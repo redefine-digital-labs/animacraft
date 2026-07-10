@@ -109,6 +109,43 @@ const templates = [
 
 const swatches = ['#7b5cff', '#2db7a3', '#f06f8f', '#f0a23a', '#335c81', '#7d5a50', '#24202b', '#f1c9b1'];
 
+const defaultConfig = {
+  network: 'testnet',
+  rpcUrl: 'https://fullnode.testnet.sui.io:443',
+  packageId: '0xTODO_ANIMACRAFT_PACKAGE',
+  walrusPublisherUrl: 'https://publisher.walrus-testnet.walrus.space',
+  walrusAggregatorUrl: 'https://aggregator.walrus-testnet.walrus.space',
+  appUrl: location.origin,
+};
+
+const runtimeConfig = {
+  ...defaultConfig,
+  ...(window.ANIMACRAFT_CONFIG || {}),
+};
+
+const chainActions = [
+  {
+    key: 'wallet',
+    title: 'Wallet',
+    body: 'Connect a Sui wallet. All creator and player writes are signed by the user.',
+  },
+  {
+    key: 'walrus',
+    title: 'Walrus assets',
+    body: 'Stage PNG layers, icons, cover sheets, manifests, rendered OCs, and profile JSON as blobs.',
+  },
+  {
+    key: 'maker',
+    title: 'OCMaker object',
+    body: 'Register creator profile, maker metadata, parts, item gates, and license policy on Sui.',
+  },
+  {
+    key: 'oc',
+    title: 'OCCharacter mint',
+    body: 'Mint finished OCs with recipe hash, image blob, profile blob, and license snapshot.',
+  },
+];
+
 const i18n = {
   en: {
     brandTagline: 'The Fully onchain Character Maker & Creator',
@@ -308,6 +345,9 @@ const state = {
   assets: [],
   customSlots: [],
   walletConnected: false,
+  walletAddress: '',
+  walletProvider: null,
+  chainMode: runtimeConfig.packageId.includes('TODO') ? 'draft' : 'live',
   locale: localStorage.getItem('animacraft-locale') || 'en',
 };
 
@@ -385,6 +425,69 @@ function download(name, content, type = 'application/json') {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function shortAddress(address) {
+  if (!address) return '';
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function availableWallet() {
+  if (window.suiWallet) return window.suiWallet;
+  if (window.sui) return window.sui;
+  const standardWallet = navigator.wallets?.get?.().find((wallet) => {
+    const name = `${wallet.name || ''}`.toLowerCase();
+    return name.includes('sui') || wallet.chains?.some((chain) => `${chain}`.includes('sui'));
+  });
+  return standardWallet || null;
+}
+
+async function connectSuiWallet() {
+  const wallet = availableWallet();
+  if (!wallet) {
+    state.walletConnected = true;
+    state.walletAddress = 'demo:install-sui-wallet';
+    state.walletProvider = 'demo';
+    renderWalletState();
+    renderChainStatus();
+    return;
+  }
+
+  try {
+    if (wallet.requestPermissions) {
+      const permissions = await wallet.requestPermissions();
+      const accounts = permissions?.accounts || wallet.accounts || [];
+      state.walletAddress = accounts[0]?.address || accounts[0] || '';
+    } else if (wallet.features?.['standard:connect']?.connect) {
+      const result = await wallet.features['standard:connect'].connect();
+      state.walletAddress = result?.accounts?.[0]?.address || '';
+    } else if (wallet.connect) {
+      const result = await wallet.connect();
+      state.walletAddress = result?.accounts?.[0]?.address || result?.address || '';
+    }
+    state.walletConnected = Boolean(state.walletAddress) || true;
+    state.walletProvider = wallet.name || 'Sui Wallet';
+  } catch (error) {
+    console.warn('Wallet connection failed', error);
+    state.walletConnected = false;
+    state.walletAddress = '';
+    state.walletProvider = null;
+  }
+
+  renderWalletState();
+  renderChainStatus();
+}
+
+function chainStatusItems() {
+  const walletReady = state.walletConnected;
+  const packageReady = !runtimeConfig.packageId.includes('TODO');
+  const walrusReady = Boolean(runtimeConfig.walrusPublisherUrl && runtimeConfig.walrusAggregatorUrl);
+  return [
+    ['Network', runtimeConfig.network, 'Sui network used by wallet transactions.', 'ready'],
+    ['Wallet', walletReady ? shortAddress(state.walletAddress) || 'Connected' : 'Not connected', walletReady ? 'Ready to sign creator and OC transactions.' : 'Connect before publishing or minting.', walletReady ? 'ready' : 'wait'],
+    ['Package', packageReady ? shortAddress(runtimeConfig.packageId) : 'Draft package id', packageReady ? 'Move package can be called from PTBs.' : 'Publish Move package, then set packageId in config.js.', packageReady ? 'ready' : 'wait'],
+    ['Walrus', walrusReady ? 'Publisher configured' : 'Missing endpoint', 'Browser uploads should write assets to Walrus, then store blob ids in Sui objects.', walrusReady ? 'ready' : 'wait'],
+  ];
 }
 
 function filteredTemplates() {
@@ -611,6 +714,13 @@ function creatorManifest() {
       chain: 'sui',
       canvas: { width: 1024, height: 1024, anchorX: 512, anchorY: 512 },
     },
+    runtime: {
+      network: runtimeConfig.network,
+      packageId: runtimeConfig.packageId,
+      walrusPublisherUrl: runtimeConfig.walrusPublisherUrl,
+      walrusAggregatorUrl: runtimeConfig.walrusAggregatorUrl,
+      appUrl: runtimeConfig.appUrl,
+    },
     slots: allSlots().map((slot, index) => ({
       key: slot.key,
       label: slot.label,
@@ -650,10 +760,13 @@ function ocPackage() {
       renderOrder: index,
     })),
     onchainIntent: {
+      network: runtimeConfig.network,
+      packageId: runtimeConfig.packageId,
       materialStorage: 'Walrus blob ids',
-      templateObject: 'Sui template object',
-      ocObject: 'Soulidity OC object',
+      templateObject: 'Animacraft OCMaker object',
+      ocObject: 'Animacraft OCCharacter object',
       settlement: 'creator royalty and license split',
+      walletSigner: state.walletAddress || 'not-connected',
     },
   };
 }
@@ -1069,21 +1182,64 @@ function closeAccountPanel() {
 }
 
 function toggleWallet() {
-  state.walletConnected = !state.walletConnected;
-  renderWalletState();
+  if (state.walletConnected) {
+    state.walletConnected = false;
+    state.walletAddress = '';
+    state.walletProvider = null;
+    renderWalletState();
+    renderChainStatus();
+    return;
+  }
+  connectSuiWallet();
 }
 
 function renderWalletState() {
   $('walletButton').classList.toggle('connected', state.walletConnected);
   const walletLabel = $('walletButton').querySelector('[data-i18n="walletConnect"]');
-  if (walletLabel) walletLabel.textContent = state.walletConnected ? 'sui:0xA11C...9F2D' : t('walletConnect');
-  $('panelWalletButton').textContent = state.walletConnected ? 'Wallet connected: sui:0xA11C...9F2D' : t('connectSuiWallet');
-  $('walletSummary').textContent = state.walletConnected ? 'Sui wallet connected · OC assets ready' : 'Wallet not connected';
+  const displayAddress = state.walletAddress && !state.walletAddress.startsWith('demo:')
+    ? shortAddress(state.walletAddress)
+    : 'Demo wallet';
+  if (walletLabel) walletLabel.textContent = state.walletConnected ? displayAddress : t('walletConnect');
+  $('panelWalletButton').textContent = state.walletConnected ? `Wallet connected: ${displayAddress}` : t('connectSuiWallet');
+  $('walletSummary').textContent = state.walletConnected ? `${state.walletProvider || 'Sui wallet'} · ${runtimeConfig.network}` : 'Wallet not connected';
   $('walletFirstCard').classList.toggle('connected', state.walletConnected);
   document.querySelector('.account-grid').classList.toggle('locked', !state.walletConnected);
   document.querySelectorAll('.account-grid [data-page]').forEach((button) => {
     button.disabled = !state.walletConnected;
   });
+}
+
+function renderChainStatus() {
+  if ($('chainStatusGrid')) {
+    $('chainStatusGrid').innerHTML = chainStatusItems().map(([label, value, note, status]) => `
+      <article class="chain-status-card ${status}">
+        <span>${label}</span>
+        <strong>${value}</strong>
+        <small>${note}</small>
+      </article>
+    `).join('');
+  }
+
+  if ($('publishRuntimeCard')) {
+    $('publishRuntimeCard').innerHTML = `
+      <div>
+        <span>Network</span>
+        <strong>${runtimeConfig.network}</strong>
+      </div>
+      <div>
+        <span>Package</span>
+        <strong>${runtimeConfig.packageId.includes('TODO') ? 'Publish package first' : shortAddress(runtimeConfig.packageId)}</strong>
+      </div>
+      <div>
+        <span>Walrus</span>
+        <strong>${runtimeConfig.walrusPublisherUrl ? 'Ready for browser upload' : 'Configure endpoint'}</strong>
+      </div>
+      <div>
+        <span>Signer</span>
+        <strong>${state.walletConnected ? shortAddress(state.walletAddress) || 'Connected' : 'Connect wallet'}</strong>
+      </div>
+    `;
+  }
 }
 
 function renderProtocol() {
@@ -1094,6 +1250,18 @@ function renderProtocol() {
       <p>${body}</p>
     </article>
   `).join('');
+}
+
+function renderChainActions() {
+  document.querySelectorAll('[data-chain-action-list]').forEach((node) => {
+    node.innerHTML = chainActions.map((action, index) => `
+      <div>
+        <span>${String(index + 1).padStart(2, '0')}</span>
+        <strong>${action.title}</strong>
+        <small>${action.body}</small>
+      </div>
+    `).join('');
+  });
 }
 
 function renderAll() {
@@ -1110,6 +1278,8 @@ function renderAll() {
   renderImageMakerList();
   renderCreatorDetails();
   renderProtocol();
+  renderChainStatus();
+  renderChainActions();
   renderI18n();
   renderWalletState();
   setCreatorView(state.creatorView);

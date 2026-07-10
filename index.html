@@ -5,7 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Animacraft</title>
     <meta name="description" content="Animacraft is The Fully onchain Character Maker & Creator." />
-    <link rel="stylesheet" href="./styles.css?v=animacraft-30" />
+    <link rel="stylesheet" href="./styles.css?v=animacraft-31" />
+    <script>
+      window.ANIMACRAFT_CONFIG = window.ANIMACRAFT_CONFIG || {};
+    </script>
+    <script src="./config.js"></script>
   </head>
   <body>
     <header class="topbar">
@@ -91,6 +95,14 @@
             <span><strong>1</strong> creator package flow</span>
           </div>
         </div>
+
+        <section class="chain-status-panel" aria-label="Animacraft network status">
+          <div>
+            <p class="kicker">On-chain Network</p>
+            <h2>Backendless Sui + Walrus runtime</h2>
+          </div>
+          <div class="chain-status-grid" id="chainStatusGrid"></div>
+        </section>
 
         <div class="plaza-toolbar">
           <label class="search-box">
@@ -555,6 +567,7 @@
                   <section class="function-card primary-function">
                     <p class="kicker">On-chain Assets</p>
                     <h2>Asset registry</h2>
+                    <div class="publish-runtime-card" id="publishRuntimeCard"></div>
                     <div class="asset-status-list">
                       <div><strong>Walrus blobs</strong><span>PNG layers, cover image, generated preview sheets</span></div>
                       <div><strong>Sui objects</strong><span>Template, parts, recipe, licenses, creator identity</span></div>
@@ -564,13 +577,7 @@
                   <section class="function-card">
                     <p class="kicker">Publish Steps</p>
                     <h2>Chain execution</h2>
-                    <ol class="chain-step-list">
-                      <li><strong>Upload assets</strong><span>PNG layers and previews become Walrus blobs.</span></li>
-                      <li><strong>Register template</strong><span>Sui stores template metadata, layer order, parts, and rule hashes.</span></li>
-                      <li><strong>Attach licenses</strong><span>Personal, commercial, remix, and exclusive terms become policy objects.</span></li>
-                      <li><strong>Open creation</strong><span>Users create OC recipes against the published template.</span></li>
-                      <li><strong>Enable trading</strong><span>Secondary sales settle creator royalties and asset-owner splits.</span></li>
-                    </ol>
+                    <div class="chain-action-list" data-chain-action-list></div>
                   </section>
                   <section class="function-card">
                     <p class="kicker">Publication Scope</p>
@@ -818,10 +825,35 @@
             </p>
           </div>
         </div>
+        <div class="docs-callout-grid">
+          <section class="protocol-card">
+            <span>0x</span>
+            <h2>No backend signer</h2>
+            <p>Creators and users sign their own transactions. Animacraft can use optional indexers later, but core writes belong to Sui objects and wallet PTBs.</p>
+          </section>
+          <section class="protocol-card">
+            <span>W</span>
+            <h2>Walrus as asset layer</h2>
+            <p>All PNG layers, cover sheets, manifests, rendered OCs, and profile JSON should resolve from Walrus blob ids.</p>
+          </section>
+          <section class="protocol-card">
+            <span>PR</span>
+            <h2>Open-source releases</h2>
+            <p>Production changes land through pull requests, CI checks, and CODEOWNERS review before shipping to Vercel.</p>
+          </section>
+        </div>
+        <section class="chain-status-panel docs-chain-panel">
+          <div>
+            <p class="kicker">Production Loop</p>
+            <h2>Creator to player without a backend database</h2>
+            <p>Animacraft should work like a browser-native on-chain app: wallet signs, Walrus stores, Sui verifies, and events become the index surface.</p>
+          </div>
+          <div class="chain-action-list" data-chain-action-list></div>
+        </section>
         <div id="protocolSteps" class="protocol-grid"></div>
       </section>
     </main>
 
-    <script src="./app.js?v=animacraft-30"></script>
+    <script src="./app.js?v=animacraft-31"></script>
   </body>
 </html>

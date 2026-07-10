@@ -1,0 +1,33 @@
+{
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/maker/:id",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/oc/:id",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/creator/:path*",
+      "destination": "/index.html"
+    }
+  ]
+}
