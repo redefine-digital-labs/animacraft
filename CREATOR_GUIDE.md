@@ -23,15 +23,17 @@ An Item image belongs to one exact `Part + Item + Layer + Color` cell. Standard 
 
 ## Creator Workflow
 
-1. Open **Maker Top** and create or select an OCMaker draft.
-2. Open **Character Maker** and add the Parts users need to choose from.
+1. Open **My Page → Creator Studio**, create an OC Maker in **Your OC Makers**, or open an existing draft.
+2. The draft opens in **Character Maker**. Add the Parts users need to choose from.
 3. Select a Part and configure its immutable type, icon, menu visibility, anchor, remove behavior, and license gate.
 4. Add Layers and Colors inside that Part. Keep the first version small; every added Layer or Color expands the Item image matrix.
 5. Add Items, set their display order and visibility, then upload PNGs into their Layer × Color cells.
-6. Use the persistent canvas while switching Items. Open **Composition Order** only to arrange Layers across Parts or adjust layer offsets, opacity, and blend mode.
-7. Add incompatible-choice logic in **Rules** and shared color controls in **Palette Rules**.
-8. Run **Preview Check**. Every public Item must have at least one PNG, every rule must point to an existing Part, and at least one Part must be visible.
-9. In **On-chain Publish**, prepare one Walrus quilt, register and upload it, certify it, then publish the OCMaker object on Sui.
+6. Use the persistent canvas while switching Items. Open **Composition Order** only to arrange Layers across Parts or adjust layer offsets, opacity, and blend mode. Layers still belong to their Part; this list is only the final cross-Part stack.
+7. Use **Maker Top** as a status overview. Continue editing through Character Maker, Rules, Palette Rules, Preview Check, On-chain Publish, and Settings.
+8. Save a local draft often. Before publishing, reconnect the same wallet and reselect local image files if the browser was reloaded.
+9. Add incompatible-choice logic in **Rules** and shared color controls in **Palette Rules**.
+10. Run **Preview Check**. Every public Item must have at least one PNG, every rule must point to an existing Part, and at least one Part must be visible.
+11. In **On-chain Publish**, prepare one Walrus quilt, register and upload it, certify it, then publish the OCMaker object on Sui.
 
 ## Image Preparation
 

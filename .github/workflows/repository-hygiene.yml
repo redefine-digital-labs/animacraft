@@ -7,6 +7,26 @@ on:
       - main
 
 jobs:
+  web:
+    name: Web production build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check production build
+        run: npm run check
+
   hygiene:
     name: Repository hygiene
     runs-on: ubuntu-latest

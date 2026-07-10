@@ -12,18 +12,21 @@
 - User-side OC image/profile upload and wallet-signed OCCharacter mint transaction for configured published makers.
 - Move validation for license kinds, part kinds, item gates, non-empty blobs, and non-empty publishable makers.
 - Move unit tests and browser-verified responsive layouts.
+- Per-wallet, per-maker local draft isolation so switching makers does not share Parts or assets.
+- Pull requests run syntax checks and a clean Vite production build in GitHub Actions.
 
 ## Required before public creator onboarding
 
 1. Upgrade the local Sui CLI to match the Mainnet protocol.
 2. Fund a dedicated publisher wallet with SUI and WAL.
 3. Publish `move/animacraft` to Sui Mainnet and secure its `UpgradeCap`.
-4. Set the real package id in `public/config.js`.
+4. Replace `0xTODO_ANIMACRAFT_PACKAGE` in `public/config.js` with the verified package id.
 5. Publish at least one real maker and add its OCMaker object id under `featuredMakers`.
-6. Run a wallet-funded end-to-end Mainnet transaction with a small real PNG asset set.
-7. Replace hard-coded featured discovery with Sui event or object discovery.
+6. Run and record a wallet-funded end-to-end Mainnet transaction with a small real PNG asset set.
+7. Replace hard-coded maker discovery with indexed Sui objects/events plus Walrus manifest hydration.
 8. Add durable resumable Walrus upload state and failed-upload recovery.
 9. Add moderation/reporting policy before opening public template uploads.
+10. Add a CI job for Move tests using a pinned, Mainnet-compatible Sui CLI.
 
 ## Required before unrestricted Mainnet scale
 
@@ -31,3 +34,5 @@
 - Add contract tests covering full creator and OC lifecycle scenarios.
 - Add package upgrade policy, multisig administration, monitoring, and incident procedures.
 - Complete an independent Move security review.
+
+The static site can be deployed to a Vercel Preview now. Public creator onboarding and unrestricted Mainnet publishing remain blocked until the checklist above is complete. See `PRODUCTION_AUDIT.md` for the release gate.

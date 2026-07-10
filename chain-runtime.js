@@ -127,6 +127,11 @@ export async function prepareWalrusUpload(entries) {
     }));
   }
   if (!Array.isArray(entries) || entries.length === 0) throw new Error('Choose at least one file to store on Walrus.');
+  if (entries.length > 5_000) throw new Error('A single Walrus quilt cannot contain more than 5,000 Animacraft files.');
+  const identifiers = entries.map((entry) => entry.identifier);
+  if (new Set(identifiers).size !== identifiers.length) throw new Error('Every Walrus quilt file must have a unique identifier.');
+  const totalBytes = entries.reduce((total, entry) => total + Number(entry.blob?.size || 0), 0);
+  if (totalBytes > 500 * 1024 * 1024) throw new Error('A single Animacraft upload cannot exceed 500 MB. Split this Maker into a smaller release.');
 
   const files = await Promise.all(entries.map(async (entry) => WalrusFileClass.from({
     contents: new Uint8Array(await entry.blob.arrayBuffer()),

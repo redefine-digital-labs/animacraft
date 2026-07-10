@@ -339,6 +339,8 @@ const state = {
   partSubView: 'items',
   selectedLayer: 'hairFront:normal',
   selectedItem: 'normal',
+  makerSlots: structuredClone(slots),
+  makerParts: structuredClone(parts),
   slotOrder: slots.map((slot) => slot.key),
   layerOrder: [],
   visual: {
@@ -361,7 +363,6 @@ const state = {
   assets: [],
   rules: [],
   paletteLinks: [{ primaryPartKey: 'hairBack', linkedPartKey: 'hairFront' }],
-  customSlots: [],
   walletConnected: false,
   walletAddress: '',
   walletProvider: null,
@@ -386,6 +387,105 @@ const state = {
   pendingOcRecipeJson: '',
   locale: localStorage.getItem('animacraft-locale') || 'en',
 };
+
+const makerModels = new Map();
+const loadedMakerDrafts = new Set();
+
+function makerDraftStorageKey(templateId = state.templateId) {
+  return `animacraft-maker-draft-v2:${state.walletAddress || 'local'}:${templateId}`;
+}
+
+function defaultMakerVisual() {
+  return structuredClone({
+    background: 'dawn',
+    hairBack: 'wave',
+    hairFront: 'side',
+    eyes: 'bright',
+    mouth: 'calm',
+    outfit: 'jacket',
+    accessory: 'halo',
+    palette: {
+      background: '#f3dfc8',
+      skin: '#f1c9b1',
+      hair: '#7b5cff',
+      eyes: '#2db7a3',
+      outfit: '#335c81',
+      accessory: '#f0a23a',
+    },
+  });
+}
+
+function createMakerModel({ empty = false } = {}) {
+  return {
+    slots: empty ? [] : structuredClone(slots),
+    parts: empty ? {} : structuredClone(parts),
+    slotOrder: empty ? [] : slots.map((slot) => slot.key),
+    layerOrder: [],
+    visual: defaultMakerVisual(),
+    rules: [],
+    paletteLinks: empty ? [] : [{ primaryPartKey: 'hairBack', linkedPartKey: 'hairFront' }],
+    assets: [],
+    publishDigest: '',
+    publishStatus: '',
+  };
+}
+
+function syncActiveMakerModelRefs() {
+  const model = makerModels.get(state.templateId);
+  if (!model) return;
+  Object.assign(model, {
+    slots: state.makerSlots,
+    parts: state.makerParts,
+    slotOrder: state.slotOrder,
+    layerOrder: state.layerOrder,
+    visual: state.visual,
+    rules: state.rules,
+    paletteLinks: state.paletteLinks,
+    assets: state.assets,
+    publishDigest: state.publishDigest,
+    publishStatus: state.publishStatus,
+  });
+}
+
+function activateMakerModel(templateId, options = {}) {
+  syncActiveMakerModelRefs();
+  if (!makerModels.has(templateId)) makerModels.set(templateId, createMakerModel(options));
+  const model = makerModels.get(templateId);
+  state.templateId = templateId;
+  state.makerSlots = model.slots;
+  state.makerParts = model.parts;
+  state.slotOrder = model.slotOrder;
+  state.layerOrder = model.layerOrder;
+  state.visual = model.visual;
+  state.rules = model.rules;
+  state.paletteLinks = model.paletteLinks;
+  state.assets = model.assets;
+  state.publishDigest = model.publishDigest;
+  state.publishStatus = model.publishStatus;
+  state.makerUploadSession = null;
+  state.makerUploadStage = 'idle';
+  state.makerManifestPatchId = '';
+  state.pendingMakerManifestJson = '';
+  state.selectedSlot = state.slotOrder[0] || '';
+  state.selectedItem = state.selectedSlot ? state.visual[state.selectedSlot] || slotItems(state.selectedSlot)[0]?.id || '' : '';
+  const firstLayer = state.selectedSlot ? creatorLayers(allSlots()[0])[0] : null;
+  state.selectedLayer = firstLayer ? creatorLayerKey(state.selectedSlot, firstLayer.id) : '';
+  state.partSubView = 'items';
+  if (!loadedMakerDrafts.has(makerDraftStorageKey(templateId))) restoreMakerDraft(templateId);
+}
+
+makerModels.set(state.templateId, {
+  slots: state.makerSlots,
+  parts: state.makerParts,
+  slotOrder: state.slotOrder,
+  layerOrder: state.layerOrder,
+  visual: state.visual,
+  rules: state.rules,
+  paletteLinks: state.paletteLinks,
+  assets: state.assets,
+  publishDigest: state.publishDigest,
+  publishStatus: state.publishStatus,
+});
 
 function $(id) {
   return document.getElementById(id);
@@ -428,11 +528,11 @@ function activeMakerObjectId() {
 }
 
 function activeSlot() {
-  return allSlots().find((slot) => slot.key === state.selectedSlot) || allSlots()[0];
+  return allSlots().find((slot) => slot.key === state.selectedSlot) || allSlots()[0] || null;
 }
 
 function allSlots() {
-  const merged = [...slots, ...state.customSlots];
+  const merged = state.makerSlots;
   const byKey = new Map(merged.map((slot) => [slot.key, slot]));
   const ordered = state.slotOrder.map((key) => byKey.get(key)).filter(Boolean);
   const missing = merged.filter((slot) => !state.slotOrder.includes(slot.key));
@@ -440,7 +540,7 @@ function allSlots() {
 }
 
 function slotItems(slotKey) {
-  return parts[slotKey] || [];
+  return state.makerParts[slotKey] || [];
 }
 
 function ensureSlotStructure(slot) {
@@ -574,7 +674,12 @@ async function localPngAsset(file) {
   if (!file || (file.type !== 'image/png' && !file.name.toLowerCase().endsWith('.png'))) {
     throw new Error('Item images must be transparent PNG files.');
   }
+  if (file.size > 20 * 1024 * 1024) throw new Error('Each Item image must be 20 MB or smaller.');
   const bitmap = await createImageBitmap(file);
+  if (bitmap.width > 8192 || bitmap.height > 8192) {
+    bitmap.close();
+    throw new Error('Item images cannot exceed 8192 × 8192 px.');
+  }
   const asset = {
     file,
     url: URL.createObjectURL(file),
@@ -586,12 +691,40 @@ async function localPngAsset(file) {
   return asset;
 }
 
+async function localIconAsset(file) {
+  if (!file || !['image/png', 'image/jpeg'].includes(file.type)) throw new Error('Icons must be PNG or JPEG files.');
+  if (file.size > 5 * 1024 * 1024) throw new Error('Icons must be 5 MB or smaller.');
+  const bitmap = await createImageBitmap(file);
+  if (bitmap.width > 4096 || bitmap.height > 4096) {
+    bitmap.close();
+    throw new Error('Icons cannot exceed 4096 × 4096 px.');
+  }
+  const asset = { file, url: URL.createObjectURL(file), width: bitmap.width, height: bitmap.height };
+  bitmap.close();
+  return asset;
+}
+
 function slug(value) {
   return String(value)
     .replace(/\.[^.]+$/, '')
     .replace(/[^a-zA-Z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .toLowerCase() || 'part';
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    "'": '&#39;',
+    '"': '&quot;',
+  })[character]);
+}
+
+function safeCssColor(value, fallback = '#27c5c8') {
+  const color = String(value || '').trim();
+  return /^(#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+-]+\))$/i.test(color) ? color : fallback;
 }
 
 function splitList(value) {
@@ -660,6 +793,7 @@ function setPage(page) {
 
 function setCreatorView(view) {
   state.creatorView = view;
+  document.querySelector('.maker-list-panel')?.classList.toggle('editing', state.creatorView === 'edit');
   document.querySelectorAll('[data-creator-view]').forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.creatorView === state.creatorView);
   });
@@ -697,6 +831,12 @@ function syncTemplateFields() {
   $('creatorName').value = template.creator;
   $('creatorWorld').value = template.style;
   $('creatorRoyalty').value = template.royaltyBps;
+  $('creatorLicense').value = Object.entries({
+    'personal-use': 'Personal use',
+    'free-remix': 'Free remix',
+    'paid-commercial': 'Paid commercial',
+    'exclusive-commission': 'Exclusive commission',
+  }).find(([, label]) => label === template.license)?.[0] || 'personal-use';
   $('profileWorld').value = template.style;
   $('templateTitle').textContent = template.name;
   $('avatarTemplate').textContent = template.name;
@@ -707,32 +847,32 @@ function syncTemplateFields() {
 function renderTemplates() {
   const list = filteredTemplates();
   $('templateGrid').innerHTML = list.length ? list.map((template) => `
-    <article class="template-card ${template.id === state.templateId ? 'active' : ''}" data-template="${template.id}">
-      <div class="template-cover" style="--accent:${template.accent}; --secondary:${template.secondary};">
+    <article class="template-card ${template.id === state.templateId ? 'active' : ''}" data-template="${escapeHtml(template.id)}">
+      <div class="template-cover" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
         <div class="cover-face">
           <span class="cover-hair"></span>
           <span class="cover-eye left"></span>
           <span class="cover-eye right"></span>
           <span class="cover-mouth"></span>
         </div>
-        <span class="cover-style">${template.style}</span>
+        <span class="cover-style">${escapeHtml(template.style)}</span>
       </div>
       <div class="template-body">
         <div class="badge-row">
-          <span>${template.license}</span>
-          <span>${template.parts} parts</span>
-          <span>${template.uses} uses</span>
+          <span>${escapeHtml(template.license)}</span>
+          <span>${escapeHtml(template.parts)} parts</span>
+          <span>${escapeHtml(template.uses)} uses</span>
         </div>
-        <h2>${template.name}</h2>
-        <p class="creator-line">by ${template.creator}</p>
-        <p>${template.summary}</p>
-        <div class="sample-strip" aria-label="${template.name} samples">
-          ${[1, 2, 3, 4].map((item) => `<span style="--tilt:${item * 3}deg; --accent:${template.accent}; --secondary:${template.secondary};"></span>`).join('')}
+        <h2>${escapeHtml(template.name)}</h2>
+        <p class="creator-line">by ${escapeHtml(template.creator)}</p>
+        <p>${escapeHtml(template.summary)}</p>
+        <div class="sample-strip" aria-label="${escapeHtml(template.name)} samples">
+          ${[1, 2, 3, 4].map((item) => `<span style="--tilt:${item * 3}deg; --accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};"></span>`).join('')}
         </div>
         <div class="template-footer">
-          <span>${template.royaltyBps / 100}% royalty</span>
-          <span>${template.works} works</span>
-          <button class="primary" data-use-template="${template.id}">Start making</button>
+          <span>${Number(template.royaltyBps || 0) / 100}% royalty</span>
+          <span>${escapeHtml(template.works)} works</span>
+          <button class="primary" data-use-template="${escapeHtml(template.id)}">Start making</button>
         </div>
       </div>
     </article>
@@ -741,7 +881,7 @@ function renderTemplates() {
   document.querySelectorAll('.template-card').forEach((card) => {
     card.addEventListener('click', (event) => {
       if (event.target.closest('[data-use-template]')) return;
-      state.templateId = card.dataset.template;
+      activateMakerModel(card.dataset.template);
       syncTemplateFields();
       renderAll();
     });
@@ -749,7 +889,7 @@ function renderTemplates() {
 
   document.querySelectorAll('[data-use-template]').forEach((button) => {
     button.addEventListener('click', () => {
-      state.templateId = button.dataset.useTemplate;
+      activateMakerModel(button.dataset.useTemplate);
       syncTemplateFields();
       setPage('make');
       renderAll();
@@ -759,9 +899,9 @@ function renderTemplates() {
 
 function renderSlots() {
   $('slotRail').innerHTML = allSlots().map((slot) => `
-    <button class="slot-btn ${slot.key === state.selectedSlot ? 'active' : ''}" data-slot="${slot.key}">
-      <span>${slot.icon}</span>
-      <strong>${slot.label}</strong>
+    <button class="slot-btn ${slot.key === state.selectedSlot ? 'active' : ''}" data-slot="${escapeHtml(slot.key)}">
+      <span>${escapeHtml(slot.icon)}</span>
+      <strong>${escapeHtml(slot.label)}</strong>
     </button>
   `).join('');
 
@@ -775,14 +915,20 @@ function renderSlots() {
 
 function renderParts() {
   const slot = activeSlot();
+  if (!slot) {
+    $('slotTitle').textContent = 'No Parts yet';
+    $('slotDescription').textContent = 'Create the first Part in Character Maker.';
+    $('partGrid').innerHTML = '';
+    return;
+  }
   $('slotTitle').textContent = slot.label;
   $('slotDescription').textContent = slot.description;
   $('partColor').value = state.visual.palette[slot.colorKey];
   $('partGrid').innerHTML = slotItems(slot.key).map((part, index) => `
-    <button class="part-card ${state.visual[slot.key] === part.id ? 'active' : ''}" data-part="${part.id}">
-      <span class="part-thumb" style="--accent:${state.visual.palette[slot.colorKey]}; --index:${index};"></span>
-      <strong>${part.label}</strong>
-      <small>${slot.key}/${part.id}</small>
+    <button class="part-card ${state.visual[slot.key] === part.id ? 'active' : ''}" data-part="${escapeHtml(part.id)}">
+      <span class="part-thumb" style="--accent:${safeCssColor(state.visual.palette[slot.colorKey])}; --index:${index};"></span>
+      <strong>${escapeHtml(part.label)}</strong>
+      <small>${escapeHtml(slot.key)}/${escapeHtml(part.id)}</small>
     </button>
   `).join('');
 
@@ -796,6 +942,10 @@ function renderParts() {
 
 function renderSwatches() {
   const slot = activeSlot();
+  if (!slot) {
+    $('swatchGrid').innerHTML = '';
+    return;
+  }
   $('swatchGrid').innerHTML = swatches.map((color) => `
     <button class="swatch ${state.visual.palette[slot.colorKey] === color ? 'active' : ''}" data-swatch="${color}" style="background:${color}" aria-label="Use ${color}"></button>
   `).join('');
@@ -835,7 +985,7 @@ function renderAvatar() {
 function renderRecipe() {
   $('recipeList').innerHTML = allSlots().map((slot) => {
     const selected = slotItems(slot.key).find((part) => part.id === state.visual[slot.key]);
-    return `<button data-slot="${slot.key}">${slot.label}: ${selected ? selected.label : state.visual[slot.key]}</button>`;
+    return `<button data-slot="${slot.key}">${escapeHtml(slot.label)}: ${escapeHtml(selected ? selected.label : state.visual[slot.key])}</button>`;
   }).join('');
   document.querySelectorAll('#recipeList [data-slot]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -966,18 +1116,6 @@ function ocPackage() {
   };
 }
 
-function renderAssets() {
-  const assetQueue = $('assetQueue');
-  if (!assetQueue) return;
-  assetQueue.classList.toggle('empty', state.assets.length === 0);
-  assetQueue.innerHTML = state.assets.length ? state.assets.map((asset) => `
-    <div>
-      <strong>${asset.name}</strong>
-      <span>${asset.kind} · ${asset.slot}${asset.itemId ? ` / ${asset.itemId}` : ''}${asset.layerId ? ` / ${asset.layerId}` : ''} · ${(asset.size / 1024).toFixed(1)} KB${asset.blobId ? ' · Walrus ready' : ''}</span>
-    </div>
-  `).join('') : 'No layer files added yet.';
-}
-
 function renderChecklist() {
   const layerAssets = itemLayerAssets();
   const checks = [
@@ -995,6 +1133,36 @@ function renderChecklist() {
   `).join('');
 }
 
+function makerPublicationIssues() {
+  const issues = [];
+  const makerParts = allSlots();
+  if (!makerParts.length) issues.push('Add at least one Part.');
+  if (makerParts.length > 750) issues.push('A Maker cannot contain more than 750 Parts.');
+  if (makerParts.length && !makerParts.some((slot) => slot.menuVisible !== false)) issues.push('At least one Part must be visible in the player menu.');
+  makerParts.forEach((slot) => {
+    const items = slotItems(slot.key);
+    const layers = creatorLayers(slot);
+    const colors = creatorColors(slot);
+    if (!items.length) issues.push(`${slot.label} needs at least one Item.`);
+    if (!layers.length) issues.push(`${slot.label} needs at least one Layer.`);
+    if (!colors.length) issues.push(`${slot.label} needs at least one Color.`);
+    if (new Set(items.map((item) => item.id)).size !== items.length) issues.push(`${slot.label} contains duplicate Item IDs.`);
+    if (new Set(layers.map((layer) => layer.id)).size !== layers.length) issues.push(`${slot.label} contains duplicate Layer IDs.`);
+    if (new Set(colors.map((color) => color.id)).size !== colors.length) issues.push(`${slot.label} contains duplicate Color IDs.`);
+    items.filter((item) => item.visibility !== 'private').forEach((item) => {
+      if (!Object.values(item.images || {}).some((asset) => asset?.file)) issues.push(`${slot.label} / ${item.label} needs an Item image.`);
+    });
+  });
+  state.rules.forEach((rule) => {
+    if (!makerParts.some((slot) => slot.key === rule.leftPartKey) || !makerParts.some((slot) => slot.key === rule.rightPartKey)) {
+      issues.push('A selection rule references a missing Part.');
+    }
+  });
+  const royaltyBps = Number($('creatorRoyalty').value || 0);
+  if (!Number.isInteger(royaltyBps) || royaltyBps < 0 || royaltyBps > 10_000) issues.push('Royalty BPS must be an integer from 0 to 10000.');
+  return [...new Set(issues)];
+}
+
 function renderCreatorValidation() {
   if (!$('creatorValidationList')) return;
   const structuredParts = allSlots().filter((slot) => ['standard', 'left-right-pair', 'last-bastion'].includes(ensureSlotStructure(slot).kind));
@@ -1009,12 +1177,12 @@ function renderCreatorValidation() {
     [invalidRules.length === 0, invalidRules.length ? `${invalidRules.length} rules reference missing Parts.` : 'All selection rules reference existing Parts.'],
     [itemLayerAssets().length > 0, itemLayerAssets().length ? `${itemLayerAssets().length} item images are ready for the Walrus quilt.` : 'Upload at least one Item image before release.'],
   ];
-  $('creatorValidationList').innerHTML = checks.map(([done, label]) => `<li class="${done ? 'ok' : 'warn'}">${label}</li>`).join('');
+  $('creatorValidationList').innerHTML = checks.map(([done, label]) => `<li class="${done ? 'ok' : 'warn'}">${escapeHtml(label)}</li>`).join('');
 }
 
 function renderRules() {
   if (!$('ruleLeftPart') || !$('ruleRightPart')) return;
-  const options = allSlots().map((slot) => `<option value="${slot.key}">${slot.label}</option>`).join('');
+  const options = allSlots().map((slot) => `<option value="${escapeHtml(slot.key)}">${escapeHtml(slot.label)}</option>`).join('');
   const previousLeft = $('ruleLeftPart').value;
   const previousRight = $('ruleRightPart').value;
   $('ruleLeftPart').innerHTML = options;
@@ -1024,9 +1192,9 @@ function renderRules() {
   $('selectionRuleList').innerHTML = state.rules.length
     ? state.rules.map((rule, index) => `
         <div>
-          <span>${allSlots().find((slot) => slot.key === rule.leftPartKey)?.label || rule.leftPartKey}</span>
+          <span>${escapeHtml(allSlots().find((slot) => slot.key === rule.leftPartKey)?.label || rule.leftPartKey)}</span>
           <b>cannot combine with</b>
-          <span>${allSlots().find((slot) => slot.key === rule.rightPartKey)?.label || rule.rightPartKey}</span>
+          <span>${escapeHtml(allSlots().find((slot) => slot.key === rule.rightPartKey)?.label || rule.rightPartKey)}</span>
           <button type="button" data-remove-rule="${index}" aria-label="Remove rule">×</button>
         </div>
       `).join('')
@@ -1041,7 +1209,7 @@ function renderRules() {
 
 function renderPaletteLinks() {
   if (!$('palettePrimaryPart') || !$('paletteLinkedPart')) return;
-  const options = allSlots().map((slot) => `<option value="${slot.key}">${slot.label}</option>`).join('');
+  const options = allSlots().map((slot) => `<option value="${escapeHtml(slot.key)}">${escapeHtml(slot.label)}</option>`).join('');
   const previousPrimary = $('palettePrimaryPart').value;
   const previousLinked = $('paletteLinkedPart').value;
   $('palettePrimaryPart').innerHTML = options;
@@ -1051,9 +1219,9 @@ function renderPaletteLinks() {
   $('paletteLinkList').innerHTML = state.paletteLinks.length
     ? state.paletteLinks.map((link, index) => `
         <div>
-          <span>${allSlots().find((slot) => slot.key === link.primaryPartKey)?.label || link.primaryPartKey}</span>
+          <span>${escapeHtml(allSlots().find((slot) => slot.key === link.primaryPartKey)?.label || link.primaryPartKey)}</span>
           <b>shares palette with</b>
-          <span>${allSlots().find((slot) => slot.key === link.linkedPartKey)?.label || link.linkedPartKey}</span>
+          <span>${escapeHtml(allSlots().find((slot) => slot.key === link.linkedPartKey)?.label || link.linkedPartKey)}</span>
           <button type="button" data-remove-palette-link="${index}" aria-label="Remove palette link">×</button>
         </div>
       `).join('')
@@ -1154,7 +1322,7 @@ async function renderOcImageBlob() {
 function renderImageMakerList() {
   $('imageMakerList').innerHTML = `
     ${templates.map((template) => `
-      <article class="creator-maker-card ${template.id === state.templateId ? 'active' : ''}" data-maker="${template.id}" style="--accent:${template.accent}; --secondary:${template.secondary};">
+      <article class="creator-maker-card ${template.id === state.templateId ? 'active' : ''}" data-maker="${escapeHtml(template.id)}" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
         <div class="maker-cover-mini">
           <span class="mini-face"></span>
         </div>
@@ -1164,13 +1332,13 @@ function renderImageMakerList() {
             <span>${template.category === 'chibi' ? '1:1' : '9:16'}</span>
             <span>Free combine</span>
           </div>
-          <h2>${template.name}</h2>
-          <p>${template.summary}</p>
+          <h2>${escapeHtml(template.name)}</h2>
+          <p>${escapeHtml(template.summary)}</p>
         </div>
         <div class="maker-card-actions">
-          <button class="secondary" data-preview-maker="${template.id}">Preview</button>
-          <button class="icon-button" data-open-maker="${template.id}" aria-label="Open ${template.name}">↗</button>
-          <button class="primary" data-edit-maker="${template.id}">Edit</button>
+          <button class="secondary" data-preview-maker="${escapeHtml(template.id)}">Preview</button>
+          <button class="icon-button" data-open-maker="${escapeHtml(template.id)}" aria-label="Open ${escapeHtml(template.name)}">↗</button>
+          <button class="primary" data-edit-maker="${escapeHtml(template.id)}">Edit</button>
         </div>
       </article>
     `).join('')}
@@ -1178,7 +1346,7 @@ function renderImageMakerList() {
 
   document.querySelectorAll('[data-preview-maker], [data-open-maker]').forEach((button) => {
     button.addEventListener('click', () => {
-      state.templateId = button.dataset.previewMaker || button.dataset.openMaker;
+      activateMakerModel(button.dataset.previewMaker || button.dataset.openMaker);
       syncTemplateFields();
       setPage('make');
       renderAll();
@@ -1187,7 +1355,7 @@ function renderImageMakerList() {
 
   document.querySelectorAll('[data-edit-maker]').forEach((button) => {
     button.addEventListener('click', () => {
-      if (button.dataset.editMaker) state.templateId = button.dataset.editMaker;
+      if (button.dataset.editMaker) activateMakerModel(button.dataset.editMaker);
       syncTemplateFields();
       setCreatorView('edit');
       renderAll();
@@ -1200,18 +1368,27 @@ function renderCreatorDetails() {
   const template = activeTemplate();
   allSlots().forEach(ensureSlotStructure);
   const compositionLayers = allCreatorLayers();
-  $('detailMakerName').textContent = template.name;
   $('detailMakerTitle').textContent = template.name;
   if ($('layerMakerTitle')) $('layerMakerTitle').textContent = template.name;
   $('editingMakerTitle').textContent = template.name;
-  $('detailPartCount').textContent = `${allSlots().length} / 750 parts`;
   $('detailDescription').textContent = template.summary || 'Build the template from layered assets, then bind the maker to license rules and on-chain provenance.';
   $('layerCount').textContent = compositionLayers.length;
+  const publicItems = allSlots().flatMap((slot) => slotItems(slot.key).filter((item) => item.visibility !== 'private'));
+  const missingItems = publicItems.filter((item) => !Object.values(item.images || {}).some((asset) => asset?.file));
+  if ($('makerTopPartSummary')) $('makerTopPartSummary').textContent = `${allSlots().length} Part${allSlots().length === 1 ? '' : 's'}`;
+  if ($('makerTopAssetSummary')) $('makerTopAssetSummary').textContent = itemLayerAssets().length ? `${itemLayerAssets().length} item images ready` : 'No item images yet';
+  if ($('makerTopRuleSummary')) $('makerTopRuleSummary').textContent = `${state.rules.length} Rule${state.rules.length === 1 ? '' : 's'}`;
+  if ($('makerTopReadiness')) {
+    $('makerTopReadiness').textContent = !allSlots().length
+      ? 'Add the first Part'
+      : missingItems.length === 0 ? 'Ready to preview' : `${missingItems.length} incomplete Item${missingItems.length === 1 ? '' : 's'}`;
+  }
+  if ($('makerTopChainState')) $('makerTopChainState').textContent = state.publishDigest ? 'Published' : runtimeConfig.packageId.includes('TODO') ? 'Package pending' : 'Local draft';
 
   $('creatorPartsList').innerHTML = allSlots().map((slot, index) => `
     <button class="creator-part-row ${state.selectedSlot === slot.key ? 'active' : ''}" data-slot="${slot.key}">
       <span>${String(index + 1).padStart(2, '0')}</span>
-      <strong>${slot.label}</strong>
+      <strong>${escapeHtml(slot.label)}</strong>
       <small>${slotItems(slot.key).length} items · ${creatorLayers(slot).length} layers · ${uploadedAssetCount(slot)} files</small>
     </button>
   `).join('');
@@ -1219,8 +1396,8 @@ function renderCreatorDetails() {
   $('creatorLayerList').innerHTML = compositionLayers.map((layer, index) => `
     <button class="layer-row ${state.selectedLayer === layer.key ? 'active' : ''}" data-layer-key="${layer.key}">
       <span>${index + 1}</span>
-      <strong>${layer.name}</strong>
-      <small>${layer.partLabel} · ${layer.id}</small>
+      <strong>${escapeHtml(layer.name)}</strong>
+      <small>${escapeHtml(layer.partLabel)} · ${escapeHtml(layer.id)}</small>
     </button>
   `).join('');
 
@@ -1228,51 +1405,11 @@ function renderCreatorDetails() {
   renderLayerDetails();
   renderCreatorCanvas();
 
-  if ($('makerTopPartsList')) {
-    $('makerTopPartsList').innerHTML = allSlots().map((slot, index) => `
-      <div class="maker-top-row">
-        <span class="maker-top-index">${String(index + 1).padStart(2, '0')}</span>
-        <div class="maker-top-main">
-          <strong>${slot.label}</strong>
-          <small>${slot.key}</small>
-        </div>
-        <small class="maker-top-status">${slotItems(slot.key).length} items · ${creatorLayers(slot).length} layers · ${uploadedAssetCount(slot)} files</small>
-        <div class="maker-top-actions">
-          <button class="secondary" data-slot-items="${slot.key}">Items</button>
-          <button class="secondary" data-slot-settings="${slot.key}">Settings</button>
-        </div>
-      </div>
-    `).join('');
-  }
-
-  if ($('makerTopLayerList')) {
-    $('makerTopLayerList').innerHTML = compositionLayers.map((layer, index) => `
-      <div class="maker-top-row">
-        <span class="maker-top-index">${index + 1}</span>
-        <div class="maker-top-main">
-          <strong>${layer.name}</strong>
-          <small>${layer.partLabel}</small>
-        </div>
-        <small class="maker-top-status">${layer.blendMode || 'normal'} · ${layer.opacity ?? 100}%</small>
-      </div>
-    `).join('');
-  }
-
   document.querySelectorAll('.creator-part-row').forEach((button) => {
     button.addEventListener('click', () => {
       state.selectedSlot = button.dataset.slot;
       state.selectedItem = state.visual[state.selectedSlot] || slotItems(state.selectedSlot)[0]?.id || '';
       state.partSubView = 'items';
-      renderCreatorDetails();
-    });
-  });
-
-  document.querySelectorAll('[data-slot-items], [data-slot-settings]').forEach((button) => {
-    button.addEventListener('click', () => {
-      state.selectedSlot = button.dataset.slotItems || button.dataset.slotSettings;
-      state.selectedItem = state.visual[state.selectedSlot] || slotItems(state.selectedSlot)[0]?.id || '';
-      state.partSubView = button.dataset.slotItems ? 'items' : 'settings';
-      setEditorPanel('parts');
       renderCreatorDetails();
     });
   });
@@ -1288,7 +1425,21 @@ function renderCreatorDetails() {
 
 function renderPartWorkspace() {
   if (!$('partWorkspace')) return;
-  const slot = ensureSlotStructure(activeSlot());
+  const active = activeSlot();
+  if (!active) {
+    $('partWorkspace').innerHTML = `
+      <div class="empty-part-state">
+        <span class="empty-part-mark">+</span>
+        <strong>Create the first Part</strong>
+        <p>Parts contain the Items, Layers, Colors, and PNG files users combine.</p>
+        <button class="primary" data-empty-add-part>Add Part</button>
+      </div>
+    `;
+    document.querySelector('[data-empty-add-part]')?.addEventListener('click', openPartModal);
+    return;
+  }
+  const slot = ensureSlotStructure(active);
+  const slotLabel = escapeHtml(slot.label);
   const items = slotItems(slot.key);
   const layers = creatorLayers(slot);
   const colors = creatorColors(slot);
@@ -1299,15 +1450,15 @@ function renderPartWorkspace() {
   const selectedItem = items.find((item) => item.id === selectedItemForSlot) || items[0];
   const totalCells = layers.length * colors.length;
   const itemRows = items.map((item, index) => `
-    <button class="item-row ${selectedItemForSlot === item.id ? 'active' : ''}" data-select-item="${item.id}">
+    <button class="item-row ${selectedItemForSlot === item.id ? 'active' : ''}" data-select-item="${escapeHtml(item.id)}">
       <span>No.${index + 1}</span>
-      <span class="item-row-copy"><strong>${item.label}</strong><small>${Object.values(item.images || {}).filter((asset) => asset?.file).length}/${totalCells} images · ${item.visibility}</small></span>
+      <span class="item-row-copy"><strong>${escapeHtml(item.label)}</strong><small>${Object.values(item.images || {}).filter((asset) => asset?.file).length}/${totalCells} images · ${escapeHtml(item.visibility)}</small></span>
       <span class="item-row-thumb">${item.iconAsset?.url ? `<img src="${item.iconAsset.url}" alt="" />` : String(index + 1).padStart(2, '0')}</span>
     </button>
   `).join('');
 
   const tabs = `
-    <div class="part-workspace-tabs" role="tablist" aria-label="${slot.label} editor">
+    <div class="part-workspace-tabs" role="tablist" aria-label="${slotLabel} editor">
       <button class="${state.partSubView === 'items' ? 'active' : ''}" data-part-subview="items">Items</button>
       <button class="${state.partSubView === 'layers' ? 'active' : ''}" data-part-subview="layers">Layers & colors</button>
       <button class="${state.partSubView === 'settings' ? 'active' : ''}" data-part-subview="settings">Part settings</button>
@@ -1319,7 +1470,7 @@ function renderPartWorkspace() {
       <div class="workspace-head">
         <div>
           <p class="kicker">Part Details</p>
-          <h2>${slot.label}</h2>
+          <h2>${slotLabel}</h2>
         </div>
         <div class="workspace-actions">
           <button class="secondary" data-select-layer-from-part="${creatorLayerKey(slot.key, layers[0].id)}">Composition order</button>
@@ -1327,7 +1478,7 @@ function renderPartWorkspace() {
       </div>
       ${tabs}
       <div class="part-detail-grid">
-        <label>Part name<input data-part-field="label" value="${slot.label}" /></label>
+        <label>Part name<input data-part-field="label" value="${slotLabel}" /></label>
         <label>Part type<select data-part-field="kind" disabled>
           <option value="standard" ${slot.kind === 'standard' || !slot.kind ? 'selected' : ''}>Standard part</option>
           <option value="left-right-pair" ${slot.kind === 'left-right-pair' ? 'selected' : ''}>Left-right paired part</option>
@@ -1343,7 +1494,7 @@ function renderPartWorkspace() {
           <option value="yes" ${slot.allowRemove !== false ? 'selected' : ''}>User may remove</option>
           <option value="no" ${slot.allowRemove === false ? 'selected' : ''}>Always selected</option>
         </select></label>
-        <label>Default item<select data-part-field="defaultItemId">${items.map((item) => `<option value="${item.id}" ${slot.defaultItemId === item.id || (!slot.defaultItemId && item === items[0]) ? 'selected' : ''}>${item.label}</option>`).join('')}</select></label>
+        <label>Default item<select data-part-field="defaultItemId">${items.map((item) => `<option value="${escapeHtml(item.id)}" ${slot.defaultItemId === item.id || (!slot.defaultItemId && item === items[0]) ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('')}</select></label>
         <label>Part menu icon<input data-part-icon type="file" accept="image/png,image/jpeg" /></label>
         <div><strong>Icon status</strong><span>${slot.iconAsset ? `${slot.iconAsset.width} × ${slot.iconAsset.height}` : 'No custom icon'}</span></div>
         <label>License gate<select data-part-field="licenseGate">
@@ -1366,7 +1517,7 @@ function renderPartWorkspace() {
   } else if (state.partSubView === 'layers') {
     $('partWorkspace').innerHTML = `
       <div class="workspace-head">
-        <div><p class="kicker">Layers & Colors</p><h2>${slot.label}</h2></div>
+        <div><p class="kicker">Layers & Colors</p><h2>${slotLabel}</h2></div>
         <div class="workspace-actions">
           <button class="secondary" data-add-layer ${slot.kind !== 'standard' ? 'disabled' : ''}>Add layer</button>
           <button class="secondary" data-add-color>Add color</button>
@@ -1379,7 +1530,7 @@ function renderPartWorkspace() {
           <div class="builder-list">${layers.map((layer, index) => `
             <div class="builder-row">
               <span>${index + 1}</span>
-              <input data-inline-layer-name="${layer.id}" value="${layer.name}" aria-label="Layer name" />
+              <input data-inline-layer-name="${escapeHtml(layer.id)}" value="${escapeHtml(layer.name)}" aria-label="Layer name" />
               <small>Global #${allCreatorLayers().findIndex((candidate) => candidate.key === creatorLayerKey(slot.key, layer.id)) + 1}</small>
               ${slot.kind === 'standard' && layers.length > 1 ? `<button class="icon-command" data-delete-layer="${layer.id}" title="Delete layer" aria-label="Delete layer">×</button>` : ''}
             </div>
@@ -1389,9 +1540,9 @@ function renderPartWorkspace() {
           <div class="builder-title"><strong>Colors</strong><span>${colors.length}</span></div>
           <div class="builder-list">${colors.map((color) => `
             <div class="builder-row color-builder-row">
-              <input type="color" data-color-value="${color.id}" value="${color.value}" aria-label="${color.name} color" />
-              <input data-color-name="${color.id}" value="${color.name}" aria-label="Color name" />
-              <small>${color.id}</small>
+              <input type="color" data-color-value="${escapeHtml(color.id)}" value="${escapeHtml(color.value)}" aria-label="${escapeHtml(color.name)} color" />
+              <input data-color-name="${escapeHtml(color.id)}" value="${escapeHtml(color.name)}" aria-label="Color name" />
+              <small>${escapeHtml(color.id)}</small>
             </div>
           `).join('')}</div>
         </section>
@@ -1401,15 +1552,15 @@ function renderPartWorkspace() {
   } else {
     const matrix = selectedItem ? layers.map((layer) => `
       <section class="asset-layer-group">
-        <div class="asset-layer-head"><strong>${layer.name}</strong><span>${slot.label}</span></div>
+        <div class="asset-layer-head"><strong>${escapeHtml(layer.name)}</strong><span>${slotLabel}</span></div>
         <div class="asset-cell-grid">${colors.map((color) => {
           const key = assetCellKey(layer.id, color.id);
           const asset = selectedItem.images?.[key];
           return `
             <label class="asset-upload-cell ${asset?.file ? 'complete' : ''}">
-              <input type="file" accept="image/png" data-upload-item-image data-item-id="${selectedItem.id}" data-layer-id="${layer.id}" data-color-id="${color.id}" />
+              <input type="file" accept="image/png" data-upload-item-image data-item-id="${escapeHtml(selectedItem.id)}" data-layer-id="${escapeHtml(layer.id)}" data-color-id="${escapeHtml(color.id)}" />
               <span class="asset-cell-preview">${asset?.url ? `<img src="${asset.url}" alt="" />` : '<b>+</b>'}</span>
-              <span class="asset-cell-copy"><strong>${color.name}</strong><small>${asset?.file ? `${asset.width} × ${asset.height}` : 'Upload PNG'}</small></span>
+              <span class="asset-cell-copy"><strong>${escapeHtml(color.name)}</strong><small>${asset?.file ? `${asset.width} × ${asset.height}` : 'Upload PNG'}</small></span>
             </label>
           `;
         }).join('')}</div>
@@ -1419,7 +1570,7 @@ function renderPartWorkspace() {
       <div class="workspace-head">
         <div>
           <p class="kicker">Part Items</p>
-          <h2>${slot.label}</h2>
+          <h2>${slotLabel}</h2>
         </div>
         <div class="workspace-actions">
           <button class="primary" data-add-item>+ Add item</button>
@@ -1436,21 +1587,21 @@ function renderPartWorkspace() {
         <aside class="item-list">${itemRows || '<div class="empty-state">No items yet.</div>'}</aside>
         <div class="item-asset-editor">${selectedItem ? `
           <div class="item-editor-head">
-            <div><p class="kicker">Item No.${items.indexOf(selectedItem) + 1}</p><h3>${selectedItem.label}</h3></div>
-            ${items.indexOf(selectedItem) > 0 ? `<button class="secondary" data-delete-item="${selectedItem.id}">Delete item</button>` : '<span class="template-token">Required base item</span>'}
+            <div><p class="kicker">Item No.${items.indexOf(selectedItem) + 1}</p><h3>${escapeHtml(selectedItem.label)}</h3></div>
+            ${items.indexOf(selectedItem) > 0 ? `<button class="secondary" data-delete-item="${escapeHtml(selectedItem.id)}">Delete item</button>` : '<span class="template-token">Required base item</span>'}
           </div>
           <div class="item-setting-row">
-            <label>Item name<input data-item-field="label" value="${selectedItem.label}" /></label>
+            <label>Item name<input data-item-field="label" value="${escapeHtml(selectedItem.label)}" /></label>
             <label>Visibility<select data-item-field="visibility" ${items.indexOf(selectedItem) === 0 ? 'disabled' : ''}>
               <option value="public" ${selectedItem.visibility === 'public' ? 'selected' : ''}>Public</option>
               <option value="private" ${selectedItem.visibility === 'private' ? 'selected' : ''}>Private</option>
             </select></label>
             <label>Display order<input data-item-field="displayOrder" type="number" min="1" value="${selectedItem.displayOrder}" /></label>
-            <label>Picker icon<input type="file" accept="image/png,image/jpeg" data-upload-item-icon="${selectedItem.id}" /></label>
+            <label>Picker icon<input type="file" accept="image/png,image/jpeg" data-upload-item-icon="${escapeHtml(selectedItem.id)}" /></label>
           </div>
           <div class="asset-matrix-head"><div><strong>Item images</strong><span>${Object.values(selectedItem.images || {}).filter((asset) => asset?.file).length}/${totalCells} cells complete</span></div><button class="secondary" data-part-subview="layers">Edit layers & colors</button></div>
           <div class="asset-matrix">${matrix}</div>
-          <p class="workspace-message">${slot.assetMessage || 'PNG images remain local until you prepare the Walrus quilt in On-chain Publish.'}</p>
+          <p class="workspace-message">${escapeHtml(slot.assetMessage || 'PNG images remain local until you prepare the Walrus quilt in On-chain Publish.')}</p>
         ` : '<div class="empty-state">Add an item to begin uploading images.</div>'}</div>
       </div>
     `;
@@ -1488,10 +1639,9 @@ function renderPartWorkspace() {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
+      const nextIcon = await localIconAsset(file);
       if (slot.iconAsset?.url) URL.revokeObjectURL(slot.iconAsset.url);
-      const bitmap = await createImageBitmap(file);
-      slot.iconAsset = { file, url: URL.createObjectURL(file), width: bitmap.width, height: bitmap.height };
-      bitmap.close();
+      slot.iconAsset = nextIcon;
       syncCreatorAssets();
       invalidateMakerUpload('Part icon changed. Prepare a new Walrus quilt before publishing.');
     } catch (error) {
@@ -1507,8 +1657,9 @@ function renderPartWorkspace() {
       if (!item || !file) return;
       const key = assetCellKey(input.dataset.layerId, input.dataset.colorId);
       try {
+        const nextAsset = await localPngAsset(file);
         if (item.images[key]?.url) URL.revokeObjectURL(item.images[key].url);
-        item.images[key] = await localPngAsset(file);
+        item.images[key] = nextAsset;
         slot.assetMessage = item.images[key].warning || `${file.name} is ready for preview.`;
         syncCreatorAssets();
         invalidateMakerUpload('Assets changed. Prepare a new Walrus quilt before publishing.');
@@ -1524,12 +1675,15 @@ function renderPartWorkspace() {
       const item = items.find((candidate) => candidate.id === input.dataset.uploadItemIcon);
       const file = event.target.files?.[0];
       if (!item || !file) return;
-      const bitmap = await createImageBitmap(file);
-      if (item.iconAsset?.url) URL.revokeObjectURL(item.iconAsset.url);
-      item.iconAsset = { file, url: URL.createObjectURL(file), width: bitmap.width, height: bitmap.height };
-      bitmap.close();
-      syncCreatorAssets();
-      invalidateMakerUpload('Item icon changed. Prepare a new Walrus quilt before publishing.');
+      try {
+        const nextIcon = await localIconAsset(file);
+        if (item.iconAsset?.url) URL.revokeObjectURL(item.iconAsset.url);
+        item.iconAsset = nextIcon;
+        syncCreatorAssets();
+        invalidateMakerUpload('Item icon changed. Prepare a new Walrus quilt before publishing.');
+      } catch (error) {
+        slot.assetMessage = error.message || 'Could not read this Item icon.';
+      }
       renderCreatorDetails();
     });
   });
@@ -1547,8 +1701,8 @@ function renderPartWorkspace() {
     button.addEventListener('click', () => {
       const next = slotItems(slot.key).length + 1;
       const id = `item-${next}`;
-      if (!parts[slot.key]) parts[slot.key] = [];
-      parts[slot.key].push({ id, label: `Item ${next}` });
+      if (!state.makerParts[slot.key]) state.makerParts[slot.key] = [];
+      state.makerParts[slot.key].push({ id, label: `Item ${next}` });
       ensureSlotStructure(slot);
       state.selectedItem = id;
       state.visual[slot.key] = id;
@@ -1646,7 +1800,10 @@ function updatePartField(slotKey, field, value) {
 function renderLayerDetails() {
   if (!$('layerDetailsPanel')) return;
   const selected = selectedLayerRecord();
-  if (!selected) return;
+  if (!selected) {
+    $('layerDetailsPanel').innerHTML = '<div class="empty-state">Add a Part to create its first composition Layer.</div>';
+    return;
+  }
   const slot = allSlots().find((candidate) => candidate.key === selected.partKey);
   const layer = creatorLayers(slot).find((candidate) => candidate.id === selected.id);
   const layerAssets = slotItems(slot.key).flatMap((item) => Object.entries(item.images || {}).filter(([key, asset]) => key.startsWith(`${layer.id}:`) && asset?.file));
@@ -1654,8 +1811,8 @@ function renderLayerDetails() {
     <div class="workspace-head">
       <div>
         <p class="kicker">Layer Details</p>
-        <h2>${layer.name}</h2>
-        <small>${slot.label} · ${layerAssets.length} uploaded item images</small>
+        <h2>${escapeHtml(layer.name)}</h2>
+        <small>${escapeHtml(slot.label)} · ${layerAssets.length} uploaded item images</small>
       </div>
       <div class="workspace-actions">
         <button class="secondary" data-move-layer="up">Move front</button>
@@ -1664,7 +1821,7 @@ function renderLayerDetails() {
       </div>
     </div>
     <div class="part-detail-grid">
-      <label>Layer name<input data-layer-field="name" value="${layer.name}" /></label>
+      <label>Layer name<input data-layer-field="name" value="${escapeHtml(layer.name)}" /></label>
       <label>Anchor X<input data-layer-field="x" type="number" value="${layer.x ?? 0}" /></label>
       <label>Anchor Y<input data-layer-field="y" type="number" value="${layer.y ?? 0}" /></label>
       <label>Opacity<input data-layer-field="opacity" type="number" min="0" max="100" value="${layer.opacity ?? 100}" /></label>
@@ -1737,7 +1894,7 @@ function renderCreatorCanvas() {
     return [{ layer, asset: assetEntry[1] }];
   });
   $('creatorCanvasAssets').innerHTML = images.map(({ layer, asset }) => `
-    <img src="${asset.url}" alt="${layer.partLabel} ${layer.name}" style="--layer-x:${layer.x || 0};--layer-y:${layer.y || 0};opacity:${(layer.opacity ?? 100) / 100};mix-blend-mode:${layer.blendMode || 'normal'}" />
+    <img src="${asset.url}" alt="${escapeHtml(layer.partLabel)} ${escapeHtml(layer.name)}" style="--layer-x:${layer.x || 0};--layer-y:${layer.y || 0};opacity:${(layer.opacity ?? 100) / 100};mix-blend-mode:${layer.blendMode || 'normal'}" />
   `).join('');
   $('creatorCanvasEmpty').hidden = images.length > 0;
   if ($('canvasAssetCount')) $('canvasAssetCount').textContent = `${images.length} image${images.length === 1 ? '' : 's'}`;
@@ -1798,8 +1955,9 @@ function renderWalletState() {
 function publishReadiness() {
   if (runtimeConfig.packageId.includes('TODO')) return 'Publish the Move package and set packageId in config.js.';
   if (!state.walletConnected) return 'Connect a Sui wallet to sign publication.';
-  if (!itemLayerAssets().length) return 'Upload at least one item image in Parts.';
   if (!$('creatorTemplateName').value.trim()) return 'Add a maker name in Settings.';
+  const issue = makerPublicationIssues()[0];
+  if (issue) return issue;
   return 'Prepare one Walrus quilt, register and upload it, certify it, then publish the maker on Sui Mainnet.';
 }
 
@@ -1824,10 +1982,10 @@ function renderPublishAction() {
 function renderChainStatus() {
   if ($('chainStatusGrid')) {
     $('chainStatusGrid').innerHTML = chainStatusItems().map(([label, value, note, status]) => `
-      <article class="chain-status-card ${status}">
-        <span>${label}</span>
-        <strong>${value}</strong>
-        <small>${note}</small>
+      <article class="chain-status-card ${escapeHtml(status)}">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+        <small>${escapeHtml(note)}</small>
       </article>
     `).join('');
   }
@@ -1836,11 +1994,11 @@ function renderChainStatus() {
     $('publishRuntimeCard').innerHTML = `
       <div>
         <span>Network</span>
-        <strong>${runtimeConfig.network}</strong>
+        <strong>${escapeHtml(runtimeConfig.network)}</strong>
       </div>
       <div>
         <span>Package</span>
-        <strong>${runtimeConfig.packageId.includes('TODO') ? 'Publish package first' : shortAddress(runtimeConfig.packageId)}</strong>
+        <strong>${escapeHtml(runtimeConfig.packageId.includes('TODO') ? 'Publish package first' : shortAddress(runtimeConfig.packageId))}</strong>
       </div>
       <div>
         <span>Walrus</span>
@@ -1848,7 +2006,7 @@ function renderChainStatus() {
       </div>
       <div>
         <span>Signer</span>
-        <strong>${state.walletConnected ? shortAddress(state.walletAddress) || 'Connected' : 'Connect wallet'}</strong>
+        <strong>${escapeHtml(state.walletConnected ? shortAddress(state.walletAddress) || 'Connected' : 'Connect wallet')}</strong>
       </div>
     `;
   }
@@ -1884,7 +2042,8 @@ async function prepareMakerUpload() {
   renderPublishAction();
   try {
     syncCreatorAssets();
-    if (!itemLayerAssets().length) throw new Error('Upload at least one PNG item image in Parts before preparing publication.');
+    const issues = makerPublicationIssues();
+    if (issues.length) throw new Error(issues[0]);
     state.assets.forEach((asset) => {
       if (!asset.file) throw new Error(`${asset.name} is no longer available. Select the PNG files again.`);
     });
@@ -2126,8 +2285,11 @@ async function mintCurrentOc() {
   }
 }
 
-function restoreMakerDraft() {
-  const raw = localStorage.getItem('animacraft-maker-draft-v1');
+function restoreMakerDraft(templateId = state.templateId) {
+  const storageKey = makerDraftStorageKey(templateId);
+  const raw = localStorage.getItem(storageKey)
+    || (templateId === state.templateId ? localStorage.getItem('animacraft-maker-draft-v1') : null);
+  loadedMakerDrafts.add(storageKey);
   if (!raw) return;
   try {
     const draft = JSON.parse(raw);
@@ -2146,7 +2308,7 @@ function restoreMakerDraft() {
             colorKey: 'accessory',
             description: 'Restored creator Part',
           };
-          state.customSlots.push(slot);
+          state.makerSlots.push(slot);
         }
         Object.assign(slot, {
           label: savedPart.label,
@@ -2168,7 +2330,7 @@ function restoreMakerDraft() {
           spacingSteps: savedPart.controls?.spacingSteps || 0,
         });
         if (!state.slotOrder.includes(slot.key)) state.slotOrder.push(slot.key);
-        parts[slot.key] = (savedPart.items || []).map((item) => ({
+        state.makerParts[slot.key] = (savedPart.items || []).map((item) => ({
           id: item.id,
           label: item.label,
           displayOrder: item.displayOrder,
@@ -2184,26 +2346,31 @@ function restoreMakerDraft() {
     }
     const template = draft.manifest?.template;
     if (template) {
+      const currentTemplate = activeTemplate();
+      currentTemplate.name = template.name || currentTemplate.name;
+      currentTemplate.creator = template.creator || currentTemplate.creator;
+      currentTemplate.style = template.style || currentTemplate.style;
+      currentTemplate.license = creatorLicenseLabels?.[template.license] || template.license || currentTemplate.license;
+      currentTemplate.royaltyBps = template.royaltyBps ?? currentTemplate.royaltyBps;
       $('creatorTemplateName').value = template.name || $('creatorTemplateName').value;
       $('creatorName').value = template.creator || $('creatorName').value;
       $('creatorWorld').value = template.style || $('creatorWorld').value;
       $('creatorLicense').value = template.license || $('creatorLicense').value;
       $('creatorRoyalty').value = template.royaltyBps ?? $('creatorRoyalty').value;
     }
+    syncActiveMakerModelRefs();
   } catch (error) {
     console.warn('Ignored an unreadable local maker draft.', error);
   }
 }
 
 function renderAll() {
-  syncTemplateFields();
   renderTemplates();
   renderSlots();
   renderParts();
   renderSwatches();
   renderAvatar();
   renderRecipe();
-  renderAssets();
   renderChecklist();
   renderCreatorValidation();
   renderRules();
@@ -2219,6 +2386,7 @@ function renderAll() {
   renderWalletState();
   setCreatorView(state.creatorView);
   setEditorPanel(state.editorPanel);
+  syncActiveMakerModelRefs();
 }
 
 document.querySelectorAll('[data-page]').forEach((button) => {
@@ -2285,12 +2453,34 @@ $('templateSearch').addEventListener('input', (event) => {
 });
 
 $('partColor').addEventListener('input', (event) => {
-  state.visual.palette[activeSlot().colorKey] = event.target.value;
+  const slot = activeSlot();
+  if (!slot) return;
+  state.visual.palette[slot.colorKey] = event.target.value;
   renderAll();
 });
 
-['profileName', 'profileWorld', 'profileDescription', 'profileTags', 'creatorTemplateName', 'creatorName', 'creatorWorld', 'creatorLicense', 'creatorRoyalty'].forEach((id) => {
+['profileName', 'profileWorld', 'profileDescription', 'profileTags'].forEach((id) => {
   $(id).addEventListener('input', renderAll);
+});
+
+const creatorLicenseLabels = {
+  'personal-use': 'Personal use',
+  'free-remix': 'Free remix',
+  'paid-commercial': 'Paid commercial',
+  'exclusive-commission': 'Exclusive commission',
+};
+
+['creatorTemplateName', 'creatorName', 'creatorWorld', 'creatorLicense', 'creatorRoyalty'].forEach((id) => {
+  $(id).addEventListener('input', () => {
+    const template = activeTemplate();
+    if (id === 'creatorTemplateName') template.name = $('creatorTemplateName').value;
+    else if (id === 'creatorName') template.creator = $('creatorName').value;
+    else if (id === 'creatorWorld') template.style = $('creatorWorld').value;
+    else if (id === 'creatorLicense') template.license = creatorLicenseLabels[$('creatorLicense').value] || 'Personal use';
+    else if (id === 'creatorRoyalty') template.royaltyBps = Number($('creatorRoyalty').value || 0);
+    invalidateMakerUpload();
+    renderAll();
+  });
 });
 
 $('prepareMakerUpload')?.addEventListener('click', prepareMakerUpload);
@@ -2328,13 +2518,14 @@ $('addPaletteLink')?.addEventListener('click', () => {
 
 $('saveMakerDraft')?.addEventListener('click', () => {
   const draft = {
+    templateId: state.templateId,
     savedAt: new Date().toISOString(),
     manifest: creatorManifest(),
     visual: state.visual,
     rules: state.rules,
     paletteLinks: state.paletteLinks,
   };
-  localStorage.setItem('animacraft-maker-draft-v1', JSON.stringify(draft));
+  localStorage.setItem(makerDraftStorageKey(), JSON.stringify(draft));
   $('saveMakerDraft').textContent = 'Saved · reselect files after reload';
 });
 
@@ -2393,9 +2584,6 @@ $('registerMaker').addEventListener('click', () => {
   const name = $('newMakerName').value.trim() || 'Untitled OC Maker';
   const canvas = document.querySelector('[data-canvas-choice].active')?.dataset.canvasChoice || '1:1';
   const makerType = document.querySelector('[data-maker-type].active')?.dataset.makerType || 'Free combine';
-  const firstPart = $('firstPartName')?.value.trim() || 'Face base';
-  const firstPartType = $('firstPartType')?.value || 'standard';
-  const firstLayer = $('firstLayerName')?.value.trim() || 'Normal';
   const id = `${slug(name)}-${Date.now().toString(36)}`;
   templates.unshift({
     id,
@@ -2411,12 +2599,13 @@ $('registerMaker').addEventListener('click', () => {
     parts: 0,
     accent: '#27c5c8',
     secondary: '#f0a23a',
-    summary: `${makerType} maker shell with Maker Top, first ${firstPartType} part "${firstPart}", and "${firstLayer}" layer prepared for asset upload.`,
+    summary: `${makerType} OC Maker draft. Add Parts and item images in Character Maker.`,
     licenseNote: 'Draft maker. Configure release and publication before public use.',
   });
-  state.templateId = id;
+  activateMakerModel(id, { empty: true });
+  syncTemplateFields();
   state.creatorView = 'edit';
-  state.editorPanel = 'top';
+  state.editorPanel = 'parts';
   $('newMakerName').value = '';
   closeMakerModal();
   renderAll();
@@ -2433,12 +2622,12 @@ $('registerPart').addEventListener('click', () => {
   const initialLayers = kind === 'left-right-pair'
     ? [{ id: 'left', name: 'Left', x: 0, y: 0, opacity: 100, blendMode: 'normal' }, { id: 'right', name: 'Right', x: 0, y: 0, opacity: 100, blendMode: 'normal' }]
     : [{ id: 'normal', name: layerName, x: 0, y: 0, opacity: 100, blendMode: 'normal' }];
-  state.customSlots.push({
+  state.makerSlots.push({
     key,
     label,
     icon: label.slice(0, 2).toUpperCase(),
     colorKey: 'accessory',
-    description: `${kind} part created in Maker Top`,
+    description: `${kind} part created in Character Maker`,
     kind,
     layerName,
     menuVisible,
@@ -2449,7 +2638,7 @@ $('registerPart').addEventListener('click', () => {
   });
   state.slotOrder.push(key);
   state.layerOrder.push(...initialLayers.map((layer) => creatorLayerKey(key, layer.id)));
-  parts[key] = [{ id: 'normal', label: itemLabel, displayOrder: 1, visibility: 'public', images: {}, iconAsset: null }];
+  state.makerParts[key] = [{ id: 'normal', label: itemLabel, displayOrder: 1, visibility: 'public', images: {}, iconAsset: null }];
   state.visual[key] = 'normal';
   state.selectedSlot = key;
   state.selectedLayer = creatorLayerKey(key, initialLayers[0].id);
@@ -2475,6 +2664,7 @@ initializeChain(runtimeConfig, (connection) => {
   renderChainStatus();
 });
 
+syncTemplateFields();
 restoreMakerDraft();
 renderAll();
 setPage(location.hash.replace('#', '') || 'templates');

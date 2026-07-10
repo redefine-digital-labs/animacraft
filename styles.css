@@ -1253,7 +1253,7 @@ input[type="color"] {
 
 .creator-console {
   display: grid;
-  grid-template-columns: 230px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   min-height: calc(100vh - 130px);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1324,6 +1324,10 @@ input[type="color"] {
 .maker-list-panel {
   min-width: 0;
   padding: 24px;
+}
+
+.maker-list-panel.editing > .creator-workshop-head {
+  display: none;
 }
 
 .creator-view {
@@ -2042,10 +2046,68 @@ input[type="color"] {
   min-width: 150px;
 }
 
+#makerRegistrationModal .choice-row,
+#makerRegistrationModal .type-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#makerRegistrationModal .type-card {
+  min-height: 88px;
+}
+
+#makerRegistrationModal .type-card small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .creator-workbench {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
+}
+
+.maker-section-nav {
+  position: sticky;
+  top: 158px;
+  z-index: 10;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px;
+  background: rgba(255, 250, 242, 0.96);
+  box-shadow: 0 8px 24px rgba(55, 43, 31, 0.08);
+  backdrop-filter: blur(14px);
+}
+
+.maker-section-nav nav {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.maker-section-nav nav button {
+  flex: 0 0 auto;
+  min-height: 38px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.maker-section-nav nav button:hover,
+.maker-section-nav nav button.active {
+  border-color: var(--line);
+  background: #ffffff;
+  color: #149980;
 }
 
 .maker-detail-sidebar {
@@ -2154,6 +2216,48 @@ input[type="color"] {
   display: grid;
   gap: 16px;
   min-width: 0;
+}
+
+.maker-home-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.maker-home-action {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-width: 0;
+  min-height: 132px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 14px;
+  background: #ffffff;
+  color: var(--ink);
+  text-align: left;
+}
+
+.maker-home-action:hover,
+.maker-home-action.primary-home-action {
+  border-color: #27c5c8;
+  background: #f0fffb;
+}
+
+.maker-home-action > span {
+  color: #149980;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.maker-home-action strong {
+  overflow-wrap: anywhere;
+  font-size: 20px;
+}
+
+.maker-home-action small {
+  color: var(--muted);
+  line-height: 1.4;
 }
 
 .editor-panel {
@@ -2476,6 +2580,7 @@ input[type="color"] {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .workspace-actions {
@@ -2621,6 +2726,7 @@ input[type="color"] {
   justify-content: space-between;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .item-editor-head h3 {
@@ -2881,6 +2987,27 @@ input[type="color"] {
   gap: 12px;
   align-items: start;
   min-width: 0;
+}
+
+.character-maker-workspace > *,
+.part-workspace > *,
+.item-asset-editor > *,
+.composition-grid > * {
+  min-width: 0;
+}
+
+.character-maker-panel input,
+.character-maker-panel select,
+.character-maker-panel textarea {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.character-maker-panel button,
+.production-button-row button {
+  max-width: 100%;
+  white-space: normal;
 }
 
 .character-part-browser,
@@ -3684,6 +3811,14 @@ pre {
     grid-column: 1 / -1;
   }
 
+  .maker-section-nav {
+    position: static;
+  }
+
+  .maker-home-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .create-maker-panel {
     position: static;
   }
@@ -3730,6 +3865,15 @@ pre {
   .part-workspace-tabs {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .maker-home-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .maker-section-nav nav button {
+    padding-inline: 10px;
+    font-size: 12px;
   }
 
   .docs-workflow,
@@ -3834,12 +3978,14 @@ pre {
   }
 
   .editor-topbar-actions {
-    justify-content: stretch;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
   }
 
   .editor-topbar-actions button {
-    flex: 1 1 120px;
+    width: 100%;
+    min-width: 0;
   }
 
   .editor-canvas-stage {
@@ -3864,7 +4010,7 @@ pre {
   }
 
   .item-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: 54px minmax(0, 1fr) 42px;
   }
 
   .chain-action-list div,
@@ -3877,7 +4023,8 @@ pre {
   }
 
   .item-row > span {
-    width: max-content;
+    width: auto;
+    max-width: 100%;
   }
 
   .slot-rail,
@@ -3892,6 +4039,11 @@ pre {
   .creation-blueprint,
   .part-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  #makerRegistrationModal .choice-row,
+  #makerRegistrationModal .type-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .modal-field > span {

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Animacraft</title>
     <meta name="description" content="Animacraft is The Fully onchain Character Maker & Creator." />
-    <link rel="stylesheet" href="./styles.css?v=animacraft-32" />
+    <link rel="stylesheet" href="./styles.css?v=animacraft-36" />
     <script src="/config.js"></script>
   </head>
   <body>
@@ -203,77 +203,17 @@
 
       <section id="creator" class="page">
         <div class="creator-console">
-          <aside class="creator-sidebar">
-            <div class="creator-welcome">Workspace <strong>xiaopai</strong></div>
-            <span class="side-label">Create</span>
-            <button class="active">OC Maker Library</button>
-            <button>Creator Profile</button>
-            <button>Wallet & Account</button>
-            <button>Make OC</button>
-            <span class="side-label">Tools</span>
-            <button data-new-maker-panel>New OC maker</button>
-            <button>Material templates</button>
-            <div class="language-pill">English</div>
-          </aside>
-
           <section class="maker-list-panel">
             <div class="creator-workshop-head">
               <div>
                 <p class="kicker">Creator Workshop</p>
-                <h1>Create and manage OC makers</h1>
-                <p>Start with a maker shell, then add parts, layers, rules, licensing, and publication settings.</p>
+                <h1>Your OC Makers</h1>
+                <p>Create, test, and publish Character Makers from one wallet-owned workspace.</p>
               </div>
-              <button id="downloadManifest" class="primary">Export Manifest</button>
-            </div>
-
-            <div class="notice-bar">
-              <strong>Information</strong>
-              <span>Color Palette is now part of Palette Rules. Animacraft also adds on-chain license rules.</span>
+              <button class="primary" data-new-maker-panel>New OC Maker</button>
             </div>
 
             <div class="creator-view active" data-creator-view="list">
-            <div class="maker-overview-grid">
-              <section class="create-maker-panel">
-                <p class="kicker">Create</p>
-                <h2>Create a new OC maker</h2>
-                <p>Create a maker shell first, then use Maker Top to add parts, manage items, sort layers, define rules, link palettes, preview, and publish on-chain.</p>
-                <button class="new-maker-cta" data-new-maker-panel>
-                  <span>+</span>
-                  Register OC Maker
-                </button>
-                <div class="maker-setup-map">
-                  <div><strong>1</strong><span>Register maker shell</span></div>
-                  <div><strong>2</strong><span>Open Maker Top</span></div>
-                  <div><strong>3</strong><span>Add parts and items</span></div>
-                  <div><strong>4</strong><span>Set rules and palettes</span></div>
-                  <div><strong>5</strong><span>Preview and publish</span></div>
-                </div>
-                <div class="layer-editor-preview">
-                  <div class="layer-canvas-preview">
-                    <span class="preview-bg"></span>
-                    <span class="preview-body"></span>
-                    <span class="preview-hair"></span>
-                    <span class="preview-eyes"></span>
-                  </div>
-                  <div class="layer-stack-preview">
-                    <strong>Layer stack</strong>
-                    <span>07 Accessory</span>
-                    <span>06 Front hair</span>
-                    <span>05 Eyes</span>
-                    <span>04 Face</span>
-                    <span>03 Outfit</span>
-                    <span>02 Back hair</span>
-                    <span>01 Background</span>
-                  </div>
-                </div>
-                <div class="maker-create-steps">
-                  <div><strong>Top</strong><span>Maker control console</span></div>
-                  <div><strong>Parts</strong><span>Part settings and item lists</span></div>
-                  <div><strong>Rules</strong><span>Part and item compatibility</span></div>
-                  <div><strong>Chain</strong><span>Walrus assets and Sui policy</span></div>
-                </div>
-              </section>
-
               <section class="image-maker-section">
                 <div class="section-row">
                   <div>
@@ -284,7 +224,6 @@
                 </div>
                 <div class="image-maker-list" id="imageMakerList"></div>
               </section>
-            </div>
             </div>
 
             <div class="creator-view" data-creator-view="edit">
@@ -297,24 +236,13 @@
               <div class="editor-topbar-actions">
                 <button class="secondary" data-editor-panel-button="preview">Preview</button>
                 <button id="saveMakerDraft" class="secondary" type="button">Save draft</button>
+                <button id="downloadManifest" class="secondary" type="button">Export</button>
                 <button class="primary" data-editor-panel-button="publish">Release</button>
               </div>
             </div>
 
             <div class="creator-workbench">
-              <aside class="maker-detail-sidebar">
-                <div class="maker-side-summary">
-                  <span class="mini-brand-mark"></span>
-                  <div>
-                    <p class="kicker">Maker status</p>
-                    <strong id="detailMakerName">Starlit Daily OC</strong>
-                  </div>
-                </div>
-                <div class="maker-side-stats">
-                  <div><span>Parts</span><strong id="detailPartCount">28 / 750</strong></div>
-                  <div><span>Status</span><strong>Draft</strong></div>
-                  <div><span>Chain</span><strong>Local</strong></div>
-                </div>
+              <aside class="maker-section-nav">
                 <nav>
                   <button class="active" data-editor-panel-button="top">Maker Top</button>
                   <button data-editor-panel-button="parts">Character Maker</button>
@@ -342,28 +270,27 @@
                     <button class="primary" data-editor-panel-button="settings">Edit maker info</button>
                   </div>
 
-                  <div class="maker-top-grid">
-                    <section class="function-card primary-function">
-                      <div class="section-row">
-                        <div>
-                          <p class="kicker">Parts</p>
-                          <h2>Registered parts</h2>
-                        </div>
-                        <button class="primary" data-open-part-modal>+ Add</button>
-                      </div>
-                      <div id="makerTopPartsList" class="maker-top-list"></div>
-                    </section>
-                    <section class="function-card">
-                      <div class="section-row">
-                        <div>
-                          <p class="kicker">Layer</p>
-                          <h2>Generated layer order</h2>
-                        </div>
-                        <button class="secondary" data-editor-panel-button="parts" data-focus-composition>Arrange</button>
-                      </div>
-                      <p class="editor-note">Layers are generated from registered parts. Sorting changes the visual stack, while Part Settings controls menu behavior and item structure.</p>
-                      <div id="makerTopLayerList" class="maker-top-list compact"></div>
-                    </section>
+                  <div class="maker-home-grid">
+                    <button class="maker-home-action primary-home-action" data-editor-panel-button="parts">
+                      <span>Character structure</span>
+                      <strong id="makerTopPartSummary">0 Parts</strong>
+                      <small id="makerTopAssetSummary">No item images yet</small>
+                    </button>
+                    <button class="maker-home-action" data-editor-panel-button="rules">
+                      <span>Selection logic</span>
+                      <strong id="makerTopRuleSummary">0 Rules</strong>
+                      <small>Compatibility and fallback behavior</small>
+                    </button>
+                    <button class="maker-home-action" data-editor-panel-button="preview">
+                      <span>Quality check</span>
+                      <strong id="makerTopReadiness">Not ready</strong>
+                      <small>Player flow and required assets</small>
+                    </button>
+                    <button class="maker-home-action" data-editor-panel-button="publish">
+                      <span>Publication</span>
+                      <strong id="makerTopChainState">Local draft</strong>
+                      <small>Walrus storage and Sui object</small>
+                    </button>
                   </div>
                 </section>
 
@@ -653,55 +580,19 @@
                 <div class="type-row">
                   <button class="type-card active" data-maker-type="Free combine">
                     <strong>✓ Free combine</strong>
-                    <p>Users freely choose parts and colors. Best for icons, OCs, character profiles, and creator templates.</p>
+                    <small>Users choose every Item and Color.</small>
                   </button>
                   <button class="type-card" data-maker-type="Rule-guided mix">
                     <strong>Rule-guided mix</strong>
-                    <p>Users can auto-generate combinations while creator rules prevent clipping, missing layers, or invalid licenses.</p>
+                    <small>Rules constrain generated combinations.</small>
                   </button>
                 </div>
               </div>
 
-              <div class="modal-field">
-                <span>Starter structure</span>
-                <div class="starter-structure-grid">
-                  <label><input type="checkbox" checked /> Maker Top dashboard</label>
-                  <label><input type="checkbox" checked /> First standard part</label>
-                  <label><input type="checkbox" checked /> No.1 base item</label>
-                  <label><input type="checkbox" checked /> Generated layer order</label>
-                  <label><input type="checkbox" /> Left-right paired part</label>
-                  <label><input type="checkbox" /> Last-bastion fallback</label>
-                </div>
-              </div>
-
-              <div class="modal-field">
-                <span>First part</span>
-                <div class="creation-blueprint">
-                  <label>Part name<input id="firstPartName" value="Face base" /></label>
-                  <label>
-                    Part type
-                    <select id="firstPartType">
-                      <option value="standard">Standard part</option>
-                      <option value="left-right-pair">Left-right paired part</option>
-                      <option value="last-bastion">Last bastion part</option>
-                    </select>
-                  </label>
-                  <label>Layer name<input id="firstLayerName" value="Normal" /></label>
-                </div>
-              </div>
-
-              <div class="modal-field">
-                <span>On-chain draft</span>
-                <div class="onchain-draft-plan">
-                  <div><strong>Walrus staging</strong><span>Prepare asset slots for PNG layers, item icons, and cover previews.</span></div>
-                  <div><strong>Sui draft object</strong><span>Create a local manifest that can become a template object after wallet confirmation.</span></div>
-                  <div><strong>Policy draft</strong><span>Personal use by default, with commercial and remix policies added before release.</span></div>
-                </div>
-              </div>
             </div>
             <div class="modal-actions">
               <button class="secondary" data-close-maker-modal>Cancel</button>
-              <button id="registerMaker" class="primary">Create Maker Top</button>
+              <button id="registerMaker" class="primary">Create OC Maker</button>
             </div>
           </div>
         </div>
@@ -822,6 +713,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=animacraft-35"></script>
+    <script type="module" src="./app.js?v=animacraft-36"></script>
   </body>
 </html>
