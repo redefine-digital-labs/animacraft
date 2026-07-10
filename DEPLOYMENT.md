@@ -42,27 +42,38 @@ Never commit private keys or admin mnemonics. Frontend config may only include p
 - network
 - RPC URL
 - published package id
-- Walrus publisher / aggregator URLs
+- Walrus aggregator URL
 - Walrus upload relay URL and storage epochs
+- maximum relay tip in MIST
 - featured OCMaker object ids
 - public app URL
 
 ## Production Path
 
-1. Publish the Animacraft Move package.
-2. Set `packageId` in runtime config.
-3. Enable wallet connection through Sui Wallet / wallet standard.
-4. On Testnet, upload creator assets through the public Walrus publisher.
-5. On Mainnet, replace the public publisher path with a wallet-paid Walrus Upload Relay flow.
-6. Register `CreatorProfile` and `OCMaker` on Sui.
-7. Store manifest blob ids in `OCMaker`.
-8. Add published maker object ids to discovery configuration until event discovery is enabled.
-9. Let users mint `OCCharacter` objects from published makers.
-10. Add marketplace / Kiosk integration after creator and player loops are stable.
+1. Upgrade the Sui CLI to a version compatible with the current Mainnet protocol.
+2. Fund the publisher wallet with SUI for gas and WAL for Walrus storage.
+3. Build and test the Move package, then publish it to Sui Mainnet.
+4. Set the real `packageId` in `public/config.js` and redeploy.
+5. Connect a wallet through Wallet Standard.
+6. Prepare creator PNGs and manifests as a Walrus quilt in the browser.
+7. Register, upload through the Mainnet upload relay, and certify in separate wallet interactions.
+8. Register `CreatorProfile` and `OCMaker` on Sui using QuiltPatchIDs for individual files.
+9. Add published OCMaker object ids to discovery configuration until event discovery is enabled.
+10. Let users render an OC, store its image and profile on Walrus, then mint an `OCCharacter` on Sui.
+11. Add marketplace / Kiosk integration after creator and player loops are stable.
 
 ## Mainnet Boundary
 
-Walrus has no unauthenticated public Mainnet publisher. A production browser client must use the Walrus TypeScript SDK with an Upload Relay, splitting register and certify into separate wallet interactions. Do not point Mainnet at the Testnet publisher or add a private application signer.
+Walrus has no unauthenticated public Mainnet publisher. Animacraft uses the Walrus TypeScript SDK and Mainnet Upload Relay, splitting registration/upload and certification into separate wallet interactions. It never embeds a private application signer.
+
+The wallet must hold both currencies before onboarding a real creator:
+
+- SUI pays Sui transaction gas and relay tips.
+- WAL pays Walrus storage registration.
+
+Mainnet transactions are irreversible and consume real assets. Use a dedicated deployment wallet, verify its address and balances, retain the package `UpgradeCap`, and record every transaction digest before opening public onboarding.
+
+The current upload session is held in browser memory. Do not treat it as durable recovery yet: keep source files until certification succeeds, and retry from preparation after a refresh or interrupted upload.
 
 ## Backendless Rule
 

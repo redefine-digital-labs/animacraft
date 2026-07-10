@@ -1,10 +1,13 @@
 import {
   explorerTransactionUrl,
+  certifyWalrusUpload,
   initializeChain,
   mintCharacter,
   openWalletSelector,
+  prepareWalrusUpload,
   publishMaker,
-  uploadWalrusBlob,
+  registerAndUploadWalrus,
+  walrusFileUrl,
 } from './chain-runtime.js';
 
 const slots = [
@@ -119,13 +122,13 @@ const templates = [
 const swatches = ['#7b5cff', '#2db7a3', '#f06f8f', '#f0a23a', '#335c81', '#7d5a50', '#24202b', '#f1c9b1'];
 
 const defaultConfig = {
-  network: 'testnet',
-  rpcUrl: 'https://fullnode.testnet.sui.io:443',
+  network: 'mainnet',
+  rpcUrl: 'https://fullnode.mainnet.sui.io:443',
   packageId: '0xTODO_ANIMACRAFT_PACKAGE',
-  walrusPublisherUrl: 'https://publisher.walrus-testnet.walrus.space',
-  walrusAggregatorUrl: 'https://aggregator.walrus-testnet.walrus.space',
-  walrusUploadRelayUrl: 'https://upload-relay.testnet.walrus.space',
-  walrusEpochs: 3,
+  walrusAggregatorUrl: 'https://aggregator.walrus-mainnet.walrus.space',
+  walrusUploadRelayUrl: 'https://upload-relay.mainnet.walrus.space',
+  walrusRelayMaxTipMist: 1_000_000,
+  walrusEpochs: 2,
   featuredMakers: {},
   appUrl: location.origin,
 };
@@ -333,10 +336,11 @@ const state = {
   search: '',
   templateId: 'daily-starlit',
   selectedSlot: 'hairFront',
-  partSubView: 'overview',
-  selectedLayer: 'hairFront',
+  partSubView: 'items',
+  selectedLayer: 'hairFront:normal',
   selectedItem: 'normal',
   slotOrder: slots.map((slot) => slot.key),
+  layerOrder: [],
   visual: {
     background: 'dawn',
     hairBack: 'wave',
@@ -366,9 +370,20 @@ const state = {
   publishing: false,
   publishStatus: '',
   publishDigest: '',
+  makerUploadSession: null,
+  makerUploadStage: 'idle',
+  makerManifestPatchId: '',
+  pendingMakerManifestJson: '',
   minting: false,
   mintStatus: '',
   mintDigest: '',
+  ocUploadSession: null,
+  ocUploadStage: 'idle',
+  ocImagePatchId: '',
+  ocProfilePatchId: '',
+  pendingOcPackage: null,
+  pendingOcRecipeHash: null,
+  pendingOcRecipeJson: '',
   locale: localStorage.getItem('animacraft-locale') || 'en',
 };
 
@@ -428,6 +443,149 @@ function slotItems(slotKey) {
   return parts[slotKey] || [];
 }
 
+function ensureSlotStructure(slot) {
+  if (!slot.kind) slot.kind = 'standard';
+  if (!Array.isArray(slot.layers) || slot.layers.length === 0) {
+    if (slot.kind === 'left-right-pair') {
+      slot.layers = [
+        { id: 'left', name: 'Left', x: slot.x || 0, y: slot.y || 0, opacity: 100, blendMode: 'normal' },
+        { id: 'right', name: 'Right', x: slot.rightX || 0, y: slot.y || 0, opacity: 100, blendMode: 'normal' },
+      ];
+    } else {
+      slot.layers = [{ id: 'normal', name: slot.layerName || 'Normal', x: slot.x || 0, y: slot.y || 0, opacity: 100, blendMode: 'normal' }];
+    }
+  }
+  if (!Array.isArray(slot.colors) || slot.colors.length === 0) {
+    slot.colors = [{ id: 'default', name: 'Default', value: state.visual.palette[slot.colorKey] || '#7b5cff' }];
+  }
+  slotItems(slot.key).forEach((item, index) => {
+    item.displayOrder ??= index + 1;
+    item.visibility ??= 'public';
+    item.images ||= {};
+    item.iconAsset ||= null;
+  });
+  return slot;
+}
+
+function creatorLayers(slot) {
+  return ensureSlotStructure(slot).layers;
+}
+
+function creatorColors(slot) {
+  return ensureSlotStructure(slot).colors;
+}
+
+function creatorLayerKey(partKey, layerId) {
+  return `${partKey}:${layerId}`;
+}
+
+function allCreatorLayers() {
+  const layers = allSlots().flatMap((slot) => creatorLayers(slot).map((layer) => ({
+    ...layer,
+    partKey: slot.key,
+    partLabel: slot.label,
+    key: creatorLayerKey(slot.key, layer.id),
+  })));
+  const byKey = new Map(layers.map((layer) => [layer.key, layer]));
+  const ordered = state.layerOrder.map((key) => byKey.get(key)).filter(Boolean);
+  const missing = layers.filter((layer) => !state.layerOrder.includes(layer.key));
+  if (missing.length) state.layerOrder.push(...missing.map((layer) => layer.key));
+  return [...ordered, ...missing];
+}
+
+function selectedLayerRecord() {
+  return allCreatorLayers().find((layer) => layer.key === state.selectedLayer) || allCreatorLayers()[0];
+}
+
+function assetCellKey(layerId, colorId) {
+  return `${layerId}:${colorId}`;
+}
+
+function uploadedAssetCount(slot) {
+  return slotItems(slot.key).reduce((count, item) => count + Object.values(item.images || {}).filter((asset) => asset?.file).length, 0);
+}
+
+function itemLayerAssets() {
+  return state.assets.filter((asset) => asset.kind === 'item-layer');
+}
+
+function syncCreatorAssets() {
+  state.assets = allSlots().flatMap((slot) => {
+    const partIcon = slot.iconAsset?.file ? [{
+      ...slot.iconAsset,
+      name: slot.iconAsset.file.name,
+      size: slot.iconAsset.file.size,
+      type: slot.iconAsset.file.type,
+      kind: 'part-icon',
+      slot: slot.key,
+      partId: '',
+      itemId: '',
+      layerId: '',
+      colorId: '',
+      identifier: `${slug(slot.key)}-part-icon.${slot.iconAsset.file.type === 'image/jpeg' ? 'jpg' : 'png'}`,
+    }] : [];
+    const itemAssets = slotItems(slot.key).flatMap((item) => {
+      const icon = item.iconAsset?.file ? [{
+        ...item.iconAsset,
+        name: item.iconAsset.file.name,
+        size: item.iconAsset.file.size,
+        type: item.iconAsset.file.type,
+        kind: 'item-icon',
+        slot: slot.key,
+        partId: item.id,
+        itemId: item.id,
+        layerId: '',
+        colorId: '',
+        identifier: `${slug(slot.key)}-${slug(item.id)}-icon.${item.iconAsset.file.type === 'image/jpeg' ? 'jpg' : 'png'}`,
+      }] : [];
+      const images = Object.entries(item.images || {}).flatMap(([cellKey, asset]) => {
+        if (!asset?.file) return [];
+        const [layerId, colorId] = cellKey.split(':');
+        return [{
+          ...asset,
+          name: asset.file.name,
+          size: asset.file.size,
+          type: asset.file.type,
+          kind: 'item-layer',
+          slot: slot.key,
+          partId: item.id,
+          itemId: item.id,
+          layerId,
+          colorId,
+          identifier: `${slug(slot.key)}-${slug(item.id)}-${slug(layerId)}-${slug(colorId)}.png`,
+        }];
+      });
+      return [...icon, ...images];
+    });
+    return [...partIcon, ...itemAssets];
+  });
+}
+
+function invalidateMakerUpload(message = '') {
+  state.makerUploadSession = null;
+  state.makerUploadStage = 'idle';
+  state.makerManifestPatchId = '';
+  state.pendingMakerManifestJson = '';
+  state.publishDigest = '';
+  state.publishStatus = message;
+}
+
+async function localPngAsset(file) {
+  if (!file || (file.type !== 'image/png' && !file.name.toLowerCase().endsWith('.png'))) {
+    throw new Error('Item images must be transparent PNG files.');
+  }
+  const bitmap = await createImageBitmap(file);
+  const asset = {
+    file,
+    url: URL.createObjectURL(file),
+    width: bitmap.width,
+    height: bitmap.height,
+    warning: bitmap.width < 600 || bitmap.height < 600 ? 'Below the recommended 600 × 600 px.' : '',
+  };
+  bitmap.close();
+  return asset;
+}
+
 function slug(value) {
   return String(value)
     .replace(/\.[^.]+$/, '')
@@ -469,9 +627,7 @@ async function connectSuiWallet() {
 function chainStatusItems() {
   const walletReady = state.walletConnected;
   const packageReady = !runtimeConfig.packageId.includes('TODO');
-  const walrusReady = runtimeConfig.network === 'mainnet'
-    ? Boolean(runtimeConfig.walrusUploadRelayUrl && runtimeConfig.walrusAggregatorUrl)
-    : Boolean(runtimeConfig.walrusPublisherUrl && runtimeConfig.walrusAggregatorUrl);
+  const walrusReady = Boolean(runtimeConfig.walrusUploadRelayUrl && runtimeConfig.walrusAggregatorUrl);
   return [
     ['Network', runtimeConfig.network, 'Sui network used by wallet transactions.', 'ready'],
     ['Wallet', walletReady ? shortAddress(state.walletAddress) || 'Connected' : 'Not connected', walletReady ? 'Ready to sign creator and OC transactions.' : 'Connect before publishing or minting.', walletReady ? 'ready' : 'wait'],
@@ -521,15 +677,14 @@ function setEditorPanel(panel) {
   });
   const labels = {
     top: 'Maker Top',
-    layers: 'Layer Editor',
-    parts: 'Parts',
+    parts: 'Character Maker',
     rules: 'Rules',
     palette: 'Palette Rules',
     preview: 'Preview Check',
     publish: 'On-chain Publish',
     settings: 'Settings',
   };
-  if ($('editingPanelKicker')) $('editingPanelKicker').textContent = labels[state.editorPanel] || 'Layer Editor';
+  if ($('editingPanelKicker')) $('editingPanelKicker').textContent = labels[state.editorPanel] || 'Character Maker';
 }
 
 function focusCreatorTop() {
@@ -692,7 +847,7 @@ function renderRecipe() {
 
 function creatorManifest() {
   return {
-    schemaVersion: 'animacraft.creator-template.v1',
+    schemaVersion: 'animacraft.creator-template.v2',
     template: {
       id: slug($('creatorTemplateName').value),
       name: $('creatorTemplateName').value,
@@ -707,32 +862,73 @@ function creatorManifest() {
     runtime: {
       network: runtimeConfig.network,
       packageId: runtimeConfig.packageId,
-      walrusPublisherUrl: runtimeConfig.walrusPublisherUrl,
       walrusAggregatorUrl: runtimeConfig.walrusAggregatorUrl,
+      walrusUploadRelayUrl: runtimeConfig.walrusUploadRelayUrl,
       appUrl: runtimeConfig.appUrl,
     },
-    slots: allSlots().map((slot, index) => ({
+    parts: allSlots().map((slot) => ({
       key: slot.key,
       label: slot.label,
-      renderOrder: index,
-      colorKey: slot.colorKey,
-      parts: slotItems(slot.key).map((part) => ({
-        id: part.id,
-        label: part.label,
-        file: `${slot.key}_${part.id}.png`,
+      kind: slot.kind,
+      menuVisible: slot.menuVisible !== false,
+      allowRemove: slot.allowRemove !== false,
+      defaultItemId: slot.defaultItemId || slotItems(slot.key)[0]?.id || '',
+      anchor: { x: slot.x || 0, y: slot.y || 0, rightX: slot.rightX || 0 },
+      controls: {
+        moveX: Boolean(slot.allowMoveX),
+        moveY: Boolean(slot.allowMoveY),
+        scale: Boolean(slot.allowScale),
+        rotate: Boolean(slot.allowRotate),
+        pairedSpacing: Boolean(slot.allowSpacing),
+        spacingStep: slot.spacingStep || 0,
+        spacingSteps: slot.spacingSteps || 0,
+      },
+      iconIdentifier: slot.iconAsset?.file ? `${slug(slot.key)}-part-icon.${slot.iconAsset.file.type === 'image/jpeg' ? 'jpg' : 'png'}` : '',
+      layers: creatorLayers(slot).map((layer) => ({
+        id: layer.id,
+        name: layer.name,
+        renderOrder: allCreatorLayers().findIndex((candidate) => candidate.key === creatorLayerKey(slot.key, layer.id)),
+        x: layer.x || 0,
+        y: layer.y || 0,
+        opacity: layer.opacity ?? 100,
+        blendMode: layer.blendMode || 'normal',
+      })),
+      colors: creatorColors(slot),
+      items: slotItems(slot.key).map((item) => ({
+        id: item.id,
+        label: item.label,
+        displayOrder: item.displayOrder,
+        visibility: item.visibility,
+        iconIdentifier: item.iconAsset?.file ? `${slug(slot.key)}-${slug(item.id)}-icon.${item.iconAsset.file.type === 'image/jpeg' ? 'jpg' : 'png'}` : '',
+        images: Object.keys(item.images || {}).filter((key) => item.images[key]?.file).map((key) => {
+          const [layerId, colorId] = key.split(':');
+          return { layerId, colorId, identifier: `${slug(slot.key)}-${slug(item.id)}-${slug(layerId)}-${slug(colorId)}.png` };
+        }),
       })),
     })),
     rules: state.rules,
     paletteLinks: state.paletteLinks,
-    assets: state.assets.map(({ name, size, type, slot, partId, blobId = '' }) => ({
+    assets: state.assets.map(({ name, size, type, kind, slot, partId, itemId, layerId, colorId, identifier = '', patchId = '', blobId = '' }) => ({
       name,
       size,
       type,
+      kind,
       slot,
       partId,
+      itemId,
+      layerId,
+      colorId,
+      identifier,
+      patchId,
       blobId,
     })),
   };
+}
+
+function creatorUploadManifest() {
+  const manifest = creatorManifest();
+  manifest.assets = manifest.assets.map((asset) => ({ ...asset, patchId: '', blobId: '' }));
+  return manifest;
 }
 
 function ocPackage() {
@@ -777,17 +973,18 @@ function renderAssets() {
   assetQueue.innerHTML = state.assets.length ? state.assets.map((asset) => `
     <div>
       <strong>${asset.name}</strong>
-      <span>${asset.slot} · ${asset.partId} · ${(asset.size / 1024).toFixed(1)} KB${asset.blobId ? ' · Walrus ready' : ''}</span>
+      <span>${asset.kind} · ${asset.slot}${asset.itemId ? ` / ${asset.itemId}` : ''}${asset.layerId ? ` / ${asset.layerId}` : ''} · ${(asset.size / 1024).toFixed(1)} KB${asset.blobId ? ' · Walrus ready' : ''}</span>
     </div>
   `).join('') : 'No layer files added yet.';
 }
 
 function renderChecklist() {
+  const layerAssets = itemLayerAssets();
   const checks = [
     ['Maker metadata', $('creatorTemplateName').value.trim() && $('creatorName').value.trim()],
     ['Standard slots', allSlots().length >= 7],
     ['License rules', Number($('creatorRoyalty').value || 0) >= 0],
-    ['Layer samples', state.assets.length > 0],
+    ['Item layer images', layerAssets.length > 0],
     ['OC preview', Boolean($('profileName').value.trim())],
   ];
   $('creatorChecklist').innerHTML = checks.map(([label, done]) => `
@@ -796,6 +993,23 @@ function renderChecklist() {
       <strong>${label}</strong>
     </div>
   `).join('');
+}
+
+function renderCreatorValidation() {
+  if (!$('creatorValidationList')) return;
+  const structuredParts = allSlots().filter((slot) => ['standard', 'left-right-pair', 'last-bastion'].includes(ensureSlotStructure(slot).kind));
+  const visibleParts = structuredParts.filter((slot) => slot.menuVisible !== false);
+  const publicItems = structuredParts.flatMap((slot) => slotItems(slot.key).filter((item) => item.visibility !== 'private').map((item) => ({ slot, item })));
+  const missingItems = publicItems.filter(({ item }) => !Object.values(item.images || {}).some((asset) => asset?.file));
+  const invalidRules = state.rules.filter((rule) => !allSlots().some((slot) => slot.key === rule.leftPartKey) || !allSlots().some((slot) => slot.key === rule.rightPartKey));
+  const checks = [
+    [structuredParts.length > 0, 'At least one valid Part is registered.'],
+    [visibleParts.length > 0, 'At least one Part is visible in the player menu.'],
+    [missingItems.length === 0, missingItems.length ? `${missingItems.length} public Items still have no PNG image.` : 'Every public Item has at least one PNG image.'],
+    [invalidRules.length === 0, invalidRules.length ? `${invalidRules.length} rules reference missing Parts.` : 'All selection rules reference existing Parts.'],
+    [itemLayerAssets().length > 0, itemLayerAssets().length ? `${itemLayerAssets().length} item images are ready for the Walrus quilt.` : 'Upload at least one Item image before release.'],
+  ];
+  $('creatorValidationList').innerHTML = checks.map(([done, label]) => `<li class="${done ? 'ok' : 'warn'}">${label}</li>`).join('');
 }
 
 function renderRules() {
@@ -860,13 +1074,17 @@ function mintReadiness() {
   if (runtimeConfig.packageId.includes('TODO')) return 'The Move package is not configured yet.';
   if (!activeMakerObjectId()) return 'This template is a preview. Add its published OCMaker object id to public/config.js.';
   if (!state.walletConnected) return 'Connect a Sui wallet to mint this OC.';
-  return 'Ready to store the OC image and profile on Walrus, then mint on Sui.';
+  return 'Prepare the OC quilt, register and upload it, certify it, then mint on Sui Mainnet.';
 }
 
 function renderMintAction() {
   if (!$('mintOcOnchain')) return;
-  const ready = !runtimeConfig.packageId.includes('TODO') && Boolean(activeMakerObjectId()) && state.walletConnected;
-  $('mintOcOnchain').disabled = state.minting || !ready;
+  const baseReady = !runtimeConfig.packageId.includes('TODO') && Boolean(activeMakerObjectId()) && state.walletConnected;
+  $('prepareOcUpload').disabled = state.minting || !baseReady || state.ocUploadStage !== 'idle';
+  $('registerOcUpload').disabled = state.minting || !state.walletConnected || !['encoded', 'registered'].includes(state.ocUploadStage);
+  $('registerOcUpload').textContent = state.ocUploadStage === 'registered' ? 'Retry upload' : 'Register & upload';
+  $('certifyOcUpload').disabled = state.minting || !state.walletConnected || state.ocUploadStage !== 'uploaded';
+  $('mintOcOnchain').disabled = state.minting || !state.walletConnected || state.ocUploadStage !== 'certified';
   $('mintOcOnchain').textContent = state.minting ? 'Minting…' : state.mintDigest ? 'Minted' : 'Mint OC';
   if (state.mintDigest) {
     $('mintOcStatus').innerHTML = `OC minted. <a href="${explorerTransactionUrl(state.mintDigest)}" target="_blank" rel="noreferrer">View transaction</a>`;
@@ -875,11 +1093,34 @@ function renderMintAction() {
   }
 }
 
-function renderOcImageBlob() {
+async function renderOcImageBlob() {
   const canvas = document.createElement('canvas');
   canvas.width = 1024;
   canvas.height = 1024;
   const context = canvas.getContext('2d');
+  const uploadedLayers = [...allCreatorLayers()].reverse().flatMap((layer) => {
+    const itemId = state.visual[layer.partKey] || slotItems(layer.partKey)[0]?.id;
+    const item = slotItems(layer.partKey).find((candidate) => candidate.id === itemId);
+    const asset = Object.entries(item?.images || {}).find(([key, value]) => key.startsWith(`${layer.id}:`) && value?.file)?.[1];
+    return asset ? [{ layer, asset }] : [];
+  });
+  if (uploadedLayers.length) {
+    context.clearRect(0, 0, 1024, 1024);
+    for (const { layer, asset } of uploadedLayers) {
+      const bitmap = await createImageBitmap(asset.file);
+      context.globalAlpha = (layer.opacity ?? 100) / 100;
+      context.globalCompositeOperation = ['normal', 'multiply', 'screen', 'overlay'].includes(layer.blendMode)
+        ? (layer.blendMode === 'normal' ? 'source-over' : layer.blendMode)
+        : 'source-over';
+      context.drawImage(bitmap, layer.x || 0, layer.y || 0, bitmap.width, bitmap.height);
+      bitmap.close();
+    }
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = 'source-over';
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not render the OC image.')), 'image/png');
+    });
+  }
   const palette = state.visual.palette;
   context.fillStyle = palette.background;
   context.fillRect(0, 0, 1024, 1024);
@@ -957,32 +1198,35 @@ function renderImageMakerList() {
 
 function renderCreatorDetails() {
   const template = activeTemplate();
+  allSlots().forEach(ensureSlotStructure);
+  const compositionLayers = allCreatorLayers();
   $('detailMakerName').textContent = template.name;
   $('detailMakerTitle').textContent = template.name;
   if ($('layerMakerTitle')) $('layerMakerTitle').textContent = template.name;
   $('editingMakerTitle').textContent = template.name;
   $('detailPartCount').textContent = `${allSlots().length} / 750 parts`;
   $('detailDescription').textContent = template.summary || 'Build the template from layered assets, then bind the maker to license rules and on-chain provenance.';
-  $('layerCount').textContent = allSlots().length;
+  $('layerCount').textContent = compositionLayers.length;
 
   $('creatorPartsList').innerHTML = allSlots().map((slot, index) => `
-    <button class="creator-part-row" data-slot="${slot.key}">
+    <button class="creator-part-row ${state.selectedSlot === slot.key ? 'active' : ''}" data-slot="${slot.key}">
       <span>${String(index + 1).padStart(2, '0')}</span>
       <strong>${slot.label}</strong>
-      <small>${slotItems(slot.key).length} items</small>
+      <small>${slotItems(slot.key).length} items · ${creatorLayers(slot).length} layers · ${uploadedAssetCount(slot)} files</small>
     </button>
   `).join('');
 
-  $('creatorLayerList').innerHTML = allSlots().map((slot, index) => `
-    <button class="layer-row ${state.selectedLayer === slot.key ? 'active' : ''}" data-layer-key="${slot.key}">
+  $('creatorLayerList').innerHTML = compositionLayers.map((layer, index) => `
+    <button class="layer-row ${state.selectedLayer === layer.key ? 'active' : ''}" data-layer-key="${layer.key}">
       <span>${index + 1}</span>
-      <strong>${slot.label}</strong>
-      <small>${slot.key}</small>
+      <strong>${layer.name}</strong>
+      <small>${layer.partLabel} · ${layer.id}</small>
     </button>
   `).join('');
 
   renderPartWorkspace();
   renderLayerDetails();
+  renderCreatorCanvas();
 
   if ($('makerTopPartsList')) {
     $('makerTopPartsList').innerHTML = allSlots().map((slot, index) => `
@@ -992,7 +1236,7 @@ function renderCreatorDetails() {
           <strong>${slot.label}</strong>
           <small>${slot.key}</small>
         </div>
-        <small class="maker-top-status">${index === 0 ? 'Last bastion ready' : `${slotItems(slot.key).length} items`}</small>
+        <small class="maker-top-status">${slotItems(slot.key).length} items · ${creatorLayers(slot).length} layers · ${uploadedAssetCount(slot)} files</small>
         <div class="maker-top-actions">
           <button class="secondary" data-slot-items="${slot.key}">Items</button>
           <button class="secondary" data-slot-settings="${slot.key}">Settings</button>
@@ -1002,14 +1246,14 @@ function renderCreatorDetails() {
   }
 
   if ($('makerTopLayerList')) {
-    $('makerTopLayerList').innerHTML = allSlots().map((slot, index) => `
+    $('makerTopLayerList').innerHTML = compositionLayers.map((layer, index) => `
       <div class="maker-top-row">
         <span class="maker-top-index">${index + 1}</span>
         <div class="maker-top-main">
-          <strong>${slot.label}</strong>
-          <small>${slot.key}</small>
+          <strong>${layer.name}</strong>
+          <small>${layer.partLabel}</small>
         </div>
-        <small class="maker-top-status">${slot.kind || 'standard'}</small>
+        <small class="maker-top-status">${layer.blendMode || 'normal'} · ${layer.opacity ?? 100}%</small>
       </div>
     `).join('');
   }
@@ -1020,7 +1264,6 @@ function renderCreatorDetails() {
       state.selectedItem = state.visual[state.selectedSlot] || slotItems(state.selectedSlot)[0]?.id || '';
       state.partSubView = 'items';
       renderCreatorDetails();
-      $('partWorkspace')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
   });
 
@@ -1037,6 +1280,7 @@ function renderCreatorDetails() {
   document.querySelectorAll('[data-layer-key]').forEach((button) => {
     button.addEventListener('click', () => {
       state.selectedLayer = button.dataset.layerKey;
+      state.selectedSlot = state.selectedLayer.split(':')[0];
       renderCreatorDetails();
     });
   });
@@ -1044,18 +1288,31 @@ function renderCreatorDetails() {
 
 function renderPartWorkspace() {
   if (!$('partWorkspace')) return;
-  const slot = activeSlot();
+  const slot = ensureSlotStructure(activeSlot());
   const items = slotItems(slot.key);
-  const selectedItemForSlot = state.visual[slot.key] || items[0]?.id || '';
+  const layers = creatorLayers(slot);
+  const colors = creatorColors(slot);
+  if (!items.some((item) => item.id === state.selectedItem)) {
+    state.selectedItem = state.visual[slot.key] || items[0]?.id || '';
+  }
+  const selectedItemForSlot = state.selectedItem;
+  const selectedItem = items.find((item) => item.id === selectedItemForSlot) || items[0];
+  const totalCells = layers.length * colors.length;
   const itemRows = items.map((item, index) => `
-    <div class="item-row ${selectedItemForSlot === item.id ? 'active' : ''}" data-item-id="${item.id}">
+    <button class="item-row ${selectedItemForSlot === item.id ? 'active' : ''}" data-select-item="${item.id}">
       <span>No.${index + 1}</span>
-      <strong>${item.label}</strong>
-      <small>${item.assetStatus === 'staged' ? 'Walrus staged' : index === 0 ? 'Base item · public' : 'Public item'}</small>
-      <button class="secondary" data-stage-item="${item.id}">Stage file</button>
-      <button class="secondary" data-select-item="${item.id}">Select</button>
-    </div>
+      <span class="item-row-copy"><strong>${item.label}</strong><small>${Object.values(item.images || {}).filter((asset) => asset?.file).length}/${totalCells} images · ${item.visibility}</small></span>
+      <span class="item-row-thumb">${item.iconAsset?.url ? `<img src="${item.iconAsset.url}" alt="" />` : String(index + 1).padStart(2, '0')}</span>
+    </button>
   `).join('');
+
+  const tabs = `
+    <div class="part-workspace-tabs" role="tablist" aria-label="${slot.label} editor">
+      <button class="${state.partSubView === 'items' ? 'active' : ''}" data-part-subview="items">Items</button>
+      <button class="${state.partSubView === 'layers' ? 'active' : ''}" data-part-subview="layers">Layers & colors</button>
+      <button class="${state.partSubView === 'settings' ? 'active' : ''}" data-part-subview="settings">Part settings</button>
+    </div>
+  `;
 
   if (state.partSubView === 'settings') {
     $('partWorkspace').innerHTML = `
@@ -1065,52 +1322,137 @@ function renderPartWorkspace() {
           <h2>${slot.label}</h2>
         </div>
         <div class="workspace-actions">
-          <button class="secondary" data-part-subview="items">Item List</button>
-          <button class="secondary" data-select-layer-from-part="${slot.key}">Open layer</button>
+          <button class="secondary" data-select-layer-from-part="${creatorLayerKey(slot.key, layers[0].id)}">Composition order</button>
         </div>
       </div>
+      ${tabs}
       <div class="part-detail-grid">
         <label>Part name<input data-part-field="label" value="${slot.label}" /></label>
-        <label>Part type<select data-part-field="kind">
+        <label>Part type<select data-part-field="kind" disabled>
           <option value="standard" ${slot.kind === 'standard' || !slot.kind ? 'selected' : ''}>Standard part</option>
           <option value="left-right-pair" ${slot.kind === 'left-right-pair' ? 'selected' : ''}>Left-right paired part</option>
           <option value="last-bastion" ${slot.kind === 'last-bastion' ? 'selected' : ''}>Last bastion part</option>
         </select></label>
         <label>Anchor X<input data-part-field="x" type="number" value="${slot.x ?? 0}" /></label>
         <label>Anchor Y<input data-part-field="y" type="number" value="${slot.y ?? 0}" /></label>
-        <label>Layer name<input data-part-field="layerName" value="${slot.layerName || 'Normal'}" /></label>
         <label>Menu visibility<select data-part-field="menuVisible">
           <option value="visible" ${slot.menuVisible !== false ? 'selected' : ''}>Visible in menu</option>
           <option value="hidden" ${slot.menuVisible === false ? 'selected' : ''}>Hidden fixed layer</option>
         </select></label>
+        <label>Remove option<select data-part-field="allowRemove">
+          <option value="yes" ${slot.allowRemove !== false ? 'selected' : ''}>User may remove</option>
+          <option value="no" ${slot.allowRemove === false ? 'selected' : ''}>Always selected</option>
+        </select></label>
+        <label>Default item<select data-part-field="defaultItemId">${items.map((item) => `<option value="${item.id}" ${slot.defaultItemId === item.id || (!slot.defaultItemId && item === items[0]) ? 'selected' : ''}>${item.label}</option>`).join('')}</select></label>
+        <label>Part menu icon<input data-part-icon type="file" accept="image/png,image/jpeg" /></label>
+        <div><strong>Icon status</strong><span>${slot.iconAsset ? `${slot.iconAsset.width} × ${slot.iconAsset.height}` : 'No custom icon'}</span></div>
         <label>License gate<select data-part-field="licenseGate">
           <option value="included" ${slot.licenseGate !== 'paid' ? 'selected' : ''}>Included in maker license</option>
           <option value="paid" ${slot.licenseGate === 'paid' ? 'selected' : ''}>Paid add-on part</option>
         </select></label>
-        <label>On-chain status<select data-part-field="assetStatus">
-          <option value="draft" ${slot.assetStatus !== 'staged' ? 'selected' : ''}>Draft local slot</option>
-          <option value="staged" ${slot.assetStatus === 'staged' ? 'selected' : ''}>Walrus staged</option>
-        </select></label>
+        <label>Horizontal movement<select data-part-field="allowMoveX"><option value="no" ${!slot.allowMoveX ? 'selected' : ''}>Locked</option><option value="yes" ${slot.allowMoveX ? 'selected' : ''}>Player may move</option></select></label>
+        <label>Vertical movement<select data-part-field="allowMoveY"><option value="no" ${!slot.allowMoveY ? 'selected' : ''}>Locked</option><option value="yes" ${slot.allowMoveY ? 'selected' : ''}>Player may move</option></select></label>
+        <label>Scale control<select data-part-field="allowScale"><option value="no" ${!slot.allowScale ? 'selected' : ''}>Locked</option><option value="yes" ${slot.allowScale ? 'selected' : ''}>Player may scale</option></select></label>
+        <label>Rotation control<select data-part-field="allowRotate"><option value="no" ${!slot.allowRotate ? 'selected' : ''}>Locked</option><option value="yes" ${slot.allowRotate ? 'selected' : ''}>Player may rotate</option></select></label>
+        ${slot.kind === 'left-right-pair' ? `
+          <label>Right layer X<input data-part-field="rightX" type="number" value="${slot.rightX || 0}" /></label>
+          <label>Paired spacing<select data-part-field="allowSpacing"><option value="no" ${!slot.allowSpacing ? 'selected' : ''}>Locked</option><option value="yes" ${slot.allowSpacing ? 'selected' : ''}>Player may adjust</option></select></label>
+          <label>Spacing step<input data-part-field="spacingStep" type="number" min="1" value="${slot.spacingStep || 3}" /></label>
+          <label>Spacing moves<input data-part-field="spacingSteps" type="number" min="1" value="${slot.spacingSteps || 5}" /></label>
+        ` : ''}
+        <div><strong>Type lock</strong><span>Part type is immutable after creation so its layer contract stays stable.</span></div>
       </div>
     `;
+  } else if (state.partSubView === 'layers') {
+    $('partWorkspace').innerHTML = `
+      <div class="workspace-head">
+        <div><p class="kicker">Layers & Colors</p><h2>${slot.label}</h2></div>
+        <div class="workspace-actions">
+          <button class="secondary" data-add-layer ${slot.kind !== 'standard' ? 'disabled' : ''}>Add layer</button>
+          <button class="secondary" data-add-color>Add color</button>
+        </div>
+      </div>
+      ${tabs}
+      <div class="part-layer-builder">
+        <section>
+          <div class="builder-title"><strong>Layers</strong><span>${layers.length}</span></div>
+          <div class="builder-list">${layers.map((layer, index) => `
+            <div class="builder-row">
+              <span>${index + 1}</span>
+              <input data-inline-layer-name="${layer.id}" value="${layer.name}" aria-label="Layer name" />
+              <small>Global #${allCreatorLayers().findIndex((candidate) => candidate.key === creatorLayerKey(slot.key, layer.id)) + 1}</small>
+              ${slot.kind === 'standard' && layers.length > 1 ? `<button class="icon-command" data-delete-layer="${layer.id}" title="Delete layer" aria-label="Delete layer">×</button>` : ''}
+            </div>
+          `).join('')}</div>
+        </section>
+        <section>
+          <div class="builder-title"><strong>Colors</strong><span>${colors.length}</span></div>
+          <div class="builder-list">${colors.map((color) => `
+            <div class="builder-row color-builder-row">
+              <input type="color" data-color-value="${color.id}" value="${color.value}" aria-label="${color.name} color" />
+              <input data-color-name="${color.id}" value="${color.name}" aria-label="Color name" />
+              <small>${color.id}</small>
+            </div>
+          `).join('')}</div>
+        </section>
+      </div>
+      <p class="workspace-message">${slot.kind === 'left-right-pair' ? 'Left-right pairs keep fixed Left and Right layers.' : slot.kind === 'last-bastion' ? 'Last bastion parts keep one fixed fallback layer.' : 'Each item needs one PNG for every layer and color it uses.'}</p>
+    `;
   } else {
+    const matrix = selectedItem ? layers.map((layer) => `
+      <section class="asset-layer-group">
+        <div class="asset-layer-head"><strong>${layer.name}</strong><span>${slot.label}</span></div>
+        <div class="asset-cell-grid">${colors.map((color) => {
+          const key = assetCellKey(layer.id, color.id);
+          const asset = selectedItem.images?.[key];
+          return `
+            <label class="asset-upload-cell ${asset?.file ? 'complete' : ''}">
+              <input type="file" accept="image/png" data-upload-item-image data-item-id="${selectedItem.id}" data-layer-id="${layer.id}" data-color-id="${color.id}" />
+              <span class="asset-cell-preview">${asset?.url ? `<img src="${asset.url}" alt="" />` : '<b>+</b>'}</span>
+              <span class="asset-cell-copy"><strong>${color.name}</strong><small>${asset?.file ? `${asset.width} × ${asset.height}` : 'Upload PNG'}</small></span>
+            </label>
+          `;
+        }).join('')}</div>
+      </section>
+    `).join('') : '';
     $('partWorkspace').innerHTML = `
       <div class="workspace-head">
         <div>
-          <p class="kicker">Item List</p>
+          <p class="kicker">Part Items</p>
           <h2>${slot.label}</h2>
         </div>
         <div class="workspace-actions">
-          <button class="secondary" data-add-item>+ Add item</button>
-          <button class="secondary" data-part-subview="settings">Part Settings</button>
+          <button class="primary" data-add-item>+ Add item</button>
         </div>
       </div>
+      ${tabs}
       <div class="item-toolbar">
         <span>${items.length} items</span>
-        <span>Sort key: Item No.</span>
-        <span>Selected: ${selectedItemForSlot || 'none'}</span>
+        <span>${layers.length} layers</span>
+        <span>${colors.length} colors</span>
+        <span>${uploadedAssetCount(slot)} uploaded files</span>
       </div>
-      <div class="item-list">${itemRows || '<div class="empty-state">No items yet. Add the first item to make this part selectable.</div>'}</div>
+      <div class="part-item-editor">
+        <aside class="item-list">${itemRows || '<div class="empty-state">No items yet.</div>'}</aside>
+        <div class="item-asset-editor">${selectedItem ? `
+          <div class="item-editor-head">
+            <div><p class="kicker">Item No.${items.indexOf(selectedItem) + 1}</p><h3>${selectedItem.label}</h3></div>
+            ${items.indexOf(selectedItem) > 0 ? `<button class="secondary" data-delete-item="${selectedItem.id}">Delete item</button>` : '<span class="template-token">Required base item</span>'}
+          </div>
+          <div class="item-setting-row">
+            <label>Item name<input data-item-field="label" value="${selectedItem.label}" /></label>
+            <label>Visibility<select data-item-field="visibility" ${items.indexOf(selectedItem) === 0 ? 'disabled' : ''}>
+              <option value="public" ${selectedItem.visibility === 'public' ? 'selected' : ''}>Public</option>
+              <option value="private" ${selectedItem.visibility === 'private' ? 'selected' : ''}>Private</option>
+            </select></label>
+            <label>Display order<input data-item-field="displayOrder" type="number" min="1" value="${selectedItem.displayOrder}" /></label>
+            <label>Picker icon<input type="file" accept="image/png,image/jpeg" data-upload-item-icon="${selectedItem.id}" /></label>
+          </div>
+          <div class="asset-matrix-head"><div><strong>Item images</strong><span>${Object.values(selectedItem.images || {}).filter((asset) => asset?.file).length}/${totalCells} cells complete</span></div><button class="secondary" data-part-subview="layers">Edit layers & colors</button></div>
+          <div class="asset-matrix">${matrix}</div>
+          <p class="workspace-message">${slot.assetMessage || 'PNG images remain local until you prepare the Walrus quilt in On-chain Publish.'}</p>
+        ` : '<div class="empty-state">Add an item to begin uploading images.</div>'}</div>
+      </div>
     `;
   }
 
@@ -1125,15 +1467,6 @@ function renderPartWorkspace() {
     button.addEventListener('click', () => {
       state.selectedItem = button.dataset.selectItem;
       state.visual[slot.key] = state.selectedItem;
-      renderAll();
-    });
-  });
-
-  document.querySelectorAll('[data-stage-item]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const item = slotItems(slot.key).find((entry) => entry.id === button.dataset.stageItem);
-      if (!item) return;
-      item.assetStatus = item.assetStatus === 'staged' ? 'draft' : 'staged';
       renderCreatorDetails();
     });
   });
@@ -1141,14 +1474,73 @@ function renderPartWorkspace() {
   document.querySelectorAll('[data-select-layer-from-part]').forEach((button) => {
     button.addEventListener('click', () => {
       state.selectedLayer = button.dataset.selectLayerFromPart;
-      setEditorPanel('layers');
+      setEditorPanel('parts');
       renderAll();
-      $('layerDetailsPanel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      $('compositionOrder')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
   });
 
   document.querySelectorAll('[data-part-field]').forEach((input) => {
     input.addEventListener('change', () => updatePartField(slot.key, input.dataset.partField, input.value));
+  });
+
+  document.querySelector('[data-part-icon]')?.addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      if (slot.iconAsset?.url) URL.revokeObjectURL(slot.iconAsset.url);
+      const bitmap = await createImageBitmap(file);
+      slot.iconAsset = { file, url: URL.createObjectURL(file), width: bitmap.width, height: bitmap.height };
+      bitmap.close();
+      syncCreatorAssets();
+      invalidateMakerUpload('Part icon changed. Prepare a new Walrus quilt before publishing.');
+    } catch (error) {
+      slot.assetMessage = error.message || 'Could not read this icon.';
+    }
+    renderCreatorDetails();
+  });
+
+  document.querySelectorAll('[data-upload-item-image]').forEach((input) => {
+    input.addEventListener('change', async (event) => {
+      const item = items.find((candidate) => candidate.id === input.dataset.itemId);
+      const file = event.target.files?.[0];
+      if (!item || !file) return;
+      const key = assetCellKey(input.dataset.layerId, input.dataset.colorId);
+      try {
+        if (item.images[key]?.url) URL.revokeObjectURL(item.images[key].url);
+        item.images[key] = await localPngAsset(file);
+        slot.assetMessage = item.images[key].warning || `${file.name} is ready for preview.`;
+        syncCreatorAssets();
+        invalidateMakerUpload('Assets changed. Prepare a new Walrus quilt before publishing.');
+      } catch (error) {
+        slot.assetMessage = error.message || 'Could not read this PNG.';
+      }
+      renderCreatorDetails();
+    });
+  });
+
+  document.querySelectorAll('[data-upload-item-icon]').forEach((input) => {
+    input.addEventListener('change', async (event) => {
+      const item = items.find((candidate) => candidate.id === input.dataset.uploadItemIcon);
+      const file = event.target.files?.[0];
+      if (!item || !file) return;
+      const bitmap = await createImageBitmap(file);
+      if (item.iconAsset?.url) URL.revokeObjectURL(item.iconAsset.url);
+      item.iconAsset = { file, url: URL.createObjectURL(file), width: bitmap.width, height: bitmap.height };
+      bitmap.close();
+      syncCreatorAssets();
+      invalidateMakerUpload('Item icon changed. Prepare a new Walrus quilt before publishing.');
+      renderCreatorDetails();
+    });
+  });
+
+  document.querySelectorAll('[data-item-field]').forEach((input) => {
+    input.addEventListener('change', () => {
+      if (!selectedItem) return;
+      selectedItem[input.dataset.itemField] = input.dataset.itemField === 'displayOrder' ? Number(input.value || 1) : input.value;
+      invalidateMakerUpload();
+      renderCreatorDetails();
+    });
   });
 
   document.querySelectorAll('[data-add-item]').forEach((button) => {
@@ -1157,9 +1549,84 @@ function renderPartWorkspace() {
       const id = `item-${next}`;
       if (!parts[slot.key]) parts[slot.key] = [];
       parts[slot.key].push({ id, label: `Item ${next}` });
+      ensureSlotStructure(slot);
       state.selectedItem = id;
       state.visual[slot.key] = id;
+      invalidateMakerUpload();
       renderAll();
+    });
+  });
+
+  document.querySelectorAll('[data-delete-item]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const index = items.findIndex((item) => item.id === button.dataset.deleteItem);
+      if (index <= 0) return;
+      Object.values(items[index].images || {}).forEach((asset) => asset?.url && URL.revokeObjectURL(asset.url));
+      items.splice(index, 1);
+      state.selectedItem = items[0]?.id || '';
+      state.visual[slot.key] = state.selectedItem;
+      syncCreatorAssets();
+      invalidateMakerUpload();
+      renderAll();
+    });
+  });
+
+  document.querySelector('[data-add-layer]')?.addEventListener('click', () => {
+    if (slot.kind !== 'standard') return;
+    const next = layers.length + 1;
+    const id = `layer-${next}-${Date.now().toString(36)}`;
+    layers.push({ id, name: `Layer ${next}`, x: slot.x || 0, y: slot.y || 0, opacity: 100, blendMode: 'normal' });
+    state.layerOrder.push(creatorLayerKey(slot.key, id));
+    state.selectedLayer = creatorLayerKey(slot.key, id);
+    invalidateMakerUpload();
+    renderCreatorDetails();
+  });
+
+  document.querySelectorAll('[data-delete-layer]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (slot.kind !== 'standard' || layers.length <= 1) return;
+      const layerId = button.dataset.deleteLayer;
+      const index = layers.findIndex((layer) => layer.id === layerId);
+      if (index < 0) return;
+      layers.splice(index, 1);
+      state.layerOrder = state.layerOrder.filter((key) => key !== creatorLayerKey(slot.key, layerId));
+      items.forEach((item) => Object.keys(item.images || {}).forEach((key) => {
+        if (key.startsWith(`${layerId}:`)) {
+          if (item.images[key]?.url) URL.revokeObjectURL(item.images[key].url);
+          delete item.images[key];
+        }
+      }));
+      syncCreatorAssets();
+      invalidateMakerUpload();
+      renderCreatorDetails();
+    });
+  });
+
+  document.querySelectorAll('[data-inline-layer-name]').forEach((input) => {
+    input.addEventListener('change', () => {
+      const layer = layers.find((candidate) => candidate.id === input.dataset.inlineLayerName);
+      if (layer) layer.name = input.value.trim() || layer.name;
+      invalidateMakerUpload();
+      renderCreatorDetails();
+    });
+  });
+
+  document.querySelector('[data-add-color]')?.addEventListener('click', () => {
+    const next = colors.length + 1;
+    colors.push({ id: `color-${next}-${Date.now().toString(36)}`, name: `Color ${next}`, value: swatches[(next - 1) % swatches.length] });
+    invalidateMakerUpload();
+    renderCreatorDetails();
+  });
+
+  document.querySelectorAll('[data-color-name], [data-color-value]').forEach((input) => {
+    input.addEventListener('change', () => {
+      const colorId = input.dataset.colorName || input.dataset.colorValue;
+      const color = colors.find((candidate) => candidate.id === colorId);
+      if (!color) return;
+      if (input.dataset.colorName) color.name = input.value.trim() || color.name;
+      else color.value = input.value;
+      invalidateMakerUpload();
+      renderCreatorDetails();
     });
   });
 }
@@ -1167,91 +1634,113 @@ function renderPartWorkspace() {
 function updatePartField(slotKey, field, value) {
   const slot = allSlots().find((item) => item.key === slotKey);
   if (!slot) return;
-  if (field === 'x' || field === 'y') slot[field] = Number(value || 0);
+  if (['x', 'y', 'rightX', 'spacingStep', 'spacingSteps'].includes(field)) slot[field] = Number(value || 0);
   else if (field === 'menuVisible') slot.menuVisible = value !== 'hidden';
+  else if (field === 'allowRemove') slot.allowRemove = value === 'yes';
+  else if (['allowMoveX', 'allowMoveY', 'allowScale', 'allowRotate', 'allowSpacing'].includes(field)) slot[field] = value === 'yes';
   else slot[field] = value;
-  if (field === 'label') {
-    if (slot.key === state.selectedLayer && $('layerMakerTitle')) renderLayerDetails();
-  }
+  invalidateMakerUpload();
   renderCreatorDetails();
 }
 
 function renderLayerDetails() {
   if (!$('layerDetailsPanel')) return;
-  const layer = allSlots().find((slot) => slot.key === state.selectedLayer) || activeSlot();
+  const selected = selectedLayerRecord();
+  if (!selected) return;
+  const slot = allSlots().find((candidate) => candidate.key === selected.partKey);
+  const layer = creatorLayers(slot).find((candidate) => candidate.id === selected.id);
+  const layerAssets = slotItems(slot.key).flatMap((item) => Object.entries(item.images || {}).filter(([key, asset]) => key.startsWith(`${layer.id}:`) && asset?.file));
   $('layerDetailsPanel').innerHTML = `
     <div class="workspace-head">
       <div>
         <p class="kicker">Layer Details</p>
-        <h2>${layer.label}</h2>
+        <h2>${layer.name}</h2>
+        <small>${slot.label} · ${layerAssets.length} uploaded item images</small>
       </div>
       <div class="workspace-actions">
         <button class="secondary" data-move-layer="up">Move front</button>
         <button class="secondary" data-move-layer="down">Move behind</button>
-        <button class="secondary" data-stage-layer="${layer.key}">${layer.assetStatus === 'staged' ? 'Unstage asset' : 'Stage asset'}</button>
-        <button class="secondary" data-open-part-modal>Add layer</button>
+        <button class="secondary" data-open-layer-part="${slot.key}">Edit item images</button>
       </div>
     </div>
     <div class="part-detail-grid">
-      <label>Layer name<input data-layer-field="layerName" value="${layer.layerName || layer.label}" /></label>
+      <label>Layer name<input data-layer-field="name" value="${layer.name}" /></label>
       <label>Anchor X<input data-layer-field="x" type="number" value="${layer.x ?? 0}" /></label>
       <label>Anchor Y<input data-layer-field="y" type="number" value="${layer.y ?? 0}" /></label>
-      <label>Layer kind<select data-layer-field="kind">
-        <option value="standard" ${layer.kind === 'standard' || !layer.kind ? 'selected' : ''}>Standard</option>
-        <option value="left-right-pair" ${layer.kind === 'left-right-pair' ? 'selected' : ''}>Left-right pair</option>
-        <option value="last-bastion" ${layer.kind === 'last-bastion' ? 'selected' : ''}>Last bastion</option>
-      </select></label>
-      <label>Menu visibility<select data-layer-field="menuVisible">
-        <option value="visible" ${layer.menuVisible !== false ? 'selected' : ''}>Visible in menu</option>
-        <option value="hidden" ${layer.menuVisible === false ? 'selected' : ''}>Hidden fixed layer</option>
-      </select></label>
-      <label>Walrus status<select data-layer-field="assetStatus">
-        <option value="draft" ${layer.assetStatus !== 'staged' ? 'selected' : ''}>Draft slot</option>
-        <option value="staged" ${layer.assetStatus === 'staged' ? 'selected' : ''}>Staged blob</option>
+      <label>Opacity<input data-layer-field="opacity" type="number" min="0" max="100" value="${layer.opacity ?? 100}" /></label>
+      <label>Blend mode<select data-layer-field="blendMode">
+        <option value="normal" ${layer.blendMode === 'normal' ? 'selected' : ''}>Normal</option>
+        <option value="multiply" ${layer.blendMode === 'multiply' ? 'selected' : ''}>Multiply</option>
+        <option value="screen" ${layer.blendMode === 'screen' ? 'selected' : ''}>Screen</option>
+        <option value="overlay" ${layer.blendMode === 'overlay' ? 'selected' : ''}>Overlay</option>
       </select></label>
       <div>
-        <strong>Sui object</strong>
-        <span>${layer.assetStatus === 'staged' ? 'Ready for template manifest' : 'Waiting for asset staging'}</span>
+        <strong>Composition position</strong>
+        <span>#${allCreatorLayers().findIndex((candidate) => candidate.key === selected.key) + 1} of ${allCreatorLayers().length}</span>
       </div>
       <div>
-        <strong>Current items</strong>
-        <span>${slotItems(layer.key).length} item records</span>
+        <strong>Walrus readiness</strong>
+        <span>${layerAssets.length ? `${layerAssets.length} local files ready` : 'Upload item images in Parts'}</span>
       </div>
     </div>
   `;
 
   document.querySelectorAll('[data-layer-field]').forEach((input) => {
-    input.addEventListener('change', () => updateLayerField(layer.key, input.dataset.layerField, input.value));
+    input.addEventListener('change', () => updateLayerField(selected.key, input.dataset.layerField, input.value));
   });
 
   document.querySelectorAll('[data-move-layer]').forEach((button) => {
-    button.addEventListener('click', () => moveLayer(layer.key, button.dataset.moveLayer));
+    button.addEventListener('click', () => moveLayer(selected.key, button.dataset.moveLayer));
   });
 
-  document.querySelectorAll('[data-stage-layer]').forEach((button) => {
+  document.querySelectorAll('[data-open-layer-part]').forEach((button) => {
     button.addEventListener('click', () => {
-      updateLayerField(button.dataset.stageLayer, 'assetStatus', layer.assetStatus === 'staged' ? 'draft' : 'staged');
+      state.selectedSlot = button.dataset.openLayerPart;
+      state.selectedItem = state.visual[state.selectedSlot] || slotItems(state.selectedSlot)[0]?.id || '';
+      state.partSubView = 'items';
+      setEditorPanel('parts');
+      renderCreatorDetails();
     });
-  });
-
-  document.querySelectorAll('[data-open-part-modal]').forEach((button) => {
-    button.addEventListener('click', openPartModal);
   });
 }
 
 function updateLayerField(layerKey, field, value) {
-  updatePartField(layerKey, field, value);
+  const [partKey, layerId] = layerKey.split(':');
+  const slot = allSlots().find((candidate) => candidate.key === partKey);
+  const layer = slot && creatorLayers(slot).find((candidate) => candidate.id === layerId);
+  if (!layer) return;
+  layer[field] = ['x', 'y', 'opacity'].includes(field) ? Number(value || 0) : value;
+  invalidateMakerUpload();
+  renderCreatorDetails();
 }
 
 function moveLayer(layerKey, direction) {
-  const order = [...state.slotOrder];
+  allCreatorLayers();
+  const order = [...state.layerOrder];
   const index = order.indexOf(layerKey);
   if (index === -1) return;
   const target = direction === 'up' ? index - 1 : index + 1;
   if (target < 0 || target >= order.length) return;
   [order[index], order[target]] = [order[target], order[index]];
-  state.slotOrder = order;
+  state.layerOrder = order;
+  invalidateMakerUpload();
   renderAll();
+}
+
+function renderCreatorCanvas() {
+  if (!$('creatorCanvasAssets')) return;
+  const images = [...allCreatorLayers()].reverse().flatMap((layer) => {
+    const itemId = state.visual[layer.partKey] || slotItems(layer.partKey)[0]?.id;
+    const item = slotItems(layer.partKey).find((candidate) => candidate.id === itemId);
+    const assetEntry = Object.entries(item?.images || {}).find(([key, asset]) => key.startsWith(`${layer.id}:`) && asset?.url);
+    if (!assetEntry) return [];
+    return [{ layer, asset: assetEntry[1] }];
+  });
+  $('creatorCanvasAssets').innerHTML = images.map(({ layer, asset }) => `
+    <img src="${asset.url}" alt="${layer.partLabel} ${layer.name}" style="--layer-x:${layer.x || 0};--layer-y:${layer.y || 0};opacity:${(layer.opacity ?? 100) / 100};mix-blend-mode:${layer.blendMode || 'normal'}" />
+  `).join('');
+  $('creatorCanvasEmpty').hidden = images.length > 0;
+  if ($('canvasAssetCount')) $('canvasAssetCount').textContent = `${images.length} image${images.length === 1 ? '' : 's'}`;
 }
 
 function openMakerModal() {
@@ -1309,16 +1798,20 @@ function renderWalletState() {
 function publishReadiness() {
   if (runtimeConfig.packageId.includes('TODO')) return 'Publish the Move package and set packageId in config.js.';
   if (!state.walletConnected) return 'Connect a Sui wallet to sign publication.';
-  if (!state.assets.length) return 'Upload at least one transparent PNG layer.';
+  if (!itemLayerAssets().length) return 'Upload at least one item image in Parts.';
   if (!$('creatorTemplateName').value.trim()) return 'Add a maker name in Settings.';
-  return 'Ready to upload assets to Walrus and publish the maker on Sui.';
+  return 'Prepare one Walrus quilt, register and upload it, certify it, then publish the maker on Sui Mainnet.';
 }
 
 function renderPublishAction() {
   if (!$('publishMakerOnchain')) return;
-  const ready = !runtimeConfig.packageId.includes('TODO') && state.walletConnected && state.assets.length > 0;
-  $('publishMakerOnchain').disabled = state.publishing || !ready;
-  $('publishMakerOnchain').textContent = state.publishing ? 'Publishing…' : state.publishDigest ? 'Published' : 'Upload & publish';
+  const baseReady = !runtimeConfig.packageId.includes('TODO') && state.walletConnected && itemLayerAssets().length > 0;
+  $('prepareMakerUpload').disabled = state.publishing || !baseReady || state.makerUploadStage !== 'idle';
+  $('registerMakerUpload').disabled = state.publishing || !state.walletConnected || !['encoded', 'registered'].includes(state.makerUploadStage);
+  $('registerMakerUpload').textContent = state.makerUploadStage === 'registered' ? '2. Retry upload' : '2. Register & upload';
+  $('certifyMakerUpload').disabled = state.publishing || !state.walletConnected || state.makerUploadStage !== 'uploaded';
+  $('publishMakerOnchain').disabled = state.publishing || !state.walletConnected || state.makerUploadStage !== 'certified';
+  $('publishMakerOnchain').textContent = state.publishing ? 'Publishing…' : state.publishDigest ? 'Published' : '4. Publish maker';
   $('makerPublishAction').classList.toggle('success', Boolean(state.publishDigest));
   $('makerPublishAction').classList.toggle('busy', state.publishing);
   if (state.publishDigest) {
@@ -1351,7 +1844,7 @@ function renderChainStatus() {
       </div>
       <div>
         <span>Walrus</span>
-        <strong>${runtimeConfig.walrusPublisherUrl ? 'Ready for browser upload' : 'Configure endpoint'}</strong>
+        <strong>${runtimeConfig.walrusUploadRelayUrl ? 'Mainnet Upload Relay ready' : 'Configure upload relay'}</strong>
       </div>
       <div>
         <span>Signer</span>
@@ -1384,61 +1877,122 @@ function renderChainActions() {
   });
 }
 
-async function publishCurrentMaker() {
-  if (state.publishing) return;
+async function prepareMakerUpload() {
   state.publishing = true;
-  state.publishStatus = 'Uploading PNG layers to Walrus…';
   state.publishDigest = '';
-  renderAll();
-
+  state.publishStatus = 'Encoding PNG layers and manifest into one Walrus quilt…';
+  renderPublishAction();
   try {
-    for (let index = 0; index < state.assets.length; index += 1) {
-      const asset = state.assets[index];
+    syncCreatorAssets();
+    if (!itemLayerAssets().length) throw new Error('Upload at least one PNG item image in Parts before preparing publication.');
+    state.assets.forEach((asset) => {
       if (!asset.file) throw new Error(`${asset.name} is no longer available. Select the PNG files again.`);
-      if (!asset.blobId) {
-        state.publishStatus = `Uploading layer ${index + 1} of ${state.assets.length}: ${asset.name}`;
-        renderPublishAction();
-        const stored = await uploadWalrusBlob(asset.file);
-        asset.blobId = stored.blobId;
-        asset.walrusObjectId = stored.suiObjectId;
-      }
+    });
+    state.pendingMakerManifestJson = JSON.stringify(creatorUploadManifest());
+    const manifestBlob = new Blob([state.pendingMakerManifestJson], { type: 'application/json' });
+    const entries = [
+      ...state.assets.map((asset) => ({ blob: asset.file, identifier: asset.identifier, kind: asset.kind })),
+      { blob: manifestBlob, identifier: 'animacraft-manifest.json', kind: 'maker-manifest' },
+    ];
+    state.makerUploadSession = await prepareWalrusUpload(entries);
+    state.makerUploadStage = 'encoded';
+    state.publishStatus = 'Quilt encoded. Register it on Walrus Mainnet with your wallet.';
+  } catch (error) {
+    state.publishStatus = error.message || 'Could not prepare the maker quilt.';
+  } finally {
+    state.publishing = false;
+    renderAll();
+  }
+}
+
+async function registerMakerUpload() {
+  state.publishing = true;
+  state.publishStatus = 'Waiting for the Walrus registration signature, then uploading through Mainnet relay…';
+  renderPublishAction();
+  try {
+    await registerAndUploadWalrus(state.makerUploadSession);
+    state.makerUploadStage = 'uploaded';
+    state.publishStatus = 'Quilt uploaded. Certify availability with one more wallet signature.';
+  } catch (error) {
+    state.makerUploadStage = state.makerUploadSession?.stage || state.makerUploadStage;
+    state.publishStatus = error.message || 'Walrus registration or upload failed.';
+  } finally {
+    state.publishing = false;
+    renderAll();
+  }
+}
+
+async function certifyMakerUpload() {
+  state.publishing = true;
+  state.publishStatus = 'Waiting for the Walrus certification signature…';
+  renderPublishAction();
+  try {
+    await certifyWalrusUpload(state.makerUploadSession);
+    if (state.makerUploadSession.files.length !== state.assets.length + 1) {
+      throw new Error('Walrus returned an unexpected number of quilt files.');
     }
+    state.assets.forEach((asset, index) => {
+      asset.patchId = state.makerUploadSession.files[index].id;
+      asset.blobId = state.makerUploadSession.files[index].blobId;
+    });
+    state.makerManifestPatchId = state.makerUploadSession.files[state.assets.length].id;
+    state.makerUploadStage = 'certified';
+    state.publishStatus = 'Walrus quilt certified. Publish the indexed OCMaker object on Sui Mainnet.';
+  } catch (error) {
+    state.publishStatus = error.message || 'Walrus certification failed.';
+  } finally {
+    state.publishing = false;
+    renderAll();
+  }
+}
 
-    state.publishStatus = 'Uploading the maker manifest to Walrus…';
-    renderPublishAction();
-    const manifest = creatorManifest();
-    const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
-    const storedManifest = await uploadWalrusBlob(manifestBlob);
-
-    const assetSlots = [...new Set(state.assets.map((asset) => asset.slot))];
+async function publishCurrentMaker() {
+  if (state.publishing || state.makerUploadStage !== 'certified') return;
+  state.publishing = true;
+  state.publishStatus = 'Waiting for your Sui Mainnet publication signature…';
+  renderPublishAction();
+  try {
+    if (JSON.stringify(creatorUploadManifest()) !== state.pendingMakerManifestJson) {
+      state.makerUploadSession = null;
+      state.makerUploadStage = 'idle';
+      state.makerManifestPatchId = '';
+      state.pendingMakerManifestJson = '';
+      state.assets.forEach((asset) => {
+        asset.patchId = '';
+        asset.blobId = '';
+      });
+      throw new Error('The maker changed after upload. Prepare a new quilt before publishing.');
+    }
+    const layerAssets = itemLayerAssets();
+    const assetSlots = [...new Set(layerAssets.map((asset) => asset.slot))];
     const makerParts = assetSlots.map((key, index) => {
       const slot = allSlots().find((candidate) => candidate.key === key);
+      const configuredOrder = allSlots().findIndex((candidate) => candidate.key === key);
       return {
         key,
         label: slot?.label || key,
         kind: slot?.kind || 'standard',
-        renderOrder: allSlots().findIndex((candidate) => candidate.key === key) >= 0
-          ? allSlots().findIndex((candidate) => candidate.key === key)
-          : index,
+        renderOrder: configuredOrder >= 0 ? configuredOrder : index,
         menuVisible: slot?.menuVisible !== false,
         required: index === 0,
       };
     });
-    const makerItems = state.assets.map((asset) => ({
-      partKey: asset.slot,
-      itemKey: asset.partId,
-      label: asset.partId.replace(/-/g, ' '),
-      blobId: asset.blobId,
-      iconBlobId: '',
-      gateKind: 0,
+    const makerItems = assetSlots.flatMap((partKey) => slotItems(partKey).flatMap((item) => {
+      const itemAssets = layerAssets.filter((asset) => asset.slot === partKey && asset.itemId === item.id);
+      if (!itemAssets.length) return [];
+      const icon = state.assets.find((asset) => asset.kind === 'item-icon' && asset.slot === partKey && asset.itemId === item.id);
+      return [{
+        partKey,
+        itemKey: item.id,
+        label: item.label,
+        blobId: itemAssets[0].patchId,
+        iconBlobId: icon?.patchId || '',
+        gateKind: 0,
+      }];
     }));
     const makerRules = state.rules.filter((rule) => assetSlots.includes(rule.leftPartKey) && assetSlots.includes(rule.rightPartKey));
-    if (makerRules.length !== state.rules.length) {
-      throw new Error('Every rule must reference parts that have uploaded PNG items.');
-    }
+    if (makerRules.length !== state.rules.length) throw new Error('Every rule must reference a part with uploaded PNG items.');
 
-    state.publishStatus = 'Waiting for your Sui wallet signature…';
-    renderPublishAction();
     const transaction = await publishMaker({
       creator: {
         displayName: $('creatorName').value.trim(),
@@ -1448,11 +2002,11 @@ async function publishCurrentMaker() {
       maker: {
         name: $('creatorTemplateName').value.trim(),
         description: activeTemplate().summary,
-        coverUrl: '',
+        coverUrl: walrusFileUrl(state.assets[0]?.patchId),
         license: $('creatorLicense').value,
         royaltyBps: Number($('creatorRoyalty').value || 0),
       },
-      manifestBlobId: storedManifest.blobId,
+      manifestBlobId: state.makerManifestPatchId,
       parts: makerParts,
       items: makerItems,
       rules: makerRules,
@@ -1468,36 +2022,92 @@ async function publishCurrentMaker() {
   }
 }
 
-async function mintCurrentOc() {
-  if (state.minting) return;
+async function prepareOcUpload() {
   state.minting = true;
-  state.mintStatus = 'Rendering your OC…';
   state.mintDigest = '';
+  state.mintStatus = 'Rendering the OC and encoding one Walrus quilt…';
   renderMintAction();
-
   try {
     const oc = ocPackage();
     const image = await renderOcImageBlob();
-    state.mintStatus = 'Uploading OC image to Walrus…';
-    renderMintAction();
-    const storedImage = await uploadWalrusBlob(image);
-
-    state.mintStatus = 'Uploading OC profile and recipe to Walrus…';
-    renderMintAction();
     const profile = new Blob([JSON.stringify(oc)], { type: 'application/json' });
-    const storedProfile = await uploadWalrusBlob(profile);
-    const recipeBytes = new TextEncoder().encode(JSON.stringify(oc.recipe));
-    const recipeHash = new Uint8Array(await crypto.subtle.digest('SHA-256', recipeBytes));
-
-    state.mintStatus = 'Waiting for your Sui wallet signature…';
+    const recipeJson = JSON.stringify(oc.recipe);
+    const recipeBytes = new TextEncoder().encode(recipeJson);
+    state.pendingOcPackage = oc;
+    state.pendingOcRecipeJson = recipeJson;
+    state.pendingOcRecipeHash = new Uint8Array(await crypto.subtle.digest('SHA-256', recipeBytes));
+    state.ocUploadSession = await prepareWalrusUpload([
+      { blob: image, identifier: 'animacraft-oc.png', kind: 'oc-image' },
+      { blob: profile, identifier: 'animacraft-oc.json', kind: 'oc-profile' },
+    ]);
+    state.ocUploadStage = 'encoded';
+    state.mintStatus = 'OC quilt encoded. Register it on Walrus Mainnet.';
+  } catch (error) {
+    state.mintStatus = error.message || 'Could not prepare the OC quilt.';
+  } finally {
+    state.minting = false;
     renderMintAction();
+  }
+}
+
+async function registerOcUpload() {
+  state.minting = true;
+  state.mintStatus = 'Waiting for registration signature, then uploading the OC quilt…';
+  renderMintAction();
+  try {
+    await registerAndUploadWalrus(state.ocUploadSession);
+    state.ocUploadStage = 'uploaded';
+    state.mintStatus = 'OC quilt uploaded. Certify it with one more signature.';
+  } catch (error) {
+    state.ocUploadStage = state.ocUploadSession?.stage || state.ocUploadStage;
+    state.mintStatus = error.message || 'OC registration or upload failed.';
+  } finally {
+    state.minting = false;
+    renderMintAction();
+  }
+}
+
+async function certifyOcUpload() {
+  state.minting = true;
+  state.mintStatus = 'Waiting for Walrus certification signature…';
+  renderMintAction();
+  try {
+    await certifyWalrusUpload(state.ocUploadSession);
+    if (state.ocUploadSession.files.length !== 2) throw new Error('Walrus returned an unexpected OC quilt result.');
+    state.ocImagePatchId = state.ocUploadSession.files[0].id;
+    state.ocProfilePatchId = state.ocUploadSession.files[1].id;
+    state.ocUploadStage = 'certified';
+    state.mintStatus = 'OC files certified. Mint the OCCharacter object on Sui Mainnet.';
+  } catch (error) {
+    state.mintStatus = error.message || 'OC certification failed.';
+  } finally {
+    state.minting = false;
+    renderMintAction();
+  }
+}
+
+async function mintCurrentOc() {
+  if (state.minting || state.ocUploadStage !== 'certified') return;
+  state.minting = true;
+  state.mintStatus = 'Waiting for your Sui Mainnet mint signature…';
+  renderMintAction();
+  try {
+    const currentRecipeJson = JSON.stringify(ocPackage().recipe);
+    if (currentRecipeJson !== state.pendingOcRecipeJson) {
+      state.ocUploadSession = null;
+      state.ocUploadStage = 'idle';
+      state.ocImagePatchId = '';
+      state.ocProfilePatchId = '';
+      throw new Error('The OC changed after upload. Prepare a new mint quilt.');
+    }
+    const oc = state.pendingOcPackage;
     const transaction = await mintCharacter({
       makerId: activeMakerObjectId(),
       name: oc.profile.name,
-      profileBlobId: storedProfile.blobId,
-      imageBlobId: storedImage.blobId,
-      imageUrl: `${runtimeConfig.walrusAggregatorUrl.replace(/\/$/, '')}/v1/blobs/${storedImage.blobId}`,
-      recipeHash,
+      profileBlobId: state.ocProfilePatchId,
+      imageBlobId: state.ocImagePatchId,
+      imageUrl: walrusFileUrl(state.ocImagePatchId),
+      recipeHash: state.pendingOcRecipeHash,
       recipe: oc.recipe.map((slot) => ({
         partKey: slot.slot,
         itemKey: slot.part,
@@ -1524,6 +2134,54 @@ function restoreMakerDraft() {
     if (draft.visual) state.visual = draft.visual;
     if (Array.isArray(draft.rules)) state.rules = draft.rules;
     if (Array.isArray(draft.paletteLinks)) state.paletteLinks = draft.paletteLinks;
+    if (Array.isArray(draft.manifest?.parts)) {
+      state.layerOrder = [];
+      draft.manifest.parts.forEach((savedPart) => {
+        let slot = allSlots().find((candidate) => candidate.key === savedPart.key);
+        if (!slot) {
+          slot = {
+            key: savedPart.key,
+            label: savedPart.label,
+            icon: savedPart.label.slice(0, 2).toUpperCase(),
+            colorKey: 'accessory',
+            description: 'Restored creator Part',
+          };
+          state.customSlots.push(slot);
+        }
+        Object.assign(slot, {
+          label: savedPart.label,
+          kind: savedPart.kind,
+          menuVisible: savedPart.menuVisible,
+          allowRemove: savedPart.allowRemove,
+          defaultItemId: savedPart.defaultItemId,
+          x: savedPart.anchor?.x || 0,
+          y: savedPart.anchor?.y || 0,
+          rightX: savedPart.anchor?.rightX || 0,
+          layers: (savedPart.layers || []).map(({ id, name, x, y, opacity, blendMode }) => ({ id, name, x, y, opacity, blendMode })),
+          colors: savedPart.colors || [],
+          allowMoveX: savedPart.controls?.moveX,
+          allowMoveY: savedPart.controls?.moveY,
+          allowScale: savedPart.controls?.scale,
+          allowRotate: savedPart.controls?.rotate,
+          allowSpacing: savedPart.controls?.pairedSpacing,
+          spacingStep: savedPart.controls?.spacingStep || 0,
+          spacingSteps: savedPart.controls?.spacingSteps || 0,
+        });
+        if (!state.slotOrder.includes(slot.key)) state.slotOrder.push(slot.key);
+        parts[slot.key] = (savedPart.items || []).map((item) => ({
+          id: item.id,
+          label: item.label,
+          displayOrder: item.displayOrder,
+          visibility: item.visibility,
+          images: {},
+          iconAsset: null,
+        }));
+        savedPart.layers?.forEach((layer) => {
+          state.layerOrder[layer.renderOrder] = creatorLayerKey(slot.key, layer.id);
+        });
+      });
+      state.layerOrder = state.layerOrder.filter(Boolean);
+    }
     const template = draft.manifest?.template;
     if (template) {
       $('creatorTemplateName').value = template.name || $('creatorTemplateName').value;
@@ -1547,6 +2205,7 @@ function renderAll() {
   renderRecipe();
   renderAssets();
   renderChecklist();
+  renderCreatorValidation();
   renderRules();
   renderPaletteLinks();
   renderPackage();
@@ -1599,7 +2258,8 @@ $('backToMakerList').addEventListener('click', () => {
 document.querySelectorAll('[data-editor-panel-button]').forEach((button) => {
   button.addEventListener('click', () => {
     setEditorPanel(button.dataset.editorPanelButton);
-    document.querySelector('.maker-detail-main')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const target = button.hasAttribute('data-focus-composition') ? $('compositionOrder') : document.querySelector('.maker-detail-main');
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 });
 
@@ -1633,16 +2293,9 @@ $('partColor').addEventListener('input', (event) => {
   $(id).addEventListener('input', renderAll);
 });
 
-$('assetUpload').addEventListener('change', (event) => {
-  state.assets = [...event.target.files].map((file) => {
-    const fileSlug = slug(file.name);
-    const slot = allSlots().find((candidate) => fileSlug.startsWith(slug(candidate.key))) || activeSlot();
-    const partId = fileSlug.replace(new RegExp(`^${slug(slot.key)}[-_]*`), '') || 'normal';
-    return { name: file.name, size: file.size, type: file.type, slot: slot.key, partId, file, blobId: '' };
-  });
-  renderAll();
-});
-
+$('prepareMakerUpload')?.addEventListener('click', prepareMakerUpload);
+$('registerMakerUpload')?.addEventListener('click', registerMakerUpload);
+$('certifyMakerUpload')?.addEventListener('click', certifyMakerUpload);
 $('publishMakerOnchain')?.addEventListener('click', publishCurrentMaker);
 
 $('addSelectionRule')?.addEventListener('click', () => {
@@ -1682,7 +2335,7 @@ $('saveMakerDraft')?.addEventListener('click', () => {
     paletteLinks: state.paletteLinks,
   };
   localStorage.setItem('animacraft-maker-draft-v1', JSON.stringify(draft));
-  $('saveMakerDraft').textContent = 'Saved';
+  $('saveMakerDraft').textContent = 'Saved · reselect files after reload';
 });
 
 $('downloadManifest').addEventListener('click', () => {
@@ -1693,6 +2346,9 @@ $('downloadPackage').addEventListener('click', () => {
   download(`${slug($('profileName').value)}-oc-package.json`, JSON.stringify(ocPackage(), null, 2));
 });
 
+$('prepareOcUpload')?.addEventListener('click', prepareOcUpload);
+$('registerOcUpload')?.addEventListener('click', registerOcUpload);
+$('certifyOcUpload')?.addEventListener('click', certifyOcUpload);
 $('mintOcOnchain')?.addEventListener('click', mintCurrentOc);
 
 $('downloadRecipe').addEventListener('click', () => {
@@ -1774,6 +2430,9 @@ $('registerPart').addEventListener('click', () => {
   const itemLabel = $('newPartItemName').value.trim() || 'Normal';
   const layerName = $('newPartLayerName').value.trim() || 'Normal';
   const menuVisible = $('newPartMenuVisible').value === 'visible';
+  const initialLayers = kind === 'left-right-pair'
+    ? [{ id: 'left', name: 'Left', x: 0, y: 0, opacity: 100, blendMode: 'normal' }, { id: 'right', name: 'Right', x: 0, y: 0, opacity: 100, blendMode: 'normal' }]
+    : [{ id: 'normal', name: layerName, x: 0, y: 0, opacity: 100, blendMode: 'normal' }];
   state.customSlots.push({
     key,
     label,
@@ -1785,14 +2444,18 @@ $('registerPart').addEventListener('click', () => {
     menuVisible,
     x: 0,
     y: 0,
+    layers: initialLayers,
+    colors: [{ id: 'default', name: 'Default', value: '#f0a23a' }],
   });
   state.slotOrder.push(key);
-  parts[key] = [{ id: 'normal', label: itemLabel }];
+  state.layerOrder.push(...initialLayers.map((layer) => creatorLayerKey(key, layer.id)));
+  parts[key] = [{ id: 'normal', label: itemLabel, displayOrder: 1, visibility: 'public', images: {}, iconAsset: null }];
   state.visual[key] = 'normal';
   state.selectedSlot = key;
-  state.selectedLayer = key;
+  state.selectedLayer = creatorLayerKey(key, initialLayers[0].id);
   state.selectedItem = 'normal';
   state.partSubView = 'items';
+  invalidateMakerUpload();
   closePartModal();
   setEditorPanel('parts');
   renderAll();

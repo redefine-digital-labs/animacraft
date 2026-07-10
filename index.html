@@ -127,6 +127,9 @@
           <div class="maker-actions">
             <button id="downloadRecipe" class="secondary">Recipe JSON</button>
             <button id="downloadPackage" class="primary">Save OC Package</button>
+            <button id="prepareOcUpload" class="secondary" type="button">Prepare mint</button>
+            <button id="registerOcUpload" class="secondary" type="button">Register & upload</button>
+            <button id="certifyOcUpload" class="secondary" type="button">Certify</button>
             <button id="mintOcOnchain" class="primary" type="button">Mint OC</button>
             <small id="mintOcStatus" class="maker-action-status"></small>
           </div>
@@ -314,8 +317,7 @@
                 </div>
                 <nav>
                   <button class="active" data-editor-panel-button="top">Maker Top</button>
-                  <button data-editor-panel-button="layers">Layer Editor</button>
-                  <button data-editor-panel-button="parts">Parts</button>
+                  <button data-editor-panel-button="parts">Character Maker</button>
                   <button data-editor-panel-button="rules">Rules</button>
                   <button data-editor-panel-button="palette">Palette Rules</button>
                   <button data-editor-panel-button="preview">Preview Check</button>
@@ -357,7 +359,7 @@
                           <p class="kicker">Layer</p>
                           <h2>Generated layer order</h2>
                         </div>
-                        <button class="secondary" data-editor-panel-button="layers">Sort</button>
+                        <button class="secondary" data-editor-panel-button="parts" data-focus-composition>Arrange</button>
                       </div>
                       <p class="editor-note">Layers are generated from registered parts. Sorting changes the visual stack, while Part Settings controls menu behavior and item structure.</p>
                       <div id="makerTopLayerList" class="maker-top-list compact"></div>
@@ -365,92 +367,46 @@
                   </div>
                 </section>
 
-                <section id="maker-detail-top" class="layer-editor-core editor-panel" data-editor-panel="layers">
-                  <div class="editor-canvas-card">
-                    <p class="kicker">Layer Editor</p>
-                    <h2 id="layerMakerTitle">Starlit Daily OC</h2>
-                    <div class="maker-tags">
-                      <span>Private</span>
-                      <span>1:1</span>
-                      <span>Free combine</span>
-                    </div>
-                    <p>Build the template from layered assets, then bind the maker to license rules and on-chain provenance.</p>
-                    <div class="editor-canvas-stage" aria-label="Layered OC preview">
-                      <span class="editor-layer-bg"></span>
-                      <span class="editor-layer-body"></span>
-                      <span class="editor-layer-hair"></span>
-                      <span class="editor-layer-eyes"></span>
-                      <span class="editor-layer-accessory"></span>
-                      <span class="editor-layer-caption">Preview canvas</span>
-                    </div>
-                  </div>
-
-                  <div class="editor-inspector-card">
-                    <div class="section-row">
-                      <div>
-                        <p class="kicker">Layer Stack</p>
-                        <h2>Composition order</h2>
-                      </div>
-                      <span class="template-token"><span id="layerCount">0</span> layers</span>
-                    </div>
-                    <div id="creatorLayerList" class="creator-layer-list editor-layer-stack"></div>
-                    <p class="editor-note">Each layer keeps ordering, anchor position, menu visibility, and an asset reference that can be published to Walrus and registered on Sui.</p>
-                    <div id="layerDetailsPanel" class="layer-details-panel"></div>
-                  </div>
-                </section>
-
                 <div class="creator-function-grid editor-panel" data-editor-panel="parts">
-                  <section id="maker-parts" class="function-card primary-function">
-                    <div class="section-row">
-                      <h2>Parts</h2>
-                      <button class="primary" data-open-part-modal>+ Add</button>
-                    </div>
-                    <p id="partWorkspaceIntro">Parts are the creator-facing asset groups users choose from when making an OC. Each part can contain multiple PNG items, linked colors, rules, and license metadata.</p>
-                    <div id="creatorPartsList" class="creator-parts-list"></div>
-                    <div id="partWorkspace" class="part-workspace"></div>
-                    <div class="part-type-cards">
-                      <div class="part-type-card">
-                        <strong>Standard parts</strong>
-                        <span>Normal selectable asset groups. Use this for hair, eyes, outfits, mouths, accessories, and backgrounds.</span>
+                  <section id="maker-parts" class="character-maker-panel">
+                    <header class="character-maker-head">
+                      <div>
+                        <p class="kicker">Character Maker</p>
+                        <h2 id="layerMakerTitle">Starlit Daily OC</h2>
                       </div>
-                      <div class="part-type-card">
-                        <strong>Left-right paired parts</strong>
-                        <span>Mirrored or paired assets such as earrings, eyes, wings, or sleeves. Distance and offset can be adjusted together.</span>
+                      <div class="maker-tags"><span>Private</span><span>1:1</span><span>Free combine</span></div>
+                    </header>
+                    <div class="character-maker-workspace">
+                      <aside class="character-part-browser">
+                        <div class="section-row"><strong>Parts</strong><button class="primary" data-open-part-modal>+ Add</button></div>
+                        <div id="creatorPartsList" class="creator-parts-list"></div>
+                      </aside>
+                      <section class="character-canvas-panel">
+                        <div class="canvas-toolbar"><strong>Live preview</strong><span id="canvasAssetCount">0 images</span></div>
+                        <div class="editor-canvas-stage" aria-label="Layered OC preview">
+                          <div id="creatorCanvasAssets" class="creator-canvas-assets"></div>
+                          <div id="creatorCanvasEmpty" class="creator-canvas-empty">
+                            <strong>No item images yet</strong>
+                            <span>Select an item and upload its PNG layer images.</span>
+                          </div>
+                          <span class="editor-layer-caption">1024 × 1024</span>
+                        </div>
+                      </section>
+                      <aside class="character-part-inspector">
+                        <div id="partWorkspace" class="part-workspace"></div>
+                      </aside>
+                    </div>
+                    <section id="compositionOrder" class="composition-drawer">
+                      <div class="section-row">
+                        <div><p class="kicker">Composition Order</p><h3>Global layer stack</h3></div>
+                        <span class="template-token"><span id="layerCount">0</span> layers</span>
                       </div>
-                      <div class="part-type-card">
-                        <strong>Last bastion parts</strong>
-                        <span>Fallback items that remain selectable when rules would otherwise hide every option in a group.</span>
+                      <div class="composition-grid">
+                        <div id="creatorLayerList" class="creator-layer-list editor-layer-stack"></div>
+                        <div id="layerDetailsPanel" class="layer-details-panel"></div>
                       </div>
-                    </div>
-                    <label class="add-parts-wide">
-                      Upload PNG layers
-                      <input id="assetUpload" type="file" accept="image/png" multiple />
-                    </label>
+                    </section>
                   </section>
-                  <section class="function-card">
-                    <p class="kicker">Part Settings</p>
-                    <h2>Controls per part</h2>
-                    <div class="control-list">
-                      <span>Part name and internal creator label</span>
-                      <span>Type lock: standard, left-right pair, or last bastion cannot be changed after creation</span>
-                      <span>Part icon for the user menu, or hidden menu mode for fixed background parts</span>
-                      <span>Canvas anchor: upper-left X/Y, plus right-layer X for paired parts</span>
-                      <span>Remove button and default item state</span>
-                      <span>Allowed controls: move X/Y, scale, rotate, paired spacing</span>
-                    </div>
-                  </section>
-                  <section class="function-card">
-                    <p class="kicker">Item Settings</p>
-                    <h2>Items inside a part</h2>
-                    <div class="control-list">
-                      <span>No.1 item is the required base item and cannot be deleted or made private</span>
-                      <span>Item number supports bulk upload and can differ from display order</span>
-                      <span>Public/private status decides whether the item appears to makers</span>
-                      <span>Each item can have PNG layer files and a separate selection icon</span>
-                      <span>Display order controls the user-facing item picker</span>
-                    </div>
-                  </section>
-
                 </div>
 
                 <div class="creator-function-grid editor-panel" data-editor-panel="rules">
@@ -537,12 +493,7 @@
                   <section id="maker-preview-check" class="function-card validation-card primary-function">
                     <p class="kicker">Preview Validation</p>
                     <h2>Publish readiness</h2>
-                    <ul class="validation-list">
-                      <li class="ok">Standard or left-right paired parts are registered.</li>
-                      <li class="ok">At least one part is visible in the user menu.</li>
-                      <li class="warn">One or more item images still need final PNG files before release.</li>
-                      <li class="warn">Rules should be tested against clipping and empty-state combinations.</li>
-                    </ul>
+                    <ul id="creatorValidationList" class="validation-list"></ul>
                   </section>
                   <section class="function-card">
                     <p class="kicker">User Flow</p>
@@ -580,7 +531,12 @@
                         <strong>Publish this maker</strong>
                         <span id="makerPublishStatus">Upload at least one PNG layer, connect a wallet, and configure the Move package.</span>
                       </div>
-                      <button id="publishMakerOnchain" class="primary" type="button">Upload & publish</button>
+                      <div class="production-button-row">
+                        <button id="prepareMakerUpload" class="secondary" type="button">1. Prepare</button>
+                        <button id="registerMakerUpload" class="secondary" type="button">2. Register & upload</button>
+                        <button id="certifyMakerUpload" class="secondary" type="button">3. Certify</button>
+                        <button id="publishMakerOnchain" class="primary" type="button">4. Publish maker</button>
+                      </div>
                     </div>
                   </section>
                   <section class="function-card">
@@ -595,28 +551,6 @@
                       <div><strong>Public</strong><span>Listed in plaza/search and available for OC creation.</span></div>
                       <div><strong>Unlisted</strong><span>Accessible only by URL or allowlist; link can be rotated.</span></div>
                       <div><strong>Private</strong><span>Creator-only draft, unavailable to other users.</span></div>
-                    </div>
-                  </section>
-                </div>
-
-                <div class="creator-function-grid editor-panel" data-editor-panel="layers">
-                  <section class="function-card">
-                    <p class="kicker">Layer Controls</p>
-                    <h2>Canvas behavior</h2>
-                    <div class="control-list">
-                      <span>Canvas: 1:1 / 9:16</span>
-                      <span>Menu visibility: ON / OFF</span>
-                      <span>Anchor: X, Y, scale, rotate</span>
-                      <span>Auto-mix: allow / lock</span>
-                    </div>
-                  </section>
-                  <section class="function-card">
-                    <p class="kicker">Layer Rules</p>
-                    <h2>Type-based constraints</h2>
-                    <div class="asset-status-list">
-                      <div><strong>Standard parts</strong><span>Can contain one or more layers, sortable by composition order.</span></div>
-                      <div><strong>Left-right paired parts</strong><span>Automatically use left and right layers; creator sets right-side X and spacing movement.</span></div>
-                      <div><strong>Last bastion parts</strong><span>Used as rule fallbacks; layers cannot be freely added like standard parts.</span></div>
                     </div>
                   </section>
                 </div>
@@ -859,10 +793,35 @@
           </div>
           <div class="chain-action-list" data-chain-action-list></div>
         </section>
+        <section class="docs-guide">
+          <div class="docs-guide-head">
+            <div><p class="kicker">Creator Guide</p><h2>Build one Character Maker</h2></div>
+            <span class="template-token">Part → Item → Image</span>
+          </div>
+          <div class="docs-workflow">
+            <article><span>01</span><strong>Maker Top</strong><p>Create the maker shell and review parts, layer count, draft status, and release readiness.</p></article>
+            <article><span>02</span><strong>Character Maker</strong><p>Add a Part, choose its fixed type, then define Layers, Colors, Items, icons, and each PNG image cell.</p></article>
+            <article><span>03</span><strong>Composition Order</strong><p>Arrange layers across Parts while the selected Item images remain visible on the same live canvas.</p></article>
+            <article><span>04</span><strong>Rules & Palette</strong><p>Prevent incompatible choices and link color controls across related Parts.</p></article>
+            <article><span>05</span><strong>Preview Check</strong><p>Use the maker as a player, verify defaults and removals, and confirm every public Item has its required images.</p></article>
+            <article><span>06</span><strong>On-chain Publish</strong><p>Prepare one Walrus quilt, register and upload it, certify file availability, then publish the OCMaker on Sui.</p></article>
+          </div>
+        </section>
+        <section class="docs-model">
+          <div><p class="kicker">Maker Data Model</p><h2>Where each setting belongs</h2></div>
+          <div class="docs-model-grid">
+            <article><strong>Part</strong><span>Name, immutable type, menu icon, canvas anchor, remove/default behavior, controls, and license gate.</span></article>
+            <article><strong>Layer</strong><span>Owned by one Part. Stores name, global composition position, offset, opacity, and blend mode.</span></article>
+            <article><strong>Color</strong><span>Owned by one Part. Expands the image matrix and may link to colors in other Parts.</span></article>
+            <article><strong>Item</strong><span>One user-selectable option inside a Part, with display order, visibility, picker icon, and item rules.</span></article>
+            <article><strong>Item image</strong><span>One PNG for a specific Item × Layer × Color cell. These files become Walrus quilt patches.</span></article>
+            <article><strong>OCMaker</strong><span>The Sui object binds creator, manifest, selection rules, license policy, and the published item index.</span></article>
+          </div>
+        </section>
         <div id="protocolSteps" class="protocol-grid"></div>
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=animacraft-32"></script>
+    <script type="module" src="./app.js?v=animacraft-35"></script>
   </body>
 </html>

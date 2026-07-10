@@ -7,7 +7,7 @@ Animacraft must stay focused on OC creation. Integrations are optional adapters.
 Input:
 
 - `animacraft.oc.v1`
-- `animacraft.creator-template.v1`
+- `animacraft.creator-template.v2`
 
 Responsibilities:
 

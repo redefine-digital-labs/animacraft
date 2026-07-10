@@ -172,15 +172,14 @@ Blocking checks should include:
 
 ## Animacraft Product Implications
 
-Animacraft should be organized as editor subpages rather than one long page:
+Animacraft should center creation on one persistent Character Maker workspace, with supporting task views around it:
 
 - Maker Top
-- Layer Editor
-- Parts
+- Character Maker: Part list, Item selection, Part-owned Layers and Colors, item image uploads, live canvas, and global composition order
 - Rules
 - Palette Rules
 - Preview Check
 - On-chain Publish
 - Settings
 
-The creator experience should stay in Animacraft's own bright, lightweight OC-tool language. Picrew is a workflow reference, not a visual system to copy.
+Layer editing is not a parallel content area: every Layer belongs to a Part. Only cross-Part composition order is global. The creator experience should stay in Animacraft's own bright, lightweight OC-tool language. Picrew is a workflow reference, not a visual system to copy.

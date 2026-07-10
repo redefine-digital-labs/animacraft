@@ -3,6 +3,7 @@ import { createDAppKit } from '@mysten/dapp-kit-core';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction } from '@mysten/sui/transactions';
 import { bcs } from '@mysten/sui/bcs';
+import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
 
 const CLOCK_OBJECT_ID = '0x6';
 
@@ -10,6 +11,8 @@ let dAppKit;
 let runtimeConfig;
 let walletModal;
 let connectionUnsubscribe;
+let walrusClient;
+let WalrusFileClass;
 
 const recipeSlotBcs = bcs.struct('RecipeSlot', {
   part_key: bcs.string(),
@@ -106,31 +109,88 @@ export async function openWalletSelector() {
   await walletModal.show();
 }
 
-export async function uploadWalrusBlob(blob, options = {}) {
-  if (!runtimeConfig?.walrusPublisherUrl) throw new Error('Walrus publisher is not configured.');
-  if (runtimeConfig.network === 'mainnet') {
-    throw new Error('Mainnet browser uploads require a wallet-paid Walrus upload relay. The public publisher is Testnet-only.');
+export async function prepareWalrusUpload(entries) {
+  const connection = requireConnection();
+  if (!runtimeConfig?.walrusUploadRelayUrl) throw new Error('Configure the Walrus Mainnet upload relay first.');
+  if (!walrusClient) {
+    const { WalrusFile, walrus } = await import('@mysten/walrus');
+    WalrusFileClass = WalrusFile;
+    walrusClient = new SuiGrpcClient({
+      network: runtimeConfig.network,
+      baseUrl: runtimeConfig.rpcUrl,
+    }).$extend(walrus({
+      wasmUrl: walrusWasmUrl,
+      uploadRelay: {
+        host: runtimeConfig.walrusUploadRelayUrl,
+        sendTip: { max: Number(runtimeConfig.walrusRelayMaxTipMist || 1_000_000) },
+      },
+    }));
   }
+  if (!Array.isArray(entries) || entries.length === 0) throw new Error('Choose at least one file to store on Walrus.');
 
-  const epochs = Math.max(1, Number(options.epochs || runtimeConfig.walrusEpochs || 3));
-  const endpoint = `${runtimeConfig.walrusPublisherUrl.replace(/\/$/, '')}/v1/blobs?epochs=${epochs}`;
-  const response = await fetch(endpoint, {
-    method: 'PUT',
-    headers: { 'content-type': blob.type || 'application/octet-stream' },
-    body: blob,
-  });
-  if (!response.ok) throw new Error(`Walrus upload failed (${response.status}).`);
-
-  const payload = await response.json();
-  const created = payload.newlyCreated?.blobObject;
-  const certified = payload.alreadyCertified;
-  const blobId = created?.blobId || certified?.blobId || payload.blobId;
-  if (!blobId) throw new Error('Walrus upload succeeded but returned no blob id.');
+  const files = await Promise.all(entries.map(async (entry) => WalrusFileClass.from({
+    contents: new Uint8Array(await entry.blob.arrayBuffer()),
+    identifier: entry.identifier,
+    tags: {
+      'content-type': entry.blob.type || 'application/octet-stream',
+      'animacraft-kind': entry.kind || 'asset',
+    },
+  })));
+  const flow = walrusClient.walrus.writeFilesFlow({ files });
+  const encoded = await flow.encode();
   return {
-    blobId,
-    suiObjectId: created?.id || certified?.event?.blobObject?.id || '',
-    endEpoch: created?.storage?.endEpoch || certified?.endEpoch || null,
+    flow,
+    entries,
+    encoded,
+    owner: connection.account.address,
+    stage: 'encoded',
+    registerDigest: '',
+    certifyDigest: '',
+    uploaded: null,
+    files: [],
   };
+}
+
+export async function registerAndUploadWalrus(session) {
+  const connection = requireConnection();
+  if (!session?.flow || !['encoded', 'registered'].includes(session.stage)) {
+    throw new Error('Prepare the Walrus quilt before registering it.');
+  }
+  if (session.owner !== connection.account.address) {
+    throw new Error('Reconnect the wallet that prepared this Walrus upload.');
+  }
+  if (session.stage === 'encoded') {
+    const registerTx = session.flow.register({
+      epochs: Math.max(1, Number(runtimeConfig.walrusEpochs || 2)),
+      owner: connection.account.address,
+      deletable: false,
+    });
+    const registered = unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: registerTx }));
+    session.registerDigest = registered.digest;
+    session.stage = 'registered';
+  }
+  session.uploaded = await session.flow.upload({ digest: session.registerDigest });
+  session.stage = 'uploaded';
+  return session;
+}
+
+export async function certifyWalrusUpload(session) {
+  const connection = requireConnection();
+  if (!session?.flow || session.stage !== 'uploaded') throw new Error('Register and upload the Walrus quilt before certification.');
+  if (session.owner !== connection.account.address) {
+    throw new Error('Reconnect the wallet that prepared this Walrus upload.');
+  }
+  const certifyTx = session.flow.certify();
+  const certified = unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: certifyTx }));
+  session.certifyDigest = certified.digest;
+  session.files = await session.flow.listFiles();
+  session.stage = 'certified';
+  return session;
+}
+
+export function walrusFileUrl(quiltPatchId) {
+  if (!quiltPatchId) return '';
+  return `${runtimeConfig.walrusAggregatorUrl.replace(/\/$/, '')}/v1/blobs/by-quilt-patch-id/${quiltPatchId}`;
 }
 
 export async function publishMaker({ creator, maker, manifestBlobId, parts, items, rules = [] }) {
@@ -246,5 +306,5 @@ export async function mintCharacter({ makerId, name, profileBlobId, imageBlobId,
 }
 
 export function explorerTransactionUrl(digest) {
-  return `https://suivision.xyz/txblock/${digest}?network=${runtimeConfig?.network || 'testnet'}`;
+  return `https://suivision.xyz/txblock/${digest}?network=${runtimeConfig?.network || 'mainnet'}`;
 }

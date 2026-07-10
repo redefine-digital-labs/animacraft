@@ -1,6 +1,6 @@
 {
   "name": "animacraft",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "The Fully onchain Character Maker & Creator",
@@ -14,7 +14,9 @@
   },
   "dependencies": {
     "@mysten/dapp-kit-core": "1.6.4",
-    "@mysten/sui": "2.20.2"
+    "@mysten/sui": "2.20.2",
+    "@mysten/walrus": "1.2.4",
+    "@mysten/walrus-wasm": "0.3.0"
   },
   "devDependencies": {
     "vite": "8.1.4"

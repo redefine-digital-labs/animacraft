@@ -46,9 +46,13 @@ Animacraft is designed to run without a mandatory backend:
 - Walrus stores PNG layers, icons, manifests, rendered OC images, and profile JSON.
 - Wallets sign creator publishing and user minting transactions.
 - The frontend uses Mysten's current framework-agnostic dApp Kit and gRPC client.
+- Mainnet Walrus writes use the official TypeScript SDK and wallet-paid upload relay; assets are bundled as quilts and referenced by QuiltPatchID.
+
+The checked-in runtime defaults to Sui and Walrus Mainnet. It remains intentionally disabled for publishing until `packageId` is replaced with the real published Move package id.
 
 See:
 
+- `CREATOR_GUIDE.md`
 - `DEPLOYMENT.md`
 - `PRODUCTION_ROADMAP.md`
 - `move/animacraft/README.md`
@@ -58,7 +62,7 @@ See:
 Studio exports:
 
 - `animacraft.oc-package.v1` OC Package
-- `animacraft.creator-template.v1` Creator Template Manifest
+- `animacraft.creator-template.v2` Creator Template Manifest (`Part → Layers + Colors + Items → Item Images`)
 - Recipe JSON
 - OC markdown
 
