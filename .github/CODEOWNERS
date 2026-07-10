@@ -1,0 +1,11 @@
+# Default maintainers for all repository changes.
+* @soul893
+
+# Protocol changes should always be reviewed by a maintainer.
+/move/animacraft/ @soul893
+
+# Product and creator-facing docs should always be reviewed.
+/PRODUCT.md @soul893
+/CREATOR_ONBOARDING.md @soul893
+/NEKA_STYLE_ONCHAIN_PRD.md @soul893
+/NEKA_STYLE_ONCHAIN_PRD.zh-CN.md @soul893

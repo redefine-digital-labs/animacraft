@@ -1,0 +1,40 @@
+name: Repository hygiene
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify required files
+        run: |
+          test -f README.md
+          test -f CONTRIBUTING.md
+          test -f index.html
+          test -f app.js
+          test -f styles.css
+          test -f move/animacraft/Move.toml
+          test -f move/animacraft/sources/animacraft.move
+
+      - name: Prevent generated build artifacts
+        run: |
+          if git ls-files | grep -E '(^|/)build/'; then
+            echo "Generated build artifacts must not be committed."
+            exit 1
+          fi
+
+      - name: Check for obvious secret names
+        run: |
+          if git grep -nE '(PRIVATE_KEY|SECRET_KEY|ACCESS_TOKEN|GITHUB_TOKEN|MNEMONIC=)' -- . ':!.github/workflows/repository-hygiene.yml'; then
+            echo "Potential secret-like text found. Please remove or document why it is safe."
+            exit 1
+          fi
