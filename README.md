@@ -20,7 +20,7 @@ Why not "Soulidity Studio":
 
 ## Current App
 
-This folder contains a dependency-free static app:
+This folder contains a Vite-built, backendless web app:
 
 - `index.html`
 - `styles.css`
@@ -28,7 +28,14 @@ This folder contains a dependency-free static app:
 - `PRODUCT.md`
 - `move/animacraft`
 
-Open `index.html` directly in a browser, or serve the folder with any static server.
+Run it locally with:
+
+```bash
+npm install
+npm run dev
+```
+
+Create the Vercel output with `npm run build`. The production files are written to `dist/`.
 
 ## Production Direction
 
@@ -38,6 +45,7 @@ Animacraft is designed to run without a mandatory backend:
 - Sui stores creator profiles, OC maker templates, license policy snapshots, and finished OC objects.
 - Walrus stores PNG layers, icons, manifests, rendered OC images, and profile JSON.
 - Wallets sign creator publishing and user minting transactions.
+- The frontend uses Mysten's current framework-agnostic dApp Kit and gRPC client.
 
 See:
 
@@ -49,7 +57,7 @@ See:
 
 Studio exports:
 
-- `animacraft.oc.v1` OC Package
+- `animacraft.oc-package.v1` OC Package
 - `animacraft.creator-template.v1` Creator Template Manifest
 - Recipe JSON
 - OC markdown

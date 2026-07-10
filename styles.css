@@ -750,6 +750,24 @@ textarea:focus {
   gap: 8px;
 }
 
+.maker-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.maker-action-status {
+  flex: 1 0 100%;
+  max-width: 520px;
+  color: var(--muted);
+  line-height: 1.4;
+  text-align: right;
+}
+
+.maker-action-status a {
+  color: var(--teal-dark);
+  font-weight: 800;
+}
+
 .badge-row {
   flex-wrap: wrap;
   margin-bottom: 12px;
@@ -2616,6 +2634,52 @@ input[type="color"] {
   overflow-wrap: anywhere;
 }
 
+.production-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8faf9;
+}
+
+.production-action > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.production-action span {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.production-action a {
+  color: var(--teal-dark);
+  font-weight: 800;
+}
+
+.production-action.busy {
+  border-color: var(--teal);
+}
+
+.production-action.success {
+  border-color: #2d9d78;
+  background: #effbf6;
+}
+
+.production-action button {
+  flex: 0 0 auto;
+}
+
+.production-action button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .part-type-card,
 .rule-card,
 .asset-status-list div,
@@ -2659,6 +2723,85 @@ input[type="color"] {
   background: #fff6f9;
   color: #6f5660;
   font-size: 13px;
+}
+
+.rule-builder {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfb;
+}
+
+.rule-builder label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.rule-builder > span {
+  padding-bottom: 12px;
+  color: var(--muted);
+  font-weight: 800;
+  text-align: center;
+}
+
+.rule-builder select {
+  width: 100%;
+}
+
+.palette-link-builder {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.palette-link-builder label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.palette-link-builder select {
+  width: 100%;
+}
+
+.selection-rule-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.selection-rule-list > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #dce4e2;
+  border-radius: 8px;
+}
+
+.selection-rule-list b,
+.selection-rule-list p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.selection-rule-list button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  font-size: 20px;
 }
 
 .rule-example span {
@@ -3083,6 +3226,39 @@ pre {
 }
 
 @media (max-width: 760px) {
+  .rule-builder,
+  .palette-link-builder,
+  .selection-rule-list > div {
+    grid-template-columns: 1fr;
+  }
+
+  .rule-builder > span {
+    padding: 0;
+    text-align: left;
+  }
+
+  .maker-actions {
+    justify-content: stretch;
+  }
+
+  .maker-actions button {
+    flex: 1 1 100%;
+  }
+
+  .maker-action-status {
+    max-width: none;
+    text-align: left;
+  }
+
+  .production-action {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .production-action button {
+    width: 100%;
+  }
+
   .topbar,
   .page-head,
   .maker-topline,

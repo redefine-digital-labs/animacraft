@@ -1,0 +1,25 @@
+{
+  "name": "animacraft",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "The Fully onchain Character Maker & Creator",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "check": "node --check app.js && node --check chain-runtime.js && npm run build",
+    "move:build": "cd move/animacraft && sui move build",
+    "move:test": "cd move/animacraft && sui move test"
+  },
+  "dependencies": {
+    "@mysten/dapp-kit-core": "1.6.4",
+    "@mysten/sui": "2.20.2"
+  },
+  "devDependencies": {
+    "vite": "8.1.4"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}
