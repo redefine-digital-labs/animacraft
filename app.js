@@ -1,3 +1,12 @@
+import {
+  explorerTransactionUrl,
+  initializeChain,
+  mintCharacter,
+  openWalletSelector,
+  publishMaker,
+  uploadWalrusBlob,
+} from './chain-runtime.js';
+
 const slots = [
   { key: 'background', label: 'Background', icon: 'BG', colorKey: 'background', description: 'Scene, mood, and backdrop' },
   { key: 'hairBack', label: 'Back Hair', icon: 'HB', colorKey: 'hair', description: 'Rear silhouette and outer hair shape' },
@@ -108,6 +117,46 @@ const templates = [
 ];
 
 const swatches = ['#7b5cff', '#2db7a3', '#f06f8f', '#f0a23a', '#335c81', '#7d5a50', '#24202b', '#f1c9b1'];
+
+const defaultConfig = {
+  network: 'testnet',
+  rpcUrl: 'https://fullnode.testnet.sui.io:443',
+  packageId: '0xTODO_ANIMACRAFT_PACKAGE',
+  walrusPublisherUrl: 'https://publisher.walrus-testnet.walrus.space',
+  walrusAggregatorUrl: 'https://aggregator.walrus-testnet.walrus.space',
+  walrusUploadRelayUrl: 'https://upload-relay.testnet.walrus.space',
+  walrusEpochs: 3,
+  featuredMakers: {},
+  appUrl: location.origin,
+};
+
+const runtimeConfig = {
+  ...defaultConfig,
+  ...(window.ANIMACRAFT_CONFIG || {}),
+};
+
+const chainActions = [
+  {
+    key: 'wallet',
+    title: 'Wallet',
+    body: 'Connect a Sui wallet. All creator and player writes are signed by the user.',
+  },
+  {
+    key: 'walrus',
+    title: 'Walrus assets',
+    body: 'Stage PNG layers, icons, cover sheets, manifests, rendered OCs, and profile JSON as blobs.',
+  },
+  {
+    key: 'maker',
+    title: 'OCMaker object',
+    body: 'Register creator profile, maker metadata, parts, item gates, and license policy on Sui.',
+  },
+  {
+    key: 'oc',
+    title: 'OCCharacter mint',
+    body: 'Mint finished OCs with recipe hash, image blob, profile blob, and license snapshot.',
+  },
+];
 
 const i18n = {
   en: {
@@ -306,8 +355,20 @@ const state = {
     },
   },
   assets: [],
+  rules: [],
+  paletteLinks: [{ primaryPartKey: 'hairBack', linkedPartKey: 'hairFront' }],
   customSlots: [],
   walletConnected: false,
+  walletAddress: '',
+  walletProvider: null,
+  walletStatus: 'disconnected',
+  chainMode: runtimeConfig.packageId.includes('TODO') ? 'draft' : 'live',
+  publishing: false,
+  publishStatus: '',
+  publishDigest: '',
+  minting: false,
+  mintStatus: '',
+  mintDigest: '',
   locale: localStorage.getItem('animacraft-locale') || 'en',
 };
 
@@ -345,6 +406,10 @@ function renderI18n() {
 
 function activeTemplate() {
   return templates.find((template) => template.id === state.templateId) || templates[0];
+}
+
+function activeMakerObjectId() {
+  return runtimeConfig.featuredMakers?.[activeTemplate().id] || '';
 }
 
 function activeSlot() {
@@ -385,6 +450,34 @@ function download(name, content, type = 'application/json') {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function shortAddress(address) {
+  if (!address) return '';
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+async function connectSuiWallet() {
+  try {
+    await openWalletSelector();
+  } catch (error) {
+    state.publishStatus = error.message || 'Wallet connection failed.';
+    renderPublishAction();
+  }
+}
+
+function chainStatusItems() {
+  const walletReady = state.walletConnected;
+  const packageReady = !runtimeConfig.packageId.includes('TODO');
+  const walrusReady = runtimeConfig.network === 'mainnet'
+    ? Boolean(runtimeConfig.walrusUploadRelayUrl && runtimeConfig.walrusAggregatorUrl)
+    : Boolean(runtimeConfig.walrusPublisherUrl && runtimeConfig.walrusAggregatorUrl);
+  return [
+    ['Network', runtimeConfig.network, 'Sui network used by wallet transactions.', 'ready'],
+    ['Wallet', walletReady ? shortAddress(state.walletAddress) || 'Connected' : 'Not connected', walletReady ? 'Ready to sign creator and OC transactions.' : 'Connect before publishing or minting.', walletReady ? 'ready' : 'wait'],
+    ['Package', packageReady ? shortAddress(runtimeConfig.packageId) : 'Draft package id', packageReady ? 'Move package can be called from PTBs.' : 'Publish Move package, then set packageId in config.js.', packageReady ? 'ready' : 'wait'],
+    ['Walrus', walrusReady ? `${runtimeConfig.network} upload configured` : 'Missing endpoint', 'Assets are uploaded before their blob ids are committed to the maker transaction.', walrusReady ? 'ready' : 'wait'],
+  ];
 }
 
 function filteredTemplates() {
@@ -611,6 +704,13 @@ function creatorManifest() {
       chain: 'sui',
       canvas: { width: 1024, height: 1024, anchorX: 512, anchorY: 512 },
     },
+    runtime: {
+      network: runtimeConfig.network,
+      packageId: runtimeConfig.packageId,
+      walrusPublisherUrl: runtimeConfig.walrusPublisherUrl,
+      walrusAggregatorUrl: runtimeConfig.walrusAggregatorUrl,
+      appUrl: runtimeConfig.appUrl,
+    },
     slots: allSlots().map((slot, index) => ({
       key: slot.key,
       label: slot.label,
@@ -622,7 +722,16 @@ function creatorManifest() {
         file: `${slot.key}_${part.id}.png`,
       })),
     })),
-    assets: state.assets,
+    rules: state.rules,
+    paletteLinks: state.paletteLinks,
+    assets: state.assets.map(({ name, size, type, slot, partId, blobId = '' }) => ({
+      name,
+      size,
+      type,
+      slot,
+      partId,
+      blobId,
+    })),
   };
 }
 
@@ -650,10 +759,13 @@ function ocPackage() {
       renderOrder: index,
     })),
     onchainIntent: {
+      network: runtimeConfig.network,
+      packageId: runtimeConfig.packageId,
       materialStorage: 'Walrus blob ids',
-      templateObject: 'Sui template object',
-      ocObject: 'Soulidity OC object',
+      templateObject: 'Animacraft OCMaker object',
+      ocObject: 'Animacraft OCCharacter object',
       settlement: 'creator royalty and license split',
+      walletSigner: state.walletAddress || 'not-connected',
     },
   };
 }
@@ -665,7 +777,7 @@ function renderAssets() {
   assetQueue.innerHTML = state.assets.length ? state.assets.map((asset) => `
     <div>
       <strong>${asset.name}</strong>
-      <span>${asset.slot} · ${asset.partId} · ${(asset.size / 1024).toFixed(1)} KB</span>
+      <span>${asset.slot} · ${asset.partId} · ${(asset.size / 1024).toFixed(1)} KB${asset.blobId ? ' · Walrus ready' : ''}</span>
     </div>
   `).join('') : 'No layer files added yet.';
 }
@@ -686,8 +798,116 @@ function renderChecklist() {
   `).join('');
 }
 
+function renderRules() {
+  if (!$('ruleLeftPart') || !$('ruleRightPart')) return;
+  const options = allSlots().map((slot) => `<option value="${slot.key}">${slot.label}</option>`).join('');
+  const previousLeft = $('ruleLeftPart').value;
+  const previousRight = $('ruleRightPart').value;
+  $('ruleLeftPart').innerHTML = options;
+  $('ruleRightPart').innerHTML = options;
+  $('ruleLeftPart').value = previousLeft || allSlots()[0]?.key || '';
+  $('ruleRightPart').value = previousRight || allSlots()[1]?.key || allSlots()[0]?.key || '';
+  $('selectionRuleList').innerHTML = state.rules.length
+    ? state.rules.map((rule, index) => `
+        <div>
+          <span>${allSlots().find((slot) => slot.key === rule.leftPartKey)?.label || rule.leftPartKey}</span>
+          <b>cannot combine with</b>
+          <span>${allSlots().find((slot) => slot.key === rule.rightPartKey)?.label || rule.rightPartKey}</span>
+          <button type="button" data-remove-rule="${index}" aria-label="Remove rule">×</button>
+        </div>
+      `).join('')
+    : '<p>No selection rules yet.</p>';
+  document.querySelectorAll('[data-remove-rule]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.rules.splice(Number(button.dataset.removeRule), 1);
+      renderAll();
+    });
+  });
+}
+
+function renderPaletteLinks() {
+  if (!$('palettePrimaryPart') || !$('paletteLinkedPart')) return;
+  const options = allSlots().map((slot) => `<option value="${slot.key}">${slot.label}</option>`).join('');
+  const previousPrimary = $('palettePrimaryPart').value;
+  const previousLinked = $('paletteLinkedPart').value;
+  $('palettePrimaryPart').innerHTML = options;
+  $('paletteLinkedPart').innerHTML = options;
+  $('palettePrimaryPart').value = previousPrimary || 'hairBack';
+  $('paletteLinkedPart').value = previousLinked || 'hairFront';
+  $('paletteLinkList').innerHTML = state.paletteLinks.length
+    ? state.paletteLinks.map((link, index) => `
+        <div>
+          <span>${allSlots().find((slot) => slot.key === link.primaryPartKey)?.label || link.primaryPartKey}</span>
+          <b>shares palette with</b>
+          <span>${allSlots().find((slot) => slot.key === link.linkedPartKey)?.label || link.linkedPartKey}</span>
+          <button type="button" data-remove-palette-link="${index}" aria-label="Remove palette link">×</button>
+        </div>
+      `).join('')
+    : '<p>No linked palettes yet.</p>';
+  document.querySelectorAll('[data-remove-palette-link]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.paletteLinks.splice(Number(button.dataset.removePaletteLink), 1);
+      renderAll();
+    });
+  });
+}
+
 function renderPackage() {
   $('packagePreview').textContent = JSON.stringify(ocPackage(), null, 2);
+}
+
+function mintReadiness() {
+  if (runtimeConfig.packageId.includes('TODO')) return 'The Move package is not configured yet.';
+  if (!activeMakerObjectId()) return 'This template is a preview. Add its published OCMaker object id to public/config.js.';
+  if (!state.walletConnected) return 'Connect a Sui wallet to mint this OC.';
+  return 'Ready to store the OC image and profile on Walrus, then mint on Sui.';
+}
+
+function renderMintAction() {
+  if (!$('mintOcOnchain')) return;
+  const ready = !runtimeConfig.packageId.includes('TODO') && Boolean(activeMakerObjectId()) && state.walletConnected;
+  $('mintOcOnchain').disabled = state.minting || !ready;
+  $('mintOcOnchain').textContent = state.minting ? 'Minting…' : state.mintDigest ? 'Minted' : 'Mint OC';
+  if (state.mintDigest) {
+    $('mintOcStatus').innerHTML = `OC minted. <a href="${explorerTransactionUrl(state.mintDigest)}" target="_blank" rel="noreferrer">View transaction</a>`;
+  } else {
+    $('mintOcStatus').textContent = state.mintStatus || mintReadiness();
+  }
+}
+
+function renderOcImageBlob() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 1024;
+  const context = canvas.getContext('2d');
+  const palette = state.visual.palette;
+  context.fillStyle = palette.background;
+  context.fillRect(0, 0, 1024, 1024);
+  context.fillStyle = palette.outfit;
+  context.beginPath();
+  context.roundRect(260, 720, 504, 360, 120);
+  context.fill();
+  context.fillStyle = palette.skin;
+  context.beginPath();
+  context.ellipse(512, 490, 235, 285, 0, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = palette.hair;
+  context.beginPath();
+  context.ellipse(512, 285, 300, 225, 0, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = palette.eyes;
+  context.beginPath();
+  context.arc(425, 500, 24, 0, Math.PI * 2);
+  context.arc(599, 500, 24, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = palette.accessory;
+  context.lineWidth = 24;
+  context.beginPath();
+  context.ellipse(512, 145, 180, 54, 0, 0, Math.PI * 2);
+  context.stroke();
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not render the OC image.')), 'image/png');
+  });
 }
 
 function renderImageMakerList() {
@@ -1069,21 +1289,77 @@ function closeAccountPanel() {
 }
 
 function toggleWallet() {
-  state.walletConnected = !state.walletConnected;
-  renderWalletState();
+  connectSuiWallet();
 }
 
 function renderWalletState() {
   $('walletButton').classList.toggle('connected', state.walletConnected);
   const walletLabel = $('walletButton').querySelector('[data-i18n="walletConnect"]');
-  if (walletLabel) walletLabel.textContent = state.walletConnected ? 'sui:0xA11C...9F2D' : t('walletConnect');
-  $('panelWalletButton').textContent = state.walletConnected ? 'Wallet connected: sui:0xA11C...9F2D' : t('connectSuiWallet');
-  $('walletSummary').textContent = state.walletConnected ? 'Sui wallet connected · OC assets ready' : 'Wallet not connected';
+  const displayAddress = shortAddress(state.walletAddress);
+  if (walletLabel) walletLabel.textContent = state.walletConnected ? displayAddress : t('walletConnect');
+  $('panelWalletButton').textContent = state.walletConnected ? `Wallet connected: ${displayAddress}` : t('connectSuiWallet');
+  $('walletSummary').textContent = state.walletConnected ? `${state.walletProvider || 'Sui wallet'} · ${runtimeConfig.network}` : 'Wallet not connected';
   $('walletFirstCard').classList.toggle('connected', state.walletConnected);
   document.querySelector('.account-grid').classList.toggle('locked', !state.walletConnected);
   document.querySelectorAll('.account-grid [data-page]').forEach((button) => {
     button.disabled = !state.walletConnected;
   });
+}
+
+function publishReadiness() {
+  if (runtimeConfig.packageId.includes('TODO')) return 'Publish the Move package and set packageId in config.js.';
+  if (!state.walletConnected) return 'Connect a Sui wallet to sign publication.';
+  if (!state.assets.length) return 'Upload at least one transparent PNG layer.';
+  if (!$('creatorTemplateName').value.trim()) return 'Add a maker name in Settings.';
+  return 'Ready to upload assets to Walrus and publish the maker on Sui.';
+}
+
+function renderPublishAction() {
+  if (!$('publishMakerOnchain')) return;
+  const ready = !runtimeConfig.packageId.includes('TODO') && state.walletConnected && state.assets.length > 0;
+  $('publishMakerOnchain').disabled = state.publishing || !ready;
+  $('publishMakerOnchain').textContent = state.publishing ? 'Publishing…' : state.publishDigest ? 'Published' : 'Upload & publish';
+  $('makerPublishAction').classList.toggle('success', Boolean(state.publishDigest));
+  $('makerPublishAction').classList.toggle('busy', state.publishing);
+  if (state.publishDigest) {
+    $('makerPublishStatus').innerHTML = `Published on ${runtimeConfig.network}. <a href="${explorerTransactionUrl(state.publishDigest)}" target="_blank" rel="noreferrer">View transaction</a>`;
+  } else {
+    $('makerPublishStatus').textContent = state.publishStatus || publishReadiness();
+  }
+}
+
+function renderChainStatus() {
+  if ($('chainStatusGrid')) {
+    $('chainStatusGrid').innerHTML = chainStatusItems().map(([label, value, note, status]) => `
+      <article class="chain-status-card ${status}">
+        <span>${label}</span>
+        <strong>${value}</strong>
+        <small>${note}</small>
+      </article>
+    `).join('');
+  }
+
+  if ($('publishRuntimeCard')) {
+    $('publishRuntimeCard').innerHTML = `
+      <div>
+        <span>Network</span>
+        <strong>${runtimeConfig.network}</strong>
+      </div>
+      <div>
+        <span>Package</span>
+        <strong>${runtimeConfig.packageId.includes('TODO') ? 'Publish package first' : shortAddress(runtimeConfig.packageId)}</strong>
+      </div>
+      <div>
+        <span>Walrus</span>
+        <strong>${runtimeConfig.walrusPublisherUrl ? 'Ready for browser upload' : 'Configure endpoint'}</strong>
+      </div>
+      <div>
+        <span>Signer</span>
+        <strong>${state.walletConnected ? shortAddress(state.walletAddress) || 'Connected' : 'Connect wallet'}</strong>
+      </div>
+    `;
+  }
+  renderPublishAction();
 }
 
 function renderProtocol() {
@@ -1096,6 +1372,171 @@ function renderProtocol() {
   `).join('');
 }
 
+function renderChainActions() {
+  document.querySelectorAll('[data-chain-action-list]').forEach((node) => {
+    node.innerHTML = chainActions.map((action, index) => `
+      <div>
+        <span>${String(index + 1).padStart(2, '0')}</span>
+        <strong>${action.title}</strong>
+        <small>${action.body}</small>
+      </div>
+    `).join('');
+  });
+}
+
+async function publishCurrentMaker() {
+  if (state.publishing) return;
+  state.publishing = true;
+  state.publishStatus = 'Uploading PNG layers to Walrus…';
+  state.publishDigest = '';
+  renderAll();
+
+  try {
+    for (let index = 0; index < state.assets.length; index += 1) {
+      const asset = state.assets[index];
+      if (!asset.file) throw new Error(`${asset.name} is no longer available. Select the PNG files again.`);
+      if (!asset.blobId) {
+        state.publishStatus = `Uploading layer ${index + 1} of ${state.assets.length}: ${asset.name}`;
+        renderPublishAction();
+        const stored = await uploadWalrusBlob(asset.file);
+        asset.blobId = stored.blobId;
+        asset.walrusObjectId = stored.suiObjectId;
+      }
+    }
+
+    state.publishStatus = 'Uploading the maker manifest to Walrus…';
+    renderPublishAction();
+    const manifest = creatorManifest();
+    const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+    const storedManifest = await uploadWalrusBlob(manifestBlob);
+
+    const assetSlots = [...new Set(state.assets.map((asset) => asset.slot))];
+    const makerParts = assetSlots.map((key, index) => {
+      const slot = allSlots().find((candidate) => candidate.key === key);
+      return {
+        key,
+        label: slot?.label || key,
+        kind: slot?.kind || 'standard',
+        renderOrder: allSlots().findIndex((candidate) => candidate.key === key) >= 0
+          ? allSlots().findIndex((candidate) => candidate.key === key)
+          : index,
+        menuVisible: slot?.menuVisible !== false,
+        required: index === 0,
+      };
+    });
+    const makerItems = state.assets.map((asset) => ({
+      partKey: asset.slot,
+      itemKey: asset.partId,
+      label: asset.partId.replace(/-/g, ' '),
+      blobId: asset.blobId,
+      iconBlobId: '',
+      gateKind: 0,
+    }));
+    const makerRules = state.rules.filter((rule) => assetSlots.includes(rule.leftPartKey) && assetSlots.includes(rule.rightPartKey));
+    if (makerRules.length !== state.rules.length) {
+      throw new Error('Every rule must reference parts that have uploaded PNG items.');
+    }
+
+    state.publishStatus = 'Waiting for your Sui wallet signature…';
+    renderPublishAction();
+    const transaction = await publishMaker({
+      creator: {
+        displayName: $('creatorName').value.trim(),
+        bio: `${$('creatorWorld').value.trim()} OC maker creator`,
+        avatarUrl: '',
+      },
+      maker: {
+        name: $('creatorTemplateName').value.trim(),
+        description: activeTemplate().summary,
+        coverUrl: '',
+        license: $('creatorLicense').value,
+        royaltyBps: Number($('creatorRoyalty').value || 0),
+      },
+      manifestBlobId: storedManifest.blobId,
+      parts: makerParts,
+      items: makerItems,
+      rules: makerRules,
+    });
+    state.publishDigest = transaction.digest;
+    state.publishStatus = '';
+  } catch (error) {
+    console.error('Maker publication failed', error);
+    state.publishStatus = error.message || 'Maker publication failed.';
+  } finally {
+    state.publishing = false;
+    renderAll();
+  }
+}
+
+async function mintCurrentOc() {
+  if (state.minting) return;
+  state.minting = true;
+  state.mintStatus = 'Rendering your OC…';
+  state.mintDigest = '';
+  renderMintAction();
+
+  try {
+    const oc = ocPackage();
+    const image = await renderOcImageBlob();
+    state.mintStatus = 'Uploading OC image to Walrus…';
+    renderMintAction();
+    const storedImage = await uploadWalrusBlob(image);
+
+    state.mintStatus = 'Uploading OC profile and recipe to Walrus…';
+    renderMintAction();
+    const profile = new Blob([JSON.stringify(oc)], { type: 'application/json' });
+    const storedProfile = await uploadWalrusBlob(profile);
+    const recipeBytes = new TextEncoder().encode(JSON.stringify(oc.recipe));
+    const recipeHash = new Uint8Array(await crypto.subtle.digest('SHA-256', recipeBytes));
+
+    state.mintStatus = 'Waiting for your Sui wallet signature…';
+    renderMintAction();
+    const transaction = await mintCharacter({
+      makerId: activeMakerObjectId(),
+      name: oc.profile.name,
+      profileBlobId: storedProfile.blobId,
+      imageBlobId: storedImage.blobId,
+      imageUrl: `${runtimeConfig.walrusAggregatorUrl.replace(/\/$/, '')}/v1/blobs/${storedImage.blobId}`,
+      recipeHash,
+      recipe: oc.recipe.map((slot) => ({
+        partKey: slot.slot,
+        itemKey: slot.part,
+        colorHex: slot.color,
+        renderOrder: slot.renderOrder,
+      })),
+    });
+    state.mintDigest = transaction.digest;
+    state.mintStatus = '';
+  } catch (error) {
+    console.error('OC mint failed', error);
+    state.mintStatus = error.message || 'OC mint failed.';
+  } finally {
+    state.minting = false;
+    renderMintAction();
+  }
+}
+
+function restoreMakerDraft() {
+  const raw = localStorage.getItem('animacraft-maker-draft-v1');
+  if (!raw) return;
+  try {
+    const draft = JSON.parse(raw);
+    if (draft.visual) state.visual = draft.visual;
+    if (Array.isArray(draft.rules)) state.rules = draft.rules;
+    if (Array.isArray(draft.paletteLinks)) state.paletteLinks = draft.paletteLinks;
+    const template = draft.manifest?.template;
+    if (template) {
+      $('creatorTemplateName').value = template.name || $('creatorTemplateName').value;
+      $('creatorName').value = template.creator || $('creatorName').value;
+      $('creatorWorld').value = template.style || $('creatorWorld').value;
+      $('creatorLicense').value = template.license || $('creatorLicense').value;
+      $('creatorRoyalty').value = template.royaltyBps ?? $('creatorRoyalty').value;
+    }
+  } catch (error) {
+    console.warn('Ignored an unreadable local maker draft.', error);
+  }
+}
+
 function renderAll() {
   syncTemplateFields();
   renderTemplates();
@@ -1106,10 +1547,15 @@ function renderAll() {
   renderRecipe();
   renderAssets();
   renderChecklist();
+  renderRules();
+  renderPaletteLinks();
   renderPackage();
   renderImageMakerList();
   renderCreatorDetails();
   renderProtocol();
+  renderChainStatus();
+  renderChainActions();
+  renderMintAction();
   renderI18n();
   renderWalletState();
   setCreatorView(state.creatorView);
@@ -1190,10 +1636,53 @@ $('partColor').addEventListener('input', (event) => {
 $('assetUpload').addEventListener('change', (event) => {
   state.assets = [...event.target.files].map((file) => {
     const fileSlug = slug(file.name);
-    const [slot = 'unknown', partId = fileSlug] = fileSlug.split(/[-_]/);
-    return { name: file.name, size: file.size, type: file.type, slot, partId };
+    const slot = allSlots().find((candidate) => fileSlug.startsWith(slug(candidate.key))) || activeSlot();
+    const partId = fileSlug.replace(new RegExp(`^${slug(slot.key)}[-_]*`), '') || 'normal';
+    return { name: file.name, size: file.size, type: file.type, slot: slot.key, partId, file, blobId: '' };
   });
   renderAll();
+});
+
+$('publishMakerOnchain')?.addEventListener('click', publishCurrentMaker);
+
+$('addSelectionRule')?.addEventListener('click', () => {
+  const leftPartKey = $('ruleLeftPart').value;
+  const rightPartKey = $('ruleRightPart').value;
+  if (!leftPartKey || !rightPartKey || leftPartKey === rightPartKey) {
+    state.publishStatus = 'Choose two different parts for a selection rule.';
+    renderPublishAction();
+    return;
+  }
+  const duplicate = state.rules.some((rule) =>
+    (rule.leftPartKey === leftPartKey && rule.rightPartKey === rightPartKey)
+    || (rule.leftPartKey === rightPartKey && rule.rightPartKey === leftPartKey));
+  if (!duplicate) {
+    state.rules.push({ leftPartKey, leftItemKey: '', rightPartKey, rightItemKey: '' });
+  }
+  renderAll();
+});
+
+$('addPaletteLink')?.addEventListener('click', () => {
+  const primaryPartKey = $('palettePrimaryPart').value;
+  const linkedPartKey = $('paletteLinkedPart').value;
+  if (!primaryPartKey || !linkedPartKey || primaryPartKey === linkedPartKey) return;
+  const duplicate = state.paletteLinks.some((link) =>
+    (link.primaryPartKey === primaryPartKey && link.linkedPartKey === linkedPartKey)
+    || (link.primaryPartKey === linkedPartKey && link.linkedPartKey === primaryPartKey));
+  if (!duplicate) state.paletteLinks.push({ primaryPartKey, linkedPartKey });
+  renderAll();
+});
+
+$('saveMakerDraft')?.addEventListener('click', () => {
+  const draft = {
+    savedAt: new Date().toISOString(),
+    manifest: creatorManifest(),
+    visual: state.visual,
+    rules: state.rules,
+    paletteLinks: state.paletteLinks,
+  };
+  localStorage.setItem('animacraft-maker-draft-v1', JSON.stringify(draft));
+  $('saveMakerDraft').textContent = 'Saved';
 });
 
 $('downloadManifest').addEventListener('click', () => {
@@ -1203,6 +1692,8 @@ $('downloadManifest').addEventListener('click', () => {
 $('downloadPackage').addEventListener('click', () => {
   download(`${slug($('profileName').value)}-oc-package.json`, JSON.stringify(ocPackage(), null, 2));
 });
+
+$('mintOcOnchain')?.addEventListener('click', mintCurrentOc);
 
 $('downloadRecipe').addEventListener('click', () => {
   download(`${slug($('profileName').value)}-recipe.json`, JSON.stringify(ocPackage().recipe, null, 2));
@@ -1312,5 +1803,15 @@ window.addEventListener('hashchange', () => {
   if (['templates', 'make', 'creator', 'docs', 'protocol', 'editor'].includes(page)) setPage(page);
 });
 
+initializeChain(runtimeConfig, (connection) => {
+  state.walletConnected = connection.connected;
+  state.walletAddress = connection.address;
+  state.walletProvider = connection.provider;
+  state.walletStatus = connection.status;
+  renderWalletState();
+  renderChainStatus();
+});
+
+restoreMakerDraft();
 renderAll();
 setPage(location.hash.replace('#', '') || 'templates');
