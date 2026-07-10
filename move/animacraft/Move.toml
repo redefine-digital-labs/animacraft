@@ -1,0 +1,6 @@
+[package]
+name = "animacraft"
+edition = "2024.beta"
+
+[addresses]
+animacraft = "0x0"

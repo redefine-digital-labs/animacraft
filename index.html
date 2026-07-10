@@ -1,0 +1,827 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Animacraft</title>
+    <meta name="description" content="Animacraft is The Fully onchain Character Maker & Creator." />
+    <link rel="stylesheet" href="./styles.css?v=animacraft-30" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#templates" aria-label="Animacraft">
+        <span class="brand-mark"></span>
+        <span>
+          <strong>Animacraft</strong>
+          <small data-i18n="brandTagline">The Fully onchain Character Maker & Creator</small>
+        </span>
+      </a>
+      <nav class="main-nav" aria-label="Animacraft sections">
+        <button class="active" data-page="templates" data-i18n="navTemplates">Templates</button>
+        <button data-page="docs" data-i18n="navDocs">Docs</button>
+      </nav>
+      <div class="account-cluster">
+        <button id="walletButton" class="wallet-button" type="button">
+          <span class="wallet-dot"></span>
+          <span data-i18n="walletConnect">Connect wallet</span>
+        </button>
+        <button id="accountButton" class="account-button" type="button" aria-expanded="false" aria-controls="accountPanel">
+          <span class="account-avatar">A</span>
+          <span class="account-label" data-i18n="myPage">MyPage</span>
+        </button>
+      </div>
+    </header>
+
+    <div id="accountPanel" class="account-panel" aria-hidden="true">
+      <div class="account-panel-head">
+        <button id="closeAccountPanel" class="panel-close" type="button" aria-label="Close account menu">×</button>
+        <label class="language-select" aria-label="Account language">
+          <span data-i18n="languageLabel">Language</span>
+          <select id="accountLanguage">
+            <option value="en">English</option>
+            <option value="zh">中文</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="vi">Tiếng Việt</option>
+          </select>
+        </label>
+      </div>
+      <div class="account-summary">
+        <span class="account-avatar large">A</span>
+        <div>
+          <strong>Animacraft user</strong>
+          <small id="walletSummary">Wallet not connected</small>
+        </div>
+      </div>
+      <div class="wallet-first-card" id="walletFirstCard">
+          <strong data-i18n="walletFirstTitle">Connect your wallet first</strong>
+          <p data-i18n="walletFirstCopy">MyPage, favorites, creator tools, saved OCs, and on-chain license actions unlock after wallet connection.</p>
+        <button id="panelWalletButton" type="button" data-i18n="connectSuiWallet">Connect Sui wallet</button>
+      </div>
+      <div class="account-grid">
+        <button data-page="templates"><strong data-i18n="myPage">MyPage</strong><span data-i18n="myPageCopy">Works and on-chain OCs</span></button>
+        <button data-page="templates"><strong data-i18n="favorite">Favorite</strong><span data-i18n="favoriteCopy">Saved makers</span></button>
+        <button data-page="creator"><strong data-i18n="createMaker">Create maker</strong><span data-i18n="createMakerCopy">Publish an OC template</span></button>
+        <button data-page="make"><strong data-i18n="makeOc">Make OC</strong><span data-i18n="makeOcCopy">Continue current OC</span></button>
+      </div>
+      <div class="public-account-actions">
+        <button data-page="templates"><strong data-i18n="browseTemplates">Browse templates</strong><span data-i18n="browseTemplatesCopy">Find a maker to play</span></button>
+        <button data-page="docs"><strong data-i18n="navDocs">Docs</strong><span data-i18n="docsCopy">Protocol and licensing</span></button>
+      </div>
+      <div class="account-links">
+        <button type="button">Guidelines</button>
+        <button type="button">Terms of use</button>
+      </div>
+    </div>
+
+    <main>
+      <section id="templates" class="page active">
+        <div class="page-head">
+          <div>
+            <p class="kicker" data-i18n="templatePlaza">Template Plaza</p>
+            <h1 data-i18n="templateHero">Pick an artist-made template, then make your OC</h1>
+            <p data-i18n="templateHeroCopy">
+              Choose a maker, combine parts, save a character, and let Animacraft handle provenance,
+              licensing, revenue splits, and on-chain records.
+            </p>
+          </div>
+          <div class="head-metrics" aria-label="platform metrics">
+            <span><strong>3</strong> starter templates</span>
+            <span><strong>106</strong> layered parts</span>
+            <span><strong>1</strong> creator package flow</span>
+          </div>
+        </div>
+
+        <div class="plaza-toolbar">
+          <label class="search-box">
+            <span data-i18n="search">Search</span>
+            <input id="templateSearch" type="search" placeholder="Search style, creator, license..." data-i18n-placeholder="searchPlaceholder" />
+          </label>
+          <div class="filter-row" aria-label="Template filters">
+            <button class="filter-chip active" data-filter="all" data-i18n="filterAll">All</button>
+            <button class="filter-chip" data-filter="daily" data-i18n="filterDaily">Daily icon</button>
+            <button class="filter-chip" data-filter="fantasy" data-i18n="filterFantasy">Fantasy</button>
+            <button class="filter-chip" data-filter="chibi" data-i18n="filterChibi">Chibi</button>
+          </div>
+        </div>
+
+        <div id="templateGrid" class="template-grid"></div>
+      </section>
+
+      <section id="make" class="page">
+        <div class="maker-topline">
+          <div>
+            <p class="kicker">Make OC</p>
+            <h1 id="templateTitle">Starlit Daily OC</h1>
+            <p>Choose parts, tune colors, and save the current OC. The template source, license snapshot, and recipe are packaged for on-chain registration.</p>
+          </div>
+          <div class="maker-actions">
+            <button id="downloadRecipe" class="secondary">Recipe JSON</button>
+            <button id="downloadPackage" class="primary">Save OC Package</button>
+          </div>
+        </div>
+
+        <div class="maker-layout">
+          <aside class="slot-panel">
+            <div class="panel-title">
+              <span>Parts</span>
+              <strong>Choose a slot</strong>
+            </div>
+            <div id="slotRail" class="slot-rail"></div>
+          </aside>
+
+          <section class="canvas-panel">
+            <div class="canvas-toolbar">
+              <div>
+                <span class="micro-label">Live Preview</span>
+                <h2 id="characterNameTitle">Mira</h2>
+              </div>
+              <span id="avatarWorld" class="template-token">Daily OC</span>
+            </div>
+            <div id="avatar" class="avatar" aria-label="Character preview">
+              <div class="avatar-bg"></div>
+              <div class="hair-back"></div>
+              <div class="outfit"></div>
+              <div class="face"></div>
+              <div class="ear ear-left"></div>
+              <div class="ear ear-right"></div>
+              <div class="hair-front"></div>
+              <div class="eye eye-left"></div>
+              <div class="eye eye-right"></div>
+              <div class="blush blush-left"></div>
+              <div class="blush blush-right"></div>
+              <div class="mouth"></div>
+              <div class="accessory"></div>
+              <div class="avatar-caption">
+                <strong id="avatarName">Mira</strong>
+                <span id="avatarTemplate">Starlit Daily OC</span>
+              </div>
+            </div>
+            <div class="recipe-strip" id="recipeList"></div>
+          </section>
+
+          <aside class="parts-panel">
+            <div class="parts-head">
+              <div>
+                <span class="micro-label">Current Slot</span>
+                <h2 id="slotTitle">Front Hair</h2>
+                <p id="slotDescription">Bangs and face framing</p>
+              </div>
+            </div>
+            <div id="partGrid" class="part-grid"></div>
+
+            <div class="color-panel">
+              <div class="color-row">
+                <label for="partColor">Current color</label>
+                <input id="partColor" type="color" value="#7b5cff" />
+              </div>
+              <div id="swatchGrid" class="swatch-grid" aria-label="Color swatches"></div>
+            </div>
+
+            <div class="license-panel">
+              <span class="micro-label">Template License</span>
+              <strong id="licenseTitle">Personal use</strong>
+              <p id="licenseDescription">Generate personal icons and OC profiles. Commercial use requires an add-on license.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="creator" class="page">
+        <div class="creator-console">
+          <aside class="creator-sidebar">
+            <div class="creator-welcome">Workspace <strong>xiaopai</strong></div>
+            <span class="side-label">Create</span>
+            <button class="active">OC Maker Library</button>
+            <button>Creator Profile</button>
+            <button>Wallet & Account</button>
+            <button>Make OC</button>
+            <span class="side-label">Tools</span>
+            <button data-new-maker-panel>New OC maker</button>
+            <button>Material templates</button>
+            <div class="language-pill">English</div>
+          </aside>
+
+          <section class="maker-list-panel">
+            <div class="creator-workshop-head">
+              <div>
+                <p class="kicker">Creator Workshop</p>
+                <h1>Create and manage OC makers</h1>
+                <p>Start with a maker shell, then add parts, layers, rules, licensing, and publication settings.</p>
+              </div>
+              <button id="downloadManifest" class="primary">Export Manifest</button>
+            </div>
+
+            <div class="notice-bar">
+              <strong>Information</strong>
+              <span>Color Palette is now part of Palette Rules. Animacraft also adds on-chain license rules.</span>
+            </div>
+
+            <div class="creator-view active" data-creator-view="list">
+            <div class="maker-overview-grid">
+              <section class="create-maker-panel">
+                <p class="kicker">Create</p>
+                <h2>Create a new OC maker</h2>
+                <p>Create a maker shell first, then use Maker Top to add parts, manage items, sort layers, define rules, link palettes, preview, and publish on-chain.</p>
+                <button class="new-maker-cta" data-new-maker-panel>
+                  <span>+</span>
+                  Register OC Maker
+                </button>
+                <div class="maker-setup-map">
+                  <div><strong>1</strong><span>Register maker shell</span></div>
+                  <div><strong>2</strong><span>Open Maker Top</span></div>
+                  <div><strong>3</strong><span>Add parts and items</span></div>
+                  <div><strong>4</strong><span>Set rules and palettes</span></div>
+                  <div><strong>5</strong><span>Preview and publish</span></div>
+                </div>
+                <div class="layer-editor-preview">
+                  <div class="layer-canvas-preview">
+                    <span class="preview-bg"></span>
+                    <span class="preview-body"></span>
+                    <span class="preview-hair"></span>
+                    <span class="preview-eyes"></span>
+                  </div>
+                  <div class="layer-stack-preview">
+                    <strong>Layer stack</strong>
+                    <span>07 Accessory</span>
+                    <span>06 Front hair</span>
+                    <span>05 Eyes</span>
+                    <span>04 Face</span>
+                    <span>03 Outfit</span>
+                    <span>02 Back hair</span>
+                    <span>01 Background</span>
+                  </div>
+                </div>
+                <div class="maker-create-steps">
+                  <div><strong>Top</strong><span>Maker control console</span></div>
+                  <div><strong>Parts</strong><span>Part settings and item lists</span></div>
+                  <div><strong>Rules</strong><span>Part and item compatibility</span></div>
+                  <div><strong>Chain</strong><span>Walrus assets and Sui policy</span></div>
+                </div>
+              </section>
+
+              <section class="image-maker-section">
+                <div class="section-row">
+                  <div>
+                    <p class="kicker">Library</p>
+                    <h2>OC Maker Library</h2>
+                  </div>
+                  <span class="template-token">Wallet workspace</span>
+                </div>
+                <div class="image-maker-list" id="imageMakerList"></div>
+              </section>
+            </div>
+            </div>
+
+            <div class="creator-view" data-creator-view="edit">
+            <div class="creator-edit-topbar">
+              <button class="back-to-list-button" id="backToMakerList">← OC Maker Library</button>
+              <div>
+                <p class="kicker" id="editingPanelKicker">Maker Top</p>
+                <h2 id="editingMakerTitle">Starlit Daily OC</h2>
+              </div>
+              <div class="editor-topbar-actions">
+                <button class="secondary" data-editor-panel-button="preview">Preview</button>
+                <button class="secondary">Save draft</button>
+                <button class="primary" data-editor-panel-button="publish">Release</button>
+              </div>
+            </div>
+
+            <div class="creator-workbench">
+              <aside class="maker-detail-sidebar">
+                <div class="maker-side-summary">
+                  <span class="mini-brand-mark"></span>
+                  <div>
+                    <p class="kicker">Maker status</p>
+                    <strong id="detailMakerName">Starlit Daily OC</strong>
+                  </div>
+                </div>
+                <div class="maker-side-stats">
+                  <div><span>Parts</span><strong id="detailPartCount">28 / 750</strong></div>
+                  <div><span>Status</span><strong>Draft</strong></div>
+                  <div><span>Chain</span><strong>Local</strong></div>
+                </div>
+                <nav>
+                  <button class="active" data-editor-panel-button="top">Maker Top</button>
+                  <button data-editor-panel-button="layers">Layer Editor</button>
+                  <button data-editor-panel-button="parts">Parts</button>
+                  <button data-editor-panel-button="rules">Rules</button>
+                  <button data-editor-panel-button="palette">Palette Rules</button>
+                  <button data-editor-panel-button="preview">Preview Check</button>
+                  <button data-editor-panel-button="publish">On-chain Publish</button>
+                  <button data-editor-panel-button="settings">Settings</button>
+                </nav>
+              </aside>
+
+              <section class="maker-detail-main">
+                <section class="maker-top-panel editor-panel active" data-editor-panel="top">
+                  <div class="maker-summary-card">
+                    <div>
+                      <p class="kicker">Maker Top</p>
+                      <h2 id="detailMakerTitle">Starlit Daily OC</h2>
+                      <div class="maker-tags">
+                        <span>Private</span>
+                        <span>1:1</span>
+                        <span>Free combine</span>
+                      </div>
+                      <p id="detailDescription">Build the template from layered assets, then bind the maker to license rules and on-chain provenance.</p>
+                    </div>
+                    <button class="primary" data-editor-panel-button="settings">Edit maker info</button>
+                  </div>
+
+                  <div class="maker-top-grid">
+                    <section class="function-card primary-function">
+                      <div class="section-row">
+                        <div>
+                          <p class="kicker">Parts</p>
+                          <h2>Registered parts</h2>
+                        </div>
+                        <button class="primary" data-open-part-modal>+ Add</button>
+                      </div>
+                      <div id="makerTopPartsList" class="maker-top-list"></div>
+                    </section>
+                    <section class="function-card">
+                      <div class="section-row">
+                        <div>
+                          <p class="kicker">Layer</p>
+                          <h2>Generated layer order</h2>
+                        </div>
+                        <button class="secondary" data-editor-panel-button="layers">Sort</button>
+                      </div>
+                      <p class="editor-note">Layers are generated from registered parts. Sorting changes the visual stack, while Part Settings controls menu behavior and item structure.</p>
+                      <div id="makerTopLayerList" class="maker-top-list compact"></div>
+                    </section>
+                  </div>
+                </section>
+
+                <section id="maker-detail-top" class="layer-editor-core editor-panel" data-editor-panel="layers">
+                  <div class="editor-canvas-card">
+                    <p class="kicker">Layer Editor</p>
+                    <h2 id="layerMakerTitle">Starlit Daily OC</h2>
+                    <div class="maker-tags">
+                      <span>Private</span>
+                      <span>1:1</span>
+                      <span>Free combine</span>
+                    </div>
+                    <p>Build the template from layered assets, then bind the maker to license rules and on-chain provenance.</p>
+                    <div class="editor-canvas-stage" aria-label="Layered OC preview">
+                      <span class="editor-layer-bg"></span>
+                      <span class="editor-layer-body"></span>
+                      <span class="editor-layer-hair"></span>
+                      <span class="editor-layer-eyes"></span>
+                      <span class="editor-layer-accessory"></span>
+                      <span class="editor-layer-caption">Preview canvas</span>
+                    </div>
+                  </div>
+
+                  <div class="editor-inspector-card">
+                    <div class="section-row">
+                      <div>
+                        <p class="kicker">Layer Stack</p>
+                        <h2>Composition order</h2>
+                      </div>
+                      <span class="template-token"><span id="layerCount">0</span> layers</span>
+                    </div>
+                    <div id="creatorLayerList" class="creator-layer-list editor-layer-stack"></div>
+                    <p class="editor-note">Each layer keeps ordering, anchor position, menu visibility, and an asset reference that can be published to Walrus and registered on Sui.</p>
+                    <div id="layerDetailsPanel" class="layer-details-panel"></div>
+                  </div>
+                </section>
+
+                <div class="creator-function-grid editor-panel" data-editor-panel="parts">
+                  <section id="maker-parts" class="function-card primary-function">
+                    <div class="section-row">
+                      <h2>Parts</h2>
+                      <button class="primary" data-open-part-modal>+ Add</button>
+                    </div>
+                    <p id="partWorkspaceIntro">Parts are the creator-facing asset groups users choose from when making an OC. Each part can contain multiple PNG items, linked colors, rules, and license metadata.</p>
+                    <div id="creatorPartsList" class="creator-parts-list"></div>
+                    <div id="partWorkspace" class="part-workspace"></div>
+                    <div class="part-type-cards">
+                      <div class="part-type-card">
+                        <strong>Standard parts</strong>
+                        <span>Normal selectable asset groups. Use this for hair, eyes, outfits, mouths, accessories, and backgrounds.</span>
+                      </div>
+                      <div class="part-type-card">
+                        <strong>Left-right paired parts</strong>
+                        <span>Mirrored or paired assets such as earrings, eyes, wings, or sleeves. Distance and offset can be adjusted together.</span>
+                      </div>
+                      <div class="part-type-card">
+                        <strong>Last bastion parts</strong>
+                        <span>Fallback items that remain selectable when rules would otherwise hide every option in a group.</span>
+                      </div>
+                    </div>
+                    <label class="add-parts-wide">
+                      Upload PNG layers
+                      <input id="assetUpload" type="file" accept="image/png" multiple />
+                    </label>
+                  </section>
+                  <section class="function-card">
+                    <p class="kicker">Part Settings</p>
+                    <h2>Controls per part</h2>
+                    <div class="control-list">
+                      <span>Part name and internal creator label</span>
+                      <span>Type lock: standard, left-right pair, or last bastion cannot be changed after creation</span>
+                      <span>Part icon for the user menu, or hidden menu mode for fixed background parts</span>
+                      <span>Canvas anchor: upper-left X/Y, plus right-layer X for paired parts</span>
+                      <span>Remove button and default item state</span>
+                      <span>Allowed controls: move X/Y, scale, rotate, paired spacing</span>
+                    </div>
+                  </section>
+                  <section class="function-card">
+                    <p class="kicker">Item Settings</p>
+                    <h2>Items inside a part</h2>
+                    <div class="control-list">
+                      <span>No.1 item is the required base item and cannot be deleted or made private</span>
+                      <span>Item number supports bulk upload and can differ from display order</span>
+                      <span>Public/private status decides whether the item appears to makers</span>
+                      <span>Each item can have PNG layer files and a separate selection icon</span>
+                      <span>Display order controls the user-facing item picker</span>
+                    </div>
+                  </section>
+
+                </div>
+
+                <div class="creator-function-grid editor-panel" data-editor-panel="rules">
+                  <section id="maker-rules" class="function-card primary-function">
+                    <div class="section-row">
+                      <div>
+                        <p class="kicker">Rules</p>
+                        <h2>Selection logic</h2>
+                      </div>
+                      <button class="secondary">Add rule</button>
+                    </div>
+                    <div class="rule-grid">
+                      <div class="rule-card">
+                        <strong>Part rules</strong>
+                        <span>Prevent two whole part groups from being selected together, such as two incompatible hairstyles.</span>
+                      </div>
+                      <div class="rule-card">
+                        <strong>Item rules</strong>
+                        <span>Prevent specific items from being selected together, such as one hat clipping through one hairstyle.</span>
+                      </div>
+                    </div>
+                    <div class="rule-example">
+                      <span>Hair: Twin Tails</span>
+                      <b>cannot combine with</b>
+                      <span>Hat: Tall Crown</span>
+                    </div>
+                  </section>
+                  <section class="function-card">
+                    <p class="kicker">Rule Scope</p>
+                    <h2>What becomes enforceable</h2>
+                    <div class="control-list">
+                      <span>Draft: creator tests visual compatibility locally.</span>
+                      <span>Template publish: allowed rule schema is stored on Sui.</span>
+                      <span>OC mint: recipe must satisfy the published rules.</span>
+                      <span>Trade: license and royalty rules travel with the OC.</span>
+                    </div>
+                  </section>
+                  <section class="function-card">
+                    <p class="kicker">Last Bastion</p>
+                    <h2>Fallback safety</h2>
+                    <div class="rule-example">
+                      <span>Dress selected</span>
+                      <b>deselects</b>
+                      <span>Tops + Bottoms</span>
+                    </div>
+                    <p>If a rule would leave a required body area empty, a last-bastion part becomes the fallback. Animacraft should store this as a rule-bound required fallback object on-chain.</p>
+                  </section>
+                </div>
+
+                <div class="creator-function-grid editor-panel" data-editor-panel="palette">
+                  <section id="maker-color-linking" class="function-card primary-function">
+                    <div class="section-row">
+                      <div>
+                        <p class="kicker">Color Linking</p>
+                        <h2>Linked palettes</h2>
+                      </div>
+                      <button class="secondary">+ Add linkage</button>
+                    </div>
+                    <p>Connect color-controlled items so a user can change one palette and keep related layers synchronized, such as front hair, back hair, eyebrows, and shadows.</p>
+                    <div class="linkage-row">
+                      <span>Hair palette</span>
+                      <strong>Back Hair + Front Hair + Eyebrows</strong>
+                    </div>
+                    <div class="linkage-row">
+                      <span>Outfit accent</span>
+                      <strong>Jacket trim + Ribbon + Icon frame</strong>
+                    </div>
+                  </section>
+                  <section class="function-card">
+                    <p class="kicker">Palette On-chain State</p>
+                    <h2>Linked color records</h2>
+                    <div class="asset-status-list">
+                      <div><strong>Palette group</strong><span>Records which layers share one user-facing color control.</span></div>
+                      <div><strong>Variant map</strong><span>Stores allowed color sets, premium palettes, and creator defaults.</span></div>
+                      <div><strong>Recipe snapshot</strong><span>Finished OCs keep the exact palette choices used at mint time.</span></div>
+                    </div>
+                  </section>
+                </div>
+
+                <div class="creator-function-grid editor-panel" data-editor-panel="preview">
+                  <section id="maker-preview-check" class="function-card validation-card primary-function">
+                    <p class="kicker">Preview Validation</p>
+                    <h2>Publish readiness</h2>
+                    <ul class="validation-list">
+                      <li class="ok">Standard or left-right paired parts are registered.</li>
+                      <li class="ok">At least one part is visible in the user menu.</li>
+                      <li class="warn">One or more item images still need final PNG files before release.</li>
+                      <li class="warn">Rules should be tested against clipping and empty-state combinations.</li>
+                    </ul>
+                  </section>
+                  <section class="function-card">
+                    <p class="kicker">User Flow</p>
+                    <h2>What makers will see</h2>
+                    <div class="control-list">
+                      <span>Template opens as a clean OC creation page.</span>
+                      <span>Only visible parts appear in the user menu.</span>
+                      <span>Invalid combinations are disabled before minting.</span>
+                      <span>Preview exports a recipe, cover image, and metadata package.</span>
+                    </div>
+                  </section>
+                  <section class="function-card">
+                    <p class="kicker">Validation Matrix</p>
+                    <h2>Blocking checks</h2>
+                    <div class="asset-status-list">
+                      <div><strong>Required structure</strong><span>At least one standard or paired part and one visible menu part.</span></div>
+                      <div><strong>Required files</strong><span>Every public item needs item images for every required layer.</span></div>
+                      <div><strong>Rule integrity</strong><span>No rule may reference a deleted part, private item, or missing fallback.</span></div>
+                    </div>
+                  </section>
+                </div>
+
+                <div class="creator-function-grid editor-panel" data-editor-panel="publish">
+                  <section class="function-card primary-function">
+                    <p class="kicker">On-chain Assets</p>
+                    <h2>Asset registry</h2>
+                    <div class="asset-status-list">
+                      <div><strong>Walrus blobs</strong><span>PNG layers, cover image, generated preview sheets</span></div>
+                      <div><strong>Sui objects</strong><span>Template, parts, recipe, licenses, creator identity</span></div>
+                      <div><strong>Revenue splits</strong><span>Template creator, part owner, OC owner, marketplace fee</span></div>
+                    </div>
+                  </section>
+                  <section class="function-card">
+                    <p class="kicker">Publish Steps</p>
+                    <h2>Chain execution</h2>
+                    <ol class="chain-step-list">
+                      <li><strong>Upload assets</strong><span>PNG layers and previews become Walrus blobs.</span></li>
+                      <li><strong>Register template</strong><span>Sui stores template metadata, layer order, parts, and rule hashes.</span></li>
+                      <li><strong>Attach licenses</strong><span>Personal, commercial, remix, and exclusive terms become policy objects.</span></li>
+                      <li><strong>Open creation</strong><span>Users create OC recipes against the published template.</span></li>
+                      <li><strong>Enable trading</strong><span>Secondary sales settle creator royalties and asset-owner splits.</span></li>
+                    </ol>
+                  </section>
+                  <section class="function-card">
+                    <p class="kicker">Publication Scope</p>
+                    <h2>Access states</h2>
+                    <div class="asset-status-list">
+                      <div><strong>Public</strong><span>Listed in plaza/search and available for OC creation.</span></div>
+                      <div><strong>Unlisted</strong><span>Accessible only by URL or allowlist; link can be rotated.</span></div>
+                      <div><strong>Private</strong><span>Creator-only draft, unavailable to other users.</span></div>
+                    </div>
+                  </section>
+                </div>
+
+                <div class="creator-function-grid editor-panel" data-editor-panel="layers">
+                  <section class="function-card">
+                    <p class="kicker">Layer Controls</p>
+                    <h2>Canvas behavior</h2>
+                    <div class="control-list">
+                      <span>Canvas: 1:1 / 9:16</span>
+                      <span>Menu visibility: ON / OFF</span>
+                      <span>Anchor: X, Y, scale, rotate</span>
+                      <span>Auto-mix: allow / lock</span>
+                    </div>
+                  </section>
+                  <section class="function-card">
+                    <p class="kicker">Layer Rules</p>
+                    <h2>Type-based constraints</h2>
+                    <div class="asset-status-list">
+                      <div><strong>Standard parts</strong><span>Can contain one or more layers, sortable by composition order.</span></div>
+                      <div><strong>Left-right paired parts</strong><span>Automatically use left and right layers; creator sets right-side X and spacing movement.</span></div>
+                      <div><strong>Last bastion parts</strong><span>Used as rule fallbacks; layers cannot be freely added like standard parts.</span></div>
+                    </div>
+                  </section>
+                </div>
+
+                <div class="creator-settings-grid editor-panel" data-editor-panel="settings">
+                  <section class="creator-card setup-card">
+                    <p class="kicker">Maker Settings</p>
+                    <h2>OC Maker settings</h2>
+                    <label>Maker name<input id="creatorTemplateName" value="Starlit Daily OC" /></label>
+                    <label>Creator<input id="creatorName" value="Animacraft Lab" /></label>
+                    <label>Style / world<input id="creatorWorld" value="Daily OC" /></label>
+                    <label>
+                      License type
+                      <select id="creatorLicense">
+                        <option value="personal-use">Personal use</option>
+                        <option value="free-remix">Free remix</option>
+                        <option value="paid-commercial">Paid commercial</option>
+                        <option value="exclusive-commission">Exclusive commission</option>
+                      </select>
+                    </label>
+                    <label>Creator royalty BPS<input id="creatorRoyalty" type="number" value="300" /></label>
+                  </section>
+
+                  <section class="creator-card">
+                    <p class="kicker">Publishing Checklist</p>
+                    <h2>Publishing checklist</h2>
+                    <div id="creatorChecklist" class="checklist"></div>
+                  </section>
+
+                  <section class="creator-card rights-card">
+                    <p class="kicker">Rules & Revenue</p>
+                    <h2>License and revenue rules</h2>
+                    <div class="rights-grid">
+                      <div><strong>Personal use</strong><span>Users can make icons, OC profiles, and non-commercial displays.</span></div>
+                      <div><strong>Commercial add-on</strong><span>Creators can set paid licenses for templates or premium parts.</span></div>
+                      <div><strong>Secondary trade</strong><span>When finished OCs resell, template creators, material owners, and OC owners settle by rule.</span></div>
+                    </div>
+                  </section>
+                  <section class="creator-card">
+                    <p class="kicker">User Permissions</p>
+                    <h2>Usage policy</h2>
+                    <div class="rights-grid">
+                      <div><strong>Permission scope</strong><span>Defines how generated OC images may be used, remixed, displayed, or commercialized.</span></div>
+                      <div><strong>Sensitive flag</strong><span>Marks templates that should be gated, filtered, or restricted by marketplace policy.</span></div>
+                      <div><strong>Auto-mix controls</strong><span>Controls whether all properties or only item/color choices can be auto-mixed.</span></div>
+                    </div>
+                  </section>
+                </div>
+              </section>
+
+            </div>
+
+            <section class="package-card editor-panel" data-editor-panel="preview">
+              <div>
+                <p class="kicker">Current OC Package</p>
+                <h2>Current package preview</h2>
+              </div>
+              <div class="profile-grid">
+                <label>OC name<input id="profileName" value="Mira" /></label>
+                <label>World<input id="profileWorld" value="Daily OC" /></label>
+                <label>Tags<input id="profileTags" value="daily, soft, starlit" /></label>
+                <label class="wide-field">OC description<textarea id="profileDescription">A calm, curious original character with a warm expression and soft starlit styling.</textarea></label>
+              </div>
+              <pre id="packagePreview"></pre>
+            </section>
+            </div>
+          </section>
+        </div>
+
+        <div id="makerRegistrationModal" class="maker-modal" aria-hidden="true">
+          <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="makerRegistrationTitle">
+            <div class="modal-head">
+              <h2 id="makerRegistrationTitle">OC Maker Registration</h2>
+              <button class="modal-close" data-close-maker-modal aria-label="Close">×</button>
+            </div>
+            <div class="modal-body">
+              <label class="modal-field">
+                <span>OC Maker Name</span>
+                <input id="newMakerName" placeholder="Example: Starlit Daily OC" />
+              </label>
+
+              <div class="modal-field">
+                <span>Canvas size</span>
+                <div class="choice-row">
+                  <button class="choice-card active" data-canvas-choice="1:1">
+                    <i></i>
+                    <strong>1:1</strong>
+                    <small>W:600px H:600px</small>
+                  </button>
+                  <button class="choice-card" data-canvas-choice="9:16">
+                    <i class="portrait"></i>
+                    <strong>9:16</strong>
+                    <small>W:540px H:960px</small>
+                  </button>
+                </div>
+              </div>
+
+              <div class="modal-field">
+                <span>Maker mode</span>
+                <div class="type-row">
+                  <button class="type-card active" data-maker-type="Free combine">
+                    <strong>✓ Free combine</strong>
+                    <p>Users freely choose parts and colors. Best for icons, OCs, character profiles, and creator templates.</p>
+                  </button>
+                  <button class="type-card" data-maker-type="Rule-guided mix">
+                    <strong>Rule-guided mix</strong>
+                    <p>Users can auto-generate combinations while creator rules prevent clipping, missing layers, or invalid licenses.</p>
+                  </button>
+                </div>
+              </div>
+
+              <div class="modal-field">
+                <span>Starter structure</span>
+                <div class="starter-structure-grid">
+                  <label><input type="checkbox" checked /> Maker Top dashboard</label>
+                  <label><input type="checkbox" checked /> First standard part</label>
+                  <label><input type="checkbox" checked /> No.1 base item</label>
+                  <label><input type="checkbox" checked /> Generated layer order</label>
+                  <label><input type="checkbox" /> Left-right paired part</label>
+                  <label><input type="checkbox" /> Last-bastion fallback</label>
+                </div>
+              </div>
+
+              <div class="modal-field">
+                <span>First part</span>
+                <div class="creation-blueprint">
+                  <label>Part name<input id="firstPartName" value="Face base" /></label>
+                  <label>
+                    Part type
+                    <select id="firstPartType">
+                      <option value="standard">Standard part</option>
+                      <option value="left-right-pair">Left-right paired part</option>
+                      <option value="last-bastion">Last bastion part</option>
+                    </select>
+                  </label>
+                  <label>Layer name<input id="firstLayerName" value="Normal" /></label>
+                </div>
+              </div>
+
+              <div class="modal-field">
+                <span>On-chain draft</span>
+                <div class="onchain-draft-plan">
+                  <div><strong>Walrus staging</strong><span>Prepare asset slots for PNG layers, item icons, and cover previews.</span></div>
+                  <div><strong>Sui draft object</strong><span>Create a local manifest that can become a template object after wallet confirmation.</span></div>
+                  <div><strong>Policy draft</strong><span>Personal use by default, with commercial and remix policies added before release.</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button class="secondary" data-close-maker-modal>Cancel</button>
+              <button id="registerMaker" class="primary">Create Maker Top</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="partRegistrationModal" class="maker-modal" aria-hidden="true">
+          <div class="modal-card compact-modal" role="dialog" aria-modal="true" aria-labelledby="partRegistrationTitle">
+            <div class="modal-head">
+              <h2 id="partRegistrationTitle">Part Registration</h2>
+              <button class="modal-close" data-close-part-modal aria-label="Close">×</button>
+            </div>
+            <div class="modal-body">
+              <label class="modal-field">
+                <span>Part name</span>
+                <input id="newPartName" value="New accessory" />
+              </label>
+              <div class="modal-field">
+                <span>Part type</span>
+                <div class="type-row">
+                  <button class="type-card active" data-new-part-type="standard">
+                    <strong>✓ Standard</strong>
+                    <p>Normal selectable part with one or more layers and visible items.</p>
+                  </button>
+                  <button class="type-card" data-new-part-type="left-right-pair">
+                    <strong>Left-right pair</strong>
+                    <p>Paired left/right layers with spacing and mirrored anchor settings.</p>
+                  </button>
+                  <button class="type-card" data-new-part-type="last-bastion">
+                    <strong>Last bastion</strong>
+                    <p>Fallback part that remains available when rules hide other options.</p>
+                  </button>
+                </div>
+              </div>
+              <div class="modal-field">
+                <span>Starter item</span>
+                <div class="creation-blueprint">
+                  <label>No.1 item<input id="newPartItemName" value="Normal" /></label>
+                  <label>Layer name<input id="newPartLayerName" value="Normal" /></label>
+                  <label>
+                    Menu visibility
+                    <select id="newPartMenuVisible">
+                      <option value="visible">Visible in menu</option>
+                      <option value="hidden">Hidden fixed layer</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button class="secondary" data-close-part-modal>Cancel</button>
+              <button id="registerPart" class="primary">Create part</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="docs" class="page">
+        <div class="page-head">
+          <div>
+            <p class="kicker">Docs</p>
+            <h1>On-chain rules for OC creation</h1>
+            <p>
+              Animacraft keeps the maker experience simple, while the protocol records material provenance,
+              template licenses, OC ownership, trade settlement, and remix relationships.
+            </p>
+          </div>
+        </div>
+        <div id="protocolSteps" class="protocol-grid"></div>
+      </section>
+    </main>
+
+    <script src="./app.js?v=animacraft-30"></script>
+  </body>
+</html>
