@@ -2,7 +2,7 @@
 
 ## Pilot Goal
 
-Each invited artist publishes one small, polished Character Maker that users can open, remix into distinct OCs, and mint on Sui Mainnet.
+Each invited artist publishes one small, polished Character Maker that users can open, remix into distinct OCs, and mint as canonical Soulidity Souls on Sui Mainnet.
 
 ## Before Starting
 
@@ -43,10 +43,10 @@ Common Parts include Background, Body/Base, Back Hair, Front Hair, Eyes, Mouth, 
 
 - `personal-use`: personal avatars, profiles, and non-commercial display.
 - `free-remix`: remix/share permission under the creator's stated terms.
-- `paid-commercial`: records commercial permission policy; payment is handled outside this release.
+- `paid-commercial`: records commercial permission policy; the Maker may independently enable a native-USDC mint fee.
 - `exclusive-commission`: records an exclusive-policy intent; off-chain terms still need to identify the actual buyer/project.
 
-`royaltyBps` is copied into every OC as policy metadata. It does not automatically collect or distribute funds yet.
+`royaltyBps` must be off or 1%–5% and is copied into the Soul mint authorization. Animacraft collects optional Maker fees only inside the canonical Soulidity mint PTB; Soulidity Marketplace is responsible for later resale distribution.
 
 ## Publication Checklist
 
@@ -54,11 +54,12 @@ Common Parts include Background, Body/Base, Back Hair, Front Hair, Eyes, Mouth, 
 2. Test every visible Part, None option, required Part, rule, palette link, and Item thumbnail.
    Linked Parts must expose the same exact hex Color set.
 3. Complete Preview Check with no blockers.
-4. Export a manifest backup.
-5. Prepare the Walrus quilt and confirm the expected file count.
-6. Register/upload and certify with the same wallet.
-7. Publish the shared Maker on Sui.
-8. Open it from a disconnected browser, then use a second wallet to make and mint an OC.
-9. Record Maker object, Quilt Blob ID, publication digest, sample OC object, and creator contact.
+4. Review Living Content defaults. Leave them unchanged for a neutral Soul shell or customize the character voice, founding memory, and skill.
+5. Export a manifest backup.
+6. Prepare the Walrus quilt and confirm the expected file count.
+7. Register/upload and certify with the same wallet.
+8. Publish the shared Maker on Sui.
+9. Open it from a disconnected browser, then use a second wallet to make an OC and complete the Soulidity mint.
+10. Record Maker object, Quilt Blob ID, publication digest, sample Soul object, and creator contact.
 
 Do not publish a test draft merely to inspect the flow. Published versions are immutable; mistakes require a new version or archive.

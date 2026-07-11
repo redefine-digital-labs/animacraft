@@ -15,6 +15,10 @@ OCMaker
 |     `- Item images: one PNG per Layer x Color cell
 |- Selection rules
 |- Palette links
+|- Living Content defaults
+|  |- soul.md
+|  |- memory.md
+|  `- skills.zip / SKILL.md
 |- License policy
 `- Walrus manifest
 ```
@@ -39,9 +43,10 @@ public Items x Layers x Colors
 7. Use **Composition Order** to move Layers front/behind and set X/Y offset, opacity, or blend mode. The editor preview and final exported PNG use the same values.
 8. In **Rules**, block incompatible choices between two non-Last-Bastion Parts. A blank Item selector means the whole Part; a selected Item creates an Item-specific rule.
 9. In **Palette Rules**, link Parts whose colors should change together. Linked Parts must publish the same exact hex Color set; the player selects one shared value and Sui enforces it at mint.
-10. Complete Maker name, description, creator, world/style, license kind, and royalty policy in **Settings**.
-11. Run **Preview Check** until every blocking check passes.
-12. In **On-chain Publish**, prepare, register/upload, certify, and publish.
+10. Open **Living Content**. The default Soul Character, Memory, and Skills & Docs files are already valid for Soulidity; edit only what should be specific to this Maker.
+11. Complete Maker name, description, creator, world/style, license kind, mint availability, native-USDC price, and 0%–5% resale royalty tier in **Settings**.
+12. Run **Preview Check** until every blocking check passes.
+13. In **On-chain Publish**, prepare, register/upload, certify, and publish.
 
 ## Image Rules
 
@@ -64,14 +69,15 @@ If a paid Walrus workflow is interrupted, reconnect the same wallet and use **Re
 ## Delete, Publish, Archive
 
 - Before publication, a creator may permanently delete a local Maker, Part, Item, optional Layer, or extra Color. Related local file references and invalid rules are removed.
-- Publishing stores an immutable version. Art, rules, policy, and manifest are no longer editable.
+- Publishing stores immutable art, rules, and manifest. The current `MakerAdminCap` owner may update future mint availability, USDC price, royalty tier, and archive state.
 - To revise a published Maker, create and publish a new version.
-- The creator may archive or restore the shared Sui Maker. Archive blocks new OC mints but preserves existing OCs, provenance, policy snapshots, and Walrus files.
+- The creator may archive or restore the shared Sui Maker. Archive blocks new Soul authorizations but preserves existing Souls, provenance, policy snapshots, and Walrus files.
 
 ## Launch Limits
 
 - 100 Items, 32 Layers, and 32 Colors per Part.
 - 5,000 Walrus files per Maker release, including cover and manifest.
 - 450 total Part + public Item + Color + selection rule + palette-link records in the current one-transaction publisher.
-- New Maker and OC quilts default to 53 Walrus Mainnet epochs, currently about two years. Storage can be extended, so operators must schedule renewal before expiry.
-- Royalty BPS is recorded policy metadata. This release does not collect template payments or settle royalties.
+- New Maker and OC packages default to 53 Walrus Mainnet epochs, currently about two years. Storage can be extended, so operators must schedule renewal before expiry.
+- Paid mint revenue is held by the Maker's `MakerTreasury<USDC>` and only the matching `MakerAdminCap` holder can withdraw it.
+- Royalty tiers are copied into the Soul mint authorization. Secondary settlement is enforced by the Soulidity Marketplace adapter, not by browser metadata.

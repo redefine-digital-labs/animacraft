@@ -4,7 +4,7 @@ Animacraft is a static Vite app with direct wallet-signed Sui and Walrus writes.
 
 ## Recommended Origin
 
-Use `animacraft.soulidity.xyz`. It keeps Animacraft visibly related to Soulidity while preserving a standalone product and repository boundary.
+Use `animacraft.soulidity.ai`. It keeps Animacraft visibly related to Soulidity while preserving a standalone product and repository boundary.
 
 ## 1. Preflight
 
@@ -41,14 +41,27 @@ window.ANIMACRAFT_CONFIG = {
   grpcUrl: 'https://fullnode.mainnet.sui.io:443',
   graphqlUrl: 'https://sui-mainnet.mystenlabs.com/graphql',
   packageId: '0xVERIFIED_PACKAGE_ID',
+  paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
+  paymentCoinSymbol: 'USDC',
+  paymentCoinDecimals: 6,
   walrusAggregatorUrl: 'https://aggregator.walrus-mainnet.walrus.space',
   walrusUploadRelayUrl: 'https://upload-relay.mainnet.walrus.space',
   walrusRelayMaxTipMist: 1000000,
   walrusEpochs: 53,
   featuredMakers: {},
-  appUrl: 'https://animacraft.soulidity.xyz'
+  appUrl: 'https://animacraft.soulidity.ai',
+  soulidityAppUrl: 'https://www.soulidity.ai',
+  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0'
 };
 ```
+
+Run the strict read-only check after setting the Animacraft package:
+
+```bash
+npm run preflight:mainnet
+```
+
+After the separate Soulidity package and adapter are published, set `soulidityPackageId` and run `npm run preflight:integration`.
 
 `featuredMakers` is only a curated fallback. The public gallery discovers all `OCMakerPublished` events through Sui GraphQL and hydrates each Maker from its certified Walrus manifest.
 
@@ -73,7 +86,7 @@ Only public values belong in this file. Vercel serves `config.js` with `no-store
 
 ## 5. Connect the Subdomain
 
-1. Add `animacraft.soulidity.xyz` to the Vercel project.
+1. Add `animacraft.soulidity.ai` to the Vercel project.
 2. Add the CNAME or provider-specific DNS record Vercel shows.
 3. Wait for TLS issuance.
 4. Update `appUrl` if the final origin differs, redeploy, and verify both apex navigation and deep rewrites.
@@ -86,10 +99,12 @@ Use a small real Maker first:
 2. Connect the creator wallet and create a 1:1 draft with two Parts and two Items.
 3. Upload aligned PNGs, save, reload, and confirm IndexedDB restores every file.
 4. Prepare, register/upload, certify, and publish the Maker. Interrupt once before certification and verify `Resume saved upload` works.
-5. Confirm the shared `OCMaker` appears through event discovery without adding it to `featuredMakers`.
-6. Connect a second wallet, make an OC, resume an interrupted OC upload, and mint it.
-7. Confirm My OCs, Sui object links, Walrus image, recipe, policy snapshot, and the Move-verified SHA-256 BCS recipe hash.
-8. Archive the Maker with the creator wallet, verify a new mint is rejected, restore it, and verify minting resumes.
+5. Confirm the shared `OCMaker`, shared `MakerTreasury<USDC>`, and wallet-owned `MakerAdminCap` are linked and the Maker appears through event discovery.
+6. Connect a second wallet, make an OC, resume an interrupted OC upload, and complete one free mint.
+7. Enable a small USDC price with the Cap wallet, complete one paid mint, and verify the exact amount reaches the linked Treasury.
+8. Withdraw that amount with the Cap wallet and verify the recipient balance and withdrawal event.
+9. Confirm the Soulidity handoff, Living Content files, Walrus image, recipe, policy/payment snapshots, and the Move-verified SHA-256 BCS recipe hash.
+10. Archive the Maker with the Cap wallet, verify a new mint is rejected, restore it, and verify minting resumes.
 
 Record all transaction digests and object ids in the release PR.
 
@@ -99,7 +114,11 @@ Record all transaction digests and object ids in the release PR.
 - WAL pays Walrus storage registration.
 - Maker and OC upload checkpoints survive reload in the same browser profile.
 - Certified Walrus data and Sui objects are not deleted when a local draft is removed.
-- A published Maker is immutable; publish a new Maker version to change its art or rules.
+- A published Maker's art and composition rules are immutable; publish a new version to change them. Its Cap owner may change future mint economics and archive state.
+
+## Separate Soulidity Deployment
+
+Do not combine the two packages into one publish transaction. Publish Animacraft first, pin its original package ID as a dependency of the Soulidity adapter, review that diff with the Soulidity developers, then publish Soulidity with its own `UpgradeCap`. Animacraft and Soulidity must have separate multisig custody records and release tags.
 
 ## Rollback
 

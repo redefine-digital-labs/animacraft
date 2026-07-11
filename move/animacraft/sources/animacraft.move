@@ -3,14 +3,17 @@ module animacraft::animacraft;
 use std::bcs;
 use std::hash;
 use std::string::{Self as string, String};
+use std::type_name;
+use sui::balance::{Self as balance, Balance};
 use sui::clock::Clock;
+use sui::coin::{Self as coin, Coin};
 use sui::display;
 use sui::event;
 use sui::package;
 use sui::table::{Self as table, Table};
 
-const VERSION: u64 = 1;
-const MAX_BPS: u16 = 10_000;
+const VERSION: u64 = 3;
+const MAX_ROYALTY_BPS: u16 = 500;
 const MAX_PARTS: u64 = 750;
 const MAX_ITEMS: u64 = 5_000;
 const MAX_RULES: u64 = 1_000;
@@ -20,7 +23,6 @@ const MAX_DESCRIPTION_BYTES: u64 = 2_000;
 const MAX_URI_BYTES: u64 = 512;
 
 const ENotOwner: u64 = 0;
-const ERoyaltyTooHigh: u64 = 1;
 const EMakerPublished: u64 = 2;
 const EMakerNotPublished: u64 = 3;
 const EPartAlreadyExists: u64 = 4;
@@ -53,6 +55,13 @@ const ETooManyColors: u64 = 30;
 const EPartHasNoColors: u64 = 31;
 const EInvalidRenderOrder: u64 = 32;
 const EPaletteLinkViolation: u64 = 33;
+const EInvalidAdminCap: u64 = 34;
+const EMintingDisabled: u64 = 35;
+const EWrongPayment: u64 = 36;
+const EInvalidRoyalty: u64 = 37;
+const ETreasuryMismatch: u64 = 38;
+const EInsufficientRevenue: u64 = 39;
+const EInvalidFeeConfig: u64 = 40;
 
 const LICENSE_PERSONAL: u8 = 0;
 const LICENSE_FREE_REMIX: u8 = 1;
@@ -84,14 +93,22 @@ public struct CreatorProfile has key {
     maker_ids: vector<ID>,
 }
 
-/// Snapshot of how a maker and derived OCs may be used. It is copied into every
-/// minted OC so later maker policy edits cannot rewrite old user rights.
+/// Snapshot of how a Maker-derived Soul may be used. It is copied into every
+/// mint authorization so later Maker edits cannot rewrite existing rights.
 public struct LicensePolicy has copy, drop, store {
     license_kind: u8,
     royalty_bps: u16,
     commercial_allowed: bool,
     remix_allowed: bool,
     attribution_required: bool,
+}
+
+/// Unforgeable policy exported to Soulidity when it consumes a Maker mint
+/// authorization. Its private fields preserve the mint-time royalty tier.
+public struct RoyaltyPolicySnapshot has copy, drop, store {
+    maker_id: ID,
+    treasury_id: ID,
+    royalty_bps: u16,
 }
 
 public struct PartKey has copy, drop, store {
@@ -118,6 +135,27 @@ public struct ItemRecord has copy, drop, store {
     gate_kind: u8,
 }
 
+/// Transferable authority for one Maker. Whoever owns this object controls
+/// Maker settings, publication lifecycle, and its linked Treasury withdrawals.
+public struct MakerAdminCap has key, store {
+    id: UID,
+    version: u64,
+    maker_id: ID,
+    treasury_id: ID,
+}
+
+/// A Maker-specific payment vault. The type parameter is the only coin type
+/// accepted by that Maker. Production Makers use Circle native Sui USDC.
+public struct MakerTreasury<phantom PaymentCoin> has key {
+    id: UID,
+    version: u64,
+    maker_id: ID,
+    revenue: Balance<PaymentCoin>,
+    total_collected: u64,
+    total_royalty_collected: u64,
+    total_withdrawn: u64,
+}
+
 /// Creator template. Its manifest blob should contain the full off-chain / Walrus
 /// index needed by the editor, while this object keeps canonical ownership,
 /// publication state, licensing, parts and item references queryable on-chain.
@@ -131,6 +169,12 @@ public struct OCMaker has key {
     cover_url: String,
     manifest_blob_id: String,
     policy: LicensePolicy,
+    admin_cap_id: Option<ID>,
+    treasury_id: Option<ID>,
+    payment_coin_type: String,
+    minting_enabled: bool,
+    mint_fee_enabled: bool,
+    mint_price_atomic: u64,
     parts: Table<PartKey, PartRecord>,
     items_by_part: Table<PartKey, vector<ItemRecord>>,
     part_keys: vector<String>,
@@ -165,23 +209,25 @@ public struct PaletteLink has copy, drop, store {
     right_part_key: String,
 }
 
-/// User-owned OC output derived from an OCMaker. The rendered image and profile
-/// JSON are Walrus blob ids; recipe_hash is the stable proof for the selected
-/// part/item/color set.
-public struct OCCharacter has key, store {
-    id: UID,
+/// Ephemeral, non-droppable authorization consumed by the Soulidity mint
+/// adapter in the same programmable transaction. Animacraft validates the
+/// Maker recipe and optional payment, but never creates a parallel OC token.
+public struct SoulMintAuthorization {
     version: u64,
     maker_id: ID,
+    maker_treasury_id: ID,
     maker_creator: address,
-    minter: address,
+    payer: address,
     name: String,
     profile_json_blob_id: String,
     image_blob_id: String,
     image_url: String,
     recipe_hash: vector<u8>,
     license_snapshot: LicensePolicy,
+    mint_payment_coin_type: String,
+    mint_price_atomic: u64,
     recipe: vector<RecipeSlot>,
-    created_at_ms: u64,
+    authorized_at_ms: u64,
 }
 
 public struct CreatorProfileCreated has copy, drop {
@@ -192,10 +238,50 @@ public struct CreatorProfileCreated has copy, drop {
 
 public struct OCMakerCreated has copy, drop {
     maker_id: ID,
+    admin_cap_id: ID,
+    treasury_id: ID,
     creator: address,
     creator_profile_id: ID,
+    payment_coin_type: String,
     license_kind: u8,
     royalty_bps: u16,
+    minting_enabled: bool,
+    mint_fee_enabled: bool,
+    mint_price_atomic: u64,
+}
+
+public struct MakerEconomicsUpdated has copy, drop {
+    maker_id: ID,
+    updater: address,
+    minting_enabled: bool,
+    mint_fee_enabled: bool,
+    mint_price_atomic: u64,
+    royalty_bps: u16,
+}
+
+public struct MakerRevenueCollected has copy, drop {
+    maker_id: ID,
+    treasury_id: ID,
+    payer: address,
+    amount: u64,
+}
+
+public struct MakerRevenueWithdrawn has copy, drop {
+    maker_id: ID,
+    treasury_id: ID,
+    operator: address,
+    recipient: address,
+    amount: u64,
+}
+
+public struct MakerRoyaltyCollected has copy, drop {
+    maker_id: ID,
+    treasury_id: ID,
+    payer: address,
+    gross_sale_amount: u64,
+    royalty_amount: u64,
+    royalty_bps: u16,
+    soul_id: ID,
 }
 
 public struct OCMakerMetadataUpdated has copy, drop {
@@ -254,14 +340,15 @@ public struct OCMakerPaletteLinked has copy, drop {
     right_part_key: String,
 }
 
-public struct OCCharacterMinted has copy, drop {
-    oc_id: ID,
+public struct SoulMintAuthorized has copy, drop {
     maker_id: ID,
+    treasury_id: ID,
     maker_creator: address,
-    owner: address,
+    payer: address,
     recipe_hash: vector<u8>,
     license_kind: u8,
     royalty_bps: u16,
+    mint_price_atomic: u64,
 }
 
 fun init(otw: ANIMACRAFT, ctx: &mut TxContext) {
@@ -272,18 +359,12 @@ fun init(otw: ANIMACRAFT, ctx: &mut TxContext) {
     maker_display.add(b"description".to_string(), b"{description}".to_string());
     maker_display.add(b"image_url".to_string(), b"{cover_url}".to_string());
     maker_display.add(b"creator".to_string(), b"{creator}".to_string());
+    maker_display.add(b"payment_coin_type".to_string(), b"{payment_coin_type}".to_string());
+    maker_display.add(b"mint_price_atomic".to_string(), b"{mint_price_atomic}".to_string());
     maker_display.update_version();
-
-    let mut oc_display = display::new<OCCharacter>(&publisher, ctx);
-    oc_display.add(b"name".to_string(), b"{name}".to_string());
-    oc_display.add(b"description".to_string(), b"OC created with Animacraft".to_string());
-    oc_display.add(b"image_url".to_string(), b"{image_url}".to_string());
-    oc_display.add(b"creator".to_string(), b"{maker_creator}".to_string());
-    oc_display.update_version();
 
     transfer::public_transfer(publisher, ctx.sender());
     transfer::public_transfer(maker_display, ctx.sender());
-    transfer::public_transfer(oc_display, ctx.sender());
 }
 
 public fun protocol_version(): u64 {
@@ -358,12 +439,137 @@ public fun maker_policy(self: &OCMaker): LicensePolicy {
     self.policy
 }
 
-public fun oc_minter(self: &OCCharacter): address {
-    self.minter
+public fun maker_treasury_id(self: &OCMaker): Option<ID> {
+    self.treasury_id
 }
 
-public fun oc_maker_id(self: &OCCharacter): ID {
+public fun maker_admin_cap_id(self: &OCMaker): Option<ID> {
+    self.admin_cap_id
+}
+
+public fun maker_payment_coin_type(self: &OCMaker): &String {
+    &self.payment_coin_type
+}
+
+public fun maker_minting_enabled(self: &OCMaker): bool {
+    self.minting_enabled
+}
+
+public fun maker_mint_fee_enabled(self: &OCMaker): bool {
+    self.mint_fee_enabled
+}
+
+public fun maker_mint_price_atomic(self: &OCMaker): u64 {
+    self.mint_price_atomic
+}
+
+public fun admin_cap_maker_id(self: &MakerAdminCap): ID {
     self.maker_id
+}
+
+public fun admin_cap_treasury_id(self: &MakerAdminCap): ID {
+    self.treasury_id
+}
+
+public fun treasury_maker_id<PaymentCoin>(self: &MakerTreasury<PaymentCoin>): ID {
+    self.maker_id
+}
+
+public fun treasury_id<PaymentCoin>(self: &MakerTreasury<PaymentCoin>): ID {
+    object::id(self)
+}
+
+public fun treasury_balance<PaymentCoin>(self: &MakerTreasury<PaymentCoin>): u64 {
+    self.revenue.value()
+}
+
+public fun treasury_total_collected<PaymentCoin>(self: &MakerTreasury<PaymentCoin>): u64 {
+    self.total_collected
+}
+
+public fun treasury_total_withdrawn<PaymentCoin>(self: &MakerTreasury<PaymentCoin>): u64 {
+    self.total_withdrawn
+}
+
+public fun treasury_total_royalty_collected<PaymentCoin>(self: &MakerTreasury<PaymentCoin>): u64 {
+    self.total_royalty_collected
+}
+
+public fun royalty_policy_maker_id(self: &RoyaltyPolicySnapshot): ID {
+    self.maker_id
+}
+
+public fun royalty_policy_treasury_id(self: &RoyaltyPolicySnapshot): ID {
+    self.treasury_id
+}
+
+public fun royalty_policy_bps(self: &RoyaltyPolicySnapshot): u16 {
+    self.royalty_bps
+}
+
+/// Soulidity's adapter is the intended consumer. The authorization has no
+/// abilities, so it cannot be stored, transferred, copied, or silently dropped.
+/// The adapter must consume it in the same PTB that mints the canonical Soul.
+public fun consume_soul_mint_authorization(
+    authorization: SoulMintAuthorization,
+): (
+    u64,
+    ID,
+    ID,
+    address,
+    address,
+    String,
+    String,
+    String,
+    String,
+    vector<u8>,
+    LicensePolicy,
+    RoyaltyPolicySnapshot,
+    String,
+    u64,
+    vector<RecipeSlot>,
+    u64,
+) {
+    let SoulMintAuthorization {
+        version,
+        maker_id,
+        maker_treasury_id,
+        maker_creator,
+        payer,
+        name,
+        profile_json_blob_id,
+        image_blob_id,
+        image_url,
+        recipe_hash,
+        license_snapshot,
+        mint_payment_coin_type,
+        mint_price_atomic,
+        recipe,
+        authorized_at_ms,
+    } = authorization;
+    let royalty_policy = RoyaltyPolicySnapshot {
+        maker_id,
+        treasury_id: maker_treasury_id,
+        royalty_bps: license_snapshot.royalty_bps,
+    };
+    (
+        version,
+        maker_id,
+        maker_treasury_id,
+        maker_creator,
+        payer,
+        name,
+        profile_json_blob_id,
+        image_blob_id,
+        image_url,
+        recipe_hash,
+        license_snapshot,
+        royalty_policy,
+        mint_payment_coin_type,
+        mint_price_atomic,
+        recipe,
+        authorized_at_ms,
+    )
 }
 
 public fun creator_maker_ids(profile: &CreatorProfile): &vector<ID> {
@@ -461,7 +667,7 @@ public fun update_creator_profile(
     profile.payout_address = payout_address;
 }
 
-public fun new_oc_maker(
+fun new_oc_maker(
     profile: &mut CreatorProfile,
     name: String,
     description: String,
@@ -481,7 +687,7 @@ public fun new_oc_maker(
     assert_max_bytes(&description, MAX_DESCRIPTION_BYTES);
     assert_max_bytes(&cover_url, MAX_URI_BYTES);
     assert_max_bytes(&manifest_blob_id, MAX_URI_BYTES);
-    assert!(royalty_bps <= MAX_BPS, ERoyaltyTooHigh);
+    assert_valid_royalty(royalty_bps);
     assert_valid_license_kind(license_kind);
 
     let creator = ctx.sender();
@@ -503,6 +709,12 @@ public fun new_oc_maker(
         cover_url,
         manifest_blob_id,
         policy,
+        admin_cap_id: option::none(),
+        treasury_id: option::none(),
+        payment_coin_type: b"".to_string(),
+        minting_enabled: true,
+        mint_fee_enabled: false,
+        mint_price_atomic: 0,
         parts: table::new(ctx),
         items_by_part: table::new(ctx),
         part_keys: vector[],
@@ -521,17 +733,88 @@ public fun new_oc_maker(
     profile.maker_count = profile.maker_count + 1;
     profile.maker_ids.push_back(maker_id);
 
-    event::emit(OCMakerCreated {
-        maker_id,
-        creator,
-        creator_profile_id: object::id(profile),
-        license_kind,
-        royalty_bps,
-    });
     maker
 }
 
-public fun update_maker_metadata(
+/// Creates the production three-object Maker model. The returned Maker and
+/// Treasury remain owned inputs while the creator builds the release; the Cap
+/// is transferred to the creator when the Maker is shared.
+public fun new_managed_oc_maker<PaymentCoin>(
+    profile: &mut CreatorProfile,
+    name: String,
+    description: String,
+    cover_url: String,
+    manifest_blob_id: String,
+    license_kind: u8,
+    royalty_bps: u16,
+    commercial_allowed: bool,
+    remix_allowed: bool,
+    attribution_required: bool,
+    minting_enabled: bool,
+    mint_fee_enabled: bool,
+    mint_price_atomic: u64,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): (OCMaker, MakerTreasury<PaymentCoin>, MakerAdminCap) {
+    assert_valid_fee_config(minting_enabled, mint_fee_enabled, mint_price_atomic);
+    let mut maker = new_oc_maker(
+        profile,
+        name,
+        description,
+        cover_url,
+        manifest_blob_id,
+        license_kind,
+        royalty_bps,
+        commercial_allowed,
+        remix_allowed,
+        attribution_required,
+        clock,
+        ctx,
+    );
+    let maker_id = object::id(&maker);
+    let treasury = MakerTreasury<PaymentCoin> {
+        id: object::new(ctx),
+        version: VERSION,
+        maker_id,
+        revenue: balance::zero(),
+        total_collected: 0,
+        total_royalty_collected: 0,
+        total_withdrawn: 0,
+    };
+    let treasury_id = object::id(&treasury);
+    let cap = MakerAdminCap {
+        id: object::new(ctx),
+        version: VERSION,
+        maker_id,
+        treasury_id,
+    };
+    let admin_cap_id = object::id(&cap);
+    let payment_coin_type = payment_coin_type_name<PaymentCoin>();
+    maker.admin_cap_id = option::some(admin_cap_id);
+    maker.treasury_id = option::some(treasury_id);
+    maker.payment_coin_type = payment_coin_type;
+    maker.minting_enabled = minting_enabled;
+    maker.mint_fee_enabled = mint_fee_enabled;
+    maker.mint_price_atomic = mint_price_atomic;
+
+    event::emit(OCMakerCreated {
+        maker_id,
+        admin_cap_id,
+        treasury_id,
+        creator: ctx.sender(),
+        creator_profile_id: object::id(profile),
+        payment_coin_type,
+        license_kind,
+        royalty_bps,
+        minting_enabled,
+        mint_fee_enabled,
+        mint_price_atomic,
+    });
+    (maker, treasury, cap)
+}
+
+public fun admin_update_maker_metadata(
+    cap: &MakerAdminCap,
     maker: &mut OCMaker,
     name: String,
     description: String,
@@ -540,7 +823,154 @@ public fun update_maker_metadata(
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_maker_creator(maker, ctx);
+    assert_maker_admin(maker, cap);
+    update_maker_metadata(maker, name, description, cover_url, manifest_blob_id, clock, ctx);
+}
+
+public fun admin_update_maker_policy(
+    cap: &MakerAdminCap,
+    maker: &mut OCMaker,
+    license_kind: u8,
+    royalty_bps: u16,
+    commercial_allowed: bool,
+    remix_allowed: bool,
+    attribution_required: bool,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert_maker_admin(maker, cap);
+    update_maker_policy(
+        maker,
+        license_kind,
+        royalty_bps,
+        commercial_allowed,
+        remix_allowed,
+        attribution_required,
+        clock,
+        ctx,
+    );
+}
+
+/// Economics may be updated after publication because every OC stores an
+/// immutable policy and price snapshot at mint time.
+public fun configure_maker_economics(
+    cap: &MakerAdminCap,
+    maker: &mut OCMaker,
+    minting_enabled: bool,
+    mint_fee_enabled: bool,
+    mint_price_atomic: u64,
+    royalty_bps: u16,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert_maker_admin(maker, cap);
+    assert_valid_fee_config(minting_enabled, mint_fee_enabled, mint_price_atomic);
+    assert_valid_royalty(royalty_bps);
+    maker.minting_enabled = minting_enabled;
+    maker.mint_fee_enabled = mint_fee_enabled;
+    maker.mint_price_atomic = mint_price_atomic;
+    maker.policy.royalty_bps = royalty_bps;
+    maker.updated_at_ms = clock.timestamp_ms();
+    event::emit(MakerEconomicsUpdated {
+        maker_id: object::id(maker),
+        updater: ctx.sender(),
+        minting_enabled,
+        mint_fee_enabled,
+        mint_price_atomic,
+        royalty_bps,
+    });
+}
+
+public fun admin_add_part(
+    cap: &MakerAdminCap,
+    maker: &mut OCMaker,
+    key: String,
+    label: String,
+    part_kind: u8,
+    render_order: u64,
+    menu_visible: bool,
+    required: bool,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert_maker_admin(maker, cap);
+    add_part(maker, key, label, part_kind, render_order, menu_visible, required, clock, ctx);
+}
+
+public fun admin_add_color(
+    cap: &MakerAdminCap,
+    maker: &mut OCMaker,
+    part_key_name: String,
+    color_hex: String,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert_maker_admin(maker, cap);
+    add_color(maker, part_key_name, color_hex, clock, ctx);
+}
+
+public fun admin_add_item(
+    cap: &MakerAdminCap,
+    maker: &mut OCMaker,
+    part_key_name: String,
+    item_key: String,
+    label: String,
+    walrus_blob_id: String,
+    icon_blob_id: String,
+    gate_kind: u8,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert_maker_admin(maker, cap);
+    add_item(maker, part_key_name, item_key, label, walrus_blob_id, icon_blob_id, gate_kind, clock, ctx);
+}
+
+public fun admin_add_selection_rule(
+    cap: &MakerAdminCap,
+    maker: &mut OCMaker,
+    left_part_key: String,
+    left_item_key: String,
+    right_part_key: String,
+    right_item_key: String,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert_maker_admin(maker, cap);
+    add_selection_rule(maker, left_part_key, left_item_key, right_part_key, right_item_key, clock, ctx);
+}
+
+public fun admin_add_palette_link(
+    cap: &MakerAdminCap,
+    maker: &mut OCMaker,
+    left_part_key: String,
+    right_part_key: String,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert_maker_admin(maker, cap);
+    add_palette_link(maker, left_part_key, right_part_key, clock, ctx);
+}
+
+public fun admin_publish_maker(
+    cap: &MakerAdminCap,
+    maker: &mut OCMaker,
+    manifest_blob_id: String,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert_maker_admin(maker, cap);
+    publish_maker(maker, manifest_blob_id, clock, ctx);
+}
+
+fun update_maker_metadata(
+    maker: &mut OCMaker,
+    name: String,
+    description: String,
+    cover_url: String,
+    manifest_blob_id: String,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
     assert_editable(maker);
     assert_non_empty(&name);
     assert_max_bytes(&name, MAX_KEY_BYTES);
@@ -560,7 +990,7 @@ public fun update_maker_metadata(
     });
 }
 
-public fun update_maker_policy(
+fun update_maker_policy(
     maker: &mut OCMaker,
     license_kind: u8,
     royalty_bps: u16,
@@ -568,11 +998,10 @@ public fun update_maker_policy(
     remix_allowed: bool,
     attribution_required: bool,
     clock: &Clock,
-    ctx: &TxContext,
+    _ctx: &TxContext,
 ) {
-    assert_maker_creator(maker, ctx);
     assert_editable(maker);
-    assert!(royalty_bps <= MAX_BPS, ERoyaltyTooHigh);
+    assert_valid_royalty(royalty_bps);
     assert_valid_license_kind(license_kind);
 
     maker.policy = LicensePolicy {
@@ -585,7 +1014,7 @@ public fun update_maker_policy(
     maker.updated_at_ms = clock.timestamp_ms();
 }
 
-public fun add_part(
+fun add_part(
     maker: &mut OCMaker,
     key: String,
     label: String,
@@ -596,7 +1025,6 @@ public fun add_part(
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_maker_creator(maker, ctx);
     assert_editable(maker);
     assert_non_empty(&key);
     assert_non_empty(&label);
@@ -632,14 +1060,13 @@ public fun add_part(
     });
 }
 
-public fun add_color(
+fun add_color(
     maker: &mut OCMaker,
     part_key_name: String,
     color_hex: String,
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_maker_creator(maker, ctx);
     assert_editable(maker);
     assert_max_bytes(&part_key_name, MAX_KEY_BYTES);
     assert_color_hex(&color_hex);
@@ -664,7 +1091,7 @@ public fun add_color(
     });
 }
 
-public fun add_item(
+fun add_item(
     maker: &mut OCMaker,
     part_key_name: String,
     item_key: String,
@@ -675,7 +1102,6 @@ public fun add_item(
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_maker_creator(maker, ctx);
     assert_editable(maker);
     assert_non_empty(&part_key_name);
     assert_non_empty(&item_key);
@@ -716,7 +1142,7 @@ public fun add_item(
     });
 }
 
-public fun add_selection_rule(
+fun add_selection_rule(
     maker: &mut OCMaker,
     left_part_key: String,
     left_item_key: String,
@@ -725,7 +1151,6 @@ public fun add_selection_rule(
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_maker_creator(maker, ctx);
     assert_editable(maker);
     assert!(maker.rule_count < MAX_RULES, ETooManyRules);
     assert!(left_part_key != right_part_key, EInvalidSelectionRule);
@@ -776,14 +1201,13 @@ public fun add_selection_rule(
     });
 }
 
-public fun add_palette_link(
+fun add_palette_link(
     maker: &mut OCMaker,
     left_part_key: String,
     right_part_key: String,
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_maker_creator(maker, ctx);
     assert_editable(maker);
     assert!(maker.palette_link_count < MAX_RULES, ETooManyRules);
     assert!(left_part_key != right_part_key, EInvalidSelectionRule);
@@ -819,13 +1243,12 @@ public fun add_palette_link(
     });
 }
 
-public fun publish_maker(
+fun publish_maker(
     maker: &mut OCMaker,
     manifest_blob_id: String,
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_maker_creator(maker, ctx);
     assert_editable(maker);
     assert!(maker.part_count > 0, ENoParts);
     assert!(maker.item_count > 0, ENoItems);
@@ -848,19 +1271,33 @@ public fun publish_maker(
 /// Published Makers are shared so any wallet can borrow them as an immutable
 /// input when minting an OC. Creator-only mutations still validate ctx.sender().
 #[allow(lint(share_owned))]
-public fun share_published_maker(maker: OCMaker, ctx: &TxContext) {
-    assert_maker_creator(&maker, ctx);
+fun share_published_maker(maker: OCMaker, _ctx: &TxContext) {
     assert!(maker.published, EMakerNotPublished);
     transfer::share_object(maker);
 }
 
-public fun set_maker_archived(
+/// Finalizes the three-object release. Maker and Treasury become shared public
+/// infrastructure; the transferable Cap remains with the publishing wallet.
+#[allow(lint(share_owned))]
+public fun share_managed_maker<PaymentCoin>(
+    maker: OCMaker,
+    treasury: MakerTreasury<PaymentCoin>,
+    cap: MakerAdminCap,
+): MakerAdminCap {
+    assert_maker_admin(&maker, &cap);
+    assert_treasury_matches(&maker, &treasury);
+    assert!(maker.published, EMakerNotPublished);
+    transfer::share_object(maker);
+    transfer::share_object(treasury);
+    cap
+}
+
+fun set_maker_archived(
     maker: &mut OCMaker,
     archived: bool,
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_maker_creator(maker, ctx);
     assert!(maker.published, EMakerNotPublished);
 
     maker.archived = archived;
@@ -873,7 +1310,72 @@ public fun set_maker_archived(
     });
 }
 
-public fun new_oc_character(
+public fun admin_set_maker_archived(
+    cap: &MakerAdminCap,
+    maker: &mut OCMaker,
+    archived: bool,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert_maker_admin(maker, cap);
+    set_maker_archived(maker, archived, clock, ctx);
+}
+
+public fun withdraw_maker_revenue<PaymentCoin>(
+    cap: &MakerAdminCap,
+    maker: &OCMaker,
+    treasury: &mut MakerTreasury<PaymentCoin>,
+    amount: u64,
+    recipient: address,
+    ctx: &mut TxContext,
+) {
+    assert_maker_admin(maker, cap);
+    assert_treasury_matches(maker, treasury);
+    assert!(amount > 0 && amount <= treasury.revenue.value(), EInsufficientRevenue);
+    let payment = coin::take(&mut treasury.revenue, amount, ctx);
+    treasury.total_withdrawn = treasury.total_withdrawn + amount;
+    transfer::public_transfer(payment, recipient);
+    event::emit(MakerRevenueWithdrawn {
+        maker_id: object::id(maker),
+        treasury_id: object::id(treasury),
+        operator: ctx.sender(),
+        recipient,
+        amount,
+    });
+}
+
+/// Soulidity calls this in its purchase PTB. The exact royalty is recomputed
+/// from the OC/Maker policy tier so the frontend cannot choose a lower amount.
+public fun deposit_resale_royalty<PaymentCoin>(
+    policy: &RoyaltyPolicySnapshot,
+    maker: &OCMaker,
+    treasury: &mut MakerTreasury<PaymentCoin>,
+    payment: Coin<PaymentCoin>,
+    gross_sale_amount: u64,
+    soul_id: ID,
+    ctx: &TxContext,
+) {
+    assert_treasury_matches(maker, treasury);
+    assert!(policy.maker_id == object::id(maker) && policy.treasury_id == object::id(treasury), ETreasuryMismatch);
+    let royalty_bps = policy.royalty_bps;
+    assert!(royalty_bps > 0, EInvalidRoyalty);
+    let royalty_amount = gross_sale_amount.mul_div((royalty_bps as u64), 10_000);
+    assert!(royalty_amount > 0 && payment.value() == royalty_amount, EWrongPayment);
+    coin::put(&mut treasury.revenue, payment);
+    treasury.total_collected = treasury.total_collected + royalty_amount;
+    treasury.total_royalty_collected = treasury.total_royalty_collected + royalty_amount;
+    event::emit(MakerRoyaltyCollected {
+        maker_id: object::id(maker),
+        treasury_id: object::id(treasury),
+        payer: ctx.sender(),
+        gross_sale_amount,
+        royalty_amount,
+        royalty_bps,
+        soul_id,
+    });
+}
+
+fun new_soul_mint_authorization(
     maker: &OCMaker,
     name: String,
     profile_json_blob_id: String,
@@ -882,8 +1384,8 @@ public fun new_oc_character(
     recipe_hash: vector<u8>,
     recipe: vector<RecipeSlot>,
     clock: &Clock,
-    ctx: &mut TxContext,
-): OCCharacter {
+    ctx: &TxContext,
+): SoulMintAuthorization {
     assert!(maker.published, EMakerNotPublished);
     assert!(!maker.archived, EMakerArchived);
     assert_non_empty(&name);
@@ -898,37 +1400,48 @@ public fun new_oc_character(
     assert_valid_recipe(maker, &recipe);
     assert!(recipe_hash == hash::sha2_256(bcs::to_bytes(&recipe)), EInvalidRecipeHash);
 
-    let owner = ctx.sender();
-    let oc = OCCharacter {
-        id: object::new(ctx),
+    // Publicly-created production Makers always have a Treasury. The fallback
+    // keeps module-only legacy test fixtures readable without creating a
+    // second finished-character path.
+    let maker_treasury_id = if (maker.treasury_id.is_some()) {
+        *maker.treasury_id.borrow()
+    } else {
+        object::id(maker)
+    };
+    let payer = ctx.sender();
+    let authorization = SoulMintAuthorization {
         version: VERSION,
         maker_id: object::id(maker),
+        maker_treasury_id,
         maker_creator: maker.creator,
-        minter: owner,
+        payer,
         name,
         profile_json_blob_id,
         image_blob_id,
         image_url,
         recipe_hash,
         license_snapshot: maker.policy,
+        mint_payment_coin_type: maker.payment_coin_type,
+        mint_price_atomic: maker.mint_price_atomic,
         recipe,
-        created_at_ms: clock.timestamp_ms(),
+        authorized_at_ms: clock.timestamp_ms(),
     };
-    let oc_id = object::id(&oc);
-
-    event::emit(OCCharacterMinted {
-        oc_id,
+    event::emit(SoulMintAuthorized {
         maker_id: object::id(maker),
+        treasury_id: maker_treasury_id,
         maker_creator: maker.creator,
-        owner,
+        payer,
         recipe_hash,
         license_kind: maker.policy.license_kind,
         royalty_bps: maker.policy.royalty_bps,
+        mint_price_atomic: maker.mint_price_atomic,
     });
-    oc
+    authorization
 }
 
-entry fun mint_oc_character(
+/// Free Maker path. Soulidity consumes the returned authorization and creates
+/// the only finished character object in the same programmable transaction.
+public fun authorize_soul_mint(
     maker: &OCMaker,
     name: String,
     profile_json_blob_id: String,
@@ -937,10 +1450,11 @@ entry fun mint_oc_character(
     recipe_hash: vector<u8>,
     recipe: vector<RecipeSlot>,
     clock: &Clock,
-    ctx: &mut TxContext,
-) {
-    let owner = ctx.sender();
-    let oc = new_oc_character(
+    ctx: &TxContext,
+): SoulMintAuthorization {
+    assert!(maker.minting_enabled, EMintingDisabled);
+    assert!(!maker.mint_fee_enabled && maker.mint_price_atomic == 0, EWrongPayment);
+    new_soul_mint_authorization(
         maker,
         name,
         profile_json_blob_id,
@@ -950,12 +1464,74 @@ entry fun mint_oc_character(
         recipe,
         clock,
         ctx,
-    );
-    transfer::public_transfer(oc, owner);
+    )
 }
 
-fun assert_maker_creator(maker: &OCMaker, ctx: &TxContext) {
-    assert_owner(maker.creator, ctx);
+/// Paid Maker path. Exact payment is settled into the Maker Treasury before
+/// Soulidity consumes the authorization. Any later PTB failure rolls it back.
+public fun authorize_soul_mint_paid<PaymentCoin>(
+    maker: &OCMaker,
+    treasury: &mut MakerTreasury<PaymentCoin>,
+    payment: Coin<PaymentCoin>,
+    name: String,
+    profile_json_blob_id: String,
+    image_blob_id: String,
+    image_url: String,
+    recipe_hash: vector<u8>,
+    recipe: vector<RecipeSlot>,
+    clock: &Clock,
+    ctx: &TxContext,
+): SoulMintAuthorization {
+    assert!(maker.minting_enabled, EMintingDisabled);
+    assert!(maker.mint_fee_enabled && maker.mint_price_atomic > 0, EWrongPayment);
+    collect_mint_payment(maker, treasury, payment, ctx);
+
+    new_soul_mint_authorization(
+        maker,
+        name,
+        profile_json_blob_id,
+        image_blob_id,
+        image_url,
+        recipe_hash,
+        recipe,
+        clock,
+        ctx,
+    )
+}
+
+fun collect_mint_payment<PaymentCoin>(
+    maker: &OCMaker,
+    treasury: &mut MakerTreasury<PaymentCoin>,
+    payment: Coin<PaymentCoin>,
+    ctx: &TxContext,
+) {
+    assert_treasury_matches(maker, treasury);
+    let amount = payment.value();
+    assert!(amount == maker.mint_price_atomic, EWrongPayment);
+    coin::put(&mut treasury.revenue, payment);
+    treasury.total_collected = treasury.total_collected + amount;
+    event::emit(MakerRevenueCollected {
+        maker_id: object::id(maker),
+        treasury_id: object::id(treasury),
+        payer: ctx.sender(),
+        amount,
+    });
+}
+
+fun assert_maker_admin(maker: &OCMaker, cap: &MakerAdminCap) {
+    assert!(cap.maker_id == object::id(maker), EInvalidAdminCap);
+    assert!(maker.admin_cap_id.is_some() && *maker.admin_cap_id.borrow() == object::id(cap), EInvalidAdminCap);
+    assert!(maker.treasury_id.is_some() && *maker.treasury_id.borrow() == cap.treasury_id, EInvalidAdminCap);
+}
+
+fun assert_treasury_matches<PaymentCoin>(maker: &OCMaker, treasury: &MakerTreasury<PaymentCoin>) {
+    assert!(treasury.maker_id == object::id(maker), ETreasuryMismatch);
+    assert!(maker.treasury_id.is_some() && *maker.treasury_id.borrow() == object::id(treasury), ETreasuryMismatch);
+    assert!(maker.payment_coin_type == payment_coin_type_name<PaymentCoin>(), ETreasuryMismatch);
+}
+
+fun payment_coin_type_name<PaymentCoin>(): String {
+    string::from_ascii(type_name::with_defining_ids<PaymentCoin>().into_string())
 }
 
 fun assert_owner(owner: address, ctx: &TxContext) {
@@ -981,6 +1557,15 @@ fun assert_max_bytes(value: &String, max: u64) {
 
 fun assert_valid_license_kind(value: u8) {
     assert!(value <= LICENSE_EXCLUSIVE, EInvalidLicenseKind);
+}
+
+fun assert_valid_royalty(value: u16) {
+    assert!(value == 0 || (value >= 100 && value <= MAX_ROYALTY_BPS && value % 100 == 0), EInvalidRoyalty);
+}
+
+fun assert_valid_fee_config(minting_enabled: bool, mint_fee_enabled: bool, mint_price_atomic: u64) {
+    assert!(minting_enabled || !mint_fee_enabled, EInvalidFeeConfig);
+    assert!((mint_fee_enabled && mint_price_atomic > 0) || (!mint_fee_enabled && mint_price_atomic == 0), EInvalidFeeConfig);
 }
 
 fun assert_valid_part_kind(value: u8) {
@@ -1178,14 +1763,238 @@ fun test_recipe_hash(recipe: &vector<RecipeSlot>): vector<u8> {
     hash::sha2_256(bcs::to_bytes(recipe))
 }
 
+#[test_only]
+fun consume_authorization_for_testing(authorization: SoulMintAuthorization) {
+    let (_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =
+        consume_soul_mint_authorization(authorization);
+}
+
+#[test_only]
+fun royalty_policy_from_authorization_for_testing(
+    authorization: SoulMintAuthorization,
+): RoyaltyPolicySnapshot {
+    let (_, _, _, _, _, _, _, _, _, _, _, royalty_policy, _, _, _, _) =
+        consume_soul_mint_authorization(authorization);
+    royalty_policy
+}
+
+#[test_only]
+fun managed_maker_for_testing(
+    mint_fee_enabled: bool,
+    mint_price_atomic: u64,
+    ctx: &mut TxContext,
+    clock: &Clock,
+): (CreatorProfile, OCMaker, MakerTreasury<sui::sui::SUI>, MakerAdminCap) {
+    let mut profile = new_creator_profile(
+        b"Managed creator".to_string(),
+        b"".to_string(),
+        b"".to_string(),
+        ctx.sender(),
+        ctx,
+    );
+    let (mut maker, treasury, cap) = new_managed_oc_maker<sui::sui::SUI>(
+        &mut profile,
+        b"Managed Maker".to_string(),
+        b"".to_string(),
+        b"".to_string(),
+        b"manifest".to_string(),
+        LICENSE_PERSONAL,
+        300,
+        false,
+        false,
+        true,
+        true,
+        mint_fee_enabled,
+        mint_price_atomic,
+        clock,
+        ctx,
+    );
+    admin_add_part(
+        &cap,
+        &mut maker,
+        b"eyes".to_string(),
+        b"Eyes".to_string(),
+        PART_STANDARD,
+        0,
+        true,
+        true,
+        clock,
+        ctx,
+    );
+    admin_add_color(&cap, &mut maker, b"eyes".to_string(), b"#2db7a3".to_string(), clock, ctx);
+    admin_add_item(
+        &cap,
+        &mut maker,
+        b"eyes".to_string(),
+        b"bright".to_string(),
+        b"Bright".to_string(),
+        b"item-blob".to_string(),
+        b"".to_string(),
+        ITEM_INCLUDED,
+        clock,
+        ctx,
+    );
+    admin_publish_maker(&cap, &mut maker, b"manifest".to_string(), clock, ctx);
+    (profile, maker, treasury, cap)
+}
+
 #[test]
 fun protocol_constants_are_stable() {
+    assert!(protocol_version() == 3);
     assert!(license_personal() == 0);
     assert!(license_exclusive() == 3);
     assert!(part_standard() == 0);
     assert!(part_last_bastion() == 2);
     assert!(item_included() == 0);
     assert!(item_creator_only() == 2);
+}
+
+#[test]
+fun managed_maker_collects_and_withdraws_exact_payment() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (profile, maker, mut treasury, cap) = managed_maker_for_testing(true, 1_500_000, &mut ctx, &clock);
+    assert!(admin_cap_maker_id(&cap) == maker_id(&maker));
+    assert!(admin_cap_treasury_id(&cap) == treasury_id(&treasury));
+    assert!(treasury_maker_id(&treasury) == maker_id(&maker));
+    assert!(maker_mint_fee_enabled(&maker));
+    assert!(maker_mint_price_atomic(&maker) == 1_500_000);
+
+    let payment_balance = balance::create_for_testing<sui::sui::SUI>(1_500_000);
+    let payment = coin::from_balance(payment_balance, &mut ctx);
+    let recipe = vector[RecipeSlot {
+        part_key: b"eyes".to_string(),
+        item_key: b"bright".to_string(),
+        color_hex: b"#2db7a3".to_string(),
+        render_order: 0,
+    }];
+    let recipe_hash = test_recipe_hash(&recipe);
+    let authorization = authorize_soul_mint_paid(
+        &maker,
+        &mut treasury,
+        payment,
+        b"Paid Soul".to_string(),
+        b"profile".to_string(),
+        b"image".to_string(),
+        b"https://example.com/image.png".to_string(),
+        recipe_hash,
+        recipe,
+        &clock,
+        &ctx,
+    );
+    consume_authorization_for_testing(authorization);
+    assert!(treasury_balance(&treasury) == 1_500_000);
+    assert!(treasury_total_collected(&treasury) == 1_500_000);
+
+    let recipient = ctx.sender();
+    withdraw_maker_revenue(&cap, &maker, &mut treasury, 1_500_000, recipient, &mut ctx);
+    assert!(treasury_balance(&treasury) == 0);
+    assert!(treasury_total_withdrawn(&treasury) == 1_500_000);
+
+    transfer::transfer(profile, recipient);
+    transfer::transfer(maker, recipient);
+    transfer::transfer(treasury, recipient);
+    transfer::public_transfer(cap, recipient);
+    clock.destroy_for_testing();
+}
+
+#[test]
+fun cap_controls_post_publish_economics_and_archive_state() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (profile, mut maker, mut treasury, cap) = managed_maker_for_testing(false, 0, &mut ctx, &clock);
+    let recipe = vector[RecipeSlot {
+        part_key: b"eyes".to_string(),
+        item_key: b"bright".to_string(),
+        color_hex: b"#2db7a3".to_string(),
+        render_order: 0,
+    }];
+    let recipe_hash = test_recipe_hash(&recipe);
+    let authorization = new_soul_mint_authorization(
+        &maker,
+        b"Royalty OC".to_string(),
+        b"profile".to_string(),
+        b"image".to_string(),
+        b"https://example.com/image.png".to_string(),
+        recipe_hash,
+        recipe,
+        &clock,
+        &ctx,
+    );
+    let royalty_policy = royalty_policy_from_authorization_for_testing(authorization);
+    assert!(royalty_policy_bps(&royalty_policy) == 300);
+    configure_maker_economics(&cap, &mut maker, true, true, 2_000_000, 500, &clock, &ctx);
+    assert!(maker_mint_fee_enabled(&maker));
+    assert!(maker_mint_price_atomic(&maker) == 2_000_000);
+    assert!(maker_policy(&maker).royalty_bps == 500);
+    assert!(royalty_policy_bps(&royalty_policy) == 300);
+    let royalty = coin::from_balance(balance::create_for_testing<sui::sui::SUI>(600_000), &mut ctx);
+    deposit_resale_royalty(
+        &royalty_policy,
+        &maker,
+        &mut treasury,
+        royalty,
+        20_000_000,
+        object::id_from_address(@0x789),
+        &ctx,
+    );
+    assert!(treasury_balance(&treasury) == 600_000);
+    assert!(treasury_total_royalty_collected(&treasury) == 600_000);
+    admin_set_maker_archived(&cap, &mut maker, true, &clock, &ctx);
+    assert!(maker_archived(&maker));
+
+    let recipient = ctx.sender();
+    transfer::transfer(profile, recipient);
+    transfer::transfer(maker, recipient);
+    transfer::transfer(treasury, recipient);
+    transfer::public_transfer(cap, recipient);
+    clock.destroy_for_testing();
+}
+
+#[test, expected_failure(abort_code = EInvalidRoyalty)]
+fun rejects_non_tiered_royalty() {
+    assert_valid_royalty(250);
+}
+
+#[test, expected_failure(abort_code = EInvalidAdminCap)]
+fun rejects_admin_cap_from_another_maker() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (_profile_a, mut maker_a, _treasury_a, _cap_a) = managed_maker_for_testing(false, 0, &mut ctx, &clock);
+    let (_profile_b, _maker_b, _treasury_b, cap_b) = managed_maker_for_testing(false, 0, &mut ctx, &clock);
+    admin_set_maker_archived(&cap_b, &mut maker_a, true, &clock, &ctx);
+    abort 99
+}
+
+#[test]
+fun authorization_is_consumed_by_soulidity_boundary() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (profile, maker, treasury, cap) = managed_maker_for_testing(false, 0, &mut ctx, &clock);
+    let recipe = vector[RecipeSlot {
+        part_key: b"eyes".to_string(),
+        item_key: b"bright".to_string(),
+        color_hex: b"#2db7a3".to_string(),
+        render_order: 0,
+    }];
+    let recipe_hash = test_recipe_hash(&recipe);
+    let authorization = authorize_soul_mint(
+        &maker,
+        b"Soul-ready OC".to_string(),
+        b"profile".to_string(),
+        b"image".to_string(),
+        b"https://example.com/image.png".to_string(),
+        recipe_hash,
+        recipe,
+        &clock,
+        &ctx,
+    );
+    consume_authorization_for_testing(authorization);
+    transfer::transfer(profile, ctx.sender());
+    transfer::transfer(maker, ctx.sender());
+    transfer::transfer(treasury, ctx.sender());
+    transfer::public_transfer(cap, ctx.sender());
+    clock.destroy_for_testing();
 }
 
 #[test]
@@ -1327,7 +2136,7 @@ fun every_published_part_requires_an_item() {
 }
 
 #[test]
-fun publishes_and_mints_a_valid_recipe() {
+fun publishes_and_authorizes_a_valid_soul_recipe() {
     let mut ctx = tx_context::dummy();
     let clock = sui::clock::create_for_testing(&mut ctx);
     let mut profile = new_creator_profile(
@@ -1383,7 +2192,7 @@ fun publishes_and_mints_a_valid_recipe() {
         render_order: 0,
     }];
     let recipe_hash = test_recipe_hash(&recipe);
-    let oc = new_oc_character(
+    let authorization = new_soul_mint_authorization(
         &maker,
         b"Mira".to_string(),
         b"profile-blob".to_string(),
@@ -1392,13 +2201,13 @@ fun publishes_and_mints_a_valid_recipe() {
         recipe_hash,
         recipe,
         &clock,
-        &mut ctx,
+        &ctx,
     );
 
     let sender = ctx.sender();
     transfer::transfer(profile, sender);
     transfer::transfer(maker, sender);
-    transfer::public_transfer(oc, sender);
+    consume_authorization_for_testing(authorization);
     clock.destroy_for_testing();
 }
 
@@ -1436,7 +2245,7 @@ fun rejects_non_sha256_recipe_hash() {
     let mut ctx = tx_context::dummy();
     let clock = sui::clock::create_for_testing(&mut ctx);
     let (profile, maker) = published_maker_for_testing(&mut ctx, &clock);
-    let oc = new_oc_character(
+    let authorization = new_soul_mint_authorization(
         &maker,
         b"Invalid hash".to_string(),
         b"profile-blob".to_string(),
@@ -1450,12 +2259,12 @@ fun rejects_non_sha256_recipe_hash() {
             render_order: 0,
         }],
         &clock,
-        &mut ctx,
+        &ctx,
     );
     let sender = ctx.sender();
     transfer::transfer(profile, sender);
     transfer::transfer(maker, sender);
-    transfer::public_transfer(oc, sender);
+    consume_authorization_for_testing(authorization);
     clock.destroy_for_testing();
     abort 99
 }
@@ -1465,7 +2274,7 @@ fun rejects_invalid_recipe_color() {
     let mut ctx = tx_context::dummy();
     let clock = sui::clock::create_for_testing(&mut ctx);
     let (profile, maker) = published_maker_for_testing(&mut ctx, &clock);
-    let oc = new_oc_character(
+    let authorization = new_soul_mint_authorization(
         &maker,
         b"Invalid color".to_string(),
         b"profile-blob".to_string(),
@@ -1479,12 +2288,12 @@ fun rejects_invalid_recipe_color() {
             render_order: 0,
         }],
         &clock,
-        &mut ctx,
+        &ctx,
     );
     let sender = ctx.sender();
     transfer::transfer(profile, sender);
     transfer::transfer(maker, sender);
-    transfer::public_transfer(oc, sender);
+    consume_authorization_for_testing(authorization);
     clock.destroy_for_testing();
     abort 99
 }
@@ -1494,7 +2303,7 @@ fun rejects_forged_32_byte_recipe_hash() {
     let mut ctx = tx_context::dummy();
     let clock = sui::clock::create_for_testing(&mut ctx);
     let (profile, maker) = published_maker_for_testing(&mut ctx, &clock);
-    let oc = new_oc_character(
+    let authorization = new_soul_mint_authorization(
         &maker,
         b"Forged hash".to_string(),
         b"profile-blob".to_string(),
@@ -1508,11 +2317,11 @@ fun rejects_forged_32_byte_recipe_hash() {
             render_order: 0,
         }],
         &clock,
-        &mut ctx,
+        &ctx,
     );
     transfer::transfer(profile, ctx.sender());
     transfer::transfer(maker, ctx.sender());
-    transfer::public_transfer(oc, ctx.sender());
+    consume_authorization_for_testing(authorization);
     clock.destroy_for_testing();
     abort 99
 }
@@ -1522,7 +2331,7 @@ fun rejects_unregistered_recipe_color() {
     let mut ctx = tx_context::dummy();
     let clock = sui::clock::create_for_testing(&mut ctx);
     let (profile, maker) = published_maker_for_testing(&mut ctx, &clock);
-    let oc = new_oc_character(
+    let authorization = new_soul_mint_authorization(
         &maker,
         b"Unregistered color".to_string(),
         b"profile-blob".to_string(),
@@ -1536,11 +2345,11 @@ fun rejects_unregistered_recipe_color() {
             render_order: 0,
         }],
         &clock,
-        &mut ctx,
+        &ctx,
     );
     transfer::transfer(profile, ctx.sender());
     transfer::transfer(maker, ctx.sender());
-    transfer::public_transfer(oc, ctx.sender());
+    consume_authorization_for_testing(authorization);
     clock.destroy_for_testing();
     abort 99
 }
@@ -1550,7 +2359,7 @@ fun rejects_forged_render_order() {
     let mut ctx = tx_context::dummy();
     let clock = sui::clock::create_for_testing(&mut ctx);
     let (profile, maker) = published_maker_for_testing(&mut ctx, &clock);
-    let oc = new_oc_character(
+    let authorization = new_soul_mint_authorization(
         &maker,
         b"Forged order".to_string(),
         b"profile-blob".to_string(),
@@ -1564,11 +2373,11 @@ fun rejects_forged_render_order() {
             render_order: 99,
         }],
         &clock,
-        &mut ctx,
+        &ctx,
     );
     transfer::transfer(profile, ctx.sender());
     transfer::transfer(maker, ctx.sender());
-    transfer::public_transfer(oc, ctx.sender());
+    consume_authorization_for_testing(authorization);
     clock.destroy_for_testing();
     abort 99
 }
@@ -1602,7 +2411,7 @@ fun rejects_recipe_that_breaks_palette_link() {
     add_item(&mut maker, b"brows".to_string(), b"normal".to_string(), b"Normal".to_string(), b"brows-blob".to_string(), b"".to_string(), ITEM_INCLUDED, &clock, &ctx);
     add_palette_link(&mut maker, b"hair".to_string(), b"brows".to_string(), &clock, &ctx);
     publish_maker(&mut maker, b"manifest".to_string(), &clock, &ctx);
-    let oc = new_oc_character(
+    let authorization = new_soul_mint_authorization(
         &maker,
         b"Mismatched palette".to_string(),
         b"profile".to_string(),
@@ -1614,11 +2423,11 @@ fun rejects_recipe_that_breaks_palette_link() {
             RecipeSlot { part_key: b"brows".to_string(), item_key: b"normal".to_string(), color_hex: b"#ffffff".to_string(), render_order: 1 },
         ],
         &clock,
-        &mut ctx,
+        &ctx,
     );
     transfer::transfer(profile, ctx.sender());
     transfer::transfer(maker, ctx.sender());
-    transfer::public_transfer(oc, ctx.sender());
+    consume_authorization_for_testing(authorization);
     clock.destroy_for_testing();
     abort 99
 }
@@ -1630,7 +2439,7 @@ fun archived_maker_rejects_new_oc_mints() {
     let (profile, mut maker) = published_maker_for_testing(&mut ctx, &clock);
     set_maker_archived(&mut maker, true, &clock, &ctx);
 
-    let oc = new_oc_character(
+    let authorization = new_soul_mint_authorization(
         &maker,
         b"Blocked".to_string(),
         b"profile-blob".to_string(),
@@ -1644,12 +2453,12 @@ fun archived_maker_rejects_new_oc_mints() {
             render_order: 0,
         }],
         &clock,
-        &mut ctx,
+        &ctx,
     );
     let sender = ctx.sender();
     transfer::transfer(profile, sender);
     transfer::transfer(maker, sender);
-    transfer::public_transfer(oc, sender);
+    consume_authorization_for_testing(authorization);
     clock.destroy_for_testing();
 }
 
@@ -1694,7 +2503,7 @@ fun rejects_recipe_that_breaks_selection_rule() {
         &ctx,
     );
     publish_maker(&mut maker, b"manifest".to_string(), &clock, &ctx);
-    let oc = new_oc_character(
+    let authorization = new_soul_mint_authorization(
         &maker,
         b"Invalid".to_string(),
         b"profile".to_string(),
@@ -1706,12 +2515,12 @@ fun rejects_recipe_that_breaks_selection_rule() {
             RecipeSlot { part_key: b"hat".to_string(), item_key: b"crown".to_string(), color_hex: b"#ffffff".to_string(), render_order: 1 },
         ],
         &clock,
-        &mut ctx,
+        &ctx,
     );
     let sender = ctx.sender();
     transfer::transfer(profile, sender);
     transfer::transfer(maker, sender);
-    transfer::public_transfer(oc, sender);
+    consume_authorization_for_testing(authorization);
     clock.destroy_for_testing();
     abort 99
 }
