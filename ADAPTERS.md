@@ -2,6 +2,14 @@
 
 Animacraft is the Character Maker editor and Maker protocol. Soulidity is the canonical finished-character, Living Content, social, and marketplace protocol. There is one finished asset: a Soulidity `Soul`. Animacraft does not mint a parallel `OCCharacter`.
 
+## Ownership Boundary
+
+- Animacraft is a separate package because `OCMaker`, `MakerAdminCap`, and `MakerTreasury<USDC>` are durable Maker infrastructure with their own ownership and economics.
+- `authorize_soul_mint*` validates a frozen Maker recipe and, when enabled, settles its exact fee. It returns an ephemeral value; it creates no character object and grants no standalone ownership.
+- Soulidity is the only package that creates the finished `Soul`, its required `SoulContent`, `SoulState`, and personal-Kiosk ownership.
+- The production adapter belongs in Soulidity so it can call Soulidity's package-scoped mint internals. It depends on Animacraft's published original package ID and consumes the authorization in the same PTB.
+- If authorization validation, payment, content creation, or Soul minting fails, the entire PTB aborts. There is no paid authorization or Treasury deposit without the corresponding Soul.
+
 ## Stable Animacraft Inputs
 
 - Shared `OCMaker`, shared `MakerTreasury<USDC>`, and transferable `MakerAdminCap` object IDs.
@@ -34,7 +42,9 @@ The audited Soulidity adapter must build one programmable transaction:
 6. Store Maker ID, recipe hash, policy snapshot, and Treasury royalty destination as verified Animacraft provenance.
 7. Finalize the Soul inside the user's personal Kiosk.
 
-The current generic Soulidity `mint_imported_in_personal_kiosk` stores an unverified string origin. It is suitable for the temporary free JSON handoff, but it is not the final paid-Maker adapter and must not be presented as verified Animacraft provenance.
+The current generic Soulidity `mint_imported_in_personal_kiosk` stores an unverified string origin. It is suitable for the temporary free Import Kit handoff, but it is not the final paid-Maker adapter and must not be presented as verified Animacraft provenance. The ZIP must be extracted first: `00-profile.json` enters Soulidity's generic parser, while the cover, Soul Character, Memory, and Skills files are uploaded in its Map Fields step.
+
+The Import Kit intentionally supports free Makers only. It bypasses `SoulMintAuthorization`, so it cannot prove recipe validation on chain, collect a Maker fee, or establish verified royalty routing. Those capabilities switch on only after the dedicated Soulidity adapter is deployed.
 
 ## Royalty And Maker Rights
 
@@ -56,5 +66,5 @@ Soulidity may separately list `MakerAdminCap` as the transferable Maker manageme
 
 - Animacraft does not duplicate Soulidity Soul ownership, Kiosk, Marketplace, or social graphs.
 - Soulidity does not edit Maker art, Parts, Items, Layers, palettes, or recipes.
-- A browser redirect or generic import JSON is a temporary handoff, not proof of the audited paid adapter.
+- A browser redirect or Import Kit ZIP is a temporary free-Maker handoff, not proof of the audited paid adapter.
 - No adapter receives a private key or backend signer.

@@ -1269,7 +1269,8 @@ fun publish_maker(
 }
 
 /// Published Makers are shared so any wallet can borrow them as an immutable
-/// input when minting an OC. Creator-only mutations still validate ctx.sender().
+/// input when requesting a Soulidity mint authorization. Creator-only mutations
+/// still validate ctx.sender().
 #[allow(lint(share_owned))]
 fun share_published_maker(maker: OCMaker, _ctx: &TxContext) {
     assert!(maker.published, EMakerNotPublished);

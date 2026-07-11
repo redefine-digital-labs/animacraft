@@ -184,12 +184,33 @@ export function soulidityContentManifest(value, context = {}) {
 export function createSoulidityImportBundle(value, context = {}) {
   const manifest = soulidityContentManifest(value, context);
   const skillZip = zipSync({ 'SKILL.md': strToU8(manifest.content.skillMd) }, { level: 6 });
-  const bundle = zipSync({
-    'soul.md': strToU8(manifest.content.soulMd),
-    'memory.md': strToU8(manifest.content.memoryMd),
-    'skills.zip': skillZip,
-    'animacraft-import.json': strToU8(JSON.stringify(manifest, null, 2)),
-  }, { level: 6 });
+  const importJson = context.importJson || createSoulidityImportJson(value, context);
+  const hasCover = context.imageBytes instanceof Uint8Array && context.imageBytes.length > 0;
+  const files = {
+    '00-profile.json': strToU8(JSON.stringify(importJson, null, 2)),
+    '02-soul.md': strToU8(manifest.content.soulMd),
+    '03-memory.md': strToU8(manifest.content.memoryMd),
+    '04-skills.zip': skillZip,
+    'animacraft-import-manifest.json': strToU8(JSON.stringify(manifest, null, 2)),
+    'README.txt': strToU8(`Animacraft -> Soulidity Import Kit
+
+Extract this ZIP before opening Soulidity Import Soul.
+
+1. Upload 00-profile.json as the source file.
+2. Confirm the mapped Soul name and description.
+3. ${hasCover ? 'Upload 01-cover.png as Preview Image.' : 'Choose a PNG cover image as Preview Image.'}
+4. Upload 02-soul.md as Soul Character.
+5. Upload 03-memory.md as Memory.
+6. Upload 04-skills.zip as Skills & Docs (optional but already valid).
+7. Review the Animacraft Maker provenance, then sign the Soulidity mint.
+
+Paid Makers require the dedicated Animacraft authorization adapter and cannot use this transitional import kit.
+`),
+  };
+  if (hasCover) {
+    files['01-cover.png'] = context.imageBytes;
+  }
+  const bundle = zipSync(files, { level: 6 });
   return { manifest, bytes: bundle };
 }
 

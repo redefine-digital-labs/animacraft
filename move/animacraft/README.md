@@ -29,7 +29,7 @@ The old unguarded construction helpers are private to the module and unit tests.
 
 ## Economics
 
-- `minting_enabled` controls whether new OC mints are accepted.
+- `minting_enabled` controls whether new Soulidity mint authorizations are accepted.
 - `mint_fee_enabled` controls whether payment is required.
 - `mint_price_atomic` is denominated in the Treasury coin's smallest unit. USDC uses six decimals.
 - Paid authorization accepts an exact `Coin<PaymentCoin>` amount and deposits it atomically before Soulidity creates the Soul. If the later mint fails, the whole PTB rolls back.

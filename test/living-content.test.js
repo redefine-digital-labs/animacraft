@@ -46,14 +46,27 @@ test('Soulidity bundle contains markdown and a nested valid SKILL.md zip', () =>
   const { bytes } = createSoulidityImportBundle(content, {
     maker,
     profile: { name: 'Hoshi', world: 'Moon Market', description: 'A patient cartographer.' },
+    imageBytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
   });
   const files = unzipSync(bytes);
-  assert.ok(files['soul.md']);
-  assert.ok(files['memory.md']);
-  assert.ok(files['skills.zip']);
-  assert.ok(files['animacraft-import.json']);
-  const skillFiles = unzipSync(files['skills.zip']);
+  assert.ok(files['00-profile.json']);
+  assert.ok(files['01-cover.png']);
+  assert.ok(files['02-soul.md']);
+  assert.ok(files['03-memory.md']);
+  assert.ok(files['04-skills.zip']);
+  assert.ok(files['animacraft-import-manifest.json']);
+  assert.match(strFromU8(files['README.txt']), /Extract this ZIP/);
+  assert.match(strFromU8(files['README.txt']), /Upload 01-cover\.png/);
+  assert.equal(JSON.parse(strFromU8(files['00-profile.json'])).name, 'Hoshi');
+  const skillFiles = unzipSync(files['04-skills.zip']);
   assert.match(strFromU8(skillFiles['SKILL.md']), /^---\nname: starlit-daily-oc-companion/m);
+});
+
+test('Living Content template explains that creators must choose a cover', () => {
+  const { bytes } = createSoulidityImportBundle(createDefaultLivingContent(maker), { maker });
+  const files = unzipSync(bytes);
+  assert.equal(files['01-cover.png'], undefined);
+  assert.match(strFromU8(files['README.txt']), /Choose a PNG cover image/);
 });
 
 test('Living Content rejects empty or oversized documents', () => {

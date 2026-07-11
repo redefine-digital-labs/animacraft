@@ -26,7 +26,7 @@ The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio
 - Move verifies registered recipe Colors, published Part order, selection/palette rules, and SHA-256 over canonical BCS recipe bytes.
 - My Souls sends users to Soulidity, which owns the canonical finished-character collection.
 - Vercel rewrites, CSP including Walrus WASM support, non-cached runtime config, and baseline security headers.
-- Pull requests run config preflight, 31 web/config integrity tests, syntax checks, and a production build; the local Move suite currently passes 25 tests.
+- Pull requests run config preflight, 32 web/config integrity tests, syntax checks, and a production build; the local Move suite currently passes 25 tests.
 
 ## Manual Mainnet Activation
 
@@ -45,7 +45,7 @@ The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio
 - A single release supports up to 450 on-chain Part + public Item + Color + selection rule + palette-link records in its one-transaction publisher.
 - A Maker supports up to 5,000 Walrus files including its manifest.
 - Production config requests 53 Walrus Mainnet epochs, currently about two years. A renewal process is required before expiry.
-- Native-USDC authorization collection and Cap withdrawal are implemented. The temporary free JSON handoff does not support paid Makers; paid mint and secondary-sale settlement require the reviewed Soulidity adapter.
+- Native-USDC authorization collection and Cap withdrawal are implemented. The temporary free Import Kit handoff does not support paid Makers; paid mint and secondary-sale settlement require the reviewed Soulidity adapter.
 - Creators must retain original art and confirm they have the right to publish it.
 - Establish reporting, takedown, and license-dispute contacts before accepting uninvited public uploads.
 

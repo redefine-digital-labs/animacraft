@@ -55,13 +55,14 @@ Player path:
 2. Resolve maker object and manifest blob ids.
 3. Compose OC locally in browser.
 4. Upload rendered OC image and profile JSON to Walrus.
-5. Call `mint_oc_character`.
-6. Open the wallet-owned result in My OCs and verify its public Sui object and Walrus files.
+5. Free pilot path: download the Soulidity Import Kit and complete the only Soul mint in Soulidity.
+6. Canonical path: call Animacraft `authorize_soul_mint` or `authorize_soul_mint_paid<USDC>` and Soulidity's dedicated adapter in one PTB.
+7. Open the wallet-owned result in My Souls and verify its Soulidity Soul/Kiosk objects and Walrus files.
 
 Done when:
 
 - A real creator can publish one maker from the browser.
-- A real user can mint one OC from that maker.
+- A real user can create one OC from that Maker and mint exactly one Soul in Soulidity.
 
 ## Phase 3: Event-Based Indexing Without a Backend
 
@@ -71,8 +72,9 @@ Goal: keep the core product backendless while making discovery useful.
 
 Use:
 
-- Sui events for maker creation, publication, and OC minting.
-- Sui object queries for maker and OC detail pages.
+- Animacraft events for Maker creation, publication, and Soul authorization.
+- Soulidity events for canonical Soul creation, ownership, and trade.
+- Sui object queries for Maker detail pages and Soulidity Soul detail pages.
 - Walrus blob ids for visual payloads.
 - Optional static snapshots for featured makers.
 
