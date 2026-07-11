@@ -443,6 +443,15 @@ main {
   margin-bottom: 22px;
 }
 
+.maker-topline {
+  grid-template-columns: minmax(320px, 0.85fr) minmax(0, 1.15fr);
+}
+
+.maker-topline > *,
+.maker-actions {
+  min-width: 0;
+}
+
 .kicker,
 .micro-label {
   display: block;
@@ -1030,6 +1039,10 @@ textarea:focus {
   grid-template-columns: 190px minmax(420px, 1fr) 360px;
   gap: 16px;
   align-items: start;
+}
+
+.maker-layout > * {
+  min-width: 0;
 }
 
 .slot-panel,
@@ -4756,7 +4769,7 @@ pre {
   }
 
   .avatar {
-    min-height: 430px;
+    min-height: min(430px, calc(100vw - 54px));
   }
 
   .face {

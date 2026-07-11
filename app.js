@@ -245,8 +245,8 @@ const i18n = {
     settings: 'Settings',
     recipeJson: 'Recipe JSON',
     saveOcPackage: 'Save OC Package',
-    prepareMint: 'Prepare mint',
-    mintOc: 'Mint OC',
+    prepareMint: 'Prepare Soul handoff',
+    mintOc: 'Continue to Soulidity',
     currentSlot: 'Current Part',
     choosePart: 'Choose a Part',
     livePreview: 'Live Preview',
@@ -262,7 +262,7 @@ const i18n = {
     walletConnected: '钱包已连接',
     myPage: '我的页面',
     walletFirstTitle: '请先连接钱包',
-    walletFirstCopy: '连接钱包后可使用我的 OC、创作者工具、草稿保存、发布与铸造。',
+    walletFirstCopy: '连接钱包后可使用我的 Soul、创作者工具、草稿保存、发布并进入 Soulidity 铸造。',
     connectSuiWallet: '连接 Sui 钱包',
     myPageCopy: '作品与链上 OC',
     createMaker: '创建模板',
@@ -313,8 +313,8 @@ const i18n = {
     settings: '设置',
     recipeJson: '配方 JSON',
     saveOcPackage: '保存 OC 包',
-    prepareMint: '准备铸造',
-    mintOc: '铸造 OC',
+    prepareMint: '准备 Soul 交接包',
+    mintOc: '前往 Soulidity',
     currentSlot: '当前部件',
     choosePart: '选择部件',
     livePreview: '实时预览',
@@ -381,8 +381,8 @@ const i18n = {
     settings: '設定',
     recipeJson: 'レシピ JSON',
     saveOcPackage: 'OC パッケージ保存',
-    prepareMint: 'ミント準備',
-    mintOc: 'OC をミント',
+    prepareMint: 'Soul 連携を準備',
+    mintOc: 'Soulidity に進む',
     currentSlot: '現在のパーツ',
     choosePart: 'パーツを選択',
     livePreview: 'ライブプレビュー',
@@ -449,8 +449,8 @@ const i18n = {
     settings: '설정',
     recipeJson: '레시피 JSON',
     saveOcPackage: 'OC 패키지 저장',
-    prepareMint: '민팅 준비',
-    mintOc: 'OC 민팅',
+    prepareMint: 'Soul 연동 준비',
+    mintOc: 'Soulidity로 계속',
     currentSlot: '현재 파트',
     choosePart: '파트 선택',
     livePreview: '실시간 미리보기',
@@ -517,8 +517,8 @@ const i18n = {
     settings: 'Cài đặt',
     recipeJson: 'Recipe JSON',
     saveOcPackage: 'Lưu gói OC',
-    prepareMint: 'Chuẩn bị mint',
-    mintOc: 'Mint OC',
+    prepareMint: 'Chuẩn bị chuyển sang Soul',
+    mintOc: 'Tiếp tục tới Soulidity',
     currentSlot: 'Part hiện tại',
     choosePart: 'Chọn Part',
     livePreview: 'Xem trước trực tiếp',
@@ -2956,6 +2956,12 @@ function renderMintAction() {
   const treasuryReady = !activeTemplate()?.mintFeeEnabled || Boolean(activeTemplate()?.treasuryId || state.makerTreasuryObjectId);
   const soulidityReady = /^0x[0-9a-f]+$/i.test(String(runtimeConfig.soulidityPackageId || '')) && !String(runtimeConfig.soulidityPackageId).includes('TODO');
   const baseReady = packageConfigured() && soulidityReady && activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId()) && state.walletConnected && mintOpen && treasuryReady && !activeTemplate()?.mintFeeEnabled && ocRecipeIssues().length === 0;
+  const chainMakerReady = activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId());
+  $('resumeOcUpload').hidden = !chainMakerReady || !state.hasOcUploadRecovery || state.ocUploadStage !== 'idle';
+  $('prepareOcUpload').hidden = !chainMakerReady || state.ocUploadStage !== 'idle' || state.hasOcUploadRecovery;
+  $('registerOcUpload').hidden = !['encoded', 'registered'].includes(state.ocUploadStage);
+  $('certifyOcUpload').hidden = state.ocUploadStage !== 'uploaded';
+  $('mintOcOnchain').hidden = state.ocUploadStage !== 'certified';
   $('resumeOcUpload').disabled = state.minting || !state.walletConnected || activeTemplate()?.source !== 'chain' || !state.hasOcUploadRecovery;
   $('prepareOcUpload').disabled = state.minting || !baseReady || state.ocUploadStage !== 'idle';
   $('registerOcUpload').disabled = state.minting || !state.walletConnected || !['encoded', 'registered'].includes(state.ocUploadStage);
@@ -4455,6 +4461,13 @@ async function mintCurrentOc() {
     const oc = state.pendingOcPackage;
     const imageUrl = walrusFileUrl(state.ocImagePatchId);
     const profileUrl = walrusFileUrl(state.ocProfilePatchId);
+    const handoffUrl = new URL('/import', runtimeConfig.soulidityAppUrl);
+    handoffUrl.searchParams.set('source', 'animacraft');
+    handoffUrl.searchParams.set('maker', activeMakerObjectId());
+    handoffUrl.searchParams.set('profile', profileUrl);
+    handoffUrl.searchParams.set('image', imageUrl);
+    window.open(handoffUrl.toString(), '_blank', 'noopener,noreferrer');
+
     const importJson = createSoulidityImportJson(state.livingContent, {
       maker: activeTemplate(),
       makerId: activeMakerObjectId(),
@@ -4463,14 +4476,19 @@ async function mintCurrentOc() {
       profileUrl,
       recipeHash: bytesToHex(state.pendingOcRecipeHash),
     });
-    download(`${slug(oc.profile.name)}-soulidity-import.json`, JSON.stringify(importJson, null, 2));
-    const handoffUrl = new URL('/import', runtimeConfig.soulidityAppUrl);
-    handoffUrl.searchParams.set('source', 'animacraft');
-    handoffUrl.searchParams.set('maker', activeMakerObjectId());
-    handoffUrl.searchParams.set('profile', profileUrl);
-    handoffUrl.searchParams.set('image', imageUrl);
-    window.open(handoffUrl.toString(), '_blank', 'noopener,noreferrer');
-    state.mintStatus = 'Soulidity opened and its compatible import JSON was downloaded. Upload that JSON there to complete the single Soul mint.';
+    const imageBytes = new Uint8Array(await state.pendingOcImageBlob.arrayBuffer());
+    const { bytes } = createSoulidityImportBundle(state.livingContent, {
+      maker: activeTemplate(),
+      makerId: activeMakerObjectId(),
+      profile: oc.profile,
+      imageUrl,
+      profileUrl,
+      recipeHash: bytesToHex(state.pendingOcRecipeHash),
+      importJson,
+      imageBytes,
+    });
+    download(`${slug(oc.profile.name)}-soulidity-import-kit.zip`, bytes, 'application/zip');
+    state.mintStatus = 'Soulidity opened and the Import Kit was downloaded. Extract it, upload 00-profile.json, then add its cover, Soul Character, Memory, and Skills files to complete the single Soul mint.';
   } catch (error) {
     console.error('Soulidity handoff failed', error);
     state.mintStatus = error.message || 'Soulidity handoff failed.';
