@@ -18,7 +18,7 @@ What should reviewers pay attention to?
 
 - [ ] Checked locally in browser
 - [ ] Ran `sui move build` for protocol changes
-- [ ] No generated build artifacts committed
+- [ ] No generated build artifacts committed, or Creator Pack outputs include source, disclosure, deterministic build steps, and tests
 - [ ] Screenshots attached for UI changes
 
 ## On-chain / Creator Impact

@@ -16,6 +16,15 @@ Animacraft and Soulidity are separate products, repositories, and Sui packages. 
 6. A user makes an OC, stores its rendered image and package on Walrus, and enters Soulidity's canonical mint flow. The final asset is a Soul, not a second Animacraft token.
 7. Published art and composition rules cannot be silently edited. The current Cap owner may update future mint economics, withdraw revenue, archive/restore the Maker, or transfer the Cap through Soulidity.
 
+## Bundled Creator Packs
+
+Animacraft ships two first-party, AI-assisted original creator packs for launch QA and later on-chain publication:
+
+- `Astral Courier · 星夜信使`
+- `Hanamori Spirit · 花守灵契`
+
+Each pack contains 25 public Items across six Parts and 5,120 default-rule combinations. Source atlases, prompt disclosure, and reproducible build notes live in `creator-packs/`; validated runtime manifests and `1024 x 1024` alpha PNG layers live in `public/makers/`. They appear as **Creator pack** entries in the Template Plaza. Canonical Soul mint remains locked until the pack is published as a real Sui `OCMaker` and hydrated from its certified Walrus manifest.
+
 ## Architecture
 
 - **Vercel:** static Vite frontend, security headers, and route rewrites.
@@ -35,7 +44,7 @@ npm run move:test
 npm run dev
 ```
 
-`npm run check` runs config preflight, JavaScript syntax checks, 32 web/config integrity tests, and the Vite production build. `npm run move:test` currently runs 25 contract tests. Both suites pin the same canonical BCS recipe bytes and SHA-256 fixture.
+`npm run check` runs config preflight, JavaScript syntax checks, the web/config integrity suite, and the Vite production build. `npm run move:test` runs the Move contract suite. Both suites pin the same canonical BCS recipe bytes and SHA-256 fixture.
 
 ## Runtime Configuration
 

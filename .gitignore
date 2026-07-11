@@ -9,6 +9,8 @@ Thumbs.db
 # Build artifacts
 node_modules/
 dist/
+.venv/
+__pycache__/
 
 # Move build artifacts
 move/**/build/
