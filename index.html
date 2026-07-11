@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Animacraft</title>
     <meta name="description" content="Animacraft is The Fully onchain Character Maker & Creator." />
-    <link rel="stylesheet" href="./styles.css?v=animacraft-36" />
+    <link rel="stylesheet" href="./styles.css?v=animacraft-39" />
     <script src="/config.js"></script>
   </head>
   <body>
@@ -82,14 +82,14 @@
             <p class="kicker" data-i18n="templatePlaza">Template Plaza</p>
             <h1 data-i18n="templateHero">Pick an artist-made template, then make your OC</h1>
             <p data-i18n="templateHeroCopy">
-              Choose a maker, combine parts, save a character, and let Animacraft handle provenance,
-              licensing, revenue splits, and on-chain records.
+              Choose a maker, combine Parts, and save a character with its recipe, license snapshot,
+              provenance, and on-chain record.
             </p>
           </div>
           <div class="head-metrics" aria-label="platform metrics">
-            <span><strong>3</strong> starter templates</span>
-            <span><strong>106</strong> layered parts</span>
-            <span><strong>1</strong> creator package flow</span>
+            <span><strong>3</strong> starter examples</span>
+            <span><strong>Sui</strong> Mainnet objects</span>
+            <span><strong>Walrus</strong> asset quilts</span>
           </div>
         </div>
 
@@ -125,6 +125,7 @@
             <p>Choose parts, tune colors, and save the current OC. The template source, license snapshot, and recipe are packaged for on-chain registration.</p>
           </div>
           <div class="maker-actions">
+            <button id="backToCreatorPreview" class="secondary" type="button" hidden>Back to Creator Studio</button>
             <button id="downloadRecipe" class="secondary">Recipe JSON</button>
             <button id="downloadPackage" class="primary">Save OC Package</button>
             <button id="prepareOcUpload" class="secondary" type="button">Prepare mint</button>
@@ -166,6 +167,7 @@
               <div class="blush blush-right"></div>
               <div class="mouth"></div>
               <div class="accessory"></div>
+              <div id="playerLayerAssets" class="player-layer-assets"></div>
               <div class="avatar-caption">
                 <strong id="avatarName">Mira</strong>
                 <span id="avatarTemplate">Starlit Daily OC</span>
@@ -202,12 +204,19 @@
       </section>
 
       <section id="creator" class="page">
-        <div class="creator-console">
+        <section id="creatorWalletGate" class="creator-wallet-gate">
+          <span class="wallet-gate-mark"></span>
+          <p class="kicker">Creator Studio</p>
+          <h1>Connect a Sui wallet to create OC Makers</h1>
+          <p>Your wallet owns drafts, signs Walrus storage transactions, and becomes the creator of each published Maker.</p>
+          <button id="creatorGateWalletButton" class="primary" type="button">Connect Sui wallet</button>
+        </section>
+        <div id="creatorConsole" class="creator-console" hidden>
           <section class="maker-list-panel">
             <div class="creator-workshop-head">
               <div>
                 <p class="kicker">Creator Workshop</p>
-                <h1>Your OC Makers</h1>
+                <h1>Creator Studio</h1>
                 <p>Create, test, and publish Character Makers from one wallet-owned workspace.</p>
               </div>
               <button class="primary" data-new-maker-panel>New OC Maker</button>
@@ -220,7 +229,7 @@
                     <p class="kicker">Library</p>
                     <h2>OC Maker Library</h2>
                   </div>
-                  <span class="template-token">Wallet workspace</span>
+                    <span class="template-token">Local drafts + starter examples</span>
                 </div>
                 <div class="image-maker-list" id="imageMakerList"></div>
               </section>
@@ -228,13 +237,13 @@
 
             <div class="creator-view" data-creator-view="edit">
             <div class="creator-edit-topbar">
-              <button class="back-to-list-button" id="backToMakerList">← OC Maker Library</button>
-              <div>
-                <p class="kicker" id="editingPanelKicker">Maker Top</p>
+              <button class="back-to-list-button" id="backToMakerList" title="Back to OC Maker Library">← Library</button>
+              <div class="editor-context">
+                <span class="editor-section-label" id="editingPanelKicker">Maker Top</span>
                 <h2 id="editingMakerTitle">Starlit Daily OC</h2>
               </div>
               <div class="editor-topbar-actions">
-                <button class="secondary" data-editor-panel-button="preview">Preview</button>
+                <button id="playMakerPreview" class="secondary" type="button">Preview</button>
                 <button id="saveMakerDraft" class="secondary" type="button">Save draft</button>
                 <button id="downloadManifest" class="secondary" type="button">Export</button>
                 <button class="primary" data-editor-panel-button="publish">Release</button>
@@ -298,10 +307,10 @@
                   <section id="maker-parts" class="character-maker-panel">
                     <header class="character-maker-head">
                       <div>
-                        <p class="kicker">Character Maker</p>
-                        <h2 id="layerMakerTitle">Starlit Daily OC</h2>
+                        <p class="kicker">Character workspace</p>
+                        <h2>Parts, Items & Layers</h2>
                       </div>
-                      <div class="maker-tags"><span>Private</span><span>1:1</span><span>Free combine</span></div>
+                      <div class="maker-tags"><span>Private</span><span id="makerCanvasTag">1:1</span><span>Free combine</span></div>
                     </header>
                     <div class="character-maker-workspace">
                       <aside class="character-part-browser">
@@ -310,13 +319,13 @@
                       </aside>
                       <section class="character-canvas-panel">
                         <div class="canvas-toolbar"><strong>Live preview</strong><span id="canvasAssetCount">0 images</span></div>
-                        <div class="editor-canvas-stage" aria-label="Layered OC preview">
+                        <div id="creatorCanvasStage" class="editor-canvas-stage" aria-label="Layered OC preview">
                           <div id="creatorCanvasAssets" class="creator-canvas-assets"></div>
                           <div id="creatorCanvasEmpty" class="creator-canvas-empty">
                             <strong>No item images yet</strong>
                             <span>Select an item and upload its PNG layer images.</span>
                           </div>
-                          <span class="editor-layer-caption">1024 × 1024</span>
+                          <span id="canvasSizeLabel" class="editor-layer-caption">1024 × 1024</span>
                         </div>
                       </section>
                       <aside class="character-part-inspector">
@@ -326,7 +335,7 @@
                     <section id="compositionOrder" class="composition-drawer">
                       <div class="section-row">
                         <div><p class="kicker">Composition Order</p><h3>Global layer stack</h3></div>
-                        <span class="template-token"><span id="layerCount">0</span> layers</span>
+                        <span class="template-token"><span id="layerCount">0</span> layers · back → front</span>
                       </div>
                       <div class="composition-grid">
                         <div id="creatorLayerList" class="creator-layer-list editor-layer-stack"></div>
@@ -346,9 +355,15 @@
                       <button id="addSelectionRule" class="secondary" type="button">Add rule</button>
                     </div>
                     <div class="rule-builder">
-                      <label>First part<select id="ruleLeftPart"></select></label>
+                      <div class="rule-side">
+                        <label>First part<select id="ruleLeftPart"></select></label>
+                        <label>Specific item (optional)<select id="ruleLeftItem"></select></label>
+                      </div>
                       <span>cannot combine with</span>
-                      <label>Second part<select id="ruleRightPart"></select></label>
+                      <div class="rule-side">
+                        <label>Second part<select id="ruleRightPart"></select></label>
+                        <label>Specific item (optional)<select id="ruleRightItem"></select></label>
+                      </div>
                     </div>
                     <div id="selectionRuleList" class="selection-rule-list"></div>
                     <div class="rule-grid">
@@ -377,16 +392,6 @@
                       <span>Trade: license and royalty rules travel with the OC.</span>
                     </div>
                   </section>
-                  <section class="function-card">
-                    <p class="kicker">Last Bastion</p>
-                    <h2>Fallback safety</h2>
-                    <div class="rule-example">
-                      <span>Dress selected</span>
-                      <b>deselects</b>
-                      <span>Tops + Bottoms</span>
-                    </div>
-                    <p>If a rule would leave a required body area empty, a last-bastion part becomes the fallback. Animacraft should store this as a rule-bound required fallback object on-chain.</p>
-                  </section>
                 </div>
 
                 <div class="creator-function-grid editor-panel" data-editor-panel="palette">
@@ -406,12 +411,12 @@
                     <div id="paletteLinkList" class="selection-rule-list"></div>
                   </section>
                   <section class="function-card">
-                    <p class="kicker">Palette On-chain State</p>
+                    <p class="kicker">Palette Manifest</p>
                     <h2>Linked color records</h2>
                     <div class="asset-status-list">
-                      <div><strong>Palette group</strong><span>Records which layers share one user-facing color control.</span></div>
-                      <div><strong>Variant map</strong><span>Stores allowed color sets, premium palettes, and creator defaults.</span></div>
-                      <div><strong>Recipe snapshot</strong><span>Finished OCs keep the exact palette choices used at mint time.</span></div>
+                      <div><strong>Palette group</strong><span>The Walrus manifest records which Parts share one user-facing color control.</span></div>
+                      <div><strong>Maker reference</strong><span>The Sui Maker stores the immutable Walrus manifest reference at publication.</span></div>
+                      <div><strong>Recipe snapshot</strong><span>Finished OCs keep the exact selected color value in their on-chain recipe.</span></div>
                     </div>
                   </section>
                 </div>
@@ -428,8 +433,8 @@
                     <div class="control-list">
                       <span>Template opens as a clean OC creation page.</span>
                       <span>Only visible parts appear in the user menu.</span>
-                      <span>Invalid combinations are disabled before minting.</span>
-                      <span>Preview exports a recipe, cover image, and metadata package.</span>
+                      <span>Invalid Part and Item combinations are disabled while users choose.</span>
+                      <span>The user can export the selected recipe and metadata package.</span>
                     </div>
                   </section>
                   <section class="function-card">
@@ -437,8 +442,8 @@
                     <h2>Blocking checks</h2>
                     <div class="asset-status-list">
                       <div><strong>Required structure</strong><span>At least one standard or paired part and one visible menu part.</span></div>
-                      <div><strong>Required files</strong><span>Every public item needs item images for every required layer.</span></div>
-                      <div><strong>Rule integrity</strong><span>No rule may reference a deleted part, private item, or missing fallback.</span></div>
+                      <div><strong>Required files</strong><span>Every public Item needs one PNG for each Layer × Color cell.</span></div>
+                      <div><strong>Rule integrity</strong><span>No rule may reference a deleted Part or draft-only Item.</span></div>
                     </div>
                   </section>
                 </div>
@@ -449,14 +454,14 @@
                     <h2>Asset registry</h2>
                     <div class="publish-runtime-card" id="publishRuntimeCard"></div>
                     <div class="asset-status-list">
-                      <div><strong>Walrus blobs</strong><span>PNG layers, cover image, generated preview sheets</span></div>
-                      <div><strong>Sui objects</strong><span>Template, parts, recipe, licenses, creator identity</span></div>
-                      <div><strong>Revenue splits</strong><span>Template creator, part owner, OC owner, marketplace fee</span></div>
+                      <div><strong>Walrus quilt</strong><span>Item PNGs, optional picker icons, and the versioned Maker manifest</span></div>
+                      <div><strong>Sui objects</strong><span>CreatorProfile, OCMaker, Parts, Items, Rules, license snapshot, and ownership</span></div>
+                      <div><strong>Royalty policy</strong><span>License kind and royalty basis points are recorded; marketplace settlement is a separate adapter.</span></div>
                     </div>
                     <div class="production-action" id="makerPublishAction">
                       <div>
                         <strong>Publish this maker</strong>
-                        <span id="makerPublishStatus">Upload at least one PNG layer, connect a wallet, and configure the Move package.</span>
+                        <span id="makerPublishStatus">Complete every published Item image cell, connect a wallet, and configure the Move package.</span>
                       </div>
                       <div class="production-button-row">
                         <button id="prepareMakerUpload" class="secondary" type="button">1. Prepare</button>
@@ -472,12 +477,12 @@
                     <div class="chain-action-list" data-chain-action-list></div>
                   </section>
                   <section class="function-card">
-                    <p class="kicker">Publication Scope</p>
-                    <h2>Access states</h2>
+                    <p class="kicker">Publication Record</p>
+                    <h2>What becomes immutable</h2>
                     <div class="asset-status-list">
-                      <div><strong>Public</strong><span>Listed in plaza/search and available for OC creation.</span></div>
-                      <div><strong>Unlisted</strong><span>Accessible only by URL or allowlist; link can be rotated.</span></div>
-                      <div><strong>Private</strong><span>Creator-only draft, unavailable to other users.</span></div>
+                      <div><strong>Provenance</strong><span>Creator wallet, Maker object, package version, and publication transaction.</span></div>
+                      <div><strong>Asset version</strong><span>The certified Walrus manifest and every referenced item image.</span></div>
+                      <div><strong>Rules</strong><span>Part and Item incompatibilities enforced when an OC recipe is minted.</span></div>
                     </div>
                   </section>
                 </div>
@@ -565,12 +570,12 @@
                   <button class="choice-card active" data-canvas-choice="1:1">
                     <i></i>
                     <strong>1:1</strong>
-                    <small>W:600px H:600px</small>
+                    <small>W:1024px H:1024px</small>
                   </button>
                   <button class="choice-card" data-canvas-choice="9:16">
                     <i class="portrait"></i>
                     <strong>9:16</strong>
-                    <small>W:540px H:960px</small>
+                    <small>W:1080px H:1920px</small>
                   </button>
                 </div>
               </div>
@@ -654,8 +659,8 @@
             <p class="kicker">Docs</p>
             <h1>On-chain rules for OC creation</h1>
             <p>
-              Animacraft keeps the maker experience simple, while the protocol records material provenance,
-              template licenses, OC ownership, trade settlement, and remix relationships.
+              Animacraft keeps the maker experience simple while Sui and Walrus record Maker provenance,
+              license policy, OC ownership, and the exact recipe used to create each character.
             </p>
           </div>
         </div>
@@ -668,7 +673,7 @@
           <section class="protocol-card">
             <span>W</span>
             <h2>Walrus as asset layer</h2>
-            <p>All PNG layers, cover sheets, manifests, rendered OCs, and profile JSON should resolve from Walrus blob ids.</p>
+            <p>Item PNGs, optional picker icons, Maker manifests, finished OC images, and profile JSON resolve from certified Walrus quilt patches.</p>
           </section>
           <section class="protocol-card">
             <span>PR</span>
@@ -678,9 +683,9 @@
         </div>
         <section class="chain-status-panel docs-chain-panel">
           <div>
-            <p class="kicker">Production Loop</p>
+            <p class="kicker">Production Architecture</p>
             <h2>Creator to player without a backend database</h2>
-            <p>Animacraft should work like a browser-native on-chain app: wallet signs, Walrus stores, Sui verifies, and events become the index surface.</p>
+            <p>Wallets sign core writes, Walrus stores assets, and Sui verifies ownership and recipes. Public gallery discovery remains gated until chain-derived indexing is enabled.</p>
           </div>
           <div class="chain-action-list" data-chain-action-list></div>
         </section>
@@ -690,18 +695,18 @@
             <span class="template-token">Part → Item → Image</span>
           </div>
           <div class="docs-workflow">
-            <article><span>01</span><strong>Maker Top</strong><p>Create the maker shell and review parts, layer count, draft status, and release readiness.</p></article>
+            <article><span>01</span><strong>Library & Maker Top</strong><p>Create or open a Maker in the library, then use Maker Top to review structure, files, rules, and release readiness.</p></article>
             <article><span>02</span><strong>Character Maker</strong><p>Add a Part, choose its fixed type, then define Layers, Colors, Items, icons, and each PNG image cell.</p></article>
             <article><span>03</span><strong>Composition Order</strong><p>Arrange layers across Parts while the selected Item images remain visible on the same live canvas.</p></article>
             <article><span>04</span><strong>Rules & Palette</strong><p>Prevent incompatible choices and link color controls across related Parts.</p></article>
-            <article><span>05</span><strong>Preview Check</strong><p>Use the maker as a player, verify defaults and removals, and confirm every public Item has its required images.</p></article>
+            <article><span>05</span><strong>Preview Check</strong><p>Validate visible Parts, rule references, and every required public Item × Layer × Color image cell.</p></article>
             <article><span>06</span><strong>On-chain Publish</strong><p>Prepare one Walrus quilt, register and upload it, certify file availability, then publish the OCMaker on Sui.</p></article>
           </div>
         </section>
         <section class="docs-model">
           <div><p class="kicker">Maker Data Model</p><h2>Where each setting belongs</h2></div>
           <div class="docs-model-grid">
-            <article><strong>Part</strong><span>Name, immutable type, menu icon, canvas anchor, remove/default behavior, controls, and license gate.</span></article>
+            <article><strong>Part</strong><span>Name, immutable type, menu icon, canvas anchor, remove/default behavior, controls, and manifest policy.</span></article>
             <article><strong>Layer</strong><span>Owned by one Part. Stores name, global composition position, offset, opacity, and blend mode.</span></article>
             <article><strong>Color</strong><span>Owned by one Part. Expands the image matrix and may link to colors in other Parts.</span></article>
             <article><strong>Item</strong><span>One user-selectable option inside a Part, with display order, visibility, picker icon, and item rules.</span></article>
@@ -713,6 +718,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=animacraft-36"></script>
+    <script type="module" src="./app.js?v=animacraft-39"></script>
   </body>
 </html>

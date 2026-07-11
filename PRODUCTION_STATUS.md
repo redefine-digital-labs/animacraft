@@ -13,6 +13,8 @@
 - Move validation for license kinds, part kinds, item gates, non-empty blobs, and non-empty publishable makers.
 - Move unit tests and browser-verified responsive layouts.
 - Per-wallet, per-maker local draft isolation so switching makers does not share Parts or assets.
+- Wallet-first Creator Studio gating and Part/Item-level selection-rule authoring backed by Move recipe validation.
+- Honest starter-example labeling, local Maker preview navigation, rule-aware player choices, and local uploaded-layer rendering.
 - Pull requests run syntax checks and a clean Vite production build in GitHub Actions.
 
 ## Required before public creator onboarding

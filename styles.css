@@ -926,6 +926,24 @@ textarea:focus {
   position: absolute;
 }
 
+.player-layer-assets {
+  position: absolute;
+  inset: 0;
+}
+
+.player-layer-assets img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transform: translate(calc(var(--layer-x) * 0.04%), calc(var(--layer-y) * 0.04%));
+}
+
+.avatar.has-layer-assets > :not(.player-layer-assets):not(.avatar-caption) {
+  display: none;
+}
+
 .avatar-bg {
   inset: 18px;
   border: 2px solid rgba(37, 33, 43, 0.14);
@@ -1260,6 +1278,47 @@ input[type="color"] {
   overflow: hidden;
   background: rgba(255, 250, 242, 0.72);
   box-shadow: var(--shadow);
+}
+
+.creator-wallet-gate {
+  display: grid;
+  justify-items: start;
+  width: min(680px, calc(100% - 32px));
+  margin: 56px auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: clamp(24px, 5vw, 48px);
+  background: var(--paper-strong);
+  box-shadow: 8px 8px 0 var(--mint);
+}
+
+.creator-wallet-gate[hidden],
+.creator-console[hidden] {
+  display: none !important;
+}
+
+.creator-wallet-gate h1 {
+  max-width: 620px;
+  margin: 8px 0 12px;
+  font-size: clamp(30px, 5vw, 48px);
+  line-height: 1.08;
+}
+
+.creator-wallet-gate > p:not(.kicker) {
+  max-width: 580px;
+  margin: 0 0 22px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.wallet-gate-mark {
+  width: 54px;
+  height: 54px;
+  margin-bottom: 18px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: conic-gradient(from 210deg, var(--violet), var(--mint), var(--rose), var(--violet));
+  box-shadow: 4px 4px 0 var(--sun);
 }
 
 .creator-sidebar {
@@ -1664,6 +1723,33 @@ input[type="color"] {
 .creator-edit-topbar h2,
 .creator-edit-topbar p {
   margin: 0;
+}
+
+.editor-context {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.editor-context h2 {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-section-label {
+  width: max-content;
+  max-width: 100%;
+  border-radius: 5px;
+  padding: 3px 7px;
+  background: #e6fbf6;
+  color: #12695d;
+  font-size: 11px;
+  font-weight: 900;
 }
 
 .back-to-list-button {
@@ -2974,6 +3060,7 @@ input[type="color"] {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .character-maker-head h2 {
@@ -3280,6 +3367,12 @@ input[type="color"] {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.rule-side {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
 }
 
 .rule-builder > span {
@@ -3970,7 +4063,12 @@ pre {
   }
 
   .creator-edit-topbar {
+    grid-template-columns: auto minmax(0, 1fr);
     top: 8px;
+  }
+
+  .creator-edit-topbar .editor-topbar-actions {
+    grid-column: 1 / -1;
   }
 
   .creator-workbench {

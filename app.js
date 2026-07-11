@@ -68,6 +68,7 @@ const parts = {
 const templates = [
   {
     id: 'daily-starlit',
+    source: 'starter',
     name: 'Starlit Daily OC',
     category: 'daily',
     creator: 'Animacraft Lab',
@@ -75,9 +76,6 @@ const templates = [
     license: 'Personal use',
     royaltyBps: 300,
     price: 'Free base + paid parts',
-    uses: '1.8k',
-    works: 426,
-    parts: 28,
     accent: '#7b5cff',
     secondary: '#2db7a3',
     summary: 'A daily OC maker for profile icons, character sheets, and lightweight original characters.',
@@ -85,6 +83,7 @@ const templates = [
   },
   {
     id: 'fantasy-flower',
+    source: 'starter',
     name: 'Flower Familiar',
     category: 'fantasy',
     creator: 'Mori Atelier',
@@ -92,16 +91,14 @@ const templates = [
     license: 'Paid commercial',
     royaltyBps: 500,
     price: 'Creator-set paid template',
-    uses: '952',
-    works: 218,
-    parts: 36,
     accent: '#2db7a3',
     secondary: '#f0a23a',
     summary: 'A fantasy-friendly maker for spirits, familiars, story characters, and worldbuilding.',
-    licenseNote: 'Paid templates, commercial licenses, and remix revenue can settle by part-level rules.',
+    licenseNote: 'Starter policy example for a paid commercial Maker. Marketplace settlement is not active in this preview.',
   },
   {
     id: 'chibi-idol',
+    source: 'starter',
     name: 'Chibi Idol Maker',
     category: 'chibi',
     creator: 'Stage Mint',
@@ -109,9 +106,6 @@ const templates = [
     license: 'Personal use',
     royaltyBps: 250,
     price: 'Free trial parts',
-    uses: '2.4k',
-    works: 703,
-    parts: 42,
     accent: '#f06f8f',
     secondary: '#f0a23a',
     summary: 'A quick chibi maker for stage characters, fan OCs, and small profile images.',
@@ -147,7 +141,7 @@ const chainActions = [
   {
     key: 'walrus',
     title: 'Walrus assets',
-    body: 'Stage PNG layers, icons, cover sheets, manifests, rendered OCs, and profile JSON as blobs.',
+    body: 'Stage item PNGs, optional picker icons, Maker manifests, finished OC images, and profile JSON as quilt patches.',
   },
   {
     key: 'maker',
@@ -185,7 +179,7 @@ const i18n = {
     docsCopy: 'Protocol and licensing',
     templatePlaza: 'Template Plaza',
     templateHero: 'Pick an artist-made template, then make your OC',
-    templateHeroCopy: 'Choose a maker, combine parts, save a character, and let Animacraft handle provenance, licensing, revenue splits, and on-chain records.',
+    templateHeroCopy: 'Choose a maker, combine Parts, and save a character with its recipe, license snapshot, provenance, and on-chain record.',
     search: 'Search',
     searchPlaceholder: 'Search style, creator, license...',
     filterAll: 'All',
@@ -216,7 +210,7 @@ const i18n = {
     docsCopy: '协议与授权',
     templatePlaza: '模板广场',
     templateHero: '选择创作者模板，然后捏出你的 OC',
-    templateHeroCopy: '选择模板、组合部件、保存角色，Animacraft 负责来源、授权、收益分配与链上记录。',
+    templateHeroCopy: '选择模板、组合部件，并将角色连同配方、授权快照、来源与链上记录一起保存。',
     search: '搜索',
     searchPlaceholder: '搜索风格、创作者、授权...',
     filterAll: '全部',
@@ -247,7 +241,7 @@ const i18n = {
     docsCopy: 'プロトコルとライセンス',
     templatePlaza: 'テンプレート広場',
     templateHero: 'アーティスト製テンプレートを選び、OC を作る',
-    templateHeroCopy: 'メーカーを選び、パーツを組み合わせ、キャラクターを保存。出所、ライセンス、収益分配、オンチェーン記録は Animacraft が扱います。',
+    templateHeroCopy: 'メーカーを選び、パーツを組み合わせ、レシピ、ライセンスのスナップショット、来歴、オンチェーン記録と共にキャラクターを保存します。',
     search: '検索',
     searchPlaceholder: 'スタイル、作者、ライセンスを検索...',
     filterAll: 'すべて',
@@ -278,7 +272,7 @@ const i18n = {
     docsCopy: '프로토콜과 라이선스',
     templatePlaza: '템플릿 광장',
     templateHero: '작가 템플릿을 고르고 OC를 만드세요',
-    templateHeroCopy: '메이커를 선택하고 파츠를 조합해 캐릭터를 저장하면, 출처, 라이선스, 수익 분배, 온체인 기록은 Animacraft가 처리합니다.',
+    templateHeroCopy: '메이커를 선택하고 파츠를 조합한 뒤 레시피, 라이선스 스냅샷, 출처, 온체인 기록과 함께 캐릭터를 저장합니다.',
     search: '검색',
     searchPlaceholder: '스타일, 크리에이터, 라이선스 검색...',
     filterAll: '전체',
@@ -309,7 +303,7 @@ const i18n = {
     docsCopy: 'Giao thức và cấp quyền',
     templatePlaza: 'Quảng trường mẫu',
     templateHero: 'Chọn mẫu của artist, rồi tạo OC của bạn',
-    templateHeroCopy: 'Chọn maker, ghép part, lưu nhân vật; Animacraft xử lý nguồn gốc, giấy phép, chia doanh thu và bản ghi on-chain.',
+    templateHeroCopy: 'Chọn maker, ghép Part và lưu nhân vật cùng công thức, bản chụp giấy phép, nguồn gốc và bản ghi on-chain.',
     search: 'Tìm kiếm',
     searchPlaceholder: 'Tìm phong cách, creator, license...',
     filterAll: 'Tất cả',
@@ -324,7 +318,7 @@ const protocolSteps = [
   ['02', 'Template Contract', 'A maker records usable parts, licenses, creator identity, royalties, and composition rules.'],
   ['03', 'OC Recipe', 'A user-made OC becomes a recipe that references templates, parts, colors, and license snapshots.'],
   ['04', 'Finished OC', 'The result can mint as a Soul / OC object with ownership, profile data, display image, and provenance.'],
-  ['05', 'License Trade', 'Resale, commercial use, and remix licensing trigger on-chain splits for template and material creators.'],
+  ['05', 'License Snapshot', 'Each finished OC preserves the Maker license kind and royalty basis points; marketplace settlement is handled by a separate adapter.'],
   ['06', 'Creator Flywheel', 'Great templates bring OC makers; great OCs bring template sales and secondary market activity.'],
 ];
 
@@ -339,6 +333,7 @@ const state = {
   partSubView: 'items',
   selectedLayer: 'hairFront:normal',
   selectedItem: 'normal',
+  makerCanvas: { width: 1024, height: 1024 },
   makerSlots: structuredClone(slots),
   makerParts: structuredClone(parts),
   slotOrder: slots.map((slot) => slot.key),
@@ -372,6 +367,7 @@ const state = {
   publishStatus: '',
   publishDigest: '',
   makerUploadSession: null,
+  pendingMakerAssets: [],
   makerUploadStage: 'idle',
   makerManifestPatchId: '',
   pendingMakerManifestJson: '',
@@ -385,6 +381,7 @@ const state = {
   pendingOcPackage: null,
   pendingOcRecipeHash: null,
   pendingOcRecipeJson: '',
+  previewingMaker: false,
   locale: localStorage.getItem('animacraft-locale') || 'en',
 };
 
@@ -415,8 +412,9 @@ function defaultMakerVisual() {
   });
 }
 
-function createMakerModel({ empty = false } = {}) {
+function createMakerModel({ empty = false, canvas = { width: 1024, height: 1024 } } = {}) {
   return {
+    canvas: { ...canvas },
     slots: empty ? [] : structuredClone(slots),
     parts: empty ? {} : structuredClone(parts),
     slotOrder: empty ? [] : slots.map((slot) => slot.key),
@@ -435,6 +433,7 @@ function syncActiveMakerModelRefs() {
   if (!model) return;
   Object.assign(model, {
     slots: state.makerSlots,
+    canvas: state.makerCanvas,
     parts: state.makerParts,
     slotOrder: state.slotOrder,
     layerOrder: state.layerOrder,
@@ -452,6 +451,7 @@ function activateMakerModel(templateId, options = {}) {
   if (!makerModels.has(templateId)) makerModels.set(templateId, createMakerModel(options));
   const model = makerModels.get(templateId);
   state.templateId = templateId;
+  state.makerCanvas = model.canvas;
   state.makerSlots = model.slots;
   state.makerParts = model.parts;
   state.slotOrder = model.slotOrder;
@@ -463,6 +463,7 @@ function activateMakerModel(templateId, options = {}) {
   state.publishDigest = model.publishDigest;
   state.publishStatus = model.publishStatus;
   state.makerUploadSession = null;
+  state.pendingMakerAssets = [];
   state.makerUploadStage = 'idle';
   state.makerManifestPatchId = '';
   state.pendingMakerManifestJson = '';
@@ -475,6 +476,7 @@ function activateMakerModel(templateId, options = {}) {
 }
 
 makerModels.set(state.templateId, {
+  canvas: state.makerCanvas,
   slots: state.makerSlots,
   parts: state.makerParts,
   slotOrder: state.slotOrder,
@@ -539,11 +541,16 @@ function allSlots() {
   return [...ordered, ...missing];
 }
 
+function playableSlots() {
+  return allSlots().filter((slot) => slot.menuVisible !== false);
+}
+
 function slotItems(slotKey) {
   return state.makerParts[slotKey] || [];
 }
 
 function ensureSlotStructure(slot) {
+  slot.colorKey ||= slot.key;
   if (!slot.kind) slot.kind = 'standard';
   if (!Array.isArray(slot.layers) || slot.layers.length === 0) {
     if (slot.kind === 'left-right-pair') {
@@ -558,6 +565,7 @@ function ensureSlotStructure(slot) {
   if (!Array.isArray(slot.colors) || slot.colors.length === 0) {
     slot.colors = [{ id: 'default', name: 'Default', value: state.visual.palette[slot.colorKey] || '#7b5cff' }];
   }
+  state.visual.palette[slot.colorKey] ||= slot.colors[0]?.value || '#7b5cff';
   slotItems(slot.key).forEach((item, index) => {
     item.displayOrder ??= index + 1;
     item.visibility ??= 'public';
@@ -663,6 +671,7 @@ function syncCreatorAssets() {
 
 function invalidateMakerUpload(message = '') {
   state.makerUploadSession = null;
+  state.pendingMakerAssets = [];
   state.makerUploadStage = 'idle';
   state.makerManifestPatchId = '';
   state.pendingMakerManifestJson = '';
@@ -772,6 +781,7 @@ function chainStatusItems() {
 function filteredTemplates() {
   const query = state.search.trim().toLowerCase();
   return templates.filter((template) => {
+    if (template.source === 'local') return false;
     const matchesFilter = state.filter === 'all' || template.category === state.filter;
     const haystack = `${template.name} ${template.creator} ${template.style} ${template.license} ${template.summary}`.toLowerCase();
     return matchesFilter && (!query || haystack.includes(query));
@@ -780,6 +790,10 @@ function filteredTemplates() {
 
 function setPage(page) {
   state.page = page === 'editor' ? 'make' : page === 'protocol' ? 'docs' : page;
+  if (state.page === 'make') {
+    const playable = playableSlots();
+    if (!playable.some((slot) => slot.key === state.selectedSlot)) state.selectedSlot = playable[0]?.key || '';
+  }
   if (state.page === 'creator' && !state.creatorView) state.creatorView = 'list';
   document.querySelectorAll('.page').forEach((section) => {
     section.classList.toggle('active', section.id === state.page);
@@ -859,9 +873,10 @@ function renderTemplates() {
       </div>
       <div class="template-body">
         <div class="badge-row">
+          <span>Starter example</span>
           <span>${escapeHtml(template.license)}</span>
-          <span>${escapeHtml(template.parts)} parts</span>
-          <span>${escapeHtml(template.uses)} uses</span>
+          <span>${slots.length} Parts</span>
+          <span>${Object.values(parts).reduce((total, items) => total + items.length, 0)} Items</span>
         </div>
         <h2>${escapeHtml(template.name)}</h2>
         <p class="creator-line">by ${escapeHtml(template.creator)}</p>
@@ -870,8 +885,7 @@ function renderTemplates() {
           ${[1, 2, 3, 4].map((item) => `<span style="--tilt:${item * 3}deg; --accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};"></span>`).join('')}
         </div>
         <div class="template-footer">
-          <span>${Number(template.royaltyBps || 0) / 100}% royalty</span>
-          <span>${escapeHtml(template.works)} works</span>
+          <span>${Number(template.royaltyBps || 0) / 100}% royalty policy</span>
           <button class="primary" data-use-template="${escapeHtml(template.id)}">Start making</button>
         </div>
       </div>
@@ -891,6 +905,7 @@ function renderTemplates() {
     button.addEventListener('click', () => {
       activateMakerModel(button.dataset.useTemplate);
       syncTemplateFields();
+      state.previewingMaker = false;
       setPage('make');
       renderAll();
     });
@@ -898,7 +913,7 @@ function renderTemplates() {
 }
 
 function renderSlots() {
-  $('slotRail').innerHTML = allSlots().map((slot) => `
+  $('slotRail').innerHTML = playableSlots().map((slot) => `
     <button class="slot-btn ${slot.key === state.selectedSlot ? 'active' : ''}" data-slot="${escapeHtml(slot.key)}">
       <span>${escapeHtml(slot.icon)}</span>
       <strong>${escapeHtml(slot.label)}</strong>
@@ -923,9 +938,21 @@ function renderParts() {
   }
   $('slotTitle').textContent = slot.label;
   $('slotDescription').textContent = slot.description;
-  $('partColor').value = state.visual.palette[slot.colorKey];
-  $('partGrid').innerHTML = slotItems(slot.key).map((part, index) => `
-    <button class="part-card ${state.visual[slot.key] === part.id ? 'active' : ''}" data-part="${escapeHtml(part.id)}">
+  const publicItems = slotItems(slot.key).filter((item) => item.visibility !== 'private').sort((left, right) => left.displayOrder - right.displayOrder);
+  if (state.visual[slot.key] && !publicItems.some((item) => item.id === state.visual[slot.key])) {
+    state.visual[slot.key] = slot.defaultItemId && publicItems.some((item) => item.id === slot.defaultItemId) ? slot.defaultItemId : publicItems[0]?.id || '';
+  }
+  $('partColor').value = safeCssColor(state.visual.palette[slot.colorKey]);
+  $('partColor').disabled = uploadedAssetCount(slot) > 0;
+  const removeOption = slot.allowRemove !== false ? `
+    <button class="part-card ${state.visual[slot.key] ? '' : 'active'}" data-part="">
+      <span class="part-thumb empty-thumb">×</span>
+      <strong>None</strong>
+      <small>Remove this Part</small>
+    </button>
+  ` : '';
+  $('partGrid').innerHTML = removeOption + publicItems.map((part, index) => `
+    <button class="part-card ${state.visual[slot.key] === part.id ? 'active' : ''}" data-part="${escapeHtml(part.id)}" ${selectionWouldBreakRule(slot.key, part.id) ? 'disabled title="Unavailable with the current selection"' : ''}>
       <span class="part-thumb" style="--accent:${safeCssColor(state.visual.palette[slot.colorKey])}; --index:${index};"></span>
       <strong>${escapeHtml(part.label)}</strong>
       <small>${escapeHtml(slot.key)}/${escapeHtml(part.id)}</small>
@@ -946,20 +973,32 @@ function renderSwatches() {
     $('swatchGrid').innerHTML = '';
     return;
   }
-  $('swatchGrid').innerHTML = swatches.map((color) => `
+  const makerColors = creatorColors(slot).map((color) => color.value);
+  const choices = uploadedAssetCount(slot) ? makerColors : swatches;
+  $('swatchGrid').innerHTML = choices.map((color) => `
     <button class="swatch ${state.visual.palette[slot.colorKey] === color ? 'active' : ''}" data-swatch="${color}" style="background:${color}" aria-label="Use ${color}"></button>
   `).join('');
   document.querySelectorAll('[data-swatch]').forEach((button) => {
     button.addEventListener('click', () => {
-      state.visual.palette[slot.colorKey] = button.dataset.swatch;
+      applyPaletteColor(slot, button.dataset.swatch);
       renderAll();
     });
+  });
+}
+
+function applyPaletteColor(slot, color) {
+  state.visual.palette[slot.colorKey] = color;
+  state.paletteLinks.filter((link) => link.primaryPartKey === slot.key || link.linkedPartKey === slot.key).forEach((link) => {
+    const linkedKey = link.primaryPartKey === slot.key ? link.linkedPartKey : link.primaryPartKey;
+    const linkedSlot = allSlots().find((candidate) => candidate.key === linkedKey);
+    if (linkedSlot) state.visual.palette[linkedSlot.colorKey] = color;
   });
 }
 
 function renderAvatar() {
   const palette = state.visual.palette;
   const avatar = $('avatar');
+  avatar.style.aspectRatio = `${state.makerCanvas.width} / ${state.makerCanvas.height}`;
   avatar.dataset.background = state.visual.background;
   avatar.dataset.hairBack = state.visual.hairBack;
   avatar.dataset.hairFront = state.visual.hairFront;
@@ -980,12 +1019,41 @@ function renderAvatar() {
   $('avatarName').textContent = $('profileName').value || 'Untitled OC';
   $('characterNameTitle').textContent = $('profileName').value || 'Untitled OC';
   $('avatarWorld').textContent = $('profileWorld').value || activeTemplate().style;
+  renderPlayerLayerAssets();
+}
+
+function selectionWouldBreakRule(partKey, itemId) {
+  const selection = { ...state.visual, [partKey]: itemId };
+  return state.rules.some((rule) => {
+    const leftItem = selection[rule.leftPartKey];
+    const rightItem = selection[rule.rightPartKey];
+    const leftSelected = Boolean(leftItem) && (!rule.leftItemKey || leftItem === rule.leftItemKey);
+    const rightSelected = Boolean(rightItem) && (!rule.rightItemKey || rightItem === rule.rightItemKey);
+    return leftSelected && rightSelected;
+  });
+}
+
+function renderPlayerLayerAssets() {
+  if (!$('playerLayerAssets')) return;
+  const images = allCreatorLayers().flatMap((layer) => {
+    const item = slotItems(layer.partKey).find((candidate) => candidate.id === state.visual[layer.partKey] && candidate.visibility !== 'private');
+    if (!item) return [];
+    const slot = allSlots().find((candidate) => candidate.key === layer.partKey);
+    const colors = creatorColors(slot);
+    const selectedColor = colors.find((color) => color.value.toLowerCase() === String(state.visual.palette[slot.colorKey] || '').toLowerCase()) || colors[0];
+    const asset = selectedColor ? item.images?.[assetCellKey(layer.id, selectedColor.id)] : null;
+    return asset?.url ? [{ layer, asset }] : [];
+  });
+  $('playerLayerAssets').innerHTML = images.map(({ layer, asset }) => `
+    <img src="${asset.url}" alt="${escapeHtml(layer.partLabel)} ${escapeHtml(layer.name)}" style="--layer-x:${layer.x || 0};--layer-y:${layer.y || 0};opacity:${(layer.opacity ?? 100) / 100};mix-blend-mode:${layer.blendMode || 'normal'}" />
+  `).join('');
+  $('avatar').classList.toggle('has-layer-assets', images.length > 0);
 }
 
 function renderRecipe() {
-  $('recipeList').innerHTML = allSlots().map((slot) => {
+  $('recipeList').innerHTML = playableSlots().map((slot) => {
     const selected = slotItems(slot.key).find((part) => part.id === state.visual[slot.key]);
-    return `<button data-slot="${slot.key}">${escapeHtml(slot.label)}: ${escapeHtml(selected ? selected.label : state.visual[slot.key])}</button>`;
+    return `<button data-slot="${slot.key}">${escapeHtml(slot.label)}: ${escapeHtml(selected ? selected.label : 'None')}</button>`;
   }).join('');
   document.querySelectorAll('#recipeList [data-slot]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -1007,7 +1075,12 @@ function creatorManifest() {
       royaltyBps: Number($('creatorRoyalty').value || 0),
       storage: 'walrus',
       chain: 'sui',
-      canvas: { width: 1024, height: 1024, anchorX: 512, anchorY: 512 },
+      canvas: {
+        width: state.makerCanvas.width,
+        height: state.makerCanvas.height,
+        anchorX: Math.round(state.makerCanvas.width / 2),
+        anchorY: Math.round(state.makerCanvas.height / 2),
+      },
     },
     runtime: {
       network: runtimeConfig.network,
@@ -1077,8 +1150,36 @@ function creatorManifest() {
 
 function creatorUploadManifest() {
   const manifest = creatorManifest();
-  manifest.assets = manifest.assets.map((asset) => ({ ...asset, patchId: '', blobId: '' }));
+  manifest.parts = manifest.parts.map((part) => {
+    const publicItems = part.items.filter((item) => item.visibility !== 'private');
+    return {
+      ...part,
+      defaultItemId: publicItems.some((item) => item.id === part.defaultItemId) ? part.defaultItemId : publicItems[0]?.id || '',
+      items: publicItems,
+    };
+  });
+  manifest.assets = publishableAssets().map(({ name, size, type, kind, slot, partId, itemId, layerId, colorId, identifier = '' }) => ({
+    name,
+    size,
+    type,
+    kind,
+    slot,
+    partId,
+    itemId,
+    layerId,
+    colorId,
+    identifier,
+    patchId: '',
+    blobId: '',
+  }));
   return manifest;
+}
+
+function publishableAssets() {
+  return state.assets.filter((asset) => {
+    if (!asset.itemId) return true;
+    return slotItems(asset.slot).some((item) => item.id === asset.itemId && item.visibility !== 'private');
+  });
 }
 
 function ocPackage() {
@@ -1103,7 +1204,7 @@ function ocPackage() {
       part: state.visual[slot.key],
       color: state.visual.palette[slot.colorKey],
       renderOrder: index,
-    })),
+    })).filter((entry) => entry.part && slotItems(entry.slot).some((item) => item.id === entry.part && item.visibility !== 'private')),
     onchainIntent: {
       network: runtimeConfig.network,
       packageId: runtimeConfig.packageId,
@@ -1133,6 +1234,35 @@ function renderChecklist() {
   `).join('');
 }
 
+function selectionRuleSideLabel(partKey, itemKey) {
+  const slot = allSlots().find((candidate) => candidate.key === partKey);
+  const partLabel = slot?.label || partKey;
+  if (!itemKey) return `${partLabel} / any Item`;
+  const item = slotItems(partKey).find((candidate) => candidate.id === itemKey);
+  return `${partLabel} / ${item?.label || itemKey}`;
+}
+
+function selectionRuleIssue(rule) {
+  for (const [partKey, itemKey] of [[rule.leftPartKey, rule.leftItemKey], [rule.rightPartKey, rule.rightItemKey]]) {
+    const slot = allSlots().find((candidate) => candidate.key === partKey);
+    if (!slot) return 'A selection rule references a missing Part.';
+    if (itemKey) {
+      const item = slotItems(partKey).find((candidate) => candidate.id === itemKey);
+      if (!item || item.visibility === 'private') return 'A selection rule references a missing or private Item.';
+    }
+  }
+  return '';
+}
+
+function renderRuleItemOptions(selectId, partKey, preferredValue = '') {
+  const select = $(selectId);
+  if (!select) return;
+  const items = slotItems(partKey).filter((item) => item.visibility !== 'private');
+  select.innerHTML = `<option value="">Any Item in this Part</option>${items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join('')}`;
+  select.value = items.some((item) => item.id === preferredValue) ? preferredValue : '';
+  select.disabled = items.length === 0;
+}
+
 function makerPublicationIssues() {
   const issues = [];
   const makerParts = allSlots();
@@ -1144,19 +1274,20 @@ function makerPublicationIssues() {
     const layers = creatorLayers(slot);
     const colors = creatorColors(slot);
     if (!items.length) issues.push(`${slot.label} needs at least one Item.`);
+    if (items.length && !items.some((item) => item.visibility !== 'private')) issues.push(`${slot.label} needs at least one published Item.`);
     if (!layers.length) issues.push(`${slot.label} needs at least one Layer.`);
     if (!colors.length) issues.push(`${slot.label} needs at least one Color.`);
     if (new Set(items.map((item) => item.id)).size !== items.length) issues.push(`${slot.label} contains duplicate Item IDs.`);
     if (new Set(layers.map((layer) => layer.id)).size !== layers.length) issues.push(`${slot.label} contains duplicate Layer IDs.`);
     if (new Set(colors.map((color) => color.id)).size !== colors.length) issues.push(`${slot.label} contains duplicate Color IDs.`);
     items.filter((item) => item.visibility !== 'private').forEach((item) => {
-      if (!Object.values(item.images || {}).some((asset) => asset?.file)) issues.push(`${slot.label} / ${item.label} needs an Item image.`);
+      const missingCells = layers.flatMap((layer) => colors.filter((color) => !item.images?.[assetCellKey(layer.id, color.id)]?.file));
+      if (missingCells.length) issues.push(`${slot.label} / ${item.label} needs ${missingCells.length} more PNG image${missingCells.length === 1 ? '' : 's'}.`);
     });
   });
   state.rules.forEach((rule) => {
-    if (!makerParts.some((slot) => slot.key === rule.leftPartKey) || !makerParts.some((slot) => slot.key === rule.rightPartKey)) {
-      issues.push('A selection rule references a missing Part.');
-    }
+    const issue = selectionRuleIssue(rule);
+    if (issue) issues.push(issue);
   });
   const royaltyBps = Number($('creatorRoyalty').value || 0);
   if (!Number.isInteger(royaltyBps) || royaltyBps < 0 || royaltyBps > 10_000) issues.push('Royalty BPS must be an integer from 0 to 10000.');
@@ -1168,33 +1299,37 @@ function renderCreatorValidation() {
   const structuredParts = allSlots().filter((slot) => ['standard', 'left-right-pair', 'last-bastion'].includes(ensureSlotStructure(slot).kind));
   const visibleParts = structuredParts.filter((slot) => slot.menuVisible !== false);
   const publicItems = structuredParts.flatMap((slot) => slotItems(slot.key).filter((item) => item.visibility !== 'private').map((item) => ({ slot, item })));
-  const missingItems = publicItems.filter(({ item }) => !Object.values(item.images || {}).some((asset) => asset?.file));
-  const invalidRules = state.rules.filter((rule) => !allSlots().some((slot) => slot.key === rule.leftPartKey) || !allSlots().some((slot) => slot.key === rule.rightPartKey));
+  const missingCells = publicItems.reduce((total, { slot, item }) => total + creatorLayers(slot).reduce((layerTotal, layer) => layerTotal + creatorColors(slot).filter((color) => !item.images?.[assetCellKey(layer.id, color.id)]?.file).length, 0), 0);
+  const invalidRules = state.rules.filter((rule) => selectionRuleIssue(rule));
   const checks = [
     [structuredParts.length > 0, 'At least one valid Part is registered.'],
     [visibleParts.length > 0, 'At least one Part is visible in the player menu.'],
-    [missingItems.length === 0, missingItems.length ? `${missingItems.length} public Items still have no PNG image.` : 'Every public Item has at least one PNG image.'],
-    [invalidRules.length === 0, invalidRules.length ? `${invalidRules.length} rules reference missing Parts.` : 'All selection rules reference existing Parts.'],
+    [missingCells === 0, missingCells ? `${missingCells} required Layer × Color PNG cells are still empty.` : 'Every public Item has all required PNG images.'],
+    [invalidRules.length === 0, invalidRules.length ? `${invalidRules.length} rules reference unavailable Parts or Items.` : 'All selection rules reference available Parts and Items.'],
     [itemLayerAssets().length > 0, itemLayerAssets().length ? `${itemLayerAssets().length} item images are ready for the Walrus quilt.` : 'Upload at least one Item image before release.'],
   ];
   $('creatorValidationList').innerHTML = checks.map(([done, label]) => `<li class="${done ? 'ok' : 'warn'}">${escapeHtml(label)}</li>`).join('');
 }
 
 function renderRules() {
-  if (!$('ruleLeftPart') || !$('ruleRightPart')) return;
+  if (!$('ruleLeftPart') || !$('ruleRightPart') || !$('ruleLeftItem') || !$('ruleRightItem')) return;
   const options = allSlots().map((slot) => `<option value="${escapeHtml(slot.key)}">${escapeHtml(slot.label)}</option>`).join('');
   const previousLeft = $('ruleLeftPart').value;
   const previousRight = $('ruleRightPart').value;
+  const previousLeftItem = $('ruleLeftItem').value;
+  const previousRightItem = $('ruleRightItem').value;
   $('ruleLeftPart').innerHTML = options;
   $('ruleRightPart').innerHTML = options;
   $('ruleLeftPart').value = previousLeft || allSlots()[0]?.key || '';
   $('ruleRightPart').value = previousRight || allSlots()[1]?.key || allSlots()[0]?.key || '';
+  renderRuleItemOptions('ruleLeftItem', $('ruleLeftPart').value, previousLeftItem);
+  renderRuleItemOptions('ruleRightItem', $('ruleRightPart').value, previousRightItem);
   $('selectionRuleList').innerHTML = state.rules.length
     ? state.rules.map((rule, index) => `
         <div>
-          <span>${escapeHtml(allSlots().find((slot) => slot.key === rule.leftPartKey)?.label || rule.leftPartKey)}</span>
+          <span>${escapeHtml(selectionRuleSideLabel(rule.leftPartKey, rule.leftItemKey))}</span>
           <b>cannot combine with</b>
-          <span>${escapeHtml(allSlots().find((slot) => slot.key === rule.rightPartKey)?.label || rule.rightPartKey)}</span>
+          <span>${escapeHtml(selectionRuleSideLabel(rule.rightPartKey, rule.rightItemKey))}</span>
           <button type="button" data-remove-rule="${index}" aria-label="Remove rule">×</button>
         </div>
       `).join('')
@@ -1202,6 +1337,7 @@ function renderRules() {
   document.querySelectorAll('[data-remove-rule]').forEach((button) => {
     button.addEventListener('click', () => {
       state.rules.splice(Number(button.dataset.removeRule), 1);
+      invalidateMakerUpload();
       renderAll();
     });
   });
@@ -1229,6 +1365,7 @@ function renderPaletteLinks() {
   document.querySelectorAll('[data-remove-palette-link]').forEach((button) => {
     button.addEventListener('click', () => {
       state.paletteLinks.splice(Number(button.dataset.removePaletteLink), 1);
+      invalidateMakerUpload();
       renderAll();
     });
   });
@@ -1263,17 +1400,20 @@ function renderMintAction() {
 
 async function renderOcImageBlob() {
   const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 1024;
+  canvas.width = state.makerCanvas.width;
+  canvas.height = state.makerCanvas.height;
   const context = canvas.getContext('2d');
-  const uploadedLayers = [...allCreatorLayers()].reverse().flatMap((layer) => {
+  const uploadedLayers = allCreatorLayers().flatMap((layer) => {
     const itemId = state.visual[layer.partKey] || slotItems(layer.partKey)[0]?.id;
-    const item = slotItems(layer.partKey).find((candidate) => candidate.id === itemId);
-    const asset = Object.entries(item?.images || {}).find(([key, value]) => key.startsWith(`${layer.id}:`) && value?.file)?.[1];
+    const item = slotItems(layer.partKey).find((candidate) => candidate.id === itemId && candidate.visibility !== 'private');
+    const slot = allSlots().find((candidate) => candidate.key === layer.partKey);
+    const colors = creatorColors(slot);
+    const selectedColor = colors.find((color) => color.value.toLowerCase() === String(state.visual.palette[slot.colorKey] || '').toLowerCase()) || colors[0];
+    const asset = selectedColor ? item?.images?.[assetCellKey(layer.id, selectedColor.id)] : null;
     return asset ? [{ layer, asset }] : [];
   });
   if (uploadedLayers.length) {
-    context.clearRect(0, 0, 1024, 1024);
+    context.clearRect(0, 0, canvas.width, canvas.height);
     for (const { layer, asset } of uploadedLayers) {
       const bitmap = await createImageBitmap(asset.file);
       context.globalAlpha = (layer.opacity ?? 100) / 100;
@@ -1291,7 +1431,9 @@ async function renderOcImageBlob() {
   }
   const palette = state.visual.palette;
   context.fillStyle = palette.background;
-  context.fillRect(0, 0, 1024, 1024);
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.save();
+  context.scale(canvas.width / 1024, canvas.height / 1024);
   context.fillStyle = palette.outfit;
   context.beginPath();
   context.roundRect(260, 720, 504, 360, 120);
@@ -1314,6 +1456,7 @@ async function renderOcImageBlob() {
   context.beginPath();
   context.ellipse(512, 145, 180, 54, 0, 0, Math.PI * 2);
   context.stroke();
+  context.restore();
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not render the OC image.')), 'image/png');
   });
@@ -1328,7 +1471,7 @@ function renderImageMakerList() {
         </div>
         <div class="maker-card-body">
           <div class="maker-tags">
-            <span>${template.license === 'Personal use' ? 'Private' : 'Listed'}</span>
+            <span>${template.source === 'local' ? 'Local draft' : 'Starter example'}</span>
             <span>${template.category === 'chibi' ? '1:1' : '9:16'}</span>
             <span>Free combine</span>
           </div>
@@ -1369,21 +1512,25 @@ function renderCreatorDetails() {
   allSlots().forEach(ensureSlotStructure);
   const compositionLayers = allCreatorLayers();
   $('detailMakerTitle').textContent = template.name;
-  if ($('layerMakerTitle')) $('layerMakerTitle').textContent = template.name;
   $('editingMakerTitle').textContent = template.name;
+  $('editingMakerTitle').title = template.name;
   $('detailDescription').textContent = template.summary || 'Build the template from layered assets, then bind the maker to license rules and on-chain provenance.';
   $('layerCount').textContent = compositionLayers.length;
-  const publicItems = allSlots().flatMap((slot) => slotItems(slot.key).filter((item) => item.visibility !== 'private'));
-  const missingItems = publicItems.filter((item) => !Object.values(item.images || {}).some((asset) => asset?.file));
+  const publicItems = allSlots().flatMap((slot) => slotItems(slot.key).filter((item) => item.visibility !== 'private').map((item) => ({ slot, item })));
+  const incompleteItems = publicItems.filter(({ slot, item }) => creatorLayers(slot).some((layer) => creatorColors(slot).some((color) => !item.images?.[assetCellKey(layer.id, color.id)]?.file)));
   if ($('makerTopPartSummary')) $('makerTopPartSummary').textContent = `${allSlots().length} Part${allSlots().length === 1 ? '' : 's'}`;
   if ($('makerTopAssetSummary')) $('makerTopAssetSummary').textContent = itemLayerAssets().length ? `${itemLayerAssets().length} item images ready` : 'No item images yet';
   if ($('makerTopRuleSummary')) $('makerTopRuleSummary').textContent = `${state.rules.length} Rule${state.rules.length === 1 ? '' : 's'}`;
   if ($('makerTopReadiness')) {
     $('makerTopReadiness').textContent = !allSlots().length
       ? 'Add the first Part'
-      : missingItems.length === 0 ? 'Ready to preview' : `${missingItems.length} incomplete Item${missingItems.length === 1 ? '' : 's'}`;
+      : incompleteItems.length === 0 ? 'Ready to preview' : `${incompleteItems.length} incomplete Item${incompleteItems.length === 1 ? '' : 's'}`;
   }
   if ($('makerTopChainState')) $('makerTopChainState').textContent = state.publishDigest ? 'Published' : runtimeConfig.packageId.includes('TODO') ? 'Package pending' : 'Local draft';
+  const canvasRatio = state.makerCanvas.width === state.makerCanvas.height ? '1:1' : '9:16';
+  if ($('makerCanvasTag')) $('makerCanvasTag').textContent = canvasRatio;
+  if ($('canvasSizeLabel')) $('canvasSizeLabel').textContent = `${state.makerCanvas.width} × ${state.makerCanvas.height}`;
+  if ($('creatorCanvasStage')) $('creatorCanvasStage').style.aspectRatio = `${state.makerCanvas.width} / ${state.makerCanvas.height}`;
 
   $('creatorPartsList').innerHTML = allSlots().map((slot, index) => `
     <button class="creator-part-row ${state.selectedSlot === slot.key ? 'active' : ''}" data-slot="${slot.key}">
@@ -1592,9 +1739,9 @@ function renderPartWorkspace() {
           </div>
           <div class="item-setting-row">
             <label>Item name<input data-item-field="label" value="${escapeHtml(selectedItem.label)}" /></label>
-            <label>Visibility<select data-item-field="visibility" ${items.indexOf(selectedItem) === 0 ? 'disabled' : ''}>
-              <option value="public" ${selectedItem.visibility === 'public' ? 'selected' : ''}>Public</option>
-              <option value="private" ${selectedItem.visibility === 'private' ? 'selected' : ''}>Private</option>
+            <label>Publication<select data-item-field="visibility" ${items.indexOf(selectedItem) === 0 ? 'disabled' : ''}>
+              <option value="public" ${selectedItem.visibility === 'public' ? 'selected' : ''}>Include in published Maker</option>
+              <option value="private" ${selectedItem.visibility === 'private' ? 'selected' : ''}>Draft only</option>
             </select></label>
             <label>Display order<input data-item-field="displayOrder" type="number" min="1" value="${selectedItem.displayOrder}" /></label>
             <label>Picker icon<input type="file" accept="image/png,image/jpeg" data-upload-item-icon="${escapeHtml(selectedItem.id)}" /></label>
@@ -1876,7 +2023,7 @@ function moveLayer(layerKey, direction) {
   const order = [...state.layerOrder];
   const index = order.indexOf(layerKey);
   if (index === -1) return;
-  const target = direction === 'up' ? index - 1 : index + 1;
+  const target = direction === 'up' ? index + 1 : index - 1;
   if (target < 0 || target >= order.length) return;
   [order[index], order[target]] = [order[target], order[index]];
   state.layerOrder = order;
@@ -1886,7 +2033,7 @@ function moveLayer(layerKey, direction) {
 
 function renderCreatorCanvas() {
   if (!$('creatorCanvasAssets')) return;
-  const images = [...allCreatorLayers()].reverse().flatMap((layer) => {
+  const images = allCreatorLayers().flatMap((layer) => {
     const itemId = state.visual[layer.partKey] || slotItems(layer.partKey)[0]?.id;
     const item = slotItems(layer.partKey).find((candidate) => candidate.id === itemId);
     const assetEntry = Object.entries(item?.images || {}).find(([key, asset]) => key.startsWith(`${layer.id}:`) && asset?.url);
@@ -1901,6 +2048,10 @@ function renderCreatorCanvas() {
 }
 
 function openMakerModal() {
+  if (!state.walletConnected) {
+    openAccountPanel();
+    return;
+  }
   $('makerRegistrationModal').classList.add('active');
   $('makerRegistrationModal').setAttribute('aria-hidden', 'false');
   $('newMakerName').focus();
@@ -1912,6 +2063,10 @@ function closeMakerModal() {
 }
 
 function openPartModal() {
+  if (!state.walletConnected) {
+    openAccountPanel();
+    return;
+  }
   $('partRegistrationModal').classList.add('active');
   $('partRegistrationModal').setAttribute('aria-hidden', 'false');
   $('newPartName').focus();
@@ -1950,6 +2105,9 @@ function renderWalletState() {
   document.querySelectorAll('.account-grid [data-page]').forEach((button) => {
     button.disabled = !state.walletConnected;
   });
+  if ($('creatorWalletGate')) $('creatorWalletGate').hidden = state.walletConnected;
+  if ($('creatorConsole')) $('creatorConsole').hidden = !state.walletConnected;
+  if ($('backToCreatorPreview')) $('backToCreatorPreview').hidden = !state.previewingMaker;
 }
 
 function publishReadiness() {
@@ -2044,13 +2202,14 @@ async function prepareMakerUpload() {
     syncCreatorAssets();
     const issues = makerPublicationIssues();
     if (issues.length) throw new Error(issues[0]);
-    state.assets.forEach((asset) => {
+    state.pendingMakerAssets = publishableAssets();
+    state.pendingMakerAssets.forEach((asset) => {
       if (!asset.file) throw new Error(`${asset.name} is no longer available. Select the PNG files again.`);
     });
     state.pendingMakerManifestJson = JSON.stringify(creatorUploadManifest());
     const manifestBlob = new Blob([state.pendingMakerManifestJson], { type: 'application/json' });
     const entries = [
-      ...state.assets.map((asset) => ({ blob: asset.file, identifier: asset.identifier, kind: asset.kind })),
+      ...state.pendingMakerAssets.map((asset) => ({ blob: asset.file, identifier: asset.identifier, kind: asset.kind })),
       { blob: manifestBlob, identifier: 'animacraft-manifest.json', kind: 'maker-manifest' },
     ];
     state.makerUploadSession = await prepareWalrusUpload(entries);
@@ -2087,14 +2246,14 @@ async function certifyMakerUpload() {
   renderPublishAction();
   try {
     await certifyWalrusUpload(state.makerUploadSession);
-    if (state.makerUploadSession.files.length !== state.assets.length + 1) {
+    if (state.makerUploadSession.files.length !== state.pendingMakerAssets.length + 1) {
       throw new Error('Walrus returned an unexpected number of quilt files.');
     }
-    state.assets.forEach((asset, index) => {
+    state.pendingMakerAssets.forEach((asset, index) => {
       asset.patchId = state.makerUploadSession.files[index].id;
       asset.blobId = state.makerUploadSession.files[index].blobId;
     });
-    state.makerManifestPatchId = state.makerUploadSession.files[state.assets.length].id;
+    state.makerManifestPatchId = state.makerUploadSession.files[state.pendingMakerAssets.length].id;
     state.makerUploadStage = 'certified';
     state.publishStatus = 'Walrus quilt certified. Publish the indexed OCMaker object on Sui Mainnet.';
   } catch (error) {
@@ -2116,13 +2275,13 @@ async function publishCurrentMaker() {
       state.makerUploadStage = 'idle';
       state.makerManifestPatchId = '';
       state.pendingMakerManifestJson = '';
-      state.assets.forEach((asset) => {
+      state.pendingMakerAssets.forEach((asset) => {
         asset.patchId = '';
         asset.blobId = '';
       });
       throw new Error('The maker changed after upload. Prepare a new quilt before publishing.');
     }
-    const layerAssets = itemLayerAssets();
+    const layerAssets = state.pendingMakerAssets.filter((asset) => asset.kind === 'item-layer');
     const assetSlots = [...new Set(layerAssets.map((asset) => asset.slot))];
     const makerParts = assetSlots.map((key, index) => {
       const slot = allSlots().find((candidate) => candidate.key === key);
@@ -2133,13 +2292,13 @@ async function publishCurrentMaker() {
         kind: slot?.kind || 'standard',
         renderOrder: configuredOrder >= 0 ? configuredOrder : index,
         menuVisible: slot?.menuVisible !== false,
-        required: index === 0,
+        required: slot?.allowRemove === false,
       };
     });
-    const makerItems = assetSlots.flatMap((partKey) => slotItems(partKey).flatMap((item) => {
+    const makerItems = assetSlots.flatMap((partKey) => slotItems(partKey).filter((item) => item.visibility !== 'private').flatMap((item) => {
       const itemAssets = layerAssets.filter((asset) => asset.slot === partKey && asset.itemId === item.id);
       if (!itemAssets.length) return [];
-      const icon = state.assets.find((asset) => asset.kind === 'item-icon' && asset.slot === partKey && asset.itemId === item.id);
+      const icon = state.pendingMakerAssets.find((asset) => asset.kind === 'item-icon' && asset.slot === partKey && asset.itemId === item.id);
       return [{
         partKey,
         itemKey: item.id,
@@ -2161,7 +2320,7 @@ async function publishCurrentMaker() {
       maker: {
         name: $('creatorTemplateName').value.trim(),
         description: activeTemplate().summary,
-        coverUrl: walrusFileUrl(state.assets[0]?.patchId),
+        coverUrl: walrusFileUrl(state.pendingMakerAssets[0]?.patchId),
         license: $('creatorLicense').value,
         royaltyBps: Number($('creatorRoyalty').value || 0),
       },
@@ -2305,7 +2464,7 @@ function restoreMakerDraft(templateId = state.templateId) {
             key: savedPart.key,
             label: savedPart.label,
             icon: savedPart.label.slice(0, 2).toUpperCase(),
-            colorKey: 'accessory',
+            colorKey: savedPart.key,
             description: 'Restored creator Part',
           };
           state.makerSlots.push(slot);
@@ -2346,6 +2505,9 @@ function restoreMakerDraft(templateId = state.templateId) {
     }
     const template = draft.manifest?.template;
     if (template) {
+      if (template.canvas?.width && template.canvas?.height) {
+        state.makerCanvas = { width: Number(template.canvas.width), height: Number(template.canvas.height) };
+      }
       const currentTemplate = activeTemplate();
       currentTemplate.name = template.name || currentTemplate.name;
       currentTemplate.creator = template.creator || currentTemplate.creator;
@@ -2392,6 +2554,7 @@ function renderAll() {
 document.querySelectorAll('[data-page]').forEach((button) => {
   button.addEventListener('click', () => {
     if ($('accountPanel')?.contains(button)) closeAccountPanel();
+    if (button.dataset.page === 'make') state.previewingMaker = false;
     setPage(button.dataset.page);
   });
 });
@@ -2414,6 +2577,7 @@ $('accountButton').addEventListener('click', () => {
 $('closeAccountPanel').addEventListener('click', closeAccountPanel);
 $('walletButton').addEventListener('click', toggleWallet);
 $('panelWalletButton').addEventListener('click', toggleWallet);
+$('creatorGateWalletButton')?.addEventListener('click', toggleWallet);
 ['accountLanguage'].forEach((id) => {
   $(id)?.addEventListener('change', (event) => setLocale(event.target.value));
 });
@@ -2429,6 +2593,21 @@ document.querySelectorAll('[data-editor-panel-button]').forEach((button) => {
     const target = button.hasAttribute('data-focus-composition') ? $('compositionOrder') : document.querySelector('.maker-detail-main');
     target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
+});
+
+$('playMakerPreview')?.addEventListener('click', () => {
+  state.previewingMaker = true;
+  setPage('make');
+  renderAll();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
+$('backToCreatorPreview')?.addEventListener('click', () => {
+  state.previewingMaker = false;
+  state.creatorView = 'edit';
+  setPage('creator');
+  renderAll();
+  focusCreatorTop();
 });
 
 document.querySelectorAll('[data-new-maker-panel]').forEach((button) => {
@@ -2455,7 +2634,7 @@ $('templateSearch').addEventListener('input', (event) => {
 $('partColor').addEventListener('input', (event) => {
   const slot = activeSlot();
   if (!slot) return;
-  state.visual.palette[slot.colorKey] = event.target.value;
+  applyPaletteColor(slot, event.target.value);
   renderAll();
 });
 
@@ -2490,19 +2669,28 @@ $('publishMakerOnchain')?.addEventListener('click', publishCurrentMaker);
 
 $('addSelectionRule')?.addEventListener('click', () => {
   const leftPartKey = $('ruleLeftPart').value;
+  const leftItemKey = $('ruleLeftItem').value;
   const rightPartKey = $('ruleRightPart').value;
+  const rightItemKey = $('ruleRightItem').value;
   if (!leftPartKey || !rightPartKey || leftPartKey === rightPartKey) {
     state.publishStatus = 'Choose two different parts for a selection rule.';
     renderPublishAction();
     return;
   }
   const duplicate = state.rules.some((rule) =>
-    (rule.leftPartKey === leftPartKey && rule.rightPartKey === rightPartKey)
-    || (rule.leftPartKey === rightPartKey && rule.rightPartKey === leftPartKey));
+    (rule.leftPartKey === leftPartKey && rule.leftItemKey === leftItemKey && rule.rightPartKey === rightPartKey && rule.rightItemKey === rightItemKey)
+    || (rule.leftPartKey === rightPartKey && rule.leftItemKey === rightItemKey && rule.rightPartKey === leftPartKey && rule.rightItemKey === leftItemKey));
   if (!duplicate) {
-    state.rules.push({ leftPartKey, leftItemKey: '', rightPartKey, rightItemKey: '' });
+    state.rules.push({ leftPartKey, leftItemKey, rightPartKey, rightItemKey });
+    invalidateMakerUpload();
   }
   renderAll();
+});
+
+['ruleLeftPart', 'ruleRightPart'].forEach((id) => {
+  $(id)?.addEventListener('change', () => {
+    renderRuleItemOptions(id === 'ruleLeftPart' ? 'ruleLeftItem' : 'ruleRightItem', $(id).value);
+  });
 });
 
 $('addPaletteLink')?.addEventListener('click', () => {
@@ -2512,7 +2700,10 @@ $('addPaletteLink')?.addEventListener('click', () => {
   const duplicate = state.paletteLinks.some((link) =>
     (link.primaryPartKey === primaryPartKey && link.linkedPartKey === linkedPartKey)
     || (link.primaryPartKey === linkedPartKey && link.linkedPartKey === primaryPartKey));
-  if (!duplicate) state.paletteLinks.push({ primaryPartKey, linkedPartKey });
+  if (!duplicate) {
+    state.paletteLinks.push({ primaryPartKey, linkedPartKey });
+    invalidateMakerUpload();
+  }
   renderAll();
 });
 
@@ -2581,12 +2772,19 @@ document.querySelectorAll('[data-close-part-modal]').forEach((button) => {
 });
 
 $('registerMaker').addEventListener('click', () => {
+  if (!state.walletConnected) {
+    closeMakerModal();
+    openAccountPanel();
+    return;
+  }
   const name = $('newMakerName').value.trim() || 'Untitled OC Maker';
   const canvas = document.querySelector('[data-canvas-choice].active')?.dataset.canvasChoice || '1:1';
+  const canvasSize = canvas === '9:16' ? { width: 1080, height: 1920 } : { width: 1024, height: 1024 };
   const makerType = document.querySelector('[data-maker-type].active')?.dataset.makerType || 'Free combine';
   const id = `${slug(name)}-${Date.now().toString(36)}`;
   templates.unshift({
     id,
+    source: 'local',
     name,
     category: 'daily',
     creator: $('creatorName').value || 'xiaopai',
@@ -2594,15 +2792,12 @@ $('registerMaker').addEventListener('click', () => {
     license: 'Personal use',
     royaltyBps: 300,
     price: 'Draft',
-    uses: '0',
-    works: 0,
-    parts: 0,
     accent: '#27c5c8',
     secondary: '#f0a23a',
     summary: `${makerType} OC Maker draft. Add Parts and item images in Character Maker.`,
     licenseNote: 'Draft maker. Configure release and publication before public use.',
   });
-  activateMakerModel(id, { empty: true });
+  activateMakerModel(id, { empty: true, canvas: canvasSize });
   syncTemplateFields();
   state.creatorView = 'edit';
   state.editorPanel = 'parts';
@@ -2613,6 +2808,11 @@ $('registerMaker').addEventListener('click', () => {
 });
 
 $('registerPart').addEventListener('click', () => {
+  if (!state.walletConnected) {
+    closePartModal();
+    openAccountPanel();
+    return;
+  }
   const label = $('newPartName').value.trim() || 'New part';
   const key = `${slug(label)}-${Date.now().toString(36)}`;
   const kind = document.querySelector('[data-new-part-type].active')?.dataset.newPartType || 'standard';
@@ -2626,7 +2826,7 @@ $('registerPart').addEventListener('click', () => {
     key,
     label,
     icon: label.slice(0, 2).toUpperCase(),
-    colorKey: 'accessory',
+    colorKey: key,
     description: `${kind} part created in Character Maker`,
     kind,
     layerName,
@@ -2640,6 +2840,7 @@ $('registerPart').addEventListener('click', () => {
   state.layerOrder.push(...initialLayers.map((layer) => creatorLayerKey(key, layer.id)));
   state.makerParts[key] = [{ id: 'normal', label: itemLabel, displayOrder: 1, visibility: 'public', images: {}, iconAsset: null }];
   state.visual[key] = 'normal';
+  state.visual.palette[key] = '#f0a23a';
   state.selectedSlot = key;
   state.selectedLayer = creatorLayerKey(key, initialLayers[0].id);
   state.selectedItem = 'normal';

@@ -23,6 +23,8 @@ The web application builds as a static deployment and the core Character Maker w
 
 - Maker edit state and local drafts are isolated by wallet and Maker id.
 - Publication blocks empty Parts, missing public Item images, duplicate ids, broken rule references, invalid royalty values, and more than 750 Parts.
+- Creator Studio is wallet-gated, selection rules can target whole Parts or specific public Items, and publication requires every public Item's Layer × Color PNG matrix.
+- Draft-only Items are excluded from the publication manifest and Walrus quilt; public previews render the selected local layer/color assets in composition order.
 - Item images and icons enforce file type, byte-size, and image-dimension limits.
 - Walrus quilt preparation enforces unique identifiers, file-count limits, and a total byte limit.
 - User-controlled names and labels are escaped before dynamic HTML insertion in primary editor and gallery surfaces.
