@@ -13,6 +13,7 @@ Animacraft is a static Vite app with direct wallet-signed Sui and Walrus writes.
 - Publisher address: `0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f`
 - Source tree: `6ecafa9db67f1c683f53679a3c07d0036d7f88c5`
 - Merged source commit: `979a4161ac79f4e275d30575f2ce2e76195a9cfa`
+- Source verification: successful at `2026-07-11T20:32:31Z` with Sui CLI `1.74.1-8fc60f1fa966`
 
 The canonical machine-readable record is [`deployments/mainnet.json`](deployments/mainnet.json). The original package ID is the stable dependency address Soulidity must pin; do not substitute a future upgraded package version ID.
 
@@ -53,7 +54,7 @@ Edit `public/config.js`:
 window.ANIMACRAFT_CONFIG = {
   network: 'mainnet',
   grpcUrl: 'https://fullnode.mainnet.sui.io:443',
-  graphqlUrl: 'https://sui-mainnet.mystenlabs.com/graphql',
+  graphqlUrl: 'https://graphql.mainnet.sui.io/graphql',
   packageId: '0xVERIFIED_PACKAGE_ID',
   paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
   paymentCoinSymbol: 'USDC',

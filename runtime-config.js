@@ -3,7 +3,7 @@ export const SUI_MAINNET_USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef6
 export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   network: 'mainnet',
   grpcUrl: 'https://fullnode.mainnet.sui.io:443',
-  graphqlUrl: 'https://sui-mainnet.mystenlabs.com/graphql',
+  graphqlUrl: 'https://graphql.mainnet.sui.io/graphql',
   packageId: '0xTODO_ANIMACRAFT_PACKAGE',
   paymentCoinType: SUI_MAINNET_USDC_TYPE,
   paymentCoinSymbol: 'USDC',

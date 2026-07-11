@@ -30,6 +30,7 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(deployment.packageId, deployment.originalPackageId);
   assert.equal(runtime.network, deployment.network);
   assert.equal(runtime.packageId, deployment.originalPackageId);
+  assert.equal(runtime.graphqlUrl, 'https://graphql.mainnet.sui.io/graphql');
   assert.equal(runtime.paymentCoinType, SUI_MAINNET_USDC_TYPE);
   assert.match(moveSource, new RegExp(`const VERSION: u64 = ${deployment.protocolVersion};`));
 
@@ -38,6 +39,9 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   }
 
   assert.match(deployment.publishDigest, /^[1-9A-HJ-NP-Za-km-z]{43,44}$/);
+  assert.match(deployment.verification.packageDigest, /^[1-9A-HJ-NP-Za-km-z]{43,44}$/);
   assert.equal(deployment.verification.transactionStatus, 'success');
+  assert.equal(deployment.verification.sourceStatus, 'success');
+  assert.match(deployment.verification.sourceVerifiedAtUtc, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   assert.equal(validateRuntimeConfig(runtime, { strict: true, requireSoulidity: true }).valid, true);
 });

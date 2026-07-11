@@ -2,7 +2,7 @@
 
 ## Release State
 
-The repository is a **Maker Mainnet production candidate with a published protocol package**. The original Animacraft package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` is live and the editor/runtime are ready for a signed invited-creator smoke test. Canonical paid Soul minting remains blocked until the separate Soulidity adapter is reviewed and deployed.
+The repository is a **Maker Mainnet production candidate with a published and source-verified protocol package**. The original Animacraft package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` is live, its Mainnet bytecode matches this repository's published source tree, and the editor/runtime are ready for a signed invited-creator smoke test. Canonical paid Soul minting remains blocked until the separate Soulidity adapter is reviewed and deployed.
 
 The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio, local draft ownership, Walrus writes, publication, archive, and Soulidity handoff require a connected wallet.
 
