@@ -75,9 +75,10 @@ If a paid Walrus workflow is interrupted, reconnect the same wallet and use **Re
 
 ## Launch Limits
 
+- Protocol v3 publishes included Items only. Do not use paid add-on or creator-only Item gates until a later reviewed protocol version enforces their entitlement rules.
 - 100 Items, 32 Layers, and 32 Colors per Part.
 - 5,000 Walrus files per Maker release, including cover and manifest.
 - 450 total Part + public Item + Color + selection rule + palette-link records in the current one-transaction publisher.
 - New Maker and OC packages default to 53 Walrus Mainnet epochs, currently about two years. Storage can be extended, so operators must schedule renewal before expiry.
-- Paid mint revenue is held by the Maker's `MakerTreasury<USDC>` and only the matching `MakerAdminCap` holder can withdraw it.
-- Royalty tiers are copied into the Soul mint authorization. Secondary settlement is enforced by the Soulidity Marketplace adapter, not by browser metadata.
+- Once the canonical Soulidity adapter is activated, paid mint revenue is held by the Maker's `MakerTreasury<USDC>` and only the matching `MakerAdminCap` holder can withdraw it. Until then, keep pilot mint fees disabled.
+- Royalty tiers are copied into the Soul mint authorization. Secondary settlement becomes active only through the reviewed Soulidity Marketplace adapter, never through browser metadata.

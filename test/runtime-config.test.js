@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_RUNTIME_CONFIG,
   SUI_MAINNET_USDC_TYPE,
+  assertSupportedMakerMintEconomics,
+  assertSupportedMakerPaymentCoin,
   normalizeRuntimeConfig,
   validateRuntimeConfig,
 } from '../runtime-config.js';
@@ -38,6 +40,40 @@ test('blocks an alternate token from impersonating native USDC', () => {
   assert.equal(result.valid, false);
   assert.match(result.errors.join(' '), /Circle native Sui USDC/);
   assert.equal(SUI_MAINNET_USDC_TYPE.includes('::usdc::USDC'), true);
+});
+
+test('accepts only the configured on-chain Maker payment coin', () => {
+  assert.equal(
+    assertSupportedMakerPaymentCoin(SUI_MAINNET_USDC_TYPE, SUI_MAINNET_USDC_TYPE),
+    SUI_MAINNET_USDC_TYPE,
+  );
+  assert.throws(
+    () => assertSupportedMakerPaymentCoin('0x2::sui::SUI', SUI_MAINNET_USDC_TYPE),
+    /does not match configured native Sui USDC/,
+  );
+  assert.throws(
+    () => assertSupportedMakerPaymentCoin('', SUI_MAINNET_USDC_TYPE),
+    /invalid payment coin type/,
+  );
+});
+
+test('accepts only browser-safe on-chain Maker economics', () => {
+  assert.deepEqual(
+    assertSupportedMakerMintEconomics({ mintingEnabled: true, mintFeeEnabled: true, mintPriceAtomic: '1500000' }),
+    { mintingEnabled: true, mintFeeEnabled: true, mintPriceAtomic: 1_500_000 },
+  );
+  assert.deepEqual(
+    assertSupportedMakerMintEconomics({ mintingEnabled: false, mintFeeEnabled: false, mintPriceAtomic: 0 }),
+    { mintingEnabled: false, mintFeeEnabled: false, mintPriceAtomic: 0 },
+  );
+  assert.throws(
+    () => assertSupportedMakerMintEconomics({ mintingEnabled: true, mintFeeEnabled: true, mintPriceAtomic: '9007199254740992' }),
+    /cannot be represented safely/,
+  );
+  assert.throws(
+    () => assertSupportedMakerMintEconomics({ mintingEnabled: false, mintFeeEnabled: true, mintPriceAtomic: 1 }),
+    /invalid mint economics/,
+  );
 });
 
 test('rejects unsafe Walrus retention and malformed featured ids', () => {

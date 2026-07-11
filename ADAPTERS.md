@@ -13,7 +13,7 @@ Animacraft is the Character Maker editor and Maker protocol. Soulidity is the ca
 ## Stable Animacraft Inputs
 
 - Shared `OCMaker`, shared `MakerTreasury<USDC>`, and transferable `MakerAdminCap` object IDs.
-- Certified `animacraft.creator-template.v3` Walrus manifest with Parts, Items, Layers, Colors, rules, and default Living Content.
+- An `animacraft.creator-template.v3` Walrus manifest with Parts, Items, Layers, Colors, rules, and default Living Content. The browser certifies its Quilt before Maker publication; v3 stores bounded locator strings rather than a `Blob` object attestation.
 - `animacraft.oc-package.v1` with rendered image reference, profile, canonical recipe/hash, and `animacraft.soulidity-import.v1` content mapping.
 - `SoulMintAuthorization`, an ephemeral Move value with no abilities. It cannot be copied, stored, transferred, or dropped.
 - Public `authorize_soul_mint`, `authorize_soul_mint_paid`, and `consume_soul_mint_authorization` functions. Soulidity must not parse private BCS layout as an API.
@@ -34,8 +34,8 @@ The editor creates valid defaults automatically. An OC-only creator can leave th
 
 The audited Soulidity adapter must build one programmable transaction:
 
-1. Certify the rendered image, OC package, `soul.md`, `memory.md`, and `skills.zip` Walrus Blob objects.
-2. Call Animacraft `authorize_soul_mint` or `authorize_soul_mint_paid<USDC>` with the Maker recipe and certified references.
+1. Certify the rendered image, OC package, `soul.md`, `memory.md`, and `skills.zip` on Walrus. Soulidity consumes actual `Blob` objects for mandatory Living Content; Animacraft v3 binds image/profile Quilt patch locators as strings.
+2. Call Animacraft `authorize_soul_mint` or `authorize_soul_mint_paid<USDC>` with the Maker recipe and those bounded locators.
 3. For a paid Maker, exact native USDC moves into its Treasury. A later failure rolls the entire PTB back.
 4. Consume the returned authorization through `consume_soul_mint_authorization`.
 5. Call Soulidity's dedicated Animacraft mint entry, creating exactly one Soul and its mandatory initial content.
@@ -54,13 +54,15 @@ Soulidity may separately list `MakerAdminCap` as the transferable Maker manageme
 
 ## Deployment Order
 
-1. Review and publish Animacraft; record its original package ID and secure its `UpgradeCap`.
+1. Pin the published Animacraft original package ID, verify its recorded source tree, and secure its `UpgradeCap`.
 2. Pin that original package ID in the Soulidity adapter dependency.
 3. Implement the canonical Mint PTB, verified provenance, Cap escrow, and resale royalty settlement in Soulidity with its developers.
 4. Run both repositories' tests and an independent Move review.
 5. Publish Soulidity separately and secure its own `UpgradeCap`.
 6. Configure both package IDs and run `npm run preflight:integration`.
 7. Execute two-wallet Mainnet smoke tests for free mint, paid mint, Cap transfer, listing, purchase, and royalty withdrawal.
+
+The exact Soulidity source changes, provenance schema, no-double-royalty rule, v3 limitations, and required tests are specified in [SOULIDITY_ADAPTER_HANDOFF.md](./SOULIDITY_ADAPTER_HANDOFF.md). Signed acceptance evidence follows [MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md).
 
 ## Explicit Non-Goals
 

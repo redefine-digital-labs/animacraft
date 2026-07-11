@@ -42,7 +42,7 @@ The wallet is the account. There is no separate Animacraft password or backend s
 
 ## What Animacraft Does Not Yet Own
 
-- Premium-Part purchases and secondary-market settlement (optional Maker-wide native-USDC mint fees are implemented)
+- Premium-Part purchases and secondary-market settlement (the Maker-wide native-USDC contract path exists, but activation remains gated on the canonical Soulidity adapter)
 - Marketplace/Kiosk listing and resale
 - Royalty or platform-fee settlement
 - Fiat creator onboarding

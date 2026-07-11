@@ -42,7 +42,11 @@ import {
   validateLivingContent,
 } from './living-content.js';
 import { responseBlobWithinLimit, responseBytesWithinLimit } from './remote-read.js';
-import { normalizeRuntimeConfig } from './runtime-config.js';
+import {
+  assertSupportedMakerMintEconomics,
+  assertSupportedMakerPaymentCoin,
+  normalizeRuntimeConfig,
+} from './runtime-config.js';
 
 const slots = [
   { key: 'background', label: 'Background', icon: 'BG', colorKey: 'background', description: 'Scene, mood, and backdrop' },
@@ -194,6 +198,7 @@ const MAX_COLORS_PER_PART = 32;
 
 const suppliedConfig = window.ANIMACRAFT_CONFIG || {};
 const runtimeConfig = normalizeRuntimeConfig(suppliedConfig, location.origin);
+const canonicalSoulMintEnabled = runtimeConfig.canonicalSoulMintEnabled === true;
 const localUiTest = ['127.0.0.1', 'localhost'].includes(location.hostname)
   && new URLSearchParams(location.search).get('ui-test') === '1';
 
@@ -1178,6 +1183,15 @@ async function loadBundledMakers() {
 
 async function hydrateChainMaker(object) {
   const fields = suiObjectFields(object);
+  assertSupportedMakerPaymentCoin(
+    suiField(fields, 'payment_coin_type', 'paymentCoinType'),
+    runtimeConfig.paymentCoinType,
+  );
+  const economics = assertSupportedMakerMintEconomics({
+    mintingEnabled: ![false, 'false', 0, '0'].includes(suiField(fields, 'minting_enabled', 'mintingEnabled')),
+    mintFeeEnabled: [true, 'true', 1, '1'].includes(suiField(fields, 'mint_fee_enabled', 'mintFeeEnabled')),
+    mintPriceAtomic: suiField(fields, 'mint_price_atomic', 'mintPriceAtomic') || 0,
+  });
   const quiltId = String(suiField(fields, 'manifest_blob_id', 'manifestBlobId') || '');
   if (!quiltId) throw new Error(`OCMaker ${shortAddress(object.objectId)} has no Walrus Quilt ID.`);
   const response = await fetchWalrusWithBackoff(walrusQuiltFileUrl(quiltId, 'animacraft-manifest.json'));
@@ -1211,13 +1225,13 @@ async function hydrateChainMaker(object) {
     style: String(templateData.style || 'OC Maker'),
     license: makerLicenseLabel(policy),
     royaltyBps: Number(suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || templateData.royaltyBps || 0),
-    mintingEnabled: ![false, 'false', 0, '0'].includes(suiField(fields, 'minting_enabled', 'mintingEnabled')),
-    mintFeeEnabled: [true, 'true', 1, '1'].includes(suiField(fields, 'mint_fee_enabled', 'mintFeeEnabled')),
-    mintPriceAtomic: Number(suiField(fields, 'mint_price_atomic', 'mintPriceAtomic') || 0),
+    mintingEnabled: economics.mintingEnabled,
+    mintFeeEnabled: economics.mintFeeEnabled,
+    mintPriceAtomic: economics.mintPriceAtomic,
     treasuryId: object.treasuryId || suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
     adminCapId: object.adminCapId || '',
-    price: Number(suiField(fields, 'mint_price_atomic', 'mintPriceAtomic') || 0) > 0
-      ? `${(Number(suiField(fields, 'mint_price_atomic', 'mintPriceAtomic')) / (10 ** runtimeConfig.paymentCoinDecimals)).toLocaleString()} ${runtimeConfig.paymentCoinSymbol}`
+    price: economics.mintPriceAtomic > 0
+      ? `${(economics.mintPriceAtomic / (10 ** runtimeConfig.paymentCoinDecimals)).toLocaleString()} ${runtimeConfig.paymentCoinSymbol}`
       : 'Free mint',
     summary: String(suiField(fields, 'description') || 'Published Animacraft Character Maker.'),
     licenseNote: String(templateData.licenseNote || 'License and royalty policy are read from the published Sui OCMaker.'),
@@ -1280,7 +1294,7 @@ async function loadChainMakers(owner = state.walletAddress) {
     }));
     const results = await Promise.allSettled([...byId.values()].map(hydrateChainMaker));
     const failures = results.filter((result) => result.status === 'rejected');
-    if (failures.length) state.chainMakerLoadError = `${failures.length} on-chain Maker manifest${failures.length === 1 ? '' : 's'} could not be loaded from Walrus.`;
+    if (failures.length) state.chainMakerLoadError = `${failures.length} on-chain Maker${failures.length === 1 ? '' : 's'} could not be verified and loaded.`;
     else if (discoveryWarning) state.chainMakerLoadError = discoveryWarning;
     if (state.routeMakerReference) {
       const target = templates.find((template) => template.id === state.routeMakerReference || template.objectId === state.routeMakerReference);
@@ -2077,7 +2091,7 @@ function syncTemplateFields() {
   $('creatorMintPrice').value = template.mintPriceAtomic
     ? String(atomicCoinToDecimal(template.mintPriceAtomic))
     : String(template.mintPrice || 1);
-  $('creatorMintPrice').disabled = !template.mintFeeEnabled;
+  $('creatorMintPrice').disabled = !canonicalSoulMintEnabled || !template.mintFeeEnabled;
   $('creatorLicense').value = Object.entries({
     'personal-use': 'Personal use',
     'free-remix': 'Free remix',
@@ -2852,6 +2866,7 @@ function makerPublicationIssues() {
   const mintFeeEnabled = $('creatorMintFeeEnabled').checked;
   const mintPriceAtomic = decimalCoinToAtomic($('creatorMintPrice').value);
   if (!$('creatorMintingEnabled').checked && mintFeeEnabled) issues.push('Turn on OC minting before enabling a mint fee.');
+  if (mintFeeEnabled && !canonicalSoulMintEnabled) issues.push('Paid mint is release-gated until the canonical Soulidity adapter is deployed and verified.');
   if (mintFeeEnabled && (!mintPriceAtomic || mintPriceAtomic <= 0)) issues.push(`Enter a positive ${runtimeConfig.paymentCoinSymbol} mint price with no more than ${runtimeConfig.paymentCoinDecimals} decimal places.`);
   try {
     validateMakerManifest(creatorUploadManifest());
@@ -3385,10 +3400,17 @@ function renderMakerLifecycle() {
     if ($(id)) $(id).disabled = locked;
   });
   const canManageEconomics = !locked || Boolean(state.makerAdminCapObjectId);
-  ['creatorMintingEnabled', 'creatorMintFeeEnabled', 'creatorRoyalty'].forEach((id) => {
+  ['creatorMintingEnabled', 'creatorRoyalty'].forEach((id) => {
     if ($(id)) $(id).disabled = !canManageEconomics;
   });
-  if ($('creatorMintPrice')) $('creatorMintPrice').disabled = !canManageEconomics || !$('creatorMintFeeEnabled').checked;
+  const canChangeMintFee = canManageEconomics
+    && (canonicalSoulMintEnabled || $('creatorMintFeeEnabled').checked);
+  if ($('creatorMintFeeEnabled')) $('creatorMintFeeEnabled').disabled = !canChangeMintFee;
+  if ($('creatorMintPrice')) {
+    $('creatorMintPrice').disabled = !canManageEconomics
+      || !canonicalSoulMintEnabled
+      || !$('creatorMintFeeEnabled').checked;
+  }
   if ($('updateMakerEconomics')) $('updateMakerEconomics').disabled = !locked || !state.makerAdminCapObjectId || state.publishing;
   if ($('withdrawMakerRevenue')) $('withdrawMakerRevenue').disabled = !locked || !state.makerAdminCapObjectId || !state.makerTreasuryObjectId || state.publishing;
   if ($('makerTreasuryBalance')) {
@@ -4947,8 +4969,14 @@ const creatorLicenseLabels = {
         $('creatorMintFeeEnabled').checked = false;
       }
     } else if (id === 'creatorMintFeeEnabled') {
-      template.mintFeeEnabled = $('creatorMintFeeEnabled').checked;
-      $('creatorMintPrice').disabled = !template.mintFeeEnabled;
+      if ($('creatorMintFeeEnabled').checked && !canonicalSoulMintEnabled) {
+        $('creatorMintFeeEnabled').checked = false;
+        template.mintFeeEnabled = false;
+        state.publishStatus = 'Paid mint stays off until the canonical Soulidity adapter is deployed and verified.';
+      } else {
+        template.mintFeeEnabled = $('creatorMintFeeEnabled').checked;
+      }
+      $('creatorMintPrice').disabled = !canonicalSoulMintEnabled || !template.mintFeeEnabled;
     } else if (id === 'creatorMintPrice') {
       template.mintPriceAtomic = decimalCoinToAtomic($('creatorMintPrice').value) || 0;
     }
@@ -4995,6 +5023,10 @@ $('updateMakerEconomics')?.addEventListener('click', async () => {
   }
   const mintPriceAtomic = $('creatorMintFeeEnabled').checked ? decimalCoinToAtomic($('creatorMintPrice').value) : 0;
   const royaltyBps = Number($('creatorRoyalty').value || 0);
+  if ($('creatorMintFeeEnabled').checked && !canonicalSoulMintEnabled) {
+    $('makerEconomicsStatus').textContent = 'Paid mint remains release-gated. Disable the fee before updating this Maker.';
+    return;
+  }
   if ($('creatorMintFeeEnabled').checked && !mintPriceAtomic) {
     $('makerEconomicsStatus').textContent = `Enter a valid ${runtimeConfig.paymentCoinSymbol} mint price.`;
     return;

@@ -10,11 +10,11 @@ Protocol version `3` defines the Maker/Treasury/AdminCap model and the non-dropp
 - `MakerTreasury<PaymentCoin>`: shared Maker-specific vault containing exact mint revenue, total collected, and total withdrawn.
 - `MakerAdminCap`: transferable owned capability linked to exactly one Maker and Treasury. The holder can update economics, archive/restore, and withdraw revenue.
 
-Production uses Circle native Sui Mainnet USDC as `PaymentCoin`. The generic type keeps unit tests independent of Mainnet while preventing another coin from being deposited into a Maker's Treasury.
+Production uses Circle native Sui Mainnet USDC as `PaymentCoin`. The generic type keeps unit tests independent of Mainnet and prevents a different coin from entering an existing typed Treasury. The contract can still instantiate another-coin Maker, so production discovery and the Soulidity adapter must reject any Maker whose stored payment type is not native USDC.
 
 `CreatorProfile` records original creator provenance. It is not the source of current management authority after publication; Cap ownership is.
 
-`SoulMintAuthorization` is an ephemeral value with no Move abilities. It contains validated Maker provenance, certified Walrus references, canonical recipe/hash, license/royalty snapshot, and mint-payment snapshot. It cannot be copied, stored, transferred, or dropped; a Soulidity adapter must consume it in the same PTB that creates the canonical Soul.
+`SoulMintAuthorization` is an ephemeral value with no Move abilities. It contains validated Maker provenance, bounded Walrus Quilt patch locators, canonical recipe/hash, license/royalty snapshot, and mint-payment snapshot. It cannot be copied, stored, transferred, or dropped; a Soulidity adapter must consume it in the same PTB that creates the canonical Soul. Protocol v3 does not receive Walrus `Blob` objects and therefore does not independently attest locator certification.
 
 ## Publication PTB
 

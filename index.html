@@ -529,7 +529,7 @@
                     <div class="asset-status-list">
                       <div><strong>Walrus quilt</strong><span>Item PNGs, optional picker icons, and the versioned Maker manifest</span></div>
                       <div><strong>Sui objects</strong><span>CreatorProfile, OCMaker, MakerTreasury, MakerAdminCap, recipe rules, policy snapshots, and ownership</span></div>
-                      <div><strong>Revenue & royalty</strong><span>Optional native-USDC mint fees settle into the Maker Treasury; Soulidity enforces the 0%–5% tier on resale.</span></div>
+                      <div><strong>Revenue & royalty</strong><span>The Maker Treasury path is ready; paid mint and 0%–5% resale settlement activate with the reviewed Soulidity adapter.</span></div>
                     </div>
                     <div class="production-action" id="makerPublishAction">
                       <div>
@@ -595,10 +595,10 @@
                     <fieldset class="economics-settings">
                       <legend>Minting & revenue</legend>
                       <label class="toggle-field"><input id="creatorMintingEnabled" type="checkbox" checked /><span>Allow new Soul authorizations</span></label>
-                      <label class="toggle-field"><input id="creatorMintFeeEnabled" type="checkbox" /><span>Charge a mint fee</span></label>
+                      <label class="toggle-field"><input id="creatorMintFeeEnabled" type="checkbox" /><span>Charge a mint fee after canonical activation</span></label>
                       <label>Mint price (USDC)<input id="creatorMintPrice" type="number" min="0.01" max="1000000" step="0.01" value="1" disabled /></label>
                       <label>
-                        Soulidity resale royalty
+                        Future Soulidity resale royalty
                         <select id="creatorRoyalty">
                           <option value="0">No royalty</option>
                           <option value="100">1%</option>
@@ -608,7 +608,7 @@
                           <option value="500">5%</option>
                         </select>
                       </label>
-                      <small>Mint revenue stays in this Maker's on-chain Treasury. Only its MakerAdminCap holder can withdraw it.</small>
+                      <small>During the Maker-only pilot, paid mint stays off. After canonical activation, revenue settles into this Maker's Treasury and only its MakerAdminCap holder can withdraw it.</small>
                       <strong id="makerTreasuryBalance">Treasury balance appears after publication.</strong>
                       <div class="economics-actions">
                         <button id="updateMakerEconomics" class="secondary" type="button">Update on-chain settings</button>
@@ -789,7 +789,7 @@
             <h1>On-chain rules for OC creation</h1>
             <p>
               Animacraft keeps the maker experience simple while Sui and Walrus record Maker provenance,
-              license policy, OC ownership, and the exact recipe used to create each character.
+              license policy, and recipe authorization. Soulidity owns the finished character and its Living Content.
             </p>
           </div>
         </div>
@@ -802,7 +802,7 @@
           <section class="protocol-card">
             <span>W</span>
             <h2>Walrus as asset layer</h2>
-            <p>Item PNGs, optional picker icons, Maker manifests, finished OC images, and profile JSON resolve from a certified Quilt Blob ID plus file identifier.</p>
+            <p>Item PNGs, picker icons, Maker manifests, finished OC images, and profile JSON resolve from browser-certified Walrus Quilts. Sui v3 records bounded Quilt and patch locators.</p>
           </section>
           <section class="protocol-card">
             <span>PR</span>
@@ -846,10 +846,19 @@
           </div>
         </section>
         <section class="docs-model">
+          <div><p class="kicker">Protocol Boundary</p><h2>One Maker, one canonical Soul</h2></div>
+          <div class="docs-model-grid">
+            <article><strong>Animacraft</strong><span>Publishes the shared Maker, USDC Treasury, transferable AdminCap, immutable recipe rules, and a one-PTB Soul mint authorization. It does not mint a finished character token.</span></article>
+            <article><strong>Soulidity</strong><span>Consumes the authorization, creates the only Soul, binds mandatory Soul Character and Memory Blobs, locks ownership in a personal Kiosk, and handles social and marketplace activity.</span></article>
+            <article><strong>Temporary Import Kit</strong><span>Free Makers may use the file handoff during the invited pilot. It is an unverified import, cannot collect a Maker fee, and must never be labeled canonical Animacraft provenance.</span></article>
+            <article><strong>Canonical adapter</strong><span>Paid mint, verified provenance, Maker resale royalty, and Cap trading activate only after the reviewed Soulidity adapter is deployed and its Mainnet evidence run passes.</span></article>
+          </div>
+        </section>
+        <section class="docs-model">
           <div><p class="kicker">Maker Lifecycle</p><h2>Delete locally, archive on-chain</h2></div>
           <div class="docs-model-grid">
             <article><strong>Local draft</strong><span>IndexedDB stores wallet-scoped structure, source files, and upload checkpoints. Maker, Part, Item, optional Layer, and extra Color records may be permanently deleted before publication.</span></article>
-            <article><strong>Published Maker</strong><span>Publication locks art, rules, and the certified Walrus manifest. The Cap holder may only change future mint economics and archive state.</span></article>
+            <article><strong>Published Maker</strong><span>Publication locks art, rules, and the previously certified Walrus manifest locator. The Cap holder may only change future mint economics and archive state.</span></article>
             <article><strong>Archived Maker</strong><span>The creator may archive or restore a published Maker with a wallet signature. Archive blocks new Soul authorizations while preserving existing Souls, rights snapshots, and provenance.</span></article>
             <article><strong>Walrus retention</strong><span>Production uploads request 53 Mainnet epochs, currently about two years. Removing a local reference does not erase certified storage, but retention must be extended before expiry.</span></article>
           </div>

@@ -21,6 +21,17 @@ function utf8Length(value) {
   return new TextEncoder().encode(String(value || '')).length;
 }
 
+export function assertProtocolV3IncludedItemGates(items) {
+  if (!Array.isArray(items)) throw new Error('Protocol v3 Maker Items must be an array.');
+  items.forEach((item) => {
+    const gateKind = Number(item?.gateKind ?? 0);
+    if (!Number.isInteger(gateKind) || gateKind !== 0) {
+      throw new Error('Protocol v3 supports only included Items; paid and creator-only Item gates are not enforced.');
+    }
+  });
+  return items;
+}
+
 export function validateRemoteMakerManifest(manifest) {
   if (!manifest || typeof manifest !== 'object') throw new Error('The Maker manifest is not a JSON object.');
   if (manifest.schemaVersion !== 'animacraft.creator-template.v3') {
@@ -92,6 +103,7 @@ export function validateRemoteMakerManifest(manifest) {
     if (part.kind === 'last-bastion' && part.allowRemove !== false) throw new Error(`${label} must be a required fallback Part.`);
     if (part.menuVisible) visiblePartCount += 1;
     if (!items.length || items.length > LIMITS.maxItemsPerPart) throw new Error(`${label} has an invalid Item count.`);
+    assertProtocolV3IncludedItemGates(items);
     if (!layers.length || layers.length > LIMITS.maxLayersPerPart) throw new Error(`${label} has an invalid Layer count.`);
     if (!colors.length || colors.length > LIMITS.maxColorsPerPart) throw new Error(`${label} has an invalid Color count.`);
     if (new Set(items.map((item) => String(item?.id || ''))).size !== items.length) throw new Error(`${label} contains duplicate Item IDs.`);

@@ -4,6 +4,7 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction } from '@mysten/sui/transactions';
 import { bcs } from '@mysten/sui/bcs';
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
+import { assertProtocolV3IncludedItemGates } from './manifest-validation.js';
 import { hashRecipe, recipeSlotBcs, recipeValue } from './recipe-hash.js';
 
 export { hashRecipe } from './recipe-hash.js';
@@ -416,6 +417,7 @@ export function walrusQuiltFileUrl(quiltId, identifier) {
 }
 
 export async function publishMaker({ creator, maker, manifestBlobId, parts, items, rules = [], paletteLinks = [] }) {
+  const includedItems = assertProtocolV3IncludedItemGates(items);
   const connection = requireConnection();
   const paymentCoinType = requirePaymentCoinType();
   const tx = new Transaction();
@@ -482,7 +484,7 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
     }
   }
 
-  for (const item of items) {
+  for (const item of includedItems) {
     tx.moveCall({
       target: moveTarget('admin_add_item'),
       arguments: [
@@ -493,7 +495,7 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
         pureString(tx, item.label),
         pureString(tx, item.blobId),
         pureString(tx, item.iconBlobId),
-        tx.pure.u8(Number(item.gateKind || 0)),
+        tx.pure.u8(0),
         tx.object(CLOCK_OBJECT_ID),
       ],
     });
@@ -640,7 +642,11 @@ export async function withdrawMakerRevenue({ makerId, treasuryId, adminCapId, am
 export function appendSoulMintAuthorization(tx, { makerId, treasuryId, mintPriceAtomic = 0, name, profileBlobId, imageBlobId, imageUrl, recipeHash, recipe }) {
   requireConnection();
   const serializedRecipe = bcs.vector(recipeSlotBcs).serialize(recipeValue(recipe));
-  const price = BigInt(mintPriceAtomic || 0);
+  const numericPrice = Number(mintPriceAtomic || 0);
+  if (!Number.isSafeInteger(numericPrice) || numericPrice < 0) {
+    throw new Error('The Maker mint price cannot be represented safely by this client.');
+  }
+  const price = BigInt(numericPrice);
   const paid = price > 0n;
   if (paid && !treasuryId) throw new Error('This paid Maker is missing its on-chain MakerTreasury object id. Refresh the Maker before minting.');
 

@@ -20,6 +20,18 @@ The following require contract-owner review, passing Web and Move suites, a depl
 - Runtime package IDs, USDC type, domains, CSP, and wallet transaction construction.
 - Soulidity adapter dependencies or Marketplace settlement.
 
+## Published Protocol v3 Boundaries
+
+- Production publishers must register every Item with gate kind `0` (`included`). The package exposes reserved constants for paid add-on and creator-only Items, but v3 recipe authorization does not enforce either gate. The browser publisher and remote manifest validator reject those values; product copy must not advertise them as live access controls.
+- Multiple visual Layers belong to a Part and are committed through the immutable Maker manifest. The on-chain recipe records one selected Item, Color, and Part render order per Part; it does not attest individual PNG pixels.
+- A Maker's `PaymentCoin` type is fixed by its Treasury, but the generic package cannot prevent third parties from creating a Maker with another coin. The production browser rejects non-native-USDC Makers, and the Soulidity adapter must repeat that type check on chain.
+- A valid Move `u64` can exceed JavaScript's exact integer range. The browser rejects Makers whose atomic mint price is not a non-negative safe integer or whose mint switches and price disagree; wallet signing must never proceed from a rounded display value.
+- `LicensePolicy` fields are private in v3. Other Move packages can preserve the opaque snapshot and read royalty getters, but cannot yet execute commercial/remix/attribution flags on chain.
+- Walrus IDs in v3 are bounded locator strings, not owned `Blob` objects. The Soulidity mint path must receive actual certified Living Content `Blob` objects separately.
+- A dedicated royalty purchase function is insufficient unless Soulidity's existing generic solo and collection purchase entries reject typed Animacraft Souls. The adapter must bind frozen provenance to SoulState and make every alternate settlement path fail closed, otherwise callers can bypass the Maker Treasury.
+
+Any future package upgrade must explicitly handle existing version-3 objects. Do not let new entry functions silently reinterpret old Maker, Treasury, Cap, policy, or authorization layouts. Specify migration/version assertions, test old-object compatibility, verify the upgrade source diff, and require protocol-custody approval before signing.
+
 ## Incident Response
 
 1. Stop creator onboarding and Vercel promotion.
