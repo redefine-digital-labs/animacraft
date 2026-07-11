@@ -2,7 +2,15 @@
 
 ## Pilot Goal
 
-Each invited artist publishes one small, polished Character Maker that users can open, remix into distinct OCs, and mint as canonical Soulidity Souls on Sui Mainnet.
+Each invited artist publishes one small, polished Character Maker that users can open and remix into distinct OCs on Sui Mainnet. Canonical Soulidity mint is the next activation stage and is enabled only after the reviewed adapter and signed multi-wallet smoke test are live.
+
+## Current Pilot Boundary
+
+- Maker creation, Walrus certification, Sui publication, public browsing, OC composition, archive/restore, and Cap-only Maker administration belong to the Animacraft pilot.
+- Keep the first Maker's mint fee disabled unless the release operator confirms the Soulidity adapter is deployed and the paid atomic-mint test has passed.
+- Every protocol-v3 Item is included with the Maker. Paid add-on and creator-only Item gates are not live access controls.
+- A royalty tier may be recorded now, but secondary settlement is not live until Soulidity's Animacraft-aware Marketplace path is deployed and tested.
+- The temporary Import Kit is an unverified handoff. It must not be presented as typed Animacraft provenance or as the canonical paid mint path.
 
 ## Before Starting
 
@@ -59,7 +67,8 @@ Common Parts include Background, Body/Base, Back Hair, Front Hair, Eyes, Mouth, 
 6. Prepare the Walrus quilt and confirm the expected file count.
 7. Register/upload and certify with the same wallet.
 8. Publish the shared Maker on Sui.
-9. Open it from a disconnected browser, then use a second wallet to make an OC and complete the Soulidity mint.
-10. Record Maker object, Quilt Blob ID, publication digest, sample Soul object, and creator contact.
+9. Open it from a disconnected browser, then use a second wallet to make and export an OC.
+10. If the release status explicitly says the Soulidity adapter is active, complete the canonical mint with the same second wallet; otherwise stop at the clearly labeled Import Kit handoff.
+11. Record Maker object, Treasury, AdminCap, Quilt Blob ID, publication digest, creator contact, and any activated sample Soul object.
 
 Do not publish a test draft merely to inspect the flow. Published versions are immutable; mistakes require a new version or archive.
