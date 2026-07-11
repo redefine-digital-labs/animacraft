@@ -115,6 +115,7 @@ The current Soulidity fixed-price purchase sends creator royalty to the Soul cre
 - splits the exact native-USDC royalty coin;
 - calls `deposit_resale_royalty<USDC>` with the shared Maker, matching Treasury, gross listing price, and Soul ID;
 - skips the Animacraft call when the tier is 0%;
+- rejects a nonzero-tier listing or purchase when `floor(gross_sale_amount * royalty_bps / 10_000)` is zero; protocol v3 deliberately rejects a zero-value royalty deposit, so the Marketplace must enforce the corresponding minimum atomic listing price;
 - preserves platform and optional collection royalties;
 - leaves exactly the listing price for the seller;
 - emits the Maker ID, Treasury ID, basis points, and royalty amount in purchase evidence.
@@ -147,6 +148,9 @@ These limits are explicit and must not be hidden in product copy:
 - `LicensePolicy` fields are private and v3 has no public license getters. Soulidity can store the opaque snapshot, and royalty getters are available, but another Move package cannot yet branch on commercial/remix/attribution flags.
 - The authorization binds name, image locator/URL, recipe, policy, and price, but not Soulidity's display description. Treat description as user-authored display metadata.
 - Animacraft's generic `PaymentCoin` enforces one coin type per Maker but does not globally forbid third parties from creating another-coin Maker. Production Animacraft rejects every discovered Maker whose on-chain payment type is not configured native USDC; Soulidity must repeat that check on chain.
+- Browser clients reject atomic prices outside JavaScript's exact integer range. Soulidity must still use `u64`/Move arithmetic directly and must never derive settlement amounts from formatted browser text.
+- Item gate values `1` (paid add-on) and `2` (creator-only) are reserved but not enforced by v3 recipe authorization. Production publication is restricted to gate `0` (included); Soulidity must not infer paid-item entitlement from those reserved values.
+- Visual Layer matrices and per-Layer composition order are committed in the immutable Maker manifest. The canonical on-chain recipe intentionally records one Part/Item/Color selection and Part render order per Part, not an independent record for every image Layer.
 
 An additive Animacraft upgrade may later introduce public license getters and Blob-aware authorization. Do not make those changes in a hurried Mainnet upgrade; specify them, test migration compatibility, review independently, and sign through protocol custody.
 
@@ -160,7 +164,7 @@ Soulidity's adapter PR is not release-ready without tests for:
 - wrong payer, version, Maker, Treasury, coin type, amount, recipe hash, or required content aborts;
 - one authorization cannot mint twice and cannot remain at PTB end;
 - Soulidity creator royalty is zero for Animacraft Souls;
-- 0%, 1%, 2%, 3%, 4%, and 5% resale behavior, including rounding and zero-amount edges;
+- 0%, 1%, 2%, 3%, 4%, and 5% resale behavior, including floor rounding and clean rejection when a nonzero tier would round to zero;
 - Maker royalty is deposited once and the seller receives exactly the listing price;
 - provenance cannot be substituted across Souls;
 - Cap transfer changes administration/withdrawal authority without rewriting provenance;

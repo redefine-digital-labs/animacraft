@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateRemoteMakerManifest } from '../manifest-validation.js';
+import {
+  assertProtocolV3IncludedItemGates,
+  validateRemoteMakerManifest,
+} from '../manifest-validation.js';
 
 function item(id, identifier) {
   return {
@@ -55,6 +58,19 @@ function validManifest() {
 test('accepts a complete production manifest', () => {
   const manifest = validManifest();
   assert.equal(validateRemoteMakerManifest(manifest), manifest);
+});
+
+test('keeps protocol v3 publication on included Items only', () => {
+  const included = [{ id: 'eyes-a' }, { id: 'eyes-b', gateKind: 0 }];
+  assert.equal(assertProtocolV3IncludedItemGates(included), included);
+  assert.throws(
+    () => assertProtocolV3IncludedItemGates([{ id: 'premium', gateKind: 1 }]),
+    /only included Items/,
+  );
+  assert.throws(
+    () => assertProtocolV3IncludedItemGates([{ id: 'creator', gateKind: 2 }]),
+    /only included Items/,
+  );
 });
 
 test('rejects duplicate Part keys', () => {

@@ -54,7 +54,7 @@ Soulidity may separately list `MakerAdminCap` as the transferable Maker manageme
 
 ## Deployment Order
 
-1. Review and publish Animacraft; record its original package ID and secure its `UpgradeCap`.
+1. Pin the published Animacraft original package ID, verify its recorded source tree, and secure its `UpgradeCap`.
 2. Pin that original package ID in the Soulidity adapter dependency.
 3. Implement the canonical Mint PTB, verified provenance, Cap escrow, and resale royalty settlement in Soulidity with its developers.
 4. Run both repositories' tests and an independent Move review.

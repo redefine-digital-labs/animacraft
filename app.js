@@ -42,7 +42,11 @@ import {
   validateLivingContent,
 } from './living-content.js';
 import { responseBlobWithinLimit, responseBytesWithinLimit } from './remote-read.js';
-import { assertSupportedMakerPaymentCoin, normalizeRuntimeConfig } from './runtime-config.js';
+import {
+  assertSupportedMakerMintEconomics,
+  assertSupportedMakerPaymentCoin,
+  normalizeRuntimeConfig,
+} from './runtime-config.js';
 
 const slots = [
   { key: 'background', label: 'Background', icon: 'BG', colorKey: 'background', description: 'Scene, mood, and backdrop' },
@@ -1089,6 +1093,11 @@ async function hydrateChainMaker(object) {
     suiField(fields, 'payment_coin_type', 'paymentCoinType'),
     runtimeConfig.paymentCoinType,
   );
+  const economics = assertSupportedMakerMintEconomics({
+    mintingEnabled: ![false, 'false', 0, '0'].includes(suiField(fields, 'minting_enabled', 'mintingEnabled')),
+    mintFeeEnabled: [true, 'true', 1, '1'].includes(suiField(fields, 'mint_fee_enabled', 'mintFeeEnabled')),
+    mintPriceAtomic: suiField(fields, 'mint_price_atomic', 'mintPriceAtomic') || 0,
+  });
   const quiltId = String(suiField(fields, 'manifest_blob_id', 'manifestBlobId') || '');
   if (!quiltId) throw new Error(`OCMaker ${shortAddress(object.objectId)} has no Walrus Quilt ID.`);
   const response = await fetchWalrusWithBackoff(walrusQuiltFileUrl(quiltId, 'animacraft-manifest.json'));
@@ -1122,13 +1131,13 @@ async function hydrateChainMaker(object) {
     style: String(templateData.style || 'OC Maker'),
     license: makerLicenseLabel(policy),
     royaltyBps: Number(suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || templateData.royaltyBps || 0),
-    mintingEnabled: ![false, 'false', 0, '0'].includes(suiField(fields, 'minting_enabled', 'mintingEnabled')),
-    mintFeeEnabled: [true, 'true', 1, '1'].includes(suiField(fields, 'mint_fee_enabled', 'mintFeeEnabled')),
-    mintPriceAtomic: Number(suiField(fields, 'mint_price_atomic', 'mintPriceAtomic') || 0),
+    mintingEnabled: economics.mintingEnabled,
+    mintFeeEnabled: economics.mintFeeEnabled,
+    mintPriceAtomic: economics.mintPriceAtomic,
     treasuryId: object.treasuryId || suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
     adminCapId: object.adminCapId || '',
-    price: Number(suiField(fields, 'mint_price_atomic', 'mintPriceAtomic') || 0) > 0
-      ? `${(Number(suiField(fields, 'mint_price_atomic', 'mintPriceAtomic')) / (10 ** runtimeConfig.paymentCoinDecimals)).toLocaleString()} ${runtimeConfig.paymentCoinSymbol}`
+    price: economics.mintPriceAtomic > 0
+      ? `${(economics.mintPriceAtomic / (10 ** runtimeConfig.paymentCoinDecimals)).toLocaleString()} ${runtimeConfig.paymentCoinSymbol}`
       : 'Free mint',
     summary: String(suiField(fields, 'description') || 'Published Animacraft Character Maker.'),
     licenseNote: String(templateData.licenseNote || 'License and royalty policy are read from the published Sui OCMaker.'),

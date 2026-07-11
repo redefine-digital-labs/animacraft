@@ -4,9 +4,9 @@ Audit target: five invited creators publishing real Character Makers and users m
 
 ## Decision
 
-**Maker code candidate: pass. Canonical Soul mint activation: waiting for Animacraft publication, the reviewed Soulidity adapter, and signed smoke-test evidence.**
+**Maker protocol: published and source-verified. Invited-creator activation: waiting for signed Maker/Vercel evidence. Canonical Soul mint activation: waiting for the reviewed Soulidity adapter and signed end-to-end evidence.**
 
-The Animacraft placeholder package id remains a hard write gate. A Vercel Preview may be deployed immediately; do not call paid Maker minting Mainnet-live until Soulidity consumes `SoulMintAuthorization` and the manual activation checklist in `PRODUCTION_STATUS.md` passes.
+Animacraft Mainnet package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` is live and its bytecode matches the recorded source tree. The public runtime is activated in the dedicated Mainnet configuration PR. Do not call creator publication proven, or paid Maker minting Mainnet-live, until the relevant signed checks in `MAINNET_SMOKE_TEST.md` pass. Soulidity must consume `SoulMintAuthorization` before canonical paid mint or verified provenance is enabled.
 
 ## End-to-End Model
 
@@ -32,14 +32,14 @@ The Animacraft placeholder package id remains a hard write gate. A Vercel Previe
 - Published Makers are shared but cannot be publicly transferred or shared outside the defining Move module.
 - Move rejects duplicate Items and Colors, oversized structures/strings, empty Part records, invalid Last Bastion rules, unregistered recipe Colors, forged Part order, forged BCS recipe hashes, palette/selection violations, and archived Maker mints.
 - Published Maker content is immutable. Matching Cap authorization is checked for economics, withdrawal, and archive/restore; existing Soul rights/payment snapshots survive later changes.
-- Thirty-one Node integrity/config tests and twenty-five Move tests currently pass; final syntax, diff, and production-build evidence is refreshed before each release PR.
+- The Web/config integrity suite and twenty-five published-source Move tests pass; final syntax, dependency audit, diff, and production-build evidence is refreshed before each release PR.
 
 ## Remaining External Gates
 
-- Publish and verify the package on Mainnet; document `UpgradeCap` custody.
+- Move the live `UpgradeCap`, `Publisher`, and `Display<OCMaker>` into the documented protocol custody arrangement.
 - Implement and review Soulidity's dedicated Animacraft authorization entry without modifying its current generic-import guarantees.
-- Configure the package id and run creator/user Mainnet transactions with real SUI and WAL.
-- Confirm the production Vercel CSP with wallet connection and Walrus WASM upload in the deployed origin.
+- Run the real creator/player Mainnet matrix with separate wallets, SUI, WAL, and native USDC.
+- Confirm the production Vercel CSP with wallet connection and Walrus WASM upload in the deployed origin, then promote `animacraft.soulidity.ai`.
 - Establish creator terms, reporting, takedown, and license-dispute operations.
 - Obtain an independent Move review before unrestricted or high-value use.
 
@@ -49,6 +49,8 @@ The Animacraft placeholder package id remains a hard write gate. A Vercel Previe
 - Sui GraphQL and Walrus endpoints are external availability dependencies. A manual refresh, bounded Walrus read retry, and visible degraded state exist; production monitoring and dedicated Sui capacity are still required.
 - Event discovery currently reads up to the 500 most recent published Maker IDs. That is sufficient for the invited pilot but requires an on-chain index or paginated catalog strategy before large-scale discovery.
 - Exact native-USDC payment collection and withdrawal are implemented in the authorization path. Paid mint and secondary royalties remain disabled until Soulidity consumes that authorization in its reviewed Marketplace adapter.
+- Protocol v3 publication supports included Items only. Paid add-on and creator-only Item constants are reserved but not enforced by recipe authorization; the production publisher and remote manifest validator reject those gates.
+- The public runtime rejects non-native-USDC Makers and on-chain atomic prices that JavaScript cannot represent exactly. Soulidity must repeat coin-type and amount checks in Move.
 - IndexedDB is local to one browser profile. Exported manifests and original source art remain the creator's responsibility; cross-device draft sync is not implemented.
 - Mainnet storage defaults to 53 Walrus epochs, currently about two years. Certified files are immutable for that term but require a future signed extension to remain available beyond it.
 - Move verifies the canonical recipe, not the pixels of the user-supplied rendered PNG. Consumers should treat the on-chain Part/Item/Color recipe as authoritative display provenance.

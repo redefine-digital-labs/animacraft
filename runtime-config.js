@@ -38,6 +38,19 @@ export function assertSupportedMakerPaymentCoin(actualType, configuredType = SUI
   return actual;
 }
 
+export function assertSupportedMakerMintEconomics({ mintingEnabled, mintFeeEnabled, mintPriceAtomic }) {
+  const price = Number(mintPriceAtomic);
+  if (!Number.isSafeInteger(price) || price < 0) {
+    throw new Error('The on-chain Maker mint price cannot be represented safely by this client.');
+  }
+  if ((!mintingEnabled && mintFeeEnabled)
+    || (mintFeeEnabled && price === 0)
+    || (!mintFeeEnabled && price !== 0)) {
+    throw new Error('The on-chain Maker has an invalid mint economics configuration.');
+  }
+  return { mintingEnabled: Boolean(mintingEnabled), mintFeeEnabled: Boolean(mintFeeEnabled), mintPriceAtomic: price };
+}
+
 function validHttpsUrl(value, { allowLocalhost = false } = {}) {
   try {
     const url = new URL(String(value || ''));

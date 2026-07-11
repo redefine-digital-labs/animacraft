@@ -134,6 +134,8 @@ For each enabled tier used in the pilot, especially 0%, 1%, and 5%:
 7. confirm the ordinary Soul creator royalty is zero and no second royalty is paid to Player B;
 8. confirm the Soul moves to Buyer C's personal Kiosk and stale grants are invalidated.
 
+Negative edge: attempt a nonzero-tier listing below the minimum atomic price needed to produce one USDC atomic unit of royalty. The listing or purchase must be rejected before settlement; it must not silently waive the Maker royalty.
+
 Pass condition: the immutable Maker snapshot, not mutable web metadata, determines the royalty route.
 
 ## H. Failure And Recovery
