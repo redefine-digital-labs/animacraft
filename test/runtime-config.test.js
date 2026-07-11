@@ -20,6 +20,7 @@ test('accepts a complete Mainnet production configuration', () => {
   assert.equal(result.valid, true);
   assert.equal(result.packageReady, true);
   assert.equal(result.soulidityReady, true);
+  assert.equal(productionConfig().canonicalSoulMintEnabled, false);
 });
 
 test('keeps source placeholders as warnings outside strict activation', () => {
@@ -47,4 +48,12 @@ test('rejects unsafe Walrus retention and malformed featured ids', () => {
   assert.equal(result.valid, false);
   assert.match(result.errors.join(' '), /walrusEpochs/);
   assert.match(result.errors.join(' '), /featuredMakers/);
+});
+
+test('requires an explicit boolean canonical Soul mint gate', () => {
+  const config = productionConfig();
+  config.canonicalSoulMintEnabled = 'yes';
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /canonicalSoulMintEnabled/);
 });

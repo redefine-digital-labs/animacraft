@@ -3,7 +3,7 @@ export const SUI_MAINNET_USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef6
 export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   network: 'mainnet',
   grpcUrl: 'https://fullnode.mainnet.sui.io:443',
-  graphqlUrl: 'https://sui-mainnet.mystenlabs.com/graphql',
+  graphqlUrl: 'https://graphql.mainnet.sui.io/graphql',
   packageId: '0xTODO_ANIMACRAFT_PACKAGE',
   paymentCoinType: SUI_MAINNET_USDC_TYPE,
   paymentCoinSymbol: 'USDC',
@@ -16,6 +16,7 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   appUrl: '',
   soulidityAppUrl: 'https://www.soulidity.ai',
   soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  canonicalSoulMintEnabled: false,
 });
 
 const SUI_ID = /^0x[0-9a-f]+$/i;
@@ -62,6 +63,7 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   if (!packageReady) (strict ? errors : warnings).push('Publish Animacraft and replace packageId before Mainnet activation.');
   const soulidityReady = SUI_ID.test(String(config.soulidityPackageId || '')) && !String(config.soulidityPackageId).includes('TODO');
   if (!soulidityReady) (requireSoulidity ? errors : warnings).push('Set soulidityPackageId before enabling the Soulidity handoff.');
+  if (typeof config.canonicalSoulMintEnabled !== 'boolean') errors.push('canonicalSoulMintEnabled must be a boolean release gate.');
 
   if (!MOVE_TYPE.test(String(config.paymentCoinType || ''))) errors.push('paymentCoinType is not a valid Sui Move coin type.');
   if (config.paymentCoinType !== SUI_MAINNET_USDC_TYPE) errors.push('Mainnet Maker payments must use Circle native Sui USDC.');

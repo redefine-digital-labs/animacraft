@@ -35,21 +35,21 @@ npm run move:test
 npm run dev
 ```
 
-`npm run check` runs config preflight, JavaScript syntax checks, 32 web/config integrity tests, and the Vite production build. `npm run move:test` currently runs 25 contract tests. Both suites pin the same canonical BCS recipe bytes and SHA-256 fixture.
+`npm run check` runs config preflight, JavaScript syntax checks, the web/config integrity suite, and the Vite production build. `npm run move:test` runs the Move contract suite. Both suites pin the same canonical BCS recipe bytes and SHA-256 fixture.
 
 ## Runtime Configuration
 
-Public configuration lives in `public/config.js`; `config.example.js` documents every field. Publishing and minting intentionally remain disabled while `packageId` contains `TODO`.
+Public configuration lives in `public/config.js`; `config.example.js` documents every field. The source-verified Mainnet package is `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`; its transaction, package digest, source tree, and custody objects are recorded in `deployments/mainnet.json`.
 
-Before Mainnet activation:
+Before promoting the invited-creator release:
 
-1. Publish and verify `move/animacraft` on Sui Mainnet.
-2. Put the `UpgradeCap` under a documented custodian or multisig policy.
-3. Set the verified package id in `public/config.js`.
-4. Run `npm run preflight:mainnet`.
-5. Publish the reviewed Soulidity adapter against the pinned Animacraft package ID.
-6. Run one free and one paid canonical Soul mint, then withdraw a small Treasury balance with the Cap wallet.
-7. Redeploy and verify public event discovery, Walrus hydration, Cap discovery, archive/restore, and Soulidity collection handoff.
+1. Verify `deployments/mainnet.json` against the explorer transaction and source-verification result.
+2. Put the `UpgradeCap`, `Publisher`, and `Display<OCMaker>` under a documented custodian or multisig policy.
+3. Run `npm run preflight:integration` against the production runtime.
+4. Verify a Vercel Preview, wallet connection, Walrus WASM upload, public Maker discovery, and disconnected browsing.
+5. Publish one small real Maker and verify its Maker, Treasury, Cap, archive/restore, and withdrawal lifecycle with separate wallets.
+6. Publish the separately reviewed Soulidity adapter against the pinned Animacraft original package ID.
+7. Run one free and one paid canonical Soul mint plus resale evidence before enabling those claims in the UI.
 
 ## Versioned Outputs
 

@@ -50,15 +50,38 @@ async function checkNetwork(config, validation) {
   }
 
   try {
+    const makerEventType = validation.packageReady
+      ? `${config.packageId}::animacraft::OCMakerPublished`
+      : null;
+    const query = makerEventType
+      ? `query PublishedAnimacraftMakers($type: String!) {
+          chainIdentifier
+          events(filter: { type: $type }, last: 1) {
+            pageInfo { hasPreviousPage startCursor }
+            nodes { contents { json } }
+          }
+        }`
+      : '{ chainIdentifier }';
     const response = await deadline('Sui GraphQL', (signal) => fetch(config.graphqlUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: '{ chainIdentifier }' }),
+      body: JSON.stringify({
+        query,
+        ...(makerEventType ? { variables: { type: makerEventType } } : {}),
+      }),
       signal,
     }));
     const body = await response.json();
-    record('Sui GraphQL', response.ok && Boolean(body.data?.chainIdentifier) && !body.errors?.length,
-      body.data?.chainIdentifier || body.errors?.[0]?.message || `HTTP ${response.status}`);
+    const eventQueryReady = !makerEventType || Array.isArray(body.data?.events?.nodes);
+    const detail = body.errors?.[0]?.message
+      || (body.data?.chainIdentifier
+        ? `${body.data.chainIdentifier}${makerEventType ? '; Maker event query OK' : ''}`
+        : `HTTP ${response.status}`);
+    record(
+      'Sui GraphQL',
+      response.ok && Boolean(body.data?.chainIdentifier) && eventQueryReady && !body.errors?.length,
+      detail,
+    );
   } catch (error) {
     record('Sui GraphQL', false, error.message);
   }
@@ -82,13 +105,20 @@ async function checkNetwork(config, validation) {
   }
 
   if (validation.soulidityReady) {
+    const soulidityMintFunction = config.canonicalSoulMintEnabled
+      ? 'mint_animacraft_in_personal_kiosk'
+      : 'mint_imported_in_personal_kiosk';
     try {
       const result = await deadline('Soulidity package', () => client.core.getMoveFunction({
         packageId: config.soulidityPackageId,
         moduleName: 'market',
-        name: 'mint_imported_in_personal_kiosk',
+        name: soulidityMintFunction,
       }));
-      record('Soulidity package', result.function?.name === 'mint_imported_in_personal_kiosk', `${config.soulidityPackageId}::market::mint_imported_in_personal_kiosk`);
+      record(
+        'Soulidity package',
+        result.function?.name === soulidityMintFunction,
+        `${config.soulidityPackageId}::market::${soulidityMintFunction}`,
+      );
     } catch (error) {
       record('Soulidity package', false, error.message);
     }

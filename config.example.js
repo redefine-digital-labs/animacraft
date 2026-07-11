@@ -1,7 +1,7 @@
 window.ANIMACRAFT_CONFIG = {
   network: 'mainnet',
   grpcUrl: 'https://fullnode.mainnet.sui.io:443',
-  graphqlUrl: 'https://sui-mainnet.mystenlabs.com/graphql',
+  graphqlUrl: 'https://graphql.mainnet.sui.io/graphql',
   packageId: '0xTODO_ANIMACRAFT_PACKAGE',
   paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
   paymentCoinSymbol: 'USDC',
@@ -15,5 +15,6 @@ window.ANIMACRAFT_CONFIG = {
   },
   appUrl: 'https://animacraft.soulidity.ai',
   soulidityAppUrl: 'https://www.soulidity.ai',
-  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0'
+  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  canonicalSoulMintEnabled: false
 };

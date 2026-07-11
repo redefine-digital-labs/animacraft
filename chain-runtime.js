@@ -210,7 +210,7 @@ export async function listPublishedMakerIds(limit = 500) {
     const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
     graphqlClient = new SuiGraphQLClient({
       network: runtimeConfig.network,
-      url: runtimeConfig.graphqlUrl || `https://sui-${runtimeConfig.network}.mystenlabs.com/graphql`,
+      url: runtimeConfig.graphqlUrl || `https://graphql.${runtimeConfig.network}.sui.io/graphql`,
     });
   }
   const eventType = `${packageId}::animacraft::OCMakerPublished`;

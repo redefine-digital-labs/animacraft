@@ -2,6 +2,21 @@
 
 Animacraft is a static Vite app with direct wallet-signed Sui and Walrus writes. There is no application server, database, private signer, or secret runtime variable.
 
+## Current Mainnet Release
+
+- Original package: `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`
+- Publish transaction: `GxU8kpBPf4BU2KP9761sh7tgHnAsaYZ8dq5dipw3n185`
+- Checkpoint: `297352663`
+- `UpgradeCap`: `0xe7d1269532bbfbf5e448cb5c58f07fc6720ed3d22e7853e9f13b7b6282746520`
+- `Publisher`: `0xfc5a8e6f32e5d7a77492373e5b301809a2b0ca4cbec7282a43668995d7ae2ddb`
+- `Display<OCMaker>`: `0xeec472b0f5eeb1a6ca07ca10d9e470a4aa1946f005d8ff29299365b0e3003877`
+- Publisher address: `0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f`
+- Source tree: `6ecafa9db67f1c683f53679a3c07d0036d7f88c5`
+- Merged source commit: `979a4161ac79f4e275d30575f2ce2e76195a9cfa`
+- Source verification: successful at `2026-07-11T20:32:31Z` with Sui CLI `1.74.1-8fc60f1fa966`
+
+The canonical machine-readable record is [`deployments/mainnet.json`](deployments/mainnet.json). The original package ID is the stable dependency address Soulidity must pin; do not substitute a future upgraded package version ID.
+
 ## Recommended Origin
 
 Use `animacraft.soulidity.ai`. It keeps Animacraft visibly related to Soulidity while preserving a standalone product and repository boundary.
@@ -39,7 +54,7 @@ Edit `public/config.js`:
 window.ANIMACRAFT_CONFIG = {
   network: 'mainnet',
   grpcUrl: 'https://fullnode.mainnet.sui.io:443',
-  graphqlUrl: 'https://sui-mainnet.mystenlabs.com/graphql',
+  graphqlUrl: 'https://graphql.mainnet.sui.io/graphql',
   packageId: '0xVERIFIED_PACKAGE_ID',
   paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
   paymentCoinSymbol: 'USDC',
@@ -51,7 +66,8 @@ window.ANIMACRAFT_CONFIG = {
   featuredMakers: {},
   appUrl: 'https://animacraft.soulidity.ai',
   soulidityAppUrl: 'https://www.soulidity.ai',
-  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0'
+  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  canonicalSoulMintEnabled: false
 };
 ```
 
@@ -64,6 +80,8 @@ npm run preflight:mainnet
 After the separate Soulidity package and adapter are published, set `soulidityPackageId` and run `npm run preflight:integration`.
 
 `featuredMakers` is only a curated fallback. The public gallery discovers all `OCMakerPublished` events through Sui GraphQL and hydrates each Maker from its certified Walrus manifest.
+
+Keep `canonicalSoulMintEnabled: false` during the Maker-only invited pilot. Set it to `true` only in the same reviewed release that ships the browser's atomic Animacraft-to-Soulidity PTB, verifies `mint_animacraft_in_personal_kiosk` in the configured package, and records the signed Mainnet smoke test. The strict preflight switches its expected Soulidity function when this gate changes.
 
 The sample Mysten Sui endpoints are appropriate for the five-creator pilot, but the public fullnode is rate-limited. Replace `grpcUrl` and, where available, `graphqlUrl` with monitored dedicated Mainnet infrastructure before unrestricted traffic. Animacraft keeps these as public runtime values; provider credentials must never be embedded in the browser bundle.
 
