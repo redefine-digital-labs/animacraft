@@ -146,3 +146,27 @@ test('requires a public license note', () => {
   manifest.template.licenseNote = '';
   assert.throws(() => validateRemoteMakerManifest(manifest), /invalid public metadata/);
 });
+
+test('accepts a tiered royalty and USDC mint fee', () => {
+  const manifest = validManifest();
+  Object.assign(manifest.template, {
+    royaltyBps: 500,
+    mintingEnabled: true,
+    mintFeeEnabled: true,
+    mintPriceAtomic: 1_500_000,
+    paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
+  });
+  assert.equal(validateRemoteMakerManifest(manifest), manifest);
+});
+
+test('rejects arbitrary royalty basis points', () => {
+  const manifest = validManifest();
+  manifest.template.royaltyBps = 250;
+  assert.throws(() => validateRemoteMakerManifest(manifest), /invalid public metadata/);
+});
+
+test('rejects a paid mint without a valid payment coin', () => {
+  const manifest = validManifest();
+  Object.assign(manifest.template, { mintFeeEnabled: true, mintPriceAtomic: 1_000_000, paymentCoinType: 'USDC' });
+  assert.throws(() => validateRemoteMakerManifest(manifest), /invalid mint economics/);
+});

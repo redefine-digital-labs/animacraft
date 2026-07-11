@@ -1,3 +1,5 @@
+import { validateLivingContent } from './living-content.js';
+
 const LIMITS = Object.freeze({
   maxParts: 750,
   maxItems: 5_000,
@@ -39,10 +41,19 @@ export function validateRemoteMakerManifest(manifest) {
     || !String(manifest.template.licenseNote || '').trim()
     || utf8Length(manifest.template.licenseNote || '') > LIMITS.maxDescriptionBytes
     || !['personal-use', 'free-remix', 'paid-commercial', 'exclusive-commission'].includes(manifest.template.license || 'personal-use')
-    || !Number.isInteger(Number(manifest.template.royaltyBps || 0))
-    || Number(manifest.template.royaltyBps || 0) < 0
-    || Number(manifest.template.royaltyBps || 0) > 10_000) {
+    || ![0, 100, 200, 300, 400, 500].includes(Number(manifest.template.royaltyBps || 0))) {
     throw new Error('The Maker manifest has invalid public metadata.');
+  }
+  const mintingEnabled = manifest.template.mintingEnabled !== false;
+  const mintFeeEnabled = Boolean(manifest.template.mintFeeEnabled);
+  const mintPriceAtomic = Number(manifest.template.mintPriceAtomic || 0);
+  if ((!mintingEnabled && mintFeeEnabled)
+    || !Number.isSafeInteger(mintPriceAtomic)
+    || mintPriceAtomic < 0
+    || (mintFeeEnabled && mintPriceAtomic === 0)
+    || (!mintFeeEnabled && mintPriceAtomic !== 0)
+    || (mintFeeEnabled && !/^0x[0-9a-f]+::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*$/i.test(String(manifest.template.paymentCoinType || '')))) {
+    throw new Error('The Maker manifest has invalid mint economics.');
   }
 
   const assets = Array.isArray(manifest.assets) ? manifest.assets : [];
@@ -194,6 +205,7 @@ export function validateRemoteMakerManifest(manifest) {
   if (manifest.template.coverIdentifier && !assetIdentifierSet.has(String(manifest.template.coverIdentifier))) {
     throw new Error('The Maker cover is missing from the asset index.');
   }
+  if (manifest.livingContent) validateLivingContent(manifest.livingContent);
   return manifest;
 }
 

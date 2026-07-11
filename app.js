@@ -1,4 +1,5 @@
 import {
+  configureMakerEconomics,
   explorerObjectUrl,
   explorerTransactionUrl,
   certifyWalrusUpload,
@@ -6,19 +7,19 @@ import {
   hashRecipe,
   initializeChain,
   listOwnedCreatorProfiles,
-  listOwnedCharacters,
+  listOwnedMakerAdminCaps,
   listOwnedMakers,
   listPublishedMakerIds,
-  mintCharacter,
   openWalletSelector,
   prepareWalrusUpload,
   publishMaker,
   registerAndUploadWalrus,
-  resolvePublishedMakerObjectId,
+  resolvePublishedMakerObjects,
   resumeWalrusUpload,
   setMakerArchived,
   walrusFileUrl,
   walrusQuiltFileUrl,
+  withdrawMakerRevenue,
 } from './chain-runtime.js';
 import {
   deleteMakerAssets,
@@ -32,7 +33,16 @@ import {
   saveMakerUploadRecovery,
 } from './draft-store.js';
 import { validateRemoteMakerManifest as validateMakerManifest } from './manifest-validation.js';
+import {
+  createDefaultLivingContent,
+  createSoulidityImportBundle,
+  createSoulidityImportJson,
+  normalizeLivingContent,
+  soulidityContentManifest,
+  validateLivingContent,
+} from './living-content.js';
 import { responseBlobWithinLimit, responseBytesWithinLimit } from './remote-read.js';
+import { normalizeRuntimeConfig } from './runtime-config.js';
 
 const slots = [
   { key: 'background', label: 'Background', icon: 'BG', colorKey: 'background', description: 'Scene, mood, and backdrop' },
@@ -118,7 +128,7 @@ const templates = [
     accent: '#2db7a3',
     secondary: '#f0a23a',
     summary: 'A fantasy-friendly maker for spirits, familiars, story characters, and worldbuilding.',
-    licenseNote: 'Starter policy example for a paid commercial Maker. Payment settlement is not included in this release.',
+    licenseNote: 'Commercial use is allowed. The published Maker may separately charge an exact native-USDC mint fee.',
   },
   {
     id: 'chibi-idol',
@@ -128,7 +138,7 @@ const templates = [
     creator: 'Stage Mint',
     style: 'Chibi idol',
     license: 'Personal use',
-    royaltyBps: 250,
+    royaltyBps: 200,
     price: 'Starter example',
     accent: '#f06f8f',
     secondary: '#f0a23a',
@@ -146,25 +156,10 @@ const MAX_ITEMS_PER_PART = 100;
 const MAX_LAYERS_PER_PART = 32;
 const MAX_COLORS_PER_PART = 32;
 
-const defaultConfig = {
-  network: 'mainnet',
-  grpcUrl: 'https://fullnode.mainnet.sui.io:443',
-  graphqlUrl: 'https://sui-mainnet.mystenlabs.com/graphql',
-  packageId: '0xTODO_ANIMACRAFT_PACKAGE',
-  walrusAggregatorUrl: 'https://aggregator.walrus-mainnet.walrus.space',
-  walrusUploadRelayUrl: 'https://upload-relay.mainnet.walrus.space',
-  walrusRelayMaxTipMist: 1_000_000,
-  walrusEpochs: 53,
-  featuredMakers: {},
-  appUrl: location.origin,
-};
-
 const suppliedConfig = window.ANIMACRAFT_CONFIG || {};
-const runtimeConfig = {
-  ...defaultConfig,
-  ...suppliedConfig,
-  grpcUrl: suppliedConfig.grpcUrl || suppliedConfig.rpcUrl || defaultConfig.grpcUrl,
-};
+const runtimeConfig = normalizeRuntimeConfig(suppliedConfig, location.origin);
+const localUiTest = ['127.0.0.1', 'localhost'].includes(location.hostname)
+  && new URLSearchParams(location.search).get('ui-test') === '1';
 
 const chainActions = [
   {
@@ -184,8 +179,8 @@ const chainActions = [
   },
   {
     key: 'oc',
-    title: 'OCCharacter mint',
-    body: 'Mint finished OCs with recipe hash, image blob, profile blob, and license snapshot.',
+    title: 'Soulidity mint',
+    body: 'Animacraft validates the Maker recipe and hands Living Content to Soulidity, which mints the only finished Soul object.',
   },
 ];
 
@@ -199,7 +194,7 @@ const i18n = {
     walletConnected: 'Wallet connected',
     myPage: 'MyPage',
     walletFirstTitle: 'Connect your wallet first',
-    walletFirstCopy: 'My OCs, creator tools, draft storage, publishing, and minting unlock after wallet connection.',
+    walletFirstCopy: 'My Souls, creator tools, draft storage, publishing, and Soulidity minting unlock after wallet connection.',
     connectSuiWallet: 'Connect Sui wallet',
     myPageCopy: 'Works and on-chain OCs',
     createMaker: 'Create maker',
@@ -230,8 +225,8 @@ const i18n = {
     connectToMake: 'Connect to make',
     viewMaker: 'View Maker',
     noMatchingMakers: 'No matching Makers found.',
-    myOcs: 'My OCs',
-    myOcsCopy: 'Wallet-owned characters',
+    myOcs: 'My Souls',
+    myOcsCopy: 'Soulidity-owned characters',
     creatorStudio: 'Creator Studio',
     creatorStudioCopy: 'Create, test, and publish Character Makers from one wallet-owned workspace.',
     newOcMaker: 'New OC Maker',
@@ -540,10 +535,10 @@ Object.entries(i18n).forEach(([locale, dictionary]) => {
 
 const protocolSteps = [
   ['01', 'Material Layers', 'Creators upload transparent PNGs, anchors, order, and slot metadata to Walrus.'],
-  ['02', 'Template Contract', 'A maker records usable parts, licenses, creator identity, royalties, and composition rules.'],
+  ['02', 'Template Contract', 'A Maker links immutable art and rules to a transferable AdminCap and a native-USDC Treasury.'],
   ['03', 'OC Recipe', 'A user-made OC becomes a recipe that references templates, parts, colors, and license snapshots.'],
-  ['04', 'Finished OC', 'The result can mint as a Soul / OC object with ownership, profile data, display image, and provenance.'],
-  ['05', 'License Snapshot', 'Each finished OC preserves the Maker license kind and royalty basis points; marketplace settlement is handled by a separate adapter.'],
+  ['04', 'Living Content', 'Soul Character, Memory, and Skills & Docs are resolved from editable Maker defaults.'],
+  ['05', 'Canonical Soul', 'Soulidity consumes the Maker authorization and mints the only finished character object.'],
   ['06', 'Creator Flywheel', 'Great templates bring OC makers; great OCs bring template sales and secondary market activity.'],
 ];
 
@@ -583,6 +578,8 @@ const state = {
   assets: [],
   rules: [],
   paletteLinks: [{ primaryPartKey: 'hairBack', linkedPartKey: 'hairFront' }],
+  livingContent: createDefaultLivingContent(),
+  livingDocument: 'soulMd',
   walletConnected: false,
   walletAddress: '',
   walletProvider: null,
@@ -591,6 +588,10 @@ const state = {
   publishStatus: '',
   publishDigest: '',
   makerObjectId: '',
+  makerTreasuryObjectId: '',
+  makerAdminCapObjectId: '',
+  treasuryBalanceLoadedFor: '',
+  treasuryBalanceLoading: false,
   makerArchived: false,
   makerUploadSession: null,
   pendingMakerAssets: [],
@@ -690,10 +691,13 @@ function createMakerModel({ empty = false, starter = false, canvas = { width: 10
     visual,
     rules: [],
     paletteLinks: empty ? [] : [{ primaryPartKey: 'hairBack', linkedPartKey: 'hairFront' }],
+    livingContent: createDefaultLivingContent(),
     assets: [],
     publishDigest: '',
     publishStatus: '',
     makerObjectId: '',
+    makerTreasuryObjectId: '',
+    makerAdminCapObjectId: '',
     makerArchived: false,
   };
 }
@@ -710,10 +714,13 @@ function syncActiveMakerModelRefs() {
     visual: state.visual,
     rules: state.rules,
     paletteLinks: state.paletteLinks,
+    livingContent: state.livingContent,
     assets: state.assets,
     publishDigest: state.publishDigest,
     publishStatus: state.publishStatus,
     makerObjectId: state.makerObjectId,
+    makerTreasuryObjectId: state.makerTreasuryObjectId,
+    makerAdminCapObjectId: state.makerAdminCapObjectId,
     makerArchived: state.makerArchived,
   });
 }
@@ -748,10 +755,14 @@ function applyMakerModelToState(templateId, model) {
   state.visual = model.visual;
   state.rules = model.rules;
   state.paletteLinks = model.paletteLinks;
+  state.livingContent = normalizeLivingContent(model.livingContent, activeTemplate());
   state.assets = model.assets;
   state.publishDigest = model.publishDigest;
   state.publishStatus = model.publishStatus;
   state.makerObjectId = model.makerObjectId || '';
+  state.makerTreasuryObjectId = model.makerTreasuryObjectId || '';
+  state.makerAdminCapObjectId = model.makerAdminCapObjectId || '';
+  if (state.makerTreasuryObjectId !== state.treasuryBalanceLoadedFor) state.treasuryBalanceLoadedFor = '';
   state.makerArchived = Boolean(model.makerArchived);
   state.makerUploadSession = null;
   state.pendingMakerAssets = [];
@@ -789,10 +800,13 @@ makerModels.set(state.templateId, {
   visual: state.visual,
   rules: state.rules,
   paletteLinks: state.paletteLinks,
+  livingContent: state.livingContent,
   assets: state.assets,
   publishDigest: state.publishDigest,
   publishStatus: state.publishStatus,
   makerObjectId: state.makerObjectId,
+  makerTreasuryObjectId: state.makerTreasuryObjectId,
+  makerAdminCapObjectId: state.makerAdminCapObjectId,
   makerArchived: state.makerArchived,
 });
 
@@ -866,6 +880,9 @@ function persistLocalMakerIndex() {
     style: template.style,
     license: template.license,
     royaltyBps: template.royaltyBps,
+    mintingEnabled: template.mintingEnabled !== false,
+    mintFeeEnabled: Boolean(template.mintFeeEnabled),
+    mintPriceAtomic: Number(template.mintPriceAtomic || 0),
     price: template.price,
     accent: template.accent,
     secondary: template.secondary,
@@ -894,7 +911,10 @@ function loadLocalMakerIndex(address = state.walletAddress) {
         creator: safeDraftText(record.creator, shortAddress(address) || 'Creator', 128),
         style: safeDraftText(record.style, 'OC Maker', 128),
         license: ['Personal use', 'Free remix', 'Paid commercial', 'Exclusive commission'].includes(record.license) ? record.license : 'Personal use',
-        royaltyBps: Math.round(finiteNumber(record.royaltyBps, 0, 0, 10_000)),
+        royaltyBps: [0, 100, 200, 300, 400, 500].includes(Number(record.royaltyBps)) ? Number(record.royaltyBps) : 0,
+        mintingEnabled: record.mintingEnabled !== false,
+        mintFeeEnabled: Boolean(record.mintFeeEnabled),
+        mintPriceAtomic: Number(record.mintPriceAtomic || 0),
         price: 'Draft',
         accent: safeCssColor(record.accent),
         secondary: safeCssColor(record.secondary, '#f0a23a'),
@@ -921,8 +941,9 @@ function suiField(fields, ...names) {
 
 function suiJsonId(value) {
   if (typeof value === 'string') return /^0x[0-9a-f]+$/i.test(value.trim()) ? value.trim() : '';
+  if (Array.isArray(value)) return value.map(suiJsonId).find(Boolean) || '';
   if (!value || typeof value !== 'object') return '';
-  return suiJsonId(value.id || value.bytes || value.address || value.fields);
+  return suiJsonId(value.id || value.bytes || value.address || value.fields || value.vec || value.some);
 }
 
 function creatorProfileMakerIds(profile) {
@@ -1047,6 +1068,7 @@ function makerModelFromManifest(manifest, quiltId, object) {
     visual,
     rules: Array.isArray(manifest?.rules) ? manifest.rules : [],
     paletteLinks: Array.isArray(manifest?.paletteLinks) ? manifest.paletteLinks : [],
+    livingContent: normalizeLivingContent(manifest?.livingContent, manifest?.template),
     assets: (manifest?.assets || []).filter((asset) => asset.identifier).map((asset) => ({
       ...asset,
       url: walrusQuiltFileUrl(quiltId, asset.identifier),
@@ -1055,6 +1077,8 @@ function makerModelFromManifest(manifest, quiltId, object) {
     publishDigest: object.previousTransaction || 'on-chain',
     publishStatus: '',
     makerObjectId: object.objectId,
+    makerTreasuryObjectId: object.treasuryId || suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
+    makerAdminCapObjectId: object.adminCapId || '',
     makerArchived: [true, 'true', 1, '1'].includes(suiField(fields, 'archived')),
   };
 }
@@ -1094,7 +1118,14 @@ async function hydrateChainMaker(object) {
     style: String(templateData.style || 'OC Maker'),
     license: makerLicenseLabel(policy),
     royaltyBps: Number(suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || templateData.royaltyBps || 0),
-    price: 'On-chain',
+    mintingEnabled: ![false, 'false', 0, '0'].includes(suiField(fields, 'minting_enabled', 'mintingEnabled')),
+    mintFeeEnabled: [true, 'true', 1, '1'].includes(suiField(fields, 'mint_fee_enabled', 'mintFeeEnabled')),
+    mintPriceAtomic: Number(suiField(fields, 'mint_price_atomic', 'mintPriceAtomic') || 0),
+    treasuryId: object.treasuryId || suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
+    adminCapId: object.adminCapId || '',
+    price: Number(suiField(fields, 'mint_price_atomic', 'mintPriceAtomic') || 0) > 0
+      ? `${(Number(suiField(fields, 'mint_price_atomic', 'mintPriceAtomic')) / (10 ** runtimeConfig.paymentCoinDecimals)).toLocaleString()} ${runtimeConfig.paymentCoinSymbol}`
+      : 'Free mint',
     summary: String(suiField(fields, 'description') || 'Published Animacraft Character Maker.'),
     licenseNote: String(templateData.licenseNote || 'License and royalty policy are read from the published Sui OCMaker.'),
     coverUrl: safeExternalUrl(
@@ -1118,9 +1149,10 @@ async function loadChainMakers(owner = state.walletAddress) {
   try {
     const featuredIds = Object.values(runtimeConfig.featuredMakers || {});
     let discoveryWarning = '';
-    const [legacyOwned, profiles, publishedIds] = await Promise.all([
+    const [legacyOwned, profiles, adminCaps, publishedIds] = await Promise.all([
       owner ? listOwnedMakers(owner) : Promise.resolve([]),
       owner ? listOwnedCreatorProfiles(owner) : Promise.resolve([]),
+      owner ? listOwnedMakerAdminCaps(owner) : Promise.resolve([]),
       listPublishedMakerIds().catch((error) => {
         discoveryWarning = error.message || 'Sui GraphQL Maker discovery is temporarily unavailable.';
         return [];
@@ -1128,7 +1160,14 @@ async function loadChainMakers(owner = state.walletAddress) {
     ]);
     if (owner) state.creatorProfileObjectId = profiles[0]?.objectId || '';
     const profileMakerIds = profiles.flatMap(creatorProfileMakerIds);
-    const ownedIds = new Set([...legacyOwned.map((object) => object.objectId), ...profileMakerIds]);
+    const capsByMaker = new Map(adminCaps.map((cap) => {
+      const fields = suiObjectFields(cap);
+      return [suiJsonId(suiField(fields, 'maker_id', 'makerId')), {
+        adminCapId: cap.objectId,
+        treasuryId: suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
+      }];
+    }).filter(([makerId]) => makerId));
+    const ownedIds = new Set([...legacyOwned.map((object) => object.objectId), ...capsByMaker.keys()]);
     const discovered = await getMakerObjects([
       ...featuredIds,
       ...publishedIds,
@@ -1136,10 +1175,16 @@ async function loadChainMakers(owner = state.walletAddress) {
       ...legacyOwned.map((object) => object.objectId),
       ...(/^0x[0-9a-f]+$/i.test(state.routeMakerReference) ? [state.routeMakerReference] : []),
     ]);
-    const byId = new Map(discovered.map((object) => [object.objectId, {
-      ...object,
-      owned: ownedIds.has(object.objectId),
-    }]));
+    const byId = new Map(discovered.map((object) => {
+      const authority = capsByMaker.get(object.objectId) || {};
+      const makerFields = suiObjectFields(object);
+      return [object.objectId, {
+        ...object,
+        ...authority,
+        treasuryId: authority.treasuryId || suiJsonId(suiField(makerFields, 'treasury_id', 'treasuryId')),
+        owned: ownedIds.has(object.objectId),
+      }];
+    }));
     const results = await Promise.allSettled([...byId.values()].map(hydrateChainMaker));
     const failures = results.filter((result) => result.status === 'rejected');
     if (failures.length) state.chainMakerLoadError = `${failures.length} on-chain Maker manifest${failures.length === 1 ? '' : 's'} could not be loaded from Walrus.`;
@@ -1164,56 +1209,44 @@ async function loadChainMakers(owner = state.walletAddress) {
 
 function renderOwnedCharacters() {
   if (!$('ownedCharacterGrid')) return;
-  if ($('ownedCharacterStatus')) {
-    $('ownedCharacterStatus').textContent = state.ownedCharactersLoading
-      ? 'Reading wallet-owned OCCharacter objects from Sui…'
-      : state.ownedCharactersError || `${state.ownedCharacters.length} on-chain OC${state.ownedCharacters.length === 1 ? '' : 's'} owned by this wallet.`;
-  }
-  if (state.ownedCharactersLoading && !state.ownedCharacters.length) {
-    $('ownedCharacterGrid').innerHTML = '<div class="empty-state">Loading on-chain OCs…</div>';
-    return;
-  }
-  $('ownedCharacterGrid').innerHTML = state.ownedCharacters.length ? state.ownedCharacters.map((object) => {
-    const fields = suiObjectFields(object);
-    const policy = suiField(fields, 'license_snapshot', 'licenseSnapshot') || {};
-    const name = String(suiField(fields, 'name') || 'Untitled OC');
-    const imageUrl = safeExternalUrl(suiField(fields, 'image_url', 'imageUrl'));
-    const makerId = suiJsonId(suiField(fields, 'maker_id', 'makerId'));
-    return `
-      <article class="owned-oc-card">
-        <div class="owned-oc-media">
-          ${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(name)}" loading="lazy" />` : '<span>No image</span>'}
-        </div>
-        <div class="owned-oc-body">
-          <span class="template-token">${escapeHtml(makerLicenseLabel(policy))}</span>
-          <h2>${escapeHtml(name)}</h2>
-          <p>Maker ${escapeHtml(shortAddress(makerId) || 'unknown')}</p>
-          <div class="owned-oc-links">
-            <a href="${escapeHtml(explorerObjectUrl(object.objectId))}" target="_blank" rel="noreferrer">View Sui object</a>
-            ${imageUrl ? `<a href="${escapeHtml(imageUrl)}" target="_blank" rel="noreferrer">Open Walrus image</a>` : ''}
-          </div>
-        </div>
-      </article>
-    `;
-  }).join('') : '<div class="empty-state">No OCCharacter objects yet. Choose an on-chain Maker and mint your first OC.</div>';
+  if ($('ownedCharacterStatus')) $('ownedCharacterStatus').textContent = 'Finished characters are Soulidity Souls, not duplicate Animacraft tokens.';
+  const soulidityUrl = safeExternalUrl(runtimeConfig.soulidityAppUrl) || '#';
+  $('ownedCharacterGrid').innerHTML = `
+    <div class="empty-state">
+      Your minted characters, Living Content, social identity, and marketplace activity live in Soulidity.
+      <a href="${escapeHtml(soulidityUrl)}" target="_blank" rel="noreferrer">Open Soulidity</a>
+    </div>`;
 }
 
 async function loadOwnedCharacters({ force = false } = {}) {
   const owner = state.walletAddress;
-  if (!owner || !packageConfigured() || state.ownedCharactersLoading) return;
+  if (!owner || state.ownedCharactersLoading) return;
   if (!force && state.ownedCharactersLoadedFor === owner) return;
-  state.ownedCharactersLoading = true;
-  state.ownedCharactersError = '';
+  state.ownedCharacters = [];
+  state.ownedCharactersLoadedFor = owner;
   renderOwnedCharacters();
+}
+
+async function loadActiveTreasuryBalance({ force = false } = {}) {
+  const treasuryId = activeTemplate()?.treasuryId || state.makerTreasuryObjectId;
+  if (!treasuryId || state.treasuryBalanceLoading || (!force && state.treasuryBalanceLoadedFor === treasuryId)) return;
+  state.treasuryBalanceLoading = true;
+  if ($('makerTreasuryBalance')) $('makerTreasuryBalance').textContent = 'Loading Treasury balance from Sui…';
   try {
-    state.ownedCharacters = await listOwnedCharacters(owner);
-    state.ownedCharactersLoadedFor = owner;
+    const [treasury] = await getMakerObjects([treasuryId]);
+    if (!treasury) throw new Error('The linked MakerTreasury could not be loaded.');
+    const fields = suiObjectFields(treasury);
+    const revenue = suiField(fields, 'revenue') || {};
+    const revenueFields = revenue.fields && typeof revenue.fields === 'object' ? revenue.fields : revenue;
+    const balanceAtomic = Number(suiField(revenueFields, 'value') || 0);
+    activeTemplate().treasuryBalanceAtomic = Number.isSafeInteger(balanceAtomic) ? balanceAtomic : 0;
+    state.treasuryBalanceLoadedFor = treasuryId;
   } catch (error) {
-    state.ownedCharactersError = error.message || 'Could not load wallet-owned OCs from Sui.';
-    state.ownedCharactersLoadedFor = '';
+    activeTemplate().treasuryBalanceError = error.message || 'Treasury balance unavailable.';
+    state.treasuryBalanceLoadedFor = '';
   } finally {
-    state.ownedCharactersLoading = false;
-    renderOwnedCharacters();
+    state.treasuryBalanceLoading = false;
+    renderMakerLifecycle();
   }
 }
 
@@ -1224,16 +1257,22 @@ async function recoverPublishedMakerIndex() {
   state.publishStatus = 'Published transaction found. Resolving the OCMaker object id from Sui indexing…';
   renderAll();
   try {
-    const makerObjectId = await resolvePublishedMakerObjectId(digest);
+    const indexed = await resolvePublishedMakerObjects(digest);
+    const makerObjectId = indexed.makerObjectId;
     if (!makerObjectId) throw new Error('The publication transaction is indexed, but its OCMaker object was not found.');
     if (state.publishDigest !== digest) return;
     state.makerObjectId = makerObjectId;
+    state.makerTreasuryObjectId = indexed.makerTreasuryObjectId || state.makerTreasuryObjectId;
+    state.makerAdminCapObjectId = indexed.makerAdminCapObjectId || state.makerAdminCapObjectId;
+    state.creatorProfileObjectId = indexed.creatorProfileObjectId || state.creatorProfileObjectId;
     state.publishStatus = '';
     Object.assign(activeTemplate(), {
       source: 'chain',
       objectId: makerObjectId,
+      treasuryId: state.makerTreasuryObjectId,
+      adminCapId: state.makerAdminCapObjectId,
       quiltId: state.makerQuiltId || activeTemplate().quiltId || '',
-      price: 'On-chain',
+      price: activeTemplate().mintFeeEnabled ? `${atomicCoinToDecimal(activeTemplate().mintPriceAtomic)} ${runtimeConfig.paymentCoinSymbol}` : 'Free mint',
     });
     syncActiveMakerModelRefs();
     await saveCurrentMakerDraft({ silent: true });
@@ -1423,6 +1462,8 @@ async function saveCurrentMakerDraft({ silent = false } = {}) {
     chain: {
       publishDigest: state.publishDigest,
       makerObjectId: state.makerObjectId,
+      makerTreasuryObjectId: state.makerTreasuryObjectId,
+      makerAdminCapObjectId: state.makerAdminCapObjectId,
       archived: state.makerArchived,
     },
   };
@@ -1777,6 +1818,21 @@ function finiteNumber(value, fallback = 0, minimum = -Infinity, maximum = Infini
   return Number.isFinite(number) ? Math.min(maximum, Math.max(minimum, number)) : fallback;
 }
 
+function decimalCoinToAtomic(value, decimals = runtimeConfig.paymentCoinDecimals) {
+  const text = String(value ?? '').trim();
+  const scale = Number(decimals);
+  if (!Number.isInteger(scale) || scale < 0 || scale > 18 || !/^\d+(?:\.\d+)?$/.test(text)) return null;
+  const [whole, fraction = ''] = text.split('.');
+  if (fraction.length > scale) return null;
+  const atomic = (BigInt(whole) * (10n ** BigInt(scale))) + BigInt((fraction || '').padEnd(scale, '0') || '0');
+  return atomic <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(atomic) : null;
+}
+
+function atomicCoinToDecimal(value, decimals = runtimeConfig.paymentCoinDecimals) {
+  const scale = 10 ** Number(decimals || 0);
+  return Number(value || 0) / scale;
+}
+
 function safeDraftText(value, fallback = '', maxLength = 2_000) {
   return String(value ?? fallback).slice(0, maxLength);
 }
@@ -1786,7 +1842,8 @@ function splitList(value) {
 }
 
 function download(name, content, type = 'application/json') {
-  const blob = new Blob([content], { type: `${type};charset=utf-8` });
+  const contentType = /^(text\/|application\/(json|javascript|xml))/.test(type) ? `${type};charset=utf-8` : type;
+  const blob = new Blob([content], { type: contentType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -1895,6 +1952,7 @@ function setEditorPanel(panel) {
     parts: t('characterMaker'),
     rules: t('rules'),
     palette: t('paletteRules'),
+    living: 'Living Content',
     preview: t('previewCheck'),
     publish: t('onchainPublish'),
     settings: t('settings'),
@@ -1913,6 +1971,12 @@ function syncTemplateFields() {
   $('creatorName').value = template.creator;
   $('creatorWorld').value = template.style;
   $('creatorRoyalty').value = template.royaltyBps;
+  $('creatorMintingEnabled').checked = template.mintingEnabled !== false;
+  $('creatorMintFeeEnabled').checked = Boolean(template.mintFeeEnabled);
+  $('creatorMintPrice').value = template.mintPriceAtomic
+    ? String(atomicCoinToDecimal(template.mintPriceAtomic))
+    : String(template.mintPrice || 1);
+  $('creatorMintPrice').disabled = !template.mintFeeEnabled;
   $('creatorLicense').value = Object.entries({
     'personal-use': 'Personal use',
     'free-remix': 'Free remix',
@@ -2281,6 +2345,11 @@ function creatorManifest() {
       license: $('creatorLicense').value,
       licenseNote: $('creatorLicenseNote').value,
       royaltyBps: Number($('creatorRoyalty').value || 0),
+      mintingEnabled: $('creatorMintingEnabled').checked,
+      mintFeeEnabled: $('creatorMintFeeEnabled').checked,
+      mintPriceAtomic: $('creatorMintFeeEnabled').checked ? decimalCoinToAtomic($('creatorMintPrice').value) : 0,
+      paymentCoinType: runtimeConfig.paymentCoinType,
+      paymentCoinSymbol: runtimeConfig.paymentCoinSymbol,
       storage: 'walrus',
       chain: 'sui',
       canvas: {
@@ -2331,6 +2400,7 @@ function creatorManifest() {
     })),
     rules: state.rules,
     paletteLinks: state.paletteLinks,
+    livingContent: normalizeLivingContent(state.livingContent, activeTemplate()),
     assets: state.assets.map(({ name, size, type, kind, slot, partId, itemId, layerId, colorId, identifier = '', patchId = '', blobId = '' }) => ({
       name,
       size,
@@ -2423,6 +2493,17 @@ function makerUploadEntries() {
 }
 
 function ocPackage() {
+  const profile = {
+    name: $('profileName').value || 'Untitled OC',
+    world: $('profileWorld').value || activeTemplate().style,
+    description: $('profileDescription').value,
+    tags: splitList($('profileTags').value),
+  };
+  const livingContent = soulidityContentManifest(state.livingContent, {
+    maker: activeTemplate(),
+    makerId: activeMakerObjectId(),
+    profile,
+  });
   return {
     schemaVersion: 'animacraft.oc-package.v1',
     createdAt: new Date().toISOString(),
@@ -2434,12 +2515,8 @@ function ocPackage() {
       licenseNote: activeTemplate().licenseNote,
       royaltyBps: activeTemplate().royaltyBps,
     },
-    profile: {
-      name: $('profileName').value || 'Untitled OC',
-      world: $('profileWorld').value || activeTemplate().style,
-      description: $('profileDescription').value,
-      tags: splitList($('profileTags').value),
-    },
+    profile,
+    livingContent,
     recipe: allSlots().map((slot, index) => ({
       slot: slot.key,
       part: state.visual[slot.key],
@@ -2451,8 +2528,9 @@ function ocPackage() {
       packageId: runtimeConfig.packageId,
       materialStorage: 'Walrus blob ids',
       templateObject: 'Animacraft OCMaker object',
-      ocObject: 'Animacraft OCCharacter object',
-      policy: 'license and royalty values are immutable snapshots; payment settlement is not part of this release',
+      soulObject: 'Soulidity Soul object',
+      makerAuthorization: 'Animacraft validates the recipe and optional Maker fee before Soulidity consumes the mint authorization',
+      policy: 'Soulidity mints and trades the only finished character object; Animacraft does not create a parallel OC token',
       walletSigner: state.walletAddress || 'not-connected',
     },
   };
@@ -2521,11 +2599,18 @@ function renderChecklist() {
     (layerTotal, layer) => layerTotal + creatorColors(slot).filter((color) => !assetReady(item.images?.[assetCellKey(layer.id, color.id)])).length,
     0,
   ), 0);
+  let livingContentReady = true;
+  try {
+    validateLivingContent(state.livingContent);
+  } catch {
+    livingContentReady = false;
+  }
   const checks = [
     ['Maker metadata', Boolean($('creatorTemplateName').value.trim() && $('creatorDescription').value.trim() && $('creatorName').value.trim())],
     ['Parts and Items', allSlots().length > 0 && publicItems.length > 0],
     ['Item image matrix', publicItems.length > 0 && missingCells === 0],
     ['Rules and palettes', state.rules.every((rule) => !selectionRuleIssue(rule)) && state.paletteLinks.every((link) => !paletteLinkIssue(link))],
+    ['Living Content', livingContentReady],
     ['Publication policy', Boolean($('creatorLicenseNote').value.trim()) && Number.isInteger(Number($('creatorRoyalty').value)) && Number($('creatorRoyalty').value) >= 0 && Number($('creatorRoyalty').value) <= 10_000],
   ];
   $('creatorChecklist').innerHTML = checks.map(([label, done]) => `
@@ -2660,7 +2745,11 @@ function makerPublicationIssues() {
     if (issue) issues.push(issue);
   });
   const royaltyBps = Number($('creatorRoyalty').value || 0);
-  if (!Number.isInteger(royaltyBps) || royaltyBps < 0 || royaltyBps > 10_000) issues.push('Royalty BPS must be an integer from 0 to 10000.');
+  if (![0, 100, 200, 300, 400, 500].includes(royaltyBps)) issues.push('Soulidity resale royalty must be off or one of the 1% to 5% tiers.');
+  const mintFeeEnabled = $('creatorMintFeeEnabled').checked;
+  const mintPriceAtomic = decimalCoinToAtomic($('creatorMintPrice').value);
+  if (!$('creatorMintingEnabled').checked && mintFeeEnabled) issues.push('Turn on OC minting before enabling a mint fee.');
+  if (mintFeeEnabled && (!mintPriceAtomic || mintPriceAtomic <= 0)) issues.push(`Enter a positive ${runtimeConfig.paymentCoinSymbol} mint price with no more than ${runtimeConfig.paymentCoinDecimals} decimal places.`);
   try {
     validateMakerManifest(creatorUploadManifest());
   } catch (error) {
@@ -2755,6 +2844,53 @@ function renderPaletteLinks() {
   });
 }
 
+const livingDocumentMeta = Object.freeze({
+  soulMd: { title: 'Soul Character', kind: 'SOUL_DOC · soul', filename: 'soul.md' },
+  memoryMd: { title: 'Memory', kind: 'MEMORY · default', filename: 'memory.md' },
+  skillMd: { title: 'Skills & Docs', kind: 'SKILL · SKILL.md', filename: 'skills.zip / SKILL.md' },
+});
+
+function livingMakerContext() {
+  const template = activeTemplate();
+  return {
+    name: $('creatorTemplateName')?.value || template.name,
+    description: $('creatorDescription')?.value || template.summary,
+    creator: $('creatorName')?.value || template.creator,
+    style: $('creatorWorld')?.value || template.style,
+  };
+}
+
+function refreshLivingDefaults() {
+  const defaults = createDefaultLivingContent(livingMakerContext());
+  state.livingContent = normalizeLivingContent(state.livingContent, livingMakerContext());
+  Object.keys(livingDocumentMeta).forEach((key) => {
+    if (!state.livingContent.customized[key]) state.livingContent[key] = defaults[key];
+  });
+}
+
+function renderLivingContent() {
+  if (!$('livingDocumentSource')) return;
+  refreshLivingDefaults();
+  if (!livingDocumentMeta[state.livingDocument]) state.livingDocument = 'soulMd';
+  const meta = livingDocumentMeta[state.livingDocument];
+  const source = state.livingContent[state.livingDocument];
+  document.querySelectorAll('[data-living-document]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.livingDocument === state.livingDocument);
+  });
+  $('livingDocumentKind').textContent = meta.kind;
+  $('livingDocumentTitle').textContent = meta.title;
+  $('livingDocumentFilename').textContent = meta.filename;
+  $('livingDocumentSize').textContent = `${new TextEncoder().encode(source).length.toLocaleString()} bytes`;
+  if ($('livingDocumentSource').value !== source) $('livingDocumentSource').value = source;
+  $('livingDocumentSource').disabled = makerIsPublished();
+  $('restoreLivingDefault').disabled = makerIsPublished() || !state.livingContent.customized[state.livingDocument];
+  const customizedCount = Object.values(state.livingContent.customized).filter(Boolean).length;
+  $('livingContentStatus').textContent = customizedCount ? `${customizedCount} customized` : 'Defaults ready';
+  $('livingSoulState').textContent = state.livingContent.customized.soulMd ? 'Customized' : 'Default';
+  $('livingMemoryState').textContent = state.livingContent.customized.memoryMd ? 'Customized' : 'Default';
+  $('livingSkillState').textContent = state.livingContent.customized.skillMd ? 'Customized' : 'Default';
+}
+
 function renderPackage() {
   $('packagePreview').textContent = JSON.stringify(ocPackage(), null, 2);
 }
@@ -2795,34 +2931,39 @@ function ocRecipeIssues() {
       issues.push(`${left.label} and ${right.label} must use the same linked palette color.`);
     }
   });
-  if (state.makerArchived) issues.push('This Maker is archived and does not accept new OC mints.');
+  if (state.makerArchived) issues.push('This Maker is archived and does not accept new Soul authorizations.');
   return [...new Set(issues)];
 }
 
 function mintReadiness() {
   if (!packageConfigured()) return 'The Move package is not configured yet.';
   if (activeTemplate()?.source !== 'chain' || !activeMakerObjectId()) return 'This template is a preview. Minting unlocks after its published Sui Maker and Walrus manifest are loaded.';
+  if (activeTemplate().mintingEnabled === false || makerModels.get(activeTemplate().id)?.makerArchived) return 'This Maker is not accepting new Soul authorizations.';
+  if (activeTemplate().mintFeeEnabled && !activeTemplate().treasuryId && !state.makerTreasuryObjectId) return 'This paid Maker is missing its on-chain Treasury reference.';
   if (!state.walletConnected) return 'Connect a Sui wallet to mint this OC.';
+  if (!/^0x[0-9a-f]+$/i.test(String(runtimeConfig.soulidityPackageId || '')) || String(runtimeConfig.soulidityPackageId).includes('TODO')) {
+    return 'Configure the Soulidity package before enabling canonical Soul minting.';
+  }
+  if (activeTemplate().mintFeeEnabled) return 'Paid Maker minting waits for the audited Soulidity authorization adapter. Free Makers can use the import handoff now.';
   const issue = ocRecipeIssues()[0];
   if (issue) return issue;
-  return 'Prepare the OC quilt, register and upload it, certify it, then mint on Sui Mainnet.';
+  return 'Prepare and certify the OC package, then continue to Soulidity for the canonical Soul mint.';
 }
 
 function renderMintAction() {
   if (!$('mintOcOnchain')) return;
-  const baseReady = packageConfigured() && activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId()) && state.walletConnected && ocRecipeIssues().length === 0;
+  const mintOpen = activeTemplate()?.mintingEnabled !== false && !makerModels.get(activeTemplate()?.id)?.makerArchived;
+  const treasuryReady = !activeTemplate()?.mintFeeEnabled || Boolean(activeTemplate()?.treasuryId || state.makerTreasuryObjectId);
+  const soulidityReady = /^0x[0-9a-f]+$/i.test(String(runtimeConfig.soulidityPackageId || '')) && !String(runtimeConfig.soulidityPackageId).includes('TODO');
+  const baseReady = packageConfigured() && soulidityReady && activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId()) && state.walletConnected && mintOpen && treasuryReady && !activeTemplate()?.mintFeeEnabled && ocRecipeIssues().length === 0;
   $('resumeOcUpload').disabled = state.minting || !state.walletConnected || activeTemplate()?.source !== 'chain' || !state.hasOcUploadRecovery;
   $('prepareOcUpload').disabled = state.minting || !baseReady || state.ocUploadStage !== 'idle';
   $('registerOcUpload').disabled = state.minting || !state.walletConnected || !['encoded', 'registered'].includes(state.ocUploadStage);
   $('registerOcUpload').textContent = state.ocUploadStage === 'registered' ? 'Retry upload' : 'Register & upload';
   $('certifyOcUpload').disabled = state.minting || !state.walletConnected || state.ocUploadStage !== 'uploaded';
   $('mintOcOnchain').disabled = state.minting || !state.walletConnected || state.ocUploadStage !== 'certified';
-  $('mintOcOnchain').textContent = state.minting ? 'Minting…' : state.mintDigest ? 'Minted' : t('mintOc');
-  if (state.mintDigest) {
-    $('mintOcStatus').innerHTML = `OC minted. <a href="${escapeHtml(explorerTransactionUrl(state.mintDigest))}" target="_blank" rel="noreferrer">View transaction</a>`;
-  } else {
-    $('mintOcStatus').textContent = state.mintStatus || mintReadiness();
-  }
+  $('mintOcOnchain').textContent = state.minting ? 'Preparing handoff…' : 'Continue to Soulidity';
+  $('mintOcStatus').textContent = state.mintStatus || mintReadiness();
   ['profileName', 'profileWorld', 'profileDescription', 'profileTags'].forEach((id) => {
     if ($(id)) $(id).disabled = state.minting;
   });
@@ -3057,6 +3198,7 @@ function renderImageMakerList() {
       syncTemplateFields();
       setCreatorView('edit');
       renderAll();
+      loadActiveTreasuryBalance();
       focusCreatorTop();
     });
   });
@@ -3107,8 +3249,8 @@ function renderMakerLifecycle() {
   const labels = {
     starter: ['Starter workspace', 'This example is editable in the current browser. Save it as a new local Maker before production use.'],
     draft: ['Local draft', 'This draft is stored for the connected wallet in this browser and may be edited or permanently deleted.'],
-    published: ['Published on Sui', 'The published Maker, rules, license, and certified Walrus manifest are immutable. Archive it to stop new OC mints.'],
-    archived: ['Archived on Sui', 'The historical record and existing OCs remain valid, but this Maker no longer accepts new OC mints.'],
+    published: ['Published on Sui', 'The published Maker, rules, license, and certified Walrus manifest are immutable. Archive it to stop new Soul authorizations.'],
+    archived: ['Archived on Sui', 'The historical record and existing Souls remain valid, but this Maker no longer accepts new Soul authorizations.'],
   };
   const [title, copy] = labels[lifecycle];
   if ($('makerLifecycleBadge')) {
@@ -3127,12 +3269,25 @@ function renderMakerLifecycle() {
   if ($('archiveMakerOnchain')) {
     $('archiveMakerOnchain').textContent = lifecycle === 'archived' ? 'Restore maker' : 'Archive maker';
     $('archiveMakerOnchain').className = lifecycle === 'archived' ? 'secondary' : 'danger-button';
-    $('archiveMakerOnchain').disabled = !state.makerObjectId || state.publishing;
+    $('archiveMakerOnchain').disabled = !state.makerObjectId || !state.makerAdminCapObjectId || state.publishing;
   }
 
-  ['creatorTemplateName', 'creatorDescription', 'creatorName', 'creatorWorld', 'creatorLicense', 'creatorLicenseNote', 'creatorRoyalty'].forEach((id) => {
+  ['creatorTemplateName', 'creatorDescription', 'creatorName', 'creatorWorld', 'creatorLicense', 'creatorLicenseNote'].forEach((id) => {
     if ($(id)) $(id).disabled = locked;
   });
+  const canManageEconomics = !locked || Boolean(state.makerAdminCapObjectId);
+  ['creatorMintingEnabled', 'creatorMintFeeEnabled', 'creatorRoyalty'].forEach((id) => {
+    if ($(id)) $(id).disabled = !canManageEconomics;
+  });
+  if ($('creatorMintPrice')) $('creatorMintPrice').disabled = !canManageEconomics || !$('creatorMintFeeEnabled').checked;
+  if ($('updateMakerEconomics')) $('updateMakerEconomics').disabled = !locked || !state.makerAdminCapObjectId || state.publishing;
+  if ($('withdrawMakerRevenue')) $('withdrawMakerRevenue').disabled = !locked || !state.makerAdminCapObjectId || !state.makerTreasuryObjectId || state.publishing;
+  if ($('makerTreasuryBalance')) {
+    const template = activeTemplate();
+    $('makerTreasuryBalance').textContent = locked && state.makerTreasuryObjectId
+      ? template.treasuryBalanceError || `Treasury balance: ${atomicCoinToDecimal(template.treasuryBalanceAtomic || 0)} ${runtimeConfig.paymentCoinSymbol}`
+      : 'Treasury balance appears after publication.';
+  }
   if ($('saveMakerDraft')) {
     const saveLabels = {
       idle: t('saveDraft'),
@@ -4122,6 +4277,9 @@ async function publishCurrentMaker() {
         coverUrl: walrusFileUrl(state.pendingMakerAssets.find((asset) => asset.kind === 'maker-cover')?.patchId),
         license: $('creatorLicense').value,
         royaltyBps: Number($('creatorRoyalty').value || 0),
+        mintingEnabled: $('creatorMintingEnabled').checked,
+        mintFeeEnabled: $('creatorMintFeeEnabled').checked,
+        mintPriceAtomic: $('creatorMintFeeEnabled').checked ? decimalCoinToAtomic($('creatorMintPrice').value) : 0,
       },
       manifestBlobId: state.makerQuiltId,
       parts: makerParts,
@@ -4131,6 +4289,8 @@ async function publishCurrentMaker() {
     });
     state.publishDigest = transaction.digest;
     state.makerObjectId = transaction.makerObjectId || '';
+    state.makerTreasuryObjectId = transaction.makerTreasuryObjectId || '';
+    state.makerAdminCapObjectId = transaction.makerAdminCapObjectId || '';
     state.creatorProfileObjectId = transaction.creatorProfileObjectId || state.creatorProfileObjectId;
     state.makerArchived = false;
     state.publishStatus = state.makerObjectId
@@ -4140,10 +4300,18 @@ async function publishCurrentMaker() {
       source: state.makerObjectId ? 'chain' : 'local',
       owned: true,
       objectId: state.makerObjectId,
+      treasuryId: state.makerTreasuryObjectId,
+      adminCapId: state.makerAdminCapObjectId,
+      mintingEnabled: $('creatorMintingEnabled').checked,
+      mintFeeEnabled: $('creatorMintFeeEnabled').checked,
+      mintPriceAtomic: $('creatorMintFeeEnabled').checked ? decimalCoinToAtomic($('creatorMintPrice').value) : 0,
       quiltId: state.makerQuiltId,
-      price: state.makerObjectId ? 'On-chain' : 'Indexing',
+      price: $('creatorMintFeeEnabled').checked
+        ? `${$('creatorMintPrice').value} ${runtimeConfig.paymentCoinSymbol}`
+        : state.makerObjectId ? 'Free mint' : 'Indexing',
     });
     await saveCurrentMakerDraft();
+    loadActiveTreasuryBalance({ force: true });
     clearMakerUploadRecovery().catch((error) => console.warn('Could not clear completed Walrus recovery data.', error));
     if (!state.makerObjectId) setTimeout(recoverPublishedMakerIndex, 4_000);
   } catch (error) {
@@ -4163,7 +4331,7 @@ async function updateMakerArchiveState(archived) {
     : 'Waiting for your Sui signature to restore this Maker…';
   renderAll();
   try {
-    const transaction = await setMakerArchived(state.makerObjectId, archived);
+    const transaction = await setMakerArchived(state.makerObjectId, state.makerAdminCapObjectId, archived);
     state.makerArchived = archived;
     state.publishStatus = `${archived ? 'Archived' : 'Restored'} on ${runtimeConfig.network}: ${transaction.digest}`;
     await saveCurrentMakerDraft();
@@ -4231,7 +4399,7 @@ async function registerOcUpload() {
       if (state.ocUploadSession.files.length !== 2) throw new Error('Walrus returned an unexpected OC quilt result.');
       state.ocImagePatchId = state.ocUploadSession.files[0].id;
       state.ocProfilePatchId = state.ocUploadSession.files[1].id;
-      state.mintStatus = 'The recovered OC quilt was already certified. Continue with the Sui mint.';
+      state.mintStatus = 'The recovered OC quilt is certified. Continue to Soulidity for the canonical mint.';
     } else {
       state.mintStatus = 'OC quilt uploaded. Certify it with one more signature.';
     }
@@ -4257,7 +4425,7 @@ async function certifyOcUpload() {
     state.ocImagePatchId = state.ocUploadSession.files[0].id;
     state.ocProfilePatchId = state.ocUploadSession.files[1].id;
     state.ocUploadStage = 'certified';
-    state.mintStatus = 'OC files certified. Mint the OCCharacter object on Sui Mainnet.';
+    state.mintStatus = 'OC files certified. Continue to Soulidity for the canonical Soul mint.';
   } catch (error) {
     state.mintStatus = error.message || 'OC certification failed.';
   } finally {
@@ -4272,7 +4440,7 @@ async function certifyOcUpload() {
 async function mintCurrentOc() {
   if (state.minting || state.ocUploadStage !== 'certified') return;
   state.minting = true;
-  state.mintStatus = 'Waiting for your Sui Mainnet mint signature…';
+  state.mintStatus = 'Preparing the Soulidity import package…';
   renderMintAction();
   try {
     if (ocFingerprint() !== state.pendingOcFingerprint) {
@@ -4283,30 +4451,29 @@ async function mintCurrentOc() {
       await clearOcUploadRecovery();
       throw new Error('The OC profile or recipe changed after upload. Prepare a new mint quilt.');
     }
+    if (activeTemplate().mintFeeEnabled) throw new Error('Paid Maker minting requires the Soulidity authorization adapter and cannot use the file handoff.');
     const oc = state.pendingOcPackage;
-    const transaction = await mintCharacter({
+    const imageUrl = walrusFileUrl(state.ocImagePatchId);
+    const profileUrl = walrusFileUrl(state.ocProfilePatchId);
+    const importJson = createSoulidityImportJson(state.livingContent, {
+      maker: activeTemplate(),
       makerId: activeMakerObjectId(),
-      name: oc.profile.name,
-      profileBlobId: state.ocProfilePatchId,
-      imageBlobId: state.ocImagePatchId,
-      imageUrl: walrusFileUrl(state.ocImagePatchId),
-      recipeHash: state.pendingOcRecipeHash,
-      recipe: oc.recipe.map((slot) => ({
-        partKey: slot.slot,
-        itemKey: slot.part,
-        colorHex: slot.color,
-        renderOrder: slot.renderOrder,
-      })),
+      profile: oc.profile,
+      imageUrl,
+      profileUrl,
+      recipeHash: bytesToHex(state.pendingOcRecipeHash),
     });
-    state.mintDigest = transaction.digest;
-    state.mintObjectId = transaction.ocObjectId || '';
-    state.mintStatus = '';
-    clearOcUploadRecovery().catch((error) => console.warn('Could not clear completed OC recovery data.', error));
-    state.ownedCharactersLoadedFor = '';
-    loadOwnedCharacters({ force: true });
+    download(`${slug(oc.profile.name)}-soulidity-import.json`, JSON.stringify(importJson, null, 2));
+    const handoffUrl = new URL('/import', runtimeConfig.soulidityAppUrl);
+    handoffUrl.searchParams.set('source', 'animacraft');
+    handoffUrl.searchParams.set('maker', activeMakerObjectId());
+    handoffUrl.searchParams.set('profile', profileUrl);
+    handoffUrl.searchParams.set('image', imageUrl);
+    window.open(handoffUrl.toString(), '_blank', 'noopener,noreferrer');
+    state.mintStatus = 'Soulidity opened and its compatible import JSON was downloaded. Upload that JSON there to complete the single Soul mint.';
   } catch (error) {
-    console.error('OC mint failed', error);
-    state.mintStatus = error.message || 'OC mint failed.';
+    console.error('Soulidity handoff failed', error);
+    state.mintStatus = error.message || 'Soulidity handoff failed.';
   } finally {
     state.minting = false;
     renderMintAction();
@@ -4419,7 +4586,12 @@ async function restoreMakerDraft(templateId = state.templateId) {
       currentTemplate.style = safeDraftText(template.style, currentTemplate.style, 128) || currentTemplate.style;
       currentTemplate.license = creatorLicenseLabels?.[template.license] || currentTemplate.license;
       currentTemplate.licenseNote = safeDraftText(template.licenseNote, currentTemplate.licenseNote, 2_000);
-      currentTemplate.royaltyBps = Math.round(finiteNumber(template.royaltyBps, currentTemplate.royaltyBps, 0, 10_000));
+      currentTemplate.royaltyBps = [0, 100, 200, 300, 400, 500].includes(Number(template.royaltyBps))
+        ? Number(template.royaltyBps)
+        : 0;
+      currentTemplate.mintingEnabled = template.mintingEnabled !== false;
+      currentTemplate.mintFeeEnabled = Boolean(template.mintFeeEnabled);
+      currentTemplate.mintPriceAtomic = Number(template.mintPriceAtomic || 0);
       $('creatorTemplateName').value = currentTemplate.name;
       $('creatorDescription').value = currentTemplate.summary;
       $('creatorName').value = currentTemplate.creator;
@@ -4427,12 +4599,21 @@ async function restoreMakerDraft(templateId = state.templateId) {
       $('creatorLicense').value = Object.entries(creatorLicenseLabels).find(([, label]) => label === currentTemplate.license)?.[0] || 'personal-use';
       $('creatorLicenseNote').value = currentTemplate.licenseNote;
       $('creatorRoyalty').value = currentTemplate.royaltyBps;
+      $('creatorMintingEnabled').checked = currentTemplate.mintingEnabled;
+      $('creatorMintFeeEnabled').checked = currentTemplate.mintFeeEnabled;
+      $('creatorMintPrice').value = currentTemplate.mintPriceAtomic
+        ? String(atomicCoinToDecimal(currentTemplate.mintPriceAtomic))
+        : '1';
+      $('creatorMintPrice').disabled = !currentTemplate.mintFeeEnabled;
     }
     if (draft.chain) {
       state.publishDigest = String(draft.chain.publishDigest || '');
       state.makerObjectId = String(draft.chain.makerObjectId || '');
+      state.makerTreasuryObjectId = String(draft.chain.makerTreasuryObjectId || '');
+      state.makerAdminCapObjectId = String(draft.chain.makerAdminCapObjectId || '');
       state.makerArchived = Boolean(draft.chain.archived);
     }
+    state.livingContent = normalizeLivingContent(draft.manifest?.livingContent, activeTemplate());
     syncActiveMakerModelRefs();
     await restoreMakerAssets(templateId);
     recoverPublishedMakerIndex();
@@ -4455,6 +4636,7 @@ function renderAll() {
   renderCreatorValidation();
   renderRules();
   renderPaletteLinks();
+  renderLivingContent();
   renderPackage();
   renderImageMakerList();
   renderCreatorDetails();
@@ -4521,6 +4703,52 @@ document.querySelectorAll('[data-editor-panel-button]').forEach((button) => {
   });
 });
 
+document.querySelectorAll('[data-living-document]').forEach((button) => {
+  button.addEventListener('click', () => {
+    state.livingDocument = button.dataset.livingDocument;
+    renderLivingContent();
+  });
+});
+
+$('livingDocumentSource')?.addEventListener('input', (event) => {
+  if (!ensureMakerEditable()) return;
+  const key = state.livingDocument;
+  state.livingContent[key] = event.target.value;
+  state.livingContent.customized[key] = true;
+  try {
+    validateLivingContent(state.livingContent);
+    event.target.setCustomValidity('');
+  } catch (error) {
+    event.target.setCustomValidity(error.message);
+  }
+  invalidateMakerUpload();
+  scheduleMakerAutosave();
+  renderLivingContent();
+});
+
+$('restoreLivingDefault')?.addEventListener('click', () => {
+  if (!ensureMakerEditable()) return;
+  const defaults = createDefaultLivingContent(livingMakerContext());
+  state.livingContent[state.livingDocument] = defaults[state.livingDocument];
+  state.livingContent.customized[state.livingDocument] = false;
+  invalidateMakerUpload();
+  scheduleMakerAutosave();
+  renderLivingContent();
+});
+
+$('downloadLivingTemplate')?.addEventListener('click', () => {
+  const { bytes } = createSoulidityImportBundle(state.livingContent, {
+    maker: livingMakerContext(),
+    makerId: activeMakerObjectId(),
+    profile: {
+      name: '{{OC_NAME}}',
+      world: '{{OC_WORLD}}',
+      description: '{{OC_DESCRIPTION}}',
+    },
+  });
+  download(`${slug($('creatorTemplateName').value)}-living-content.zip`, bytes, 'application/zip');
+});
+
 $('playMakerPreview')?.addEventListener('click', () => {
   state.previewingMaker = true;
   setPage('make');
@@ -4579,9 +4807,10 @@ const creatorLicenseLabels = {
   'exclusive-commission': 'Exclusive commission',
 };
 
-['creatorTemplateName', 'creatorDescription', 'creatorName', 'creatorWorld', 'creatorLicense', 'creatorLicenseNote', 'creatorRoyalty'].forEach((id) => {
+['creatorTemplateName', 'creatorDescription', 'creatorName', 'creatorWorld', 'creatorLicense', 'creatorLicenseNote', 'creatorRoyalty', 'creatorMintingEnabled', 'creatorMintFeeEnabled', 'creatorMintPrice'].forEach((id) => {
   $(id).addEventListener('input', () => {
-    if (!ensureMakerEditable()) return;
+    const economicsField = ['creatorRoyalty', 'creatorMintingEnabled', 'creatorMintFeeEnabled', 'creatorMintPrice'].includes(id);
+    if (!economicsField && !ensureMakerEditable()) return;
     const template = activeTemplate();
     if (id === 'creatorTemplateName') template.name = $('creatorTemplateName').value;
     else if (id === 'creatorDescription') template.summary = $('creatorDescription').value;
@@ -4590,7 +4819,21 @@ const creatorLicenseLabels = {
     else if (id === 'creatorLicense') template.license = creatorLicenseLabels[$('creatorLicense').value] || 'Personal use';
     else if (id === 'creatorLicenseNote') template.licenseNote = $('creatorLicenseNote').value;
     else if (id === 'creatorRoyalty') template.royaltyBps = Number($('creatorRoyalty').value || 0);
-    invalidateMakerUpload();
+    else if (id === 'creatorMintingEnabled') {
+      template.mintingEnabled = $('creatorMintingEnabled').checked;
+      if (!template.mintingEnabled) {
+        template.mintFeeEnabled = false;
+        $('creatorMintFeeEnabled').checked = false;
+      }
+    } else if (id === 'creatorMintFeeEnabled') {
+      template.mintFeeEnabled = $('creatorMintFeeEnabled').checked;
+      $('creatorMintPrice').disabled = !template.mintFeeEnabled;
+    } else if (id === 'creatorMintPrice') {
+      template.mintPriceAtomic = decimalCoinToAtomic($('creatorMintPrice').value) || 0;
+    }
+    if (['creatorTemplateName', 'creatorDescription', 'creatorName', 'creatorWorld'].includes(id)) refreshLivingDefaults();
+    if (!makerIsPublished()) invalidateMakerUpload();
+    if (!makerIsPublished()) scheduleMakerAutosave();
     persistLocalMakerIndex();
     renderAll();
   });
@@ -4615,10 +4858,81 @@ $('archiveMakerOnchain')?.addEventListener('click', () => {
   }
   openConfirmation({
     title: 'Archive published Maker?',
-    message: 'New OC mints will be blocked on Sui. Existing OC ownership, license snapshots, provenance, and Walrus records remain intact. You can restore the Maker later.',
+    message: 'New Soul authorizations will be blocked on Sui. Existing Soul ownership, license snapshots, provenance, and Walrus records remain intact. You can restore the Maker later.',
     confirmLabel: 'Archive maker',
     action: () => updateMakerArchiveState(true),
   });
+});
+$('updateMakerEconomics')?.addEventListener('click', async () => {
+  if (!makerIsPublished()) {
+    $('makerEconomicsStatus').textContent = 'These settings will be included when this Maker is first published.';
+    return;
+  }
+  if (!state.makerAdminCapObjectId) {
+    $('makerEconomicsStatus').textContent = 'Connect the wallet that currently owns this MakerAdminCap.';
+    return;
+  }
+  const mintPriceAtomic = $('creatorMintFeeEnabled').checked ? decimalCoinToAtomic($('creatorMintPrice').value) : 0;
+  const royaltyBps = Number($('creatorRoyalty').value || 0);
+  if ($('creatorMintFeeEnabled').checked && !mintPriceAtomic) {
+    $('makerEconomicsStatus').textContent = `Enter a valid ${runtimeConfig.paymentCoinSymbol} mint price.`;
+    return;
+  }
+  state.publishing = true;
+  $('makerEconomicsStatus').textContent = 'Waiting for the MakerAdminCap owner signature…';
+  try {
+    const transaction = await configureMakerEconomics({
+      makerId: state.makerObjectId,
+      adminCapId: state.makerAdminCapObjectId,
+      mintingEnabled: $('creatorMintingEnabled').checked,
+      mintFeeEnabled: $('creatorMintFeeEnabled').checked,
+      mintPriceAtomic,
+      royaltyBps,
+    });
+    Object.assign(activeTemplate(), {
+      mintingEnabled: $('creatorMintingEnabled').checked,
+      mintFeeEnabled: $('creatorMintFeeEnabled').checked,
+      mintPriceAtomic,
+      royaltyBps,
+      price: mintPriceAtomic ? `${$('creatorMintPrice').value} ${runtimeConfig.paymentCoinSymbol}` : 'Free mint',
+    });
+    $('makerEconomicsStatus').textContent = `On-chain settings updated: ${transaction.digest}`;
+    await saveCurrentMakerDraft({ silent: true });
+  } catch (error) {
+    $('makerEconomicsStatus').textContent = error.message || 'The on-chain settings update failed.';
+  } finally {
+    state.publishing = false;
+    renderAll();
+  }
+});
+$('withdrawMakerRevenue')?.addEventListener('click', async () => {
+  const amountAtomic = decimalCoinToAtomic($('creatorWithdrawAmount').value);
+  if (!makerIsPublished() || !state.makerTreasuryObjectId || !state.makerAdminCapObjectId) {
+    $('makerEconomicsStatus').textContent = 'A published Maker, its Treasury, and its MakerAdminCap are required.';
+    return;
+  }
+  if (!amountAtomic) {
+    $('makerEconomicsStatus').textContent = `Enter a valid ${runtimeConfig.paymentCoinSymbol} withdrawal amount.`;
+    return;
+  }
+  state.publishing = true;
+  $('makerEconomicsStatus').textContent = 'Waiting for the MakerAdminCap owner signature…';
+  try {
+    const transaction = await withdrawMakerRevenue({
+      makerId: state.makerObjectId,
+      treasuryId: state.makerTreasuryObjectId,
+      adminCapId: state.makerAdminCapObjectId,
+      amountAtomic,
+      recipient: state.walletAddress,
+    });
+    $('makerEconomicsStatus').textContent = `${$('creatorWithdrawAmount').value} ${runtimeConfig.paymentCoinSymbol} withdrawn: ${transaction.digest}`;
+    await loadActiveTreasuryBalance({ force: true });
+  } catch (error) {
+    $('makerEconomicsStatus').textContent = error.message || 'The Treasury withdrawal failed.';
+  } finally {
+    state.publishing = false;
+    renderAll();
+  }
 });
 $('deleteMakerDraft')?.addEventListener('click', () => requestDeleteMaker());
 
@@ -4700,7 +5014,9 @@ $('resumeOcUpload')?.addEventListener('click', async () => {
 $('registerOcUpload')?.addEventListener('click', registerOcUpload);
 $('certifyOcUpload')?.addEventListener('click', certifyOcUpload);
 $('mintOcOnchain')?.addEventListener('click', mintCurrentOc);
-$('refreshOwnedCharacters')?.addEventListener('click', () => loadOwnedCharacters({ force: true }));
+$('refreshOwnedCharacters')?.addEventListener('click', () => {
+  window.open(runtimeConfig.soulidityAppUrl, '_blank', 'noopener,noreferrer');
+});
 $('refreshMakers')?.addEventListener('click', () => {
   state.chainMakersLoadedFor = '';
   state.chainMakerLoadError = '';
@@ -4797,6 +5113,10 @@ $('registerMaker').addEventListener('click', async () => {
     style: canvas,
     license: 'Personal use',
     royaltyBps: 300,
+    mintingEnabled: true,
+    mintFeeEnabled: false,
+    mintPriceAtomic: 0,
+    mintPrice: 1,
     price: 'Draft',
     accent: '#27c5c8',
     secondary: '#f0a23a',
@@ -4926,6 +5246,12 @@ if (directMakerMatch) {
 }
 
 initializeChain(runtimeConfig, (connection) => {
+  if (localUiTest) connection = {
+    connected: true,
+    address: '0xc0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0de',
+    provider: 'Local UI test',
+    status: 'connected',
+  };
   const previousWalletAddress = state.walletAddress;
   const walletChanged = previousWalletAddress !== connection.address;
   if (walletChanged) {

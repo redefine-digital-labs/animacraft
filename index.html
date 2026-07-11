@@ -57,11 +57,11 @@
       </div>
       <div class="wallet-first-card" id="walletFirstCard">
           <strong data-i18n="walletFirstTitle">Connect your wallet first</strong>
-          <p data-i18n="walletFirstCopy">My OCs, creator tools, draft storage, publishing, and minting unlock after wallet connection.</p>
+          <p data-i18n="walletFirstCopy">My Souls, creator tools, draft storage, publishing, and Soulidity minting unlock after wallet connection.</p>
         <button id="panelWalletButton" type="button" data-i18n="connectSuiWallet">Connect Sui wallet</button>
       </div>
       <div class="account-grid">
-        <button data-page="collection"><strong data-i18n="myOcs">My OCs</strong><span data-i18n="myOcsCopy">Wallet-owned characters</span></button>
+        <button data-page="collection"><strong data-i18n="myOcs">My Souls</strong><span data-i18n="myOcsCopy">Soulidity-owned characters</span></button>
         <button data-page="creator"><strong data-i18n="createMaker">Create maker</strong><span data-i18n="createMakerCopy">Publish an OC template</span></button>
         <button data-page="make"><strong data-i18n="makeOc">Make OC</strong><span data-i18n="makeOcCopy">Continue current OC</span></button>
       </div>
@@ -130,11 +130,11 @@
             <button id="backToCreatorPreview" class="secondary" type="button" hidden>Back to Creator Studio</button>
             <button id="downloadRecipe" class="secondary" data-i18n="recipeJson">Recipe JSON</button>
             <button id="downloadPackage" class="primary" data-i18n="saveOcPackage">Save OC Package</button>
-            <button id="resumeOcUpload" class="secondary" type="button">Resume mint upload</button>
-            <button id="prepareOcUpload" class="secondary" type="button" data-i18n="prepareMint">Prepare mint</button>
+            <button id="resumeOcUpload" class="secondary" type="button">Resume Soul package</button>
+            <button id="prepareOcUpload" class="secondary" type="button">Prepare Soul package</button>
             <button id="registerOcUpload" class="secondary" type="button">Register & upload</button>
             <button id="certifyOcUpload" class="secondary" type="button">Certify</button>
-            <button id="mintOcOnchain" class="primary" type="button">Mint OC</button>
+            <button id="mintOcOnchain" class="primary" type="button">Continue to Soulidity</button>
             <small id="mintOcStatus" class="maker-action-status"></small>
           </div>
         </div>
@@ -210,10 +210,10 @@
         <div class="page-head">
           <div>
             <p class="kicker">MyPage</p>
-            <h1>My on-chain OCs</h1>
-            <p>Characters owned by the connected wallet, with their rendered Walrus image, Maker provenance, and license snapshot.</p>
+            <h1>My Souls</h1>
+            <p>Finished characters, Living Content, social identity, and marketplace ownership are managed by Soulidity.</p>
           </div>
-          <button id="refreshOwnedCharacters" class="secondary" type="button">Refresh from Sui</button>
+          <button id="refreshOwnedCharacters" class="secondary" type="button">Open Soulidity collection</button>
         </div>
         <div id="ownedCharacterStatus" class="collection-status"></div>
         <div id="ownedCharacterGrid" class="collection-grid"></div>
@@ -273,6 +273,7 @@
                   <button data-editor-panel-button="parts" data-i18n="characterMaker">Character Maker</button>
                   <button data-editor-panel-button="rules" data-i18n="rules">Rules</button>
                   <button data-editor-panel-button="palette" data-i18n="paletteRules">Palette Rules</button>
+                  <button data-editor-panel-button="living">Living Content</button>
                   <button data-editor-panel-button="preview" data-i18n="previewCheck">Preview Check</button>
                   <button data-editor-panel-button="publish" data-i18n="onchainPublish">On-chain Publish</button>
                   <button data-editor-panel-button="settings" data-i18n="settings">Settings</button>
@@ -406,7 +407,7 @@
                     <div class="control-list">
                       <span>Draft: creator tests visual compatibility locally.</span>
                       <span>Template publish: allowed rule schema is stored on Sui.</span>
-                      <span>OC mint: recipe must satisfy the published rules.</span>
+                      <span>Soul authorization: the recipe must satisfy the published rules.</span>
                       <span>Trade: license and royalty rules travel with the OC.</span>
                     </div>
                   </section>
@@ -438,6 +439,60 @@
                     </div>
                   </section>
                 </div>
+
+                <section class="living-content-panel editor-panel" data-editor-panel="living">
+                  <header class="living-content-head">
+                    <div>
+                      <p class="kicker">Soul workspace</p>
+                      <h2>Living Content</h2>
+                      <p>Every OC includes Soulidity-ready defaults. Edit them only when this Maker needs a specific personality, memory, or skill.</p>
+                    </div>
+                    <div class="living-content-actions">
+                      <span class="template-token" id="livingContentStatus">Defaults ready</span>
+                      <button id="downloadLivingTemplate" class="secondary" type="button">Download template</button>
+                    </div>
+                  </header>
+                  <div class="living-content-workspace">
+                    <nav class="living-document-list" aria-label="Living Content documents">
+                      <button class="active" type="button" data-living-document="soulMd">
+                        <span>Soul Character</span>
+                        <small id="livingSoulState">Default</small>
+                      </button>
+                      <button type="button" data-living-document="memoryMd">
+                        <span>Memory</span>
+                        <small id="livingMemoryState">Default</small>
+                      </button>
+                      <button type="button" data-living-document="skillMd">
+                        <span>Skills &amp; Docs</span>
+                        <small id="livingSkillState">Default</small>
+                      </button>
+                    </nav>
+                    <section class="living-document-editor">
+                      <div class="section-row living-editor-toolbar">
+                        <div>
+                          <p class="kicker" id="livingDocumentKind">SOUL_DOC · soul</p>
+                          <h3 id="livingDocumentTitle">Soul Character</h3>
+                        </div>
+                        <button id="restoreLivingDefault" class="secondary" type="button">Restore default</button>
+                      </div>
+                      <textarea id="livingDocumentSource" spellcheck="false" aria-label="Living Content markdown"></textarea>
+                      <div class="living-editor-footer">
+                        <span id="livingDocumentFilename">soul.md</span>
+                        <span id="livingDocumentSize">0 bytes</span>
+                      </div>
+                    </section>
+                    <aside class="living-compatibility-panel">
+                      <p class="kicker">Soulidity import</p>
+                      <h3>Mint-ready structure</h3>
+                      <div class="asset-status-list">
+                        <div><strong>soul.md</strong><span><code>soul_doc / soul</code></span></div>
+                        <div><strong>memory.md</strong><span><code>memory / default</code></span></div>
+                        <div><strong>skills.zip</strong><span><code>skill / SKILL.md</code></span></div>
+                      </div>
+                      <p>These files remain editable defaults inside the Maker. The final OC resolves its name, world, and description before Soulidity import.</p>
+                    </aside>
+                  </div>
+                </section>
 
                 <div class="creator-function-grid editor-panel" data-editor-panel="preview">
                   <section id="maker-preview-check" class="function-card validation-card primary-function">
@@ -473,8 +528,8 @@
                     <div class="publish-runtime-card" id="publishRuntimeCard"></div>
                     <div class="asset-status-list">
                       <div><strong>Walrus quilt</strong><span>Item PNGs, optional picker icons, and the versioned Maker manifest</span></div>
-                      <div><strong>Sui objects</strong><span>CreatorProfile, OCMaker, Parts, Items, allowed Colors, selection/palette rules, license snapshot, and ownership</span></div>
-                      <div><strong>Royalty policy</strong><span>License kind and royalty basis points are recorded; marketplace settlement is a separate adapter.</span></div>
+                      <div><strong>Sui objects</strong><span>CreatorProfile, OCMaker, MakerTreasury, MakerAdminCap, recipe rules, policy snapshots, and ownership</span></div>
+                      <div><strong>Revenue & royalty</strong><span>Optional native-USDC mint fees settle into the Maker Treasury; Soulidity enforces the 0%–5% tier on resale.</span></div>
                     </div>
                     <div class="production-action" id="makerPublishAction">
                       <div>
@@ -537,7 +592,31 @@
                       </select>
                     </label>
                     <label>License note<textarea id="creatorLicenseNote" maxlength="2000">Personal use only. Credit the creator when the OC is shared publicly.</textarea></label>
-                    <label>Royalty policy BPS (record only)<input id="creatorRoyalty" type="number" min="0" max="10000" step="1" value="300" /></label>
+                    <fieldset class="economics-settings">
+                      <legend>Minting & revenue</legend>
+                      <label class="toggle-field"><input id="creatorMintingEnabled" type="checkbox" checked /><span>Allow new Soul authorizations</span></label>
+                      <label class="toggle-field"><input id="creatorMintFeeEnabled" type="checkbox" /><span>Charge a mint fee</span></label>
+                      <label>Mint price (USDC)<input id="creatorMintPrice" type="number" min="0.01" max="1000000" step="0.01" value="1" disabled /></label>
+                      <label>
+                        Soulidity resale royalty
+                        <select id="creatorRoyalty">
+                          <option value="0">No royalty</option>
+                          <option value="100">1%</option>
+                          <option value="200">2%</option>
+                          <option value="300" selected>3%</option>
+                          <option value="400">4%</option>
+                          <option value="500">5%</option>
+                        </select>
+                      </label>
+                      <small>Mint revenue stays in this Maker's on-chain Treasury. Only its MakerAdminCap holder can withdraw it.</small>
+                      <strong id="makerTreasuryBalance">Treasury balance appears after publication.</strong>
+                      <div class="economics-actions">
+                        <button id="updateMakerEconomics" class="secondary" type="button">Update on-chain settings</button>
+                        <label>Withdraw revenue (USDC)<input id="creatorWithdrawAmount" type="number" min="0.01" step="0.01" value="1" /></label>
+                        <button id="withdrawMakerRevenue" class="secondary" type="button">Withdraw to my wallet</button>
+                      </div>
+                      <small id="makerEconomicsStatus"></small>
+                    </fieldset>
                   </section>
 
                   <section class="creator-card">
@@ -560,7 +639,7 @@
                     <h2>What this release enforces</h2>
                     <div class="rights-grid">
                       <div><strong>Permission scope</strong><span>License kind records personal, remix, commercial, or exclusive permission.</span></div>
-                      <div><strong>Attribution</strong><span>Published Makers require creator attribution in every minted OC policy snapshot.</span></div>
+                      <div><strong>Attribution</strong><span>Published Makers carry creator attribution into every Soul mint authorization.</span></div>
                       <div><strong>Recipe integrity</strong><span>Required Parts, available Items, and incompatibility rules are verified by the Move contract.</span></div>
                     </div>
                   </section>
@@ -761,15 +840,17 @@
             <article><strong>Color</strong><span>Owned by one Part. Expands the image matrix and may link to colors in other Parts.</span></article>
             <article><strong>Item</strong><span>One user-selectable option inside a Part, with display order, visibility, picker icon, and item rules.</span></article>
             <article><strong>Item image</strong><span>One PNG for a specific Item × Layer × Color cell. These files become Walrus quilt patches.</span></article>
-            <article><strong>OCMaker</strong><span>The shared Sui object binds creator, Quilt Blob ID, public Parts/Items/Colors, selection and palette rules, license policy, and archive state.</span></article>
+            <article><strong>OCMaker</strong><span>The shared Sui object binds original creator, Quilt Blob ID, public Parts/Items/Colors, rules, mint economics, license policy, and archive state.</span></article>
+            <article><strong>MakerTreasury</strong><span>A shared coin-typed vault receives exact native-USDC mint fees and records collection and withdrawal totals.</span></article>
+            <article><strong>MakerAdminCap</strong><span>The transferable management right controls economics, withdrawals, and lifecycle. Cap ownership is separate from original art provenance.</span></article>
           </div>
         </section>
         <section class="docs-model">
           <div><p class="kicker">Maker Lifecycle</p><h2>Delete locally, archive on-chain</h2></div>
           <div class="docs-model-grid">
             <article><strong>Local draft</strong><span>IndexedDB stores wallet-scoped structure, source files, and upload checkpoints. Maker, Part, Item, optional Layer, and extra Color records may be permanently deleted before publication.</span></article>
-            <article><strong>Published Maker</strong><span>Publication locks the Sui object, license, rules, and certified Walrus manifest version. Changes require a new Maker version rather than silent mutation.</span></article>
-            <article><strong>Archived Maker</strong><span>The creator may archive or restore a published Maker with a wallet signature. Archive blocks new OC mints while preserving existing OCs, rights snapshots, and provenance.</span></article>
+            <article><strong>Published Maker</strong><span>Publication locks art, rules, and the certified Walrus manifest. The Cap holder may only change future mint economics and archive state.</span></article>
+            <article><strong>Archived Maker</strong><span>The creator may archive or restore a published Maker with a wallet signature. Archive blocks new Soul authorizations while preserving existing Souls, rights snapshots, and provenance.</span></article>
             <article><strong>Walrus retention</strong><span>Production uploads request 53 Mainnet epochs, currently about two years. Removing a local reference does not erase certified storage, but retention must be extended before expiry.</span></article>
           </div>
         </section>

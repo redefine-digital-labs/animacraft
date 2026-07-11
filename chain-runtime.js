@@ -28,6 +28,14 @@ function requirePackageId() {
   return packageId;
 }
 
+function requirePaymentCoinType() {
+  const coinType = String(runtimeConfig?.paymentCoinType || '').trim();
+  if (!/^0x[0-9a-f]+::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*$/i.test(coinType)) {
+    throw new Error('Configure a valid Sui paymentCoinType before publishing or using a paid Maker.');
+  }
+  return coinType;
+}
+
 function requireConnection() {
   const connection = dAppKit?.stores.$connection.get();
   if (!connection?.account?.address) {
@@ -129,6 +137,25 @@ export async function listOwnedMakers(owner) {
   return objects;
 }
 
+export async function listOwnedMakerAdminCaps(owner) {
+  const packageId = requirePackageId();
+  const address = owner || requireConnection().account.address;
+  const objects = [];
+  let cursor = null;
+  do {
+    const page = await suiClient.listOwnedObjects({
+      owner: address,
+      type: `${packageId}::animacraft::MakerAdminCap`,
+      cursor,
+      limit: 50,
+      include: { json: true, previousTransaction: true },
+    });
+    objects.push(...page.objects);
+    cursor = page.hasNextPage ? page.cursor : null;
+  } while (cursor && objects.length < 500);
+  return objects;
+}
+
 export async function listOwnedCreatorProfiles(owner) {
   const packageId = requirePackageId();
   const address = owner || requireConnection().account.address;
@@ -145,25 +172,6 @@ export async function listOwnedCreatorProfiles(owner) {
     objects.push(...page.objects);
     cursor = page.hasNextPage ? page.cursor : null;
   } while (cursor && objects.length < 100);
-  return objects;
-}
-
-export async function listOwnedCharacters(owner) {
-  const packageId = requirePackageId();
-  const address = owner || requireConnection().account.address;
-  const objects = [];
-  let cursor = null;
-  do {
-    const page = await suiClient.listOwnedObjects({
-      owner: address,
-      type: `${packageId}::animacraft::OCCharacter`,
-      cursor,
-      limit: 50,
-      include: { json: true, display: true, previousTransaction: true },
-    });
-    objects.push(...page.objects);
-    cursor = page.hasNextPage ? page.cursor : null;
-  } while (cursor && objects.length < 500);
   return objects;
 }
 
@@ -409,6 +417,7 @@ export function walrusQuiltFileUrl(quiltId, identifier) {
 
 export async function publishMaker({ creator, maker, manifestBlobId, parts, items, rules = [], paletteLinks = [] }) {
   const connection = requireConnection();
+  const paymentCoinType = requirePaymentCoinType();
   const tx = new Transaction();
   const createsProfile = !creator.profileId;
   const profile = creator.profileId
@@ -423,8 +432,9 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
         ],
       });
   const policy = licenseKind(maker.license);
-  const ocMaker = tx.moveCall({
-    target: moveTarget('new_oc_maker'),
+  const [ocMaker, makerTreasury, makerAdminCap] = tx.moveCall({
+    target: moveTarget('new_managed_oc_maker'),
+    typeArguments: [paymentCoinType],
     arguments: [
       profile,
       pureString(tx, maker.name),
@@ -436,14 +446,18 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
       tx.pure.bool(policy >= 2),
       tx.pure.bool(policy === 1),
       tx.pure.bool(true),
+      tx.pure.bool(maker.mintingEnabled !== false),
+      tx.pure.bool(Boolean(maker.mintFeeEnabled)),
+      tx.pure.u64(Number(maker.mintFeeEnabled ? maker.mintPriceAtomic : 0)),
       tx.object(CLOCK_OBJECT_ID),
     ],
   });
 
   for (const part of parts) {
     tx.moveCall({
-      target: moveTarget('add_part'),
+      target: moveTarget('admin_add_part'),
       arguments: [
+        makerAdminCap,
         ocMaker,
         pureString(tx, part.key),
         pureString(tx, part.label),
@@ -456,8 +470,9 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
     });
     for (const color of part.colors || []) {
       tx.moveCall({
-        target: moveTarget('add_color'),
+        target: moveTarget('admin_add_color'),
         arguments: [
+          makerAdminCap,
           ocMaker,
           pureString(tx, part.key),
           pureString(tx, color),
@@ -469,8 +484,9 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
 
   for (const item of items) {
     tx.moveCall({
-      target: moveTarget('add_item'),
+      target: moveTarget('admin_add_item'),
       arguments: [
+        makerAdminCap,
         ocMaker,
         pureString(tx, item.partKey),
         pureString(tx, item.itemKey),
@@ -485,8 +501,9 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
 
   for (const rule of rules) {
     tx.moveCall({
-      target: moveTarget('add_selection_rule'),
+      target: moveTarget('admin_add_selection_rule'),
       arguments: [
+        makerAdminCap,
         ocMaker,
         pureString(tx, rule.leftPartKey),
         pureString(tx, rule.leftItemKey),
@@ -499,8 +516,9 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
 
   for (const link of paletteLinks) {
     tx.moveCall({
-      target: moveTarget('add_palette_link'),
+      target: moveTarget('admin_add_palette_link'),
       arguments: [
+        makerAdminCap,
         ocMaker,
         pureString(tx, link.primaryPartKey),
         pureString(tx, link.linkedPartKey),
@@ -510,13 +528,15 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
   }
 
   tx.moveCall({
-    target: moveTarget('publish_maker'),
-    arguments: [ocMaker, pureString(tx, manifestBlobId), tx.object(CLOCK_OBJECT_ID)],
+    target: moveTarget('admin_publish_maker'),
+    arguments: [makerAdminCap, ocMaker, pureString(tx, manifestBlobId), tx.object(CLOCK_OBJECT_ID)],
   });
-  tx.moveCall({
-    target: moveTarget('share_published_maker'),
-    arguments: [ocMaker],
+  const returnedAdminCap = tx.moveCall({
+    target: moveTarget('share_managed_maker'),
+    typeArguments: [paymentCoinType],
+    arguments: [ocMaker, makerTreasury, makerAdminCap],
   });
+  tx.transferObjects([returnedAdminCap], connection.account.address);
   if (createsProfile) {
     tx.moveCall({
       target: moveTarget('keep_creator_profile'),
@@ -526,6 +546,8 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
 
   const transaction = unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: tx }));
   let makerObjectId = '';
+  let makerTreasuryObjectId = '';
+  let makerAdminCapObjectId = '';
   let creatorProfileObjectId = creator.profileId || '';
   try {
     const indexedResult = unwrapTransaction(await suiClient.waitForTransaction({
@@ -533,44 +555,104 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
       include: { effects: true, objectTypes: true },
     }));
     makerObjectId = Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::OCMaker'))?.[0] || '';
+    makerTreasuryObjectId = Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.includes('::animacraft::MakerTreasury<'))?.[0] || '';
+    makerAdminCapObjectId = Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::MakerAdminCap'))?.[0] || '';
     creatorProfileObjectId ||= Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::CreatorProfile'))?.[0] || '';
   } catch (error) {
     console.warn('Maker published, but its object id is not indexed yet.', error);
   }
-  return { ...transaction, makerObjectId, creatorProfileObjectId };
+  return { ...transaction, makerObjectId, makerTreasuryObjectId, makerAdminCapObjectId, creatorProfileObjectId };
 }
 
 export async function resolvePublishedMakerObjectId(digest, timeout = 30_000) {
+  return (await resolvePublishedMakerObjects(digest, timeout)).makerObjectId;
+}
+
+export async function resolvePublishedMakerObjects(digest, timeout = 30_000) {
   requirePackageId();
-  if (!digest) return '';
+  if (!digest) return {};
   const indexedResult = unwrapTransaction(await suiClient.waitForTransaction({
     digest,
     timeout,
     include: { objectTypes: true },
   }));
-  return Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::OCMaker'))?.[0] || '';
+  const types = Object.entries(indexedResult.objectTypes || {});
+  return {
+    makerObjectId: types.find(([, type]) => type.endsWith('::animacraft::OCMaker'))?.[0] || '',
+    makerTreasuryObjectId: types.find(([, type]) => type.includes('::animacraft::MakerTreasury<'))?.[0] || '',
+    makerAdminCapObjectId: types.find(([, type]) => type.endsWith('::animacraft::MakerAdminCap'))?.[0] || '',
+    creatorProfileObjectId: types.find(([, type]) => type.endsWith('::animacraft::CreatorProfile'))?.[0] || '',
+  };
 }
 
-export async function setMakerArchived(makerId, archived) {
+export async function setMakerArchived(makerId, adminCapId, archived) {
   requireConnection();
   if (!makerId) throw new Error('The published OCMaker object id is missing. Reload it from Sui before changing lifecycle state.');
+  if (!adminCapId) throw new Error('The MakerAdminCap is required to change this Maker.');
   const tx = new Transaction();
   tx.moveCall({
-    target: moveTarget('set_maker_archived'),
-    arguments: [tx.object(makerId), tx.pure.bool(Boolean(archived)), tx.object(CLOCK_OBJECT_ID)],
+    target: moveTarget('admin_set_maker_archived'),
+    arguments: [tx.object(adminCapId), tx.object(makerId), tx.pure.bool(Boolean(archived)), tx.object(CLOCK_OBJECT_ID)],
   });
   return unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: tx }));
 }
 
-export async function mintCharacter({ makerId, name, profileBlobId, imageBlobId, imageUrl, recipeHash, recipe }) {
+export async function configureMakerEconomics({ makerId, adminCapId, mintingEnabled, mintFeeEnabled, mintPriceAtomic, royaltyBps }) {
   requireConnection();
+  if (!makerId || !adminCapId) throw new Error('The Maker and its MakerAdminCap are required to update economics.');
   const tx = new Transaction();
-  const serializedRecipe = bcs.vector(recipeSlotBcs).serialize(recipeValue(recipe));
-
   tx.moveCall({
-    target: moveTarget('mint_oc_character'),
+    target: moveTarget('configure_maker_economics'),
+    arguments: [
+      tx.object(adminCapId),
+      tx.object(makerId),
+      tx.pure.bool(Boolean(mintingEnabled)),
+      tx.pure.bool(Boolean(mintFeeEnabled)),
+      tx.pure.u64(BigInt(mintFeeEnabled ? mintPriceAtomic : 0)),
+      tx.pure.u16(Number(royaltyBps)),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
+  });
+  return unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: tx }));
+}
+
+export async function withdrawMakerRevenue({ makerId, treasuryId, adminCapId, amountAtomic, recipient }) {
+  const connection = requireConnection();
+  if (!makerId || !treasuryId || !adminCapId) throw new Error('The Maker, Treasury, and MakerAdminCap are required to withdraw revenue.');
+  const amount = BigInt(amountAtomic || 0);
+  if (amount <= 0n) throw new Error('Enter a positive revenue amount to withdraw.');
+  const tx = new Transaction();
+  tx.moveCall({
+    target: moveTarget('withdraw_maker_revenue'),
+    typeArguments: [requirePaymentCoinType()],
+    arguments: [
+      tx.object(adminCapId),
+      tx.object(makerId),
+      tx.object(treasuryId),
+      tx.pure.u64(amount),
+      tx.pure.address(recipient || connection.account.address),
+    ],
+  });
+  return unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: tx }));
+}
+
+/** Adds Maker validation/payment to a Soulidity mint PTB. */
+export function appendSoulMintAuthorization(tx, { makerId, treasuryId, mintPriceAtomic = 0, name, profileBlobId, imageBlobId, imageUrl, recipeHash, recipe }) {
+  requireConnection();
+  const serializedRecipe = bcs.vector(recipeSlotBcs).serialize(recipeValue(recipe));
+  const price = BigInt(mintPriceAtomic || 0);
+  const paid = price > 0n;
+  if (paid && !treasuryId) throw new Error('This paid Maker is missing its on-chain MakerTreasury object id. Refresh the Maker before minting.');
+
+  return tx.moveCall({
+    target: moveTarget(paid ? 'authorize_soul_mint_paid' : 'authorize_soul_mint'),
+    ...(paid ? { typeArguments: [requirePaymentCoinType()] } : {}),
     arguments: [
       tx.object(makerId),
+      ...(paid ? [
+        tx.object(treasuryId),
+        tx.coin({ type: requirePaymentCoinType(), balance: price }),
+      ] : []),
       pureString(tx, name),
       pureString(tx, profileBlobId),
       pureString(tx, imageBlobId),
@@ -580,19 +662,6 @@ export async function mintCharacter({ makerId, name, profileBlobId, imageBlobId,
       tx.object(CLOCK_OBJECT_ID),
     ],
   });
-
-  const transaction = unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: tx }));
-  let ocObjectId = '';
-  try {
-    const indexedResult = unwrapTransaction(await suiClient.waitForTransaction({
-      digest: transaction.digest,
-      include: { objectTypes: true },
-    }));
-    ocObjectId = Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::OCCharacter'))?.[0] || '';
-  } catch (error) {
-    console.warn('OC minted, but its object id is not indexed yet.', error);
-  }
-  return { ...transaction, ocObjectId };
 }
 
 export function explorerTransactionUrl(digest) {

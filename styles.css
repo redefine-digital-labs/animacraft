@@ -2462,7 +2462,7 @@ input[type="color"] {
 
 .maker-section-nav nav {
   display: grid;
-  grid-template-columns: repeat(7, minmax(max-content, 1fr));
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 4px;
   min-width: 0;
 }
@@ -2649,6 +2649,160 @@ input[type="color"] {
 
 .package-card.editor-panel.active {
   display: block;
+}
+
+.living-content-panel.editor-panel.active {
+  display: grid;
+}
+
+.living-content-panel {
+  gap: 16px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 20px;
+  background: #ffffff;
+}
+
+.living-content-head {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.living-content-head h2 {
+  margin-bottom: 6px;
+}
+
+.living-content-head p:not(.kicker),
+.living-compatibility-panel > p:last-child {
+  max-width: 760px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.living-content-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.living-content-workspace {
+  display: grid;
+  grid-template-columns: 210px minmax(380px, 1fr) minmax(250px, 0.52fr);
+  gap: 12px;
+  min-width: 0;
+}
+
+.living-document-list,
+.living-document-editor,
+.living-compatibility-panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdfd;
+}
+
+.living-document-list {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding: 8px;
+}
+
+.living-document-list button {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 12px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.living-document-list button:hover,
+.living-document-list button.active {
+  border-color: #27c5c8;
+  background: #effcf9;
+}
+
+.living-document-list span {
+  overflow-wrap: anywhere;
+  font-weight: 900;
+}
+
+.living-document-list small {
+  color: var(--muted);
+}
+
+.living-document-list button.active small {
+  color: #149980;
+}
+
+.living-document-editor {
+  display: grid;
+  grid-template-rows: auto minmax(460px, 1fr) auto;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.living-editor-toolbar {
+  padding: 14px;
+}
+
+.living-editor-toolbar h3,
+.living-compatibility-panel h3 {
+  margin-top: 2px;
+  font-size: 19px;
+}
+
+#livingDocumentSource {
+  width: 100%;
+  min-width: 0;
+  min-height: 460px;
+  resize: vertical;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 18px;
+  background: #fcfdfd;
+  color: #30333a;
+  font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+#livingDocumentSource:focus {
+  outline: 2px solid #27c5c8;
+  outline-offset: -2px;
+}
+
+.living-editor-footer {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 9px 14px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.living-compatibility-panel {
+  padding: 16px;
+}
+
+.living-compatibility-panel .asset-status-list {
+  margin: 14px 0;
+}
+
+.living-compatibility-panel code {
+  overflow-wrap: anywhere;
+  color: #149980;
 }
 
 .maker-detail-hero,
@@ -3969,6 +4123,60 @@ input[type="color"] {
   grid-row: span 2;
 }
 
+.economics-settings {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  min-width: 0;
+}
+
+.economics-settings legend {
+  padding: 0 6px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.economics-settings .toggle-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 0;
+  color: var(--ink);
+}
+
+.economics-settings .toggle-field input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.economics-settings small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.economics-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  min-width: 0;
+}
+
+.economics-actions label {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
+.economics-actions button {
+  min-width: 0;
+  white-space: normal;
+}
+
 .creator-card label,
 .profile-grid label {
   display: grid;
@@ -4225,6 +4433,14 @@ pre {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
+  .living-content-workspace {
+    grid-template-columns: 190px minmax(0, 1fr);
+  }
+
+  .living-compatibility-panel {
+    grid-column: 1 / -1;
+  }
+
   .maker-home-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -4306,6 +4522,28 @@ pre {
 
   .maker-section-nav nav {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .living-content-head,
+  .living-content-workspace {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .living-content-actions {
+    justify-content: flex-start;
+  }
+
+  .living-document-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .living-document-list button {
+    padding: 9px;
+  }
+
+  .living-compatibility-panel {
+    grid-column: auto;
   }
 
   .docs-workflow,
