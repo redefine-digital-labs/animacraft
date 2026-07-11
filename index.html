@@ -529,7 +529,7 @@
                     <div class="asset-status-list">
                       <div><strong>Walrus quilt</strong><span>Item PNGs, optional picker icons, and the versioned Maker manifest</span></div>
                       <div><strong>Sui objects</strong><span>CreatorProfile, OCMaker, MakerTreasury, MakerAdminCap, recipe rules, policy snapshots, and ownership</span></div>
-                      <div><strong>Revenue & royalty</strong><span>Optional native-USDC mint fees settle into the Maker Treasury; Soulidity enforces the 0%–5% tier on resale.</span></div>
+                      <div><strong>Revenue & royalty</strong><span>The Maker Treasury path is ready; paid mint and 0%–5% resale settlement activate with the reviewed Soulidity adapter.</span></div>
                     </div>
                     <div class="production-action" id="makerPublishAction">
                       <div>
@@ -595,10 +595,10 @@
                     <fieldset class="economics-settings">
                       <legend>Minting & revenue</legend>
                       <label class="toggle-field"><input id="creatorMintingEnabled" type="checkbox" checked /><span>Allow new Soul authorizations</span></label>
-                      <label class="toggle-field"><input id="creatorMintFeeEnabled" type="checkbox" /><span>Charge a mint fee</span></label>
+                      <label class="toggle-field"><input id="creatorMintFeeEnabled" type="checkbox" /><span>Charge a mint fee after canonical activation</span></label>
                       <label>Mint price (USDC)<input id="creatorMintPrice" type="number" min="0.01" max="1000000" step="0.01" value="1" disabled /></label>
                       <label>
-                        Soulidity resale royalty
+                        Future Soulidity resale royalty
                         <select id="creatorRoyalty">
                           <option value="0">No royalty</option>
                           <option value="100">1%</option>
@@ -608,7 +608,7 @@
                           <option value="500">5%</option>
                         </select>
                       </label>
-                      <small>Mint revenue stays in this Maker's on-chain Treasury. Only its MakerAdminCap holder can withdraw it.</small>
+                      <small>During the Maker-only pilot, paid mint stays off. After canonical activation, revenue settles into this Maker's Treasury and only its MakerAdminCap holder can withdraw it.</small>
                       <strong id="makerTreasuryBalance">Treasury balance appears after publication.</strong>
                       <div class="economics-actions">
                         <button id="updateMakerEconomics" class="secondary" type="button">Update on-chain settings</button>

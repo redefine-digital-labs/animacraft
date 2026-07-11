@@ -162,6 +162,7 @@ const MAX_COLORS_PER_PART = 32;
 
 const suppliedConfig = window.ANIMACRAFT_CONFIG || {};
 const runtimeConfig = normalizeRuntimeConfig(suppliedConfig, location.origin);
+const canonicalSoulMintEnabled = runtimeConfig.canonicalSoulMintEnabled === true;
 const localUiTest = ['127.0.0.1', 'localhost'].includes(location.hostname)
   && new URLSearchParams(location.search).get('ui-test') === '1';
 
@@ -1989,7 +1990,7 @@ function syncTemplateFields() {
   $('creatorMintPrice').value = template.mintPriceAtomic
     ? String(atomicCoinToDecimal(template.mintPriceAtomic))
     : String(template.mintPrice || 1);
-  $('creatorMintPrice').disabled = !template.mintFeeEnabled;
+  $('creatorMintPrice').disabled = !canonicalSoulMintEnabled || !template.mintFeeEnabled;
   $('creatorLicense').value = Object.entries({
     'personal-use': 'Personal use',
     'free-remix': 'Free remix',
@@ -2762,6 +2763,7 @@ function makerPublicationIssues() {
   const mintFeeEnabled = $('creatorMintFeeEnabled').checked;
   const mintPriceAtomic = decimalCoinToAtomic($('creatorMintPrice').value);
   if (!$('creatorMintingEnabled').checked && mintFeeEnabled) issues.push('Turn on OC minting before enabling a mint fee.');
+  if (mintFeeEnabled && !canonicalSoulMintEnabled) issues.push('Paid mint is release-gated until the canonical Soulidity adapter is deployed and verified.');
   if (mintFeeEnabled && (!mintPriceAtomic || mintPriceAtomic <= 0)) issues.push(`Enter a positive ${runtimeConfig.paymentCoinSymbol} mint price with no more than ${runtimeConfig.paymentCoinDecimals} decimal places.`);
   try {
     validateMakerManifest(creatorUploadManifest());
@@ -3295,10 +3297,17 @@ function renderMakerLifecycle() {
     if ($(id)) $(id).disabled = locked;
   });
   const canManageEconomics = !locked || Boolean(state.makerAdminCapObjectId);
-  ['creatorMintingEnabled', 'creatorMintFeeEnabled', 'creatorRoyalty'].forEach((id) => {
+  ['creatorMintingEnabled', 'creatorRoyalty'].forEach((id) => {
     if ($(id)) $(id).disabled = !canManageEconomics;
   });
-  if ($('creatorMintPrice')) $('creatorMintPrice').disabled = !canManageEconomics || !$('creatorMintFeeEnabled').checked;
+  const canChangeMintFee = canManageEconomics
+    && (canonicalSoulMintEnabled || $('creatorMintFeeEnabled').checked);
+  if ($('creatorMintFeeEnabled')) $('creatorMintFeeEnabled').disabled = !canChangeMintFee;
+  if ($('creatorMintPrice')) {
+    $('creatorMintPrice').disabled = !canManageEconomics
+      || !canonicalSoulMintEnabled
+      || !$('creatorMintFeeEnabled').checked;
+  }
   if ($('updateMakerEconomics')) $('updateMakerEconomics').disabled = !locked || !state.makerAdminCapObjectId || state.publishing;
   if ($('withdrawMakerRevenue')) $('withdrawMakerRevenue').disabled = !locked || !state.makerAdminCapObjectId || !state.makerTreasuryObjectId || state.publishing;
   if ($('makerTreasuryBalance')) {
@@ -4857,8 +4866,14 @@ const creatorLicenseLabels = {
         $('creatorMintFeeEnabled').checked = false;
       }
     } else if (id === 'creatorMintFeeEnabled') {
-      template.mintFeeEnabled = $('creatorMintFeeEnabled').checked;
-      $('creatorMintPrice').disabled = !template.mintFeeEnabled;
+      if ($('creatorMintFeeEnabled').checked && !canonicalSoulMintEnabled) {
+        $('creatorMintFeeEnabled').checked = false;
+        template.mintFeeEnabled = false;
+        state.publishStatus = 'Paid mint stays off until the canonical Soulidity adapter is deployed and verified.';
+      } else {
+        template.mintFeeEnabled = $('creatorMintFeeEnabled').checked;
+      }
+      $('creatorMintPrice').disabled = !canonicalSoulMintEnabled || !template.mintFeeEnabled;
     } else if (id === 'creatorMintPrice') {
       template.mintPriceAtomic = decimalCoinToAtomic($('creatorMintPrice').value) || 0;
     }
@@ -4905,6 +4920,10 @@ $('updateMakerEconomics')?.addEventListener('click', async () => {
   }
   const mintPriceAtomic = $('creatorMintFeeEnabled').checked ? decimalCoinToAtomic($('creatorMintPrice').value) : 0;
   const royaltyBps = Number($('creatorRoyalty').value || 0);
+  if ($('creatorMintFeeEnabled').checked && !canonicalSoulMintEnabled) {
+    $('makerEconomicsStatus').textContent = 'Paid mint remains release-gated. Disable the fee before updating this Maker.';
+    return;
+  }
   if ($('creatorMintFeeEnabled').checked && !mintPriceAtomic) {
     $('makerEconomicsStatus').textContent = `Enter a valid ${runtimeConfig.paymentCoinSymbol} mint price.`;
     return;
