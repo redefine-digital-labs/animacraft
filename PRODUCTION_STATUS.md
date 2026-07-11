@@ -2,7 +2,7 @@
 
 ## Release State
 
-The repository is a **Maker Mainnet production candidate**. The editor and Maker protocol are ready for an invited-creator pilot, but writes remain blocked until the real Animacraft package id is configured. Canonical paid Soul minting remains blocked until the separate Soulidity adapter is reviewed and deployed.
+The repository is a **Maker Mainnet production candidate with a published protocol package**. The original Animacraft package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` is live and the editor/runtime are ready for a signed invited-creator smoke test. Canonical paid Soul minting remains blocked until the separate Soulidity adapter is reviewed and deployed.
 
 The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio, local draft ownership, Walrus writes, publication, archive, and Soulidity handoff require a connected wallet.
 
@@ -26,19 +26,18 @@ The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio
 - Move verifies registered recipe Colors, published Part order, selection/palette rules, and SHA-256 over canonical BCS recipe bytes.
 - My Souls sends users to Soulidity, which owns the canonical finished-character collection.
 - Vercel rewrites, CSP including Walrus WASM support, non-cached runtime config, and baseline security headers.
-- Pull requests run config preflight, 32 web/config integrity tests, syntax checks, and a production build; the local Move suite currently passes 25 tests.
+- Pull requests run config preflight, 33 web/config integrity tests, syntax checks, and a production build; the local Move suite currently passes 25 tests.
 
 ## Manual Mainnet Activation
 
-1. Fund a dedicated publisher wallet with SUI and WAL.
-2. Run `npm run move:test`, publish `move/animacraft`, and record package, transaction, publisher, and `UpgradeCap` custody.
-3. Replace `0xTODO_ANIMACRAFT_PACKAGE` in `public/config.js` with the verified Mainnet package id and run `npm run preflight:mainnet`.
-4. Deploy a Vercel Preview and connect the intended `animacraft.soulidity.ai` subdomain.
-5. Publish one small real Maker through all four Walrus/Sui stages.
-6. Publish the reviewed Soulidity adapter pinned to the Animacraft package ID.
-7. Open the Maker from a disconnected browser, connect a second wallet, complete free and paid canonical Soul mints, then withdraw the paid amount with the Cap wallet.
-8. Verify Maker/Treasury/Cap discovery, Living Content import, Soulidity collection, archive rejection, restore, and transaction links.
-9. Record the evidence in the release PR before promoting the domain.
+1. Move the published `UpgradeCap`, `Publisher`, and `Display<OCMaker>` objects into the documented protocol custody arrangement.
+2. Run `npm run preflight:mainnet` against the configured original package.
+3. Deploy a Vercel Preview and connect the intended `animacraft.soulidity.ai` subdomain.
+4. Publish one small real Maker through all four Walrus/Sui stages.
+5. Publish the reviewed Soulidity adapter pinned to the Animacraft original package ID.
+6. Open the Maker from a disconnected browser, connect a second wallet, complete free and paid canonical Soul mints, then withdraw the paid amount with the Cap wallet.
+7. Verify Maker/Treasury/Cap discovery, Living Content import, Soulidity collection, archive rejection, restore, and transaction links.
+8. Record the evidence in the release PR before promoting the domain.
 
 ## Invited Pilot Boundary
 

@@ -2,6 +2,20 @@
 
 Animacraft is a static Vite app with direct wallet-signed Sui and Walrus writes. There is no application server, database, private signer, or secret runtime variable.
 
+## Current Mainnet Release
+
+- Original package: `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`
+- Publish transaction: `GxU8kpBPf4BU2KP9761sh7tgHnAsaYZ8dq5dipw3n185`
+- Checkpoint: `297352663`
+- `UpgradeCap`: `0xe7d1269532bbfbf5e448cb5c58f07fc6720ed3d22e7853e9f13b7b6282746520`
+- `Publisher`: `0xfc5a8e6f32e5d7a77492373e5b301809a2b0ca4cbec7282a43668995d7ae2ddb`
+- `Display<OCMaker>`: `0xeec472b0f5eeb1a6ca07ca10d9e470a4aa1946f005d8ff29299365b0e3003877`
+- Publisher address: `0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f`
+- Source tree: `6ecafa9db67f1c683f53679a3c07d0036d7f88c5`
+- Merged source commit: `979a4161ac79f4e275d30575f2ce2e76195a9cfa`
+
+The canonical machine-readable record is [`deployments/mainnet.json`](deployments/mainnet.json). The original package ID is the stable dependency address Soulidity must pin; do not substitute a future upgraded package version ID.
+
 ## Recommended Origin
 
 Use `animacraft.soulidity.ai`. It keeps Animacraft visibly related to Soulidity while preserving a standalone product and repository boundary.
