@@ -1,87 +1,106 @@
-# Animacraft Production Deployment
+# Animacraft Mainnet Deployment
 
-Animacraft is designed as a Vite-built, backendless app.
+Animacraft is a static Vite app with direct wallet-signed Sui and Walrus writes. There is no application server, database, private signer, or secret runtime variable.
 
-The production stack should be:
+## Recommended Origin
 
-- Vercel for static hosting and preview deployments.
-- Sui for creator profiles, OC maker objects, license policy snapshots, and OC objects.
-- Walrus for PNG layers, icons, cover images, manifests, rendered OC images, and profile JSON.
-- Wallet transaction blocks for all writes. No private backend signer.
+Use `animacraft.soulidity.xyz`. It keeps Animacraft visibly related to Soulidity while preserving a standalone product and repository boundary.
 
-## Recommended Domains
+## 1. Preflight
 
-Use one of:
+```bash
+npm ci
+npm run check
+npm run move:test
+git diff --check
+```
 
-- `animacraft.soulidity.xyz`
-- `studio.soulidity.xyz`
-- `oc.soulidity.xyz`
+Confirm the deployment wallet, active Sui environment, SUI gas, WAL balance, and the installed CLI version before any Mainnet command. Never paste a mnemonic or private key into this repository, Vercel, or a support conversation.
 
-For a standalone open-source product, `animacraft.soulidity.xyz` is the clearest.
+## 2. Publish the Move Package
 
-## Vercel Setup
+The package is in `move/animacraft`. Use a Mainnet-compatible Sui CLI and the current official package-publish/PTB command shown by that CLI. Do not reuse a command copied from an older Sui release without checking `sui client ptb --help` and the official Sui CLI reference.
+
+After signing, record:
+
+- original package id
+- publish transaction digest
+- publisher address
+- `UpgradeCap` object id and custodian
+- CLI version and Git commit
+
+Run `sui move test` again from the exact commit that was published.
+
+## 3. Configure the Public Runtime
+
+Edit `public/config.js`:
+
+```js
+window.ANIMACRAFT_CONFIG = {
+  network: 'mainnet',
+  grpcUrl: 'https://fullnode.mainnet.sui.io:443',
+  graphqlUrl: 'https://sui-mainnet.mystenlabs.com/graphql',
+  packageId: '0xVERIFIED_PACKAGE_ID',
+  walrusAggregatorUrl: 'https://aggregator.walrus-mainnet.walrus.space',
+  walrusUploadRelayUrl: 'https://upload-relay.mainnet.walrus.space',
+  walrusRelayMaxTipMist: 1000000,
+  walrusEpochs: 53,
+  featuredMakers: {},
+  appUrl: 'https://animacraft.soulidity.xyz'
+};
+```
+
+`featuredMakers` is only a curated fallback. The public gallery discovers all `OCMakerPublished` events through Sui GraphQL and hydrates each Maker from its certified Walrus manifest.
+
+The sample Mysten Sui endpoints are appropriate for the five-creator pilot, but the public fullnode is rate-limited. Replace `grpcUrl` and, where available, `graphqlUrl` with monitored dedicated Mainnet infrastructure before unrestricted traffic. Animacraft keeps these as public runtime values; provider credentials must never be embedded in the browser bundle.
+
+`walrusEpochs: 53` requests the current Mainnet maximum, approximately two years at 14 days per epoch. It increases WAL cost compared with a short pilot upload. Record each Quilt Blob object and establish a renewal calendar before expiry; Walrus retention is extendable but not perpetual without renewal.
+
+The player retries newly certified Walrus manifests and render layers with bounded exponential backoff because a CDN-backed aggregator can briefly return a cached `404` immediately after certification.
+
+Only public values belong in this file. Vercel serves `config.js` with `no-store` so a package/config correction is not hidden behind a stale browser cache.
+
+## 4. Deploy Vercel
 
 1. Import `redefine-digital-labs/animacraft`.
-2. Framework preset: `Vite`.
-3. Build command: `npm run build`.
-4. Output directory: `dist`.
-5. Install command: `npm install`.
+2. Framework: `Vite`.
+3. Install command: `npm ci`.
+4. Build command: `npm run build`.
+5. Output directory: `dist`.
+6. Deploy the production-candidate branch as Preview first.
 
-The repository includes `vercel.json` for static rewrites:
+`vercel.json` supplies SPA rewrites and browser security headers. In the Preview origin, explicitly verify that wallet discovery and Walrus WASM encoding are not blocked by CSP.
 
-- `/maker/:id`
-- `/oc/:id`
-- `/creator/:path*`
+## 5. Connect the Subdomain
 
-## Runtime Config
+1. Add `animacraft.soulidity.xyz` to the Vercel project.
+2. Add the CNAME or provider-specific DNS record Vercel shows.
+3. Wait for TLS issuance.
+4. Update `appUrl` if the final origin differs, redeploy, and verify both apex navigation and deep rewrites.
 
-Public runtime configuration lives in `public/config.js`; `config.example.js` documents all fields. After publishing the Move package, set its package id and the first published maker object ids, then redeploy.
+## 6. Signed Mainnet Smoke Test
 
-Never commit private keys or admin mnemonics. Frontend config may only include public values:
+Use a small real Maker first:
 
-- network
-- RPC URL
-- published package id
-- Walrus aggregator URL
-- Walrus upload relay URL and storage epochs
-- maximum relay tip in MIST
-- featured OCMaker object ids
-- public app URL
+1. Open the Template Plaza while disconnected; published Makers must remain visible.
+2. Connect the creator wallet and create a 1:1 draft with two Parts and two Items.
+3. Upload aligned PNGs, save, reload, and confirm IndexedDB restores every file.
+4. Prepare, register/upload, certify, and publish the Maker. Interrupt once before certification and verify `Resume saved upload` works.
+5. Confirm the shared `OCMaker` appears through event discovery without adding it to `featuredMakers`.
+6. Connect a second wallet, make an OC, resume an interrupted OC upload, and mint it.
+7. Confirm My OCs, Sui object links, Walrus image, recipe, policy snapshot, and the Move-verified SHA-256 BCS recipe hash.
+8. Archive the Maker with the creator wallet, verify a new mint is rejected, restore it, and verify minting resumes.
 
-## Production Path
+Record all transaction digests and object ids in the release PR.
 
-1. Upgrade the Sui CLI to a version compatible with the current Mainnet protocol.
-2. Fund the publisher wallet with SUI for gas and WAL for Walrus storage.
-3. Build and test the Move package, then publish it to Sui Mainnet.
-4. Set the real `packageId` in `public/config.js` and redeploy.
-5. Connect a wallet through Wallet Standard.
-6. Prepare creator PNGs and manifests as a Walrus quilt in the browser.
-7. Register, upload through the Mainnet upload relay, and certify in separate wallet interactions.
-8. Register `CreatorProfile` and `OCMaker` on Sui using QuiltPatchIDs for individual files.
-9. Add published OCMaker object ids to discovery configuration until event discovery is enabled.
-10. Let users render an OC, store its image and profile on Walrus, then mint an `OCCharacter` on Sui.
-11. Add marketplace / Kiosk integration after creator and player loops are stable.
+## Mainnet Cost and Recovery
 
-## Mainnet Boundary
-
-Walrus has no unauthenticated public Mainnet publisher. Animacraft uses the Walrus TypeScript SDK and Mainnet Upload Relay, splitting registration/upload and certification into separate wallet interactions. It never embeds a private application signer.
-
-The wallet must hold both currencies before onboarding a real creator:
-
-- SUI pays Sui transaction gas and relay tips.
+- SUI pays transaction gas and upload-relay tips.
 - WAL pays Walrus storage registration.
+- Maker and OC upload checkpoints survive reload in the same browser profile.
+- Certified Walrus data and Sui objects are not deleted when a local draft is removed.
+- A published Maker is immutable; publish a new Maker version to change its art or rules.
 
-Mainnet transactions are irreversible and consume real assets. Use a dedicated deployment wallet, verify its address and balances, retain the package `UpgradeCap`, and record every transaction digest before opening public onboarding.
+## Rollback
 
-The current upload session is held in browser memory. Do not treat it as durable recovery yet: keep source files until certification succeeds, and retry from preparation after a refresh or interrupted upload.
-
-## Backendless Rule
-
-If a feature needs persistence, ask first:
-
-- Can it be a Sui object?
-- Can the file be a Walrus blob?
-- Can the index be derived from events?
-- Can the wallet sign the transaction directly?
-
-Only add a backend if it is strictly an optional indexer, cache, or analytics layer.
+If the web release is faulty, roll Vercel back to the previous deployment. If a Maker is faulty, archive it; do not attempt to erase history. If the Move package needs an upgrade, stop onboarding, publish the reviewed upgrade through the documented `UpgradeCap` policy, update runtime config only if required, and repeat the smoke test.

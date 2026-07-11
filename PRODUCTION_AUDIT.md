@@ -1,54 +1,53 @@
 # Animacraft Production Audit
 
-Audit target: public creator onboarding, user OC creation, and Sui/Walrus Mainnet publishing without an application backend.
+Audit target: five invited creators publishing real Character Makers and users making/minting OCs on Sui and Walrus Mainnet without an application backend.
 
-## Release decision
+## Decision
 
-**Vercel Preview: ready. Public Mainnet production: not ready.**
+**Code candidate: pass. Mainnet activation: waiting for package publication, runtime config, and signed smoke-test evidence.**
 
-The web application builds as a static deployment and the core Character Maker workflow is implemented. Mainnet publication is intentionally blocked while `public/config.js` contains a placeholder package id. Do not remove that gate until the deployed package and first end-to-end transaction are verified.
+The placeholder package id remains a hard write gate. A Vercel Preview may be deployed immediately; do not call it Mainnet-live until the manual activation checklist in `PRODUCTION_STATUS.md` passes.
 
-## Product workflow
+## End-to-End Model
 
-1. A visitor connects a Sui wallet before My Page and creator actions become available.
-2. A creator opens My Page, enters Creator Studio, and creates or opens an OC Maker.
-3. Character Maker is the persistent work surface. Every Part owns its Items, Layers, Colors, and image files.
-4. Composition Order only controls the final stack across Parts; it does not create a second Layer ownership model.
-5. Rules and Palette Rules constrain valid combinations.
-6. Preview Check validates the public maker before publication.
-7. On-chain Publish uploads the manifest and image assets to Walrus, then signs the Sui publication transaction.
-8. A user opens a published Maker, chooses Items, uploads the resulting OC data, and signs an OCCharacter mint transaction.
+1. A disconnected visitor browses public on-chain Makers and Docs.
+2. A creator connects a wallet and creates a wallet-isolated local draft.
+3. Each Part owns Items, Layers, Colors, icons, and its PNG matrix.
+4. Composition Order only controls the final cross-Part stack.
+5. Rules prevent incompatible selections; Last Bastion Parts remain required and rule-proof.
+6. Preview Check validates metadata, structure, image cells, rules, palette links, limits, and policy.
+7. Walrus prepare/register/upload/certify stages persist recovery checkpoints locally.
+8. One Sui PTB creates or reuses a CreatorProfile, registers the Maker, publishes it, and shares it.
+9. A user makes an OC, stores its final image/profile quilt, and mints an owned OCCharacter against the shared Maker.
 
-## Completed controls
+## Passed Controls
 
-- Maker edit state and local drafts are isolated by wallet and Maker id.
-- Publication blocks empty Parts, missing public Item images, duplicate ids, broken rule references, invalid royalty values, and more than 750 Parts.
-- Creator Studio is wallet-gated, selection rules can target whole Parts or specific public Items, and publication requires every public Item's Layer × Color PNG matrix.
-- Draft-only Items are excluded from the publication manifest and Walrus quilt; public previews render the selected local layer/color assets in composition order.
-- Item images and icons enforce file type, byte-size, and image-dimension limits.
-- Walrus quilt preparation enforces unique identifiers, file-count limits, and a total byte limit.
-- User-controlled names and labels are escaped before dynamic HTML insertion in primary editor and gallery surfaces.
-- Wallet signing is required for Sui state changes; private keys are not stored by the application.
-- Vercel headers include a Content Security Policy and other baseline browser protections.
-- GitHub pull requests run repository hygiene plus a clean production web build.
+- Wallet connection gates every write workflow; no application key, mnemonic, signer, or backend database exists.
+- Draft metadata, source files, and upload checkpoints live in IndexedDB and are namespaced by wallet and Maker.
+- Public manifests are limited to 10 MB and validated for schema, canvas, duplicate identifiers, matrix completeness, asset references, rules, palettes, coordinates, and blend modes.
+- Source images enforce PNG type, 20 MB per-file size, maximum dimensions, and the Maker canvas ratio.
+- Walrus quilts enforce Blob inputs, unique 1-512 byte identifiers, 5,000 files, and 500 MB total size.
+- Dynamic public names and labels are escaped; public URLs are restricted to HTTP(S); CSP blocks object/embed content and allows only required WASM execution.
+- Published Makers are shared but cannot be publicly transferred or shared outside the defining Move module.
+- Move rejects duplicate Items and Colors, oversized structures/strings, empty Part records, invalid Last Bastion rules, unregistered recipe Colors, forged Part order, forged BCS recipe hashes, palette/selection violations, and archived Maker mints.
+- Published Maker content is immutable. Creator authorization is checked for archive/restore; existing OC rights snapshots survive archive.
+- Eighteen Node integrity tests, twenty Move tests, syntax checks, `git diff --check`, and the Vite production build pass locally.
 
-## P0 release blockers
+## Remaining External Gates
 
-- Publish and verify the Move package on Sui Mainnet; record the package id, transaction digest, publisher, and UpgradeCap custodian.
-- Configure the verified package id and execute one complete real-asset creator publication and user mint on Mainnet.
-- Replace hard-coded gallery data with chain-derived Maker discovery and Walrus manifest hydration.
-- Persist resumable Walrus upload state so a refresh or relay failure cannot strand a paid upload workflow.
-- Establish moderation, takedown, content reporting, and license-dispute operations for public uploads.
-- Run Move tests in CI with a pinned Sui CLI and obtain an independent Move security review.
+- Publish and verify the package on Mainnet; document `UpgradeCap` custody.
+- Configure the package id and run creator/user Mainnet transactions with real SUI and WAL.
+- Confirm the production Vercel CSP with wallet connection and Walrus WASM upload in the deployed origin.
+- Establish creator terms, reporting, takedown, and license-dispute operations.
+- Obtain an independent Move review before unrestricted or high-value use.
 
-## P1 before scale
+## Known Launch Limits
 
-- Batch large Maker registrations to stay within transaction and gas limits.
-- Add automated browser tests for wallet gating, Maker isolation, upload validation, preview, and publication recovery.
-- Put the UpgradeCap under a documented multisig policy and define upgrade/incident procedures.
-- Add chain/indexer health monitoring and user-facing degraded-state handling.
-- Test all five locales at mobile and desktop widths with production-length creator and asset names.
-
-## Deployment gate
-
-Vercel may deploy the current branch as a Preview. Promote to the public production domain only when every P0 item has an owner, evidence, and a pass result. The placeholder package id must remain a hard failure, never a silent fallback.
+- The browser publisher registers at most 450 Part + public Item + Color + selection rule + palette-link records in one PTB. Larger Makers require a future batched registration flow.
+- Sui GraphQL and Walrus endpoints are external availability dependencies. A manual refresh, bounded Walrus read retry, and visible degraded state exist; production monitoring and dedicated Sui capacity are still required.
+- Event discovery currently reads up to the 500 most recent published Maker IDs. That is sufficient for the invited pilot but requires an on-chain index or paginated catalog strategy before large-scale discovery.
+- Policy fields record license and royalty intent but do not collect payments or settle royalties.
+- IndexedDB is local to one browser profile. Exported manifests and original source art remain the creator's responsibility; cross-device draft sync is not implemented.
+- Mainnet storage defaults to 53 Walrus epochs, currently about two years. Certified files are immutable for that term but require a future signed extension to remain available beyond it.
+- Move verifies the canonical recipe, not the pixels of the user-supplied rendered PNG. Consumers should treat the on-chain Part/Item/Color recipe as authoritative display provenance.
+- Public Template Plaza and Maker-detail routes were exercised in the local in-app browser at `1280 x 720` and `390 x 844`. Direct hash routes, template-first ordering, sticky-header clearance, text clipping, and horizontal overflow passed. Wallet-signed creator and mint paths remain part of the required deployed Mainnet smoke test.

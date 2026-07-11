@@ -1,70 +1,60 @@
 # Animacraft Move Protocol
 
-Animacraft is an independent Sui Move package for fully on-chain character maker ownership, licensing, and OC provenance.
+This independent Sui Move package implements the minimum fully on-chain Character Maker lifecycle. Walrus stores large files; Move stores canonical creator authority, Maker structure, publication state, recipe rules, policy snapshots, and OC ownership.
 
-It is intentionally separate from Soulidity. The two products can live in the same repository and cooperate through adapters, but Animacraft can be published, upgraded, and integrated on its own.
+## Objects
 
-## Production Scope
+- `CreatorProfile`: wallet owner, display metadata, payout address, Maker count, and Maker IDs.
+- `OCMaker`: non-transferable module-controlled Maker with Parts, public Items, allowed Colors, selection and palette rules, license policy, Walrus Quilt Blob ID, publication state, and archive state.
+- `LicensePolicy`: license kind, royalty BPS, commercial/remix permission, and attribution requirement.
+- `OCCharacter`: user-owned result with Maker provenance, Walrus image/profile references, 32-byte recipe hash, full recipe, and copied policy.
 
-This package owns the minimum on-chain loop:
+## Shared Maker Model
 
-1. Creator registers a `CreatorProfile`.
-2. Creator creates an `OCMaker` template.
-3. Creator adds maker parts and item metadata.
-4. Creator publishes the maker with a Walrus manifest blob id.
-5. User mints an `OCCharacter` from the published maker.
-6. The OC stores its recipe hash, rendered image blob id, profile JSON blob id, and a snapshot of the maker license.
+Published Makers must be shared so any wallet can pass an immutable `&OCMaker` to `mint_oc_character`. `OCMaker` intentionally has no `store` ability, so outside modules cannot transfer or publicly share it and bypass Animacraft lifecycle checks.
 
-Large PNG layers, preview images, JSON manifests, and rendered OC files should live in Walrus. The Move objects keep canonical ownership, policy, provenance, and queryable references.
+The production PTB calls:
 
-## Main Objects
+1. `new_creator_profile` when the wallet has no profile, otherwise reuses its profile object.
+2. `new_oc_maker`.
+3. `add_part`, `add_color`, `add_item`, `add_selection_rule`, and `add_palette_link` for the validated public structure.
+4. `publish_maker` with the certified Walrus Quilt Blob ID.
+5. `share_published_maker` while the Maker is still fresh in the same transaction.
+6. Calls `keep_creator_profile` for a newly created profile. `CreatorProfile` has no generic `store` ability, so its explicit owner cannot drift from Sui object ownership.
 
-- `CreatorProfile`: creator identity, payout address, and maker count.
-- `OCMaker`: creator-owned maker template with part records, item records, manifest reference, and publication state.
-- `LicensePolicy`: license/royalty rules copied into each OC at mint time.
-- `OCCharacter`: user-owned finished OC created from a published maker.
-- `RecipeSlot`: selected part, item, color, and render order in an OC recipe.
+## Enforced Invariants
 
-## Entry Flow
+- Valid license, Part, and Item-gate enums.
+- Royalty BPS from 0 to 10,000.
+- At most 750 Parts, 5,000 Items, 1,000 rules, and 32 Colors per Part.
+- Bounded names, descriptions, URIs, and Walrus identifiers.
+- Unique Part keys and Item keys within each Part.
+- Every published Part has at least one Item and at least one Part is menu-visible.
+- Last Bastion Parts are required and cannot be targeted by selection rules.
+- Publication locks metadata, policy, structure, and rules.
+- Archive blocks new OC mints without changing existing OCs.
+- Recipes reference real Parts, Items, and registered Colors, preserve published Part order, contain no duplicate Part, include every required Part, and satisfy selection and palette rules.
+- OC recipe hashes are SHA-256 over the canonical BCS `vector<RecipeSlot>` and are recomputed by Move rather than trusted from the caller.
 
-Simple frontends can call:
+## Lifecycle
 
-- `create_creator_profile`
-- `create_oc_maker`
-- `add_part`
-- `add_item`
-- `publish_maker`
-- `mint_oc_character`
+- Local draft deletion is frontend-only.
+- `publish_maker` makes the current version immutable.
+- `set_maker_archived` is creator-only and reversible.
+- Existing `OCCharacter` ownership, recipe, provenance, and policy snapshots survive archive.
+- Published Sui records and certified Walrus files are not erased by deleting local browser data.
 
-Composable PTB flows can call:
-
-- `new_creator_profile`
-- `new_oc_maker`
-- `new_oc_character`
-
-The `new_*` functions return objects instead of transferring them directly, so wallet flows can combine object creation with later actions such as Kiosk listing, Soulidity identity binding, or marketplace settlement.
-
-## Boundaries
-
-Animacraft does not directly own:
-
-- Marketplace payment settlement.
-- Kiosk listing policy.
-- Soulidity agent/identity memory.
-- Walrus upload execution.
-- Creator fiat/off-chain onboarding.
-
-Those should be integrated through adapters after the core creator/maker/OC loop is stable.
-
-## Suggested Integration Layers
-
-- `animacraft`: maker templates, licenses, recipe provenance, OC minting.
-- `walrus`: files, layer PNGs, icons, manifests, rendered OC images.
-- `soulidity`: optional agent identity, paid access, collections, broader marketplace rules.
-- `frontend`: editor state, validation UX, upload pipeline, wallet PTBs.
-
-## Build
+## Build and Test
 
 ```bash
 sui move build
+sui move test
 ```
+
+The current suite contains 20 tests covering constants, valid publication/mint, shared Maker creation, archive/restore, archived mint rejection, enum validation, duplicate Item and rule rejection, empty Part rejection, Last Bastion rules, forged hashes, unregistered Colors, forged order, linked palettes, selection rules, and the canonical web/Move BCS hash fixture.
+
+One `share_owned` lint warning is intentionally suppressed on `share_published_maker`. It only succeeds for a freshly created published object in the same transaction; the runtime aborts attempts to share an older owned object.
+
+## Explicit Boundary
+
+This package records license and royalty policy but does not execute payments, premium-Part access, Kiosk listings, resale, or royalty settlement. Those require separate reviewed adapters.

@@ -8,7 +8,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "check": "node --check app.js && node --check chain-runtime.js && npm run build",
+    "test": "node --test",
+    "check": "node --check app.js && node --check chain-runtime.js && node --check draft-store.js && node --check manifest-validation.js && node --check recipe-hash.js && node --check remote-read.js && npm test && npm run build",
     "move:build": "cd move/animacraft && sui move build",
     "move:test": "cd move/animacraft && sui move test"
   },

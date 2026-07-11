@@ -1,59 +1,77 @@
 # Animacraft Creator Guide
 
-Animacraft centers creator work on one Character Maker workspace. A Part owns its Layers, Colors, and Items. The global composition order only decides how those owned Layers stack on the final canvas.
+Animacraft uses one Character Maker workspace. A **Part** is a user-facing category such as Eyes, Front Hair, or Outfit. Each Part owns its Items, Layers, Colors, icons, and PNG files. **Composition Order** only arranges those owned Layers across Parts.
 
 ## Data Model
 
 ```text
 OCMaker
-├── Part
-│   ├── Part settings
-│   ├── Layer(s)
-│   ├── Color(s)
-│   └── Item(s)
-│       ├── Picker icon
-│       └── Item images: Layer × Color
-├── Selection rules
-├── Palette links
-├── License policy
-└── Walrus manifest
+|- Part
+|  |- Part settings
+|  |- Layer(s)
+|  |- Color(s)
+|  `- Item(s)
+|     |- Picker icon (optional)
+|     `- Item images: one PNG per Layer x Color cell
+|- Selection rules
+|- Palette links
+|- License policy
+`- Walrus manifest
 ```
 
-An Item image belongs to one exact `Part + Item + Layer + Color` cell. Standard Parts may add Layers. Left-right paired Parts receive fixed Left and Right Layers. Last bastion Parts keep a fixed fallback Layer.
+The number of required files for one Part is:
 
-## Creator Workflow
+```text
+public Items x Layers x Colors
+```
 
-1. Open **My Page → Creator Studio**, create an OC Maker in the library, or open an existing draft.
-2. The draft opens in **Character Maker**. Add the Parts users need to choose from.
-3. Select a Part and configure its immutable type, icon, menu visibility, anchor, remove behavior, and manifest policy.
-4. Add Layers and Colors inside that Part. Keep the first version small; every added Layer or Color expands the Item image matrix.
-5. Add Items, set their display order and visibility, then upload PNGs into their Layer × Color cells.
-6. Use the persistent canvas while switching Items. Open **Composition Order** only to arrange Layers across Parts or adjust layer offsets, opacity, and blend mode. Layers still belong to their Part; this list is only the final cross-Part stack.
-7. Use **Maker Top** as a status overview. Continue editing through Character Maker, Rules, Palette Rules, Preview Check, On-chain Publish, and Settings.
-8. Save a local draft often. Before publishing, reconnect the same wallet and reselect local image files if the browser was reloaded.
-9. Add incompatible-choice logic in **Rules**. Leave an Item selector on "Any Item" for a whole-Part rule, or choose a specific public Item on either side for clipping and compatibility rules. Add shared color controls in **Palette Rules**.
-10. Run **Preview Check**. Every published Item must fill its complete Layer × Color PNG matrix, every rule must point to an available Part or Item, and at least one Part must be visible.
-11. In **On-chain Publish**, prepare one Walrus quilt, register and upload it, certify it, then publish the OCMaker object on Sui.
+## Build a Maker
 
-## Image Preparation
+1. Connect the creator wallet and open **MyPage -> Create maker**.
+2. Create a square `1024 x 1024` or portrait `1080 x 1920` Maker. Use the Character starter or a blank canvas.
+3. In **Character Maker**, add or select a Part.
+4. Choose its type once:
+   - **Standard:** one or more freely managed Layers.
+   - **Left-right pair:** fixed Left and Right Layers, each positioned independently.
+   - **Last bastion:** required fallback Part that cannot be targeted by incompatibility rules.
+5. In **Layers & colors**, define the image matrix. Adding a Layer or Color adds one required cell to every public Item in that Part.
+6. In **Items**, add user choices, set display order and publication state, optionally upload a picker icon, then fill every PNG cell.
+7. Use **Composition Order** to move Layers front/behind and set X/Y offset, opacity, or blend mode. The editor preview and final exported PNG use the same values.
+8. In **Rules**, block incompatible choices between two non-Last-Bastion Parts. A blank Item selector means the whole Part; a selected Item creates an Item-specific rule.
+9. In **Palette Rules**, link Parts whose colors should change together. Linked Parts must publish the same exact hex Color set; the player selects one shared value and Sui enforces it at mint.
+10. Complete Maker name, description, creator, world/style, license kind, and royalty policy in **Settings**.
+11. Run **Preview Check** until every blocking check passes.
+12. In **On-chain Publish**, prepare, register/upload, certify, and publish.
 
-- Item images must be PNG.
-- Use transparent backgrounds for character layers.
-- Choose the Maker canvas before editing: `1024 × 1024` for square Makers or `1080 × 1920` for portrait Makers.
-- Images below `600 × 600` receive a warning.
-- Separate front and back artwork into two Layers of the same Part when one Item must change them together.
-- Every Layer × Color cell of a published Item is required. Mark an unfinished Item as **Draft only**, or remove the unused Layer/Color before publication.
+## Image Rules
 
-The underlying relationship follows established character-maker practice: Parts contain Layers, Colors, and Items, and the required image count grows with `Items × Layers × Colors`. See Picrew's official [creation sequence](https://support.picrew.me/en/create_imagemaker/create_first_process) and [item image upload guide](https://support.picrew.me/en/creator_functions/item_image_upload) for the comparable model.
+- Item images must be PNG and no larger than 20 MB or `8192 x 8192`.
+- Every image must use the Maker's selected canvas ratio.
+- For best quality, upload at least the Maker canvas size: `1024 x 1024` or `1080 x 1920`.
+- Use transparency for character layers. A background Part may intentionally fill the canvas.
+- Keep corresponding artwork aligned to the same origin. Use Layer X/Y only for deliberate offsets.
+- Item and Part icons may be PNG or JPEG up to 5 MB.
+- Mark unfinished Items **Draft only** so they are excluded from the public manifest and quilt.
 
-## Mainnet Publication
+## Saving and Recovery
 
-The browser keeps selected source files locally until publication begins. Animacraft then:
+Maker structure, source image Blobs, and Walrus upload checkpoints are stored in IndexedDB under the connected wallet and Maker. Saving and autosave survive normal reloads in the same browser profile; creators do not need to reselect files after every refresh.
 
-1. Encodes item images, icons, and the maker manifest into a Walrus quilt.
-2. Registers storage using the connected wallet.
-3. Uploads through the Walrus Mainnet upload relay.
-4. Certifies availability and resolves every QuiltPatchID.
-5. Publishes the creator profile and OCMaker index to Sui.
+Drafts are not cross-device cloud storage. Keep original art and a local manifest export. Private/incognito storage, browser-data cleanup, or another device will not contain the draft.
 
-Keep all source files until certification succeeds. The current browser session is not yet a durable upload recovery store.
+If a paid Walrus workflow is interrupted, reconnect the same wallet and use **Resume saved upload**. Do not edit the Maker between preparation and publication; any edit invalidates the old checkpoint and requires a new quilt.
+
+## Delete, Publish, Archive
+
+- Before publication, a creator may permanently delete a local Maker, Part, Item, optional Layer, or extra Color. Related local file references and invalid rules are removed.
+- Publishing stores an immutable version. Art, rules, policy, and manifest are no longer editable.
+- To revise a published Maker, create and publish a new version.
+- The creator may archive or restore the shared Sui Maker. Archive blocks new OC mints but preserves existing OCs, provenance, policy snapshots, and Walrus files.
+
+## Launch Limits
+
+- 100 Items, 32 Layers, and 32 Colors per Part.
+- 5,000 Walrus files per Maker release, including cover and manifest.
+- 450 total Part + public Item + Color + selection rule + palette-link records in the current one-transaction publisher.
+- New Maker and OC quilts default to 53 Walrus Mainnet epochs, currently about two years. Storage can be extended, so operators must schedule renewal before expiry.
+- Royalty BPS is recorded policy metadata. This release does not collect template payments or settle royalties.

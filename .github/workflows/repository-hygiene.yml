@@ -41,6 +41,13 @@ jobs:
           test -f CONTRIBUTING.md
           test -f index.html
           test -f app.js
+          test -f draft-store.js
+          test -f manifest-validation.js
+          test -f recipe-hash.js
+          test -f remote-read.js
+          test -f test/manifest-validation.test.js
+          test -f test/recipe-hash.test.js
+          test -f test/remote-read.test.js
           test -f styles.css
           test -f move/animacraft/Move.toml
           test -f move/animacraft/sources/animacraft.move

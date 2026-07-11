@@ -1,14 +1,38 @@
 import {
+  explorerObjectUrl,
   explorerTransactionUrl,
   certifyWalrusUpload,
+  getMakerObjects,
+  hashRecipe,
   initializeChain,
+  listOwnedCreatorProfiles,
+  listOwnedCharacters,
+  listOwnedMakers,
+  listPublishedMakerIds,
   mintCharacter,
   openWalletSelector,
   prepareWalrusUpload,
   publishMaker,
   registerAndUploadWalrus,
+  resolvePublishedMakerObjectId,
+  resumeWalrusUpload,
+  setMakerArchived,
   walrusFileUrl,
+  walrusQuiltFileUrl,
 } from './chain-runtime.js';
+import {
+  deleteMakerAssets,
+  deleteMakerDraftRecord,
+  deleteMakerUploadRecovery,
+  loadMakerAssets,
+  loadMakerDraftRecord,
+  loadMakerUploadRecovery,
+  replaceMakerAssets,
+  saveMakerDraftRecord,
+  saveMakerUploadRecovery,
+} from './draft-store.js';
+import { validateRemoteMakerManifest as validateMakerManifest } from './manifest-validation.js';
+import { responseBlobWithinLimit, responseBytesWithinLimit } from './remote-read.js';
 
 const slots = [
   { key: 'background', label: 'Background', icon: 'BG', colorKey: 'background', description: 'Scene, mood, and backdrop' },
@@ -75,11 +99,11 @@ const templates = [
     style: 'Daily icon',
     license: 'Personal use',
     royaltyBps: 300,
-    price: 'Free base + paid parts',
+    price: 'Starter example',
     accent: '#7b5cff',
     secondary: '#2db7a3',
     summary: 'A daily OC maker for profile icons, character sheets, and lightweight original characters.',
-    licenseNote: 'Generate personal icons and OC profiles. Commercial use requires an add-on license.',
+    licenseNote: 'Generate personal icons and OC profiles. Commercial use requires separate creator permission.',
   },
   {
     id: 'fantasy-flower',
@@ -90,11 +114,11 @@ const templates = [
     style: 'Fantasy character',
     license: 'Paid commercial',
     royaltyBps: 500,
-    price: 'Creator-set paid template',
+    price: 'Starter example',
     accent: '#2db7a3',
     secondary: '#f0a23a',
     summary: 'A fantasy-friendly maker for spirits, familiars, story characters, and worldbuilding.',
-    licenseNote: 'Starter policy example for a paid commercial Maker. Marketplace settlement is not active in this preview.',
+    licenseNote: 'Starter policy example for a paid commercial Maker. Payment settlement is not included in this release.',
   },
   {
     id: 'chibi-idol',
@@ -105,31 +129,41 @@ const templates = [
     style: 'Chibi idol',
     license: 'Personal use',
     royaltyBps: 250,
-    price: 'Free trial parts',
+    price: 'Starter example',
     accent: '#f06f8f',
     secondary: '#f0a23a',
     summary: 'A quick chibi maker for stage characters, fan OCs, and small profile images.',
-    licenseNote: 'Personal use by default. Paid parts can unlock limited use or commercial add-ons.',
+    licenseNote: 'Personal use by default. Commercial use requires separate creator permission.',
   },
 ];
 
 const swatches = ['#7b5cff', '#2db7a3', '#f06f8f', '#f0a23a', '#335c81', '#7d5a50', '#24202b', '#f1c9b1'];
+const MAX_MAKER_PARTS = 750;
+const MAX_MAKER_ITEMS = 5_000;
+const MAX_MAKER_RULES = 1_000;
+const MAX_SINGLE_PUBLISH_RECORDS = 450;
+const MAX_ITEMS_PER_PART = 100;
+const MAX_LAYERS_PER_PART = 32;
+const MAX_COLORS_PER_PART = 32;
 
 const defaultConfig = {
   network: 'mainnet',
-  rpcUrl: 'https://fullnode.mainnet.sui.io:443',
+  grpcUrl: 'https://fullnode.mainnet.sui.io:443',
+  graphqlUrl: 'https://sui-mainnet.mystenlabs.com/graphql',
   packageId: '0xTODO_ANIMACRAFT_PACKAGE',
   walrusAggregatorUrl: 'https://aggregator.walrus-mainnet.walrus.space',
   walrusUploadRelayUrl: 'https://upload-relay.mainnet.walrus.space',
   walrusRelayMaxTipMist: 1_000_000,
-  walrusEpochs: 2,
+  walrusEpochs: 53,
   featuredMakers: {},
   appUrl: location.origin,
 };
 
+const suppliedConfig = window.ANIMACRAFT_CONFIG || {};
 const runtimeConfig = {
   ...defaultConfig,
-  ...(window.ANIMACRAFT_CONFIG || {}),
+  ...suppliedConfig,
+  grpcUrl: suppliedConfig.grpcUrl || suppliedConfig.rpcUrl || defaultConfig.grpcUrl,
 };
 
 const chainActions = [
@@ -146,7 +180,7 @@ const chainActions = [
   {
     key: 'maker',
     title: 'OCMaker object',
-    body: 'Register creator profile, maker metadata, parts, item gates, and license policy on Sui.',
+    body: 'Register creator profile, public Parts, Items, Colors, selection and palette rules, archive state, and license policy on Sui.',
   },
   {
     key: 'oc',
@@ -165,11 +199,9 @@ const i18n = {
     walletConnected: 'Wallet connected',
     myPage: 'MyPage',
     walletFirstTitle: 'Connect your wallet first',
-    walletFirstCopy: 'MyPage, favorites, creator tools, saved OCs, and on-chain license actions unlock after wallet connection.',
+    walletFirstCopy: 'My OCs, creator tools, draft storage, publishing, and minting unlock after wallet connection.',
     connectSuiWallet: 'Connect Sui wallet',
     myPageCopy: 'Works and on-chain OCs',
-    favorite: 'Favorite',
-    favoriteCopy: 'Saved makers',
     createMaker: 'Create maker',
     createMakerCopy: 'Publish an OC template',
     makeOc: 'Make OC',
@@ -186,6 +218,45 @@ const i18n = {
     filterDaily: 'Daily icon',
     filterFantasy: 'Fantasy',
     filterChibi: 'Chibi',
+    publicMakers: 'public Makers',
+    mainnetObjects: 'Mainnet objects',
+    assetQuilts: 'asset quilts',
+    sourceOnchain: 'On-chain Maker',
+    sourceStarter: 'Starter example',
+    partsLabel: 'Parts',
+    itemsLabel: 'Items',
+    royaltyPolicy: 'royalty policy',
+    startMaking: 'Start making',
+    connectToMake: 'Connect to make',
+    viewMaker: 'View Maker',
+    noMatchingMakers: 'No matching Makers found.',
+    myOcs: 'My OCs',
+    myOcsCopy: 'Wallet-owned characters',
+    creatorStudio: 'Creator Studio',
+    creatorStudioCopy: 'Create, test, and publish Character Makers from one wallet-owned workspace.',
+    newOcMaker: 'New OC Maker',
+    makerLibrary: 'OC Maker Library',
+    walletOwnedMakers: 'Wallet-owned Makers',
+    preview: 'Preview',
+    saveDraft: 'Save draft',
+    exportManifest: 'Manifest',
+    release: 'Release',
+    makerTop: 'Maker Top',
+    characterMaker: 'Character Maker',
+    rules: 'Rules',
+    paletteRules: 'Palette Rules',
+    previewCheck: 'Preview Check',
+    onchainPublish: 'On-chain Publish',
+    settings: 'Settings',
+    recipeJson: 'Recipe JSON',
+    saveOcPackage: 'Save OC Package',
+    prepareMint: 'Prepare mint',
+    mintOc: 'Mint OC',
+    currentSlot: 'Current Part',
+    choosePart: 'Choose a Part',
+    livePreview: 'Live Preview',
+    templateLicense: 'Template License',
+    currentColor: 'Current color',
   },
   zh: {
     brandTagline: 'The Fully onchain Character Maker & Creator',
@@ -196,11 +267,9 @@ const i18n = {
     walletConnected: '钱包已连接',
     myPage: '我的页面',
     walletFirstTitle: '请先连接钱包',
-    walletFirstCopy: '连接钱包后可使用个人页、收藏、创作者工具、已保存 OC 与链上授权操作。',
+    walletFirstCopy: '连接钱包后可使用我的 OC、创作者工具、草稿保存、发布与铸造。',
     connectSuiWallet: '连接 Sui 钱包',
     myPageCopy: '作品与链上 OC',
-    favorite: '收藏',
-    favoriteCopy: '已保存模板',
     createMaker: '创建模板',
     createMakerCopy: '发布 OC 模板',
     makeOc: '捏 OC',
@@ -217,6 +286,45 @@ const i18n = {
     filterDaily: '日常头像',
     filterFantasy: '幻想',
     filterChibi: 'Q版',
+    publicMakers: '个公开模板',
+    mainnetObjects: '主网对象',
+    assetQuilts: '素材 Quilt',
+    sourceOnchain: '链上模板',
+    sourceStarter: '示例模板',
+    partsLabel: '部件',
+    itemsLabel: '选项',
+    royaltyPolicy: '版税政策',
+    startMaking: '开始捏 OC',
+    connectToMake: '连接钱包后开始',
+    viewMaker: '查看模板',
+    noMatchingMakers: '没有找到匹配的模板。',
+    myOcs: '我的 OC',
+    myOcsCopy: '钱包拥有的角色',
+    creatorStudio: '创作者工作台',
+    creatorStudioCopy: '在一个钱包工作区中创建、测试并发布角色模板。',
+    newOcMaker: '新建 OC 模板',
+    makerLibrary: 'OC 模板库',
+    walletOwnedMakers: '钱包拥有的模板',
+    preview: '预览',
+    saveDraft: '保存草稿',
+    exportManifest: '清单',
+    release: '发布',
+    makerTop: '模板概览',
+    characterMaker: '角色创建器',
+    rules: '组合规则',
+    paletteRules: '配色规则',
+    previewCheck: '发布检查',
+    onchainPublish: '链上发布',
+    settings: '设置',
+    recipeJson: '配方 JSON',
+    saveOcPackage: '保存 OC 包',
+    prepareMint: '准备铸造',
+    mintOc: '铸造 OC',
+    currentSlot: '当前部件',
+    choosePart: '选择部件',
+    livePreview: '实时预览',
+    templateLicense: '模板授权',
+    currentColor: '当前颜色',
   },
   ja: {
     brandTagline: 'The Fully onchain Character Maker & Creator',
@@ -227,11 +335,9 @@ const i18n = {
     walletConnected: '接続済み',
     myPage: 'マイページ',
     walletFirstTitle: '先にウォレットを接続してください',
-    walletFirstCopy: '接続後、マイページ、保存、作成ツール、OC、オンチェーン権限を利用できます。',
+    walletFirstCopy: '接続後、マイ OC、作成ツール、下書き保存、公開、ミントを利用できます。',
     connectSuiWallet: 'Sui ウォレット接続',
     myPageCopy: '作品とオンチェーン OC',
-    favorite: 'お気に入り',
-    favoriteCopy: '保存したメーカー',
     createMaker: 'メーカー作成',
     createMakerCopy: 'OC テンプレートを公開',
     makeOc: 'OC を作る',
@@ -248,6 +354,45 @@ const i18n = {
     filterDaily: '日常アイコン',
     filterFantasy: 'ファンタジー',
     filterChibi: 'ちび',
+    publicMakers: '公開メーカー',
+    mainnetObjects: 'メインネットオブジェクト',
+    assetQuilts: 'アセット Quilt',
+    sourceOnchain: 'オンチェーンメーカー',
+    sourceStarter: 'スターター例',
+    partsLabel: 'パーツ',
+    itemsLabel: 'アイテム',
+    royaltyPolicy: 'ロイヤリティ方針',
+    startMaking: 'OC を作る',
+    connectToMake: '接続して作る',
+    viewMaker: 'メーカーを見る',
+    noMatchingMakers: '一致するメーカーがありません。',
+    myOcs: 'マイ OC',
+    myOcsCopy: 'ウォレット所有キャラクター',
+    creatorStudio: 'クリエイタースタジオ',
+    creatorStudioCopy: '一つのウォレットワークスペースで Character Maker を作成、テスト、公開します。',
+    newOcMaker: '新しい OC メーカー',
+    makerLibrary: 'OC メーカーライブラリ',
+    walletOwnedMakers: 'ウォレット所有メーカー',
+    preview: 'プレビュー',
+    saveDraft: '下書き保存',
+    exportManifest: 'マニフェスト',
+    release: '公開',
+    makerTop: 'メーカー概要',
+    characterMaker: 'キャラクターメーカー',
+    rules: 'ルール',
+    paletteRules: 'パレットルール',
+    previewCheck: '公開チェック',
+    onchainPublish: 'オンチェーン公開',
+    settings: '設定',
+    recipeJson: 'レシピ JSON',
+    saveOcPackage: 'OC パッケージ保存',
+    prepareMint: 'ミント準備',
+    mintOc: 'OC をミント',
+    currentSlot: '現在のパーツ',
+    choosePart: 'パーツを選択',
+    livePreview: 'ライブプレビュー',
+    templateLicense: 'テンプレートライセンス',
+    currentColor: '現在の色',
   },
   ko: {
     brandTagline: 'The Fully onchain Character Maker & Creator',
@@ -258,11 +403,9 @@ const i18n = {
     walletConnected: '지갑 연결됨',
     myPage: '마이페이지',
     walletFirstTitle: '먼저 지갑을 연결하세요',
-    walletFirstCopy: '지갑을 연결하면 마이페이지, 즐겨찾기, 창작 도구, 저장된 OC, 온체인 라이선스 기능을 사용할 수 있습니다.',
+    walletFirstCopy: '지갑을 연결하면 내 OC, 창작 도구, 초안 저장, 게시, 민팅을 사용할 수 있습니다.',
     connectSuiWallet: 'Sui 지갑 연결',
     myPageCopy: '작품과 온체인 OC',
-    favorite: '즐겨찾기',
-    favoriteCopy: '저장한 메이커',
     createMaker: '메이커 만들기',
     createMakerCopy: 'OC 템플릿 게시',
     makeOc: 'OC 만들기',
@@ -279,6 +422,45 @@ const i18n = {
     filterDaily: '데일리 아이콘',
     filterFantasy: '판타지',
     filterChibi: '치비',
+    publicMakers: '공개 메이커',
+    mainnetObjects: '메인넷 오브젝트',
+    assetQuilts: '에셋 Quilt',
+    sourceOnchain: '온체인 메이커',
+    sourceStarter: '스타터 예시',
+    partsLabel: '파트',
+    itemsLabel: '아이템',
+    royaltyPolicy: '로열티 정책',
+    startMaking: 'OC 만들기',
+    connectToMake: '연결하고 만들기',
+    viewMaker: '메이커 보기',
+    noMatchingMakers: '일치하는 메이커가 없습니다.',
+    myOcs: '내 OC',
+    myOcsCopy: '지갑 소유 캐릭터',
+    creatorStudio: '크리에이터 스튜디오',
+    creatorStudioCopy: '하나의 지갑 작업공간에서 Character Maker를 만들고 테스트하고 게시합니다.',
+    newOcMaker: '새 OC 메이커',
+    makerLibrary: 'OC 메이커 라이브러리',
+    walletOwnedMakers: '지갑 소유 메이커',
+    preview: '미리보기',
+    saveDraft: '초안 저장',
+    exportManifest: '매니페스트',
+    release: '게시',
+    makerTop: '메이커 개요',
+    characterMaker: '캐릭터 메이커',
+    rules: '규칙',
+    paletteRules: '팔레트 규칙',
+    previewCheck: '게시 검사',
+    onchainPublish: '온체인 게시',
+    settings: '설정',
+    recipeJson: '레시피 JSON',
+    saveOcPackage: 'OC 패키지 저장',
+    prepareMint: '민팅 준비',
+    mintOc: 'OC 민팅',
+    currentSlot: '현재 파트',
+    choosePart: '파트 선택',
+    livePreview: '실시간 미리보기',
+    templateLicense: '템플릿 라이선스',
+    currentColor: '현재 색상',
   },
   vi: {
     brandTagline: 'The Fully onchain Character Maker & Creator',
@@ -289,11 +471,9 @@ const i18n = {
     walletConnected: 'Đã kết nối ví',
     myPage: 'Trang của tôi',
     walletFirstTitle: 'Kết nối ví trước',
-    walletFirstCopy: 'Sau khi kết nối ví, bạn có thể dùng MyPage, yêu thích, công cụ creator, OC đã lưu và quyền on-chain.',
+    walletFirstCopy: 'Sau khi kết nối ví, bạn có thể dùng OC của tôi, công cụ creator, lưu bản nháp, xuất bản và mint.',
     connectSuiWallet: 'Kết nối ví Sui',
     myPageCopy: 'Tác phẩm và OC on-chain',
-    favorite: 'Yêu thích',
-    favoriteCopy: 'Maker đã lưu',
     createMaker: 'Tạo maker',
     createMakerCopy: 'Xuất bản mẫu OC',
     makeOc: 'Tạo OC',
@@ -310,8 +490,53 @@ const i18n = {
     filterDaily: 'Icon hằng ngày',
     filterFantasy: 'Fantasy',
     filterChibi: 'Chibi',
+    publicMakers: 'Maker công khai',
+    mainnetObjects: 'Đối tượng Mainnet',
+    assetQuilts: 'Quilt tài nguyên',
+    sourceOnchain: 'Maker on-chain',
+    sourceStarter: 'Ví dụ khởi đầu',
+    partsLabel: 'Part',
+    itemsLabel: 'Item',
+    royaltyPolicy: 'chính sách royalty',
+    startMaking: 'Bắt đầu tạo OC',
+    connectToMake: 'Kết nối để tạo',
+    viewMaker: 'Xem Maker',
+    noMatchingMakers: 'Không tìm thấy Maker phù hợp.',
+    myOcs: 'OC của tôi',
+    myOcsCopy: 'Nhân vật thuộc sở hữu ví',
+    creatorStudio: 'Creator Studio',
+    creatorStudioCopy: 'Tạo, thử nghiệm và xuất bản Character Maker trong một không gian thuộc ví.',
+    newOcMaker: 'OC Maker mới',
+    makerLibrary: 'Thư viện OC Maker',
+    walletOwnedMakers: 'Maker thuộc sở hữu ví',
+    preview: 'Xem trước',
+    saveDraft: 'Lưu bản nháp',
+    exportManifest: 'Manifest',
+    release: 'Xuất bản',
+    makerTop: 'Tổng quan Maker',
+    characterMaker: 'Character Maker',
+    rules: 'Quy tắc',
+    paletteRules: 'Quy tắc bảng màu',
+    previewCheck: 'Kiểm tra xuất bản',
+    onchainPublish: 'Xuất bản on-chain',
+    settings: 'Cài đặt',
+    recipeJson: 'Recipe JSON',
+    saveOcPackage: 'Lưu gói OC',
+    prepareMint: 'Chuẩn bị mint',
+    mintOc: 'Mint OC',
+    currentSlot: 'Part hiện tại',
+    choosePart: 'Chọn Part',
+    livePreview: 'Xem trước trực tiếp',
+    templateLicense: 'Giấy phép mẫu',
+    currentColor: 'Màu hiện tại',
   },
 };
+
+const requiredLocaleKeys = Object.keys(i18n.en);
+Object.entries(i18n).forEach(([locale, dictionary]) => {
+  const missing = requiredLocaleKeys.filter((key) => !Object.hasOwn(dictionary, key));
+  if (missing.length) throw new Error(`Locale ${locale} is missing: ${missing.join(', ')}`);
+});
 
 const protocolSteps = [
   ['01', 'Material Layers', 'Creators upload transparent PNGs, anchors, order, and slot metadata to Walrus.'],
@@ -362,34 +587,71 @@ const state = {
   walletAddress: '',
   walletProvider: null,
   walletStatus: 'disconnected',
-  chainMode: runtimeConfig.packageId.includes('TODO') ? 'draft' : 'live',
   publishing: false,
   publishStatus: '',
   publishDigest: '',
+  makerObjectId: '',
+  makerArchived: false,
   makerUploadSession: null,
   pendingMakerAssets: [],
   makerUploadStage: 'idle',
-  makerManifestPatchId: '',
+  makerQuiltId: '',
+  pendingMakerCoverBlob: null,
+  hasMakerUploadRecovery: false,
   pendingMakerManifestJson: '',
   minting: false,
   mintStatus: '',
   mintDigest: '',
+  mintObjectId: '',
   ocUploadSession: null,
   ocUploadStage: 'idle',
+  hasOcUploadRecovery: false,
   ocImagePatchId: '',
   ocProfilePatchId: '',
+  pendingOcImageBlob: null,
+  pendingOcProfileBlob: null,
   pendingOcPackage: null,
   pendingOcRecipeHash: null,
   pendingOcRecipeJson: '',
+  pendingOcFingerprint: '',
   previewingMaker: false,
-  locale: localStorage.getItem('animacraft-locale') || 'en',
+  pendingWalletPage: '',
+  pendingWalletTemplateId: '',
+  routeMakerReference: '',
+  chainMakersLoadedFor: '',
+  chainMakersLoading: false,
+  chainMakerLoadError: '',
+  recoveringMakerDigest: '',
+  creatorProfileObjectId: '',
+  ownedCharacters: [],
+  ownedCharactersLoading: false,
+  ownedCharactersError: '',
+  ownedCharactersLoadedFor: '',
+  draftSaveStatus: 'idle',
+  draftSaveMessage: '',
+  locale: Object.hasOwn(i18n, localStorage.getItem('animacraft-locale') || '') ? localStorage.getItem('animacraft-locale') : 'en',
 };
 
 const makerModels = new Map();
 const loadedMakerDrafts = new Set();
+const loadedLocalMakerIndexes = new Set();
+const loadedMakerAssetDrafts = new Set();
+const loadedMakerUploadRecoveries = new Set();
+const loadedOcUploadRecoveries = new Set();
+let pendingConfirmation = null;
+let makerAutosaveTimer = null;
 
 function makerDraftStorageKey(templateId = state.templateId) {
   return `animacraft-maker-draft-v2:${state.walletAddress || 'local'}:${templateId}`;
+}
+
+function makerAssetStorageKey(templateId = state.templateId) {
+  return `${state.walletAddress || 'local'}:${templateId}`;
+}
+
+function ocUploadStorageKey(templateId = state.templateId) {
+  const template = templates.find((candidate) => candidate.id === templateId);
+  return `${state.walletAddress || 'local'}:oc:${template?.objectId || runtimeConfig.featuredMakers?.[templateId] || templateId}`;
 }
 
 function defaultMakerVisual() {
@@ -412,19 +674,27 @@ function defaultMakerVisual() {
   });
 }
 
-function createMakerModel({ empty = false, canvas = { width: 1024, height: 1024 } } = {}) {
+function createMakerModel({ empty = false, starter = false, canvas = { width: 1024, height: 1024 } } = {}) {
+  const modelSlots = empty ? [] : structuredClone(slots);
+  const modelParts = starter
+    ? Object.fromEntries(slots.map((slot) => [slot.key, [{ id: 'normal', label: 'Normal', displayOrder: 1, visibility: 'public', images: {}, iconAsset: null }]]))
+    : empty ? {} : structuredClone(parts);
+  const visual = defaultMakerVisual();
+  if (starter) modelSlots.forEach((slot) => { visual[slot.key] = 'normal'; });
   return {
     canvas: { ...canvas },
-    slots: empty ? [] : structuredClone(slots),
-    parts: empty ? {} : structuredClone(parts),
-    slotOrder: empty ? [] : slots.map((slot) => slot.key),
+    slots: modelSlots,
+    parts: modelParts,
+    slotOrder: modelSlots.map((slot) => slot.key),
     layerOrder: [],
-    visual: defaultMakerVisual(),
+    visual,
     rules: [],
     paletteLinks: empty ? [] : [{ primaryPartKey: 'hairBack', linkedPartKey: 'hairFront' }],
     assets: [],
     publishDigest: '',
     publishStatus: '',
+    makerObjectId: '',
+    makerArchived: false,
   };
 }
 
@@ -443,14 +713,33 @@ function syncActiveMakerModelRefs() {
     assets: state.assets,
     publishDigest: state.publishDigest,
     publishStatus: state.publishStatus,
+    makerObjectId: state.makerObjectId,
+    makerArchived: state.makerArchived,
   });
 }
 
-function activateMakerModel(templateId, options = {}) {
-  syncActiveMakerModelRefs();
-  if (!makerModels.has(templateId)) makerModels.set(templateId, createMakerModel(options));
-  const model = makerModels.get(templateId);
+function resetOcUploadState() {
+  state.minting = false;
+  state.mintStatus = '';
+  state.mintDigest = '';
+  state.mintObjectId = '';
+  state.ocUploadSession = null;
+  state.ocUploadStage = 'idle';
+  state.hasOcUploadRecovery = false;
+  state.ocImagePatchId = '';
+  state.ocProfilePatchId = '';
+  state.pendingOcImageBlob = null;
+  state.pendingOcProfileBlob = null;
+  state.pendingOcPackage = null;
+  state.pendingOcRecipeHash = null;
+  state.pendingOcRecipeJson = '';
+  state.pendingOcFingerprint = '';
+}
+
+function applyMakerModelToState(templateId, model) {
+  const previousTemplateId = state.templateId;
   state.templateId = templateId;
+  if (previousTemplateId !== templateId) resetOcUploadState();
   state.makerCanvas = model.canvas;
   state.makerSlots = model.slots;
   state.makerParts = model.parts;
@@ -462,17 +751,33 @@ function activateMakerModel(templateId, options = {}) {
   state.assets = model.assets;
   state.publishDigest = model.publishDigest;
   state.publishStatus = model.publishStatus;
+  state.makerObjectId = model.makerObjectId || '';
+  state.makerArchived = Boolean(model.makerArchived);
   state.makerUploadSession = null;
   state.pendingMakerAssets = [];
   state.makerUploadStage = 'idle';
-  state.makerManifestPatchId = '';
+  state.makerQuiltId = '';
+  state.pendingMakerCoverBlob = null;
+  state.hasMakerUploadRecovery = false;
   state.pendingMakerManifestJson = '';
   state.selectedSlot = state.slotOrder[0] || '';
   state.selectedItem = state.selectedSlot ? state.visual[state.selectedSlot] || slotItems(state.selectedSlot)[0]?.id || '' : '';
   const firstLayer = state.selectedSlot ? creatorLayers(allSlots()[0])[0] : null;
   state.selectedLayer = firstLayer ? creatorLayerKey(state.selectedSlot, firstLayer.id) : '';
   state.partSubView = 'items';
-  if (!loadedMakerDrafts.has(makerDraftStorageKey(templateId))) restoreMakerDraft(templateId);
+}
+
+function activateMakerModel(templateId, options = {}) {
+  if (makerAutosaveTimer) {
+    clearTimeout(makerAutosaveTimer);
+    makerAutosaveTimer = null;
+    saveCurrentMakerDraft({ silent: true });
+  }
+  syncActiveMakerModelRefs();
+  if (!makerModels.has(templateId)) makerModels.set(templateId, createMakerModel(options));
+  const model = makerModels.get(templateId);
+  applyMakerModelToState(templateId, model);
+  if (state.walletConnected && !loadedMakerDrafts.has(makerDraftStorageKey(templateId))) restoreMakerDraft(templateId);
 }
 
 makerModels.set(state.templateId, {
@@ -487,6 +792,8 @@ makerModels.set(state.templateId, {
   assets: state.assets,
   publishDigest: state.publishDigest,
   publishStatus: state.publishStatus,
+  makerObjectId: state.makerObjectId,
+  makerArchived: state.makerArchived,
 });
 
 function $(id) {
@@ -501,11 +808,11 @@ function setLocale(locale) {
   state.locale = i18n[locale] ? locale : 'en';
   localStorage.setItem('animacraft-locale', state.locale);
   document.documentElement.lang = state.locale === 'zh' ? 'zh-CN' : state.locale;
-  renderI18n();
-  renderWalletState();
+  renderAll();
 }
 
 function renderI18n() {
+  document.documentElement.lang = state.locale === 'zh' ? 'zh-CN' : state.locale;
   document.querySelectorAll('[data-i18n]').forEach((node) => {
     node.textContent = t(node.dataset.i18n);
   });
@@ -525,8 +832,644 @@ function activeTemplate() {
   return templates.find((template) => template.id === state.templateId) || templates[0];
 }
 
+function makerIsPublished() {
+  return Boolean(state.publishDigest || state.makerObjectId || activeTemplate()?.source === 'chain');
+}
+
+function makerLifecycle() {
+  if (makerIsPublished()) return state.makerArchived ? 'archived' : 'published';
+  return activeTemplate()?.source === 'local' ? 'draft' : 'starter';
+}
+
+function ensureMakerEditable() {
+  if (!makerIsPublished()) return true;
+  state.publishStatus = state.makerArchived
+    ? 'This Maker is archived on Sui. Restore it before creating new OCs; its published version remains immutable.'
+    : 'Published Makers are immutable. Create a new version to change Parts, Items, Layers, rules, or assets.';
+  renderPublishAction();
+  return false;
+}
+
+function localMakerIndexKey(address = state.walletAddress) {
+  return `animacraft-local-makers-v1:${address || 'local'}`;
+}
+
+function persistLocalMakerIndex() {
+  if (!state.walletAddress) return;
+  const records = templates.filter((template) => template.source === 'local' && template.owner === state.walletAddress).map((template) => ({
+    id: template.id,
+    source: 'local',
+    owner: state.walletAddress,
+    name: template.name,
+    category: template.category,
+    creator: template.creator,
+    style: template.style,
+    license: template.license,
+    royaltyBps: template.royaltyBps,
+    price: template.price,
+    accent: template.accent,
+    secondary: template.secondary,
+    summary: template.summary,
+    licenseNote: template.licenseNote,
+  }));
+  localStorage.setItem(localMakerIndexKey(), JSON.stringify(records));
+}
+
+function loadLocalMakerIndex(address = state.walletAddress) {
+  const key = localMakerIndexKey(address);
+  if (!address || loadedLocalMakerIndexes.has(key)) return;
+  loadedLocalMakerIndexes.add(key);
+  try {
+    const records = JSON.parse(localStorage.getItem(key) || '[]');
+    if (!Array.isArray(records)) return;
+    records.slice().reverse().forEach((record) => {
+      const id = safeDraftText(record?.id, '', 128);
+      if (!isSafeKey(id) || templates.some((template) => template.id === id)) return;
+      templates.unshift({
+        id,
+        source: 'local',
+        owner: address,
+        name: safeDraftText(record.name, 'Untitled OC Maker', 128),
+        category: ['daily', 'fantasy', 'chibi'].includes(record.category) ? record.category : 'daily',
+        creator: safeDraftText(record.creator, shortAddress(address) || 'Creator', 128),
+        style: safeDraftText(record.style, 'OC Maker', 128),
+        license: ['Personal use', 'Free remix', 'Paid commercial', 'Exclusive commission'].includes(record.license) ? record.license : 'Personal use',
+        royaltyBps: Math.round(finiteNumber(record.royaltyBps, 0, 0, 10_000)),
+        price: 'Draft',
+        accent: safeCssColor(record.accent),
+        secondary: safeCssColor(record.secondary, '#f0a23a'),
+        summary: safeDraftText(record.summary, 'Character Maker draft.', 2_000),
+        licenseNote: safeDraftText(record.licenseNote, 'Draft maker.', 2_000),
+      });
+    });
+  } catch (error) {
+    console.warn('Ignored an unreadable local Maker index.', error);
+  }
+}
+
+function suiObjectFields(object) {
+  const json = object?.json || {};
+  return json.fields && typeof json.fields === 'object' ? json.fields : json;
+}
+
+function suiField(fields, ...names) {
+  for (const name of names) {
+    if (fields?.[name] !== undefined) return fields[name];
+  }
+  return undefined;
+}
+
+function suiJsonId(value) {
+  if (typeof value === 'string') return /^0x[0-9a-f]+$/i.test(value.trim()) ? value.trim() : '';
+  if (!value || typeof value !== 'object') return '';
+  return suiJsonId(value.id || value.bytes || value.address || value.fields);
+}
+
+function creatorProfileMakerIds(profile) {
+  const fields = suiObjectFields(profile);
+  const values = suiField(fields, 'maker_ids', 'makerIds');
+  return Array.isArray(values) ? values.map(suiJsonId).filter(Boolean) : [];
+}
+
+function makerLicenseLabel(policy = {}) {
+  const kind = Number(suiField(policy.fields || policy, 'license_kind', 'licenseKind') || 0);
+  return ['Personal use', 'Free remix', 'Paid commercial', 'Exclusive commission'][kind] || 'Personal use';
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15_000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchWalrusWithBackoff(url, options = {}, attempts = 4) {
+  const retryableStatuses = new Set([404, 408, 429, 500, 502, 503, 504]);
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetchWithTimeout(url, options);
+      if (response.ok || !retryableStatuses.has(response.status) || attempt === attempts - 1) return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts - 1) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500 * (2 ** attempt)));
+  }
+  throw lastError || new Error('Walrus did not return a readable response.');
+}
+
+function makerModelFromManifest(manifest, quiltId, object) {
+  const savedParts = Array.isArray(manifest?.parts) ? manifest.parts : [];
+  const visual = defaultMakerVisual();
+  const modelParts = {};
+  const modelSlots = savedParts.map((part) => {
+    const colors = Array.isArray(part.colors) && part.colors.length
+      ? part.colors.map((color) => ({ ...color }))
+      : [{ id: 'default', name: 'Default', value: '#7b5cff' }];
+    const layers = Array.isArray(part.layers) && part.layers.length
+      ? part.layers.map((layer) => ({
+          id: layer.id,
+          name: layer.name || layer.id,
+          x: Number(layer.x || 0),
+          y: Number(layer.y || 0),
+          opacity: Number(layer.opacity ?? 100),
+          blendMode: layer.blendMode || 'normal',
+          renderOrder: Number(layer.renderOrder || 0),
+        }))
+      : [{ id: 'normal', name: 'Normal', x: 0, y: 0, opacity: 100, blendMode: 'normal', renderOrder: 0 }];
+    const colorKey = part.key;
+    const slot = {
+      key: part.key,
+      label: part.label || part.key,
+      icon: String(part.label || part.key).slice(0, 2).toUpperCase(),
+      colorKey,
+      description: 'Published Animacraft Part',
+      kind: part.kind || 'standard',
+      menuVisible: part.menuVisible !== false,
+      allowRemove: part.allowRemove !== false,
+      defaultItemId: part.defaultItemId || part.items?.[0]?.id || '',
+      x: Number(part.anchor?.x || 0),
+      y: Number(part.anchor?.y || 0),
+      rightX: Number(part.anchor?.rightX || 0),
+      layers,
+      colors,
+      iconAsset: part.iconIdentifier ? {
+        identifier: part.iconIdentifier,
+        url: walrusQuiltFileUrl(quiltId, part.iconIdentifier),
+        remote: true,
+      } : null,
+    };
+    modelParts[part.key] = (part.items || []).map((item, index) => {
+      const images = {};
+      (item.images || []).forEach((image) => {
+        if (!image.identifier) return;
+        images[assetCellKey(image.layerId, image.colorId)] = {
+          identifier: image.identifier,
+          url: walrusQuiltFileUrl(quiltId, image.identifier),
+          remote: true,
+        };
+      });
+      return {
+        id: item.id,
+        label: item.label || item.id,
+        displayOrder: Number(item.displayOrder || index + 1),
+        visibility: item.visibility || 'public',
+        images,
+        iconAsset: item.iconIdentifier ? {
+          identifier: item.iconIdentifier,
+          url: walrusQuiltFileUrl(quiltId, item.iconIdentifier),
+          remote: true,
+        } : null,
+      };
+    });
+    visual[part.key] = slot.defaultItemId || modelParts[part.key][0]?.id || '';
+    visual.palette[colorKey] = colors[0].value;
+    return slot;
+  });
+  const layerOrder = modelSlots.flatMap((slot) => slot.layers.map((layer) => ({
+    key: creatorLayerKey(slot.key, layer.id),
+    renderOrder: layer.renderOrder,
+  }))).sort((left, right) => left.renderOrder - right.renderOrder).map((layer) => layer.key);
+  const fields = suiObjectFields(object);
+  return {
+    canvas: {
+      width: Number(manifest?.template?.canvas?.width || 1024),
+      height: Number(manifest?.template?.canvas?.height || 1024),
+    },
+    slots: modelSlots,
+    parts: modelParts,
+    slotOrder: modelSlots.map((slot) => slot.key),
+    layerOrder,
+    visual,
+    rules: Array.isArray(manifest?.rules) ? manifest.rules : [],
+    paletteLinks: Array.isArray(manifest?.paletteLinks) ? manifest.paletteLinks : [],
+    assets: (manifest?.assets || []).filter((asset) => asset.identifier).map((asset) => ({
+      ...asset,
+      url: walrusQuiltFileUrl(quiltId, asset.identifier),
+      remote: true,
+    })),
+    publishDigest: object.previousTransaction || 'on-chain',
+    publishStatus: '',
+    makerObjectId: object.objectId,
+    makerArchived: [true, 'true', 1, '1'].includes(suiField(fields, 'archived')),
+  };
+}
+
+async function hydrateChainMaker(object) {
+  const fields = suiObjectFields(object);
+  const quiltId = String(suiField(fields, 'manifest_blob_id', 'manifestBlobId') || '');
+  if (!quiltId) throw new Error(`OCMaker ${shortAddress(object.objectId)} has no Walrus Quilt ID.`);
+  const response = await fetchWalrusWithBackoff(walrusQuiltFileUrl(quiltId, 'animacraft-manifest.json'));
+  if (!response.ok) throw new Error(`Could not load Maker manifest (${response.status}).`);
+  const manifestBytes = await responseBytesWithinLimit(response, 10 * 1024 * 1024, 'The Maker manifest');
+  let manifest;
+  try {
+    manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
+  } catch {
+    throw new Error('The Maker manifest is not valid JSON.');
+  }
+  validateMakerManifest(manifest);
+  const featuredKey = Object.entries(runtimeConfig.featuredMakers || {}).find(([, objectId]) => objectId === object.objectId)?.[0];
+  const recoveredTemplate = templates.find((candidate) => candidate.objectId === object.objectId);
+  const id = featuredKey || recoveredTemplate?.id || `chain-${object.objectId}`;
+  const policy = suiField(fields, 'policy') || {};
+  const templateData = manifest.template || {};
+  const template = templates.find((candidate) => candidate.id === id) || {
+    id,
+    category: 'daily',
+    accent: '#27c5c8',
+    secondary: '#f0a23a',
+  };
+  Object.assign(template, {
+    source: 'chain',
+    owned: Boolean(object.owned),
+    objectId: object.objectId,
+    quiltId,
+    name: String(suiField(fields, 'name') || templateData.name || 'On-chain OC Maker'),
+    creator: String(suiField(fields, 'creator') || templateData.creator || 'Sui creator'),
+    style: String(templateData.style || 'OC Maker'),
+    license: makerLicenseLabel(policy),
+    royaltyBps: Number(suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || templateData.royaltyBps || 0),
+    price: 'On-chain',
+    summary: String(suiField(fields, 'description') || 'Published Animacraft Character Maker.'),
+    licenseNote: String(templateData.licenseNote || 'License and royalty policy are read from the published Sui OCMaker.'),
+    coverUrl: safeExternalUrl(
+      suiField(fields, 'cover_url', 'coverUrl')
+      || templateData.coverUrl
+      || (templateData.coverIdentifier ? walrusQuiltFileUrl(quiltId, templateData.coverIdentifier) : ''),
+    ),
+  });
+  if (!templates.includes(template)) templates.unshift(template);
+  const model = makerModelFromManifest(manifest, quiltId, object);
+  makerModels.set(id, model);
+  if (state.templateId === id) applyMakerModelToState(id, model);
+}
+
+async function loadChainMakers(owner = state.walletAddress) {
+  const loadKey = owner || 'public';
+  if (!packageConfigured() || state.chainMakersLoadedFor === loadKey) return;
+  state.chainMakersLoadedFor = loadKey;
+  state.chainMakersLoading = true;
+  state.chainMakerLoadError = '';
+  try {
+    const featuredIds = Object.values(runtimeConfig.featuredMakers || {});
+    let discoveryWarning = '';
+    const [legacyOwned, profiles, publishedIds] = await Promise.all([
+      owner ? listOwnedMakers(owner) : Promise.resolve([]),
+      owner ? listOwnedCreatorProfiles(owner) : Promise.resolve([]),
+      listPublishedMakerIds().catch((error) => {
+        discoveryWarning = error.message || 'Sui GraphQL Maker discovery is temporarily unavailable.';
+        return [];
+      }),
+    ]);
+    if (owner) state.creatorProfileObjectId = profiles[0]?.objectId || '';
+    const profileMakerIds = profiles.flatMap(creatorProfileMakerIds);
+    const ownedIds = new Set([...legacyOwned.map((object) => object.objectId), ...profileMakerIds]);
+    const discovered = await getMakerObjects([
+      ...featuredIds,
+      ...publishedIds,
+      ...profileMakerIds,
+      ...legacyOwned.map((object) => object.objectId),
+      ...(/^0x[0-9a-f]+$/i.test(state.routeMakerReference) ? [state.routeMakerReference] : []),
+    ]);
+    const byId = new Map(discovered.map((object) => [object.objectId, {
+      ...object,
+      owned: ownedIds.has(object.objectId),
+    }]));
+    const results = await Promise.allSettled([...byId.values()].map(hydrateChainMaker));
+    const failures = results.filter((result) => result.status === 'rejected');
+    if (failures.length) state.chainMakerLoadError = `${failures.length} on-chain Maker manifest${failures.length === 1 ? '' : 's'} could not be loaded from Walrus.`;
+    else if (discoveryWarning) state.chainMakerLoadError = discoveryWarning;
+    if (state.routeMakerReference) {
+      const target = templates.find((template) => template.id === state.routeMakerReference || template.objectId === state.routeMakerReference);
+      if (target) {
+        state.routeMakerReference = '';
+        activateMakerModel(target.id);
+        syncTemplateFields();
+        setPage('template');
+      }
+    }
+  } catch (error) {
+    state.chainMakerLoadError = error.message || 'Could not load on-chain Makers.';
+    state.chainMakersLoadedFor = '';
+  }
+  state.chainMakersLoading = false;
+  renderAll();
+  if (state.page === 'make') restoreOcUploadRecovery(state.templateId);
+}
+
+function renderOwnedCharacters() {
+  if (!$('ownedCharacterGrid')) return;
+  if ($('ownedCharacterStatus')) {
+    $('ownedCharacterStatus').textContent = state.ownedCharactersLoading
+      ? 'Reading wallet-owned OCCharacter objects from Sui…'
+      : state.ownedCharactersError || `${state.ownedCharacters.length} on-chain OC${state.ownedCharacters.length === 1 ? '' : 's'} owned by this wallet.`;
+  }
+  if (state.ownedCharactersLoading && !state.ownedCharacters.length) {
+    $('ownedCharacterGrid').innerHTML = '<div class="empty-state">Loading on-chain OCs…</div>';
+    return;
+  }
+  $('ownedCharacterGrid').innerHTML = state.ownedCharacters.length ? state.ownedCharacters.map((object) => {
+    const fields = suiObjectFields(object);
+    const policy = suiField(fields, 'license_snapshot', 'licenseSnapshot') || {};
+    const name = String(suiField(fields, 'name') || 'Untitled OC');
+    const imageUrl = safeExternalUrl(suiField(fields, 'image_url', 'imageUrl'));
+    const makerId = suiJsonId(suiField(fields, 'maker_id', 'makerId'));
+    return `
+      <article class="owned-oc-card">
+        <div class="owned-oc-media">
+          ${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(name)}" loading="lazy" />` : '<span>No image</span>'}
+        </div>
+        <div class="owned-oc-body">
+          <span class="template-token">${escapeHtml(makerLicenseLabel(policy))}</span>
+          <h2>${escapeHtml(name)}</h2>
+          <p>Maker ${escapeHtml(shortAddress(makerId) || 'unknown')}</p>
+          <div class="owned-oc-links">
+            <a href="${escapeHtml(explorerObjectUrl(object.objectId))}" target="_blank" rel="noreferrer">View Sui object</a>
+            ${imageUrl ? `<a href="${escapeHtml(imageUrl)}" target="_blank" rel="noreferrer">Open Walrus image</a>` : ''}
+          </div>
+        </div>
+      </article>
+    `;
+  }).join('') : '<div class="empty-state">No OCCharacter objects yet. Choose an on-chain Maker and mint your first OC.</div>';
+}
+
+async function loadOwnedCharacters({ force = false } = {}) {
+  const owner = state.walletAddress;
+  if (!owner || !packageConfigured() || state.ownedCharactersLoading) return;
+  if (!force && state.ownedCharactersLoadedFor === owner) return;
+  state.ownedCharactersLoading = true;
+  state.ownedCharactersError = '';
+  renderOwnedCharacters();
+  try {
+    state.ownedCharacters = await listOwnedCharacters(owner);
+    state.ownedCharactersLoadedFor = owner;
+  } catch (error) {
+    state.ownedCharactersError = error.message || 'Could not load wallet-owned OCs from Sui.';
+    state.ownedCharactersLoadedFor = '';
+  } finally {
+    state.ownedCharactersLoading = false;
+    renderOwnedCharacters();
+  }
+}
+
+async function recoverPublishedMakerIndex() {
+  const digest = state.publishDigest;
+  if (!digest || state.makerObjectId || !packageConfigured() || state.recoveringMakerDigest === digest) return;
+  state.recoveringMakerDigest = digest;
+  state.publishStatus = 'Published transaction found. Resolving the OCMaker object id from Sui indexing…';
+  renderAll();
+  try {
+    const makerObjectId = await resolvePublishedMakerObjectId(digest);
+    if (!makerObjectId) throw new Error('The publication transaction is indexed, but its OCMaker object was not found.');
+    if (state.publishDigest !== digest) return;
+    state.makerObjectId = makerObjectId;
+    state.publishStatus = '';
+    Object.assign(activeTemplate(), {
+      source: 'chain',
+      objectId: makerObjectId,
+      quiltId: state.makerQuiltId || activeTemplate().quiltId || '',
+      price: 'On-chain',
+    });
+    syncActiveMakerModelRefs();
+    await saveCurrentMakerDraft({ silent: true });
+    persistLocalMakerIndex();
+    state.chainMakersLoadedFor = '';
+    await loadChainMakers(state.walletAddress);
+  } catch (error) {
+    state.publishStatus = `${error.message || 'The OCMaker object id is not available yet'} The recovery draft remains in this browser.`;
+  } finally {
+    if (state.recoveringMakerDigest === digest) state.recoveringMakerDigest = '';
+    renderAll();
+  }
+}
+
+function openConfirmation({ title, message, confirmLabel = 'Delete', action }) {
+  pendingConfirmation = action;
+  $('confirmActionTitle').textContent = title;
+  $('confirmActionMessage').textContent = message;
+  $('confirmActionButton').textContent = confirmLabel;
+  $('confirmActionModal').classList.add('active');
+  $('confirmActionModal').setAttribute('aria-hidden', 'false');
+  $('confirmActionButton').focus();
+}
+
+function closeConfirmation() {
+  pendingConfirmation = null;
+  $('confirmActionModal').classList.remove('active');
+  $('confirmActionModal').setAttribute('aria-hidden', 'true');
+}
+
+function revokeMakerObjectUrls(model = makerModels.get(state.templateId)) {
+  Object.values(model?.parts || {}).flat().forEach((item) => {
+    if (item.iconAsset?.url) URL.revokeObjectURL(item.iconAsset.url);
+    Object.values(item.images || {}).forEach((asset) => asset?.url && URL.revokeObjectURL(asset.url));
+  });
+  (model?.slots || []).forEach((slot) => {
+    if (slot.iconAsset?.url) URL.revokeObjectURL(slot.iconAsset.url);
+  });
+}
+
+function makerAssetRecordKey(kind, slot = '', itemId = '', layerId = '', colorId = '') {
+  return [kind, slot, itemId, layerId, colorId].map((value) => encodeURIComponent(String(value || ''))).join('|');
+}
+
+function makerAssetRecords() {
+  return allSlots().flatMap((slot) => {
+    const records = [];
+    if (slot.iconAsset?.file) {
+      records.push({
+        assetKey: makerAssetRecordKey('part-icon', slot.key),
+        kind: 'part-icon',
+        slot: slot.key,
+        blob: slot.iconAsset.file,
+        fileName: slot.iconAsset.file.name,
+        fileType: slot.iconAsset.file.type,
+        lastModified: slot.iconAsset.file.lastModified || Date.now(),
+        width: slot.iconAsset.width || 0,
+        height: slot.iconAsset.height || 0,
+      });
+    }
+    slotItems(slot.key).forEach((item) => {
+      if (item.iconAsset?.file) {
+        records.push({
+          assetKey: makerAssetRecordKey('item-icon', slot.key, item.id),
+          kind: 'item-icon',
+          slot: slot.key,
+          itemId: item.id,
+          blob: item.iconAsset.file,
+          fileName: item.iconAsset.file.name,
+          fileType: item.iconAsset.file.type,
+          lastModified: item.iconAsset.file.lastModified || Date.now(),
+          width: item.iconAsset.width || 0,
+          height: item.iconAsset.height || 0,
+        });
+      }
+      Object.entries(item.images || {}).forEach(([cellKey, asset]) => {
+        if (!asset?.file) return;
+        const [layerId, colorId] = cellKey.split(':');
+        records.push({
+          assetKey: makerAssetRecordKey('item-layer', slot.key, item.id, layerId, colorId),
+          kind: 'item-layer',
+          slot: slot.key,
+          itemId: item.id,
+          layerId,
+          colorId,
+          blob: asset.file,
+          fileName: asset.file.name,
+          fileType: asset.file.type,
+          lastModified: asset.file.lastModified || Date.now(),
+          width: asset.width || 0,
+          height: asset.height || 0,
+          warning: asset.warning || '',
+        });
+      });
+    });
+    return records;
+  });
+}
+
+function storedAsset(record) {
+  const file = record.blob instanceof File
+    ? record.blob
+    : new File([record.blob], record.fileName || 'asset.png', {
+        type: record.fileType || record.blob?.type || 'application/octet-stream',
+        lastModified: record.lastModified || Date.now(),
+      });
+  return {
+    file,
+    url: URL.createObjectURL(file),
+    width: Number(record.width || 0),
+    height: Number(record.height || 0),
+    warning: record.warning || '',
+    restored: true,
+  };
+}
+
+async function restoreMakerAssets(templateId = state.templateId) {
+  const assetStorageKey = makerAssetStorageKey(templateId);
+  if (loadedMakerAssetDrafts.has(assetStorageKey) || activeTemplate()?.source === 'chain') return;
+  loadedMakerAssetDrafts.add(assetStorageKey);
+  try {
+    const records = await loadMakerAssets(assetStorageKey);
+    if (state.templateId !== templateId) {
+      if (state.templateId !== templateId) loadedMakerAssetDrafts.delete(assetStorageKey);
+      return;
+    }
+    if (!records.length) {
+      await restoreMakerUploadRecovery(templateId);
+      return;
+    }
+    records.forEach((record) => {
+      const slot = allSlots().find((candidate) => candidate.key === record.slot);
+      if (!slot || !record.blob) return;
+      const asset = storedAsset(record);
+      if (record.kind === 'part-icon') {
+        if (slot.iconAsset?.url) URL.revokeObjectURL(slot.iconAsset.url);
+        slot.iconAsset = asset;
+        return;
+      }
+      const item = slotItems(slot.key).find((candidate) => candidate.id === record.itemId);
+      if (!item) {
+        URL.revokeObjectURL(asset.url);
+        return;
+      }
+      if (record.kind === 'item-icon') {
+        if (item.iconAsset?.url) URL.revokeObjectURL(item.iconAsset.url);
+        item.iconAsset = asset;
+        return;
+      }
+      if (record.kind === 'item-layer') {
+        const cellKey = assetCellKey(record.layerId, record.colorId);
+        if (item.images?.[cellKey]?.url) URL.revokeObjectURL(item.images[cellKey].url);
+        item.images ||= {};
+        item.images[cellKey] = asset;
+      }
+    });
+    syncCreatorAssets();
+    syncActiveMakerModelRefs();
+    state.draftSaveStatus = 'saved';
+    state.draftSaveMessage = `${records.length} local asset${records.length === 1 ? '' : 's'} restored`;
+    await restoreMakerUploadRecovery(templateId);
+    renderAll();
+  } catch (error) {
+    loadedMakerAssetDrafts.delete(assetStorageKey);
+    state.draftSaveStatus = 'error';
+    state.draftSaveMessage = error.message || 'Local PNG assets could not be restored.';
+    renderMakerLifecycle();
+  }
+}
+
+async function saveCurrentMakerDraft({ silent = false } = {}) {
+  if (!state.walletConnected || !state.walletAddress) {
+    if (silent) return null;
+    throw new Error('Connect the wallet that owns this draft before saving it.');
+  }
+  syncCreatorAssets();
+  const templateId = state.templateId;
+  const storageKey = makerDraftStorageKey(templateId);
+  const assetStorageKey = makerAssetStorageKey(templateId);
+  const draft = {
+    templateId,
+    savedAt: new Date().toISOString(),
+    manifest: creatorManifest(),
+    visual: state.visual,
+    rules: state.rules,
+    paletteLinks: state.paletteLinks,
+    chain: {
+      publishDigest: state.publishDigest,
+      makerObjectId: state.makerObjectId,
+      archived: state.makerArchived,
+    },
+  };
+  state.draftSaveStatus = 'saving';
+  state.draftSaveMessage = '';
+  if (!silent) renderMakerLifecycle();
+  try {
+    const records = makerAssetRecords();
+    await saveMakerDraftRecord(storageKey, draft);
+    await replaceMakerAssets(assetStorageKey, records);
+    localStorage.removeItem(storageKey);
+    persistLocalMakerIndex();
+    loadedMakerAssetDrafts.add(assetStorageKey);
+    if (state.templateId === templateId) {
+      state.draftSaveStatus = 'saved';
+      state.draftSaveMessage = `${records.length} local asset${records.length === 1 ? '' : 's'} saved in this browser`;
+    }
+  } catch (error) {
+    if (state.templateId === templateId) {
+      state.draftSaveStatus = 'error';
+      state.draftSaveMessage = error.message || 'The draft could not be saved locally.';
+    }
+    if (!silent) throw error;
+  } finally {
+    if (state.templateId === templateId) renderMakerLifecycle();
+  }
+  return draft;
+}
+
+function scheduleMakerAutosave() {
+  if (!state.walletConnected || makerIsPublished()) return;
+  const templateId = state.templateId;
+  clearTimeout(makerAutosaveTimer);
+  state.draftSaveStatus = 'dirty';
+  state.draftSaveMessage = 'Unsaved changes';
+  makerAutosaveTimer = setTimeout(() => {
+    if (state.templateId !== templateId || makerIsPublished()) return;
+    saveCurrentMakerDraft({ silent: true });
+  }, 900);
+}
+
 function activeMakerObjectId() {
-  return runtimeConfig.featuredMakers?.[activeTemplate().id] || '';
+  return activeTemplate()?.objectId || runtimeConfig.featuredMakers?.[activeTemplate().id] || '';
+}
+
+function assetReady(asset) {
+  return Boolean(asset?.file || asset?.url || asset?.patchId);
 }
 
 function activeSlot() {
@@ -552,6 +1495,7 @@ function slotItems(slotKey) {
 function ensureSlotStructure(slot) {
   slot.colorKey ||= slot.key;
   if (!slot.kind) slot.kind = 'standard';
+  if (slot.kind === 'last-bastion') slot.allowRemove = false;
   if (!Array.isArray(slot.layers) || slot.layers.length === 0) {
     if (slot.kind === 'left-right-pair') {
       slot.layers = [
@@ -609,8 +1553,38 @@ function assetCellKey(layerId, colorId) {
   return `${layerId}:${colorId}`;
 }
 
+function selectedColorRecord(slot) {
+  const colors = creatorColors(slot);
+  const selected = String(state.visual.palette[slot.colorKey] || '').toLowerCase();
+  return colors.find((color) => String(color.value || '').toLowerCase() === selected) || colors[0] || null;
+}
+
+function itemLayerAsset(slot, item, layer) {
+  const color = selectedColorRecord(slot);
+  return color ? item?.images?.[assetCellKey(layer.id, color.id)] : null;
+}
+
+function itemPickerAsset(slot, item) {
+  if (item?.iconAsset?.url) return item.iconAsset;
+  for (const layer of creatorLayers(slot)) {
+    const asset = itemLayerAsset(slot, item, layer);
+    if (asset?.url) return asset;
+  }
+  return Object.values(item?.images || {}).find((asset) => asset?.url) || null;
+}
+
+function layerInlineStyle(layer) {
+  const x = Number.isFinite(Number(layer.x)) ? Number(layer.x) : 0;
+  const y = Number.isFinite(Number(layer.y)) ? Number(layer.y) : 0;
+  const xPercent = (x / Math.max(1, state.makerCanvas.width)) * 100;
+  const yPercent = (y / Math.max(1, state.makerCanvas.height)) * 100;
+  const opacity = Math.min(100, Math.max(0, Number(layer.opacity ?? 100))) / 100;
+  const blendMode = ['normal', 'multiply', 'screen', 'overlay'].includes(layer.blendMode) ? layer.blendMode : 'normal';
+  return `--layer-x:${xPercent.toFixed(4)}%;--layer-y:${yPercent.toFixed(4)}%;opacity:${opacity};mix-blend-mode:${blendMode}`;
+}
+
 function uploadedAssetCount(slot) {
-  return slotItems(slot.key).reduce((count, item) => count + Object.values(item.images || {}).filter((asset) => asset?.file).length, 0);
+  return slotItems(slot.key).reduce((count, item) => count + Object.values(item.images || {}).filter(assetReady).length, 0);
 }
 
 function itemLayerAssets() {
@@ -670,13 +1644,45 @@ function syncCreatorAssets() {
 }
 
 function invalidateMakerUpload(message = '') {
+  if (makerIsPublished()) return;
   state.makerUploadSession = null;
   state.pendingMakerAssets = [];
   state.makerUploadStage = 'idle';
-  state.makerManifestPatchId = '';
+  state.makerQuiltId = '';
+  state.pendingMakerCoverBlob = null;
   state.pendingMakerManifestJson = '';
   state.publishDigest = '';
   state.publishStatus = message;
+  const recoveryKey = makerAssetStorageKey();
+  loadedMakerUploadRecoveries.delete(recoveryKey);
+  deleteMakerUploadRecovery(recoveryKey).catch((error) => console.warn('Could not clear stale Walrus recovery data.', error));
+  scheduleMakerAutosave();
+}
+
+async function persistMakerUploadRecovery() {
+  const session = state.makerUploadSession;
+  if (!session?.checkpoint || !state.pendingMakerCoverBlob || !state.pendingMakerManifestJson) return;
+  const recoveryKey = makerAssetStorageKey();
+  await saveMakerUploadRecovery(recoveryKey, {
+    owner: session.owner,
+    stage: state.makerUploadStage,
+    checkpoint: session.checkpoint,
+    registerDigest: session.registerDigest || '',
+    certifyDigest: session.certifyDigest || '',
+    quiltBlobId: state.makerQuiltId || session.quiltBlobId || '',
+    files: (session.files || []).map(({ id, blobId }) => ({ id, blobId })),
+    manifestJson: state.pendingMakerManifestJson,
+    coverBlob: state.pendingMakerCoverBlob,
+  });
+  state.hasMakerUploadRecovery = true;
+  loadedMakerUploadRecoveries.add(recoveryKey);
+}
+
+async function clearMakerUploadRecovery(templateId = state.templateId) {
+  const recoveryKey = makerAssetStorageKey(templateId);
+  loadedMakerUploadRecoveries.delete(recoveryKey);
+  await deleteMakerUploadRecovery(recoveryKey);
+  if (state.templateId === templateId) state.hasMakerUploadRecovery = false;
 }
 
 async function localPngAsset(file) {
@@ -689,12 +1695,21 @@ async function localPngAsset(file) {
     bitmap.close();
     throw new Error('Item images cannot exceed 8192 × 8192 px.');
   }
+  const targetRatio = state.makerCanvas.width / state.makerCanvas.height;
+  const imageRatio = bitmap.width / bitmap.height;
+  if (Math.abs(targetRatio - imageRatio) > 0.005) {
+    const expected = `${state.makerCanvas.width}:${state.makerCanvas.height}`;
+    bitmap.close();
+    throw new Error(`Item images must match this Maker's ${expected} canvas ratio.`);
+  }
   const asset = {
     file,
     url: URL.createObjectURL(file),
     width: bitmap.width,
     height: bitmap.height,
-    warning: bitmap.width < 600 || bitmap.height < 600 ? 'Below the recommended 600 × 600 px.' : '',
+    warning: bitmap.width < state.makerCanvas.width || bitmap.height < state.makerCanvas.height
+      ? `Below the recommended ${state.makerCanvas.width} × ${state.makerCanvas.height} px.`
+      : '',
   };
   bitmap.close();
   return asset;
@@ -721,6 +1736,10 @@ function slug(value) {
     .toLowerCase() || 'part';
 }
 
+function isSafeKey(value) {
+  return /^[a-zA-Z0-9_-]+$/.test(String(value || ''));
+}
+
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (character) => ({
     '&': '&amp;',
@@ -731,9 +1750,35 @@ function escapeHtml(value) {
   })[character]);
 }
 
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ''), location.origin);
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function utf8Length(value) {
+  return new TextEncoder().encode(String(value || '')).length;
+}
+
+function bytesToHex(bytes) {
+  return `0x${[...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+}
+
 function safeCssColor(value, fallback = '#27c5c8') {
   const color = String(value || '').trim();
   return /^(#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+-]+\))$/i.test(color) ? color : fallback;
+}
+
+function finiteNumber(value, fallback = 0, minimum = -Infinity, maximum = Infinity) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(maximum, Math.max(minimum, number)) : fallback;
+}
+
+function safeDraftText(value, fallback = '', maxLength = 2_000) {
+  return String(value ?? fallback).slice(0, maxLength);
 }
 
 function splitList(value) {
@@ -757,6 +1802,10 @@ function shortAddress(address) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
+function packageConfigured() {
+  return /^0x[0-9a-f]+$/i.test(String(runtimeConfig.packageId || '').trim()) && !runtimeConfig.packageId.includes('TODO');
+}
+
 async function connectSuiWallet() {
   try {
     await openWalletSelector();
@@ -768,13 +1817,16 @@ async function connectSuiWallet() {
 
 function chainStatusItems() {
   const walletReady = state.walletConnected;
-  const packageReady = !runtimeConfig.packageId.includes('TODO');
+  const packageReady = packageConfigured();
   const walrusReady = Boolean(runtimeConfig.walrusUploadRelayUrl && runtimeConfig.walrusAggregatorUrl);
+  const discoveryKey = state.walletAddress || 'public';
+  const discoveryReady = packageReady && !state.chainMakersLoading && !state.chainMakerLoadError && state.chainMakersLoadedFor === discoveryKey;
   return [
     ['Network', runtimeConfig.network, 'Sui network used by wallet transactions.', 'ready'],
     ['Wallet', walletReady ? shortAddress(state.walletAddress) || 'Connected' : 'Not connected', walletReady ? 'Ready to sign creator and OC transactions.' : 'Connect before publishing or minting.', walletReady ? 'ready' : 'wait'],
     ['Package', packageReady ? shortAddress(runtimeConfig.packageId) : 'Draft package id', packageReady ? 'Move package can be called from PTBs.' : 'Publish Move package, then set packageId in config.js.', packageReady ? 'ready' : 'wait'],
     ['Walrus', walrusReady ? `${runtimeConfig.network} upload configured` : 'Missing endpoint', 'Assets are uploaded before their blob ids are committed to the maker transaction.', walrusReady ? 'ready' : 'wait'],
+    ['Discovery', state.chainMakersLoading ? 'Syncing Makers' : state.chainMakerLoadError || (discoveryReady ? 'Chain-derived' : 'Waiting'), discoveryReady ? 'Published Makers are discovered from Sui events and hydrated from certified Walrus manifests.' : 'Set the published package id to enable the public on-chain Maker gallery.', discoveryReady ? 'ready' : 'wait'],
   ];
 }
 
@@ -782,14 +1834,26 @@ function filteredTemplates() {
   const query = state.search.trim().toLowerCase();
   return templates.filter((template) => {
     if (template.source === 'local') return false;
+    if (template.source === 'chain' && makerModels.get(template.id)?.makerArchived) return false;
     const matchesFilter = state.filter === 'all' || template.category === state.filter;
     const haystack = `${template.name} ${template.creator} ${template.style} ${template.license} ${template.summary}`.toLowerCase();
     return matchesFilter && (!query || haystack.includes(query));
   });
 }
 
+function templateModelMetrics(template) {
+  const model = makerModels.get(template.id);
+  return {
+    parts: model?.slots?.length ?? slots.length,
+    items: model?.parts
+      ? Object.values(model.parts).reduce((total, items) => total + items.length, 0)
+      : Object.values(parts).reduce((total, items) => total + items.length, 0),
+  };
+}
+
 function setPage(page) {
-  state.page = page === 'editor' ? 'make' : page === 'protocol' ? 'docs' : page;
+  const requestedPage = page === 'editor' ? 'make' : page === 'protocol' ? 'docs' : page;
+  state.page = !state.walletConnected && !['templates', 'template', 'docs'].includes(requestedPage) ? 'templates' : requestedPage;
   if (state.page === 'make') {
     const playable = playableSlots();
     if (!playable.some((slot) => slot.key === state.selectedSlot)) state.selectedSlot = playable[0]?.key || '';
@@ -801,8 +1865,11 @@ function setPage(page) {
   document.querySelectorAll('[data-page]').forEach((button) => {
     button.classList.toggle('active', button.dataset.page === state.page);
   });
-  history.replaceState(null, '', `#${state.page}`);
+  const onDeepLink = /^\/(maker|oc)\//.test(location.pathname);
+  history.replaceState(null, '', onDeepLink && state.page !== 'template' ? `/#${state.page}` : `#${state.page}`);
   closeAccountPanel();
+  if (state.page === 'make') setTimeout(() => restoreOcUploadRecovery(state.templateId), 0);
+  if (state.page === 'collection') setTimeout(() => loadOwnedCharacters(), 0);
 }
 
 function setCreatorView(view) {
@@ -824,13 +1891,13 @@ function setEditorPanel(panel) {
     button.classList.toggle('active', button.dataset.editorPanelButton === state.editorPanel);
   });
   const labels = {
-    top: 'Maker Top',
-    parts: 'Character Maker',
-    rules: 'Rules',
-    palette: 'Palette Rules',
-    preview: 'Preview Check',
-    publish: 'On-chain Publish',
-    settings: 'Settings',
+    top: t('makerTop'),
+    parts: t('characterMaker'),
+    rules: t('rules'),
+    palette: t('paletteRules'),
+    preview: t('previewCheck'),
+    publish: t('onchainPublish'),
+    settings: t('settings'),
   };
   if ($('editingPanelKicker')) $('editingPanelKicker').textContent = labels[state.editorPanel] || 'Character Maker';
 }
@@ -842,6 +1909,7 @@ function focusCreatorTop() {
 function syncTemplateFields() {
   const template = activeTemplate();
   $('creatorTemplateName').value = template.name;
+  $('creatorDescription').value = template.summary || '';
   $('creatorName').value = template.creator;
   $('creatorWorld').value = template.style;
   $('creatorRoyalty').value = template.royaltyBps;
@@ -851,6 +1919,7 @@ function syncTemplateFields() {
     'paid-commercial': 'Paid commercial',
     'exclusive-commission': 'Exclusive commission',
   }).find(([, label]) => label === template.license)?.[0] || 'personal-use';
+  $('creatorLicenseNote').value = template.licenseNote || '';
   $('profileWorld').value = template.style;
   $('templateTitle').textContent = template.name;
   $('avatarTemplate').textContent = template.name;
@@ -860,23 +1929,30 @@ function syncTemplateFields() {
 
 function renderTemplates() {
   const list = filteredTemplates();
-  $('templateGrid').innerHTML = list.length ? list.map((template) => `
+  const publicMakerCount = templates.filter((template) => template.source !== 'local' && !(template.source === 'chain' && makerModels.get(template.id)?.makerArchived)).length;
+  if ($('publicMakerCount')) $('publicMakerCount').textContent = String(publicMakerCount);
+  $('templateGrid').innerHTML = list.length ? list.map((template) => {
+    const metrics = templateModelMetrics(template);
+    const sourceLabel = template.source === 'chain' ? t('sourceOnchain') : t('sourceStarter');
+    return `
     <article class="template-card ${template.id === state.templateId ? 'active' : ''}" data-template="${escapeHtml(template.id)}">
       <div class="template-cover" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
-        <div class="cover-face">
-          <span class="cover-hair"></span>
-          <span class="cover-eye left"></span>
-          <span class="cover-eye right"></span>
-          <span class="cover-mouth"></span>
-        </div>
+        ${template.coverUrl
+          ? `<img class="template-cover-image" src="${escapeHtml(template.coverUrl)}" alt="${escapeHtml(template.name)} preview" loading="lazy" />`
+          : `<div class="cover-face">
+              <span class="cover-hair"></span>
+              <span class="cover-eye left"></span>
+              <span class="cover-eye right"></span>
+              <span class="cover-mouth"></span>
+            </div>`}
         <span class="cover-style">${escapeHtml(template.style)}</span>
       </div>
       <div class="template-body">
         <div class="badge-row">
-          <span>Starter example</span>
+          <span>${sourceLabel}</span>
           <span>${escapeHtml(template.license)}</span>
-          <span>${slots.length} Parts</span>
-          <span>${Object.values(parts).reduce((total, items) => total + items.length, 0)} Items</span>
+          <span>${metrics.parts} ${t('partsLabel')}</span>
+          <span>${metrics.items} ${t('itemsLabel')}</span>
         </div>
         <h2>${escapeHtml(template.name)}</h2>
         <p class="creator-line">by ${escapeHtml(template.creator)}</p>
@@ -885,24 +1961,39 @@ function renderTemplates() {
           ${[1, 2, 3, 4].map((item) => `<span style="--tilt:${item * 3}deg; --accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};"></span>`).join('')}
         </div>
         <div class="template-footer">
-          <span>${Number(template.royaltyBps || 0) / 100}% royalty policy</span>
-          <button class="primary" data-use-template="${escapeHtml(template.id)}">Start making</button>
+          <span>${Number(template.royaltyBps || 0) / 100}% ${t('royaltyPolicy')}</span>
+          <div class="template-card-actions">
+            <button class="secondary" type="button" data-view-template="${escapeHtml(template.id)}">${t('viewMaker')}</button>
+            <button class="primary" data-use-template="${escapeHtml(template.id)}">${state.walletConnected ? t('startMaking') : t('connectToMake')}</button>
+          </div>
         </div>
       </div>
     </article>
-  `).join('') : '<div class="empty-state">No matching makers found.</div>';
+  `;
+  }).join('') : `<div class="empty-state">${t('noMatchingMakers')}</div>`;
 
   document.querySelectorAll('.template-card').forEach((card) => {
     card.addEventListener('click', (event) => {
       if (event.target.closest('[data-use-template]')) return;
-      activateMakerModel(card.dataset.template);
-      syncTemplateFields();
-      renderAll();
+      openTemplateDetail(card.dataset.template);
+    });
+  });
+
+  document.querySelectorAll('[data-view-template]').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openTemplateDetail(button.dataset.viewTemplate);
     });
   });
 
   document.querySelectorAll('[data-use-template]').forEach((button) => {
     button.addEventListener('click', () => {
+      if (!state.walletConnected) {
+        state.pendingWalletPage = 'make';
+        state.pendingWalletTemplateId = button.dataset.useTemplate;
+        connectSuiWallet();
+        return;
+      }
       activateMakerModel(button.dataset.useTemplate);
       syncTemplateFields();
       state.previewingMaker = false;
@@ -912,10 +2003,79 @@ function renderTemplates() {
   });
 }
 
+function openTemplateDetail(templateId, { updatePath = true } = {}) {
+  const template = templates.find((candidate) => candidate.id === templateId);
+  if (!template || template.source === 'local') return;
+  activateMakerModel(template.id);
+  syncTemplateFields();
+  if (updatePath) {
+    const reference = template.objectId || template.id;
+    history.pushState(null, '', `/maker/${encodeURIComponent(reference)}#template`);
+  }
+  setPage('template');
+  renderAll();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function renderTemplateDetail() {
+  if (!$('templateDetail')) return;
+  const template = activeTemplate();
+  const model = makerModels.get(template.id);
+  const metrics = templateModelMetrics(template);
+  const archived = Boolean(model?.makerArchived);
+  const manifestUrl = template.quiltId ? walrusQuiltFileUrl(template.quiltId, 'animacraft-manifest.json') : '';
+  const partLabels = (model?.slots || slots).slice(0, 12).map((slot) => slot.label);
+  $('templateDetail').innerHTML = `
+    <div class="template-detail-media" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
+      <div class="template-cover">
+        ${template.coverUrl
+          ? `<img class="template-cover-image" src="${escapeHtml(template.coverUrl)}" alt="${escapeHtml(template.name)} preview" />`
+          : `<div class="cover-face"><span class="cover-hair"></span><span class="cover-eye left"></span><span class="cover-eye right"></span><span class="cover-mouth"></span></div>`}
+        <span class="cover-style">${escapeHtml(template.style)}</span>
+      </div>
+    </div>
+    <div class="template-detail-copy">
+      <div class="badge-row">
+        <span>${template.source === 'chain' ? t('sourceOnchain') : t('sourceStarter')}</span>
+        <span>${escapeHtml(template.license)}</span>
+        ${archived ? '<span>Archived</span>' : ''}
+      </div>
+      <h1>${escapeHtml(template.name)}</h1>
+      <p class="creator-line">by ${escapeHtml(template.creator)}</p>
+      <p class="template-detail-summary">${escapeHtml(template.summary)}</p>
+      <div class="template-detail-metrics">
+        <div><strong>${metrics.parts}</strong><span>${t('partsLabel')}</span></div>
+        <div><strong>${metrics.items}</strong><span>${t('itemsLabel')}</span></div>
+        <div><strong>${Number(template.royaltyBps || 0) / 100}%</strong><span>${t('royaltyPolicy')}</span></div>
+      </div>
+      <div class="badge-row">${partLabels.map((label) => `<span>${escapeHtml(label)}</span>`).join('')}</div>
+      <div class="template-detail-license"><strong>${escapeHtml(template.license)}</strong><p>${escapeHtml(template.licenseNote)}</p></div>
+      <div class="template-detail-actions">
+        <button class="primary" type="button" data-detail-start ${archived ? 'disabled' : ''}>${state.walletConnected ? t('startMaking') : t('connectToMake')}</button>
+      </div>
+      <div class="template-detail-links">
+        ${template.objectId ? `<a href="${escapeHtml(explorerObjectUrl(template.objectId))}" target="_blank" rel="noreferrer">View Sui Maker</a>` : ''}
+        ${manifestUrl ? `<a href="${escapeHtml(manifestUrl)}" target="_blank" rel="noreferrer">Open Walrus manifest</a>` : ''}
+      </div>
+    </div>
+  `;
+  document.querySelector('[data-detail-start]')?.addEventListener('click', () => {
+    if (!state.walletConnected) {
+      state.pendingWalletPage = 'make';
+      state.pendingWalletTemplateId = template.id;
+      connectSuiWallet();
+      return;
+    }
+    state.previewingMaker = false;
+    setPage('make');
+    renderAll();
+  });
+}
+
 function renderSlots() {
   $('slotRail').innerHTML = playableSlots().map((slot) => `
     <button class="slot-btn ${slot.key === state.selectedSlot ? 'active' : ''}" data-slot="${escapeHtml(slot.key)}">
-      <span>${escapeHtml(slot.icon)}</span>
+      <span>${slot.iconAsset?.url ? `<img src="${escapeHtml(slot.iconAsset.url)}" alt="" />` : escapeHtml(slot.icon)}</span>
       <strong>${escapeHtml(slot.label)}</strong>
     </button>
   `).join('');
@@ -945,22 +2105,26 @@ function renderParts() {
   $('partColor').value = safeCssColor(state.visual.palette[slot.colorKey]);
   $('partColor').disabled = uploadedAssetCount(slot) > 0;
   const removeOption = slot.allowRemove !== false ? `
-    <button class="part-card ${state.visual[slot.key] ? '' : 'active'}" data-part="">
+    <button class="part-card ${state.visual[slot.key] ? '' : 'active'}" data-part="" ${state.minting ? 'disabled' : ''}>
       <span class="part-thumb empty-thumb">×</span>
       <strong>None</strong>
       <small>Remove this Part</small>
     </button>
   ` : '';
-  $('partGrid').innerHTML = removeOption + publicItems.map((part, index) => `
-    <button class="part-card ${state.visual[slot.key] === part.id ? 'active' : ''}" data-part="${escapeHtml(part.id)}" ${selectionWouldBreakRule(slot.key, part.id) ? 'disabled title="Unavailable with the current selection"' : ''}>
-      <span class="part-thumb" style="--accent:${safeCssColor(state.visual.palette[slot.colorKey])}; --index:${index};"></span>
-      <strong>${escapeHtml(part.label)}</strong>
-      <small>${escapeHtml(slot.key)}/${escapeHtml(part.id)}</small>
-    </button>
-  `).join('');
+  $('partGrid').innerHTML = removeOption + publicItems.map((part, index) => {
+    const pickerAsset = itemPickerAsset(slot, part);
+    return `
+      <button class="part-card ${state.visual[slot.key] === part.id ? 'active' : ''}" data-part="${escapeHtml(part.id)}" ${state.minting || selectionWouldBreakRule(slot.key, part.id) ? 'disabled title="Unavailable while minting or with the current selection"' : ''}>
+        <span class="part-thumb ${pickerAsset?.url ? 'has-image' : ''}" style="--accent:${safeCssColor(state.visual.palette[slot.colorKey])}; --index:${index};">${pickerAsset?.url ? `<img src="${escapeHtml(pickerAsset.url)}" alt="" />` : ''}</span>
+        <strong>${escapeHtml(part.label)}</strong>
+        <small>${escapeHtml(slot.key)}/${escapeHtml(part.id)}</small>
+      </button>
+    `;
+  }).join('');
 
   document.querySelectorAll('[data-part]').forEach((button) => {
     button.addEventListener('click', () => {
+      invalidateOcUpload();
       state.visual[slot.key] = button.dataset.part;
       renderAll();
     });
@@ -975,11 +2139,15 @@ function renderSwatches() {
   }
   const makerColors = creatorColors(slot).map((color) => color.value);
   const choices = uploadedAssetCount(slot) ? makerColors : swatches;
-  $('swatchGrid').innerHTML = choices.map((color) => `
-    <button class="swatch ${state.visual.palette[slot.colorKey] === color ? 'active' : ''}" data-swatch="${color}" style="background:${color}" aria-label="Use ${color}"></button>
-  `).join('');
+  $('swatchGrid').innerHTML = choices.map((value) => {
+    const color = safeCssColor(value);
+    return `
+      <button class="swatch ${state.visual.palette[slot.colorKey] === value ? 'active' : ''}" data-swatch="${escapeHtml(color)}" style="background:${color}" aria-label="Use ${escapeHtml(color)}" ${state.minting ? 'disabled' : ''}></button>
+    `;
+  }).join('');
   document.querySelectorAll('[data-swatch]').forEach((button) => {
     button.addEventListener('click', () => {
+      invalidateOcUpload();
       applyPaletteColor(slot, button.dataset.swatch);
       renderAll();
     });
@@ -987,12 +2155,52 @@ function renderSwatches() {
 }
 
 function applyPaletteColor(slot, color) {
-  state.visual.palette[slot.colorKey] = color;
-  state.paletteLinks.filter((link) => link.primaryPartKey === slot.key || link.linkedPartKey === slot.key).forEach((link) => {
-    const linkedKey = link.primaryPartKey === slot.key ? link.linkedPartKey : link.primaryPartKey;
-    const linkedSlot = allSlots().find((candidate) => candidate.key === linkedKey);
-    if (linkedSlot) state.visual.palette[linkedSlot.colorKey] = color;
-  });
+  if (uploadedAssetCount(slot) === 0) {
+    const queue = [slot];
+    const visited = new Set();
+    while (queue.length) {
+      const current = queue.shift();
+      if (!current || visited.has(current.key)) continue;
+      visited.add(current.key);
+      current.colorKey ||= current.key;
+      state.visual.palette[current.colorKey] = uploadedAssetCount(current) > 0
+        ? safeCssColor(creatorColors(current)[0]?.value)
+        : safeCssColor(color);
+      state.paletteLinks
+        .filter((link) => link.primaryPartKey === current.key || link.linkedPartKey === current.key)
+        .forEach((link) => {
+          const linkedKey = link.primaryPartKey === current.key ? link.linkedPartKey : link.primaryPartKey;
+          const linkedSlot = allSlots().find((candidate) => candidate.key === linkedKey);
+          if (linkedSlot && !visited.has(linkedKey)) queue.push(linkedSlot);
+        });
+    }
+    return;
+  }
+  const sourceColors = creatorColors(slot);
+  const sourceIndex = Math.max(0, sourceColors.findIndex((candidate) => candidate.value === color));
+  const queue = [{ slot, sourceColor: sourceColors[sourceIndex] || { id: '', value: color }, sourceIndex }];
+  const visited = new Set();
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current?.slot || visited.has(current.slot.key)) continue;
+    visited.add(current.slot.key);
+    const currentColors = creatorColors(current.slot);
+    const mapped = uploadedAssetCount(current.slot) === 0
+      ? current.sourceColor
+      : currentColors.find((candidate) => String(candidate.value || '').toLowerCase() === String(current.sourceColor.value || '').toLowerCase())
+        || currentColors.find((candidate) => candidate.id === current.sourceColor.id)
+        || currentColors[current.sourceIndex]
+        || currentColors[0]
+        || current.sourceColor;
+    state.visual.palette[current.slot.colorKey] = safeCssColor(mapped.value, safeCssColor(color));
+    state.paletteLinks
+      .filter((link) => link.primaryPartKey === current.slot.key || link.linkedPartKey === current.slot.key)
+      .forEach((link) => {
+        const linkedKey = link.primaryPartKey === current.slot.key ? link.linkedPartKey : link.primaryPartKey;
+        const linkedSlot = allSlots().find((candidate) => candidate.key === linkedKey);
+        if (linkedSlot && !visited.has(linkedKey)) queue.push({ slot: linkedSlot, sourceColor: mapped, sourceIndex: current.sourceIndex });
+      });
+  }
 }
 
 function renderAvatar() {
@@ -1039,13 +2247,11 @@ function renderPlayerLayerAssets() {
     const item = slotItems(layer.partKey).find((candidate) => candidate.id === state.visual[layer.partKey] && candidate.visibility !== 'private');
     if (!item) return [];
     const slot = allSlots().find((candidate) => candidate.key === layer.partKey);
-    const colors = creatorColors(slot);
-    const selectedColor = colors.find((color) => color.value.toLowerCase() === String(state.visual.palette[slot.colorKey] || '').toLowerCase()) || colors[0];
-    const asset = selectedColor ? item.images?.[assetCellKey(layer.id, selectedColor.id)] : null;
+    const asset = itemLayerAsset(slot, item, layer);
     return asset?.url ? [{ layer, asset }] : [];
   });
   $('playerLayerAssets').innerHTML = images.map(({ layer, asset }) => `
-    <img src="${asset.url}" alt="${escapeHtml(layer.partLabel)} ${escapeHtml(layer.name)}" style="--layer-x:${layer.x || 0};--layer-y:${layer.y || 0};opacity:${(layer.opacity ?? 100) / 100};mix-blend-mode:${layer.blendMode || 'normal'}" />
+    <img src="${escapeHtml(asset.url)}" alt="${escapeHtml(layer.partLabel)} ${escapeHtml(layer.name)}" style="${layerInlineStyle(layer)}" />
   `).join('');
   $('avatar').classList.toggle('has-layer-assets', images.length > 0);
 }
@@ -1053,7 +2259,7 @@ function renderPlayerLayerAssets() {
 function renderRecipe() {
   $('recipeList').innerHTML = playableSlots().map((slot) => {
     const selected = slotItems(slot.key).find((part) => part.id === state.visual[slot.key]);
-    return `<button data-slot="${slot.key}">${escapeHtml(slot.label)}: ${escapeHtml(selected ? selected.label : 'None')}</button>`;
+    return `<button data-slot="${escapeHtml(slot.key)}">${escapeHtml(slot.label)}: ${escapeHtml(selected ? selected.label : 'None')}</button>`;
   }).join('');
   document.querySelectorAll('#recipeList [data-slot]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -1065,13 +2271,15 @@ function renderRecipe() {
 
 function creatorManifest() {
   return {
-    schemaVersion: 'animacraft.creator-template.v2',
+    schemaVersion: 'animacraft.creator-template.v3',
     template: {
       id: slug($('creatorTemplateName').value),
       name: $('creatorTemplateName').value,
+      summary: $('creatorDescription').value,
       creator: $('creatorName').value,
       style: $('creatorWorld').value,
       license: $('creatorLicense').value,
+      licenseNote: $('creatorLicenseNote').value,
       royaltyBps: Number($('creatorRoyalty').value || 0),
       storage: 'walrus',
       chain: 'sui',
@@ -1088,6 +2296,8 @@ function creatorManifest() {
       walrusAggregatorUrl: runtimeConfig.walrusAggregatorUrl,
       walrusUploadRelayUrl: runtimeConfig.walrusUploadRelayUrl,
       appUrl: runtimeConfig.appUrl,
+      assetAddressing: 'walrus-quilt-id+identifier',
+      manifestIdentifier: 'animacraft-manifest.json',
     },
     parts: allSlots().map((slot) => ({
       key: slot.key,
@@ -1096,17 +2306,7 @@ function creatorManifest() {
       menuVisible: slot.menuVisible !== false,
       allowRemove: slot.allowRemove !== false,
       defaultItemId: slot.defaultItemId || slotItems(slot.key)[0]?.id || '',
-      anchor: { x: slot.x || 0, y: slot.y || 0, rightX: slot.rightX || 0 },
-      controls: {
-        moveX: Boolean(slot.allowMoveX),
-        moveY: Boolean(slot.allowMoveY),
-        scale: Boolean(slot.allowScale),
-        rotate: Boolean(slot.allowRotate),
-        pairedSpacing: Boolean(slot.allowSpacing),
-        spacingStep: slot.spacingStep || 0,
-        spacingSteps: slot.spacingSteps || 0,
-      },
-      iconIdentifier: slot.iconAsset?.file ? `${slug(slot.key)}-part-icon.${slot.iconAsset.file.type === 'image/jpeg' ? 'jpg' : 'png'}` : '',
+      iconIdentifier: slot.iconAsset?.identifier || (slot.iconAsset?.file ? `${slug(slot.key)}-part-icon.${slot.iconAsset.file.type === 'image/jpeg' ? 'jpg' : 'png'}` : ''),
       layers: creatorLayers(slot).map((layer) => ({
         id: layer.id,
         name: layer.name,
@@ -1122,10 +2322,10 @@ function creatorManifest() {
         label: item.label,
         displayOrder: item.displayOrder,
         visibility: item.visibility,
-        iconIdentifier: item.iconAsset?.file ? `${slug(slot.key)}-${slug(item.id)}-icon.${item.iconAsset.file.type === 'image/jpeg' ? 'jpg' : 'png'}` : '',
-        images: Object.keys(item.images || {}).filter((key) => item.images[key]?.file).map((key) => {
+        iconIdentifier: item.iconAsset?.identifier || (item.iconAsset?.file ? `${slug(slot.key)}-${slug(item.id)}-icon.${item.iconAsset.file.type === 'image/jpeg' ? 'jpg' : 'png'}` : ''),
+        images: Object.keys(item.images || {}).filter((key) => assetReady(item.images[key])).map((key) => {
           const [layerId, colorId] = key.split(':');
-          return { layerId, colorId, identifier: `${slug(slot.key)}-${slug(item.id)}-${slug(layerId)}-${slug(colorId)}.png` };
+          return { layerId, colorId, identifier: item.images[key].identifier || `${slug(slot.key)}-${slug(item.id)}-${slug(layerId)}-${slug(colorId)}.png` };
         }),
       })),
     })),
@@ -1150,6 +2350,7 @@ function creatorManifest() {
 
 function creatorUploadManifest() {
   const manifest = creatorManifest();
+  manifest.template.coverIdentifier = 'maker-cover.png';
   manifest.parts = manifest.parts.map((part) => {
     const publicItems = part.items.filter((item) => item.visibility !== 'private');
     return {
@@ -1172,6 +2373,20 @@ function creatorUploadManifest() {
     patchId: '',
     blobId: '',
   }));
+  manifest.assets.push({
+    name: 'maker-cover.png',
+    size: 0,
+    type: 'image/png',
+    kind: 'maker-cover',
+    slot: '',
+    partId: '',
+    itemId: '',
+    layerId: '',
+    colorId: '',
+    identifier: 'maker-cover.png',
+    patchId: '',
+    blobId: '',
+  });
   return manifest;
 }
 
@@ -1180,6 +2395,31 @@ function publishableAssets() {
     if (!asset.itemId) return true;
     return slotItems(asset.slot).some((item) => item.id === asset.itemId && item.visibility !== 'private');
   });
+}
+
+function makerCoverAsset(coverBlob) {
+  const coverFile = new File([coverBlob], 'maker-cover.png', { type: 'image/png', lastModified: Date.now() });
+  return {
+    file: coverFile,
+    name: coverFile.name,
+    size: coverFile.size,
+    type: coverFile.type,
+    kind: 'maker-cover',
+    slot: '',
+    partId: '',
+    itemId: '',
+    layerId: '',
+    colorId: '',
+    identifier: 'maker-cover.png',
+  };
+}
+
+function makerUploadEntries() {
+  const manifestBlob = new Blob([state.pendingMakerManifestJson], { type: 'application/json' });
+  return [
+    ...state.pendingMakerAssets.map((asset) => ({ blob: asset.file, identifier: asset.identifier, kind: asset.kind })),
+    { blob: manifestBlob, identifier: 'animacraft-manifest.json', kind: 'maker-manifest' },
+  ];
 }
 
 function ocPackage() {
@@ -1191,6 +2431,7 @@ function ocPackage() {
       name: activeTemplate().name,
       creator: activeTemplate().creator,
       license: activeTemplate().license,
+      licenseNote: activeTemplate().licenseNote,
       royaltyBps: activeTemplate().royaltyBps,
     },
     profile: {
@@ -1211,20 +2452,81 @@ function ocPackage() {
       materialStorage: 'Walrus blob ids',
       templateObject: 'Animacraft OCMaker object',
       ocObject: 'Animacraft OCCharacter object',
-      settlement: 'creator royalty and license split',
+      policy: 'license and royalty values are immutable snapshots; payment settlement is not part of this release',
       walletSigner: state.walletAddress || 'not-connected',
     },
   };
 }
 
+function ocFingerprint(oc = ocPackage()) {
+  return JSON.stringify({
+    makerId: activeMakerObjectId(),
+    profile: oc.profile,
+    recipe: oc.recipe,
+  });
+}
+
+function ocUploadEntries() {
+  if (!state.pendingOcImageBlob || !state.pendingOcProfileBlob) throw new Error('The rendered OC files are missing.');
+  return [
+    { blob: state.pendingOcImageBlob, identifier: 'animacraft-oc.png', kind: 'oc-image' },
+    { blob: state.pendingOcProfileBlob, identifier: 'animacraft-oc.json', kind: 'oc-profile' },
+  ];
+}
+
+async function persistOcUploadRecovery() {
+  const session = state.ocUploadSession;
+  if (!session?.checkpoint || !state.pendingOcImageBlob || !state.pendingOcProfileBlob || !state.pendingOcPackage) return;
+  const recoveryKey = ocUploadStorageKey();
+  await saveMakerUploadRecovery(recoveryKey, {
+    kind: 'oc-mint',
+    owner: session.owner,
+    stage: state.ocUploadStage,
+    checkpoint: session.checkpoint,
+    registerDigest: session.registerDigest || '',
+    certifyDigest: session.certifyDigest || '',
+    quiltBlobId: session.quiltBlobId || '',
+    files: (session.files || []).map(({ id, blobId }) => ({ id, blobId })),
+    imageBlob: state.pendingOcImageBlob,
+    profileBlob: state.pendingOcProfileBlob,
+    ocPackage: state.pendingOcPackage,
+    recipeHash: state.pendingOcRecipeHash,
+    recipeJson: state.pendingOcRecipeJson,
+    fingerprint: state.pendingOcFingerprint,
+  });
+  state.hasOcUploadRecovery = true;
+  loadedOcUploadRecoveries.add(recoveryKey);
+}
+
+async function clearOcUploadRecovery(templateId = state.templateId) {
+  const recoveryKey = ocUploadStorageKey(templateId);
+  loadedOcUploadRecoveries.delete(recoveryKey);
+  await deleteMakerUploadRecovery(recoveryKey);
+  if (state.templateId === templateId) state.hasOcUploadRecovery = false;
+}
+
+function invalidateOcUpload(message = 'The OC changed. Prepare a new mint upload.') {
+  if (state.minting) return;
+  const hadPreparedUpload = state.ocUploadStage !== 'idle' || state.hasOcUploadRecovery || state.mintDigest;
+  const recoveryKey = ocUploadStorageKey();
+  resetOcUploadState();
+  if (hadPreparedUpload) state.mintStatus = message;
+  loadedOcUploadRecoveries.delete(recoveryKey);
+  deleteMakerUploadRecovery(recoveryKey).catch((error) => console.warn('Could not clear stale OC upload recovery.', error));
+}
+
 function renderChecklist() {
-  const layerAssets = itemLayerAssets();
+  const publicItems = allSlots().flatMap((slot) => slotItems(slot.key).filter((item) => item.visibility !== 'private').map((item) => ({ slot, item })));
+  const missingCells = publicItems.reduce((total, { slot, item }) => total + creatorLayers(slot).reduce(
+    (layerTotal, layer) => layerTotal + creatorColors(slot).filter((color) => !assetReady(item.images?.[assetCellKey(layer.id, color.id)])).length,
+    0,
+  ), 0);
   const checks = [
-    ['Maker metadata', $('creatorTemplateName').value.trim() && $('creatorName').value.trim()],
-    ['Standard slots', allSlots().length >= 7],
-    ['License rules', Number($('creatorRoyalty').value || 0) >= 0],
-    ['Item layer images', layerAssets.length > 0],
-    ['OC preview', Boolean($('profileName').value.trim())],
+    ['Maker metadata', Boolean($('creatorTemplateName').value.trim() && $('creatorDescription').value.trim() && $('creatorName').value.trim())],
+    ['Parts and Items', allSlots().length > 0 && publicItems.length > 0],
+    ['Item image matrix', publicItems.length > 0 && missingCells === 0],
+    ['Rules and palettes', state.rules.every((rule) => !selectionRuleIssue(rule)) && state.paletteLinks.every((link) => !paletteLinkIssue(link))],
+    ['Publication policy', Boolean($('creatorLicenseNote').value.trim()) && Number.isInteger(Number($('creatorRoyalty').value)) && Number($('creatorRoyalty').value) >= 0 && Number($('creatorRoyalty').value) <= 10_000],
   ];
   $('creatorChecklist').innerHTML = checks.map(([label, done]) => `
     <div class="${done ? 'done' : ''}">
@@ -1243,13 +2545,34 @@ function selectionRuleSideLabel(partKey, itemKey) {
 }
 
 function selectionRuleIssue(rule) {
+  if (!rule.leftPartKey || !rule.rightPartKey || rule.leftPartKey === rule.rightPartKey) {
+    return 'A selection rule must connect two different Parts.';
+  }
   for (const [partKey, itemKey] of [[rule.leftPartKey, rule.leftItemKey], [rule.rightPartKey, rule.rightItemKey]]) {
     const slot = allSlots().find((candidate) => candidate.key === partKey);
     if (!slot) return 'A selection rule references a missing Part.';
+    if (slot.kind === 'last-bastion') return 'Last bastion Parts cannot be targeted by selection rules.';
     if (itemKey) {
       const item = slotItems(partKey).find((candidate) => candidate.id === itemKey);
       if (!item || item.visibility === 'private') return 'A selection rule references a missing or private Item.';
     }
+  }
+  return '';
+}
+
+function paletteLinkIssue(link) {
+  if (!link.primaryPartKey || !link.linkedPartKey || link.primaryPartKey === link.linkedPartKey) {
+    return 'A palette link must connect two different Parts.';
+  }
+  if (!allSlots().some((slot) => slot.key === link.primaryPartKey) || !allSlots().some((slot) => slot.key === link.linkedPartKey)) {
+    return 'A palette link references a missing Part.';
+  }
+  const primary = allSlots().find((slot) => slot.key === link.primaryPartKey);
+  const linked = allSlots().find((slot) => slot.key === link.linkedPartKey);
+  const primaryColors = creatorColors(primary).map((color) => String(color.value || '').toLowerCase()).sort();
+  const linkedColors = creatorColors(linked).map((color) => String(color.value || '').toLowerCase()).sort();
+  if (JSON.stringify(primaryColors) !== JSON.stringify(linkedColors)) {
+    return 'Linked Parts must publish the same exact color set so the palette rule can be enforced on Sui.';
   }
   return '';
 }
@@ -1266,9 +2589,31 @@ function renderRuleItemOptions(selectId, partKey, preferredValue = '') {
 function makerPublicationIssues() {
   const issues = [];
   const makerParts = allSlots();
+  const publicItems = makerParts.flatMap((slot) => slotItems(slot.key).filter((item) => item.visibility !== 'private'));
+  const assetIdentifiers = publishableAssets().map((asset) => String(asset.identifier || ''));
   if (!makerParts.length) issues.push('Add at least one Part.');
-  if (makerParts.length > 750) issues.push('A Maker cannot contain more than 750 Parts.');
+  if (makerParts.length > MAX_MAKER_PARTS) issues.push(`A Maker cannot contain more than ${MAX_MAKER_PARTS} Parts.`);
+  if (publicItems.length > MAX_MAKER_ITEMS) issues.push(`A Maker cannot contain more than ${MAX_MAKER_ITEMS} published Items.`);
+  if (state.rules.length > MAX_MAKER_RULES) issues.push(`A Maker cannot contain more than ${MAX_MAKER_RULES} selection rules.`);
+  const colorCount = makerParts.reduce((total, slot) => total + creatorColors(slot).length, 0);
+  const publishRecordCount = makerParts.length + publicItems.length + colorCount + state.rules.length + state.paletteLinks.length;
+  if (publishRecordCount > MAX_SINGLE_PUBLISH_RECORDS) {
+    issues.push(`This launch publisher supports up to ${MAX_SINGLE_PUBLISH_RECORDS} on-chain Part, Item, Color, Rule, and palette records per release.`);
+  }
+  if (publishableAssets().length + 2 > 5_000) issues.push('A Maker release cannot exceed 5,000 Walrus files including its cover and manifest.');
+  if (assetIdentifiers.some((identifier) => !identifier || utf8Length(identifier) > 512) || new Set(assetIdentifiers).size !== assetIdentifiers.length) {
+    issues.push('Published Walrus asset identifiers must be present, unique, and at most 512 UTF-8 bytes. Rename duplicate Part, Item, Layer, or Color IDs.');
+  }
+  if (new Set(makerParts.map((slot) => slot.key)).size !== makerParts.length) issues.push('Part keys must be unique.');
   if (makerParts.length && !makerParts.some((slot) => slot.menuVisible !== false)) issues.push('At least one Part must be visible in the player menu.');
+  if (!$('creatorTemplateName').value.trim()) issues.push('Add a Maker name.');
+  if (!$('creatorDescription').value.trim()) issues.push('Add a Maker description.');
+  if (!$('creatorName').value.trim()) issues.push('Add a creator name.');
+  if (utf8Length($('creatorTemplateName').value) > 128) issues.push('Maker name cannot exceed 128 UTF-8 bytes.');
+  if (utf8Length($('creatorDescription').value) > 2_000) issues.push('Maker description cannot exceed 2,000 UTF-8 bytes.');
+  if (utf8Length($('creatorName').value) > 128) issues.push('Creator name cannot exceed 128 UTF-8 bytes.');
+  if (!$('creatorLicenseNote').value.trim()) issues.push('Add a public license note for users.');
+  if (utf8Length($('creatorLicenseNote').value) > 2_000) issues.push('License note cannot exceed 2,000 UTF-8 bytes.');
   makerParts.forEach((slot) => {
     const items = slotItems(slot.key);
     const layers = creatorLayers(slot);
@@ -1277,20 +2622,50 @@ function makerPublicationIssues() {
     if (items.length && !items.some((item) => item.visibility !== 'private')) issues.push(`${slot.label} needs at least one published Item.`);
     if (!layers.length) issues.push(`${slot.label} needs at least one Layer.`);
     if (!colors.length) issues.push(`${slot.label} needs at least one Color.`);
+    if (items.length > MAX_ITEMS_PER_PART) issues.push(`${slot.label} cannot contain more than ${MAX_ITEMS_PER_PART} Items in this release.`);
+    if (layers.length > MAX_LAYERS_PER_PART) issues.push(`${slot.label} cannot contain more than ${MAX_LAYERS_PER_PART} Layers.`);
+    if (colors.length > MAX_COLORS_PER_PART) issues.push(`${slot.label} cannot contain more than ${MAX_COLORS_PER_PART} Colors.`);
+    if (!isSafeKey(slot.key) || utf8Length(slot.key) > 128 || utf8Length(slot.label) > 128) issues.push(`${slot.label} needs a URL-safe key and a label no longer than 128 UTF-8 bytes.`);
+    if (slot.kind === 'last-bastion' && slot.allowRemove !== false) issues.push(`${slot.label} must remain required because it is a last bastion Part.`);
     if (new Set(items.map((item) => item.id)).size !== items.length) issues.push(`${slot.label} contains duplicate Item IDs.`);
     if (new Set(layers.map((layer) => layer.id)).size !== layers.length) issues.push(`${slot.label} contains duplicate Layer IDs.`);
     if (new Set(colors.map((color) => color.id)).size !== colors.length) issues.push(`${slot.label} contains duplicate Color IDs.`);
+    if (new Set(colors.map((color) => String(color.value || '').toLowerCase())).size !== colors.length) issues.push(`${slot.label} contains duplicate Color values.`);
+    layers.forEach((layer) => {
+      if (!isSafeKey(layer.id) || utf8Length(layer.id) > 128 || utf8Length(layer.name) > 128) issues.push(`${slot.label} / ${layer.name} needs a safe ID and a name no longer than 128 UTF-8 bytes.`);
+      if (!Number.isFinite(Number(layer.x)) || !Number.isFinite(Number(layer.y))) issues.push(`${slot.label} / ${layer.name} has invalid coordinates.`);
+      if (!Number.isFinite(Number(layer.opacity)) || Number(layer.opacity) < 0 || Number(layer.opacity) > 100) issues.push(`${slot.label} / ${layer.name} needs opacity from 0 to 100.`);
+    });
+    colors.forEach((color) => {
+      if (!isSafeKey(color.id) || utf8Length(color.id) > 128 || utf8Length(color.name) > 128) issues.push(`${slot.label} / ${color.name} needs a safe ID and a name no longer than 128 UTF-8 bytes.`);
+      if (!/^#[0-9a-f]{6}$/i.test(String(color.value || ''))) issues.push(`${slot.label} / ${color.name} needs a six-digit hex color.`);
+    });
     items.filter((item) => item.visibility !== 'private').forEach((item) => {
-      const missingCells = layers.flatMap((layer) => colors.filter((color) => !item.images?.[assetCellKey(layer.id, color.id)]?.file));
+      if (!isSafeKey(item.id) || utf8Length(item.id) > 128 || utf8Length(item.label) > 128) issues.push(`${slot.label} / ${item.label} needs a safe ID and a label no longer than 128 UTF-8 bytes.`);
+      const missingCells = layers.flatMap((layer) => colors.filter((color) => !assetReady(item.images?.[assetCellKey(layer.id, color.id)])));
       if (missingCells.length) issues.push(`${slot.label} / ${item.label} needs ${missingCells.length} more PNG image${missingCells.length === 1 ? '' : 's'}.`);
+      Object.values(item.images || {}).filter(assetReady).forEach((asset) => {
+        if (!asset.width || !asset.height) return;
+        const expectedRatio = state.makerCanvas.width / state.makerCanvas.height;
+        if (Math.abs((asset.width / asset.height) - expectedRatio) > 0.005) issues.push(`${slot.label} / ${item.label} contains an image with the wrong canvas ratio.`);
+      });
     });
   });
   state.rules.forEach((rule) => {
     const issue = selectionRuleIssue(rule);
     if (issue) issues.push(issue);
   });
+  state.paletteLinks.forEach((link) => {
+    const issue = paletteLinkIssue(link);
+    if (issue) issues.push(issue);
+  });
   const royaltyBps = Number($('creatorRoyalty').value || 0);
   if (!Number.isInteger(royaltyBps) || royaltyBps < 0 || royaltyBps > 10_000) issues.push('Royalty BPS must be an integer from 0 to 10000.');
+  try {
+    validateMakerManifest(creatorUploadManifest());
+  } catch (error) {
+    issues.push(error.message || 'The public Maker manifest is invalid.');
+  }
   return [...new Set(issues)];
 }
 
@@ -1299,13 +2674,18 @@ function renderCreatorValidation() {
   const structuredParts = allSlots().filter((slot) => ['standard', 'left-right-pair', 'last-bastion'].includes(ensureSlotStructure(slot).kind));
   const visibleParts = structuredParts.filter((slot) => slot.menuVisible !== false);
   const publicItems = structuredParts.flatMap((slot) => slotItems(slot.key).filter((item) => item.visibility !== 'private').map((item) => ({ slot, item })));
-  const missingCells = publicItems.reduce((total, { slot, item }) => total + creatorLayers(slot).reduce((layerTotal, layer) => layerTotal + creatorColors(slot).filter((color) => !item.images?.[assetCellKey(layer.id, color.id)]?.file).length, 0), 0);
+  const missingCells = publicItems.reduce((total, { slot, item }) => total + creatorLayers(slot).reduce((layerTotal, layer) => layerTotal + creatorColors(slot).filter((color) => !assetReady(item.images?.[assetCellKey(layer.id, color.id)])).length, 0), 0);
   const invalidRules = state.rules.filter((rule) => selectionRuleIssue(rule));
+  const invalidPaletteLinks = state.paletteLinks.filter((link) => paletteLinkIssue(link));
+  const colorCount = structuredParts.reduce((total, slot) => total + creatorColors(slot).length, 0);
+  const publishRecordCount = structuredParts.length + publicItems.length + colorCount + state.rules.length + state.paletteLinks.length;
   const checks = [
     [structuredParts.length > 0, 'At least one valid Part is registered.'],
     [visibleParts.length > 0, 'At least one Part is visible in the player menu.'],
     [missingCells === 0, missingCells ? `${missingCells} required Layer × Color PNG cells are still empty.` : 'Every public Item has all required PNG images.'],
     [invalidRules.length === 0, invalidRules.length ? `${invalidRules.length} rules reference unavailable Parts or Items.` : 'All selection rules reference available Parts and Items.'],
+    [invalidPaletteLinks.length === 0, invalidPaletteLinks.length ? `${invalidPaletteLinks.length} palette links reference unavailable Parts.` : 'All linked palettes reference available Parts.'],
+    [publishRecordCount <= MAX_SINGLE_PUBLISH_RECORDS, publishRecordCount <= MAX_SINGLE_PUBLISH_RECORDS ? `${publishRecordCount}/${MAX_SINGLE_PUBLISH_RECORDS} on-chain Part, Item, Color, Rule, and palette records fit the launch publisher.` : `${publishRecordCount} records exceed this launch publisher's ${MAX_SINGLE_PUBLISH_RECORDS}-record limit.`],
     [itemLayerAssets().length > 0, itemLayerAssets().length ? `${itemLayerAssets().length} item images are ready for the Walrus quilt.` : 'Upload at least one Item image before release.'],
   ];
   $('creatorValidationList').innerHTML = checks.map(([done, label]) => `<li class="${done ? 'ok' : 'warn'}">${escapeHtml(label)}</li>`).join('');
@@ -1313,17 +2693,19 @@ function renderCreatorValidation() {
 
 function renderRules() {
   if (!$('ruleLeftPart') || !$('ruleRightPart') || !$('ruleLeftItem') || !$('ruleRightItem')) return;
-  const options = allSlots().map((slot) => `<option value="${escapeHtml(slot.key)}">${escapeHtml(slot.label)}</option>`).join('');
+  const ruleParts = allSlots().filter((slot) => slot.kind !== 'last-bastion');
+  const options = ruleParts.map((slot) => `<option value="${escapeHtml(slot.key)}">${escapeHtml(slot.label)}</option>`).join('');
   const previousLeft = $('ruleLeftPart').value;
   const previousRight = $('ruleRightPart').value;
   const previousLeftItem = $('ruleLeftItem').value;
   const previousRightItem = $('ruleRightItem').value;
   $('ruleLeftPart').innerHTML = options;
   $('ruleRightPart').innerHTML = options;
-  $('ruleLeftPart').value = previousLeft || allSlots()[0]?.key || '';
-  $('ruleRightPart').value = previousRight || allSlots()[1]?.key || allSlots()[0]?.key || '';
+  $('ruleLeftPart').value = ruleParts.some((slot) => slot.key === previousLeft) ? previousLeft : ruleParts[0]?.key || '';
+  $('ruleRightPart').value = ruleParts.some((slot) => slot.key === previousRight) ? previousRight : ruleParts[1]?.key || ruleParts[0]?.key || '';
   renderRuleItemOptions('ruleLeftItem', $('ruleLeftPart').value, previousLeftItem);
   renderRuleItemOptions('ruleRightItem', $('ruleRightPart').value, previousRightItem);
+  if ($('addSelectionRule')) $('addSelectionRule').disabled = makerIsPublished() || ruleParts.length < 2;
   $('selectionRuleList').innerHTML = state.rules.length
     ? state.rules.map((rule, index) => `
         <div>
@@ -1336,6 +2718,7 @@ function renderRules() {
     : '<p>No selection rules yet.</p>';
   document.querySelectorAll('[data-remove-rule]').forEach((button) => {
     button.addEventListener('click', () => {
+      if (!ensureMakerEditable()) return;
       state.rules.splice(Number(button.dataset.removeRule), 1);
       invalidateMakerUpload();
       renderAll();
@@ -1364,6 +2747,7 @@ function renderPaletteLinks() {
     : '<p>No linked palettes yet.</p>';
   document.querySelectorAll('[data-remove-palette-link]').forEach((button) => {
     button.addEventListener('click', () => {
+      if (!ensureMakerEditable()) return;
       state.paletteLinks.splice(Number(button.dataset.removePaletteLink), 1);
       invalidateMakerUpload();
       renderAll();
@@ -1375,27 +2759,73 @@ function renderPackage() {
   $('packagePreview').textContent = JSON.stringify(ocPackage(), null, 2);
 }
 
+function ocRecipeIssues() {
+  const issues = [];
+  const profileName = $('profileName').value.trim();
+  if (!profileName) issues.push('Name this OC before preparing its mint.');
+  if (utf8Length(profileName) > 128) issues.push('OC name cannot exceed 128 UTF-8 bytes.');
+  if (utf8Length($('profileWorld').value) > 128) issues.push('OC world cannot exceed 128 UTF-8 bytes.');
+  if (utf8Length($('profileDescription').value) > 2_000) issues.push('OC description cannot exceed 2,000 UTF-8 bytes.');
+  if (utf8Length($('profileTags').value) > 1_000) issues.push('OC tags cannot exceed 1,000 UTF-8 bytes.');
+  const recipe = ocPackage().recipe;
+  if (!recipe.length) issues.push('Choose at least one Item for this OC.');
+  allSlots().forEach((slot) => {
+    const selectedItem = state.visual[slot.key];
+    if (slot.allowRemove === false && !selectedItem) issues.push(`${slot.label} is required.`);
+    if (selectedItem && !slotItems(slot.key).some((item) => item.id === selectedItem && item.visibility !== 'private')) {
+      issues.push(`${slot.label} has an unavailable Item selection.`);
+    }
+    const selectedColor = String(state.visual.palette[slot.colorKey] || '').toLowerCase();
+    if (selectedItem && !creatorColors(slot).some((color) => String(color.value || '').toLowerCase() === selectedColor)) {
+      issues.push(`${slot.label} has an unavailable Color selection.`);
+    }
+  });
+  state.rules.forEach((rule) => {
+    const leftItem = state.visual[rule.leftPartKey];
+    const rightItem = state.visual[rule.rightPartKey];
+    const leftSelected = Boolean(leftItem) && (!rule.leftItemKey || leftItem === rule.leftItemKey);
+    const rightSelected = Boolean(rightItem) && (!rule.rightItemKey || rightItem === rule.rightItemKey);
+    if (leftSelected && rightSelected) issues.push('The current Item combination violates a Maker selection rule.');
+  });
+  state.paletteLinks.forEach((link) => {
+    const left = allSlots().find((slot) => slot.key === link.primaryPartKey);
+    const right = allSlots().find((slot) => slot.key === link.linkedPartKey);
+    if (!left || !right || !state.visual[left.key] || !state.visual[right.key]) return;
+    if (String(state.visual.palette[left.colorKey] || '').toLowerCase() !== String(state.visual.palette[right.colorKey] || '').toLowerCase()) {
+      issues.push(`${left.label} and ${right.label} must use the same linked palette color.`);
+    }
+  });
+  if (state.makerArchived) issues.push('This Maker is archived and does not accept new OC mints.');
+  return [...new Set(issues)];
+}
+
 function mintReadiness() {
-  if (runtimeConfig.packageId.includes('TODO')) return 'The Move package is not configured yet.';
-  if (!activeMakerObjectId()) return 'This template is a preview. Add its published OCMaker object id to public/config.js.';
+  if (!packageConfigured()) return 'The Move package is not configured yet.';
+  if (activeTemplate()?.source !== 'chain' || !activeMakerObjectId()) return 'This template is a preview. Minting unlocks after its published Sui Maker and Walrus manifest are loaded.';
   if (!state.walletConnected) return 'Connect a Sui wallet to mint this OC.';
+  const issue = ocRecipeIssues()[0];
+  if (issue) return issue;
   return 'Prepare the OC quilt, register and upload it, certify it, then mint on Sui Mainnet.';
 }
 
 function renderMintAction() {
   if (!$('mintOcOnchain')) return;
-  const baseReady = !runtimeConfig.packageId.includes('TODO') && Boolean(activeMakerObjectId()) && state.walletConnected;
+  const baseReady = packageConfigured() && activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId()) && state.walletConnected && ocRecipeIssues().length === 0;
+  $('resumeOcUpload').disabled = state.minting || !state.walletConnected || activeTemplate()?.source !== 'chain' || !state.hasOcUploadRecovery;
   $('prepareOcUpload').disabled = state.minting || !baseReady || state.ocUploadStage !== 'idle';
   $('registerOcUpload').disabled = state.minting || !state.walletConnected || !['encoded', 'registered'].includes(state.ocUploadStage);
   $('registerOcUpload').textContent = state.ocUploadStage === 'registered' ? 'Retry upload' : 'Register & upload';
   $('certifyOcUpload').disabled = state.minting || !state.walletConnected || state.ocUploadStage !== 'uploaded';
   $('mintOcOnchain').disabled = state.minting || !state.walletConnected || state.ocUploadStage !== 'certified';
-  $('mintOcOnchain').textContent = state.minting ? 'Minting…' : state.mintDigest ? 'Minted' : 'Mint OC';
+  $('mintOcOnchain').textContent = state.minting ? 'Minting…' : state.mintDigest ? 'Minted' : t('mintOc');
   if (state.mintDigest) {
-    $('mintOcStatus').innerHTML = `OC minted. <a href="${explorerTransactionUrl(state.mintDigest)}" target="_blank" rel="noreferrer">View transaction</a>`;
+    $('mintOcStatus').innerHTML = `OC minted. <a href="${escapeHtml(explorerTransactionUrl(state.mintDigest))}" target="_blank" rel="noreferrer">View transaction</a>`;
   } else {
     $('mintOcStatus').textContent = state.mintStatus || mintReadiness();
   }
+  ['profileName', 'profileWorld', 'profileDescription', 'profileTags'].forEach((id) => {
+    if ($(id)) $(id).disabled = state.minting;
+  });
 }
 
 async function renderOcImageBlob() {
@@ -1415,12 +2845,24 @@ async function renderOcImageBlob() {
   if (uploadedLayers.length) {
     context.clearRect(0, 0, canvas.width, canvas.height);
     for (const { layer, asset } of uploadedLayers) {
-      const bitmap = await createImageBitmap(asset.file);
+      let source = asset.file;
+      if (!source && asset.url) {
+        const response = await fetchWalrusWithBackoff(asset.url);
+        if (!response.ok) throw new Error(`Could not load a published Maker layer (${response.status}).`);
+        source = await responseBlobWithinLimit(response, 20 * 1024 * 1024, 'A published Maker layer');
+      }
+      if (!source) throw new Error('A selected Maker layer has no readable image source.');
+      const bitmap = await createImageBitmap(source);
+      const expectedRatio = state.makerCanvas.width / state.makerCanvas.height;
+      if (bitmap.width > 8192 || bitmap.height > 8192 || Math.abs((bitmap.width / bitmap.height) - expectedRatio) > 0.005) {
+        bitmap.close();
+        throw new Error('A published Maker layer exceeds image limits or does not match the Maker canvas ratio.');
+      }
       context.globalAlpha = (layer.opacity ?? 100) / 100;
       context.globalCompositeOperation = ['normal', 'multiply', 'screen', 'overlay'].includes(layer.blendMode)
         ? (layer.blendMode === 'normal' ? 'source-over' : layer.blendMode)
         : 'source-over';
-      context.drawImage(bitmap, layer.x || 0, layer.y || 0, bitmap.width, bitmap.height);
+      context.drawImage(bitmap, layer.x || 0, layer.y || 0, canvas.width, canvas.height);
       bitmap.close();
     }
     context.globalAlpha = 1;
@@ -1462,29 +2904,142 @@ async function renderOcImageBlob() {
   });
 }
 
+async function restoreMakerUploadRecovery(templateId = state.templateId, { force = false } = {}) {
+  const recoveryKey = makerAssetStorageKey(templateId);
+  if (force) loadedMakerUploadRecoveries.delete(recoveryKey);
+  if (loadedMakerUploadRecoveries.has(recoveryKey) || makerIsPublished()) return;
+  loadedMakerUploadRecoveries.add(recoveryKey);
+  try {
+    const recovery = await loadMakerUploadRecovery(recoveryKey);
+    state.hasMakerUploadRecovery = Boolean(recovery);
+    if (!recovery || state.templateId !== templateId) return;
+    syncCreatorAssets();
+    if (JSON.stringify(creatorUploadManifest()) !== recovery.manifestJson) {
+      await clearMakerUploadRecovery(templateId);
+      throw new Error('The draft changed after this Walrus checkpoint. Prepare a new upload from the current assets.');
+    }
+    if (!recovery.coverBlob) throw new Error('The saved Maker cover is missing from upload recovery.');
+    state.pendingMakerCoverBlob = recovery.coverBlob;
+    state.pendingMakerAssets = [...publishableAssets(), makerCoverAsset(recovery.coverBlob)];
+    state.pendingMakerAssets.forEach((asset) => {
+      if (!asset.file) throw new Error(`${asset.name} is missing from the local draft asset store.`);
+    });
+    state.pendingMakerManifestJson = recovery.manifestJson;
+    state.makerUploadSession = await resumeWalrusUpload(makerUploadEntries(), recovery);
+    state.makerUploadStage = state.makerUploadSession.stage;
+    state.makerQuiltId = recovery.quiltBlobId || state.makerUploadSession.quiltBlobId;
+    if (state.makerUploadStage === 'certified') {
+      if (state.makerUploadSession.files.length !== state.pendingMakerAssets.length + 1) {
+        throw new Error('The certified Walrus quilt no longer matches this Maker asset set.');
+      }
+      state.pendingMakerAssets.forEach((asset, index) => {
+        asset.patchId = state.makerUploadSession.files[index].id;
+        asset.blobId = state.makerUploadSession.files[index].blobId;
+      });
+    }
+    state.publishStatus = {
+      encoded: 'Saved Walrus quilt restored. Register and upload it with the same wallet.',
+      registered: 'Paid Walrus registration restored. Retry the relay upload without registering again.',
+      uploaded: 'Uploaded Walrus quilt restored. Continue with certification.',
+      certified: 'Certified Walrus quilt restored. Continue with Sui Maker publication.',
+    }[state.makerUploadStage] || 'Saved Walrus upload restored.';
+  } catch (error) {
+    state.makerUploadSession = null;
+    state.pendingMakerAssets = [];
+    state.pendingMakerCoverBlob = null;
+    state.pendingMakerManifestJson = '';
+    state.makerUploadStage = 'idle';
+    state.publishStatus = error.message || 'Could not restore the saved Walrus upload.';
+  } finally {
+    renderAll();
+  }
+}
+
+async function restoreOcUploadRecovery(templateId = state.templateId, { force = false } = {}) {
+  if (!state.walletConnected || activeTemplate()?.source !== 'chain' || !activeMakerObjectId() || state.templateId !== templateId) return;
+  const recoveryKey = ocUploadStorageKey(templateId);
+  if (force) loadedOcUploadRecoveries.delete(recoveryKey);
+  if (loadedOcUploadRecoveries.has(recoveryKey) || state.mintDigest) return;
+  loadedOcUploadRecoveries.add(recoveryKey);
+  try {
+    const recovery = await loadMakerUploadRecovery(recoveryKey);
+    state.hasOcUploadRecovery = Boolean(recovery);
+    if (!recovery || recovery.kind !== 'oc-mint' || state.templateId !== templateId) return;
+    if (ocFingerprint() !== recovery.fingerprint) {
+      await clearOcUploadRecovery(templateId);
+      throw new Error('The current OC no longer matches the saved mint upload. Prepare a new OC quilt.');
+    }
+    state.pendingOcImageBlob = recovery.imageBlob;
+    state.pendingOcProfileBlob = recovery.profileBlob;
+    state.pendingOcPackage = recovery.ocPackage;
+    state.pendingOcRecipeHash = recovery.recipeHash instanceof Uint8Array
+      ? recovery.recipeHash
+      : new Uint8Array(recovery.recipeHash || []);
+    state.pendingOcRecipeJson = recovery.recipeJson;
+    state.pendingOcFingerprint = recovery.fingerprint;
+    state.ocUploadSession = await resumeWalrusUpload(ocUploadEntries(), recovery);
+    state.ocUploadStage = state.ocUploadSession.stage;
+    if (state.ocUploadStage === 'certified') {
+      if (state.ocUploadSession.files.length !== 2) throw new Error('The certified OC quilt no longer contains exactly two files.');
+      state.ocImagePatchId = state.ocUploadSession.files[0].id;
+      state.ocProfilePatchId = state.ocUploadSession.files[1].id;
+    }
+    state.mintStatus = {
+      encoded: 'Saved OC quilt restored. Register and upload it with the same wallet.',
+      registered: 'Paid OC registration restored. Retry upload without registering again.',
+      uploaded: 'Uploaded OC quilt restored. Continue with certification.',
+      certified: 'Certified OC files restored. Continue with the Sui mint.',
+    }[state.ocUploadStage] || 'Saved OC upload restored.';
+  } catch (error) {
+    state.ocUploadSession = null;
+    state.ocUploadStage = 'idle';
+    state.ocImagePatchId = '';
+    state.ocProfilePatchId = '';
+    state.pendingOcImageBlob = null;
+    state.pendingOcProfileBlob = null;
+    state.pendingOcPackage = null;
+    state.pendingOcRecipeHash = null;
+    state.pendingOcRecipeJson = '';
+    state.pendingOcFingerprint = '';
+    state.mintStatus = error.message || 'Could not restore the saved OC upload.';
+  } finally {
+    renderAll();
+  }
+}
+
 function renderImageMakerList() {
+  const creatorTemplates = templates.filter((template) =>
+    (template.source === 'local' && template.owner === state.walletAddress)
+    || (template.source === 'chain' && template.owned));
   $('imageMakerList').innerHTML = `
-    ${templates.map((template) => `
-      <article class="creator-maker-card ${template.id === state.templateId ? 'active' : ''}" data-maker="${escapeHtml(template.id)}" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
-        <div class="maker-cover-mini">
-          <span class="mini-face"></span>
-        </div>
-        <div class="maker-card-body">
-          <div class="maker-tags">
-            <span>${template.source === 'local' ? 'Local draft' : 'Starter example'}</span>
-            <span>${template.category === 'chibi' ? '1:1' : '9:16'}</span>
-            <span>Free combine</span>
+    ${creatorTemplates.length ? creatorTemplates.map((template) => {
+      const model = makerModels.get(template.id);
+      const published = template.source === 'chain' || Boolean(model?.publishDigest || model?.makerObjectId);
+      const archived = published && Boolean(model?.makerArchived);
+      const lifecycleLabel = archived ? 'Archived' : published ? 'Published on Sui' : template.source === 'local' ? 'Local draft' : 'Starter example';
+      const canvasLabel = model?.canvas?.width === model?.canvas?.height ? '1:1' : '9:16';
+      return `
+        <article class="creator-maker-card ${template.id === state.templateId ? 'active' : ''}" data-maker="${escapeHtml(template.id)}" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
+          <div class="maker-cover-mini">
+            ${template.coverUrl ? `<img src="${escapeHtml(template.coverUrl)}" alt="${escapeHtml(template.name)} cover" />` : '<span class="mini-face"></span>'}
           </div>
-          <h2>${escapeHtml(template.name)}</h2>
-          <p>${escapeHtml(template.summary)}</p>
-        </div>
-        <div class="maker-card-actions">
-          <button class="secondary" data-preview-maker="${escapeHtml(template.id)}">Preview</button>
-          <button class="icon-button" data-open-maker="${escapeHtml(template.id)}" aria-label="Open ${escapeHtml(template.name)}">↗</button>
-          <button class="primary" data-edit-maker="${escapeHtml(template.id)}">Edit</button>
-        </div>
-      </article>
-    `).join('')}
+          <div class="maker-card-body">
+            <div class="maker-tags">
+              <span>${lifecycleLabel}</span>
+              <span>${canvasLabel}</span>
+              <span>Free combine</span>
+            </div>
+            <h2>${escapeHtml(template.name)}</h2>
+            <p>${escapeHtml(template.summary)}</p>
+          </div>
+          <div class="maker-card-actions">
+            <button class="secondary" data-preview-maker="${escapeHtml(template.id)}">${t('preview')}</button>
+            ${template.source === 'local' && !published ? `<button class="icon-button danger-icon" data-delete-maker="${escapeHtml(template.id)}" title="Delete draft" aria-label="Delete ${escapeHtml(template.name)}">×</button>` : ''}
+            <button class="primary" data-edit-maker="${escapeHtml(template.id)}">${published ? 'Manage' : 'Edit'}</button>
+          </div>
+        </article>
+      `;
+    }).join('') : '<div class="empty-state">No wallet-owned Makers yet. Create an OC Maker to begin your first local draft.</div>'}
   `;
 
   document.querySelectorAll('[data-preview-maker], [data-open-maker]').forEach((button) => {
@@ -1505,19 +3060,152 @@ function renderImageMakerList() {
       focusCreatorTop();
     });
   });
+
+  document.querySelectorAll('[data-delete-maker]').forEach((button) => {
+    button.addEventListener('click', () => requestDeleteMaker(button.dataset.deleteMaker));
+  });
+}
+
+function requestDeleteMaker(templateId = state.templateId) {
+  const template = templates.find((candidate) => candidate.id === templateId);
+  const model = makerModels.get(templateId);
+  if (!template || template.source !== 'local' || model?.publishDigest || model?.makerObjectId) return;
+  openConfirmation({
+    title: 'Delete local draft?',
+    message: `“${template.name}” and its local Part, Item, Layer, and file references will be permanently removed from this browser.`,
+    confirmLabel: 'Delete draft',
+    action: async () => {
+      const wasActive = state.templateId === templateId;
+      const assetStorageKey = makerAssetStorageKey(templateId);
+      revokeMakerObjectUrls(model);
+      localStorage.removeItem(makerDraftStorageKey(templateId));
+      loadedMakerDrafts.delete(makerDraftStorageKey(templateId));
+      loadedMakerAssetDrafts.delete(assetStorageKey);
+      await deleteMakerDraftRecord(makerDraftStorageKey(templateId));
+      await deleteMakerAssets(assetStorageKey);
+      await clearMakerUploadRecovery(templateId);
+      makerModels.delete(templateId);
+      const templateIndex = templates.findIndex((candidate) => candidate.id === templateId);
+      if (templateIndex >= 0) templates.splice(templateIndex, 1);
+      persistLocalMakerIndex();
+      const fallback = wasActive ? templates[0] : activeTemplate();
+      if (wasActive && fallback) {
+        activateMakerModel(fallback.id);
+        syncTemplateFields();
+      }
+      state.creatorView = 'list';
+      state.editorPanel = 'top';
+      renderAll();
+      focusCreatorTop();
+    },
+  });
+}
+
+function renderMakerLifecycle() {
+  const lifecycle = makerLifecycle();
+  const locked = makerIsPublished();
+  const labels = {
+    starter: ['Starter workspace', 'This example is editable in the current browser. Save it as a new local Maker before production use.'],
+    draft: ['Local draft', 'This draft is stored for the connected wallet in this browser and may be edited or permanently deleted.'],
+    published: ['Published on Sui', 'The published Maker, rules, license, and certified Walrus manifest are immutable. Archive it to stop new OC mints.'],
+    archived: ['Archived on Sui', 'The historical record and existing OCs remain valid, but this Maker no longer accepts new OC mints.'],
+  };
+  const [title, copy] = labels[lifecycle];
+  if ($('makerLifecycleBadge')) {
+    $('makerLifecycleBadge').textContent = title;
+    $('makerLifecycleBadge').className = `maker-lifecycle-badge ${lifecycle}`;
+  }
+  if ($('makerLifecycleTitle')) $('makerLifecycleTitle').textContent = title;
+  if ($('makerLifecycleCopy')) $('makerLifecycleCopy').textContent = copy;
+  if ($('deleteMakerDraft')) {
+    $('deleteMakerDraft').hidden = lifecycle !== 'draft';
+    $('deleteMakerDraft').disabled = lifecycle !== 'draft';
+  }
+  if ($('makerLifecycleAction')) $('makerLifecycleAction').hidden = !locked;
+  if ($('makerLifecycleActionTitle')) $('makerLifecycleActionTitle').textContent = lifecycle === 'archived' ? 'Archived maker' : 'Published maker';
+  if ($('makerLifecycleActionCopy')) $('makerLifecycleActionCopy').textContent = state.publishStatus || copy;
+  if ($('archiveMakerOnchain')) {
+    $('archiveMakerOnchain').textContent = lifecycle === 'archived' ? 'Restore maker' : 'Archive maker';
+    $('archiveMakerOnchain').className = lifecycle === 'archived' ? 'secondary' : 'danger-button';
+    $('archiveMakerOnchain').disabled = !state.makerObjectId || state.publishing;
+  }
+
+  ['creatorTemplateName', 'creatorDescription', 'creatorName', 'creatorWorld', 'creatorLicense', 'creatorLicenseNote', 'creatorRoyalty'].forEach((id) => {
+    if ($(id)) $(id).disabled = locked;
+  });
+  if ($('saveMakerDraft')) {
+    const saveLabels = {
+      idle: t('saveDraft'),
+      dirty: t('saveDraft'),
+      saving: 'Saving locally…',
+      saved: 'Saved locally',
+      error: 'Retry local save',
+    };
+    $('saveMakerDraft').textContent = saveLabels[state.draftSaveStatus] || t('saveDraft');
+    $('saveMakerDraft').title = state.draftSaveMessage || 'Save Maker metadata and PNG files in this browser.';
+    $('saveMakerDraft').disabled = locked || state.draftSaveStatus === 'saving';
+  }
+  document.querySelectorAll('[data-open-part-modal], [data-add-item], [data-delete-item], [data-delete-part], [data-add-layer], [data-delete-layer], [data-add-color], [data-delete-color], [data-move-layer], [data-remove-rule], [data-remove-palette-link], #addSelectionRule, #addPaletteLink').forEach((control) => {
+    control.disabled = locked;
+  });
+  if ($('addSelectionRule')) $('addSelectionRule').disabled = locked || allSlots().filter((slot) => slot.kind !== 'last-bastion').length < 2;
+  if ($('addPaletteLink')) $('addPaletteLink').disabled = locked || allSlots().length < 2;
+  document.querySelectorAll('#partWorkspace input, #partWorkspace select, #layerDetailsPanel input, #layerDetailsPanel select').forEach((control) => {
+    control.disabled = locked;
+  });
+}
+
+function requestDeletePart(slotKey) {
+  if (!ensureMakerEditable()) return;
+  const slot = allSlots().find((candidate) => candidate.key === slotKey);
+  if (!slot) return;
+  openConfirmation({
+    title: 'Delete Part?',
+    message: `“${slot.label}” and all of its Items, Layers, Colors, local PNG references, selection rules, and palette links will be removed from this draft.`,
+    confirmLabel: 'Delete Part',
+    action: () => {
+      if (slot.iconAsset?.url) URL.revokeObjectURL(slot.iconAsset.url);
+      slotItems(slot.key).forEach((item) => {
+        if (item.iconAsset?.url) URL.revokeObjectURL(item.iconAsset.url);
+        Object.values(item.images || {}).forEach((asset) => asset?.url && URL.revokeObjectURL(asset.url));
+      });
+      state.makerSlots = state.makerSlots.filter((candidate) => candidate.key !== slot.key);
+      state.slotOrder = state.slotOrder.filter((key) => key !== slot.key);
+      state.layerOrder = state.layerOrder.filter((key) => !key.startsWith(`${slot.key}:`));
+      delete state.makerParts[slot.key];
+      delete state.visual[slot.key];
+      delete state.visual.palette[slot.colorKey];
+      state.rules = state.rules.filter((rule) => rule.leftPartKey !== slot.key && rule.rightPartKey !== slot.key);
+      state.paletteLinks = state.paletteLinks.filter((link) => link.primaryPartKey !== slot.key && link.linkedPartKey !== slot.key);
+      state.selectedSlot = state.slotOrder[0] || '';
+      state.selectedItem = state.selectedSlot ? slotItems(state.selectedSlot)[0]?.id || '' : '';
+      const firstLayer = allCreatorLayers()[0];
+      state.selectedLayer = firstLayer?.key || '';
+      syncCreatorAssets();
+      invalidateMakerUpload('Part deleted. Prepare a new Walrus quilt before publishing.');
+      renderAll();
+    },
+  });
 }
 
 function renderCreatorDetails() {
   const template = activeTemplate();
   allSlots().forEach(ensureSlotStructure);
   const compositionLayers = allCreatorLayers();
+  const lifecycle = makerLifecycle();
+  const lifecycleLabel = {
+    starter: 'Starter workspace',
+    draft: 'Local draft',
+    published: 'Published',
+    archived: 'Archived',
+  }[lifecycle] || 'Local draft';
   $('detailMakerTitle').textContent = template.name;
   $('editingMakerTitle').textContent = template.name;
   $('editingMakerTitle').title = template.name;
   $('detailDescription').textContent = template.summary || 'Build the template from layered assets, then bind the maker to license rules and on-chain provenance.';
   $('layerCount').textContent = compositionLayers.length;
   const publicItems = allSlots().flatMap((slot) => slotItems(slot.key).filter((item) => item.visibility !== 'private').map((item) => ({ slot, item })));
-  const incompleteItems = publicItems.filter(({ slot, item }) => creatorLayers(slot).some((layer) => creatorColors(slot).some((color) => !item.images?.[assetCellKey(layer.id, color.id)]?.file)));
+  const incompleteItems = publicItems.filter(({ slot, item }) => creatorLayers(slot).some((layer) => creatorColors(slot).some((color) => !assetReady(item.images?.[assetCellKey(layer.id, color.id)]))));
   if ($('makerTopPartSummary')) $('makerTopPartSummary').textContent = `${allSlots().length} Part${allSlots().length === 1 ? '' : 's'}`;
   if ($('makerTopAssetSummary')) $('makerTopAssetSummary').textContent = itemLayerAssets().length ? `${itemLayerAssets().length} item images ready` : 'No item images yet';
   if ($('makerTopRuleSummary')) $('makerTopRuleSummary').textContent = `${state.rules.length} Rule${state.rules.length === 1 ? '' : 's'}`;
@@ -1526,14 +3214,17 @@ function renderCreatorDetails() {
       ? 'Add the first Part'
       : incompleteItems.length === 0 ? 'Ready to preview' : `${incompleteItems.length} incomplete Item${incompleteItems.length === 1 ? '' : 's'}`;
   }
-  if ($('makerTopChainState')) $('makerTopChainState').textContent = state.publishDigest ? 'Published' : runtimeConfig.packageId.includes('TODO') ? 'Package pending' : 'Local draft';
+  if ($('makerTopChainState')) $('makerTopChainState').textContent = state.publishDigest ? 'Published' : !packageConfigured() ? 'Package pending' : 'Local draft';
   const canvasRatio = state.makerCanvas.width === state.makerCanvas.height ? '1:1' : '9:16';
+  if ($('makerTopLifecycleTag')) $('makerTopLifecycleTag').textContent = lifecycleLabel;
+  if ($('makerWorkspaceLifecycleTag')) $('makerWorkspaceLifecycleTag').textContent = lifecycleLabel;
+  if ($('makerTopCanvasTag')) $('makerTopCanvasTag').textContent = canvasRatio;
   if ($('makerCanvasTag')) $('makerCanvasTag').textContent = canvasRatio;
   if ($('canvasSizeLabel')) $('canvasSizeLabel').textContent = `${state.makerCanvas.width} × ${state.makerCanvas.height}`;
   if ($('creatorCanvasStage')) $('creatorCanvasStage').style.aspectRatio = `${state.makerCanvas.width} / ${state.makerCanvas.height}`;
 
   $('creatorPartsList').innerHTML = allSlots().map((slot, index) => `
-    <button class="creator-part-row ${state.selectedSlot === slot.key ? 'active' : ''}" data-slot="${slot.key}">
+    <button class="creator-part-row ${state.selectedSlot === slot.key ? 'active' : ''}" data-slot="${escapeHtml(slot.key)}">
       <span>${String(index + 1).padStart(2, '0')}</span>
       <strong>${escapeHtml(slot.label)}</strong>
       <small>${slotItems(slot.key).length} items · ${creatorLayers(slot).length} layers · ${uploadedAssetCount(slot)} files</small>
@@ -1541,7 +3232,7 @@ function renderCreatorDetails() {
   `).join('');
 
   $('creatorLayerList').innerHTML = compositionLayers.map((layer, index) => `
-    <button class="layer-row ${state.selectedLayer === layer.key ? 'active' : ''}" data-layer-key="${layer.key}">
+    <button class="layer-row ${state.selectedLayer === layer.key ? 'active' : ''}" data-layer-key="${escapeHtml(layer.key)}">
       <span>${index + 1}</span>
       <strong>${escapeHtml(layer.name)}</strong>
       <small>${escapeHtml(layer.partLabel)} · ${escapeHtml(layer.id)}</small>
@@ -1599,8 +3290,8 @@ function renderPartWorkspace() {
   const itemRows = items.map((item, index) => `
     <button class="item-row ${selectedItemForSlot === item.id ? 'active' : ''}" data-select-item="${escapeHtml(item.id)}">
       <span>No.${index + 1}</span>
-      <span class="item-row-copy"><strong>${escapeHtml(item.label)}</strong><small>${Object.values(item.images || {}).filter((asset) => asset?.file).length}/${totalCells} images · ${escapeHtml(item.visibility)}</small></span>
-      <span class="item-row-thumb">${item.iconAsset?.url ? `<img src="${item.iconAsset.url}" alt="" />` : String(index + 1).padStart(2, '0')}</span>
+      <span class="item-row-copy"><strong>${escapeHtml(item.label)}</strong><small>${Object.values(item.images || {}).filter(assetReady).length}/${totalCells} images · ${escapeHtml(item.visibility)}</small></span>
+      <span class="item-row-thumb">${item.iconAsset?.url ? `<img src="${escapeHtml(item.iconAsset.url)}" alt="" />` : String(index + 1).padStart(2, '0')}</span>
     </button>
   `).join('');
 
@@ -1620,45 +3311,32 @@ function renderPartWorkspace() {
           <h2>${slotLabel}</h2>
         </div>
         <div class="workspace-actions">
-          <button class="secondary" data-select-layer-from-part="${creatorLayerKey(slot.key, layers[0].id)}">Composition order</button>
+          <button class="secondary" data-select-layer-from-part="${escapeHtml(creatorLayerKey(slot.key, layers[0].id))}">Composition order</button>
+          <button class="danger-button" data-delete-part="${escapeHtml(slot.key)}">Delete Part</button>
         </div>
       </div>
       ${tabs}
       <div class="part-detail-grid">
-        <label>Part name<input data-part-field="label" value="${slotLabel}" /></label>
+        <label>Part name<input data-part-field="label" value="${slotLabel}" maxlength="128" /></label>
         <label>Part type<select data-part-field="kind" disabled>
           <option value="standard" ${slot.kind === 'standard' || !slot.kind ? 'selected' : ''}>Standard part</option>
           <option value="left-right-pair" ${slot.kind === 'left-right-pair' ? 'selected' : ''}>Left-right paired part</option>
           <option value="last-bastion" ${slot.kind === 'last-bastion' ? 'selected' : ''}>Last bastion part</option>
         </select></label>
-        <label>Anchor X<input data-part-field="x" type="number" value="${slot.x ?? 0}" /></label>
-        <label>Anchor Y<input data-part-field="y" type="number" value="${slot.y ?? 0}" /></label>
         <label>Menu visibility<select data-part-field="menuVisible">
           <option value="visible" ${slot.menuVisible !== false ? 'selected' : ''}>Visible in menu</option>
           <option value="hidden" ${slot.menuVisible === false ? 'selected' : ''}>Hidden fixed layer</option>
         </select></label>
-        <label>Remove option<select data-part-field="allowRemove">
+        <label>Remove option<select data-part-field="allowRemove" ${slot.kind === 'last-bastion' ? 'disabled' : ''}>
           <option value="yes" ${slot.allowRemove !== false ? 'selected' : ''}>User may remove</option>
           <option value="no" ${slot.allowRemove === false ? 'selected' : ''}>Always selected</option>
         </select></label>
         <label>Default item<select data-part-field="defaultItemId">${items.map((item) => `<option value="${escapeHtml(item.id)}" ${slot.defaultItemId === item.id || (!slot.defaultItemId && item === items[0]) ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('')}</select></label>
         <label>Part menu icon<input data-part-icon type="file" accept="image/png,image/jpeg" /></label>
         <div><strong>Icon status</strong><span>${slot.iconAsset ? `${slot.iconAsset.width} × ${slot.iconAsset.height}` : 'No custom icon'}</span></div>
-        <label>License gate<select data-part-field="licenseGate">
-          <option value="included" ${slot.licenseGate !== 'paid' ? 'selected' : ''}>Included in maker license</option>
-          <option value="paid" ${slot.licenseGate === 'paid' ? 'selected' : ''}>Paid add-on part</option>
-        </select></label>
-        <label>Horizontal movement<select data-part-field="allowMoveX"><option value="no" ${!slot.allowMoveX ? 'selected' : ''}>Locked</option><option value="yes" ${slot.allowMoveX ? 'selected' : ''}>Player may move</option></select></label>
-        <label>Vertical movement<select data-part-field="allowMoveY"><option value="no" ${!slot.allowMoveY ? 'selected' : ''}>Locked</option><option value="yes" ${slot.allowMoveY ? 'selected' : ''}>Player may move</option></select></label>
-        <label>Scale control<select data-part-field="allowScale"><option value="no" ${!slot.allowScale ? 'selected' : ''}>Locked</option><option value="yes" ${slot.allowScale ? 'selected' : ''}>Player may scale</option></select></label>
-        <label>Rotation control<select data-part-field="allowRotate"><option value="no" ${!slot.allowRotate ? 'selected' : ''}>Locked</option><option value="yes" ${slot.allowRotate ? 'selected' : ''}>Player may rotate</option></select></label>
-        ${slot.kind === 'left-right-pair' ? `
-          <label>Right layer X<input data-part-field="rightX" type="number" value="${slot.rightX || 0}" /></label>
-          <label>Paired spacing<select data-part-field="allowSpacing"><option value="no" ${!slot.allowSpacing ? 'selected' : ''}>Locked</option><option value="yes" ${slot.allowSpacing ? 'selected' : ''}>Player may adjust</option></select></label>
-          <label>Spacing step<input data-part-field="spacingStep" type="number" min="1" value="${slot.spacingStep || 3}" /></label>
-          <label>Spacing moves<input data-part-field="spacingSteps" type="number" min="1" value="${slot.spacingSteps || 5}" /></label>
-        ` : ''}
         <div><strong>Type lock</strong><span>Part type is immutable after creation so its layer contract stays stable.</span></div>
+        <div><strong>Position</strong><span>Adjust each owned Layer in Composition Order so preview and exported PNG use the same coordinates.</span></div>
+        ${slot.kind === 'last-bastion' ? '<div><strong>Fallback behavior</strong><span>This required Part cannot be targeted by selection rules.</span></div>' : ''}
       </div>
     `;
   } else if (state.partSubView === 'layers') {
@@ -1677,9 +3355,9 @@ function renderPartWorkspace() {
           <div class="builder-list">${layers.map((layer, index) => `
             <div class="builder-row">
               <span>${index + 1}</span>
-              <input data-inline-layer-name="${escapeHtml(layer.id)}" value="${escapeHtml(layer.name)}" aria-label="Layer name" />
+              <input data-inline-layer-name="${escapeHtml(layer.id)}" value="${escapeHtml(layer.name)}" maxlength="128" aria-label="Layer name" />
               <small>Global #${allCreatorLayers().findIndex((candidate) => candidate.key === creatorLayerKey(slot.key, layer.id)) + 1}</small>
-              ${slot.kind === 'standard' && layers.length > 1 ? `<button class="icon-command" data-delete-layer="${layer.id}" title="Delete layer" aria-label="Delete layer">×</button>` : ''}
+              ${slot.kind === 'standard' && layers.length > 1 ? `<button class="icon-command" data-delete-layer="${escapeHtml(layer.id)}" title="Delete layer" aria-label="Delete layer">×</button>` : ''}
             </div>
           `).join('')}</div>
         </section>
@@ -1688,8 +3366,9 @@ function renderPartWorkspace() {
           <div class="builder-list">${colors.map((color) => `
             <div class="builder-row color-builder-row">
               <input type="color" data-color-value="${escapeHtml(color.id)}" value="${escapeHtml(color.value)}" aria-label="${escapeHtml(color.name)} color" />
-              <input data-color-name="${escapeHtml(color.id)}" value="${escapeHtml(color.name)}" aria-label="Color name" />
+              <input data-color-name="${escapeHtml(color.id)}" value="${escapeHtml(color.name)}" maxlength="128" aria-label="Color name" />
               <small>${escapeHtml(color.id)}</small>
+              ${colors.length > 1 ? `<button class="icon-command" data-delete-color="${escapeHtml(color.id)}" title="Delete color" aria-label="Delete ${escapeHtml(color.name)} color">×</button>` : ''}
             </div>
           `).join('')}</div>
         </section>
@@ -1704,10 +3383,10 @@ function renderPartWorkspace() {
           const key = assetCellKey(layer.id, color.id);
           const asset = selectedItem.images?.[key];
           return `
-            <label class="asset-upload-cell ${asset?.file ? 'complete' : ''}">
+            <label class="asset-upload-cell ${assetReady(asset) ? 'complete' : ''}">
               <input type="file" accept="image/png" data-upload-item-image data-item-id="${escapeHtml(selectedItem.id)}" data-layer-id="${escapeHtml(layer.id)}" data-color-id="${escapeHtml(color.id)}" />
-              <span class="asset-cell-preview">${asset?.url ? `<img src="${asset.url}" alt="" />` : '<b>+</b>'}</span>
-              <span class="asset-cell-copy"><strong>${escapeHtml(color.name)}</strong><small>${asset?.file ? `${asset.width} × ${asset.height}` : 'Upload PNG'}</small></span>
+              <span class="asset-cell-preview">${asset?.url ? `<img src="${escapeHtml(asset.url)}" alt="" />` : '<b>+</b>'}</span>
+              <span class="asset-cell-copy"><strong>${escapeHtml(color.name)}</strong><small>${assetReady(asset) ? (asset.width && asset.height ? `${asset.width} × ${asset.height}` : 'Stored on Walrus') : 'Upload PNG'}</small></span>
             </label>
           `;
         }).join('')}</div>
@@ -1735,18 +3414,18 @@ function renderPartWorkspace() {
         <div class="item-asset-editor">${selectedItem ? `
           <div class="item-editor-head">
             <div><p class="kicker">Item No.${items.indexOf(selectedItem) + 1}</p><h3>${escapeHtml(selectedItem.label)}</h3></div>
-            ${items.indexOf(selectedItem) > 0 ? `<button class="secondary" data-delete-item="${escapeHtml(selectedItem.id)}">Delete item</button>` : '<span class="template-token">Required base item</span>'}
+            <button class="danger-button" data-delete-item="${escapeHtml(selectedItem.id)}">Delete item</button>
           </div>
           <div class="item-setting-row">
-            <label>Item name<input data-item-field="label" value="${escapeHtml(selectedItem.label)}" /></label>
-            <label>Publication<select data-item-field="visibility" ${items.indexOf(selectedItem) === 0 ? 'disabled' : ''}>
+            <label>Item name<input data-item-field="label" value="${escapeHtml(selectedItem.label)}" maxlength="128" /></label>
+            <label>Publication<select data-item-field="visibility">
               <option value="public" ${selectedItem.visibility === 'public' ? 'selected' : ''}>Include in published Maker</option>
               <option value="private" ${selectedItem.visibility === 'private' ? 'selected' : ''}>Draft only</option>
             </select></label>
             <label>Display order<input data-item-field="displayOrder" type="number" min="1" value="${selectedItem.displayOrder}" /></label>
             <label>Picker icon<input type="file" accept="image/png,image/jpeg" data-upload-item-icon="${escapeHtml(selectedItem.id)}" /></label>
           </div>
-          <div class="asset-matrix-head"><div><strong>Item images</strong><span>${Object.values(selectedItem.images || {}).filter((asset) => asset?.file).length}/${totalCells} cells complete</span></div><button class="secondary" data-part-subview="layers">Edit layers & colors</button></div>
+          <div class="asset-matrix-head"><div><strong>Item images</strong><span>${Object.values(selectedItem.images || {}).filter(assetReady).length}/${totalCells} cells complete</span></div><button class="secondary" data-part-subview="layers">Edit layers & colors</button></div>
           <div class="asset-matrix">${matrix}</div>
           <p class="workspace-message">${escapeHtml(slot.assetMessage || 'PNG images remain local until you prepare the Walrus quilt in On-chain Publish.')}</p>
         ` : '<div class="empty-state">Add an item to begin uploading images.</div>'}</div>
@@ -1779,10 +3458,16 @@ function renderPartWorkspace() {
   });
 
   document.querySelectorAll('[data-part-field]').forEach((input) => {
-    input.addEventListener('change', () => updatePartField(slot.key, input.dataset.partField, input.value));
+    input.addEventListener('change', () => {
+      if (!ensureMakerEditable()) return;
+      updatePartField(slot.key, input.dataset.partField, input.value);
+    });
   });
 
+  document.querySelector('[data-delete-part]')?.addEventListener('click', () => requestDeletePart(slot.key));
+
   document.querySelector('[data-part-icon]')?.addEventListener('change', async (event) => {
+    if (!ensureMakerEditable()) return;
     const file = event.target.files?.[0];
     if (!file) return;
     try {
@@ -1799,6 +3484,7 @@ function renderPartWorkspace() {
 
   document.querySelectorAll('[data-upload-item-image]').forEach((input) => {
     input.addEventListener('change', async (event) => {
+      if (!ensureMakerEditable()) return;
       const item = items.find((candidate) => candidate.id === input.dataset.itemId);
       const file = event.target.files?.[0];
       if (!item || !file) return;
@@ -1819,6 +3505,7 @@ function renderPartWorkspace() {
 
   document.querySelectorAll('[data-upload-item-icon]').forEach((input) => {
     input.addEventListener('change', async (event) => {
+      if (!ensureMakerEditable()) return;
       const item = items.find((candidate) => candidate.id === input.dataset.uploadItemIcon);
       const file = event.target.files?.[0];
       if (!item || !file) return;
@@ -1837,8 +3524,11 @@ function renderPartWorkspace() {
 
   document.querySelectorAll('[data-item-field]').forEach((input) => {
     input.addEventListener('change', () => {
+      if (!ensureMakerEditable()) return;
       if (!selectedItem) return;
-      selectedItem[input.dataset.itemField] = input.dataset.itemField === 'displayOrder' ? Number(input.value || 1) : input.value;
+      if (input.dataset.itemField === 'displayOrder') selectedItem.displayOrder = Math.max(1, Math.floor(Number(input.value || 1)));
+      else if (input.dataset.itemField === 'visibility') selectedItem.visibility = input.value === 'private' ? 'private' : 'public';
+      else if (input.value.trim()) selectedItem.label = input.value.trim();
       invalidateMakerUpload();
       renderCreatorDetails();
     });
@@ -1846,7 +3536,14 @@ function renderPartWorkspace() {
 
   document.querySelectorAll('[data-add-item]').forEach((button) => {
     button.addEventListener('click', () => {
-      const next = slotItems(slot.key).length + 1;
+      if (!ensureMakerEditable()) return;
+      if (slotItems(slot.key).length >= MAX_ITEMS_PER_PART) {
+        slot.assetMessage = `This release supports up to ${MAX_ITEMS_PER_PART} Items per Part.`;
+        renderCreatorDetails();
+        return;
+      }
+      let next = slotItems(slot.key).length + 1;
+      while (slotItems(slot.key).some((item) => item.id === `item-${next}`)) next += 1;
       const id = `item-${next}`;
       if (!state.makerParts[slot.key]) state.makerParts[slot.key] = [];
       state.makerParts[slot.key].push({ id, label: `Item ${next}` });
@@ -1861,19 +3558,38 @@ function renderPartWorkspace() {
   document.querySelectorAll('[data-delete-item]').forEach((button) => {
     button.addEventListener('click', () => {
       const index = items.findIndex((item) => item.id === button.dataset.deleteItem);
-      if (index <= 0) return;
-      Object.values(items[index].images || {}).forEach((asset) => asset?.url && URL.revokeObjectURL(asset.url));
-      items.splice(index, 1);
-      state.selectedItem = items[0]?.id || '';
-      state.visual[slot.key] = state.selectedItem;
-      syncCreatorAssets();
-      invalidateMakerUpload();
-      renderAll();
+      if (index < 0 || !ensureMakerEditable()) return;
+      const item = items[index];
+      openConfirmation({
+        title: 'Delete Item?',
+        message: `“${item.label}” and all of its local Layer × Color PNG references will be removed from this draft.`,
+        confirmLabel: 'Delete item',
+        action: () => {
+          if (item.iconAsset?.url) URL.revokeObjectURL(item.iconAsset.url);
+          Object.values(item.images || {}).forEach((asset) => asset?.url && URL.revokeObjectURL(asset.url));
+          items.splice(index, 1);
+          state.rules = state.rules.filter((rule) => !(
+            (rule.leftPartKey === slot.key && rule.leftItemKey === item.id)
+            || (rule.rightPartKey === slot.key && rule.rightItemKey === item.id)
+          ));
+          state.selectedItem = items[Math.min(index, items.length - 1)]?.id || '';
+          state.visual[slot.key] = state.selectedItem;
+          if (slot.defaultItemId === item.id) slot.defaultItemId = state.selectedItem;
+          syncCreatorAssets();
+          invalidateMakerUpload('Item deleted. Prepare a new Walrus quilt before publishing.');
+          renderAll();
+        },
+      });
     });
   });
 
   document.querySelector('[data-add-layer]')?.addEventListener('click', () => {
-    if (slot.kind !== 'standard') return;
+    if (slot.kind !== 'standard' || !ensureMakerEditable()) return;
+    if (layers.length >= MAX_LAYERS_PER_PART) {
+      slot.assetMessage = `A Part cannot contain more than ${MAX_LAYERS_PER_PART} Layers.`;
+      renderCreatorDetails();
+      return;
+    }
     const next = layers.length + 1;
     const id = `layer-${next}-${Date.now().toString(36)}`;
     layers.push({ id, name: `Layer ${next}`, x: slot.x || 0, y: slot.y || 0, opacity: 100, blendMode: 'normal' });
@@ -1885,7 +3601,7 @@ function renderPartWorkspace() {
 
   document.querySelectorAll('[data-delete-layer]').forEach((button) => {
     button.addEventListener('click', () => {
-      if (slot.kind !== 'standard' || layers.length <= 1) return;
+      if (slot.kind !== 'standard' || layers.length <= 1 || !ensureMakerEditable()) return;
       const layerId = button.dataset.deleteLayer;
       const index = layers.findIndex((layer) => layer.id === layerId);
       if (index < 0) return;
@@ -1905,6 +3621,7 @@ function renderPartWorkspace() {
 
   document.querySelectorAll('[data-inline-layer-name]').forEach((input) => {
     input.addEventListener('change', () => {
+      if (!ensureMakerEditable()) return;
       const layer = layers.find((candidate) => candidate.id === input.dataset.inlineLayerName);
       if (layer) layer.name = input.value.trim() || layer.name;
       invalidateMakerUpload();
@@ -1913,6 +3630,12 @@ function renderPartWorkspace() {
   });
 
   document.querySelector('[data-add-color]')?.addEventListener('click', () => {
+    if (!ensureMakerEditable()) return;
+    if (colors.length >= MAX_COLORS_PER_PART) {
+      slot.assetMessage = `A Part cannot contain more than ${MAX_COLORS_PER_PART} Colors.`;
+      renderCreatorDetails();
+      return;
+    }
     const next = colors.length + 1;
     colors.push({ id: `color-${next}-${Date.now().toString(36)}`, name: `Color ${next}`, value: swatches[(next - 1) % swatches.length] });
     invalidateMakerUpload();
@@ -1921,6 +3644,7 @@ function renderPartWorkspace() {
 
   document.querySelectorAll('[data-color-name], [data-color-value]').forEach((input) => {
     input.addEventListener('change', () => {
+      if (!ensureMakerEditable()) return;
       const colorId = input.dataset.colorName || input.dataset.colorValue;
       const color = colors.find((candidate) => candidate.id === colorId);
       if (!color) return;
@@ -1930,16 +3654,44 @@ function renderPartWorkspace() {
       renderCreatorDetails();
     });
   });
+
+  document.querySelectorAll('[data-delete-color]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (colors.length <= 1 || !ensureMakerEditable()) return;
+      const color = colors.find((candidate) => candidate.id === button.dataset.deleteColor);
+      if (!color) return;
+      openConfirmation({
+        title: 'Delete Color?',
+        message: `“${color.name}” and its PNG cell in every Item and Layer of “${slot.label}” will be removed from this draft.`,
+        confirmLabel: 'Delete color',
+        action: () => {
+          const colorIndex = colors.findIndex((candidate) => candidate.id === color.id);
+          colors.splice(colorIndex, 1);
+          items.forEach((item) => Object.keys(item.images || {}).forEach((key) => {
+            if (key.endsWith(`:${color.id}`)) {
+              if (item.images[key]?.url) URL.revokeObjectURL(item.images[key].url);
+              delete item.images[key];
+            }
+          }));
+          if (state.visual.palette[slot.colorKey] === color.value) state.visual.palette[slot.colorKey] = colors[0].value;
+          syncCreatorAssets();
+          invalidateMakerUpload('Color deleted. Prepare a new Walrus quilt before publishing.');
+          renderCreatorDetails();
+        },
+      });
+    });
+  });
 }
 
 function updatePartField(slotKey, field, value) {
+  if (!ensureMakerEditable()) return;
   const slot = allSlots().find((item) => item.key === slotKey);
   if (!slot) return;
-  if (['x', 'y', 'rightX', 'spacingStep', 'spacingSteps'].includes(field)) slot[field] = Number(value || 0);
-  else if (field === 'menuVisible') slot.menuVisible = value !== 'hidden';
+  if (field === 'menuVisible') slot.menuVisible = value !== 'hidden';
   else if (field === 'allowRemove') slot.allowRemove = value === 'yes';
-  else if (['allowMoveX', 'allowMoveY', 'allowScale', 'allowRotate', 'allowSpacing'].includes(field)) slot[field] = value === 'yes';
-  else slot[field] = value;
+  else if (field === 'defaultItemId' && slotItems(slot.key).some((item) => item.id === value)) slot.defaultItemId = value;
+  else if (field === 'label' && value.trim()) slot.label = value.trim();
+  if (slot.kind === 'last-bastion') slot.allowRemove = false;
   invalidateMakerUpload();
   renderCreatorDetails();
 }
@@ -1953,7 +3705,7 @@ function renderLayerDetails() {
   }
   const slot = allSlots().find((candidate) => candidate.key === selected.partKey);
   const layer = creatorLayers(slot).find((candidate) => candidate.id === selected.id);
-  const layerAssets = slotItems(slot.key).flatMap((item) => Object.entries(item.images || {}).filter(([key, asset]) => key.startsWith(`${layer.id}:`) && asset?.file));
+  const layerAssets = slotItems(slot.key).flatMap((item) => Object.entries(item.images || {}).filter(([key, asset]) => key.startsWith(`${layer.id}:`) && assetReady(asset)));
   $('layerDetailsPanel').innerHTML = `
     <div class="workspace-head">
       <div>
@@ -1964,11 +3716,11 @@ function renderLayerDetails() {
       <div class="workspace-actions">
         <button class="secondary" data-move-layer="up">Move front</button>
         <button class="secondary" data-move-layer="down">Move behind</button>
-        <button class="secondary" data-open-layer-part="${slot.key}">Edit item images</button>
+        <button class="secondary" data-open-layer-part="${escapeHtml(slot.key)}">Edit item images</button>
       </div>
     </div>
     <div class="part-detail-grid">
-      <label>Layer name<input data-layer-field="name" value="${escapeHtml(layer.name)}" /></label>
+      <label>Layer name<input data-layer-field="name" value="${escapeHtml(layer.name)}" maxlength="128" /></label>
       <label>Anchor X<input data-layer-field="x" type="number" value="${layer.x ?? 0}" /></label>
       <label>Anchor Y<input data-layer-field="y" type="number" value="${layer.y ?? 0}" /></label>
       <label>Opacity<input data-layer-field="opacity" type="number" min="0" max="100" value="${layer.opacity ?? 100}" /></label>
@@ -2009,16 +3761,22 @@ function renderLayerDetails() {
 }
 
 function updateLayerField(layerKey, field, value) {
+  if (!ensureMakerEditable()) return;
   const [partKey, layerId] = layerKey.split(':');
   const slot = allSlots().find((candidate) => candidate.key === partKey);
   const layer = slot && creatorLayers(slot).find((candidate) => candidate.id === layerId);
   if (!layer) return;
-  layer[field] = ['x', 'y', 'opacity'].includes(field) ? Number(value || 0) : value;
+  if (field === 'x') layer.x = Math.min(state.makerCanvas.width, Math.max(-state.makerCanvas.width, Number(value || 0)));
+  else if (field === 'y') layer.y = Math.min(state.makerCanvas.height, Math.max(-state.makerCanvas.height, Number(value || 0)));
+  else if (field === 'opacity') layer.opacity = Math.min(100, Math.max(0, Number(value || 0)));
+  else if (field === 'blendMode') layer.blendMode = ['normal', 'multiply', 'screen', 'overlay'].includes(value) ? value : 'normal';
+  else layer.name = String(value || '').trim() || layer.name;
   invalidateMakerUpload();
   renderCreatorDetails();
 }
 
 function moveLayer(layerKey, direction) {
+  if (!ensureMakerEditable()) return;
   allCreatorLayers();
   const order = [...state.layerOrder];
   const index = order.indexOf(layerKey);
@@ -2036,12 +3794,12 @@ function renderCreatorCanvas() {
   const images = allCreatorLayers().flatMap((layer) => {
     const itemId = state.visual[layer.partKey] || slotItems(layer.partKey)[0]?.id;
     const item = slotItems(layer.partKey).find((candidate) => candidate.id === itemId);
-    const assetEntry = Object.entries(item?.images || {}).find(([key, asset]) => key.startsWith(`${layer.id}:`) && asset?.url);
-    if (!assetEntry) return [];
-    return [{ layer, asset: assetEntry[1] }];
+    const slot = allSlots().find((candidate) => candidate.key === layer.partKey);
+    const asset = slot && itemLayerAsset(slot, item, layer);
+    return asset?.url ? [{ layer, asset }] : [];
   });
   $('creatorCanvasAssets').innerHTML = images.map(({ layer, asset }) => `
-    <img src="${asset.url}" alt="${escapeHtml(layer.partLabel)} ${escapeHtml(layer.name)}" style="--layer-x:${layer.x || 0};--layer-y:${layer.y || 0};opacity:${(layer.opacity ?? 100) / 100};mix-blend-mode:${layer.blendMode || 'normal'}" />
+    <img src="${escapeHtml(asset.url)}" alt="${escapeHtml(layer.partLabel)} ${escapeHtml(layer.name)}" style="${layerInlineStyle(layer)}" />
   `).join('');
   $('creatorCanvasEmpty').hidden = images.length > 0;
   if ($('canvasAssetCount')) $('canvasAssetCount').textContent = `${images.length} image${images.length === 1 ? '' : 's'}`;
@@ -2063,10 +3821,15 @@ function closeMakerModal() {
 }
 
 function openPartModal() {
+  if (!ensureMakerEditable()) return;
   if (!state.walletConnected) {
     openAccountPanel();
     return;
   }
+  document.querySelectorAll('[data-new-part-type]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.newPartType === 'standard');
+  });
+  $('newPartMenuVisible').disabled = false;
   $('partRegistrationModal').classList.add('active');
   $('partRegistrationModal').setAttribute('aria-hidden', 'false');
   $('newPartName').focus();
@@ -2100,18 +3863,25 @@ function renderWalletState() {
   if (walletLabel) walletLabel.textContent = state.walletConnected ? displayAddress : t('walletConnect');
   $('panelWalletButton').textContent = state.walletConnected ? `Wallet connected: ${displayAddress}` : t('connectSuiWallet');
   $('walletSummary').textContent = state.walletConnected ? `${state.walletProvider || 'Sui wallet'} · ${runtimeConfig.network}` : 'Wallet not connected';
+  if ($('profileSummary')) {
+    $('profileSummary').textContent = !state.walletConnected
+      ? 'Creator profile appears after first Maker publication'
+      : state.creatorProfileObjectId ? `Creator profile ${shortAddress(state.creatorProfileObjectId)}` : 'Creator profile will be created on first publication';
+  }
+  if ($('accountIdentity')) $('accountIdentity').textContent = state.walletConnected ? shortAddress(state.walletAddress) : 'Animacraft user';
   $('walletFirstCard').classList.toggle('connected', state.walletConnected);
   document.querySelector('.account-grid').classList.toggle('locked', !state.walletConnected);
   document.querySelectorAll('.account-grid [data-page]').forEach((button) => {
     button.disabled = !state.walletConnected;
   });
+  if (!state.walletConnected) closeAccountPanel();
   if ($('creatorWalletGate')) $('creatorWalletGate').hidden = state.walletConnected;
   if ($('creatorConsole')) $('creatorConsole').hidden = !state.walletConnected;
   if ($('backToCreatorPreview')) $('backToCreatorPreview').hidden = !state.previewingMaker;
 }
 
 function publishReadiness() {
-  if (runtimeConfig.packageId.includes('TODO')) return 'Publish the Move package and set packageId in config.js.';
+  if (!packageConfigured()) return 'Publish the Move package and set packageId in config.js.';
   if (!state.walletConnected) return 'Connect a Sui wallet to sign publication.';
   if (!$('creatorTemplateName').value.trim()) return 'Add a maker name in Settings.';
   const issue = makerPublicationIssues()[0];
@@ -2121,23 +3891,29 @@ function publishReadiness() {
 
 function renderPublishAction() {
   if (!$('publishMakerOnchain')) return;
-  const baseReady = !runtimeConfig.packageId.includes('TODO') && state.walletConnected && itemLayerAssets().length > 0;
+  const locked = makerIsPublished();
+  const baseReady = !locked && packageConfigured() && state.walletConnected && itemLayerAssets().length > 0;
+  $('resumeMakerUpload').disabled = locked || state.publishing || !state.walletConnected || !state.hasMakerUploadRecovery;
   $('prepareMakerUpload').disabled = state.publishing || !baseReady || state.makerUploadStage !== 'idle';
   $('registerMakerUpload').disabled = state.publishing || !state.walletConnected || !['encoded', 'registered'].includes(state.makerUploadStage);
   $('registerMakerUpload').textContent = state.makerUploadStage === 'registered' ? '2. Retry upload' : '2. Register & upload';
   $('certifyMakerUpload').disabled = state.publishing || !state.walletConnected || state.makerUploadStage !== 'uploaded';
-  $('publishMakerOnchain').disabled = state.publishing || !state.walletConnected || state.makerUploadStage !== 'certified';
+  $('publishMakerOnchain').disabled = locked || state.publishing || !state.walletConnected || state.makerUploadStage !== 'certified';
   $('publishMakerOnchain').textContent = state.publishing ? 'Publishing…' : state.publishDigest ? 'Published' : '4. Publish maker';
   $('makerPublishAction').classList.toggle('success', Boolean(state.publishDigest));
   $('makerPublishAction').classList.toggle('busy', state.publishing);
   if (state.publishDigest) {
-    $('makerPublishStatus').innerHTML = `Published on ${runtimeConfig.network}. <a href="${explorerTransactionUrl(state.publishDigest)}" target="_blank" rel="noreferrer">View transaction</a>`;
+    $('makerPublishStatus').innerHTML = `Published on ${escapeHtml(runtimeConfig.network)}. <a href="${escapeHtml(explorerTransactionUrl(state.publishDigest))}" target="_blank" rel="noreferrer">View transaction</a>`;
   } else {
     $('makerPublishStatus').textContent = state.publishStatus || publishReadiness();
   }
 }
 
 function renderChainStatus() {
+  if ($('refreshMakers')) {
+    $('refreshMakers').disabled = state.chainMakersLoading || !packageConfigured();
+    $('refreshMakers').textContent = state.chainMakersLoading ? 'Syncing Makers…' : 'Refresh Makers';
+  }
   if ($('chainStatusGrid')) {
     $('chainStatusGrid').innerHTML = chainStatusItems().map(([label, value, note, status]) => `
       <article class="chain-status-card ${escapeHtml(status)}">
@@ -2156,11 +3932,11 @@ function renderChainStatus() {
       </div>
       <div>
         <span>Package</span>
-        <strong>${escapeHtml(runtimeConfig.packageId.includes('TODO') ? 'Publish package first' : shortAddress(runtimeConfig.packageId))}</strong>
+        <strong>${escapeHtml(!packageConfigured() ? 'Publish package first' : shortAddress(runtimeConfig.packageId))}</strong>
       </div>
       <div>
         <span>Walrus</span>
-        <strong>${runtimeConfig.walrusUploadRelayUrl ? 'Mainnet Upload Relay ready' : 'Configure upload relay'}</strong>
+        <strong>${runtimeConfig.walrusUploadRelayUrl ? `${Number(runtimeConfig.walrusEpochs || 53)} epoch retention` : 'Configure upload relay'}</strong>
       </div>
       <div>
         <span>Signer</span>
@@ -2202,22 +3978,27 @@ async function prepareMakerUpload() {
     syncCreatorAssets();
     const issues = makerPublicationIssues();
     if (issues.length) throw new Error(issues[0]);
-    state.pendingMakerAssets = publishableAssets();
+    const coverBlob = await renderOcImageBlob();
+    state.pendingMakerCoverBlob = coverBlob;
+    state.pendingMakerAssets = [
+      ...publishableAssets(),
+      makerCoverAsset(coverBlob),
+    ];
     state.pendingMakerAssets.forEach((asset) => {
       if (!asset.file) throw new Error(`${asset.name} is no longer available. Select the PNG files again.`);
     });
     state.pendingMakerManifestJson = JSON.stringify(creatorUploadManifest());
-    const manifestBlob = new Blob([state.pendingMakerManifestJson], { type: 'application/json' });
-    const entries = [
-      ...state.pendingMakerAssets.map((asset) => ({ blob: asset.file, identifier: asset.identifier, kind: asset.kind })),
-      { blob: manifestBlob, identifier: 'animacraft-manifest.json', kind: 'maker-manifest' },
-    ];
-    state.makerUploadSession = await prepareWalrusUpload(entries);
+    state.makerUploadSession = await prepareWalrusUpload(makerUploadEntries());
+    state.makerQuiltId = state.makerUploadSession.quiltBlobId;
     state.makerUploadStage = 'encoded';
     state.publishStatus = 'Quilt encoded. Register it on Walrus Mainnet with your wallet.';
+    await persistMakerUploadRecovery();
   } catch (error) {
     state.publishStatus = error.message || 'Could not prepare the maker quilt.';
   } finally {
+    if (state.makerUploadSession?.checkpoint) {
+      persistMakerUploadRecovery().catch((error) => console.warn('Could not save Walrus upload recovery.', error));
+    }
     state.publishing = false;
     renderAll();
   }
@@ -2229,12 +4010,25 @@ async function registerMakerUpload() {
   renderPublishAction();
   try {
     await registerAndUploadWalrus(state.makerUploadSession);
-    state.makerUploadStage = 'uploaded';
-    state.publishStatus = 'Quilt uploaded. Certify availability with one more wallet signature.';
+    state.makerUploadStage = state.makerUploadSession.stage;
+    if (state.makerUploadStage === 'certified') {
+      if (state.makerUploadSession.files.length !== state.pendingMakerAssets.length + 1) throw new Error('Walrus returned an unexpected number of quilt files.');
+      state.pendingMakerAssets.forEach((asset, index) => {
+        asset.patchId = state.makerUploadSession.files[index].id;
+        asset.blobId = state.makerUploadSession.files[index].blobId;
+      });
+      state.makerQuiltId = state.makerUploadSession.files[0]?.blobId || state.makerQuiltId;
+      state.publishStatus = 'The recovered quilt was already certified. Continue with Sui Maker publication.';
+    } else {
+      state.publishStatus = 'Quilt uploaded. Certify availability with one more wallet signature.';
+    }
   } catch (error) {
     state.makerUploadStage = state.makerUploadSession?.stage || state.makerUploadStage;
     state.publishStatus = error.message || 'Walrus registration or upload failed.';
   } finally {
+    if (state.makerUploadSession?.checkpoint) {
+      persistMakerUploadRecovery().catch((error) => console.warn('Could not save Walrus upload recovery.', error));
+    }
     state.publishing = false;
     renderAll();
   }
@@ -2253,12 +4047,15 @@ async function certifyMakerUpload() {
       asset.patchId = state.makerUploadSession.files[index].id;
       asset.blobId = state.makerUploadSession.files[index].blobId;
     });
-    state.makerManifestPatchId = state.makerUploadSession.files[state.pendingMakerAssets.length].id;
+    state.makerQuiltId = state.makerUploadSession.files[0]?.blobId || state.makerQuiltId;
     state.makerUploadStage = 'certified';
     state.publishStatus = 'Walrus quilt certified. Publish the indexed OCMaker object on Sui Mainnet.';
   } catch (error) {
     state.publishStatus = error.message || 'Walrus certification failed.';
   } finally {
+    if (state.makerUploadSession?.checkpoint) {
+      persistMakerUploadRecovery().catch((error) => console.warn('Could not save Walrus upload recovery.', error));
+    }
     state.publishing = false;
     renderAll();
   }
@@ -2273,7 +4070,7 @@ async function publishCurrentMaker() {
     if (JSON.stringify(creatorUploadManifest()) !== state.pendingMakerManifestJson) {
       state.makerUploadSession = null;
       state.makerUploadStage = 'idle';
-      state.makerManifestPatchId = '';
+      state.makerQuiltId = '';
       state.pendingMakerManifestJson = '';
       state.pendingMakerAssets.forEach((asset) => {
         asset.patchId = '';
@@ -2293,6 +4090,7 @@ async function publishCurrentMaker() {
         renderOrder: configuredOrder >= 0 ? configuredOrder : index,
         menuVisible: slot?.menuVisible !== false,
         required: slot?.allowRemove === false,
+        colors: creatorColors(slot).map((color) => color.value),
       };
     });
     const makerItems = assetSlots.flatMap((partKey) => slotItems(partKey).filter((item) => item.visibility !== 'private').flatMap((item) => {
@@ -2313,6 +4111,7 @@ async function publishCurrentMaker() {
 
     const transaction = await publishMaker({
       creator: {
+        profileId: state.creatorProfileObjectId,
         displayName: $('creatorName').value.trim(),
         bio: `${$('creatorWorld').value.trim()} OC maker creator`,
         avatarUrl: '',
@@ -2320,20 +4119,56 @@ async function publishCurrentMaker() {
       maker: {
         name: $('creatorTemplateName').value.trim(),
         description: activeTemplate().summary,
-        coverUrl: walrusFileUrl(state.pendingMakerAssets[0]?.patchId),
+        coverUrl: walrusFileUrl(state.pendingMakerAssets.find((asset) => asset.kind === 'maker-cover')?.patchId),
         license: $('creatorLicense').value,
         royaltyBps: Number($('creatorRoyalty').value || 0),
       },
-      manifestBlobId: state.makerManifestPatchId,
+      manifestBlobId: state.makerQuiltId,
       parts: makerParts,
       items: makerItems,
       rules: makerRules,
+      paletteLinks: state.paletteLinks,
     });
     state.publishDigest = transaction.digest;
-    state.publishStatus = '';
+    state.makerObjectId = transaction.makerObjectId || '';
+    state.creatorProfileObjectId = transaction.creatorProfileObjectId || state.creatorProfileObjectId;
+    state.makerArchived = false;
+    state.publishStatus = state.makerObjectId
+      ? ''
+      : 'Published on Sui. The object id is still indexing, so this browser is retaining the recovery draft.';
+    Object.assign(activeTemplate(), {
+      source: state.makerObjectId ? 'chain' : 'local',
+      owned: true,
+      objectId: state.makerObjectId,
+      quiltId: state.makerQuiltId,
+      price: state.makerObjectId ? 'On-chain' : 'Indexing',
+    });
+    await saveCurrentMakerDraft();
+    clearMakerUploadRecovery().catch((error) => console.warn('Could not clear completed Walrus recovery data.', error));
+    if (!state.makerObjectId) setTimeout(recoverPublishedMakerIndex, 4_000);
   } catch (error) {
     console.error('Maker publication failed', error);
     state.publishStatus = error.message || 'Maker publication failed.';
+  } finally {
+    state.publishing = false;
+    renderAll();
+  }
+}
+
+async function updateMakerArchiveState(archived) {
+  if (state.publishing || !state.makerObjectId || !makerIsPublished()) return;
+  state.publishing = true;
+  state.publishStatus = archived
+    ? 'Waiting for your Sui signature to archive this Maker…'
+    : 'Waiting for your Sui signature to restore this Maker…';
+  renderAll();
+  try {
+    const transaction = await setMakerArchived(state.makerObjectId, archived);
+    state.makerArchived = archived;
+    state.publishStatus = `${archived ? 'Archived' : 'Restored'} on ${runtimeConfig.network}: ${transaction.digest}`;
+    await saveCurrentMakerDraft();
+  } catch (error) {
+    state.publishStatus = error.message || `Could not ${archived ? 'archive' : 'restore'} this Maker.`;
   } finally {
     state.publishing = false;
     renderAll();
@@ -2346,23 +4181,40 @@ async function prepareOcUpload() {
   state.mintStatus = 'Rendering the OC and encoding one Walrus quilt…';
   renderMintAction();
   try {
+    const issues = ocRecipeIssues();
+    if (issues.length) throw new Error(issues[0]);
     const oc = ocPackage();
     const image = await renderOcImageBlob();
-    const profile = new Blob([JSON.stringify(oc)], { type: 'application/json' });
     const recipeJson = JSON.stringify(oc.recipe);
-    const recipeBytes = new TextEncoder().encode(recipeJson);
+    const chainRecipe = oc.recipe.map((slot) => ({
+      partKey: slot.slot,
+      itemKey: slot.part,
+      colorHex: slot.color,
+      renderOrder: slot.renderOrder,
+    }));
+    const recipeHash = await hashRecipe(chainRecipe);
+    oc.integrity = {
+      recipeEncoding: 'BCS vector<RecipeSlot>',
+      recipeHashAlgorithm: 'SHA-256',
+      recipeHash: bytesToHex(recipeHash),
+    };
+    const profile = new Blob([JSON.stringify(oc)], { type: 'application/json' });
     state.pendingOcPackage = oc;
+    state.pendingOcImageBlob = image;
+    state.pendingOcProfileBlob = profile;
     state.pendingOcRecipeJson = recipeJson;
-    state.pendingOcRecipeHash = new Uint8Array(await crypto.subtle.digest('SHA-256', recipeBytes));
-    state.ocUploadSession = await prepareWalrusUpload([
-      { blob: image, identifier: 'animacraft-oc.png', kind: 'oc-image' },
-      { blob: profile, identifier: 'animacraft-oc.json', kind: 'oc-profile' },
-    ]);
+    state.pendingOcRecipeHash = recipeHash;
+    state.pendingOcFingerprint = ocFingerprint(oc);
+    state.ocUploadSession = await prepareWalrusUpload(ocUploadEntries());
     state.ocUploadStage = 'encoded';
     state.mintStatus = 'OC quilt encoded. Register it on Walrus Mainnet.';
+    await persistOcUploadRecovery();
   } catch (error) {
     state.mintStatus = error.message || 'Could not prepare the OC quilt.';
   } finally {
+    if (state.ocUploadSession?.checkpoint) {
+      persistOcUploadRecovery().catch((error) => console.warn('Could not save OC upload recovery.', error));
+    }
     state.minting = false;
     renderMintAction();
   }
@@ -2374,12 +4226,22 @@ async function registerOcUpload() {
   renderMintAction();
   try {
     await registerAndUploadWalrus(state.ocUploadSession);
-    state.ocUploadStage = 'uploaded';
-    state.mintStatus = 'OC quilt uploaded. Certify it with one more signature.';
+    state.ocUploadStage = state.ocUploadSession.stage;
+    if (state.ocUploadStage === 'certified') {
+      if (state.ocUploadSession.files.length !== 2) throw new Error('Walrus returned an unexpected OC quilt result.');
+      state.ocImagePatchId = state.ocUploadSession.files[0].id;
+      state.ocProfilePatchId = state.ocUploadSession.files[1].id;
+      state.mintStatus = 'The recovered OC quilt was already certified. Continue with the Sui mint.';
+    } else {
+      state.mintStatus = 'OC quilt uploaded. Certify it with one more signature.';
+    }
   } catch (error) {
     state.ocUploadStage = state.ocUploadSession?.stage || state.ocUploadStage;
     state.mintStatus = error.message || 'OC registration or upload failed.';
   } finally {
+    if (state.ocUploadSession?.checkpoint) {
+      persistOcUploadRecovery().catch((error) => console.warn('Could not save OC upload recovery.', error));
+    }
     state.minting = false;
     renderMintAction();
   }
@@ -2399,6 +4261,9 @@ async function certifyOcUpload() {
   } catch (error) {
     state.mintStatus = error.message || 'OC certification failed.';
   } finally {
+    if (state.ocUploadSession?.checkpoint) {
+      persistOcUploadRecovery().catch((error) => console.warn('Could not save OC upload recovery.', error));
+    }
     state.minting = false;
     renderMintAction();
   }
@@ -2410,13 +4275,13 @@ async function mintCurrentOc() {
   state.mintStatus = 'Waiting for your Sui Mainnet mint signature…';
   renderMintAction();
   try {
-    const currentRecipeJson = JSON.stringify(ocPackage().recipe);
-    if (currentRecipeJson !== state.pendingOcRecipeJson) {
+    if (ocFingerprint() !== state.pendingOcFingerprint) {
       state.ocUploadSession = null;
       state.ocUploadStage = 'idle';
       state.ocImagePatchId = '';
       state.ocProfilePatchId = '';
-      throw new Error('The OC changed after upload. Prepare a new mint quilt.');
+      await clearOcUploadRecovery();
+      throw new Error('The OC profile or recipe changed after upload. Prepare a new mint quilt.');
     }
     const oc = state.pendingOcPackage;
     const transaction = await mintCharacter({
@@ -2434,7 +4299,11 @@ async function mintCurrentOc() {
       })),
     });
     state.mintDigest = transaction.digest;
+    state.mintObjectId = transaction.ocObjectId || '';
     state.mintStatus = '';
+    clearOcUploadRecovery().catch((error) => console.warn('Could not clear completed OC recovery data.', error));
+    state.ownedCharactersLoadedFor = '';
+    loadOwnedCharacters({ force: true });
   } catch (error) {
     console.error('OC mint failed', error);
     state.mintStatus = error.message || 'OC mint failed.';
@@ -2444,60 +4313,92 @@ async function mintCurrentOc() {
   }
 }
 
-function restoreMakerDraft(templateId = state.templateId) {
+async function restoreMakerDraft(templateId = state.templateId) {
   const storageKey = makerDraftStorageKey(templateId);
-  const raw = localStorage.getItem(storageKey)
-    || (templateId === state.templateId ? localStorage.getItem('animacraft-maker-draft-v1') : null);
   loadedMakerDrafts.add(storageKey);
-  if (!raw) return;
   try {
-    const draft = JSON.parse(raw);
-    if (draft.visual) state.visual = draft.visual;
-    if (Array.isArray(draft.rules)) state.rules = draft.rules;
-    if (Array.isArray(draft.paletteLinks)) state.paletteLinks = draft.paletteLinks;
+    let draft = await loadMakerDraftRecord(storageKey);
+    if (!draft) {
+      const raw = localStorage.getItem(storageKey)
+        || (templateId === state.templateId ? localStorage.getItem('animacraft-maker-draft-v1') : null);
+      if (!raw) return;
+      draft = JSON.parse(raw);
+      await saveMakerDraftRecord(storageKey, draft);
+      localStorage.removeItem(storageKey);
+      if (templateId === state.templateId) localStorage.removeItem('animacraft-maker-draft-v1');
+    }
+    if (state.templateId !== templateId || (draft.templateId && draft.templateId !== templateId)) return;
+    if (draft.visual && typeof draft.visual === 'object') {
+      const restoredVisual = structuredClone(draft.visual);
+      restoredVisual.palette = Object.fromEntries(Object.entries(restoredVisual.palette || {}).map(([key, value]) => [key, safeCssColor(value)]));
+      state.visual = restoredVisual;
+    }
+    if (Array.isArray(draft.rules)) state.rules = draft.rules.slice(0, MAX_MAKER_RULES).filter((rule) => rule && typeof rule === 'object');
+    if (Array.isArray(draft.paletteLinks)) state.paletteLinks = draft.paletteLinks.slice(0, MAX_MAKER_RULES).filter((link) => link && typeof link === 'object');
     if (Array.isArray(draft.manifest?.parts)) {
+      state.makerSlots = [];
+      state.makerParts = {};
+      state.slotOrder = [];
       state.layerOrder = [];
-      draft.manifest.parts.forEach((savedPart) => {
-        let slot = allSlots().find((candidate) => candidate.key === savedPart.key);
-        if (!slot) {
-          slot = {
-            key: savedPart.key,
-            label: savedPart.label,
-            icon: savedPart.label.slice(0, 2).toUpperCase(),
-            colorKey: savedPart.key,
-            description: 'Restored creator Part',
-          };
-          state.makerSlots.push(slot);
-        }
+      const restoredPartKeys = new Set();
+      draft.manifest.parts.slice(0, MAX_MAKER_PARTS).forEach((savedPart) => {
+        const partKey = safeDraftText(savedPart?.key, '', 128);
+        if (!isSafeKey(partKey) || restoredPartKeys.has(partKey)) return;
+        restoredPartKeys.add(partKey);
+        const partLabel = safeDraftText(savedPart?.label, partKey, 128) || partKey;
+        const kind = ['standard', 'left-right-pair', 'last-bastion'].includes(savedPart.kind) ? savedPart.kind : 'standard';
+        const layers = (Array.isArray(savedPart.layers) ? savedPart.layers : []).slice(0, MAX_LAYERS_PER_PART).filter((layer, index, list) => {
+          const id = safeDraftText(layer?.id, '', 128);
+          return isSafeKey(id) && list.findIndex((candidate) => candidate?.id === layer.id) === index;
+        }).map((layer, index) => ({
+          id: safeDraftText(layer.id, `layer-${index + 1}`, 128),
+          name: safeDraftText(layer.name, `Layer ${index + 1}`, 128),
+          x: finiteNumber(layer.x, 0, -8_192, 8_192),
+          y: finiteNumber(layer.y, 0, -8_192, 8_192),
+          opacity: finiteNumber(layer.opacity, 100, 0, 100),
+          blendMode: ['normal', 'multiply', 'screen', 'overlay'].includes(layer.blendMode) ? layer.blendMode : 'normal',
+          renderOrder: Math.max(0, Math.floor(finiteNumber(layer.renderOrder, index, 0, MAX_MAKER_PARTS * MAX_LAYERS_PER_PART))),
+        }));
+        const colors = (Array.isArray(savedPart.colors) ? savedPart.colors : []).slice(0, MAX_COLORS_PER_PART).filter((color, index, list) => {
+          const id = safeDraftText(color?.id, '', 128);
+          return isSafeKey(id) && /^#[0-9a-f]{6}$/i.test(String(color?.value || '')) && list.findIndex((candidate) => candidate?.id === color.id) === index;
+        }).map((color, index) => ({
+          id: safeDraftText(color.id, `color-${index + 1}`, 128),
+          name: safeDraftText(color.name, `Color ${index + 1}`, 128),
+          value: safeCssColor(color.value),
+        }));
+        const slot = {
+          key: partKey,
+          label: partLabel,
+          icon: partLabel.slice(0, 2).toUpperCase(),
+          colorKey: partKey,
+          description: 'Restored creator Part',
+        };
+        state.makerSlots.push(slot);
         Object.assign(slot, {
-          label: savedPart.label,
-          kind: savedPart.kind,
-          menuVisible: savedPart.menuVisible,
-          allowRemove: savedPart.allowRemove,
-          defaultItemId: savedPart.defaultItemId,
-          x: savedPart.anchor?.x || 0,
-          y: savedPart.anchor?.y || 0,
-          rightX: savedPart.anchor?.rightX || 0,
-          layers: (savedPart.layers || []).map(({ id, name, x, y, opacity, blendMode }) => ({ id, name, x, y, opacity, blendMode })),
-          colors: savedPart.colors || [],
-          allowMoveX: savedPart.controls?.moveX,
-          allowMoveY: savedPart.controls?.moveY,
-          allowScale: savedPart.controls?.scale,
-          allowRotate: savedPart.controls?.rotate,
-          allowSpacing: savedPart.controls?.pairedSpacing,
-          spacingStep: savedPart.controls?.spacingStep || 0,
-          spacingSteps: savedPart.controls?.spacingSteps || 0,
+          kind,
+          menuVisible: savedPart.menuVisible !== false,
+          allowRemove: kind === 'last-bastion' ? false : savedPart.allowRemove !== false,
+          defaultItemId: safeDraftText(savedPart.defaultItemId, '', 128),
+          layers: layers.length ? layers : [{ id: 'normal', name: 'Normal', x: 0, y: 0, opacity: 100, blendMode: 'normal', renderOrder: state.layerOrder.length }],
+          colors: colors.length ? colors : [{ id: 'default', name: 'Default', value: '#7b5cff' }],
         });
         if (!state.slotOrder.includes(slot.key)) state.slotOrder.push(slot.key);
-        state.makerParts[slot.key] = (savedPart.items || []).map((item) => ({
-          id: item.id,
-          label: item.label,
-          displayOrder: item.displayOrder,
-          visibility: item.visibility,
+        const restoredItemIds = new Set();
+        state.makerParts[slot.key] = (Array.isArray(savedPart.items) ? savedPart.items : []).slice(0, MAX_ITEMS_PER_PART).filter((item) => {
+          const id = safeDraftText(item?.id, '', 128);
+          if (!isSafeKey(id) || restoredItemIds.has(id)) return false;
+          restoredItemIds.add(id);
+          return true;
+        }).map((item, index) => ({
+          id: safeDraftText(item.id, `item-${index + 1}`, 128),
+          label: safeDraftText(item.label, `Item ${index + 1}`, 128),
+          displayOrder: Math.max(1, Math.floor(finiteNumber(item.displayOrder, index + 1, 1, 10_000))),
+          visibility: item.visibility === 'private' ? 'private' : 'public',
           images: {},
           iconAsset: null,
         }));
-        savedPart.layers?.forEach((layer) => {
+        slot.layers.forEach((layer) => {
           state.layerOrder[layer.renderOrder] = creatorLayerKey(slot.key, layer.id);
         });
       });
@@ -2506,28 +4407,45 @@ function restoreMakerDraft(templateId = state.templateId) {
     const template = draft.manifest?.template;
     if (template) {
       if (template.canvas?.width && template.canvas?.height) {
-        state.makerCanvas = { width: Number(template.canvas.width), height: Number(template.canvas.height) };
+        state.makerCanvas = {
+          width: Math.round(finiteNumber(template.canvas.width, 1024, 256, 8_192)),
+          height: Math.round(finiteNumber(template.canvas.height, 1024, 256, 8_192)),
+        };
       }
       const currentTemplate = activeTemplate();
-      currentTemplate.name = template.name || currentTemplate.name;
-      currentTemplate.creator = template.creator || currentTemplate.creator;
-      currentTemplate.style = template.style || currentTemplate.style;
-      currentTemplate.license = creatorLicenseLabels?.[template.license] || template.license || currentTemplate.license;
-      currentTemplate.royaltyBps = template.royaltyBps ?? currentTemplate.royaltyBps;
-      $('creatorTemplateName').value = template.name || $('creatorTemplateName').value;
-      $('creatorName').value = template.creator || $('creatorName').value;
-      $('creatorWorld').value = template.style || $('creatorWorld').value;
-      $('creatorLicense').value = template.license || $('creatorLicense').value;
-      $('creatorRoyalty').value = template.royaltyBps ?? $('creatorRoyalty').value;
+      currentTemplate.name = safeDraftText(template.name, currentTemplate.name, 128) || currentTemplate.name;
+      currentTemplate.summary = safeDraftText(template.summary, currentTemplate.summary, 2_000);
+      currentTemplate.creator = safeDraftText(template.creator, currentTemplate.creator, 128) || currentTemplate.creator;
+      currentTemplate.style = safeDraftText(template.style, currentTemplate.style, 128) || currentTemplate.style;
+      currentTemplate.license = creatorLicenseLabels?.[template.license] || currentTemplate.license;
+      currentTemplate.licenseNote = safeDraftText(template.licenseNote, currentTemplate.licenseNote, 2_000);
+      currentTemplate.royaltyBps = Math.round(finiteNumber(template.royaltyBps, currentTemplate.royaltyBps, 0, 10_000));
+      $('creatorTemplateName').value = currentTemplate.name;
+      $('creatorDescription').value = currentTemplate.summary;
+      $('creatorName').value = currentTemplate.creator;
+      $('creatorWorld').value = currentTemplate.style;
+      $('creatorLicense').value = Object.entries(creatorLicenseLabels).find(([, label]) => label === currentTemplate.license)?.[0] || 'personal-use';
+      $('creatorLicenseNote').value = currentTemplate.licenseNote;
+      $('creatorRoyalty').value = currentTemplate.royaltyBps;
+    }
+    if (draft.chain) {
+      state.publishDigest = String(draft.chain.publishDigest || '');
+      state.makerObjectId = String(draft.chain.makerObjectId || '');
+      state.makerArchived = Boolean(draft.chain.archived);
     }
     syncActiveMakerModelRefs();
+    await restoreMakerAssets(templateId);
+    recoverPublishedMakerIndex();
+    renderAll();
   } catch (error) {
+    loadedMakerDrafts.delete(storageKey);
     console.warn('Ignored an unreadable local maker draft.', error);
   }
 }
 
 function renderAll() {
   renderTemplates();
+  renderTemplateDetail();
   renderSlots();
   renderParts();
   renderSwatches();
@@ -2544,10 +4462,12 @@ function renderAll() {
   renderChainStatus();
   renderChainActions();
   renderMintAction();
+  renderOwnedCharacters();
   renderI18n();
   renderWalletState();
   setCreatorView(state.creatorView);
   setEditorPanel(state.editorPanel);
+  renderMakerLifecycle();
   syncActiveMakerModelRefs();
 }
 
@@ -2575,6 +4495,11 @@ $('accountButton').addEventListener('click', () => {
 });
 
 $('closeAccountPanel').addEventListener('click', closeAccountPanel);
+$('templateDetailBack')?.addEventListener('click', () => {
+  setPage('templates');
+  renderAll();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
 $('walletButton').addEventListener('click', toggleWallet);
 $('panelWalletButton').addEventListener('click', toggleWallet);
 $('creatorGateWalletButton')?.addEventListener('click', toggleWallet);
@@ -2590,8 +4515,9 @@ $('backToMakerList').addEventListener('click', () => {
 document.querySelectorAll('[data-editor-panel-button]').forEach((button) => {
   button.addEventListener('click', () => {
     setEditorPanel(button.dataset.editorPanelButton);
-    const target = button.hasAttribute('data-focus-composition') ? $('compositionOrder') : document.querySelector('.maker-detail-main');
-    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (button.hasAttribute('data-focus-composition')) {
+      $('compositionOrder')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
   });
 });
 
@@ -2634,12 +4560,16 @@ $('templateSearch').addEventListener('input', (event) => {
 $('partColor').addEventListener('input', (event) => {
   const slot = activeSlot();
   if (!slot) return;
+  invalidateOcUpload();
   applyPaletteColor(slot, event.target.value);
   renderAll();
 });
 
 ['profileName', 'profileWorld', 'profileDescription', 'profileTags'].forEach((id) => {
-  $(id).addEventListener('input', renderAll);
+  $(id).addEventListener('input', () => {
+    invalidateOcUpload();
+    renderAll();
+  });
 });
 
 const creatorLicenseLabels = {
@@ -2649,25 +4579,56 @@ const creatorLicenseLabels = {
   'exclusive-commission': 'Exclusive commission',
 };
 
-['creatorTemplateName', 'creatorName', 'creatorWorld', 'creatorLicense', 'creatorRoyalty'].forEach((id) => {
+['creatorTemplateName', 'creatorDescription', 'creatorName', 'creatorWorld', 'creatorLicense', 'creatorLicenseNote', 'creatorRoyalty'].forEach((id) => {
   $(id).addEventListener('input', () => {
+    if (!ensureMakerEditable()) return;
     const template = activeTemplate();
     if (id === 'creatorTemplateName') template.name = $('creatorTemplateName').value;
+    else if (id === 'creatorDescription') template.summary = $('creatorDescription').value;
     else if (id === 'creatorName') template.creator = $('creatorName').value;
     else if (id === 'creatorWorld') template.style = $('creatorWorld').value;
     else if (id === 'creatorLicense') template.license = creatorLicenseLabels[$('creatorLicense').value] || 'Personal use';
+    else if (id === 'creatorLicenseNote') template.licenseNote = $('creatorLicenseNote').value;
     else if (id === 'creatorRoyalty') template.royaltyBps = Number($('creatorRoyalty').value || 0);
     invalidateMakerUpload();
+    persistLocalMakerIndex();
     renderAll();
   });
 });
 
 $('prepareMakerUpload')?.addEventListener('click', prepareMakerUpload);
+$('resumeMakerUpload')?.addEventListener('click', async () => {
+  state.publishing = true;
+  state.publishStatus = 'Restoring the saved Walrus upload checkpoint…';
+  renderAll();
+  await restoreMakerUploadRecovery(state.templateId, { force: true });
+  state.publishing = false;
+  renderAll();
+});
 $('registerMakerUpload')?.addEventListener('click', registerMakerUpload);
 $('certifyMakerUpload')?.addEventListener('click', certifyMakerUpload);
 $('publishMakerOnchain')?.addEventListener('click', publishCurrentMaker);
+$('archiveMakerOnchain')?.addEventListener('click', () => {
+  if (state.makerArchived) {
+    updateMakerArchiveState(false);
+    return;
+  }
+  openConfirmation({
+    title: 'Archive published Maker?',
+    message: 'New OC mints will be blocked on Sui. Existing OC ownership, license snapshots, provenance, and Walrus records remain intact. You can restore the Maker later.',
+    confirmLabel: 'Archive maker',
+    action: () => updateMakerArchiveState(true),
+  });
+});
+$('deleteMakerDraft')?.addEventListener('click', () => requestDeleteMaker());
 
 $('addSelectionRule')?.addEventListener('click', () => {
+  if (!ensureMakerEditable()) return;
+  if (state.rules.length >= MAX_MAKER_RULES) {
+    state.publishStatus = `A Maker cannot contain more than ${MAX_MAKER_RULES} selection rules.`;
+    renderPublishAction();
+    return;
+  }
   const leftPartKey = $('ruleLeftPart').value;
   const leftItemKey = $('ruleLeftItem').value;
   const rightPartKey = $('ruleRightPart').value;
@@ -2694,6 +4655,7 @@ $('addSelectionRule')?.addEventListener('click', () => {
 });
 
 $('addPaletteLink')?.addEventListener('click', () => {
+  if (!ensureMakerEditable()) return;
   const primaryPartKey = $('palettePrimaryPart').value;
   const linkedPartKey = $('paletteLinkedPart').value;
   if (!primaryPartKey || !linkedPartKey || primaryPartKey === linkedPartKey) return;
@@ -2707,17 +4669,15 @@ $('addPaletteLink')?.addEventListener('click', () => {
   renderAll();
 });
 
-$('saveMakerDraft')?.addEventListener('click', () => {
-  const draft = {
-    templateId: state.templateId,
-    savedAt: new Date().toISOString(),
-    manifest: creatorManifest(),
-    visual: state.visual,
-    rules: state.rules,
-    paletteLinks: state.paletteLinks,
-  };
-  localStorage.setItem(makerDraftStorageKey(), JSON.stringify(draft));
-  $('saveMakerDraft').textContent = 'Saved · reselect files after reload';
+$('saveMakerDraft')?.addEventListener('click', async () => {
+  if (!ensureMakerEditable()) return;
+  try {
+    await saveCurrentMakerDraft();
+  } catch (error) {
+    state.draftSaveStatus = 'error';
+    state.draftSaveMessage = error.message || 'Could not save PNG assets in this browser.';
+    renderMakerLifecycle();
+  }
 });
 
 $('downloadManifest').addEventListener('click', () => {
@@ -2729,9 +4689,23 @@ $('downloadPackage').addEventListener('click', () => {
 });
 
 $('prepareOcUpload')?.addEventListener('click', prepareOcUpload);
+$('resumeOcUpload')?.addEventListener('click', async () => {
+  state.minting = true;
+  state.mintStatus = 'Restoring the saved OC upload checkpoint…';
+  renderAll();
+  await restoreOcUploadRecovery(state.templateId, { force: true });
+  state.minting = false;
+  renderAll();
+});
 $('registerOcUpload')?.addEventListener('click', registerOcUpload);
 $('certifyOcUpload')?.addEventListener('click', certifyOcUpload);
 $('mintOcOnchain')?.addEventListener('click', mintCurrentOc);
+$('refreshOwnedCharacters')?.addEventListener('click', () => loadOwnedCharacters({ force: true }));
+$('refreshMakers')?.addEventListener('click', () => {
+  state.chainMakersLoadedFor = '';
+  state.chainMakerLoadError = '';
+  loadChainMakers(state.walletAddress);
+});
 
 $('downloadRecipe').addEventListener('click', () => {
   download(`${slug($('profileName').value)}-recipe.json`, JSON.stringify(ocPackage().recipe, null, 2));
@@ -2747,15 +4721,18 @@ document.querySelectorAll('[data-canvas-choice]').forEach((button) => {
   });
 });
 
-document.querySelectorAll('[data-maker-type]').forEach((button) => {
+document.querySelectorAll('[data-maker-start]').forEach((button) => {
   button.addEventListener('click', () => {
-    document.querySelectorAll('[data-maker-type]').forEach((item) => item.classList.toggle('active', item === button));
+    document.querySelectorAll('[data-maker-start]').forEach((item) => item.classList.toggle('active', item === button));
   });
 });
 
 document.querySelectorAll('[data-new-part-type]').forEach((button) => {
   button.addEventListener('click', () => {
     document.querySelectorAll('[data-new-part-type]').forEach((item) => item.classList.toggle('active', item === button));
+    const isLastBastion = button.dataset.newPartType === 'last-bastion';
+    $('newPartMenuVisible').disabled = isLastBastion;
+    if (isLastBastion) $('newPartMenuVisible').value = 'visible';
   });
 });
 
@@ -2771,7 +4748,35 @@ document.querySelectorAll('[data-close-part-modal]').forEach((button) => {
   button.addEventListener('click', closePartModal);
 });
 
-$('registerMaker').addEventListener('click', () => {
+document.querySelectorAll('[data-close-confirm-modal]').forEach((button) => {
+  button.addEventListener('click', closeConfirmation);
+});
+
+$('confirmActionModal').addEventListener('click', (event) => {
+  if (event.target === $('confirmActionModal')) closeConfirmation();
+});
+
+$('confirmActionButton').addEventListener('click', async () => {
+  const action = pendingConfirmation;
+  closeConfirmation();
+  if (!action) return;
+  try {
+    await action();
+  } catch (error) {
+    state.publishStatus = error.message || 'The requested action could not be completed.';
+    renderAll();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  if ($('confirmActionModal').classList.contains('active')) closeConfirmation();
+  else if ($('partRegistrationModal').classList.contains('active')) closePartModal();
+  else if ($('makerRegistrationModal').classList.contains('active')) closeMakerModal();
+  else if ($('accountPanel').classList.contains('active')) closeAccountPanel();
+});
+
+$('registerMaker').addEventListener('click', async () => {
   if (!state.walletConnected) {
     closeMakerModal();
     openAccountPanel();
@@ -2780,25 +4785,28 @@ $('registerMaker').addEventListener('click', () => {
   const name = $('newMakerName').value.trim() || 'Untitled OC Maker';
   const canvas = document.querySelector('[data-canvas-choice].active')?.dataset.canvasChoice || '1:1';
   const canvasSize = canvas === '9:16' ? { width: 1080, height: 1920 } : { width: 1024, height: 1024 };
-  const makerType = document.querySelector('[data-maker-type].active')?.dataset.makerType || 'Free combine';
-  const id = `${slug(name)}-${Date.now().toString(36)}`;
+  const makerStart = document.querySelector('[data-maker-start].active')?.dataset.makerStart || 'character';
+  const id = `${slug(name).slice(0, 96)}-${Date.now().toString(36)}`;
   templates.unshift({
     id,
     source: 'local',
+    owner: state.walletAddress,
     name,
     category: 'daily',
-    creator: $('creatorName').value || 'xiaopai',
+    creator: shortAddress(state.walletAddress) || 'Creator',
     style: canvas,
     license: 'Personal use',
     royaltyBps: 300,
     price: 'Draft',
     accent: '#27c5c8',
     secondary: '#f0a23a',
-    summary: `${makerType} OC Maker draft. Add Parts and item images in Character Maker.`,
-    licenseNote: 'Draft maker. Configure release and publication before public use.',
+    summary: 'Character Maker draft. Add Parts, Items, Layers, Colors, and aligned PNG images.',
+    licenseNote: 'Personal use only. Credit the creator when the OC is shared publicly.',
   });
-  activateMakerModel(id, { empty: true, canvas: canvasSize });
+  persistLocalMakerIndex();
+  activateMakerModel(id, { empty: makerStart === 'blank', starter: makerStart === 'character', canvas: canvasSize });
   syncTemplateFields();
+  await saveCurrentMakerDraft({ silent: true });
   state.creatorView = 'edit';
   state.editorPanel = 'parts';
   $('newMakerName').value = '';
@@ -2808,17 +4816,27 @@ $('registerMaker').addEventListener('click', () => {
 });
 
 $('registerPart').addEventListener('click', () => {
+  if (!ensureMakerEditable()) {
+    closePartModal();
+    return;
+  }
   if (!state.walletConnected) {
     closePartModal();
     openAccountPanel();
     return;
   }
+  if (allSlots().length >= MAX_MAKER_PARTS) {
+    closePartModal();
+    state.publishStatus = `A Maker cannot contain more than ${MAX_MAKER_PARTS} Parts.`;
+    renderAll();
+    return;
+  }
   const label = $('newPartName').value.trim() || 'New part';
-  const key = `${slug(label)}-${Date.now().toString(36)}`;
+  const key = `${slug(label).slice(0, 96)}-${Date.now().toString(36)}`;
   const kind = document.querySelector('[data-new-part-type].active')?.dataset.newPartType || 'standard';
   const itemLabel = $('newPartItemName').value.trim() || 'Normal';
   const layerName = $('newPartLayerName').value.trim() || 'Normal';
-  const menuVisible = $('newPartMenuVisible').value === 'visible';
+  const menuVisible = kind === 'last-bastion' || $('newPartMenuVisible').value === 'visible';
   const initialLayers = kind === 'left-right-pair'
     ? [{ id: 'left', name: 'Left', x: 0, y: 0, opacity: 100, blendMode: 'normal' }, { id: 'right', name: 'Right', x: 0, y: 0, opacity: 100, blendMode: 'normal' }]
     : [{ id: 'normal', name: layerName, x: 0, y: 0, opacity: 100, blendMode: 'normal' }];
@@ -2831,6 +4849,7 @@ $('registerPart').addEventListener('click', () => {
     kind,
     layerName,
     menuVisible,
+    allowRemove: kind !== 'last-bastion',
     x: 0,
     y: 0,
     layers: initialLayers,
@@ -2853,19 +4872,98 @@ $('registerPart').addEventListener('click', () => {
 
 window.addEventListener('hashchange', () => {
   const page = location.hash.replace('#', '') || 'templates';
-  if (['templates', 'make', 'creator', 'docs', 'protocol', 'editor'].includes(page)) setPage(page);
+  if (['templates', 'template', 'make', 'collection', 'creator', 'docs', 'protocol', 'editor'].includes(page)) setPage(page);
 });
 
+window.addEventListener('popstate', () => {
+  const makerMatch = location.pathname.match(/\/maker\/([^/]+)$/);
+  if (makerMatch) {
+    try {
+      const reference = decodeURIComponent(makerMatch[1]);
+      const template = templates.find((candidate) => candidate.id === reference || candidate.objectId === reference);
+      if (template) {
+        openTemplateDetail(template.id, { updatePath: false });
+        return;
+      }
+      state.routeMakerReference = reference;
+      state.chainMakersLoadedFor = '';
+      loadChainMakers(state.walletAddress);
+      return;
+    } catch {
+      state.routeMakerReference = '';
+    }
+  }
+  const page = location.hash.replace('#', '') || 'templates';
+  setPage(['templates', 'template', 'make', 'collection', 'creator', 'docs'].includes(page) ? page : 'templates');
+  renderAll();
+});
+
+window.addEventListener('beforeunload', (event) => {
+  const makerInFlight = state.publishing || ['registered', 'uploaded', 'certified'].includes(state.makerUploadStage);
+  const ocInFlight = state.minting || ['registered', 'uploaded', 'certified'].includes(state.ocUploadStage);
+  if (!makerInFlight && !ocInFlight) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
+let initialPage = location.hash.replace('#', '') || 'templates';
+const directMakerMatch = location.pathname.match(/\/maker\/([^/]+)$/);
+if (directMakerMatch) {
+  try {
+    const reference = decodeURIComponent(directMakerMatch[1]);
+    const knownTemplate = templates.find((template) => template.id === reference || template.objectId === reference);
+    if (knownTemplate) {
+      activateMakerModel(knownTemplate.id);
+      state.routeMakerReference = '';
+      initialPage = 'template';
+    } else {
+      state.routeMakerReference = reference;
+      initialPage = 'templates';
+    }
+  } catch {
+    state.routeMakerReference = '';
+  }
+}
+
 initializeChain(runtimeConfig, (connection) => {
+  const previousWalletAddress = state.walletAddress;
+  const walletChanged = previousWalletAddress !== connection.address;
+  if (walletChanged) {
+    resetOcUploadState();
+    state.ownedCharacters = [];
+    state.ownedCharactersLoadedFor = '';
+    state.ownedCharactersError = '';
+    templates.filter((template) => template.source === 'chain').forEach((template) => { template.owned = false; });
+    const currentTemplate = activeTemplate();
+    if (currentTemplate?.source === 'local' && currentTemplate.owner && currentTemplate.owner !== connection.address) {
+      activateMakerModel(templates.find((template) => template.source === 'starter')?.id || templates[0].id);
+      syncTemplateFields();
+    }
+  }
   state.walletConnected = connection.connected;
   state.walletAddress = connection.address;
   state.walletProvider = connection.provider;
   state.walletStatus = connection.status;
-  renderWalletState();
-  renderChainStatus();
+  if (!connection.connected || walletChanged) state.creatorProfileObjectId = '';
+  if (connection.connected) {
+    loadLocalMakerIndex(connection.address);
+    restoreMakerDraft(state.templateId);
+    loadChainMakers(connection.address);
+    loadOwnedCharacters();
+    if (state.pendingWalletTemplateId) {
+      activateMakerModel(state.pendingWalletTemplateId);
+      syncTemplateFields();
+    }
+    if (state.pendingWalletPage) setPage(state.pendingWalletPage);
+    state.pendingWalletPage = '';
+    state.pendingWalletTemplateId = '';
+  } else if (!['templates', 'template', 'docs'].includes(state.page)) {
+    setPage('templates');
+  }
+  renderAll();
 });
 
 syncTemplateFields();
-restoreMakerDraft();
 renderAll();
-setPage(location.hash.replace('#', '') || 'templates');
+setPage(initialPage);
+loadChainMakers();

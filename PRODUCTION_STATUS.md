@@ -1,40 +1,55 @@
 # Animacraft Production Status
 
-## Working now
+## Release State
 
-- Vite production build and Vercel SPA rewrites.
-- Character Maker workspace with Part-owned Layers, Colors, Items, per-cell PNG uploads, live composition preview, and global layer ordering.
-- Creator manifest v2 with `Part → Layers + Colors + Items → Item Images` provenance.
-- Official Sui dApp Kit wallet selection and real connection state.
-- Sui and Walrus Mainnet runtime configuration with publishing gated until a real package id is installed.
-- Mainnet Walrus quilt preparation, wallet-paid registration, upload relay transfer, certification, and QuiltPatchID resolution.
-- One wallet-signed PTB that creates a creator profile, creates an OCMaker, registers its parts and items, publishes it, and transfers both objects to the creator.
-- User-side OC image/profile upload and wallet-signed OCCharacter mint transaction for configured published makers.
-- Move validation for license kinds, part kinds, item gates, non-empty blobs, and non-empty publishable makers.
-- Move unit tests and browser-verified responsive layouts.
-- Per-wallet, per-maker local draft isolation so switching makers does not share Parts or assets.
-- Wallet-first Creator Studio gating and Part/Item-level selection-rule authoring backed by Move recipe validation.
-- Honest starter-example labeling, local Maker preview navigation, rule-aware player choices, and local uploaded-layer rendering.
-- Pull requests run syntax checks and a clean Vite production build in GitHub Actions.
+The repository is a **Mainnet production candidate**. The web and Move implementations are ready for an invited-creator pilot, but Mainnet writes remain correctly blocked until the real package id is configured and the deployment wallet completes the first signed end-to-end run.
 
-## Required before public creator onboarding
+The Template Plaza and Docs are public without a wallet. My OCs, Make OC, Creator Studio, local draft ownership, Walrus writes, publication, archive, and minting require a connected wallet.
 
-1. Upgrade the local Sui CLI to match the Mainnet protocol.
-2. Fund a dedicated publisher wallet with SUI and WAL.
-3. Publish `move/animacraft` to Sui Mainnet and secure its `UpgradeCap`.
-4. Replace `0xTODO_ANIMACRAFT_PACKAGE` in `public/config.js` with the verified package id.
-5. Publish at least one real maker and add its OCMaker object id under `featuredMakers`.
-6. Run and record a wallet-funded end-to-end Mainnet transaction with a small real PNG asset set.
-7. Replace hard-coded maker discovery with indexed Sui objects/events plus Walrus manifest hydration.
-8. Add durable resumable Walrus upload state and failed-upload recovery.
-9. Add moderation/reporting policy before opening public template uploads.
-10. Add a CI job for Move tests using a pinned, Mainnet-compatible Sui CLI.
+## Implemented
 
-## Required before unrestricted Mainnet scale
+- Character Maker centered on Part-owned Items, Layers, Colors, icons, and complete `Item x Layer x Color` PNG matrices.
+- One live composition surface plus a global cross-Part Layer order; preview and exported PNG use the same offsets, opacity, blend mode, and canvas scaling.
+- Standard, left-right paired, and required Last Bastion Parts. Last Bastion Parts cannot be targeted by incompatibility rules.
+- Local Maker, Part, Item, optional Layer, and extra Color deletion before publication.
+- IndexedDB v3 persistence for Maker structure, source image Blobs, and resumable Maker/OC Walrus upload checkpoints.
+- `animacraft.creator-template.v3` manifests with a generated Maker cover and Quilt Blob ID plus identifier addressing.
+- Public Maker discovery from Sui publication events, Sui object hydration, and certified Walrus manifests.
+- Remote manifest limits and validation before an untrusted public Maker reaches the player.
+- Reusable wallet-owned `CreatorProfile` records with published Maker IDs.
+- Shared published `OCMaker` objects so any user can borrow a Maker for minting while creator-only mutations still verify `ctx.sender()`.
+- Immutable published versions, creator-signed archive/restore, and mint rejection for archived Makers.
+- Rule-aware player choices, required Part validation, exact linked Color sets, uploaded item thumbnails, finished PNG rendering, Walrus storage, and `OCCharacter` minting.
+- Move verifies registered recipe Colors, published Part order, selection/palette rules, and SHA-256 over canonical BCS recipe bytes.
+- My OCs reads wallet-owned `OCCharacter` objects and links their Sui provenance and Walrus image.
+- Vercel rewrites, CSP including Walrus WASM support, non-cached runtime config, and baseline security headers.
+- Pull requests run eighteen web integrity tests, syntax checks, and a production build; the local Move suite currently passes twenty tests, including a shared web/Move BCS hash fixture.
 
-- Add transaction size limits and batch publishing for large makers.
-- Add contract tests covering full creator and OC lifecycle scenarios.
-- Add package upgrade policy, multisig administration, monitoring, and incident procedures.
-- Complete an independent Move security review.
+## Manual Mainnet Activation
 
-The static site can be deployed to a Vercel Preview now. Public creator onboarding and unrestricted Mainnet publishing remain blocked until the checklist above is complete. See `PRODUCTION_AUDIT.md` for the release gate.
+1. Fund a dedicated publisher wallet with SUI and WAL.
+2. Run `npm run move:test`, publish `move/animacraft`, and record package, transaction, publisher, and `UpgradeCap` custody.
+3. Replace `0xTODO_ANIMACRAFT_PACKAGE` in `public/config.js` with the verified Mainnet package id.
+4. Deploy a Vercel Preview and connect the intended `animacraft.soulidity.xyz` subdomain.
+5. Publish one small real Maker through all four Walrus/Sui stages.
+6. Open that Maker from a disconnected browser, connect a second user wallet, make an OC, and mint it.
+7. Verify event discovery, cover and layer hydration, My OCs, archive rejection, restore, and transaction links.
+8. Record the evidence in the release PR before promoting the domain.
+
+## Invited Pilot Boundary
+
+- A single release supports up to 450 on-chain Part + public Item + Color + selection rule + palette-link records in its one-transaction publisher.
+- A Maker supports up to 5,000 Walrus files including its manifest.
+- Production config requests 53 Walrus Mainnet epochs, currently about two years. A renewal process is required before expiry.
+- Payment collection and royalty settlement are not implemented; BPS is policy metadata only.
+- Creators must retain original art and confirm they have the right to publish it.
+- Establish reporting, takedown, and license-dispute contacts before accepting uninvited public uploads.
+
+## Before Unrestricted Scale
+
+- Add batched multi-transaction Maker registration beyond the launch transaction limit.
+- Pin and run a Mainnet-compatible Sui CLI in GitHub Actions.
+- Complete an independent Move security review and document upgrade/multisig procedures.
+- Add production monitoring for Sui GraphQL, RPC, Walrus aggregator, and upload relay degradation.
+- Add creator-facing Walrus retention status and a signed renewal action before the first production Quilt approaches expiry.
+- Complete full-interface localization QA for English, Chinese, Japanese, Korean, and Vietnamese.

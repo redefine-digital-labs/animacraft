@@ -4,6 +4,9 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction } from '@mysten/sui/transactions';
 import { bcs } from '@mysten/sui/bcs';
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
+import { hashRecipe, recipeSlotBcs, recipeValue } from './recipe-hash.js';
+
+export { hashRecipe } from './recipe-hash.js';
 
 const CLOCK_OBJECT_ID = '0x6';
 
@@ -13,19 +16,16 @@ let walletModal;
 let connectionUnsubscribe;
 let walrusClient;
 let WalrusFileClass;
-
-const recipeSlotBcs = bcs.struct('RecipeSlot', {
-  part_key: bcs.string(),
-  item_key: bcs.string(),
-  color_hex: bcs.string(),
-  render_order: bcs.u64(),
-});
+let suiClient;
+let graphqlClient;
 
 function requirePackageId() {
   if (!runtimeConfig?.packageId || runtimeConfig.packageId.includes('TODO')) {
     throw new Error('The Animacraft Move package is not configured yet. Publish it and set packageId in config.js.');
   }
-  return runtimeConfig.packageId;
+  const packageId = String(runtimeConfig.packageId).trim();
+  if (!/^0x[0-9a-f]+$/i.test(packageId)) throw new Error('The configured Animacraft package id is not a valid Sui address.');
+  return packageId;
 }
 
 function requireConnection() {
@@ -73,11 +73,12 @@ function pureString(tx, value) {
 
 export function initializeChain(config, onConnectionChange) {
   runtimeConfig = config;
+  suiClient = new SuiGrpcClient({ network: config.network, baseUrl: config.grpcUrl || config.rpcUrl });
   dAppKit = createDAppKit({
     networks: [config.network],
     defaultNetwork: config.network,
     autoConnect: true,
-    createClient: (network) => new SuiGrpcClient({ network, baseUrl: config.rpcUrl }),
+    createClient: () => suiClient,
   });
 
   walletModal = document.createElement('mysten-dapp-kit-connect-modal');
@@ -109,15 +110,135 @@ export async function openWalletSelector() {
   await walletModal.show();
 }
 
-export async function prepareWalrusUpload(entries) {
-  const connection = requireConnection();
+export async function listOwnedMakers(owner) {
+  const packageId = requirePackageId();
+  const address = owner || requireConnection().account.address;
+  const objects = [];
+  let cursor = null;
+  do {
+    const page = await suiClient.listOwnedObjects({
+      owner: address,
+      type: `${packageId}::animacraft::OCMaker`,
+      cursor,
+      limit: 50,
+      include: { json: true, display: true, previousTransaction: true },
+    });
+    objects.push(...page.objects);
+    cursor = page.hasNextPage ? page.cursor : null;
+  } while (cursor && objects.length < 500);
+  return objects;
+}
+
+export async function listOwnedCreatorProfiles(owner) {
+  const packageId = requirePackageId();
+  const address = owner || requireConnection().account.address;
+  const objects = [];
+  let cursor = null;
+  do {
+    const page = await suiClient.listOwnedObjects({
+      owner: address,
+      type: `${packageId}::animacraft::CreatorProfile`,
+      cursor,
+      limit: 50,
+      include: { json: true, display: true, previousTransaction: true },
+    });
+    objects.push(...page.objects);
+    cursor = page.hasNextPage ? page.cursor : null;
+  } while (cursor && objects.length < 100);
+  return objects;
+}
+
+export async function listOwnedCharacters(owner) {
+  const packageId = requirePackageId();
+  const address = owner || requireConnection().account.address;
+  const objects = [];
+  let cursor = null;
+  do {
+    const page = await suiClient.listOwnedObjects({
+      owner: address,
+      type: `${packageId}::animacraft::OCCharacter`,
+      cursor,
+      limit: 50,
+      include: { json: true, display: true, previousTransaction: true },
+    });
+    objects.push(...page.objects);
+    cursor = page.hasNextPage ? page.cursor : null;
+  } while (cursor && objects.length < 500);
+  return objects;
+}
+
+export async function getMakerObjects(objectIds) {
+  requirePackageId();
+  const ids = [...new Set((objectIds || []).map(jsonSuiId).filter(Boolean))];
+  if (!ids.length) return [];
+  const batches = [];
+  for (let index = 0; index < ids.length; index += 50) batches.push(ids.slice(index, index + 50));
+  const responses = await Promise.all(batches.map((objectIdsBatch) => suiClient.getObjects({
+    objectIds: objectIdsBatch,
+    include: { json: true, display: true, previousTransaction: true },
+  })));
+  return responses.flatMap((response) => response.objects).filter((object) => object && !('error' in object));
+}
+
+function jsonSuiId(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('{')) {
+      try {
+        return jsonSuiId(JSON.parse(trimmed));
+      } catch {
+        return '';
+      }
+    }
+    return /^0x[0-9a-f]+$/i.test(trimmed) ? trimmed : '';
+  }
+  if (!value || typeof value !== 'object') return '';
+  return jsonSuiId(value.id || value.bytes || value.address || value.fields);
+}
+
+export async function listPublishedMakerIds(limit = 500) {
+  const packageId = requirePackageId();
+  if (!graphqlClient) {
+    const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+    graphqlClient = new SuiGraphQLClient({
+      network: runtimeConfig.network,
+      url: runtimeConfig.graphqlUrl || `https://sui-${runtimeConfig.network}.mystenlabs.com/graphql`,
+    });
+  }
+  const eventType = `${packageId}::animacraft::OCMakerPublished`;
+  const ids = [];
+  let before = null;
+  do {
+    const result = await graphqlClient.query({
+      query: `
+        query PublishedAnimacraftMakers($type: String!, $last: Int!, $before: String) {
+          events(filter: { type: $type }, last: $last, before: $before) {
+            pageInfo { hasPreviousPage startCursor }
+            nodes { contents { json } }
+          }
+        }
+      `,
+      variables: { type: eventType, last: Math.min(100, limit - ids.length), before },
+    });
+    if (result.errors?.length) throw new Error(result.errors[0].message || 'Sui GraphQL event discovery failed.');
+    const connection = result.data?.events;
+    (connection?.nodes || []).forEach((event) => {
+      const makerId = jsonSuiId(event.contents?.json?.maker_id || event.contents?.json?.makerId);
+      if (makerId) ids.push(makerId);
+    });
+    before = connection?.pageInfo?.hasPreviousPage ? connection.pageInfo.startCursor : null;
+  } while (before && ids.length < limit);
+  return [...new Set(ids)];
+}
+
+async function ensureWalrusRuntime() {
   if (!runtimeConfig?.walrusUploadRelayUrl) throw new Error('Configure the Walrus Mainnet upload relay first.');
   if (!walrusClient) {
     const { WalrusFile, walrus } = await import('@mysten/walrus');
     WalrusFileClass = WalrusFile;
     walrusClient = new SuiGrpcClient({
       network: runtimeConfig.network,
-      baseUrl: runtimeConfig.rpcUrl,
+      baseUrl: runtimeConfig.grpcUrl || runtimeConfig.rpcUrl,
     }).$extend(walrus({
       wasmUrl: walrusWasmUrl,
       uploadRelay: {
@@ -126,14 +247,21 @@ export async function prepareWalrusUpload(entries) {
       },
     }));
   }
+}
+
+async function walrusFiles(entries) {
   if (!Array.isArray(entries) || entries.length === 0) throw new Error('Choose at least one file to store on Walrus.');
   if (entries.length > 5_000) throw new Error('A single Walrus quilt cannot contain more than 5,000 Animacraft files.');
   const identifiers = entries.map((entry) => entry.identifier);
+  if (entries.some((entry) => !(entry.blob instanceof Blob))) throw new Error('Every Walrus entry must contain a readable browser Blob.');
+  if (identifiers.some((identifier) => !identifier || new TextEncoder().encode(String(identifier)).length > 512)) {
+    throw new Error('Every Walrus quilt identifier must contain 1 to 512 UTF-8 bytes.');
+  }
   if (new Set(identifiers).size !== identifiers.length) throw new Error('Every Walrus quilt file must have a unique identifier.');
   const totalBytes = entries.reduce((total, entry) => total + Number(entry.blob?.size || 0), 0);
   if (totalBytes > 500 * 1024 * 1024) throw new Error('A single Animacraft upload cannot exceed 500 MB. Split this Maker into a smaller release.');
 
-  const files = await Promise.all(entries.map(async (entry) => WalrusFileClass.from({
+  return Promise.all(entries.map(async (entry) => WalrusFileClass.from({
     contents: new Uint8Array(await entry.blob.arrayBuffer()),
     identifier: entry.identifier,
     tags: {
@@ -141,19 +269,65 @@ export async function prepareWalrusUpload(entries) {
       'animacraft-kind': entry.kind || 'asset',
     },
   })));
+}
+
+export async function prepareWalrusUpload(entries) {
+  const connection = requireConnection();
+  await ensureWalrusRuntime();
+  const files = await walrusFiles(entries);
   const flow = walrusClient.walrus.writeFilesFlow({ files });
   const encoded = await flow.encode();
   return {
     flow,
     entries,
     encoded,
+    checkpoint: encoded,
+    quiltBlobId: encoded.blobId,
     owner: connection.account.address,
     stage: 'encoded',
     registerDigest: '',
     certifyDigest: '',
     uploaded: null,
     files: [],
+    recoveringUploaded: false,
   };
+}
+
+export async function resumeWalrusUpload(entries, recovery) {
+  const connection = requireConnection();
+  if (!recovery?.checkpoint) throw new Error('The saved Walrus upload checkpoint is missing.');
+  if (recovery.owner !== connection.account.address) throw new Error('Reconnect the wallet that started this Walrus upload.');
+  await ensureWalrusRuntime();
+  const files = await walrusFiles(entries);
+  const flow = walrusClient.walrus.writeFilesFlow({ files, resume: recovery.checkpoint });
+  const encoded = await flow.encode();
+  if (recovery.quiltBlobId && encoded.blobId !== recovery.quiltBlobId) {
+    throw new Error('The local Maker assets no longer match the saved Walrus upload. Prepare a new quilt.');
+  }
+  const session = {
+    flow,
+    entries,
+    encoded,
+    quiltBlobId: encoded.blobId,
+    owner: recovery.owner,
+    stage: recovery.stage || recovery.checkpoint.step,
+    registerDigest: recovery.registerDigest || recovery.checkpoint.txDigest || '',
+    certifyDigest: recovery.certifyDigest || '',
+    uploaded: recovery.checkpoint.step === 'uploaded' ? recovery.checkpoint : null,
+    checkpoint: recovery.checkpoint,
+    files: [],
+    recoveringUploaded: false,
+  };
+  if (session.stage === 'uploaded') {
+    session.stage = 'registered';
+    session.recoveringUploaded = true;
+  } else if (session.stage === 'certified') {
+    if (!Array.isArray(recovery.files) || recovery.files.length === 0) {
+      throw new Error('The certified Walrus checkpoint is missing its local Quilt file index. Prepare the upload again from the saved source files.');
+    }
+    session.files = recovery.files;
+  }
+  return session;
 }
 
 export async function registerAndUploadWalrus(session) {
@@ -165,8 +339,10 @@ export async function registerAndUploadWalrus(session) {
     throw new Error('Reconnect the wallet that prepared this Walrus upload.');
   }
   if (session.stage === 'encoded') {
+    const configuredEpochs = Number(runtimeConfig.walrusEpochs ?? 53);
+    const storageEpochs = Number.isInteger(configuredEpochs) ? Math.min(53, Math.max(1, configuredEpochs)) : 53;
     const registerTx = session.flow.register({
-      epochs: Math.max(1, Number(runtimeConfig.walrusEpochs || 2)),
+      epochs: storageEpochs,
       owner: connection.account.address,
       deletable: false,
     });
@@ -175,7 +351,25 @@ export async function registerAndUploadWalrus(session) {
     session.stage = 'registered';
   }
   session.uploaded = await session.flow.upload({ digest: session.registerDigest });
-  session.stage = 'uploaded';
+  session.checkpoint = {
+    ...session.uploaded,
+    ...(session.encoded.nonce ? { nonce: session.encoded.nonce } : {}),
+  };
+  if (session.recoveringUploaded) session.files = await session.flow.listFiles();
+  if (session.files[0]?.blobObject?.certified_epoch != null) {
+    const blobObject = session.files[0].blobObject;
+    session.checkpoint = {
+      step: 'certified',
+      blobId: session.files[0].blobId,
+      blobObjectId: blobObject.id,
+      blobObject,
+      ...(session.encoded.nonce ? { nonce: session.encoded.nonce } : {}),
+    };
+    session.stage = 'certified';
+  } else {
+    session.stage = 'uploaded';
+  }
+  session.recoveringUploaded = false;
   return session;
 }
 
@@ -185,10 +379,20 @@ export async function certifyWalrusUpload(session) {
   if (session.owner !== connection.account.address) {
     throw new Error('Reconnect the wallet that prepared this Walrus upload.');
   }
-  const certifyTx = session.flow.certify();
-  const certified = unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: certifyTx }));
-  session.certifyDigest = certified.digest;
+  if (!session.certifyDigest) {
+    const certifyTx = session.flow.certify();
+    const certified = unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: certifyTx }));
+    session.certifyDigest = certified.digest;
+  }
   session.files = await session.flow.listFiles();
+  const blobObject = session.files[0]?.blobObject;
+  session.checkpoint = blobObject ? {
+    step: 'certified',
+    blobId: session.files[0].blobId,
+    blobObjectId: blobObject.id,
+    blobObject,
+    ...(session.encoded.nonce ? { nonce: session.encoded.nonce } : {}),
+  } : session.checkpoint;
   session.stage = 'certified';
   return session;
 }
@@ -198,18 +402,26 @@ export function walrusFileUrl(quiltPatchId) {
   return `${runtimeConfig.walrusAggregatorUrl.replace(/\/$/, '')}/v1/blobs/by-quilt-patch-id/${quiltPatchId}`;
 }
 
-export async function publishMaker({ creator, maker, manifestBlobId, parts, items, rules = [] }) {
+export function walrusQuiltFileUrl(quiltId, identifier) {
+  if (!quiltId || !identifier) return '';
+  return `${runtimeConfig.walrusAggregatorUrl.replace(/\/$/, '')}/v1/blobs/by-quilt-id/${encodeURIComponent(quiltId)}/${encodeURIComponent(identifier)}`;
+}
+
+export async function publishMaker({ creator, maker, manifestBlobId, parts, items, rules = [], paletteLinks = [] }) {
   const connection = requireConnection();
   const tx = new Transaction();
-  const profile = tx.moveCall({
-    target: moveTarget('new_creator_profile'),
-    arguments: [
-      pureString(tx, creator.displayName),
-      pureString(tx, creator.bio),
-      pureString(tx, creator.avatarUrl),
-      tx.pure.address(connection.account.address),
-    ],
-  });
+  const createsProfile = !creator.profileId;
+  const profile = creator.profileId
+    ? tx.object(creator.profileId)
+    : tx.moveCall({
+        target: moveTarget('new_creator_profile'),
+        arguments: [
+          pureString(tx, creator.displayName),
+          pureString(tx, creator.bio),
+          pureString(tx, creator.avatarUrl),
+          tx.pure.address(connection.account.address),
+        ],
+      });
   const policy = licenseKind(maker.license);
   const ocMaker = tx.moveCall({
     target: moveTarget('new_oc_maker'),
@@ -242,6 +454,17 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
         tx.object(CLOCK_OBJECT_ID),
       ],
     });
+    for (const color of part.colors || []) {
+      tx.moveCall({
+        target: moveTarget('add_color'),
+        arguments: [
+          ocMaker,
+          pureString(tx, part.key),
+          pureString(tx, color),
+          tx.object(CLOCK_OBJECT_ID),
+        ],
+      });
+    }
   }
 
   for (const item of items) {
@@ -274,24 +497,75 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
     });
   }
 
+  for (const link of paletteLinks) {
+    tx.moveCall({
+      target: moveTarget('add_palette_link'),
+      arguments: [
+        ocMaker,
+        pureString(tx, link.primaryPartKey),
+        pureString(tx, link.linkedPartKey),
+        tx.object(CLOCK_OBJECT_ID),
+      ],
+    });
+  }
+
   tx.moveCall({
     target: moveTarget('publish_maker'),
     arguments: [ocMaker, pureString(tx, manifestBlobId), tx.object(CLOCK_OBJECT_ID)],
   });
-  tx.transferObjects([profile, ocMaker], connection.account.address);
+  tx.moveCall({
+    target: moveTarget('share_published_maker'),
+    arguments: [ocMaker],
+  });
+  if (createsProfile) {
+    tx.moveCall({
+      target: moveTarget('keep_creator_profile'),
+      arguments: [profile],
+    });
+  }
 
+  const transaction = unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: tx }));
+  let makerObjectId = '';
+  let creatorProfileObjectId = creator.profileId || '';
+  try {
+    const indexedResult = unwrapTransaction(await suiClient.waitForTransaction({
+      digest: transaction.digest,
+      include: { effects: true, objectTypes: true },
+    }));
+    makerObjectId = Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::OCMaker'))?.[0] || '';
+    creatorProfileObjectId ||= Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::CreatorProfile'))?.[0] || '';
+  } catch (error) {
+    console.warn('Maker published, but its object id is not indexed yet.', error);
+  }
+  return { ...transaction, makerObjectId, creatorProfileObjectId };
+}
+
+export async function resolvePublishedMakerObjectId(digest, timeout = 30_000) {
+  requirePackageId();
+  if (!digest) return '';
+  const indexedResult = unwrapTransaction(await suiClient.waitForTransaction({
+    digest,
+    timeout,
+    include: { objectTypes: true },
+  }));
+  return Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::OCMaker'))?.[0] || '';
+}
+
+export async function setMakerArchived(makerId, archived) {
+  requireConnection();
+  if (!makerId) throw new Error('The published OCMaker object id is missing. Reload it from Sui before changing lifecycle state.');
+  const tx = new Transaction();
+  tx.moveCall({
+    target: moveTarget('set_maker_archived'),
+    arguments: [tx.object(makerId), tx.pure.bool(Boolean(archived)), tx.object(CLOCK_OBJECT_ID)],
+  });
   return unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: tx }));
 }
 
 export async function mintCharacter({ makerId, name, profileBlobId, imageBlobId, imageUrl, recipeHash, recipe }) {
   requireConnection();
   const tx = new Transaction();
-  const recipeValue = recipe.map((slot) => ({
-    part_key: slot.partKey,
-    item_key: slot.itemKey,
-    color_hex: slot.colorHex,
-    render_order: BigInt(slot.renderOrder),
-  }));
+  const serializedRecipe = bcs.vector(recipeSlotBcs).serialize(recipeValue(recipe));
 
   tx.moveCall({
     target: moveTarget('mint_oc_character'),
@@ -302,14 +576,29 @@ export async function mintCharacter({ makerId, name, profileBlobId, imageBlobId,
       pureString(tx, imageBlobId),
       pureString(tx, imageUrl),
       tx.pure.vector('u8', [...recipeHash]),
-      tx.pure(bcs.vector(recipeSlotBcs).serialize(recipeValue)),
+      tx.pure(serializedRecipe),
       tx.object(CLOCK_OBJECT_ID),
     ],
   });
 
-  return unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: tx }));
+  const transaction = unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: tx }));
+  let ocObjectId = '';
+  try {
+    const indexedResult = unwrapTransaction(await suiClient.waitForTransaction({
+      digest: transaction.digest,
+      include: { objectTypes: true },
+    }));
+    ocObjectId = Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::OCCharacter'))?.[0] || '';
+  } catch (error) {
+    console.warn('OC minted, but its object id is not indexed yet.', error);
+  }
+  return { ...transaction, ocObjectId };
 }
 
 export function explorerTransactionUrl(digest) {
   return `https://suivision.xyz/txblock/${digest}?network=${runtimeConfig?.network || 'mainnet'}`;
+}
+
+export function explorerObjectUrl(objectId) {
+  return `https://suivision.xyz/object/${objectId}?network=${runtimeConfig?.network || 'mainnet'}`;
 }
