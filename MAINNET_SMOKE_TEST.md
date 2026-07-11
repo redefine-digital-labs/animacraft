@@ -136,6 +136,8 @@ For each enabled tier used in the pilot, especially 0%, 1%, and 5%:
 
 Negative edge: attempt a nonzero-tier listing below the minimum atomic price needed to produce one USDC atomic unit of royalty. The listing or purchase must be rejected before settlement; it must not silently waive the Maker royalty.
 
+Bypass edge: submit the same Animacraft Soul and listing to Soulidity's ordinary solo and collection purchase entries without the typed provenance/Maker/Treasury inputs. Both must abort and leave the listing, Soul owner, payment coin, and Treasury unchanged.
+
 Pass condition: the immutable Maker snapshot, not mutable web metadata, determines the royalty route.
 
 ## H. Failure And Recovery

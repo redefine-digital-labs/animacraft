@@ -14,6 +14,16 @@ This document is the implementation contract between the independently managed A
 
 Soulidity must pin the Animacraft **original package ID** as the type identity. If Animacraft is upgraded later, review the new published-at package separately; never silently follow an unreviewed upgrade.
 
+## Verified Current Soulidity Baseline
+
+The read-only compatibility audit on 2026-07-11 used the local Soulidity package whose `Published.toml` binds Mainnet package `0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0`. A clean temporary copy passed:
+
+```bash
+sui client verify-source --force --build-env mainnet --json move/soulidity
+```
+
+with Sui CLI `1.74.1-8fc60f1fa966`. The verified baseline exposes `mint_imported_in_personal_kiosk`, the private `mint_soul_in_personal_kiosk_impl`, `InitialContentEntry` with actual Walrus `Blob` values, solo/collection fixed-price purchase entries, typed Soul content invariants, and personal Kiosk custody described below. This proves the handoff targets the current Mainnet source, not that the future adapter diff has been reviewed or deployed.
+
 ## Non-Negotiable Boundary
 
 - Animacraft owns `OCMaker`, `MakerTreasury<USDC>`, `MakerAdminCap`, recipe validation, Maker fees, and Maker royalty snapshots.
@@ -71,7 +81,7 @@ Add `PROVENANCE_ANIMACRAFT = 3` and a package-visible accessor in `soul.move`. D
 
 ### 3. Add a provenance module
 
-Create a Soulidity-owned `AnimacraftProvenance` shared object linked one-to-one to a Soul. Its minimum immutable fields are:
+Create a Soulidity-owned `AnimacraftProvenance` object linked one-to-one to a Soul. Freeze it after construction so later Marketplace calls can borrow immutable evidence without trusting a mutable operator. Its minimum fields are:
 
 - Soul ID, Animacraft version, Maker ID, and Maker Treasury ID
 - original Maker creator and payer
@@ -81,6 +91,8 @@ Create a Soulidity-owned `AnimacraftProvenance` shared object linked one-to-one 
 - payment coin type, mint price snapshot, and authorization timestamp
 
 Emit an event containing the provenance object ID, Soul ID, Maker ID, and Treasury ID so indexers can resolve the link without an application database. Provide public read helpers and an `assert_matches_soul` helper. Do not expose mutation functions.
+
+Add a one-time typed-provenance binding to `SoulState` without changing the layout of existing Mainnet states. The preferred compatible design is a package-owned dynamic field on the state's UID keyed by provenance kind and containing the frozen provenance object ID. `soul.move` should expose package-only bind/assert helpers and a public read helper. The Animacraft mint path binds kind `3` exactly once before the state is shared; generic imported mint cannot create this binding.
 
 The provenance module may import Animacraft types, but it must not import `market`; this keeps the module graph acyclic. `market` may import the provenance module.
 
@@ -100,7 +112,7 @@ The preferred entry must:
 8. mint with Soulidity provenance kind `3`;
 9. set Soulidity's ordinary creator royalty to `0` for this path;
 10. retain Soulidity's existing requirement for exactly one Soul document and at least one founding Memory Blob;
-11. create and share exactly one immutable `AnimacraftProvenance` linked to the returned Soul ID;
+11. create and freeze exactly one `AnimacraftProvenance`, then bind its ID to the returned SoulState under typed provenance kind `3` before state finalization;
 12. return/finalize the existing `SoulState` exactly as other Soulidity mint paths do.
 
 Setting Soulidity's ordinary creator royalty to zero is intentional. Animacraft royalties belong to the Maker Treasury and its current Cap owner. Reusing Soulidity's creator royalty would pay the OC minter and then charge the Maker royalty again, causing the wrong beneficiary or double collection.
@@ -121,6 +133,10 @@ The current Soulidity fixed-price purchase sends creator royalty to the Soul cre
 - emits the Maker ID, Treasury ID, basis points, and royalty amount in purchase evidence.
 
 Do not call both the existing Soul creator royalty and Animacraft Maker royalty for the same right.
+
+This path must not be optional. Update both existing generic purchase entries, `buy_soul_fixed_price` and `buy_soul_fixed_price_with_collection`, to abort when the SoulState carries typed Animacraft provenance. Add corresponding Animacraft-aware solo and collection purchase entries that require the frozen provenance object, matching shared Maker, and matching Treasury. Otherwise a buyer could deliberately call the generic path and bypass the Maker royalty.
+
+Soulidity's current internal `bps_amount` rounds platform/creator/collection fees up. Animacraft v3 recomputes Maker royalty with floor division in `deposit_resale_royalty`. Do not reuse `bps_amount` for Maker royalty: quote and split exactly `floor(gross_sale_amount * maker_royalty_bps / 10_000)`, while preserving Soulidity's existing rounding for its own fees. Deposit the Maker amount even when the seller also controls the Maker Cap so Treasury accounting remains canonical.
 
 ### 6. Add MakerAdminCap trading separately
 
@@ -164,7 +180,10 @@ Soulidity's adapter PR is not release-ready without tests for:
 - wrong payer, version, Maker, Treasury, coin type, amount, recipe hash, or required content aborts;
 - one authorization cannot mint twice and cannot remain at PTB end;
 - Soulidity creator royalty is zero for Animacraft Souls;
+- both generic solo and collection purchase entries reject an Animacraft-bound Soul, so Maker royalty cannot be bypassed by choosing another public function;
+- only the typed adapter can create the one-time SoulState provenance binding; imported provenance text cannot forge it;
 - 0%, 1%, 2%, 3%, 4%, and 5% resale behavior, including floor rounding and clean rejection when a nonzero tier would round to zero;
+- Animacraft-aware solo and collection purchases preserve Soulidity platform/collection rounding while depositing the exact floor-rounded Maker royalty;
 - Maker royalty is deposited once and the seller receives exactly the listing price;
 - provenance cannot be substituted across Souls;
 - Cap transfer changes administration/withdrawal authority without rewriting provenance;
