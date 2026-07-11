@@ -1,3 +1,5 @@
+import { normalizeStructTag } from '@mysten/sui/utils';
+
 export const SUI_MAINNET_USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
 
 export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
@@ -20,6 +22,21 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
 
 const SUI_ID = /^0x[0-9a-f]+$/i;
 const MOVE_TYPE = /^0x[0-9a-f]+::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*$/i;
+
+export function assertSupportedMakerPaymentCoin(actualType, configuredType = SUI_MAINNET_USDC_TYPE) {
+  let actual;
+  let configured;
+  try {
+    actual = normalizeStructTag(String(actualType || '').trim());
+    configured = normalizeStructTag(String(configuredType || '').trim());
+  } catch {
+    throw new Error('The on-chain Maker has an invalid payment coin type.');
+  }
+  if (actual !== configured) {
+    throw new Error('The on-chain Maker payment coin does not match configured native Sui USDC.');
+  }
+  return actual;
+}
 
 function validHttpsUrl(value, { allowLocalhost = false } = {}) {
   try {

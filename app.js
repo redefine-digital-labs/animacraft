@@ -42,7 +42,7 @@ import {
   validateLivingContent,
 } from './living-content.js';
 import { responseBlobWithinLimit, responseBytesWithinLimit } from './remote-read.js';
-import { normalizeRuntimeConfig } from './runtime-config.js';
+import { assertSupportedMakerPaymentCoin, normalizeRuntimeConfig } from './runtime-config.js';
 
 const slots = [
   { key: 'background', label: 'Background', icon: 'BG', colorKey: 'background', description: 'Scene, mood, and backdrop' },
@@ -1085,6 +1085,10 @@ function makerModelFromManifest(manifest, quiltId, object) {
 
 async function hydrateChainMaker(object) {
   const fields = suiObjectFields(object);
+  assertSupportedMakerPaymentCoin(
+    suiField(fields, 'payment_coin_type', 'paymentCoinType'),
+    runtimeConfig.paymentCoinType,
+  );
   const quiltId = String(suiField(fields, 'manifest_blob_id', 'manifestBlobId') || '');
   if (!quiltId) throw new Error(`OCMaker ${shortAddress(object.objectId)} has no Walrus Quilt ID.`);
   const response = await fetchWalrusWithBackoff(walrusQuiltFileUrl(quiltId, 'animacraft-manifest.json'));
@@ -1187,7 +1191,7 @@ async function loadChainMakers(owner = state.walletAddress) {
     }));
     const results = await Promise.allSettled([...byId.values()].map(hydrateChainMaker));
     const failures = results.filter((result) => result.status === 'rejected');
-    if (failures.length) state.chainMakerLoadError = `${failures.length} on-chain Maker manifest${failures.length === 1 ? '' : 's'} could not be loaded from Walrus.`;
+    if (failures.length) state.chainMakerLoadError = `${failures.length} on-chain Maker${failures.length === 1 ? '' : 's'} could not be verified and loaded.`;
     else if (discoveryWarning) state.chainMakerLoadError = discoveryWarning;
     if (state.routeMakerReference) {
       const target = templates.find((template) => template.id === state.routeMakerReference || template.objectId === state.routeMakerReference);

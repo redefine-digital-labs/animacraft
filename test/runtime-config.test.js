@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_RUNTIME_CONFIG,
   SUI_MAINNET_USDC_TYPE,
+  assertSupportedMakerPaymentCoin,
   normalizeRuntimeConfig,
   validateRuntimeConfig,
 } from '../runtime-config.js';
@@ -37,6 +38,21 @@ test('blocks an alternate token from impersonating native USDC', () => {
   assert.equal(result.valid, false);
   assert.match(result.errors.join(' '), /Circle native Sui USDC/);
   assert.equal(SUI_MAINNET_USDC_TYPE.includes('::usdc::USDC'), true);
+});
+
+test('accepts only the configured on-chain Maker payment coin', () => {
+  assert.equal(
+    assertSupportedMakerPaymentCoin(SUI_MAINNET_USDC_TYPE, SUI_MAINNET_USDC_TYPE),
+    SUI_MAINNET_USDC_TYPE,
+  );
+  assert.throws(
+    () => assertSupportedMakerPaymentCoin('0x2::sui::SUI', SUI_MAINNET_USDC_TYPE),
+    /does not match configured native Sui USDC/,
+  );
+  assert.throws(
+    () => assertSupportedMakerPaymentCoin('', SUI_MAINNET_USDC_TYPE),
+    /invalid payment coin type/,
+  );
 });
 
 test('rejects unsafe Walrus retention and malformed featured ids', () => {
