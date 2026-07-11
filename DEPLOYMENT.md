@@ -66,7 +66,8 @@ window.ANIMACRAFT_CONFIG = {
   featuredMakers: {},
   appUrl: 'https://animacraft.soulidity.ai',
   soulidityAppUrl: 'https://www.soulidity.ai',
-  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0'
+  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  canonicalSoulMintEnabled: false
 };
 ```
 
@@ -79,6 +80,8 @@ npm run preflight:mainnet
 After the separate Soulidity package and adapter are published, set `soulidityPackageId` and run `npm run preflight:integration`.
 
 `featuredMakers` is only a curated fallback. The public gallery discovers all `OCMakerPublished` events through Sui GraphQL and hydrates each Maker from its certified Walrus manifest.
+
+Keep `canonicalSoulMintEnabled: false` during the Maker-only invited pilot. Set it to `true` only in the same reviewed release that ships the browser's atomic Animacraft-to-Soulidity PTB, verifies `mint_animacraft_in_personal_kiosk` in the configured package, and records the signed Mainnet smoke test. The strict preflight switches its expected Soulidity function when this gate changes.
 
 The sample Mysten Sui endpoints are appropriate for the five-creator pilot, but the public fullnode is rate-limited. Replace `grpcUrl` and, where available, `graphqlUrl` with monitored dedicated Mainnet infrastructure before unrestricted traffic. Animacraft keeps these as public runtime values; provider credentials must never be embedded in the browser bundle.
 

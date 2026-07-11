@@ -32,6 +32,7 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(runtime.packageId, deployment.originalPackageId);
   assert.equal(runtime.graphqlUrl, 'https://graphql.mainnet.sui.io/graphql');
   assert.equal(runtime.paymentCoinType, SUI_MAINNET_USDC_TYPE);
+  assert.equal(runtime.canonicalSoulMintEnabled, false, 'canonical mint stays gated until the reviewed adapter is deployed');
   assert.match(moveSource, new RegExp(`const VERSION: u64 = ${deployment.protocolVersion};`));
 
   for (const field of ['packageId', 'originalPackageId', 'publisherAddress', 'upgradeCapId', 'publisherObjectId', 'displayObjectId']) {

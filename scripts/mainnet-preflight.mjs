@@ -105,13 +105,20 @@ async function checkNetwork(config, validation) {
   }
 
   if (validation.soulidityReady) {
+    const soulidityMintFunction = config.canonicalSoulMintEnabled
+      ? 'mint_animacraft_in_personal_kiosk'
+      : 'mint_imported_in_personal_kiosk';
     try {
       const result = await deadline('Soulidity package', () => client.core.getMoveFunction({
         packageId: config.soulidityPackageId,
         moduleName: 'market',
-        name: 'mint_imported_in_personal_kiosk',
+        name: soulidityMintFunction,
       }));
-      record('Soulidity package', result.function?.name === 'mint_imported_in_personal_kiosk', `${config.soulidityPackageId}::market::mint_imported_in_personal_kiosk`);
+      record(
+        'Soulidity package',
+        result.function?.name === soulidityMintFunction,
+        `${config.soulidityPackageId}::market::${soulidityMintFunction}`,
+      );
     } catch (error) {
       record('Soulidity package', false, error.message);
     }

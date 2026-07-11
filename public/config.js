@@ -13,5 +13,6 @@ window.ANIMACRAFT_CONFIG = {
   featuredMakers: {},
   appUrl: 'https://animacraft.soulidity.ai',
   soulidityAppUrl: 'https://www.soulidity.ai',
-  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0'
+  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  canonicalSoulMintEnabled: false
 };
