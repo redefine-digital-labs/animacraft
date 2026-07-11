@@ -31,11 +31,17 @@ Recommended merge rule:
 
 ## Required Checks
 
-The `Repository hygiene` workflow should pass before merge. For Move protocol changes, run locally:
+The `Repository hygiene` workflow should pass before merge. Run the web tests and build locally:
 
 ```bash
-cd move/animacraft
-sui move build
+npm ci
+npm run check
+```
+
+For Move protocol changes, also run:
+
+```bash
+npm run move:test
 ```
 
 ## Repository Ownership

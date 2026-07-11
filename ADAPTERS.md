@@ -6,14 +6,14 @@ Animacraft must stay focused on OC creation. Integrations are optional adapters.
 
 Input:
 
-- `animacraft.oc.v1`
-- `animacraft.creator-template.v1`
+- `animacraft.oc-package.v1`
+- `animacraft.creator-template.v3`
 
 Responsibilities:
 
 - Convert OC note to `oc.md` or `soul.md` if Soulidity needs it.
 - Convert creator template manifest into storage metadata.
-- Upload assets to the current storage path.
+- Resolve certified assets by Walrus Quilt Blob ID and identifier.
 - Mint Soul through Soulidity contracts.
 - Optional listing through Soulidity market.
 

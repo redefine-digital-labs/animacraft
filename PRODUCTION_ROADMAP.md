@@ -5,11 +5,13 @@ Animacraft should become a fully on-chain character maker and creator platform:
 - creators publish OC makers
 - users create finished OCs from makers
 - assets live on Walrus
-- ownership, licenses, recipes, and creator revenue logic live on Sui
+- ownership, licenses, recipes, and creator royalty policy live on Sui
 - the frontend is static and deployable on Vercel
 - no backend signer or private database is required for core actions
 
 ## Phase 1: Static Production Shell
+
+Status: implemented; Vercel production-domain promotion remains a deployment action.
 
 Goal: make the app deployable and understandable for early creator onboarding.
 
@@ -27,6 +29,8 @@ Done when:
 
 ## Phase 2: Sui + Walrus Write Path
 
+Status: implemented and locally tested; waiting for package publication and signed Mainnet smoke tests.
+
 Goal: replace local JSON export with wallet-signed on-chain writes.
 
 Creator path:
@@ -34,11 +38,15 @@ Creator path:
 1. Connect Sui wallet.
 2. Create or load `CreatorProfile`.
 3. Upload PNG layers, icons, cover sheets, and manifest JSON to Walrus.
-4. Call Animacraft Move package:
-   - `create_oc_maker`
+4. Call Animacraft Move package in one PTB:
+   - `new_oc_maker`
    - `add_part`
+   - `add_color`
    - `add_item`
+   - `add_selection_rule`
+   - `add_palette_link`
    - `publish_maker`
+   - `share_published_maker`
 5. Store maker object id in browser state and URL.
 
 Player path:
@@ -48,7 +56,7 @@ Player path:
 3. Compose OC locally in browser.
 4. Upload rendered OC image and profile JSON to Walrus.
 5. Call `mint_oc_character`.
-6. Open `/oc/:id`.
+6. Open the wallet-owned result in My OCs and verify its public Sui object and Walrus files.
 
 Done when:
 
@@ -56,6 +64,8 @@ Done when:
 - A real user can mint one OC from that maker.
 
 ## Phase 3: Event-Based Indexing Without a Backend
+
+Status: implemented with Sui GraphQL publication events, object reads, and Walrus manifest hydration.
 
 Goal: keep the core product backendless while making discovery useful.
 

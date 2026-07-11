@@ -1,57 +1,86 @@
 # Animacraft Product Boundary
 
-## One-Line Positioning
+## Positioning
 
-Animacraft is a standalone creator tool for making OC templates and remixable character packages.
+**Animacraft is The Fully onchain Character Maker & Creator.**
 
-## What Studio Does
+It serves two linked roles:
 
-- Template plaza
-- Template detail
-- 2D avatar / OC composition
-- Layer slot and part selection
-- Creator asset intake
-- Creator onboarding
-- Artist revenue and authorization metadata
-- Works preview
-- Artist handoff manifest
-- OC profile editing
-- Standard package export
+- **Maker creators:** artists package reusable Parts, Items, Layers, Colors, rules, and usage policy.
+- **OC makers:** users choose a published Maker, combine its options, and own the resulting OC record.
 
-## What Studio Does Not Own
+## Public Without a Wallet
 
-- Sui wallet connection
-- Soulidity mint transaction
-- Walrus / Seal upload
-- Market listing
-- Paid access
-- SoulGrant issuance
-- Agent persona runtime
-- Game runtime logic
+- Template Plaza and search/filter
+- Published Maker covers, creators, structure counts, and policy labels
+- Docs and creator workflow
+- Visible Sui/Walrus runtime health
 
-Those are downstream adapter responsibilities.
+## Wallet-Owned Actions
 
-## Recommended Product Architecture
+- My OCs
+- Local creator drafts and source assets
+- Maker Walrus storage and Sui publication
+- Maker archive/restore
+- OC Walrus storage and Sui mint
+
+The wallet is the account. There is no separate Animacraft password or backend session.
+
+## What Animacraft Owns
+
+- Character Maker editor and player
+- Part -> Item -> Layer x Color asset model
+- Draft persistence and upload recovery
+- Public Maker discovery and manifest hydration
+- CreatorProfile, OCMaker, LicensePolicy, RecipeSlot, and OCCharacter Move objects
+- Walrus quilts for Maker and OC files
+- Required Part, registered Color, published order, selection-rule, palette-rule, and BCS recipe-hash enforcement
+- Immutable creator license notes carried by the Maker manifest and finished OC package
+- Immutable publication, archive/restore, provenance, ownership, and policy snapshots
+- Versioned Maker manifest and OC package export
+
+## What Animacraft Does Not Yet Own
+
+- Template or premium-Part payment collection
+- Marketplace/Kiosk listing and resale
+- Royalty or platform-fee settlement
+- Fiat creator onboarding
+- Moderation adjudication backend
+- Agent memory/persona runtime
+- Game runtime and animation logic
+- Soulidity identity, grants, collections, or broader market rules
+
+Those capabilities may integrate later through explicit adapters. They must not appear as active controls before their contracts and user flows exist.
+
+## Product Architecture
 
 ```text
-Animacraft
-  ├─ OC Package
-  ├─ Creator Template Manifest
-  ├─ Recipe JSON
-  └─ Rendered cover
+Animacraft web app
+  |- Public Template Plaza
+  |- Wallet-owned Creator Studio
+  |- Character Maker player
+  `- My OCs
 
-Adapters
-  ├─ Soulidity Protocol Adapter
-  ├─ OKX Campaign Adapter
-  └─ Game Character Adapter
+Sui Mainnet
+  |- CreatorProfile
+  |- shared OCMaker
+  `- owned OCCharacter
+
+Walrus Mainnet
+  |- Maker source quilt + manifest
+  `- finished OC image + profile quilt
+
+Optional adapters
+  |- Soulidity
+  |- marketplace / Kiosk
+  |- games
+  `- campaigns and other wallets
 ```
 
-## MVP Acceptance
+## Pilot Acceptance
 
-- A user can choose an artist template.
-- A user can inspect template detail, works preview, license, and revenue rules.
-- A user can compose an OC visually.
-- A creator can import layer PNG metadata and export a manifest.
-- A creator can follow onboarding and asset pack rules.
-- Studio can export a self-contained OC package without Soulidity login.
-- Soulidity or another app can later import the package.
+- A disconnected visitor can discover real published Makers.
+- An invited creator can build, reload, preview, validate, recover, publish, archive, and restore a Maker without application support.
+- A second wallet can use the shared Maker, obey its rules, store a final OC, mint it, and find it in My OCs.
+- Published content cannot be silently changed or locally deleted.
+- Every policy and revenue statement distinguishes recorded metadata from active economic settlement.
