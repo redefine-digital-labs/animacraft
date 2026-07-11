@@ -26,7 +26,7 @@ The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio
 - Move verifies registered recipe Colors, published Part order, selection/palette rules, and SHA-256 over canonical BCS recipe bytes.
 - My Souls sends users to Soulidity, which owns the canonical finished-character collection.
 - Vercel rewrites, CSP including Walrus WASM support, non-cached runtime config, and baseline security headers.
-- Pull requests run config preflight, 33 web/config integrity tests, syntax checks, and a production build; the local Move suite currently passes 25 tests.
+- Pull requests run config preflight, the web/config integrity suite, syntax checks, and a production build; Move protocol changes also run the contract suite.
 
 ## Manual Mainnet Activation
 

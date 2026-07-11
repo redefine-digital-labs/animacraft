@@ -35,7 +35,7 @@ npm run move:test
 npm run dev
 ```
 
-`npm run check` runs config preflight, JavaScript syntax checks, 33 web/config integrity tests, and the Vite production build. `npm run move:test` currently runs 25 contract tests. Both suites pin the same canonical BCS recipe bytes and SHA-256 fixture.
+`npm run check` runs config preflight, JavaScript syntax checks, the web/config integrity suite, and the Vite production build. `npm run move:test` runs the Move contract suite. Both suites pin the same canonical BCS recipe bytes and SHA-256 fixture.
 
 ## Runtime Configuration
 
