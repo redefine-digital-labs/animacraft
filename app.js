@@ -101,6 +101,42 @@ const parts = {
 
 const templates = [
   {
+    id: 'astral-courier',
+    source: 'creator-pack',
+    manifestUrl: '/makers/astral-courier/animacraft-manifest.json',
+    name: 'Astral Courier · 星夜信使',
+    category: 'daily',
+    creator: 'Animacraft Atelier',
+    style: 'Japanese cel-shaded celestial portrait',
+    license: 'Personal use',
+    royaltyBps: 300,
+    price: 'Free creator pack',
+    accent: '#6f63ff',
+    secondary: '#43d7e8',
+    summary: 'A premium cel-shaded celestial courier maker with four skin tones, hairstyles, expressions, outfits, backgrounds, and five accessories.',
+    licenseNote: 'Free personal Soul mint and avatar use with Maker provenance retained. Commercial use and resale rights follow the published on-chain policy. AI-assisted original art is disclosed in the creator pack.',
+    coverUrl: '/makers/astral-courier/cover.png',
+    mintingEnabled: true,
+  },
+  {
+    id: 'hanamori-spirit',
+    source: 'creator-pack',
+    manifestUrl: '/makers/hanamori-spirit/animacraft-manifest.json',
+    name: 'Hanamori Spirit · 花守灵契',
+    category: 'fantasy',
+    creator: 'Animacraft Atelier',
+    style: 'Japanese cel-shaded spirit-garden portrait',
+    license: 'Personal use',
+    royaltyBps: 300,
+    price: 'Free creator pack',
+    accent: '#d94f45',
+    secondary: '#4caa83',
+    summary: 'A refined cel-shaded spirit-garden maker with four skin tones, hairstyles, expressions, ceremonial fantasy outfits, backgrounds, and five ornaments.',
+    licenseNote: 'Free personal Soul mint and avatar use with Maker provenance retained. Commercial use and resale rights follow the published on-chain policy. AI-assisted original art is disclosed in the creator pack.',
+    coverUrl: '/makers/hanamori-spirit/cover.png',
+    mintingEnabled: true,
+  },
+  {
     id: 'daily-starlit',
     source: 'starter',
     name: 'Starlit Daily OC',
@@ -218,6 +254,7 @@ const i18n = {
     assetQuilts: 'asset quilts',
     sourceOnchain: 'On-chain Maker',
     sourceStarter: 'Starter example',
+    sourceCreatorPack: 'Creator pack',
     partsLabel: 'Parts',
     itemsLabel: 'Items',
     royaltyPolicy: 'royalty policy',
@@ -286,6 +323,7 @@ const i18n = {
     assetQuilts: '素材 Quilt',
     sourceOnchain: '链上模板',
     sourceStarter: '示例模板',
+    sourceCreatorPack: '创作者模板',
     partsLabel: '部件',
     itemsLabel: '选项',
     royaltyPolicy: '版税政策',
@@ -354,6 +392,7 @@ const i18n = {
     assetQuilts: 'アセット Quilt',
     sourceOnchain: 'オンチェーンメーカー',
     sourceStarter: 'スターター例',
+    sourceCreatorPack: 'クリエイターパック',
     partsLabel: 'パーツ',
     itemsLabel: 'アイテム',
     royaltyPolicy: 'ロイヤリティ方針',
@@ -422,6 +461,7 @@ const i18n = {
     assetQuilts: '에셋 Quilt',
     sourceOnchain: '온체인 메이커',
     sourceStarter: '스타터 예시',
+    sourceCreatorPack: '크리에이터 팩',
     partsLabel: '파트',
     itemsLabel: '아이템',
     royaltyPolicy: '로열티 정책',
@@ -490,6 +530,7 @@ const i18n = {
     assetQuilts: 'Quilt tài nguyên',
     sourceOnchain: 'Maker on-chain',
     sourceStarter: 'Ví dụ khởi đầu',
+    sourceCreatorPack: 'Gói nhà sáng tạo',
     partsLabel: 'Part',
     itemsLabel: 'Item',
     royaltyPolicy: 'chính sách royalty',
@@ -983,7 +1024,7 @@ async function fetchWalrusWithBackoff(url, options = {}, attempts = 4) {
   throw lastError || new Error('Walrus did not return a readable response.');
 }
 
-function makerModelFromManifest(manifest, quiltId, object) {
+function makerModelFromManifest(manifest, resolveAssetUrl, object = {}) {
   const savedParts = Array.isArray(manifest?.parts) ? manifest.parts : [];
   const visual = defaultMakerVisual();
   const modelParts = {};
@@ -1008,7 +1049,7 @@ function makerModelFromManifest(manifest, quiltId, object) {
       label: part.label || part.key,
       icon: String(part.label || part.key).slice(0, 2).toUpperCase(),
       colorKey,
-      description: 'Published Animacraft Part',
+      description: 'Animacraft Maker Part',
       kind: part.kind || 'standard',
       menuVisible: part.menuVisible !== false,
       allowRemove: part.allowRemove !== false,
@@ -1020,7 +1061,7 @@ function makerModelFromManifest(manifest, quiltId, object) {
       colors,
       iconAsset: part.iconIdentifier ? {
         identifier: part.iconIdentifier,
-        url: walrusQuiltFileUrl(quiltId, part.iconIdentifier),
+        url: resolveAssetUrl(part.iconIdentifier),
         remote: true,
       } : null,
     };
@@ -1030,7 +1071,7 @@ function makerModelFromManifest(manifest, quiltId, object) {
         if (!image.identifier) return;
         images[assetCellKey(image.layerId, image.colorId)] = {
           identifier: image.identifier,
-          url: walrusQuiltFileUrl(quiltId, image.identifier),
+          url: resolveAssetUrl(image.identifier),
           remote: true,
         };
       });
@@ -1042,7 +1083,7 @@ function makerModelFromManifest(manifest, quiltId, object) {
         images,
         iconAsset: item.iconIdentifier ? {
           identifier: item.iconIdentifier,
-          url: walrusQuiltFileUrl(quiltId, item.iconIdentifier),
+          url: resolveAssetUrl(item.iconIdentifier),
           remote: true,
         } : null,
       };
@@ -1071,16 +1112,68 @@ function makerModelFromManifest(manifest, quiltId, object) {
     livingContent: normalizeLivingContent(manifest?.livingContent, manifest?.template),
     assets: (manifest?.assets || []).filter((asset) => asset.identifier).map((asset) => ({
       ...asset,
-      url: walrusQuiltFileUrl(quiltId, asset.identifier),
+      url: resolveAssetUrl(asset.identifier),
       remote: true,
     })),
-    publishDigest: object.previousTransaction || 'on-chain',
+    publishDigest: object.previousTransaction || '',
     publishStatus: '',
-    makerObjectId: object.objectId,
+    makerObjectId: object.objectId || '',
     makerTreasuryObjectId: object.treasuryId || suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
     makerAdminCapObjectId: object.adminCapId || '',
     makerArchived: [true, 'true', 1, '1'].includes(suiField(fields, 'archived')),
   };
+}
+
+let bundledMakersLoaded = false;
+
+function bundledAssetUrl(makerId, identifier) {
+  const segments = String(identifier || '').split('/').filter(Boolean);
+  if (!segments.length || segments.some((segment) => segment === '.' || segment === '..' || !/^[a-zA-Z0-9._-]+$/.test(segment))) {
+    throw new Error('Bundled Maker contains an unsafe asset identifier.');
+  }
+  const safePath = segments.map(encodeURIComponent).join('/');
+  return `/makers/${encodeURIComponent(makerId)}/${safePath}`;
+}
+
+async function loadBundledMakers() {
+  if (bundledMakersLoaded) return;
+  bundledMakersLoaded = true;
+  const creatorPacks = templates.filter((template) => template.source === 'creator-pack');
+  const results = await Promise.allSettled(creatorPacks.map(async (template) => {
+    const response = await fetch(template.manifestUrl, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`${template.name} manifest returned ${response.status}.`);
+    const manifest = await response.json();
+    validateMakerManifest(manifest);
+    const model = makerModelFromManifest(manifest, (identifier) => bundledAssetUrl(template.id, identifier));
+    makerModels.set(template.id, model);
+    Object.assign(template, {
+      name: manifest.template.name,
+      creator: manifest.template.creator,
+      style: manifest.template.style,
+      summary: manifest.template.summary,
+      license: makerLicenseLabel({ licenseKind: ['personal-use', 'free-remix', 'paid-commercial', 'exclusive-commission'].indexOf(manifest.template.license) }),
+      licenseNote: manifest.template.licenseNote,
+      royaltyBps: Number(manifest.template.royaltyBps || 0),
+      mintingEnabled: manifest.template.mintingEnabled !== false,
+    });
+    if (state.templateId === template.id) applyMakerModelToState(template.id, model);
+    return template.id;
+  }));
+  results.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      creatorPacks[index].loadError = result.reason?.message || 'Bundled Maker could not be loaded.';
+      console.error('Bundled Maker load failed', result.reason);
+    }
+  });
+  bundledMakersLoaded = results.every((result) => result.status === 'fulfilled');
+  const routed = templates.find((template) => template.id === state.routeMakerReference && makerModels.has(template.id));
+  if (routed) {
+    state.routeMakerReference = '';
+    activateMakerModel(routed.id);
+    syncTemplateFields();
+    setPage('template');
+  }
+  renderAll();
 }
 
 async function hydrateChainMaker(object) {
@@ -1135,7 +1228,7 @@ async function hydrateChainMaker(object) {
     ),
   });
   if (!templates.includes(template)) templates.unshift(template);
-  const model = makerModelFromManifest(manifest, quiltId, object);
+  const model = makerModelFromManifest(manifest, (identifier) => walrusQuiltFileUrl(quiltId, identifier), object);
   makerModels.set(id, model);
   if (state.templateId === id) applyMakerModelToState(id, model);
 }
@@ -1898,6 +1991,12 @@ function filteredTemplates() {
   });
 }
 
+function templateSourceLabel(template) {
+  if (template.source === 'chain') return t('sourceOnchain');
+  if (template.source === 'creator-pack') return t('sourceCreatorPack');
+  return t('sourceStarter');
+}
+
 function templateModelMetrics(template) {
   const model = makerModels.get(template.id);
   return {
@@ -1909,6 +2008,7 @@ function templateModelMetrics(template) {
 }
 
 function setPage(page) {
+  const previousPage = state.page;
   const requestedPage = page === 'editor' ? 'make' : page === 'protocol' ? 'docs' : page;
   state.page = !state.walletConnected && !['templates', 'template', 'docs'].includes(requestedPage) ? 'templates' : requestedPage;
   if (state.page === 'make') {
@@ -1925,6 +2025,7 @@ function setPage(page) {
   const onDeepLink = /^\/(maker|oc)\//.test(location.pathname);
   history.replaceState(null, '', onDeepLink && state.page !== 'template' ? `/#${state.page}` : `#${state.page}`);
   closeAccountPanel();
+  if (state.page !== previousPage) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   if (state.page === 'make') setTimeout(() => restoreOcUploadRecovery(state.templateId), 0);
   if (state.page === 'collection') setTimeout(() => loadOwnedCharacters(), 0);
 }
@@ -1997,7 +2098,7 @@ function renderTemplates() {
   if ($('publicMakerCount')) $('publicMakerCount').textContent = String(publicMakerCount);
   $('templateGrid').innerHTML = list.length ? list.map((template) => {
     const metrics = templateModelMetrics(template);
-    const sourceLabel = template.source === 'chain' ? t('sourceOnchain') : t('sourceStarter');
+    const sourceLabel = templateSourceLabel(template);
     return `
     <article class="template-card ${template.id === state.templateId ? 'active' : ''}" data-template="${escapeHtml(template.id)}">
       <div class="template-cover" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
@@ -2087,7 +2188,9 @@ function renderTemplateDetail() {
   const model = makerModels.get(template.id);
   const metrics = templateModelMetrics(template);
   const archived = Boolean(model?.makerArchived);
-  const manifestUrl = template.quiltId ? walrusQuiltFileUrl(template.quiltId, 'animacraft-manifest.json') : '';
+  const manifestUrl = template.quiltId
+    ? walrusQuiltFileUrl(template.quiltId, 'animacraft-manifest.json')
+    : template.manifestUrl || '';
   const partLabels = (model?.slots || slots).slice(0, 12).map((slot) => slot.label);
   $('templateDetail').innerHTML = `
     <div class="template-detail-media" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
@@ -2100,7 +2203,7 @@ function renderTemplateDetail() {
     </div>
     <div class="template-detail-copy">
       <div class="badge-row">
-        <span>${template.source === 'chain' ? t('sourceOnchain') : t('sourceStarter')}</span>
+        <span>${templateSourceLabel(template)}</span>
         <span>${escapeHtml(template.license)}</span>
         ${archived ? '<span>Archived</span>' : ''}
       </div>
@@ -2119,7 +2222,7 @@ function renderTemplateDetail() {
       </div>
       <div class="template-detail-links">
         ${template.objectId ? `<a href="${escapeHtml(explorerObjectUrl(template.objectId))}" target="_blank" rel="noreferrer">View Sui Maker</a>` : ''}
-        ${manifestUrl ? `<a href="${escapeHtml(manifestUrl)}" target="_blank" rel="noreferrer">Open Walrus manifest</a>` : ''}
+        ${manifestUrl ? `<a href="${escapeHtml(manifestUrl)}" target="_blank" rel="noreferrer">${template.quiltId ? 'Open Walrus manifest' : 'Open Maker manifest'}</a>` : ''}
       </div>
     </div>
   `;
@@ -5038,6 +5141,7 @@ $('refreshOwnedCharacters')?.addEventListener('click', () => {
 $('refreshMakers')?.addEventListener('click', () => {
   state.chainMakersLoadedFor = '';
   state.chainMakerLoadError = '';
+  loadBundledMakers();
   loadChainMakers(state.walletAddress);
 });
 
@@ -5310,4 +5414,5 @@ initializeChain(runtimeConfig, (connection) => {
 syncTemplateFields();
 renderAll();
 setPage(initialPage);
+loadBundledMakers();
 loadChainMakers();

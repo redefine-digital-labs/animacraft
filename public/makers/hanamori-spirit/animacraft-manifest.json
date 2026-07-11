@@ -1,0 +1,942 @@
+{
+  "schemaVersion": "animacraft.creator-template.v3",
+  "template": {
+    "id": "hanamori-spirit",
+    "name": "Hanamori Spirit · 花守灵契",
+    "summary": "A refined cel-shaded spirit-garden maker with four skin tones, hairstyles, expressions, ceremonial fantasy outfits, backgrounds, and five ornaments.",
+    "creator": "Animacraft Atelier",
+    "style": "Japanese cel-shaded spirit-garden portrait",
+    "license": "personal-use",
+    "licenseNote": "Free personal Soul mint and avatar use with Maker provenance retained. Commercial use and resale rights follow the published on-chain policy. AI-assisted original art is disclosed in the creator pack.",
+    "royaltyBps": 300,
+    "mintingEnabled": true,
+    "mintFeeEnabled": false,
+    "mintPriceAtomic": 0,
+    "paymentCoinSymbol": "USDC",
+    "storage": "walrus",
+    "chain": "sui",
+    "coverIdentifier": "cover.png",
+    "canvas": {
+      "width": 1024,
+      "height": 1024,
+      "anchorX": 512,
+      "anchorY": 512
+    }
+  },
+  "runtime": {
+    "network": "mainnet",
+    "assetAddressing": "bundled-path-before-publication; walrus-quilt-id+identifier-after-publication",
+    "manifestIdentifier": "animacraft-manifest.json"
+  },
+  "parts": [
+    {
+      "key": "background",
+      "label": "Background",
+      "kind": "last-bastion",
+      "menuVisible": true,
+      "allowRemove": false,
+      "defaultItemId": "spring-gate",
+      "iconIdentifier": "",
+      "layers": [
+        {
+          "id": "normal",
+          "name": "Background",
+          "renderOrder": 0,
+          "x": 0,
+          "y": 0,
+          "opacity": 100,
+          "blendMode": "normal"
+        }
+      ],
+      "colors": [
+        {
+          "id": "original",
+          "name": "Original",
+          "value": "#7b5cff"
+        }
+      ],
+      "items": [
+        {
+          "id": "spring-gate",
+          "label": "Spring Gate",
+          "displayOrder": 1,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/background/spring-gate.png"
+            }
+          ]
+        },
+        {
+          "id": "paper-garden",
+          "label": "Paper Garden",
+          "displayOrder": 2,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/background/paper-garden.png"
+            }
+          ]
+        },
+        {
+          "id": "lantern-dusk",
+          "label": "Lantern Dusk",
+          "displayOrder": 3,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/background/lantern-dusk.png"
+            }
+          ]
+        },
+        {
+          "id": "jade-moon",
+          "label": "Jade Moon",
+          "displayOrder": 4,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/background/jade-moon.png"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "base",
+      "label": "Skin & Base",
+      "kind": "last-bastion",
+      "menuVisible": true,
+      "allowRemove": false,
+      "defaultItemId": "porcelain-peach",
+      "iconIdentifier": "",
+      "layers": [
+        {
+          "id": "normal",
+          "name": "Skin & Base",
+          "renderOrder": 1,
+          "x": 0,
+          "y": 0,
+          "opacity": 100,
+          "blendMode": "normal"
+        }
+      ],
+      "colors": [
+        {
+          "id": "original",
+          "name": "Original",
+          "value": "#7b5cff"
+        }
+      ],
+      "items": [
+        {
+          "id": "porcelain-peach",
+          "label": "Porcelain Peach",
+          "displayOrder": 1,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/base/porcelain-peach.png"
+            }
+          ]
+        },
+        {
+          "id": "warm-beige",
+          "label": "Warm Beige",
+          "displayOrder": 2,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/base/warm-beige.png"
+            }
+          ]
+        },
+        {
+          "id": "honey-tan",
+          "label": "Honey Tan",
+          "displayOrder": 3,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/base/honey-tan.png"
+            }
+          ]
+        },
+        {
+          "id": "deep-umber",
+          "label": "Deep Umber",
+          "displayOrder": 4,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/base/deep-umber.png"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "outfit",
+      "label": "Outfit",
+      "kind": "standard",
+      "menuVisible": true,
+      "allowRemove": true,
+      "defaultItemId": "vermilion-keeper",
+      "iconIdentifier": "",
+      "layers": [
+        {
+          "id": "normal",
+          "name": "Outfit",
+          "renderOrder": 2,
+          "x": 0,
+          "y": 0,
+          "opacity": 100,
+          "blendMode": "normal"
+        }
+      ],
+      "colors": [
+        {
+          "id": "original",
+          "name": "Original",
+          "value": "#7b5cff"
+        }
+      ],
+      "items": [
+        {
+          "id": "vermilion-keeper",
+          "label": "Vermilion Keeper",
+          "displayOrder": 1,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/outfit/vermilion-keeper.png"
+            }
+          ]
+        },
+        {
+          "id": "forest-haori",
+          "label": "Forest Haori",
+          "displayOrder": 2,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/outfit/forest-haori.png"
+            }
+          ]
+        },
+        {
+          "id": "plum-festival",
+          "label": "Plum Festival",
+          "displayOrder": 3,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/outfit/plum-festival.png"
+            }
+          ]
+        },
+        {
+          "id": "indigo-mantle",
+          "label": "Indigo Mantle",
+          "displayOrder": 4,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/outfit/indigo-mantle.png"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "expression",
+      "label": "Expression",
+      "kind": "standard",
+      "menuVisible": true,
+      "allowRemove": true,
+      "defaultItemId": "serene-jade",
+      "iconIdentifier": "",
+      "layers": [
+        {
+          "id": "normal",
+          "name": "Expression",
+          "renderOrder": 3,
+          "x": 0,
+          "y": 0,
+          "opacity": 100,
+          "blendMode": "normal"
+        }
+      ],
+      "colors": [
+        {
+          "id": "original",
+          "name": "Original",
+          "value": "#7b5cff"
+        }
+      ],
+      "items": [
+        {
+          "id": "serene-jade",
+          "label": "Serene Jade",
+          "displayOrder": 1,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/expression/serene-jade.png"
+            }
+          ]
+        },
+        {
+          "id": "bright-plum",
+          "label": "Bright Plum",
+          "displayOrder": 2,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/expression/bright-plum.png"
+            }
+          ]
+        },
+        {
+          "id": "dreamy-amber",
+          "label": "Dreamy Amber",
+          "displayOrder": 3,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/expression/dreamy-amber.png"
+            }
+          ]
+        },
+        {
+          "id": "focused-teal",
+          "label": "Focused Teal",
+          "displayOrder": 4,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/expression/focused-teal.png"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "hair",
+      "label": "Hair",
+      "kind": "standard",
+      "menuVisible": true,
+      "allowRemove": true,
+      "defaultItemId": "chestnut-tufts",
+      "iconIdentifier": "",
+      "layers": [
+        {
+          "id": "normal",
+          "name": "Hair",
+          "renderOrder": 4,
+          "x": 0,
+          "y": 0,
+          "opacity": 100,
+          "blendMode": "normal"
+        }
+      ],
+      "colors": [
+        {
+          "id": "original",
+          "name": "Original",
+          "value": "#7b5cff"
+        }
+      ],
+      "items": [
+        {
+          "id": "chestnut-tufts",
+          "label": "Chestnut Spirit Tufts",
+          "displayOrder": 1,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/hair/chestnut-tufts.png"
+            }
+          ]
+        },
+        {
+          "id": "black-vermilion",
+          "label": "Black Vermilion",
+          "displayOrder": 2,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/hair/black-vermilion.png"
+            }
+          ]
+        },
+        {
+          "id": "cream-hime",
+          "label": "Cream Hime Bob",
+          "displayOrder": 3,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/hair/cream-hime.png"
+            }
+          ]
+        },
+        {
+          "id": "auburn-ponytail",
+          "label": "Auburn Ponytail",
+          "displayOrder": 4,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/hair/auburn-ponytail.png"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "accessory",
+      "label": "Accessory",
+      "kind": "standard",
+      "menuVisible": true,
+      "allowRemove": false,
+      "defaultItemId": "none",
+      "iconIdentifier": "",
+      "layers": [
+        {
+          "id": "normal",
+          "name": "Accessory",
+          "renderOrder": 5,
+          "x": 0,
+          "y": 0,
+          "opacity": 100,
+          "blendMode": "normal"
+        }
+      ],
+      "colors": [
+        {
+          "id": "original",
+          "name": "Original",
+          "value": "#7b5cff"
+        }
+      ],
+      "items": [
+        {
+          "id": "none",
+          "label": "None",
+          "displayOrder": 1,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/accessory/none.png"
+            }
+          ]
+        },
+        {
+          "id": "plum-blossom",
+          "label": "Plum Blossom",
+          "displayOrder": 2,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/accessory/plum-blossom.png"
+            }
+          ]
+        },
+        {
+          "id": "jade-forehead-chain",
+          "label": "Jade Forehead Chain",
+          "displayOrder": 3,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/accessory/jade-forehead-chain.png"
+            }
+          ]
+        },
+        {
+          "id": "tassel-earrings",
+          "label": "Tassel Earrings",
+          "displayOrder": 4,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/accessory/tassel-earrings.png"
+            }
+          ]
+        },
+        {
+          "id": "magatama-pendant",
+          "label": "Jade Spirit Pendant",
+          "displayOrder": 5,
+          "visibility": "public",
+          "iconIdentifier": "",
+          "images": [
+            {
+              "layerId": "normal",
+              "colorId": "original",
+              "identifier": "layers/accessory/magatama-pendant.png"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "rules": [],
+  "paletteLinks": [],
+  "livingContent": {
+    "schemaVersion": "animacraft.living-content.v1",
+    "soulMd": "# Soul Character\n\n## Identity\n- Name: {{OC_NAME}}\n- World: {{OC_WORLD}}\n- Visual origin: Hanamori Spirit · 花守灵契 by Animacraft Atelier\n- Character summary: {{OC_DESCRIPTION}}\n\n## Core Truths\n- Grow from an original character into a continuous, owner-directed companion.\n- Preserve consent, authorship, and the selected visual recipe.\n- Distinguish memories from creative interpretation.\n\n## Vibe\n- Voice: graceful, vivid, concise first, and emotionally attentive.\n- Style: Japanese cel-shaded spirit-garden portrait.\n\n## Boundaries\n- Never invent permissions, private history, or tool access.\n- Ask before consequential actions or disclosure of protected information.\n",
+    "memoryMd": "# Founding Memory\n\n{{OC_NAME}} began as an original composition in Hanamori Spirit · 花守灵契.\n\n- Preserve the Maker provenance and selected visual recipe.\n- Treat {{OC_DESCRIPTION}} as the opening direction, not fabricated history.\n- Learn only from content the owner intentionally adds.\n",
+    "skillMd": "---\nname: hanamori-spirit-companion\ndescription: Keeps this character's voice, visual provenance, and owner-approved context aligned.\n---\n# Character Companion\n\nUse this skill when the Soul needs to speak or act consistently with {{OC_NAME}}.\n\n- Keep verified facts, remembered context, and creative interpretation distinct.\n- Preserve the Maker and recipe provenance.\n- Ask for permission before consequential actions.\n",
+    "customized": {
+      "soulMd": true,
+      "memoryMd": true,
+      "skillMd": true
+    }
+  },
+  "assets": [
+    {
+      "name": "spring-gate.png",
+      "size": 299997,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "background",
+      "partId": "spring-gate",
+      "itemId": "spring-gate",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/background/spring-gate.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "paper-garden.png",
+      "size": 300251,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "background",
+      "partId": "paper-garden",
+      "itemId": "paper-garden",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/background/paper-garden.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "lantern-dusk.png",
+      "size": 398677,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "background",
+      "partId": "lantern-dusk",
+      "itemId": "lantern-dusk",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/background/lantern-dusk.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "jade-moon.png",
+      "size": 394567,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "background",
+      "partId": "jade-moon",
+      "itemId": "jade-moon",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/background/jade-moon.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "porcelain-peach.png",
+      "size": 385133,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "base",
+      "partId": "porcelain-peach",
+      "itemId": "porcelain-peach",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/base/porcelain-peach.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "warm-beige.png",
+      "size": 403041,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "base",
+      "partId": "warm-beige",
+      "itemId": "warm-beige",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/base/warm-beige.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "honey-tan.png",
+      "size": 410596,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "base",
+      "partId": "honey-tan",
+      "itemId": "honey-tan",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/base/honey-tan.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "deep-umber.png",
+      "size": 429906,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "base",
+      "partId": "deep-umber",
+      "itemId": "deep-umber",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/base/deep-umber.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "vermilion-keeper.png",
+      "size": 551398,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "outfit",
+      "partId": "vermilion-keeper",
+      "itemId": "vermilion-keeper",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/outfit/vermilion-keeper.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "forest-haori.png",
+      "size": 556171,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "outfit",
+      "partId": "forest-haori",
+      "itemId": "forest-haori",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/outfit/forest-haori.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "plum-festival.png",
+      "size": 699475,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "outfit",
+      "partId": "plum-festival",
+      "itemId": "plum-festival",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/outfit/plum-festival.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "indigo-mantle.png",
+      "size": 684742,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "outfit",
+      "partId": "indigo-mantle",
+      "itemId": "indigo-mantle",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/outfit/indigo-mantle.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "serene-jade.png",
+      "size": 63695,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "expression",
+      "partId": "serene-jade",
+      "itemId": "serene-jade",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/expression/serene-jade.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "bright-plum.png",
+      "size": 64098,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "expression",
+      "partId": "bright-plum",
+      "itemId": "bright-plum",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/expression/bright-plum.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "dreamy-amber.png",
+      "size": 62905,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "expression",
+      "partId": "dreamy-amber",
+      "itemId": "dreamy-amber",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/expression/dreamy-amber.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "focused-teal.png",
+      "size": 67029,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "expression",
+      "partId": "focused-teal",
+      "itemId": "focused-teal",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/expression/focused-teal.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "chestnut-tufts.png",
+      "size": 649558,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "hair",
+      "partId": "chestnut-tufts",
+      "itemId": "chestnut-tufts",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/hair/chestnut-tufts.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "black-vermilion.png",
+      "size": 648113,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "hair",
+      "partId": "black-vermilion",
+      "itemId": "black-vermilion",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/hair/black-vermilion.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "cream-hime.png",
+      "size": 422803,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "hair",
+      "partId": "cream-hime",
+      "itemId": "cream-hime",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/hair/cream-hime.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "auburn-ponytail.png",
+      "size": 633881,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "hair",
+      "partId": "auburn-ponytail",
+      "itemId": "auburn-ponytail",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/hair/auburn-ponytail.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "none.png",
+      "size": 4144,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "accessory",
+      "partId": "none",
+      "itemId": "none",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/accessory/none.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "plum-blossom.png",
+      "size": 72099,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "accessory",
+      "partId": "plum-blossom",
+      "itemId": "plum-blossom",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/accessory/plum-blossom.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "jade-forehead-chain.png",
+      "size": 48302,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "accessory",
+      "partId": "jade-forehead-chain",
+      "itemId": "jade-forehead-chain",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/accessory/jade-forehead-chain.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "tassel-earrings.png",
+      "size": 60814,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "accessory",
+      "partId": "tassel-earrings",
+      "itemId": "tassel-earrings",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/accessory/tassel-earrings.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "magatama-pendant.png",
+      "size": 37778,
+      "type": "image/png",
+      "kind": "item-layer",
+      "slot": "accessory",
+      "partId": "magatama-pendant",
+      "itemId": "magatama-pendant",
+      "layerId": "normal",
+      "colorId": "original",
+      "identifier": "layers/accessory/magatama-pendant.png",
+      "patchId": "",
+      "blobId": ""
+    },
+    {
+      "name": "cover.png",
+      "size": 1365923,
+      "type": "image/png",
+      "kind": "maker-cover",
+      "slot": "",
+      "partId": "",
+      "itemId": "",
+      "layerId": "",
+      "colorId": "",
+      "identifier": "cover.png",
+      "patchId": "",
+      "blobId": ""
+    }
+  ],
+  "disclosure": {
+    "aiAssisted": true,
+    "modelPath": "OpenAI built-in image generation",
+    "humanCuration": "Prompt design, selection, chroma cleanup, atlas slicing, composition, metadata, and QA by Animacraft Atelier.",
+    "inspirationBoundary": "Uses the general layered maker interaction pattern; no third-party maker artwork or named character was used as an input asset."
+  }
+}

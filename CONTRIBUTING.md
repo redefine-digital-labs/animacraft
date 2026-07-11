@@ -22,7 +22,7 @@ Before requesting review:
 2. Include screenshots for frontend changes.
 3. Include contract/build notes for Move changes.
 4. Keep unrelated refactors out of the PR.
-5. Confirm no generated build output is committed.
+5. Confirm no generated build output is committed. Reviewed first-party Creator Pack runtime assets are the exception only when the same PR includes their source atlases, prompt disclosure, deterministic build path, and manifest tests.
 
 Recommended merge rule:
 

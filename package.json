@@ -13,6 +13,8 @@
     "preflight:config": "node scripts/mainnet-preflight.mjs",
     "preflight:mainnet": "node scripts/mainnet-preflight.mjs --strict --network",
     "preflight:integration": "node scripts/mainnet-preflight.mjs --strict --network --require-soulidity",
+    "makers:build": "python3 scripts/build-builtin-makers.py",
+    "makers:verify": "python3 -m py_compile scripts/chroma_key.py scripts/build-builtin-makers.py && node --test test/bundled-makers.test.js",
     "move:build": "cd move/animacraft && sui move build",
     "move:test": "cd move/animacraft && sui move test"
   },

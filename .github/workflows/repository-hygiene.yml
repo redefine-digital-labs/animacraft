@@ -27,6 +27,9 @@ jobs:
       - name: Check production build
         run: npm run check
 
+      - name: Verify bundled Creator Packs
+        run: npm run makers:verify
+
   hygiene:
     name: Repository hygiene
     runs-on: ubuntu-latest
@@ -50,6 +53,9 @@ jobs:
           test -f remote-read.js
           test -f runtime-config.js
           test -f scripts/mainnet-preflight.mjs
+          test -f scripts/build-builtin-makers.py
+          test -f scripts/chroma_key.py
+          test -f test/bundled-makers.test.js
           test -f test/manifest-validation.test.js
           test -f test/living-content.test.js
           test -f test/recipe-hash.test.js
