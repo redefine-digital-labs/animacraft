@@ -16,7 +16,7 @@ Status: implemented; Vercel production-domain promotion remains a deployment act
 Goal: make the app deployable and understandable for early creator onboarding.
 
 - Deploy static app to Vercel.
-- Configure domain such as `animacraft.soulidity.xyz`.
+- Configure `animacraft.soulidity.ai`.
 - Show runtime network, Sui package, Walrus endpoints, and wallet state.
 - Keep creator/editor/player flows usable without a backend.
 - Publish open-source PR workflow and CI.
@@ -29,7 +29,7 @@ Done when:
 
 ## Phase 2: Sui + Walrus Write Path
 
-Status: implemented and locally tested; waiting for package publication and signed Mainnet smoke tests.
+Status: package published and source-verified; waiting for a signed real-Maker Mainnet smoke test and the separately reviewed Soulidity adapter.
 
 Goal: replace local JSON export with wallet-signed on-chain writes.
 

@@ -1,4 +1,5 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
@@ -38,12 +39,8 @@
   ],
   "rewrites": [
     {
-      "source": "/maker/:id",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/creator/:path*",
-      "destination": "/index.html"
+      "source": "/(.*)",
+      "destination": "/"
     }
   ]
 }

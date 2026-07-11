@@ -84,6 +84,18 @@ Only public values belong in this file. Vercel serves `config.js` with `no-store
 
 `vercel.json` supplies SPA rewrites and browser security headers. In the Preview origin, explicitly verify that wallet discovery and Walrus WASM encoding are not blocked by CSP.
 
+After promoting the reviewed deployment, verify the live runtime configuration, security headers, and direct SPA routes against the Git checkout:
+
+```bash
+npm run preflight:production
+```
+
+For a protected Preview, pass its reachable URL directly after disabling protection for the acceptance window or using an approved Vercel access mechanism:
+
+```bash
+node scripts/production-smoke.mjs --url=https://your-preview.vercel.app
+```
+
 ## 5. Connect the Subdomain
 
 1. Add `animacraft.soulidity.ai` to the Vercel project.
@@ -100,11 +112,17 @@ Use a small real Maker first:
 3. Upload aligned PNGs, save, reload, and confirm IndexedDB restores every file.
 4. Prepare, register/upload, certify, and publish the Maker. Interrupt once before certification and verify `Resume saved upload` works.
 5. Confirm the shared `OCMaker`, shared `MakerTreasury<USDC>`, and wallet-owned `MakerAdminCap` are linked and the Maker appears through event discovery.
-6. Connect a second wallet, make an OC, resume an interrupted OC upload, and complete one free mint.
-7. Enable a small USDC price with the Cap wallet, complete one paid mint, and verify the exact amount reaches the linked Treasury.
-8. Withdraw that amount with the Cap wallet and verify the recipient balance and withdrawal event.
-9. Confirm the Soulidity handoff, Living Content files, Walrus image, recipe, policy/payment snapshots, and the Move-verified SHA-256 BCS recipe hash.
-10. Archive the Maker with the Cap wallet, verify a new mint is rejected, restore it, and verify minting resumes.
+6. Archive the Maker with the Cap wallet, verify a new authorization is rejected, restore it, and verify authorization resumes.
+7. Confirm a disconnected visitor can open the new Maker through its direct `/maker/:id` URL.
+
+The Maker-only invited pilot stops here. Keep paid mint controls and canonical Soul claims disabled.
+
+After the separate Soulidity adapter has been reviewed and deployed:
+
+8. Connect a second wallet, make an OC, resume an interrupted OC upload, and complete one free canonical Soul mint in one PTB.
+9. Enable a small USDC price with the Cap wallet, complete one paid canonical Soul mint, and verify the exact amount reaches the linked Treasury.
+10. Withdraw that amount with the Cap wallet and verify the recipient balance and withdrawal event.
+11. Confirm the Soulidity handoff, Living Content files, Walrus image, recipe, policy/payment snapshots, and the Move-verified SHA-256 BCS recipe hash.
 
 Record all transaction digests and object ids in the release PR.
 
