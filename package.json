@@ -9,11 +9,10 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "node --test",
-    "check": "node --check app.js && node --check chain-runtime.js && node --check draft-store.js && node --check living-content.js && node --check manifest-validation.js && node --check recipe-hash.js && node --check remote-read.js && node --check runtime-config.js && node --check scripts/mainnet-preflight.mjs && node --check scripts/production-smoke.mjs && npm run preflight:config && npm test && npm run build",
+    "check": "node --check app.js && node --check chain-runtime.js && node --check draft-store.js && node --check living-content.js && node --check manifest-validation.js && node --check recipe-hash.js && node --check remote-read.js && node --check runtime-config.js && node --check scripts/mainnet-preflight.mjs && npm run preflight:config && npm test && npm run build",
     "preflight:config": "node scripts/mainnet-preflight.mjs",
     "preflight:mainnet": "node scripts/mainnet-preflight.mjs --strict --network",
     "preflight:integration": "node scripts/mainnet-preflight.mjs --strict --network --require-soulidity",
-    "preflight:production": "npm run preflight:integration && node scripts/production-smoke.mjs",
     "move:build": "cd move/animacraft && sui move build",
     "move:test": "cd move/animacraft && sui move test"
   },

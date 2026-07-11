@@ -87,7 +87,8 @@ Only public values belong in this file. Vercel serves `config.js` with `no-store
 After promoting the reviewed deployment, verify the live runtime configuration, security headers, and direct SPA routes against the Git checkout:
 
 ```bash
-npm run preflight:production
+npm run preflight:integration
+node scripts/production-smoke.mjs
 ```
 
 For a protected Preview, pass its reachable URL directly after disabling protection for the acceptance window or using an approved Vercel access mechanism:

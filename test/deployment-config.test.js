@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+test('production deployment smoke script parses on the supported Node runtime', () => {
+  const script = fileURLToPath(new URL('../scripts/production-smoke.mjs', import.meta.url));
+  execFileSync(process.execPath, ['--check', script], { stdio: 'pipe' });
+});
 
 test('Vercel serves every SPA deep link through the clean root route', async () => {
   const config = JSON.parse(await readFile(new URL('../vercel.json', import.meta.url), 'utf8'));

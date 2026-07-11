@@ -30,15 +30,15 @@ The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio
 
 ## Manual Mainnet Activation
 
-1. Put the published `UpgradeCap`, `Publisher`, and `Display<OCMaker>` into the documented protocol custody arrangement.
-2. Run `npm run preflight:mainnet` against the configured original package.
-3. Deploy a Vercel Preview and connect the intended `animacraft.soulidity.ai` subdomain.
-4. Run `npm run preflight:production` and require the live config, headers, `/maker/:id`, `/creator/:path`, and `/oc/:id` deep links to pass.
+1. Fund a dedicated publisher wallet with SUI and WAL.
+2. Run `npm run move:test`, publish `move/animacraft`, and record package, transaction, publisher, and `UpgradeCap` custody.
+3. Replace `0xTODO_ANIMACRAFT_PACKAGE` in `public/config.js` with the verified Mainnet package id and run `npm run preflight:mainnet`.
+4. Deploy a Vercel Preview and connect the intended `animacraft.soulidity.ai` subdomain.
 5. Publish one small real Maker through all four Walrus/Sui stages.
-6. Publish the reviewed Soulidity adapter pinned to the Animacraft original package ID.
+6. Publish the reviewed Soulidity adapter pinned to the Animacraft package ID.
 7. Open the Maker from a disconnected browser, connect a second wallet, complete free and paid canonical Soul mints, then withdraw the paid amount with the Cap wallet.
 8. Verify Maker/Treasury/Cap discovery, Living Content import, Soulidity collection, archive rejection, restore, and transaction links.
-9. Record the evidence in the release PR before enabling canonical Soul claims.
+9. Record the evidence in the release PR before promoting the domain.
 
 ## Invited Pilot Boundary
 
