@@ -2,7 +2,7 @@
 
 ## Release State
 
-The original Animacraft v3 package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` is live and source-verified at the recorded deployment commit. The repository now contains a **v4 upgrade candidate** that preserves existing Maker object layouts and adds non-bypassable primary protocol-fee splitting. v4 is not Mainnet-active until the UpgradeCap holder signs the upgrade and initializes the canonical Protocol Fee objects. Canonical Soul minting remains blocked until the separate Soulidity adapter is reviewed and deployed.
+Animacraft product version `0.4.0` is a pre-v1 production candidate. Product v1 is reserved for a proven ecosystem at roughly 1,000 active creators. Move protocol numbers are tracked separately: the original protocol v3 package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` is live and source-verified at the recorded deployment commit. The repository now contains a **protocol v4 upgrade candidate** that preserves existing Maker object layouts and adds non-bypassable primary protocol-fee splitting. Protocol v4 is not Mainnet-active until the UpgradeCap holder signs the upgrade and initializes the canonical Protocol Fee objects. Canonical Soul minting remains blocked until the separate Soulidity adapter is reviewed and deployed.
 
 The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio, local draft ownership, Walrus writes, publication, archive, and Soulidity handoff require a connected wallet.
 
