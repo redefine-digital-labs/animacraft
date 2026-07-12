@@ -1,5 +1,10 @@
 # Animacraft Protocol Economics v4
 
+`v4` is the internal Move protocol/ABI compatibility number. The Animacraft
+product remains pre-v1 and this candidate ships as product version `0.4.0`.
+Product v1 is reserved for a proven creator ecosystem at roughly 1,000 active
+creators, not merely a contract upgrade.
+
 ## Goal
 
 Add a transparent protocol share to paid Maker-to-Soul mints without changing the
