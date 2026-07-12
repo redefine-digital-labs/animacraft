@@ -1,6 +1,6 @@
 # Soulidity Adapter Handoff
 
-This document is the implementation contract between the independently managed Animacraft and Soulidity repositories. It describes the production adapter that still has to land in Soulidity. It is not a second minting protocol.
+This document is the implementation contract between the independently managed Animacraft and Soulidity repositories. The candidate implementation lives on the reviewed integration branches, but remains inactive until both upgrades and the Mainnet evidence run are complete. It is not a second minting protocol.
 
 ## Pinned Mainnet Identities
 

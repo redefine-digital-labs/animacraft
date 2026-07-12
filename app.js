@@ -269,6 +269,10 @@ const i18n = {
     noMatchingMakers: 'No matching Makers found.',
     myOcs: 'My Souls',
     myOcsCopy: 'Soulidity-owned characters',
+    soulidityMySouls: 'My Souls',
+    socialProfile: 'Social profile',
+    community: 'Community',
+    marketplace: 'Market',
     creatorStudio: 'Creator Studio',
     creatorStudioCopy: 'Create, test, and publish Character Makers from one wallet-owned workspace.',
     newOcMaker: 'New OC Maker',
@@ -338,6 +342,10 @@ const i18n = {
     noMatchingMakers: '没有找到匹配的模板。',
     myOcs: '我的 OC',
     myOcsCopy: '钱包拥有的角色',
+    soulidityMySouls: '我的 Soul',
+    socialProfile: '社交主页',
+    community: '社区',
+    marketplace: '市场',
     creatorStudio: '创作者工作台',
     creatorStudioCopy: '在一个钱包工作区中创建、测试并发布角色模板。',
     newOcMaker: '新建 OC 模板',
@@ -407,6 +415,10 @@ const i18n = {
     noMatchingMakers: '一致するメーカーがありません。',
     myOcs: 'マイ OC',
     myOcsCopy: 'ウォレット所有キャラクター',
+    soulidityMySouls: 'マイ Soul',
+    socialProfile: 'ソーシャルプロフィール',
+    community: 'コミュニティ',
+    marketplace: 'マーケット',
     creatorStudio: 'クリエイタースタジオ',
     creatorStudioCopy: '一つのウォレットワークスペースで Character Maker を作成、テスト、公開します。',
     newOcMaker: '新しい OC メーカー',
@@ -476,6 +488,10 @@ const i18n = {
     noMatchingMakers: '일치하는 메이커가 없습니다.',
     myOcs: '내 OC',
     myOcsCopy: '지갑 소유 캐릭터',
+    soulidityMySouls: '내 Soul',
+    socialProfile: '소셜 프로필',
+    community: '커뮤니티',
+    marketplace: '마켓',
     creatorStudio: '크리에이터 스튜디오',
     creatorStudioCopy: '하나의 지갑 작업공간에서 Character Maker를 만들고 테스트하고 게시합니다.',
     newOcMaker: '새 OC 메이커',
@@ -545,6 +561,10 @@ const i18n = {
     noMatchingMakers: 'Không tìm thấy Maker phù hợp.',
     myOcs: 'OC của tôi',
     myOcsCopy: 'Nhân vật thuộc sở hữu ví',
+    soulidityMySouls: 'Soul của tôi',
+    socialProfile: 'Hồ sơ xã hội',
+    community: 'Cộng đồng',
+    marketplace: 'Chợ giao dịch',
     creatorStudio: 'Creator Studio',
     creatorStudioCopy: 'Tạo, thử nghiệm và xuất bản Character Maker trong một không gian thuộc ví.',
     newOcMaker: 'OC Maker mới',
@@ -1317,11 +1337,19 @@ async function loadChainMakers(owner = state.walletAddress) {
 function renderOwnedCharacters() {
   if (!$('ownedCharacterGrid')) return;
   if ($('ownedCharacterStatus')) $('ownedCharacterStatus').textContent = 'Finished characters are Soulidity Souls, not duplicate Animacraft tokens.';
-  const soulidityUrl = safeExternalUrl(runtimeConfig.soulidityAppUrl) || '#';
+  const mySoulsUrl = soulidityAppLink('/my-souls');
+  const profileUrl = soulidityAppLink('/profile');
+  const communityUrl = soulidityAppLink('/community');
+  const marketUrl = soulidityAppLink('/market');
   $('ownedCharacterGrid').innerHTML = `
     <div class="empty-state">
       Your minted characters, Living Content, social identity, and marketplace activity live in Soulidity.
-      <a href="${escapeHtml(soulidityUrl)}" target="_blank" rel="noreferrer">Open Soulidity</a>
+      <div class="owned-oc-links">
+        <a href="${escapeHtml(mySoulsUrl)}" target="_blank" rel="noreferrer">My Souls</a>
+        <a href="${escapeHtml(profileUrl)}" target="_blank" rel="noreferrer">Social profile</a>
+        <a href="${escapeHtml(communityUrl)}" target="_blank" rel="noreferrer">Community</a>
+        <a href="${escapeHtml(marketUrl)}" target="_blank" rel="noreferrer">Market</a>
+      </div>
     </div>`;
 }
 
@@ -1905,6 +1933,21 @@ function safeExternalUrl(value) {
   } catch {
     return '';
   }
+}
+
+function soulidityAppLink(pathname, params = {}) {
+  const base = safeExternalUrl(runtimeConfig.soulidityAppUrl);
+  if (!base) return '#';
+  const url = new URL(base);
+  url.pathname = pathname;
+  url.hash = '';
+  url.search = '';
+  url.searchParams.set('source', 'animacraft');
+  if (state.walletConnected && state.walletAddress) url.searchParams.set('wallet', state.walletAddress);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value).trim()) url.searchParams.set(key, String(value));
+  });
+  return url.href;
 }
 
 function utf8Length(value) {
@@ -3063,7 +3106,7 @@ function mintReadiness() {
   if (!/^0x[0-9a-f]+$/i.test(String(runtimeConfig.soulidityPackageId || '')) || String(runtimeConfig.soulidityPackageId).includes('TODO')) {
     return 'Configure the Soulidity package before enabling canonical Soul minting.';
   }
-  if (activeTemplate().mintFeeEnabled) return 'Paid Maker minting waits for the audited Soulidity authorization adapter. Free Makers can use the import handoff now.';
+  if (!canonicalSoulMintEnabled) return 'Canonical Soul minting is unavailable until the reviewed Soulidity adapter release gate is enabled.';
   const issue = ocRecipeIssues()[0];
   if (issue) return issue;
   return 'Prepare and certify the OC package, then continue to Soulidity for the canonical Soul mint.';
@@ -3074,7 +3117,8 @@ function renderMintAction() {
   const mintOpen = activeTemplate()?.mintingEnabled !== false && !makerModels.get(activeTemplate()?.id)?.makerArchived;
   const treasuryReady = !activeTemplate()?.mintFeeEnabled || Boolean(activeTemplate()?.treasuryId || state.makerTreasuryObjectId);
   const soulidityReady = /^0x[0-9a-f]+$/i.test(String(runtimeConfig.soulidityPackageId || '')) && !String(runtimeConfig.soulidityPackageId).includes('TODO');
-  const baseReady = packageConfigured() && soulidityReady && activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId()) && state.walletConnected && mintOpen && treasuryReady && !activeTemplate()?.mintFeeEnabled && ocRecipeIssues().length === 0;
+  const adapterReady = canonicalSoulMintEnabled;
+  const baseReady = packageConfigured() && soulidityReady && activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId()) && state.walletConnected && mintOpen && treasuryReady && adapterReady && ocRecipeIssues().length === 0;
   const chainMakerReady = activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId());
   $('resumeOcUpload').hidden = !chainMakerReady || !state.hasOcUploadRecovery || state.ocUploadStage !== 'idle';
   $('prepareOcUpload').hidden = !chainMakerReady || state.ocUploadStage !== 'idle' || state.hasOcUploadRecovery;
@@ -3086,7 +3130,7 @@ function renderMintAction() {
   $('registerOcUpload').disabled = state.minting || !state.walletConnected || !['encoded', 'registered'].includes(state.ocUploadStage);
   $('registerOcUpload').textContent = state.ocUploadStage === 'registered' ? 'Retry upload' : 'Register & upload';
   $('certifyOcUpload').disabled = state.minting || !state.walletConnected || state.ocUploadStage !== 'uploaded';
-  $('mintOcOnchain').disabled = state.minting || !state.walletConnected || state.ocUploadStage !== 'certified';
+  $('mintOcOnchain').disabled = state.minting || !baseReady || state.ocUploadStage !== 'certified';
   $('mintOcOnchain').textContent = state.minting ? 'Preparing handoff…' : 'Continue to Soulidity';
   $('mintOcStatus').textContent = state.mintStatus || mintReadiness();
   ['profileName', 'profileWorld', 'profileDescription', 'profileTags'].forEach((id) => {
@@ -4161,6 +4205,19 @@ function renderWalletState() {
   document.querySelectorAll('.account-grid [data-page]').forEach((button) => {
     button.disabled = !state.walletConnected;
   });
+  const soulidityLinks = {
+    soulidityMySoulsLink: '/my-souls',
+    soulidityProfileLink: '/profile',
+    soulidityCommunityLink: '/community',
+    soulidityMarketLink: '/market',
+  };
+  Object.entries(soulidityLinks).forEach(([id, path]) => {
+    const link = $(id);
+    if (link) link.href = soulidityAppLink(path);
+  });
+  document.querySelectorAll('[data-soulidity-auth]').forEach((link) => {
+    link.setAttribute('aria-disabled', String(!state.walletConnected));
+  });
   if (!state.walletConnected) closeAccountPanel();
   if ($('creatorWalletGate')) $('creatorWalletGate').hidden = state.walletConnected;
   if ($('creatorConsole')) $('creatorConsole').hidden = !state.walletConnected;
@@ -4572,9 +4629,10 @@ async function certifyOcUpload() {
 async function mintCurrentOc() {
   if (state.minting || state.ocUploadStage !== 'certified') return;
   state.minting = true;
-  state.mintStatus = 'Preparing the Soulidity import package…';
+  state.mintStatus = 'Preparing the canonical Soulidity handoff…';
   renderMintAction();
   try {
+    if (!canonicalSoulMintEnabled) throw new Error('Canonical Soul minting is not activated for this release.');
     if (ocFingerprint() !== state.pendingOcFingerprint) {
       state.ocUploadSession = null;
       state.ocUploadStage = 'idle';
@@ -4583,16 +4641,18 @@ async function mintCurrentOc() {
       await clearOcUploadRecovery();
       throw new Error('The OC profile or recipe changed after upload. Prepare a new mint quilt.');
     }
-    if (activeTemplate().mintFeeEnabled) throw new Error('Paid Maker minting requires the Soulidity authorization adapter and cannot use the file handoff.');
     const oc = state.pendingOcPackage;
     const imageUrl = walrusFileUrl(state.ocImagePatchId);
     const profileUrl = walrusFileUrl(state.ocProfilePatchId);
-    const handoffUrl = new URL('/import', runtimeConfig.soulidityAppUrl);
-    handoffUrl.searchParams.set('source', 'animacraft');
-    handoffUrl.searchParams.set('maker', activeMakerObjectId());
-    handoffUrl.searchParams.set('profile', profileUrl);
-    handoffUrl.searchParams.set('image', imageUrl);
-    window.open(handoffUrl.toString(), '_blank', 'noopener,noreferrer');
+    const handoffUrl = soulidityAppLink(runtimeConfig.soulidityIntegrationPath, {
+      maker: activeMakerObjectId(),
+      profile: profileUrl,
+      image: imageUrl,
+      profileBlob: state.ocProfilePatchId,
+      imageBlob: state.ocImagePatchId,
+      recipeHash: bytesToHex(state.pendingOcRecipeHash),
+    });
+    window.open(handoffUrl, '_blank', 'noopener,noreferrer');
 
     const importJson = createSoulidityImportJson(state.livingContent, {
       maker: activeTemplate(),
@@ -4613,8 +4673,8 @@ async function mintCurrentOc() {
       importJson,
       imageBytes,
     });
-    download(`${slug(oc.profile.name)}-soulidity-import-kit.zip`, bytes, 'application/zip');
-    state.mintStatus = 'Soulidity opened and the Import Kit was downloaded. Extract it, upload 00-profile.json, then add its cover, Soul Character, Memory, and Skills files to complete the single Soul mint.';
+    download(`${slug(oc.profile.name)}-animacraft-soul-handoff.zip`, bytes, 'application/zip');
+    state.mintStatus = 'Soulidity integration opened and the recovery handoff was downloaded. The integration route creates one canonical Soul; it does not use the generic import mint.';
   } catch (error) {
     console.error('Soulidity handoff failed', error);
     state.mintStatus = error.message || 'Soulidity handoff failed.';
@@ -5169,7 +5229,15 @@ $('registerOcUpload')?.addEventListener('click', registerOcUpload);
 $('certifyOcUpload')?.addEventListener('click', certifyOcUpload);
 $('mintOcOnchain')?.addEventListener('click', mintCurrentOc);
 $('refreshOwnedCharacters')?.addEventListener('click', () => {
-  window.open(runtimeConfig.soulidityAppUrl, '_blank', 'noopener,noreferrer');
+  window.open(soulidityAppLink('/my-souls'), '_blank', 'noopener,noreferrer');
+});
+document.querySelectorAll('[data-soulidity-auth]').forEach((link) => {
+  link.addEventListener('click', (event) => {
+    if (state.walletConnected) return;
+    event.preventDefault();
+    openAccountPanel();
+    connectSuiWallet();
+  });
 });
 $('refreshMakers')?.addEventListener('click', () => {
   state.chainMakersLoadedFor = '';

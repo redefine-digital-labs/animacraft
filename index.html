@@ -65,6 +65,12 @@
         <button data-page="creator"><strong data-i18n="createMaker">Create maker</strong><span data-i18n="createMakerCopy">Publish an OC template</span></button>
         <button data-page="make"><strong data-i18n="makeOc">Make OC</strong><span data-i18n="makeOcCopy">Continue current OC</span></button>
       </div>
+      <div class="soulidity-account-actions" aria-label="Soulidity account and social links">
+        <a id="soulidityMySoulsLink" data-soulidity-auth href="#"><strong data-i18n="soulidityMySouls">My Souls</strong><span>Soulidity</span></a>
+        <a id="soulidityProfileLink" data-soulidity-auth href="#"><strong data-i18n="socialProfile">Social profile</strong><span>Soulidity</span></a>
+        <a id="soulidityCommunityLink" href="#"><strong data-i18n="community">Community</strong><span>Soulidity</span></a>
+        <a id="soulidityMarketLink" href="#"><strong data-i18n="marketplace">Market</strong><span>Soulidity</span></a>
+      </div>
       <div class="public-account-actions">
         <button data-page="templates"><strong data-i18n="browseTemplates">Browse templates</strong><span data-i18n="browseTemplatesCopy">Find a maker to play</span></button>
         <button data-page="docs"><strong data-i18n="navDocs">Docs</strong><span data-i18n="docsCopy">Protocol and licensing</span></button>
@@ -214,7 +220,7 @@
             <h1>My Souls</h1>
             <p>Finished characters, Living Content, social identity, and marketplace ownership are managed by Soulidity.</p>
           </div>
-          <button id="refreshOwnedCharacters" class="secondary" type="button">Open Soulidity collection</button>
+          <button id="refreshOwnedCharacters" class="secondary" type="button">Open My Souls</button>
         </div>
         <div id="ownedCharacterStatus" class="collection-status"></div>
         <div id="ownedCharacterGrid" class="collection-grid"></div>
@@ -851,8 +857,8 @@
           <div class="docs-model-grid">
             <article><strong>Animacraft</strong><span>Publishes the shared Maker, USDC Treasury, transferable AdminCap, immutable recipe rules, and a one-PTB Soul mint authorization. It does not mint a finished character token.</span></article>
             <article><strong>Soulidity</strong><span>Consumes the authorization, creates the only Soul, binds mandatory Soul Character and Memory Blobs, locks ownership in a personal Kiosk, and handles social and marketplace activity.</span></article>
-            <article><strong>Temporary Import Kit</strong><span>Free Makers may use the file handoff during the invited pilot. It is an unverified import, cannot collect a Maker fee, and must never be labeled canonical Animacraft provenance.</span></article>
-            <article><strong>Canonical adapter</strong><span>Paid mint, verified provenance, Maker resale royalty, and Cap trading activate only after the reviewed Soulidity adapter is deployed and its Mainnet evidence run passes.</span></article>
+            <article><strong>Dedicated handoff</strong><span>The certified OC profile opens Soulidity's Animacraft integration route. The downloaded handoff archive is recovery material, not a second mint path.</span></article>
+            <article><strong>Canonical adapter</strong><span>Free and paid Maker authorization, verified provenance, Maker resale royalty, and the Soul mint execute through the reviewed cross-package path after its Mainnet release gate is enabled.</span></article>
           </div>
         </section>
         <section class="docs-model">

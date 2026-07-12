@@ -71,6 +71,6 @@ Before promoting the invited-creator release:
 
 ## Current Boundary
 
-Animacraft enforces Maker publication, Cap-based administration, recipe validity, optional exact native-USDC fees, Treasury withdrawals, and immutable policy snapshots. Soulidity creates and owns the only finished Soul, mandatory initial Living Content, Kiosk ownership, social identity, listings, resale, and settlement. Paid mint remains disabled in the temporary file handoff until Soulidity consumes Animacraft's non-droppable authorization in one PTB.
+Animacraft enforces Maker publication, Cap-based administration, recipe validity, optional exact native-USDC fees, Treasury withdrawals, and immutable policy snapshots. Soulidity creates and owns the only finished Soul, mandatory initial Living Content, Kiosk ownership, social identity, listings, resale, and settlement. The dedicated integration route consumes Animacraft's non-droppable authorization in the same PTB as the canonical Soul mint; production keeps this route fail-closed until both reviewed upgrades and shared fee objects are configured.
 
 See [CREATOR_GUIDE.md](./CREATOR_GUIDE.md), [DEPLOYMENT.md](./DEPLOYMENT.md), [PRODUCTION_STATUS.md](./PRODUCTION_STATUS.md), [SOULIDITY_ADAPTER_HANDOFF.md](./SOULIDITY_ADAPTER_HANDOFF.md), [MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md), and [move/animacraft/README.md](./move/animacraft/README.md).

@@ -17,6 +17,7 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   featuredMakers: {},
   appUrl: '',
   soulidityAppUrl: 'https://www.soulidity.ai',
+  soulidityIntegrationPath: '/integrations/animacraft',
   soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
   protocolFeeConfigId: '',
   protocolTreasuryId: '',
@@ -91,6 +92,9 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   checkUrl('walrusUploadRelayUrl');
   checkUrl('appUrl', { allowLocalhost: !strict });
   checkUrl('soulidityAppUrl', { allowLocalhost: !strict });
+  if (!/^\/[a-z0-9/_-]+$/i.test(String(config.soulidityIntegrationPath || ''))) {
+    errors.push('soulidityIntegrationPath must be an absolute application path.');
+  }
 
   const packageReady = SUI_ID.test(String(config.packageId || '')) && !String(config.packageId).includes('TODO');
   if (!packageReady) (strict ? errors : warnings).push('Publish Animacraft and replace packageId before Mainnet activation.');

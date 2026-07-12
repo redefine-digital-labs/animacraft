@@ -15,6 +15,7 @@ window.ANIMACRAFT_CONFIG = {
   },
   appUrl: 'https://animacraft.soulidity.ai',
   soulidityAppUrl: 'https://www.soulidity.ai',
+  soulidityIntegrationPath: '/integrations/animacraft',
   soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
   protocolFeeConfigId: '0xYOUR_V4_PROTOCOL_FEE_CONFIG',
   protocolTreasuryId: '0xYOUR_V4_PROTOCOL_TREASURY',
