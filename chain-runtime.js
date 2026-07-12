@@ -639,7 +639,19 @@ export async function withdrawMakerRevenue({ makerId, treasuryId, adminCapId, am
 }
 
 /** Adds Maker validation/payment to a Soulidity mint PTB. */
-export function appendSoulMintAuthorization(tx, { makerId, treasuryId, mintPriceAtomic = 0, name, profileBlobId, imageBlobId, imageUrl, recipeHash, recipe }) {
+export function appendSoulMintAuthorization(tx, {
+  makerId,
+  treasuryId,
+  protocolFeeConfigId = runtimeConfig?.protocolFeeConfigId,
+  protocolTreasuryId = runtimeConfig?.protocolTreasuryId,
+  mintPriceAtomic = 0,
+  name,
+  profileBlobId,
+  imageBlobId,
+  imageUrl,
+  recipeHash,
+  recipe,
+}) {
   requireConnection();
   const serializedRecipe = bcs.vector(recipeSlotBcs).serialize(recipeValue(recipe));
   const numericPrice = Number(mintPriceAtomic || 0);
@@ -649,14 +661,19 @@ export function appendSoulMintAuthorization(tx, { makerId, treasuryId, mintPrice
   const price = BigInt(numericPrice);
   const paid = price > 0n;
   if (paid && !treasuryId) throw new Error('This paid Maker is missing its on-chain MakerTreasury object id. Refresh the Maker before minting.');
+  if (paid && (!protocolFeeConfigId || !protocolTreasuryId)) {
+    throw new Error('Paid minting is waiting for the canonical v4 Protocol Fee objects.');
+  }
 
   return tx.moveCall({
-    target: moveTarget(paid ? 'authorize_soul_mint_paid' : 'authorize_soul_mint'),
+    target: moveTarget(paid ? 'authorize_soul_mint_paid_with_protocol_fee' : 'authorize_soul_mint'),
     ...(paid ? { typeArguments: [requirePaymentCoinType()] } : {}),
     arguments: [
       tx.object(makerId),
       ...(paid ? [
         tx.object(treasuryId),
+        tx.object(protocolFeeConfigId),
+        tx.object(protocolTreasuryId),
         tx.coin({ type: requirePaymentCoinType(), balance: price }),
       ] : []),
       pureString(tx, name),
