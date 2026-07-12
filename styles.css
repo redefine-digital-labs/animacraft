@@ -5370,6 +5370,9 @@ pre {
 .v4-canvas-column {
   display: grid;
   grid-template-rows: auto minmax(420px, 1fr) auto;
+  width: 100%;
+  margin: 0;
+  padding: 0;
   background: #eef3f4;
 }
 

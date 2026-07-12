@@ -56,7 +56,7 @@ test('Maker v4 mounts separate Creator and Player workspaces on one renderer', a
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
-  assert.match(html, /styles\.css\?v=animacraft-maker-v4-5/);
+  assert.match(html, /styles\.css\?v=animacraft-maker-v4-6/);
   assert.match(html, /app\.js\?v=animacraft-production-7/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
@@ -77,6 +77,7 @@ test('Maker v4 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(workspace, /this\.contextEpoch !== contextEpoch/);
   assert.match(workspace, /this\.store\.replace\(incoming, context\.recipe \|\| incoming\.defaultRecipe/);
   assert.match(styles, /\.maker-v4-mount\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s);
+  assert.match(styles, /\.v4-canvas-column\s*\{[^}]*width:\s*100%;[^}]*margin:\s*0;[^}]*padding:\s*0;/s);
   assert.match(styles, /@media \(max-width:\s*820px\)[\s\S]*?\.creator-function-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   assert.match(styles, /@media \(max-width:\s*560px\)[\s\S]*?\.v4-studio-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
   assert.match(styles, /\.v4-player-header\s*\{\s*position:\s*relative;/s);
