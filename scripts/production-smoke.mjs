@@ -103,6 +103,9 @@ if (origin) {
       'appUrl',
       'soulidityAppUrl',
       'soulidityPackageId',
+      'protocolFeeConfigId',
+      'protocolTreasuryId',
+      'primaryProtocolFeeBps',
       'canonicalSoulMintEnabled',
     ];
     const drift = exactFields.filter((field) => remote[field] !== expected[field]);
