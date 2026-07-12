@@ -215,6 +215,7 @@ export class MakerWorkspace {
     this.bindingScalePreview = null;
     this.dragSort = null;
     this.renderAbort = { creator: null, player: null };
+    this.contextEpoch = 0;
     this.autosave = debounce(() => this.save({ automatic: true }), 850);
     this.sessionAutosave = debounce(() => this.savePlayerSession(), 500);
     this.boundCreatorClick = (event) => this.handleCreatorClick(event);
@@ -296,6 +297,7 @@ export class MakerWorkspace {
   }
 
   async setContext(context) {
+    const contextEpoch = ++this.contextEpoch;
     if (!context?.makerKey) {
       this.context = null;
       this.renderEmpty();
@@ -304,6 +306,14 @@ export class MakerWorkspace {
     const sameMaker = this.context?.makerKey === context.makerKey;
     this.context = { ...this.context, ...context };
     if (sameMaker && this.store) {
+      if (isMakerV4Document(context.document)) {
+        const incoming = this.normalizeDocument(clone(context.document));
+        const current = this.store.getState().document;
+        if (JSON.stringify(incoming) !== JSON.stringify(current)) {
+          this.store.replace(incoming, context.recipe || incoming.defaultRecipe, { clearHistory: true, markSaved: true });
+          this.ensureCreatorSelection(incoming);
+        }
+      }
       this.render();
       return;
     }
@@ -377,10 +387,10 @@ export class MakerWorkspace {
     this.playerRedo = [];
     this.playerIntroOpen = true;
     this.render();
-    await this.restoreLocalWorkspace();
+    await this.restoreLocalWorkspace(contextEpoch);
   }
 
-  async restoreLocalWorkspace() {
+  async restoreLocalWorkspace(contextEpoch = this.contextEpoch) {
     if (!this.makerKey || !this.context?.walletAddress) return;
     const requestedMakerKey = this.makerKey;
     try {
@@ -389,7 +399,7 @@ export class MakerWorkspace {
         loadMakerWorkspaceAssets(requestedMakerKey),
         loadPlayerWorkspaceSession(this.playerSessionKey),
       ]);
-      if (this.context?.makerKey !== requestedMakerKey) return;
+      if (this.context?.makerKey !== requestedMakerKey || this.contextEpoch !== contextEpoch) return;
       storedAssets.forEach((record) => {
         const previous = this.assets.get(record.assetId);
         if (previous) revokeRuntimeAsset(previous);
@@ -397,6 +407,7 @@ export class MakerWorkspace {
       });
       this.assetResolver.clear();
       this.assetResolver = createCachedAssetResolver(this.assets);
+      if (this.contextEpoch !== contextEpoch) return;
       if (saved?.document && saved.document.version?.rootMakerId === this.store.getState().document.version.rootMakerId) {
         const restored = this.normalizeDocument(saved.document);
         this.store.replace(restored, saved.metadata?.recipe || restored.defaultRecipe, { clearHistory: true, markSaved: true });
@@ -406,6 +417,7 @@ export class MakerWorkspace {
         this.playerProfile = { ...this.playerProfile, ...(playerSession.session.profile || {}) };
         this.playerIntroOpen = false;
       }
+      if (this.contextEpoch !== contextEpoch) return;
       this.render();
     } catch (error) {
       this.store?.setSaveState('error', error.message || 'Could not restore the local Maker workspace.');
@@ -498,8 +510,7 @@ export class MakerWorkspace {
         const runtime = this.runtimeAsset(binding.assetId);
         if (!runtime && !document.assets.find((asset) => asset.id === binding.assetId)?.url) {
           issues.push({ code: 'runtime_asset_missing', path: `${part.id}/${item.id}/${variant.id}/${binding.id}`, message: `${part.name} / ${item.name} is missing its local or remote PNG.` });
-        }
-        if (binding.positionConfirmed === false) {
+        } else if (binding.positionConfirmed === false) {
           issues.push({ code: 'position_unconfirmed', path: `${part.id}/${item.id}/${variant.id}/${binding.id}`, message: `${part.name} / ${item.name} has a cropped layer whose Canvas position is not confirmed.` });
         }
       });
@@ -558,6 +569,12 @@ export class MakerWorkspace {
 
   getPublicationIssues() {
     return this.publicationIssues().map((issue) => ({ ...issue }));
+  }
+
+  openCreatorTab(tab = 'structure') {
+    const allowed = new Set(['structure', 'layers', 'colors', 'rules', 'expansions', 'validate']);
+    this.creatorTab = allowed.has(tab) ? tab : 'structure';
+    this.render();
   }
 
   beginNextVersion() {
@@ -650,6 +667,7 @@ export class MakerWorkspace {
     this.ensureCreatorSelection(document);
     const { part, item, variant, binding } = this.selectedCreatorRecords(document);
     const issues = this.publicationIssues(document);
+    const previewAssetCount = document.parts.reduce((count, part) => count + part.items.reduce((itemCount, item) => itemCount + item.variants.reduce((variantCount, variant) => variantCount + variant.layerBindings.filter((candidate) => Boolean(this.runtimeAsset(candidate.assetId))).length, 0), 0), 0);
     const compatibility = this.compatibilityReport(document);
     const partRows = document.parts.map((candidate) => `
       <button class="v4-part-row ${candidate.id === part?.id ? 'active' : ''}" type="button" draggable="true" data-drag-kind="part" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-part" data-part-id="${escapeHtml(candidate.id)}">
@@ -697,8 +715,8 @@ export class MakerWorkspace {
             <button type="button" data-action="undo" ${state.canUndo ? '' : 'disabled'} title="${escapeHtml(state.undoLabel)}">↶ Undo</button>
             <button type="button" data-action="redo" ${state.canRedo ? '' : 'disabled'} title="${escapeHtml(state.redoLabel)}">↷ Redo</button>
             <button type="button" data-action="save">Save</button>
-            <button type="button" data-action="open-player">▶ Player test</button>
-            <button class="primary" type="button" data-action="publish">Publish${issues.length ? ` · ${issues.length}` : ''}</button>
+            <button type="button" data-action="open-player" ${previewAssetCount ? '' : 'disabled'} title="${previewAssetCount ? 'Test this Maker with the exact player renderer' : 'Upload at least one layer PNG before player testing'}">▶ Player test</button>
+            <button class="primary" type="button" data-action="publish">${issues.length ? `Review ${issues.length} issue${issues.length === 1 ? '' : 's'}` : 'Publish to Mainnet'}</button>
           </div>
         </header>
 
@@ -798,7 +816,7 @@ export class MakerWorkspace {
         <div class="v4-inspector-section prominent">
           <div class="v4-inspector-section-head"><span class="v4-inspector-label">Selected layer</span><button type="button" class="danger" data-action="delete-binding">Delete</button></div>
           <label>Layer Track<select data-action="binding-track">${trackOptions}</select></label>
-          <label class="v4-file-button wide">Replace layer PNG<input type="file" accept="image/png" data-action="binding-asset" /></label>
+          <label class="v4-file-button wide">${this.assets.has(binding.assetId) ? 'Replace layer PNG' : 'Upload layer PNG'}<input type="file" accept="image/png" data-action="binding-asset" /></label>
           <div class="v4-number-grid">
             <label>X<input type="number" value="${Number(binding.transform.x).toFixed(1)}" data-action="binding-x" /></label>
             <label>Y<input type="number" value="${Number(binding.transform.y).toFixed(1)}" data-action="binding-y" /></label>
@@ -927,7 +945,11 @@ export class MakerWorkspace {
         <div class="v4-expansion-grid">${cards || '<div class="v4-inline-empty"><strong>No Expansion Packs</strong><span>Create one, then copy selected Items into its isolated namespace.</span></div>'}</div>
       `;
     }
-    const issueRows = issues.map((issue) => `<li class="${issue.code.includes('missing') || issue.code.includes('invalid') ? 'error' : 'warning'}"><span>${escapeHtml(issue.path || 'Maker')}</span><strong>${escapeHtml(issue.message)}</strong></li>`).join('');
+    const issueRows = issues.map((issue) => {
+      const severity = issue.code.includes('missing') || issue.code.includes('invalid') ? 'error' : 'warning';
+      const focusable = String(issue.path || '').split('/').length === 4;
+      return `<li class="${severity}">${focusable ? `<button type="button" data-action="focus-issue" data-issue-path="${escapeHtml(issue.path)}" title="Open this layer"><span>${escapeHtml(issue.path)}</span><strong>${escapeHtml(issue.message)}</strong><em>Open →</em></button>` : `<span>${escapeHtml(issue.path || 'Maker')}</span><strong>${escapeHtml(issue.message)}</strong>`}</li>`;
+    }).join('');
     return `
       <div class="v4-advanced-head"><div><span>PUBLISH PREFLIGHT</span><h3>${issues.length ? `${issues.length} issue${issues.length === 1 ? '' : 's'} block publication` : 'Ready to publish'}</h3><p>Creator, Player, cover and final export all resolve this same document.</p></div><button type="button" data-action="run-preflight">Run again</button></div>
       ${compatibility ? `<div class="v4-compatibility ${compatibility.compatible ? 'ready' : 'breaking'}"><div><strong>${compatibility.compatible ? 'Compatible Maker update' : 'Breaking update — old OCs stay pinned'}</strong><span>${escapeHtml(compatibility.summary)}</span></div>${!compatibility.compatible && document.version.compatibility !== 'breaking' ? '<button type="button" data-action="set-version-compatibility" data-compatibility="breaking">Confirm breaking update</button>' : compatibility.compatible && document.version.compatibility === 'breaking' ? '<button type="button" data-action="set-version-compatibility" data-compatibility="compatible">Use compatible update</button>' : '<em>Compatibility confirmed</em>'}</div>` : '<div class="v4-compatibility ready"><strong>Initial Maker version</strong><span>No published version is being replaced.</span></div>'}
@@ -1349,6 +1371,19 @@ export class MakerWorkspace {
       this.render();
       return;
     }
+    if (action === 'focus-issue') {
+      const [partId, itemId, variantId, bindingId] = String(button.dataset.issuePath || '').split('/');
+      const target = findBinding(document, partId, itemId, variantId, bindingId);
+      if (!target) return;
+      this.selectedPartId = partId;
+      this.selectedItemId = itemId;
+      this.selectedVariantId = variantId;
+      this.selectedBindingId = bindingId;
+      this.selectedTrackId = target.layerTrackId;
+      this.creatorTab = 'structure';
+      this.render();
+      return;
+    }
     if (action === 'toggle-solo') {
       this.creatorSolo = !this.creatorSolo;
       this.render();
@@ -1468,6 +1503,14 @@ export class MakerWorkspace {
       this.executeDocument('Add LayerBinding', ({ document: next }) => {
         const target = findVariant(next, part.id, item.id, variant.id);
         const placeholderId = uniqueDocumentId('pending-asset', [next.assets], 'pending-asset');
+        next.assets.push({
+          id: placeholderId,
+          identifier: `pending/${placeholderId}.png`,
+          kind: 'pending-layer',
+          mediaType: 'image/png',
+          width: next.canvas.width,
+          height: next.canvas.height,
+        });
         target.layerBindings.push(createLayerBinding(target, this.selectedTrackId || next.layerTracks[0].id, placeholderId));
         this.selectedBindingId = target.layerBindings.at(-1).id;
       });

@@ -1095,6 +1095,33 @@ textarea:focus {
   background: rgba(255, 255, 255, 0.7);
 }
 
+.plaza-empty-state {
+  grid-column: 1 / -1;
+  min-height: 320px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.plaza-empty-state h2,
+.plaza-empty-state p {
+  margin: 0;
+  max-width: 620px;
+}
+
+.empty-state-mark {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  background: var(--mint-soft);
+  color: var(--mint-dark);
+  font-size: 30px;
+}
+
 .maker-layout {
   display: grid;
   grid-template-columns: 190px minmax(420px, 1fr) 360px;
@@ -5935,6 +5962,25 @@ pre {
   font-size: 11px;
 }
 
+.v4-preflight-list li > button {
+  width: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(120px, 0.55fr) minmax(0, 2fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.v4-preflight-list li > button em {
+  color: var(--mint-dark);
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
 .v4-preflight-list li.error {
   border-left: 4px solid #d7435a;
 }
@@ -6508,16 +6554,43 @@ pre {
 }
 
 @media (max-width: 560px) {
-  .v4-top-actions,
+  .v4-top-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .v4-top-actions button {
+    min-width: 0;
+    padding-inline: 5px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .v4-top-actions button.primary:last-child {
+    grid-column: 1 / -1;
+  }
+
   .v4-player-tools {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .v4-top-actions button,
   .v4-player-tools button {
     min-width: 0;
     padding-inline: 5px;
+  }
+
+  .v4-studio-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+    padding: 8px;
+    gap: 6px;
+  }
+
+  .v4-studio-tabs button {
+    border-radius: 8px;
+    white-space: normal;
   }
 
   .v4-canvas-viewport {
@@ -6557,7 +6630,9 @@ pre {
 
   .v4-track-row,
   .v4-rule-list > div,
-  .v4-import-list > div {
+  .v4-import-list > div,
+  .v4-preflight-list li,
+  .v4-preflight-list li > button {
     grid-template-columns: 1fr;
   }
 

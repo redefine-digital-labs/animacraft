@@ -48,7 +48,13 @@ import {
   normalizeRuntimeConfig,
 } from './runtime-config.js';
 import { createMakerWorkspace } from './maker-workspace.js';
-import { isMakerV4Document, migrateMakerV3ToV4, validateMakerV4Document } from './maker-v4.js';
+import {
+  createCharacterMakerV4Starter,
+  createMakerV4Document,
+  isMakerV4Document,
+  migrateMakerV3ToV4,
+  validateMakerV4Document,
+} from './maker-v4.js';
 import { evaluateRecipe } from './maker-rules.js';
 import { mergeExpansionPacks } from './expansion-packs.js';
 import {
@@ -279,6 +285,9 @@ const i18n = {
     connectToMake: 'Connect to make',
     viewMaker: 'View Maker',
     noMatchingMakers: 'No matching Makers found.',
+    noPublishedMakers: 'No Makers have been published yet',
+    noPublishedMakersCopy: 'Animacraft only lists Makers discovered from Sui and restored from certified Walrus assets. Be the first creator to publish one.',
+    createFirstMaker: 'Create the first Maker',
     myOcs: 'My Souls',
     myOcsCopy: 'Soulidity-owned characters',
     soulidityMySouls: 'My Souls',
@@ -352,6 +361,9 @@ const i18n = {
     connectToMake: '连接钱包后开始',
     viewMaker: '查看模板',
     noMatchingMakers: '没有找到匹配的模板。',
+    noPublishedMakers: '还没有 Maker 发布到链上',
+    noPublishedMakersCopy: 'Animacraft 只展示从 Sui 发现并由 Walrus 认证素材恢复的 Maker。成为第一位发布者。',
+    createFirstMaker: '创建第一个 Maker',
     myOcs: '我的 OC',
     myOcsCopy: '钱包拥有的角色',
     soulidityMySouls: '我的 Soul',
@@ -425,6 +437,9 @@ const i18n = {
     connectToMake: '接続して作る',
     viewMaker: 'メーカーを見る',
     noMatchingMakers: '一致するメーカーがありません。',
+    noPublishedMakers: 'まだ Maker は公開されていません',
+    noPublishedMakersCopy: 'Animacraft は Sui で検出され、認証済み Walrus 素材から復元された Maker のみを表示します。最初のクリエイターになりましょう。',
+    createFirstMaker: '最初の Maker を作成',
     myOcs: 'マイ OC',
     myOcsCopy: 'ウォレット所有キャラクター',
     soulidityMySouls: 'マイ Soul',
@@ -498,6 +513,9 @@ const i18n = {
     connectToMake: '연결하고 만들기',
     viewMaker: '메이커 보기',
     noMatchingMakers: '일치하는 메이커가 없습니다.',
+    noPublishedMakers: '아직 온체인에 공개된 Maker가 없습니다',
+    noPublishedMakersCopy: 'Animacraft는 Sui에서 발견되고 인증된 Walrus 에셋으로 복원된 Maker만 표시합니다. 첫 번째 크리에이터가 되어 보세요.',
+    createFirstMaker: '첫 Maker 만들기',
     myOcs: '내 OC',
     myOcsCopy: '지갑 소유 캐릭터',
     soulidityMySouls: '내 Soul',
@@ -571,6 +589,9 @@ const i18n = {
     connectToMake: 'Kết nối để tạo',
     viewMaker: 'Xem Maker',
     noMatchingMakers: 'Không tìm thấy Maker phù hợp.',
+    noPublishedMakers: 'Chưa có Maker nào được phát hành on-chain',
+    noPublishedMakersCopy: 'Animacraft chỉ hiển thị Maker được phát hiện từ Sui và khôi phục bằng tài sản Walrus đã chứng nhận. Hãy trở thành nhà sáng tạo đầu tiên.',
+    createFirstMaker: 'Tạo Maker đầu tiên',
     myOcs: 'OC của tôi',
     myOcsCopy: 'Nhân vật thuộc sở hữu ví',
     soulidityMySouls: 'Soul của tôi',
@@ -1339,6 +1360,7 @@ function bundledAssetUrl(makerId, identifier) {
 }
 
 async function loadBundledMakers() {
+  if (!localUiTest) return;
   if (bundledMakersLoaded) return;
   bundledMakersLoaded = true;
   const creatorPacks = templates.filter((template) => template.source === 'creator-pack');
@@ -2228,6 +2250,7 @@ function filteredTemplates() {
   const query = state.search.trim().toLowerCase();
   return templates.filter((template) => {
     if (template.source === 'local') return false;
+    if (template.source !== 'chain' && !(localUiTest && template.source === 'creator-pack')) return false;
     if (template.source === 'chain' && makerModels.get(template.id)?.makerArchived) return false;
     const matchesFilter = state.filter === 'all' || template.category === state.filter;
     const haystack = `${template.name} ${template.creator} ${template.style} ${template.license} ${template.summary}`.toLowerCase();
@@ -2251,10 +2274,23 @@ function templateModelMetrics(template) {
   };
 }
 
+function canOpenPlayer(template = activeTemplate()) {
+  if (!template) return false;
+  if (template.source === 'chain') return !makerModels.get(template.id)?.makerArchived;
+  if (localUiTest && template.source === 'creator-pack') return makerModels.has(template.id);
+  return Boolean(state.previewingMaker && template.source === 'local' && makerModels.has(template.id));
+}
+
+function makerHasRenderableAssets() {
+  if (state.makerRuntimeAssetsV4 instanceof Map && state.makerRuntimeAssetsV4.size > 0) return true;
+  return state.assets.some((asset) => Boolean(asset?.blob || asset?.file || asset?.url));
+}
+
 function setPage(page) {
   const previousPage = state.page;
   const requestedPage = page === 'editor' ? 'make' : page === 'protocol' ? 'docs' : page;
-  state.page = !state.walletConnected && !['templates', 'template', 'docs'].includes(requestedPage) ? 'templates' : requestedPage;
+  const walletAllowedPage = !state.walletConnected && !['templates', 'template', 'docs'].includes(requestedPage) ? 'templates' : requestedPage;
+  state.page = walletAllowedPage === 'make' && !canOpenPlayer() ? 'templates' : walletAllowedPage;
   if (state.page === 'make') {
     if (previousPage !== 'make' && $('legacyPlayerEditor')) {
       $('legacyPlayerEditor').hidden = true;
@@ -2343,7 +2379,7 @@ function syncTemplateFields() {
 
 function renderTemplates() {
   const list = filteredTemplates();
-  const publicMakerCount = templates.filter((template) => template.source !== 'local' && !(template.source === 'chain' && makerModels.get(template.id)?.makerArchived)).length;
+  const publicMakerCount = templates.filter((template) => template.source === 'chain' && !makerModels.get(template.id)?.makerArchived).length;
   if ($('publicMakerCount')) $('publicMakerCount').textContent = String(publicMakerCount);
   $('templateGrid').innerHTML = list.length ? list.map((template) => {
     const metrics = templateModelMetrics(template);
@@ -2384,7 +2420,25 @@ function renderTemplates() {
       </div>
     </article>
   `;
-  }).join('') : `<div class="empty-state">${t('noMatchingMakers')}</div>`;
+  }).join('') : publicMakerCount === 0 ? `
+    <section class="empty-state plaza-empty-state">
+      <span class="empty-state-mark" aria-hidden="true">＋</span>
+      <h2>${t('noPublishedMakers')}</h2>
+      <p>${t('noPublishedMakersCopy')}</p>
+      <button class="primary" type="button" data-create-first-maker>${t('createFirstMaker')}</button>
+    </section>
+  ` : `<div class="empty-state">${t('noMatchingMakers')}</div>`;
+
+  document.querySelector('[data-create-first-maker]')?.addEventListener('click', async () => {
+    if (!state.walletConnected) {
+      state.pendingWalletPage = 'creator';
+      await connectSuiWallet();
+      return;
+    }
+    setPage('creator');
+    renderAll();
+    openMakerModal();
+  });
 
   document.querySelectorAll('.template-card').forEach((card) => {
     card.addEventListener('click', (event) => {
@@ -2419,7 +2473,7 @@ function renderTemplates() {
 
 function openTemplateDetail(templateId, { updatePath = true } = {}) {
   const template = templates.find((candidate) => candidate.id === templateId);
-  if (!template || template.source === 'local') return;
+  if (!template || template.source === 'local' || (template.source !== 'chain' && !(localUiTest && template.source === 'creator-pack'))) return;
   activateMakerModel(template.id);
   syncTemplateFields();
   if (updatePath) {
@@ -3777,6 +3831,7 @@ function renderImageMakerList() {
     button.addEventListener('click', () => {
       activateMakerModel(button.dataset.previewMaker || button.dataset.openMaker);
       syncTemplateFields();
+      state.previewingMaker = true;
       setPage('make');
       renderAll();
     });
@@ -4628,8 +4683,21 @@ function renderWalletState() {
   $('walletFirstCard').classList.toggle('connected', state.walletConnected);
   document.querySelector('.account-grid').classList.toggle('locked', !state.walletConnected);
   document.querySelectorAll('.account-grid [data-page]').forEach((button) => {
-    button.disabled = !state.walletConnected;
+    button.disabled = !state.walletConnected || (button.dataset.page === 'make' && !canOpenPlayer());
   });
+  if ($('accountMakeOc')) {
+    $('accountMakeOc').title = canOpenPlayer()
+      ? 'Continue the selected Maker session'
+      : 'Choose a published Maker from Templates first';
+  }
+  if ($('playMakerPreview')) {
+    const source = activeTemplate()?.source;
+    const previewReady = source === 'chain'
+      || (source === 'local' && makerHasRenderableAssets())
+      || (localUiTest && source === 'creator-pack' && makerHasRenderableAssets());
+    $('playMakerPreview').disabled = !previewReady;
+    $('playMakerPreview').title = previewReady ? 'Open the exact player editor' : 'Upload at least one layer PNG before previewing';
+  }
   const soulidityLinks = {
     soulidityMySoulsLink: '/my-souls',
     soulidityProfileLink: '/profile',
@@ -5209,7 +5277,10 @@ async function restoreMakerDraft(templateId = state.templateId) {
     let draft = await loadMakerDraftRecord(storageKey);
     if (!draft) {
       const raw = localStorage.getItem(storageKey)
-        || (templateId === state.templateId ? localStorage.getItem('animacraft-maker-draft-v1') : null);
+        // The unscoped v1 key belonged only to the original Daily starter.
+        // Never import it into a newly-created wallet draft just because that
+        // draft happens to be the active template during asynchronous restore.
+        || (templateId === 'daily-starlit' ? localStorage.getItem('animacraft-maker-draft-v1') : null);
       if (!raw) return;
       draft = JSON.parse(raw);
       await saveMakerDraftRecord(storageKey, draft);
@@ -5614,6 +5685,7 @@ $('backToMakerList').addEventListener('click', () => {
 document.querySelectorAll('[data-editor-panel-button]').forEach((button) => {
   button.addEventListener('click', () => {
     setEditorPanel(button.dataset.editorPanelButton);
+    if (button.dataset.makerWorkspaceTab) makerWorkspace?.openCreatorTab?.(button.dataset.makerWorkspaceTab);
     if (button.hasAttribute('data-focus-composition')) {
       $('compositionOrder')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
@@ -6074,11 +6146,36 @@ $('registerMaker').addEventListener('click', async () => {
     price: 'Draft',
     accent: '#27c5c8',
     secondary: '#f0a23a',
-    summary: 'Character Maker draft. Add Parts, Items, Layers, Colors, and aligned PNG images.',
+    summary: 'Character Maker draft. Upload aligned PNG artwork, test every combination, then publish the immutable version to Sui and Walrus.',
     licenseNote: 'Personal use only. Credit the creator when the OC is shared publicly.',
   });
   persistLocalMakerIndex();
-  activateMakerModel(id, { empty: makerStart === 'blank', starter: makerStart === 'character', canvas: canvasSize });
+  const documentV4 = makerStart === 'character'
+    ? createCharacterMakerV4Starter({
+        makerId: id,
+        name,
+        creator: shortAddress(state.walletAddress) || 'Creator',
+        width: canvasSize.width,
+        height: canvasSize.height,
+      })
+    : createMakerV4Document({
+        makerId: id,
+        name,
+        creator: shortAddress(state.walletAddress) || 'Creator',
+        width: canvasSize.width,
+        height: canvasSize.height,
+      });
+  documentV4.metadata.summary = 'Character Maker draft. Upload aligned PNG artwork, test every combination, then publish the immutable version to Sui and Walrus.';
+  documentV4.metadata.style = canvas;
+  documentV4.metadata.license.note = 'Personal use only. Credit the creator when the OC is shared publicly.';
+  documentV4.publication.royaltyBps = 300;
+  documentV4.livingContent = createDefaultLivingContent();
+  validateMakerV4Document(documentV4, { mode: 'draft' });
+  const model = makerModelFromV4Manifest(documentV4, () => '');
+  model.makerRuntimeAssetsV4 = new Map();
+  model.assets = [];
+  makerModels.set(id, model);
+  activateMakerModel(id);
   syncTemplateFields();
   await saveCurrentMakerDraft({ silent: true });
   state.creatorView = 'edit';
@@ -6231,6 +6328,14 @@ makerWorkspace = createMakerWorkspace({
     },
     onCompleteOc(payload) {
       syncPlayerV4State(payload);
+      if (state.previewingMaker && activeTemplate()?.source === 'local') {
+        state.previewingMaker = false;
+        state.creatorView = 'edit';
+        setPage('creator');
+        renderAll();
+        focusCreatorTop();
+        return;
+      }
       const legacy = $('legacyPlayerEditor');
       if (legacy) {
         legacy.hidden = false;

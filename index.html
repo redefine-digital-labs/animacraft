@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Animacraft</title>
     <meta name="description" content="Animacraft is The Fully onchain Character Maker & Creator." />
-    <link rel="stylesheet" href="./styles.css?v=animacraft-maker-v4-3" />
+    <link rel="stylesheet" href="./styles.css?v=animacraft-maker-v4-4" />
     <script src="/config.js"></script>
   </head>
   <body>
@@ -63,7 +63,7 @@
       <div class="account-grid">
         <button data-page="collection"><strong data-i18n="myOcs">My Souls</strong><span data-i18n="myOcsCopy">Soulidity-owned characters</span></button>
         <button data-page="creator"><strong data-i18n="createMaker">Create maker</strong><span data-i18n="createMakerCopy">Publish an OC template</span></button>
-        <button data-page="make"><strong data-i18n="makeOc">Make OC</strong><span data-i18n="makeOcCopy">Continue current OC</span></button>
+        <button id="accountMakeOc" data-page="make"><strong data-i18n="makeOc">Make OC</strong><span data-i18n="makeOcCopy">Continue current OC</span></button>
       </div>
       <div class="soulidity-account-actions" aria-label="Soulidity account and social links">
         <a id="soulidityMySoulsLink" data-soulidity-auth href="#"><strong data-i18n="soulidityMySouls">My Souls</strong><span>Soulidity</span></a>
@@ -89,7 +89,7 @@
             </p>
           </div>
           <div class="head-metrics" aria-label="platform metrics">
-            <span><strong id="publicMakerCount">3</strong> <span data-i18n="publicMakers">public Makers</span></span>
+            <span><strong id="publicMakerCount">0</strong> <span data-i18n="publicMakers">public Makers</span></span>
             <span><strong>Sui</strong> <span data-i18n="mainnetObjects">Mainnet objects</span></span>
             <span><strong>Walrus</strong> <span data-i18n="assetQuilts">asset quilts</span></span>
           </div>
@@ -281,10 +281,7 @@
                 <nav>
                   <button class="active" data-editor-panel-button="top" data-i18n="makerTop">Maker Top</button>
                   <button data-editor-panel-button="parts" data-i18n="characterMaker">Character Maker</button>
-                  <button data-editor-panel-button="rules" data-i18n="rules">Rules</button>
-                  <button data-editor-panel-button="palette" data-i18n="paletteRules">Palette Rules</button>
                   <button data-editor-panel-button="living">Living Content</button>
-                  <button data-editor-panel-button="preview" data-i18n="previewCheck">Preview Check</button>
                   <button data-editor-panel-button="publish" data-i18n="onchainPublish">On-chain Publish</button>
                   <button data-editor-panel-button="settings" data-i18n="settings">Settings</button>
                 </nav>
@@ -309,17 +306,17 @@
                   </div>
 
                   <div class="maker-home-grid">
-                    <button class="maker-home-action primary-home-action" data-editor-panel-button="parts">
+                    <button class="maker-home-action primary-home-action" data-editor-panel-button="parts" data-maker-workspace-tab="structure">
                       <span>Character structure</span>
                       <strong id="makerTopPartSummary">0 Parts</strong>
                       <small id="makerTopAssetSummary">No item images yet</small>
                     </button>
-                    <button class="maker-home-action" data-editor-panel-button="rules">
+                    <button class="maker-home-action" data-editor-panel-button="parts" data-maker-workspace-tab="rules">
                       <span>Selection logic</span>
                       <strong id="makerTopRuleSummary">0 Rules</strong>
                       <small>Compatibility and fallback behavior</small>
                     </button>
-                    <button class="maker-home-action" data-editor-panel-button="preview">
+                    <button class="maker-home-action" data-editor-panel-button="parts" data-maker-workspace-tab="validate">
                       <span>Quality check</span>
                       <strong id="makerTopReadiness">Not ready</strong>
                       <small>Player flow and required assets</small>
@@ -709,7 +706,7 @@
                 <div class="type-row">
                   <button class="type-card active" data-maker-start="character">
                     <strong>Character starter</strong>
-                    <small>Seven common Parts with one empty Item each, ready for PNG uploads.</small>
+                    <small>Eight production-ready Parts with direct PNG upload slots and a complete layer order.</small>
                   </button>
                   <button class="type-card" data-maker-start="blank">
                     <strong>Blank canvas</strong>
@@ -836,21 +833,21 @@
           </div>
           <div class="docs-workflow">
             <article><span>01</span><strong>Library & Maker Top</strong><p>Create or open a Maker in the library, then use Maker Top to review structure, files, rules, and release readiness.</p></article>
-            <article><span>02</span><strong>Character Maker</strong><p>Add a Part, choose Standard, Left-right pair, or required Last Bastion, then define Layers, Colors, Items, icons, and each PNG image cell.</p></article>
-            <article><span>03</span><strong>Composition Order</strong><p>Arrange layers across Parts while the selected Item images remain visible on the same live canvas.</p></article>
-            <article><span>04</span><strong>Rules & Palette</strong><p>Prevent incompatible choices and link color controls across related Parts.</p></article>
-            <article><span>05</span><strong>Preview Check</strong><p>Validate visible Parts, rule references, and every required public Item × Layer × Color image cell.</p></article>
+            <article><span>02</span><strong>Character Maker</strong><p>Work in one studio: Part is the player menu, Item is one choice, Style is an optional variant, and each LayerBinding places one PNG on a global LayerTrack.</p></article>
+            <article><span>03</span><strong>Layer Tracks</strong><p>Arrange the global back-to-front render order, then position, scale, rotate, blend, hide, solo, and confirm each bound PNG on the shared canvas.</p></article>
+            <article><span>04</span><strong>Smart Color & Rules</strong><p>Create deterministic linked color channels and enforce Item or Style requirements, exclusions, parent visibility, and valid random combinations.</p></article>
+            <article><span>05</span><strong>Player Test & Preflight</strong><p>Use the exact player renderer, then resolve every missing asset, unconfirmed position, invalid default, rule conflict, and compatibility issue.</p></article>
             <article><span>06</span><strong>On-chain Publish</strong><p>Prepare one Walrus quilt, register and upload it, certify availability, then publish and share the OCMaker on Sui. Interrupted stages can resume locally.</p></article>
           </div>
         </section>
         <section class="docs-model">
           <div><p class="kicker">Maker Data Model</p><h2>Where each setting belongs</h2></div>
           <div class="docs-model-grid">
-            <article><strong>Part</strong><span>Name, immutable type, menu icon, visibility, remove/default behavior, owned Layers, Colors, and Items.</span></article>
-            <article><strong>Layer</strong><span>Owned by one Part. Stores name, global composition position, offset, opacity, and blend mode.</span></article>
-            <article><strong>Color</strong><span>Owned by one Part. Expands the image matrix and may link to colors in other Parts.</span></article>
-            <article><strong>Item</strong><span>One user-selectable option inside a Part, with display order, visibility, picker icon, and item rules.</span></article>
-            <article><strong>Item image</strong><span>One PNG for a specific Item × Layer × Color cell. These files become Walrus quilt patches.</span></article>
+            <article><strong>Part</strong><span>One player menu category with required/optional behavior, parent visibility, icon, default Item, and selection rules.</span></article>
+            <article><strong>Item & Style</strong><span>Item is one player click. Style is an optional explicit Variant under that Item; both may carry requires/excludes rules.</span></article>
+            <article><strong>LayerTrack</strong><span>A global back-to-front render lane shared across Parts. Player menu order never changes visual z-order.</span></article>
+            <article><strong>LayerBinding</strong><span>One PNG bound from one Style to one LayerTrack, with transform, opacity, blend mode, conditional visibility, and optional smart color.</span></article>
+            <article><strong>ColorChannel</strong><span>A deterministic gradient-map or asset-map palette shared by any LayerBindings that must change color together.</span></article>
             <article><strong>OCMaker</strong><span>The shared Sui object binds original creator, Quilt Blob ID, public Parts/Items/Colors, rules, mint economics, license policy, and archive state.</span></article>
             <article><strong>MakerTreasury</strong><span>A shared coin-typed vault receives exact native-USDC mint fees and records collection and withdrawal totals.</span></article>
             <article><strong>MakerAdminCap</strong><span>The transferable management right controls economics, withdrawals, and lifecycle. Cap ownership is separate from original art provenance.</span></article>
@@ -878,6 +875,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=animacraft-production-4"></script>
+    <script type="module" src="./app.js?v=animacraft-production-6"></script>
   </body>
 </html>

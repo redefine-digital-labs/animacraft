@@ -23,7 +23,7 @@ Animacraft ships two first-party, AI-assisted original creator packs for launch 
 - `Astral Courier · 星夜信使`
 - `Hanamori Spirit · 花守灵契`
 
-Each pack contains 25 public Items across six Parts and 5,120 default-rule combinations. Source atlases, prompt disclosure, and reproducible build notes live in `creator-packs/`; validated runtime manifests and `1024 x 1024` alpha PNG layers live in `public/makers/`. They appear as **Creator pack** entries in the Template Plaza. Canonical Soul mint remains locked until the pack is published as a real Sui `OCMaker` and hydrated from its certified Walrus manifest.
+Each pack contains 25 public Items across six Parts and 5,120 default-rule combinations. Source atlases, prompt disclosure, and reproducible build notes live in `creator-packs/`; validated runtime manifests and `1024 x 1024` alpha PNG layers live in `public/makers/`. They are available only when local UI-test mode is explicitly enabled. Production Template Plaza never lists bundled or starter data: a pack appears publicly only after it is published as a real Sui `OCMaker` and hydrated from its certified Walrus manifest.
 
 ## Architecture
 
@@ -73,5 +73,7 @@ Before promoting the invited-creator release:
 ## Current Boundary
 
 Animacraft uses separate Creator Studio and Player Editor surfaces backed by one Maker v4 model, rule engine, and Canvas renderer. The full requires, hierarchy, and visibility graph is authoritative in the versioned Walrus manifest; the current Move object keeps an explicitly labelled compatibility projection of the subset it can index. Animacraft enforces Maker publication, Cap-based administration, recipe validity, optional exact native-USDC fees, Treasury withdrawals, and immutable policy snapshots. Soulidity creates and owns the only finished Soul, mandatory initial Living Content, Kiosk ownership, social identity, listings, resale, and settlement. Its dedicated integration route consumes Animacraft's non-droppable authorization in the same PTB as the canonical Soul mint; production keeps this route fail-closed until both reviewed upgrades and shared fee objects are configured.
+
+As of this release candidate, Mainnet discovery returns zero published Makers. That is intentionally shown as an honest creator-first empty state. Users cannot enter Player Editor from hidden examples, and `Make OC` becomes available only after selecting a verified on-chain Maker. Creator `Player test` is a separate draft-only path and unlocks after at least one actual PNG is available.
 
 See [CREATOR_ASSET_SPEC_V4.zh-CN.md](./CREATOR_ASSET_SPEC_V4.zh-CN.md), [CREATOR_GUIDE.md](./CREATOR_GUIDE.md), [DEPLOYMENT.md](./DEPLOYMENT.md), [PRODUCTION_STATUS.md](./PRODUCTION_STATUS.md), [SOULIDITY_ADAPTER_HANDOFF.md](./SOULIDITY_ADAPTER_HANDOFF.md), [MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md), and [move/animacraft/README.md](./move/animacraft/README.md).
