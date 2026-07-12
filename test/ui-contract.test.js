@@ -47,22 +47,29 @@ test('the certified OC handoff uses the dedicated Soulidity adapter for free and
 });
 
 test('Maker v4 mounts separate Creator and Player workspaces on one renderer', async () => {
-  const [html, app, workspace, styles] = await Promise.all([
+  const [html, app, workspace, workspaceI18n, styles] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),
     readFile(new URL('../app.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-workspace-i18n.js', import.meta.url), 'utf8'),
     readFile(new URL('../styles.css', import.meta.url), 'utf8'),
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
+  assert.match(html, /styles\.css\?v=animacraft-maker-v4-5/);
+  assert.match(html, /app\.js\?v=animacraft-production-7/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
   assert.match(app, /buildMakerV4PublicationBundle/);
   assert.match(app, /makerWorkspace\.renderRecipeToBlob\(recipe\)/);
   assert.match(workspace, /renderResolvedScene\(scene, canvas/);
   assert.match(workspace, /data-action="player-none"/);
-  assert.match(workspace, /Upload at least one layer PNG before player testing/);
-  assert.match(workspace, /Review \$\{issues\.length\} issue/);
+  assert.match(workspaceI18n, /Upload at least one layer PNG before player testing/);
+  assert.match(workspace, /this\.tr\(issues\.length === 1 \? 'reviewIssue' : 'reviewIssues'/);
+  assert.match(workspaceI18n, /reviewIssues: 'Review \{count\} issues'/);
+  assert.match(workspace, /class="v4-tool-modal-backdrop" data-action="close-tool-backdrop"/);
+  assert.match(workspace, /id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true"/);
+  assert.match(workspace, /role="tab" aria-selected=/);
   assert.match(workspace, /else if \(binding\.positionConfirmed === false\)/);
   assert.match(workspace, /data-action="focus-issue"/);
   assert.match(workspace, /kind:\s*'pending-layer'/);
