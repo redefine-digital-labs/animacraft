@@ -8,12 +8,18 @@ The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio
 
 ## Implemented
 
-- Character Maker centered on Part-owned Items, Layers, Colors, icons, and complete `Item x Layer x Color` PNG matrices.
+- Separate Maker v4 Creator Studio and Player Editor surfaces backed by one document model, constraint engine, and Canvas renderer; players never reposition creator-authored layers.
+- Fixed Canvas coordinates with creator drag/position confirmation, proportional scale, zoom, hide/Solo/dim inspection, explicit LayerTracks, full blend modes, and pixel rendering.
+- Batch PNG import with mapping confirmation, alpha-cropped UI thumbnails without source mutation, independent thumbnails/icons, structural copy/delete/reorder, Undo/Redo, and incremental/manual save states.
+- Item/Variant/LayerBinding hierarchy, explicit optional `None`, requires/excludes, parent Parts, conditional visibility, shared gradient/asset-map ColorChannels, and constraint-safe Random.
+- Embedded, namespaced ExpansionPack preview/runtime support plus compatible/breaking Maker update analysis and immutable old-OC version pinning.
+- `animacraft.maker.v4` and `animacraft.oc-package.v2` Walrus outputs with a deterministic compatibility projection for the existing Sui publication and RecipeSlot interfaces. Move-inexpressible rules are marked as partial coverage rather than silently dropped.
+- Migration support for the previous Part-owned `Item x Layer x Color` PNG-matrix model.
 - One live composition surface plus a global cross-Part Layer order; preview and exported PNG use the same offsets, opacity, blend mode, and canvas scaling.
 - Standard, left-right paired, and required Last Bastion Parts. Last Bastion Parts cannot be targeted by incompatibility rules.
 - Local Maker, Part, Item, optional Layer, and extra Color deletion before publication.
-- IndexedDB v3 persistence for Maker structure, source image Blobs, and resumable Maker/OC Walrus upload checkpoints.
-- `animacraft.creator-template.v3` manifests with a generated Maker cover and Quilt Blob ID plus identifier addressing.
+- Separate IndexedDB v4 stores for Maker documents, incrementally persisted source image Blobs, wallet-scoped player sessions, and resumable Maker/OC Walrus upload checkpoints; v3 drafts remain migratable.
+- `animacraft.creator-template.v3` manifest compatibility alongside the generated v4 Maker cover, Quilt Blob ID, and identifier addressing.
 - Public Maker discovery from Sui publication events, Sui object hydration, and certified Walrus manifests.
 - Remote manifest limits and validation before an untrusted public Maker reaches the player.
 - Reusable wallet-owned `CreatorProfile` records with published Maker IDs.
