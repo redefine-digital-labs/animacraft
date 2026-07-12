@@ -66,7 +66,11 @@ window.ANIMACRAFT_CONFIG = {
   featuredMakers: {},
   appUrl: 'https://animacraft.soulidity.ai',
   soulidityAppUrl: 'https://www.soulidity.ai',
+  soulidityIntegrationPath: '/integrations/animacraft',
   soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  protocolFeeConfigId: '',
+  protocolTreasuryId: '',
+  primaryProtocolFeeBps: 5000,
   canonicalSoulMintEnabled: false
 };
 ```
@@ -81,7 +85,7 @@ After the separate Soulidity package and adapter are published, set `soulidityPa
 
 `featuredMakers` is only a curated fallback. The public gallery discovers all `OCMakerPublished` events through Sui GraphQL and hydrates each Maker from its certified Walrus manifest.
 
-Keep `canonicalSoulMintEnabled: false` during the Maker-only invited pilot. Set it to `true` only in the same reviewed release that ships the browser's atomic Animacraft-to-Soulidity PTB, verifies `mint_animacraft_in_personal_kiosk` in the configured package, and records the signed Mainnet smoke test. The strict preflight switches its expected Soulidity function when this gate changes.
+Keep `canonicalSoulMintEnabled: false` until the Animacraft v4 and Soulidity adapter upgrades are both source-verified. Set it to `true` only after `protocolFeeConfigId` and `protocolTreasuryId` identify the reviewed native-USDC shared objects, the dedicated `/integrations/animacraft` route has passed the signed recovery test, and the Mainnet smoke evidence is attached. The strict preflight switches its expected Soulidity function when this gate changes.
 
 The sample Mysten Sui endpoints are appropriate for the five-creator pilot, but the public fullnode is rate-limited. Replace `grpcUrl` and, where available, `graphqlUrl` with monitored dedicated Mainnet infrastructure before unrestricted traffic. Animacraft keeps these as public runtime values; provider credentials must never be embedded in the browser bundle.
 
@@ -139,9 +143,11 @@ The Maker-only invited pilot stops here. Keep paid mint controls and canonical S
 After the separate Soulidity adapter has been reviewed and deployed:
 
 8. Connect a second wallet, make an OC, resume an interrupted OC upload, and complete one free canonical Soul mint in one PTB.
-9. Enable a small USDC price with the Cap wallet, complete one paid canonical Soul mint, and verify the exact amount reaches the linked Treasury.
-10. Withdraw that amount with the Cap wallet and verify the recipient balance and withdrawal event.
-11. Confirm the Soulidity handoff, Living Content files, Walrus image, recipe, policy/payment snapshots, and the Move-verified SHA-256 BCS recipe hash.
+9. Enable a small USDC price with the Cap wallet, complete one paid canonical Soul mint, and verify the protocol receives floor(50%) while the linked Maker Treasury receives the exact remainder.
+10. Withdraw the Maker share with the Cap wallet and verify the recipient balance and withdrawal event.
+11. Confirm the dedicated Soulidity handoff, Living Content files, Walrus image, recipe, policy/payment snapshots, and the Move-verified SHA-256 BCS recipe hash.
+12. List and buy that Soul from a third wallet. Verify Soulidity receives 2.5% and the immutable 0%-5% Maker royalty reaches the matching Maker Treasury once; generic listing and purchase entries must both reject the same Soul.
+13. Interrupt projection sync after one successful mint transaction, reload the integration page, and verify `Resume Soulidity sync` does not request another mint signature.
 
 Record all transaction digests and object ids in the release PR.
 
