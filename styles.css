@@ -4986,7 +4986,9 @@ pre {
 
 /* Maker v4: one runtime, two purpose-built workspaces. */
 .maker-v4-mount {
+  min-width: 0;
   width: 100%;
+  max-width: 100%;
 }
 
 .maker-v4-creator-mount {
@@ -5027,6 +5029,9 @@ pre {
 
 .v4-studio-shell,
 .v4-player-shell {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -6412,6 +6417,10 @@ pre {
 }
 
 @media (max-width: 820px) {
+  .creator-function-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .v4-studio-topbar,
   .v4-player-header,
   .v4-player-finishbar {
@@ -6421,6 +6430,12 @@ pre {
 
   .v4-save-indicator {
     margin-left: 0;
+  }
+
+  .v4-version-badge {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .v4-studio-workspace {

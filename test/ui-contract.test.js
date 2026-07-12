@@ -61,5 +61,7 @@ test('Maker v4 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(app, /makerWorkspace\.renderRecipeToBlob\(recipe\)/);
   assert.match(workspace, /renderResolvedScene\(scene, canvas/);
   assert.match(workspace, /data-action="player-none"/);
+  assert.match(styles, /\.maker-v4-mount\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s);
+  assert.match(styles, /@media \(max-width:\s*820px\)[\s\S]*?\.creator-function-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   assert.match(styles, /\.v4-player-header\s*\{\s*position:\s*relative;/s);
 });
