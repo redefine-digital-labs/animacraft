@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Animacraft</title>
     <meta name="description" content="Animacraft is The Fully onchain Character Maker & Creator." />
-    <link rel="stylesheet" href="./styles.css?v=animacraft-production-6" />
+    <link rel="stylesheet" href="./styles.css?v=animacraft-maker-v4-3" />
     <script src="/config.js"></script>
   </head>
   <body>
@@ -126,6 +126,8 @@
       </section>
 
       <section id="make" class="page">
+        <div id="makerV4PlayerMount" class="maker-v4-mount maker-v4-player-mount" aria-live="polite"></div>
+        <div id="legacyPlayerEditor" class="legacy-player-editor" hidden>
         <div class="maker-topline">
           <div>
             <p class="kicker" data-i18n="makeOc">Make OC</p>
@@ -210,6 +212,7 @@
               <p id="licenseDescription">Generate personal icons and OC profiles. Commercial use requires separate creator permission.</p>
             </div>
           </aside>
+        </div>
         </div>
       </section>
 
@@ -330,7 +333,8 @@
                 </section>
 
                 <div class="creator-function-grid editor-panel" data-editor-panel="parts">
-                  <section id="maker-parts" class="character-maker-panel">
+                  <div id="makerV4CreatorMount" class="maker-v4-mount maker-v4-creator-mount" aria-live="polite"></div>
+                  <section id="maker-parts" class="character-maker-panel" hidden>
                     <header class="character-maker-head">
                       <div>
                         <p class="kicker">Character workspace</p>

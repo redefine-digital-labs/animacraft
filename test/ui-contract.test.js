@@ -45,3 +45,21 @@ test('the certified OC handoff uses the dedicated Soulidity adapter for free and
   assert.match(html, /<strong>Dedicated handoff<\/strong>/);
   assert.doesNotMatch(html, /<strong>Temporary Import Kit<\/strong>/);
 });
+
+test('Maker v4 mounts separate Creator and Player workspaces on one renderer', async () => {
+  const [html, app, workspace, styles] = await Promise.all([
+    readFile(new URL('../index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(html, /id="makerV4CreatorMount"/);
+  assert.match(html, /id="makerV4PlayerMount"/);
+  assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
+  assert.match(app, /buildMakerV4PublicationBundle/);
+  assert.match(app, /makerWorkspace\.renderRecipeToBlob\(recipe\)/);
+  assert.match(workspace, /renderResolvedScene\(scene, canvas/);
+  assert.match(workspace, /data-action="player-none"/);
+  assert.match(styles, /\.v4-player-header\s*\{\s*position:\s*relative;/s);
+});
