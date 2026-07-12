@@ -5612,6 +5612,7 @@ function syncMakerWorkspaceContext() {
 }
 
 function renderAll() {
+  makerWorkspace?.setLocale(state.locale, { render: false });
   renderTemplates();
   renderTemplateDetail();
   renderSlots();
@@ -6299,6 +6300,7 @@ if (directMakerMatch) {
 makerWorkspace = createMakerWorkspace({
   creatorRoot: $('makerV4CreatorMount'),
   playerRoot: $('makerV4PlayerMount'),
+  locale: state.locale,
   callbacks: {
     onDocumentChange(payload) {
       syncV4WorkspaceState(payload);

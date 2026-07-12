@@ -54,6 +54,7 @@ import {
   savePlayerWorkspaceSession,
   upsertMakerWorkspaceAssets,
 } from './maker-workspace-store.js';
+import { makerWorkspaceText } from './maker-workspace-i18n.js';
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (character) => ({
@@ -111,12 +112,6 @@ function recipeWithColors(document, recipe) {
     }
   });
   return next;
-}
-
-function partStatus(part) {
-  const variants = part.items.reduce((count, item) => count + item.variants.length, 0);
-  const bindings = part.items.reduce((count, item) => count + item.variants.reduce((sum, variant) => sum + variant.layerBindings.length, 0), 0);
-  return `${part.items.length} items · ${variants} styles · ${bindings} layers`;
 }
 
 function ownerRuleRows(document) {
@@ -186,6 +181,7 @@ export class MakerWorkspace {
     this.creatorRoot = options.creatorRoot || null;
     this.playerRoot = options.playerRoot || null;
     this.callbacks = options.callbacks || {};
+    this.locale = options.locale || 'en';
     this.context = null;
     this.store = null;
     this.unsubscribe = null;
@@ -207,6 +203,7 @@ export class MakerWorkspace {
     this.playerIntroOpen = false;
     this.enabledExpansionIds = new Set();
     this.pendingImport = null;
+    this.pendingCreatorText = null;
     this.creatorZoom = 1;
     this.creatorSolo = false;
     this.creatorDimOthers = true;
@@ -227,6 +224,12 @@ export class MakerWorkspace {
       });
     };
     this.boundCreatorInput = (event) => this.handleCreatorInput(event);
+    this.boundCreatorFocusout = (event) => {
+      if (this.captureCreatorText(event.target)) this.flushPendingCreatorText();
+    };
+    this.boundCreatorKeydown = (event) => {
+      if (event.key === 'Escape' && this.creatorTab !== 'structure') this.openCreatorTab('structure');
+    };
     this.boundPlayerClick = (event) => this.handlePlayerClick(event);
     this.boundPlayerChange = (event) => this.handlePlayerChange(event);
     this.attachRootListeners();
@@ -238,6 +241,8 @@ export class MakerWorkspace {
       this.creatorRoot.addEventListener('click', this.boundCreatorClick);
       this.creatorRoot.addEventListener('change', this.boundCreatorChange);
       this.creatorRoot.addEventListener('input', this.boundCreatorInput);
+      this.creatorRoot.addEventListener('focusout', this.boundCreatorFocusout);
+      this.creatorRoot.addEventListener('keydown', this.boundCreatorKeydown);
       this.creatorRoot.addEventListener('dragstart', (event) => this.handleDragStart(event));
       this.creatorRoot.addEventListener('dragover', (event) => this.handleDragOver(event));
       this.creatorRoot.addEventListener('drop', (event) => this.handleDrop(event));
@@ -575,6 +580,34 @@ export class MakerWorkspace {
     const allowed = new Set(['structure', 'layers', 'colors', 'rules', 'expansions', 'validate']);
     this.creatorTab = allowed.has(tab) ? tab : 'structure';
     this.render();
+    requestAnimationFrame(() => {
+      const selector = this.creatorTab === 'structure'
+        ? '[data-action="creator-tab"][data-tab="structure"]'
+        : '.v4-tool-modal-backdrop [data-action="close-tool"]';
+      this.creatorRoot?.querySelector(selector)?.focus();
+    });
+  }
+
+  setLocale(locale = 'en', { render = true } = {}) {
+    const next = ['en', 'zh', 'ja', 'ko', 'vi'].includes(locale) ? locale : 'en';
+    if (next === this.locale) return;
+    this.locale = next;
+    if (render) this.render();
+  }
+
+  tr(key, variables = {}) {
+    return makerWorkspaceText(this.locale, key, variables);
+  }
+
+  creatorTabLabel(tab = this.creatorTab, issueCount = 0) {
+    return {
+      structure: this.tr('partsItems'),
+      layers: this.tr('layerTracks'),
+      colors: this.tr('smartColor'),
+      rules: this.tr('rules'),
+      expansions: this.tr('expansionPacks'),
+      validate: this.tr(issueCount ? 'preflightCount' : 'preflightReady', { count: issueCount }),
+    }[tab] || this.tr('partsItems');
   }
 
   beginNextVersion() {
@@ -672,8 +705,8 @@ export class MakerWorkspace {
     const partRows = document.parts.map((candidate) => `
       <button class="v4-part-row ${candidate.id === part?.id ? 'active' : ''}" type="button" draggable="true" data-drag-kind="part" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-part" data-part-id="${escapeHtml(candidate.id)}">
         <span class="v4-part-icon">${candidate.iconAssetId && this.runtimeAsset(candidate.iconAssetId)?.url ? `<img src="${escapeHtml(this.runtimeAsset(candidate.iconAssetId).url)}" alt="" />` : escapeHtml(candidate.name.slice(0, 2).toUpperCase())}</span>
-        <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(partStatus(candidate))}</small></span>
-        <em>${candidate.required ? 'Required' : 'Optional'}</em>
+        <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(this.tr('partStatus', { items: candidate.items.length, styles: candidate.items.reduce((count, item) => count + item.variants.length, 0), layers: candidate.items.reduce((count, item) => count + item.variants.reduce((sum, variant) => sum + variant.layerBindings.length, 0), 0) }))}</small></span>
+        <em>${candidate.required ? this.tr('required') : this.tr('optional')}</em>
       </button>
     `).join('');
     const itemRows = part?.items.map((candidate) => {
@@ -707,72 +740,76 @@ export class MakerWorkspace {
       <section class="v4-studio-shell">
         <header class="v4-studio-topbar">
           <div class="v4-studio-title">
-            <span class="v4-eyebrow">Maker v4 Studio</span>
+            <span class="v4-eyebrow">${escapeHtml(this.tr('studio'))}</span>
             <div><h2>${escapeHtml(document.metadata.name)}</h2><span class="v4-version-badge">${escapeHtml(document.version.versionId)} · ${document.canvas.width}×${document.canvas.height}</span></div>
           </div>
           <div class="v4-save-indicator ${escapeHtml(state.saveState)}"><i></i><span>${escapeHtml(state.saveMessage || (state.dirty ? 'Unsaved changes' : 'Saved'))}</span></div>
           <div class="v4-top-actions">
-            <button type="button" data-action="undo" ${state.canUndo ? '' : 'disabled'} title="${escapeHtml(state.undoLabel)}">↶ Undo</button>
-            <button type="button" data-action="redo" ${state.canRedo ? '' : 'disabled'} title="${escapeHtml(state.redoLabel)}">↷ Redo</button>
-            <button type="button" data-action="save">Save</button>
-            <button type="button" data-action="open-player" ${previewAssetCount ? '' : 'disabled'} title="${previewAssetCount ? 'Test this Maker with the exact player renderer' : 'Upload at least one layer PNG before player testing'}">▶ Player test</button>
-            <button class="primary" type="button" data-action="publish">${issues.length ? `Review ${issues.length} issue${issues.length === 1 ? '' : 's'}` : 'Publish to Mainnet'}</button>
+            <button type="button" data-action="undo" ${state.canUndo ? '' : 'disabled'} title="${escapeHtml(state.canUndo ? state.undoLabel : this.tr('undoUnavailable'))}">↶ ${escapeHtml(this.tr('undo'))}</button>
+            <button type="button" data-action="redo" ${state.canRedo ? '' : 'disabled'} title="${escapeHtml(state.canRedo ? state.redoLabel : this.tr('redoUnavailable'))}">↷ ${escapeHtml(this.tr('redo'))}</button>
+            <button type="button" data-action="save" title="${escapeHtml(this.tr('saveHint'))}">${escapeHtml(this.tr(state.saveState === 'saving' ? 'saving' : 'save'))}</button>
+            <button type="button" data-action="open-player" ${previewAssetCount ? '' : 'disabled'} title="${escapeHtml(this.tr(previewAssetCount ? 'playerTestHint' : 'playerTestBlocked'))}">▶ ${escapeHtml(this.tr('playerTest'))}</button>
+            <button class="primary" type="button" data-action="publish">${escapeHtml(issues.length ? this.tr(issues.length === 1 ? 'reviewIssue' : 'reviewIssues', { count: issues.length }) : this.tr('publishMainnet'))}</button>
           </div>
         </header>
 
-        <nav class="v4-studio-tabs" aria-label="Maker tools">
+        <nav class="v4-studio-tabs" aria-label="Maker tools" role="tablist">
           ${[
-            ['structure', 'Parts & Items'],
-            ['layers', 'Layer Tracks'],
-            ['colors', 'Smart Color'],
-            ['rules', 'Rules'],
-            ['expansions', 'Expansion Packs'],
-            ['validate', `Preflight ${issues.length ? `(${issues.length})` : '✓'}`],
-          ].map(([id, label]) => `<button type="button" class="${this.creatorTab === id ? 'active' : ''}" data-action="creator-tab" data-tab="${id}">${escapeHtml(label)}</button>`).join('')}
+            ['structure', this.tr('partsItems')],
+            ['layers', this.tr('layerTracks')],
+            ['colors', this.tr('smartColor')],
+            ['rules', this.tr('rules')],
+            ['expansions', this.tr('expansionPacks')],
+            ['validate', this.tr(issues.length ? 'preflightCount' : 'preflightReady', { count: issues.length })],
+          ].map(([id, label]) => `<button type="button" id="makerV4Tab-${id}" class="${this.creatorTab === id ? 'active' : ''}" data-action="creator-tab" data-tab="${id}" role="tab" aria-selected="${this.creatorTab === id}" aria-controls="${id === 'structure' ? 'makerV4ToolPanel' : 'makerV4ToolDialog'}" tabindex="${this.creatorTab === id ? '0' : '-1'}">${escapeHtml(label)}</button>`).join('')}
         </nav>
 
-        <div class="v4-studio-workspace">
+        <div id="makerV4ToolPanel" class="v4-studio-workspace" role="tabpanel" aria-labelledby="makerV4Tab-structure">
           <aside class="v4-parts-browser">
-            <div class="v4-panel-head"><div><span>PARTS</span><strong>Player menu</strong></div><button type="button" data-action="add-part">＋</button></div>
+            <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('parts'))}</span><strong>${escapeHtml(this.tr('playerMenu'))}</strong></div><button type="button" data-action="add-part">＋</button></div>
             <div class="v4-parts-list">${partRows || '<div class="v4-inline-empty"><span>Create the first Part.</span></div>'}</div>
-            ${part ? `<div class="v4-part-actions"><button type="button" data-action="copy-part">Duplicate</button><button type="button" data-action="delete-part" class="danger">Delete</button></div>` : ''}
+            ${part ? `<div class="v4-part-actions"><button type="button" data-action="copy-part">${escapeHtml(this.tr('duplicate'))}</button><button type="button" data-action="delete-part" class="danger">${escapeHtml(this.tr('delete'))}</button></div>` : ''}
           </aside>
 
           <main class="v4-canvas-column">
             <div class="v4-canvas-toolbar">
-              <div><strong>True runtime preview</strong><span id="v4CreatorRenderStatus">Same renderer as Player, cover and final PNG</span></div>
+              <div><strong>${escapeHtml(this.tr('runtimePreview'))}</strong><span id="v4CreatorRenderStatus">${escapeHtml(this.tr('runtimePreviewCopy'))}</span></div>
               <div class="v4-canvas-tools">
-                <button type="button" class="${this.creatorSolo ? 'active' : ''}" data-action="toggle-solo" ${binding ? '' : 'disabled'}>Solo</button>
-                <button type="button" class="${this.creatorDimOthers ? 'active' : ''}" data-action="toggle-dim">Dim others</button>
-                <label>Zoom <input type="range" min="50" max="200" step="10" value="${Math.round(this.creatorZoom * 100)}" data-action="canvas-zoom" /></label>
-                <button type="button" class="${document.canvas.pixelMode === 'pixelated' ? 'active' : ''}" data-action="toggle-pixel">Pixel mode</button>
+                <button type="button" class="${this.creatorSolo ? 'active' : ''}" data-action="toggle-solo" ${binding ? '' : 'disabled'}>${escapeHtml(this.tr('solo'))}</button>
+                <button type="button" class="${this.creatorDimOthers ? 'active' : ''}" data-action="toggle-dim">${escapeHtml(this.tr('dimOthers'))}</button>
+                <label>${escapeHtml(this.tr('zoom'))} <input type="range" min="50" max="200" step="10" value="${Math.round(this.creatorZoom * 100)}" data-action="canvas-zoom" /></label>
+                <button type="button" class="${document.canvas.pixelMode === 'pixelated' ? 'active' : ''}" data-action="toggle-pixel">${escapeHtml(this.tr('pixelMode'))}</button>
               </div>
             </div>
             <div class="v4-canvas-viewport ${document.canvas.pixelMode === 'pixelated' ? 'pixelated' : ''}">
               <div class="v4-canvas-ruler"><span>0,0</span><span>${document.canvas.width},${document.canvas.height}</span></div>
               <canvas id="makerV4CreatorCanvas" class="v4-runtime-canvas" style="width:${Math.round(this.creatorZoom * 100)}%" aria-label="Maker canvas"></canvas>
-              ${!binding ? '<div class="v4-canvas-empty"><strong>Select a visual layer</strong><span>Choose an Item style and upload one or more PNGs.</span></div>' : ''}
+              ${!binding ? `<div class="v4-canvas-empty"><strong>${escapeHtml(this.tr('selectVisualLayer'))}</strong><span>${escapeHtml(this.tr('selectVisualLayerCopy'))}</span></div>` : ''}
             </div>
             <div class="v4-items-dock">
               <div class="v4-panel-head">
-                <div><span>ITEMS</span><strong>${escapeHtml(part?.name || 'Select a Part')}</strong></div>
+                <div><span>${escapeHtml(this.tr('items'))}</span><strong>${escapeHtml(part?.name || this.tr('selectPart'))}</strong></div>
                 <div>
-                  <button type="button" data-action="add-item" ${part ? '' : 'disabled'}>＋ Item</button>
-                  <label class="v4-file-button ${variant ? '' : 'disabled'}">Batch import<input type="file" accept="image/png" multiple data-action="batch-import" ${variant ? '' : 'disabled'} /></label>
+                  <button type="button" data-action="add-item" ${part ? '' : 'disabled'}>${escapeHtml(this.tr('addItem'))}</button>
+                  <label class="v4-file-button ${variant ? '' : 'disabled'}">${escapeHtml(this.tr('batchImport'))}<input type="file" accept="image/png" multiple data-action="batch-import" ${variant ? '' : 'disabled'} /></label>
                 </div>
               </div>
               <div class="v4-item-grid">${itemRows}</div>
-              ${item ? `<div class="v4-variant-row"><span>Styles</span>${variantRows}<button type="button" data-action="add-variant">＋ Style</button></div>` : ''}
+              ${item ? `<div class="v4-variant-row"><span>${escapeHtml(this.tr('styles'))}</span>${variantRows}<button type="button" data-action="add-variant">${escapeHtml(this.tr('addStyle'))}</button></div>` : ''}
             </div>
           </main>
 
           <aside class="v4-inspector">
-            <div class="v4-panel-head"><div><span>INSPECTOR</span><strong>${escapeHtml(binding ? 'Layer' : item ? 'Item' : part ? 'Part' : 'Nothing selected')}</strong></div></div>
+            <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('inspector'))}</span><strong>${escapeHtml(binding ? this.tr('layer') : item ? this.tr('item') : part ? this.tr('part') : this.tr('nothingSelected'))}</strong></div></div>
             ${this.renderCreatorInspector(document, part, item, variant, binding, bindingRows)}
           </aside>
         </div>
-
-        <section class="v4-advanced-panel">${this.renderCreatorAdvanced(document, issues, compatibility)}</section>
+        ${this.creatorTab !== 'structure' ? `<div class="v4-tool-modal-backdrop" data-action="close-tool-backdrop">
+          <section id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true" aria-labelledby="makerV4ToolTitle">
+            <header class="v4-tool-context"><div><span>${escapeHtml(this.creatorTabLabel(this.creatorTab, issues.length))}</span><strong id="makerV4ToolTitle">${escapeHtml(document.metadata.name)}</strong></div><button type="button" data-action="close-tool" aria-label="Close">×</button></header>
+            ${this.renderCreatorAdvanced(document, issues, compatibility)}
+          </section>
+        </div>` : ''}
       </section>
       ${this.renderImportDialog(document)}
     `;
@@ -839,7 +876,7 @@ export class MakerWorkspace {
     if (this.creatorTab === 'structure') {
       const { part, item, variant } = this.selectedCreatorRecords(document);
       return `
-        <div class="v4-advanced-head"><div><span>MAKER STRUCTURE</span><h3>One click can own many visual layers</h3></div><button type="button" data-action="set-default-recipe">Set current combination as default</button></div>
+        <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('partsItems'))}</span><h3>${escapeHtml(this.tr('structureTitle'))}</h3></div><button type="button" data-action="set-default-recipe">${escapeHtml(this.tr('setDefault'))}</button></div>
         <div class="v4-explainer-grid">
           <article><strong>Part</strong><span>Player menu category</span><em>${escapeHtml(part?.name || '—')}</em></article>
           <article><strong>Item</strong><span>One player click</span><em>${escapeHtml(item?.name || '—')}</em></article>
@@ -860,7 +897,7 @@ export class MakerWorkspace {
         `;
       }).join('');
       return `
-        <div class="v4-advanced-head"><div><span>LAYER TRACKS</span><h3>Global render order · back → front</h3><p>Player menu order never controls visual z-order.</p></div><button type="button" data-action="add-track">＋ Layer Track</button></div>
+        <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('layerTracks'))}</span><h3>${escapeHtml(this.tr('layerOrderTitle'))}</h3><p>${escapeHtml(this.tr('layerOrderCopy'))}</p></div><button type="button" data-action="add-track">${escapeHtml(this.tr('addTrack'))}</button></div>
         <div class="v4-track-list">${rows || '<div class="v4-inline-empty"><span>Add a Layer Track before importing artwork.</span></div>'}</div>
       `;
     }
@@ -887,7 +924,7 @@ export class MakerWorkspace {
       `).join('') || '';
       const linkedBindings = selectedChannel ? document.parts.flatMap((part) => part.items.flatMap((item) => item.variants.flatMap((variant) => variant.layerBindings.filter((binding) => binding.colorChannelId === selectedChannel.id).map((binding) => `${part.name} / ${item.name} / ${variant.name}`)))) : [];
       return `
-        <div class="v4-advanced-head"><div><span>SMART COLOR</span><h3>Shared deterministic color channels</h3><p>Gradient-map preserves source luminance; linked layers switch together.</p></div><button type="button" data-action="add-channel">＋ Color Channel</button></div>
+        <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('smartColor'))}</span><h3>${escapeHtml(this.tr('smartColorTitle'))}</h3><p>${escapeHtml(this.tr('smartColorCopy'))}</p></div><button type="button" data-action="add-channel">${escapeHtml(this.tr('addChannel'))}</button></div>
         <div class="v4-color-workspace">
           <div class="v4-color-channel-list">${channels || '<div class="v4-inline-empty"><span>Create a channel, then bind layers from the Inspector.</span></div>'}</div>
           ${selectedChannel ? `<div class="v4-color-detail">
@@ -910,7 +947,7 @@ export class MakerWorkspace {
         ]),
       ]).join('');
       return `
-        <div class="v4-advanced-head"><div><span>REQUIRES / EXCLUDES</span><h3>Only valid OC combinations reach the player</h3><p>Hierarchy controls whole child Parts; rules control specific selections.</p></div></div>
+        <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('rules'))}</span><h3>${escapeHtml(this.tr('rulesTitle'))}</h3><p>${escapeHtml(this.tr('rulesCopy'))}</p></div></div>
         <div class="v4-rule-builder">
           <label>When Part<select id="v4RuleOwnerPart" data-action="rule-owner-part">${partOptions}</select></label>
           <label>Owner scope<select id="v4RuleOwnerScope"><option value="part">Whole Part</option><option value="item">Selected Item</option><option value="variant">Selected Style</option></select></label>
@@ -941,19 +978,33 @@ export class MakerWorkspace {
         `;
       }).join('');
       return `
-        <div class="v4-advanced-head"><div><span>EXPANSION PACKS</span><h3>Additive DLC without mutating the base Maker</h3><p>Every Pack is namespaced and pinned to this Maker version.</p></div><button type="button" data-action="add-expansion">＋ Expansion Pack</button></div>
+        <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('expansionPacks'))}</span><h3>${escapeHtml(this.tr('expansionTitle'))}</h3><p>${escapeHtml(this.tr('expansionCopy'))}</p></div><button type="button" data-action="add-expansion">${escapeHtml(this.tr('addExpansion'))}</button></div>
         <div class="v4-expansion-grid">${cards || '<div class="v4-inline-empty"><strong>No Expansion Packs</strong><span>Create one, then copy selected Items into its isolated namespace.</span></div>'}</div>
       `;
     }
     const issueRows = issues.map((issue) => {
       const severity = issue.code.includes('missing') || issue.code.includes('invalid') ? 'error' : 'warning';
       const focusable = String(issue.path || '').split('/').length === 4;
-      return `<li class="${severity}">${focusable ? `<button type="button" data-action="focus-issue" data-issue-path="${escapeHtml(issue.path)}" title="Open this layer"><span>${escapeHtml(issue.path)}</span><strong>${escapeHtml(issue.message)}</strong><em>Open →</em></button>` : `<span>${escapeHtml(issue.path || 'Maker')}</span><strong>${escapeHtml(issue.message)}</strong>`}</li>`;
+      const [partId, itemId, variantId, bindingId] = String(issue.path || '').split('/');
+      const issuePart = findPart(document, partId);
+      const issueItem = issuePart && findItem(document, partId, itemId);
+      const issueVariant = issueItem?.variants.find((candidate) => candidate.id === variantId);
+      const issueBinding = issueVariant?.layerBindings.find((candidate) => candidate.id === bindingId);
+      const issueTrack = issueBinding && document.layerTracks.find((candidate) => candidate.id === issueBinding.layerTrackId);
+      const displayPath = focusable
+        ? [issuePart?.name, issueItem?.name, issueVariant?.name, issueTrack?.name].filter(Boolean).join(' › ')
+        : issue.path || 'Maker';
+      const displayMessage = issue.code === 'runtime_asset_missing'
+        ? this.tr('missingAsset', { part: issuePart?.name || partId, item: issueItem?.name || itemId })
+        : issue.code === 'position_unconfirmed'
+          ? this.tr('positionUnconfirmed', { part: issuePart?.name || partId, item: issueItem?.name || itemId })
+          : issue.message;
+      return `<li class="${severity}">${focusable ? `<button type="button" data-action="focus-issue" data-issue-path="${escapeHtml(issue.path)}" title="${escapeHtml(issue.path)}"><span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong><em>${escapeHtml(this.tr('open'))}</em></button>` : `<span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong>`}</li>`;
     }).join('');
     return `
-      <div class="v4-advanced-head"><div><span>PUBLISH PREFLIGHT</span><h3>${issues.length ? `${issues.length} issue${issues.length === 1 ? '' : 's'} block publication` : 'Ready to publish'}</h3><p>Creator, Player, cover and final export all resolve this same document.</p></div><button type="button" data-action="run-preflight">Run again</button></div>
-      ${compatibility ? `<div class="v4-compatibility ${compatibility.compatible ? 'ready' : 'breaking'}"><div><strong>${compatibility.compatible ? 'Compatible Maker update' : 'Breaking update — old OCs stay pinned'}</strong><span>${escapeHtml(compatibility.summary)}</span></div>${!compatibility.compatible && document.version.compatibility !== 'breaking' ? '<button type="button" data-action="set-version-compatibility" data-compatibility="breaking">Confirm breaking update</button>' : compatibility.compatible && document.version.compatibility === 'breaking' ? '<button type="button" data-action="set-version-compatibility" data-compatibility="compatible">Use compatible update</button>' : '<em>Compatibility confirmed</em>'}</div>` : '<div class="v4-compatibility ready"><strong>Initial Maker version</strong><span>No published version is being replaced.</span></div>'}
-      <ul class="v4-preflight-list">${issueRows || '<li class="ready"><span>All checks</span><strong>Default recipe and runtime structure are valid.</strong></li>'}</ul>
+      <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('publishPreflight'))}</span><h3>${escapeHtml(issues.length ? this.tr(issues.length === 1 ? 'issueBlocks' : 'issuesBlock', { count: issues.length }) : this.tr('readyPublish'))}</h3><p>${escapeHtml(this.tr('preflightCopy'))}</p></div><button type="button" data-action="run-preflight">${escapeHtml(this.tr('runAgain'))}</button></div>
+      ${compatibility ? `<div class="v4-compatibility ${compatibility.compatible ? 'ready' : 'breaking'}"><div><strong>${compatibility.compatible ? 'Compatible Maker update' : 'Breaking update — old OCs stay pinned'}</strong><span>${escapeHtml(compatibility.summary)}</span></div>${!compatibility.compatible && document.version.compatibility !== 'breaking' ? '<button type="button" data-action="set-version-compatibility" data-compatibility="breaking">Confirm breaking update</button>' : compatibility.compatible && document.version.compatibility === 'breaking' ? '<button type="button" data-action="set-version-compatibility" data-compatibility="compatible">Use compatible update</button>' : '<em>Compatibility confirmed</em>'}</div>` : `<div class="v4-compatibility ready"><strong>${escapeHtml(this.tr('initialVersion'))}</strong><span>${escapeHtml(this.tr('initialVersionCopy'))}</span></div>`}
+      <ul class="v4-preflight-list">${issueRows || `<li class="ready"><span>${escapeHtml(this.tr('allChecks'))}</span><strong>${escapeHtml(this.tr('allChecksCopy'))}</strong></li>`}</ul>
     `;
   }
 
@@ -1275,6 +1326,68 @@ export class MakerWorkspace {
     }
   }
 
+  captureCreatorText(input) {
+    const action = input?.dataset?.action;
+    if (!['part-name', 'item-name', 'variant-name', 'track-name', 'channel-name', 'swatch-name'].includes(action)) return false;
+    this.pendingCreatorText = {
+      action,
+      value: String(input.value || ''),
+      partId: this.selectedPartId,
+      itemId: this.selectedItemId,
+      variantId: this.selectedVariantId,
+      trackId: input.dataset.trackId || this.selectedTrackId,
+      channelId: this.selectedChannelId,
+      swatchId: input.dataset.swatchId || '',
+    };
+    return true;
+  }
+
+  flushPendingCreatorText() {
+    const pending = this.pendingCreatorText;
+    this.pendingCreatorText = null;
+    if (!pending || !this.store) return false;
+    const value = pending.value.trim();
+    const currentDocument = this.store.getState().document;
+    const currentChannel = currentDocument.colorChannels.find((candidate) => candidate.id === pending.channelId);
+    const currentValue = pending.action === 'part-name' ? findPart(currentDocument, pending.partId)?.name
+      : pending.action === 'item-name' ? findItem(currentDocument, pending.partId, pending.itemId)?.name
+        : pending.action === 'variant-name' ? findVariant(currentDocument, pending.partId, pending.itemId, pending.variantId)?.name
+          : pending.action === 'track-name' ? currentDocument.layerTracks.find((candidate) => candidate.id === pending.trackId)?.name
+            : pending.action === 'channel-name' ? currentChannel?.name
+              : currentChannel?.swatches.find((candidate) => candidate.id === pending.swatchId)?.name;
+    if (!value || value === currentValue) return false;
+    this.executeDocument({
+      'part-name': 'Rename Part',
+      'item-name': 'Rename Item',
+      'variant-name': 'Rename Style',
+      'track-name': 'Rename Layer Track',
+      'channel-name': 'Rename Color Channel',
+      'swatch-name': 'Rename color preset',
+    }[pending.action], ({ document }) => {
+      if (pending.action === 'part-name') {
+        const target = findPart(document, pending.partId);
+        if (target && value) target.name = value;
+      } else if (pending.action === 'item-name') {
+        const target = findItem(document, pending.partId, pending.itemId);
+        if (target && value) target.name = value;
+      } else if (pending.action === 'variant-name') {
+        const target = findVariant(document, pending.partId, pending.itemId, pending.variantId);
+        if (target && value) target.name = value;
+      } else if (pending.action === 'track-name') {
+        const target = document.layerTracks.find((candidate) => candidate.id === pending.trackId);
+        if (target && value) target.name = value;
+      } else {
+        const channel = document.colorChannels.find((candidate) => candidate.id === pending.channelId);
+        if (pending.action === 'channel-name' && channel && value) channel.name = value;
+        if (pending.action === 'swatch-name') {
+          const swatch = channel?.swatches.find((candidate) => candidate.id === pending.swatchId);
+          if (swatch && value) swatch.name = value;
+        }
+      }
+    });
+    return true;
+  }
+
   confirmDelete(message) {
     return typeof window.confirm !== 'function' || window.confirm(message);
   }
@@ -1283,13 +1396,17 @@ export class MakerWorkspace {
     const button = event.target.closest('[data-action]');
     if (!button || button.matches('input,select,textarea,label')) return;
     const action = button.dataset.action;
+    this.flushPendingCreatorText();
     const state = this.store?.getState();
     if (!state) return;
     const document = state.document;
     const { part, item, variant, binding } = this.selectedCreatorRecords(document);
     if (action === 'creator-tab') {
-      this.creatorTab = button.dataset.tab;
-      this.render();
+      this.openCreatorTab(button.dataset.tab);
+      return;
+    }
+    if (action === 'close-tool' || (action === 'close-tool-backdrop' && event.target === button)) {
+      this.openCreatorTab('structure');
       return;
     }
     if (action === 'select-part') {
@@ -1667,6 +1784,7 @@ export class MakerWorkspace {
 
   handleCreatorInput(event) {
     const action = event.target.dataset.action;
+    if (this.captureCreatorText(event.target)) return;
     if (action === 'canvas-zoom') {
       this.creatorZoom = Math.min(2, Math.max(0.5, Number(event.target.value || 100) / 100));
       const canvas = this.creatorRoot?.querySelector('#makerV4CreatorCanvas');
@@ -1683,6 +1801,10 @@ export class MakerWorkspace {
     const input = event.target;
     const action = input.dataset.action;
     if (!action || !this.store) return;
+    if (this.captureCreatorText(input)) {
+      this.flushPendingCreatorText();
+      return;
+    }
     const state = this.store.getState();
     const document = state.document;
     const { part, item, variant, binding } = this.selectedCreatorRecords(document);
@@ -2206,6 +2328,14 @@ export class MakerWorkspace {
 
   destroy() {
     this.unsubscribe?.();
+    this.creatorRoot?.removeEventListener('click', this.boundCreatorClick);
+    this.creatorRoot?.removeEventListener('change', this.boundCreatorChange);
+    this.creatorRoot?.removeEventListener('input', this.boundCreatorInput);
+    this.creatorRoot?.removeEventListener('focusout', this.boundCreatorFocusout);
+    this.creatorRoot?.removeEventListener('keydown', this.boundCreatorKeydown);
+    this.playerRoot?.removeEventListener('click', this.boundPlayerClick);
+    this.playerRoot?.removeEventListener('change', this.boundPlayerChange);
+    this.playerRoot?.removeEventListener('input', this.boundPlayerChange);
     this.assetResolver.clear();
     this.assets.forEach(revokeRuntimeAsset);
     this.renderAbort.creator?.abort();
