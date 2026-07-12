@@ -61,7 +61,39 @@ test('Maker v4 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(app, /makerWorkspace\.renderRecipeToBlob\(recipe\)/);
   assert.match(workspace, /renderResolvedScene\(scene, canvas/);
   assert.match(workspace, /data-action="player-none"/);
+  assert.match(workspace, /Upload at least one layer PNG before player testing/);
+  assert.match(workspace, /Review \$\{issues\.length\} issue/);
+  assert.match(workspace, /else if \(binding\.positionConfirmed === false\)/);
+  assert.match(workspace, /data-action="focus-issue"/);
+  assert.match(workspace, /kind:\s*'pending-layer'/);
+  assert.match(workspace, /this\.contextEpoch = 0/);
+  assert.match(workspace, /this\.contextEpoch !== contextEpoch/);
+  assert.match(workspace, /this\.store\.replace\(incoming, context\.recipe \|\| incoming\.defaultRecipe/);
   assert.match(styles, /\.maker-v4-mount\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s);
   assert.match(styles, /@media \(max-width:\s*820px\)[\s\S]*?\.creator-function-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(styles, /@media \(max-width:\s*560px\)[\s\S]*?\.v4-studio-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
   assert.match(styles, /\.v4-player-header\s*\{\s*position:\s*relative;/s);
+});
+
+test('production gallery is chain-derived and creator packs are local test fixtures only', async () => {
+  const [app, html, runtime] = await Promise.all([
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../chain-runtime.js', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(app, /if \(!localUiTest\) return;\s*if \(bundledMakersLoaded\) return;/);
+  assert.match(app, /template\.source !== 'chain' && !\(localUiTest && template\.source === 'creator-pack'\)/);
+  assert.match(app, /template\.source === 'chain' && !makerModels\.get\(template\.id\)\?\.makerArchived/);
+  assert.match(app, /data-create-first-maker/);
+  assert.match(app, /walletAllowedPage === 'make' && !canOpenPlayer\(\) \? 'templates'/);
+  assert.match(app, /templateId === 'daily-starlit' \? localStorage\.getItem\('animacraft-maker-draft-v1'\) : null/);
+  assert.match(app, /template\.source === 'chain'/);
+  assert.match(html, /id="accountMakeOc" data-page="make"/);
+  assert.doesNotMatch(html, /data-editor-panel-button="rules"/);
+  assert.doesNotMatch(html, /data-editor-panel-button="palette"/);
+  assert.doesNotMatch(html, /data-editor-panel-button="preview"/);
+  assert.match(html, /id="publicMakerCount">0</);
+  assert.match(runtime, /last: Math\.min\(50, limit - ids\.length\)/);
+  assert.doesNotMatch(runtime, /last: Math\.min\(100, limit - ids\.length\)/);
 });

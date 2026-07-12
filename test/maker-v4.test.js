@@ -6,11 +6,35 @@ import {
   MAKER_V4_SCHEMA_VERSION,
   MakerV4ValidationError,
   collectMakerV4ValidationIssues,
+  createCharacterMakerV4Starter,
   createMakerV4Document,
   isMakerV4Document,
   migrateMakerV3ToV4,
   validateMakerV4Document,
 } from '../maker-v4.js';
+
+test('character starter opens with a complete Part to LayerBinding upload graph', () => {
+  const document = createCharacterMakerV4Starter({
+    makerId: 'first-creator-maker',
+    name: 'First Creator Maker',
+    creator: '0xcreator',
+  });
+
+  assert.equal(document.parts.length, 8);
+  assert.equal(document.layerTracks.length, 8);
+  assert.equal(document.defaultRecipe.selections.length, 8);
+  assert.deepEqual(document.parts.filter((part) => part.required).map((part) => part.id), ['skin-base', 'eyes']);
+  document.parts.forEach((part, index) => {
+    assert.equal(part.menuOrder, index);
+    assert.equal(part.items.length, 1);
+    assert.equal(part.items[0].variants.length, 1);
+    assert.equal(part.items[0].variants[0].layerBindings.length, 1);
+    assert.equal(part.items[0].variants[0].layerBindings[0].layerTrackId, document.layerTracks[index].id);
+    assert.match(part.items[0].variants[0].layerBindings[0].assetId, /^pending-/);
+  });
+  assert.doesNotThrow(() => validateMakerV4Document(document, { mode: 'draft' }));
+  assert.throws(() => validateMakerV4Document(document, { mode: 'publish' }), MakerV4ValidationError);
+});
 
 function validV4Document() {
   const document = createMakerV4Document({

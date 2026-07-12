@@ -227,7 +227,8 @@ export async function listPublishedMakerIds(limit = 500) {
           }
         }
       `,
-      variables: { type: eventType, last: Math.min(100, limit - ids.length), before },
+      // Sui Mainnet GraphQL currently rejects event pages larger than 50.
+      variables: { type: eventType, last: Math.min(50, limit - ids.length), before },
     });
     if (result.errors?.length) throw new Error(result.errors[0].message || 'Sui GraphQL event discovery failed.');
     const connection = result.data?.events;

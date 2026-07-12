@@ -208,6 +208,87 @@ export function createMakerV4Document({
   };
 }
 
+/**
+ * Creates the production Character Maker starting graph. Each player-facing
+ * Part already owns an Item, Variant, LayerTrack, and pending LayerBinding so
+ * the creator's first meaningful action is uploading artwork, not wiring the
+ * schema by hand.
+ */
+export function createCharacterMakerV4Starter(options = {}) {
+  const document = createMakerV4Document(options);
+  const definitions = [
+    ['background', 'Background', false],
+    ['back-hair', 'Back Hair', false],
+    ['skin-base', 'Skin & Base', true],
+    ['outfit', 'Outfit', false],
+    ['eyes', 'Eyes', true],
+    ['mouth', 'Mouth', false],
+    ['front-hair', 'Front Hair', false],
+    ['accessory', 'Accessory', false],
+  ];
+
+  definitions.forEach(([id, name, required], order) => {
+    const trackId = `${id}-track`;
+    const itemId = `${id}-default`;
+    const variantId = 'default';
+    const assetId = `pending-${id}`;
+    document.layerTracks.push({ id: trackId, name, order });
+    document.assets.push({
+      id: assetId,
+      identifier: `pending/${id}.png`,
+      kind: 'pending-layer',
+      mediaType: 'image/png',
+      width: document.canvas.width,
+      height: document.canvas.height,
+    });
+    document.parts.push({
+      id,
+      name,
+      menuOrder: order,
+      menuVisible: true,
+      required,
+      defaultItemId: itemId,
+      parentPartId: null,
+      iconAssetId: null,
+      visibleWhen: null,
+      requires: [],
+      excludes: [],
+      items: [{
+        id: itemId,
+        name: 'Default',
+        displayOrder: 0,
+        thumbnailAssetId: null,
+        visibleWhen: null,
+        requires: [],
+        excludes: [],
+        defaultVariantId: variantId,
+        variants: [{
+          id: variantId,
+          name: 'Default',
+          displayOrder: 0,
+          visibleWhen: null,
+          requires: [],
+          excludes: [],
+          layerBindings: [{
+            id: `${id}-binding`,
+            layerTrackId: trackId,
+            assetId,
+            colorChannelId: null,
+            assetsBySwatch: [],
+            transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+            opacity: 1,
+            blendMode: 'normal',
+            visibleWhen: null,
+            positionConfirmed: false,
+          }],
+        }],
+      }],
+    });
+    document.defaultRecipe.selections.push({ partId: id, itemId, variantId });
+  });
+  return document;
+}
+
 export class MakerV4ValidationError extends Error {
   constructor(issues) {
     super(`Maker v4 validation failed with ${issues.length} issue${issues.length === 1 ? '' : 's'}: ${issues[0]?.message || 'Invalid document.'}`);

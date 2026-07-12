@@ -6,9 +6,12 @@ Animacraft product version `0.4.0` is a pre-v1 production candidate. Product v1 
 
 The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio, local draft ownership, Walrus writes, publication, archive, and Soulidity handoff require a connected wallet.
 
+Current Mainnet truth: the published package is configured, but discovery currently returns zero verified public Makers. Production therefore renders a creator-first empty state and does not expose bundled starter cards. A player session may open only from a Sui-discovered Maker restored from certified Walrus data; local creator packs remain explicit UI-test fixtures.
+
 ## Implemented
 
 - Separate Maker v4 Creator Studio and Player Editor surfaces backed by one document model, constraint engine, and Canvas renderer; players never reposition creator-authored layers.
+- Production Character starter creates a complete eight-Part graph with one Item, Variant, global LayerTrack, and direct PNG LayerBinding upload slot per Part; it no longer migrates an empty legacy shell.
 - Fixed Canvas coordinates with creator drag/position confirmation, proportional scale, zoom, hide/Solo/dim inspection, explicit LayerTracks, full blend modes, and pixel rendering.
 - Batch PNG import with mapping confirmation, alpha-cropped UI thumbnails without source mutation, independent thumbnails/icons, structural copy/delete/reorder, Undo/Redo, and incremental/manual save states.
 - Item/Variant/LayerBinding hierarchy, explicit optional `None`, requires/excludes, parent Parts, conditional visibility, shared gradient/asset-map ColorChannels, and constraint-safe Random.
@@ -21,6 +24,7 @@ The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio
 - Separate IndexedDB v4 stores for Maker documents, incrementally persisted source image Blobs, wallet-scoped player sessions, and resumable Maker/OC Walrus upload checkpoints; v3 drafts remain migratable.
 - `animacraft.creator-template.v3` manifest compatibility alongside the generated v4 Maker cover, Quilt Blob ID, and identifier addressing.
 - Public Maker discovery from Sui publication events, Sui object hydration, and certified Walrus manifests.
+- Chain-only production gallery, truthful zero-Maker state, 50-event Mainnet GraphQL pagination, and guarded Player routes that cannot fall back to hidden examples.
 - Remote manifest limits and validation before an untrusted public Maker reaches the player.
 - Reusable wallet-owned `CreatorProfile` records with published Maker IDs.
 - Three-object Maker publication: shared `OCMaker`, shared `MakerTreasury<PaymentCoin>`, and transferable `MakerAdminCap`.
@@ -44,6 +48,8 @@ The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio
 6. Open the Maker from a disconnected browser, connect a second wallet, complete free and paid canonical Soul mints, then withdraw both Maker and protocol shares with their respective Caps.
 7. Verify Maker/Treasury/Cap discovery, Living Content, Soulidity profile/collection, 2.5% resale settlement, archive rejection, restore, and transaction links.
 8. Record the evidence in the release PR before enabling canonical mint.
+
+Until steps 2, 4, and 5 are evidenced, this is a creator production candidate rather than a completed end-to-end Soul mint release. `canonicalSoulMintEnabled` remains `false`, paid mint controls remain fail-closed, and no UI copy should imply that an OC has already been minted.
 
 ## Invited Pilot Boundary
 
