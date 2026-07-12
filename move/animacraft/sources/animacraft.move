@@ -811,6 +811,23 @@ public fun recipe_slot_render_order(self: &RecipeSlot): u64 {
     self.render_order
 }
 
+/// Cross-package constructor for the canonical recipe value. The Maker
+/// authorization path still validates every field against published records.
+public fun new_recipe_slot(
+    part_key: String,
+    item_key: String,
+    color_hex: String,
+    render_order: u64,
+): RecipeSlot {
+    RecipeSlot { part_key, item_key, color_hex, render_order }
+}
+
+/// Canonical SHA-256 over the BCS recipe bytes used by web clients and
+/// downstream Move packages before requesting a SoulMintAuthorization.
+public fun hash_recipe_slots(recipe: &vector<RecipeSlot>): vector<u8> {
+    hash::sha2_256(bcs::to_bytes(recipe))
+}
+
 public fun new_creator_profile(
     display_name: String,
     bio: String,
@@ -2044,7 +2061,7 @@ fun published_maker_for_testing(ctx: &mut TxContext, clock: &Clock): (CreatorPro
 
 #[test_only]
 fun test_recipe_hash(recipe: &vector<RecipeSlot>): vector<u8> {
-    hash::sha2_256(bcs::to_bytes(recipe))
+    hash_recipe_slots(recipe)
 }
 
 #[test_only]
