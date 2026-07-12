@@ -2265,6 +2265,7 @@ function renderSlots() {
     button.addEventListener('click', () => {
       state.selectedSlot = button.dataset.slot;
       renderAll();
+      document.querySelector('.parts-panel')?.scrollTo({ top: 0 });
     });
   });
 }
