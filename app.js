@@ -103,89 +103,23 @@ const parts = {
   ],
 };
 
-const templates = [
-  {
-    id: 'astral-courier',
-    source: 'creator-pack',
-    manifestUrl: '/makers/astral-courier/animacraft-manifest.json',
-    name: 'Astral Courier · 星夜信使',
-    category: 'daily',
-    creator: 'Animacraft Atelier',
-    style: 'Japanese cel-shaded celestial portrait',
-    license: 'Personal use',
-    royaltyBps: 300,
-    price: 'Free creator pack',
-    accent: '#6f63ff',
-    secondary: '#43d7e8',
-    summary: 'A premium cel-shaded celestial courier maker with four skin tones, hairstyles, expressions, outfits, backgrounds, and five accessories.',
-    licenseNote: 'Free personal Soul mint and avatar use with Maker provenance retained. Commercial use and resale rights follow the published on-chain policy. AI-assisted original art is disclosed in the creator pack.',
-    coverUrl: '/makers/astral-courier/cover.png',
-    mintingEnabled: true,
-  },
-  {
-    id: 'hanamori-spirit',
-    source: 'creator-pack',
-    manifestUrl: '/makers/hanamori-spirit/animacraft-manifest.json',
-    name: 'Hanamori Spirit · 花守灵契',
-    category: 'fantasy',
-    creator: 'Animacraft Atelier',
-    style: 'Japanese cel-shaded spirit-garden portrait',
-    license: 'Personal use',
-    royaltyBps: 300,
-    price: 'Free creator pack',
-    accent: '#d94f45',
-    secondary: '#4caa83',
-    summary: 'A refined cel-shaded spirit-garden maker with four skin tones, hairstyles, expressions, ceremonial fantasy outfits, backgrounds, and five ornaments.',
-    licenseNote: 'Free personal Soul mint and avatar use with Maker provenance retained. Commercial use and resale rights follow the published on-chain policy. AI-assisted original art is disclosed in the creator pack.',
-    coverUrl: '/makers/hanamori-spirit/cover.png',
-    mintingEnabled: true,
-  },
-  {
-    id: 'daily-starlit',
-    source: 'starter',
-    name: 'Starlit Daily OC',
-    category: 'daily',
-    creator: 'Animacraft Lab',
-    style: 'Daily icon',
-    license: 'Personal use',
-    royaltyBps: 300,
-    price: 'Starter example',
-    accent: '#7b5cff',
-    secondary: '#2db7a3',
-    summary: 'A daily OC maker for profile icons, character sheets, and lightweight original characters.',
-    licenseNote: 'Generate personal icons and OC profiles. Commercial use requires separate creator permission.',
-  },
-  {
-    id: 'fantasy-flower',
-    source: 'starter',
-    name: 'Flower Familiar',
-    category: 'fantasy',
-    creator: 'Mori Atelier',
-    style: 'Fantasy character',
-    license: 'Paid commercial',
-    royaltyBps: 500,
-    price: 'Starter example',
-    accent: '#2db7a3',
-    secondary: '#f0a23a',
-    summary: 'A fantasy-friendly maker for spirits, familiars, story characters, and worldbuilding.',
-    licenseNote: 'Commercial use is allowed. The published Maker may separately charge an exact native-USDC mint fee.',
-  },
-  {
-    id: 'chibi-idol',
-    source: 'starter',
-    name: 'Chibi Idol Maker',
-    category: 'chibi',
-    creator: 'Stage Mint',
-    style: 'Chibi idol',
-    license: 'Personal use',
-    royaltyBps: 200,
-    price: 'Starter example',
-    accent: '#f06f8f',
-    secondary: '#f0a23a',
-    summary: 'A quick chibi maker for stage characters, fan OCs, and small profile images.',
-    licenseNote: 'Personal use by default. Commercial use requires separate creator permission.',
-  },
-];
+const SYSTEM_WORKSPACE_TEMPLATE = {
+  id: 'system-workspace',
+  source: 'system',
+  name: 'Untitled Maker Workspace',
+  category: 'daily',
+  creator: 'Connected creator',
+  style: 'Blank modular workspace',
+  license: 'Personal use',
+  royaltyBps: 0,
+  price: 'Local workspace',
+  accent: '#7b5cff',
+  secondary: '#2db7a3',
+  summary: 'A neutral local workspace. Public Makers are discovered from Sui and hydrated from Walrus.',
+  licenseNote: 'Set an explicit policy before publication.',
+};
+
+const templates = [];
 
 const swatches = ['#7b5cff', '#2db7a3', '#f06f8f', '#f0a23a', '#335c81', '#7d5a50', '#24202b', '#f1c9b1'];
 const MAX_MAKER_PARTS = 750;
@@ -594,7 +528,7 @@ const state = {
   editorPanel: 'top',
   filter: 'all',
   search: '',
-  templateId: 'daily-starlit',
+  templateId: '',
   selectedSlot: 'hairFront',
   partSubView: 'items',
   selectedLayer: 'hairFront:normal',
@@ -889,7 +823,7 @@ function renderI18n() {
 }
 
 function activeTemplate() {
-  return templates.find((template) => template.id === state.templateId) || templates[0];
+  return templates.find((template) => template.id === state.templateId) || SYSTEM_WORKSPACE_TEMPLATE;
 }
 
 function makerIsPublished() {
@@ -5417,8 +5351,13 @@ initializeChain(runtimeConfig, (connection) => {
     templates.filter((template) => template.source === 'chain').forEach((template) => { template.owned = false; });
     const currentTemplate = activeTemplate();
     if (currentTemplate?.source === 'local' && currentTemplate.owner && currentTemplate.owner !== connection.address) {
-      activateMakerModel(templates.find((template) => template.source === 'starter')?.id || templates[0].id);
-      syncTemplateFields();
+      const fallback = templates.find((template) => template.source === 'chain') || templates[0];
+      if (fallback) {
+        activateMakerModel(fallback.id);
+        syncTemplateFields();
+      } else {
+        state.templateId = '';
+      }
     }
   }
   state.walletConnected = connection.connected;

@@ -16,19 +16,14 @@ Animacraft and Soulidity are separate products, repositories, and Sui packages. 
 6. A user makes an OC, stores its rendered image and package on Walrus, and enters Soulidity's canonical mint flow. The final asset is a Soul, not a second Animacraft token.
 7. Published art and composition rules cannot be silently edited. The current Cap owner may update future mint economics, withdraw revenue, archive/restore the Maker, or transfer the Cap through Soulidity.
 
-## Bundled Creator Packs
+## Creator Asset Boundary
 
-Animacraft ships two first-party, AI-assisted original creator packs for launch QA and later on-chain publication:
-
-- `Astral Courier · 星夜信使`
-- `Hanamori Spirit · 花守灵契`
-
-Each pack contains 25 public Items across six Parts and 5,120 default-rule combinations. Source atlases, prompt disclosure, and reproducible build notes live in `creator-packs/`; validated runtime manifests and `1024 x 1024` alpha PNG layers live in `public/makers/`. They appear as **Creator pack** entries in the Template Plaza. Canonical Soul mint remains locked until the pack is published as a real Sui `OCMaker` and hydrated from its certified Walrus manifest.
+Animacraft contains no bundled creator artwork or named starter Makers. Independent creators keep source atlases, prompts, runtime layers, and candidate manifests in separate asset projects. The public Template Plaza discovers real `OCMakerPublished` events from Sui and hydrates certified manifests and layers from Walrus. The product repository retains only the neutral local authoring workspace and protocol-level validation.
 
 ## Architecture
 
 - **Vercel:** static Vite frontend, security headers, and route rewrites.
-- **Sui Mainnet:** `CreatorProfile`, shared `OCMaker`, shared USDC `MakerTreasury`, transferable `MakerAdminCap`, registered recipe rules, and ephemeral `SoulMintAuthorization` values consumed by Soulidity.
+- **Sui Mainnet:** `CreatorProfile`, shared `OCMaker`, shared USDC `MakerTreasury`, transferable `MakerAdminCap`, v4 Protocol Fee config/treasury, registered recipe rules, and ephemeral `SoulMintAuthorization` values consumed by Soulidity.
 - **Walrus Mainnet:** source PNGs, icons, Maker cover, manifest, rendered OC image, profile JSON, and Soulidity-compatible Living Content.
 - **Sui GraphQL:** public discovery of `OCMakerPublished` events. No application database is required.
 - **Wallet Standard:** every write and storage payment is signed by the creator or user. No private application signer exists.
@@ -71,6 +66,6 @@ Before promoting the invited-creator release:
 
 ## Current Boundary
 
-Animacraft enforces Maker publication, Cap-based administration, recipe validity, optional exact native-USDC fees, Treasury withdrawals, and immutable policy snapshots. Soulidity creates and owns the only finished Soul, mandatory initial Living Content, Kiosk ownership, social identity, listings, resale, and settlement. Paid mint remains disabled in the temporary file handoff until Soulidity consumes Animacraft's non-droppable authorization in one PTB.
+Animacraft enforces Maker publication, Cap-based administration, recipe validity, optional exact native-USDC fees, Treasury withdrawals, and immutable policy snapshots. The v4 candidate splits paid mint revenue between the Maker and protocol Treasuries at the configured rate, initially 50/50. Soulidity creates and owns the only finished Soul, mandatory initial Living Content, Kiosk ownership, social identity, listings, resale, and settlement. Paid mint remains disabled until the v4 fee objects and reviewed Soulidity adapter are deployed and Soulidity consumes Animacraft's non-droppable authorization in one PTB.
 
 See [CREATOR_GUIDE.md](./CREATOR_GUIDE.md), [DEPLOYMENT.md](./DEPLOYMENT.md), [PRODUCTION_STATUS.md](./PRODUCTION_STATUS.md), [SOULIDITY_ADAPTER_HANDOFF.md](./SOULIDITY_ADAPTER_HANDOFF.md), [MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md), and [move/animacraft/README.md](./move/animacraft/README.md).

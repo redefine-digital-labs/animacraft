@@ -562,7 +562,7 @@ Recommended asset model:
 
 ```json
 {
-  "templateId": "daily-starlit",
+  "templateId": "published-maker-id",
   "canvas": { "width": 1024, "height": 1024 },
   "slots": [
     {

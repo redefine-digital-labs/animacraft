@@ -11,7 +11,7 @@ window.ANIMACRAFT_CONFIG = {
   walrusRelayMaxTipMist: 1000000,
   walrusEpochs: 53,
   featuredMakers: {
-    'daily-starlit': '0xYOUR_PUBLISHED_OC_MAKER_OBJECT'
+    'maker-slug': '0xYOUR_PUBLISHED_OC_MAKER_OBJECT'
   },
   appUrl: 'https://animacraft.soulidity.ai',
   soulidityAppUrl: 'https://www.soulidity.ai',

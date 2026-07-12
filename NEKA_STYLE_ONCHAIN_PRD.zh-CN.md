@@ -562,7 +562,7 @@ Animacraft 有普通产品用户，但协议需要更精确的角色定义。一
 
 ```json
 {
-  "templateId": "daily-starlit",
+  "templateId": "published-maker-id",
   "canvas": { "width": 1024, "height": 1024 },
   "slots": [
     {
