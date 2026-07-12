@@ -9,7 +9,7 @@ Animacraft and Soulidity are separate products, repositories, and Sui packages. 
 ## Product Loop
 
 1. Anyone can browse the public Template Plaza without a wallet.
-2. A creator connects a Sui wallet, creates a local Maker draft, and defines `Part -> Item -> Layer x Color PNG` assets.
+2. A creator connects a Sui wallet, creates a local Maker draft, and defines `Part -> Item -> Variant -> LayerBinding` assets on global LayerTracks.
 3. The browser persists draft metadata, source files, and upload checkpoints in IndexedDB.
 4. The creator stores one immutable Maker quilt on Walrus and publishes `OCMaker + MakerTreasury<USDC> + MakerAdminCap` on Sui.
 5. Every Maker includes editable Soul Character, Memory, and Skills & Docs defaults compatible with Soulidity content slots.
@@ -62,8 +62,9 @@ Before promoting the invited-creator release:
 
 ## Versioned Outputs
 
-- `animacraft.creator-template.v3`: Maker manifest and Walrus asset index.
-- `animacraft.oc-package.v1`: finished OC profile, recipe, policy, and chain intent.
+- `animacraft.maker.v4`: authoritative versioned Maker graph, fixed Canvas transforms, LayerTracks, ColorChannels, rules, ExpansionPack metadata, and Walrus asset index.
+- `animacraft.oc-package.v2`: finished OC profile with the full v4 Recipe, immutable Maker version, Living Content, and its deterministic Sui RecipeSlot projection.
+- `animacraft.creator-template.v3` and `animacraft.oc-package.v1`: read/migration compatibility for Makers and recovery drafts created before the v4 editor.
 - `animacraft.living-content.v1`: editable Maker defaults for `soul.md`, `memory.md`, and `SKILL.md`.
 - `animacraft.soulidity-import.v1`: exact Soulidity content-kind and slot-name mapping.
 - Recipe JSON: exact selected Part, Item, registered Color, and published Part order. Move recomputes its SHA-256 BCS hash at mint.
@@ -71,6 +72,6 @@ Before promoting the invited-creator release:
 
 ## Current Boundary
 
-Animacraft enforces Maker publication, Cap-based administration, recipe validity, optional exact native-USDC fees, Treasury withdrawals, and immutable policy snapshots. Soulidity creates and owns the only finished Soul, mandatory initial Living Content, Kiosk ownership, social identity, listings, resale, and settlement. The dedicated integration route consumes Animacraft's non-droppable authorization in the same PTB as the canonical Soul mint; production keeps this route fail-closed until both reviewed upgrades and shared fee objects are configured.
+Animacraft uses separate Creator Studio and Player Editor surfaces backed by one Maker v4 model, rule engine, and Canvas renderer. The full requires, hierarchy, and visibility graph is authoritative in the versioned Walrus manifest; the current Move object keeps an explicitly labelled compatibility projection of the subset it can index. Animacraft enforces Maker publication, Cap-based administration, recipe validity, optional exact native-USDC fees, Treasury withdrawals, and immutable policy snapshots. Soulidity creates and owns the only finished Soul, mandatory initial Living Content, Kiosk ownership, social identity, listings, resale, and settlement. Its dedicated integration route consumes Animacraft's non-droppable authorization in the same PTB as the canonical Soul mint; production keeps this route fail-closed until both reviewed upgrades and shared fee objects are configured.
 
-See [CREATOR_GUIDE.md](./CREATOR_GUIDE.md), [DEPLOYMENT.md](./DEPLOYMENT.md), [PRODUCTION_STATUS.md](./PRODUCTION_STATUS.md), [SOULIDITY_ADAPTER_HANDOFF.md](./SOULIDITY_ADAPTER_HANDOFF.md), [MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md), and [move/animacraft/README.md](./move/animacraft/README.md).
+See [CREATOR_ASSET_SPEC_V4.zh-CN.md](./CREATOR_ASSET_SPEC_V4.zh-CN.md), [CREATOR_GUIDE.md](./CREATOR_GUIDE.md), [DEPLOYMENT.md](./DEPLOYMENT.md), [PRODUCTION_STATUS.md](./PRODUCTION_STATUS.md), [SOULIDITY_ADAPTER_HANDOFF.md](./SOULIDITY_ADAPTER_HANDOFF.md), [MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md), and [move/animacraft/README.md](./move/animacraft/README.md).

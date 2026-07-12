@@ -47,6 +47,18 @@ import {
   assertSupportedMakerPaymentCoin,
   normalizeRuntimeConfig,
 } from './runtime-config.js';
+import { createMakerWorkspace } from './maker-workspace.js';
+import { isMakerV4Document, migrateMakerV3ToV4, validateMakerV4Document } from './maker-v4.js';
+import { evaluateRecipe } from './maker-rules.js';
+import { mergeExpansionPacks } from './expansion-packs.js';
+import {
+  buildMakerV4MoveSummary,
+  buildMakerV4OcPackage,
+  buildMakerV4OcUploadEntries,
+  buildMakerV4PublicationBundle,
+  buildMakerV4PublicationManifest,
+  indexMakerV4UploadResults,
+} from './maker-publication-v4.js';
 
 const slots = [
   { key: 'background', label: 'Background', icon: 'BG', colorKey: 'background', description: 'Scene, mood, and backdrop' },
@@ -644,6 +656,13 @@ const state = {
   assets: [],
   rules: [],
   paletteLinks: [{ primaryPartKey: 'hairBack', linkedPartKey: 'hairFront' }],
+  makerDocumentV4: null,
+  makerRecipeV4: null,
+  makerRuntimeAssetsV4: new Map(),
+  publishedMakerDocumentV4: null,
+  playerRecipeV4: null,
+  playerProfileV4: null,
+  playerRuntimeDocumentV4: null,
   livingContent: createDefaultLivingContent(),
   livingDocument: 'soulMd',
   walletConnected: false,
@@ -666,6 +685,7 @@ const state = {
   pendingMakerCoverBlob: null,
   hasMakerUploadRecovery: false,
   pendingMakerManifestJson: '',
+  pendingMakerV4Bundle: null,
   minting: false,
   mintStatus: '',
   mintDigest: '',
@@ -707,6 +727,7 @@ const loadedMakerUploadRecoveries = new Set();
 const loadedOcUploadRecoveries = new Set();
 let pendingConfirmation = null;
 let makerAutosaveTimer = null;
+let makerWorkspace = null;
 
 function makerDraftStorageKey(templateId = state.templateId) {
   return `animacraft-maker-draft-v2:${state.walletAddress || 'local'}:${templateId}`;
@@ -759,6 +780,10 @@ function createMakerModel({ empty = false, starter = false, canvas = { width: 10
     paletteLinks: empty ? [] : [{ primaryPartKey: 'hairBack', linkedPartKey: 'hairFront' }],
     livingContent: createDefaultLivingContent(),
     assets: [],
+    makerDocumentV4: null,
+    makerRecipeV4: null,
+    makerRuntimeAssetsV4: new Map(),
+    publishedMakerDocumentV4: null,
     publishDigest: '',
     publishStatus: '',
     makerObjectId: '',
@@ -782,6 +807,10 @@ function syncActiveMakerModelRefs() {
     paletteLinks: state.paletteLinks,
     livingContent: state.livingContent,
     assets: state.assets,
+    makerDocumentV4: state.makerDocumentV4,
+    makerRecipeV4: state.makerRecipeV4,
+    makerRuntimeAssetsV4: state.makerRuntimeAssetsV4,
+    publishedMakerDocumentV4: state.publishedMakerDocumentV4,
     publishDigest: state.publishDigest,
     publishStatus: state.publishStatus,
     makerObjectId: state.makerObjectId,
@@ -823,6 +852,13 @@ function applyMakerModelToState(templateId, model) {
   state.paletteLinks = model.paletteLinks;
   state.livingContent = normalizeLivingContent(model.livingContent, activeTemplate());
   state.assets = model.assets;
+  state.makerDocumentV4 = model.makerDocumentV4 || null;
+  state.makerRecipeV4 = model.makerRecipeV4 || null;
+  state.makerRuntimeAssetsV4 = model.makerRuntimeAssetsV4 instanceof Map ? model.makerRuntimeAssetsV4 : new Map();
+  state.publishedMakerDocumentV4 = model.publishedMakerDocumentV4 || (model.makerDocumentV4?.version?.createdAt ? model.makerDocumentV4 : null);
+  state.playerRecipeV4 = null;
+  state.playerProfileV4 = null;
+  state.playerRuntimeDocumentV4 = null;
   state.publishDigest = model.publishDigest;
   state.publishStatus = model.publishStatus;
   state.makerObjectId = model.makerObjectId || '';
@@ -837,6 +873,7 @@ function applyMakerModelToState(templateId, model) {
   state.pendingMakerCoverBlob = null;
   state.hasMakerUploadRecovery = false;
   state.pendingMakerManifestJson = '';
+  state.pendingMakerV4Bundle = null;
   state.selectedSlot = state.slotOrder[0] || '';
   state.selectedItem = state.selectedSlot ? state.visual[state.selectedSlot] || slotItems(state.selectedSlot)[0]?.id || '' : '';
   const firstLayer = state.selectedSlot ? creatorLayers(allSlots()[0])[0] : null;
@@ -868,6 +905,10 @@ makerModels.set(state.templateId, {
   paletteLinks: state.paletteLinks,
   livingContent: state.livingContent,
   assets: state.assets,
+  makerDocumentV4: state.makerDocumentV4,
+  makerRecipeV4: state.makerRecipeV4,
+  makerRuntimeAssetsV4: state.makerRuntimeAssetsV4,
+  publishedMakerDocumentV4: state.publishedMakerDocumentV4,
   publishDigest: state.publishDigest,
   publishStatus: state.publishStatus,
   makerObjectId: state.makerObjectId,
@@ -916,13 +957,20 @@ function makerIsPublished() {
   return Boolean(state.publishDigest || state.makerObjectId || activeTemplate()?.source === 'chain');
 }
 
+function makerHasPendingV4Version() {
+  return isMakerV4Document(state.makerDocumentV4)
+    && isMakerV4Document(state.publishedMakerDocumentV4)
+    && state.makerDocumentV4.version.versionId !== state.publishedMakerDocumentV4.version.versionId;
+}
+
 function makerLifecycle() {
   if (makerIsPublished()) return state.makerArchived ? 'archived' : 'published';
   return activeTemplate()?.source === 'local' ? 'draft' : 'starter';
 }
 
 function ensureMakerEditable() {
-  if (!makerIsPublished()) return true;
+  if (!makerIsPublished() || makerHasPendingV4Version()) return true;
+  if (isMakerV4Document(state.makerDocumentV4) && makerWorkspace?.beginNextVersion?.()) return true;
   state.publishStatus = state.makerArchived
     ? 'This Maker is archived on Sui. Restore it before creating new OCs; its published version remains immutable.'
     : 'Published Makers are immutable. Create a new version to change Parts, Items, Layers, rules, or assets.';
@@ -1049,7 +1097,137 @@ async function fetchWalrusWithBackoff(url, options = {}, attempts = 4) {
   throw lastError || new Error('Walrus did not return a readable response.');
 }
 
+function validateAnyMakerManifest(manifest) {
+  return isMakerV4Document(manifest)
+    ? validateMakerV4Document(manifest, { mode: 'publish' })
+    : validateMakerManifest(manifest);
+}
+
+function makerModelFromV4Manifest(document, resolveAssetUrl, object = {}) {
+  const descriptorById = new Map((document.assets || []).map((asset) => [asset.id, asset]));
+  const trackById = new Map((document.layerTracks || []).map((track) => [track.id, track]));
+  const channelById = new Map((document.colorChannels || []).map((channel) => [channel.id, channel]));
+  const visual = defaultMakerVisual();
+  const modelParts = {};
+  const modelSlots = (document.parts || []).map((part) => {
+    const bindings = part.items.flatMap((item) => item.variants.flatMap((variant) => variant.layerBindings));
+    const trackIds = [...new Set(bindings.map((binding) => binding.layerTrackId))];
+    const channel = channelById.get(bindings.find((binding) => binding.colorChannelId)?.colorChannelId);
+    const colors = channel?.swatches?.length
+      ? channel.swatches.map((swatch) => ({ id: swatch.id, name: swatch.name, value: swatch.hintColor }))
+      : [{ id: 'default', name: 'Default', value: '#7b5cff' }];
+    const layers = trackIds.map((trackId) => {
+      const binding = bindings.find((candidate) => candidate.layerTrackId === trackId);
+      const track = trackById.get(trackId);
+      return {
+        id: trackId,
+        name: track?.name || trackId,
+        x: Number(binding?.transform?.x || 0),
+        y: Number(binding?.transform?.y || 0),
+        opacity: Math.round(Number(binding?.opacity ?? 1) * 100),
+        blendMode: binding?.blendMode || 'normal',
+        renderOrder: Number(track?.order || 0),
+      };
+    });
+    const flattened = part.items.flatMap((item) => item.variants.map((variant, variantIndex) => {
+      const itemId = item.variants.length > 1 ? `${item.id}--${variant.id}` : item.id;
+      const images = {};
+      variant.layerBindings.forEach((binding) => {
+        const bindingChannel = channelById.get(binding.colorChannelId);
+        const mappings = binding.assetsBySwatch?.length
+          ? binding.assetsBySwatch
+          : (bindingChannel?.swatches || colors).map((swatch) => ({ swatchId: swatch.id, assetId: binding.assetId }));
+        if (!mappings.length) mappings.push({ swatchId: 'default', assetId: binding.assetId });
+        mappings.forEach((mapping) => {
+          const descriptor = descriptorById.get(mapping.assetId);
+          if (!descriptor?.identifier) return;
+          images[assetCellKey(binding.layerTrackId, mapping.swatchId || 'default')] = {
+            identifier: descriptor.identifier,
+            url: resolveAssetUrl(descriptor.identifier),
+            remote: true,
+          };
+        });
+      });
+      const thumbnail = descriptorById.get(item.thumbnailAssetId);
+      return {
+        id: itemId,
+        label: item.variants.length > 1 ? `${item.name} · ${variant.name}` : item.name,
+        displayOrder: Number(item.displayOrder || 0) + variantIndex + 1,
+        visibility: 'public',
+        images,
+        iconAsset: thumbnail?.identifier ? { identifier: thumbnail.identifier, url: resolveAssetUrl(thumbnail.identifier), remote: true } : null,
+        v4ItemId: item.id,
+        v4VariantId: variant.id,
+      };
+    }));
+    modelParts[part.id] = flattened;
+    const defaultItem = part.items.find((item) => item.id === part.defaultItemId) || part.items[0];
+    const defaultItemId = defaultItem?.variants?.length > 1
+      ? `${defaultItem.id}--${defaultItem.defaultVariantId || defaultItem.variants[0]?.id}`
+      : defaultItem?.id || '';
+    visual[part.id] = defaultItemId;
+    visual.palette[part.id] = colors.find((color) => color.id === channel?.defaultSwatchId)?.value || colors[0].value;
+    const icon = descriptorById.get(part.iconAssetId);
+    return {
+      key: part.id,
+      label: part.name,
+      icon: part.name.slice(0, 2).toUpperCase(),
+      colorKey: part.id,
+      description: 'Animacraft Maker v4 Part',
+      kind: part.required ? 'last-bastion' : 'standard',
+      menuVisible: part.menuVisible !== false,
+      allowRemove: !part.required,
+      defaultItemId,
+      layers: layers.length ? layers : [{ id: `track-${part.id}`, name: part.name, x: 0, y: 0, opacity: 100, blendMode: 'normal', renderOrder: 0 }],
+      colors,
+      iconAsset: icon?.identifier ? { identifier: icon.identifier, url: resolveAssetUrl(icon.identifier), remote: true } : null,
+    };
+  });
+  const layerOrder = (document.layerTracks || []).slice().sort((left, right) => left.order - right.order).flatMap((track) => modelSlots.filter((slot) => slot.layers.some((layer) => layer.id === track.id)).map((slot) => creatorLayerKey(slot.key, track.id)));
+  const fields = suiObjectFields(object);
+  const runtimeAssets = (document.assets || []).filter((asset) => asset.identifier).map((asset) => ({
+    ...asset,
+    assetId: asset.id,
+    url: resolveAssetUrl(asset.identifier),
+    remote: true,
+  }));
+  const editableDocument = structuredClone(document);
+  const releaseCoverId = editableDocument.metadata?.coverAssetId;
+  const releaseCover = editableDocument.assets?.find((asset) => asset.id === releaseCoverId);
+  if (releaseCover?.kind === 'maker-cover') {
+    editableDocument.assets = editableDocument.assets.filter((asset) => asset.id !== releaseCoverId);
+    editableDocument.metadata.coverAssetId = null;
+  }
+  return {
+    canvas: { width: document.canvas.width, height: document.canvas.height },
+    slots: modelSlots,
+    parts: modelParts,
+    slotOrder: modelSlots.map((slot) => slot.key),
+    layerOrder,
+    visual,
+    rules: [],
+    paletteLinks: [],
+    livingContent: normalizeLivingContent(document.livingContent, document.metadata),
+    assets: runtimeAssets,
+    makerDocumentV4: editableDocument,
+    makerRecipeV4: cloneV4Recipe(editableDocument.defaultRecipe),
+    makerRuntimeAssetsV4: new Map(runtimeAssets.map((asset) => [asset.assetId, asset])),
+    publishedMakerDocumentV4: object.objectId ? structuredClone(editableDocument) : null,
+    publishDigest: object.previousTransaction || '',
+    publishStatus: '',
+    makerObjectId: object.objectId || '',
+    makerTreasuryObjectId: object.treasuryId || suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
+    makerAdminCapObjectId: object.adminCapId || '',
+    makerArchived: [true, 'true', 1, '1'].includes(suiField(fields, 'archived')),
+  };
+}
+
+function cloneV4Recipe(recipe) {
+  return structuredClone(recipe || { selections: [], colors: [] });
+}
+
 function makerModelFromManifest(manifest, resolveAssetUrl, object = {}) {
+  if (isMakerV4Document(manifest)) return makerModelFromV4Manifest(manifest, resolveAssetUrl, object);
   const savedParts = Array.isArray(manifest?.parts) ? manifest.parts : [];
   const visual = defaultMakerVisual();
   const modelParts = {};
@@ -1168,18 +1346,19 @@ async function loadBundledMakers() {
     const response = await fetch(template.manifestUrl, { cache: 'no-store' });
     if (!response.ok) throw new Error(`${template.name} manifest returned ${response.status}.`);
     const manifest = await response.json();
-    validateMakerManifest(manifest);
+    validateAnyMakerManifest(manifest);
     const model = makerModelFromManifest(manifest, (identifier) => bundledAssetUrl(template.id, identifier));
     makerModels.set(template.id, model);
+    const manifestMetadata = isMakerV4Document(manifest) ? manifest.metadata : manifest.template;
     Object.assign(template, {
-      name: manifest.template.name,
-      creator: manifest.template.creator,
-      style: manifest.template.style,
-      summary: manifest.template.summary,
-      license: makerLicenseLabel({ licenseKind: ['personal-use', 'free-remix', 'paid-commercial', 'exclusive-commission'].indexOf(manifest.template.license) }),
-      licenseNote: manifest.template.licenseNote,
-      royaltyBps: Number(manifest.template.royaltyBps || 0),
-      mintingEnabled: manifest.template.mintingEnabled !== false,
+      name: manifestMetadata.name,
+      creator: manifestMetadata.creator,
+      style: manifestMetadata.style,
+      summary: manifestMetadata.summary,
+      license: makerLicenseLabel({ licenseKind: ['personal-use', 'free-remix', 'paid-commercial', 'exclusive-commission'].indexOf(manifestMetadata.license?.kind || manifestMetadata.license) }),
+      licenseNote: manifestMetadata.license?.note || manifestMetadata.licenseNote,
+      royaltyBps: Number((isMakerV4Document(manifest) ? manifest.publication?.royaltyBps : manifestMetadata.royaltyBps) || 0),
+      mintingEnabled: (isMakerV4Document(manifest) ? manifest.publication?.mintingEnabled : manifestMetadata.mintingEnabled) !== false,
     });
     if (state.templateId === template.id) applyMakerModelToState(template.id, model);
     return template.id;
@@ -1223,12 +1402,16 @@ async function hydrateChainMaker(object) {
   } catch {
     throw new Error('The Maker manifest is not valid JSON.');
   }
-  validateMakerManifest(manifest);
+  validateAnyMakerManifest(manifest);
   const featuredKey = Object.entries(runtimeConfig.featuredMakers || {}).find(([, objectId]) => objectId === object.objectId)?.[0];
   const recoveredTemplate = templates.find((candidate) => candidate.objectId === object.objectId);
   const id = featuredKey || recoveredTemplate?.id || `chain-${object.objectId}`;
   const policy = suiField(fields, 'policy') || {};
-  const templateData = manifest.template || {};
+  const templateData = isMakerV4Document(manifest) ? manifest.metadata || {} : manifest.template || {};
+  const publicationData = isMakerV4Document(manifest) ? manifest.publication || {} : templateData;
+  const coverDescriptor = isMakerV4Document(manifest)
+    ? manifest.assets?.find((asset) => asset.id === templateData.coverAssetId)
+    : null;
   const template = templates.find((candidate) => candidate.id === id) || {
     id,
     category: 'daily',
@@ -1244,7 +1427,7 @@ async function hydrateChainMaker(object) {
     creator: String(suiField(fields, 'creator') || templateData.creator || 'Sui creator'),
     style: String(templateData.style || 'OC Maker'),
     license: makerLicenseLabel(policy),
-    royaltyBps: Number(suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || templateData.royaltyBps || 0),
+    royaltyBps: Number(suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || publicationData.royaltyBps || 0),
     mintingEnabled: economics.mintingEnabled,
     mintFeeEnabled: economics.mintFeeEnabled,
     mintPriceAtomic: economics.mintPriceAtomic,
@@ -1254,10 +1437,11 @@ async function hydrateChainMaker(object) {
       ? `${(economics.mintPriceAtomic / (10 ** runtimeConfig.paymentCoinDecimals)).toLocaleString()} ${runtimeConfig.paymentCoinSymbol}`
       : 'Free mint',
     summary: String(suiField(fields, 'description') || 'Published Animacraft Character Maker.'),
-    licenseNote: String(templateData.licenseNote || 'License and royalty policy are read from the published Sui OCMaker.'),
+    licenseNote: String(templateData.license?.note || templateData.licenseNote || 'License and royalty policy are read from the published Sui OCMaker.'),
     coverUrl: safeExternalUrl(
       suiField(fields, 'cover_url', 'coverUrl')
       || templateData.coverUrl
+      || (coverDescriptor?.identifier ? walrusQuiltFileUrl(quiltId, coverDescriptor.identifier) : '')
       || (templateData.coverIdentifier ? walrusQuiltFileUrl(quiltId, templateData.coverIdentifier) : ''),
     ),
   });
@@ -1591,6 +1775,8 @@ async function saveCurrentMakerDraft({ silent = false } = {}) {
     templateId,
     savedAt: new Date().toISOString(),
     manifest: creatorManifest(),
+    makerRecipeV4: isMakerV4Document(state.makerDocumentV4) ? cloneV4Recipe(state.makerRecipeV4 || state.makerDocumentV4.defaultRecipe) : null,
+    publishedMakerDocumentV4: isMakerV4Document(state.publishedMakerDocumentV4) ? structuredClone(state.publishedMakerDocumentV4) : null,
     visual: state.visual,
     rules: state.rules,
     paletteLinks: state.paletteLinks,
@@ -1820,13 +2006,14 @@ function syncCreatorAssets() {
 }
 
 function invalidateMakerUpload(message = '') {
-  if (makerIsPublished()) return;
+  if (makerIsPublished() && !makerHasPendingV4Version()) return;
   state.makerUploadSession = null;
   state.pendingMakerAssets = [];
   state.makerUploadStage = 'idle';
   state.makerQuiltId = '';
   state.pendingMakerCoverBlob = null;
   state.pendingMakerManifestJson = '';
+  state.pendingMakerV4Bundle = null;
   state.publishDigest = '';
   state.publishStatus = message;
   const recoveryKey = makerAssetStorageKey();
@@ -2069,6 +2256,10 @@ function setPage(page) {
   const requestedPage = page === 'editor' ? 'make' : page === 'protocol' ? 'docs' : page;
   state.page = !state.walletConnected && !['templates', 'template', 'docs'].includes(requestedPage) ? 'templates' : requestedPage;
   if (state.page === 'make') {
+    if (previousPage !== 'make' && $('legacyPlayerEditor')) {
+      $('legacyPlayerEditor').hidden = true;
+      $('legacyPlayerEditor').classList.remove('handoff-only');
+    }
     const playable = playableSlots();
     if (!playable.some((slot) => slot.key === state.selectedSlot)) state.selectedSlot = playable[0]?.key || '';
   }
@@ -2089,6 +2280,7 @@ function setPage(page) {
 
 function setCreatorView(view) {
   state.creatorView = view;
+  if (view === 'edit' && ['top', 'rules', 'palette', 'preview'].includes(state.editorPanel)) state.editorPanel = 'parts';
   document.querySelector('.maker-list-panel')?.classList.toggle('editing', state.creatorView === 'edit');
   document.querySelectorAll('[data-creator-view]').forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.creatorView === state.creatorView);
@@ -2494,7 +2686,100 @@ function renderRecipe() {
   });
 }
 
+function makerV4DocumentForRelease({ includeGeneratedCover = false, sourceDocument = state.makerDocumentV4 } = {}) {
+  if (!isMakerV4Document(sourceDocument)) return null;
+  const documentV4 = structuredClone(sourceDocument);
+  documentV4.metadata.name = $('creatorTemplateName')?.value || documentV4.metadata.name;
+  documentV4.metadata.summary = $('creatorDescription')?.value ?? documentV4.metadata.summary;
+  documentV4.metadata.creator = $('creatorName')?.value || documentV4.metadata.creator;
+  documentV4.metadata.style = $('creatorWorld')?.value ?? documentV4.metadata.style;
+  documentV4.metadata.license = {
+    kind: $('creatorLicense')?.value || documentV4.metadata.license.kind,
+    note: $('creatorLicenseNote')?.value ?? documentV4.metadata.license.note,
+  };
+  documentV4.publication = {
+    ...documentV4.publication,
+    royaltyBps: Number($('creatorRoyalty')?.value || 0),
+    mintingEnabled: $('creatorMintingEnabled')?.checked !== false,
+    mintFeeEnabled: Boolean($('creatorMintFeeEnabled')?.checked),
+    mintPriceAtomic: $('creatorMintFeeEnabled')?.checked ? decimalCoinToAtomic($('creatorMintPrice')?.value) || 0 : 0,
+    paymentCoinType: runtimeConfig.paymentCoinType,
+    paymentCoinSymbol: runtimeConfig.paymentCoinSymbol,
+    storage: 'walrus',
+    chain: 'sui',
+  };
+  documentV4.runtime = {
+    network: runtimeConfig.network,
+    packageId: runtimeConfig.packageId,
+    assetAddressing: 'walrus-quilt-id+identifier',
+  };
+  documentV4.livingContent = normalizeLivingContent(state.livingContent, documentV4.metadata);
+  if (!includeGeneratedCover) return documentV4;
+
+  const usedIds = new Set(documentV4.assets.map((asset) => asset.id));
+  const usedIdentifiers = new Set(documentV4.assets.map((asset) => asset.identifier).filter(Boolean));
+  let coverAssetId = 'maker-release-cover';
+  let suffix = 2;
+  while (usedIds.has(coverAssetId)) {
+    coverAssetId = `maker-release-cover-${suffix}`;
+    suffix += 1;
+  }
+  let identifier = 'maker-cover.png';
+  suffix = 2;
+  while (usedIdentifiers.has(identifier)) {
+    identifier = `maker-cover-${suffix}.png`;
+    suffix += 1;
+  }
+  documentV4.assets.push({
+    id: coverAssetId,
+    identifier,
+    kind: 'maker-cover',
+    mediaType: 'image/png',
+    width: documentV4.canvas.width,
+    height: documentV4.canvas.height,
+    source: 'generated-release',
+  });
+  documentV4.metadata.coverAssetId = coverAssetId;
+  return documentV4;
+}
+
+async function makerV4RuntimeAssetsForRelease(documentV4, coverBlob) {
+  const runtimeAssets = new Map();
+  currentV4RuntimeAssets().forEach((record) => {
+    const assetId = String(record.assetId || record.id || '');
+    if (assetId) runtimeAssets.set(assetId, record);
+  });
+  const coverAssetId = documentV4.metadata.coverAssetId;
+  runtimeAssets.set(coverAssetId, {
+    assetId: coverAssetId,
+    blob: coverBlob,
+    file: coverBlob,
+    fileName: documentV4.assets.find((asset) => asset.id === coverAssetId)?.identifier || 'maker-cover.png',
+  });
+  for (const descriptor of documentV4.assets) {
+    if (runtimeAssets.get(descriptor.id)?.blob || runtimeAssets.get(descriptor.id)?.file) continue;
+    const record = runtimeAssets.get(descriptor.id);
+    const url = record?.url
+      || (activeTemplate()?.quiltId && descriptor.identifier ? walrusQuiltFileUrl(activeTemplate().quiltId, descriptor.identifier) : '');
+    if (!url) continue;
+    const response = await fetchWalrusWithBackoff(url);
+    if (!response.ok) throw new Error(`Could not reload ${descriptor.identifier} for this Maker version (${response.status}).`);
+    const blob = await responseBlobWithinLimit(response, 20 * 1024 * 1024, `Maker asset ${descriptor.identifier}`);
+    runtimeAssets.set(descriptor.id, { ...record, assetId: descriptor.id, blob, file: blob, url });
+  }
+  return runtimeAssets;
+}
+
+function makerV4PublicExtensions(documentV4) {
+  const expansionDrafts = structuredClone(documentV4.extensions?.expansionDrafts || []);
+  return expansionDrafts.length
+    ? { expansionRuntime: 'embedded-v1', expansionDrafts }
+    : {};
+}
+
 function creatorManifest() {
+  const documentV4 = makerV4DocumentForRelease();
+  if (documentV4) return documentV4;
   return {
     schemaVersion: 'animacraft.creator-template.v3',
     template: {
@@ -2580,6 +2865,13 @@ function creatorManifest() {
 }
 
 function creatorUploadManifest() {
+  const documentV4 = makerV4DocumentForRelease({ includeGeneratedCover: true });
+  if (documentV4) {
+    return buildMakerV4PublicationManifest(documentV4, {
+      previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
+      publicExtensions: makerV4PublicExtensions(documentV4),
+    });
+  }
   const manifest = creatorManifest();
   manifest.template.coverIdentifier = 'maker-cover.png';
   manifest.parts = manifest.parts.map((part) => {
@@ -2646,6 +2938,7 @@ function makerCoverAsset(coverBlob) {
 }
 
 function makerUploadEntries() {
+  if (state.pendingMakerV4Bundle?.entries?.length) return state.pendingMakerV4Bundle.entries;
   const manifestBlob = new Blob([state.pendingMakerManifestJson], { type: 'application/json' });
   return [
     ...state.pendingMakerAssets.map((asset) => ({ blob: asset.file, identifier: asset.identifier, kind: asset.kind })),
@@ -2653,7 +2946,75 @@ function makerUploadEntries() {
   ];
 }
 
+function collapseMakerV4AssetAliases(documentV4) {
+  const canonicalByIdentifier = new Map();
+  const aliases = new Map();
+  documentV4.assets.forEach((asset) => {
+    if (!asset.identifier || !canonicalByIdentifier.has(asset.identifier)) {
+      if (asset.identifier) canonicalByIdentifier.set(asset.identifier, asset.id);
+      return;
+    }
+    aliases.set(asset.id, canonicalByIdentifier.get(asset.identifier));
+  });
+  if (!aliases.size) return documentV4;
+  const resolve = (assetId) => aliases.get(assetId) || assetId;
+  documentV4.metadata.coverAssetId = resolve(documentV4.metadata.coverAssetId);
+  documentV4.parts.forEach((part) => {
+    part.iconAssetId = resolve(part.iconAssetId);
+    part.items.forEach((item) => {
+      item.thumbnailAssetId = resolve(item.thumbnailAssetId);
+      item.variants.forEach((variant) => variant.layerBindings.forEach((binding) => {
+        binding.assetId = resolve(binding.assetId);
+        binding.assetsBySwatch = (binding.assetsBySwatch || []).map((mapping) => ({
+          ...mapping,
+          assetId: resolve(mapping.assetId),
+        }));
+      }));
+    });
+  });
+  documentV4.assets = documentV4.assets.filter((asset) => !aliases.has(asset.id));
+  return documentV4;
+}
+
+function currentMakerV4OcBundle({ createdAt = new Date().toISOString(), integrity = null } = {}) {
+  if (!isMakerV4Document(state.makerDocumentV4)) return null;
+  const runtimeDocument = isMakerV4Document(state.playerRuntimeDocumentV4)
+    && state.playerRuntimeDocumentV4.version.versionId === state.makerDocumentV4.version.versionId
+    ? state.playerRuntimeDocumentV4
+    : state.makerDocumentV4;
+  const documentV4 = collapseMakerV4AssetAliases(makerV4DocumentForRelease({
+    includeGeneratedCover: true,
+    sourceDocument: runtimeDocument,
+  }));
+  const profile = {
+    name: $('profileName').value || 'Untitled OC',
+    world: $('profileWorld').value || activeTemplate().style,
+    description: $('profileDescription').value,
+    tags: splitList($('profileTags').value),
+  };
+  const livingContent = soulidityContentManifest(state.livingContent, {
+    maker: activeTemplate(),
+    makerId: activeMakerObjectId(),
+    profile,
+  });
+  return buildMakerV4OcPackage({
+    document: documentV4,
+    recipe: state.playerRecipeV4 || state.makerRecipeV4 || documentV4.defaultRecipe,
+    profile,
+    livingContent,
+    makerObjectId: activeMakerObjectId(),
+    manifestBlobId: activeTemplate()?.quiltId || state.makerQuiltId || '',
+    createdAt,
+    integrity,
+  });
+}
+
 function ocPackage() {
+  if (isMakerV4Document(state.makerDocumentV4)
+    && activeTemplate()?.source === 'chain'
+    && !makerHasPendingV4Version()) {
+    return currentMakerV4OcBundle().package;
+  }
   const profile = {
     name: $('profileName').value || 'Untitled OC',
     world: $('profileWorld').value || activeTemplate().style,
@@ -2833,6 +3194,15 @@ function renderRuleItemOptions(selectId, partKey, preferredValue = '') {
 }
 
 function makerPublicationIssues() {
+  if (isMakerV4Document(state.makerDocumentV4)) {
+    const issues = (makerWorkspace?.getPublicationIssues?.() || []).map((issue) => issue.message || String(issue));
+    try {
+      creatorUploadManifest();
+    } catch (error) {
+      issues.push(error.message || 'The Maker v4 publication manifest is invalid.');
+    }
+    return [...new Set(issues)];
+  }
   const issues = [];
   const makerParts = allSlots();
   const publicItems = makerParts.flatMap((slot) => slotItems(slot.key).filter((item) => item.visibility !== 'private'));
@@ -2913,7 +3283,7 @@ function makerPublicationIssues() {
   if (mintFeeEnabled && !canonicalSoulMintEnabled) issues.push('Paid mint is release-gated until the canonical Soulidity adapter is deployed and verified.');
   if (mintFeeEnabled && (!mintPriceAtomic || mintPriceAtomic <= 0)) issues.push(`Enter a positive ${runtimeConfig.paymentCoinSymbol} mint price with no more than ${runtimeConfig.paymentCoinDecimals} decimal places.`);
   try {
-    validateMakerManifest(creatorUploadManifest());
+    validateAnyMakerManifest(creatorUploadManifest());
   } catch (error) {
     issues.push(error.message || 'The public Maker manifest is invalid.');
   }
@@ -3044,8 +3414,9 @@ function renderLivingContent() {
   $('livingDocumentFilename').textContent = meta.filename;
   $('livingDocumentSize').textContent = `${new TextEncoder().encode(source).length.toLocaleString()} bytes`;
   if ($('livingDocumentSource').value !== source) $('livingDocumentSource').value = source;
-  $('livingDocumentSource').disabled = makerIsPublished();
-  $('restoreLivingDefault').disabled = makerIsPublished() || !state.livingContent.customized[state.livingDocument];
+  const livingLocked = makerIsPublished() && !makerHasPendingV4Version();
+  $('livingDocumentSource').disabled = livingLocked;
+  $('restoreLivingDefault').disabled = livingLocked || !state.livingContent.customized[state.livingDocument];
   const customizedCount = Object.values(state.livingContent.customized).filter(Boolean).length;
   $('livingContentStatus').textContent = customizedCount ? `${customizedCount} customized` : 'Defaults ready';
   $('livingSoulState').textContent = state.livingContent.customized.soulMd ? 'Customized' : 'Default';
@@ -3054,7 +3425,11 @@ function renderLivingContent() {
 }
 
 function renderPackage() {
-  $('packagePreview').textContent = JSON.stringify(ocPackage(), null, 2);
+  try {
+    $('packagePreview').textContent = JSON.stringify(ocPackage(), null, 2);
+  } catch (error) {
+    $('packagePreview').textContent = JSON.stringify({ status: 'draft', issue: error.message || 'OC package is not ready.' }, null, 2);
+  }
 }
 
 function ocRecipeIssues() {
@@ -3065,6 +3440,22 @@ function ocRecipeIssues() {
   if (utf8Length($('profileWorld').value) > 128) issues.push('OC world cannot exceed 128 UTF-8 bytes.');
   if (utf8Length($('profileDescription').value) > 2_000) issues.push('OC description cannot exceed 2,000 UTF-8 bytes.');
   if (utf8Length($('profileTags').value) > 1_000) issues.push('OC tags cannot exceed 1,000 UTF-8 bytes.');
+  if (isMakerV4Document(state.makerDocumentV4)) {
+    if (makerHasPendingV4Version()) issues.push('Publish this Maker version before using it to mint a Soul. Player test remains available.');
+    const recipeDocument = isMakerV4Document(state.playerRuntimeDocumentV4)
+      && state.playerRuntimeDocumentV4.version.versionId === state.makerDocumentV4.version.versionId
+      ? state.playerRuntimeDocumentV4
+      : state.makerDocumentV4;
+    const recipe = state.playerRecipeV4 || state.makerRecipeV4 || recipeDocument.defaultRecipe;
+    if (!recipe?.selections?.length) issues.push('Choose at least one Item for this OC.');
+    const evaluated = evaluateRecipe(recipeDocument, recipe);
+    evaluated.violations.forEach((violation) => {
+      const part = recipeDocument.parts.find((candidate) => candidate.id === violation.partId || candidate.id === violation.trigger?.partId);
+      issues.push(`${part?.name || violation.partId || 'The current OC'}: ${String(violation.code || 'invalid selection').replaceAll('-', ' ')}.`);
+    });
+    if (state.makerArchived) issues.push('This Maker is archived and does not accept new Soul authorizations.');
+    return [...new Set(issues)];
+  }
   const recipe = ocPackage().recipe;
   if (!recipe.length) issues.push('Choose at least one Item for this OC.');
   allSlots().forEach((slot) => {
@@ -3138,7 +3529,11 @@ function renderMintAction() {
   });
 }
 
-async function renderOcImageBlob() {
+async function renderOcImageBlob(recipeOverride = null) {
+  if (isMakerV4Document(state.makerDocumentV4) && makerWorkspace?.renderRecipeToBlob) {
+    const recipe = recipeOverride || state.playerRecipeV4 || state.makerRecipeV4 || state.makerDocumentV4.defaultRecipe;
+    return makerWorkspace.renderRecipeToBlob(recipe);
+  }
   const canvas = document.createElement('canvas');
   canvas.width = state.makerCanvas.width;
   canvas.height = state.makerCanvas.height;
@@ -3217,7 +3612,7 @@ async function renderOcImageBlob() {
 async function restoreMakerUploadRecovery(templateId = state.templateId, { force = false } = {}) {
   const recoveryKey = makerAssetStorageKey(templateId);
   if (force) loadedMakerUploadRecoveries.delete(recoveryKey);
-  if (loadedMakerUploadRecoveries.has(recoveryKey) || makerIsPublished()) return;
+  if (loadedMakerUploadRecoveries.has(recoveryKey) || (makerIsPublished() && !makerHasPendingV4Version())) return;
   loadedMakerUploadRecoveries.add(recoveryKey);
   try {
     const recovery = await loadMakerUploadRecovery(recoveryKey);
@@ -3230,7 +3625,32 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
     }
     if (!recovery.coverBlob) throw new Error('The saved Maker cover is missing from upload recovery.');
     state.pendingMakerCoverBlob = recovery.coverBlob;
-    state.pendingMakerAssets = [...publishableAssets(), makerCoverAsset(recovery.coverBlob)];
+    if (isMakerV4Document(state.makerDocumentV4)) {
+      const documentV4 = makerV4DocumentForRelease({ includeGeneratedCover: true });
+      const runtimeAssets = await makerV4RuntimeAssetsForRelease(documentV4, recovery.coverBlob);
+      state.pendingMakerV4Bundle = buildMakerV4PublicationBundle(documentV4, runtimeAssets, {
+        previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
+        publicExtensions: makerV4PublicExtensions(documentV4),
+      });
+      if (state.pendingMakerV4Bundle.manifestJson !== recovery.manifestJson) {
+        throw new Error('The Maker v4 release graph no longer matches this Walrus checkpoint.');
+      }
+      state.pendingMakerAssets = state.pendingMakerV4Bundle.assetEntries.map((entry) => ({
+        assetId: entry.assetId,
+        file: entry.blob,
+        blob: entry.blob,
+        name: entry.identifier,
+        size: entry.blob?.size || 0,
+        type: entry.blob?.type || 'application/octet-stream',
+        kind: entry.kind,
+        identifier: entry.identifier,
+        patchId: '',
+        blobId: '',
+      }));
+    } else {
+      state.pendingMakerV4Bundle = null;
+      state.pendingMakerAssets = [...publishableAssets(), makerCoverAsset(recovery.coverBlob)];
+    }
     state.pendingMakerAssets.forEach((asset) => {
       if (!asset.file) throw new Error(`${asset.name} is missing from the local draft asset store.`);
     });
@@ -3258,6 +3678,7 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
     state.pendingMakerAssets = [];
     state.pendingMakerCoverBlob = null;
     state.pendingMakerManifestJson = '';
+    state.pendingMakerV4Bundle = null;
     state.makerUploadStage = 'idle';
     state.publishStatus = error.message || 'Could not restore the saved Walrus upload.';
   } finally {
@@ -3365,6 +3786,7 @@ function renderImageMakerList() {
     button.addEventListener('click', () => {
       if (button.dataset.editMaker) activateMakerModel(button.dataset.editMaker);
       syncTemplateFields();
+      state.editorPanel = 'parts';
       setCreatorView('edit');
       renderAll();
       loadActiveTreasuryBalance();
@@ -3414,17 +3836,19 @@ function requestDeleteMaker(templateId = state.templateId) {
 
 function renderMakerLifecycle() {
   const lifecycle = makerLifecycle();
-  const locked = makerIsPublished();
+  const locked = makerIsPublished() && !makerHasPendingV4Version();
   const labels = {
     starter: ['Starter workspace', 'This example is editable in the current browser. Save it as a new local Maker before production use.'],
     draft: ['Local draft', 'This draft is stored for the connected wallet in this browser and may be edited or permanently deleted.'],
     published: ['Published on Sui', 'The published Maker, rules, license, and certified Walrus manifest are immutable. Archive it to stop new Soul authorizations.'],
     archived: ['Archived on Sui', 'The historical record and existing Souls remain valid, but this Maker no longer accepts new Soul authorizations.'],
   };
-  const [title, copy] = labels[lifecycle];
+  const [title, copy] = makerHasPendingV4Version()
+    ? ['Version draft', `Editing ${state.makerDocumentV4.version.versionId}. The previous Maker and existing OCs remain pinned to ${state.publishedMakerDocumentV4.version.versionId}.`]
+    : labels[lifecycle];
   if ($('makerLifecycleBadge')) {
     $('makerLifecycleBadge').textContent = title;
-    $('makerLifecycleBadge').className = `maker-lifecycle-badge ${lifecycle}`;
+    $('makerLifecycleBadge').className = `maker-lifecycle-badge ${makerHasPendingV4Version() ? 'draft' : lifecycle}`;
   }
   if ($('makerLifecycleTitle')) $('makerLifecycleTitle').textContent = title;
   if ($('makerLifecycleCopy')) $('makerLifecycleCopy').textContent = copy;
@@ -3530,6 +3954,7 @@ function renderCreatorDetails() {
     published: 'Published',
     archived: 'Archived',
   }[lifecycle] || 'Local draft';
+  const displayedLifecycleLabel = makerHasPendingV4Version() ? 'Version draft' : lifecycleLabel;
   $('detailMakerTitle').textContent = template.name;
   $('editingMakerTitle').textContent = template.name;
   $('editingMakerTitle').title = template.name;
@@ -3547,8 +3972,8 @@ function renderCreatorDetails() {
   }
   if ($('makerTopChainState')) $('makerTopChainState').textContent = state.publishDigest ? 'Published' : !packageConfigured() ? 'Package pending' : 'Local draft';
   const canvasRatio = state.makerCanvas.width === state.makerCanvas.height ? '1:1' : '9:16';
-  if ($('makerTopLifecycleTag')) $('makerTopLifecycleTag').textContent = lifecycleLabel;
-  if ($('makerWorkspaceLifecycleTag')) $('makerWorkspaceLifecycleTag').textContent = lifecycleLabel;
+  if ($('makerTopLifecycleTag')) $('makerTopLifecycleTag').textContent = displayedLifecycleLabel;
+  if ($('makerWorkspaceLifecycleTag')) $('makerWorkspaceLifecycleTag').textContent = displayedLifecycleLabel;
   if ($('makerTopCanvasTag')) $('makerTopCanvasTag').textContent = canvasRatio;
   if ($('makerCanvasTag')) $('makerCanvasTag').textContent = canvasRatio;
   if ($('canvasSizeLabel')) $('canvasSizeLabel').textContent = `${state.makerCanvas.width} × ${state.makerCanvas.height}`;
@@ -4235,8 +4660,11 @@ function publishReadiness() {
 
 function renderPublishAction() {
   if (!$('publishMakerOnchain')) return;
-  const locked = makerIsPublished();
-  const baseReady = !locked && packageConfigured() && state.walletConnected && itemLayerAssets().length > 0;
+  const locked = makerIsPublished() && !makerHasPendingV4Version();
+  const hasMakerAssets = isMakerV4Document(state.makerDocumentV4)
+    ? state.makerDocumentV4.parts.some((part) => part.items.some((item) => item.variants.some((variant) => variant.layerBindings.length)))
+    : itemLayerAssets().length > 0;
+  const baseReady = !locked && packageConfigured() && state.walletConnected && hasMakerAssets;
   $('resumeMakerUpload').disabled = locked || state.publishing || !state.walletConnected || !state.hasMakerUploadRecovery;
   $('prepareMakerUpload').disabled = state.publishing || !baseReady || state.makerUploadStage !== 'idle';
   $('registerMakerUpload').disabled = state.publishing || !state.walletConnected || !['encoded', 'registered'].includes(state.makerUploadStage);
@@ -4322,16 +4750,40 @@ async function prepareMakerUpload() {
     syncCreatorAssets();
     const issues = makerPublicationIssues();
     if (issues.length) throw new Error(issues[0]);
-    const coverBlob = await renderOcImageBlob();
+    const coverBlob = await renderOcImageBlob(state.makerDocumentV4?.defaultRecipe || null);
     state.pendingMakerCoverBlob = coverBlob;
-    state.pendingMakerAssets = [
-      ...publishableAssets(),
-      makerCoverAsset(coverBlob),
-    ];
+    if (isMakerV4Document(state.makerDocumentV4)) {
+      const documentV4 = makerV4DocumentForRelease({ includeGeneratedCover: true });
+      const runtimeAssets = await makerV4RuntimeAssetsForRelease(documentV4, coverBlob);
+      const bundle = buildMakerV4PublicationBundle(documentV4, runtimeAssets, {
+        previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
+        publicExtensions: makerV4PublicExtensions(documentV4),
+      });
+      state.pendingMakerV4Bundle = bundle;
+      state.pendingMakerAssets = bundle.assetEntries.map((entry) => ({
+        assetId: entry.assetId,
+        file: entry.blob,
+        blob: entry.blob,
+        name: entry.identifier,
+        size: entry.blob?.size || 0,
+        type: entry.blob?.type || 'application/octet-stream',
+        kind: entry.kind,
+        identifier: entry.identifier,
+        patchId: '',
+        blobId: '',
+      }));
+      state.pendingMakerManifestJson = bundle.manifestJson;
+    } else {
+      state.pendingMakerV4Bundle = null;
+      state.pendingMakerAssets = [
+        ...publishableAssets(),
+        makerCoverAsset(coverBlob),
+      ];
+      state.pendingMakerManifestJson = JSON.stringify(creatorUploadManifest());
+    }
     state.pendingMakerAssets.forEach((asset) => {
       if (!asset.file) throw new Error(`${asset.name} is no longer available. Select the PNG files again.`);
     });
-    state.pendingMakerManifestJson = JSON.stringify(creatorUploadManifest());
     state.makerUploadSession = await prepareWalrusUpload(makerUploadEntries());
     state.makerQuiltId = state.makerUploadSession.quiltBlobId;
     state.makerUploadStage = 'encoded';
@@ -4416,51 +4868,79 @@ async function publishCurrentMaker() {
       state.makerUploadStage = 'idle';
       state.makerQuiltId = '';
       state.pendingMakerManifestJson = '';
+      state.pendingMakerV4Bundle = null;
       state.pendingMakerAssets.forEach((asset) => {
         asset.patchId = '';
         asset.blobId = '';
       });
       throw new Error('The maker changed after upload. Prepare a new quilt before publishing.');
     }
-    const layerAssets = state.pendingMakerAssets.filter((asset) => asset.kind === 'item-layer');
-    const assetSlots = [...new Set(layerAssets.map((asset) => asset.slot))];
-    const makerParts = assetSlots.map((key, index) => {
-      const slot = allSlots().find((candidate) => candidate.key === key);
-      const configuredOrder = allSlots().findIndex((candidate) => candidate.key === key);
-      return {
-        key,
-        label: slot?.label || key,
-        kind: slot?.kind || 'standard',
-        renderOrder: configuredOrder >= 0 ? configuredOrder : index,
-        menuVisible: slot?.menuVisible !== false,
-        required: slot?.allowRemove === false,
-        colors: creatorColors(slot).map((color) => color.value),
-      };
-    });
-    const makerItems = assetSlots.flatMap((partKey) => slotItems(partKey).filter((item) => item.visibility !== 'private').flatMap((item) => {
-      const itemAssets = layerAssets.filter((asset) => asset.slot === partKey && asset.itemId === item.id);
-      if (!itemAssets.length) return [];
-      const icon = state.pendingMakerAssets.find((asset) => asset.kind === 'item-icon' && asset.slot === partKey && asset.itemId === item.id);
-      return [{
-        partKey,
-        itemKey: item.id,
-        label: item.label,
-        blobId: itemAssets[0].patchId,
-        iconBlobId: icon?.patchId || '',
-        gateKind: 0,
-      }];
-    }));
-    const makerRules = state.rules.filter((rule) => assetSlots.includes(rule.leftPartKey) && assetSlots.includes(rule.rightPartKey));
-    if (makerRules.length !== state.rules.length) throw new Error('Every rule must reference a part with uploaded PNG items.');
-
-    const transaction = await publishMaker({
-      creator: {
-        profileId: state.creatorProfileObjectId,
-        displayName: $('creatorName').value.trim(),
-        bio: `${$('creatorWorld').value.trim()} OC maker creator`,
-        avatarUrl: '',
-      },
-      maker: {
+    let makerParts;
+    let makerItems;
+    let makerRules;
+    let makerPaletteLinks;
+    let makerPayload;
+    let creatorDisplayName = $('creatorName').value.trim();
+    let creatorBio = `${$('creatorWorld').value.trim()} OC maker creator`;
+    let authorizationCoverage = 'complete';
+    if (isMakerV4Document(state.makerDocumentV4)) {
+      const publishedManifest = JSON.parse(state.pendingMakerManifestJson);
+      const uploadEntries = state.pendingMakerV4Bundle?.entries || makerUploadEntries();
+      const locations = indexMakerV4UploadResults(uploadEntries, state.makerUploadSession.files);
+      const coverLocation = locations.get(publishedManifest.metadata.coverAssetId);
+      const expansionDrafts = publishedManifest.extensions?.expansionDrafts || [];
+      let moveDocument = publishedManifest;
+      if (expansionDrafts.length) {
+        const merged = mergeExpansionPacks(publishedManifest, expansionDrafts, { returnResult: true });
+        if (!merged.compatible) throw new Error('An embedded ExpansionPack is no longer compatible with this Maker version.');
+        moveDocument = collapseMakerV4AssetAliases(merged.maker);
+      }
+      const summary = buildMakerV4MoveSummary(moveDocument, {
+        assetLocations: locations,
+        coverUrl: walrusFileUrl(coverLocation?.id || coverLocation?.patchId || ''),
+        previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
+      });
+      makerParts = summary.parts;
+      makerItems = summary.items;
+      makerRules = summary.rules;
+      makerPaletteLinks = summary.paletteLinks;
+      makerPayload = summary.maker;
+      creatorDisplayName = publishedManifest.metadata.creator;
+      creatorBio = `${publishedManifest.metadata.style} OC maker creator`;
+      authorizationCoverage = summary.authorizationCoverage;
+    } else {
+      const layerAssets = state.pendingMakerAssets.filter((asset) => asset.kind === 'item-layer');
+      const assetSlots = [...new Set(layerAssets.map((asset) => asset.slot))];
+      makerParts = assetSlots.map((key, index) => {
+        const slot = allSlots().find((candidate) => candidate.key === key);
+        const configuredOrder = allSlots().findIndex((candidate) => candidate.key === key);
+        return {
+          key,
+          label: slot?.label || key,
+          kind: slot?.kind || 'standard',
+          renderOrder: configuredOrder >= 0 ? configuredOrder : index,
+          menuVisible: slot?.menuVisible !== false,
+          required: slot?.allowRemove === false,
+          colors: creatorColors(slot).map((color) => color.value),
+        };
+      });
+      makerItems = assetSlots.flatMap((partKey) => slotItems(partKey).filter((item) => item.visibility !== 'private').flatMap((item) => {
+        const itemAssets = layerAssets.filter((asset) => asset.slot === partKey && asset.itemId === item.id);
+        if (!itemAssets.length) return [];
+        const icon = state.pendingMakerAssets.find((asset) => asset.kind === 'item-icon' && asset.slot === partKey && asset.itemId === item.id);
+        return [{
+          partKey,
+          itemKey: item.id,
+          label: item.label,
+          blobId: itemAssets[0].patchId,
+          iconBlobId: icon?.patchId || '',
+          gateKind: 0,
+        }];
+      }));
+      makerRules = state.rules.filter((rule) => assetSlots.includes(rule.leftPartKey) && assetSlots.includes(rule.rightPartKey));
+      if (makerRules.length !== state.rules.length) throw new Error('Every rule must reference a part with uploaded PNG items.');
+      makerPaletteLinks = state.paletteLinks;
+      makerPayload = {
         name: $('creatorTemplateName').value.trim(),
         description: activeTemplate().summary,
         coverUrl: walrusFileUrl(state.pendingMakerAssets.find((asset) => asset.kind === 'maker-cover')?.patchId),
@@ -4469,12 +4949,22 @@ async function publishCurrentMaker() {
         mintingEnabled: $('creatorMintingEnabled').checked,
         mintFeeEnabled: $('creatorMintFeeEnabled').checked,
         mintPriceAtomic: $('creatorMintFeeEnabled').checked ? decimalCoinToAtomic($('creatorMintPrice').value) : 0,
+      };
+    }
+
+    const transaction = await publishMaker({
+      creator: {
+        profileId: state.creatorProfileObjectId,
+        displayName: creatorDisplayName,
+        bio: creatorBio,
+        avatarUrl: '',
       },
+      maker: makerPayload,
       manifestBlobId: state.makerQuiltId,
       parts: makerParts,
       items: makerItems,
       rules: makerRules,
-      paletteLinks: state.paletteLinks,
+      paletteLinks: makerPaletteLinks,
     });
     state.publishDigest = transaction.digest;
     state.makerObjectId = transaction.makerObjectId || '';
@@ -4483,14 +4973,20 @@ async function publishCurrentMaker() {
     state.creatorProfileObjectId = transaction.creatorProfileObjectId || state.creatorProfileObjectId;
     state.makerArchived = false;
     state.publishStatus = state.makerObjectId
-      ? ''
+      ? authorizationCoverage === 'partial'
+        ? 'Published. Full requires, hierarchy, and visibility rules remain authoritative in the versioned Walrus manifest; Sui indexes its supported subset.'
+        : ''
       : 'Published on Sui. The object id is still indexing, so this browser is retaining the recovery draft.';
+    if (isMakerV4Document(state.makerDocumentV4)) {
+      state.publishedMakerDocumentV4 = structuredClone(state.makerDocumentV4);
+    }
     Object.assign(activeTemplate(), {
       source: state.makerObjectId ? 'chain' : 'local',
       owned: true,
       objectId: state.makerObjectId,
       treasuryId: state.makerTreasuryObjectId,
       adminCapId: state.makerAdminCapObjectId,
+      coverUrl: makerPayload.coverUrl,
       mintingEnabled: $('creatorMintingEnabled').checked,
       mintFeeEnabled: $('creatorMintFeeEnabled').checked,
       mintPriceAtomic: $('creatorMintFeeEnabled').checked ? decimalCoinToAtomic($('creatorMintPrice').value) : 0,
@@ -4540,22 +5036,44 @@ async function prepareOcUpload() {
   try {
     const issues = ocRecipeIssues();
     if (issues.length) throw new Error(issues[0]);
-    const oc = ocPackage();
     const image = await renderOcImageBlob();
-    const recipeJson = JSON.stringify(oc.recipe);
-    const chainRecipe = oc.recipe.map((slot) => ({
-      partKey: slot.slot,
-      itemKey: slot.part,
-      colorHex: slot.color,
-      renderOrder: slot.renderOrder,
-    }));
+    const useV4 = isMakerV4Document(state.makerDocumentV4);
+    const createdAt = new Date().toISOString();
+    let oc;
+    let recipeJson;
+    let chainRecipe;
+    let v4Bundle = null;
+    if (useV4) {
+      v4Bundle = currentMakerV4OcBundle({ createdAt });
+      chainRecipe = v4Bundle.suiRecipe;
+      recipeJson = v4Bundle.fullRecipeJson;
+    } else {
+      oc = ocPackage();
+      recipeJson = JSON.stringify(oc.recipe);
+      chainRecipe = oc.recipe.map((slot) => ({
+        partKey: slot.slot,
+        itemKey: slot.part,
+        colorHex: slot.color,
+        renderOrder: slot.renderOrder,
+      }));
+    }
     const recipeHash = await hashRecipe(chainRecipe);
-    oc.integrity = {
+    const integrity = {
       recipeEncoding: 'BCS vector<RecipeSlot>',
       recipeHashAlgorithm: 'SHA-256',
       recipeHash: bytesToHex(recipeHash),
     };
-    const profile = new Blob([JSON.stringify(oc)], { type: 'application/json' });
+    let profile;
+    if (useV4) {
+      v4Bundle = currentMakerV4OcBundle({ createdAt, integrity });
+      oc = v4Bundle.package;
+      recipeJson = v4Bundle.fullRecipeJson;
+      const entries = buildMakerV4OcUploadEntries(image, v4Bundle);
+      profile = entries[1].blob;
+    } else {
+      oc.integrity = integrity;
+      profile = new Blob([JSON.stringify(oc)], { type: 'application/json' });
+    }
     state.pendingOcPackage = oc;
     state.pendingOcImageBlob = image;
     state.pendingOcProfileBlob = profile;
@@ -4699,14 +5217,61 @@ async function restoreMakerDraft(templateId = state.templateId) {
       if (templateId === state.templateId) localStorage.removeItem('animacraft-maker-draft-v1');
     }
     if (state.templateId !== templateId || (draft.templateId && draft.templateId !== templateId)) return;
-    if (draft.visual && typeof draft.visual === 'object') {
+    let restoredV4 = false;
+    if (isMakerV4Document(draft.manifest)) {
+      validateMakerV4Document(draft.manifest, { mode: 'draft' });
+      const documentV4 = structuredClone(draft.manifest);
+      const restoredModel = makerModelFromV4Manifest(documentV4, () => '');
+      state.makerCanvas = restoredModel.canvas;
+      state.makerSlots = restoredModel.slots;
+      state.makerParts = restoredModel.parts;
+      state.slotOrder = restoredModel.slotOrder;
+      state.layerOrder = restoredModel.layerOrder;
+      state.visual = restoredModel.visual;
+      state.rules = restoredModel.rules;
+      state.paletteLinks = restoredModel.paletteLinks;
+      state.makerDocumentV4 = documentV4;
+      state.makerRecipeV4 = cloneV4Recipe(draft.makerRecipeV4 || documentV4.defaultRecipe);
+      state.publishedMakerDocumentV4 = isMakerV4Document(draft.publishedMakerDocumentV4)
+        ? structuredClone(draft.publishedMakerDocumentV4)
+        : null;
+      state.makerRuntimeAssetsV4 = restoredModel.makerRuntimeAssetsV4;
+      syncLegacyVisualFromV4(documentV4, state.makerRecipeV4);
+      const currentTemplate = activeTemplate();
+      Object.assign(currentTemplate, {
+        name: documentV4.metadata.name,
+        summary: documentV4.metadata.summary,
+        creator: documentV4.metadata.creator,
+        style: documentV4.metadata.style,
+        license: creatorLicenseLabels[documentV4.metadata.license.kind] || 'Personal use',
+        licenseNote: documentV4.metadata.license.note,
+        royaltyBps: documentV4.publication.royaltyBps,
+        mintingEnabled: documentV4.publication.mintingEnabled,
+        mintFeeEnabled: documentV4.publication.mintFeeEnabled,
+        mintPriceAtomic: documentV4.publication.mintPriceAtomic,
+      });
+      $('creatorTemplateName').value = currentTemplate.name;
+      $('creatorDescription').value = currentTemplate.summary;
+      $('creatorName').value = currentTemplate.creator;
+      $('creatorWorld').value = currentTemplate.style;
+      $('creatorLicense').value = documentV4.metadata.license.kind;
+      $('creatorLicenseNote').value = currentTemplate.licenseNote;
+      $('creatorRoyalty').value = currentTemplate.royaltyBps;
+      $('creatorMintingEnabled').checked = currentTemplate.mintingEnabled;
+      $('creatorMintFeeEnabled').checked = currentTemplate.mintFeeEnabled;
+      $('creatorMintPrice').value = currentTemplate.mintPriceAtomic
+        ? String(atomicCoinToDecimal(currentTemplate.mintPriceAtomic))
+        : '1';
+      restoredV4 = true;
+    }
+    if (!restoredV4 && draft.visual && typeof draft.visual === 'object') {
       const restoredVisual = structuredClone(draft.visual);
       restoredVisual.palette = Object.fromEntries(Object.entries(restoredVisual.palette || {}).map(([key, value]) => [key, safeCssColor(value)]));
       state.visual = restoredVisual;
     }
-    if (Array.isArray(draft.rules)) state.rules = draft.rules.slice(0, MAX_MAKER_RULES).filter((rule) => rule && typeof rule === 'object');
-    if (Array.isArray(draft.paletteLinks)) state.paletteLinks = draft.paletteLinks.slice(0, MAX_MAKER_RULES).filter((link) => link && typeof link === 'object');
-    if (Array.isArray(draft.manifest?.parts)) {
+    if (!restoredV4 && Array.isArray(draft.rules)) state.rules = draft.rules.slice(0, MAX_MAKER_RULES).filter((rule) => rule && typeof rule === 'object');
+    if (!restoredV4 && Array.isArray(draft.paletteLinks)) state.paletteLinks = draft.paletteLinks.slice(0, MAX_MAKER_RULES).filter((link) => link && typeof link === 'object');
+    if (!restoredV4 && Array.isArray(draft.manifest?.parts)) {
       state.makerSlots = [];
       state.makerParts = {};
       state.slotOrder = [];
@@ -4828,6 +5393,153 @@ async function restoreMakerDraft(templateId = state.templateId) {
   }
 }
 
+function currentMakerV4Source() {
+  if (isMakerV4Document(state.makerDocumentV4)) return state.makerDocumentV4;
+  const template = activeTemplate();
+  try {
+    return migrateMakerV3ToV4({
+      template: {
+        id: template.id || state.templateId || 'system-workspace',
+        name: template.name,
+        summary: template.summary,
+        creator: template.creator,
+        style: template.style,
+        license: ['personal-use', 'free-remix', 'paid-commercial', 'exclusive-commission'].find((kind) => kind === $('creatorLicense')?.value) || 'personal-use',
+        licenseNote: template.licenseNote || $('creatorLicenseNote')?.value || 'Set a public Maker license before publication.',
+        royaltyBps: Number(template.royaltyBps || 0),
+        mintingEnabled: template.mintingEnabled !== false,
+        mintFeeEnabled: Boolean(template.mintFeeEnabled),
+        mintPriceAtomic: Number(template.mintPriceAtomic || 0),
+        paymentCoinType: runtimeConfig.paymentCoinType,
+        paymentCoinSymbol: runtimeConfig.paymentCoinSymbol,
+        canvas: state.makerCanvas,
+      },
+      canvas: state.makerCanvas,
+      slots: state.makerSlots,
+      parts: state.makerParts,
+      slotOrder: state.slotOrder,
+      layerOrder: state.layerOrder,
+      visual: state.visual,
+      rules: state.rules,
+      paletteLinks: state.paletteLinks,
+      livingContent: state.livingContent,
+      assets: state.assets,
+    });
+  } catch (error) {
+    console.warn('Could not migrate the legacy Maker draft into v4.', error);
+    return null;
+  }
+}
+
+function currentV4RuntimeAssets() {
+  const assets = [];
+  if (state.makerRuntimeAssetsV4 instanceof Map) assets.push(...state.makerRuntimeAssetsV4.values());
+  state.assets.forEach((asset) => assets.push({
+    ...asset,
+    assetId: asset.assetId || asset.id || asset.identifier,
+    blob: asset.blob || asset.file,
+  }));
+  return assets.filter((asset, index) => {
+    const key = asset.assetId || asset.identifier || asset.id;
+    return key && assets.findIndex((candidate) => (candidate.assetId || candidate.identifier || candidate.id) === key) === index;
+  });
+}
+
+function v4ProfileFromLegacy() {
+  return state.playerProfileV4 || {
+    name: $('profileName')?.value || 'Untitled OC',
+    world: $('profileWorld')?.value || activeTemplate().style || '',
+    description: $('profileDescription')?.value || '',
+    tags: $('profileTags')?.value || '',
+  };
+}
+
+function syncLegacyVisualFromV4(document, recipe) {
+  if (!document || !recipe) return;
+  const selections = new Map((recipe.selections || []).map((selection) => [selection.partId, selection]));
+  document.parts.forEach((part) => {
+    const selection = selections.get(part.id);
+    if (!selection) {
+      state.visual[part.id] = '';
+      return;
+    }
+    const flattenedId = `${selection.itemId}--${selection.variantId}`;
+    state.visual[part.id] = slotItems(part.id).some((item) => item.id === flattenedId)
+      ? flattenedId
+      : selection.itemId;
+  });
+  (recipe.colors || []).forEach((selection) => {
+    const channel = document.colorChannels.find((candidate) => candidate.id === selection.channelId);
+    const swatch = channel?.swatches.find((candidate) => candidate.id === selection.swatchId);
+    const linkedParts = document.parts.filter((part) => part.items.some((item) => item.variants.some((variant) => variant.layerBindings.some((binding) => binding.colorChannelId === channel?.id))));
+    linkedParts.forEach((part) => {
+      const legacySlot = allSlots().find((slot) => slot.key === part.id);
+      state.visual.palette[legacySlot?.colorKey || part.id] = swatch?.hintColor || '#7b5cff';
+    });
+  });
+}
+
+function syncV4WorkspaceState({ document, recipe, assets, profile = null }) {
+  state.makerDocumentV4 = document;
+  state.makerRecipeV4 = recipe;
+  state.makerRuntimeAssetsV4 = assets instanceof Map ? assets : new Map();
+  if (state.playerRuntimeDocumentV4?.version?.versionId !== document?.version?.versionId) state.playerRuntimeDocumentV4 = null;
+  if (profile) state.playerProfileV4 = { ...profile };
+  const template = activeTemplate();
+  if (document?.metadata) {
+    Object.assign(template, {
+      name: document.metadata.name,
+      summary: document.metadata.summary,
+      creator: document.metadata.creator,
+      style: document.metadata.style,
+      licenseNote: document.metadata.license?.note || template.licenseNote,
+      royaltyBps: document.publication?.royaltyBps ?? template.royaltyBps,
+      mintingEnabled: document.publication?.mintingEnabled ?? template.mintingEnabled,
+      mintFeeEnabled: document.publication?.mintFeeEnabled ?? template.mintFeeEnabled,
+      mintPriceAtomic: document.publication?.mintPriceAtomic ?? template.mintPriceAtomic,
+    });
+    state.makerCanvas = { width: document.canvas.width, height: document.canvas.height };
+    state.livingContent = normalizeLivingContent(document.livingContent, document.metadata);
+  }
+  syncLegacyVisualFromV4(document, recipe);
+  syncActiveMakerModelRefs();
+  persistLocalMakerIndex();
+}
+
+function syncPlayerV4State({ document, recipe, profile }) {
+  state.playerRuntimeDocumentV4 = document;
+  state.playerRecipeV4 = recipe;
+  state.playerProfileV4 = { ...profile };
+  syncLegacyVisualFromV4(document, recipe);
+  if ($('profileName')) $('profileName').value = profile.name || 'Untitled OC';
+  if ($('profileWorld')) $('profileWorld').value = profile.world || '';
+  if ($('profileDescription')) $('profileDescription').value = profile.description || '';
+  if ($('profileTags')) $('profileTags').value = profile.tags || '';
+  invalidateOcUpload();
+}
+
+function syncMakerWorkspaceContext() {
+  if (!makerWorkspace) return;
+  const template = activeTemplate();
+  const document = currentMakerV4Source();
+  if (!document) return;
+  const makerKey = `${state.walletAddress || 'wallet'}:${template.id || state.templateId || document.version.rootMakerId}`;
+  makerWorkspace.setContext({
+    makerKey,
+    walletAddress: state.walletAddress,
+    name: template.name,
+    creator: template.creator,
+    document,
+    recipe: state.makerRecipeV4 || document.defaultRecipe,
+    playerRecipe: state.playerRecipeV4 || document.defaultRecipe,
+    profile: v4ProfileFromLegacy(),
+    assets: currentV4RuntimeAssets(),
+    publishedDocument: state.publishedMakerDocumentV4,
+    versionId: document.version.versionId,
+    isPublished: makerIsPublished(),
+  });
+}
+
 function renderAll() {
   renderTemplates();
   renderTemplateDetail();
@@ -4855,6 +5567,7 @@ function renderAll() {
   setEditorPanel(state.editorPanel);
   renderMakerLifecycle();
   syncActiveMakerModelRefs();
+  syncMakerWorkspaceContext();
 }
 
 document.querySelectorAll('[data-page]').forEach((button) => {
@@ -4925,6 +5638,7 @@ $('livingDocumentSource')?.addEventListener('input', (event) => {
   } catch (error) {
     event.target.setCustomValidity(error.message);
   }
+  makerWorkspace?.updateMakerSettings?.({ livingContent: state.livingContent });
   invalidateMakerUpload();
   scheduleMakerAutosave();
   renderLivingContent();
@@ -4935,6 +5649,7 @@ $('restoreLivingDefault')?.addEventListener('click', () => {
   const defaults = createDefaultLivingContent(livingMakerContext());
   state.livingContent[state.livingDocument] = defaults[state.livingDocument];
   state.livingContent.customized[state.livingDocument] = false;
+  makerWorkspace?.updateMakerSettings?.({ livingContent: state.livingContent });
   invalidateMakerUpload();
   scheduleMakerAutosave();
   renderLivingContent();
@@ -5041,8 +5756,24 @@ const creatorLicenseLabels = {
     } else if (id === 'creatorMintPrice') {
       template.mintPriceAtomic = decimalCoinToAtomic($('creatorMintPrice').value) || 0;
     }
+    if (!makerIsPublished() || makerHasPendingV4Version() || !economicsField) {
+      makerWorkspace?.updateMakerSettings?.({
+        name: $('creatorTemplateName').value,
+        summary: $('creatorDescription').value,
+        creator: $('creatorName').value,
+        style: $('creatorWorld').value,
+        licenseKind: $('creatorLicense').value,
+        licenseNote: $('creatorLicenseNote').value,
+        royaltyBps: Number($('creatorRoyalty').value || 0),
+        mintingEnabled: $('creatorMintingEnabled').checked,
+        mintFeeEnabled: $('creatorMintFeeEnabled').checked,
+        mintPriceAtomic: $('creatorMintFeeEnabled').checked ? decimalCoinToAtomic($('creatorMintPrice').value) || 0 : 0,
+        paymentCoinType: runtimeConfig.paymentCoinType,
+        paymentCoinSymbol: runtimeConfig.paymentCoinSymbol,
+      });
+    }
     if (['creatorTemplateName', 'creatorDescription', 'creatorName', 'creatorWorld'].includes(id)) refreshLivingDefaults();
-    if (!makerIsPublished()) invalidateMakerUpload();
+    if (!makerIsPublished() || makerHasPendingV4Version()) invalidateMakerUpload();
     if (!makerIsPublished()) scheduleMakerAutosave();
     persistLocalMakerIndex();
     renderAll();
@@ -5467,6 +6198,62 @@ if (directMakerMatch) {
     state.routeMakerReference = '';
   }
 }
+
+makerWorkspace = createMakerWorkspace({
+  creatorRoot: $('makerV4CreatorMount'),
+  playerRoot: $('makerV4PlayerMount'),
+  callbacks: {
+    onDocumentChange(payload) {
+      syncV4WorkspaceState(payload);
+      if (makerHasPendingV4Version()) invalidateMakerUpload('Maker version changed. Prepare a fresh Walrus quilt before publication.');
+    },
+    onSaved(payload) {
+      syncV4WorkspaceState(payload);
+      state.draftSaveStatus = 'saved';
+      state.draftSaveMessage = payload.automatic ? 'Maker v4 autosaved' : 'Maker v4 saved';
+    },
+    onOpenPlayer(payload) {
+      syncV4WorkspaceState(payload);
+      state.previewingMaker = true;
+      if ($('legacyPlayerEditor')) $('legacyPlayerEditor').hidden = true;
+      setPage('make');
+      renderAll();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    onPublish(payload) {
+      syncV4WorkspaceState(payload);
+      setEditorPanel('publish');
+      renderAll();
+      if (state.makerUploadStage === 'idle' && !state.publishing) prepareMakerUpload();
+    },
+    onPlayerRecipeChange(payload) {
+      syncPlayerV4State(payload);
+    },
+    onCompleteOc(payload) {
+      syncPlayerV4State(payload);
+      const legacy = $('legacyPlayerEditor');
+      if (legacy) {
+        legacy.hidden = false;
+        legacy.classList.add('handoff-only');
+        legacy.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      renderMintAction();
+      if (state.ocUploadStage === 'idle' && activeTemplate()?.source === 'chain' && !makerHasPendingV4Version() && !state.minting) prepareOcUpload();
+    },
+    onPlayerError(error) {
+      state.mintStatus = error.message || 'The current Maker rules could not produce a valid OC.';
+      renderMintAction();
+    },
+    onCreatorError(error) {
+      state.publishStatus = error.message || 'The selected Maker asset could not be imported.';
+      renderPublishAction();
+    },
+    onPlayerSaveError(error) {
+      state.mintStatus = error.message || 'The OC draft could not be saved locally.';
+      renderMintAction();
+    },
+  },
+});
 
 initializeChain(runtimeConfig, (connection) => {
   if (localUiTest) connection = {
