@@ -2,5 +2,8 @@
 name = "animacraft"
 edition = "2024.beta"
 
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1" }
+
 [addresses]
 animacraft = "0x0"

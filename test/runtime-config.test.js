@@ -93,3 +93,31 @@ test('requires an explicit boolean canonical Soul mint gate', () => {
   assert.equal(result.valid, false);
   assert.match(result.errors.join(' '), /canonicalSoulMintEnabled/);
 });
+
+test('requires canonical v4 protocol fee objects before enabling Soul mint', () => {
+  const missing = productionConfig();
+  missing.canonicalSoulMintEnabled = true;
+  let result = validateRuntimeConfig(missing, { strict: true, requireSoulidity: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /ProtocolFeeConfig and ProtocolTreasury/);
+
+  const ready = productionConfig();
+  Object.assign(ready, {
+    canonicalSoulMintEnabled: true,
+    protocolFeeConfigId: '0xfeed',
+    protocolTreasuryId: '0xbeef',
+    primaryProtocolFeeBps: 5_000,
+  });
+  result = validateRuntimeConfig(ready, { strict: true, requireSoulidity: true });
+  assert.equal(result.valid, true);
+  assert.equal(result.protocolFeeConfigReady, true);
+  assert.equal(result.protocolTreasuryReady, true);
+});
+
+test('caps the configured primary protocol share at fifty percent', () => {
+  const config = productionConfig();
+  config.primaryProtocolFeeBps = 5_001;
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /0 to 5000/);
+});

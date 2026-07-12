@@ -33,7 +33,11 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(runtime.graphqlUrl, 'https://graphql.mainnet.sui.io/graphql');
   assert.equal(runtime.paymentCoinType, SUI_MAINNET_USDC_TYPE);
   assert.equal(runtime.canonicalSoulMintEnabled, false, 'canonical mint stays gated until the reviewed adapter is deployed');
-  assert.match(moveSource, new RegExp(`const VERSION: u64 = ${deployment.protocolVersion};`));
+  assert.equal(deployment.protocolVersion, 3, 'the deployment record remains on the signed v3 package until upgrade');
+  assert.match(moveSource, /const VERSION: u64 = 4;/, 'the source tree contains the reviewed v4 upgrade candidate');
+  assert.equal(runtime.protocolFeeConfigId, '', 'v4 fee objects are recorded only after signed initialization');
+  assert.equal(runtime.protocolTreasuryId, '', 'v4 fee objects are recorded only after signed initialization');
+  assert.equal(runtime.primaryProtocolFeeBps, 5_000);
 
   for (const field of ['packageId', 'originalPackageId', 'publisherAddress', 'upgradeCapId', 'publisherObjectId', 'displayObjectId']) {
     assert.match(deployment[field], SUI_OBJECT_ID, `${field} must be a canonical 32-byte Sui id`);

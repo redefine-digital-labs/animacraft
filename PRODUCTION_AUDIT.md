@@ -4,9 +4,9 @@ Audit target: five invited creators publishing real Character Makers and users m
 
 ## Decision
 
-**Maker protocol: published and source-verified. Invited-creator activation: waiting for signed Maker/Vercel evidence. Canonical Soul mint activation: waiting for the reviewed Soulidity adapter and signed end-to-end evidence.**
+**Maker v3: published and source-verified. v4 economics: code-complete candidate waiting for signed upgrade/initialization. Canonical Soul mint: waiting for the reviewed Soulidity adapter and signed end-to-end evidence.**
 
-Animacraft Mainnet package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` is live and its bytecode matches the recorded source tree. The public runtime is activated in the dedicated Mainnet configuration PR. Do not call creator publication proven, or paid Maker minting Mainnet-live, until the relevant signed checks in `MAINNET_SMOKE_TEST.md` pass. Soulidity must consume `SoulMintAuthorization` before canonical paid mint or verified provenance is enabled.
+Animacraft Mainnet package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` is live and its v3 bytecode matches the recorded deployment source. The current source is a v4 upgrade candidate, not evidence that Mainnet has upgraded. Do not call paid Maker minting or canonical provenance Mainnet-live until the fee objects, Soulidity adapter, and signed checks in `MAINNET_SMOKE_TEST.md` pass.
 
 ## End-to-End Model
 
@@ -32,7 +32,7 @@ Animacraft Mainnet package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103
 - Published Makers are shared but cannot be publicly transferred or shared outside the defining Move module.
 - Move rejects duplicate Items and Colors, oversized structures/strings, empty Part records, invalid Last Bastion rules, unregistered recipe Colors, forged Part order, forged BCS recipe hashes, palette/selection violations, and archived Maker mints.
 - Published Maker content is immutable. Matching Cap authorization is checked for economics, withdrawal, and archive/restore; existing Soul rights/payment snapshots survive later changes.
-- The Web/config integrity suite and twenty-five published-source Move tests pass; final syntax, dependency audit, diff, and production-build evidence is refreshed before each release PR.
+- The Web/config integrity suite and thirty-one v4 Move tests pass; final syntax, dependency audit, diff, and production-build evidence is refreshed before each release PR.
 
 ## Remaining External Gates
 
@@ -49,7 +49,7 @@ Animacraft Mainnet package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103
 - Sui GraphQL and Walrus endpoints are external availability dependencies. A manual refresh, bounded Walrus read retry, and visible degraded state exist; production monitoring and dedicated Sui capacity are still required.
 - Event discovery currently reads up to the 500 most recent published Maker IDs. That is sufficient for the invited pilot but requires an on-chain index or paginated catalog strategy before large-scale discovery.
 - Exact native-USDC payment collection and withdrawal are implemented in the authorization path. Paid mint and secondary royalties remain disabled until Soulidity consumes that authorization in its reviewed Marketplace adapter.
-- Protocol v3 publication supports included Items only. Paid add-on and creator-only Item constants are reserved but not enforced by recipe authorization; the production publisher and remote manifest validator reject those gates.
+- Protocol v4 retains included-Item-only publication. Paid add-on and creator-only Item constants are reserved but not enforced by recipe authorization; the production publisher and remote manifest validator reject those gates.
 - The public runtime rejects non-native-USDC Makers and on-chain atomic prices that JavaScript cannot represent exactly. Soulidity must repeat coin-type and amount checks in Move.
 - IndexedDB is local to one browser profile. Exported manifests and original source art remain the creator's responsibility; cross-device draft sync is not implemented.
 - Mainnet storage defaults to 53 Walrus epochs, currently about two years. Certified files are immutable for that term but require a future signed extension to remain available beyond it.

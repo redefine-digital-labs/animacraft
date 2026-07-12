@@ -2,7 +2,7 @@
 
 Animacraft is an independent Sui Move package for publishing Character Makers and authorizing canonical Soulidity mints. Walrus stores creative files; Sui stores Maker authority, pricing, revenue, composition rules, and policy snapshots. Soulidity owns the finished Soul.
 
-Protocol version `3` defines the Maker/Treasury/AdminCap model and the non-droppable Soul mint authorization ABI. There is no legacy finished-character object in this package.
+Protocol version `4` preserves the v3 Maker/Treasury/AdminCap object layouts, adds canonical Protocol Fee objects, and upgrades the non-droppable Soul mint authorization ABI. There is no finished-character object in this package.
 
 ## Three-Object Maker
 
@@ -14,7 +14,7 @@ Production uses Circle native Sui Mainnet USDC as `PaymentCoin`. The generic typ
 
 `CreatorProfile` records original creator provenance. It is not the source of current management authority after publication; Cap ownership is.
 
-`SoulMintAuthorization` is an ephemeral value with no Move abilities. It contains validated Maker provenance, bounded Walrus Quilt patch locators, canonical recipe/hash, license/royalty snapshot, and mint-payment snapshot. It cannot be copied, stored, transferred, or dropped; a Soulidity adapter must consume it in the same PTB that creates the canonical Soul. Protocol v3 does not receive Walrus `Blob` objects and therefore does not independently attest locator certification.
+`SoulMintAuthorization` is an ephemeral value with no Move abilities. It contains validated Maker provenance, bounded Walrus Quilt patch locators, canonical recipe/hash, license/royalty snapshot, and mint-payment snapshot. It cannot be copied, stored, transferred, or dropped; a Soulidity adapter must consume it in the same PTB that creates the canonical Soul. Protocol v4 does not receive Walrus `Blob` objects and therefore does not independently attest locator certification.
 
 ## Publication PTB
 
@@ -32,7 +32,9 @@ The old unguarded construction helpers are private to the module and unit tests.
 - `minting_enabled` controls whether new Soulidity mint authorizations are accepted.
 - `mint_fee_enabled` controls whether payment is required.
 - `mint_price_atomic` is denominated in the Treasury coin's smallest unit. USDC uses six decimals.
-- Paid authorization accepts an exact `Coin<PaymentCoin>` amount and deposits it atomically before Soulidity creates the Soul. If the later mint fails, the whole PTB rolls back.
+- The canonical v4 paid authorization accepts an exact `Coin<PaymentCoin>` amount and splits it atomically between the Maker and Protocol Treasuries before Soulidity creates the Soul. The default protocol share is 5,000 bps (50%), capped at 50%; floor rounding goes to the protocol and the exact remainder goes to the Maker.
+- The legacy v3 paid entry aborts after upgrade, preventing callers from bypassing the protocol split.
+- If the later Soulidity mint fails, both Treasury deposits roll back with the whole PTB.
 - Only the matching `MakerAdminCap` can withdraw Treasury funds.
 - Resale royalty is `0`, `100`, `200`, `300`, `400`, or `500` basis points.
 - Every authorization snapshots the policy and mint price active at mint time.
@@ -57,6 +59,6 @@ sui move build
 sui move test
 ```
 
-The suite currently contains 25 tests, including Cap mismatch rejection, non-droppable Soul authorization consumption, tiered royalties, exact payment collection, withdrawal accounting, post-publication economics, archive behavior, rule validation, and the shared web/Move BCS hash fixture.
+The suite currently contains 31 tests, including Cap mismatch rejection, non-droppable Soul authorization consumption, tiered royalties, exact 50/50 payment splitting, old-entry bypass rejection, both Treasury withdrawals, post-publication economics, archive behavior, rule validation, and the shared web/Move BCS hash fixture.
 
 Mainnet publication remains a manual multisig signature. Record the original package ID, transaction digest, publisher, CLI version, Git commit, and `UpgradeCap` custody.

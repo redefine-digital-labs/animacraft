@@ -2,7 +2,7 @@
 
 ## Release State
 
-The repository is a **Maker Mainnet production candidate with a published and source-verified protocol package**. The original Animacraft package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` is live, its Mainnet bytecode matches this repository's published source tree, and the editor/runtime are ready for a signed invited-creator smoke test. Canonical paid Soul minting remains blocked until the separate Soulidity adapter is reviewed and deployed.
+Animacraft product version `0.4.0` is a pre-v1 production candidate. Product v1 is reserved for a proven ecosystem at roughly 1,000 active creators. Move protocol numbers are tracked separately: the original protocol v3 package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` is live and source-verified at the recorded deployment commit. The repository now contains a **protocol v4 upgrade candidate** that preserves existing Maker object layouts and adds non-bypassable primary protocol-fee splitting. Protocol v4 is not Mainnet-active until the UpgradeCap holder signs the upgrade and initializes the canonical Protocol Fee objects. Canonical Soul minting remains blocked until the separate Soulidity adapter is reviewed and deployed.
 
 The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio, local draft ownership, Walrus writes, publication, archive, and Soulidity handoff require a connected wallet.
 
@@ -18,7 +18,7 @@ The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio
 - Remote manifest limits and validation before an untrusted public Maker reaches the player.
 - Reusable wallet-owned `CreatorProfile` records with published Maker IDs.
 - Three-object Maker publication: shared `OCMaker`, shared `MakerTreasury<PaymentCoin>`, and transferable `MakerAdminCap`.
-- Cap-only administration, exact native-USDC paid authorization, Treasury accounting/withdrawal, and 0% or 1%–5% resale-royalty tiers.
+- Cap-only administration, exact native-USDC paid authorization, v4 Maker/protocol Treasury splitting, Treasury accounting/withdrawal, and 0% or 1%–5% resale-royalty tiers.
 - Immutable published art/rules, Cap-signed economics and archive/restore, and mint rejection for archived or closed Makers.
 - Rule-aware player choices, required Part validation, exact linked Color sets, uploaded item thumbnails, finished PNG rendering, and Walrus storage.
 - Living Content editor with Soulidity-compatible `soul.md`, `memory.md`, and `skills.zip` defaults embedded in Maker and OC packages.
@@ -31,13 +31,13 @@ The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio
 ## Manual Mainnet Activation
 
 1. Move the published `UpgradeCap`, `Publisher`, and `Display<OCMaker>` objects into the documented protocol custody arrangement.
-2. Run `npm run preflight:mainnet` against the configured original package.
-3. Deploy a Vercel Preview and connect the intended `animacraft.soulidity.ai` subdomain.
+2. Sign the reviewed v4 upgrade, then initialize the canonical native-USDC `ProtocolFeeConfig`, `ProtocolTreasury`, and `ProtocolFeeAdminCap` with the Publisher.
+3. Record those IDs, run `npm run preflight:mainnet`, and deploy a Vercel Preview.
 4. Publish one small real Maker through all four Walrus/Sui stages.
-5. Publish the reviewed Soulidity adapter pinned to the Animacraft original package ID.
-6. Open the Maker from a disconnected browser, connect a second wallet, complete free and paid canonical Soul mints, then withdraw the paid amount with the Cap wallet.
-7. Verify Maker/Treasury/Cap discovery, Living Content import, Soulidity collection, archive rejection, restore, and transaction links.
-8. Record the evidence in the release PR before promoting the domain.
+5. Publish the reviewed Soulidity adapter pinned to the Animacraft original package ID and verify Soulidity's secondary platform fee remains 250 bps.
+6. Open the Maker from a disconnected browser, connect a second wallet, complete free and paid canonical Soul mints, then withdraw both Maker and protocol shares with their respective Caps.
+7. Verify Maker/Treasury/Cap discovery, Living Content, Soulidity profile/collection, 2.5% resale settlement, archive rejection, restore, and transaction links.
+8. Record the evidence in the release PR before enabling canonical mint.
 
 ## Invited Pilot Boundary
 

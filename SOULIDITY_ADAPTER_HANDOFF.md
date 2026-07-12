@@ -8,7 +8,8 @@ This document is the implementation contract between the independently managed A
 | --- | --- |
 | Animacraft original package | `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` |
 | Animacraft module | `animacraft::animacraft` |
-| Animacraft protocol version | `3` |
+| Animacraft deployed protocol | `3` |
+| Animacraft adapter target | `4` after reviewed upgrade |
 | Circle native Sui USDC | `0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC` |
 | Current Soulidity package | `0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0` |
 
@@ -26,7 +27,7 @@ with Sui CLI `1.74.1-8fc60f1fa966`. The verified baseline exposes `mint_imported
 
 ## Non-Negotiable Boundary
 
-- Animacraft owns `OCMaker`, `MakerTreasury<USDC>`, `MakerAdminCap`, recipe validation, Maker fees, and Maker royalty snapshots.
+- Animacraft owns `OCMaker`, `MakerTreasury<USDC>`, `MakerAdminCap`, v4 Protocol Fee objects, recipe validation, primary mint splitting, and Maker royalty snapshots.
 - Soulidity owns the only finished character object: `Soul`, `SoulState`, `SoulContent`, personal Kiosk custody, social identity, and Marketplace settlement.
 - Animacraft must not mint an `OCCharacter`, NFT, or other parallel finished asset.
 - Soulidity must consume `SoulMintAuthorization` and mint the Soul in the same PTB. The authorization has no abilities and therefore cannot be stored, copied, transferred, or dropped.
@@ -40,15 +41,15 @@ Soulidity should call public functions rather than decode private BCS layouts.
 ### Authorization producers
 
 - `authorize_soul_mint(&OCMaker, name, profile_patch_id, image_patch_id, image_url, recipe_hash, recipe, &Clock, &TxContext)`
-- `authorize_soul_mint_paid<USDC>(&OCMaker, &mut MakerTreasury<USDC>, Coin<USDC>, name, profile_patch_id, image_patch_id, image_url, recipe_hash, recipe, &Clock, &TxContext)`
+- `authorize_soul_mint_paid_with_protocol_fee<USDC>(&OCMaker, &mut MakerTreasury<USDC>, &ProtocolFeeConfig, &mut ProtocolTreasury<USDC>, Coin<USDC>, name, profile_patch_id, image_patch_id, image_url, recipe_hash, recipe, &Clock, &mut TxContext)`
 
-Both return `SoulMintAuthorization`. The paid path accepts exactly `mint_price_atomic`; overpayment and underpayment abort.
+Both return `SoulMintAuthorization`. The paid path accepts exactly `mint_price_atomic`; overpayment and underpayment abort. It floor-splits the configured protocol share (initially 5,000 bps) and sends the exact remainder to the Maker Treasury. The v3 paid entry aborts after upgrade so it cannot bypass the split.
 
 ### Authorization consumer
 
 `consume_soul_mint_authorization` returns this tuple in order:
 
-1. Animacraft protocol version (`u64`)
+1. Animacraft protocol version (`u64`, required value `4`)
 2. Maker ID (`ID`)
 3. Maker Treasury ID (`ID`)
 4. original Maker creator (`address`)
@@ -103,7 +104,7 @@ The existing `mint_soul_in_personal_kiosk_impl` is private. Keep the actual adap
 The preferred entry must:
 
 1. consume `SoulMintAuthorization`;
-2. require authorization version `3`;
+2. require authorization version `4`;
 3. require `payer == tx_context::sender(ctx)`;
 4. require the authorization payment coin to equal Circle native Sui USDC;
 5. verify the returned Maker and Treasury IDs match `RoyaltyPolicySnapshot` getters;
@@ -119,7 +120,7 @@ Setting Soulidity's ordinary creator royalty to zero is intentional. Animacraft 
 
 ### 5. Add an Animacraft-aware purchase path
 
-The current Soulidity fixed-price purchase sends creator royalty to the Soul creator address. Animacraft Souls need a dedicated path that:
+Keep Soulidity's `MarketConfig.platform_fee_bps` at `250` (2.5%). The current Soulidity fixed-price purchase sends creator royalty to the Soul creator address. Animacraft Souls need a dedicated path that:
 
 - proves provenance Soul ID equals the listing Soul ID;
 - reads the immutable Maker royalty tier from `RoyaltyPolicySnapshot`;
@@ -127,7 +128,7 @@ The current Soulidity fixed-price purchase sends creator royalty to the Soul cre
 - splits the exact native-USDC royalty coin;
 - calls `deposit_resale_royalty<USDC>` with the shared Maker, matching Treasury, gross listing price, and Soul ID;
 - skips the Animacraft call when the tier is 0%;
-- rejects a nonzero-tier listing or purchase when `floor(gross_sale_amount * royalty_bps / 10_000)` is zero; protocol v3 deliberately rejects a zero-value royalty deposit, so the Marketplace must enforce the corresponding minimum atomic listing price;
+- rejects a nonzero-tier listing or purchase when `floor(gross_sale_amount * royalty_bps / 10_000)` is zero; protocol v4 retains the deliberate zero-value royalty rejection, so the Marketplace must enforce the corresponding minimum atomic listing price;
 - preserves platform and optional collection royalties;
 - leaves exactly the listing price for the seller;
 - emits the Maker ID, Treasury ID, basis points, and royalty amount in purchase evidence.
@@ -136,7 +137,7 @@ Do not call both the existing Soul creator royalty and Animacraft Maker royalty 
 
 This path must not be optional. Update both existing generic purchase entries, `buy_soul_fixed_price` and `buy_soul_fixed_price_with_collection`, to abort when the SoulState carries typed Animacraft provenance. Add corresponding Animacraft-aware solo and collection purchase entries that require the frozen provenance object, matching shared Maker, and matching Treasury. Otherwise a buyer could deliberately call the generic path and bypass the Maker royalty.
 
-Soulidity's current internal `bps_amount` rounds platform/creator/collection fees up. Animacraft v3 recomputes Maker royalty with floor division in `deposit_resale_royalty`. Do not reuse `bps_amount` for Maker royalty: quote and split exactly `floor(gross_sale_amount * maker_royalty_bps / 10_000)`, while preserving Soulidity's existing rounding for its own fees. Deposit the Maker amount even when the seller also controls the Maker Cap so Treasury accounting remains canonical.
+Soulidity's current internal `bps_amount` rounds platform/creator/collection fees up. Animacraft v4 recomputes Maker royalty with floor division in `deposit_resale_royalty`. Do not reuse `bps_amount` for Maker royalty: quote and split exactly `floor(gross_sale_amount * maker_royalty_bps / 10_000)`, while preserving Soulidity's existing rounding for its own fees. Deposit the Maker amount even when the seller also controls the Maker Cap so Treasury accounting remains canonical.
 
 ### 6. Add MakerAdminCap trading separately
 
@@ -148,24 +149,24 @@ The browser constructs one Sui PTB after all required Walrus objects are certifi
 
 1. create Soulidity `InitialContentEntry` values from owned Walrus `Blob` objects for `soul.md`, `memory.md`, and optional `skills.zip`;
 2. create any allowed Soulidity state-config entries;
-3. call free or paid Animacraft authorization with the exact Maker recipe;
+3. call free Animacraft authorization, or call the v4 paid authorization with the canonical Protocol Fee config/treasury and exact Maker recipe;
 4. pass the returned authorization directly into Soulidity's Animacraft mint entry;
 5. Soulidity consumes it, mints one Soul, binds content, locks the Soul in the user's personal Kiosk, and shares state/provenance;
 6. finalize the PTB with no remaining authorization value.
 
 The UI must not label a browser redirect, downloaded Import Kit, or `mint_imported_in_personal_kiosk` as verified Animacraft provenance.
 
-## Known Protocol v3 Limits
+## Known Protocol v4 Limits
 
 These limits are explicit and must not be hidden in product copy:
 
-- `profile_json_blob_id`, `image_blob_id`, Maker manifest IDs, and Item IDs are bounded locator strings. Animacraft v3 does not receive Walrus `Blob` objects and does not itself attest certification or bind a locator to a Blob object.
+- `profile_json_blob_id`, `image_blob_id`, Maker manifest IDs, and Item IDs are bounded locator strings. Animacraft v4 does not receive Walrus `Blob` objects and does not itself attest certification or bind a locator to a Blob object.
 - Soulidity still receives and owns actual certified `Blob` objects for mandatory Living Content. The first adapter may treat the profile/image locators as authorization-bound provenance, but not as an on-chain Walrus certification proof.
-- `LicensePolicy` fields are private and v3 has no public license getters. Soulidity can store the opaque snapshot, and royalty getters are available, but another Move package cannot yet branch on commercial/remix/attribution flags.
+- `LicensePolicy` fields are private and v4 has no public license getters. Soulidity can store the opaque snapshot, and royalty getters are available, but another Move package cannot yet branch on commercial/remix/attribution flags.
 - The authorization binds name, image locator/URL, recipe, policy, and price, but not Soulidity's display description. Treat description as user-authored display metadata.
 - Animacraft's generic `PaymentCoin` enforces one coin type per Maker but does not globally forbid third parties from creating another-coin Maker. Production Animacraft rejects every discovered Maker whose on-chain payment type is not configured native USDC; Soulidity must repeat that check on chain.
 - Browser clients reject atomic prices outside JavaScript's exact integer range. Soulidity must still use `u64`/Move arithmetic directly and must never derive settlement amounts from formatted browser text.
-- Item gate values `1` (paid add-on) and `2` (creator-only) are reserved but not enforced by v3 recipe authorization. Production publication is restricted to gate `0` (included); Soulidity must not infer paid-item entitlement from those reserved values.
+- Item gate values `1` (paid add-on) and `2` (creator-only) are reserved but not enforced by v4 recipe authorization. Production publication is restricted to gate `0` (included); Soulidity must not infer paid-item entitlement from those reserved values.
 - Visual Layer matrices and per-Layer composition order are committed in the immutable Maker manifest. The canonical on-chain recipe intentionally records one Part/Item/Color selection and Part render order per Part, not an independent record for every image Layer.
 
 An additive Animacraft upgrade may later introduce public license getters and Blob-aware authorization. Do not make those changes in a hurried Mainnet upgrade; specify them, test migration compatibility, review independently, and sign through protocol custody.
@@ -175,7 +176,7 @@ An additive Animacraft upgrade may later introduce public license getters and Bl
 Soulidity's adapter PR is not release-ready without tests for:
 
 - free authorization creates exactly one provenance-kind-3 Soul;
-- paid authorization increases the matching Maker Treasury by the exact amount;
+- paid authorization floor-splits the exact gross amount between the canonical Protocol Treasury and matching Maker Treasury, with no remainder loss;
 - any later Soul/content failure rolls back the paid Treasury deposit;
 - wrong payer, version, Maker, Treasury, coin type, amount, recipe hash, or required content aborts;
 - one authorization cannot mint twice and cannot remain at PTB end;
@@ -192,4 +193,4 @@ Soulidity's adapter PR is not release-ready without tests for:
 
 ## Activation Gate
 
-Paid mint, verified Animacraft provenance, Maker resale royalty, and Maker Cap trading remain **not live** until the Soulidity adapter PR passes both repositories' tests, independent Move review, Mainnet deployment, and the evidence run in [MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md).
+Paid mint, verified Animacraft provenance, 50/50 primary splitting, 2.5% Soulidity secondary fee, Maker resale royalty, and Maker Cap trading remain **not live** until the Animacraft v4 upgrade and canonical fee objects are deployed, the Soulidity adapter PR passes both repositories' tests and independent Move review, and the Mainnet evidence run in [MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md) passes.
