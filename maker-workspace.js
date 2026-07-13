@@ -208,6 +208,7 @@ export class MakerWorkspace {
     this.creatorSolo = false;
     this.creatorDimOthers = true;
     this.hiddenBindingIds = new Set();
+    this.editingPositionBindingId = '';
     this.dragPreview = null;
     this.bindingScalePreview = null;
     this.dragSort = null;
@@ -255,7 +256,7 @@ export class MakerWorkspace {
   }
 
   renderEmpty() {
-    const copy = '<div class="v4-empty"><strong>Select or create a Maker</strong><span>The v4 editor will load its Parts, Items, styles and layers here.</span></div>';
+    const copy = `<div class="v4-empty"><strong>${escapeHtml(this.tr('selectOrCreateMaker'))}</strong><span>${escapeHtml(this.tr('emptyMakerCopy'))}</span></div>`;
     if (this.creatorRoot) this.creatorRoot.innerHTML = copy;
     if (this.playerRoot) this.playerRoot.innerHTML = copy;
   }
@@ -383,7 +384,7 @@ export class MakerWorkspace {
     this.playerRecipe = recipeWithColors(document, context.playerRecipe || document.defaultRecipe);
     this.playerPartId = document.parts.find((part) => part.menuVisible)?.id || document.parts[0]?.id || '';
     this.playerProfile = {
-      name: context.profile?.name || 'Untitled OC',
+      name: context.profile?.name || this.tr('untitledOc'),
       world: context.profile?.world || document.metadata.style || '',
       description: context.profile?.description || '',
       tags: context.profile?.tags || '',
@@ -425,7 +426,7 @@ export class MakerWorkspace {
       if (this.contextEpoch !== contextEpoch) return;
       this.render();
     } catch (error) {
-      this.store?.setSaveState('error', error.message || 'Could not restore the local Maker workspace.');
+      this.store?.setSaveState('error', error.message || this.tr('restoreFailed'));
     }
   }
 
@@ -438,6 +439,9 @@ export class MakerWorkspace {
     this.selectedVariantId = variant?.id || '';
     let binding = variant?.layerBindings.find((candidate) => candidate.id === this.selectedBindingId) || variant?.layerBindings[0] || null;
     this.selectedBindingId = binding?.id || '';
+    this.editingPositionBindingId = binding?.positionConfirmed === false
+      ? binding.id
+      : this.editingPositionBindingId === binding?.id ? this.editingPositionBindingId : '';
     this.selectedTrackId = document.layerTracks.some((track) => track.id === this.selectedTrackId)
       ? this.selectedTrackId
       : binding?.layerTrackId || document.layerTracks[0]?.id || '';
@@ -459,7 +463,7 @@ export class MakerWorkspace {
 
   async save({ automatic = false } = {}) {
     if (!this.store || !this.makerKey || !this.context?.walletAddress) return;
-    this.store.setSaveState('saving', automatic ? 'Autosaving changes…' : 'Saving changes…');
+    this.store.setSaveState('saving', this.tr('savingChanges'));
     try {
       const state = this.store.getState();
       await saveMakerWorkspaceDocument(this.makerKey, state.document, {
@@ -468,10 +472,10 @@ export class MakerWorkspace {
         makerVersionId: state.document.version.versionId,
         walletAddress: this.context.walletAddress,
       });
-      this.store.setSaveState('saved', automatic ? 'Autosaved' : 'Saved');
+      this.store.setSaveState('saved', this.tr('savedStatus'));
       this.callbacks.onSaved?.({ document: state.document, recipe: state.recipe, assets: this.assets, automatic });
     } catch (error) {
-      this.store.setSaveState('error', error.message || 'Local save failed.');
+      this.store.setSaveState('error', error.message || this.tr('saveFailed'));
     }
   }
 
@@ -599,6 +603,102 @@ export class MakerWorkspace {
     return makerWorkspaceText(this.locale, key, variables);
   }
 
+  blendModeText(mode) {
+    const key = {
+      normal: 'blendNormal', multiply: 'blendMultiply', screen: 'blendScreen', overlay: 'blendOverlay', darken: 'blendDarken', lighten: 'blendLighten',
+      'color-dodge': 'blendColorDodge', 'color-burn': 'blendColorBurn', 'hard-light': 'blendHardLight', 'soft-light': 'blendSoftLight', difference: 'blendDifference', exclusion: 'blendExclusion',
+      hue: 'blendHue', saturation: 'blendSaturation', color: 'blendColor', luminosity: 'blendLuminosity', 'linear-dodge': 'blendLinearDodge',
+    }[mode];
+    return key ? this.tr(key) : String(mode || '');
+  }
+
+  licenseText(kind) {
+    const key = {
+      'personal-use': 'licensePersonalUse', 'free-remix': 'licenseFreeRemix', 'paid-commercial': 'licensePaidCommercial', 'exclusive-commission': 'licenseExclusiveCommission',
+    }[kind];
+    return key ? this.tr(key) : String(kind || this.tr('unknown'));
+  }
+
+  saveStateText(state) {
+    if (state.saveState === 'error') return state.saveMessage || this.tr('saveFailed');
+    if (state.saveState === 'saving') return this.tr('savingChanges');
+    if (state.saveState === 'dirty' || state.dirty) return this.tr('unsavedChanges');
+    if (state.saveMessage === 'Loaded') return this.tr('loadingStatus');
+    return this.tr('savedStatus');
+  }
+
+  issueText(issue, context = {}) {
+    if (issue.code === 'runtime_asset_missing') return this.tr('missingAsset', context);
+    if (issue.code === 'position_unconfirmed') return this.tr('positionUnconfirmed', context);
+    if (this.locale === 'en') return issue.message || this.tr('issueUnknown');
+    if (issue.code === 'compatibility_declaration_mismatch') return this.tr('issueCompatibility');
+    if (issue.code === 'default_recipe_render') return this.tr('issueRender');
+    if (String(issue.code).startsWith('expansion_')) return this.tr('issueExpansion');
+    if (issue.code === 'missing_reference') return this.tr('issueMissingReference');
+    if (issue.code === 'duplicate' || issue.code === 'duplicate-selection') return this.tr('issueDuplicate');
+    if (issue.code === 'limit') return this.tr('issueLimit');
+    if (issue.code === 'cycle') return this.tr('issueCycle');
+    if (issue.code === 'contradictory_rule') return this.tr('issueContradictory');
+    if (issue.code === 'missing_default') return this.tr('issueMissingDefault');
+    if (issue.code === 'invalid_default') return this.tr('issueInvalidDefault');
+    if (String(issue.code).includes('rule') || String(issue.code).includes('recipe')) return this.tr('issueRule');
+    if (String(issue.code).startsWith('invalid_') || String(issue.code).startsWith('unsupported_')) return this.tr('issueInvalid');
+    if (String(issue.code).startsWith('unknown') || String(issue.code).includes('missing')) return this.tr('issueUnknown');
+    return this.tr('issueInvalid');
+  }
+
+  captureCreatorViewState() {
+    if (!this.creatorRoot?.querySelector) return null;
+    const scrollSelectors = [
+      '.v4-parts-list', '.v4-canvas-viewport', '.v4-inspector', '.v4-item-grid', '.v4-advanced-panel',
+      '.v4-track-list', '.v4-color-workspace', '.v4-rule-list', '.v4-expansion-grid', '.v4-preflight-list',
+    ];
+    const scroll = scrollSelectors.map((selector) => {
+      const node = this.creatorRoot.querySelector(selector);
+      return node ? { selector, top: node.scrollTop, left: node.scrollLeft } : null;
+    }).filter(Boolean);
+    const active = globalThis.document?.activeElement;
+    const ownsActive = Boolean(active && this.creatorRoot.contains?.(active));
+    const identity = ownsActive ? {
+      id: active.id || '',
+      action: active.dataset?.action || '',
+      dataset: Object.fromEntries(Object.entries(active.dataset || {}).filter(([key]) => key !== 'action')),
+      start: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+      end: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
+    } : null;
+    const page = Number.isFinite(globalThis.window?.scrollX) && Number.isFinite(globalThis.window?.scrollY)
+      ? { left: globalThis.window.scrollX, top: globalThis.window.scrollY }
+      : null;
+    return { scroll, identity, page };
+  }
+
+  restoreCreatorViewState(viewState) {
+    if (!viewState || !this.creatorRoot?.querySelector) return;
+    viewState.scroll.forEach(({ selector, top, left }) => {
+      const node = this.creatorRoot.querySelector(selector);
+      if (!node) return;
+      node.scrollTop = top;
+      node.scrollLeft = left;
+    });
+    if (viewState.page && typeof globalThis.window?.scrollTo === 'function') {
+      globalThis.window.scrollTo(viewState.page.left, viewState.page.top);
+    }
+    const identity = viewState.identity;
+    if (!identity) return;
+    const escapeAttribute = (value) => String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+    let selector = identity.id ? `#${escapeAttribute(identity.id)}` : identity.action ? `[data-action="${escapeAttribute(identity.action)}"]` : '';
+    if (!identity.id && selector) Object.entries(identity.dataset).forEach(([key, value]) => {
+      const attribute = key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+      selector += `[data-${attribute}="${escapeAttribute(value)}"]`;
+    });
+    const replacement = selector ? this.creatorRoot.querySelector(selector) : null;
+    if (!replacement) return;
+    replacement.focus?.({ preventScroll: true });
+    if (identity.start !== null && typeof replacement.setSelectionRange === 'function') {
+      replacement.setSelectionRange(identity.start, identity.end ?? identity.start);
+    }
+  }
+
   creatorTabLabel(tab = this.creatorTab, issueCount = 0) {
     return {
       structure: this.tr('partsItems'),
@@ -675,9 +775,9 @@ export class MakerWorkspace {
 
   async renderRecipeToBlob(recipe = this.playerRecipe, { type = 'image/png', quality } = {}) {
     const document = this.runtimeDocument();
-    if (!document) throw new Error('No Maker document is loaded.');
+    if (!document) throw new Error(this.tr('noMakerLoaded'));
     const canvas = globalThis.document?.createElement?.('canvas');
-    if (!canvas) throw new Error('Canvas export is only available in a browser.');
+    if (!canvas) throw new Error(this.tr('canvasExportBrowserOnly'));
     const scene = resolveMakerScene(document, recipe, { strict: true });
     scene.layers.forEach((layer) => this.ensureAssetAlias(layer.assetId));
     await renderResolvedScene(scene, canvas, {
@@ -688,13 +788,14 @@ export class MakerWorkspace {
     return new Promise((resolve, reject) => {
       canvas.toBlob((blob) => {
         if (blob) resolve(blob);
-        else reject(new Error('The shared Maker renderer could not export this recipe.'));
+        else reject(new Error(this.tr('recipeExportFailed')));
       }, type, quality);
     });
   }
 
   renderCreator() {
     if (!this.creatorRoot || !this.store) return;
+    const viewState = this.captureCreatorViewState();
     const state = this.store.getState();
     const document = state.document;
     this.ensureCreatorSelection(document);
@@ -715,10 +816,10 @@ export class MakerWorkspace {
         <button class="v4-item-card ${candidate.id === item?.id ? 'active' : ''}" type="button" draggable="true" data-drag-kind="item" data-parent-id="${escapeHtml(part.id)}" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-item" data-item-id="${escapeHtml(candidate.id)}">
           <span class="v4-item-thumb">${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" />` : '<i>PNG</i>'}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
-          <small>${candidate.variants.length} style${candidate.variants.length === 1 ? '' : 's'}</small>
+          <small>${escapeHtml(this.tr('styleCount', { count: candidate.variants.length }))}</small>
         </button>
       `;
-    }).join('') || '<div class="v4-inline-empty"><strong>No Items yet</strong><span>Add an Item, then batch-import its PNG layers.</span></div>';
+    }).join('') || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noItemsYet'))}</strong><span>${escapeHtml(this.tr('noItemsCopy'))}</span></div>`;
     const variantRows = item?.variants.map((candidate) => `
       <button class="v4-variant-chip ${candidate.id === variant?.id ? 'active' : ''}" type="button" draggable="true" data-drag-kind="variant" data-parent-id="${escapeHtml(`${part.id}/${item.id}`)}" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-variant" data-variant-id="${escapeHtml(candidate.id)}">
         ${escapeHtml(candidate.name)} <span>${candidate.layerBindings.length}</span>
@@ -731,10 +832,10 @@ export class MakerWorkspace {
         <button class="v4-binding-row ${candidate.id === binding?.id ? 'active' : ''} ${this.hiddenBindingIds.has(candidate.id) ? 'muted' : ''}" type="button" data-action="select-binding" data-binding-id="${escapeHtml(candidate.id)}">
           <span>${runtime?.thumbnailUrl || runtime?.url ? `<img src="${escapeHtml(runtime.thumbnailUrl || runtime.url)}" alt="" />` : '◫'}</span>
           <strong>${escapeHtml(track?.name || candidate.layerTrackId)}</strong>
-          <small>${escapeHtml(candidate.blendMode)} · ${Math.round(candidate.opacity * 100)}%</small>
+          <small>${escapeHtml(this.blendModeText(candidate.blendMode))} · ${Math.round(candidate.opacity * 100)}%</small>
         </button>
       `;
-    }).join('') || '<div class="v4-inline-empty"><span>No visual LayerBinding in this style.</span></div>';
+    }).join('') || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noVisualLayer'))}</span></div>`;
 
     this.creatorRoot.innerHTML = `
       <section class="v4-studio-shell">
@@ -743,17 +844,17 @@ export class MakerWorkspace {
             <span class="v4-eyebrow">${escapeHtml(this.tr('studio'))}</span>
             <div><h2>${escapeHtml(document.metadata.name)}</h2><span class="v4-version-badge">${escapeHtml(document.version.versionId)} · ${document.canvas.width}×${document.canvas.height}</span></div>
           </div>
-          <div class="v4-save-indicator ${escapeHtml(state.saveState)}"><i></i><span>${escapeHtml(state.saveMessage || (state.dirty ? 'Unsaved changes' : 'Saved'))}</span></div>
+          <div class="v4-save-indicator ${escapeHtml(state.saveState)}"><i></i><span>${escapeHtml(this.saveStateText(state))}</span></div>
           <div class="v4-top-actions">
-            <button type="button" data-action="undo" ${state.canUndo ? '' : 'disabled'} title="${escapeHtml(state.canUndo ? state.undoLabel : this.tr('undoUnavailable'))}">↶ ${escapeHtml(this.tr('undo'))}</button>
-            <button type="button" data-action="redo" ${state.canRedo ? '' : 'disabled'} title="${escapeHtml(state.canRedo ? state.redoLabel : this.tr('redoUnavailable'))}">↷ ${escapeHtml(this.tr('redo'))}</button>
+            <button type="button" data-action="undo" ${state.canUndo ? '' : 'disabled'} title="${escapeHtml(state.canUndo ? this.tr('undoHint') : this.tr('undoUnavailable'))}">↶ ${escapeHtml(this.tr('undo'))}</button>
+            <button type="button" data-action="redo" ${state.canRedo ? '' : 'disabled'} title="${escapeHtml(state.canRedo ? this.tr('redoHint') : this.tr('redoUnavailable'))}">↷ ${escapeHtml(this.tr('redo'))}</button>
             <button type="button" data-action="save" title="${escapeHtml(this.tr('saveHint'))}">${escapeHtml(this.tr(state.saveState === 'saving' ? 'saving' : 'save'))}</button>
             <button type="button" data-action="open-player" ${previewAssetCount ? '' : 'disabled'} title="${escapeHtml(this.tr(previewAssetCount ? 'playerTestHint' : 'playerTestBlocked'))}">▶ ${escapeHtml(this.tr('playerTest'))}</button>
             <button class="primary" type="button" data-action="publish">${escapeHtml(issues.length ? this.tr(issues.length === 1 ? 'reviewIssue' : 'reviewIssues', { count: issues.length }) : this.tr('publishMainnet'))}</button>
           </div>
         </header>
 
-        <nav class="v4-studio-tabs" aria-label="Maker tools" role="tablist">
+        <nav class="v4-studio-tabs" aria-label="${escapeHtml(this.tr('makerToolsLabel'))}" role="tablist">
           ${[
             ['structure', this.tr('partsItems')],
             ['layers', this.tr('layerTracks')],
@@ -767,7 +868,7 @@ export class MakerWorkspace {
         <div id="makerV4ToolPanel" class="v4-studio-workspace" role="tabpanel" aria-labelledby="makerV4Tab-structure">
           <aside class="v4-parts-browser">
             <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('parts'))}</span><strong>${escapeHtml(this.tr('playerMenu'))}</strong></div><button type="button" data-action="add-part">＋</button></div>
-            <div class="v4-parts-list">${partRows || '<div class="v4-inline-empty"><span>Create the first Part.</span></div>'}</div>
+            <div class="v4-parts-list">${partRows || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('createFirstPart'))}</span></div>`}</div>
             ${part ? `<div class="v4-part-actions"><button type="button" data-action="copy-part">${escapeHtml(this.tr('duplicate'))}</button><button type="button" data-action="delete-part" class="danger">${escapeHtml(this.tr('delete'))}</button></div>` : ''}
           </aside>
 
@@ -783,7 +884,7 @@ export class MakerWorkspace {
             </div>
             <div class="v4-canvas-viewport ${document.canvas.pixelMode === 'pixelated' ? 'pixelated' : ''}">
               <div class="v4-canvas-ruler"><span>0,0</span><span>${document.canvas.width},${document.canvas.height}</span></div>
-              <canvas id="makerV4CreatorCanvas" class="v4-runtime-canvas" style="width:${Math.round(this.creatorZoom * 100)}%" aria-label="Maker canvas"></canvas>
+              <canvas id="makerV4CreatorCanvas" class="v4-runtime-canvas" style="width:${Math.round(this.creatorZoom * 100)}%" aria-label="${escapeHtml(this.tr('makerCanvasLabel'))}"></canvas>
               ${!binding ? `<div class="v4-canvas-empty"><strong>${escapeHtml(this.tr('selectVisualLayer'))}</strong><span>${escapeHtml(this.tr('selectVisualLayerCopy'))}</span></div>` : ''}
             </div>
             <div class="v4-items-dock">
@@ -806,67 +907,71 @@ export class MakerWorkspace {
         </div>
         ${this.creatorTab !== 'structure' ? `<div class="v4-tool-modal-backdrop" data-action="close-tool-backdrop">
           <section id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true" aria-labelledby="makerV4ToolTitle">
-            <header class="v4-tool-context"><div><span>${escapeHtml(this.creatorTabLabel(this.creatorTab, issues.length))}</span><strong id="makerV4ToolTitle">${escapeHtml(document.metadata.name)}</strong></div><button type="button" data-action="close-tool" aria-label="Close">×</button></header>
+            <header class="v4-tool-context"><div><span>${escapeHtml(this.creatorTabLabel(this.creatorTab, issues.length))}</span><strong id="makerV4ToolTitle">${escapeHtml(document.metadata.name)}</strong></div><button type="button" data-action="close-tool" aria-label="${escapeHtml(this.tr('close'))}">×</button></header>
             ${this.renderCreatorAdvanced(document, issues, compatibility)}
           </section>
         </div>` : ''}
       </section>
       ${this.renderImportDialog(document)}
     `;
+    this.restoreCreatorViewState(viewState);
   }
 
   renderCreatorInspector(document, part, item, variant, binding, bindingRows) {
-    if (!part) return '<div class="v4-inline-empty"><strong>No Part selected</strong><span>Create a Part to begin.</span></div>';
-    const parentOptions = ['<option value="">No parent</option>', ...document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(part.parentPartId, candidate.id)}>${escapeHtml(candidate.name)}</option>`)].join('');
+    if (!part) return `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noPartSelected'))}</strong><span>${escapeHtml(this.tr('noPartSelectedCopy'))}</span></div>`;
+    const parentOptions = [`<option value="">${escapeHtml(this.tr('noParent'))}</option>`, ...document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(part.parentPartId, candidate.id)}>${escapeHtml(candidate.name)}</option>`)].join('');
     const defaultOptions = part.items.map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(part.defaultItemId, candidate.id)}>${escapeHtml(candidate.name)}</option>`).join('');
     const trackOptions = document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}" ${selected(binding?.layerTrackId, track.id)}>${escapeHtml(track.name)}</option>`).join('');
-    const channelOptions = ['<option value="">No smart color</option>', ...document.colorChannels.map((channel) => `<option value="${escapeHtml(channel.id)}" ${selected(binding?.colorChannelId, channel.id)}>${escapeHtml(channel.name)}</option>`)].join('');
-    const visibleOptions = ['<option value="">Always visible</option>', ...document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(binding?.visibleWhen?.partId, candidate.id)}>${escapeHtml(`When ${candidate.name} selected`)}</option>`)].join('');
+    const channelOptions = [`<option value="">${escapeHtml(this.tr('noSmartColor'))}</option>`, ...document.colorChannels.map((channel) => `<option value="${escapeHtml(channel.id)}" ${selected(binding?.colorChannelId, channel.id)}>${escapeHtml(channel.name)}</option>`)].join('');
+    const visibleOptions = [`<option value="">${escapeHtml(this.tr('alwaysVisible'))}</option>`, ...document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(binding?.visibleWhen?.partId, candidate.id)}>${escapeHtml(this.tr('whenPartSelected', { part: candidate.name }))}</option>`)].join('');
+    const positionEditorOpen = Boolean(binding && (binding.positionConfirmed === false || this.editingPositionBindingId === binding.id));
     return `
       <div class="v4-inspector-section">
-        <span class="v4-inspector-label">Part</span>
-        <label>Name<input value="${escapeHtml(part.name)}" data-action="part-name" maxlength="128" /></label>
+        <span class="v4-inspector-label">${escapeHtml(this.tr('part'))}</span>
+        <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(part.name)}" data-action="part-name" maxlength="128" /></label>
         <div class="v4-toggle-grid">
-          <label><input type="checkbox" ${checked(part.required)} data-action="part-required" /> Required</label>
-          <label><input type="checkbox" ${checked(part.menuVisible)} data-action="part-visible" /> Player menu</label>
+          <label><input type="checkbox" ${checked(part.required)} data-action="part-required" /> ${escapeHtml(this.tr('required'))}</label>
+          <label><input type="checkbox" ${checked(part.menuVisible)} data-action="part-visible" /> ${escapeHtml(this.tr('playerMenu'))}</label>
         </div>
-        <label>Parent Part<select data-action="part-parent">${parentOptions}</select></label>
-        <label>Default Item<select data-action="part-default" ${part.items.length ? '' : 'disabled'}><option value="">None</option>${defaultOptions}</select></label>
-        <label class="v4-file-button wide">Upload Part icon<input type="file" accept="image/png,image/jpeg" data-action="part-icon" /></label>
+        <label>${escapeHtml(this.tr('parentPart'))}<select data-action="part-parent">${parentOptions}</select></label>
+        <label>${escapeHtml(this.tr('defaultItem'))}<select data-action="part-default" ${part.items.length ? '' : 'disabled'}><option value="">${escapeHtml(this.tr('none'))}</option>${defaultOptions}</select></label>
+        <label class="v4-file-button wide">${escapeHtml(this.tr('uploadPartIcon'))}<input type="file" accept="image/png,image/jpeg" data-action="part-icon" /></label>
       </div>
       ${item ? `
         <div class="v4-inspector-section">
-          <span class="v4-inspector-label">Item</span>
-          <label>Name<input value="${escapeHtml(item.name)}" data-action="item-name" maxlength="128" /></label>
-          <div class="v4-inline-actions"><button type="button" data-action="copy-item">Duplicate</button><button type="button" class="danger" data-action="delete-item">Delete</button></div>
-          <label class="v4-file-button wide">Custom thumbnail<input type="file" accept="image/png,image/jpeg" data-action="item-thumbnail" /></label>
+          <span class="v4-inspector-label">${escapeHtml(this.tr('item'))}</span>
+          <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(item.name)}" data-action="item-name" maxlength="128" /></label>
+          <div class="v4-inline-actions"><button type="button" data-action="copy-item">${escapeHtml(this.tr('duplicate'))}</button><button type="button" class="danger" data-action="delete-item">${escapeHtml(this.tr('delete'))}</button></div>
+          <label class="v4-file-button wide">${escapeHtml(this.tr('customThumbnail'))}<input type="file" accept="image/png,image/jpeg" data-action="item-thumbnail" /></label>
         </div>
         <div class="v4-inspector-section">
-          <span class="v4-inspector-label">Style</span>
-          <label>Name<input value="${escapeHtml(variant?.name || '')}" data-action="variant-name" maxlength="128" ${variant ? '' : 'disabled'} /></label>
-          <div class="v4-inline-actions"><button type="button" data-action="copy-variant" ${variant ? '' : 'disabled'}>Duplicate</button><button type="button" class="danger" data-action="delete-variant" ${item.variants.length > 1 ? '' : 'disabled'}>Delete</button></div>
+          <span class="v4-inspector-label">${escapeHtml(this.tr('style'))}</span>
+          <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(variant?.name || '')}" data-action="variant-name" maxlength="128" ${variant ? '' : 'disabled'} /></label>
+          <div class="v4-inline-actions"><button type="button" data-action="copy-variant" ${variant ? '' : 'disabled'}>${escapeHtml(this.tr('duplicate'))}</button><button type="button" class="danger" data-action="delete-variant" ${item.variants.length > 1 ? '' : 'disabled'}>${escapeHtml(this.tr('delete'))}</button></div>
           <div class="v4-binding-list">${bindingRows}</div>
-          <button type="button" data-action="add-empty-binding" ${document.layerTracks.length ? '' : 'disabled'}>＋ Empty LayerBinding</button>
+          <button type="button" data-action="add-empty-binding" ${document.layerTracks.length ? '' : 'disabled'}>${escapeHtml(this.tr('emptyLayerBinding'))}</button>
         </div>
       ` : ''}
       ${binding ? `
         <div class="v4-inspector-section prominent">
-          <div class="v4-inspector-section-head"><span class="v4-inspector-label">Selected layer</span><button type="button" class="danger" data-action="delete-binding">Delete</button></div>
-          <label>Layer Track<select data-action="binding-track">${trackOptions}</select></label>
-          <label class="v4-file-button wide">${this.assets.has(binding.assetId) ? 'Replace layer PNG' : 'Upload layer PNG'}<input type="file" accept="image/png" data-action="binding-asset" /></label>
-          <div class="v4-number-grid">
-            <label>X<input type="number" value="${Number(binding.transform.x).toFixed(1)}" data-action="binding-x" /></label>
-            <label>Y<input type="number" value="${Number(binding.transform.y).toFixed(1)}" data-action="binding-y" /></label>
-            <label>Scale<input type="number" min="0.01" max="100" step="0.01" value="${Number(binding.transform.scale).toFixed(2)}" data-action="binding-scale" /></label>
-            <label>Rotate<input type="number" step="1" value="${Number(binding.transform.rotation).toFixed(1)}" data-action="binding-rotation" /></label>
-          </div>
-          <label>Scale on Canvas<input type="range" min="5" max="400" value="${Math.round(Number(binding.transform.scale) * 100)}" data-action="binding-scale-preview" /></label>
-          <label>Opacity<input type="range" min="0" max="100" value="${Math.round(binding.opacity * 100)}" data-action="binding-opacity" /></label>
-          <label>Blend mode<select data-action="binding-blend">${['normal','multiply','screen','overlay','darken','lighten','color-dodge','color-burn','hard-light','soft-light','difference','exclusion','hue','saturation','color','luminosity','linear-dodge'].map((mode) => `<option value="${mode}" ${selected(binding.blendMode, mode)}>${mode}</option>`).join('')}</select></label>
-          <label>Smart color<select data-action="binding-channel">${channelOptions}</select></label>
-          <label>Show this layer<select data-action="binding-visible-when">${visibleOptions}</select></label>
-          <div class="v4-inline-actions"><button type="button" data-action="toggle-binding-hidden">${this.hiddenBindingIds.has(binding.id) ? 'Show layer' : 'Hide layer'}</button><button type="button" class="primary" data-action="confirm-position">${binding.positionConfirmed === false ? 'Confirm position' : 'Position confirmed ✓'}</button></div>
-          <small>Drag directly on the Canvas to position this layer. Player movement remains disabled.</small>
+          <div class="v4-inspector-section-head"><span class="v4-inspector-label">${escapeHtml(this.tr('selectedLayer'))}</span><button type="button" class="danger" data-action="delete-binding">${escapeHtml(this.tr('delete'))}</button></div>
+          <label>${escapeHtml(this.tr('layerTrack'))}<select data-action="binding-track">${trackOptions}</select></label>
+          <label class="v4-file-button wide">${escapeHtml(this.tr(this.assets.has(binding.assetId) ? 'replaceLayerPng' : 'uploadLayerPng'))}<input type="file" accept="image/png" data-action="binding-asset" /></label>
+          ${positionEditorOpen ? `
+            <div class="v4-number-grid">
+              <label>X<input type="number" value="${Number(binding.transform.x).toFixed(1)}" data-action="binding-x" /></label>
+              <label>Y<input type="number" value="${Number(binding.transform.y).toFixed(1)}" data-action="binding-y" /></label>
+              <label>${escapeHtml(this.tr('scale'))}<input type="number" min="0.01" max="100" step="0.01" value="${Number(binding.transform.scale).toFixed(2)}" data-action="binding-scale" /></label>
+              <label>${escapeHtml(this.tr('rotate'))}<input type="number" step="1" value="${Number(binding.transform.rotation).toFixed(1)}" data-action="binding-rotation" /></label>
+            </div>
+            <label>${escapeHtml(this.tr('scaleOnCanvas'))}<input type="range" min="5" max="400" value="${Math.round(Number(binding.transform.scale) * 100)}" data-action="binding-scale-preview" /></label>
+          ` : ''}
+          <label>${escapeHtml(this.tr('opacity'))}<input type="range" min="0" max="100" value="${Math.round(binding.opacity * 100)}" data-action="binding-opacity" /></label>
+          <label>${escapeHtml(this.tr('blendMode'))}<select data-action="binding-blend">${['normal','multiply','screen','overlay','darken','lighten','color-dodge','color-burn','hard-light','soft-light','difference','exclusion','hue','saturation','color','luminosity','linear-dodge'].map((mode) => `<option value="${mode}" ${selected(binding.blendMode, mode)}>${escapeHtml(this.blendModeText(mode))}</option>`).join('')}</select></label>
+          <label>${escapeHtml(this.tr('smartColor'))}<select data-action="binding-channel">${channelOptions}</select></label>
+          <label>${escapeHtml(this.tr('showThisLayer'))}<select data-action="binding-visible-when">${visibleOptions}</select></label>
+          <div class="v4-inline-actions"><button type="button" data-action="toggle-binding-hidden">${escapeHtml(this.tr(this.hiddenBindingIds.has(binding.id) ? 'showLayer' : 'hideLayer'))}</button>${positionEditorOpen ? `<button type="button" class="primary" data-action="confirm-position">${escapeHtml(this.tr('confirmPosition'))}</button>` : `<button type="button" class="primary" data-action="edit-position" title="${escapeHtml(this.tr('positionConfirmed'))}">${escapeHtml(this.tr('adjustPosition'))}</button>`}</div>
+          ${positionEditorOpen ? `<small>${escapeHtml(this.tr('dragPositionCopy'))}</small>` : ''}
         </div>
       ` : ''}
     `;
@@ -878,10 +983,10 @@ export class MakerWorkspace {
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('partsItems'))}</span><h3>${escapeHtml(this.tr('structureTitle'))}</h3></div><button type="button" data-action="set-default-recipe">${escapeHtml(this.tr('setDefault'))}</button></div>
         <div class="v4-explainer-grid">
-          <article><strong>Part</strong><span>Player menu category</span><em>${escapeHtml(part?.name || '—')}</em></article>
-          <article><strong>Item</strong><span>One player click</span><em>${escapeHtml(item?.name || '—')}</em></article>
-          <article><strong>Style</strong><span>Explicit secondary variant</span><em>${escapeHtml(variant?.name || '—')}</em></article>
-          <article><strong>LayerBinding</strong><span>One PNG on one global track</span><em>${variant?.layerBindings.length || 0} active layers</em></article>
+          <article><strong>${escapeHtml(this.tr('part'))}</strong><span>${escapeHtml(this.tr('partConceptCopy'))}</span><em>${escapeHtml(part?.name || '—')}</em></article>
+          <article><strong>${escapeHtml(this.tr('item'))}</strong><span>${escapeHtml(this.tr('itemConceptCopy'))}</span><em>${escapeHtml(item?.name || '—')}</em></article>
+          <article><strong>${escapeHtml(this.tr('style'))}</strong><span>${escapeHtml(this.tr('styleConceptCopy'))}</span><em>${escapeHtml(variant?.name || '—')}</em></article>
+          <article><strong>${escapeHtml(this.tr('bindingConcept'))}</strong><span>${escapeHtml(this.tr('bindingConceptCopy'))}</span><em>${escapeHtml(this.tr('activeLayerCount', { count: variant?.layerBindings.length || 0 }))}</em></article>
         </div>
       `;
     }
@@ -890,7 +995,7 @@ export class MakerWorkspace {
         const bindings = document.parts.flatMap((part) => part.items.flatMap((item) => item.variants.flatMap((variant) => variant.layerBindings.filter((binding) => binding.layerTrackId === track.id))));
         return `
           <div class="v4-track-row ${track.id === this.selectedTrackId ? 'active' : ''}" draggable="true" data-drag-kind="track" data-drag-id="${escapeHtml(track.id)}" data-drop-kind="track">
-            <button type="button" data-action="select-track" data-track-id="${escapeHtml(track.id)}"><span>⋮⋮</span><strong>${escapeHtml(track.name)}</strong><small>${bindings.length} binding${bindings.length === 1 ? '' : 's'}</small></button>
+            <button type="button" data-action="select-track" data-track-id="${escapeHtml(track.id)}"><span>⋮⋮</span><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(this.tr('bindingCount', { count: bindings.length }))}</small></button>
             <input value="${escapeHtml(track.name)}" data-action="track-name" data-track-id="${escapeHtml(track.id)}" maxlength="128" />
             <div><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="up">↑</button><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="down">↓</button><button type="button" data-action="delete-track" data-track-id="${escapeHtml(track.id)}" ${bindings.length ? 'disabled' : ''}>×</button></div>
           </div>
@@ -898,7 +1003,7 @@ export class MakerWorkspace {
       }).join('');
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('layerTracks'))}</span><h3>${escapeHtml(this.tr('layerOrderTitle'))}</h3><p>${escapeHtml(this.tr('layerOrderCopy'))}</p></div><button type="button" data-action="add-track">${escapeHtml(this.tr('addTrack'))}</button></div>
-        <div class="v4-track-list">${rows || '<div class="v4-inline-empty"><span>Add a Layer Track before importing artwork.</span></div>'}</div>
+        <div class="v4-track-list">${rows || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('emptyTracks'))}</span></div>`}</div>
       `;
     }
     if (this.creatorTab === 'colors') {
@@ -906,19 +1011,19 @@ export class MakerWorkspace {
       const channels = document.colorChannels.map((channel) => `
         <button type="button" class="v4-color-channel-card ${selectedChannel?.id === channel.id ? 'active' : ''}" data-action="select-channel" data-channel-id="${escapeHtml(channel.id)}">
           <span style="--swatch:${escapeHtml(channel.swatches.find((swatch) => swatch.id === channel.defaultSwatchId)?.hintColor || '#7b5cff')}"></span>
-          <strong>${escapeHtml(channel.name)}</strong><small>${channel.swatches.length} colors · ${escapeHtml(channel.mode)}</small>
+          <strong>${escapeHtml(channel.name)}</strong><small>${escapeHtml(this.tr('colorCountMode', { count: channel.swatches.length, mode: this.tr(channel.mode === 'asset-map' ? 'separateAssets' : 'gradientMap') }))}</small>
         </button>
       `).join('');
       const swatches = selectedChannel?.swatches.map((swatch) => `
         <div class="v4-swatch-editor ${swatch.id === selectedChannel.defaultSwatchId ? 'default' : ''}">
-          <input type="radio" name="v4-default-swatch" value="${escapeHtml(swatch.id)}" ${checked(swatch.id === selectedChannel.defaultSwatchId)} data-action="channel-default-swatch" title="Default color" />
+          <input type="radio" name="v4-default-swatch" value="${escapeHtml(swatch.id)}" ${checked(swatch.id === selectedChannel.defaultSwatchId)} data-action="channel-default-swatch" title="${escapeHtml(this.tr('defaultColor'))}" />
           <input value="${escapeHtml(swatch.name)}" data-action="swatch-name" data-swatch-id="${escapeHtml(swatch.id)}" maxlength="128" />
-          <label>Hint<input type="color" value="${escapeHtml(swatch.hintColor)}" data-action="swatch-hint" data-swatch-id="${escapeHtml(swatch.id)}" /></label>
+          <label>${escapeHtml(this.tr('hint'))}<input type="color" value="${escapeHtml(swatch.hintColor)}" data-action="swatch-hint" data-swatch-id="${escapeHtml(swatch.id)}" /></label>
           ${selectedChannel.mode === 'gradient-map' ? `
-            <label>Shadow<input type="color" value="${escapeHtml(swatch.stops[0]?.color || '#111111')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="0" /></label>
-            <label>Mid<input type="color" value="${escapeHtml(swatch.stops[Math.floor((swatch.stops.length - 1) / 2)]?.color || swatch.hintColor)}" data-action="swatch-mid" data-swatch-id="${escapeHtml(swatch.id)}" /></label>
-            <label>Light<input type="color" value="${escapeHtml(swatch.stops.at(-1)?.color || '#ffffff')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="${Math.max(1, swatch.stops.length - 1)}" /></label>
-          ` : '<span>Upload one asset per swatch on each binding.</span>'}
+            <label>${escapeHtml(this.tr('shadow'))}<input type="color" value="${escapeHtml(swatch.stops[0]?.color || '#111111')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="0" /></label>
+            <label>${escapeHtml(this.tr('mid'))}<input type="color" value="${escapeHtml(swatch.stops[Math.floor((swatch.stops.length - 1) / 2)]?.color || swatch.hintColor)}" data-action="swatch-mid" data-swatch-id="${escapeHtml(swatch.id)}" /></label>
+            <label>${escapeHtml(this.tr('light'))}<input type="color" value="${escapeHtml(swatch.stops.at(-1)?.color || '#ffffff')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="${Math.max(1, swatch.stops.length - 1)}" /></label>
+          ` : `<span>${escapeHtml(this.tr('assetPerSwatchCopy'))}</span>`}
           <button type="button" data-action="delete-swatch" data-swatch-id="${escapeHtml(swatch.id)}" ${selectedChannel.swatches.length <= 1 ? 'disabled' : ''}>×</button>
         </div>
       `).join('') || '';
@@ -926,12 +1031,12 @@ export class MakerWorkspace {
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('smartColor'))}</span><h3>${escapeHtml(this.tr('smartColorTitle'))}</h3><p>${escapeHtml(this.tr('smartColorCopy'))}</p></div><button type="button" data-action="add-channel">${escapeHtml(this.tr('addChannel'))}</button></div>
         <div class="v4-color-workspace">
-          <div class="v4-color-channel-list">${channels || '<div class="v4-inline-empty"><span>Create a channel, then bind layers from the Inspector.</span></div>'}</div>
+          <div class="v4-color-channel-list">${channels || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('createChannelCopy'))}</span></div>`}</div>
           ${selectedChannel ? `<div class="v4-color-detail">
-            <div class="v4-form-row"><label>Name<input value="${escapeHtml(selectedChannel.name)}" data-action="channel-name" /></label><label>Mode<select data-action="channel-mode"><option value="gradient-map" ${selected(selectedChannel.mode, 'gradient-map')}>Gradient map</option><option value="asset-map" ${selected(selectedChannel.mode, 'asset-map')}>Separate assets</option></select></label><button type="button" class="danger" data-action="delete-channel">Delete</button></div>
+            <div class="v4-form-row"><label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(selectedChannel.name)}" data-action="channel-name" /></label><label>${escapeHtml(this.tr('mode'))}<select data-action="channel-mode"><option value="gradient-map" ${selected(selectedChannel.mode, 'gradient-map')}>${escapeHtml(this.tr('gradientMap'))}</option><option value="asset-map" ${selected(selectedChannel.mode, 'asset-map')}>${escapeHtml(this.tr('separateAssets'))}</option></select></label><button type="button" class="danger" data-action="delete-channel">${escapeHtml(this.tr('delete'))}</button></div>
             <div class="v4-swatch-list">${swatches}</div>
-            <button type="button" data-action="add-swatch">＋ Color preset</button>
-            <p class="v4-linked-copy"><strong>Linked layers:</strong> ${linkedBindings.length ? linkedBindings.map(escapeHtml).join(' · ') : 'None yet'}</p>
+            <button type="button" data-action="add-swatch">${escapeHtml(this.tr('colorPreset'))}</button>
+            <p class="v4-linked-copy"><strong>${escapeHtml(this.tr('linkedLayers'))}</strong> ${linkedBindings.length ? linkedBindings.map(escapeHtml).join(' · ') : escapeHtml(this.tr('noneYet'))}</p>
           </div>` : ''}
         </div>
       `;
@@ -940,7 +1045,7 @@ export class MakerWorkspace {
       const rows = ownerRuleRows(document);
       const partOptions = document.parts.map((part) => `<option value="${escapeHtml(part.id)}">${escapeHtml(part.name)}</option>`).join('');
       const targetOptions = document.parts.flatMap((part) => [
-        `<option value="${escapeHtml(part.id)}">${escapeHtml(part.name)} / any Item</option>`,
+        `<option value="${escapeHtml(part.id)}">${escapeHtml(part.name)} / ${escapeHtml(this.tr('anyItem'))}</option>`,
         ...part.items.flatMap((item) => [
           `<option value="${escapeHtml(`${part.id}::${item.id}`)}">${escapeHtml(part.name)} / ${escapeHtml(item.name)}</option>`,
           ...item.variants.map((variant) => `<option value="${escapeHtml(`${part.id}::${item.id}::${variant.id}`)}">${escapeHtml(part.name)} / ${escapeHtml(item.name)} / ${escapeHtml(variant.name)}</option>`),
@@ -949,18 +1054,18 @@ export class MakerWorkspace {
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('rules'))}</span><h3>${escapeHtml(this.tr('rulesTitle'))}</h3><p>${escapeHtml(this.tr('rulesCopy'))}</p></div></div>
         <div class="v4-rule-builder">
-          <label>When Part<select id="v4RuleOwnerPart" data-action="rule-owner-part">${partOptions}</select></label>
-          <label>Owner scope<select id="v4RuleOwnerScope"><option value="part">Whole Part</option><option value="item">Selected Item</option><option value="variant">Selected Style</option></select></label>
-          <label>Rule<select id="v4RuleType"><option value="excludes">cannot combine with</option><option value="requires">requires</option></select></label>
-          <label>Target definition<select id="v4RuleTargetDefinition">${targetOptions}</select></label>
-          <button type="button" data-action="add-rule">Add rule</button>
+          <label>${escapeHtml(this.tr('whenPart'))}<select id="v4RuleOwnerPart" data-action="rule-owner-part">${partOptions}</select></label>
+          <label>${escapeHtml(this.tr('ownerScope'))}<select id="v4RuleOwnerScope"><option value="part">${escapeHtml(this.tr('wholePart'))}</option><option value="item">${escapeHtml(this.tr('selectedItem'))}</option><option value="variant">${escapeHtml(this.tr('selectedStyle'))}</option></select></label>
+          <label>${escapeHtml(this.tr('ruleLabel'))}<select id="v4RuleType"><option value="excludes">${escapeHtml(this.tr('cannotCombineWith'))}</option><option value="requires">${escapeHtml(this.tr('requiresLabel'))}</option></select></label>
+          <label>${escapeHtml(this.tr('targetDefinition'))}<select id="v4RuleTargetDefinition">${targetOptions}</select></label>
+          <button type="button" data-action="add-rule">${escapeHtml(this.tr('addRule'))}</button>
         </div>
         <div class="v4-rule-list">${rows.map((row) => {
           const targetPart = findPart(document, row.target.partId);
           const targetItem = row.target.itemId ? findItem(document, row.target.partId, row.target.itemId) : null;
           const targetVariant = row.target.variantId && targetItem ? targetItem.variants.find((variant) => variant.id === row.target.variantId) : null;
-          return `<div><span>${escapeHtml(row.ownerName)}</span><b>${row.type === 'requires' ? 'requires' : 'cannot combine with'}</b><span>${escapeHtml(targetPart?.name || row.target.partId)}${targetItem ? ` / ${escapeHtml(targetItem.name)}` : ''}${targetVariant ? ` / ${escapeHtml(targetVariant.name)}` : ''}</span><button type="button" data-action="delete-rule" data-rule-id="${escapeHtml(row.id)}">×</button></div>`;
-        }).join('') || '<div class="v4-inline-empty"><span>No constraints. Random may use every visible Item.</span></div>'}</div>
+          return `<div><span>${escapeHtml(row.ownerName)}</span><b>${escapeHtml(this.tr(row.type === 'requires' ? 'requiresLabel' : 'cannotCombineWith'))}</b><span>${escapeHtml(targetPart?.name || row.target.partId)}${targetItem ? ` / ${escapeHtml(targetItem.name)}` : ''}${targetVariant ? ` / ${escapeHtml(targetVariant.name)}` : ''}</span><button type="button" data-action="delete-rule" data-rule-id="${escapeHtml(row.id)}">×</button></div>`;
+        }).join('') || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noConstraints'))}</span></div>`}</div>
       `;
     }
     if (this.creatorTab === 'expansions') {
@@ -971,15 +1076,15 @@ export class MakerWorkspace {
         return `
           <article class="v4-expansion-card ${result.compatible ? 'ready' : 'error'}">
             <header><div><span>${escapeHtml(pack.namespace)}</span><h4>${escapeHtml(pack.name)}</h4></div><em>${escapeHtml(pack.version)}</em></header>
-            <p>${pack.parts.length} Part extension${pack.parts.length === 1 ? '' : 's'} · ${pack.assets.length} assets</p>
-            <small>${result.compatible ? 'Compatible additive overlay' : result.errors.map((error) => error.code).join(', ')}</small>
-            <div><button type="button" data-action="toggle-expansion" data-pack-id="${escapeHtml(pack.packId)}" ${result.compatible ? '' : 'disabled'}>${enabled ? 'Disable preview' : 'Enable preview'}</button><button type="button" data-action="add-selected-to-expansion" data-pack-id="${escapeHtml(pack.packId)}" ${this.selectedItemId ? '' : 'disabled'}>Add selected Item copy</button><button type="button" data-action="delete-expansion" data-pack-id="${escapeHtml(pack.packId)}" class="danger">Delete</button></div>
+            <p>${escapeHtml(this.tr('expansionStats', { parts: pack.parts.length, assets: pack.assets.length }))}</p>
+            <small>${escapeHtml(this.tr(result.compatible ? 'compatibleOverlay' : 'incompatibleOverlay'))}</small>
+            <div><button type="button" data-action="toggle-expansion" data-pack-id="${escapeHtml(pack.packId)}" ${result.compatible ? '' : 'disabled'}>${escapeHtml(this.tr(enabled ? 'disablePreview' : 'enablePreview'))}</button><button type="button" data-action="add-selected-to-expansion" data-pack-id="${escapeHtml(pack.packId)}" ${this.selectedItemId ? '' : 'disabled'}>${escapeHtml(this.tr('addSelectedItemCopy'))}</button><button type="button" data-action="delete-expansion" data-pack-id="${escapeHtml(pack.packId)}" class="danger">${escapeHtml(this.tr('delete'))}</button></div>
           </article>
         `;
       }).join('');
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('expansionPacks'))}</span><h3>${escapeHtml(this.tr('expansionTitle'))}</h3><p>${escapeHtml(this.tr('expansionCopy'))}</p></div><button type="button" data-action="add-expansion">${escapeHtml(this.tr('addExpansion'))}</button></div>
-        <div class="v4-expansion-grid">${cards || '<div class="v4-inline-empty"><strong>No Expansion Packs</strong><span>Create one, then copy selected Items into its isolated namespace.</span></div>'}</div>
+        <div class="v4-expansion-grid">${cards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noExpansionPacks'))}</strong><span>${escapeHtml(this.tr('noExpansionCopy'))}</span></div>`}</div>
       `;
     }
     const issueRows = issues.map((issue) => {
@@ -994,32 +1099,28 @@ export class MakerWorkspace {
       const displayPath = focusable
         ? [issuePart?.name, issueItem?.name, issueVariant?.name, issueTrack?.name].filter(Boolean).join(' › ')
         : issue.path || 'Maker';
-      const displayMessage = issue.code === 'runtime_asset_missing'
-        ? this.tr('missingAsset', { part: issuePart?.name || partId, item: issueItem?.name || itemId })
-        : issue.code === 'position_unconfirmed'
-          ? this.tr('positionUnconfirmed', { part: issuePart?.name || partId, item: issueItem?.name || itemId })
-          : issue.message;
+      const displayMessage = this.issueText(issue, { part: issuePart?.name || partId, item: issueItem?.name || itemId });
       return `<li class="${severity}">${focusable ? `<button type="button" data-action="focus-issue" data-issue-path="${escapeHtml(issue.path)}" title="${escapeHtml(issue.path)}"><span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong><em>${escapeHtml(this.tr('open'))}</em></button>` : `<span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong>`}</li>`;
     }).join('');
     return `
       <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('publishPreflight'))}</span><h3>${escapeHtml(issues.length ? this.tr(issues.length === 1 ? 'issueBlocks' : 'issuesBlock', { count: issues.length }) : this.tr('readyPublish'))}</h3><p>${escapeHtml(this.tr('preflightCopy'))}</p></div><button type="button" data-action="run-preflight">${escapeHtml(this.tr('runAgain'))}</button></div>
-      ${compatibility ? `<div class="v4-compatibility ${compatibility.compatible ? 'ready' : 'breaking'}"><div><strong>${compatibility.compatible ? 'Compatible Maker update' : 'Breaking update — old OCs stay pinned'}</strong><span>${escapeHtml(compatibility.summary)}</span></div>${!compatibility.compatible && document.version.compatibility !== 'breaking' ? '<button type="button" data-action="set-version-compatibility" data-compatibility="breaking">Confirm breaking update</button>' : compatibility.compatible && document.version.compatibility === 'breaking' ? '<button type="button" data-action="set-version-compatibility" data-compatibility="compatible">Use compatible update</button>' : '<em>Compatibility confirmed</em>'}</div>` : `<div class="v4-compatibility ready"><strong>${escapeHtml(this.tr('initialVersion'))}</strong><span>${escapeHtml(this.tr('initialVersionCopy'))}</span></div>`}
+      ${compatibility ? `<div class="v4-compatibility ${compatibility.compatible ? 'ready' : 'breaking'}"><div><strong>${escapeHtml(this.tr(compatibility.compatible ? 'compatibleUpdate' : 'breakingUpdate'))}</strong><span>${escapeHtml(this.locale === 'en' ? compatibility.summary : this.tr('compatibilitySummary', { breaking: compatibility.breaking?.length || 0, warnings: compatibility.warnings?.length || 0, additions: compatibility.additions?.length || 0 }))}</span></div>${!compatibility.compatible && document.version.compatibility !== 'breaking' ? `<button type="button" data-action="set-version-compatibility" data-compatibility="breaking">${escapeHtml(this.tr('confirmBreakingUpdate'))}</button>` : compatibility.compatible && document.version.compatibility === 'breaking' ? `<button type="button" data-action="set-version-compatibility" data-compatibility="compatible">${escapeHtml(this.tr('useCompatibleUpdate'))}</button>` : `<em>${escapeHtml(this.tr('compatibilityConfirmed'))}</em>`}</div>` : `<div class="v4-compatibility ready"><strong>${escapeHtml(this.tr('initialVersion'))}</strong><span>${escapeHtml(this.tr('initialVersionCopy'))}</span></div>`}
       <ul class="v4-preflight-list">${issueRows || `<li class="ready"><span>${escapeHtml(this.tr('allChecks'))}</span><strong>${escapeHtml(this.tr('allChecksCopy'))}</strong></li>`}</ul>
     `;
   }
 
   renderImportDialog(document) {
     if (!this.pendingImport) return '';
-    const options = ['<option value="">Create a new Layer Track</option>', ...document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}">${escapeHtml(track.name)}</option>`)].join('');
+    const options = [`<option value="">${escapeHtml(this.tr('createNewLayerTrack'))}</option>`, ...document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}">${escapeHtml(track.name)}</option>`)].join('');
     return `
-      <div class="v4-modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirm batch import mapping">
+      <div class="v4-modal-backdrop" role="dialog" aria-modal="true" aria-label="${escapeHtml(this.tr('confirmBatchImport'))}">
         <section class="v4-import-dialog">
-          <header><div><span>BATCH IMPORT</span><h3>Confirm PNG → Layer Track mapping</h3></div><button type="button" data-action="cancel-import">×</button></header>
-          <p>Files are not committed until you confirm. Full-canvas PNGs land at 0,0; cropped PNGs must be positioned and confirmed.</p>
+          <header><div><span>${escapeHtml(this.tr('batchImport'))}</span><h3>${escapeHtml(this.tr('batchImportTitle'))}</h3></div><button type="button" data-action="cancel-import" aria-label="${escapeHtml(this.tr('close'))}">×</button></header>
+          <p>${escapeHtml(this.tr('batchImportCopy'))}</p>
           <div class="v4-import-list">${this.pendingImport.mapping.map((mapping, index) => `
-            <div><span>${escapeHtml(mapping.fileName)}</span><em>${escapeHtml(mapping.confidence)}</em><select data-action="import-track" data-import-index="${index}">${options.replace(`value="${escapeHtml(mapping.trackId)}"`, `value="${escapeHtml(mapping.trackId)}" selected`)}</select><input data-action="import-track-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedTrackName)}" aria-label="New track name" /></div>
+            <div><span>${escapeHtml(mapping.fileName)}</span><em>${escapeHtml(this.tr({ matched: 'importMatched', ordered: 'importOrdered', 'new-track': 'importNewTrack' }[mapping.confidence] || 'importNewTrack'))}</em><select data-action="import-track" data-import-index="${index}">${options.replace(`value="${escapeHtml(mapping.trackId)}"`, `value="${escapeHtml(mapping.trackId)}" selected`)}</select><input data-action="import-track-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedTrackName)}" aria-label="${escapeHtml(this.tr('newTrackName'))}" /></div>
           `).join('')}</div>
-          <footer><button type="button" data-action="cancel-import">Cancel</button><button class="primary" type="button" data-action="confirm-import">Import ${this.pendingImport.mapping.length} PNG${this.pendingImport.mapping.length === 1 ? '' : 's'}</button></footer>
+          <footer><button type="button" data-action="cancel-import">${escapeHtml(this.tr('cancel'))}</button><button class="primary" type="button" data-action="confirm-import">${escapeHtml(this.tr('importPngCount', { count: this.pendingImport.mapping.length }))}</button></footer>
         </section>
       </div>
     `;
@@ -1067,7 +1168,7 @@ export class MakerWorkspace {
         <button type="button" class="v4-player-part ${candidate.id === part?.id ? 'active' : ''}" data-action="player-part" data-part-id="${escapeHtml(candidate.id)}">
           <span>${candidate.iconAssetId && this.runtimeAsset(candidate.iconAssetId)?.url ? `<img src="${escapeHtml(this.runtimeAsset(candidate.iconAssetId).url)}" alt="" />` : escapeHtml(candidate.name.slice(0, 2).toUpperCase())}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
-          <small>${selection?.itemId ? 'Selected' : candidate.required ? 'Required' : 'None'}</small>
+          <small>${escapeHtml(this.tr(selection?.itemId ? 'selectedState' : candidate.required ? 'required' : 'noneState'))}</small>
         </button>
       `;
     }).join('');
@@ -1077,7 +1178,7 @@ export class MakerWorkspace {
         <button type="button" class="v4-player-item ${candidate.id === currentItem?.id ? 'active' : ''}" data-action="player-item" data-item-id="${escapeHtml(candidate.id)}">
           <span>${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : '<i>PNG</i>'}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
-          ${candidate.variants.length > 1 ? `<em>${candidate.variants.length} styles</em>` : ''}
+          ${candidate.variants.length > 1 ? `<em>${escapeHtml(this.tr('styleCount', { count: candidate.variants.length }))}</em>` : ''}
         </button>
       `;
     }).join('') || '';
@@ -1100,56 +1201,56 @@ export class MakerWorkspace {
     this.playerRoot.innerHTML = `
       <section class="v4-player-shell">
         <header class="v4-player-header">
-          <div><span class="v4-eyebrow">Character Maker</span><h1>${escapeHtml(document.metadata.name)}</h1><p>by ${escapeHtml(document.metadata.creator || 'Unknown creator')} · ${escapeHtml(document.version.versionId)}</p></div>
+          <div><span class="v4-eyebrow">${escapeHtml(this.tr('characterMaker'))}</span><h1>${escapeHtml(document.metadata.name)}</h1><p>${escapeHtml(this.tr('byCreatorVersion', { creator: document.metadata.creator || this.tr('unknownCreator'), version: document.version.versionId }))}</p></div>
           <div class="v4-player-tools">
-            <button type="button" data-action="player-info">ⓘ Info & license</button>
-            <button type="button" data-action="player-undo" ${this.playerUndo.length ? '' : 'disabled'}>↶</button>
-            <button type="button" data-action="player-redo" ${this.playerRedo.length ? '' : 'disabled'}>↷</button>
-            <button type="button" data-action="player-random">Random</button>
-            <button type="button" data-action="player-clear">Remove optional</button>
-            <button type="button" data-action="player-reset">Reset</button>
+            <button type="button" data-action="player-info">ⓘ ${escapeHtml(this.tr('infoLicense'))}</button>
+            <button type="button" data-action="player-undo" aria-label="${escapeHtml(this.tr('undo'))}" ${this.playerUndo.length ? '' : 'disabled'}>↶</button>
+            <button type="button" data-action="player-redo" aria-label="${escapeHtml(this.tr('redo'))}" ${this.playerRedo.length ? '' : 'disabled'}>↷</button>
+            <button type="button" data-action="player-random">${escapeHtml(this.tr('random'))}</button>
+            <button type="button" data-action="player-clear">${escapeHtml(this.tr('removeOptional'))}</button>
+            <button type="button" data-action="player-reset">${escapeHtml(this.tr('reset'))}</button>
           </div>
         </header>
         <div class="v4-player-main">
           <section class="v4-player-preview">
             <div class="v4-player-canvas-wrap ${document.canvas.pixelMode === 'pixelated' ? 'pixelated' : ''}">
-              <canvas id="makerV4PlayerCanvas" class="v4-runtime-canvas" aria-label="Your OC preview"></canvas>
-              <div id="v4PlayerRenderStatus" class="v4-render-status">Loading default recipe…</div>
+              <canvas id="makerV4PlayerCanvas" class="v4-runtime-canvas" aria-label="${escapeHtml(this.tr('yourOcPreview'))}"></canvas>
+              <div id="v4PlayerRenderStatus" class="v4-render-status">${escapeHtml(this.tr('loadingDefaultRecipe'))}</div>
             </div>
-            <div class="v4-player-nameplate"><div><strong>${escapeHtml(this.playerProfile.name || 'Untitled OC')}</strong><span>${escapeHtml(this.playerProfile.world || document.metadata.style || 'Original Character')}</span></div><em>${recipeResult.valid ? 'Valid combination' : `${recipeResult.violations.length} rule issue${recipeResult.violations.length === 1 ? '' : 's'}`}</em></div>
+            <div class="v4-player-nameplate"><div><strong>${escapeHtml(this.playerProfile.name || this.tr('untitledOc'))}</strong><span>${escapeHtml(this.playerProfile.world || document.metadata.style || this.tr('originalCharacter'))}</span></div><em>${escapeHtml(recipeResult.valid ? this.tr('validCombination') : this.tr('ruleIssueCount', { count: recipeResult.violations.length }))}</em></div>
             <div class="v4-player-recipe-strip">${selectedSummary}</div>
           </section>
           <section class="v4-player-controls">
             <div class="v4-player-part-rail">${partButtons}</div>
             <div class="v4-player-picker">
-              <header><div><span>CURRENT PART</span><h2>${escapeHtml(part?.name || 'No playable Parts')}</h2></div>${part && !part.required ? `<button type="button" data-action="player-none" class="secondary">None / Remove</button>` : ''}</header>
-              <div class="v4-player-item-grid">${itemButtons || '<div class="v4-inline-empty"><span>This Part has no available Items.</span></div>'}</div>
-              ${currentItem && visibleVariants.length > 1 ? `<div class="v4-player-variant-picker"><span>Style</span>${variantButtons}</div>` : ''}
+              <header><div><span>${escapeHtml(this.tr('currentPart'))}</span><h2>${escapeHtml(part?.name || this.tr('noPlayableParts'))}</h2></div>${part && !part.required ? `<button type="button" data-action="player-none" class="secondary">${escapeHtml(this.tr('noneRemove'))}</button>` : ''}</header>
+              <div class="v4-player-item-grid">${itemButtons || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noAvailableItems'))}</span></div>`}</div>
+              ${currentItem && visibleVariants.length > 1 ? `<div class="v4-player-variant-picker"><span>${escapeHtml(this.tr('style'))}</span>${variantButtons}</div>` : ''}
               ${colorRows || ''}
-              ${packs.length ? `<details class="v4-player-expansions"><summary>Expansion Packs</summary>${packs.map((pack) => {
+              ${packs.length ? `<details class="v4-player-expansions"><summary>${escapeHtml(this.tr('expansionPacks'))}</summary>${packs.map((pack) => {
                 const compatibility = checkExpansionPackCompatibility(this.store.getState().document, pack);
-                return `<label><input type="checkbox" data-action="player-expansion" value="${escapeHtml(pack.packId)}" ${checked(this.enabledExpansionIds.has(pack.packId))} ${compatibility.compatible ? '' : 'disabled'} /><span><strong>${escapeHtml(pack.name)}</strong><small>${compatibility.compatible ? 'Optional content pack' : 'Not compatible with this version'}</small></span></label>`;
+                return `<label><input type="checkbox" data-action="player-expansion" value="${escapeHtml(pack.packId)}" ${checked(this.enabledExpansionIds.has(pack.packId))} ${compatibility.compatible ? '' : 'disabled'} /><span><strong>${escapeHtml(pack.name)}</strong><small>${escapeHtml(this.tr(compatibility.compatible ? 'optionalContentPack' : 'incompatibleVersion'))}</small></span></label>`;
               }).join('')}</details>` : ''}
             </div>
           </section>
         </div>
         <footer class="v4-player-finishbar">
           <div class="v4-player-profile-fields">
-            <label>OC name<input value="${escapeHtml(this.playerProfile.name)}" data-action="player-profile-name" maxlength="128" /></label>
-            <label>World<input value="${escapeHtml(this.playerProfile.world)}" data-action="player-profile-world" maxlength="128" /></label>
+            <label>${escapeHtml(this.tr('ocName'))}<input value="${escapeHtml(this.playerProfile.name)}" data-action="player-profile-name" maxlength="128" /></label>
+            <label>${escapeHtml(this.tr('world'))}<input value="${escapeHtml(this.playerProfile.world)}" data-action="player-profile-world" maxlength="128" /></label>
           </div>
-          <div><span>${recipeResult.valid ? 'Draft autosaved to this wallet workspace' : 'Fix the current rule conflict before finishing'}</span><button type="button" data-action="player-export">Recipe JSON</button><button class="primary" type="button" data-action="player-complete" ${recipeResult.valid ? '' : 'disabled'}>Complete OC</button></div>
+          <div><span>${escapeHtml(this.tr(recipeResult.valid ? 'draftAutosaved' : 'fixRuleConflict'))}</span><button type="button" data-action="player-export">${escapeHtml(this.tr('recipeJson'))}</button><button class="primary" type="button" data-action="player-complete" ${recipeResult.valid ? '' : 'disabled'}>${escapeHtml(this.tr('completeOc'))}</button></div>
         </footer>
       </section>
       ${this.playerIntroOpen ? `
         <div class="v4-modal-backdrop player-info" role="dialog" aria-modal="true">
           <section class="v4-player-info-dialog">
-            <span class="v4-eyebrow">Before you make</span>
+            <span class="v4-eyebrow">${escapeHtml(this.tr('beforeYouMake'))}</span>
             <h2>${escapeHtml(document.metadata.name)}</h2>
-            <p>${escapeHtml(document.metadata.summary || 'Combine the creator-provided Parts to make your OC.')}</p>
-            <dl><div><dt>Creator</dt><dd>${escapeHtml(document.metadata.creator || 'Unknown')}</dd></div><div><dt>License</dt><dd>${escapeHtml(document.metadata.license?.kind || 'personal-use')}</dd></div><div><dt>Version</dt><dd>${escapeHtml(document.version.versionId)}</dd></div></dl>
-            <blockquote>${escapeHtml(document.metadata.license?.note || 'Follow the creator policy shown with this Maker.')}</blockquote>
-            <button type="button" class="primary" data-action="close-player-info">Start making</button>
+            <p>${escapeHtml(document.metadata.summary || this.tr('combineCreatorParts'))}</p>
+            <dl><div><dt>${escapeHtml(this.tr('creator'))}</dt><dd>${escapeHtml(document.metadata.creator || this.tr('unknown'))}</dd></div><div><dt>${escapeHtml(this.tr('license'))}</dt><dd>${escapeHtml(this.licenseText(document.metadata.license?.kind || 'personal-use'))}</dd></div><div><dt>${escapeHtml(this.tr('version'))}</dt><dd>${escapeHtml(document.version.versionId)}</dd></div></dl>
+            <blockquote>${escapeHtml(document.metadata.license?.note || this.tr('followCreatorPolicy'))}</blockquote>
+            <button type="button" class="primary" data-action="close-player-info">${escapeHtml(this.tr('startMaking'))}</button>
           </section>
         </div>
       ` : ''}
@@ -1200,11 +1301,11 @@ export class MakerWorkspace {
       });
       if (controller.signal.aborted) return;
       if (status) status.textContent = result.skipped.length
-        ? `${result.drawn} layers · ${result.skipped.length} asset${result.skipped.length === 1 ? '' : 's'} unavailable`
-        : `${result.drawn} layers · shared runtime renderer`;
+        ? this.tr('creatorRenderUnavailable', { drawn: result.drawn, skipped: result.skipped.length })
+        : this.tr('creatorRenderReady', { drawn: result.drawn });
     } catch (error) {
       if (error?.name === 'AbortError') return;
-      if (status) status.textContent = error.message || 'Canvas render failed.';
+      if (status) status.textContent = error.message || this.tr('canvasRenderFailed');
     }
   }
 
@@ -1228,13 +1329,13 @@ export class MakerWorkspace {
       if (controller.signal.aborted) return;
       if (status) {
         status.textContent = result.skipped.length
-          ? `Keeping the valid frame while ${result.skipped.length} asset${result.skipped.length === 1 ? '' : 's'} retry.`
-          : `${result.drawn} layers ready`;
+          ? this.tr('playerRenderRetry', { skipped: result.skipped.length })
+          : this.tr('playerRenderReady', { drawn: result.drawn });
         status.classList.toggle('ready', !result.skipped.length);
       }
     } catch (error) {
       if (error?.name === 'AbortError') return;
-      if (status) status.textContent = error.message || 'Preview render failed.';
+      if (status) status.textContent = error.message || this.tr('previewRenderFailed');
     }
   }
 
@@ -1276,7 +1377,8 @@ export class MakerWorkspace {
           if (!target) return;
           target.transform.x = preview.x;
           target.transform.y = preview.y;
-          target.positionConfirmed = true;
+          target.positionConfirmed = false;
+          this.editingPositionBindingId = target.id;
         });
       };
       canvas.addEventListener('pointermove', move);
@@ -1389,7 +1491,7 @@ export class MakerWorkspace {
   }
 
   confirmDelete(message) {
-    return typeof window.confirm !== 'function' || window.confirm(message);
+    return typeof globalThis.window?.confirm !== 'function' || globalThis.window.confirm(message);
   }
 
   handleCreatorClick(event) {
@@ -1448,6 +1550,7 @@ export class MakerWorkspace {
       const selectedBinding = findBinding(document, this.selectedPartId, this.selectedItemId, this.selectedVariantId, this.selectedBindingId);
       this.selectedTrackId = selectedBinding?.layerTrackId || this.selectedTrackId;
       this.selectedChannelId = selectedBinding?.colorChannelId || this.selectedChannelId;
+      this.editingPositionBindingId = selectedBinding?.positionConfirmed === false ? selectedBinding.id : '';
       this.render();
       return;
     }
@@ -1497,6 +1600,7 @@ export class MakerWorkspace {
       this.selectedVariantId = variantId;
       this.selectedBindingId = bindingId;
       this.selectedTrackId = target.layerTrackId;
+      this.editingPositionBindingId = bindingId;
       this.creatorTab = 'structure';
       this.render();
       return;
@@ -1538,7 +1642,7 @@ export class MakerWorkspace {
       });
       return;
     }
-    if (action === 'delete-part' && part && this.confirmDelete(`Delete “${part.name}” and all of its Items and layers?`)) {
+    if (action === 'delete-part' && part && this.confirmDelete(this.tr('deletePartConfirm', { name: part.name }))) {
       this.executeDocument('Delete Part', ({ document: next, recipe: nextRecipe }) => {
         next.parts = next.parts.filter((candidate) => candidate.id !== part.id);
         next.parts.forEach((candidate) => {
@@ -1577,7 +1681,7 @@ export class MakerWorkspace {
       });
       return;
     }
-    if (action === 'delete-item' && item && this.confirmDelete(`Delete “${item.name}” and all of its styles?`)) {
+    if (action === 'delete-item' && item && this.confirmDelete(this.tr('deleteItemConfirm', { name: item.name }))) {
       this.executeDocument('Delete Item', ({ document: next, recipe: nextRecipe }) => {
         const targetPart = findPart(next, part.id);
         targetPart.items = targetPart.items.filter((candidate) => candidate.id !== item.id);
@@ -1606,7 +1710,7 @@ export class MakerWorkspace {
       });
       return;
     }
-    if (action === 'delete-variant' && variant && item.variants.length > 1 && this.confirmDelete(`Delete style “${variant.name}”?`)) {
+    if (action === 'delete-variant' && variant && item.variants.length > 1 && this.confirmDelete(this.tr('deleteStyleConfirm', { name: variant.name }))) {
       this.executeDocument('Delete Style', ({ document: next }) => {
         const targetItem = findItem(next, part.id, item.id);
         targetItem.variants = targetItem.variants.filter((candidate) => candidate.id !== variant.id);
@@ -1643,9 +1747,15 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'confirm-position' && binding) {
+      this.editingPositionBindingId = '';
       this.executeDocument('Confirm layer position', ({ document: next }) => {
         findBinding(next, part.id, item.id, variant.id, binding.id).positionConfirmed = true;
       });
+      return;
+    }
+    if (action === 'edit-position' && binding) {
+      this.editingPositionBindingId = binding.id;
+      this.render();
       return;
     }
     if (action === 'add-track') {
@@ -1875,7 +1985,8 @@ export class MakerWorkspace {
       this.executeDocument('Edit layer transform', ({ document: next }) => {
         const target = findBinding(next, part.id, item.id, variant.id, binding.id);
         target.transform[field] = field === 'scale' ? Math.max(0.01, Number(input.value || 1)) : Number(input.value || 0);
-        target.positionConfirmed = true;
+        target.positionConfirmed = false;
+        this.editingPositionBindingId = target.id;
       });
     } else if (action === 'binding-scale-preview' && binding) {
       const scale = Math.max(0.01, Number(input.value || 100) / 100);
@@ -1883,7 +1994,8 @@ export class MakerWorkspace {
       this.executeDocument('Scale layer on Canvas', ({ document: next }) => {
         const target = findBinding(next, part.id, item.id, variant.id, binding.id);
         target.transform.scale = scale;
-        target.positionConfirmed = true;
+        target.positionConfirmed = false;
+        this.editingPositionBindingId = target.id;
       });
     } else if (action === 'binding-opacity' && binding) this.executeDocument('Change layer opacity', ({ document: next }) => { findBinding(next, part.id, item.id, variant.id, binding.id).opacity = Number(input.value || 0) / 100; });
     else if (action === 'binding-blend' && binding) this.executeDocument('Change blend mode', ({ document: next }) => { findBinding(next, part.id, item.id, variant.id, binding.id).blendMode = input.value; });
@@ -1944,8 +2056,8 @@ export class MakerWorkspace {
   }
 
   async importDisplayAsset(file, kind) {
-    if (!file || !String(file.type || '').startsWith('image/')) throw new Error('Choose a PNG or JPEG image.');
-    if (Number(file.size || 0) > 5 * 1024 * 1024) throw new Error('Icons and thumbnails must be 5 MB or smaller.');
+    if (!file || !String(file.type || '').startsWith('image/')) throw new Error(this.tr('chooseDisplayImage'));
+    if (Number(file.size || 0) > 5 * 1024 * 1024) throw new Error(this.tr('displayAssetTooLarge'));
     const bitmap = await createImageBitmap(file);
     const width = bitmap.width;
     const height = bitmap.height;
@@ -1972,6 +2084,7 @@ export class MakerWorkspace {
     await upsertMakerWorkspaceAssets(this.makerKey, [{ ...record, url: '', thumbnailUrl: '' }]);
     this.assetResolver.clear();
     this.assetResolver = createCachedAssetResolver(this.assets);
+    this.editingPositionBindingId = inspection.fullCanvas ? '' : selection.bindingId;
     this.executeDocument('Replace layer PNG', ({ document }) => {
       addDocumentAsset(document, record);
       const binding = findBinding(document, selection.partId, selection.itemId, selection.variantId, selection.bindingId);
@@ -1994,7 +2107,7 @@ export class MakerWorkspace {
   async confirmBatchImport() {
     const pending = this.pendingImport;
     if (!pending || !this.store) return;
-    this.store.setSaveState('saving', `Inspecting ${pending.mapping.length} PNG files…`);
+    this.store.setSaveState('saving', this.tr('inspectingPngs', { count: pending.mapping.length }));
     try {
       const canvas = this.store.getState().document.canvas;
       const prepared = await Promise.all(pending.mapping.map(async (mapping) => {
@@ -2046,16 +2159,17 @@ export class MakerWorkspace {
             };
           }
           targetBinding.positionConfirmed = inspection.fullCanvas;
+          if (!inspection.fullCanvas) this.editingPositionBindingId = targetBinding.id;
           this.selectedBindingId = targetBinding.id;
         });
         targetItem.thumbnailAssetId ||= prepared[0]?.record.assetId || null;
         removeUnreferencedAssetMetadata(document);
       });
       this.pendingImport = null;
-      this.store.setSaveState('dirty', `${prepared.length} PNG layer${prepared.length === 1 ? '' : 's'} imported`);
+      this.store.setSaveState('dirty', this.tr('importedPngs', { count: prepared.length }));
       this.render();
     } catch (error) {
-      this.store.setSaveState('error', error.message || 'Batch import failed.');
+      this.store.setSaveState('error', error.message || this.tr('batchImportFailed'));
     }
   }
 
@@ -2268,8 +2382,12 @@ export class MakerWorkspace {
       const next = clone(this.playerRecipe);
       const requiredIds = new Set(document.parts.filter((candidate) => candidate.required).map((candidate) => candidate.id));
       next.selections = next.selections.filter((selection) => requiredIds.has(selection.partId));
-      const normalized = normalizeRecipe(document, next, { lockedPartIds: [...requiredIds] });
-      this.setPlayerRecipe(normalized.valid ? normalized.documentRecipe : next, 'Remove optional Parts');
+      const exact = evaluateRecipe(document, next);
+      if (exact.valid) this.setPlayerRecipe(exact.documentRecipe, 'Remove optional Parts');
+      else {
+        const normalized = normalizeRecipe(document, next, { lockedPartIds: [...requiredIds] });
+        this.setPlayerRecipe(normalized.valid ? normalized.documentRecipe : next, 'Remove optional Parts');
+      }
       return;
     }
     if (action === 'player-random') {
