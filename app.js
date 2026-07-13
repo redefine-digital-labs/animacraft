@@ -626,6 +626,81 @@ const i18n = {
   },
 };
 
+const editorShellI18n = {
+  en: {
+    creatorWorkshop: 'Creator Workshop', library: 'Library', backLibraryShort: '← Library', backLibrary: 'Back to OC Maker Library', localDraft: 'Local draft', livingContent: 'Living Content', freeCombine: 'Free combine', starterWorkspace: 'Starter workspace', starterExample: 'Starter example', publishedOnSui: 'Published on Sui', published: 'Published', archived: 'Archived', savedLocally: 'Saved locally', savingLocally: 'Saving…', saveFailedStatus: 'Save failed', retryLocalSave: 'Retry local save', saveBrowserTitle: 'Save Maker metadata and PNG files in this browser.', packagePending: 'Package pending', characterStructure: 'Character structure', selectionLogic: 'Selection logic', qualityCheck: 'Quality check', publication: 'Publication', noItemImagesYet: 'No item images yet', itemImagesReady: '{count} item image(s) ready', compatibilityFallback: 'Compatibility and fallback behavior', playerFlowAssets: 'Player flow and required assets', walrusAndSui: 'Walrus storage and Sui object', notReady: 'Not ready', manage: 'Manage', edit: 'Edit', deleteDraft: 'Delete draft', noOwnedMakers: 'No wallet-owned Makers yet. Create an OC Maker to begin your first local draft.', versionDraft: 'Version draft', partsCount: '{count} Part(s)', rulesCount: '{count} Rule(s)', addFirstPart: 'Add the first Part', readyPreview: 'Ready to preview', incompleteItems: '{count} incomplete Item(s)',
+  },
+  zh: {
+    creatorWorkshop: '创作者工作区', library: '模板库', backLibraryShort: '← 模板库', backLibrary: '返回 OC 模板库', localDraft: '本地草稿', livingContent: '生命内容', freeCombine: '自由组合', starterWorkspace: '初始工作区', starterExample: '示例模板', publishedOnSui: '已发布到 Sui', published: '已发布', archived: '已归档', savedLocally: '已保存到本地', savingLocally: '保存中…', saveFailedStatus: '保存失败', retryLocalSave: '重新保存到本地', saveBrowserTitle: '将 Maker 元数据和 PNG 文件保存到当前浏览器。', packagePending: '合约配置待完成', characterStructure: '角色结构', selectionLogic: '组合逻辑', qualityCheck: '质量检查', publication: '发布', noItemImagesYet: '还没有选项素材', itemImagesReady: '已有 {count} 张选项素材', compatibilityFallback: '兼容性与兜底行为', playerFlowAssets: '玩家流程与必需素材', walrusAndSui: 'Walrus 存储与 Sui 对象', notReady: '尚未就绪', manage: '管理', edit: '编辑', deleteDraft: '删除草稿', noOwnedMakers: '当前钱包还没有 Maker。创建一个 OC Maker，开始第一份本地草稿。', versionDraft: '新版本草稿', partsCount: '{count} 个部件', rulesCount: '{count} 条规则', addFirstPart: '添加第一个部件', readyPreview: '可以预览', incompleteItems: '{count} 个选项未完成',
+  },
+  ja: {
+    creatorWorkshop: 'クリエイターワークショップ', library: 'ライブラリ', backLibraryShort: '← ライブラリ', backLibrary: 'OC Maker ライブラリへ戻る', localDraft: 'ローカル下書き', livingContent: 'Living Content', freeCombine: '自由組み合わせ', starterWorkspace: '初期ワークスペース', starterExample: 'スターター例', publishedOnSui: 'Sui に公開済み', published: '公開済み', archived: 'アーカイブ済み', savedLocally: 'ローカル保存済み', savingLocally: '保存中…', saveFailedStatus: '保存失敗', retryLocalSave: 'ローカル保存を再試行', saveBrowserTitle: 'Maker のメタデータと PNG をこのブラウザに保存します。', packagePending: 'パッケージ設定待ち', characterStructure: 'キャラクター構造', selectionLogic: '組み合わせロジック', qualityCheck: '品質チェック', publication: '公開', noItemImagesYet: 'アイテム素材がありません', itemImagesReady: 'アイテム素材 {count} 枚準備済み', compatibilityFallback: '互換性とフォールバック', playerFlowAssets: 'プレイヤーフローと必須素材', walrusAndSui: 'Walrus ストレージと Sui オブジェクト', notReady: '未準備', manage: '管理', edit: '編集', deleteDraft: '下書きを削除', noOwnedMakers: 'このウォレットには Maker がありません。OC Maker を作成して最初の下書きを始めてください。', versionDraft: 'バージョン下書き', partsCount: 'パーツ {count}', rulesCount: 'ルール {count}', addFirstPart: '最初のパーツを追加', readyPreview: 'プレビュー可能', incompleteItems: '未完成アイテム {count}',
+  },
+  ko: {
+    creatorWorkshop: '크리에이터 작업실', library: '라이브러리', backLibraryShort: '← 라이브러리', backLibrary: 'OC Maker 라이브러리로 돌아가기', localDraft: '로컬 초안', livingContent: 'Living Content', freeCombine: '자유 조합', starterWorkspace: '초기 작업 공간', starterExample: '스타터 예시', publishedOnSui: 'Sui 게시 완료', published: '게시됨', archived: '보관됨', savedLocally: '로컬 저장됨', savingLocally: '저장 중…', saveFailedStatus: '저장 실패', retryLocalSave: '로컬 저장 다시 시도', saveBrowserTitle: 'Maker 메타데이터와 PNG 파일을 이 브라우저에 저장합니다.', packagePending: '패키지 설정 대기', characterStructure: '캐릭터 구조', selectionLogic: '조합 로직', qualityCheck: '품질 검사', publication: '게시', noItemImagesYet: '아이템 이미지 없음', itemImagesReady: '아이템 이미지 {count}개 준비됨', compatibilityFallback: '호환성과 대체 동작', playerFlowAssets: '플레이어 흐름과 필수 에셋', walrusAndSui: 'Walrus 저장소와 Sui 오브젝트', notReady: '준비되지 않음', manage: '관리', edit: '편집', deleteDraft: '초안 삭제', noOwnedMakers: '이 지갑에 Maker가 없습니다. OC Maker를 만들어 첫 로컬 초안을 시작하세요.', versionDraft: '버전 초안', partsCount: '파트 {count}개', rulesCount: '규칙 {count}개', addFirstPart: '첫 파트 추가', readyPreview: '미리보기 가능', incompleteItems: '미완성 아이템 {count}개',
+  },
+  vi: {
+    creatorWorkshop: 'Xưởng sáng tạo', library: 'Thư viện', backLibraryShort: '← Thư viện', backLibrary: 'Quay lại thư viện OC Maker', localDraft: 'Bản nháp cục bộ', livingContent: 'Nội dung sống', freeCombine: 'Kết hợp tự do', starterWorkspace: 'Không gian khởi đầu', starterExample: 'Ví dụ khởi đầu', publishedOnSui: 'Đã đăng lên Sui', published: 'Đã đăng', archived: 'Đã lưu trữ', savedLocally: 'Đã lưu cục bộ', savingLocally: 'Đang lưu…', saveFailedStatus: 'Lưu thất bại', retryLocalSave: 'Thử lưu cục bộ lại', saveBrowserTitle: 'Lưu dữ liệu Maker và tệp PNG trong trình duyệt này.', packagePending: 'Chờ cấu hình gói', characterStructure: 'Cấu trúc nhân vật', selectionLogic: 'Logic kết hợp', qualityCheck: 'Kiểm tra chất lượng', publication: 'Xuất bản', noItemImagesYet: 'Chưa có hình Vật phẩm', itemImagesReady: 'Đã sẵn sàng {count} hình Vật phẩm', compatibilityFallback: 'Tương thích và hành vi dự phòng', playerFlowAssets: 'Luồng người chơi và tài nguyên bắt buộc', walrusAndSui: 'Lưu trữ Walrus và đối tượng Sui', notReady: 'Chưa sẵn sàng', manage: 'Quản lý', edit: 'Chỉnh sửa', deleteDraft: 'Xóa bản nháp', noOwnedMakers: 'Ví này chưa có Maker. Hãy tạo OC Maker để bắt đầu bản nháp đầu tiên.', versionDraft: 'Bản nháp phiên bản', partsCount: '{count} Bộ phận', rulesCount: '{count} quy tắc', addFirstPart: 'Thêm Bộ phận đầu tiên', readyPreview: 'Sẵn sàng xem trước', incompleteItems: '{count} Vật phẩm chưa hoàn tất',
+  },
+};
+
+Object.entries(editorShellI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
+
+const editorDetailI18n = {
+  en: {
+    makerDescriptionDefault: 'Build the template from layered assets, then bind the Maker to license rules and on-chain provenance.', editMakerInfo: 'Edit Maker info', soulWorkspace: 'Soul workspace', livingContentCopy: 'Every OC includes Soulidity-ready defaults. Edit them only when this Maker needs a specific personality, memory, or skill.', defaultsReady: 'Defaults ready', downloadTemplate: 'Download template', defaultStatus: 'Default', soulCharacter: 'Soul Character', memory: 'Memory', skillsDocs: 'Skills & Docs', restoreDefault: 'Restore default', soulidityImport: 'Soulidity import', mintReadyStructure: 'Mint-ready structure', livingImportCopy: 'These files remain editable defaults inside the Maker. The final OC resolves its name, world, and description before Soulidity import.',
+    onchainAssets: 'On-chain Assets', assetRegistry: 'Asset registry', walrusQuilt: 'Walrus quilt', walrusQuiltAssets: 'Layer PNGs, optional picker icons, cover, and the versioned Maker manifest', suiObjects: 'Sui objects', suiObjectsCopy: 'CreatorProfile, OCMaker, MakerTreasury, MakerAdminCap, recipe rules, policy snapshots, and ownership', revenueRoyalty: 'Revenue & royalty', revenueRoyaltyCopy: 'The Maker Treasury path is ready; paid mint and 0%-5% resale settlement activate with the reviewed Soulidity adapter.', publishThisMaker: 'Publish this Maker', publishPrereq: 'Resolve every Preflight issue, connect a wallet, and configure the Move package.', resumeSavedUpload: 'Resume saved upload', prepareStep: '1. Prepare', registerUploadStep: '2. Register & upload', retryUploadStep: '2. Retry upload', certifyStep: '3. Certify', publishMakerStep: '4. Publish Maker', publishingStatus: 'Publishing…', publishedMaker: 'Published Maker', publishedRecordCopy: 'Published records remain on Sui and certified Walrus assets remain available for their storage term.', archiveMaker: 'Archive Maker', restoreMaker: 'Restore Maker', publishSteps: 'Publish Steps', chainExecution: 'Chain execution', publicationRecord: 'Publication Record', immutableRecord: 'What becomes immutable', provenance: 'Provenance', provenanceCopy: 'Creator wallet, Maker object, package version, and publication transaction.', assetVersion: 'Asset version', assetVersionCopy: 'The certified Walrus manifest and every referenced layer image.', rulesRecord: 'Rules', rulesRecordCopy: 'Part, Item, Color, order, selection, palette, and BCS recipe-hash integrity enforced when a Soul is minted.',
+    lifecycle: 'Lifecycle', draftLifecycleCopy: 'Draft content is stored locally and can still be edited or permanently deleted.', starterLifecycleCopy: 'This example is editable in the current browser. Save it as a new local Maker before production use.', publishedLifecycleCopy: 'The published Maker, rules, license, and certified Walrus manifest are immutable. Archive it to stop new Soul authorizations.', archivedLifecycleCopy: 'The historical record and existing Souls remain valid, but this Maker no longer accepts new Soul authorizations.', versionLifecycleCopy: 'Editing {current}. The previous Maker and existing OCs remain pinned to {previous}.', archivedMaker: 'Archived Maker', makerSettings: 'Maker Settings', ocMakerSettings: 'OC Maker settings', makerName: 'Maker name', makerDescription: 'Maker description', creatorLabel: 'Creator', styleWorld: 'Style / world', licenseType: 'License type', licenseNote: 'License note', mintingRevenue: 'Minting & revenue', allowSoulAuthorizations: 'Allow new Soul authorizations', chargeMintFee: 'Charge a mint fee after canonical activation', mintPriceUsdc: 'Mint price (USDC)', resaleRoyalty: 'Future Soulidity resale royalty', noRoyalty: 'No royalty', pilotEconomicsCopy: 'During the Maker-only pilot, paid mint stays off. After canonical activation, revenue settles into this Maker Treasury and only its MakerAdminCap holder can withdraw it.', treasuryAfterPublication: 'Treasury balance appears after publication.', treasuryBalance: 'Treasury balance: {amount} {symbol}', updateOnchainSettings: 'Update on-chain settings', withdrawRevenue: 'Withdraw revenue (USDC)', withdrawWallet: 'Withdraw to my wallet', publishingChecklist: 'Publishing checklist', rulesRevenue: 'Rules & Revenue', licenseRevenueRules: 'License and revenue rules', personalUseLabel: 'Personal use', personalUseCopy: 'Users can make icons, OC profiles, and non-commercial displays.', commercialPermission: 'Commercial permission', commercialPermissionCopy: 'Creators may publish a commercial-use policy copied into each finished OC.', royaltyPolicy: 'Royalty policy', royaltyPolicyCopy: 'The royalty tier is snapshotted at Soul mint and settled only by the reviewed Soulidity path.', onchainPolicy: 'On-chain Policy', releaseEnforces: 'What this release enforces', permissionScope: 'Permission scope', permissionScopeCopy: 'License kind records personal, remix, commercial, or exclusive permission.', attribution: 'Attribution', attributionCopy: 'Published Makers carry creator attribution into every Soul mint authorization.', recipeIntegrity: 'Recipe integrity', recipeIntegrityCopy: 'Required Parts, available Items, and combination rules are verified before authorization.', paidMintDisabled: 'Paid mint stays off until the canonical Soulidity adapter is deployed and verified.', restoringUpload: 'Restoring the saved Walrus upload checkpoint…',
+    publishPackageFirst: 'Publish the Move package and set packageId in config.js.', connectPublishWallet: 'Connect a Sui wallet to sign publication.', addMakerName: 'Add a Maker name in Settings.', publishReadinessCopy: 'Prepare one Walrus quilt, register and upload it, certify it, then publish the Maker on Sui Mainnet.', publishedNetwork: 'Published on {network}.', viewTransaction: 'View transaction', encodingQuilt: 'Encoding PNG layers and manifest into one Walrus quilt…', quiltEncoded: 'Quilt encoded. Register it on Walrus Mainnet with your wallet.', prepareQuiltFailed: 'Could not prepare the Maker quilt.', registeringQuilt: 'Waiting for the Walrus registration signature, then uploading through Mainnet relay…', recoveredCertified: 'The recovered quilt was already certified. Continue with Sui Maker publication.', quiltUploaded: 'Quilt uploaded. Certify availability with one more wallet signature.', registrationFailed: 'Walrus registration or upload failed.', certifyingQuilt: 'Waiting for the Walrus certification signature…', quiltCertified: 'Walrus quilt certified. Publish the indexed OCMaker object on Sui Mainnet.', certificationFailed: 'Walrus certification failed.', waitingSuiPublish: 'Waiting for your Sui Mainnet publication signature…', makerChangedAfterUpload: 'The Maker changed after upload. Prepare a new quilt before publishing.',
+  },
+  zh: {
+    makerDescriptionDefault: '用分层素材搭建模板，再绑定授权规则和链上来源。', editMakerInfo: '编辑 Maker 信息', soulWorkspace: 'Soul 工作区', livingContentCopy: '每个 OC 都包含 Soulidity 可用的默认内容。仅在此 Maker 需要特定性格、记忆或技能时修改。', defaultsReady: '默认内容已就绪', downloadTemplate: '下载模板', defaultStatus: '默认', soulCharacter: 'Soul 角色', memory: '记忆', skillsDocs: '技能与文档', restoreDefault: '恢复默认', soulidityImport: 'Soulidity 导入', mintReadyStructure: '可铸造结构', livingImportCopy: '这些文件作为可编辑默认内容保存在 Maker 中。最终 OC 会在导入 Soulidity 前写入名称、世界和说明。',
+    onchainAssets: '链上资产', assetRegistry: '资产登记', walrusQuilt: 'Walrus Quilt', walrusQuiltAssets: '图层 PNG、可选选择器图标、封面和版本化 Maker Manifest', suiObjects: 'Sui 对象', suiObjectsCopy: 'CreatorProfile、OCMaker、MakerTreasury、MakerAdminCap、配方规则、政策快照和所有权', revenueRoyalty: '收入与版税', revenueRoyaltyCopy: 'Maker Treasury 路径已就绪；付费铸造和 0%-5% 二级版税将在 Soulidity 适配器审计启用后生效。', publishThisMaker: '发布此 Maker', publishPrereq: '解决全部发布检查问题，连接钱包并配置 Move 包。', resumeSavedUpload: '恢复保存的上传', prepareStep: '1. 准备', registerUploadStep: '2. 注册并上传', retryUploadStep: '2. 重试上传', certifyStep: '3. 认证', publishMakerStep: '4. 发布 Maker', publishingStatus: '发布中…', publishedMaker: '已发布 Maker', publishedRecordCopy: '发布记录保留在 Sui；认证的 Walrus 素材在存储期内保持可用。', archiveMaker: '归档 Maker', restoreMaker: '恢复 Maker', publishSteps: '发布步骤', chainExecution: '链上执行', publicationRecord: '发布记录', immutableRecord: '发布后不可变内容', provenance: '来源', provenanceCopy: '创作者钱包、Maker 对象、包版本和发布交易。', assetVersion: '素材版本', assetVersionCopy: '已认证的 Walrus Manifest 及其引用的所有图层图片。', rulesRecord: '规则', rulesRecordCopy: 'Part、Item、颜色、顺序、组合、色板和 BCS 配方哈希在 Soul 铸造时强制验证。',
+    lifecycle: '生命周期', draftLifecycleCopy: '草稿保存在本地，仍可编辑或永久删除。', starterLifecycleCopy: '此示例可在当前浏览器编辑；用于生产前请保存为新的本地 Maker。', publishedLifecycleCopy: '已发布 Maker、规则、授权和认证 Walrus Manifest 不可变。归档可停止新的 Soul 授权。', archivedLifecycleCopy: '历史记录和现有 Soul 仍然有效，但此 Maker 不再接受新的 Soul 授权。', versionLifecycleCopy: '正在编辑 {current}。上一版本 Maker 和现有 OC 继续固定在 {previous}。', archivedMaker: '已归档 Maker', makerSettings: 'Maker 设置', ocMakerSettings: 'OC Maker 设置', makerName: 'Maker 名称', makerDescription: 'Maker 说明', creatorLabel: '创作者', styleWorld: '风格 / 世界', licenseType: '授权类型', licenseNote: '授权说明', mintingRevenue: '铸造与收入', allowSoulAuthorizations: '允许新的 Soul 授权', chargeMintFee: '正式链路启用后收取铸造费', mintPriceUsdc: '铸造价格（USDC）', resaleRoyalty: '未来 Soulidity 二级版税', noRoyalty: '不收版税', pilotEconomicsCopy: 'Maker 试运行阶段保持付费铸造关闭。正式链路启用后，收入进入此 Maker Treasury，只有 MakerAdminCap 持有者可提取。', treasuryAfterPublication: '发布后显示 Treasury 余额。', treasuryBalance: 'Treasury 余额：{amount} {symbol}', updateOnchainSettings: '更新链上设置', withdrawRevenue: '提取收入（USDC）', withdrawWallet: '提取到我的钱包', publishingChecklist: '发布清单', rulesRevenue: '规则与收入', licenseRevenueRules: '授权与收入规则', personalUseLabel: '个人使用', personalUseCopy: '用户可制作头像、OC 档案和非商业展示。', commercialPermission: '商业许可', commercialPermissionCopy: '创作者可发布商业使用政策，并写入每个成品 OC。', royaltyPolicy: '版税政策', royaltyPolicyCopy: '版税档位在 Soul 铸造时形成快照，仅由审计后的 Soulidity 路径结算。', onchainPolicy: '链上政策', releaseEnforces: '本版本强制执行', permissionScope: '许可范围', permissionScopeCopy: '授权类型记录个人、再创作、商业或独家许可。', attribution: '署名', attributionCopy: '已发布 Maker 会把创作者署名写入每次 Soul 铸造授权。', recipeIntegrity: '配方完整性', recipeIntegrityCopy: '必选 Part、可用 Item 和组合规则在授权前验证。', paidMintDisabled: '在 Soulidity 正式适配器完成部署和验证前，付费铸造保持关闭。', restoringUpload: '正在恢复保存的 Walrus 上传检查点…',
+    publishPackageFirst: '请先发布 Move 包，并在 config.js 中设置 packageId。', connectPublishWallet: '连接 Sui 钱包以签名发布。', addMakerName: '请在设置中填写 Maker 名称。', publishReadinessCopy: '准备一个 Walrus Quilt，注册并上传、认证后，再把 Maker 发布到 Sui 主网。', publishedNetwork: '已发布到 {network}。', viewTransaction: '查看交易', encodingQuilt: '正在把 PNG 图层和 Manifest 编码为一个 Walrus Quilt…', quiltEncoded: 'Quilt 已编码。请用钱包在 Walrus 主网注册。', prepareQuiltFailed: '无法准备 Maker Quilt。', registeringQuilt: '等待 Walrus 注册签名，随后通过主网中继上传…', recoveredCertified: '恢复的 Quilt 已认证，可继续发布 Sui Maker。', quiltUploaded: 'Quilt 已上传。请再签名一次认证可用性。', registrationFailed: 'Walrus 注册或上传失败。', certifyingQuilt: '等待 Walrus 认证签名…', quiltCertified: 'Walrus Quilt 已认证。请在 Sui 主网发布索引 OCMaker 对象。', certificationFailed: 'Walrus 认证失败。', waitingSuiPublish: '等待你的 Sui 主网发布签名…', makerChangedAfterUpload: 'Maker 在上传后发生变化，请重新准备 Quilt 后发布。',
+  },
+  ja: {
+    makerDescriptionDefault: 'レイヤー素材でテンプレートを作り、ライセンス規則とオンチェーン来歴を結び付けます。', editMakerInfo: 'Maker 情報を編集', soulWorkspace: 'Soul ワークスペース', livingContentCopy: '各 OC には Soulidity 対応の初期内容があります。この Maker 固有の性格、記憶、スキルが必要な場合だけ編集します。', defaultsReady: '初期内容準備済み', downloadTemplate: 'テンプレートをダウンロード', defaultStatus: '初期値', soulCharacter: 'Soul キャラクター', memory: 'メモリー', skillsDocs: 'スキルと文書', restoreDefault: '初期値に戻す', soulidityImport: 'Soulidity 取り込み', mintReadyStructure: 'Mint 対応構造', livingImportCopy: 'これらは Maker 内の編集可能な初期値です。最終 OC は Soulidity 取り込み前に名前、世界、説明を反映します。',
+    onchainAssets: 'オンチェーン資産', assetRegistry: '資産登録', walrusQuilt: 'Walrus Quilt', walrusQuiltAssets: 'レイヤー PNG、任意アイコン、カバー、バージョン付き Maker Manifest', suiObjects: 'Sui オブジェクト', suiObjectsCopy: 'CreatorProfile、OCMaker、MakerTreasury、MakerAdminCap、レシピ規則、方針スナップショット、所有権', revenueRoyalty: '収益とロイヤリティ', revenueRoyaltyCopy: 'Maker Treasury 経路は準備済みです。課金 Mint と 0%-5% の二次ロイヤリティはレビュー済み Soulidity アダプターで有効になります。', publishThisMaker: 'この Maker を公開', publishPrereq: '公開チェックを解決し、ウォレット接続と Move パッケージ設定を完了してください。', resumeSavedUpload: '保存済みアップロードを再開', prepareStep: '1. 準備', registerUploadStep: '2. 登録とアップロード', retryUploadStep: '2. 再アップロード', certifyStep: '3. 認証', publishMakerStep: '4. Maker を公開', publishingStatus: '公開中…', publishedMaker: '公開済み Maker', publishedRecordCopy: '公開記録は Sui に残り、認証済み Walrus 素材は保存期間中利用できます。', archiveMaker: 'Maker をアーカイブ', restoreMaker: 'Maker を復元', publishSteps: '公開手順', chainExecution: 'チェーン実行', publicationRecord: '公開記録', immutableRecord: '変更不能になる内容', provenance: '来歴', provenanceCopy: '制作者ウォレット、Maker オブジェクト、パッケージ版、公開取引。', assetVersion: '素材バージョン', assetVersionCopy: '認証済み Walrus Manifest と参照される全レイヤー画像。', rulesRecord: 'ルール', rulesRecordCopy: 'Part、Item、色、順序、選択、パレット、BCS レシピハッシュを Soul Mint 時に検証します。',
+    lifecycle: 'ライフサイクル', draftLifecycleCopy: '下書きはローカル保存され、編集または完全削除できます。', starterLifecycleCopy: 'この例は現在のブラウザで編集できます。本番利用前に新しいローカル Maker として保存してください。', publishedLifecycleCopy: '公開済み Maker、ルール、ライセンス、認証済み Walrus Manifest は不変です。アーカイブすると新しい Soul 認可を停止できます。', archivedLifecycleCopy: '履歴と既存 Soul は有効ですが、この Maker は新しい Soul 認可を受け付けません。', versionLifecycleCopy: '{current} を編集中です。以前の Maker と既存 OC は {previous} に固定されます。', archivedMaker: 'アーカイブ済み Maker', makerSettings: 'Maker 設定', ocMakerSettings: 'OC Maker 設定', makerName: 'Maker 名', makerDescription: 'Maker 説明', creatorLabel: '制作者', styleWorld: 'スタイル / 世界', licenseType: 'ライセンス種別', licenseNote: 'ライセンス説明', mintingRevenue: 'Mint と収益', allowSoulAuthorizations: '新しい Soul 認可を許可', chargeMintFee: '正式有効化後に Mint 料金を徴収', mintPriceUsdc: 'Mint 価格（USDC）', resaleRoyalty: '将来の Soulidity 二次ロイヤリティ', noRoyalty: 'ロイヤリティなし', pilotEconomicsCopy: 'Maker 試行中は課金 Mint を無効にします。正式有効化後、収益は Maker Treasury に入り、MakerAdminCap 保有者だけが引き出せます。', treasuryAfterPublication: '公開後に Treasury 残高を表示します。', treasuryBalance: 'Treasury 残高：{amount} {symbol}', updateOnchainSettings: 'オンチェーン設定を更新', withdrawRevenue: '収益を引き出す（USDC）', withdrawWallet: '自分のウォレットへ引き出す', publishingChecklist: '公開チェックリスト', rulesRevenue: 'ルールと収益', licenseRevenueRules: 'ライセンスと収益規則', personalUseLabel: '個人利用', personalUseCopy: 'アイコン、OC プロフィール、非商用表示に利用できます。', commercialPermission: '商用許可', commercialPermissionCopy: '制作者は完成 OC に記録される商用方針を公開できます。', royaltyPolicy: 'ロイヤリティ方針', royaltyPolicyCopy: 'ロイヤリティ段階は Soul Mint 時に固定され、レビュー済み Soulidity 経路だけで決済します。', onchainPolicy: 'オンチェーン方針', releaseEnforces: 'この版で強制される内容', permissionScope: '許可範囲', permissionScopeCopy: '個人、リミックス、商用、独占の許可種別を記録します。', attribution: '帰属表示', attributionCopy: '公開 Maker の制作者情報は Soul Mint 認可に引き継がれます。', recipeIntegrity: 'レシピ整合性', recipeIntegrityCopy: '必須 Part、利用可能 Item、組み合わせ規則を認可前に検証します。', paidMintDisabled: 'Soulidity アダプターの配備と検証が完了するまで課金 Mint は無効です。', restoringUpload: '保存済み Walrus アップロードを復元中…',
+    publishPackageFirst: 'Move パッケージを公開し、config.js に packageId を設定してください。', connectPublishWallet: '公開署名用の Sui ウォレットを接続してください。', addMakerName: '設定で Maker 名を入力してください。', publishReadinessCopy: 'Walrus Quilt を準備、登録、アップロード、認証してから Sui Mainnet に公開します。', publishedNetwork: '{network} に公開済み。', viewTransaction: '取引を表示', encodingQuilt: 'PNG レイヤーと Manifest を Walrus Quilt に変換中…', quiltEncoded: 'Quilt の変換完了。ウォレットで Walrus Mainnet に登録してください。', prepareQuiltFailed: 'Maker Quilt を準備できませんでした。', registeringQuilt: 'Walrus 登録署名を待ち、Mainnet リレーへアップロードします…', recoveredCertified: '復元した Quilt は認証済みです。Sui Maker 公開へ進めます。', quiltUploaded: 'Quilt をアップロードしました。もう一度署名して可用性を認証してください。', registrationFailed: 'Walrus の登録またはアップロードに失敗しました。', certifyingQuilt: 'Walrus 認証署名を待っています…', quiltCertified: 'Walrus Quilt を認証しました。Sui Mainnet に OCMaker を公開してください。', certificationFailed: 'Walrus 認証に失敗しました。', waitingSuiPublish: 'Sui Mainnet 公開署名を待っています…', makerChangedAfterUpload: 'アップロード後に Maker が変更されました。新しい Quilt を準備してください。',
+  },
+  ko: {
+    makerDescriptionDefault: '레이어 에셋으로 템플릿을 만든 뒤 라이선스 규칙과 온체인 출처를 연결합니다.', editMakerInfo: 'Maker 정보 편집', soulWorkspace: 'Soul 작업 공간', livingContentCopy: '모든 OC에는 Soulidity용 기본 콘텐츠가 있습니다. 이 Maker만의 성격, 기억, 기술이 필요할 때만 편집하세요.', defaultsReady: '기본 콘텐츠 준비됨', downloadTemplate: '템플릿 다운로드', defaultStatus: '기본값', soulCharacter: 'Soul 캐릭터', memory: '메모리', skillsDocs: '스킬과 문서', restoreDefault: '기본값 복원', soulidityImport: 'Soulidity 가져오기', mintReadyStructure: 'Mint 준비 구조', livingImportCopy: '이 파일은 Maker 안의 편집 가능한 기본값입니다. 최종 OC는 Soulidity 가져오기 전에 이름, 세계, 설명을 반영합니다.',
+    onchainAssets: '온체인 에셋', assetRegistry: '에셋 등록', walrusQuilt: 'Walrus Quilt', walrusQuiltAssets: '레이어 PNG, 선택 아이콘, 커버, 버전 Maker Manifest', suiObjects: 'Sui 오브젝트', suiObjectsCopy: 'CreatorProfile, OCMaker, MakerTreasury, MakerAdminCap, 레시피 규칙, 정책 스냅샷, 소유권', revenueRoyalty: '수익과 로열티', revenueRoyaltyCopy: 'Maker Treasury 경로는 준비되었습니다. 유료 Mint와 0%-5% 재판매 로열티는 검토된 Soulidity 어댑터로 활성화됩니다.', publishThisMaker: '이 Maker 게시', publishPrereq: '게시 검사 문제를 해결하고 지갑과 Move 패키지를 설정하세요.', resumeSavedUpload: '저장된 업로드 재개', prepareStep: '1. 준비', registerUploadStep: '2. 등록 및 업로드', retryUploadStep: '2. 업로드 재시도', certifyStep: '3. 인증', publishMakerStep: '4. Maker 게시', publishingStatus: '게시 중…', publishedMaker: '게시된 Maker', publishedRecordCopy: '게시 기록은 Sui에 남고 인증된 Walrus 에셋은 보관 기간 동안 유지됩니다.', archiveMaker: 'Maker 보관', restoreMaker: 'Maker 복원', publishSteps: '게시 단계', chainExecution: '체인 실행', publicationRecord: '게시 기록', immutableRecord: '변경 불가 항목', provenance: '출처', provenanceCopy: '제작자 지갑, Maker 오브젝트, 패키지 버전, 게시 트랜잭션.', assetVersion: '에셋 버전', assetVersionCopy: '인증된 Walrus Manifest와 참조된 모든 레이어 이미지.', rulesRecord: '규칙', rulesRecordCopy: 'Part, Item, 색상, 순서, 선택, 팔레트, BCS 레시피 해시를 Soul Mint 때 검증합니다.',
+    lifecycle: '수명 주기', draftLifecycleCopy: '초안은 로컬에 저장되며 편집하거나 영구 삭제할 수 있습니다.', starterLifecycleCopy: '이 예시는 현재 브라우저에서 편집할 수 있습니다. 프로덕션 사용 전에 새 로컬 Maker로 저장하세요.', publishedLifecycleCopy: '게시된 Maker, 규칙, 라이선스, 인증된 Walrus Manifest는 변경할 수 없습니다. 보관하면 새 Soul 승인이 중지됩니다.', archivedLifecycleCopy: '기록과 기존 Soul은 유효하지만 새 Soul 승인은 받지 않습니다.', versionLifecycleCopy: '{current} 편집 중. 이전 Maker와 기존 OC는 {previous}에 고정됩니다.', archivedMaker: '보관된 Maker', makerSettings: 'Maker 설정', ocMakerSettings: 'OC Maker 설정', makerName: 'Maker 이름', makerDescription: 'Maker 설명', creatorLabel: '제작자', styleWorld: '스타일 / 세계', licenseType: '라이선스 유형', licenseNote: '라이선스 설명', mintingRevenue: 'Mint와 수익', allowSoulAuthorizations: '새 Soul 승인 허용', chargeMintFee: '정식 활성화 후 Mint 수수료 부과', mintPriceUsdc: 'Mint 가격(USDC)', resaleRoyalty: '향후 Soulidity 재판매 로열티', noRoyalty: '로열티 없음', pilotEconomicsCopy: 'Maker 시험 기간에는 유료 Mint를 끕니다. 정식 활성화 후 수익은 Maker Treasury에 들어가며 MakerAdminCap 보유자만 인출할 수 있습니다.', treasuryAfterPublication: '게시 후 Treasury 잔액이 표시됩니다.', treasuryBalance: 'Treasury 잔액: {amount} {symbol}', updateOnchainSettings: '온체인 설정 업데이트', withdrawRevenue: '수익 인출(USDC)', withdrawWallet: '내 지갑으로 인출', publishingChecklist: '게시 체크리스트', rulesRevenue: '규칙과 수익', licenseRevenueRules: '라이선스와 수익 규칙', personalUseLabel: '개인 사용', personalUseCopy: '아이콘, OC 프로필, 비상업 표시를 만들 수 있습니다.', commercialPermission: '상업 허가', commercialPermissionCopy: '제작자는 완성 OC에 기록되는 상업 사용 정책을 게시할 수 있습니다.', royaltyPolicy: '로열티 정책', royaltyPolicyCopy: '로열티 단계는 Soul Mint 시 고정되며 검토된 Soulidity 경로에서만 정산됩니다.', onchainPolicy: '온체인 정책', releaseEnforces: '이 버전이 강제하는 항목', permissionScope: '허가 범위', permissionScopeCopy: '개인, 리믹스, 상업, 독점 허가 유형을 기록합니다.', attribution: '출처 표시', attributionCopy: '게시된 Maker의 제작자 정보는 모든 Soul Mint 승인에 포함됩니다.', recipeIntegrity: '레시피 무결성', recipeIntegrityCopy: '필수 Part, 사용 가능한 Item, 조합 규칙을 승인 전에 검증합니다.', paidMintDisabled: 'Soulidity 어댑터 배포와 검증 전에는 유료 Mint를 사용할 수 없습니다.', restoringUpload: '저장된 Walrus 업로드 체크포인트 복원 중…',
+    publishPackageFirst: 'Move 패키지를 게시하고 config.js에 packageId를 설정하세요.', connectPublishWallet: '게시 서명을 위해 Sui 지갑을 연결하세요.', addMakerName: '설정에서 Maker 이름을 입력하세요.', publishReadinessCopy: 'Walrus Quilt를 준비, 등록, 업로드, 인증한 뒤 Sui Mainnet에 게시하세요.', publishedNetwork: '{network}에 게시됨.', viewTransaction: '트랜잭션 보기', encodingQuilt: 'PNG 레이어와 Manifest를 Walrus Quilt로 인코딩 중…', quiltEncoded: 'Quilt 인코딩 완료. 지갑으로 Walrus Mainnet에 등록하세요.', prepareQuiltFailed: 'Maker Quilt를 준비하지 못했습니다.', registeringQuilt: 'Walrus 등록 서명을 기다린 뒤 Mainnet 릴레이로 업로드합니다…', recoveredCertified: '복구한 Quilt가 이미 인증되었습니다. Sui Maker 게시를 계속하세요.', quiltUploaded: 'Quilt 업로드 완료. 한 번 더 서명해 사용 가능성을 인증하세요.', registrationFailed: 'Walrus 등록 또는 업로드 실패.', certifyingQuilt: 'Walrus 인증 서명을 기다리는 중…', quiltCertified: 'Walrus Quilt 인증 완료. Sui Mainnet에 OCMaker를 게시하세요.', certificationFailed: 'Walrus 인증 실패.', waitingSuiPublish: 'Sui Mainnet 게시 서명을 기다리는 중…', makerChangedAfterUpload: '업로드 후 Maker가 변경되었습니다. 새 Quilt를 준비하세요.',
+  },
+  vi: {
+    makerDescriptionDefault: 'Xây mẫu từ tài nguyên nhiều lớp rồi liên kết quy tắc giấy phép và nguồn gốc on-chain.', editMakerInfo: 'Sửa thông tin Maker', soulWorkspace: 'Không gian Soul', livingContentCopy: 'Mỗi OC có nội dung mặc định dùng được với Soulidity. Chỉ sửa khi Maker cần tính cách, ký ức hoặc kỹ năng riêng.', defaultsReady: 'Mặc định đã sẵn sàng', downloadTemplate: 'Tải mẫu', defaultStatus: 'Mặc định', soulCharacter: 'Nhân vật Soul', memory: 'Ký ức', skillsDocs: 'Kỹ năng & Tài liệu', restoreDefault: 'Khôi phục mặc định', soulidityImport: 'Nhập vào Soulidity', mintReadyStructure: 'Cấu trúc sẵn sàng Mint', livingImportCopy: 'Các tệp là mặc định có thể sửa trong Maker. OC cuối sẽ điền tên, thế giới và mô tả trước khi nhập vào Soulidity.',
+    onchainAssets: 'Tài sản on-chain', assetRegistry: 'Đăng ký tài sản', walrusQuilt: 'Walrus Quilt', walrusQuiltAssets: 'PNG lớp, biểu tượng tùy chọn, ảnh bìa và Maker Manifest theo phiên bản', suiObjects: 'Đối tượng Sui', suiObjectsCopy: 'CreatorProfile, OCMaker, MakerTreasury, MakerAdminCap, quy tắc công thức, ảnh chụp chính sách và quyền sở hữu', revenueRoyalty: 'Doanh thu & bản quyền', revenueRoyaltyCopy: 'Đường Maker Treasury đã sẵn sàng; Mint trả phí và bản quyền 0%-5% được bật với bộ điều hợp Soulidity đã duyệt.', publishThisMaker: 'Đăng Maker này', publishPrereq: 'Giải quyết mọi lỗi kiểm tra, kết nối ví và cấu hình gói Move.', resumeSavedUpload: 'Tiếp tục bản tải đã lưu', prepareStep: '1. Chuẩn bị', registerUploadStep: '2. Đăng ký & tải lên', retryUploadStep: '2. Thử tải lại', certifyStep: '3. Chứng nhận', publishMakerStep: '4. Đăng Maker', publishingStatus: 'Đang đăng…', publishedMaker: 'Maker đã đăng', publishedRecordCopy: 'Bản ghi nằm trên Sui và tài nguyên Walrus đã chứng nhận còn dùng được trong thời hạn lưu.', archiveMaker: 'Lưu trữ Maker', restoreMaker: 'Khôi phục Maker', publishSteps: 'Các bước đăng', chainExecution: 'Thực thi on-chain', publicationRecord: 'Bản ghi xuất bản', immutableRecord: 'Nội dung trở thành bất biến', provenance: 'Nguồn gốc', provenanceCopy: 'Ví tác giả, đối tượng Maker, phiên bản gói và giao dịch đăng.', assetVersion: 'Phiên bản tài nguyên', assetVersionCopy: 'Walrus Manifest đã chứng nhận và mọi ảnh lớp được tham chiếu.', rulesRecord: 'Quy tắc', rulesRecordCopy: 'Part, Item, màu, thứ tự, lựa chọn, bảng màu và hàm băm công thức BCS được kiểm tra khi Mint Soul.',
+    lifecycle: 'Vòng đời', draftLifecycleCopy: 'Bản nháp lưu cục bộ, vẫn có thể sửa hoặc xóa vĩnh viễn.', starterLifecycleCopy: 'Ví dụ này có thể sửa trong trình duyệt hiện tại. Hãy lưu thành Maker cục bộ mới trước khi dùng thật.', publishedLifecycleCopy: 'Maker, quy tắc, giấy phép và Walrus Manifest đã đăng là bất biến. Lưu trữ Maker để dừng phê duyệt Soul mới.', archivedLifecycleCopy: 'Lịch sử và Soul hiện có vẫn hợp lệ, nhưng Maker không nhận phê duyệt Soul mới.', versionLifecycleCopy: 'Đang sửa {current}. Maker trước và OC hiện có vẫn ghim ở {previous}.', archivedMaker: 'Maker đã lưu trữ', makerSettings: 'Cài đặt Maker', ocMakerSettings: 'Cài đặt OC Maker', makerName: 'Tên Maker', makerDescription: 'Mô tả Maker', creatorLabel: 'Tác giả', styleWorld: 'Phong cách / thế giới', licenseType: 'Loại giấy phép', licenseNote: 'Ghi chú giấy phép', mintingRevenue: 'Mint & doanh thu', allowSoulAuthorizations: 'Cho phép phê duyệt Soul mới', chargeMintFee: 'Thu phí Mint sau khi kích hoạt chính thức', mintPriceUsdc: 'Giá Mint (USDC)', resaleRoyalty: 'Bản quyền bán lại Soulidity tương lai', noRoyalty: 'Không bản quyền', pilotEconomicsCopy: 'Trong giai đoạn thử Maker, Mint trả phí bị tắt. Sau khi kích hoạt, doanh thu vào Maker Treasury và chỉ chủ MakerAdminCap được rút.', treasuryAfterPublication: 'Số dư Treasury xuất hiện sau khi đăng.', treasuryBalance: 'Số dư Treasury: {amount} {symbol}', updateOnchainSettings: 'Cập nhật cài đặt on-chain', withdrawRevenue: 'Rút doanh thu (USDC)', withdrawWallet: 'Rút về ví của tôi', publishingChecklist: 'Danh sách kiểm tra đăng', rulesRevenue: 'Quy tắc & Doanh thu', licenseRevenueRules: 'Quy tắc giấy phép và doanh thu', personalUseLabel: 'Dùng cá nhân', personalUseCopy: 'Người dùng có thể tạo biểu tượng, hồ sơ OC và hiển thị phi thương mại.', commercialPermission: 'Cho phép thương mại', commercialPermissionCopy: 'Tác giả có thể đăng chính sách thương mại được ghi vào mỗi OC hoàn chỉnh.', royaltyPolicy: 'Chính sách bản quyền', royaltyPolicyCopy: 'Bậc bản quyền được chụp khi Mint Soul và chỉ thanh toán qua Soulidity đã duyệt.', onchainPolicy: 'Chính sách on-chain', releaseEnforces: 'Bản này thực thi', permissionScope: 'Phạm vi quyền', permissionScopeCopy: 'Loại giấy phép ghi quyền cá nhân, phối lại, thương mại hoặc độc quyền.', attribution: 'Ghi công', attributionCopy: 'Maker đã đăng mang ghi công tác giả vào mọi phê duyệt Mint Soul.', recipeIntegrity: 'Toàn vẹn công thức', recipeIntegrityCopy: 'Part bắt buộc, Item khả dụng và quy tắc kết hợp được kiểm tra trước khi phê duyệt.', paidMintDisabled: 'Mint trả phí vẫn tắt cho đến khi bộ điều hợp Soulidity được triển khai và xác minh.', restoringUpload: 'Đang khôi phục điểm kiểm tra tải Walrus đã lưu…',
+    publishPackageFirst: 'Đăng gói Move và đặt packageId trong config.js.', connectPublishWallet: 'Kết nối ví Sui để ký xuất bản.', addMakerName: 'Thêm tên Maker trong Cài đặt.', publishReadinessCopy: 'Chuẩn bị Walrus Quilt, đăng ký, tải lên, chứng nhận rồi đăng Maker lên Sui Mainnet.', publishedNetwork: 'Đã đăng trên {network}.', viewTransaction: 'Xem giao dịch', encodingQuilt: 'Đang mã hóa lớp PNG và Manifest thành Walrus Quilt…', quiltEncoded: 'Quilt đã mã hóa. Đăng ký trên Walrus Mainnet bằng ví.', prepareQuiltFailed: 'Không thể chuẩn bị Maker Quilt.', registeringQuilt: 'Đang chờ chữ ký đăng ký Walrus rồi tải qua relay Mainnet…', recoveredCertified: 'Quilt khôi phục đã được chứng nhận. Tiếp tục đăng Sui Maker.', quiltUploaded: 'Quilt đã tải lên. Ký thêm lần nữa để chứng nhận.', registrationFailed: 'Đăng ký hoặc tải Walrus thất bại.', certifyingQuilt: 'Đang chờ chữ ký chứng nhận Walrus…', quiltCertified: 'Walrus Quilt đã chứng nhận. Đăng OCMaker lên Sui Mainnet.', certificationFailed: 'Chứng nhận Walrus thất bại.', waitingSuiPublish: 'Đang chờ chữ ký đăng Sui Mainnet…', makerChangedAfterUpload: 'Maker đã thay đổi sau khi tải. Hãy chuẩn bị Quilt mới.',
+  },
+};
+
+Object.entries(editorDetailI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
+
+const licenseOptionI18n = {
+  en: { licensePersonal: 'Personal use', licenseRemix: 'Free remix', licenseCommercial: 'Paid commercial', licenseExclusive: 'Exclusive commission' },
+  zh: { licensePersonal: '个人使用', licenseRemix: '允许免费再创作', licenseCommercial: '付费商业使用', licenseExclusive: '独家委托' },
+  ja: { licensePersonal: '個人利用', licenseRemix: '無料リミックス', licenseCommercial: '有料商用', licenseExclusive: '独占コミッション' },
+  ko: { licensePersonal: '개인 사용', licenseRemix: '무료 리믹스', licenseCommercial: '유료 상업 사용', licenseExclusive: '독점 커미션' },
+  vi: { licensePersonal: 'Dùng cá nhân', licenseRemix: 'Phối lại miễn phí', licenseCommercial: 'Thương mại trả phí', licenseExclusive: 'Đặt hàng độc quyền' },
+};
+
+Object.entries(licenseOptionI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
+
+const livingStatusI18n = {
+  en: { customizedStatus: 'Customized', customizedCount: '{count} customized', byteCount: '{count} bytes' },
+  zh: { customizedStatus: '已自定义', customizedCount: '已自定义 {count} 项', byteCount: '{count} 字节' },
+  ja: { customizedStatus: 'カスタマイズ済み', customizedCount: '{count} 件カスタマイズ済み', byteCount: '{count} バイト' },
+  ko: { customizedStatus: '사용자 지정', customizedCount: '{count}개 사용자 지정', byteCount: '{count}바이트' },
+  vi: { customizedStatus: 'Đã tùy chỉnh', customizedCount: 'Đã tùy chỉnh {count}', byteCount: '{count} byte' },
+};
+
+Object.entries(livingStatusI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
+
 const requiredLocaleKeys = Object.keys(i18n.en);
 Object.entries(i18n).forEach(([locale, dictionary]) => {
   const missing = requiredLocaleKeys.filter((key) => !Object.hasOwn(dictionary, key));
@@ -942,8 +1017,12 @@ function $(id) {
   return document.getElementById(id);
 }
 
-function t(key) {
-  return (i18n[state.locale] && i18n[state.locale][key]) || i18n.en[key] || key;
+function t(key, variables = {}) {
+  const template = (i18n[state.locale] && i18n[state.locale][key]) || i18n.en[key] || key;
+  return Object.entries(variables).reduce(
+    (result, [name, value]) => result.replaceAll(`{${name}}`, String(value)),
+    template,
+  );
 }
 
 function setLocale(locale) {
@@ -960,6 +1039,9 @@ function renderI18n() {
   });
   document.querySelectorAll('[data-i18n-placeholder]').forEach((node) => {
     node.setAttribute('placeholder', t(node.dataset.i18nPlaceholder));
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach((node) => {
+    node.setAttribute('title', t(node.dataset.i18nTitle));
   });
   ['accountLanguage'].forEach((id) => {
     if ($(id)) $(id).value = state.locale;
@@ -2338,12 +2420,12 @@ function setEditorPanel(panel) {
     parts: t('characterMaker'),
     rules: t('rules'),
     palette: t('paletteRules'),
-    living: 'Living Content',
+    living: t('livingContent'),
     preview: t('previewCheck'),
     publish: t('onchainPublish'),
     settings: t('settings'),
   };
-  if ($('editingPanelKicker')) $('editingPanelKicker').textContent = labels[state.editorPanel] || 'Character Maker';
+  if ($('editingPanelKicker')) $('editingPanelKicker').textContent = labels[state.editorPanel] || t('characterMaker');
 }
 
 function focusCreatorTop() {
@@ -3431,9 +3513,9 @@ function renderPaletteLinks() {
 }
 
 const livingDocumentMeta = Object.freeze({
-  soulMd: { title: 'Soul Character', kind: 'SOUL_DOC · soul', filename: 'soul.md' },
-  memoryMd: { title: 'Memory', kind: 'MEMORY · default', filename: 'memory.md' },
-  skillMd: { title: 'Skills & Docs', kind: 'SKILL · SKILL.md', filename: 'skills.zip / SKILL.md' },
+  soulMd: { titleKey: 'soulCharacter', kind: 'SOUL_DOC · soul', filename: 'soul.md' },
+  memoryMd: { titleKey: 'memory', kind: 'MEMORY · default', filename: 'memory.md' },
+  skillMd: { titleKey: 'skillsDocs', kind: 'SKILL · SKILL.md', filename: 'skills.zip / SKILL.md' },
 });
 
 function livingMakerContext() {
@@ -3464,18 +3546,18 @@ function renderLivingContent() {
     button.classList.toggle('active', button.dataset.livingDocument === state.livingDocument);
   });
   $('livingDocumentKind').textContent = meta.kind;
-  $('livingDocumentTitle').textContent = meta.title;
+  $('livingDocumentTitle').textContent = t(meta.titleKey);
   $('livingDocumentFilename').textContent = meta.filename;
-  $('livingDocumentSize').textContent = `${new TextEncoder().encode(source).length.toLocaleString()} bytes`;
+  $('livingDocumentSize').textContent = t('byteCount', { count: new TextEncoder().encode(source).length.toLocaleString() });
   if ($('livingDocumentSource').value !== source) $('livingDocumentSource').value = source;
   const livingLocked = makerIsPublished() && !makerHasPendingV4Version();
   $('livingDocumentSource').disabled = livingLocked;
   $('restoreLivingDefault').disabled = livingLocked || !state.livingContent.customized[state.livingDocument];
   const customizedCount = Object.values(state.livingContent.customized).filter(Boolean).length;
-  $('livingContentStatus').textContent = customizedCount ? `${customizedCount} customized` : 'Defaults ready';
-  $('livingSoulState').textContent = state.livingContent.customized.soulMd ? 'Customized' : 'Default';
-  $('livingMemoryState').textContent = state.livingContent.customized.memoryMd ? 'Customized' : 'Default';
-  $('livingSkillState').textContent = state.livingContent.customized.skillMd ? 'Customized' : 'Default';
+  $('livingContentStatus').textContent = customizedCount ? t('customizedCount', { count: customizedCount }) : t('defaultsReady');
+  $('livingSoulState').textContent = state.livingContent.customized.soulMd ? t('customizedStatus') : t('defaultStatus');
+  $('livingMemoryState').textContent = state.livingContent.customized.memoryMd ? t('customizedStatus') : t('defaultStatus');
+  $('livingSkillState').textContent = state.livingContent.customized.skillMd ? t('customizedStatus') : t('defaultStatus');
 }
 
 function renderPackage() {
@@ -3801,7 +3883,7 @@ function renderImageMakerList() {
       const model = makerModels.get(template.id);
       const published = template.source === 'chain' || Boolean(model?.publishDigest || model?.makerObjectId);
       const archived = published && Boolean(model?.makerArchived);
-      const lifecycleLabel = archived ? 'Archived' : published ? 'Published on Sui' : template.source === 'local' ? 'Local draft' : 'Starter example';
+      const lifecycleLabel = t(archived ? 'archived' : published ? 'publishedOnSui' : template.source === 'local' ? 'localDraft' : 'starterExample');
       const canvasLabel = model?.canvas?.width === model?.canvas?.height ? '1:1' : '9:16';
       return `
         <article class="creator-maker-card ${template.id === state.templateId ? 'active' : ''}" data-maker="${escapeHtml(template.id)}" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
@@ -3812,19 +3894,19 @@ function renderImageMakerList() {
             <div class="maker-tags">
               <span>${lifecycleLabel}</span>
               <span>${canvasLabel}</span>
-              <span>Free combine</span>
+              <span>${t('freeCombine')}</span>
             </div>
             <h2>${escapeHtml(template.name)}</h2>
             <p>${escapeHtml(template.summary)}</p>
           </div>
           <div class="maker-card-actions">
             <button class="secondary" data-preview-maker="${escapeHtml(template.id)}">${t('preview')}</button>
-            ${template.source === 'local' && !published ? `<button class="icon-button danger-icon" data-delete-maker="${escapeHtml(template.id)}" title="Delete draft" aria-label="Delete ${escapeHtml(template.name)}">×</button>` : ''}
-            <button class="primary" data-edit-maker="${escapeHtml(template.id)}">${published ? 'Manage' : 'Edit'}</button>
+            ${template.source === 'local' && !published ? `<button class="icon-button danger-icon" data-delete-maker="${escapeHtml(template.id)}" title="${t('deleteDraft')}" aria-label="${t('deleteDraft')}: ${escapeHtml(template.name)}">×</button>` : ''}
+            <button class="primary" data-edit-maker="${escapeHtml(template.id)}">${t(published ? 'manage' : 'edit')}</button>
           </div>
         </article>
       `;
-    }).join('') : '<div class="empty-state">No wallet-owned Makers yet. Create an OC Maker to begin your first local draft.</div>'}
+    }).join('') : `<div class="empty-state">${t('noOwnedMakers')}</div>`}
   `;
 
   document.querySelectorAll('[data-preview-maker], [data-open-maker]').forEach((button) => {
@@ -3893,13 +3975,13 @@ function renderMakerLifecycle() {
   const lifecycle = makerLifecycle();
   const locked = makerIsPublished() && !makerHasPendingV4Version();
   const labels = {
-    starter: ['Starter workspace', 'This example is editable in the current browser. Save it as a new local Maker before production use.'],
-    draft: ['Local draft', 'This draft is stored for the connected wallet in this browser and may be edited or permanently deleted.'],
-    published: ['Published on Sui', 'The published Maker, rules, license, and certified Walrus manifest are immutable. Archive it to stop new Soul authorizations.'],
-    archived: ['Archived on Sui', 'The historical record and existing Souls remain valid, but this Maker no longer accepts new Soul authorizations.'],
+    starter: [t('starterWorkspace'), t('starterLifecycleCopy')],
+    draft: [t('localDraft'), t('draftLifecycleCopy')],
+    published: [t('publishedOnSui'), t('publishedLifecycleCopy')],
+    archived: [t('archived'), t('archivedLifecycleCopy')],
   };
   const [title, copy] = makerHasPendingV4Version()
-    ? ['Version draft', `Editing ${state.makerDocumentV4.version.versionId}. The previous Maker and existing OCs remain pinned to ${state.publishedMakerDocumentV4.version.versionId}.`]
+    ? [t('versionDraft'), t('versionLifecycleCopy', { current: state.makerDocumentV4.version.versionId, previous: state.publishedMakerDocumentV4.version.versionId })]
     : labels[lifecycle];
   if ($('makerLifecycleBadge')) {
     $('makerLifecycleBadge').textContent = title;
@@ -3912,10 +3994,10 @@ function renderMakerLifecycle() {
     $('deleteMakerDraft').disabled = lifecycle !== 'draft';
   }
   if ($('makerLifecycleAction')) $('makerLifecycleAction').hidden = !locked;
-  if ($('makerLifecycleActionTitle')) $('makerLifecycleActionTitle').textContent = lifecycle === 'archived' ? 'Archived maker' : 'Published maker';
+  if ($('makerLifecycleActionTitle')) $('makerLifecycleActionTitle').textContent = lifecycle === 'archived' ? t('archivedMaker') : t('publishedMaker');
   if ($('makerLifecycleActionCopy')) $('makerLifecycleActionCopy').textContent = state.publishStatus || copy;
   if ($('archiveMakerOnchain')) {
-    $('archiveMakerOnchain').textContent = lifecycle === 'archived' ? 'Restore maker' : 'Archive maker';
+    $('archiveMakerOnchain').textContent = lifecycle === 'archived' ? t('restoreMaker') : t('archiveMaker');
     $('archiveMakerOnchain').className = lifecycle === 'archived' ? 'secondary' : 'danger-button';
     $('archiveMakerOnchain').disabled = !state.makerObjectId || !state.makerAdminCapObjectId || state.publishing;
   }
@@ -3940,19 +4022,19 @@ function renderMakerLifecycle() {
   if ($('makerTreasuryBalance')) {
     const template = activeTemplate();
     $('makerTreasuryBalance').textContent = locked && state.makerTreasuryObjectId
-      ? template.treasuryBalanceError || `Treasury balance: ${atomicCoinToDecimal(template.treasuryBalanceAtomic || 0)} ${runtimeConfig.paymentCoinSymbol}`
-      : 'Treasury balance appears after publication.';
+      ? template.treasuryBalanceError || t('treasuryBalance', { amount: atomicCoinToDecimal(template.treasuryBalanceAtomic || 0), symbol: runtimeConfig.paymentCoinSymbol })
+      : t('treasuryAfterPublication');
   }
   if ($('saveMakerDraft')) {
     const saveLabels = {
       idle: t('saveDraft'),
       dirty: t('saveDraft'),
-      saving: 'Saving locally…',
-      saved: 'Saved locally',
-      error: 'Retry local save',
+      saving: t('savingLocally'),
+      saved: t('savedLocally'),
+      error: t('retryLocalSave'),
     };
     $('saveMakerDraft').textContent = saveLabels[state.draftSaveStatus] || t('saveDraft');
-    $('saveMakerDraft').title = state.draftSaveMessage || 'Save Maker metadata and PNG files in this browser.';
+    $('saveMakerDraft').title = state.draftSaveMessage || t('saveBrowserTitle');
     $('saveMakerDraft').disabled = locked || state.draftSaveStatus === 'saving';
   }
   document.querySelectorAll('[data-open-part-modal], [data-add-item], [data-delete-item], [data-delete-part], [data-add-layer], [data-delete-layer], [data-add-color], [data-delete-color], [data-move-layer], [data-remove-rule], [data-remove-palette-link], #addSelectionRule, #addPaletteLink').forEach((control) => {
@@ -4004,12 +4086,12 @@ function renderCreatorDetails() {
   const compositionLayers = allCreatorLayers();
   const lifecycle = makerLifecycle();
   const lifecycleLabel = {
-    starter: 'Starter workspace',
-    draft: 'Local draft',
-    published: 'Published',
-    archived: 'Archived',
-  }[lifecycle] || 'Local draft';
-  const displayedLifecycleLabel = makerHasPendingV4Version() ? 'Version draft' : lifecycleLabel;
+    starter: t('starterWorkspace'),
+    draft: t('localDraft'),
+    published: t('published'),
+    archived: t('archived'),
+  }[lifecycle] || t('localDraft');
+  const displayedLifecycleLabel = makerHasPendingV4Version() ? t('versionDraft') : lifecycleLabel;
   $('detailMakerTitle').textContent = template.name;
   $('editingMakerTitle').textContent = template.name;
   $('editingMakerTitle').title = template.name;
@@ -4017,15 +4099,15 @@ function renderCreatorDetails() {
   $('layerCount').textContent = compositionLayers.length;
   const publicItems = allSlots().flatMap((slot) => slotItems(slot.key).filter((item) => item.visibility !== 'private').map((item) => ({ slot, item })));
   const incompleteItems = publicItems.filter(({ slot, item }) => creatorLayers(slot).some((layer) => creatorColors(slot).some((color) => !assetReady(item.images?.[assetCellKey(layer.id, color.id)]))));
-  if ($('makerTopPartSummary')) $('makerTopPartSummary').textContent = `${allSlots().length} Part${allSlots().length === 1 ? '' : 's'}`;
-  if ($('makerTopAssetSummary')) $('makerTopAssetSummary').textContent = itemLayerAssets().length ? `${itemLayerAssets().length} item images ready` : 'No item images yet';
-  if ($('makerTopRuleSummary')) $('makerTopRuleSummary').textContent = `${state.rules.length} Rule${state.rules.length === 1 ? '' : 's'}`;
+  if ($('makerTopPartSummary')) $('makerTopPartSummary').textContent = t('partsCount', { count: allSlots().length });
+  if ($('makerTopAssetSummary')) $('makerTopAssetSummary').textContent = itemLayerAssets().length ? t('itemImagesReady', { count: itemLayerAssets().length }) : t('noItemImagesYet');
+  if ($('makerTopRuleSummary')) $('makerTopRuleSummary').textContent = t('rulesCount', { count: state.rules.length });
   if ($('makerTopReadiness')) {
     $('makerTopReadiness').textContent = !allSlots().length
-      ? 'Add the first Part'
-      : incompleteItems.length === 0 ? 'Ready to preview' : `${incompleteItems.length} incomplete Item${incompleteItems.length === 1 ? '' : 's'}`;
+      ? t('addFirstPart')
+      : incompleteItems.length === 0 ? t('readyPreview') : t('incompleteItems', { count: incompleteItems.length });
   }
-  if ($('makerTopChainState')) $('makerTopChainState').textContent = state.publishDigest ? 'Published' : !packageConfigured() ? 'Package pending' : 'Local draft';
+  if ($('makerTopChainState')) $('makerTopChainState').textContent = state.publishDigest ? t('published') : !packageConfigured() ? t('packagePending') : t('localDraft');
   const canvasRatio = state.makerCanvas.width === state.makerCanvas.height ? '1:1' : '9:16';
   if ($('makerTopLifecycleTag')) $('makerTopLifecycleTag').textContent = displayedLifecycleLabel;
   if ($('makerWorkspaceLifecycleTag')) $('makerWorkspaceLifecycleTag').textContent = displayedLifecycleLabel;
@@ -4718,12 +4800,12 @@ function renderWalletState() {
 }
 
 function publishReadiness() {
-  if (!packageConfigured()) return 'Publish the Move package and set packageId in config.js.';
-  if (!state.walletConnected) return 'Connect a Sui wallet to sign publication.';
-  if (!$('creatorTemplateName').value.trim()) return 'Add a maker name in Settings.';
+  if (!packageConfigured()) return t('publishPackageFirst');
+  if (!state.walletConnected) return t('connectPublishWallet');
+  if (!$('creatorTemplateName').value.trim()) return t('addMakerName');
   const issue = makerPublicationIssues()[0];
   if (issue) return issue;
-  return 'Prepare one Walrus quilt, register and upload it, certify it, then publish the maker on Sui Mainnet.';
+  return t('publishReadinessCopy');
 }
 
 function renderPublishAction() {
@@ -4736,14 +4818,14 @@ function renderPublishAction() {
   $('resumeMakerUpload').disabled = locked || state.publishing || !state.walletConnected || !state.hasMakerUploadRecovery;
   $('prepareMakerUpload').disabled = state.publishing || !baseReady || state.makerUploadStage !== 'idle';
   $('registerMakerUpload').disabled = state.publishing || !state.walletConnected || !['encoded', 'registered'].includes(state.makerUploadStage);
-  $('registerMakerUpload').textContent = state.makerUploadStage === 'registered' ? '2. Retry upload' : '2. Register & upload';
+  $('registerMakerUpload').textContent = state.makerUploadStage === 'registered' ? t('retryUploadStep') : t('registerUploadStep');
   $('certifyMakerUpload').disabled = state.publishing || !state.walletConnected || state.makerUploadStage !== 'uploaded';
   $('publishMakerOnchain').disabled = locked || state.publishing || !state.walletConnected || state.makerUploadStage !== 'certified';
-  $('publishMakerOnchain').textContent = state.publishing ? 'Publishing…' : state.publishDigest ? 'Published' : '4. Publish maker';
+  $('publishMakerOnchain').textContent = state.publishing ? t('publishingStatus') : state.publishDigest ? t('published') : t('publishMakerStep');
   $('makerPublishAction').classList.toggle('success', Boolean(state.publishDigest));
   $('makerPublishAction').classList.toggle('busy', state.publishing);
   if (state.publishDigest) {
-    $('makerPublishStatus').innerHTML = `Published on ${escapeHtml(runtimeConfig.network)}. <a href="${escapeHtml(explorerTransactionUrl(state.publishDigest))}" target="_blank" rel="noreferrer">View transaction</a>`;
+    $('makerPublishStatus').innerHTML = `${escapeHtml(t('publishedNetwork', { network: runtimeConfig.network }))} <a href="${escapeHtml(explorerTransactionUrl(state.publishDigest))}" target="_blank" rel="noreferrer">${escapeHtml(t('viewTransaction'))}</a>`;
   } else {
     $('makerPublishStatus').textContent = state.publishStatus || publishReadiness();
   }
@@ -4812,7 +4894,7 @@ function renderChainActions() {
 async function prepareMakerUpload() {
   state.publishing = true;
   state.publishDigest = '';
-  state.publishStatus = 'Encoding PNG layers and manifest into one Walrus quilt…';
+  state.publishStatus = t('encodingQuilt');
   renderPublishAction();
   try {
     syncCreatorAssets();
@@ -4855,10 +4937,10 @@ async function prepareMakerUpload() {
     state.makerUploadSession = await prepareWalrusUpload(makerUploadEntries());
     state.makerQuiltId = state.makerUploadSession.quiltBlobId;
     state.makerUploadStage = 'encoded';
-    state.publishStatus = 'Quilt encoded. Register it on Walrus Mainnet with your wallet.';
+    state.publishStatus = t('quiltEncoded');
     await persistMakerUploadRecovery();
   } catch (error) {
-    state.publishStatus = error.message || 'Could not prepare the maker quilt.';
+    state.publishStatus = error.message || t('prepareQuiltFailed');
   } finally {
     if (state.makerUploadSession?.checkpoint) {
       persistMakerUploadRecovery().catch((error) => console.warn('Could not save Walrus upload recovery.', error));
@@ -4870,7 +4952,7 @@ async function prepareMakerUpload() {
 
 async function registerMakerUpload() {
   state.publishing = true;
-  state.publishStatus = 'Waiting for the Walrus registration signature, then uploading through Mainnet relay…';
+  state.publishStatus = t('registeringQuilt');
   renderPublishAction();
   try {
     await registerAndUploadWalrus(state.makerUploadSession);
@@ -4882,13 +4964,13 @@ async function registerMakerUpload() {
         asset.blobId = state.makerUploadSession.files[index].blobId;
       });
       state.makerQuiltId = state.makerUploadSession.files[0]?.blobId || state.makerQuiltId;
-      state.publishStatus = 'The recovered quilt was already certified. Continue with Sui Maker publication.';
+      state.publishStatus = t('recoveredCertified');
     } else {
-      state.publishStatus = 'Quilt uploaded. Certify availability with one more wallet signature.';
+      state.publishStatus = t('quiltUploaded');
     }
   } catch (error) {
     state.makerUploadStage = state.makerUploadSession?.stage || state.makerUploadStage;
-    state.publishStatus = error.message || 'Walrus registration or upload failed.';
+    state.publishStatus = error.message || t('registrationFailed');
   } finally {
     if (state.makerUploadSession?.checkpoint) {
       persistMakerUploadRecovery().catch((error) => console.warn('Could not save Walrus upload recovery.', error));
@@ -4900,7 +4982,7 @@ async function registerMakerUpload() {
 
 async function certifyMakerUpload() {
   state.publishing = true;
-  state.publishStatus = 'Waiting for the Walrus certification signature…';
+  state.publishStatus = t('certifyingQuilt');
   renderPublishAction();
   try {
     await certifyWalrusUpload(state.makerUploadSession);
@@ -4913,9 +4995,9 @@ async function certifyMakerUpload() {
     });
     state.makerQuiltId = state.makerUploadSession.files[0]?.blobId || state.makerQuiltId;
     state.makerUploadStage = 'certified';
-    state.publishStatus = 'Walrus quilt certified. Publish the indexed OCMaker object on Sui Mainnet.';
+    state.publishStatus = t('quiltCertified');
   } catch (error) {
-    state.publishStatus = error.message || 'Walrus certification failed.';
+    state.publishStatus = error.message || t('certificationFailed');
   } finally {
     if (state.makerUploadSession?.checkpoint) {
       persistMakerUploadRecovery().catch((error) => console.warn('Could not save Walrus upload recovery.', error));
@@ -4928,7 +5010,7 @@ async function certifyMakerUpload() {
 async function publishCurrentMaker() {
   if (state.publishing || state.makerUploadStage !== 'certified') return;
   state.publishing = true;
-  state.publishStatus = 'Waiting for your Sui Mainnet publication signature…';
+  state.publishStatus = t('waitingSuiPublish');
   renderPublishAction();
   try {
     if (JSON.stringify(creatorUploadManifest()) !== state.pendingMakerManifestJson) {
@@ -4941,7 +5023,7 @@ async function publishCurrentMaker() {
         asset.patchId = '';
         asset.blobId = '';
       });
-      throw new Error('The maker changed after upload. Prepare a new quilt before publishing.');
+      throw new Error(t('makerChangedAfterUpload'));
     }
     let makerParts;
     let makerItems;
@@ -5821,7 +5903,7 @@ const creatorLicenseLabels = {
       if ($('creatorMintFeeEnabled').checked && !canonicalSoulMintEnabled) {
         $('creatorMintFeeEnabled').checked = false;
         template.mintFeeEnabled = false;
-        state.publishStatus = 'Paid mint stays off until the canonical Soulidity adapter is deployed and verified.';
+        state.publishStatus = t('paidMintDisabled');
       } else {
         template.mintFeeEnabled = $('creatorMintFeeEnabled').checked;
       }
@@ -5856,7 +5938,7 @@ const creatorLicenseLabels = {
 $('prepareMakerUpload')?.addEventListener('click', prepareMakerUpload);
 $('resumeMakerUpload')?.addEventListener('click', async () => {
   state.publishing = true;
-  state.publishStatus = 'Restoring the saved Walrus upload checkpoint…';
+  state.publishStatus = t('restoringUpload');
   renderAll();
   await restoreMakerUploadRecovery(state.templateId, { force: true });
   state.publishing = false;

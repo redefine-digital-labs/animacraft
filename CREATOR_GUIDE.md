@@ -1,84 +1,60 @@
 # Animacraft Creator Guide
 
-Animacraft uses one Character Maker workspace. A **Part** is a user-facing category such as Eyes, Front Hair, or Outfit. Each Part owns its Items, Layers, Colors, icons, and PNG files. **Composition Order** only arranges those owned Layers across Parts.
+Animacraft Maker v4 uses one versioned document and one renderer across Creator Studio, Player Editor, cover generation, and final PNG export.
 
-## Data Model
+The complete Chinese protocol and invited-creator tutorial is [ANIMACRAFT_PROTOCOL_AND_EDITOR_GUIDE.zh-CN.md](./ANIMACRAFT_PROTOCOL_AND_EDITOR_GUIDE.zh-CN.md). Art delivery requirements are in [CREATOR_ASSET_SPEC_V4.zh-CN.md](./CREATOR_ASSET_SPEC_V4.zh-CN.md). The approved Creator Studio layout is frozen in [UI_BASELINE.md](./UI_BASELINE.md).
 
-```text
-OCMaker
-|- Part
-|  |- Part settings
-|  |- Layer(s)
-|  |- Color(s)
-|  `- Item(s)
-|     |- Picker icon (optional)
-|     `- Item images: one PNG per Layer x Color cell
-|- Selection rules
-|- Palette links
-|- Living Content defaults
-|  |- soul.md
-|  |- memory.md
-|  `- skills.zip / SKILL.md
-|- License policy
-`- Walrus manifest
-```
-
-The number of required files for one Part is:
+## Maker v4 Model
 
 ```text
-public Items x Layers x Colors
+Maker
+|- Part                         player menu category
+|  `- Item                     one player selection
+|     `- Style / Variant       optional visual variation
+|        `- LayerBinding       one PNG on one global LayerTrack
+|- LayerTrack                  global back-to-front render lane
+|- ColorChannel                shared gradient-map or asset-map palette
+|- Rules                       requires, excludes and visibility conditions
+`- ExpansionPack               version-pinned additive content
 ```
 
-## Build a Maker
+A Part is not a visual layer. One Hair Item may bind a back-hair PNG, a front-hair PNG, and a highlight PNG to three different LayerTracks. The player makes one Hair selection; the renderer resolves every associated LayerBinding.
 
-1. Connect the creator wallet and open **MyPage -> Create maker**.
-2. Create a square `1024 x 1024` or portrait `1080 x 1920` Maker. Use the Character starter or a blank canvas.
-3. In **Character Maker**, add or select a Part.
-4. Choose its type once:
-   - **Standard:** one or more freely managed Layers.
-   - **Left-right pair:** fixed Left and Right Layers, each positioned independently.
-   - **Last bastion:** required fallback Part that cannot be targeted by incompatibility rules.
-5. In **Layers & colors**, define the image matrix. Adding a Layer or Color adds one required cell to every public Item in that Part.
-6. In **Items**, add user choices, set display order and publication state, optionally upload a picker icon, then fill every PNG cell.
-7. Use **Composition Order** to move Layers front/behind and set X/Y offset, opacity, or blend mode. The editor preview and final exported PNG use the same values.
-8. In **Rules**, block incompatible choices between two non-Last-Bastion Parts. A blank Item selector means the whole Part; a selected Item creates an Item-specific rule.
-9. In **Palette Rules**, link Parts whose colors should change together. Linked Parts must publish the same exact hex Color set; the player selects one shared value and Sui enforces it at mint.
-10. Open **Living Content**. The default Soul Character, Memory, and Skills & Docs files are already valid for Soulidity; edit only what should be specific to this Maker.
-11. Complete Maker name, description, creator, world/style, license kind, mint availability, native-USDC price, and 0%–5% resale royalty tier in **Settings**.
-12. Run **Preview Check** until every blocking check passes.
-13. In **On-chain Publish**, prepare, register/upload, certify, and publish.
+## Creator Flow
 
-## Image Rules
+1. Connect a Sui wallet and open **MyPage -> Create Maker**.
+2. Create a `1024 x 1024` Maker for the first production trial.
+3. In **Character Maker**, define Parts, Items, optional Styles, and their PNG LayerBindings.
+4. Upload full-canvas PNGs at `(0, 0)` or position cropped artwork on the Canvas.
+5. Explicitly confirm every cropped layer position. Confirmed transform controls collapse to an **Adjust position** action; any later transform edit requires confirmation again.
+6. Use **Layer Tracks** for global render order, **Smart Color** for linked palettes, and **Rules** for valid combinations.
+7. Run **Player test** with the same renderer used for final output.
+8. Keep or edit the default Soul Character, Memory, and Skills & Docs under **Living Content**.
+9. Resolve every **Preflight** issue.
+10. In **On-chain Publish**, prepare, register/upload, certify, and publish the Maker.
 
-- Item images must be PNG and no larger than 20 MB or `8192 x 8192`.
-- Every image must use the Maker's selected canvas ratio.
-- For best quality, upload at least the Maker canvas size: `1024 x 1024` or `1080 x 1920`.
-- Use transparency for character layers. A background Part may intentionally fill the canvas.
-- Keep corresponding artwork aligned to the same origin. Use Layer X/Y only for deliberate offsets.
-- Item and Part icons may be PNG or JPEG up to 5 MB.
-- Mark unfinished Items **Draft only** so they are excluded from the public manifest and quilt.
+## Saving and Deletion
 
-## Saving and Recovery
+Maker documents, source image Blobs, player sessions, and Walrus checkpoints are stored in wallet-scoped IndexedDB records. This survives a normal reload in the same browser profile, but it is not cross-device cloud storage.
 
-Maker structure, source image Blobs, and Walrus upload checkpoints are stored in IndexedDB under the connected wallet and Maker. Saving and autosave survive normal reloads in the same browser profile; creators do not need to reselect files after every refresh.
+Before publication, local Makers and nested content can be permanently deleted. After publication, art and rules remain immutable. The current `MakerAdminCap` holder may update future economics, withdraw matching Treasury revenue, archive or restore the Maker, or publish a new content version. Existing OCs stay pinned to the Maker version they used.
 
-Drafts are not cross-device cloud storage. Keep original art and a local manifest export. Private/incognito storage, browser-data cleanup, or another device will not contain the draft.
+## Publication Boundary
 
-If a paid Walrus workflow is interrupted, reconnect the same wallet and use **Resume saved upload**. Do not edit the Maker between preparation and publication; any edit invalidates the old checkpoint and requires a new quilt.
+Animacraft publishes the shared `OCMaker`, `MakerTreasury<USDC>`, and transferable `MakerAdminCap`, plus an immutable Walrus Maker quilt. It validates an OC recipe and returns a non-droppable `SoulMintAuthorization`; it does not mint a second finished-character token.
 
-## Delete, Publish, Archive
+Soulidity consumes that authorization and creates the only Soul, initial Living Content, Kiosk ownership, social identity, marketplace listing, and resale settlement. Paid mint remains disabled until the reviewed Animacraft v4 fee upgrade and Soulidity adapter are deployed and verified on Mainnet.
 
-- Before publication, a creator may permanently delete a local Maker, Part, Item, optional Layer, or extra Color. Related local file references and invalid rules are removed.
-- Publishing stores immutable art, rules, and manifest. The current `MakerAdminCap` owner may update future mint availability, USDC price, royalty tier, and archive state.
-- To revise a published Maker, create and publish a new version.
-- The creator may archive or restore the shared Sui Maker. Archive blocks new Soul authorizations but preserves existing Souls, provenance, policy snapshots, and Walrus files.
+## Acceptance Gate
 
-## Launch Limits
+Before inviting unrestricted production use, record evidence for one real creator wallet and one separate player wallet:
 
-- Protocol v3 publishes included Items only. Do not use paid add-on or creator-only Item gates until a later reviewed protocol version enforces their entitlement rules.
-- 100 Items, 32 Layers, and 32 Colors per Part.
-- 5,000 Walrus files per Maker release, including cover and manifest.
-- 450 total Part + public Item + Color + selection rule + palette-link records in the current one-transaction publisher.
-- New Maker and OC packages default to 53 Walrus Mainnet epochs, currently about two years. Storage can be extended, so operators must schedule renewal before expiry.
-- Once the canonical Soulidity adapter is activated, paid mint revenue is held by the Maker's `MakerTreasury<USDC>` and only the matching `MakerAdminCap` holder can withdraw it. Until then, keep pilot mint fees disabled.
-- Royalty tiers are copied into the Soul mint authorization. Secondary settlement becomes active only through the reviewed Soulidity Marketplace adapter, never through browser metadata.
+- local draft reload with PNG recovery;
+- Creator and Player rendering parity;
+- optional None, Random, rules, colors, Undo/Redo, and final Recipe behavior;
+- all four Walrus/Sui publication stages;
+- Maker, Treasury, Cap, archive/restore, transfer, and withdrawal permissions;
+- the canonical Soulidity handoff in one PTB;
+- free and paid settlement, protocol fee, 2.5% secondary platform fee, and the selected 0%-5% Maker royalty.
+
+Until that evidence exists, describe the release as an invited-creator production candidate rather than a completed end-to-end Mainnet launch.

@@ -57,7 +57,7 @@ test('Maker v4 mounts separate Creator and Player workspaces on one renderer', a
 
   assert.match(html, /id="makerV4CreatorMount"/);
   assert.match(html, /styles\.css\?v=animacraft-maker-v4-6/);
-  assert.match(html, /app\.js\?v=animacraft-production-7/);
+  assert.match(html, /app\.js\?v=animacraft-production-8/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
   assert.match(app, /buildMakerV4PublicationBundle/);
@@ -81,6 +81,24 @@ test('Maker v4 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(styles, /@media \(max-width:\s*820px\)[\s\S]*?\.creator-function-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   assert.match(styles, /@media \(max-width:\s*560px\)[\s\S]*?\.v4-studio-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
   assert.match(styles, /\.v4-player-header\s*\{\s*position:\s*relative;/s);
+});
+
+test('every static editor translation hook is backed by the application dictionary', async () => {
+  const [html, app] = await Promise.all([
+    readFile(new URL('../index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+  ]);
+  const editorStart = html.indexOf('class="creator-view active"');
+  const editorEnd = html.indexOf('id="makerRegistrationModal"');
+  const editorHtml = html.slice(editorStart, editorEnd);
+  const keys = [...new Set([...editorHtml.matchAll(/data-i18n(?:-title)?="([^"]+)"/g)].map((match) => match[1]))];
+
+  assert.ok(keys.length >= 70, 'Creator Studio should expose detailed translation hooks');
+  keys.forEach((key) => assert.match(app, new RegExp(`\\b${key}:`), `missing application translation key: ${key}`));
+  ['zh', 'ja', 'ko', 'vi'].forEach((locale) => {
+    assert.match(app, new RegExp(`${locale}: \\{[\\s\\S]*?publishMakerStep:`), `${locale} must translate the publication flow`);
+    assert.match(app, new RegExp(`${locale}: \\{[\\s\\S]*?livingContentCopy:`), `${locale} must translate Living Content`);
+  });
 });
 
 test('production gallery is chain-derived and creator packs are local test fixtures only', async () => {

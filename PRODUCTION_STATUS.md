@@ -12,7 +12,7 @@ Current Mainnet truth: the published package is configured, but discovery curren
 
 - Separate Maker v4 Creator Studio and Player Editor surfaces backed by one document model, constraint engine, and Canvas renderer; players never reposition creator-authored layers.
 - Parts & Items remains the persistent creator canvas; Layer Tracks, Smart Color, Rules, Expansion Packs, and Preflight use bounded desktop/mobile tool dialogs with close/Escape behavior, human-readable issue paths, and no horizontal overflow.
-- Maker Studio navigation and primary creation controls follow the existing MyPage language setting in English, Chinese, Japanese, Korean, and Vietnamese. Core Preflight asset/position diagnostics are localized; remaining low-level protocol diagnostics deliberately fall back to English pending full-interface localization QA.
+- Maker Studio navigation, nested Inspector controls, runtime status, validation, Player Editor, and primary creation controls follow the existing MyPage language setting in English, Chinese, Japanese, Korean, and Vietnamese. Unknown low-level protocol diagnostics fall back to a localized category message rather than hiding an error.
 - Text edits are buffered and flushed before Save, Undo, tool switching, and review so a creator cannot lose a rename by clicking a toolbar action directly.
 - Production Character starter creates a complete eight-Part graph with one Item, Variant, global LayerTrack, and direct PNG LayerBinding upload slot per Part; it no longer migrates an empty legacy shell.
 - Fixed Canvas coordinates with creator drag/position confirmation, proportional scale, zoom, hide/Solo/dim inspection, explicit LayerTracks, full blend modes, and pixel rendering.

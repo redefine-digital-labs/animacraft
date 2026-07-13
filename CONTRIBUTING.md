@@ -16,6 +16,8 @@ Animacraft is an open-source creator tool and Sui Move protocol for fully on-cha
 
 Every change should go through a pull request.
 
+Creator Studio changes must preserve the approved [PR #15 UI layout baseline](./UI_BASELINE.md). Functional completion, translation, validation, accessibility, and containment fixes are welcome; primary layout changes require explicit product-owner approval.
+
 Before requesting review:
 
 1. Explain the product or protocol change clearly.
@@ -23,6 +25,7 @@ Before requesting review:
 3. Include contract/build notes for Move changes.
 4. Keep unrelated refactors out of the PR.
 5. Confirm no generated build output is committed. Reviewed first-party Creator Pack runtime assets are the exception only when the same PR includes their source atlases, prompt disclosure, deterministic build path, and manifest tests.
+6. For Creator Studio changes, compare the result with the baseline screenshot and state which existing function was completed.
 
 Recommended merge rule:
 
