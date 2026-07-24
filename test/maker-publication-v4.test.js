@@ -226,6 +226,35 @@ test('publication manifest is immutable, referenced-only and strips runtime stat
   assert.equal(validateMakerV4Document(manifest), manifest);
 });
 
+test('excludes draft and private Items and their artwork from immutable publication', () => {
+  const document = publicationMaker();
+  document.parts[0].items.push({
+    id: 'unfinished',
+    name: 'Unfinished',
+    displayOrder: 1,
+    importKey: 'unfinished',
+    status: 'private',
+    thumbnailAssetId: null,
+    visibleWhen: null,
+    requires: [],
+    excludes: [],
+    defaultVariantId: 'default',
+    variants: [{
+      id: 'default',
+      name: 'Default',
+      displayOrder: 0,
+      visibleWhen: null,
+      requires: [],
+      excludes: [],
+      layerBindings: [binding('unfinished-binding', 'body-track', 'private-art')],
+    }],
+  });
+  document.assets.push({ id: 'private-art', identifier: 'private.png', kind: 'layer', mediaType: 'image/png', width: 10, height: 10 });
+  const manifest = buildMakerV4PublicationManifest(document);
+  assert.deepEqual(manifest.parts[0].items.map((item) => item.id), ['shape']);
+  assert.equal(manifest.assets.some((asset) => asset.id === 'private-art'), false);
+});
+
 test('referenced assets and quilt entries have deterministic identifier order', async () => {
   const document = publicationMaker();
   assert.deepEqual(collectReferencedMakerV4AssetIds(document), [

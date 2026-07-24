@@ -142,6 +142,24 @@ test('resolves a recipe to a deterministic back-to-front layer list', () => {
   assert.deepEqual(first.issues, []);
 });
 
+test('prefers a shared Layer Track transform only for explicitly linked bindings', () => {
+  const maker = makerFixture();
+  maker.layerTracks.find((track) => track.id === 'back').transform = { x: 40, y: 50, scale: 0.8, rotation: -4 };
+  const binding = maker.parts[0].items[0].variants[0].bindings[0];
+  binding.inheritTrackTransform = true;
+  const linked = resolveMakerScene(maker, recipeFixture()).layers.find((layer) => layer.bindingId === 'back');
+  assert.deepEqual(
+    { x: linked.transform.x, y: linked.transform.y, scaleX: linked.transform.scaleX, rotation: linked.transform.rotation },
+    { x: 40, y: 50, scaleX: 0.8, rotation: -4 },
+  );
+  assert.equal(linked.transformSource, 'track');
+
+  binding.inheritTrackTransform = false;
+  const detached = resolveMakerScene(maker, recipeFixture()).layers.find((layer) => layer.bindingId === 'back');
+  assert.equal(detached.transform.x, 12);
+  assert.equal(detached.transformSource, 'binding');
+});
+
 test('evaluates requires, excludes, parent selections and color conditions', () => {
   const context = {
     selections: new Map([

@@ -3,12 +3,14 @@ import test from 'node:test';
 
 import {
   addDocumentAsset,
+  applyTrackTransform,
   createGradientColorChannel,
   createItem,
   createLayerBinding,
   createLayerTrack,
   createPart,
   duplicatePart,
+  effectiveBindingTransform,
   findBinding,
   findItem,
   findPart,
@@ -77,6 +79,24 @@ test('creates finite uniform layer bindings and gradient channels', () => {
   assert.deepEqual(binding.transform, { x: 12, y: -8, scale: 1.25, rotation: 5 });
   assert.equal(binding.opacity, 1);
   assert.equal(binding.blendMode, 'normal');
+  assert.equal(binding.inheritTrackTransform, true);
+  assert.equal(binding.positionConfirmed, false);
+});
+
+test('uses one locked Layer Track transform across every linked Item', () => {
+  const document = playableDocument();
+  const part = document.parts[0];
+  const second = createItem(part, 'Alternate Body');
+  second.variants[0].layerBindings.push(createLayerBinding(second.variants[0], document.layerTracks[0].id, 'alternate-art', { x: 400, y: 500, scale: 2 }));
+  part.items.push(second);
+  document.assets.push({ id: 'alternate-art', identifier: 'alternate.png' });
+  applyTrackTransform(document, document.layerTracks[0].id, { x: 24, y: -12, scale: 1.2, rotation: 3 });
+  const transforms = part.items.map((item) => effectiveBindingTransform(document, item.variants[0].layerBindings[0]));
+  assert.deepEqual(transforms, [
+    { x: 24, y: -12, scale: 1.2, rotation: 3 },
+    { x: 24, y: -12, scale: 1.2, rotation: 3 },
+  ]);
+  assert.ok(part.items.every((item) => item.variants[0].layerBindings[0].positionConfirmed));
 });
 
 test('adds and replaces public asset metadata by stable asset id', () => {

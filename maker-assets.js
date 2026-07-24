@@ -59,6 +59,61 @@ export function buildAssetImportMapping(files, layerTracks = []) {
   });
 }
 
+function bestPathMatch(pathToken, pathSegments, entries, fields) {
+  let best = null;
+  let bestScore = 0;
+  entries.forEach((entry) => {
+    fields.map((field) => normalizedToken(entry?.[field])).filter(Boolean).forEach((token) => {
+      let score = 0;
+      if (pathSegments.includes(token)) score = 100 + token.length;
+      else if (pathToken.includes(token)) score = 70 + token.length;
+      if (score > bestScore) {
+        best = entry;
+        bestScore = score;
+      }
+    });
+  });
+  return { entry: best, score: bestScore };
+}
+
+/**
+ * Maps a folder or filename matrix to
+ * Part × Item × Style × Layer Track × Color.
+ *
+ * Recommended layout:
+ *   part/item/style/track@swatch.png
+ */
+export function buildProjectAssetImportMapping(files, document) {
+  const tracks = document?.layerTracks || [];
+  const parts = document?.parts || [];
+  const channels = document?.colorChannels || [];
+  return [...files].map((file) => {
+    const relativePath = String(file.webkitRelativePath || file.name || '');
+    const pathToken = normalizedToken(relativePath);
+    const pathSegments = relativePath.split(/[\\/]/).map(normalizedToken).filter(Boolean);
+    const part = bestPathMatch(pathToken, pathSegments, parts, ['id', 'name']).entry;
+    const item = bestPathMatch(pathToken, pathSegments, part?.items || [], ['importKey', 'id', 'name']).entry;
+    const variant = bestPathMatch(pathToken, pathSegments, item?.variants || [], ['id', 'name']).entry
+      || (item?.variants?.length === 1 ? item.variants[0] : null);
+    const track = bestPathMatch(pathToken, pathSegments, tracks, ['id', 'name']).entry;
+    const colorEntries = channels.flatMap((channel) => (channel.swatches || []).map((swatch) => ({
+      ...swatch,
+      channelId: channel.id,
+    })));
+    const color = bestPathMatch(pathToken, pathSegments, colorEntries, ['id', 'name']).entry;
+    const requiredMatches = [part, item, variant, track].filter(Boolean).length;
+    return {
+      file,
+      fileName: relativePath || String(file.name || ''),
+      targetDefinition: part && item && variant ? `${part.id}::${item.id}::${variant.id}` : '',
+      trackId: track?.id || '',
+      colorDefinition: color ? `${color.channelId}::${color.id}` : '',
+      confidence: requiredMatches === 4 ? 'matched' : requiredMatches >= 2 ? 'review' : 'unmapped',
+      suggestedTrackName: String(file.name || 'Layer').replace(/\.[^.]+$/, '').split('@')[0],
+    };
+  });
+}
+
 export function createAssetId(prefix = 'asset') {
   const id = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return `${normalizedToken(prefix).replace(/\s+/g, '-') || 'asset'}-${id}`;
@@ -72,6 +127,53 @@ export async function inspectPngAsset(file, makerCanvas) {
   const bitmap = await createImageBitmap(file);
   const width = bitmap.width;
   const height = bitmap.height;
+  let alphaBounds = null;
+  try {
+    const maximumEdge = 1024;
+    const analysisScale = Math.min(1, maximumEdge / Math.max(width, height));
+    const analysisWidth = Math.max(1, Math.round(width * analysisScale));
+    const analysisHeight = Math.max(1, Math.round(height * analysisScale));
+    const analysisCanvas = typeof OffscreenCanvas !== 'undefined'
+      ? new OffscreenCanvas(analysisWidth, analysisHeight)
+      : globalThis.document?.createElement?.('canvas');
+    if (analysisCanvas) {
+      analysisCanvas.width = analysisWidth;
+      analysisCanvas.height = analysisHeight;
+      const context = analysisCanvas.getContext('2d', { willReadFrequently: true });
+      context.drawImage(bitmap, 0, 0, analysisWidth, analysisHeight);
+      const pixels = context.getImageData(0, 0, analysisWidth, analysisHeight).data;
+      let minX = analysisWidth;
+      let minY = analysisHeight;
+      let maxX = -1;
+      let maxY = -1;
+      for (let y = 0; y < analysisHeight; y += 1) {
+        for (let x = 0; x < analysisWidth; x += 1) {
+          if (pixels[((y * analysisWidth) + x) * 4 + 3] < 8) continue;
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+        }
+      }
+      if (maxX >= minX && maxY >= minY) {
+        const inverse = 1 / analysisScale;
+        const left = minX * inverse;
+        const top = minY * inverse;
+        const right = (maxX + 1) * inverse;
+        const bottom = (maxY + 1) * inverse;
+        alphaBounds = {
+          x: Math.round(left * 10) / 10,
+          y: Math.round(top * 10) / 10,
+          width: Math.round((right - left) * 10) / 10,
+          height: Math.round((bottom - top) * 10) / 10,
+          centerX: Math.round(((left + right) / 2) * 10) / 10,
+          centerY: Math.round(((top + bottom) / 2) * 10) / 10,
+        };
+      }
+    }
+  } catch {
+    alphaBounds = null;
+  }
   bitmap.close();
   if (!width || !height || width > MAX_MAKER_ASSET_EDGE || height > MAX_MAKER_ASSET_EDGE) {
     throw new Error(`${file.name} has unsupported dimensions.`);
@@ -84,6 +186,7 @@ export async function inspectPngAsset(file, makerCanvas) {
     width,
     height,
     fullCanvas,
+    alphaBounds,
     initialTransform: {
       x: fullCanvas ? 0 : Math.round((canvasWidth - (width * initialScale)) / 2),
       y: fullCanvas ? 0 : Math.round((canvasHeight - (height * initialScale)) / 2),
@@ -155,19 +258,59 @@ export async function createAlphaCroppedThumbnail(blob, size = 256) {
   return canvasToBlob(output);
 }
 
-export function runtimeAssetRecord({ assetId, blob, fileName, width, height, thumbnailBlob = null, source = 'local' }) {
+export function runtimeAssetRecord({ assetId, blob, fileName, width, height, alphaBounds = null, thumbnailBlob = null, source = 'local' }) {
   return {
     assetId,
     blob,
     fileName: String(fileName || `${assetId}.png`),
     width: Number(width || 0),
     height: Number(height || 0),
+    alphaBounds,
     thumbnailBlob,
     source,
     url: blob ? URL.createObjectURL(blob) : '',
     thumbnailUrl: thumbnailBlob ? URL.createObjectURL(thumbnailBlob) : '',
     updatedAt: Date.now(),
   };
+}
+
+export function collectTrackAlignmentWarnings(document, runtimeAssets, options = {}) {
+  const centerTolerance = Number(options.centerTolerance || Math.max(document?.canvas?.width || 0, document?.canvas?.height || 0) * 0.035);
+  const sizeRatioLimit = Number(options.sizeRatioLimit || 1.45);
+  const recordFor = (assetId) => runtimeAssets instanceof Map ? runtimeAssets.get(assetId) : runtimeAssets?.[assetId];
+  const groups = new Map();
+  (document?.parts || []).forEach((part) => (part.items || [])
+    .filter((item) => (item.status || 'public') === 'public')
+    .forEach((item) => (item.variants || []).forEach((variant) => (variant.layerBindings || []).forEach((binding) => {
+      const bounds = recordFor(binding.assetId)?.alphaBounds;
+      if (!bounds) return;
+      const entries = groups.get(binding.layerTrackId) || [];
+      entries.push({ part, item, variant, binding, bounds });
+      groups.set(binding.layerTrackId, entries);
+    }))));
+  const warnings = [];
+  groups.forEach((entries, trackId) => {
+    if (entries.length < 2) return;
+    const track = document.layerTracks?.find((candidate) => candidate.id === trackId);
+    if (track?.alignmentApproved === true) return;
+    const centersX = entries.map((entry) => entry.bounds.centerX).sort((a, b) => a - b);
+    const centersY = entries.map((entry) => entry.bounds.centerY).sort((a, b) => a - b);
+    const widths = entries.map((entry) => entry.bounds.width).filter((value) => value > 0).sort((a, b) => a - b);
+    const heights = entries.map((entry) => entry.bounds.height).filter((value) => value > 0).sort((a, b) => a - b);
+    const spreadX = centersX.at(-1) - centersX[0];
+    const spreadY = centersY.at(-1) - centersY[0];
+    const widthRatio = widths[0] ? widths.at(-1) / widths[0] : 1;
+    const heightRatio = heights[0] ? heights.at(-1) / heights[0] : 1;
+    if (spreadX <= centerTolerance && spreadY <= centerTolerance && widthRatio <= sizeRatioLimit && heightRatio <= sizeRatioLimit) return;
+    warnings.push({
+      code: 'track_alignment_drift',
+      severity: 'warning',
+      path: `layerTracks.${trackId}`,
+      trackId,
+      message: `${track?.name || trackId} has suspicious transparent-bound variation across ${entries.length} public layers (center spread ${spreadX.toFixed(1)}×${spreadY.toFixed(1)} px; size ratio ${widthRatio.toFixed(2)}×${heightRatio.toFixed(2)}). Compare the layers or explicitly approve the exception.`,
+    });
+  });
+  return warnings;
 }
 
 export function reviveRuntimeAssetRecord(record) {

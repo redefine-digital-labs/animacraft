@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   MAX_MAKER_ASSET_BYTES,
   buildAssetImportMapping,
+  buildProjectAssetImportMapping,
+  collectTrackAlignmentWarnings,
   createAssetId,
   createCachedAssetResolver,
   inspectPngAsset,
@@ -49,6 +51,35 @@ test('suggests a new track when there are more unmatched files than tracks', () 
   assert.equal(mapping[1].trackId, '');
   assert.equal(mapping[1].confidence, 'new-track');
   assert.equal(mapping[1].suggestedTrackName, 'sparkles');
+});
+
+test('maps a folder matrix to Part, Item, Style, Track and asset color', () => {
+  const document = {
+    layerTracks: [{ id: 'hair-front', name: 'Hair Front' }],
+    colorChannels: [{
+      id: 'hair-color',
+      name: 'Hair Color',
+      swatches: [{ id: 'blue', name: 'Blue' }],
+    }],
+    parts: [{
+      id: 'hair',
+      name: 'Hair',
+      items: [{
+        id: 'long',
+        importKey: 'long-hair',
+        name: 'Long Hair',
+        variants: [{ id: 'default', name: 'Default' }],
+      }],
+    }],
+  };
+  const [mapping] = buildProjectAssetImportMapping([{
+    name: 'hair-front@blue.png',
+    webkitRelativePath: 'maker/hair/long-hair/default/hair-front@blue.png',
+  }], document);
+  assert.equal(mapping.targetDefinition, 'hair::long::default');
+  assert.equal(mapping.trackId, 'hair-front');
+  assert.equal(mapping.colorDefinition, 'hair-color::blue');
+  assert.equal(mapping.confidence, 'matched');
 });
 
 test('creates readable, collision-resistant asset ids', () => {
@@ -160,4 +191,27 @@ test('runtime records create and revoke only owned object URLs', () => {
     URL.createObjectURL = originalCreate;
     URL.revokeObjectURL = originalRevoke;
   }
+});
+
+test('flags suspicious alpha-bound drift on a shared public Layer Track', () => {
+  const document = {
+    canvas: { width: 1000, height: 1000 },
+    layerTracks: [{ id: 'base', name: 'Base', alignmentApproved: false }],
+    parts: [{
+      id: 'body',
+      items: [
+        { id: 'one', status: 'public', variants: [{ id: 'default', layerBindings: [{ id: 'one', layerTrackId: 'base', assetId: 'one' }] }] },
+        { id: 'two', status: 'public', variants: [{ id: 'default', layerBindings: [{ id: 'two', layerTrackId: 'base', assetId: 'two' }] }] },
+      ],
+    }],
+  };
+  const assets = new Map([
+    ['one', { alphaBounds: { centerX: 500, centerY: 500, width: 500, height: 800 } }],
+    ['two', { alphaBounds: { centerX: 570, centerY: 540, width: 300, height: 600 } }],
+  ]);
+  const warnings = collectTrackAlignmentWarnings(document, assets);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].code, 'track_alignment_drift');
+  document.layerTracks[0].alignmentApproved = true;
+  assert.deepEqual(collectTrackAlignmentWarnings(document, assets), []);
 });

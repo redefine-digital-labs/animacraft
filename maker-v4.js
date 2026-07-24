@@ -45,6 +45,7 @@ const BLEND_MODES = Object.freeze([
   'linear-dodge',
 ]);
 const COLOR_CHANNEL_MODES = Object.freeze(['asset-map', 'gradient-map']);
+const ITEM_STATUSES = Object.freeze(['draft', 'private', 'public']);
 const VERSION_COMPATIBILITY = Object.freeze(['initial', 'compatible', 'breaking']);
 const LICENSE_KINDS = Object.freeze(['personal-use', 'free-remix', 'paid-commercial', 'exclusive-commission']);
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
@@ -439,6 +440,18 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
       else trackById.set(track.id, track);
     }
     validateName(track.name, `${path}.name`, issue);
+    if (track.transform !== undefined) {
+      const transform = track.transform;
+      if (!isObject(transform) || !Number.isFinite(transform.x) || !Number.isFinite(transform.y)
+        || !Number.isFinite(transform.scale) || transform.scale <= 0 || transform.scale > 100
+        || !Number.isFinite(transform.rotation)) {
+        issue(`${path}.transform`, 'must contain finite x, y, rotation and a scale greater than 0 and at most 100', 'invalid_transform');
+      }
+    }
+    if (track.locked !== undefined && typeof track.locked !== 'boolean') issue(`${path}.locked`, 'must be boolean', 'invalid_layer_track');
+    if (track.referenceAssetId !== null && track.referenceAssetId !== undefined && !assetById.has(track.referenceAssetId)) {
+      issue(`${path}.referenceAssetId`, 'references a missing Asset', 'missing_reference');
+    }
   });
   validateContiguousOrder(tracks, 'layerTracks', 'order', issue);
 
@@ -531,7 +544,8 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
     if (!Array.isArray(part.requires) || !Array.isArray(part.excludes)) issue(path, 'must contain requires and excludes arrays', 'invalid_rules');
     const items = Array.isArray(part.items) ? part.items : [];
     if (!Array.isArray(part.items)) issue(`${path}.items`, 'must be an array', 'invalid_collection');
-    if ((publish && !items.length) || items.length > LIMITS.maxItemsPerPart) {
+    const publicItems = items.filter((item) => (item?.status || 'public') === 'public');
+    if ((publish && !publicItems.length) || items.length > LIMITS.maxItemsPerPart) {
       issue(`${path}.items`, `must contain ${publish ? '1 to ' : 'at most '}${LIMITS.maxItemsPerPart} entries`, 'invalid_items');
     }
     totalItems += items.length;
@@ -548,13 +562,17 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
         else itemsById.set(item.id, item);
       }
       validateName(item.name, `${itemPath}.name`, issue);
+      const itemStatus = item.status || 'public';
+      if (!ITEM_STATUSES.includes(itemStatus)) issue(`${itemPath}.status`, 'must be draft, private or public', 'invalid_item');
+      if (item.importKey !== undefined) validateSafeId(item.importKey, `${itemPath}.importKey`, issue);
+      const publishItem = itemStatus === 'public';
       if (!Array.isArray(item.requires) || !Array.isArray(item.excludes)) issue(itemPath, 'must contain requires and excludes arrays', 'invalid_rules');
       if (item.thumbnailAssetId !== null && item.thumbnailAssetId !== undefined && !assetById.has(item.thumbnailAssetId)) {
         issue(`${itemPath}.thumbnailAssetId`, 'references a missing Asset', 'missing_reference');
       }
       const variants = Array.isArray(item.variants) ? item.variants : [];
       if (!Array.isArray(item.variants)) issue(`${itemPath}.variants`, 'must be an array', 'invalid_collection');
-      if ((publish && !variants.length) || variants.length > LIMITS.maxVariantsPerItem) {
+      if ((publish && publishItem && !variants.length) || variants.length > LIMITS.maxVariantsPerItem) {
         issue(`${itemPath}.variants`, `must contain ${publish ? '1 to ' : 'at most '}${LIMITS.maxVariantsPerItem} entries`, 'invalid_variants');
       }
       totalVariants += variants.length;
@@ -574,7 +592,7 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
         if (!Array.isArray(variant.requires) || !Array.isArray(variant.excludes)) issue(variantPath, 'must contain requires and excludes arrays', 'invalid_rules');
         const bindings = Array.isArray(variant.layerBindings) ? variant.layerBindings : [];
         if (!Array.isArray(variant.layerBindings)) issue(`${variantPath}.layerBindings`, 'must be an array', 'invalid_collection');
-        if (publish && !bindings.length) issue(`${variantPath}.layerBindings`, 'must contain at least one LayerBinding', 'invalid_bindings');
+        if (publish && publishItem && !bindings.length) issue(`${variantPath}.layerBindings`, 'must contain at least one LayerBinding', 'invalid_bindings');
         totalBindings += bindings.length;
         const bindingIds = new Set();
         bindings.forEach((binding, bindingIndex) => {
@@ -588,12 +606,15 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
             bindingIds.add(binding.id);
           }
           if (!trackById.has(binding.layerTrackId)) issue(`${bindingPath}.layerTrackId`, 'references a missing LayerTrack', 'missing_reference');
-          if (!assetById.has(binding.assetId)) issue(`${bindingPath}.assetId`, 'references a missing Asset', 'missing_reference');
+          if ((!publish || publishItem) && !assetById.has(binding.assetId)) issue(`${bindingPath}.assetId`, 'references a missing Asset', 'missing_reference');
           const transform = binding.transform;
           if (!isObject(transform) || !Number.isFinite(transform.x) || !Number.isFinite(transform.y)
             || !Number.isFinite(transform.scale) || transform.scale <= 0 || transform.scale > 100
             || !Number.isFinite(transform.rotation)) {
             issue(`${bindingPath}.transform`, 'must contain finite x, y, rotation and a scale greater than 0 and at most 100', 'invalid_transform');
+          }
+          if (binding.inheritTrackTransform !== undefined && typeof binding.inheritTrackTransform !== 'boolean') {
+            issue(`${bindingPath}.inheritTrackTransform`, 'must be boolean', 'invalid_transform');
           }
           if (typeof binding.opacity !== 'number' || binding.opacity < 0 || binding.opacity > 1) {
             issue(`${bindingPath}.opacity`, 'must be a number from 0 to 1', 'invalid_opacity');
@@ -608,7 +629,7 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
             if (!channel) {
               issue(`${bindingPath}.colorChannelId`, 'references a missing ColorChannel', 'missing_reference');
             } else if (channel.mode === 'asset-map') {
-              if (publish) {
+              if (publish && publishItem) {
                 const mappedSwatches = mappedAssets.map((mapping) => mapping?.swatchId);
                 const expectedSwatches = channel.swatches.map((swatch) => swatch.id);
                 if (mappedSwatches.length !== expectedSwatches.length
@@ -633,16 +654,19 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
         });
       });
       validateContiguousOrder(variants, `${itemPath}.variants`, 'displayOrder', issue);
-      if (item.defaultVariantId !== null && !variantsById.has(item.defaultVariantId)) {
+      if ((!publish || publishItem) && item.defaultVariantId !== null && !variantsById.has(item.defaultVariantId)) {
         issue(`${itemPath}.defaultVariantId`, 'references a missing Variant', 'missing_reference');
       }
-      if (publish && !item.defaultVariantId) issue(`${itemPath}.defaultVariantId`, 'is required for publication', 'missing_reference');
+      if (publish && publishItem && !item.defaultVariantId) issue(`${itemPath}.defaultVariantId`, 'is required for publication', 'missing_reference');
     });
     validateContiguousOrder(items, `${path}.items`, 'displayOrder', issue);
     if (part.defaultItemId !== null && !itemsById.has(part.defaultItemId)) {
       issue(`${path}.defaultItemId`, 'references a missing Item', 'missing_reference');
     }
     if (publish && part.required && !part.defaultItemId) issue(`${path}.defaultItemId`, 'is required for this Part', 'missing_reference');
+    if (publish && part.defaultItemId && (itemsById.get(part.defaultItemId)?.status || 'public') !== 'public') {
+      issue(`${path}.defaultItemId`, 'must reference a public Item for publication', 'invalid_default');
+    }
     if (part.iconAssetId !== null && part.iconAssetId !== undefined && !assetById.has(part.iconAssetId)) {
       issue(`${path}.iconAssetId`, 'references a missing Asset', 'missing_reference');
     }
