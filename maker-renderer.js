@@ -259,6 +259,8 @@ function normalizeTrack(track, index) {
     name: String(firstDefined(track?.name, track?.label, idOf(track, `Track ${index + 1}`))),
     order: finite(firstDefined(track?.order, track?.renderOrder), Number.MAX_SAFE_INTEGER),
     visible: track?.visible !== false,
+    transform: object(track?.transform),
+    locked: track?.locked !== false,
   };
 }
 
@@ -349,8 +351,9 @@ function selectedChannel(channel, rawSelection) {
   };
 }
 
-function normalizeTransform(binding, asset, canvas) {
-  const transform = object(binding?.transform);
+function normalizeTransform(binding, asset, canvas, track) {
+  const useTrackTransform = binding?.inheritTrackTransform === true && Object.keys(object(track?.transform)).length > 0;
+  const transform = useTrackTransform ? object(track.transform) : object(binding?.transform);
   const baseScale = finite(firstDefined(transform.scale, binding?.scale), 1);
   const flipX = firstDefined(transform.flipX, binding?.flipX) ? -1 : 1;
   const flipY = firstDefined(transform.flipY, binding?.flipY) ? -1 : 1;
@@ -583,7 +586,8 @@ export function resolveMakerScene(maker, recipe, options = {}) {
         partOrder: finite(firstDefined(part.menuOrder, part.order), partIndex),
         assetId,
         asset,
-        transform: normalizeTransform(binding, asset, canvas),
+        transform: normalizeTransform(binding, asset, canvas, track),
+        transformSource: binding.inheritTrackTransform === true ? 'track' : 'binding',
         opacity: normalizeOpacity(firstDefined(binding.opacity, 1)),
         blendMode: normalizeBlendMode(binding.blendMode),
         compositeOperation: BLEND_MODES[normalizeBlendMode(binding.blendMode)],

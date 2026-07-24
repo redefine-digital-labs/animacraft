@@ -25,6 +25,14 @@ export function createLayerTrack(document, name = 'New Layer') {
     id: uniqueDocumentId(name, [document.layerTracks], 'layer'),
     name,
     order: document.layerTracks.length,
+    transform: {
+      x: 0,
+      y: 0,
+      scale: 1,
+      rotation: 0,
+    },
+    locked: true,
+    referenceAssetId: null,
   };
 }
 
@@ -62,6 +70,8 @@ export function createItem(part, name = 'New Item') {
     id: uniqueDocumentId(name, [part.items || []], 'item'),
     name,
     displayOrder: part.items?.length || 0,
+    importKey: '',
+    status: 'draft',
     thumbnailAssetId: null,
     visibleWhen: null,
     requires: [],
@@ -69,6 +79,7 @@ export function createItem(part, name = 'New Item') {
     defaultVariantId: null,
     variants: [],
   };
+  item.importKey = item.id;
   const variant = createVariant(item, 'Default');
   item.variants.push(variant);
   item.defaultVariantId = variant.id;
@@ -88,6 +99,8 @@ export function createLayerBinding(variant, layerTrackId, assetId, transform = {
       scale: Math.max(0.01, Number(transform.scale ?? transform.scaleX ?? 1)),
       rotation: Number(transform.rotation || 0),
     },
+    inheritTrackTransform: true,
+    positionConfirmed: false,
     opacity: 1,
     blendMode: 'normal',
     visibleWhen: null,
@@ -151,12 +164,57 @@ export function normalizeDocumentOrders(document) {
     part.menuOrder = partIndex;
     part.items.forEach((item, itemIndex) => {
       item.displayOrder = itemIndex;
+      item.importKey ||= item.id;
+      item.status ||= 'public';
       item.variants.forEach((variant, variantIndex) => { variant.displayOrder = variantIndex; });
+      item.variants.forEach((variant) => variant.layerBindings.forEach((binding) => {
+        if (typeof binding.inheritTrackTransform !== 'boolean') binding.inheritTrackTransform = false;
+        if (typeof binding.positionConfirmed !== 'boolean') binding.positionConfirmed = true;
+      }));
     });
   });
-  document.layerTracks.forEach((track, index) => { track.order = index; });
+  document.layerTracks.forEach((track, index) => {
+    track.order = index;
+    track.transform ||= { x: 0, y: 0, scale: 1, rotation: 0 };
+    track.transform.x = Number(track.transform.x || 0);
+    track.transform.y = Number(track.transform.y || 0);
+    track.transform.scale = Math.max(0.01, Number(track.transform.scale ?? 1));
+    track.transform.rotation = Number(track.transform.rotation || 0);
+    if (typeof track.locked !== 'boolean') track.locked = true;
+    track.referenceAssetId ??= null;
+  });
   document.colorChannels.forEach((channel, index) => { channel.order = index; });
   return document;
+}
+
+export function effectiveBindingTransform(document, binding) {
+  const track = document?.layerTracks?.find((candidate) => candidate.id === binding?.layerTrackId);
+  if (binding?.inheritTrackTransform !== false && track?.transform) return { ...track.transform };
+  return {
+    x: Number(binding?.transform?.x || 0),
+    y: Number(binding?.transform?.y || 0),
+    scale: Math.max(0.01, Number(binding?.transform?.scale ?? 1)),
+    rotation: Number(binding?.transform?.rotation || 0),
+  };
+}
+
+export function applyTrackTransform(document, trackId, transform, { confirm = true } = {}) {
+  const track = document?.layerTracks?.find((candidate) => candidate.id === trackId);
+  if (!track) return null;
+  track.transform = {
+    x: Number(transform?.x || 0),
+    y: Number(transform?.y || 0),
+    scale: Math.max(0.01, Number(transform?.scale ?? 1)),
+    rotation: Number(transform?.rotation || 0),
+  };
+  document.parts.forEach((part) => part.items.forEach((item) => item.variants.forEach((variant) => {
+    variant.layerBindings.forEach((binding) => {
+      if (binding.layerTrackId !== trackId) return;
+      binding.inheritTrackTransform = true;
+      if (confirm) binding.positionConfirmed = true;
+    });
+  })));
+  return track;
 }
 
 export function moveArrayEntry(entries, fromIndex, toIndex) {
@@ -169,6 +227,9 @@ export function moveArrayEntry(entries, fromIndex, toIndex) {
 function collectReferencedAssets(document) {
   const ids = new Set();
   if (document.metadata?.coverAssetId) ids.add(document.metadata.coverAssetId);
+  document.layerTracks.forEach((track) => {
+    if (track.referenceAssetId) ids.add(track.referenceAssetId);
+  });
   document.parts.forEach((part) => {
     if (part.iconAssetId) ids.add(part.iconAssetId);
     part.items.forEach((item) => {

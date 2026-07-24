@@ -69,7 +69,9 @@ function orderedParts(document) {
 }
 
 function orderedItems(part) {
-  return [...asArray(part?.items)].sort((left, right) => compareOrder(left, right, 'displayOrder'));
+  return [...asArray(part?.items)]
+    .filter((item) => (item?.status || 'public') === 'public')
+    .sort((left, right) => compareOrder(left, right, 'displayOrder'));
 }
 
 function orderedVariants(item) {
@@ -175,6 +177,9 @@ function assetById(document) {
 export function collectReferencedMakerV4AssetIds(document) {
   const ids = new Set();
   if (document?.metadata?.coverAssetId) ids.add(String(document.metadata.coverAssetId));
+  orderedTracks(document).forEach((track) => {
+    if (track.referenceAssetId) ids.add(String(track.referenceAssetId));
+  });
   orderedParts(document).forEach((part) => {
     if (part.iconAssetId) ids.add(String(part.iconAssetId));
     orderedItems(part).forEach((item) => {
@@ -249,6 +254,7 @@ function sanitizeBinding(binding) {
       scale: Number(binding.transform?.scale ?? 1),
       rotation: Number(binding.transform?.rotation || 0),
     },
+    inheritTrackTransform: binding.inheritTrackTransform === true,
     opacity: Number(binding.opacity),
     blendMode: String(binding.blendMode || 'normal'),
     visibleWhen: clone(binding.visibleWhen ?? null),
@@ -272,6 +278,8 @@ function sanitizeItem(item, trackOrder) {
     id: String(item.id || ''),
     name: String(item.name || ''),
     displayOrder: Number(item.displayOrder),
+    importKey: String(item.importKey || item.id || ''),
+    status: 'public',
     thumbnailAssetId: item.thumbnailAssetId ?? null,
     visibleWhen: clone(item.visibleWhen ?? null),
     requires: clone(asArray(item.requires)),
@@ -504,7 +512,19 @@ export function buildMakerV4PublicationManifest(document, options = {}) {
       height: Number(document.canvas.height),
       pixelMode: String(document.canvas.pixelMode),
     },
-    layerTracks: tracks.map((track) => ({ id: String(track.id), name: String(track.name), order: Number(track.order) })),
+    layerTracks: tracks.map((track) => ({
+      id: String(track.id),
+      name: String(track.name),
+      order: Number(track.order),
+      transform: {
+        x: Number(track.transform?.x || 0),
+        y: Number(track.transform?.y || 0),
+        scale: Number(track.transform?.scale ?? 1),
+        rotation: Number(track.transform?.rotation || 0),
+      },
+      locked: track.locked !== false,
+      referenceAssetId: track.referenceAssetId ?? null,
+    })),
     colorChannels: colors.map(sanitizeChannel),
     parts: orderedParts(document).map((part) => sanitizePart(part, trackOrder)),
     defaultRecipe: {

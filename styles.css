@@ -4949,6 +4949,10 @@ pre {
   grid-column: 1 / -1;
 }
 
+.creator-view[data-creator-view="edit"].v4-parts-active .creator-editor-header {
+  display: none;
+}
+
 #maker-parts,
 .legacy-player-editor[hidden] {
   display: none !important;
@@ -5424,6 +5428,32 @@ pre {
   width: 100%;
 }
 
+.v4-file-button.compact {
+  width: auto;
+}
+
+.v4-binding-swatch-assets {
+  display: grid;
+  gap: 6px;
+}
+
+.v4-binding-swatch-assets .v4-file-button {
+  justify-content: flex-start;
+}
+
+.v4-binding-swatch-assets .v4-file-button.missing {
+  border-color: #d79229;
+  background: #fff8e6;
+}
+
+.v4-binding-swatch-assets i {
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border-radius: 5px;
+  background: var(--swatch);
+}
+
 .v4-item-grid,
 .v4-player-item-grid {
   display: grid;
@@ -5657,13 +5687,19 @@ pre {
 
 .v4-track-row {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) minmax(180px, 1fr) auto;
+  grid-template-columns: minmax(190px, 1fr) minmax(150px, 0.8fr) minmax(180px, 1fr) auto;
   gap: 8px;
   align-items: center;
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: #f9fbfb;
+}
+
+.v4-track-placement {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
 }
 
 .v4-track-row > button:first-child {
@@ -5974,6 +6010,20 @@ pre {
   grid-template-columns: minmax(130px, 1fr) 80px minmax(170px, 1fr) minmax(150px, 1fr);
   gap: 8px;
   align-items: center;
+}
+
+.v4-import-dialog.project-matrix {
+  width: min(1180px, 100%);
+}
+
+.v4-import-dialog.project-matrix .v4-import-list > div {
+  grid-template-columns: minmax(140px, 1fr) 70px minmax(210px, 1.2fr) minmax(160px, 0.9fr) minmax(150px, 0.8fr);
+}
+
+.v4-import-list > div.conflict {
+  border-radius: 8px;
+  outline: 2px solid #d56a4a;
+  outline-offset: 3px;
 }
 
 .v4-import-list em {
@@ -6305,6 +6355,58 @@ pre {
   line-height: 1.6;
 }
 
+.v4-chain-flow {
+  margin: 14px;
+  border: 1px solid var(--ink);
+  border-radius: 14px;
+  padding: 15px;
+  background: #f8fbfb;
+  box-shadow: 4px 4px 0 rgba(240, 162, 58, 0.55);
+}
+
+.v4-chain-flow header,
+.v4-chain-flow > div {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.v4-chain-flow h3,
+.v4-chain-flow p {
+  margin: 3px 0;
+}
+
+.v4-chain-flow p {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.v4-chain-flow ol {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.v4-chain-flow li {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 850;
+  text-align: center;
+}
+
+.v4-chain-flow li.active {
+  border-color: #149980;
+  background: #e7faf5;
+  color: #0f7568;
+}
+
 .v4-player-info-dialog dl {
   display: grid;
   gap: 5px;
@@ -6419,6 +6521,30 @@ pre {
     position: static;
   }
 
+  .v4-player-main {
+    display: block;
+  }
+
+  .v4-player-preview {
+    position: sticky;
+    z-index: 5;
+    top: 0;
+    grid-template-rows: minmax(240px, 42vh) auto;
+    min-height: 0;
+    max-height: 58vh;
+    padding: 8px;
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 8px 18px rgba(27, 25, 33, 0.12);
+  }
+
+  .v4-player-canvas-wrap {
+    min-height: 240px;
+  }
+
+  .v4-player-recipe-strip {
+    display: none;
+  }
+
   .v4-player-controls {
     display: block;
   }
@@ -6471,13 +6597,14 @@ pre {
   }
 
   .v4-player-preview {
-    grid-template-rows: minmax(380px, 52vh) auto auto;
-    min-height: 520px;
-    padding: 10px;
+    grid-template-rows: minmax(220px, 38vh) auto;
+    min-height: 0;
+    max-height: 52vh;
+    padding: 7px;
   }
 
   .v4-player-canvas-wrap {
-    min-height: 360px;
+    min-height: 220px;
   }
 
   .v4-player-profile-fields,
@@ -6504,5 +6631,14 @@ pre {
 
   .v4-swatch-editor {
     grid-template-columns: auto 1fr;
+  }
+
+  .v4-chain-flow ol {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .v4-chain-flow > div {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

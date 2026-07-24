@@ -62,6 +62,7 @@ import {
 
 const slots = [
   { key: 'background', label: 'Background', icon: 'BG', colorKey: 'background', description: 'Scene, mood, and backdrop' },
+  { key: 'base', label: 'Skin & Base', icon: 'BA', colorKey: 'skin', description: 'The shared body and face foundation that every wearable aligns to' },
   { key: 'hairBack', label: 'Back Hair', icon: 'HB', colorKey: 'hair', description: 'Rear silhouette and outer hair shape' },
   { key: 'hairFront', label: 'Front Hair', icon: 'HF', colorKey: 'hair', description: 'Bangs, fringe, and face framing' },
   { key: 'eyes', label: 'Eyes', icon: 'EY', colorKey: 'eyes', description: 'Expression focus and personality' },
@@ -76,6 +77,12 @@ const parts = {
     { id: 'mint', label: 'Mint Gradient' },
     { id: 'violet', label: 'Violet Night' },
     { id: 'grid', label: 'Pixel Grid' },
+  ],
+  base: [
+    { id: 'porcelain', label: 'Porcelain' },
+    { id: 'warm', label: 'Warm' },
+    { id: 'deep', label: 'Deep' },
+    { id: 'fantasy', label: 'Fantasy' },
   ],
   hairBack: [
     { id: 'wave', label: 'Soft Long' },
@@ -552,6 +559,7 @@ const state = {
   layerOrder: [],
   visual: {
     background: 'dawn',
+    base: 'porcelain',
     hairBack: 'wave',
     hairFront: 'side',
     eyes: 'bright',
@@ -659,6 +667,7 @@ function ocUploadStorageKey(templateId = state.templateId) {
 function defaultMakerVisual() {
   return structuredClone({
     background: 'dawn',
+    base: 'porcelain',
     hairBack: 'wave',
     hairFront: 'side',
     eyes: 'bright',
@@ -2182,6 +2191,8 @@ function setCreatorView(view) {
 
 function setEditorPanel(panel) {
   state.editorPanel = panel;
+  document.querySelector('.creator-view[data-creator-view="edit"]')
+    ?.classList.toggle('v4-parts-active', state.editorPanel === 'parts');
   document.querySelectorAll('[data-editor-panel]').forEach((section) => {
     section.classList.toggle('active', section.dataset.editorPanel === state.editorPanel);
   });
@@ -3417,6 +3428,19 @@ function renderMintAction() {
   ['profileName', 'profileWorld', 'profileDescription', 'profileTags'].forEach((id) => {
     if ($(id)) $(id).disabled = state.minting;
   });
+  makerWorkspace?.setPlayerPublishState?.({
+    stage: state.ocUploadStage,
+    status: state.mintStatus || mintReadiness(),
+    busy: state.minting,
+    digest: state.mintDigest,
+    actions: {
+      resume: !state.minting && chainMakerReady && state.hasOcUploadRecovery && state.ocUploadStage === 'idle',
+      prepare: !state.minting && baseReady && state.ocUploadStage === 'idle' && !state.hasOcUploadRecovery,
+      register: !state.minting && state.walletConnected && ['encoded', 'registered'].includes(state.ocUploadStage),
+      certify: !state.minting && state.walletConnected && state.ocUploadStage === 'uploaded',
+      publish: !state.minting && state.walletConnected && state.ocUploadStage === 'certified',
+    },
+  });
 }
 
 async function renderOcImageBlob(recipeOverride = null) {
@@ -4556,6 +4580,19 @@ function renderPublishAction() {
   } else {
     $('makerPublishStatus').textContent = state.publishStatus || publishReadiness();
   }
+  makerWorkspace?.setCreatorPublishState?.({
+    stage: state.makerUploadStage,
+    status: state.publishStatus || publishReadiness(),
+    busy: state.publishing,
+    digest: state.publishDigest,
+    actions: {
+      resume: !locked && !state.publishing && state.walletConnected && state.hasMakerUploadRecovery,
+      prepare: !state.publishing && baseReady && state.makerUploadStage === 'idle' && !state.hasMakerUploadRecovery,
+      register: !state.publishing && state.walletConnected && ['encoded', 'registered'].includes(state.makerUploadStage),
+      certify: !state.publishing && state.walletConnected && state.makerUploadStage === 'uploaded',
+      publish: !locked && !state.publishing && state.walletConnected && state.makerUploadStage === 'certified',
+    },
+  });
 }
 
 function renderChainStatus() {
@@ -6078,6 +6115,11 @@ makerWorkspace = createMakerWorkspace({
       state.draftSaveStatus = 'saved';
       state.draftSaveMessage = payload.automatic ? 'Maker v4 autosaved' : 'Maker v4 saved';
     },
+    onBackToLibrary() {
+      setCreatorView('list');
+      renderAll();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
     onOpenPlayer(payload) {
       syncV4WorkspaceState(payload);
       state.previewingMaker = true;
@@ -6088,23 +6130,43 @@ makerWorkspace = createMakerWorkspace({
     },
     onPublish(payload) {
       syncV4WorkspaceState(payload);
-      setEditorPanel('publish');
-      renderAll();
       if (state.makerUploadStage === 'idle' && !state.publishing) prepareMakerUpload();
+    },
+    async onCreatorPublishAction(action) {
+      if (action === 'prepare') await prepareMakerUpload();
+      else if (action === 'register') await registerMakerUpload();
+      else if (action === 'certify') await certifyMakerUpload();
+      else if (action === 'onchain') await publishCurrentMaker();
+      else if (action === 'resume') {
+        state.publishing = true;
+        state.publishStatus = 'Restoring the saved Walrus upload checkpoint…';
+        renderAll();
+        await restoreMakerUploadRecovery(state.templateId, { force: true });
+        state.publishing = false;
+        renderAll();
+      }
     },
     onPlayerRecipeChange(payload) {
       syncPlayerV4State(payload);
     },
     onCompleteOc(payload) {
       syncPlayerV4State(payload);
-      const legacy = $('legacyPlayerEditor');
-      if (legacy) {
-        legacy.hidden = false;
-        legacy.classList.add('handoff-only');
-        legacy.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
       renderMintAction();
       if (state.ocUploadStage === 'idle' && activeTemplate()?.source === 'chain' && !makerHasPendingV4Version() && !state.minting) prepareOcUpload();
+    },
+    async onPlayerPublishAction(action) {
+      if (action === 'prepare') await prepareOcUpload();
+      else if (action === 'register') await registerOcUpload();
+      else if (action === 'certify') await certifyOcUpload();
+      else if (action === 'onchain') await mintCurrentOc();
+      else if (action === 'resume') {
+        state.minting = true;
+        state.mintStatus = 'Restoring the saved OC upload checkpoint…';
+        renderAll();
+        await restoreOcUploadRecovery(state.templateId, { force: true });
+        state.minting = false;
+        renderAll();
+      }
     },
     onPlayerError(error) {
       state.mintStatus = error.message || 'The current Maker rules could not produce a valid OC.';
