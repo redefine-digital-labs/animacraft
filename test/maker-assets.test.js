@@ -53,14 +53,9 @@ test('suggests a new track when there are more unmatched files than tracks', () 
   assert.equal(mapping[1].suggestedTrackName, 'sparkles');
 });
 
-test('maps a folder matrix to Part, Item, Style, Track and asset color', () => {
+test('maps a folder matrix to exactly one Part, Item, Style and Layer Track', () => {
   const document = {
     layerTracks: [{ id: 'hair-front', name: 'Hair Front' }],
-    colorChannels: [{
-      id: 'hair-color',
-      name: 'Hair Color',
-      swatches: [{ id: 'blue', name: 'Blue' }],
-    }],
     parts: [{
       id: 'hair',
       name: 'Hair',
@@ -68,17 +63,17 @@ test('maps a folder matrix to Part, Item, Style, Track and asset color', () => {
         id: 'long',
         importKey: 'long-hair',
         name: 'Long Hair',
-        variants: [{ id: 'default', name: 'Default' }],
+        styles: [{ id: 'default', name: 'Default' }],
       }],
     }],
   };
   const [mapping] = buildProjectAssetImportMapping([{
-    name: 'hair-front@blue.png',
-    webkitRelativePath: 'maker/hair/long-hair/default/hair-front@blue.png',
+    name: 'hair-front.png',
+    webkitRelativePath: 'maker/hair/long-hair/default/hair-front.png',
   }], document);
   assert.equal(mapping.targetDefinition, 'hair::long::default');
   assert.equal(mapping.trackId, 'hair-front');
-  assert.equal(mapping.colorDefinition, 'hair-color::blue');
+  assert.equal(Object.hasOwn(mapping, 'colorDefinition'), false);
   assert.equal(mapping.confidence, 'matched');
 });
 
@@ -100,11 +95,11 @@ test('inspects full-canvas and cropped PNG dimensions with deterministic initial
   try {
     const full = await inspectPngAsset({ name: 'full.png', type: 'image/png', size: 100, width: 1024, height: 1024 }, { width: 1024, height: 1024 });
     assert.equal(full.fullCanvas, true);
-    assert.deepEqual(full.initialTransform, { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 });
+    assert.deepEqual(full.initialTransform, { x: 0, y: 0, scale: 1, rotation: 0 });
 
     const cropped = await inspectPngAsset({ name: 'crop.png', type: 'image/png', size: 100, width: 400, height: 800 }, { width: 1000, height: 1000 });
     assert.equal(cropped.fullCanvas, false);
-    assert.deepEqual(cropped.initialTransform, { x: 300, y: 100, scaleX: 1, scaleY: 1, rotation: 0 });
+    assert.deepEqual(cropped.initialTransform, { x: 300, y: 100, scale: 1, rotation: 0 });
     assert.match(cropped.warning, /confirm its position/i);
     assert.deepEqual(closed, ['full.png', 'crop.png']);
   } finally {
@@ -200,8 +195,8 @@ test('flags suspicious alpha-bound drift on a shared public Layer Track', () => 
     parts: [{
       id: 'body',
       items: [
-        { id: 'one', status: 'public', variants: [{ id: 'default', layerBindings: [{ id: 'one', layerTrackId: 'base', assetId: 'one' }] }] },
-        { id: 'two', status: 'public', variants: [{ id: 'default', layerBindings: [{ id: 'two', layerTrackId: 'base', assetId: 'two' }] }] },
+        { id: 'one', status: 'public', styles: [{ id: 'default', layerTrackId: 'base', assetId: 'one' }] },
+        { id: 'two', status: 'public', styles: [{ id: 'default', layerTrackId: 'base', assetId: 'two' }] },
       ],
     }],
   };

@@ -5,15 +5,16 @@ import {
   addDocumentAsset,
   createGradientColorChannel,
   createItem,
-  createLayerBinding,
   createLayerTrack,
   createPart,
+  createStyle,
+  duplicateItem,
   duplicatePart,
-  effectiveBindingTransform,
-  findBinding,
+  duplicateStyle,
+  effectiveStyleTransform,
   findItem,
   findPart,
-  findVariant,
+  findStyle,
   moveArrayEntry,
   normalizeDocumentOrders,
   recipeSelectionMap,
@@ -22,16 +23,10 @@ import {
   synchronizeDefaultRecipe,
   uniqueDocumentId,
 } from '../maker-document-ops.js';
+import { createMakerV5Document } from '../maker-v4.js';
 
 function emptyDocument() {
-  return {
-    metadata: { coverAssetId: null },
-    layerTracks: [],
-    colorChannels: [],
-    parts: [],
-    assets: [],
-    defaultRecipe: { selections: [], colors: [] },
-  };
+  return createMakerV5Document({ makerId: 'ops-maker', name: 'Ops Maker' });
 }
 
 function playableDocument() {
@@ -40,8 +35,11 @@ function playableDocument() {
   document.layerTracks.push(track);
   const part = createPart(document, 'Body');
   const item = createItem(part, 'Default Body');
-  const binding = createLayerBinding(item.variants[0], track.id, 'body-art');
-  item.variants[0].layerBindings.push(binding);
+  const selectedStyle = createStyle(item, 'Default');
+  selectedStyle.layerTrackId = track.id;
+  selectedStyle.assetId = 'body-art';
+  item.styles.push(selectedStyle);
+  item.defaultStyleId = selectedStyle.id;
   part.items.push(item);
   part.defaultItemId = item.id;
   document.parts.push(part);
@@ -50,7 +48,7 @@ function playableDocument() {
   return document;
 }
 
-test('creates URL-safe unique ids and complete editor records', () => {
+test('creates URL-safe unique ids and empty draft Item/Style editor records', () => {
   assert.equal(uniqueDocumentId('Café Hair!', [{ id: 'cafe-hair' }]), 'cafe-hair-2');
   const document = emptyDocument();
   document.layerTracks.push(createLayerTrack(document, 'Hair Back'));
@@ -58,67 +56,68 @@ test('creates URL-safe unique ids and complete editor records', () => {
   document.parts.push(createPart(document, 'Hair'));
   document.parts.push(createPart(document, 'Hair'));
   assert.deepEqual(document.layerTracks.map((track) => track.id), ['hair-back', 'hair-back-2']);
+  assert.ok(document.layerTracks.every((track) => !Object.hasOwn(track, 'transform')));
   assert.deepEqual(document.parts.map((part) => part.id), ['hair', 'hair-2']);
+
   const item = createItem(document.parts[0], 'Long Hair');
-  assert.equal(item.defaultVariantId, 'default');
-  assert.equal(item.variants.length, 1);
-  assert.deepEqual(item.variants[0].requires, []);
-});
-test('creates finite uniform layer bindings and gradient channels', () => {
-  const document = emptyDocument();
-  const channel = createGradientColorChannel(document, 'Hair Color');
-  assert.equal(channel.mode, 'gradient-map');
-  assert.deepEqual(channel.swatches[0].stops.map((stop) => stop.offset), [0, 0.5, 1]);
-  const binding = createLayerBinding({ layerBindings: [] }, 'hair-front', 'hair-art', {
-    x: 12,
-    y: -8,
-    scaleX: 1.25,
-    rotation: 5,
-  });
-  assert.deepEqual(binding.transform, { x: 12, y: -8, scale: 1.25, rotation: 5 });
-  assert.equal(binding.opacity, 1);
-  assert.equal(binding.blendMode, 'normal');
-  assert.equal(binding.inheritTrackTransform, false);
-  assert.equal(binding.positionConfirmed, false);
+  assert.equal(item.defaultStyleId, null);
+  assert.deepEqual(item.styles, []);
+  assert.equal(item.status, 'draft');
+
+  const selectedStyle = createStyle(item, 'Pure Black');
+  assert.equal(selectedStyle.assetId, null);
+  assert.equal(selectedStyle.layerTrackId, null);
+  assert.deepEqual(selectedStyle.transform, { x: 0, y: 0, scale: 1, rotation: 0 });
+  assert.equal(selectedStyle.positionLocked, false);
+  assert.equal(selectedStyle.styleLocked, false);
 });
 
-test('keeps every Item transform independent even when bindings share one Layer Track', () => {
+test('creates gradient channels with a usable default swatch', () => {
+  const channel = createGradientColorChannel(emptyDocument(), 'Hair Color');
+  assert.equal(channel.mode, 'gradient-map');
+  assert.equal(channel.defaultSwatchId, 'default');
+  assert.deepEqual(channel.swatches[0].stops.map((stop) => stop.offset), [0, 0.5, 1]);
+});
+
+test('keeps every Style transform independent even when Styles share one Layer Track', () => {
   const document = playableDocument();
   const part = document.parts[0];
-  const firstBinding = part.items[0].variants[0].layerBindings[0];
-  firstBinding.transform = { x: 24, y: -12, scale: 1.2, rotation: 3 };
+  const firstStyle = part.items[0].styles[0];
+  firstStyle.transform = { x: 24, y: -12, scale: 1.2, rotation: 3 };
+
   const second = createItem(part, 'Alternate Body');
-  second.variants[0].layerBindings.push(createLayerBinding(second.variants[0], document.layerTracks[0].id, 'alternate-art', { x: 400, y: 500, scale: 2 }));
+  const secondStyle = createStyle(second, 'Default');
+  secondStyle.layerTrackId = document.layerTracks[0].id;
+  secondStyle.assetId = 'alternate-art';
+  secondStyle.transform = { x: 400, y: 500, scale: 2, rotation: 0 };
+  second.styles.push(secondStyle);
+  second.defaultStyleId = secondStyle.id;
   part.items.push(second);
-  document.assets.push({ id: 'alternate-art', identifier: 'alternate.png' });
-  const transforms = part.items.map((item) => effectiveBindingTransform(document, item.variants[0].layerBindings[0]));
-  assert.deepEqual(transforms, [
+
+  assert.deepEqual(part.items.map((item) => effectiveStyleTransform(document, item.styles[0])), [
     { x: 24, y: -12, scale: 1.2, rotation: 3 },
     { x: 400, y: 500, scale: 2, rotation: 0 },
   ]);
-  firstBinding.transform.x = 99;
-  assert.equal(second.variants[0].layerBindings[0].transform.x, 400);
+  firstStyle.transform.x = 99;
+  assert.equal(secondStyle.transform.x, 400);
 });
 
-test('bakes a legacy shared Track transform into each binding before detaching it', () => {
+test('Style render settings are isolated between sibling Styles', () => {
   const document = playableDocument();
-  const part = document.parts[0];
-  const second = createItem(part, 'Alternate Body');
-  second.variants[0].layerBindings.push(createLayerBinding(second.variants[0], document.layerTracks[0].id, 'alternate-art', { x: 400, y: 500, scale: 2 }));
-  part.items.push(second);
-  document.layerTracks[0].transform = { x: 32, y: -18, scale: 0.75, rotation: 7 };
-  part.items.forEach((item) => { item.variants[0].layerBindings[0].inheritTrackTransform = true; });
-
+  const item = document.parts[0].items[0];
+  const second = createStyle(item, 'Blue');
+  second.assetId = 'blue-art';
+  second.layerTrackId = item.styles[0].layerTrackId;
+  item.styles.push(second);
   normalizeDocumentOrders(document);
 
-  const bindings = part.items.map((item) => item.variants[0].layerBindings[0]);
-  assert.ok(bindings.every((binding) => binding.inheritTrackTransform === false));
-  assert.deepEqual(bindings.map((binding) => binding.transform), [
-    { x: 32, y: -18, scale: 0.75, rotation: 7 },
-    { x: 32, y: -18, scale: 0.75, rotation: 7 },
-  ]);
-  bindings[0].transform.x = 64;
-  assert.equal(bindings[1].transform.x, 32);
+  item.styles[0].transform.x = -120;
+  item.styles[0].opacity = 0.25;
+  item.styles[0].requires.push({ partId: 'other' });
+
+  assert.deepEqual(item.styles[1].transform, { x: 0, y: 0, scale: 1, rotation: 0 });
+  assert.equal(item.styles[1].opacity, 1);
+  assert.deepEqual(item.styles[1].requires, []);
 });
 
 test('adds and replaces public asset metadata by stable asset id', () => {
@@ -139,20 +138,41 @@ test('adds and replaces public asset metadata by stable asset id', () => {
   assert.equal(document.assets[0].kind, 'thumbnail');
 });
 
-test('normalizes every independent menu, item, variant, track and color order', () => {
+test('normalizes every independent Part, Item, Style, Track and color order', () => {
   const document = playableDocument();
   const secondPart = createPart(document, 'Hair');
-  secondPart.items.push(createItem(secondPart, 'B'), createItem(secondPart, 'A'));
-  secondPart.items[0].variants.push({ ...secondPart.items[0].variants[0], id: 'second' });
+  const firstItem = createItem(secondPart, 'B');
+  const firstStyle = createStyle(firstItem, 'First');
+  const secondStyle = createStyle(firstItem, 'Second');
+  firstItem.styles.push(firstStyle, secondStyle);
+  firstItem.defaultStyleId = firstStyle.id;
+  secondPart.items.push(firstItem, createItem(secondPart, 'A'));
   document.parts.unshift(secondPart);
   document.layerTracks.unshift(createLayerTrack(document, 'Front'));
   document.colorChannels.push(createGradientColorChannel(document, 'One'), createGradientColorChannel(document, 'Two'));
   normalizeDocumentOrders(document);
   assert.deepEqual(document.parts.map((part) => part.menuOrder), [0, 1]);
   assert.deepEqual(secondPart.items.map((item) => item.displayOrder), [0, 1]);
-  assert.deepEqual(secondPart.items[0].variants.map((variant) => variant.displayOrder), [0, 1]);
+  assert.deepEqual(firstItem.styles.map((entry) => entry.displayOrder), [0, 1]);
   assert.deepEqual(document.layerTracks.map((track) => track.order), [0, 1]);
   assert.deepEqual(document.colorChannels.map((channel) => channel.order), [0, 1]);
+});
+
+test('normalization rejects obsolete nested render graphs', () => {
+  const document = playableDocument();
+  const obsoleteField = ['layer', 'Bindings'].join('');
+  document.parts[0].items[0].styles[0][obsoleteField] = [];
+  assert.throws(() => normalizeDocumentOrders(document), /not compatible with .*Maker v5/);
+});
+
+test('normalization removes accidental Track placement and preserves Style placement', () => {
+  const document = playableDocument();
+  const selectedStyle = document.parts[0].items[0].styles[0];
+  selectedStyle.transform = { x: -40, y: 22, scale: 1.5, rotation: 6 };
+  document.layerTracks[0].transform = { x: 999, y: 999, scale: 0.1, rotation: 90 };
+  normalizeDocumentOrders(document);
+  assert.equal(Object.hasOwn(document.layerTracks[0], 'transform'), false);
+  assert.deepEqual(selectedStyle.transform, { x: -40, y: 22, scale: 1.5, rotation: 6 });
 });
 
 test('moves valid array entries in place and ignores unsafe indexes', () => {
@@ -164,53 +184,57 @@ test('moves valid array entries in place and ignores unsafe indexes', () => {
   assert.deepEqual(entries, ['b', 'c', 'a']);
 });
 
-test('find helpers resolve the exact nested editor record', () => {
+test('find helpers resolve the exact Part, Item and Style', () => {
   const document = playableDocument();
   const part = document.parts[0];
   const item = part.items[0];
-  const variant = item.variants[0];
-  const binding = variant.layerBindings[0];
+  const selectedStyle = item.styles[0];
   assert.equal(findPart(document, part.id), part);
   assert.equal(findItem(document, part.id, item.id), item);
-  assert.equal(findVariant(document, part.id, item.id, variant.id), variant);
-  assert.equal(findBinding(document, part.id, item.id, variant.id, binding.id), binding);
-  assert.equal(findBinding(document, part.id, item.id, variant.id, 'missing'), null);
+  assert.equal(findStyle(document, part.id, item.id, selectedStyle.id), selectedStyle);
+  assert.equal(findStyle(document, part.id, item.id, 'missing'), null);
 });
 
 test('keeps every referenced asset kind and prunes only unreachable metadata', () => {
   const document = playableDocument();
   const part = document.parts[0];
   const item = part.items[0];
-  const binding = item.variants[0].layerBindings[0];
   document.metadata.coverAssetId = 'cover';
   part.iconAssetId = 'part-icon';
   item.thumbnailAssetId = 'thumbnail';
-  binding.assetsBySwatch = [{ swatchId: 'dark', assetId: 'dark-art' }];
   document.assets.push(
     { id: 'cover' },
     { id: 'part-icon' },
     { id: 'thumbnail' },
-    { id: 'dark-art' },
     { id: 'orphan' },
   );
   assert.deepEqual(removeUnreferencedAssetMetadata(document), ['orphan']);
-  assert.deepEqual(new Set(document.assets.map((asset) => asset.id)), new Set(['body-art', 'cover', 'part-icon', 'thumbnail', 'dark-art']));
+  assert.deepEqual(new Set(document.assets.map((asset) => asset.id)), new Set(['body-art', 'cover', 'part-icon', 'thumbnail']));
 });
 
 test('synchronizes valid defaults while retaining existing playable choices', () => {
   const document = playableDocument();
   const part = document.parts[0];
   const alternate = createItem(part, 'Alternate');
+  const alternateStyle = createStyle(alternate, 'Default');
+  alternateStyle.assetId = 'alternate-art';
+  alternateStyle.layerTrackId = document.layerTracks[0].id;
+  alternate.styles.push(alternateStyle);
+  alternate.defaultStyleId = alternateStyle.id;
   part.items.push(alternate);
   const channel = createGradientColorChannel(document, 'Skin');
   channel.swatches.push({ id: 'cool', name: 'Cool', hintColor: '#ffffff', stops: [] });
   document.colorChannels.push(channel);
   document.defaultRecipe = {
-    selections: [{ partId: part.id, itemId: alternate.id, variantId: alternate.defaultVariantId }],
+    selections: [{ partId: part.id, itemId: alternate.id, styleId: alternate.defaultStyleId }],
     colors: [{ channelId: channel.id, swatchId: 'cool' }],
   };
   const recipe = synchronizeDefaultRecipe(document);
-  assert.equal(recipe.selections[0].itemId, alternate.id);
+  assert.deepEqual(recipe.selections[0], {
+    partId: part.id,
+    itemId: alternate.id,
+    styleId: alternateStyle.id,
+  });
   assert.equal(recipe.colors[0].swatchId, 'cool');
 });
 
@@ -221,39 +245,94 @@ test('repairs stale default ids to the fallback records it selected', () => {
   const channel = createGradientColorChannel(document, 'Skin');
   document.colorChannels.push(channel);
   part.defaultItemId = 'deleted-item';
-  item.defaultVariantId = 'deleted-variant';
+  item.defaultStyleId = 'deleted-style';
   channel.defaultSwatchId = 'deleted-swatch';
   document.defaultRecipe = {
-    selections: [{ partId: part.id, itemId: 'also-deleted', variantId: 'also-deleted' }],
+    selections: [{ partId: part.id, itemId: 'also-deleted', styleId: 'also-deleted' }],
     colors: [{ channelId: channel.id, swatchId: 'also-deleted' }],
   };
   synchronizeDefaultRecipe(document);
   assert.equal(part.defaultItemId, item.id);
-  assert.equal(item.defaultVariantId, item.variants[0].id);
+  assert.equal(item.defaultStyleId, item.styles[0].id);
   assert.equal(channel.defaultSwatchId, channel.swatches[0].id);
 });
 
-test('duplicates a Part deeply, resets hierarchy and preserves valid internal defaults', () => {
+test('duplicates a Part deeply and re-keys all nested editor identities', () => {
   const document = playableDocument();
   const source = document.parts[0];
   source.parentPartId = 'parent';
+  source.items[0].styles[0].requires.push({ partId: 'external' });
   const duplicate = duplicatePart(document, source.id);
+
   assert.notEqual(duplicate, source);
-  assert.equal(duplicate.id, 'body-copy');
-  assert.equal(duplicate.parentPartId, null);
+  assert.notEqual(duplicate.id, source.id);
+  assert.equal(duplicate.parentPartId, source.parentPartId);
+  assert.notEqual(duplicate.items[0].id, source.items[0].id);
+  assert.notEqual(duplicate.items[0].styles[0].id, source.items[0].styles[0].id);
   assert.equal(duplicate.defaultItemId, duplicate.items[0].id);
-  assert.equal(duplicate.items[0].defaultVariantId, duplicate.items[0].variants[0].id);
-  duplicate.items[0].name = 'Changed copy';
-  assert.notEqual(source.items[0].name, duplicate.items[0].name);
-  assert.deepEqual(document.parts.map((part) => part.menuOrder), [0, 1]);
+  assert.equal(duplicate.items[0].defaultStyleId, duplicate.items[0].styles[0].id);
+
+  duplicate.items[0].styles[0].transform.x = 77;
+  duplicate.items[0].styles[0].requires[0].partId = 'copy-external';
+  assert.equal(source.items[0].styles[0].transform.x, 0);
+  assert.equal(source.items[0].styles[0].requires[0].partId, 'external');
+});
+
+test('duplicates an Item with deep Style copies and rewritten internal self references', () => {
+  const document = playableDocument();
+  const part = document.parts[0];
+  const source = part.items[0];
+  const sourceStyle = source.styles[0];
+  source.requires = [{ partId: part.id, itemId: source.id, styleId: sourceStyle.id }];
+  sourceStyle.visibleWhen = {
+    op: 'selected',
+    partId: part.id,
+    itemId: source.id,
+    styleId: sourceStyle.id,
+  };
+  sourceStyle.transform = { x: -18, y: 24, scale: 1.4, rotation: 3 };
+
+  const duplicate = duplicateItem(document, part.id, source.id);
+  const copiedStyle = duplicate.styles[0];
+  assert.notEqual(duplicate.id, source.id);
+  assert.notEqual(copiedStyle.id, sourceStyle.id);
+  assert.equal(duplicate.defaultStyleId, copiedStyle.id);
+  assert.deepEqual(duplicate.requires, [{
+    partId: part.id,
+    itemId: duplicate.id,
+    styleId: copiedStyle.id,
+  }]);
+  assert.equal(copiedStyle.visibleWhen.itemId, duplicate.id);
+  assert.equal(copiedStyle.visibleWhen.styleId, copiedStyle.id);
+  assert.deepEqual(copiedStyle.transform, sourceStyle.transform);
+  assert.notEqual(copiedStyle.transform, sourceStyle.transform);
+  copiedStyle.transform.x = 400;
+  assert.equal(sourceStyle.transform.x, -18);
+});
+
+test('duplicates a Style with identical parameters, a new ID and rewritten self rules', () => {
+  const document = playableDocument();
+  const part = document.parts[0];
+  const item = part.items[0];
+  const source = item.styles[0];
+  source.requires = [{ partId: part.id, itemId: item.id, styleId: source.id }];
+
+  const duplicate = duplicateStyle(document, part.id, item.id, source.id);
+  assert.notEqual(duplicate.id, source.id);
+  assert.equal(duplicate.requires[0].styleId, duplicate.id);
+  assert.deepEqual(duplicate.transform, source.transform);
+  assert.notEqual(duplicate.transform, source.transform);
+  assert.notEqual(duplicate.requires, source.requires);
+  duplicate.requires[0].partId = 'copy-part';
+  assert.equal(source.requires[0].partId, part.id);
 });
 
 test('updates and removes recipe selections without introducing duplicate Parts', () => {
-  const recipe = { selections: [{ partId: 'body', itemId: 'one' }], colors: [] };
-  replaceRecipeSelection(recipe, { partId: 'body', itemId: 'two', variantId: 'default' });
-  replaceRecipeSelection(recipe, { partId: 'hair', itemId: 'long' });
-  assert.equal(recipeSelectionMap(recipe).get('body').itemId, 'two');
+  const recipe = { selections: [{ partId: 'body', itemId: 'one', styleId: 'default' }], colors: [] };
+  replaceRecipeSelection(recipe, { partId: 'body', itemId: 'two', styleId: 'blue' });
+  replaceRecipeSelection(recipe, { partId: 'hair', itemId: 'long', styleId: 'black' });
+  assert.deepEqual(recipeSelectionMap(recipe).get('body'), { partId: 'body', itemId: 'two', styleId: 'blue' });
   assert.equal(recipe.selections.length, 2);
   replaceRecipeSelection(recipe, { partId: 'body', itemId: '' });
-  assert.deepEqual(recipe.selections, [{ partId: 'hair', itemId: 'long' }]);
+  assert.deepEqual(recipe.selections, [{ partId: 'hair', itemId: 'long', styleId: 'black' }]);
 });

@@ -7,7 +7,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inflateSync } from 'node:zlib';
 
-import { migrateMakerV3ToV4, validateMakerV4Document } from '../maker-v4.js';
+import { createMakerV5Document, validateMakerV5Document } from '../maker-v4.js';
 
 export const ANGIE_STRESS_REPORT_SCHEMA = 'animacraft.angie-stress-report.v1';
 export const ANGIE_FIXTURE_CLASSIFICATION = 'negative-complex-stress-fixture';
@@ -216,6 +216,190 @@ function alignmentDiagnostics(v3Manifest, metrics, canvas) {
   return diagnostics;
 }
 
+function safeId(value, fallback = 'entry') {
+  return String(value || fallback)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 96) || fallback;
+}
+
+/**
+ * Angie remains an explicit, one-time stress-fixture import. This converter
+ * creates the v5 graph directly; it is not a compatibility layer for arbitrary
+ * legacy Makers.
+ */
+function convertAngieV3ToV5(sourceManifest, { makerId }) {
+  const sourceTemplate = sourceManifest.template || {};
+  const canvas = sourceTemplate.canvas || {};
+  const document = createMakerV5Document({
+    makerId,
+    name: sourceTemplate.name || 'Angie stress fixture',
+    creator: sourceTemplate.creator || 'Unknown creator',
+    width: Number(canvas.width || 1024),
+    height: Number(canvas.height || 1024),
+  });
+  document.metadata.summary = String(sourceTemplate.summary || '');
+  document.metadata.style = String(sourceTemplate.style || '');
+  document.metadata.license = {
+    kind: ['personal-use', 'free-remix', 'paid-commercial', 'exclusive-commission'].includes(sourceTemplate.license)
+      ? sourceTemplate.license
+      : 'personal-use',
+    note: String(sourceTemplate.licenseNote || 'Stress fixture only.'),
+  };
+  document.publication = {
+    ...document.publication,
+    royaltyBps: Number(sourceTemplate.royaltyBps || 0),
+    mintingEnabled: sourceTemplate.mintingEnabled !== false,
+    mintFeeEnabled: Boolean(sourceTemplate.mintFeeEnabled),
+    mintPriceAtomic: Number(sourceTemplate.mintPriceAtomic || 0),
+    paymentCoinType: String(sourceTemplate.paymentCoinType || ''),
+    paymentCoinSymbol: String(sourceTemplate.paymentCoinSymbol || ''),
+    storage: String(sourceTemplate.storage || 'walrus'),
+    chain: String(sourceTemplate.chain || 'sui'),
+  };
+  document.runtime = structuredClone(sourceManifest.runtime || {});
+  document.livingContent = sourceManifest.livingContent ? structuredClone(sourceManifest.livingContent) : null;
+
+  const assetsByIdentifier = new Map();
+  const addAsset = (identifier, kind = 'layer-png') => {
+    const key = String(identifier || '');
+    if (!key) return null;
+    if (assetsByIdentifier.has(key)) return assetsByIdentifier.get(key).id;
+    const stem = safeId(key.replace(/\.png$/i, '').replaceAll('/', '-'), `asset-${assetsByIdentifier.size + 1}`);
+    let id = stem;
+    let suffix = 2;
+    const used = new Set([...assetsByIdentifier.values()].map((asset) => asset.id));
+    while (used.has(id)) {
+      id = `${stem}-${suffix}`;
+      suffix += 1;
+    }
+    const asset = {
+      id,
+      identifier: key,
+      kind,
+      mediaType: 'image/png',
+      width: null,
+      height: null,
+    };
+    assetsByIdentifier.set(key, asset);
+    document.assets.push(asset);
+    return id;
+  };
+
+  document.metadata.coverAssetId = addAsset(sourceTemplate.coverIdentifier, 'maker-cover');
+
+  const trackRecords = [];
+  (sourceManifest.parts || []).forEach((sourcePart, partIndex) => {
+    const partId = safeId(sourcePart.key, `part-${partIndex + 1}`);
+    const sourceLayers = Array.isArray(sourcePart.layers) ? sourcePart.layers : [];
+    sourceLayers.forEach((layer, layerIndex) => {
+      trackRecords.push({
+        id: `${partId}-${safeId(layer.id, `layer-${layerIndex + 1}`)}`,
+        name: String(layer.name || layer.id || sourcePart.label || partId),
+        sourceOrder: Number(layer.renderOrder ?? trackRecords.length),
+        sourcePartId: partId,
+        sourceLayerId: String(layer.id || ''),
+      });
+    });
+  });
+  trackRecords.sort((left, right) => left.sourceOrder - right.sourceOrder);
+  trackRecords.forEach((track, order) => {
+    document.layerTracks.push({
+      id: track.id,
+      name: track.name,
+      order,
+      locked: true,
+      referenceAssetId: null,
+    });
+  });
+  const trackIdFor = (partId, layerId) => trackRecords.find(
+    (track) => track.sourcePartId === partId && track.sourceLayerId === String(layerId || ''),
+  )?.id || null;
+
+  (sourceManifest.parts || []).forEach((sourcePart, partIndex) => {
+    const partId = safeId(sourcePart.key, `part-${partIndex + 1}`);
+    const sourceItems = Array.isArray(sourcePart.items) ? sourcePart.items : [];
+    const items = sourceItems.map((sourceItem, itemIndex) => {
+      const itemId = safeId(sourceItem.id, `item-${itemIndex + 1}`);
+      const sourceImages = Array.isArray(sourceItem.images) ? sourceItem.images : [];
+      // Angie currently has one visual layer per Item. Keeping this assertion
+      // visible prevents silently recreating the removed multi-binding model.
+      if (new Set(sourceImages.map((image) => image.layerId)).size > 1) {
+        throw new AngieImportError(
+          `${sourcePart.label || partId}/${sourceItem.label || itemId} needs multiple simultaneous PNG layers; split it into separate v5 Parts before import.`,
+          'legacy-item-needs-part-split',
+          { partId, itemId },
+        );
+      }
+      const styleId = `${itemId}-style`;
+      const primaryImage = sourceImages[0] || null;
+      const sourceLayer = (sourcePart.layers || []).find((layer) => layer.id === primaryImage?.layerId) || sourcePart.layers?.[0] || {};
+      const assetId = addAsset(primaryImage?.identifier, 'layer-png');
+      const thumbnailAssetId = addAsset(sourceItem.iconIdentifier, 'item-thumbnail');
+      return {
+        id: itemId,
+        name: String(sourceItem.label || sourceItem.id || `Item ${itemIndex + 1}`),
+        displayOrder: itemIndex,
+        importKey: itemId,
+        status: sourceItem.visibility === 'private' ? 'private' : 'public',
+        thumbnailAssetId,
+        visibleWhen: null,
+        requires: [],
+        excludes: [],
+        defaultStyleId: styleId,
+        styles: [{
+          id: styleId,
+          name: 'Default',
+          displayOrder: 0,
+          assetId,
+          layerTrackId: trackIdFor(partId, primaryImage?.layerId || sourceLayer.id),
+          colorChannelId: null,
+          transform: {
+            x: Number(sourceLayer.x || 0),
+            y: Number(sourceLayer.y || 0),
+            scale: 1,
+            rotation: 0,
+          },
+          positionConfirmed: true,
+          positionLocked: true,
+          styleLocked: false,
+          opacity: Math.max(0, Math.min(1, Number(sourceLayer.opacity ?? 100) / 100)),
+          blendMode: String(sourceLayer.blendMode || 'normal'),
+          visibleWhen: null,
+          requires: [],
+          excludes: [],
+        }],
+      };
+    });
+    const defaultItemId = items.find((item) => item.id === safeId(sourcePart.defaultItemId, ''))?.id || items[0]?.id || null;
+    document.parts.push({
+      id: partId,
+      name: String(sourcePart.label || sourcePart.key || `Part ${partIndex + 1}`),
+      menuOrder: partIndex,
+      menuVisible: sourcePart.menuVisible !== false,
+      required: sourcePart.allowRemove === false || sourcePart.kind === 'last-bastion',
+      defaultItemId,
+      parentPartId: null,
+      iconAssetId: addAsset(sourcePart.iconIdentifier, 'part-icon'),
+      visibleWhen: null,
+      requires: [],
+      excludes: [],
+      items,
+    });
+    const defaultItem = items.find((item) => item.id === defaultItemId);
+    if (defaultItem) {
+      document.defaultRecipe.selections.push({
+        partId,
+        itemId: defaultItem.id,
+        styleId: defaultItem.defaultStyleId,
+      });
+    }
+  });
+  return document;
+}
+
 export function resolveDefaultAngieReleaseRoot(cwd = process.cwd()) {
   const candidates = [
     process.env.ANGIE_RELEASE_ROOT,
@@ -227,11 +411,11 @@ export function resolveDefaultAngieReleaseRoot(cwd = process.cwd()) {
 }
 
 /**
- * Convert Angie's existing v3 release into a local v4 stress fixture and an
+ * Convert Angie's existing v3 release into a local v5 stress fixture and an
  * evidence report. This intentionally does not repair the art: alignment,
  * empty-placeholder and composite-layer problems must remain observable.
  */
-export async function buildAngieV4StressFixture({
+export async function buildAngieV5StressFixture({
   sourceRoot = resolveDefaultAngieReleaseRoot(),
   assetBaseUrl = '',
   attachLocalPaths = true,
@@ -257,11 +441,8 @@ export async function buildAngieV4StressFixture({
   }
 
   const sourceMakerId = String(sourceManifest.template?.id || 'angie-maker');
-  const stressMakerId = `${sourceMakerId}-stress-v4`;
-  const document = migrateMakerV3ToV4(sourceManifest, {
-    makerId: stressMakerId,
-    rootMakerId: stressMakerId,
-  });
+  const stressMakerId = `${sourceMakerId}-stress-v5`;
+  const document = convertAngieV3ToV5(sourceManifest, { makerId: stressMakerId });
   document.metadata.name = `[Stress Fixture] ${document.metadata.name}`;
   document.metadata.summary = `Negative/complex editor stress fixture; not a visual gold standard. ${document.metadata.summary}`.trim();
   document.metadata.disclosures = {
@@ -337,7 +518,7 @@ export async function buildAngieV4StressFixture({
     'The release contains flattened runtime PNGs but no PSD/PSB authoring structure or creator-approved positioning evidence.',
     'Hair and outfit use one composite layer each, so front/back occlusion cannot be repaired by metadata alone.',
     'Alpha-bound centers diagnose suspicious movement but cannot decide artistic intent or automatically realign anatomy.',
-    'The v3 cover cannot be proven pixel-identical to the shared v4 renderer without its original render recipe.',
+    'The v3 cover cannot be proven pixel-identical to the shared v5 renderer without its original render recipe.',
     'The source declares AI assistance; this importer records the statement but cannot verify training data or rights provenance.',
   ];
   const report = {
@@ -355,7 +536,7 @@ export async function buildAngieV4StressFixture({
     summary: {
       partCount: document.parts.length,
       itemCount: document.parts.reduce((total, part) => total + part.items.length, 0),
-      variantCount: document.parts.reduce((total, part) => total + part.items.reduce((itemTotal, item) => itemTotal + item.variants.length, 0), 0),
+      styleCount: document.parts.reduce((total, part) => total + part.items.reduce((itemTotal, item) => itemTotal + item.styles.length, 0), 0),
       layerTrackCount: document.layerTracks.length,
       assetCount: document.assets.length,
       errorCount: diagnostics.filter((entry) => entry.severity === 'error').length,
@@ -377,12 +558,23 @@ export async function buildAngieV4StressFixture({
       warnings: report.summary.warningCount,
     },
     knownLimitations,
-    originalPublication: migrateMakerV3ToV4(sourceManifest).publication,
+    originalPublication: {
+      royaltyBps: Number(sourceManifest.template?.royaltyBps || 0),
+      mintingEnabled: sourceManifest.template?.mintingEnabled !== false,
+      mintFeeEnabled: Boolean(sourceManifest.template?.mintFeeEnabled),
+      mintPriceAtomic: Number(sourceManifest.template?.mintPriceAtomic || 0),
+      paymentCoinSymbol: String(sourceManifest.template?.paymentCoinSymbol || ''),
+      storage: String(sourceManifest.template?.storage || 'walrus'),
+      chain: String(sourceManifest.template?.chain || 'sui'),
+    },
   };
 
-  validateMakerV4Document(document, { mode: 'publish' });
+  validateMakerV5Document(document, { mode: 'publish' });
   return { manifest: document, report };
 }
+
+// Retain the established script API name while callers move to v5 wording.
+export const buildAngieV4StressFixture = buildAngieV5StressFixture;
 
 export async function copyAngieFixtureAssets(manifest, sourceRoot, destinationRoot) {
   const source = resolve(sourceRoot);
@@ -397,7 +589,7 @@ export async function copyAngieFixtureAssets(manifest, sourceRoot, destinationRo
 }
 
 function usage() {
-  return `Usage: node scripts/import-angie-v4.mjs [options]\n\nOptions:\n  --source PATH          Angie astral-courier release directory\n  --output FILE          Write v4 stress manifest; default: stdout\n  --report FILE          Write diagnostic report\n  --asset-base-url URL   Browser URL prefix for copied/source assets\n  --copy-assets DIR      Copy referenced assets while preserving identifiers\n  --portable             Omit absolute local paths and file:// URLs\n  --help                 Show this help\n\nThis importer never edits Angie source files. The result is a negative stress fixture and must not be published as approved art.\n`;
+  return `Usage: node scripts/import-angie-v4.mjs [options]\n\nOptions:\n  --source PATH          Angie astral-courier release directory\n  --output FILE          Write v5 stress manifest; default: stdout\n  --report FILE          Write diagnostic report\n  --asset-base-url URL   Browser URL prefix for copied/source assets\n  --copy-assets DIR      Copy referenced assets while preserving identifiers\n  --portable             Omit absolute local paths and file:// URLs\n  --help                 Show this help\n\nThis importer never edits Angie source files. The result is a negative stress fixture and must not be published as approved art.\n`;
 }
 
 function parseArgs(argv) {
@@ -442,7 +634,7 @@ async function main() {
     throw new AngieImportError('Manifest and report cannot both use stdout.', 'invalid-cli-arguments');
   }
   const sourceRoot = options.sourceRoot || resolveDefaultAngieReleaseRoot();
-  const result = await buildAngieV4StressFixture({
+  const result = await buildAngieV5StressFixture({
     sourceRoot,
     assetBaseUrl: options.assetBaseUrl,
     attachLocalPaths: options.attachLocalPaths,
@@ -451,7 +643,7 @@ async function main() {
   await writeJson(options.output, result.manifest);
   if (options.report) await writeJson(options.report, result.report);
   process.stderr.write(
-    `Angie v4 stress fixture: ${result.report.summary.partCount} Parts, ${result.report.summary.itemCount} Items, ${result.report.summary.assetCount} assets, ${result.report.summary.errorCount} errors, ${result.report.summary.warningCount} warnings.\n`,
+    `Angie v5 stress fixture: ${result.report.summary.partCount} Parts, ${result.report.summary.itemCount} Items, ${result.report.summary.assetCount} assets, ${result.report.summary.errorCount} errors, ${result.report.summary.warningCount} warnings.\n`,
   );
 }
 

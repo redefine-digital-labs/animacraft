@@ -7,23 +7,39 @@ import {
   evaluateRecipe,
   evaluateVisibleWhen,
   generateValidRecipe,
-  isLayerVisible,
+  isStyleVisible,
   normalizeRecipe,
 } from '../maker-rules.js';
 
-function variant(id, rules = {}) {
-  return { id, name: id, requires: rules.requires || [], excludes: rules.excludes || [], layerBindings: [] };
-}
-
-function item(id, rules = {}, variantIds = ['default']) {
+function style(id, rules = {}) {
   return {
     id,
     name: id,
-    visibility: 'public',
-    defaultVariantId: variantIds[0],
+    displayOrder: 0,
+    assetId: `${id}-asset`,
+    layerTrackId: `${id}-track`,
+    colorChannelId: null,
+    transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+    positionConfirmed: false,
+    positionLocked: false,
+    styleLocked: false,
+    opacity: 1,
+    blendMode: 'normal',
+    visibleWhen: rules.visibleWhen || null,
     requires: rules.requires || [],
     excludes: rules.excludes || [],
-    variants: variantIds.map((variantId) => variant(variantId, rules.variants?.[variantId])),
+  };
+}
+
+function item(id, rules = {}, styleIds = ['default']) {
+  return {
+    id,
+    name: id,
+    status: 'public',
+    defaultStyleId: styleIds[0],
+    requires: rules.requires || [],
+    excludes: rules.excludes || [],
+    styles: styleIds.map((styleId) => style(styleId, rules.styles?.[styleId])),
   };
 }
 
@@ -32,8 +48,8 @@ function ruleMaker() {
     id: 'rule-maker',
     defaultRecipe: {
       selections: [
-        { partId: 'body', itemId: 'base', variantId: 'default' },
-        { partId: 'outfit', itemId: 'casual', variantId: 'default' },
+        { partId: 'body', itemId: 'base', styleId: 'default' },
+        { partId: 'outfit', itemId: 'casual', styleId: 'default' },
       ],
       colors: [],
     },
@@ -90,7 +106,7 @@ function ruleMaker() {
     rules: [{
       id: 'heavy-no-hat',
       type: 'excludes',
-      trigger: { partId: 'outfit', itemId: 'armor', variantId: 'heavy' },
+      trigger: { partId: 'outfit', itemId: 'armor', styleId: 'heavy' },
       targets: [{ partId: 'hat' }],
     }],
   };
@@ -100,7 +116,7 @@ test('evaluates requires and excludes without mutating the supplied recipe', () 
   const maker = ruleMaker();
   const input = [
     { partId: 'body', itemId: 'base' },
-    { partId: 'outfit', itemId: 'armor', variantId: 'heavy' },
+    { partId: 'outfit', itemId: 'armor', styleId: 'heavy' },
     { partId: 'accessory', itemId: 'ring' },
     { partId: 'hat', itemId: 'cap' },
   ];
@@ -115,7 +131,7 @@ test('evaluates requires and excludes without mutating the supplied recipe', () 
 test('normalizes a recipe through the full requires closure', () => {
   const result = normalizeRecipe(ruleMaker(), [
     { partId: 'body', itemId: 'base' },
-    { partId: 'outfit', itemId: 'armor', variantId: 'light' },
+    { partId: 'outfit', itemId: 'armor', styleId: 'light' },
     { partId: 'accessory', itemId: 'ring' },
   ]);
   assert.equal(result.valid, true);
@@ -134,7 +150,7 @@ test('can lock the player\'s latest click while repairing earlier dependent Part
   const result = normalizeRecipe(maker, {
     body: 'base',
     accessory: 'ring',
-    outfit: { itemId: 'armor', variantId: 'light' },
+    outfit: { itemId: 'armor', styleId: 'light' },
   }, { preferPartId: 'outfit' });
   assert.equal(result.valid, true);
   assert.equal(result.selection.outfit.itemId, 'armor');
@@ -144,7 +160,7 @@ test('can lock the player\'s latest click while repairing earlier dependent Part
 test('removes a child selection when its parent selection does not activate it', () => {
   const result = normalizeRecipe(ruleMaker(), [
     { partId: 'body', itemId: 'base' },
-    { partId: 'outfit', itemId: 'armor', variantId: 'light' },
+    { partId: 'outfit', itemId: 'armor', styleId: 'light' },
     { partId: 'accessory', itemId: 'sword' },
     { partId: 'hat', itemId: 'cap' },
   ]);
@@ -164,7 +180,7 @@ test('supports legacy symmetric incompatibility records', () => {
   assert.ok(result.violations.some((issue) => issue.code === 'excludes-rule'));
 });
 
-test('evaluates Maker v4 selected/all/any/not visibleWhen conditions', () => {
+test('evaluates Style-aware selected/all/any/not visibleWhen conditions', () => {
   const recipe = normalizeRecipe(ruleMaker(), {
     body: 'base',
     outfit: 'casual',
@@ -185,12 +201,28 @@ test('evaluates Maker v4 selected/all/any/not visibleWhen conditions', () => {
     ],
   };
   assert.equal(evaluateVisibleWhen(condition, recipe), true);
-  assert.equal(isLayerVisible({ partId: 'outfit', itemId: 'casual', visibleWhen: condition }, recipe), true);
-  assert.equal(isLayerVisible({ partId: 'outfit', itemId: 'armor', visibleWhen: condition }, recipe), false);
-  assert.equal(isLayerVisible({ hidden: true, visibleWhen: condition }, recipe), false);
+  assert.equal(isStyleVisible({ partId: 'outfit', itemId: 'casual', styleId: 'default', visibleWhen: condition }, recipe), true);
+  assert.equal(isStyleVisible({ partId: 'outfit', itemId: 'armor', styleId: 'light', visibleWhen: condition }, recipe), false);
 });
 
-test('normalizes v4 ColorChannel selections into a renderer-ready document recipe', () => {
+test('isStyleVisible ignores obsolete hidden, enabled and visibilityCondition aliases', () => {
+  const recipe = normalizeRecipe(ruleMaker(), {
+    body: 'base',
+    outfit: 'casual',
+    accessory: 'sword',
+  });
+  const owner = {
+    partId: 'outfit',
+    itemId: 'casual',
+    styleId: 'default',
+  };
+  const falseCondition = { op: 'selected', partId: 'accessory', itemId: 'ring' };
+  assert.equal(isStyleVisible({ ...owner, hidden: true }, recipe), true);
+  assert.equal(isStyleVisible({ ...owner, enabled: false }, recipe), true);
+  assert.equal(isStyleVisible({ ...owner, visibilityCondition: falseCondition }, recipe), true);
+});
+
+test('normalizes ColorChannel selections into a renderer-ready v5 recipe', () => {
   const maker = ruleMaker();
   maker.colorChannels = [{
     id: 'hair-color',
@@ -216,7 +248,7 @@ test('rejects a selected Item whose availability condition is false', () => {
     accessory: 'ring',
   });
   assert.equal(result.valid, false);
-  assert.ok(result.violations.some((issue) => issue.code === 'hidden-item-or-variant-selected'));
+  assert.ok(result.violations.some((issue) => issue.code === 'hidden-item-or-style-selected'));
 });
 
 test('constraint-safe random never emits an invalid combination', () => {

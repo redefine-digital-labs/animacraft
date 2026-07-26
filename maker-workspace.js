@@ -1,8 +1,7 @@
 import {
-  collectMakerV4ValidationIssues,
-  createMakerV4Document,
-  isMakerV4Document,
-  migrateMakerV3ToV4,
+  collectMakerV5ValidationIssues,
+  createMakerV5Document,
+  isMakerV5Document,
 } from './maker-v4.js';
 import { evaluateRecipe, generateValidRecipe, normalizeRecipe } from './maker-rules.js';
 import {
@@ -17,16 +16,16 @@ import {
   addDocumentAsset,
   createGradientColorChannel,
   createItem,
-  createLayerBinding,
   createLayerTrack,
   createPart,
-  createVariant,
+  createStyle,
+  duplicateItem,
   duplicatePart,
-  effectiveBindingTransform,
-  findBinding,
+  duplicateStyle,
+  effectiveStyleTransform,
   findItem,
   findPart,
-  findVariant,
+  findStyle,
   moveArrayEntry,
   normalizeDocumentOrders,
   recipeSelectionMap,
@@ -98,6 +97,10 @@ function safeFileName(value, fallback = 'asset') {
     .toLowerCase() || fallback;
 }
 
+function styleSceneKey(partId, itemId, styleId) {
+  return `${String(partId || '')}/${String(itemId || '')}/${String(styleId || '')}`;
+}
+
 function compactIssue(issue) {
   return {
     code: String(issue?.code || 'invalid'),
@@ -126,7 +129,7 @@ function ownerRuleRows(document) {
       ownerType: 'part',
       ownerPartId: part.id,
       ownerItemId: '',
-      ownerVariantId: '',
+      ownerStyleId: '',
       ownerName: part.name,
       type,
       target,
@@ -138,20 +141,20 @@ function ownerRuleRows(document) {
         ownerType: 'item',
         ownerPartId: part.id,
         ownerItemId: item.id,
-        ownerVariantId: '',
+        ownerStyleId: '',
         ownerName: `${part.name} / ${item.name}`,
         type,
         target,
         index,
       })));
-      item.variants.forEach((variant) => {
-        ['requires', 'excludes'].forEach((type) => (variant[type] || []).forEach((target, index) => rows.push({
-          id: `variant:${part.id}:${item.id}:${variant.id}:${type}:${index}`,
-          ownerType: 'variant',
+      item.styles.forEach((style) => {
+        ['requires', 'excludes'].forEach((type) => (style[type] || []).forEach((target, index) => rows.push({
+          id: `style:${part.id}:${item.id}:${style.id}:${type}:${index}`,
+          ownerType: 'style',
           ownerPartId: part.id,
           ownerItemId: item.id,
-          ownerVariantId: variant.id,
-          ownerName: `${part.name} / ${item.name} / ${variant.name}`,
+          ownerStyleId: style.id,
+          ownerName: `${part.name} / ${item.name} / ${style.name}`,
           type,
           target,
           index,
@@ -163,14 +166,14 @@ function ownerRuleRows(document) {
 }
 
 export function ruleOwnerFromDefinition(document, definition) {
-  const [partId = '', itemId = '', variantId = ''] = String(definition || '').split('::');
+  const [partId = '', itemId = '', styleId = ''] = String(definition || '').split('::');
   const part = findPart(document, partId);
   if (!part) return null;
   if (!itemId) return part;
   const item = findItem(document, partId, itemId);
   if (!item) return null;
-  if (!variantId) return item;
-  return findVariant(document, partId, itemId, variantId);
+  if (!styleId) return item;
+  return findStyle(document, partId, itemId, styleId);
 }
 
 function defaultExpansion(document, index) {
@@ -206,8 +209,7 @@ export class MakerWorkspace {
     this.creatorTab = 'structure';
     this.selectedPartId = '';
     this.selectedItemId = '';
-    this.selectedVariantId = '';
-    this.selectedBindingId = '';
+    this.selectedStyleId = '';
     this.selectedTrackId = '';
     this.selectedChannelId = '';
     this.playerPartId = '';
@@ -215,6 +217,7 @@ export class MakerWorkspace {
     this.playerRecipe = { selections: [], colors: [] };
     this.playerUndo = [];
     this.playerRedo = [];
+    this.playerCreatorPreview = false;
     this.playerProfile = { name: 'Untitled OC', world: '', description: '', tags: '' };
     this.playerIntroOpen = false;
     this.creatorPublishOpen = false;
@@ -227,10 +230,11 @@ export class MakerWorkspace {
     this.creatorZoom = 1;
     this.creatorSolo = false;
     this.creatorDimOthers = true;
-    this.hiddenBindingIds = new Set();
-    this.editingPositionBindingId = '';
+    this.hiddenStyleKeys = new Set();
+    this.creatorHiddenPartIds = new Set();
+    this.editingPositionStyleKey = '';
     this.dragPreview = null;
-    this.bindingScalePreview = null;
+    this.styleScalePreview = null;
     this.dragSort = null;
     this.renderAbort = { creator: null, player: null };
     this.contextEpoch = 0;
@@ -332,7 +336,10 @@ export class MakerWorkspace {
     const sameMaker = this.context?.makerKey === context.makerKey;
     this.context = { ...this.context, ...context };
     if (sameMaker && this.store) {
-      if (isMakerV4Document(context.document)) {
+      if (context.document && !isMakerV5Document(context.document)) {
+        throw new TypeError('Legacy Maker v3/v4 documents are incompatible with Maker v5.');
+      }
+      if (isMakerV5Document(context.document)) {
         const incoming = this.normalizeDocument(clone(context.document));
         const current = this.store.getState().document;
         if (JSON.stringify(incoming) !== JSON.stringify(current)) {
@@ -348,18 +355,24 @@ export class MakerWorkspace {
     this.assets.forEach(revokeRuntimeAsset);
     this.assets = new Map();
     this.assetResolver = createCachedAssetResolver(this.assets);
+    this.selectedPartId = '';
+    this.selectedItemId = '';
+    this.selectedStyleId = '';
+    this.selectedTrackId = '';
+    this.selectedChannelId = '';
+    this.playerCreatorPreview = false;
+    this.hiddenStyleKeys.clear();
+    this.creatorHiddenPartIds.clear();
+    this.editingPositionStyleKey = '';
+    this.dragPreview = null;
+    this.styleScalePreview = null;
 
-    let document;
-    try {
-      document = isMakerV4Document(context.document)
-        ? clone(context.document)
-        : context.document
-          ? migrateMakerV3ToV4(context.document)
-          : createMakerV4Document({ makerId: context.makerKey, name: context.name || 'Untitled Maker', creator: context.creator || '' });
-    } catch (error) {
-      document = createMakerV4Document({ makerId: context.makerKey, name: context.name || 'Recovered Maker', creator: context.creator || '' });
-      document.extensions.migrationError = error.message;
+    if (context.document && !isMakerV5Document(context.document)) {
+      throw new TypeError('Legacy Maker v3/v4 documents are incompatible with Maker v5; create a new Maker instead.');
     }
+    const document = context.document
+      ? clone(context.document)
+      : createMakerV5Document({ makerId: context.makerKey, name: context.name || 'Untitled Maker', creator: context.creator || '' });
     this.normalizeDocument(document);
     (context.assets || []).forEach((record) => {
       const assetId = String(record.assetId || record.id || record.identifier || '');
@@ -395,7 +408,7 @@ export class MakerWorkspace {
     this.creatorRecipe = clone(recipe);
     this.unsubscribe = this.store.subscribe((next, event) => {
       this.ensureCreatorSelection(next.document);
-      this.creatorRecipe = recipeWithColors(next.document, this.creatorRecipe || next.recipe);
+      this.syncCreatorRecipeSelection();
       this.render();
       if (event.reason !== 'replace' && event.reason !== 'save-state') {
         this.callbacks.onDocumentChange?.({ document: next.document, recipe: next.recipe, assets: this.assets, event });
@@ -457,19 +470,45 @@ export class MakerWorkspace {
     this.selectedPartId = part?.id || '';
     let item = part?.items.find((candidate) => candidate.id === this.selectedItemId) || part?.items[0] || null;
     this.selectedItemId = item?.id || '';
-    let variant = item?.variants.find((candidate) => candidate.id === this.selectedVariantId) || item?.variants[0] || null;
-    this.selectedVariantId = variant?.id || '';
-    let binding = variant?.layerBindings.find((candidate) => candidate.id === this.selectedBindingId) || variant?.layerBindings[0] || null;
-    this.selectedBindingId = binding?.id || '';
-    this.editingPositionBindingId = binding?.positionConfirmed === false
-      ? binding.id
-      : this.editingPositionBindingId === binding?.id ? this.editingPositionBindingId : '';
+    let style = item?.styles.find((candidate) => candidate.id === this.selectedStyleId) || item?.styles[0] || null;
+    this.selectedStyleId = style?.id || '';
+    const styleKey = style ? styleSceneKey(part.id, item.id, style.id) : '';
+    this.editingPositionStyleKey = style && !style.styleLocked && !style.positionLocked && (
+      style.positionConfirmed === false || this.editingPositionStyleKey === styleKey
+    ) ? styleKey : '';
     this.selectedTrackId = document.layerTracks.some((track) => track.id === this.selectedTrackId)
       ? this.selectedTrackId
-      : binding?.layerTrackId || document.layerTracks[0]?.id || '';
+      : style?.layerTrackId || document.layerTracks[0]?.id || '';
     this.selectedChannelId = document.colorChannels.some((channel) => channel.id === this.selectedChannelId)
       ? this.selectedChannelId
-      : binding?.colorChannelId || document.colorChannels[0]?.id || '';
+      : style?.colorChannelId || document.colorChannels[0]?.id || '';
+    const partIds = new Set(document.parts.map((candidate) => candidate.id));
+    this.creatorHiddenPartIds = new Set([...this.creatorHiddenPartIds].filter((partId) => partIds.has(partId)));
+    const styleKeys = new Set(document.parts.flatMap((candidatePart) => candidatePart.items.flatMap((candidateItem) => (
+      candidateItem.styles.map((candidateStyle) => styleSceneKey(candidatePart.id, candidateItem.id, candidateStyle.id))
+    ))));
+    this.hiddenStyleKeys = new Set([...this.hiddenStyleKeys].filter((key) => styleKeys.has(key)));
+  }
+
+  syncCreatorRecipeSelection({ partId = this.selectedPartId, itemId = this.selectedItemId, styleId = this.selectedStyleId } = {}) {
+    if (!this.store) return;
+    const document = this.store.getState().document;
+    const desired = clone(this.creatorRecipe || this.store.getState().recipe || document.defaultRecipe);
+    const completeSelection = Boolean(itemId && styleId && findStyle(document, partId, itemId, styleId));
+    replaceRecipeSelection(desired, { partId, itemId: completeSelection ? itemId : '', styleId });
+    if (!completeSelection) {
+      this.creatorRecipe = recipeWithColors(document, desired);
+      return;
+    }
+    const normalized = normalizeRecipe(document, desired, { preferPartId: partId });
+    this.creatorRecipe = recipeWithColors(document, normalized.valid ? normalized.documentRecipe : desired);
+  }
+
+  currentStyleKey(part = null, item = null, style = null) {
+    const records = part && item ? { part, item, style } : this.selectedCreatorRecords();
+    return records.part && records.item && records.style
+      ? styleSceneKey(records.part.id, records.item.id, records.style.id)
+      : '';
   }
 
   render() {
@@ -518,33 +557,30 @@ export class MakerWorkspace {
   selectedCreatorRecords(document = this.store?.getState().document) {
     const part = document ? findPart(document, this.selectedPartId) : null;
     const item = part ? findItem(document, part.id, this.selectedItemId) : null;
-    const variant = item ? findVariant(document, part.id, item.id, this.selectedVariantId) : null;
-    const binding = variant ? findBinding(document, part.id, item.id, variant.id, this.selectedBindingId) : null;
-    return { part, item, variant, binding };
+    const style = item ? findStyle(document, part.id, item.id, this.selectedStyleId) : null;
+    return { part, item, style };
   }
 
   itemThumbnailUrl(item) {
     const explicit = this.runtimeAsset(item?.thumbnailAssetId);
     if (explicit?.thumbnailUrl || explicit?.url) return explicit.thumbnailUrl || explicit.url;
-    const binding = item?.variants?.flatMap((variant) => variant.layerBindings || [])[0];
-    const source = this.runtimeAsset(binding?.assetId);
+    const style = item?.styles?.find((candidate) => candidate.id === item.defaultStyleId) || item?.styles?.[0];
+    const source = this.runtimeAsset(style?.assetId);
     return source?.thumbnailUrl || source?.url || '';
   }
 
   publicationIssues(document = this.store?.getState().document) {
     if (!document) return [];
-    const issues = collectMakerV4ValidationIssues(document, { mode: 'publish' })
+    const issues = collectMakerV5ValidationIssues(document, { mode: 'publish' })
       .filter((issue) => issue.path !== 'metadata.coverAssetId')
       .map(compactIssue);
-    document.parts.forEach((part) => part.items.filter((item) => (item.status || 'public') === 'public').forEach((item) => item.variants.forEach((variant) => {
-      variant.layerBindings.forEach((binding) => {
-        const runtime = this.runtimeAsset(binding.assetId);
-        if (!runtime && !document.assets.find((asset) => asset.id === binding.assetId)?.url) {
-          issues.push({ code: 'runtime_asset_missing', path: `${part.id}/${item.id}/${variant.id}/${binding.id}`, message: `${part.name} / ${item.name} is missing its local or remote PNG.` });
-        } else if (binding.positionConfirmed === false) {
-          issues.push({ code: 'position_unconfirmed', path: `${part.id}/${item.id}/${variant.id}/${binding.id}`, message: `${part.name} / ${item.name} has a cropped layer whose Canvas position is not confirmed.` });
-        }
-      });
+    document.parts.forEach((part) => part.items.filter((item) => (item.status || 'public') === 'public').forEach((item) => item.styles.forEach((style) => {
+      const runtime = this.runtimeAsset(style.assetId);
+      if (!style.assetId || (!runtime && !document.assets.find((asset) => asset.id === style.assetId)?.url)) {
+        issues.push({ code: 'runtime_asset_missing', path: `${part.id}/${item.id}/${style.id}`, message: `${part.name} / ${item.name} / ${style.name} is missing its local or remote PNG.` });
+      } else if (style.positionConfirmed === false) {
+        issues.push({ code: 'position_unconfirmed', path: `${part.id}/${item.id}/${style.id}`, message: `${part.name} / ${item.name} / ${style.name} has a cropped PNG whose Canvas position is not confirmed.` });
+      }
     })));
     const runtime = this.runtimeDocument();
     try {
@@ -840,17 +876,25 @@ export class MakerWorkspace {
     const state = this.store.getState();
     const document = state.document;
     this.ensureCreatorSelection(document);
-    const { part, item, variant, binding } = this.selectedCreatorRecords(document);
+    const { part, item, style } = this.selectedCreatorRecords(document);
     const issues = this.publicationIssues(document);
-    const previewAssetCount = document.parts.reduce((count, part) => count + part.items.reduce((itemCount, item) => itemCount + item.variants.reduce((variantCount, variant) => variantCount + variant.layerBindings.filter((candidate) => Boolean(this.runtimeAsset(candidate.assetId))).length, 0), 0), 0);
+    const previewAssetCount = document.parts.reduce((count, candidatePart) => count + candidatePart.items.reduce((itemCount, candidateItem) => (
+      itemCount + candidateItem.styles.filter((candidateStyle) => {
+        const descriptor = document.assets.find((asset) => asset.id === candidateStyle.assetId);
+        return Boolean(candidateStyle.assetId && (this.runtimeAsset(candidateStyle.assetId) || descriptor?.url || descriptor?.legacy?.url));
+      }).length
+    ), 0), 0);
     const blockingIssues = issues.filter((issue) => issue.severity !== 'warning');
     const compatibility = this.compatibilityReport(document);
     const partRows = document.parts.map((candidate) => `
-      <button class="v4-part-row ${candidate.id === part?.id ? 'active' : ''}" type="button" draggable="true" data-drag-kind="part" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-part" data-part-id="${escapeHtml(candidate.id)}">
-        <span class="v4-part-icon">${candidate.iconAssetId && this.runtimeAsset(candidate.iconAssetId)?.url ? `<img src="${escapeHtml(this.runtimeAsset(candidate.iconAssetId).url)}" alt="" />` : escapeHtml(candidate.name.slice(0, 2).toUpperCase())}</span>
-        <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(this.tr('partStatus', { items: candidate.items.length, styles: candidate.items.reduce((count, item) => count + item.variants.length, 0), layers: candidate.items.reduce((count, item) => count + item.variants.reduce((sum, variant) => sum + variant.layerBindings.length, 0), 0) }))}</small></span>
-        <em>${candidate.required ? this.tr('required') : this.tr('optional')}</em>
-      </button>
+      <div class="v4-part-row ${candidate.id === part?.id ? 'active' : ''} ${this.creatorHiddenPartIds.has(candidate.id) ? 'preview-hidden' : ''}" draggable="true" data-drag-kind="part" data-drag-id="${escapeHtml(candidate.id)}">
+        <button class="v4-part-select" type="button" data-action="select-part" data-part-id="${escapeHtml(candidate.id)}">
+          <span class="v4-part-icon">${candidate.iconAssetId && this.runtimeAsset(candidate.iconAssetId)?.url ? `<img src="${escapeHtml(this.runtimeAsset(candidate.iconAssetId).url)}" alt="" />` : escapeHtml(candidate.name.slice(0, 2).toUpperCase())}</span>
+          <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(this.tr('partStatus', { items: candidate.items.length, styles: candidate.items.reduce((count, candidateItem) => count + candidateItem.styles.length, 0) }))}</small></span>
+          <em>${candidate.required ? this.tr('required') : this.tr('optional')}</em>
+        </button>
+        <button class="v4-part-eye ${this.creatorHiddenPartIds.has(candidate.id) ? '' : 'active'}" type="button" data-action="toggle-part-preview" data-part-id="${escapeHtml(candidate.id)}" aria-pressed="${!this.creatorHiddenPartIds.has(candidate.id)}" title="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}">${this.creatorHiddenPartIds.has(candidate.id) ? '◎' : '◉'}</button>
+      </div>
     `).join('');
     const itemRows = part?.items.map((candidate) => {
       const thumbnail = this.itemThumbnailUrl(candidate);
@@ -858,26 +902,22 @@ export class MakerWorkspace {
         <button class="v4-item-card ${candidate.id === item?.id ? 'active' : ''}" type="button" draggable="true" data-drag-kind="item" data-parent-id="${escapeHtml(part.id)}" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-item" data-item-id="${escapeHtml(candidate.id)}">
           <span class="v4-item-thumb">${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" />` : '<i>PNG</i>'}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
-          <small>${escapeHtml(this.tr('styleCount', { count: candidate.variants.length }))} · ${escapeHtml(candidate.status || 'public')}</small>
+          <small>${escapeHtml(this.tr('styleCount', { count: candidate.styles.length }))} · ${escapeHtml(candidate.status || 'public')}</small>
         </button>
       `;
     }).join('') || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noItemsYet'))}</strong><span>${escapeHtml(this.tr('noItemsCopy'))}</span></div>`;
-    const variantRows = item?.variants.map((candidate) => `
-      <button class="v4-variant-chip ${candidate.id === variant?.id ? 'active' : ''}" type="button" draggable="true" data-drag-kind="variant" data-parent-id="${escapeHtml(`${part.id}/${item.id}`)}" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-variant" data-variant-id="${escapeHtml(candidate.id)}">
-        ${escapeHtml(candidate.name)} <span>${candidate.layerBindings.length}</span>
-      </button>
-    `).join('') || '';
-    const bindingRows = variant?.layerBindings.map((candidate) => {
+    const styleRows = item?.styles.map((candidate) => {
       const track = document.layerTracks.find((entry) => entry.id === candidate.layerTrackId);
       const runtime = this.runtimeAsset(candidate.assetId);
+      const key = styleSceneKey(part.id, item.id, candidate.id);
       return `
-        <button class="v4-binding-row ${candidate.id === binding?.id ? 'active' : ''} ${this.hiddenBindingIds.has(candidate.id) ? 'muted' : ''}" type="button" data-action="select-binding" data-binding-id="${escapeHtml(candidate.id)}">
-          <span>${runtime?.thumbnailUrl || runtime?.url ? `<img src="${escapeHtml(runtime.thumbnailUrl || runtime.url)}" alt="" />` : '◫'}</span>
-          <strong>${escapeHtml(track?.name || candidate.layerTrackId)}</strong>
-          <small>${escapeHtml(this.blendModeText(candidate.blendMode))} · ${Math.round(candidate.opacity * 100)}%</small>
+        <button class="v4-style-chip ${candidate.id === style?.id ? 'active' : ''} ${this.hiddenStyleKeys.has(key) ? 'muted' : ''}" type="button" draggable="${candidate.styleLocked ? 'false' : 'true'}" data-drag-kind="style" data-parent-id="${escapeHtml(`${part.id}/${item.id}`)}" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-style" data-style-id="${escapeHtml(candidate.id)}">
+          <span class="v4-style-chip-thumb">${runtime?.thumbnailUrl || runtime?.url ? `<img src="${escapeHtml(runtime.thumbnailUrl || runtime.url)}" alt="" />` : '<i>PNG</i>'}</span>
+          <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(track?.name || this.tr('noLayerTrack'))}</small></span>
+          ${candidate.styleLocked ? '<em>🔒</em>' : candidate.positionLocked ? '<em>⌖</em>' : ''}
         </button>
       `;
-    }).join('') || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noVisualLayer'))}</span></div>`;
+    }).join('') || `<span class="v4-style-empty">${escapeHtml(this.tr('noStylesYet'))}</span>`;
 
     this.creatorRoot.innerHTML = `
       <section class="v4-studio-shell">
@@ -892,8 +932,8 @@ export class MakerWorkspace {
             <button type="button" data-action="undo" ${state.canUndo ? '' : 'disabled'} title="${escapeHtml(state.canUndo ? this.tr('undoHint') : this.tr('undoUnavailable'))}">↶ ${escapeHtml(this.tr('undo'))}</button>
             <button type="button" data-action="redo" ${state.canRedo ? '' : 'disabled'} title="${escapeHtml(state.canRedo ? this.tr('redoHint') : this.tr('redoUnavailable'))}">↷ ${escapeHtml(this.tr('redo'))}</button>
             <button type="button" data-action="save" title="${escapeHtml(this.tr('saveHint'))}">${escapeHtml(this.tr(state.saveState === 'saving' ? 'saving' : 'save'))}</button>
-            <button type="button" data-action="export-project">Project ZIP</button>
-            <label class="v4-file-button compact">Import ZIP<input type="file" accept=".zip,application/zip" data-action="import-project" /></label>
+            <button type="button" data-action="export-project">${escapeHtml(this.tr('projectZip'))}</button>
+            <label class="v4-file-button compact">${escapeHtml(this.tr('importZip'))}<input type="file" accept=".zip,application/zip" data-action="import-project" /></label>
             <button type="button" data-action="open-player" title="${escapeHtml(this.tr(previewAssetCount ? 'playerTestHint' : 'playerTestBlocked'))}">▶ ${escapeHtml(this.tr('playerTest'))}</button>
             <button class="primary" type="button" data-action="publish">${escapeHtml(blockingIssues.length ? this.tr(blockingIssues.length === 1 ? 'reviewIssue' : 'reviewIssues', { count: blockingIssues.length }) : this.tr('publishMainnet'))}</button>
           </div>
@@ -921,8 +961,10 @@ export class MakerWorkspace {
             <div class="v4-canvas-toolbar">
               <div><strong>${escapeHtml(this.tr('runtimePreview'))}</strong><span id="v4CreatorRenderStatus">${escapeHtml(this.tr('runtimePreviewCopy'))}</span></div>
               <div class="v4-canvas-tools">
-                <button type="button" class="${this.creatorSolo ? 'active' : ''}" data-action="toggle-solo" ${binding ? '' : 'disabled'}>${escapeHtml(this.tr('solo'))}</button>
+                <button type="button" class="${this.creatorSolo ? 'active' : ''}" data-action="toggle-solo" ${style ? '' : 'disabled'}>${escapeHtml(this.tr('solo'))}</button>
                 <button type="button" class="${this.creatorDimOthers ? 'active' : ''}" data-action="toggle-dim">${escapeHtml(this.tr('dimOthers'))}</button>
+                <button type="button" data-action="show-all-parts">${escapeHtml(this.tr('showAllParts'))}</button>
+                <button type="button" data-action="show-current-part" ${part ? '' : 'disabled'}>${escapeHtml(this.tr('showCurrentPart'))}</button>
                 <label>${escapeHtml(this.tr('zoom'))} <input type="range" min="50" max="200" step="10" value="${Math.round(this.creatorZoom * 100)}" data-action="canvas-zoom" /></label>
                 <button type="button" class="${document.canvas.pixelMode === 'pixelated' ? 'active' : ''}" data-action="toggle-pixel">${escapeHtml(this.tr('pixelMode'))}</button>
               </div>
@@ -930,25 +972,25 @@ export class MakerWorkspace {
             <div class="v4-canvas-viewport ${document.canvas.pixelMode === 'pixelated' ? 'pixelated' : ''}">
               <div class="v4-canvas-ruler"><span>0,0</span><span>${document.canvas.width},${document.canvas.height}</span></div>
               <canvas id="makerV4CreatorCanvas" class="v4-runtime-canvas" style="width:${Math.round(this.creatorZoom * 100)}%" aria-label="${escapeHtml(this.tr('makerCanvasLabel'))}"></canvas>
-              ${!binding ? `<div class="v4-canvas-empty"><strong>${escapeHtml(this.tr('selectVisualLayer'))}</strong><span>${escapeHtml(this.tr('selectVisualLayerCopy'))}</span></div>` : ''}
+              ${!style?.assetId ? `<div class="v4-canvas-empty"><strong>${escapeHtml(this.tr('selectVisualStyle'))}</strong><span>${escapeHtml(this.tr('selectVisualStyleCopy'))}</span></div>` : ''}
             </div>
             <div class="v4-items-dock">
               <div class="v4-panel-head">
                 <div><span>${escapeHtml(this.tr('items'))}</span><strong>${escapeHtml(part?.name || this.tr('selectPart'))}</strong></div>
                 <div>
                   <button type="button" data-action="add-item" ${part ? '' : 'disabled'}>${escapeHtml(this.tr('addItem'))}</button>
-                  <label class="v4-file-button ${variant ? '' : 'disabled'}">${escapeHtml(this.tr('batchImport'))}<input type="file" accept="image/png" multiple data-action="batch-import" ${variant ? '' : 'disabled'} /></label>
-                  <label class="v4-file-button">Import matrix folder<input type="file" accept="image/png" multiple webkitdirectory directory data-action="project-import" /></label>
+                  <label class="v4-file-button ${item ? '' : 'disabled'}">${escapeHtml(this.tr('batchImport'))}<input type="file" accept="image/png" multiple data-action="batch-import" ${item ? '' : 'disabled'} /></label>
+                  <label class="v4-file-button">${escapeHtml(this.tr('importMatrixFolder'))}<input type="file" accept="image/png" multiple webkitdirectory directory data-action="project-import" /></label>
                 </div>
               </div>
               <div class="v4-item-grid">${itemRows}</div>
-              ${item ? `<div class="v4-variant-row"><span>${escapeHtml(this.tr('styles'))}</span>${variantRows}<button type="button" data-action="add-variant">${escapeHtml(this.tr('addStyle'))}</button></div>` : ''}
+              ${item ? `<div class="v4-style-row"><span>${escapeHtml(this.tr('styles'))}</span>${styleRows}<button type="button" data-action="add-style">${escapeHtml(this.tr('addStyle'))}</button></div>` : ''}
             </div>
           </main>
 
           <aside class="v4-inspector">
-            <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('inspector'))}</span><strong>${escapeHtml(binding ? this.tr('layer') : item ? this.tr('item') : part ? this.tr('part') : this.tr('nothingSelected'))}</strong></div></div>
-            ${this.renderCreatorInspector(document, part, item, variant, binding, bindingRows)}
+            <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('inspector'))}</span><strong>${escapeHtml(style ? this.tr('style') : item ? this.tr('item') : part ? this.tr('part') : this.tr('nothingSelected'))}</strong></div></div>
+            ${this.renderCreatorInspector(document, part, item, style)}
           </aside>
         </div>
         ${this.creatorTab !== 'structure' ? `<div class="v4-tool-modal-backdrop" data-action="close-tool-backdrop">
@@ -1013,25 +1055,19 @@ export class MakerWorkspace {
     `;
   }
 
-  renderCreatorInspector(document, part, item, variant, binding, bindingRows) {
+  renderCreatorInspector(document, part, item, style) {
     if (!part) return `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noPartSelected'))}</strong><span>${escapeHtml(this.tr('noPartSelectedCopy'))}</span></div>`;
     const parentOptions = [`<option value="">${escapeHtml(this.tr('noParent'))}</option>`, ...document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(part.parentPartId, candidate.id)}>${escapeHtml(candidate.name)}</option>`)].join('');
     const defaultOptions = part.items.map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(part.defaultItemId, candidate.id)}>${escapeHtml(candidate.name)}</option>`).join('');
-    const trackOptions = document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}" ${selected(binding?.layerTrackId, track.id)}>${escapeHtml(track.name)}</option>`).join('');
-    const channelOptions = [`<option value="">${escapeHtml(this.tr('noSmartColor'))}</option>`, ...document.colorChannels.map((channel) => `<option value="${escapeHtml(channel.id)}" ${selected(binding?.colorChannelId, channel.id)}>${escapeHtml(channel.name)}</option>`)].join('');
-    const visibleOptions = [`<option value="">${escapeHtml(this.tr('alwaysVisible'))}</option>`, ...document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(binding?.visibleWhen?.partId, candidate.id)}>${escapeHtml(this.tr('whenPartSelected', { part: candidate.name }))}</option>`)].join('');
-    const positionEditorOpen = Boolean(binding && (binding.positionConfirmed === false || this.editingPositionBindingId === binding.id));
-    const effectiveTransform = binding ? effectiveBindingTransform(document, binding) : null;
-    const selectedBindingChannel = binding ? document.colorChannels.find((channel) => channel.id === binding.colorChannelId) : null;
-    const assetMapInputs = selectedBindingChannel?.mode === 'asset-map' ? `
-      <div class="v4-binding-swatch-assets">
-        <span class="v4-inspector-label">Separate color assets</span>
-        ${selectedBindingChannel.swatches.map((swatch) => {
-          const mapping = binding.assetsBySwatch?.find((candidate) => candidate.swatchId === swatch.id);
-          return `<label class="v4-file-button wide ${mapping ? 'mapped' : 'missing'}"><i style="--swatch:${escapeHtml(swatch.hintColor)}"></i>${escapeHtml(swatch.name)} · ${mapping ? 'Replace PNG' : 'Upload PNG'}<input type="file" accept="image/png" data-action="binding-swatch-asset" data-swatch-id="${escapeHtml(swatch.id)}" /></label>`;
-        }).join('')}
-      </div>
-    ` : '';
+    const trackOptions = [`<option value="">${escapeHtml(this.tr('noLayerTrack'))}</option>`, ...document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}" ${selected(style?.layerTrackId, track.id)}>${escapeHtml(track.name)}</option>`)].join('');
+    const channelOptions = [`<option value="">${escapeHtml(this.tr('noSmartColor'))}</option>`, ...document.colorChannels.filter((channel) => channel.mode === 'gradient-map').map((channel) => `<option value="${escapeHtml(channel.id)}" ${selected(style?.colorChannelId, channel.id)}>${escapeHtml(channel.name)}</option>`)].join('');
+    const visibleOptions = [`<option value="">${escapeHtml(this.tr('alwaysVisible'))}</option>`, ...document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(style?.visibleWhen?.partId, candidate.id)}>${escapeHtml(this.tr('whenPartSelected', { part: candidate.name }))}</option>`)].join('');
+    const styleKey = style ? styleSceneKey(part.id, item.id, style.id) : '';
+    const styleLocked = Boolean(style?.styleLocked);
+    const positionLocked = styleLocked || Boolean(style?.positionLocked);
+    const styleDisabled = styleLocked ? 'disabled' : '';
+    const positionEditorOpen = Boolean(style && !positionLocked && (style.positionConfirmed === false || this.editingPositionStyleKey === styleKey));
+    const effectiveTransform = style ? effectiveStyleTransform(document, style) : null;
     return `
       <div class="v4-inspector-section">
         <span class="v4-inspector-label">${escapeHtml(this.tr('part'))}</span>
@@ -1048,41 +1084,49 @@ export class MakerWorkspace {
         <div class="v4-inspector-section">
           <span class="v4-inspector-label">${escapeHtml(this.tr('item'))}</span>
           <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(item.name)}" data-action="item-name" maxlength="128" /></label>
-          <label>Import key<input value="${escapeHtml(item.importKey || item.id)}" data-action="item-import-key" maxlength="128" /></label>
-          <label>Release status<select data-action="item-status"><option value="draft" ${selected(item.status, 'draft')}>Draft · creator only</option><option value="private" ${selected(item.status, 'private')}>Private · excluded from publish</option><option value="public" ${selected(item.status || 'public', 'public')}>Public · player visible</option></select></label>
+          <label>${escapeHtml(this.tr('importKey'))}<input value="${escapeHtml(item.importKey || item.id)}" data-action="item-import-key" maxlength="128" /></label>
+          <label>${escapeHtml(this.tr('releaseStatus'))}<select data-action="item-status"><option value="draft" ${selected(item.status, 'draft')}>${escapeHtml(this.tr('statusDraft'))}</option><option value="private" ${selected(item.status, 'private')}>${escapeHtml(this.tr('statusPrivate'))}</option><option value="public" ${selected(item.status || 'public', 'public')}>${escapeHtml(this.tr('statusPublic'))}</option></select></label>
           <div class="v4-inline-actions"><button type="button" data-action="copy-item">${escapeHtml(this.tr('duplicate'))}</button><button type="button" class="danger" data-action="delete-item">${escapeHtml(this.tr('delete'))}</button></div>
           <label class="v4-file-button wide">${escapeHtml(this.tr('customThumbnail'))}<input type="file" accept="image/png,image/jpeg" data-action="item-thumbnail" /></label>
-          <button type="button" data-action="generate-item-thumbnail">Generate composite thumbnail</button>
+          <button type="button" data-action="generate-item-thumbnail">${escapeHtml(this.tr('generateCompositeThumbnail'))}</button>
         </div>
         <div class="v4-inspector-section">
           <span class="v4-inspector-label">${escapeHtml(this.tr('style'))}</span>
-          <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(variant?.name || '')}" data-action="variant-name" maxlength="128" ${variant ? '' : 'disabled'} /></label>
-          <div class="v4-inline-actions"><button type="button" data-action="copy-variant" ${variant ? '' : 'disabled'}>${escapeHtml(this.tr('duplicate'))}</button><button type="button" class="danger" data-action="delete-variant" ${item.variants.length > 1 ? '' : 'disabled'}>${escapeHtml(this.tr('delete'))}</button></div>
-          <div class="v4-binding-list">${bindingRows}</div>
-          <button type="button" data-action="add-empty-binding" ${document.layerTracks.length ? '' : 'disabled'}>${escapeHtml(this.tr('emptyLayerBinding'))}</button>
-        </div>
-      ` : ''}
-      ${binding ? `
-        <div class="v4-inspector-section prominent">
-          <div class="v4-inspector-section-head"><span class="v4-inspector-label">${escapeHtml(this.tr('selectedLayer'))}</span><button type="button" class="danger" data-action="delete-binding">${escapeHtml(this.tr('delete'))}</button></div>
-          <label>${escapeHtml(this.tr('layerTrack'))}<select data-action="binding-track">${trackOptions}</select></label>
-          <label class="v4-file-button wide">${escapeHtml(this.tr(this.assets.has(binding.assetId) ? 'replaceLayerPng' : 'uploadLayerPng'))}<input type="file" accept="image/png" data-action="binding-asset" /></label>
-          ${positionEditorOpen ? `
-            <div class="v4-number-grid">
-              <label>X<input type="number" value="${Number(effectiveTransform.x).toFixed(1)}" data-action="binding-x" /></label>
-              <label>Y<input type="number" value="${Number(effectiveTransform.y).toFixed(1)}" data-action="binding-y" /></label>
-              <label>${escapeHtml(this.tr('scale'))}<input type="number" min="0.01" max="100" step="0.01" value="${Number(effectiveTransform.scale).toFixed(2)}" data-action="binding-scale" /></label>
-              <label>${escapeHtml(this.tr('rotate'))}<input type="number" step="1" value="${Number(effectiveTransform.rotation).toFixed(1)}" data-action="binding-rotation" /></label>
+          <p class="v4-style-concept">${escapeHtml(this.tr('stylePngCopy'))}</p>
+          ${style ? `
+            <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(style.name)}" data-action="style-name" maxlength="128" ${styleDisabled} /></label>
+            <div class="v4-inline-actions">
+              <button type="button" data-action="copy-style">${escapeHtml(this.tr('duplicate'))}</button>
+              <button type="button" data-action="set-default-style" ${styleLocked || item.defaultStyleId === style.id ? 'disabled' : ''}>${escapeHtml(item.defaultStyleId === style.id ? this.tr('defaultStyle') : this.tr('setDefaultStyle'))}</button>
+              <button type="button" class="danger" data-action="delete-style" ${styleDisabled}>${escapeHtml(this.tr('delete'))}</button>
             </div>
-            <label>${escapeHtml(this.tr('scaleOnCanvas'))}<input type="range" min="5" max="400" value="${Math.round(Number(effectiveTransform.scale) * 100)}" data-action="binding-scale-preview" /></label>
-          ` : ''}
-          <label>${escapeHtml(this.tr('opacity'))}<input type="range" min="0" max="100" value="${Math.round(binding.opacity * 100)}" data-action="binding-opacity" /></label>
-          <label>${escapeHtml(this.tr('blendMode'))}<select data-action="binding-blend">${['normal','multiply','screen','overlay','darken','lighten','color-dodge','color-burn','hard-light','soft-light','difference','exclusion','hue','saturation','color','luminosity','linear-dodge'].map((mode) => `<option value="${mode}" ${selected(binding.blendMode, mode)}>${escapeHtml(this.blendModeText(mode))}</option>`).join('')}</select></label>
-          <label>${escapeHtml(this.tr('smartColor'))}<select data-action="binding-channel">${channelOptions}</select></label>
-          ${assetMapInputs}
-          <label>${escapeHtml(this.tr('showThisLayer'))}<select data-action="binding-visible-when">${visibleOptions}</select></label>
-          <div class="v4-inline-actions"><button type="button" data-action="toggle-binding-hidden">${escapeHtml(this.tr(this.hiddenBindingIds.has(binding.id) ? 'showLayer' : 'hideLayer'))}</button>${positionEditorOpen ? `<button type="button" class="primary" data-action="confirm-position">${escapeHtml(this.tr('confirmPosition'))}</button>` : `<button type="button" class="primary" data-action="edit-position" title="${escapeHtml(this.tr('positionConfirmed'))}">${escapeHtml(this.tr('adjustPosition'))}</button>`}</div>
-          ${positionEditorOpen ? `<small>${escapeHtml(this.tr('dragPositionCopy'))}</small>` : ''}
+            <div class="v4-style-locks">
+              <label><input type="checkbox" ${checked(style.positionLocked)} data-action="style-position-locked" ${styleLocked ? 'disabled' : ''} /> ${escapeHtml(this.tr('positionLock'))}</label>
+              <label><input type="checkbox" ${checked(style.styleLocked)} data-action="style-locked" /> ${escapeHtml(this.tr('styleLock'))}</label>
+            </div>
+            <label>${escapeHtml(this.tr('layerTrack'))}<select data-action="style-track" ${styleDisabled}>${trackOptions}</select></label>
+            <label class="v4-file-button wide ${styleLocked ? 'disabled' : ''}">${escapeHtml(this.tr(style.assetId ? 'replaceStylePng' : 'uploadStylePng'))}<input type="file" accept="image/png" data-action="style-asset" ${styleDisabled} /></label>
+            ${positionEditorOpen ? `
+              <div class="v4-number-grid">
+                <label>X<input type="number" value="${Number(effectiveTransform.x).toFixed(1)}" data-action="style-x" /></label>
+                <label>Y<input type="number" value="${Number(effectiveTransform.y).toFixed(1)}" data-action="style-y" /></label>
+                <label>${escapeHtml(this.tr('scale'))}<input type="number" min="0.01" max="100" step="0.01" value="${Number(effectiveTransform.scale).toFixed(2)}" data-action="style-scale" /></label>
+                <label>${escapeHtml(this.tr('rotate'))}<input type="number" step="1" value="${Number(effectiveTransform.rotation).toFixed(1)}" data-action="style-rotation" /></label>
+              </div>
+              <label>${escapeHtml(this.tr('scaleOnCanvas'))}<input type="range" min="5" max="400" value="${Math.round(Number(effectiveTransform.scale) * 100)}" data-action="style-scale-preview" /></label>
+            ` : `<p class="v4-position-summary">X ${Number(effectiveTransform.x).toFixed(1)} · Y ${Number(effectiveTransform.y).toFixed(1)} · ${escapeHtml(this.tr('scale'))} ${Number(effectiveTransform.scale).toFixed(2)} · ${escapeHtml(this.tr('rotate'))} ${Number(effectiveTransform.rotation).toFixed(1)}°</p>`}
+            <label>${escapeHtml(this.tr('opacity'))}<input type="range" min="0" max="100" value="${Math.round(style.opacity * 100)}" data-action="style-opacity" ${styleDisabled} /></label>
+            <label>${escapeHtml(this.tr('blendMode'))}<select data-action="style-blend" ${styleDisabled}>${['normal','multiply','screen','overlay','darken','lighten','color-dodge','color-burn','hard-light','soft-light','difference','exclusion','hue','saturation','color','luminosity','linear-dodge'].map((mode) => `<option value="${mode}" ${selected(style.blendMode, mode)}>${escapeHtml(this.blendModeText(mode))}</option>`).join('')}</select></label>
+            <label>${escapeHtml(this.tr('smartColor'))}<select data-action="style-channel" ${styleDisabled}>${channelOptions}</select></label>
+            <label>${escapeHtml(this.tr('showThisStyle'))}<select data-action="style-visible-when" ${styleDisabled}>${visibleOptions}</select></label>
+            <div class="v4-inline-actions">
+              <button type="button" data-action="toggle-style-hidden">${escapeHtml(this.tr(this.hiddenStyleKeys.has(styleKey) ? 'showStyle' : 'hideStyle'))}</button>
+              ${positionEditorOpen
+                ? `<button type="button" class="primary" data-action="confirm-position" ${style.assetId ? '' : 'disabled'}>${escapeHtml(this.tr('confirmPosition'))}</button>`
+                : `<button type="button" class="primary" data-action="edit-position" ${positionLocked || !style.assetId ? 'disabled' : ''} title="${escapeHtml(this.tr('positionConfirmed'))}">${escapeHtml(this.tr('adjustPosition'))}</button>`}
+            </div>
+            ${positionEditorOpen ? `<small>${escapeHtml(this.tr('dragPositionCopy'))}</small>` : ''}
+          ` : `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noStylesYet'))}</strong><span>${escapeHtml(this.tr('addStyleCopy'))}</span></div>`}
         </div>
       ` : ''}
     `;
@@ -1090,27 +1134,26 @@ export class MakerWorkspace {
 
   renderCreatorAdvanced(document, issues, compatibility) {
     if (this.creatorTab === 'structure') {
-      const { part, item, variant } = this.selectedCreatorRecords(document);
+      const { part, item, style } = this.selectedCreatorRecords(document);
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('partsItems'))}</span><h3>${escapeHtml(this.tr('structureTitle'))}</h3></div><button type="button" data-action="set-default-recipe">${escapeHtml(this.tr('setDefault'))}</button></div>
         <div class="v4-explainer-grid">
           <article><strong>${escapeHtml(this.tr('part'))}</strong><span>${escapeHtml(this.tr('partConceptCopy'))}</span><em>${escapeHtml(part?.name || '—')}</em></article>
           <article><strong>${escapeHtml(this.tr('item'))}</strong><span>${escapeHtml(this.tr('itemConceptCopy'))}</span><em>${escapeHtml(item?.name || '—')}</em></article>
-          <article><strong>${escapeHtml(this.tr('style'))}</strong><span>${escapeHtml(this.tr('styleConceptCopy'))}</span><em>${escapeHtml(variant?.name || '—')}</em></article>
-          <article><strong>${escapeHtml(this.tr('bindingConcept'))}</strong><span>${escapeHtml(this.tr('bindingConceptCopy'))}</span><em>${escapeHtml(this.tr('activeLayerCount', { count: variant?.layerBindings.length || 0 }))}</em></article>
+          <article><strong>${escapeHtml(this.tr('style'))}</strong><span>${escapeHtml(this.tr('styleConceptCopy'))}</span><em>${escapeHtml(style?.name || '—')}</em></article>
         </div>
       `;
     }
     if (this.creatorTab === 'layers') {
       const alignmentByTrack = new Map(collectTrackAlignmentWarnings(document, this.assets).map((warning) => [warning.trackId, warning]));
       const rows = document.layerTracks.map((track) => {
-        const bindings = document.parts.flatMap((part) => part.items.flatMap((item) => item.variants.flatMap((variant) => variant.layerBindings.filter((binding) => binding.layerTrackId === track.id))));
+        const styles = document.parts.flatMap((part) => part.items.flatMap((item) => item.styles.filter((style) => style.layerTrackId === track.id)));
         return `
-          <div class="v4-track-row ${track.id === this.selectedTrackId ? 'active' : ''}" draggable="true" data-drag-kind="track" data-drag-id="${escapeHtml(track.id)}" data-drop-kind="track">
-            <button type="button" data-action="select-track" data-track-id="${escapeHtml(track.id)}"><span>⋮⋮</span><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(this.tr('bindingCount', { count: bindings.length }))}</small></button>
-            <input value="${escapeHtml(track.name)}" data-action="track-name" data-track-id="${escapeHtml(track.id)}" maxlength="128" />
-            <span class="v4-track-placement">${escapeHtml(this.tr('trackOrderOnly'))}</span>
-            <div>${alignmentByTrack.has(track.id) ? `<button type="button" class="warning" data-action="approve-track-alignment" data-track-id="${escapeHtml(track.id)}" title="${escapeHtml(alignmentByTrack.get(track.id).message)}">Review drift</button>` : track.alignmentApproved ? '<em>Exception approved</em>' : ''}<button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="up">↑</button><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="down">↓</button><button type="button" data-action="delete-track" data-track-id="${escapeHtml(track.id)}" ${bindings.length ? 'disabled' : ''}>×</button></div>
+          <div class="v4-track-row ${track.id === this.selectedTrackId ? 'active' : ''} ${track.locked ? 'locked' : ''}" draggable="${track.locked ? 'false' : 'true'}" data-drag-kind="track" data-drag-id="${escapeHtml(track.id)}" data-drop-kind="track">
+            <button type="button" data-action="select-track" data-track-id="${escapeHtml(track.id)}"><span>⋮⋮</span><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(this.tr('trackStyleCount', { count: styles.length }))}</small></button>
+            <input value="${escapeHtml(track.name)}" data-action="track-name" data-track-id="${escapeHtml(track.id)}" maxlength="128" ${track.locked ? 'disabled' : ''} />
+            <span class="v4-track-placement">${escapeHtml(this.tr(track.locked ? 'trackLocked' : 'trackOrderOnly'))}</span>
+            <div>${alignmentByTrack.has(track.id) ? `<button type="button" class="warning" data-action="approve-track-alignment" data-track-id="${escapeHtml(track.id)}" title="${escapeHtml(alignmentByTrack.get(track.id).message)}">${escapeHtml(this.tr('reviewDrift'))}</button>` : track.alignmentApproved ? `<em>${escapeHtml(this.tr('exceptionApproved'))}</em>` : ''}<button type="button" data-action="toggle-track-lock" data-track-id="${escapeHtml(track.id)}">${escapeHtml(this.tr(track.locked ? 'unlockTrack' : 'lockTrack'))}</button><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="up" ${track.locked ? 'disabled' : ''}>↑</button><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="down" ${track.locked ? 'disabled' : ''}>↓</button><button type="button" data-action="delete-track" data-track-id="${escapeHtml(track.id)}" ${styles.length || track.locked ? 'disabled' : ''}>×</button></div>
           </div>
         `;
       }).join('');
@@ -1120,11 +1163,12 @@ export class MakerWorkspace {
       `;
     }
     if (this.creatorTab === 'colors') {
-      const selectedChannel = document.colorChannels.find((channel) => channel.id === this.selectedChannelId) || document.colorChannels[0];
-      const channels = document.colorChannels.map((channel) => `
+      const gradientChannels = document.colorChannels.filter((channel) => channel.mode === 'gradient-map');
+      const selectedChannel = gradientChannels.find((channel) => channel.id === this.selectedChannelId) || gradientChannels[0];
+      const channels = gradientChannels.map((channel) => `
         <button type="button" class="v4-color-channel-card ${selectedChannel?.id === channel.id ? 'active' : ''}" data-action="select-channel" data-channel-id="${escapeHtml(channel.id)}">
           <span style="--swatch:${escapeHtml(channel.swatches.find((swatch) => swatch.id === channel.defaultSwatchId)?.hintColor || '#7b5cff')}"></span>
-          <strong>${escapeHtml(channel.name)}</strong><small>${escapeHtml(this.tr('colorCountMode', { count: channel.swatches.length, mode: this.tr(channel.mode === 'asset-map' ? 'separateAssets' : 'gradientMap') }))}</small>
+          <strong>${escapeHtml(channel.name)}</strong><small>${escapeHtml(this.tr('colorCountMode', { count: channel.swatches.length, mode: this.tr('gradientMap') }))}</small>
         </button>
       `).join('');
       const swatches = selectedChannel?.swatches.map((swatch) => `
@@ -1132,24 +1176,26 @@ export class MakerWorkspace {
           <input type="radio" name="v4-default-swatch" value="${escapeHtml(swatch.id)}" ${checked(swatch.id === selectedChannel.defaultSwatchId)} data-action="channel-default-swatch" title="${escapeHtml(this.tr('defaultColor'))}" />
           <input value="${escapeHtml(swatch.name)}" data-action="swatch-name" data-swatch-id="${escapeHtml(swatch.id)}" maxlength="128" />
           <label>${escapeHtml(this.tr('hint'))}<input type="color" value="${escapeHtml(swatch.hintColor)}" data-action="swatch-hint" data-swatch-id="${escapeHtml(swatch.id)}" /></label>
-          ${selectedChannel.mode === 'gradient-map' ? `
-            <label>${escapeHtml(this.tr('shadow'))}<input type="color" value="${escapeHtml(swatch.stops[0]?.color || '#111111')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="0" /></label>
-            <label>${escapeHtml(this.tr('mid'))}<input type="color" value="${escapeHtml(swatch.stops[Math.floor((swatch.stops.length - 1) / 2)]?.color || swatch.hintColor)}" data-action="swatch-mid" data-swatch-id="${escapeHtml(swatch.id)}" /></label>
-            <label>${escapeHtml(this.tr('light'))}<input type="color" value="${escapeHtml(swatch.stops.at(-1)?.color || '#ffffff')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="${Math.max(1, swatch.stops.length - 1)}" /></label>
-          ` : `<span>${escapeHtml(this.tr('assetPerSwatchCopy'))}</span>`}
+          <label>${escapeHtml(this.tr('shadow'))}<input type="color" value="${escapeHtml(swatch.stops[0]?.color || '#111111')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="0" /></label>
+          <label>${escapeHtml(this.tr('mid'))}<input type="color" value="${escapeHtml(swatch.stops[Math.floor((swatch.stops.length - 1) / 2)]?.color || swatch.hintColor)}" data-action="swatch-mid" data-swatch-id="${escapeHtml(swatch.id)}" /></label>
+          <label>${escapeHtml(this.tr('light'))}<input type="color" value="${escapeHtml(swatch.stops.at(-1)?.color || '#ffffff')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="${Math.max(1, swatch.stops.length - 1)}" /></label>
           <button type="button" data-action="delete-swatch" data-swatch-id="${escapeHtml(swatch.id)}" ${selectedChannel.swatches.length <= 1 ? 'disabled' : ''}>×</button>
         </div>
       `).join('') || '';
-      const linkedBindings = selectedChannel ? document.parts.flatMap((part) => part.items.flatMap((item) => item.variants.flatMap((variant) => variant.layerBindings.filter((binding) => binding.colorChannelId === selectedChannel.id).map((binding) => `${part.name} / ${item.name} / ${variant.name}`)))) : [];
+      const linkedStyleRecords = selectedChannel ? document.parts.flatMap((part) => part.items.flatMap((item) => item.styles
+        .filter((style) => style.colorChannelId === selectedChannel.id)
+        .map((style) => ({ style, label: `${part.name} / ${item.name} / ${style.name}` })))) : [];
+      const linkedStyles = linkedStyleRecords.map(({ style, label }) => `${label}${style.styleLocked ? ' 🔒' : ''}`);
+      const channelLocked = linkedStyleRecords.some(({ style }) => style.styleLocked);
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('smartColor'))}</span><h3>${escapeHtml(this.tr('smartColorTitle'))}</h3><p>${escapeHtml(this.tr('smartColorCopy'))}</p></div><button type="button" data-action="add-channel">${escapeHtml(this.tr('addChannel'))}</button></div>
         <div class="v4-color-workspace">
           <div class="v4-color-channel-list">${channels || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('createChannelCopy'))}</span></div>`}</div>
           ${selectedChannel ? `<div class="v4-color-detail">
-            <div class="v4-form-row"><label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(selectedChannel.name)}" data-action="channel-name" /></label><label>${escapeHtml(this.tr('mode'))}<select data-action="channel-mode"><option value="gradient-map" ${selected(selectedChannel.mode, 'gradient-map')}>${escapeHtml(this.tr('gradientMap'))}</option><option value="asset-map" ${selected(selectedChannel.mode, 'asset-map')}>${escapeHtml(this.tr('separateAssets'))}</option></select></label><button type="button" class="danger" data-action="delete-channel">${escapeHtml(this.tr('delete'))}</button></div>
+            <div class="v4-form-row"><label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(selectedChannel.name)}" data-action="channel-name" /></label><span>${escapeHtml(this.tr('gradientMap'))}</span><button type="button" class="danger" data-action="delete-channel" ${channelLocked ? `disabled title="${escapeHtml(this.tr('styleLock'))}"` : ''}>${escapeHtml(this.tr('delete'))}</button></div>
             <div class="v4-swatch-list">${swatches}</div>
             <button type="button" data-action="add-swatch">${escapeHtml(this.tr('colorPreset'))}</button>
-            <p class="v4-linked-copy"><strong>${escapeHtml(this.tr('linkedLayers'))}</strong> ${linkedBindings.length ? linkedBindings.map(escapeHtml).join(' · ') : escapeHtml(this.tr('noneYet'))}</p>
+            <p class="v4-linked-copy"><strong>${escapeHtml(this.tr('linkedStyles'))}</strong> ${linkedStyles.length ? linkedStyles.map(escapeHtml).join(' · ') : escapeHtml(this.tr('noneYet'))}</p>
           </div>` : ''}
         </div>
       `;
@@ -1160,7 +1206,7 @@ export class MakerWorkspace {
         `<option value="${escapeHtml(part.id)}">${escapeHtml(part.name)} / ${escapeHtml(this.tr('anyItem'))}</option>`,
         ...part.items.flatMap((item) => [
           `<option value="${escapeHtml(`${part.id}::${item.id}`)}">${escapeHtml(part.name)} / ${escapeHtml(item.name)}</option>`,
-          ...item.variants.map((variant) => `<option value="${escapeHtml(`${part.id}::${item.id}::${variant.id}`)}">${escapeHtml(part.name)} / ${escapeHtml(item.name)} / ${escapeHtml(variant.name)}</option>`),
+          ...item.styles.map((style) => `<option value="${escapeHtml(`${part.id}::${item.id}::${style.id}`)}">${escapeHtml(part.name)} / ${escapeHtml(item.name)} / ${escapeHtml(style.name)}</option>`),
         ]),
       ]).join('');
       return `
@@ -1174,8 +1220,9 @@ export class MakerWorkspace {
         <div class="v4-rule-list">${rows.map((row) => {
           const targetPart = findPart(document, row.target.partId);
           const targetItem = row.target.itemId ? findItem(document, row.target.partId, row.target.itemId) : null;
-          const targetVariant = row.target.variantId && targetItem ? targetItem.variants.find((variant) => variant.id === row.target.variantId) : null;
-          return `<div><span>${escapeHtml(row.ownerName)}</span><b>${escapeHtml(this.tr(row.type === 'requires' ? 'requiresLabel' : 'cannotCombineWith'))}</b><span>${escapeHtml(targetPart?.name || row.target.partId)}${targetItem ? ` / ${escapeHtml(targetItem.name)}` : ''}${targetVariant ? ` / ${escapeHtml(targetVariant.name)}` : ''}</span><button type="button" data-action="delete-rule" data-rule-id="${escapeHtml(row.id)}">×</button></div>`;
+          const targetStyle = row.target.styleId && targetItem ? targetItem.styles.find((style) => style.id === row.target.styleId) : null;
+          const ownerStyle = row.ownerStyleId ? findStyle(document, row.ownerPartId, row.ownerItemId, row.ownerStyleId) : null;
+          return `<div><span>${escapeHtml(row.ownerName)}${ownerStyle?.styleLocked ? ' 🔒' : ''}</span><b>${escapeHtml(this.tr(row.type === 'requires' ? 'requiresLabel' : 'cannotCombineWith'))}</b><span>${escapeHtml(targetPart?.name || row.target.partId)}${targetItem ? ` / ${escapeHtml(targetItem.name)}` : ''}${targetStyle ? ` / ${escapeHtml(targetStyle.name)}` : ''}</span><button type="button" data-action="delete-rule" data-rule-id="${escapeHtml(row.id)}" ${ownerStyle?.styleLocked ? 'disabled' : ''}>×</button></div>`;
         }).join('') || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noConstraints'))}</span></div>`}</div>
       `;
     }
@@ -1202,15 +1249,14 @@ export class MakerWorkspace {
     const warningIssues = issues.filter((issue) => issue.severity === 'warning');
     const issueRows = issues.map((issue) => {
       const severity = issue.severity === 'warning' ? 'warning' : issue.code.includes('missing') || issue.code.includes('invalid') ? 'error' : 'warning';
-      const focusable = String(issue.path || '').split('/').length === 4;
-      const [partId, itemId, variantId, bindingId] = String(issue.path || '').split('/');
+      const focusable = String(issue.path || '').split('/').length === 3;
+      const [partId, itemId, styleId] = String(issue.path || '').split('/');
       const issuePart = findPart(document, partId);
       const issueItem = issuePart && findItem(document, partId, itemId);
-      const issueVariant = issueItem?.variants.find((candidate) => candidate.id === variantId);
-      const issueBinding = issueVariant?.layerBindings.find((candidate) => candidate.id === bindingId);
-      const issueTrack = issueBinding && document.layerTracks.find((candidate) => candidate.id === issueBinding.layerTrackId);
+      const issueStyle = issueItem?.styles.find((candidate) => candidate.id === styleId);
+      const issueTrack = issueStyle && document.layerTracks.find((candidate) => candidate.id === issueStyle.layerTrackId);
       const displayPath = focusable
-        ? [issuePart?.name, issueItem?.name, issueVariant?.name, issueTrack?.name].filter(Boolean).join(' › ')
+        ? [issuePart?.name, issueItem?.name, issueStyle?.name, issueTrack?.name].filter(Boolean).join(' › ')
         : issue.path || 'Maker';
       const displayMessage = this.issueText(issue, { part: issuePart?.name || partId, item: issueItem?.name || itemId });
       return `<li class="${severity}">${focusable ? `<button type="button" data-action="focus-issue" data-issue-path="${escapeHtml(issue.path)}" title="${escapeHtml(issue.path)}"><span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong><em>${escapeHtml(this.tr('open'))}</em></button>` : `<span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong>`}</li>`;
@@ -1224,37 +1270,36 @@ export class MakerWorkspace {
 
   renderImportDialog(document) {
     if (!this.pendingImport) return '';
-    const trackOptions = (value) => ['<option value="">Create a new Layer Track</option>', ...document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}" ${selected(value, track.id)}>${escapeHtml(track.name)}</option>`)].join('');
-    const targetOptions = (value) => ['<option value="">Choose Item / Style…</option>', ...document.parts.flatMap((part) => part.items.flatMap((item) => item.variants.map((variant) => {
-      const definition = `${part.id}::${item.id}::${variant.id}`;
-      return `<option value="${escapeHtml(definition)}" ${selected(value, definition)}>${escapeHtml(part.name)} / ${escapeHtml(item.name)} / ${escapeHtml(variant.name)}</option>`;
+    const trackOptions = (value) => [`<option value="">${escapeHtml(this.tr('createNewLayerTrack'))}</option>`, ...document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}" ${selected(value, track.id)}>${escapeHtml(track.name)}</option>`)].join('');
+    const targetOptions = (value) => [`<option value="">${escapeHtml(this.tr('chooseItemStyle'))}</option>`, ...document.parts.flatMap((part) => part.items.flatMap((item) => item.styles.map((style) => {
+      const definition = `${part.id}::${item.id}::${style.id}`;
+      return `<option value="${escapeHtml(definition)}" ${selected(value, definition)}>${escapeHtml(part.name)} / ${escapeHtml(item.name)} / ${escapeHtml(style.name)}</option>`;
     })))].join('');
-    const colorOptions = (value) => ['<option value="">Main artwork</option>', ...document.colorChannels.filter((channel) => channel.mode === 'asset-map').flatMap((channel) => channel.swatches.map((swatch) => {
-      const definition = `${channel.id}::${swatch.id}`;
-      return `<option value="${escapeHtml(definition)}" ${selected(value, definition)}>${escapeHtml(channel.name)} / ${escapeHtml(swatch.name)}</option>`;
-    }))].join('');
     const projectMode = this.pendingImport.mode === 'project';
     const targetCounts = new Map();
-    const importTargetKey = (mapping) => `${mapping.targetDefinition || `${this.pendingImport.partId}::${this.pendingImport.itemId}::${this.pendingImport.variantId}`}|${mapping.trackId || `new:${mapping.suggestedTrackName}`}|${mapping.colorDefinition || ''}`;
-    this.pendingImport.mapping.forEach((mapping) => {
-      const key = importTargetKey(mapping);
+    const importTargetKey = (mapping, index) => projectMode
+      ? mapping.targetDefinition
+      : `new-style:${index}`;
+    this.pendingImport.mapping.forEach((mapping, index) => {
+      const key = importTargetKey(mapping, index);
       targetCounts.set(key, (targetCounts.get(key) || 0) + 1);
     });
-    const hasConflicts = this.pendingImport.mapping.some((mapping) => targetCounts.get(importTargetKey(mapping)) > 1);
+    const hasConflicts = this.pendingImport.mapping.some((mapping, index) => targetCounts.get(importTargetKey(mapping, index)) > 1);
     return `
-      <div class="v4-modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirm batch import mapping">
+      <div class="v4-modal-backdrop" role="dialog" aria-modal="true" aria-label="${escapeHtml(this.tr('confirmBatchImport'))}">
         <section class="v4-import-dialog ${projectMode ? 'project-matrix' : ''}">
-          <header><div><span>${projectMode ? 'PROJECT MATRIX IMPORT' : 'BATCH IMPORT'}</span><h3>${projectMode ? 'Confirm Part × Item × Style × Track × Color' : 'Confirm PNG → Layer Track mapping'}</h3></div><button type="button" data-action="cancel-import">×</button></header>
-          <p>Files are not committed until you confirm. ${projectMode ? 'Use folders like part/item/style/track@swatch.png; every row remains editable.' : ''} Full-canvas PNGs use the Track origin; cropped PNGs must be positioned and confirmed.</p>
+          <header><div><span>${escapeHtml(this.tr('confirmBatchImport'))}</span><h3>${escapeHtml(this.tr(projectMode ? 'projectImportTitle' : 'batchImportTitle'))}</h3></div><button type="button" data-action="cancel-import">×</button></header>
+          <p>${escapeHtml(this.tr(projectMode ? 'projectImportCopy' : 'batchImportCopy'))}</p>
           <div class="v4-import-list">${this.pendingImport.mapping.map((mapping, index) => `
-            <div class="${targetCounts.get(importTargetKey(mapping)) > 1 ? 'conflict' : ''}">
+            <div class="${targetCounts.get(importTargetKey(mapping, index)) > 1 ? 'conflict' : ''}">
               <span>${escapeHtml(mapping.fileName)}</span><em>${escapeHtml(mapping.confidence)}</em>
               ${projectMode ? `<select data-action="import-target" data-import-index="${index}">${targetOptions(mapping.targetDefinition)}</select>` : ''}
+              ${projectMode ? '' : `<input data-action="import-style-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedStyleName || '')}" aria-label="${escapeHtml(this.tr('style'))}" />`}
               <select data-action="import-track" data-import-index="${index}">${trackOptions(mapping.trackId)}</select>
-              ${projectMode ? `<select data-action="import-color" data-import-index="${index}">${colorOptions(mapping.colorDefinition)}</select>` : `<input data-action="import-track-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedTrackName)}" aria-label="New track name" />`}
+              ${projectMode ? '' : `<input data-action="import-track-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedTrackName)}" aria-label="${escapeHtml(this.tr('newTrackName'))}" />`}
             </div>
           `).join('')}</div>
-          <footer><button type="button" data-action="cancel-import">Cancel</button><button class="primary" type="button" data-action="confirm-import" ${hasConflicts || (projectMode && this.pendingImport.mapping.some((mapping) => !mapping.targetDefinition)) ? 'disabled' : ''}>${hasConflicts ? 'Resolve duplicate mappings' : `Import ${this.pendingImport.mapping.length} PNG${this.pendingImport.mapping.length === 1 ? '' : 's'}`}</button></footer>
+          <footer><button type="button" data-action="cancel-import">${escapeHtml(this.tr('cancel'))}</button><button class="primary" type="button" data-action="confirm-import" ${hasConflicts || (projectMode && this.pendingImport.mapping.some((mapping) => !mapping.targetDefinition)) ? 'disabled' : ''}>${escapeHtml(hasConflicts ? this.tr('resolveDuplicateMappings') : this.tr('importPngCount', { count: this.pendingImport.mapping.length }))}</button></footer>
         </section>
       </div>
     `;
@@ -1275,8 +1320,17 @@ export class MakerWorkspace {
   }
 
   playerVisibleItems(part) {
-    const creatorPreview = this.context?.isPublished !== true;
-    return (part?.items || []).filter((item) => creatorPreview || (item.status || 'public') === 'public');
+    const document = this.runtimeDocument();
+    const creatorPreview = this.playerCreatorPreview || this.context?.isPublished !== true;
+    return (part?.items || []).filter((item) => {
+      if ((item.status || 'draft') === 'public') return true;
+      if (!creatorPreview) return false;
+      return item.styles.some((style) => {
+        if (!style.assetId || !style.layerTrackId) return false;
+        const descriptor = document?.assets.find((asset) => asset.id === style.assetId);
+        return Boolean(this.runtimeAsset(style.assetId) || descriptor?.url || descriptor?.legacy?.url);
+      });
+    });
   }
 
   playerCompletionIssues(document, recipe) {
@@ -1315,10 +1369,10 @@ export class MakerWorkspace {
     const visibleItems = this.playerVisibleItems(part).filter((item) => evaluateVisibleWhen(item.visibleWhen, visibilityContext));
     const currentSelection = part ? selectionMap.get(part.id) : null;
     const currentItem = visibleItems.find((item) => item.id === currentSelection?.itemId) || null;
-    const visibleVariants = currentItem?.variants.filter((variant) => evaluateVisibleWhen(variant.visibleWhen, visibilityContext)) || [];
-    const currentVariant = visibleVariants.find((variant) => variant.id === currentSelection?.variantId)
-      || visibleVariants.find((variant) => variant.id === currentItem?.defaultVariantId)
-      || visibleVariants[0]
+    const visibleStyles = currentItem?.styles.filter((style) => evaluateVisibleWhen(style.visibleWhen, visibilityContext)) || [];
+    const currentStyle = visibleStyles.find((style) => style.id === currentSelection?.styleId)
+      || visibleStyles.find((style) => style.id === currentItem?.defaultStyleId)
+      || visibleStyles[0]
       || null;
     const recipeResult = evaluateRecipe(document, recipe);
     const completionIssues = this.playerCompletionIssues(document, recipe);
@@ -1338,14 +1392,14 @@ export class MakerWorkspace {
         <button type="button" class="v4-player-item ${candidate.id === currentItem?.id ? 'active' : ''}" data-action="player-item" data-item-id="${escapeHtml(candidate.id)}">
           <span>${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : '<i>PNG</i>'}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
-          ${candidate.variants.length > 1 ? `<em>${escapeHtml(this.tr('styleCount', { count: candidate.variants.length }))}</em>` : ''}
+          ${candidate.styles.length > 1 ? `<em>${escapeHtml(this.tr('styleCount', { count: candidate.styles.length }))}</em>` : ''}
         </button>
       `;
     }).join('') || '';
-    const variantButtons = visibleVariants.map((candidate) => `
-      <button type="button" class="${candidate.id === currentVariant?.id ? 'active' : ''}" data-action="player-variant" data-variant-id="${escapeHtml(candidate.id)}">${escapeHtml(candidate.name)}</button>
+    const styleButtons = visibleStyles.map((candidate) => `
+      <button type="button" class="${candidate.id === currentStyle?.id ? 'active' : ''}" data-action="player-style" data-style-id="${escapeHtml(candidate.id)}">${escapeHtml(candidate.name)}</button>
     `).join('') || '';
-    const usedChannelIds = new Set(currentVariant?.layerBindings.map((binding) => binding.colorChannelId).filter(Boolean) || []);
+    const usedChannelIds = new Set(currentStyle?.colorChannelId ? [currentStyle.colorChannelId] : []);
     const colorRows = document.colorChannels.filter((channel) => usedChannelIds.has(channel.id)).map((channel) => {
       const selectedColor = recipe.colors?.find((entry) => entry.channelId === channel.id)?.swatchId || channel.defaultSwatchId;
       return `
@@ -1385,7 +1439,7 @@ export class MakerWorkspace {
             <div class="v4-player-picker">
               <header><div><span>${escapeHtml(this.tr('currentPart'))}</span><h2>${escapeHtml(part?.name || this.tr('noPlayableParts'))}</h2></div>${part && !part.required ? `<button type="button" data-action="player-none" class="secondary">${escapeHtml(this.tr('noneRemove'))}</button>` : ''}</header>
               <div class="v4-player-item-grid">${itemButtons || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noAvailableItems'))}</span></div>`}</div>
-              ${currentItem && visibleVariants.length > 1 ? `<div class="v4-player-variant-picker"><span>${escapeHtml(this.tr('style'))}</span>${variantButtons}</div>` : ''}
+              ${currentItem && visibleStyles.length > 1 ? `<div class="v4-player-style-picker"><span>${escapeHtml(this.tr('style'))}</span>${styleButtons}</div>` : ''}
               ${colorRows || ''}
               ${packs.length ? `<details class="v4-player-expansions"><summary>${escapeHtml(this.tr('expansionPacks'))}</summary>${packs.map((pack) => {
                 const compatibility = checkExpansionPackCompatibility(this.store.getState().document, pack);
@@ -1420,16 +1474,16 @@ export class MakerWorkspace {
 
   documentWithCreatorPreview() {
     const base = clone(this.runtimeDocument());
-    if (!this.dragPreview && this.bindingScalePreview == null) return base;
-    const binding = findBinding(base, this.selectedPartId, this.selectedItemId, this.selectedVariantId, this.selectedBindingId);
-    if (!binding) return base;
-    const target = binding.transform;
+    if (!this.dragPreview && this.styleScalePreview == null) return base;
+    const style = findStyle(base, this.selectedPartId, this.selectedItemId, this.selectedStyleId);
+    if (!style) return base;
+    const target = style.transform;
     if (!target) return base;
     if (this.dragPreview) {
       target.x = this.dragPreview.x;
       target.y = this.dragPreview.y;
     }
-    if (this.bindingScalePreview != null) target.scale = this.bindingScalePreview;
+    if (this.styleScalePreview != null) target.scale = this.styleScalePreview;
     return base;
   }
 
@@ -1450,10 +1504,15 @@ export class MakerWorkspace {
       const document = this.documentWithCreatorPreview();
       const recipe = this.creatorRecipe || this.store.getState().recipe;
       const scene = resolveMakerScene(document, recipe, { strict: false });
-      scene.layers = scene.layers.filter((layer) => !this.hiddenBindingIds.has(layer.bindingId));
-      if (this.creatorSolo && this.selectedBindingId) scene.layers = scene.layers.filter((layer) => layer.bindingId === this.selectedBindingId);
-      else if (this.creatorDimOthers && this.selectedBindingId) scene.layers.forEach((layer) => {
-        if (layer.bindingId !== this.selectedBindingId) layer.opacity *= 0.22;
+      const selectedStyleKey = this.currentStyleKey();
+      scene.layers = scene.layers.filter((layer) => (
+        !this.creatorHiddenPartIds.has(layer.partId)
+        && !this.hiddenStyleKeys.has(styleSceneKey(layer.partId, layer.itemId, layer.styleId))
+      ));
+      if (this.creatorSolo && selectedStyleKey) {
+        scene.layers = scene.layers.filter((layer) => styleSceneKey(layer.partId, layer.itemId, layer.styleId) === selectedStyleKey);
+      } else if (this.creatorDimOthers && selectedStyleKey) scene.layers.forEach((layer) => {
+        if (styleSceneKey(layer.partId, layer.itemId, layer.styleId) !== selectedStyleKey) layer.opacity *= 0.22;
       });
       scene.layers.forEach((layer) => this.ensureAssetAlias(layer.assetId));
       const result = await renderResolvedScene(scene, canvas, {
@@ -1507,9 +1566,10 @@ export class MakerWorkspace {
     if (!canvas || canvas.dataset.dragReady === 'true') return;
     canvas.dataset.dragReady = 'true';
     canvas.addEventListener('pointerdown', (event) => {
-      const { binding } = this.selectedCreatorRecords();
-      if (!binding || event.button !== 0) return;
-      const effectiveTransform = effectiveBindingTransform(this.store.getState().document, binding);
+      const { part, item, style } = this.selectedCreatorRecords();
+      if (!part || !item || !style?.assetId || style.positionLocked || style.styleLocked || event.button !== 0) return;
+      const selection = { partId: part.id, itemId: item.id, styleId: style.id };
+      const effectiveTransform = effectiveStyleTransform(this.store.getState().document, style);
       const rect = canvas.getBoundingClientRect();
       const start = {
         clientX: event.clientX,
@@ -1536,13 +1596,13 @@ export class MakerWorkspace {
         const preview = this.dragPreview;
         this.dragPreview = null;
         if (!preview || (preview.x === start.x && preview.y === start.y)) return;
-        this.executeDocument('Move layer on Canvas', ({ document }) => {
-          const target = findBinding(document, this.selectedPartId, this.selectedItemId, this.selectedVariantId, this.selectedBindingId);
-          if (!target) return;
+        this.executeDocument('Move Style on Canvas', ({ document }) => {
+          const target = findStyle(document, selection.partId, selection.itemId, selection.styleId);
+          if (!target || target.positionLocked || target.styleLocked) return;
           target.transform.x = preview.x;
           target.transform.y = preview.y;
           target.positionConfirmed = false;
-          this.editingPositionBindingId = target.id;
+          this.editingPositionStyleKey = styleSceneKey(selection.partId, selection.itemId, selection.styleId);
         });
       };
       canvas.addEventListener('pointermove', move);
@@ -1557,7 +1617,7 @@ export class MakerWorkspace {
     this.store.execute(label, (next) => {
       const published = this.context?.publishedDocument;
       if (this.context?.isPublished
-        && isMakerV4Document(published)
+        && isMakerV5Document(published)
         && next.document.version.versionId === published.version.versionId) {
         const number = Math.max(Number(next.document.version.number || 1), Number(published.version.number || 1)) + 1;
         next.document.version = {
@@ -1594,13 +1654,13 @@ export class MakerWorkspace {
 
   captureCreatorText(input) {
     const action = input?.dataset?.action;
-    if (!['part-name', 'item-name', 'variant-name', 'track-name', 'channel-name', 'swatch-name'].includes(action)) return false;
+    if (!['part-name', 'item-name', 'style-name', 'track-name', 'channel-name', 'swatch-name'].includes(action)) return false;
     this.pendingCreatorText = {
       action,
       value: String(input.value || ''),
       partId: this.selectedPartId,
       itemId: this.selectedItemId,
-      variantId: this.selectedVariantId,
+      styleId: this.selectedStyleId,
       trackId: input.dataset.trackId || this.selectedTrackId,
       channelId: this.selectedChannelId,
       swatchId: input.dataset.swatchId || '',
@@ -1617,7 +1677,7 @@ export class MakerWorkspace {
     const currentChannel = currentDocument.colorChannels.find((candidate) => candidate.id === pending.channelId);
     const currentValue = pending.action === 'part-name' ? findPart(currentDocument, pending.partId)?.name
       : pending.action === 'item-name' ? findItem(currentDocument, pending.partId, pending.itemId)?.name
-        : pending.action === 'variant-name' ? findVariant(currentDocument, pending.partId, pending.itemId, pending.variantId)?.name
+        : pending.action === 'style-name' ? findStyle(currentDocument, pending.partId, pending.itemId, pending.styleId)?.name
           : pending.action === 'track-name' ? currentDocument.layerTracks.find((candidate) => candidate.id === pending.trackId)?.name
             : pending.action === 'channel-name' ? currentChannel?.name
               : currentChannel?.swatches.find((candidate) => candidate.id === pending.swatchId)?.name;
@@ -1625,7 +1685,7 @@ export class MakerWorkspace {
     this.executeDocument({
       'part-name': 'Rename Part',
       'item-name': 'Rename Item',
-      'variant-name': 'Rename Style',
+      'style-name': 'Rename Style',
       'track-name': 'Rename Layer Track',
       'channel-name': 'Rename Color Channel',
       'swatch-name': 'Rename color preset',
@@ -1636,12 +1696,12 @@ export class MakerWorkspace {
       } else if (pending.action === 'item-name') {
         const target = findItem(document, pending.partId, pending.itemId);
         if (target && value) target.name = value;
-      } else if (pending.action === 'variant-name') {
-        const target = findVariant(document, pending.partId, pending.itemId, pending.variantId);
-        if (target && value) target.name = value;
+      } else if (pending.action === 'style-name') {
+        const target = findStyle(document, pending.partId, pending.itemId, pending.styleId);
+        if (target && !target.styleLocked && value) target.name = value;
       } else if (pending.action === 'track-name') {
         const target = document.layerTracks.find((candidate) => candidate.id === pending.trackId);
-        if (target && value) target.name = value;
+        if (target && !target.locked && value) target.name = value;
       } else {
         const channel = document.colorChannels.find((candidate) => candidate.id === pending.channelId);
         if (pending.action === 'channel-name' && channel && value) channel.name = value;
@@ -1666,7 +1726,7 @@ export class MakerWorkspace {
     const state = this.store?.getState();
     if (!state) return;
     const document = state.document;
-    const { part, item, variant, binding } = this.selectedCreatorRecords(document);
+    const { part, item, style } = this.selectedCreatorRecords(document);
     if (action === 'creator-tab') {
       this.openCreatorTab(button.dataset.tab);
       return;
@@ -1680,10 +1740,11 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'select-part') {
+      this.dragPreview = null;
+      this.styleScalePreview = null;
       this.selectedPartId = button.dataset.partId;
       this.selectedItemId = '';
-      this.selectedVariantId = '';
-      this.selectedBindingId = '';
+      this.selectedStyleId = '';
       this.ensureCreatorSelection(document);
       this.render();
       return;
@@ -1691,38 +1752,21 @@ export class MakerWorkspace {
     if (action === 'select-item') {
       const selectedItem = findItem(document, this.selectedPartId, button.dataset.itemId);
       if (!selectedItem) return;
+      this.dragPreview = null;
+      this.styleScalePreview = null;
       this.selectedItemId = selectedItem.id;
-      this.selectedVariantId = selectedItem.defaultVariantId || selectedItem.variants[0]?.id || '';
-      this.selectedBindingId = '';
+      this.selectedStyleId = selectedItem.defaultStyleId || selectedItem.styles[0]?.id || '';
       this.ensureCreatorSelection(document);
-      this.creatorRecipe = clone(this.creatorRecipe || state.recipe);
-      replaceRecipeSelection(this.creatorRecipe, {
-        partId: this.selectedPartId,
-        itemId: selectedItem.id,
-        variantId: this.selectedVariantId,
-      });
+      this.syncCreatorRecipeSelection();
       this.render();
       return;
     }
-    if (action === 'select-variant') {
-      this.selectedVariantId = button.dataset.variantId;
-      this.selectedBindingId = '';
+    if (action === 'select-style') {
+      this.dragPreview = null;
+      this.styleScalePreview = null;
+      this.selectedStyleId = button.dataset.styleId;
       this.ensureCreatorSelection(document);
-      this.creatorRecipe = clone(this.creatorRecipe || state.recipe);
-      replaceRecipeSelection(this.creatorRecipe, {
-        partId: this.selectedPartId,
-        itemId: this.selectedItemId,
-        variantId: this.selectedVariantId,
-      });
-      this.render();
-      return;
-    }
-    if (action === 'select-binding') {
-      this.selectedBindingId = button.dataset.bindingId;
-      const selectedBinding = findBinding(document, this.selectedPartId, this.selectedItemId, this.selectedVariantId, this.selectedBindingId);
-      this.selectedTrackId = selectedBinding?.layerTrackId || this.selectedTrackId;
-      this.selectedChannelId = selectedBinding?.colorChannelId || this.selectedChannelId;
-      this.editingPositionBindingId = selectedBinding?.positionConfirmed === false ? selectedBinding.id : '';
+      this.syncCreatorRecipeSelection();
       this.render();
       return;
     }
@@ -1744,6 +1788,7 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'open-player') {
+      this.playerCreatorPreview = true;
       this.playerRecipe = clone(this.creatorRecipe || state.recipe);
       this.playerUndo = [];
       this.playerRedo = [];
@@ -1781,15 +1826,14 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'focus-issue') {
-      const [partId, itemId, variantId, bindingId] = String(button.dataset.issuePath || '').split('/');
-      const target = findBinding(document, partId, itemId, variantId, bindingId);
+      const [partId, itemId, styleId] = String(button.dataset.issuePath || '').split('/');
+      const target = findStyle(document, partId, itemId, styleId);
       if (!target) return;
       this.selectedPartId = partId;
       this.selectedItemId = itemId;
-      this.selectedVariantId = variantId;
-      this.selectedBindingId = bindingId;
-      this.selectedTrackId = target.layerTrackId;
-      this.editingPositionBindingId = bindingId;
+      this.selectedStyleId = styleId;
+      this.selectedTrackId = target.layerTrackId || this.selectedTrackId;
+      this.editingPositionStyleKey = target.positionLocked || target.styleLocked ? '' : styleSceneKey(partId, itemId, styleId);
       this.creatorTab = 'structure';
       this.render();
       return;
@@ -1804,9 +1848,27 @@ export class MakerWorkspace {
       this.render();
       return;
     }
-    if (action === 'toggle-binding-hidden' && binding) {
-      if (this.hiddenBindingIds.has(binding.id)) this.hiddenBindingIds.delete(binding.id);
-      else this.hiddenBindingIds.add(binding.id);
+    if (action === 'toggle-style-hidden' && style) {
+      const key = styleSceneKey(part.id, item.id, style.id);
+      if (this.hiddenStyleKeys.has(key)) this.hiddenStyleKeys.delete(key);
+      else this.hiddenStyleKeys.add(key);
+      this.render();
+      return;
+    }
+    if (action === 'toggle-part-preview') {
+      const partId = button.dataset.partId;
+      if (this.creatorHiddenPartIds.has(partId)) this.creatorHiddenPartIds.delete(partId);
+      else this.creatorHiddenPartIds.add(partId);
+      this.render();
+      return;
+    }
+    if (action === 'show-all-parts') {
+      this.creatorHiddenPartIds.clear();
+      this.render();
+      return;
+    }
+    if (action === 'show-current-part' && part) {
+      this.creatorHiddenPartIds = new Set(document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => candidate.id));
       this.render();
       return;
     }
@@ -1820,15 +1882,22 @@ export class MakerWorkspace {
       const nextPart = createPart(document, `Part ${document.parts.length + 1}`);
       this.selectedPartId = nextPart.id;
       this.selectedItemId = '';
+      this.selectedStyleId = '';
       this.executeDocument('Add Part', ({ document: next }) => { next.parts.push(nextPart); });
+      this.syncCreatorRecipeSelection();
       return;
     }
     if (action === 'copy-part' && part) {
       this.executeDocument('Duplicate Part', ({ document: next }) => {
         const duplicate = duplicatePart(next, part.id);
-        this.selectedPartId = duplicate?.id || this.selectedPartId;
-        this.selectedItemId = duplicate?.items[0]?.id || '';
+        if (!duplicate) return;
+        const duplicateItem = duplicate.items.find((candidate) => candidate.id === duplicate.defaultItemId) || duplicate.items[0] || null;
+        const duplicateStyle = duplicateItem?.styles.find((candidate) => candidate.id === duplicateItem.defaultStyleId) || duplicateItem?.styles[0] || null;
+        this.selectedPartId = duplicate.id;
+        this.selectedItemId = duplicateItem?.id || '';
+        this.selectedStyleId = duplicateStyle?.id || '';
       });
+      this.syncCreatorRecipeSelection();
       return;
     }
     if (action === 'delete-part' && part && this.confirmDelete(this.tr('deletePartConfirm', { name: part.name }))) {
@@ -1843,31 +1912,32 @@ export class MakerWorkspace {
         removeUnreferencedAssetMetadata(next);
       });
       this.selectedPartId = '';
+      this.selectedItemId = '';
+      this.selectedStyleId = '';
+      this.ensureCreatorSelection(this.store.getState().document);
+      this.syncCreatorRecipeSelection();
       return;
     }
     if (action === 'add-item' && part) {
       const nextItem = createItem(part, `Item ${part.items.length + 1}`);
       this.selectedItemId = nextItem.id;
-      this.selectedVariantId = nextItem.defaultVariantId;
-      this.selectedBindingId = '';
-      this.executeDocument('Add Item', ({ document: next, recipe: nextRecipe }) => {
+      this.selectedStyleId = '';
+      this.executeDocument('Add Item', ({ document: next }) => {
         const target = findPart(next, part.id);
         target.items.push(nextItem);
         target.defaultItemId ||= nextItem.id;
-        replaceRecipeSelection(nextRecipe, { partId: target.id, itemId: nextItem.id, variantId: nextItem.defaultVariantId });
       });
+      this.syncCreatorRecipeSelection();
       return;
     }
     if (action === 'copy-item' && item) {
       this.executeDocument('Duplicate Item', ({ document: next }) => {
-        const targetPart = findPart(next, part.id);
-        const duplicate = clone(findItem(next, part.id, item.id));
-        duplicate.id = uniqueDocumentId(`${item.id}-copy`, [targetPart.items], 'item-copy');
-        duplicate.name = `${item.name} Copy`;
-        targetPart.items.push(duplicate);
+        const duplicate = duplicateItem(next, part.id, item.id);
+        if (!duplicate) return;
         this.selectedItemId = duplicate.id;
-        this.selectedVariantId = duplicate.defaultVariantId;
+        this.selectedStyleId = duplicate.defaultStyleId || duplicate.styles[0]?.id || '';
       });
+      this.syncCreatorRecipeSelection();
       return;
     }
     if (action === 'delete-item' && item && this.confirmDelete(this.tr('deleteItemConfirm', { name: item.name }))) {
@@ -1879,72 +1949,61 @@ export class MakerWorkspace {
         removeUnreferencedAssetMetadata(next);
       });
       this.selectedItemId = '';
+      this.selectedStyleId = '';
+      this.ensureCreatorSelection(this.store.getState().document);
+      this.syncCreatorRecipeSelection();
       return;
     }
-    if (action === 'add-variant' && item) {
-      const nextVariant = createVariant(item, `Style ${item.variants.length + 1}`);
-      this.selectedVariantId = nextVariant.id;
-      this.selectedBindingId = '';
-      this.executeDocument('Add Style', ({ document: next }) => findItem(next, part.id, item.id).variants.push(nextVariant));
-      return;
-    }
-    if (action === 'copy-variant' && variant) {
-      this.executeDocument('Duplicate Style', ({ document: next }) => {
+    if (action === 'add-style' && item) {
+      const nextStyle = createStyle(item, `Style ${item.styles.length + 1}`);
+      this.selectedStyleId = nextStyle.id;
+      this.executeDocument('Add Style', ({ document: next }) => {
         const targetItem = findItem(next, part.id, item.id);
-        const duplicate = clone(findVariant(next, part.id, item.id, variant.id));
-        duplicate.id = uniqueDocumentId(`${variant.id}-copy`, [targetItem.variants], 'style-copy');
-        duplicate.name = `${variant.name} Copy`;
-        targetItem.variants.push(duplicate);
-        this.selectedVariantId = duplicate.id;
+        targetItem.styles.push(nextStyle);
+        targetItem.defaultStyleId ||= nextStyle.id;
       });
+      this.syncCreatorRecipeSelection();
       return;
     }
-    if (action === 'delete-variant' && variant && item.variants.length > 1 && this.confirmDelete(this.tr('deleteStyleConfirm', { name: variant.name }))) {
+    if (action === 'copy-style' && style) {
+      this.executeDocument('Duplicate Style', ({ document: next }) => {
+        const duplicate = duplicateStyle(next, part.id, item.id, style.id);
+        if (!duplicate) return;
+        this.selectedStyleId = duplicate.id;
+      });
+      this.syncCreatorRecipeSelection();
+      return;
+    }
+    if (action === 'delete-style' && style && !style.styleLocked && this.confirmDelete(this.tr('deleteStyleConfirm', { name: style.name }))) {
       this.executeDocument('Delete Style', ({ document: next }) => {
         const targetItem = findItem(next, part.id, item.id);
-        targetItem.variants = targetItem.variants.filter((candidate) => candidate.id !== variant.id);
-        if (targetItem.defaultVariantId === variant.id) targetItem.defaultVariantId = targetItem.variants[0]?.id || null;
+        targetItem.styles = targetItem.styles.filter((candidate) => candidate.id !== style.id);
+        if (targetItem.defaultStyleId === style.id) targetItem.defaultStyleId = targetItem.styles[0]?.id || null;
         removeUnreferencedAssetMetadata(next);
+        this.selectedStyleId = targetItem.defaultStyleId || targetItem.styles[0]?.id || '';
       });
-      this.selectedVariantId = '';
+      this.syncCreatorRecipeSelection();
       return;
     }
-    if (action === 'add-empty-binding' && variant && document.layerTracks.length) {
-      this.executeDocument('Add LayerBinding', ({ document: next }) => {
-        const target = findVariant(next, part.id, item.id, variant.id);
-        const placeholderId = uniqueDocumentId('pending-asset', [next.assets], 'pending-asset');
-        next.assets.push({
-          id: placeholderId,
-          identifier: `pending/${placeholderId}.png`,
-          kind: 'pending-layer',
-          mediaType: 'image/png',
-          width: next.canvas.width,
-          height: next.canvas.height,
-        });
-        target.layerBindings.push(createLayerBinding(target, this.selectedTrackId || next.layerTracks[0].id, placeholderId));
-        this.selectedBindingId = target.layerBindings.at(-1).id;
+    if (action === 'set-default-style' && style && !style.styleLocked) {
+      this.executeDocument('Set default Style', ({ document: next }) => {
+        const targetItem = findItem(next, part.id, item.id);
+        targetItem.defaultStyleId = style.id;
+        const selection = next.defaultRecipe.selections.find((candidate) => candidate.partId === part.id && candidate.itemId === item.id);
+        if (selection) selection.styleId = style.id;
       });
       return;
     }
-    if (action === 'delete-binding' && binding) {
-      this.executeDocument('Delete LayerBinding', ({ document: next }) => {
-        const target = findVariant(next, part.id, item.id, variant.id);
-        target.layerBindings = target.layerBindings.filter((candidate) => candidate.id !== binding.id);
-        removeUnreferencedAssetMetadata(next);
-      });
-      this.selectedBindingId = '';
-      return;
-    }
-    if (action === 'confirm-position' && binding) {
-      this.editingPositionBindingId = '';
-      this.executeDocument('Confirm layer position', ({ document: next }) => {
-        const target = findBinding(next, part.id, item.id, variant.id, binding.id);
+    if (action === 'confirm-position' && style && !style.styleLocked && !style.positionLocked) {
+      this.editingPositionStyleKey = '';
+      this.executeDocument('Confirm Style position', ({ document: next }) => {
+        const target = findStyle(next, part.id, item.id, style.id);
         target.positionConfirmed = true;
       });
       return;
     }
-    if (action === 'edit-position' && binding) {
-      this.editingPositionBindingId = binding.id;
+    if (action === 'edit-position' && style && !style.styleLocked && !style.positionLocked) {
+      this.editingPositionStyleKey = styleSceneKey(part.id, item.id, style.id);
       this.render();
       return;
     }
@@ -1961,13 +2020,30 @@ export class MakerWorkspace {
     if (action === 'move-track') {
       const index = document.layerTracks.findIndex((track) => track.id === button.dataset.trackId);
       const target = button.dataset.direction === 'up' ? index + 1 : index - 1;
-      this.executeDocument('Reorder Layer Tracks', ({ document: next }) => moveArrayEntry(next.layerTracks, index, target));
+      if (index < 0 || target < 0 || target >= document.layerTracks.length || document.layerTracks[index].locked || document.layerTracks[target].locked) return;
+      this.executeDocument('Reorder Layer Tracks', ({ document: next }) => {
+        if (next.layerTracks[index]?.locked || next.layerTracks[target]?.locked) return;
+        moveArrayEntry(next.layerTracks, index, target);
+      });
+      return;
+    }
+    if (action === 'toggle-track-lock') {
+      const trackId = button.dataset.trackId;
+      this.executeDocument('Toggle Layer Track lock', ({ document: next }) => {
+        const track = next.layerTracks.find((candidate) => candidate.id === trackId);
+        if (track) track.locked = !track.locked;
+      });
       return;
     }
     if (action === 'delete-track') {
       const trackId = button.dataset.trackId;
-      const used = document.parts.some((candidate) => candidate.items.some((candidateItem) => candidateItem.variants.some((candidateVariant) => candidateVariant.layerBindings.some((candidateBinding) => candidateBinding.layerTrackId === trackId))));
-      if (!used) this.executeDocument('Delete Layer Track', ({ document: next }) => { next.layerTracks = next.layerTracks.filter((track) => track.id !== trackId); });
+      const track = document.layerTracks.find((candidate) => candidate.id === trackId);
+      if (!track || track.locked) return;
+      const used = document.parts.some((candidate) => candidate.items.some((candidateItem) => candidateItem.styles.some((candidateStyle) => candidateStyle.layerTrackId === trackId)));
+      if (!used) this.executeDocument('Delete Layer Track', ({ document: next }) => {
+        const current = next.layerTracks.find((candidate) => candidate.id === trackId);
+        if (!current?.locked) next.layerTracks = next.layerTracks.filter((candidate) => candidate.id !== trackId);
+      });
       return;
     }
     if (action === 'approve-track-alignment') {
@@ -1986,14 +2062,21 @@ export class MakerWorkspace {
     }
     if (action === 'delete-channel') {
       const channelId = this.selectedChannelId;
+      const lockedLinkedStyle = document.parts.some((candidate) => candidate.items.some((candidateItem) => candidateItem.styles.some((candidateStyle) => (
+        candidateStyle.styleLocked && candidateStyle.colorChannelId === channelId
+      ))));
+      if (lockedLinkedStyle) return;
       this.executeDocument('Delete Color Channel', ({ document: next }) => {
+        const stillLocked = next.parts.some((candidate) => candidate.items.some((candidateItem) => candidateItem.styles.some((candidateStyle) => (
+          candidateStyle.styleLocked && candidateStyle.colorChannelId === channelId
+        ))));
+        if (stillLocked) return;
         next.colorChannels = next.colorChannels.filter((channel) => channel.id !== channelId);
-        next.parts.forEach((candidate) => candidate.items.forEach((candidateItem) => candidateItem.variants.forEach((candidateVariant) => candidateVariant.layerBindings.forEach((candidateBinding) => {
-          if (candidateBinding.colorChannelId === channelId) {
-            candidateBinding.colorChannelId = null;
-            candidateBinding.assetsBySwatch = [];
+        next.parts.forEach((candidate) => candidate.items.forEach((candidateItem) => candidateItem.styles.forEach((candidateStyle) => {
+          if (candidateStyle.colorChannelId === channelId) {
+            candidateStyle.colorChannelId = null;
           }
-        }))));
+        })));
       });
       this.selectedChannelId = '';
       return;
@@ -2015,9 +2098,6 @@ export class MakerWorkspace {
         if (!target || target.swatches.length <= 1) return;
         target.swatches = target.swatches.filter((swatch) => swatch.id !== swatchId);
         if (target.defaultSwatchId === swatchId) target.defaultSwatchId = target.swatches[0]?.id || null;
-        next.parts.forEach((candidate) => candidate.items.forEach((candidateItem) => candidateItem.variants.forEach((candidateVariant) => candidateVariant.layerBindings.forEach((candidateBinding) => {
-          if (candidateBinding.colorChannelId === target.id) candidateBinding.assetsBySwatch = candidateBinding.assetsBySwatch.filter((mapping) => mapping.swatchId !== swatchId);
-        }))));
       });
       return;
     }
@@ -2067,7 +2147,7 @@ export class MakerWorkspace {
           if (!selection) return;
           candidate.defaultItemId = selection.itemId;
           const selectedItem = candidate.items.find((candidateItem) => candidateItem.id === selection.itemId);
-          if (selectedItem) selectedItem.defaultVariantId = selection.variantId || selectedItem.defaultVariantId;
+          if (selectedItem) selectedItem.defaultStyleId = selection.styleId || selectedItem.defaultStyleId;
         });
         next.colorChannels.forEach((channel) => {
           const selection = creatorRecipe.colors?.find((entry) => entry.channelId === channel.id);
@@ -2105,8 +2185,10 @@ export class MakerWorkspace {
       if (canvas) canvas.style.width = `${Math.round(this.creatorZoom * 100)}%`;
       return;
     }
-    if (action === 'binding-scale-preview') {
-      this.bindingScalePreview = Math.max(0.01, Number(event.target.value || 100) / 100);
+    if (action === 'style-scale-preview') {
+      const { style } = this.selectedCreatorRecords();
+      if (!style || style.positionLocked || style.styleLocked) return;
+      this.styleScalePreview = Math.max(0.01, Number(event.target.value || 100) / 100);
       this.drawCreatorCanvas();
     }
   }
@@ -2121,7 +2203,7 @@ export class MakerWorkspace {
     }
     const state = this.store.getState();
     const document = state.document;
-    const { part, item, variant, binding } = this.selectedCreatorRecords(document);
+    const { part, item, style } = this.selectedCreatorRecords(document);
     if (action === 'import-project' && input.files?.[0]) {
       await this.importProjectArchive(input.files[0]);
       input.value = '';
@@ -2129,13 +2211,15 @@ export class MakerWorkspace {
     }
     if (action === 'batch-import') {
       const files = [...(input.files || [])];
-      if (!files.length || !variant) return;
+      if (!files.length || !item) return;
       this.pendingImport = {
-        mode: 'variant',
+        mode: 'item',
         partId: part.id,
         itemId: item.id,
-        variantId: variant.id,
-        mapping: buildAssetImportMapping(files, document.layerTracks),
+        mapping: buildAssetImportMapping(files, document.layerTracks).map((mapping, index) => ({
+          ...mapping,
+          suggestedStyleName: safeFileName(mapping.fileName, `style-${index + 1}`).replaceAll('-', ' '),
+        })),
       };
       this.render();
       return;
@@ -2158,14 +2242,6 @@ export class MakerWorkspace {
       }
       return;
     }
-    if (action === 'import-color') {
-      const mapping = this.pendingImport?.mapping[Number(input.dataset.importIndex)];
-      if (mapping) {
-        mapping.colorDefinition = input.value;
-        this.render();
-      }
-      return;
-    }
     if (action === 'import-track') {
       const mapping = this.pendingImport?.mapping[Number(input.dataset.importIndex)];
       if (mapping) {
@@ -2177,6 +2253,11 @@ export class MakerWorkspace {
     if (action === 'import-track-name') {
       const mapping = this.pendingImport?.mapping[Number(input.dataset.importIndex)];
       if (mapping) mapping.suggestedTrackName = input.value.trim() || mapping.suggestedTrackName;
+      return;
+    }
+    if (action === 'import-style-name') {
+      const mapping = this.pendingImport?.mapping[Number(input.dataset.importIndex)];
+      if (mapping) mapping.suggestedStyleName = input.value.trim() || mapping.suggestedStyleName;
       return;
     }
     if (action === 'part-icon' && part && input.files?.[0]) {
@@ -2197,18 +2278,8 @@ export class MakerWorkspace {
       });
       return;
     }
-    if (action === 'binding-asset' && binding && input.files?.[0]) {
-      await this.replaceBindingAsset(input.files[0], { partId: part.id, itemId: item.id, variantId: variant.id, bindingId: binding.id });
-      return;
-    }
-    if (action === 'binding-swatch-asset' && binding && input.files?.[0]) {
-      await this.replaceBindingSwatchAsset(input.files[0], {
-        partId: part.id,
-        itemId: item.id,
-        variantId: variant.id,
-        bindingId: binding.id,
-        swatchId: input.dataset.swatchId,
-      });
+    if (action === 'style-asset' && style && !style.styleLocked && input.files?.[0]) {
+      await this.replaceStyleAsset(input.files[0], { partId: part.id, itemId: item.id, styleId: style.id });
       return;
     }
     const bool = input.type === 'checkbox' ? input.checked : null;
@@ -2223,7 +2294,7 @@ export class MakerWorkspace {
       const selection = next.defaultRecipe.selections.find((candidate) => candidate.partId === target.id);
       if (selectedItem && selection) {
         selection.itemId = selectedItem.id;
-        selection.variantId = selectedItem.defaultVariantId || selectedItem.variants[0]?.id;
+        selection.styleId = selectedItem.defaultStyleId || selectedItem.styles[0]?.id;
       }
     });
     else if (action === 'item-name' && item) this.executeDocument('Rename Item', ({ document: next }) => { findItem(next, part.id, item.id).name = input.value.trim() || item.name; });
@@ -2235,65 +2306,60 @@ export class MakerWorkspace {
       const target = findItem(next, part.id, item.id);
       target.status = ['draft', 'private', 'public'].includes(input.value) ? input.value : 'draft';
     });
-    else if (action === 'variant-name' && variant) this.executeDocument('Rename Style', ({ document: next }) => { findVariant(next, part.id, item.id, variant.id).name = input.value.trim() || variant.name; });
-    else if (action === 'binding-track' && binding) this.executeDocument('Bind Layer Track', ({ document: next }) => { findBinding(next, part.id, item.id, variant.id, binding.id).layerTrackId = input.value; });
-    else if (['binding-x', 'binding-y', 'binding-scale', 'binding-rotation'].includes(action) && binding) {
-      const field = action.replace('binding-', '');
-      this.executeDocument('Edit layer transform', ({ document: next }) => {
-        const target = findBinding(next, part.id, item.id, variant.id, binding.id);
+    else if (action === 'style-name' && style && !style.styleLocked) this.executeDocument('Rename Style', ({ document: next }) => { findStyle(next, part.id, item.id, style.id).name = input.value.trim() || style.name; });
+    else if (action === 'style-locked' && style) {
+      this.executeDocument(bool ? 'Lock Style' : 'Unlock Style', ({ document: next }) => {
+        findStyle(next, part.id, item.id, style.id).styleLocked = bool;
+      });
+      if (bool) this.editingPositionStyleKey = '';
+    } else if (action === 'style-position-locked' && style && !style.styleLocked) {
+      this.executeDocument(bool ? 'Lock Style position' : 'Unlock Style position', ({ document: next }) => {
+        findStyle(next, part.id, item.id, style.id).positionLocked = bool;
+      });
+      if (bool) this.editingPositionStyleKey = '';
+    } else if (action === 'style-track' && style && !style.styleLocked) this.executeDocument('Set Style Layer Track', ({ document: next }) => {
+      findStyle(next, part.id, item.id, style.id).layerTrackId = input.value || null;
+    });
+    else if (['style-x', 'style-y', 'style-scale', 'style-rotation'].includes(action) && style && !style.styleLocked && !style.positionLocked) {
+      const field = action.replace('style-', '');
+      this.executeDocument('Edit Style transform', ({ document: next }) => {
+        const target = findStyle(next, part.id, item.id, style.id);
+        if (!target || target.styleLocked || target.positionLocked) return;
         const transform = target.transform;
         if (!transform) return;
         transform[field] = field === 'scale' ? Math.max(0.01, Number(input.value || 1)) : Number(input.value || 0);
         target.positionConfirmed = false;
-        this.editingPositionBindingId = target.id;
+        this.editingPositionStyleKey = styleSceneKey(part.id, item.id, style.id);
       });
-    } else if (action === 'binding-scale-preview' && binding) {
+    } else if (action === 'style-scale-preview' && style && !style.styleLocked && !style.positionLocked) {
       const scale = Math.max(0.01, Number(input.value || 100) / 100);
-      this.bindingScalePreview = null;
-      this.executeDocument('Scale layer on Canvas', ({ document: next }) => {
-        const target = findBinding(next, part.id, item.id, variant.id, binding.id);
+      this.styleScalePreview = null;
+      this.executeDocument('Scale Style on Canvas', ({ document: next }) => {
+        const target = findStyle(next, part.id, item.id, style.id);
+        if (!target || target.styleLocked || target.positionLocked) return;
         const transform = target.transform;
         if (!transform) return;
         transform.scale = scale;
         target.positionConfirmed = false;
-        this.editingPositionBindingId = target.id;
+        this.editingPositionStyleKey = styleSceneKey(part.id, item.id, style.id);
       });
-    } else if (action === 'binding-opacity' && binding) this.executeDocument('Change layer opacity', ({ document: next }) => { findBinding(next, part.id, item.id, variant.id, binding.id).opacity = Number(input.value || 0) / 100; });
-    else if (action === 'binding-blend' && binding) this.executeDocument('Change blend mode', ({ document: next }) => { findBinding(next, part.id, item.id, variant.id, binding.id).blendMode = input.value; });
-    else if (action === 'binding-channel' && binding) this.executeDocument('Bind smart color', ({ document: next }) => {
-      const target = findBinding(next, part.id, item.id, variant.id, binding.id);
-      target.colorChannelId = input.value || null;
-      const channel = next.colorChannels.find((candidate) => candidate.id === target.colorChannelId);
-      target.assetsBySwatch = channel?.mode === 'asset-map'
-        ? channel.swatches.slice(0, 1).map((swatch) => ({ swatchId: swatch.id, assetId: target.assetId }))
-        : [];
+    } else if (action === 'style-opacity' && style && !style.styleLocked) this.executeDocument('Change Style opacity', ({ document: next }) => { findStyle(next, part.id, item.id, style.id).opacity = Number(input.value || 0) / 100; });
+    else if (action === 'style-blend' && style && !style.styleLocked) this.executeDocument('Change Style blend mode', ({ document: next }) => { findStyle(next, part.id, item.id, style.id).blendMode = input.value; });
+    else if (action === 'style-channel' && style && !style.styleLocked) this.executeDocument('Link Style smart color', ({ document: next }) => {
+      const target = findStyle(next, part.id, item.id, style.id);
+      const channel = next.colorChannels.find((candidate) => candidate.id === input.value && candidate.mode === 'gradient-map');
+      target.colorChannelId = channel?.id || null;
     });
-    else if (action === 'binding-visible-when' && binding) this.executeDocument('Change layer visibility rule', ({ document: next }) => {
-      findBinding(next, part.id, item.id, variant.id, binding.id).visibleWhen = input.value ? { op: 'selected', partId: input.value } : null;
+    else if (action === 'style-visible-when' && style && !style.styleLocked) this.executeDocument('Change Style visibility rule', ({ document: next }) => {
+      findStyle(next, part.id, item.id, style.id).visibleWhen = input.value ? { op: 'selected', partId: input.value } : null;
     });
     else if (action === 'track-name') this.executeDocument('Rename Layer Track', ({ document: next }) => {
       const track = next.layerTracks.find((candidate) => candidate.id === input.dataset.trackId);
-      if (track) track.name = input.value.trim() || track.name;
+      if (track && !track.locked) track.name = input.value.trim() || track.name;
     });
     else if (action === 'channel-name') this.executeDocument('Rename Color Channel', ({ document: next }) => {
       const channel = next.colorChannels.find((candidate) => candidate.id === this.selectedChannelId);
       if (channel) channel.name = input.value.trim() || channel.name;
-    });
-    else if (action === 'channel-mode') this.executeDocument('Change Color Channel mode', ({ document: next }) => {
-      const channel = next.colorChannels.find((candidate) => candidate.id === this.selectedChannelId);
-      if (!channel) return;
-      channel.mode = input.value;
-      channel.swatches.forEach((swatch) => {
-        swatch.stops = channel.mode === 'gradient-map' && swatch.stops.length < 2
-          ? [{ offset: 0, color: '#151020' }, { offset: 0.5, color: swatch.hintColor }, { offset: 1, color: '#ffffff' }]
-          : channel.mode === 'asset-map' ? [] : swatch.stops;
-      });
-      next.parts.forEach((candidate) => candidate.items.forEach((candidateItem) => candidateItem.variants.forEach((candidateVariant) => candidateVariant.layerBindings.forEach((candidateBinding) => {
-        if (candidateBinding.colorChannelId !== channel.id) return;
-        candidateBinding.assetsBySwatch = channel.mode === 'asset-map'
-          ? channel.swatches.slice(0, 1).map((swatch) => ({ swatchId: swatch.id, assetId: candidateBinding.assetId }))
-          : [];
-      }))));
     });
     else if (action === 'channel-default-swatch') this.executeDocument('Change default color', ({ document: next }) => {
       const channel = next.colorChannels.find((candidate) => candidate.id === this.selectedChannelId);
@@ -2360,7 +2426,7 @@ export class MakerWorkspace {
     this.store.setSaveState('saving', 'Reading Maker project…');
     try {
       const imported = await readMakerProjectArchive(file);
-      if (!isMakerV4Document(imported.document)) throw new Error('The project does not contain a Maker v4 document.');
+      if (!isMakerV5Document(imported.document)) throw new Error('The project does not contain a Maker v5 document.');
       const document = this.normalizeDocument(imported.document);
       this.assetResolver.clear();
       this.assets.forEach(revokeRuntimeAsset);
@@ -2379,75 +2445,43 @@ export class MakerWorkspace {
     }
   }
 
-  async replaceBindingAsset(file, selection) {
+  async replaceStyleAsset(file, selection) {
     const inspection = await inspectPngAsset(file, this.store.getState().document.canvas);
     const thumbnailBlob = await createAlphaCroppedThumbnail(file);
     const assetId = createAssetId(file.name);
     const record = runtimeAssetRecord({ assetId, blob: file, fileName: file.name, width: inspection.width, height: inspection.height, alphaBounds: inspection.alphaBounds, thumbnailBlob });
-    record.kind = 'layer';
+    record.kind = 'style';
     record.identifier = `${safeFileName(file.name, assetId)}-${assetId.slice(-8)}.png`;
     this.assets.set(assetId, record);
     await upsertMakerWorkspaceAssets(this.makerKey, [{ ...record, url: '', thumbnailUrl: '' }]);
     this.assetResolver.clear();
     this.assetResolver = createCachedAssetResolver(this.assets);
-    this.editingPositionBindingId = inspection.fullCanvas ? '' : selection.bindingId;
-    this.executeDocument('Replace layer PNG', ({ document }) => {
+    const currentStyle = findStyle(this.store.getState().document, selection.partId, selection.itemId, selection.styleId);
+    if (!currentStyle || currentStyle.styleLocked) return;
+    const keepPosition = currentStyle.positionLocked;
+    this.editingPositionStyleKey = inspection.fullCanvas || keepPosition
+      ? ''
+      : styleSceneKey(selection.partId, selection.itemId, selection.styleId);
+    this.executeDocument('Replace Style PNG', ({ document }) => {
       addDocumentAsset(document, record);
-      const binding = findBinding(document, selection.partId, selection.itemId, selection.variantId, selection.bindingId);
-      const previousAssetId = binding.assetId;
-      binding.assetId = assetId;
-      const track = document.layerTracks.find((candidate) => candidate.id === binding.layerTrackId);
+      const style = findStyle(document, selection.partId, selection.itemId, selection.styleId);
+      if (!style || style.styleLocked) return;
+      const previousAssetId = style.assetId;
+      style.assetId = assetId;
+      const track = document.layerTracks.find((candidate) => candidate.id === style.layerTrackId);
       if (track) {
         track.alignmentApproved = false;
         if (!track.referenceAssetId || track.referenceAssetId === previousAssetId) track.referenceAssetId = assetId;
       }
-      binding.transform = {
-        x: inspection.initialTransform.x,
-        y: inspection.initialTransform.y,
-        scale: inspection.initialTransform.scaleX,
-        rotation: 0,
-      };
-      binding.inheritTrackTransform = false;
-      binding.positionConfirmed = inspection.fullCanvas;
-      if (binding.colorChannelId) {
-        const channel = document.colorChannels.find((candidate) => candidate.id === binding.colorChannelId);
-        binding.assetsBySwatch = channel?.mode === 'asset-map'
-          ? channel.swatches.slice(0, 1).map((swatch) => ({ swatchId: swatch.id, assetId }))
-          : [];
+      if (!style.positionLocked) {
+        style.transform = {
+          x: inspection.initialTransform.x,
+          y: inspection.initialTransform.y,
+          scale: inspection.initialTransform.scale,
+          rotation: 0,
+        };
+        style.positionConfirmed = inspection.fullCanvas;
       }
-      removeUnreferencedAssetMetadata(document);
-    });
-  }
-
-  async replaceBindingSwatchAsset(file, selection) {
-    const inspection = await inspectPngAsset(file, this.store.getState().document.canvas);
-    const thumbnailBlob = await createAlphaCroppedThumbnail(file);
-    const assetId = createAssetId(`${file.name}-${selection.swatchId}`);
-    const record = runtimeAssetRecord({
-      assetId,
-      blob: file,
-      fileName: file.name,
-      width: inspection.width,
-      height: inspection.height,
-      alphaBounds: inspection.alphaBounds,
-      thumbnailBlob,
-    });
-    record.kind = 'layer';
-    record.identifier = `${safeFileName(file.name, assetId)}-${assetId.slice(-8)}.png`;
-    this.assets.set(assetId, record);
-    await upsertMakerWorkspaceAssets(this.makerKey, [{ ...record, url: '', thumbnailUrl: '' }]);
-    this.assetResolver.clear();
-    this.assetResolver = createCachedAssetResolver(this.assets);
-    this.executeDocument(`Upload ${selection.swatchId} color artwork`, ({ document }) => {
-      addDocumentAsset(document, record);
-      const binding = findBinding(document, selection.partId, selection.itemId, selection.variantId, selection.bindingId);
-      const channel = document.colorChannels.find((candidate) => candidate.id === binding?.colorChannelId);
-      if (!binding || channel?.mode !== 'asset-map' || !channel.swatches.some((swatch) => swatch.id === selection.swatchId)) return;
-      binding.assetsBySwatch ||= [];
-      const index = binding.assetsBySwatch.findIndex((mapping) => mapping.swatchId === selection.swatchId);
-      const mapping = { swatchId: selection.swatchId, assetId };
-      if (index >= 0) binding.assetsBySwatch[index] = mapping;
-      else binding.assetsBySwatch.push(mapping);
       removeUnreferencedAssetMetadata(document);
     });
   }
@@ -2466,14 +2500,13 @@ export class MakerWorkspace {
       isolatedPart.items = isolatedPart.items.filter((candidate) => candidate.id === itemId);
       const isolatedItem = isolatedPart.items[0];
       isolatedItem.visibleWhen = null;
-      isolatedItem.variants.forEach((variant) => {
-        variant.visibleWhen = null;
-        variant.layerBindings.forEach((binding) => { binding.visibleWhen = null; });
+      isolatedItem.styles.forEach((style) => {
+        style.visibleWhen = null;
       });
       isolated.parts = [isolatedPart];
-      const variantId = isolatedItem.defaultVariantId || isolatedItem.variants[0]?.id;
+      const styleId = isolatedItem.defaultStyleId || isolatedItem.styles[0]?.id;
       const recipe = {
-        selections: [{ partId, itemId, variantId }],
+        selections: [{ partId, itemId, styleId }],
         colors: clone(document.defaultRecipe.colors || []),
       };
       const canvas = globalThis.document.createElement('canvas');
@@ -2516,11 +2549,12 @@ export class MakerWorkspace {
     if (!pending || !this.store) return;
     this.store.setSaveState('saving', this.tr('inspectingPngs', { count: pending.mapping.length }));
     try {
-      const targetKeys = pending.mapping.map((mapping) => {
-        const target = mapping.targetDefinition || `${pending.partId}::${pending.itemId}::${pending.variantId}`;
-        return `${target}|${mapping.trackId || `new:${mapping.suggestedTrackName}`}|${mapping.colorDefinition || 'main'}`;
-      });
-      if (new Set(targetKeys).size !== targetKeys.length) throw new Error('Two PNG files map to the same Item, Style, Layer Track and Color. Resolve the highlighted duplicate rows first.');
+      if (pending.mode === 'project') {
+        const targetKeys = pending.mapping.map((mapping) => mapping.targetDefinition);
+        if (new Set(targetKeys).size !== targetKeys.length) {
+          throw new Error('Two PNG files map to the same Style. Each Style can own only one PNG; choose or create a different Style.');
+        }
+      }
       const canvas = this.store.getState().document.canvas;
       const prepared = await Promise.all(pending.mapping.map(async (mapping) => {
         const inspection = await inspectPngAsset(mapping.file, canvas);
@@ -2535,7 +2569,7 @@ export class MakerWorkspace {
           alphaBounds: inspection.alphaBounds,
           thumbnailBlob,
         });
-        record.kind = 'layer';
+        record.kind = 'style';
         record.identifier = `${safeFileName(mapping.fileName, assetId)}-${assetId.slice(-8)}.png`;
         return { mapping, inspection, record };
       }));
@@ -2543,15 +2577,20 @@ export class MakerWorkspace {
       await upsertMakerWorkspaceAssets(this.makerKey, prepared.map(({ record }) => ({ ...record, url: '', thumbnailUrl: '' })));
       this.assetResolver.clear();
       this.assetResolver = createCachedAssetResolver(this.assets);
-      const affectedItems = new Set();
-      this.executeDocument(`Batch import ${prepared.length} PNG layers`, ({ document }) => {
+      this.executeDocument(`Batch import ${prepared.length} Style PNGs`, ({ document }) => {
         const newTrackByName = new Map();
         prepared.forEach(({ mapping, inspection, record }) => {
-          const [partId, itemId, variantId] = String(mapping.targetDefinition || `${pending.partId}::${pending.itemId}::${pending.variantId}`).split('::');
+          const [partId, itemId, requestedStyleId] = String(mapping.targetDefinition || `${pending.partId}::${pending.itemId}`).split('::');
           const targetItem = findItem(document, partId, itemId);
-          const targetVariant = findVariant(document, partId, itemId, variantId);
-          if (!targetItem || !targetVariant) throw new Error(`${mapping.fileName} does not have a valid Item / Style target.`);
-          affectedItems.add(`${partId}::${itemId}`);
+          if (!targetItem) throw new Error(`${mapping.fileName} does not have a valid Item target.`);
+          let targetStyle = requestedStyleId ? findStyle(document, partId, itemId, requestedStyleId) : null;
+          if (pending.mode === 'project' && !targetStyle) throw new Error(`${mapping.fileName} does not have a valid Style target.`);
+          if (targetStyle?.styleLocked) throw new Error(`${targetStyle.name} is locked. Unlock it before importing a replacement PNG.`);
+          if (!targetStyle) {
+            targetStyle = createStyle(targetItem, mapping.suggestedStyleName || safeFileName(mapping.fileName, `Style ${targetItem.styles.length + 1}`));
+            targetItem.styles.push(targetStyle);
+            targetItem.defaultStyleId ||= targetStyle.id;
+          }
           let trackId = mapping.trackId;
           const proposedTrackName = mapping.suggestedTrackName || `Layer ${document.layerTracks.length + 1}`;
           if (!trackId && newTrackByName.has(proposedTrackName)) trackId = newTrackByName.get(proposedTrackName);
@@ -2562,55 +2601,35 @@ export class MakerWorkspace {
             newTrackByName.set(proposedTrackName, trackId);
           }
           addDocumentAsset(document, record);
-          let targetBinding = targetVariant.layerBindings.find((candidate) => candidate.layerTrackId === trackId);
-          if (!targetBinding) {
-            targetBinding = createLayerBinding(targetVariant, trackId, record.assetId, {
+          targetStyle.layerTrackId = trackId;
+          targetStyle.assetId = record.assetId;
+          if (!targetStyle.positionLocked) {
+            targetStyle.transform = {
               x: inspection.initialTransform.x,
               y: inspection.initialTransform.y,
-              scale: inspection.initialTransform.scaleX,
-            });
-            targetVariant.layerBindings.push(targetBinding);
+              scale: inspection.initialTransform.scale,
+              rotation: 0,
+            };
+            targetStyle.positionConfirmed = inspection.fullCanvas;
           }
-          const [channelId = '', swatchId = ''] = String(mapping.colorDefinition || '').split('::');
-          if (channelId && swatchId) {
-            const channel = document.colorChannels.find((candidate) => candidate.id === channelId);
-            if (channel?.mode !== 'asset-map' || !channel.swatches.some((swatch) => swatch.id === swatchId)) {
-              throw new Error(`${mapping.fileName} targets a missing or non-asset color preset.`);
-            }
-            targetBinding.colorChannelId = channelId;
-            targetBinding.assetsBySwatch ||= [];
-            const mappingIndex = targetBinding.assetsBySwatch.findIndex((candidate) => candidate.swatchId === swatchId);
-            const swatchMapping = { swatchId, assetId: record.assetId };
-            if (mappingIndex >= 0) targetBinding.assetsBySwatch[mappingIndex] = swatchMapping;
-            else targetBinding.assetsBySwatch.push(swatchMapping);
-          } else {
-            targetBinding.assetId = record.assetId;
+          if (!inspection.fullCanvas && !targetStyle.positionLocked) {
+            this.editingPositionStyleKey = styleSceneKey(partId, itemId, targetStyle.id);
           }
-          targetBinding.transform = {
-            x: inspection.initialTransform.x,
-            y: inspection.initialTransform.y,
-            scale: inspection.initialTransform.scaleX,
-            rotation: 0,
-          };
-          targetBinding.inheritTrackTransform = false;
-          targetBinding.positionConfirmed = inspection.fullCanvas;
-          if (!inspection.fullCanvas) this.editingPositionBindingId = targetBinding.id;
           const targetTrack = document.layerTracks.find((candidate) => candidate.id === trackId);
           if (targetTrack) {
             targetTrack.alignmentApproved = false;
             targetTrack.referenceAssetId ||= record.assetId;
           }
-          this.selectedBindingId = targetBinding.id;
+          this.selectedPartId = partId;
+          this.selectedItemId = itemId;
+          this.selectedStyleId = targetStyle.id;
         });
         removeUnreferencedAssetMetadata(document);
       });
       this.pendingImport = null;
+      this.syncCreatorRecipeSelection();
       this.store.setSaveState('dirty', this.tr('importedPngs', { count: prepared.length }));
       this.render();
-      for (const definition of affectedItems) {
-        const [partId, itemId] = definition.split('::');
-        await this.generateCompositeItemThumbnail(partId, itemId);
-      }
     } catch (error) {
       this.store.setSaveState('error', error.message || this.tr('batchImportFailed'));
     }
@@ -2620,33 +2639,39 @@ export class MakerWorkspace {
     const document = this.store.getState().document;
     const ownerDefinition = this.creatorRoot.querySelector('#v4RuleOwnerDefinition')?.value || this.selectedPartId;
     const type = this.creatorRoot.querySelector('#v4RuleType')?.value || 'excludes';
-    const [targetPartId = '', targetItemId = '', targetVariantId = ''] = String(this.creatorRoot.querySelector('#v4RuleTargetDefinition')?.value || '').split('::');
+    const [targetPartId = '', targetItemId = '', targetStyleId = ''] = String(this.creatorRoot.querySelector('#v4RuleTargetDefinition')?.value || '').split('::');
     if (!ownerDefinition || !targetPartId) return;
-    const targetDefinition = [targetPartId, targetItemId, targetVariantId].filter(Boolean).join('::');
+    const targetDefinition = [targetPartId, targetItemId, targetStyleId].filter(Boolean).join('::');
     if (ownerDefinition === targetDefinition) return;
+    const currentOwner = ruleOwnerFromDefinition(document, ownerDefinition);
+    if (!currentOwner || currentOwner.styleLocked) return;
     this.executeDocument(`Add ${type} rule`, ({ document: next }) => {
       const owner = ruleOwnerFromDefinition(next, ownerDefinition);
-      if (!owner) return;
+      if (!owner || owner.styleLocked) return;
       const target = {
         partId: targetPartId,
         ...(targetItemId ? { itemId: targetItemId } : {}),
-        ...(targetVariantId ? { variantId: targetVariantId } : {}),
+        ...(targetStyleId ? { styleId: targetStyleId } : {}),
       };
       owner[type] ||= [];
       if (!owner[type].some((candidate) => candidate.partId === target.partId
         && String(candidate.itemId || '') === targetItemId
-        && String(candidate.variantId || '') === targetVariantId)) owner[type].push(target);
+        && String(candidate.styleId || '') === targetStyleId)) owner[type].push(target);
     });
   }
 
   deleteRule(ruleId) {
-    const row = ownerRuleRows(this.store.getState().document).find((candidate) => candidate.id === ruleId);
+    const currentDocument = this.store.getState().document;
+    const row = ownerRuleRows(currentDocument).find((candidate) => candidate.id === ruleId);
     if (!row) return;
+    const currentOwnerStyle = row.ownerStyleId ? findStyle(currentDocument, row.ownerPartId, row.ownerItemId, row.ownerStyleId) : null;
+    if (currentOwnerStyle?.styleLocked) return;
     this.executeDocument('Delete selection rule', ({ document }) => {
       const ownerPart = findPart(document, row.ownerPartId);
       const ownerItem = row.ownerItemId ? findItem(document, row.ownerPartId, row.ownerItemId) : null;
-      const ownerVariant = row.ownerVariantId ? findVariant(document, row.ownerPartId, row.ownerItemId, row.ownerVariantId) : null;
-      const owner = ownerVariant || ownerItem || ownerPart;
+      const ownerStyle = row.ownerStyleId ? findStyle(document, row.ownerPartId, row.ownerItemId, row.ownerStyleId) : null;
+      if (ownerStyle?.styleLocked) return;
+      const owner = ownerStyle || ownerItem || ownerPart;
       owner[row.type].splice(row.index, 1);
     });
   }
@@ -2669,10 +2694,10 @@ export class MakerWorkspace {
       copy.id = uniqueDocumentId(`${item.id}-pack`, [extension.items], 'pack-item');
       copy.name = `${item.name} Pack`;
       extension.items.push(copy);
-      const bindings = copy.variants.flatMap((candidate) => candidate.layerBindings);
-      const trackIds = new Set(bindings.map((candidate) => candidate.layerTrackId));
-      const assetIds = new Set(bindings.flatMap((candidate) => [candidate.assetId, ...(candidate.assetsBySwatch || []).map((mapping) => mapping.assetId)]));
-      const channelIds = new Set(bindings.map((candidate) => candidate.colorChannelId).filter(Boolean));
+      const styles = copy.styles;
+      const trackIds = new Set(styles.map((candidate) => candidate.layerTrackId).filter(Boolean));
+      const assetIds = new Set(styles.map((candidate) => candidate.assetId).filter(Boolean));
+      const channelIds = new Set(styles.map((candidate) => candidate.colorChannelId).filter(Boolean));
       next.layerTracks.filter((track) => trackIds.has(track.id)).forEach((track) => {
         if (!pack.layerTracks.some((candidate) => candidate.id === track.id)) pack.layerTracks.push(clone(track));
       });
@@ -2688,6 +2713,24 @@ export class MakerWorkspace {
   handleDragStart(event) {
     const target = event.target.closest('[data-drag-kind]');
     if (!target) return;
+    const document = this.store?.getState().document;
+    if (target.dataset.dragKind === 'track') {
+      const track = document?.layerTracks.find((candidate) => candidate.id === target.dataset.dragId);
+      if (!track || track.locked) {
+        event.preventDefault();
+        this.dragSort = null;
+        return;
+      }
+    }
+    if (target.dataset.dragKind === 'style') {
+      const [partId, itemId] = String(target.dataset.parentId || '').split('/');
+      const style = document ? findStyle(document, partId, itemId, target.dataset.dragId) : null;
+      if (!style || style.styleLocked) {
+        event.preventDefault();
+        this.dragSort = null;
+        return;
+      }
+    }
     this.dragSort = {
       kind: target.dataset.dragKind,
       id: target.dataset.dragId,
@@ -2712,17 +2755,33 @@ export class MakerWorkspace {
     const source = this.dragSort;
     this.dragSort = null;
     if (!targetId || targetId === source.id) return;
+    if (source.kind === 'track' || source.kind === 'style') {
+      const currentDocument = this.store.getState().document;
+      let currentEntries = currentDocument.layerTracks;
+      const lockField = source.kind === 'track' ? 'locked' : 'styleLocked';
+      if (source.kind === 'style') {
+        const [partId, itemId] = source.parentId.split('/');
+        currentEntries = findItem(currentDocument, partId, itemId)?.styles || [];
+      }
+      const from = currentEntries.findIndex((entry) => entry.id === source.id);
+      const to = currentEntries.findIndex((entry) => entry.id === targetId);
+      if (from < 0 || to < 0 || currentEntries.slice(Math.min(from, to), Math.max(from, to) + 1).some((entry) => entry[lockField])) return;
+    }
     this.executeDocument(`Reorder ${source.kind}`, ({ document }) => {
       let entries = [];
       if (source.kind === 'part') entries = document.parts;
       else if (source.kind === 'track') entries = document.layerTracks;
       else if (source.kind === 'item') entries = findPart(document, source.parentId)?.items || [];
-      else if (source.kind === 'variant') {
+      else if (source.kind === 'style') {
         const [partId, itemId] = source.parentId.split('/');
-        entries = findItem(document, partId, itemId)?.variants || [];
+        entries = findItem(document, partId, itemId)?.styles || [];
       }
       const from = entries.findIndex((entry) => entry.id === source.id);
       const to = entries.findIndex((entry) => entry.id === targetId);
+      if (source.kind === 'track' || source.kind === 'style') {
+        const lockField = source.kind === 'track' ? 'locked' : 'styleLocked';
+        if (from < 0 || to < 0 || entries.slice(Math.min(from, to), Math.max(from, to) + 1).some((entry) => entry[lockField])) return;
+      }
       moveArrayEntry(entries, from, to);
     });
   }
@@ -2738,9 +2797,9 @@ export class MakerWorkspace {
     this.render();
   }
 
-  normalizedPlayerSelection(partId, itemId, variantId) {
+  normalizedPlayerSelection(partId, itemId, styleId) {
     const desired = clone(this.playerRecipe);
-    replaceRecipeSelection(desired, { partId, itemId, variantId });
+    replaceRecipeSelection(desired, { partId, itemId, styleId });
     const result = normalizeRecipe(this.runtimeDocument(), desired, { preferPartId: partId });
     return result.valid ? result.documentRecipe : desired;
   }
@@ -2764,11 +2823,11 @@ export class MakerWorkspace {
     if (action === 'player-item' && part) {
       const nextItem = part.items.find((candidate) => candidate.id === button.dataset.itemId);
       if (!nextItem) return;
-      this.setPlayerRecipe(this.normalizedPlayerSelection(part.id, nextItem.id, nextItem.defaultVariantId || nextItem.variants[0]?.id), `Choose ${nextItem.name}`);
+      this.setPlayerRecipe(this.normalizedPlayerSelection(part.id, nextItem.id, nextItem.defaultStyleId || nextItem.styles[0]?.id), `Choose ${nextItem.name}`);
       return;
     }
-    if (action === 'player-variant' && part && item) {
-      this.setPlayerRecipe(this.normalizedPlayerSelection(part.id, item.id, button.dataset.variantId), `Choose style ${button.textContent.trim()}`);
+    if (action === 'player-style' && part && item) {
+      this.setPlayerRecipe(this.normalizedPlayerSelection(part.id, item.id, button.dataset.styleId), `Choose style ${button.textContent.trim()}`);
       return;
     }
     if (action === 'player-none' && part && !part.required) {
@@ -2853,7 +2912,7 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'player-export') {
-      const payload = { schemaVersion: 'animacraft.player-recipe.v4', makerVersionId: document.version.versionId, recipe: this.playerRecipe, profile: this.playerProfile };
+      const payload = { schemaVersion: 'animacraft.player-recipe.v5', makerVersionId: document.version.versionId, recipe: this.playerRecipe, profile: this.playerProfile };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const link = globalThis.document.createElement('a');

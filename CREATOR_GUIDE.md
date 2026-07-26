@@ -1,32 +1,32 @@
 # Animacraft Creator Guide
 
-Animacraft Maker v4 uses one versioned document and one renderer across Creator Studio, Player Editor, cover generation, and final PNG export.
+Animacraft Maker v5 uses one versioned document and one renderer across Creator Studio, Player Editor, cover generation, and final PNG export.
 
-The complete Chinese protocol and invited-creator tutorial is [ANIMACRAFT_PROTOCOL_AND_EDITOR_GUIDE.zh-CN.md](./ANIMACRAFT_PROTOCOL_AND_EDITOR_GUIDE.zh-CN.md). Art delivery requirements are in [CREATOR_ASSET_SPEC_V4.zh-CN.md](./CREATOR_ASSET_SPEC_V4.zh-CN.md). The approved Creator Studio layout is frozen in [UI_BASELINE.md](./UI_BASELINE.md).
+The current Chinese art and editor contract is [CREATOR_ASSET_SPEC_V5.zh-CN.md](./CREATOR_ASSET_SPEC_V5.zh-CN.md).
 
-## Maker v4 Model
+## Maker v5 Model
 
 ```text
 Maker
 |- Part                         player menu category
 |  `- Item                     one player selection
-|     `- Style / Variant       optional visual variation
-|        `- LayerBinding       one PNG on one global LayerTrack
+|     `- Style                 one required visual option
+|        `- PNG + transform    the complete renderable unit
 |- LayerTrack                  global back-to-front render lane
-|- ColorChannel                shared gradient-map or asset-map palette
+|- ColorChannel                shared gradient-map palette for the same PNG
 |- Rules                       requires, excludes and visibility conditions
 `- ExpansionPack               version-pinned additive content
 ```
 
-A Part is not a visual layer. One Hair Item may bind a back-hair PNG, a front-hair PNG, and a highlight PNG to three different LayerTracks. The player makes one Hair selection; the renderer resolves every associated LayerBinding.
+A Part is not a shared transform. Every Style owns exactly one PNG, one LayerTrack reference, and one independent transform. Artwork that must render both behind and in front of the body is split into separate Parts such as Back Hair and Front Hair.
 
 ## Creator Flow
 
 1. Connect a Sui wallet and open **MyPage -> Create Maker**.
 2. Create a `1024 x 1024` Maker for the first production trial.
-3. In **Character Maker**, define Parts, Items, optional Styles, and their PNG LayerBindings.
+3. In **Character Maker**, define Parts, Items, and Styles; attach one PNG directly to each Style.
 4. Upload full-canvas PNGs at `(0, 0)` or position cropped artwork on the Canvas.
-5. Explicitly confirm every cropped layer position. Confirmed transform controls collapse to an **Adjust position** action; any later transform edit requires confirmation again.
+5. Explicitly confirm every cropped Style position, then lock it against accidental movement. Any later transform edit requires unlocking and confirming again.
 6. Use **Layer Tracks** for global render order, **Smart Color** for linked palettes, and **Rules** for valid combinations.
 7. Run **Player test** with the same renderer used for final output.
 8. Keep or edit the default Soul Character, Memory, and Skills & Docs under **Living Content**.

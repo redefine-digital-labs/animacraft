@@ -2,7 +2,7 @@
  * Immutable Maker expansion and update-compatibility utilities.
  *
  * Expansion Packs are runtime overlays. They may add optional Parts, Items,
- * Variants, LayerTracks, palettes, assets and rules, but never replace a base
+ * Styles, LayerTracks, palettes, assets and rules, but never replace a base
  * definition. Every pack-owned id is namespaced with `namespace__localId`.
  */
 
@@ -11,6 +11,37 @@ import { collectMakerRules, createMakerRuleIndex, normalizeRuleSelector } from '
 const PACK_SCHEMA = 'animacraft.expansion-pack.v1';
 const SAFE_NAMESPACE = /^[A-Za-z][A-Za-z0-9_-]{1,63}$/;
 const SAFE_LOCAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const OBSOLETE_ITEM_STYLE_FIELDS = Object.freeze([
+  'variants',
+  'defaultVariantId',
+  'visible',
+  'hidden',
+  'enabled',
+  'visibilityCondition',
+  'rules',
+]);
+const OBSOLETE_STYLE_RENDER_FIELDS = Object.freeze([
+  'layerBindings',
+  'bindings',
+  'layers',
+  'bindingId',
+  'inheritTrackTransform',
+  'assetsBySwatch',
+  'assetIds',
+  'assetMap',
+  'assets',
+  'images',
+  'variant',
+  'variantId',
+  'variantKey',
+  'variants',
+  'defaultVariantId',
+  'visible',
+  'hidden',
+  'enabled',
+  'visibilityCondition',
+  'rules',
+]);
 
 export class ExpansionPackError extends Error {
   constructor(message, code = 'invalid-expansion-pack', details = {}) {
@@ -38,8 +69,8 @@ function itemIdOf(item) {
   return String(item?.id ?? item?.key ?? '');
 }
 
-function variantIdOf(variant) {
-  return String(variant?.id ?? variant?.key ?? '');
+function styleIdOf(style) {
+  return String(style?.id ?? style?.key ?? '');
 }
 
 function trackIdOf(track) {
@@ -84,21 +115,126 @@ function itemsOf(part) {
   return Array.isArray(part?.items) ? part.items : [];
 }
 
-function variantsOf(item) {
-  if (Array.isArray(item?.variants)) return item.variants;
-  if (Array.isArray(item?.styles)) return item.styles;
-  return [];
-}
-
-function bindingsOf(owner) {
-  if (Array.isArray(owner?.layerBindings)) return owner.layerBindings;
-  if (Array.isArray(owner?.bindings)) return owner.bindings;
-  if (Array.isArray(owner?.layers)) return owner.layers;
-  return [];
+function stylesOf(item) {
+  return Array.isArray(item?.styles) ? item.styles : [];
 }
 
 function colorsOf(part) {
   return Array.isArray(part?.colors) ? part.colors : [];
+}
+
+function validatePackStyleModel(base, pack, errors) {
+  const knownAssets = new Map([
+    ...asArray(base?.assets),
+    ...asArray(pack?.assets),
+  ].map((asset) => [String(asset?.id ?? ''), asset]).filter(([id]) => Boolean(id)));
+
+  packParts(pack).forEach((part, partIndex) => {
+    const partId = partIdOf(part) || `#${partIndex + 1}`;
+    itemsOf(part).forEach((item, itemIndex) => {
+      const itemId = itemIdOf(item)
+        || String(item?.extendsItemId ?? item?.extendsItemKey ?? item?.targetItemId ?? '')
+        || `#${itemIndex + 1}`;
+      const itemPath = `parts.${partId}.items.${itemId}`;
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        errors.push({
+          code: 'invalid-pack-item',
+          path: itemPath,
+          partId,
+          itemId,
+          message: 'Each Expansion Pack Item must be an object.',
+        });
+        return;
+      }
+
+      OBSOLETE_ITEM_STYLE_FIELDS.forEach((field) => {
+        if (Object.hasOwn(item, field)) {
+          errors.push({
+            code: 'obsolete-pack-item-field',
+            path: `${itemPath}.${field}`,
+            partId,
+            itemId,
+            field,
+            message: `Expansion Pack Items cannot use legacy ${field}; Maker v5 requires styles/defaultStyleId.`,
+          });
+        }
+      });
+
+      if (Object.hasOwn(item, 'styles') && !Array.isArray(item.styles)) {
+        errors.push({
+          code: 'invalid-pack-styles',
+          path: `${itemPath}.styles`,
+          partId,
+          itemId,
+          message: 'Expansion Pack Item styles must be an array.',
+        });
+        return;
+      }
+
+      stylesOf(item).forEach((style, styleIndex) => {
+        const styleId = styleIdOf(style) || `#${styleIndex + 1}`;
+        const stylePath = `${itemPath}.styles.${styleId}`;
+        if (!style || typeof style !== 'object' || Array.isArray(style)) {
+          errors.push({
+            code: 'invalid-pack-style',
+            path: stylePath,
+            partId,
+            itemId,
+            styleId,
+            message: 'Each Expansion Pack Style must be an object.',
+          });
+          return;
+        }
+
+        OBSOLETE_STYLE_RENDER_FIELDS.forEach((field) => {
+          if (Object.hasOwn(style, field)) {
+            errors.push({
+              code: 'obsolete-pack-style-field',
+              path: `${stylePath}.${field}`,
+              partId,
+              itemId,
+              styleId,
+              field,
+              message: `Expansion Pack Styles cannot use legacy ${field}; one Maker v5 Style is exactly one PNG render unit.`,
+            });
+          }
+        });
+
+        if (!Object.hasOwn(style, 'assetId')
+          || typeof style.assetId !== 'string'
+          || !style.assetId.trim()) {
+          errors.push({
+            code: 'pack-style-requires-single-asset',
+            path: `${stylePath}.assetId`,
+            partId,
+            itemId,
+            styleId,
+            message: 'Each Expansion Pack Style must reference exactly one PNG through one non-empty assetId.',
+          });
+        } else if (!knownAssets.has(style.assetId)) {
+          errors.push({
+            code: 'missing-pack-style-asset',
+            path: `${stylePath}.assetId`,
+            partId,
+            itemId,
+            styleId,
+            assetId: style.assetId,
+            message: `Expansion Pack Style assetId ${style.assetId} does not reference a base or Pack asset.`,
+          });
+        } else if (knownAssets.get(style.assetId)?.mediaType !== 'image/png') {
+          errors.push({
+            code: 'pack-style-asset-not-png',
+            path: `${stylePath}.assetId`,
+            partId,
+            itemId,
+            styleId,
+            assetId: style.assetId,
+            message: `Expansion Pack Style assetId ${style.assetId} must resolve to one image/png Asset.`,
+          });
+        }
+      });
+    });
+  });
 }
 
 function isRequired(part) {
@@ -206,20 +342,20 @@ function rewriteSelectorValue(value, maps) {
   let partId = selector.partId;
   if (value.scope !== 'base' && maps.part.has(partId)) partId = maps.part.get(partId);
   const itemMap = maps.items.get(partId) || maps.items.get(selector.partId);
-  const variantMapForItem = (itemId) => maps.variants.get(`${partId}/${itemMap?.get(itemId) || itemId}`)
-    || maps.variants.get(`${selector.partId}/${itemId}`);
+  const styleMapForItem = (itemId) => maps.styles.get(`${partId}/${itemMap?.get(itemId) || itemId}`)
+    || maps.styles.get(`${selector.partId}/${itemId}`);
   const rewriteItem = (itemId) => value.scope === 'base' ? itemId : itemMap?.get(itemId) || itemId;
   const itemId = selector.itemId ? rewriteItem(selector.itemId) : '';
   const itemIds = (selector.itemIds || []).map(rewriteItem);
-  const variantMap = selector.itemId ? variantMapForItem(selector.itemId) : null;
-  const variantId = selector.variantId && value.scope !== 'base' ? variantMap?.get(selector.variantId) || selector.variantId : selector.variantId;
-  const variantIds = (selector.variantIds || []).map((id) => value.scope === 'base' ? id : variantMap?.get(id) || id);
+  const styleMap = selector.itemId ? styleMapForItem(selector.itemId) : null;
+  const styleId = selector.styleId && value.scope !== 'base' ? styleMap?.get(selector.styleId) || selector.styleId : selector.styleId;
+  const styleIds = (selector.styleIds || []).map((id) => value.scope === 'base' ? id : styleMap?.get(id) || id);
   return {
     partId,
     ...(itemId ? { itemId } : {}),
     ...(itemIds.length ? { itemIds } : {}),
-    ...(variantId ? { variantId } : {}),
-    ...(variantIds.length ? { variantIds } : {}),
+    ...(styleId ? { styleId } : {}),
+    ...(styleIds.length ? { styleIds } : {}),
   };
 }
 
@@ -261,7 +397,7 @@ function createPackMaps(base, pack, errors) {
   const palettes = new Map();
   const assets = new Map();
   const items = new Map();
-  const variants = new Map();
+  const styles = new Map();
   const addDefinitionMap = (values, idOf, map, kind) => {
     const duplicates = duplicateIds(values, idOf);
     duplicates.forEach((id) => errors.push({ code: `duplicate-pack-${kind}`, id }));
@@ -288,18 +424,20 @@ function createPackMaps(base, pack, errors) {
     itemsOf(packPart).forEach((item) => {
       const targetItemId = String(item.extendsItemId ?? item.extendsItemKey ?? item.targetItemId ?? itemMap.get(itemIdOf(item)) ?? '');
       if (!targetItemId) return;
-      const variantMap = new Map();
-      addDefinitionMap(variantsOf(item), variantIdOf, variantMap, `variant-${targetPartId}-${targetItemId}`);
-      variants.set(`${targetPartId}/${targetItemId}`, variantMap);
+      const styleMap = new Map();
+      addDefinitionMap(stylesOf(item), styleIdOf, styleMap, `style-${targetPartId}-${targetItemId}`);
+      styles.set(`${targetPartId}/${targetItemId}`, styleMap);
     });
   });
-  return { part, tracks, palettes, assets, items, variants };
+  return { part, tracks, palettes, assets, items, styles };
 }
 
-function rewriteBinding(binding, maps, pack) {
-  let copy = rewriteEmbeddedRules(clone(binding), maps);
-  const localId = String(copy.id ?? copy.key ?? '');
-  if (localId) copy.id = namespaceId(packNamespaceOf(pack), localId);
+function rewriteStyle(style, targetPartId, targetItemId, maps, pack) {
+  const localId = styleIdOf(style);
+  const styleMap = maps.styles.get(`${targetPartId}/${targetItemId}`);
+  let copy = rewriteEmbeddedRules(clone(style), maps);
+  copy.id = styleMap?.get(localId) || namespaceId(packNamespaceOf(pack), localId);
+  if ('key' in copy) delete copy.key;
   const trackId = String(copy.layerTrackId ?? copy.trackId ?? '');
   if (trackId && maps.tracks.has(trackId)) copy.layerTrackId = maps.tracks.get(trackId);
   const paletteId = String(copy.paletteId ?? copy.colorChannelId ?? '');
@@ -309,25 +447,6 @@ function rewriteBinding(binding, maps, pack) {
   }
   const assetId = String(copy.assetId ?? '');
   if (assetId && maps.assets.has(assetId)) copy.assetId = maps.assets.get(assetId);
-  if (Array.isArray(copy.assetsBySwatch)) {
-    copy.assetsBySwatch = copy.assetsBySwatch.map((mapping) => ({
-      ...mapping,
-      assetId: maps.assets.get(String(mapping.assetId || '')) || mapping.assetId,
-    }));
-  }
-  if (copy.visibilityCondition) copy.visibilityCondition = rewriteCondition(copy.visibilityCondition, maps);
-  return annotate(copy, pack);
-}
-
-function rewriteVariant(variant, targetPartId, targetItemId, maps, pack) {
-  const localId = variantIdOf(variant);
-  const variantMap = maps.variants.get(`${targetPartId}/${targetItemId}`);
-  let copy = rewriteEmbeddedRules(clone(variant), maps);
-  copy.id = variantMap?.get(localId) || namespaceId(packNamespaceOf(pack), localId);
-  if ('key' in copy) delete copy.key;
-  if (Array.isArray(copy.bindings)) copy.bindings = copy.bindings.map((binding) => rewriteBinding(binding, maps, pack));
-  if (Array.isArray(copy.layers)) copy.layers = copy.layers.map((binding) => rewriteBinding(binding, maps, pack));
-  if (Array.isArray(copy.layerBindings)) copy.layerBindings = copy.layerBindings.map((binding) => rewriteBinding(binding, maps, pack));
   return annotate(copy, pack);
 }
 
@@ -338,15 +457,11 @@ function rewriteItem(item, targetPartId, maps, pack) {
   let copy = rewriteEmbeddedRules(clone(item), maps);
   copy.id = targetItemId;
   if ('key' in copy) delete copy.key;
-  if (Array.isArray(copy.variants)) copy.variants = copy.variants.map((variant) => rewriteVariant(variant, targetPartId, targetItemId, maps, pack));
-  if (Array.isArray(copy.styles)) copy.styles = copy.styles.map((variant) => rewriteVariant(variant, targetPartId, targetItemId, maps, pack));
-  if (Array.isArray(copy.bindings)) copy.bindings = copy.bindings.map((binding) => rewriteBinding(binding, maps, pack));
-  if (Array.isArray(copy.layers)) copy.layers = copy.layers.map((binding) => rewriteBinding(binding, maps, pack));
-  if (Array.isArray(copy.layerBindings)) copy.layerBindings = copy.layerBindings.map((binding) => rewriteBinding(binding, maps, pack));
+  copy.styles = stylesOf(copy).map((style) => rewriteStyle(style, targetPartId, targetItemId, maps, pack));
   if (copy.thumbnailAssetId && maps.assets.has(copy.thumbnailAssetId)) copy.thumbnailAssetId = maps.assets.get(copy.thumbnailAssetId);
-  const defaultVariantId = String(copy.defaultVariantId ?? copy.defaultStyleId ?? '');
-  const variantMap = maps.variants.get(`${targetPartId}/${targetItemId}`);
-  if (defaultVariantId && variantMap?.has(defaultVariantId)) copy.defaultVariantId = variantMap.get(defaultVariantId);
+  const defaultStyleId = String(copy.defaultStyleId ?? '');
+  const styleMap = maps.styles.get(`${targetPartId}/${targetItemId}`);
+  if (defaultStyleId && styleMap?.has(defaultStyleId)) copy.defaultStyleId = styleMap.get(defaultStyleId);
   return annotate(copy, pack);
 }
 
@@ -391,10 +506,14 @@ function normalizePackRule(rule, index, maps, pack) {
 function preparePack(base, pack, errors, warnings) {
   const maps = createPackMaps(base, pack, errors);
   if (errors.length) return { maps };
-  const tracks = asArray(pack.layerTracks).map((track) => annotate({
-    ...clone(track),
-    id: maps.tracks.get(trackIdOf(track)),
-  }, pack));
+  const tracks = asArray(pack.layerTracks).map((track) => {
+    const copy = clone(track);
+    delete copy.transform;
+    return annotate({
+      ...copy,
+      id: maps.tracks.get(trackIdOf(track)),
+    }, pack);
+  });
   const palettes = asArray(pack.palettes ?? pack.colorChannels).map((palette) => annotate({
     ...clone(palette),
     id: maps.palettes.get(paletteIdOf(palette)),
@@ -415,13 +534,13 @@ function preparePack(base, pack, errors, warnings) {
         items: itemsOf(entry)
           .filter((item) => !(item.extendsItemId || item.extendsItemKey || item.targetItemId))
           .map((item) => rewriteItem(item, targetPartId, maps, pack)),
-        variantExtensions: itemsOf(entry)
+        styleExtensions: itemsOf(entry)
           .filter((item) => item.extendsItemId || item.extendsItemKey || item.targetItemId)
           .map((item) => {
             const targetItemId = String(item.extendsItemId ?? item.extendsItemKey ?? item.targetItemId);
             return {
               targetItemId,
-              variants: variantsOf(item).map((variant) => rewriteVariant(variant, targetPartId, targetItemId, maps, pack)),
+              styles: stylesOf(item).map((style) => rewriteStyle(style, targetPartId, targetItemId, maps, pack)),
             };
           }),
       };
@@ -436,8 +555,8 @@ function selectorUsesNamespace(selector, namespace) {
   return selector.partId?.startsWith(prefix)
     || selector.itemId?.startsWith(prefix)
     || selector.itemIds?.some((id) => id.startsWith(prefix))
-    || selector.variantId?.startsWith(prefix)
-    || selector.variantIds?.some((id) => id.startsWith(prefix));
+    || selector.styleId?.startsWith(prefix)
+    || selector.styleIds?.some((id) => id.startsWith(prefix));
 }
 
 function validateAddedRules(base, merged, pack, errors) {
@@ -490,15 +609,14 @@ function mergePrepared(base, pack, prepared) {
       item.displayOrder = maxOrder + index + 1;
       target.items.push(item);
     });
-    extension.variantExtensions.forEach((itemExtension) => {
+    extension.styleExtensions.forEach((itemExtension) => {
       const targetItem = target.items.find((item) => itemIdOf(item) === itemExtension.targetItemId);
       if (!targetItem) return;
-      const field = Array.isArray(targetItem.styles) && !Array.isArray(targetItem.variants) ? 'styles' : 'variants';
-      targetItem[field] = variantsOf(targetItem);
-      const maxVariantOrder = targetItem[field].reduce((max, variant) => Math.max(max, Number(variant.displayOrder ?? -1)), -1);
-      itemExtension.variants.forEach((variant, index) => {
-        variant.displayOrder = maxVariantOrder + index + 1;
-        targetItem[field].push(variant);
+      targetItem.styles = stylesOf(targetItem);
+      const maxStyleOrder = targetItem.styles.reduce((max, style) => Math.max(max, Number(style.displayOrder ?? -1)), -1);
+      itemExtension.styles.forEach((style, index) => {
+        style.displayOrder = maxStyleOrder + index + 1;
+        targetItem.styles.push(style);
       });
     });
   });
@@ -570,7 +688,7 @@ export function checkExpansionPackCompatibility(base, pack) {
           errors.push({ code: 'missing-extension-target-item', partId: extensionTarget, itemId: targetItemId });
           return;
         }
-        const itemForbidden = ['id', 'key', 'name', 'label', 'defaultVariantId', 'defaultStyleId', 'thumbnailAssetId', 'visibleWhen', 'requires', 'excludes'];
+        const itemForbidden = ['id', 'key', 'name', 'label', 'defaultStyleId', 'thumbnailAssetId', 'visibleWhen', 'requires', 'excludes'];
         itemForbidden.filter((key) => Object.hasOwn(item, key)).forEach((key) => errors.push({
           code: 'pack-modifies-base-item',
           partId: extensionTarget,
@@ -582,6 +700,7 @@ export function checkExpansionPackCompatibility(base, pack) {
       errors.push({ code: 'item-extension-needs-base-part', partId: partIdOf(part) });
     }
   });
+  validatePackStyleModel(base, pack, errors);
   const prepared = preparePack(base, pack, errors, warnings);
   let merged = null;
   if (!errors.length) {
@@ -650,9 +769,9 @@ function selectorExistsInOldMaker(selector, oldIndex) {
   if (!oldIndex.parts.has(selector.partId)) return false;
   if (selector.itemId && !oldIndex.items.has(`${selector.partId}/${selector.itemId}`)) return false;
   if (selector.itemIds?.some((itemId) => !oldIndex.items.has(`${selector.partId}/${itemId}`))) return false;
-  if (selector.variantId) {
+  if (selector.styleId) {
     const itemId = selector.itemId || selector.itemIds?.[0];
-    if (!oldIndex.variants.has(`${selector.partId}/${itemId}/${selector.variantId}`)) return false;
+    if (!oldIndex.styles.has(`${selector.partId}/${itemId}/${selector.styleId}`)) return false;
   }
   return true;
 }
@@ -660,23 +779,29 @@ function selectorExistsInOldMaker(selector, oldIndex) {
 function definitionIndex(maker) {
   const parts = new Set();
   const items = new Set();
-  const variants = new Set();
+  const styles = new Set();
   partsOf(maker).forEach((part) => {
     const partId = partIdOf(part);
     parts.add(partId);
     itemsOf(part).forEach((item) => {
       const itemId = itemIdOf(item);
       items.add(`${partId}/${itemId}`);
-      variantsOf(item).forEach((variant) => variants.add(`${partId}/${itemId}/${variantIdOf(variant)}`));
+      stylesOf(item).forEach((style) => styles.add(`${partId}/${itemId}/${styleIdOf(style)}`));
     });
   });
-  return { parts, items, variants };
+  return { parts, items, styles };
 }
 
-function renderSignature(owner) {
-  const bindings = bindingsOf(owner);
-  const images = Array.isArray(owner?.images) ? owner.images : [];
-  return stableJson({ bindings, images, visibleWhen: owner?.visibleWhen ?? null });
+function renderSignature(style) {
+  return stableJson({
+    assetId: style?.assetId ?? null,
+    layerTrackId: style?.layerTrackId ?? null,
+    colorChannelId: style?.colorChannelId ?? null,
+    transform: style?.transform ?? null,
+    opacity: style?.opacity ?? 1,
+    blendMode: style?.blendMode ?? 'normal',
+    visibleWhen: style?.visibleWhen ?? null,
+  });
 }
 
 /**
@@ -753,24 +878,21 @@ export function compareMakerCompatibility(previous, next) {
       if (stableJson(item.visibleWhen ?? null) !== stableJson(nextItem.visibleWhen ?? null)) {
         addBreaking('item-visibility-changed', `parts.${partId}.items.${itemId}.visibleWhen`, 'An existing Item availability condition changed.');
       }
-      const previousVariants = mapBy(variantsOf(item), variantIdOf);
-      const nextVariants = mapBy(variantsOf(nextItem), variantIdOf);
-      if (!previousVariants.size && nextVariants.size) {
-        addBreaking('variants-introduced', `parts.${partId}.items.${itemId}.variants`, 'The old Item had no Variant id, so its old recipe is ambiguous.');
+      const previousStyles = mapBy(stylesOf(item), styleIdOf);
+      const nextStyles = mapBy(stylesOf(nextItem), styleIdOf);
+      if (!previousStyles.size && nextStyles.size) {
+        addBreaking('styles-introduced', `parts.${partId}.items.${itemId}.styles`, 'The old Item had no Style id, so its old recipe is ambiguous.');
       }
-      previousVariants.forEach((variant, variantId) => {
-        const nextVariant = nextVariants.get(variantId);
-        if (!nextVariant) addBreaking('variant-removed', `parts.${partId}.items.${itemId}.variants.${variantId}`, 'A Variant referenced by old recipes was removed.');
-        else if (renderSignature(variant) !== renderSignature(nextVariant)) {
-          addBreaking('variant-rendering-changed', `parts.${partId}.items.${itemId}.variants.${variantId}`, 'Layer bindings or images changed.', 'render');
+      previousStyles.forEach((style, styleId) => {
+        const nextStyle = nextStyles.get(styleId);
+        if (!nextStyle) addBreaking('style-removed', `parts.${partId}.items.${itemId}.styles.${styleId}`, 'A Style referenced by old recipes was removed.');
+        else if (renderSignature(style) !== renderSignature(nextStyle)) {
+          addBreaking('style-rendering-changed', `parts.${partId}.items.${itemId}.styles.${styleId}`, 'The Style PNG or rendering settings changed.', 'render');
         }
       });
-      nextVariants.forEach((_, variantId) => {
-        if (!previousVariants.has(variantId)) addAddition('variant-added', `parts.${partId}.items.${itemId}.variants.${variantId}`, 'A Variant was added.');
+      nextStyles.forEach((_, styleId) => {
+        if (!previousStyles.has(styleId)) addAddition('style-added', `parts.${partId}.items.${itemId}.styles.${styleId}`, 'A Style was added.');
       });
-      if (!previousVariants.size && !nextVariants.size && renderSignature(item) !== renderSignature(nextItem)) {
-        addBreaking('item-rendering-changed', `parts.${partId}.items.${itemId}`, 'Layer bindings or images changed.', 'render');
-      }
     });
     nextItems.forEach((_, itemId) => {
       if (!previousItems.has(itemId)) addAddition('item-added', `parts.${partId}.items.${itemId}`, 'An Item was added.');

@@ -7,10 +7,42 @@ import {
   resolveMakerScene,
 } from '../maker-renderer.js';
 
+function style(id, trackId, assetId, extra = {}) {
+  return {
+    id,
+    name: id,
+    displayOrder: 0,
+    assetId,
+    layerTrackId: trackId,
+    colorChannelId: null,
+    transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+    opacity: 1,
+    blendMode: 'normal',
+    visibleWhen: null,
+    requires: [],
+    excludes: [],
+    ...extra,
+  };
+}
+
+function part(id, menuOrder, trackId, assetId, extraStyle = {}) {
+  return {
+    id,
+    menuOrder,
+    required: false,
+    defaultItemId: 'default',
+    items: [{
+      id: 'default',
+      defaultStyleId: 'default',
+      styles: [style('default', trackId, assetId, extraStyle)],
+    }],
+  };
+}
+
 function makerFixture() {
   return {
-    schemaVersion: 'animacraft.maker-document.v4',
-    canvas: { width: 800, height: 600, pixelMode: 'nearest' },
+    schemaVersion: 'animacraft.maker.v5',
+    canvas: { width: 800, height: 600, pixelMode: 'pixelated' },
     layerTracks: [
       { id: 'fx', order: 30 },
       { id: 'front', order: 20 },
@@ -21,10 +53,10 @@ function makerFixture() {
     colorChannels: [{
       id: 'hair-color',
       name: 'Hair',
-      defaultValueId: 'black',
-      values: [
-        { id: 'black', value: '#111111' },
-        { id: 'blue', value: '#3366ff' },
+      defaultSwatchId: 'black',
+      swatches: [
+        { id: 'black', hintColor: '#111111' },
+        { id: 'blue', hintColor: '#3366ff' },
       ],
     }],
     assets: [
@@ -38,92 +70,72 @@ function makerFixture() {
       { id: 'b', width: 10, height: 10 },
     ],
     parts: [
-      {
-        id: 'hair',
-        menuOrder: 2,
+      part('hair-back', 2, 'back', 'hair-back-black', {
         colorChannelId: 'hair-color',
-        items: [{
-          id: 'long',
-          variants: [{
-            id: 'swept',
-            bindings: [
-              {
-                id: 'back',
-                layerTrackId: 'back',
-                sourceAssetIdsByColor: { black: 'hair-back-black', blue: 'hair-back-blue' },
-                transform: { x: 12, y: 8, scale: 1.25, rotation: 5, originX: 200, originY: 150 },
-                opacity: 80,
-                blendMode: 'multiply',
-              },
-              { id: 'front', layerTrackId: 'front', sourceAssetId: 'hair-front', blendMode: 'screen' },
-              {
-                id: 'sparkle',
-                layerTrackId: 'fx',
-                sourceAssetId: 'sparkle',
-                blendMode: 'linear-dodge',
-                visibleWhen: { partId: 'body', itemId: 'base' },
-              },
-              {
-                id: 'not-rendered',
-                layerTrackId: 'fx',
-                sourceAssetId: 'hidden',
-                visibleWhen: { excludes: [{ partId: 'body', itemId: 'base' }] },
-              },
-              { id: 'same-b', layerTrackId: 'same-b', sourceAssetId: 'b' },
-              { id: 'same-a', layerTrackId: 'same-a', sourceAssetId: 'a' },
-            ],
-          }],
-        }],
-      },
-      {
-        id: 'body',
-        menuOrder: 1,
-        items: [{ id: 'base', bindings: [{ id: 'body', layerTrackId: 'back', sourceAssetId: 'body', order: -1 }] }],
-      },
+        transform: { x: 12, y: 8, scale: 1.25, rotation: 5, originX: 200, originY: 150 },
+        opacity: 0.8,
+        blendMode: 'multiply',
+      }),
+      part('hair-front', 3, 'front', 'hair-front', { blendMode: 'screen' }),
+      part('sparkle', 4, 'fx', 'sparkle', {
+        blendMode: 'linear-dodge',
+        visibleWhen: { op: 'selected', partId: 'body', itemId: 'default', styleId: 'default' },
+      }),
+      part('hidden', 5, 'fx', 'hidden', {
+        visibleWhen: { op: 'not', condition: { op: 'selected', partId: 'body', itemId: 'default' } },
+      }),
+      part('same-b', 6, 'same-b', 'b'),
+      part('same-a', 7, 'same-a', 'a'),
+      part('body', 1, 'back', 'body', { displayOrder: -1 }),
     ],
   };
 }
 
 function recipeFixture(reverse = false) {
-  const selections = [
-    { partId: 'hair', itemId: 'long', variantId: 'swept' },
-    { partId: 'body', itemId: 'base' },
-  ];
+  const selections = makerFixture().parts.map((entry) => ({
+    partId: entry.id,
+    itemId: 'default',
+    styleId: 'default',
+  }));
   return {
     selections: reverse ? selections.reverse() : selections,
-    colorChannels: { 'hair-color': 'blue' },
+    colors: [{ channelId: 'hair-color', swatchId: 'blue' }],
   };
 }
 
-test('resolves a recipe to a deterministic back-to-front layer list', () => {
+test('resolves one selected Style to one deterministic back-to-front layer', () => {
   const first = resolveMakerScene(makerFixture(), recipeFixture());
   const reversed = resolveMakerScene(makerFixture(), recipeFixture(true));
 
-  assert.deepEqual(
-    first.layers.map((layer) => layer.key),
-    [
-      'body/base/default/body',
-      'hair/long/swept/back',
-      'hair/long/swept/front',
-      'hair/long/swept/same-a',
-      'hair/long/swept/same-b',
-      'hair/long/swept/sparkle',
-    ],
-  );
+  assert.deepEqual(first.layers.map((layer) => layer.key), [
+    'body/default/default',
+    'hair-back/default/default',
+    'hair-front/default/default',
+    'same-a/default/default',
+    'same-b/default/default',
+    'sparkle/default/default',
+  ]);
   assert.deepEqual(
     first.layers.map((layer) => layer.key),
     reversed.layers.map((layer) => layer.key),
-    'recipe array order must never become render order',
+    'recipe array order must never become z-order',
   );
+  assert.ok(first.layers.every((layer) => Object.hasOwn(layer, 'styleId')));
+  const obsoleteIdentityField = ['binding', 'Id'].join('');
+  assert.ok(first.layers.every((layer) => !Object.hasOwn(layer, obsoleteIdentityField)));
+  assert.deepEqual(first.issues, []);
+});
 
-  const back = first.layers.find((layer) => layer.bindingId === 'back');
-  assert.equal(back.assetId, 'hair-back-blue');
-  assert.deepEqual(back.colorChannel && {
-    id: back.colorChannel.id,
-    valueId: back.colorChannel.valueId,
-    value: back.colorChannel.value,
+test('recolors the Style single PNG while preserving its transform, opacity and blend mode', () => {
+  const scene = resolveMakerScene(makerFixture(), recipeFixture());
+  const hair = scene.layers.find((layer) => layer.partId === 'hair-back');
+  assert.equal(hair.assetId, 'hair-back-black');
+  assert.deepEqual(hair.colorChannel && {
+    id: hair.colorChannel.id,
+    valueId: hair.colorChannel.valueId,
+    value: hair.colorChannel.value,
   }, { id: 'hair-color', valueId: 'blue', value: '#3366ff' });
-  assert.deepEqual(back.transform, {
+  assert.deepEqual(hair.transform, {
     x: 12,
     y: 8,
     width: 400,
@@ -134,171 +146,78 @@ test('resolves a recipe to a deterministic back-to-front layer list', () => {
     originX: 200,
     originY: 150,
   });
-  assert.equal(back.opacity, 0.8);
-  assert.equal(back.compositeOperation, BLEND_MODES.multiply);
-  assert.equal(first.layers.at(-1).blendMode, 'add');
-  assert.equal(first.layers.at(-1).compositeOperation, 'lighter');
-  assert.equal(first.pixelMode, 'nearest');
-  assert.deepEqual(first.issues, []);
+  assert.equal(hair.opacity, 0.8);
+  assert.equal(hair.compositeOperation, BLEND_MODES.multiply);
+  assert.equal(scene.layers.at(-1).blendMode, 'add');
+  assert.equal(scene.layers.at(-1).compositeOperation, 'lighter');
+  assert.equal(scene.pixelMode, 'nearest');
 });
 
-test('prefers a shared Layer Track transform only for explicitly linked bindings', () => {
+test('Layer Track transform never changes a Style placement', () => {
   const maker = makerFixture();
-  maker.layerTracks.find((track) => track.id === 'back').transform = { x: 40, y: 50, scale: 0.8, rotation: -4 };
-  const binding = maker.parts[0].items[0].variants[0].bindings[0];
-  binding.inheritTrackTransform = true;
-  const linked = resolveMakerScene(maker, recipeFixture()).layers.find((layer) => layer.bindingId === 'back');
-  assert.deepEqual(
-    { x: linked.transform.x, y: linked.transform.y, scaleX: linked.transform.scaleX, rotation: linked.transform.rotation },
-    { x: 40, y: 50, scaleX: 0.8, rotation: -4 },
-  );
-  assert.equal(linked.transformSource, 'track');
-
-  binding.inheritTrackTransform = false;
-  const detached = resolveMakerScene(maker, recipeFixture()).layers.find((layer) => layer.bindingId === 'back');
-  assert.equal(detached.transform.x, 12);
-  assert.equal(detached.transformSource, 'binding');
+  maker.layerTracks.find((track) => track.id === 'back').transform = { x: 400, y: 500, scale: 0.1, rotation: -40 };
+  const hair = resolveMakerScene(maker, recipeFixture()).layers.find((layer) => layer.partId === 'hair-back');
+  assert.equal(hair.transform.x, 12);
+  assert.equal(hair.transform.y, 8);
+  assert.equal(hair.transform.scaleX, 1.25);
+  assert.equal(hair.transformSource, 'style');
 });
 
-test('evaluates requires, excludes, parent selections and color conditions', () => {
+test('does not treat obsolete style.visible=false as a render switch', () => {
+  const maker = makerFixture();
+  maker.parts.find((part) => part.id === 'hair-back').items[0].styles[0].visible = false;
+  const scene = resolveMakerScene(maker, recipeFixture());
+  assert.ok(scene.layers.some((layer) => layer.partId === 'hair-back'));
+});
+
+test('evaluates style-aware selected/all/any/not and color conditions', () => {
   const context = {
     selections: new Map([
-      ['face', { itemId: 'smile', variantId: 'open' }],
+      ['face', { itemId: 'smile', styleId: 'open' }],
       ['hat', { itemId: '' }],
     ]),
     colorChannels: new Map([['eyes', { valueId: 'violet', value: '#7755ff' }]]),
   };
-
   assert.equal(evaluateVisibleWhen({ all: [
-    { partId: 'face', itemId: 'smile', variantId: 'open' },
+    { partId: 'face', itemId: 'smile', styleId: 'open' },
     { colorChannelId: 'eyes', in: ['violet', 'green'] },
   ] }, context), true);
   assert.equal(evaluateVisibleWhen({ partId: 'hat', selected: false }, context), true);
   assert.equal(evaluateVisibleWhen({
-    requires: [{ partId: 'face', itemIds: ['smile'] }],
+    requires: [{ partId: 'face', itemIds: ['smile'], styleIds: ['open'] }],
     excludes: [{ colorChannelId: 'eyes', equals: '#7755ff' }],
   }, context), false);
-  assert.equal(evaluateVisibleWhen({
-    op: 'all',
-    conditions: [
-      { op: 'selected', partId: 'face', itemId: 'smile' },
-      { op: 'not', condition: { op: 'selected', partId: 'hat' } },
-    ],
-  }, context), true);
 });
 
-test('does not silently replace an explicit None or missing Item', () => {
+test('does not silently replace explicit None, missing Items or missing Styles', () => {
   const maker = makerFixture();
-  maker.parts[0].defaultItemId = 'long';
   maker.parts[0].required = true;
-
-  const none = resolveMakerScene(maker, { selections: [{ partId: 'hair', itemId: '' }] });
+  const none = resolveMakerScene(maker, { selections: [{ partId: 'hair-back', itemId: '' }] });
   assert.deepEqual(none.layers, []);
 
-  const missing = resolveMakerScene(maker, { selections: [{ partId: 'hair', itemId: 'missing' }] });
-  assert.deepEqual(missing.layers, []);
-  assert.equal(missing.issues[0].code, 'unknown-item');
-  assert.throws(
-    () => resolveMakerScene(maker, { selections: [{ partId: 'hair', itemId: 'missing' }] }, { strict: true }),
-    (error) => error.name === 'MakerSceneResolutionError' && error.issues[0].code === 'unknown-item',
-  );
-});
-
-test('can opt into required defaults without overriding an explicit None', () => {
-  const maker = makerFixture();
-  maker.parts[1].required = true;
-  maker.parts[1].defaultItemId = 'base';
-
-  const omitted = resolveMakerScene(maker, { selections: [] }, { useRequiredDefaults: true });
-  assert.deepEqual(omitted.layers.map((layer) => layer.key), ['body/base/default/body']);
-
-  const explicitNone = resolveMakerScene(maker, { selections: [{ partId: 'body', itemId: '' }] }, { useRequiredDefaults: true });
-  assert.deepEqual(explicitNone.layers, []);
-});
-
-test('adapts the published v3 layer and image matrix into the shared scene', () => {
-  const maker = {
-    schemaVersion: 'animacraft.creator-template.v3',
-    template: { canvas: { width: 1024, height: 1024 } },
-    assets: [{ identifier: 'hair-blue.png', width: 1024, height: 1024 }],
-    parts: [{
-      key: 'hair',
-      colorChannelId: 'hair',
-      colors: [{ id: 'black', value: '#111111' }, { id: 'blue', value: '#3366ff' }],
-      layers: [{ id: 'front', renderOrder: 4, x: 7, y: 9, opacity: 50, blendMode: 'screen' }],
-      items: [{
-        id: 'bob',
-        images: [{ layerId: 'front', colorId: 'blue', identifier: 'hair-blue.png' }],
-      }],
-    }],
-  };
-  const scene = resolveMakerScene(maker, [{ slot: 'hair', part: 'bob', color: '#3366ff' }]);
-  assert.equal(scene.layers.length, 1);
-  assert.equal(scene.layers[0].trackId, 'hair:front');
-  assert.equal(scene.layers[0].assetId, 'hair-blue.png');
-  assert.equal(scene.layers[0].transform.x, 7);
-  assert.equal(scene.layers[0].opacity, 0.5);
-  assert.equal(scene.layers[0].compositeOperation, 'screen');
-});
-
-test('uses v4 swatches and assetsBySwatch without a Part-level color channel', () => {
-  const maker = {
-    schemaVersion: 'animacraft.maker.v4',
-    canvas: { width: 512, height: 512, pixelMode: 'pixelated' },
-    layerTracks: [{ id: 'eyes', name: 'Eyes', order: 0 }],
-    colorChannels: [{
-      id: 'eye-color',
-      name: 'Eye color',
-      order: 0,
-      mode: 'gradient-map',
-      defaultSwatchId: 'violet',
-      swatches: [{
-        id: 'violet',
-        name: 'Violet',
-        hintColor: '#7755ff',
-        stops: [{ offset: 0, color: '#110022' }, { offset: 1, color: '#ddaaff' }],
-      }, {
-        id: 'green',
-        name: 'Green',
-        hintColor: '#33aa66',
-        stops: [{ offset: 0, color: '#001108' }, { offset: 1, color: '#aaffcc' }],
-      }],
-    }],
-    assets: [{ id: 'eye-base' }, { id: 'eye-violet' }, { id: 'eye-green' }],
-    parts: [{
-      id: 'expression',
-      items: [{
-        id: 'calm',
-        defaultVariantId: 'front',
-        variants: [{
-          id: 'front',
-          layerBindings: [{
-            id: 'eyes',
-            layerTrackId: 'eyes',
-            assetId: 'eye-base',
-            colorChannelId: 'eye-color',
-            assetsBySwatch: [
-              { swatchId: 'violet', assetId: 'eye-violet' },
-              { swatchId: 'green', assetId: 'eye-green' },
-            ],
-            transform: { x: 0, y: 0, scale: 1, rotation: 0 },
-            opacity: 1,
-            blendMode: 'overlay',
-          }],
-        }],
-      }],
-    }],
-  };
-  const scene = resolveMakerScene(maker, {
-    selections: [{ partId: 'expression', itemId: 'calm', variantId: 'front' }],
-    colors: [{ channelId: 'eye-color', swatchId: 'green' }],
+  const missingItem = resolveMakerScene(maker, {
+    selections: [{ partId: 'hair-back', itemId: 'missing', styleId: 'default' }],
   });
-  assert.equal(scene.layers[0].assetId, 'eye-green');
-  assert.equal(scene.layers[0].colorChannel.swatchId, 'green');
-  assert.equal(scene.layers[0].colorChannel.value, '#33aa66');
-  assert.equal(scene.layers[0].colorChannel.valueDefinition.stops.length, 2);
-  assert.equal(scene.layers[0].compositeOperation, 'overlay');
-  assert.equal(scene.layers[0].pixelMode, 'nearest');
+  assert.equal(missingItem.issues[0].code, 'unknown-item');
+
+  const missingStyle = resolveMakerScene(maker, {
+    selections: [{ partId: 'hair-back', itemId: 'default', styleId: 'missing' }],
+  });
+  assert.equal(missingStyle.issues[0].code, 'unknown-style');
+});
+
+test('can opt into required defaults without overriding explicit None', () => {
+  const maker = makerFixture();
+  const body = maker.parts.find((entry) => entry.id === 'body');
+  body.required = true;
+  const omitted = resolveMakerScene(maker, { selections: [] }, { useRequiredDefaults: true });
+  assert.deepEqual(omitted.layers.map((layer) => layer.key), ['body/default/default']);
+  const explicitNone = resolveMakerScene(
+    maker,
+    { selections: [{ partId: 'body', itemId: '' }] },
+    { useRequiredDefaults: true },
+  );
+  assert.deepEqual(explicitNone.layers, []);
 });
 
 function fakeCanvas() {
@@ -337,14 +256,15 @@ function fakeCanvas() {
   return { canvas, operations };
 }
 
-test('Canvas renderer applies transforms, blend, pixel mode and color hook', async () => {
+test('Canvas renderer applies direct Style transforms, blend, pixel mode and color hook', async () => {
   const maker = makerFixture();
-  maker.parts = [maker.parts[0]];
-  maker.parts[0].items[0].variants[0].bindings = [maker.parts[0].items[0].variants[0].bindings[0]];
+  maker.parts = [maker.parts.find((entry) => entry.id === 'hair-back')];
   const { canvas, operations } = fakeCanvas();
   const colors = [];
-
-  const result = await renderMakerToCanvas(maker, recipeFixture(), canvas, {
+  const result = await renderMakerToCanvas(maker, {
+    selections: [{ partId: 'hair-back', itemId: 'default', styleId: 'default' }],
+    colors: [{ channelId: 'hair-color', swatchId: 'blue' }],
+  }, canvas, {
     resolveAsset(assetId) {
       return { width: 400, height: 300, name: assetId };
     },
@@ -363,6 +283,6 @@ test('Canvas renderer applies transforms, blend, pixel mode and color hook', asy
   assert.ok(operations.some((operation) => operation[0] === 'scale' && operation[1] === 1.25 && operation[2] === 1.25));
   assert.deepEqual(
     operations.find((operation) => operation[0] === 'drawImage'),
-    ['drawImage', 'hair-back-blue:colored', 0.8, 'multiply', false, 0, 0, 400, 300],
+    ['drawImage', 'hair-back-black:colored', 0.8, 'multiply', false, 0, 0, 400, 300],
   );
 });

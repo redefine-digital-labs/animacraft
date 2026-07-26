@@ -78,38 +78,34 @@ function bestPathMatch(pathToken, pathSegments, entries, fields) {
 
 /**
  * Maps a folder or filename matrix to
- * Part × Item × Style × Layer Track × Color.
+ * Part × Item × Style.
  *
  * Recommended layout:
- *   part/item/style/track@swatch.png
+ *   part/item/style.png
+ *
+ * A Style is one renderable PNG. Its global Layer Track is selected in the
+ * import confirmation UI rather than represented by another child level.
  */
 export function buildProjectAssetImportMapping(files, document) {
   const tracks = document?.layerTracks || [];
   const parts = document?.parts || [];
-  const channels = document?.colorChannels || [];
   return [...files].map((file) => {
     const relativePath = String(file.webkitRelativePath || file.name || '');
     const pathToken = normalizedToken(relativePath);
     const pathSegments = relativePath.split(/[\\/]/).map(normalizedToken).filter(Boolean);
     const part = bestPathMatch(pathToken, pathSegments, parts, ['id', 'name']).entry;
     const item = bestPathMatch(pathToken, pathSegments, part?.items || [], ['importKey', 'id', 'name']).entry;
-    const variant = bestPathMatch(pathToken, pathSegments, item?.variants || [], ['id', 'name']).entry
-      || (item?.variants?.length === 1 ? item.variants[0] : null);
+    const style = bestPathMatch(pathToken, pathSegments, item?.styles || [], ['id', 'name']).entry
+      || (item?.styles?.length === 1 ? item.styles[0] : null);
     const track = bestPathMatch(pathToken, pathSegments, tracks, ['id', 'name']).entry;
-    const colorEntries = channels.flatMap((channel) => (channel.swatches || []).map((swatch) => ({
-      ...swatch,
-      channelId: channel.id,
-    })));
-    const color = bestPathMatch(pathToken, pathSegments, colorEntries, ['id', 'name']).entry;
-    const requiredMatches = [part, item, variant, track].filter(Boolean).length;
+    const requiredMatches = [part, item, style].filter(Boolean).length;
     return {
       file,
       fileName: relativePath || String(file.name || ''),
-      targetDefinition: part && item && variant ? `${part.id}::${item.id}::${variant.id}` : '',
+      targetDefinition: part && item && style ? `${part.id}::${item.id}::${style.id}` : '',
       trackId: track?.id || '',
-      colorDefinition: color ? `${color.channelId}::${color.id}` : '',
-      confidence: requiredMatches === 4 ? 'matched' : requiredMatches >= 2 ? 'review' : 'unmapped',
-      suggestedTrackName: String(file.name || 'Layer').replace(/\.[^.]+$/, '').split('@')[0],
+      confidence: requiredMatches === 3 ? 'matched' : requiredMatches >= 2 ? 'review' : 'unmapped',
+      suggestedTrackName: track?.name || '',
     };
   });
 }
@@ -181,17 +177,21 @@ export async function inspectPngAsset(file, makerCanvas) {
   const canvasWidth = Number(makerCanvas?.width || 0);
   const canvasHeight = Number(makerCanvas?.height || 0);
   const fullCanvas = width === canvasWidth && height === canvasHeight;
-  const initialScale = fullCanvas ? 1 : Math.min(1, canvasWidth / width, canvasHeight / height);
+  const visibleBounds = alphaBounds || { x: 0, y: 0, width, height };
+  const initialScale = fullCanvas
+    ? 1
+    : Math.min(1, canvasWidth / Math.max(1, visibleBounds.width), canvasHeight / Math.max(1, visibleBounds.height));
+  const centeredX = Math.round(((canvasWidth - (visibleBounds.width * initialScale)) / 2) - (visibleBounds.x * initialScale));
+  const centeredY = Math.round(((canvasHeight - (visibleBounds.height * initialScale)) / 2) - (visibleBounds.y * initialScale));
   return {
     width,
     height,
     fullCanvas,
     alphaBounds,
     initialTransform: {
-      x: fullCanvas ? 0 : Math.round((canvasWidth - (width * initialScale)) / 2),
-      y: fullCanvas ? 0 : Math.round((canvasHeight - (height * initialScale)) / 2),
-      scaleX: initialScale,
-      scaleY: initialScale,
+      x: fullCanvas ? 0 : centeredX,
+      y: fullCanvas ? 0 : centeredY,
+      scale: initialScale,
       rotation: 0,
     },
     warning: fullCanvas ? '' : 'Cropped artwork: confirm its position before publishing.',
@@ -281,13 +281,13 @@ export function collectTrackAlignmentWarnings(document, runtimeAssets, options =
   const groups = new Map();
   (document?.parts || []).forEach((part) => (part.items || [])
     .filter((item) => (item.status || 'public') === 'public')
-    .forEach((item) => (item.variants || []).forEach((variant) => (variant.layerBindings || []).forEach((binding) => {
-      const bounds = recordFor(binding.assetId)?.alphaBounds;
+    .forEach((item) => (item.styles || []).forEach((style) => {
+      const bounds = recordFor(style.assetId)?.alphaBounds;
       if (!bounds) return;
-      const entries = groups.get(binding.layerTrackId) || [];
-      entries.push({ part, item, variant, binding, bounds });
-      groups.set(binding.layerTrackId, entries);
-    }))));
+      const entries = groups.get(style.layerTrackId) || [];
+      entries.push({ part, item, style, bounds });
+      groups.set(style.layerTrackId, entries);
+    })));
   const warnings = [];
   groups.forEach((entries, trackId) => {
     if (entries.length < 2) return;

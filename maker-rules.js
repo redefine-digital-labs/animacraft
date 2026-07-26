@@ -1,10 +1,9 @@
 /**
  * Pure, UI-independent recipe constraint runtime.
  *
- * The runtime deliberately accepts both the legacy manifest vocabulary
- * (`key`, `partKey`, `itemKey`, `styles`) and the new MakerDocument vocabulary
- * (`id`, `partId`, `itemId`, `variants`). Its canonical recipe output is an
- * ordered array of `{ partId, itemId, variantId?, colorId?, colorHex? }` slots.
+ * The canonical Maker graph is Part → Item → Style. A Style is the smallest
+ * renderable unit and owns one active PNG plus its transform and render data.
+ * Canonical recipes use `{ partId, itemId, styleId, colorId?, colorHex? }`.
  */
 
 const RULE_TYPES = new Set(['requires', 'excludes']);
@@ -31,8 +30,8 @@ function itemIdOf(item) {
   return String(item?.id ?? item?.key ?? '');
 }
 
-function variantIdOf(variant) {
-  return String(variant?.id ?? variant?.key ?? '');
+function styleIdOf(style) {
+  return String(style?.id ?? style?.key ?? '');
 }
 
 function makerParts(maker) {
@@ -43,14 +42,13 @@ function partItems(part) {
   return Array.isArray(part?.items) ? part.items : [];
 }
 
-function itemVariants(item) {
-  if (Array.isArray(item?.variants)) return item.variants;
-  if (Array.isArray(item?.styles)) return item.styles;
-  return [];
+function itemStyles(item) {
+  return Array.isArray(item?.styles) ? item.styles : [];
 }
 
 function isPublishedItem(item) {
-  return item?.enabled !== false && !['private', 'draft', 'disabled'].includes(String(item?.visibility || '').toLowerCase());
+  const status = String(item?.status ?? item?.visibility ?? 'public').toLowerCase();
+  return item?.enabled !== false && status === 'public';
 }
 
 function isRequiredPart(part) {
@@ -66,11 +64,11 @@ export function normalizeRuleSelector(input, context = {}) {
   if (typeof input === 'string') {
     const separator = input.includes('/') ? '/' : input.includes(':') ? ':' : '';
     if (!separator) return { partId: input };
-    const [partId, itemId, variantId] = input.split(separator);
+    const [partId, itemId, styleId] = input.split(separator);
     return {
       partId: String(partId || context.partId || ''),
       ...(itemId ? { itemId: String(itemId) } : {}),
-      ...(variantId ? { variantId: String(variantId) } : {}),
+      ...(styleId ? { styleId: String(styleId) } : {}),
     };
   }
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
@@ -78,18 +76,18 @@ export function normalizeRuleSelector(input, context = {}) {
   }
   const partId = String(input.partId ?? input.partKey ?? input.part ?? context.partId ?? '');
   // Context supplies only the owning Part for shorthand targets such as
-  // `{ itemId: 'long' }`. Inheriting the owner's Item/Variant would turn an
+  // `{ itemId: 'long' }`. Inheriting the owner's Item/Style would turn an
   // explicit `{ partId: 'body' }` target into `body/<owner item>` by accident.
   const itemId = String(input.itemId ?? input.itemKey ?? input.item ?? '');
-  const variantId = String(input.variantId ?? input.variantKey ?? input.styleId ?? input.styleKey ?? '');
+  const styleId = String(input.styleId ?? input.styleKey ?? '');
   const itemIds = normalizeIdList(input.itemIds ?? input.itemKeys);
-  const variantIds = normalizeIdList(input.variantIds ?? input.variantKeys ?? input.styleIds);
+  const styleIds = normalizeIdList(input.styleIds ?? input.styleKeys);
   return {
     partId,
     ...(itemId ? { itemId } : {}),
     ...(itemIds.length ? { itemIds } : {}),
-    ...(variantId ? { variantId } : {}),
-    ...(variantIds.length ? { variantIds } : {}),
+    ...(styleId ? { styleId } : {}),
+    ...(styleIds.length ? { styleIds } : {}),
   };
 }
 
@@ -133,7 +131,7 @@ function normalizeGlobalRule(rule, index) {
   };
 }
 
-/** Collect global and embedded Part / Item / Variant rules into one form. */
+/** Collect global and embedded Part / Item / Style rules into one form. */
 export function collectMakerRules(maker) {
   const result = asArray(maker?.rules).map(normalizeGlobalRule);
   makerParts(maker).forEach((part) => {
@@ -142,9 +140,9 @@ export function collectMakerRules(maker) {
     partItems(part).forEach((item) => {
       const itemId = itemIdOf(item);
       result.push(...embeddedRules(item, { partId, itemId }, `item:${partId}:${itemId}`));
-      itemVariants(item).forEach((variant) => {
-        const variantId = variantIdOf(variant);
-        result.push(...embeddedRules(variant, { partId, itemId, variantId }, `variant:${partId}:${itemId}:${variantId}`));
+      itemStyles(item).forEach((style) => {
+        const styleId = styleIdOf(style);
+        result.push(...embeddedRules(style, { partId, itemId, styleId }, `style:${partId}:${itemId}:${styleId}`));
       });
     });
   });
@@ -162,16 +160,16 @@ function assertSelector(index, selector, ruleId) {
       throw new MakerRuleError(`Rule ${ruleId} references missing Item ${selector.partId}/${itemId}.`, 'missing-rule-item', { ruleId, selector });
     }
   }
-  const variantIds = [...(selector.variantIds || []), ...(selector.variantId ? [selector.variantId] : [])];
-  if (variantIds.length) {
+  const styleIds = [...(selector.styleIds || []), ...(selector.styleId ? [selector.styleId] : [])];
+  if (styleIds.length) {
     const selectedItems = selector.itemId ? [selector.itemId] : selector.itemIds || [];
     if (selectedItems.length !== 1) {
-      throw new MakerRuleError(`Rule ${ruleId} must name one Item before naming a Variant.`, 'ambiguous-rule-variant', { ruleId, selector });
+      throw new MakerRuleError(`Rule ${ruleId} must name one Item before naming a Style.`, 'ambiguous-rule-style', { ruleId, selector });
     }
-    const variants = index.variantByItem.get(`${selector.partId}/${selectedItems[0]}`);
-    variantIds.forEach((variantId) => {
-      if (!variants?.has(variantId)) {
-        throw new MakerRuleError(`Rule ${ruleId} references missing Variant ${variantId}.`, 'missing-rule-variant', { ruleId, selector });
+    const styles = index.styleByItem.get(`${selector.partId}/${selectedItems[0]}`);
+    styleIds.forEach((styleId) => {
+      if (!styles?.has(styleId)) {
+        throw new MakerRuleError(`Rule ${ruleId} references missing Style ${styleId}.`, 'missing-rule-style', { ruleId, selector });
       }
     });
   }
@@ -221,7 +219,7 @@ export function createMakerRuleIndex(maker) {
   const parts = makerParts(maker);
   const partById = new Map();
   const itemByPart = new Map();
-  const variantByItem = new Map();
+  const styleByItem = new Map();
   parts.forEach((part) => {
     const partId = partIdOf(part);
     if (!partId || partById.has(partId)) {
@@ -235,15 +233,19 @@ export function createMakerRuleIndex(maker) {
         throw new MakerRuleError(`Part ${partId} has an empty or duplicate Item id: ${itemId || '(empty)'}.`, 'duplicate-item-id', { partId, itemId });
       }
       itemMap.set(itemId, item);
-      const variants = new Map();
-      itemVariants(item).forEach((variant) => {
-        const variantId = variantIdOf(variant);
-        if (!variantId || variants.has(variantId)) {
-          throw new MakerRuleError(`Item ${partId}/${itemId} has an empty or duplicate Variant id.`, 'duplicate-variant-id', { partId, itemId, variantId });
+      const styles = new Map();
+      itemStyles(item).forEach((style) => {
+        const styleId = styleIdOf(style);
+        if (!styleId || styles.has(styleId)) {
+          throw new MakerRuleError(`Item ${partId}/${itemId} has an empty or duplicate Style id.`, 'duplicate-style-id', { partId, itemId, styleId });
         }
-        variants.set(variantId, variant);
+        styles.set(styleId, style);
       });
-      variantByItem.set(`${partId}/${itemId}`, variants);
+      styleByItem.set(`${partId}/${itemId}`, styles);
+      const defaultStyleId = String(item?.defaultStyleId ?? '');
+      if (defaultStyleId && !styles.has(defaultStyleId)) {
+        throw new MakerRuleError(`Item ${partId}/${itemId} references missing default Style ${defaultStyleId}.`, 'missing-default-style', { partId, itemId, styleId: defaultStyleId });
+      }
     });
     itemByPart.set(partId, itemMap);
     const defaultItemId = String(part?.defaultItemId ?? part?.defaultItemKey ?? '');
@@ -252,7 +254,7 @@ export function createMakerRuleIndex(maker) {
     }
   });
   const orderedParts = topologicalParts(parts, partById);
-  const index = { maker, parts: orderedParts, partById, itemByPart, variantByItem, rules: [] };
+  const index = { maker, parts: orderedParts, partById, itemByPart, styleByItem, rules: [] };
   index.rules = collectMakerRules(maker);
   index.rules.forEach((rule) => {
     if (!RULE_TYPES.has(rule.type) || !rule.trigger.partId || !rule.targets.length) {
@@ -271,13 +273,13 @@ function canonicalInputSelection(partId, value) {
   const resolvedPartId = String(value.partId ?? value.partKey ?? partId ?? '');
   const itemId = String(value.itemId ?? value.itemKey ?? value.id ?? '');
   if (!itemId) return null;
-  const variantId = String(value.variantId ?? value.variantKey ?? value.styleId ?? value.styleKey ?? '');
+  const styleId = String(value.styleId ?? value.styleKey ?? '');
   const colorId = String(value.colorId ?? value.colorKey ?? '');
   const colorHex = String(value.colorHex ?? value.colorValue ?? (String(value.color || '').startsWith('#') ? value.color : '') ?? '');
   return {
     partId: resolvedPartId,
     itemId,
-    ...(variantId ? { variantId } : {}),
+    ...(styleId ? { styleId } : {}),
     ...(colorId ? { colorId } : {}),
     ...(colorHex ? { colorHex: colorHex.toLowerCase() } : {}),
   };
@@ -361,8 +363,8 @@ function normalizeRecipeColors(maker, recipe, { random = null, exact = false } =
   return { colors, issues };
 }
 
-function itemDefaultVariantId(item) {
-  return String(item?.defaultVariantId ?? item?.defaultStyleId ?? itemVariants(item)[0]?.id ?? itemVariants(item)[0]?.key ?? '');
+function itemDefaultStyleId(item) {
+  return String(item?.defaultStyleId ?? itemStyles(item)[0]?.id ?? itemStyles(item)[0]?.key ?? '');
 }
 
 function normalizeColor(part, desired, random) {
@@ -387,26 +389,22 @@ function selectionCandidates(index, part, desired, random) {
   const candidates = [];
   index.itemByPart.get(partId).forEach((item, itemId) => {
     if (!isPublishedItem(item)) return;
-    const variants = [...index.variantByItem.get(`${partId}/${itemId}`).values()];
-    if (!variants.length) {
-      candidates.push({ partId, itemId, ...normalizeColor(part, desired?.itemId === itemId ? desired : null, random) });
-      return;
-    }
-    variants.forEach((variant) => candidates.push({
+    const styles = [...index.styleByItem.get(`${partId}/${itemId}`).values()];
+    styles.forEach((style) => candidates.push({
       partId,
       itemId,
-      variantId: variantIdOf(variant),
+      styleId: styleIdOf(style),
       ...normalizeColor(part, desired?.itemId === itemId ? desired : null, random),
     }));
   });
   const defaultItemId = String(part?.defaultItemId ?? part?.defaultItemKey ?? '');
-  const desiredKey = desired ? `${desired.itemId}/${desired.variantId || ''}` : '';
+  const desiredKey = desired ? `${desired.itemId}/${desired.styleId || ''}` : '';
   const defaultItem = index.itemByPart.get(partId).get(defaultItemId);
-  const defaultKey = defaultItemId ? `${defaultItemId}/${itemDefaultVariantId(defaultItem)}` : '';
+  const defaultKey = defaultItemId ? `${defaultItemId}/${itemDefaultStyleId(defaultItem)}` : '';
   const score = (candidate) => {
-    const key = `${candidate.itemId}/${candidate.variantId || ''}`;
+    const key = `${candidate.itemId}/${candidate.styleId || ''}`;
     if (desiredKey && key === desiredKey) return 0;
-    if (desired?.itemId && candidate.itemId === desired.itemId && !desired.variantId) return 1;
+    if (desired?.itemId && candidate.itemId === desired.itemId && !desired.styleId) return 1;
     if (defaultKey && key === defaultKey) return 2;
     if (defaultItemId && candidate.itemId === defaultItemId) return 3;
     return 4;
@@ -421,8 +419,8 @@ function selectorState(selector, assignments) {
   if (!selected) return 'miss';
   if (selector.itemId && selected.itemId !== selector.itemId) return 'miss';
   if (selector.itemIds?.length && !selector.itemIds.includes(selected.itemId)) return 'miss';
-  if (selector.variantId && selected.variantId !== selector.variantId) return 'miss';
-  if (selector.variantIds?.length && !selector.variantIds.includes(selected.variantId)) return 'miss';
+  if (selector.styleId && selected.styleId !== selector.styleId) return 'miss';
+  if (selector.styleIds?.length && !selector.styleIds.includes(selected.styleId)) return 'miss';
   return 'match';
 }
 
@@ -493,12 +491,12 @@ function selectedDefinitionVisibleState(index, selection, assignments) {
   const item = index.itemByPart.get(selection.partId)?.get(selection.itemId);
   const itemState = conditionState(item?.visibleWhen, assignments);
   if (itemState === 'miss') return 'miss';
-  const variant = selection.variantId
-    ? index.variantByItem.get(`${selection.partId}/${selection.itemId}`)?.get(selection.variantId)
+  const style = selection.styleId
+    ? index.styleByItem.get(`${selection.partId}/${selection.itemId}`)?.get(selection.styleId)
     : null;
-  const variantState = conditionState(variant?.visibleWhen, assignments);
-  if (variantState === 'miss') return 'miss';
-  return itemState === 'unknown' || variantState === 'unknown' ? 'unknown' : 'match';
+  const styleState = conditionState(style?.visibleWhen, assignments);
+  if (styleState === 'miss') return 'miss';
+  return itemState === 'unknown' || styleState === 'unknown' ? 'unknown' : 'match';
 }
 
 function partialVisibilityValid(index, assignments) {
@@ -524,7 +522,7 @@ function evaluateAssignments(index, assignments, initialIssues = []) {
     else if (!visible && selected) violations.push({ code: 'hidden-part-selected', partId });
     if (active && isRequiredPart(part) && !selected) violations.push({ code: 'required-part-missing', partId });
     if (selected && selectedDefinitionVisibleState(index, selected, assignments) !== 'match') {
-      violations.push({ code: 'hidden-item-or-variant-selected', partId, itemId: selected.itemId, variantId: selected.variantId });
+      violations.push({ code: 'hidden-item-or-style-selected', partId, itemId: selected.itemId, styleId: selected.styleId });
     }
   });
   index.rules.forEach((rule) => {
@@ -557,18 +555,19 @@ function sanitizedAssignments(index, parsed) {
       assignments.set(partId, null);
       return;
     }
-    const variants = index.variantByItem.get(`${partId}/${selection.itemId}`);
-    let variantId = selection.variantId;
-    if (variants.size) {
-      if (variantId && !variants.has(variantId)) issues.push({ code: 'unknown-variant', partId, itemId: selection.itemId, variantId });
-      if (!variants.has(variantId)) variantId = itemDefaultVariantId(item);
-    } else {
-      variantId = '';
+    const styles = index.styleByItem.get(`${partId}/${selection.itemId}`);
+    let styleId = selection.styleId;
+    if (styleId && !styles.has(styleId)) issues.push({ code: 'unknown-style', partId, itemId: selection.itemId, styleId });
+    if (!styles.has(styleId)) styleId = itemDefaultStyleId(item);
+    if (!styleId || !styles.has(styleId)) {
+      issues.push({ code: 'missing-style', partId, itemId: selection.itemId });
+      assignments.set(partId, null);
+      return;
     }
     assignments.set(partId, {
       partId,
       itemId: selection.itemId,
-      ...(variantId ? { variantId } : {}),
+      styleId,
       ...normalizeColor(part, selection),
     });
   });
@@ -630,7 +629,7 @@ function solve(index, desired, options = {}) {
         if (!desiredSelection) candidates = [null];
         else candidates = candidates.filter((candidate) => (
           candidate.itemId === desiredSelection.itemId
-          && (!desiredSelection.variantId || candidate.variantId === desiredSelection.variantId)
+          && (!desiredSelection.styleId || candidate.styleId === desiredSelection.styleId)
         ));
       }
       const optional = !isRequiredPart(part) || part.visibleWhen != null;
@@ -772,18 +771,19 @@ export function evaluateVisibleWhen(condition, recipe) {
   return conditionState(condition, assignments) === 'match';
 }
 
-/** Determine whether a LayerBinding should render for the current recipe. */
-export function isLayerVisible(binding, recipe) {
-  if (!binding || binding.hidden === true || binding.enabled === false) return false;
+/** Determine whether a Style should render for the current recipe. */
+export function isStyleVisible(style, recipe) {
+  if (!style) return false;
   const assignments = recipe?.selection
     ? new Map(Object.entries(recipe.selection))
     : parseRecipeInput(recipe).selection;
   const ownerSelector = normalizeRuleSelector({
-    partId: binding.partId ?? binding.partKey,
-    itemId: binding.itemId ?? binding.itemKey,
-    variantId: binding.variantId ?? binding.variantKey ?? binding.styleId,
+    partId: style.partId ?? style.partKey,
+    itemId: style.itemId ?? style.itemKey,
+    styleId: style.styleId ?? style.styleKey ?? style.id,
   });
   if (ownerSelector.partId && selectorState(ownerSelector, assignments) !== 'match') return false;
-  const condition = binding.visibleWhen ?? binding.visibilityCondition ?? binding.rules?.visibleWhen;
-  return conditionState(condition, assignments) === 'match';
+  return conditionState(style.visibleWhen, assignments) === 'match';
 }
+
+export const isLayerVisible = isStyleVisible;

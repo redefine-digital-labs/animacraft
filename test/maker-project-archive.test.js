@@ -9,7 +9,7 @@ import {
 
 test('round-trips a portable Maker project with source and thumbnail blobs', async () => {
   const document = {
-    schemaVersion: 'animacraft.maker.v4',
+    schemaVersion: 'animacraft.maker.v5',
     metadata: { id: 'portable-maker' },
     assets: [{
       id: 'body-art',
