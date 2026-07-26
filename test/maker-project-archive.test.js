@@ -38,6 +38,38 @@ test('round-trips a portable Maker project with source and thumbnail blobs', asy
   assert.equal(await restored.assets[0].thumbnailBlob.text(), 'thumb-png');
 });
 
+test('includes Expansion Pack-only asset blobs in portable project backups', async () => {
+  const document = {
+    schemaVersion: 'animacraft.maker.v5',
+    metadata: { id: 'portable-expansion-maker' },
+    assets: [],
+    extensions: {
+      expansionDrafts: [{
+        packId: 'bonus-pack',
+        assets: [{
+          id: 'bonus-art',
+          identifier: 'expansions/bonus-art.png',
+          kind: 'layer',
+          mediaType: 'image/png',
+          width: 512,
+          height: 512,
+        }],
+      }],
+    },
+  };
+  const archive = await createMakerProjectArchive(document, new Map([['bonus-art', {
+    assetId: 'bonus-art',
+    fileName: 'Bonus Art.png',
+    width: 512,
+    height: 512,
+    blob: new Blob(['bonus-source'], { type: 'image/png' }),
+  }]]));
+  const restored = await readMakerProjectArchive(archive);
+  assert.equal(restored.assets.length, 1);
+  assert.equal(restored.assets[0].assetId, 'bonus-art');
+  assert.equal(await restored.assets[0].blob.text(), 'bonus-source');
+});
+
 test('rejects arbitrary ZIP payloads without the project schema', async () => {
   await assert.rejects(
     () => readMakerProjectArchive(new Blob(['not-a-zip'])),

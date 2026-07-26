@@ -205,11 +205,14 @@ test('round-trips and removes a player draft independently of Maker documents', 
     makerVersionId: 'maker-v2',
     recipe: { selections: [{ partId: 'hair', itemId: 'long' }], colors: [] },
     profile: { name: 'Mira' },
+    enabledExpansionIds: ['moon-pack', 'costume-pack'],
   };
   await savePlayerWorkspaceSession('wallet:maker-v2', session);
   session.profile.name = 'Changed outside';
+  session.enabledExpansionIds.push('changed-outside');
   const loaded = await loadPlayerWorkspaceSession('wallet:maker-v2');
   assert.equal(loaded.session.profile.name, 'Mira');
+  assert.deepEqual(loaded.session.enabledExpansionIds, ['moon-pack', 'costume-pack']);
   assert.equal(typeof loaded.savedAt, 'number');
   await deletePlayerWorkspaceSession('wallet:maker-v2');
   assert.equal(await loadPlayerWorkspaceSession('wallet:maker-v2'), null);

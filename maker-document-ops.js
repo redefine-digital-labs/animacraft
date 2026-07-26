@@ -343,7 +343,10 @@ export function duplicatePart(document, partId) {
 
   const rewriteTarget = (target) => {
     if (!target || typeof target !== 'object' || Array.isArray(target) || target.partId !== source.id) return target;
-    const sourceItemId = target.itemId;
+    const sourceItemId = target.itemId
+      || (Array.isArray(target.itemIds) && target.itemIds.length === 1
+        ? target.itemIds[0]
+        : '');
     const sourceStyleId = target.styleId;
     const sourceItemIds = Array.isArray(target.itemIds) ? target.itemIds : null;
     const sourceStyleIds = Array.isArray(target.styleIds) ? target.styleIds : null;
@@ -439,11 +442,34 @@ export function duplicateItem(document, partId, itemId) {
 
   const rewriteTarget = (target) => {
     if (!target || typeof target !== 'object' || Array.isArray(target)
-      || target.partId !== partId || target.itemId !== source.id) return target;
+      || target.partId !== partId) return target;
+    const targetsSourceItem = target.itemId === source.id
+      || (Array.isArray(target.itemIds) && target.itemIds.includes(source.id));
+    if (!targetsSourceItem) return target;
+    const styleScopeIsSource = target.itemId === source.id
+      || (!target.itemId && Array.isArray(target.itemIds)
+        && target.itemIds.length === 1
+        && target.itemIds[0] === source.id);
     return {
       ...target,
-      itemId: duplicate.id,
-      ...(target.styleId ? { styleId: styleIdMap.get(target.styleId) || target.styleId } : {}),
+      ...(target.itemId === source.id ? { itemId: duplicate.id } : {}),
+      ...(Array.isArray(target.itemIds)
+        ? {
+            itemIds: target.itemIds.map((targetItemId) => (
+              targetItemId === source.id ? duplicate.id : targetItemId
+            )),
+          }
+        : {}),
+      ...(styleScopeIsSource && target.styleId
+        ? { styleId: styleIdMap.get(target.styleId) || target.styleId }
+        : {}),
+      ...(styleScopeIsSource && Array.isArray(target.styleIds)
+        ? {
+            styleIds: target.styleIds.map((targetStyleId) => (
+              styleIdMap.get(targetStyleId) || targetStyleId
+            )),
+          }
+        : {}),
     };
   };
   rewriteCopiedOwnerReferences(duplicate, rewriteTarget);
@@ -463,8 +489,22 @@ export function duplicateStyle(document, partId, itemId, styleId) {
   duplicate.name = `${source.name} Copy`;
   const rewriteTarget = (target) => {
     if (!target || typeof target !== 'object' || Array.isArray(target)
-      || target.partId !== partId || target.itemId !== itemId || target.styleId !== source.id) return target;
-    return { ...target, styleId: duplicate.id };
+      || target.partId !== partId) return target;
+    const targetsItem = target.itemId === itemId
+      || (Array.isArray(target.itemIds)
+        && target.itemIds.length === 1
+        && target.itemIds[0] === itemId);
+    if (!targetsItem) return target;
+    if (target.styleId === source.id) return { ...target, styleId: duplicate.id };
+    if (Array.isArray(target.styleIds) && target.styleIds.includes(source.id)) {
+      return {
+        ...target,
+        styleIds: target.styleIds.map((targetStyleId) => (
+          targetStyleId === source.id ? duplicate.id : targetStyleId
+        )),
+      };
+    }
+    return target;
   };
   rewriteCopiedOwnerReferences(duplicate, rewriteTarget);
   item.styles.push(duplicate);

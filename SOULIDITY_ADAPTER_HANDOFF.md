@@ -13,7 +13,12 @@ This document is the implementation contract between the independently managed A
 | Circle native Sui USDC | `0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC` |
 | Current Soulidity package | `0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0` |
 
-Soulidity must pin the Animacraft **original package ID** as the type identity. If Animacraft is upgraded later, review the new published-at package separately; never silently follow an unreviewed upgrade.
+Soulidity must pin the Animacraft **original package ID** as `original-id` and
+the type identity. Its dependency `published-at` must separately name the
+reviewed v4 callable package so the new gated authorization functions are
+available. If Animacraft is upgraded again later, keep `original-id` unchanged
+and review the new `published-at` package separately; never silently follow an
+unreviewed upgrade.
 
 ## Verified Current Soulidity Baseline
 
@@ -40,14 +45,16 @@ Soulidity should call public functions rather than decode private BCS layouts.
 
 ### Authorization producers
 
-- `authorize_soul_mint(&OCMaker, name, profile_patch_id, image_patch_id, image_url, recipe_hash, recipe, &Clock, &TxContext)`
+- `authorize_soul_mint_with_protocol_gate(&OCMaker, &ProtocolFeeConfig, name, profile_patch_id, image_patch_id, image_url, recipe_hash, recipe, &Clock, &TxContext)`
 - `authorize_soul_mint_paid_with_protocol_fee<USDC>(&OCMaker, &mut MakerTreasury<USDC>, &ProtocolFeeConfig, &mut ProtocolTreasury<USDC>, Coin<USDC>, name, profile_patch_id, image_patch_id, image_url, recipe_hash, recipe, &Clock, &mut TxContext)`
 
-Both return `SoulMintAuthorization`. The paid path accepts exactly `mint_price_atomic`; overpayment and underpayment abort. It floor-splits the configured protocol share (initially 5,000 bps) and sends the exact remainder to the Maker Treasury. The v3 paid entry aborts after upgrade so it cannot bypass the split.
+Both return the new, non-droppable `CanonicalSoulMintAuthorization` TypeOrigin introduced by the reviewed v4 package, and both require the same enabled canonical `ProtocolFeeConfig`. The paid path accepts exactly `mint_price_atomic`; overpayment and underpayment abort. It floor-splits the configured protocol share (initially 5,000 bps) and sends the exact remainder to the Maker Treasury.
+
+The immutable original package can still return the older `SoulMintAuthorization`; upgrading its same-named legacy functions does not erase that bytecode. Soulidity therefore accepts only `CanonicalSoulMintAuthorization`. The old type is intentionally unusable at the Soulidity mint boundary even if an original-package legacy producer remains callable.
 
 ### Authorization consumer
 
-`consume_soul_mint_authorization` returns this tuple in order:
+`consume_canonical_soul_mint_authorization` first consumes the canonical wrapper and returns the inner authorization together with the exact Protocol Fee config ID, Treasury ID, basis points, and paid amount. Soulidity then consumes the inner payload with `consume_soul_mint_authorization`, which returns this tuple in order:
 
 1. Animacraft protocol version (`u64`, required value `4`)
 2. Maker ID (`ID`)
@@ -74,7 +81,11 @@ Implement these changes in the Soulidity repository after coordinating with its 
 
 ### 1. Pin Animacraft
 
-Add the reviewed Animacraft source revision as a Move dependency and bind Mainnet deployment replacement to the original package ID above. Commit both `Move.toml` and the resolved lockfile. A floating branch or tag is not acceptable for production.
+Add the reviewed Animacraft source revision as a Move dependency. Bind the
+Mainnet replacement with `original-id` equal to the original package above and
+`published-at` equal to the finalized v4 callable package. Commit both
+`Move.toml` and the resolved lockfile. A floating branch or tag is not
+acceptable for production.
 
 ### 2. Add verified provenance kind
 
@@ -103,7 +114,7 @@ The existing `mint_soul_in_personal_kiosk_impl` is private. Keep the actual adap
 
 The preferred entry must:
 
-1. consume `SoulMintAuthorization`;
+1. consume `CanonicalSoulMintAuthorization` and reject the legacy authorization type at the Move signature boundary;
 2. require authorization version `4`;
 3. require `payer == tx_context::sender(ctx)`;
 4. require the authorization payment coin to equal Circle native Sui USDC;
@@ -179,7 +190,8 @@ Soulidity's adapter PR is not release-ready without tests for:
 - paid authorization floor-splits the exact gross amount between the canonical Protocol Treasury and matching Maker Treasury, with no remainder loss;
 - any later Soul/content failure rolls back the paid Treasury deposit;
 - wrong payer, version, Maker, Treasury, coin type, amount, recipe hash, or required content aborts;
-- one authorization cannot mint twice and cannot remain at PTB end;
+- one canonical authorization cannot mint twice and cannot remain at PTB end;
+- an authorization returned by either immutable original-package legacy producer cannot type-check as a Soulidity mint argument;
 - Soulidity creator royalty is zero for Animacraft Souls;
 - both generic solo and collection purchase entries reject an Animacraft-bound Soul, so Maker royalty cannot be bypassed by choosing another public function;
 - only the typed adapter can create the one-time SoulState provenance binding; imported provenance text cannot forge it;

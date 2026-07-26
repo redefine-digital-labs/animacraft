@@ -57,7 +57,8 @@ Before promoting the invited-creator release:
 3. Run `npm run preflight:integration` against the production runtime.
 4. Verify a Vercel Preview, wallet connection, Walrus WASM upload, public Maker discovery, and disconnected browsing.
 5. Publish one small real Maker and verify its Maker, Treasury, Cap, archive/restore, and withdrawal lifecycle with separate wallets.
-6. Publish the separately reviewed Soulidity adapter against the pinned Animacraft original package ID.
+6. Publish the separately reviewed Soulidity adapter with Animacraft's stable
+   original ID as `original-id` and the reviewed v4 upgrade as `published-at`.
 7. Run one free and one paid canonical Soul mint plus resale evidence before enabling those claims in the UI.
 
 ## Versioned Outputs

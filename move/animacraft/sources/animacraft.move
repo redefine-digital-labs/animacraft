@@ -2,6 +2,7 @@ module animacraft::animacraft;
 
 use std::bcs;
 use std::hash;
+use std::option::{Self as option, Option};
 use std::string::{Self as string, String};
 use std::type_name;
 use sui::balance::{Self as balance, Balance};
@@ -71,6 +72,7 @@ const EProtocolTreasuryMismatch: u64 = 44;
 const EProtocolFeeDisabled: u64 = 45;
 const EDeprecatedPaidMint: u64 = 46;
 const EInsufficientProtocolRevenue: u64 = 47;
+const EDeprecatedFreeMint: u64 = 48;
 
 const LICENSE_PERSONAL: u8 = 0;
 const LICENSE_FREE_REMIX: u8 = 1;
@@ -192,6 +194,10 @@ public struct ProtocolFeeAdminCap has key, store {
     version: u64,
     config_id: ID,
     treasury_id: ID,
+    // The package Publisher is sealed into the one production AdminCap.
+    // Because its fields are private, it cannot be extracted to initialize a
+    // second canonical ProtocolFeeConfig/Treasury pair.
+    publisher: Option<package::Publisher>,
 }
 
 /// Creator template. Its manifest blob should contain the full off-chain / Walrus
@@ -268,6 +274,22 @@ public struct SoulMintAuthorization {
     authorized_at_ms: u64,
 }
 
+/// Canonical cross-package mint capability introduced before the v4 Mainnet
+/// upgrade. The original package bytecode can still construct the legacy
+/// `SoulMintAuthorization`, but it can never construct this wrapper because
+/// the type did not exist there. Soulidity accepts only this type.
+///
+/// The gate identity and fee evidence are captured alongside the legacy
+/// authorization payload so provenance can distinguish a genuinely gated
+/// free mint from a paid mint whose protocol split happened atomically.
+public struct CanonicalSoulMintAuthorization {
+    authorization: SoulMintAuthorization,
+    protocol_fee_config_id: ID,
+    protocol_treasury_id: ID,
+    protocol_fee_bps: u16,
+    protocol_fee_amount: u64,
+}
+
 public struct CreatorProfileCreated has copy, drop {
     profile_id: ID,
     owner: address,
@@ -310,6 +332,7 @@ public struct ProtocolFeesInitialized has copy, drop {
     admin_cap_id: ID,
     payment_coin_type: String,
     primary_mint_fee_bps: u16,
+    enabled: bool,
 }
 
 public struct PrimaryMintRevenueSplit has copy, drop {
@@ -445,11 +468,12 @@ fun init(otw: ANIMACRAFT, ctx: &mut TxContext) {
 /// Post-upgrade v4 initializer. The existing package Publisher is the
 /// authorization boundary; production records the one canonical object set.
 public fun initialize_protocol_fees<PaymentCoin>(
-    publisher: &package::Publisher,
+    publisher: package::Publisher,
     ctx: &mut TxContext,
 ): ProtocolFeeAdminCap {
     assert!(publisher.from_package<ANIMACRAFT>(), EPublisherMismatch);
-    let (config, treasury, admin_cap) = new_protocol_fee_objects<PaymentCoin>(ctx);
+    let (config, treasury, admin_cap) =
+        new_protocol_fee_objects<PaymentCoin>(option::some(publisher), false, ctx);
     let config_id = object::id(&config);
     let treasury_id = object::id(&treasury);
     let admin_cap_id = object::id(&admin_cap);
@@ -459,6 +483,7 @@ public fun initialize_protocol_fees<PaymentCoin>(
         admin_cap_id,
         payment_coin_type: payment_coin_type_name<PaymentCoin>(),
         primary_mint_fee_bps: DEFAULT_PRIMARY_PROTOCOL_FEE_BPS,
+        enabled: false,
     });
     transfer::share_object(config);
     transfer::share_object(treasury);
@@ -466,6 +491,8 @@ public fun initialize_protocol_fees<PaymentCoin>(
 }
 
 fun new_protocol_fee_objects<PaymentCoin>(
+    publisher: Option<package::Publisher>,
+    enabled: bool,
     ctx: &mut TxContext,
 ): (ProtocolFeeConfig, ProtocolTreasury<PaymentCoin>, ProtocolFeeAdminCap) {
     let config_id = object::new(ctx);
@@ -484,15 +511,59 @@ fun new_protocol_fee_objects<PaymentCoin>(
         version: VERSION,
         treasury_id,
         primary_mint_fee_bps: DEFAULT_PRIMARY_PROTOCOL_FEE_BPS,
-        enabled: true,
+        enabled,
     };
     let admin_cap = ProtocolFeeAdminCap {
         id: object::new(ctx),
         version: VERSION,
         config_id: config_object_id,
         treasury_id,
+        publisher,
     };
     (config, treasury, admin_cap)
+}
+
+#[test_only]
+public fun new_protocol_fee_objects_for_testing<PaymentCoin>(
+    enabled: bool,
+    ctx: &mut TxContext,
+): (ProtocolFeeConfig, ProtocolTreasury<PaymentCoin>, ProtocolFeeAdminCap) {
+    new_protocol_fee_objects<PaymentCoin>(option::none(), enabled, ctx)
+}
+
+#[test_only]
+public fun destroy_protocol_fee_objects_for_testing<PaymentCoin>(
+    config: ProtocolFeeConfig,
+    treasury: ProtocolTreasury<PaymentCoin>,
+    cap: ProtocolFeeAdminCap,
+) {
+    let ProtocolFeeConfig {
+        id: config_id,
+        version: _,
+        treasury_id: _,
+        primary_mint_fee_bps: _,
+        enabled: _,
+    } = config;
+    let ProtocolTreasury {
+        id: treasury_id,
+        version: _,
+        config_id: _,
+        revenue,
+        total_collected: _,
+        total_withdrawn: _,
+    } = treasury;
+    let ProtocolFeeAdminCap {
+        id: cap_id,
+        version: _,
+        config_id: _,
+        treasury_id: _,
+        publisher,
+    } = cap;
+    publisher.destroy_none();
+    revenue.destroy_zero();
+    config_id.delete();
+    treasury_id.delete();
+    cap_id.delete();
 }
 
 public fun protocol_version(): u64 {
@@ -635,6 +706,10 @@ public fun protocol_fee_config_id(self: &ProtocolFeeConfig): ID {
     object::id(self)
 }
 
+public fun protocol_fee_config_version(self: &ProtocolFeeConfig): u64 {
+    self.version
+}
+
 public fun protocol_fee_treasury_id(self: &ProtocolFeeConfig): ID {
     self.treasury_id
 }
@@ -649,6 +724,26 @@ public fun protocol_fee_enabled(self: &ProtocolFeeConfig): bool {
 
 public fun protocol_treasury_id<PaymentCoin>(self: &ProtocolTreasury<PaymentCoin>): ID {
     object::id(self)
+}
+
+public fun protocol_treasury_version<PaymentCoin>(self: &ProtocolTreasury<PaymentCoin>): u64 {
+    self.version
+}
+
+public fun protocol_treasury_config_id<PaymentCoin>(self: &ProtocolTreasury<PaymentCoin>): ID {
+    self.config_id
+}
+
+public fun protocol_fee_admin_config_id(self: &ProtocolFeeAdminCap): ID {
+    self.config_id
+}
+
+public fun protocol_fee_admin_treasury_id(self: &ProtocolFeeAdminCap): ID {
+    self.treasury_id
+}
+
+public fun protocol_fee_admin_holds_publisher(self: &ProtocolFeeAdminCap): bool {
+    self.publisher.is_some()
 }
 
 public fun protocol_treasury_balance<PaymentCoin>(self: &ProtocolTreasury<PaymentCoin>): u64 {
@@ -788,6 +883,29 @@ public fun consume_soul_mint_authorization(
         mint_price_atomic,
         recipe,
         authorized_at_ms,
+    )
+}
+
+/// Consume the v4-only canonical wrapper. Returning the inner authorization
+/// is safe: the wrapper has already proved that it was constructed by one of
+/// the gated producers below, and the non-droppable inner value must still be
+/// consumed in this PTB.
+public fun consume_canonical_soul_mint_authorization(
+    canonical: CanonicalSoulMintAuthorization,
+): (SoulMintAuthorization, ID, ID, u16, u64) {
+    let CanonicalSoulMintAuthorization {
+        authorization,
+        protocol_fee_config_id,
+        protocol_treasury_id,
+        protocol_fee_bps,
+        protocol_fee_amount,
+    } = canonical;
+    (
+        authorization,
+        protocol_fee_config_id,
+        protocol_treasury_id,
+        protocol_fee_bps,
+        protocol_fee_amount,
     )
 }
 
@@ -1504,9 +1622,8 @@ fun publish_maker(
     });
 }
 
-/// Published Makers are shared so any wallet can borrow them as an immutable
-/// input when requesting a Soulidity mint authorization. Creator-only mutations
-/// still validate ctx.sender().
+/// Test helper retained to exercise the legacy shared-Maker boundary.
+#[test_only]
 #[allow(lint(share_owned))]
 fun share_published_maker(maker: OCMaker, _ctx: &TxContext) {
     assert!(maker.published, EMakerNotPublished);
@@ -1676,10 +1793,30 @@ fun new_soul_mint_authorization(
     authorization
 }
 
-/// Free Maker path. Soulidity consumes the returned authorization and creates
-/// the only finished character object in the same programmable transaction.
+/// Deprecated v3 free path. Its public signature must remain for a compatible
+/// package upgrade, but the v4 callable package always aborts so it cannot
+/// bypass the canonical on-chain integration gate.
 public fun authorize_soul_mint(
+    _maker: &OCMaker,
+    _name: String,
+    _profile_json_blob_id: String,
+    _image_blob_id: String,
+    _image_url: String,
+    _recipe_hash: vector<u8>,
+    _recipe: vector<RecipeSlot>,
+    _clock: &Clock,
+    _ctx: &TxContext,
+): SoulMintAuthorization {
+    abort EDeprecatedFreeMint
+}
+
+/// Canonical v4 free path. Soulidity consumes the returned authorization and
+/// creates the only finished character object in the same programmable
+/// transaction. The shared ProtocolFeeConfig doubles as a fail-closed
+/// Animacraft/Soulidity integration gate.
+public fun authorize_soul_mint_with_protocol_gate(
     maker: &OCMaker,
+    protocol_config: &ProtocolFeeConfig,
     name: String,
     profile_json_blob_id: String,
     image_blob_id: String,
@@ -1688,20 +1825,28 @@ public fun authorize_soul_mint(
     recipe: vector<RecipeSlot>,
     clock: &Clock,
     ctx: &TxContext,
-): SoulMintAuthorization {
+): CanonicalSoulMintAuthorization {
     assert!(maker.minting_enabled, EMintingDisabled);
     assert!(!maker.mint_fee_enabled && maker.mint_price_atomic == 0, EWrongPayment);
-    new_soul_mint_authorization(
-        maker,
-        name,
-        profile_json_blob_id,
-        image_blob_id,
-        image_url,
-        recipe_hash,
-        recipe,
-        clock,
-        ctx,
-    )
+    assert!(protocol_config.enabled, EProtocolFeeDisabled);
+    assert!(protocol_config.primary_mint_fee_bps <= MAX_PRIMARY_PROTOCOL_FEE_BPS, EInvalidProtocolFeeConfig);
+    CanonicalSoulMintAuthorization {
+        authorization: new_soul_mint_authorization(
+            maker,
+            name,
+            profile_json_blob_id,
+            image_blob_id,
+            image_url,
+            recipe_hash,
+            recipe,
+            clock,
+            ctx,
+        ),
+        protocol_fee_config_id: object::id(protocol_config),
+        protocol_treasury_id: protocol_config.treasury_id,
+        protocol_fee_bps: protocol_config.primary_mint_fee_bps,
+        protocol_fee_amount: 0,
+    }
 }
 
 /// Deprecated v3 path. It must abort after the v4 upgrade so callers cannot
@@ -1739,11 +1884,11 @@ public fun authorize_soul_mint_paid_with_protocol_fee<PaymentCoin>(
     recipe: vector<RecipeSlot>,
     clock: &Clock,
     ctx: &mut TxContext,
-): SoulMintAuthorization {
+): CanonicalSoulMintAuthorization {
     assert!(maker.minting_enabled, EMintingDisabled);
     assert!(maker.mint_fee_enabled && maker.mint_price_atomic > 0, EWrongPayment);
     assert!(protocol_config.enabled, EProtocolFeeDisabled);
-    collect_mint_payment_with_protocol_fee(
+    let protocol_fee_amount = collect_mint_payment_with_protocol_fee(
         maker,
         maker_treasury,
         protocol_config,
@@ -1752,17 +1897,23 @@ public fun authorize_soul_mint_paid_with_protocol_fee<PaymentCoin>(
         ctx,
     );
 
-    new_soul_mint_authorization(
-        maker,
-        name,
-        profile_json_blob_id,
-        image_blob_id,
-        image_url,
-        recipe_hash,
-        recipe,
-        clock,
-        ctx,
-    )
+    CanonicalSoulMintAuthorization {
+        authorization: new_soul_mint_authorization(
+            maker,
+            name,
+            profile_json_blob_id,
+            image_blob_id,
+            image_url,
+            recipe_hash,
+            recipe,
+            clock,
+            ctx,
+        ),
+        protocol_fee_config_id: object::id(protocol_config),
+        protocol_treasury_id: object::id(protocol_treasury),
+        protocol_fee_bps: protocol_config.primary_mint_fee_bps,
+        protocol_fee_amount,
+    }
 }
 
 fun collect_mint_payment_with_protocol_fee<PaymentCoin>(
@@ -1772,7 +1923,7 @@ fun collect_mint_payment_with_protocol_fee<PaymentCoin>(
     protocol_treasury: &mut ProtocolTreasury<PaymentCoin>,
     mut payment: Coin<PaymentCoin>,
     ctx: &mut TxContext,
-) {
+): u64 {
     assert_treasury_matches(maker, maker_treasury);
     assert_protocol_treasury_matches(protocol_config, protocol_treasury);
     let amount = payment.value();
@@ -1803,6 +1954,7 @@ fun collect_mint_payment_with_protocol_fee<PaymentCoin>(
         protocol_amount,
         protocol_fee_bps: protocol_config.primary_mint_fee_bps,
     });
+    protocol_amount
 }
 
 fun assert_maker_admin(maker: &OCMaker, cap: &MakerAdminCap) {
@@ -2071,6 +2223,26 @@ fun consume_authorization_for_testing(authorization: SoulMintAuthorization) {
 }
 
 #[test_only]
+fun consume_canonical_authorization_for_testing(
+    canonical: CanonicalSoulMintAuthorization,
+): (ID, ID, u16, u64) {
+    let (
+        authorization,
+        protocol_fee_config_id,
+        protocol_treasury_id,
+        protocol_fee_bps,
+        protocol_fee_amount,
+    ) = consume_canonical_soul_mint_authorization(canonical);
+    consume_authorization_for_testing(authorization);
+    (
+        protocol_fee_config_id,
+        protocol_treasury_id,
+        protocol_fee_bps,
+        protocol_fee_amount,
+    )
+}
+
+#[test_only]
 fun royalty_policy_from_authorization_for_testing(
     authorization: SoulMintAuthorization,
 ): RoyaltyPolicySnapshot {
@@ -2158,7 +2330,7 @@ fun paid_maker_splits_and_withdraws_exact_payment() {
     let clock = sui::clock::create_for_testing(&mut ctx);
     let (profile, maker, mut treasury, cap) = managed_maker_for_testing(true, 1_500_001, &mut ctx, &clock);
     let (protocol_config, mut protocol_treasury, protocol_cap) =
-        new_protocol_fee_objects<sui::sui::SUI>(&mut ctx);
+        new_protocol_fee_objects<sui::sui::SUI>(option::none(), true, &mut ctx);
     assert!(admin_cap_maker_id(&cap) == maker_id(&maker));
     assert!(admin_cap_treasury_id(&cap) == treasury_id(&treasury));
     assert!(treasury_maker_id(&treasury) == maker_id(&maker));
@@ -2192,7 +2364,12 @@ fun paid_maker_splits_and_withdraws_exact_payment() {
         &clock,
         &mut ctx,
     );
-    consume_authorization_for_testing(authorization);
+    let (config_id, treasury_id, fee_bps, fee_amount) =
+        consume_canonical_authorization_for_testing(authorization);
+    assert!(config_id == object::id(&protocol_config));
+    assert!(treasury_id == object::id(&protocol_treasury));
+    assert!(fee_bps == DEFAULT_PRIMARY_PROTOCOL_FEE_BPS);
+    assert!(fee_amount == 750_000);
     assert!(treasury_balance(&treasury) == 750_001);
     assert!(treasury_total_collected(&treasury) == 750_001);
     assert!(protocol_treasury_balance(&protocol_treasury) == 750_000);
@@ -2227,7 +2404,8 @@ fun paid_maker_splits_and_withdraws_exact_payment() {
 #[test]
 fun protocol_fee_admin_can_lower_fee_and_disable_paid_mint() {
     let mut ctx = tx_context::dummy();
-    let (mut config, treasury, cap) = new_protocol_fee_objects<sui::sui::SUI>(&mut ctx);
+    let (mut config, treasury, cap) =
+        new_protocol_fee_objects<sui::sui::SUI>(option::none(), true, &mut ctx);
     update_primary_protocol_fee_bps(&mut config, &cap, 1_500);
     assert!(primary_protocol_fee_bps(&config) == 1_500);
     update_protocol_fee_enabled(&mut config, &cap, false);
@@ -2241,7 +2419,8 @@ fun protocol_fee_admin_can_lower_fee_and_disable_paid_mint() {
 #[test, expected_failure(abort_code = EInvalidProtocolFeeConfig)]
 fun protocol_fee_cannot_exceed_fifty_percent() {
     let mut ctx = tx_context::dummy();
-    let (mut config, _treasury, cap) = new_protocol_fee_objects<sui::sui::SUI>(&mut ctx);
+    let (mut config, _treasury, cap) =
+        new_protocol_fee_objects<sui::sui::SUI>(option::none(), true, &mut ctx);
     update_primary_protocol_fee_bps(&mut config, &cap, 5_001);
     abort 99
 }
@@ -2279,6 +2458,63 @@ fun legacy_paid_mint_entry_cannot_bypass_protocol_split() {
     abort 99
 }
 
+#[test, expected_failure(abort_code = EDeprecatedFreeMint)]
+fun legacy_free_mint_entry_cannot_bypass_protocol_gate() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (_profile, maker, _treasury, _cap) =
+        managed_maker_for_testing(false, 0, &mut ctx, &clock);
+    let recipe = vector[RecipeSlot {
+        part_key: b"eyes".to_string(),
+        item_key: b"bright".to_string(),
+        color_hex: b"#2db7a3".to_string(),
+        render_order: 0,
+    }];
+    let recipe_hash = test_recipe_hash(&recipe);
+    let _authorization = authorize_soul_mint(
+        &maker,
+        b"Legacy".to_string(),
+        b"profile".to_string(),
+        b"image".to_string(),
+        b"https://example.com/image.png".to_string(),
+        recipe_hash,
+        recipe,
+        &clock,
+        &ctx,
+    );
+    abort 99
+}
+
+#[test, expected_failure(abort_code = EProtocolFeeDisabled)]
+fun disabled_protocol_config_rejects_free_mint() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (_profile, maker, _treasury, _cap) =
+        managed_maker_for_testing(false, 0, &mut ctx, &clock);
+    let (config, _protocol_treasury, _protocol_cap) =
+        new_protocol_fee_objects<sui::sui::SUI>(option::none(), false, &mut ctx);
+    let recipe = vector[RecipeSlot {
+        part_key: b"eyes".to_string(),
+        item_key: b"bright".to_string(),
+        color_hex: b"#2db7a3".to_string(),
+        render_order: 0,
+    }];
+    let recipe_hash = test_recipe_hash(&recipe);
+    let _authorization = authorize_soul_mint_with_protocol_gate(
+        &maker,
+        &config,
+        b"Disabled".to_string(),
+        b"profile".to_string(),
+        b"image".to_string(),
+        b"https://example.com/image.png".to_string(),
+        recipe_hash,
+        recipe,
+        &clock,
+        &ctx,
+    );
+    abort 99
+}
+
 #[test, expected_failure(abort_code = EProtocolFeeDisabled)]
 fun disabled_protocol_config_rejects_paid_mint() {
     let mut ctx = tx_context::dummy();
@@ -2286,7 +2522,7 @@ fun disabled_protocol_config_rejects_paid_mint() {
     let (_profile, maker, mut treasury, _cap) =
         managed_maker_for_testing(true, 1_000, &mut ctx, &clock);
     let (mut config, mut protocol_treasury, protocol_cap) =
-        new_protocol_fee_objects<sui::sui::SUI>(&mut ctx);
+        new_protocol_fee_objects<sui::sui::SUI>(option::none(), true, &mut ctx);
     update_protocol_fee_enabled(&mut config, &protocol_cap, false);
     let payment = coin::from_balance(
         balance::create_for_testing<sui::sui::SUI>(1_000),
@@ -2324,9 +2560,9 @@ fun mismatched_protocol_treasury_rejects_paid_mint() {
     let (_profile, maker, mut treasury, _cap) =
         managed_maker_for_testing(true, 1_000, &mut ctx, &clock);
     let (config, _protocol_treasury_a, _protocol_cap_a) =
-        new_protocol_fee_objects<sui::sui::SUI>(&mut ctx);
+        new_protocol_fee_objects<sui::sui::SUI>(option::none(), true, &mut ctx);
     let (_config_b, mut protocol_treasury_b, _protocol_cap_b) =
-        new_protocol_fee_objects<sui::sui::SUI>(&mut ctx);
+        new_protocol_fee_objects<sui::sui::SUI>(option::none(), true, &mut ctx);
     let payment = coin::from_balance(
         balance::create_for_testing<sui::sui::SUI>(1_000),
         &mut ctx,
@@ -2363,7 +2599,7 @@ fun paid_mint_requires_exact_gross_amount() {
     let (_profile, maker, mut treasury, _cap) =
         managed_maker_for_testing(true, 1_000, &mut ctx, &clock);
     let (config, mut protocol_treasury, _protocol_cap) =
-        new_protocol_fee_objects<sui::sui::SUI>(&mut ctx);
+        new_protocol_fee_objects<sui::sui::SUI>(option::none(), true, &mut ctx);
     let payment = coin::from_balance(
         balance::create_for_testing<sui::sui::SUI>(999),
         &mut ctx,
@@ -2466,6 +2702,8 @@ fun authorization_is_consumed_by_soulidity_boundary() {
     let mut ctx = tx_context::dummy();
     let clock = sui::clock::create_for_testing(&mut ctx);
     let (profile, maker, treasury, cap) = managed_maker_for_testing(false, 0, &mut ctx, &clock);
+    let (protocol_config, protocol_treasury, protocol_cap) =
+        new_protocol_fee_objects<sui::sui::SUI>(option::none(), true, &mut ctx);
     let recipe = vector[RecipeSlot {
         part_key: b"eyes".to_string(),
         item_key: b"bright".to_string(),
@@ -2473,8 +2711,9 @@ fun authorization_is_consumed_by_soulidity_boundary() {
         render_order: 0,
     }];
     let recipe_hash = test_recipe_hash(&recipe);
-    let authorization = authorize_soul_mint(
+    let authorization = authorize_soul_mint_with_protocol_gate(
         &maker,
+        &protocol_config,
         b"Soul-ready OC".to_string(),
         b"profile".to_string(),
         b"image".to_string(),
@@ -2484,11 +2723,19 @@ fun authorization_is_consumed_by_soulidity_boundary() {
         &clock,
         &ctx,
     );
-    consume_authorization_for_testing(authorization);
+    let (config_id, treasury_id, fee_bps, fee_amount) =
+        consume_canonical_authorization_for_testing(authorization);
+    assert!(config_id == object::id(&protocol_config));
+    assert!(treasury_id == object::id(&protocol_treasury));
+    assert!(fee_bps == DEFAULT_PRIMARY_PROTOCOL_FEE_BPS);
+    assert!(fee_amount == 0);
     transfer::transfer(profile, ctx.sender());
     transfer::transfer(maker, ctx.sender());
     transfer::transfer(treasury, ctx.sender());
+    transfer::transfer(protocol_config, ctx.sender());
+    transfer::transfer(protocol_treasury, ctx.sender());
     transfer::public_transfer(cap, ctx.sender());
+    transfer::public_transfer(protocol_cap, ctx.sender());
     clock.destroy_for_testing();
 }
 

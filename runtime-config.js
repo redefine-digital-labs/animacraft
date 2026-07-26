@@ -7,6 +7,8 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   grpcUrl: 'https://fullnode.mainnet.sui.io:443',
   graphqlUrl: 'https://graphql.mainnet.sui.io/graphql',
   packageId: '0xTODO_ANIMACRAFT_PACKAGE',
+  callablePackageId: '0xTODO_ANIMACRAFT_PACKAGE',
+  originalPackageId: '0xTODO_ANIMACRAFT_PACKAGE',
   paymentCoinType: SUI_MAINNET_USDC_TYPE,
   paymentCoinSymbol: 'USDC',
   paymentCoinDecimals: 6,
@@ -19,8 +21,13 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   soulidityAppUrl: 'https://www.soulidity.ai',
   soulidityIntegrationPath: '/integrations/animacraft',
   soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  // Defining package (TypeOrigin) for the protocol-v4 fee object types. This
+  // remains fixed when a later package becomes the callable package.
+  protocolFeePackageId: '',
   protocolFeeConfigId: '',
   protocolTreasuryId: '',
+  protocolFeeAdminCapId: '',
+  protocolFeeAdminCapOwner: '',
   primaryProtocolFeeBps: 5_000,
   canonicalSoulMintEnabled: false,
 });
@@ -66,10 +73,26 @@ function validHttpsUrl(value, { allowLocalhost = false } = {}) {
   }
 }
 
+export function resolveCallablePackageId(config = {}) {
+  return String(config.callablePackageId || config.packageId || config.originalPackageId || '').trim();
+}
+
+export function resolveOriginalPackageId(config = {}) {
+  return String(config.originalPackageId || config.packageId || config.callablePackageId || '').trim();
+}
+
 export function normalizeRuntimeConfig(overrides = {}, origin = '') {
+  const callablePackageId = resolveCallablePackageId(overrides)
+    || DEFAULT_RUNTIME_CONFIG.callablePackageId;
+  const originalPackageId = resolveOriginalPackageId(overrides)
+    || DEFAULT_RUNTIME_CONFIG.originalPackageId;
   return {
     ...DEFAULT_RUNTIME_CONFIG,
     ...overrides,
+    // packageId remains a compatibility alias for pre-upgrade config files.
+    packageId: callablePackageId,
+    callablePackageId,
+    originalPackageId,
     grpcUrl: overrides.grpcUrl || overrides.rpcUrl || DEFAULT_RUNTIME_CONFIG.grpcUrl,
     appUrl: overrides.appUrl || origin || DEFAULT_RUNTIME_CONFIG.appUrl,
     featuredMakers: overrides.featuredMakers && typeof overrides.featuredMakers === 'object'
@@ -96,15 +119,58 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     errors.push('soulidityIntegrationPath must be an absolute application path.');
   }
 
-  const packageReady = SUI_ID.test(String(config.packageId || '')) && !String(config.packageId).includes('TODO');
-  if (!packageReady) (strict ? errors : warnings).push('Publish Animacraft and replace packageId before Mainnet activation.');
+  const callablePackageId = resolveCallablePackageId(config);
+  const originalPackageId = resolveOriginalPackageId(config);
+  const callablePackageReady = SUI_ID.test(callablePackageId) && !callablePackageId.includes('TODO');
+  const originalPackageReady = SUI_ID.test(originalPackageId) && !originalPackageId.includes('TODO');
+  const packageReady = callablePackageReady && originalPackageReady;
+  if (!callablePackageReady) {
+    (strict ? errors : warnings).push('Publish Animacraft and set callablePackageId before Mainnet activation.');
+  }
+  if (!originalPackageReady) {
+    (strict ? errors : warnings).push('Set originalPackageId to the first published package id before Mainnet activation.');
+  }
+  if (config.packageId && config.callablePackageId
+    && String(config.packageId).trim() !== String(config.callablePackageId).trim()) {
+    errors.push('packageId is a compatibility alias and must match callablePackageId.');
+  }
   const soulidityReady = SUI_ID.test(String(config.soulidityPackageId || '')) && !String(config.soulidityPackageId).includes('TODO');
   if (!soulidityReady) (requireSoulidity ? errors : warnings).push('Set soulidityPackageId before enabling the Soulidity handoff.');
   if (typeof config.canonicalSoulMintEnabled !== 'boolean') errors.push('canonicalSoulMintEnabled must be a boolean release gate.');
+  if (requireSoulidity && config.canonicalSoulMintEnabled !== true) {
+    errors.push('The Soulidity integration preflight requires canonicalSoulMintEnabled=true.');
+  }
   const protocolFeeConfigReady = SUI_ID.test(String(config.protocolFeeConfigId || ''));
   const protocolTreasuryReady = SUI_ID.test(String(config.protocolTreasuryId || ''));
-  if (config.canonicalSoulMintEnabled && (!protocolFeeConfigReady || !protocolTreasuryReady)) {
-    errors.push('Canonical Soul minting requires the v4 ProtocolFeeConfig and ProtocolTreasury object ids.');
+  const protocolFeeAdminCapReady = SUI_ID.test(String(config.protocolFeeAdminCapId || ''));
+  const protocolFeeAdminCapOwnerReady = SUI_ID.test(String(config.protocolFeeAdminCapOwner || ''));
+  const protocolFeePackageId = String(config.protocolFeePackageId || '').trim();
+  const protocolFeePackageReady = SUI_ID.test(protocolFeePackageId);
+  const protocolObjectsConfigured = Boolean(
+    config.protocolFeeConfigId
+      || config.protocolTreasuryId
+      || config.protocolFeeAdminCapId
+      || config.protocolFeeAdminCapOwner,
+  );
+  if (protocolFeePackageId && !protocolFeePackageReady) {
+    errors.push('protocolFeePackageId must be a valid Sui package ID.');
+  }
+  if (callablePackageReady
+    && originalPackageReady
+    && callablePackageId !== originalPackageId
+    && !protocolFeePackageReady) {
+    errors.push('An upgraded Animacraft callable package requires its stable protocolFeePackageId TypeOrigin.');
+  }
+  if (protocolObjectsConfigured && !protocolFeePackageReady) {
+    errors.push('Protocol fee objects require their stable protocolFeePackageId TypeOrigin.');
+  }
+  if (config.canonicalSoulMintEnabled
+    && (!protocolFeePackageReady
+      || !protocolFeeConfigReady
+      || !protocolTreasuryReady
+      || !protocolFeeAdminCapReady
+      || !protocolFeeAdminCapOwnerReady)) {
+    errors.push('Canonical Soul minting requires the v4 protocol fee TypeOrigin, ProtocolFeeConfig, ProtocolTreasury, AdminCap, and expected AdminCap owner.');
   }
   const primaryProtocolFeeBps = Number(config.primaryProtocolFeeBps);
   if (!Number.isInteger(primaryProtocolFeeBps) || primaryProtocolFeeBps < 0 || primaryProtocolFeeBps > 5_000) {
@@ -124,9 +190,14 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   return {
     valid: errors.length === 0,
     packageReady,
+    callablePackageReady,
+    originalPackageReady,
     soulidityReady,
+    protocolFeePackageReady,
     protocolFeeConfigReady,
     protocolTreasuryReady,
+    protocolFeeAdminCapReady,
+    protocolFeeAdminCapOwnerReady,
     errors,
     warnings,
   };

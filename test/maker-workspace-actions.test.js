@@ -4,7 +4,11 @@ import test from 'node:test';
 
 import { createCharacterMakerV5Starter } from '../maker-v4.js';
 import { synchronizeDefaultRecipe } from '../maker-document-ops.js';
-import { createMakerWorkspace } from '../maker-workspace.js';
+import { createMakerProjectArchive } from '../maker-project-archive.js';
+import {
+  createMakerWorkspace,
+  enabledExpansionIdsForDocument,
+} from '../maker-workspace.js';
 
 class FakeRoot {
   constructor(selectors = {}) {
@@ -202,7 +206,10 @@ test('uploading a full-canvas PNG still enters Adjust position until confirmed',
     globalThis.document = { createElement: () => makeCanvas() };
     globalThis.OffscreenCanvas = undefined;
     globalThis.createImageBitmap = async () => ({ width: 1024, height: 1024, close() {} });
-    const file = new Blob(['full-canvas'], { type: 'image/png' });
+    const file = new Blob([
+      Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      'full-canvas',
+    ], { type: 'image/png' });
     Object.defineProperty(file, 'name', { value: 'full-canvas.png' });
     const { part, item, style } = workspace.selectedCreatorRecords();
     workspace.editingPositionStyleKey = '';
@@ -275,6 +282,7 @@ test('pixel mode exposes a grid and snaps edited coordinates to integers', async
     creatorClick(workspace, 'toggle-pixel');
     assert.equal(workspace.getDocument().canvas.pixelMode, 'pixelated');
     assert.match(creatorRoot.innerHTML, /v4-canvas-viewport pixelated/);
+    assert.match(creatorRoot.innerHTML, /data-action="toggle-pixel" aria-pressed="true"/);
     assert.match(creatorRoot.innerHTML, /data-action="style-x"[^>]*step="1"|step="1"[^>]*data-action="style-x"/);
 
     await workspace.handleCreatorChange({
@@ -563,6 +571,117 @@ test('Layer Track page assigns only the current Style and new Tracks start unloc
   }, { creatorRoot, playable: true });
 });
 
+test('Layer Track page exposes exact Part › Item › Style bindings and moves back/front in visual order', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    workspace.creatorTab = 'layers';
+    workspace.render();
+    const document = workspace.getDocument();
+    const targetPart = document.parts[1];
+    const targetItem = targetPart.items[0];
+    const targetStyle = targetItem.styles[0];
+    assert.match(creatorRoot.innerHTML, /Styles drawn on this track/);
+    assert.match(
+      creatorRoot.innerHTML,
+      new RegExp(`${targetPart.name} › ${targetItem.name} › ${targetStyle.name}`),
+    );
+
+    creatorClick(workspace, 'select-style-binding', {
+      partId: targetPart.id,
+      itemId: targetItem.id,
+      styleId: targetStyle.id,
+    });
+    assert.equal(workspace.selectedPartId, targetPart.id);
+    assert.equal(workspace.selectedItemId, targetItem.id);
+    assert.equal(workspace.selectedStyleId, targetStyle.id);
+    assert.equal(workspace.selectedTrackId, targetStyle.layerTrackId);
+
+    const originalOrder = workspace.getDocument().layerTracks.map((track) => track.id);
+    const movingTrackId = originalOrder[1];
+    creatorClick(workspace, 'move-track', { trackId: movingTrackId, direction: 'up' });
+    assert.equal(workspace.getDocument().layerTracks[0].id, movingTrackId, 'up moves toward the back/top of the back-to-front list');
+    creatorClick(workspace, 'move-track', { trackId: movingTrackId, direction: 'down' });
+    assert.deepEqual(workspace.getDocument().layerTracks.map((track) => track.id), originalOrder);
+  }, { creatorRoot, playable: true });
+});
+
+test('direct Part, Item, and Style selection keeps the Layer Track context on the selected Style', async () => {
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    const firstPart = document.parts[0];
+    const targetPart = document.parts[1];
+    const targetItem = targetPart.items[0];
+    const targetStyle = targetItem.styles[0];
+    assert.notEqual(firstPart.items[0].styles[0].layerTrackId, targetStyle.layerTrackId);
+
+    workspace.selectedTrackId = firstPart.items[0].styles[0].layerTrackId;
+    creatorClick(workspace, 'select-part', { partId: targetPart.id });
+    assert.equal(workspace.selectedTrackId, targetStyle.layerTrackId);
+
+    workspace.selectedTrackId = firstPart.items[0].styles[0].layerTrackId;
+    creatorClick(workspace, 'select-item', { itemId: targetItem.id });
+    assert.equal(workspace.selectedTrackId, targetStyle.layerTrackId);
+
+    workspace.selectedTrackId = firstPart.items[0].styles[0].layerTrackId;
+    creatorClick(workspace, 'select-style', { styleId: targetStyle.id });
+    assert.equal(workspace.selectedTrackId, targetStyle.layerTrackId);
+  }, { playable: true });
+});
+
+test('whole Style lock cannot be bypassed by deleting its parent Item or Part', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const { part, item } = workspace.selectedCreatorRecords();
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-locked' }, checked: true, type: 'checkbox' },
+    });
+    const partCount = workspace.getDocument().parts.length;
+    const itemCount = workspace.selectedCreatorRecords().part.items.length;
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /data-action="delete-part" class="danger" disabled/);
+    assert.match(creatorRoot.innerHTML, /data-action="delete-item" disabled/);
+
+    creatorClick(workspace, 'delete-item');
+    assert.equal(workspace.selectedCreatorRecords().part.items.length, itemCount);
+    creatorClick(workspace, 'delete-part');
+    assert.equal(workspace.getDocument().parts.length, partCount);
+    assert.equal(workspace.selectedCreatorRecords().part.id, part.id);
+    assert.equal(workspace.selectedCreatorRecords().item.id, item.id);
+  }, { creatorRoot, playable: true });
+});
+
+test('the quick Style visibility selector never destroys an imported advanced condition', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const { part, item, style } = workspace.selectedCreatorRecords();
+    const condition = {
+      op: 'any',
+      conditions: [
+        { op: 'selected', partId: workspace.getDocument().parts[1].id },
+        { op: 'selected', partId: workspace.getDocument().parts[2].id },
+      ],
+    };
+    workspace.executeDocument('Import advanced visibility', ({ document }) => {
+      document.parts.find((candidate) => candidate.id === part.id)
+        .items.find((candidate) => candidate.id === item.id)
+        .styles.find((candidate) => candidate.id === style.id)
+        .visibleWhen = structuredClone(condition);
+    });
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /Advanced condition \(preserved\)/);
+    assert.match(creatorRoot.innerHTML, /data-action="style-visible-when" disabled/);
+
+    await workspace.handleCreatorChange({
+      target: {
+        dataset: { action: 'style-visible-when' },
+        value: workspace.getDocument().parts[3].id,
+        type: 'select-one',
+      },
+    });
+    assert.deepEqual(workspace.selectedCreatorRecords().style.visibleWhen, condition);
+  }, { creatorRoot, playable: true });
+});
+
 test('color, rule, and Expansion Pack controls perform real document operations', async () => {
   await withWorkspace(async (workspace) => {
     creatorClick(workspace, 'add-channel');
@@ -624,6 +743,366 @@ test('color, rule, and Expansion Pack controls perform real document operations'
     creatorClick(workspace, 'delete-channel');
     assert.equal(workspace.getDocument().colorChannels.length, 0);
   }, { playable: true });
+});
+
+test('deleting Smart Color definitions repairs Creator, stored, and Player Recipes', async () => {
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'add-channel');
+    creatorClick(workspace, 'add-swatch');
+    const channel = workspace.getDocument().colorChannels[0];
+    const removedSwatch = channel.swatches.at(-1);
+    const fallbackSwatch = channel.swatches[0];
+    const colorSelection = { channelId: channel.id, swatchId: removedSwatch.id };
+    workspace.creatorRecipe.colors = [structuredClone(colorSelection)];
+    workspace.playerRecipe.colors = [structuredClone(colorSelection)];
+    workspace.store.execute('Choose temporary color', (next) => {
+      next.recipe.colors = [structuredClone(colorSelection)];
+    });
+
+    creatorClick(workspace, 'delete-swatch', { swatchId: removedSwatch.id });
+    assert.deepEqual(workspace.creatorRecipe.colors, [{
+      channelId: channel.id,
+      swatchId: fallbackSwatch.id,
+    }]);
+    assert.deepEqual(workspace.store.getState().recipe.colors, [{
+      channelId: channel.id,
+      swatchId: fallbackSwatch.id,
+    }]);
+    assert.deepEqual(workspace.playerRecipe.colors, [{
+      channelId: channel.id,
+      swatchId: fallbackSwatch.id,
+    }]);
+
+    creatorClick(workspace, 'delete-channel');
+    assert.deepEqual(workspace.creatorRecipe.colors, []);
+    assert.deepEqual(workspace.store.getState().recipe.colors, []);
+    assert.deepEqual(workspace.playerRecipe.colors, []);
+  }, { playable: true });
+});
+
+test('Expansion Item copies rewrite Item self references instead of pointing back to base content', async () => {
+  await withWorkspace(async (workspace) => {
+    const { part, item, style } = workspace.selectedCreatorRecords();
+    workspace.executeDocument('Add self-referencing Item fixture', ({ document }) => {
+      const target = document.parts.find((candidate) => candidate.id === part.id)
+        .items.find((candidate) => candidate.id === item.id);
+      target.requires = [{ partId: part.id, itemId: item.id }];
+      target.styles.find((candidate) => candidate.id === style.id).visibleWhen = {
+        op: 'selected',
+        partId: part.id,
+        itemId: item.id,
+        styleId: style.id,
+      };
+    });
+    creatorClick(workspace, 'add-expansion');
+    const packId = workspace.getDocument().extensions.expansionDrafts[0].packId;
+    creatorClick(workspace, 'add-selected-to-expansion', { packId });
+
+    const copy = workspace.getDocument().extensions.expansionDrafts[0].parts[0].items[0];
+    assert.notEqual(copy.id, item.id);
+    assert.equal(copy.importKey, copy.id);
+    assert.equal(copy.requires[0].itemId, copy.id);
+    assert.equal(copy.styles[0].visibleWhen.itemId, copy.id);
+    assert.equal(copy.styles[0].visibleWhen.styleId, style.id);
+  }, { playable: true });
+});
+
+test('deleting a Style prunes embedded visibility/rules and global rules that target it', async () => {
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    const ownerPart = document.parts[0];
+    const targetPart = document.parts[1];
+    const targetItem = targetPart.items[0];
+    const targetStyle = targetItem.styles[0];
+    const selector = {
+      partId: targetPart.id,
+      itemId: targetItem.id,
+      styleId: targetStyle.id,
+    };
+    workspace.executeDocument('Add deletion reference fixtures', ({ document: next }) => {
+      const owner = next.parts.find((part) => part.id === ownerPart.id);
+      owner.requires = [structuredClone(selector)];
+      owner.visibleWhen = { op: 'selected', ...structuredClone(selector) };
+      next.rules = [{
+        id: 'global-target-rule',
+        type: 'requires',
+        trigger: { partId: owner.id },
+        targets: [structuredClone(selector)],
+      }];
+    });
+
+    creatorClick(workspace, 'select-part', { partId: targetPart.id });
+    creatorClick(workspace, 'select-item', { itemId: targetItem.id });
+    creatorClick(workspace, 'select-style', { styleId: targetStyle.id });
+    creatorClick(workspace, 'delete-style');
+
+    const nextOwner = workspace.getDocument().parts.find((part) => part.id === ownerPart.id);
+    assert.deepEqual(nextOwner.requires, []);
+    assert.equal(nextOwner.visibleWhen, null);
+    assert.deepEqual(workspace.getDocument().rules, []);
+  }, { playable: true });
+});
+
+test('locked project-import targets are rejected before Blob records enter the save repository', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const { part, item, style } = workspace.selectedCreatorRecords();
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-locked' }, checked: true, type: 'checkbox' },
+    });
+    workspace.pendingImport = {
+      mode: 'project',
+      mapping: [{
+        file: { name: 'locked.png', type: 'image/png' },
+        fileName: 'locked.png',
+        targetDefinition: `${part.id}::${item.id}::${style.id}`,
+        trackId: style.layerTrackId,
+        suggestedTrackName: 'Locked',
+      }],
+    };
+    workspace.render();
+    assert.match(
+      creatorRoot.innerHTML,
+      new RegExp(`value="${part.id}::${item.id}::${style.id}" selected disabled`),
+    );
+    const assetCount = workspace.assets.size;
+    const assetId = style.assetId;
+    await workspace.confirmBatchImport();
+    assert.equal(workspace.assets.size, assetCount);
+    assert.equal(workspace.selectedCreatorRecords().style.assetId, assetId);
+    assert.equal(workspace.store.getState().saveState, 'error');
+  }, { creatorRoot, playable: true });
+});
+
+test('Maker ZIP import re-inspects Style PNG pixels and blocks fully transparent artwork', async () => {
+  const previousBitmap = globalThis.createImageBitmap;
+  const previousOffscreenCanvas = globalThis.OffscreenCanvas;
+  try {
+    await withWorkspace(async (workspace) => {
+      class TransparentCanvas {
+        constructor(width, height) {
+          this.width = width;
+          this.height = height;
+        }
+
+        getContext() {
+          return {
+            drawImage() {},
+            getImageData: () => ({
+              data: new Uint8ClampedArray(this.width * this.height * 4),
+            }),
+          };
+        }
+      }
+      globalThis.OffscreenCanvas = TransparentCanvas;
+      globalThis.createImageBitmap = async () => ({
+        width: 2,
+        height: 2,
+        close() {},
+      });
+      workspace.flushCompletedAssetOperation = async () => true;
+
+      creatorClick(workspace, 'add-expansion');
+      const packId = workspace.getDocument().extensions.expansionDrafts[0].packId;
+      creatorClick(workspace, 'add-selected-to-expansion', { packId });
+      const document = workspace.getDocument();
+      const pack = document.extensions.expansionDrafts[0];
+      const style = pack.parts[0].items[0].styles[0];
+      const assetId = 'transparent-zip-style';
+      style.assetId = assetId;
+      style.positionConfirmed = true;
+      pack.assets = [{
+        id: assetId,
+        identifier: `${assetId}.png`,
+        kind: 'layer',
+        mediaType: 'image/png',
+        width: 2,
+        height: 2,
+      }];
+      const blob = new Blob([
+        Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+        'not-real-pixels-in-test',
+      ], { type: 'image/png' });
+      const archive = await createMakerProjectArchive(document, new Map([[
+        assetId,
+        {
+          assetId,
+          blob,
+          fileName: `${assetId}.png`,
+          width: 999,
+          height: 999,
+          // Forged metadata must never bypass the import-time pixel inspection.
+          alphaAnalyzed: false,
+          hasVisiblePixels: true,
+        },
+      ]]));
+
+      await workspace.importProjectArchive(archive);
+      const imported = workspace.runtimeAsset(assetId);
+      assert.equal(imported.width, 2);
+      assert.equal(imported.height, 2);
+      assert.equal(imported.alphaAnalyzed, true);
+      assert.equal(imported.hasVisiblePixels, false);
+      assert.ok(workspace.publicationIssues().some((issue) => (
+        issue.code === 'transparent_public_style'
+        && issue.path === `extensions.expansionDrafts.${packId}/${pack.parts[0].id}/${pack.parts[0].items[0].id}/${style.id}`
+      )));
+    }, { playable: true });
+  } finally {
+    globalThis.createImageBitmap = previousBitmap;
+    globalThis.OffscreenCanvas = previousOffscreenCanvas;
+  }
+});
+
+test('Run Preflight invalidates cached rule analysis and blocking issues render as errors', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    workspace.executeDocument('Create blocking position fixture', ({ document: next }) => {
+      next.parts[0].items[0].styles[0].positionConfirmed = false;
+    });
+    const document = workspace.store.getState().document;
+    workspace.rulePreflightCache.set(document, [{
+      code: 'cached-fake-blocker',
+      path: 'rules',
+      message: 'stale',
+    }]);
+    creatorClick(workspace, 'run-preflight');
+    const refreshed = workspace.rulePreflightCache.get(document);
+    assert.equal(refreshed.some((issue) => issue.code === 'cached-fake-blocker'), false);
+    assert.match(creatorRoot.innerHTML, /v4-preflight-list/);
+    assert.match(creatorRoot.innerHTML, /<li class="error">/);
+  }, { creatorRoot, playable: true });
+});
+
+test('negative stress fixtures remain publication-blocked with localized guidance', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const issue = workspace.publicationIssues()
+      .find((candidate) => candidate.code === 'fixture_do_not_publish');
+    assert.ok(issue, 'the stress-fixture marker must create a blocking publication issue');
+    assert.equal(issue.path, 'extensions.stressTest.doNotPublish');
+
+    const localizedMessages = new Set();
+    for (const locale of ['en', 'zh', 'ja', 'ko', 'vi']) {
+      workspace.setLocale(locale, { render: false });
+      const message = workspace.issueText(issue);
+      assert.ok(message.length >= 20, `${locale} must explain why publication is blocked`);
+      localizedMessages.add(message);
+    }
+    assert.equal(localizedMessages.size, 5, 'every supported language must provide its own guidance');
+
+    workspace.setLocale('zh');
+    creatorClick(workspace, 'creator-tab', { tab: 'validate' });
+    assert.match(creatorRoot.innerHTML, /负向压力测试模板/);
+    assert.match(creatorRoot.innerHTML, /<li class="error">/);
+  }, {
+    creatorRoot,
+    playable: true,
+    prepareDocument(document) {
+      document.extensions = {
+        ...document.extensions,
+        stressTest: {
+          doNotPublish: true,
+          reason: 'Negative editor fixture',
+        },
+      };
+    },
+  });
+});
+
+test('duplicate Player input/change events do not create duplicate save revisions', async () => {
+  await withWorkspace(async (workspace) => {
+    const initialRevision = workspace.playerSessionRevision;
+    const changed = {
+      target: {
+        dataset: { action: 'player-profile-world' },
+        value: 'New World',
+      },
+    };
+    workspace.handlePlayerChange(changed);
+    assert.equal(workspace.playerSessionRevision, initialRevision + 1);
+    workspace.handlePlayerChange(changed);
+    assert.equal(workspace.playerSessionRevision, initialRevision + 1);
+  }, { playable: true });
+});
+
+test('Player Expansion Pack toggles clear undo entries from the previous runtime graph', async () => {
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'add-expansion');
+    const packId = workspace.getDocument().extensions.expansionDrafts[0].packId;
+    creatorClick(workspace, 'add-selected-to-expansion', { packId });
+    workspace.playerUndo = [{ label: 'Old graph', recipe: structuredClone(workspace.playerRecipe) }];
+    workspace.playerRedo = [{ label: 'Old graph redo', recipe: structuredClone(workspace.playerRecipe) }];
+
+    workspace.handlePlayerChange({
+      target: {
+        dataset: { action: 'player-expansion' },
+        value: packId,
+        checked: true,
+      },
+    });
+    assert.equal(workspace.enabledExpansionIds.has(packId), true);
+    assert.deepEqual(workspace.playerUndo, []);
+    assert.deepEqual(workspace.playerRedo, []);
+  }, { playable: true });
+});
+
+test('Player Smart Color shows every channel used by the resolved OC scene', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    workspace.playerIntroOpen = false;
+    workspace.playerPartId = workspace.getDocument().parts[0].id;
+    workspace.renderPlayer();
+
+    assert.match(playerRoot.innerHTML, /Colors used by this OC/);
+    assert.match(playerRoot.innerHTML, /data-channel-id="background-tone"/);
+    assert.match(playerRoot.innerHTML, /data-channel-id="skin-tone"/);
+    assert.doesNotMatch(playerRoot.innerHTML, /data-channel-id="unused-tone"/);
+  }, {
+    playable: true,
+    playerRoot,
+    prepareDocument(document) {
+      const channel = (id, name, color) => ({
+        id,
+        name,
+        order: document.colorChannels.length,
+        mode: 'gradient-map',
+        defaultSwatchId: 'default',
+        swatches: [{
+          id: 'default',
+          name: 'Default',
+          hintColor: color,
+          stops: [
+            { offset: 0, color },
+            { offset: 1, color: '#ffffff' },
+          ],
+        }],
+      });
+      document.colorChannels.push(
+        channel('background-tone', 'Background tone', '#221144'),
+        channel('skin-tone', 'Skin tone', '#a86f50'),
+        channel('unused-tone', 'Unused tone', '#00ff00'),
+      );
+      document.parts[0].items[0].styles[0].colorChannelId = 'background-tone';
+      document.parts[2].items[0].styles[0].colorChannelId = 'skin-tone';
+    },
+  });
+});
+
+test('enabled Expansion Pack ids are scoped to packs declared by the current Maker', () => {
+  const document = {
+    extensions: {
+      expansionDrafts: [
+        { packId: 'pack-b' },
+        { packId: 'pack-a' },
+      ],
+    },
+  };
+  assert.deepEqual(
+    enabledExpansionIdsForDocument(document, new Set(['pack-a', 'foreign-pack', 'pack-b'])),
+    ['pack-b', 'pack-a'],
+  );
+  assert.deepEqual(enabledExpansionIdsForDocument(document, 'pack-a'), []);
 });
 
 test('advanced rule builder persists canonical ANY groups, ALL targets, and rejects cross-Part ANY', async () => {
@@ -846,8 +1325,13 @@ test('player controls select, undo, redo, clear, randomize, edit profile and com
 
     workspace.handlePlayerChange({ target: { dataset: { action: 'player-profile-name' }, value: 'Test OC' } });
     workspace.handlePlayerChange({ target: { dataset: { action: 'player-profile-world' }, value: 'Test World' } });
+    workspace.handlePlayerChange({ target: { dataset: { action: 'player-profile-description' }, value: 'A production-ready character.' } });
+    workspace.handlePlayerChange({ target: { dataset: { action: 'player-profile-tags' }, value: 'space, courier' } });
     assert.equal(workspace.playerProfile.name, 'Test OC');
     assert.equal(workspace.playerProfile.world, 'Test World');
+    assert.equal(workspace.playerProfile.description, 'A production-ready character.');
+    assert.equal(workspace.playerProfile.tags, 'space, courier');
+    assert.equal(workspace.playerSaveState, 'dirty');
 
     playerClick(workspace, 'player-info');
     assert.equal(workspace.playerIntroOpen, true);
@@ -857,6 +1341,67 @@ test('player controls select, undo, redo, clear, randomize, edit profile and com
     playerClick(workspace, 'player-complete');
     assert.equal(completed.length, 1);
   }, { playable: true, callbacks: { onCompleteOc: (payload) => completed.push(payload) } });
+});
+
+test('Player completion stays blocked until the exact current scene has rendered without missing PNGs', async () => {
+  await withWorkspace(async (workspace) => {
+    const document = workspace.runtimeDocument();
+    const renderKey = workspace.playerRenderKey(document, workspace.playerRecipe);
+
+    workspace.playerRenderState = { key: renderKey, status: 'pending', error: '' };
+    assert.match(
+      workspace.playerCompletionIssues(document, workspace.playerRecipe).join(' '),
+      /Verifying every selected PNG/,
+    );
+
+    workspace.playerRenderState = { key: renderKey, status: 'error', error: 'PNG decode failed' };
+    assert.match(
+      workspace.playerCompletionIssues(document, workspace.playerRecipe).join(' '),
+      /PNG decode failed/,
+    );
+
+    workspace.playerRenderState = { key: renderKey, status: 'ready', error: '' };
+    assert.equal(
+      workspace.playerCompletionIssues(document, workspace.playerRecipe).some((issue) => (
+        issue.includes('Verifying every selected PNG') || issue.includes('PNG decode failed')
+      )),
+      false,
+    );
+  }, { playable: true });
+});
+
+test('Player session writes stay ordered and only the newest snapshot may report saved', async () => {
+  const writes = [];
+  const releases = [];
+  await withWorkspace(async (workspace) => {
+    workspace.context.walletAddress = '0xplayer';
+    workspace.playerProfile.name = 'First';
+    workspace.markPlayerSessionDirty();
+    const first = workspace.savePlayerSession();
+    workspace.playerProfile.name = 'Second';
+    workspace.markPlayerSessionDirty();
+    const second = workspace.savePlayerSession();
+
+    await Promise.resolve();
+    assert.equal(writes.length, 1, 'the second write waits for the first');
+    assert.equal(writes[0].profile.name, 'First');
+    releases.shift()();
+    await first;
+    assert.notEqual(workspace.playerSaveState, 'saved', 'an older snapshot cannot mark the newer revision saved');
+
+    await Promise.resolve();
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1].profile.name, 'Second');
+    releases.shift()();
+    await second;
+    assert.equal(workspace.playerSaveState, 'saved');
+  }, {
+    playable: true,
+    async savePlayerSessionRecord(_key, session) {
+      writes.push(structuredClone(session));
+      await new Promise((resolve) => releases.push(resolve));
+    },
+  });
 });
 
 test('Player hides empty Styles, chooses a drawable alternative, and blocks incompatible clicks', async () => {
@@ -1021,6 +1566,45 @@ test('Creator preview availability resets for the same Maker before real Player 
     assert.equal(workspace.playerCreatorPreview, false);
     assert.doesNotMatch(playerRoot.innerHTML, /Preview only/);
   }, { playable: true, playerRoot });
+});
+
+test('an unresolved on-chain publication makes the Creator document read-only until recovery is cleared', async () => {
+  const creatorRoot = new FakeRoot();
+  let publicationPending = true;
+  await withWorkspace(async (workspace) => {
+    const before = workspace.getDocument();
+    const { part, item, style } = workspace.selectedCreatorRecords();
+    const originalStyleCount = item.styles.length;
+    const originalX = style.transform.x;
+
+    assert.match(creatorRoot.innerHTML, /Publication recovery is pending/);
+    assert.equal(workspace.executeDocument('Unsafe edit', ({ document }) => {
+      document.metadata.name = 'Must not be committed';
+    }), false);
+    creatorClick(workspace, 'add-style');
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-x' }, value: '999', type: 'number' },
+    });
+
+    const lockedDocument = workspace.getDocument();
+    const lockedPart = lockedDocument.parts.find((candidate) => candidate.id === part.id);
+    const lockedItem = lockedPart.items.find((candidate) => candidate.id === item.id);
+    const lockedStyle = lockedItem.styles.find((candidate) => candidate.id === style.id);
+    assert.equal(lockedDocument.metadata.name, before.metadata.name);
+    assert.equal(lockedItem.styles.length, originalStyleCount);
+    assert.equal(lockedStyle.transform.x, originalX);
+    assert.equal(workspace.store.getState().dirty, false);
+
+    publicationPending = false;
+    creatorClick(workspace, 'add-style');
+    assert.equal(workspace.selectedCreatorRecords().item.styles.length, originalStyleCount + 1);
+  }, {
+    creatorRoot,
+    callbacks: {
+      canMutateDocument: () => !publicationPending,
+      documentMutationBlockedMessage: () => 'Publication recovery is pending',
+    },
+  });
 });
 
 test('every rendered Maker Studio data-action is backed by a handler or an intentional passive form value', async () => {

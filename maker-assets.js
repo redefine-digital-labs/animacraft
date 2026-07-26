@@ -1,5 +1,6 @@
 const MAX_MAKER_ASSET_BYTES = 20 * 1024 * 1024;
 const MAX_MAKER_ASSET_EDGE = 8_192;
+const PNG_SIGNATURE = Object.freeze([137, 80, 78, 71, 13, 10, 26, 10]);
 
 function normalizedToken(value) {
   return String(value || '')
@@ -130,15 +131,28 @@ export function initialPngTransform(widthValue, heightValue, makerCanvas = {}) {
   };
 }
 
+async function hasPngSignature(file) {
+  if (!file || typeof file.arrayBuffer !== 'function') return null;
+  const headerSource = typeof file.slice === 'function' ? file.slice(0, PNG_SIGNATURE.length) : file;
+  const bytes = new Uint8Array(await headerSource.arrayBuffer());
+  return bytes.length >= PNG_SIGNATURE.length
+    && PNG_SIGNATURE.every((byte, index) => bytes[index] === byte);
+}
+
 export async function inspectPngAsset(file, makerCanvas) {
   if (!file || (!String(file.type || '').includes('image/png') && !String(file.name || '').toLowerCase().endsWith('.png'))) {
     throw new Error('Maker artwork must be a PNG file with transparency support.');
   }
   if (Number(file.size || 0) > MAX_MAKER_ASSET_BYTES) throw new Error(`${file.name} is larger than 20 MB.`);
+  if (await hasPngSignature(file) === false) {
+    throw new Error(`${file.name || 'Maker artwork'} is not a real PNG file.`);
+  }
   const bitmap = await createImageBitmap(file);
   const width = bitmap.width;
   const height = bitmap.height;
   let alphaBounds = null;
+  let alphaAnalyzed = false;
+  let visiblePixelCount = 0;
   try {
     const maximumEdge = 1024;
     const analysisScale = Math.min(1, maximumEdge / Math.max(width, height));
@@ -153,6 +167,7 @@ export async function inspectPngAsset(file, makerCanvas) {
       const context = analysisCanvas.getContext('2d', { willReadFrequently: true });
       context.drawImage(bitmap, 0, 0, analysisWidth, analysisHeight);
       const pixels = context.getImageData(0, 0, analysisWidth, analysisHeight).data;
+      alphaAnalyzed = true;
       let minX = analysisWidth;
       let minY = analysisHeight;
       let maxX = -1;
@@ -160,6 +175,7 @@ export async function inspectPngAsset(file, makerCanvas) {
       for (let y = 0; y < analysisHeight; y += 1) {
         for (let x = 0; x < analysisWidth; x += 1) {
           if (pixels[((y * analysisWidth) + x) * 4 + 3] < 8) continue;
+          visiblePixelCount += 1;
           minX = Math.min(minX, x);
           minY = Math.min(minY, y);
           maxX = Math.max(maxX, x);
@@ -197,6 +213,8 @@ export async function inspectPngAsset(file, makerCanvas) {
     height,
     fullCanvas,
     alphaBounds,
+    alphaAnalyzed,
+    hasVisiblePixels: alphaAnalyzed ? visiblePixelCount > 0 : null,
     // Use the complete source PNG for predictable import placement. Alpha
     // bounds remain thumbnail and alignment-diagnostic metadata only.
     initialTransform: initialPngTransform(width, height, makerCanvas),
@@ -264,7 +282,18 @@ export async function createAlphaCroppedThumbnail(blob, size = 256) {
   return canvasToBlob(output);
 }
 
-export function runtimeAssetRecord({ assetId, blob, fileName, width, height, alphaBounds = null, thumbnailBlob = null, source = 'local' }) {
+export function runtimeAssetRecord({
+  assetId,
+  blob,
+  fileName,
+  width,
+  height,
+  alphaBounds = null,
+  alphaAnalyzed = false,
+  hasVisiblePixels = null,
+  thumbnailBlob = null,
+  source = 'local',
+}) {
   return {
     assetId,
     blob,
@@ -272,6 +301,8 @@ export function runtimeAssetRecord({ assetId, blob, fileName, width, height, alp
     width: Number(width || 0),
     height: Number(height || 0),
     alphaBounds,
+    alphaAnalyzed: alphaAnalyzed === true,
+    hasVisiblePixels: hasVisiblePixels === null ? null : hasVisiblePixels === true,
     thumbnailBlob,
     source,
     url: blob ? URL.createObjectURL(blob) : '',
@@ -320,11 +351,20 @@ export function collectTrackAlignmentWarnings(document, runtimeAssets, options =
 }
 
 export function reviveRuntimeAssetRecord(record) {
-  return runtimeAssetRecord({
+  const revived = runtimeAssetRecord({
     ...record,
     blob: record?.blob,
     thumbnailBlob: record?.thumbnailBlob,
   });
+  const remoteUrl = String(record?.url || '');
+  const remoteThumbnailUrl = String(record?.thumbnailUrl || '');
+  if (!revived.url && remoteUrl && !remoteUrl.startsWith('blob:')) revived.url = remoteUrl;
+  if (
+    !revived.thumbnailUrl
+    && remoteThumbnailUrl
+    && !remoteThumbnailUrl.startsWith('blob:')
+  ) revived.thumbnailUrl = remoteThumbnailUrl;
+  return revived;
 }
 
 export function revokeRuntimeAsset(record) {

@@ -2,15 +2,14 @@
  * Pure bridge between the full Animacraft Maker v5 document and the existing
  * Walrus + Sui publication interfaces.
  *
- * Walrus remains authoritative for the full versioned Maker/recipe. The Sui
- * OCMaker stores a deliberately smaller compatibility projection. Every loss
- * in that projection is reported instead of being silently treated as a full
- * representation of Maker v5. The file/API names remain temporary compatibility
- * aliases for existing callers.
+ * Walrus remains authoritative for the full versioned Maker/recipe. Projection
+ * v2 compiles that graph into an equivalent Sui authorization/color model or
+ * fails closed; the older lossy projection remains only for compatibility.
+ * The file/API names remain temporary aliases for existing callers.
  */
 
-import { compareMakerCompatibility } from './expansion-packs.js';
-import { collectMakerRules, evaluateRecipe } from './maker-rules.js';
+import { compareMakerCompatibility, mergeExpansionPacks } from './expansion-packs.js';
+import { collectMakerRules, evaluateRecipe, normalizeRuleSelector } from './maker-rules.js';
 import { MAKER_V4_SCHEMA_VERSION, validateMakerV4Document } from './maker-v4.js';
 
 export const MAKER_V4_MANIFEST_IDENTIFIER = 'animacraft-manifest.json';
@@ -19,8 +18,13 @@ export const MAKER_V4_MOVE_PROJECTION_SCHEMA = 'animacraft.move-summary.v1';
 export const MAKER_V4_OC_PACKAGE_SCHEMA = 'animacraft.oc-package.v2';
 export const MAKER_V4_ITEM_KEY_ENCODING = 'item-style-key.v1';
 export const MAKER_V4_NEUTRAL_COLOR = '#000000';
+export const MAKER_V4_MOVE_PROJECTION_V2_SCHEMA = 'animacraft.move-summary.v2';
+export const MAKER_V4_ITEM_KEY_ENCODING_V2 = 'item-style-none-smart-color.v2';
+export const MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER = 'animacraft-chain-auxiliary.png';
+export const MAKER_V4_MAX_SINGLE_PUBLISH_RECORDS = 450;
 
 const MOVE_MAX_KEY_BYTES = 128;
+const MOVE_MAX_PARTS = 750;
 const MOVE_MAX_ITEMS = 5_000;
 const MOVE_MAX_RULES = 1_000;
 const MOVE_PART_KINDS = new Set(['standard', 'left-right-pair', 'last-bastion']);
@@ -161,8 +165,916 @@ function buildItemProjection(document) {
   return { byTuple, records };
 }
 
+function setIntersection(left, right) {
+  return new Set([...left].filter((value) => right.has(value)));
+}
+
+function setDifference(left, right) {
+  return new Set([...left].filter((value) => !right.has(value)));
+}
+
+function sortedSet(value) {
+  return [...value].sort(compareText);
+}
+
+function assetFingerprint(asset) {
+  return String(asset?.contentHash || asset?.digest || '').toLowerCase();
+}
+
+/** Collapse immutable Asset aliases created when embedded Packs reuse a PNG. */
+export function collapseMakerV4ProjectionAssetAliases(document) {
+  const result = clone(document);
+  const canonicalByIdentifier = new Map();
+  const aliases = new Map();
+  asArray(result?.assets).forEach((asset) => {
+    const identifier = String(asset?.identifier || '');
+    const assetId = String(asset?.id || '');
+    if (!identifier || !assetId) return;
+    if (!canonicalByIdentifier.has(identifier)) {
+      canonicalByIdentifier.set(identifier, asset);
+      return;
+    }
+    const canonical = canonicalByIdentifier.get(identifier);
+    if (String(canonical.id) === assetId) return;
+    const canonicalFingerprint = assetFingerprint(canonical);
+    const aliasFingerprint = assetFingerprint(asset);
+    if (canonicalFingerprint && aliasFingerprint && canonicalFingerprint !== aliasFingerprint) {
+      throw new MakerV4PublicationError(
+        `Assets "${canonical.id}" and "${assetId}" reuse one identifier with different content hashes.`,
+        'duplicate-asset-identifier-content-conflict',
+        { identifier, assetIds: [String(canonical.id), assetId] },
+      );
+    }
+    aliases.set(assetId, String(canonical.id));
+  });
+  if (!aliases.size) return result;
+  const resolve = (assetId) => aliases.get(String(assetId || '')) || assetId;
+  if (result.metadata) result.metadata.coverAssetId = resolve(result.metadata.coverAssetId);
+  asArray(result.layerTracks).forEach((track) => {
+    track.referenceAssetId = resolve(track.referenceAssetId);
+  });
+  asArray(result.parts).forEach((part) => {
+    part.iconAssetId = resolve(part.iconAssetId);
+    asArray(part.items).forEach((item) => {
+      item.thumbnailAssetId = resolve(item.thumbnailAssetId);
+      asArray(item.styles).forEach((style) => {
+        style.assetId = resolve(style.assetId);
+      });
+    });
+  });
+  result.assets = asArray(result.assets).filter((asset) => !aliases.has(String(asset?.id || '')));
+  return result;
+}
+
+/**
+ * Build the one immutable chain-definition graph: base Maker plus every
+ * embedded ExpansionPack, independent of which Packs one Player enables.
+ */
+export function prepareMakerV4ProjectionV2Document(document, options = {}) {
+  const base = clone(document);
+  const packs = options.expansionPacks === undefined
+    ? asArray(base?.extensions?.expansionDrafts)
+    : asArray(options.expansionPacks);
+  base.assets ||= [];
+  const baseAssets = new Map(base.assets.map((asset) => [String(asset?.id || ''), asset]));
+  packs.forEach((pack) => asArray(pack?.assets).forEach((asset) => {
+    const assetId = String(asset?.id || '');
+    if (!assetId) return;
+    const existing = baseAssets.get(assetId);
+    if (!existing) {
+      const copy = clone(asset);
+      base.assets.push(copy);
+      baseAssets.set(assetId, copy);
+      return;
+    }
+    const identifiersMatch = String(existing.identifier || '') === String(asset.identifier || '');
+    const existingFingerprint = assetFingerprint(existing);
+    const packFingerprint = assetFingerprint(asset);
+    if (!identifiersMatch
+      || (existingFingerprint && packFingerprint && existingFingerprint !== packFingerprint)) {
+      throw new MakerV4PublicationError(
+        `ExpansionPack Asset "${assetId}" conflicts with another immutable Asset identity.`,
+        'expansion-asset-id-conflict',
+        {
+          assetId,
+          identifiers: [String(existing.identifier || ''), String(asset.identifier || '')],
+        },
+      );
+    }
+  }));
+  let merged = base;
+  if (packs.length) {
+    const result = mergeExpansionPacks(base, packs, { returnResult: true });
+    if (!result.compatible) {
+      throw new MakerV4PublicationError(
+        'Embedded ExpansionPacks are not compatible with this Maker release.',
+        'incompatible-expansion-pack-projection',
+        { errors: clone(result.errors), results: clone(result.results) },
+      );
+    }
+    merged = result.maker;
+  }
+
+  merged.defaultRecipe ||= { selections: [], colors: [] };
+  merged.defaultRecipe.selections ||= [];
+  merged.defaultRecipe.colors ||= [];
+  const defaultParts = new Set(merged.defaultRecipe.selections
+    .map((selection) => String(selection?.partId || ''))
+    .filter(Boolean));
+  // Pack-added Parts are optional by compatibility contract. Their picker
+  // default is not an instruction to enable the Pack in the base recipe.
+  asArray(merged.parts).forEach((part) => {
+    if (part?.expansionPackId && part.required !== true && !defaultParts.has(String(part.id))) {
+      part.defaultItemId = null;
+    }
+  });
+  const defaultChannels = new Set(merged.defaultRecipe.colors
+    .map((selection) => String(selection?.channelId || ''))
+    .filter(Boolean));
+  asArray(merged.colorChannels).forEach((channel) => {
+    if (!defaultChannels.has(String(channel.id)) && channel.defaultSwatchId) {
+      merged.defaultRecipe.colors.push({
+        channelId: String(channel.id),
+        swatchId: String(channel.defaultSwatchId),
+      });
+    }
+  });
+  return collapseMakerV4ProjectionAssetAliases(merged);
+}
+
+function partMayBeInactive(part, sourceParts, visiting = new Set()) {
+  if (!part) return false;
+  if (part.visibleWhen != null) return true;
+  const parentPartId = String(part.parentPartId || '');
+  if (!parentPartId) return false;
+  if (visiting.has(String(part.id))) return true;
+  const nextVisiting = new Set(visiting).add(String(part.id));
+  const parent = sourceParts.get(parentPartId);
+  return parent?.required !== true || partMayBeInactive(parent, sourceParts, nextVisiting);
+}
+
+function nullableProjectionPart(part, sourceParts) {
+  return part?.required !== true || partMayBeInactive(part, sourceParts);
+}
+
+function projectionV2Index(document) {
+  const itemProjection = buildItemProjection(document);
+  const sourceParts = new Map(orderedParts(document).map((part) => [String(part.id), part]));
+  const usedPartKeys = new Set(sourceParts.keys());
+  const partRecords = [];
+  const partBySourceId = new Map();
+  const itemByTuple = new Map();
+  const realKeysByPart = new Map();
+  const domainKeysByPart = new Map();
+  const noneByPart = new Map();
+  const items = [];
+  const styleMappings = [];
+  const noneMappings = [];
+  const colorMappings = [];
+
+  orderedParts(document).forEach((part) => {
+    const partKey = String(part.id);
+    const sourceRecords = itemProjection.records
+      .filter((record) => String(record.part.id) === partKey)
+      .sort((left, right) => (
+        compareOrder(left.item, right.item, 'displayOrder')
+        || compareOrder(left.style, right.style, 'displayOrder')
+        || compareText(left.key, right.key)
+      ));
+    const usedItemKeys = new Set(sourceRecords.map((record) => record.key));
+    const realKeys = new Set(sourceRecords.map((record) => record.key));
+    const nullable = nullableProjectionPart(part, sourceParts);
+    const record = {
+      key: partKey,
+      label: String(part.name || part.id),
+      kind: 'standard',
+      renderOrder: partRecords.length,
+      menuVisible: part.menuVisible !== false,
+      required: true,
+      colors: [MAKER_V4_NEUTRAL_COLOR],
+      projectionKind: 'part',
+      sourcePartId: String(part.id),
+      nullable,
+      source: part,
+    };
+    partRecords.push(record);
+    partBySourceId.set(String(part.id), record);
+
+    sourceRecords.forEach((sourceRecord) => {
+      const styles = orderedStyles(sourceRecord.item);
+      const label = styles.length === 1 || sourceRecord.isDefault
+        ? String(sourceRecord.item.name || sourceRecord.item.id)
+        : `${sourceRecord.item.name || sourceRecord.item.id} · ${sourceRecord.style.name || sourceRecord.style.id}`;
+      const item = {
+        partKey,
+        itemKey: sourceRecord.key,
+        label: truncateUtf8(label),
+        gateKind: 0,
+        projectionKind: 'style',
+        sourcePartId: String(part.id),
+        sourceItemId: String(sourceRecord.item.id),
+        sourceStyleId: String(sourceRecord.style.id),
+        sourceAssetId: String(sourceRecord.style.assetId || ''),
+        sourceThumbnailAssetId: sourceRecord.item.thumbnailAssetId
+          ? String(sourceRecord.item.thumbnailAssetId)
+          : null,
+        assetRef: {
+          kind: 'maker-style-png',
+          assetId: String(sourceRecord.style.assetId || ''),
+        },
+        iconAssetRef: sourceRecord.item.thumbnailAssetId
+          ? {
+            kind: 'maker-item-thumbnail',
+            assetId: String(sourceRecord.item.thumbnailAssetId),
+          }
+          : null,
+        renderAsset: true,
+      };
+      items.push(item);
+      itemByTuple.set(tupleKey(part.id, sourceRecord.item.id, sourceRecord.style.id), item);
+      styleMappings.push({
+        partId: String(part.id),
+        itemId: String(sourceRecord.item.id),
+        styleId: String(sourceRecord.style.id),
+        partKey,
+        itemKey: sourceRecord.key,
+      });
+    });
+
+    if (nullable) {
+      const itemKey = compactMoveKey('__ac_none', `none\u0000${part.id}`, usedItemKeys);
+      const none = {
+        partKey,
+        itemKey,
+        label: 'None',
+        gateKind: 0,
+        projectionKind: 'none',
+        sourcePartId: String(part.id),
+        sourceItemId: null,
+        sourceStyleId: null,
+        sourceAssetId: null,
+        sourceThumbnailAssetId: null,
+        assetRef: {
+          kind: 'projection-auxiliary',
+          identifier: MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER,
+        },
+        iconAssetRef: null,
+        renderAsset: false,
+      };
+      items.push(none);
+      noneByPart.set(String(part.id), none);
+      noneMappings.push({ partId: String(part.id), partKey, itemKey });
+    }
+    realKeysByPart.set(partKey, realKeys);
+    domainKeysByPart.set(partKey, new Set([
+      ...realKeys,
+      ...(noneByPart.has(String(part.id)) ? [noneByPart.get(String(part.id)).itemKey] : []),
+    ]));
+  });
+
+  orderedChannels(document).forEach((channel) => {
+    const partKey = compactMoveKey(
+      `__ac_color_${channel.id}`,
+      `color-channel\u0000${channel.id}`,
+      usedPartKeys,
+    );
+    const part = {
+      key: partKey,
+      label: String(channel.name || channel.id),
+      kind: 'standard',
+      renderOrder: partRecords.length,
+      menuVisible: false,
+      required: true,
+      colors: [MAKER_V4_NEUTRAL_COLOR],
+      projectionKind: 'color-channel',
+      sourceChannelId: String(channel.id),
+      nullable: false,
+      source: channel,
+    };
+    partRecords.push(part);
+    const usedItemKeys = new Set();
+    const swatches = asArray(channel.swatches).map((swatch) => {
+      const itemKey = compactMoveKey(
+        String(swatch.id),
+        `color-swatch\u0000${channel.id}\u0000${swatch.id}`,
+        usedItemKeys,
+      );
+      items.push({
+        partKey,
+        itemKey,
+        label: truncateUtf8(String(swatch.name || swatch.id)),
+        gateKind: 0,
+        projectionKind: 'color-swatch',
+        sourceChannelId: String(channel.id),
+        sourceSwatchId: String(swatch.id),
+        sourceAssetId: null,
+        sourceThumbnailAssetId: null,
+        assetRef: {
+          kind: 'projection-auxiliary',
+          identifier: MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER,
+        },
+        iconAssetRef: null,
+        renderAsset: false,
+      });
+      return {
+        swatchId: String(swatch.id),
+        itemKey,
+      };
+    });
+    const keys = new Set(swatches.map((swatch) => swatch.itemKey));
+    realKeysByPart.set(partKey, keys);
+    domainKeysByPart.set(partKey, new Set(keys));
+    colorMappings.push({
+      channelId: String(channel.id),
+      partKey,
+      swatches,
+    });
+  });
+
+  return {
+    parts: partRecords,
+    partBySourceId,
+    items,
+    itemByTuple,
+    realKeysByPart,
+    domainKeysByPart,
+    noneByPart,
+    mappings: {
+      styles: styleMappings,
+      none: noneMappings,
+      colorChannels: colorMappings,
+    },
+  };
+}
+
+function selectorProjectionKeys(selectorInput, index) {
+  const selector = normalizeRuleSelector(selectorInput);
+  const part = index.partBySourceId.get(selector.partId);
+  if (!part) {
+    throw new MakerV4PublicationError(
+      `The projection selector references missing Part "${selector.partId}".`,
+      'rule-projection-failed',
+      { selector },
+    );
+  }
+  const itemIds = new Set([
+    ...(selector.itemId ? [selector.itemId] : []),
+    ...asArray(selector.itemIds),
+  ]);
+  const styleIds = new Set([
+    ...(selector.styleId ? [selector.styleId] : []),
+    ...asArray(selector.styleIds),
+  ]);
+  const matches = index.mappings.styles.filter((mapping) => (
+    mapping.partId === selector.partId
+    && (!itemIds.size || itemIds.has(mapping.itemId))
+    && (!styleIds.size || styleIds.has(mapping.styleId))
+  ));
+  return new Set(matches.map((mapping) => mapping.itemKey));
+}
+
+function conditionPartIds(condition) {
+  if (condition == null || typeof condition === 'boolean') return new Set();
+  if (Array.isArray(condition)) {
+    return new Set(condition.flatMap((entry) => [...conditionPartIds(entry)]));
+  }
+  if (condition?.op === 'selected'
+    || typeof condition === 'string'
+    || condition?.partId
+    || condition?.partKey
+    || condition?.part) {
+    const selector = normalizeRuleSelector(condition);
+    return new Set(selector.partId ? [selector.partId] : []);
+  }
+  if (condition?.op === 'not') return conditionPartIds(condition.condition);
+  if (condition?.op === 'all' || condition?.op === 'any') {
+    return new Set(asArray(condition.conditions).flatMap((entry) => [...conditionPartIds(entry)]));
+  }
+  if (condition && typeof condition === 'object') {
+    return new Set([
+      ...asArray(condition.all ?? condition.requires).flatMap((entry) => [...conditionPartIds(entry)]),
+      ...asArray(condition.any).flatMap((entry) => [...conditionPartIds(entry)]),
+      ...asArray(condition.not ?? condition.excludes).flatMap((entry) => [...conditionPartIds(entry)]),
+    ]);
+  }
+  return new Set();
+}
+
+function conditionMatchesProjectionKey(condition, partId, itemKey, index) {
+  if (condition == null) return true;
+  if (typeof condition === 'boolean') return condition;
+  if (Array.isArray(condition)) {
+    return condition.every((entry) => conditionMatchesProjectionKey(entry, partId, itemKey, index));
+  }
+  if (condition?.op === 'selected'
+    || typeof condition === 'string'
+    || condition?.partId
+    || condition?.partKey
+    || condition?.part) {
+    const selector = normalizeRuleSelector(condition);
+    if (selector.partId !== partId) return false;
+    return selectorProjectionKeys(selector, index).has(itemKey);
+  }
+  if (condition?.op === 'not') {
+    return !conditionMatchesProjectionKey(condition.condition, partId, itemKey, index);
+  }
+  if (condition?.op === 'all') {
+    return asArray(condition.conditions)
+      .every((entry) => conditionMatchesProjectionKey(entry, partId, itemKey, index));
+  }
+  if (condition?.op === 'any') {
+    return asArray(condition.conditions)
+      .some((entry) => conditionMatchesProjectionKey(entry, partId, itemKey, index));
+  }
+  return false;
+}
+
+function conditionAllowedKeysForPart(condition, partId, index, negated = false) {
+  const part = index.partBySourceId.get(partId);
+  if (!part) {
+    throw new MakerV4PublicationError(
+      `The visibility condition references missing Part "${partId}".`,
+      'condition-projection-failed',
+      { partId },
+    );
+  }
+  const domain = index.domainKeysByPart.get(part.key) || new Set();
+  return new Set([...domain].filter((itemKey) => (
+    conditionMatchesProjectionKey(condition, partId, itemKey, index) !== negated
+  )));
+}
+
+function mergeConditionClauses(clauses) {
+  const byPart = new Map();
+  clauses.forEach((clause) => {
+    if (!byPart.has(clause.partId)) {
+      byPart.set(clause.partId, { ...clause, allowed: new Set(clause.allowed) });
+      return;
+    }
+    const existing = byPart.get(clause.partId);
+    existing.allowed = setIntersection(existing.allowed, clause.allowed);
+  });
+  return [...byPart.values()].sort((left, right) => compareText(left.partId, right.partId));
+}
+
+function unrepresentableCondition(path, condition, reason) {
+  throw new MakerV4PublicationError(
+    `The condition at ${path} cannot be represented by pairwise Move exclusions.`,
+    'unrepresentable-projection-condition',
+    { path, reason, condition: clone(condition) },
+  );
+}
+
+function conditionProjectionClauses(condition, index, path, negated = false) {
+  if (condition == null) return negated
+    ? unrepresentableCondition(path, condition, 'negated-always-visible-condition')
+    : [];
+  const partIds = conditionPartIds(condition);
+  if (partIds.size === 1) {
+    const [partId] = partIds;
+    return [{
+      partId,
+      allowed: conditionAllowedKeysForPart(condition, partId, index, negated),
+      path,
+    }];
+  }
+  if (!partIds.size) {
+    unrepresentableCondition(path, condition, 'condition-has-no-selection');
+  }
+  if (condition?.op === 'not') {
+    return conditionProjectionClauses(condition.condition, index, `${path}.condition`, !negated);
+  }
+  if (condition?.op === 'all' || condition?.op === 'any') {
+    const effectiveOperator = negated
+      ? (condition.op === 'all' ? 'any' : 'all')
+      : condition.op;
+    if (effectiveOperator === 'any') {
+      unrepresentableCondition(path, condition, negated ? 'cross-part-not-all' : 'cross-part-any');
+    }
+    return mergeConditionClauses(asArray(condition.conditions).flatMap((entry, childIndex) => (
+      conditionProjectionClauses(
+        entry,
+        index,
+        `${path}.conditions[${childIndex}]`,
+        negated,
+      )
+    )));
+  }
+  unrepresentableCondition(path, condition, 'nested-cross-part-condition');
+}
+
+function ownerProjectionKeys(owner, index) {
+  if (owner.style) {
+    const item = index.itemByTuple.get(tupleKey(owner.part.id, owner.item.id, owner.style.id));
+    return new Set(item ? [item.itemKey] : []);
+  }
+  if (owner.item) {
+    return new Set(index.mappings.styles
+      .filter((mapping) => mapping.partId === owner.part.id && mapping.itemId === owner.item.id)
+      .map((mapping) => mapping.itemKey));
+  }
+  return new Set(index.realKeysByPart.get(String(owner.part.id)) || []);
+}
+
+function projectionOwnerPath(part, item = null, style = null) {
+  let path = `parts.${part.id}`;
+  if (item) path += `.items.${item.id}`;
+  if (style) path += `.styles.${style.id}`;
+  return path;
+}
+
+function addProjectionRule(state, leftPartKey, leftItemKey, rightPartKey, rightItemKey, source) {
+  if (!leftItemKey || !rightItemKey) {
+    throw new MakerV4PublicationError(
+      'Projection rules must enumerate exact Item keys.',
+      'wildcard-projection-rule',
+      { leftPartKey, leftItemKey, rightPartKey, rightItemKey, source },
+    );
+  }
+  const sides = [
+    { partKey: String(leftPartKey), itemKey: String(leftItemKey) },
+    { partKey: String(rightPartKey), itemKey: String(rightItemKey) },
+  ].sort((left, right) => (
+    compareText(left.partKey, right.partKey)
+    || compareText(left.itemKey, right.itemKey)
+  ));
+  const key = `${sides[0].partKey}\u0000${sides[0].itemKey}\u0001${sides[1].partKey}\u0000${sides[1].itemKey}`;
+  if (state.seen.has(key)) return;
+  state.seen.add(key);
+  state.rules.push({
+    leftPartKey: sides[0].partKey,
+    leftItemKey: sides[0].itemKey,
+    rightPartKey: sides[1].partKey,
+    rightItemKey: sides[1].itemKey,
+  });
+  if (state.rules.length > MOVE_MAX_RULES) {
+    throw new MakerV4PublicationError(
+      `The Move projection expands to more than ${MOVE_MAX_RULES} rules.`,
+      'move-rule-limit',
+      { count: state.rules.length, source },
+    );
+  }
+}
+
+function addProjectionRuleProduct(state, ownerPart, ownerKeys, targetPart, targetKeys, source) {
+  ownerKeys.forEach((ownerKey) => targetKeys.forEach((targetKey) => {
+    addProjectionRule(state, ownerPart, ownerKey, targetPart, targetKey, source);
+  }));
+}
+
+function projectVisibilityCondition(state, owner, condition, index, path) {
+  if (condition == null) return [];
+  const ownerPartKey = String(owner.part.id);
+  const ownerKeys = ownerProjectionKeys(owner, index);
+  const clauses = conditionProjectionClauses(condition, index, path);
+  clauses.forEach((clause) => {
+    const targetPart = index.partBySourceId.get(clause.partId);
+    const targetDomain = index.domainKeysByPart.get(targetPart.key) || new Set();
+    if (targetPart.key === ownerPartKey) {
+      if (![...ownerKeys].every((key) => clause.allowed.has(key))) {
+        throw new MakerV4PublicationError(
+          `The visibility condition at ${path} invalidates choices in its own Part.`,
+          'unrepresentable-same-part-constraint',
+          { path, partId: owner.part.id, condition: clone(condition) },
+        );
+      }
+      return;
+    }
+    addProjectionRuleProduct(
+      state,
+      ownerPartKey,
+      ownerKeys,
+      targetPart.key,
+      setDifference(targetDomain, clause.allowed),
+      { kind: 'visibleWhen', path },
+    );
+  });
+  return clauses;
+}
+
+function projectParentActivation(state, part, index, path) {
+  if (!part.parentPartId) return null;
+  const parent = index.partBySourceId.get(String(part.parentPartId));
+  const ownerKeys = index.realKeysByPart.get(String(part.id)) || new Set();
+  const allowed = index.realKeysByPart.get(parent.key) || new Set();
+  const domain = index.domainKeysByPart.get(parent.key) || new Set();
+  addProjectionRuleProduct(
+    state,
+    String(part.id),
+    ownerKeys,
+    parent.key,
+    setDifference(domain, allowed),
+    { kind: 'parentPart', path },
+  );
+  return { partId: String(part.parentPartId), allowed, path };
+}
+
+function projectRequiredConditionalSentinel(state, part, index, activationClauses, path) {
+  if (part.required !== true || !index.noneByPart.has(String(part.id))) return;
+  const merged = mergeConditionClauses(activationClauses);
+  const noneKey = index.noneByPart.get(String(part.id)).itemKey;
+  const selfClause = merged.find((clause) => clause.partId === String(part.id));
+  // If the visibility expression is false while None occupies this Part, the
+  // Part is inactive by definition and None needs no cross-Part restriction.
+  if (selfClause && !selfClause.allowed.has(noneKey)) return;
+  if (merged.some((clause) => clause.allowed.size === 0)) return;
+  const externalClauses = merged
+    .filter((clause) => clause.partId !== String(part.id))
+    .filter((clause) => {
+      const target = index.partBySourceId.get(clause.partId);
+      const domain = index.domainKeysByPart.get(target.key) || new Set();
+      return clause.allowed.size !== domain.size;
+    });
+  if (!externalClauses.length) {
+    throw new MakerV4PublicationError(
+      `Required conditional Part "${part.id}" is active while its None sentinel is selected.`,
+      'unrepresentable-required-visibility',
+      {
+        path,
+        partId: String(part.id),
+        activationParts: [],
+        reason: 'unconditionally-active-sentinel',
+      },
+    );
+  }
+  if (externalClauses.length > 1) {
+    throw new MakerV4PublicationError(
+      `Required conditional Part "${part.id}" needs a ternary activation constraint.`,
+      'unrepresentable-required-visibility',
+      {
+        path,
+        partId: String(part.id),
+        activationParts: externalClauses.map((clause) => clause.partId),
+      },
+    );
+  }
+  const clause = externalClauses[0];
+  const targetPart = index.partBySourceId.get(clause.partId);
+  addProjectionRuleProduct(
+    state,
+    String(part.id),
+    new Set([noneKey]),
+    targetPart.key,
+    clause.allowed,
+    { kind: 'required-conditional-sentinel', path },
+  );
+}
+
+function projectEmbeddedRules(state, document, index) {
+  collectMakerRules(document).forEach((rule) => {
+    if (rule.type !== 'requires' && rule.type !== 'excludes') {
+      throw new MakerV4PublicationError(
+        `Rule "${rule.id}" has unsupported type "${rule.type}".`,
+        'rule-projection-failed',
+        { ruleId: String(rule.id), type: String(rule.type) },
+      );
+    }
+    const trigger = normalizeRuleSelector(rule.trigger);
+    const triggerPart = index.partBySourceId.get(trigger.partId);
+    if (!triggerPart) {
+      throw new MakerV4PublicationError(
+        `Rule "${rule.id}" has no projected trigger Part.`,
+        'rule-projection-failed',
+        { ruleId: rule.id, trigger },
+      );
+    }
+    const triggerKeys = selectorProjectionKeys(trigger, index);
+    if (!triggerKeys.size) return;
+    asArray(rule.targets).forEach((targetInput) => {
+      const target = normalizeRuleSelector(targetInput);
+      const targetPart = index.partBySourceId.get(target.partId);
+      const targetKeys = selectorProjectionKeys(target, index);
+      if (triggerPart.key === targetPart.key) {
+        const invalidKeys = rule.type === 'requires'
+          ? setDifference(triggerKeys, targetKeys)
+          : setIntersection(triggerKeys, targetKeys);
+        if (invalidKeys.size) {
+          throw new MakerV4PublicationError(
+            `Rule "${rule.id}" invalidates choices within one Part and cannot be represented pairwise.`,
+            'unrepresentable-same-part-constraint',
+            {
+              ruleId: String(rule.id),
+              type: String(rule.type),
+              partId: trigger.partId,
+              itemKeys: sortedSet(invalidKeys),
+            },
+          );
+        }
+        return;
+      }
+      const forbidden = rule.type === 'requires'
+        ? setDifference(index.domainKeysByPart.get(targetPart.key) || new Set(), targetKeys)
+        : targetKeys;
+      addProjectionRuleProduct(
+        state,
+        triggerPart.key,
+        triggerKeys,
+        targetPart.key,
+        forbidden,
+        { kind: String(rule.type), ruleId: String(rule.id) },
+      );
+    });
+  });
+}
+
+function projectionRuleSort(left, right) {
+  return compareText(left.leftPartKey, right.leftPartKey)
+    || compareText(left.leftItemKey, right.leftItemKey)
+    || compareText(left.rightPartKey, right.rightPartKey)
+    || compareText(left.rightItemKey, right.rightItemKey);
+}
+
+/**
+ * Compile Maker v5 into a lossless authorization/color projection for the
+ * current pairwise-exclusion Move model. This compiler is intentionally pure:
+ * it contains no Walrus locations and either returns complete coverage or
+ * throws before producing a partial summary.
+ */
+function compilePreparedMakerV4MoveProjectionV2(document) {
+  validateMakerV4Document(document, { mode: 'publish' });
+  const index = projectionV2Index(document);
+  if (index.parts.length > MOVE_MAX_PARTS) {
+    throw new MakerV4PublicationError(
+      `The Move projection contains more than ${MOVE_MAX_PARTS} Parts.`,
+      'move-part-limit',
+      { count: index.parts.length },
+    );
+  }
+  if (index.items.length > MOVE_MAX_ITEMS) {
+    throw new MakerV4PublicationError(
+      `The Move projection contains more than ${MOVE_MAX_ITEMS} Items.`,
+      'move-item-limit',
+      { count: index.items.length },
+    );
+  }
+
+  const state = { rules: [], seen: new Set() };
+  orderedParts(document).forEach((part) => {
+    const path = projectionOwnerPath(part);
+    const activationClauses = [];
+    const parentClause = projectParentActivation(state, part, index, `${path}.parentPartId`);
+    if (parentClause) activationClauses.push(parentClause);
+    activationClauses.push(...projectVisibilityCondition(
+      state,
+      { part },
+      part.visibleWhen,
+      index,
+      `${path}.visibleWhen`,
+    ));
+    projectRequiredConditionalSentinel(state, part, index, activationClauses, path);
+
+    orderedItems(part).forEach((item) => {
+      const itemPath = projectionOwnerPath(part, item);
+      projectVisibilityCondition(
+        state,
+        { part, item },
+        item.visibleWhen,
+        index,
+        `${itemPath}.visibleWhen`,
+      );
+      orderedStyles(item).forEach((style) => {
+        const stylePath = projectionOwnerPath(part, item, style);
+        projectVisibilityCondition(
+          state,
+          { part, item, style },
+          style.visibleWhen,
+          index,
+          `${stylePath}.visibleWhen`,
+        );
+      });
+    });
+  });
+  projectEmbeddedRules(state, document, index);
+  state.rules.sort(projectionRuleSort);
+
+  const projectionItems = index.items.map((item) => clone(item));
+  const requiresAuxiliary = projectionItems.some((item) => item.renderAsset === false);
+  const singlePublishRecords = (index.parts.length * 2) + index.items.length + state.rules.length;
+  const auxiliaryIdentifierConflict = requiresAuxiliary
+    ? asArray(document?.assets).find((asset) => (
+      String(asset?.identifier || '') === MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER
+    ))
+    : null;
+  if (auxiliaryIdentifierConflict) {
+    throw new MakerV4PublicationError(
+      'A normal Maker Asset uses the reserved projection auxiliary identifier.',
+      'reserved-projection-auxiliary-identifier',
+      {
+        assetId: String(auxiliaryIdentifierConflict.id || ''),
+        identifier: MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER,
+      },
+    );
+  }
+  return {
+    schemaVersion: MAKER_V4_MOVE_PROJECTION_V2_SCHEMA,
+    itemKeyEncoding: MAKER_V4_ITEM_KEY_ENCODING_V2,
+    recipeEncoding: 'sui.recipe-slot.v1',
+    renderOrderSemantics: 'canonical-recipe-order.v1',
+    neutralColor: MAKER_V4_NEUTRAL_COLOR,
+    authorizationCoverage: 'complete',
+    colorCoverage: 'complete',
+    auxiliary: {
+      identifier: MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER,
+      kind: 'chain-auxiliary',
+      mediaType: 'image/png',
+      projectionOnly: true,
+      renderAsset: false,
+      required: requiresAuxiliary,
+    },
+    parts: index.parts.map(({ source, ...part }) => clone(part)),
+    items: projectionItems,
+    rules: clone(state.rules),
+    paletteLinks: [],
+    mappings: clone(index.mappings),
+    counts: {
+      parts: index.parts.length,
+      items: index.items.length,
+      rules: state.rules.length,
+      recipeSlots: index.parts.length,
+      singlePublishRecords,
+    },
+  };
+}
+
+export function compileMakerV4MoveProjectionV2(document) {
+  return compilePreparedMakerV4MoveProjectionV2(
+    prepareMakerV4ProjectionV2Document(document),
+  );
+}
+
+/** Enforce the current one-PTB publication record budget before Walrus spend. */
+export function assertMakerV4ProjectionV2SinglePublishBudget(
+  projection,
+  maximum = MAKER_V4_MAX_SINGLE_PUBLISH_RECORDS,
+) {
+  const limit = Number(maximum);
+  const parts = Number(projection?.counts?.parts || 0);
+  const items = Number(projection?.counts?.items || 0);
+  const rules = Number(projection?.counts?.rules || 0);
+  const paletteLinks = Number(asArray(projection?.paletteLinks).length);
+  const totalRecords = (parts * 2) + items + rules + paletteLinks;
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new MakerV4PublicationError(
+      'The single-publication record budget is invalid.',
+      'invalid-single-publish-record-limit',
+      { maximum },
+    );
+  }
+  if (totalRecords > limit) {
+    throw new MakerV4PublicationError(
+      `The Maker needs ${totalRecords} on-chain records, above the single-transaction limit of ${limit}.`,
+      'single-publish-record-limit',
+      {
+        count: totalRecords,
+        maximum: limit,
+        parts,
+        colors: parts,
+        items,
+        rules,
+        paletteLinks,
+      },
+    );
+  }
+  return totalRecords;
+}
+
+/**
+ * Mark the single reusable transparent PNG used by projection-only None and
+ * ColorChannel Items. It is never a normal Maker render asset.
+ */
+export function createMakerV4ProjectionV2AuxiliaryEntry(blob) {
+  if (!blob || typeof blob.arrayBuffer !== 'function') {
+    throw new MakerV4PublicationError(
+      'The projection auxiliary PNG Blob/File is missing.',
+      'missing-projection-auxiliary',
+    );
+  }
+  if (String(blob.type || '').toLowerCase() !== 'image/png') {
+    throw new MakerV4PublicationError(
+      'The projection auxiliary asset must have MIME type image/png.',
+      'invalid-projection-auxiliary',
+      { mediaType: String(blob.type || '') },
+    );
+  }
+  return {
+    blob,
+    identifier: MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER,
+    kind: 'chain-auxiliary',
+    assetId: null,
+    projectionOnly: true,
+    renderAsset: false,
+  };
+}
+
 function assetById(document) {
-  return new Map(asArray(document?.assets).map((asset) => [String(asset?.id || ''), asset]));
+  const result = new Map(asArray(document?.assets).map((asset) => [String(asset?.id || ''), asset]));
+  asArray(document?.extensions?.expansionDrafts).forEach((pack) => {
+    asArray(pack?.assets).forEach((asset) => {
+      const assetId = String(asset?.id || '');
+      if (assetId && !result.has(assetId)) result.set(assetId, asset);
+    });
+  });
+  return result;
 }
 
 /** Return every asset referenced by the immutable Maker graph. */
@@ -467,6 +1379,7 @@ export function buildMakerV4PublicationManifest(document, options = {}) {
   const tracks = orderedTracks(document);
   const trackOrder = new Map(tracks.map((track) => [String(track.id), Number(track.order)]));
   const referenced = new Set(collectReferencedMakerV4AssetIds(document));
+  const immutableAssets = assetById(document);
   const colors = orderedChannels(document);
   const partOrder = new Map(orderedParts(document).map((part) => [String(part.id), Number(part.menuOrder)]));
   const colorOrder = new Map(colors.map((channel) => [String(channel.id), Number(channel.order)]));
@@ -512,7 +1425,7 @@ export function buildMakerV4PublicationManifest(document, options = {}) {
       )),
     },
     expansionPacks: asArray(document.expansionPacks).map(sanitizeExpansionPack).sort((left, right) => compareText(left.id, right.id)),
-    assets: asArray(document.assets).filter((asset) => referenced.has(String(asset.id))).map(sanitizeAsset)
+    assets: [...referenced].map((assetId) => immutableAssets.get(assetId)).filter(Boolean).map(sanitizeAsset)
       .sort((left, right) => compareText(left.identifier, right.identifier) || compareText(left.id, right.id)),
     publication: {
       royaltyBps: Number(document.publication.royaltyBps),
@@ -532,6 +1445,8 @@ export function buildMakerV4PublicationManifest(document, options = {}) {
     legacyMoveProjection: releaseProjection(document),
     extensions: options.publicExtensions ? clone(options.publicExtensions) : {},
   };
+  manifest.moveProjectionV2 = compileMakerV4MoveProjectionV2(manifest);
+  assertMakerV4ProjectionV2SinglePublishBudget(manifest.moveProjectionV2);
   if (options.requireCompleteRuleProjection && manifest.legacyMoveProjection.authorizationCoverage !== 'complete') {
     throw new MakerV4PublicationError(
       'This Maker uses rules the current Move summary cannot enforce.',
@@ -595,19 +1510,37 @@ export function buildMakerV4PublicationBundle(document, runtimeAssets, options =
   const manifestIdentifier = options.manifestIdentifier || MAKER_V4_MANIFEST_IDENTIFIER;
   const manifest = buildMakerV4PublicationManifest(document, options);
   const manifestJson = JSON.stringify(manifest);
-  const assetEntries = collectMakerV4UploadEntries(document, runtimeAssets, { ...options, manifestIdentifier });
+  const renderAssetEntries = collectMakerV4UploadEntries(document, runtimeAssets, { ...options, manifestIdentifier });
+  const auxiliaryEntry = manifest.moveProjectionV2?.auxiliary?.required
+    ? createMakerV4ProjectionV2AuxiliaryEntry(options.projectionAuxiliaryBlob)
+    : null;
+  const assetEntries = [
+    ...renderAssetEntries,
+    ...(auxiliaryEntry ? [auxiliaryEntry] : []),
+  ];
+  const projectedFileCount = assetEntries.length + 1;
+  if (projectedFileCount > 5_000) {
+    throw new MakerV4PublicationError(
+      'The Maker, v2 auxiliary PNG, and Manifest exceed the 5,000-file Walrus quilt limit.',
+      'walrus-quilt-file-limit',
+      { count: projectedFileCount, maximum: 5_000 },
+    );
+  }
   const manifestBlob = new Blob([manifestJson], { type: 'application/json' });
   return {
     manifest,
     manifestJson,
     manifestIdentifier,
     assetEntries,
+    renderAssetEntries,
+    auxiliaryEntry,
     entries: [
       ...assetEntries,
       { blob: manifestBlob, identifier: manifestIdentifier, kind: 'maker-manifest', assetId: null },
     ],
     release: manifest.release,
-    projection: manifest.legacyMoveProjection,
+    projection: manifest.moveProjectionV2,
+    legacyProjection: manifest.legacyMoveProjection,
   };
 }
 
@@ -730,6 +1663,160 @@ function paletteLinks(index) {
   });
 }
 
+function quiltPatchLocationValue(locations, assetId) {
+  const record = locations instanceof Map ? locations.get(assetId) : jsonObject(locations)[assetId];
+  if (typeof record === 'string') return record;
+  return String(record?.patchId || record?.quiltPatchId || record?.walrusPatchId || record?.id || '');
+}
+
+function directQuiltPatchLocationValue(record) {
+  if (typeof record === 'string') return record;
+  return String(record?.patchId || record?.quiltPatchId || record?.walrusPatchId || record?.id || '');
+}
+
+function assertStoredMoveProjectionV2(document, projection) {
+  if (!document?.moveProjectionV2
+    || JSON.stringify(document.moveProjectionV2) === JSON.stringify(projection)) return;
+  throw new MakerV4PublicationError(
+    'The immutable Manifest v2 projection does not match the recomputed Maker graph.',
+    'move-projection-v2-manifest-mismatch',
+    {
+      storedSchema: String(document.moveProjectionV2.schemaVersion || ''),
+      computedSchema: projection.schemaVersion,
+    },
+  );
+}
+
+/**
+ * Resolve the pure v2 projection to the existing `publishMaker()` arguments.
+ * Every Item receives a certified Walrus quilt-patch id. None and Smart Color
+ * Items deliberately reuse one transparent projection-only patch.
+ */
+export function buildMakerV4MoveSummaryV2(document, options = {}) {
+  const projection = compileMakerV4MoveProjectionV2(document);
+  assertStoredMoveProjectionV2(document, projection);
+  const totalRecords = assertMakerV4ProjectionV2SinglePublishBudget(
+    projection,
+    options.maxSinglePublishRecords ?? MAKER_V4_MAX_SINGLE_PUBLISH_RECORDS,
+  );
+  const auxiliaryRecord = options.auxiliaryLocation;
+  if (auxiliaryRecord && typeof auxiliaryRecord === 'object') {
+    if (auxiliaryRecord.identifier
+      && String(auxiliaryRecord.identifier) !== MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER) {
+      throw new MakerV4PublicationError(
+        'The Walrus auxiliary location belongs to a different quilt identifier.',
+        'invalid-projection-auxiliary-location',
+        {
+          expectedIdentifier: MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER,
+          identifier: String(auxiliaryRecord.identifier),
+        },
+      );
+    }
+    if (auxiliaryRecord.renderAsset === true || auxiliaryRecord.projectionOnly === false) {
+      throw new MakerV4PublicationError(
+        'The Walrus auxiliary location is not marked as projection-only.',
+        'invalid-projection-auxiliary-location',
+      );
+    }
+  }
+  const auxiliaryPatchId = directQuiltPatchLocationValue(auxiliaryRecord);
+  if (projection.auxiliary.required && !auxiliaryPatchId) {
+    throw new MakerV4PublicationError(
+      'The certified Walrus quilt-patch location for the projection auxiliary PNG is missing.',
+      'missing-projection-auxiliary-location',
+      { identifier: MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER },
+    );
+  }
+
+  const missingLocations = new Set();
+  const items = projection.items.map((item) => {
+    let blobId = '';
+    if (item.assetRef?.kind === 'maker-style-png') {
+      blobId = quiltPatchLocationValue(options.assetLocations, String(item.assetRef.assetId || ''));
+      if (!blobId) missingLocations.add(String(item.assetRef.assetId || ''));
+    } else if (item.assetRef?.kind === 'projection-auxiliary') {
+      blobId = auxiliaryPatchId;
+    } else {
+      throw new MakerV4PublicationError(
+        'A v2 projection Item has an unknown asset reference.',
+        'invalid-projection-item-asset',
+        { partKey: item.partKey, itemKey: item.itemKey, assetRef: clone(item.assetRef) },
+      );
+    }
+    let iconBlobId = '';
+    if (item.iconAssetRef?.assetId) {
+      iconBlobId = quiltPatchLocationValue(options.assetLocations, String(item.iconAssetRef.assetId));
+      if (!iconBlobId) missingLocations.add(String(item.iconAssetRef.assetId));
+    }
+    return {
+      partKey: item.partKey,
+      itemKey: item.itemKey,
+      label: item.label,
+      blobId,
+      iconBlobId,
+      gateKind: 0,
+      projectionKind: item.projectionKind,
+      sourcePartId: item.sourcePartId ?? null,
+      sourceItemId: item.sourceItemId ?? null,
+      sourceStyleId: item.sourceStyleId ?? null,
+      sourceChannelId: item.sourceChannelId ?? null,
+      sourceSwatchId: item.sourceSwatchId ?? null,
+      sourceAssetId: item.sourceAssetId ?? null,
+      renderAsset: item.renderAsset === true,
+    };
+  });
+  if (missingLocations.size) {
+    throw new MakerV4PublicationError(
+      `Certified Walrus quilt-patch locations are missing for ${sortedSet(missingLocations).join(', ')}.`,
+      'missing-walrus-asset-location',
+      { assetIds: sortedSet(missingLocations) },
+    );
+  }
+  if (items.some((item) => !item.blobId)) {
+    throw new MakerV4PublicationError(
+      'Every v2 projection Item must resolve to one certified Walrus quilt-patch id.',
+      'missing-projection-item-location',
+    );
+  }
+
+  return {
+    maker: {
+      name: String(document.metadata.name || ''),
+      description: String(document.metadata.summary || ''),
+      coverUrl: String(options.coverUrl || ''),
+      license: String(document.metadata.license?.kind || 'personal-use'),
+      royaltyBps: Number(document.publication.royaltyBps || 0),
+      mintingEnabled: document.publication.mintingEnabled !== false,
+      mintFeeEnabled: Boolean(document.publication.mintFeeEnabled),
+      mintPriceAtomic: Number(document.publication.mintFeeEnabled ? document.publication.mintPriceAtomic : 0),
+    },
+    parts: projection.parts.map((part) => ({
+      key: part.key,
+      label: part.label,
+      kind: part.kind,
+      renderOrder: part.renderOrder,
+      menuVisible: part.menuVisible,
+      required: true,
+      colors: [MAKER_V4_NEUTRAL_COLOR],
+      projectionKind: part.projectionKind,
+      sourcePartId: part.sourcePartId ?? null,
+      sourceChannelId: part.sourceChannelId ?? null,
+    })),
+    items,
+    rules: clone(projection.rules),
+    paletteLinks: [],
+    authorizationCoverage: 'complete',
+    colorCoverage: 'complete',
+    singlePublishRecords: totalRecords,
+    auxiliary: {
+      ...clone(projection.auxiliary),
+      patchId: auxiliaryPatchId,
+    },
+    projection,
+    release: buildMakerV4VersionMetadata(document, options.previousDocument || null),
+  };
+}
+
 /**
  * Flatten Maker v5 definitions to the existing `publishMaker()` arguments.
  * Style ids are encoded into unique legacy Item keys; the full mapping stays
@@ -829,6 +1916,34 @@ function rawRecipeColors(recipe) {
   return Object.keys(jsonObject(source));
 }
 
+function recipeWithExpansionColorDefaults(document, recipe) {
+  const result = Array.isArray(recipe)
+    ? { selections: clone(recipe), colors: [] }
+    : clone(recipe || {});
+  const source = result.colors ?? result.colorChannels ?? result.palettes;
+  let colors;
+  if (Array.isArray(source)) {
+    colors = source.map(clone);
+  } else {
+    colors = Object.entries(jsonObject(source)).map(([channelId, value]) => ({
+      channelId,
+      swatchId: String(value?.swatchId ?? value?.valueId ?? value?.id ?? value ?? ''),
+    }));
+  }
+  const supplied = new Set(colors
+    .map((entry) => String(entry?.channelId || entry?.colorChannelId || entry?.paletteId || ''))
+    .filter(Boolean));
+  orderedChannels(document).forEach((channel) => {
+    if (!channel?.expansionPackId || supplied.has(String(channel.id)) || !channel.defaultSwatchId) return;
+    colors.push({ channelId: String(channel.id), swatchId: String(channel.defaultSwatchId) });
+    supplied.add(String(channel.id));
+  });
+  result.colors = colors;
+  delete result.colorChannels;
+  delete result.palettes;
+  return result;
+}
+
 /**
  * Validate without repair, retain the full v4 recipe for Walrus, and produce
  * the exact existing `{ partKey, itemKey, colorHex, renderOrder }` Sui recipe.
@@ -903,6 +2018,151 @@ export function flattenMakerV4Recipe(document, recipe, options = {}) {
   };
 }
 
+/**
+ * Flatten a valid full recipe into exactly one neutral Move slot per v2
+ * projection Part. Optional/inactive Parts use their private None sentinel;
+ * every ColorChannel uses its hidden synthetic swatch Part.
+ */
+export function flattenMakerV4RecipeV2(document, recipe, options = {}) {
+  const projectionDocument = prepareMakerV4ProjectionV2Document(document);
+  validateMakerV4Document(projectionDocument, { mode: 'publish' });
+  const projectionRecipe = options.fillExpansionColorDefaults === false
+    ? recipe
+    : recipeWithExpansionColorDefaults(projectionDocument, recipe);
+  const explicitSelections = rawRecipeSelections(projectionRecipe);
+  const duplicateParts = explicitSelections
+    .map((selection) => String(selection?.partId || selection?.partKey || ''))
+    .filter((partId, position, values) => partId && values.indexOf(partId) !== position);
+  if (duplicateParts.length) {
+    throw new MakerV4PublicationError(
+      'The recipe selects the same Part more than once.',
+      'duplicate-recipe-part',
+      { partIds: [...new Set(duplicateParts)] },
+    );
+  }
+  const partMap = new Map(orderedParts(projectionDocument).map((part) => [String(part.id), part]));
+  const missingStyles = explicitSelections.flatMap((selection) => {
+    const partId = String(selection?.partId || selection?.partKey || '');
+    const itemId = String(selection?.itemId || selection?.itemKey || '');
+    if (!partId || !itemId) return [];
+    const item = orderedItems(partMap.get(partId)).find((candidate) => String(candidate.id) === itemId);
+    return item && orderedStyles(item).length && !String(selection?.styleId || selection?.styleKey || '')
+      ? [{ partId, itemId }]
+      : [];
+  });
+  if (missingStyles.length) {
+    throw new MakerV4PublicationError(
+      'Every selected Item must name its Style.',
+      'missing-recipe-style',
+      { selections: missingStyles },
+    );
+  }
+  const explicitColorEntries = Array.isArray(
+    projectionRecipe?.colors ?? projectionRecipe?.colorChannels ?? projectionRecipe?.palettes,
+  )
+    ? (projectionRecipe.colors ?? projectionRecipe.colorChannels ?? projectionRecipe.palettes)
+    : [];
+  const duplicateColorChannels = explicitColorEntries
+    .map((entry) => String(entry?.channelId || entry?.colorChannelId || entry?.paletteId || ''))
+    .filter((channelId, position, values) => channelId && values.indexOf(channelId) !== position);
+  if (duplicateColorChannels.length) {
+    throw new MakerV4PublicationError(
+      'The recipe selects the same ColorChannel more than once.',
+      'duplicate-recipe-color-channel',
+      { channelIds: [...new Set(duplicateColorChannels)] },
+    );
+  }
+  if (options.requireExplicitColors !== false) {
+    const supplied = new Set(rawRecipeColors(projectionRecipe));
+    const missingChannels = orderedChannels(projectionDocument)
+      .map((channel) => String(channel.id))
+      .filter((channelId) => !supplied.has(channelId));
+    if (missingChannels.length) {
+      throw new MakerV4PublicationError(
+        'The recipe is missing explicit ColorChannel selections.',
+        'missing-recipe-colors',
+        { channelIds: missingChannels },
+      );
+    }
+  }
+
+  const evaluated = evaluateRecipe(projectionDocument, projectionRecipe);
+  if (!evaluated.valid) {
+    throw new MakerV4PublicationError(
+      'The Maker recipe violates Maker constraints.',
+      'invalid-maker-recipe',
+      { violations: evaluated.violations },
+    );
+  }
+  const projection = compilePreparedMakerV4MoveProjectionV2(projectionDocument);
+  assertStoredMoveProjectionV2(document, projection);
+  const selections = new Map(asArray(evaluated.documentRecipe.selections)
+    .map((selection) => [String(selection.partId), selection]));
+  const colors = new Map(asArray(evaluated.documentRecipe.colors)
+    .map((color) => [String(color.channelId), String(color.swatchId)]));
+  const styleMapping = new Map(projection.mappings.styles.map((mapping) => [
+    tupleKey(mapping.partId, mapping.itemId, mapping.styleId),
+    mapping,
+  ]));
+  const noneMapping = new Map(projection.mappings.none.map((mapping) => [mapping.partId, mapping]));
+  const channelMapping = new Map(projection.mappings.colorChannels.map((mapping) => [mapping.channelId, mapping]));
+
+  const suiRecipe = projection.parts.map((part) => {
+    if (part.projectionKind === 'color-channel') {
+      const mapping = channelMapping.get(String(part.sourceChannelId));
+      const swatchId = colors.get(String(part.sourceChannelId));
+      const swatch = mapping?.swatches.find((candidate) => candidate.swatchId === swatchId);
+      if (!swatch) {
+        throw new MakerV4PublicationError(
+          'A recipe ColorChannel selection is absent from the Move projection.',
+          'recipe-color-projection-failed',
+          { channelId: part.sourceChannelId, swatchId },
+        );
+      }
+      return {
+        partKey: part.key,
+        itemKey: swatch.itemKey,
+        colorHex: MAKER_V4_NEUTRAL_COLOR,
+        renderOrder: part.renderOrder,
+      };
+    }
+
+    const selection = selections.get(String(part.sourcePartId));
+    const mapping = selection
+      ? styleMapping.get(tupleKey(selection.partId, selection.itemId, selection.styleId))
+      : noneMapping.get(String(part.sourcePartId));
+    if (!mapping) {
+      throw new MakerV4PublicationError(
+        'A recipe Part selection is absent from the Move projection.',
+        'recipe-projection-failed',
+        { partId: part.sourcePartId, selection: clone(selection || null) },
+      );
+    }
+    return {
+      partKey: part.key,
+      itemKey: mapping.itemKey,
+      colorHex: MAKER_V4_NEUTRAL_COLOR,
+      renderOrder: part.renderOrder,
+    };
+  }).sort((left, right) => left.renderOrder - right.renderOrder || compareText(left.partKey, right.partKey));
+
+  if (suiRecipe.length !== projection.counts.recipeSlots
+    || suiRecipe.some((slot, index) => slot.renderOrder !== index)) {
+    throw new MakerV4PublicationError(
+      'The v2 Move recipe is not a complete contiguous projection.',
+      'recipe-projection-incomplete',
+      { expected: projection.counts.recipeSlots, actual: suiRecipe.length },
+    );
+  }
+  return {
+    fullRecipe: clone(evaluated.documentRecipe),
+    fullRecipeJson: JSON.stringify(evaluated.documentRecipe),
+    suiRecipe,
+    projection,
+    release: buildMakerV4VersionMetadata(document, options.previousDocument || null),
+  };
+}
+
 /** Build the full OC provenance file uploaded to Walrus. */
 export function buildMakerV4OcPackage({
   document,
@@ -915,7 +2175,7 @@ export function buildMakerV4OcPackage({
   previousDocument = null,
   integrity = null,
 } = {}) {
-  const flattened = flattenMakerV4Recipe(document, recipe, { previousDocument });
+  const flattened = flattenMakerV4RecipeV2(document, recipe, { previousDocument });
   const packageValue = {
     schemaVersion: MAKER_V4_OC_PACKAGE_SCHEMA,
     createdAt,
@@ -935,7 +2195,8 @@ export function buildMakerV4OcPackage({
     recipe: flattened.fullRecipe,
     suiSummary: {
       recipeEncoding: 'BCS vector<RecipeSlot>',
-      itemKeyEncoding: MAKER_V4_ITEM_KEY_ENCODING,
+      projectionSchema: MAKER_V4_MOVE_PROJECTION_V2_SCHEMA,
+      itemKeyEncoding: MAKER_V4_ITEM_KEY_ENCODING_V2,
       recipe: flattened.suiRecipe,
     },
     release: flattened.release,

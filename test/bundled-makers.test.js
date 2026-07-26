@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { validateRemoteMakerManifest } from '../manifest-validation.js';
+import { validateMakerV5Document } from '../maker-v4.js';
 
 const ROOT = new URL('../public/makers/', import.meta.url);
 const MAKERS = ['astral-courier', 'hanamori-spirit'];
@@ -44,6 +46,30 @@ for (const makerId of MAKERS) {
       const dimensions = pngDimensions(file);
       assert.deepEqual([dimensions.width, dimensions.height], [1024, 1024], asset.identifier);
       assert.equal(dimensions.colorType, 6, `${asset.identifier} must be RGBA PNG`);
+    }));
+  });
+
+  test(`bundled ${makerId} has a playable, non-publishable v5 stress fixture`, async () => {
+    const makerRoot = new URL(`${makerId}/`, ROOT);
+    const manifest = JSON.parse(await readFile(new URL('animacraft-maker-v5.json', makerRoot), 'utf8'));
+    validateMakerV5Document(manifest, { mode: 'publish' });
+
+    assert.equal(manifest.extensions.stressTest.doNotPublish, true);
+    assert.equal(manifest.extensions.stressTest.doNotUseAsVisualGold, true);
+    assert.equal(manifest.publication.mintingEnabled, false);
+    assert.equal(manifest.parts.length, 6);
+    assert.equal(manifest.parts.reduce((total, part) => total + part.items.length, 0), 25);
+    assert.equal(manifest.parts.reduce(
+      (total, part) => total + part.items.reduce((itemTotal, item) => itemTotal + item.styles.length, 0),
+      0,
+    ), 25);
+
+    await Promise.all(manifest.assets.map(async (asset) => {
+      const fileUrl = new URL(asset.identifier, makerRoot);
+      assert.ok(fileUrl.href.startsWith(makerRoot.href), `${asset.identifier} escapes its Maker directory`);
+      const file = await readFile(fileUrl);
+      assert.equal(file.length, asset.byteLength, `${asset.identifier} byte length drifted`);
+      assert.equal(createHash('sha256').update(file).digest('hex'), asset.sha256, `${asset.identifier} hash drifted`);
     }));
   });
 }

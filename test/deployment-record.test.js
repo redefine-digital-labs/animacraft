@@ -27,19 +27,31 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
 
   assert.equal(deployment.schemaVersion, 'animacraft.deployment.v1');
   assert.equal(deployment.network, 'mainnet');
-  assert.equal(deployment.packageId, deployment.originalPackageId);
   assert.equal(runtime.network, deployment.network);
-  assert.equal(runtime.packageId, deployment.originalPackageId);
+  assert.equal(runtime.packageId, deployment.packageId);
+  assert.equal(runtime.packageId, runtime.callablePackageId);
+  assert.equal(runtime.callablePackageId, deployment.callablePackageId);
+  assert.equal(runtime.originalPackageId, deployment.originalPackageId);
   assert.equal(runtime.graphqlUrl, 'https://graphql.mainnet.sui.io/graphql');
   assert.equal(runtime.paymentCoinType, SUI_MAINNET_USDC_TYPE);
   assert.equal(runtime.canonicalSoulMintEnabled, false, 'canonical mint stays gated until the reviewed adapter is deployed');
   assert.equal(deployment.protocolVersion, 3, 'the deployment record remains on the signed v3 package until upgrade');
   assert.match(moveSource, /const VERSION: u64 = 4;/, 'the source tree contains the reviewed v4 upgrade candidate');
   assert.equal(runtime.protocolFeeConfigId, '', 'v4 fee objects are recorded only after signed initialization');
+  assert.equal(runtime.protocolFeePackageId, '', 'v4 fee TypeOrigin is recorded only after signed upgrade');
   assert.equal(runtime.protocolTreasuryId, '', 'v4 fee objects are recorded only after signed initialization');
+  assert.equal(runtime.protocolFeeAdminCapId, '', 'v4 fee AdminCap is recorded only after signed initialization');
+  assert.equal(runtime.protocolFeeAdminCapOwner, '', 'v4 fee AdminCap owner is recorded only after signed initialization');
+  assert.equal(deployment.upgradeTxDigest, '', 'v4 upgrade digest is recorded only after signed execution');
+  assert.equal(deployment.protocolFeeInitializationTxDigest, '', 'v4 initializer digest is recorded only after signed execution');
+  assert.equal(deployment.protocolFeePackageId, '', 'v4 fee TypeOrigin is recorded only after signed upgrade');
+  assert.equal(deployment.protocolFeeConfigId, '', 'v4 fee config is recorded only after signed initialization');
+  assert.equal(deployment.protocolTreasuryId, '', 'v4 fee treasury is recorded only after signed initialization');
+  assert.equal(deployment.protocolFeeAdminCapId, '', 'v4 fee AdminCap is recorded only after signed initialization');
+  assert.equal(deployment.protocolFeeAdminCapOwner, '', 'v4 fee AdminCap owner is recorded only after signed initialization');
   assert.equal(runtime.primaryProtocolFeeBps, 5_000);
 
-  for (const field of ['packageId', 'originalPackageId', 'publisherAddress', 'upgradeCapId', 'publisherObjectId', 'displayObjectId']) {
+  for (const field of ['packageId', 'callablePackageId', 'originalPackageId', 'publisherAddress', 'upgradeCapId', 'publisherObjectId', 'displayObjectId']) {
     assert.match(deployment[field], SUI_OBJECT_ID, `${field} must be a canonical 32-byte Sui id`);
   }
 
@@ -48,5 +60,7 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(deployment.verification.transactionStatus, 'success');
   assert.equal(deployment.verification.sourceStatus, 'success');
   assert.match(deployment.verification.sourceVerifiedAtUtc, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
-  assert.equal(validateRuntimeConfig(runtime, { strict: true, requireSoulidity: true }).valid, true);
+  const integrationReadiness = validateRuntimeConfig(runtime, { strict: true, requireSoulidity: true });
+  assert.equal(integrationReadiness.valid, false, 'production must stay fail-closed until canonical Soul minting is activated');
+  assert.match(integrationReadiness.errors.join(' '), /canonicalSoulMintEnabled=true/);
 });

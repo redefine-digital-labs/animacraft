@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createCharacterMakerV5Starter, createMakerV5Document } from '../maker-v4.js';
-import { createItem, synchronizeDefaultRecipe } from '../maker-document-ops.js';
+import { createItem, createStyle, synchronizeDefaultRecipe } from '../maker-document-ops.js';
 import { createMakerWorkspace } from '../maker-workspace.js';
 
 async function withAnimationFrame(run) {
@@ -16,6 +16,36 @@ async function withAnimationFrame(run) {
   } finally {
     globalThis.requestAnimationFrame = previous;
   }
+}
+
+function addRemoteStyleAsset(document, style, assetId) {
+  style.assetId = assetId;
+  style.positionConfirmed = true;
+  document.assets.push({
+    id: assetId,
+    identifier: `${assetId}.png`,
+    kind: 'layer',
+    mediaType: 'image/png',
+    width: 1024,
+    height: 1024,
+    url: `https://assets.example/${assetId}.png`,
+  });
+}
+
+function publishableStarter(makerId) {
+  const document = createCharacterMakerV5Starter({
+    makerId,
+    name: 'Rule Preflight Fixture',
+    creator: 'Test Creator',
+  });
+  document.metadata.license.note = 'Test-only fixture.';
+  document.parts.forEach((part) => {
+    part.items.forEach((item) => item.styles.forEach((style) => {
+      addRemoteStyleAsset(document, style, `${part.id}-${item.id}-${style.id}-asset`);
+    }));
+  });
+  synchronizeDefaultRecipe(document);
+  return document;
 }
 
 test('same-key context replaces an early shell with the restored v5 draft', async () => withAnimationFrame(async () => {
@@ -36,6 +66,302 @@ test('same-key context replaces an early shell with the restored v5 draft', asyn
   assert.equal(result.parts.length, 8);
   assert.ok(result.parts.every((part) => part.items[0].styles.length === 1));
   assert.ok(result.parts.every((part) => part.items[0].defaultStyleId === part.items[0].styles[0].id));
+  workspace.destroy();
+}));
+
+test('remote-backed drafts preserve readable URLs across restore, save, and Player handoff', async () => withAnimationFrame(async () => {
+  const makerKey = '0xcreator:remote-backed';
+  const walletAddress = '0xcreator';
+  const document = createCharacterMakerV5Starter({
+    makerId: 'remote-backed',
+    name: 'Remote-backed Maker',
+  });
+  const style = document.parts[0].items[0].styles[0];
+  style.assetId = 'remote-layer';
+  style.positionConfirmed = true;
+  document.assets.push({
+    id: style.assetId,
+    identifier: 'remote-layer.png',
+    kind: 'layer',
+    mediaType: 'image/png',
+    width: 1024,
+    height: 1024,
+  });
+  const savedDocument = structuredClone(document);
+  let savedSnapshot = null;
+  const repository = {
+    async load(requestedMakerKey) {
+      assert.equal(requestedMakerKey, makerKey);
+      return {
+        makerKey,
+        revision: 0,
+        document: structuredClone(savedDocument),
+        recipe: structuredClone(savedDocument.defaultRecipe),
+        // Legacy saves could contain metadata but no Blob or stable URL.
+        assets: [{ assetId: style.assetId, url: '', thumbnailUrl: '', source: 'remote' }],
+        metadata: {},
+        savedAt: 123,
+      };
+    },
+    async save(requestedMakerKey, snapshot) {
+      assert.equal(requestedMakerKey, makerKey);
+      savedSnapshot = structuredClone(snapshot);
+      return {
+        confirmed: true,
+        conflict: false,
+        persistedRevision: snapshot.revision,
+        savedAt: 456,
+      };
+    },
+    async flush() {
+      return { persistedRevision: savedSnapshot?.revision ?? 0 };
+    },
+    getStatus() {
+      return { persistedRevision: savedSnapshot?.revision ?? 0, savedAt: 456 };
+    },
+  };
+  const workspace = createMakerWorkspace({
+    callbacks: {},
+    draftRepository: repository,
+    walStorage: null,
+    loadPlayerSessionRecord: async () => null,
+    savePlayerSessionRecord: async () => {},
+  });
+
+  await workspace.setContext({
+    makerKey,
+    walletAddress,
+    document,
+    assets: [{
+      assetId: style.assetId,
+      identifier: 'remote-layer.png',
+      url: 'https://assets.example/remote-layer.png',
+      source: 'remote',
+    }],
+  });
+
+  assert.equal(
+    workspace.runtimeAsset(style.assetId).url,
+    'https://assets.example/remote-layer.png',
+    'an incomplete legacy asset record must not replace the readable manifest source',
+  );
+  workspace.executeDocument('Rename remote-backed Maker', ({ document: next }) => {
+    next.metadata.name = 'Saved remote-backed Maker';
+  });
+  const result = await workspace.save();
+  assert.equal(result.confirmed, true);
+  assert.equal(
+    savedSnapshot.assets.find((asset) => asset.assetId === style.assetId).url,
+    'https://assets.example/remote-layer.png',
+    'stable remote URLs must remain in the persisted draft',
+  );
+  workspace.destroy();
+}));
+
+test('Player Expansion Pack choices restore by wallet and Maker version, then clear on Maker switch', async () => withAnimationFrame(async () => {
+  const makerKey = 'wallet:session-expansions';
+  const walletAddress = '0xplayer';
+  const document = createCharacterMakerV5Starter({
+    makerId: 'session-expansions',
+    name: 'Session Expansions',
+  });
+  document.extensions.expansionDrafts = [
+    { packId: 'moon-pack', name: 'Moon Pack' },
+    { packId: 'costume-pack', name: 'Costume Pack' },
+  ];
+  const savedDocument = structuredClone(document);
+  const repository = {
+    async load(requestedMakerKey) {
+      if (requestedMakerKey !== makerKey) return null;
+      return {
+        makerKey,
+        revision: 0,
+        document: structuredClone(savedDocument),
+        recipe: structuredClone(savedDocument.defaultRecipe),
+        assets: [],
+        metadata: {},
+        savedAt: 123,
+      };
+    },
+    async save() {
+      throw new Error('The restored fixture must not create a Maker revision.');
+    },
+    async flush() {
+      return { persistedRevision: 0 };
+    },
+    getStatus() {
+      return { persistedRevision: 0, savedAt: 123 };
+    },
+  };
+  const sessionWrites = [];
+  const workspace = createMakerWorkspace({
+    callbacks: {},
+    draftRepository: repository,
+    walStorage: null,
+    async loadPlayerSessionRecord(sessionKey) {
+      assert.equal(sessionKey, `${walletAddress}::${document.version.versionId}`);
+      return {
+        session: {
+          makerVersionId: document.version.versionId,
+          recipe: structuredClone(document.defaultRecipe),
+          profile: { name: 'Restored OC' },
+          enabledExpansionIds: ['moon-pack', 'foreign-maker-pack'],
+        },
+        savedAt: 456,
+      };
+    },
+    async savePlayerSessionRecord(sessionKey, session) {
+      sessionWrites.push({ sessionKey, session: structuredClone(session) });
+    },
+  });
+
+  await workspace.setContext({
+    makerKey,
+    walletAddress,
+    document,
+    assets: [],
+  });
+
+  assert.deepEqual([...workspace.enabledExpansionIds], ['moon-pack']);
+  assert.equal(workspace.playerProfile.name, 'Restored OC');
+  await workspace.savePlayerSession();
+  assert.equal(sessionWrites[0].sessionKey, `${walletAddress}::${document.version.versionId}`);
+  assert.deepEqual(sessionWrites[0].session.enabledExpansionIds, ['moon-pack']);
+
+  workspace.sessionAutosave();
+  const otherMaker = createCharacterMakerV5Starter({
+    makerId: 'other-session-maker',
+    name: 'Other Session Maker',
+  });
+  await workspace.setContext({
+    makerKey: 'wallet:other-session-maker',
+    walletAddress: '',
+    document: otherMaker,
+    assets: [],
+  });
+
+  assert.equal(workspace.enabledExpansionIds.size, 0);
+  assert.ok(sessionWrites.length >= 2);
+  assert.ok(sessionWrites.every((entry) => entry.sessionKey === `${walletAddress}::${document.version.versionId}`));
+  assert.ok(sessionWrites.every((entry) => entry.session.enabledExpansionIds.length === 1));
+  workspace.destroy();
+}));
+
+test('preflight blocks a default Recipe that violates requires or excludes', async () => withAnimationFrame(async () => {
+  const workspace = createMakerWorkspace({ callbacks: {} });
+  const document = publishableStarter('default-rule-violation');
+  const background = document.parts.find((part) => part.id === 'background');
+  background.excludes = [{ partId: 'skin-base' }];
+
+  await workspace.setContext({
+    makerKey: 'wallet:default-rule-violation',
+    walletAddress: '',
+    document,
+    assets: [],
+  });
+
+  const issues = workspace.getPublicationIssues();
+  const defaultIssues = issues.filter((issue) => issue.code === 'default_recipe_rule_violation');
+  assert.equal(defaultIssues.length, 1);
+  assert.equal(defaultIssues[0].path, 'defaultRecipe');
+  assert.match(defaultIssues[0].message, /excludes-rule/);
+  assert.equal(issues.some((issue) => issue.code === 'unsatisfiable_maker_rules'), false);
+  workspace.destroy();
+}));
+
+test('preflight blocks an invalid requires default even when another playable Recipe can repair it', async () => withAnimationFrame(async () => {
+  const workspace = createMakerWorkspace({ callbacks: {} });
+  const document = publishableStarter('default-requires-violation');
+  const background = document.parts.find((part) => part.id === 'background');
+  const accessory = document.parts.find((part) => part.id === 'accessory');
+  const requiredItem = createItem(accessory, 'Required Charm');
+  requiredItem.styles[0].layerTrackId = 'accessory-track';
+  addRemoteStyleAsset(document, requiredItem.styles[0], 'required-charm-asset');
+  accessory.items.push(requiredItem);
+  background.requires = [{ partId: accessory.id, itemId: requiredItem.id }];
+
+  await workspace.setContext({
+    makerKey: 'wallet:default-requires-violation',
+    walletAddress: '',
+    document,
+    assets: [],
+  });
+
+  const issues = workspace.getPublicationIssues();
+  const defaultIssues = issues.filter((issue) => issue.code === 'default_recipe_rule_violation');
+  assert.equal(defaultIssues.length, 1);
+  assert.match(defaultIssues[0].message, /requires-rule/);
+  assert.equal(issues.some((issue) => issue.code === 'unsatisfiable_maker_rules'), false);
+  workspace.destroy();
+}));
+
+test('preflight blocks a Maker whose required Parts make the rule graph unsatisfiable', async () => withAnimationFrame(async () => {
+  const workspace = createMakerWorkspace({ callbacks: {} });
+  const document = publishableStarter('unsatisfiable-rule-graph');
+  const skin = document.parts.find((part) => part.id === 'skin-base');
+  skin.excludes = [{ partId: 'eyes' }];
+
+  await workspace.setContext({
+    makerKey: 'wallet:unsatisfiable-rule-graph',
+    walletAddress: '',
+    document,
+    assets: [],
+  });
+
+  const issues = workspace.getPublicationIssues();
+  const graphIssues = issues.filter((issue) => issue.code === 'unsatisfiable_maker_rules');
+  assert.equal(graphIssues.length, 1);
+  assert.equal(graphIssues[0].path, 'rules');
+  assert.match(graphIssues[0].message, /No playable public Recipe/);
+  workspace.destroy();
+}));
+
+test('preflight identifies rule-unreachable public Styles and Items without flagging reachable siblings', async () => withAnimationFrame(async () => {
+  const workspace = createMakerWorkspace({ callbacks: {} });
+  const document = publishableStarter('unreachable-public-options');
+  const background = document.parts.find((part) => part.id === 'background');
+  const reachableItem = background.items[0];
+
+  const blockedStyle = createStyle(reachableItem, 'Blocked Style');
+  blockedStyle.layerTrackId = document.layerTracks.find((track) => track.id === 'background-track').id;
+  blockedStyle.requires = [{ partId: background.id, itemId: 'impossible-item' }];
+  addRemoteStyleAsset(document, blockedStyle, 'blocked-style-asset');
+  reachableItem.styles.push(blockedStyle);
+
+  const unreachableItem = createItem(background, 'Impossible Item');
+  unreachableItem.requires = [{ partId: background.id, itemId: reachableItem.id }];
+  unreachableItem.styles[0].layerTrackId = 'background-track';
+  addRemoteStyleAsset(document, unreachableItem.styles[0], 'impossible-item-asset');
+  background.items.push(unreachableItem);
+
+  await workspace.setContext({
+    makerKey: 'wallet:unreachable-public-options',
+    walletAddress: '',
+    document,
+    assets: [],
+  });
+
+  const issues = workspace.getPublicationIssues();
+  const unreachableStyles = issues
+    .filter((issue) => issue.code === 'unreachable_public_style_rules')
+    .map((issue) => issue.path)
+    .sort();
+  assert.deepEqual(unreachableStyles, [
+    `background/${reachableItem.id}/${blockedStyle.id}`,
+    `background/${unreachableItem.id}/${unreachableItem.styles[0].id}`,
+  ].sort());
+  assert.deepEqual(
+    issues.filter((issue) => issue.code === 'unreachable_public_item_rules').map((issue) => issue.path),
+    [`background/${unreachableItem.id}`],
+  );
+  assert.equal(
+    issues.some((issue) => (
+      issue.code === 'unreachable_public_item_rules'
+      && issue.path === `background/${reachableItem.id}`
+    )),
+    false,
+  );
+  assert.equal(issues.some((issue) => issue.code === 'unsatisfiable_maker_rules'), false);
   workspace.destroy();
 }));
 

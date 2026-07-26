@@ -315,6 +315,27 @@ test('duplicates an Item with deep Style copies and rewritten internal self refe
   assert.equal(sourceStyle.transform.x, -18);
 });
 
+test('duplicates Item ANY selectors without retaining array references to the source Item or Styles', () => {
+  const document = playableDocument();
+  const part = document.parts[0];
+  const source = part.items[0];
+  const alternate = createStyle(source, 'Alternate');
+  source.styles.push(alternate);
+  source.requires = [{
+    partId: part.id,
+    itemIds: [source.id],
+    styleIds: [source.styles[0].id, alternate.id],
+  }];
+
+  const duplicate = duplicateItem(document, part.id, source.id);
+  assert.deepEqual(duplicate.requires, [{
+    partId: part.id,
+    itemIds: [duplicate.id],
+    styleIds: duplicate.styles.map((style) => style.id),
+  }]);
+  assert.notDeepEqual(duplicate.requires[0].styleIds, source.requires[0].styleIds);
+});
+
 test('duplicates a Style with identical parameters, a new ID and rewritten self rules', () => {
   const document = playableDocument();
   const part = document.parts[0];
@@ -330,6 +351,44 @@ test('duplicates a Style with identical parameters, a new ID and rewritten self 
   assert.notEqual(duplicate.requires, source.requires);
   duplicate.requires[0].partId = 'copy-part';
   assert.equal(source.requires[0].partId, part.id);
+});
+
+test('duplicates a Style and rewrites its identity inside an ANY style selector', () => {
+  const document = playableDocument();
+  const part = document.parts[0];
+  const item = part.items[0];
+  const source = item.styles[0];
+  source.visibleWhen = {
+    op: 'selected',
+    partId: part.id,
+    itemIds: [item.id],
+    styleIds: [source.id],
+  };
+
+  const duplicate = duplicateStyle(document, part.id, item.id, source.id);
+  assert.deepEqual(duplicate.visibleWhen.styleIds, [duplicate.id]);
+  assert.deepEqual(source.visibleWhen.styleIds, [source.id]);
+});
+
+test('duplicates a Part and rekeys Style arrays scoped through a single itemIds selector', () => {
+  const document = playableDocument();
+  const source = document.parts[0];
+  const sourceItem = source.items[0];
+  const alternate = createStyle(sourceItem, 'Alternate');
+  sourceItem.styles.push(alternate);
+  sourceItem.excludes = [{
+    partId: source.id,
+    itemIds: [sourceItem.id],
+    styleIds: [sourceItem.styles[0].id, alternate.id],
+  }];
+
+  const duplicate = duplicatePart(document, source.id);
+  assert.equal(duplicate.items[0].excludes[0].partId, duplicate.id);
+  assert.deepEqual(duplicate.items[0].excludes[0].itemIds, [duplicate.items[0].id]);
+  assert.deepEqual(
+    duplicate.items[0].excludes[0].styleIds,
+    duplicate.items[0].styles.map((style) => style.id),
+  );
 });
 
 test('updates and removes recipe selections without introducing duplicate Parts', () => {

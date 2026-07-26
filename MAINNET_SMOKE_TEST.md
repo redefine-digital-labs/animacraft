@@ -22,12 +22,16 @@ Record only public addresses in the evidence table.
 - [ ] `npm ci`, `npm run check`, and `npm run move:test` pass from a clean checkout.
 - [ ] `npm run preflight:mainnet` passes against the configured package.
 - [ ] Animacraft original package is `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`.
+- [ ] The callable Animacraft package reports protocol version `4`; its source commit, upgrade digest, and UpgradeCap owner are recorded.
+- [ ] The native-USDC `ProtocolFeeConfig`, `ProtocolTreasury`, and `ProtocolFeeAdminCap` cross-reference one another, the AdminCap still seals the original Publisher, and the integration gate starts disabled.
 - [ ] Runtime payment type is Circle native Sui USDC.
 - [ ] Vercel Preview uses production-like CSP, headers, routes, and `public/config.js`.
 - [ ] `animacraft.soulidity.ai` points to the reviewed deployment only after Preview acceptance.
 - [ ] The repository has an approved open-source code license and separate creator-asset terms, so contributed art does not accidentally inherit the code license.
 - [ ] UpgradeCap/Publisher/Display custody and emergency contacts are recorded outside the public repository.
-- [ ] Soulidity adapter is deployed before testing canonical paid mint or verified provenance.
+- [ ] Soulidity adapter is deployed before testing canonical mint or verified provenance.
+- [ ] Soulidity's legacy `MarketConfig` is permanently paused and its legacy AdminCap is destroyed before any Animacraft Soul is minted.
+- [ ] The successor `AnimacraftMarketConfig` starts with primary minting enabled only for the signed smoke test and secondary trading disabled until the bypass tests pass.
 
 If the public Sui RPC has not indexed the package checkpoint yet, record the endpoint and observed checkpoint. Do not republish an already successful package transaction.
 
@@ -37,8 +41,10 @@ If the public Sui RPC has not indexed the package checkpoint yet, record the end
 | --- | --- |
 | Animacraft Git commit | |
 | Soulidity Git commit | |
-| Animacraft package ID | |
-| Soulidity package ID | |
+| Animacraft original / callable / protocol-fee TypeOrigin package IDs | |
+| Animacraft ProtocolFeeConfig / Treasury / AdminCap IDs | |
+| Soulidity original / callable package IDs | |
+| Soulidity legacy / Animacraft MarketConfig IDs | |
 | Vercel deployment URL | |
 | Production URL | |
 | Creator A address | |
@@ -64,7 +70,7 @@ Using Creator A:
 
 1. connect wallet and create/reuse one CreatorProfile;
 2. create a small real Maker with at least two Parts, two Items per selectable Part, one required Last Bastion Part, one palette link, and one incompatibility rule;
-3. upload every required Item x Layer x Color PNG cell and a picker icon;
+3. upload exactly one PNG for every public Style, confirm each Style's independent transform and LayerTrack binding, and optionally upload independent Part/Item thumbnails;
 4. edit default Soul Character, Memory, and Skills files;
 5. close/reopen the browser and confirm IndexedDB draft and source Blobs recover under the same wallet;
 6. prepare, register/upload, and certify one immutable Walrus Quilt;
@@ -78,7 +84,7 @@ Pass condition: one real creator can publish without an application backend or o
 ## C. Local And On-Chain Lifecycle
 
 1. In a new local draft, delete an Item, optional Layer, Part, and the Maker itself; confirm source files and indexes are removed only from the wallet's local storage.
-2. In the published Maker, confirm art, Parts, Items, Layers, Colors, rules, and manifest cannot be edited or deleted.
+2. In the published Maker, confirm art, Parts, Items, Styles, LayerTrack order, Smart Colors, rules, and manifest cannot be edited or deleted.
 3. Archive with Creator A and confirm new authorization is blocked while the public page and existing Souls remain readable.
 4. Restore and confirm minting is available again.
 5. Attempt archive/configuration from Negative-test D; record the expected abort.
@@ -91,7 +97,7 @@ This section requires the reviewed Soulidity adapter. Using Player B:
 
 1. select a complete recipe and render the final image;
 2. register/upload/certify image, profile, Soul Character, Memory, and optional Skills on Walrus;
-3. construct one PTB containing Animacraft free authorization and Soulidity canonical mint;
+3. enable the canonical Animacraft protocol gate, then construct one PTB containing the gated free authorization and Soulidity canonical mint;
 4. confirm the PTB creates exactly one Soul, SoulState, SoulContent, access list, and typed Animacraft provenance;
 5. confirm the Soul is locked in Player B's personal Kiosk and no finished Animacraft token exists;
 6. confirm recipe hash, Maker ID, Treasury ID, image/profile locators, payer, and policy snapshots match;
@@ -105,9 +111,9 @@ Using Creator A, enable a small native-USDC mint price. Using Player B:
 
 1. record Player B and Maker Treasury balances;
 2. execute authorization and Soul mint in one PTB with the exact amount;
-3. confirm one Soul is created and Treasury increases by exactly the configured price;
+3. confirm one Soul is created, the Protocol Treasury receives `floor(price × protocol_bps / 10_000)`, and the Maker Treasury receives the exact remainder;
 4. repeat with underpayment, overpayment, alternate coin type, and malformed required content;
-5. confirm every failure creates no Soul and leaves the Treasury unchanged.
+5. confirm every failure creates no Soul and leaves both Treasuries unchanged.
 
 Pass condition: payment and canonical Soul mint are atomic.
 
@@ -143,6 +149,8 @@ Pass condition: the immutable Maker snapshot, not mutable web metadata, determin
 ## H. Failure And Recovery
 
 - interrupt Maker upload after encode, register, and upload; confirm same-wallet resume works;
+- close the tab before a Maker publication digest is checkpointed; confirm the saved creator + Manifest intent recovers the existing Maker and never requests an automatic duplicate signature;
+- if no matching event can be found, confirm retry remains blocked until the operator explicitly clears the uncertain intent after checking the wallet and explorer;
 - switch wallet during recovery; confirm the session refuses to continue;
 - alter a local file after encoding; confirm fingerprint/quilt mismatch forces a new upload;
 - make Walrus aggregator, relay, GraphQL, and RPC individually unavailable; confirm readable errors and no false success state;
@@ -161,6 +169,7 @@ Pass condition: the immutable Maker snapshot, not mutable web metadata, determin
 | Paid atomic mint | | |
 | Cap transfer and withdrawal | | |
 | Resale royalty | | |
+| Legacy marketplace permanently retired | | |
 | Responsive/browser QA | | |
 | Independent Move review | | |
 | Upgrade custody confirmed | | |
