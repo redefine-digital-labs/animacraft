@@ -99,7 +99,7 @@ export function createLayerBinding(variant, layerTrackId, assetId, transform = {
       scale: Math.max(0.01, Number(transform.scale ?? transform.scaleX ?? 1)),
       rotation: Number(transform.rotation || 0),
     },
-    inheritTrackTransform: true,
+    inheritTrackTransform: false,
     positionConfirmed: false,
     opacity: 1,
     blendMode: 'normal',
@@ -160,19 +160,6 @@ export function findBinding(document, partId, itemId, variantId, bindingId) {
 }
 
 export function normalizeDocumentOrders(document) {
-  document.parts.forEach((part, partIndex) => {
-    part.menuOrder = partIndex;
-    part.items.forEach((item, itemIndex) => {
-      item.displayOrder = itemIndex;
-      item.importKey ||= item.id;
-      item.status ||= 'public';
-      item.variants.forEach((variant, variantIndex) => { variant.displayOrder = variantIndex; });
-      item.variants.forEach((variant) => variant.layerBindings.forEach((binding) => {
-        if (typeof binding.inheritTrackTransform !== 'boolean') binding.inheritTrackTransform = false;
-        if (typeof binding.positionConfirmed !== 'boolean') binding.positionConfirmed = true;
-      }));
-    });
-  });
   document.layerTracks.forEach((track, index) => {
     track.order = index;
     track.transform ||= { x: 0, y: 0, scale: 1, rotation: 0 };
@@ -183,38 +170,45 @@ export function normalizeDocumentOrders(document) {
     if (typeof track.locked !== 'boolean') track.locked = true;
     track.referenceAssetId ??= null;
   });
+  const trackById = new Map(document.layerTracks.map((track) => [track.id, track]));
+  document.parts.forEach((part, partIndex) => {
+    part.menuOrder = partIndex;
+    part.items.forEach((item, itemIndex) => {
+      item.displayOrder = itemIndex;
+      item.importKey ||= item.id;
+      item.status ||= 'public';
+      item.variants.forEach((variant, variantIndex) => { variant.displayOrder = variantIndex; });
+      item.variants.forEach((variant) => variant.layerBindings.forEach((binding) => {
+        binding.transform ||= { x: 0, y: 0, scale: 1, rotation: 0 };
+        binding.transform.x = Number(binding.transform.x || 0);
+        binding.transform.y = Number(binding.transform.y || 0);
+        binding.transform.scale = Math.max(0.01, Number(binding.transform.scale ?? 1));
+        binding.transform.rotation = Number(binding.transform.rotation || 0);
+        // Maker drafts briefly supported a shared Track transform. Bake that
+        // visual result into every binding once, then detach it so editing one
+        // Item can never move another Item on the same global z-order track.
+        if (binding.inheritTrackTransform === true) {
+          const trackTransform = trackById.get(binding.layerTrackId)?.transform;
+          if (trackTransform) binding.transform = { ...trackTransform };
+        }
+        binding.inheritTrackTransform = false;
+        if (typeof binding.positionConfirmed !== 'boolean') binding.positionConfirmed = true;
+      }));
+    });
+  });
   document.colorChannels.forEach((channel, index) => { channel.order = index; });
   return document;
 }
 
 export function effectiveBindingTransform(document, binding) {
   const track = document?.layerTracks?.find((candidate) => candidate.id === binding?.layerTrackId);
-  if (binding?.inheritTrackTransform !== false && track?.transform) return { ...track.transform };
+  if (binding?.inheritTrackTransform === true && track?.transform) return { ...track.transform };
   return {
     x: Number(binding?.transform?.x || 0),
     y: Number(binding?.transform?.y || 0),
     scale: Math.max(0.01, Number(binding?.transform?.scale ?? 1)),
     rotation: Number(binding?.transform?.rotation || 0),
   };
-}
-
-export function applyTrackTransform(document, trackId, transform, { confirm = true } = {}) {
-  const track = document?.layerTracks?.find((candidate) => candidate.id === trackId);
-  if (!track) return null;
-  track.transform = {
-    x: Number(transform?.x || 0),
-    y: Number(transform?.y || 0),
-    scale: Math.max(0.01, Number(transform?.scale ?? 1)),
-    rotation: Number(transform?.rotation || 0),
-  };
-  document.parts.forEach((part) => part.items.forEach((item) => item.variants.forEach((variant) => {
-    variant.layerBindings.forEach((binding) => {
-      if (binding.layerTrackId !== trackId) return;
-      binding.inheritTrackTransform = true;
-      if (confirm) binding.positionConfirmed = true;
-    });
-  })));
-  return track;
 }
 
 export function moveArrayEntry(entries, fromIndex, toIndex) {
