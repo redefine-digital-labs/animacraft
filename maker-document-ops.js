@@ -39,7 +39,7 @@ export function createLayerTrack(document, name = 'New Layer') {
     id: uniqueDocumentId(name, [document.layerTracks || []], 'layer'),
     name,
     order: document.layerTracks?.length || 0,
-    locked: true,
+    locked: false,
     referenceAssetId: null,
   };
 }
@@ -91,8 +91,9 @@ export function createStyle(item, name = 'New Style') {
 }
 
 /**
- * New Items intentionally start without a Style. Draft validation permits this;
- * publication requires every public Item to have a valid default Style.
+ * Every Item owns at least one Style from the moment it is created. The
+ * initial default Style is intentionally asset-free so creators can upload its
+ * PNG later without introducing another structural layer below Style.
  */
 export function createItem(part, name = 'New Item') {
   const item = {
@@ -100,7 +101,9 @@ export function createItem(part, name = 'New Item') {
     name,
     displayOrder: part.items?.length || 0,
     importKey: '',
-    status: 'draft',
+    // Item-level release status is no longer exposed in Creator Studio.
+    // New Items must therefore be publishable without a hidden field.
+    status: 'public',
     thumbnailAssetId: null,
     visibleWhen: null,
     requires: [],
@@ -109,6 +112,9 @@ export function createItem(part, name = 'New Item') {
     styles: [],
   };
   item.importKey = item.id;
+  const defaultStyle = createStyle(item, 'Default Style');
+  item.styles.push(defaultStyle);
+  item.defaultStyleId = defaultStyle.id;
   return item;
 }
 
@@ -176,7 +182,7 @@ export function normalizeDocumentOrders(document) {
   document.layerTracks.forEach((track, index) => {
     track.order = index;
     delete track.transform;
-    if (typeof track.locked !== 'boolean') track.locked = true;
+    if (typeof track.locked !== 'boolean') track.locked = false;
     track.referenceAssetId ??= null;
   });
 
@@ -189,8 +195,13 @@ export function normalizeDocumentOrders(document) {
       }
       item.displayOrder = itemIndex;
       item.importKey ||= item.id;
-      item.status ||= 'draft';
+      item.status ||= 'public';
       item.styles ||= [];
+      if (!item.styles.length) {
+        const defaultStyle = createStyle(item, 'Default Style');
+        item.styles.push(defaultStyle);
+        item.defaultStyleId = defaultStyle.id;
+      }
       item.styles.forEach((style, styleIndex) => {
         if (Object.hasOwn(style, 'layerBindings') || Object.hasOwn(style, 'assetsBySwatch')) {
           throw new TypeError('Legacy nested or multi-asset fields are not compatible with one-PNG Maker v5 Styles.');

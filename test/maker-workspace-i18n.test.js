@@ -97,3 +97,86 @@ test('critical nested editor details do not fall back to English outside English
     keys.forEach((key) => assert.notEqual(dictionary[key], english[key], `${locale}.${key} must be localized`));
   });
 });
+
+test('Soul configuration has complete five-language navigation and editor labels', () => {
+  const keys = [
+    'soulConfig',
+    'soulConfigTitle',
+    'soulConfigCopy',
+    'soulPersonalityIdentity',
+    'soulPersonalityIdentityCopy',
+    'soulMemory',
+    'soulMemoryCopy',
+    'soulSkills',
+    'soulSkillsCopy',
+    'soulRestoreDefault',
+    'soulValidationStatus',
+    'soulValidationValid',
+    'soulValidationInvalid',
+    'soulDraftSaveCopy',
+  ];
+  const english = makerWorkspaceDictionary('en');
+
+  MAKER_WORKSPACE_LOCALES.forEach((locale) => {
+    const dictionary = makerWorkspaceDictionary(locale);
+    keys.forEach((key) => {
+      assert.ok(dictionary[key]?.trim(), `${locale}.${key} must be translated`);
+      if (locale !== 'en') {
+        assert.notEqual(dictionary[key], english[key], `${locale}.${key} must not fall back to English`);
+      }
+    });
+    assert.equal(
+      makerWorkspaceText(locale, 'soulDocumentSize', { bytes: 512, limit: 65_536 }).includes('{'),
+      false,
+      `${locale}.soulDocumentSize must interpolate both counters`,
+    );
+  });
+
+  assert.equal(makerWorkspaceText('zh', 'soulConfig'), 'Soul 配置');
+  assert.equal(makerWorkspaceText('zh', 'soulPersonalityIdentity'), '性格与身份');
+  assert.equal(makerWorkspaceText('zh', 'soulMemory'), '记忆');
+  assert.equal(makerWorkspaceText('zh', 'soulSkills'), '技能');
+  assert.equal(makerWorkspaceText('zh', 'soulRestoreDefault'), '恢复默认');
+});
+
+test('version history and timestamp states are localized in all five Maker Studio languages', () => {
+  const keys = [
+    'versionHistory',
+    'versionHistoryTitle',
+    'versionHistoryLoading',
+    'versionHistoryEmpty',
+    'versionHistoryFailed',
+    'versionHistoryRetry',
+    'versionHistoryRevision',
+    'versionHistoryCurrent',
+    'versionHistoryRestore',
+    'versionHistoryRestoreConfirm',
+    'versionHistoryRestoring',
+    'versionHistoryRestored',
+    'versionHistoryFlushFailed',
+    'versionHistoryRestoreFailed',
+    'savedAtTime',
+  ];
+  const english = makerWorkspaceDictionary('en');
+
+  MAKER_WORKSPACE_LOCALES.forEach((locale) => {
+    const dictionary = makerWorkspaceDictionary(locale);
+    keys.forEach((key) => {
+      assert.ok(dictionary[key]?.trim(), `${locale}.${key} must be translated`);
+      if (locale !== 'en') {
+        assert.notEqual(dictionary[key], english[key], `${locale}.${key} must not fall back to English`);
+      }
+    });
+    assert.equal(
+      makerWorkspaceText(locale, 'versionHistoryRestoreConfirm', {
+        revision: 12,
+        name: 'Mira',
+      }).includes('{'),
+      false,
+    );
+    assert.equal(makerWorkspaceText(locale, 'savedAtTime', { time: '21:14' }).includes('{'), false);
+  });
+
+  assert.equal(makerWorkspaceText('zh', 'versionHistory'), '版本历史');
+  assert.equal(makerWorkspaceText('zh', 'versionHistoryCurrent'), '当前版本');
+});

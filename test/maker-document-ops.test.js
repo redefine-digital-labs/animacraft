@@ -35,11 +35,9 @@ function playableDocument() {
   document.layerTracks.push(track);
   const part = createPart(document, 'Body');
   const item = createItem(part, 'Default Body');
-  const selectedStyle = createStyle(item, 'Default');
+  const selectedStyle = item.styles[0];
   selectedStyle.layerTrackId = track.id;
   selectedStyle.assetId = 'body-art';
-  item.styles.push(selectedStyle);
-  item.defaultStyleId = selectedStyle.id;
   part.items.push(item);
   part.defaultItemId = item.id;
   document.parts.push(part);
@@ -48,7 +46,7 @@ function playableDocument() {
   return document;
 }
 
-test('creates URL-safe unique ids and empty draft Item/Style editor records', () => {
+test('creates URL-safe ids and gives every new Item one empty default Style', () => {
   assert.equal(uniqueDocumentId('Café Hair!', [{ id: 'cafe-hair' }]), 'cafe-hair-2');
   const document = emptyDocument();
   document.layerTracks.push(createLayerTrack(document, 'Hair Back'));
@@ -57,14 +55,23 @@ test('creates URL-safe unique ids and empty draft Item/Style editor records', ()
   document.parts.push(createPart(document, 'Hair'));
   assert.deepEqual(document.layerTracks.map((track) => track.id), ['hair-back', 'hair-back-2']);
   assert.ok(document.layerTracks.every((track) => !Object.hasOwn(track, 'transform')));
+  assert.ok(document.layerTracks.every((track) => track.locked === false));
   assert.deepEqual(document.parts.map((part) => part.id), ['hair', 'hair-2']);
 
   const item = createItem(document.parts[0], 'Long Hair');
-  assert.equal(item.defaultStyleId, null);
-  assert.deepEqual(item.styles, []);
-  assert.equal(item.status, 'draft');
+  assert.equal(item.styles.length, 1);
+  assert.equal(item.defaultStyleId, item.styles[0].id);
+  assert.equal(item.styles[0].name, 'Default Style');
+  assert.equal(item.styles[0].assetId, null);
+  assert.equal(item.styles[0].layerTrackId, null);
+  assert.equal(item.status, 'public');
 
   const selectedStyle = createStyle(item, 'Pure Black');
+  assert.equal(item.styles.length, 1, 'creating an additional Style does not mutate the Item until it is added');
+  assert.notEqual(selectedStyle, item.styles[0]);
+  assert.notEqual(selectedStyle.transform, item.styles[0].transform);
+  assert.notEqual(selectedStyle.requires, item.styles[0].requires);
+  assert.equal(selectedStyle.displayOrder, 1);
   assert.equal(selectedStyle.assetId, null);
   assert.equal(selectedStyle.layerTrackId, null);
   assert.deepEqual(selectedStyle.transform, { x: 0, y: 0, scale: 1, rotation: 0 });
@@ -86,12 +93,10 @@ test('keeps every Style transform independent even when Styles share one Layer T
   firstStyle.transform = { x: 24, y: -12, scale: 1.2, rotation: 3 };
 
   const second = createItem(part, 'Alternate Body');
-  const secondStyle = createStyle(second, 'Default');
+  const secondStyle = second.styles[0];
   secondStyle.layerTrackId = document.layerTracks[0].id;
   secondStyle.assetId = 'alternate-art';
   secondStyle.transform = { x: 400, y: 500, scale: 2, rotation: 0 };
-  second.styles.push(secondStyle);
-  second.defaultStyleId = secondStyle.id;
   part.items.push(second);
 
   assert.deepEqual(part.items.map((item) => effectiveStyleTransform(document, item.styles[0])), [
@@ -142,19 +147,21 @@ test('normalizes every independent Part, Item, Style, Track and color order', ()
   const document = playableDocument();
   const secondPart = createPart(document, 'Hair');
   const firstItem = createItem(secondPart, 'B');
-  const firstStyle = createStyle(firstItem, 'First');
+  const firstStyle = firstItem.styles[0];
+  firstStyle.name = 'First';
   const secondStyle = createStyle(firstItem, 'Second');
-  firstItem.styles.push(firstStyle, secondStyle);
-  firstItem.defaultStyleId = firstStyle.id;
+  firstItem.styles.push(secondStyle);
   secondPart.items.push(firstItem, createItem(secondPart, 'A'));
   document.parts.unshift(secondPart);
   document.layerTracks.unshift(createLayerTrack(document, 'Front'));
+  delete document.layerTracks[0].locked;
   document.colorChannels.push(createGradientColorChannel(document, 'One'), createGradientColorChannel(document, 'Two'));
   normalizeDocumentOrders(document);
   assert.deepEqual(document.parts.map((part) => part.menuOrder), [0, 1]);
   assert.deepEqual(secondPart.items.map((item) => item.displayOrder), [0, 1]);
   assert.deepEqual(firstItem.styles.map((entry) => entry.displayOrder), [0, 1]);
   assert.deepEqual(document.layerTracks.map((track) => track.order), [0, 1]);
+  assert.equal(document.layerTracks[0].locked, false);
   assert.deepEqual(document.colorChannels.map((channel) => channel.order), [0, 1]);
 });
 
@@ -216,11 +223,9 @@ test('synchronizes valid defaults while retaining existing playable choices', ()
   const document = playableDocument();
   const part = document.parts[0];
   const alternate = createItem(part, 'Alternate');
-  const alternateStyle = createStyle(alternate, 'Default');
+  const alternateStyle = alternate.styles[0];
   alternateStyle.assetId = 'alternate-art';
   alternateStyle.layerTrackId = document.layerTracks[0].id;
-  alternate.styles.push(alternateStyle);
-  alternate.defaultStyleId = alternateStyle.id;
   part.items.push(alternate);
   const channel = createGradientColorChannel(document, 'Skin');
   channel.swatches.push({ id: 'cool', name: 'Cool', hintColor: '#ffffff', stops: [] });

@@ -140,7 +140,9 @@ test('Maker v5 exposes the four-level P0 creator workflow without legacy visual 
   assert.match(styles, /\.creator-view\[data-creator-view="edit"\]\.v4-parts-active \.creator-editor-header\s*\{\s*display:\s*none;/s);
   assert.match(workspace, /this\.tr\('importMatrixFolder'\)/);
   assert.match(workspace, /this\.tr\('projectZip'\)/);
-  assert.match(workspace, /this\.tr\('generateCompositeThumbnail'\)/);
+  assert.doesNotMatch(workspace, /this\.tr\('generateCompositeThumbnail'\)/);
+  assert.doesNotMatch(workspace, /this\.tr\('parentPart'\)/);
+  assert.match(workspace, /\['soul', this\.tr\('soulConfig'\)\]/);
   assert.match(workspace, /data-action="add-style"/);
   assert.match(workspace, /data-action="copy-style"/);
   assert.match(workspace, /data-action="style-asset"/);
@@ -170,4 +172,26 @@ test('Maker v5 keeps the mobile player preview visible and blocks incomplete OC 
   assert.match(workspace, /data-action="player-complete" \$\{completionIssues\.length \? 'disabled' : ''\}/);
   assert.match(styles, /@media \(max-width: 820px\)[\s\S]*?\.v4-player-preview\s*\{[^}]*position:\s*sticky;[^}]*max-height:\s*58vh;/s);
   assert.match(styles, /@media \(max-width: 560px\)[\s\S]*?\.v4-player-preview\s*\{[^}]*grid-template-rows:\s*minmax\(220px,\s*38vh\) auto;[^}]*max-height:\s*52vh;/s);
+});
+
+test('Creator Library exposes a non-destructive current and legacy Draft Recovery Center', async () => {
+  const [html, app, workspace, initializer, styles] = await Promise.all([
+    readFile(new URL('../index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-storage-initializer.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(html, /id="openDraftRecovery"/);
+  assert.match(html, /id="draftRecoveryModal"/);
+  assert.match(app, /scanLegacyMakerDrafts\(\)/);
+  assert.match(app, /makerWorkspace\?\.listDraftProjects\(\{\}\)/);
+  assert.match(app, /commitRecoveredDraftCopy/);
+  assert.match(app, /persistLocalMakerIndex\(requestedWallet\)/);
+  assert.match(workspace, /failed its storage read-back verification/);
+  assert.doesNotMatch(initializer, /\.deleteDatabase\(/);
+  assert.doesNotMatch(initializer, /\.clear\(/);
+  assert.doesNotMatch(initializer, /\.removeItem\(/);
+  assert.match(styles, /\.draft-recovery-card\s*\{/);
 });

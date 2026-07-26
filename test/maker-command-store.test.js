@@ -102,6 +102,33 @@ test('replace resets history by default and can mark a loaded draft dirty', () =
   assert.equal(store.getState().saveState, 'dirty');
 });
 
+test('save snapshots carry the persisted base independently from local command revisions', () => {
+  const source = fixture();
+  const store = createMakerCommandStore(source.document, source.recipe);
+  store.execute('Unsaved first edit', ({ document }) => {
+    document.metadata.name = 'First';
+  });
+  assert.equal(store.snapshotForSave().baseRevision, null);
+
+  store.setSaveState('saved', 'Saved', { revision: 1 });
+  store.execute('Edit from revision 1', ({ document }) => {
+    document.metadata.name = 'Second';
+  });
+  assert.equal(store.snapshotForSave().baseRevision, 1);
+
+  store.replace(
+    { metadata: { name: 'Restored revision 9' }, parts: [] },
+    { selections: [], colors: [] },
+    { persistedRevision: 9 },
+  );
+  store.execute('Edit restored draft', ({ document }) => {
+    document.metadata.name = 'Revision 10';
+  });
+  const restoredSnapshot = store.snapshotForSave();
+  assert.equal(restoredSnapshot.revision, 10);
+  assert.equal(restoredSnapshot.baseRevision, 9);
+});
+
 test('bounds retained command history', () => {
   const source = fixture();
   const store = createMakerCommandStore(source.document, source.recipe, { historyLimit: 10 });

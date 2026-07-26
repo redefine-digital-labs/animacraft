@@ -170,7 +170,7 @@ function validV5Document() {
   return document;
 }
 
-test('starter creates Parts and tracks while every draft Item starts without a Style', () => {
+test('starter creates Parts, tracks and one asset-free default Style per Item', () => {
   const document = createCharacterMakerV5Starter({
     makerId: 'first-creator-maker',
     name: 'First Creator Maker',
@@ -180,14 +180,21 @@ test('starter creates Parts and tracks while every draft Item starts without a S
   assert.equal(document.schemaVersion, 'animacraft.maker.v5');
   assert.equal(document.parts.length, 8);
   assert.equal(document.layerTracks.length, 8);
+  assert.ok(document.layerTracks.every((track) => track.locked === false));
   assert.deepEqual(document.defaultRecipe.selections, []);
   assert.deepEqual(document.parts.filter((part) => part.required).map((part) => part.id), ['skin-base', 'eyes']);
   document.parts.forEach((part, index) => {
     assert.equal(part.menuOrder, index);
     assert.equal(part.items.length, 1);
-    assert.equal(part.items[0].status, 'draft');
-    assert.equal(part.items[0].defaultStyleId, null);
-    assert.deepEqual(part.items[0].styles, []);
+    assert.equal(part.items[0].status, 'public');
+    assert.equal(part.items[0].styles.length, 1);
+    const defaultStyle = part.items[0].styles[0];
+    assert.equal(part.items[0].defaultStyleId, defaultStyle.id);
+    assert.equal(defaultStyle.name, 'Default Style');
+    assert.equal(defaultStyle.assetId, null);
+    assert.equal(defaultStyle.layerTrackId, document.layerTracks[index].id);
+    assert.deepEqual(defaultStyle.transform, { x: 0, y: 0, scale: 1, rotation: 0 });
+    assert.equal(Object.hasOwn(defaultStyle, 'layerBindings'), false);
   });
   assert.doesNotThrow(() => validateMakerV5Document(document, { mode: 'draft' }));
   assert.throws(() => validateMakerV5Document(document, { mode: 'publish' }), MakerV5ValidationError);
@@ -206,7 +213,7 @@ test('validates Maker → Part → Item → Style and direct Style render fields
   assert.equal(hatStyle.transform.y, -8);
 });
 
-test('draft mode permits empty Items and empty Styles, publish mode rejects unfinished public content', () => {
+test('draft mode permits an asset-free default Style while publish mode rejects unfinished public content', () => {
   const document = createMakerV5Document({ makerId: 'draft-maker', creator: 'Artist' });
   document.parts.push({
     id: 'hair',
@@ -230,7 +237,7 @@ test('draft mode permits empty Items and empty Styles, publish mode rejects unfi
       visibleWhen: null,
       requires: [],
       excludes: [],
-      defaultStyleId: null,
+      defaultStyleId: 'empty',
       styles: [style('empty', null, null)],
     }],
   });
@@ -240,6 +247,17 @@ test('draft mode permits empty Items and empty Styles, publish mode rejects unfi
   const issues = collectMakerV5ValidationIssues(document, { mode: 'publish' });
   assert.ok(issues.some((entry) => entry.path.endsWith('.assetId') && entry.code === 'missing_reference'));
   assert.ok(issues.some((entry) => entry.path.endsWith('.layerTrackId') && entry.code === 'missing_reference'));
+  assert.ok(!issues.some((entry) => entry.path.endsWith('.defaultStyleId')));
+});
+
+test('draft validation requires every Item to retain one default Style record', () => {
+  const document = createCharacterMakerV5Starter({ makerId: 'missing-default-style' });
+  const item = document.parts[0].items[0];
+  item.styles = [];
+  item.defaultStyleId = null;
+
+  const issues = collectMakerV5ValidationIssues(document, { mode: 'draft' });
+  assert.ok(issues.some((entry) => entry.path.endsWith('.styles') && entry.code === 'invalid_styles'));
   assert.ok(issues.some((entry) => entry.path.endsWith('.defaultStyleId') && entry.code === 'missing_reference'));
 });
 
@@ -324,6 +342,58 @@ test('rejects parent cycles, contradictory rules and incompatible ExpansionPack 
   assert.ok(issues.some((entry) => entry.code === 'cycle'));
   assert.ok(issues.some((entry) => entry.code === 'contradictory_rule'));
   assert.ok(issues.some((entry) => entry.path.endsWith('.baseMakerVersion')));
+});
+
+test('validates canonical itemIds/styleIds groups and de-duplicates them independent of order', () => {
+  const document = validV5Document();
+  const alternateBody = structuredClone(document.parts[0].items[0]);
+  alternateBody.id = 'body-alt';
+  alternateBody.name = 'Alternate Body';
+  alternateBody.importKey = 'body-alt';
+  alternateBody.displayOrder = 1;
+  document.parts[0].items.push(alternateBody);
+  document.parts[1].requires = [
+    { partId: 'body', itemIds: ['body-shape', 'body-alt'] },
+    { partId: 'body', itemId: 'body-shape', styleIds: ['default', 'armored'] },
+  ];
+  let issues = collectMakerV5ValidationIssues(document);
+  assert.equal(issues.some((entry) => entry.path.startsWith('parts[1].requires')), false);
+
+  document.parts[1].requires = [
+    { partId: 'body', itemId: 'body-shape', styleIds: ['default', 'armored'] },
+    { partId: 'body', itemId: 'body-shape', styleIds: ['armored', 'default'] },
+  ];
+  issues = collectMakerV5ValidationIssues(document);
+  assert.ok(issues.some((entry) => entry.path === 'parts[1].requires[1]' && entry.code === 'duplicate'));
+});
+
+test('rejects malformed, duplicate and missing IDs inside grouped rule targets', () => {
+  const document = validV5Document();
+  const alternateBody = structuredClone(document.parts[0].items[0]);
+  alternateBody.id = 'body-alt';
+  alternateBody.name = 'Alternate Body';
+  alternateBody.importKey = 'body-alt';
+  alternateBody.displayOrder = 1;
+  document.parts[0].items.push(alternateBody);
+  document.parts[1].requires = [{
+    partId: 'body',
+    itemId: 'body-shape',
+    itemIds: ['body-shape', 'missing-item'],
+  }, {
+    partId: 'body',
+    itemId: 'body-shape',
+    styleIds: ['default', 'default', 'missing-style'],
+  }, {
+    partId: 'body',
+    itemIds: ['body-shape', 'body-alt'],
+    styleIds: ['default'],
+  }];
+  const issues = collectMakerV5ValidationIssues(document);
+  assert.ok(issues.some((entry) => entry.path === 'parts[1].requires[0]' && entry.code === 'invalid_rule_target'));
+  assert.ok(issues.some((entry) => entry.path.endsWith('.itemIds[1]') && entry.code === 'missing_reference'));
+  assert.ok(issues.some((entry) => entry.path.endsWith('.styleIds[1]') && entry.code === 'duplicate'));
+  assert.ok(issues.some((entry) => entry.path.endsWith('.styleIds[2]') && entry.code === 'missing_reference'));
+  assert.ok(issues.some((entry) => entry.path === 'parts[1].requires[2].styleIds' && entry.code === 'invalid_rule_target'));
 });
 
 test('legacy documents are deliberately not migrated, while v5 input is deeply cloned', () => {

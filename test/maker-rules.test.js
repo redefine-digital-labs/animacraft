@@ -3,12 +3,14 @@ import test from 'node:test';
 
 import {
   MakerRuleError,
+  composeRuleTargets,
   createMakerRuleIndex,
   evaluateRecipe,
   evaluateVisibleWhen,
   generateValidRecipe,
   isStyleVisible,
   normalizeRecipe,
+  ruleSelectorKey,
 } from '../maker-rules.js';
 
 function style(id, rules = {}) {
@@ -111,6 +113,67 @@ function ruleMaker() {
     }],
   };
 }
+
+test('composes canonical ALL and same-Part ANY targets with stable set identity', () => {
+  assert.deepEqual(composeRuleTargets([
+    { partId: 'outfit', itemId: 'casual' },
+    { partId: 'accessory', itemId: 'ring' },
+  ], 'all'), [
+    { partId: 'outfit', itemId: 'casual' },
+    { partId: 'accessory', itemId: 'ring' },
+  ]);
+  assert.deepEqual(composeRuleTargets([
+    { partId: 'accessory', itemId: 'ring' },
+    { partId: 'accessory', itemId: 'sword' },
+  ], 'any'), [{
+    partId: 'accessory',
+    itemIds: ['ring', 'sword'],
+  }]);
+  assert.deepEqual(composeRuleTargets([
+    { partId: 'outfit', itemId: 'armor', styleId: 'light' },
+    { partId: 'outfit', itemId: 'armor', styleId: 'heavy' },
+  ], 'any'), [{
+    partId: 'outfit',
+    itemId: 'armor',
+    styleIds: ['heavy', 'light'],
+  }]);
+  assert.equal(
+    ruleSelectorKey({ partId: 'accessory', itemIds: ['ring', 'sword'] }),
+    ruleSelectorKey({ partId: 'accessory', itemIds: ['sword', 'ring'] }),
+  );
+  assert.throws(
+    () => composeRuleTargets([
+      { partId: 'outfit', itemId: 'casual' },
+      { partId: 'accessory', itemId: 'ring' },
+    ], 'any'),
+    (error) => error instanceof MakerRuleError && error.code === 'cross-part-any-rule',
+  );
+});
+
+test('runtime treats itemIds groups as ANY while requires lists remain ALL and excludes express NOT', () => {
+  const maker = ruleMaker();
+  const casual = maker.parts.find((part) => part.id === 'outfit').items.find((entry) => entry.id === 'casual');
+  casual.requires = [{ partId: 'accessory', itemIds: ['ring', 'sword'] }];
+  assert.equal(evaluateRecipe(maker, [
+    { partId: 'body', itemId: 'base', styleId: 'default' },
+    { partId: 'outfit', itemId: 'casual', styleId: 'default' },
+    { partId: 'accessory', itemId: 'ring', styleId: 'default' },
+  ]).valid, true);
+  assert.equal(evaluateRecipe(maker, [
+    { partId: 'body', itemId: 'base', styleId: 'default' },
+    { partId: 'outfit', itemId: 'casual', styleId: 'default' },
+  ]).valid, false);
+
+  casual.requires = [];
+  casual.excludes = [{ partId: 'accessory', itemIds: ['ring', 'sword'] }];
+  const excluded = evaluateRecipe(maker, [
+    { partId: 'body', itemId: 'base', styleId: 'default' },
+    { partId: 'outfit', itemId: 'casual', styleId: 'default' },
+    { partId: 'accessory', itemId: 'sword', styleId: 'default' },
+  ]);
+  assert.equal(excluded.valid, false);
+  assert.ok(excluded.violations.some((issue) => issue.code === 'excludes-rule'));
+});
 
 test('evaluates requires and excludes without mutating the supplied recipe', () => {
   const maker = ruleMaker();

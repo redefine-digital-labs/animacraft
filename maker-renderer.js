@@ -352,8 +352,8 @@ function normalizeTransform(style, asset, canvas) {
     scaleX: finite(firstDefined(transform.scaleX, style?.scaleX), baseScale) * flipX,
     scaleY: finite(firstDefined(transform.scaleY, style?.scaleY), baseScale) * flipY,
     rotation: finite(firstDefined(transform.rotation, transform.rotationDegrees, style?.rotation), 0),
-    originX: finite(firstDefined(transform.originX, transform.anchorX, style?.originX), 0),
-    originY: finite(firstDefined(transform.originY, transform.anchorY, style?.originY), 0),
+    originX: finite(firstDefined(transform.originX, transform.anchorX, style?.originX), width / 2),
+    originY: finite(firstDefined(transform.originY, transform.anchorY, style?.originY), height / 2),
   };
 }
 
@@ -421,7 +421,6 @@ function sortLayers(left, right) {
   return compareNumber(left.trackOrder, right.trackOrder)
     || compareText(left.trackId, right.trackId)
     || compareNumber(left.order, right.order)
-    || compareNumber(left.partOrder, right.partOrder)
     || compareText(left.partId, right.partId)
     || compareText(left.itemId, right.itemId)
     || compareText(left.styleId, right.styleId);
@@ -688,7 +687,13 @@ export async function renderResolvedScene(scene, target, options = {}) {
       if (layer.pixelMode === 'linear' && 'imageSmoothingQuality' in context) context.imageSmoothingQuality = options.imageSmoothingQuality || 'high';
       context.globalAlpha = layer.opacity;
       context.globalCompositeOperation = layer.compositeOperation;
-      context.translate(transform.x + transform.originX, transform.y + transform.originY);
+      // x/y remain the PNG's top-left at rotation 0. The rotation pivot is
+      // expressed in unscaled PNG coordinates, so move to its scaled canvas
+      // position before applying rotation and scale.
+      context.translate(
+        transform.x + Math.abs(transform.scaleX) * transform.originX,
+        transform.y + Math.abs(transform.scaleY) * transform.originY,
+      );
       context.rotate(transform.rotation * Math.PI / 180);
       context.scale(transform.scaleX, transform.scaleY);
       context.translate(-transform.originX, -transform.originY);

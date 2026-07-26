@@ -8,6 +8,7 @@ import {
   collectTrackAlignmentWarnings,
   createAssetId,
   createCachedAssetResolver,
+  initialPngTransform,
   inspectPngAsset,
   revokeRuntimeAsset,
   runtimeAssetRecord,
@@ -82,6 +83,17 @@ test('creates readable, collision-resistant asset ids', () => {
   const second = createAssetId('Hair Front.PNG');
   assert.match(first, /^hair-front-/);
   assert.notEqual(first, second);
+});
+
+test('centers the complete PNG bounds instead of shifting to transparent alpha content', () => {
+  assert.deepEqual(
+    initialPngTransform(1600, 800, { width: 1000, height: 1000 }),
+    { x: 0, y: 250, scale: 0.625, rotation: 0 },
+  );
+  assert.deepEqual(
+    initialPngTransform(400, 800, { width: 1000, height: 1000 }),
+    { x: 300, y: 100, scale: 1, rotation: 0 },
+  );
 });
 
 test('inspects full-canvas and cropped PNG dimensions with deterministic initial transforms', async () => {
