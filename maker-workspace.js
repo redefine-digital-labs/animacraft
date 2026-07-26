@@ -15,7 +15,6 @@ import { evaluateVisibleWhen, renderResolvedScene, resolveMakerScene } from './m
 import { createMakerCommandStore } from './maker-command-store.js';
 import {
   addDocumentAsset,
-  applyTrackTransform,
   createGradientColorChannel,
   createItem,
   createLayerBinding,
@@ -1068,7 +1067,6 @@ export class MakerWorkspace {
           <div class="v4-inspector-section-head"><span class="v4-inspector-label">${escapeHtml(this.tr('selectedLayer'))}</span><button type="button" class="danger" data-action="delete-binding">${escapeHtml(this.tr('delete'))}</button></div>
           <label>${escapeHtml(this.tr('layerTrack'))}<select data-action="binding-track">${trackOptions}</select></label>
           <label class="v4-file-button wide">${escapeHtml(this.tr(this.assets.has(binding.assetId) ? 'replaceLayerPng' : 'uploadLayerPng'))}<input type="file" accept="image/png" data-action="binding-asset" /></label>
-          <label class="v4-track-inherit"><input type="checkbox" ${checked(binding.inheritTrackTransform !== false)} data-action="binding-inherit-track" /> Use locked Layer Track position</label>
           ${positionEditorOpen ? `
             <div class="v4-number-grid">
               <label>X<input type="number" value="${Number(effectiveTransform.x).toFixed(1)}" data-action="binding-x" /></label>
@@ -1083,7 +1081,7 @@ export class MakerWorkspace {
           <label>${escapeHtml(this.tr('smartColor'))}<select data-action="binding-channel">${channelOptions}</select></label>
           ${assetMapInputs}
           <label>${escapeHtml(this.tr('showThisLayer'))}<select data-action="binding-visible-when">${visibleOptions}</select></label>
-          <div class="v4-inline-actions"><button type="button" data-action="toggle-binding-hidden">${escapeHtml(this.tr(this.hiddenBindingIds.has(binding.id) ? 'showLayer' : 'hideLayer'))}</button><button type="button" data-action="apply-position-to-track">Apply to every Item on Track</button>${positionEditorOpen ? `<button type="button" class="primary" data-action="confirm-position">${escapeHtml(this.tr('confirmPosition'))}</button>` : `<button type="button" class="primary" data-action="edit-position" title="${escapeHtml(this.tr('positionConfirmed'))}">${escapeHtml(this.tr('adjustPosition'))}</button>`}</div>
+          <div class="v4-inline-actions"><button type="button" data-action="toggle-binding-hidden">${escapeHtml(this.tr(this.hiddenBindingIds.has(binding.id) ? 'showLayer' : 'hideLayer'))}</button>${positionEditorOpen ? `<button type="button" class="primary" data-action="confirm-position">${escapeHtml(this.tr('confirmPosition'))}</button>` : `<button type="button" class="primary" data-action="edit-position" title="${escapeHtml(this.tr('positionConfirmed'))}">${escapeHtml(this.tr('adjustPosition'))}</button>`}</div>
           ${positionEditorOpen ? `<small>${escapeHtml(this.tr('dragPositionCopy'))}</small>` : ''}
         </div>
       ` : ''}
@@ -1107,12 +1105,11 @@ export class MakerWorkspace {
       const alignmentByTrack = new Map(collectTrackAlignmentWarnings(document, this.assets).map((warning) => [warning.trackId, warning]));
       const rows = document.layerTracks.map((track) => {
         const bindings = document.parts.flatMap((part) => part.items.flatMap((item) => item.variants.flatMap((variant) => variant.layerBindings.filter((binding) => binding.layerTrackId === track.id))));
-        const inheritedCount = bindings.filter((binding) => binding.inheritTrackTransform !== false).length;
         return `
           <div class="v4-track-row ${track.id === this.selectedTrackId ? 'active' : ''}" draggable="true" data-drag-kind="track" data-drag-id="${escapeHtml(track.id)}" data-drop-kind="track">
             <button type="button" data-action="select-track" data-track-id="${escapeHtml(track.id)}"><span>⋮⋮</span><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(this.tr('bindingCount', { count: bindings.length }))}</small></button>
             <input value="${escapeHtml(track.name)}" data-action="track-name" data-track-id="${escapeHtml(track.id)}" maxlength="128" />
-            <span class="v4-track-placement">x ${Number(track.transform?.x || 0).toFixed(0)} · y ${Number(track.transform?.y || 0).toFixed(0)} · ${Math.round(Number(track.transform?.scale ?? 1) * 100)}% · ${inheritedCount}/${bindings.length} linked</span>
+            <span class="v4-track-placement">${escapeHtml(this.tr('trackOrderOnly'))}</span>
             <div>${alignmentByTrack.has(track.id) ? `<button type="button" class="warning" data-action="approve-track-alignment" data-track-id="${escapeHtml(track.id)}" title="${escapeHtml(alignmentByTrack.get(track.id).message)}">Review drift</button>` : track.alignmentApproved ? '<em>Exception approved</em>' : ''}<button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="up">↑</button><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="down">↓</button><button type="button" data-action="delete-track" data-track-id="${escapeHtml(track.id)}" ${bindings.length ? 'disabled' : ''}>×</button></div>
           </div>
         `;
@@ -1426,9 +1423,7 @@ export class MakerWorkspace {
     if (!this.dragPreview && this.bindingScalePreview == null) return base;
     const binding = findBinding(base, this.selectedPartId, this.selectedItemId, this.selectedVariantId, this.selectedBindingId);
     if (!binding) return base;
-    const target = binding.inheritTrackTransform !== false
-      ? base.layerTracks.find((track) => track.id === binding.layerTrackId)?.transform
-      : binding.transform;
+    const target = binding.transform;
     if (!target) return base;
     if (this.dragPreview) {
       target.x = this.dragPreview.x;
@@ -1544,16 +1539,8 @@ export class MakerWorkspace {
         this.executeDocument('Move layer on Canvas', ({ document }) => {
           const target = findBinding(document, this.selectedPartId, this.selectedItemId, this.selectedVariantId, this.selectedBindingId);
           if (!target) return;
-          if (target.inheritTrackTransform !== false) {
-            const track = document.layerTracks.find((candidate) => candidate.id === target.layerTrackId);
-            if (track) {
-              track.transform.x = preview.x;
-              track.transform.y = preview.y;
-            }
-          } else {
-            target.transform.x = preview.x;
-            target.transform.y = preview.y;
-          }
+          target.transform.x = preview.x;
+          target.transform.y = preview.y;
           target.positionConfirmed = false;
           this.editingPositionBindingId = target.id;
         });
@@ -1952,26 +1939,13 @@ export class MakerWorkspace {
       this.editingPositionBindingId = '';
       this.executeDocument('Confirm layer position', ({ document: next }) => {
         const target = findBinding(next, part.id, item.id, variant.id, binding.id);
-        if (target.inheritTrackTransform !== false) {
-          next.parts.forEach((candidatePart) => candidatePart.items.forEach((candidateItem) => candidateItem.variants.forEach((candidateVariant) => {
-            candidateVariant.layerBindings.forEach((candidateBinding) => {
-              if (candidateBinding.layerTrackId === target.layerTrackId && candidateBinding.inheritTrackTransform !== false) candidateBinding.positionConfirmed = true;
-            });
-          })));
-        } else target.positionConfirmed = true;
+        target.positionConfirmed = true;
       });
       return;
     }
     if (action === 'edit-position' && binding) {
       this.editingPositionBindingId = binding.id;
       this.render();
-      return;
-    }
-    if (action === 'apply-position-to-track' && binding) {
-      const transform = effectiveBindingTransform(document, binding);
-      this.executeDocument('Apply position to every Item on Track', ({ document: next }) => {
-        applyTrackTransform(next, binding.layerTrackId, transform);
-      });
       return;
     }
     if (action === 'generate-item-thumbnail' && item) {
@@ -2263,23 +2237,11 @@ export class MakerWorkspace {
     });
     else if (action === 'variant-name' && variant) this.executeDocument('Rename Style', ({ document: next }) => { findVariant(next, part.id, item.id, variant.id).name = input.value.trim() || variant.name; });
     else if (action === 'binding-track' && binding) this.executeDocument('Bind Layer Track', ({ document: next }) => { findBinding(next, part.id, item.id, variant.id, binding.id).layerTrackId = input.value; });
-    else if (action === 'binding-inherit-track' && binding) this.executeDocument(input.checked ? 'Use Layer Track position' : 'Detach layer position', ({ document: next }) => {
-      const target = findBinding(next, part.id, item.id, variant.id, binding.id);
-      if (!target) return;
-      if (input.checked) {
-        target.inheritTrackTransform = true;
-      } else {
-        target.transform = effectiveBindingTransform(next, target);
-        target.inheritTrackTransform = false;
-      }
-    });
     else if (['binding-x', 'binding-y', 'binding-scale', 'binding-rotation'].includes(action) && binding) {
       const field = action.replace('binding-', '');
       this.executeDocument('Edit layer transform', ({ document: next }) => {
         const target = findBinding(next, part.id, item.id, variant.id, binding.id);
-        const transform = target.inheritTrackTransform !== false
-          ? next.layerTracks.find((track) => track.id === target.layerTrackId)?.transform
-          : target.transform;
+        const transform = target.transform;
         if (!transform) return;
         transform[field] = field === 'scale' ? Math.max(0.01, Number(input.value || 1)) : Number(input.value || 0);
         target.positionConfirmed = false;
@@ -2290,9 +2252,7 @@ export class MakerWorkspace {
       this.bindingScalePreview = null;
       this.executeDocument('Scale layer on Canvas', ({ document: next }) => {
         const target = findBinding(next, part.id, item.id, variant.id, binding.id);
-        const transform = target.inheritTrackTransform !== false
-          ? next.layerTracks.find((track) => track.id === target.layerTrackId)?.transform
-          : target.transform;
+        const transform = target.transform;
         if (!transform) return;
         transform.scale = scale;
         target.positionConfirmed = false;
@@ -2441,14 +2401,13 @@ export class MakerWorkspace {
         track.alignmentApproved = false;
         if (!track.referenceAssetId || track.referenceAssetId === previousAssetId) track.referenceAssetId = assetId;
       }
-      if (binding.inheritTrackTransform === false) {
-        binding.transform = {
-          x: inspection.initialTransform.x,
-          y: inspection.initialTransform.y,
-          scale: inspection.initialTransform.scaleX,
-          rotation: 0,
-        };
-      }
+      binding.transform = {
+        x: inspection.initialTransform.x,
+        y: inspection.initialTransform.y,
+        scale: inspection.initialTransform.scaleX,
+        rotation: 0,
+      };
+      binding.inheritTrackTransform = false;
       binding.positionConfirmed = inspection.fullCanvas;
       if (binding.colorChannelId) {
         const channel = document.colorChannels.find((candidate) => candidate.id === binding.colorChannelId);
@@ -2598,12 +2557,6 @@ export class MakerWorkspace {
           if (!trackId && newTrackByName.has(proposedTrackName)) trackId = newTrackByName.get(proposedTrackName);
           if (!trackId || !document.layerTracks.some((track) => track.id === trackId)) {
             const track = createLayerTrack(document, proposedTrackName);
-            track.transform = {
-              x: inspection.initialTransform.x,
-              y: inspection.initialTransform.y,
-              scale: inspection.initialTransform.scaleX,
-              rotation: 0,
-            };
             document.layerTracks.push(track);
             trackId = track.id;
             newTrackByName.set(proposedTrackName, trackId);
@@ -2633,7 +2586,13 @@ export class MakerWorkspace {
           } else {
             targetBinding.assetId = record.assetId;
           }
-          targetBinding.inheritTrackTransform = true;
+          targetBinding.transform = {
+            x: inspection.initialTransform.x,
+            y: inspection.initialTransform.y,
+            scale: inspection.initialTransform.scaleX,
+            rotation: 0,
+          };
+          targetBinding.inheritTrackTransform = false;
           targetBinding.positionConfirmed = inspection.fullCanvas;
           if (!inspection.fullCanvas) this.editingPositionBindingId = targetBinding.id;
           const targetTrack = document.layerTracks.find((candidate) => candidate.id === trackId);

@@ -73,6 +73,46 @@ test('position confirmation collapses the position editor and explicit adjustmen
   }, { creatorRoot });
 });
 
+test('editing one Item binding never changes another Item or Part', async () => {
+  await withWorkspace(async (workspace) => {
+    const initial = workspace.getDocument();
+    const firstPart = initial.parts[0];
+    const firstItem = firstPart.items[0];
+    const firstBinding = firstItem.variants[0].layerBindings[0];
+    const otherPart = initial.parts[1];
+    const otherItem = otherPart.items[0];
+    const otherBinding = otherItem.variants[0].layerBindings[0];
+
+    creatorClick(workspace, 'select-part', { partId: firstPart.id });
+    creatorClick(workspace, 'select-item', { itemId: firstItem.id });
+    creatorClick(workspace, 'copy-item');
+    const copiedItem = workspace.selectedCreatorRecords().item;
+    const copiedBinding = copiedItem.variants[0].layerBindings[0];
+    assert.equal(copiedBinding.layerTrackId, firstBinding.layerTrackId);
+
+    await workspace.handleCreatorChange({ target: { dataset: { action: 'binding-x' }, value: '37', type: 'number' } });
+    let document = workspace.getDocument();
+    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).variants[0].layerBindings[0].transform.x, 37);
+    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).variants[0].layerBindings[0].transform.x, 0);
+    assert.equal(document.parts[1].items.find((item) => item.id === otherItem.id).variants[0].layerBindings[0].transform.x, 0);
+
+    creatorClick(workspace, 'confirm-position');
+    document = workspace.getDocument();
+    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).variants[0].layerBindings[0].positionConfirmed, true);
+    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).variants[0].layerBindings[0].positionConfirmed, false);
+
+    creatorClick(workspace, 'select-part', { partId: otherPart.id });
+    creatorClick(workspace, 'select-item', { itemId: otherItem.id });
+    assert.equal(workspace.selectedCreatorRecords().binding.id, otherBinding.id);
+    await workspace.handleCreatorChange({ target: { dataset: { action: 'binding-y' }, value: '-42', type: 'number' } });
+
+    document = workspace.getDocument();
+    assert.equal(document.parts[1].items.find((item) => item.id === otherItem.id).variants[0].layerBindings[0].transform.y, -42);
+    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).variants[0].layerBindings[0].transform.y, 0);
+    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).variants[0].layerBindings[0].transform.y, 0);
+  });
+});
+
 test('Creator rerenders preserve panel scroll, focus and input selection', async () => {
   const previousDocument = globalThis.document;
   const previousWindow = globalThis.window;

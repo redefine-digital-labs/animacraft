@@ -138,7 +138,8 @@ test('Maker v4 exposes the P0 creator workflow without the legacy editor chrome'
   assert.match(workspace, /Import matrix folder/);
   assert.match(workspace, /Project ZIP/);
   assert.match(workspace, /Generate composite thumbnail/);
-  assert.match(workspace, /Apply to every Item on Track/);
+  assert.doesNotMatch(workspace, /Apply to every Item on Track/);
+  assert.doesNotMatch(workspace, /data-action="binding-inherit-track"/);
   assert.match(workspace, /data-action="binding-swatch-asset"/);
   assert.match(workspace, /data-action="open-player"/);
 });
