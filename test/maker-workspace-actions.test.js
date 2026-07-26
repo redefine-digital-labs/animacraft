@@ -258,6 +258,7 @@ test('player controls select, undo, redo, clear, randomize, edit profile and com
     assert.equal(workspace.playerIntroOpen, true);
     playerClick(workspace, 'close-player-info');
     assert.equal(workspace.playerIntroOpen, false);
+    workspace.playerCompletionIssues = () => [];
     playerClick(workspace, 'player-complete');
     assert.equal(completed.length, 1);
   }, { callbacks: { onCompleteOc: (payload) => completed.push(payload) } });

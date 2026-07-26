@@ -68,7 +68,7 @@ if (origin) {
       csp.includes("worker-src 'self' blob:"),
       csp.includes("'wasm-unsafe-eval'"),
     ].every(Boolean);
-    record('Application shell', response.ok && text.includes('The Fully onchain Character Maker & Creator'), `HTTP ${response.status}`);
+    record('Application shell', response.ok && text.includes('The Fully Onchain Character Maker & Creator'), `HTTP ${response.status}`);
     record('Security headers', securityHeaders, securityHeaders ? 'Required production headers are present.' : 'One or more required headers are missing.');
   } catch (error) {
     record('Application shell', false, error.message);
@@ -117,7 +117,7 @@ if (origin) {
     try {
       const url = new URL(path, origin);
       const { response, text } = await fetchText(`SPA route ${path}`, url);
-      record(`SPA route ${path}`, response.ok && text.includes('The Fully onchain Character Maker & Creator'), `HTTP ${response.status}`);
+      record(`SPA route ${path}`, response.ok && text.includes('The Fully Onchain Character Maker & Creator'), `HTTP ${response.status}`);
     } catch (error) {
       record(`SPA route ${path}`, false, error.message);
     }

@@ -2,7 +2,7 @@
 
 ## Positioning
 
-**Animacraft is The Fully onchain Character Maker & Creator.**
+**Animacraft is The Fully Onchain Character Maker & Creator.**
 
 It serves two linked roles:
 

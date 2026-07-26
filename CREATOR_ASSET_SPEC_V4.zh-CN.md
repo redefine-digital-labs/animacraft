@@ -54,14 +54,13 @@ maker-id/
 │   ├── maker-id.psd
 │   └── reference-default.png
 ├── runtime/
-│   ├── background/
-│   │   └── moon-portal/default/background.png
-│   ├── base/
-│   │   └── porcelain/default/body-base.png
-│   └── hair/
-│       └── moonlit-wolf/default/
-│           ├── hair-back.png
-│           └── hair-front.png
+│   ├── background/moon-portal/default/background.png
+│   ├── base/porcelain/default/body-base.png
+│   └── hair/moonlit-wolf/default/
+│       ├── hair-back@violet.png
+│       ├── hair-back@silver.png
+│       ├── hair-front@violet.png
+│       └── hair-front@silver.png
 ├── thumbnails/
 │   ├── parts/hair.png
 │   └── items/hair/moonlit-wolf.png
@@ -73,6 +72,14 @@ maker-id/
 ```
 
 不得只交付一批无法对应 Part、Item、Variant 和 LayerTrack 的散图。
+
+Creator Studio 的“Import matrix folder”可以直接识别以下相对路径：
+
+```text
+part-id/item-id/variant-id/layer-track-id@swatch-id.png
+```
+
+其中 `@swatch-id` 可省略；省略时使用该 Layer 的默认素材。文件夹导入后必须先在映射确认表中检查 Part、Item、Variant、LayerTrack 和颜色，再执行导入。重复指向同一个目标格子的文件会阻断导入，工具不会静默覆盖。
 
 ### `mapping.csv` 必填列
 

@@ -15,6 +15,7 @@ import { evaluateVisibleWhen, renderResolvedScene, resolveMakerScene } from './m
 import { createMakerCommandStore } from './maker-command-store.js';
 import {
   addDocumentAsset,
+  applyTrackTransform,
   createGradientColorChannel,
   createItem,
   createLayerBinding,
@@ -22,6 +23,7 @@ import {
   createPart,
   createVariant,
   duplicatePart,
+  effectiveBindingTransform,
   findBinding,
   findItem,
   findPart,
@@ -36,6 +38,8 @@ import {
 } from './maker-document-ops.js';
 import {
   buildAssetImportMapping,
+  buildProjectAssetImportMapping,
+  collectTrackAlignmentWarnings,
   createAlphaCroppedThumbnail,
   createAssetId,
   createCachedAssetResolver,
@@ -45,6 +49,7 @@ import {
   runtimeAssetRecord,
 } from './maker-assets.js';
 import { createGradientColorProcessor } from './maker-color.js';
+import { createMakerProjectArchive, readMakerProjectArchive } from './maker-project-archive.js';
 import {
   deleteMakerWorkspaceAssets,
   loadMakerWorkspaceAssets,
@@ -158,6 +163,17 @@ function ownerRuleRows(document) {
   return rows;
 }
 
+export function ruleOwnerFromDefinition(document, definition) {
+  const [partId = '', itemId = '', variantId = ''] = String(definition || '').split('::');
+  const part = findPart(document, partId);
+  if (!part) return null;
+  if (!itemId) return part;
+  const item = findItem(document, partId, itemId);
+  if (!item) return null;
+  if (!variantId) return item;
+  return findVariant(document, partId, itemId, variantId);
+}
+
 function defaultExpansion(document, index) {
   const packId = uniqueDocumentId(`expansion-${index + 1}`, [document.extensions?.expansionDrafts || []], 'expansion');
   return {
@@ -196,11 +212,16 @@ export class MakerWorkspace {
     this.selectedTrackId = '';
     this.selectedChannelId = '';
     this.playerPartId = '';
+    this.creatorRecipe = { selections: [], colors: [] };
     this.playerRecipe = { selections: [], colors: [] };
     this.playerUndo = [];
     this.playerRedo = [];
     this.playerProfile = { name: 'Untitled OC', world: '', description: '', tags: '' };
     this.playerIntroOpen = false;
+    this.creatorPublishOpen = false;
+    this.creatorPublishState = { stage: 'idle', status: '', busy: false, digest: '', actions: {} };
+    this.playerPublishOpen = false;
+    this.playerPublishState = { stage: 'idle', status: '', busy: false, digest: '', actions: {} };
     this.enabledExpansionIds = new Set();
     this.pendingImport = null;
     this.pendingCreatorText = null;
@@ -372,8 +393,10 @@ export class MakerWorkspace {
     });
     const recipe = recipeWithColors(document, context.recipe || document.defaultRecipe);
     this.store = createMakerCommandStore(document, recipe);
+    this.creatorRecipe = clone(recipe);
     this.unsubscribe = this.store.subscribe((next, event) => {
       this.ensureCreatorSelection(next.document);
+      this.creatorRecipe = recipeWithColors(next.document, this.creatorRecipe || next.recipe);
       this.render();
       if (event.reason !== 'replace' && event.reason !== 'save-state') {
         this.callbacks.onDocumentChange?.({ document: next.document, recipe: next.recipe, assets: this.assets, event });
@@ -514,7 +537,7 @@ export class MakerWorkspace {
     const issues = collectMakerV4ValidationIssues(document, { mode: 'publish' })
       .filter((issue) => issue.path !== 'metadata.coverAssetId')
       .map(compactIssue);
-    document.parts.forEach((part) => part.items.forEach((item) => item.variants.forEach((variant) => {
+    document.parts.forEach((part) => part.items.filter((item) => (item.status || 'public') === 'public').forEach((item) => item.variants.forEach((variant) => {
       variant.layerBindings.forEach((binding) => {
         const runtime = this.runtimeAsset(binding.assetId);
         if (!runtime && !document.assets.find((asset) => asset.id === binding.assetId)?.url) {
@@ -547,7 +570,12 @@ export class MakerWorkspace {
         message: `${pack.name || pack.packId || 'ExpansionPack'}: ${error.message || error.code || 'not compatible with this Maker version'}.`,
       }));
     });
+    issues.push(...collectTrackAlignmentWarnings(document, this.assets));
     return issues.filter((issue, index, entries) => entries.findIndex((candidate) => `${candidate.code}:${candidate.path}:${candidate.message}` === `${issue.code}:${issue.path}:${issue.message}`) === index);
+  }
+
+  blockingPublicationIssues(document = this.store?.getState().document) {
+    return this.publicationIssues(document).filter((issue) => issue.severity !== 'warning');
   }
 
   compatibilityReport(document = this.store?.getState().document) {
@@ -564,7 +592,7 @@ export class MakerWorkspace {
   }
 
   getCreatorRecipe() {
-    return this.store ? clone(this.store.getState().recipe) : null;
+    return this.store ? clone(this.creatorRecipe || this.store.getState().recipe) : null;
   }
 
   getPlayerSnapshot() {
@@ -577,7 +605,21 @@ export class MakerWorkspace {
   }
 
   getPublicationIssues() {
-    return this.publicationIssues().map((issue) => ({ ...issue }));
+    return this.blockingPublicationIssues().map((issue) => ({ ...issue }));
+  }
+
+  setCreatorPublishState(nextState = {}) {
+    const next = { ...this.creatorPublishState, ...nextState, actions: { ...this.creatorPublishState.actions, ...(nextState.actions || {}) } };
+    const changed = JSON.stringify(next) !== JSON.stringify(this.creatorPublishState);
+    this.creatorPublishState = next;
+    if (changed && this.store) requestAnimationFrame(() => this.render());
+  }
+
+  setPlayerPublishState(nextState = {}) {
+    const next = { ...this.playerPublishState, ...nextState, actions: { ...this.playerPublishState.actions, ...(nextState.actions || {}) } };
+    const changed = JSON.stringify(next) !== JSON.stringify(this.playerPublishState);
+    this.playerPublishState = next;
+    if (changed && this.store) requestAnimationFrame(() => this.render());
   }
 
   openCreatorTab(tab = 'structure') {
@@ -802,6 +844,7 @@ export class MakerWorkspace {
     const { part, item, variant, binding } = this.selectedCreatorRecords(document);
     const issues = this.publicationIssues(document);
     const previewAssetCount = document.parts.reduce((count, part) => count + part.items.reduce((itemCount, item) => itemCount + item.variants.reduce((variantCount, variant) => variantCount + variant.layerBindings.filter((candidate) => Boolean(this.runtimeAsset(candidate.assetId))).length, 0), 0), 0);
+    const blockingIssues = issues.filter((issue) => issue.severity !== 'warning');
     const compatibility = this.compatibilityReport(document);
     const partRows = document.parts.map((candidate) => `
       <button class="v4-part-row ${candidate.id === part?.id ? 'active' : ''}" type="button" draggable="true" data-drag-kind="part" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-part" data-part-id="${escapeHtml(candidate.id)}">
@@ -816,7 +859,7 @@ export class MakerWorkspace {
         <button class="v4-item-card ${candidate.id === item?.id ? 'active' : ''}" type="button" draggable="true" data-drag-kind="item" data-parent-id="${escapeHtml(part.id)}" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-item" data-item-id="${escapeHtml(candidate.id)}">
           <span class="v4-item-thumb">${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" />` : '<i>PNG</i>'}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
-          <small>${escapeHtml(this.tr('styleCount', { count: candidate.variants.length }))}</small>
+          <small>${escapeHtml(this.tr('styleCount', { count: candidate.variants.length }))} · ${escapeHtml(candidate.status || 'public')}</small>
         </button>
       `;
     }).join('') || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noItemsYet'))}</strong><span>${escapeHtml(this.tr('noItemsCopy'))}</span></div>`;
@@ -846,11 +889,14 @@ export class MakerWorkspace {
           </div>
           <div class="v4-save-indicator ${escapeHtml(state.saveState)}"><i></i><span>${escapeHtml(this.saveStateText(state))}</span></div>
           <div class="v4-top-actions">
+            <button type="button" data-action="back-library">← Library</button>
             <button type="button" data-action="undo" ${state.canUndo ? '' : 'disabled'} title="${escapeHtml(state.canUndo ? this.tr('undoHint') : this.tr('undoUnavailable'))}">↶ ${escapeHtml(this.tr('undo'))}</button>
             <button type="button" data-action="redo" ${state.canRedo ? '' : 'disabled'} title="${escapeHtml(state.canRedo ? this.tr('redoHint') : this.tr('redoUnavailable'))}">↷ ${escapeHtml(this.tr('redo'))}</button>
             <button type="button" data-action="save" title="${escapeHtml(this.tr('saveHint'))}">${escapeHtml(this.tr(state.saveState === 'saving' ? 'saving' : 'save'))}</button>
-            <button type="button" data-action="open-player" ${previewAssetCount ? '' : 'disabled'} title="${escapeHtml(this.tr(previewAssetCount ? 'playerTestHint' : 'playerTestBlocked'))}">▶ ${escapeHtml(this.tr('playerTest'))}</button>
-            <button class="primary" type="button" data-action="publish">${escapeHtml(issues.length ? this.tr(issues.length === 1 ? 'reviewIssue' : 'reviewIssues', { count: issues.length }) : this.tr('publishMainnet'))}</button>
+            <button type="button" data-action="export-project">Project ZIP</button>
+            <label class="v4-file-button compact">Import ZIP<input type="file" accept=".zip,application/zip" data-action="import-project" /></label>
+            <button type="button" data-action="open-player" title="${escapeHtml(this.tr(previewAssetCount ? 'playerTestHint' : 'playerTestBlocked'))}">▶ ${escapeHtml(this.tr('playerTest'))}</button>
+            <button class="primary" type="button" data-action="publish">${escapeHtml(blockingIssues.length ? this.tr(blockingIssues.length === 1 ? 'reviewIssue' : 'reviewIssues', { count: blockingIssues.length }) : this.tr('publishMainnet'))}</button>
           </div>
         </header>
 
@@ -893,6 +939,7 @@ export class MakerWorkspace {
                 <div>
                   <button type="button" data-action="add-item" ${part ? '' : 'disabled'}>${escapeHtml(this.tr('addItem'))}</button>
                   <label class="v4-file-button ${variant ? '' : 'disabled'}">${escapeHtml(this.tr('batchImport'))}<input type="file" accept="image/png" multiple data-action="batch-import" ${variant ? '' : 'disabled'} /></label>
+                  <label class="v4-file-button">Import matrix folder<input type="file" accept="image/png" multiple webkitdirectory directory data-action="project-import" /></label>
                 </div>
               </div>
               <div class="v4-item-grid">${itemRows}</div>
@@ -911,10 +958,60 @@ export class MakerWorkspace {
             ${this.renderCreatorAdvanced(document, issues, compatibility)}
           </section>
         </div>` : ''}
+        ${this.renderCreatorPublishFlow()}
       </section>
       ${this.renderImportDialog(document)}
     `;
     this.restoreCreatorViewState(viewState);
+  }
+
+  renderCreatorPublishFlow() {
+    if (!this.creatorPublishOpen) return '';
+    const state = this.creatorPublishState;
+    const actions = state.actions || {};
+    const step = state.stage === 'certified' ? 4 : state.stage === 'uploaded' ? 3 : ['encoded', 'registered'].includes(state.stage) ? 2 : state.digest ? 5 : 1;
+    return `
+      <section class="v4-chain-flow">
+        <header><div><span class="v4-eyebrow">Walrus + Sui release</span><h3>Publish Maker · step ${step} of 4</h3></div><button type="button" data-action="close-creator-publish">×</button></header>
+        <ol>
+          <li class="${step >= 1 ? 'active' : ''}">Prepare quilt</li>
+          <li class="${step >= 2 ? 'active' : ''}">Register & upload</li>
+          <li class="${step >= 3 ? 'active' : ''}">Certify Walrus</li>
+          <li class="${step >= 4 ? 'active' : ''}">Publish on Sui</li>
+        </ol>
+        <p>${escapeHtml(state.status || 'The same immutable Maker document and rendered assets will be published.')}</p>
+        <div>
+          ${actions.resume ? '<button type="button" data-action="creator-publish-resume">Resume upload</button>' : ''}
+          ${actions.prepare ? '<button type="button" data-action="creator-publish-prepare">1. Prepare quilt</button>' : ''}
+          ${actions.register ? `<button type="button" data-action="creator-publish-register">${state.stage === 'registered' ? '2. Retry upload' : '2. Register & upload'}</button>` : ''}
+          ${actions.certify ? '<button type="button" data-action="creator-publish-certify">3. Certify</button>' : ''}
+          ${actions.publish ? '<button class="primary" type="button" data-action="creator-publish-onchain">4. Publish Maker</button>' : ''}
+          ${state.digest ? '<strong>Published ✓</strong>' : ''}
+        </div>
+      </section>
+    `;
+  }
+
+  renderPlayerPublishFlow() {
+    if (!this.playerPublishOpen) return '';
+    const state = this.playerPublishState;
+    const actions = state.actions || {};
+    const step = state.stage === 'certified' ? 4 : state.stage === 'uploaded' ? 3 : ['encoded', 'registered'].includes(state.stage) ? 2 : state.digest ? 5 : 1;
+    return `
+      <section class="v4-chain-flow player">
+        <header><div><span class="v4-eyebrow">Walrus + Soulidity</span><h3>Finish this OC · step ${step} of 4</h3></div><button type="button" data-action="close-player-publish">×</button></header>
+        <ol><li class="${step >= 1 ? 'active' : ''}">Prepare files</li><li class="${step >= 2 ? 'active' : ''}">Register & upload</li><li class="${step >= 3 ? 'active' : ''}">Certify Walrus</li><li class="${step >= 4 ? 'active' : ''}">Continue to Soulidity</li></ol>
+        <p>${escapeHtml(state.status || 'Your selected recipe and rendered OC stay pinned to this Maker version.')}</p>
+        <div>
+          ${actions.resume ? '<button type="button" data-action="player-publish-resume">Resume upload</button>' : ''}
+          ${actions.prepare ? '<button type="button" data-action="player-publish-prepare">1. Prepare OC</button>' : ''}
+          ${actions.register ? `<button type="button" data-action="player-publish-register">${state.stage === 'registered' ? '2. Retry upload' : '2. Register & upload'}</button>` : ''}
+          ${actions.certify ? '<button type="button" data-action="player-publish-certify">3. Certify</button>' : ''}
+          ${actions.publish ? '<button class="primary" type="button" data-action="player-publish-onchain">4. Continue to Soulidity</button>' : ''}
+          ${state.digest ? '<strong>Completed ✓</strong>' : ''}
+        </div>
+      </section>
+    `;
   }
 
   renderCreatorInspector(document, part, item, variant, binding, bindingRows) {
@@ -925,6 +1022,17 @@ export class MakerWorkspace {
     const channelOptions = [`<option value="">${escapeHtml(this.tr('noSmartColor'))}</option>`, ...document.colorChannels.map((channel) => `<option value="${escapeHtml(channel.id)}" ${selected(binding?.colorChannelId, channel.id)}>${escapeHtml(channel.name)}</option>`)].join('');
     const visibleOptions = [`<option value="">${escapeHtml(this.tr('alwaysVisible'))}</option>`, ...document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(binding?.visibleWhen?.partId, candidate.id)}>${escapeHtml(this.tr('whenPartSelected', { part: candidate.name }))}</option>`)].join('');
     const positionEditorOpen = Boolean(binding && (binding.positionConfirmed === false || this.editingPositionBindingId === binding.id));
+    const effectiveTransform = binding ? effectiveBindingTransform(document, binding) : null;
+    const selectedBindingChannel = binding ? document.colorChannels.find((channel) => channel.id === binding.colorChannelId) : null;
+    const assetMapInputs = selectedBindingChannel?.mode === 'asset-map' ? `
+      <div class="v4-binding-swatch-assets">
+        <span class="v4-inspector-label">Separate color assets</span>
+        ${selectedBindingChannel.swatches.map((swatch) => {
+          const mapping = binding.assetsBySwatch?.find((candidate) => candidate.swatchId === swatch.id);
+          return `<label class="v4-file-button wide ${mapping ? 'mapped' : 'missing'}"><i style="--swatch:${escapeHtml(swatch.hintColor)}"></i>${escapeHtml(swatch.name)} · ${mapping ? 'Replace PNG' : 'Upload PNG'}<input type="file" accept="image/png" data-action="binding-swatch-asset" data-swatch-id="${escapeHtml(swatch.id)}" /></label>`;
+        }).join('')}
+      </div>
+    ` : '';
     return `
       <div class="v4-inspector-section">
         <span class="v4-inspector-label">${escapeHtml(this.tr('part'))}</span>
@@ -941,8 +1049,11 @@ export class MakerWorkspace {
         <div class="v4-inspector-section">
           <span class="v4-inspector-label">${escapeHtml(this.tr('item'))}</span>
           <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(item.name)}" data-action="item-name" maxlength="128" /></label>
+          <label>Import key<input value="${escapeHtml(item.importKey || item.id)}" data-action="item-import-key" maxlength="128" /></label>
+          <label>Release status<select data-action="item-status"><option value="draft" ${selected(item.status, 'draft')}>Draft · creator only</option><option value="private" ${selected(item.status, 'private')}>Private · excluded from publish</option><option value="public" ${selected(item.status || 'public', 'public')}>Public · player visible</option></select></label>
           <div class="v4-inline-actions"><button type="button" data-action="copy-item">${escapeHtml(this.tr('duplicate'))}</button><button type="button" class="danger" data-action="delete-item">${escapeHtml(this.tr('delete'))}</button></div>
           <label class="v4-file-button wide">${escapeHtml(this.tr('customThumbnail'))}<input type="file" accept="image/png,image/jpeg" data-action="item-thumbnail" /></label>
+          <button type="button" data-action="generate-item-thumbnail">Generate composite thumbnail</button>
         </div>
         <div class="v4-inspector-section">
           <span class="v4-inspector-label">${escapeHtml(this.tr('style'))}</span>
@@ -957,20 +1068,22 @@ export class MakerWorkspace {
           <div class="v4-inspector-section-head"><span class="v4-inspector-label">${escapeHtml(this.tr('selectedLayer'))}</span><button type="button" class="danger" data-action="delete-binding">${escapeHtml(this.tr('delete'))}</button></div>
           <label>${escapeHtml(this.tr('layerTrack'))}<select data-action="binding-track">${trackOptions}</select></label>
           <label class="v4-file-button wide">${escapeHtml(this.tr(this.assets.has(binding.assetId) ? 'replaceLayerPng' : 'uploadLayerPng'))}<input type="file" accept="image/png" data-action="binding-asset" /></label>
+          <label class="v4-track-inherit"><input type="checkbox" ${checked(binding.inheritTrackTransform !== false)} data-action="binding-inherit-track" /> Use locked Layer Track position</label>
           ${positionEditorOpen ? `
             <div class="v4-number-grid">
-              <label>X<input type="number" value="${Number(binding.transform.x).toFixed(1)}" data-action="binding-x" /></label>
-              <label>Y<input type="number" value="${Number(binding.transform.y).toFixed(1)}" data-action="binding-y" /></label>
-              <label>${escapeHtml(this.tr('scale'))}<input type="number" min="0.01" max="100" step="0.01" value="${Number(binding.transform.scale).toFixed(2)}" data-action="binding-scale" /></label>
-              <label>${escapeHtml(this.tr('rotate'))}<input type="number" step="1" value="${Number(binding.transform.rotation).toFixed(1)}" data-action="binding-rotation" /></label>
+              <label>X<input type="number" value="${Number(effectiveTransform.x).toFixed(1)}" data-action="binding-x" /></label>
+              <label>Y<input type="number" value="${Number(effectiveTransform.y).toFixed(1)}" data-action="binding-y" /></label>
+              <label>${escapeHtml(this.tr('scale'))}<input type="number" min="0.01" max="100" step="0.01" value="${Number(effectiveTransform.scale).toFixed(2)}" data-action="binding-scale" /></label>
+              <label>${escapeHtml(this.tr('rotate'))}<input type="number" step="1" value="${Number(effectiveTransform.rotation).toFixed(1)}" data-action="binding-rotation" /></label>
             </div>
-            <label>${escapeHtml(this.tr('scaleOnCanvas'))}<input type="range" min="5" max="400" value="${Math.round(Number(binding.transform.scale) * 100)}" data-action="binding-scale-preview" /></label>
+            <label>${escapeHtml(this.tr('scaleOnCanvas'))}<input type="range" min="5" max="400" value="${Math.round(Number(effectiveTransform.scale) * 100)}" data-action="binding-scale-preview" /></label>
           ` : ''}
           <label>${escapeHtml(this.tr('opacity'))}<input type="range" min="0" max="100" value="${Math.round(binding.opacity * 100)}" data-action="binding-opacity" /></label>
           <label>${escapeHtml(this.tr('blendMode'))}<select data-action="binding-blend">${['normal','multiply','screen','overlay','darken','lighten','color-dodge','color-burn','hard-light','soft-light','difference','exclusion','hue','saturation','color','luminosity','linear-dodge'].map((mode) => `<option value="${mode}" ${selected(binding.blendMode, mode)}>${escapeHtml(this.blendModeText(mode))}</option>`).join('')}</select></label>
           <label>${escapeHtml(this.tr('smartColor'))}<select data-action="binding-channel">${channelOptions}</select></label>
+          ${assetMapInputs}
           <label>${escapeHtml(this.tr('showThisLayer'))}<select data-action="binding-visible-when">${visibleOptions}</select></label>
-          <div class="v4-inline-actions"><button type="button" data-action="toggle-binding-hidden">${escapeHtml(this.tr(this.hiddenBindingIds.has(binding.id) ? 'showLayer' : 'hideLayer'))}</button>${positionEditorOpen ? `<button type="button" class="primary" data-action="confirm-position">${escapeHtml(this.tr('confirmPosition'))}</button>` : `<button type="button" class="primary" data-action="edit-position" title="${escapeHtml(this.tr('positionConfirmed'))}">${escapeHtml(this.tr('adjustPosition'))}</button>`}</div>
+          <div class="v4-inline-actions"><button type="button" data-action="toggle-binding-hidden">${escapeHtml(this.tr(this.hiddenBindingIds.has(binding.id) ? 'showLayer' : 'hideLayer'))}</button><button type="button" data-action="apply-position-to-track">Apply to every Item on Track</button>${positionEditorOpen ? `<button type="button" class="primary" data-action="confirm-position">${escapeHtml(this.tr('confirmPosition'))}</button>` : `<button type="button" class="primary" data-action="edit-position" title="${escapeHtml(this.tr('positionConfirmed'))}">${escapeHtml(this.tr('adjustPosition'))}</button>`}</div>
           ${positionEditorOpen ? `<small>${escapeHtml(this.tr('dragPositionCopy'))}</small>` : ''}
         </div>
       ` : ''}
@@ -991,13 +1104,16 @@ export class MakerWorkspace {
       `;
     }
     if (this.creatorTab === 'layers') {
+      const alignmentByTrack = new Map(collectTrackAlignmentWarnings(document, this.assets).map((warning) => [warning.trackId, warning]));
       const rows = document.layerTracks.map((track) => {
         const bindings = document.parts.flatMap((part) => part.items.flatMap((item) => item.variants.flatMap((variant) => variant.layerBindings.filter((binding) => binding.layerTrackId === track.id))));
+        const inheritedCount = bindings.filter((binding) => binding.inheritTrackTransform !== false).length;
         return `
           <div class="v4-track-row ${track.id === this.selectedTrackId ? 'active' : ''}" draggable="true" data-drag-kind="track" data-drag-id="${escapeHtml(track.id)}" data-drop-kind="track">
             <button type="button" data-action="select-track" data-track-id="${escapeHtml(track.id)}"><span>⋮⋮</span><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(this.tr('bindingCount', { count: bindings.length }))}</small></button>
             <input value="${escapeHtml(track.name)}" data-action="track-name" data-track-id="${escapeHtml(track.id)}" maxlength="128" />
-            <div><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="up">↑</button><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="down">↓</button><button type="button" data-action="delete-track" data-track-id="${escapeHtml(track.id)}" ${bindings.length ? 'disabled' : ''}>×</button></div>
+            <span class="v4-track-placement">x ${Number(track.transform?.x || 0).toFixed(0)} · y ${Number(track.transform?.y || 0).toFixed(0)} · ${Math.round(Number(track.transform?.scale ?? 1) * 100)}% · ${inheritedCount}/${bindings.length} linked</span>
+            <div>${alignmentByTrack.has(track.id) ? `<button type="button" class="warning" data-action="approve-track-alignment" data-track-id="${escapeHtml(track.id)}" title="${escapeHtml(alignmentByTrack.get(track.id).message)}">Review drift</button>` : track.alignmentApproved ? '<em>Exception approved</em>' : ''}<button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="up">↑</button><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="down">↓</button><button type="button" data-action="delete-track" data-track-id="${escapeHtml(track.id)}" ${bindings.length ? 'disabled' : ''}>×</button></div>
           </div>
         `;
       }).join('');
@@ -1043,8 +1159,7 @@ export class MakerWorkspace {
     }
     if (this.creatorTab === 'rules') {
       const rows = ownerRuleRows(document);
-      const partOptions = document.parts.map((part) => `<option value="${escapeHtml(part.id)}">${escapeHtml(part.name)}</option>`).join('');
-      const targetOptions = document.parts.flatMap((part) => [
+      const definitionOptions = document.parts.flatMap((part) => [
         `<option value="${escapeHtml(part.id)}">${escapeHtml(part.name)} / ${escapeHtml(this.tr('anyItem'))}</option>`,
         ...part.items.flatMap((item) => [
           `<option value="${escapeHtml(`${part.id}::${item.id}`)}">${escapeHtml(part.name)} / ${escapeHtml(item.name)}</option>`,
@@ -1054,10 +1169,9 @@ export class MakerWorkspace {
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('rules'))}</span><h3>${escapeHtml(this.tr('rulesTitle'))}</h3><p>${escapeHtml(this.tr('rulesCopy'))}</p></div></div>
         <div class="v4-rule-builder">
-          <label>${escapeHtml(this.tr('whenPart'))}<select id="v4RuleOwnerPart" data-action="rule-owner-part">${partOptions}</select></label>
-          <label>${escapeHtml(this.tr('ownerScope'))}<select id="v4RuleOwnerScope"><option value="part">${escapeHtml(this.tr('wholePart'))}</option><option value="item">${escapeHtml(this.tr('selectedItem'))}</option><option value="variant">${escapeHtml(this.tr('selectedStyle'))}</option></select></label>
+          <label>${escapeHtml(this.tr('whenPart'))}<select id="v4RuleOwnerDefinition">${definitionOptions}</select></label>
           <label>${escapeHtml(this.tr('ruleLabel'))}<select id="v4RuleType"><option value="excludes">${escapeHtml(this.tr('cannotCombineWith'))}</option><option value="requires">${escapeHtml(this.tr('requiresLabel'))}</option></select></label>
-          <label>${escapeHtml(this.tr('targetDefinition'))}<select id="v4RuleTargetDefinition">${targetOptions}</select></label>
+          <label>${escapeHtml(this.tr('targetDefinition'))}<select id="v4RuleTargetDefinition">${definitionOptions}</select></label>
           <button type="button" data-action="add-rule">${escapeHtml(this.tr('addRule'))}</button>
         </div>
         <div class="v4-rule-list">${rows.map((row) => {
@@ -1087,8 +1201,10 @@ export class MakerWorkspace {
         <div class="v4-expansion-grid">${cards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noExpansionPacks'))}</strong><span>${escapeHtml(this.tr('noExpansionCopy'))}</span></div>`}</div>
       `;
     }
+    const blockingIssues = issues.filter((issue) => issue.severity !== 'warning');
+    const warningIssues = issues.filter((issue) => issue.severity === 'warning');
     const issueRows = issues.map((issue) => {
-      const severity = issue.code.includes('missing') || issue.code.includes('invalid') ? 'error' : 'warning';
+      const severity = issue.severity === 'warning' ? 'warning' : issue.code.includes('missing') || issue.code.includes('invalid') ? 'error' : 'warning';
       const focusable = String(issue.path || '').split('/').length === 4;
       const [partId, itemId, variantId, bindingId] = String(issue.path || '').split('/');
       const issuePart = findPart(document, partId);
@@ -1103,7 +1219,7 @@ export class MakerWorkspace {
       return `<li class="${severity}">${focusable ? `<button type="button" data-action="focus-issue" data-issue-path="${escapeHtml(issue.path)}" title="${escapeHtml(issue.path)}"><span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong><em>${escapeHtml(this.tr('open'))}</em></button>` : `<span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong>`}</li>`;
     }).join('');
     return `
-      <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('publishPreflight'))}</span><h3>${escapeHtml(issues.length ? this.tr(issues.length === 1 ? 'issueBlocks' : 'issuesBlock', { count: issues.length }) : this.tr('readyPublish'))}</h3><p>${escapeHtml(this.tr('preflightCopy'))}</p></div><button type="button" data-action="run-preflight">${escapeHtml(this.tr('runAgain'))}</button></div>
+      <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('publishPreflight'))}</span><h3>${escapeHtml(blockingIssues.length ? this.tr(blockingIssues.length === 1 ? 'issueBlocks' : 'issuesBlock', { count: blockingIssues.length }) : warningIssues.length ? `Ready with ${warningIssues.length} alignment warning${warningIssues.length === 1 ? '' : 's'}` : this.tr('readyPublish'))}</h3><p>${escapeHtml(this.tr('preflightCopy'))}</p></div><button type="button" data-action="run-preflight">${escapeHtml(this.tr('runAgain'))}</button></div>
       ${compatibility ? `<div class="v4-compatibility ${compatibility.compatible ? 'ready' : 'breaking'}"><div><strong>${escapeHtml(this.tr(compatibility.compatible ? 'compatibleUpdate' : 'breakingUpdate'))}</strong><span>${escapeHtml(this.locale === 'en' ? compatibility.summary : this.tr('compatibilitySummary', { breaking: compatibility.breaking?.length || 0, warnings: compatibility.warnings?.length || 0, additions: compatibility.additions?.length || 0 }))}</span></div>${!compatibility.compatible && document.version.compatibility !== 'breaking' ? `<button type="button" data-action="set-version-compatibility" data-compatibility="breaking">${escapeHtml(this.tr('confirmBreakingUpdate'))}</button>` : compatibility.compatible && document.version.compatibility === 'breaking' ? `<button type="button" data-action="set-version-compatibility" data-compatibility="compatible">${escapeHtml(this.tr('useCompatibleUpdate'))}</button>` : `<em>${escapeHtml(this.tr('compatibilityConfirmed'))}</em>`}</div>` : `<div class="v4-compatibility ready"><strong>${escapeHtml(this.tr('initialVersion'))}</strong><span>${escapeHtml(this.tr('initialVersionCopy'))}</span></div>`}
       <ul class="v4-preflight-list">${issueRows || `<li class="ready"><span>${escapeHtml(this.tr('allChecks'))}</span><strong>${escapeHtml(this.tr('allChecksCopy'))}</strong></li>`}</ul>
     `;
@@ -1111,16 +1227,37 @@ export class MakerWorkspace {
 
   renderImportDialog(document) {
     if (!this.pendingImport) return '';
-    const options = [`<option value="">${escapeHtml(this.tr('createNewLayerTrack'))}</option>`, ...document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}">${escapeHtml(track.name)}</option>`)].join('');
+    const trackOptions = (value) => ['<option value="">Create a new Layer Track</option>', ...document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}" ${selected(value, track.id)}>${escapeHtml(track.name)}</option>`)].join('');
+    const targetOptions = (value) => ['<option value="">Choose Item / Style…</option>', ...document.parts.flatMap((part) => part.items.flatMap((item) => item.variants.map((variant) => {
+      const definition = `${part.id}::${item.id}::${variant.id}`;
+      return `<option value="${escapeHtml(definition)}" ${selected(value, definition)}>${escapeHtml(part.name)} / ${escapeHtml(item.name)} / ${escapeHtml(variant.name)}</option>`;
+    })))].join('');
+    const colorOptions = (value) => ['<option value="">Main artwork</option>', ...document.colorChannels.filter((channel) => channel.mode === 'asset-map').flatMap((channel) => channel.swatches.map((swatch) => {
+      const definition = `${channel.id}::${swatch.id}`;
+      return `<option value="${escapeHtml(definition)}" ${selected(value, definition)}>${escapeHtml(channel.name)} / ${escapeHtml(swatch.name)}</option>`;
+    }))].join('');
+    const projectMode = this.pendingImport.mode === 'project';
+    const targetCounts = new Map();
+    const importTargetKey = (mapping) => `${mapping.targetDefinition || `${this.pendingImport.partId}::${this.pendingImport.itemId}::${this.pendingImport.variantId}`}|${mapping.trackId || `new:${mapping.suggestedTrackName}`}|${mapping.colorDefinition || ''}`;
+    this.pendingImport.mapping.forEach((mapping) => {
+      const key = importTargetKey(mapping);
+      targetCounts.set(key, (targetCounts.get(key) || 0) + 1);
+    });
+    const hasConflicts = this.pendingImport.mapping.some((mapping) => targetCounts.get(importTargetKey(mapping)) > 1);
     return `
-      <div class="v4-modal-backdrop" role="dialog" aria-modal="true" aria-label="${escapeHtml(this.tr('confirmBatchImport'))}">
-        <section class="v4-import-dialog">
-          <header><div><span>${escapeHtml(this.tr('batchImport'))}</span><h3>${escapeHtml(this.tr('batchImportTitle'))}</h3></div><button type="button" data-action="cancel-import" aria-label="${escapeHtml(this.tr('close'))}">×</button></header>
-          <p>${escapeHtml(this.tr('batchImportCopy'))}</p>
+      <div class="v4-modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirm batch import mapping">
+        <section class="v4-import-dialog ${projectMode ? 'project-matrix' : ''}">
+          <header><div><span>${projectMode ? 'PROJECT MATRIX IMPORT' : 'BATCH IMPORT'}</span><h3>${projectMode ? 'Confirm Part × Item × Style × Track × Color' : 'Confirm PNG → Layer Track mapping'}</h3></div><button type="button" data-action="cancel-import">×</button></header>
+          <p>Files are not committed until you confirm. ${projectMode ? 'Use folders like part/item/style/track@swatch.png; every row remains editable.' : ''} Full-canvas PNGs use the Track origin; cropped PNGs must be positioned and confirmed.</p>
           <div class="v4-import-list">${this.pendingImport.mapping.map((mapping, index) => `
-            <div><span>${escapeHtml(mapping.fileName)}</span><em>${escapeHtml(this.tr({ matched: 'importMatched', ordered: 'importOrdered', 'new-track': 'importNewTrack' }[mapping.confidence] || 'importNewTrack'))}</em><select data-action="import-track" data-import-index="${index}">${options.replace(`value="${escapeHtml(mapping.trackId)}"`, `value="${escapeHtml(mapping.trackId)}" selected`)}</select><input data-action="import-track-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedTrackName)}" aria-label="${escapeHtml(this.tr('newTrackName'))}" /></div>
+            <div class="${targetCounts.get(importTargetKey(mapping)) > 1 ? 'conflict' : ''}">
+              <span>${escapeHtml(mapping.fileName)}</span><em>${escapeHtml(mapping.confidence)}</em>
+              ${projectMode ? `<select data-action="import-target" data-import-index="${index}">${targetOptions(mapping.targetDefinition)}</select>` : ''}
+              <select data-action="import-track" data-import-index="${index}">${trackOptions(mapping.trackId)}</select>
+              ${projectMode ? `<select data-action="import-color" data-import-index="${index}">${colorOptions(mapping.colorDefinition)}</select>` : `<input data-action="import-track-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedTrackName)}" aria-label="New track name" />`}
+            </div>
           `).join('')}</div>
-          <footer><button type="button" data-action="cancel-import">${escapeHtml(this.tr('cancel'))}</button><button class="primary" type="button" data-action="confirm-import">${escapeHtml(this.tr('importPngCount', { count: this.pendingImport.mapping.length }))}</button></footer>
+          <footer><button type="button" data-action="cancel-import">Cancel</button><button class="primary" type="button" data-action="confirm-import" ${hasConflicts || (projectMode && this.pendingImport.mapping.some((mapping) => !mapping.targetDefinition)) ? 'disabled' : ''}>${hasConflicts ? 'Resolve duplicate mappings' : `Import ${this.pendingImport.mapping.length} PNG${this.pendingImport.mapping.length === 1 ? '' : 's'}`}</button></footer>
         </section>
       </div>
     `;
@@ -1140,6 +1277,31 @@ export class MakerWorkspace {
     });
   }
 
+  playerVisibleItems(part) {
+    const creatorPreview = this.context?.isPublished !== true;
+    return (part?.items || []).filter((item) => creatorPreview || (item.status || 'public') === 'public');
+  }
+
+  playerCompletionIssues(document, recipe) {
+    const issues = [];
+    const recipeResult = evaluateRecipe(document, recipe);
+    if (!recipeResult.valid) issues.push(...recipeResult.violations.map((violation) => violation.message || violation.code || 'Invalid combination'));
+    try {
+      const scene = resolveMakerScene(document, recipe, { strict: false });
+      if (!scene.layers.length) issues.push('The current OC has no visible artwork.');
+      scene.issues.forEach((issue) => issues.push(issue.message));
+      scene.layers.forEach((layer) => {
+        const descriptor = document.assets.find((asset) => asset.id === layer.assetId);
+        if (!this.runtimeAsset(layer.assetId) && !descriptor?.url && !descriptor?.legacy?.url) {
+          issues.push(`Artwork is unavailable for ${layer.partId} / ${layer.itemId}.`);
+        }
+      });
+    } catch (error) {
+      issues.push(error.message || 'The current OC cannot be rendered.');
+    }
+    return [...new Set(issues.filter(Boolean))];
+  }
+
   renderPlayer() {
     if (!this.playerRoot || !this.store) return;
     const document = this.runtimeDocument();
@@ -1153,7 +1315,7 @@ export class MakerWorkspace {
       selections: recipe.selections || [],
       colorChannels: Object.fromEntries((recipe.colors || []).map((entry) => [entry.channelId, entry.swatchId])),
     };
-    const visibleItems = part?.items.filter((item) => evaluateVisibleWhen(item.visibleWhen, visibilityContext)) || [];
+    const visibleItems = this.playerVisibleItems(part).filter((item) => evaluateVisibleWhen(item.visibleWhen, visibilityContext));
     const currentSelection = part ? selectionMap.get(part.id) : null;
     const currentItem = visibleItems.find((item) => item.id === currentSelection?.itemId) || null;
     const visibleVariants = currentItem?.variants.filter((variant) => evaluateVisibleWhen(variant.visibleWhen, visibilityContext)) || [];
@@ -1162,6 +1324,7 @@ export class MakerWorkspace {
       || visibleVariants[0]
       || null;
     const recipeResult = evaluateRecipe(document, recipe);
+    const completionIssues = this.playerCompletionIssues(document, recipe);
     const partButtons = parts.map((candidate) => {
       const selection = selectionMap.get(candidate.id);
       return `
@@ -1239,8 +1402,9 @@ export class MakerWorkspace {
             <label>${escapeHtml(this.tr('ocName'))}<input value="${escapeHtml(this.playerProfile.name)}" data-action="player-profile-name" maxlength="128" /></label>
             <label>${escapeHtml(this.tr('world'))}<input value="${escapeHtml(this.playerProfile.world)}" data-action="player-profile-world" maxlength="128" /></label>
           </div>
-          <div><span>${escapeHtml(this.tr(recipeResult.valid ? 'draftAutosaved' : 'fixRuleConflict'))}</span><button type="button" data-action="player-export">${escapeHtml(this.tr('recipeJson'))}</button><button class="primary" type="button" data-action="player-complete" ${recipeResult.valid ? '' : 'disabled'}>${escapeHtml(this.tr('completeOc'))}</button></div>
+          <div><span>${completionIssues.length ? escapeHtml(completionIssues[0]) : escapeHtml(this.tr('draftAutosaved'))}</span><button type="button" data-action="player-export">${escapeHtml(this.tr('recipeJson'))}</button><button class="primary" type="button" data-action="player-complete" ${completionIssues.length ? 'disabled' : ''}>${escapeHtml(this.tr('completeOc'))}</button></div>
         </footer>
+        ${this.renderPlayerPublishFlow()}
       </section>
       ${this.playerIntroOpen ? `
         <div class="v4-modal-backdrop player-info" role="dialog" aria-modal="true">
@@ -1262,11 +1426,15 @@ export class MakerWorkspace {
     if (!this.dragPreview && this.bindingScalePreview == null) return base;
     const binding = findBinding(base, this.selectedPartId, this.selectedItemId, this.selectedVariantId, this.selectedBindingId);
     if (!binding) return base;
+    const target = binding.inheritTrackTransform !== false
+      ? base.layerTracks.find((track) => track.id === binding.layerTrackId)?.transform
+      : binding.transform;
+    if (!target) return base;
     if (this.dragPreview) {
-      binding.transform.x = this.dragPreview.x;
-      binding.transform.y = this.dragPreview.y;
+      target.x = this.dragPreview.x;
+      target.y = this.dragPreview.y;
     }
-    if (this.bindingScalePreview != null) binding.transform.scale = this.bindingScalePreview;
+    if (this.bindingScalePreview != null) target.scale = this.bindingScalePreview;
     return base;
   }
 
@@ -1285,7 +1453,7 @@ export class MakerWorkspace {
     const status = this.creatorRoot.querySelector('#v4CreatorRenderStatus');
     try {
       const document = this.documentWithCreatorPreview();
-      const recipe = this.store.getState().recipe;
+      const recipe = this.creatorRecipe || this.store.getState().recipe;
       const scene = resolveMakerScene(document, recipe, { strict: false });
       scene.layers = scene.layers.filter((layer) => !this.hiddenBindingIds.has(layer.bindingId));
       if (this.creatorSolo && this.selectedBindingId) scene.layers = scene.layers.filter((layer) => layer.bindingId === this.selectedBindingId);
@@ -1346,12 +1514,13 @@ export class MakerWorkspace {
     canvas.addEventListener('pointerdown', (event) => {
       const { binding } = this.selectedCreatorRecords();
       if (!binding || event.button !== 0) return;
+      const effectiveTransform = effectiveBindingTransform(this.store.getState().document, binding);
       const rect = canvas.getBoundingClientRect();
       const start = {
         clientX: event.clientX,
         clientY: event.clientY,
-        x: Number(binding.transform.x || 0),
-        y: Number(binding.transform.y || 0),
+        x: Number(effectiveTransform.x || 0),
+        y: Number(effectiveTransform.y || 0),
         ratioX: this.store.getState().document.canvas.width / Math.max(1, rect.width),
         ratioY: this.store.getState().document.canvas.height / Math.max(1, rect.height),
       };
@@ -1375,8 +1544,16 @@ export class MakerWorkspace {
         this.executeDocument('Move layer on Canvas', ({ document }) => {
           const target = findBinding(document, this.selectedPartId, this.selectedItemId, this.selectedVariantId, this.selectedBindingId);
           if (!target) return;
-          target.transform.x = preview.x;
-          target.transform.y = preview.y;
+          if (target.inheritTrackTransform !== false) {
+            const track = document.layerTracks.find((candidate) => candidate.id === target.layerTrackId);
+            if (track) {
+              track.transform.x = preview.x;
+              track.transform.y = preview.y;
+            }
+          } else {
+            target.transform.x = preview.x;
+            target.transform.y = preview.y;
+          }
           target.positionConfirmed = false;
           this.editingPositionBindingId = target.id;
         });
@@ -1511,6 +1688,10 @@ export class MakerWorkspace {
       this.openCreatorTab('structure');
       return;
     }
+    if (action === 'back-library') {
+      this.callbacks.onBackToLibrary?.();
+      return;
+    }
     if (action === 'select-part') {
       this.selectedPartId = button.dataset.partId;
       this.selectedItemId = '';
@@ -1527,22 +1708,26 @@ export class MakerWorkspace {
       this.selectedVariantId = selectedItem.defaultVariantId || selectedItem.variants[0]?.id || '';
       this.selectedBindingId = '';
       this.ensureCreatorSelection(document);
-      this.store.execute('Preview Item', (next) => replaceRecipeSelection(next.recipe, {
+      this.creatorRecipe = clone(this.creatorRecipe || state.recipe);
+      replaceRecipeSelection(this.creatorRecipe, {
         partId: this.selectedPartId,
         itemId: selectedItem.id,
         variantId: this.selectedVariantId,
-      }));
+      });
+      this.render();
       return;
     }
     if (action === 'select-variant') {
       this.selectedVariantId = button.dataset.variantId;
       this.selectedBindingId = '';
       this.ensureCreatorSelection(document);
-      this.store.execute('Preview Style', (next) => replaceRecipeSelection(next.recipe, {
+      this.creatorRecipe = clone(this.creatorRecipe || state.recipe);
+      replaceRecipeSelection(this.creatorRecipe, {
         partId: this.selectedPartId,
         itemId: this.selectedItemId,
         variantId: this.selectedVariantId,
-      }));
+      });
+      this.render();
       return;
     }
     if (action === 'select-binding') {
@@ -1567,8 +1752,12 @@ export class MakerWorkspace {
     if (action === 'undo') return void this.store.undo();
     if (action === 'redo') return void this.store.redo();
     if (action === 'save') return void this.save();
+    if (action === 'export-project') {
+      void this.exportProjectArchive();
+      return;
+    }
     if (action === 'open-player') {
-      this.playerRecipe = clone(state.recipe);
+      this.playerRecipe = clone(this.creatorRecipe || state.recipe);
       this.playerUndo = [];
       this.playerRedo = [];
       this.playerIntroOpen = true;
@@ -1577,13 +1766,26 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'publish') {
-      const issues = this.publicationIssues(document);
+      const issues = this.blockingPublicationIssues(document);
       if (issues.length) {
         this.creatorTab = 'validate';
         this.render();
         return;
       }
+      this.creatorPublishOpen = true;
       this.callbacks.onPublish?.({ document, recipe: document.defaultRecipe, assets: this.assets, compatibility: this.compatibilityReport(document) });
+      this.render();
+      return;
+    }
+    if (action === 'close-creator-publish') {
+      this.creatorPublishOpen = false;
+      this.render();
+      return;
+    }
+    const creatorPublishActions = new Set(['creator-publish-resume', 'creator-publish-prepare', 'creator-publish-register', 'creator-publish-certify', 'creator-publish-onchain']);
+    if (creatorPublishActions.has(action)) {
+      this.creatorPublishOpen = true;
+      this.callbacks.onCreatorPublishAction?.(action.replace('creator-publish-', ''));
       return;
     }
     if (action === 'run-preflight') {
@@ -1749,13 +1951,31 @@ export class MakerWorkspace {
     if (action === 'confirm-position' && binding) {
       this.editingPositionBindingId = '';
       this.executeDocument('Confirm layer position', ({ document: next }) => {
-        findBinding(next, part.id, item.id, variant.id, binding.id).positionConfirmed = true;
+        const target = findBinding(next, part.id, item.id, variant.id, binding.id);
+        if (target.inheritTrackTransform !== false) {
+          next.parts.forEach((candidatePart) => candidatePart.items.forEach((candidateItem) => candidateItem.variants.forEach((candidateVariant) => {
+            candidateVariant.layerBindings.forEach((candidateBinding) => {
+              if (candidateBinding.layerTrackId === target.layerTrackId && candidateBinding.inheritTrackTransform !== false) candidateBinding.positionConfirmed = true;
+            });
+          })));
+        } else target.positionConfirmed = true;
       });
       return;
     }
     if (action === 'edit-position' && binding) {
       this.editingPositionBindingId = binding.id;
       this.render();
+      return;
+    }
+    if (action === 'apply-position-to-track' && binding) {
+      const transform = effectiveBindingTransform(document, binding);
+      this.executeDocument('Apply position to every Item on Track', ({ document: next }) => {
+        applyTrackTransform(next, binding.layerTrackId, transform);
+      });
+      return;
+    }
+    if (action === 'generate-item-thumbnail' && item) {
+      void this.generateCompositeItemThumbnail(part.id, item.id);
       return;
     }
     if (action === 'add-track') {
@@ -1774,6 +1994,14 @@ export class MakerWorkspace {
       const trackId = button.dataset.trackId;
       const used = document.parts.some((candidate) => candidate.items.some((candidateItem) => candidateItem.variants.some((candidateVariant) => candidateVariant.layerBindings.some((candidateBinding) => candidateBinding.layerTrackId === trackId))));
       if (!used) this.executeDocument('Delete Layer Track', ({ document: next }) => { next.layerTracks = next.layerTracks.filter((track) => track.id !== trackId); });
+      return;
+    }
+    if (action === 'approve-track-alignment') {
+      const trackId = button.dataset.trackId;
+      this.executeDocument('Approve Layer Track alignment exception', ({ document: next }) => {
+        const track = next.layerTracks.find((candidate) => candidate.id === trackId);
+        if (track) track.alignmentApproved = true;
+      });
       return;
     }
     if (action === 'add-channel') {
@@ -1855,9 +2083,11 @@ export class MakerWorkspace {
     }
     if (action === 'add-selected-to-expansion') return void this.addSelectedItemToExpansion(button.dataset.packId);
     if (action === 'set-default-recipe') {
+      const creatorRecipe = clone(this.creatorRecipe || state.recipe);
       this.executeDocument('Set default recipe', ({ document: next, recipe: nextRecipe }) => {
-        next.defaultRecipe = clone(nextRecipe);
-        const selections = recipeSelectionMap(nextRecipe);
+        next.defaultRecipe = clone(creatorRecipe);
+        Object.assign(nextRecipe, clone(creatorRecipe));
+        const selections = recipeSelectionMap(creatorRecipe);
         next.parts.forEach((candidate) => {
           const selection = selections.get(candidate.id);
           if (!selection) return;
@@ -1866,7 +2096,7 @@ export class MakerWorkspace {
           if (selectedItem) selectedItem.defaultVariantId = selection.variantId || selectedItem.defaultVariantId;
         });
         next.colorChannels.forEach((channel) => {
-          const selection = nextRecipe.colors?.find((entry) => entry.channelId === channel.id);
+          const selection = creatorRecipe.colors?.find((entry) => entry.channelId === channel.id);
           if (selection) channel.defaultSwatchId = selection.swatchId;
         });
       });
@@ -1918,10 +2148,16 @@ export class MakerWorkspace {
     const state = this.store.getState();
     const document = state.document;
     const { part, item, variant, binding } = this.selectedCreatorRecords(document);
+    if (action === 'import-project' && input.files?.[0]) {
+      await this.importProjectArchive(input.files[0]);
+      input.value = '';
+      return;
+    }
     if (action === 'batch-import') {
       const files = [...(input.files || [])];
       if (!files.length || !variant) return;
       this.pendingImport = {
+        mode: 'variant',
         partId: part.id,
         itemId: item.id,
         variantId: variant.id,
@@ -1930,9 +2166,38 @@ export class MakerWorkspace {
       this.render();
       return;
     }
+    if (action === 'project-import') {
+      const files = [...(input.files || [])].filter((file) => String(file.name || '').toLowerCase().endsWith('.png'));
+      if (!files.length) return;
+      this.pendingImport = {
+        mode: 'project',
+        mapping: buildProjectAssetImportMapping(files, document),
+      };
+      this.render();
+      return;
+    }
+    if (action === 'import-target') {
+      const mapping = this.pendingImport?.mapping[Number(input.dataset.importIndex)];
+      if (mapping) {
+        mapping.targetDefinition = input.value;
+        this.render();
+      }
+      return;
+    }
+    if (action === 'import-color') {
+      const mapping = this.pendingImport?.mapping[Number(input.dataset.importIndex)];
+      if (mapping) {
+        mapping.colorDefinition = input.value;
+        this.render();
+      }
+      return;
+    }
     if (action === 'import-track') {
       const mapping = this.pendingImport?.mapping[Number(input.dataset.importIndex)];
-      if (mapping) mapping.trackId = input.value;
+      if (mapping) {
+        mapping.trackId = input.value;
+        this.render();
+      }
       return;
     }
     if (action === 'import-track-name') {
@@ -1962,6 +2227,16 @@ export class MakerWorkspace {
       await this.replaceBindingAsset(input.files[0], { partId: part.id, itemId: item.id, variantId: variant.id, bindingId: binding.id });
       return;
     }
+    if (action === 'binding-swatch-asset' && binding && input.files?.[0]) {
+      await this.replaceBindingSwatchAsset(input.files[0], {
+        partId: part.id,
+        itemId: item.id,
+        variantId: variant.id,
+        bindingId: binding.id,
+        swatchId: input.dataset.swatchId,
+      });
+      return;
+    }
     const bool = input.type === 'checkbox' ? input.checked : null;
     if (action === 'part-name' && part) this.executeDocument('Rename Part', ({ document: next }) => { findPart(next, part.id).name = input.value.trim() || part.name; });
     else if (action === 'part-required' && part) this.executeDocument('Change required Part', ({ document: next }) => { findPart(next, part.id).required = bool; });
@@ -1978,13 +2253,35 @@ export class MakerWorkspace {
       }
     });
     else if (action === 'item-name' && item) this.executeDocument('Rename Item', ({ document: next }) => { findItem(next, part.id, item.id).name = input.value.trim() || item.name; });
+    else if (action === 'item-import-key' && item) this.executeDocument('Change Item import key', ({ document: next }) => {
+      const normalized = input.value.trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+      if (normalized) findItem(next, part.id, item.id).importKey = normalized;
+    });
+    else if (action === 'item-status' && item) this.executeDocument('Change Item release status', ({ document: next }) => {
+      const target = findItem(next, part.id, item.id);
+      target.status = ['draft', 'private', 'public'].includes(input.value) ? input.value : 'draft';
+    });
     else if (action === 'variant-name' && variant) this.executeDocument('Rename Style', ({ document: next }) => { findVariant(next, part.id, item.id, variant.id).name = input.value.trim() || variant.name; });
     else if (action === 'binding-track' && binding) this.executeDocument('Bind Layer Track', ({ document: next }) => { findBinding(next, part.id, item.id, variant.id, binding.id).layerTrackId = input.value; });
+    else if (action === 'binding-inherit-track' && binding) this.executeDocument(input.checked ? 'Use Layer Track position' : 'Detach layer position', ({ document: next }) => {
+      const target = findBinding(next, part.id, item.id, variant.id, binding.id);
+      if (!target) return;
+      if (input.checked) {
+        target.inheritTrackTransform = true;
+      } else {
+        target.transform = effectiveBindingTransform(next, target);
+        target.inheritTrackTransform = false;
+      }
+    });
     else if (['binding-x', 'binding-y', 'binding-scale', 'binding-rotation'].includes(action) && binding) {
       const field = action.replace('binding-', '');
       this.executeDocument('Edit layer transform', ({ document: next }) => {
         const target = findBinding(next, part.id, item.id, variant.id, binding.id);
-        target.transform[field] = field === 'scale' ? Math.max(0.01, Number(input.value || 1)) : Number(input.value || 0);
+        const transform = target.inheritTrackTransform !== false
+          ? next.layerTracks.find((track) => track.id === target.layerTrackId)?.transform
+          : target.transform;
+        if (!transform) return;
+        transform[field] = field === 'scale' ? Math.max(0.01, Number(input.value || 1)) : Number(input.value || 0);
         target.positionConfirmed = false;
         this.editingPositionBindingId = target.id;
       });
@@ -1993,7 +2290,11 @@ export class MakerWorkspace {
       this.bindingScalePreview = null;
       this.executeDocument('Scale layer on Canvas', ({ document: next }) => {
         const target = findBinding(next, part.id, item.id, variant.id, binding.id);
-        target.transform.scale = scale;
+        const transform = target.inheritTrackTransform !== false
+          ? next.layerTracks.find((track) => track.id === target.layerTrackId)?.transform
+          : target.transform;
+        if (!transform) return;
+        transform.scale = scale;
         target.positionConfirmed = false;
         this.editingPositionBindingId = target.id;
       });
@@ -2003,7 +2304,9 @@ export class MakerWorkspace {
       const target = findBinding(next, part.id, item.id, variant.id, binding.id);
       target.colorChannelId = input.value || null;
       const channel = next.colorChannels.find((candidate) => candidate.id === target.colorChannelId);
-      target.assetsBySwatch = channel?.mode === 'asset-map' ? channel.swatches.map((swatch) => ({ swatchId: swatch.id, assetId: target.assetId })) : [];
+      target.assetsBySwatch = channel?.mode === 'asset-map'
+        ? channel.swatches.slice(0, 1).map((swatch) => ({ swatchId: swatch.id, assetId: target.assetId }))
+        : [];
     });
     else if (action === 'binding-visible-when' && binding) this.executeDocument('Change layer visibility rule', ({ document: next }) => {
       findBinding(next, part.id, item.id, variant.id, binding.id).visibleWhen = input.value ? { op: 'selected', partId: input.value } : null;
@@ -2028,7 +2331,7 @@ export class MakerWorkspace {
       next.parts.forEach((candidate) => candidate.items.forEach((candidateItem) => candidateItem.variants.forEach((candidateVariant) => candidateVariant.layerBindings.forEach((candidateBinding) => {
         if (candidateBinding.colorChannelId !== channel.id) return;
         candidateBinding.assetsBySwatch = channel.mode === 'asset-map'
-          ? channel.swatches.map((swatch) => ({ swatchId: swatch.id, assetId: candidateBinding.assetId }))
+          ? channel.swatches.slice(0, 1).map((swatch) => ({ swatchId: swatch.id, assetId: candidateBinding.assetId }))
           : [];
       }))));
     });
@@ -2073,11 +2376,54 @@ export class MakerWorkspace {
     return record;
   }
 
+  async exportProjectArchive() {
+    if (!this.store) return;
+    const wasDirty = this.store.getState().dirty;
+    this.store.setSaveState('saving', 'Packing Maker project…');
+    try {
+      const document = this.store.getState().document;
+      const blob = await createMakerProjectArchive(document, this.assets);
+      const url = URL.createObjectURL(blob);
+      const link = globalThis.document.createElement('a');
+      link.href = url;
+      link.download = `${safeFileName(document.metadata.name, document.metadata.id)}.animacraft-maker.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+      this.store.setSaveState(wasDirty ? 'dirty' : 'saved', 'Project backup downloaded');
+    } catch (error) {
+      this.store.setSaveState('error', error.message || 'Could not export the Maker project.');
+    }
+  }
+
+  async importProjectArchive(file) {
+    if (!this.store) return;
+    this.store.setSaveState('saving', 'Reading Maker project…');
+    try {
+      const imported = await readMakerProjectArchive(file);
+      if (!isMakerV4Document(imported.document)) throw new Error('The project does not contain a Maker v4 document.');
+      const document = this.normalizeDocument(imported.document);
+      this.assetResolver.clear();
+      this.assets.forEach(revokeRuntimeAsset);
+      this.assets = new Map(imported.assets.map((record) => [
+        record.assetId,
+        record.url && !record.blob ? { ...record } : reviveRuntimeAssetRecord(record),
+      ]));
+      this.assetResolver = createCachedAssetResolver(this.assets);
+      await upsertMakerWorkspaceAssets(this.makerKey, [...this.assets.values()].map((record) => ({ ...record, url: '', thumbnailUrl: '' })));
+      const recipe = recipeWithColors(document, document.defaultRecipe);
+      this.creatorRecipe = clone(recipe);
+      this.store.replace(document, recipe, { clearHistory: true, markSaved: false });
+      this.store.setSaveState('dirty', `Imported project backup from ${imported.exportedAt || 'another workspace'}`);
+    } catch (error) {
+      this.store.setSaveState('error', error.message || 'Could not import the Maker project.');
+    }
+  }
+
   async replaceBindingAsset(file, selection) {
     const inspection = await inspectPngAsset(file, this.store.getState().document.canvas);
     const thumbnailBlob = await createAlphaCroppedThumbnail(file);
     const assetId = createAssetId(file.name);
-    const record = runtimeAssetRecord({ assetId, blob: file, fileName: file.name, width: inspection.width, height: inspection.height, thumbnailBlob });
+    const record = runtimeAssetRecord({ assetId, blob: file, fileName: file.name, width: inspection.width, height: inspection.height, alphaBounds: inspection.alphaBounds, thumbnailBlob });
     record.kind = 'layer';
     record.identifier = `${safeFileName(file.name, assetId)}-${assetId.slice(-8)}.png`;
     this.assets.set(assetId, record);
@@ -2088,20 +2434,122 @@ export class MakerWorkspace {
     this.executeDocument('Replace layer PNG', ({ document }) => {
       addDocumentAsset(document, record);
       const binding = findBinding(document, selection.partId, selection.itemId, selection.variantId, selection.bindingId);
+      const previousAssetId = binding.assetId;
       binding.assetId = assetId;
-      binding.transform = {
-        x: inspection.initialTransform.x,
-        y: inspection.initialTransform.y,
-        scale: inspection.initialTransform.scaleX,
-        rotation: 0,
-      };
+      const track = document.layerTracks.find((candidate) => candidate.id === binding.layerTrackId);
+      if (track) {
+        track.alignmentApproved = false;
+        if (!track.referenceAssetId || track.referenceAssetId === previousAssetId) track.referenceAssetId = assetId;
+      }
+      if (binding.inheritTrackTransform === false) {
+        binding.transform = {
+          x: inspection.initialTransform.x,
+          y: inspection.initialTransform.y,
+          scale: inspection.initialTransform.scaleX,
+          rotation: 0,
+        };
+      }
       binding.positionConfirmed = inspection.fullCanvas;
       if (binding.colorChannelId) {
         const channel = document.colorChannels.find((candidate) => candidate.id === binding.colorChannelId);
-        binding.assetsBySwatch = channel?.mode === 'asset-map' ? channel.swatches.map((swatch) => ({ swatchId: swatch.id, assetId })) : [];
+        binding.assetsBySwatch = channel?.mode === 'asset-map'
+          ? channel.swatches.slice(0, 1).map((swatch) => ({ swatchId: swatch.id, assetId }))
+          : [];
       }
       removeUnreferencedAssetMetadata(document);
     });
+  }
+
+  async replaceBindingSwatchAsset(file, selection) {
+    const inspection = await inspectPngAsset(file, this.store.getState().document.canvas);
+    const thumbnailBlob = await createAlphaCroppedThumbnail(file);
+    const assetId = createAssetId(`${file.name}-${selection.swatchId}`);
+    const record = runtimeAssetRecord({
+      assetId,
+      blob: file,
+      fileName: file.name,
+      width: inspection.width,
+      height: inspection.height,
+      alphaBounds: inspection.alphaBounds,
+      thumbnailBlob,
+    });
+    record.kind = 'layer';
+    record.identifier = `${safeFileName(file.name, assetId)}-${assetId.slice(-8)}.png`;
+    this.assets.set(assetId, record);
+    await upsertMakerWorkspaceAssets(this.makerKey, [{ ...record, url: '', thumbnailUrl: '' }]);
+    this.assetResolver.clear();
+    this.assetResolver = createCachedAssetResolver(this.assets);
+    this.executeDocument(`Upload ${selection.swatchId} color artwork`, ({ document }) => {
+      addDocumentAsset(document, record);
+      const binding = findBinding(document, selection.partId, selection.itemId, selection.variantId, selection.bindingId);
+      const channel = document.colorChannels.find((candidate) => candidate.id === binding?.colorChannelId);
+      if (!binding || channel?.mode !== 'asset-map' || !channel.swatches.some((swatch) => swatch.id === selection.swatchId)) return;
+      binding.assetsBySwatch ||= [];
+      const index = binding.assetsBySwatch.findIndex((mapping) => mapping.swatchId === selection.swatchId);
+      const mapping = { swatchId: selection.swatchId, assetId };
+      if (index >= 0) binding.assetsBySwatch[index] = mapping;
+      else binding.assetsBySwatch.push(mapping);
+      removeUnreferencedAssetMetadata(document);
+    });
+  }
+
+  async generateCompositeItemThumbnail(partId, itemId) {
+    const document = this.store?.getState().document;
+    const part = document && findPart(document, partId);
+    const item = part && findItem(document, partId, itemId);
+    if (!document || !part || !item) return;
+    this.store.setSaveState('saving', `Generating ${item.name} thumbnail…`);
+    try {
+      const isolated = clone(document);
+      const isolatedPart = findPart(isolated, partId);
+      isolatedPart.parentPartId = null;
+      isolatedPart.visibleWhen = null;
+      isolatedPart.items = isolatedPart.items.filter((candidate) => candidate.id === itemId);
+      const isolatedItem = isolatedPart.items[0];
+      isolatedItem.visibleWhen = null;
+      isolatedItem.variants.forEach((variant) => {
+        variant.visibleWhen = null;
+        variant.layerBindings.forEach((binding) => { binding.visibleWhen = null; });
+      });
+      isolated.parts = [isolatedPart];
+      const variantId = isolatedItem.defaultVariantId || isolatedItem.variants[0]?.id;
+      const recipe = {
+        selections: [{ partId, itemId, variantId }],
+        colors: clone(document.defaultRecipe.colors || []),
+      };
+      const canvas = globalThis.document.createElement('canvas');
+      const scene = resolveMakerScene(isolated, recipe, { strict: true });
+      scene.layers.forEach((layer) => this.ensureAssetAlias(layer.assetId));
+      await renderResolvedScene(scene, canvas, {
+        skipMissingAssets: false,
+        resolveAsset: (assetId) => this.assetResolver.resolve(assetId),
+        applyColorChannel: this.applyColorChannel,
+      });
+      const rendered = await new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not render Item thumbnail.')), 'image/png'));
+      const thumbnailBlob = await createAlphaCroppedThumbnail(rendered);
+      const assetId = createAssetId(`${item.importKey || item.id}-thumbnail`);
+      const record = runtimeAssetRecord({
+        assetId,
+        blob: thumbnailBlob,
+        fileName: `${safeFileName(item.importKey || item.id, 'item')}-thumbnail.png`,
+        width: 256,
+        height: 256,
+        source: 'generated-thumbnail',
+      });
+      record.kind = 'thumbnail';
+      record.identifier = `thumbnails/${safeFileName(item.importKey || item.id, 'item')}-${assetId.slice(-8)}.png`;
+      this.assets.set(assetId, record);
+      await upsertMakerWorkspaceAssets(this.makerKey, [{ ...record, url: '', thumbnailUrl: '' }]);
+      this.assetResolver.clear();
+      this.assetResolver = createCachedAssetResolver(this.assets);
+      this.executeDocument(`Generate ${item.name} thumbnail`, ({ document: next }) => {
+        addDocumentAsset(next, record);
+        findItem(next, partId, itemId).thumbnailAssetId = assetId;
+        removeUnreferencedAssetMetadata(next);
+      });
+    } catch (error) {
+      this.store.setSaveState('error', error.message || 'Could not generate the composite Item thumbnail.');
+    }
   }
 
   async confirmBatchImport() {
@@ -2109,6 +2557,11 @@ export class MakerWorkspace {
     if (!pending || !this.store) return;
     this.store.setSaveState('saving', this.tr('inspectingPngs', { count: pending.mapping.length }));
     try {
+      const targetKeys = pending.mapping.map((mapping) => {
+        const target = mapping.targetDefinition || `${pending.partId}::${pending.itemId}::${pending.variantId}`;
+        return `${target}|${mapping.trackId || `new:${mapping.suggestedTrackName}`}|${mapping.colorDefinition || 'main'}`;
+      });
+      if (new Set(targetKeys).size !== targetKeys.length) throw new Error('Two PNG files map to the same Item, Style, Layer Track and Color. Resolve the highlighted duplicate rows first.');
       const canvas = this.store.getState().document.canvas;
       const prepared = await Promise.all(pending.mapping.map(async (mapping) => {
         const inspection = await inspectPngAsset(mapping.file, canvas);
@@ -2120,6 +2573,7 @@ export class MakerWorkspace {
           fileName: mapping.fileName,
           width: inspection.width,
           height: inspection.height,
+          alphaBounds: inspection.alphaBounds,
           thumbnailBlob,
         });
         record.kind = 'layer';
@@ -2130,15 +2584,29 @@ export class MakerWorkspace {
       await upsertMakerWorkspaceAssets(this.makerKey, prepared.map(({ record }) => ({ ...record, url: '', thumbnailUrl: '' })));
       this.assetResolver.clear();
       this.assetResolver = createCachedAssetResolver(this.assets);
+      const affectedItems = new Set();
       this.executeDocument(`Batch import ${prepared.length} PNG layers`, ({ document }) => {
-        const targetItem = findItem(document, pending.partId, pending.itemId);
-        const targetVariant = findVariant(document, pending.partId, pending.itemId, pending.variantId);
+        const newTrackByName = new Map();
         prepared.forEach(({ mapping, inspection, record }) => {
+          const [partId, itemId, variantId] = String(mapping.targetDefinition || `${pending.partId}::${pending.itemId}::${pending.variantId}`).split('::');
+          const targetItem = findItem(document, partId, itemId);
+          const targetVariant = findVariant(document, partId, itemId, variantId);
+          if (!targetItem || !targetVariant) throw new Error(`${mapping.fileName} does not have a valid Item / Style target.`);
+          affectedItems.add(`${partId}::${itemId}`);
           let trackId = mapping.trackId;
+          const proposedTrackName = mapping.suggestedTrackName || `Layer ${document.layerTracks.length + 1}`;
+          if (!trackId && newTrackByName.has(proposedTrackName)) trackId = newTrackByName.get(proposedTrackName);
           if (!trackId || !document.layerTracks.some((track) => track.id === trackId)) {
-            const track = createLayerTrack(document, mapping.suggestedTrackName || `Layer ${document.layerTracks.length + 1}`);
+            const track = createLayerTrack(document, proposedTrackName);
+            track.transform = {
+              x: inspection.initialTransform.x,
+              y: inspection.initialTransform.y,
+              scale: inspection.initialTransform.scaleX,
+              rotation: 0,
+            };
             document.layerTracks.push(track);
             trackId = track.id;
+            newTrackByName.set(proposedTrackName, trackId);
           }
           addDocumentAsset(document, record);
           let targetBinding = targetVariant.layerBindings.find((candidate) => candidate.layerTrackId === trackId);
@@ -2149,25 +2617,41 @@ export class MakerWorkspace {
               scale: inspection.initialTransform.scaleX,
             });
             targetVariant.layerBindings.push(targetBinding);
+          }
+          const [channelId = '', swatchId = ''] = String(mapping.colorDefinition || '').split('::');
+          if (channelId && swatchId) {
+            const channel = document.colorChannels.find((candidate) => candidate.id === channelId);
+            if (channel?.mode !== 'asset-map' || !channel.swatches.some((swatch) => swatch.id === swatchId)) {
+              throw new Error(`${mapping.fileName} targets a missing or non-asset color preset.`);
+            }
+            targetBinding.colorChannelId = channelId;
+            targetBinding.assetsBySwatch ||= [];
+            const mappingIndex = targetBinding.assetsBySwatch.findIndex((candidate) => candidate.swatchId === swatchId);
+            const swatchMapping = { swatchId, assetId: record.assetId };
+            if (mappingIndex >= 0) targetBinding.assetsBySwatch[mappingIndex] = swatchMapping;
+            else targetBinding.assetsBySwatch.push(swatchMapping);
           } else {
             targetBinding.assetId = record.assetId;
-            targetBinding.transform = {
-              x: inspection.initialTransform.x,
-              y: inspection.initialTransform.y,
-              scale: inspection.initialTransform.scaleX,
-              rotation: 0,
-            };
           }
+          targetBinding.inheritTrackTransform = true;
           targetBinding.positionConfirmed = inspection.fullCanvas;
           if (!inspection.fullCanvas) this.editingPositionBindingId = targetBinding.id;
+          const targetTrack = document.layerTracks.find((candidate) => candidate.id === trackId);
+          if (targetTrack) {
+            targetTrack.alignmentApproved = false;
+            targetTrack.referenceAssetId ||= record.assetId;
+          }
           this.selectedBindingId = targetBinding.id;
         });
-        targetItem.thumbnailAssetId ||= prepared[0]?.record.assetId || null;
         removeUnreferencedAssetMetadata(document);
       });
       this.pendingImport = null;
       this.store.setSaveState('dirty', this.tr('importedPngs', { count: prepared.length }));
       this.render();
+      for (const definition of affectedItems) {
+        const [partId, itemId] = definition.split('::');
+        await this.generateCompositeItemThumbnail(partId, itemId);
+      }
     } catch (error) {
       this.store.setSaveState('error', error.message || this.tr('batchImportFailed'));
     }
@@ -2175,16 +2659,15 @@ export class MakerWorkspace {
 
   addRuleFromBuilder() {
     const document = this.store.getState().document;
-    const ownerPartId = this.creatorRoot.querySelector('#v4RuleOwnerPart')?.value || this.selectedPartId;
-    const ownerScope = this.creatorRoot.querySelector('#v4RuleOwnerScope')?.value || 'part';
+    const ownerDefinition = this.creatorRoot.querySelector('#v4RuleOwnerDefinition')?.value || this.selectedPartId;
     const type = this.creatorRoot.querySelector('#v4RuleType')?.value || 'excludes';
     const [targetPartId = '', targetItemId = '', targetVariantId = ''] = String(this.creatorRoot.querySelector('#v4RuleTargetDefinition')?.value || '').split('::');
-    if (!ownerPartId || !targetPartId || ownerPartId === targetPartId) return;
+    if (!ownerDefinition || !targetPartId) return;
+    const targetDefinition = [targetPartId, targetItemId, targetVariantId].filter(Boolean).join('::');
+    if (ownerDefinition === targetDefinition) return;
     this.executeDocument(`Add ${type} rule`, ({ document: next }) => {
-      const ownerPart = findPart(next, ownerPartId);
-      let owner = ownerPart;
-      if (ownerScope === 'item') owner = ownerPart.items.find((candidate) => candidate.id === (ownerPartId === this.selectedPartId ? this.selectedItemId : ownerPart.defaultItemId)) || ownerPart;
-      if (ownerScope === 'variant' && owner !== ownerPart) owner = owner.variants.find((candidate) => candidate.id === (ownerPartId === this.selectedPartId ? this.selectedVariantId : owner.defaultVariantId)) || owner;
+      const owner = ruleOwnerFromDefinition(next, ownerDefinition);
+      if (!owner) return;
       const target = {
         partId: targetPartId,
         ...(targetItemId ? { itemId: targetItemId } : {}),
@@ -2423,7 +2906,25 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'player-complete') {
+      const issues = this.playerCompletionIssues(document, this.playerRecipe);
+      if (issues.length) {
+        this.callbacks.onPlayerError?.(new Error(issues[0]));
+        return;
+      }
+      this.playerPublishOpen = true;
       this.callbacks.onCompleteOc?.({ document, recipe: this.playerRecipe, profile: this.playerProfile, assets: this.assets });
+      this.render();
+      return;
+    }
+    if (action === 'close-player-publish') {
+      this.playerPublishOpen = false;
+      this.render();
+      return;
+    }
+    const playerPublishActions = new Set(['player-publish-resume', 'player-publish-prepare', 'player-publish-register', 'player-publish-certify', 'player-publish-onchain']);
+    if (playerPublishActions.has(action)) {
+      this.playerPublishOpen = true;
+      this.callbacks.onPlayerPublishAction?.(action.replace('player-publish-', ''));
     }
   }
 

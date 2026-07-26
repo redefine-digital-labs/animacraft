@@ -4,7 +4,7 @@
 
 适用对象：真人画师、Maker 制作者、测试玩家、审核与运营人员
 
-产品理念：**The Fully onchain Character Maker & Creator.**
+产品理念：**The Fully Onchain Character Maker & Creator.**
 
 > 本文是邀请真人创作者测试时的主教程。美术文件的尺寸、拆层、命名和交付要求另见 [Maker v4 创作者素材交付规范](./CREATOR_ASSET_SPEC_V4.zh-CN.md)。当前 Creator Studio 的布局以 [PR #15 UI 基线](./UI_BASELINE.md) 为准，后续只细化既有功能，不随意改变整体布局。
 
