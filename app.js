@@ -252,7 +252,7 @@ const chainActions = [
 
 const i18n = {
   en: {
-    brandTagline: 'The Fully onchain Character Maker & Creator',
+    brandTagline: 'The Fully Onchain Character Maker & Creator',
     navTemplates: 'Templates',
     navDocs: 'Docs',
     languageLabel: 'Language',
@@ -328,7 +328,7 @@ const i18n = {
     currentColor: 'Current color',
   },
   zh: {
-    brandTagline: 'The Fully onchain Character Maker & Creator',
+    brandTagline: 'The Fully Onchain Character Maker & Creator',
     navTemplates: '模板广场',
     navDocs: '文档',
     languageLabel: '语言',
@@ -404,7 +404,7 @@ const i18n = {
     currentColor: '当前颜色',
   },
   ja: {
-    brandTagline: 'The Fully onchain Character Maker & Creator',
+    brandTagline: 'The Fully Onchain Character Maker & Creator',
     navTemplates: 'テンプレート',
     navDocs: 'ドキュメント',
     languageLabel: '言語',
@@ -480,7 +480,7 @@ const i18n = {
     currentColor: '現在の色',
   },
   ko: {
-    brandTagline: 'The Fully onchain Character Maker & Creator',
+    brandTagline: 'The Fully Onchain Character Maker & Creator',
     navTemplates: '템플릿',
     navDocs: '문서',
     languageLabel: '언어',
@@ -556,7 +556,7 @@ const i18n = {
     currentColor: '현재 색상',
   },
   vi: {
-    brandTagline: 'The Fully onchain Character Maker & Creator',
+    brandTagline: 'The Fully Onchain Character Maker & Creator',
     navTemplates: 'Mẫu',
     navDocs: 'Tài liệu',
     languageLabel: 'Ngôn ngữ',

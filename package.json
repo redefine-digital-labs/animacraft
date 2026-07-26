@@ -3,7 +3,7 @@
   "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "The Fully onchain Character Maker & Creator",
+  "description": "The Fully Onchain Character Maker & Creator",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",

@@ -1,6 +1,6 @@
 # Animacraft
 
-**The Fully onchain Character Maker & Creator.**
+**The Fully Onchain Character Maker & Creator.**
 
 Animacraft is a standalone, backendless Character Maker editor for artists and OC users. Creators build reusable Makers from layered PNG assets; users combine those Makers into an OC and continue to Soulidity for the single canonical Soul mint. Walrus stores creative files and Living Content, while Sui records Maker provenance, rules, rights, and revenue.
 
