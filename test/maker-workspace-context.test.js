@@ -171,6 +171,118 @@ test('Soul Markdown is an independent undoable Maker document edit', async () =>
   workspace.destroy();
 }));
 
+test('Draft Recovery commits an isolated v5 copy and verifies it before returning', async () => {
+  const records = new Map();
+  const calls = [];
+  const repository = {
+    async load(makerKey) {
+      calls.push(`load:${makerKey}`);
+      return records.has(makerKey) ? structuredClone(records.get(makerKey)) : null;
+    },
+    async save(makerKey, snapshot) {
+      calls.push(`save:${makerKey}:${snapshot.revision}`);
+      records.set(makerKey, {
+        makerKey,
+        revision: snapshot.revision,
+        document: structuredClone(snapshot.document),
+        recipe: structuredClone(snapshot.recipe),
+        assets: structuredClone(snapshot.assets),
+        metadata: structuredClone(snapshot.metadata),
+        savedAt: 123,
+      });
+      return { confirmed: true, conflict: false, persistedRevision: snapshot.revision };
+    },
+    async flush(makerKey) {
+      calls.push(`flush:${makerKey}`);
+      return { persistedRevision: 0 };
+    },
+  };
+  const workspace = createMakerWorkspace({ callbacks: {}, draftRepository: repository });
+  const document = createCharacterMakerV5Starter({
+    makerId: 'recovered-copy',
+    name: 'Recovered Copy',
+  });
+  const assets = [{ assetId: 'recovery-png', blob: new Blob(['png'], { type: 'image/png' }) }];
+
+  const recovered = await workspace.commitRecoveredDraftCopy({
+    makerKey: 'wallet:recovered-copy',
+    document,
+    recipe: document.defaultRecipe,
+    assets,
+    metadata: { walletAddress: 'wallet' },
+  });
+
+  assert.equal(recovered.document.metadata.name, 'Recovered Copy');
+  assert.equal(recovered.assets[0].assetId, 'recovery-png');
+  assert.equal(recovered.metadata.recoveryCopy, true);
+  assert.deepEqual(calls, [
+    'load:wallet:recovered-copy',
+    'save:wallet:recovered-copy:0',
+    'flush:wallet:recovered-copy',
+    'load:wallet:recovered-copy',
+  ]);
+  await assert.rejects(
+    workspace.commitRecoveredDraftCopy({
+      makerKey: 'wallet:recovered-copy',
+      document,
+      assets,
+    }),
+    /already exists/,
+  );
+  workspace.destroy();
+});
+
+test('Draft Recovery rejects a copy when persisted PNG bytes do not match', async () => {
+  let saved = null;
+  const repository = {
+    async load(makerKey) {
+      if (!saved) return null;
+      return {
+        makerKey,
+        revision: saved.revision,
+        document: structuredClone(saved.document),
+        recipe: structuredClone(saved.recipe),
+        assets: [{
+          ...structuredClone(saved.assets[0]),
+          blob: new Blob(['corrupt'], { type: 'image/png' }),
+        }],
+        metadata: structuredClone(saved.metadata),
+        savedAt: 123,
+      };
+    },
+    async save(_makerKey, snapshot) {
+      saved = structuredClone(snapshot);
+      return { confirmed: true, conflict: false, persistedRevision: snapshot.revision };
+    },
+    async flush() {
+      return { persistedRevision: 0 };
+    },
+  };
+  const workspace = createMakerWorkspace({ callbacks: {}, draftRepository: repository });
+  const document = createCharacterMakerV5Starter({
+    makerId: 'corrupt-recovery-copy',
+    name: 'Corrupt Recovery Copy',
+  });
+
+  await assert.rejects(
+    workspace.commitRecoveredDraftCopy({
+      makerKey: 'wallet:corrupt-recovery-copy',
+      document,
+      assets: [{
+        assetId: 'recovery-png',
+        identifier: 'recovery.png',
+        kind: 'layer',
+        mediaType: 'image/png',
+        width: 1,
+        height: 1,
+        blob: new Blob(['png'], { type: 'image/png' }),
+      }],
+    }),
+    /read-back verification/,
+  );
+  workspace.destroy();
+});
+
 test('pending Creator text is committed before toolbar actions and becomes undoable', async () => withAnimationFrame(async () => {
   const workspace = createMakerWorkspace({ callbacks: {} });
   const document = createCharacterMakerV5Starter({ makerId: 'text-buffer', name: 'Text Buffer' });

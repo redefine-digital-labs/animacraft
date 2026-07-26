@@ -245,7 +245,10 @@
                 <h1 data-i18n="creatorStudio">Creator Studio</h1>
                 <p data-i18n="creatorStudioCopy">Create, test, and publish Character Makers from one wallet-owned workspace.</p>
               </div>
-              <button class="primary" data-new-maker-panel data-i18n="newOcMaker">New OC Maker</button>
+              <div class="creator-workshop-actions">
+                <button id="openDraftRecovery" class="secondary" type="button">Draft Recovery</button>
+                <button class="primary" data-new-maker-panel data-i18n="newOcMaker">New OC Maker</button>
+              </div>
             </div>
 
             <div class="creator-view active" data-creator-view="list">
@@ -719,6 +722,30 @@
             <div class="modal-actions">
               <button class="secondary" data-close-maker-modal>Cancel</button>
               <button id="registerMaker" class="primary">Create OC Maker</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="draftRecoveryModal" class="maker-modal" aria-hidden="true">
+          <div class="modal-card draft-recovery-modal" role="dialog" aria-modal="true" aria-labelledby="draftRecoveryTitle" aria-describedby="draftRecoveryIntro">
+            <div class="modal-head">
+              <div>
+                <p class="kicker">Local safety</p>
+                <h2 id="draftRecoveryTitle">Draft Recovery Center</h2>
+              </div>
+              <button class="modal-close" data-close-draft-recovery aria-label="Close">×</button>
+            </div>
+            <div class="modal-body">
+              <p id="draftRecoveryIntro">
+                Animacraft scans current and legacy browser storage without deleting or changing it.
+                Export any discovery first, or restore a compatible Maker as a new independent copy.
+              </p>
+              <div id="draftRecoveryStatus" class="draft-recovery-status" role="status" aria-live="polite"></div>
+              <div id="draftRecoveryList" class="draft-recovery-list"></div>
+            </div>
+            <div class="modal-actions">
+              <button id="rescanDraftRecovery" class="secondary" type="button">Scan again</button>
+              <button class="primary" type="button" data-close-draft-recovery>Done</button>
             </div>
           </div>
         </div>

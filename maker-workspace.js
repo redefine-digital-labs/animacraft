@@ -111,6 +111,22 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function persistedAssetBlob(record) {
+  const value = record?.blob || record?.file;
+  return typeof Blob !== 'undefined' && value instanceof Blob ? value : null;
+}
+
+async function blobPayloadsEqual(left, right) {
+  if (!left || !right || left.size !== right.size || left.type !== right.type) return false;
+  const leftBytes = new Uint8Array(await left.arrayBuffer());
+  const rightBytes = new Uint8Array(await right.arrayBuffer());
+  if (leftBytes.length !== rightBytes.length) return false;
+  for (let index = 0; index < leftBytes.length; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) return false;
+  }
+  return true;
+}
+
 function browserLocalStorage() {
   if (typeof globalThis.window === 'undefined') return null;
   try {
@@ -1455,6 +1471,95 @@ export class MakerWorkspace {
 
   async listDraftProjects(filter = {}) {
     return this.draftRepository.listProjects(filter);
+  }
+
+  async loadDraftProject(makerKey) {
+    return this.draftRepository.load(makerKey);
+  }
+
+  async commitRecoveredDraftCopy({
+    makerKey,
+    document,
+    recipe = document?.defaultRecipe,
+    assets = [],
+    metadata = {},
+  } = {}) {
+    const requestedMakerKey = String(makerKey || '').trim();
+    if (!requestedMakerKey) throw new Error('A new Maker key is required for recovery.');
+    if (!isMakerV5Document(document)) {
+      throw new Error('Only Maker v5 drafts can be restored automatically.');
+    }
+    if (!Array.isArray(assets)) throw new Error('Recovered Maker assets must be an array.');
+
+    const existing = await this.draftRepository.load(requestedMakerKey);
+    if (existing) throw new Error('The recovery destination already exists.');
+
+    const snapshot = {
+      revision: 0,
+      baseRevision: null,
+      document: clone(document),
+      recipe: clone(recipe || document.defaultRecipe),
+      assets: clone(assets),
+      metadata: {
+        ...clone(metadata),
+        recoveryCopy: true,
+      },
+    };
+    const committed = await this.draftRepository.save(requestedMakerKey, snapshot);
+    if (!committed?.confirmed || committed.conflict) {
+      throw new Error('The recovered Maker could not be committed without a storage conflict.');
+    }
+    await this.draftRepository.flush(requestedMakerKey);
+
+    const verified = await this.draftRepository.load(requestedMakerKey);
+    const documentMatches = verified?.document
+      && JSON.stringify(verified.document) === JSON.stringify(snapshot.document);
+    const recipeMatches = verified?.recipe
+      && JSON.stringify(verified.recipe) === JSON.stringify(snapshot.recipe);
+    const expectedAssets = new Map();
+    snapshot.assets.forEach((asset) => {
+      const assetId = String(asset?.assetId || '').trim();
+      if (!assetId) throw new Error('Every recovered Maker asset needs an Asset ID.');
+      if (expectedAssets.has(assetId)) {
+        throw new Error(`Recovered Maker asset "${assetId}" is duplicated.`);
+      }
+      expectedAssets.set(assetId, asset);
+    });
+    const verifiedAssets = new Map(
+      (verified?.assets || []).map((asset) => [String(asset?.assetId || '').trim(), asset]),
+    );
+    let assetsMatch = expectedAssets.size === verifiedAssets.size;
+    for (const [assetId, expectedAsset] of expectedAssets) {
+      const verifiedAsset = verifiedAssets.get(assetId);
+      if (!verifiedAsset) {
+        assetsMatch = false;
+        break;
+      }
+      const expectedBlob = persistedAssetBlob(expectedAsset);
+      if (expectedBlob) {
+        const verifiedBlob = persistedAssetBlob(verifiedAsset);
+        if (!await blobPayloadsEqual(expectedBlob, verifiedBlob)) {
+          assetsMatch = false;
+          break;
+        }
+      }
+      for (const field of ['identifier', 'kind', 'mediaType', 'width', 'height', 'url']) {
+        if ((expectedAsset[field] ?? null) !== (verifiedAsset[field] ?? null)) {
+          assetsMatch = false;
+          break;
+        }
+      }
+      if (!assetsMatch) break;
+    }
+    if (
+      verified?.revision !== 0
+      || !documentMatches
+      || !recipeMatches
+      || !assetsMatch
+    ) {
+      throw new Error('The recovered Maker failed its storage read-back verification.');
+    }
+    return verified;
   }
 
   async deleteDraftProject(makerKey) {

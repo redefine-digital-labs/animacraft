@@ -50,6 +50,12 @@ import {
 import { createMakerWorkspace } from './maker-workspace.js';
 import { initializeMakerDraftStorage } from './maker-storage-initializer.js';
 import {
+  legacyRecoveryExportPayload,
+  normalizeRecoveredMakerRecipe,
+  prepareRecoveredMakerAssets,
+  scanLegacyMakerDrafts,
+} from './maker-legacy-recovery.js';
+import {
   createCharacterMakerV4Starter,
   createMakerV4Document,
   isMakerV4Document,
@@ -716,6 +722,136 @@ const livingStatusI18n = {
 
 Object.entries(livingStatusI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
 
+const draftRecoveryI18n = {
+  en: {
+    draftRecovery: 'Draft Recovery',
+    draftRecoveryTitle: 'Draft Recovery Center',
+    draftRecoveryKicker: 'Local safety',
+    draftRecoveryIntro: 'Animacraft scans current and legacy browser storage without deleting or changing it. Export any discovery first, or restore a compatible Maker as a new independent copy.',
+    draftRecoveryScan: 'Scan again',
+    draftRecoveryDone: 'Done',
+    draftRecoveryScanning: 'Scanning current and legacy browser storage…',
+    draftRecoveryEmpty: 'No Maker draft records were found in this browser.',
+    draftRecoveryFound: '{count} draft record(s) found. Source data remains untouched.',
+    draftRecoveryExport: 'Export backup',
+    draftRecoveryRestore: 'Restore as copy',
+    draftRecoveryRestoring: 'Restoring…',
+    draftRecoveryUnsupported: 'Raw backup only; this older format cannot be migrated automatically.',
+    draftRecoveryComplete: 'Recovered “{name}” as a new independent Maker.',
+    draftRecoveryFailed: 'The selected draft could not be recovered safely.',
+    draftRecoveryCurrent: 'Current v6 workspace',
+    draftRecoveryWorkspaceV4: 'Legacy Workspace v4',
+    draftRecoveryCreatorDrafts: 'Legacy Creator draft',
+    draftRecoveryLocalDraft: 'Legacy local draft',
+    draftRecoveryLocalIndex: 'Legacy Maker index',
+    draftRecoveryUnknownWallet: 'Unknown wallet',
+    draftRecoveryAssets: '{count} asset(s)',
+    draftRecoveryRevision: 'revision {revision}',
+  },
+  zh: {
+    draftRecovery: '草稿恢复',
+    draftRecoveryTitle: '草稿恢复中心',
+    draftRecoveryKicker: '本地数据安全',
+    draftRecoveryIntro: 'Animacraft 会以只读方式扫描新版和旧版浏览器存储，绝不删除或修改源数据。你可以先导出任何记录，再把兼容的 Maker 恢复为全新的独立副本。',
+    draftRecoveryScan: '重新扫描',
+    draftRecoveryDone: '完成',
+    draftRecoveryScanning: '正在扫描新版与旧版浏览器存储…',
+    draftRecoveryEmpty: '此浏览器中没有发现 Maker 草稿记录。',
+    draftRecoveryFound: '发现 {count} 条草稿记录，所有源数据均保持不变。',
+    draftRecoveryExport: '导出备份',
+    draftRecoveryRestore: '恢复为副本',
+    draftRecoveryRestoring: '正在恢复…',
+    draftRecoveryUnsupported: '只能导出原始备份；这个旧格式无法安全地自动迁移。',
+    draftRecoveryComplete: '已把“{name}”恢复为新的独立 Maker。',
+    draftRecoveryFailed: '无法安全恢复所选草稿。',
+    draftRecoveryCurrent: '当前 v6 工作区',
+    draftRecoveryWorkspaceV4: '旧版 Workspace v4',
+    draftRecoveryCreatorDrafts: '旧版 Creator 草稿',
+    draftRecoveryLocalDraft: '旧版本地草稿',
+    draftRecoveryLocalIndex: '旧版 Maker 索引',
+    draftRecoveryUnknownWallet: '未知钱包',
+    draftRecoveryAssets: '{count} 个素材',
+    draftRecoveryRevision: '修订版 {revision}',
+  },
+  ja: {
+    draftRecovery: '下書き復旧',
+    draftRecoveryTitle: '下書き復旧センター',
+    draftRecoveryKicker: 'ローカル保護',
+    draftRecoveryIntro: '現在と旧版のブラウザ保存領域を読み取り専用で検査します。元データは削除・変更されません。記録を先に書き出し、対応 Maker は独立コピーとして復旧できます。',
+    draftRecoveryScan: '再スキャン',
+    draftRecoveryDone: '完了',
+    draftRecoveryScanning: '現在と旧版の保存領域をスキャン中…',
+    draftRecoveryEmpty: 'このブラウザに Maker 下書きは見つかりませんでした。',
+    draftRecoveryFound: '{count} 件の記録を発見しました。元データは変更されません。',
+    draftRecoveryExport: 'バックアップを書き出す',
+    draftRecoveryRestore: 'コピーとして復旧',
+    draftRecoveryRestoring: '復旧中…',
+    draftRecoveryUnsupported: '元データの書き出しのみ可能です。この旧形式は自動移行できません。',
+    draftRecoveryComplete: '「{name}」を新しい独立 Maker として復旧しました。',
+    draftRecoveryFailed: '選択した下書きを安全に復旧できませんでした。',
+    draftRecoveryCurrent: '現在の v6 ワークスペース',
+    draftRecoveryWorkspaceV4: '旧 Workspace v4',
+    draftRecoveryCreatorDrafts: '旧 Creator 下書き',
+    draftRecoveryLocalDraft: '旧ローカル下書き',
+    draftRecoveryLocalIndex: '旧 Maker インデックス',
+    draftRecoveryUnknownWallet: '不明なウォレット',
+    draftRecoveryAssets: '{count} 個の素材',
+    draftRecoveryRevision: 'リビジョン {revision}',
+  },
+  ko: {
+    draftRecovery: '초안 복구',
+    draftRecoveryTitle: '초안 복구 센터',
+    draftRecoveryKicker: '로컬 데이터 보호',
+    draftRecoveryIntro: '현재 및 이전 브라우저 저장소를 읽기 전용으로 검사합니다. 원본은 삭제하거나 변경하지 않습니다. 먼저 백업을 내보내고 호환 Maker를 독립 복사본으로 복구할 수 있습니다.',
+    draftRecoveryScan: '다시 검사',
+    draftRecoveryDone: '완료',
+    draftRecoveryScanning: '현재 및 이전 브라우저 저장소 검사 중…',
+    draftRecoveryEmpty: '이 브라우저에서 Maker 초안을 찾지 못했습니다.',
+    draftRecoveryFound: '{count}개 기록을 찾았습니다. 원본 데이터는 그대로 유지됩니다.',
+    draftRecoveryExport: '백업 내보내기',
+    draftRecoveryRestore: '복사본으로 복구',
+    draftRecoveryRestoring: '복구 중…',
+    draftRecoveryUnsupported: '원본 백업만 가능합니다. 이 이전 형식은 자동 이전할 수 없습니다.',
+    draftRecoveryComplete: '“{name}”을 새 독립 Maker로 복구했습니다.',
+    draftRecoveryFailed: '선택한 초안을 안전하게 복구하지 못했습니다.',
+    draftRecoveryCurrent: '현재 v6 작업 공간',
+    draftRecoveryWorkspaceV4: '이전 Workspace v4',
+    draftRecoveryCreatorDrafts: '이전 Creator 초안',
+    draftRecoveryLocalDraft: '이전 로컬 초안',
+    draftRecoveryLocalIndex: '이전 Maker 인덱스',
+    draftRecoveryUnknownWallet: '알 수 없는 지갑',
+    draftRecoveryAssets: '소재 {count}개',
+    draftRecoveryRevision: '리비전 {revision}',
+  },
+  vi: {
+    draftRecovery: 'Khôi phục bản nháp',
+    draftRecoveryTitle: 'Trung tâm khôi phục bản nháp',
+    draftRecoveryKicker: 'An toàn dữ liệu cục bộ',
+    draftRecoveryIntro: 'Animacraft quét bộ nhớ trình duyệt hiện tại và cũ ở chế độ chỉ đọc, không xóa hay thay đổi dữ liệu nguồn. Bạn có thể xuất bản sao lưu trước hoặc khôi phục Maker tương thích thành một bản sao độc lập.',
+    draftRecoveryScan: 'Quét lại',
+    draftRecoveryDone: 'Xong',
+    draftRecoveryScanning: 'Đang quét bộ nhớ trình duyệt hiện tại và cũ…',
+    draftRecoveryEmpty: 'Không tìm thấy bản nháp Maker trong trình duyệt này.',
+    draftRecoveryFound: 'Đã tìm thấy {count} bản ghi. Dữ liệu nguồn không bị thay đổi.',
+    draftRecoveryExport: 'Xuất bản sao lưu',
+    draftRecoveryRestore: 'Khôi phục thành bản sao',
+    draftRecoveryRestoring: 'Đang khôi phục…',
+    draftRecoveryUnsupported: 'Chỉ có thể xuất bản sao lưu thô; định dạng cũ này không thể tự động di chuyển.',
+    draftRecoveryComplete: 'Đã khôi phục “{name}” thành một Maker độc lập mới.',
+    draftRecoveryFailed: 'Không thể khôi phục an toàn bản nháp đã chọn.',
+    draftRecoveryCurrent: 'Workspace v6 hiện tại',
+    draftRecoveryWorkspaceV4: 'Workspace v4 cũ',
+    draftRecoveryCreatorDrafts: 'Bản nháp Creator cũ',
+    draftRecoveryLocalDraft: 'Bản nháp cục bộ cũ',
+    draftRecoveryLocalIndex: 'Chỉ mục Maker cũ',
+    draftRecoveryUnknownWallet: 'Ví không xác định',
+    draftRecoveryAssets: '{count} tài nguyên',
+    draftRecoveryRevision: 'bản sửa đổi {revision}',
+  },
+};
+
+Object.entries(draftRecoveryI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
+
 const requiredLocaleKeys = Object.keys(i18n.en);
 Object.entries(i18n).forEach(([locale, dictionary]) => {
   const missing = requiredLocaleKeys.filter((key) => !Object.hasOwn(dictionary, key));
@@ -828,6 +964,11 @@ const state = {
   ownedCharactersLoadedFor: '',
   draftSaveStatus: 'idle',
   draftSaveMessage: '',
+  draftRecoveryStatus: 'idle',
+  draftRecoveryRecords: [],
+  draftRecoveryError: '',
+  draftRecoveryMessage: '',
+  draftRecoveryBusyId: '',
   locale: Object.hasOwn(i18n, localStorage.getItem('animacraft-locale') || '') ? localStorage.getItem('animacraft-locale') : 'en',
 };
 
@@ -847,6 +988,7 @@ const loadedOcUploadRecoveries = new Set();
 let pendingConfirmation = null;
 let makerAutosaveTimer = null;
 let makerWorkspace = null;
+let draftRecoveryRequestId = 0;
 
 function makerDraftStorageKey(templateId = state.templateId) {
   return `animacraft-maker-draft-v2:${state.walletAddress || 'local'}:${templateId}`;
@@ -1211,6 +1353,384 @@ async function recoverStableMakerIndex(address = state.walletAddress) {
     state.draftSaveMessage = error.message || 'The local Maker library could not be rebuilt.';
     renderMakerLifecycle();
   }
+}
+
+function currentDraftRecoveryRecord(record) {
+  const document = record?.document || null;
+  const revision = Number.isSafeInteger(record?.metadata?.draftRevision)
+    ? record.metadata.draftRevision
+    : null;
+  const makerKey = String(record?.makerKey || '');
+  const recoverable = isMakerV4Document(document);
+  return {
+    id: `current-v6:${encodeURIComponent(makerKey)}:${revision ?? 'unknown'}`,
+    source: 'workspace-v6',
+    makerKey,
+    makerId: String(record?.metadata?.rootMakerId || document?.version?.rootMakerId || ''),
+    walletAddress: String(record?.metadata?.walletAddress || ''),
+    savedAt: Number.isFinite(record?.savedAt) ? record.savedAt : null,
+    revision,
+    document: recoverable ? structuredClone(document) : null,
+    recipe: recoverable
+      ? structuredClone(record?.metadata?.recipe || document.defaultRecipe)
+      : null,
+    assets: [],
+    assetCount: Array.isArray(document?.assets) ? document.assets.length : 0,
+    raw: {
+      databaseName: 'animacraft-maker-workspace-v6',
+      projectRecord: structuredClone(record),
+      assetsLoadedOnDemand: true,
+    },
+    recoverable,
+    status: recoverable ? 'recoverable' : 'raw-only',
+    issues: recoverable ? [] : [{
+      code: 'maker-document-missing',
+      message: 'The v6 record does not contain a compatible animacraft.maker.v5 document.',
+    }],
+    sourceKey: makerKey,
+  };
+}
+
+function draftRecoverySourceLabel(source) {
+  return {
+    'workspace-v6': t('draftRecoveryCurrent'),
+    'workspace-v4': t('draftRecoveryWorkspaceV4'),
+    'creator-drafts': t('draftRecoveryCreatorDrafts'),
+    'local-storage-draft': t('draftRecoveryLocalDraft'),
+    'local-storage-index': t('draftRecoveryLocalIndex'),
+  }[source] || source || t('draftRecoveryLocalDraft');
+}
+
+function draftRecoveryName(record) {
+  return safeDraftText(
+    record?.document?.metadata?.name
+      || record?.raw?.indexRecord?.name
+      || record?.raw?.projectRecord?.document?.metadata?.name
+      || record?.makerId
+      || record?.makerKey,
+    'Unknown Maker draft',
+    128,
+  );
+}
+
+function draftRecoveryMetrics(record) {
+  const parts = Array.isArray(record?.document?.parts) ? record.document.parts : [];
+  return {
+    parts: parts.length,
+    items: parts.reduce((total, part) => total + (Array.isArray(part?.items) ? part.items.length : 0), 0),
+    styles: parts.reduce((total, part) => total + (part?.items || []).reduce(
+      (itemTotal, item) => itemTotal + (Array.isArray(item?.styles) ? item.styles.length : 0),
+      0,
+    ), 0),
+  };
+}
+
+function formatDraftRecoveryTime(value) {
+  if (!Number.isFinite(value)) return 'Unknown time';
+  return new Date(value).toLocaleString({
+    en: 'en-US',
+    zh: 'zh-CN',
+    ja: 'ja-JP',
+    ko: 'ko-KR',
+    vi: 'vi-VN',
+  }[state.locale] || 'en-US');
+}
+
+function renderDraftRecoveryCenter() {
+  if (!$('draftRecoveryModal')) return;
+  $('openDraftRecovery').textContent = t('draftRecovery');
+  $('draftRecoveryTitle').textContent = t('draftRecoveryTitle');
+  $('draftRecoveryModal').querySelector('.kicker').textContent = t('draftRecoveryKicker');
+  $('draftRecoveryIntro').textContent = t('draftRecoveryIntro');
+  $('rescanDraftRecovery').textContent = t('draftRecoveryScan');
+  $('draftRecoveryModal').querySelector('[data-close-draft-recovery].primary').textContent = t('draftRecoveryDone');
+
+  const status = $('draftRecoveryStatus');
+  status.classList.toggle('error', Boolean(state.draftRecoveryError));
+  if (state.draftRecoveryStatus === 'loading') status.textContent = t('draftRecoveryScanning');
+  else if (state.draftRecoveryError) status.textContent = state.draftRecoveryError;
+  else if (state.draftRecoveryMessage) status.textContent = state.draftRecoveryMessage;
+  else if (state.draftRecoveryStatus === 'ready') {
+    status.textContent = state.draftRecoveryRecords.length
+      ? t('draftRecoveryFound', { count: state.draftRecoveryRecords.length })
+      : t('draftRecoveryEmpty');
+  } else status.textContent = '';
+
+  $('draftRecoveryList').innerHTML = state.draftRecoveryRecords.map((record) => {
+    const metrics = draftRecoveryMetrics(record);
+    const wallet = record.walletAddress
+      ? shortAddress(record.walletAddress)
+      : t('draftRecoveryUnknownWallet');
+    const revision = Number.isSafeInteger(record.revision)
+      ? t('draftRecoveryRevision', { revision: record.revision })
+      : 'revision unknown';
+    const assetCount = Number.isInteger(record.assetCount)
+      ? record.assetCount
+      : Array.isArray(record.assets) ? record.assets.length : 0;
+    const crossWallet = record.walletAddress
+      && state.walletAddress
+      && record.walletAddress !== state.walletAddress
+      ? ` · ${shortAddress(record.walletAddress)} → ${shortAddress(state.walletAddress)}`
+      : '';
+    const issues = (record.issues || []).map((entry) => entry?.message).filter(Boolean);
+    const busy = state.draftRecoveryBusyId === record.id;
+    return `
+      <article class="draft-recovery-card">
+        <div>
+          <h3>${escapeHtml(draftRecoveryName(record))}</h3>
+          <p class="draft-recovery-meta">
+            ${escapeHtml(draftRecoverySourceLabel(record.source))} ·
+            ${escapeHtml(wallet)}${escapeHtml(crossWallet)} ·
+            ${escapeHtml(formatDraftRecoveryTime(record.savedAt))} ·
+            ${escapeHtml(revision)} ·
+            ${escapeHtml(t('draftRecoveryAssets', { count: assetCount }))} ·
+            ${metrics.parts} Part / ${metrics.items} Item / ${metrics.styles} Style
+          </p>
+          ${issues.length
+            ? `<p class="draft-recovery-issue">${escapeHtml(issues.join(' '))}</p>`
+            : !record.recoverable
+              ? `<p class="draft-recovery-issue">${escapeHtml(t('draftRecoveryUnsupported'))}</p>`
+              : ''}
+        </div>
+        <div class="draft-recovery-actions">
+          <button class="secondary" type="button" data-recovery-action="export" data-recovery-id="${escapeHtml(record.id)}" ${busy ? 'disabled' : ''}>
+            ${escapeHtml(t('draftRecoveryExport'))}
+          </button>
+          <button class="primary" type="button" data-recovery-action="restore" data-recovery-id="${escapeHtml(record.id)}" ${!record.recoverable || busy ? 'disabled' : ''}>
+            ${escapeHtml(t(busy ? 'draftRecoveryRestoring' : 'draftRecoveryRestore'))}
+          </button>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+async function refreshDraftRecoveryCenter() {
+  const requestId = ++draftRecoveryRequestId;
+  const requestedWallet = state.walletAddress;
+  state.draftRecoveryStatus = 'loading';
+  state.draftRecoveryError = '';
+  state.draftRecoveryMessage = '';
+  state.draftRecoveryBusyId = '';
+  state.draftRecoveryRecords = [];
+  renderDraftRecoveryCenter();
+
+  const [currentResult, legacyResult] = await Promise.allSettled([
+    makerWorkspace?.listDraftProjects({}) || Promise.resolve([]),
+    scanLegacyMakerDrafts(),
+  ]);
+  if (
+    requestId !== draftRecoveryRequestId
+    || requestedWallet !== state.walletAddress
+    || !$('draftRecoveryModal').classList.contains('active')
+  ) return;
+
+  const currentRecords = currentResult.status === 'fulfilled'
+    ? currentResult.value.map(currentDraftRecoveryRecord)
+    : [];
+  const legacyRecords = legacyResult.status === 'fulfilled' ? legacyResult.value : [];
+  state.draftRecoveryRecords = [...currentRecords, ...legacyRecords].sort((left, right) => (
+    Number(right.savedAt ?? -1) - Number(left.savedAt ?? -1)
+    || left.id.localeCompare(right.id)
+  ));
+  const errors = [
+    currentResult.status === 'rejected'
+      ? `Current v6 workspace: ${currentResult.reason?.message || 'scan failed'}`
+      : '',
+    legacyResult.status === 'rejected'
+      ? `Legacy storage: ${legacyResult.reason?.message || 'scan failed'}`
+      : '',
+  ].filter(Boolean);
+  state.draftRecoveryError = errors.join(' ');
+  state.draftRecoveryStatus = 'ready';
+  renderDraftRecoveryCenter();
+}
+
+function openDraftRecoveryCenter() {
+  $('draftRecoveryModal').classList.add('active');
+  $('draftRecoveryModal').setAttribute('aria-hidden', 'false');
+  $('draftRecoveryTitle').focus?.();
+  void refreshDraftRecoveryCenter();
+}
+
+function closeDraftRecoveryCenter() {
+  draftRecoveryRequestId += 1;
+  state.draftRecoveryRecords = [];
+  state.draftRecoveryStatus = 'idle';
+  state.draftRecoveryError = '';
+  state.draftRecoveryMessage = '';
+  state.draftRecoveryBusyId = '';
+  $('draftRecoveryList').replaceChildren();
+  $('draftRecoveryModal').classList.remove('active');
+  $('draftRecoveryModal').setAttribute('aria-hidden', 'true');
+}
+
+function draftRecoveryRecord(recordId) {
+  return state.draftRecoveryRecords.find((record) => record.id === recordId) || null;
+}
+
+async function materializeDraftRecoveryRecord(record) {
+  if (record.source !== 'workspace-v6') return record;
+  const loaded = await makerWorkspace.loadDraftProject(record.makerKey);
+  if (!loaded?.document) throw new Error('The selected v6 Maker draft is no longer available.');
+  return {
+    ...record,
+    document: loaded.document,
+    recipe: loaded.recipe || loaded.document.defaultRecipe,
+    assets: loaded.assets || [],
+    assetCount: (loaded.assets || []).length,
+    raw: {
+      ...record.raw,
+      project: loaded,
+    },
+  };
+}
+
+function recoveredMakerId(record) {
+  const base = slug(`${draftRecoveryName(record)}-recovered`).slice(0, 70) || 'recovered-maker';
+  const random = globalThis.crypto?.randomUUID?.().replaceAll('-', '').slice(0, 12)
+    || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+  return `${base}-${random}`.slice(0, 96);
+}
+
+function rebaseRecoveredExpansionIdentities(document, makerId) {
+  document.expansionPacks = (document.expansionPacks || []).map((pack) => ({
+    ...pack,
+    baseMakerId: makerId,
+    baseMakerVersion: 1,
+  }));
+  if (Array.isArray(document.extensions?.expansionDrafts)) {
+    document.extensions.expansionDrafts = document.extensions.expansionDrafts.map((pack) => ({
+      ...pack,
+      baseMakerId: makerId,
+      baseVersion: '1',
+      baseVersionRange: undefined,
+      baseManifestHash: undefined,
+      compatibility: pack.compatibility ? {
+        ...pack.compatibility,
+        baseVersion: '1',
+        baseVersionRange: undefined,
+        baseManifestHash: undefined,
+      } : pack.compatibility,
+    }));
+  }
+}
+
+function recoveredMakerDocument(record, makerId, ownerWallet) {
+  if (!isMakerV4Document(record.document)) {
+    throw new Error(t('draftRecoveryUnsupported'));
+  }
+  const document = structuredClone(record.document);
+  document.metadata.id = makerId;
+  document.metadata.name = utf8Truncate(`${draftRecoveryName(record)} · Recovered`, 128);
+  document.metadata.creator = shortAddress(ownerWallet) || document.metadata.creator;
+  document.version = {
+    rootMakerId: makerId,
+    versionId: `${makerId}-v1`.slice(0, 128),
+    number: 1,
+    parentVersionId: null,
+    compatibility: 'initial',
+    compatibleFrom: 1,
+    createdAt: null,
+    changelog: 'Recovered from a preserved local browser draft.',
+  };
+  document.runtime = {};
+  document.extensions ||= {};
+  rebaseRecoveredExpansionIdentities(document, makerId);
+  validateMakerV4Document(document, { mode: 'draft' });
+  return document;
+}
+
+function recoveredTemplate(document, makerId, ownerWallet) {
+  return {
+    id: makerId,
+    source: 'local',
+    owner: ownerWallet,
+    name: document.metadata.name,
+    category: 'daily',
+    creator: document.metadata.creator || shortAddress(ownerWallet) || 'Creator',
+    style: document.metadata.style || 'OC Maker',
+    license: creatorLicenseLabels[document.metadata.license?.kind] || 'Personal use',
+    royaltyBps: Number(document.publication?.royaltyBps || 0),
+    mintingEnabled: document.publication?.mintingEnabled !== false,
+    mintFeeEnabled: Boolean(document.publication?.mintFeeEnabled),
+    mintPriceAtomic: Number(document.publication?.mintPriceAtomic || 0),
+    price: 'Draft',
+    accent: '#27c5c8',
+    secondary: '#f0a23a',
+    summary: safeDraftText(document.metadata.summary, 'Recovered Character Maker draft.', 2_000),
+    licenseNote: safeDraftText(document.metadata.license?.note, 'Recovered local draft.', 2_000),
+  };
+}
+
+async function exportDraftRecoveryRecord(record) {
+  const materialized = await materializeDraftRecoveryRecord(record);
+  const payload = await legacyRecoveryExportPayload(materialized);
+  download(
+    `${slug(draftRecoveryName(record)) || 'maker'}-recovery.json`,
+    JSON.stringify(payload, null, 2),
+  );
+}
+
+async function restoreDraftRecoveryRecord(record) {
+  if (!record?.recoverable) throw new Error(t('draftRecoveryUnsupported'));
+  if (!state.walletConnected || !state.walletAddress) {
+    throw new Error('Connect the wallet that will own the recovered Maker copy.');
+  }
+  const flushed = await makerWorkspace.flushPendingChanges({ reason: 'recover-draft-copy' });
+  if (!flushed.saved) throw new Error('Save the current Maker before recovering another draft.');
+
+  const requestedWallet = state.walletAddress;
+  const materialized = await materializeDraftRecoveryRecord(record);
+  if (requestedWallet !== state.walletAddress) throw new Error('The connected wallet changed during recovery.');
+  const makerId = recoveredMakerId(materialized);
+  const document = recoveredMakerDocument(materialized, makerId, requestedWallet);
+  const recipe = normalizeRecoveredMakerRecipe(document, materialized.recipe);
+  const assets = prepareRecoveredMakerAssets(document, materialized.assets);
+  const makerKey = `${requestedWallet}:${makerId}`;
+  const verified = await makerWorkspace.commitRecoveredDraftCopy({
+    makerKey,
+    document,
+    recipe,
+    assets,
+    metadata: {
+      walletAddress: requestedWallet,
+      recoveredFromSource: materialized.source,
+      recoveredFromMakerKey: materialized.makerKey,
+      recoveredAt: Date.now(),
+    },
+  });
+  if (requestedWallet !== state.walletAddress) {
+    throw new Error('The connected wallet changed while the recovered copy was being saved. Reconnect the original destination wallet to find it in Draft Recovery.');
+  }
+  if (
+    verified.document?.version?.rootMakerId !== makerId
+    || verified.revision !== 0
+  ) {
+    throw new Error('The recovered Maker identity failed read-back verification.');
+  }
+
+  const template = recoveredTemplate(document, makerId, requestedWallet);
+  const model = makerModelFromV4Manifest(document, () => '');
+  // The adapter normally removes a published cover from an editable copy.
+  // Recovery is a full backup operation, so retain the exact recovered document.
+  model.makerDocumentV4 = structuredClone(document);
+  model.makerRecipeV4 = structuredClone(recipe);
+  model.makerRuntimeAssetsV4 = new Map(assets.map((asset) => [asset.assetId, asset]));
+  model.assets = [];
+  templates.unshift(template);
+  makerModels.set(makerId, model);
+  persistLocalMakerIndex(requestedWallet);
+
+  closeDraftRecoveryCenter();
+  activateMakerModel(makerId);
+  syncTemplateFields();
+  state.creatorView = 'edit';
+  state.editorPanel = 'parts';
+  state.draftSaveStatus = 'saved';
+  state.draftSaveMessage = t('draftRecoveryComplete', { name: document.metadata.name });
+  renderAll();
+  focusCreatorTop();
 }
 
 function suiObjectFields(object) {
@@ -2323,6 +2843,15 @@ function soulidityAppLink(pathname, params = {}) {
 
 function utf8Length(value) {
   return new TextEncoder().encode(String(value || '')).length;
+}
+
+function utf8Truncate(value, maximumBytes) {
+  let result = '';
+  for (const character of String(value || '')) {
+    if (utf8Length(result + character) > maximumBytes) break;
+    result += character;
+  }
+  return result;
 }
 
 function bytesToHex(bytes) {
@@ -5795,6 +6324,7 @@ function renderAll() {
   renderLivingContent();
   renderPackage();
   renderImageMakerList();
+  renderDraftRecoveryCenter();
   renderCreatorDetails();
   renderProtocol();
   renderChainStatus();
@@ -5934,6 +6464,8 @@ $('backToCreatorPreview')?.addEventListener('click', () => {
 document.querySelectorAll('[data-new-maker-panel]').forEach((button) => {
   button.addEventListener('click', openMakerModal);
 });
+
+$('openDraftRecovery')?.addEventListener('click', openDraftRecoveryCenter);
 
 document.querySelectorAll('[data-open-part-modal]').forEach((button) => {
   button.addEventListener('click', openPartModal);
@@ -6233,6 +6765,42 @@ document.querySelectorAll('[data-close-maker-modal]').forEach((button) => {
   button.addEventListener('click', closeMakerModal);
 });
 
+document.querySelectorAll('[data-close-draft-recovery]').forEach((button) => {
+  button.addEventListener('click', closeDraftRecoveryCenter);
+});
+
+$('rescanDraftRecovery')?.addEventListener('click', () => {
+  void refreshDraftRecoveryCenter();
+});
+
+$('draftRecoveryModal')?.addEventListener('click', (event) => {
+  if (event.target === $('draftRecoveryModal')) closeDraftRecoveryCenter();
+});
+
+$('draftRecoveryList')?.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-recovery-action]');
+  if (!button || button.disabled || state.draftRecoveryBusyId) return;
+  const record = draftRecoveryRecord(button.dataset.recoveryId);
+  if (!record) return;
+  state.draftRecoveryBusyId = record.id;
+  state.draftRecoveryError = '';
+  state.draftRecoveryMessage = '';
+  renderDraftRecoveryCenter();
+  try {
+    if (button.dataset.recoveryAction === 'export') {
+      await exportDraftRecoveryRecord(record);
+      state.draftRecoveryMessage = `“${draftRecoveryName(record)}” backup exported.`;
+    } else if (button.dataset.recoveryAction === 'restore') {
+      await restoreDraftRecoveryRecord(record);
+    }
+  } catch (error) {
+    state.draftRecoveryError = error.message || t('draftRecoveryFailed');
+  } finally {
+    state.draftRecoveryBusyId = '';
+    if ($('draftRecoveryModal').classList.contains('active')) renderDraftRecoveryCenter();
+  }
+});
+
 document.querySelectorAll('[data-canvas-choice]').forEach((button) => {
   button.addEventListener('click', () => {
     document.querySelectorAll('[data-canvas-choice]').forEach((item) => item.classList.toggle('active', item === button));
@@ -6288,7 +6856,8 @@ $('confirmActionButton').addEventListener('click', async () => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if ($('confirmActionModal').classList.contains('active')) closeConfirmation();
+  if ($('draftRecoveryModal').classList.contains('active')) closeDraftRecoveryCenter();
+  else if ($('confirmActionModal').classList.contains('active')) closeConfirmation();
   else if ($('partRegistrationModal').classList.contains('active')) closePartModal();
   else if ($('makerRegistrationModal').classList.contains('active')) closeMakerModal();
   else if ($('accountPanel').classList.contains('active')) closeAccountPanel();
