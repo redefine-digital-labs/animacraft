@@ -65,7 +65,7 @@ test('Maker v4 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(workspace, /renderResolvedScene\(scene, canvas/);
   assert.match(workspace, /data-action="player-none"/);
   assert.match(workspaceI18n, /Upload at least one layer PNG before player testing/);
-  assert.match(workspace, /this\.tr\(issues\.length === 1 \? 'reviewIssue' : 'reviewIssues'/);
+  assert.match(workspace, /this\.tr\(blockingIssues\.length === 1 \? 'reviewIssue' : 'reviewIssues'/);
   assert.match(workspaceI18n, /reviewIssues: 'Review \{count\} issues'/);
   assert.match(workspace, /class="v4-tool-modal-backdrop" data-action="close-tool-backdrop"/);
   assert.match(workspace, /id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true"/);

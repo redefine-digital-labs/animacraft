@@ -1782,7 +1782,8 @@ export class MakerWorkspace {
       this.render();
       return;
     }
-    if (action.startsWith('creator-publish-')) {
+    const creatorPublishActions = new Set(['creator-publish-resume', 'creator-publish-prepare', 'creator-publish-register', 'creator-publish-certify', 'creator-publish-onchain']);
+    if (creatorPublishActions.has(action)) {
       this.creatorPublishOpen = true;
       this.callbacks.onCreatorPublishAction?.(action.replace('creator-publish-', ''));
       return;
@@ -2920,7 +2921,8 @@ export class MakerWorkspace {
       this.render();
       return;
     }
-    if (action.startsWith('player-publish-')) {
+    const playerPublishActions = new Set(['player-publish-resume', 'player-publish-prepare', 'player-publish-register', 'player-publish-certify', 'player-publish-onchain']);
+    if (playerPublishActions.has(action)) {
       this.playerPublishOpen = true;
       this.callbacks.onPlayerPublishAction?.(action.replace('player-publish-', ''));
     }
