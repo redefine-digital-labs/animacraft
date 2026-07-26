@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { createCharacterMakerV5Starter } from '../maker-v4.js';
-import { createStyle, synchronizeDefaultRecipe } from '../maker-document-ops.js';
+import { synchronizeDefaultRecipe } from '../maker-document-ops.js';
 import { createMakerWorkspace } from '../maker-workspace.js';
 
 class FakeRoot {
@@ -16,6 +16,54 @@ class FakeRoot {
   removeEventListener() {}
   contains() { return false; }
   querySelector(selector) { return this.selectors[selector] || null; }
+}
+
+class FakeEventNode {
+  constructor({ width = 1024, height = 1024 } = {}) {
+    this.dataset = {};
+    this.style = {};
+    this.scrollLeft = 0;
+    this.scrollTop = 0;
+    this.captureCount = 0;
+    this.listeners = new Map();
+    this.classes = new Set();
+    this.classList = {
+      add: (...names) => names.forEach((name) => this.classes.add(name)),
+      remove: (...names) => names.forEach((name) => this.classes.delete(name)),
+      contains: (name) => this.classes.has(name),
+    };
+    this.rect = { left: 0, top: 0, width, height };
+  }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || new Set();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type, listener) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatch(type, event = {}) {
+    const next = {
+      button: 0,
+      clientX: 0,
+      clientY: 0,
+      pointerId: 1,
+      preventDefault() {},
+      ...event,
+    };
+    [...(this.listeners.get(type) || [])].forEach((listener) => listener(next));
+  }
+
+  getBoundingClientRect() {
+    return this.rect;
+  }
+
+  setPointerCapture() {
+    this.captureCount += 1;
+  }
 }
 
 function actionTarget(action, dataset = {}, textContent = '') {
@@ -42,19 +90,17 @@ async function withWorkspace(run, options = {}) {
     callback();
     return 1;
   };
-  const { playable = false, ...workspaceOptions } = options;
+  const { playable = false, prepareDocument = null, ...workspaceOptions } = options;
   const workspace = createMakerWorkspace(workspaceOptions);
   try {
     const document = createCharacterMakerV5Starter({ makerId: `qa-${Math.random()}`, name: 'QA Maker' });
     if (playable) {
       document.parts.forEach((part, index) => {
         const item = part.items[0];
-        const selectedStyle = createStyle(item, 'Default');
+        const selectedStyle = item.styles[0];
         selectedStyle.layerTrackId = document.layerTracks[index].id;
         selectedStyle.assetId = `${part.id}-art`;
         selectedStyle.positionConfirmed = true;
-        item.styles.push(selectedStyle);
-        item.defaultStyleId = selectedStyle.id;
         item.status = 'public';
         document.assets.push({
           id: selectedStyle.assetId,
@@ -63,8 +109,13 @@ async function withWorkspace(run, options = {}) {
           mediaType: 'image/png',
           width: 1024,
           height: 1024,
+          url: `memory://${selectedStyle.assetId}`,
         });
       });
+      synchronizeDefaultRecipe(document);
+    }
+    if (typeof prepareDocument === 'function') {
+      prepareDocument(document);
       synchronizeDefaultRecipe(document);
     }
     await workspace.setContext({ makerKey: `wallet:${document.version.rootMakerId}`, walletAddress: '', document, assets: [] });
@@ -84,7 +135,7 @@ test('position confirmation is separate from the real position lock', async () =
 
     creatorClick(workspace, 'confirm-position');
     assert.equal(workspace.selectedCreatorRecords().style.positionConfirmed, true);
-    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="style-x"/);
+    assert.match(creatorRoot.innerHTML, /data-action="style-x"/);
     assert.match(creatorRoot.innerHTML, /data-action="edit-position"/);
     creatorClick(workspace, 'edit-position');
     assert.match(creatorRoot.innerHTML, /data-action="style-x"/);
@@ -97,9 +148,217 @@ test('position confirmation is separate from the real position lock', async () =
       target: { dataset: { action: 'style-position-locked' }, checked: true, type: 'checkbox' },
     });
     assert.equal(workspace.selectedCreatorRecords().style.positionLocked, true);
+    assert.match(creatorRoot.innerHTML, /data-action="style-x" readonly aria-readonly="true"/);
     await workspace.handleCreatorChange({ target: { dataset: { action: 'style-x' }, value: '99', type: 'number' } });
     assert.equal(workspace.selectedCreatorRecords().style.transform.x, 18.5);
   }, { creatorRoot });
+});
+
+test('Canvas drag only moves a Style while its explicit position editor is open', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const canvas = new FakeEventNode();
+    creatorRoot.selectors['#makerV4CreatorCanvas'] = canvas;
+    workspace.attachCanvasDrag();
+
+    const before = structuredClone(workspace.selectedCreatorRecords().style.transform);
+    canvas.dispatch('pointerdown', { clientX: 100, clientY: 100 });
+    assert.equal(canvas.captureCount, 0, 'confirmed position must reject direct Canvas dragging');
+
+    delete creatorRoot.selectors['#makerV4CreatorCanvas'];
+    creatorClick(workspace, 'edit-position');
+    creatorRoot.selectors['#makerV4CreatorCanvas'] = canvas;
+    canvas.dispatch('pointerdown', { clientX: 100, clientY: 100 });
+    assert.equal(canvas.captureCount, 1, 'Adjust position explicitly enables direct Canvas dragging');
+    canvas.dispatch('pointermove', { clientX: 125, clientY: 135 });
+    canvas.dispatch('pointerup', { clientX: 125, clientY: 135 });
+    assert.notDeepEqual(workspace.selectedCreatorRecords().style.transform, before);
+
+    delete creatorRoot.selectors['#makerV4CreatorCanvas'];
+    creatorClick(workspace, 'confirm-position');
+    creatorRoot.selectors['#makerV4CreatorCanvas'] = canvas;
+    canvas.dispatch('pointerdown', { clientX: 100, clientY: 100 });
+    assert.equal(canvas.captureCount, 1, 'Confirm position closes Canvas dragging again');
+  }, { creatorRoot, playable: true });
+});
+
+test('uploading a full-canvas PNG still enters Adjust position until confirmed', async () => {
+  const previousDocument = globalThis.document;
+  const previousBitmap = globalThis.createImageBitmap;
+  const previousOffscreenCanvas = globalThis.OffscreenCanvas;
+  await withWorkspace(async (workspace) => {
+    const makeCanvas = () => ({
+      width: 0,
+      height: 0,
+      getContext() {
+        return {
+          clearRect() {},
+          drawImage() {},
+          getImageData: () => ({ data: new Uint8ClampedArray(this.width * this.height * 4) }),
+        };
+      },
+      toBlob(callback) { callback(new Blob(['thumbnail'], { type: 'image/png' })); },
+    });
+    globalThis.document = { createElement: () => makeCanvas() };
+    globalThis.OffscreenCanvas = undefined;
+    globalThis.createImageBitmap = async () => ({ width: 1024, height: 1024, close() {} });
+    const file = new Blob(['full-canvas'], { type: 'image/png' });
+    Object.defineProperty(file, 'name', { value: 'full-canvas.png' });
+    const { part, item, style } = workspace.selectedCreatorRecords();
+    workspace.editingPositionStyleKey = '';
+    workspace.executeDocument('Confirm fixture position', ({ document }) => {
+      const target = document.parts.find((entry) => entry.id === part.id)
+        .items.find((entry) => entry.id === item.id)
+        .styles.find((entry) => entry.id === style.id);
+      target.positionConfirmed = true;
+    });
+    workspace.flushCompletedAssetOperation = async () => true;
+
+    try {
+      await workspace.replaceStyleAsset(file, { partId: part.id, itemId: item.id, styleId: style.id });
+      const uploadedStyle = workspace.selectedCreatorRecords().style;
+      assert.deepEqual(uploadedStyle.transform, { x: 0, y: 0, scale: 1, rotation: 0 });
+      assert.equal(uploadedStyle.positionConfirmed, false);
+      assert.equal(workspace.editingPositionStyleKey, `${part.id}/${item.id}/${style.id}`);
+    } finally {
+      globalThis.document = previousDocument;
+      globalThis.createImageBitmap = previousBitmap;
+      globalThis.OffscreenCanvas = previousOffscreenCanvas;
+    }
+  });
+});
+
+test('Creator Canvas wheel zoom and viewport pan never mutate Style coordinates', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const canvas = new FakeEventNode();
+    const viewport = new FakeEventNode({ width: 500, height: 500 });
+    const slider = { value: '100' };
+    creatorRoot.selectors['#makerV4CreatorCanvas'] = canvas;
+    creatorRoot.selectors['.v4-canvas-viewport'] = viewport;
+    creatorRoot.selectors['[data-action="canvas-zoom"]'] = slider;
+    const transformBefore = structuredClone(workspace.selectedCreatorRecords().style.transform);
+
+    workspace.attachCanvasDrag();
+    viewport.dispatch('wheel', { deltaY: -1, clientX: 250, clientY: 250 });
+    assert.equal(workspace.creatorZoom, 1.1);
+    assert.equal(canvas.style.width, '110%');
+    assert.equal(slider.value, '110');
+
+    const panStart = { left: viewport.scrollLeft, top: viewport.scrollTop };
+    viewport.dispatch('pointerdown', { button: 1, clientX: 100, clientY: 100 });
+    viewport.dispatch('pointermove', { button: 1, clientX: 75, clientY: 65 });
+    viewport.dispatch('pointerup', { button: 1, clientX: 75, clientY: 65 });
+    assert.equal(viewport.scrollLeft, panStart.left + 25);
+    assert.equal(viewport.scrollTop, panStart.top + 35);
+
+    workspace.boundCreatorKeydown({
+      code: 'Space',
+      key: ' ',
+      target: { matches: () => false },
+      preventDefault() {},
+    });
+    const spacePanStart = { left: viewport.scrollLeft, top: viewport.scrollTop };
+    viewport.dispatch('pointerdown', { button: 0, clientX: 90, clientY: 90 });
+    viewport.dispatch('pointermove', { button: 0, clientX: 80, clientY: 70 });
+    viewport.dispatch('pointerup', { button: 0, clientX: 80, clientY: 70 });
+    workspace.boundCreatorKeyup({ code: 'Space' });
+    assert.equal(viewport.scrollLeft, spacePanStart.left + 10);
+    assert.equal(viewport.scrollTop, spacePanStart.top + 20);
+    assert.deepEqual(workspace.selectedCreatorRecords().style.transform, transformBefore);
+  }, { creatorRoot, playable: true });
+});
+
+test('pixel mode exposes a grid and snaps edited coordinates to integers', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'toggle-pixel');
+    assert.equal(workspace.getDocument().canvas.pixelMode, 'pixelated');
+    assert.match(creatorRoot.innerHTML, /v4-canvas-viewport pixelated/);
+    assert.match(creatorRoot.innerHTML, /data-action="style-x"[^>]*step="1"|step="1"[^>]*data-action="style-x"/);
+
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-x' }, value: '18.6', type: 'number' },
+    });
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-y' }, value: '-7.6', type: 'number' },
+    });
+    assert.equal(workspace.selectedCreatorRecords().style.transform.x, 19);
+    assert.equal(workspace.selectedCreatorRecords().style.transform.y, -8);
+  }, { creatorRoot });
+});
+
+test('Item batch import targets the empty default Style and one inherited Layer Track', async () => {
+  await withWorkspace(async (workspace) => {
+    const { part, item, style } = workspace.selectedCreatorRecords();
+    await workspace.handleCreatorChange({
+      target: {
+        dataset: { action: 'batch-import' },
+        files: [
+          { name: 'black.png', type: 'image/png' },
+          { name: 'blue-streak.png', type: 'image/png' },
+        ],
+      },
+    });
+
+    assert.equal(workspace.pendingImport.partId, part.id);
+    assert.equal(workspace.pendingImport.itemId, item.id);
+    assert.equal(workspace.pendingImport.defaultStyleId, style.id);
+    assert.deepEqual(
+      workspace.pendingImport.mapping.map((entry) => entry.trackId),
+      [style.layerTrackId, style.layerTrackId],
+    );
+  });
+});
+
+test('Creator structure keeps Layer Tracks global and exposes a current Style breadcrumb', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const inheritedTrackId = workspace.selectedCreatorRecords().style.layerTrackId;
+    creatorClick(workspace, 'add-style');
+
+    assert.equal(workspace.selectedCreatorRecords().style.layerTrackId, inheritedTrackId);
+    assert.match(creatorRoot.innerHTML, /data-action="style-x"/);
+    assert.match(creatorRoot.innerHTML, /data-action="style-y"/);
+    assert.match(creatorRoot.innerHTML, /data-action="style-scale"/);
+    assert.match(creatorRoot.innerHTML, /data-action="style-rotation"/);
+    assert.match(creatorRoot.innerHTML, /v4-inspector-context/);
+    assert.match(creatorRoot.innerHTML, / › /);
+    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="part-parent"/);
+    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="item-import-key"/);
+    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="item-status"/);
+    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="generate-item-thumbnail"/);
+    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="style-track"/);
+  }, { creatorRoot });
+});
+
+test('Creator preview modes are mutually exclusive and fall back to Show all with fewer than two layers', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'add-style');
+
+    assert.equal(workspace.creatorPreviewMode, 'all');
+    assert.match(creatorRoot.innerHTML, /data-action="set-preview-mode" data-preview-mode="all" aria-pressed="true"/);
+    assert.match(creatorRoot.innerHTML, /data-preview-mode="dim" aria-pressed="false" disabled/);
+    assert.match(creatorRoot.innerHTML, /data-preview-mode="solo" aria-pressed="false" disabled/);
+
+    creatorClick(workspace, 'set-preview-mode', { previewMode: 'dim' });
+    assert.equal(workspace.creatorPreviewMode, 'all');
+    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="toggle-solo"/);
+    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="toggle-dim"/);
+  }, { creatorRoot });
+
+  await withWorkspace(async (workspace) => {
+    workspace.executeDocument('Make preview fixtures available', ({ document }) => {
+      document.assets.forEach((asset) => { asset.url = `memory://${asset.id}`; });
+    });
+    creatorClick(workspace, 'set-preview-mode', { previewMode: 'dim' });
+    assert.equal(workspace.creatorPreviewMode, 'dim');
+    creatorClick(workspace, 'set-preview-mode', { previewMode: 'solo' });
+    assert.equal(workspace.creatorPreviewMode, 'solo');
+    creatorClick(workspace, 'set-preview-mode', { previewMode: 'all' });
+    assert.equal(workspace.creatorPreviewMode, 'all');
+  }, { playable: true });
 });
 
 test('editing one Style never changes another Item or Part', async () => {
@@ -125,19 +384,19 @@ test('editing one Style never changes another Item or Part', async () => {
     creatorClick(workspace, 'select-style', { styleId: firstStyle.id });
     creatorClick(workspace, 'copy-item');
     const copiedItem = workspace.selectedCreatorRecords().item;
-    const copiedStyle = copiedItem.styles[0];
+    const copiedStyle = workspace.selectedCreatorRecords().style;
     assert.notEqual(copiedStyle.id, firstStyle.id);
 
     await workspace.handleCreatorChange({ target: { dataset: { action: 'style-x' }, value: '37', type: 'number' } });
     let document = workspace.getDocument();
-    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).styles[0].transform.x, 37);
-    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).styles[0].transform.x, 0);
-    assert.equal(document.parts[1].items.find((item) => item.id === otherItem.id).styles[0].transform.x, 0);
+    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).styles.find((style) => style.id === copiedStyle.id).transform.x, 37);
+    assert.ok(document.parts[0].items.find((item) => item.id === firstItem.id).styles.every((style) => style.transform.x === 0));
+    assert.ok(document.parts[1].items.find((item) => item.id === otherItem.id).styles.every((style) => style.transform.x === 0));
 
     creatorClick(workspace, 'confirm-position');
     document = workspace.getDocument();
-    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).styles[0].positionConfirmed, true);
-    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).styles[0].positionConfirmed, false);
+    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).styles.find((style) => style.id === copiedStyle.id).positionConfirmed, true);
+    assert.ok(document.parts[0].items.find((item) => item.id === firstItem.id).styles.every((style) => style.positionConfirmed === false));
 
     creatorClick(workspace, 'select-part', { partId: otherPart.id });
     creatorClick(workspace, 'select-item', { itemId: otherItem.id });
@@ -146,9 +405,32 @@ test('editing one Style never changes another Item or Part', async () => {
     await workspace.handleCreatorChange({ target: { dataset: { action: 'style-y' }, value: '-42', type: 'number' } });
 
     document = workspace.getDocument();
-    assert.equal(document.parts[1].items.find((item) => item.id === otherItem.id).styles[0].transform.y, -42);
-    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).styles[0].transform.y, 0);
-    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).styles[0].transform.y, 0);
+    assert.equal(document.parts[1].items.find((item) => item.id === otherItem.id).styles.find((style) => style.id === otherStyle.id).transform.y, -42);
+    assert.ok(document.parts[0].items.find((item) => item.id === copiedItem.id).styles.every((style) => style.transform.y === 0));
+    assert.ok(document.parts[0].items.find((item) => item.id === firstItem.id).styles.every((style) => style.transform.y === 0));
+  });
+});
+
+test('returning to a Part restores the Item and Style selected in the Creator recipe', async () => {
+  await withWorkspace(async (workspace) => {
+    const firstPartId = workspace.getDocument().parts[0].id;
+    const otherPartId = workspace.getDocument().parts[1].id;
+
+    creatorClick(workspace, 'select-part', { partId: firstPartId });
+    creatorClick(workspace, 'add-item');
+    const chosenItem = workspace.selectedCreatorRecords().item;
+    const chosenStyle = workspace.selectedCreatorRecords().style;
+    const recipeSelection = workspace.creatorRecipe.selections.find((entry) => entry.partId === firstPartId);
+    assert.equal(recipeSelection.itemId, chosenItem.id);
+    assert.equal(recipeSelection.styleId, chosenStyle.id);
+
+    creatorClick(workspace, 'select-part', { partId: otherPartId });
+    creatorClick(workspace, 'select-part', { partId: firstPartId });
+    assert.equal(workspace.selectedCreatorRecords().item.id, chosenItem.id);
+    assert.equal(workspace.selectedCreatorRecords().style.id, chosenStyle.id);
+    const restoredRecipeSelection = workspace.creatorRecipe.selections.find((entry) => entry.partId === firstPartId);
+    assert.equal(restoredRecipeSelection.itemId, chosenItem.id);
+    assert.equal(restoredRecipeSelection.styleId, chosenStyle.id);
   });
 });
 
@@ -236,6 +518,8 @@ test('creator structure controls mutate the v5 document and remain undoable', as
     creatorClick(workspace, 'add-track');
     const unusedTrack = workspace.selectedTrackId;
     assert.equal(workspace.getDocument().layerTracks.length, trackCount + 1);
+    assert.equal(workspace.getDocument().layerTracks.find((track) => track.id === unusedTrack).locked, false);
+    creatorClick(workspace, 'toggle-track-lock', { trackId: unusedTrack });
     creatorClick(workspace, 'delete-track', { trackId: unusedTrack });
     assert.equal(workspace.getDocument().layerTracks.length, trackCount + 1, 'a locked Layer Track cannot be deleted');
     creatorClick(workspace, 'toggle-track-lock', { trackId: unusedTrack });
@@ -243,6 +527,40 @@ test('creator structure controls mutate the v5 document and remain undoable', as
     creatorClick(workspace, 'delete-track', { trackId: unusedTrack });
     assert.equal(workspace.getDocument().layerTracks.length, trackCount);
   });
+});
+
+test('Layer Track page assigns only the current Style and new Tracks start unlocked', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    assert.ok(workspace.getDocument().layerTracks.every((track) => track.locked === false));
+    const { style } = workspace.selectedCreatorRecords();
+    const originalTransform = structuredClone(style.transform);
+    const targetTrack = workspace.getDocument().layerTracks.find((track) => track.id !== style.layerTrackId);
+
+    workspace.creatorTab = 'layers';
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /data-action="assign-style-track"/);
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'assign-style-track' }, value: targetTrack.id, type: 'select-one' },
+    });
+    assert.equal(workspace.selectedCreatorRecords().style.layerTrackId, targetTrack.id);
+    assert.deepEqual(workspace.selectedCreatorRecords().style.transform, originalTransform);
+
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-locked' }, checked: true, type: 'checkbox' },
+    });
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /data-action="assign-style-track" disabled/);
+    const lockedTrackId = workspace.selectedCreatorRecords().style.layerTrackId;
+    await workspace.handleCreatorChange({
+      target: {
+        dataset: { action: 'assign-style-track' },
+        value: workspace.getDocument().layerTracks.find((track) => track.id !== lockedTrackId).id,
+        type: 'select-one',
+      },
+    });
+    assert.equal(workspace.selectedCreatorRecords().style.layerTrackId, lockedTrackId);
+  }, { creatorRoot, playable: true });
 });
 
 test('color, rule, and Expansion Pack controls perform real document operations', async () => {
@@ -306,6 +624,68 @@ test('color, rule, and Expansion Pack controls perform real document operations'
     creatorClick(workspace, 'delete-channel');
     assert.equal(workspace.getDocument().colorChannels.length, 0);
   }, { playable: true });
+});
+
+test('advanced rule builder persists canonical ANY groups, ALL targets, and rejects cross-Part ANY', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    let document = workspace.getDocument();
+    const owner = document.parts[0];
+    const targetPart = document.parts[1];
+    const otherPart = document.parts[2];
+    const firstTargetItem = targetPart.items[0];
+    workspace.executeDocument('Add advanced rule fixture', ({ document: next }) => {
+      const target = next.parts.find((part) => part.id === targetPart.id);
+      const alternate = structuredClone(target.items[0]);
+      alternate.id = 'alternate-rule-target';
+      alternate.name = 'Alternate rule target';
+      alternate.importKey = alternate.id;
+      alternate.displayOrder = 1;
+      target.items.push(alternate);
+    });
+    document = workspace.getDocument();
+    const alternateTargetItem = document.parts[1].items[1];
+    creatorRoot.selectors = {
+      '#v4RuleOwnerDefinition': { value: owner.id },
+      '#v4RuleType': { value: 'requires' },
+      '#v4RuleMatchMode': { value: 'any' },
+      '#v4RuleTargetDefinitions': {
+        selectedOptions: [
+          { value: `${targetPart.id}::${alternateTargetItem.id}` },
+          { value: `${targetPart.id}::${firstTargetItem.id}` },
+        ],
+      },
+    };
+
+    workspace.addRuleFromBuilder();
+    assert.deepEqual(workspace.getDocument().parts[0].requires, [{
+      partId: targetPart.id,
+      itemIds: [alternateTargetItem.id, firstTargetItem.id].sort(),
+    }]);
+
+    creatorRoot.selectors['#v4RuleTargetDefinitions'].selectedOptions.reverse();
+    workspace.addRuleFromBuilder();
+    assert.equal(workspace.getDocument().parts[0].requires.length, 1, 'ANY identity is order independent');
+
+    creatorRoot.selectors['#v4RuleTargetDefinitions'].selectedOptions = [
+      { value: `${targetPart.id}::${firstTargetItem.id}` },
+      { value: `${otherPart.id}::${otherPart.items[0].id}` },
+    ];
+    workspace.addRuleFromBuilder();
+    assert.equal(workspace.getDocument().parts[0].requires.length, 1);
+    assert.equal(workspace.ruleBuilderError, workspace.tr('ruleAnySamePartError'));
+
+    creatorRoot.selectors['#v4RuleMatchMode'].value = 'all';
+    workspace.addRuleFromBuilder();
+    assert.equal(workspace.getDocument().parts[0].requires.length, 3);
+    assert.equal(workspace.ruleBuilderError, '');
+
+    workspace.creatorTab = 'rules';
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /<b>ALL required<\/b>/);
+    assert.match(creatorRoot.innerHTML, /<em>ANY<\/em>/);
+    assert.match(creatorRoot.innerHTML, /Alternate rule target/);
+  }, { creatorRoot, playable: true });
 });
 
 test('whole Style lock blocks indirect rule, color-channel, and ordering mutations', async () => {
@@ -383,6 +763,50 @@ test('whole Style lock blocks indirect rule, color-channel, and ordering mutatio
   }, { playable: true });
 });
 
+test('a color channel referenced by a fully locked Style cannot be edited indirectly', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'add-channel');
+    creatorClick(workspace, 'add-swatch');
+    const channelId = workspace.selectedChannelId;
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-channel' }, value: channelId, type: 'select-one' },
+    });
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-locked' }, checked: true, type: 'checkbox' },
+    });
+    workspace.creatorTab = 'colors';
+    workspace.render();
+
+    assert.match(creatorRoot.innerHTML, /data-action="channel-name" disabled/);
+    assert.match(creatorRoot.innerHTML, /data-action="add-swatch" disabled/);
+    const before = structuredClone(workspace.getDocument().colorChannels.find((channel) => channel.id === channelId));
+    const alternateSwatch = before.swatches.find((swatch) => swatch.id !== before.defaultSwatchId) || before.swatches[0];
+
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'channel-name' }, value: 'Must not change', type: 'text' },
+    });
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'channel-default-swatch' }, value: alternateSwatch.id, type: 'radio' },
+    });
+    await workspace.handleCreatorChange({
+      target: {
+        dataset: { action: 'swatch-hint', swatchId: before.swatches[0].id },
+        value: '#000000',
+        type: 'color',
+      },
+    });
+    creatorClick(workspace, 'add-swatch');
+    creatorClick(workspace, 'delete-swatch', { swatchId: before.swatches[0].id });
+    creatorClick(workspace, 'delete-channel');
+
+    assert.deepEqual(
+      workspace.getDocument().colorChannels.find((channel) => channel.id === channelId),
+      before,
+    );
+  }, { creatorRoot, playable: true });
+});
+
 test('player controls select, undo, redo, clear, randomize, edit profile and complete an OC', async () => {
   const completed = [];
   await withWorkspace(async (workspace) => {
@@ -391,10 +815,17 @@ test('player controls select, undo, redo, clear, randomize, edit profile and com
     workspace.ensureCreatorSelection(workspace.getDocument());
     creatorClick(workspace, 'add-item');
     creatorClick(workspace, 'add-style');
-    await workspace.handleCreatorChange({
-      target: { dataset: { action: 'item-status' }, value: 'public', type: 'select-one' },
-    });
     const nextItem = workspace.selectedCreatorRecords().item;
+    const playableStyleId = workspace.selectedCreatorRecords().style.id;
+    workspace.executeDocument('Make the new Item playable', ({ document }) => {
+      const targetPart = document.parts.find((candidate) => candidate.id === part.id);
+      const targetItem = targetPart.items.find((candidate) => candidate.id === nextItem.id);
+      const targetStyle = targetItem.styles.find((candidate) => candidate.id === playableStyleId);
+      targetStyle.assetId = `${part.id}-art`;
+      targetStyle.layerTrackId = document.layerTracks.find((track) => track.id === targetPart.items[0].styles[0].layerTrackId)?.id
+        || document.layerTracks[0].id;
+      targetStyle.positionConfirmed = true;
+    });
 
     workspace.playerPartId = part.id;
     playerClick(workspace, 'player-item', { itemId: nextItem.id });
@@ -426,6 +857,170 @@ test('player controls select, undo, redo, clear, randomize, edit profile and com
     playerClick(workspace, 'player-complete');
     assert.equal(completed.length, 1);
   }, { playable: true, callbacks: { onCompleteOc: (payload) => completed.push(payload) } });
+});
+
+test('Player hides empty Styles, chooses a drawable alternative, and blocks incompatible clicks', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    const part = document.parts.find((candidate) => !candidate.required);
+    const conflictingPart = document.parts.find((candidate) => candidate.id !== part.id);
+    const conflictingSelection = workspace.playerRecipe.selections.find((selection) => selection.partId === conflictingPart.id);
+    const sourceItem = part.items[0];
+    const sourceStyle = sourceItem.styles[0];
+    workspace.executeDocument('Add Player option fixtures', ({ document: next }) => {
+      const targetPart = next.parts.find((candidate) => candidate.id === part.id);
+      const alternativeItem = structuredClone(sourceItem);
+      alternativeItem.id = 'alternative-item';
+      alternativeItem.name = 'Alternative item';
+      alternativeItem.defaultStyleId = 'empty-default';
+      alternativeItem.styles = [
+        {
+          ...structuredClone(sourceStyle),
+          id: 'empty-default',
+          name: 'Empty default',
+          assetId: null,
+        },
+        {
+          ...structuredClone(sourceStyle),
+          id: 'drawable-style',
+          name: 'Drawable style',
+        },
+      ];
+      const blockedItem = structuredClone(sourceItem);
+      blockedItem.id = 'blocked-item';
+      blockedItem.name = 'Blocked item';
+      blockedItem.defaultStyleId = 'blocked-style';
+      blockedItem.styles[0].id = 'blocked-style';
+      blockedItem.excludes = [{
+        partId: conflictingPart.id,
+        itemId: conflictingSelection.itemId,
+      }];
+      targetPart.items.push(alternativeItem, blockedItem);
+    });
+
+    workspace.playerPartId = part.id;
+    workspace.renderPlayer();
+    assert.doesNotMatch(playerRoot.innerHTML, />Empty default</);
+    assert.match(playerRoot.innerHTML, /data-item-id="blocked-item" disabled/);
+
+    playerClick(workspace, 'player-item', { itemId: 'alternative-item' });
+    const selected = workspace.playerRecipe.selections.find((selection) => selection.partId === part.id);
+    assert.equal(selected.itemId, 'alternative-item');
+    assert.equal(selected.styleId, 'drawable-style');
+
+    const beforeBlockedClick = structuredClone(workspace.playerRecipe);
+    playerClick(workspace, 'player-item', { itemId: 'blocked-item' });
+    assert.deepEqual(workspace.playerRecipe, beforeBlockedClick);
+  }, { playable: true, playerRoot });
+});
+
+test('Player disables individual and global removal when an optional Part is required', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    const requiredPart = document.parts.find((part) => part.required);
+    const optionalPart = document.parts.find((part) => !part.required);
+    const requiredSelection = workspace.playerRecipe.selections
+      .find((selection) => selection.partId === requiredPart.id);
+    const optionalSelection = workspace.playerRecipe.selections
+      .find((selection) => selection.partId === optionalPart.id);
+    workspace.executeDocument('Require optional Player Part', ({ document: next }) => {
+      const item = next.parts.find((part) => part.id === requiredPart.id).items
+        .find((candidate) => candidate.id === requiredSelection.itemId);
+      item.requires = [{
+        partId: optionalPart.id,
+        itemId: optionalSelection.itemId,
+        styleId: optionalSelection.styleId,
+      }];
+    });
+    workspace.playerPartId = optionalPart.id;
+    workspace.renderPlayer();
+
+    assert.match(playerRoot.innerHTML, /data-action="player-none"[^>]*disabled/);
+    assert.match(playerRoot.innerHTML, /data-action="player-clear"[^>]*disabled/);
+    assert.match(playerRoot.innerHTML, /Requires/);
+
+    const before = structuredClone(workspace.playerRecipe);
+    playerClick(workspace, 'player-none');
+    assert.deepEqual(workspace.playerRecipe, before);
+    playerClick(workspace, 'player-clear');
+    assert.deepEqual(workspace.playerRecipe, before);
+  }, { playable: true, playerRoot });
+});
+
+test('Player entry, reset, and random replace an empty default Style with playable artwork', async () => {
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    const requiredPart = document.parts.find((part) => part.required);
+    const item = requiredPart.items[0];
+    const playableStyle = item.styles.find((style) => style.id === 'playable-alternative');
+
+    assert.equal(
+      workspace.playerRecipe.selections.find((selection) => selection.partId === requiredPart.id).styleId,
+      playableStyle.id,
+      'initial Player entry repairs the empty default Style',
+    );
+
+    workspace.playerRecipe = structuredClone(document.defaultRecipe);
+    playerClick(workspace, 'player-reset');
+    assert.equal(
+      workspace.playerRecipe.selections.find((selection) => selection.partId === requiredPart.id).styleId,
+      playableStyle.id,
+      'Reset repairs the empty default Style',
+    );
+
+    for (let iteration = 0; iteration < 10; iteration += 1) {
+      playerClick(workspace, 'player-random');
+      workspace.playerRecipe.selections.forEach((selection) => {
+        const selectedPart = document.parts.find((part) => part.id === selection.partId);
+        const selectedItem = selectedPart.items.find((candidate) => candidate.id === selection.itemId);
+        const selectedStyle = selectedItem.styles.find((candidate) => candidate.id === selection.styleId);
+        assert.ok(selectedStyle.assetId, `${selection.partId} random selection must own a PNG`);
+      });
+    }
+  }, {
+    playable: true,
+    prepareDocument(document) {
+      const requiredPart = document.parts.find((part) => part.required);
+      const item = requiredPart.items[0];
+      const defaultStyle = item.styles.find((style) => style.id === item.defaultStyleId);
+      const playableStyle = structuredClone(defaultStyle);
+      playableStyle.id = 'playable-alternative';
+      playableStyle.name = 'Playable alternative';
+      item.styles.push(playableStyle);
+      defaultStyle.assetId = null;
+    },
+  });
+});
+
+test('Creator preview availability resets for the same Maker before real Player use', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    const part = document.parts[0];
+    const source = part.items[0];
+    workspace.executeDocument('Add preview-only Item', ({ document: next }) => {
+      const targetPart = next.parts.find((candidate) => candidate.id === part.id);
+      const previewOnly = structuredClone(source);
+      previewOnly.id = 'preview-only';
+      previewOnly.name = 'Preview only';
+      previewOnly.status = 'private';
+      targetPart.items.push(previewOnly);
+    });
+
+    workspace.setPlayerCreatorPreview(true);
+    workspace.renderPlayer();
+    assert.match(playerRoot.innerHTML, /Preview only/);
+
+    await workspace.setContext({
+      makerKey: workspace.makerKey,
+      isPublished: true,
+      creatorPreview: false,
+    });
+    assert.equal(workspace.playerCreatorPreview, false);
+    assert.doesNotMatch(playerRoot.innerHTML, /Preview only/);
+  }, { playable: true, playerRoot });
 });
 
 test('every rendered Maker Studio data-action is backed by a handler or an intentional passive form value', async () => {

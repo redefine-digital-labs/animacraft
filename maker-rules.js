@@ -80,8 +80,8 @@ export function normalizeRuleSelector(input, context = {}) {
   // explicit `{ partId: 'body' }` target into `body/<owner item>` by accident.
   const itemId = String(input.itemId ?? input.itemKey ?? input.item ?? '');
   const styleId = String(input.styleId ?? input.styleKey ?? '');
-  const itemIds = normalizeIdList(input.itemIds ?? input.itemKeys);
-  const styleIds = normalizeIdList(input.styleIds ?? input.styleKeys);
+  const itemIds = normalizeIdList(input.itemIds ?? input.itemKeys).sort();
+  const styleIds = normalizeIdList(input.styleIds ?? input.styleKeys).sort();
   return {
     partId,
     ...(itemId ? { itemId } : {}),
@@ -89,6 +89,94 @@ export function normalizeRuleSelector(input, context = {}) {
     ...(styleId ? { styleId } : {}),
     ...(styleIds.length ? { styleIds } : {}),
   };
+}
+
+/** Stable semantic identity for simple and grouped canonical rule targets. */
+export function ruleSelectorKey(input) {
+  const selector = normalizeRuleSelector(input);
+  const itemIds = normalizeIdList([
+    ...(selector.itemId ? [selector.itemId] : []),
+    ...(selector.itemIds || []),
+  ]).sort();
+  const styleIds = normalizeIdList([
+    ...(selector.styleId ? [selector.styleId] : []),
+    ...(selector.styleIds || []),
+  ]).sort();
+  return JSON.stringify([selector.partId, itemIds, styleIds]);
+}
+
+/**
+ * Compose Creator-selected targets into the canonical embedded-rule shape.
+ *
+ * `all` remains a list of independently required/excluded selectors. `any`
+ * becomes one selector using itemIds or styleIds, which is only meaningful
+ * inside one Part (and, for Styles, one Item).
+ */
+export function composeRuleTargets(inputs, mode = 'all') {
+  if (!['all', 'any'].includes(mode)) {
+    throw new MakerRuleError(`Unknown rule match mode ${mode}.`, 'invalid-rule-match-mode', { mode });
+  }
+  const selectors = asArray(inputs).map((input) => normalizeRuleSelector(input));
+  if (!selectors.length) {
+    throw new MakerRuleError('Choose at least one rule target.', 'empty-rule-targets');
+  }
+  selectors.forEach((selector) => {
+    if (!selector.partId) {
+      throw new MakerRuleError('Every rule target must name a Part.', 'invalid-rule-target', { selector });
+    }
+  });
+  const unique = [...new Map(selectors.map((selector) => [ruleSelectorKey(selector), selector])).values()];
+  if (mode === 'all' || unique.length === 1) return unique;
+
+  const partIds = normalizeIdList(unique.map((selector) => selector.partId));
+  if (partIds.length !== 1) {
+    throw new MakerRuleError(
+      'An any group can only contain choices from one Part.',
+      'cross-part-any-rule',
+      { selectors: unique },
+    );
+  }
+  const partId = partIds[0];
+  if (unique.some((selector) => !selector.itemId && !selector.itemIds?.length)) {
+    return [{ partId }];
+  }
+
+  const hasStyles = unique.some((selector) => selector.styleId || selector.styleIds?.length);
+  if (!hasStyles) {
+    const itemIds = normalizeIdList(unique.flatMap((selector) => (
+      selector.itemId ? [selector.itemId] : selector.itemIds || []
+    ))).sort();
+    return [{
+      partId,
+      ...(itemIds.length === 1 ? { itemId: itemIds[0] } : { itemIds }),
+    }];
+  }
+
+  if (unique.some((selector) => !selector.styleId && !selector.styleIds?.length)) {
+    throw new MakerRuleError(
+      'An any Style group cannot mix whole Items with individual Styles.',
+      'ambiguous-any-style-rule',
+      { selectors: unique },
+    );
+  }
+  const itemIds = normalizeIdList(unique.flatMap((selector) => (
+    selector.itemId ? [selector.itemId] : selector.itemIds || []
+  ))).sort();
+  if (itemIds.length !== 1) {
+    throw new MakerRuleError(
+      'An any Style group can only contain Styles from one Item.',
+      'ambiguous-any-style-rule',
+      { selectors: unique },
+    );
+  }
+  const styleIds = normalizeIdList(unique.flatMap((selector) => (
+    selector.styleId ? [selector.styleId] : selector.styleIds || []
+  ))).sort();
+  return [{
+    partId,
+    itemId: itemIds[0],
+    ...(styleIds.length === 1 ? { styleId: styleIds[0] } : { styleIds }),
+  }];
 }
 
 function normalizeRuleTargetList(value, context) {

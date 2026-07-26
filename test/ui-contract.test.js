@@ -140,7 +140,9 @@ test('Maker v5 exposes the four-level P0 creator workflow without legacy visual 
   assert.match(styles, /\.creator-view\[data-creator-view="edit"\]\.v4-parts-active \.creator-editor-header\s*\{\s*display:\s*none;/s);
   assert.match(workspace, /this\.tr\('importMatrixFolder'\)/);
   assert.match(workspace, /this\.tr\('projectZip'\)/);
-  assert.match(workspace, /this\.tr\('generateCompositeThumbnail'\)/);
+  assert.doesNotMatch(workspace, /this\.tr\('generateCompositeThumbnail'\)/);
+  assert.doesNotMatch(workspace, /this\.tr\('parentPart'\)/);
+  assert.match(workspace, /\['soul', this\.tr\('soulConfig'\)\]/);
   assert.match(workspace, /data-action="add-style"/);
   assert.match(workspace, /data-action="copy-style"/);
   assert.match(workspace, /data-action="style-asset"/);

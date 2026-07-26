@@ -25,6 +25,12 @@ for (const makerId of MAKERS) {
     assert.equal(manifest.parts.reduce((total, part) => total + part.items.length, 0), 25);
     assert.equal(manifest.parts.reduce((total, part) => total * part.items.length, 1), 5_120);
     assert.equal(manifest.disclosure.aiAssisted, true);
+    assert.equal(
+      manifest.template.mintingEnabled,
+      false,
+      'AI-assisted stress fixtures must stay non-mintable until human visual sign-off',
+    );
+    assert.match(manifest.template.summary, /stress fixture/i);
     const accessory = manifest.parts.find((part) => part.key === 'accessory');
     assert.equal(accessory.allowRemove, false, 'the explicit None Item must be the only remove choice');
     assert.equal(accessory.items.filter((item) => item.id === 'none').length, 1);

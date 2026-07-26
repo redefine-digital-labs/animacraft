@@ -86,7 +86,13 @@ function cloneTargets(value) {
   return Array.isArray(value) ? value.filter(isObject).map((target) => ({
     partId: String(target.partId || target.partKey || ''),
     ...(target.itemId || target.itemKey ? { itemId: String(target.itemId || target.itemKey) } : {}),
+    ...(Array.isArray(target.itemIds || target.itemKeys)
+      ? { itemIds: [...new Set((target.itemIds || target.itemKeys).map(String).filter(Boolean))].sort() }
+      : {}),
     ...(target.styleId || target.styleKey ? { styleId: String(target.styleId || target.styleKey) } : {}),
+    ...(Array.isArray(target.styleIds || target.styleKeys)
+      ? { styleIds: [...new Set((target.styleIds || target.styleKeys).map(String).filter(Boolean))].sort() }
+      : {}),
   })) : [];
 }
 
@@ -97,7 +103,13 @@ function normalizeCondition(value) {
       op: 'selected',
       partId: String(value.partId || value.partKey || ''),
       ...(value.itemId || value.itemKey ? { itemId: String(value.itemId || value.itemKey) } : {}),
+      ...(Array.isArray(value.itemIds || value.itemKeys)
+        ? { itemIds: [...new Set((value.itemIds || value.itemKeys).map(String).filter(Boolean))].sort() }
+        : {}),
       ...(value.styleId || value.styleKey ? { styleId: String(value.styleId || value.styleKey) } : {}),
+      ...(Array.isArray(value.styleIds || value.styleKeys)
+        ? { styleIds: [...new Set((value.styleIds || value.styleKeys).map(String).filter(Boolean))].sort() }
+        : {}),
     };
   }
   if (value.op === 'not') return { op: 'not', condition: normalizeCondition(value.condition) };
@@ -179,9 +191,9 @@ export function createMakerV5Document({
 }
 
 /**
- * Creates the standard Character Maker Part/Item skeleton. Items deliberately
- * start with `styles: []`: creators add the first empty Style and then attach
- * its track and asset in Creator Studio.
+ * Creates the standard Character Maker Part/Item/Style skeleton. Every Item
+ * starts with one asset-free default Style linked to its Part's Layer Track;
+ * creators upload the PNG directly to that Style in Creator Studio.
  */
 export function createCharacterMakerV5Starter(options = {}) {
   const document = createMakerV5Document(options);
@@ -198,11 +210,13 @@ export function createCharacterMakerV5Starter(options = {}) {
 
   definitions.forEach(([id, name, required], order) => {
     const itemId = `${id}-default`;
+    const styleId = 'default-style';
+    const trackId = `${id}-track`;
     document.layerTracks.push({
-      id: `${id}-track`,
+      id: trackId,
       name,
       order,
-      locked: true,
+      locked: false,
       referenceAssetId: null,
     });
     document.parts.push({
@@ -222,13 +236,34 @@ export function createCharacterMakerV5Starter(options = {}) {
         name: 'Default',
         displayOrder: 0,
         importKey: itemId,
-        status: 'draft',
+        status: 'public',
         thumbnailAssetId: null,
         visibleWhen: null,
         requires: [],
         excludes: [],
-        defaultStyleId: null,
-        styles: [],
+        defaultStyleId: styleId,
+        styles: [{
+          id: styleId,
+          name: 'Default Style',
+          displayOrder: 0,
+          assetId: null,
+          layerTrackId: trackId,
+          colorChannelId: null,
+          transform: {
+            x: 0,
+            y: 0,
+            scale: 1,
+            rotation: 0,
+          },
+          positionConfirmed: false,
+          positionLocked: false,
+          styleLocked: false,
+          opacity: 1,
+          blendMode: 'normal',
+          visibleWhen: null,
+          requires: [],
+          excludes: [],
+        }],
       }],
     });
   });
@@ -269,7 +304,15 @@ function validateContiguousOrder(entries, path, field, issue) {
 }
 
 function selectionTargetKey(target) {
-  return `${target?.partId || ''}\u0000${target?.itemId || ''}\u0000${target?.styleId || ''}`;
+  const itemIds = [...new Set([
+    ...(target?.itemId ? [String(target.itemId)] : []),
+    ...(Array.isArray(target?.itemIds) ? target.itemIds.map(String) : []),
+  ])].sort();
+  const styleIds = [...new Set([
+    ...(target?.styleId ? [String(target.styleId)] : []),
+    ...(Array.isArray(target?.styleIds) ? target.styleIds.map(String) : []),
+  ])].sort();
+  return JSON.stringify([String(target?.partId || ''), itemIds, styleIds]);
 }
 
 function hasOwn(value, key) {
@@ -277,9 +320,9 @@ function hasOwn(value, key) {
 }
 
 /**
- * Returns all validation issues without throwing. Draft mode accepts empty
- * Items and Styles without assets/tracks; publish mode requires every public
- * Item to contain at least one fully renderable Style.
+ * Returns all validation issues without throwing. Every Item must contain a
+ * default Style. Draft mode permits that Style to have no PNG/track yet;
+ * publish mode requires every public Style to be fully renderable.
  */
 export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = {}) {
   if (!['draft', 'publish'].includes(mode)) throw new TypeError('Maker v5 validation mode must be "draft" or "publish".');
@@ -519,8 +562,8 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
 
       const styles = Array.isArray(item.styles) ? item.styles : [];
       if (!Array.isArray(item.styles)) issue(`${itemPath}.styles`, 'must be an array', 'invalid_collection');
-      if ((publish && publishItem && !styles.length) || styles.length > LIMITS.maxStylesPerItem) {
-        issue(`${itemPath}.styles`, `must contain ${publish && publishItem ? '1 to ' : 'at most '}${LIMITS.maxStylesPerItem} entries`, 'invalid_styles');
+      if (!styles.length || styles.length > LIMITS.maxStylesPerItem) {
+        issue(`${itemPath}.styles`, `must contain 1 to ${LIMITS.maxStylesPerItem} entries`, 'invalid_styles');
       }
       totalStyles += styles.length;
       const stylesById = new Map();
@@ -597,11 +640,10 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
       });
 
       validateContiguousOrder(styles, `${itemPath}.styles`, 'displayOrder', issue);
-      if (item.defaultStyleId !== null && item.defaultStyleId !== undefined && !stylesById.has(item.defaultStyleId)) {
+      if (!item.defaultStyleId) {
+        issue(`${itemPath}.defaultStyleId`, 'is required and must reference a Style', 'missing_reference');
+      } else if (!stylesById.has(item.defaultStyleId)) {
         issue(`${itemPath}.defaultStyleId`, 'references a missing Style', 'missing_reference');
-      }
-      if (publish && publishItem && !item.defaultStyleId) {
-        issue(`${itemPath}.defaultStyleId`, 'is required for publication', 'missing_reference');
       }
     });
 
@@ -657,18 +699,85 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
       issue(`${path}.partId`, 'references a missing Part', 'missing_reference');
       return;
     }
-    if (target.itemId !== undefined) {
-      const item = itemByPart.get(target.partId)?.get(target.itemId);
-      if (!item) {
+
+    const validateIdList = (value, field) => {
+      if (!Array.isArray(value) || !value.length) {
+        issue(`${path}.${field}`, 'must be a non-empty array of IDs', 'invalid_rule_target');
+        return [];
+      }
+      if (value.length > LIMITS.maxRuleTargets) {
+        issue(`${path}.${field}`, `cannot contain more than ${LIMITS.maxRuleTargets} IDs`, 'limit');
+      }
+      const seen = new Set();
+      return value.flatMap((id, index) => {
+        if (typeof id !== 'string' || !id) {
+          issue(`${path}.${field}[${index}]`, 'must be a non-empty ID string', 'invalid_rule_target');
+          return [];
+        }
+        if (seen.has(id)) issue(`${path}.${field}[${index}]`, 'duplicates another ID', 'duplicate');
+        seen.add(id);
+        return [id];
+      });
+    };
+
+    const hasItemId = hasOwn(target, 'itemId');
+    const hasItemIds = hasOwn(target, 'itemIds');
+    if (hasItemId && hasItemIds) {
+      issue(path, 'cannot use itemId and itemIds together', 'invalid_rule_target');
+    }
+    const directItemIds = hasItemId && typeof target.itemId === 'string' && target.itemId
+      ? [target.itemId]
+      : [];
+    const groupedItemIds = hasItemIds ? validateIdList(target.itemIds, 'itemIds') : [];
+    const itemIds = [...directItemIds, ...groupedItemIds];
+    if (hasItemId && (typeof target.itemId !== 'string' || !target.itemId)) {
+      issue(`${path}.itemId`, 'must be a non-empty ID string', 'invalid_rule_target');
+    }
+    directItemIds.forEach((itemId) => {
+      if (!itemByPart.get(target.partId)?.has(itemId)) {
         issue(`${path}.itemId`, 'references a missing Item in the target Part', 'missing_reference');
-        return;
       }
-      if (target.styleId !== undefined
-        && !styleByPartItem.get(`${target.partId}\u0000${target.itemId}`)?.has(target.styleId)) {
-        issue(`${path}.styleId`, 'references a missing Style in the target Item', 'missing_reference');
+    });
+    groupedItemIds.forEach((itemId, index) => {
+      if (!itemByPart.get(target.partId)?.has(itemId)) {
+        issue(`${path}.itemIds[${index}]`, 'references a missing Item in the target Part', 'missing_reference');
       }
-    } else if (target.styleId !== undefined) {
-      issue(`${path}.styleId`, 'cannot be used without itemId', 'invalid_rule_target');
+    });
+
+    const hasStyleId = hasOwn(target, 'styleId');
+    const hasStyleIds = hasOwn(target, 'styleIds');
+    if (hasStyleId && hasStyleIds) {
+      issue(path, 'cannot use styleId and styleIds together', 'invalid_rule_target');
+    }
+    const directStyleIds = hasStyleId && typeof target.styleId === 'string' && target.styleId
+      ? [target.styleId]
+      : [];
+    const groupedStyleIds = hasStyleIds ? validateIdList(target.styleIds, 'styleIds') : [];
+    const styleIds = [...directStyleIds, ...groupedStyleIds];
+    if (hasStyleId && (typeof target.styleId !== 'string' || !target.styleId)) {
+      issue(`${path}.styleId`, 'must be a non-empty ID string', 'invalid_rule_target');
+    }
+    if ((hasStyleId || hasStyleIds) && new Set(itemIds).size !== 1) {
+      issue(
+        `${path}.${hasStyleIds ? 'styleIds' : 'styleId'}`,
+        'requires exactly one Item target',
+        'invalid_rule_target',
+      );
+      return;
+    }
+    if (styleIds.length) {
+      const itemId = itemIds[0];
+      const styles = styleByPartItem.get(`${target.partId}\u0000${itemId}`);
+      directStyleIds.forEach((styleId) => {
+        if (!styles?.has(styleId)) {
+          issue(`${path}.styleId`, 'references a missing Style in the target Item', 'missing_reference');
+        }
+      });
+      groupedStyleIds.forEach((styleId, index) => {
+        if (!styles?.has(styleId)) {
+          issue(`${path}.styleIds[${index}]`, 'references a missing Style in the target Item', 'missing_reference');
+        }
+      });
     }
   }
 

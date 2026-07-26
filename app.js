@@ -48,6 +48,7 @@ import {
   normalizeRuntimeConfig,
 } from './runtime-config.js';
 import { createMakerWorkspace } from './maker-workspace.js';
+import { initializeMakerDraftStorage } from './maker-storage-initializer.js';
 import {
   createCharacterMakerV4Starter,
   createMakerV4Document,
@@ -64,6 +65,14 @@ import {
   buildMakerV4PublicationManifest,
   indexMakerV4UploadResults,
 } from './maker-publication-v4.js';
+
+let makerStorageInitializationError = null;
+try {
+  await initializeMakerDraftStorage();
+} catch (error) {
+  makerStorageInitializationError = error;
+  console.error('Maker draft storage initialization will retry on the next page load.', error);
+}
 
 const slots = [
   { key: 'background', label: 'Background', icon: 'BG', colorKey: 'background', description: 'Scene, mood, and backdrop' },
@@ -141,10 +150,10 @@ const templates = [
     price: 'Free creator pack',
     accent: '#6f63ff',
     secondary: '#43d7e8',
-    summary: 'A premium cel-shaded celestial courier maker with four skin tones, hairstyles, expressions, outfits, backgrounds, and five accessories.',
-    licenseNote: 'Free personal Soul mint and avatar use with Maker provenance retained. Commercial use and resale rights follow the published on-chain policy. AI-assisted original art is disclosed in the creator pack.',
+    summary: 'An AI-assisted complex editor stress fixture. Combination alignment is intentionally under review and it is not a visual gold standard.',
+    licenseNote: 'Internal editor stress fixture. Soul minting stays disabled until a human artist realigns and signs off every required combination.',
     coverUrl: '/makers/astral-courier/cover.png',
-    mintingEnabled: true,
+    mintingEnabled: false,
   },
   {
     id: 'hanamori-spirit',
@@ -159,10 +168,10 @@ const templates = [
     price: 'Free creator pack',
     accent: '#d94f45',
     secondary: '#4caa83',
-    summary: 'A refined cel-shaded spirit-garden maker with four skin tones, hairstyles, expressions, ceremonial fantasy outfits, backgrounds, and five ornaments.',
-    licenseNote: 'Free personal Soul mint and avatar use with Maker provenance retained. Commercial use and resale rights follow the published on-chain policy. AI-assisted original art is disclosed in the creator pack.',
+    summary: 'A more stable AI-assisted editor stress fixture that still requires human cleanup and combination review before release.',
+    licenseNote: 'Internal editor stress fixture. Soul minting stays disabled until a human artist completes cleanup, combination review, and final rights sign-off.',
     coverUrl: '/makers/hanamori-spirit/cover.png',
-    mintingEnabled: true,
+    mintingEnabled: false,
   },
   {
     id: 'daily-starlit',
@@ -822,9 +831,16 @@ const state = {
   locale: Object.hasOwn(i18n, localStorage.getItem('animacraft-locale') || '') ? localStorage.getItem('animacraft-locale') : 'en',
 };
 
+if (makerStorageInitializationError) {
+  state.draftSaveStatus = 'error';
+  state.draftSaveMessage = makerStorageInitializationError.message
+    || 'Close other Animacraft tabs and reload once to initialize Maker draft storage.';
+}
+
 const makerModels = new Map();
 const loadedMakerDrafts = new Set();
 const loadedLocalMakerIndexes = new Set();
+const loadedStableMakerIndexes = new Set();
 const loadedMakerAssetDrafts = new Set();
 const loadedMakerUploadRecoveries = new Set();
 const loadedOcUploadRecoveries = new Set();
@@ -1090,15 +1106,16 @@ function ensureMakerEditable() {
 }
 
 function localMakerIndexKey(address = state.walletAddress) {
-  return `animacraft-local-makers-v1:${address || 'local'}`;
+  return `animacraft-local-makers-v6:${address || 'local'}`;
 }
 
-function persistLocalMakerIndex() {
-  if (!state.walletAddress) return;
-  const records = templates.filter((template) => template.source === 'local' && template.owner === state.walletAddress).map((template) => ({
+function persistLocalMakerIndex(address = state.walletAddress) {
+  const owner = String(address || '').trim();
+  if (!owner) return;
+  const records = templates.filter((template) => template.source === 'local' && template.owner === owner).map((template) => ({
     id: template.id,
     source: 'local',
-    owner: state.walletAddress,
+    owner,
     name: template.name,
     category: template.category,
     creator: template.creator,
@@ -1114,7 +1131,7 @@ function persistLocalMakerIndex() {
     summary: template.summary,
     licenseNote: template.licenseNote,
   }));
-  localStorage.setItem(localMakerIndexKey(), JSON.stringify(records));
+  localStorage.setItem(localMakerIndexKey(owner), JSON.stringify(records));
 }
 
 function loadLocalMakerIndex(address = state.walletAddress) {
@@ -1149,6 +1166,50 @@ function loadLocalMakerIndex(address = state.walletAddress) {
     });
   } catch (error) {
     console.warn('Ignored an unreadable local Maker index.', error);
+  }
+}
+
+async function recoverStableMakerIndex(address = state.walletAddress) {
+  const owner = String(address || '').trim();
+  if (!owner || !makerWorkspace || loadedStableMakerIndexes.has(owner)) return;
+  loadedStableMakerIndexes.add(owner);
+  try {
+    const records = await makerWorkspace.listDraftProjects({ walletAddress: owner });
+    records.slice().reverse().forEach((record) => {
+      const document = record?.document;
+      const id = safeDraftText(
+        record?.metadata?.rootMakerId || document?.version?.rootMakerId,
+        '',
+        128,
+      );
+      if (!isSafeKey(id) || templates.some((template) => template.id === id)) return;
+      templates.unshift({
+        id,
+        source: 'local',
+        owner,
+        name: safeDraftText(document?.metadata?.name, 'Untitled OC Maker', 128),
+        category: 'daily',
+        creator: safeDraftText(document?.metadata?.creator, shortAddress(owner) || 'Creator', 128),
+        style: safeDraftText(document?.metadata?.style, 'OC Maker', 128),
+        license: creatorLicenseLabels[document?.metadata?.license?.kind] || 'Personal use',
+        royaltyBps: Number(document?.publication?.royaltyBps || 0),
+        mintingEnabled: document?.publication?.mintingEnabled !== false,
+        mintFeeEnabled: Boolean(document?.publication?.mintFeeEnabled),
+        mintPriceAtomic: Number(document?.publication?.mintPriceAtomic || 0),
+        price: 'Draft',
+        accent: '#27c5c8',
+        secondary: '#f0a23a',
+        summary: safeDraftText(document?.metadata?.summary, 'Character Maker draft.', 2_000),
+        licenseNote: safeDraftText(document?.metadata?.license?.note, 'Draft maker.', 2_000),
+      });
+    });
+    persistLocalMakerIndex();
+    renderAll();
+  } catch (error) {
+    loadedStableMakerIndexes.delete(owner);
+    state.draftSaveStatus = 'error';
+    state.draftSaveMessage = error.message || 'The local Maker library could not be rebuilt.';
+    renderMakerLifecycle();
   }
 }
 
@@ -1881,6 +1942,14 @@ async function saveCurrentMakerDraft({ silent = false } = {}) {
     if (silent) return null;
     throw new Error('Connect the wallet that owns this draft before saving it.');
   }
+  if (isMakerV4Document(state.makerDocumentV4) && makerWorkspace) {
+    await syncMakerWorkspaceContext();
+    const result = await makerWorkspace.save({ automatic: silent });
+    if (!result && !silent) {
+      throw new Error(makerWorkspace.store?.getState().saveMessage || 'The Maker draft could not be saved locally.');
+    }
+    return result;
+  }
   syncCreatorAssets();
   const templateId = state.templateId;
   const storageKey = makerDraftStorageKey(templateId);
@@ -1930,6 +1999,7 @@ async function saveCurrentMakerDraft({ silent = false } = {}) {
 
 function scheduleMakerAutosave() {
   if (!state.walletConnected || makerIsPublished()) return;
+  if (isMakerV4Document(state.makerDocumentV4)) return;
   const templateId = state.templateId;
   clearTimeout(makerAutosaveTimer);
   state.draftSaveStatus = 'dirty';
@@ -3972,6 +4042,7 @@ function requestDeleteMaker(templateId = state.templateId) {
       localStorage.removeItem(makerDraftStorageKey(templateId));
       loadedMakerDrafts.delete(makerDraftStorageKey(templateId));
       loadedMakerAssetDrafts.delete(assetStorageKey);
+      await makerWorkspace?.deleteDraftProject?.(`${state.walletAddress}:${templateId}`);
       await deleteMakerDraftRecord(makerDraftStorageKey(templateId));
       await deleteMakerAssets(assetStorageKey);
       await clearMakerUploadRecovery(templateId);
@@ -5387,6 +5458,10 @@ async function mintCurrentOc() {
 }
 
 async function restoreMakerDraft(templateId = state.templateId) {
+  const requestedTemplate = templates.find((template) => template.id === templateId);
+  if (requestedTemplate?.source === 'local' || isMakerV4Document(makerModels.get(templateId)?.makerDocumentV4)) {
+    return;
+  }
   const storageKey = makerDraftStorageKey(templateId);
   loadedMakerDrafts.add(storageKey);
   try {
@@ -5404,53 +5479,10 @@ async function restoreMakerDraft(templateId = state.templateId) {
       if (templateId === state.templateId) localStorage.removeItem('animacraft-maker-draft-v1');
     }
     if (state.templateId !== templateId || (draft.templateId && draft.templateId !== templateId)) return;
+    // Maker v5 has one authoritative repository. Never let the legacy shell
+    // restore an older v5 snapshot over the Workspace draft.
+    if (isMakerV4Document(draft.manifest)) return;
     let restoredV4 = false;
-    if (isMakerV4Document(draft.manifest)) {
-      validateMakerV4Document(draft.manifest, { mode: 'draft' });
-      const documentV4 = structuredClone(draft.manifest);
-      const restoredModel = makerModelFromV4Manifest(documentV4, () => '');
-      state.makerCanvas = restoredModel.canvas;
-      state.makerSlots = restoredModel.slots;
-      state.makerParts = restoredModel.parts;
-      state.slotOrder = restoredModel.slotOrder;
-      state.layerOrder = restoredModel.layerOrder;
-      state.visual = restoredModel.visual;
-      state.rules = restoredModel.rules;
-      state.paletteLinks = restoredModel.paletteLinks;
-      state.makerDocumentV4 = documentV4;
-      state.makerRecipeV4 = cloneV4Recipe(draft.makerRecipeV4 || documentV4.defaultRecipe);
-      state.publishedMakerDocumentV4 = isMakerV4Document(draft.publishedMakerDocumentV4)
-        ? structuredClone(draft.publishedMakerDocumentV4)
-        : null;
-      state.makerRuntimeAssetsV4 = restoredModel.makerRuntimeAssetsV4;
-      syncLegacyVisualFromV4(documentV4, state.makerRecipeV4);
-      const currentTemplate = activeTemplate();
-      Object.assign(currentTemplate, {
-        name: documentV4.metadata.name,
-        summary: documentV4.metadata.summary,
-        creator: documentV4.metadata.creator,
-        style: documentV4.metadata.style,
-        license: creatorLicenseLabels[documentV4.metadata.license.kind] || 'Personal use',
-        licenseNote: documentV4.metadata.license.note,
-        royaltyBps: documentV4.publication.royaltyBps,
-        mintingEnabled: documentV4.publication.mintingEnabled,
-        mintFeeEnabled: documentV4.publication.mintFeeEnabled,
-        mintPriceAtomic: documentV4.publication.mintPriceAtomic,
-      });
-      $('creatorTemplateName').value = currentTemplate.name;
-      $('creatorDescription').value = currentTemplate.summary;
-      $('creatorName').value = currentTemplate.creator;
-      $('creatorWorld').value = currentTemplate.style;
-      $('creatorLicense').value = documentV4.metadata.license.kind;
-      $('creatorLicenseNote').value = currentTemplate.licenseNote;
-      $('creatorRoyalty').value = currentTemplate.royaltyBps;
-      $('creatorMintingEnabled').checked = currentTemplate.mintingEnabled;
-      $('creatorMintFeeEnabled').checked = currentTemplate.mintFeeEnabled;
-      $('creatorMintPrice').value = currentTemplate.mintPriceAtomic
-        ? String(atomicCoinToDecimal(currentTemplate.mintPriceAtomic))
-        : '1';
-      restoredV4 = true;
-    }
     if (!restoredV4 && draft.visual && typeof draft.visual === 'object') {
       const restoredVisual = structuredClone(draft.visual);
       restoredVisual.palette = Object.fromEntries(Object.entries(restoredVisual.palette || {}).map(([key, value]) => [key, safeCssColor(value)]));
@@ -5632,7 +5664,57 @@ function syncLegacyVisualFromV4(document, recipe) {
   });
 }
 
-function syncV4WorkspaceState({ document, recipe, assets, profile = null }) {
+function syncV4WorkspaceState({
+  makerKey = '',
+  document,
+  recipe,
+  assets,
+  profile = null,
+}) {
+  const rootMakerId = String(document?.version?.rootMakerId || '');
+  const targetTemplate = templates.find((template) => (
+    template.id === rootMakerId
+    || template.objectId === rootMakerId
+  )) || null;
+  const activeRootMakerId = currentMakerV4Source()?.version?.rootMakerId
+    || activeTemplate()?.id
+    || state.templateId;
+  const activeMakerKey = `${state.walletAddress || 'wallet'}:${activeRootMakerId}`;
+  const belongsToActiveMaker = makerKey
+    ? makerKey === activeMakerKey
+    : Boolean(targetTemplate && targetTemplate.id === state.templateId);
+
+  if (!belongsToActiveMaker) {
+    const targetModel = targetTemplate ? makerModels.get(targetTemplate.id) : null;
+    if (!targetTemplate || !targetModel) return false;
+    if (document?.metadata) {
+      Object.assign(targetTemplate, {
+        name: document.metadata.name,
+        summary: document.metadata.summary,
+        creator: document.metadata.creator,
+        style: document.metadata.style,
+        licenseNote: document.metadata.license?.note || targetTemplate.licenseNote,
+        royaltyBps: document.publication?.royaltyBps ?? targetTemplate.royaltyBps,
+        mintingEnabled: document.publication?.mintingEnabled ?? targetTemplate.mintingEnabled,
+        mintFeeEnabled: document.publication?.mintFeeEnabled ?? targetTemplate.mintFeeEnabled,
+        mintPriceAtomic: document.publication?.mintPriceAtomic ?? targetTemplate.mintPriceAtomic,
+      });
+    }
+    Object.assign(targetModel, {
+      makerDocumentV4: document,
+      makerRecipeV4: recipe,
+      makerRuntimeAssetsV4: assets instanceof Map ? assets : new Map(),
+      canvas: document?.canvas
+        ? { width: document.canvas.width, height: document.canvas.height }
+        : targetModel.canvas,
+      livingContent: document
+        ? normalizeLivingContent(document.livingContent, document.metadata)
+        : targetModel.livingContent,
+    });
+    if (targetTemplate.owner) persistLocalMakerIndex(targetTemplate.owner);
+    return false;
+  }
+
   state.makerDocumentV4 = document;
   state.makerRecipeV4 = recipe;
   state.makerRuntimeAssetsV4 = assets instanceof Map ? assets : new Map();
@@ -5657,6 +5739,7 @@ function syncV4WorkspaceState({ document, recipe, assets, profile = null }) {
   syncLegacyVisualFromV4(document, recipe);
   syncActiveMakerModelRefs();
   persistLocalMakerIndex();
+  return true;
 }
 
 function syncPlayerV4State({ document, recipe, profile }) {
@@ -5672,24 +5755,27 @@ function syncPlayerV4State({ document, recipe, profile }) {
 }
 
 function syncMakerWorkspaceContext() {
-  if (!makerWorkspace) return;
+  if (!makerWorkspace) return Promise.resolve();
   const template = activeTemplate();
   const document = currentMakerV4Source();
-  if (!document) return;
-  const makerKey = `${state.walletAddress || 'wallet'}:${template.id || state.templateId || document.version.rootMakerId}`;
-  makerWorkspace.setContext({
+  if (!document && template?.source !== 'local') return Promise.resolve();
+  const rootMakerId = document?.version?.rootMakerId || template.id || state.templateId;
+  const makerKey = `${state.walletAddress || 'wallet'}:${rootMakerId}`;
+  return makerWorkspace.setContext({
     makerKey,
     walletAddress: state.walletAddress,
     name: template.name,
     creator: template.creator,
+    rootMakerId,
     document,
-    recipe: state.makerRecipeV4 || document.defaultRecipe,
-    playerRecipe: state.playerRecipeV4 || document.defaultRecipe,
+    recipe: state.makerRecipeV4 || document?.defaultRecipe,
+    playerRecipe: state.playerRecipeV4 || document?.defaultRecipe,
     profile: v4ProfileFromLegacy(),
     assets: currentV4RuntimeAssets(),
     publishedDocument: state.publishedMakerDocumentV4,
-    versionId: document.version.versionId,
+    versionId: document?.version?.versionId,
     isPublished: makerIsPublished(),
+    creatorPreview: state.previewingMaker,
   });
 }
 
@@ -5721,13 +5807,20 @@ function renderAll() {
   setEditorPanel(state.editorPanel);
   renderMakerLifecycle();
   syncActiveMakerModelRefs();
-  syncMakerWorkspaceContext();
+  void syncMakerWorkspaceContext().catch((error) => {
+    state.draftSaveStatus = 'error';
+    state.draftSaveMessage = error.message || 'The Maker workspace could not be restored.';
+    console.error('Maker workspace context failed.', error);
+  });
 }
 
 document.querySelectorAll('[data-page]').forEach((button) => {
   button.addEventListener('click', () => {
     if ($('accountPanel')?.contains(button)) closeAccountPanel();
-    if (button.dataset.page === 'make') state.previewingMaker = false;
+    if (button.dataset.page === 'make') {
+      state.previewingMaker = false;
+      makerWorkspace?.setPlayerCreatorPreview?.(false);
+    }
     setPage(button.dataset.page);
   });
 });
@@ -6355,9 +6448,21 @@ window.addEventListener('popstate', () => {
 window.addEventListener('beforeunload', (event) => {
   const makerInFlight = state.publishing || ['registered', 'uploaded', 'certified'].includes(state.makerUploadStage);
   const ocInFlight = state.minting || ['registered', 'uploaded', 'certified'].includes(state.ocUploadStage);
-  if (!makerInFlight && !ocInFlight) return;
+  const makerDraftDirty = makerWorkspace?.hasUnsavedChanges?.() === true;
+  if (!makerInFlight && !ocInFlight && !makerDraftDirty) return;
+  void makerWorkspace?.flushPendingChanges?.({ reason: 'beforeunload' });
   event.preventDefault();
   event.returnValue = '';
+});
+
+window.addEventListener('pagehide', () => {
+  void makerWorkspace?.flushPendingChanges?.({ reason: 'pagehide' });
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    void makerWorkspace?.flushPendingChanges?.({ reason: 'visibility-hidden' });
+  }
 });
 
 let initialPage = location.hash.replace('#', '') || 'templates';
@@ -6384,12 +6489,19 @@ makerWorkspace = createMakerWorkspace({
   playerRoot: $('makerV4PlayerMount'),
   locale: state.locale,
   callbacks: {
+    onRestored(payload) {
+      if (!syncV4WorkspaceState(payload)) return;
+      state.draftSaveStatus = 'saved';
+      state.draftSaveMessage = payload.savedAt
+        ? `Maker v5 restored · ${new Date(payload.savedAt).toLocaleTimeString()}`
+        : 'Maker v5 restored';
+    },
     onDocumentChange(payload) {
-      syncV4WorkspaceState(payload);
+      if (!syncV4WorkspaceState(payload)) return;
       if (makerHasPendingV4Version()) invalidateMakerUpload('Maker version changed. Prepare a fresh Walrus quilt before publication.');
     },
     onSaved(payload) {
-      syncV4WorkspaceState(payload);
+      if (!syncV4WorkspaceState(payload)) return;
       state.draftSaveStatus = 'saved';
       state.draftSaveMessage = payload.automatic ? 'Maker v5 autosaved' : 'Maker v5 saved';
     },
@@ -6497,6 +6609,7 @@ initializeChain(runtimeConfig, (connection) => {
   if (!connection.connected || walletChanged) state.creatorProfileObjectId = '';
   if (connection.connected) {
     loadLocalMakerIndex(connection.address);
+    void recoverStableMakerIndex(connection.address);
     restoreMakerDraft(state.templateId);
     loadChainMakers(connection.address);
     loadOwnedCharacters();

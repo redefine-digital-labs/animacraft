@@ -115,6 +115,21 @@ export function createAssetId(prefix = 'asset') {
   return `${normalizedToken(prefix).replace(/\s+/g, '-') || 'asset'}-${id}`;
 }
 
+export function initialPngTransform(widthValue, heightValue, makerCanvas = {}) {
+  const width = Math.max(1, Number(widthValue || 0));
+  const height = Math.max(1, Number(heightValue || 0));
+  const canvasWidth = Math.max(1, Number(makerCanvas.width || 0));
+  const canvasHeight = Math.max(1, Number(makerCanvas.height || 0));
+  const fullCanvas = width === canvasWidth && height === canvasHeight;
+  const scale = fullCanvas ? 1 : Math.min(1, canvasWidth / width, canvasHeight / height);
+  return {
+    x: fullCanvas ? 0 : Math.round((canvasWidth - (width * scale)) / 2),
+    y: fullCanvas ? 0 : Math.round((canvasHeight - (height * scale)) / 2),
+    scale,
+    rotation: 0,
+  };
+}
+
 export async function inspectPngAsset(file, makerCanvas) {
   if (!file || (!String(file.type || '').includes('image/png') && !String(file.name || '').toLowerCase().endsWith('.png'))) {
     throw new Error('Maker artwork must be a PNG file with transparency support.');
@@ -177,23 +192,14 @@ export async function inspectPngAsset(file, makerCanvas) {
   const canvasWidth = Number(makerCanvas?.width || 0);
   const canvasHeight = Number(makerCanvas?.height || 0);
   const fullCanvas = width === canvasWidth && height === canvasHeight;
-  const visibleBounds = alphaBounds || { x: 0, y: 0, width, height };
-  const initialScale = fullCanvas
-    ? 1
-    : Math.min(1, canvasWidth / Math.max(1, visibleBounds.width), canvasHeight / Math.max(1, visibleBounds.height));
-  const centeredX = Math.round(((canvasWidth - (visibleBounds.width * initialScale)) / 2) - (visibleBounds.x * initialScale));
-  const centeredY = Math.round(((canvasHeight - (visibleBounds.height * initialScale)) / 2) - (visibleBounds.y * initialScale));
   return {
     width,
     height,
     fullCanvas,
     alphaBounds,
-    initialTransform: {
-      x: fullCanvas ? 0 : centeredX,
-      y: fullCanvas ? 0 : centeredY,
-      scale: initialScale,
-      rotation: 0,
-    },
+    // Use the complete source PNG for predictable import placement. Alpha
+    // bounds remain thumbnail and alignment-diagnostic metadata only.
+    initialTransform: initialPngTransform(width, height, makerCanvas),
     warning: fullCanvas ? '' : 'Cropped artwork: confirm its position before publishing.',
   };
 }

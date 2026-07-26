@@ -163,6 +163,30 @@ test('Layer Track transform never changes a Style placement', () => {
   assert.equal(hair.transformSource, 'style');
 });
 
+test('rotation defaults to the PNG center and Part menu order never changes layer order', () => {
+  const maker = makerFixture();
+  const hair = maker.parts.find((part) => part.id === 'hair-front');
+  hair.items[0].styles[0].transform.rotation = 15;
+  const before = resolveMakerScene(maker, recipeFixture());
+  const hairLayer = before.layers.find((layer) => layer.partId === 'hair-front');
+  assert.equal(hairLayer.transform.originX, 400);
+  assert.equal(hairLayer.transform.originY, 300);
+
+  maker.parts.find((part) => part.id === 'hair-back').items[0].styles[0].displayOrder = 0;
+  maker.parts.find((part) => part.id === 'body').items[0].styles[0].displayOrder = 0;
+  const sameTrackBefore = resolveMakerScene(maker, recipeFixture())
+    .layers
+    .filter((layer) => layer.trackId === 'back')
+    .map((layer) => layer.partId);
+  maker.parts.find((part) => part.id === 'hair-back').menuOrder = -100;
+  maker.parts.find((part) => part.id === 'body').menuOrder = 100;
+  const sameTrackAfter = resolveMakerScene(maker, recipeFixture())
+    .layers
+    .filter((layer) => layer.trackId === 'back')
+    .map((layer) => layer.partId);
+  assert.deepEqual(sameTrackAfter, sameTrackBefore);
+});
+
 test('does not treat obsolete style.visible=false as a render switch', () => {
   const maker = makerFixture();
   maker.parts.find((part) => part.id === 'hair-back').items[0].styles[0].visible = false;
@@ -278,7 +302,7 @@ test('Canvas renderer applies direct Style transforms, blend, pixel mode and col
   assert.equal(canvas.height, 600);
   assert.equal(result.drawn, 1);
   assert.deepEqual(colors, [{ id: 'hair-color', valueId: 'blue' }]);
-  assert.ok(operations.some((operation) => operation[0] === 'translate' && operation[1] === 212 && operation[2] === 158));
+  assert.ok(operations.some((operation) => operation[0] === 'translate' && operation[1] === 262 && operation[2] === 195.5));
   assert.ok(operations.some((operation) => operation[0] === 'rotate' && Math.abs(operation[1] - (5 * Math.PI / 180)) < 1e-12));
   assert.ok(operations.some((operation) => operation[0] === 'scale' && operation[1] === 1.25 && operation[2] === 1.25));
   assert.deepEqual(

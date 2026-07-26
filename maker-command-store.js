@@ -15,6 +15,7 @@ export function createMakerCommandStore(initialDocument, initialRecipe, options 
   let redoStack = [];
   let revision = 0;
   let savedRevision = 0;
+  let persistedRevision = null;
   let saveState = 'saved';
   let saveMessage = '';
 
@@ -43,6 +44,7 @@ export function createMakerCommandStore(initialDocument, initialRecipe, options 
         recipe,
         revision,
         savedRevision,
+        persistedRevision,
         dirty: revision !== savedRevision,
         saveState,
         saveMessage,
@@ -59,10 +61,19 @@ export function createMakerCommandStore(initialDocument, initialRecipe, options 
       commitSnapshot(next, String(label || 'Edit Maker'));
       return api.getState();
     },
-    replace(nextDocument, nextRecipe, { clearHistory = true, markSaved = true } = {}) {
+    replace(nextDocument, nextRecipe, {
+      clearHistory = true,
+      markSaved = true,
+      persistedRevision: nextPersistedRevision = null,
+    } = {}) {
       document = clone(nextDocument);
       recipe = clone(nextRecipe);
-      revision += 1;
+      revision = Number.isSafeInteger(nextPersistedRevision) && nextPersistedRevision >= 0
+        ? Math.max(revision, nextPersistedRevision)
+        : revision + 1;
+      if (Number.isSafeInteger(nextPersistedRevision) && nextPersistedRevision >= 0) {
+        persistedRevision = nextPersistedRevision;
+      }
       if (clearHistory) {
         undoStack = [];
         redoStack = [];
@@ -96,10 +107,26 @@ export function createMakerCommandStore(initialDocument, initialRecipe, options 
       notify('redo', command.label);
       return true;
     },
-    setSaveState(nextState, message = '') {
-      saveState = nextState;
-      saveMessage = String(message || '');
-      if (nextState === 'saved') savedRevision = revision;
+    setSaveState(nextState, message = '', options = {}) {
+      const hasPersistedAcknowledgement = Number.isInteger(options.revision);
+      const acknowledgedRevision = hasPersistedAcknowledgement
+        ? Math.min(options.revision, revision)
+        : revision;
+      if (nextState === 'saved') {
+        savedRevision = Math.max(savedRevision, acknowledgedRevision);
+        if (hasPersistedAcknowledgement) {
+          persistedRevision = persistedRevision === null
+            ? acknowledgedRevision
+            : Math.max(persistedRevision, acknowledgedRevision);
+        }
+        saveState = savedRevision === revision ? 'saved' : 'dirty';
+        saveMessage = saveState === 'saved'
+          ? String(message || '')
+          : String(options.pendingMessage || 'Unsaved changes');
+      } else {
+        saveState = nextState;
+        saveMessage = String(message || '');
+      }
       notify('save-state');
     },
     subscribe(listener) {
@@ -108,6 +135,14 @@ export function createMakerCommandStore(initialDocument, initialRecipe, options 
     },
     exportJournal() {
       return undoStack.map(({ label, at }) => ({ label, at }));
+    },
+    snapshotForSave() {
+      return {
+        ...snapshot(),
+        revision,
+        baseRevision: persistedRevision,
+        journal: api.exportJournal(),
+      };
     },
   };
 

@@ -3,7 +3,22 @@ import {
   createMakerV5Document,
   isMakerV5Document,
 } from './maker-v4.js';
-import { evaluateRecipe, generateValidRecipe, normalizeRecipe } from './maker-rules.js';
+import {
+  composeRuleTargets,
+  evaluateRecipe,
+  normalizeRecipe,
+  normalizeRuleSelector,
+  ruleSelectorKey,
+} from './maker-rules.js';
+import {
+  buildPlayerPartOptions,
+  evaluatePlayerClearOptionalOption,
+  evaluatePlayerItemOption,
+  evaluatePlayerRemovePartOption,
+  evaluatePlayerStyleOption,
+  generatePlayablePlayerRecipe,
+  normalizePlayablePlayerRecipe,
+} from './maker-player-options.js';
 import {
   checkExpansionPackCompatibility,
   compareMakerCompatibility,
@@ -49,14 +64,22 @@ import {
 import { createGradientColorProcessor } from './maker-color.js';
 import { createMakerProjectArchive, readMakerProjectArchive } from './maker-project-archive.js';
 import {
-  deleteMakerWorkspaceAssets,
-  loadMakerWorkspaceAssets,
-  loadMakerWorkspaceDocument,
+  SOUL_CONFIG_DOCUMENTS,
+  resetSoulConfig,
+  updateSoulConfig,
+  validateSoulConfig,
+} from './maker-soul-config.js';
+import {
   loadPlayerWorkspaceSession,
-  saveMakerWorkspaceDocument,
   savePlayerWorkspaceSession,
-  upsertMakerWorkspaceAssets,
 } from './maker-workspace-store.js';
+import { createMakerDraftRepository } from './maker-draft-repository.js';
+import {
+  clearMakerDraftWal,
+  loadMakerDraftWal,
+  makerDraftWalSnapshotsEqual,
+  writeMakerDraftWal,
+} from './maker-draft-wal.js';
 import { makerWorkspaceText } from './maker-workspace-i18n.js';
 
 function escapeHtml(value) {
@@ -77,16 +100,75 @@ function selected(value, expected) {
   return String(value ?? '') === String(expected ?? '') ? 'selected' : '';
 }
 
+function colorChannelHasLockedStyle(document, channelId) {
+  if (!channelId) return false;
+  return Boolean(document?.parts?.some((part) => part.items.some((item) => item.styles.some((style) => (
+    style.styleLocked && style.colorChannelId === channelId
+  )))));
+}
+
 function clone(value) {
   return structuredClone(value);
 }
 
+function browserLocalStorage() {
+  if (typeof globalThis.window === 'undefined') return null;
+  try {
+    return globalThis.localStorage || null;
+  } catch {
+    return null;
+  }
+}
+
+function browserWalWriterId() {
+  if (typeof globalThis.window === 'undefined') {
+    return globalThis.crypto?.randomUUID?.() || `maker-tab-${Date.now()}-${Math.random()}`;
+  }
+  const storageKey = 'animacraft-maker-wal-writer-v1';
+  try {
+    const existing = globalThis.sessionStorage?.getItem(storageKey);
+    if (existing) return existing;
+    const created = globalThis.crypto?.randomUUID?.() || `maker-tab-${Date.now()}-${Math.random()}`;
+    globalThis.sessionStorage?.setItem(storageKey, created);
+    return created;
+  } catch {
+    return globalThis.crypto?.randomUUID?.() || `maker-tab-${Date.now()}-${Math.random()}`;
+  }
+}
+
 function debounce(callback, delay) {
   let timer = null;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => callback(...args), delay);
+  let pendingArgs = null;
+  let running = Promise.resolve();
+  const invoke = () => {
+    const args = pendingArgs || [];
+    pendingArgs = null;
+    timer = null;
+    const result = running.then(() => callback(...args));
+    running = result.catch(() => undefined);
+    return result;
   };
+  const schedule = (...args) => {
+    pendingArgs = args;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      void invoke();
+    }, delay);
+  };
+  schedule.flush = async () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      return invoke();
+    }
+    return running;
+  };
+  schedule.cancel = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    pendingArgs = null;
+  };
+  schedule.pending = () => timer !== null;
+  return schedule;
 }
 
 function safeFileName(value, fallback = 'asset') {
@@ -165,6 +247,49 @@ function ownerRuleRows(document) {
   return rows;
 }
 
+function ownerRuleGroups(document) {
+  const groups = new Map();
+  ownerRuleRows(document).forEach((row) => {
+    const key = [row.ownerType, row.ownerPartId, row.ownerItemId, row.ownerStyleId, row.type].join('\u0000');
+    const group = groups.get(key) || {
+      key,
+      ownerType: row.ownerType,
+      ownerPartId: row.ownerPartId,
+      ownerItemId: row.ownerItemId,
+      ownerStyleId: row.ownerStyleId,
+      ownerName: row.ownerName,
+      type: row.type,
+      rows: [],
+    };
+    group.rows.push(row);
+    groups.set(key, group);
+  });
+  return [...groups.values()];
+}
+
+function ruleTargetSummary(document, target) {
+  const selector = normalizeRuleSelector(target);
+  const part = findPart(document, selector.partId);
+  const itemIds = selector.itemId ? [selector.itemId] : selector.itemIds || [];
+  const item = itemIds.length === 1 ? findItem(document, selector.partId, itemIds[0]) : null;
+  const styleIds = selector.styleId ? [selector.styleId] : selector.styleIds || [];
+  if (styleIds.length && item) {
+    const names = styleIds.map((styleId) => item.styles.find((style) => style.id === styleId)?.name || styleId);
+    return {
+      any: styleIds.length > 1,
+      label: [part?.name || selector.partId, item.name, names.join(' / ')].join(' › '),
+    };
+  }
+  if (itemIds.length) {
+    const names = itemIds.map((itemId) => findItem(document, selector.partId, itemId)?.name || itemId);
+    return {
+      any: itemIds.length > 1,
+      label: [part?.name || selector.partId, names.join(' / ')].join(' › '),
+    };
+  }
+  return { any: false, label: part?.name || selector.partId };
+}
+
 export function ruleOwnerFromDefinition(document, definition) {
   const [partId = '', itemId = '', styleId = ''] = String(definition || '').split('::');
   const part = findPart(document, partId);
@@ -202,6 +327,7 @@ export class MakerWorkspace {
     this.locale = options.locale || 'en';
     this.context = null;
     this.store = null;
+    this.draftRepository = options.draftRepository || createMakerDraftRepository();
     this.unsubscribe = null;
     this.assets = new Map();
     this.assetResolver = createCachedAssetResolver(this.assets);
@@ -212,6 +338,7 @@ export class MakerWorkspace {
     this.selectedStyleId = '';
     this.selectedTrackId = '';
     this.selectedChannelId = '';
+    this.selectedSoulDocumentKey = 'soulMd';
     this.playerPartId = '';
     this.creatorRecipe = { selections: [], colors: [] };
     this.playerRecipe = { selections: [], colors: [] };
@@ -222,14 +349,22 @@ export class MakerWorkspace {
     this.playerIntroOpen = false;
     this.creatorPublishOpen = false;
     this.creatorPublishState = { stage: 'idle', status: '', busy: false, digest: '', actions: {} };
+    this.versionHistoryOpen = false;
+    this.versionHistoryStatus = 'idle';
+    this.versionHistoryEntries = [];
+    this.versionHistoryError = '';
+    this.versionHistoryMessage = '';
+    this.versionHistoryRequestId = 0;
+    this.restoringCheckpointRevision = null;
     this.playerPublishOpen = false;
     this.playerPublishState = { stage: 'idle', status: '', busy: false, digest: '', actions: {} };
     this.enabledExpansionIds = new Set();
     this.pendingImport = null;
     this.pendingCreatorText = null;
+    this.ruleBuilderError = '';
     this.creatorZoom = 1;
-    this.creatorSolo = false;
-    this.creatorDimOthers = true;
+    this.creatorSpacePressed = false;
+    this.creatorPreviewMode = 'all';
     this.hiddenStyleKeys = new Set();
     this.creatorHiddenPartIds = new Set();
     this.editingPositionStyleKey = '';
@@ -238,11 +373,24 @@ export class MakerWorkspace {
     this.dragSort = null;
     this.renderAbort = { creator: null, player: null };
     this.contextEpoch = 0;
+    this.contextRequestId = 0;
+    this.contextSwitchInProgress = false;
+    this.restoreInProgress = false;
+    this.restoreError = '';
+    this.walStorage = Object.hasOwn(options, 'walStorage')
+      ? options.walStorage
+      : browserLocalStorage();
+    this.walWriterId = String(options.walWriterId || browserWalWriterId());
+    this.recoveryWriteAhead = null;
+    this.writeAheadError = '';
+    this.textAutosave = debounce(() => this.flushPendingCreatorText(), 300);
     this.autosave = debounce(() => this.save({ automatic: true }), 850);
     this.sessionAutosave = debounce(() => this.savePlayerSession(), 500);
     this.boundCreatorClick = (event) => this.handleCreatorClick(event);
     this.boundCreatorChange = (event) => {
+      const operation = this.captureMakerOperation();
       Promise.resolve(this.handleCreatorChange(event)).catch((error) => {
+        if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
         const message = error.message || 'The selected Maker asset could not be imported.';
         this.store?.setSaveState('error', message);
         this.callbacks.onCreatorError?.(error);
@@ -253,7 +401,21 @@ export class MakerWorkspace {
       if (this.captureCreatorText(event.target)) this.flushPendingCreatorText();
     };
     this.boundCreatorKeydown = (event) => {
-      if (event.key === 'Escape' && this.creatorTab !== 'structure') this.openCreatorTab('structure');
+      const editingText = event.target?.matches?.('input, textarea, select, [contenteditable="true"]');
+      if (event.code === 'Space' && !editingText) {
+        this.creatorSpacePressed = true;
+        this.creatorRoot?.querySelector('.v4-canvas-viewport')?.classList.add('pan-ready');
+        event.preventDefault?.();
+        return;
+      }
+      if (event.key !== 'Escape') return;
+      if (this.versionHistoryOpen) this.closeVersionHistory();
+      else if (this.creatorTab !== 'structure') this.openCreatorTab('structure');
+    };
+    this.boundCreatorKeyup = (event) => {
+      if (event.code !== 'Space') return;
+      this.creatorSpacePressed = false;
+      this.creatorRoot?.querySelector('.v4-canvas-viewport')?.classList.remove('pan-ready');
     };
     this.boundPlayerClick = (event) => this.handlePlayerClick(event);
     this.boundPlayerChange = (event) => this.handlePlayerChange(event);
@@ -268,6 +430,7 @@ export class MakerWorkspace {
       this.creatorRoot.addEventListener('input', this.boundCreatorInput);
       this.creatorRoot.addEventListener('focusout', this.boundCreatorFocusout);
       this.creatorRoot.addEventListener('keydown', this.boundCreatorKeydown);
+      this.creatorRoot.addEventListener('keyup', this.boundCreatorKeyup);
       this.creatorRoot.addEventListener('dragstart', (event) => this.handleDragStart(event));
       this.creatorRoot.addEventListener('dragover', (event) => this.handleDragOver(event));
       this.creatorRoot.addEventListener('drop', (event) => this.handleDrop(event));
@@ -327,19 +490,68 @@ export class MakerWorkspace {
   }
 
   async setContext(context) {
-    const contextEpoch = ++this.contextEpoch;
-    if (!context?.makerKey) {
+    const contextRequestId = ++this.contextRequestId;
+    const requestedMakerKey = String(context?.makerKey || '');
+    const previousMakerKey = this.makerKey;
+    const sameMaker = Boolean(requestedMakerKey && previousMakerKey === requestedMakerKey);
+
+    if (!requestedMakerKey) {
+      if (previousMakerKey) {
+        this.textAutosave.cancel();
+        this.flushPendingCreatorText();
+        this.contextSwitchInProgress = true;
+        try {
+          const flushed = await this.flushPendingChanges({ reason: 'clear-context' });
+          if (!flushed.saved) throw new Error(this.store?.getState().saveMessage || this.tr('saveFailed'));
+        } catch (error) {
+          if (contextRequestId !== this.contextRequestId) return;
+          this.contextSwitchInProgress = false;
+          throw error;
+        }
+      }
+      if (contextRequestId !== this.contextRequestId) return;
+      this.contextEpoch += 1;
+      this.contextSwitchInProgress = false;
+      this.unsubscribe?.();
+      this.unsubscribe = null;
       this.context = null;
+      this.store = null;
       this.renderEmpty();
       return;
     }
-    const sameMaker = this.context?.makerKey === context.makerKey;
+
+    if (!sameMaker && previousMakerKey) {
+      this.textAutosave.cancel();
+      this.flushPendingCreatorText();
+      this.contextSwitchInProgress = true;
+      try {
+        const flushed = await this.flushPendingChanges({ reason: 'switch-maker' });
+        if (!flushed.saved) throw new Error(this.store?.getState().saveMessage || this.tr('saveFailed'));
+      } catch (error) {
+        if (contextRequestId !== this.contextRequestId) return;
+        this.contextSwitchInProgress = false;
+        throw error;
+      }
+      if (contextRequestId !== this.contextRequestId) return;
+      this.contextEpoch += 1;
+      this.contextSwitchInProgress = false;
+      this.autosave.cancel();
+    } else if (!sameMaker) {
+      this.contextEpoch += 1;
+    }
+    const contextEpoch = this.contextEpoch;
+
     this.context = { ...this.context, ...context };
     if (sameMaker && this.store) {
+      if (Object.hasOwn(context, 'creatorPreview')) {
+        this.playerCreatorPreview = Boolean(context.creatorPreview);
+      } else if (context.isPublished === true) {
+        this.playerCreatorPreview = false;
+      }
       if (context.document && !isMakerV5Document(context.document)) {
         throw new TypeError('Legacy Maker v3/v4 documents are incompatible with Maker v5.');
       }
-      if (isMakerV5Document(context.document)) {
+      if (context.replaceDocument === true && isMakerV5Document(context.document) && !this.store.getState().dirty) {
         const incoming = this.normalizeDocument(clone(context.document));
         const current = this.store.getState().document;
         if (JSON.stringify(incoming) !== JSON.stringify(current)) {
@@ -360,19 +572,33 @@ export class MakerWorkspace {
     this.selectedStyleId = '';
     this.selectedTrackId = '';
     this.selectedChannelId = '';
-    this.playerCreatorPreview = false;
+    this.playerCreatorPreview = Boolean(context.creatorPreview);
     this.hiddenStyleKeys.clear();
     this.creatorHiddenPartIds.clear();
     this.editingPositionStyleKey = '';
     this.dragPreview = null;
     this.styleScalePreview = null;
+    this.versionHistoryOpen = false;
+    this.versionHistoryStatus = 'idle';
+    this.versionHistoryEntries = [];
+    this.versionHistoryError = '';
+    this.versionHistoryMessage = '';
+    this.versionHistoryRequestId += 1;
+    this.restoringCheckpointRevision = null;
+    this.restoreError = '';
+    this.recoveryWriteAhead = null;
+    this.pendingImport = null;
 
     if (context.document && !isMakerV5Document(context.document)) {
       throw new TypeError('Legacy Maker v3/v4 documents are incompatible with Maker v5; create a new Maker instead.');
     }
     const document = context.document
       ? clone(context.document)
-      : createMakerV5Document({ makerId: context.makerKey, name: context.name || 'Untitled Maker', creator: context.creator || '' });
+      : createMakerV5Document({
+          makerId: context.rootMakerId || context.makerId || context.makerKey,
+          name: context.name || 'Untitled Maker',
+          creator: context.creator || '',
+        });
     this.normalizeDocument(document);
     (context.assets || []).forEach((record) => {
       const assetId = String(record.assetId || record.id || record.identifier || '');
@@ -410,13 +636,28 @@ export class MakerWorkspace {
       this.ensureCreatorSelection(next.document);
       this.syncCreatorRecipeSelection();
       this.render();
+      if (event.reason !== 'save-state' && next.dirty) {
+        this.persistWriteAheadSnapshot(this.store, this.makerKey);
+      }
       if (event.reason !== 'replace' && event.reason !== 'save-state') {
-        this.callbacks.onDocumentChange?.({ document: next.document, recipe: next.recipe, assets: this.assets, event });
+        this.callbacks.onDocumentChange?.({
+          makerKey: this.makerKey,
+          document: next.document,
+          recipe: next.recipe,
+          assets: this.assets,
+          event,
+        });
         this.autosave();
       }
     });
     this.ensureCreatorSelection(document);
-    this.playerRecipe = recipeWithColors(document, context.playerRecipe || document.defaultRecipe);
+    const initialPlayerRecipe = recipeWithColors(document, context.playerRecipe || document.defaultRecipe);
+    const playablePlayerRecipe = normalizePlayablePlayerRecipe(
+      document,
+      initialPlayerRecipe,
+      this.playerOptionSettings(document),
+    );
+    this.playerRecipe = playablePlayerRecipe.documentRecipe;
     this.playerPartId = document.parts.find((part) => part.menuVisible)?.id || document.parts[0]?.id || '';
     this.playerProfile = {
       name: context.profile?.name || this.tr('untitledOc'),
@@ -427,21 +668,34 @@ export class MakerWorkspace {
     this.playerUndo = [];
     this.playerRedo = [];
     this.playerIntroOpen = true;
+    this.restoreInProgress = Boolean(this.makerKey && this.context?.walletAddress);
     this.render();
-    await this.restoreLocalWorkspace(contextEpoch);
+    if (this.restoreInProgress) await this.restoreLocalWorkspace(contextEpoch);
   }
 
   async restoreLocalWorkspace(contextEpoch = this.contextEpoch) {
     if (!this.makerKey || !this.context?.walletAddress) return;
     const requestedMakerKey = this.makerKey;
+    const requestedStore = this.store;
+    const baseRevision = requestedStore?.getState().revision ?? 0;
+    this.restoreInProgress = true;
+    this.restoreError = '';
     try {
-      const [saved, storedAssets, playerSession] = await Promise.all([
-        loadMakerWorkspaceDocument(requestedMakerKey),
-        loadMakerWorkspaceAssets(requestedMakerKey),
+      const [saved, playerSession] = await Promise.all([
+        this.draftRepository.load(requestedMakerKey),
         loadPlayerWorkspaceSession(this.playerSessionKey),
       ]);
-      if (this.context?.makerKey !== requestedMakerKey || this.contextEpoch !== contextEpoch) return;
-      storedAssets.forEach((record) => {
+      if (
+        this.context?.makerKey !== requestedMakerKey
+        || this.contextEpoch !== contextEpoch
+        || this.store !== requestedStore
+      ) return;
+      const currentState = requestedStore.getState();
+      const mayRestore = currentState.revision === baseRevision && !currentState.dirty;
+      if (!mayRestore) {
+        throw new Error('The local editor changed before the saved Maker revision finished restoring.');
+      }
+      (saved?.assets || []).forEach((record) => {
         const previous = this.assets.get(record.assetId);
         if (previous) revokeRuntimeAsset(previous);
         this.assets.set(record.assetId, reviveRuntimeAssetRecord(record));
@@ -449,28 +703,174 @@ export class MakerWorkspace {
       this.assetResolver.clear();
       this.assetResolver = createCachedAssetResolver(this.assets);
       if (this.contextEpoch !== contextEpoch) return;
-      if (saved?.document && saved.document.version?.rootMakerId === this.store.getState().document.version.rootMakerId) {
+      if (
+        saved?.document
+        && saved.document.version?.rootMakerId !== requestedStore.getState().document.version.rootMakerId
+      ) {
+        throw new Error('The saved Maker identity does not match this workspace.');
+      }
+      if (saved?.document) {
         const restored = this.normalizeDocument(saved.document);
-        this.store.replace(restored, saved.metadata?.recipe || restored.defaultRecipe, { clearHistory: true, markSaved: true });
+        requestedStore.replace(restored, saved.recipe || restored.defaultRecipe, {
+          clearHistory: true,
+          markSaved: true,
+          persistedRevision: saved.revision,
+        });
+        requestedStore.setSaveState(
+          'saved',
+          saved.savedAt
+            ? this.tr('savedAtTime', { time: this.formatSavedClock(saved.savedAt) })
+            : this.tr('savedStatus'),
+          { revision: saved.revision },
+        );
+        this.creatorRecipe = clone(saved.recipe || restored.defaultRecipe);
+        const restoredPlayerRecipe = normalizePlayablePlayerRecipe(
+          restored,
+          saved.recipe || restored.defaultRecipe,
+          this.playerOptionSettings(restored),
+        );
+        this.playerRecipe = restoredPlayerRecipe.documentRecipe;
+        this.ensureCreatorSelection(restored);
+        this.callbacks.onRestored?.({
+          makerKey: requestedMakerKey,
+          document: restored,
+          recipe: saved.recipe || restored.defaultRecipe,
+          assets: this.assets,
+          revision: saved.revision,
+          savedAt: saved.savedAt,
+        });
+      }
+      const persistedRevision = Number.isSafeInteger(saved?.revision) ? saved.revision : null;
+      const writeAhead = loadMakerDraftWal(this.walStorage, requestedMakerKey, {
+        writerId: this.walWriterId,
+      });
+      this.recoveryWriteAhead = writeAhead;
+      let recoveredWriteAhead = false;
+      if (writeAhead) {
+        if (writeAhead.writerId && writeAhead.writerId !== this.walWriterId) {
+          throw new Error(this.tr('workspaceWalForeignTab'));
+        } else if (saved?.document && makerDraftWalSnapshotsEqual(writeAhead, {
+          document: saved.document,
+          recipe: saved.recipe,
+        })) {
+          clearMakerDraftWal(this.walStorage, requestedMakerKey, {
+            writerId: writeAhead.writerId,
+            expectedSnapshot: writeAhead,
+          });
+          this.recoveryWriteAhead = null;
+        } else {
+          if (writeAhead.baseRevision !== persistedRevision) {
+            throw new Error(this.tr('workspaceWalConflict'));
+          }
+          if (
+            !isMakerV5Document(writeAhead.document)
+            || writeAhead.document.version?.rootMakerId
+              !== requestedStore.getState().document.version.rootMakerId
+          ) {
+            throw new Error(this.tr('workspaceWalWrongMaker'));
+          }
+          const recoveredDocument = this.normalizeDocument(clone(writeAhead.document));
+          const recoveredRecipe = recipeWithColors(
+            recoveredDocument,
+            writeAhead.recipe || recoveredDocument.defaultRecipe,
+          );
+          requestedStore.replace(recoveredDocument, recoveredRecipe, {
+            clearHistory: true,
+            markSaved: false,
+          });
+          this.creatorRecipe = clone(recoveredRecipe);
+          this.playerRecipe = clone(recoveredRecipe);
+          this.ensureCreatorSelection(recoveredDocument);
+          this.persistWriteAheadSnapshot(requestedStore, requestedMakerKey);
+          recoveredWriteAhead = true;
+          this.callbacks.onRestored?.({
+            makerKey: requestedMakerKey,
+            document: recoveredDocument,
+            recipe: recoveredRecipe,
+            assets: this.assets,
+            revision: requestedStore.getState().revision,
+            savedAt: writeAhead.updatedAt,
+            recoveredFromWriteAhead: true,
+          });
+        }
       }
       if (playerSession?.session?.makerVersionId === this.runtimeDocument()?.version?.versionId) {
-        this.playerRecipe = playerSession.session.recipe || this.playerRecipe;
+        const restoredPlayerRecipe = playerSession.session.recipe || this.playerRecipe;
+        const playablePlayerRecipe = normalizePlayablePlayerRecipe(
+          this.runtimeDocument(),
+          restoredPlayerRecipe,
+          this.playerOptionSettings(),
+        );
+        this.playerRecipe = playablePlayerRecipe.documentRecipe;
         this.playerProfile = { ...this.playerProfile, ...(playerSession.session.profile || {}) };
         this.playerIntroOpen = false;
       }
       if (this.contextEpoch !== contextEpoch) return;
-      this.render();
+      if (!saved?.document || recoveredWriteAhead) {
+        const initialCommit = await this.save({
+          automatic: true,
+          force: !recoveredWriteAhead,
+          allowDuringRestore: true,
+        });
+        if (!initialCommit?.confirmed) {
+          throw new Error(
+            recoveredWriteAhead
+              ? this.tr('workspaceWalCommitFailed')
+              : this.tr('workspaceInitialCommitFailed'),
+          );
+        }
+        if (recoveredWriteAhead && writeAhead) {
+          clearMakerDraftWal(this.walStorage, requestedMakerKey, {
+            writerId: writeAhead.writerId,
+            expectedSnapshot: writeAhead,
+          });
+          this.recoveryWriteAhead = null;
+        }
+      }
     } catch (error) {
-      this.store?.setSaveState('error', error.message || this.tr('restoreFailed'));
+      if (this.context?.makerKey === requestedMakerKey && this.store === requestedStore) {
+        this.restoreError = error.message || this.tr('restoreFailed');
+        this.store?.setSaveState('error', this.restoreError);
+      }
+    } finally {
+      if (this.contextEpoch === contextEpoch) {
+        this.restoreInProgress = false;
+        this.render();
+      }
     }
+  }
+
+  async retryLocalWorkspaceRestore() {
+    if (!this.store || !this.makerKey || !this.context?.walletAddress || this.restoreInProgress) return;
+    if (this.store.getState().dirty) {
+      this.restoreError = this.tr('workspaceRestoreBlocked');
+      this.render();
+      return;
+    }
+    this.restoreError = '';
+    this.restoreInProgress = true;
+    this.render();
+    await this.restoreLocalWorkspace(this.contextEpoch);
   }
 
   ensureCreatorSelection(document) {
     let part = findPart(document, this.selectedPartId) || document.parts[0] || null;
     this.selectedPartId = part?.id || '';
-    let item = part?.items.find((candidate) => candidate.id === this.selectedItemId) || part?.items[0] || null;
+    const recipeSelection = part
+      ? recipeSelectionMap(this.creatorRecipe || this.store?.getState().recipe || document.defaultRecipe).get(part.id)
+      : null;
+    let item = part?.items.find((candidate) => candidate.id === this.selectedItemId)
+      || part?.items.find((candidate) => candidate.id === recipeSelection?.itemId)
+      || part?.items.find((candidate) => candidate.id === part.defaultItemId)
+      || part?.items[0]
+      || null;
     this.selectedItemId = item?.id || '';
-    let style = item?.styles.find((candidate) => candidate.id === this.selectedStyleId) || item?.styles[0] || null;
+    const recipeStyleId = recipeSelection?.itemId === item?.id ? recipeSelection?.styleId : '';
+    let style = item?.styles.find((candidate) => candidate.id === this.selectedStyleId)
+      || item?.styles.find((candidate) => candidate.id === recipeStyleId)
+      || item?.styles.find((candidate) => candidate.id === item.defaultStyleId)
+      || item?.styles[0]
+      || null;
     this.selectedStyleId = style?.id || '';
     const styleKey = style ? styleSceneKey(part.id, item.id, style.id) : '';
     this.editingPositionStyleKey = style && !style.styleLocked && !style.positionLocked && (
@@ -522,21 +922,437 @@ export class MakerWorkspace {
     });
   }
 
-  async save({ automatic = false } = {}) {
-    if (!this.store || !this.makerKey || !this.context?.walletAddress) return;
-    this.store.setSaveState('saving', this.tr('savingChanges'));
+  persistWriteAheadSnapshot(requestedStore = this.store, requestedMakerKey = this.makerKey) {
+    if (!requestedStore || !requestedMakerKey || !this.walStorage) return false;
     try {
-      const state = this.store.getState();
-      await saveMakerWorkspaceDocument(this.makerKey, state.document, {
-        recipe: state.recipe,
-        journal: this.store.exportJournal(),
-        makerVersionId: state.document.version.versionId,
-        walletAddress: this.context.walletAddress,
+      const snapshot = requestedStore.snapshotForSave();
+      writeMakerDraftWal(this.walStorage, requestedMakerKey, snapshot, {
+        writerId: this.walWriterId,
+        walletAddress: this.context?.walletAddress || '',
+        rootMakerId: snapshot.document.version?.rootMakerId || '',
       });
-      this.store.setSaveState('saved', this.tr('savedStatus'));
-      this.callbacks.onSaved?.({ document: state.document, recipe: state.recipe, assets: this.assets, automatic });
+      this.writeAheadError = '';
+      return true;
     } catch (error) {
-      this.store.setSaveState('error', error.message || this.tr('saveFailed'));
+      this.writeAheadError = this.tr('workspaceWalWriteFailed');
+      requestedStore?.setSaveState('error', this.writeAheadError);
+      console.warn(this.writeAheadError, error);
+      return false;
+    }
+  }
+
+  clearWriteAheadSnapshot(requestedMakerKey, expectedSnapshot = null) {
+    if (!requestedMakerKey || !this.walStorage) return false;
+    try {
+      const cleared = clearMakerDraftWal(this.walStorage, requestedMakerKey, {
+        writerId: this.walWriterId,
+        expectedSnapshot,
+      });
+      if (cleared && this.makerKey === requestedMakerKey) this.recoveryWriteAhead = null;
+      return cleared;
+    } catch (error) {
+      this.writeAheadError = error?.message || 'The emergency Maker recovery snapshot could not be cleared.';
+      return false;
+    }
+  }
+
+  emergencyRecoverySnapshot() {
+    if (this.recoveryWriteAhead) return this.recoveryWriteAhead;
+    if (!this.makerKey || !this.walStorage) return null;
+    try {
+      this.recoveryWriteAhead = loadMakerDraftWal(this.walStorage, this.makerKey, {
+        writerId: this.walWriterId,
+      });
+      return this.recoveryWriteAhead;
+    } catch {
+      return null;
+    }
+  }
+
+  exportEmergencyRecoveryJson() {
+    const recovery = this.emergencyRecoverySnapshot();
+    if (!recovery) return false;
+    const { storageKey: _storageKey, ...record } = recovery;
+    const content = JSON.stringify(record, null, 2);
+    this.callbacks.onEmergencyRecoveryExport?.({
+      makerKey: this.makerKey,
+      record: clone(record),
+      content,
+    });
+    if (
+      typeof globalThis.document?.createElement === 'function'
+      && typeof globalThis.URL?.createObjectURL === 'function'
+    ) {
+      const blob = new Blob([content], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = globalThis.document.createElement('a');
+      link.href = url;
+      link.download = `${safeFileName(
+        recovery.document?.metadata?.name,
+        recovery.rootMakerId || 'maker',
+      )}-emergency-recovery.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+    return true;
+  }
+
+  async save({
+    automatic = false,
+    force = false,
+    allowDuringRestore = false,
+  } = {}) {
+    if (!this.store || !this.makerKey || !this.context?.walletAddress) return null;
+    if ((!allowDuringRestore && this.restoreInProgress) || this.restoreError) return null;
+    this.flushPendingCreatorText();
+    if (!automatic) this.autosave.cancel();
+    const requestedStore = this.store;
+    const requestedMakerKey = this.makerKey;
+    const requestedContextEpoch = this.contextEpoch;
+    const requestedWallet = this.context.walletAddress;
+    const stateBeforeSave = requestedStore.getState();
+    if (!force && !stateBeforeSave.dirty) {
+      return {
+        makerKey: requestedMakerKey,
+        requestedRevision: stateBeforeSave.revision,
+        persistedRevision: this.draftRepository.getStatus(requestedMakerKey).persistedRevision,
+        confirmed: true,
+        superseded: false,
+        conflict: false,
+        noop: true,
+      };
+    }
+    const snapshot = requestedStore.snapshotForSave();
+    const assets = [...this.assets.values()].map((record) => ({
+      ...record,
+      url: '',
+      thumbnailUrl: '',
+    }));
+    requestedStore.setSaveState('saving', this.tr('savingChanges'));
+    try {
+      const result = await this.draftRepository.save(requestedMakerKey, {
+        ...snapshot,
+        assets,
+        metadata: {
+          makerVersionId: snapshot.document.version.versionId,
+          rootMakerId: snapshot.document.version.rootMakerId,
+          walletAddress: requestedWallet,
+          name: snapshot.document.metadata.name,
+        },
+      });
+      if (
+        this.store !== requestedStore
+        || this.makerKey !== requestedMakerKey
+        || this.contextEpoch !== requestedContextEpoch
+      ) return result;
+      if (result.confirmed) {
+        const savedAt = result.savedAt
+          ?? this.draftRepository.getStatus(requestedMakerKey).savedAt
+          ?? Date.now();
+        requestedStore.setSaveState('saved', this.tr('savedAtTime', {
+          time: this.formatSavedClock(savedAt),
+        }), { revision: snapshot.revision });
+        const current = requestedStore.getState();
+        if (current.dirty) {
+          this.persistWriteAheadSnapshot(requestedStore, requestedMakerKey);
+        } else {
+          this.clearWriteAheadSnapshot(requestedMakerKey, snapshot);
+        }
+        if (current.revision === snapshot.revision) {
+          this.callbacks.onSaved?.({
+            makerKey: requestedMakerKey,
+            document: current.document,
+            recipe: current.recipe,
+            assets: this.assets,
+            automatic,
+            revision: snapshot.revision,
+          });
+        } else {
+          this.autosave();
+        }
+      } else if (
+        result.conflict
+        || (
+          result.superseded
+          && Number.isSafeInteger(result.persistedRevision)
+          && result.persistedRevision > snapshot.revision
+        )
+      ) {
+        requestedStore.setSaveState(
+          'error',
+          this.tr('workspaceCrossTabConflict'),
+        );
+      } else if (requestedStore.getState().dirty) {
+        this.autosave();
+      }
+      return result;
+    } catch (error) {
+      if (this.store === requestedStore && this.makerKey === requestedMakerKey) {
+        requestedStore.setSaveState('error', error.message || this.tr('saveFailed'));
+      }
+      return null;
+    }
+  }
+
+  hasUnsavedChanges() {
+    if (!this.store) return false;
+    const state = this.store.getState();
+    return Boolean(
+      this.pendingCreatorText
+      || this.textAutosave.pending()
+      || this.autosave.pending()
+      || state.dirty
+      || state.saveState === 'saving'
+      || state.saveState === 'error'
+    );
+  }
+
+  async flushPendingChanges({ reason = 'flush' } = {}) {
+    this.textAutosave.cancel();
+    this.flushPendingCreatorText();
+    const requestedStore = this.store;
+    const requestedMakerKey = this.makerKey;
+    if (!requestedStore || !requestedMakerKey || !this.context?.walletAddress) {
+      this.autosave.cancel();
+      return { makerKey: requestedMakerKey, reason, saved: !requestedStore?.getState().dirty };
+    }
+
+    if (requestedStore.getState().dirty && !this.autosave.pending()) this.autosave();
+    await this.autosave.flush();
+    await this.draftRepository.flush(requestedMakerKey);
+
+    if (
+      this.store === requestedStore
+      && this.makerKey === requestedMakerKey
+      && requestedStore.getState().dirty
+    ) {
+      await this.save({ automatic: true });
+      await this.draftRepository.flush(requestedMakerKey);
+    }
+
+    return {
+      makerKey: requestedMakerKey,
+      reason,
+      saved: this.store !== requestedStore || !requestedStore.getState().dirty,
+    };
+  }
+
+  isCurrentMakerOperation(makerKey, store, contextEpoch) {
+    return Boolean(
+      makerKey
+      && this.makerKey === makerKey
+      && this.store === store
+      && this.contextEpoch === contextEpoch
+    );
+  }
+
+  captureMakerOperation() {
+    return {
+      makerKey: this.makerKey,
+      store: this.store,
+      contextEpoch: this.contextEpoch,
+    };
+  }
+
+  async flushCompletedAssetOperation(operation, reason) {
+    if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) {
+      return false;
+    }
+    const result = await this.flushPendingChanges({ reason });
+    if (
+      this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)
+      && !result.saved
+    ) {
+      throw new Error(operation.store.getState().saveMessage || this.tr('saveFailed'));
+    }
+    return result.saved;
+  }
+
+  async openVersionHistory() {
+    if (!this.store || !this.makerKey) return;
+    const requestedMakerKey = this.makerKey;
+    const requestedStore = this.store;
+    const requestedContextEpoch = this.contextEpoch;
+    const requestId = ++this.versionHistoryRequestId;
+    this.versionHistoryOpen = true;
+    this.versionHistoryStatus = 'loading';
+    this.versionHistoryEntries = [];
+    this.versionHistoryError = '';
+    this.versionHistoryMessage = '';
+    this.render();
+    try {
+      const flushed = await this.flushPendingChanges({ reason: 'open-version-history' });
+      if (
+        requestId !== this.versionHistoryRequestId
+        || !this.isCurrentMakerOperation(requestedMakerKey, requestedStore, requestedContextEpoch)
+      ) return;
+      if (!flushed.saved) throw new Error(this.tr('versionHistoryFlushFailed'));
+      const checkpoints = await this.draftRepository.listCheckpoints(requestedMakerKey);
+      if (
+        requestId !== this.versionHistoryRequestId
+        || !this.isCurrentMakerOperation(requestedMakerKey, requestedStore, requestedContextEpoch)
+      ) return;
+      this.versionHistoryEntries = checkpoints;
+      this.versionHistoryStatus = checkpoints.length ? 'ready' : 'empty';
+      this.render();
+    } catch (error) {
+      if (
+        requestId !== this.versionHistoryRequestId
+        || !this.isCurrentMakerOperation(requestedMakerKey, requestedStore, requestedContextEpoch)
+      ) return;
+      this.versionHistoryStatus = 'error';
+      this.versionHistoryError = error?.message || this.tr('versionHistoryFailed');
+      this.render();
+    }
+  }
+
+  closeVersionHistory() {
+    if (this.versionHistoryStatus === 'restoring') return;
+    this.versionHistoryRequestId += 1;
+    this.versionHistoryOpen = false;
+    this.versionHistoryStatus = 'idle';
+    this.versionHistoryError = '';
+    this.versionHistoryMessage = '';
+    this.restoringCheckpointRevision = null;
+    this.render();
+  }
+
+  async restoreVersionCheckpoint(checkpointRevisionValue) {
+    if (!this.store || !this.makerKey || this.versionHistoryStatus === 'restoring') return;
+    const checkpointRevision = Number(checkpointRevisionValue);
+    if (!Number.isSafeInteger(checkpointRevision) || checkpointRevision < 0) return;
+    const checkpoint = this.versionHistoryEntries.find((entry) => entry.revision === checkpointRevision);
+    if (!checkpoint) return;
+    const checkpointName = checkpoint.document?.metadata?.name
+      || checkpoint.metadata?.name
+      || this.tr('versionHistoryUnknownName');
+    if (!this.confirmDelete(this.tr('versionHistoryRestoreConfirm', {
+      revision: checkpointRevision,
+      name: checkpointName,
+    }))) return;
+
+    const requestedMakerKey = this.makerKey;
+    const requestedStore = this.store;
+    const requestedContextEpoch = this.contextEpoch;
+    const requestedRootMakerId = requestedStore.getState().document.version?.rootMakerId || '';
+    const requestId = ++this.versionHistoryRequestId;
+    this.versionHistoryStatus = 'restoring';
+    this.versionHistoryError = '';
+    this.versionHistoryMessage = '';
+    this.restoringCheckpointRevision = checkpointRevision;
+    this.render();
+    try {
+      const flushed = await this.flushPendingChanges({ reason: 'restore-version-history' });
+      if (
+        requestId !== this.versionHistoryRequestId
+        || !this.isCurrentMakerOperation(requestedMakerKey, requestedStore, requestedContextEpoch)
+      ) return;
+      if (!flushed.saved) throw new Error(this.tr('versionHistoryFlushFailed'));
+
+      const restoration = await this.draftRepository.restoreCheckpoint(
+        requestedMakerKey,
+        checkpointRevision,
+      );
+      if (
+        requestId !== this.versionHistoryRequestId
+        || !this.isCurrentMakerOperation(requestedMakerKey, requestedStore, requestedContextEpoch)
+      ) return;
+      if (
+        restoration?.makerKey !== requestedMakerKey
+        || restoration?.committed !== true
+        || restoration?.conflict === true
+        || !Number.isSafeInteger(restoration?.persistedRevision)
+      ) {
+        throw new Error(this.tr('versionHistoryRestoreFailed'));
+      }
+
+      const saved = await this.draftRepository.load(requestedMakerKey);
+      if (
+        requestId !== this.versionHistoryRequestId
+        || !this.isCurrentMakerOperation(requestedMakerKey, requestedStore, requestedContextEpoch)
+      ) return;
+      if (
+        saved?.makerKey !== requestedMakerKey
+        || saved?.revision !== restoration.persistedRevision
+        || !saved?.document
+        || saved.document.version?.rootMakerId !== requestedRootMakerId
+      ) {
+        throw new Error(this.tr('versionHistoryRestoreFailed'));
+      }
+
+      const restoredDocument = this.normalizeDocument(clone(saved.document));
+      this.assetResolver.clear();
+      this.assets.forEach(revokeRuntimeAsset);
+      this.assets = new Map();
+      (saved.assets || []).forEach((record) => {
+        const assetId = String(record.assetId || '');
+        if (!assetId) return;
+        this.assets.set(assetId, reviveRuntimeAssetRecord({ ...record, assetId }));
+      });
+      this.assetResolver = createCachedAssetResolver(this.assets);
+
+      const restoredRecipe = recipeWithColors(
+        restoredDocument,
+        saved.recipe || restoredDocument.defaultRecipe,
+      );
+      requestedStore.replace(restoredDocument, restoredRecipe, {
+        clearHistory: true,
+        markSaved: true,
+        persistedRevision: saved.revision,
+      });
+      this.clearWriteAheadSnapshot(requestedMakerKey, {
+        document: restoredDocument,
+        recipe: restoredRecipe,
+      });
+      this.creatorRecipe = clone(restoredRecipe);
+      const playablePlayerRecipe = normalizePlayablePlayerRecipe(
+        restoredDocument,
+        restoredRecipe,
+        this.playerOptionSettings(restoredDocument),
+      );
+      this.playerRecipe = playablePlayerRecipe.documentRecipe;
+      this.playerUndo = [];
+      this.playerRedo = [];
+      this.ensureCreatorSelection(restoredDocument);
+      this.callbacks.onRestored?.({
+        makerKey: requestedMakerKey,
+        document: restoredDocument,
+        recipe: restoredRecipe,
+        assets: this.assets,
+        revision: saved.revision,
+        savedAt: saved.savedAt,
+        restoredFromRevision: checkpointRevision,
+      });
+
+      let checkpoints = this.versionHistoryEntries;
+      try {
+        checkpoints = await this.draftRepository.listCheckpoints(requestedMakerKey);
+      } catch {
+        checkpoints = [{
+          revision: saved.revision,
+          document: clone(restoredDocument),
+          metadata: clone(saved.metadata || {}),
+          savedAt: saved.savedAt,
+        }, ...checkpoints];
+      }
+      if (
+        requestId !== this.versionHistoryRequestId
+        || !this.isCurrentMakerOperation(requestedMakerKey, requestedStore, requestedContextEpoch)
+      ) return;
+      this.versionHistoryEntries = checkpoints;
+      this.versionHistoryStatus = 'ready';
+      this.versionHistoryMessage = this.tr('versionHistoryRestored', { revision: saved.revision });
+      this.restoringCheckpointRevision = null;
+      this.render();
+    } catch (error) {
+      if (
+        requestId !== this.versionHistoryRequestId
+        || !this.isCurrentMakerOperation(requestedMakerKey, requestedStore, requestedContextEpoch)
+      ) return;
+      this.versionHistoryStatus = 'error';
+      this.versionHistoryError = error?.message || this.tr('versionHistoryRestoreFailed');
+      this.restoringCheckpointRevision = null;
+      this.render();
     }
   }
 
@@ -561,10 +1377,13 @@ export class MakerWorkspace {
     return { part, item, style };
   }
 
-  itemThumbnailUrl(item) {
+  itemThumbnailUrl(item, preferredStyleId = '') {
     const explicit = this.runtimeAsset(item?.thumbnailAssetId);
     if (explicit?.thumbnailUrl || explicit?.url) return explicit.thumbnailUrl || explicit.url;
-    const style = item?.styles?.find((candidate) => candidate.id === item.defaultStyleId) || item?.styles?.[0];
+    const style = item?.styles?.find((candidate) => candidate.id === preferredStyleId)
+      || item?.styles?.find((candidate) => candidate.id === item.defaultStyleId)
+      || item?.styles?.find((candidate) => candidate.assetId)
+      || item?.styles?.[0];
     const source = this.runtimeAsset(style?.assetId);
     return source?.thumbnailUrl || source?.url || '';
   }
@@ -605,6 +1424,14 @@ export class MakerWorkspace {
         message: `${pack.name || pack.packId || 'ExpansionPack'}: ${error.message || error.code || 'not compatible with this Maker version'}.`,
       }));
     });
+    const soulConfig = validateSoulConfig(document.livingContent, document);
+    if (!soulConfig.valid) {
+      issues.push({
+        code: 'invalid_living_content',
+        path: 'livingContent',
+        message: soulConfig.error || 'Soul Configuration must contain valid personality, memory, and SKILL.md documents.',
+      });
+    }
     issues.push(...collectTrackAlignmentWarnings(document, this.assets));
     return issues.filter((issue, index, entries) => entries.findIndex((candidate) => `${candidate.code}:${candidate.path}:${candidate.message}` === `${issue.code}:${issue.path}:${issue.message}`) === index);
   }
@@ -624,6 +1451,24 @@ export class MakerWorkspace {
 
   getDocument() {
     return this.store ? clone(this.store.getState().document) : null;
+  }
+
+  async listDraftProjects(filter = {}) {
+    return this.draftRepository.listProjects(filter);
+  }
+
+  async deleteDraftProject(makerKey) {
+    try {
+      await this.draftRepository.deleteProject(makerKey);
+      this.clearWriteAheadSnapshot(makerKey);
+    } catch (error) {
+      if (error?.code === 'MAKER_DRAFT_DELETE_CONFLICT') {
+        const localized = new Error(this.tr('workspaceDeleteConflict'));
+        localized.code = error.code;
+        throw localized;
+      }
+      throw error;
+    }
   }
 
   getCreatorRecipe() {
@@ -658,8 +1503,9 @@ export class MakerWorkspace {
   }
 
   openCreatorTab(tab = 'structure') {
-    const allowed = new Set(['structure', 'layers', 'colors', 'rules', 'expansions', 'validate']);
+    const allowed = new Set(['structure', 'layers', 'colors', 'rules', 'expansions', 'soul', 'validate']);
     this.creatorTab = allowed.has(tab) ? tab : 'structure';
+    if (this.creatorTab !== 'rules') this.ruleBuilderError = '';
     this.render();
     requestAnimationFrame(() => {
       const selector = this.creatorTab === 'structure'
@@ -673,6 +1519,13 @@ export class MakerWorkspace {
     const next = ['en', 'zh', 'ja', 'ko', 'vi'].includes(locale) ? locale : 'en';
     if (next === this.locale) return;
     this.locale = next;
+    if (render) this.render();
+  }
+
+  setPlayerCreatorPreview(enabled, { render = true } = {}) {
+    const next = Boolean(enabled);
+    if (next === this.playerCreatorPreview) return;
+    this.playerCreatorPreview = next;
     if (render) this.render();
   }
 
@@ -701,7 +1554,40 @@ export class MakerWorkspace {
     if (state.saveState === 'saving') return this.tr('savingChanges');
     if (state.saveState === 'dirty' || state.dirty) return this.tr('unsavedChanges');
     if (state.saveMessage === 'Loaded') return this.tr('loadingStatus');
+    if (state.saveState === 'saved' && state.saveMessage) return state.saveMessage;
     return this.tr('savedStatus');
+  }
+
+  formatSavedClock(value) {
+    const date = new Date(Number(value));
+    if (!Number.isFinite(date.getTime())) return '';
+    const locale = {
+      en: 'en-US',
+      zh: 'zh-CN',
+      ja: 'ja-JP',
+      ko: 'ko-KR',
+      vi: 'vi-VN',
+    }[this.locale] || 'en-US';
+    return new Intl.DateTimeFormat(locale, {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date);
+  }
+
+  formatCheckpointSavedAt(value) {
+    const date = new Date(Number(value));
+    if (!Number.isFinite(date.getTime())) return this.tr('versionHistoryUnknownTime');
+    const locale = {
+      en: 'en-US',
+      zh: 'zh-CN',
+      ja: 'ja-JP',
+      ko: 'ko-KR',
+      vi: 'vi-VN',
+    }[this.locale] || 'en-US';
+    return new Intl.DateTimeFormat(locale, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(date);
   }
 
   issueText(issue, context = {}) {
@@ -728,7 +1614,7 @@ export class MakerWorkspace {
     if (!this.creatorRoot?.querySelector) return null;
     const scrollSelectors = [
       '.v4-parts-list', '.v4-canvas-viewport', '.v4-inspector', '.v4-item-grid', '.v4-advanced-panel',
-      '.v4-track-list', '.v4-color-workspace', '.v4-rule-list', '.v4-expansion-grid', '.v4-preflight-list',
+      '.v4-track-list', '.v4-color-workspace', '.v4-rule-list', '.v4-expansion-grid', '.v4-soul-editor', '.v4-preflight-list',
     ];
     const scroll = scrollSelectors.map((selector) => {
       const node = this.creatorRoot.querySelector(selector);
@@ -783,6 +1669,7 @@ export class MakerWorkspace {
       colors: this.tr('smartColor'),
       rules: this.tr('rules'),
       expansions: this.tr('expansionPacks'),
+      soul: this.tr('soulConfig'),
       validate: this.tr(issueCount ? 'preflightCount' : 'preflightReady', { count: issueCount }),
     }[tab] || this.tr('partsItems');
   }
@@ -884,6 +1771,20 @@ export class MakerWorkspace {
         return Boolean(candidateStyle.assetId && (this.runtimeAsset(candidateStyle.assetId) || descriptor?.url || descriptor?.legacy?.url));
       }).length
     ), 0), 0);
+    let visiblePreviewLayerCount = 0;
+    try {
+      const previewScene = resolveMakerScene(document, this.creatorRecipe || state.recipe, { strict: false });
+      visiblePreviewLayerCount = previewScene.layers.filter((layer) => {
+        if (this.creatorHiddenPartIds.has(layer.partId)) return false;
+        if (this.hiddenStyleKeys.has(styleSceneKey(layer.partId, layer.itemId, layer.styleId))) return false;
+        const descriptor = document.assets.find((asset) => asset.id === layer.assetId);
+        return Boolean(layer.assetId && (this.runtimeAsset(layer.assetId) || descriptor?.url || descriptor?.legacy?.url));
+      }).length;
+    } catch {
+      visiblePreviewLayerCount = 0;
+    }
+    const canComparePreviewLayers = Boolean(style && visiblePreviewLayerCount >= 2);
+    if (!canComparePreviewLayers && this.creatorPreviewMode !== 'all') this.creatorPreviewMode = 'all';
     const blockingIssues = issues.filter((issue) => issue.severity !== 'warning');
     const compatibility = this.compatibilityReport(document);
     const partRows = document.parts.map((candidate) => `
@@ -902,18 +1803,17 @@ export class MakerWorkspace {
         <button class="v4-item-card ${candidate.id === item?.id ? 'active' : ''}" type="button" draggable="true" data-drag-kind="item" data-parent-id="${escapeHtml(part.id)}" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-item" data-item-id="${escapeHtml(candidate.id)}">
           <span class="v4-item-thumb">${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" />` : '<i>PNG</i>'}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
-          <small>${escapeHtml(this.tr('styleCount', { count: candidate.styles.length }))} · ${escapeHtml(candidate.status || 'public')}</small>
+          <small>${escapeHtml(this.tr('styleCount', { count: candidate.styles.length }))}</small>
         </button>
       `;
     }).join('') || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noItemsYet'))}</strong><span>${escapeHtml(this.tr('noItemsCopy'))}</span></div>`;
     const styleRows = item?.styles.map((candidate) => {
-      const track = document.layerTracks.find((entry) => entry.id === candidate.layerTrackId);
       const runtime = this.runtimeAsset(candidate.assetId);
       const key = styleSceneKey(part.id, item.id, candidate.id);
       return `
         <button class="v4-style-chip ${candidate.id === style?.id ? 'active' : ''} ${this.hiddenStyleKeys.has(key) ? 'muted' : ''}" type="button" draggable="${candidate.styleLocked ? 'false' : 'true'}" data-drag-kind="style" data-parent-id="${escapeHtml(`${part.id}/${item.id}`)}" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-style" data-style-id="${escapeHtml(candidate.id)}">
           <span class="v4-style-chip-thumb">${runtime?.thumbnailUrl || runtime?.url ? `<img src="${escapeHtml(runtime.thumbnailUrl || runtime.url)}" alt="" />` : '<i>PNG</i>'}</span>
-          <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(track?.name || this.tr('noLayerTrack'))}</small></span>
+          <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(candidate.id === item.defaultStyleId ? this.tr('defaultStyle') : this.tr('style'))}</small></span>
           ${candidate.styleLocked ? '<em>🔒</em>' : candidate.positionLocked ? '<em>⌖</em>' : ''}
         </button>
       `;
@@ -932,6 +1832,7 @@ export class MakerWorkspace {
             <button type="button" data-action="undo" ${state.canUndo ? '' : 'disabled'} title="${escapeHtml(state.canUndo ? this.tr('undoHint') : this.tr('undoUnavailable'))}">↶ ${escapeHtml(this.tr('undo'))}</button>
             <button type="button" data-action="redo" ${state.canRedo ? '' : 'disabled'} title="${escapeHtml(state.canRedo ? this.tr('redoHint') : this.tr('redoUnavailable'))}">↷ ${escapeHtml(this.tr('redo'))}</button>
             <button type="button" data-action="save" title="${escapeHtml(this.tr('saveHint'))}">${escapeHtml(this.tr(state.saveState === 'saving' ? 'saving' : 'save'))}</button>
+            <button type="button" data-action="open-version-history">${escapeHtml(this.tr('versionHistory'))}</button>
             <button type="button" data-action="export-project">${escapeHtml(this.tr('projectZip'))}</button>
             <label class="v4-file-button compact">${escapeHtml(this.tr('importZip'))}<input type="file" accept=".zip,application/zip" data-action="import-project" /></label>
             <button type="button" data-action="open-player" title="${escapeHtml(this.tr(previewAssetCount ? 'playerTestHint' : 'playerTestBlocked'))}">▶ ${escapeHtml(this.tr('playerTest'))}</button>
@@ -946,6 +1847,7 @@ export class MakerWorkspace {
             ['colors', this.tr('smartColor')],
             ['rules', this.tr('rules')],
             ['expansions', this.tr('expansionPacks')],
+            ['soul', this.tr('soulConfig')],
             ['validate', this.tr(issues.length ? 'preflightCount' : 'preflightReady', { count: issues.length })],
           ].map(([id, label]) => `<button type="button" id="makerV4Tab-${id}" class="${this.creatorTab === id ? 'active' : ''}" data-action="creator-tab" data-tab="${id}" role="tab" aria-selected="${this.creatorTab === id}" aria-controls="${id === 'structure' ? 'makerV4ToolPanel' : 'makerV4ToolDialog'}" tabindex="${this.creatorTab === id ? '0' : '-1'}">${escapeHtml(label)}</button>`).join('')}
         </nav>
@@ -961,8 +1863,11 @@ export class MakerWorkspace {
             <div class="v4-canvas-toolbar">
               <div><strong>${escapeHtml(this.tr('runtimePreview'))}</strong><span id="v4CreatorRenderStatus">${escapeHtml(this.tr('runtimePreviewCopy'))}</span></div>
               <div class="v4-canvas-tools">
-                <button type="button" class="${this.creatorSolo ? 'active' : ''}" data-action="toggle-solo" ${style ? '' : 'disabled'}>${escapeHtml(this.tr('solo'))}</button>
-                <button type="button" class="${this.creatorDimOthers ? 'active' : ''}" data-action="toggle-dim">${escapeHtml(this.tr('dimOthers'))}</button>
+                <div class="v4-preview-mode" role="group" aria-label="${escapeHtml(this.tr('previewModeLabel'))}">
+                  <button type="button" class="${this.creatorPreviewMode === 'all' ? 'active' : ''}" data-action="set-preview-mode" data-preview-mode="all" aria-pressed="${this.creatorPreviewMode === 'all'}">${escapeHtml(this.tr('previewShowAll'))}</button>
+                  <button type="button" class="${this.creatorPreviewMode === 'dim' ? 'active' : ''}" data-action="set-preview-mode" data-preview-mode="dim" aria-pressed="${this.creatorPreviewMode === 'dim'}" ${canComparePreviewLayers ? '' : 'disabled'}>${escapeHtml(this.tr('previewDimOthers'))}</button>
+                  <button type="button" class="${this.creatorPreviewMode === 'solo' ? 'active' : ''}" data-action="set-preview-mode" data-preview-mode="solo" aria-pressed="${this.creatorPreviewMode === 'solo'}" ${canComparePreviewLayers ? '' : 'disabled'}>${escapeHtml(this.tr('previewSoloCurrent'))}</button>
+                </div>
                 <button type="button" data-action="show-all-parts">${escapeHtml(this.tr('showAllParts'))}</button>
                 <button type="button" data-action="show-current-part" ${part ? '' : 'disabled'}>${escapeHtml(this.tr('showCurrentPart'))}</button>
                 <label>${escapeHtml(this.tr('zoom'))} <input type="range" min="50" max="200" step="10" value="${Math.round(this.creatorZoom * 100)}" data-action="canvas-zoom" /></label>
@@ -971,7 +1876,7 @@ export class MakerWorkspace {
             </div>
             <div class="v4-canvas-viewport ${document.canvas.pixelMode === 'pixelated' ? 'pixelated' : ''}">
               <div class="v4-canvas-ruler"><span>0,0</span><span>${document.canvas.width},${document.canvas.height}</span></div>
-              <canvas id="makerV4CreatorCanvas" class="v4-runtime-canvas" style="width:${Math.round(this.creatorZoom * 100)}%" aria-label="${escapeHtml(this.tr('makerCanvasLabel'))}"></canvas>
+              <canvas id="makerV4CreatorCanvas" class="v4-runtime-canvas ${style && !style.positionLocked && !style.styleLocked && this.editingPositionStyleKey === styleSceneKey(part.id, item.id, style.id) ? 'position-editing' : ''}" style="width:${Math.round(this.creatorZoom * 100)}%" tabindex="0" aria-label="${escapeHtml(this.tr('makerCanvasLabel'))}"></canvas>
               ${!style?.assetId ? `<div class="v4-canvas-empty"><strong>${escapeHtml(this.tr('selectVisualStyle'))}</strong><span>${escapeHtml(this.tr('selectVisualStyleCopy'))}</span></div>` : ''}
             </div>
             <div class="v4-items-dock">
@@ -989,7 +1894,7 @@ export class MakerWorkspace {
           </main>
 
           <aside class="v4-inspector">
-            <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('inspector'))}</span><strong>${escapeHtml(style ? this.tr('style') : item ? this.tr('item') : part ? this.tr('part') : this.tr('nothingSelected'))}</strong></div></div>
+            <div class="v4-panel-head v4-inspector-context"><div><span>${escapeHtml(this.tr('currentStyle'))}</span><strong>${escapeHtml([part?.name || '—', item?.name || '—', style?.name || '—'].join(' › '))}</strong></div></div>
             ${this.renderCreatorInspector(document, part, item, style)}
           </aside>
         </div>
@@ -1001,9 +1906,106 @@ export class MakerWorkspace {
         </div>` : ''}
         ${this.renderCreatorPublishFlow()}
       </section>
+      ${this.renderWorkspaceRestoreGuard()}
+      ${this.renderVersionHistory()}
       ${this.renderImportDialog(document)}
     `;
     this.restoreCreatorViewState(viewState);
+  }
+
+  renderWorkspaceRestoreGuard() {
+    if (!this.restoreInProgress && !this.restoreError) return '';
+    const recoveryAvailable = Boolean(this.restoreError && this.emergencyRecoverySnapshot());
+    return `
+      <div class="v4-modal-backdrop v4-workspace-restore-backdrop">
+        <section class="v4-workspace-restore-dialog" role="status" aria-live="polite">
+          ${this.restoreInProgress ? `
+            <i></i>
+            <strong>${escapeHtml(this.tr('workspaceRestoring'))}</strong>
+            <span>${escapeHtml(this.tr('workspaceRestoringCopy'))}</span>
+          ` : `
+            <strong>${escapeHtml(this.tr('restoreFailed'))}</strong>
+            <span>${escapeHtml(this.tr('workspaceRestoreBlocked'))}</span>
+            <small>${escapeHtml(this.restoreError)}</small>
+            <div>
+              <button type="button" data-action="back-library">← Library</button>
+              ${recoveryAvailable ? `<button type="button" data-action="export-emergency-recovery">${escapeHtml(this.tr('workspaceRecoveryExport'))}</button>` : ''}
+              <button type="button" class="primary" data-action="retry-workspace-restore">${escapeHtml(this.tr('workspaceRestoreRetry'))}</button>
+            </div>
+          `}
+        </section>
+      </div>
+    `;
+  }
+
+  renderVersionHistory() {
+    if (!this.versionHistoryOpen) return '';
+    const persistedRevision = this.draftRepository.getStatus(this.makerKey).persistedRevision;
+    const busy = this.versionHistoryStatus === 'loading' || this.versionHistoryStatus === 'restoring';
+    const list = this.versionHistoryEntries.length ? `
+      <ol class="v4-version-history-list">
+        ${this.versionHistoryEntries.map((checkpoint) => {
+          const revision = Number(checkpoint.revision);
+          const name = checkpoint.document?.metadata?.name
+            || checkpoint.metadata?.name
+            || this.tr('versionHistoryUnknownName');
+          const current = revision === persistedRevision;
+          const restoring = this.restoringCheckpointRevision === revision;
+          return `
+            <li class="${current ? 'current' : ''}">
+              <div>
+                <strong>${escapeHtml(name)}</strong>
+                <span>${escapeHtml(this.tr('versionHistoryRevision', { revision }))}</span>
+                <time>${escapeHtml(this.formatCheckpointSavedAt(checkpoint.savedAt))}</time>
+              </div>
+              ${current
+                ? `<em>${escapeHtml(this.tr('versionHistoryCurrent'))}</em>`
+                : `<button type="button" data-action="restore-checkpoint" data-revision="${revision}" ${busy ? 'disabled' : ''}>${escapeHtml(this.tr(restoring ? 'versionHistoryRestoring' : 'versionHistoryRestore'))}</button>`}
+            </li>
+          `;
+        }).join('')}
+      </ol>
+    ` : '';
+    let content = list;
+    if (this.versionHistoryStatus === 'loading') {
+      content = `<div class="v4-version-history-state loading"><i></i><strong>${escapeHtml(this.tr('versionHistoryLoading'))}</strong><span>${escapeHtml(this.tr('versionHistoryLoadingCopy'))}</span></div>`;
+    } else if (this.versionHistoryStatus === 'empty') {
+      content = `<div class="v4-version-history-state"><strong>${escapeHtml(this.tr('versionHistoryEmpty'))}</strong><span>${escapeHtml(this.tr('versionHistoryEmptyCopy'))}</span></div>`;
+    } else if (this.versionHistoryStatus === 'error') {
+      content = `
+        <div class="v4-version-history-state error">
+          <strong>${escapeHtml(this.tr('versionHistoryFailed'))}</strong>
+          <span>${escapeHtml(this.versionHistoryError || this.tr('versionHistoryRestoreFailed'))}</span>
+          <button type="button" data-action="retry-version-history">${escapeHtml(this.tr('versionHistoryRetry'))}</button>
+        </div>
+        ${list}
+      `;
+    } else if (this.versionHistoryStatus === 'restoring') {
+      content = `
+        <div class="v4-version-history-notice">${escapeHtml(this.tr('versionHistoryRestoring'))}</div>
+        ${list}
+      `;
+    } else if (this.versionHistoryMessage) {
+      content = `
+        <div class="v4-version-history-notice success">${escapeHtml(this.versionHistoryMessage)}</div>
+        ${list}
+      `;
+    }
+    return `
+      <div class="v4-modal-backdrop v4-version-history-backdrop" data-action="close-version-history-backdrop">
+        <section class="v4-version-history-dialog" role="dialog" aria-modal="true" aria-labelledby="makerVersionHistoryTitle">
+          <header>
+            <div>
+              <span class="v4-eyebrow">${escapeHtml(this.tr('versionHistory'))}</span>
+              <h3 id="makerVersionHistoryTitle">${escapeHtml(this.tr('versionHistoryTitle'))}</h3>
+              <p>${escapeHtml(this.tr('versionHistoryCopy'))}</p>
+            </div>
+            <button type="button" data-action="close-version-history" aria-label="${escapeHtml(this.tr('close'))}" ${this.versionHistoryStatus === 'restoring' ? 'disabled' : ''}>×</button>
+          </header>
+          <div class="v4-version-history-content">${content}</div>
+        </section>
+      </div>
+    `;
   }
 
   renderCreatorPublishFlow() {
@@ -1057,17 +2059,18 @@ export class MakerWorkspace {
 
   renderCreatorInspector(document, part, item, style) {
     if (!part) return `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noPartSelected'))}</strong><span>${escapeHtml(this.tr('noPartSelectedCopy'))}</span></div>`;
-    const parentOptions = [`<option value="">${escapeHtml(this.tr('noParent'))}</option>`, ...document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(part.parentPartId, candidate.id)}>${escapeHtml(candidate.name)}</option>`)].join('');
     const defaultOptions = part.items.map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(part.defaultItemId, candidate.id)}>${escapeHtml(candidate.name)}</option>`).join('');
-    const trackOptions = [`<option value="">${escapeHtml(this.tr('noLayerTrack'))}</option>`, ...document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}" ${selected(style?.layerTrackId, track.id)}>${escapeHtml(track.name)}</option>`)].join('');
     const channelOptions = [`<option value="">${escapeHtml(this.tr('noSmartColor'))}</option>`, ...document.colorChannels.filter((channel) => channel.mode === 'gradient-map').map((channel) => `<option value="${escapeHtml(channel.id)}" ${selected(style?.colorChannelId, channel.id)}>${escapeHtml(channel.name)}</option>`)].join('');
     const visibleOptions = [`<option value="">${escapeHtml(this.tr('alwaysVisible'))}</option>`, ...document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(style?.visibleWhen?.partId, candidate.id)}>${escapeHtml(this.tr('whenPartSelected', { part: candidate.name }))}</option>`)].join('');
     const styleKey = style ? styleSceneKey(part.id, item.id, style.id) : '';
     const styleLocked = Boolean(style?.styleLocked);
     const positionLocked = styleLocked || Boolean(style?.positionLocked);
     const styleDisabled = styleLocked ? 'disabled' : '';
+    const positionReadonly = positionLocked ? 'readonly aria-readonly="true"' : '';
+    const positionDisabled = positionLocked ? 'disabled' : '';
     const positionEditorOpen = Boolean(style && !positionLocked && (style.positionConfirmed === false || this.editingPositionStyleKey === styleKey));
     const effectiveTransform = style ? effectiveStyleTransform(document, style) : null;
+    const pixelCoordinates = document.canvas.pixelMode === 'pixelated';
     return `
       <div class="v4-inspector-section">
         <span class="v4-inspector-label">${escapeHtml(this.tr('part'))}</span>
@@ -1076,7 +2079,6 @@ export class MakerWorkspace {
           <label><input type="checkbox" ${checked(part.required)} data-action="part-required" /> ${escapeHtml(this.tr('required'))}</label>
           <label><input type="checkbox" ${checked(part.menuVisible)} data-action="part-visible" /> ${escapeHtml(this.tr('playerMenu'))}</label>
         </div>
-        <label>${escapeHtml(this.tr('parentPart'))}<select data-action="part-parent">${parentOptions}</select></label>
         <label>${escapeHtml(this.tr('defaultItem'))}<select data-action="part-default" ${part.items.length ? '' : 'disabled'}><option value="">${escapeHtml(this.tr('none'))}</option>${defaultOptions}</select></label>
         <label class="v4-file-button wide">${escapeHtml(this.tr('uploadPartIcon'))}<input type="file" accept="image/png,image/jpeg" data-action="part-icon" /></label>
       </div>
@@ -1084,11 +2086,8 @@ export class MakerWorkspace {
         <div class="v4-inspector-section">
           <span class="v4-inspector-label">${escapeHtml(this.tr('item'))}</span>
           <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(item.name)}" data-action="item-name" maxlength="128" /></label>
-          <label>${escapeHtml(this.tr('importKey'))}<input value="${escapeHtml(item.importKey || item.id)}" data-action="item-import-key" maxlength="128" /></label>
-          <label>${escapeHtml(this.tr('releaseStatus'))}<select data-action="item-status"><option value="draft" ${selected(item.status, 'draft')}>${escapeHtml(this.tr('statusDraft'))}</option><option value="private" ${selected(item.status, 'private')}>${escapeHtml(this.tr('statusPrivate'))}</option><option value="public" ${selected(item.status || 'public', 'public')}>${escapeHtml(this.tr('statusPublic'))}</option></select></label>
           <div class="v4-inline-actions"><button type="button" data-action="copy-item">${escapeHtml(this.tr('duplicate'))}</button><button type="button" class="danger" data-action="delete-item">${escapeHtml(this.tr('delete'))}</button></div>
           <label class="v4-file-button wide">${escapeHtml(this.tr('customThumbnail'))}<input type="file" accept="image/png,image/jpeg" data-action="item-thumbnail" /></label>
-          <button type="button" data-action="generate-item-thumbnail">${escapeHtml(this.tr('generateCompositeThumbnail'))}</button>
         </div>
         <div class="v4-inspector-section">
           <span class="v4-inspector-label">${escapeHtml(this.tr('style'))}</span>
@@ -1104,26 +2103,26 @@ export class MakerWorkspace {
               <label><input type="checkbox" ${checked(style.positionLocked)} data-action="style-position-locked" ${styleLocked ? 'disabled' : ''} /> ${escapeHtml(this.tr('positionLock'))}</label>
               <label><input type="checkbox" ${checked(style.styleLocked)} data-action="style-locked" /> ${escapeHtml(this.tr('styleLock'))}</label>
             </div>
-            <label>${escapeHtml(this.tr('layerTrack'))}<select data-action="style-track" ${styleDisabled}>${trackOptions}</select></label>
             <label class="v4-file-button wide ${styleLocked ? 'disabled' : ''}">${escapeHtml(this.tr(style.assetId ? 'replaceStylePng' : 'uploadStylePng'))}<input type="file" accept="image/png" data-action="style-asset" ${styleDisabled} /></label>
-            ${positionEditorOpen ? `
-              <div class="v4-number-grid">
-                <label>X<input type="number" value="${Number(effectiveTransform.x).toFixed(1)}" data-action="style-x" /></label>
-                <label>Y<input type="number" value="${Number(effectiveTransform.y).toFixed(1)}" data-action="style-y" /></label>
-                <label>${escapeHtml(this.tr('scale'))}<input type="number" min="0.01" max="100" step="0.01" value="${Number(effectiveTransform.scale).toFixed(2)}" data-action="style-scale" /></label>
-                <label>${escapeHtml(this.tr('rotate'))}<input type="number" step="1" value="${Number(effectiveTransform.rotation).toFixed(1)}" data-action="style-rotation" /></label>
-              </div>
-              <label>${escapeHtml(this.tr('scaleOnCanvas'))}<input type="range" min="5" max="400" value="${Math.round(Number(effectiveTransform.scale) * 100)}" data-action="style-scale-preview" /></label>
-            ` : `<p class="v4-position-summary">X ${Number(effectiveTransform.x).toFixed(1)} · Y ${Number(effectiveTransform.y).toFixed(1)} · ${escapeHtml(this.tr('scale'))} ${Number(effectiveTransform.scale).toFixed(2)} · ${escapeHtml(this.tr('rotate'))} ${Number(effectiveTransform.rotation).toFixed(1)}°</p>`}
+            <div class="v4-position-row">
+              <p class="v4-position-summary">X ${Number(effectiveTransform.x).toFixed(1)} · Y ${Number(effectiveTransform.y).toFixed(1)} · ${escapeHtml(this.tr('scale'))} ${Number(effectiveTransform.scale).toFixed(2)} · ${escapeHtml(this.tr('rotate'))} ${Number(effectiveTransform.rotation).toFixed(1)}°</p>
+              ${positionEditorOpen
+                ? `<button type="button" class="primary" data-action="confirm-position" ${style.assetId ? '' : 'disabled'}>${escapeHtml(this.tr('confirmPosition'))}</button>`
+                : `<button type="button" data-action="edit-position" ${positionLocked || !style.assetId ? 'disabled' : ''}>${escapeHtml(this.tr('adjustPosition'))}</button>`}
+            </div>
+            <div class="v4-number-grid">
+              <label>X<input type="number" step="${pixelCoordinates ? '1' : '0.1'}" value="${Number(effectiveTransform.x).toFixed(pixelCoordinates ? 0 : 1)}" data-action="style-x" ${positionReadonly} /></label>
+              <label>Y<input type="number" step="${pixelCoordinates ? '1' : '0.1'}" value="${Number(effectiveTransform.y).toFixed(pixelCoordinates ? 0 : 1)}" data-action="style-y" ${positionReadonly} /></label>
+              <label>${escapeHtml(this.tr('scale'))}<input type="number" min="0.01" max="100" step="0.01" value="${Number(effectiveTransform.scale).toFixed(2)}" data-action="style-scale" ${positionReadonly} /></label>
+              <label>${escapeHtml(this.tr('rotate'))}<input type="number" step="1" value="${Number(effectiveTransform.rotation).toFixed(1)}" data-action="style-rotation" ${positionReadonly} /></label>
+            </div>
+            <label>${escapeHtml(this.tr('scaleOnCanvas'))}<input type="range" min="5" max="400" value="${Math.round(Number(effectiveTransform.scale) * 100)}" data-action="style-scale-preview" ${positionDisabled} /></label>
             <label>${escapeHtml(this.tr('opacity'))}<input type="range" min="0" max="100" value="${Math.round(style.opacity * 100)}" data-action="style-opacity" ${styleDisabled} /></label>
             <label>${escapeHtml(this.tr('blendMode'))}<select data-action="style-blend" ${styleDisabled}>${['normal','multiply','screen','overlay','darken','lighten','color-dodge','color-burn','hard-light','soft-light','difference','exclusion','hue','saturation','color','luminosity','linear-dodge'].map((mode) => `<option value="${mode}" ${selected(style.blendMode, mode)}>${escapeHtml(this.blendModeText(mode))}</option>`).join('')}</select></label>
             <label>${escapeHtml(this.tr('smartColor'))}<select data-action="style-channel" ${styleDisabled}>${channelOptions}</select></label>
             <label>${escapeHtml(this.tr('showThisStyle'))}<select data-action="style-visible-when" ${styleDisabled}>${visibleOptions}</select></label>
             <div class="v4-inline-actions">
               <button type="button" data-action="toggle-style-hidden">${escapeHtml(this.tr(this.hiddenStyleKeys.has(styleKey) ? 'showStyle' : 'hideStyle'))}</button>
-              ${positionEditorOpen
-                ? `<button type="button" class="primary" data-action="confirm-position" ${style.assetId ? '' : 'disabled'}>${escapeHtml(this.tr('confirmPosition'))}</button>`
-                : `<button type="button" class="primary" data-action="edit-position" ${positionLocked || !style.assetId ? 'disabled' : ''} title="${escapeHtml(this.tr('positionConfirmed'))}">${escapeHtml(this.tr('adjustPosition'))}</button>`}
             </div>
             ${positionEditorOpen ? `<small>${escapeHtml(this.tr('dragPositionCopy'))}</small>` : ''}
           ` : `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noStylesYet'))}</strong><span>${escapeHtml(this.tr('addStyleCopy'))}</span></div>`}
@@ -1145,7 +2144,12 @@ export class MakerWorkspace {
       `;
     }
     if (this.creatorTab === 'layers') {
+      const { part: selectedPart, item: selectedItem, style: selectedStyle } = this.selectedCreatorRecords(document);
       const alignmentByTrack = new Map(collectTrackAlignmentWarnings(document, this.assets).map((warning) => [warning.trackId, warning]));
+      const trackOptions = [
+        `<option value="" ${selected(selectedStyle?.layerTrackId, '')}>${escapeHtml(this.tr('noLayerTrack'))}</option>`,
+        ...document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}" ${selected(selectedStyle?.layerTrackId, track.id)}>${escapeHtml(track.name)}</option>`),
+      ].join('');
       const rows = document.layerTracks.map((track) => {
         const styles = document.parts.flatMap((part) => part.items.flatMap((item) => item.styles.filter((style) => style.layerTrackId === track.id)));
         return `
@@ -1159,6 +2163,12 @@ export class MakerWorkspace {
       }).join('');
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('layerTracks'))}</span><h3>${escapeHtml(this.tr('layerOrderTitle'))}</h3><p>${escapeHtml(this.tr('layerOrderCopy'))}</p></div><button type="button" data-action="add-track">${escapeHtml(this.tr('addTrack'))}</button></div>
+        ${selectedStyle ? `
+          <div class="v4-track-assignment">
+            <div><span>${escapeHtml(this.tr('currentStyle'))}</span><strong>${escapeHtml([selectedPart?.name, selectedItem?.name, selectedStyle.name].filter(Boolean).join(' › '))}</strong></div>
+            <label>${escapeHtml(this.tr('layerTrack'))}<select data-action="assign-style-track" ${selectedStyle.styleLocked ? 'disabled' : ''}>${trackOptions}</select></label>
+          </div>
+        ` : ''}
         <div class="v4-track-list">${rows || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('emptyTracks'))}</span></div>`}</div>
       `;
     }
@@ -1171,37 +2181,38 @@ export class MakerWorkspace {
           <strong>${escapeHtml(channel.name)}</strong><small>${escapeHtml(this.tr('colorCountMode', { count: channel.swatches.length, mode: this.tr('gradientMap') }))}</small>
         </button>
       `).join('');
-      const swatches = selectedChannel?.swatches.map((swatch) => `
-        <div class="v4-swatch-editor ${swatch.id === selectedChannel.defaultSwatchId ? 'default' : ''}">
-          <input type="radio" name="v4-default-swatch" value="${escapeHtml(swatch.id)}" ${checked(swatch.id === selectedChannel.defaultSwatchId)} data-action="channel-default-swatch" title="${escapeHtml(this.tr('defaultColor'))}" />
-          <input value="${escapeHtml(swatch.name)}" data-action="swatch-name" data-swatch-id="${escapeHtml(swatch.id)}" maxlength="128" />
-          <label>${escapeHtml(this.tr('hint'))}<input type="color" value="${escapeHtml(swatch.hintColor)}" data-action="swatch-hint" data-swatch-id="${escapeHtml(swatch.id)}" /></label>
-          <label>${escapeHtml(this.tr('shadow'))}<input type="color" value="${escapeHtml(swatch.stops[0]?.color || '#111111')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="0" /></label>
-          <label>${escapeHtml(this.tr('mid'))}<input type="color" value="${escapeHtml(swatch.stops[Math.floor((swatch.stops.length - 1) / 2)]?.color || swatch.hintColor)}" data-action="swatch-mid" data-swatch-id="${escapeHtml(swatch.id)}" /></label>
-          <label>${escapeHtml(this.tr('light'))}<input type="color" value="${escapeHtml(swatch.stops.at(-1)?.color || '#ffffff')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="${Math.max(1, swatch.stops.length - 1)}" /></label>
-          <button type="button" data-action="delete-swatch" data-swatch-id="${escapeHtml(swatch.id)}" ${selectedChannel.swatches.length <= 1 ? 'disabled' : ''}>×</button>
-        </div>
-      `).join('') || '';
       const linkedStyleRecords = selectedChannel ? document.parts.flatMap((part) => part.items.flatMap((item) => item.styles
         .filter((style) => style.colorChannelId === selectedChannel.id)
         .map((style) => ({ style, label: `${part.name} / ${item.name} / ${style.name}` })))) : [];
       const linkedStyles = linkedStyleRecords.map(({ style, label }) => `${label}${style.styleLocked ? ' 🔒' : ''}`);
-      const channelLocked = linkedStyleRecords.some(({ style }) => style.styleLocked);
+      const channelLocked = colorChannelHasLockedStyle(document, selectedChannel?.id);
+      const channelDisabled = channelLocked ? `disabled title="${escapeHtml(this.tr('styleLock'))}"` : '';
+      const swatches = selectedChannel?.swatches.map((swatch) => `
+        <div class="v4-swatch-editor ${swatch.id === selectedChannel.defaultSwatchId ? 'default' : ''}">
+          <input type="radio" name="v4-default-swatch" value="${escapeHtml(swatch.id)}" ${checked(swatch.id === selectedChannel.defaultSwatchId)} data-action="channel-default-swatch" title="${escapeHtml(this.tr('defaultColor'))}" ${channelDisabled} />
+          <input value="${escapeHtml(swatch.name)}" data-action="swatch-name" data-swatch-id="${escapeHtml(swatch.id)}" maxlength="128" ${channelDisabled} />
+          <label>${escapeHtml(this.tr('hint'))}<input type="color" value="${escapeHtml(swatch.hintColor)}" data-action="swatch-hint" data-swatch-id="${escapeHtml(swatch.id)}" ${channelDisabled} /></label>
+          <label>${escapeHtml(this.tr('shadow'))}<input type="color" value="${escapeHtml(swatch.stops[0]?.color || '#111111')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="0" ${channelDisabled} /></label>
+          <label>${escapeHtml(this.tr('mid'))}<input type="color" value="${escapeHtml(swatch.stops[Math.floor((swatch.stops.length - 1) / 2)]?.color || swatch.hintColor)}" data-action="swatch-mid" data-swatch-id="${escapeHtml(swatch.id)}" ${channelDisabled} /></label>
+          <label>${escapeHtml(this.tr('light'))}<input type="color" value="${escapeHtml(swatch.stops.at(-1)?.color || '#ffffff')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="${Math.max(1, swatch.stops.length - 1)}" ${channelDisabled} /></label>
+          <button type="button" data-action="delete-swatch" data-swatch-id="${escapeHtml(swatch.id)}" ${selectedChannel.swatches.length <= 1 || channelLocked ? channelDisabled || 'disabled' : ''}>×</button>
+        </div>
+      `).join('') || '';
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('smartColor'))}</span><h3>${escapeHtml(this.tr('smartColorTitle'))}</h3><p>${escapeHtml(this.tr('smartColorCopy'))}</p></div><button type="button" data-action="add-channel">${escapeHtml(this.tr('addChannel'))}</button></div>
         <div class="v4-color-workspace">
           <div class="v4-color-channel-list">${channels || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('createChannelCopy'))}</span></div>`}</div>
           ${selectedChannel ? `<div class="v4-color-detail">
-            <div class="v4-form-row"><label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(selectedChannel.name)}" data-action="channel-name" /></label><span>${escapeHtml(this.tr('gradientMap'))}</span><button type="button" class="danger" data-action="delete-channel" ${channelLocked ? `disabled title="${escapeHtml(this.tr('styleLock'))}"` : ''}>${escapeHtml(this.tr('delete'))}</button></div>
+            <div class="v4-form-row"><label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(selectedChannel.name)}" data-action="channel-name" ${channelDisabled} /></label><span>${escapeHtml(this.tr('gradientMap'))}</span><button type="button" class="danger" data-action="delete-channel" ${channelDisabled}>${escapeHtml(this.tr('delete'))}</button></div>
             <div class="v4-swatch-list">${swatches}</div>
-            <button type="button" data-action="add-swatch">${escapeHtml(this.tr('colorPreset'))}</button>
+            <button type="button" data-action="add-swatch" ${channelDisabled}>${escapeHtml(this.tr('colorPreset'))}</button>
             <p class="v4-linked-copy"><strong>${escapeHtml(this.tr('linkedStyles'))}</strong> ${linkedStyles.length ? linkedStyles.map(escapeHtml).join(' · ') : escapeHtml(this.tr('noneYet'))}</p>
           </div>` : ''}
         </div>
       `;
     }
     if (this.creatorTab === 'rules') {
-      const rows = ownerRuleRows(document);
+      const groups = ownerRuleGroups(document);
       const definitionOptions = document.parts.flatMap((part) => [
         `<option value="${escapeHtml(part.id)}">${escapeHtml(part.name)} / ${escapeHtml(this.tr('anyItem'))}</option>`,
         ...part.items.flatMap((item) => [
@@ -1214,15 +2225,27 @@ export class MakerWorkspace {
         <div class="v4-rule-builder">
           <label>${escapeHtml(this.tr('whenPart'))}<select id="v4RuleOwnerDefinition">${definitionOptions}</select></label>
           <label>${escapeHtml(this.tr('ruleLabel'))}<select id="v4RuleType"><option value="excludes">${escapeHtml(this.tr('cannotCombineWith'))}</option><option value="requires">${escapeHtml(this.tr('requiresLabel'))}</option></select></label>
-          <label>${escapeHtml(this.tr('targetDefinition'))}<select id="v4RuleTargetDefinition">${definitionOptions}</select></label>
+          <label>${escapeHtml(this.tr('ruleMatchMode'))}<select id="v4RuleMatchMode"><option value="all">${escapeHtml(this.tr('ruleAllTargets'))}</option><option value="any">${escapeHtml(this.tr('ruleAnyTargets'))}</option></select></label>
+          <label class="v4-rule-target-picker">${escapeHtml(this.tr('targetDefinition'))}<select id="v4RuleTargetDefinitions" multiple size="8">${definitionOptions}</select><small>${escapeHtml(this.tr('ruleMultiSelectHint'))}</small></label>
           <button type="button" data-action="add-rule">${escapeHtml(this.tr('addRule'))}</button>
         </div>
-        <div class="v4-rule-list">${rows.map((row) => {
-          const targetPart = findPart(document, row.target.partId);
-          const targetItem = row.target.itemId ? findItem(document, row.target.partId, row.target.itemId) : null;
-          const targetStyle = row.target.styleId && targetItem ? targetItem.styles.find((style) => style.id === row.target.styleId) : null;
-          const ownerStyle = row.ownerStyleId ? findStyle(document, row.ownerPartId, row.ownerItemId, row.ownerStyleId) : null;
-          return `<div><span>${escapeHtml(row.ownerName)}${ownerStyle?.styleLocked ? ' 🔒' : ''}</span><b>${escapeHtml(this.tr(row.type === 'requires' ? 'requiresLabel' : 'cannotCombineWith'))}</b><span>${escapeHtml(targetPart?.name || row.target.partId)}${targetItem ? ` / ${escapeHtml(targetItem.name)}` : ''}${targetStyle ? ` / ${escapeHtml(targetStyle.name)}` : ''}</span><button type="button" data-action="delete-rule" data-rule-id="${escapeHtml(row.id)}" ${ownerStyle?.styleLocked ? 'disabled' : ''}>×</button></div>`;
+        ${this.ruleBuilderError ? `<div class="v4-rule-error" role="alert">${escapeHtml(this.ruleBuilderError)}</div>` : ''}
+        <div class="v4-rule-list">${groups.map((group) => {
+          const ownerStyle = group.ownerStyleId ? findStyle(document, group.ownerPartId, group.ownerItemId, group.ownerStyleId) : null;
+          const logic = group.type === 'excludes'
+            ? this.tr('ruleNotBadge')
+            : group.rows.length > 1 ? this.tr('ruleAllBadge') : this.tr('requiresLabel');
+          return `
+            <div class="v4-rule-group">
+              <header><span>${escapeHtml(group.ownerName)}${ownerStyle?.styleLocked ? ' 🔒' : ''}</span><b>${escapeHtml(logic)}</b></header>
+              <div class="v4-rule-targets">
+                ${group.rows.map((row) => {
+                  const summary = ruleTargetSummary(document, row.target);
+                  return `<span>${summary.any ? `<em>${escapeHtml(this.tr('ruleAnyBadge'))}</em>` : ''}<strong>${escapeHtml(summary.label)}</strong><button type="button" data-action="delete-rule" data-rule-id="${escapeHtml(row.id)}" ${ownerStyle?.styleLocked ? 'disabled' : ''}>×</button></span>`;
+                }).join('')}
+              </div>
+            </div>
+          `;
         }).join('') || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noConstraints'))}</span></div>`}</div>
       `;
     }
@@ -1243,6 +2266,51 @@ export class MakerWorkspace {
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('expansionPacks'))}</span><h3>${escapeHtml(this.tr('expansionTitle'))}</h3><p>${escapeHtml(this.tr('expansionCopy'))}</p></div><button type="button" data-action="add-expansion">${escapeHtml(this.tr('addExpansion'))}</button></div>
         <div class="v4-expansion-grid">${cards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noExpansionPacks'))}</strong><span>${escapeHtml(this.tr('noExpansionCopy'))}</span></div>`}</div>
+      `;
+    }
+    if (this.creatorTab === 'soul') {
+      const validation = validateSoulConfig(document.livingContent, document);
+      const selectedDocument = SOUL_CONFIG_DOCUMENTS.find(({ key }) => key === this.selectedSoulDocumentKey)
+        || SOUL_CONFIG_DOCUMENTS[0];
+      this.selectedSoulDocumentKey = selectedDocument.key;
+      const selectedStatus = validation.documents[selectedDocument.key];
+      const documentCopyKeys = {
+        soulMd: ['soulPersonalityIdentity', 'soulPersonalityIdentityCopy'],
+        memoryMd: ['soulMemory', 'soulMemoryCopy'],
+        skillMd: ['soulSkills', 'soulSkillsCopy'],
+      };
+      const documentTabs = SOUL_CONFIG_DOCUMENTS.map((entry) => {
+        const [titleKey] = documentCopyKeys[entry.key];
+        const status = validation.documents[entry.key];
+        return `
+          <button type="button" class="${entry.key === selectedDocument.key ? 'active' : ''} ${status.valid ? 'valid' : 'invalid'}" data-action="select-soul-document" data-soul-key="${escapeHtml(entry.key)}" aria-pressed="${entry.key === selectedDocument.key}">
+            <span>${escapeHtml(entry.filename)}</span>
+            <strong>${escapeHtml(this.tr(titleKey))}</strong>
+            <small>${escapeHtml(this.tr(status.customized ? 'soulDocumentCustomized' : 'soulDocumentDefault'))} · ${escapeHtml(this.tr(status.valid ? 'soulValidationValid' : 'soulValidationInvalid'))}</small>
+          </button>
+        `;
+      }).join('');
+      const [, selectedCopyKey] = documentCopyKeys[selectedDocument.key];
+      return `
+        <div class="v4-advanced-head">
+          <div><span>${escapeHtml(this.tr('soulConfig'))}</span><h3>${escapeHtml(this.tr('soulConfigTitle'))}</h3><p>${escapeHtml(this.tr('soulConfigCopy'))}</p></div>
+          <button type="button" data-action="reset-all-soul">${escapeHtml(this.tr('soulRestoreAllDefaults'))}</button>
+        </div>
+        <div class="v4-soul-workspace">
+          <nav class="v4-soul-document-list" aria-label="${escapeHtml(this.tr('soulConfig'))}">${documentTabs}</nav>
+          <section class="v4-soul-editor">
+            <header>
+              <div><span>${escapeHtml(selectedDocument.filename)}</span><strong>${escapeHtml(this.tr(documentCopyKeys[selectedDocument.key][0]))}</strong><small>${escapeHtml(this.tr(selectedCopyKey))}</small></div>
+              <button type="button" data-action="reset-soul-document" data-soul-key="${escapeHtml(selectedDocument.key)}">${escapeHtml(this.tr('soulRestoreDefault'))}</button>
+            </header>
+            <textarea data-action="soul-document-content" data-soul-key="${escapeHtml(selectedDocument.key)}" spellcheck="false" aria-label="${escapeHtml(selectedDocument.filename)}">${escapeHtml(validation.content[selectedDocument.key])}</textarea>
+            <footer>
+              <span class="${selectedStatus.valid ? 'valid' : 'invalid'}"><strong>${escapeHtml(this.tr('soulValidationStatus'))}:</strong> ${escapeHtml(this.tr(selectedStatus.valid ? 'soulValidationValid' : 'soulValidationInvalid'))}${selectedStatus.error ? ` · ${escapeHtml(selectedStatus.error)}` : ''}</span>
+              <span>${escapeHtml(this.tr('soulDocumentSize', { bytes: selectedStatus.bytes, limit: selectedStatus.maxBytes }))}</span>
+              <span>${escapeHtml(this.tr('soulDraftSaveCopy'))}</span>
+            </footer>
+          </section>
+        </div>
       `;
     }
     const blockingIssues = issues.filter((issue) => issue.severity !== 'warning');
@@ -1313,7 +2381,16 @@ export class MakerWorkspace {
     };
     return document.parts.filter((part) => {
       if (!part.menuVisible) return false;
-      if (part.parentPartId && !selections.get(part.parentPartId)?.itemId) return false;
+      if (part.parentPartId) {
+        const parentSelection = selections.get(part.parentPartId);
+        if (!parentSelection?.itemId) return false;
+        const allowedParentItemIds = Array.isArray(part.parentItemIds)
+          ? part.parentItemIds
+          : Array.isArray(part.parentItemKeys)
+            ? part.parentItemKeys
+            : [];
+        if (allowedParentItemIds.length && !allowedParentItemIds.includes(parentSelection.itemId)) return false;
+      }
       if (!evaluateVisibleWhen(part.visibleWhen, visibilityContext)) return false;
       return true;
     });
@@ -1331,6 +2408,40 @@ export class MakerWorkspace {
         return Boolean(this.runtimeAsset(style.assetId) || descriptor?.url || descriptor?.legacy?.url);
       });
     });
+  }
+
+  playerOptionSettings(document = this.runtimeDocument()) {
+    const creatorPreview = this.playerCreatorPreview || this.context?.isPublished !== true;
+    return {
+      includeNonPublicItems: creatorPreview,
+      isAssetAvailable: (assetId) => {
+        if (this.runtimeAsset(assetId)) return true;
+        const descriptor = document?.assets?.find((asset) => asset.id === assetId);
+        return Boolean(descriptor?.url || descriptor?.legacy?.url);
+      },
+    };
+  }
+
+  playerOptionReasonText(option, document = this.runtimeDocument()) {
+    const code = option?.reasonCode;
+    if (code === 'missing-style-png' || code === 'invalid-style-png') {
+      return this.tr('optionMissingPng');
+    }
+    if (code === 'requires-rule' || code === 'excludes-rule') {
+      const target = option?.reason?.details?.displayTarget
+        || option?.reason?.details?.target
+        || {};
+      const part = findPart(document, target.partId);
+      const item = target.itemId ? findItem(document, target.partId, target.itemId) : null;
+      const style = target.styleId && item
+        ? item.styles.find((candidate) => candidate.id === target.styleId)
+        : null;
+      const targetLabel = [part?.name || target.partId, item?.name, style?.name].filter(Boolean).join(' › ');
+      return this.tr(code === 'requires-rule' ? 'optionRequires' : 'optionExcludes', {
+        target: targetLabel || this.tr('optionUnavailable'),
+      });
+    }
+    return this.tr('optionUnavailable');
   }
 
   playerCompletionIssues(document, recipe) {
@@ -1362,20 +2473,31 @@ export class MakerWorkspace {
     let part = parts.find((candidate) => candidate.id === this.playerPartId) || parts[0] || null;
     this.playerPartId = part?.id || '';
     const selectionMap = recipeSelectionMap(recipe);
-    const visibilityContext = {
-      selections: recipe.selections || [],
-      colorChannels: Object.fromEntries((recipe.colors || []).map((entry) => [entry.channelId, entry.swatchId])),
-    };
-    const visibleItems = this.playerVisibleItems(part).filter((item) => evaluateVisibleWhen(item.visibleWhen, visibilityContext));
+    const optionSettings = this.playerOptionSettings(document);
+    const partOptions = part
+      ? buildPlayerPartOptions(document, recipe, part.id, optionSettings)
+      : { items: [] };
+    const removePartOption = part
+      ? evaluatePlayerRemovePartOption(document, recipe, part.id, optionSettings)
+      : null;
+    const clearOptionalOption = evaluatePlayerClearOptionalOption(document, recipe, optionSettings);
+    const itemOptions = new Map(partOptions.items.map((option) => [option.itemId, option]));
+    const visibleItems = (part?.items || []).filter((item) => itemOptions.get(item.id)?.visible);
     const currentSelection = part ? selectionMap.get(part.id) : null;
     const currentItem = visibleItems.find((item) => item.id === currentSelection?.itemId) || null;
-    const visibleStyles = currentItem?.styles.filter((style) => evaluateVisibleWhen(style.visibleWhen, visibilityContext)) || [];
+    const currentItemOption = currentItem ? itemOptions.get(currentItem.id) : null;
+    const styleOptions = new Map((currentItemOption?.styles || []).map((option) => [option.styleId, option]));
+    const visibleStyles = currentItem?.styles.filter((style) => styleOptions.get(style.id)?.visible) || [];
     const currentStyle = visibleStyles.find((style) => style.id === currentSelection?.styleId)
-      || visibleStyles.find((style) => style.id === currentItem?.defaultStyleId)
-      || visibleStyles[0]
       || null;
     const recipeResult = evaluateRecipe(document, recipe);
     const completionIssues = this.playerCompletionIssues(document, recipe);
+    const removePartReason = removePartOption?.selectable
+      ? ''
+      : this.playerOptionReasonText(removePartOption, document);
+    const clearOptionalReason = clearOptionalOption.selectable
+      ? ''
+      : this.playerOptionReasonText(clearOptionalOption, document);
     const partButtons = parts.map((candidate) => {
       const selection = selectionMap.get(candidate.id);
       return `
@@ -1387,18 +2509,25 @@ export class MakerWorkspace {
       `;
     }).join('');
     const itemButtons = visibleItems.map((candidate) => {
-      const thumbnail = this.itemThumbnailUrl(candidate);
+      const option = itemOptions.get(candidate.id);
+      const thumbnail = this.itemThumbnailUrl(candidate, option?.preferredStyleId);
+      const visibleStyleCount = option?.styles.filter((style) => style.visible).length || 0;
+      const reason = option?.selectable ? '' : this.playerOptionReasonText(option, document);
       return `
-        <button type="button" class="v4-player-item ${candidate.id === currentItem?.id ? 'active' : ''}" data-action="player-item" data-item-id="${escapeHtml(candidate.id)}">
+        <button type="button" class="v4-player-item ${candidate.id === currentItem?.id ? 'active' : ''} ${option?.selectable ? '' : 'disabled'}" data-action="player-item" data-item-id="${escapeHtml(candidate.id)}" ${option?.selectable ? '' : 'disabled'} title="${escapeHtml(reason || candidate.name)}">
           <span>${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : '<i>PNG</i>'}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
-          ${candidate.styles.length > 1 ? `<em>${escapeHtml(this.tr('styleCount', { count: candidate.styles.length }))}</em>` : ''}
+          ${option?.selectable ? (visibleStyleCount > 1 ? `<em>${escapeHtml(this.tr('styleCount', { count: visibleStyleCount }))}</em>` : '') : `<em>${escapeHtml(reason)}</em>`}
         </button>
       `;
     }).join('') || '';
-    const styleButtons = visibleStyles.map((candidate) => `
-      <button type="button" class="${candidate.id === currentStyle?.id ? 'active' : ''}" data-action="player-style" data-style-id="${escapeHtml(candidate.id)}">${escapeHtml(candidate.name)}</button>
-    `).join('') || '';
+    const styleButtons = visibleStyles.map((candidate) => {
+      const option = styleOptions.get(candidate.id);
+      const reason = option?.selectable ? '' : this.playerOptionReasonText(option, document);
+      return `
+        <button type="button" class="${candidate.id === currentStyle?.id ? 'active' : ''} ${option?.selectable ? '' : 'disabled'}" data-action="player-style" data-style-id="${escapeHtml(candidate.id)}" ${option?.selectable ? '' : 'disabled'} title="${escapeHtml(reason || candidate.name)}">${escapeHtml(candidate.name)}${option?.selectable ? '' : ` · ${escapeHtml(reason)}`}</button>
+      `;
+    }).join('') || '';
     const usedChannelIds = new Set(currentStyle?.colorChannelId ? [currentStyle.colorChannelId] : []);
     const colorRows = document.colorChannels.filter((channel) => usedChannelIds.has(channel.id)).map((channel) => {
       const selectedColor = recipe.colors?.find((entry) => entry.channelId === channel.id)?.swatchId || channel.defaultSwatchId;
@@ -1421,7 +2550,7 @@ export class MakerWorkspace {
             <button type="button" data-action="player-undo" aria-label="${escapeHtml(this.tr('undo'))}" ${this.playerUndo.length ? '' : 'disabled'}>↶</button>
             <button type="button" data-action="player-redo" aria-label="${escapeHtml(this.tr('redo'))}" ${this.playerRedo.length ? '' : 'disabled'}>↷</button>
             <button type="button" data-action="player-random">${escapeHtml(this.tr('random'))}</button>
-            <button type="button" data-action="player-clear">${escapeHtml(this.tr('removeOptional'))}</button>
+            <button type="button" data-action="player-clear" ${clearOptionalOption.selectable ? '' : 'disabled'} title="${escapeHtml(clearOptionalReason || this.tr('removeOptional'))}">${escapeHtml(this.tr('removeOptional'))}</button>
             <button type="button" data-action="player-reset">${escapeHtml(this.tr('reset'))}</button>
           </div>
         </header>
@@ -1437,7 +2566,7 @@ export class MakerWorkspace {
           <section class="v4-player-controls">
             <div class="v4-player-part-rail">${partButtons}</div>
             <div class="v4-player-picker">
-              <header><div><span>${escapeHtml(this.tr('currentPart'))}</span><h2>${escapeHtml(part?.name || this.tr('noPlayableParts'))}</h2></div>${part && !part.required ? `<button type="button" data-action="player-none" class="secondary">${escapeHtml(this.tr('noneRemove'))}</button>` : ''}</header>
+              <header><div><span>${escapeHtml(this.tr('currentPart'))}</span><h2>${escapeHtml(part?.name || this.tr('noPlayableParts'))}</h2></div>${removePartOption?.visible ? `<div><button type="button" data-action="player-none" class="secondary" ${removePartOption.selectable ? '' : 'disabled'} title="${escapeHtml(removePartReason || this.tr('noneRemove'))}">${escapeHtml(this.tr('noneRemove'))}</button>${removePartReason ? `<small>${escapeHtml(removePartReason)}</small>` : ''}</div>` : ''}</header>
               <div class="v4-player-item-grid">${itemButtons || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noAvailableItems'))}</span></div>`}</div>
               ${currentItem && visibleStyles.length > 1 ? `<div class="v4-player-style-picker"><span>${escapeHtml(this.tr('style'))}</span>${styleButtons}</div>` : ''}
               ${colorRows || ''}
@@ -1509,9 +2638,10 @@ export class MakerWorkspace {
         !this.creatorHiddenPartIds.has(layer.partId)
         && !this.hiddenStyleKeys.has(styleSceneKey(layer.partId, layer.itemId, layer.styleId))
       ));
-      if (this.creatorSolo && selectedStyleKey) {
+      const previewMode = scene.layers.length >= 2 ? this.creatorPreviewMode : 'all';
+      if (previewMode === 'solo' && selectedStyleKey) {
         scene.layers = scene.layers.filter((layer) => styleSceneKey(layer.partId, layer.itemId, layer.styleId) === selectedStyleKey);
-      } else if (this.creatorDimOthers && selectedStyleKey) scene.layers.forEach((layer) => {
+      } else if (previewMode === 'dim' && selectedStyleKey) scene.layers.forEach((layer) => {
         if (styleSceneKey(layer.partId, layer.itemId, layer.styleId) !== selectedStyleKey) layer.opacity *= 0.22;
       });
       scene.layers.forEach((layer) => this.ensureAssetAlias(layer.assetId));
@@ -1561,13 +2691,90 @@ export class MakerWorkspace {
     }
   }
 
+  setCreatorZoom(value, options = {}) {
+    const nextZoom = Math.round(Math.min(2, Math.max(0.5, Number(value) || 1)) * 10) / 10;
+    const previousZoom = this.creatorZoom || 1;
+    const viewport = options.viewport || this.creatorRoot?.querySelector('.v4-canvas-viewport');
+    const canvas = options.canvas || this.creatorRoot?.querySelector('#makerV4CreatorCanvas');
+    const rect = viewport?.getBoundingClientRect?.();
+    const hasFocalPoint = rect
+      && Number.isFinite(options.clientX)
+      && Number.isFinite(options.clientY);
+    const localX = hasFocalPoint ? options.clientX - rect.left : 0;
+    const localY = hasFocalPoint ? options.clientY - rect.top : 0;
+    const contentX = hasFocalPoint ? Number(viewport.scrollLeft || 0) + localX : 0;
+    const contentY = hasFocalPoint ? Number(viewport.scrollTop || 0) + localY : 0;
+
+    this.creatorZoom = nextZoom;
+    if (canvas?.style) canvas.style.width = `${Math.round(nextZoom * 100)}%`;
+    const slider = this.creatorRoot?.querySelector('[data-action="canvas-zoom"]');
+    if (slider) slider.value = String(Math.round(nextZoom * 100));
+
+    if (hasFocalPoint && previousZoom > 0) {
+      const ratio = nextZoom / previousZoom;
+      viewport.scrollLeft = Math.max(0, (contentX * ratio) - localX);
+      viewport.scrollTop = Math.max(0, (contentY * ratio) - localY);
+    }
+    return nextZoom;
+  }
+
   attachCanvasDrag() {
+    if (this.contextSwitchInProgress || this.restoreInProgress || this.restoreError) return;
+    const viewport = this.creatorRoot?.querySelector('.v4-canvas-viewport');
     const canvas = this.creatorRoot?.querySelector('#makerV4CreatorCanvas');
+    if (viewport && viewport.dataset.navigationReady !== 'true') {
+      viewport.dataset.navigationReady = 'true';
+      viewport.addEventListener('wheel', (event) => {
+        if (!event.deltaY) return;
+        event.preventDefault?.();
+        const direction = event.deltaY < 0 ? 0.1 : -0.1;
+        this.setCreatorZoom(this.creatorZoom + direction, {
+          viewport,
+          canvas,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        });
+      }, { passive: false });
+      viewport.addEventListener('pointerdown', (event) => {
+        const panRequested = event.button === 1 || (event.button === 0 && this.creatorSpacePressed);
+        if (!panRequested) return;
+        event.preventDefault?.();
+        const start = {
+          clientX: event.clientX,
+          clientY: event.clientY,
+          left: Number(viewport.scrollLeft || 0),
+          top: Number(viewport.scrollTop || 0),
+        };
+        viewport.setPointerCapture?.(event.pointerId);
+        viewport.classList.add('panning');
+        const move = (moveEvent) => {
+          viewport.scrollLeft = start.left - (moveEvent.clientX - start.clientX);
+          viewport.scrollTop = start.top - (moveEvent.clientY - start.clientY);
+        };
+        const finish = () => {
+          viewport.removeEventListener('pointermove', move);
+          viewport.removeEventListener('pointerup', finish);
+          viewport.removeEventListener('pointercancel', finish);
+          viewport.classList.remove('panning');
+        };
+        viewport.addEventListener('pointermove', move);
+        viewport.addEventListener('pointerup', finish);
+        viewport.addEventListener('pointercancel', finish);
+      });
+    }
     if (!canvas || canvas.dataset.dragReady === 'true') return;
     canvas.dataset.dragReady = 'true';
     canvas.addEventListener('pointerdown', (event) => {
       const { part, item, style } = this.selectedCreatorRecords();
-      if (!part || !item || !style?.assetId || style.positionLocked || style.styleLocked || event.button !== 0) return;
+      const styleKey = style ? styleSceneKey(part.id, item.id, style.id) : '';
+      if (!part
+        || !item
+        || !style?.assetId
+        || style.positionLocked
+        || style.styleLocked
+        || this.editingPositionStyleKey !== styleKey
+        || this.creatorSpacePressed
+        || event.button !== 0) return;
       const selection = { partId: part.id, itemId: item.id, styleId: style.id };
       const effectiveTransform = effectiveStyleTransform(this.store.getState().document, style);
       const rect = canvas.getBoundingClientRect();
@@ -1578,13 +2785,16 @@ export class MakerWorkspace {
         y: Number(effectiveTransform.y || 0),
         ratioX: this.store.getState().document.canvas.width / Math.max(1, rect.width),
         ratioY: this.store.getState().document.canvas.height / Math.max(1, rect.height),
+        pixelCoordinates: this.store.getState().document.canvas.pixelMode === 'pixelated',
       };
       canvas.setPointerCapture(event.pointerId);
       canvas.classList.add('dragging');
       const move = (moveEvent) => {
+        const x = start.x + ((moveEvent.clientX - start.clientX) * start.ratioX);
+        const y = start.y + ((moveEvent.clientY - start.clientY) * start.ratioY);
         this.dragPreview = {
-          x: Math.round((start.x + ((moveEvent.clientX - start.clientX) * start.ratioX)) * 10) / 10,
-          y: Math.round((start.y + ((moveEvent.clientY - start.clientY) * start.ratioY)) * 10) / 10,
+          x: start.pixelCoordinates ? Math.round(x) : Math.round(x * 10) / 10,
+          y: start.pixelCoordinates ? Math.round(y) : Math.round(y * 10) / 10,
         };
         this.drawCreatorCanvas();
       };
@@ -1612,8 +2822,7 @@ export class MakerWorkspace {
   }
 
   executeDocument(label, mutator) {
-    if (!this.store) return;
-    const before = new Set(this.store.getState().document.assets.map((asset) => asset.id));
+    if (!this.store || this.contextSwitchInProgress || this.restoreInProgress || this.restoreError) return;
     this.store.execute(label, (next) => {
       const published = this.context?.publishedDocument;
       if (this.context?.isPublished
@@ -1638,23 +2847,16 @@ export class MakerWorkspace {
       synchronizeDefaultRecipe(next.document);
       next.recipe = recipeWithColors(next.document, next.recipe);
     });
-    const after = new Set(this.store.getState().document.assets.map((asset) => asset.id));
-    const removed = [...before].filter((assetId) => !after.has(assetId));
-    if (removed.length) {
-      removed.forEach((assetId) => {
-        const record = this.assets.get(assetId);
-        if (record) revokeRuntimeAsset(record);
-        this.assets.delete(assetId);
-      });
-      this.assetResolver.clear();
-      this.assetResolver = createCachedAssetResolver(this.assets);
-      deleteMakerWorkspaceAssets(this.makerKey, removed).catch(() => {});
-    }
+    // Detached Blob records stay available while Undo/Redo or a retained v6
+    // checkpoint may still restore their asset IDs. Physical garbage collection
+    // must happen only after both histories no longer reference the Blob.
   }
 
   captureCreatorText(input) {
     const action = input?.dataset?.action;
-    if (!['part-name', 'item-name', 'style-name', 'track-name', 'channel-name', 'swatch-name'].includes(action)) return false;
+    if (!['part-name', 'item-name', 'style-name', 'track-name', 'channel-name', 'swatch-name', 'soul-document-content'].includes(action)) return false;
+    if (['channel-name', 'swatch-name'].includes(action)
+      && colorChannelHasLockedStyle(this.store?.getState().document, this.selectedChannelId)) return false;
     this.pendingCreatorText = {
       action,
       value: String(input.value || ''),
@@ -1664,6 +2866,7 @@ export class MakerWorkspace {
       trackId: input.dataset.trackId || this.selectedTrackId,
       channelId: this.selectedChannelId,
       swatchId: input.dataset.swatchId || '',
+      soulKey: input.dataset.soulKey || this.selectedSoulDocumentKey,
     };
     return true;
   }
@@ -1672,9 +2875,20 @@ export class MakerWorkspace {
     const pending = this.pendingCreatorText;
     this.pendingCreatorText = null;
     if (!pending || !this.store) return false;
-    const value = pending.value.trim();
     const currentDocument = this.store.getState().document;
+    if (pending.action === 'soul-document-content') {
+      const value = pending.value;
+      const currentValue = validateSoulConfig(currentDocument.livingContent, currentDocument).content[pending.soulKey];
+      if (value === currentValue) return false;
+      this.executeDocument('Edit Soul configuration', ({ document }) => {
+        document.livingContent = updateSoulConfig(document.livingContent, pending.soulKey, value, document);
+      });
+      return true;
+    }
+    const value = pending.value.trim();
     const currentChannel = currentDocument.colorChannels.find((candidate) => candidate.id === pending.channelId);
+    if (['channel-name', 'swatch-name'].includes(pending.action)
+      && colorChannelHasLockedStyle(currentDocument, pending.channelId)) return false;
     const currentValue = pending.action === 'part-name' ? findPart(currentDocument, pending.partId)?.name
       : pending.action === 'item-name' ? findItem(currentDocument, pending.partId, pending.itemId)?.name
         : pending.action === 'style-name' ? findStyle(currentDocument, pending.partId, pending.itemId, pending.styleId)?.name
@@ -1704,6 +2918,7 @@ export class MakerWorkspace {
         if (target && !target.locked && value) target.name = value;
       } else {
         const channel = document.colorChannels.find((candidate) => candidate.id === pending.channelId);
+        if (colorChannelHasLockedStyle(document, pending.channelId)) return;
         if (pending.action === 'channel-name' && channel && value) channel.name = value;
         if (pending.action === 'swatch-name') {
           const swatch = channel?.swatches.find((candidate) => candidate.id === pending.swatchId);
@@ -1722,13 +2937,61 @@ export class MakerWorkspace {
     const button = event.target.closest('[data-action]');
     if (!button || button.matches('input,select,textarea,label')) return;
     const action = button.dataset.action;
+    if (this.contextSwitchInProgress || this.restoreInProgress || this.restoreError) {
+      if (action === 'retry-workspace-restore' && this.restoreError) {
+        void this.retryLocalWorkspaceRestore();
+      } else if (action === 'export-emergency-recovery' && this.restoreError) {
+        this.exportEmergencyRecoveryJson();
+      } else if (action === 'back-library' && this.restoreError) {
+        this.callbacks.onBackToLibrary?.();
+      }
+      return;
+    }
     this.flushPendingCreatorText();
     const state = this.store?.getState();
     if (!state) return;
     const document = state.document;
     const { part, item, style } = this.selectedCreatorRecords(document);
+    if (action === 'open-version-history' || action === 'retry-version-history') {
+      void this.openVersionHistory();
+      return;
+    }
+    if (
+      action === 'close-version-history'
+      || (action === 'close-version-history-backdrop' && event.target === button)
+    ) {
+      this.closeVersionHistory();
+      return;
+    }
+    if (action === 'restore-checkpoint') {
+      void this.restoreVersionCheckpoint(button.dataset.revision);
+      return;
+    }
     if (action === 'creator-tab') {
       this.openCreatorTab(button.dataset.tab);
+      return;
+    }
+    if (action === 'select-soul-document') {
+      if (SOUL_CONFIG_DOCUMENTS.some(({ key }) => key === button.dataset.soulKey)) {
+        this.selectedSoulDocumentKey = button.dataset.soulKey;
+        this.render();
+      }
+      return;
+    }
+    if (action === 'reset-soul-document') {
+      const soulKey = button.dataset.soulKey || this.selectedSoulDocumentKey;
+      if (!SOUL_CONFIG_DOCUMENTS.some(({ key }) => key === soulKey)) return;
+      if (!this.confirmDelete(this.tr('soulRestoreConfirm'))) return;
+      this.executeDocument('Restore Soul document default', ({ document: next }) => {
+        next.livingContent = resetSoulConfig(next.livingContent, soulKey, next);
+      });
+      return;
+    }
+    if (action === 'reset-all-soul') {
+      if (!this.confirmDelete(this.tr('soulRestoreConfirm'))) return;
+      this.executeDocument('Restore all Soul defaults', ({ document: next }) => {
+        next.livingContent = resetSoulConfig(next.livingContent, null, next);
+      });
       return;
     }
     if (action === 'close-tool' || (action === 'close-tool-backdrop' && event.target === button)) {
@@ -1736,7 +2999,19 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'back-library') {
-      this.callbacks.onBackToLibrary?.();
+      const operation = this.captureMakerOperation();
+      void this.flushPendingChanges({ reason: 'back-library' }).then((result) => {
+        if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
+        if (!result.saved) {
+          operation.store.setSaveState('error', operation.store.getState().saveMessage || this.tr('saveFailed'));
+          return;
+        }
+        this.callbacks.onBackToLibrary?.();
+      }).catch((error) => {
+        if (this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) {
+          operation.store.setSaveState('error', error.message || this.tr('saveFailed'));
+        }
+      });
       return;
     }
     if (action === 'select-part') {
@@ -1746,6 +3021,7 @@ export class MakerWorkspace {
       this.selectedItemId = '';
       this.selectedStyleId = '';
       this.ensureCreatorSelection(document);
+      this.syncCreatorRecipeSelection();
       this.render();
       return;
     }
@@ -1788,13 +3064,31 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'open-player') {
-      this.playerCreatorPreview = true;
-      this.playerRecipe = clone(this.creatorRecipe || state.recipe);
-      this.playerUndo = [];
-      this.playerRedo = [];
-      this.playerIntroOpen = true;
-      this.callbacks.onOpenPlayer?.({ document: this.runtimeDocument(), recipe: this.playerRecipe, assets: this.assets });
-      this.render();
+      const operation = this.captureMakerOperation();
+      void this.flushPendingChanges({ reason: 'open-player' }).then((result) => {
+        if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
+        if (!result.saved) {
+          operation.store.setSaveState('error', operation.store.getState().saveMessage || this.tr('saveFailed'));
+          return;
+        }
+        this.playerCreatorPreview = true;
+        const previewRecipe = clone(this.creatorRecipe || operation.store.getState().recipe);
+        const playablePreviewRecipe = normalizePlayablePlayerRecipe(
+          this.runtimeDocument(),
+          previewRecipe,
+          this.playerOptionSettings(),
+        );
+        this.playerRecipe = playablePreviewRecipe.documentRecipe;
+        this.playerUndo = [];
+        this.playerRedo = [];
+        this.playerIntroOpen = true;
+        this.callbacks.onOpenPlayer?.({ document: this.runtimeDocument(), recipe: this.playerRecipe, assets: this.assets });
+        this.render();
+      }).catch((error) => {
+        if (this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) {
+          operation.store.setSaveState('error', error.message || this.tr('saveFailed'));
+        }
+      });
       return;
     }
     if (action === 'publish') {
@@ -1804,9 +3098,33 @@ export class MakerWorkspace {
         this.render();
         return;
       }
-      this.creatorPublishOpen = true;
-      this.callbacks.onPublish?.({ document, recipe: document.defaultRecipe, assets: this.assets, compatibility: this.compatibilityReport(document) });
-      this.render();
+      const operation = this.captureMakerOperation();
+      void this.flushPendingChanges({ reason: 'publish' }).then((result) => {
+        if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
+        if (!result.saved) {
+          operation.store.setSaveState('error', operation.store.getState().saveMessage || this.tr('saveFailed'));
+          return;
+        }
+        const savedDocument = operation.store.getState().document;
+        const savedIssues = this.blockingPublicationIssues(savedDocument);
+        if (savedIssues.length) {
+          this.creatorTab = 'validate';
+          this.render();
+          return;
+        }
+        this.creatorPublishOpen = true;
+        this.callbacks.onPublish?.({
+          document: savedDocument,
+          recipe: savedDocument.defaultRecipe,
+          assets: this.assets,
+          compatibility: this.compatibilityReport(savedDocument),
+        });
+        this.render();
+      }).catch((error) => {
+        if (this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) {
+          operation.store.setSaveState('error', error.message || this.tr('saveFailed'));
+        }
+      });
       return;
     }
     if (action === 'close-creator-publish') {
@@ -1838,13 +3156,24 @@ export class MakerWorkspace {
       this.render();
       return;
     }
-    if (action === 'toggle-solo') {
-      this.creatorSolo = !this.creatorSolo;
-      this.render();
-      return;
-    }
-    if (action === 'toggle-dim') {
-      this.creatorDimOthers = !this.creatorDimOthers;
+    if (action === 'set-preview-mode') {
+      const mode = ['all', 'dim', 'solo'].includes(button.dataset.previewMode) ? button.dataset.previewMode : 'all';
+      if (mode !== 'all') {
+        let visibleLayerCount = 0;
+        try {
+          const scene = resolveMakerScene(document, this.creatorRecipe || state.recipe, { strict: false });
+          visibleLayerCount = scene.layers.filter((layer) => {
+            if (this.creatorHiddenPartIds.has(layer.partId)) return false;
+            if (this.hiddenStyleKeys.has(styleSceneKey(layer.partId, layer.itemId, layer.styleId))) return false;
+            const descriptor = document.assets.find((asset) => asset.id === layer.assetId);
+            return Boolean(layer.assetId && (this.runtimeAsset(layer.assetId) || descriptor?.url || descriptor?.legacy?.url));
+          }).length;
+        } catch {
+          visibleLayerCount = 0;
+        }
+        if (!style || visibleLayerCount < 2) return;
+      }
+      this.creatorPreviewMode = mode;
       this.render();
       return;
     }
@@ -1920,6 +3249,12 @@ export class MakerWorkspace {
     }
     if (action === 'add-item' && part) {
       const nextItem = createItem(part, `Item ${part.items.length + 1}`);
+      const inheritedTrackId = item?.styles.find((candidate) => candidate.id === item.defaultStyleId)?.layerTrackId
+        || item?.styles[0]?.layerTrackId
+        || this.selectedTrackId
+        || document.layerTracks[0]?.id
+        || null;
+      nextItem.styles[0].layerTrackId = inheritedTrackId;
       this.selectedItemId = nextItem.id;
       this.selectedStyleId = '';
       this.executeDocument('Add Item', ({ document: next }) => {
@@ -1956,6 +3291,11 @@ export class MakerWorkspace {
     }
     if (action === 'add-style' && item) {
       const nextStyle = createStyle(item, `Style ${item.styles.length + 1}`);
+      nextStyle.layerTrackId = item.styles.find((candidate) => candidate.id === item.defaultStyleId)?.layerTrackId
+        || item.styles[0]?.layerTrackId
+        || this.selectedTrackId
+        || document.layerTracks[0]?.id
+        || null;
       this.selectedStyleId = nextStyle.id;
       this.executeDocument('Add Style', ({ document: next }) => {
         const targetItem = findItem(next, part.id, item.id);
@@ -2005,10 +3345,6 @@ export class MakerWorkspace {
     if (action === 'edit-position' && style && !style.styleLocked && !style.positionLocked) {
       this.editingPositionStyleKey = styleSceneKey(part.id, item.id, style.id);
       this.render();
-      return;
-    }
-    if (action === 'generate-item-thumbnail' && item) {
-      void this.generateCompositeItemThumbnail(part.id, item.id);
       return;
     }
     if (action === 'add-track') {
@@ -2062,15 +3398,9 @@ export class MakerWorkspace {
     }
     if (action === 'delete-channel') {
       const channelId = this.selectedChannelId;
-      const lockedLinkedStyle = document.parts.some((candidate) => candidate.items.some((candidateItem) => candidateItem.styles.some((candidateStyle) => (
-        candidateStyle.styleLocked && candidateStyle.colorChannelId === channelId
-      ))));
-      if (lockedLinkedStyle) return;
+      if (colorChannelHasLockedStyle(document, channelId)) return;
       this.executeDocument('Delete Color Channel', ({ document: next }) => {
-        const stillLocked = next.parts.some((candidate) => candidate.items.some((candidateItem) => candidateItem.styles.some((candidateStyle) => (
-          candidateStyle.styleLocked && candidateStyle.colorChannelId === channelId
-        ))));
-        if (stillLocked) return;
+        if (colorChannelHasLockedStyle(next, channelId)) return;
         next.colorChannels = next.colorChannels.filter((channel) => channel.id !== channelId);
         next.parts.forEach((candidate) => candidate.items.forEach((candidateItem) => candidateItem.styles.forEach((candidateStyle) => {
           if (candidateStyle.colorChannelId === channelId) {
@@ -2083,9 +3413,10 @@ export class MakerWorkspace {
     }
     if (action === 'add-swatch') {
       const channel = document.colorChannels.find((candidate) => candidate.id === this.selectedChannelId);
-      if (!channel) return;
+      if (!channel || colorChannelHasLockedStyle(document, channel.id)) return;
       this.executeDocument('Add Color Preset', ({ document: next }) => {
         const target = next.colorChannels.find((candidate) => candidate.id === channel.id);
+        if (!target || colorChannelHasLockedStyle(next, target.id)) return;
         const id = uniqueDocumentId(`color-${target.swatches.length + 1}`, [target.swatches], 'color');
         target.swatches.push({ id, name: `Color ${target.swatches.length + 1}`, hintColor: '#f06f8f', stops: target.mode === 'gradient-map' ? [{ offset: 0, color: '#3d101c' }, { offset: 0.5, color: '#f06f8f' }, { offset: 1, color: '#ffe8ef' }] : [] });
       });
@@ -2093,9 +3424,10 @@ export class MakerWorkspace {
     }
     if (action === 'delete-swatch') {
       const swatchId = button.dataset.swatchId;
+      if (colorChannelHasLockedStyle(document, this.selectedChannelId)) return;
       this.executeDocument('Delete Color Preset', ({ document: next }) => {
         const target = next.colorChannels.find((candidate) => candidate.id === this.selectedChannelId);
-        if (!target || target.swatches.length <= 1) return;
+        if (!target || target.swatches.length <= 1 || colorChannelHasLockedStyle(next, target.id)) return;
         target.swatches = target.swatches.filter((swatch) => swatch.id !== swatchId);
         if (target.defaultSwatchId === swatchId) target.defaultSwatchId = target.swatches[0]?.id || null;
       });
@@ -2177,12 +3509,14 @@ export class MakerWorkspace {
   }
 
   handleCreatorInput(event) {
+    if (this.contextSwitchInProgress || this.restoreInProgress || this.restoreError) return;
     const action = event.target.dataset.action;
-    if (this.captureCreatorText(event.target)) return;
+    if (this.captureCreatorText(event.target)) {
+      this.textAutosave();
+      return;
+    }
     if (action === 'canvas-zoom') {
-      this.creatorZoom = Math.min(2, Math.max(0.5, Number(event.target.value || 100) / 100));
-      const canvas = this.creatorRoot?.querySelector('#makerV4CreatorCanvas');
-      if (canvas) canvas.style.width = `${Math.round(this.creatorZoom * 100)}%`;
+      this.setCreatorZoom(Number(event.target.value || 100) / 100);
       return;
     }
     if (action === 'style-scale-preview') {
@@ -2194,6 +3528,7 @@ export class MakerWorkspace {
   }
 
   async handleCreatorChange(event) {
+    if (this.contextSwitchInProgress || this.restoreInProgress || this.restoreError) return;
     const input = event.target;
     const action = input.dataset.action;
     if (!action || !this.store) return;
@@ -2212,12 +3547,21 @@ export class MakerWorkspace {
     if (action === 'batch-import') {
       const files = [...(input.files || [])];
       if (!files.length || !item) return;
+      const defaultStyle = item.styles.find((candidate) => candidate.id === item.defaultStyleId)
+        || item.styles[0]
+        || null;
+      const inheritedTrackId = defaultStyle?.layerTrackId || this.selectedTrackId || document.layerTracks[0]?.id || '';
+      const inheritedTrackName = document.layerTracks.find((track) => track.id === inheritedTrackId)?.name
+        || `${part.name} layer`;
       this.pendingImport = {
         mode: 'item',
         partId: part.id,
         itemId: item.id,
+        defaultStyleId: defaultStyle && !defaultStyle.assetId ? defaultStyle.id : '',
         mapping: buildAssetImportMapping(files, document.layerTracks).map((mapping, index) => ({
           ...mapping,
+          trackId: inheritedTrackId,
+          suggestedTrackName: inheritedTrackName,
           suggestedStyleName: safeFileName(mapping.fileName, `style-${index + 1}`).replaceAll('-', ' '),
         })),
       };
@@ -2261,21 +3605,33 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'part-icon' && part && input.files?.[0]) {
-      const asset = await this.importDisplayAsset(input.files[0], 'part-icon');
+      const operation = this.captureMakerOperation();
+      const partId = part.id;
+      const asset = await this.importDisplayAsset(input.files[0], 'part-icon', operation);
+      if (!asset || !this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
       this.executeDocument('Update Part icon', ({ document: next }) => {
+        const target = findPart(next, partId);
+        if (!target) return;
         addDocumentAsset(next, asset);
-        findPart(next, part.id).iconAssetId = asset.assetId;
+        target.iconAssetId = asset.assetId;
         removeUnreferencedAssetMetadata(next);
       });
+      await this.flushCompletedAssetOperation(operation, 'part-icon-import');
       return;
     }
     if (action === 'item-thumbnail' && item && input.files?.[0]) {
-      const asset = await this.importDisplayAsset(input.files[0], 'thumbnail');
+      const operation = this.captureMakerOperation();
+      const selection = { partId: part.id, itemId: item.id };
+      const asset = await this.importDisplayAsset(input.files[0], 'thumbnail', operation);
+      if (!asset || !this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
       this.executeDocument('Update Item thumbnail', ({ document: next }) => {
+        const target = findItem(next, selection.partId, selection.itemId);
+        if (!target) return;
         addDocumentAsset(next, asset);
-        findItem(next, part.id, item.id).thumbnailAssetId = asset.assetId;
+        target.thumbnailAssetId = asset.assetId;
         removeUnreferencedAssetMetadata(next);
       });
+      await this.flushCompletedAssetOperation(operation, 'item-thumbnail-import');
       return;
     }
     if (action === 'style-asset' && style && !style.styleLocked && input.files?.[0]) {
@@ -2286,7 +3642,6 @@ export class MakerWorkspace {
     if (action === 'part-name' && part) this.executeDocument('Rename Part', ({ document: next }) => { findPart(next, part.id).name = input.value.trim() || part.name; });
     else if (action === 'part-required' && part) this.executeDocument('Change required Part', ({ document: next }) => { findPart(next, part.id).required = bool; });
     else if (action === 'part-visible' && part) this.executeDocument('Change Part menu visibility', ({ document: next }) => { findPart(next, part.id).menuVisible = bool; });
-    else if (action === 'part-parent' && part) this.executeDocument('Change Part hierarchy', ({ document: next }) => { findPart(next, part.id).parentPartId = input.value || null; });
     else if (action === 'part-default' && part) this.executeDocument('Change default Item', ({ document: next }) => {
       const target = findPart(next, part.id);
       target.defaultItemId = input.value || null;
@@ -2298,14 +3653,6 @@ export class MakerWorkspace {
       }
     });
     else if (action === 'item-name' && item) this.executeDocument('Rename Item', ({ document: next }) => { findItem(next, part.id, item.id).name = input.value.trim() || item.name; });
-    else if (action === 'item-import-key' && item) this.executeDocument('Change Item import key', ({ document: next }) => {
-      const normalized = input.value.trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
-      if (normalized) findItem(next, part.id, item.id).importKey = normalized;
-    });
-    else if (action === 'item-status' && item) this.executeDocument('Change Item release status', ({ document: next }) => {
-      const target = findItem(next, part.id, item.id);
-      target.status = ['draft', 'private', 'public'].includes(input.value) ? input.value : 'draft';
-    });
     else if (action === 'style-name' && style && !style.styleLocked) this.executeDocument('Rename Style', ({ document: next }) => { findStyle(next, part.id, item.id, style.id).name = input.value.trim() || style.name; });
     else if (action === 'style-locked' && style) {
       this.executeDocument(bool ? 'Lock Style' : 'Unlock Style', ({ document: next }) => {
@@ -2317,17 +3664,19 @@ export class MakerWorkspace {
         findStyle(next, part.id, item.id, style.id).positionLocked = bool;
       });
       if (bool) this.editingPositionStyleKey = '';
-    } else if (action === 'style-track' && style && !style.styleLocked) this.executeDocument('Set Style Layer Track', ({ document: next }) => {
-      findStyle(next, part.id, item.id, style.id).layerTrackId = input.value || null;
-    });
-    else if (['style-x', 'style-y', 'style-scale', 'style-rotation'].includes(action) && style && !style.styleLocked && !style.positionLocked) {
+    } else if (['style-x', 'style-y', 'style-scale', 'style-rotation'].includes(action) && style && !style.styleLocked && !style.positionLocked) {
       const field = action.replace('style-', '');
       this.executeDocument('Edit Style transform', ({ document: next }) => {
         const target = findStyle(next, part.id, item.id, style.id);
         if (!target || target.styleLocked || target.positionLocked) return;
         const transform = target.transform;
         if (!transform) return;
-        transform[field] = field === 'scale' ? Math.max(0.01, Number(input.value || 1)) : Number(input.value || 0);
+        const value = Number(input.value || (field === 'scale' ? 1 : 0));
+        transform[field] = field === 'scale'
+          ? Math.max(0.01, value)
+          : ['x', 'y'].includes(field) && next.canvas.pixelMode === 'pixelated'
+            ? Math.round(value)
+            : value;
         target.positionConfirmed = false;
         this.editingPositionStyleKey = styleSceneKey(part.id, item.id, style.id);
       });
@@ -2353,23 +3702,35 @@ export class MakerWorkspace {
     else if (action === 'style-visible-when' && style && !style.styleLocked) this.executeDocument('Change Style visibility rule', ({ document: next }) => {
       findStyle(next, part.id, item.id, style.id).visibleWhen = input.value ? { op: 'selected', partId: input.value } : null;
     });
+    else if (action === 'assign-style-track' && style && !style.styleLocked) {
+      const trackId = document.layerTracks.some((candidate) => candidate.id === input.value) ? input.value : null;
+      this.executeDocument('Assign Style Layer Track', ({ document: next }) => {
+        const target = findStyle(next, part.id, item.id, style.id);
+        if (!target || target.styleLocked) return;
+        target.layerTrackId = trackId;
+      });
+      this.selectedTrackId = trackId || this.selectedTrackId;
+    }
     else if (action === 'track-name') this.executeDocument('Rename Layer Track', ({ document: next }) => {
       const track = next.layerTracks.find((candidate) => candidate.id === input.dataset.trackId);
       if (track && !track.locked) track.name = input.value.trim() || track.name;
     });
-    else if (action === 'channel-name') this.executeDocument('Rename Color Channel', ({ document: next }) => {
+    else if (action === 'channel-name' && !colorChannelHasLockedStyle(document, this.selectedChannelId)) this.executeDocument('Rename Color Channel', ({ document: next }) => {
       const channel = next.colorChannels.find((candidate) => candidate.id === this.selectedChannelId);
-      if (channel) channel.name = input.value.trim() || channel.name;
+      if (channel && !colorChannelHasLockedStyle(next, channel.id)) channel.name = input.value.trim() || channel.name;
     });
-    else if (action === 'channel-default-swatch') this.executeDocument('Change default color', ({ document: next }) => {
+    else if (action === 'channel-default-swatch' && !colorChannelHasLockedStyle(document, this.selectedChannelId)) this.executeDocument('Change default color', ({ document: next }) => {
       const channel = next.colorChannels.find((candidate) => candidate.id === this.selectedChannelId);
+      if (!channel || colorChannelHasLockedStyle(next, channel.id)) return;
       channel.defaultSwatchId = input.value;
       const selection = next.defaultRecipe.colors.find((entry) => entry.channelId === channel.id);
       if (selection) selection.swatchId = input.value;
     });
-    else if (['swatch-name', 'swatch-hint', 'swatch-stop', 'swatch-mid'].includes(action)) {
+    else if (['swatch-name', 'swatch-hint', 'swatch-stop', 'swatch-mid'].includes(action)
+      && !colorChannelHasLockedStyle(document, this.selectedChannelId)) {
       this.executeDocument('Edit smart color preset', ({ document: next }) => {
         const channel = next.colorChannels.find((candidate) => candidate.id === this.selectedChannelId);
+        if (!channel || colorChannelHasLockedStyle(next, channel.id)) return;
         const swatch = channel?.swatches.find((candidate) => candidate.id === input.dataset.swatchId);
         if (!swatch) return;
         if (action === 'swatch-name') swatch.name = input.value.trim() || swatch.name;
@@ -2384,19 +3745,19 @@ export class MakerWorkspace {
     }
   }
 
-  async importDisplayAsset(file, kind) {
+  async importDisplayAsset(file, kind, operation = this.captureMakerOperation()) {
     if (!file || !String(file.type || '').startsWith('image/')) throw new Error(this.tr('chooseDisplayImage'));
     if (Number(file.size || 0) > 5 * 1024 * 1024) throw new Error(this.tr('displayAssetTooLarge'));
     const bitmap = await createImageBitmap(file);
     const width = bitmap.width;
     const height = bitmap.height;
     bitmap.close();
+    if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return null;
     const assetId = createAssetId(kind);
     const record = runtimeAssetRecord({ assetId, blob: file, fileName: file.name, width, height, source: 'local' });
     record.kind = kind;
     record.identifier = `${safeFileName(file.name, assetId)}-${assetId.slice(-8)}.${String(file.type).includes('jpeg') ? 'jpg' : 'png'}`;
     this.assets.set(assetId, record);
-    await upsertMakerWorkspaceAssets(this.makerKey, [{ ...record, url: '', thumbnailUrl: '' }]);
     this.assetResolver.clear();
     this.assetResolver = createCachedAssetResolver(this.assets);
     return record;
@@ -2404,28 +3765,36 @@ export class MakerWorkspace {
 
   async exportProjectArchive() {
     if (!this.store) return;
-    const wasDirty = this.store.getState().dirty;
-    this.store.setSaveState('saving', 'Packing Maker project…');
+    const operation = this.captureMakerOperation();
+    const state = operation.store.getState();
+    const wasDirty = state.dirty;
+    const document = clone(state.document);
+    const assets = new Map(this.assets);
+    operation.store.setSaveState('saving', 'Packing Maker project…');
     try {
-      const document = this.store.getState().document;
-      const blob = await createMakerProjectArchive(document, this.assets);
+      const blob = await createMakerProjectArchive(document, assets);
+      if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
       const url = URL.createObjectURL(blob);
       const link = globalThis.document.createElement('a');
       link.href = url;
       link.download = `${safeFileName(document.metadata.name, document.metadata.id)}.animacraft-maker.zip`;
       link.click();
       URL.revokeObjectURL(url);
-      this.store.setSaveState(wasDirty ? 'dirty' : 'saved', 'Project backup downloaded');
+      operation.store.setSaveState(wasDirty ? 'dirty' : 'saved', 'Project backup downloaded');
     } catch (error) {
-      this.store.setSaveState('error', error.message || 'Could not export the Maker project.');
+      if (this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) {
+        operation.store.setSaveState('error', error.message || 'Could not export the Maker project.');
+      }
     }
   }
 
   async importProjectArchive(file) {
     if (!this.store) return;
-    this.store.setSaveState('saving', 'Reading Maker project…');
+    const operation = this.captureMakerOperation();
+    operation.store.setSaveState('saving', 'Reading Maker project…');
     try {
       const imported = await readMakerProjectArchive(file);
+      if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
       if (!isMakerV5Document(imported.document)) throw new Error('The project does not contain a Maker v5 document.');
       const document = this.normalizeDocument(imported.document);
       this.assetResolver.clear();
@@ -2435,31 +3804,38 @@ export class MakerWorkspace {
         record.url && !record.blob ? { ...record } : reviveRuntimeAssetRecord(record),
       ]));
       this.assetResolver = createCachedAssetResolver(this.assets);
-      await upsertMakerWorkspaceAssets(this.makerKey, [...this.assets.values()].map((record) => ({ ...record, url: '', thumbnailUrl: '' })));
       const recipe = recipeWithColors(document, document.defaultRecipe);
       this.creatorRecipe = clone(recipe);
-      this.store.replace(document, recipe, { clearHistory: true, markSaved: false });
-      this.store.setSaveState('dirty', `Imported project backup from ${imported.exportedAt || 'another workspace'}`);
+      operation.store.replace(document, recipe, { clearHistory: true, markSaved: false });
+      operation.store.setSaveState('dirty', `Imported project backup from ${imported.exportedAt || 'another workspace'}`);
+      this.autosave();
+      await this.flushCompletedAssetOperation(operation, 'project-archive-import');
     } catch (error) {
-      this.store.setSaveState('error', error.message || 'Could not import the Maker project.');
+      if (this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) {
+        operation.store.setSaveState('error', error.message || 'Could not import the Maker project.');
+      }
     }
   }
 
   async replaceStyleAsset(file, selection) {
-    const inspection = await inspectPngAsset(file, this.store.getState().document.canvas);
+    const operation = this.captureMakerOperation();
+    if (!operation.store) return;
+    const selectedTrackId = this.selectedTrackId;
+    const inspection = await inspectPngAsset(file, operation.store.getState().document.canvas);
+    if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
     const thumbnailBlob = await createAlphaCroppedThumbnail(file);
+    if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
+    const currentStyle = findStyle(operation.store.getState().document, selection.partId, selection.itemId, selection.styleId);
+    if (!currentStyle || currentStyle.styleLocked) return;
     const assetId = createAssetId(file.name);
     const record = runtimeAssetRecord({ assetId, blob: file, fileName: file.name, width: inspection.width, height: inspection.height, alphaBounds: inspection.alphaBounds, thumbnailBlob });
     record.kind = 'style';
     record.identifier = `${safeFileName(file.name, assetId)}-${assetId.slice(-8)}.png`;
     this.assets.set(assetId, record);
-    await upsertMakerWorkspaceAssets(this.makerKey, [{ ...record, url: '', thumbnailUrl: '' }]);
     this.assetResolver.clear();
     this.assetResolver = createCachedAssetResolver(this.assets);
-    const currentStyle = findStyle(this.store.getState().document, selection.partId, selection.itemId, selection.styleId);
-    if (!currentStyle || currentStyle.styleLocked) return;
     const keepPosition = currentStyle.positionLocked;
-    this.editingPositionStyleKey = inspection.fullCanvas || keepPosition
+    this.editingPositionStyleKey = keepPosition
       ? ''
       : styleSceneKey(selection.partId, selection.itemId, selection.styleId);
     this.executeDocument('Replace Style PNG', ({ document }) => {
@@ -2468,6 +3844,15 @@ export class MakerWorkspace {
       if (!style || style.styleLocked) return;
       const previousAssetId = style.assetId;
       style.assetId = assetId;
+      if (!document.layerTracks.some((candidate) => candidate.id === style.layerTrackId)) {
+        let track = document.layerTracks.find((candidate) => candidate.id === selectedTrackId)
+          || document.layerTracks[0];
+        if (!track) {
+          track = createLayerTrack(document, 'Layer 1');
+          document.layerTracks.push(track);
+        }
+        style.layerTrackId = track.id;
+      }
       const track = document.layerTracks.find((candidate) => candidate.id === style.layerTrackId);
       if (track) {
         track.alignmentApproved = false;
@@ -2480,74 +3865,18 @@ export class MakerWorkspace {
           scale: inspection.initialTransform.scale,
           rotation: 0,
         };
-        style.positionConfirmed = inspection.fullCanvas;
+        style.positionConfirmed = false;
       }
       removeUnreferencedAssetMetadata(document);
     });
-  }
-
-  async generateCompositeItemThumbnail(partId, itemId) {
-    const document = this.store?.getState().document;
-    const part = document && findPart(document, partId);
-    const item = part && findItem(document, partId, itemId);
-    if (!document || !part || !item) return;
-    this.store.setSaveState('saving', `Generating ${item.name} thumbnail…`);
-    try {
-      const isolated = clone(document);
-      const isolatedPart = findPart(isolated, partId);
-      isolatedPart.parentPartId = null;
-      isolatedPart.visibleWhen = null;
-      isolatedPart.items = isolatedPart.items.filter((candidate) => candidate.id === itemId);
-      const isolatedItem = isolatedPart.items[0];
-      isolatedItem.visibleWhen = null;
-      isolatedItem.styles.forEach((style) => {
-        style.visibleWhen = null;
-      });
-      isolated.parts = [isolatedPart];
-      const styleId = isolatedItem.defaultStyleId || isolatedItem.styles[0]?.id;
-      const recipe = {
-        selections: [{ partId, itemId, styleId }],
-        colors: clone(document.defaultRecipe.colors || []),
-      };
-      const canvas = globalThis.document.createElement('canvas');
-      const scene = resolveMakerScene(isolated, recipe, { strict: true });
-      scene.layers.forEach((layer) => this.ensureAssetAlias(layer.assetId));
-      await renderResolvedScene(scene, canvas, {
-        skipMissingAssets: false,
-        resolveAsset: (assetId) => this.assetResolver.resolve(assetId),
-        applyColorChannel: this.applyColorChannel,
-      });
-      const rendered = await new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not render Item thumbnail.')), 'image/png'));
-      const thumbnailBlob = await createAlphaCroppedThumbnail(rendered);
-      const assetId = createAssetId(`${item.importKey || item.id}-thumbnail`);
-      const record = runtimeAssetRecord({
-        assetId,
-        blob: thumbnailBlob,
-        fileName: `${safeFileName(item.importKey || item.id, 'item')}-thumbnail.png`,
-        width: 256,
-        height: 256,
-        source: 'generated-thumbnail',
-      });
-      record.kind = 'thumbnail';
-      record.identifier = `thumbnails/${safeFileName(item.importKey || item.id, 'item')}-${assetId.slice(-8)}.png`;
-      this.assets.set(assetId, record);
-      await upsertMakerWorkspaceAssets(this.makerKey, [{ ...record, url: '', thumbnailUrl: '' }]);
-      this.assetResolver.clear();
-      this.assetResolver = createCachedAssetResolver(this.assets);
-      this.executeDocument(`Generate ${item.name} thumbnail`, ({ document: next }) => {
-        addDocumentAsset(next, record);
-        findItem(next, partId, itemId).thumbnailAssetId = assetId;
-        removeUnreferencedAssetMetadata(next);
-      });
-    } catch (error) {
-      this.store.setSaveState('error', error.message || 'Could not generate the composite Item thumbnail.');
-    }
+    await this.flushCompletedAssetOperation(operation, 'style-png-import');
   }
 
   async confirmBatchImport() {
     const pending = this.pendingImport;
     if (!pending || !this.store) return;
-    this.store.setSaveState('saving', this.tr('inspectingPngs', { count: pending.mapping.length }));
+    const operation = this.captureMakerOperation();
+    operation.store.setSaveState('saving', this.tr('inspectingPngs', { count: pending.mapping.length }));
     try {
       if (pending.mode === 'project') {
         const targetKeys = pending.mapping.map((mapping) => mapping.targetDefinition);
@@ -2555,7 +3884,7 @@ export class MakerWorkspace {
           throw new Error('Two PNG files map to the same Style. Each Style can own only one PNG; choose or create a different Style.');
         }
       }
-      const canvas = this.store.getState().document.canvas;
+      const canvas = operation.store.getState().document.canvas;
       const prepared = await Promise.all(pending.mapping.map(async (mapping) => {
         const inspection = await inspectPngAsset(mapping.file, canvas);
         const thumbnailBlob = await createAlphaCroppedThumbnail(mapping.file);
@@ -2573,17 +3902,28 @@ export class MakerWorkspace {
         record.identifier = `${safeFileName(mapping.fileName, assetId)}-${assetId.slice(-8)}.png`;
         return { mapping, inspection, record };
       }));
+      if (
+        this.pendingImport !== pending
+        || !this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)
+      ) return;
       prepared.forEach(({ record }) => this.assets.set(record.assetId, record));
-      await upsertMakerWorkspaceAssets(this.makerKey, prepared.map(({ record }) => ({ ...record, url: '', thumbnailUrl: '' })));
       this.assetResolver.clear();
       this.assetResolver = createCachedAssetResolver(this.assets);
       this.executeDocument(`Batch import ${prepared.length} Style PNGs`, ({ document }) => {
         const newTrackByName = new Map();
-        prepared.forEach(({ mapping, inspection, record }) => {
+        prepared.forEach(({ mapping, inspection, record }, preparedIndex) => {
           const [partId, itemId, requestedStyleId] = String(mapping.targetDefinition || `${pending.partId}::${pending.itemId}`).split('::');
           const targetItem = findItem(document, partId, itemId);
           if (!targetItem) throw new Error(`${mapping.fileName} does not have a valid Item target.`);
           let targetStyle = requestedStyleId ? findStyle(document, partId, itemId, requestedStyleId) : null;
+          if (
+            pending.mode === 'item'
+            && preparedIndex === 0
+            && pending.defaultStyleId
+          ) {
+            const emptyDefault = findStyle(document, partId, itemId, pending.defaultStyleId);
+            if (emptyDefault && !emptyDefault.assetId) targetStyle = emptyDefault;
+          }
           if (pending.mode === 'project' && !targetStyle) throw new Error(`${mapping.fileName} does not have a valid Style target.`);
           if (targetStyle?.styleLocked) throw new Error(`${targetStyle.name} is locked. Unlock it before importing a replacement PNG.`);
           if (!targetStyle) {
@@ -2610,9 +3950,9 @@ export class MakerWorkspace {
               scale: inspection.initialTransform.scale,
               rotation: 0,
             };
-            targetStyle.positionConfirmed = inspection.fullCanvas;
+            targetStyle.positionConfirmed = false;
           }
-          if (!inspection.fullCanvas && !targetStyle.positionLocked) {
+          if (!targetStyle.positionLocked) {
             this.editingPositionStyleKey = styleSceneKey(partId, itemId, targetStyle.id);
           }
           const targetTrack = document.layerTracks.find((candidate) => candidate.id === trackId);
@@ -2628,35 +3968,69 @@ export class MakerWorkspace {
       });
       this.pendingImport = null;
       this.syncCreatorRecipeSelection();
-      this.store.setSaveState('dirty', this.tr('importedPngs', { count: prepared.length }));
+      operation.store.setSaveState('dirty', this.tr('importedPngs', { count: prepared.length }));
       this.render();
+      await this.flushCompletedAssetOperation(operation, 'batch-png-import');
     } catch (error) {
-      this.store.setSaveState('error', error.message || this.tr('batchImportFailed'));
+      if (this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) {
+        operation.store.setSaveState('error', error.message || this.tr('batchImportFailed'));
+      }
     }
   }
 
   addRuleFromBuilder() {
     const document = this.store.getState().document;
     const ownerDefinition = this.creatorRoot.querySelector('#v4RuleOwnerDefinition')?.value || this.selectedPartId;
-    const type = this.creatorRoot.querySelector('#v4RuleType')?.value || 'excludes';
-    const [targetPartId = '', targetItemId = '', targetStyleId = ''] = String(this.creatorRoot.querySelector('#v4RuleTargetDefinition')?.value || '').split('::');
-    if (!ownerDefinition || !targetPartId) return;
-    const targetDefinition = [targetPartId, targetItemId, targetStyleId].filter(Boolean).join('::');
-    if (ownerDefinition === targetDefinition) return;
+    const requestedType = this.creatorRoot.querySelector('#v4RuleType')?.value || 'excludes';
+    const type = requestedType === 'requires' ? 'requires' : 'excludes';
+    const matchMode = this.creatorRoot.querySelector('#v4RuleMatchMode')?.value === 'any' ? 'any' : 'all';
+    const targetPicker = this.creatorRoot.querySelector('#v4RuleTargetDefinitions');
+    const legacyTarget = this.creatorRoot.querySelector('#v4RuleTargetDefinition')?.value || '';
+    const definitions = targetPicker?.selectedOptions
+      ? [...targetPicker.selectedOptions].map((option) => option.value).filter(Boolean)
+      : [targetPicker?.value || legacyTarget].filter(Boolean);
+    if (!ownerDefinition || !definitions.length) return;
     const currentOwner = ruleOwnerFromDefinition(document, ownerDefinition);
     if (!currentOwner || currentOwner.styleLocked) return;
+    const selectors = definitions.map((definition) => {
+      const [partId = '', itemId = '', styleId = ''] = String(definition).split('::');
+      return {
+        partId,
+        ...(itemId ? { itemId } : {}),
+        ...(styleId ? { styleId } : {}),
+      };
+    });
+    let targets;
+    try {
+      targets = composeRuleTargets(selectors, matchMode);
+    } catch (error) {
+      this.ruleBuilderError = error?.code === 'cross-part-any-rule'
+        ? this.tr('ruleAnySamePartError')
+        : error?.code === 'ambiguous-any-style-rule'
+          ? this.tr('ruleAnySameItemError')
+          : error.message;
+      this.render();
+      return;
+    }
+    const [ownerPartId = '', ownerItemId = '', ownerStyleId = ''] = String(ownerDefinition).split('::');
+    const ownerKey = ruleSelectorKey({
+      partId: ownerPartId,
+      ...(ownerItemId ? { itemId: ownerItemId } : {}),
+      ...(ownerStyleId ? { styleId: ownerStyleId } : {}),
+    });
+    if (targets.some((target) => ruleSelectorKey(target) === ownerKey)) return;
+    this.ruleBuilderError = '';
     this.executeDocument(`Add ${type} rule`, ({ document: next }) => {
       const owner = ruleOwnerFromDefinition(next, ownerDefinition);
       if (!owner || owner.styleLocked) return;
-      const target = {
-        partId: targetPartId,
-        ...(targetItemId ? { itemId: targetItemId } : {}),
-        ...(targetStyleId ? { styleId: targetStyleId } : {}),
-      };
       owner[type] ||= [];
-      if (!owner[type].some((candidate) => candidate.partId === target.partId
-        && String(candidate.itemId || '') === targetItemId
-        && String(candidate.styleId || '') === targetStyleId)) owner[type].push(target);
+      const existing = new Set(owner[type].map(ruleSelectorKey));
+      targets.forEach((target) => {
+        const key = ruleSelectorKey(target);
+        if (existing.has(key)) return;
+        owner[type].push(target);
+        existing.add(key);
+      });
     });
   }
 
@@ -2797,14 +4171,8 @@ export class MakerWorkspace {
     this.render();
   }
 
-  normalizedPlayerSelection(partId, itemId, styleId) {
-    const desired = clone(this.playerRecipe);
-    replaceRecipeSelection(desired, { partId, itemId, styleId });
-    const result = normalizeRecipe(this.runtimeDocument(), desired, { preferPartId: partId });
-    return result.valid ? result.documentRecipe : desired;
-  }
-
   handlePlayerClick(event) {
+    if (this.contextSwitchInProgress || this.restoreInProgress || this.restoreError) return;
     const button = event.target.closest('[data-action]');
     if (!button || button.matches('input,select,textarea,label')) return;
     const action = button.dataset.action;
@@ -2823,28 +4191,36 @@ export class MakerWorkspace {
     if (action === 'player-item' && part) {
       const nextItem = part.items.find((candidate) => candidate.id === button.dataset.itemId);
       if (!nextItem) return;
-      this.setPlayerRecipe(this.normalizedPlayerSelection(part.id, nextItem.id, nextItem.defaultStyleId || nextItem.styles[0]?.id), `Choose ${nextItem.name}`);
+      const option = evaluatePlayerItemOption(
+        document,
+        this.playerRecipe,
+        { partId: part.id, itemId: nextItem.id },
+        this.playerOptionSettings(document),
+      );
+      if (!option.selectable || !option.nextRecipe) return;
+      this.setPlayerRecipe(option.nextRecipe, `Choose ${nextItem.name}`);
       return;
     }
     if (action === 'player-style' && part && item) {
-      this.setPlayerRecipe(this.normalizedPlayerSelection(part.id, item.id, button.dataset.styleId), `Choose style ${button.textContent.trim()}`);
+      const option = evaluatePlayerStyleOption(
+        document,
+        this.playerRecipe,
+        { partId: part.id, itemId: item.id, styleId: button.dataset.styleId },
+        this.playerOptionSettings(document),
+      );
+      if (!option.selectable || !option.nextRecipe) return;
+      this.setPlayerRecipe(option.nextRecipe, `Choose style ${button.textContent.trim()}`);
       return;
     }
     if (action === 'player-none' && part && !part.required) {
-      const next = clone(this.playerRecipe);
-      const removeIds = new Set([part.id]);
-      let changed = true;
-      while (changed) {
-        changed = false;
-        document.parts.forEach((candidate) => {
-          if (candidate.parentPartId && removeIds.has(candidate.parentPartId) && !removeIds.has(candidate.id)) {
-            removeIds.add(candidate.id);
-            changed = true;
-          }
-        });
-      }
-      next.selections = next.selections.filter((selection) => !removeIds.has(selection.partId));
-      this.setPlayerRecipe(next, `Remove ${part.name}`);
+      const option = evaluatePlayerRemovePartOption(
+        document,
+        this.playerRecipe,
+        part.id,
+        this.playerOptionSettings(document),
+      );
+      if (!option.selectable || !option.nextRecipe) return;
+      this.setPlayerRecipe(option.nextRecipe, `Remove ${part.name}`);
       return;
     }
     if (action === 'player-color') {
@@ -2876,25 +4252,38 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'player-reset') {
-      this.setPlayerRecipe(clone(document.defaultRecipe), 'Reset OC');
+      const playable = normalizePlayablePlayerRecipe(
+        document,
+        document.defaultRecipe,
+        this.playerOptionSettings(document),
+      );
+      if (!playable.valid) {
+        this.callbacks.onPlayerError?.(new Error(
+          this.playerOptionReasonText({ reasonCode: playable.violations[0]?.code }, document),
+        ));
+        return;
+      }
+      this.setPlayerRecipe(playable.documentRecipe, 'Reset OC');
       return;
     }
     if (action === 'player-clear') {
-      const next = clone(this.playerRecipe);
-      const requiredIds = new Set(document.parts.filter((candidate) => candidate.required).map((candidate) => candidate.id));
-      next.selections = next.selections.filter((selection) => requiredIds.has(selection.partId));
-      const exact = evaluateRecipe(document, next);
-      if (exact.valid) this.setPlayerRecipe(exact.documentRecipe, 'Remove optional Parts');
-      else {
-        const normalized = normalizeRecipe(document, next, { lockedPartIds: [...requiredIds] });
-        this.setPlayerRecipe(normalized.valid ? normalized.documentRecipe : next, 'Remove optional Parts');
-      }
+      const option = evaluatePlayerClearOptionalOption(
+        document,
+        this.playerRecipe,
+        this.playerOptionSettings(document),
+      );
+      if (!option.selectable || !option.nextRecipe) return;
+      this.setPlayerRecipe(option.nextRecipe, 'Remove optional Parts');
       return;
     }
     if (action === 'player-random') {
       try {
-        const result = generateValidRecipe(document);
-        this.setPlayerRecipe(result.documentRecipe || { selections: result.recipe, colors: this.playerRecipe.colors }, 'Random OC');
+        const result = generatePlayablePlayerRecipe(
+          document,
+          this.playerOptionSettings(document),
+        );
+        if (!result.valid) throw new Error(this.tr('noPlayableParts'));
+        this.setPlayerRecipe(result.documentRecipe, 'Random OC');
       } catch (error) {
         this.callbacks.onPlayerError?.(error);
       }
@@ -2947,6 +4336,7 @@ export class MakerWorkspace {
   }
 
   handlePlayerChange(event) {
+    if (this.contextSwitchInProgress || this.restoreInProgress || this.restoreError) return;
     const input = event.target;
     const action = input.dataset.action;
     if (!action) return;
@@ -2964,12 +4354,15 @@ export class MakerWorkspace {
   }
 
   destroy() {
+    void this.flushPendingChanges({ reason: 'destroy' });
+    void this.sessionAutosave.flush();
     this.unsubscribe?.();
     this.creatorRoot?.removeEventListener('click', this.boundCreatorClick);
     this.creatorRoot?.removeEventListener('change', this.boundCreatorChange);
     this.creatorRoot?.removeEventListener('input', this.boundCreatorInput);
     this.creatorRoot?.removeEventListener('focusout', this.boundCreatorFocusout);
     this.creatorRoot?.removeEventListener('keydown', this.boundCreatorKeydown);
+    this.creatorRoot?.removeEventListener('keyup', this.boundCreatorKeyup);
     this.playerRoot?.removeEventListener('click', this.boundPlayerClick);
     this.playerRoot?.removeEventListener('change', this.boundPlayerChange);
     this.playerRoot?.removeEventListener('input', this.boundPlayerChange);
