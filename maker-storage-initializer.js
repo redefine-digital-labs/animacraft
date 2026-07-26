@@ -1,8 +1,10 @@
 /**
- * One-time cleanup for the first deployment of the stable Maker workspace.
+ * Non-destructive legacy Maker storage inspection.
  *
- * Do not bump this epoch for ordinary application deployments. A new value is
- * an explicit instruction to clear the listed legacy Maker draft data again.
+ * The epoch is retained for compatibility with deployments that already wrote
+ * it. It is an inspection marker only: changing or removing it must never be
+ * interpreted as permission to delete a database, clear an object store, or
+ * remove a localStorage draft key.
  */
 export const MAKER_DRAFT_SCHEMA_EPOCH = 'maker-v5-stable-storage-1';
 export const MAKER_DRAFT_SCHEMA_EPOCH_KEY = 'animacraft-maker-draft-schema-epoch';
@@ -33,7 +35,8 @@ function requireStorage(storage) {
     !storage
     || typeof storage.getItem !== 'function'
     || typeof storage.setItem !== 'function'
-    || typeof storage.removeItem !== 'function'
+    || typeof storage.key !== 'function'
+    || typeof storage.length !== 'number'
   ) {
     throw new Error('Persistent localStorage is required to initialize Maker draft storage.');
   }
@@ -41,76 +44,10 @@ function requireStorage(storage) {
 }
 
 function requireIndexedDb(factory) {
-  if (!factory || typeof factory.open !== 'function' || typeof factory.deleteDatabase !== 'function') {
+  if (!factory || (typeof factory !== 'object' && typeof factory !== 'function')) {
     throw new Error('IndexedDB is required to initialize Maker draft storage.');
   }
   return factory;
-}
-
-function requestError(request, fallback) {
-  return request?.error instanceof Error ? request.error : new Error(fallback);
-}
-
-function deleteDatabase(factory, databaseName) {
-  return new Promise((resolve, reject) => {
-    const request = factory.deleteDatabase(databaseName);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(requestError(request, `Could not delete legacy Maker database "${databaseName}".`));
-    request.onblocked = () => reject(new Error(
-      `Could not initialize Maker storage because "${databaseName}" is open in another Animacraft tab.`,
-    ));
-  });
-}
-
-function openDatabase(factory, databaseName) {
-  return new Promise((resolve, reject) => {
-    let created = false;
-    const request = factory.open(databaseName);
-    request.onupgradeneeded = (event) => {
-      created = Number(event?.oldVersion || 0) === 0;
-    };
-    request.onsuccess = () => resolve({ database: request.result, created });
-    request.onerror = () => reject(requestError(request, `Could not open legacy Maker database "${databaseName}".`));
-    request.onblocked = () => reject(new Error(
-      `Could not initialize Maker storage because "${databaseName}" is blocked by another Animacraft tab.`,
-    ));
-  });
-}
-
-function transactionComplete(transaction, databaseName) {
-  return new Promise((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onabort = () => reject(
-      transaction.error || new Error(`Clearing legacy Maker data in "${databaseName}" was aborted.`),
-    );
-    transaction.onerror = () => reject(
-      transaction.error || new Error(`Clearing legacy Maker data in "${databaseName}" failed.`),
-    );
-  });
-}
-
-async function clearDatabaseStores(factory, databaseName, requestedStoreNames) {
-  const { database, created } = await openDatabase(factory, databaseName);
-  if (created) {
-    database.close();
-    await deleteDatabase(factory, databaseName);
-    return [];
-  }
-
-  const storeNames = requestedStoreNames.filter((name) => database.objectStoreNames.contains(name));
-  if (!storeNames.length) {
-    database.close();
-    return [];
-  }
-
-  try {
-    const transaction = database.transaction(storeNames, 'readwrite');
-    storeNames.forEach((name) => transaction.objectStore(name).clear());
-    await transactionComplete(transaction, databaseName);
-    return storeNames;
-  } finally {
-    database.close();
-  }
 }
 
 function matchingLegacyLocalStorageKeys(storage) {
@@ -125,7 +62,70 @@ function matchingLegacyLocalStorageKeys(storage) {
       matches.push(key);
     }
   }
-  return matches;
+  return matches.sort();
+}
+
+async function inspectLegacyDatabases(factory) {
+  if (typeof factory.databases !== 'function') {
+    return {
+      databaseListing: 'unsupported',
+      preservedDatabaseNames: [],
+      legacyWorkspacePresent: null,
+    };
+  }
+
+  try {
+    const entries = await factory.databases();
+    const databaseNames = new Set(
+      (Array.isArray(entries) ? entries : [])
+        .map((entry) => String(entry?.name || '').trim())
+        .filter(Boolean),
+    );
+    const legacyWorkspacePresent = databaseNames.has(LEGACY_WORKSPACE_DATABASE);
+    return {
+      databaseListing: 'complete',
+      preservedDatabaseNames: [
+        ...LEGACY_MAKER_DATABASES.filter((name) => databaseNames.has(name)),
+        ...(legacyWorkspacePresent ? [LEGACY_WORKSPACE_DATABASE] : []),
+      ],
+      legacyWorkspacePresent,
+    };
+  } catch (error) {
+    // Database listing is optional browser metadata. An unavailable inspection
+    // must not tempt callers to open/create, clear, or delete a legacy database.
+    return {
+      databaseListing: 'failed',
+      preservedDatabaseNames: [],
+      legacyWorkspacePresent: null,
+      inspectionError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function inspectPreservedLegacyStorage(indexedDb, storage) {
+  const databaseInspection = await inspectLegacyDatabases(indexedDb);
+  return {
+    ...databaseInspection,
+    preservedLocalStorageKeys: matchingLegacyLocalStorageKeys(storage),
+  };
+}
+
+function resultFor({
+  performed,
+  epoch,
+  inspection,
+}) {
+  return {
+    performed,
+    epoch,
+    inspection,
+
+    // Kept as explicit, backwards-compatible proof that initialization did not
+    // mutate any legacy storage.
+    clearedDatabases: [],
+    clearedWorkspaceStores: [],
+    removedLocalStorageKeys: [],
+  };
 }
 
 async function runInitialization({
@@ -133,37 +133,25 @@ async function runInitialization({
   storage,
   epoch,
 }) {
-  const clearedDatabases = [];
-  for (const databaseName of LEGACY_MAKER_DATABASES) {
-    await deleteDatabase(indexedDb, databaseName);
-    clearedDatabases.push(databaseName);
-  }
+  const inspection = await inspectPreservedLegacyStorage(indexedDb, storage);
 
-  const clearedWorkspaceStores = await clearDatabaseStores(
-    indexedDb,
-    LEGACY_WORKSPACE_DATABASE,
-    LEGACY_WORKSPACE_MAKER_STORES,
-  );
-
-  const removedLocalStorageKeys = matchingLegacyLocalStorageKeys(storage);
-  removedLocalStorageKeys.forEach((key) => storage.removeItem(key));
-
-  // This is deliberately the final write. A partial/failed cleanup must retry
-  // on the next startup instead of being mistaken for a completed migration.
+  // This marker records that the non-destructive inspection ran. It grants no
+  // cleanup authority and is the only persistent write made by this module.
   storage.setItem(MAKER_DRAFT_SCHEMA_EPOCH_KEY, epoch);
 
-  return {
+  return resultFor({
     performed: true,
     epoch,
-    clearedDatabases,
-    clearedWorkspaceStores,
-    removedLocalStorageKeys,
-  };
+    inspection,
+  });
 }
 
 /**
- * Clears only the explicitly listed legacy Maker draft data once per schema
- * epoch. Callers must await this before loading or writing any Maker workspace.
+ * Inspects known legacy Maker storage without modifying it.
+ *
+ * This function never opens, deletes, or clears an IndexedDB database/store and
+ * never removes a localStorage key. The v6 workspace is neither opened nor
+ * otherwise touched.
  */
 export async function initializeMakerDraftStorage(options = {}) {
   const storage = requireStorage(options.localStorage ?? globalThis.localStorage);
@@ -172,13 +160,12 @@ export async function initializeMakerDraftStorage(options = {}) {
   if (!epoch) throw new Error('A Maker draft schema epoch is required.');
 
   if (storage.getItem(MAKER_DRAFT_SCHEMA_EPOCH_KEY) === epoch) {
-    return {
+    const inspection = await inspectPreservedLegacyStorage(indexedDb, storage);
+    return resultFor({
       performed: false,
       epoch,
-      clearedDatabases: [],
-      clearedWorkspaceStores: [],
-      removedLocalStorageKeys: [],
-    };
+      inspection,
+    });
   }
 
   let storageInitializations = activeInitializations.get(storage);

@@ -11,6 +11,9 @@ import {
 class MemoryStorage {
   constructor(entries = {}) {
     this.records = new Map(Object.entries(entries));
+    this.removeCalls = [];
+    this.setCalls = [];
+    this.failNextSet = false;
   }
 
   get length() {
@@ -26,27 +29,17 @@ class MemoryStorage {
   }
 
   setItem(key, value) {
+    this.setCalls.push(String(key));
+    if (this.failNextSet) {
+      this.failNextSet = false;
+      throw new Error('simulated marker write failure');
+    }
     this.records.set(String(key), String(value));
   }
 
   removeItem(key) {
+    this.removeCalls.push(String(key));
     this.records.delete(key);
-  }
-}
-
-class MemoryTransaction {
-  constructor(database, storeNames) {
-    this.database = database;
-    this.storeNames = storeNames;
-    this.error = null;
-    queueMicrotask(() => this.oncomplete?.());
-  }
-
-  objectStore(name) {
-    if (!this.storeNames.includes(name)) throw new Error(`Store ${name} is outside this transaction.`);
-    return {
-      clear: () => this.database.stores.get(name).clear(),
-    };
   }
 }
 
@@ -56,58 +49,37 @@ class MemoryDatabase {
     this.stores = new Map(
       Object.entries(stores).map(([storeName, records]) => [storeName, new Map(Object.entries(records))]),
     );
-    this.objectStoreNames = {
-      contains: (storeName) => this.stores.has(storeName),
-    };
   }
-
-  transaction(storeNames) {
-    return new MemoryTransaction(this, storeNames);
-  }
-
-  close() {}
 }
 
 class MemoryIndexedDb {
   constructor(databases = {}) {
-    this.databases = new Map(
+    this.databasesByName = new Map(
       Object.entries(databases).map(([name, stores]) => [name, new MemoryDatabase(name, stores)]),
     );
+    this.databaseListCalls = 0;
+    this.openCalls = [];
     this.deleteCalls = [];
-    this.failNextDelete = false;
+    this.failNextList = false;
+  }
+
+  async databases() {
+    this.databaseListCalls += 1;
+    if (this.failNextList) {
+      this.failNextList = false;
+      throw new Error('simulated database listing failure');
+    }
+    return [...this.databasesByName.keys()].map((name) => ({ name, version: 1 }));
+  }
+
+  open(name) {
+    this.openCalls.push(name);
+    throw new Error('Non-destructive initialization must not open a database.');
   }
 
   deleteDatabase(name) {
     this.deleteCalls.push(name);
-    const request = {};
-    queueMicrotask(() => {
-      if (this.failNextDelete) {
-        this.failNextDelete = false;
-        request.error = new Error('simulated delete failure');
-        request.onerror?.();
-        return;
-      }
-      this.databases.delete(name);
-      request.onsuccess?.();
-    });
-    return request;
-  }
-
-  open(name) {
-    const request = {};
-    queueMicrotask(() => {
-      let database = this.databases.get(name);
-      if (!database) {
-        database = new MemoryDatabase(name);
-        this.databases.set(name, database);
-        request.result = database;
-        request.onupgradeneeded?.({ oldVersion: 0 });
-      } else {
-        request.result = database;
-      }
-      queueMicrotask(() => request.onsuccess?.());
-    });
-    return request;
+    throw new Error('Non-destructive initialization must not delete a database.');
   }
 }
 
@@ -129,7 +101,32 @@ function legacyData() {
   });
 }
 
-test('first initialization clears only legacy Maker drafts and records the epoch last', async () => {
+function assertLegacyDatabasesIntact(indexedDB) {
+  assert.equal(
+    indexedDB.databasesByName.get('animacraft-creator-drafts').stores.get('maker-drafts').size,
+    1,
+  );
+  assert.equal(
+    indexedDB.databasesByName.get('animacraft-creator-drafts').stores.get('maker-assets').size,
+    1,
+  );
+  assert.equal(
+    indexedDB.databasesByName.get(LEGACY_WORKSPACE_DATABASE).stores.get('maker-documents').size,
+    1,
+  );
+  assert.equal(
+    indexedDB.databasesByName.get(LEGACY_WORKSPACE_DATABASE).stores.get('maker-assets').size,
+    1,
+  );
+  assert.equal(
+    indexedDB.databasesByName.get(LEGACY_WORKSPACE_DATABASE).stores.get('player-sessions').size,
+    1,
+  );
+  assert.deepEqual(indexedDB.openCalls, []);
+  assert.deepEqual(indexedDB.deleteCalls, []);
+}
+
+test('first initialization preserves every legacy draft and only records inspection metadata', async () => {
   const indexedDB = legacyData();
   const localStorage = new MemoryStorage({
     'animacraft-maker-draft-v1': 'old draft',
@@ -143,92 +140,114 @@ test('first initialization clears only legacy Maker drafts and records the epoch
 
   assert.equal(result.performed, true);
   assert.equal(result.epoch, MAKER_DRAFT_SCHEMA_EPOCH);
-  assert.deepEqual(result.clearedDatabases, ['animacraft-creator-drafts']);
-  assert.deepEqual(result.clearedWorkspaceStores.sort(), ['maker-assets', 'maker-documents']);
-  assert.equal(indexedDB.databases.has('animacraft-creator-drafts'), false);
-  assert.equal(indexedDB.databases.get(LEGACY_WORKSPACE_DATABASE).stores.get('maker-documents').size, 0);
-  assert.equal(indexedDB.databases.get(LEGACY_WORKSPACE_DATABASE).stores.get('maker-assets').size, 0);
-  assert.equal(indexedDB.databases.get(LEGACY_WORKSPACE_DATABASE).stores.get('player-sessions').size, 1);
-  assert.equal(indexedDB.databases.get('wallet-provider-cache').stores.get('sessions').size, 1);
-  assert.equal(localStorage.getItem('animacraft-maker-draft-v1'), null);
-  assert.equal(localStorage.getItem('animacraft-maker-draft-v2:0x123:maker'), null);
-  assert.equal(localStorage.getItem('animacraft-local-makers-v1:0x123'), null);
+  assert.deepEqual(result.clearedDatabases, []);
+  assert.deepEqual(result.clearedWorkspaceStores, []);
+  assert.deepEqual(result.removedLocalStorageKeys, []);
+  assert.deepEqual(result.inspection, {
+    databaseListing: 'complete',
+    preservedDatabaseNames: ['animacraft-creator-drafts', LEGACY_WORKSPACE_DATABASE],
+    legacyWorkspacePresent: true,
+    preservedLocalStorageKeys: [
+      'animacraft-local-makers-v1:0x123',
+      'animacraft-maker-draft-v1',
+      'animacraft-maker-draft-v2:0x123:maker',
+    ],
+  });
+
+  assertLegacyDatabasesIntact(indexedDB);
+  assert.equal(indexedDB.databasesByName.get('wallet-provider-cache').stores.get('sessions').size, 1);
+  assert.equal(localStorage.getItem('animacraft-maker-draft-v1'), 'old draft');
+  assert.equal(localStorage.getItem('animacraft-maker-draft-v2:0x123:maker'), 'old draft');
+  assert.equal(localStorage.getItem('animacraft-local-makers-v1:0x123'), 'old index');
   assert.equal(localStorage.getItem('animacraft-locale'), 'zh-CN');
   assert.equal(localStorage.getItem('dapp-kit:wallet-connection'), '0x123');
+  assert.deepEqual(localStorage.removeCalls, []);
   assert.equal(localStorage.getItem(MAKER_DRAFT_SCHEMA_EPOCH_KEY), MAKER_DRAFT_SCHEMA_EPOCH);
 });
 
-test('the same epoch is idempotent and never clears drafts created after initialization', async () => {
+test('the same epoch remains read-only and reports newly discovered legacy drafts', async () => {
   const indexedDB = legacyData();
   const localStorage = new MemoryStorage();
   await initializeMakerDraftStorage({ indexedDB, localStorage });
 
-  indexedDB.databases.set('animacraft-creator-drafts', new MemoryDatabase('animacraft-creator-drafts', {
-    'maker-drafts': { newMaker: { makerKey: 'newMaker' } },
-  }));
+  indexedDB.databasesByName.set('animacraft-creator-drafts', new MemoryDatabase(
+    'animacraft-creator-drafts',
+    { 'maker-drafts': { newMaker: { makerKey: 'newMaker' } } },
+  ));
   localStorage.setItem('animacraft-local-makers-v1:0x456', 'new maker index');
-  const deleteCallCount = indexedDB.deleteCalls.length;
+  const markerWriteCount = localStorage.setCalls.filter(
+    (key) => key === MAKER_DRAFT_SCHEMA_EPOCH_KEY,
+  ).length;
 
   const result = await initializeMakerDraftStorage({ indexedDB, localStorage });
 
   assert.equal(result.performed, false);
-  assert.equal(indexedDB.deleteCalls.length, deleteCallCount);
+  assert.deepEqual(result.inspection.preservedLocalStorageKeys, ['animacraft-local-makers-v1:0x456']);
   assert.equal(
-    indexedDB.databases.get('animacraft-creator-drafts').stores.get('maker-drafts').size,
+    indexedDB.databasesByName.get('animacraft-creator-drafts').stores.get('maker-drafts').size,
     1,
   );
-  assert.equal(localStorage.getItem('animacraft-local-makers-v1:0x456'), 'new maker index');
+  assert.equal(
+    localStorage.setCalls.filter((key) => key === MAKER_DRAFT_SCHEMA_EPOCH_KEY).length,
+    markerWriteCount,
+  );
+  assert.deepEqual(localStorage.removeCalls, []);
+  assert.deepEqual(indexedDB.openCalls, []);
+  assert.deepEqual(indexedDB.deleteCalls, []);
 });
 
-test('a missing marker can only repeat the legacy allowlist and never deletes the v6 workspace', async () => {
+test('a missing marker never clears legacy storage and never touches the v6 workspace', async () => {
   const indexedDB = legacyData();
   const localStorage = new MemoryStorage();
   await initializeMakerDraftStorage({ indexedDB, localStorage });
 
-  indexedDB.databases.set('animacraft-maker-workspace-v6', new MemoryDatabase(
+  indexedDB.databasesByName.set('animacraft-maker-workspace-v6', new MemoryDatabase(
     'animacraft-maker-workspace-v6',
     {
       'maker-projects': { current: { makerId: 'current', revision: 12 } },
       'maker-assets': { currentAsset: { makerId: 'current' } },
     },
   ));
-  indexedDB.databases.set('animacraft-creator-drafts', new MemoryDatabase(
-    'animacraft-creator-drafts',
-    { 'maker-drafts': { legacyAgain: { makerKey: 'legacyAgain' } } },
-  ));
   localStorage.removeItem(MAKER_DRAFT_SCHEMA_EPOCH_KEY);
+  localStorage.removeCalls = [];
 
   const result = await initializeMakerDraftStorage({ indexedDB, localStorage });
 
   assert.equal(result.performed, true);
-  assert.equal(indexedDB.databases.has('animacraft-creator-drafts'), false);
+  assertLegacyDatabasesIntact(indexedDB);
   assert.equal(
-    indexedDB.databases.get('animacraft-maker-workspace-v6').stores.get('maker-projects').size,
+    indexedDB.databasesByName.get('animacraft-maker-workspace-v6').stores.get('maker-projects').size,
     1,
   );
   assert.equal(
-    indexedDB.databases.get('animacraft-maker-workspace-v6').stores.get('maker-assets').size,
+    indexedDB.databasesByName.get('animacraft-maker-workspace-v6').stores.get('maker-assets').size,
     1,
   );
+  assert.deepEqual(localStorage.removeCalls, []);
 });
 
-test('a failed cleanup does not write the epoch and can be retried safely', async () => {
+test('a marker write failure still preserves all draft data and can be retried safely', async () => {
   const indexedDB = legacyData();
-  const localStorage = new MemoryStorage();
-  indexedDB.failNextDelete = true;
+  const localStorage = new MemoryStorage({
+    'animacraft-maker-draft-v1': 'recover me',
+  });
+  localStorage.failNextSet = true;
 
   await assert.rejects(
     initializeMakerDraftStorage({ indexedDB, localStorage }),
-    /simulated delete failure/,
+    /simulated marker write failure/,
   );
   assert.equal(localStorage.getItem(MAKER_DRAFT_SCHEMA_EPOCH_KEY), null);
+  assert.equal(localStorage.getItem('animacraft-maker-draft-v1'), 'recover me');
+  assertLegacyDatabasesIntact(indexedDB);
 
   const result = await initializeMakerDraftStorage({ indexedDB, localStorage });
   assert.equal(result.performed, true);
   assert.equal(localStorage.getItem(MAKER_DRAFT_SCHEMA_EPOCH_KEY), MAKER_DRAFT_SCHEMA_EPOCH);
+  assert.equal(localStorage.getItem('animacraft-maker-draft-v1'), 'recover me');
 });
 
-test('concurrent callers share one awaited initialization', async () => {
+test('concurrent callers share one awaited non-destructive initialization', async () => {
   const indexedDB = legacyData();
   const localStorage = new MemoryStorage();
 
@@ -239,15 +258,62 @@ test('concurrent callers share one awaited initialization', async () => {
 
   assert.equal(first.performed, true);
   assert.equal(second.performed, true);
-  assert.equal(indexedDB.deleteCalls.filter((name) => name === 'animacraft-creator-drafts').length, 1);
+  assert.equal(indexedDB.databaseListCalls, 1);
+  assert.equal(
+    localStorage.setCalls.filter((key) => key === MAKER_DRAFT_SCHEMA_EPOCH_KEY).length,
+    1,
+  );
+  assertLegacyDatabasesIntact(indexedDB);
 });
 
-test('refuses destructive initialization when a persistent marker cannot be stored', async () => {
+test('a database-listing failure never falls back to opening or deleting legacy data', async () => {
+  const indexedDB = legacyData();
+  const localStorage = new MemoryStorage({
+    'animacraft-maker-draft-v1': 'recover me',
+  });
+  indexedDB.failNextList = true;
+
+  const result = await initializeMakerDraftStorage({ indexedDB, localStorage });
+
+  assert.deepEqual(result.inspection, {
+    databaseListing: 'failed',
+    preservedDatabaseNames: [],
+    legacyWorkspacePresent: null,
+    inspectionError: 'simulated database listing failure',
+    preservedLocalStorageKeys: ['animacraft-maker-draft-v1'],
+  });
+  assert.equal(localStorage.getItem('animacraft-maker-draft-v1'), 'recover me');
+  assertLegacyDatabasesIntact(indexedDB);
+});
+
+test('unsupported database listing stays non-destructive and does not require delete APIs', async () => {
+  const localStorage = new MemoryStorage({
+    'animacraft-maker-draft-v1': 'recover me',
+  });
+  const indexedDB = {
+    open() {
+      throw new Error('must not be called');
+    },
+  };
+
+  const result = await initializeMakerDraftStorage({ indexedDB, localStorage });
+
+  assert.equal(result.inspection.databaseListing, 'unsupported');
+  assert.deepEqual(result.inspection.preservedDatabaseNames, []);
+  assert.equal(result.inspection.legacyWorkspacePresent, null);
+  assert.deepEqual(result.inspection.preservedLocalStorageKeys, ['animacraft-maker-draft-v1']);
+  assert.equal(localStorage.getItem('animacraft-maker-draft-v1'), 'recover me');
+  assert.deepEqual(localStorage.removeCalls, []);
+});
+
+test('refuses initialization when the inspection marker cannot be stored', async () => {
   const indexedDB = legacyData();
 
   await assert.rejects(
     initializeMakerDraftStorage({ indexedDB, localStorage: {} }),
     /Persistent localStorage is required/,
   );
-  assert.equal(indexedDB.deleteCalls.length, 0);
+  assert.equal(indexedDB.databaseListCalls, 0);
+  assert.deepEqual(indexedDB.openCalls, []);
+  assert.deepEqual(indexedDB.deleteCalls, []);
 });
