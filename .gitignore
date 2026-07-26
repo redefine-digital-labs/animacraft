@@ -14,3 +14,5 @@ __pycache__/
 
 # Move build artifacts
 move/**/build/
+.vercel
+.env*
