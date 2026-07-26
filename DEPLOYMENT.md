@@ -15,7 +15,12 @@ Animacraft is a static Vite app with direct wallet-signed Sui and Walrus writes.
 - Merged source commit: `979a4161ac79f4e275d30575f2ce2e76195a9cfa`
 - Source verification: successful at `2026-07-11T20:32:31Z` with Sui CLI `1.74.1-8fc60f1fa966`
 
-The canonical machine-readable record is [`deployments/mainnet.json`](deployments/mainnet.json). The original package ID is the stable dependency address Soulidity must pin; do not substitute a future upgraded package version ID.
+The canonical machine-readable record is [`deployments/mainnet.json`](deployments/mainnet.json).
+For Soulidity's Move dependency, the original package ID remains the stable
+`original-id`/type identity, while `published-at` must be the separately
+reviewed current callable package (v4 for this release). Do not replace
+`original-id` with an upgrade ID, and do not silently advance `published-at`
+to an unreviewed later upgrade.
 
 ## Recommended Origin
 
@@ -28,25 +33,142 @@ npm ci
 npm run check
 npm run move:test
 git diff --check
+git status --short
+git rev-parse HEAD
+git rev-parse 'HEAD^{tree}'
+sui --version
+sui client active-env
+sui client chain-identifier
+sui client active-address
+sui client object 0xe7d1269532bbfbf5e448cb5c58f07fc6720ed3d22e7853e9f13b7b6282746520 --json
 ```
 
-Confirm the deployment wallet, active Sui environment, SUI gas, WAL balance, and the installed CLI version before any Mainnet command. Never paste a mnemonic or private key into this repository, Vercel, or a support conversation.
+The expected Mainnet chain identifier is `35834a8a`. Confirm the deployment
+wallet, active Sui environment, SUI gas, WAL balance, and the installed CLI
+version before any Mainnet command. The `UpgradeCap` readback must show that it
+still controls original package
+`0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`
+and is held by the approved custodian or multisig. Never paste a mnemonic or
+private key into this repository, Vercel, or a support conversation.
 
-## 2. Publish the Move Package
+## 2. Upgrade to v4 through the existing custody procedure
 
-The package is in `move/animacraft`. Use a Mainnet-compatible Sui CLI and the current official package-publish/PTB command shown by that CLI. Do not reuse a command copied from an older Sui release without checking `sui client ptb --help` and the official Sui CLI reference.
+The package is in `move/animacraft`. This repository deliberately does not
+contain an unattended Mainnet signer. Build and dry-run the exact upgrade
+candidate first:
 
-After signing, record:
+```bash
+sui client upgrade move/animacraft \
+  --upgrade-capability 0xe7d1269532bbfbf5e448cb5c58f07fc6720ed3d22e7853e9f13b7b6282746520 \
+  --build-env mainnet \
+  --dry-run \
+  --json
+```
 
-- original package id
-- publish transaction digest
-- publisher address
-- `UpgradeCap` object id and custodian
-- CLI version and Git commit
+For a multisig or hardware-wallet ceremony, create the unsigned transaction
+with the same source, capability and Mainnet environment using
+`--serialize-unsigned-transaction`; then pass those bytes through the existing
+custody review/sign/execute process. Do not run a bare signing command from an
+unreviewed workstation. The ceremony reviewers must compare the transaction
+target, upgrade capability, sender, gas budget, package digest, source commit,
+source tree and toolchain with the release PR.
 
-Run `sui move test` again from the exact commit that was published.
+After the signed upgrade is final, read it back:
 
-## 3. Configure the Public Runtime
+```bash
+sui client tx-block "$ANIMACRAFT_V4_UPGRADE_TX_DIGEST" --json
+sui client object 0xe7d1269532bbfbf5e448cb5c58f07fc6720ed3d22e7853e9f13b7b6282746520 --json
+sui client verify-source --force --build-env mainnet --json move/animacraft
+```
+
+Record and review all of the following before initialization:
+
+- `deployments/mainnet.json`:
+  - `originalPackageId` remains the v3 ID
+    `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`.
+  - `packageId` and `callablePackageId` both become the new v4 callable ID.
+  - `protocolFeePackageId` becomes that same v4 ID, because v4 is the
+    TypeOrigin of the fee/canonical-authorization structs.
+  - `protocolVersion` becomes `4` and `upgradeTxDigest` contains the final
+    digest.
+  - source commit/tree, CLI version, verification result and `UpgradeCap`
+    custodian are updated from the actual ceremony evidence.
+- `move/animacraft/Published.toml`:
+  - `published-at` becomes the v4 callable ID.
+  - `original-id` remains the v3 ID.
+  - `version` becomes `2`.
+  - `upgrade-capability` remains
+    `0xe7d1269532bbfbf5e448cb5c58f07fc6720ed3d22e7853e9f13b7b6282746520`.
+
+Run the Move tests again from the exact published commit. Never infer the
+callable package or TypeOrigin from a UI link; take them from the final
+transaction/object readback and commit the evidence-bearing record.
+
+## 3. Initialize the v4 protocol objects once
+
+Initialization consumes the existing package
+`Publisher` (`0xfc5a8e6f32e5d7a77492373e5b301809a2b0ca4cbec7282a43668995d7ae2ddb`),
+shares `ProtocolFeeConfig` and `ProtocolTreasury<USDC>`, and returns the
+`ProtocolFeeAdminCap`. Use one custody-reviewed PTB so that the returned cap is
+explicitly transferred to the approved admin address. With current Sui CLI PTB
+syntax, the dry-run shape is:
+
+```bash
+# Fill these from the reviewed upgrade record and custody policy.
+ANIMACRAFT_V4_PACKAGE=0x...
+MAINNET_USDC=0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC
+PROTOCOL_FEE_ADMIN_OWNER=0x...
+
+sui client ptb \
+  --move-call \
+  "$ANIMACRAFT_V4_PACKAGE::animacraft::initialize_protocol_fees" \
+  "<$MAINNET_USDC>" \
+  "@0xfc5a8e6f32e5d7a77492373e5b301809a2b0ca4cbec7282a43668995d7ae2ddb" \
+  --assign protocol_fee_admin_cap \
+  --transfer-objects '[protocol_fee_admin_cap]' "$PROTOCOL_FEE_ADMIN_OWNER" \
+  --dry-run \
+  --json
+```
+
+Before producing bytes, compare this syntax with `sui client ptb --help` from
+the recorded CLI version. The signed transaction must be generated and approved
+through the same multisig/hardware-wallet boundary as the upgrade. If submission
+times out, resolve the transaction digest and object changes first; never
+blindly retry this one-time initializer.
+
+After finality, record the initializer digest and the three IDs emitted by
+`ProtocolFeesInitialized`, then perform independent object readback:
+
+```bash
+sui client tx-block "$PROTOCOL_FEE_INITIALIZATION_TX_DIGEST" --json
+sui client object "$PROTOCOL_FEE_CONFIG_ID" --json
+sui client object "$PROTOCOL_TREASURY_ID" --json
+sui client object "$PROTOCOL_FEE_ADMIN_CAP_ID" --json
+```
+
+The record is accepted only when:
+
+- `ProtocolFeeConfig` and `ProtocolTreasury<USDC>` are shared.
+- `ProtocolFeeAdminCap` is address-owned by the approved admin/custodian.
+- all three exact types begin with
+  `$ANIMACRAFT_V4_PACKAGE::animacraft::...`; this v4 address is their stable
+  TypeOrigin for later v5+ upgrades.
+- all three objects report protocol version `4` and cross-reference the same
+  config/treasury IDs.
+- the initial fee is `5000` bps and the on-chain integration gate is `false`.
+- the package `Publisher` is present inside the AdminCap and no longer exists as
+  a separately spendable object.
+
+Write the final values to `deployments/mainnet.json`
+(`protocolFeeInitializationTxDigest`, all three object IDs and
+`protocolFeeAdminCapOwner`) and mirror the TypeOrigin/object IDs/owner into
+`public/config.js`. Keep `canonicalSoulMintEnabled: false`. Only then run:
+
+```bash
+npm run preflight:mainnet
+```
+
+## 4. Configure the Public Runtime
 
 Edit `public/config.js`:
 
@@ -55,7 +177,9 @@ window.ANIMACRAFT_CONFIG = {
   network: 'mainnet',
   grpcUrl: 'https://fullnode.mainnet.sui.io:443',
   graphqlUrl: 'https://graphql.mainnet.sui.io/graphql',
-  packageId: '0xVERIFIED_PACKAGE_ID',
+  packageId: '0xCURRENT_CALLABLE_PACKAGE_ID',
+  callablePackageId: '0xCURRENT_CALLABLE_PACKAGE_ID',
+  originalPackageId: '0xFIRST_PUBLISHED_PACKAGE_ID',
   paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
   paymentCoinSymbol: 'USDC',
   paymentCoinDecimals: 6,
@@ -68,24 +192,40 @@ window.ANIMACRAFT_CONFIG = {
   soulidityAppUrl: 'https://www.soulidity.ai',
   soulidityIntegrationPath: '/integrations/animacraft',
   soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  protocolFeePackageId: '0xV4_PROTOCOL_FEE_TYPE_ORIGIN_PACKAGE',
   protocolFeeConfigId: '',
   protocolTreasuryId: '',
+  protocolFeeAdminCapId: '',
+  protocolFeeAdminCapOwner: '',
   primaryProtocolFeeBps: 5000,
   canonicalSoulMintEnabled: false
 };
 ```
 
-Run the strict read-only check after setting the Animacraft package:
+`callablePackageId` is the current package version used by every Move call. `originalPackageId`
+is the first published package address and remains the type and event identity after upgrades.
+Keep the legacy `packageId` alias equal to `callablePackageId`; older one-field configurations
+remain supported and treat that one value as both identities. After an upgrade, change only
+`packageId` and `callablePackageId`. Never change `originalPackageId`, or existing
+`OCMaker`, `MakerAdminCap`, `MakerTreasury`, `CreatorProfile`, and `OCMakerPublished`
+records will disappear from client discovery.
 
-```bash
-npm run preflight:mainnet
-```
+`protocolFeePackageId` is a third, deliberately stable identity: the v4
+upgrade package that first defines `ProtocolFeeConfig`, `ProtocolTreasury`, and
+`ProtocolFeeAdminCap`. Set it to the v4 callable package when those objects are
+initialized. Do not change it during a later v5+ upgrade; only
+`packageId`/`callablePackageId` move forward. The strict preflight checks the
+three fee objects against this TypeOrigin instead of incorrectly assuming that
+new v4 types came from the original v3 package.
 
-After the separate Soulidity package and adapter are published, set `soulidityPackageId` and run `npm run preflight:integration`.
+After the separate Soulidity package and adapter are published, set
+`soulidityPackageId`. Run `npm run preflight:integration` only after the
+Soulidity legacy market is paused and retired, the V2 objects are recorded and
+read back, and both chain gates are intentionally enabled.
 
 `featuredMakers` is only a curated fallback. The public gallery discovers all `OCMakerPublished` events through Sui GraphQL and hydrates each Maker from its certified Walrus manifest.
 
-Keep `canonicalSoulMintEnabled: false` until the Animacraft v4 and Soulidity adapter upgrades are both source-verified. Set it to `true` only after `protocolFeeConfigId` and `protocolTreasuryId` identify the reviewed native-USDC shared objects, the dedicated `/integrations/animacraft` route has passed the signed recovery test, and the Mainnet smoke evidence is attached. The strict preflight switches its expected Soulidity function when this gate changes.
+Keep `canonicalSoulMintEnabled: false` until the Animacraft v4 and Soulidity adapter upgrades are both source-verified. The one-time initializer consumes the package `Publisher`, creates the native-USDC `ProtocolFeeConfig` and `ProtocolTreasury` with the integration gate disabled, and seals that Publisher inside `ProtocolFeeAdminCap`; do not retry initialization after an RPC timeout until the first transaction digest has been resolved. Record all three object IDs and the expected AdminCap owner. Set the chain gate and `canonicalSoulMintEnabled` to `true` only after the objects cross-reference one another, the AdminCap owner is verified, the dedicated `/integrations/animacraft` route has passed the signed recovery test, and the Mainnet smoke evidence is attached. The strict preflight verifies these invariants and switches its expected Soulidity function when this gate changes.
 
 The sample Mysten Sui endpoints are appropriate for the five-creator pilot, but the public fullnode is rate-limited. Replace `grpcUrl` and, where available, `graphqlUrl` with monitored dedicated Mainnet infrastructure before unrestricted traffic. Animacraft keeps these as public runtime values; provider credentials must never be embedded in the browser bundle.
 
@@ -95,7 +235,7 @@ The player retries newly certified Walrus manifests and render layers with bound
 
 Only public values belong in this file. Vercel serves `config.js` with `no-store` so a package/config correction is not hidden behind a stale browser cache.
 
-## 4. Deploy Vercel
+## 5. Deploy Vercel
 
 1. Import `redefine-digital-labs/animacraft`.
 2. Framework: `Vite`.
@@ -119,14 +259,14 @@ For a protected Preview, pass its reachable URL directly after disabling protect
 node scripts/production-smoke.mjs --url=https://your-preview.vercel.app
 ```
 
-## 5. Connect the Subdomain
+## 6. Connect the Subdomain
 
 1. Add `animacraft.soulidity.ai` to the Vercel project.
 2. Add the CNAME or provider-specific DNS record Vercel shows.
 3. Wait for TLS issuance.
 4. Update `appUrl` if the final origin differs, redeploy, and verify both apex navigation and deep rewrites.
 
-## 6. Signed Mainnet Smoke Test
+## 7. Signed Mainnet Smoke Test
 
 Use a small real Maker first:
 
@@ -161,7 +301,13 @@ Record all transaction digests and object ids in the release PR.
 
 ## Separate Soulidity Deployment
 
-Do not combine the two packages into one publish transaction. Publish Animacraft first, pin its original package ID as a dependency of the Soulidity adapter, review that diff with the Soulidity developers, then publish Soulidity with its own `UpgradeCap`. Animacraft and Soulidity must have separate multisig custody records and release tags.
+Do not combine the two packages into one publish transaction. Publish the
+Animacraft upgrade first. In Soulidity's dependency replacement, keep the
+Animacraft original package as `original-id` and set `published-at` to the
+reviewed Animacraft v4 callable package so the v4 authorization ABI is actually
+available. Review that exact pair with the Soulidity developers, then publish
+Soulidity with its own `UpgradeCap`. Animacraft and Soulidity must have separate
+multisig custody records and release tags.
 
 ## Rollback
 

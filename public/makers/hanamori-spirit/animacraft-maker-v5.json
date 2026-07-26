@@ -1,0 +1,1427 @@
+{
+  "schemaVersion": "animacraft.maker.v5",
+  "version": {
+    "rootMakerId": "hanamori-spirit-stress-v5",
+    "versionId": "hanamori-spirit-stress-v5-v1",
+    "number": 1,
+    "parentVersionId": null,
+    "compatibility": "initial",
+    "compatibleFrom": 1,
+    "createdAt": null,
+    "changelog": ""
+  },
+  "metadata": {
+    "id": "hanamori-spirit-stress-v5",
+    "name": "[Stress Fixture] Hanamori Spirit · 花守灵契",
+    "summary": "Negative/complex editor stress fixture; not a visual gold standard. A more stable AI-assisted editor stress fixture that still requires human cleanup and combination review before release.",
+    "creator": "Animacraft Atelier",
+    "style": "Japanese cel-shaded spirit-garden portrait",
+    "license": {
+      "kind": "personal-use",
+      "note": "Internal editor stress fixture using AI-assisted art. Soul minting stays disabled until a human artist completes cleanup, combination review, and final rights sign-off."
+    },
+    "coverAssetId": "cover",
+    "disclosures": {
+      "aiAssisted": true,
+      "statement": "Internal editor stress fixture using AI-assisted art. Soul minting stays disabled until a human artist completes cleanup, combination review, and final rights sign-off.",
+      "verification": "source-declared-not-independently-verified"
+    }
+  },
+  "canvas": {
+    "width": 1024,
+    "height": 1024,
+    "pixelMode": "smooth"
+  },
+  "layerTracks": [
+    {
+      "id": "background-normal",
+      "name": "Background",
+      "order": 0,
+      "locked": true,
+      "referenceAssetId": null
+    },
+    {
+      "id": "base-normal",
+      "name": "Skin & Base",
+      "order": 1,
+      "locked": true,
+      "referenceAssetId": null
+    },
+    {
+      "id": "outfit-normal",
+      "name": "Outfit",
+      "order": 2,
+      "locked": true,
+      "referenceAssetId": null
+    },
+    {
+      "id": "expression-normal",
+      "name": "Expression",
+      "order": 3,
+      "locked": true,
+      "referenceAssetId": null
+    },
+    {
+      "id": "hair-normal",
+      "name": "Hair",
+      "order": 4,
+      "locked": true,
+      "referenceAssetId": null
+    },
+    {
+      "id": "accessory-normal",
+      "name": "Accessory",
+      "order": 5,
+      "locked": true,
+      "referenceAssetId": null
+    }
+  ],
+  "colorChannels": [],
+  "parts": [
+    {
+      "id": "background",
+      "name": "Background",
+      "menuOrder": 0,
+      "menuVisible": true,
+      "required": true,
+      "defaultItemId": "spring-gate",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "spring-gate",
+          "name": "Spring Gate",
+          "displayOrder": 0,
+          "importKey": "spring-gate",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "spring-gate-style",
+          "styles": [
+            {
+              "id": "spring-gate-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-background-spring-gate",
+              "layerTrackId": "background-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "paper-garden",
+          "name": "Paper Garden",
+          "displayOrder": 1,
+          "importKey": "paper-garden",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "paper-garden-style",
+          "styles": [
+            {
+              "id": "paper-garden-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-background-paper-garden",
+              "layerTrackId": "background-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "lantern-dusk",
+          "name": "Lantern Dusk",
+          "displayOrder": 2,
+          "importKey": "lantern-dusk",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "lantern-dusk-style",
+          "styles": [
+            {
+              "id": "lantern-dusk-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-background-lantern-dusk",
+              "layerTrackId": "background-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "jade-moon",
+          "name": "Jade Moon",
+          "displayOrder": 3,
+          "importKey": "jade-moon",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "jade-moon-style",
+          "styles": [
+            {
+              "id": "jade-moon-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-background-jade-moon",
+              "layerTrackId": "background-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "base",
+      "name": "Skin & Base",
+      "menuOrder": 1,
+      "menuVisible": true,
+      "required": true,
+      "defaultItemId": "porcelain-peach",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "porcelain-peach",
+          "name": "Porcelain Peach",
+          "displayOrder": 0,
+          "importKey": "porcelain-peach",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "porcelain-peach-style",
+          "styles": [
+            {
+              "id": "porcelain-peach-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-base-porcelain-peach",
+              "layerTrackId": "base-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "warm-beige",
+          "name": "Warm Beige",
+          "displayOrder": 1,
+          "importKey": "warm-beige",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "warm-beige-style",
+          "styles": [
+            {
+              "id": "warm-beige-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-base-warm-beige",
+              "layerTrackId": "base-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "honey-tan",
+          "name": "Honey Tan",
+          "displayOrder": 2,
+          "importKey": "honey-tan",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "honey-tan-style",
+          "styles": [
+            {
+              "id": "honey-tan-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-base-honey-tan",
+              "layerTrackId": "base-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "deep-umber",
+          "name": "Deep Umber",
+          "displayOrder": 3,
+          "importKey": "deep-umber",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "deep-umber-style",
+          "styles": [
+            {
+              "id": "deep-umber-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-base-deep-umber",
+              "layerTrackId": "base-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "outfit",
+      "name": "Outfit",
+      "menuOrder": 2,
+      "menuVisible": true,
+      "required": false,
+      "defaultItemId": "vermilion-keeper",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "vermilion-keeper",
+          "name": "Vermilion Keeper",
+          "displayOrder": 0,
+          "importKey": "vermilion-keeper",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "vermilion-keeper-style",
+          "styles": [
+            {
+              "id": "vermilion-keeper-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-outfit-vermilion-keeper",
+              "layerTrackId": "outfit-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "forest-haori",
+          "name": "Forest Haori",
+          "displayOrder": 1,
+          "importKey": "forest-haori",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "forest-haori-style",
+          "styles": [
+            {
+              "id": "forest-haori-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-outfit-forest-haori",
+              "layerTrackId": "outfit-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "plum-festival",
+          "name": "Plum Festival",
+          "displayOrder": 2,
+          "importKey": "plum-festival",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "plum-festival-style",
+          "styles": [
+            {
+              "id": "plum-festival-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-outfit-plum-festival",
+              "layerTrackId": "outfit-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "indigo-mantle",
+          "name": "Indigo Mantle",
+          "displayOrder": 3,
+          "importKey": "indigo-mantle",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "indigo-mantle-style",
+          "styles": [
+            {
+              "id": "indigo-mantle-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-outfit-indigo-mantle",
+              "layerTrackId": "outfit-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "expression",
+      "name": "Expression",
+      "menuOrder": 3,
+      "menuVisible": true,
+      "required": false,
+      "defaultItemId": "serene-jade",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "serene-jade",
+          "name": "Serene Jade",
+          "displayOrder": 0,
+          "importKey": "serene-jade",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "serene-jade-style",
+          "styles": [
+            {
+              "id": "serene-jade-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-expression-serene-jade",
+              "layerTrackId": "expression-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "bright-plum",
+          "name": "Bright Plum",
+          "displayOrder": 1,
+          "importKey": "bright-plum",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "bright-plum-style",
+          "styles": [
+            {
+              "id": "bright-plum-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-expression-bright-plum",
+              "layerTrackId": "expression-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "dreamy-amber",
+          "name": "Dreamy Amber",
+          "displayOrder": 2,
+          "importKey": "dreamy-amber",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "dreamy-amber-style",
+          "styles": [
+            {
+              "id": "dreamy-amber-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-expression-dreamy-amber",
+              "layerTrackId": "expression-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "focused-teal",
+          "name": "Focused Teal",
+          "displayOrder": 3,
+          "importKey": "focused-teal",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "focused-teal-style",
+          "styles": [
+            {
+              "id": "focused-teal-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-expression-focused-teal",
+              "layerTrackId": "expression-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hair",
+      "name": "Hair",
+      "menuOrder": 4,
+      "menuVisible": true,
+      "required": false,
+      "defaultItemId": "chestnut-tufts",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "chestnut-tufts",
+          "name": "Chestnut Spirit Tufts",
+          "displayOrder": 0,
+          "importKey": "chestnut-tufts",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "chestnut-tufts-style",
+          "styles": [
+            {
+              "id": "chestnut-tufts-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-hair-chestnut-tufts",
+              "layerTrackId": "hair-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "black-vermilion",
+          "name": "Black Vermilion",
+          "displayOrder": 1,
+          "importKey": "black-vermilion",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "black-vermilion-style",
+          "styles": [
+            {
+              "id": "black-vermilion-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-hair-black-vermilion",
+              "layerTrackId": "hair-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "cream-hime",
+          "name": "Cream Hime Bob",
+          "displayOrder": 2,
+          "importKey": "cream-hime",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "cream-hime-style",
+          "styles": [
+            {
+              "id": "cream-hime-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-hair-cream-hime",
+              "layerTrackId": "hair-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "auburn-ponytail",
+          "name": "Auburn Ponytail",
+          "displayOrder": 3,
+          "importKey": "auburn-ponytail",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "auburn-ponytail-style",
+          "styles": [
+            {
+              "id": "auburn-ponytail-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-hair-auburn-ponytail",
+              "layerTrackId": "hair-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "accessory",
+      "name": "Accessory",
+      "menuOrder": 5,
+      "menuVisible": true,
+      "required": true,
+      "defaultItemId": "none",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "none",
+          "name": "None",
+          "displayOrder": 0,
+          "importKey": "none",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "none-style",
+          "styles": [
+            {
+              "id": "none-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-accessory-none",
+              "layerTrackId": "accessory-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "plum-blossom",
+          "name": "Plum Blossom",
+          "displayOrder": 1,
+          "importKey": "plum-blossom",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "plum-blossom-style",
+          "styles": [
+            {
+              "id": "plum-blossom-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-accessory-plum-blossom",
+              "layerTrackId": "accessory-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "jade-forehead-chain",
+          "name": "Jade Forehead Chain",
+          "displayOrder": 2,
+          "importKey": "jade-forehead-chain",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "jade-forehead-chain-style",
+          "styles": [
+            {
+              "id": "jade-forehead-chain-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-accessory-jade-forehead-chain",
+              "layerTrackId": "accessory-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "tassel-earrings",
+          "name": "Tassel Earrings",
+          "displayOrder": 3,
+          "importKey": "tassel-earrings",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "tassel-earrings-style",
+          "styles": [
+            {
+              "id": "tassel-earrings-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-accessory-tassel-earrings",
+              "layerTrackId": "accessory-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "magatama-pendant",
+          "name": "Jade Spirit Pendant",
+          "displayOrder": 4,
+          "importKey": "magatama-pendant",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "magatama-pendant-style",
+          "styles": [
+            {
+              "id": "magatama-pendant-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-accessory-magatama-pendant",
+              "layerTrackId": "accessory-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "defaultRecipe": {
+    "selections": [
+      {
+        "partId": "background",
+        "itemId": "spring-gate",
+        "styleId": "spring-gate-style"
+      },
+      {
+        "partId": "base",
+        "itemId": "porcelain-peach",
+        "styleId": "porcelain-peach-style"
+      },
+      {
+        "partId": "outfit",
+        "itemId": "vermilion-keeper",
+        "styleId": "vermilion-keeper-style"
+      },
+      {
+        "partId": "expression",
+        "itemId": "serene-jade",
+        "styleId": "serene-jade-style"
+      },
+      {
+        "partId": "hair",
+        "itemId": "chestnut-tufts",
+        "styleId": "chestnut-tufts-style"
+      },
+      {
+        "partId": "accessory",
+        "itemId": "none",
+        "styleId": "none-style"
+      }
+    ],
+    "colors": []
+  },
+  "expansionPacks": [],
+  "assets": [
+    {
+      "id": "cover",
+      "identifier": "cover.png",
+      "kind": "maker-cover",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 1365923,
+      "sha256": "102e84ea256049a3a53da19dac75fad052228ce806c97c0b41e65ba0f3393de5"
+    },
+    {
+      "id": "layers-background-spring-gate",
+      "identifier": "layers/background/spring-gate.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 299997,
+      "sha256": "bc7881f7382b0f72c698c676bdf5358d6c554aa207b678ed985d2b7bc83169d2"
+    },
+    {
+      "id": "layers-background-paper-garden",
+      "identifier": "layers/background/paper-garden.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 300251,
+      "sha256": "976a5f70f1f09c7540c72592cd2fbc84bf16bf40d4023db6c38e99e5abb9dfca"
+    },
+    {
+      "id": "layers-background-lantern-dusk",
+      "identifier": "layers/background/lantern-dusk.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 398677,
+      "sha256": "898515de8350d5d3d4e65a952891bd7784a8fb3b3e745ff8935dfa00d24c2271"
+    },
+    {
+      "id": "layers-background-jade-moon",
+      "identifier": "layers/background/jade-moon.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 394567,
+      "sha256": "cd508b82e16c735d9c163e9a5e16ac55c8341daaeb9146139355a99344847c2e"
+    },
+    {
+      "id": "layers-base-porcelain-peach",
+      "identifier": "layers/base/porcelain-peach.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 385133,
+      "sha256": "1c6f499cf6961b0c44dd57266a3ab59a342a30664d2021f787c9c65f7410522b"
+    },
+    {
+      "id": "layers-base-warm-beige",
+      "identifier": "layers/base/warm-beige.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 403041,
+      "sha256": "45463c68cdf9dfbfe8174d40cbd549720a075b0ef54bef3f0c823d603e4d77ed"
+    },
+    {
+      "id": "layers-base-honey-tan",
+      "identifier": "layers/base/honey-tan.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 410596,
+      "sha256": "72960f94cb2b761600519f1166f4e89b00e35af2bae8754fc84c6b6c6aa8b213"
+    },
+    {
+      "id": "layers-base-deep-umber",
+      "identifier": "layers/base/deep-umber.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 429906,
+      "sha256": "13da2cfb59218ff479f96f34bee87446db029b97562a8d03ac7bbc8fbc957e6d"
+    },
+    {
+      "id": "layers-outfit-vermilion-keeper",
+      "identifier": "layers/outfit/vermilion-keeper.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 551398,
+      "sha256": "55bcca7c8901b3d1d6dd4a7198e2a1a3aee9a9e0d40abd9a115b842f6e21a598"
+    },
+    {
+      "id": "layers-outfit-forest-haori",
+      "identifier": "layers/outfit/forest-haori.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 556171,
+      "sha256": "42cf63341216bb1622a29f88544324bad1fbb47e6687200ecbcb44f092ebd422"
+    },
+    {
+      "id": "layers-outfit-plum-festival",
+      "identifier": "layers/outfit/plum-festival.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 699475,
+      "sha256": "2fbc35b7a688064e136b18aea9b8bcd78efa5e5ed5c144355c91b23c18afabc5"
+    },
+    {
+      "id": "layers-outfit-indigo-mantle",
+      "identifier": "layers/outfit/indigo-mantle.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 684742,
+      "sha256": "d3cb9384c2e9f4c610fe678e1767771d3b1a5a3ffe0967e5ac173de4ae7f7acb"
+    },
+    {
+      "id": "layers-expression-serene-jade",
+      "identifier": "layers/expression/serene-jade.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 63695,
+      "sha256": "3c2a5ef1633a9eb307990497b8741c5684b8795d0dcaad3e4cf00db85890f73a"
+    },
+    {
+      "id": "layers-expression-bright-plum",
+      "identifier": "layers/expression/bright-plum.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 64098,
+      "sha256": "bb500359a55d8078174dd7040956dac5e5c788a3fec8fde0799bc07d71558335"
+    },
+    {
+      "id": "layers-expression-dreamy-amber",
+      "identifier": "layers/expression/dreamy-amber.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 62905,
+      "sha256": "1874b1756423e9fa3fff254fcb088cb9752e3f0a9f9e254669914a67d95fa59d"
+    },
+    {
+      "id": "layers-expression-focused-teal",
+      "identifier": "layers/expression/focused-teal.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 67029,
+      "sha256": "60b11c02f253e5279a4d3ae643c1ba5aceff84b6c7b6c3d7db7b0caad20a4da1"
+    },
+    {
+      "id": "layers-hair-chestnut-tufts",
+      "identifier": "layers/hair/chestnut-tufts.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 649558,
+      "sha256": "31311080d85b3095ef609e4fcc0d2948a22f86066ae90949fd1d2dbd9850b959"
+    },
+    {
+      "id": "layers-hair-black-vermilion",
+      "identifier": "layers/hair/black-vermilion.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 648113,
+      "sha256": "b12d06a0c539311f192edfa69418e5583d4c92481de5b2c04a39603e2c48c8a0"
+    },
+    {
+      "id": "layers-hair-cream-hime",
+      "identifier": "layers/hair/cream-hime.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 422803,
+      "sha256": "c23597798779ecadfea88812e94c0f817ed9bb4b5ec29fee74a829401323377e"
+    },
+    {
+      "id": "layers-hair-auburn-ponytail",
+      "identifier": "layers/hair/auburn-ponytail.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 633881,
+      "sha256": "e615daa34cb7348fc766078bc25cbfdc8179e3ec41d4a2c632750706da12d246"
+    },
+    {
+      "id": "layers-accessory-none",
+      "identifier": "layers/accessory/none.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 4144,
+      "sha256": "f12ddfea20dcca2fa350d75d5ed2ae76a4fffbcdfd2b8f2357558b90072dab9f"
+    },
+    {
+      "id": "layers-accessory-plum-blossom",
+      "identifier": "layers/accessory/plum-blossom.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 72099,
+      "sha256": "6588154dda1af18071a530171ae4e0996386b7a1c93c31bece630c6c01f4096d"
+    },
+    {
+      "id": "layers-accessory-jade-forehead-chain",
+      "identifier": "layers/accessory/jade-forehead-chain.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 48302,
+      "sha256": "d7383a15cb92a2f445773c86245385bfc202b6c45fe94a850231b5bb6f73cd1a"
+    },
+    {
+      "id": "layers-accessory-tassel-earrings",
+      "identifier": "layers/accessory/tassel-earrings.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 60814,
+      "sha256": "3f3e760d43bd0b70b7d5570c3c8f2dfc0071ff859bf9599f37a73852c47d7dab"
+    },
+    {
+      "id": "layers-accessory-magatama-pendant",
+      "identifier": "layers/accessory/magatama-pendant.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 37778,
+      "sha256": "e35e8580715a3214a6c240d34dfb149970096126a20ace1656af816480824b51"
+    }
+  ],
+  "publication": {
+    "royaltyBps": 300,
+    "mintingEnabled": false,
+    "mintFeeEnabled": false,
+    "mintPriceAtomic": 0,
+    "paymentCoinType": "",
+    "paymentCoinSymbol": "USDC",
+    "storage": "walrus",
+    "chain": "sui"
+  },
+  "runtime": {
+    "network": "mainnet",
+    "assetAddressing": "bundled-path-before-publication; walrus-quilt-id+identifier-after-publication",
+    "manifestIdentifier": "animacraft-manifest.json"
+  },
+  "livingContent": {
+    "schemaVersion": "animacraft.living-content.v1",
+    "soulMd": "# Soul Character\n\n## Identity\n- Name: {{OC_NAME}}\n- World: {{OC_WORLD}}\n- Visual origin: Hanamori Spirit · 花守灵契 by Animacraft Atelier\n- Character summary: {{OC_DESCRIPTION}}\n\n## Core Truths\n- Grow from an original character into a continuous, owner-directed companion.\n- Preserve consent, authorship, and the selected visual recipe.\n- Distinguish memories from creative interpretation.\n\n## Vibe\n- Voice: graceful, vivid, concise first, and emotionally attentive.\n- Style: Japanese cel-shaded spirit-garden portrait.\n\n## Boundaries\n- Never invent permissions, private history, or tool access.\n- Ask before consequential actions or disclosure of protected information.\n",
+    "memoryMd": "# Founding Memory\n\n{{OC_NAME}} began as an original composition in Hanamori Spirit · 花守灵契.\n\n- Preserve the Maker provenance and selected visual recipe.\n- Treat {{OC_DESCRIPTION}} as the opening direction, not fabricated history.\n- Learn only from content the owner intentionally adds.\n",
+    "skillMd": "---\nname: hanamori-spirit-companion\ndescription: Keeps this character's voice, visual provenance, and owner-approved context aligned.\n---\n# Character Companion\n\nUse this skill when the Soul needs to speak or act consistently with {{OC_NAME}}.\n\n- Keep verified facts, remembered context, and creative interpretation distinct.\n- Preserve the Maker and recipe provenance.\n- Ask for permission before consequential actions.\n",
+    "customized": {
+      "soulMd": true,
+      "memoryMd": true,
+      "skillMd": true
+    }
+  },
+  "extensions": {
+    "stressTest": {
+      "classification": "negative-complex-stress-fixture",
+      "doNotPublish": true,
+      "doNotUseAsVisualGold": true,
+      "sourceManifestSha256": "481279244c2a62400d0f5183e4c34dec392725b2d791133dad0353471b35a9a9",
+      "sourceMakerId": "hanamori-spirit",
+      "reportSchemaVersion": "animacraft.angie-stress-report.v1",
+      "diagnosticCounts": {
+        "errors": 0,
+        "warnings": 8
+      },
+      "knownLimitations": [
+        "Angie is intentionally a negative/complex stress fixture, not approved visual reference art.",
+        "The release contains flattened runtime PNGs but no PSD/PSB authoring structure or creator-approved positioning evidence.",
+        "Hair and outfit use one composite layer each, so front/back occlusion cannot be repaired by metadata alone.",
+        "Alpha-bound centers diagnose suspicious movement but cannot decide artistic intent or automatically realign anatomy.",
+        "The v3 cover cannot be proven pixel-identical to the shared v5 renderer without its original render recipe.",
+        "The source declares AI assistance; this importer records the statement but cannot verify training data or rights provenance."
+      ],
+      "originalPublication": {
+        "royaltyBps": 300,
+        "mintingEnabled": false,
+        "mintFeeEnabled": false,
+        "mintPriceAtomic": 0,
+        "paymentCoinSymbol": "USDC",
+        "storage": "walrus",
+        "chain": "sui"
+      }
+    }
+  }
+}

@@ -5899,6 +5899,7 @@ pre {
 .v4-color-detail select,
 .v4-rule-builder select,
 .v4-player-profile-fields input,
+.v4-player-profile-fields textarea,
 .v4-track-row input,
 .v4-import-list select,
 .v4-import-list input {
@@ -5909,6 +5910,11 @@ pre {
   padding: 6px 8px;
   background: #fff;
   color: var(--ink);
+}
+
+.v4-player-profile-fields textarea {
+  min-height: 58px;
+  resize: vertical;
 }
 
 .v4-toggle-grid,
@@ -6088,6 +6094,11 @@ pre {
   background: #f2f4f4;
 }
 
+.v4-track-row.has-current-style {
+  border-color: var(--violet);
+  box-shadow: inset 3px 0 0 var(--violet);
+}
+
 .v4-track-row.locked > :not([data-action="toggle-track-lock"]) {
   opacity: 0.62;
 }
@@ -6112,6 +6123,35 @@ pre {
 .v4-track-row small {
   color: var(--muted);
   font-size: 9px;
+}
+
+.v4-track-bindings {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding-top: 7px;
+  border-top: 1px dashed var(--line);
+}
+
+.v4-track-bindings > strong,
+.v4-track-bindings > span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.v4-track-bindings > button {
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 9px;
+}
+
+.v4-track-bindings > button.current {
+  border-color: var(--violet);
+  background: rgba(123, 92, 255, 0.1);
 }
 
 .v4-color-workspace {
@@ -7025,12 +7065,24 @@ pre {
   font-style: normal;
 }
 
-.v4-player-colors {
+.v4-player-color-controls {
   display: grid;
   gap: 7px;
   margin-top: 12px;
   padding-top: 11px;
   border-top: 1px solid var(--soft);
+}
+
+.v4-player-color-controls > strong {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.v4-player-colors {
+  display: grid;
+  gap: 7px;
 }
 
 .v4-player-colors > span {
@@ -7078,6 +7130,13 @@ pre {
   font-weight: 900;
 }
 
+.v4-player-expansions > p {
+  margin: 7px 0 2px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .v4-player-expansions label {
   display: flex;
   gap: 8px;
@@ -7112,7 +7171,11 @@ pre {
   display: grid;
   grid-template-columns: repeat(2, minmax(180px, 1fr));
   gap: 8px;
-  width: min(520px, 60%);
+  width: min(680px, 65%);
+}
+
+.v4-player-profile-fields .wide {
+  grid-column: 1 / -1;
 }
 
 .v4-player-finishbar > div:last-child {
@@ -7121,9 +7184,24 @@ pre {
   align-items: center;
 }
 
-.v4-player-finishbar > div:last-child > span {
+.v4-player-finish-status {
+  display: grid;
+  gap: 2px;
+  max-width: 260px;
+}
+
+.v4-player-finish-status small {
   color: var(--muted);
   font-size: 10px;
+}
+
+.v4-player-finish-status small[data-state="error"],
+.v4-player-finish-status strong[data-state="blocked"] {
+  color: var(--rose);
+}
+
+.v4-player-finish-status strong[data-state="ready"] {
+  color: var(--mint);
 }
 
 .v4-player-info-dialog {

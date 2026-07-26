@@ -3,30 +3,182 @@ import { createDAppKit } from '@mysten/dapp-kit-core';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction } from '@mysten/sui/transactions';
 import { bcs } from '@mysten/sui/bcs';
+import { normalizeStructTag } from '@mysten/sui/utils';
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
 import { assertProtocolV3IncludedItemGates } from './manifest-validation.js';
 import { hashRecipe, recipeSlotBcs, recipeValue } from './recipe-hash.js';
+import { resolveCallablePackageId, resolveOriginalPackageId } from './runtime-config.js';
+import { publishedMakerFromIntentEvent } from './chain-publication-recovery.js';
 
 export { hashRecipe } from './recipe-hash.js';
+export { publishedMakerFromIntentEvent } from './chain-publication-recovery.js';
 
 const CLOCK_OBJECT_ID = '0x6';
 
 let dAppKit;
 let runtimeConfig;
 let walletModal;
+let walletModalLocale = 'en';
+let walletModalObserver;
 let connectionUnsubscribe;
 let walrusClient;
 let WalrusFileClass;
 let suiClient;
 let graphqlClient;
 
-function requirePackageId() {
-  if (!runtimeConfig?.packageId || runtimeConfig.packageId.includes('TODO')) {
-    throw new Error('The Animacraft Move package is not configured yet. Publish it and set packageId in config.js.');
+const walletModalI18n = Object.freeze({
+  en: Object.freeze({
+    connect: 'Connect a wallet',
+    noneInstalled: 'No wallets installed',
+    back: 'Go back',
+    close: 'Close',
+    awaiting: 'Awaiting connection...',
+    accept: 'Accept the request from {wallet} in order to proceed',
+    cancel: 'Cancel',
+    requestCanceled: 'Request canceled',
+    canceledCopy: 'You canceled the request',
+    failed: 'Connection failed',
+    failedCopy: 'Something went wrong. Please try again',
+    retry: 'Retry',
+  }),
+  zh: Object.freeze({
+    connect: '连接钱包',
+    noneInstalled: '未安装可用钱包',
+    back: '返回',
+    close: '关闭',
+    awaiting: '等待连接…',
+    accept: '请在 {wallet} 中接受连接请求以继续。',
+    cancel: '取消',
+    requestCanceled: '请求已取消',
+    canceledCopy: '你已取消该请求。',
+    failed: '连接失败',
+    failedCopy: '出现问题，请重试。',
+    retry: '重试',
+  }),
+  ja: Object.freeze({
+    connect: 'ウォレットを接続',
+    noneInstalled: '利用できるウォレットがインストールされていません',
+    back: '戻る',
+    close: '閉じる',
+    awaiting: '接続を待機中…',
+    accept: '続行するには {wallet} でリクエストを承認してください。',
+    cancel: 'キャンセル',
+    requestCanceled: 'リクエストはキャンセルされました',
+    canceledCopy: 'リクエストをキャンセルしました。',
+    failed: '接続に失敗しました',
+    failedCopy: '問題が発生しました。もう一度お試しください。',
+    retry: '再試行',
+  }),
+  ko: Object.freeze({
+    connect: '지갑 연결',
+    noneInstalled: '설치된 지갑이 없습니다',
+    back: '뒤로',
+    close: '닫기',
+    awaiting: '연결 승인 대기 중…',
+    accept: '계속하려면 {wallet}에서 요청을 승인하세요.',
+    cancel: '취소',
+    requestCanceled: '요청이 취소되었습니다',
+    canceledCopy: '요청을 취소했습니다.',
+    failed: '연결에 실패했습니다',
+    failedCopy: '문제가 발생했습니다. 다시 시도하세요.',
+    retry: '다시 시도',
+  }),
+  vi: Object.freeze({
+    connect: 'Kết nối ví',
+    noneInstalled: 'Chưa cài đặt ví nào',
+    back: 'Quay lại',
+    close: 'Đóng',
+    awaiting: 'Đang chờ kết nối…',
+    accept: 'Chấp nhận yêu cầu trong {wallet} để tiếp tục.',
+    cancel: 'Hủy',
+    requestCanceled: 'Yêu cầu đã bị hủy',
+    canceledCopy: 'Bạn đã hủy yêu cầu.',
+    failed: 'Kết nối thất bại',
+    failedCopy: 'Đã xảy ra lỗi. Vui lòng thử lại.',
+    retry: 'Thử lại',
+  }),
+});
+
+function walletStatusKey(title) {
+  if (Object.values(walletModalI18n).some((copy) => copy.awaiting === title)) return 'awaiting';
+  if (Object.values(walletModalI18n).some((copy) => copy.requestCanceled === title)) return 'requestCanceled';
+  if (Object.values(walletModalI18n).some((copy) => copy.failed === title)) return 'failed';
+  return '';
+}
+
+function translateWalletModal() {
+  const root = walletModal?.shadowRoot;
+  if (!root) return;
+  const copy = walletModalI18n[walletModalLocale] || walletModalI18n.en;
+  const wallets = dAppKit?.stores?.$wallets?.get?.() || [];
+  const title = root.querySelector('.title');
+  const titleCopy = wallets.length ? copy.connect : copy.noneInstalled;
+  if (title && title.textContent !== titleCopy) title.textContent = titleCopy;
+
+  const back = root.querySelector('.back-button');
+  if (back?.getAttribute('aria-label') !== copy.back) back?.setAttribute('aria-label', copy.back);
+  const close = root.querySelector('.close-button');
+  if (close?.getAttribute('aria-label') !== copy.close) close?.setAttribute('aria-label', copy.close);
+
+  const status = root.querySelector('connection-status');
+  if (!status) return;
+  const key = walletStatusKey(status.title);
+  if (key === 'awaiting') {
+    status.title = copy.awaiting;
+    status.copy = copy.accept.replace('{wallet}', status.wallet?.name || '');
+  } else if (key === 'requestCanceled') {
+    status.title = copy.requestCanceled;
+    status.copy = copy.canceledCopy;
+  } else if (key === 'failed') {
+    status.title = copy.failed;
+    status.copy = copy.failedCopy;
   }
-  const packageId = String(runtimeConfig.packageId).trim();
-  if (!/^0x[0-9a-f]+$/i.test(packageId)) throw new Error('The configured Animacraft package id is not a valid Sui address.');
+  const action = status.querySelector('internal-button');
+  const actionCopy = key === 'awaiting' ? copy.cancel : copy.retry;
+  if (action && action.textContent.trim() !== actionCopy) action.textContent = actionCopy;
+}
+
+export function setWalletModalLocale(locale) {
+  walletModalLocale = Object.hasOwn(walletModalI18n, locale) ? locale : 'en';
+  translateWalletModal();
+}
+
+function requireConfiguredPackageId(packageId, fieldName) {
+  if (!packageId || packageId.includes('TODO')) {
+    throw new Error(`The Animacraft Move package is not configured yet. Publish it and set ${fieldName} in config.js.`);
+  }
+  if (!/^0x[0-9a-f]+$/i.test(packageId)) {
+    throw new Error(`The configured Animacraft ${fieldName} is not a valid Sui address.`);
+  }
   return packageId;
+}
+
+function requireCallablePackageId() {
+  return requireConfiguredPackageId(resolveCallablePackageId(runtimeConfig), 'callablePackageId');
+}
+
+function requireOriginalPackageId() {
+  return requireConfiguredPackageId(resolveOriginalPackageId(runtimeConfig), 'originalPackageId');
+}
+
+function originalAnimacraftStructType(structName) {
+  return normalizeStructTag(`${requireOriginalPackageId()}::animacraft::${structName}`);
+}
+
+export function isOriginalAnimacraftObjectType(type, structName, { generic = false } = {}) {
+  let actual;
+  try {
+    actual = normalizeStructTag(String(type || ''));
+  } catch {
+    return false;
+  }
+  const expected = originalAnimacraftStructType(structName);
+  return generic ? actual.startsWith(`${expected}<`) : actual === expected;
+}
+
+function findOriginalAnimacraftObjectId(objectTypes, structName, options) {
+  return Object.entries(objectTypes || {})
+    .find(([, type]) => isOriginalAnimacraftObjectType(type, structName, options))?.[0] || '';
 }
 
 function requirePaymentCoinType() {
@@ -46,7 +198,7 @@ function requireConnection() {
 }
 
 function moveTarget(functionName) {
-  return `${requirePackageId()}::animacraft::${functionName}`;
+  return `${requireCallablePackageId()}::animacraft::${functionName}`;
 }
 
 function unwrapTransaction(result) {
@@ -94,6 +246,14 @@ export function initializeChain(config, onConnectionChange) {
   walletModal.id = 'suiWalletModal';
   walletModal.instance = dAppKit;
   document.body.appendChild(walletModal);
+  void walletModal.updateComplete?.then(() => {
+    translateWalletModal();
+    walletModalObserver?.disconnect();
+    walletModalObserver = new MutationObserver(translateWalletModal);
+    if (walletModal.shadowRoot) {
+      walletModalObserver.observe(walletModal.shadowRoot, { childList: true, subtree: true });
+    }
+  });
 
   connectionUnsubscribe = dAppKit.stores.$connection.subscribe((connection) => {
     onConnectionChange({
@@ -106,6 +266,8 @@ export function initializeChain(config, onConnectionChange) {
 
   return () => {
     connectionUnsubscribe?.();
+    walletModalObserver?.disconnect();
+    walletModalObserver = undefined;
     walletModal?.remove();
   };
 }
@@ -120,7 +282,7 @@ export async function openWalletSelector() {
 }
 
 export async function listOwnedMakers(owner) {
-  const packageId = requirePackageId();
+  const packageId = requireOriginalPackageId();
   const address = owner || requireConnection().account.address;
   const objects = [];
   let cursor = null;
@@ -139,7 +301,7 @@ export async function listOwnedMakers(owner) {
 }
 
 export async function listOwnedMakerAdminCaps(owner) {
-  const packageId = requirePackageId();
+  const packageId = requireOriginalPackageId();
   const address = owner || requireConnection().account.address;
   const objects = [];
   let cursor = null;
@@ -158,7 +320,7 @@ export async function listOwnedMakerAdminCaps(owner) {
 }
 
 export async function listOwnedCreatorProfiles(owner) {
-  const packageId = requirePackageId();
+  const packageId = requireOriginalPackageId();
   const address = owner || requireConnection().account.address;
   const objects = [];
   let cursor = null;
@@ -176,8 +338,8 @@ export async function listOwnedCreatorProfiles(owner) {
   return objects;
 }
 
-export async function getMakerObjects(objectIds) {
-  requirePackageId();
+export async function getMakerObjects(objectIds, { expectedStructName = '', generic = false } = {}) {
+  requireOriginalPackageId();
   const ids = [...new Set((objectIds || []).map(jsonSuiId).filter(Boolean))];
   if (!ids.length) return [];
   const batches = [];
@@ -186,7 +348,11 @@ export async function getMakerObjects(objectIds) {
     objectIds: objectIdsBatch,
     include: { json: true, display: true, previousTransaction: true },
   })));
-  return responses.flatMap((response) => response.objects).filter((object) => object && !('error' in object));
+  return responses
+    .flatMap((response) => response.objects)
+    .filter((object) => object
+      && !('error' in object)
+      && (!expectedStructName || isOriginalAnimacraftObjectType(object.type, expectedStructName, { generic })));
 }
 
 function jsonSuiId(value) {
@@ -205,8 +371,7 @@ function jsonSuiId(value) {
   return jsonSuiId(value.id || value.bytes || value.address || value.fields);
 }
 
-export async function listPublishedMakerIds(limit = 500) {
-  const packageId = requirePackageId();
+async function getGraphqlClient() {
   if (!graphqlClient) {
     const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
     graphqlClient = new SuiGraphQLClient({
@@ -214,11 +379,17 @@ export async function listPublishedMakerIds(limit = 500) {
       url: runtimeConfig.graphqlUrl || `https://graphql.${runtimeConfig.network}.sui.io/graphql`,
     });
   }
+  return graphqlClient;
+}
+
+export async function listPublishedMakerIds(limit = 500) {
+  const packageId = requireOriginalPackageId();
+  const client = await getGraphqlClient();
   const eventType = `${packageId}::animacraft::OCMakerPublished`;
   const ids = [];
   let before = null;
   do {
-    const result = await graphqlClient.query({
+    const result = await client.query({
       query: `
         query PublishedAnimacraftMakers($type: String!, $last: Int!, $before: String) {
           events(filter: { type: $type }, last: $last, before: $before) {
@@ -239,6 +410,49 @@ export async function listPublishedMakerIds(limit = 500) {
     before = connection?.pageInfo?.hasPreviousPage ? connection.pageInfo.startCursor : null;
   } while (before && ids.length < limit);
   return [...new Set(ids)];
+}
+
+/**
+ * Recover an already-submitted publication after a tab closes between wallet
+ * signing and the local digest checkpoint. Creator + certified Manifest Quilt
+ * id is the immutable publication intent identity.
+ */
+export async function findPublishedMakerByIntent({ creator, manifestBlobId, limit = 500 } = {}) {
+  const packageId = requireOriginalPackageId();
+  if (!creator || !manifestBlobId) return null;
+  const client = await getGraphqlClient();
+  const eventType = `${packageId}::animacraft::OCMakerPublished`;
+  let scanned = 0;
+  let before = null;
+  do {
+    const pageSize = Math.min(50, Math.max(1, Number(limit) - scanned));
+    const result = await client.query({
+      query: `
+        query RecoverAnimacraftMaker($type: String!, $last: Int!, $before: String) {
+          events(filter: { type: $type }, last: $last, before: $before) {
+            pageInfo { hasPreviousPage startCursor }
+            nodes {
+              transaction { digest }
+              contents { json }
+            }
+          }
+        }
+      `,
+      variables: { type: eventType, last: pageSize, before },
+    });
+    if (result.errors?.length) {
+      throw new Error(result.errors[0].message || 'Sui GraphQL publication recovery failed.');
+    }
+    const connection = result.data?.events;
+    const nodes = connection?.nodes || [];
+    for (let index = nodes.length - 1; index >= 0; index -= 1) {
+      const match = publishedMakerFromIntentEvent(nodes[index], { creator, manifestBlobId });
+      if (match) return match;
+    }
+    scanned += nodes.length;
+    before = connection?.pageInfo?.hasPreviousPage ? connection.pageInfo.startCursor : null;
+  } while (before && scanned < Number(limit));
+  return null;
 }
 
 async function ensureWalrusRuntime() {
@@ -417,7 +631,16 @@ export function walrusQuiltFileUrl(quiltId, identifier) {
   return `${runtimeConfig.walrusAggregatorUrl.replace(/\/$/, '')}/v1/blobs/by-quilt-id/${encodeURIComponent(quiltId)}/${encodeURIComponent(identifier)}`;
 }
 
-export async function publishMaker({ creator, maker, manifestBlobId, parts, items, rules = [], paletteLinks = [] }) {
+export async function publishMaker({
+  creator,
+  maker,
+  manifestBlobId,
+  parts,
+  items,
+  rules = [],
+  paletteLinks = [],
+  onSubmitted = null,
+}) {
   const includedItems = assertProtocolV3IncludedItemGates(items);
   const connection = requireConnection();
   const paymentCoinType = requirePaymentCoinType();
@@ -548,6 +771,13 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
   }
 
   const transaction = unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: tx }));
+  if (typeof onSubmitted === 'function') {
+    try {
+      await onSubmitted({ digest: transaction.digest, manifestBlobId });
+    } catch (error) {
+      console.warn('Maker publication was submitted, but its local digest checkpoint could not be saved.', error);
+    }
+  }
   let makerObjectId = '';
   let makerTreasuryObjectId = '';
   let makerAdminCapObjectId = '';
@@ -557,10 +787,10 @@ export async function publishMaker({ creator, maker, manifestBlobId, parts, item
       digest: transaction.digest,
       include: { effects: true, objectTypes: true },
     }));
-    makerObjectId = Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::OCMaker'))?.[0] || '';
-    makerTreasuryObjectId = Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.includes('::animacraft::MakerTreasury<'))?.[0] || '';
-    makerAdminCapObjectId = Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::MakerAdminCap'))?.[0] || '';
-    creatorProfileObjectId ||= Object.entries(indexedResult.objectTypes || {}).find(([, type]) => type.endsWith('::animacraft::CreatorProfile'))?.[0] || '';
+    makerObjectId = findOriginalAnimacraftObjectId(indexedResult.objectTypes, 'OCMaker');
+    makerTreasuryObjectId = findOriginalAnimacraftObjectId(indexedResult.objectTypes, 'MakerTreasury', { generic: true });
+    makerAdminCapObjectId = findOriginalAnimacraftObjectId(indexedResult.objectTypes, 'MakerAdminCap');
+    creatorProfileObjectId ||= findOriginalAnimacraftObjectId(indexedResult.objectTypes, 'CreatorProfile');
   } catch (error) {
     console.warn('Maker published, but its object id is not indexed yet.', error);
   }
@@ -572,19 +802,18 @@ export async function resolvePublishedMakerObjectId(digest, timeout = 30_000) {
 }
 
 export async function resolvePublishedMakerObjects(digest, timeout = 30_000) {
-  requirePackageId();
+  requireOriginalPackageId();
   if (!digest) return {};
   const indexedResult = unwrapTransaction(await suiClient.waitForTransaction({
     digest,
     timeout,
     include: { objectTypes: true },
   }));
-  const types = Object.entries(indexedResult.objectTypes || {});
   return {
-    makerObjectId: types.find(([, type]) => type.endsWith('::animacraft::OCMaker'))?.[0] || '',
-    makerTreasuryObjectId: types.find(([, type]) => type.includes('::animacraft::MakerTreasury<'))?.[0] || '',
-    makerAdminCapObjectId: types.find(([, type]) => type.endsWith('::animacraft::MakerAdminCap'))?.[0] || '',
-    creatorProfileObjectId: types.find(([, type]) => type.endsWith('::animacraft::CreatorProfile'))?.[0] || '',
+    makerObjectId: findOriginalAnimacraftObjectId(indexedResult.objectTypes, 'OCMaker'),
+    makerTreasuryObjectId: findOriginalAnimacraftObjectId(indexedResult.objectTypes, 'MakerTreasury', { generic: true }),
+    makerAdminCapObjectId: findOriginalAnimacraftObjectId(indexedResult.objectTypes, 'MakerAdminCap'),
+    creatorProfileObjectId: findOriginalAnimacraftObjectId(indexedResult.objectTypes, 'CreatorProfile'),
   };
 }
 
@@ -661,13 +890,16 @@ export function appendSoulMintAuthorization(tx, {
   }
   const price = BigInt(numericPrice);
   const paid = price > 0n;
+  if (!protocolFeeConfigId) {
+    throw new Error('Canonical Soul minting is waiting for the v4 on-chain integration gate.');
+  }
   if (paid && !treasuryId) throw new Error('This paid Maker is missing its on-chain MakerTreasury object id. Refresh the Maker before minting.');
-  if (paid && (!protocolFeeConfigId || !protocolTreasuryId)) {
+  if (paid && !protocolTreasuryId) {
     throw new Error('Paid minting is waiting for the canonical v4 Protocol Fee objects.');
   }
 
   return tx.moveCall({
-    target: moveTarget(paid ? 'authorize_soul_mint_paid_with_protocol_fee' : 'authorize_soul_mint'),
+    target: moveTarget(paid ? 'authorize_soul_mint_paid_with_protocol_fee' : 'authorize_soul_mint_with_protocol_gate'),
     ...(paid ? { typeArguments: [requirePaymentCoinType()] } : {}),
     arguments: [
       tx.object(makerId),
@@ -676,7 +908,9 @@ export function appendSoulMintAuthorization(tx, {
         tx.object(protocolFeeConfigId),
         tx.object(protocolTreasuryId),
         tx.coin({ type: requirePaymentCoinType(), balance: price }),
-      ] : []),
+      ] : [
+        tx.object(protocolFeeConfigId),
+      ]),
       pureString(tx, name),
       pureString(tx, profileBlobId),
       pureString(tx, imageBlobId),

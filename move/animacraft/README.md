@@ -33,7 +33,8 @@ The old unguarded construction helpers are private to the module and unit tests.
 - `mint_fee_enabled` controls whether payment is required.
 - `mint_price_atomic` is denominated in the Treasury coin's smallest unit. USDC uses six decimals.
 - The canonical v4 paid authorization accepts an exact `Coin<PaymentCoin>` amount and splits it atomically between the Maker and Protocol Treasuries before Soulidity creates the Soul. The default protocol share is 5,000 bps (50%), capped at 50%; floor rounding goes to the protocol and the exact remainder goes to the Maker.
-- The legacy v3 paid entry aborts after upgrade, preventing callers from bypassing the protocol split.
+- The canonical free authorization requires the same enabled `ProtocolFeeConfig`, so canonical minting is fail-closed until both packages are deployed and the protocol gate is explicitly enabled.
+- The legacy v3 free and paid entries abort after upgrade, preventing callers from bypassing the integration gate or protocol split.
 - If the later Soulidity mint fails, both Treasury deposits roll back with the whole PTB.
 - Only the matching `MakerAdminCap` can withdraw Treasury funds.
 - Resale royalty is `0`, `100`, `200`, `300`, `400`, or `500` basis points.
@@ -59,6 +60,6 @@ sui move build
 sui move test
 ```
 
-The suite currently contains 31 tests, including Cap mismatch rejection, non-droppable Soul authorization consumption, tiered royalties, exact 50/50 payment splitting, old-entry bypass rejection, both Treasury withdrawals, post-publication economics, archive behavior, rule validation, and the shared web/Move BCS hash fixture.
+The suite currently contains 33 tests, including Cap mismatch rejection, non-droppable Soul authorization consumption, tiered royalties, exact 50/50 payment splitting, disabled-gate and old-entry bypass rejection, both Treasury withdrawals, post-publication economics, archive behavior, rule validation, and the shared web/Move BCS hash fixture.
 
 Mainnet publication remains a manual multisig signature. Record the original package ID, transaction digest, publisher, CLI version, Git commit, and `UpgradeCap` custody.

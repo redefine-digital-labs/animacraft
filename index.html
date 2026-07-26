@@ -17,7 +17,7 @@
           <small data-i18n="brandTagline">The Fully Onchain Character Maker & Creator</small>
         </span>
       </a>
-      <nav class="main-nav" aria-label="Animacraft sections">
+      <nav class="main-nav" aria-label="Animacraft sections" data-i18n-aria-label="mainNavAria">
         <button class="active" data-page="templates" data-i18n="navTemplates">Templates</button>
         <button data-page="docs" data-i18n="navDocs">Docs</button>
       </nav>
@@ -35,8 +35,8 @@
 
     <div id="accountPanel" class="account-panel" aria-hidden="true">
       <div class="account-panel-head">
-        <button id="closeAccountPanel" class="panel-close" type="button" aria-label="Close account menu">×</button>
-        <label class="language-select" aria-label="Account language">
+        <button id="closeAccountPanel" class="panel-close" type="button" aria-label="Close account menu" data-i18n-aria-label="closeAccountMenu">×</button>
+        <label class="language-select" aria-label="Account language" data-i18n-aria-label="accountLanguageAria">
           <span data-i18n="languageLabel">Language</span>
           <select id="accountLanguage">
             <option value="en">English</option>
@@ -65,7 +65,7 @@
         <button data-page="creator"><strong data-i18n="createMaker">Create maker</strong><span data-i18n="createMakerCopy">Publish an OC template</span></button>
         <button id="accountMakeOc" data-page="make"><strong data-i18n="makeOc">Make OC</strong><span data-i18n="makeOcCopy">Continue current OC</span></button>
       </div>
-      <div class="soulidity-account-actions" aria-label="Soulidity account and social links">
+      <div class="soulidity-account-actions" aria-label="Soulidity account and social links" data-i18n-aria-label="soulidityLinksAria">
         <a id="soulidityMySoulsLink" data-soulidity-auth href="#"><strong data-i18n="soulidityMySouls">My Souls</strong><span>Soulidity</span></a>
         <a id="soulidityProfileLink" data-soulidity-auth href="#"><strong data-i18n="socialProfile">Social profile</strong><span>Soulidity</span></a>
         <a id="soulidityCommunityLink" href="#"><strong data-i18n="community">Community</strong><span>Soulidity</span></a>
@@ -88,7 +88,7 @@
               provenance, and on-chain record.
             </p>
           </div>
-          <div class="head-metrics" aria-label="platform metrics">
+          <div class="head-metrics" aria-label="Platform metrics" data-i18n-aria-label="platformMetricsAria">
             <span><strong id="publicMakerCount">0</strong> <span data-i18n="publicMakers">public Makers</span></span>
             <span><strong>Sui</strong> <span data-i18n="mainnetObjects">Mainnet objects</span></span>
             <span><strong>Walrus</strong> <span data-i18n="assetQuilts">asset quilts</span></span>
@@ -100,7 +100,7 @@
             <span data-i18n="search">Search</span>
             <input id="templateSearch" type="search" placeholder="Search style, creator, license..." data-i18n-placeholder="searchPlaceholder" />
           </label>
-          <div class="filter-row" aria-label="Template filters">
+          <div class="filter-row" aria-label="Template filters" data-i18n-aria-label="templateFiltersAria">
             <button class="filter-chip active" data-filter="all" data-i18n="filterAll">All</button>
             <button class="filter-chip" data-filter="daily" data-i18n="filterDaily">Daily icon</button>
             <button class="filter-chip" data-filter="fantasy" data-i18n="filterFantasy">Fantasy</button>
@@ -110,18 +110,18 @@
 
         <div id="templateGrid" class="template-grid"></div>
 
-        <section class="chain-status-panel" aria-label="Animacraft network status">
+        <section class="chain-status-panel" aria-label="Animacraft network status" data-i18n-aria-label="networkStatusAria">
           <div>
-            <p class="kicker">On-chain Network</p>
-            <h2>Backendless Sui + Walrus runtime</h2>
-            <button id="refreshMakers" class="secondary chain-refresh-button" type="button">Refresh Makers</button>
+            <p class="kicker" data-i18n="onchainNetworkKicker">On-chain Network</p>
+            <h2 data-i18n="backendlessRuntimeTitle">Backendless Sui + Walrus runtime</h2>
+            <button id="refreshMakers" class="secondary chain-refresh-button" type="button" data-i18n="refreshMakers">Refresh Makers</button>
           </div>
           <div class="chain-status-grid" id="chainStatusGrid"></div>
         </section>
       </section>
 
       <section id="template" class="page">
-        <button id="templateDetailBack" class="detail-back-button" type="button">← Template Plaza</button>
+        <button id="templateDetailBack" class="detail-back-button" type="button" data-i18n="templatePlazaBack">← Template Plaza</button>
         <div id="templateDetail" class="template-detail"></div>
       </section>
 
@@ -164,7 +164,7 @@
               <span id="avatarWorld" class="template-token">Daily OC</span>
             </div>
             <div class="avatar-viewport">
-              <div id="avatar" class="avatar" aria-label="Character preview">
+              <div id="avatar" class="avatar" aria-label="Character preview" data-i18n-aria-label="characterPreviewAria">
                 <div class="avatar-bg"></div>
                 <div class="hair-back"></div>
                 <div class="outfit"></div>
@@ -203,7 +203,7 @@
                 <label for="partColor" data-i18n="currentColor">Current color</label>
                 <input id="partColor" type="color" value="#7b5cff" />
               </div>
-              <div id="swatchGrid" class="swatch-grid" aria-label="Color swatches"></div>
+              <div id="swatchGrid" class="swatch-grid" aria-label="Color swatches" data-i18n-aria-label="colorSwatchesAria"></div>
             </div>
 
             <div class="license-panel">
@@ -219,11 +219,11 @@
       <section id="collection" class="page">
         <div class="page-head">
           <div>
-            <p class="kicker">MyPage</p>
-            <h1>My Souls</h1>
-            <p>Finished characters, Living Content, social identity, and marketplace ownership are managed by Soulidity.</p>
+            <p class="kicker" data-i18n="myPage">MyPage</p>
+            <h1 data-i18n="myOcs">My Souls</h1>
+            <p data-i18n="collectionSoulidityCopy">Finished characters, Living Content, social identity, and marketplace ownership are managed by Soulidity.</p>
           </div>
-          <button id="refreshOwnedCharacters" class="secondary" type="button">Open My Souls</button>
+          <button id="refreshOwnedCharacters" class="secondary" type="button" data-i18n="openMySouls">Open My Souls</button>
         </div>
         <div id="ownedCharacterStatus" class="collection-status"></div>
         <div id="ownedCharacterGrid" class="collection-grid"></div>
@@ -233,8 +233,8 @@
         <section id="creatorWalletGate" class="creator-wallet-gate">
           <span class="wallet-gate-mark"></span>
           <p class="kicker" data-i18n="creatorStudio">Creator Studio</p>
-          <h1>Connect a Sui wallet to create OC Makers</h1>
-          <p>Your wallet owns drafts, signs Walrus storage transactions, and becomes the creator of each published Maker.</p>
+          <h1 data-i18n="creatorWalletGateTitle">Connect a Sui wallet to create OC Makers</h1>
+          <p data-i18n="creatorWalletGateCopy">Your wallet owns drafts, signs Walrus storage transactions, and becomes the creator of each published Maker.</p>
           <button id="creatorGateWalletButton" class="primary" type="button" data-i18n="connectSuiWallet">Connect Sui wallet</button>
         </section>
         <div id="creatorConsole" class="creator-console" hidden>
@@ -246,7 +246,7 @@
                 <p data-i18n="creatorStudioCopy">Create, test, and publish Character Makers from one wallet-owned workspace.</p>
               </div>
               <div class="creator-workshop-actions">
-                <button id="openDraftRecovery" class="secondary" type="button">Draft Recovery</button>
+                <button id="openDraftRecovery" class="secondary" type="button" data-i18n="draftRecovery">Draft Recovery</button>
                 <button class="primary" data-new-maker-panel data-i18n="newOcMaker">New OC Maker</button>
               </div>
             </div>
@@ -349,7 +349,7 @@
                       </aside>
                       <section class="character-canvas-panel">
                         <div class="canvas-toolbar"><strong>Live preview</strong><span id="canvasAssetCount">0 images</span></div>
-                        <div id="creatorCanvasStage" class="editor-canvas-stage" aria-label="Layered OC preview">
+                        <div id="creatorCanvasStage" class="editor-canvas-stage" aria-label="Layered OC preview" data-i18n-aria-label="layeredOcPreviewAria">
                           <div id="creatorCanvasAssets" class="creator-canvas-assets"></div>
                           <div id="creatorCanvasEmpty" class="creator-canvas-empty">
                             <strong>No item images yet</strong>
@@ -464,7 +464,7 @@
                     </div>
                   </header>
                   <div class="living-content-workspace">
-                    <nav class="living-document-list" aria-label="Living Content documents">
+                    <nav class="living-document-list" aria-label="Living Content documents" data-i18n-aria-label="livingDocumentsAria">
                       <button class="active" type="button" data-living-document="soulMd">
                         <span data-i18n="soulCharacter">Soul Character</span>
                         <small id="livingSoulState" data-i18n="defaultStatus">Default</small>
@@ -486,7 +486,7 @@
                         </div>
                         <button id="restoreLivingDefault" class="secondary" type="button" data-i18n="restoreDefault">Restore default</button>
                       </div>
-                      <textarea id="livingDocumentSource" spellcheck="false" aria-label="Living Content markdown"></textarea>
+                      <textarea id="livingDocumentSource" spellcheck="false" aria-label="Living Content markdown" data-i18n-aria-label="livingMarkdownAria"></textarea>
                       <div class="living-editor-footer">
                         <span id="livingDocumentFilename">soul.md</span>
                         <span id="livingDocumentSize">0 bytes</span>
@@ -553,6 +553,7 @@
                         <button id="registerMakerUpload" class="secondary" type="button" data-i18n="registerUploadStep">2. Register &amp; upload</button>
                         <button id="certifyMakerUpload" class="secondary" type="button" data-i18n="certifyStep">3. Certify</button>
                         <button id="publishMakerOnchain" class="primary" type="button" data-i18n="publishMakerStep">4. Publish Maker</button>
+                        <button id="reviewPendingMakerPublication" class="secondary" type="button" data-i18n="reviewPendingPublication" hidden>Review pending publication</button>
                       </div>
                     </div>
                     <div class="production-action lifecycle-action" id="makerLifecycleAction" hidden>
@@ -679,17 +680,17 @@
         <div id="makerRegistrationModal" class="maker-modal" aria-hidden="true">
           <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="makerRegistrationTitle">
             <div class="modal-head">
-              <h2 id="makerRegistrationTitle">OC Maker Registration</h2>
-              <button class="modal-close" data-close-maker-modal aria-label="Close">×</button>
+              <h2 id="makerRegistrationTitle" data-i18n="newMakerRegistration">OC Maker Registration</h2>
+              <button class="modal-close" data-close-maker-modal aria-label="Close" data-i18n-aria-label="close">×</button>
             </div>
             <div class="modal-body">
               <label class="modal-field">
-                <span>OC Maker Name</span>
-                <input id="newMakerName" placeholder="Example: Starlit Daily OC" maxlength="128" />
+                <span data-i18n="newMakerNameLabel">OC Maker Name</span>
+                <input id="newMakerName" placeholder="Example: Starlit Daily OC" data-i18n-placeholder="newMakerNamePlaceholder" maxlength="128" />
               </label>
 
               <div class="modal-field">
-                <span>Canvas size</span>
+                <span data-i18n="canvasSize">Canvas size</span>
                 <div class="choice-row">
                   <button class="choice-card active" data-canvas-choice="1:1">
                     <i></i>
@@ -705,23 +706,23 @@
               </div>
 
               <div class="modal-field">
-                <span>Starting structure</span>
+                <span data-i18n="startingStructure">Starting structure</span>
                 <div class="type-row">
                   <button class="type-card active" data-maker-start="character">
-                    <strong>Character starter</strong>
-                    <small>Eight production-ready Parts with direct PNG upload slots and a complete layer order.</small>
+                    <strong data-i18n="characterStarter">Character starter</strong>
+                    <small data-i18n="characterStarterCopy">Eight production-ready Parts, each with a default Item and Style, plus a complete layer order.</small>
                   </button>
                   <button class="type-card" data-maker-start="blank">
-                    <strong>Blank canvas</strong>
-                    <small>Begin without Parts and define the full Maker structure yourself.</small>
+                    <strong data-i18n="blankCanvas">Blank canvas</strong>
+                    <small data-i18n="blankCanvasCopy">Begin without Parts and define the full Maker structure yourself.</small>
                   </button>
                 </div>
               </div>
 
             </div>
             <div class="modal-actions">
-              <button class="secondary" data-close-maker-modal>Cancel</button>
-              <button id="registerMaker" class="primary">Create OC Maker</button>
+              <button class="secondary" data-close-maker-modal data-i18n="cancel">Cancel</button>
+              <button id="registerMaker" class="primary" data-i18n="createOcMaker">Create OC Maker</button>
             </div>
           </div>
         </div>
@@ -730,13 +731,13 @@
           <div class="modal-card draft-recovery-modal" role="dialog" aria-modal="true" aria-labelledby="draftRecoveryTitle" aria-describedby="draftRecoveryIntro">
             <div class="modal-head">
               <div>
-                <p class="kicker">Local safety</p>
-                <h2 id="draftRecoveryTitle">Draft Recovery Center</h2>
+                <p class="kicker" data-i18n="draftRecoveryKicker">Local safety</p>
+                <h2 id="draftRecoveryTitle" data-i18n="draftRecoveryTitle">Draft Recovery Center</h2>
               </div>
-              <button class="modal-close" data-close-draft-recovery aria-label="Close">×</button>
+              <button class="modal-close" data-close-draft-recovery aria-label="Close" data-i18n-aria-label="close">×</button>
             </div>
             <div class="modal-body">
-              <p id="draftRecoveryIntro">
+              <p id="draftRecoveryIntro" data-i18n="draftRecoveryIntro">
                 Animacraft scans current and legacy browser storage without deleting or changing it.
                 Export any discovery first, or restore a compatible Maker as a new independent copy.
               </p>
@@ -744,8 +745,8 @@
               <div id="draftRecoveryList" class="draft-recovery-list"></div>
             </div>
             <div class="modal-actions">
-              <button id="rescanDraftRecovery" class="secondary" type="button">Scan again</button>
-              <button class="primary" type="button" data-close-draft-recovery>Done</button>
+              <button id="rescanDraftRecovery" class="secondary" type="button" data-i18n="draftRecoveryScan">Scan again</button>
+              <button class="primary" type="button" data-close-draft-recovery data-i18n="draftRecoveryDone">Done</button>
             </div>
           </div>
         </div>
@@ -754,7 +755,7 @@
           <div class="modal-card compact-modal" role="dialog" aria-modal="true" aria-labelledby="partRegistrationTitle">
             <div class="modal-head">
               <h2 id="partRegistrationTitle">Part Registration</h2>
-              <button class="modal-close" data-close-part-modal aria-label="Close">×</button>
+              <button class="modal-close" data-close-part-modal aria-label="Close" data-i18n-aria-label="close">×</button>
             </div>
             <div class="modal-body">
               <label class="modal-field">
@@ -804,13 +805,13 @@
           <div class="modal-card confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="confirmActionTitle" aria-describedby="confirmActionMessage">
             <div class="modal-head">
               <h2 id="confirmActionTitle">Confirm action</h2>
-              <button class="modal-close" data-close-confirm-modal aria-label="Close">×</button>
+              <button class="modal-close" data-close-confirm-modal aria-label="Close" data-i18n-aria-label="close">×</button>
             </div>
             <div class="modal-body">
               <p id="confirmActionMessage">This action cannot be undone.</p>
             </div>
             <div class="modal-actions">
-              <button class="secondary" data-close-confirm-modal>Cancel</button>
+              <button class="secondary" data-close-confirm-modal data-i18n="cancel">Cancel</button>
               <button id="confirmActionButton" class="danger-button" type="button">Delete</button>
             </div>
           </div>
@@ -820,9 +821,9 @@
       <section id="docs" class="page">
         <div class="page-head">
           <div>
-            <p class="kicker">Docs</p>
-            <h1>On-chain rules for OC creation</h1>
-            <p>
+            <p class="kicker" data-i18n="navDocs">Docs</p>
+            <h1 data-i18n="docsTitle">On-chain rules for OC creation</h1>
+            <p data-i18n="docsIntro">
               Animacraft keeps the maker experience simple while Sui and Walrus record Maker provenance,
               license policy, and recipe authorization. Soulidity owns the finished character and its Living Content.
             </p>
@@ -831,71 +832,71 @@
         <div class="docs-callout-grid">
           <section class="protocol-card">
             <span>0x</span>
-            <h2>No backend signer</h2>
-            <p>Creators and users sign their own transactions. Public reads use Sui GraphQL, while every core write belongs to Sui objects and wallet PTBs.</p>
+            <h2 data-i18n="docsNoSignerTitle">No backend signer</h2>
+            <p data-i18n="docsNoSignerCopy">Creators and users sign their own transactions. Public reads use Sui GraphQL, while every core write belongs to Sui objects and wallet PTBs.</p>
           </section>
           <section class="protocol-card">
             <span>W</span>
-            <h2>Walrus as asset layer</h2>
-            <p>Item PNGs, picker icons, Maker manifests, finished OC images, and profile JSON resolve from browser-certified Walrus Quilts. Sui v3 records bounded Quilt and patch locators.</p>
+            <h2 data-i18n="docsWalrusAssetsTitle">Walrus as asset layer</h2>
+            <p data-i18n="docsWalrusAssetsCopy">Style PNGs, picker icons, Maker manifests, finished OC images, and profile JSON resolve from browser-certified Walrus Quilts. Sui records bounded Quilt and patch locators.</p>
           </section>
           <section class="protocol-card">
             <span>PR</span>
-            <h2>Open-source releases</h2>
-            <p>Production changes land through pull requests, CI checks, and CODEOWNERS review before shipping to Vercel.</p>
+            <h2 data-i18n="docsOpenSourceTitle">Open-source releases</h2>
+            <p data-i18n="docsOpenSourceCopy">Production changes land through pull requests, CI checks, and CODEOWNERS review before shipping to Vercel.</p>
           </section>
         </div>
         <section class="chain-status-panel docs-chain-panel">
           <div>
-            <p class="kicker">Production Architecture</p>
-            <h2>Creator to player without a backend database</h2>
-            <p>Wallets sign core writes, Walrus stores assets, and Sui verifies ownership and recipes. Published Maker events drive the public gallery without an Animacraft database.</p>
+            <p class="kicker" data-i18n="docsArchitectureKicker">Production Architecture</p>
+            <h2 data-i18n="docsArchitectureTitle">Creator to player without a backend database</h2>
+            <p data-i18n="docsArchitectureCopy">Wallets sign core writes, Walrus stores assets, and Sui verifies ownership and recipes. Published Maker events drive the public gallery without an Animacraft database.</p>
           </div>
           <div class="chain-action-list" data-chain-action-list></div>
         </section>
         <section class="docs-guide">
           <div class="docs-guide-head">
-            <div><p class="kicker">Creator Guide</p><h2>Build one Character Maker</h2></div>
-            <span class="template-token">Part → Item → Image</span>
+            <div><p class="kicker" data-i18n="docsCreatorGuide">Creator Guide</p><h2 data-i18n="docsBuildMakerTitle">Build one Character Maker</h2></div>
+            <span class="template-token" data-i18n="docsHierarchyToken">Maker → Part → Item → Style → PNG</span>
           </div>
           <div class="docs-workflow">
-            <article><span>01</span><strong>Library & Maker Top</strong><p>Create or open a Maker in the library, then use Maker Top to review structure, files, rules, and release readiness.</p></article>
-            <article><span>02</span><strong>Character Maker</strong><p>Work in one studio: Part is the player menu, Item is one choice, and every Style directly owns one PNG plus its position and render settings.</p></article>
-            <article><span>03</span><strong>Layer Tracks</strong><p>Arrange the global back-to-front render order, then position, scale, rotate, blend, hide, solo, and confirm each bound PNG on the shared canvas.</p></article>
-            <article><span>04</span><strong>Smart Color & Rules</strong><p>Create deterministic linked color channels and enforce Item or Style requirements, exclusions, parent visibility, and valid random combinations.</p></article>
-            <article><span>05</span><strong>Player Test & Preflight</strong><p>Use the exact player renderer, then resolve every missing asset, unconfirmed position, invalid default, rule conflict, and compatibility issue.</p></article>
-            <article><span>06</span><strong>On-chain Publish</strong><p>Prepare one Walrus quilt, register and upload it, certify availability, then publish and share the OCMaker on Sui. Interrupted stages can resume locally.</p></article>
+            <article><span>01</span><strong data-i18n="docsStep1Title">Library & Maker Top</strong><p data-i18n="docsStep1Copy">Create or open a Maker in the library, then use Maker Top to review structure, files, rules, and release readiness.</p></article>
+            <article><span>02</span><strong data-i18n="docsStep2Title">Character Maker</strong><p data-i18n="docsStep2Copy">Work in one studio: Part is the player menu, Item is one choice, and every Style directly owns one PNG plus its position and render settings.</p></article>
+            <article><span>03</span><strong data-i18n="docsStep3Title">Layer Tracks</strong><p data-i18n="docsStep3Copy">Arrange the global back-to-front render order, then position, scale, rotate, blend, hide, solo, and confirm each bound PNG on the shared canvas.</p></article>
+            <article><span>04</span><strong data-i18n="docsStep4Title">Smart Color & Rules</strong><p data-i18n="docsStep4Copy">Create deterministic linked color channels and enforce Item or Style requirements, exclusions, parent visibility, and valid random combinations.</p></article>
+            <article><span>05</span><strong data-i18n="docsStep5Title">Player Test & Preflight</strong><p data-i18n="docsStep5Copy">Use the exact player renderer, then resolve every missing asset, unconfirmed position, invalid default, rule conflict, and compatibility issue.</p></article>
+            <article><span>06</span><strong data-i18n="docsStep6Title">On-chain Publish</strong><p data-i18n="docsStep6Copy">Prepare one Walrus quilt, register and upload it, certify availability, then publish and share the OCMaker on Sui. Interrupted stages can resume locally.</p></article>
           </div>
         </section>
         <section class="docs-model">
-          <div><p class="kicker">Maker Data Model</p><h2>Where each setting belongs</h2></div>
+          <div><p class="kicker" data-i18n="docsDataModelKicker">Maker Data Model</p><h2 data-i18n="docsDataModelTitle">Where each setting belongs</h2></div>
           <div class="docs-model-grid">
-            <article><strong>Part</strong><span>One player menu category with required/optional behavior, parent visibility, icon, default Item, and selection rules.</span></article>
-            <article><strong>Item & Style</strong><span>Item is one player click. Style is the required visual choice under that Item; both may carry requires/excludes rules.</span></article>
-            <article><strong>LayerTrack</strong><span>A global back-to-front render lane shared across Parts. Player menu order never changes visual z-order.</span></article>
-            <article><strong>Style PNG</strong><span>One Style owns one PNG on one LayerTrack, with transform, opacity, blend mode, conditional visibility, locking, and optional smart color.</span></article>
-            <article><strong>ColorChannel</strong><span>A deterministic gradient-map palette shared by Styles that recolor their one PNG together.</span></article>
-            <article><strong>OCMaker</strong><span>The shared Sui object binds original creator, Quilt Blob ID, public Parts/Items/Colors, rules, mint economics, license policy, and archive state.</span></article>
-            <article><strong>MakerTreasury</strong><span>A shared coin-typed vault receives exact native-USDC mint fees and records collection and withdrawal totals.</span></article>
-            <article><strong>MakerAdminCap</strong><span>The transferable management right controls economics, withdrawals, and lifecycle. Cap ownership is separate from original art provenance.</span></article>
+            <article><strong data-i18n="docsPartTerm">Part</strong><span data-i18n="docsPartCopy">One player menu category with required/optional behavior, parent visibility, icon, default Item, and selection rules.</span></article>
+            <article><strong data-i18n="docsItemStyleTerm">Item & Style</strong><span data-i18n="docsItemStyleCopy">Item is one player click. Style is the required visual choice under that Item; both may carry requires/excludes rules.</span></article>
+            <article><strong data-i18n="docsLayerTrackTerm">LayerTrack</strong><span data-i18n="docsLayerTrackCopy">A global back-to-front render lane shared across Parts. Player menu order never changes visual z-order.</span></article>
+            <article><strong data-i18n="docsStylePngTerm">Style PNG</strong><span data-i18n="docsStylePngCopy">One Style directly owns one PNG with its own transform, opacity, blend mode, visibility, locking, and optional Smart Color. The separate Layer Tracks panel only controls global back-to-front order.</span></article>
+            <article><strong data-i18n="docsColorChannelTerm">ColorChannel</strong><span data-i18n="docsColorChannelCopy">A deterministic gradient-map palette shared by Styles that recolor their one PNG together.</span></article>
+            <article><strong>OCMaker</strong><span data-i18n="docsOcMakerCopy">The shared Sui object binds original creator, Quilt Blob ID, public Parts/Items/Colors, rules, mint economics, license policy, and archive state.</span></article>
+            <article><strong>MakerTreasury</strong><span data-i18n="docsTreasuryCopy">A shared coin-typed vault receives exact native-USDC mint fees and records collection and withdrawal totals.</span></article>
+            <article><strong>MakerAdminCap</strong><span data-i18n="docsAdminCapCopy">The transferable management right controls economics, withdrawals, and lifecycle. Cap ownership is separate from original art provenance.</span></article>
           </div>
         </section>
         <section class="docs-model">
-          <div><p class="kicker">Protocol Boundary</p><h2>One Maker, one canonical Soul</h2></div>
+          <div><p class="kicker" data-i18n="docsProtocolBoundary">Protocol Boundary</p><h2 data-i18n="docsBoundaryTitle">One Maker, one canonical Soul</h2></div>
           <div class="docs-model-grid">
-            <article><strong>Animacraft</strong><span>Publishes the shared Maker, USDC Treasury, transferable AdminCap, immutable recipe rules, and a one-PTB Soul mint authorization. It does not mint a finished character token.</span></article>
-            <article><strong>Soulidity</strong><span>Consumes the authorization, creates the only Soul, binds mandatory Soul Character and Memory Blobs, locks ownership in a personal Kiosk, and handles social and marketplace activity.</span></article>
-            <article><strong>Dedicated handoff</strong><span>The certified OC profile opens Soulidity's Animacraft integration route. The downloaded handoff archive is recovery material, not a second mint path.</span></article>
-            <article><strong>Canonical adapter</strong><span>Free and paid Maker authorization, verified provenance, Maker resale royalty, and the Soul mint execute through the reviewed cross-package path after its Mainnet release gate is enabled.</span></article>
+            <article><strong>Animacraft</strong><span data-i18n="docsAnimacraftCopy">Publishes the shared Maker, USDC Treasury, transferable AdminCap, immutable recipe rules, and a one-PTB Soul mint authorization. It does not mint a finished character token.</span></article>
+            <article><strong>Soulidity</strong><span data-i18n="docsSoulidityCopy">Consumes the authorization, creates the only Soul, binds mandatory Soul Character and Memory Blobs, locks ownership in a personal Kiosk, and handles social and marketplace activity.</span></article>
+            <article><strong data-i18n="docsHandoffTitle">Dedicated handoff</strong><span data-i18n="docsHandoffCopy">The certified OC profile opens Soulidity's Animacraft integration route. The downloaded handoff archive is recovery material, not a second mint path.</span></article>
+            <article><strong data-i18n="docsAdapterTitle">Canonical adapter</strong><span data-i18n="docsAdapterCopy">Free and paid Maker authorization, verified provenance, Maker resale royalty, and the Soul mint execute through the reviewed cross-package path after its Mainnet release gate is enabled.</span></article>
           </div>
         </section>
         <section class="docs-model">
-          <div><p class="kicker">Maker Lifecycle</p><h2>Delete locally, archive on-chain</h2></div>
+          <div><p class="kicker" data-i18n="docsLifecycleKicker">Maker Lifecycle</p><h2 data-i18n="docsLifecycleTitle">Delete locally, archive on-chain</h2></div>
           <div class="docs-model-grid">
-            <article><strong>Local draft</strong><span>IndexedDB stores wallet-scoped structure, source files, and upload checkpoints. Maker, Part, Item, Style, and Color records may be permanently deleted before publication.</span></article>
-            <article><strong>Published Maker</strong><span>Publication locks art, rules, and the previously certified Walrus manifest locator. The Cap holder may only change future mint economics and archive state.</span></article>
-            <article><strong>Archived Maker</strong><span>The creator may archive or restore a published Maker with a wallet signature. Archive blocks new Soul authorizations while preserving existing Souls, rights snapshots, and provenance.</span></article>
-            <article><strong>Walrus retention</strong><span>Production uploads request 53 Mainnet epochs, currently about two years. Removing a local reference does not erase certified storage, but retention must be extended before expiry.</span></article>
+            <article><strong data-i18n="docsLocalDraftTitle">Local draft</strong><span data-i18n="docsLocalDraftCopy">IndexedDB stores wallet-scoped structure, source files, and upload checkpoints. Maker, Part, Item, Style, and Color records may be permanently deleted before publication.</span></article>
+            <article><strong data-i18n="docsPublishedMakerTitle">Published Maker</strong><span data-i18n="docsPublishedMakerCopy">Publication locks art, rules, and the previously certified Walrus manifest locator. The Cap holder may only change future mint economics and archive state.</span></article>
+            <article><strong data-i18n="docsArchivedMakerTitle">Archived Maker</strong><span data-i18n="docsArchivedMakerCopy">The creator may archive or restore a published Maker with a wallet signature. Archive blocks new Soul authorizations while preserving existing Souls, rights snapshots, and provenance.</span></article>
+            <article><strong data-i18n="docsWalrusRetentionTitle">Walrus retention</strong><span data-i18n="docsWalrusRetentionCopy">Production uploads request 53 Mainnet epochs, currently about two years. Removing a local reference does not erase certified storage, but retention must be extended before expiry.</span></article>
           </div>
         </section>
         <div id="protocolSteps" class="protocol-grid"></div>

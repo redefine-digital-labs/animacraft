@@ -269,7 +269,13 @@ test('referenced assets and quilt entries have deterministic identifier order', 
     '50-hat.png',
   ]);
 
-  const bundle = buildMakerV4PublicationBundle(document, runtimeAssets(document));
+  const bundle = buildMakerV4PublicationBundle(document, runtimeAssets(document), {
+    projectionAuxiliaryBlob: new Blob(['transparent'], { type: 'image/png' }),
+  });
+  assert.equal(bundle.entries.at(-2).identifier, 'animacraft-chain-auxiliary.png');
+  assert.equal(bundle.entries.at(-2).kind, 'chain-auxiliary');
+  assert.equal(bundle.entries.at(-2).projectionOnly, true);
+  assert.equal(bundle.entries.at(-2).renderAsset, false);
   assert.equal(bundle.entries.at(-1).identifier, MAKER_V4_MANIFEST_IDENTIFIER);
   assert.equal(bundle.entries.at(-1).kind, 'maker-manifest');
   assert.deepEqual(JSON.parse(await bundle.entries.at(-1).blob.text()), bundle.manifest);
@@ -284,8 +290,12 @@ test('referenced assets and quilt entries have deterministic identifier order', 
 test('embedded ExpansionPack assets stay in the immutable release graph', () => {
   const document = publicationMaker();
   document.extensions.expansionDrafts = [{
+    schemaVersion: 'animacraft.expansion-pack.v1',
     packId: 'season-one',
     namespace: 's1',
+    version: '1.0.0',
+    baseMakerId: 'astral-maker',
+    baseVersion: '1',
     assets: [structuredClone(document.assets.find((asset) => asset.id === 'unused'))],
     parts: [],
     layerTracks: [],

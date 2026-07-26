@@ -6,6 +6,8 @@ import {
   assertSupportedMakerMintEconomics,
   assertSupportedMakerPaymentCoin,
   normalizeRuntimeConfig,
+  resolveCallablePackageId,
+  resolveOriginalPackageId,
   validateRuntimeConfig,
 } from '../runtime-config.js';
 
@@ -18,11 +20,80 @@ function productionConfig() {
 }
 
 test('accepts a complete Mainnet production configuration', () => {
-  const result = validateRuntimeConfig(productionConfig(), { strict: true, requireSoulidity: true });
+  const config = productionConfig();
+  Object.assign(config, {
+    canonicalSoulMintEnabled: true,
+    protocolFeePackageId: '0x5678',
+    protocolFeeConfigId: '0xfeed',
+    protocolTreasuryId: '0xbeef',
+    protocolFeeAdminCapId: '0xcafe',
+    protocolFeeAdminCapOwner: '0xadea',
+  });
+  const result = validateRuntimeConfig(config, { strict: true, requireSoulidity: true });
   assert.equal(result.valid, true);
   assert.equal(result.packageReady, true);
+  assert.equal(result.callablePackageReady, true);
+  assert.equal(result.originalPackageReady, true);
   assert.equal(result.soulidityReady, true);
-  assert.equal(productionConfig().canonicalSoulMintEnabled, false);
+  assert.equal(config.canonicalSoulMintEnabled, true);
+});
+
+test('Soulidity integration preflight fails closed while canonical minting is gated off', () => {
+  const result = validateRuntimeConfig(productionConfig(), { strict: true, requireSoulidity: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /canonicalSoulMintEnabled=true/);
+});
+
+test('keeps legacy packageId-only configurations upgrade compatible', () => {
+  const config = productionConfig();
+  assert.equal(config.packageId, '0x1234');
+  assert.equal(config.callablePackageId, '0x1234');
+  assert.equal(config.originalPackageId, '0x1234');
+  assert.equal(resolveCallablePackageId({ packageId: '0x1234' }), '0x1234');
+  assert.equal(resolveOriginalPackageId({ packageId: '0x1234' }), '0x1234');
+});
+
+test('separates the callable upgrade package from the original type identity', () => {
+  const config = normalizeRuntimeConfig({
+    packageId: '0x5678',
+    callablePackageId: '0x5678',
+    originalPackageId: '0x1234',
+    appUrl: 'https://animacraft.soulidity.ai',
+    soulidityPackageId: '0xabcd',
+    canonicalSoulMintEnabled: true,
+    protocolFeePackageId: '0x5678',
+    protocolFeeConfigId: '0xfeed',
+    protocolTreasuryId: '0xbeef',
+    protocolFeeAdminCapId: '0xcafe',
+    protocolFeeAdminCapOwner: '0xadea',
+  });
+  const result = validateRuntimeConfig(config, { strict: true, requireSoulidity: true });
+  assert.equal(config.packageId, '0x5678');
+  assert.equal(config.callablePackageId, '0x5678');
+  assert.equal(config.originalPackageId, '0x1234');
+  assert.equal(result.valid, true);
+  assert.equal(result.packageReady, true);
+});
+
+test('rejects an upgraded callable package without a stable protocol-fee TypeOrigin', () => {
+  const config = normalizeRuntimeConfig({
+    packageId: '0x5678',
+    callablePackageId: '0x5678',
+    originalPackageId: '0x1234',
+    appUrl: 'https://animacraft.soulidity.ai',
+    soulidityPackageId: '0xabcd',
+  });
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /upgraded Animacraft callable package/);
+});
+
+test('rejects an ambiguous legacy alias that differs from the callable package', () => {
+  const config = productionConfig();
+  config.packageId = '0x9999';
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /compatibility alias/);
 });
 
 test('keeps source placeholders as warnings outside strict activation', () => {
@@ -99,19 +170,54 @@ test('requires canonical v4 protocol fee objects before enabling Soul mint', () 
   missing.canonicalSoulMintEnabled = true;
   let result = validateRuntimeConfig(missing, { strict: true, requireSoulidity: true });
   assert.equal(result.valid, false);
-  assert.match(result.errors.join(' '), /ProtocolFeeConfig and ProtocolTreasury/);
+  assert.match(result.errors.join(' '), /ProtocolFeeConfig, ProtocolTreasury, AdminCap/);
 
   const ready = productionConfig();
   Object.assign(ready, {
     canonicalSoulMintEnabled: true,
+    protocolFeePackageId: '0x5678',
     protocolFeeConfigId: '0xfeed',
     protocolTreasuryId: '0xbeef',
+    protocolFeeAdminCapId: '0xcafe',
+    protocolFeeAdminCapOwner: '0xadea',
     primaryProtocolFeeBps: 5_000,
   });
   result = validateRuntimeConfig(ready, { strict: true, requireSoulidity: true });
   assert.equal(result.valid, true);
+  assert.equal(result.protocolFeePackageReady, true);
   assert.equal(result.protocolFeeConfigReady, true);
   assert.equal(result.protocolTreasuryReady, true);
+  assert.equal(result.protocolFeeAdminCapReady, true);
+  assert.equal(result.protocolFeeAdminCapOwnerReady, true);
+});
+
+test('keeps the v4 protocol-fee TypeOrigin stable across a later callable upgrade', () => {
+  const config = normalizeRuntimeConfig({
+    packageId: '0x9999',
+    callablePackageId: '0x9999',
+    originalPackageId: '0x1234',
+    protocolFeePackageId: '0x5678',
+    appUrl: 'https://animacraft.soulidity.ai',
+    soulidityPackageId: '0xabcd',
+    canonicalSoulMintEnabled: true,
+    protocolFeeConfigId: '0xfeed',
+    protocolTreasuryId: '0xbeef',
+    protocolFeeAdminCapId: '0xcafe',
+    protocolFeeAdminCapOwner: '0xadea',
+  });
+  const result = validateRuntimeConfig(config, { strict: true, requireSoulidity: true });
+  assert.equal(result.valid, true);
+  assert.equal(config.callablePackageId, '0x9999');
+  assert.equal(config.originalPackageId, '0x1234');
+  assert.equal(config.protocolFeePackageId, '0x5678');
+});
+
+test('rejects protocol objects without their defining package TypeOrigin', () => {
+  const config = productionConfig();
+  config.protocolFeeConfigId = '0xfeed';
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /protocolFeePackageId TypeOrigin/);
 });
 
 test('caps the configured primary protocol share at fifty percent', () => {

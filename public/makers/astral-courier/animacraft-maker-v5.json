@@ -1,0 +1,1427 @@
+{
+  "schemaVersion": "animacraft.maker.v5",
+  "version": {
+    "rootMakerId": "astral-courier-stress-v5",
+    "versionId": "astral-courier-stress-v5-v1",
+    "number": 1,
+    "parentVersionId": null,
+    "compatibility": "initial",
+    "compatibleFrom": 1,
+    "createdAt": null,
+    "changelog": ""
+  },
+  "metadata": {
+    "id": "astral-courier-stress-v5",
+    "name": "[Stress Fixture] Astral Courier · 星夜信使",
+    "summary": "Negative/complex editor stress fixture; not a visual gold standard. An AI-assisted complex editor stress fixture. Combination alignment is intentionally under review and it is not a visual gold standard.",
+    "creator": "Animacraft Atelier",
+    "style": "Japanese cel-shaded celestial portrait",
+    "license": {
+      "kind": "personal-use",
+      "note": "Internal editor stress fixture using AI-assisted art. Soul minting stays disabled until a human artist realigns and signs off every required combination."
+    },
+    "coverAssetId": "cover",
+    "disclosures": {
+      "aiAssisted": true,
+      "statement": "Internal editor stress fixture using AI-assisted art. Soul minting stays disabled until a human artist realigns and signs off every required combination.",
+      "verification": "source-declared-not-independently-verified"
+    }
+  },
+  "canvas": {
+    "width": 1024,
+    "height": 1024,
+    "pixelMode": "smooth"
+  },
+  "layerTracks": [
+    {
+      "id": "background-normal",
+      "name": "Background",
+      "order": 0,
+      "locked": true,
+      "referenceAssetId": null
+    },
+    {
+      "id": "base-normal",
+      "name": "Skin & Base",
+      "order": 1,
+      "locked": true,
+      "referenceAssetId": null
+    },
+    {
+      "id": "outfit-normal",
+      "name": "Outfit",
+      "order": 2,
+      "locked": true,
+      "referenceAssetId": null
+    },
+    {
+      "id": "expression-normal",
+      "name": "Expression",
+      "order": 3,
+      "locked": true,
+      "referenceAssetId": null
+    },
+    {
+      "id": "hair-normal",
+      "name": "Hair",
+      "order": 4,
+      "locked": true,
+      "referenceAssetId": null
+    },
+    {
+      "id": "accessory-normal",
+      "name": "Accessory",
+      "order": 5,
+      "locked": true,
+      "referenceAssetId": null
+    }
+  ],
+  "colorChannels": [],
+  "parts": [
+    {
+      "id": "background",
+      "name": "Background",
+      "menuOrder": 0,
+      "menuVisible": true,
+      "required": true,
+      "defaultItemId": "moon-portal",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "moon-portal",
+          "name": "Moon Portal",
+          "displayOrder": 0,
+          "importKey": "moon-portal",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "moon-portal-style",
+          "styles": [
+            {
+              "id": "moon-portal-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-background-moon-portal",
+              "layerTrackId": "background-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "meteor-dawn",
+          "name": "Meteor Dawn",
+          "displayOrder": 1,
+          "importKey": "meteor-dawn",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "meteor-dawn-style",
+          "styles": [
+            {
+              "id": "meteor-dawn-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-background-meteor-dawn",
+              "layerTrackId": "background-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "aurora-grid",
+          "name": "Aurora Grid",
+          "displayOrder": 2,
+          "importKey": "aurora-grid",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "aurora-grid-style",
+          "styles": [
+            {
+              "id": "aurora-grid-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-background-aurora-grid",
+              "layerTrackId": "background-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "quiet-orbit",
+          "name": "Quiet Orbit",
+          "displayOrder": 3,
+          "importKey": "quiet-orbit",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "quiet-orbit-style",
+          "styles": [
+            {
+              "id": "quiet-orbit-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-background-quiet-orbit",
+              "layerTrackId": "background-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "base",
+      "name": "Skin & Base",
+      "menuOrder": 1,
+      "menuVisible": true,
+      "required": true,
+      "defaultItemId": "porcelain",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "porcelain",
+          "name": "Porcelain",
+          "displayOrder": 0,
+          "importKey": "porcelain",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "porcelain-style",
+          "styles": [
+            {
+              "id": "porcelain-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-base-porcelain",
+              "layerTrackId": "base-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "warm-beige",
+          "name": "Warm Beige",
+          "displayOrder": 1,
+          "importKey": "warm-beige",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "warm-beige-style",
+          "styles": [
+            {
+              "id": "warm-beige-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-base-warm-beige",
+              "layerTrackId": "base-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "golden-tan",
+          "name": "Golden Tan",
+          "displayOrder": 2,
+          "importKey": "golden-tan",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "golden-tan-style",
+          "styles": [
+            {
+              "id": "golden-tan-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-base-golden-tan",
+              "layerTrackId": "base-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "deep-brown",
+          "name": "Deep Brown",
+          "displayOrder": 3,
+          "importKey": "deep-brown",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "deep-brown-style",
+          "styles": [
+            {
+              "id": "deep-brown-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-base-deep-brown",
+              "layerTrackId": "base-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "outfit",
+      "name": "Outfit",
+      "menuOrder": 2,
+      "menuVisible": true,
+      "required": false,
+      "defaultItemId": "courier-jacket",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "courier-jacket",
+          "name": "Celestial Courier",
+          "displayOrder": 0,
+          "importKey": "courier-jacket",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "courier-jacket-style",
+          "styles": [
+            {
+              "id": "courier-jacket-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-outfit-courier-jacket",
+              "layerTrackId": "outfit-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "academy-blazer",
+          "name": "Midnight Academy",
+          "displayOrder": 1,
+          "importKey": "academy-blazer",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "academy-blazer-style",
+          "styles": [
+            {
+              "id": "academy-blazer-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-outfit-academy-blazer",
+              "layerTrackId": "outfit-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "starlight-hoodie",
+          "name": "Starlight Hoodie",
+          "displayOrder": 2,
+          "importKey": "starlight-hoodie",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "starlight-hoodie-style",
+          "styles": [
+            {
+              "id": "starlight-hoodie-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-outfit-starlight-hoodie",
+              "layerTrackId": "outfit-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "moon-mantle",
+          "name": "Moon Mantle",
+          "displayOrder": 3,
+          "importKey": "moon-mantle",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "moon-mantle-style",
+          "styles": [
+            {
+              "id": "moon-mantle-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-outfit-moon-mantle",
+              "layerTrackId": "outfit-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "expression",
+      "name": "Expression",
+      "menuOrder": 3,
+      "menuVisible": true,
+      "required": false,
+      "defaultItemId": "calm-violet",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "calm-violet",
+          "name": "Calm Violet",
+          "displayOrder": 0,
+          "importKey": "calm-violet",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "calm-violet-style",
+          "styles": [
+            {
+              "id": "calm-violet-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-expression-calm-violet",
+              "layerTrackId": "expression-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "curious-cyan",
+          "name": "Curious Cyan",
+          "displayOrder": 1,
+          "importKey": "curious-cyan",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "curious-cyan-style",
+          "styles": [
+            {
+              "id": "curious-cyan-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-expression-curious-cyan",
+              "layerTrackId": "expression-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "sleepy-indigo",
+          "name": "Sleepy Indigo",
+          "displayOrder": 2,
+          "importKey": "sleepy-indigo",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "sleepy-indigo-style",
+          "styles": [
+            {
+              "id": "sleepy-indigo-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-expression-sleepy-indigo",
+              "layerTrackId": "expression-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "determined-amber",
+          "name": "Determined Amber",
+          "displayOrder": 3,
+          "importKey": "determined-amber",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "determined-amber-style",
+          "styles": [
+            {
+              "id": "determined-amber-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-expression-determined-amber",
+              "layerTrackId": "expression-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hair",
+      "name": "Hair",
+      "menuOrder": 4,
+      "menuVisible": true,
+      "required": false,
+      "defaultItemId": "moonlit-wolf",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "moonlit-wolf",
+          "name": "Moonlit Wolf Cut",
+          "displayOrder": 0,
+          "importKey": "moonlit-wolf",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "moonlit-wolf-style",
+          "styles": [
+            {
+              "id": "moonlit-wolf-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-hair-moonlit-wolf",
+              "layerTrackId": "hair-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "indigo-straight",
+          "name": "Indigo Straight",
+          "displayOrder": 1,
+          "importKey": "indigo-straight",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "indigo-straight-style",
+          "styles": [
+            {
+              "id": "indigo-straight-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-hair-indigo-straight",
+              "layerTrackId": "hair-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "silver-bob",
+          "name": "Silver Airy Bob",
+          "displayOrder": 2,
+          "importKey": "silver-bob",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "silver-bob-style",
+          "styles": [
+            {
+              "id": "silver-bob-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-hair-silver-bob",
+              "layerTrackId": "hair-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "violet-tails",
+          "name": "Violet Twin Tails",
+          "displayOrder": 3,
+          "importKey": "violet-tails",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "violet-tails-style",
+          "styles": [
+            {
+              "id": "violet-tails-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-hair-violet-tails",
+              "layerTrackId": "hair-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "accessory",
+      "name": "Accessory",
+      "menuOrder": 5,
+      "menuVisible": true,
+      "required": true,
+      "defaultItemId": "none",
+      "parentPartId": null,
+      "iconAssetId": null,
+      "visibleWhen": null,
+      "requires": [],
+      "excludes": [],
+      "items": [
+        {
+          "id": "none",
+          "name": "None",
+          "displayOrder": 0,
+          "importKey": "none",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "none-style",
+          "styles": [
+            {
+              "id": "none-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-accessory-none",
+              "layerTrackId": "accessory-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "crescent-clip",
+          "name": "Crescent Clip",
+          "displayOrder": 1,
+          "importKey": "crescent-clip",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "crescent-clip-style",
+          "styles": [
+            {
+              "id": "crescent-clip-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-accessory-crescent-clip",
+              "layerTrackId": "accessory-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "holo-visor",
+          "name": "Holo Visor",
+          "displayOrder": 2,
+          "importKey": "holo-visor",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "holo-visor-style",
+          "styles": [
+            {
+              "id": "holo-visor-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-accessory-holo-visor",
+              "layerTrackId": "accessory-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "star-earrings",
+          "name": "Star Earrings",
+          "displayOrder": 3,
+          "importKey": "star-earrings",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "star-earrings-style",
+          "styles": [
+            {
+              "id": "star-earrings-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-accessory-star-earrings",
+              "layerTrackId": "accessory-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        },
+        {
+          "id": "orbit-pendant",
+          "name": "Orbit Pendant",
+          "displayOrder": 4,
+          "importKey": "orbit-pendant",
+          "status": "public",
+          "thumbnailAssetId": null,
+          "visibleWhen": null,
+          "requires": [],
+          "excludes": [],
+          "defaultStyleId": "orbit-pendant-style",
+          "styles": [
+            {
+              "id": "orbit-pendant-style",
+              "name": "Default",
+              "displayOrder": 0,
+              "assetId": "layers-accessory-orbit-pendant",
+              "layerTrackId": "accessory-normal",
+              "colorChannelId": null,
+              "transform": {
+                "x": 0,
+                "y": 0,
+                "scale": 1,
+                "rotation": 0
+              },
+              "positionConfirmed": true,
+              "positionLocked": true,
+              "styleLocked": false,
+              "opacity": 1,
+              "blendMode": "normal",
+              "visibleWhen": null,
+              "requires": [],
+              "excludes": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "defaultRecipe": {
+    "selections": [
+      {
+        "partId": "background",
+        "itemId": "moon-portal",
+        "styleId": "moon-portal-style"
+      },
+      {
+        "partId": "base",
+        "itemId": "porcelain",
+        "styleId": "porcelain-style"
+      },
+      {
+        "partId": "outfit",
+        "itemId": "courier-jacket",
+        "styleId": "courier-jacket-style"
+      },
+      {
+        "partId": "expression",
+        "itemId": "calm-violet",
+        "styleId": "calm-violet-style"
+      },
+      {
+        "partId": "hair",
+        "itemId": "moonlit-wolf",
+        "styleId": "moonlit-wolf-style"
+      },
+      {
+        "partId": "accessory",
+        "itemId": "none",
+        "styleId": "none-style"
+      }
+    ],
+    "colors": []
+  },
+  "expansionPacks": [],
+  "assets": [
+    {
+      "id": "cover",
+      "identifier": "cover.png",
+      "kind": "maker-cover",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 1343651,
+      "sha256": "fad13e7d9d5d5d12041f293d25092dcc86f1b4d9ffbc3b404afb2a5a568ff166"
+    },
+    {
+      "id": "layers-background-moon-portal",
+      "identifier": "layers/background/moon-portal.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 384371,
+      "sha256": "03bee5c88e8280e902e7cbd7b82ec0782d20df60f3559b27d716bf50b9d581bc"
+    },
+    {
+      "id": "layers-background-meteor-dawn",
+      "identifier": "layers/background/meteor-dawn.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 372354,
+      "sha256": "3eecf6564daa793f12d0b91d5f21bb3c287162d3b153f6cbaa8ee65c230b750d"
+    },
+    {
+      "id": "layers-background-aurora-grid",
+      "identifier": "layers/background/aurora-grid.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 437196,
+      "sha256": "4179a0e767461d18cd698082df70c315265bf36ff396313d39e1da58abfb5c57"
+    },
+    {
+      "id": "layers-background-quiet-orbit",
+      "identifier": "layers/background/quiet-orbit.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 406546,
+      "sha256": "11bd408b5f96a4a32c48d86fefa1e98204f72df8bcc03c8ec9566369e29cc28e"
+    },
+    {
+      "id": "layers-base-porcelain",
+      "identifier": "layers/base/porcelain.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 340382,
+      "sha256": "b9bf153cc5d19a8305c123ce76fa1adfe4f690389976652907622e7b3b13c39b"
+    },
+    {
+      "id": "layers-base-warm-beige",
+      "identifier": "layers/base/warm-beige.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 347616,
+      "sha256": "bd0b2a63d0cb6e73f1d101baf16d69217048b021ca5d6945b817ff203c7ab40a"
+    },
+    {
+      "id": "layers-base-golden-tan",
+      "identifier": "layers/base/golden-tan.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 357562,
+      "sha256": "53c2504ae8d9a0a75b435b83e952b659777c747739b56479013747db05994317"
+    },
+    {
+      "id": "layers-base-deep-brown",
+      "identifier": "layers/base/deep-brown.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 353637,
+      "sha256": "0727c239f85f5c5135612c8755984ca75153a7bd3fd7191bbacf83e6bbc86584"
+    },
+    {
+      "id": "layers-outfit-courier-jacket",
+      "identifier": "layers/outfit/courier-jacket.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 556009,
+      "sha256": "cf884a6999990b7c65229a8cf2e126458a9ce1b8c5ec4178df113e140d43fa9a"
+    },
+    {
+      "id": "layers-outfit-academy-blazer",
+      "identifier": "layers/outfit/academy-blazer.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 398848,
+      "sha256": "cc412c4d75f7c7d97babf26341d243ec36a8db45a30ac49684b9eaf193ca76cc"
+    },
+    {
+      "id": "layers-outfit-starlight-hoodie",
+      "identifier": "layers/outfit/starlight-hoodie.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 622765,
+      "sha256": "7b1004b0aa40d1b2a85654e591108b4489ed8cf2e5d99dc7ad11f597a1cae5a4"
+    },
+    {
+      "id": "layers-outfit-moon-mantle",
+      "identifier": "layers/outfit/moon-mantle.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 674224,
+      "sha256": "0a184e8da733d2f3971eeb30cdda383d2d9067c41dd47d23429ffa2eed0a2aab"
+    },
+    {
+      "id": "layers-expression-calm-violet",
+      "identifier": "layers/expression/calm-violet.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 67113,
+      "sha256": "7ef0a85e65b0a2447ecef8f93cbdb39af2781028ebe2ae2bb265ff667e3ccac9"
+    },
+    {
+      "id": "layers-expression-curious-cyan",
+      "identifier": "layers/expression/curious-cyan.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 78226,
+      "sha256": "13ea057c30b41bc2abb897e8d1ef8dc38931d579157b08089edab760a7b7c9f9"
+    },
+    {
+      "id": "layers-expression-sleepy-indigo",
+      "identifier": "layers/expression/sleepy-indigo.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 58373,
+      "sha256": "c2740e43a56a06dbb32e827fcd6278245cbaadcaaeaf4a0d96bdcc1a91fedfd3"
+    },
+    {
+      "id": "layers-expression-determined-amber",
+      "identifier": "layers/expression/determined-amber.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 68939,
+      "sha256": "8ba2d49f1edfffb5523738c71db99a3ea50a71b5a7f2018d61d85d89559f6ac7"
+    },
+    {
+      "id": "layers-hair-moonlit-wolf",
+      "identifier": "layers/hair/moonlit-wolf.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 644256,
+      "sha256": "98e02ac7672a1796bb1572c2bf9869643ca2c32974d9a2cec7570c9e6cb0d144"
+    },
+    {
+      "id": "layers-hair-indigo-straight",
+      "identifier": "layers/hair/indigo-straight.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 507304,
+      "sha256": "8b28b285238c9139048b274b0b440262f5075a9dd379ac5d5c3365d24ae325fa"
+    },
+    {
+      "id": "layers-hair-silver-bob",
+      "identifier": "layers/hair/silver-bob.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 533973,
+      "sha256": "c8d598ee216efe5cdd4a751393bcd2613880ae4ca28171c20bd45b51f1c2a21e"
+    },
+    {
+      "id": "layers-hair-violet-tails",
+      "identifier": "layers/hair/violet-tails.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 802569,
+      "sha256": "c6fb24cbd0677257ba206c0120fde7592cc830af924bf30ba4d288e8ae721457"
+    },
+    {
+      "id": "layers-accessory-none",
+      "identifier": "layers/accessory/none.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 4144,
+      "sha256": "f12ddfea20dcca2fa350d75d5ed2ae76a4fffbcdfd2b8f2357558b90072dab9f"
+    },
+    {
+      "id": "layers-accessory-crescent-clip",
+      "identifier": "layers/accessory/crescent-clip.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 25765,
+      "sha256": "d055b070244b4e12afd34f0eba5ec7eb2a544146f13d2db0556feae5f1ab4f30"
+    },
+    {
+      "id": "layers-accessory-holo-visor",
+      "identifier": "layers/accessory/holo-visor.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 90817,
+      "sha256": "29ae04d823913c467e4c94bf596e0da69817301105a6637da168ece113872ec1"
+    },
+    {
+      "id": "layers-accessory-star-earrings",
+      "identifier": "layers/accessory/star-earrings.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 33370,
+      "sha256": "173a35e0eb5b854ff05fa9713f811db25dcdc08a43e18db82c125ee9f1172010"
+    },
+    {
+      "id": "layers-accessory-orbit-pendant",
+      "identifier": "layers/accessory/orbit-pendant.png",
+      "kind": "layer-png",
+      "mediaType": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "byteLength": 43510,
+      "sha256": "9771de56790c05ce76031f87b6beb61fed5d17d02d4f1ed51a7c79ec1e448009"
+    }
+  ],
+  "publication": {
+    "royaltyBps": 300,
+    "mintingEnabled": false,
+    "mintFeeEnabled": false,
+    "mintPriceAtomic": 0,
+    "paymentCoinType": "",
+    "paymentCoinSymbol": "USDC",
+    "storage": "walrus",
+    "chain": "sui"
+  },
+  "runtime": {
+    "network": "mainnet",
+    "assetAddressing": "bundled-path-before-publication; walrus-quilt-id+identifier-after-publication",
+    "manifestIdentifier": "animacraft-manifest.json"
+  },
+  "livingContent": {
+    "schemaVersion": "animacraft.living-content.v1",
+    "soulMd": "# Soul Character\n\n## Identity\n- Name: {{OC_NAME}}\n- World: {{OC_WORLD}}\n- Visual origin: Astral Courier · 星夜信使 by Animacraft Atelier\n- Character summary: {{OC_DESCRIPTION}}\n\n## Core Truths\n- Grow from an original character into a continuous, owner-directed companion.\n- Preserve consent, authorship, and the selected visual recipe.\n- Distinguish memories from creative interpretation.\n\n## Vibe\n- Voice: graceful, vivid, concise first, and emotionally attentive.\n- Style: Japanese cel-shaded celestial portrait.\n\n## Boundaries\n- Never invent permissions, private history, or tool access.\n- Ask before consequential actions or disclosure of protected information.\n",
+    "memoryMd": "# Founding Memory\n\n{{OC_NAME}} began as an original composition in Astral Courier · 星夜信使.\n\n- Preserve the Maker provenance and selected visual recipe.\n- Treat {{OC_DESCRIPTION}} as the opening direction, not fabricated history.\n- Learn only from content the owner intentionally adds.\n",
+    "skillMd": "---\nname: astral-courier-companion\ndescription: Keeps this character's voice, visual provenance, and owner-approved context aligned.\n---\n# Character Companion\n\nUse this skill when the Soul needs to speak or act consistently with {{OC_NAME}}.\n\n- Keep verified facts, remembered context, and creative interpretation distinct.\n- Preserve the Maker and recipe provenance.\n- Ask for permission before consequential actions.\n",
+    "customized": {
+      "soulMd": true,
+      "memoryMd": true,
+      "skillMd": true
+    }
+  },
+  "extensions": {
+    "stressTest": {
+      "classification": "negative-complex-stress-fixture",
+      "doNotPublish": true,
+      "doNotUseAsVisualGold": true,
+      "sourceManifestSha256": "f9aa7e7d430cc00c95f3ef64b231d46d33dcacb6ca1e453835dcaa719fd2d25d",
+      "sourceMakerId": "astral-courier",
+      "reportSchemaVersion": "animacraft.angie-stress-report.v1",
+      "diagnosticCounts": {
+        "errors": 0,
+        "warnings": 9
+      },
+      "knownLimitations": [
+        "Angie is intentionally a negative/complex stress fixture, not approved visual reference art.",
+        "The release contains flattened runtime PNGs but no PSD/PSB authoring structure or creator-approved positioning evidence.",
+        "Hair and outfit use one composite layer each, so front/back occlusion cannot be repaired by metadata alone.",
+        "Alpha-bound centers diagnose suspicious movement but cannot decide artistic intent or automatically realign anatomy.",
+        "The v3 cover cannot be proven pixel-identical to the shared v5 renderer without its original render recipe.",
+        "The source declares AI assistance; this importer records the statement but cannot verify training data or rights provenance."
+      ],
+      "originalPublication": {
+        "royaltyBps": 300,
+        "mintingEnabled": false,
+        "mintFeeEnabled": false,
+        "mintPriceAtomic": 0,
+        "paymentCoinSymbol": "USDC",
+        "storage": "walrus",
+        "chain": "sui"
+      }
+    }
+  }
+}

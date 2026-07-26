@@ -10,6 +10,7 @@ import {
   createCachedAssetResolver,
   initialPngTransform,
   inspectPngAsset,
+  reviveRuntimeAssetRecord,
   revokeRuntimeAsset,
   runtimeAssetRecord,
 } from '../maker-assets.js';
@@ -119,9 +120,62 @@ test('inspects full-canvas and cropped PNG dimensions with deterministic initial
   }
 });
 
+test('distinguishes a fully transparent PNG from artwork with visible pixels', async () => {
+  const previousBitmap = globalThis.createImageBitmap;
+  const previousOffscreenCanvas = globalThis.OffscreenCanvas;
+  let pixels = new Uint8ClampedArray(2 * 2 * 4);
+  globalThis.createImageBitmap = async () => ({ width: 2, height: 2, close() {} });
+  globalThis.OffscreenCanvas = class {
+    getContext() {
+      return {
+        drawImage() {},
+        getImageData() {
+          return { data: pixels };
+        },
+      };
+    }
+  };
+  try {
+    const transparent = await inspectPngAsset(
+      { name: 'none.png', type: 'image/png', size: 16 },
+      { width: 2, height: 2 },
+    );
+    assert.equal(transparent.alphaAnalyzed, true);
+    assert.equal(transparent.hasVisiblePixels, false);
+    assert.equal(transparent.alphaBounds, null);
+
+    pixels = new Uint8ClampedArray(2 * 2 * 4);
+    pixels[3] = 255;
+    const visible = await inspectPngAsset(
+      { name: 'eye.png', type: 'image/png', size: 16 },
+      { width: 2, height: 2 },
+    );
+    assert.equal(visible.hasVisiblePixels, true);
+    assert.deepEqual(visible.alphaBounds, {
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      centerX: 0.5,
+      centerY: 0.5,
+    });
+  } finally {
+    globalThis.createImageBitmap = previousBitmap;
+    globalThis.OffscreenCanvas = previousOffscreenCanvas;
+  }
+});
+
 test('rejects non-PNG, oversized and invalid-dimension artwork', async () => {
   await assert.rejects(() => inspectPngAsset({ name: 'photo.jpg', type: 'image/jpeg', size: 1 }, { width: 1024, height: 1024 }), /must be a PNG/);
   await assert.rejects(() => inspectPngAsset({ name: 'huge.png', type: 'image/png', size: MAX_MAKER_ASSET_BYTES + 1 }, { width: 1024, height: 1024 }), /larger than 20 MB/);
+  const renamedJpeg = new Blob([
+    Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70]),
+  ], { type: 'image/png' });
+  Object.defineProperty(renamedJpeg, 'name', { value: 'renamed-photo.png' });
+  await assert.rejects(
+    () => inspectPngAsset(renamedJpeg, { width: 1024, height: 1024 }),
+    /not a real PNG/,
+  );
   const previous = globalThis.createImageBitmap;
   globalThis.createImageBitmap = async () => ({ width: 9000, height: 20, close() {} });
   try {
@@ -198,6 +252,25 @@ test('runtime records create and revoke only owned object URLs', () => {
     URL.createObjectURL = originalCreate;
     URL.revokeObjectURL = originalRevoke;
   }
+});
+
+test('revived runtime records retain remote URLs but never stale object URLs', () => {
+  const remote = reviveRuntimeAssetRecord({
+    assetId: 'remote-layer',
+    url: 'https://assets.example/remote-layer.png',
+    thumbnailUrl: '/makers/remote-layer-thumb.png',
+    source: 'remote',
+  });
+  assert.equal(remote.url, 'https://assets.example/remote-layer.png');
+  assert.equal(remote.thumbnailUrl, '/makers/remote-layer-thumb.png');
+
+  const stale = reviveRuntimeAssetRecord({
+    assetId: 'stale-layer',
+    url: 'blob:https://animacraft.example/stale-layer',
+    thumbnailUrl: 'blob:https://animacraft.example/stale-thumb',
+  });
+  assert.equal(stale.url, '');
+  assert.equal(stale.thumbnailUrl, '');
 });
 
 test('flags suspicious alpha-bound drift on a shared public Layer Track', () => {

@@ -43,7 +43,15 @@ export async function createMakerProjectArchive(document, runtimeAssets) {
   if (!document || typeof document !== 'object') throw new TypeError('A Maker document is required.');
   const files = {};
   const assetIndex = [];
-  for (const descriptor of document.assets || []) {
+  const descriptors = new Map();
+  [
+    ...(document.assets || []),
+    ...(document.extensions?.expansionDrafts || []).flatMap((pack) => pack.assets || []),
+  ].forEach((descriptor) => {
+    const assetId = String(descriptor?.id || '');
+    if (assetId && !descriptors.has(assetId)) descriptors.set(assetId, descriptor);
+  });
+  for (const descriptor of descriptors.values()) {
     const record = recordFrom(runtimeAssets, descriptor.id);
     const sourceBytes = await bytesFrom(record?.blob || record?.file);
     const thumbnailBytes = await bytesFrom(record?.thumbnailBlob);

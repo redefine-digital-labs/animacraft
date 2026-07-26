@@ -3,6 +3,8 @@ window.ANIMACRAFT_CONFIG = {
   grpcUrl: 'https://fullnode.mainnet.sui.io:443',
   graphqlUrl: 'https://graphql.mainnet.sui.io/graphql',
   packageId: '0xTODO_ANIMACRAFT_PACKAGE',
+  callablePackageId: '0xTODO_ANIMACRAFT_PACKAGE',
+  originalPackageId: '0xTODO_ANIMACRAFT_PACKAGE',
   paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
   paymentCoinSymbol: 'USDC',
   paymentCoinDecimals: 6,
@@ -17,8 +19,11 @@ window.ANIMACRAFT_CONFIG = {
   soulidityAppUrl: 'https://www.soulidity.ai',
   soulidityIntegrationPath: '/integrations/animacraft',
   soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  protocolFeePackageId: '0xV4_PROTOCOL_FEE_TYPE_ORIGIN_PACKAGE',
   protocolFeeConfigId: '0xYOUR_V4_PROTOCOL_FEE_CONFIG',
   protocolTreasuryId: '0xYOUR_V4_PROTOCOL_TREASURY',
+  protocolFeeAdminCapId: '0xYOUR_V4_PROTOCOL_FEE_ADMIN_CAP',
+  protocolFeeAdminCapOwner: '0xEXPECTED_ADMIN_WALLET',
   primaryProtocolFeeBps: 5000,
   canonicalSoulMintEnabled: false
 };
