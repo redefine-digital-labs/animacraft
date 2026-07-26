@@ -1,7 +1,9 @@
 # Animacraft Maker v4 创作者素材交付规范
 
+> **已废弃，仅供历史参考。** Maker v5 不再使用 Variant、LayerBinding、Empty LayerBinding 或 `asset-map`。新的社区 Maker、Creator Studio 和 Player Editor 只遵循 [`CREATOR_ASSET_SPEC_V5.zh-CN.md`](./CREATOR_ASSET_SPEC_V5.zh-CN.md) 中的 `Maker → Part → Item → Style → 唯一 PNG` 结构；旧 v3/v4 草稿不会迁移。
+
 版本：4.0
-状态：Creator Studio P0/P1 实施基线
+状态：已废弃的历史设计
 适用对象：画师、美术外包、Maker 设计师、技术美术、内容审核人员
 
 这份规范解决一个核心问题：**每张素材单独看都能用，但组合后仍然不像同一个角色。**

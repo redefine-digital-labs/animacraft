@@ -13,7 +13,7 @@ import { createMakerRuleIndex, evaluateRecipe } from '../maker-rules.js';
 
 function baseMaker() {
   return {
-    schemaVersion: 'animacraft.maker.v4',
+    schemaVersion: 'animacraft.maker.v5',
     version: {
       rootMakerId: 'astral-maker',
       versionId: 'astral-maker-v2',
@@ -26,7 +26,7 @@ function baseMaker() {
     canvas: { width: 1024, height: 1024, pixelMode: 'smooth' },
     layerTracks: [{ id: 'body-track', name: 'Body', order: 0 }],
     colorChannels: [],
-    assets: [{ id: 'body-art', identifier: 'body-v2.png', contentHash: 'body-hash' }],
+    assets: [{ id: 'body-art', identifier: 'body-v2.png', contentHash: 'body-hash', mediaType: 'image/png' }],
     parts: [{
       id: 'body',
       name: 'Body',
@@ -41,31 +41,32 @@ function baseMaker() {
         id: 'body-default',
         name: 'Default Body',
         displayOrder: 0,
-        defaultVariantId: 'default',
+        importKey: 'body-default',
+        status: 'public',
+        defaultStyleId: 'default',
         requires: [],
         excludes: [],
-        variants: [{
+        styles: [{
           id: 'default',
           name: 'Default',
           displayOrder: 0,
+          assetId: 'body-art',
+          layerTrackId: 'body-track',
+          colorChannelId: null,
+          transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+          positionConfirmed: false,
+          positionLocked: false,
+          styleLocked: false,
+          opacity: 1,
+          blendMode: 'normal',
+          visibleWhen: null,
           requires: [],
           excludes: [],
-          layerBindings: [{
-            id: 'body-binding',
-            layerTrackId: 'body-track',
-            assetId: 'body-art',
-            colorChannelId: null,
-            assetsBySwatch: [],
-            transform: { x: 0, y: 0, scale: 1, rotation: 0 },
-            opacity: 1,
-            blendMode: 'normal',
-            visibleWhen: null,
-          }],
         }],
       }],
     }],
     defaultRecipe: {
-      selections: [{ partId: 'body', itemId: 'body-default', variantId: 'default' }],
+      selections: [{ partId: 'body', itemId: 'body-default', styleId: 'default' }],
       colors: [],
     },
     rules: [],
@@ -83,8 +84,8 @@ function moonPack() {
     baseMakerId: 'astral-maker',
     baseMakerVersion: 2,
     assets: [
-      { id: 'hat-art', identifier: 'moon/hat.png', contentHash: 'hat-hash' },
-      { id: 'armor-art', identifier: 'moon/armor.png', contentHash: 'armor-hash' },
+      { id: 'hat-art', identifier: 'moon/hat.png', contentHash: 'hat-hash', mediaType: 'image/png' },
+      { id: 'armor-art', identifier: 'moon/armor.png', contentHash: 'armor-hash', mediaType: 'image/png' },
     ],
     layerTracks: [{ id: 'hat-track', name: 'Hat', order: 0 }],
     colorChannels: [],
@@ -95,26 +96,27 @@ function moonPack() {
           id: 'armored-body',
           name: 'Armored Body',
           displayOrder: 0,
-          defaultVariantId: 'default',
+          importKey: 'armored-body',
+          status: 'public',
+          defaultStyleId: 'default',
           requires: [],
           excludes: [],
-          variants: [{
+          styles: [{
             id: 'default',
             name: 'Default',
             displayOrder: 0,
+            layerTrackId: 'body-track',
+            assetId: 'armor-art',
+            colorChannelId: null,
+            transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+            positionConfirmed: false,
+            positionLocked: false,
+            styleLocked: false,
+            opacity: 1,
+            blendMode: 'normal',
+            visibleWhen: null,
             requires: [],
             excludes: [],
-            layerBindings: [{
-              id: 'armor-binding',
-              layerTrackId: 'body-track',
-              assetId: 'armor-art',
-              colorChannelId: null,
-              assetsBySwatch: [],
-              transform: { x: 0, y: 0, scale: 1, rotation: 0 },
-              opacity: 1,
-              blendMode: 'normal',
-              visibleWhen: null,
-            }],
           }],
         }],
       },
@@ -132,26 +134,27 @@ function moonPack() {
           id: 'halo',
           name: 'Moon Halo',
           displayOrder: 0,
-          defaultVariantId: 'default',
+          importKey: 'halo',
+          status: 'public',
+          defaultStyleId: 'default',
           requires: [{ scope: 'base', partId: 'body' }],
           excludes: [],
-          variants: [{
+          styles: [{
             id: 'default',
             name: 'Default',
             displayOrder: 0,
+            layerTrackId: 'hat-track',
+            assetId: 'hat-art',
+            colorChannelId: null,
+            transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+            positionConfirmed: false,
+            positionLocked: false,
+            styleLocked: false,
+            opacity: 1,
+            blendMode: 'screen',
+            visibleWhen: { op: 'selected', scope: 'base', partId: 'body', itemId: 'body-default' },
             requires: [],
             excludes: [],
-            layerBindings: [{
-              id: 'halo-binding',
-              layerTrackId: 'hat-track',
-              assetId: 'hat-art',
-              colorChannelId: null,
-              assetsBySwatch: [],
-              transform: { x: 0, y: 0, scale: 1, rotation: 0 },
-              opacity: 1,
-              blendMode: 'screen',
-              visibleWhen: { op: 'selected', scope: 'base', partId: 'body', itemId: 'body-default' },
-            }],
           }],
         }],
       },
@@ -182,12 +185,12 @@ test('namespaces pack definitions without mutating the base Maker', () => {
   assert.ok(merged.parts.some((part) => part.id === 'moon__hat' && part.parentPartId === 'body'));
   assert.ok(merged.parts.find((part) => part.id === 'body').items.some((item) => item.id === 'moon__armored-body'));
   const halo = merged.parts.find((part) => part.id === 'moon__hat').items[0];
-  const binding = halo.variants[0].layerBindings[0];
+  const selectedStyle = halo.styles[0];
   assert.equal(halo.id, 'moon__halo');
-  assert.equal(halo.variants[0].id, 'moon__default');
-  assert.equal(binding.layerTrackId, 'moon__hat-track');
-  assert.equal(binding.assetId, 'moon__hat-art');
-  assert.equal(binding.visibleWhen.partId, 'body');
+  assert.equal(selectedStyle.id, 'moon__default');
+  assert.equal(selectedStyle.layerTrackId, 'moon__hat-track');
+  assert.equal(selectedStyle.assetId, 'moon__hat-art');
+  assert.equal(selectedStyle.visibleWhen.partId, 'body');
   assert.equal(merged.installedExpansionPacks[0].packId, 'moon-pack');
   assert.doesNotThrow(() => createMakerRuleIndex(merged));
   assert.equal(evaluateRecipe(merged, merged.defaultRecipe).valid, true);
@@ -200,34 +203,130 @@ test('mergeExpansionPack returns the same additive runtime view as compatibility
   assert.equal(merged.defaultRecipe.selections.length, 1);
 });
 
-test('can add a namespaced Variant to an existing base Item without replacing its default', () => {
+test('can add a namespaced Style to an existing base Item without replacing its default', () => {
   const pack = moonPack();
   pack.parts[0].items.push({
     extendsItemId: 'body-default',
-    variants: [{
+    styles: [{
       id: 'moonlit',
       name: 'Moonlit',
       displayOrder: 0,
+      layerTrackId: 'body-track',
+      assetId: 'armor-art',
+      colorChannelId: null,
+      transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+      positionConfirmed: false,
+      positionLocked: false,
+      styleLocked: false,
+      opacity: 1,
+      blendMode: 'screen',
+      visibleWhen: null,
       requires: [],
       excludes: [],
-      layerBindings: [{
-        id: 'moonlit-binding',
-        layerTrackId: 'body-track',
-        assetId: 'armor-art',
-        colorChannelId: null,
-        assetsBySwatch: [],
-        transform: { x: 0, y: 0, scale: 1, rotation: 0 },
-        opacity: 1,
-        blendMode: 'screen',
-        visibleWhen: null,
-      }],
     }],
   });
   const merged = mergeExpansionPack(baseMaker(), pack);
   const item = merged.parts[0].items.find((candidate) => candidate.id === 'body-default');
-  assert.equal(item.defaultVariantId, 'default');
-  assert.deepEqual(item.variants.map((variant) => variant.id), ['default', 'moon__moonlit']);
-  assert.equal(item.variants[1].layerBindings[0].assetId, 'moon__armor-art');
+  assert.equal(item.defaultStyleId, 'default');
+  assert.deepEqual(item.styles.map((entry) => entry.id), ['default', 'moon__moonlit']);
+  assert.equal(item.styles[1].assetId, 'moon__armor-art');
+});
+
+test('rejects legacy nested, multi-asset and Variant fields on Expansion Pack Styles', () => {
+  const obsoleteFields = new Map([
+    ['layerBindings', [{ id: 'legacy-binding', assetId: 'armor-art' }]],
+    ['bindingId', 'legacy-binding'],
+    ['assetsBySwatch', [{ swatchId: 'blue', assetId: 'armor-art' }]],
+    ['variant', { id: 'legacy-variant' }],
+    ['bindings', []],
+    ['layers', []],
+    ['variants', []],
+    ['visible', false],
+    ['hidden', true],
+    ['enabled', false],
+    ['visibilityCondition', { op: 'selected', partId: 'body' }],
+    ['rules', { visibleWhen: { op: 'selected', partId: 'body' } }],
+  ]);
+
+  obsoleteFields.forEach((value, field) => {
+    const pack = moonPack();
+    pack.parts[0].items[0].styles[0][field] = value;
+    const result = checkExpansionPackCompatibility(baseMaker(), pack);
+    assert.equal(result.compatible, false, `${field} must not pass compatibility`);
+    assert.equal(result.merged, null);
+    assert.ok(result.errors.some((issue) => (
+      issue.code === 'obsolete-pack-style-field'
+      && issue.field === field
+      && issue.styleId === 'default'
+    )), JSON.stringify(result.errors));
+    assert.throws(
+      () => mergeExpansionPack(baseMaker(), pack),
+      (error) => error?.code === 'incompatible-expansion-pack'
+        && error.details.errors.some((issue) => issue.code === 'obsolete-pack-style-field' && issue.field === field),
+    );
+  });
+
+  const itemVariantPack = moonPack();
+  itemVariantPack.parts[0].items[0].variants = structuredClone(itemVariantPack.parts[0].items[0].styles);
+  const itemVariantResult = checkExpansionPackCompatibility(baseMaker(), itemVariantPack);
+  assert.equal(itemVariantResult.compatible, false);
+  assert.ok(itemVariantResult.errors.some((issue) => (
+    issue.code === 'obsolete-pack-item-field' && issue.field === 'variants'
+  )), JSON.stringify(itemVariantResult.errors));
+});
+
+test('requires exactly one resolvable assetId for every Expansion Pack Style', () => {
+  const invalidAssetCases = [
+    {
+      name: 'missing assetId',
+      mutate(style) { delete style.assetId; },
+      code: 'pack-style-requires-single-asset',
+    },
+    {
+      name: 'blank assetId',
+      mutate(style) { style.assetId = '   '; },
+      code: 'pack-style-requires-single-asset',
+    },
+    {
+      name: 'multiple asset ids',
+      mutate(style) { style.assetId = ['armor-art', 'hat-art']; },
+      code: 'pack-style-requires-single-asset',
+    },
+    {
+      name: 'unknown assetId',
+      mutate(style) { style.assetId = 'missing-art'; },
+      code: 'missing-pack-style-asset',
+    },
+    {
+      name: 'non-PNG assetId',
+      mutate(style, pack) {
+        pack.assets.find((asset) => asset.id === style.assetId).mediaType = 'image/jpeg';
+      },
+      code: 'pack-style-asset-not-png',
+    },
+  ];
+
+  invalidAssetCases.forEach(({ name, mutate, code }) => {
+    const pack = moonPack();
+    mutate(pack.parts[0].items[0].styles[0], pack);
+    const result = checkExpansionPackCompatibility(baseMaker(), pack);
+    assert.equal(result.compatible, false, `${name} must not pass compatibility`);
+    assert.equal(result.merged, null);
+    assert.ok(result.errors.some((issue) => issue.code === code && issue.styleId === 'default'), JSON.stringify(result.errors));
+    assert.throws(
+      () => mergeExpansionPack(baseMaker(), pack),
+      (error) => error?.code === 'incompatible-expansion-pack'
+        && error.details.errors.some((issue) => issue.code === code),
+    );
+  });
+
+  const baseAssetPack = moonPack();
+  baseAssetPack.parts[0].items[0].styles[0].assetId = 'body-art';
+  const merged = mergeExpansionPack(baseMaker(), baseAssetPack);
+  const style = merged.parts[0].items.find((item) => item.id === 'moon__armored-body').styles[0];
+  assert.equal(style.assetId, 'body-art');
+  assert.equal(Object.hasOwn(style, 'layerBindings'), false);
+  assert.equal(Object.hasOwn(style, 'assetsBySwatch'), false);
 });
 
 test('rejects wrong Maker identity, base version and required Pack Parts', () => {
@@ -274,23 +373,27 @@ test('reports an additive Maker update as compatible', () => {
     id: 'body-alt',
     name: 'Alternate Body',
     displayOrder: 1,
-    defaultVariantId: 'default',
+    importKey: 'body-alt',
+    status: 'public',
+    defaultStyleId: 'default',
     requires: [],
     excludes: [],
-    variants: [{
+    styles: [{
       id: 'default',
       name: 'Default',
       displayOrder: 0,
+      layerTrackId: 'body-track',
+      assetId: 'body-alt-art',
+      colorChannelId: null,
+      transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+      positionConfirmed: false,
+      positionLocked: false,
+      styleLocked: false,
+      opacity: 1,
+      blendMode: 'normal',
+      visibleWhen: null,
       requires: [],
       excludes: [],
-      layerBindings: [{
-        id: 'body-alt-binding',
-        layerTrackId: 'body-track',
-        assetId: 'body-alt-art',
-        transform: { x: 0, y: 0, scale: 1, rotation: 0 },
-        opacity: 1,
-        blendMode: 'normal',
-      }],
     }],
   });
   const result = compareMakerCompatibility(previous, next);
@@ -303,13 +406,13 @@ test('reports removed recipe ids and rendering changes as pinned-version breaks'
   const previous = baseMaker();
   const next = structuredClone(previous);
   next.version = { ...next.version, versionId: 'astral-maker-v3', number: 3, parentVersionId: 'astral-maker-v2' };
-  next.parts[0].items[0].variants[0].layerBindings[0].transform.x = 12;
+  next.parts[0].items[0].styles[0].transform.x = 12;
   next.assets[0].contentHash = 'new-body-hash';
   const result = compareMakerCompatibility(previous, next);
   assert.equal(result.compatible, false);
   assert.equal(result.requiresPinnedVersion, true);
   assert.equal(result.renderCompatible, false);
-  assert.ok(result.breaking.some((change) => change.code === 'variant-rendering-changed'));
+  assert.ok(result.breaking.some((change) => change.code === 'style-rendering-changed'));
   assert.ok(result.breaking.some((change) => change.code === 'asset-content-changed'));
 });
 

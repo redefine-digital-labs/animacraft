@@ -52,7 +52,6 @@ import {
   createCharacterMakerV4Starter,
   createMakerV4Document,
   isMakerV4Document,
-  migrateMakerV3ToV4,
   validateMakerV4Document,
 } from './maker-v4.js';
 import { evaluateRecipe } from './maker-rules.js';
@@ -1222,60 +1221,62 @@ function makerModelFromV4Manifest(document, resolveAssetUrl, object = {}) {
   const visual = defaultMakerVisual();
   const modelParts = {};
   const modelSlots = (document.parts || []).map((part) => {
-    const bindings = part.items.flatMap((item) => item.variants.flatMap((variant) => variant.layerBindings));
-    const trackIds = [...new Set(bindings.map((binding) => binding.layerTrackId))];
-    const channel = channelById.get(bindings.find((binding) => binding.colorChannelId)?.colorChannelId);
+    // Draft Parts are allowed to be empty. Keep the legacy preview adapter
+    // resilient while Creator Studio is constructing the first Item/Style.
+    const items = Array.isArray(part.items) ? part.items : [];
+    const styles = items.flatMap((item) => item.styles || []);
+    const trackIds = [...new Set(styles.map((style) => style.layerTrackId).filter(Boolean))];
+    const channel = channelById.get(styles.find((style) => style.colorChannelId)?.colorChannelId);
     const colors = channel?.swatches?.length
       ? channel.swatches.map((swatch) => ({ id: swatch.id, name: swatch.name, value: swatch.hintColor }))
       : [{ id: 'default', name: 'Default', value: '#7b5cff' }];
     const layers = trackIds.map((trackId) => {
-      const binding = bindings.find((candidate) => candidate.layerTrackId === trackId);
+      const style = styles.find((candidate) => candidate.layerTrackId === trackId);
       const track = trackById.get(trackId);
       return {
         id: trackId,
         name: track?.name || trackId,
-        x: Number(binding?.transform?.x || 0),
-        y: Number(binding?.transform?.y || 0),
-        opacity: Math.round(Number(binding?.opacity ?? 1) * 100),
-        blendMode: binding?.blendMode || 'normal',
+        x: Number(style?.transform?.x || 0),
+        y: Number(style?.transform?.y || 0),
+        opacity: Math.round(Number(style?.opacity ?? 1) * 100),
+        blendMode: style?.blendMode || 'normal',
         renderOrder: Number(track?.order || 0),
       };
     });
-    const flattened = part.items.flatMap((item) => item.variants.map((variant, variantIndex) => {
-      const itemId = item.variants.length > 1 ? `${item.id}--${variant.id}` : item.id;
+    const flattened = items.flatMap((item) => (item.styles || []).map((style, styleIndex) => {
+      const itemId = (item.styles || []).length > 1 ? `${item.id}--${style.id}` : item.id;
       const images = {};
-      variant.layerBindings.forEach((binding) => {
-        const bindingChannel = channelById.get(binding.colorChannelId);
-        const mappings = binding.assetsBySwatch?.length
-          ? binding.assetsBySwatch
-          : (bindingChannel?.swatches || colors).map((swatch) => ({ swatchId: swatch.id, assetId: binding.assetId }));
-        if (!mappings.length) mappings.push({ swatchId: 'default', assetId: binding.assetId });
-        mappings.forEach((mapping) => {
-          const descriptor = descriptorById.get(mapping.assetId);
-          if (!descriptor?.identifier) return;
-          images[assetCellKey(binding.layerTrackId, mapping.swatchId || 'default')] = {
-            identifier: descriptor.identifier,
-            url: resolveAssetUrl(descriptor.identifier),
-            remote: true,
-          };
-        });
+      const styleChannel = channelById.get(style.colorChannelId);
+      const mappings = (styleChannel?.swatches || colors).map((swatch) => ({
+        swatchId: swatch.id,
+        assetId: style.assetId,
+      }));
+      if (!mappings.length && style.assetId) mappings.push({ swatchId: 'default', assetId: style.assetId });
+      mappings.forEach((mapping) => {
+        const descriptor = descriptorById.get(mapping.assetId);
+        if (!descriptor?.identifier || !style.layerTrackId) return;
+        images[assetCellKey(style.layerTrackId, mapping.swatchId || 'default')] = {
+          identifier: descriptor.identifier,
+          url: resolveAssetUrl(descriptor.identifier),
+          remote: true,
+        };
       });
       const thumbnail = descriptorById.get(item.thumbnailAssetId);
       return {
         id: itemId,
-        label: item.variants.length > 1 ? `${item.name} · ${variant.name}` : item.name,
-        displayOrder: Number(item.displayOrder || 0) + variantIndex + 1,
+        label: (item.styles || []).length > 1 ? `${item.name} · ${style.name}` : item.name,
+        displayOrder: Number(item.displayOrder || 0) + styleIndex + 1,
         visibility: 'public',
         images,
         iconAsset: thumbnail?.identifier ? { identifier: thumbnail.identifier, url: resolveAssetUrl(thumbnail.identifier), remote: true } : null,
         v4ItemId: item.id,
-        v4VariantId: variant.id,
+        v4StyleId: style.id,
       };
     }));
     modelParts[part.id] = flattened;
-    const defaultItem = part.items.find((item) => item.id === part.defaultItemId) || part.items[0];
-    const defaultItemId = defaultItem?.variants?.length > 1
-      ? `${defaultItem.id}--${defaultItem.defaultVariantId || defaultItem.variants[0]?.id}`
+    const defaultItem = items.find((item) => item.id === part.defaultItemId) || items[0];
+    const defaultItemId = defaultItem?.styles?.length > 1
+      ? `${defaultItem.id}--${defaultItem.defaultStyleId || defaultItem.styles[0]?.id}`
       : defaultItem?.id || '';
     visual[part.id] = defaultItemId;
     visual.palette[part.id] = colors.find((color) => color.id === channel?.defaultSwatchId)?.value || colors[0].value;
@@ -1285,7 +1286,7 @@ function makerModelFromV4Manifest(document, resolveAssetUrl, object = {}) {
       label: part.name,
       icon: part.name.slice(0, 2).toUpperCase(),
       colorKey: part.id,
-      description: 'Animacraft Maker v4 Part',
+      description: 'Animacraft Maker v5 Part',
       kind: part.required ? 'last-bastion' : 'standard',
       menuVisible: part.menuVisible !== false,
       allowRemove: !part.required,
@@ -3110,13 +3111,9 @@ function collapseMakerV4AssetAliases(documentV4) {
     part.iconAssetId = resolve(part.iconAssetId);
     part.items.forEach((item) => {
       item.thumbnailAssetId = resolve(item.thumbnailAssetId);
-      item.variants.forEach((variant) => variant.layerBindings.forEach((binding) => {
-        binding.assetId = resolve(binding.assetId);
-        binding.assetsBySwatch = (binding.assetsBySwatch || []).map((mapping) => ({
-          ...mapping,
-          assetId: resolve(mapping.assetId),
-        }));
-      }));
+      (item.styles || []).forEach((style) => {
+        style.assetId = resolve(style.assetId);
+      });
     });
   });
   documentV4.assets = documentV4.assets.filter((asset) => !aliases.has(asset.id));
@@ -3346,7 +3343,7 @@ function makerPublicationIssues() {
     try {
       creatorUploadManifest();
     } catch (error) {
-      issues.push(error.message || 'The Maker v4 publication manifest is invalid.');
+      issues.push(error.message || 'The Maker v5 publication manifest is invalid.');
     }
     return [...new Set(issues)];
   }
@@ -3450,7 +3447,7 @@ function renderCreatorValidation() {
   const checks = [
     [structuredParts.length > 0, 'At least one valid Part is registered.'],
     [visibleParts.length > 0, 'At least one Part is visible in the player menu.'],
-    [missingCells === 0, missingCells ? `${missingCells} required Layer × Color PNG cells are still empty.` : 'Every public Item has all required PNG images.'],
+    [missingCells === 0, missingCells ? `${missingCells} required Style PNG references are still empty.` : 'Every public Item has all required Style PNG images.'],
     [invalidRules.length === 0, invalidRules.length ? `${invalidRules.length} rules reference unavailable Parts or Items.` : 'All selection rules reference available Parts and Items.'],
     [invalidPaletteLinks.length === 0, invalidPaletteLinks.length ? `${invalidPaletteLinks.length} palette links reference unavailable Parts.` : 'All linked palettes reference available Parts.'],
     [publishRecordCount <= MAX_SINGLE_PUBLISH_RECORDS, publishRecordCount <= MAX_SINGLE_PUBLISH_RECORDS ? `${publishRecordCount}/${MAX_SINGLE_PUBLISH_RECORDS} on-chain Part, Item, Color, Rule, and palette records fit the launch publisher.` : `${publishRecordCount} records exceed this launch publisher's ${MAX_SINGLE_PUBLISH_RECORDS}-record limit.`],
@@ -3793,7 +3790,7 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
         publicExtensions: makerV4PublicExtensions(documentV4),
       });
       if (state.pendingMakerV4Bundle.manifestJson !== recovery.manifestJson) {
-        throw new Error('The Maker v4 release graph no longer matches this Walrus checkpoint.');
+        throw new Error('The Maker v5 release graph no longer matches this Walrus checkpoint.');
       }
       state.pendingMakerAssets = state.pendingMakerV4Bundle.assetEntries.map((entry) => ({
         assetId: entry.assetId,
@@ -4479,7 +4476,7 @@ function renderPartWorkspace() {
       const item = items[index];
       openConfirmation({
         title: 'Delete Item?',
-        message: `“${item.label}” and all of its local Layer × Color PNG references will be removed from this draft.`,
+        message: `“${item.label}” and all of its local Style PNG references will be removed from this draft.`,
         confirmLabel: 'Delete item',
         action: () => {
           if (item.iconAsset?.url) URL.revokeObjectURL(item.iconAsset.url);
@@ -4836,7 +4833,7 @@ function renderPublishAction() {
   if (!$('publishMakerOnchain')) return;
   const locked = makerIsPublished() && !makerHasPendingV4Version();
   const hasMakerAssets = isMakerV4Document(state.makerDocumentV4)
-    ? state.makerDocumentV4.parts.some((part) => part.items.some((item) => item.variants.some((variant) => variant.layerBindings.length)))
+    ? state.makerDocumentV4.parts.some((part) => part.items.some((item) => (item.styles || []).some((style) => style.assetId)))
     : itemLayerAssets().length > 0;
   const baseReady = !locked && packageConfigured() && state.walletConnected && hasMakerAssets;
   $('resumeMakerUpload').disabled = locked || state.publishing || !state.walletConnected || !state.hasMakerUploadRecovery;
@@ -5584,41 +5581,7 @@ async function restoreMakerDraft(templateId = state.templateId) {
 }
 
 function currentMakerV4Source() {
-  if (isMakerV4Document(state.makerDocumentV4)) return state.makerDocumentV4;
-  const template = activeTemplate();
-  try {
-    return migrateMakerV3ToV4({
-      template: {
-        id: template.id || state.templateId || 'system-workspace',
-        name: template.name,
-        summary: template.summary,
-        creator: template.creator,
-        style: template.style,
-        license: ['personal-use', 'free-remix', 'paid-commercial', 'exclusive-commission'].find((kind) => kind === $('creatorLicense')?.value) || 'personal-use',
-        licenseNote: template.licenseNote || $('creatorLicenseNote')?.value || 'Set a public Maker license before publication.',
-        royaltyBps: Number(template.royaltyBps || 0),
-        mintingEnabled: template.mintingEnabled !== false,
-        mintFeeEnabled: Boolean(template.mintFeeEnabled),
-        mintPriceAtomic: Number(template.mintPriceAtomic || 0),
-        paymentCoinType: runtimeConfig.paymentCoinType,
-        paymentCoinSymbol: runtimeConfig.paymentCoinSymbol,
-        canvas: state.makerCanvas,
-      },
-      canvas: state.makerCanvas,
-      slots: state.makerSlots,
-      parts: state.makerParts,
-      slotOrder: state.slotOrder,
-      layerOrder: state.layerOrder,
-      visual: state.visual,
-      rules: state.rules,
-      paletteLinks: state.paletteLinks,
-      livingContent: state.livingContent,
-      assets: state.assets,
-    });
-  } catch (error) {
-    console.warn('Could not migrate the legacy Maker draft into v4.', error);
-    return null;
-  }
+  return isMakerV4Document(state.makerDocumentV4) ? state.makerDocumentV4 : null;
 }
 
 function currentV4RuntimeAssets() {
@@ -5653,7 +5616,7 @@ function syncLegacyVisualFromV4(document, recipe) {
       state.visual[part.id] = '';
       return;
     }
-    const flattenedId = `${selection.itemId}--${selection.variantId}`;
+    const flattenedId = `${selection.itemId}--${selection.styleId}`;
     state.visual[part.id] = slotItems(part.id).some((item) => item.id === flattenedId)
       ? flattenedId
       : selection.itemId;
@@ -5661,7 +5624,7 @@ function syncLegacyVisualFromV4(document, recipe) {
   (recipe.colors || []).forEach((selection) => {
     const channel = document.colorChannels.find((candidate) => candidate.id === selection.channelId);
     const swatch = channel?.swatches.find((candidate) => candidate.id === selection.swatchId);
-    const linkedParts = document.parts.filter((part) => part.items.some((item) => item.variants.some((variant) => variant.layerBindings.some((binding) => binding.colorChannelId === channel?.id))));
+    const linkedParts = document.parts.filter((part) => part.items.some((item) => (item.styles || []).some((style) => style.colorChannelId === channel?.id)));
     linkedParts.forEach((part) => {
       const legacySlot = allSlots().find((slot) => slot.key === part.id);
       state.visual.palette[legacySlot?.colorKey || part.id] = swatch?.hintColor || '#7b5cff';
@@ -6428,7 +6391,7 @@ makerWorkspace = createMakerWorkspace({
     onSaved(payload) {
       syncV4WorkspaceState(payload);
       state.draftSaveStatus = 'saved';
-      state.draftSaveMessage = payload.automatic ? 'Maker v4 autosaved' : 'Maker v4 saved';
+      state.draftSaveMessage = payload.automatic ? 'Maker v5 autosaved' : 'Maker v5 saved';
     },
     onBackToLibrary() {
       setCreatorView('list');

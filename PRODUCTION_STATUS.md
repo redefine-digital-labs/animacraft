@@ -10,28 +10,29 @@ Current Mainnet truth: the published package is configured, but discovery curren
 
 ## Implemented
 
-- Separate Maker v4 Creator Studio and Player Editor surfaces backed by one document model, constraint engine, and Canvas renderer; players never reposition creator-authored layers.
+- Separate Maker v5 Creator Studio and Player Editor surfaces backed by one document model, constraint engine, and Canvas renderer; players never reposition creator-authored Styles.
 - Parts & Items remains the persistent creator canvas; Layer Tracks, Smart Color, Rules, Expansion Packs, and Preflight use bounded desktop/mobile tool dialogs with close/Escape behavior, human-readable issue paths, and no horizontal overflow.
 - Maker Studio navigation, nested Inspector controls, runtime status, validation, Player Editor, and primary creation controls follow the existing MyPage language setting in English, Chinese, Japanese, Korean, and Vietnamese. Unknown low-level protocol diagnostics fall back to a localized category message rather than hiding an error.
 - Text edits are buffered and flushed before Save, Undo, tool switching, and review so a creator cannot lose a rename by clicking a toolbar action directly.
-- Production Character starter creates a complete eight-Part graph with one Item, Variant, global LayerTrack, and direct PNG LayerBinding upload slot per Part; it no longer migrates an empty legacy shell.
-- Fixed Canvas coordinates with creator drag/position confirmation, proportional scale, zoom, hide/Solo/dim inspection, explicit LayerTracks, full blend modes, and pixel rendering.
+- Production Character starter creates an eight-Part draft graph with one empty draft Item and one global LayerTrack per Part. Creators add Styles explicitly; a new Item does not inherit stale artwork or settings.
+- Fixed Canvas coordinates owned only by each Style, with creator drag/position confirmation, real position and full-Style locks, proportional scale, zoom, hide/Solo/dim inspection, explicit z-order-only LayerTracks, full blend modes, and pixel rendering.
 - Batch PNG import with mapping confirmation, alpha-cropped UI thumbnails without source mutation, independent thumbnails/icons, structural copy/delete/reorder, Undo/Redo, and incremental/manual save states.
-- Item/Variant/LayerBinding hierarchy, explicit optional `None`, requires/excludes, parent Parts, conditional visibility, shared gradient/asset-map ColorChannels, and constraint-safe Random.
+- Final `Maker → Part → Item → Style` hierarchy. Each Style has exactly one `assetId`/PNG plus its own Track, transform, opacity, blend, color, lock, and rule data; there is no nested render-unit level or Style enable toggle.
+- Explicit optional `None`, requires/excludes, parent Parts, conditional visibility, shared gradient-map ColorChannels, and constraint-safe Random. A different PNG always requires a different Style.
 - Embedded, namespaced ExpansionPack preview/runtime support plus compatible/breaking Maker update analysis and immutable old-OC version pinning.
-- `animacraft.maker.v4` and `animacraft.oc-package.v2` Walrus outputs with a deterministic compatibility projection for the existing Sui publication and RecipeSlot interfaces. Move-inexpressible rules are marked as partial coverage rather than silently dropped.
-- Migration support for the previous Part-owned `Item x Layer x Color` PNG-matrix model.
-- One live composition surface plus a global cross-Part Layer order; preview and exported PNG use the same offsets, opacity, blend mode, and canvas scaling.
+- `animacraft.maker.v5` and `animacraft.oc-package.v2` Walrus outputs with a deterministic compatibility projection for the existing Sui publication and RecipeSlot interfaces. Move-inexpressible rules are marked as partial coverage rather than silently dropped.
+- Maker v5 authoring rejects legacy multi-image nested render graphs instead of guessing a lossy migration.
+- One live composition surface plus a global cross-Part LayerTrack order. LayerTracks never store or inherit coordinates; preview and exported PNG use each Style's same transform, opacity, blend mode, and canvas scaling.
 - Standard, left-right paired, and required Last Bastion Parts. Last Bastion Parts cannot be targeted by incompatibility rules.
-- Local Maker, Part, Item, optional Layer, and extra Color deletion before publication.
-- Separate IndexedDB v4 stores for Maker documents, incrementally persisted source image Blobs, wallet-scoped player sessions, and resumable Maker/OC Walrus upload checkpoints; v3 drafts remain migratable.
-- `animacraft.creator-template.v3` manifest compatibility alongside the generated v4 Maker cover, Quilt Blob ID, and identifier addressing.
+- Local Maker, Part, Item, Style, and extra Color deletion before publication.
+- Separate IndexedDB stores for Maker v5 documents, incrementally persisted source image Blobs, wallet-scoped player sessions, and resumable Maker/OC Walrus upload checkpoints. Legacy v3/v4 drafts are not silently migrated into the v5 hierarchy.
+- Legacy `animacraft.creator-template.v3` reading remains separate from the generated v5 Maker cover, Quilt Blob ID, and identifier addressing.
 - Public Maker discovery from Sui publication events, Sui object hydration, and certified Walrus manifests.
 - Chain-only production gallery, truthful zero-Maker state, 50-event Mainnet GraphQL pagination, and guarded Player routes that cannot fall back to hidden examples.
 - Remote manifest limits and validation before an untrusted public Maker reaches the player.
 - Reusable wallet-owned `CreatorProfile` records with published Maker IDs.
 - Three-object Maker publication: shared `OCMaker`, shared `MakerTreasury<PaymentCoin>`, and transferable `MakerAdminCap`.
-- Cap-only administration, exact native-USDC paid authorization, v4 Maker/protocol Treasury splitting, Treasury accounting/withdrawal, and 0% or 1%–5% resale-royalty tiers.
+- Cap-only administration, exact native-USDC paid authorization, protocol v4 Maker/protocol Treasury splitting, Treasury accounting/withdrawal, and 0% or 1%–5% resale-royalty tiers.
 - Immutable published art/rules, Cap-signed economics and archive/restore, and mint rejection for archived or closed Makers.
 - Rule-aware player choices, required Part validation, exact linked Color sets, uploaded item thumbnails, finished PNG rendering, and Walrus storage.
 - Living Content editor with Soulidity-compatible `soul.md`, `memory.md`, and `skills.zip` defaults embedded in Maker and OC packages.

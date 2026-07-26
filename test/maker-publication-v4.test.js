@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createMakerV4Document, validateMakerV4Document } from '../maker-v4.js';
+import { createMakerV5Document, validateMakerV5Document } from '../maker-v4.js';
+import { resolveMakerScene } from '../maker-renderer.js';
 import {
   MAKER_V4_MANIFEST_IDENTIFIER,
   MAKER_V4_NEUTRAL_COLOR,
@@ -18,23 +19,29 @@ import {
   indexMakerV4UploadResults,
 } from '../maker-publication-v4.js';
 
-function binding(id, track, asset, colorChannelId = null, extra = {}) {
+function style(id, track, asset, colorChannelId = null, extra = {}) {
   return {
     id,
+    name: id,
+    displayOrder: 0,
     layerTrackId: track,
     assetId: asset,
     colorChannelId,
-    assetsBySwatch: [],
     transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+    positionConfirmed: false,
+    positionLocked: false,
+    styleLocked: false,
     opacity: 1,
     blendMode: 'normal',
     visibleWhen: null,
+    requires: [],
+    excludes: [],
     ...extra,
   };
 }
 
 function publicationMaker({ version = 1, compatibility = version === 1 ? 'initial' : 'compatible' } = {}) {
-  const document = createMakerV4Document({
+  const document = createMakerV5Document({
     makerId: 'astral-maker',
     name: 'Astral Maker',
     creator: 'Angie',
@@ -46,7 +53,7 @@ function publicationMaker({ version = 1, compatibility = version === 1 ? 'initia
       changelog: version === 1 ? '' : 'Adds new Maker content.',
     },
   });
-  document.metadata.summary = 'A complete Maker v4 publication fixture.';
+  document.metadata.summary = 'A complete Maker v5 publication fixture.';
   document.metadata.style = 'Cel shaded';
   document.metadata.license.note = 'Personal use with creator credit.';
   document.metadata.coverAssetId = 'cover';
@@ -101,30 +108,20 @@ function publicationMaker({ version = 1, compatibility = version === 1 ? 'initia
         id: 'shape',
         name: 'Body Shape',
         displayOrder: 0,
+        importKey: 'shape',
+        status: 'public',
         thumbnailAssetId: 'body-thumb',
         visibleWhen: null,
         requires: [],
         excludes: [],
-        defaultVariantId: 'default',
-        variants: [
-          {
-            id: 'default',
-            name: 'Default',
-            displayOrder: 0,
-            visibleWhen: null,
-            requires: [],
-            excludes: [],
-            layerBindings: [binding('body-default-binding', 'body-track', 'body-default', 'skin')],
-          },
-          {
-            id: 'armored',
+        defaultStyleId: 'default',
+        styles: [
+          style('default', 'body-track', 'body-default', 'skin'),
+          style('armored', 'body-track', 'body-armored', 'skin', {
             name: 'Armored',
             displayOrder: 1,
-            visibleWhen: null,
-            requires: [],
-            excludes: [],
-            layerBindings: [binding('body-armored-binding', 'body-track', 'body-armored', 'skin', { blendMode: 'overlay' })],
-          },
+            blendMode: 'overlay',
+          }),
         ],
       }],
     },
@@ -144,27 +141,23 @@ function publicationMaker({ version = 1, compatibility = version === 1 ? 'initia
         id: 'moon-hat',
         name: 'Moon Hat',
         displayOrder: 0,
+        importKey: 'moon-hat',
+        status: 'public',
         thumbnailAssetId: null,
         visibleWhen: null,
         requires: [],
         excludes: [],
-        defaultVariantId: 'default',
-        variants: [{
-          id: 'default',
-          name: 'Default',
-          displayOrder: 0,
-          visibleWhen: null,
-          requires: [],
-          excludes: [{ partId: 'body', itemId: 'shape', variantId: 'armored' }],
-          layerBindings: [binding('hat-binding', 'hat-track', 'hat')],
-        }],
+        defaultStyleId: 'default',
+        styles: [style('default', 'hat-track', 'hat', null, {
+          excludes: [{ partId: 'body', itemId: 'shape', styleId: 'armored' }],
+        })],
       }],
     },
   ];
   document.defaultRecipe = {
     selections: [
-      { partId: 'body', itemId: 'shape', variantId: 'default' },
-      { partId: 'hat', itemId: 'moon-hat', variantId: 'default' },
+      { partId: 'body', itemId: 'shape', styleId: 'default' },
+      { partId: 'hat', itemId: 'moon-hat', styleId: 'default' },
     ],
     colors: [{ channelId: 'skin', swatchId: 'warm' }],
   };
@@ -175,7 +168,7 @@ function publicationMaker({ version = 1, compatibility = version === 1 ? 'initia
   };
   document.assetsById = { cover: { blob: new Blob(['leak']) } };
   document.extensions = { legacyV3: { unmappedTopLevel: { wallet: '0xprivate', objectUrl: 'blob:private' } } };
-  validateMakerV4Document(document);
+  validateMakerV5Document(document);
   return document;
 }
 
@@ -195,11 +188,11 @@ function assetLocations() {
   ]);
 }
 
-function recipe({ bodyVariant = 'default', hat = true, color = 'cool' } = {}) {
+function recipe({ bodyStyle = 'default', hat = true, color = 'cool' } = {}) {
   return {
     selections: [
-      { partId: 'body', itemId: 'shape', variantId: bodyVariant },
-      ...(hat ? [{ partId: 'hat', itemId: 'moon-hat', variantId: 'default' }] : []),
+      { partId: 'body', itemId: 'shape', styleId: bodyStyle },
+      ...(hat ? [{ partId: 'hat', itemId: 'moon-hat', styleId: 'default' }] : []),
     ],
     colors: [{ channelId: 'skin', swatchId: color }],
   };
@@ -211,7 +204,7 @@ test('publication manifest is immutable, referenced-only and strips runtime stat
   const manifest = buildMakerV4PublicationManifest(document);
 
   assert.deepEqual(document, before);
-  assert.equal(manifest.schemaVersion, 'animacraft.maker.v4');
+  assert.equal(manifest.schemaVersion, 'animacraft.maker.v5');
   assert.deepEqual(manifest.runtime, {});
   assert.equal('assetsById' in manifest, false);
   assert.deepEqual(manifest.extensions, {});
@@ -223,7 +216,18 @@ test('publication manifest is immutable, referenced-only and strips runtime stat
   assert.equal(manifest.legacyMoveProjection.authorizationCoverage, 'partial');
   assert.equal(manifest.legacyMoveProjection.parts[0].items[0].summaryItemKey, 'shape');
   assert.equal(manifest.legacyMoveProjection.parts[0].items[1].summaryItemKey, 'shape--armored');
-  assert.equal(validateMakerV4Document(manifest), manifest);
+  assert.equal(validateMakerV5Document(manifest), manifest);
+});
+
+test('publication preserves the resolved layer count for the same recipe', () => {
+  const document = publicationMaker();
+  const selectedRecipe = recipe();
+  const before = resolveMakerScene(document, selectedRecipe);
+  const manifest = buildMakerV4PublicationManifest(document);
+  const after = resolveMakerScene(manifest, selectedRecipe);
+
+  assert.equal(before.layers.length, 2);
+  assert.equal(after.layers.length, before.layers.length);
 });
 
 test('excludes draft and private Items and their artwork from immutable publication', () => {
@@ -238,16 +242,8 @@ test('excludes draft and private Items and their artwork from immutable publicat
     visibleWhen: null,
     requires: [],
     excludes: [],
-    defaultVariantId: 'default',
-    variants: [{
-      id: 'default',
-      name: 'Default',
-      displayOrder: 0,
-      visibleWhen: null,
-      requires: [],
-      excludes: [],
-      layerBindings: [binding('unfinished-binding', 'body-track', 'private-art')],
-    }],
+    defaultStyleId: 'default',
+    styles: [style('default', 'body-track', 'private-art')],
   });
   document.assets.push({ id: 'private-art', identifier: 'private.png', kind: 'layer', mediaType: 'image/png', width: 10, height: 10 });
   const manifest = buildMakerV4PublicationManifest(document);
@@ -323,7 +319,7 @@ test('asset collection fails rather than silently replacing a missing Blob', () 
   );
 });
 
-test('Move summary projects Parts, Variants, colors and representable exclusions', () => {
+test('Move summary projects Parts, Styles, colors and representable exclusions', () => {
   const document = publicationMaker();
   const summary = buildMakerV4MoveSummary(document, {
     assetLocations: assetLocations(),
@@ -373,7 +369,7 @@ test('recipe projection keeps explicit None and never substitutes an optional de
   const document = publicationMaker();
   const result = flattenMakerV4Recipe(document, recipe({ hat: false }));
 
-  assert.deepEqual(result.fullRecipe.selections, [{ partId: 'body', itemId: 'shape', variantId: 'default' }]);
+  assert.deepEqual(result.fullRecipe.selections, [{ partId: 'body', itemId: 'shape', styleId: 'default' }]);
   assert.deepEqual(result.suiRecipe, [{
     partKey: 'body',
     itemKey: 'shape',
@@ -383,7 +379,7 @@ test('recipe projection keeps explicit None and never substitutes an optional de
   assert.equal(result.fullRecipeJson, JSON.stringify(result.fullRecipe));
 });
 
-test('recipe projection rejects missing required Parts, implicit Variants and conflicts', () => {
+test('recipe projection rejects missing required Parts, implicit Styles and conflicts', () => {
   const document = publicationMaker();
   assert.throws(
     () => flattenMakerV4Recipe(document, { selections: [], colors: [{ channelId: 'skin', swatchId: 'warm' }] }),
@@ -394,17 +390,17 @@ test('recipe projection rejects missing required Parts, implicit Variants and co
       selections: [{ partId: 'body', itemId: 'shape' }],
       colors: [{ channelId: 'skin', swatchId: 'warm' }],
     }),
-    (error) => error.code === 'missing-recipe-variant',
+    (error) => error.code === 'missing-recipe-style',
   );
   assert.throws(
     () => flattenMakerV4Recipe(document, {
       selections: { body: { itemId: 'shape' } },
       colors: [{ channelId: 'skin', swatchId: 'warm' }],
     }),
-    (error) => error.code === 'missing-recipe-variant',
+    (error) => error.code === 'missing-recipe-style',
   );
   assert.throws(
-    () => flattenMakerV4Recipe(document, recipe({ bodyVariant: 'armored', hat: true })),
+    () => flattenMakerV4Recipe(document, recipe({ bodyStyle: 'armored', hat: true })),
     (error) => error.code === 'invalid-maker-recipe',
   );
   assert.throws(
@@ -413,7 +409,7 @@ test('recipe projection rejects missing required Parts, implicit Variants and co
   );
 });
 
-test('OC package retains full v4 recipe beside the Sui summary recipe', async () => {
+test('OC package retains the full v5 recipe beside the Sui summary recipe', async () => {
   const document = publicationMaker();
   const bridge = buildMakerV4OcPackage({
     document,
@@ -440,12 +436,12 @@ test('OC package retains full v4 recipe beside the Sui summary recipe', async ()
 test('version metadata detects breaking rendering updates and declaration mismatch', () => {
   const previous = publicationMaker();
   const breaking = publicationMaker({ version: 2, compatibility: 'breaking' });
-  breaking.parts[0].items[0].variants[0].layerBindings[0].transform.x = 20;
+  breaking.parts[0].items[0].styles[0].transform.x = 20;
   const metadata = buildMakerV4VersionMetadata(breaking, previous);
   assert.equal(metadata.update.level, 'breaking');
   assert.equal(metadata.update.renderCompatible, false);
   assert.equal(metadata.update.requiresPinnedVersion, true);
-  assert.ok(metadata.update.breaking.some((issue) => issue.code === 'variant-rendering-changed'));
+  assert.ok(metadata.update.breaking.some((issue) => issue.code === 'style-rendering-changed'));
 
   const wronglyCompatible = structuredClone(breaking);
   wronglyCompatible.version.compatibility = 'compatible';

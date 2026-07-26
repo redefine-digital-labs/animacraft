@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { createCharacterMakerV4Starter } from '../maker-v4.js';
+import { createCharacterMakerV5Starter } from '../maker-v4.js';
+import { createStyle, synchronizeDefaultRecipe } from '../maker-document-ops.js';
 import { createMakerWorkspace } from '../maker-workspace.js';
 
 class FakeRoot {
@@ -41,9 +42,31 @@ async function withWorkspace(run, options = {}) {
     callback();
     return 1;
   };
-  const workspace = createMakerWorkspace(options);
+  const { playable = false, ...workspaceOptions } = options;
+  const workspace = createMakerWorkspace(workspaceOptions);
   try {
-    const document = createCharacterMakerV4Starter({ makerId: `qa-${Math.random()}`, name: 'QA Maker' });
+    const document = createCharacterMakerV5Starter({ makerId: `qa-${Math.random()}`, name: 'QA Maker' });
+    if (playable) {
+      document.parts.forEach((part, index) => {
+        const item = part.items[0];
+        const selectedStyle = createStyle(item, 'Default');
+        selectedStyle.layerTrackId = document.layerTracks[index].id;
+        selectedStyle.assetId = `${part.id}-art`;
+        selectedStyle.positionConfirmed = true;
+        item.styles.push(selectedStyle);
+        item.defaultStyleId = selectedStyle.id;
+        item.status = 'public';
+        document.assets.push({
+          id: selectedStyle.assetId,
+          identifier: `${selectedStyle.assetId}.png`,
+          kind: 'layer',
+          mediaType: 'image/png',
+          width: 1024,
+          height: 1024,
+        });
+      });
+      synchronizeDefaultRecipe(document);
+    }
     await workspace.setContext({ makerKey: `wallet:${document.version.rootMakerId}`, walletAddress: '', document, assets: [] });
     await run(workspace);
   } finally {
@@ -52,64 +75,80 @@ async function withWorkspace(run, options = {}) {
   }
 }
 
-test('position confirmation collapses the position editor and explicit adjustment reopens it', async () => {
+test('position confirmation is separate from the real position lock', async () => {
   const creatorRoot = new FakeRoot();
   await withWorkspace(async (workspace) => {
-    assert.match(creatorRoot.innerHTML, /data-action="binding-x"/);
+    creatorClick(workspace, 'add-style');
+    assert.match(creatorRoot.innerHTML, /data-action="style-x"/);
     assert.match(creatorRoot.innerHTML, /data-action="confirm-position"/);
 
     creatorClick(workspace, 'confirm-position');
-    assert.equal(workspace.selectedCreatorRecords().binding.positionConfirmed, true);
-    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="binding-x"/);
+    assert.equal(workspace.selectedCreatorRecords().style.positionConfirmed, true);
+    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="style-x"/);
     assert.match(creatorRoot.innerHTML, /data-action="edit-position"/);
-
     creatorClick(workspace, 'edit-position');
-    assert.match(creatorRoot.innerHTML, /data-action="binding-x"/);
+    assert.match(creatorRoot.innerHTML, /data-action="style-x"/);
 
-    await workspace.handleCreatorChange({ target: { dataset: { action: 'binding-x' }, value: '18.5', type: 'number' } });
-    assert.equal(workspace.selectedCreatorRecords().binding.transform.x, 18.5);
-    assert.equal(workspace.selectedCreatorRecords().binding.positionConfirmed, false);
-    assert.match(creatorRoot.innerHTML, /data-action="confirm-position"/);
+    await workspace.handleCreatorChange({ target: { dataset: { action: 'style-x' }, value: '18.5', type: 'number' } });
+    assert.equal(workspace.selectedCreatorRecords().style.transform.x, 18.5);
+    assert.equal(workspace.selectedCreatorRecords().style.positionConfirmed, false);
+
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-position-locked' }, checked: true, type: 'checkbox' },
+    });
+    assert.equal(workspace.selectedCreatorRecords().style.positionLocked, true);
+    await workspace.handleCreatorChange({ target: { dataset: { action: 'style-x' }, value: '99', type: 'number' } });
+    assert.equal(workspace.selectedCreatorRecords().style.transform.x, 18.5);
   }, { creatorRoot });
 });
 
-test('editing one Item binding never changes another Item or Part', async () => {
+test('editing one Style never changes another Item or Part', async () => {
   await withWorkspace(async (workspace) => {
-    const initial = workspace.getDocument();
+    let initial = workspace.getDocument();
     const firstPart = initial.parts[0];
     const firstItem = firstPart.items[0];
-    const firstBinding = firstItem.variants[0].layerBindings[0];
     const otherPart = initial.parts[1];
     const otherItem = otherPart.items[0];
-    const otherBinding = otherItem.variants[0].layerBindings[0];
 
     creatorClick(workspace, 'select-part', { partId: firstPart.id });
     creatorClick(workspace, 'select-item', { itemId: firstItem.id });
-    creatorClick(workspace, 'copy-item');
-    const copiedItem = workspace.selectedCreatorRecords().item;
-    const copiedBinding = copiedItem.variants[0].layerBindings[0];
-    assert.equal(copiedBinding.layerTrackId, firstBinding.layerTrackId);
-
-    await workspace.handleCreatorChange({ target: { dataset: { action: 'binding-x' }, value: '37', type: 'number' } });
-    let document = workspace.getDocument();
-    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).variants[0].layerBindings[0].transform.x, 37);
-    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).variants[0].layerBindings[0].transform.x, 0);
-    assert.equal(document.parts[1].items.find((item) => item.id === otherItem.id).variants[0].layerBindings[0].transform.x, 0);
-
-    creatorClick(workspace, 'confirm-position');
-    document = workspace.getDocument();
-    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).variants[0].layerBindings[0].positionConfirmed, true);
-    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).variants[0].layerBindings[0].positionConfirmed, false);
+    creatorClick(workspace, 'add-style');
+    const firstStyle = workspace.selectedCreatorRecords().style;
 
     creatorClick(workspace, 'select-part', { partId: otherPart.id });
     creatorClick(workspace, 'select-item', { itemId: otherItem.id });
-    assert.equal(workspace.selectedCreatorRecords().binding.id, otherBinding.id);
-    await workspace.handleCreatorChange({ target: { dataset: { action: 'binding-y' }, value: '-42', type: 'number' } });
+    creatorClick(workspace, 'add-style');
+    const otherStyle = workspace.selectedCreatorRecords().style;
+
+    creatorClick(workspace, 'select-part', { partId: firstPart.id });
+    creatorClick(workspace, 'select-item', { itemId: firstItem.id });
+    creatorClick(workspace, 'select-style', { styleId: firstStyle.id });
+    creatorClick(workspace, 'copy-item');
+    const copiedItem = workspace.selectedCreatorRecords().item;
+    const copiedStyle = copiedItem.styles[0];
+    assert.notEqual(copiedStyle.id, firstStyle.id);
+
+    await workspace.handleCreatorChange({ target: { dataset: { action: 'style-x' }, value: '37', type: 'number' } });
+    let document = workspace.getDocument();
+    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).styles[0].transform.x, 37);
+    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).styles[0].transform.x, 0);
+    assert.equal(document.parts[1].items.find((item) => item.id === otherItem.id).styles[0].transform.x, 0);
+
+    creatorClick(workspace, 'confirm-position');
+    document = workspace.getDocument();
+    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).styles[0].positionConfirmed, true);
+    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).styles[0].positionConfirmed, false);
+
+    creatorClick(workspace, 'select-part', { partId: otherPart.id });
+    creatorClick(workspace, 'select-item', { itemId: otherItem.id });
+    creatorClick(workspace, 'select-style', { styleId: otherStyle.id });
+    assert.equal(workspace.selectedCreatorRecords().style.id, otherStyle.id);
+    await workspace.handleCreatorChange({ target: { dataset: { action: 'style-y' }, value: '-42', type: 'number' } });
 
     document = workspace.getDocument();
-    assert.equal(document.parts[1].items.find((item) => item.id === otherItem.id).variants[0].layerBindings[0].transform.y, -42);
-    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).variants[0].layerBindings[0].transform.y, 0);
-    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).variants[0].layerBindings[0].transform.y, 0);
+    assert.equal(document.parts[1].items.find((item) => item.id === otherItem.id).styles[0].transform.y, -42);
+    assert.equal(document.parts[0].items.find((item) => item.id === copiedItem.id).styles[0].transform.y, 0);
+    assert.equal(document.parts[0].items.find((item) => item.id === firstItem.id).styles[0].transform.y, 0);
   });
 });
 
@@ -163,7 +202,7 @@ test('Creator rerenders preserve panel scroll, focus and input selection', async
   }
 });
 
-test('creator structure controls mutate the v4 document and remain undoable', async () => {
+test('creator structure controls mutate the v5 document and remain undoable', async () => {
   await withWorkspace(async (workspace) => {
     const initial = workspace.getDocument();
     const firstPart = initial.parts[0];
@@ -176,16 +215,10 @@ test('creator structure controls mutate the v4 document and remain undoable', as
     assert.equal(workspace.getDocument().parts[0].items.length, itemCount + 2);
 
     const selectedItem = workspace.selectedCreatorRecords().item;
-    const variantCount = selectedItem.variants.length;
-    creatorClick(workspace, 'add-variant');
-    creatorClick(workspace, 'copy-variant');
-    assert.equal(workspace.selectedCreatorRecords().item.variants.length, variantCount + 2);
-
-    const bindingCount = workspace.selectedCreatorRecords().variant.layerBindings.length;
-    creatorClick(workspace, 'add-empty-binding');
-    assert.equal(workspace.selectedCreatorRecords().variant.layerBindings.length, bindingCount + 1);
-    creatorClick(workspace, 'delete-binding');
-    assert.equal(workspace.selectedCreatorRecords().variant.layerBindings.length, bindingCount);
+    const styleCount = selectedItem.styles.length;
+    creatorClick(workspace, 'add-style');
+    creatorClick(workspace, 'copy-style');
+    assert.equal(workspace.selectedCreatorRecords().item.styles.length, styleCount + 2);
 
     const partCount = workspace.getDocument().parts.length;
     creatorClick(workspace, 'add-part');
@@ -203,6 +236,10 @@ test('creator structure controls mutate the v4 document and remain undoable', as
     creatorClick(workspace, 'add-track');
     const unusedTrack = workspace.selectedTrackId;
     assert.equal(workspace.getDocument().layerTracks.length, trackCount + 1);
+    creatorClick(workspace, 'delete-track', { trackId: unusedTrack });
+    assert.equal(workspace.getDocument().layerTracks.length, trackCount + 1, 'a locked Layer Track cannot be deleted');
+    creatorClick(workspace, 'toggle-track-lock', { trackId: unusedTrack });
+    assert.equal(workspace.getDocument().layerTracks.find((track) => track.id === unusedTrack).locked, false);
     creatorClick(workspace, 'delete-track', { trackId: unusedTrack });
     assert.equal(workspace.getDocument().layerTracks.length, trackCount);
   });
@@ -225,15 +262,23 @@ test('color, rule, and Expansion Pack controls perform real document operations'
     creatorClick(workspace, 'delete-swatch', { swatchId: addedSwatch.id });
     assert.equal(workspace.getDocument().colorChannels[0].swatches.length, originalSwatchCount);
 
-    await workspace.handleCreatorChange({ target: { dataset: { action: 'channel-mode' }, value: 'asset-map', type: 'select-one' } });
-    assert.equal(workspace.getDocument().colorChannels[0].mode, 'asset-map');
+    const styleBeforeColorLink = workspace.selectedCreatorRecords().style;
+    const originalStyleAssetId = styleBeforeColorLink.assetId;
+    assert.equal(document.colorChannels[0].mode, 'gradient-map');
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-channel' }, value: channelId, type: 'select-one' },
+    });
+    const styleAfterColorLink = workspace.selectedCreatorRecords().style;
+    assert.equal(styleAfterColorLink.colorChannelId, channelId);
+    assert.equal(styleAfterColorLink.assetId, originalStyleAssetId, 'Smart Color recolors the Style single PNG');
+    assert.equal(Object.hasOwn(styleAfterColorLink, 'assetsBySwatch'), false);
 
     document = workspace.getDocument();
     const owner = document.parts[0];
     const target = document.parts[1];
     workspace.selectedPartId = owner.id;
     workspace.selectedItemId = owner.items[0].id;
-    workspace.selectedVariantId = owner.items[0].variants[0].id;
+    workspace.selectedStyleId = owner.items[0].styles[0]?.id || '';
     workspace.creatorRoot = new FakeRoot({
       '#v4RuleOwnerPart': { value: owner.id },
       '#v4RuleOwnerScope': { value: 'part' },
@@ -260,7 +305,82 @@ test('color, rule, and Expansion Pack controls perform real document operations'
     workspace.selectedChannelId = channelId;
     creatorClick(workspace, 'delete-channel');
     assert.equal(workspace.getDocument().colorChannels.length, 0);
-  });
+  }, { playable: true });
+});
+
+test('whole Style lock blocks indirect rule, color-channel, and ordering mutations', async () => {
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'add-channel');
+    let document = workspace.getDocument();
+    const channelId = document.colorChannels[0].id;
+    const part = document.parts[0];
+    const item = part.items[0];
+    const sourceStyleId = item.styles[0].id;
+    const targetPartId = document.parts[1].id;
+
+    creatorClick(workspace, 'select-part', { partId: part.id });
+    creatorClick(workspace, 'select-item', { itemId: item.id });
+    creatorClick(workspace, 'select-style', { styleId: sourceStyleId });
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-channel' }, value: channelId, type: 'select-one' },
+    });
+    creatorClick(workspace, 'copy-style');
+    const copiedStyleId = workspace.selectedCreatorRecords().style.id;
+
+    creatorClick(workspace, 'select-style', { styleId: sourceStyleId });
+    workspace.creatorRoot = new FakeRoot({
+      '#v4RuleOwnerDefinition': { value: `${part.id}::${item.id}::${sourceStyleId}` },
+      '#v4RuleType': { value: 'excludes' },
+      '#v4RuleTargetDefinition': { value: targetPartId },
+    });
+    workspace.addRuleFromBuilder();
+    assert.equal(workspace.selectedCreatorRecords().style.excludes.length, 1);
+
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-locked' }, checked: true, type: 'checkbox' },
+    });
+    workspace.deleteRule(`style:${part.id}:${item.id}:${sourceStyleId}:excludes:0`);
+    assert.equal(workspace.selectedCreatorRecords().style.excludes.length, 1, 'locked Style rule cannot be deleted');
+
+    workspace.creatorRoot.selectors['#v4RuleType'].value = 'requires';
+    workspace.addRuleFromBuilder();
+    assert.equal(workspace.selectedCreatorRecords().style.requires.length, 0, 'locked Style rule cannot be added');
+
+    workspace.selectedChannelId = channelId;
+    creatorClick(workspace, 'delete-channel');
+    document = workspace.getDocument();
+    assert.equal(document.colorChannels.some((channel) => channel.id === channelId), true);
+    assert.equal(document.parts[0].items[0].styles[0].colorChannelId, channelId);
+
+    const originalStyleOrder = document.parts[0].items[0].styles.map((style) => style.id);
+    workspace.dragSort = {
+      kind: 'style',
+      id: copiedStyleId,
+      parentId: `${part.id}/${item.id}`,
+    };
+    const dropTarget = {
+      dataset: {
+        dragKind: 'style',
+        dragId: sourceStyleId,
+        parentId: `${part.id}/${item.id}`,
+      },
+    };
+    dropTarget.closest = () => dropTarget;
+    workspace.handleDrop({ target: dropTarget, preventDefault() {} });
+    assert.deepEqual(workspace.getDocument().parts[0].items[0].styles.map((style) => style.id), originalStyleOrder);
+
+    let prevented = false;
+    workspace.handleDragStart({
+      target: dropTarget,
+      preventDefault() { prevented = true; },
+      dataTransfer: {
+        setData() {},
+        set effectAllowed(_) {},
+      },
+    });
+    assert.equal(prevented, true);
+    assert.equal(workspace.dragSort, null);
+  }, { playable: true });
 });
 
 test('player controls select, undo, redo, clear, randomize, edit profile and complete an OC', async () => {
@@ -270,6 +390,10 @@ test('player controls select, undo, redo, clear, randomize, edit profile and com
     workspace.selectedPartId = part.id;
     workspace.ensureCreatorSelection(workspace.getDocument());
     creatorClick(workspace, 'add-item');
+    creatorClick(workspace, 'add-style');
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'item-status' }, value: 'public', type: 'select-one' },
+    });
     const nextItem = workspace.selectedCreatorRecords().item;
 
     workspace.playerPartId = part.id;
@@ -301,7 +425,7 @@ test('player controls select, undo, redo, clear, randomize, edit profile and com
     workspace.playerCompletionIssues = () => [];
     playerClick(workspace, 'player-complete');
     assert.equal(completed.length, 1);
-  }, { callbacks: { onCompleteOc: (payload) => completed.push(payload) } });
+  }, { playable: true, callbacks: { onCompleteOc: (payload) => completed.push(payload) } });
 });
 
 test('every rendered Maker Studio data-action is backed by a handler or an intentional passive form value', async () => {

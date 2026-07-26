@@ -5,7 +5,7 @@
  * interpretation.
  */
 
-export const MAKER_SCENE_VERSION = 'animacraft.resolved-scene.v1';
+export const MAKER_SCENE_VERSION = 'animacraft.resolved-scene.v2';
 
 export const BLEND_MODES = Object.freeze({
   normal: 'source-over',
@@ -121,15 +121,15 @@ function selectedPartMatches(condition, context) {
   if (!selected) return false;
 
   const itemId = String(firstDefined(selection.itemId, selection.itemKey, selection.part, '') || '');
-  const variantId = String(firstDefined(selection.variantId, selection.styleId, '') || '');
+  const styleId = String(firstDefined(selection.styleId, selection.styleKey, '') || '');
   const expectedItem = firstDefined(condition.itemId, condition.itemKey);
   const expectedItems = firstDefined(condition.itemIds, condition.itemKeys);
-  const expectedVariant = firstDefined(condition.variantId, condition.styleId);
-  const expectedVariants = firstDefined(condition.variantIds, condition.styleIds);
+  const expectedStyle = firstDefined(condition.styleId, condition.styleKey);
+  const expectedStyles = firstDefined(condition.styleIds, condition.styleKeys);
   if (expectedItem !== undefined && itemId !== String(expectedItem)) return false;
   if (Array.isArray(expectedItems) && !expectedItems.map(String).includes(itemId)) return false;
-  if (expectedVariant !== undefined && variantId !== String(expectedVariant)) return false;
-  if (Array.isArray(expectedVariants) && !expectedVariants.map(String).includes(variantId)) return false;
+  if (expectedStyle !== undefined && styleId !== String(expectedStyle)) return false;
+  if (Array.isArray(expectedStyles) && !expectedStyles.map(String).includes(styleId)) return false;
   return true;
 }
 
@@ -148,11 +148,11 @@ function selectedColorMatches(condition, context) {
 }
 
 /**
- * Evaluate the small declarative condition language used by Parts, Variants
- * and LayerBindings.
+ * Evaluate the small declarative condition language used by Parts, Items and
+ * Styles.
  *
  * Supported forms:
- *   { partId, itemId?, itemIds?, variantId?, selected? }
+ *   { partId, itemId?, itemIds?, styleId?, styleIds?, selected? }
  *   { colorChannelId, equals? | in?, selected? }
  *   { all: [...] }, { any: [...] }, { not: condition }
  *   { requires: [...], excludes: [...] }
@@ -206,7 +206,7 @@ function normalizeSelection(raw) {
   return {
     partId: String(firstDefined(raw?.partId, raw?.partKey, raw?.slot, raw?.key, '') || ''),
     itemId: String(firstDefined(raw?.itemId, raw?.itemKey, raw?.part, '') || ''),
-    variantId: String(firstDefined(raw?.variantId, raw?.styleId, raw?.variant, '') || ''),
+    styleId: String(firstDefined(raw?.styleId, raw?.styleKey, '') || ''),
     color: firstDefined(raw?.color, raw?.colorId, raw?.colorHex),
     colorChannels: object(firstDefined(raw?.colorChannels, raw?.colors, raw?.palettes)),
   };
@@ -259,27 +259,13 @@ function normalizeTrack(track, index) {
     name: String(firstDefined(track?.name, track?.label, idOf(track, `Track ${index + 1}`))),
     order: finite(firstDefined(track?.order, track?.renderOrder), Number.MAX_SAFE_INTEGER),
     visible: track?.visible !== false,
-    transform: object(track?.transform),
     locked: track?.locked !== false,
   };
 }
 
-function makerTracks(maker, parts) {
+function makerTracks(maker) {
   const declared = array(firstDefined(maker?.layerTracks, maker?.document?.layerTracks, maker?.tracks));
   const tracks = declared.map(normalizeTrack);
-  if (!tracks.length) {
-    parts.forEach((part, partIndex) => {
-      const partId = idOf(part, `part-${partIndex + 1}`);
-      array(part?.layers).forEach((layer, layerIndex) => {
-        tracks.push(normalizeTrack({
-          id: String(firstDefined(layer?.layerTrackId, layer?.trackId, `${partId}:${idOf(layer, `layer-${layerIndex + 1}`)}`)),
-          name: firstDefined(layer?.name, layer?.label),
-          order: firstDefined(layer?.order, layer?.renderOrder),
-          visible: layer?.visible,
-        }, tracks.length));
-      });
-    });
-  }
   return tracks.sort((left, right) => (
     compareNumber(left.order, right.order)
     || compareText(left.id, right.id)
@@ -309,8 +295,8 @@ function normalizeChannel(channel, index) {
   return {
     id: idOf(channel, `channel-${index + 1}`),
     name: String(firstDefined(channel?.name, channel?.label, idOf(channel, `Channel ${index + 1}`))),
-    mode: String(firstDefined(channel?.mode, channel?.type, 'asset-variant')),
-    defaultValueId: String(firstDefined(channel?.defaultValueId, channel?.defaultColorId, channel?.defaultSwatchId, values[0]?.id, '') || ''),
+    mode: String(firstDefined(channel?.mode, channel?.type, 'gradient-map')),
+    defaultValueId: String(firstDefined(channel?.defaultSwatchId, channel?.defaultValueId, channel?.defaultColorId, values[0]?.id, '') || ''),
     values,
     source: channel,
   };
@@ -351,107 +337,61 @@ function selectedChannel(channel, rawSelection) {
   };
 }
 
-function normalizeTransform(binding, asset, canvas, track) {
-  const useTrackTransform = binding?.inheritTrackTransform === true && Object.keys(object(track?.transform)).length > 0;
-  const transform = useTrackTransform ? object(track.transform) : object(binding?.transform);
-  const baseScale = finite(firstDefined(transform.scale, binding?.scale), 1);
-  const flipX = firstDefined(transform.flipX, binding?.flipX) ? -1 : 1;
-  const flipY = firstDefined(transform.flipY, binding?.flipY) ? -1 : 1;
-  const width = positive(firstDefined(transform.width, binding?.width, asset?.width), canvas.width);
-  const height = positive(firstDefined(transform.height, binding?.height, asset?.height), canvas.height);
+function normalizeTransform(style, asset, canvas) {
+  const transform = object(style?.transform);
+  const baseScale = finite(firstDefined(transform.scale, style?.scale), 1);
+  const flipX = firstDefined(transform.flipX, style?.flipX) ? -1 : 1;
+  const flipY = firstDefined(transform.flipY, style?.flipY) ? -1 : 1;
+  const width = positive(firstDefined(transform.width, style?.width, asset?.width), canvas.width);
+  const height = positive(firstDefined(transform.height, style?.height, asset?.height), canvas.height);
   return {
-    x: finite(firstDefined(transform.x, binding?.x), 0),
-    y: finite(firstDefined(transform.y, binding?.y), 0),
+    x: finite(firstDefined(transform.x, style?.x), 0),
+    y: finite(firstDefined(transform.y, style?.y), 0),
     width,
     height,
-    scaleX: finite(firstDefined(transform.scaleX, binding?.scaleX), baseScale) * flipX,
-    scaleY: finite(firstDefined(transform.scaleY, binding?.scaleY), baseScale) * flipY,
-    rotation: finite(firstDefined(transform.rotation, transform.rotationDegrees, binding?.rotation), 0),
-    originX: finite(firstDefined(transform.originX, transform.anchorX, binding?.originX), 0),
-    originY: finite(firstDefined(transform.originY, transform.anchorY, binding?.originY), 0),
+    scaleX: finite(firstDefined(transform.scaleX, style?.scaleX), baseScale) * flipX,
+    scaleY: finite(firstDefined(transform.scaleY, style?.scaleY), baseScale) * flipY,
+    rotation: finite(firstDefined(transform.rotation, transform.rotationDegrees, style?.rotation), 0),
+    originX: finite(firstDefined(transform.originX, transform.anchorX, style?.originX), 0),
+    originY: finite(firstDefined(transform.originY, transform.anchorY, style?.originY), 0),
   };
 }
 
-function variantsFor(item) {
-  const variants = array(firstDefined(item?.variants, item?.styles));
-  if (variants.length) return variants;
-  return [{ id: 'default', name: 'Default', bindings: firstDefined(item?.bindings, item?.layerBindings, item?.layers) }];
+function stylesFor(item) {
+  return array(item?.styles);
 }
 
-function selectedVariant(item, selection, issues, path) {
-  const variants = variantsFor(item);
-  if (!variants.length) return null;
-  const requested = selection.variantId;
+function selectedStyle(item, selection, issues, path) {
+  const styles = stylesFor(item);
+  if (!styles.length) {
+    issues.push({ code: 'missing-styles', path, message: `Item "${selection.itemId}" has no Styles.` });
+    return null;
+  }
+  const requested = selection.styleId;
   if (requested) {
-    const variant = variants.find((candidate) => idOf(candidate) === requested);
-    if (!variant) issues.push({ code: 'unknown-variant', path, message: `Recipe selects missing Variant "${requested}".` });
-    return variant || null;
+    const style = styles.find((candidate) => idOf(candidate) === requested);
+    if (!style) issues.push({ code: 'unknown-style', path, message: `Recipe selects missing Style "${requested}".` });
+    return style || null;
   }
-  const defaultId = String(firstDefined(item?.defaultVariantId, item?.defaultStyleId, '') || '');
+  const defaultId = String(item?.defaultStyleId || '');
   if (defaultId) {
-    const variant = variants.find((candidate) => idOf(candidate) === defaultId);
-    if (!variant) issues.push({ code: 'unknown-default-variant', path, message: `Item has missing default Variant "${defaultId}".` });
-    return variant || null;
+    const style = styles.find((candidate) => idOf(candidate) === defaultId);
+    if (!style) issues.push({ code: 'unknown-default-style', path, message: `Item has missing default Style "${defaultId}".` });
+    return style || null;
   }
-  if (variants.length === 1) return variants[0];
-  issues.push({ code: 'variant-required', path, message: 'Recipe must select a Variant for this Item.' });
+  if (styles.length === 1) return styles[0];
+  issues.push({ code: 'style-required', path, message: 'Recipe must select a Style for this Item.' });
   return null;
 }
 
-function legacyBindings(part, item, selection, partId, colorChannel) {
-  if (!array(part?.layers).length || !array(item?.images).length) return EMPTY_ARRAY;
-  return part.layers.map((layer, index) => {
-    const layerId = idOf(layer, `layer-${index + 1}`);
-    const image = item.images.find((candidate) => {
-      if (String(candidate?.layerId || '') !== layerId) return false;
-      if (!colorChannel) return true;
-      return String(candidate?.colorId || '') === colorChannel.valueId;
-    });
-    return {
-      id: layerId,
-      layerTrackId: String(firstDefined(layer?.layerTrackId, layer?.trackId, `${partId}:${layerId}`)),
-      sourceAssetId: firstDefined(image?.assetId, image?.identifier),
-      transform: {
-        x: layer?.x,
-        y: layer?.y,
-        scale: layer?.scale,
-        rotation: layer?.rotation,
-      },
-      opacity: layer?.opacity,
-      blendMode: layer?.blendMode,
-      colorChannelId: colorChannel?.id,
-      order: firstDefined(layer?.order, layer?.renderOrder),
-    };
-  }).filter((binding) => binding.sourceAssetId);
+function styleAssetId(style) {
+  return String(firstDefined(style?.assetId, style?.sourceAssetId, style?.identifier, style?.source?.assetId, style?.source?.id, '') || '');
 }
 
-function bindingsFor(part, item, variant, selection, partId, colorChannel) {
-  const bindings = array(firstDefined(variant?.bindings, variant?.layerBindings, item?.bindings, item?.layerBindings));
-  return bindings.length ? bindings : legacyBindings(part, item, selection, partId, colorChannel);
-}
-
-function bindingAssetId(binding, colorChannel) {
-  const map = firstDefined(binding?.sourceAssetIdsByColor, binding?.assetIdsByColor, binding?.assetsByColor);
-  if (map && !Array.isArray(map)) {
-    const mapped = firstDefined(map[colorChannel?.valueId], map[colorChannel?.value]);
-    if (mapped !== undefined) return String(firstDefined(mapped?.assetId, mapped?.sourceAssetId, mapped?.id, mapped));
-  }
-  const assets = array(firstDefined(binding?.assets, binding?.sources, binding?.assetsBySwatch));
-  if (assets.length) {
-    const match = assets.find((candidate) => {
-      const color = String(firstDefined(candidate?.colorValueId, candidate?.colorId, candidate?.swatchId, candidate?.value, '') || '');
-      return color === colorChannel?.valueId || color.toLowerCase() === String(colorChannel?.value || '').toLowerCase();
-    }) || assets.find((candidate) => !firstDefined(candidate?.colorValueId, candidate?.colorId, candidate?.swatchId, candidate?.value));
-    if (match) return String(firstDefined(match.assetId, match.sourceAssetId, match.identifier, match.id, ''));
-  }
-  return String(firstDefined(binding?.sourceAssetId, binding?.assetId, binding?.identifier, binding?.source?.assetId, binding?.source?.id, '') || '');
-}
-
-function trackIdFor(binding, partId, trackById) {
-  const requested = String(firstDefined(binding?.layerTrackId, binding?.trackId, binding?.layerId, '') || '');
+function trackIdFor(style, trackById) {
+  const requested = String(firstDefined(style?.layerTrackId, style?.trackId, '') || '');
   if (trackById.has(requested)) return requested;
-  const legacy = `${partId}:${requested}`;
-  return trackById.has(legacy) ? legacy : requested;
+  return requested;
 }
 
 function selectedItem(part, selection, issues, path) {
@@ -469,8 +409,8 @@ function partChannel(part, selection, channelById, recipeChannels) {
   return selectedChannel(channel, raw);
 }
 
-function bindingChannel(binding, inherited, channelById, recipeChannels, selection) {
-  const channelId = String(firstDefined(binding?.colorChannelId, binding?.paletteId, inherited?.id, '') || '');
+function styleChannel(style, inherited, channelById, recipeChannels, selection) {
+  const channelId = String(firstDefined(style?.colorChannelId, style?.paletteId, inherited?.id, '') || '');
   const channel = channelById.get(channelId);
   if (!channel) return inherited || null;
   const raw = firstDefined(selection.colorChannels[channelId], recipeChannels.get(channelId), inherited?.valueId);
@@ -484,8 +424,7 @@ function sortLayers(left, right) {
     || compareNumber(left.partOrder, right.partOrder)
     || compareText(left.partId, right.partId)
     || compareText(left.itemId, right.itemId)
-    || compareText(left.variantId, right.variantId)
-    || compareText(left.bindingId, right.bindingId);
+    || compareText(left.styleId, right.styleId);
 }
 
 function resolutionError(issues) {
@@ -496,14 +435,18 @@ function resolutionError(issues) {
 }
 
 /**
- * Resolve an Animacraft v4 Maker document and recipe into a stable, serializable
+ * Resolve an Animacraft Maker document and recipe into a stable, serializable
  * back-to-front layer list. Recipe order never controls z-order.
+ *
+ * A v5 Style is the only renderable unit: one selected Style produces exactly
+ * one resolved scene layer. Older multi-binding document graphs are not
+ * interpreted here.
  */
 export function resolveMakerScene(maker, recipe, options = {}) {
   if (!maker || typeof maker !== 'object') throw new TypeError('A Maker document is required.');
   const canvas = makerCanvas(maker);
   const parts = makerParts(maker);
-  const tracks = makerTracks(maker, parts);
+  const tracks = makerTracks(maker);
   const trackById = new Map(tracks.map((track) => [track.id, track]));
   const assets = makerAssets(maker);
   const channels = makerChannels(maker, parts);
@@ -523,10 +466,24 @@ export function resolveMakerScene(maker, recipe, options = {}) {
       const partId = idOf(part);
       if (!normalizedRecipe.selections.has(partId) && (part.required === true || part.allowRemove === false)) {
         const defaultItemId = String(firstDefined(part.defaultItemId, '') || '');
-        if (defaultItemId) normalizedRecipe.selections.set(partId, normalizeSelection({ partId, itemId: defaultItemId }));
+        const defaultItem = array(part?.items).find((item) => idOf(item) === defaultItemId);
+        const defaultStyleId = String(firstDefined(defaultItem?.defaultStyleId, stylesFor(defaultItem)[0]?.id, '') || '');
+        if (defaultItemId) normalizedRecipe.selections.set(partId, normalizeSelection({ partId, itemId: defaultItemId, styleId: defaultStyleId }));
       }
     });
   }
+
+  // Resolve omitted Style ids before evaluating any visibility condition so
+  // cross-Part Style selectors have the same result regardless of Part order.
+  normalizedRecipe.selections.forEach((selection, partId) => {
+    if (!selection.itemId || selection.styleId) return;
+    const part = parts.find((candidate) => idOf(candidate) === partId);
+    const item = array(part?.items).find((candidate) => idOf(candidate) === selection.itemId);
+    const styles = stylesFor(item);
+    const defaultStyleId = String(item?.defaultStyleId || '');
+    const defaultStyle = styles.find((style) => idOf(style) === defaultStyleId);
+    if (defaultStyle || styles.length === 1) selection.styleId = idOf(defaultStyle || styles[0]);
+  });
 
   const conditionContext = {
     selections: normalizedRecipe.selections,
@@ -548,52 +505,48 @@ export function resolveMakerScene(maker, recipe, options = {}) {
 
     const item = selectedItem(part, selection, issues, path);
     if (!item || !evaluateVisibleWhen(item.visibleWhen, conditionContext)) return;
-    const variant = selectedVariant(item, selection, issues, `${path}.items.${selection.itemId}`);
-    if (!variant || !evaluateVisibleWhen(variant.visibleWhen, conditionContext)) return;
-    const variantId = idOf(variant, 'default');
+    const style = selectedStyle(item, selection, issues, `${partId}/${selection.itemId}`);
+    if (!style || !evaluateVisibleWhen(style.visibleWhen, conditionContext)) return;
+    const styleId = idOf(style);
     const inheritedChannel = partChannel(part, selection, channelById, normalizedRecipe.colorChannels);
-
-    bindingsFor(part, item, variant, selection, partId, inheritedChannel).forEach((binding, bindingIndex) => {
-      if (!evaluateVisibleWhen(binding.visibleWhen, conditionContext)) return;
-      const bindingId = idOf(binding, `binding-${bindingIndex + 1}`);
-      const trackId = trackIdFor(binding, partId, trackById);
-      const track = trackById.get(trackId);
-      if (!track) {
-        issues.push({ code: 'unknown-layer-track', path: `${path}.bindings.${bindingId}`, message: `Binding references missing LayerTrack "${trackId}".` });
-        return;
-      }
-      if (!track.visible || binding.visible === false) return;
-      const colorChannel = bindingChannel(binding, inheritedChannel, channelById, normalizedRecipe.colorChannels, selection);
-      const assetId = bindingAssetId(binding, colorChannel);
-      if (!assetId) {
-        issues.push({ code: 'missing-asset-reference', path: `${path}.bindings.${bindingId}`, message: `Binding "${bindingId}" has no source Asset.` });
-        return;
-      }
-      const asset = assets.get(assetId) || null;
-      if (!asset && assets.size && options.allowUnindexedAssets !== true) {
-        issues.push({ code: 'unknown-asset', path: `${path}.bindings.${bindingId}`, message: `Binding references missing Asset "${assetId}".` });
-        return;
-      }
-      layers.push({
-        key: `${partId}/${selection.itemId}/${variantId}/${bindingId}`,
-        partId,
-        itemId: selection.itemId,
-        variantId,
-        bindingId,
-        trackId,
-        trackOrder: track.order,
-        order: finite(firstDefined(binding.order, binding.renderOrder), bindingIndex),
-        partOrder: finite(firstDefined(part.menuOrder, part.order), partIndex),
-        assetId,
-        asset,
-        transform: normalizeTransform(binding, asset, canvas, track),
-        transformSource: binding.inheritTrackTransform === true ? 'track' : 'binding',
-        opacity: normalizeOpacity(firstDefined(binding.opacity, 1)),
-        blendMode: normalizeBlendMode(binding.blendMode),
-        compositeOperation: BLEND_MODES[normalizeBlendMode(binding.blendMode)],
-        pixelMode: normalizePixelMode(firstDefined(binding.pixelMode, canvas.pixelMode)),
-        colorChannel,
-      });
+    const trackId = trackIdFor(style, trackById);
+    const track = trackById.get(trackId);
+    const stylePath = `${partId}/${selection.itemId}/${styleId}`;
+    if (!track) {
+      issues.push({ code: 'unknown-layer-track', path: stylePath, message: `Style references missing LayerTrack "${trackId}".` });
+      return;
+    }
+    if (!track.visible) return;
+    const colorChannel = styleChannel(style, inheritedChannel, channelById, normalizedRecipe.colorChannels, selection);
+    const assetId = styleAssetId(style);
+    if (!assetId) {
+      issues.push({ code: 'missing-asset-reference', path: stylePath, message: `Style "${styleId}" has no Asset.` });
+      return;
+    }
+    const asset = assets.get(assetId) || null;
+    if (!asset && assets.size && options.allowUnindexedAssets !== true) {
+      issues.push({ code: 'unknown-asset', path: stylePath, message: `Style references missing Asset "${assetId}".` });
+      return;
+    }
+    const blendMode = normalizeBlendMode(style.blendMode);
+    layers.push({
+      key: stylePath,
+      partId,
+      itemId: selection.itemId,
+      styleId,
+      trackId,
+      trackOrder: track.order,
+      order: finite(firstDefined(style.order, style.renderOrder, style.displayOrder), 0),
+      partOrder: finite(firstDefined(part.menuOrder, part.order), partIndex),
+      assetId,
+      asset,
+      transform: normalizeTransform(style, asset, canvas),
+      transformSource: 'style',
+      opacity: normalizeOpacity(firstDefined(style.opacity, 1)),
+      blendMode,
+      compositeOperation: BLEND_MODES[blendMode],
+      pixelMode: normalizePixelMode(firstDefined(style.pixelMode, canvas.pixelMode)),
+      colorChannel,
     });
   });
 

@@ -6,7 +6,7 @@
 
 产品理念：**The Fully Onchain Character Maker & Creator.**
 
-> 本文是邀请真人创作者测试时的主教程。美术文件的尺寸、拆层、命名和交付要求另见 [Maker v4 创作者素材交付规范](./CREATOR_ASSET_SPEC_V4.zh-CN.md)。当前 Creator Studio 的布局以 [PR #15 UI 基线](./UI_BASELINE.md) 为准，后续只细化既有功能，不随意改变整体布局。
+> 本文是邀请真人创作者测试时的主教程。美术文件的尺寸、拆层、命名和交付要求另见 [Maker v5 创作者与画师素材规范](./CREATOR_ASSET_SPEC_V5.zh-CN.md)。当前 Creator Studio 的布局以 [PR #15 UI 基线](./UI_BASELINE.md) 为准，后续只细化既有功能，不随意改变整体布局。
 
 ## 1. Animacraft 是什么
 
@@ -110,7 +110,7 @@ Animacraft 不再额外铸造一份“成品角色 NFT”。它只负责编辑�
 页面上方保留五个产品区：
 
 - **模板概览**：Maker 状态和发布准备度；
-- **角色创建器**：核心 Part、Item、Style 与 Layer 编辑器；
+- **角色创建器**：核心 Part、Item 与 Style 编辑器；
 - **Living Content**：Soul Character、Memory、Skills & Docs 默认内容；
 - **链上发布**：Walrus 和 Sui 四阶段发布；
 - **设置**：Maker 元数据、授权和经济参数。
@@ -122,14 +122,18 @@ Maker
 ├── Part：玩家菜单分类，例如 Hair
 │   ├── Item：玩家的一次选择，例如 Long Hair
 │   │   └── Style：该 Item 的可选款式，例如 Left / Pattern A
-│   │       └── LayerBinding：一张 PNG 在一个 LayerTrack 上的显示设置
+│   │       └── 唯一 PNG 及其坐标、颜色、混合和规则参数
 ├── LayerTrack：全 Maker 共用的后到前渲染顺序
-├── ColorChannel：多个 LayerBinding 共用的联动颜色
+├── ColorChannel：多个 Style 可共用的联动颜色
 ├── Rules：requires / excludes / 条件显隐
 └── ExpansionPack：固定到 Maker 版本的增量内容
 ```
 
-**Part 不等于图层。** Part 是玩家菜单；一个 Item 可以同时控制后发、前发、高光等多个 LayerBinding。所有 Part 共用 LayerTrack，因此玩家菜单顺序不会改变遮挡关系。
+**Style 是最小且唯一的可渲染单位。** 每个 Style 直接对应一张 PNG 和它的全部显示参数，Style 下方没有额外的渲染子层级。Item 保留 Styles 列表与 `+ Style`，不设置“是否开启 Style”的开关。
+
+每个 Style 恰好只有一个 `assetId`。如果需要另一张 PNG，即使它只是另一种配色或花纹，也必须新建另一个 Style，不能在一个 Style 中藏多张可切换 PNG。
+
+**Part 不等于图层。** Part 是玩家菜单分类，Item 是玩家的一次点击，Style 是 Item 的一种具体外观。一个造型若需要后发、前发或高光等多张 PNG 同时显示，应按遮挡职责拆成多个 Part，并用规则维持合理组合；不能把多张 PNG 塞进一个 Style。所有 Style 选择全 Maker 共用的 LayerTrack，因此玩家菜单顺序不会改变遮挡关系。
 
 ## 7. 角色创建器逐项教程
 
@@ -143,7 +147,7 @@ Maker
 2. 设置名称、必选/可选、父 Part 和默认 Item；
 3. 新建 Item；
 4. 需要同一 Item 的款式变化时添加 Style；
-5. 给 Style 添加或批量导入 PNG LayerBinding；
+5. 给 Style 上传或批量导入它唯一的一张 PNG；
 6. 在 Canvas 中定位；
 7. 设置 LayerTrack、混合模式、透明度、联动配色和条件显隐；
 8. 设置当前默认组合并进入玩家测试。
@@ -161,6 +165,8 @@ Maker
 
 确认位置后，坐标与缩放控制会自动收起，减少 Inspector 长度。需要继续调整时点击“调整位置”重新展开。任何新的拖动、坐标或缩放修改都会重新标记为“待确认”，发布检查会阻止未确认的裁切素材。
 
+“确认位置”表示创作者已经检查结果，不等于写保护。完成后还可开启“位置锁定”，真实禁止 Canvas 拖动、坐标、旋转和缩放写入；完整 Style 锁定还会禁止替换 PNG、Track、颜色、混合模式和规则。负数坐标是合法值，表示 PNG 的一部分位于 Canvas 外，编辑器不会自动改成零。
+
 玩家端永远不能移动创作者已经确认的位置。
 
 ### 7.3 批量导入
@@ -168,7 +174,7 @@ Maker
 1. 在当前 Part 中点击“批量导入”；
 2. 一次选择多张 PNG；
 3. 系统只先检查文件，不会立刻写入结构；
-4. 在映射确认窗口检查 PNG 对应的 Item、Style 和 LayerTrack；
+4. 在映射确认窗口检查 PNG 对应的 Part、Item、Style 和 LayerTrack；
 5. 文件名匹配不正确时手动修改；
 6. 确认后再写入 Maker；
 7. 逐张检查裁切素材的位置和遮挡。
@@ -181,17 +187,18 @@ Maker
 
 - 列表下方是后层，上方是前层；
 - Hair Back、Body、Outfit、Expression、Hair Front 等应使用不同轨道；
-- 删除仍被 LayerBinding 使用的轨道会被阻止；
+- 删除仍被 Style 使用的轨道会被阻止；
 - Item 或 Part 的展示顺序不会替代 LayerTrack。
+
+LayerTrack 只保存全局 z-order、名称和排序锁定，不保存、继承或修改任何坐标。Style 的 `x / y / scale / rotation` 是唯一位置来源；切换 Track 不应让图片跳位。
 
 ### 7.5 联动配色
 
-联动配色有两种模式：
-
-- **渐变映射**：保留源图明暗，用暗部/中间色/亮部重新着色；
-- **独立素材**：每个色板为相关 LayerBinding 指定一套独立 PNG。
+联动配色只对 Style 的唯一 PNG 使用 **Gradient Map**：保留源图明暗，用暗部、中间色和亮部重新着色。
 
 同一头发的前发、后发和高光应绑定同一个 ColorChannel。预览、玩家端和最终导出使用同一颜色解析逻辑。
+
+如果某个颜色或花纹必须使用另一张手绘 PNG，应新建 Style，而不是把多张 PNG 放进一个 ColorChannel 或同一个 Style。
 
 ### 7.6 组合规则
 
@@ -200,9 +207,9 @@ Maker
 - Part 级规则影响整个 Part；
 - Item/Style 级规则只影响具体选择；
 - 父 Part 可以控制子 Part 是否显示；
-- LayerBinding 还可按某个 Part 是否被选择来条件显隐。
+- Style 可以按某个 Part、Item 或 Style 是否被选择来条件显隐。
 
-规则不是提示文字。玩家选择、随机组合、默认配方和发布检查都会执行同一规则引擎。Move 暂时不能完整表达的 v4 规则会在 Manifest 中标记 `partial`，不会静默丢失。
+规则不是提示文字。玩家选择、随机组合、默认配方和发布检查都会执行同一规则引擎。Move 暂时不能完整表达的 v5 Maker 规则会在 Manifest 中标记 `partial`，不会静默丢失。
 
 ### 7.7 扩展包
 
@@ -220,7 +227,7 @@ ExpansionPack 用来给已发布 Maker 增加命名空间隔离的内容，不�
 - Part、Item、Style、LayerTrack 引用有效；
 - 必选 Part 有有效默认值；
 - PNG 本地或远程素材存在；
-- 裁切 LayerBinding 已确认位置；
+- 裁切 Style PNG 已确认位置；
 - 默认 Recipe 可通过规则并完成渲染；
 - requires/excludes 不自相矛盾；
 - ColorChannel 和 ExpansionPack 引用有效；
@@ -230,12 +237,12 @@ ExpansionPack 用来给已发布 Maker 增加命名空间隔离的内容，不�
 
 ## 8. 编辑器稳定操作说明
 
-- **保存**：将 Maker v4 文档与 PNG Blob 写入当前浏览器；顶部状态显示保存中、已保存或失败。
+- **保存**：将 Maker v5 文档与 PNG Blob 写入当前浏览器；顶部状态显示保存中、已保存或失败。
 - **撤销/重做**：结构、字段和变换操作进入同一命令历史；不可用时按钮会禁用并说明原因。
-- **工具切换**：Layer Tracks、联动配色、组合规则、扩展包和发布检查打开为边界明确的工具层；关闭后保留当前 Part、Item、Layer 和滚动位置。
+- **工具切换**：Layer Tracks、联动配色、组合规则、扩展包和发布检查打开为边界明确的工具层；关闭后保留当前 Part、Item、Style 和滚动位置。
 - **焦点保护**：点击按钮前会提交正在编辑的文字；重渲染应保留输入焦点、选区和面板滚动位置。
 - **玩家测试**：至少有一张真实 PNG 后才启用；Creator Studio 草稿测试不等于已发布 Maker。
-- **删除**：本地未发布的 Maker、Part、Item、Style 和 LayerBinding 可删除；发布后不删除链上历史，只能新建版本或归档。
+- **删除**：本地未发布的 Maker、Part、Item 和 Style 可删除；发布后不删除链上历史，只能新建版本或归档。
 
 ## 9. Living Content
 
@@ -265,7 +272,7 @@ ExpansionPack 用来给已发布 Maker 增加命名空间隔离的内容，不�
 ### 阶段 1：Prepare
 
 - 冻结当前发布快照；
-- 验证 Maker v4、素材索引、Living Content 和兼容投影；
+- 验证 Maker v5、素材索引、Living Content 和兼容投影；
 - 生成一个 Walrus Quilt；
 - 建立本地恢复检查点。
 
@@ -311,7 +318,7 @@ ExpansionPack 用来给已发布 Maker 增加命名空间隔离的内容，不�
 
 - [ ] 创建 `1024 × 1024` 小型 Maker；
 - [ ] 至少 3 个 Part、每个 Part 至少 2 个 Item；
-- [ ] 包含一个多 Layer Item 和一个可选 Part；
+- [ ] 包含一组跨前后遮挡、已拆成多个 Part 的素材和一个可选 Part；
 - [ ] 上传真实 PNG 并确认裁切素材位置；
 - [ ] 配置一个 ColorChannel 和一条 excludes 规则；
 - [ ] Player Test 中组合、None、随机、撤销/重做均正常；
@@ -354,7 +361,7 @@ ExpansionPack 用来给已发布 Maker 增加命名空间隔离的内容，不�
 
 ### Player Test 按钮不可用
 
-至少需要一个真实可解析的 PNG LayerBinding。占位资产不算可玩内容。
+至少需要一个带真实可解析 PNG 的 Style。占位资产不算可玩内容。
 
 ### 发布按钮不可用
 
@@ -368,7 +375,7 @@ ExpansionPack 用来给已发布 Maker 增加命名空间隔离的内容，不�
 
 截至本候选版：
 
-- Creator Studio 与 Player Editor 已共用 Maker v4、规则引擎和 Renderer；
+- Creator Studio 与 Player Editor 已共用 Maker v5、规则引擎和 Renderer；
 - 本地草稿、自动保存、Undo/Redo、批量导入、定位、LayerTrack、ColorChannel、规则、扩展包和发布检查已实现并有自动测试；
 - Creator Studio 主工作面支持英语、简体中文、日语、韩语和越南语；
 - Sui 原协议包已发布并记录；

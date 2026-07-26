@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Animacraft</title>
     <meta name="description" content="Animacraft is The Fully Onchain Character Maker & Creator." />
-    <link rel="stylesheet" href="./styles.css?v=animacraft-maker-v4-6" />
+    <link rel="stylesheet" href="./styles.css?v=animacraft-maker-v5-1" />
     <script src="/config.js"></script>
   </head>
   <body>
@@ -335,7 +335,7 @@
                     <header class="character-maker-head">
                       <div>
                         <p class="kicker">Character workspace</p>
-                        <h2>Parts, Items & Layers</h2>
+                        <h2>Parts, Items & Styles</h2>
                       </div>
                       <div class="maker-tags"><span id="makerWorkspaceLifecycleTag">Local draft</span><span id="makerCanvasTag">1:1</span><span>Free combine</span></div>
                     </header>
@@ -523,7 +523,7 @@
                     <h2>Blocking checks</h2>
                     <div class="asset-status-list">
                       <div><strong>Required structure</strong><span>At least one standard or paired part and one visible menu part.</span></div>
-                      <div><strong>Required files</strong><span>Every public Item needs one PNG for each Layer × Color cell.</span></div>
+                      <div><strong>Required files</strong><span>Every public Item needs at least one Style, and every Style owns exactly one PNG.</span></div>
                       <div><strong>Rule integrity</strong><span>No rule may reference a deleted Part or draft-only Item.</span></div>
                     </div>
                   </section>
@@ -833,7 +833,7 @@
           </div>
           <div class="docs-workflow">
             <article><span>01</span><strong>Library & Maker Top</strong><p>Create or open a Maker in the library, then use Maker Top to review structure, files, rules, and release readiness.</p></article>
-            <article><span>02</span><strong>Character Maker</strong><p>Work in one studio: Part is the player menu, Item is one choice, Style is an optional variant, and each LayerBinding places one PNG on a global LayerTrack.</p></article>
+            <article><span>02</span><strong>Character Maker</strong><p>Work in one studio: Part is the player menu, Item is one choice, and every Style directly owns one PNG plus its position and render settings.</p></article>
             <article><span>03</span><strong>Layer Tracks</strong><p>Arrange the global back-to-front render order, then position, scale, rotate, blend, hide, solo, and confirm each bound PNG on the shared canvas.</p></article>
             <article><span>04</span><strong>Smart Color & Rules</strong><p>Create deterministic linked color channels and enforce Item or Style requirements, exclusions, parent visibility, and valid random combinations.</p></article>
             <article><span>05</span><strong>Player Test & Preflight</strong><p>Use the exact player renderer, then resolve every missing asset, unconfirmed position, invalid default, rule conflict, and compatibility issue.</p></article>
@@ -844,10 +844,10 @@
           <div><p class="kicker">Maker Data Model</p><h2>Where each setting belongs</h2></div>
           <div class="docs-model-grid">
             <article><strong>Part</strong><span>One player menu category with required/optional behavior, parent visibility, icon, default Item, and selection rules.</span></article>
-            <article><strong>Item & Style</strong><span>Item is one player click. Style is an optional explicit Variant under that Item; both may carry requires/excludes rules.</span></article>
+            <article><strong>Item & Style</strong><span>Item is one player click. Style is the required visual choice under that Item; both may carry requires/excludes rules.</span></article>
             <article><strong>LayerTrack</strong><span>A global back-to-front render lane shared across Parts. Player menu order never changes visual z-order.</span></article>
-            <article><strong>LayerBinding</strong><span>One PNG bound from one Style to one LayerTrack, with transform, opacity, blend mode, conditional visibility, and optional smart color.</span></article>
-            <article><strong>ColorChannel</strong><span>A deterministic gradient-map or asset-map palette shared by any LayerBindings that must change color together.</span></article>
+            <article><strong>Style PNG</strong><span>One Style owns one PNG on one LayerTrack, with transform, opacity, blend mode, conditional visibility, locking, and optional smart color.</span></article>
+            <article><strong>ColorChannel</strong><span>A deterministic gradient-map palette shared by Styles that recolor their one PNG together.</span></article>
             <article><strong>OCMaker</strong><span>The shared Sui object binds original creator, Quilt Blob ID, public Parts/Items/Colors, rules, mint economics, license policy, and archive state.</span></article>
             <article><strong>MakerTreasury</strong><span>A shared coin-typed vault receives exact native-USDC mint fees and records collection and withdrawal totals.</span></article>
             <article><strong>MakerAdminCap</strong><span>The transferable management right controls economics, withdrawals, and lifecycle. Cap ownership is separate from original art provenance.</span></article>
@@ -865,7 +865,7 @@
         <section class="docs-model">
           <div><p class="kicker">Maker Lifecycle</p><h2>Delete locally, archive on-chain</h2></div>
           <div class="docs-model-grid">
-            <article><strong>Local draft</strong><span>IndexedDB stores wallet-scoped structure, source files, and upload checkpoints. Maker, Part, Item, optional Layer, and extra Color records may be permanently deleted before publication.</span></article>
+            <article><strong>Local draft</strong><span>IndexedDB stores wallet-scoped structure, source files, and upload checkpoints. Maker, Part, Item, Style, and Color records may be permanently deleted before publication.</span></article>
             <article><strong>Published Maker</strong><span>Publication locks art, rules, and the previously certified Walrus manifest locator. The Cap holder may only change future mint economics and archive state.</span></article>
             <article><strong>Archived Maker</strong><span>The creator may archive or restore a published Maker with a wallet signature. Archive blocks new Soul authorizations while preserving existing Souls, rights snapshots, and provenance.</span></article>
             <article><strong>Walrus retention</strong><span>Production uploads request 53 Mainnet epochs, currently about two years. Removing a local reference does not erase certified storage, but retention must be extended before expiry.</span></article>
@@ -875,6 +875,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=animacraft-production-8"></script>
+    <script type="module" src="./app.js?v=animacraft-production-9"></script>
   </body>
 </html>

@@ -14,6 +14,7 @@ Each invited artist publishes one small, polished Character Maker that users can
 
 ## Before Starting
 
+- Read the [Maker v5 creator asset specification](./CREATOR_ASSET_SPEC_V5.zh-CN.md) before producing a full asset set.
 - Use a Sui wallet controlled by the creator.
 - Hold enough SUI for gas/relay tips and WAL for the selected storage epochs.
 - Use only original or properly licensed art.
@@ -26,7 +27,7 @@ Each invited artist publishes one small, polished Character Maker that users can
 - Canvas: `1024 x 1024` for avatars or `1080 x 1920` for full-body/portrait work.
 - 5-10 Parts rather than an oversized first release.
 - 2-4 Items in each important Part.
-- One Color at first; add color variants only where every matrix cell is ready.
+- One or two Styles per Item at first. Use gradient-map color only when the same PNG can be recolored faithfully; another hand-drawn PNG is another Style.
 - Optional Part/Item picker icons for faster user scanning.
 - At least four visually distinct OC combinations tested before publication.
 
@@ -34,18 +35,18 @@ Common Parts include Background, Body/Base, Back Hair, Front Hair, Eyes, Mouth, 
 
 ## Asset Checklist
 
-- Transparent PNG for each Item image.
-- Every image matches the Maker canvas ratio and shared origin.
-- Every public Item fills all of its Layer x Color cells.
-- Front/back artwork that changes together belongs to separate Layers in the same Part.
+- Exactly one transparent PNG for each Style.
+- Every public Item has at least one valid Style and a valid default Style.
+- Every image uses the Maker canvas coordinate system and shared visual origin.
+- Front/back artwork that appears simultaneously belongs to separate Parts on separate LayerTracks, connected with rules when needed.
 - File names remain understandable in the creator's source folder; Animacraft generates safe unique quilt identifiers.
 - No accidental solid background, clipped edge, hidden signature, or unlicensed third-party mark.
 
 ## Part Types
 
-- **Standard:** normal selectable group with editable Layers.
-- **Left-right pair:** two fixed Layers for paired ears, wings, hands, or symmetrical accessories.
-- **Last bastion:** required fallback that cannot be disabled by selection rules.
+- **Standard:** a normal selectable Part containing Items and their Styles.
+- **Left-right pair:** represent simultaneous left/right PNGs as separate Parts and connect their Items with rules.
+- **Last bastion:** a required Part fallback that cannot be disabled by selection rules.
 
 ## Rights in the Pilot
 
@@ -59,8 +60,8 @@ Common Parts include Background, Body/Base, Back Hair, Front Hair, Eyes, Mouth, 
 ## Publication Checklist
 
 1. Save, reload, and confirm the draft and source files restore.
-2. Test every visible Part, None option, required Part, rule, palette link, and Item thumbnail.
-   Linked Parts must expose the same exact hex Color set.
+2. Test every visible Part, Item, Style, None option, required Part, rule, shared ColorChannel, and Item thumbnail.
+   Styles linked to one ColorChannel must expose the same exact gradient swatches.
 3. Complete Preview Check with no blockers.
 4. Review Living Content defaults. Leave them unchanged for a neutral Soul shell or customize the character voice, founding memory, and skill.
 5. Export a manifest backup.

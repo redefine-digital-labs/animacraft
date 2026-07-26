@@ -1,11 +1,12 @@
 /**
- * Pure bridge between the full Animacraft Maker v4 document and the existing
+ * Pure bridge between the full Animacraft Maker v5 document and the existing
  * Walrus + Sui publication interfaces.
  *
  * Walrus remains authoritative for the full versioned Maker/recipe. The Sui
  * OCMaker stores a deliberately smaller compatibility projection. Every loss
  * in that projection is reported instead of being silently treated as a full
- * representation of Maker v4.
+ * representation of Maker v5. The file/API names remain temporary compatibility
+ * aliases for existing callers.
  */
 
 import { compareMakerCompatibility } from './expansion-packs.js';
@@ -16,7 +17,7 @@ export const MAKER_V4_MANIFEST_IDENTIFIER = 'animacraft-manifest.json';
 export const MAKER_V4_RELEASE_SCHEMA = 'animacraft.maker-release.v1';
 export const MAKER_V4_MOVE_PROJECTION_SCHEMA = 'animacraft.move-summary.v1';
 export const MAKER_V4_OC_PACKAGE_SCHEMA = 'animacraft.oc-package.v2';
-export const MAKER_V4_ITEM_KEY_ENCODING = 'item-variant-key.v1';
+export const MAKER_V4_ITEM_KEY_ENCODING = 'item-style-key.v1';
 export const MAKER_V4_NEUTRAL_COLOR = '#000000';
 
 const MOVE_MAX_KEY_BYTES = 128;
@@ -74,17 +75,8 @@ function orderedItems(part) {
     .sort((left, right) => compareOrder(left, right, 'displayOrder'));
 }
 
-function orderedVariants(item) {
-  return [...asArray(item?.variants)].sort((left, right) => compareOrder(left, right, 'displayOrder'));
-}
-
-function orderedBindings(variant, trackOrder) {
-  return [...asArray(variant?.layerBindings)].sort((left, right) => (
-    (trackOrder.get(String(left?.layerTrackId || '')) ?? Number.MAX_SAFE_INTEGER)
-      - (trackOrder.get(String(right?.layerTrackId || '')) ?? Number.MAX_SAFE_INTEGER)
-    || compareText(left?.layerTrackId, right?.layerTrackId)
-    || compareText(left?.id, right?.id)
-  ));
+function orderedStyles(item) {
+  return [...asArray(item?.styles)].sort((left, right) => compareOrder(left, right, 'displayOrder'));
 }
 
 function jsonObject(value) {
@@ -134,8 +126,8 @@ function compactMoveKey(candidate, identity, used) {
   return result;
 }
 
-function tupleKey(partId, itemId, variantId) {
-  return `${partId}\u0000${itemId}\u0000${variantId}`;
+function tupleKey(partId, itemId, styleId) {
+  return `${partId}\u0000${itemId}\u0000${styleId}`;
 }
 
 function buildItemProjection(document) {
@@ -144,23 +136,23 @@ function buildItemProjection(document) {
   orderedParts(document).forEach((part) => {
     const used = new Set();
     const descriptors = orderedItems(part).flatMap((item) => {
-      const variants = orderedVariants(item);
-      return variants.map((variant) => ({ part, item, variant, isDefault: variant.id === item.defaultVariantId }));
+      const styles = orderedStyles(item);
+      return styles.map((style) => ({ part, item, style, isDefault: style.id === item.defaultStyleId }));
     });
 
-    // Preserve every Item id for its default Variant before allocating compound
+    // Preserve every Item id for its default Style before allocating compound
     // keys. This prevents an Item named `shirt--red` from being displaced by a
-    // red Variant belonging to another Item.
-    descriptors.filter((entry) => entry.isDefault || orderedVariants(entry.item).length === 1).forEach((entry) => {
-      const identity = tupleKey(part.id, entry.item.id, entry.variant.id);
+    // red Style belonging to another Item.
+    descriptors.filter((entry) => entry.isDefault || orderedStyles(entry.item).length === 1).forEach((entry) => {
+      const identity = tupleKey(part.id, entry.item.id, entry.style.id);
       const key = compactMoveKey(entry.item.id, identity, used);
       const record = { ...entry, key };
       byTuple.set(identity, record);
       records.push(record);
     });
-    descriptors.filter((entry) => !byTuple.has(tupleKey(part.id, entry.item.id, entry.variant.id))).forEach((entry) => {
-      const identity = tupleKey(part.id, entry.item.id, entry.variant.id);
-      const key = compactMoveKey(`${entry.item.id}--${entry.variant.id}`, identity, used);
+    descriptors.filter((entry) => !byTuple.has(tupleKey(part.id, entry.item.id, entry.style.id))).forEach((entry) => {
+      const identity = tupleKey(part.id, entry.item.id, entry.style.id);
+      const key = compactMoveKey(`${entry.item.id}--${entry.style.id}`, identity, used);
       const record = { ...entry, key };
       byTuple.set(identity, record);
       records.push(record);
@@ -184,12 +176,9 @@ export function collectReferencedMakerV4AssetIds(document) {
     if (part.iconAssetId) ids.add(String(part.iconAssetId));
     orderedItems(part).forEach((item) => {
       if (item.thumbnailAssetId) ids.add(String(item.thumbnailAssetId));
-      orderedVariants(item).forEach((variant) => asArray(variant.layerBindings).forEach((binding) => {
-        if (binding.assetId) ids.add(String(binding.assetId));
-        asArray(binding.assetsBySwatch).forEach((mapping) => {
-          if (mapping?.assetId) ids.add(String(mapping.assetId));
-        });
-      }));
+      orderedStyles(item).forEach((style) => {
+        if (style.assetId) ids.add(String(style.assetId));
+      });
     });
   });
   asArray(document?.extensions?.expansionDrafts).forEach((pack) => {
@@ -238,42 +227,32 @@ function sanitizeAsset(asset) {
   };
 }
 
-function sanitizeBinding(binding) {
+function sanitizeStyle(style) {
   return {
-    id: String(binding.id || ''),
-    layerTrackId: String(binding.layerTrackId || ''),
-    assetId: String(binding.assetId || ''),
-    colorChannelId: binding.colorChannelId ?? null,
-    assetsBySwatch: asArray(binding.assetsBySwatch).map((mapping) => ({
-      swatchId: String(mapping.swatchId || ''),
-      assetId: String(mapping.assetId || ''),
-    })),
+    id: String(style.id || ''),
+    name: String(style.name || ''),
+    displayOrder: Number(style.displayOrder),
+    assetId: String(style.assetId || ''),
+    layerTrackId: String(style.layerTrackId || ''),
+    colorChannelId: style.colorChannelId ?? null,
     transform: {
-      x: Number(binding.transform?.x || 0),
-      y: Number(binding.transform?.y || 0),
-      scale: Number(binding.transform?.scale ?? 1),
-      rotation: Number(binding.transform?.rotation || 0),
+      x: Number(style.transform?.x || 0),
+      y: Number(style.transform?.y || 0),
+      scale: Number(style.transform?.scale ?? 1),
+      rotation: Number(style.transform?.rotation || 0),
     },
-    inheritTrackTransform: binding.inheritTrackTransform === true,
-    opacity: Number(binding.opacity),
-    blendMode: String(binding.blendMode || 'normal'),
-    visibleWhen: clone(binding.visibleWhen ?? null),
+    positionConfirmed: style.positionConfirmed === true,
+    positionLocked: style.positionLocked === true,
+    styleLocked: style.styleLocked === true,
+    opacity: Number(style.opacity),
+    blendMode: String(style.blendMode || 'normal'),
+    visibleWhen: clone(style.visibleWhen ?? null),
+    requires: clone(asArray(style.requires)),
+    excludes: clone(asArray(style.excludes)),
   };
 }
 
-function sanitizeVariant(variant, trackOrder) {
-  return {
-    id: String(variant.id || ''),
-    name: String(variant.name || ''),
-    displayOrder: Number(variant.displayOrder),
-    visibleWhen: clone(variant.visibleWhen ?? null),
-    requires: clone(asArray(variant.requires)),
-    excludes: clone(asArray(variant.excludes)),
-    layerBindings: orderedBindings(variant, trackOrder).map(sanitizeBinding),
-  };
-}
-
-function sanitizeItem(item, trackOrder) {
+function sanitizeItem(item) {
   return {
     id: String(item.id || ''),
     name: String(item.name || ''),
@@ -284,12 +263,12 @@ function sanitizeItem(item, trackOrder) {
     visibleWhen: clone(item.visibleWhen ?? null),
     requires: clone(asArray(item.requires)),
     excludes: clone(asArray(item.excludes)),
-    defaultVariantId: item.defaultVariantId ?? null,
-    variants: orderedVariants(item).map((variant) => sanitizeVariant(variant, trackOrder)),
+    defaultStyleId: item.defaultStyleId ?? null,
+    styles: orderedStyles(item).map(sanitizeStyle),
   };
 }
 
-function sanitizePart(part, trackOrder) {
+function sanitizePart(part) {
   return {
     id: String(part.id || ''),
     name: String(part.name || ''),
@@ -302,7 +281,7 @@ function sanitizePart(part, trackOrder) {
     visibleWhen: clone(part.visibleWhen ?? null),
     requires: clone(asArray(part.requires)),
     excludes: clone(asArray(part.excludes)),
-    items: orderedItems(part).map((item) => sanitizeItem(item, trackOrder)),
+    items: orderedItems(part).map(sanitizeItem),
   };
 }
 
@@ -396,19 +375,18 @@ function projectionIndex(document) {
   const items = buildItemProjection(document);
   const parts = orderedParts(document).map((part) => {
     const defaultItem = orderedItems(part).find((item) => item.id === part.defaultItemId) || orderedItems(part)[0];
-    const variants = defaultItem ? orderedVariants(defaultItem) : [];
-    const defaultVariant = variants.find((variant) => variant.id === defaultItem?.defaultVariantId) || variants[0];
+    const styles = defaultItem ? orderedStyles(defaultItem) : [];
+    const defaultStyle = styles.find((style) => style.id === defaultItem?.defaultStyleId) || styles[0];
     const orderedOwners = [
-      ...(defaultVariant ? [defaultVariant] : []),
-      ...orderedItems(part).flatMap((item) => orderedVariants(item)).filter((variant) => variant !== defaultVariant),
+      ...(defaultStyle ? [defaultStyle] : []),
+      ...orderedItems(part).flatMap((item) => orderedStyles(item)).filter((style) => style !== defaultStyle),
     ];
-    const orderedPartBindings = orderedOwners.flatMap((variant) => orderedBindings(variant, trackOrder));
-    const allColorChannelIds = [...new Set(orderedPartBindings
-      .map((binding) => String(binding.colorChannelId || ''))
+    const allColorChannelIds = [...new Set(orderedOwners
+      .map((style) => String(style.colorChannelId || ''))
       .filter((channelId) => channelById.has(channelId)))];
-    const primaryBinding = orderedPartBindings
-      .find((binding) => binding.colorChannelId && channelById.has(String(binding.colorChannelId)));
-    const primaryColorChannelId = primaryBinding ? String(primaryBinding.colorChannelId) : null;
+    const primaryStyle = orderedOwners
+      .find((style) => style.colorChannelId && channelById.has(String(style.colorChannelId)));
+    const primaryColorChannelId = primaryStyle ? String(primaryStyle.colorChannelId) : null;
     const channel = primaryColorChannelId ? channelById.get(primaryColorChannelId) : null;
     const colors = channel
       ? [...new Set(asArray(channel.swatches).map((swatch) => moveColor(swatch.hintColor)))]
@@ -438,7 +416,7 @@ function releaseProjection(document) {
   const index = projectionIndex(document);
   if (index.items.records.length > MOVE_MAX_ITEMS) {
     throw new MakerV4PublicationError(
-      `The Move summary contains more than ${MOVE_MAX_ITEMS} Item/Variant records.`,
+      `The Move summary contains more than ${MOVE_MAX_ITEMS} Item/Style records.`,
       'move-item-limit',
       { count: index.items.records.length },
     );
@@ -463,7 +441,7 @@ function releaseProjection(document) {
       colors: [...part.colors],
       items: index.items.records.filter((record) => record.part.id === part.id).map((record) => ({
         itemId: String(record.item.id),
-        variantId: String(record.variant.id),
+        styleId: String(record.style.id),
         summaryItemKey: record.key,
       })),
     })),
@@ -516,17 +494,11 @@ export function buildMakerV4PublicationManifest(document, options = {}) {
       id: String(track.id),
       name: String(track.name),
       order: Number(track.order),
-      transform: {
-        x: Number(track.transform?.x || 0),
-        y: Number(track.transform?.y || 0),
-        scale: Number(track.transform?.scale ?? 1),
-        rotation: Number(track.transform?.rotation || 0),
-      },
       locked: track.locked !== false,
       referenceAssetId: track.referenceAssetId ?? null,
     })),
     colorChannels: colors.map(sanitizeChannel),
-    parts: orderedParts(document).map((part) => sanitizePart(part, trackOrder)),
+    parts: orderedParts(document).map(sanitizePart),
     defaultRecipe: {
       selections: [...asArray(document.defaultRecipe?.selections)].map(clone).sort((left, right) => (
         (partOrder.get(String(left?.partId || '')) ?? Number.MAX_SAFE_INTEGER)
@@ -657,17 +629,8 @@ function locationValue(locations, assetId) {
   return String(record?.patchId || record?.quiltPatchId || record?.walrusPatchId || record?.id || record?.blobId || '');
 }
 
-function primaryVariantAssetId(index, record) {
-  const bindings = orderedBindings(record.variant, index.trackOrder);
-  for (const binding of bindings) {
-    const channel = binding.colorChannelId ? index.channelById.get(String(binding.colorChannelId)) : null;
-    if (channel?.defaultSwatchId) {
-      const mapped = asArray(binding.assetsBySwatch).find((entry) => entry.swatchId === channel.defaultSwatchId);
-      if (mapped?.assetId) return String(mapped.assetId);
-    }
-    if (binding.assetId) return String(binding.assetId);
-  }
-  return '';
+function primaryStyleAssetId(record) {
+  return String(record.style.assetId || '');
 }
 
 function selectorSummaryKeys(selector, index) {
@@ -676,7 +639,7 @@ function selectorSummaryKeys(selector, index) {
   const matches = index.items.records.filter((record) => (
     record.part.id === partId
     && record.item.id === selector.itemId
-    && (!selector.variantId || record.variant.id === selector.variantId)
+    && (!selector.styleId || record.style.id === selector.styleId)
   ));
   return matches.map((record) => record.key);
 }
@@ -741,11 +704,8 @@ function flattenMoveRules(document, index) {
     if (part.visibleWhen) unrepresentedRules.push({ code: 'visible-when-retained-on-walrus', path: `parts.${part.id}.visibleWhen` });
     orderedItems(part).forEach((item) => {
       if (item.visibleWhen) unrepresentedRules.push({ code: 'visible-when-retained-on-walrus', path: `parts.${part.id}.items.${item.id}.visibleWhen` });
-      orderedVariants(item).forEach((variant) => {
-        if (variant.visibleWhen) unrepresentedRules.push({ code: 'visible-when-retained-on-walrus', path: `parts.${part.id}.items.${item.id}.variants.${variant.id}.visibleWhen` });
-        asArray(variant.layerBindings).forEach((binding) => {
-          if (binding.visibleWhen) unrepresentedRules.push({ code: 'layer-visible-when-retained-on-walrus', path: `parts.${part.id}.items.${item.id}.variants.${variant.id}.bindings.${binding.id}.visibleWhen` });
-        });
+      orderedStyles(item).forEach((style) => {
+        if (style.visibleWhen) unrepresentedRules.push({ code: 'visible-when-retained-on-walrus', path: `parts.${part.id}.items.${item.id}.styles.${style.id}.visibleWhen` });
       });
     });
   });
@@ -771,28 +731,28 @@ function paletteLinks(index) {
 }
 
 /**
- * Flatten Maker v4 definitions to the existing `publishMaker()` arguments.
- * Variant ids are encoded into unique legacy Item keys; the full mapping stays
+ * Flatten Maker v5 definitions to the existing `publishMaker()` arguments.
+ * Style ids are encoded into unique legacy Item keys; the full mapping stays
  * in the Walrus manifest.
  */
 export function buildMakerV4MoveSummary(document, options = {}) {
   validateMakerV4Document(document, { mode: 'publish' });
   const index = projectionIndex(document);
   if (index.items.records.length > MOVE_MAX_ITEMS) {
-    throw new MakerV4PublicationError(`The Move summary contains more than ${MOVE_MAX_ITEMS} Item/Variant records.`, 'move-item-limit');
+    throw new MakerV4PublicationError(`The Move summary contains more than ${MOVE_MAX_ITEMS} Item/Style records.`, 'move-item-limit');
   }
   const missingLocations = [];
   const items = index.items.records.map((record) => {
-    const assetId = primaryVariantAssetId(index, record);
+    const assetId = primaryStyleAssetId(record);
     const blobId = locationValue(options.assetLocations, assetId);
     if (!blobId && options.requireAssetLocations !== false) missingLocations.push(assetId);
     const iconBlobId = record.item.thumbnailAssetId
       ? locationValue(options.assetLocations, String(record.item.thumbnailAssetId))
       : '';
-    const variants = orderedVariants(record.item);
-    const label = variants.length === 1 || record.isDefault
+    const styles = orderedStyles(record.item);
+    const label = styles.length === 1 || record.isDefault
       ? String(record.item.name)
-      : `${record.item.name} · ${record.variant.name}`;
+      : `${record.item.name} · ${record.style.name}`;
     return {
       partKey: String(record.part.id),
       itemKey: record.key,
@@ -801,7 +761,7 @@ export function buildMakerV4MoveSummary(document, options = {}) {
       iconBlobId,
       gateKind: 0,
       sourceItemId: String(record.item.id),
-      sourceVariantId: String(record.variant.id),
+      sourceStyleId: String(record.style.id),
       sourceAssetId: assetId,
     };
   });
@@ -882,17 +842,17 @@ export function flattenMakerV4Recipe(document, recipe, options = {}) {
     throw new MakerV4PublicationError('The recipe selects the same Part more than once.', 'duplicate-recipe-part', { partIds: [...new Set(duplicateParts)] });
   }
   const partMap = new Map(orderedParts(document).map((part) => [String(part.id), part]));
-  const missingVariants = explicitSelections.flatMap((selection) => {
+  const missingStyles = explicitSelections.flatMap((selection) => {
     const partId = String(selection?.partId || selection?.partKey || '');
     const itemId = String(selection?.itemId || selection?.itemKey || '');
     if (!partId || !itemId) return [];
     const item = orderedItems(partMap.get(partId)).find((candidate) => candidate.id === itemId);
-    return item && orderedVariants(item).length && !String(selection?.variantId || selection?.variantKey || selection?.styleId || '')
+    return item && orderedStyles(item).length && !String(selection?.styleId || selection?.styleKey || '')
       ? [{ partId, itemId }]
       : [];
   });
-  if (missingVariants.length) {
-    throw new MakerV4PublicationError('Every selected v4 Item must name its Variant.', 'missing-recipe-variant', { selections: missingVariants });
+  if (missingStyles.length) {
+    throw new MakerV4PublicationError('Every selected Item must name its Style.', 'missing-recipe-style', { selections: missingStyles });
   }
   if (options.requireExplicitColors !== false) {
     const supplied = new Set(rawRecipeColors(recipe));
@@ -909,7 +869,7 @@ export function flattenMakerV4Recipe(document, recipe, options = {}) {
   const colorSelections = new Map(asArray(evaluated.documentRecipe.colors).map((color) => [String(color.channelId), String(color.swatchId)]));
   const suiRecipe = evaluated.documentRecipe.selections.map((selection) => {
     const part = index.partById.get(String(selection.partId));
-    const item = index.items.byTuple.get(tupleKey(selection.partId, selection.itemId, selection.variantId));
+    const item = index.items.byTuple.get(tupleKey(selection.partId, selection.itemId, selection.styleId));
     if (!part || !item) {
       throw new MakerV4PublicationError('A recipe selection is absent from the Move projection.', 'recipe-projection-failed', { selection });
     }
@@ -998,7 +958,7 @@ export function buildMakerV4OcUploadEntries(imageBlob, ocPackage, options = {}) 
   }
   const packageValue = ocPackage?.package || ocPackage;
   if (!packageValue || packageValue.schemaVersion !== MAKER_V4_OC_PACKAGE_SCHEMA) {
-    throw new MakerV4PublicationError('A Maker v4 OC package is required.', 'invalid-oc-package');
+    throw new MakerV4PublicationError('A Maker v5 OC package is required.', 'invalid-oc-package');
   }
   const imageIdentifier = options.imageIdentifier || 'animacraft-oc.png';
   const profileIdentifier = options.profileIdentifier || 'animacraft-oc.json';

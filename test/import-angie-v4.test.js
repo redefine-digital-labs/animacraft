@@ -9,22 +9,22 @@ import { fileURLToPath } from 'node:url';
 import {
   ANGIE_FIXTURE_CLASSIFICATION,
   AngieImportError,
-  buildAngieV4StressFixture,
+  buildAngieV5StressFixture,
   resolveDefaultAngieReleaseRoot,
 } from '../scripts/import-angie-v4.mjs';
-import { validateMakerV4Document } from '../maker-v4.js';
+import { validateMakerV5Document } from '../maker-v4.js';
 
 const ANGIE_ROOT = resolveDefaultAngieReleaseRoot(fileURLToPath(new URL('../', import.meta.url)));
 const ANGIE_AVAILABLE = existsSync(resolve(ANGIE_ROOT, 'animacraft-manifest.json'));
 
-test('imports Astral Courier as a marked v4 negative stress fixture', { skip: !ANGIE_AVAILABLE }, async () => {
-  const { manifest, report } = await buildAngieV4StressFixture({
+test('imports Astral Courier as a marked v5 negative stress fixture', { skip: !ANGIE_AVAILABLE }, async () => {
+  const { manifest, report } = await buildAngieV5StressFixture({
     sourceRoot: ANGIE_ROOT,
     attachLocalPaths: false,
   });
 
-  assert.equal(validateMakerV4Document(manifest), manifest);
-  assert.equal(manifest.schemaVersion, 'animacraft.maker.v4');
+  assert.equal(validateMakerV5Document(manifest), manifest);
+  assert.equal(manifest.schemaVersion, 'animacraft.maker.v5');
   assert.equal(manifest.extensions.stressTest.classification, ANGIE_FIXTURE_CLASSIFICATION);
   assert.equal(manifest.extensions.stressTest.doNotPublish, true);
   assert.equal(manifest.extensions.stressTest.doNotUseAsVisualGold, true);
@@ -32,9 +32,14 @@ test('imports Astral Courier as a marked v4 negative stress fixture', { skip: !A
   assert.match(manifest.metadata.name, /^\[Stress Fixture\]/);
   assert.equal(report.summary.partCount, 6);
   assert.equal(report.summary.itemCount, 25);
+  assert.equal(report.summary.styleCount, 25);
   assert.equal(report.summary.assetCount, 26);
   assert.equal(report.summary.errorCount, 0);
   assert.ok(manifest.assets.every((asset) => !asset.localPath && !asset.url));
+  assert.ok(manifest.colorChannels.every((channel) => channel.mode === 'gradient-map'));
+  assert.ok(manifest.parts.every((part) => part.items.every((item) => item.styles.every((style) => (
+    typeof style.assetId === 'string' && !Object.hasOwn(style, 'assetsBySwatch')
+  )))), 'every imported Style must own exactly one PNG through assetId');
 
   const codes = new Set(report.diagnostics.map((diagnostic) => diagnostic.code));
   assert.ok(codes.has('empty-alpha-placeholder'));
@@ -90,7 +95,7 @@ test('rejects a v3 asset identifier that escapes the release directory', async (
   await writeFile(resolve(releaseRoot, 'animacraft-manifest.json'), `${JSON.stringify(manifest)}\n`);
 
   await assert.rejects(
-    () => buildAngieV4StressFixture({ sourceRoot: releaseRoot }),
+    () => buildAngieV5StressFixture({ sourceRoot: releaseRoot }),
     (error) => error instanceof AngieImportError && error.code === 'unsafe-asset-identifier',
   );
 });

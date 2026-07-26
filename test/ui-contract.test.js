@@ -46,7 +46,7 @@ test('the certified OC handoff uses the dedicated Soulidity adapter for free and
   assert.doesNotMatch(html, /<strong>Temporary Import Kit<\/strong>/);
 });
 
-test('Maker v4 mounts separate Creator and Player workspaces on one renderer', async () => {
+test('Maker v5 mounts separate Creator and Player workspaces on one renderer', async () => {
   const [html, app, workspace, workspaceI18n, styles] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),
     readFile(new URL('../app.js', import.meta.url), 'utf8'),
@@ -56,23 +56,23 @@ test('Maker v4 mounts separate Creator and Player workspaces on one renderer', a
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
-  assert.match(html, /styles\.css\?v=animacraft-maker-v4-6/);
-  assert.match(html, /app\.js\?v=animacraft-production-8/);
+  assert.match(html, /styles\.css\?v=animacraft-maker-v5-1/);
+  assert.match(html, /app\.js\?v=animacraft-production-9/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
   assert.match(app, /buildMakerV4PublicationBundle/);
   assert.match(app, /makerWorkspace\.renderRecipeToBlob\(recipe\)/);
   assert.match(workspace, /renderResolvedScene\(scene, canvas/);
   assert.match(workspace, /data-action="player-none"/);
-  assert.match(workspaceI18n, /Upload at least one layer PNG before player testing/);
+  assert.match(workspaceI18n, /Upload at least one Style PNG before player testing/);
   assert.match(workspace, /this\.tr\(blockingIssues\.length === 1 \? 'reviewIssue' : 'reviewIssues'/);
   assert.match(workspaceI18n, /reviewIssues: 'Review \{count\} issues'/);
   assert.match(workspace, /class="v4-tool-modal-backdrop" data-action="close-tool-backdrop"/);
   assert.match(workspace, /id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true"/);
   assert.match(workspace, /role="tab" aria-selected=/);
-  assert.match(workspace, /else if \(binding\.positionConfirmed === false\)/);
+  assert.match(workspace, /else if \(style\.positionConfirmed === false\)/);
   assert.match(workspace, /data-action="focus-issue"/);
-  assert.match(workspace, /kind:\s*'pending-layer'/);
+  assert.match(workspace, /data-action="style-asset"/);
   assert.match(workspace, /this\.contextEpoch = 0/);
   assert.match(workspace, /this\.contextEpoch !== contextEpoch/);
   assert.match(workspace, /this\.store\.replace\(incoming, context\.recipe \|\| incoming\.defaultRecipe/);
@@ -124,27 +124,43 @@ test('production gallery is chain-derived and creator packs are local test fixtu
   assert.doesNotMatch(runtime, /last: Math\.min\(100, limit - ids\.length\)/);
 });
 
-test('Maker v4 exposes the P0 creator workflow without the legacy editor chrome', async () => {
-  const [html, app, workspace, styles] = await Promise.all([
+test('Maker v5 exposes the four-level P0 creator workflow without legacy visual sublayers', async () => {
+  const [html, app, workspace, workspaceI18n, styles] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),
     readFile(new URL('../app.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-workspace-i18n.js', import.meta.url), 'utf8'),
     readFile(new URL('../styles.css', import.meta.url), 'utf8'),
   ]);
 
-  assert.match(html, /Eight production-ready Parts with direct PNG upload slots/);
+  assert.match(html, /every Style directly owns one PNG plus its position and render settings/);
   assert.match(app, /classList\.toggle\('v4-parts-active', state\.editorPanel === 'parts'\)/);
+  assert.match(app, /const items = Array\.isArray\(part\.items\) \? part\.items : \[\];/);
+  assert.match(app, /const styles = items\.flatMap\(\(item\) => item\.styles \|\| \[\]\);/);
   assert.match(styles, /\.creator-view\[data-creator-view="edit"\]\.v4-parts-active \.creator-editor-header\s*\{\s*display:\s*none;/s);
-  assert.match(workspace, /Import matrix folder/);
-  assert.match(workspace, /Project ZIP/);
-  assert.match(workspace, /Generate composite thumbnail/);
-  assert.doesNotMatch(workspace, /Apply to every Item on Track/);
-  assert.doesNotMatch(workspace, /data-action="binding-inherit-track"/);
-  assert.match(workspace, /data-action="binding-swatch-asset"/);
+  assert.match(workspace, /this\.tr\('importMatrixFolder'\)/);
+  assert.match(workspace, /this\.tr\('projectZip'\)/);
+  assert.match(workspace, /this\.tr\('generateCompositeThumbnail'\)/);
+  assert.match(workspace, /data-action="add-style"/);
+  assert.match(workspace, /data-action="copy-style"/);
+  assert.match(workspace, /data-action="style-asset"/);
+  assert.match(workspace, /data-action="style-channel"/);
+  assert.match(workspace, /data-action="style-position-locked"/);
+  assert.match(workspace, /data-action="style-locked"/);
+  assert.match(workspace, /data-action="toggle-part-preview"/);
+  assert.match(workspace, /data-action="player-style"/);
+  assert.match(workspace, /selection\.styleId/);
+  assert.doesNotMatch(workspace, /\b(?:LayerBinding|bindingId|variantId|defaultVariantId)\b/);
+  assert.doesNotMatch(workspace, /Empty LayerBinding|Selected Layer/);
+  assert.doesNotMatch(workspace, /data-action="(?:select-binding|add-binding|binding-[^"]+)"/);
+  assert.doesNotMatch(workspace, /data-action="style-swatch-asset"/);
+  assert.doesNotMatch(workspace, /<option value="asset-map"/);
+  assert.doesNotMatch(workspace, /\bassetsBySwatch\b/);
+  assert.doesNotMatch(workspaceI18n, /Separate assets/);
   assert.match(workspace, /data-action="open-player"/);
 });
 
-test('Maker v4 keeps the mobile player preview visible and blocks incomplete OC output', async () => {
+test('Maker v5 keeps the mobile player preview visible and blocks incomplete OC output', async () => {
   const [workspace, styles] = await Promise.all([
     readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
     readFile(new URL('../styles.css', import.meta.url), 'utf8'),

@@ -8,6 +8,20 @@ function slug(value, fallback = 'item') {
   return result || fallback;
 }
 
+function finite(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function normalizedTransform(value = {}) {
+  return {
+    x: finite(value.x, 0),
+    y: finite(value.y, 0),
+    scale: Math.max(0.01, finite(value.scale ?? value.scaleX, 1)),
+    rotation: finite(value.rotation, 0),
+  };
+}
+
 export function uniqueDocumentId(preferred, collections = [], fallback = 'item') {
   const used = new Set(collections.flat().map((entry) => String(entry?.id || entry)).filter(Boolean));
   const base = slug(preferred, fallback);
@@ -22,15 +36,9 @@ export function uniqueDocumentId(preferred, collections = [], fallback = 'item')
 
 export function createLayerTrack(document, name = 'New Layer') {
   return {
-    id: uniqueDocumentId(name, [document.layerTracks], 'layer'),
+    id: uniqueDocumentId(name, [document.layerTracks || []], 'layer'),
     name,
-    order: document.layerTracks.length,
-    transform: {
-      x: 0,
-      y: 0,
-      scale: 1,
-      rotation: 0,
-    },
+    order: document.layerTracks?.length || 0,
     locked: true,
     referenceAssetId: null,
   };
@@ -38,9 +46,9 @@ export function createLayerTrack(document, name = 'New Layer') {
 
 export function createPart(document, name = 'New Part') {
   return {
-    id: uniqueDocumentId(name, [document.parts], 'part'),
+    id: uniqueDocumentId(name, [document.parts || []], 'part'),
     name,
-    menuOrder: document.parts.length,
+    menuOrder: document.parts?.length || 0,
     menuVisible: true,
     required: false,
     defaultItemId: null,
@@ -53,18 +61,39 @@ export function createPart(document, name = 'New Part') {
   };
 }
 
-export function createVariant(item, name = 'Default') {
+/**
+ * A Style is the smallest and only renderable unit in a Maker v5 document.
+ * It owns exactly one asset/track placement and never contains bindings.
+ */
+export function createStyle(item, name = 'New Style') {
   return {
-    id: uniqueDocumentId(name, [item.variants || []], 'variant'),
+    id: uniqueDocumentId(name, [item?.styles || []], 'style'),
     name,
-    displayOrder: item.variants?.length || 0,
+    displayOrder: item?.styles?.length || 0,
+    assetId: null,
+    layerTrackId: null,
+    colorChannelId: null,
+    transform: {
+      x: 0,
+      y: 0,
+      scale: 1,
+      rotation: 0,
+    },
+    positionConfirmed: false,
+    positionLocked: false,
+    styleLocked: false,
+    opacity: 1,
+    blendMode: 'normal',
     visibleWhen: null,
     requires: [],
     excludes: [],
-    layerBindings: [],
   };
 }
 
+/**
+ * New Items intentionally start without a Style. Draft validation permits this;
+ * publication requires every public Item to have a valid default Style.
+ */
 export function createItem(part, name = 'New Item') {
   const item = {
     id: uniqueDocumentId(name, [part.items || []], 'item'),
@@ -76,35 +105,11 @@ export function createItem(part, name = 'New Item') {
     visibleWhen: null,
     requires: [],
     excludes: [],
-    defaultVariantId: null,
-    variants: [],
+    defaultStyleId: null,
+    styles: [],
   };
   item.importKey = item.id;
-  const variant = createVariant(item, 'Default');
-  item.variants.push(variant);
-  item.defaultVariantId = variant.id;
   return item;
-}
-
-export function createLayerBinding(variant, layerTrackId, assetId, transform = {}) {
-  return {
-    id: uniqueDocumentId(`binding-${layerTrackId}`, [variant.layerBindings || []], 'binding'),
-    layerTrackId,
-    assetId,
-    colorChannelId: null,
-    assetsBySwatch: [],
-    transform: {
-      x: Number(transform.x || 0),
-      y: Number(transform.y || 0),
-      scale: Math.max(0.01, Number(transform.scale ?? transform.scaleX ?? 1)),
-      rotation: Number(transform.rotation || 0),
-    },
-    inheritTrackTransform: false,
-    positionConfirmed: false,
-    opacity: 1,
-    blendMode: 'normal',
-    visibleWhen: null,
-  };
 }
 
 export function createGradientColorChannel(document, name = 'New Color') {
@@ -144,71 +149,77 @@ export function addDocumentAsset(document, asset) {
 }
 
 export function findPart(document, partId) {
-  return document.parts.find((part) => part.id === partId) || null;
+  return document?.parts?.find((part) => part.id === partId) || null;
 }
 
 export function findItem(document, partId, itemId) {
-  return findPart(document, partId)?.items.find((item) => item.id === itemId) || null;
+  return findPart(document, partId)?.items?.find((item) => item.id === itemId) || null;
 }
 
-export function findVariant(document, partId, itemId, variantId) {
-  return findItem(document, partId, itemId)?.variants.find((variant) => variant.id === variantId) || null;
+export function findStyle(document, partId, itemId, styleId) {
+  return findItem(document, partId, itemId)?.styles?.find((style) => style.id === styleId) || null;
 }
 
-export function findBinding(document, partId, itemId, variantId, bindingId) {
-  return findVariant(document, partId, itemId, variantId)?.layerBindings.find((binding) => binding.id === bindingId) || null;
-}
-
+/**
+ * Normalize ordering and scalar editor fields only. Legacy Variant documents
+ * are deliberately rejected instead of being silently reinterpreted as v5.
+ */
 export function normalizeDocumentOrders(document) {
+  if (!document || document.schemaVersion !== 'animacraft.maker.v5') {
+    throw new TypeError('normalizeDocumentOrders expects an animacraft.maker.v5 document.');
+  }
+
+  document.layerTracks ||= [];
+  document.parts ||= [];
+  document.colorChannels ||= [];
+
   document.layerTracks.forEach((track, index) => {
     track.order = index;
-    track.transform ||= { x: 0, y: 0, scale: 1, rotation: 0 };
-    track.transform.x = Number(track.transform.x || 0);
-    track.transform.y = Number(track.transform.y || 0);
-    track.transform.scale = Math.max(0.01, Number(track.transform.scale ?? 1));
-    track.transform.rotation = Number(track.transform.rotation || 0);
+    delete track.transform;
     if (typeof track.locked !== 'boolean') track.locked = true;
     track.referenceAssetId ??= null;
   });
-  const trackById = new Map(document.layerTracks.map((track) => [track.id, track]));
+
   document.parts.forEach((part, partIndex) => {
     part.menuOrder = partIndex;
+    part.items ||= [];
     part.items.forEach((item, itemIndex) => {
+      if (Object.hasOwn(item, 'variants') || Object.hasOwn(item, 'defaultVariantId')) {
+        throw new TypeError('Legacy Item variants are not compatible with Maker v5.');
+      }
       item.displayOrder = itemIndex;
       item.importKey ||= item.id;
-      item.status ||= 'public';
-      item.variants.forEach((variant, variantIndex) => { variant.displayOrder = variantIndex; });
-      item.variants.forEach((variant) => variant.layerBindings.forEach((binding) => {
-        binding.transform ||= { x: 0, y: 0, scale: 1, rotation: 0 };
-        binding.transform.x = Number(binding.transform.x || 0);
-        binding.transform.y = Number(binding.transform.y || 0);
-        binding.transform.scale = Math.max(0.01, Number(binding.transform.scale ?? 1));
-        binding.transform.rotation = Number(binding.transform.rotation || 0);
-        // Maker drafts briefly supported a shared Track transform. Bake that
-        // visual result into every binding once, then detach it so editing one
-        // Item can never move another Item on the same global z-order track.
-        if (binding.inheritTrackTransform === true) {
-          const trackTransform = trackById.get(binding.layerTrackId)?.transform;
-          if (trackTransform) binding.transform = { ...trackTransform };
+      item.status ||= 'draft';
+      item.styles ||= [];
+      item.styles.forEach((style, styleIndex) => {
+        if (Object.hasOwn(style, 'layerBindings') || Object.hasOwn(style, 'assetsBySwatch')) {
+          throw new TypeError('Legacy nested or multi-asset fields are not compatible with one-PNG Maker v5 Styles.');
         }
-        binding.inheritTrackTransform = false;
-        if (typeof binding.positionConfirmed !== 'boolean') binding.positionConfirmed = true;
-      }));
+        style.displayOrder = styleIndex;
+        style.assetId ??= null;
+        style.layerTrackId ??= null;
+        style.colorChannelId ??= null;
+        style.transform = normalizedTransform(style.transform);
+        if (typeof style.positionConfirmed !== 'boolean') style.positionConfirmed = false;
+        if (typeof style.positionLocked !== 'boolean') style.positionLocked = false;
+        if (typeof style.styleLocked !== 'boolean') style.styleLocked = false;
+        style.opacity = Math.max(0, Math.min(1, finite(style.opacity, 1)));
+        style.blendMode ||= 'normal';
+        style.visibleWhen ??= null;
+        style.requires = Array.isArray(style.requires) ? style.requires : [];
+        style.excludes = Array.isArray(style.excludes) ? style.excludes : [];
+      });
+      if (!item.styles.some((style) => style.id === item.defaultStyleId)) {
+        item.defaultStyleId = item.styles[0]?.id || null;
+      }
     });
   });
   document.colorChannels.forEach((channel, index) => { channel.order = index; });
   return document;
 }
 
-export function effectiveBindingTransform(document, binding) {
-  const track = document?.layerTracks?.find((candidate) => candidate.id === binding?.layerTrackId);
-  if (binding?.inheritTrackTransform === true && track?.transform) return { ...track.transform };
-  return {
-    x: Number(binding?.transform?.x || 0),
-    y: Number(binding?.transform?.y || 0),
-    scale: Math.max(0.01, Number(binding?.transform?.scale ?? 1)),
-    rotation: Number(binding?.transform?.rotation || 0),
-  };
+export function effectiveStyleTransform(_document, style) {
+  return normalizedTransform(style?.transform);
 }
 
 export function moveArrayEntry(entries, fromIndex, toIndex) {
@@ -221,17 +232,16 @@ export function moveArrayEntry(entries, fromIndex, toIndex) {
 function collectReferencedAssets(document) {
   const ids = new Set();
   if (document.metadata?.coverAssetId) ids.add(document.metadata.coverAssetId);
-  document.layerTracks.forEach((track) => {
+  (document.layerTracks || []).forEach((track) => {
     if (track.referenceAssetId) ids.add(track.referenceAssetId);
   });
-  document.parts.forEach((part) => {
+  (document.parts || []).forEach((part) => {
     if (part.iconAssetId) ids.add(part.iconAssetId);
-    part.items.forEach((item) => {
+    (part.items || []).forEach((item) => {
       if (item.thumbnailAssetId) ids.add(item.thumbnailAssetId);
-      item.variants.forEach((variant) => variant.layerBindings.forEach((binding) => {
-        if (binding.assetId) ids.add(binding.assetId);
-        (binding.assetsBySwatch || []).forEach((mapping) => mapping.assetId && ids.add(mapping.assetId));
-      }));
+      (item.styles || []).forEach((style) => {
+        if (style.assetId) ids.add(style.assetId);
+      });
     });
   });
   return ids;
@@ -247,31 +257,35 @@ export function removeUnreferencedAssetMetadata(document) {
 export function synchronizeDefaultRecipe(document) {
   const previousSelections = new Map((document.defaultRecipe?.selections || []).map((selection) => [selection.partId, selection]));
   const selections = [];
-  document.parts.forEach((part) => {
+  (document.parts || []).forEach((part) => {
     const previous = previousSelections.get(part.id);
-    const item = part.items.find((candidate) => candidate.id === previous?.itemId)
-      || part.items.find((candidate) => candidate.id === part.defaultItemId)
-      || part.items[0];
+    const item = (part.items || []).find((candidate) => candidate.id === previous?.itemId)
+      || (part.items || []).find((candidate) => candidate.id === part.defaultItemId)
+      || part.items?.[0];
     if (!item) {
       part.defaultItemId = null;
       return;
     }
     if (!part.items.some((candidate) => candidate.id === part.defaultItemId)) part.defaultItemId = item.id;
-    const variant = item.variants.find((candidate) => candidate.id === previous?.variantId)
-      || item.variants.find((candidate) => candidate.id === item.defaultVariantId)
-      || item.variants[0];
-    if (!variant) return;
-    if (!item.variants.some((candidate) => candidate.id === item.defaultVariantId)) item.defaultVariantId = variant.id;
-    selections.push({ partId: part.id, itemId: item.id, variantId: variant.id });
+    const style = (item.styles || []).find((candidate) => candidate.id === previous?.styleId)
+      || (item.styles || []).find((candidate) => candidate.id === item.defaultStyleId)
+      || item.styles?.[0];
+    if (!style) {
+      item.defaultStyleId = null;
+      return;
+    }
+    if (!item.styles.some((candidate) => candidate.id === item.defaultStyleId)) item.defaultStyleId = style.id;
+    selections.push({ partId: part.id, itemId: item.id, styleId: style.id });
   });
+
   const previousColors = new Map((document.defaultRecipe?.colors || []).map((color) => [color.channelId, color]));
-  const colors = document.colorChannels.flatMap((channel) => {
+  const colors = (document.colorChannels || []).flatMap((channel) => {
     const previousSwatchId = previousColors.get(channel.id)?.swatchId;
-    const swatchId = channel.swatches.some((swatch) => swatch.id === previousSwatchId)
+    const swatchId = channel.swatches?.some((swatch) => swatch.id === previousSwatchId)
       ? previousSwatchId
-      : channel.swatches.some((swatch) => swatch.id === channel.defaultSwatchId)
+      : channel.swatches?.some((swatch) => swatch.id === channel.defaultSwatchId)
         ? channel.defaultSwatchId
-        : channel.swatches[0]?.id;
+        : channel.swatches?.[0]?.id;
     if (!swatchId) return [];
     if (!channel.swatches.some((swatch) => swatch.id === channel.defaultSwatchId)) channel.defaultSwatchId = swatchId;
     return [{ channelId: channel.id, swatchId }];
@@ -286,14 +300,163 @@ export function duplicatePart(document, partId) {
   const duplicate = structuredClone(source);
   duplicate.id = uniqueDocumentId(`${source.id}-copy`, [document.parts], 'part-copy');
   duplicate.name = `${source.name} Copy`;
-  duplicate.parentPartId = null;
-  duplicate.items.forEach((item) => {
-    item.id = uniqueDocumentId(item.id, [duplicate.items.filter((candidate) => candidate !== item)], 'item');
-    item.variants.forEach((variant) => {
-      variant.layerBindings.forEach((binding) => { binding.id = uniqueDocumentId(binding.id, [variant.layerBindings.filter((candidate) => candidate !== binding)], 'binding'); });
+
+  const itemIdMap = new Map();
+  const styleIdMap = new Map();
+  const usedItemIds = new Set();
+
+  (source.items || []).forEach((sourceItem, itemIndex) => {
+    const copiedItem = duplicate.items[itemIndex];
+    const copiedItemId = uniqueDocumentId(
+      `${sourceItem.id}-copy`,
+      [[...usedItemIds]],
+      'item-copy',
+    );
+    usedItemIds.add(copiedItemId);
+    itemIdMap.set(sourceItem.id, copiedItemId);
+    copiedItem.id = copiedItemId;
+
+    const usedStyleIds = new Set();
+    (sourceItem.styles || []).forEach((sourceStyle, styleIndex) => {
+      const copiedStyle = copiedItem.styles[styleIndex];
+      const copiedStyleId = uniqueDocumentId(
+        `${sourceStyle.id}-copy`,
+        [[...usedStyleIds]],
+        'style-copy',
+      );
+      usedStyleIds.add(copiedStyleId);
+      styleIdMap.set(`${sourceItem.id}\u0000${sourceStyle.id}`, copiedStyleId);
+      copiedStyle.id = copiedStyleId;
     });
   });
+
+  const rewriteTarget = (target) => {
+    if (!target || typeof target !== 'object' || Array.isArray(target) || target.partId !== source.id) return target;
+    const sourceItemId = target.itemId;
+    const sourceStyleId = target.styleId;
+    const sourceItemIds = Array.isArray(target.itemIds) ? target.itemIds : null;
+    const sourceStyleIds = Array.isArray(target.styleIds) ? target.styleIds : null;
+    return {
+      ...target,
+      partId: duplicate.id,
+      ...(sourceItemId
+        ? { itemId: itemIdMap.get(sourceItemId) || sourceItemId }
+        : {}),
+      ...(sourceItemIds
+        ? { itemIds: sourceItemIds.map((itemId) => itemIdMap.get(itemId) || itemId) }
+        : {}),
+      ...(sourceStyleId
+        ? { styleId: styleIdMap.get(`${sourceItemId}\u0000${sourceStyleId}`) || sourceStyleId }
+        : {}),
+      ...(sourceStyleIds && sourceItemId
+        ? { styleIds: sourceStyleIds.map((styleId) => styleIdMap.get(`${sourceItemId}\u0000${styleId}`) || styleId) }
+        : {}),
+    };
+  };
+
+  const rewriteCondition = (condition) => {
+    if (Array.isArray(condition)) return condition.map(rewriteCondition);
+    if (!condition || typeof condition !== 'object') return condition;
+    const rewritten = rewriteTarget(condition);
+    const result = { ...rewritten };
+    ['condition', 'conditions', 'all', 'any', 'and', 'or', 'not', 'requires', 'excludes'].forEach((field) => {
+      if (result[field] !== undefined) result[field] = rewriteCondition(result[field]);
+    });
+    return result;
+  };
+
+  const rewriteOwnerReferences = (owner) => {
+    owner.requires = (owner.requires || []).map(rewriteTarget);
+    owner.excludes = (owner.excludes || []).map(rewriteTarget);
+    owner.visibleWhen = rewriteCondition(owner.visibleWhen);
+  };
+
+  duplicate.defaultItemId = source.defaultItemId
+    ? itemIdMap.get(source.defaultItemId) || null
+    : null;
+  rewriteOwnerReferences(duplicate);
+  (source.items || []).forEach((sourceItem, itemIndex) => {
+    const copiedItem = duplicate.items[itemIndex];
+    copiedItem.defaultStyleId = sourceItem.defaultStyleId
+      ? styleIdMap.get(`${sourceItem.id}\u0000${sourceItem.defaultStyleId}`) || null
+      : null;
+    rewriteOwnerReferences(copiedItem);
+    copiedItem.styles.forEach(rewriteOwnerReferences);
+  });
+
   document.parts.push(duplicate);
+  normalizeDocumentOrders(document);
+  return duplicate;
+}
+
+function rewriteCopiedOwnerReferences(owner, rewriteTarget) {
+  const rewriteCondition = (condition) => {
+    if (Array.isArray(condition)) return condition.map(rewriteCondition);
+    if (!condition || typeof condition !== 'object') return condition;
+    const result = { ...rewriteTarget(condition) };
+    ['condition', 'conditions', 'all', 'any', 'and', 'or', 'not'].forEach((field) => {
+      if (result[field] !== undefined) result[field] = rewriteCondition(result[field]);
+    });
+    return result;
+  };
+  owner.requires = (owner.requires || []).map(rewriteTarget);
+  owner.excludes = (owner.excludes || []).map(rewriteTarget);
+  owner.visibleWhen = rewriteCondition(owner.visibleWhen);
+}
+
+/** Deep-copy one Item and re-key every copied Style and self-reference. */
+export function duplicateItem(document, partId, itemId) {
+  const part = findPart(document, partId);
+  const source = findItem(document, partId, itemId);
+  if (!part || !source) return null;
+  const duplicate = structuredClone(source);
+  duplicate.id = uniqueDocumentId(`${source.id}-copy`, [part.items], 'item-copy');
+  duplicate.name = `${source.name} Copy`;
+
+  const styleIdMap = new Map();
+  const usedStyleIds = new Set();
+  (source.styles || []).forEach((sourceStyle, index) => {
+    const copiedStyle = duplicate.styles[index];
+    const copiedStyleId = uniqueDocumentId(`${sourceStyle.id}-copy`, [[...usedStyleIds]], 'style-copy');
+    usedStyleIds.add(copiedStyleId);
+    styleIdMap.set(sourceStyle.id, copiedStyleId);
+    copiedStyle.id = copiedStyleId;
+  });
+  duplicate.defaultStyleId = source.defaultStyleId
+    ? styleIdMap.get(source.defaultStyleId) || null
+    : null;
+
+  const rewriteTarget = (target) => {
+    if (!target || typeof target !== 'object' || Array.isArray(target)
+      || target.partId !== partId || target.itemId !== source.id) return target;
+    return {
+      ...target,
+      itemId: duplicate.id,
+      ...(target.styleId ? { styleId: styleIdMap.get(target.styleId) || target.styleId } : {}),
+    };
+  };
+  rewriteCopiedOwnerReferences(duplicate, rewriteTarget);
+  duplicate.styles.forEach((style) => rewriteCopiedOwnerReferences(style, rewriteTarget));
+  part.items.push(duplicate);
+  normalizeDocumentOrders(document);
+  return duplicate;
+}
+
+/** Deep-copy one Style and re-key Style-specific self-references. */
+export function duplicateStyle(document, partId, itemId, styleId) {
+  const item = findItem(document, partId, itemId);
+  const source = findStyle(document, partId, itemId, styleId);
+  if (!item || !source) return null;
+  const duplicate = structuredClone(source);
+  duplicate.id = uniqueDocumentId(`${source.id}-copy`, [item.styles], 'style-copy');
+  duplicate.name = `${source.name} Copy`;
+  const rewriteTarget = (target) => {
+    if (!target || typeof target !== 'object' || Array.isArray(target)
+      || target.partId !== partId || target.itemId !== itemId || target.styleId !== source.id) return target;
+    return { ...target, styleId: duplicate.id };
+  };
+  rewriteCopiedOwnerReferences(duplicate, rewriteTarget);
+  item.styles.push(duplicate);
   normalizeDocumentOrders(document);
   return duplicate;
 }
@@ -309,7 +472,12 @@ export function replaceRecipeSelection(recipe, selection) {
     if (index >= 0) recipe.selections.splice(index, 1);
     return recipe;
   }
-  if (index >= 0) recipe.selections[index] = selection;
-  else recipe.selections.push(selection);
+  const canonical = {
+    partId: selection.partId,
+    itemId: selection.itemId,
+    ...(selection.styleId ? { styleId: selection.styleId } : {}),
+  };
+  if (index >= 0) recipe.selections[index] = canonical;
+  else recipe.selections.push(canonical);
   return recipe;
 }

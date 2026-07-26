@@ -26,9 +26,10 @@ test('unknown Maker Studio locales and keys fall back safely', () => {
   assert.equal(makerWorkspaceText('zh', 'unknownKey'), 'unknownKey');
 });
 
-test('Chinese editor terminology distinguishes Part 部位 from Item 部件', () => {
+test('Chinese editor terminology distinguishes Part 部位, Item 部件 and Style 样式', () => {
   assert.equal(makerWorkspaceText('zh', 'part'), '部位');
   assert.equal(makerWorkspaceText('zh', 'item'), '部件');
+  assert.equal(makerWorkspaceText('zh', 'style'), '样式');
   assert.equal(makerWorkspaceText('zh', 'partsItems'), '部位与部件');
 });
 
@@ -54,6 +55,8 @@ test('all 5 Maker Studio dictionaries cover every editor and player detail key',
 
   assert.deepEqual(MAKER_WORKSPACE_LOCALES, ['en', 'zh', 'ja', 'ko', 'vi']);
   assert.ok(MAKER_WORKSPACE_KEYS.length >= 250, 'the detailed workspace dictionary must stay comprehensive');
+  assert.ok(!MAKER_WORKSPACE_KEYS.includes('separateAssets'));
+  assert.ok(!MAKER_WORKSPACE_KEYS.includes('assetPerSwatchCopy'));
 
   MAKER_WORKSPACE_LOCALES.forEach((locale) => {
     const dictionary = makerWorkspaceDictionary(locale);
@@ -70,7 +73,15 @@ test('all 5 Maker Studio dictionaries cover every editor and player detail key',
 test('critical nested editor details do not fall back to English outside English', () => {
   const keys = [
     'noPartSelected',
-    'uploadLayerPng',
+    'noStylesYet',
+    'addStyleCopy',
+    'uploadStylePng',
+    'replaceStylePng',
+    'stylePngCopy',
+    'positionLock',
+    'styleLock',
+    'hideStyle',
+    'showPartPreview',
     'blendMode',
     'batchImportTitle',
     'ownerScope',

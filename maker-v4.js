@@ -1,4 +1,4 @@
-const SCHEMA_VERSION = 'animacraft.maker.v4';
+const SCHEMA_VERSION = 'animacraft.maker.v5';
 
 const LIMITS = Object.freeze({
   minCanvas: 64,
@@ -10,14 +10,13 @@ const LIMITS = Object.freeze({
   maxParts: 750,
   maxItems: 5_000,
   maxItemsPerPart: 100,
-  maxVariants: 10_000,
-  maxVariantsPerItem: 64,
+  maxStyles: 10_000,
+  maxStylesPerItem: 64,
   maxLayerTracks: 2_048,
-  maxBindings: 20_000,
   maxColorChannels: 750,
   maxSwatchesPerChannel: 32,
-  // A Walrus quilt also contains the v4 manifest, so one of the 5,000 files
-  // remains reserved for it, matching the existing v3 publication boundary.
+  // A Walrus quilt also contains the manifest, so one of the 5,000 files
+  // remains reserved for it.
   maxAssets: 4_999,
   maxExpansionPacks: 256,
   maxRuleTargets: 1_000,
@@ -44,7 +43,7 @@ const BLEND_MODES = Object.freeze([
   'luminosity',
   'linear-dodge',
 ]);
-const COLOR_CHANNEL_MODES = Object.freeze(['asset-map', 'gradient-map']);
+const COLOR_CHANNEL_MODES = Object.freeze(['gradient-map']);
 const ITEM_STATUSES = Object.freeze(['draft', 'private', 'public']);
 const VERSION_COMPATIBILITY = Object.freeze(['initial', 'compatible', 'breaking']);
 const LICENSE_KINDS = Object.freeze(['personal-use', 'free-remix', 'paid-commercial', 'exclusive-commission']);
@@ -78,46 +77,16 @@ function safeId(value, fallback = 'item') {
   return normalized || fallback;
 }
 
-function uniqueId(preferred, used) {
-  const base = safeId(preferred);
-  let result = base;
-  let suffix = 2;
-  while (used.has(result)) {
-    result = `${base.slice(0, 88)}-${suffix}`;
-    suffix += 1;
-  }
-  used.add(result);
-  return result;
-}
-
-function finiteNumber(value, fallback = 0) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
-}
-
 function integer(value, fallback = 0) {
   const number = Number(value);
   return Number.isInteger(number) ? number : fallback;
-}
-
-function normalizedOpacity(value) {
-  const number = finiteNumber(value, 100);
-  return Math.max(0, Math.min(1, number > 1 ? number / 100 : number));
-}
-
-function normalizedBlendMode(value) {
-  return BLEND_MODES.includes(value) ? value : 'normal';
-}
-
-function normalizeHex(value, fallback = '#7b5cff') {
-  return HEX_COLOR_PATTERN.test(String(value || '')) ? String(value).toLowerCase() : fallback;
 }
 
 function cloneTargets(value) {
   return Array.isArray(value) ? value.filter(isObject).map((target) => ({
     partId: String(target.partId || target.partKey || ''),
     ...(target.itemId || target.itemKey ? { itemId: String(target.itemId || target.itemKey) } : {}),
-    ...(target.variantId ? { variantId: String(target.variantId) } : {}),
+    ...(target.styleId || target.styleKey ? { styleId: String(target.styleId || target.styleKey) } : {}),
   })) : [];
 }
 
@@ -128,7 +97,7 @@ function normalizeCondition(value) {
       op: 'selected',
       partId: String(value.partId || value.partKey || ''),
       ...(value.itemId || value.itemKey ? { itemId: String(value.itemId || value.itemKey) } : {}),
-      ...(value.variantId ? { variantId: String(value.variantId) } : {}),
+      ...(value.styleId || value.styleKey ? { styleId: String(value.styleId || value.styleKey) } : {}),
     };
   }
   if (value.op === 'not') return { op: 'not', condition: normalizeCondition(value.condition) };
@@ -157,10 +126,10 @@ function defaultVersion(rootMakerId, options = {}) {
 }
 
 /**
- * Creates an empty editor document. It is structurally valid in `draft` mode;
- * publication validation intentionally fails until playable Parts and assets exist.
+ * Creates an empty Maker v5 editor document. It is structurally valid in
+ * `draft` mode; publication intentionally requires finished public content.
  */
-export function createMakerV4Document({
+export function createMakerV5Document({
   makerId = 'untitled-maker',
   name = 'Untitled Maker',
   creator = '',
@@ -210,13 +179,12 @@ export function createMakerV4Document({
 }
 
 /**
- * Creates the production Character Maker starting graph. Each player-facing
- * Part already owns an Item, Variant, LayerTrack, and pending LayerBinding so
- * the creator's first meaningful action is uploading artwork, not wiring the
- * schema by hand.
+ * Creates the standard Character Maker Part/Item skeleton. Items deliberately
+ * start with `styles: []`: creators add the first empty Style and then attach
+ * its track and asset in Creator Studio.
  */
-export function createCharacterMakerV4Starter(options = {}) {
-  const document = createMakerV4Document(options);
+export function createCharacterMakerV5Starter(options = {}) {
+  const document = createMakerV5Document(options);
   const definitions = [
     ['background', 'Background', false],
     ['back-hair', 'Back Hair', false],
@@ -229,18 +197,13 @@ export function createCharacterMakerV4Starter(options = {}) {
   ];
 
   definitions.forEach(([id, name, required], order) => {
-    const trackId = `${id}-track`;
     const itemId = `${id}-default`;
-    const variantId = 'default';
-    const assetId = `pending-${id}`;
-    document.layerTracks.push({ id: trackId, name, order });
-    document.assets.push({
-      id: assetId,
-      identifier: `pending/${id}.png`,
-      kind: 'pending-layer',
-      mediaType: 'image/png',
-      width: document.canvas.width,
-      height: document.canvas.height,
+    document.layerTracks.push({
+      id: `${id}-track`,
+      name,
+      order,
+      locked: true,
+      referenceAssetId: null,
     });
     document.parts.push({
       id,
@@ -258,42 +221,24 @@ export function createCharacterMakerV4Starter(options = {}) {
         id: itemId,
         name: 'Default',
         displayOrder: 0,
+        importKey: itemId,
+        status: 'draft',
         thumbnailAssetId: null,
         visibleWhen: null,
         requires: [],
         excludes: [],
-        defaultVariantId: variantId,
-        variants: [{
-          id: variantId,
-          name: 'Default',
-          displayOrder: 0,
-          visibleWhen: null,
-          requires: [],
-          excludes: [],
-          layerBindings: [{
-            id: `${id}-binding`,
-            layerTrackId: trackId,
-            assetId,
-            colorChannelId: null,
-            assetsBySwatch: [],
-            transform: { x: 0, y: 0, scale: 1, rotation: 0 },
-            opacity: 1,
-            blendMode: 'normal',
-            visibleWhen: null,
-            positionConfirmed: false,
-          }],
-        }],
+        defaultStyleId: null,
+        styles: [],
       }],
     });
-    document.defaultRecipe.selections.push({ partId: id, itemId, variantId });
   });
   return document;
 }
 
-export class MakerV4ValidationError extends Error {
+export class MakerV5ValidationError extends Error {
   constructor(issues) {
-    super(`Maker v4 validation failed with ${issues.length} issue${issues.length === 1 ? '' : 's'}: ${issues[0]?.message || 'Invalid document.'}`);
-    this.name = 'MakerV4ValidationError';
+    super(`Maker v5 validation failed with ${issues.length} issue${issues.length === 1 ? '' : 's'}: ${issues[0]?.message || 'Invalid document.'}`);
+    this.name = 'MakerV5ValidationError';
     this.issues = issues;
   }
 }
@@ -324,16 +269,20 @@ function validateContiguousOrder(entries, path, field, issue) {
 }
 
 function selectionTargetKey(target) {
-  return `${target?.partId || ''}\u0000${target?.itemId || ''}\u0000${target?.variantId || ''}`;
+  return `${target?.partId || ''}\u0000${target?.itemId || ''}\u0000${target?.styleId || ''}`;
+}
+
+function hasOwn(value, key) {
+  return isObject(value) && Object.prototype.hasOwnProperty.call(value, key);
 }
 
 /**
- * Returns every validation issue without throwing. `publish` is the strict
- * release gate; `draft` still validates types/references but permits incomplete
- * work and local assets without immutable identifiers.
+ * Returns all validation issues without throwing. Draft mode accepts empty
+ * Items and Styles without assets/tracks; publish mode requires every public
+ * Item to contain at least one fully renderable Style.
  */
-export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = {}) {
-  if (!['draft', 'publish'].includes(mode)) throw new TypeError('Maker v4 validation mode must be "draft" or "publish".');
+export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = {}) {
+  if (!['draft', 'publish'].includes(mode)) throw new TypeError('Maker v5 validation mode must be "draft" or "publish".');
   const publish = mode === 'publish';
   const issues = [];
   const issue = (path, message, code = 'invalid') => issues.push({ path, message: `${path} ${message}.`, code });
@@ -440,13 +389,8 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
       else trackById.set(track.id, track);
     }
     validateName(track.name, `${path}.name`, issue);
-    if (track.transform !== undefined) {
-      const transform = track.transform;
-      if (!isObject(transform) || !Number.isFinite(transform.x) || !Number.isFinite(transform.y)
-        || !Number.isFinite(transform.scale) || transform.scale <= 0 || transform.scale > 100
-        || !Number.isFinite(transform.rotation)) {
-        issue(`${path}.transform`, 'must contain finite x, y, rotation and a scale greater than 0 and at most 100', 'invalid_transform');
-      }
+    if (hasOwn(track, 'transform')) {
+      issue(`${path}.transform`, 'is obsolete; Style.transform is the only coordinate source in Maker v5', 'unsupported_schema');
     }
     if (track.locked !== undefined && typeof track.locked !== 'boolean') issue(`${path}.locked`, 'must be boolean', 'invalid_layer_track');
     if (track.referenceAssetId !== null && track.referenceAssetId !== undefined && !assetById.has(track.referenceAssetId)) {
@@ -470,7 +414,7 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
       else channelById.set(channel.id, channel);
     }
     validateName(channel.name, `${path}.name`, issue);
-    if (!COLOR_CHANNEL_MODES.includes(channel.mode)) issue(`${path}.mode`, 'must be asset-map or gradient-map', 'invalid_color_channel');
+    if (!COLOR_CHANNEL_MODES.includes(channel.mode)) issue(`${path}.mode`, 'must be gradient-map', 'invalid_color_channel');
     const swatches = Array.isArray(channel.swatches) ? channel.swatches : [];
     if (!Array.isArray(channel.swatches)) issue(`${path}.swatches`, 'must be an array', 'invalid_collection');
     if ((publish && !swatches.length) || swatches.length > LIMITS.maxSwatchesPerChannel) {
@@ -490,20 +434,16 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
       validateName(swatch.name, `${swatchPath}.name`, issue);
       if (!HEX_COLOR_PATTERN.test(String(swatch.hintColor || ''))) issue(`${swatchPath}.hintColor`, 'must be a six- or eight-digit hex color', 'invalid_color');
       const stops = Array.isArray(swatch.stops) ? swatch.stops : [];
-      if (channel.mode === 'gradient-map') {
-        if (stops.length < 2) issue(`${swatchPath}.stops`, 'needs at least two stops for gradient mapping', 'invalid_gradient');
-        const offsets = stops.map((stop) => stop?.offset);
-        stops.forEach((stop, stopIndex) => {
-          if (!isObject(stop) || typeof stop.offset !== 'number' || stop.offset < 0 || stop.offset > 1
-            || !HEX_COLOR_PATTERN.test(String(stop.color || ''))) {
-            issue(`${swatchPath}.stops[${stopIndex}]`, 'must contain an offset from 0 to 1 and a hex color', 'invalid_gradient');
-          }
-        });
-        if (offsets.some((offset, index) => index > 0 && offset <= offsets[index - 1]) || offsets[0] !== 0 || offsets.at(-1) !== 1) {
-          issue(`${swatchPath}.stops`, 'must be strictly ordered and span offsets 0 through 1', 'invalid_gradient');
+      if (stops.length < 2) issue(`${swatchPath}.stops`, 'needs at least two stops for gradient mapping', 'invalid_gradient');
+      const offsets = stops.map((stop) => stop?.offset);
+      stops.forEach((stop, stopIndex) => {
+        if (!isObject(stop) || typeof stop.offset !== 'number' || stop.offset < 0 || stop.offset > 1
+          || !HEX_COLOR_PATTERN.test(String(stop.color || ''))) {
+          issue(`${swatchPath}.stops[${stopIndex}]`, 'must contain an offset from 0 to 1 and a hex color', 'invalid_gradient');
         }
-      } else if (stops.length) {
-        issue(`${swatchPath}.stops`, 'must be empty for an asset-map channel', 'invalid_color_channel');
+      });
+      if (offsets.some((offset, index) => index > 0 && offset <= offsets[index - 1]) || offsets[0] !== 0 || offsets.at(-1) !== 1) {
+        issue(`${swatchPath}.stops`, 'must be strictly ordered and span offsets 0 through 1', 'invalid_gradient');
       }
     });
     if (channel.defaultSwatchId !== null && !swatchIds.has(channel.defaultSwatchId)) {
@@ -520,10 +460,9 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
   }
   const partById = new Map();
   const itemByPart = new Map();
-  const variantByPartItem = new Map();
+  const styleByPartItem = new Map();
   let totalItems = 0;
-  let totalVariants = 0;
-  let totalBindings = 0;
+  let totalStyles = 0;
 
   parts.forEach((part, partIndex) => {
     const path = `parts[${partIndex}]`;
@@ -544,137 +483,144 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
     if (!Array.isArray(part.requires) || !Array.isArray(part.excludes)) issue(path, 'must contain requires and excludes arrays', 'invalid_rules');
     const items = Array.isArray(part.items) ? part.items : [];
     if (!Array.isArray(part.items)) issue(`${path}.items`, 'must be an array', 'invalid_collection');
-    const publicItems = items.filter((item) => (item?.status || 'public') === 'public');
+    const publicItems = items.filter((item) => item?.status === 'public');
     if ((publish && !publicItems.length) || items.length > LIMITS.maxItemsPerPart) {
       issue(`${path}.items`, `must contain ${publish ? '1 to ' : 'at most '}${LIMITS.maxItemsPerPart} entries`, 'invalid_items');
     }
     totalItems += items.length;
     const itemsById = new Map();
     itemByPart.set(part.id, itemsById);
+
     items.forEach((item, itemIndex) => {
       const itemPath = `${path}.items[${itemIndex}]`;
       if (!isObject(item)) {
         issue(itemPath, 'must be an object', 'invalid_item');
         return;
       }
+      if (hasOwn(item, 'variants') || hasOwn(item, 'defaultVariantId')) {
+        issue(itemPath, 'uses obsolete Variant fields; Maker v5 requires styles/defaultStyleId', 'unsupported_schema');
+      }
       if (validateSafeId(item.id, `${itemPath}.id`, issue)) {
         if (itemsById.has(item.id)) issue(`${itemPath}.id`, 'duplicates another Item ID in this Part', 'duplicate');
         else itemsById.set(item.id, item);
       }
       validateName(item.name, `${itemPath}.name`, issue);
-      const itemStatus = item.status || 'public';
-      if (!ITEM_STATUSES.includes(itemStatus)) issue(`${itemPath}.status`, 'must be draft, private or public', 'invalid_item');
+      if (!ITEM_STATUSES.includes(item.status)) issue(`${itemPath}.status`, 'must be draft, private or public', 'invalid_item');
       if (item.importKey !== undefined) validateSafeId(item.importKey, `${itemPath}.importKey`, issue);
-      const publishItem = itemStatus === 'public';
+      const publishItem = item.status === 'public';
       if (!Array.isArray(item.requires) || !Array.isArray(item.excludes)) issue(itemPath, 'must contain requires and excludes arrays', 'invalid_rules');
       if (item.thumbnailAssetId !== null && item.thumbnailAssetId !== undefined && !assetById.has(item.thumbnailAssetId)) {
         issue(`${itemPath}.thumbnailAssetId`, 'references a missing Asset', 'missing_reference');
       }
-      const variants = Array.isArray(item.variants) ? item.variants : [];
-      if (!Array.isArray(item.variants)) issue(`${itemPath}.variants`, 'must be an array', 'invalid_collection');
-      if ((publish && publishItem && !variants.length) || variants.length > LIMITS.maxVariantsPerItem) {
-        issue(`${itemPath}.variants`, `must contain ${publish ? '1 to ' : 'at most '}${LIMITS.maxVariantsPerItem} entries`, 'invalid_variants');
+      if (!hasOwn(item, 'defaultStyleId')
+        || (item.defaultStyleId !== null && typeof item.defaultStyleId !== 'string')) {
+        issue(`${itemPath}.defaultStyleId`, 'must be null or a Style ID', 'invalid_item');
       }
-      totalVariants += variants.length;
-      const variantsById = new Map();
-      variantByPartItem.set(`${part.id}\u0000${item.id}`, variantsById);
-      variants.forEach((variant, variantIndex) => {
-        const variantPath = `${itemPath}.variants[${variantIndex}]`;
-        if (!isObject(variant)) {
-          issue(variantPath, 'must be an object', 'invalid_variant');
+
+      const styles = Array.isArray(item.styles) ? item.styles : [];
+      if (!Array.isArray(item.styles)) issue(`${itemPath}.styles`, 'must be an array', 'invalid_collection');
+      if ((publish && publishItem && !styles.length) || styles.length > LIMITS.maxStylesPerItem) {
+        issue(`${itemPath}.styles`, `must contain ${publish && publishItem ? '1 to ' : 'at most '}${LIMITS.maxStylesPerItem} entries`, 'invalid_styles');
+      }
+      totalStyles += styles.length;
+      const stylesById = new Map();
+      styleByPartItem.set(`${part.id}\u0000${item.id}`, stylesById);
+
+      styles.forEach((style, styleIndex) => {
+        const stylePath = `${itemPath}.styles[${styleIndex}]`;
+        if (!isObject(style)) {
+          issue(stylePath, 'must be an object', 'invalid_style');
           return;
         }
-        if (validateSafeId(variant.id, `${variantPath}.id`, issue)) {
-          if (variantsById.has(variant.id)) issue(`${variantPath}.id`, 'duplicates another Variant ID in this Item', 'duplicate');
-          else variantsById.set(variant.id, variant);
+        if (hasOwn(style, 'layerBindings') || hasOwn(style, 'bindingId') || hasOwn(style, 'inheritTrackTransform')
+          || hasOwn(style, 'assetsBySwatch')) {
+          issue(stylePath, 'uses obsolete nested/multi-asset fields; a v5 Style is one PNG and is itself the render unit', 'unsupported_schema');
         }
-        validateName(variant.name, `${variantPath}.name`, issue);
-        if (!Array.isArray(variant.requires) || !Array.isArray(variant.excludes)) issue(variantPath, 'must contain requires and excludes arrays', 'invalid_rules');
-        const bindings = Array.isArray(variant.layerBindings) ? variant.layerBindings : [];
-        if (!Array.isArray(variant.layerBindings)) issue(`${variantPath}.layerBindings`, 'must be an array', 'invalid_collection');
-        if (publish && publishItem && !bindings.length) issue(`${variantPath}.layerBindings`, 'must contain at least one LayerBinding', 'invalid_bindings');
-        totalBindings += bindings.length;
-        const bindingIds = new Set();
-        bindings.forEach((binding, bindingIndex) => {
-          const bindingPath = `${variantPath}.layerBindings[${bindingIndex}]`;
-          if (!isObject(binding)) {
-            issue(bindingPath, 'must be an object', 'invalid_binding');
-            return;
+        ['visible', 'hidden', 'enabled', 'visibilityCondition', 'rules'].forEach((field) => {
+          if (hasOwn(style, field)) {
+            issue(
+              `${stylePath}.${field}`,
+              'is an obsolete Style visibility switch; Maker v5 uses visibleWhen only',
+              'unsupported_schema',
+            );
           }
-          if (validateSafeId(binding.id, `${bindingPath}.id`, issue)) {
-            if (bindingIds.has(binding.id)) issue(`${bindingPath}.id`, 'duplicates another LayerBinding ID in this Variant', 'duplicate');
-            bindingIds.add(binding.id);
-          }
-          if (!trackById.has(binding.layerTrackId)) issue(`${bindingPath}.layerTrackId`, 'references a missing LayerTrack', 'missing_reference');
-          if ((!publish || publishItem) && !assetById.has(binding.assetId)) issue(`${bindingPath}.assetId`, 'references a missing Asset', 'missing_reference');
-          const transform = binding.transform;
-          if (!isObject(transform) || !Number.isFinite(transform.x) || !Number.isFinite(transform.y)
-            || !Number.isFinite(transform.scale) || transform.scale <= 0 || transform.scale > 100
-            || !Number.isFinite(transform.rotation)) {
-            issue(`${bindingPath}.transform`, 'must contain finite x, y, rotation and a scale greater than 0 and at most 100', 'invalid_transform');
-          }
-          if (binding.inheritTrackTransform !== undefined && typeof binding.inheritTrackTransform !== 'boolean') {
-            issue(`${bindingPath}.inheritTrackTransform`, 'must be boolean', 'invalid_transform');
-          }
-          if (typeof binding.opacity !== 'number' || binding.opacity < 0 || binding.opacity > 1) {
-            issue(`${bindingPath}.opacity`, 'must be a number from 0 to 1', 'invalid_opacity');
-          }
-          if (!BLEND_MODES.includes(binding.blendMode)) issue(`${bindingPath}.blendMode`, 'uses an unsupported blend mode', 'invalid_blend_mode');
-          const mappedAssets = Array.isArray(binding.assetsBySwatch) ? binding.assetsBySwatch : [];
-          if (!Array.isArray(binding.assetsBySwatch)) issue(`${bindingPath}.assetsBySwatch`, 'must be an array', 'invalid_collection');
-          if (binding.colorChannelId === null || binding.colorChannelId === undefined) {
-            if (mappedAssets.length) issue(`${bindingPath}.assetsBySwatch`, 'must be empty without a ColorChannel', 'invalid_color_mapping');
-          } else {
-            const channel = channelById.get(binding.colorChannelId);
-            if (!channel) {
-              issue(`${bindingPath}.colorChannelId`, 'references a missing ColorChannel', 'missing_reference');
-            } else if (channel.mode === 'asset-map') {
-              if (publish && publishItem) {
-                const mappedSwatches = mappedAssets.map((mapping) => mapping?.swatchId);
-                const expectedSwatches = channel.swatches.map((swatch) => swatch.id);
-                if (mappedSwatches.length !== expectedSwatches.length
-                  || new Set(mappedSwatches).size !== mappedSwatches.length
-                  || expectedSwatches.some((swatchId) => !mappedSwatches.includes(swatchId))) {
-                  issue(`${bindingPath}.assetsBySwatch`, 'must map every swatch exactly once for an asset-map channel', 'invalid_color_mapping');
-                }
-              }
-            } else if (mappedAssets.length) {
-              issue(`${bindingPath}.assetsBySwatch`, 'must be empty for a gradient-map channel', 'invalid_color_mapping');
-            }
-          }
-          mappedAssets.forEach((mapping, mappingIndex) => {
-            if (!isObject(mapping) || !assetById.has(mapping.assetId)) {
-              issue(`${bindingPath}.assetsBySwatch[${mappingIndex}].assetId`, 'references a missing Asset', 'missing_reference');
-            }
-            const channel = channelById.get(binding.colorChannelId);
-            if (channel && !channel.swatches.some((swatch) => swatch.id === mapping?.swatchId)) {
-              issue(`${bindingPath}.assetsBySwatch[${mappingIndex}].swatchId`, 'references a missing swatch', 'missing_reference');
-            }
-          });
         });
+        if (validateSafeId(style.id, `${stylePath}.id`, issue)) {
+          if (stylesById.has(style.id)) issue(`${stylePath}.id`, 'duplicates another Style ID in this Item', 'duplicate');
+          else stylesById.set(style.id, style);
+        }
+        validateName(style.name, `${stylePath}.name`, issue);
+        if (!Array.isArray(style.requires) || !Array.isArray(style.excludes)) issue(stylePath, 'must contain requires and excludes arrays', 'invalid_rules');
+
+        if (!hasOwn(style, 'layerTrackId')
+          || (style.layerTrackId !== null && typeof style.layerTrackId !== 'string')) {
+          issue(`${stylePath}.layerTrackId`, 'must be null or a LayerTrack ID', 'invalid_style');
+        }
+        if (style.layerTrackId === null || style.layerTrackId === undefined || style.layerTrackId === '') {
+          if (publish && publishItem) issue(`${stylePath}.layerTrackId`, 'is required for a public Style', 'missing_reference');
+        } else if (!trackById.has(style.layerTrackId)) {
+          issue(`${stylePath}.layerTrackId`, 'references a missing LayerTrack', 'missing_reference');
+        }
+        if (!hasOwn(style, 'assetId') || (style.assetId !== null && typeof style.assetId !== 'string')) {
+          issue(`${stylePath}.assetId`, 'must be null or an Asset ID', 'invalid_style');
+        }
+        if (style.assetId === null || style.assetId === undefined || style.assetId === '') {
+          if (publish && publishItem) issue(`${stylePath}.assetId`, 'is required for a public Style', 'missing_reference');
+        } else if (!assetById.has(style.assetId)) {
+          issue(`${stylePath}.assetId`, 'references a missing Asset', 'missing_reference');
+        } else if (assetById.get(style.assetId)?.mediaType !== 'image/png') {
+          issue(`${stylePath}.assetId`, 'must reference exactly one PNG Asset', 'invalid_style_asset');
+        }
+        if (!hasOwn(style, 'colorChannelId')
+          || (style.colorChannelId !== null && typeof style.colorChannelId !== 'string')) {
+          issue(`${stylePath}.colorChannelId`, 'must be null or a ColorChannel ID', 'invalid_style');
+        }
+
+        const transform = style.transform;
+        if (!isObject(transform) || !Number.isFinite(transform.x) || !Number.isFinite(transform.y)
+          || !Number.isFinite(transform.scale) || transform.scale <= 0 || transform.scale > 100
+          || !Number.isFinite(transform.rotation)) {
+          issue(`${stylePath}.transform`, 'must contain finite x, y, rotation and a scale greater than 0 and at most 100', 'invalid_transform');
+        }
+        ['positionConfirmed', 'positionLocked', 'styleLocked'].forEach((field) => {
+          if (typeof style[field] !== 'boolean') issue(`${stylePath}.${field}`, 'must be boolean', 'invalid_style');
+        });
+        if (typeof style.opacity !== 'number' || style.opacity < 0 || style.opacity > 1) {
+          issue(`${stylePath}.opacity`, 'must be a number from 0 to 1', 'invalid_opacity');
+        }
+        if (!BLEND_MODES.includes(style.blendMode)) issue(`${stylePath}.blendMode`, 'uses an unsupported blend mode', 'invalid_blend_mode');
+
+        if (style.colorChannelId !== null && style.colorChannelId !== undefined
+          && !channelById.has(style.colorChannelId)) {
+          issue(`${stylePath}.colorChannelId`, 'references a missing ColorChannel', 'missing_reference');
+        }
       });
-      validateContiguousOrder(variants, `${itemPath}.variants`, 'displayOrder', issue);
-      if ((!publish || publishItem) && item.defaultVariantId !== null && !variantsById.has(item.defaultVariantId)) {
-        issue(`${itemPath}.defaultVariantId`, 'references a missing Variant', 'missing_reference');
+
+      validateContiguousOrder(styles, `${itemPath}.styles`, 'displayOrder', issue);
+      if (item.defaultStyleId !== null && item.defaultStyleId !== undefined && !stylesById.has(item.defaultStyleId)) {
+        issue(`${itemPath}.defaultStyleId`, 'references a missing Style', 'missing_reference');
       }
-      if (publish && publishItem && !item.defaultVariantId) issue(`${itemPath}.defaultVariantId`, 'is required for publication', 'missing_reference');
+      if (publish && publishItem && !item.defaultStyleId) {
+        issue(`${itemPath}.defaultStyleId`, 'is required for publication', 'missing_reference');
+      }
     });
+
     validateContiguousOrder(items, `${path}.items`, 'displayOrder', issue);
     if (part.defaultItemId !== null && !itemsById.has(part.defaultItemId)) {
       issue(`${path}.defaultItemId`, 'references a missing Item', 'missing_reference');
     }
     if (publish && part.required && !part.defaultItemId) issue(`${path}.defaultItemId`, 'is required for this Part', 'missing_reference');
-    if (publish && part.defaultItemId && (itemsById.get(part.defaultItemId)?.status || 'public') !== 'public') {
+    if (publish && part.defaultItemId && itemsById.get(part.defaultItemId)?.status !== 'public') {
       issue(`${path}.defaultItemId`, 'must reference a public Item for publication', 'invalid_default');
     }
     if (part.iconAssetId !== null && part.iconAssetId !== undefined && !assetById.has(part.iconAssetId)) {
       issue(`${path}.iconAssetId`, 'references a missing Asset', 'missing_reference');
     }
   });
+
   validateContiguousOrder(parts, 'parts', 'menuOrder', issue);
   if (totalItems > LIMITS.maxItems) issue('parts', `contains more than ${LIMITS.maxItems} Items`, 'limit');
-  if (totalVariants > LIMITS.maxVariants) issue('parts', `contains more than ${LIMITS.maxVariants} Variants`, 'limit');
-  if (totalBindings > LIMITS.maxBindings) issue('parts', `contains more than ${LIMITS.maxBindings} LayerBindings`, 'limit');
+  if (totalStyles > LIMITS.maxStyles) issue('parts', `contains more than ${LIMITS.maxStyles} Styles`, 'limit');
   if (publish && !parts.some((part) => part?.menuVisible === true)) issue('parts', 'must contain at least one player-visible Part', 'invalid_parts');
 
   parts.forEach((part, partIndex) => {
@@ -703,6 +649,9 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
       issue(path, 'must be a selection target object', 'invalid_rule_target');
       return;
     }
+    if (hasOwn(target, 'variantId') || hasOwn(target, 'variantKey')) {
+      issue(path, 'uses obsolete variantId; Maker v5 targets use styleId', 'unsupported_schema');
+    }
     const part = partById.get(target.partId);
     if (!part) {
       issue(`${path}.partId`, 'references a missing Part', 'missing_reference');
@@ -714,11 +663,12 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
         issue(`${path}.itemId`, 'references a missing Item in the target Part', 'missing_reference');
         return;
       }
-      if (target.variantId !== undefined && !variantByPartItem.get(`${target.partId}\u0000${target.itemId}`)?.has(target.variantId)) {
-        issue(`${path}.variantId`, 'references a missing Variant in the target Item', 'missing_reference');
+      if (target.styleId !== undefined
+        && !styleByPartItem.get(`${target.partId}\u0000${target.itemId}`)?.has(target.styleId)) {
+        issue(`${path}.styleId`, 'references a missing Style in the target Item', 'missing_reference');
       }
-    } else if (target.variantId !== undefined) {
-      issue(`${path}.variantId`, 'cannot be used without itemId', 'invalid_rule_target');
+    } else if (target.styleId !== undefined) {
+      issue(`${path}.styleId`, 'cannot be used without itemId', 'invalid_rule_target');
     }
   }
 
@@ -779,13 +729,10 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
       const itemPath = `${partPath}.items[${itemIndex}]`;
       validateRuleLists(item, itemPath);
       validateCondition(item.visibleWhen, `${itemPath}.visibleWhen`);
-      (item.variants || []).forEach((variant, variantIndex) => {
-        const variantPath = `${itemPath}.variants[${variantIndex}]`;
-        validateRuleLists(variant, variantPath);
-        validateCondition(variant.visibleWhen, `${variantPath}.visibleWhen`);
-        (variant.layerBindings || []).forEach((binding, bindingIndex) => {
-          validateCondition(binding.visibleWhen, `${variantPath}.layerBindings[${bindingIndex}].visibleWhen`);
-        });
+      (item.styles || []).forEach((style, styleIndex) => {
+        const stylePath = `${itemPath}.styles[${styleIndex}]`;
+        validateRuleLists(style, stylePath);
+        validateCondition(style.visibleWhen, `${stylePath}.visibleWhen`);
       });
     });
   });
@@ -806,16 +753,21 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
     if (selectionParts.has(selection.partId)) issue(`${path}.partId`, 'duplicates another default Part selection', 'duplicate');
     selectionParts.add(selection.partId);
     validateTarget(selection, path);
+    if (!selection.itemId) issue(`${path}.itemId`, 'is required in a Recipe selection', 'missing_reference');
+    if (!selection.styleId) issue(`${path}.styleId`, 'is required in a Recipe selection', 'missing_reference');
     const part = partById.get(selection.partId);
     const item = itemByPart.get(selection.partId)?.get(selection.itemId);
     if (part?.defaultItemId && selection.itemId !== part.defaultItemId) issue(`${path}.itemId`, 'must match the Part defaultItemId', 'invalid_default');
-    if (item?.defaultVariantId && selection.variantId !== item.defaultVariantId) issue(`${path}.variantId`, 'must match the Item defaultVariantId', 'invalid_default');
+    if (item?.defaultStyleId && selection.styleId !== item.defaultStyleId) issue(`${path}.styleId`, 'must match the Item defaultStyleId', 'invalid_default');
   });
-  parts.forEach((part, partIndex) => {
-    if ((part?.required || part?.defaultItemId) && !selectionParts.has(part.id)) {
-      issue('defaultRecipe.selections', `is missing the default selection for parts[${partIndex}]`, 'missing_default');
-    }
-  });
+  if (publish) {
+    parts.forEach((part, partIndex) => {
+      if ((part?.required || part?.defaultItemId) && !selectionParts.has(part.id)) {
+        issue('defaultRecipe.selections', `is missing the default selection for parts[${partIndex}]`, 'missing_default');
+      }
+    });
+  }
+
   const selectedChannels = new Set();
   recipeColors.forEach((selection, index) => {
     const path = `defaultRecipe.colors[${index}]`;
@@ -830,11 +782,13 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
     if (channel && !channel.swatches.some((swatch) => swatch.id === selection.swatchId)) issue(`${path}.swatchId`, 'references a missing swatch', 'missing_reference');
     if (channel?.defaultSwatchId && selection.swatchId !== channel.defaultSwatchId) issue(`${path}.swatchId`, 'must match the ColorChannel defaultSwatchId', 'invalid_default');
   });
-  channels.forEach((channel, channelIndex) => {
-    if (channel?.defaultSwatchId && !selectedChannels.has(channel.id)) {
-      issue('defaultRecipe.colors', `is missing the default swatch for colorChannels[${channelIndex}]`, 'missing_default');
-    }
-  });
+  if (publish) {
+    channels.forEach((channel, channelIndex) => {
+      if (channel?.defaultSwatchId && !selectedChannels.has(channel.id)) {
+        issue('defaultRecipe.colors', `is missing the default swatch for colorChannels[${channelIndex}]`, 'missing_default');
+      }
+    });
+  }
 
   const packs = Array.isArray(document.expansionPacks) ? document.expansionPacks : [];
   if (!Array.isArray(document.expansionPacks)) issue('expansionPacks', 'must be an array', 'invalid_collection');
@@ -887,436 +841,47 @@ export function collectMakerV4ValidationIssues(document, { mode = 'publish' } = 
   return issues;
 }
 
-export function validateMakerV4Document(document, options) {
-  const issues = collectMakerV4ValidationIssues(document, options);
-  if (issues.length) throw new MakerV4ValidationError(issues);
+export function validateMakerV5Document(document, options) {
+  const issues = collectMakerV5ValidationIssues(document, options);
+  if (issues.length) throw new MakerV5ValidationError(issues);
   return document;
 }
 
-class AssetRegistry {
-  constructor(sourceAssets = []) {
-    this.assets = [];
-    this.usedIds = new Set();
-    this.byIdentifier = new Map();
-    sourceAssets.forEach((asset, index) => this.register(asset, `asset-${index + 1}`, asset?.kind || 'other'));
-  }
-
-  register(source, hint, kind = 'layer') {
-    const raw = typeof source === 'string' ? { identifier: source } : isObject(source) ? source : {};
-    const identifier = String(raw.identifier || '').trim() || null;
-    if (identifier && this.byIdentifier.has(identifier)) return this.byIdentifier.get(identifier);
-    const id = uniqueId(raw.id || hint || identifier || `asset-${this.assets.length + 1}`, this.usedIds);
-    const asset = {
-      id,
-      identifier,
-      kind: String(kind || raw.kind || 'other'),
-      mediaType: String(raw.mediaType || raw.type || 'image/png'),
-      width: Number.isInteger(Number(raw.width)) && Number(raw.width) > 0 ? Number(raw.width) : null,
-      height: Number.isInteger(Number(raw.height)) && Number(raw.height) > 0 ? Number(raw.height) : null,
-      source: identifier ? 'published' : raw.url ? 'remote-draft' : 'local-draft',
-      legacy: Object.fromEntries([
-        ['name', raw.name],
-        ['size', raw.size],
-        ['blobId', raw.blobId],
-        ['patchId', raw.patchId],
-        ['url', raw.url],
-        ['slot', raw.slot],
-        ['partId', raw.partId],
-        ['itemId', raw.itemId],
-        ['layerId', raw.layerId],
-        ['colorId', raw.colorId],
-      ].filter(([, value]) => value !== undefined && value !== '')),
-    };
-    this.assets.push(asset);
-    if (identifier) this.byIdentifier.set(identifier, id);
-    return id;
-  }
-}
-
-function v3SourceAdapter(source) {
-  if (source?.manifest?.schemaVersion === 'animacraft.creator-template.v3') {
-    const manifest = v3SourceAdapter(source.manifest);
-    return {
-      ...manifest,
-      kind: 'saved-draft',
-      visual: isObject(source.visual) ? source.visual : manifest.visual,
-      rules: Array.isArray(source.rules) ? source.rules : manifest.rules,
-      paletteLinks: Array.isArray(source.paletteLinks) ? source.paletteLinks : manifest.paletteLinks,
-      original: source,
-    };
-  }
-  if (source?.schemaVersion === 'animacraft.creator-template.v3') {
-    return {
-      kind: 'manifest',
-      schemaVersion: source.schemaVersion,
-      template: isObject(source.template) ? source.template : {},
-      runtime: isObject(source.runtime) ? source.runtime : {},
-      livingContent: source.livingContent ?? null,
-      parts: Array.isArray(source.parts) ? source.parts.map((part) => ({
-        ...part,
-        id: part.key,
-        name: part.label,
-        required: part.allowRemove === false || part.kind === 'last-bastion',
-        menuVisible: part.menuVisible !== false,
-        layers: Array.isArray(part.layers) ? part.layers : [],
-        colors: Array.isArray(part.colors) ? part.colors : [],
-        items: Array.isArray(part.items) ? part.items : [],
-        icon: part.iconIdentifier || null,
-      })) : [],
-      partOrder: Array.isArray(source.parts) ? source.parts.map((part) => String(part.key || '')) : [],
-      layerOrder: Array.isArray(source.parts) ? source.parts.flatMap((part) => (part.layers || []).map((layer) => ({
-        key: `${part.key}:${layer.id}`,
-        order: integer(layer.renderOrder, 0),
-      }))).sort((left, right) => left.order - right.order).map((entry) => entry.key) : [],
-      visual: null,
-      rules: Array.isArray(source.rules) ? source.rules : [],
-      paletteLinks: Array.isArray(source.paletteLinks) ? source.paletteLinks : [],
-      expansionPacks: Array.isArray(source.expansionPacks) ? source.expansionPacks : [],
-      assets: Array.isArray(source.assets) ? source.assets : [],
-      original: source,
-    };
-  }
-  if (isObject(source) && Array.isArray(source.slots) && isObject(source.parts)) {
-    const slots = source.slots.map((slot) => ({
-      ...slot,
-      id: slot.key,
-      name: slot.label,
-      required: slot.allowRemove === false || slot.kind === 'last-bastion',
-      menuVisible: slot.menuVisible !== false,
-      layers: Array.isArray(slot.layers) ? slot.layers : [],
-      colors: Array.isArray(slot.colors) ? slot.colors : [],
-      items: Array.isArray(source.parts[slot.key]) ? source.parts[slot.key] : [],
-      icon: slot.iconAsset || null,
-    }));
-    return {
-      kind: 'current-model',
-      schemaVersion: 'animacraft.current-maker-model.v3',
-      template: isObject(source.template) ? source.template : isObject(source.metadata) ? source.metadata : {},
-      runtime: isObject(source.runtime) ? source.runtime : {},
-      livingContent: source.livingContent ?? null,
-      parts: slots,
-      partOrder: Array.isArray(source.slotOrder) ? source.slotOrder : slots.map((slot) => slot.key),
-      layerOrder: Array.isArray(source.layerOrder) ? source.layerOrder : [],
-      visual: isObject(source.visual) ? source.visual : null,
-      rules: Array.isArray(source.rules) ? source.rules : [],
-      paletteLinks: Array.isArray(source.paletteLinks) ? source.paletteLinks : [],
-      expansionPacks: Array.isArray(source.expansionPacks) ? source.expansionPacks : [],
-      assets: Array.isArray(source.assets) ? source.assets : [],
-      original: source,
-    };
-  }
-  throw new TypeError('Expected an animacraft.creator-template.v3 manifest or the current v3 Maker model.');
-}
-
-function unionFind(ids, links) {
-  const parent = new Map(ids.map((id) => [id, id]));
-  const find = (id) => {
-    if (!parent.has(id)) return null;
-    if (parent.get(id) !== id) parent.set(id, find(parent.get(id)));
-    return parent.get(id);
-  };
-  links.forEach((link) => {
-    const left = String(link.primaryPartKey || link.primaryPartId || '');
-    const right = String(link.linkedPartKey || link.linkedPartId || '');
-    const leftRoot = find(left);
-    const rightRoot = find(right);
-    if (leftRoot && rightRoot && leftRoot !== rightRoot) parent.set(rightRoot, leftRoot);
-  });
-  const groups = new Map();
-  ids.forEach((id) => {
-    const root = find(id);
-    if (!groups.has(root)) groups.set(root, []);
-    groups.get(root).push(id);
-  });
-  return { find, groups };
-}
-
-function imageFor(item, layerId, colorId) {
-  if (Array.isArray(item.images)) {
-    return item.images.find((image) => String(image?.layerId || '') === layerId && String(image?.colorId || '') === colorId) || null;
-  }
-  if (isObject(item.images)) return item.images[`${layerId}:${colorId}`] || null;
-  return null;
-}
-
-function normalizeExpansionPack(pack, version, index) {
-  return {
-    id: safeId(pack?.id || `expansion-${index + 1}`),
-    name: String(pack?.name || pack?.label || `Expansion ${index + 1}`),
-    version: Math.max(1, integer(pack?.version, 1)),
-    manifestIdentifier: String(pack?.manifestIdentifier || pack?.manifestBlobId || ''),
-    baseMakerId: String(pack?.baseMakerId || version.rootMakerId),
-    baseMakerVersion: Math.max(1, integer(pack?.baseMakerVersion, version.number)),
-    required: Boolean(pack?.required),
-  };
-}
-
-/**
- * Migrates either a published creator-template.v3 manifest or the current
- * in-memory `{ slots, parts, ... }` model. The input is never mutated. Unknown
- * v3 data remains available under `extensions.legacyV3` for audit/recovery.
- */
-export function migrateMakerV3ToV4(source, options = {}) {
-  if (source?.schemaVersion === SCHEMA_VERSION) {
-    const copied = clone(source);
-    if (options.validate) validateMakerV4Document(copied, { mode: options.validate === true ? 'publish' : options.validate });
-    return copied;
-  }
-  const snapshot = clone(source);
-  const adapter = v3SourceAdapter(snapshot);
-  const template = adapter.template;
-  const metadataInput = { ...template, ...(options.metadata || {}) };
-  const makerId = safeId(options.makerId || metadataInput.id || metadataInput.name || 'migrated-maker', 'migrated-maker');
-  const document = createMakerV4Document({
-    makerId,
-    name: metadataInput.name || 'Migrated Maker',
-    creator: metadataInput.creator || '',
-    width: adapter.original.canvas?.width || template.canvas?.width || 1024,
-    height: adapter.original.canvas?.height || template.canvas?.height || 1024,
-    pixelMode: options.pixelMode || adapter.original.canvas?.pixelMode || template.canvas?.pixelMode || 'smooth',
-    version: { rootMakerId: options.rootMakerId || makerId, ...options },
-  });
-  document.metadata.summary = String(metadataInput.summary || '');
-  document.metadata.style = String(metadataInput.style || '');
-  document.metadata.license = {
-    kind: LICENSE_KINDS.includes(metadataInput.license) ? metadataInput.license : 'personal-use',
-    note: String(metadataInput.licenseNote || ''),
-  };
-  document.publication = {
-    royaltyBps: integer(metadataInput.royaltyBps, 0),
-    mintingEnabled: metadataInput.mintingEnabled !== false,
-    mintFeeEnabled: Boolean(metadataInput.mintFeeEnabled),
-    mintPriceAtomic: Math.max(0, integer(metadataInput.mintPriceAtomic, 0)),
-    paymentCoinType: String(metadataInput.paymentCoinType || ''),
-    paymentCoinSymbol: String(metadataInput.paymentCoinSymbol || ''),
-    storage: String(metadataInput.storage || 'walrus'),
-    chain: String(metadataInput.chain || 'sui'),
-  };
-  document.runtime = clone(adapter.runtime);
-  document.livingContent = clone(adapter.livingContent);
-
-  const registry = new AssetRegistry(adapter.assets);
-  const usedPartIds = new Set();
-  const orderedParts = adapter.parts.slice().sort((left, right) => {
-    const leftIndex = adapter.partOrder.indexOf(left.id);
-    const rightIndex = adapter.partOrder.indexOf(right.id);
-    return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
-  });
-  orderedParts.forEach((part) => { part.v4Id = uniqueId(part.id || part.name, usedPartIds); });
-  const oldToNewPartId = new Map(orderedParts.map((part) => [String(part.id || ''), part.v4Id]));
-
-  const linked = unionFind(orderedParts.map((part) => String(part.id || '')), adapter.paletteLinks);
-  const partByOldId = new Map(orderedParts.map((part) => [String(part.id || ''), part]));
-  const colorChannelForPart = new Map();
-  const swatchForPartColor = new Map();
-  const usedChannelIds = new Set();
-  let channelOrder = 0;
-  linked.groups.forEach((memberIds) => {
-    const canonicalPart = partByOldId.get(memberIds[0]);
-    const canonicalColors = canonicalPart?.colors?.length ? canonicalPart.colors : [{ id: 'default', name: 'Default', value: '#7b5cff' }];
-    const channelId = uniqueId(`color-${canonicalPart?.v4Id || memberIds[0]}`, usedChannelIds);
-    const swatchIds = new Set();
-    const swatches = canonicalColors.map((color, index) => ({
-      id: uniqueId(color.id || `color-${index + 1}`, swatchIds),
-      name: String(color.name || color.id || `Color ${index + 1}`),
-      hintColor: normalizeHex(color.value),
-      stops: [],
-    }));
-    memberIds.forEach((memberId) => {
-      colorChannelForPart.set(memberId, channelId);
-      const colors = partByOldId.get(memberId)?.colors?.length
-        ? partByOldId.get(memberId).colors
-        : [{ id: 'default', name: 'Default', value: '#7b5cff' }];
-      colors.forEach((color, index) => {
-        const swatch = swatches.find((candidate) => candidate.hintColor === normalizeHex(color.value)) || swatches[index] || swatches[0];
-        swatchForPartColor.set(`${memberId}\u0000${color.id}`, swatch.id);
-      });
-    });
-    const paletteValue = memberIds.map((memberId) => adapter.visual?.palette?.[partByOldId.get(memberId)?.colorKey || memberId]).find(Boolean);
-    const defaultSwatch = swatches.find((swatch) => swatch.hintColor === String(paletteValue || '').toLowerCase()) || swatches[0];
-    document.colorChannels.push({
-      id: channelId,
-      name: memberIds.length > 1
-        ? memberIds.map((memberId) => partByOldId.get(memberId)?.name || memberId).join(' + ')
-        : `${canonicalPart?.name || memberIds[0]} Color`,
-      order: channelOrder,
-      mode: 'asset-map',
-      defaultSwatchId: defaultSwatch?.id || null,
-      swatches,
-    });
-    channelOrder += 1;
-  });
-
-  const allLayers = orderedParts.flatMap((part) => (part.layers || []).map((layer, layerIndex) => ({
-    part,
-    layer,
-    oldKey: `${part.id}:${layer.id}`,
-    fallbackOrder: integer(layer.renderOrder, layerIndex),
-  })));
-  allLayers.sort((left, right) => {
-    const leftIndex = adapter.layerOrder.indexOf(left.oldKey);
-    const rightIndex = adapter.layerOrder.indexOf(right.oldKey);
-    if (leftIndex >= 0 || rightIndex >= 0) return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
-    return left.fallbackOrder - right.fallbackOrder;
-  });
-  const usedTrackIds = new Set();
-  const trackForLayer = new Map();
-  allLayers.forEach(({ part, layer, oldKey }, index) => {
-    const id = uniqueId(`track-${part.v4Id}-${layer.id || index + 1}`, usedTrackIds);
-    trackForLayer.set(oldKey, id);
-    document.layerTracks.push({
-      id,
-      name: String(layer.name || `${part.name} Layer`),
-      order: index,
-    });
-  });
-
-  const remapTarget = (target) => ({
-    partId: oldToNewPartId.get(String(target.partId || target.partKey || '')) || String(target.partId || target.partKey || ''),
-    ...(target.itemId || target.itemKey ? { itemId: String(target.itemId || target.itemKey) } : {}),
-    ...(target.variantId ? { variantId: String(target.variantId) } : {}),
-  });
-  const remapCondition = (condition) => {
-    const normalized = normalizeCondition(condition);
-    if (!normalized) return null;
-    if (normalized.op === 'selected') return { op: 'selected', ...remapTarget(normalized) };
-    if (normalized.op === 'not') return { op: 'not', condition: remapCondition(normalized.condition) };
-    if (normalized.op === 'all' || normalized.op === 'any') return { op: normalized.op, conditions: normalized.conditions.map(remapCondition) };
-    return normalized;
-  };
-
-  orderedParts.forEach((sourcePart, partIndex) => {
-    const colors = sourcePart.colors?.length ? sourcePart.colors : [{ id: 'default', name: 'Default', value: '#7b5cff' }];
-    const items = (sourcePart.items || []).slice().sort((left, right) => integer(left.displayOrder, 1) - integer(right.displayOrder, 1));
-    const part = {
-      id: sourcePart.v4Id,
-      name: String(sourcePart.name || sourcePart.id || `Part ${partIndex + 1}`),
-      menuOrder: partIndex,
-      menuVisible: sourcePart.menuVisible !== false,
-      required: Boolean(sourcePart.required),
-      defaultItemId: sourcePart.defaultItemId ? String(sourcePart.defaultItemId) : items[0]?.id ? String(items[0].id) : null,
-      parentPartId: sourcePart.parentPartId ? oldToNewPartId.get(String(sourcePart.parentPartId)) || String(sourcePart.parentPartId) : null,
-      iconAssetId: sourcePart.icon ? registry.register(sourcePart.icon, `${sourcePart.v4Id}-part-icon`, 'part-icon') : null,
-      visibleWhen: remapCondition(sourcePart.visibleWhen),
-      requires: cloneTargets(sourcePart.requires).map(remapTarget),
-      excludes: cloneTargets(sourcePart.excludes).map(remapTarget),
-      items: [],
-    };
-    const usedItemIds = new Set();
-    items.forEach((sourceItem, itemIndex) => {
-      const itemId = uniqueId(sourceItem.id || sourceItem.label || `item-${itemIndex + 1}`, usedItemIds);
-      if (part.defaultItemId === sourceItem.id) part.defaultItemId = itemId;
-      const bindings = [];
-      (sourcePart.layers || []).forEach((layer, layerIndex) => {
-        const mappedAssets = [];
-        colors.forEach((color, colorIndex) => {
-          const image = imageFor(sourceItem, String(layer.id || ''), String(color.id || ''));
-          if (!image) return;
-          const rawAsset = typeof image === 'string' ? image : image.identifier ? image : image;
-          const assetId = registry.register(rawAsset, `${sourcePart.v4Id}-${itemId}-${layer.id}-${color.id}`, 'layer');
-          mappedAssets.push({
-            swatchId: swatchForPartColor.get(`${sourcePart.id}\u0000${color.id}`) || document.colorChannels.find((channel) => channel.id === colorChannelForPart.get(String(sourcePart.id)))?.swatches[colorIndex]?.id,
-            assetId,
-          });
-        });
-        if (!mappedAssets.length) return;
-        const channelId = colorChannelForPart.get(String(sourcePart.id));
-        const channel = document.colorChannels.find((candidate) => candidate.id === channelId);
-        const defaultAsset = mappedAssets.find((mapping) => mapping.swatchId === channel?.defaultSwatchId) || mappedAssets[0];
-        bindings.push({
-          id: safeId(`binding-${sourcePart.v4Id}-${itemId}-${layer.id || layerIndex + 1}`),
-          layerTrackId: trackForLayer.get(`${sourcePart.id}:${layer.id}`),
-          assetId: defaultAsset.assetId,
-          colorChannelId: channelId || null,
-          assetsBySwatch: mappedAssets,
-          transform: {
-            x: finiteNumber(layer.x, 0),
-            y: finiteNumber(layer.y, 0),
-            scale: Math.max(0.01, finiteNumber(layer.scale, 1)),
-            rotation: finiteNumber(layer.rotation, 0),
-          },
-          opacity: normalizedOpacity(layer.opacity),
-          blendMode: normalizedBlendMode(layer.blendMode),
-          visibleWhen: remapCondition(layer.visibleWhen),
-        });
-      });
-      const thumbnailSource = sourceItem.iconIdentifier || sourceItem.iconAsset || null;
-      part.items.push({
-        id: itemId,
-        name: String(sourceItem.label || sourceItem.name || sourceItem.id || `Item ${itemIndex + 1}`),
-        displayOrder: itemIndex,
-        thumbnailAssetId: thumbnailSource ? registry.register(thumbnailSource, `${sourcePart.v4Id}-${itemId}-thumbnail`, 'thumbnail') : null,
-        visibleWhen: remapCondition(sourceItem.visibleWhen),
-        requires: cloneTargets(sourceItem.requires).map(remapTarget),
-        excludes: cloneTargets(sourceItem.excludes).map(remapTarget),
-        defaultVariantId: 'default',
-        variants: [{
-          id: 'default',
-          name: 'Default',
-          displayOrder: 0,
-          visibleWhen: null,
-          requires: [],
-          excludes: [],
-          layerBindings: bindings,
-        }],
-      });
-    });
-    if (part.defaultItemId && !part.items.some((item) => item.id === part.defaultItemId)) part.defaultItemId = part.items[0]?.id || null;
-    document.parts.push(part);
-  });
-
-  adapter.rules.forEach((rule) => {
-    const left = remapTarget({ partId: rule.leftPartKey, itemId: rule.leftItemKey || undefined });
-    const right = remapTarget({ partId: rule.rightPartKey, itemId: rule.rightItemKey || undefined });
-    const addExclude = (ownerTarget, excludedTarget) => {
-      const ownerPart = document.parts.find((part) => part.id === ownerTarget.partId);
-      const owner = ownerTarget.itemId ? ownerPart?.items.find((item) => item.id === ownerTarget.itemId) : ownerPart;
-      if (owner && !owner.excludes.some((target) => selectionTargetKey(target) === selectionTargetKey(excludedTarget))) owner.excludes.push(excludedTarget);
-    };
-    addExclude(left, right);
-    addExclude(right, left);
-  });
-
-  document.defaultRecipe.selections = document.parts.flatMap((part) => {
-    const visualItemId = adapter.visual?.[part.id];
-    const item = part.items.find((candidate) => candidate.id === visualItemId)
-      || part.items.find((candidate) => candidate.id === part.defaultItemId)
-      || null;
-    if (!item) return [];
-    part.defaultItemId = item.id;
-    return [{ partId: part.id, itemId: item.id, variantId: item.defaultVariantId }];
-  });
-  document.defaultRecipe.colors = document.colorChannels.filter((channel) => channel.defaultSwatchId).map((channel) => ({
-    channelId: channel.id,
-    swatchId: channel.defaultSwatchId,
-  }));
-  document.expansionPacks = adapter.expansionPacks.map((pack, index) => normalizeExpansionPack(pack, document.version, index));
-
-  const coverSource = template.coverIdentifier || adapter.original.coverAsset || null;
-  document.metadata.coverAssetId = coverSource ? registry.register(coverSource, 'maker-cover', 'cover') : null;
-  document.assets = registry.assets;
-  document.extensions = {
-    legacyV3: {
-      sourceKind: adapter.kind,
-      sourceSchemaVersion: adapter.schemaVersion,
-      rules: clone(adapter.rules),
-      paletteLinks: clone(adapter.paletteLinks),
-      partKinds: Object.fromEntries(orderedParts.map((part) => [part.v4Id, String(part.kind || 'standard')])),
-      unmappedTopLevel: Object.fromEntries(Object.entries(adapter.original).filter(([key]) => ![
-        'schemaVersion', 'manifest', 'template', 'runtime', 'parts', 'slots', 'slotOrder', 'layerOrder', 'visual', 'rules', 'paletteLinks', 'livingContent', 'assets', 'canvas', 'expansionPacks',
-      ].includes(key)).map(([key, value]) => [key, clone(value)])),
-    },
-  };
-
-  if (options.validate) validateMakerV4Document(document, { mode: options.validate === true ? 'publish' : options.validate });
-  return document;
-}
-
-export function isMakerV4Document(value) {
+export function isMakerV5Document(value) {
   return isObject(value) && value.schemaVersion === SCHEMA_VERSION;
 }
 
+/**
+ * Legacy v3/v4 graphs cannot be mapped losslessly because v5 removes both
+ * Variants and multi-binding render units. The retained name is an API alias,
+ * not a migration promise.
+ */
+export function migrateMakerV3ToV5(source, options = {}) {
+  if (!isMakerV5Document(source)) {
+    throw new TypeError('Legacy Maker v3/v4 documents are incompatible with animacraft.maker.v5; create a new Maker v5 document.');
+  }
+  const copied = clone(source);
+  if (options.validate) validateMakerV5Document(copied, { mode: options.validate === true ? 'publish' : options.validate });
+  return copied;
+}
+
+// Temporary v4 export aliases keep existing import sites loadable while all
+// returned/accepted documents use the canonical v5 schema and Style vocabulary.
+export const createMakerV4Document = createMakerV5Document;
+export const createCharacterMakerV4Starter = createCharacterMakerV5Starter;
+export const collectMakerV4ValidationIssues = collectMakerV5ValidationIssues;
+export const validateMakerV4Document = validateMakerV5Document;
+export const migrateMakerV3ToV4 = migrateMakerV3ToV5;
+export const isMakerV4Document = isMakerV5Document;
+export { MakerV5ValidationError as MakerV4ValidationError };
+
 export {
+  BLEND_MODES as MAKER_V5_BLEND_MODES,
+  COLOR_CHANNEL_MODES as MAKER_V5_COLOR_CHANNEL_MODES,
+  LIMITS as MAKER_V5_LIMITS,
+  PIXEL_MODES as MAKER_V5_PIXEL_MODES,
+  SCHEMA_VERSION as MAKER_V5_SCHEMA_VERSION,
+  VERSION_COMPATIBILITY as MAKER_V5_VERSION_COMPATIBILITY,
   BLEND_MODES as MAKER_V4_BLEND_MODES,
   COLOR_CHANNEL_MODES as MAKER_V4_COLOR_CHANNEL_MODES,
   LIMITS as MAKER_V4_LIMITS,
