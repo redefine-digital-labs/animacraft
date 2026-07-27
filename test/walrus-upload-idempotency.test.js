@@ -187,7 +187,7 @@ test('registration rejects insufficient WAL or relay-tip SUI before signing', ()
   );
 });
 
-test('register, upload, listFiles and certify expose awaited durable checkpoints', () => {
+test('register, upload and certify expose awaited durable checkpoints without caching an uncertified Blob', () => {
   const register = section(
     'export async function registerAndUploadWalrus',
     'export async function certifyWalrusUpload',
@@ -208,12 +208,18 @@ test('register, upload, listFiles and certify expose awaited durable checkpoints
     'register digest must checkpoint before relay upload',
   );
   const uploadedCheckpoint = register.indexOf('await checkpointWalrusSession(session, onCheckpoint)', upload);
-  const listFiles = register.indexOf('session.flow.listFiles', upload);
-  assert.ok(uploadedCheckpoint > upload && uploadedCheckpoint < listFiles);
-  assert.ok(register.indexOf('await checkpointWalrusSession(session, onCheckpoint)', listFiles) > listFiles);
+  assert.ok(uploadedCheckpoint > upload);
+  assert.doesNotMatch(register, /session\.flow\.listFiles/);
+  assert.match(register, /Calling listFiles\(\)[\s\S]*pre-certification Blob object/);
 
   assert.match(certify, /pendingCertifyTransaction/);
-  assert.match(certify, /getBlobObject/);
+  assert.match(certify, /waitForCertifiedWalrusBlobObject/);
+  assert.match(certify, /listQuiltFilesFromCheckpoint\(session,\s*\{\s*blobObject\s*\}\)/);
+  assert.ok(
+    certify.indexOf('waitForCertifiedWalrusBlobObject')
+      < certify.indexOf('listQuiltFilesFromCheckpoint(session, { blobObject })'),
+    'the certified Blob must be freshly read before reconstructing patch IDs',
+  );
   assert.match(certify, /session\.stage\s*=\s*'certified'[\s\S]*await checkpointWalrusSession\(session,\s*onCheckpoint\)/);
 });
 

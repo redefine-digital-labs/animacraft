@@ -1090,6 +1090,8 @@ const productionErrorI18n = {
     unsavedDraftChanges: 'Unsaved changes',
     localPngSaveFailed: 'Could not save PNG assets in this browser.',
     requestedActionFailed: 'The requested action could not be completed.',
+    certificationSyncing: 'Walrus certification succeeded. Waiting for the certified Blob state to sync…',
+    ocCertificationSyncing: 'OC certification succeeded. Waiting for the certified Blob state to sync…',
   },
   zh: {
     makerDiscoveryFailed: '无法载入链上 Maker。',
@@ -1103,6 +1105,8 @@ const productionErrorI18n = {
     unsavedDraftChanges: '有未保存的更改',
     localPngSaveFailed: '无法在此浏览器保存 PNG 素材。',
     requestedActionFailed: '无法完成所请求的操作。',
+    certificationSyncing: 'Walrus 认证交易已成功，正在等待已认证 Blob 状态同步…',
+    ocCertificationSyncing: 'OC 认证交易已成功，正在等待已认证 Blob 状态同步…',
   },
   ja: {
     makerDiscoveryFailed: 'オンチェーン Maker を読み込めませんでした。',
@@ -1116,6 +1120,8 @@ const productionErrorI18n = {
     unsavedDraftChanges: '未保存の変更があります',
     localPngSaveFailed: 'このブラウザに PNG 素材を保存できませんでした。',
     requestedActionFailed: '要求された操作を完了できませんでした。',
+    certificationSyncing: 'Walrus の認証取引は成功しました。認証済み Blob 状態の同期を待っています…',
+    ocCertificationSyncing: 'OC の認証取引は成功しました。認証済み Blob 状態の同期を待っています…',
   },
   ko: {
     makerDiscoveryFailed: '온체인 Maker를 불러오지 못했습니다.',
@@ -1129,6 +1135,8 @@ const productionErrorI18n = {
     unsavedDraftChanges: '저장하지 않은 변경 사항',
     localPngSaveFailed: '이 브라우저에 PNG 에셋을 저장하지 못했습니다.',
     requestedActionFailed: '요청한 작업을 완료하지 못했습니다.',
+    certificationSyncing: 'Walrus 인증 거래가 성공했습니다. 인증된 Blob 상태 동기화를 기다리는 중…',
+    ocCertificationSyncing: 'OC 인증 거래가 성공했습니다. 인증된 Blob 상태 동기화를 기다리는 중…',
   },
   vi: {
     makerDiscoveryFailed: 'Không thể tải Maker on-chain.',
@@ -1142,6 +1150,8 @@ const productionErrorI18n = {
     unsavedDraftChanges: 'Có thay đổi chưa lưu',
     localPngSaveFailed: 'Không thể lưu tài nguyên PNG trong trình duyệt này.',
     requestedActionFailed: 'Không thể hoàn tất thao tác được yêu cầu.',
+    certificationSyncing: 'Giao dịch chứng nhận Walrus đã thành công. Đang chờ đồng bộ trạng thái Blob đã chứng nhận…',
+    ocCertificationSyncing: 'Giao dịch chứng nhận OC đã thành công. Đang chờ đồng bộ trạng thái Blob đã chứng nhận…',
   },
 };
 
@@ -4616,6 +4626,13 @@ function recordOcPublishError(error, action, fallbackKey = 'ocUploadFailed') {
   return classified;
 }
 
+function restoredCertificationVisibilityError(certifyDigest) {
+  return classifyChainUiError({
+    code: 'WALRUS_CERTIFICATION_NOT_VISIBLE',
+    message: `Walrus certification ${String(certifyDigest || '(confirmed transaction)')} is confirmed. Refreshing its certified Blob state will only query Sui.`,
+  }, { action: 'certify' });
+}
+
 function uploadRecoveryMismatch(message) {
   const error = new Error(`UPLOAD_RECOVERY_MISMATCH: ${message}`);
   error.code = 'UPLOAD_RECOVERY_MISMATCH';
@@ -6831,12 +6848,18 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
     state.makerUploadSession = uploadSession;
     state.makerUploadStage = uploadStage;
     state.makerQuiltId = recovery.quiltBlobId || uploadSession.quiltBlobId;
-    state.publishStatus = {
-      encoded: t('makerRecoveryEncoded'),
-      registered: t('makerRecoveryRegistered'),
-      uploaded: t('makerRecoveryUploaded'),
-      certified: t('makerRecoveryCertified'),
-    }[uploadStage] || t('makerRecoveryRestored');
+    const certificationStateSyncing = uploadStage === 'uploaded' && Boolean(uploadSession.certifyDigest);
+    if (certificationStateSyncing) {
+      state.makerPublishError = restoredCertificationVisibilityError(uploadSession.certifyDigest);
+      state.publishStatus = t('certificationSyncing');
+    } else {
+      state.publishStatus = {
+        encoded: t('makerRecoveryEncoded'),
+        registered: t('makerRecoveryRegistered'),
+        uploaded: t('makerRecoveryUploaded'),
+        certified: t('makerRecoveryCertified'),
+      }[uploadStage] || t('makerRecoveryRestored');
+    }
     if (state.makerPublicationIntent && isCurrentRequest()) {
       try {
         await recoverMakerPublicationIntent({
@@ -6921,12 +6944,18 @@ async function restoreOcUploadRecovery(templateId = state.templateId, { force = 
     state.ocUploadStage = uploadStage;
     state.ocImagePatchId = imagePatchId;
     state.ocProfilePatchId = profilePatchId;
-    state.mintStatus = {
-      encoded: t('ocRecoveryEncoded'),
-      registered: t('ocRecoveryRegistered'),
-      uploaded: t('ocRecoveryUploaded'),
-      certified: t('ocRecoveryCertified'),
-    }[uploadStage] || t('ocRecoveryRestored');
+    const certificationStateSyncing = uploadStage === 'uploaded' && Boolean(uploadSession.certifyDigest);
+    if (certificationStateSyncing) {
+      state.ocPublishError = restoredCertificationVisibilityError(uploadSession.certifyDigest);
+      state.mintStatus = t('ocCertificationSyncing');
+    } else {
+      state.mintStatus = {
+        encoded: t('ocRecoveryEncoded'),
+        registered: t('ocRecoveryRegistered'),
+        uploaded: t('ocRecoveryUploaded'),
+        certified: t('ocRecoveryCertified'),
+      }[uploadStage] || t('ocRecoveryRestored');
+    }
   } catch (error) {
     if (!isCurrentRequest()) return;
     state.ocUploadSession = null;
@@ -8228,11 +8257,12 @@ async function registerMakerUpload() {
 async function certifyMakerUpload() {
   if (state.publishing) return;
   const operation = beginMakerChainOperation();
+  const recheckingCertificationVisibility = state.makerPublishError?.code === 'WALRUS_CERTIFICATION_NOT_VISIBLE';
   const retryingCertifiedCheckpoint = state.makerPublishError?.action === 'certify'
     && state.makerUploadStage === 'certified';
   clearMakerPublishError();
   state.publishing = true;
-  state.publishStatus = t('certifyingQuilt');
+  state.publishStatus = t(recheckingCertificationVisibility ? 'certificationSyncing' : 'certifyingQuilt');
   renderPublishAction();
   try {
     await withBrowserUploadLock(operation.recoveryKey, async () => {
@@ -8263,7 +8293,10 @@ async function certifyMakerUpload() {
     });
   } catch (error) {
     if (makerChainOperationIsActive(operation)) {
-      recordMakerPublishError(error, 'certify', 'certificationFailed');
+      const classified = recordMakerPublishError(error, 'certify', 'certificationFailed');
+      if (classified.code === 'WALRUS_CERTIFICATION_NOT_VISIBLE') {
+        state.publishStatus = t('certificationSyncing');
+      }
     }
   } finally {
     if (makerChainOperationIsActive(operation)) {
@@ -8819,11 +8852,12 @@ async function certifyOcUpload() {
     return;
   }
   const operation = beginOcChainOperation();
+  const recheckingCertificationVisibility = state.ocPublishError?.code === 'WALRUS_CERTIFICATION_NOT_VISIBLE';
   const retryingCertifiedCheckpoint = state.ocPublishError?.action === 'certify'
     && state.ocUploadStage === 'certified';
   clearOcPublishError();
   state.minting = true;
-  state.mintStatus = t('ocWaitingCertification');
+  state.mintStatus = t(recheckingCertificationVisibility ? 'ocCertificationSyncing' : 'ocWaitingCertification');
   renderMintAction();
   try {
     await withBrowserUploadLock(operation.recoveryKey, async () => {
@@ -8849,7 +8883,10 @@ async function certifyOcUpload() {
     });
   } catch (error) {
     if (ocChainOperationIsActive(operation)) {
-      recordOcPublishError(error, 'certify', 'ocCertificationFailed');
+      const classified = recordOcPublishError(error, 'certify', 'ocCertificationFailed');
+      if (classified.code === 'WALRUS_CERTIFICATION_NOT_VISIBLE') {
+        state.mintStatus = t('ocCertificationSyncing');
+      }
     }
   } finally {
     if (ocChainOperationIsActive(operation)) {

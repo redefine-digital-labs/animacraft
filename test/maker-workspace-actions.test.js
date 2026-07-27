@@ -1626,6 +1626,27 @@ test('Creator and Player classify quote/pending errors and never duplicate a rev
       assert.match(root.innerHTML, /Prepare a new quote/);
 
       workspace[`set${kind[0].toUpperCase()}${kind.slice(1)}PublishState`]({
+        stage: 'uploaded',
+        error: {
+          code: 'WALRUS_CERTIFICATION_NOT_VISIBLE',
+          action: 'certify',
+          diagnostic: 'The certification transaction is confirmed.',
+        },
+        actions: { certify: true, prepare: false, review: false },
+      });
+      assert.match(root.innerHTML, /Walrus certification succeeded; the Blob state is still syncing/);
+      assert.match(root.innerHTML, /No new signature or fee is needed/);
+      assert.match(root.innerHTML, /class="v4-chain-error is-syncing" role="status" aria-live="polite"/);
+      assert.match(root.innerHTML, new RegExp(`data-action="${kind}-publish-retry" data-publish-action="certify"`));
+      assert.match(root.innerHTML, /Check certification status again/);
+      (kind === 'creator' ? creatorClick : playerClick)(
+        workspace,
+        `${kind}-publish-retry`,
+        { publishAction: 'certify' },
+      );
+      assert.deepEqual(actions[kind], ['review', 'register', 'certify']);
+
+      workspace[`set${kind[0].toUpperCase()}${kind.slice(1)}PublishState`]({
         error: {
           code: 'UPLOAD_RECOVERY_MISMATCH',
           action: 'resume',
@@ -1636,7 +1657,7 @@ test('Creator and Player classify quote/pending errors and never duplicate a rev
       assert.match(root.innerHTML, /saved upload belongs to an earlier edit/);
       assert.match(root.innerHTML, new RegExp(`data-action="${kind}-publish-discard"`));
       (kind === 'creator' ? creatorClick : playerClick)(workspace, `${kind}-publish-discard`);
-      assert.deepEqual(actions[kind], ['review', 'register', 'discard']);
+      assert.deepEqual(actions[kind], ['review', 'register', 'certify', 'discard']);
     }
   }, {
     creatorRoot,

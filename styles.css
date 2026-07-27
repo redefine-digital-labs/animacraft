@@ -7768,6 +7768,11 @@ pre {
   background: var(--ui-surface-danger);
 }
 
+.v4-chain-error.is-syncing {
+  border-color: var(--ui-tech);
+  background: var(--ui-surface-success);
+}
+
 .v4-chain-error > div:first-child {
   display: grid;
   gap: 4px;
@@ -7780,6 +7785,11 @@ pre {
   background: var(--ui-danger);
   color: var(--ui-on-danger);
   font: 800 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.v4-chain-error.is-syncing > div:first-child > span {
+  background: var(--ui-tech);
+  color: var(--ui-on-tech);
 }
 
 .v4-chain-error > p,

@@ -45,6 +45,11 @@ export function classifyChainUiError(error, {
   ) {
     code = 'UPLOAD_QUOTE_CHANGED';
   } else if (
+    searchable.includes('walrus_certification_not_visible')
+    || /walrus certification[\s\S]*confirmed[\s\S]*certified blob object[\s\S]*not visible/i.test(details)
+  ) {
+    code = 'WALRUS_CERTIFICATION_NOT_VISIBLE';
+  } else if (
     searchable.includes('transaction_outcome_pending')
     || searchable.includes('walrus_transaction_status_unknown')
     || searchable.includes('transaction outcome is still pending')
@@ -80,8 +85,11 @@ export function classifyChainUiError(error, {
   ) {
     code = 'NETWORK_UNAVAILABLE';
   }
+  const diagnosticTitle = code === 'WALRUS_CERTIFICATION_NOT_VISIBLE'
+    ? 'Animacraft chain state is still syncing'
+    : 'Animacraft chain action failed';
   const diagnostic = [
-    'Animacraft chain action failed',
+    diagnosticTitle,
     `Code: ${code}`,
     action ? `Action: ${action}` : '',
     `Time: ${occurredAt}`,

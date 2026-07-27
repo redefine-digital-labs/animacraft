@@ -3140,12 +3140,14 @@ export class MakerWorkspace {
       INSUFFICIENT_SUI_BALANCE: ['publishErrorSuiBalanceTitle', 'publishErrorSuiBalanceCopy'],
       NETWORK_UNAVAILABLE: ['publishErrorNetworkTitle', 'publishErrorNetworkCopy'],
       UPLOAD_QUOTE_CHANGED: ['publishErrorQuoteChangedTitle', 'publishErrorQuoteChangedCopy'],
+      WALRUS_CERTIFICATION_NOT_VISIBLE: ['publishErrorCertificationSyncTitle', 'publishErrorCertificationSyncCopy'],
       TRANSACTION_OUTCOME_PENDING: ['publishErrorPendingTitle', 'publishErrorPendingCopy'],
       UPLOAD_RECOVERY_MISMATCH: ['publishErrorRecoveryMismatchTitle', 'publishErrorRecoveryMismatchCopy'],
     };
     const errorCopy = state.error
       ? errorKeys[state.error.code] || ['publishErrorTitle', 'publishErrorGeneric']
       : null;
+    const certificationStateSyncing = state.error?.code === 'WALRUS_CERTIFICATION_NOT_VISIBLE';
     const retryAction = String(state.error?.action || '');
     const retryAvailable = actions[retryAction]
       || (retryAction === 'onchain' && actions.publish);
@@ -3163,11 +3165,13 @@ export class MakerWorkspace {
       && retryAction !== 'review'
       && retryAvailable
     );
-    const retryLabel = state.error?.code === 'UPLOAD_QUOTE_CHANGED' && retryAction === 'prepare'
-      ? this.tr('refreshUploadQuote')
-      : retryAction === 'resume'
-        ? this.tr('resumeUpload')
-        : this.tr('retryReleaseStep');
+    const retryLabel = state.error?.code === 'WALRUS_CERTIFICATION_NOT_VISIBLE'
+      ? this.tr('recheckCertificationStatus')
+      : state.error?.code === 'UPLOAD_QUOTE_CHANGED' && retryAction === 'prepare'
+        ? this.tr('refreshUploadQuote')
+        : retryAction === 'resume'
+          ? this.tr('resumeUpload')
+          : this.tr('retryReleaseStep');
     const copyLabel = copyState === 'copied'
       ? this.tr('errorDetailsCopied')
       : copyState === 'error'
@@ -3180,7 +3184,7 @@ export class MakerWorkspace {
       && !actions.review,
     );
     const errorPanel = state.error ? `
-      <aside class="v4-chain-error" role="alert" aria-live="assertive">
+      <aside class="v4-chain-error${certificationStateSyncing ? ' is-syncing' : ''}" role="${certificationStateSyncing ? 'status' : 'alert'}" aria-live="${certificationStateSyncing ? 'polite' : 'assertive'}">
         <div>
           <span>${escapeHtml(state.error.code || 'CHAIN_ACTION_FAILED')}</span>
           <strong>${escapeHtml(this.tr(errorCopy[0]))}</strong>

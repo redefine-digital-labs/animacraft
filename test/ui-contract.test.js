@@ -235,6 +235,45 @@ test('every application dictionary group has exact five-language key and interpo
   });
 });
 
+test('confirmed Walrus certification visibility waits are not reported as Maker or OC failures', async () => {
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8');
+
+  assert.match(
+    app,
+    /const classified = recordMakerPublishError\(error, 'certify', 'certificationFailed'\);[\s\S]*?classified\.code === 'WALRUS_CERTIFICATION_NOT_VISIBLE'[\s\S]*?state\.publishStatus = t\('certificationSyncing'\)/,
+  );
+  assert.match(
+    app,
+    /const recheckingCertificationVisibility = state\.makerPublishError\?\.code === 'WALRUS_CERTIFICATION_NOT_VISIBLE';[\s\S]*?state\.publishStatus = t\(recheckingCertificationVisibility \? 'certificationSyncing' : 'certifyingQuilt'\)/,
+  );
+  assert.match(
+    app,
+    /const classified = recordOcPublishError\(error, 'certify', 'ocCertificationFailed'\);[\s\S]*?classified\.code === 'WALRUS_CERTIFICATION_NOT_VISIBLE'[\s\S]*?state\.mintStatus = t\('ocCertificationSyncing'\)/,
+  );
+  assert.match(
+    app,
+    /const recheckingCertificationVisibility = state\.ocPublishError\?\.code === 'WALRUS_CERTIFICATION_NOT_VISIBLE';[\s\S]*?state\.mintStatus = t\(recheckingCertificationVisibility \? 'ocCertificationSyncing' : 'ocWaitingCertification'\)/,
+  );
+  assert.match(
+    app,
+    /function restoredCertificationVisibilityError\(certifyDigest\)[\s\S]*?code: 'WALRUS_CERTIFICATION_NOT_VISIBLE'[\s\S]*?action: 'certify'/,
+  );
+  assert.match(
+    app,
+    /const certificationStateSyncing = uploadStage === 'uploaded' && Boolean\(uploadSession\.certifyDigest\);[\s\S]*?state\.makerPublishError = restoredCertificationVisibilityError\(uploadSession\.certifyDigest\);[\s\S]*?state\.publishStatus = t\('certificationSyncing'\)/,
+  );
+  assert.match(
+    app,
+    /const certificationStateSyncing = uploadStage === 'uploaded' && Boolean\(uploadSession\.certifyDigest\);[\s\S]*?state\.ocPublishError = restoredCertificationVisibilityError\(uploadSession\.certifyDigest\);[\s\S]*?state\.mintStatus = t\('ocCertificationSyncing'\)/,
+  );
+
+  const productionErrors = staticObjectFromSource(app, 'productionErrorI18n');
+  ['en', 'zh', 'ja', 'ko', 'vi'].forEach((locale) => {
+    assert.ok(productionErrors[locale].certificationSyncing);
+    assert.ok(productionErrors[locale].ocCertificationSyncing);
+  });
+});
+
 test('non-English application copy only matches English for intentional product names', async () => {
   const app = await readFile(new URL('../app.js', import.meta.url), 'utf8');
   const groups = [
