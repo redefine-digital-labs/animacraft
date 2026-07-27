@@ -85,8 +85,8 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
-  assert.match(html, /styles\.css\?v=animacraft-maker-v5-1/);
-  assert.match(html, /app\.js\?v=animacraft-production-9/);
+  assert.match(html, /styles\.css\?v=animacraft-dual-theme-v1/);
+  assert.match(html, /app\.js\?v=animacraft-dual-theme-v1/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
   assert.match(app, /buildMakerV4PublicationBundle/);
@@ -207,6 +207,7 @@ test('every application dictionary group has exact five-language key and interpo
     'staticProductionPageI18n',
     'docsPageI18n',
     'draftRecoveryProductionI18n',
+    'visualThemeI18n',
   ];
   const tokens = (value) => [...String(value).matchAll(/\{([a-zA-Z0-9_]+)\}/g)]
     .map((match) => match[1])
@@ -252,6 +253,7 @@ test('non-English application copy only matches English for intentional product 
     'staticProductionPageI18n',
     'docsPageI18n',
     'draftRecoveryProductionI18n',
+    'visualThemeI18n',
   ];
   const intentional = {
     i18n: {
@@ -265,6 +267,12 @@ test('non-English application copy only matches English for intentional product 
       ja: ['walrusLabel'],
       ko: ['walrusLabel'],
       vi: ['walrusLabel'],
+    },
+    visualThemeI18n: {
+      zh: ['themeAnimacraft', 'themeSoulidity'],
+      ja: ['themeAnimacraft', 'themeSoulidity'],
+      ko: ['themeAnimacraft', 'themeSoulidity'],
+      vi: ['themeAnimacraft', 'themeSoulidity'],
     },
   };
 

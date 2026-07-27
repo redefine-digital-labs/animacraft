@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Animacraft</title>
     <meta name="description" content="Animacraft is The Fully Onchain Character Maker & Creator." />
-    <link rel="stylesheet" href="./styles.css?v=animacraft-maker-v5-1" />
+    <meta name="theme-color" content="#f3f7f8" />
+    <script src="/theme-bootstrap.js?v=animacraft-theme-v1"></script>
+    <link rel="stylesheet" href="./styles.css?v=animacraft-dual-theme-v1" />
     <script src="/config.js"></script>
   </head>
   <body>
@@ -26,6 +28,44 @@
           <span class="wallet-dot"></span>
           <span data-i18n="walletConnect">Connect wallet</span>
         </button>
+        <div class="theme-control">
+          <button
+            id="themeButton"
+            class="theme-button"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="themeMenu"
+            aria-label="Choose visual theme"
+            data-i18n-aria-label="themeButtonAria"
+            title="Choose visual theme"
+            data-i18n-title="themeButtonAria"
+          >
+            <span class="theme-button-icon" aria-hidden="true">◐</span>
+          </button>
+          <div
+            id="themeMenu"
+            class="theme-menu"
+            role="menu"
+            aria-labelledby="themeButton"
+            aria-hidden="true"
+            hidden
+          >
+            <p class="theme-menu-label" data-i18n="visualThemeLabel">Visual theme</p>
+            <button class="theme-option" type="button" role="menuitemradio" aria-checked="true" tabindex="0" data-theme-option="auto">
+              <strong data-i18n="themeAuto">Automatic</strong>
+              <span data-i18n="themeAutoCopy">Use Animacraft by default</span>
+            </button>
+            <button class="theme-option" type="button" role="menuitemradio" aria-checked="false" tabindex="-1" data-theme-option="animacraft">
+              <strong data-i18n="themeAnimacraft">Animacraft</strong>
+              <span data-i18n="themeAnimacraftCopy">Light maker workspace</span>
+            </button>
+            <button class="theme-option" type="button" role="menuitemradio" aria-checked="false" tabindex="-1" data-theme-option="soulidity">
+              <strong data-i18n="themeSoulidity">Soulidity</strong>
+              <span data-i18n="themeSoulidityCopy">Dark Soulidity workspace</span>
+            </button>
+          </div>
+        </div>
         <button id="accountButton" class="account-button" type="button" aria-expanded="false" aria-controls="accountPanel">
           <span class="account-avatar">A</span>
           <span class="account-label" data-i18n="myPage">MyPage</span>
@@ -862,6 +902,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=animacraft-production-9"></script>
+    <script type="module" src="./app.js?v=animacraft-dual-theme-v1"></script>
   </body>
 </html>
