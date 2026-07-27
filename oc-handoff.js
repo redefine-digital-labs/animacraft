@@ -28,6 +28,8 @@ export function createPlayerCompletionSnapshot({
   recipe,
   profile,
   livingContent,
+  imageBlob,
+  imageExport,
 } = {}) {
   const makerVersionId = String(document?.version?.versionId || '');
   if (!makerVersionId) throw new TypeError('A Maker version is required to complete an OC.');
@@ -36,11 +38,36 @@ export function createPlayerCompletionSnapshot({
   if (!livingContent || typeof livingContent !== 'object') {
     throw new TypeError('Resolved Living Content is required to complete an OC.');
   }
+  if (
+    !imageBlob
+    || typeof imageBlob.arrayBuffer !== 'function'
+    || imageBlob.type !== 'image/png'
+    || !Number.isSafeInteger(imageBlob.size)
+    || imageBlob.size <= 0
+  ) {
+    throw new TypeError('The exact reviewed PNG is required to complete an OC.');
+  }
+  if (
+    !imageExport
+    || !['standard', 'original'].includes(imageExport.sizeMode)
+    || typeof imageExport.transparentBackground !== 'boolean'
+    || !Number.isSafeInteger(imageExport.width)
+    || imageExport.width <= 0
+    || !Number.isSafeInteger(imageExport.height)
+    || imageExport.height <= 0
+    || imageExport.mediaType !== 'image/png'
+  ) {
+    throw new TypeError('The reviewed PNG export settings are required to complete an OC.');
+  }
   return deepFreeze({
     makerVersionId,
     recipe: clone(recipe),
     profile: clone(profile),
     livingContent: clone(livingContent),
+    // Blob bytes are immutable by platform contract, so the exact reviewed
+    // object can be retained without copying a potentially large PNG.
+    imageBlob,
+    imageExport: clone(imageExport),
   });
 }
 

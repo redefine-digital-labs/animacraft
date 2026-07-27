@@ -103,6 +103,12 @@ import {
   playerSessionWalSnapshotsEqual,
   writePlayerSessionWal,
 } from './player-session-wal.js';
+import {
+  buildPlayerShareUrl,
+  calculatePlayerExportSize,
+  isPlayerOriginalExportSafe,
+  safePngFilename,
+} from './player-export.js';
 import { makerWorkspaceText } from './maker-workspace-i18n.js';
 
 function escapeHtml(value) {
@@ -172,6 +178,12 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function deepFreeze(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  Object.values(value).forEach(deepFreeze);
+  return Object.freeze(value);
+}
+
 function persistedAssetBlob(record) {
   const value = record?.blob || record?.file;
   return typeof Blob !== 'undefined' && value instanceof Blob ? value : null;
@@ -190,6 +202,20 @@ function safeDisplayImageUrl(value) {
     const base = globalThis.location?.origin || 'https://animacraft.soulidity.ai';
     const url = new URL(source, base);
     return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function safeExternalLinkUrl(value) {
+  const source = String(value || '').trim();
+  if (!source) return '';
+  try {
+    const base = globalThis.location?.origin || 'https://animacraft.soulidity.ai';
+    const url = new URL(source, base);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password
+      ? url.href
+      : '';
   } catch {
     return '';
   }
@@ -934,6 +960,19 @@ export class MakerWorkspace {
     this.playerSaveQueue = Promise.resolve();
     this.playerRenderState = { key: '', status: 'idle', error: '' };
     this.playerIntroOpen = false;
+    this.playerExportOpen = false;
+    this.playerExportIntent = 'download';
+    this.playerExportSizeMode = 'standard';
+    this.playerExportTransparent = false;
+    this.playerExportState = 'idle';
+    this.playerExportError = '';
+    this.playerExportPreviewUrl = '';
+    this.playerExportPreviewBlob = null;
+    this.playerExportDimensions = null;
+    this.playerExportSnapshot = null;
+    this.playerExportRequestId = 0;
+    this.playerExportAbortController = null;
+    this.playerShareState = 'idle';
     this.creatorPublishOpen = false;
     this.creatorPublishState = {
       stage: 'idle',
@@ -1052,6 +1091,19 @@ export class MakerWorkspace {
     this.boundPlayerChange = (event) => this.handlePlayerChange(event);
     this.boundPlayerKeydown = (event) => {
       if (this.handlePublishDialogKeydown('player', event)) return;
+      if (this.playerExportOpen) {
+        if (event.key === 'Tab') {
+          this.trapModalFocus(
+            this.playerRoot?.querySelector('#makerPlayerExportDialog'),
+            event,
+          );
+        } else if (event.key === 'Escape') {
+          event.preventDefault?.();
+          this.closePlayerExport();
+        }
+        return;
+      }
+      if (this.handlePlayerRadioKeydown(event)) return;
       if (!this.playerIntroOpen) return;
       if (event.key === 'Tab') {
         this.trapModalFocus(
@@ -1203,6 +1255,7 @@ export class MakerWorkspace {
       this.unsubscribe = null;
       this.context = null;
       this.store = null;
+      this.resetPlayerExport();
       this.enabledExpansionIds = new Set();
       this.playerLivingContent = null;
       this.playerSessionRequestId += 1;
@@ -1256,6 +1309,7 @@ export class MakerWorkspace {
         const incoming = this.normalizeDocument(clone(context.document));
         const current = this.store.getState().document;
         if (JSON.stringify(incoming) !== JSON.stringify(current)) {
+          this.resetPlayerExport();
           this.store.replace(incoming, context.recipe || incoming.defaultRecipe, { clearHistory: true, markSaved: true });
           this.ensureCreatorSelection(incoming);
           while (this.playerSessionSwitchInProgress) {
@@ -1267,6 +1321,7 @@ export class MakerWorkspace {
       return;
     }
     this.unsubscribe?.();
+    this.resetPlayerExport();
     this.assetResolver.clear();
     this.assets.forEach(revokeRuntimeAsset);
     this.assets = new Map();
@@ -2766,13 +2821,38 @@ export class MakerWorkspace {
 
   itemThumbnailUrl(item, preferredStyleId = '') {
     const explicit = this.runtimeAsset(item?.thumbnailAssetId);
-    if (explicit?.thumbnailUrl || explicit?.url) return explicit.thumbnailUrl || explicit.url;
+    if (explicit?.thumbnailUrl || explicit?.url) {
+      return safeDisplayImageUrl(explicit.thumbnailUrl || explicit.url);
+    }
     const style = item?.styles?.find((candidate) => candidate.id === preferredStyleId)
       || item?.styles?.find((candidate) => candidate.id === item.defaultStyleId)
       || item?.styles?.find((candidate) => candidate.assetId)
       || item?.styles?.[0];
+    return this.styleThumbnailUrl(style);
+  }
+
+  styleThumbnailUrl(style) {
     const source = this.runtimeAsset(style?.assetId);
-    return source?.thumbnailUrl || source?.url || '';
+    if (source?.thumbnailUrl || source?.url) {
+      return safeDisplayImageUrl(source.thumbnailUrl || source.url);
+    }
+    const document = this.runtimeDocument();
+    const descriptor = document?.assets?.find((asset) => asset.id === style?.assetId);
+    return safeDisplayImageUrl(
+      descriptor?.thumbnailUrl || descriptor?.url || descriptor?.legacy?.url || '',
+    );
+  }
+
+  partThumbnailUrl(part, selection = null) {
+    const icon = this.runtimeAsset(part?.iconAssetId);
+    if (icon?.thumbnailUrl || icon?.url) {
+      return safeDisplayImageUrl(icon.thumbnailUrl || icon.url);
+    }
+    const selectedItem = part?.items?.find((item) => item.id === selection?.itemId);
+    const selectedThumbnail = this.itemThumbnailUrl(selectedItem, selection?.styleId);
+    if (selectedThumbnail) return selectedThumbnail;
+    const fallbackItem = this.playerVisibleItems(part).find((item) => this.itemThumbnailUrl(item));
+    return this.itemThumbnailUrl(fallbackItem);
   }
 
   makerCoverUrl(document = this.store?.getState().document) {
@@ -3253,7 +3333,12 @@ export class MakerWorkspace {
     const closeConfirmKey = kind === 'creator'
       ? 'creatorPublishCloseConfirm'
       : 'playerPublishCloseConfirm';
-    if (state.busy && !force) {
+    // A Player step owns the exact reviewed OC snapshot. Letting the Player
+    // close and edit while that step is running could publish an older image
+    // or profile after the visible OC changed. Creator document edits are
+    // independently write-locked during publication, so their existing
+    // checkpoint-preserving close path remains safe.
+    if (state.busy && (!force || kind === 'player')) {
       this[closeConfirmKey] = true;
       this.render();
       this.focusPublishDialog(kind, `[data-action="keep-${kind}-publish-open"]`);
@@ -3334,6 +3419,65 @@ export class MakerWorkspace {
   focusPlayerInfoDialog(selector = '#makerPlayerInfoDialog') {
     requestAnimationFrame(() => {
       this.playerRoot?.querySelector(selector)?.focus?.({ preventScroll: true });
+    });
+  }
+
+  focusPlayerExportDialog(selector = '#makerPlayerExportDialog') {
+    requestAnimationFrame(() => {
+      this.playerRoot?.querySelector(selector)?.focus?.({ preventScroll: true });
+    });
+  }
+
+  handlePlayerRadioKeydown(event) {
+    const keys = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
+    if (!keys.has(event?.key)) return false;
+    const current = event.target?.closest?.('[role="radio"][data-player-radio-group]');
+    const group = current?.closest?.('[role="radiogroup"]');
+    if (!current || !group?.querySelectorAll) return false;
+    const radios = [...group.querySelectorAll('[role="radio"][data-player-radio-group]')]
+      .filter((radio) => !radio.hidden);
+    const currentIndex = radios.indexOf(current);
+    if (currentIndex < 0 || radios.length === 0) return false;
+    let nextIndex = currentIndex;
+    if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = radios.length - 1;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + radios.length) % radios.length;
+    } else {
+      nextIndex = (currentIndex + 1) % radios.length;
+    }
+    event.preventDefault?.();
+    const next = radios[nextIndex];
+    radios.forEach((radio, index) => radio.setAttribute?.('tabindex', index === nextIndex ? '0' : '-1'));
+    next.focus?.({ preventScroll: true });
+    if (next.getAttribute?.('aria-disabled') === 'true') return true;
+    const groupKey = String(next.dataset?.playerRadioGroup || '');
+    const radioIndex = String(next.dataset?.playerRadioIndex || '');
+    next.click?.();
+    requestAnimationFrame(() => {
+      this.playerRoot?.querySelector(
+        `[role="radio"][data-player-radio-group="${groupKey}"][data-player-radio-index="${radioIndex}"]`,
+      )?.focus?.({ preventScroll: true });
+    });
+    return true;
+  }
+
+  capturePlayerExportScroll() {
+    const body = this.playerRoot?.querySelector?.('.v4-player-export-body');
+    if (!body) return null;
+    return {
+      left: Number(body.scrollLeft || 0),
+      top: Number(body.scrollTop || 0),
+    };
+  }
+
+  restorePlayerExportScroll(position) {
+    if (!position) return;
+    requestAnimationFrame(() => {
+      const body = this.playerRoot?.querySelector?.('.v4-player-export-body');
+      if (!body) return;
+      body.scrollLeft = position.left;
+      body.scrollTop = position.top;
     });
   }
 
@@ -3640,24 +3784,330 @@ export class MakerWorkspace {
     });
   }
 
-  async renderRecipeToBlob(recipe = this.playerRecipe, { type = 'image/png', quality } = {}) {
-    const document = this.runtimeDocument();
+  playerBackgroundPartIds(document = this.runtimeDocument()) {
+    const explicit = document?.extensions?.playerExport?.backgroundPartIds;
+    if (Array.isArray(explicit)) {
+      return new Set(explicit.map((partId) => String(partId || '')).filter(Boolean));
+    }
+    const conventionalNames = new Set([
+      'background',
+      'backdrop',
+      'scene',
+      'bg',
+      '背景',
+      '背景图',
+      '场景',
+      '背景画',
+      '배경',
+      '장면',
+      'phông nền',
+      'cảnh',
+    ]);
+    return new Set((document?.parts || []).filter((part) => {
+      const id = String(part.id || '').trim().toLowerCase();
+      const name = String(part.name || '').trim().toLowerCase();
+      return conventionalNames.has(id)
+        || conventionalNames.has(name)
+        || /(^|[-_\s])(background|backdrop|scene|bg)([-_\s]|$)/i.test(id);
+    }).map((part) => part.id));
+  }
+
+  async renderRecipeToBlob(recipe = this.playerRecipe, {
+    type = 'image/png',
+    quality,
+    document: documentOverride = null,
+    sizeMode = 'original',
+    transparentBackground = false,
+    signal = null,
+  } = {}) {
+    const document = documentOverride || this.runtimeDocument();
     if (!document) throw new Error(this.tr('noMakerLoaded'));
+    signal?.throwIfAborted?.();
     const canvas = globalThis.document?.createElement?.('canvas');
     if (!canvas) throw new Error(this.tr('canvasExportBrowserOnly'));
     const scene = resolveMakerScene(document, recipe, { strict: true });
+    if (transparentBackground) {
+      const backgroundPartIds = this.playerBackgroundPartIds(document);
+      scene.background = null;
+      scene.layers = scene.layers.filter((layer) => !backgroundPartIds.has(layer.partId));
+    }
+    const dimensions = calculatePlayerExportSize(document.canvas, { mode: sizeMode });
+    canvas.width = dimensions.width;
+    canvas.height = dimensions.height;
+    const context = canvas.getContext?.('2d');
+    if (!context) throw new Error(this.tr('canvasExportBrowserOnly'));
+    context.scale(dimensions.width / scene.width, dimensions.height / scene.height);
     scene.layers.forEach((layer) => this.ensureAssetAlias(layer.assetId));
-    await renderResolvedScene(scene, canvas, {
+    await renderResolvedScene(scene, context, {
+      resize: false,
       skipMissingAssets: false,
       resolveAsset: (assetId) => this.assetResolver.resolve(assetId),
       applyColorChannel: this.applyColorChannel,
+      signal,
     });
+    signal?.throwIfAborted?.();
     return new Promise((resolve, reject) => {
       canvas.toBlob((blob) => {
+        if (signal?.aborted) {
+          reject(signal.reason || new DOMException('The render was aborted.', 'AbortError'));
+          return;
+        }
         if (blob) resolve(blob);
         else reject(new Error(this.tr('recipeExportFailed')));
       }, type, quality);
     });
+  }
+
+  playerExternalLinks(document = this.runtimeDocument()) {
+    const raw = this.callbacks.getPlayerExternalLinks?.({
+      document,
+      makerKey: this.makerKey,
+      context: this.context,
+    }) || {};
+    const result = {
+      creatorUrl: safeExternalLinkUrl(raw.creatorUrl),
+      communityUrl: safeExternalLinkUrl(raw.communityUrl),
+    };
+    try {
+      result.shareUrl = raw.shareUrl
+        ? safeExternalLinkUrl(raw.shareUrl)
+        : buildPlayerShareUrl({
+            baseUrl: raw.baseUrl,
+            makerId: raw.makerId,
+          });
+    } catch {
+      result.shareUrl = '';
+    }
+    return result;
+  }
+
+  createPlayerExportSnapshot(document = this.runtimeDocument()) {
+    if (!document) return null;
+    return deepFreeze({
+      document: clone(document),
+      recipe: clone(recipeWithColors(document, this.playerRecipe)),
+      profile: clone(this.playerProfile),
+      livingContent: clone(this.resolvedPlayerLivingContent(document)?.content || null),
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  revokePlayerExportPreview() {
+    if (this.playerExportPreviewUrl) URL.revokeObjectURL?.(this.playerExportPreviewUrl);
+    this.playerExportPreviewUrl = '';
+    this.playerExportPreviewBlob = null;
+  }
+
+  resetPlayerExport({ preservePreferences = false } = {}) {
+    this.playerExportRequestId += 1;
+    this.playerExportAbortController?.abort?.();
+    this.playerExportAbortController = null;
+    this.revokePlayerExportPreview();
+    this.playerExportOpen = false;
+    this.playerExportIntent = 'download';
+    if (!preservePreferences) {
+      this.playerExportSizeMode = 'standard';
+      this.playerExportTransparent = false;
+    }
+    this.playerExportState = 'idle';
+    this.playerExportError = '';
+    this.playerExportDimensions = null;
+    this.playerExportSnapshot = null;
+    this.playerShareState = 'idle';
+  }
+
+  openPlayerExport(intent = 'download') {
+    const document = this.runtimeDocument();
+    if (!document) return;
+    this.resetPlayerExport({ preservePreferences: true });
+    this.playerExportOpen = true;
+    this.playerExportIntent = intent === 'complete' ? 'complete' : 'download';
+    this.playerExportSnapshot = this.createPlayerExportSnapshot(document);
+    if (
+      this.playerExportSizeMode === 'original'
+      && !isPlayerOriginalExportSafe(this.playerExportSnapshot.document.canvas)
+    ) {
+      this.playerExportSizeMode = 'standard';
+    }
+    this.playerExportState = 'rendering';
+    this.playerIntroOpen = false;
+    this.render();
+    this.focusPlayerExportDialog();
+    void this.preparePlayerExportPreview();
+  }
+
+  closePlayerExport() {
+    if (!this.playerExportOpen) return;
+    const returnAction = this.playerExportIntent === 'complete'
+      ? 'player-complete'
+      : 'player-preview-export';
+    this.resetPlayerExport({ preservePreferences: true });
+    this.render();
+    requestAnimationFrame(() => {
+      this.playerRoot?.querySelector(`[data-action="${returnAction}"]`)?.focus?.({ preventScroll: true });
+    });
+  }
+
+  async preparePlayerExportPreview({ focusSelector = '' } = {}) {
+    const snapshot = this.playerExportSnapshot;
+    if (!this.playerExportOpen || !snapshot) return;
+    const requestId = ++this.playerExportRequestId;
+    this.playerExportAbortController?.abort?.();
+    const abortController = new AbortController();
+    this.playerExportAbortController = abortController;
+    this.revokePlayerExportPreview();
+    this.playerExportState = 'rendering';
+    this.playerExportError = '';
+    this.playerExportDimensions = calculatePlayerExportSize(snapshot.document.canvas, {
+      mode: this.playerExportSizeMode,
+    });
+    this.render();
+    this.focusPlayerExportDialog(focusSelector || '#makerPlayerExportDialog');
+    try {
+      const blob = await this.renderRecipeToBlob(snapshot.recipe, {
+        document: snapshot.document,
+        sizeMode: this.playerExportSizeMode,
+        transparentBackground: this.playerExportTransparent,
+        signal: abortController.signal,
+      });
+      if (!this.playerExportOpen || requestId !== this.playerExportRequestId) return;
+      this.playerExportPreviewBlob = blob;
+      this.playerExportPreviewUrl = URL.createObjectURL(blob);
+      this.playerExportState = 'ready';
+      this.playerExportError = '';
+    } catch (error) {
+      if (!this.playerExportOpen || requestId !== this.playerExportRequestId) return;
+      this.playerExportState = 'error';
+      // Renderer diagnostics can contain low-level English asset details.
+      // Keep the Player-facing message localized and fail closed.
+      this.playerExportError = this.tr('previewRenderFailed');
+    }
+    if (this.playerExportAbortController === abortController) {
+      this.playerExportAbortController = null;
+    }
+    this.render();
+    this.focusPlayerExportDialog(focusSelector || '#makerPlayerExportDialog');
+  }
+
+  downloadPlayerExport() {
+    if (!this.playerExportPreviewBlob || !this.playerExportPreviewUrl || !this.playerExportSnapshot) return;
+    const link = globalThis.document?.createElement?.('a');
+    if (!link) return;
+    link.href = this.playerExportPreviewUrl;
+    link.download = safePngFilename(
+      this.playerExportSnapshot.profile?.name || this.tr('untitledOc'),
+    );
+    link.click();
+  }
+
+  exportPlayerRecipe(snapshot = this.playerExportSnapshot) {
+    const document = snapshot?.document || this.runtimeDocument();
+    if (!document) return;
+    const livingContent = snapshot
+      ? snapshot.livingContent
+      : this.resolvedPlayerLivingContent(document)?.content || null;
+    const profile = snapshot?.profile || this.playerProfile;
+    const payload = {
+      schemaVersion: 'animacraft.player-recipe.v5',
+      makerVersionId: document.version.versionId,
+      recipe: snapshot?.recipe || this.playerRecipe,
+      profile,
+      livingContent,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = globalThis.document?.createElement?.('a');
+    if (link) {
+      link.href = url;
+      link.download = `${safeFileName(profile.name, 'oc')}-recipe.json`;
+      link.click();
+    }
+    URL.revokeObjectURL(url);
+    this.callbacks.onExportRecipe?.(payload);
+  }
+
+  async copyTextToClipboard(value) {
+    if (globalThis.navigator?.clipboard?.writeText) {
+      await globalThis.navigator.clipboard.writeText(value);
+      return;
+    }
+    const textarea = globalThis.document?.createElement?.('textarea');
+    if (!textarea || !globalThis.document?.body) throw new Error('Clipboard unavailable');
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    globalThis.document.body.append(textarea);
+    textarea.select();
+    const copied = globalThis.document.execCommand?.('copy');
+    textarea.remove();
+    if (!copied) throw new Error('Clipboard unavailable');
+  }
+
+  async sharePlayerMaker({ native = false } = {}) {
+    const document = this.playerExportSnapshot?.document || this.runtimeDocument();
+    const shareUrl = this.playerExternalLinks(document).shareUrl;
+    if (!shareUrl) {
+      this.playerShareState = 'unavailable';
+      this.render();
+      this.focusPlayerExportDialog('[data-action="player-copy-maker-link"]');
+      return;
+    }
+    try {
+      if (native && typeof globalThis.navigator?.share === 'function') {
+        await globalThis.navigator.share({
+          title: document.metadata.name,
+          text: this.tr('shareMakerText', { maker: document.metadata.name }),
+          url: shareUrl,
+        });
+        this.playerShareState = 'shared';
+      } else {
+        await this.copyTextToClipboard(shareUrl);
+        this.playerShareState = 'copied';
+      }
+    } catch (error) {
+      this.playerShareState = error?.name === 'AbortError' ? 'idle' : 'error';
+    }
+    this.render();
+    this.focusPlayerExportDialog(
+      native ? '[data-action="player-share-maker"]' : '[data-action="player-copy-maker-link"]',
+    );
+  }
+
+  completePlayerExport() {
+    const snapshot = this.playerExportSnapshot;
+    const imageBlob = this.playerExportPreviewBlob;
+    if (!snapshot || this.playerExportState !== 'ready' || !imageBlob?.size) return;
+    const creatorPreview = this.playerCreatorPreview;
+    const issues = this.playerCompletionIssues(snapshot.document, snapshot.recipe, {
+      profile: snapshot.profile,
+      livingContent: snapshot.livingContent,
+    });
+    if (issues.length) {
+      this.callbacks.onPlayerError?.(new Error(issues[0]));
+      return;
+    }
+    const imageExport = deepFreeze({
+      sizeMode: this.playerExportSizeMode,
+      transparentBackground: this.playerExportTransparent,
+      width: this.playerExportDimensions?.width || snapshot.document.canvas.width,
+      height: this.playerExportDimensions?.height || snapshot.document.canvas.height,
+      mediaType: 'image/png',
+    });
+    this.resetPlayerExport({ preservePreferences: true });
+    this.playerPublishOpen = !creatorPreview;
+    this.playerPublishCloseConfirm = false;
+    this.callbacks.onCompleteOc?.({
+      document: snapshot.document,
+      recipe: snapshot.recipe,
+      profile: snapshot.profile,
+      livingContent: snapshot.livingContent,
+      imageBlob,
+      imageExport,
+      assets: this.assets,
+    });
+    this.render();
+    if (!creatorPreview) this.focusPlayerPublishDialog();
   }
 
   renderCreator() {
@@ -4183,7 +4633,7 @@ export class MakerWorkspace {
         <p id="${confirmId}Copy">${escapeHtml(this.tr('publishCloseConfirmCopy'))}</p>
         <div>
           <button class="primary" type="button" data-action="keep-${prefix}-publish-open">${escapeHtml(this.tr('keepPublishOpen'))}</button>
-          <button type="button" data-action="force-close-${prefix}-publish">${escapeHtml(this.tr('closePublishAnyway'))}</button>
+          ${creator ? `<button type="button" data-action="force-close-${prefix}-publish">${escapeHtml(this.tr('closePublishAnyway'))}</button>` : ''}
         </div>
       </aside>
     ` : '';
@@ -4261,6 +4711,7 @@ export class MakerWorkspace {
     const positionEditorOpen = Boolean(style && !positionLocked && (style.positionConfirmed === false || this.editingPositionStyleKey === styleKey));
     const effectiveTransform = style ? effectiveStyleTransform(document, style) : null;
     const pixelCoordinates = document.canvas.pixelMode === 'pixelated';
+    const exportBackground = this.playerBackgroundPartIds(document).has(part.id);
     return `
       <div class="v4-inspector-section">
         <span class="v4-inspector-label">${escapeHtml(this.tr('part'))}</span>
@@ -4268,6 +4719,7 @@ export class MakerWorkspace {
         <div class="v4-toggle-grid">
           <label><input type="checkbox" ${checked(part.required)} data-action="part-required" /> ${escapeHtml(this.tr('required'))}</label>
           <label><input type="checkbox" ${checked(part.menuVisible)} data-action="part-visible" /> ${escapeHtml(this.tr('playerMenu'))}</label>
+          <label><input type="checkbox" ${checked(exportBackground)} data-action="part-export-background" /> ${escapeHtml(this.tr('exportBackgroundPart'))}</label>
         </div>
         <label>${escapeHtml(this.tr('defaultItem'))}<select data-action="part-default" ${part.items.length ? '' : 'disabled'}><option value="">${escapeHtml(this.tr('none'))}</option>${defaultOptions}</select></label>
         <label class="v4-file-button wide">${escapeHtml(this.tr('uploadPartIcon'))}<input type="file" accept="image/png,image/jpeg" data-action="part-icon" /></label>
@@ -4749,6 +5201,14 @@ export class MakerWorkspace {
         target: targetLabel || this.tr('optionUnavailable'),
       });
     }
+    if (code === 'required-part') return this.tr('partRequiredCannotRemove');
+    if (code === 'inactive-child-part') return this.tr('parentSelectionUnavailable');
+    if ([
+      'hidden-item-or-style-selected',
+      'hidden-part-selected',
+      'unsatisfiable-maker',
+      'constraint-search-limit',
+    ].includes(code)) return this.tr('ruleOptionUnavailable');
     return this.tr('optionUnavailable');
   }
 
@@ -4839,7 +5299,10 @@ export class MakerWorkspace {
     return this.tr(key || 'playerInvalidCombination', context);
   }
 
-  playerCompletionIssues(document, recipe) {
+  playerCompletionIssues(document, recipe, {
+    profile = this.playerProfile,
+    livingContent = null,
+  } = {}) {
     const issues = [];
     if (this.context?.walletAddress) {
       if (
@@ -4851,13 +5314,19 @@ export class MakerWorkspace {
         issues.push(this.tr('playerSaveBeforeComplete'));
       }
     }
-    const name = String(this.playerProfile?.name || '').trim();
+    const name = String(profile?.name || '').trim();
     if (!name) issues.push(this.tr('playerNameRequired'));
     if (utf8Length(name) > 128) issues.push(this.tr('playerNameTooLong'));
-    if (utf8Length(this.playerProfile?.world) > 128) issues.push(this.tr('playerWorldTooLong'));
-    if (utf8Length(this.playerProfile?.description) > 2_000) issues.push(this.tr('playerDescriptionTooLong'));
-    if (utf8Length(this.playerProfile?.tags) > 1_000) issues.push(this.tr('playerTagsTooLong'));
-    const playerLivingContent = this.resolvedPlayerLivingContent(document);
+    if (utf8Length(profile?.world) > 128) issues.push(this.tr('playerWorldTooLong'));
+    if (utf8Length(profile?.description) > 2_000) issues.push(this.tr('playerDescriptionTooLong'));
+    if (utf8Length(profile?.tags) > 1_000) issues.push(this.tr('playerTagsTooLong'));
+    const playerLivingContent = livingContent
+      ? {
+          validation: validateSoulConfig(livingContent, document),
+          content: livingContent,
+          draft: livingContent,
+        }
+      : this.resolvedPlayerLivingContent(document);
     if (!playerLivingContent?.validation.valid) {
       const invalidDocument = SOUL_CONFIG_DOCUMENTS.find(
         ({ key }) => !playerLivingContent?.validation.documents[key].valid,
@@ -5102,8 +5571,130 @@ export class MakerWorkspace {
     if (world) world.textContent = this.playerProfile.world || document.metadata.style || this.tr('originalCharacter');
   }
 
+  renderPlayerExportModal(document) {
+    if (!this.playerExportOpen || !this.playerExportSnapshot) return '';
+    const snapshot = this.playerExportSnapshot;
+    const standard = calculatePlayerExportSize(snapshot.document.canvas, { mode: 'standard' });
+    const original = calculatePlayerExportSize(snapshot.document.canvas, { mode: 'original' });
+    const originalSafe = isPlayerOriginalExportSafe(snapshot.document.canvas);
+    const dimensions = this.playerExportDimensions
+      || (this.playerExportSizeMode === 'original' ? original : standard);
+    const external = this.playerExternalLinks(snapshot.document);
+    const selected = recipeSelectionMap(snapshot.recipe);
+    const selectedSummary = (snapshot.document.parts || []).flatMap((part) => {
+      const selection = selected.get(part.id);
+      const item = part.items.find((candidate) => candidate.id === selection?.itemId);
+      const style = item?.styles.find((candidate) => candidate.id === selection?.styleId);
+      return item ? [`${part.name}: ${item.name}${item.styles.length > 1 && style ? ` · ${style.name}` : ''}`] : [];
+    });
+    const shareStatus = {
+      copied: this.tr('makerLinkCopied'),
+      shared: this.tr('makerShared'),
+      unavailable: this.tr('makerMustBePublishedToShare'),
+      error: this.tr('makerShareUnavailable'),
+    }[this.playerShareState] || '';
+    const shareMessage = shareStatus || (external.shareUrl ? '' : this.tr('makerMustBePublishedToShare'));
+    const renderStatus = this.playerExportState === 'rendering'
+      ? this.tr('renderingFinalImage')
+      : this.playerExportState === 'error'
+        ? this.tr('finalImageFailed', { error: this.playerExportError || this.tr('previewRenderFailed') })
+        : this.tr('finalImageReady');
+    const canDownload = this.playerExportState === 'ready' && Boolean(this.playerExportPreviewBlob);
+    const exportRendering = this.playerExportState === 'rendering';
+    const completionIssues = this.playerCompletionIssues(snapshot.document, snapshot.recipe, {
+      profile: snapshot.profile,
+      livingContent: snapshot.livingContent,
+    });
+    const canComplete = canDownload && completionIssues.length === 0;
+    const completeLabel = this.playerCreatorPreview
+      ? this.tr('returnToCreator')
+      : this.tr('continueToPublish');
+
+    return `
+      <div class="v4-modal-backdrop v4-player-export-backdrop" data-action="close-player-export-backdrop">
+        <section id="makerPlayerExportDialog" class="v4-player-export-dialog" role="dialog" aria-modal="true" aria-labelledby="makerPlayerExportTitle" tabindex="-1">
+          <header>
+            <div>
+              <span class="v4-eyebrow">${escapeHtml(this.tr('previewExport'))}</span>
+              <h2 id="makerPlayerExportTitle">${escapeHtml(this.tr('finalOcPreview'))}</h2>
+              <p>${escapeHtml(this.tr('finalOcPreviewCopy'))}</p>
+            </div>
+            <button type="button" class="v4-dialog-close" data-action="close-player-export" aria-label="${escapeHtml(this.tr('continueEditing'))}">×</button>
+          </header>
+          <div class="v4-player-export-body">
+            <section class="v4-player-export-preview">
+              <div class="v4-player-export-image ${snapshot.document.canvas.pixelMode === 'pixelated' ? 'pixelated' : ''}">
+                ${this.playerExportPreviewUrl
+                  ? `<img src="${escapeHtml(this.playerExportPreviewUrl)}" alt="${escapeHtml(this.tr('previewImageAlt', { name: snapshot.profile.name || this.tr('untitledOc') }))}" />`
+                  : `<div class="v4-player-export-placeholder"><span aria-hidden="true">✦</span><strong>${escapeHtml(renderStatus)}</strong></div>`}
+              </div>
+              <div class="v4-player-export-caption">
+                <div><strong>${escapeHtml(snapshot.profile.name || this.tr('untitledOc'))}</strong><span>${escapeHtml(snapshot.profile.world || snapshot.document.metadata.style || this.tr('originalCharacter'))}</span></div>
+                <span>${escapeHtml(this.tr('exportDimensions', dimensions))}</span>
+              </div>
+              <div class="v4-player-export-selection" aria-label="${escapeHtml(this.tr('currentSelection'))}">
+                ${selectedSummary.map((label) => `<span>${escapeHtml(label)}</span>`).join('')}
+              </div>
+            </section>
+            <aside class="v4-player-export-options">
+              <fieldset>
+                <legend>${escapeHtml(this.tr('exportSize'))}</legend>
+                <div class="v4-player-export-choice">
+                  <button type="button" data-action="player-export-size" data-size-mode="standard" aria-pressed="${this.playerExportSizeMode === 'standard'}" class="${this.playerExportSizeMode === 'standard' ? 'active' : ''}" ${exportRendering ? 'disabled' : ''}>
+                    <strong>${escapeHtml(this.tr('standardSize'))}</strong>
+                    <small>${escapeHtml(this.tr('exportDimensions', standard))}</small>
+                  </button>
+                  <button type="button" data-action="player-export-size" data-size-mode="original" aria-pressed="${this.playerExportSizeMode === 'original'}" class="${this.playerExportSizeMode === 'original' ? 'active' : ''}" ${originalSafe && !exportRendering ? '' : `disabled title="${escapeHtml(originalSafe ? this.tr('renderingFinalImage') : this.tr('originalSizeUnavailable'))}"`}>
+                    <strong>${escapeHtml(this.tr('originalSize'))}</strong>
+                    <small>${escapeHtml(originalSafe
+                      ? this.tr('exportDimensions', original)
+                      : this.tr('originalSizeUnavailable'))}</small>
+                  </button>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>${escapeHtml(this.tr('backgroundMode'))}</legend>
+                <div class="v4-player-export-choice">
+                  <button type="button" data-action="player-export-background" data-transparent="false" aria-pressed="${!this.playerExportTransparent}" class="${this.playerExportTransparent ? '' : 'active'}" ${exportRendering ? 'disabled' : ''}>${escapeHtml(this.tr('currentBackground'))}</button>
+                  <button type="button" data-action="player-export-background" data-transparent="true" aria-pressed="${this.playerExportTransparent}" class="${this.playerExportTransparent ? 'active' : ''}" ${exportRendering ? 'disabled' : ''}>${escapeHtml(this.tr('transparentBackground'))}</button>
+                </div>
+              </fieldset>
+              <div class="v4-player-export-status" role="status" data-state="${escapeHtml(this.playerExportState)}">
+                <strong>${escapeHtml(renderStatus)}</strong>
+                ${this.playerExportState === 'error' ? `<button type="button" data-action="player-export-retry">${escapeHtml(this.tr('retryRender'))}</button>` : ''}
+              </div>
+              <div class="v4-player-export-share">
+                <strong>${escapeHtml(this.tr('shareMaker'))}</strong>
+                <div>
+                  <button type="button" data-action="player-copy-maker-link" ${external.shareUrl ? '' : 'disabled aria-describedby="makerPlayerShareStatus"'}>${escapeHtml(this.tr('copyMakerLink'))}</button>
+                  ${typeof globalThis.navigator?.share === 'function' ? `<button type="button" data-action="player-share-maker" ${external.shareUrl ? '' : 'disabled aria-describedby="makerPlayerShareStatus"'}>${escapeHtml(this.tr('shareMaker'))}</button>` : ''}
+                </div>
+                <small id="makerPlayerShareStatus" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(shareMessage)}</small>
+              </div>
+              ${(external.creatorUrl || external.communityUrl) ? `
+                <nav class="v4-player-soulidity-links" aria-label="${escapeHtml(this.tr('openSoulidity'))}">
+                  ${external.creatorUrl ? `<a href="${escapeHtml(external.creatorUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(this.tr('creatorOnSoulidity'))}</a>` : ''}
+                  ${external.communityUrl ? `<a href="${escapeHtml(external.communityUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(this.tr('soulidityCommunity'))}</a>` : ''}
+                </nav>
+              ` : ''}
+              <p class="v4-player-export-license">${escapeHtml(this.tr('exportLicenseNotice'))}</p>
+            </aside>
+          </div>
+          <footer>
+            <p id="makerPlayerExportCompletionIssue" class="v4-player-export-completion-issue" ${completionIssues.length ? '' : 'hidden'}>${escapeHtml(completionIssues[0] || '')}</p>
+            <button type="button" data-action="close-player-export">${escapeHtml(this.tr('continueEditing'))}</button>
+            <button type="button" data-action="player-export-recipe">${escapeHtml(this.tr('downloadRecipePackage'))}</button>
+            <button type="button" data-action="player-download-png" ${canDownload ? '' : 'disabled'}>${escapeHtml(this.tr('downloadPng'))}</button>
+            <button type="button" class="primary" data-action="player-confirm-complete" ${canComplete ? '' : 'disabled aria-describedby="makerPlayerExportCompletionIssue"'}>${escapeHtml(completeLabel)}</button>
+          </footer>
+        </section>
+      </div>
+    `;
+  }
+
   renderPlayer() {
     if (!this.playerRoot || !this.store) return;
+    const exportScroll = this.playerExportOpen ? this.capturePlayerExportScroll() : null;
     const document = this.runtimeDocument();
     if (!document) return;
     const recipe = recipeWithColors(document, this.playerRecipe);
@@ -5123,11 +5714,19 @@ export class MakerWorkspace {
     const visibleItems = (part?.items || []).filter((item) => itemOptions.get(item.id)?.visible);
     const currentSelection = part ? selectionMap.get(part.id) : null;
     const currentItem = visibleItems.find((item) => item.id === currentSelection?.itemId) || null;
+    const itemRovingId = currentItem?.id
+      || visibleItems.find((item) => itemOptions.get(item.id)?.selectable)?.id
+      || visibleItems[0]?.id
+      || '';
     const currentItemOption = currentItem ? itemOptions.get(currentItem.id) : null;
     const styleOptions = new Map((currentItemOption?.styles || []).map((option) => [option.styleId, option]));
     const visibleStyles = currentItem?.styles.filter((style) => styleOptions.get(style.id)?.visible) || [];
     const currentStyle = visibleStyles.find((style) => style.id === currentSelection?.styleId)
       || null;
+    const styleRovingId = currentStyle?.id
+      || visibleStyles.find((style) => styleOptions.get(style.id)?.selectable)?.id
+      || visibleStyles[0]?.id
+      || '';
     const recipeResult = evaluateRecipe(document, recipe);
     const renderKey = this.playerRenderKey(document, recipe);
     if (this.playerRenderState.key !== renderKey) {
@@ -5140,41 +5739,62 @@ export class MakerWorkspace {
     const clearOptionalReason = clearOptionalOption.selectable
       ? ''
       : this.playerOptionReasonText(clearOptionalOption, document);
+    const removePartReasonId = 'v4PlayerRemovePartReason';
+    const clearOptionalReasonId = 'v4PlayerClearOptionalReason';
     const partButtons = parts.map((candidate) => {
       const selection = selectionMap.get(candidate.id);
+      const thumbnail = this.partThumbnailUrl(candidate, selection);
+      const active = candidate.id === part?.id;
       return `
-        <button type="button" class="v4-player-part ${candidate.id === part?.id ? 'active' : ''}" data-action="player-part" data-part-id="${escapeHtml(candidate.id)}">
-          <span>${candidate.iconAssetId && this.runtimeAsset(candidate.iconAssetId)?.url ? `<img src="${escapeHtml(this.runtimeAsset(candidate.iconAssetId).url)}" alt="" />` : escapeHtml(candidate.name.slice(0, 2).toUpperCase())}</span>
+        <button type="button" class="v4-player-part ${active ? 'active' : ''} ${selection?.itemId ? 'has-selection' : ''}" data-action="player-part" data-part-id="${escapeHtml(candidate.id)}" aria-current="${active ? 'true' : 'false'}">
+          <span>${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : escapeHtml(candidate.name.slice(0, 2).toUpperCase())}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
           <small>${escapeHtml(this.tr(selection?.itemId ? 'selectedState' : candidate.required ? 'required' : 'noneState'))}</small>
+          ${selection?.itemId ? '<i class="v4-player-selected-mark" aria-hidden="true">✓</i>' : ''}
         </button>
       `;
     }).join('');
-    const itemButtons = visibleItems.map((candidate) => {
+    const itemButtons = visibleItems.map((candidate, itemIndex) => {
       const option = itemOptions.get(candidate.id);
       const thumbnail = this.itemThumbnailUrl(candidate, option?.preferredStyleId);
       const visibleStyleCount = option?.styles.filter((style) => style.visible).length || 0;
       const reason = option?.selectable ? '' : this.playerOptionReasonText(option, document);
+      const active = candidate.id === currentItem?.id;
+      const reasonId = `v4-player-item-reason-${candidate.id}`;
       return `
-        <button type="button" class="v4-player-item ${candidate.id === currentItem?.id ? 'active' : ''} ${option?.selectable ? '' : 'disabled'}" data-action="player-item" data-item-id="${escapeHtml(candidate.id)}" ${option?.selectable ? '' : 'disabled'} title="${escapeHtml(reason || candidate.name)}">
-          <span>${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : '<i>PNG</i>'}</span>
+        <button type="button" role="radio" class="v4-player-item ${active ? 'active' : ''} ${option?.selectable ? '' : 'disabled'}" data-action="player-item" data-item-id="${escapeHtml(candidate.id)}" data-player-radio-group="item" data-player-radio-index="${itemIndex}" aria-checked="${active ? 'true' : 'false'}" tabindex="${candidate.id === itemRovingId ? '0' : '-1'}" ${option?.selectable ? '' : `aria-disabled="true" aria-describedby="${escapeHtml(reasonId)}"`} title="${escapeHtml(reason || candidate.name)}">
+          <span class="v4-player-option-image">${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : '<i>PNG</i>'}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
-          ${option?.selectable ? (visibleStyleCount > 1 ? `<em>${escapeHtml(this.tr('styleCount', { count: visibleStyleCount }))}</em>` : '') : `<em>${escapeHtml(reason)}</em>`}
+          ${visibleStyleCount > 1 ? `<em>${escapeHtml(this.tr('styleCount', { count: visibleStyleCount }))}</em>` : ''}
+          ${active ? '<i class="v4-player-selected-mark" aria-hidden="true">✓</i>' : ''}
+          ${reason ? `<small id="${escapeHtml(reasonId)}" class="v4-player-option-reason">${escapeHtml(reason)}</small>` : ''}
         </button>
       `;
     }).join('') || '';
-    const styleButtons = visibleStyles.map((candidate) => {
+    const styleButtons = visibleStyles.map((candidate, styleIndex) => {
       const option = styleOptions.get(candidate.id);
       const reason = option?.selectable ? '' : this.playerOptionReasonText(option, document);
+      const thumbnail = this.styleThumbnailUrl(candidate);
+      const active = candidate.id === currentStyle?.id;
+      const reasonId = `v4-player-style-reason-${candidate.id}`;
       return `
-        <button type="button" class="${candidate.id === currentStyle?.id ? 'active' : ''} ${option?.selectable ? '' : 'disabled'}" data-action="player-style" data-style-id="${escapeHtml(candidate.id)}" ${option?.selectable ? '' : 'disabled'} title="${escapeHtml(reason || candidate.name)}">${escapeHtml(candidate.name)}${option?.selectable ? '' : ` · ${escapeHtml(reason)}`}</button>
+        <button type="button" role="radio" class="v4-player-style-option ${active ? 'active' : ''} ${option?.selectable ? '' : 'disabled'}" data-action="player-style" data-style-id="${escapeHtml(candidate.id)}" data-player-radio-group="style" data-player-radio-index="${styleIndex}" aria-checked="${active ? 'true' : 'false'}" tabindex="${candidate.id === styleRovingId ? '0' : '-1'}" ${option?.selectable ? '' : `aria-disabled="true" aria-describedby="${escapeHtml(reasonId)}"`} title="${escapeHtml(reason || candidate.name)}">
+          <span>${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : '<i>PNG</i>'}</span>
+          <strong>${escapeHtml(candidate.name)}</strong>
+          ${active ? '<i class="v4-player-selected-mark" aria-hidden="true">✓</i>' : ''}
+          ${reason ? `<small id="${escapeHtml(reasonId)}" class="v4-player-option-reason">${escapeHtml(reason)}</small>` : ''}
+        </button>
       `;
     }).join('') || '';
     const usedChannelIds = resolvedPlayerColorChannelIds(document, recipe);
-    const colorRows = document.colorChannels.filter((channel) => usedChannelIds.has(channel.id)).map((channel) => {
+    const colorRows = document.colorChannels.filter((channel) => usedChannelIds.has(channel.id)).map((channel, channelIndex) => {
       const selectedColor = recipe.colors?.find((entry) => entry.channelId === channel.id)?.swatchId || channel.defaultSwatchId;
+      const colorRovingId = channel.swatches.some((swatch) => swatch.id === selectedColor)
+        ? selectedColor
+        : channel.swatches[0]?.id;
+      const colorLabelId = `v4PlayerColorGroupLabel-${channelIndex}`;
       return `
-        <div class="v4-player-colors"><span>${escapeHtml(channel.name)}</span><div>${channel.swatches.map((swatch) => `<button type="button" class="${swatch.id === selectedColor ? 'active' : ''}" style="--swatch:${escapeHtml(swatch.hintColor)}" data-action="player-color" data-channel-id="${escapeHtml(channel.id)}" data-swatch-id="${escapeHtml(swatch.id)}" title="${escapeHtml(swatch.name)}"><i></i></button>`).join('')}</div></div>
+        <div class="v4-player-colors" role="radiogroup" aria-labelledby="${colorLabelId}"><span id="${colorLabelId}">${escapeHtml(channel.name)}</span><div>${channel.swatches.map((swatch, swatchIndex) => `<button type="button" role="radio" class="${swatch.id === selectedColor ? 'active' : ''}" style="--swatch:${escapeHtml(swatch.hintColor)}" data-action="player-color" data-channel-id="${escapeHtml(channel.id)}" data-swatch-id="${escapeHtml(swatch.id)}" data-player-radio-group="color-${channelIndex}" data-player-radio-index="${swatchIndex}" title="${escapeHtml(swatch.name)}" aria-label="${escapeHtml(`${channel.name}: ${swatch.name}`)}" aria-checked="${swatch.id === selectedColor ? 'true' : 'false'}" tabindex="${swatch.id === colorRovingId ? '0' : '-1'}"><i></i>${swatch.id === selectedColor ? '<b aria-hidden="true">✓</b>' : ''}</button>`).join('')}</div></div>
       `;
     }).join('');
     const colorControls = colorRows
@@ -5186,6 +5806,7 @@ export class MakerWorkspace {
       return selectedItem ? `<span>${escapeHtml(candidate.name)}: ${escapeHtml(selectedItem.name)}</span>` : '';
     }).join('');
     const makerCoverUrl = this.makerCoverUrl(document);
+    const externalLinks = this.playerExternalLinks(document);
 
     this.playerRoot.innerHTML = `
       <section class="v4-player-shell">
@@ -5198,9 +5819,12 @@ export class MakerWorkspace {
             <button type="button" data-action="player-info">ⓘ ${escapeHtml(this.tr('infoLicense'))}</button>
             <button type="button" data-action="player-undo" aria-label="${escapeHtml(this.tr('undo'))}" ${this.playerUndo.length ? '' : 'disabled'}>↶</button>
             <button type="button" data-action="player-redo" aria-label="${escapeHtml(this.tr('redo'))}" ${this.playerRedo.length ? '' : 'disabled'}>↷</button>
-            <button type="button" data-action="player-random">${escapeHtml(this.tr('random'))}</button>
-            <button type="button" data-action="player-clear" ${clearOptionalOption.selectable ? '' : 'disabled'} title="${escapeHtml(clearOptionalReason || this.tr('removeOptional'))}">${escapeHtml(this.tr('removeOptional'))}</button>
-            <button type="button" data-action="player-reset">${escapeHtml(this.tr('reset'))}</button>
+            <button type="button" data-action="player-random" title="${escapeHtml(this.tr('random'))}">${escapeHtml(this.tr('random'))}</button>
+            <div class="v4-player-tool-control">
+              <button type="button" data-action="player-clear" ${clearOptionalOption.selectable ? '' : `aria-disabled="true" aria-describedby="${clearOptionalReasonId}"`} title="${escapeHtml(clearOptionalReason || this.tr('removeOptional'))}">${escapeHtml(this.tr('removeOptional'))}</button>
+              ${clearOptionalReason ? `<small id="${clearOptionalReasonId}" class="v4-player-disabled-reason">${escapeHtml(clearOptionalReason)}</small>` : ''}
+            </div>
+            <button type="button" data-action="player-reset" title="${escapeHtml(this.tr('reset'))}">${escapeHtml(this.tr('reset'))}</button>
           </div>
         </header>
         <div class="v4-player-main">
@@ -5215,9 +5839,9 @@ export class MakerWorkspace {
           <section class="v4-player-controls">
             <div class="v4-player-part-rail">${partButtons}</div>
             <div class="v4-player-picker">
-              <header><div><span>${escapeHtml(this.tr('currentPart'))}</span><h2>${escapeHtml(part?.name || this.tr('noPlayableParts'))}</h2></div>${removePartOption?.visible ? `<div><button type="button" data-action="player-none" class="secondary" ${removePartOption.selectable ? '' : 'disabled'} title="${escapeHtml(removePartReason || this.tr('noneRemove'))}">${escapeHtml(this.tr('noneRemove'))}</button>${removePartReason ? `<small>${escapeHtml(removePartReason)}</small>` : ''}</div>` : ''}</header>
-              <div class="v4-player-item-grid">${itemButtons || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noAvailableItems'))}</span></div>`}</div>
-              ${currentItem && visibleStyles.length > 1 ? `<div class="v4-player-style-picker"><span>${escapeHtml(this.tr('style'))}</span>${styleButtons}</div>` : ''}
+              <header><div><span>${escapeHtml(this.tr('currentPart'))}</span><h2 id="v4PlayerItemGroupLabel">${escapeHtml(part?.name || this.tr('noPlayableParts'))}</h2></div>${removePartOption?.visible ? `<div class="v4-player-remove-control"><button type="button" data-action="player-none" class="secondary" ${removePartOption.selectable ? '' : `aria-disabled="true" aria-describedby="${removePartReasonId}"`} title="${escapeHtml(removePartReason || this.tr('noneRemove'))}">${escapeHtml(this.tr('noneRemove'))}</button>${removePartReason ? `<small id="${removePartReasonId}" class="v4-player-disabled-reason">${escapeHtml(removePartReason)}</small>` : ''}</div>` : ''}</header>
+              <div class="v4-player-item-grid" role="radiogroup" aria-labelledby="v4PlayerItemGroupLabel">${itemButtons || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noAvailableItems'))}</span></div>`}</div>
+              ${currentItem && visibleStyles.length > 1 ? `<div class="v4-player-style-picker" role="radiogroup" aria-labelledby="v4PlayerStyleGroupLabel"><span id="v4PlayerStyleGroupLabel">${escapeHtml(this.tr('style'))}</span>${styleButtons}</div>` : ''}
               ${colorControls}
               ${packs.length ? `<details class="v4-player-expansions"><summary>${escapeHtml(this.tr('expansionPacks'))}</summary><p>${escapeHtml(this.tr('expansionSelectionSaved'))}</p>${packs.map((pack) => {
                 const compatibility = checkExpansionPackCompatibility(this.store.getState().document, pack);
@@ -5240,6 +5864,7 @@ export class MakerWorkspace {
             <span class="v4-player-finish-status"><small id="v4PlayerSaveStatus" data-state="${escapeHtml(this.playerSaveState)}">${escapeHtml(this.playerSaveStatusText())}</small><strong id="v4PlayerCompletionStatus" data-state="${completionIssues.length ? 'blocked' : 'ready'}">${escapeHtml(completionIssues[0] || this.tr('playerOutputReady'))}</strong></span>
             <button type="button" data-action="player-retry-save" ${this.playerSaveState === 'error' ? '' : 'hidden'}>${escapeHtml(this.tr('retryPlayerSave'))}</button>
             <button type="button" data-action="player-export">${escapeHtml(this.tr('recipeJson'))}</button>
+            <button type="button" data-action="player-preview-export">${escapeHtml(this.tr('previewExport'))}</button>
             <button class="primary" type="button" data-action="player-complete" ${completionIssues.length ? 'disabled' : ''}>${escapeHtml(this.tr('completeOc'))}</button>
           </div>
         </footer>
@@ -5254,12 +5879,17 @@ export class MakerWorkspace {
             <p>${escapeHtml(document.metadata.summary || this.tr('combineCreatorParts'))}</p>
             <dl><div><dt>${escapeHtml(this.tr('creator'))}</dt><dd>${escapeHtml(document.metadata.creator || this.tr('unknown'))}</dd></div><div><dt>${escapeHtml(this.tr('style'))}</dt><dd>${escapeHtml(document.metadata.style || this.tr('originalCharacter'))}</dd></div><div><dt>${escapeHtml(this.tr('license'))}</dt><dd>${escapeHtml(this.licenseText(document.metadata.license?.kind || 'personal-use'))}</dd></div><div><dt>${escapeHtml(this.tr('version'))}</dt><dd>${escapeHtml(document.version.versionId)}</dd></div></dl>
             <blockquote>${escapeHtml(document.metadata.license?.note || this.tr('followCreatorPolicy'))}</blockquote>
+            ${(externalLinks.creatorUrl || externalLinks.communityUrl) ? `<nav class="v4-player-soulidity-links" aria-label="${escapeHtml(this.tr('openSoulidity'))}">${externalLinks.creatorUrl ? `<a href="${escapeHtml(externalLinks.creatorUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(this.tr('creatorOnSoulidity'))}</a>` : ''}${externalLinks.communityUrl ? `<a href="${escapeHtml(externalLinks.communityUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(this.tr('soulidityCommunity'))}</a>` : ''}</nav>` : ''}
             <button type="button" class="primary" data-action="close-player-info">${escapeHtml(this.tr('startMaking'))}</button>
           </section>
         </div>
       ` : ''}
+      ${this.renderPlayerExportModal(document)}
     `;
-    if (this.playerIntroOpen) this.focusPlayerInfoDialog();
+    if (this.playerExportOpen) {
+      this.restorePlayerExportScroll(exportScroll);
+      this.focusPlayerExportDialog();
+    } else if (this.playerIntroOpen) this.focusPlayerInfoDialog();
   }
 
   documentWithCreatorPreview() {
@@ -6067,8 +6697,20 @@ export class MakerWorkspace {
     }
     if (action === 'copy-part' && part) {
       this.executeDocument('Duplicate Part', ({ document: next }) => {
+        const duplicatesExportBackground = this.playerBackgroundPartIds(next).has(part.id);
         const duplicate = duplicatePart(next, part.id);
         if (!duplicate) return;
+        if (duplicatesExportBackground) {
+          next.extensions ||= {};
+          const backgroundPartIds = this.playerBackgroundPartIds(next);
+          backgroundPartIds.add(duplicate.id);
+          next.extensions.playerExport = {
+            ...(next.extensions.playerExport || {}),
+            backgroundPartIds: next.parts
+              .map((candidate) => candidate.id)
+              .filter((partId) => backgroundPartIds.has(partId)),
+          };
+        }
         const duplicateItem = duplicate.items.find((candidate) => candidate.id === duplicate.defaultItemId) || duplicate.items[0] || null;
         const duplicateStyle = duplicateItem?.styles.find((candidate) => candidate.id === duplicateItem.defaultStyleId) || duplicateItem?.styles[0] || null;
         this.selectedPartId = duplicate.id;
@@ -6089,6 +6731,10 @@ export class MakerWorkspace {
         const removedPart = findPart(next, part.id);
         const candidateTrackIds = new Set(partLayerTrackIds(removedPart));
         next.parts = next.parts.filter((candidate) => candidate.id !== part.id);
+        if (Array.isArray(next.extensions?.playerExport?.backgroundPartIds)) {
+          next.extensions.playerExport.backgroundPartIds = next.extensions.playerExport.backgroundPartIds
+            .filter((partId) => partId !== part.id);
+        }
         next.parts.forEach((candidate) => {
           if (candidate.parentPartId === part.id) candidate.parentPartId = null;
           candidate.requires = candidate.requires.filter((target) => target.partId !== part.id);
@@ -6582,6 +7228,18 @@ export class MakerWorkspace {
     else if (action === 'part-name' && part) this.executeDocument('Rename Part', ({ document: next }) => { findPart(next, part.id).name = input.value.trim() || part.name; });
     else if (action === 'part-required' && part) this.executeDocument('Change required Part', ({ document: next }) => { findPart(next, part.id).required = bool; });
     else if (action === 'part-visible' && part) this.executeDocument('Change Part menu visibility', ({ document: next }) => { findPart(next, part.id).menuVisible = bool; });
+    else if (action === 'part-export-background' && part) this.executeDocument('Change export background Part', ({ document: next }) => {
+      const backgroundPartIds = this.playerBackgroundPartIds(next);
+      if (bool) backgroundPartIds.add(part.id);
+      else backgroundPartIds.delete(part.id);
+      next.extensions ||= {};
+      next.extensions.playerExport = {
+        ...(next.extensions.playerExport || {}),
+        backgroundPartIds: next.parts
+          .map((candidate) => candidate.id)
+          .filter((partId) => backgroundPartIds.has(partId)),
+      };
+    });
     else if (action === 'part-default' && part) this.executeDocument('Change default Item', ({ document: next }) => {
       const target = findPart(next, part.id);
       target.defaultItemId = input.value || null;
@@ -7249,15 +7907,18 @@ export class MakerWorkspace {
   }
 
   setPlayerRecipe(nextRecipe, label) {
+    const normalized = recipeWithColors(this.runtimeDocument(), nextRecipe);
+    if (JSON.stringify(normalized) === JSON.stringify(this.playerRecipe)) return false;
     const previous = clone(this.playerRecipe);
     this.playerUndo.push({ label, recipe: previous });
     if (this.playerUndo.length > 100) this.playerUndo.shift();
     this.playerRedo = [];
-    this.playerRecipe = recipeWithColors(this.runtimeDocument(), nextRecipe);
+    this.playerRecipe = normalized;
     this.markPlayerSessionDirty();
     this.sessionAutosave();
     this.callbacks.onPlayerRecipeChange?.(this.playerStatePayload());
     this.render();
+    return true;
   }
 
   handlePlayerClick(event) {
@@ -7272,6 +7933,70 @@ export class MakerWorkspace {
     const action = button.dataset.action;
     const document = this.runtimeDocument();
     if (!document) return;
+    if (
+      button.disabled
+      || button.matches?.(':disabled')
+      || button.getAttribute?.('aria-disabled') === 'true'
+    ) return;
+    if (
+      action === 'close-player-export'
+      || (action === 'close-player-export-backdrop' && event.target === button)
+    ) {
+      this.closePlayerExport();
+      return;
+    }
+    if (action === 'player-export-size') {
+      const mode = button.dataset.sizeMode;
+      if (!this.playerExportOpen || !['standard', 'original'].includes(mode)) return;
+      if (this.playerExportState === 'rendering') return;
+      if (
+        mode === 'original'
+        && !isPlayerOriginalExportSafe(this.playerExportSnapshot?.document?.canvas)
+      ) return;
+      if (this.playerExportSizeMode === mode && this.playerExportState !== 'error') return;
+      this.playerExportSizeMode = mode;
+      void this.preparePlayerExportPreview({
+        focusSelector: `[data-action="player-export-size"][data-size-mode="${mode}"]`,
+      });
+      return;
+    }
+    if (action === 'player-export-background') {
+      if (!this.playerExportOpen) return;
+      if (this.playerExportState === 'rendering') return;
+      const transparent = button.dataset.transparent === 'true';
+      if (this.playerExportTransparent === transparent && this.playerExportState !== 'error') return;
+      this.playerExportTransparent = transparent;
+      void this.preparePlayerExportPreview({
+        focusSelector: `[data-action="player-export-background"][data-transparent="${transparent}"]`,
+      });
+      return;
+    }
+    if (action === 'player-export-retry') {
+      void this.preparePlayerExportPreview({
+        focusSelector: '[data-action="player-export-retry"]',
+      });
+      return;
+    }
+    if (action === 'player-download-png') {
+      this.downloadPlayerExport();
+      return;
+    }
+    if (action === 'player-export-recipe') {
+      this.exportPlayerRecipe();
+      return;
+    }
+    if (action === 'player-copy-maker-link') {
+      void this.sharePlayerMaker();
+      return;
+    }
+    if (action === 'player-share-maker') {
+      void this.sharePlayerMaker({ native: true });
+      return;
+    }
+    if (action === 'player-confirm-complete') {
+      this.completePlayerExport();
+      return;
+    }
     if (action === 'player-reset-soul-document') {
       const soulDocument = SOUL_CONFIG_DOCUMENTS.find(
         (entry) => entry.key === button.dataset.soulKey,
@@ -7435,22 +8160,11 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'player-export') {
-      const livingContent = this.resolvedPlayerLivingContent(document)?.content || null;
-      const payload = {
-        schemaVersion: 'animacraft.player-recipe.v5',
-        makerVersionId: document.version.versionId,
-        recipe: this.playerRecipe,
-        profile: this.playerProfile,
-        livingContent,
-      };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = globalThis.document.createElement('a');
-      link.href = url;
-      link.download = `${safeFileName(this.playerProfile.name, 'oc')}-recipe.json`;
-      link.click();
-      URL.revokeObjectURL(url);
-      this.callbacks.onExportRecipe?.(payload);
+      this.exportPlayerRecipe(null);
+      return;
+    }
+    if (action === 'player-preview-export') {
+      this.openPlayerExport('download');
       return;
     }
     if (action === 'player-complete') {
@@ -7459,17 +8173,7 @@ export class MakerWorkspace {
         this.callbacks.onPlayerError?.(new Error(issues[0]));
         return;
       }
-      this.playerPublishOpen = true;
-      this.playerPublishCloseConfirm = false;
-      this.callbacks.onCompleteOc?.({
-        document,
-        recipe: this.playerRecipe,
-        profile: this.playerProfile,
-        livingContent: this.resolvedPlayerLivingContent(document)?.content || null,
-        assets: this.assets,
-      });
-      this.render();
-      this.focusPlayerPublishDialog();
+      this.openPlayerExport('complete');
       return;
     }
     if (
@@ -7595,6 +8299,7 @@ export class MakerWorkspace {
   destroy() {
     void this.flushPendingChanges({ reason: 'destroy' });
     void this.sessionAutosave.flush();
+    this.resetPlayerExport();
     this.unsubscribe?.();
     this.creatorRoot?.removeEventListener('click', this.boundCreatorClick);
     this.creatorRoot?.removeEventListener('change', this.boundCreatorChange);

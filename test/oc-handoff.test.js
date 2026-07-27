@@ -72,16 +72,32 @@ test('Player completion snapshot becomes the exact Walrus OC profile and certifi
     memoryMd: '# Player-authored Memory\n\nA calm courier between worlds.',
     skillMd: '---\nname: mira-courier\n---\n# Player-authored courier skill',
   });
+  const reviewedImageBlob = new Blob(['reviewed-png'], { type: 'image/png' });
+  const reviewedImageExport = {
+    sizeMode: 'standard',
+    transparentBackground: true,
+    width: 1024,
+    height: 1024,
+    mediaType: 'image/png',
+  };
   const completion = createPlayerCompletionSnapshot({
     document,
     recipe: document.defaultRecipe,
     profile,
     livingContent: resolvedLivingContent,
+    imageBlob: reviewedImageBlob,
+    imageExport: reviewedImageExport,
   });
   assert.equal(Object.isFrozen(completion), true);
   assert.equal(Object.isFrozen(completion.recipe), true);
   assert.equal(Object.isFrozen(completion.profile), true);
   assert.equal(Object.isFrozen(completion.livingContent), true);
+  assert.equal(Object.isFrozen(completion.imageExport), true);
+  assert.equal(completion.imageBlob, reviewedImageBlob);
+  assert.notEqual(completion.imageExport, reviewedImageExport);
+  assert.deepEqual(completion.imageExport, reviewedImageExport);
+  assert.equal(completion.imageBlob.type, 'image/png');
+  assert.equal(completion.imageExport.transparentBackground, true);
   assert.equal(completion.livingContent.soulMd, '# Player-authored Soul\n\nMira keeps her own voice.');
   assert.equal(completion.livingContent.memoryMd, '# Player-authored Memory\n\nA calm courier between worlds.');
   assert.equal(completion.livingContent.skillMd, '---\nname: mira-courier\n---\n# Player-authored courier skill');
@@ -115,9 +131,10 @@ test('Player completion snapshot becomes the exact Walrus OC profile and certifi
     },
   });
   const entries = buildMakerV4OcUploadEntries(
-    new Blob(['png'], { type: 'image/png' }),
+    completion.imageBlob,
     bridge,
   );
+  assert.equal(entries[0].blob, reviewedImageBlob);
   const uploadedProfile = JSON.parse(await entries[1].blob.text());
 
   assert.deepEqual(uploadedProfile.recipe, bridge.fullRecipe);
@@ -131,6 +148,78 @@ test('Player completion snapshot becomes the exact Walrus OC profile and certifi
   assert.match(uploadedProfile.livingContent.content.skillMd, /name: mira-courier/);
   assert.doesNotMatch(uploadedProfile.livingContent.content.soulMd, /Changed after Complete/);
   assert.equal(uploadedProfile.maker.manifestBlobId, 'certified-maker-quilt');
+});
+
+test('Player completion fails closed without the exact non-empty reviewed PNG', () => {
+  const document = playableMaker();
+  const base = {
+    document,
+    recipe: document.defaultRecipe,
+    profile: { name: 'Mira' },
+    livingContent: {
+      soulMd: '# Mira',
+      memoryMd: '# Mira Memory',
+      skillMd: '---\nname: mira\n---\n# Mira Skill',
+    },
+    imageExport: {
+      sizeMode: 'standard',
+      transparentBackground: false,
+      width: 1024,
+      height: 1024,
+      mediaType: 'image/png',
+    },
+  };
+  const invalidBlobs = [
+    undefined,
+    new Blob([], { type: 'image/png' }),
+    new Blob(['not-png'], { type: 'image/jpeg' }),
+  ];
+
+  invalidBlobs.forEach((imageBlob) => {
+    assert.throws(
+      () => createPlayerCompletionSnapshot({ ...base, imageBlob }),
+      (error) => error instanceof TypeError
+        && /exact reviewed PNG/.test(error.message),
+    );
+  });
+});
+
+test('Player completion rejects invalid reviewed PNG export settings', () => {
+  const document = playableMaker();
+  const base = {
+    document,
+    recipe: document.defaultRecipe,
+    profile: { name: 'Mira' },
+    livingContent: {
+      soulMd: '# Mira',
+      memoryMd: '# Mira Memory',
+      skillMd: '---\nname: mira\n---\n# Mira Skill',
+    },
+    imageBlob: new Blob(['reviewed-png'], { type: 'image/png' }),
+  };
+  const valid = {
+    sizeMode: 'standard',
+    transparentBackground: false,
+    width: 1024,
+    height: 1024,
+    mediaType: 'image/png',
+  };
+  const invalidSettings = [
+    undefined,
+    { ...valid, sizeMode: 'thumbnail' },
+    { ...valid, transparentBackground: 'false' },
+    { ...valid, width: 0 },
+    { ...valid, height: 1.5 },
+    { ...valid, mediaType: 'image/jpeg' },
+  ];
+
+  invalidSettings.forEach((imageExport) => {
+    assert.throws(
+      () => createPlayerCompletionSnapshot({ ...base, imageExport }),
+      (error) => error instanceof TypeError
+        && /reviewed PNG export settings/.test(error.message),
+    );
+  });
 });
 
 test('canonical OC fingerprint covers provenance, integrity and every Living Content document', () => {
