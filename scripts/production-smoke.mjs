@@ -4,6 +4,7 @@ import { normalizeRuntimeConfig, validateRuntimeConfig } from '../runtime-config
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
+const requireSoulidity = args.includes('--require-soulidity');
 const requestedUrl = args.find((arg) => arg.startsWith('--url='))?.slice('--url='.length);
 const checks = [];
 
@@ -86,7 +87,7 @@ if (origin) {
   }
 
   if (remote) {
-    const validation = validateRuntimeConfig(remote, { strict: true, requireSoulidity: true });
+    const validation = validateRuntimeConfig(remote, { strict: true, requireSoulidity });
     record('Runtime config validation', validation.valid, validation.errors.join('; ') || 'Strict Mainnet fields are valid.');
     const exactFields = [
       'network',
