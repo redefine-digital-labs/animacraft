@@ -240,6 +240,120 @@ export function moveArrayEntry(entries, fromIndex, toIndex) {
   return entries;
 }
 
+export function partLayerTrackIds(part) {
+  return [...new Set((part?.items || []).flatMap((item) => (
+    (item.styles || []).map((style) => String(style.layerTrackId || '')).filter(Boolean)
+  )))];
+}
+
+export function partTrackLinkage(document, partId) {
+  const part = findPart(document, partId);
+  if (!part) return { mode: 'missing', partId: String(partId || ''), trackIds: [], trackId: null };
+  const declaredTrackIds = new Set((document.layerTracks || []).map((track) => String(track.id)));
+  const styles = (part.items || []).flatMap((item) => item.styles || []);
+  const trackIds = partLayerTrackIds(part);
+  const unassignedStyleCount = styles.filter((style) => !String(style.layerTrackId || '')).length;
+  if (!styles.length || unassignedStyleCount === styles.length) {
+    return { mode: 'unassigned', partId: part.id, trackIds, trackId: null };
+  }
+  if (unassignedStyleCount) {
+    return {
+      mode: 'custom',
+      partId: part.id,
+      trackIds,
+      trackId: null,
+      reason: 'partially-unassigned',
+      unassignedStyleCount,
+    };
+  }
+  const validTrackIds = trackIds.filter((trackId) => declaredTrackIds.has(trackId));
+  if (validTrackIds.length !== trackIds.length) {
+    return { mode: 'custom', partId: part.id, trackIds, trackId: null, reason: 'missing-track' };
+  }
+  if (trackIds.length !== 1) {
+    return { mode: 'custom', partId: part.id, trackIds, trackId: null, reason: 'multiple-tracks' };
+  }
+  const [trackId] = trackIds;
+  const ownerPartIds = (document.parts || [])
+    .filter((candidate) => partLayerTrackIds(candidate).includes(trackId))
+    .map((candidate) => candidate.id);
+  if (ownerPartIds.length !== 1 || ownerPartIds[0] !== part.id) {
+    return {
+      mode: 'custom',
+      partId: part.id,
+      trackIds,
+      trackId: null,
+      reason: 'shared-track',
+      ownerPartIds,
+    };
+  }
+  return { mode: 'linked', partId: part.id, trackIds, trackId };
+}
+
+export function linkedPartTrackPairs(document) {
+  return (document.parts || []).flatMap((part) => {
+    const linkage = partTrackLinkage(document, part.id);
+    return linkage.mode === 'linked' ? [{ partId: part.id, trackId: linkage.trackId }] : [];
+  });
+}
+
+export function linkedPartTrackOrderMatches(document) {
+  const pairs = linkedPartTrackPairs(document);
+  const linkedTrackIds = new Set(pairs.map((pair) => pair.trackId));
+  const trackOrder = (document.layerTracks || [])
+    .map((track) => track.id)
+    .filter((trackId) => linkedTrackIds.has(trackId));
+  return pairs.every((pair, index) => pair.trackId === trackOrder[index]);
+}
+
+function reorderMemberSlots(entries, memberIds, orderedIds) {
+  const slots = [];
+  const records = new Map();
+  entries.forEach((entry, index) => {
+    if (!memberIds.has(entry.id)) return;
+    slots.push(index);
+    records.set(entry.id, entry);
+  });
+  if (slots.length !== orderedIds.length || orderedIds.some((id) => !records.has(id))) return false;
+  const before = slots.map((index) => entries[index]?.id);
+  slots.forEach((index, slotIndex) => {
+    entries[index] = records.get(orderedIds[slotIndex]);
+  });
+  return before.some((id, index) => id !== orderedIds[index]);
+}
+
+/**
+ * Standard Parts have one exclusive Layer Track. Reordering the Player menu
+ * atomically reorders only those standard Track slots; custom/shared Tracks
+ * keep their explicit positions.
+ */
+export function synchronizeLinkedTrackOrderFromParts(document) {
+  const pairs = linkedPartTrackPairs(document);
+  const memberIds = new Set(pairs.map((pair) => pair.trackId));
+  return reorderMemberSlots(
+    document.layerTracks || [],
+    memberIds,
+    pairs.map((pair) => pair.trackId),
+  );
+}
+
+/**
+ * The inverse of synchronizeLinkedTrackOrderFromParts: moving a standard
+ * Layer Track also updates the associated Player menu Part order.
+ */
+export function synchronizeLinkedPartOrderFromTracks(document) {
+  const pairs = linkedPartTrackPairs(document);
+  const pairByTrackId = new Map(pairs.map((pair) => [pair.trackId, pair]));
+  const orderedPartIds = (document.layerTracks || [])
+    .map((track) => pairByTrackId.get(track.id)?.partId)
+    .filter(Boolean);
+  return reorderMemberSlots(
+    document.parts || [],
+    new Set(pairs.map((pair) => pair.partId)),
+    orderedPartIds,
+  );
+}
+
 function collectReferencedAssets(document) {
   const ids = new Set();
   if (document.metadata?.coverAssetId) ids.add(document.metadata.coverAssetId);
@@ -398,6 +512,31 @@ export function duplicatePart(document, partId) {
     copiedItem.styles.forEach(rewriteOwnerReferences);
   });
 
+  // A copied Part must be structurally independent. Clone every Track used by
+  // its Styles and rewrite the copied bindings instead of silently sharing
+  // visual z-order state with the source Part.
+  const copiedTracks = [];
+  const trackIdMap = new Map();
+  partLayerTrackIds(source).forEach((sourceTrackId) => {
+    const sourceTrack = (document.layerTracks || []).find((track) => track.id === sourceTrackId);
+    if (!sourceTrack) return;
+    const copiedTrack = structuredClone(sourceTrack);
+    copiedTrack.id = uniqueDocumentId(
+      `${sourceTrack.id}-copy`,
+      [document.layerTracks || [], copiedTracks],
+      'layer-copy',
+    );
+    copiedTrack.name = `${sourceTrack.name} Copy`;
+    copiedTrack.order = (document.layerTracks?.length || 0) + copiedTracks.length;
+    copiedTracks.push(copiedTrack);
+    trackIdMap.set(sourceTrackId, copiedTrack.id);
+  });
+  duplicate.items.forEach((copiedItem) => copiedItem.styles.forEach((copiedStyle) => {
+    if (trackIdMap.has(copiedStyle.layerTrackId)) {
+      copiedStyle.layerTrackId = trackIdMap.get(copiedStyle.layerTrackId);
+    }
+  }));
+  document.layerTracks.push(...copiedTracks);
   document.parts.push(duplicate);
   normalizeDocumentOrders(document);
   return duplicate;

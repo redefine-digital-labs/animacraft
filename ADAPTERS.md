@@ -20,7 +20,7 @@ Animacraft is the Character Maker editor and Maker protocol. Soulidity is the ca
 
 ## Living Content ABI
 
-The Maker manifest contains editable defaults. The final OC package resolves `{{OC_NAME}}`, `{{OC_WORLD}}`, and `{{OC_DESCRIPTION}}` and maps files to Soulidity's existing invariant slots:
+The Maker manifest contains editable defaults. The final OC package resolves `{{OC_NAME}}`, `{{OC_WORLD}}`, `{{OC_DESCRIPTION}}`, and `{{OC_TAGS}}` and maps files to Soulidity's existing invariant slots:
 
 | File | Soulidity kind | Slot name |
 | --- | ---: | --- |

@@ -15,11 +15,17 @@ import {
   findItem,
   findPart,
   findStyle,
+  linkedPartTrackOrderMatches,
+  linkedPartTrackPairs,
   moveArrayEntry,
   normalizeDocumentOrders,
+  partLayerTrackIds,
+  partTrackLinkage,
   recipeSelectionMap,
   removeUnreferencedAssetMetadata,
   replaceRecipeSelection,
+  synchronizeLinkedPartOrderFromTracks,
+  synchronizeLinkedTrackOrderFromParts,
   synchronizeDefaultRecipe,
   uniqueDocumentId,
 } from '../maker-document-ops.js';
@@ -44,6 +50,27 @@ function playableDocument() {
   document.assets.push({ id: 'body-art', identifier: 'body.png' });
   synchronizeDefaultRecipe(document);
   return document;
+}
+
+function appendTrack(document, name) {
+  const track = createLayerTrack(document, name);
+  document.layerTracks.push(track);
+  return track;
+}
+
+function appendPartUsingTracks(document, name, trackIds = []) {
+  const part = createPart(document, name);
+  const item = createItem(part, `${name} Item`);
+  item.styles[0].layerTrackId = trackIds[0] || null;
+  trackIds.slice(1).forEach((trackId, index) => {
+    const style = createStyle(item, `${name} Style ${index + 2}`);
+    style.layerTrackId = trackId;
+    item.styles.push(style);
+  });
+  part.items.push(item);
+  part.defaultItemId = item.id;
+  document.parts.push(part);
+  return { part, item };
 }
 
 test('creates URL-safe ids and gives every new Item one empty default Style', () => {
@@ -165,6 +192,194 @@ test('normalizes every independent Part, Item, Style, Track and color order', ()
   assert.deepEqual(document.colorChannels.map((channel) => channel.order), [0, 1]);
 });
 
+test('classifies exclusive, unassigned, partially assigned, shared, and multi-Track Parts', () => {
+  const document = emptyDocument();
+  const exclusiveTrack = appendTrack(document, 'Exclusive');
+  const sharedTrack = appendTrack(document, 'Shared');
+  const multiBackTrack = appendTrack(document, 'Multi Back');
+  const multiFrontTrack = appendTrack(document, 'Multi Front');
+
+  const linked = appendPartUsingTracks(document, 'Linked', [exclusiveTrack.id]).part;
+  const unassigned = appendPartUsingTracks(document, 'Unassigned').part;
+  const partial = appendPartUsingTracks(document, 'Partial', [multiBackTrack.id]);
+  partial.item.styles.push(createStyle(partial.item, 'Missing Track'));
+  const sharedOne = appendPartUsingTracks(document, 'Shared One', [sharedTrack.id]).part;
+  const sharedTwo = appendPartUsingTracks(document, 'Shared Two', [sharedTrack.id]).part;
+  const multi = appendPartUsingTracks(
+    document,
+    'Multi',
+    [multiBackTrack.id, multiFrontTrack.id],
+  ).part;
+  normalizeDocumentOrders(document);
+
+  assert.deepEqual(partTrackLinkage(document, linked.id), {
+    mode: 'linked',
+    partId: linked.id,
+    trackIds: [exclusiveTrack.id],
+    trackId: exclusiveTrack.id,
+  });
+  assert.deepEqual(partTrackLinkage(document, unassigned.id), {
+    mode: 'unassigned',
+    partId: unassigned.id,
+    trackIds: [],
+    trackId: null,
+  });
+  assert.deepEqual(partTrackLinkage(document, partial.part.id), {
+    mode: 'custom',
+    partId: partial.part.id,
+    trackIds: [multiBackTrack.id],
+    trackId: null,
+    reason: 'partially-unassigned',
+    unassignedStyleCount: 1,
+  });
+  assert.equal(partTrackLinkage(document, sharedOne.id).mode, 'custom');
+  assert.equal(partTrackLinkage(document, sharedOne.id).reason, 'shared-track');
+  assert.deepEqual(
+    partTrackLinkage(document, sharedOne.id).ownerPartIds,
+    [sharedOne.id, sharedTwo.id],
+  );
+  assert.deepEqual(partTrackLinkage(document, multi.id), {
+    mode: 'custom',
+    partId: multi.id,
+    trackIds: [multiBackTrack.id, multiFrontTrack.id],
+    trackId: null,
+    reason: 'multiple-tracks',
+  });
+  assert.deepEqual(partTrackLinkage(document, 'missing'), {
+    mode: 'missing',
+    partId: 'missing',
+    trackIds: [],
+    trackId: null,
+  });
+  assert.deepEqual(partLayerTrackIds(multi), [multiBackTrack.id, multiFrontTrack.id]);
+  assert.deepEqual(linkedPartTrackPairs(document), [{
+    partId: linked.id,
+    trackId: exclusiveTrack.id,
+  }]);
+});
+
+test('synchronizes linked Track slots from Player menu order without moving custom slots', () => {
+  const document = emptyDocument();
+  const firstTrack = appendTrack(document, 'First');
+  const secondTrack = appendTrack(document, 'Second');
+  const thirdTrack = appendTrack(document, 'Third');
+  const orphanTrack = appendTrack(document, 'Orphan');
+  const firstPart = appendPartUsingTracks(document, 'First', [firstTrack.id]).part;
+  const unassignedPart = appendPartUsingTracks(document, 'Unassigned').part;
+  const secondPart = appendPartUsingTracks(document, 'Second', [secondTrack.id]).part;
+  const thirdPart = appendPartUsingTracks(document, 'Third', [thirdTrack.id]).part;
+
+  document.parts = [firstPart, unassignedPart, secondPart, thirdPart];
+  document.layerTracks = [thirdTrack, orphanTrack, firstTrack, secondTrack];
+  normalizeDocumentOrders(document);
+
+  assert.equal(linkedPartTrackOrderMatches(document), false);
+  assert.equal(synchronizeLinkedTrackOrderFromParts(document), true);
+  assert.deepEqual(
+    document.layerTracks.map((track) => track.id),
+    [firstTrack.id, orphanTrack.id, secondTrack.id, thirdTrack.id],
+  );
+  assert.equal(document.layerTracks[1], orphanTrack, 'the unassigned Track keeps its custom slot');
+  assert.equal(linkedPartTrackOrderMatches(document), true);
+  assert.equal(synchronizeLinkedTrackOrderFromParts(document), false, 'a second sync is a no-op');
+
+  normalizeDocumentOrders(document);
+  assert.deepEqual(document.layerTracks.map((track) => track.order), [0, 1, 2, 3]);
+});
+
+test('synchronizes linked Player menu slots from Track order without moving custom Parts', () => {
+  const document = emptyDocument();
+  const firstTrack = appendTrack(document, 'First');
+  const secondTrack = appendTrack(document, 'Second');
+  const thirdTrack = appendTrack(document, 'Third');
+  const orphanTrack = appendTrack(document, 'Orphan');
+  const firstPart = appendPartUsingTracks(document, 'First', [firstTrack.id]).part;
+  const unassignedPart = appendPartUsingTracks(document, 'Unassigned').part;
+  const secondPart = appendPartUsingTracks(document, 'Second', [secondTrack.id]).part;
+  const thirdPart = appendPartUsingTracks(document, 'Third', [thirdTrack.id]).part;
+
+  document.parts = [firstPart, unassignedPart, secondPart, thirdPart];
+  document.layerTracks = [thirdTrack, orphanTrack, firstTrack, secondTrack];
+  normalizeDocumentOrders(document);
+
+  assert.equal(synchronizeLinkedPartOrderFromTracks(document), true);
+  assert.deepEqual(
+    document.parts.map((part) => part.id),
+    [thirdPart.id, unassignedPart.id, firstPart.id, secondPart.id],
+  );
+  assert.equal(document.parts[1], unassignedPart, 'the unassigned Part keeps its Player menu slot');
+  assert.equal(linkedPartTrackOrderMatches(document), true);
+  assert.equal(synchronizeLinkedPartOrderFromTracks(document), false, 'a second sync is a no-op');
+
+  normalizeDocumentOrders(document);
+  assert.deepEqual(document.parts.map((part) => part.menuOrder), [0, 1, 2, 3]);
+});
+
+test('linked order synchronization never reorders shared or multi-Track definitions', () => {
+  const document = emptyDocument();
+  const sharedTrack = appendTrack(document, 'Shared');
+  const multiBackTrack = appendTrack(document, 'Multi Back');
+  const multiFrontTrack = appendTrack(document, 'Multi Front');
+  const linkedOneTrack = appendTrack(document, 'Linked One');
+  const linkedTwoTrack = appendTrack(document, 'Linked Two');
+  const orphanTrack = appendTrack(document, 'Orphan');
+
+  const sharedOne = appendPartUsingTracks(document, 'Shared One', [sharedTrack.id]).part;
+  const linkedOne = appendPartUsingTracks(document, 'Linked One', [linkedOneTrack.id]).part;
+  const multi = appendPartUsingTracks(
+    document,
+    'Multi',
+    [multiBackTrack.id, multiFrontTrack.id],
+  ).part;
+  const sharedTwo = appendPartUsingTracks(document, 'Shared Two', [sharedTrack.id]).part;
+  const linkedTwo = appendPartUsingTracks(document, 'Linked Two', [linkedTwoTrack.id]).part;
+
+  document.parts = [sharedOne, linkedOne, multi, sharedTwo, linkedTwo];
+  document.layerTracks = [
+    linkedTwoTrack,
+    sharedTrack,
+    multiBackTrack,
+    linkedOneTrack,
+    multiFrontTrack,
+    orphanTrack,
+  ];
+  normalizeDocumentOrders(document);
+
+  assert.equal(synchronizeLinkedTrackOrderFromParts(document), true);
+  assert.deepEqual(document.layerTracks.map((track) => track.id), [
+    linkedOneTrack.id,
+    sharedTrack.id,
+    multiBackTrack.id,
+    linkedTwoTrack.id,
+    multiFrontTrack.id,
+    orphanTrack.id,
+  ]);
+  assert.equal(document.layerTracks[1], sharedTrack);
+  assert.equal(document.layerTracks[2], multiBackTrack);
+  assert.equal(document.layerTracks[4], multiFrontTrack);
+  assert.equal(document.layerTracks[5], orphanTrack);
+
+  document.layerTracks = [
+    linkedTwoTrack,
+    sharedTrack,
+    multiBackTrack,
+    linkedOneTrack,
+    multiFrontTrack,
+    orphanTrack,
+  ];
+  assert.equal(synchronizeLinkedPartOrderFromTracks(document), true);
+  assert.deepEqual(document.parts.map((part) => part.id), [
+    sharedOne.id,
+    linkedTwo.id,
+    multi.id,
+    sharedTwo.id,
+    linkedOne.id,
+  ]);
+  assert.equal(document.parts[0], sharedOne);
+  assert.equal(document.parts[2], multi);
+  assert.equal(document.parts[3], sharedTwo);
+});
+
 test('normalization rejects obsolete nested render graphs', () => {
   const document = playableDocument();
   const obsoleteField = ['layer', 'Bindings'].join('');
@@ -281,6 +496,55 @@ test('duplicates a Part deeply and re-keys all nested editor identities', () => 
   duplicate.items[0].styles[0].requires[0].partId = 'copy-external';
   assert.equal(source.items[0].styles[0].transform.x, 0);
   assert.equal(source.items[0].styles[0].requires[0].partId, 'external');
+});
+
+test('duplicates every used Layer Track and rebinds copied Styles to independent Tracks', () => {
+  const document = playableDocument();
+  const source = document.parts[0];
+  const sourceItem = source.items[0];
+  const bodyTrack = document.layerTracks[0];
+  bodyTrack.locked = true;
+  bodyTrack.alignmentApproved = true;
+  bodyTrack.referenceAssetId = 'body-art';
+  const highlightTrack = appendTrack(document, 'Body Highlight');
+  highlightTrack.referenceAssetId = 'body-art';
+  const highlight = createStyle(sourceItem, 'Highlight');
+  highlight.layerTrackId = highlightTrack.id;
+  highlight.assetId = 'body-art';
+  sourceItem.styles.push(highlight);
+  normalizeDocumentOrders(document);
+
+  const sourceTrackIds = partLayerTrackIds(source);
+  const duplicate = duplicatePart(document, source.id);
+  const duplicateTrackIds = partLayerTrackIds(duplicate);
+
+  assert.equal(duplicateTrackIds.length, sourceTrackIds.length);
+  assert.ok(duplicateTrackIds.every((trackId) => !sourceTrackIds.includes(trackId)));
+  assert.deepEqual(
+    duplicate.items[0].styles.map((style) => style.layerTrackId),
+    duplicateTrackIds,
+  );
+  assert.deepEqual(
+    source.items[0].styles.map((style) => style.layerTrackId),
+    sourceTrackIds,
+  );
+
+  sourceTrackIds.forEach((sourceTrackId, index) => {
+    const sourceTrack = document.layerTracks.find((track) => track.id === sourceTrackId);
+    const copiedTrack = document.layerTracks.find((track) => track.id === duplicateTrackIds[index]);
+    assert.notEqual(copiedTrack, sourceTrack);
+    assert.equal(copiedTrack.name, `${sourceTrack.name} Copy`);
+    assert.equal(copiedTrack.locked, sourceTrack.locked);
+    assert.equal(copiedTrack.referenceAssetId, sourceTrack.referenceAssetId);
+    assert.equal(copiedTrack.alignmentApproved, sourceTrack.alignmentApproved);
+  });
+
+  const copiedTrack = document.layerTracks.find((track) => track.id === duplicateTrackIds[0]);
+  copiedTrack.name = 'Independent Copy Track';
+  assert.notEqual(
+    document.layerTracks.find((track) => track.id === sourceTrackIds[0]).name,
+    copiedTrack.name,
+  );
 });
 
 test('duplicates an Item with deep Style copies and rewritten internal self references', () => {

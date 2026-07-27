@@ -80,9 +80,15 @@ test('resolver uses OC profile values without mutating Maker defaults', () => {
   const original = content.soulMd;
   const resolved = resolveLivingContent(content, {
     maker,
-    profile: { name: 'Nia', world: 'Cloud Harbor', description: 'A courier.' },
+    profile: {
+      name: 'Nia',
+      world: 'Cloud Harbor',
+      description: 'A courier.',
+      tags: ['curious', 'starlit'],
+    },
   });
   assert.match(resolved.soulMd, /Name: Nia/);
+  assert.match(resolved.soulMd, /Tags: curious, starlit/);
   assert.equal(content.soulMd, original);
 });
 

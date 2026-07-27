@@ -5,7 +5,7 @@ export const LIVING_CONTENT_MAX_FILE_BYTES = 64 * 1024;
 export const LIVING_CONTENT_MAX_TOTAL_BYTES = 192 * 1024;
 
 const encoder = new TextEncoder();
-const TOKEN_PATTERN = /\{\{(OC_NAME|OC_WORLD|OC_DESCRIPTION|MAKER_NAME|MAKER_STYLE|MAKER_CREATOR)\}\}/g;
+const TOKEN_PATTERN = /\{\{(OC_NAME|OC_WORLD|OC_DESCRIPTION|OC_TAGS|MAKER_NAME|MAKER_STYLE|MAKER_CREATOR)\}\}/g;
 
 function text(value, fallback = '') {
   return String(value ?? fallback).trim();
@@ -39,6 +39,7 @@ export function createDefaultLivingContent(maker = {}) {
 ## Identity
 - Name: {{OC_NAME}}
 - World: {{OC_WORLD}}
+- Tags: {{OC_TAGS}}
 - Visual origin: ${makerName} by ${makerCreator}
 - Character summary: {{OC_DESCRIPTION}}
 
@@ -149,10 +150,15 @@ export function validateLivingContent(value) {
 
 export function resolveLivingContent(value, context = {}) {
   const normalized = normalizeLivingContent(value, context.maker);
+  const profileTags = Array.isArray(context.profile?.tags)
+    ? context.profile.tags
+    : String(context.profile?.tags || '').split(',');
+  const resolvedTags = profileTags.map((tag) => text(tag)).filter(Boolean).join(', ');
   const replacements = {
     OC_NAME: text(context.profile?.name, 'Untitled OC'),
     OC_WORLD: text(context.profile?.world, context.maker?.style || 'Original character'),
     OC_DESCRIPTION: text(context.profile?.description, context.maker?.description || context.maker?.summary || 'An original character.'),
+    OC_TAGS: resolvedTags || 'Not specified',
     MAKER_NAME: text(context.maker?.name, 'Untitled OC Maker'),
     MAKER_STYLE: text(context.maker?.style, 'Original character'),
     MAKER_CREATOR: text(context.maker?.creator, 'Animacraft creator'),

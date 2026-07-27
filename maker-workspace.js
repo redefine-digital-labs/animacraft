@@ -42,11 +42,17 @@ import {
   findItem,
   findPart,
   findStyle,
+  linkedPartTrackPairs,
+  linkedPartTrackOrderMatches,
   moveArrayEntry,
   normalizeDocumentOrders,
+  partLayerTrackIds,
+  partTrackLinkage,
   recipeSelectionMap,
   removeUnreferencedAssetMetadata,
   replaceRecipeSelection,
+  synchronizeLinkedPartOrderFromTracks,
+  synchronizeLinkedTrackOrderFromParts,
   synchronizeDefaultRecipe,
   uniqueDocumentId,
 } from './maker-document-ops.js';
@@ -65,11 +71,19 @@ import {
 import { createGradientColorProcessor } from './maker-color.js';
 import { createMakerProjectArchive, readMakerProjectArchive } from './maker-project-archive.js';
 import {
+  buildMakerV4PublicationBundle,
+  collectReferencedMakerV4AssetIds,
+  MAKER_V4_EMBEDDED_EXPANSION_CONTAINER,
+  MAKER_V4_EMBEDDED_EXPANSION_RUNTIME,
+  MAKER_V4_MANIFEST_IDENTIFIER,
+} from './maker-publication-v4.js';
+import {
   SOUL_CONFIG_DOCUMENTS,
   resetSoulConfig,
   updateSoulConfig,
   validateSoulConfig,
 } from './maker-soul-config.js';
+import { resolveLivingContent } from './living-content.js';
 import {
   loadPlayerWorkspaceSession,
   savePlayerWorkspaceSession,
@@ -108,6 +122,44 @@ function colorChannelHasLockedStyle(document, channelId) {
   )))));
 }
 
+function trackContainsLockedStyle(document, trackId) {
+  if (!trackId) return false;
+  return Boolean(document?.parts?.some((part) => part.items.some((item) => item.styles.some((style) => (
+    style.styleLocked && style.layerTrackId === trackId
+  )))));
+}
+
+function trackVisualOrderLocked(document, trackId) {
+  const track = document?.layerTracks?.find((candidate) => candidate.id === trackId);
+  return Boolean(track?.locked || trackContainsLockedStyle(document, trackId));
+}
+
+function trackOrderChangeCrossesLock(document, beforeTracks, afterTracks) {
+  const afterIndex = new Map(afterTracks.map((track, index) => [track.id, index]));
+  return beforeTracks.some((track, beforeIndex) => {
+    const nextIndex = afterIndex.get(track.id);
+    if (!Number.isInteger(nextIndex) || nextIndex === beforeIndex) return false;
+    return beforeTracks
+      .slice(Math.min(beforeIndex, nextIndex), Math.max(beforeIndex, nextIndex) + 1)
+      .some((candidate) => trackVisualOrderLocked(document, candidate.id));
+  });
+}
+
+function partMoveCrossesLockedLinkedTrack(document, fromIndex, toIndex) {
+  if (!document || fromIndex === toIndex || fromIndex < 0 || toIndex < 0
+    || fromIndex >= document.parts.length || toIndex >= document.parts.length) return false;
+  const next = structuredClone(document);
+  moveArrayEntry(next.parts, fromIndex, toIndex);
+  synchronizeLinkedTrackOrderFromParts(next);
+  return trackOrderChangeCrossesLock(document, document.layerTracks || [], next.layerTracks || []);
+}
+
+function linkedTrackOrderSyncCrossesLock(document) {
+  const next = structuredClone(document);
+  synchronizeLinkedTrackOrderFromParts(next);
+  return trackOrderChangeCrossesLock(document, document.layerTracks || [], next.layerTracks || []);
+}
+
 function clone(value) {
   return structuredClone(value);
 }
@@ -120,6 +172,34 @@ function persistedAssetBlob(record) {
 function persistedAssetUrl(value) {
   const url = String(value || '');
   return url && !url.startsWith('blob:') ? url : '';
+}
+
+const PREFLIGHT_PNG_BYTES = Uint8Array.from([
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+  0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137,
+  0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 96, 96, 96, 96, 0,
+  0, 0, 5, 0, 1, 165, 246, 69, 64, 0, 0, 0, 0, 73, 69, 78, 68,
+  174, 66, 96, 130,
+]);
+
+function publicationPreflightPngBlob() {
+  return new Blob([PREFLIGHT_PNG_BYTES], { type: 'image/png' });
+}
+
+function publicationPreflightAssetBlob(record, descriptor) {
+  const localBlob = persistedAssetBlob(record);
+  if (localBlob) return localBlob;
+  const remoteUrl = persistedAssetUrl(record?.url)
+    || persistedAssetUrl(descriptor?.url)
+    || persistedAssetUrl(descriptor?.legacy?.url);
+  if (!remoteUrl) return null;
+  // The synchronous Creator Preflight cannot download a remote Walrus Asset.
+  // A real Blob placeholder lets the final bundle validator check the exact
+  // immutable graph, identifiers, auxiliary entry, and file count. Step 1
+  // still downloads and byte-validates the remote source before upload.
+  return new Blob([], {
+    type: String(descriptor?.mediaType || record?.type || 'application/octet-stream'),
+  });
 }
 
 function runtimeAssetHasReadableSource(record) {
@@ -751,6 +831,7 @@ export class MakerWorkspace {
     this.assetResolver = createCachedAssetResolver(this.assets);
     this.applyColorChannel = createGradientColorProcessor();
     this.rulePreflightCache = new WeakMap();
+    this.releasePreflightCache = new WeakMap();
     this.creatorTab = 'structure';
     this.selectedPartId = '';
     this.selectedItemId = '';
@@ -1020,6 +1101,9 @@ export class MakerWorkspace {
     const contextEpoch = this.contextEpoch;
 
     this.context = { ...this.context, ...context };
+    if (Object.hasOwn(context, 'publishedDocument')) {
+      this.releasePreflightCache = new WeakMap();
+    }
     if (sameMaker && this.store) {
       if (Object.hasOwn(context, 'creatorPreview')) {
         this.playerCreatorPreview = Boolean(context.creatorPreview);
@@ -2013,6 +2097,13 @@ export class MakerWorkspace {
       this.rulePreflightCache.set(document, ruleIssues);
     }
     issues.push(...ruleIssues.map((issue) => ({ ...issue })));
+    if (!linkedPartTrackOrderMatches(document)) {
+      issues.push({
+        code: 'part_track_order_mismatch',
+        path: 'layerTracks',
+        message: 'Standard Part order and linked Layer Track order differ. Sync them before publishing so Player, Renderer, Walrus and Sui use one order.',
+      });
+    }
     workspaceStyleRecords(document)
       .filter(({ item }) => (item.status || 'public') === 'public')
       .forEach(({ style, partName, itemName, path }) => {
@@ -2057,6 +2148,63 @@ export class MakerWorkspace {
         message: soulConfig.error || 'Soul Configuration must contain valid personality, memory, and SKILL.md documents.',
       });
     }
+    let releaseIssues = this.releasePreflightCache.get(document);
+    if (!releaseIssues) {
+      releaseIssues = [];
+      try {
+        const expansionDrafts = clone(document.extensions?.expansionDrafts || []);
+        const releaseDocument = clone(document);
+        const usedAssetIds = new Set(releaseDocument.assets.map((asset) => asset.id));
+        const usedIdentifiers = new Set(releaseDocument.assets.map((asset) => asset.identifier).filter(Boolean));
+        let coverAssetId = 'maker-release-cover';
+        let coverSuffix = 2;
+        while (usedAssetIds.has(coverAssetId)) {
+          coverAssetId = `maker-release-cover-${coverSuffix}`;
+          coverSuffix += 1;
+        }
+        let coverIdentifier = 'maker-cover.png';
+        coverSuffix = 2;
+        while (usedIdentifiers.has(coverIdentifier)) {
+          coverIdentifier = `maker-cover-${coverSuffix}.png`;
+          coverSuffix += 1;
+        }
+        releaseDocument.assets.push({
+          id: coverAssetId,
+          identifier: coverIdentifier,
+          kind: 'maker-cover',
+          mediaType: 'image/png',
+          width: releaseDocument.canvas.width,
+          height: releaseDocument.canvas.height,
+          source: 'generated-release-preflight',
+        });
+        releaseDocument.metadata.coverAssetId = coverAssetId;
+        const runtimeAssets = new Map();
+        collectReferencedMakerV4AssetIds(releaseDocument).forEach((assetId) => {
+          if (assetId === coverAssetId) {
+            runtimeAssets.set(assetId, publicationPreflightPngBlob());
+            return;
+          }
+          const descriptor = workspaceAssetDescriptor(releaseDocument, assetId);
+          const blob = publicationPreflightAssetBlob(this.runtimeAsset(assetId), descriptor);
+          if (blob) runtimeAssets.set(assetId, blob);
+        });
+        buildMakerV4PublicationBundle(releaseDocument, runtimeAssets, {
+          previousDocument: this.context?.publishedDocument || null,
+          publicExtensions: expansionDrafts.length
+            ? { expansionRuntime: 'embedded-v1', expansionDrafts }
+            : {},
+          projectionAuxiliaryBlob: publicationPreflightPngBlob(),
+        });
+      } catch (error) {
+        releaseIssues.push({
+          code: `release_${String(error?.code || 'compilation_failed')}`,
+          path: 'publication.release',
+          message: error?.message || 'The final Walrus manifest and Sui projection could not be compiled.',
+        });
+      }
+      this.releasePreflightCache.set(document, releaseIssues);
+    }
+    issues.push(...releaseIssues.map((issue) => ({ ...issue })));
     issues.push(...collectTrackAlignmentWarnings(document, this.assets));
     return issues.filter((issue, index, entries) => entries.findIndex((candidate) => `${candidate.code}:${candidate.path}:${candidate.message}` === `${issue.code}:${issue.path}:${issue.message}`) === index);
   }
@@ -2190,10 +2338,12 @@ export class MakerWorkspace {
   }
 
   getPlayerSnapshot() {
+    const document = this.runtimeDocument();
     return {
-      document: this.runtimeDocument() ? clone(this.runtimeDocument()) : null,
+      document: document ? clone(document) : null,
       recipe: clone(this.playerRecipe),
       profile: clone(this.playerProfile),
+      livingContent: clone(this.resolvedPlayerLivingContent(document)?.content || null),
       assets: new Map(this.assets),
     };
   }
@@ -2548,6 +2698,12 @@ export class MakerWorkspace {
     if (issue.code === 'unreachable_public_style_rules') return this.tr('issueUnreachableStyle', context);
     if (issue.code === 'maker_rule_search_limit') return this.tr('issueRuleSearchLimit');
     if (issue.code === 'compatibility_declaration_mismatch') return this.tr('issueCompatibility');
+    if (issue.code === 'part_track_order_mismatch') return this.tr('issuePartTrackOrder');
+    if (String(issue.code).startsWith('release_')) {
+      return this.tr('issueReleaseCompilation', {
+        code: String(issue.code).slice('release_'.length),
+      });
+    }
     if (issue.code === 'default_recipe_render') return this.tr('issueRender');
     if (String(issue.code).startsWith('expansion_')) return this.tr('issueExpansion');
     if (issue.code === 'missing_reference') return this.tr('issueMissingReference');
@@ -2665,6 +2821,8 @@ export class MakerWorkspace {
       paymentCoinType: current.publication.paymentCoinType,
       paymentCoinSymbol: current.publication.paymentCoinSymbol,
     };
+    const makerIdentityChanged = ['name', 'summary', 'creator', 'style']
+      .some((key) => String(nextComparable[key]) !== String(currentComparable[key]));
     if (JSON.stringify(nextComparable) === JSON.stringify(currentComparable)
       && settings.livingContent === undefined) return;
     this.executeDocument('Update Maker settings', ({ document }) => {
@@ -2686,7 +2844,15 @@ export class MakerWorkspace {
         paymentCoinType: String(nextComparable.paymentCoinType || ''),
         paymentCoinSymbol: String(nextComparable.paymentCoinSymbol || ''),
       });
-      if (settings.livingContent !== undefined) document.livingContent = clone(settings.livingContent);
+      if (settings.livingContent !== undefined) {
+        document.livingContent = clone(settings.livingContent);
+      } else if (makerIdentityChanged) {
+        let content = validateSoulConfig(document.livingContent, document).content;
+        SOUL_CONFIG_DOCUMENTS.forEach(({ key }) => {
+          if (!content.customized[key]) content = resetSoulConfig(content, key, document);
+        });
+        document.livingContent = content;
+      }
     });
   }
 
@@ -2740,16 +2906,38 @@ export class MakerWorkspace {
     if (!canComparePreviewLayers && this.creatorPreviewMode !== 'all') this.creatorPreviewMode = 'all';
     const blockingIssues = issues.filter((issue) => issue.severity !== 'warning');
     const compatibility = this.compatibilityReport(document);
-    const partRows = document.parts.map((candidate) => `
-      <div class="v4-part-row ${candidate.id === part?.id ? 'active' : ''} ${this.creatorHiddenPartIds.has(candidate.id) ? 'preview-hidden' : ''}" draggable="true" data-drag-kind="part" data-drag-id="${escapeHtml(candidate.id)}">
-        <button class="v4-part-select" type="button" data-action="select-part" data-part-id="${escapeHtml(candidate.id)}">
-          <span class="v4-part-icon">${candidate.iconAssetId && this.runtimeAsset(candidate.iconAssetId)?.url ? `<img src="${escapeHtml(this.runtimeAsset(candidate.iconAssetId).url)}" alt="" />` : escapeHtml(candidate.name.slice(0, 2).toUpperCase())}</span>
-          <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(this.tr('partStatus', { items: candidate.items.length, styles: candidate.items.reduce((count, candidateItem) => count + candidateItem.styles.length, 0) }))}</small></span>
-          <em>${candidate.required ? this.tr('required') : this.tr('optional')}</em>
-        </button>
-        <button class="v4-part-eye ${this.creatorHiddenPartIds.has(candidate.id) ? '' : 'active'}" type="button" data-action="toggle-part-preview" data-part-id="${escapeHtml(candidate.id)}" aria-pressed="${!this.creatorHiddenPartIds.has(candidate.id)}" aria-label="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}" title="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}">${this.creatorHiddenPartIds.has(candidate.id) ? '◎' : '◉'}</button>
-      </div>
-    `).join('');
+    const partRows = document.parts.map((candidate, index) => {
+      const linkage = partTrackLinkage(document, candidate.id);
+      const linkedTrack = linkage.mode === 'linked'
+        ? document.layerTracks.find((track) => track.id === linkage.trackId)
+        : null;
+      const linkLabel = linkage.mode === 'linked'
+        ? this.tr('partLinkedTrack', { track: linkedTrack?.name || linkage.trackId })
+        : linkage.mode === 'unassigned'
+          ? this.tr('partTrackUnassigned')
+          : this.tr('partCustomStacking', { count: linkage.trackIds.length });
+      const previousIndex = index - 1;
+      const nextIndex = index + 1;
+      const previousBlocked = previousIndex < 0
+        || partMoveCrossesLockedLinkedTrack(document, index, previousIndex);
+      const nextBlocked = nextIndex >= document.parts.length
+        || partMoveCrossesLockedLinkedTrack(document, index, nextIndex);
+      return `
+        <div class="v4-part-row ${candidate.id === part?.id ? 'active' : ''} ${this.creatorHiddenPartIds.has(candidate.id) ? 'preview-hidden' : ''} ${linkage.mode === 'linked' ? 'linked-track' : 'custom-track'}" draggable="true" data-drag-kind="part" data-drag-id="${escapeHtml(candidate.id)}">
+          <span class="v4-part-drag" aria-hidden="true">⋮⋮<b>${String(index + 1).padStart(2, '0')}</b></span>
+          <button class="v4-part-select" type="button" data-action="select-part" data-part-id="${escapeHtml(candidate.id)}">
+            <span class="v4-part-icon">${candidate.iconAssetId && this.runtimeAsset(candidate.iconAssetId)?.url ? `<img src="${escapeHtml(this.runtimeAsset(candidate.iconAssetId).url)}" alt="" />` : escapeHtml(candidate.name.slice(0, 2).toUpperCase())}</span>
+            <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(this.tr('partStatus', { items: candidate.items.length, styles: candidate.items.reduce((count, candidateItem) => count + candidateItem.styles.length, 0) }))}</small><small class="v4-part-track-status">${escapeHtml(linkLabel)}</small></span>
+            <em>${candidate.required ? this.tr('required') : this.tr('optional')}</em>
+          </button>
+          <div class="v4-part-order-actions">
+            <button type="button" data-action="move-part" data-part-id="${escapeHtml(candidate.id)}" data-direction="up" aria-label="${escapeHtml(this.tr('movePartUp'))}" title="${escapeHtml(this.tr('movePartUp'))}" ${previousBlocked ? 'disabled' : ''}>↑</button>
+            <button type="button" data-action="move-part" data-part-id="${escapeHtml(candidate.id)}" data-direction="down" aria-label="${escapeHtml(this.tr('movePartDown'))}" title="${escapeHtml(this.tr('movePartDown'))}" ${nextBlocked ? 'disabled' : ''}>↓</button>
+          </div>
+          <button class="v4-part-eye ${this.creatorHiddenPartIds.has(candidate.id) ? '' : 'active'}" type="button" data-action="toggle-part-preview" data-part-id="${escapeHtml(candidate.id)}" aria-pressed="${!this.creatorHiddenPartIds.has(candidate.id)}" aria-label="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}" title="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}">${this.creatorHiddenPartIds.has(candidate.id) ? '◎' : '◉'}</button>
+        </div>
+      `;
+    }).join('');
     const itemRows = part?.items.map((candidate) => {
       const thumbnail = this.itemThumbnailUrl(candidate);
       return `
@@ -2808,7 +2996,7 @@ export class MakerWorkspace {
 
         <div id="makerV4ToolPanel" class="v4-studio-workspace" role="tabpanel" aria-labelledby="makerV4Tab-structure">
           <aside class="v4-parts-browser">
-            <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('parts'))}</span><strong>${escapeHtml(this.tr('playerMenu'))}</strong></div><button type="button" data-action="add-part" aria-label="${escapeHtml(this.tr('addPartAria'))}">＋</button></div>
+            <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('parts'))}</span><strong>${escapeHtml(this.tr('playerMenuLinkedOrder'))}</strong><small>${escapeHtml(this.tr('playerMenuLinkedOrderCopy'))}</small></div><button type="button" data-action="add-part" aria-label="${escapeHtml(this.tr('addPartAria'))}">＋</button></div>
             <div class="v4-parts-list">${partRows || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('createFirstPart'))}</span></div>`}</div>
             ${part ? `<div class="v4-part-actions"><button type="button" data-action="copy-part">${escapeHtml(this.tr('duplicate'))}</button><button type="button" data-action="delete-part" class="danger" ${partContainsLockedStyle(part) ? 'disabled' : ''}>${escapeHtml(this.tr('delete'))}</button></div>` : ''}
           </aside>
@@ -3363,11 +3551,15 @@ export class MakerWorkspace {
     if (this.creatorTab === 'layers') {
       const { part: selectedPart, item: selectedItem, style: selectedStyle } = this.selectedCreatorRecords(document);
       const alignmentByTrack = new Map(collectTrackAlignmentWarnings(document, this.assets).map((warning) => [warning.trackId, warning]));
+      const linkedPairs = linkedPartTrackPairs(document);
+      const linkedPairByTrack = new Map(linkedPairs.map((pair) => [pair.trackId, pair]));
+      const linkedOrderMatches = linkedPartTrackOrderMatches(document);
+      const linkedOrderLocked = linkedTrackOrderSyncCrossesLock(document);
       const trackOptions = [
         `<option value="" ${selected(selectedStyle?.layerTrackId, '')}>${escapeHtml(this.tr('noLayerTrack'))}</option>`,
         ...document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}" ${selected(selectedStyle?.layerTrackId, track.id)}>${escapeHtml(track.name)}</option>`),
       ].join('');
-      const rows = document.layerTracks.map((track) => {
+      const rows = document.layerTracks.map((track, trackIndex) => {
         const bindings = document.parts.flatMap((part) => part.items.flatMap((item) => item.styles
           .filter((style) => style.layerTrackId === track.id)
           .map((style) => ({
@@ -3376,18 +3568,40 @@ export class MakerWorkspace {
             style,
             current: part.id === selectedPart?.id && item.id === selectedItem?.id && style.id === selectedStyle?.id,
           }))));
+        const ownerParts = [...new Map(bindings.map((binding) => [binding.part.id, binding.part])).values()];
+        const linkedPart = linkedPairByTrack.has(track.id)
+          ? document.parts.find((candidate) => candidate.id === linkedPairByTrack.get(track.id).partId)
+          : null;
+        const placementLabel = linkedPart
+          ? this.tr('trackFollowsPart', { part: linkedPart.name })
+          : ownerParts.length
+            ? this.tr('trackCustomOwners', { count: ownerParts.length })
+            : this.tr('trackUnassigned');
+        const containsLockedStyle = bindings.some((binding) => binding.style.styleLocked);
+        const visualOrderLocked = track.locked || containsLockedStyle;
+        const moveBackDisabled = trackIndex === 0
+          || visualOrderLocked
+          || trackVisualOrderLocked(document, document.layerTracks[trackIndex - 1]?.id);
+        const moveFrontDisabled = trackIndex === document.layerTracks.length - 1
+          || visualOrderLocked
+          || trackVisualOrderLocked(document, document.layerTracks[trackIndex + 1]?.id);
+        const visualLockLabel = track.locked
+          ? this.tr('trackLocked')
+          : containsLockedStyle
+            ? this.tr('styleLockedTrack')
+            : '';
         return `
-          <div class="v4-track-row ${track.id === this.selectedTrackId ? 'active' : ''} ${bindings.some((binding) => binding.current) ? 'has-current-style' : ''} ${track.locked ? 'locked' : ''}" draggable="${track.locked ? 'false' : 'true'}" data-drag-kind="track" data-drag-id="${escapeHtml(track.id)}" data-drop-kind="track">
+          <div class="v4-track-row ${track.id === this.selectedTrackId ? 'active' : ''} ${bindings.some((binding) => binding.current) ? 'has-current-style' : ''} ${linkedPart ? 'linked-part' : 'custom-track'} ${visualOrderLocked ? 'locked' : ''}" draggable="${visualOrderLocked ? 'false' : 'true'}" data-drag-kind="track" data-drag-id="${escapeHtml(track.id)}" data-drop-kind="track">
             <button type="button" data-action="select-track" data-track-id="${escapeHtml(track.id)}"><span>⋮⋮</span><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(this.tr('trackStyleCount', { count: bindings.length }))}</small></button>
             <input value="${escapeHtml(track.name)}" data-action="track-name" data-track-id="${escapeHtml(track.id)}" maxlength="128" ${track.locked ? 'disabled' : ''} />
-            <span class="v4-track-placement">${escapeHtml(this.tr(track.locked ? 'trackLocked' : 'trackOrderOnly'))}</span>
-            <div>${alignmentByTrack.has(track.id) ? `<button type="button" class="warning" data-action="approve-track-alignment" data-track-id="${escapeHtml(track.id)}" title="${escapeHtml(alignmentByTrack.get(track.id).message)}">${escapeHtml(this.tr('reviewDrift'))}</button>` : track.alignmentApproved ? `<em>${escapeHtml(this.tr('exceptionApproved'))}</em>` : ''}<button type="button" data-action="toggle-track-lock" data-track-id="${escapeHtml(track.id)}">${escapeHtml(this.tr(track.locked ? 'unlockTrack' : 'lockTrack'))}</button><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="up" aria-label="${escapeHtml(this.tr('moveTrackBack'))}" title="${escapeHtml(this.tr('moveTrackBack'))}" ${track.locked ? 'disabled' : ''}>↑</button><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="down" aria-label="${escapeHtml(this.tr('moveTrackFront'))}" title="${escapeHtml(this.tr('moveTrackFront'))}" ${track.locked ? 'disabled' : ''}>↓</button><button type="button" data-action="delete-track" data-track-id="${escapeHtml(track.id)}" aria-label="${escapeHtml(this.tr('deleteTrackAria'))}" ${bindings.length || track.locked ? 'disabled' : ''}>×</button></div>
+            <span class="v4-track-placement">${escapeHtml(placementLabel)}${visualLockLabel ? ` · ${escapeHtml(visualLockLabel)}` : ''}</span>
+            <div>${alignmentByTrack.has(track.id) ? `<button type="button" class="warning" data-action="approve-track-alignment" data-track-id="${escapeHtml(track.id)}" title="${escapeHtml(alignmentByTrack.get(track.id).message)}">${escapeHtml(this.tr('reviewDrift'))}</button>` : track.alignmentApproved ? `<em>${escapeHtml(this.tr('exceptionApproved'))}</em>` : ''}<button type="button" data-action="toggle-track-lock" data-track-id="${escapeHtml(track.id)}">${escapeHtml(this.tr(track.locked ? 'unlockTrack' : 'lockTrack'))}</button><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="up" aria-label="${escapeHtml(this.tr('moveTrackBack'))}" title="${escapeHtml(this.tr('moveTrackBack'))}" ${moveBackDisabled ? 'disabled' : ''}>↑</button><button type="button" data-action="move-track" data-track-id="${escapeHtml(track.id)}" data-direction="down" aria-label="${escapeHtml(this.tr('moveTrackFront'))}" title="${escapeHtml(this.tr('moveTrackFront'))}" ${moveFrontDisabled ? 'disabled' : ''}>↓</button><button type="button" data-action="delete-track" data-track-id="${escapeHtml(track.id)}" aria-label="${escapeHtml(this.tr('deleteTrackAria'))}" ${bindings.length || track.locked ? 'disabled' : ''}>×</button></div>
             <div class="v4-track-bindings"><strong>${escapeHtml(this.tr('trackBindings'))}</strong>${bindings.length ? bindings.map(({ part, item, style, current }) => `<button type="button" class="${current ? 'current' : ''}" data-action="select-style-binding" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(item.id)}" data-style-id="${escapeHtml(style.id)}" title="${escapeHtml(this.tr(current ? 'selectedStyleBinding' : 'openStyleBinding'))}">${escapeHtml(part.name)} › ${escapeHtml(item.name)} › ${escapeHtml(style.name)}</button>`).join('') : `<span>${escapeHtml(this.tr('noTrackBindings'))}</span>`}</div>
           </div>
         `;
       }).join('');
       return `
-        <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('layerTracks'))}</span><h3>${escapeHtml(this.tr('layerOrderTitle'))}</h3><p>${escapeHtml(this.tr('layerOrderCopy'))}</p></div><button type="button" data-action="add-track">${escapeHtml(this.tr('addTrack'))}</button></div>
+        <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('layerTracks'))}</span><h3>${escapeHtml(this.tr('layerOrderTitle'))}</h3><p>${escapeHtml(this.tr('layerOrderCopy'))}</p></div><div><button type="button" data-action="sync-linked-track-order" ${linkedOrderMatches || linkedOrderLocked ? 'disabled' : ''}>${escapeHtml(this.tr(linkedOrderMatches ? 'linkedOrderSynced' : 'syncLinkedOrder'))}</button><button type="button" data-action="add-track">${escapeHtml(this.tr('addTrack'))}</button></div></div>
         ${selectedStyle ? `
           <div class="v4-track-assignment">
             <div><span>${escapeHtml(this.tr('currentStyle'))}</span><strong>${escapeHtml([selectedPart?.name, selectedItem?.name, selectedStyle.name].filter(Boolean).join(' › '))}</strong></div>
@@ -3778,6 +3992,9 @@ export class MakerWorkspace {
     if (utf8Length(this.playerProfile?.world) > 128) issues.push(this.tr('playerWorldTooLong'));
     if (utf8Length(this.playerProfile?.description) > 2_000) issues.push(this.tr('playerDescriptionTooLong'));
     if (utf8Length(this.playerProfile?.tags) > 1_000) issues.push(this.tr('playerTagsTooLong'));
+    if (!validateSoulConfig(document.livingContent, document).valid) {
+      issues.push(`${this.tr('soulConfig')}: ${this.tr('soulValidationInvalid')}`);
+    }
     const recipeResult = evaluateRecipe(document, recipe);
     if (!recipeResult.valid) issues.push(...recipeResult.violations.map((violation) => this.playerViolationText(violation, document)));
     try {
@@ -3823,6 +4040,71 @@ export class MakerWorkspace {
     }
     const complete = this.playerRoot.querySelector('[data-action="player-complete"]');
     if (complete) complete.disabled = issues.length > 0;
+  }
+
+  resolvedPlayerLivingContent(document = this.runtimeDocument()) {
+    if (!document) return null;
+    const validation = validateSoulConfig(document.livingContent, document);
+    return {
+      validation,
+      content: resolveLivingContent(validation.content, {
+        maker: document.metadata,
+        profile: {
+          name: this.playerProfile.name,
+          world: this.playerProfile.world,
+          description: this.playerProfile.description,
+          tags: String(this.playerProfile.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean),
+        },
+      }),
+    };
+  }
+
+  renderPlayerSoulConfiguration(document) {
+    const resolved = this.resolvedPlayerLivingContent(document);
+    if (!resolved) return '';
+    const documentCopyKeys = {
+      soulMd: ['soulPersonalityIdentity', 'soulPersonalityIdentityCopy'],
+      memoryMd: ['soulMemory', 'soulMemoryCopy'],
+      skillMd: ['soulSkills', 'soulSkillsCopy'],
+    };
+    const documents = SOUL_CONFIG_DOCUMENTS.map((entry) => {
+      const status = resolved.validation.documents[entry.key];
+      const [titleKey, copyKey] = documentCopyKeys[entry.key];
+      return `
+        <details class="v4-player-soul-document ${status.valid ? 'valid' : 'invalid'}" ${entry.key === 'soulMd' ? 'open' : ''}>
+          <summary>
+            <span><code>${escapeHtml(entry.filename)}</code><strong>${escapeHtml(this.tr(titleKey))}</strong></span>
+            <small>${escapeHtml(this.tr(status.customized ? 'soulDocumentCustomized' : 'soulDocumentDefault'))} · ${escapeHtml(this.tr(status.valid ? 'soulValidationValid' : 'soulValidationInvalid'))}</small>
+          </summary>
+          <p>${escapeHtml(this.tr(copyKey))}</p>
+          <pre data-player-soul-document="${escapeHtml(entry.key)}">${escapeHtml(resolved.content[entry.key])}</pre>
+        </details>
+      `;
+    }).join('');
+    return `
+      <details class="v4-player-soul-card">
+        <summary>
+          <span><strong>${escapeHtml(this.tr('soulConfig'))}</strong><small>${escapeHtml(this.tr('soulConfigTitle'))}</small></span>
+          <em>${escapeHtml(this.tr(resolved.validation.valid ? 'soulValidationValid' : 'soulValidationInvalid'))}</em>
+        </summary>
+        <p>${escapeHtml(this.tr('soulConfigCopy'))}</p>
+        <div class="v4-player-soul-documents">${documents}</div>
+      </details>
+    `;
+  }
+
+  updatePlayerSoulConfigurationUi() {
+    const document = this.runtimeDocument();
+    const resolved = this.resolvedPlayerLivingContent(document);
+    if (!resolved || !this.playerRoot?.querySelector) return;
+    SOUL_CONFIG_DOCUMENTS.forEach((entry) => {
+      const preview = this.playerRoot.querySelector(`[data-player-soul-document="${entry.key}"]`);
+      if (preview) preview.textContent = resolved.content[entry.key];
+    });
+    const name = this.playerRoot.querySelector('[data-player-profile-preview="name"]');
+    const world = this.playerRoot.querySelector('[data-player-profile-preview="world"]');
+    if (name) name.textContent = this.playerProfile.name || this.tr('untitledOc');
+    if (world) world.textContent = this.playerProfile.world || document.metadata.style || this.tr('originalCharacter');
   }
 
   renderPlayer() {
@@ -3928,7 +4210,7 @@ export class MakerWorkspace {
               <canvas id="makerV4PlayerCanvas" class="v4-runtime-canvas" aria-label="${escapeHtml(this.tr('yourOcPreview'))}"></canvas>
               <div id="v4PlayerRenderStatus" class="v4-render-status">${escapeHtml(this.tr('loadingDefaultRecipe'))}</div>
             </div>
-            <div class="v4-player-nameplate"><div><strong>${escapeHtml(this.playerProfile.name || this.tr('untitledOc'))}</strong><span>${escapeHtml(this.playerProfile.world || document.metadata.style || this.tr('originalCharacter'))}</span></div><em>${escapeHtml(recipeResult.valid ? this.tr('validCombination') : this.tr('ruleIssueCount', { count: recipeResult.violations.length }))}</em></div>
+            <div class="v4-player-nameplate"><div><strong data-player-profile-preview="name">${escapeHtml(this.playerProfile.name || this.tr('untitledOc'))}</strong><span data-player-profile-preview="world">${escapeHtml(this.playerProfile.world || document.metadata.style || this.tr('originalCharacter'))}</span></div><em>${escapeHtml(recipeResult.valid ? this.tr('validCombination') : this.tr('ruleIssueCount', { count: recipeResult.violations.length }))}</em></div>
             <div class="v4-player-recipe-strip">${selectedSummary}</div>
           </section>
           <section class="v4-player-controls">
@@ -3947,10 +4229,12 @@ export class MakerWorkspace {
         </div>
         <footer class="v4-player-finishbar">
           <div class="v4-player-profile-fields">
+            <div class="v4-player-profile-heading"><span>${escapeHtml(this.tr('soulConfig'))}</span><strong>${escapeHtml(this.tr('soulPersonalityIdentity'))}</strong><small>${escapeHtml(this.tr('soulPersonalityIdentityCopy'))}</small></div>
             <label>${escapeHtml(this.tr('ocName'))}<input value="${escapeHtml(this.playerProfile.name)}" data-action="player-profile-name" maxlength="128" /></label>
             <label>${escapeHtml(this.tr('world'))}<input value="${escapeHtml(this.playerProfile.world)}" data-action="player-profile-world" maxlength="128" /></label>
             <label class="wide">${escapeHtml(this.tr('ocDescription'))}<textarea data-action="player-profile-description" maxlength="2000">${escapeHtml(this.playerProfile.description)}</textarea></label>
             <label class="wide">${escapeHtml(this.tr('ocTags'))}<input value="${escapeHtml(this.playerProfile.tags)}" data-action="player-profile-tags" maxlength="1000" placeholder="${escapeHtml(this.tr('ocTagsHint'))}" /></label>
+            ${this.renderPlayerSoulConfiguration(document)}
           </div>
           <div>
             <span class="v4-player-finish-status"><small id="v4PlayerSaveStatus" data-state="${escapeHtml(this.playerSaveState)}">${escapeHtml(this.playerSaveStatusText())}</small><strong id="v4PlayerCompletionStatus" data-state="${completionIssues.length ? 'blocked' : 'ready'}">${escapeHtml(completionIssues[0] || this.tr('playerOutputReady'))}</strong></span>
@@ -4356,6 +4640,7 @@ export class MakerWorkspace {
       'redo',
       'toggle-pixel',
       'add-part',
+      'move-part',
       'copy-part',
       'delete-part',
       'add-item',
@@ -4368,6 +4653,7 @@ export class MakerWorkspace {
       'confirm-position',
       'add-track',
       'move-track',
+      'sync-linked-track-order',
       'toggle-track-lock',
       'delete-track',
       'approve-track-alignment',
@@ -4611,6 +4897,7 @@ export class MakerWorkspace {
     }
     if (action === 'run-preflight') {
       this.rulePreflightCache.delete(document);
+      this.releasePreflightCache.delete(document);
       this.creatorTab = 'validate';
       this.render();
       return;
@@ -4680,12 +4967,33 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'add-part') {
-      const nextPart = createPart(document, `Part ${document.parts.length + 1}`);
-      this.selectedPartId = nextPart.id;
-      this.selectedItemId = '';
-      this.selectedStyleId = '';
-      this.executeDocument('Add Part', ({ document: next }) => { next.parts.push(nextPart); });
+      this.executeDocument('Add Part', ({ document: next }) => {
+        const nextPart = createPart(next, `Part ${next.parts.length + 1}`);
+        const nextTrack = createLayerTrack(next, nextPart.name);
+        const nextItem = createItem(nextPart, 'Default');
+        nextItem.styles[0].layerTrackId = nextTrack.id;
+        nextPart.items.push(nextItem);
+        nextPart.defaultItemId = nextItem.id;
+        next.layerTracks.push(nextTrack);
+        next.parts.push(nextPart);
+        this.selectedPartId = nextPart.id;
+        this.selectedItemId = nextItem.id;
+        this.selectedStyleId = nextItem.defaultStyleId;
+        this.selectedTrackId = nextTrack.id;
+      });
       this.syncCreatorRecipeSelection();
+      return;
+    }
+    if (action === 'move-part') {
+      const index = document.parts.findIndex((candidate) => candidate.id === button.dataset.partId);
+      const target = button.dataset.direction === 'up' ? index - 1 : index + 1;
+      if (index < 0 || target < 0 || target >= document.parts.length
+        || partMoveCrossesLockedLinkedTrack(document, index, target)) return;
+      this.executeDocument('Reorder Parts and linked Layer Tracks', ({ document: next }) => {
+        if (partMoveCrossesLockedLinkedTrack(next, index, target)) return;
+        moveArrayEntry(next.parts, index, target);
+        synchronizeLinkedTrackOrderFromParts(next);
+      });
       return;
     }
     if (action === 'copy-part' && part) {
@@ -4697,6 +5005,7 @@ export class MakerWorkspace {
         this.selectedPartId = duplicate.id;
         this.selectedItemId = duplicateItem?.id || '';
         this.selectedStyleId = duplicateStyle?.id || '';
+        this.selectedTrackId = duplicateStyle?.layerTrackId || this.selectedTrackId;
       });
       this.syncCreatorRecipeSelection();
       return;
@@ -4708,6 +5017,8 @@ export class MakerWorkspace {
       && this.confirmDelete(this.tr('deletePartConfirm', { name: part.name }))
     ) {
       this.executeDocument('Delete Part', ({ document: next, recipe: nextRecipe }) => {
+        const removedPart = findPart(next, part.id);
+        const candidateTrackIds = new Set(partLayerTrackIds(removedPart));
         next.parts = next.parts.filter((candidate) => candidate.id !== part.id);
         next.parts.forEach((candidate) => {
           if (candidate.parentPartId === part.id) candidate.parentPartId = null;
@@ -4716,6 +5027,10 @@ export class MakerWorkspace {
         });
         pruneDeletedDefinitionReferences(next, { partId: part.id });
         replaceRecipeSelection(nextRecipe, { partId: part.id, itemId: '' });
+        const usedTrackIds = new Set(next.parts.flatMap((candidate) => partLayerTrackIds(candidate)));
+        next.layerTracks = next.layerTracks.filter((track) => (
+          !candidateTrackIds.has(track.id) || usedTrackIds.has(track.id) || track.locked
+        ));
         removeUnreferencedAssetMetadata(next);
       });
       this.selectedPartId = '';
@@ -4726,19 +5041,25 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'add-item' && part) {
-      const nextItem = createItem(part, `Item ${part.items.length + 1}`);
-      const inheritedTrackId = item?.styles.find((candidate) => candidate.id === item.defaultStyleId)?.layerTrackId
-        || item?.styles[0]?.layerTrackId
-        || this.selectedTrackId
-        || document.layerTracks[0]?.id
-        || null;
-      nextItem.styles[0].layerTrackId = inheritedTrackId;
-      this.selectedItemId = nextItem.id;
-      this.selectedStyleId = '';
       this.executeDocument('Add Item', ({ document: next }) => {
-        const target = findPart(next, part.id);
-        target.items.push(nextItem);
-        target.defaultItemId ||= nextItem.id;
+        const targetPart = findPart(next, part.id);
+        const linkage = partTrackLinkage(next, targetPart.id);
+        let inheritedTrackId = linkage.mode === 'linked' ? linkage.trackId : null;
+        inheritedTrackId ||= targetPart.items
+          .flatMap((candidate) => candidate.styles)
+          .find((candidate) => candidate.layerTrackId)?.layerTrackId || null;
+        if (!inheritedTrackId) {
+          const nextTrack = createLayerTrack(next, targetPart.name);
+          next.layerTracks.push(nextTrack);
+          inheritedTrackId = nextTrack.id;
+        }
+        const nextItem = createItem(targetPart, `Item ${targetPart.items.length + 1}`);
+        nextItem.styles[0].layerTrackId = inheritedTrackId;
+        targetPart.items.push(nextItem);
+        targetPart.defaultItemId ||= nextItem.id;
+        this.selectedItemId = nextItem.id;
+        this.selectedStyleId = nextItem.defaultStyleId;
+        this.selectedTrackId = inheritedTrackId;
       });
       this.syncCreatorRecipeSelection();
       return;
@@ -4774,17 +5095,25 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'add-style' && item) {
-      const nextStyle = createStyle(item, `Style ${item.styles.length + 1}`);
-      nextStyle.layerTrackId = item.styles.find((candidate) => candidate.id === item.defaultStyleId)?.layerTrackId
-        || item.styles[0]?.layerTrackId
-        || this.selectedTrackId
-        || document.layerTracks[0]?.id
-        || null;
-      this.selectedStyleId = nextStyle.id;
       this.executeDocument('Add Style', ({ document: next }) => {
+        const targetPart = findPart(next, part.id);
         const targetItem = findItem(next, part.id, item.id);
+        let inheritedTrackId = targetItem.styles.find((candidate) => candidate.id === targetItem.defaultStyleId)?.layerTrackId
+          || targetItem.styles.find((candidate) => candidate.layerTrackId)?.layerTrackId
+          || null;
+        const linkage = partTrackLinkage(next, targetPart.id);
+        inheritedTrackId ||= linkage.mode === 'linked' ? linkage.trackId : null;
+        if (!inheritedTrackId) {
+          const nextTrack = createLayerTrack(next, targetPart.name);
+          next.layerTracks.push(nextTrack);
+          inheritedTrackId = nextTrack.id;
+        }
+        const nextStyle = createStyle(targetItem, `Style ${targetItem.styles.length + 1}`);
+        nextStyle.layerTrackId = inheritedTrackId;
         targetItem.styles.push(nextStyle);
         targetItem.defaultStyleId ||= nextStyle.id;
+        this.selectedStyleId = nextStyle.id;
+        this.selectedTrackId = inheritedTrackId;
       });
       this.syncCreatorRecipeSelection();
       return;
@@ -4845,10 +5174,21 @@ export class MakerWorkspace {
     if (action === 'move-track') {
       const index = document.layerTracks.findIndex((track) => track.id === button.dataset.trackId);
       const target = button.dataset.direction === 'up' ? index - 1 : index + 1;
-      if (index < 0 || target < 0 || target >= document.layerTracks.length || document.layerTracks[index].locked || document.layerTracks[target].locked) return;
+      if (index < 0 || target < 0 || target >= document.layerTracks.length
+        || trackVisualOrderLocked(document, document.layerTracks[index].id)
+        || trackVisualOrderLocked(document, document.layerTracks[target].id)) return;
       this.executeDocument('Reorder Layer Tracks', ({ document: next }) => {
-        if (next.layerTracks[index]?.locked || next.layerTracks[target]?.locked) return;
+        if (trackVisualOrderLocked(next, next.layerTracks[index]?.id)
+          || trackVisualOrderLocked(next, next.layerTracks[target]?.id)) return;
         moveArrayEntry(next.layerTracks, index, target);
+        synchronizeLinkedPartOrderFromTracks(next);
+      });
+      return;
+    }
+    if (action === 'sync-linked-track-order') {
+      if (linkedTrackOrderSyncCrossesLock(document)) return;
+      this.executeDocument('Sync linked Layer Tracks to Player menu', ({ document: next }) => {
+        synchronizeLinkedTrackOrderFromParts(next);
       });
       return;
     }
@@ -4932,7 +5272,13 @@ export class MakerWorkspace {
           id: pack.packId,
           name: pack.name,
           version: 1,
-          manifestIdentifier: `expansions/${pack.packId}.json`,
+          manifestIdentifier: MAKER_V4_MANIFEST_IDENTIFIER,
+          content: {
+            kind: 'embedded',
+            runtime: MAKER_V4_EMBEDDED_EXPANSION_RUNTIME,
+            container: MAKER_V4_EMBEDDED_EXPANSION_CONTAINER,
+            packId: pack.packId,
+          },
           baseMakerId: next.version.rootMakerId,
           baseMakerVersion: next.version.number,
           required: false,
@@ -5702,7 +6048,7 @@ export class MakerWorkspace {
     const document = this.store?.getState().document;
     if (target.dataset.dragKind === 'track') {
       const track = document?.layerTracks.find((candidate) => candidate.id === target.dataset.dragId);
-      if (!track || track.locked) {
+      if (!track || trackVisualOrderLocked(document, track.id)) {
         event.preventDefault();
         this.dragSort = null;
         return;
@@ -5746,17 +6092,25 @@ export class MakerWorkspace {
     const source = this.dragSort;
     this.dragSort = null;
     if (!targetId || targetId === source.id) return;
-    if (source.kind === 'track' || source.kind === 'style') {
+    if (source.kind === 'part') {
+      const currentDocument = this.store.getState().document;
+      const from = currentDocument.parts.findIndex((entry) => entry.id === source.id);
+      const to = currentDocument.parts.findIndex((entry) => entry.id === targetId);
+      if (from < 0 || to < 0 || partMoveCrossesLockedLinkedTrack(currentDocument, from, to)) return;
+    } else if (source.kind === 'track' || source.kind === 'style') {
       const currentDocument = this.store.getState().document;
       let currentEntries = currentDocument.layerTracks;
-      const lockField = source.kind === 'track' ? 'locked' : 'styleLocked';
       if (source.kind === 'style') {
         const [partId, itemId] = source.parentId.split('/');
         currentEntries = findItem(currentDocument, partId, itemId)?.styles || [];
       }
       const from = currentEntries.findIndex((entry) => entry.id === source.id);
       const to = currentEntries.findIndex((entry) => entry.id === targetId);
-      if (from < 0 || to < 0 || currentEntries.slice(Math.min(from, to), Math.max(from, to) + 1).some((entry) => entry[lockField])) return;
+      const movedRange = currentEntries.slice(Math.min(from, to), Math.max(from, to) + 1);
+      const rangeLocked = source.kind === 'track'
+        ? movedRange.some((entry) => trackVisualOrderLocked(currentDocument, entry.id))
+        : movedRange.some((entry) => entry.styleLocked);
+      if (from < 0 || to < 0 || rangeLocked) return;
     }
     this.executeDocument(`Reorder ${source.kind}`, ({ document }) => {
       let entries = [];
@@ -5769,11 +6123,17 @@ export class MakerWorkspace {
       }
       const from = entries.findIndex((entry) => entry.id === source.id);
       const to = entries.findIndex((entry) => entry.id === targetId);
+      if (source.kind === 'part' && partMoveCrossesLockedLinkedTrack(document, from, to)) return;
       if (source.kind === 'track' || source.kind === 'style') {
-        const lockField = source.kind === 'track' ? 'locked' : 'styleLocked';
-        if (from < 0 || to < 0 || entries.slice(Math.min(from, to), Math.max(from, to) + 1).some((entry) => entry[lockField])) return;
+        const movedRange = entries.slice(Math.min(from, to), Math.max(from, to) + 1);
+        const rangeLocked = source.kind === 'track'
+          ? movedRange.some((entry) => trackVisualOrderLocked(document, entry.id))
+          : movedRange.some((entry) => entry.styleLocked);
+        if (from < 0 || to < 0 || rangeLocked) return;
       }
       moveArrayEntry(entries, from, to);
+      if (source.kind === 'part') synchronizeLinkedTrackOrderFromParts(document);
+      else if (source.kind === 'track') synchronizeLinkedPartOrderFromTracks(document);
     });
   }
 
@@ -5928,7 +6288,14 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'player-export') {
-      const payload = { schemaVersion: 'animacraft.player-recipe.v5', makerVersionId: document.version.versionId, recipe: this.playerRecipe, profile: this.playerProfile };
+      const livingContent = this.resolvedPlayerLivingContent(document)?.content || null;
+      const payload = {
+        schemaVersion: 'animacraft.player-recipe.v5',
+        makerVersionId: document.version.versionId,
+        recipe: this.playerRecipe,
+        profile: this.playerProfile,
+        livingContent,
+      };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const link = globalThis.document.createElement('a');
@@ -5947,7 +6314,13 @@ export class MakerWorkspace {
       }
       this.playerPublishOpen = true;
       this.playerPublishCloseConfirm = false;
-      this.callbacks.onCompleteOc?.({ document, recipe: this.playerRecipe, profile: this.playerProfile, assets: this.assets });
+      this.callbacks.onCompleteOc?.({
+        document,
+        recipe: this.playerRecipe,
+        profile: this.playerProfile,
+        livingContent: this.resolvedPlayerLivingContent(document)?.content || null,
+        assets: this.assets,
+      });
       this.render();
       this.focusPlayerPublishDialog();
       return;
@@ -6059,7 +6432,10 @@ export class MakerWorkspace {
     this.sessionAutosave();
     this.callbacks.onPlayerRecipeChange?.({ document: this.runtimeDocument(), recipe: this.playerRecipe, profile: this.playerProfile });
     if (action === 'player-expansion') this.render();
-    else this.updatePlayerCompletionUi();
+    else {
+      this.updatePlayerSoulConfigurationUi();
+      this.updatePlayerCompletionUi();
+    }
   }
 
   destroy() {

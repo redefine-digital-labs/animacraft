@@ -519,12 +519,27 @@ test('creator structure controls mutate the v5 document and remain undoable', as
     assert.equal(workspace.selectedCreatorRecords().item.styles.length, styleCount + 2);
 
     const partCount = workspace.getDocument().parts.length;
+    const trackCountBeforePart = workspace.getDocument().layerTracks.length;
     creatorClick(workspace, 'add-part');
-    assert.equal(workspace.getDocument().parts.length, partCount + 1);
+    let documentAfterPart = workspace.getDocument();
+    assert.equal(documentAfterPart.parts.length, partCount + 1);
+    const createdPart = documentAfterPart.parts.at(-1);
+    assert.equal(createdPart.items.length, 1);
+    assert.equal(createdPart.items[0].styles.length, 1);
+    assert.ok(
+      documentAfterPart.layerTracks.some(
+        (track) => track.id === createdPart.items[0].styles[0].layerTrackId,
+      ),
+      'a new Part starts with its own linked Layer Track and default Item/Style',
+    );
+    assert.equal(documentAfterPart.layerTracks.length, trackCountBeforePart + 1);
     creatorClick(workspace, 'undo');
     assert.equal(workspace.getDocument().parts.length, partCount);
+    assert.equal(workspace.getDocument().layerTracks.length, trackCountBeforePart);
     creatorClick(workspace, 'redo');
-    assert.equal(workspace.getDocument().parts.length, partCount + 1);
+    documentAfterPart = workspace.getDocument();
+    assert.equal(documentAfterPart.parts.length, partCount + 1);
+    assert.equal(documentAfterPart.layerTracks.length, trackCountBeforePart + 1);
 
     const previousPixelMode = workspace.getDocument().canvas.pixelMode;
     creatorClick(workspace, 'toggle-pixel');
@@ -605,11 +620,152 @@ test('Layer Track page exposes exact Part › Item › Style bindings and moves 
     assert.equal(workspace.selectedTrackId, targetStyle.layerTrackId);
 
     const originalOrder = workspace.getDocument().layerTracks.map((track) => track.id);
+    const originalPartOrder = workspace.getDocument().parts.map((part) => part.id);
     const movingTrackId = originalOrder[1];
+    const movingPartId = workspace.getDocument().parts.find((part) => (
+      part.items.some((item) => item.styles.some((style) => style.layerTrackId === movingTrackId))
+    )).id;
     creatorClick(workspace, 'move-track', { trackId: movingTrackId, direction: 'up' });
     assert.equal(workspace.getDocument().layerTracks[0].id, movingTrackId, 'up moves toward the back/top of the back-to-front list');
+    assert.equal(workspace.getDocument().parts[0].id, movingPartId, 'a standard linked Track also moves its Player menu Part');
     creatorClick(workspace, 'move-track', { trackId: movingTrackId, direction: 'down' });
     assert.deepEqual(workspace.getDocument().layerTracks.map((track) => track.id), originalOrder);
+    assert.deepEqual(workspace.getDocument().parts.map((part) => part.id), originalPartOrder);
+  }, { creatorRoot, playable: true });
+});
+
+test('Player menu reordering moves standard Tracks atomically but preserves custom stacking', async () => {
+  await withWorkspace(async (workspace) => {
+    const original = workspace.getDocument();
+    const movingPart = original.parts[1];
+    const movingTrackId = movingPart.items[0].styles[0].layerTrackId;
+    const originalTrackOrder = original.layerTracks.map((track) => track.id);
+
+    creatorClick(workspace, 'move-part', { partId: movingPart.id, direction: 'up' });
+    let document = workspace.getDocument();
+    assert.equal(document.parts[0].id, movingPart.id);
+    assert.equal(document.layerTracks[0].id, movingTrackId);
+
+    creatorClick(workspace, 'undo');
+    document = workspace.getDocument();
+    assert.deepEqual(document.layerTracks.map((track) => track.id), originalTrackOrder);
+
+    const lockedTrackId = document.parts[0].items[0].styles[0].layerTrackId;
+    creatorClick(workspace, 'toggle-track-lock', { trackId: lockedTrackId });
+    const blockedPartId = document.parts[1].id;
+    creatorClick(workspace, 'move-part', { partId: blockedPartId, direction: 'up' });
+    assert.deepEqual(
+      workspace.getDocument().parts.map((part) => part.id),
+      document.parts.map((part) => part.id),
+      'crossing a locked linked Track cannot leave Part and Track order half-synchronized',
+    );
+
+    creatorClick(workspace, 'toggle-track-lock', { trackId: lockedTrackId });
+    workspace.executeDocument('Insert locked custom Track divider', ({ document: next }) => {
+      next.layerTracks.splice(1, 0, {
+        id: 'locked-custom-divider',
+        name: 'Locked custom divider',
+        order: 1,
+        locked: true,
+        referenceAssetId: null,
+      });
+    });
+    const dividedPartOrder = workspace.getDocument().parts.map((part) => part.id);
+    creatorClick(workspace, 'move-part', { partId: blockedPartId, direction: 'up' });
+    assert.deepEqual(
+      workspace.getDocument().parts.map((part) => part.id),
+      dividedPartOrder,
+      'a linked Track also cannot cross a locked custom Track',
+    );
+  }, { playable: true });
+
+  await withWorkspace(async (workspace) => {
+    const before = workspace.getDocument();
+    const sharedTrackId = before.parts[0].items[0].styles[0].layerTrackId;
+    const customPartId = before.parts[1].id;
+    workspace.executeDocument('Create explicit shared custom stacking', ({ document }) => {
+      document.parts[1].items[0].styles[0].layerTrackId = sharedTrackId;
+    });
+    const customTrackOrder = workspace.getDocument().layerTracks.map((track) => track.id);
+    creatorClick(workspace, 'move-part', { partId: customPartId, direction: 'up' });
+    assert.equal(workspace.getDocument().parts[0].id, customPartId);
+    assert.deepEqual(
+      workspace.getDocument().layerTracks.map((track) => track.id),
+      customTrackOrder,
+      'shared/custom Tracks keep their explicit visual order',
+    );
+  }, { playable: true });
+});
+
+test('a fully locked Style protects its Track z-order across buttons, drag, sync, and linked Part reordering', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const initial = workspace.getDocument();
+    const lockedPart = initial.parts[0];
+    const lockedStyle = lockedPart.items[0].styles[0];
+    const lockedTrackId = lockedStyle.layerTrackId;
+    const movingPartId = initial.parts[1].id;
+    const movingTrackId = initial.parts[1].items[0].styles[0].layerTrackId;
+    const initialPartOrder = initial.parts.map((part) => part.id);
+    const initialTrackOrder = initial.layerTracks.map((track) => track.id);
+
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-locked' }, checked: true, type: 'checkbox' },
+    });
+    assert.equal(
+      workspace.getDocument().layerTracks.find((track) => track.id === lockedTrackId).locked,
+      false,
+      'Style visual locking must not mutate the independent Track lock',
+    );
+
+    workspace.creatorTab = 'layers';
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /Contains a locked Style · visual order is protected/);
+    assert.match(
+      creatorRoot.innerHTML,
+      new RegExp(`v4-track-row[^>]*draggable="false"[^>]*data-drag-id="${lockedTrackId}"`),
+    );
+
+    creatorClick(workspace, 'move-track', { trackId: movingTrackId, direction: 'up' });
+    creatorClick(workspace, 'move-part', { partId: movingPartId, direction: 'up' });
+    assert.deepEqual(workspace.getDocument().layerTracks.map((track) => track.id), initialTrackOrder);
+    assert.deepEqual(workspace.getDocument().parts.map((part) => part.id), initialPartOrder);
+
+    let dragPrevented = false;
+    const lockedTrackTarget = {
+      dataset: { dragKind: 'track', dragId: lockedTrackId },
+      closest() { return this; },
+    };
+    workspace.handleDragStart({
+      target: lockedTrackTarget,
+      preventDefault() { dragPrevented = true; },
+      dataTransfer: {
+        setData() {},
+        set effectAllowed(_) {},
+      },
+    });
+    assert.equal(dragPrevented, true);
+    assert.equal(workspace.dragSort, null);
+
+    workspace.dragSort = { kind: 'track', id: movingTrackId, parentId: '' };
+    workspace.handleDrop({ target: lockedTrackTarget, preventDefault() {} });
+    assert.deepEqual(workspace.getDocument().layerTracks.map((track) => track.id), initialTrackOrder);
+
+    creatorClick(workspace, 'toggle-track-lock', { trackId: lockedTrackId });
+    assert.equal(workspace.getDocument().layerTracks.find((track) => track.id === lockedTrackId).locked, true);
+    creatorClick(workspace, 'toggle-track-lock', { trackId: lockedTrackId });
+    assert.equal(workspace.getDocument().layerTracks.find((track) => track.id === lockedTrackId).locked, false);
+
+    workspace.executeDocument('Create linked order mismatch fixture', ({ document }) => {
+      const [movedPart] = document.parts.splice(1, 1);
+      document.parts.splice(0, 0, movedPart);
+    });
+    creatorClick(workspace, 'sync-linked-track-order');
+    assert.deepEqual(
+      workspace.getDocument().layerTracks.map((track) => track.id),
+      initialTrackOrder,
+      'sync cannot move or cross the Track that owns a fully locked Style',
+    );
   }, { creatorRoot, playable: true });
 });
 
@@ -740,6 +896,13 @@ test('color, rule, and Expansion Pack controls perform real document operations'
     document = workspace.getDocument();
     assert.equal(document.extensions.expansionDrafts.length, 1);
     const packId = document.extensions.expansionDrafts[0].packId;
+    assert.equal(document.expansionPacks[0].manifestIdentifier, 'animacraft-manifest.json');
+    assert.deepEqual(document.expansionPacks[0].content, {
+      kind: 'embedded',
+      runtime: 'embedded-v1',
+      container: 'extensions.expansionDrafts',
+      packId,
+    });
     creatorClick(workspace, 'add-selected-to-expansion', { packId });
     assert.equal(workspace.getDocument().extensions.expansionDrafts[0].parts[0].items.length, 1);
     creatorClick(workspace, 'toggle-expansion', { packId });
@@ -982,6 +1145,106 @@ test('Run Preflight invalidates cached rule analysis and blocking issues render 
   }, { creatorRoot, playable: true });
 });
 
+test('Preflight compiles the final Walrus manifest and Sui projection before upload', async () => {
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'add-channel');
+    const channelId = workspace.getDocument().colorChannels[0].id;
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'style-channel' }, value: channelId, type: 'select-one' },
+    });
+    workspace.executeDocument('Create reserved release identifier conflict', ({ document }) => {
+      document.metadata.creator = 'QA Creator';
+      document.metadata.license.note = 'Personal use QA release.';
+      const assetId = document.parts[0].items[0].styles[0].assetId;
+      document.assets.find((asset) => asset.id === assetId).identifier = 'animacraft-chain-auxiliary.png';
+    });
+    const issue = workspace.publicationIssues().find((candidate) => (
+      candidate.code === 'release_reserved-projection-auxiliary-identifier'
+    ));
+    assert.ok(issue, 'the Creator Preflight must catch a final Sui projection failure before Walrus upload');
+    assert.equal(issue.path, 'publication.release');
+  }, { playable: true });
+});
+
+test('Preflight validates the final Quilt bundle before Step 1', async () => {
+  await withWorkspace(async (workspace) => {
+    workspace.executeDocument('Prepare release metadata', ({ document }) => {
+      document.metadata.creator = 'QA Creator';
+      document.metadata.license.note = 'Personal use QA release.';
+    });
+    assert.equal(
+      workspace.publicationIssues().some((issue) => issue.code.startsWith('release_')),
+      false,
+      'a complete playable Maker must pass the same bundle compiler used by Step 1',
+    );
+
+    workspace.executeDocument('Create reserved manifest identifier conflict', ({ document }) => {
+      const assetId = document.parts[0].items[0].styles[0].assetId;
+      document.assets.find((asset) => asset.id === assetId).identifier = 'animacraft-manifest.json';
+    });
+    assert.ok(
+      workspace.publicationIssues().some((issue) => (
+        issue.code === 'release_reserved-manifest-identifier'
+        && issue.path === 'publication.release'
+      )),
+      'Preflight must reject the reserved manifest identifier before Step 1',
+    );
+  }, { playable: true });
+
+  await withWorkspace(async (workspace) => {
+    workspace.executeDocument('Add missing Part icon Blob fixture', ({ document }) => {
+      document.metadata.creator = 'QA Creator';
+      document.metadata.license.note = 'Personal use QA release.';
+      const iconAssetId = 'part-icon-without-runtime';
+      document.assets.push({
+        id: iconAssetId,
+        identifier: `${iconAssetId}.png`,
+        kind: 'part-icon',
+        mediaType: 'image/png',
+        width: 64,
+        height: 64,
+      });
+      document.parts[0].iconAssetId = iconAssetId;
+    });
+    assert.ok(
+      workspace.publicationIssues().some((issue) => (
+        issue.code === 'release_missing-runtime-asset'
+        && issue.path === 'publication.release'
+      )),
+      'non-Style assets must have a real local Blob/File or a reloadable remote URL',
+    );
+  }, { playable: true });
+
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'add-expansion');
+    workspace.executeDocument('Fill the exact Walrus Quilt boundary', ({ document }) => {
+      document.metadata.creator = 'QA Creator';
+      document.metadata.license.note = 'Personal use QA release.';
+      const pack = document.extensions.expansionDrafts[0];
+      // Leave exactly 4,999 render assets after the generated cover. Because
+      // this Maker has optional Parts, its required v2 auxiliary PNG plus the
+      // manifest must make the real Quilt count 5,001 and fail Preflight.
+      const expansionAssetCount = 4_999 - document.assets.length - 1;
+      pack.assets = Array.from({ length: expansionAssetCount }, (_, index) => ({
+        id: `quilt-boundary-${index}`,
+        identifier: `quilt-boundary-${index}.png`,
+        kind: 'expansion-asset',
+        mediaType: 'image/png',
+        width: 1,
+        height: 1,
+        url: `memory://quilt-boundary-${index}`,
+      }));
+    });
+    assert.ok(
+      workspace.publicationIssues().some((issue) => (
+        issue.code === 'release_walrus-quilt-file-limit'
+        && issue.path === 'publication.release'
+      )),
+      'Preflight must count the v2 auxiliary PNG and manifest in the 5,000-file Quilt limit',
+    );
+  }, { playable: true });
+});
+
 test('negative stress fixtures remain publication-blocked with localized guidance', async () => {
   const creatorRoot = new FakeRoot();
   await withWorkspace(async (workspace) => {
@@ -1095,6 +1358,78 @@ test('Player Smart Color shows every channel used by the resolved OC scene', asy
       document.parts[2].items[0].styles[0].colorChannelId = 'skin-tone';
     },
   });
+});
+
+test('Player exposes the Maker Soul Configuration as the resolved OC identity card', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    workspace.playerIntroOpen = false;
+    workspace.playerProfile = {
+      name: 'Mira',
+      world: 'Astral Courier',
+      description: 'A calm courier between worlds.',
+      tags: 'starlight, courier',
+    };
+    workspace.renderPlayer();
+
+    assert.match(playerRoot.innerHTML, /Soul Configuration/);
+    assert.match(playerRoot.innerHTML, /Personality &amp; identity/);
+    assert.match(playerRoot.innerHTML, /soul\.md/);
+    assert.match(playerRoot.innerHTML, /memory\.md/);
+    assert.match(playerRoot.innerHTML, /SKILL\.md/);
+    assert.match(playerRoot.innerHTML, /Default · Valid/);
+    assert.match(playerRoot.innerHTML, /Mira/);
+    assert.match(playerRoot.innerHTML, /Astral Courier/);
+    assert.doesNotMatch(playerRoot.innerHTML, /\{\{OC_NAME\}\}/);
+
+    const resolved = workspace.resolvedPlayerLivingContent();
+    assert.match(resolved.content.soulMd, /Mira/);
+    assert.match(resolved.content.soulMd, /Astral Courier/);
+    assert.match(resolved.content.soulMd, /A calm courier between worlds\./);
+    assert.equal(resolved.validation.valid, true);
+  }, { playable: true, playerRoot });
+});
+
+test('Maker metadata refreshes uncustomized Soul defaults inside the MakerDocument only', async () => {
+  await withWorkspace(async (workspace) => {
+    const before = workspace.getDocument();
+    const normalizedLivingContent = workspace.resolvedPlayerLivingContent(before).validation.content;
+    const customSoul = '# Custom Soul\n\nKeep this creator-authored identity.';
+    workspace.updateMakerSettings({
+      livingContent: {
+        ...normalizedLivingContent,
+        soulMd: customSoul,
+        customized: {
+          ...normalizedLivingContent.customized,
+          soulMd: true,
+        },
+      },
+    });
+    workspace.updateMakerSettings({
+      name: 'Renamed Moon Maker',
+      summary: 'A newly described world.',
+      creator: 'New Creator',
+      style: 'Silver night',
+    });
+
+    const document = workspace.getDocument();
+    assert.equal(document.livingContent.soulMd, customSoul);
+    assert.equal(document.livingContent.customized.soulMd, true);
+    assert.match(document.livingContent.memoryMd, /Renamed Moon Maker/);
+    assert.match(document.livingContent.skillMd, /name: renamed-moon-maker-companion/);
+    assert.equal(document.livingContent.customized.memoryMd, false);
+    assert.equal(document.livingContent.customized.skillMd, false);
+
+    workspace.playerProfile = {
+      name: 'Mira',
+      world: 'Silver night',
+      description: 'A newly described character.',
+      tags: '',
+    };
+    const resolved = workspace.resolvedPlayerLivingContent();
+    assert.equal(resolved.content.soulMd, customSoul);
+    assert.match(resolved.content.memoryMd, /Renamed Moon Maker/);
+  }, { playable: true });
 });
 
 test('enabled Expansion Pack ids are scoped to packs declared by the current Maker', () => {
@@ -1348,6 +1683,9 @@ test('player controls select, undo, redo, clear, randomize, edit profile and com
     workspace.playerCompletionIssues = () => [];
     playerClick(workspace, 'player-complete');
     assert.equal(completed.length, 1);
+    assert.match(completed[0].livingContent.soulMd, /Test OC/);
+    assert.match(completed[0].livingContent.soulMd, /Test World/);
+    assert.match(completed[0].livingContent.memoryMd, /A production-ready character/);
   }, { playable: true, callbacks: { onCompleteOc: (payload) => completed.push(payload) } });
 });
 

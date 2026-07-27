@@ -3,7 +3,9 @@
  *
  * Expansion Packs are runtime overlays. They may add optional Parts, Items,
  * Styles, LayerTracks, palettes, assets and rules, but never replace a base
- * definition. Every pack-owned id is namespaced with `namespace__localId`.
+ * definition. Every pack-owned id is namespaced with `namespace__localId`;
+ * exact clones of base Tracks, Assets and color channels are normalized back
+ * to their base ids as explicit reusable dependencies.
  */
 
 import { collectMakerRules, createMakerRuleIndex, normalizeRuleSelector } from './maker-rules.js';
@@ -332,6 +334,44 @@ function duplicateIds(values, idOf) {
   });
 }
 
+function reusableBaseDefinition(value, ignoredFields = []) {
+  if (!value || typeof value !== 'object') return {};
+  const ignored = new Set([
+    'id',
+    'key',
+    'order',
+    'renderOrder',
+    'expansionPackId',
+    'expansionNamespace',
+    ...ignoredFields,
+  ]);
+  return stableValue(Object.fromEntries(
+    Object.entries(value).filter(([key]) => !ignored.has(key)),
+  ));
+}
+
+function baseDefinitionReuseMatches(baseValue, packValue, ignoredFields = []) {
+  return JSON.stringify(reusableBaseDefinition(baseValue, ignoredFields))
+    === JSON.stringify(reusableBaseDefinition(packValue, ignoredFields));
+}
+
+function assetReuseDefinition(asset) {
+  return stableValue({
+    identifier: String(asset?.identifier || ''),
+    kind: String(asset?.kind || ''),
+    mediaType: String(asset?.mediaType || ''),
+    width: asset?.width ?? null,
+    height: asset?.height ?? null,
+    contentHash: String(asset?.contentHash || ''),
+    digest: String(asset?.digest || ''),
+  });
+}
+
+function baseAssetReuseMatches(baseAsset, packAsset) {
+  return JSON.stringify(assetReuseDefinition(baseAsset))
+    === JSON.stringify(assetReuseDefinition(packAsset));
+}
+
 function rewriteSelectorValue(value, maps) {
   if (typeof value === 'string') {
     const selector = normalizeRuleSelector(value);
@@ -409,9 +449,93 @@ function createPackMaps(base, pack, errors) {
   };
   const newParts = packParts(pack).filter((entry) => !(entry.extendsPartId || entry.extendsPartKey || entry.targetPartId));
   addDefinitionMap(newParts, partIdOf, part, 'part');
-  addDefinitionMap(asArray(pack.layerTracks), trackIdOf, tracks, 'layer-track');
-  addDefinitionMap(asArray(pack.palettes ?? pack.colorChannels), paletteIdOf, palettes, 'palette');
-  addDefinitionMap(asArray(pack.assets).filter((asset) => asset?.id), (asset) => String(asset.id || ''), assets, 'asset');
+  const baseTracks = new Map(asArray(base?.layerTracks)
+    .map((track) => [trackIdOf(track), track])
+    .filter(([id]) => Boolean(id)));
+  const packTracks = asArray(pack.layerTracks);
+  duplicateIds(packTracks, trackIdOf)
+    .forEach((id) => errors.push({ code: 'duplicate-pack-layer-track', id }));
+  packTracks.forEach((track) => {
+    const localId = trackIdOf(track);
+    if (!localId) return;
+    const baseTrack = baseTracks.get(localId);
+    if (baseTrack) {
+      if (!baseDefinitionReuseMatches(baseTrack, track, ['transform'])) {
+        errors.push({
+          code: 'pack-base-track-definition-mismatch',
+          id: localId,
+          message: `Expansion Pack LayerTrack "${localId}" collides with a base Track but does not match its reusable definition.`,
+        });
+        return;
+      }
+      // Creator-authored Packs commonly contain an exact clone of the base
+      // Part's Track. Treat that clone as an explicit base reference so an
+      // added Item stays in the Part's existing z-order instead of becoming a
+      // new namespaced foreground Track.
+      tracks.set(localId, localId);
+      return;
+    }
+    try {
+      tracks.set(localId, namespaceId(namespace, localId));
+    } catch (error) {
+      errors.push({ code: error.code, id: localId, message: error.message });
+    }
+  });
+  const basePalettes = new Map(asArray(base?.palettes ?? base?.colorChannels)
+    .map((palette) => [paletteIdOf(palette), palette])
+    .filter(([id]) => Boolean(id)));
+  const packPalettes = asArray(pack.palettes ?? pack.colorChannels);
+  duplicateIds(packPalettes, paletteIdOf)
+    .forEach((id) => errors.push({ code: 'duplicate-pack-palette', id }));
+  packPalettes.forEach((palette) => {
+    const localId = paletteIdOf(palette);
+    if (!localId) return;
+    const basePalette = basePalettes.get(localId);
+    if (basePalette) {
+      if (!baseDefinitionReuseMatches(basePalette, palette)) {
+        errors.push({
+          code: 'pack-base-color-definition-mismatch',
+          id: localId,
+          message: `Expansion Pack color channel "${localId}" collides with a base channel but does not match its reusable definition.`,
+        });
+        return;
+      }
+      palettes.set(localId, localId);
+      return;
+    }
+    try {
+      palettes.set(localId, namespaceId(namespace, localId));
+    } catch (error) {
+      errors.push({ code: error.code, id: localId, message: error.message });
+    }
+  });
+  const baseAssets = new Map(asArray(base?.assets)
+    .map((asset) => [String(asset?.id || ''), asset])
+    .filter(([id]) => Boolean(id)));
+  const packAssets = asArray(pack.assets).filter((asset) => asset?.id);
+  duplicateIds(packAssets, (asset) => String(asset?.id || ''))
+    .forEach((id) => errors.push({ code: 'duplicate-pack-asset', id }));
+  packAssets.forEach((asset) => {
+    const localId = String(asset.id || '');
+    const baseAsset = baseAssets.get(localId);
+    if (baseAsset) {
+      if (!baseAssetReuseMatches(baseAsset, asset)) {
+        errors.push({
+          code: 'pack-base-asset-definition-mismatch',
+          id: localId,
+          message: `Expansion Pack Asset "${localId}" collides with a base Asset but does not match its immutable identity.`,
+        });
+        return;
+      }
+      assets.set(localId, localId);
+      return;
+    }
+    try {
+      assets.set(localId, namespaceId(namespace, localId));
+    } catch (error) {
+      errors.push({ code: error.code, id: localId, message: error.message });
+    }
+  });
 
   packParts(pack).forEach((packPart) => {
     const localPartId = partIdOf(packPart);
@@ -506,22 +630,38 @@ function normalizePackRule(rule, index, maps, pack) {
 function preparePack(base, pack, errors, warnings) {
   const maps = createPackMaps(base, pack, errors);
   if (errors.length) return { maps };
-  const tracks = asArray(pack.layerTracks).map((track) => {
+  const tracks = asArray(pack.layerTracks).flatMap((track) => {
+    const mappedId = maps.tracks.get(trackIdOf(track));
+    if (mappedId === trackIdOf(track)
+      && asArray(base?.layerTracks).some((candidate) => trackIdOf(candidate) === mappedId)) {
+      return [];
+    }
     const copy = clone(track);
     delete copy.transform;
-    return annotate({
+    return [annotate({
       ...copy,
-      id: maps.tracks.get(trackIdOf(track)),
-    }, pack);
+      id: mappedId,
+    }, pack)];
   });
-  const palettes = asArray(pack.palettes ?? pack.colorChannels).map((palette) => annotate({
-    ...clone(palette),
-    id: maps.palettes.get(paletteIdOf(palette)),
-  }, pack));
-  const assets = asArray(pack.assets).map((asset) => annotate({
-    ...clone(asset),
-    ...(asset?.id ? { id: maps.assets.get(String(asset.id)) } : {}),
-  }, pack));
+  const basePaletteIds = new Set(asArray(base?.palettes ?? base?.colorChannels).map(paletteIdOf));
+  const palettes = asArray(pack.palettes ?? pack.colorChannels).flatMap((palette) => {
+    const mappedId = maps.palettes.get(paletteIdOf(palette));
+    if (mappedId === paletteIdOf(palette) && basePaletteIds.has(mappedId)) return [];
+    return [annotate({
+      ...clone(palette),
+      id: mappedId,
+    }, pack)];
+  });
+  const baseAssetIds = new Set(asArray(base?.assets).map((asset) => String(asset?.id || '')));
+  const assets = asArray(pack.assets).flatMap((asset) => {
+    const localId = String(asset?.id || '');
+    const mappedId = maps.assets.get(localId);
+    if (mappedId === localId && baseAssetIds.has(mappedId)) return [];
+    return [annotate({
+      ...clone(asset),
+      ...(asset?.id ? { id: mappedId } : {}),
+    }, pack)];
+  });
   const newParts = packParts(pack)
     .filter((entry) => !(entry.extendsPartId || entry.extendsPartKey || entry.targetPartId))
     .map((part) => rewritePart(part, maps, pack));

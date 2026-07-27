@@ -2372,16 +2372,26 @@ input[type="color"] {
   line-height: 1.2;
 }
 
-.maker-lifecycle-badge.draft {
+.maker-lifecycle-badge.draft,
+.maker-lifecycle-badge.active {
   border-color: color-mix(in srgb, var(--ui-success) 48%, var(--ui-border));
   background: var(--ui-surface-success);
   color: var(--ui-success);
 }
 
-.maker-lifecycle-badge.published {
+.maker-lifecycle-badge.published,
+.maker-lifecycle-badge.version-draft {
   border-color: color-mix(in srgb, var(--ui-brand) 48%, var(--ui-border));
   background: var(--ui-surface-selected);
   color: var(--ui-brand);
+}
+
+.maker-lifecycle-badge.publishing,
+.maker-lifecycle-badge.recoverable,
+.maker-lifecycle-badge.paused {
+  border-color: color-mix(in srgb, var(--ui-warning) 52%, var(--ui-border));
+  background: var(--ui-surface-warning);
+  color: var(--ui-warning);
 }
 
 .maker-lifecycle-badge.archived {
@@ -2522,6 +2532,33 @@ input[type="color"] {
   color: var(--ui-muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.maker-tags .maker-card-lifecycle.active,
+.maker-tags .maker-card-lifecycle.draft {
+  border-color: color-mix(in srgb, var(--ui-success) 48%, var(--ui-border));
+  background: var(--ui-surface-success);
+  color: var(--ui-success);
+}
+
+.maker-tags .maker-card-lifecycle.version-draft {
+  border-color: color-mix(in srgb, var(--ui-brand) 48%, var(--ui-border));
+  background: var(--ui-surface-selected);
+  color: var(--ui-brand);
+}
+
+.maker-tags .maker-card-lifecycle.publishing,
+.maker-tags .maker-card-lifecycle.recoverable,
+.maker-tags .maker-card-lifecycle.paused {
+  border-color: color-mix(in srgb, var(--ui-warning) 52%, var(--ui-border));
+  background: var(--ui-surface-warning);
+  color: var(--ui-warning);
+}
+
+.maker-tags .maker-card-lifecycle.archived {
+  border-color: color-mix(in srgb, var(--ui-danger) 48%, var(--ui-border));
+  background: var(--ui-surface-danger);
+  color: var(--ui-danger);
 }
 
 .maker-card-body h2 {
@@ -4447,8 +4484,17 @@ input[type="color"] {
 
 .lifecycle-card .danger-button {
   grid-column: 2;
-  grid-row: 1 / span 3;
+  grid-row: 1 / span 4;
   align-self: center;
+}
+
+.lifecycle-protocol-note {
+  max-width: 78ch;
+  border-left: 3px solid var(--ui-warning);
+  padding-left: 10px;
+  color: var(--ui-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .editor-panel:not(.active) {
@@ -5657,6 +5703,15 @@ pre {
   font-size: 14px;
 }
 
+.v4-panel-head small {
+  display: block;
+  max-width: 220px;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
 .v4-parts-list {
   display: grid;
   gap: 7px;
@@ -5666,7 +5721,7 @@ pre {
 .v4-part-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px;
+  grid-template-columns: 24px minmax(0, 1fr) 28px 34px;
   gap: 4px;
   align-items: center;
   width: 100%;
@@ -5675,6 +5730,21 @@ pre {
   border-radius: 9px;
   background: var(--ui-surface);
   text-align: left;
+}
+
+.v4-part-drag {
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  color: var(--muted);
+  cursor: grab;
+  font-size: 10px;
+  user-select: none;
+}
+
+.v4-part-drag b {
+  color: var(--violet);
+  font-size: 8px;
 }
 
 .v4-part-select {
@@ -5710,6 +5780,15 @@ pre {
   font-weight: 650;
 }
 
+.v4-part-select .v4-part-track-status {
+  color: var(--mint-dark);
+  font-size: 9px;
+}
+
+.v4-part-row.custom-track .v4-part-track-status {
+  color: var(--orange);
+}
+
 .v4-part-select em {
   grid-column: 2;
   width: max-content;
@@ -5728,6 +5807,19 @@ pre {
 
 .v4-part-row.preview-hidden .v4-part-select {
   opacity: 0.5;
+}
+
+.v4-part-order-actions {
+  display: grid;
+  gap: 3px;
+}
+
+.v4-part-order-actions button {
+  width: 26px;
+  min-height: 24px !important;
+  padding: 0 !important;
+  border-radius: 6px !important;
+  font-size: 11px;
 }
 
 .v4-part-eye {
@@ -7443,6 +7535,147 @@ pre {
 
 .v4-player-profile-fields .wide {
   grid-column: 1 / -1;
+}
+
+.v4-player-profile-heading,
+.v4-player-soul-card {
+  grid-column: 1 / -1;
+}
+
+.v4-player-profile-heading {
+  display: grid;
+  gap: 2px;
+}
+
+.v4-player-profile-heading > span {
+  color: var(--violet);
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.v4-player-profile-heading > strong {
+  font-size: 13px;
+}
+
+.v4-player-profile-heading > small,
+.v4-player-soul-card > p,
+.v4-player-soul-document > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.v4-player-soul-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--ui-surface-muted);
+}
+
+.v4-player-soul-card > summary,
+.v4-player-soul-document > summary {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  list-style: none;
+}
+
+.v4-player-soul-card > summary {
+  min-height: 44px;
+  padding: 9px 11px;
+}
+
+.v4-player-soul-card > summary::-webkit-details-marker,
+.v4-player-soul-document > summary::-webkit-details-marker {
+  display: none;
+}
+
+.v4-player-soul-card > summary::after,
+.v4-player-soul-document > summary::after {
+  content: "＋";
+  flex: 0 0 auto;
+  color: var(--violet);
+  font-weight: 950;
+}
+
+.v4-player-soul-card[open] > summary::after,
+.v4-player-soul-document[open] > summary::after {
+  content: "−";
+}
+
+.v4-player-soul-card > summary span,
+.v4-player-soul-document > summary span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.v4-player-soul-card > summary small,
+.v4-player-soul-card > summary em,
+.v4-player-soul-document > summary small {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.v4-player-soul-card > summary em {
+  margin-left: auto;
+  color: var(--mint-dark);
+  font-weight: 900;
+}
+
+.v4-player-soul-card > p {
+  padding: 0 11px 10px;
+}
+
+.v4-player-soul-documents {
+  display: grid;
+  gap: 7px;
+  padding: 0 10px 10px;
+}
+
+.v4-player-soul-document {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--ui-surface);
+}
+
+.v4-player-soul-document.invalid {
+  border-color: color-mix(in srgb, var(--ui-danger) 45%, var(--ui-border));
+}
+
+.v4-player-soul-document > summary {
+  padding: 8px 10px;
+}
+
+.v4-player-soul-document > summary span {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+}
+
+.v4-player-soul-document > summary code {
+  color: var(--violet);
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.v4-player-soul-document > p {
+  padding: 0 10px 8px;
+}
+
+.v4-player-soul-document pre {
+  max-height: 240px;
+  margin: 0 9px 9px;
+  padding: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 10px;
 }
 
 .v4-player-finishbar > div:last-child {

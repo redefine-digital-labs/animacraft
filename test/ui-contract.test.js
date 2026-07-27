@@ -66,13 +66,36 @@ test('the certified OC handoff uses the dedicated Soulidity adapter for free and
   assert.match(app, /soulidityAppLink\(runtimeConfig\.soulidityIntegrationPath/);
   assert.match(app, /profileBlob:\s*state\.ocProfilePatchId/);
   assert.match(app, /imageBlob:\s*state\.ocImagePatchId/);
-  assert.match(app, /recipeHash:\s*bytesToHex\(state\.pendingOcRecipeHash\)/);
+  assert.match(app, /recipeHash:\s*certifiedRecipeHash/);
   assert.match(app, /const adapterReady = canonicalSoulMintEnabled;/);
   assert.match(app, /if \(!canonicalSoulMintEnabled\) throw new Error\(t\('canonicalMintDisabled'\)\);/);
   assert.doesNotMatch(app, /&& !activeTemplate\(\)\?\.mintFeeEnabled && ocRecipeIssues/);
   assert.match(html, /id="soulidityMySoulsLink" data-soulidity-auth/);
   assert.match(html, /<strong[^>]*data-i18n="docsHandoffTitle"[^>]*>Dedicated handoff<\/strong>/);
   assert.doesNotMatch(html, /<strong>Temporary Import Kit<\/strong>/);
+});
+
+test('Player completion, Walrus profile and final Soulidity handoff share one immutable OC snapshot', async () => {
+  const [app, handoff] = await Promise.all([
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../oc-handoff.js', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(app, /playerCompletionSnapshotV4:\s*null/);
+  assert.match(app, /syncPlayerV4State\(payload,\s*\{\s*completed:\s*true\s*\}\)/);
+  assert.match(app, /createPlayerCompletionSnapshot\(\{/);
+  assert.match(app, /completion\?\.livingContent \|\| documentV4\.livingContent/);
+  assert.match(app, /canonicalOcPackageFingerprint\(oc\)/);
+  assert.match(app, /certifiedLivingContentSource\(oc\)/);
+  assert.doesNotMatch(
+    app.slice(app.indexOf('async function mintCurrentOc()'), app.indexOf('\nasync function restoreMakerDraft')),
+    /createSoulidityImport(?:Json|Bundle)\(state\.livingContent/,
+  );
+  assert.match(
+    app,
+    /documentV4\.livingContent = normalizeLivingContent\(documentV4\.livingContent, documentV4\.metadata\)/,
+  );
+  assert.match(handoff, /Maker\/version\/Quilt provenance, resolved Living/);
 });
 
 test('Maker v5 mounts separate Creator and Player workspaces on one renderer', async () => {
@@ -195,6 +218,7 @@ test('every application dictionary group has exact five-language key and interpo
     'i18n',
     'editorShellI18n',
     'editorDetailI18n',
+    'makerLifecycleStatusI18n',
     'licenseOptionI18n',
     'livingStatusI18n',
     'draftRecoveryI18n',
@@ -280,6 +304,7 @@ test('non-English application copy only matches English for intentional product 
     'i18n',
     'editorShellI18n',
     'editorDetailI18n',
+    'makerLifecycleStatusI18n',
     'licenseOptionI18n',
     'livingStatusI18n',
     'draftRecoveryI18n',
@@ -542,6 +567,71 @@ test('pending publication review and explicit clear confirmation have complete f
   assert.match(group.zh.clearPendingPublicationMessage, /确认钱包已拒绝请求/);
   assert.match(group.zh.clearPendingPublicationMessage, /链上不存在该交易/);
   assert.match(app, /state\.makerArchived\s*\?\s*t\('archivedMakerImmutable'\)\s*:\s*t\('publishedMakerImmutable'\)/);
+});
+
+test('Maker lifecycle states are explicit and every management action revalidates current chain authority', async () => {
+  const [app, html, styles] = await Promise.all([
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  ]);
+  const lifecycleCopy = staticObjectFromSource(app, 'makerLifecycleStatusI18n');
+  const lifecycleKeys = [
+    'makerLifecycleDraft',
+    'makerLifecyclePublishing',
+    'makerLifecycleRecoverable',
+    'makerLifecycleActive',
+    'makerLifecyclePaused',
+    'makerLifecycleArchived',
+    'makerLifecycleVersionDraft',
+    'retirementProtocolUpgrade',
+    'makerAuthorityChecking',
+    'makerAuthorityChanged',
+    'makerStateReadbackPending',
+  ];
+  ['en', 'zh', 'ja', 'ko', 'vi'].forEach((locale) => {
+    lifecycleKeys.forEach((key) => assert.ok(lifecycleCopy[locale][key]?.trim(), `${locale}.${key} is required`));
+  });
+
+  assert.match(app, /function makerLifecycleDescriptor\(template = activeTemplate\(\)\)/);
+  for (const stateName of ['publishing', 'recoverable', 'version-draft', 'archived', 'paused', 'active']) {
+    assert.match(app, new RegExp(`id = '${stateName.replace('-', '\\-')}'`));
+  }
+  assert.match(app, /let id = template\?\.source === 'local' \? 'draft' : 'starter'/);
+  assert.match(app, /const pendingOnchainEconomics = economicsField && makerIsPublished\(\) && !makerHasPendingV4Version\(\)/);
+  assert.match(app, /makerLifecycleDescriptor\(template\)/);
+  assert.match(styles, /\.maker-lifecycle-badge\.publishing/);
+  assert.match(styles, /\.maker-card-lifecycle\.paused/);
+
+  const authorityStart = app.indexOf('async function refreshMakerLifecycleAuthority(operation)');
+  const authorityEnd = app.indexOf('\nasync function recoverPublishedMakerIndex', authorityStart);
+  const authority = app.slice(authorityStart, authorityEnd);
+  assert.ok(authorityStart >= 0 && authorityEnd > authorityStart);
+  assert.match(authority, /getMakerObjects\(\[makerObjectId\], \{ expectedStructName: 'OCMaker' \}\)/);
+  assert.match(authority, /listOwnedMakerAdminCaps\(walletAddress\)/);
+  assert.match(authority, /admin_cap_id/);
+  assert.match(authority, /treasury_id/);
+  assert.match(authority, /MAKER_ADMIN_CAP_NOT_OWNED/);
+
+  const archiveStart = app.indexOf('async function updateMakerArchiveState(archived)');
+  const archiveEnd = app.indexOf('\nasync function prepareOcUpload', archiveStart);
+  const archiveAction = app.slice(archiveStart, archiveEnd);
+  assert.ok(archiveAction.indexOf('await refreshMakerLifecycleAuthority(operation)') < archiveAction.indexOf('await setMakerArchived('));
+  assert.ok((archiveAction.match(/refreshMakerLifecycleAuthority\(operation\)/g) || []).length >= 2);
+
+  const economicsStart = app.indexOf("$('updateMakerEconomics')?.addEventListener('click'");
+  const economicsEnd = app.indexOf("$('withdrawMakerRevenue')?.addEventListener('click'", economicsStart);
+  const economicsAction = app.slice(economicsStart, economicsEnd);
+  assert.ok(economicsAction.indexOf('await refreshMakerLifecycleAuthority(operation)') < economicsAction.indexOf('await configureMakerEconomics({'));
+  assert.ok((economicsAction.match(/refreshMakerLifecycleAuthority\(operation\)/g) || []).length >= 2);
+
+  const withdrawStart = economicsEnd;
+  const withdrawEnd = app.indexOf("$('deleteMakerDraft')?.addEventListener", withdrawStart);
+  const withdrawAction = app.slice(withdrawStart, withdrawEnd);
+  assert.ok(withdrawAction.indexOf('await refreshMakerLifecycleAuthority(operation)') < withdrawAction.indexOf('await withdrawMakerRevenue({'));
+
+  assert.match(html, /id="makerRetirementNotice"[^>]*data-i18n="retirementProtocolUpgrade"/);
+  assert.doesNotMatch(html, /id="(?:retire|supersede)Maker/i);
 });
 
 test('the Sui wallet selector localizes every operational state in all five languages', async () => {

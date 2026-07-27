@@ -22,6 +22,8 @@ export const MAKER_V4_MOVE_PROJECTION_V2_SCHEMA = 'animacraft.move-summary.v2';
 export const MAKER_V4_ITEM_KEY_ENCODING_V2 = 'item-style-none-smart-color.v2';
 export const MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER = 'animacraft-chain-auxiliary.png';
 export const MAKER_V4_MAX_SINGLE_PUBLISH_RECORDS = 450;
+export const MAKER_V4_EMBEDDED_EXPANSION_RUNTIME = 'embedded-v1';
+export const MAKER_V4_EMBEDDED_EXPANSION_CONTAINER = 'extensions.expansionDrafts';
 
 const MOVE_MAX_KEY_BYTES = 128;
 const MOVE_MAX_PARTS = 750;
@@ -892,6 +894,11 @@ function projectionRuleSort(left, right) {
  */
 function compilePreparedMakerV4MoveProjectionV2(document) {
   validateMakerV4Document(document, { mode: 'publish' });
+  const embeddedExpansion = normalizeEmbeddedExpansionPublication(
+    document,
+    document?.extensions,
+    embeddedContainerManifestIdentifier(document),
+  );
   const index = projectionV2Index(document);
   if (index.parts.length > MOVE_MAX_PARTS) {
     throw new MakerV4PublicationError(
@@ -973,6 +980,18 @@ function compilePreparedMakerV4MoveProjectionV2(document) {
     neutralColor: MAKER_V4_NEUTRAL_COLOR,
     authorizationCoverage: 'complete',
     colorCoverage: 'complete',
+    expansionRuntime: embeddedExpansion.descriptors.length
+      ? {
+        kind: 'embedded',
+        runtime: MAKER_V4_EMBEDDED_EXPANSION_RUNTIME,
+        container: MAKER_V4_EMBEDDED_EXPANSION_CONTAINER,
+        coverage: 'complete',
+      }
+      : null,
+    expansionPacks: embeddedExpansion.descriptors.map((pack) => sanitizeExpansionPack(
+      pack,
+      embeddedContainerManifestIdentifier(document),
+    )),
     auxiliary: {
       identifier: MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER,
       kind: 'chain-auxiliary',
@@ -1213,12 +1232,124 @@ function sanitizeChannel(channel) {
   };
 }
 
-function sanitizeExpansionPack(pack) {
+function expansionPackId(pack) {
+  return String(pack?.packId || pack?.id || '');
+}
+
+function sanitizeEmbeddedExpansionDraft(pack) {
+  const copy = clone(pack) || {};
+  const packId = expansionPackId(copy);
+  delete copy.id;
+  delete copy.manifestIdentifier;
+  delete copy.runtime;
+  delete copy.assetsById;
+  copy.packId = packId;
+  copy.assets = asArray(copy.assets).map(sanitizeAsset)
+    .sort((left, right) => compareText(left.identifier, right.identifier) || compareText(left.id, right.id));
+  copy.layerTracks = asArray(copy.layerTracks).map((track) => {
+    const sanitized = clone(track) || {};
+    delete sanitized.transform;
+    return sanitized;
+  });
+  return copy;
+}
+
+function normalizeEmbeddedExpansionPublication(document, publicExtensions, manifestIdentifier) {
+  const suppliedExtensions = jsonObject(publicExtensions);
+  const documentDrafts = asArray(document?.extensions?.expansionDrafts);
+  const drafts = (Array.isArray(document?.extensions?.expansionDrafts)
+    ? documentDrafts
+    : asArray(suppliedExtensions.expansionDrafts))
+    .map(sanitizeEmbeddedExpansionDraft);
+  const seen = new Set();
+  drafts.forEach((pack) => {
+    if (!pack.packId) {
+      throw new MakerV4PublicationError(
+        'Every embedded ExpansionPack needs a stable packId.',
+        'missing-embedded-expansion-pack-id',
+      );
+    }
+    if (seen.has(pack.packId)) {
+      throw new MakerV4PublicationError(
+        `Embedded ExpansionPack "${pack.packId}" is declared more than once.`,
+        'duplicate-embedded-expansion-pack',
+        { packId: pack.packId },
+      );
+    }
+    seen.add(pack.packId);
+  });
+
+  const metadata = new Map(asArray(document?.expansionPacks)
+    .map((pack) => [expansionPackId(pack), pack])
+    .filter(([id]) => Boolean(id)));
+  const dangling = [...metadata.keys()].filter((id) => !seen.has(id));
+  if (dangling.length) {
+    throw new MakerV4PublicationError(
+      `ExpansionPack metadata has no embedded content: ${dangling.join(', ')}.`,
+      'missing-embedded-expansion-draft',
+      { packIds: dangling },
+    );
+  }
+
+  const descriptors = drafts.map((draft) => {
+    const pack = metadata.get(draft.packId) || {};
+    const numericVersion = Number(pack.version);
+    const baseVersion = Number(pack.baseMakerVersion ?? draft.baseMakerVersion ?? draft.baseVersion);
+    return {
+      id: draft.packId,
+      name: String(pack.name || draft.name || draft.packId),
+      namespace: String(draft.namespace || ''),
+      version: Number.isInteger(numericVersion) && numericVersion > 0 ? numericVersion : 1,
+      // Backwards-compatible field, now pointing at the real containing
+      // manifest rather than a non-existent expansions/<pack>.json file.
+      manifestIdentifier,
+      content: {
+        kind: 'embedded',
+        runtime: MAKER_V4_EMBEDDED_EXPANSION_RUNTIME,
+        container: MAKER_V4_EMBEDDED_EXPANSION_CONTAINER,
+        packId: draft.packId,
+      },
+      baseMakerId: String(pack.baseMakerId || draft.baseMakerId || document?.version?.rootMakerId || ''),
+      baseMakerVersion: Number.isInteger(baseVersion) && baseVersion > 0
+        ? baseVersion
+        : Number(document?.version?.number || 0),
+      required: Boolean(pack.required),
+    };
+  });
+
+  const extensions = clone(suppliedExtensions);
+  delete extensions.expansionRuntime;
+  delete extensions.expansionContainer;
+  delete extensions.expansionDrafts;
+  if (drafts.length) {
+    extensions.expansionRuntime = MAKER_V4_EMBEDDED_EXPANSION_RUNTIME;
+    extensions.expansionContainer = MAKER_V4_EMBEDDED_EXPANSION_CONTAINER;
+    extensions.expansionDrafts = drafts;
+  }
+  return { descriptors, drafts, extensions };
+}
+
+function embeddedContainerManifestIdentifier(document) {
+  const descriptor = asArray(document?.expansionPacks).find((pack) => (
+    pack?.content?.kind === 'embedded'
+    && pack?.manifestIdentifier
+  ));
+  return String(descriptor?.manifestIdentifier || MAKER_V4_MANIFEST_IDENTIFIER);
+}
+
+function sanitizeExpansionPack(pack, manifestIdentifier = MAKER_V4_MANIFEST_IDENTIFIER) {
   return {
     id: String(pack.id || ''),
     name: String(pack.name || ''),
+    namespace: String(pack.namespace || ''),
     version: Number(pack.version),
-    manifestIdentifier: String(pack.manifestIdentifier || ''),
+    manifestIdentifier: String(manifestIdentifier),
+    content: {
+      kind: 'embedded',
+      runtime: MAKER_V4_EMBEDDED_EXPANSION_RUNTIME,
+      container: MAKER_V4_EMBEDDED_EXPANSION_CONTAINER,
+      packId: String(pack.id || ''),
+    },
     baseMakerId: String(pack.baseMakerId || ''),
     baseMakerVersion: Number(pack.baseMakerVersion),
     required: Boolean(pack.required),
@@ -1367,6 +1498,12 @@ function releaseProjection(document) {
  */
 export function buildMakerV4PublicationManifest(document, options = {}) {
   validateMakerV4Document(document, { mode: 'publish' });
+  const manifestIdentifier = String(options.manifestIdentifier || MAKER_V4_MANIFEST_IDENTIFIER);
+  const embeddedExpansion = normalizeEmbeddedExpansionPublication(
+    document,
+    options.publicExtensions,
+    manifestIdentifier,
+  );
   const release = buildMakerV4VersionMetadata(document, options.previousDocument || null);
   if (!options.allowCompatibilityMismatch
     && release.update.breaking.some((issue) => issue.code === 'compatibility-declaration-mismatch')) {
@@ -1424,7 +1561,7 @@ export function buildMakerV4PublicationManifest(document, options = {}) {
         || compareText(left?.channelId, right?.channelId)
       )),
     },
-    expansionPacks: asArray(document.expansionPacks).map(sanitizeExpansionPack).sort((left, right) => compareText(left.id, right.id)),
+    expansionPacks: embeddedExpansion.descriptors.map((pack) => sanitizeExpansionPack(pack, manifestIdentifier)),
     assets: [...referenced].map((assetId) => immutableAssets.get(assetId)).filter(Boolean).map(sanitizeAsset)
       .sort((left, right) => compareText(left.identifier, right.identifier) || compareText(left.id, right.id)),
     publication: {
@@ -1443,7 +1580,7 @@ export function buildMakerV4PublicationManifest(document, options = {}) {
     livingContent: clone(document.livingContent ?? null),
     release,
     legacyMoveProjection: releaseProjection(document),
-    extensions: options.publicExtensions ? clone(options.publicExtensions) : {},
+    extensions: embeddedExpansion.extensions,
   };
   manifest.moveProjectionV2 = compileMakerV4MoveProjectionV2(manifest);
   assertMakerV4ProjectionV2SinglePublishBudget(manifest.moveProjectionV2);
