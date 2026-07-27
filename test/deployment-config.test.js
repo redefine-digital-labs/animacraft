@@ -9,6 +9,13 @@ test('production deployment smoke script parses on the supported Node runtime', 
   execFileSync(process.execPath, ['--check', script], { stdio: 'pipe' });
 });
 
+test('production smoke only requires the Soul mint gate when explicitly requested', async () => {
+  const source = await readFile(new URL('../scripts/production-smoke.mjs', import.meta.url), 'utf8');
+  assert.match(source, /args\.includes\('--require-soulidity'\)/);
+  assert.match(source, /validateRuntimeConfig\(remote, \{ strict: true, requireSoulidity \}\)/);
+  assert.doesNotMatch(source, /requireSoulidity:\s*true/);
+});
+
 test('Vercel serves every SPA deep link through the clean root route', async () => {
   const config = JSON.parse(await readFile(new URL('../vercel.json', import.meta.url), 'utf8'));
   assert.equal(config.$schema, 'https://openapi.vercel.sh/vercel.json');
