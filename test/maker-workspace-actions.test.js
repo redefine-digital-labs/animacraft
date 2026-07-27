@@ -96,6 +96,15 @@ function playerClick(workspace, action, dataset = {}, textContent = '') {
   workspace.handlePlayerClick({ target: actionTarget(action, dataset, textContent) });
 }
 
+async function completePlayerThroughFinalPreview(workspace) {
+  workspace.renderRecipeToBlob = async () => new Blob(['final-png'], { type: 'image/png' });
+  playerClick(workspace, 'player-complete');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(workspace.playerExportOpen, true);
+  assert.equal(workspace.playerExportState, 'ready');
+  playerClick(workspace, 'player-confirm-complete');
+}
+
 async function withWorkspace(run, options = {}) {
   const previousAnimationFrame = globalThis.requestAnimationFrame;
   globalThis.requestAnimationFrame = (callback) => {
@@ -1605,6 +1614,9 @@ test('Player Smart Color shows every channel used by the resolved OC scene', asy
     assert.match(playerRoot.innerHTML, /Colors used by this OC/);
     assert.match(playerRoot.innerHTML, /data-channel-id="background-tone"/);
     assert.match(playerRoot.innerHTML, /data-channel-id="skin-tone"/);
+    assert.match(playerRoot.innerHTML, /class="v4-player-colors" role="radiogroup"/);
+    assert.match(playerRoot.innerHTML, /role="radio"[^>]*data-player-radio-group="color-0"/);
+    assert.match(playerRoot.innerHTML, /aria-checked="true" tabindex="0"/);
     assert.doesNotMatch(playerRoot.innerHTML, /data-channel-id="unused-tone"/);
   }, {
     playable: true,
@@ -1919,7 +1931,7 @@ test('connected Player must save and resolve every recovery branch before Comple
       playerRoot.innerHTML,
       /data-action="player-complete" >Complete OC<\/button>/,
     );
-    playerClick(workspace, 'player-complete');
+    await completePlayerThroughFinalPreview(workspace);
     assert.equal(completed.length, 1);
     assert.equal(errors.length, 3);
   }, {
@@ -2223,12 +2235,328 @@ test('player controls select, undo, redo, clear, randomize, edit profile and com
     playerClick(workspace, 'close-player-info');
     assert.equal(workspace.playerIntroOpen, false);
     workspace.playerCompletionIssues = () => [];
-    playerClick(workspace, 'player-complete');
+    await completePlayerThroughFinalPreview(workspace);
     assert.equal(completed.length, 1);
     assert.match(completed[0].livingContent.soulMd, /Test OC/);
     assert.match(completed[0].livingContent.soulMd, /Test World/);
     assert.match(completed[0].livingContent.memoryMd, /A production-ready character/);
   }, { playable: true, callbacks: { onCompleteOc: (payload) => completed.push(payload) } });
+});
+
+test('Player image-first controls expose one current Part and strong Item, Style, and color selection state', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const document = workspace.runtimeDocument();
+    const part = document.parts[0];
+    const item = part.items[0];
+    const firstStyle = item.styles[0];
+    workspace.assets.set(firstStyle.assetId, {
+      assetId: firstStyle.assetId,
+      url: 'https://assets.example/first-style.png',
+      thumbnailUrl: 'https://assets.example/first-style-thumb.png',
+    });
+    workspace.executeDocument('Add Player style variant', ({ document: next }) => {
+      const targetItem = next.parts[0].items[0];
+      const variant = structuredClone(targetItem.styles[0]);
+      variant.id = 'player-style-variant';
+      variant.name = 'Player style variant';
+      variant.assetId = 'player-style-variant-art';
+      targetItem.styles.push(variant);
+      next.assets.push({
+        id: variant.assetId,
+        identifier: `${variant.assetId}.png`,
+        kind: 'layer',
+        mediaType: 'image/png',
+        width: 1024,
+        height: 1024,
+        url: 'https://assets.example/player-style-variant.png',
+      });
+    });
+    workspace.assets.set('player-style-variant-art', {
+      assetId: 'player-style-variant-art',
+      url: 'https://assets.example/player-style-variant.png',
+      thumbnailUrl: 'https://assets.example/player-style-variant-thumb.png',
+    });
+    workspace.renderPlayer();
+
+    assert.equal((playerRoot.innerHTML.match(/aria-current="true"/g) || []).length, 1);
+    assert.match(playerRoot.innerHTML, /v4-player-part active has-selection/);
+    assert.match(playerRoot.innerHTML, /first-style-thumb\.png/);
+    assert.match(playerRoot.innerHTML, /class="v4-player-item-grid" role="radiogroup"/);
+    assert.match(playerRoot.innerHTML, /role="radio" class="v4-player-item active[^>]*aria-checked="true" tabindex="0"/);
+    assert.match(playerRoot.innerHTML, /class="v4-player-style-picker" role="radiogroup"/);
+    assert.match(playerRoot.innerHTML, /role="radio" class="v4-player-style-option active[^>]*aria-checked="true" tabindex="0"/);
+    assert.match(playerRoot.innerHTML, /player-style-variant-thumb\.png/);
+    assert.match(playerRoot.innerHTML, /v4-player-selected-mark" aria-hidden="true"/);
+  }, { playable: true, playerRoot });
+});
+
+test('Player radio groups use roving focus and arrow keys without activating unavailable options', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    let activatedIndex = -1;
+    let focusedIndex = -1;
+    const group = {
+      querySelectorAll: () => radios,
+    };
+    const createRadio = (index, { disabled = false } = {}) => {
+      const attributes = new Map([
+        ['tabindex', index === 0 ? '0' : '-1'],
+        ['aria-disabled', disabled ? 'true' : 'false'],
+      ]);
+      return {
+        dataset: {
+          playerRadioGroup: 'item',
+          playerRadioIndex: String(index),
+        },
+        hidden: false,
+        closest(selector) {
+          if (selector === '[role="radio"][data-player-radio-group]') return this;
+          if (selector === '[role="radiogroup"]') return group;
+          return null;
+        },
+        getAttribute(name) {
+          return attributes.get(name) || null;
+        },
+        setAttribute(name, value) {
+          attributes.set(name, String(value));
+        },
+        focus() {
+          focusedIndex = index;
+        },
+        click() {
+          activatedIndex = index;
+        },
+      };
+    };
+    const radios = [
+      createRadio(0),
+      createRadio(1),
+      createRadio(2, { disabled: true }),
+    ];
+    playerRoot.selectors['[role="radio"][data-player-radio-group="item"][data-player-radio-index="1"]'] = radios[1];
+    let prevented = false;
+
+    assert.equal(workspace.handlePlayerRadioKeydown({
+      key: 'ArrowRight',
+      target: radios[0],
+      preventDefault() {
+        prevented = true;
+      },
+    }), true);
+    assert.equal(prevented, true);
+    assert.equal(focusedIndex, 1);
+    assert.equal(activatedIndex, 1);
+    assert.equal(radios[0].getAttribute('tabindex'), '-1');
+    assert.equal(radios[1].getAttribute('tabindex'), '0');
+
+    assert.equal(workspace.handlePlayerRadioKeydown({
+      key: 'ArrowRight',
+      target: radios[1],
+      preventDefault() {},
+    }), true);
+    assert.equal(focusedIndex, 2, 'disabled choices remain focusable so their reason can be discovered');
+    assert.equal(activatedIndex, 1, 'disabled choices are never activated');
+    assert.equal(radios[2].getAttribute('tabindex'), '0');
+  }, { playable: true, playerRoot });
+});
+
+test('reselecting the current Player option is a no-op and does not create phantom Undo history', async () => {
+  await withWorkspace(async (workspace) => {
+    const current = workspace.playerRecipe.selections[0];
+    workspace.playerPartId = current.partId;
+    const undoCount = workspace.playerUndo.length;
+    const revision = workspace.playerSessionRevision;
+
+    playerClick(workspace, 'player-item', { itemId: current.itemId });
+    playerClick(workspace, 'player-style', { styleId: current.styleId }, 'Current style');
+
+    assert.equal(workspace.playerUndo.length, undoCount);
+    assert.equal(workspace.playerSessionRevision, revision);
+  }, { playable: true });
+});
+
+test('final preview freezes the exact OC snapshot used by completion and supports size/background rerenders', async () => {
+  const completed = [];
+  const renders = [];
+  const renderedBlobs = [];
+  await withWorkspace(async (workspace) => {
+    workspace.playerCompletionIssues = () => [];
+    workspace.playerProfile.name = 'Frozen OC';
+    workspace.playerProfile.description = 'Frozen description';
+    workspace.renderRecipeToBlob = async (recipe, options) => {
+      renders.push({ recipe: structuredClone(recipe), options: { ...options } });
+      const blob = new Blob([`render-${renders.length}`], { type: 'image/png' });
+      renderedBlobs.push(blob);
+      return blob;
+    };
+
+    playerClick(workspace, 'player-complete');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(workspace.playerExportState, 'ready');
+    assert.equal(workspace.playerExportDimensions.width, 1024);
+    assert.match(workspace.playerRoot?.innerHTML || '', /Final OC preview|OC 最终成品预览/);
+    assert.match(
+      workspace.playerRoot?.innerHTML || '',
+      /id="makerPlayerShareStatus" role="status" aria-live="polite" aria-atomic="true"/,
+    );
+    assert.match(
+      workspace.playerRoot?.innerHTML || '',
+      /data-action="player-copy-maker-link" disabled aria-describedby="makerPlayerShareStatus"/,
+    );
+    assert.doesNotMatch(
+      workspace.playerRoot?.innerHTML || '',
+      /v4-player-export-placeholder" role="status"/,
+    );
+
+    playerClick(workspace, 'player-export-size', { sizeMode: 'original' });
+    await new Promise((resolve) => setImmediate(resolve));
+    playerClick(workspace, 'player-export-background', { transparent: 'true' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(renders.at(-1).options.sizeMode, 'original');
+    assert.equal(renders.at(-1).options.transparentBackground, true);
+
+    workspace.playerProfile.name = 'Changed behind modal';
+    workspace.playerRecipe.selections = [];
+    playerClick(workspace, 'player-confirm-complete');
+
+    assert.equal(completed.length, 1);
+    assert.equal(completed[0].profile.name, 'Frozen OC');
+    assert.equal(completed[0].profile.description, 'Frozen description');
+    assert.deepEqual(completed[0].recipe, renders[0].recipe);
+    assert.equal(completed[0].imageBlob, renderedBlobs.at(-1));
+    assert.equal(workspace.playerPublishOpen, true, 'a real Player completion continues to publication');
+    assert.deepEqual(completed[0].imageExport, {
+      sizeMode: 'original',
+      transparentBackground: true,
+      width: 1024,
+      height: 1024,
+      mediaType: 'image/png',
+    });
+  }, {
+    playable: true,
+    playerRoot: new FakeRoot(),
+    callbacks: { onCompleteOc: (payload) => completed.push(payload) },
+  });
+});
+
+test('Creator Player preview completion returns to Creator without opening or focusing publication', async () => {
+  const playerRoot = new FakeRoot();
+  let publishFocusCount = 0;
+  playerRoot.selectors['#makerPlayerPublishDialog'] = {
+    focus() {
+      publishFocusCount += 1;
+    },
+  };
+  const completed = [];
+  await withWorkspace(async (workspace) => {
+    workspace.playerCreatorPreview = true;
+    workspace.playerCompletionIssues = () => [];
+    workspace.playerExportOpen = true;
+    workspace.playerExportSnapshot = workspace.createPlayerExportSnapshot();
+    workspace.playerExportPreviewBlob = new Blob(['creator-preview'], { type: 'image/png' });
+    workspace.playerExportState = 'ready';
+    workspace.playerExportDimensions = { width: 1024, height: 1024 };
+    workspace.playerPublishOpen = true;
+
+    workspace.completePlayerExport();
+
+    assert.equal(completed.length, 1);
+    assert.equal(workspace.playerExportOpen, false);
+    assert.equal(workspace.playerPublishOpen, false);
+    assert.equal(publishFocusCount, 0);
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: { onCompleteOc: (payload) => completed.push(payload) },
+  });
+});
+
+test('Player export rerenders preserve modal scroll position', async () => {
+  const playerRoot = new FakeRoot();
+  let html = '';
+  let replaceExportBody = false;
+  const replacementBody = { scrollLeft: 0, scrollTop: 0 };
+  Object.defineProperty(playerRoot, 'innerHTML', {
+    configurable: true,
+    get() {
+      return html;
+    },
+    set(value) {
+      html = value;
+      if (replaceExportBody && value.includes('v4-player-export-body')) {
+        playerRoot.selectors['.v4-player-export-body'] = replacementBody;
+      }
+    },
+  });
+
+  await withWorkspace(async (workspace) => {
+    playerRoot.selectors['.v4-player-export-body'] = {
+      scrollLeft: 17,
+      scrollTop: 432,
+    };
+    workspace.playerExportOpen = true;
+    workspace.playerExportSnapshot = workspace.createPlayerExportSnapshot();
+    workspace.playerExportState = 'rendering';
+    replaceExportBody = true;
+
+    workspace.renderPlayer();
+
+    assert.equal(replacementBody.scrollLeft, 17);
+    assert.equal(replacementBody.scrollTop, 432);
+  }, { playable: true, playerRoot });
+});
+
+test('Player export aborts a pending render when the modal closes and serializes option changes', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    let capturedSignal = null;
+    workspace.playerExportOpen = true;
+    workspace.playerExportSnapshot = workspace.createPlayerExportSnapshot();
+    workspace.playerExportState = 'idle';
+    workspace.renderRecipeToBlob = async (_recipe, options) => {
+      capturedSignal = options.signal;
+      await new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+      });
+    };
+
+    const renderPromise = workspace.preparePlayerExportPreview();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(workspace.playerExportState, 'rendering');
+    assert.equal(capturedSignal.aborted, false);
+    assert.match(
+      playerRoot.innerHTML,
+      /data-action="player-export-background" data-transparent="true"[^>]*disabled/,
+    );
+
+    const originalMode = workspace.playerExportSizeMode;
+    const originalTransparency = workspace.playerExportTransparent;
+    playerClick(workspace, 'player-export-size', { sizeMode: 'original' });
+    playerClick(workspace, 'player-export-background', { transparent: 'true' });
+    assert.equal(workspace.playerExportSizeMode, originalMode);
+    assert.equal(workspace.playerExportTransparent, originalTransparency);
+
+    workspace.closePlayerExport();
+    await renderPromise;
+    assert.equal(capturedSignal.aborted, true);
+    assert.equal(workspace.playerExportOpen, false);
+  }, { playable: true, playerRoot });
+});
+
+test('disabled Player share controls never invoke the share action', async () => {
+  await withWorkspace(async (workspace) => {
+    let shareCalls = 0;
+    workspace.sharePlayerMaker = () => {
+      shareCalls += 1;
+    };
+    const blockedShare = actionTarget('player-copy-maker-link');
+    blockedShare.disabled = true;
+
+    workspace.handlePlayerClick({ target: blockedShare });
+
+    assert.equal(shareCalls, 0);
+  }, { playable: true });
 });
 
 test('Player completion stays blocked until the exact current scene has rendered without missing PNGs', async () => {
@@ -2584,6 +2912,22 @@ test('busy Creator and Player close confirmation settles automatically without c
   });
 });
 
+test('a busy Player release cannot be force-closed to edit behind its reviewed snapshot', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    workspace.playerPublishOpen = true;
+    workspace.setPlayerPublishState({ busy: true, status: 'Preparing the reviewed OC' });
+    playerClick(workspace, 'close-player-publish');
+
+    assert.equal(workspace.playerPublishCloseConfirm, true);
+    assert.doesNotMatch(playerRoot.innerHTML, /data-action="force-close-player-publish"/);
+
+    workspace.requestClosePlayerPublish({ force: true });
+    assert.equal(workspace.playerPublishOpen, true);
+    assert.equal(workspace.playerPublishCloseConfirm, true);
+  }, { playerRoot, playable: true });
+});
+
 test('publication close confirmation owns focus, Escape restores the close button, and listeners clean up', async () => {
   class FocusNode {
     constructor(name, active, children = []) {
@@ -2761,7 +3105,8 @@ test('Player hides empty Styles, chooses a drawable alternative, and blocks inco
     workspace.playerPartId = part.id;
     workspace.renderPlayer();
     assert.doesNotMatch(playerRoot.innerHTML, />Empty default</);
-    assert.match(playerRoot.innerHTML, /data-item-id="blocked-item" disabled/);
+    assert.match(playerRoot.innerHTML, /data-item-id="blocked-item"[^>]*aria-disabled="true"/);
+    assert.match(playerRoot.innerHTML, /v4-player-item-reason-blocked-item/);
 
     playerClick(workspace, 'player-item', { itemId: 'alternative-item' });
     const selected = workspace.playerRecipe.selections.find((selection) => selection.partId === part.id);
@@ -2796,8 +3141,22 @@ test('Player disables individual and global removal when an optional Part is req
     workspace.playerPartId = optionalPart.id;
     workspace.renderPlayer();
 
-    assert.match(playerRoot.innerHTML, /data-action="player-none"[^>]*disabled/);
-    assert.match(playerRoot.innerHTML, /data-action="player-clear"[^>]*disabled/);
+    assert.match(
+      playerRoot.innerHTML,
+      /data-action="player-none"[^>]*aria-disabled="true" aria-describedby="v4PlayerRemovePartReason"/,
+    );
+    assert.match(
+      playerRoot.innerHTML,
+      /id="v4PlayerRemovePartReason" class="v4-player-disabled-reason"/,
+    );
+    assert.match(
+      playerRoot.innerHTML,
+      /data-action="player-clear"[^>]*aria-disabled="true" aria-describedby="v4PlayerClearOptionalReason"/,
+    );
+    assert.match(
+      playerRoot.innerHTML,
+      /id="v4PlayerClearOptionalReason" class="v4-player-disabled-reason"/,
+    );
     assert.match(playerRoot.innerHTML, /Requires/);
 
     const before = structuredClone(workspace.playerRecipe);

@@ -108,14 +108,42 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
-  assert.match(html, /styles\.css\?v=animacraft-dual-theme-v1/);
-  assert.match(html, /app\.js\?v=animacraft-dual-theme-v1/);
+  assert.match(html, /styles\.css\?v=animacraft-player-export-v1/);
+  assert.match(html, /app\.js\?v=animacraft-player-export-v1/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
   assert.match(app, /buildMakerV4PublicationBundle/);
   assert.match(app, /makerWorkspace\.renderRecipeToBlob\(recipe\)/);
   assert.match(workspace, /renderResolvedScene\(scene, canvas/);
   assert.match(workspace, /data-action="player-none"/);
+  assert.match(workspace, /data-action="player-preview-export"/);
+  assert.match(workspace, /id="makerPlayerExportDialog"/);
+  assert.match(workspace, /data-action="player-download-png"/);
+  assert.match(workspace, /data-action="player-export-size"/);
+  assert.match(workspace, /data-action="player-export-background"/);
+  assert.match(workspace, /data-action="player-copy-maker-link"/);
+  assert.match(workspace, /aria-current="\$\{active \? 'true' : 'false'\}"/);
+  assert.match(workspace, /class="v4-player-style-option/);
+  assert.match(workspace, /class="v4-player-item-grid" role="radiogroup"/);
+  assert.match(workspace, /type="button" role="radio" class="v4-player-item/);
+  assert.match(workspace, /class="v4-player-style-picker" role="radiogroup"/);
+  assert.match(workspace, /data-player-radio-group="style"/);
+  assert.match(workspace, /class="v4-player-colors" role="radiogroup"/);
+  assert.match(workspace, /handlePlayerRadioKeydown\(event\)/);
+  assert.match(workspace, /const removePartReasonId = 'v4PlayerRemovePartReason'/);
+  assert.match(workspace, /const clearOptionalReasonId = 'v4PlayerClearOptionalReason'/);
+  assert.match(
+    workspace,
+    /id="makerPlayerShareStatus" role="status" aria-live="polite" aria-atomic="true"/,
+  );
+  assert.match(
+    workspace,
+    /data-action="player-copy-maker-link" \$\{external\.shareUrl \? '' : 'disabled aria-describedby="makerPlayerShareStatus"'\}/,
+  );
+  assert.doesNotMatch(workspace, /v4-player-export-placeholder" role="status"/);
+  assert.match(workspace, /this\.restorePlayerExportScroll\(exportScroll\)/);
+  assert.match(workspace, /v4-player-selected-mark" aria-hidden="true"/);
+  assert.doesNotMatch(workspace, /v4-player-selected-mark" aria-label=/);
   assert.match(workspace, /\['info', this\.tr\('makerInfo'\)\]/);
   assert.match(workspace, /makerInfoControl\('maker-name'/);
   assert.match(workspace, /makerInfoControl\('maker-creator'/);
@@ -135,6 +163,13 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(workspace, /data-action="copy-\$\{prefix\}-publish-error"/);
   assert.match(workspace, /data-action="force-close-\$\{prefix\}-publish"/);
   assert.match(styles, /\.v4-chain-flow-backdrop\s*\{[^}]*z-index:\s*1500;/s);
+  assert.match(styles, /\.v4-player-export-backdrop\s*\{[^}]*z-index:\s*1450;/s);
+  assert.match(
+    styles,
+    /\.v4-player-export-body\s*\{[^}]*overflow:\s*auto;[^}]*overscroll-behavior:\s*contain;/s,
+  );
+  assert.match(styles, /\.v4-player-export-image\s*\{[^}]*background:/s);
+  assert.match(styles, /\.v4-player-part\.active\s*\{[^}]*box-shadow:/s);
   assert.match(styles, /\.v4-chain-flow button\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px;/s);
   assert.match(styles, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.v4-chain-status > i\s*\{[^}]*animation:\s*none;/);
   assert.match(workspace, /role="tab" aria-selected=/);
@@ -710,5 +745,15 @@ test('OC publication requires a fresh completed Player snapshot in every locale'
   assert.equal(
     (prepare.match(/currentMakerV4OcBundle\(\{[^}]*requireCompletion: true[^}]*\}\)/g) || []).length,
     2,
+  );
+  assert.match(
+    prepare,
+    /const image = useV4 \? completion\.imageBlob : await renderOcImageBlob\(\);/,
+    'Maker v5 publication must upload the exact PNG approved in the final Player preview',
+  );
+  assert.match(
+    prepare,
+    /!completion\?\.imageBlob[\s\S]*?error\.code = 'OC_COMPLETION_REQUIRED'/,
+    'Maker v5 publication must fail closed when the approved PNG is absent',
   );
 });

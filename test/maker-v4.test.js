@@ -213,6 +213,35 @@ test('validates Maker → Part → Item → Style and direct Style render fields
   assert.equal(hatStyle.transform.y, -8);
 });
 
+test('player export background Part IDs must be unique existing Part references', () => {
+  const document = validV5Document();
+  document.extensions.playerExport = {
+    backgroundPartIds: ['body'],
+  };
+  assert.doesNotThrow(() => validateMakerV5Document(document));
+
+  document.extensions.playerExport.backgroundPartIds = [
+    'body',
+    'body',
+    'missing-background',
+  ];
+  const issues = collectMakerV5ValidationIssues(document);
+  assert.ok(issues.some((entry) => (
+    entry.path === 'extensions.playerExport.backgroundPartIds[1]'
+    && entry.code === 'duplicate'
+  )));
+  assert.ok(issues.some((entry) => (
+    entry.path === 'extensions.playerExport.backgroundPartIds[2]'
+    && entry.code === 'missing_reference'
+  )));
+  assert.throws(
+    () => validateMakerV5Document(document),
+    (error) => error instanceof MakerV5ValidationError
+      && error.issues.some((entry) => entry.code === 'duplicate')
+      && error.issues.some((entry) => entry.code === 'missing_reference'),
+  );
+});
+
 test('draft mode permits an asset-free default Style while publish mode rejects unfinished public content', () => {
   const document = createMakerV5Document({ makerId: 'draft-maker', creator: 'Artist' });
   document.parts.push({

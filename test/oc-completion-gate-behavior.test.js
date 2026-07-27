@@ -77,11 +77,20 @@ function completionGateHarness() {
         livingContent: structuredClone(value.livingContent),
       },
     });
-    const createPlayerCompletionSnapshot = ({ document, recipe, profile, livingContent }) => ({
+    const createPlayerCompletionSnapshot = ({
+      document,
+      recipe,
+      profile,
+      livingContent,
+      imageBlob,
+      imageExport,
+    }) => ({
       makerVersionId: document.version.versionId,
       recipe: structuredClone(recipe),
       profile: structuredClone(profile),
       livingContent: structuredClone(livingContent),
+      imageBlob,
+      imageExport: structuredClone(imageExport),
     });
     const syncLegacyVisualFromV4 = () => {};
     const invalidateOcUpload = () => {};
@@ -143,6 +152,14 @@ test('any live Player update invalidates a completed OC before publication can b
       memoryMd: '# Mira Memory',
       skillMd: '---\nname: mira\n---\n# Mira Skill',
     },
+    imageBlob: new Blob(['reviewed-png'], { type: 'image/png' }),
+    imageExport: {
+      sizeMode: 'standard',
+      transparentBackground: false,
+      width: 1024,
+      height: 1024,
+      mediaType: 'image/png',
+    },
   };
 
   harness.syncPlayerV4State(completedPayload, { completed: true });
@@ -150,6 +167,9 @@ test('any live Player update invalidates a completed OC before publication can b
   assert.equal(completed.package.profile.name, 'Mira');
   assert.equal(completed.package.recipe.selections[0].itemId, 'black');
   assert.equal(completed.package.livingContent.content.memoryMd, '# Mira Memory');
+  assert.equal(harness.state.playerCompletionSnapshotV4.imageBlob, completedPayload.imageBlob);
+  assert.notEqual(harness.state.playerCompletionSnapshotV4.imageExport, completedPayload.imageExport);
+  assert.deepEqual(harness.state.playerCompletionSnapshotV4.imageExport, completedPayload.imageExport);
 
   harness.syncPlayerV4State({
     ...completedPayload,

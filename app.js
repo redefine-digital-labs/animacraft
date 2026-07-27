@@ -4028,6 +4028,7 @@ async function hydrateChainMaker(object) {
     // The Move field is the immutable publisher address. The human-facing
     // creator display name belongs to the signed Walrus Maker metadata.
     creator: String(templateData.creator || suiField(fields, 'creator') || 'Sui creator'),
+    creatorWallet: String(suiField(fields, 'creator') || ''),
     style: String(templateData.style || 'OC Maker'),
     license: makerLicenseLabel(policy),
     royaltyBps: Number(suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || publicationData.royaltyBps || 0),
@@ -5376,7 +5377,7 @@ function safeExternalUrl(value) {
   }
 }
 
-function soulidityAppLink(pathname, params = {}) {
+function soulidityAppLink(pathname, params = {}, { includeWallet = true } = {}) {
   const base = safeExternalUrl(runtimeConfig.soulidityAppUrl);
   if (!base) return '#';
   const url = new URL(base);
@@ -5384,7 +5385,9 @@ function soulidityAppLink(pathname, params = {}) {
   url.hash = '';
   url.search = '';
   url.searchParams.set('source', 'animacraft');
-  if (state.walletConnected && state.walletAddress) url.searchParams.set('wallet', state.walletAddress);
+  if (includeWallet && state.walletConnected && state.walletAddress) {
+    url.searchParams.set('wallet', state.walletAddress);
+  }
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && String(value).trim()) url.searchParams.set(key, String(value));
   });
@@ -9169,9 +9172,27 @@ async function prepareOcUpload() {
       }
       const issues = ocRecipeIssues();
       if (issues.length) throw new Error(issues[0]);
-      const image = await renderOcImageBlob();
-      if (!ocChainOperationIsActive(operation)) return;
       const useV4 = isMakerV4Document(state.makerDocumentV4);
+      const completion = useV4
+        && state.playerCompletionSnapshotV4?.makerVersionId === state.makerDocumentV4.version.versionId
+        ? state.playerCompletionSnapshotV4
+        : null;
+      if (
+        useV4
+        && (
+          !completion?.imageBlob
+          || completion.imageBlob.type !== 'image/png'
+          || completion.imageBlob.size <= 0
+        )
+      ) {
+        const error = new Error(t('completeOcBeforePublishing'));
+        error.code = 'OC_COMPLETION_REQUIRED';
+        throw error;
+      }
+      // For Maker v5, upload the exact PNG reviewed in the final Player
+      // preview. Re-rendering here could silently change size or transparency.
+      const image = useV4 ? completion.imageBlob : await renderOcImageBlob();
+      if (!ocChainOperationIsActive(operation)) return;
       const createdAt = new Date().toISOString();
       let oc;
       let recipeJson;
@@ -9743,6 +9764,8 @@ function syncPlayerV4State({
   recipe,
   profile,
   livingContent = null,
+  imageBlob = null,
+  imageExport = null,
 }, { completed = false } = {}) {
   state.playerRuntimeDocumentV4 = document;
   state.playerRecipeV4 = recipe;
@@ -9753,6 +9776,8 @@ function syncPlayerV4State({
         recipe,
         profile,
         livingContent,
+        imageBlob,
+        imageExport,
       })
     : null;
   syncLegacyVisualFromV4(document, recipe);
@@ -10688,6 +10713,24 @@ makerWorkspace = createMakerWorkspace({
       setPage('make');
       renderAll();
       window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    getPlayerExternalLinks({ document }) {
+      const template = activeTemplate();
+      const makerId = template?.source === 'chain' ? String(template.objectId || '') : '';
+      const versionId = String(document?.version?.versionId || '');
+      const sourceParams = {
+        maker: makerId,
+        makerVersion: versionId,
+        creatorWallet: template?.creatorWallet || '',
+      };
+      return {
+        baseUrl: safeExternalUrl(runtimeConfig.appUrl || location.origin),
+        makerId,
+        // Social writes remain on Soulidity's own origin so its session and
+        // CSRF boundary stay authoritative. Animacraft only supplies immutable
+        // Maker provenance as route context.
+        communityUrl: soulidityAppLink('/community', sourceParams, { includeWallet: false }),
+      };
     },
     onPublish(payload) {
       syncV4WorkspaceState(payload);

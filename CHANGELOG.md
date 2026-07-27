@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 — Production Player export
+
+- Rebuilds Player Part, Item, Style, and linked Smart Color controls around image-first selection with stronger visual and keyboard feedback.
+- Adds an exact final-OC preview modal with standard/original sizing, current/transparent background export, Recipe JSON, and direct PNG download.
+- Freezes the reviewed PNG, Recipe, profile, and Living Content together so Walrus publication uploads the exact image the player approved instead of re-rendering it.
+- Publishes an explicit background-Part allowlist while stripping private editor extension data from immutable Maker manifests.
+- Adds safe public Maker links and routes community actions to Soulidity without serializing wallet sessions, OC data, Soul memory, or local drafts.
+- Localizes the complete Player export flow in English, Simplified Chinese, Japanese, Korean, and Vietnamese.
+
 ## 0.5.2 — Walrus certification visibility hotfix
 
 - Stops reading and caching an uncertified Walrus Blob before its certification transaction.

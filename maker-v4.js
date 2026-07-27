@@ -945,7 +945,29 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
   }
   if (!isObject(document.runtime)) issue('runtime', 'must be an object', 'invalid_runtime');
   if (document.livingContent !== null && !isObject(document.livingContent)) issue('livingContent', 'must be null or an object', 'invalid_living_content');
-  if (!isObject(document.extensions)) issue('extensions', 'must be an object', 'invalid_extensions');
+  if (!isObject(document.extensions)) {
+    issue('extensions', 'must be an object', 'invalid_extensions');
+  } else if (document.extensions.playerExport !== undefined) {
+    const playerExport = document.extensions.playerExport;
+    if (!isObject(playerExport)) {
+      issue('extensions.playerExport', 'must be an object', 'invalid_extensions');
+    } else if (!Array.isArray(playerExport.backgroundPartIds)) {
+      issue(
+        'extensions.playerExport.backgroundPartIds',
+        'must be an array of Part IDs',
+        'invalid_extensions',
+      );
+    } else {
+      const backgroundPartIds = new Set();
+      playerExport.backgroundPartIds.forEach((partId, index) => {
+        const path = `extensions.playerExport.backgroundPartIds[${index}]`;
+        if (!validateSafeId(partId, path, issue)) return;
+        if (backgroundPartIds.has(partId)) issue(path, 'duplicates another background Part ID', 'duplicate');
+        else if (!partById.has(partId)) issue(path, 'references a missing Part', 'missing_reference');
+        backgroundPartIds.add(partId);
+      });
+    }
+  }
 
   return issues;
 }

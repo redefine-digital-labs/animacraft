@@ -221,6 +221,48 @@ test('publication manifest is immutable, referenced-only and strips runtime stat
   assert.equal(validateMakerV5Document(manifest), manifest);
 });
 
+test('publication allowlists only the transparent-background Player export extension', () => {
+  const document = publicationMaker();
+  document.extensions = {
+    ...document.extensions,
+    playerExport: {
+      backgroundPartIds: ['hat'],
+      wallet: '0xprivate-player-export',
+      objectUrl: 'blob:private-player-export',
+    },
+    privateDraft: {
+      wallet: '0xprivate-draft',
+      recoveryUrl: 'blob:private-draft',
+    },
+  };
+  const manifest = buildMakerV4PublicationManifest(document, {
+    publicExtensions: {
+      playerExport: {
+        backgroundPartIds: ['body'],
+        wallet: '0xcaller-private',
+      },
+      arbitraryPrivateExtension: {
+        objectUrl: 'blob:caller-private',
+      },
+    },
+  });
+
+  assert.deepEqual(manifest.extensions, {
+    playerExport: {
+      backgroundPartIds: ['hat'],
+    },
+  });
+  assert.equal(JSON.stringify(manifest).includes('0xprivate-player-export'), false);
+  assert.equal(JSON.stringify(manifest).includes('blob:private-player-export'), false);
+  assert.equal(JSON.stringify(manifest).includes('0xprivate-draft'), false);
+  assert.equal(JSON.stringify(manifest).includes('blob:private-draft'), false);
+  assert.equal(JSON.stringify(manifest).includes('0xcaller-private'), false);
+  assert.equal(JSON.stringify(manifest).includes('blob:caller-private'), false);
+
+  document.extensions.playerExport.backgroundPartIds.push('body');
+  assert.deepEqual(manifest.extensions.playerExport.backgroundPartIds, ['hat']);
+});
+
 test('publication preserves the resolved layer count for the same recipe', () => {
   const document = publicationMaker();
   const selectedRecipe = recipe();

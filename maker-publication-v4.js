@@ -1254,6 +1254,14 @@ function sanitizeEmbeddedExpansionDraft(pack) {
   return copy;
 }
 
+function sanitizePlayerExportPublicationExtension(document) {
+  const backgroundPartIds = document?.extensions?.playerExport?.backgroundPartIds;
+  if (!Array.isArray(backgroundPartIds)) return null;
+  return {
+    backgroundPartIds: [...backgroundPartIds],
+  };
+}
+
 function normalizeEmbeddedExpansionPublication(document, publicExtensions, manifestIdentifier) {
   const suppliedExtensions = jsonObject(publicExtensions);
   const documentDrafts = asArray(document?.extensions?.expansionDrafts);
@@ -1317,10 +1325,12 @@ function normalizeEmbeddedExpansionPublication(document, publicExtensions, manif
     };
   });
 
-  const extensions = clone(suppliedExtensions);
-  delete extensions.expansionRuntime;
-  delete extensions.expansionContainer;
-  delete extensions.expansionDrafts;
+  // Publication extensions are an explicit allowlist. In particular, never
+  // copy arbitrary editor/private extension data from either the document or
+  // caller-supplied options into the immutable Walrus manifest.
+  const extensions = {};
+  const playerExport = sanitizePlayerExportPublicationExtension(document);
+  if (playerExport) extensions.playerExport = playerExport;
   if (drafts.length) {
     extensions.expansionRuntime = MAKER_V4_EMBEDDED_EXPANSION_RUNTIME;
     extensions.expansionContainer = MAKER_V4_EMBEDDED_EXPANSION_CONTAINER;
