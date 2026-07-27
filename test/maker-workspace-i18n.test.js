@@ -12,7 +12,7 @@ import { createMakerWorkspace } from '../maker-workspace.js';
 
 test('Maker Studio core controls have English, Chinese, Japanese, Korean and Vietnamese labels', () => {
   const locales = ['en', 'zh', 'ja', 'ko', 'vi'];
-  const keys = ['partsItems', 'layerTracks', 'smartColor', 'rules', 'expansionPacks', 'preflightCount', 'playerTest', 'publishMainnet'];
+  const keys = ['partsItems', 'makerInfo', 'layerTracks', 'smartColor', 'rules', 'expansionPacks', 'preflightCount', 'playerTest', 'publishMainnet'];
 
   locales.forEach((locale) => {
     keys.forEach((key) => {
@@ -56,6 +56,8 @@ test('all 5 Maker Studio dictionaries cover every editor and player detail key',
     mist: '4,534,560',
     sui: '0.00453456',
     time: '12:34',
+    filename: 'soul.md',
+    limit: 65_536,
   };
 
   assert.deepEqual(MAKER_WORKSPACE_LOCALES, ['en', 'zh', 'ja', 'ko', 'vi']);
@@ -70,7 +72,7 @@ test('all 5 Maker Studio dictionaries cover every editor and player detail key',
       assert.ok(Object.hasOwn(dictionary, key), `${locale}.${key} must be owned by that locale`);
       const value = makerWorkspaceText(locale, key, variables);
       assert.ok(value.trim(), `${locale}.${key} must not be blank`);
-      assert.doesNotMatch(value, /\{(?:count|items|styles|layers|part|item|creator|version|name|breaking|warnings|additions|parts|assets|drawn|skipped|mist|sui|time)\}/, `${locale}.${key} must interpolate its variables`);
+      assert.doesNotMatch(value, /\{(?:count|items|styles|layers|part|item|creator|version|name|breaking|warnings|additions|parts|assets|drawn|skipped|mist|sui|time|filename|limit)\}/, `${locale}.${key} must interpolate its variables`);
     });
   });
 });
@@ -112,8 +114,26 @@ test('critical nested editor details do not fall back to English outside English
     'infoLicense',
     'activeOcColors',
     'expansionSelectionSaved',
+    'makerInfo',
+    'makerInfoTitle',
+    'makerCover',
+    'makerName',
+    'makerCreator',
+    'makerIntroduction',
+    'makerWorldStyle',
+    'makerLicense',
+    'makerLicenseNote',
     'ocDescription',
     'ocTags',
+    'playerSoulConfigCopy',
+    'playerSoulEditDocument',
+    'playerSoulMakerDefault',
+    'playerSoulCustomized',
+    'playerSoulRestoreDefault',
+    'playerSoulRestoreAllDefaults',
+    'playerSoulRestoreDocumentConfirm',
+    'playerSoulRestoreAllConfirm',
+    'playerSoulDraftSaveCopy',
     'playerDraftSaving',
     'playerDraftSavedAt',
     'playerDraftSaveFailed',
@@ -172,6 +192,8 @@ test('critical nested editor details do not fall back to English outside English
     'playerNoVisibleArtwork',
     'playerArtworkUnavailable',
     'playerCurrentOcRenderFailed',
+    'playerResolveRecoveryBeforeComplete',
+    'playerSaveBeforeComplete',
     'completeOc',
     'issueMissingReference',
   ];
@@ -331,6 +353,17 @@ test('Soul configuration has complete five-language navigation and editor labels
     'soulValidationValid',
     'soulValidationInvalid',
     'soulDraftSaveCopy',
+    'soulDocumentTooLarge',
+    'soulTotalTooLarge',
+    'playerSoulConfigCopy',
+    'playerSoulEditDocument',
+    'playerSoulMakerDefault',
+    'playerSoulCustomized',
+    'playerSoulRestoreDefault',
+    'playerSoulRestoreAllDefaults',
+    'playerSoulRestoreDocumentConfirm',
+    'playerSoulRestoreAllConfirm',
+    'playerSoulDraftSaveCopy',
   ];
   const english = makerWorkspaceDictionary('en');
 
@@ -347,6 +380,16 @@ test('Soul configuration has complete five-language navigation and editor labels
       false,
       `${locale}.soulDocumentSize must interpolate both counters`,
     );
+    assert.equal(
+      makerWorkspaceText(locale, 'playerSoulEditDocument', { filename: 'soul.md' }).includes('{'),
+      false,
+      `${locale}.playerSoulEditDocument must interpolate the filename`,
+    );
+    assert.equal(
+      makerWorkspaceText(locale, 'playerSoulRestoreDocumentConfirm', { filename: 'memory.md' }).includes('{'),
+      false,
+      `${locale}.playerSoulRestoreDocumentConfirm must interpolate the filename`,
+    );
   });
 
   assert.equal(makerWorkspaceText('zh', 'soulConfig'), 'Soul 配置');
@@ -354,6 +397,64 @@ test('Soul configuration has complete five-language navigation and editor labels
   assert.equal(makerWorkspaceText('zh', 'soulMemory'), '记忆');
   assert.equal(makerWorkspaceText('zh', 'soulSkills'), '技能');
   assert.equal(makerWorkspaceText('zh', 'soulRestoreDefault'), '恢复默认');
+  assert.equal(makerWorkspaceText('zh', 'playerSoulMakerDefault'), 'Maker 默认');
+  assert.equal(makerWorkspaceText('zh', 'playerSoulCustomized'), '当前 OC 已自定义');
+});
+
+test('Maker Info has complete five-language labels for its public metadata fields', () => {
+  const keys = [
+    'makerInfo',
+    'makerInfoTitle',
+    'makerInfoCopy',
+    'makerCover',
+    'makerCoverCopy',
+    'makerCoverAlt',
+    'uploadMakerCover',
+    'replaceMakerCover',
+    'removeMakerCover',
+    'removeMakerCoverConfirm',
+    'makerCoverRequirements',
+    'makerName',
+    'makerCreator',
+    'makerIntroduction',
+    'makerWorldStyle',
+    'makerLicense',
+    'makerLicenseNote',
+    'makerInfoByteCount',
+    'makerInfoByteExceeded',
+    'makerId',
+    'makerCanvas',
+  ];
+  const english = makerWorkspaceDictionary('en');
+  const intentionalProductTerms = new Set(['makerId', 'makerCanvas']);
+
+  MAKER_WORKSPACE_LOCALES.forEach((locale) => {
+    const dictionary = makerWorkspaceDictionary(locale);
+    keys.forEach((key) => {
+      assert.ok(dictionary[key]?.trim(), `${locale}.${key} must be translated`);
+      if (locale !== 'en' && !intentionalProductTerms.has(key)) {
+        assert.notEqual(dictionary[key], english[key], `${locale}.${key} must not fall back to English`);
+      }
+    });
+    assert.equal(
+      makerWorkspaceText(locale, 'makerCoverAlt', { name: 'Moon Courier' }).includes('{'),
+      false,
+      `${locale}.makerCoverAlt must interpolate the Maker name`,
+    );
+    assert.equal(
+      makerWorkspaceText(locale, 'makerInfoByteCount', { bytes: 129, limit: 128 }).includes('{'),
+      false,
+      `${locale}.makerInfoByteCount must interpolate both byte values`,
+    );
+    assert.equal(
+      makerWorkspaceText(locale, 'makerInfoByteExceeded', { over: 1 }).includes('{'),
+      false,
+      `${locale}.makerInfoByteExceeded must interpolate the overflow`,
+    );
+  });
+
+  assert.equal(makerWorkspaceText('zh', 'makerInfo'), 'Maker 信息');
+  assert.equal(makerWorkspaceText('zh', 'makerIntroduction'), 'Maker 介绍');
 });
 
 test('version history and timestamp states are localized in all five Maker Studio languages', () => {

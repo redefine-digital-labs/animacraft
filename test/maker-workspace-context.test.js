@@ -194,6 +194,7 @@ test('Player Expansion Pack choices restore by wallet and Maker version, then cl
     },
   };
   const sessionWrites = [];
+  const restoredMemory = '# Restored player memory\n\nThis belongs only to the restored OC.';
   const workspace = createMakerWorkspace({
     callbacks: {},
     draftRepository: repository,
@@ -205,6 +206,17 @@ test('Player Expansion Pack choices restore by wallet and Maker version, then cl
           makerVersionId: document.version.versionId,
           recipe: structuredClone(document.defaultRecipe),
           profile: { name: 'Restored OC' },
+          livingContent: {
+            schemaVersion: 'animacraft.living-content.v1',
+            soulMd: '# Restored Soul',
+            memoryMd: restoredMemory,
+            skillMd: '---\nname: restored-oc\n---\n# Restored skill',
+            customized: {
+              soulMd: true,
+              memoryMd: true,
+              skillMd: true,
+            },
+          },
           enabledExpansionIds: ['moon-pack', 'foreign-maker-pack'],
         },
         savedAt: 456,
@@ -224,9 +236,21 @@ test('Player Expansion Pack choices restore by wallet and Maker version, then cl
 
   assert.deepEqual([...workspace.enabledExpansionIds], ['moon-pack']);
   assert.equal(workspace.playerProfile.name, 'Restored OC');
-  await workspace.savePlayerSession();
+  assert.equal(workspace.playerLivingContentDraft().memoryMd, restoredMemory);
+  assert.equal(workspace.playerLivingContentDraft().customized.memoryMd, true);
+
+  const autosavedMemory = '# Autosaved player memory\n\nThis survives reload.';
+  workspace.handlePlayerChange({
+    target: {
+      dataset: { action: 'player-soul-document', soulKey: 'memoryMd' },
+      value: autosavedMemory,
+    },
+  });
+  await workspace.sessionAutosave.flush();
   assert.equal(sessionWrites[0].sessionKey, `${walletAddress}::${document.version.versionId}`);
   assert.deepEqual(sessionWrites[0].session.enabledExpansionIds, ['moon-pack']);
+  assert.equal(sessionWrites[0].session.livingContent.memoryMd, autosavedMemory);
+  assert.equal(sessionWrites[0].session.livingContent.customized.memoryMd, true);
 
   workspace.sessionAutosave();
   const otherMaker = createCharacterMakerV5Starter({
@@ -241,9 +265,119 @@ test('Player Expansion Pack choices restore by wallet and Maker version, then cl
   });
 
   assert.equal(workspace.enabledExpansionIds.size, 0);
+  assert.equal(workspace.playerLivingContentDraft().customized.memoryMd, false);
+  assert.doesNotMatch(workspace.playerLivingContentDraft().memoryMd, /Autosaved player memory/);
   assert.ok(sessionWrites.length >= 2);
   assert.ok(sessionWrites.every((entry) => entry.sessionKey === `${walletAddress}::${document.version.versionId}`));
   assert.ok(sessionWrites.every((entry) => entry.session.enabledExpansionIds.length === 1));
+  workspace.destroy();
+}));
+
+test('a delayed Player Soul restore for one wallet cannot contaminate the same Maker version in another wallet', async () => withAnimationFrame(async () => {
+  let releaseWalletA;
+  let reportWalletAStarted;
+  const walletAStarted = new Promise((resolve) => {
+    reportWalletAStarted = resolve;
+  });
+  const walletARelease = new Promise((resolve) => {
+    releaseWalletA = resolve;
+  });
+  const document = createCharacterMakerV5Starter({
+    makerId: 'shared-version-wallet-isolation',
+    name: 'Shared Version Wallet Isolation',
+  });
+  const persistedDocument = structuredClone(document);
+  const repository = {
+    async load(makerKey) {
+      return {
+        makerKey,
+        revision: 0,
+        document: structuredClone(persistedDocument),
+        recipe: structuredClone(persistedDocument.defaultRecipe),
+        assets: [],
+        metadata: {},
+        savedAt: 123,
+      };
+    },
+    async save() {
+      throw new Error('A clean restored fixture must not create a Maker revision.');
+    },
+    async flush() {
+      return { persistedRevision: 0 };
+    },
+    getStatus() {
+      return { persistedRevision: 0, savedAt: 123 };
+    },
+  };
+  const sessionFor = (name, memoryMd) => ({
+    session: {
+      makerVersionId: document.version.versionId,
+      recipe: structuredClone(document.defaultRecipe),
+      profile: { name },
+      livingContent: {
+        schemaVersion: 'animacraft.living-content.v1',
+        soulMd: `# ${name}`,
+        memoryMd,
+        skillMd: `---\nname: ${name.toLowerCase()}\n---\n# ${name} skill`,
+        customized: {
+          soulMd: true,
+          memoryMd: true,
+          skillMd: true,
+        },
+      },
+      enabledExpansionIds: [],
+    },
+    savedAt: 456,
+  });
+  const workspace = createMakerWorkspace({
+    callbacks: {},
+    draftRepository: repository,
+    walStorage: null,
+    async loadPlayerSessionRecord(sessionKey) {
+      if (sessionKey === `0xwallet-a::${document.version.versionId}`) {
+        reportWalletAStarted();
+        await walletARelease;
+        return sessionFor('Wallet A OC', '# Wallet A private memory');
+      }
+      if (sessionKey === `0xwallet-b::${document.version.versionId}`) {
+        return sessionFor('Wallet B OC', '# Wallet B private memory');
+      }
+      throw new Error(`Unexpected Player session key: ${sessionKey}`);
+    },
+    async savePlayerSessionRecord() {
+      throw new Error('No Player session is dirty in this restore-only fixture.');
+    },
+  });
+
+  const openingWalletA = workspace.setContext({
+    makerKey: '0xwallet-a:shared-version-wallet-isolation',
+    walletAddress: '0xwallet-a',
+    document,
+    assets: [],
+  });
+  await walletAStarted;
+
+  const openingWalletB = workspace.setContext({
+    makerKey: '0xwallet-b:shared-version-wallet-isolation',
+    walletAddress: '0xwallet-b',
+    document,
+    assets: [],
+  });
+  await openingWalletB;
+  assert.equal(workspace.playerProfile.name, 'Wallet B OC');
+  assert.equal(workspace.playerLivingContentDraft().memoryMd, '# Wallet B private memory');
+
+  releaseWalletA();
+  await openingWalletA;
+  assert.equal(workspace.context.walletAddress, '0xwallet-b');
+  assert.equal(workspace.playerProfile.name, 'Wallet B OC');
+  assert.equal(
+    workspace.playerLivingContentDraft().memoryMd,
+    '# Wallet B private memory',
+    'the late Wallet A session must be ignored after Wallet B becomes current',
+  );
+  assert.doesNotMatch(workspace.playerLivingContentDraft().memoryMd, /Wallet A/);
+  workspace.context.walletAddress = '';
   workspace.destroy();
 }));
 
@@ -467,7 +601,7 @@ test('every Creator Studio tool tab is selectable and invalid tabs fall back to 
   const document = createCharacterMakerV5Starter({ makerId: 'tool-tabs', name: 'Tool Tabs' });
   await workspace.setContext({ makerKey: 'wallet:tool-tabs', walletAddress: '', document, assets: [] });
 
-  for (const tab of ['structure', 'layers', 'colors', 'rules', 'expansions', 'soul', 'validate']) {
+  for (const tab of ['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'soul', 'validate']) {
     workspace.openCreatorTab(tab);
     assert.equal(workspace.creatorTab, tab);
   }

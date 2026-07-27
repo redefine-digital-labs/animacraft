@@ -1011,6 +1011,7 @@ const productionRuntimeI18n = {
     ocRenderingQuilt: 'Rendering the OC and encoding one Walrus quilt…',
     ocQuiltEncoded: 'OC quilt encoded. Register it on Walrus Mainnet.',
     ocQuiltPrepareFailed: 'Could not prepare the OC quilt.',
+    completeOcBeforePublishing: 'Complete this OC again before publishing so its latest profile, recipe, and Soul documents are frozen into the release.',
     ocWaitingUpload: 'Waiting for the registration signature, then uploading the OC quilt…',
     ocUnexpectedQuilt: 'Walrus returned an unexpected OC quilt result.',
     ocRecoveredCertified: 'The recovered OC quilt is certified. Continue to Soulidity for the canonical mint.',
@@ -1064,7 +1065,7 @@ const productionRuntimeI18n = {
     walletConnectedAs: '钱包已连接：{address}', walletDisconnected: '钱包未连接', creatorProfileAfterFirstPublish: '首次发布 Maker 后会显示创作者资料', creatorProfileObject: '创作者资料 {address}', creatorProfileCreatedOnPublish: '首次发布时会创建创作者资料', accountGuest: 'Animacraft 用户', continueMakerSession: '继续当前选中的 Maker 会话', choosePublishedMaker: '请先从模板广场选择已发布的 Maker', openExactPlayer: '打开真实玩家编辑器', uploadStyleBeforePreview: '请至少上传一个样式 PNG 后再预览',
     treasuryLoadingSui: '正在从 Sui 读取 Treasury 余额…', treasuryUnavailable: '无法读取关联的 Maker Treasury。', syncingMakers: '正在同步 Maker…', refreshMakers: '刷新 Maker', networkLabel: '网络', packageLabel: '合约包', walrusLabel: 'Walrus', signerLabel: '签名钱包', publishPackageFirstShort: '请先发布合约包', epochRetention: '保留 {count} 个 epoch', configureUploadRelay: '请配置上传中继', signerConnected: '已连接', signerConnectWallet: '连接钱包',
     movePackageMissing: '尚未配置 Move 合约包。', previewMintLocked: '此模板仍是预览；载入已发布的 Sui Maker 和 Walrus 清单后才能铸造。', makerMintClosed: '此 Maker 当前不接受新的 Soul 授权。', paidTreasuryMissing: '此付费 Maker 缺少链上 Treasury 引用。', connectMintWallet: '请连接 Sui 钱包后铸造此 OC。', soulidityPackageMissing: '请先配置 Soulidity 合约包，再启用规范 Soul 铸造。', canonicalMintGateClosed: '经审核的 Soulidity 适配器发布开关尚未启用，当前不能铸造规范 Soul。', mintNextStep: '请准备并认证 OC 包，然后前往 Soulidity 铸造唯一的规范 Soul。', retryUpload: '重试上传', registerUpload: '注册并上传', preparingHandoff: '正在准备交接…',
-    ocRenderingQuilt: '正在渲染 OC 并编码为一个 Walrus Quilt…', ocQuiltEncoded: 'OC Quilt 已编码，请在 Walrus 主网上注册。', ocQuiltPrepareFailed: '无法准备 OC Quilt。', ocWaitingUpload: '正在等待注册签名，随后上传 OC Quilt…', ocUnexpectedQuilt: 'Walrus 返回的 OC Quilt 文件数量不正确。', ocRecoveredCertified: '恢复的 OC Quilt 已认证，可前往 Soulidity 进行规范铸造。', ocUploadedCertify: 'OC Quilt 已上传，请再签名一次完成认证。', ocUploadFailed: 'OC 注册或上传失败。', ocWaitingCertification: '正在等待 Walrus 认证签名…', ocFilesCertified: 'OC 文件已认证，可前往 Soulidity 铸造规范 Soul。', ocCertificationFailed: 'OC 认证失败。', transparentStylePng: '素材「{name}」没有任何可见像素。请用“可选部位”的未选择状态表示“无”，不要上传空 PNG。', pngVerificationFailed: '无法复检所有待发布的样式 PNG，请重新导入有问题的 PNG 后重试。', soulHandoffPreparing: '正在准备规范 Soulidity 交接…', canonicalMintDisabled: '此版本尚未启用规范 Soul 铸造。', ocChangedAfterUpload: '上传后 OC 资料或配方已变更，请重新准备铸造 Quilt。', soulHandoffComplete: '已打开 Soulidity 并下载恢复交接包；该集成只创建一个规范 Soul。', soulHandoffFailed: 'Soulidity 交接失败。', restoringOcUpload: '正在恢复已保存的 OC 上传检查点…',
+    ocRenderingQuilt: '正在渲染 OC 并编码为一个 Walrus Quilt…', ocQuiltEncoded: 'OC Quilt 已编码，请在 Walrus 主网上注册。', ocQuiltPrepareFailed: '无法准备 OC Quilt。', completeOcBeforePublishing: '请重新点击“完成 OC”，把最新的角色资料、组合配方与 Soul 文档冻结后再发布。', ocWaitingUpload: '正在等待注册签名，随后上传 OC Quilt…', ocUnexpectedQuilt: 'Walrus 返回的 OC Quilt 文件数量不正确。', ocRecoveredCertified: '恢复的 OC Quilt 已认证，可前往 Soulidity 进行规范铸造。', ocUploadedCertify: 'OC Quilt 已上传，请再签名一次完成认证。', ocUploadFailed: 'OC 注册或上传失败。', ocWaitingCertification: '正在等待 Walrus 认证签名…', ocFilesCertified: 'OC 文件已认证，可前往 Soulidity 铸造规范 Soul。', ocCertificationFailed: 'OC 认证失败。', transparentStylePng: '素材「{name}」没有任何可见像素。请用“可选部位”的未选择状态表示“无”，不要上传空 PNG。', pngVerificationFailed: '无法复检所有待发布的样式 PNG，请重新导入有问题的 PNG 后重试。', soulHandoffPreparing: '正在准备规范 Soulidity 交接…', canonicalMintDisabled: '此版本尚未启用规范 Soul 铸造。', ocChangedAfterUpload: '上传后 OC 资料或配方已变更，请重新准备铸造 Quilt。', soulHandoffComplete: '已打开 Soulidity 并下载恢复交接包；该集成只创建一个规范 Soul。', soulHandoffFailed: 'Soulidity 交接失败。', restoringOcUpload: '正在恢复已保存的 OC 上传检查点…',
     makerAssetUnavailable: '素材「{name}」已不可用，请重新选择 PNG。', unexpectedMakerQuilt: 'Walrus 返回的 Maker Quilt 文件数量不正确。', expansionNoLongerCompatible: '内嵌扩展包已不再兼容当前 Maker 版本。', ruleAssetMismatch: '每条规则都必须引用已有 PNG 部件的部位。', makerPublishedPartial: '已发布。完整层级和显示规则以版本化 Walrus 清单为准；Sui 只索引其支持的子集。', makerPublishedIndexing: '已发布到 Sui。对象 ID 仍在建立索引，浏览器会暂时保留恢复草稿。', archiveWaiting: '正在等待你的 Sui 签名以归档此 Maker…', restoreWaiting: '正在等待你的 Sui 签名以恢复此 Maker…', archivedOnNetwork: '已在 {network} 归档：{digest}', restoredOnNetwork: '已在 {network} 恢复：{digest}', archiveMakerFailed: '无法归档此 Maker。', restoreMakerFailed: '无法恢复此 Maker。',
     makerRestoredAt: 'Maker 工作区已恢复 · {time}', makerRestored: 'Maker 工作区已恢复', makerVersionChanged: 'Maker 版本已变更，发布前请重新准备 Walrus Quilt。', makerAutosaved: 'Maker 已自动保存', makerSaved: 'Maker 已保存', makerWorkspaceRestoreFailed: '无法恢复 Maker 工作区。', currentRulesInvalid: '当前 Maker 规则无法生成有效 OC。', creatorAssetImportFailed: '无法导入所选 Maker 素材。', ocDraftLocalFailed: '无法在本地保存 OC 草稿。',
     makerSettingsFirstPublish: '这些设置会在首次发布 Maker 时写入。', makerAdminOwnerRequired: '请连接当前持有 MakerAdminCap 的钱包。', paidMintReleaseGated: '付费铸造仍受发布开关限制，请先关闭费用再更新。', validMintPriceRequired: '请输入有效的 {symbol} 铸造价格。', adminSignatureWaiting: '正在等待 MakerAdminCap 持有者签名…', onchainSettingsUpdated: '链上设置已更新：{digest}', onchainSettingsFailed: '链上设置更新失败。', makerTreasuryRequired: '需要已发布的 Maker、Treasury 和 MakerAdminCap。', validWithdrawalRequired: '请输入有效的 {symbol} 提现金额。', revenueWithdrawn: '已提取 {amount} {symbol}：{digest}', treasuryWithdrawalFailed: 'Treasury 提现失败。',
@@ -1073,7 +1074,7 @@ const productionRuntimeI18n = {
     walletConnectedAs: 'ウォレット接続済み：{address}', walletDisconnected: 'ウォレット未接続', creatorProfileAfterFirstPublish: 'Maker の初回公開後にクリエイタープロフィールが表示されます', creatorProfileObject: 'クリエイタープロフィール {address}', creatorProfileCreatedOnPublish: '初回公開時にクリエイタープロフィールが作成されます', accountGuest: 'Animacraft ユーザー', continueMakerSession: '選択中の Maker セッションを続ける', choosePublishedMaker: '先にテンプレートから公開済み Maker を選択してください', openExactPlayer: '実際のプレイヤーエディターを開く', uploadStyleBeforePreview: 'プレビュー前にスタイル PNG を1枚以上追加してください',
     treasuryLoadingSui: 'Sui から Treasury 残高を読み込み中…', treasuryUnavailable: '関連付けられた Maker Treasury を読み込めません。', syncingMakers: 'Maker を同期中…', refreshMakers: 'Maker を更新', networkLabel: 'ネットワーク', packageLabel: 'パッケージ', walrusLabel: 'Walrus', signerLabel: '署名者', publishPackageFirstShort: '先にパッケージを公開', epochRetention: '{count} epoch 保持', configureUploadRelay: 'アップロードリレーを設定', signerConnected: '接続済み', signerConnectWallet: 'ウォレット接続',
     movePackageMissing: 'Move パッケージが未設定です。', previewMintLocked: 'このテンプレートはプレビューです。公開済み Sui Maker と Walrus マニフェストの読み込み後にミントできます。', makerMintClosed: 'この Maker は新しい Soul 承認を受け付けていません。', paidTreasuryMissing: 'この有料 Maker にはオンチェーン Treasury の参照がありません。', connectMintWallet: 'この OC をミントするには Sui ウォレットを接続してください。', soulidityPackageMissing: '正規 Soul ミントを有効にする前に Soulidity パッケージを設定してください。', canonicalMintGateClosed: '審査済み Soulidity アダプターの公開ゲートが有効になるまで正規 Soul はミントできません。', mintNextStep: 'OC パッケージを準備・認証し、Soulidity で正規 Soul をミントしてください。', retryUpload: 'アップロード再試行', registerUpload: '登録してアップロード', preparingHandoff: '連携を準備中…',
-    ocRenderingQuilt: 'OC を描画し、1つの Walrus Quilt にエンコード中…', ocQuiltEncoded: 'OC Quilt をエンコードしました。Walrus Mainnet に登録してください。', ocQuiltPrepareFailed: 'OC Quilt を準備できませんでした。', ocWaitingUpload: '登録署名を待機し、その後 OC Quilt をアップロードします…', ocUnexpectedQuilt: 'Walrus から予期しない OC Quilt 結果が返されました。', ocRecoveredCertified: '復旧した OC Quilt は認証済みです。Soulidity で正規ミントを続けてください。', ocUploadedCertify: 'OC Quilt をアップロードしました。もう一度署名して認証してください。', ocUploadFailed: 'OC の登録またはアップロードに失敗しました。', ocWaitingCertification: 'Walrus の認証署名を待機中…', ocFilesCertified: 'OC ファイルを認証しました。Soulidity で正規 Soul をミントしてください。', ocCertificationFailed: 'OC の認証に失敗しました。', transparentStylePng: '素材「{name}」に表示可能なピクセルがありません。「なし」は空 PNG ではなく任意パーツの未選択状態で表現してください。', pngVerificationFailed: '公開する全スタイル PNG を再検証できませんでした。該当 PNG を読み込み直して再試行してください。', soulHandoffPreparing: '正規 Soulidity 連携を準備中…', canonicalMintDisabled: 'このリリースでは正規 Soul ミントが有効ではありません。', ocChangedAfterUpload: 'アップロード後に OC プロフィールまたはレシピが変更されました。新しい Quilt を準備してください。', soulHandoffComplete: 'Soulidity を開き、復旧用連携パッケージをダウンロードしました。この連携は正規 Soul を1つだけ作成します。', soulHandoffFailed: 'Soulidity 連携に失敗しました。', restoringOcUpload: '保存済み OC アップロードのチェックポイントを復元中…',
+    ocRenderingQuilt: 'OC を描画し、1つの Walrus Quilt にエンコード中…', ocQuiltEncoded: 'OC Quilt をエンコードしました。Walrus Mainnet に登録してください。', ocQuiltPrepareFailed: 'OC Quilt を準備できませんでした。', completeOcBeforePublishing: '最新のプロフィール、レシピ、Soul 文書を固定するため、公開前にもう一度「OC を完成」を実行してください。', ocWaitingUpload: '登録署名を待機し、その後 OC Quilt をアップロードします…', ocUnexpectedQuilt: 'Walrus から予期しない OC Quilt 結果が返されました。', ocRecoveredCertified: '復旧した OC Quilt は認証済みです。Soulidity で正規ミントを続けてください。', ocUploadedCertify: 'OC Quilt をアップロードしました。もう一度署名して認証してください。', ocUploadFailed: 'OC の登録またはアップロードに失敗しました。', ocWaitingCertification: 'Walrus の認証署名を待機中…', ocFilesCertified: 'OC ファイルを認証しました。Soulidity で正規 Soul をミントしてください。', ocCertificationFailed: 'OC の認証に失敗しました。', transparentStylePng: '素材「{name}」に表示可能なピクセルがありません。「なし」は空 PNG ではなく任意パーツの未選択状態で表現してください。', pngVerificationFailed: '公開する全スタイル PNG を再検証できませんでした。該当 PNG を読み込み直して再試行してください。', soulHandoffPreparing: '正規 Soulidity 連携を準備中…', canonicalMintDisabled: 'このリリースでは正規 Soul ミントが有効ではありません。', ocChangedAfterUpload: 'アップロード後に OC プロフィールまたはレシピが変更されました。新しい Quilt を準備してください。', soulHandoffComplete: 'Soulidity を開き、復旧用連携パッケージをダウンロードしました。この連携は正規 Soul を1つだけ作成します。', soulHandoffFailed: 'Soulidity 連携に失敗しました。', restoringOcUpload: '保存済み OC アップロードのチェックポイントを復元中…',
     makerAssetUnavailable: '素材「{name}」は利用できません。PNG を選び直してください。', unexpectedMakerQuilt: 'Walrus から予期しない数の Maker Quilt ファイルが返されました。', expansionNoLongerCompatible: '埋め込み拡張パックは現在の Maker バージョンと互換性がありません。', ruleAssetMismatch: 'すべてのルールは PNG アイテムを持つパーツを参照する必要があります。', makerPublishedPartial: '公開しました。完全な階層・表示ルールはバージョン付き Walrus マニフェストが正本で、Sui は対応する一部を索引します。', makerPublishedIndexing: 'Sui に公開しました。オブジェクト ID の索引中は復旧下書きをブラウザに保持します。', archiveWaiting: 'この Maker をアーカイブする Sui 署名を待機中…', restoreWaiting: 'この Maker を復元する Sui 署名を待機中…', archivedOnNetwork: '{network} でアーカイブ済み：{digest}', restoredOnNetwork: '{network} で復元済み：{digest}', archiveMakerFailed: 'この Maker をアーカイブできませんでした。', restoreMakerFailed: 'この Maker を復元できませんでした。',
     makerRestoredAt: 'Maker ワークスペースを復元しました · {time}', makerRestored: 'Maker ワークスペースを復元しました', makerVersionChanged: 'Maker バージョンが変更されました。公開前に新しい Walrus Quilt を準備してください。', makerAutosaved: 'Maker を自動保存しました', makerSaved: 'Maker を保存しました', makerWorkspaceRestoreFailed: 'Maker ワークスペースを復元できませんでした。', currentRulesInvalid: '現在の Maker ルールでは有効な OC を作成できません。', creatorAssetImportFailed: '選択した Maker 素材を読み込めませんでした。', ocDraftLocalFailed: 'OC 下書きをローカル保存できませんでした。',
     makerSettingsFirstPublish: 'この設定は Maker の初回公開時に反映されます。', makerAdminOwnerRequired: '現在 MakerAdminCap を所有するウォレットを接続してください。', paidMintReleaseGated: '有料ミントは公開ゲートで制限中です。更新前に料金を無効にしてください。', validMintPriceRequired: '有効な {symbol} ミント価格を入力してください。', adminSignatureWaiting: 'MakerAdminCap 所有者の署名を待機中…', onchainSettingsUpdated: 'オンチェーン設定を更新しました：{digest}', onchainSettingsFailed: 'オンチェーン設定の更新に失敗しました。', makerTreasuryRequired: '公開済み Maker、Treasury、MakerAdminCap が必要です。', validWithdrawalRequired: '有効な {symbol} 出金額を入力してください。', revenueWithdrawn: '{amount} {symbol} を出金しました：{digest}', treasuryWithdrawalFailed: 'Treasury からの出金に失敗しました。',
@@ -1082,7 +1083,7 @@ const productionRuntimeI18n = {
     walletConnectedAs: '지갑 연결됨: {address}', walletDisconnected: '지갑 연결 안 됨', creatorProfileAfterFirstPublish: 'Maker를 처음 게시하면 크리에이터 프로필이 표시됩니다', creatorProfileObject: '크리에이터 프로필 {address}', creatorProfileCreatedOnPublish: '처음 게시할 때 크리에이터 프로필이 생성됩니다', accountGuest: 'Animacraft 사용자', continueMakerSession: '선택한 Maker 세션 계속', choosePublishedMaker: '먼저 템플릿에서 게시된 Maker를 선택하세요', openExactPlayer: '실제 플레이어 편집기 열기', uploadStyleBeforePreview: '미리보기 전에 스타일 PNG를 하나 이상 업로드하세요',
     treasuryLoadingSui: 'Sui에서 Treasury 잔액 불러오는 중…', treasuryUnavailable: '연결된 Maker Treasury를 불러올 수 없습니다.', syncingMakers: 'Maker 동기화 중…', refreshMakers: 'Maker 새로고침', networkLabel: '네트워크', packageLabel: '패키지', walrusLabel: 'Walrus', signerLabel: '서명자', publishPackageFirstShort: '먼저 패키지 게시', epochRetention: '{count} epoch 보관', configureUploadRelay: '업로드 릴레이 설정', signerConnected: '연결됨', signerConnectWallet: '지갑 연결',
     movePackageMissing: 'Move 패키지가 설정되지 않았습니다.', previewMintLocked: '이 템플릿은 미리보기입니다. 게시된 Sui Maker와 Walrus 매니페스트를 불러오면 민팅할 수 있습니다.', makerMintClosed: '이 Maker는 새 Soul 승인을 받지 않습니다.', paidTreasuryMissing: '유료 Maker에 온체인 Treasury 참조가 없습니다.', connectMintWallet: '이 OC를 민팅하려면 Sui 지갑을 연결하세요.', soulidityPackageMissing: '정식 Soul 민팅을 활성화하기 전에 Soulidity 패키지를 설정하세요.', canonicalMintGateClosed: '검토된 Soulidity 어댑터 릴리스 게이트가 활성화될 때까지 정식 Soul을 민팅할 수 없습니다.', mintNextStep: 'OC 패키지를 준비하고 인증한 뒤 Soulidity에서 정식 Soul을 민팅하세요.', retryUpload: '업로드 재시도', registerUpload: '등록 및 업로드', preparingHandoff: '연동 준비 중…',
-    ocRenderingQuilt: 'OC를 렌더링하고 하나의 Walrus Quilt로 인코딩 중…', ocQuiltEncoded: 'OC Quilt 인코딩 완료. Walrus Mainnet에 등록하세요.', ocQuiltPrepareFailed: 'OC Quilt를 준비하지 못했습니다.', ocWaitingUpload: '등록 서명을 기다린 뒤 OC Quilt를 업로드합니다…', ocUnexpectedQuilt: 'Walrus가 예상하지 못한 OC Quilt 결과를 반환했습니다.', ocRecoveredCertified: '복구된 OC Quilt가 인증되었습니다. Soulidity에서 정식 민팅을 계속하세요.', ocUploadedCertify: 'OC Quilt 업로드 완료. 한 번 더 서명해 인증하세요.', ocUploadFailed: 'OC 등록 또는 업로드에 실패했습니다.', ocWaitingCertification: 'Walrus 인증 서명을 기다리는 중…', ocFilesCertified: 'OC 파일 인증 완료. Soulidity에서 정식 Soul을 민팅하세요.', ocCertificationFailed: 'OC 인증에 실패했습니다.', transparentStylePng: '에셋 “{name}”에 보이는 픽셀이 없습니다. 빈 PNG 대신 선택 파트의 미선택 상태로 “없음”을 표현하세요.', pngVerificationFailed: '게시할 모든 스타일 PNG를 다시 확인하지 못했습니다. 문제가 있는 PNG를 다시 가져온 뒤 재시도하세요.', soulHandoffPreparing: '정식 Soulidity 연동 준비 중…', canonicalMintDisabled: '이 릴리스에서는 정식 Soul 민팅이 활성화되지 않았습니다.', ocChangedAfterUpload: '업로드 후 OC 프로필 또는 레시피가 변경되었습니다. 새 Quilt를 준비하세요.', soulHandoffComplete: 'Soulidity를 열고 복구 연동 패키지를 다운로드했습니다. 이 연동은 정식 Soul 하나만 생성합니다.', soulHandoffFailed: 'Soulidity 연동에 실패했습니다.', restoringOcUpload: '저장된 OC 업로드 체크포인트 복원 중…',
+    ocRenderingQuilt: 'OC를 렌더링하고 하나의 Walrus Quilt로 인코딩 중…', ocQuiltEncoded: 'OC Quilt 인코딩 완료. Walrus Mainnet에 등록하세요.', ocQuiltPrepareFailed: 'OC Quilt를 준비하지 못했습니다.', completeOcBeforePublishing: '최신 프로필, 레시피와 Soul 문서를 고정하려면 게시 전에 “OC 완성”을 다시 실행하세요.', ocWaitingUpload: '등록 서명을 기다린 뒤 OC Quilt를 업로드합니다…', ocUnexpectedQuilt: 'Walrus가 예상하지 못한 OC Quilt 결과를 반환했습니다.', ocRecoveredCertified: '복구된 OC Quilt가 인증되었습니다. Soulidity에서 정식 민팅을 계속하세요.', ocUploadedCertify: 'OC Quilt 업로드 완료. 한 번 더 서명해 인증하세요.', ocUploadFailed: 'OC 등록 또는 업로드에 실패했습니다.', ocWaitingCertification: 'Walrus 인증 서명을 기다리는 중…', ocFilesCertified: 'OC 파일 인증 완료. Soulidity에서 정식 Soul을 민팅하세요.', ocCertificationFailed: 'OC 인증에 실패했습니다.', transparentStylePng: '에셋 “{name}”에 보이는 픽셀이 없습니다. 빈 PNG 대신 선택 파트의 미선택 상태로 “없음”을 표현하세요.', pngVerificationFailed: '게시할 모든 스타일 PNG를 다시 확인하지 못했습니다. 문제가 있는 PNG를 다시 가져온 뒤 재시도하세요.', soulHandoffPreparing: '정식 Soulidity 연동 준비 중…', canonicalMintDisabled: '이 릴리스에서는 정식 Soul 민팅이 활성화되지 않았습니다.', ocChangedAfterUpload: '업로드 후 OC 프로필 또는 레시피가 변경되었습니다. 새 Quilt를 준비하세요.', soulHandoffComplete: 'Soulidity를 열고 복구 연동 패키지를 다운로드했습니다. 이 연동은 정식 Soul 하나만 생성합니다.', soulHandoffFailed: 'Soulidity 연동에 실패했습니다.', restoringOcUpload: '저장된 OC 업로드 체크포인트 복원 중…',
     makerAssetUnavailable: '에셋 “{name}”을(를) 더 이상 사용할 수 없습니다. PNG를 다시 선택하세요.', unexpectedMakerQuilt: 'Walrus가 예상하지 못한 수의 Maker Quilt 파일을 반환했습니다.', expansionNoLongerCompatible: '포함된 확장 팩이 현재 Maker 버전과 더 이상 호환되지 않습니다.', ruleAssetMismatch: '모든 규칙은 PNG 아이템이 업로드된 파트를 참조해야 합니다.', makerPublishedPartial: '게시되었습니다. 전체 계층 및 표시 규칙은 버전이 지정된 Walrus 매니페스트가 기준이며 Sui는 지원하는 일부만 인덱싱합니다.', makerPublishedIndexing: 'Sui에 게시되었습니다. 오브젝트 ID 인덱싱 중에는 복구 초안을 브라우저에 유지합니다.', archiveWaiting: '이 Maker를 보관하기 위한 Sui 서명을 기다리는 중…', restoreWaiting: '이 Maker를 복원하기 위한 Sui 서명을 기다리는 중…', archivedOnNetwork: '{network}에 보관됨: {digest}', restoredOnNetwork: '{network}에 복원됨: {digest}', archiveMakerFailed: '이 Maker를 보관하지 못했습니다.', restoreMakerFailed: '이 Maker를 복원하지 못했습니다.',
     makerRestoredAt: 'Maker 작업 공간 복원됨 · {time}', makerRestored: 'Maker 작업 공간 복원됨', makerVersionChanged: 'Maker 버전이 변경되었습니다. 게시 전에 새 Walrus Quilt를 준비하세요.', makerAutosaved: 'Maker 자동 저장됨', makerSaved: 'Maker 저장됨', makerWorkspaceRestoreFailed: 'Maker 작업 공간을 복원하지 못했습니다.', currentRulesInvalid: '현재 Maker 규칙으로 유효한 OC를 만들 수 없습니다.', creatorAssetImportFailed: '선택한 Maker 에셋을 가져오지 못했습니다.', ocDraftLocalFailed: 'OC 초안을 로컬에 저장하지 못했습니다.',
     makerSettingsFirstPublish: '이 설정은 Maker를 처음 게시할 때 반영됩니다.', makerAdminOwnerRequired: '현재 MakerAdminCap을 소유한 지갑을 연결하세요.', paidMintReleaseGated: '유료 민팅은 릴리스 게이트로 제한됩니다. 업데이트 전에 수수료를 끄세요.', validMintPriceRequired: '유효한 {symbol} 민팅 가격을 입력하세요.', adminSignatureWaiting: 'MakerAdminCap 소유자 서명을 기다리는 중…', onchainSettingsUpdated: '온체인 설정 업데이트됨: {digest}', onchainSettingsFailed: '온체인 설정 업데이트에 실패했습니다.', makerTreasuryRequired: '게시된 Maker, Treasury, MakerAdminCap이 필요합니다.', validWithdrawalRequired: '유효한 {symbol} 인출 금액을 입력하세요.', revenueWithdrawn: '{amount} {symbol} 인출됨: {digest}', treasuryWithdrawalFailed: 'Treasury 인출에 실패했습니다.',
@@ -1091,7 +1092,7 @@ const productionRuntimeI18n = {
     walletConnectedAs: 'Đã kết nối ví: {address}', walletDisconnected: 'Chưa kết nối ví', creatorProfileAfterFirstPublish: 'Hồ sơ tác giả xuất hiện sau lần đăng Maker đầu tiên', creatorProfileObject: 'Hồ sơ tác giả {address}', creatorProfileCreatedOnPublish: 'Hồ sơ tác giả sẽ được tạo ở lần đăng đầu tiên', accountGuest: 'Người dùng Animacraft', continueMakerSession: 'Tiếp tục phiên Maker đã chọn', choosePublishedMaker: 'Hãy chọn một Maker đã đăng trong Mẫu trước', openExactPlayer: 'Mở đúng trình chỉnh sửa người chơi', uploadStyleBeforePreview: 'Tải lên ít nhất một PNG Kiểu trước khi xem thử',
     treasuryLoadingSui: 'Đang tải số dư Treasury từ Sui…', treasuryUnavailable: 'Không thể tải Maker Treasury đã liên kết.', syncingMakers: 'Đang đồng bộ Maker…', refreshMakers: 'Làm mới Maker', networkLabel: 'Mạng', packageLabel: 'Gói', walrusLabel: 'Walrus', signerLabel: 'Ví ký', publishPackageFirstShort: 'Đăng gói trước', epochRetention: 'Lưu {count} epoch', configureUploadRelay: 'Cấu hình relay tải lên', signerConnected: 'Đã kết nối', signerConnectWallet: 'Kết nối ví',
     movePackageMissing: 'Chưa cấu hình gói Move.', previewMintLocked: 'Mẫu này đang ở chế độ xem trước. Có thể mint sau khi tải Maker Sui đã đăng và Manifest Walrus.', makerMintClosed: 'Maker này không nhận thêm phê duyệt Soul.', paidTreasuryMissing: 'Maker trả phí này thiếu tham chiếu Treasury on-chain.', connectMintWallet: 'Kết nối ví Sui để mint OC này.', soulidityPackageMissing: 'Cấu hình gói Soulidity trước khi bật mint Soul chuẩn.', canonicalMintGateClosed: 'Chưa thể mint Soul chuẩn cho đến khi bật cổng phát hành của bộ điều hợp Soulidity đã duyệt.', mintNextStep: 'Chuẩn bị và chứng nhận gói OC, rồi tiếp tục tới Soulidity để mint Soul chuẩn.', retryUpload: 'Thử tải lại', registerUpload: 'Đăng ký & tải lên', preparingHandoff: 'Đang chuẩn bị chuyển giao…',
-    ocRenderingQuilt: 'Đang kết xuất OC và mã hóa thành một Walrus Quilt…', ocQuiltEncoded: 'Đã mã hóa OC Quilt. Hãy đăng ký trên Walrus Mainnet.', ocQuiltPrepareFailed: 'Không thể chuẩn bị OC Quilt.', ocWaitingUpload: 'Đang chờ chữ ký đăng ký rồi tải OC Quilt lên…', ocUnexpectedQuilt: 'Walrus trả về kết quả OC Quilt không đúng.', ocRecoveredCertified: 'OC Quilt khôi phục đã được chứng nhận. Tiếp tục tới Soulidity để mint chuẩn.', ocUploadedCertify: 'OC Quilt đã tải lên. Ký thêm một lần để chứng nhận.', ocUploadFailed: 'Đăng ký hoặc tải OC thất bại.', ocWaitingCertification: 'Đang chờ chữ ký chứng nhận Walrus…', ocFilesCertified: 'Tệp OC đã chứng nhận. Tiếp tục tới Soulidity để mint Soul chuẩn.', ocCertificationFailed: 'Chứng nhận OC thất bại.', transparentStylePng: 'Tài nguyên “{name}” không có pixel nào hiển thị. Hãy dùng trạng thái không chọn của Bộ phận tùy chọn cho “Không có”, thay vì PNG rỗng.', pngVerificationFailed: 'Không thể xác minh lại mọi PNG Kiểu sẽ đăng. Hãy nhập lại PNG bị lỗi rồi thử lại.', soulHandoffPreparing: 'Đang chuẩn bị chuyển giao Soulidity chuẩn…', canonicalMintDisabled: 'Bản phát hành này chưa bật mint Soul chuẩn.', ocChangedAfterUpload: 'Hồ sơ hoặc công thức OC đã đổi sau khi tải lên. Hãy chuẩn bị Quilt mới.', soulHandoffComplete: 'Đã mở Soulidity và tải gói chuyển giao khôi phục. Tích hợp này chỉ tạo một Soul chuẩn.', soulHandoffFailed: 'Chuyển giao Soulidity thất bại.', restoringOcUpload: 'Đang khôi phục điểm kiểm tra tải OC đã lưu…',
+    ocRenderingQuilt: 'Đang kết xuất OC và mã hóa thành một Walrus Quilt…', ocQuiltEncoded: 'Đã mã hóa OC Quilt. Hãy đăng ký trên Walrus Mainnet.', ocQuiltPrepareFailed: 'Không thể chuẩn bị OC Quilt.', completeOcBeforePublishing: 'Hãy hoàn tất OC lại trước khi đăng để cố định hồ sơ, công thức và tài liệu Soul mới nhất.', ocWaitingUpload: 'Đang chờ chữ ký đăng ký rồi tải OC Quilt lên…', ocUnexpectedQuilt: 'Walrus trả về kết quả OC Quilt không đúng.', ocRecoveredCertified: 'OC Quilt khôi phục đã được chứng nhận. Tiếp tục tới Soulidity để mint chuẩn.', ocUploadedCertify: 'OC Quilt đã tải lên. Ký thêm một lần để chứng nhận.', ocUploadFailed: 'Đăng ký hoặc tải OC thất bại.', ocWaitingCertification: 'Đang chờ chữ ký chứng nhận Walrus…', ocFilesCertified: 'Tệp OC đã chứng nhận. Tiếp tục tới Soulidity để mint Soul chuẩn.', ocCertificationFailed: 'Chứng nhận OC thất bại.', transparentStylePng: 'Tài nguyên “{name}” không có pixel nào hiển thị. Hãy dùng trạng thái không chọn của Bộ phận tùy chọn cho “Không có”, thay vì PNG rỗng.', pngVerificationFailed: 'Không thể xác minh lại mọi PNG Kiểu sẽ đăng. Hãy nhập lại PNG bị lỗi rồi thử lại.', soulHandoffPreparing: 'Đang chuẩn bị chuyển giao Soulidity chuẩn…', canonicalMintDisabled: 'Bản phát hành này chưa bật mint Soul chuẩn.', ocChangedAfterUpload: 'Hồ sơ hoặc công thức OC đã đổi sau khi tải lên. Hãy chuẩn bị Quilt mới.', soulHandoffComplete: 'Đã mở Soulidity và tải gói chuyển giao khôi phục. Tích hợp này chỉ tạo một Soul chuẩn.', soulHandoffFailed: 'Chuyển giao Soulidity thất bại.', restoringOcUpload: 'Đang khôi phục điểm kiểm tra tải OC đã lưu…',
     makerAssetUnavailable: 'Tài nguyên “{name}” không còn khả dụng. Hãy chọn lại PNG.', unexpectedMakerQuilt: 'Walrus trả về số lượng tệp Maker Quilt không đúng.', expansionNoLongerCompatible: 'Gói mở rộng nhúng không còn tương thích với phiên bản Maker này.', ruleAssetMismatch: 'Mỗi quy tắc phải tham chiếu Bộ phận có Vật phẩm PNG đã tải lên.', makerPublishedPartial: 'Đã đăng. Cấu trúc và điều kiện hiển thị đầy đủ lấy Manifest Walrus theo phiên bản làm chuẩn; Sui lập chỉ mục phần được hỗ trợ.', makerPublishedIndexing: 'Đã đăng lên Sui. ID đối tượng đang được lập chỉ mục nên trình duyệt vẫn giữ bản nháp khôi phục.', archiveWaiting: 'Đang chờ chữ ký Sui để lưu trữ Maker này…', restoreWaiting: 'Đang chờ chữ ký Sui để khôi phục Maker này…', archivedOnNetwork: 'Đã lưu trữ trên {network}: {digest}', restoredOnNetwork: 'Đã khôi phục trên {network}: {digest}', archiveMakerFailed: 'Không thể lưu trữ Maker này.', restoreMakerFailed: 'Không thể khôi phục Maker này.',
     makerRestoredAt: 'Đã khôi phục không gian Maker · {time}', makerRestored: 'Đã khôi phục không gian Maker', makerVersionChanged: 'Phiên bản Maker đã đổi. Hãy chuẩn bị Walrus Quilt mới trước khi đăng.', makerAutosaved: 'Maker đã tự lưu', makerSaved: 'Maker đã lưu', makerWorkspaceRestoreFailed: 'Không thể khôi phục không gian Maker.', currentRulesInvalid: 'Quy tắc Maker hiện tại không thể tạo OC hợp lệ.', creatorAssetImportFailed: 'Không thể nhập tài nguyên Maker đã chọn.', ocDraftLocalFailed: 'Không thể lưu cục bộ bản nháp OC.',
     makerSettingsFirstPublish: 'Các cài đặt này sẽ được ghi khi Maker được đăng lần đầu.', makerAdminOwnerRequired: 'Kết nối ví hiện đang sở hữu MakerAdminCap.', paidMintReleaseGated: 'Mint trả phí vẫn bị khóa theo bản phát hành. Hãy tắt phí trước khi cập nhật.', validMintPriceRequired: 'Nhập giá mint {symbol} hợp lệ.', adminSignatureWaiting: 'Đang chờ chữ ký của chủ MakerAdminCap…', onchainSettingsUpdated: 'Đã cập nhật cài đặt on-chain: {digest}', onchainSettingsFailed: 'Cập nhật cài đặt on-chain thất bại.', makerTreasuryRequired: 'Cần Maker đã đăng, Treasury và MakerAdminCap.', validWithdrawalRequired: 'Nhập số tiền rút {symbol} hợp lệ.', revenueWithdrawn: 'Đã rút {amount} {symbol}: {digest}', treasuryWithdrawalFailed: 'Rút tiền từ Treasury thất bại.',
@@ -2596,6 +2597,8 @@ const loadedStableMakerIndexes = new Set();
 const loadedMakerAssetDrafts = new Set();
 const loadedMakerUploadRecoveries = new Set();
 const loadedOcUploadRecoveries = new Set();
+const localMakerCoverObjectUrls = new Map();
+const localMakerCoverRestoreTokens = new Map();
 let pendingConfirmation = null;
 let makerAutosaveTimer = null;
 let makerWorkspace = null;
@@ -3053,6 +3056,35 @@ function localMakerIndexKey(address = state.walletAddress) {
   return `animacraft-local-makers-v6:${address || 'local'}`;
 }
 
+function stableMakerCoverUrl(value) {
+  const candidate = String(value || '').trim();
+  if (!candidate || candidate.startsWith('blob:')) return '';
+  return safeExternalUrl(candidate);
+}
+
+function revokeLocalMakerCoverObjectUrl(templateId, { clearTemplate = true } = {}) {
+  const normalizedTemplateId = String(templateId || '');
+  const entry = localMakerCoverObjectUrls.get(normalizedTemplateId);
+  if (!entry) return;
+  localMakerCoverObjectUrls.delete(normalizedTemplateId);
+  URL.revokeObjectURL(entry.url);
+  if (!clearTemplate) return;
+  const template = templates.find((candidate) => candidate.id === normalizedTemplateId);
+  if (template?.coverUrl === entry.url) template.coverUrl = '';
+}
+
+function localMakerCoverObjectUrl(template, coverAssetId, blob) {
+  if (!template || !blob || typeof blob.arrayBuffer !== 'function') return '';
+  const assetId = String(coverAssetId || '');
+  const existing = localMakerCoverObjectUrls.get(template.id);
+  if (existing?.assetId === assetId && existing.blob === blob) return existing.url;
+  revokeLocalMakerCoverObjectUrl(template.id);
+  const url = URL.createObjectURL(blob);
+  localMakerCoverObjectUrls.set(template.id, { assetId, blob, url });
+  template.coverUrl = url;
+  return url;
+}
+
 function persistLocalMakerIndex(address = state.walletAddress) {
   const owner = String(address || '').trim();
   if (!owner) return;
@@ -3074,6 +3106,7 @@ function persistLocalMakerIndex(address = state.walletAddress) {
     secondary: template.secondary,
     summary: template.summary,
     licenseNote: template.licenseNote,
+    coverUrl: stableMakerCoverUrl(template.coverUrl),
   }));
   localStorage.setItem(localMakerIndexKey(owner), JSON.stringify(records));
 }
@@ -3106,10 +3139,64 @@ function loadLocalMakerIndex(address = state.walletAddress) {
         secondary: safeCssColor(record.secondary, '#f0a23a'),
         summary: safeDraftText(record.summary, 'Character Maker draft.', 2_000),
         licenseNote: safeDraftText(record.licenseNote, 'Draft maker.', 2_000),
+        coverUrl: stableMakerCoverUrl(record.coverUrl),
       });
     });
   } catch (error) {
     console.warn('Ignored an unreadable local Maker index.', error);
+  }
+}
+
+async function restoreLocalMakerCoverFromV6(record, owner) {
+  const makerId = safeDraftText(
+    record?.metadata?.rootMakerId || record?.document?.version?.rootMakerId,
+    '',
+    128,
+  );
+  const makerKey = String(record?.makerKey || '');
+  const template = templates.find((candidate) => (
+    candidate.id === makerId
+    && candidate.source === 'local'
+    && candidate.owner === owner
+  ));
+  if (!template || !makerKey || !makerWorkspace) return false;
+  const token = Symbol(makerKey);
+  localMakerCoverRestoreTokens.set(makerId, token);
+  try {
+    const loaded = await makerWorkspace.loadDraftProject(makerKey);
+    if (
+      localMakerCoverRestoreTokens.get(makerId) !== token
+      || !loaded?.document
+      || loaded.document.version?.rootMakerId !== makerId
+    ) return false;
+    const currentTemplate = templates.find((candidate) => (
+      candidate.id === makerId
+      && candidate.source === 'local'
+      && candidate.owner === owner
+    ));
+    if (!currentTemplate) return false;
+    const assets = new Map((loaded.assets || []).map((asset) => [
+      String(asset.assetId || asset.id || ''),
+      asset,
+    ]).filter(([assetId]) => assetId));
+    makerV4WorkspaceCoverUrl(loaded.document, assets, currentTemplate);
+    if (localMakerCoverRestoreTokens.get(makerId) !== token) return false;
+    renderImageMakerList();
+    return true;
+  } catch (error) {
+    console.warn(`Could not restore the local Maker cover for ${makerId}.`, error);
+    return false;
+  } finally {
+    if (localMakerCoverRestoreTokens.get(makerId) === token) {
+      localMakerCoverRestoreTokens.delete(makerId);
+    }
+  }
+}
+
+async function restoreLocalMakerCoversFromV6(records, owner) {
+  for (const record of records) {
+    if (String(owner || '') !== String(state.walletAddress || '')) return;
+    await restoreLocalMakerCoverFromV6(record, owner);
   }
 }
 
@@ -3119,6 +3206,7 @@ async function recoverStableMakerIndex(address = state.walletAddress) {
   loadedStableMakerIndexes.add(owner);
   try {
     const records = await makerWorkspace.listDraftProjects({ walletAddress: owner });
+    if (owner !== state.walletAddress) return;
     records.slice().reverse().forEach((record) => {
       const document = record?.document;
       const id = safeDraftText(
@@ -3126,29 +3214,33 @@ async function recoverStableMakerIndex(address = state.walletAddress) {
         '',
         128,
       );
-      if (!isSafeKey(id) || templates.some((template) => template.id === id)) return;
-      templates.unshift({
-        id,
-        source: 'local',
-        owner,
-        name: safeDraftText(document?.metadata?.name, 'Untitled OC Maker', 128),
-        category: 'daily',
-        creator: safeDraftText(document?.metadata?.creator, shortAddress(owner) || 'Creator', 128),
-        style: safeDraftText(document?.metadata?.style, 'OC Maker', 128),
-        license: creatorLicenseLabels[document?.metadata?.license?.kind] || 'Personal use',
-        royaltyBps: Number(document?.publication?.royaltyBps || 0),
-        mintingEnabled: document?.publication?.mintingEnabled !== false,
-        mintFeeEnabled: Boolean(document?.publication?.mintFeeEnabled),
-        mintPriceAtomic: Number(document?.publication?.mintPriceAtomic || 0),
-        price: 'Draft',
-        accent: '#27c5c8',
-        secondary: '#f0a23a',
-        summary: safeDraftText(document?.metadata?.summary, 'Character Maker draft.', 2_000),
-        licenseNote: safeDraftText(document?.metadata?.license?.note, 'Draft maker.', 2_000),
-      });
+      if (!isSafeKey(id)) return;
+      if (!templates.some((template) => template.id === id)) {
+        templates.unshift({
+          id,
+          source: 'local',
+          owner,
+          name: safeDraftText(document?.metadata?.name, 'Untitled OC Maker', 128),
+          category: 'daily',
+          creator: safeDraftText(document?.metadata?.creator, shortAddress(owner) || 'Creator', 128),
+          style: safeDraftText(document?.metadata?.style, 'OC Maker', 128),
+          license: creatorLicenseLabels[document?.metadata?.license?.kind] || 'Personal use',
+          royaltyBps: Number(document?.publication?.royaltyBps || 0),
+          mintingEnabled: document?.publication?.mintingEnabled !== false,
+          mintFeeEnabled: Boolean(document?.publication?.mintFeeEnabled),
+          mintPriceAtomic: Number(document?.publication?.mintPriceAtomic || 0),
+          price: 'Draft',
+          accent: '#27c5c8',
+          secondary: '#f0a23a',
+          summary: safeDraftText(document?.metadata?.summary, 'Character Maker draft.', 2_000),
+          licenseNote: safeDraftText(document?.metadata?.license?.note, 'Draft maker.', 2_000),
+          coverUrl: '',
+        });
+      }
     });
     persistLocalMakerIndex();
     renderAll();
+    void restoreLocalMakerCoversFromV6(records, owner);
   } catch (error) {
     loadedStableMakerIndexes.delete(owner);
     state.draftSaveStatus = 'error';
@@ -3706,12 +3798,6 @@ function makerModelFromV4Manifest(document, resolveAssetUrl, object = {}) {
     remote: true,
   }));
   const editableDocument = structuredClone(document);
-  const releaseCoverId = editableDocument.metadata?.coverAssetId;
-  const releaseCover = editableDocument.assets?.find((asset) => asset.id === releaseCoverId);
-  if (releaseCover?.kind === 'maker-cover') {
-    editableDocument.assets = editableDocument.assets.filter((asset) => asset.id !== releaseCoverId);
-    editableDocument.metadata.coverAssetId = null;
-  }
   return {
     canvas: { width: document.canvas.width, height: document.canvas.height },
     slots: modelSlots,
@@ -3939,7 +4025,9 @@ async function hydrateChainMaker(object) {
     objectId: object.objectId,
     quiltId,
     name: String(suiField(fields, 'name') || templateData.name || 'On-chain OC Maker'),
-    creator: String(suiField(fields, 'creator') || templateData.creator || 'Sui creator'),
+    // The Move field is the immutable publisher address. The human-facing
+    // creator display name belongs to the signed Walrus Maker metadata.
+    creator: String(templateData.creator || suiField(fields, 'creator') || 'Sui creator'),
     style: String(templateData.style || 'OC Maker'),
     license: makerLicenseLabel(policy),
     royaltyBps: Number(suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || publicationData.royaltyBps || 0),
@@ -5906,17 +5994,53 @@ function renderRecipe() {
   });
 }
 
+function makerV4AssetDescriptor(documentV4, assetId) {
+  const normalizedAssetId = String(assetId || '');
+  return normalizedAssetId
+    ? (documentV4?.assets || []).find((asset) => String(asset.id || '') === normalizedAssetId) || null
+    : null;
+}
+
+function makerV4RuntimeAssetRecord(assetId) {
+  const normalizedAssetId = String(assetId || '');
+  return normalizedAssetId
+    ? currentV4RuntimeAssets().find((record) => (
+        String(record?.assetId || record?.id || '') === normalizedAssetId
+      )) || null
+    : null;
+}
+
+function makerV4RuntimeAssetSource(record) {
+  const source = record?.blob || record?.file;
+  return source && typeof source.arrayBuffer === 'function' ? source : null;
+}
+
+function makerV4HasUsableCover(documentV4) {
+  const coverAssetId = String(documentV4?.metadata?.coverAssetId || '');
+  const descriptor = makerV4AssetDescriptor(documentV4, coverAssetId);
+  if (!descriptor || !descriptor.identifier || !String(descriptor.mediaType || '').startsWith('image/')) return false;
+  const record = makerV4RuntimeAssetRecord(coverAssetId);
+  if (makerV4RuntimeAssetSource(record)) return true;
+  if (record?.url || descriptor.url || descriptor.legacy?.url) return true;
+  return Boolean(activeTemplate()?.quiltId && descriptor.identifier);
+}
+
+function makerV4ReleaseCoverIsGenerated(documentV4) {
+  const descriptor = makerV4AssetDescriptor(documentV4, documentV4?.metadata?.coverAssetId);
+  return descriptor?.source === 'generated-release';
+}
+
+function makerV4ReleaseCoverBlob(documentV4, runtimeAssets) {
+  const record = runtimeAssets?.get?.(String(documentV4?.metadata?.coverAssetId || ''));
+  return makerV4RuntimeAssetSource(record);
+}
+
 function makerV4DocumentForRelease({ includeGeneratedCover = false, sourceDocument = state.makerDocumentV4 } = {}) {
   if (!isMakerV4Document(sourceDocument)) return null;
   const documentV4 = structuredClone(sourceDocument);
-  documentV4.metadata.name = $('creatorTemplateName')?.value || documentV4.metadata.name;
-  documentV4.metadata.summary = $('creatorDescription')?.value ?? documentV4.metadata.summary;
-  documentV4.metadata.creator = $('creatorName')?.value || documentV4.metadata.creator;
-  documentV4.metadata.style = $('creatorWorld')?.value ?? documentV4.metadata.style;
-  documentV4.metadata.license = {
-    kind: $('creatorLicense')?.value || documentV4.metadata.license.kind,
-    note: $('creatorLicenseNote')?.value ?? documentV4.metadata.license.note,
-  };
+  // MakerDocument is the canonical source for public metadata. The legacy
+  // shell inputs are only a compatibility projection and may lag behind the
+  // Creator Workspace after a restore or an autosaved Maker Info edit.
   documentV4.publication = {
     ...documentV4.publication,
     royaltyBps: Number($('creatorRoyalty')?.value || 0),
@@ -5937,6 +6061,7 @@ function makerV4DocumentForRelease({ includeGeneratedCover = false, sourceDocume
   };
   documentV4.livingContent = normalizeLivingContent(documentV4.livingContent, documentV4.metadata);
   if (!includeGeneratedCover) return documentV4;
+  if (makerV4HasUsableCover(documentV4)) return documentV4;
 
   const usedIds = new Set(documentV4.assets.map((asset) => asset.id));
   const usedIdentifiers = new Set(documentV4.assets.map((asset) => asset.identifier).filter(Boolean));
@@ -5965,30 +6090,40 @@ function makerV4DocumentForRelease({ includeGeneratedCover = false, sourceDocume
   return documentV4;
 }
 
-async function makerV4RuntimeAssetsForRelease(documentV4, coverBlob) {
+async function makerV4RuntimeAssetsForRelease(documentV4, providedCoverBlob = null) {
   const projectionDocument = prepareMakerV4ProjectionV2Document(documentV4);
   const runtimeAssets = new Map();
   currentV4RuntimeAssets().forEach((record) => {
     const assetId = String(record.assetId || record.id || '');
     if (assetId) runtimeAssets.set(assetId, record);
   });
-  const coverAssetId = documentV4.metadata.coverAssetId;
-  runtimeAssets.set(coverAssetId, {
-    assetId: coverAssetId,
-    blob: coverBlob,
-    file: coverBlob,
-    fileName: documentV4.assets.find((asset) => asset.id === coverAssetId)?.identifier || 'maker-cover.png',
-  });
+  const coverAssetId = String(documentV4.metadata.coverAssetId || '');
+  const coverDescriptor = makerV4AssetDescriptor(documentV4, coverAssetId);
+  if (providedCoverBlob) {
+    const existingCover = runtimeAssets.get(coverAssetId);
+    runtimeAssets.set(coverAssetId, {
+      ...existingCover,
+      assetId: coverAssetId,
+      blob: providedCoverBlob,
+      file: providedCoverBlob,
+      fileName: coverDescriptor?.identifier || existingCover?.fileName || 'maker-cover.png',
+    });
+  }
   for (const descriptor of projectionDocument.assets) {
     if (runtimeAssets.get(descriptor.id)?.blob || runtimeAssets.get(descriptor.id)?.file) continue;
     const record = runtimeAssets.get(descriptor.id);
     const url = record?.url
+      || descriptor.url
+      || descriptor.legacy?.url
       || (activeTemplate()?.quiltId && descriptor.identifier ? walrusQuiltFileUrl(activeTemplate().quiltId, descriptor.identifier) : '');
     if (!url) continue;
     const response = await fetchWalrusWithBackoff(url);
     if (!response.ok) throw new Error(`Could not reload ${descriptor.identifier} for this Maker version (${response.status}).`);
     const blob = await responseBlobWithinLimit(response, 20 * 1024 * 1024, `Maker asset ${descriptor.identifier}`);
     runtimeAssets.set(descriptor.id, { ...record, assetId: descriptor.id, blob, file: blob, url });
+  }
+  if (!coverDescriptor || !makerV4ReleaseCoverBlob(documentV4, runtimeAssets)) {
+    throw new Error('The Maker cover has no readable image source. Re-upload the cover or generate a new release cover.');
   }
   const descriptorById = new Map(
     projectionDocument.assets.map((descriptor) => [String(descriptor.id || ''), descriptor]),
@@ -6210,7 +6345,11 @@ function makerUploadEntries() {
   ];
 }
 
-function currentMakerV4OcBundle({ createdAt = new Date().toISOString(), integrity = null } = {}) {
+function currentMakerV4OcBundle({
+  createdAt = new Date().toISOString(),
+  integrity = null,
+  requireCompletion = false,
+} = {}) {
   if (!isMakerV4Document(state.makerDocumentV4)) return null;
   // Provenance must always reference the complete immutable Maker manifest.
   // Player runtime documents intentionally omit disabled ExpansionPacks.
@@ -6218,6 +6357,11 @@ function currentMakerV4OcBundle({ createdAt = new Date().toISOString(), integrit
   const completion = state.playerCompletionSnapshotV4?.makerVersionId === documentV4.version.versionId
     ? state.playerCompletionSnapshotV4
     : null;
+  if (requireCompletion && !completion) {
+    const error = new Error(t('completeOcBeforePublishing'));
+    error.code = 'OC_COMPLETION_REQUIRED';
+    throw error;
+  }
   const sourceProfile = completion?.profile || v4ProfileFromLegacy();
   const profile = {
     name: sourceProfile.name || 'Untitled OC',
@@ -7356,6 +7500,8 @@ function requestDeleteMaker(templateId = state.templateId) {
       const wasActive = state.templateId === templateId;
       const assetStorageKey = makerAssetStorageKey(templateId);
       revokeMakerObjectUrls(model);
+      localMakerCoverRestoreTokens.delete(templateId);
+      revokeLocalMakerCoverObjectUrl(templateId);
       localStorage.removeItem(makerDraftStorageKey(templateId));
       loadedMakerDrafts.delete(makerDraftStorageKey(templateId));
       loadedMakerAssetDrafts.delete(assetStorageKey);
@@ -8409,12 +8555,16 @@ async function prepareMakerUpload() {
         const projection = compileMakerV4MoveProjectionV2(documentV4);
         assertMakerV4ProjectionV2SinglePublishBudget(projection);
       }
-      const coverBlob = await renderOcImageBlob(state.makerDocumentV4?.defaultRecipe || null);
-      if (!makerChainOperationIsActive(operation)) return;
-      state.pendingMakerCoverBlob = coverBlob;
       if (documentV4) {
-        const runtimeAssets = await makerV4RuntimeAssetsForRelease(documentV4, coverBlob);
+        const generatedCoverBlob = makerV4ReleaseCoverIsGenerated(documentV4)
+          ? await renderOcImageBlob(state.makerDocumentV4?.defaultRecipe || null)
+          : null;
         if (!makerChainOperationIsActive(operation)) return;
+        const runtimeAssets = await makerV4RuntimeAssetsForRelease(documentV4, generatedCoverBlob);
+        if (!makerChainOperationIsActive(operation)) return;
+        const coverBlob = makerV4ReleaseCoverBlob(documentV4, runtimeAssets);
+        if (!coverBlob) throw new Error(t('makerRecoveryCoverMissing'));
+        state.pendingMakerCoverBlob = coverBlob;
         const bundle = buildMakerV4PublicationBundle(documentV4, runtimeAssets, {
           previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
           publicExtensions: makerV4PublicExtensions(documentV4),
@@ -8437,6 +8587,9 @@ async function prepareMakerUpload() {
         }));
         state.pendingMakerManifestJson = bundle.manifestJson;
       } else {
+        const coverBlob = await renderOcImageBlob(null);
+        if (!makerChainOperationIsActive(operation)) return;
+        state.pendingMakerCoverBlob = coverBlob;
         state.pendingMakerV4Bundle = null;
         state.pendingMakerAssets = [
           ...publishableAssets(),
@@ -9025,7 +9178,7 @@ async function prepareOcUpload() {
       let chainRecipe;
       let v4Bundle = null;
       if (useV4) {
-        v4Bundle = currentMakerV4OcBundle({ createdAt });
+        v4Bundle = currentMakerV4OcBundle({ createdAt, requireCompletion: true });
         chainRecipe = v4Bundle.suiRecipe;
         recipeJson = v4Bundle.fullRecipeJson;
       } else {
@@ -9047,7 +9200,7 @@ async function prepareOcUpload() {
       };
       let profile;
       if (useV4) {
-        v4Bundle = currentMakerV4OcBundle({ createdAt, integrity });
+        v4Bundle = currentMakerV4OcBundle({ createdAt, integrity, requireCompletion: true });
         oc = v4Bundle.package;
         recipeJson = v4Bundle.fullRecipeJson;
         const entries = buildMakerV4OcUploadEntries(image, v4Bundle);
@@ -9462,6 +9615,42 @@ function syncLegacyVisualFromV4(document, recipe) {
   });
 }
 
+function makerV4WorkspaceCoverUrl(document, assets, template = null) {
+  const coverAssetId = String(document?.metadata?.coverAssetId || '');
+  if (!coverAssetId) {
+    if (template) revokeLocalMakerCoverObjectUrl(template.id);
+    return '';
+  }
+  const runtimeAssets = assets instanceof Map ? assets : new Map();
+  const record = runtimeAssets.get(coverAssetId);
+  const descriptor = makerV4AssetDescriptor(document, coverAssetId);
+  const blob = makerV4RuntimeAssetSource(record);
+  if (blob && template) return localMakerCoverObjectUrl(template, coverAssetId, blob);
+  const stableUrl = stableMakerCoverUrl(
+    record?.url
+    || record?.thumbnailUrl
+    || descriptor?.url
+    || descriptor?.legacy?.url
+    || '',
+  );
+  if (template) {
+    const existing = localMakerCoverObjectUrls.get(template.id);
+    if (!stableUrl && existing?.assetId === coverAssetId) return existing.url;
+    revokeLocalMakerCoverObjectUrl(template.id);
+    template.coverUrl = stableUrl;
+  }
+  return stableUrl;
+}
+
+function makerV4WorkspaceLicenseLabel(kind, fallback = 'Personal use') {
+  return {
+    'personal-use': 'Personal use',
+    'free-remix': 'Free remix',
+    'paid-commercial': 'Paid commercial',
+    'exclusive-commission': 'Exclusive commission',
+  }[kind] || fallback;
+}
+
 function syncV4WorkspaceState({
   makerKey = '',
   document,
@@ -9485,13 +9674,17 @@ function syncV4WorkspaceState({
   if (!belongsToActiveMaker) {
     const targetModel = targetTemplate ? makerModels.get(targetTemplate.id) : null;
     if (!targetTemplate || !targetModel) return false;
+    localMakerCoverRestoreTokens.delete(targetTemplate.id);
+    const coverUrl = makerV4WorkspaceCoverUrl(document, assets, targetTemplate);
     if (document?.metadata) {
       Object.assign(targetTemplate, {
         name: document.metadata.name,
         summary: document.metadata.summary,
         creator: document.metadata.creator,
         style: document.metadata.style,
-        licenseNote: document.metadata.license?.note || targetTemplate.licenseNote,
+        license: makerV4WorkspaceLicenseLabel(document.metadata.license?.kind, targetTemplate.license),
+        licenseNote: document.metadata.license?.note ?? targetTemplate.licenseNote,
+        coverUrl,
         royaltyBps: document.publication?.royaltyBps ?? targetTemplate.royaltyBps,
         mintingEnabled: document.publication?.mintingEnabled ?? targetTemplate.mintingEnabled,
         mintFeeEnabled: document.publication?.mintFeeEnabled ?? targetTemplate.mintFeeEnabled,
@@ -9519,13 +9712,17 @@ function syncV4WorkspaceState({
   if (state.playerRuntimeDocumentV4?.version?.versionId !== document?.version?.versionId) state.playerRuntimeDocumentV4 = null;
   if (profile) state.playerProfileV4 = { ...profile };
   const template = activeTemplate();
+  localMakerCoverRestoreTokens.delete(template.id);
+  const coverUrl = makerV4WorkspaceCoverUrl(document, assets, template);
   if (document?.metadata) {
     Object.assign(template, {
       name: document.metadata.name,
       summary: document.metadata.summary,
       creator: document.metadata.creator,
       style: document.metadata.style,
-      licenseNote: document.metadata.license?.note || template.licenseNote,
+      license: makerV4WorkspaceLicenseLabel(document.metadata.license?.kind, template.license),
+      licenseNote: document.metadata.license?.note ?? template.licenseNote,
+      coverUrl,
       royaltyBps: document.publication?.royaltyBps ?? template.royaltyBps,
       mintingEnabled: document.publication?.mintingEnabled ?? template.mintingEnabled,
       mintFeeEnabled: document.publication?.mintFeeEnabled ?? template.mintFeeEnabled,
@@ -9533,6 +9730,7 @@ function syncV4WorkspaceState({
     });
     state.makerCanvas = { width: document.canvas.width, height: document.canvas.height };
     state.livingContent = normalizeLivingContent(document.livingContent, document.metadata);
+    syncTemplateFields();
   }
   syncLegacyVisualFromV4(document, recipe);
   syncActiveMakerModelRefs();
@@ -10559,6 +10757,13 @@ initializeChain(runtimeConfig, (connection) => {
   const previousWalletAddress = state.walletAddress;
   const walletChanged = previousWalletAddress !== connection.address;
   if (walletChanged) {
+    templates
+      .filter((template) => template.source === 'local' && template.owner === previousWalletAddress)
+      .forEach((template) => {
+        localMakerCoverRestoreTokens.delete(template.id);
+        revokeLocalMakerCoverObjectUrl(template.id);
+      });
+    if (previousWalletAddress) loadedStableMakerIndexes.delete(previousWalletAddress);
     resetMakerUploadMemoryState();
     const activeModel = makerModels.get(state.templateId);
     if (activeModel) activeModel.makerPublicationIntent = null;

@@ -205,15 +205,63 @@ test('round-trips and removes a player draft independently of Maker documents', 
     makerVersionId: 'maker-v2',
     recipe: { selections: [{ partId: 'hair', itemId: 'long' }], colors: [] },
     profile: { name: 'Mira' },
+    livingContent: {
+      schemaVersion: 'animacraft.living-content.v1',
+      soulMd: '# Mira',
+      memoryMd: '# Player memory',
+      skillMd: '---\nname: mira-guide\n---\n# Guide',
+      customized: {
+        soulMd: true,
+        memoryMd: true,
+        skillMd: true,
+      },
+    },
     enabledExpansionIds: ['moon-pack', 'costume-pack'],
   };
   await savePlayerWorkspaceSession('wallet:maker-v2', session);
   session.profile.name = 'Changed outside';
+  session.livingContent.memoryMd = '# Changed outside';
+  session.livingContent.customized.memoryMd = false;
   session.enabledExpansionIds.push('changed-outside');
   const loaded = await loadPlayerWorkspaceSession('wallet:maker-v2');
   assert.equal(loaded.session.profile.name, 'Mira');
+  assert.equal(loaded.session.livingContent.memoryMd, '# Player memory');
+  assert.equal(loaded.session.livingContent.customized.memoryMd, true);
   assert.deepEqual(loaded.session.enabledExpansionIds, ['moon-pack', 'costume-pack']);
   assert.equal(typeof loaded.savedAt, 'number');
   await deletePlayerWorkspaceSession('wallet:maker-v2');
   assert.equal(await loadPlayerWorkspaceSession('wallet:maker-v2'), null);
+}));
+
+test('Player session revision CAS lets only one writer commit from the same base revision', async () => withMemoryIndexedDb(async () => {
+  const sessionKey = 'wallet:shared-maker-version';
+  const writerA = await savePlayerWorkspaceSession(sessionKey, {
+    makerVersionId: 'shared-maker-version',
+    profile: { name: 'Writer A OC' },
+  }, {
+    revision: 1,
+    baseRevision: null,
+    writerId: 'writer-a',
+  });
+  const writerB = await savePlayerWorkspaceSession(sessionKey, {
+    makerVersionId: 'shared-maker-version',
+    profile: { name: 'Writer B OC' },
+  }, {
+    revision: 1,
+    baseRevision: null,
+    writerId: 'writer-b',
+  });
+
+  assert.equal(writerA.committed, true);
+  assert.equal(writerA.persistedRevision, 1);
+  assert.equal(writerB.committed, false);
+  assert.equal(writerB.conflict, true);
+  assert.equal(writerB.persistedRevision, 1);
+  assert.equal(writerB.writerId, 'writer-a');
+
+  const persisted = await loadPlayerWorkspaceSession(sessionKey);
+  assert.equal(persisted.revision, 1);
+  assert.equal(persisted.baseRevision, null);
+  assert.equal(persisted.writerId, 'writer-a');
+  assert.equal(persisted.session.profile.name, 'Writer A OC');
 }));

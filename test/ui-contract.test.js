@@ -116,6 +116,15 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(app, /makerWorkspace\.renderRecipeToBlob\(recipe\)/);
   assert.match(workspace, /renderResolvedScene\(scene, canvas/);
   assert.match(workspace, /data-action="player-none"/);
+  assert.match(workspace, /\['info', this\.tr\('makerInfo'\)\]/);
+  assert.match(workspace, /makerInfoControl\('maker-name'/);
+  assert.match(workspace, /makerInfoControl\('maker-creator'/);
+  assert.match(workspace, /makerInfoControl\('maker-summary'/);
+  assert.match(workspace, /makerInfoControl\('maker-style'/);
+  assert.match(workspace, /data-action="maker-license-kind"/);
+  assert.match(workspace, /makerInfoControl\('maker-license-note'/);
+  assert.match(workspace, /data-action="maker-cover"/);
+  assert.match(styles, /\.v4-studio-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(8,\s*minmax\(100px,\s*1fr\)\);/s);
   assert.match(workspaceI18n, /Upload at least one Style PNG before player testing/);
   assert.match(workspace, /this\.tr\(blockingIssues\.length === 1 \? 'reviewIssue' : 'reviewIssues'/);
   assert.match(workspaceI18n, /reviewIssues: 'Review \{count\} issues'/);
@@ -140,6 +149,21 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(styles, /@media \(max-width:\s*820px\)[\s\S]*?\.creator-function-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   assert.match(styles, /@media \(max-width:\s*560px\)[\s\S]*?\.v4-studio-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
   assert.match(styles, /\.v4-player-header\s*\{\s*position:\s*relative;/s);
+  assert.match(
+    workspace,
+    /<textarea id="\$\{editorId\}" data-action="player-soul-document" data-soul-key="\$\{escapeHtml\(entry\.key\)\}"[^>]*aria-invalid=/,
+  );
+  assert.match(workspace, /data-action="player-reset-soul-document"/);
+  assert.match(workspace, /data-action="player-reset-all-soul"/);
+  assert.doesNotMatch(workspace, /<pre data-player-soul-document=/);
+  assert.match(
+    styles,
+    /\.v4-player-soul-editor textarea\s*\{[^}]*min-height:\s*220px;[^}]*resize:\s*vertical;/s,
+  );
+  assert.match(
+    workspace,
+    /id="\$\{statusId\}" role="status" aria-live="polite"/,
+  );
 });
 
 test('every Creator release entry opens the shared modal without a legacy inline flow', async () => {
@@ -450,6 +474,10 @@ test('Maker v5 exposes the four-level P0 creator workflow without legacy visual 
   assert.match(styles, /\.creator-view\[data-creator-view="edit"\]\.v4-parts-active \.creator-editor-header\s*\{\s*display:\s*none;/s);
   assert.match(workspace, /this\.tr\('importMatrixFolder'\)/);
   assert.match(workspace, /this\.tr\('projectZip'\)/);
+  assert.match(
+    workspace,
+    /new Set\(\['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'soul', 'validate'\]\)/,
+  );
   assert.doesNotMatch(workspace, /this\.tr\('generateCompositeThumbnail'\)/);
   assert.doesNotMatch(workspace, /this\.tr\('parentPart'\)/);
   assert.match(workspace, /\['soul', this\.tr\('soulConfig'\)\]/);
@@ -661,4 +689,26 @@ test('the Sui wallet selector localizes every operational state in all five lang
   assert.match(chainRuntime, /new MutationObserver\(translateWalletModal\)/);
   assert.match(chainRuntime, /export function setWalletModalLocale\(locale\)/);
   assert.equal((app.match(/setWalletModalLocale\(state\.locale\)/g) || []).length, 2);
+});
+
+test('OC publication requires a fresh completed Player snapshot in every locale', async () => {
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8');
+  const runtimeCopy = staticObjectFromSource(app, 'productionRuntimeI18n');
+  ['en', 'zh', 'ja', 'ko', 'vi'].forEach((locale) => {
+    assert.ok(
+      runtimeCopy[locale].completeOcBeforePublishing?.trim(),
+      `${locale}.completeOcBeforePublishing is required`,
+    );
+  });
+  assert.match(
+    app,
+    /if \(requireCompletion && !completion\)[\s\S]*?error\.code = 'OC_COMPLETION_REQUIRED'/,
+  );
+  const prepareStart = app.indexOf('async function prepareOcUpload()');
+  const prepareEnd = app.indexOf('\nasync function registerOcUpload()', prepareStart);
+  const prepare = app.slice(prepareStart, prepareEnd);
+  assert.equal(
+    (prepare.match(/currentMakerV4OcBundle\(\{[^}]*requireCompletion: true[^}]*\}\)/g) || []).length,
+    2,
+  );
 });
