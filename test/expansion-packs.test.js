@@ -471,6 +471,70 @@ test('reports an additive Maker update as compatible', () => {
   assert.ok(result.additions.some((change) => change.code === 'item-added'));
 });
 
+test('treats Maker cover replacement as metadata-only while preserving renderer asset checks', () => {
+  const previous = baseMaker();
+  previous.metadata.coverAssetId = 'cover-v2';
+  previous.assets.push({
+    id: 'cover-v2',
+    identifier: 'cover-v2.png',
+    contentHash: 'cover-v2-hash',
+    mediaType: 'image/png',
+  });
+
+  const replaced = structuredClone(previous);
+  replaced.version = {
+    ...replaced.version,
+    versionId: 'astral-maker-v3',
+    number: 3,
+    parentVersionId: 'astral-maker-v2',
+  };
+  replaced.metadata.coverAssetId = 'cover-v3';
+  replaced.assets = replaced.assets
+    .filter((asset) => asset.id !== 'cover-v2')
+    .concat({
+      id: 'cover-v3',
+      identifier: 'cover-v3.png',
+      contentHash: 'cover-v3-hash',
+      mediaType: 'image/png',
+    });
+
+  const replacementResult = compareMakerCompatibility(previous, replaced);
+  assert.equal(replacementResult.compatible, true, JSON.stringify(replacementResult.breaking));
+  assert.equal(replacementResult.renderCompatible, true);
+  assert.equal(replacementResult.requiresPinnedVersion, false);
+  assert.ok(replacementResult.warnings.some((change) => change.code === 'cover-reference-changed'));
+  assert.ok(replacementResult.warnings.some((change) => change.code === 'cover-asset-removed'));
+  assert.equal(replacementResult.breaking.some((change) => change.code === 'asset-removed'), false);
+
+  const refreshed = structuredClone(previous);
+  refreshed.version = {
+    ...refreshed.version,
+    versionId: 'astral-maker-v3',
+    number: 3,
+    parentVersionId: 'astral-maker-v2',
+  };
+  refreshed.assets.find((asset) => asset.id === 'cover-v2').contentHash = 'refreshed-cover-hash';
+  const refreshResult = compareMakerCompatibility(previous, refreshed);
+  assert.equal(refreshResult.compatible, true, JSON.stringify(refreshResult.breaking));
+  assert.equal(refreshResult.renderCompatible, true);
+  assert.ok(refreshResult.warnings.some((change) => change.code === 'cover-asset-content-changed'));
+  assert.equal(refreshResult.breaking.some((change) => change.code === 'asset-content-changed'), false);
+
+  const sharedWithRenderer = structuredClone(previous);
+  sharedWithRenderer.version = {
+    ...sharedWithRenderer.version,
+    versionId: 'astral-maker-v3',
+    number: 3,
+    parentVersionId: 'astral-maker-v2',
+  };
+  sharedWithRenderer.metadata.coverAssetId = 'body-art';
+  sharedWithRenderer.assets.find((asset) => asset.id === 'body-art').contentHash = 'changed-renderer-hash';
+  const sharedResult = compareMakerCompatibility(previous, sharedWithRenderer);
+  assert.equal(sharedResult.compatible, false);
+  assert.equal(sharedResult.renderCompatible, false);
+  assert.ok(sharedResult.breaking.some((change) => change.code === 'asset-content-changed'));
+});
+
 test('reports removed recipe ids and rendering changes as pinned-version breaks', () => {
   const previous = baseMaker();
   const next = structuredClone(previous);

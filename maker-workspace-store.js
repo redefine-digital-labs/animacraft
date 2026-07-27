@@ -155,17 +155,63 @@ export async function loadMakerWorkspaceAssets(makerKey) {
   }
 }
 
-export async function savePlayerWorkspaceSession(sessionKey, session) {
+export async function savePlayerWorkspaceSession(sessionKey, session, metadata = {}) {
   const key = requireKey(sessionKey, 'Player session key');
+  const hasRevision = Object.hasOwn(metadata, 'revision');
+  const revision = hasRevision ? Number(metadata.revision) : null;
+  const baseRevision = metadata.baseRevision ?? null;
+  if (hasRevision && (!Number.isSafeInteger(revision) || revision < 0)) {
+    throw new Error('Player session revision must be a non-negative safe integer.');
+  }
+  if (baseRevision !== null && (!Number.isSafeInteger(baseRevision) || baseRevision < 0)) {
+    throw new Error('Player session base revision must be null or a non-negative safe integer.');
+  }
   const database = await openWorkspaceDatabase();
   try {
     const transaction = database.transaction(PLAYER_SESSION_STORE, 'readwrite');
-    transaction.objectStore(PLAYER_SESSION_STORE).put({
+    const store = transaction.objectStore(PLAYER_SESSION_STORE);
+    const existing = await requestResult(store.get(key));
+    const persistedRevision = Number.isSafeInteger(existing?.revision) && existing.revision >= 0
+      ? existing.revision
+      : null;
+    if (
+      (!hasRevision && persistedRevision !== null)
+      || (
+        hasRevision
+        && (
+          persistedRevision !== baseRevision
+          || (persistedRevision !== null && revision <= persistedRevision)
+        )
+      )
+    ) {
+      await transactionComplete(transaction);
+      return {
+        committed: false,
+        conflict: true,
+        requestedRevision: revision,
+        persistedRevision,
+        savedAt: existing?.savedAt ?? null,
+        writerId: String(existing?.writerId || ''),
+      };
+    }
+    const savedAt = Date.now();
+    store.put({
       sessionKey: key,
       session,
-      savedAt: Date.now(),
+      revision: hasRevision ? revision : persistedRevision,
+      baseRevision: hasRevision ? baseRevision : existing?.baseRevision ?? null,
+      writerId: hasRevision ? String(metadata.writerId || '') : String(existing?.writerId || ''),
+      savedAt,
     });
     await transactionComplete(transaction);
+    return {
+      committed: true,
+      conflict: false,
+      requestedRevision: revision,
+      persistedRevision: hasRevision ? revision : persistedRevision,
+      savedAt,
+      writerId: hasRevision ? String(metadata.writerId || '') : String(existing?.writerId || ''),
+    };
   } finally {
     database.close();
   }

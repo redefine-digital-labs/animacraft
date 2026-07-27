@@ -67,6 +67,11 @@ test('Player completion snapshot becomes the exact Walrus OC profile and certifi
     maker: document.metadata,
     profile,
   });
+  Object.assign(resolvedLivingContent, {
+    soulMd: '# Player-authored Soul\n\nMira keeps her own voice.',
+    memoryMd: '# Player-authored Memory\n\nA calm courier between worlds.',
+    skillMd: '---\nname: mira-courier\n---\n# Player-authored courier skill',
+  });
   const completion = createPlayerCompletionSnapshot({
     document,
     recipe: document.defaultRecipe,
@@ -77,7 +82,19 @@ test('Player completion snapshot becomes the exact Walrus OC profile and certifi
   assert.equal(Object.isFrozen(completion.recipe), true);
   assert.equal(Object.isFrozen(completion.profile), true);
   assert.equal(Object.isFrozen(completion.livingContent), true);
-  assert.equal(Object.isFrozen(completion.livingContent.content), true);
+  assert.equal(completion.livingContent.soulMd, '# Player-authored Soul\n\nMira keeps her own voice.');
+  assert.equal(completion.livingContent.memoryMd, '# Player-authored Memory\n\nA calm courier between worlds.');
+  assert.equal(completion.livingContent.skillMd, '---\nname: mira-courier\n---\n# Player-authored courier skill');
+
+  profile.name = 'Changed after Complete';
+  resolvedLivingContent.soulMd = '# Changed after Complete';
+  resolvedLivingContent.memoryMd = '# Changed after Complete';
+  resolvedLivingContent.skillMd = '---\nname: changed\n---\n# Changed after Complete';
+  assert.equal(completion.profile.name, 'Mira');
+  assert.match(completion.livingContent.soulMd, /Player-authored Soul/);
+  assert.match(completion.livingContent.memoryMd, /Player-authored Memory/);
+  assert.match(completion.livingContent.skillMd, /name: mira-courier/);
+
   const livingContent = soulidityContentManifest(completion.livingContent, {
     maker: document.metadata,
     makerId: '0x123',
@@ -111,6 +128,8 @@ test('Player completion snapshot becomes the exact Walrus OC profile and certifi
   );
   assert.match(uploadedProfile.livingContent.content.soulMd, /Mira/);
   assert.match(uploadedProfile.livingContent.content.memoryMd, /calm courier between worlds/);
+  assert.match(uploadedProfile.livingContent.content.skillMd, /name: mira-courier/);
+  assert.doesNotMatch(uploadedProfile.livingContent.content.soulMd, /Changed after Complete/);
   assert.equal(uploadedProfile.maker.manifestBlobId, 'certified-maker-quilt');
 });
 

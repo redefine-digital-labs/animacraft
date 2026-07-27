@@ -560,6 +560,283 @@ test('creator structure controls mutate the v5 document and remain undoable', as
   });
 });
 
+test('Maker Info tab edits the public Maker metadata used by Player and publication', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'creator-tab', { tab: 'info' });
+    assert.equal(workspace.creatorTab, 'info');
+    assert.match(creatorRoot.innerHTML, /Basic Maker information/);
+    assert.match(creatorRoot.innerHTML, /data-action="maker-cover"/);
+    assert.match(creatorRoot.innerHTML, /data-action="maker-name"/);
+    assert.match(creatorRoot.innerHTML, /data-action="maker-creator"/);
+    assert.match(creatorRoot.innerHTML, /data-action="maker-summary"/);
+    assert.match(creatorRoot.innerHTML, /data-action="maker-style"/);
+    assert.match(creatorRoot.innerHTML, /data-action="maker-license-kind"/);
+    assert.match(creatorRoot.innerHTML, /data-action="maker-license-note"/);
+    assert.match(creatorRoot.innerHTML, /Maker ID/);
+    assert.match(creatorRoot.innerHTML, /1024 × 1024/);
+
+    const textEdits = [
+      ['maker-name', 'Moon Courier Maker'],
+      ['maker-creator', 'Soul Atelier'],
+      ['maker-summary', 'Build a courier from layered moonlit artwork.'],
+      ['maker-style', 'Celestial night'],
+      ['maker-license-note', 'Personal projects and credited sharing.'],
+    ];
+    textEdits.forEach(([action, value]) => {
+      assert.equal(workspace.captureCreatorText({ dataset: { action }, value }), true);
+      assert.equal(workspace.flushPendingCreatorText(), true);
+    });
+    await workspace.handleCreatorChange({
+      target: {
+        dataset: { action: 'maker-license-kind' },
+        value: 'free-remix',
+        type: 'select-one',
+      },
+    });
+
+    const document = workspace.getDocument();
+    assert.equal(document.metadata.name, 'Moon Courier Maker');
+    assert.equal(document.metadata.creator, 'Soul Atelier');
+    assert.equal(document.metadata.summary, 'Build a courier from layered moonlit artwork.');
+    assert.equal(document.metadata.style, 'Celestial night');
+    assert.equal(document.metadata.license.kind, 'free-remix');
+    assert.equal(document.metadata.license.note, 'Personal projects and credited sharing.');
+    assert.equal(workspace.store.getState().canUndo, true);
+
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /value="Moon Courier Maker"/);
+    assert.match(creatorRoot.innerHTML, /value="Soul Atelier"/);
+    assert.match(creatorRoot.innerHTML, /Build a courier from layered moonlit artwork\./);
+    assert.match(creatorRoot.innerHTML, /<option value="free-remix" selected>/);
+  }, { creatorRoot });
+});
+
+test('Maker Info reports UTF-8 byte overflow inline and Preflight opens the invalid metadata field', async () => {
+  const creatorRoot = new FakeRoot();
+  const statusClass = new Set();
+  const statusOutput = {
+    textContent: '',
+    classList: {
+      toggle(name, enabled) {
+        if (enabled) statusClass.add(name);
+        else statusClass.delete(name);
+      },
+    },
+  };
+  let focused = 0;
+  creatorRoot.selectors['#makerInfoBytes-maker-name'] = statusOutput;
+  creatorRoot.selectors['[data-action="maker-name"]'] = {
+    focus() {
+      focused += 1;
+    },
+  };
+
+  await withWorkspace(async (workspace) => {
+    workspace.setLocale('zh', { render: false });
+    creatorClick(workspace, 'creator-tab', { tab: 'info' });
+
+    const oversizedName = '界'.repeat(43);
+    const attributes = new Map();
+    const input = {
+      dataset: { action: 'maker-name' },
+      value: oversizedName,
+      setAttribute(name, value) {
+        attributes.set(name, value);
+      },
+    };
+    workspace.handleCreatorInput({ target: input });
+
+    assert.equal(attributes.get('aria-invalid'), 'true');
+    assert.equal(attributes.get('aria-describedby'), 'makerInfoBytes-maker-name');
+    assert.equal(statusOutput.textContent, '129 / 128 UTF-8 字节 · 超过发布上限 1 字节');
+    assert.equal(statusClass.has('invalid'), true);
+    assert.equal(workspace.flushPendingCreatorText(), true);
+
+    workspace.render();
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="maker-name"[^>]*aria-invalid="true"/,
+    );
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-maker-byte-status="maker-name" class="v4-maker-info-byte-status invalid">129 \/ 128 UTF-8 字节 · 超过发布上限 1 字节<\/small>/,
+    );
+
+    creatorClick(workspace, 'creator-tab', { tab: 'validate' });
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="focus-issue" data-issue-path="metadata\.name"/,
+      'metadata validation failures must provide a direct route back to Maker Info',
+    );
+
+    creatorClick(workspace, 'focus-issue', { issuePath: 'metadata.name' });
+    assert.equal(workspace.creatorTab, 'info');
+    assert.equal(focused, 1, 'the invalid Maker name control must receive focus');
+  }, { creatorRoot });
+});
+
+test('Creator and Player Maker Info dialogs expose labels, trap focus, close on Escape, and restore focus', async () => {
+  class FocusNode {
+    constructor(name, active, children = []) {
+      this.name = name;
+      this.active = active;
+      this.children = children;
+      this.hidden = false;
+      this.focusCount = 0;
+    }
+
+    focus() {
+      this.focusCount += 1;
+      this.active.current = this;
+    }
+
+    querySelectorAll() {
+      return this.children;
+    }
+
+    contains(node) {
+      return node === this || this.children.includes(node);
+    }
+
+    getAttribute() {
+      return null;
+    }
+  }
+
+  const previousDocument = globalThis.document;
+  const active = { current: null };
+  const creatorRoot = new FakeRoot();
+  const playerRoot = new FakeRoot();
+  const creatorClose = new FocusNode('creator-info-close', active);
+  const creatorLastField = new FocusNode('creator-info-last-field', active);
+  const creatorDialog = new FocusNode(
+    'creator-info-dialog',
+    active,
+    [creatorClose, creatorLastField],
+  );
+  const creatorReturnTab = new FocusNode('creator-structure-tab', active);
+  creatorRoot.selectors['#makerV4ToolDialog'] = creatorDialog;
+  creatorRoot.selectors['.v4-tool-modal-backdrop [data-action="close-tool"]'] = creatorClose;
+  creatorRoot.selectors['[data-action="creator-tab"][data-tab="structure"]'] = creatorReturnTab;
+
+  const playerStart = new FocusNode('player-info-start', active);
+  const playerDialog = new FocusNode('player-info-dialog', active, [playerStart]);
+  const playerReturnButton = new FocusNode('player-info-return', active);
+  playerRoot.selectors['#makerPlayerInfoDialog'] = playerDialog;
+  playerRoot.selectors['[data-action="player-info"]'] = playerReturnButton;
+
+  try {
+    await withWorkspace(async (workspace) => {
+      globalThis.document = {
+        get activeElement() {
+          return active.current;
+        },
+      };
+      workspace.playerIntroOpen = false;
+
+      creatorClick(workspace, 'creator-tab', { tab: 'info' });
+      assert.equal(workspace.creatorTab, 'info');
+      assert.match(
+        creatorRoot.innerHTML,
+        /id="makerV4ToolDialog"[^>]*role="dialog" aria-modal="true" aria-labelledby="makerV4ToolTitle" tabindex="-1"/,
+      );
+      assert.match(creatorRoot.innerHTML, /id="makerV4ToolTitle">QA Maker<\/strong>/);
+      assert.match(creatorRoot.innerHTML, /Basic Maker information/);
+      assert.equal(active.current, creatorClose, 'opening Maker Info must focus its close control');
+
+      active.current = creatorLastField;
+      let prevented = false;
+      workspace.boundCreatorKeydown({
+        key: 'Tab',
+        shiftKey: false,
+        preventDefault: () => { prevented = true; },
+      });
+      assert.equal(prevented, true);
+      assert.equal(active.current, creatorClose, 'Tab must wrap to the first Creator dialog control');
+
+      active.current = creatorClose;
+      workspace.boundCreatorKeydown({
+        key: 'Tab',
+        shiftKey: true,
+        preventDefault() {},
+      });
+      assert.equal(active.current, creatorLastField, 'Shift+Tab must wrap to the last Creator dialog control');
+
+      workspace.boundCreatorKeydown({
+        key: 'Escape',
+        preventDefault() {},
+      });
+      assert.equal(workspace.creatorTab, 'structure');
+      assert.equal(active.current, creatorReturnTab, 'Escape must return focus to the Creator tools tab');
+
+      playerClick(workspace, 'player-info');
+      assert.equal(workspace.playerIntroOpen, true);
+      assert.match(
+        playerRoot.innerHTML,
+        /id="makerPlayerInfoDialog"[^>]*role="dialog" aria-modal="true" aria-labelledby="makerPlayerInfoTitle" tabindex="-1"/,
+      );
+      assert.match(playerRoot.innerHTML, /<h2 id="makerPlayerInfoTitle">QA Maker<\/h2>/);
+      assert.equal(active.current, playerDialog, 'opening Player Maker Info must focus the dialog');
+
+      active.current = playerDialog;
+      prevented = false;
+      workspace.boundPlayerKeydown({
+        key: 'Tab',
+        shiftKey: true,
+        preventDefault: () => { prevented = true; },
+      });
+      assert.equal(prevented, true);
+      assert.equal(
+        active.current,
+        playerStart,
+        'Shift+Tab from the initially focused Player dialog container must wrap to its last control',
+      );
+
+      active.current = playerStart;
+      prevented = false;
+      workspace.boundPlayerKeydown({
+        key: 'Tab',
+        shiftKey: false,
+        preventDefault: () => { prevented = true; },
+      });
+      assert.equal(prevented, true);
+      assert.equal(active.current, playerStart, 'the single Player dialog action must retain focus');
+
+      workspace.boundPlayerKeydown({
+        key: 'Escape',
+        preventDefault() {},
+      });
+      assert.equal(workspace.playerIntroOpen, false);
+      assert.equal(
+        active.current,
+        playerReturnButton,
+        'Escape must return focus to the Player Maker Info trigger',
+      );
+    }, {
+      creatorRoot,
+      playerRoot,
+      playable: true,
+    });
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});
+
+test('Maker cover import rejects executable or unsupported image formats before decoding', async () => {
+  await withWorkspace(async (workspace) => {
+    await assert.rejects(
+      workspace.importDisplayAsset(
+        new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], { type: 'image/svg+xml' }),
+        'maker-cover',
+        workspace.captureMakerOperation(),
+      ),
+      /PNG or JPEG/,
+    );
+  });
+});
+
 test('Layer Track page assigns only the current Style and new Tracks start unlocked', async () => {
   const creatorRoot = new FakeRoot();
   await withWorkspace(async (workspace) => {
@@ -1360,7 +1637,7 @@ test('Player Smart Color shows every channel used by the resolved OC scene', asy
   });
 });
 
-test('Player exposes the Maker Soul Configuration as the resolved OC identity card', async () => {
+test('Player exposes editable Maker Soul defaults as the resolved OC identity card', async () => {
   const playerRoot = new FakeRoot();
   await withWorkspace(async (workspace) => {
     workspace.playerIntroOpen = false;
@@ -1377,7 +1654,22 @@ test('Player exposes the Maker Soul Configuration as the resolved OC identity ca
     assert.match(playerRoot.innerHTML, /soul\.md/);
     assert.match(playerRoot.innerHTML, /memory\.md/);
     assert.match(playerRoot.innerHTML, /SKILL\.md/);
-    assert.match(playerRoot.innerHTML, /Default · Valid/);
+    assert.match(playerRoot.innerHTML, /Maker default · Valid/);
+    assert.match(
+      playerRoot.innerHTML,
+      /<textarea id="v4PlayerSoul-soulMd" data-action="player-soul-document" data-soul-key="soulMd"[^>]*aria-invalid="false"[^>]*aria-describedby="v4PlayerSoul-soulMd-status"/,
+    );
+    assert.match(
+      playerRoot.innerHTML,
+      /<label for="v4PlayerSoul-memoryMd">Edit memory\.md for this OC<\/label>/,
+    );
+    assert.match(
+      playerRoot.innerHTML,
+      /id="v4PlayerSoul-skillMd-status" role="status" aria-live="polite"/,
+    );
+    assert.match(playerRoot.innerHTML, /data-action="player-reset-soul-document"/);
+    assert.match(playerRoot.innerHTML, /data-action="player-reset-all-soul"/);
+    assert.doesNotMatch(playerRoot.innerHTML, /<pre data-player-soul-document=/);
     assert.match(playerRoot.innerHTML, /Mira/);
     assert.match(playerRoot.innerHTML, /Astral Courier/);
     assert.doesNotMatch(playerRoot.innerHTML, /\{\{OC_NAME\}\}/);
@@ -1388,6 +1680,256 @@ test('Player exposes the Maker Soul Configuration as the resolved OC identity ca
     assert.match(resolved.content.soulMd, /A calm courier between worlds\./);
     assert.equal(resolved.validation.valid, true);
   }, { playable: true, playerRoot });
+});
+
+test('Player Soul edits are independent, autosaved, profile-aware, and reset to Maker defaults', async () => {
+  const playerRoot = new FakeRoot();
+  const sessionWrites = [];
+  const playerChanges = [];
+  await withWorkspace(async (workspace) => {
+    workspace.context.walletAddress = '0xplayer';
+    workspace.playerIntroOpen = false;
+    workspace.playerProfile = {
+      name: 'Mira',
+      world: 'Astral Courier',
+      description: 'A calm courier between worlds.',
+      tags: 'starlight, courier',
+    };
+    workspace.playerLivingContent = workspace.normalizePlayerLivingContent(
+      null,
+      workspace.runtimeDocument(),
+    );
+    const makerLivingContent = structuredClone(workspace.getDocument().livingContent);
+    const initialRevision = workspace.playerSessionRevision;
+    const customMemory = '# Private founding memory\n\nMira chose the moon route.';
+
+    workspace.handlePlayerChange({
+      target: {
+        dataset: { action: 'player-soul-document', soulKey: 'memoryMd' },
+        value: customMemory,
+      },
+    });
+    assert.equal(workspace.playerSessionRevision, initialRevision + 1);
+    workspace.handlePlayerChange({
+      target: {
+        dataset: { action: 'player-soul-document', soulKey: 'memoryMd' },
+        value: customMemory,
+      },
+    });
+    assert.equal(
+      workspace.playerSessionRevision,
+      initialRevision + 1,
+      'duplicate input/change delivery must not create another save revision',
+    );
+    assert.equal(workspace.playerLivingContentDraft().memoryMd, customMemory);
+    assert.equal(workspace.playerLivingContentDraft().customized.memoryMd, true);
+    assert.equal(workspace.playerLivingContentDraft().customized.soulMd, false);
+    assert.deepEqual(
+      workspace.getDocument().livingContent,
+      makerLivingContent,
+      'Player edits must never mutate the Maker defaults',
+    );
+    assert.equal(playerChanges.at(-1).livingContent.memoryMd, customMemory);
+
+    workspace.handlePlayerChange({
+      target: { dataset: { action: 'player-profile-name' }, value: 'Nova' },
+    });
+    assert.match(workspace.playerLivingContentDraft().soulMd, /Name: Nova/);
+    assert.equal(
+      workspace.playerLivingContentDraft().memoryMd,
+      customMemory,
+      'a customized Player document must not be regenerated by profile changes',
+    );
+
+    playerClick(workspace, 'player-reset-soul-document', { soulKey: 'memoryMd' });
+    const resetMemory = workspace.playerLivingContentDraft();
+    assert.equal(resetMemory.customized.memoryMd, false);
+    assert.match(resetMemory.memoryMd, /Nova was composed from QA Maker/);
+
+    workspace.handlePlayerChange({
+      target: {
+        dataset: { action: 'player-soul-document', soulKey: 'soulMd' },
+        value: '# Nova identity',
+      },
+    });
+    workspace.handlePlayerChange({
+      target: {
+        dataset: { action: 'player-soul-document', soulKey: 'skillMd' },
+        value: '---\nname: nova-guide\n---\n# Nova guide',
+      },
+    });
+    assert.equal(workspace.playerLivingContentDraft().customized.soulMd, true);
+    assert.equal(workspace.playerLivingContentDraft().customized.skillMd, true);
+    playerClick(workspace, 'player-reset-all-soul');
+    const resetAll = workspace.playerLivingContentDraft();
+    assert.deepEqual(resetAll.customized, {
+      soulMd: false,
+      memoryMd: false,
+      skillMd: false,
+    });
+    assert.match(resetAll.soulMd, /Name: Nova/);
+
+    workspace.handlePlayerChange({
+      target: {
+        dataset: { action: 'player-soul-document', soulKey: 'memoryMd' },
+        value: customMemory,
+      },
+    });
+    await workspace.sessionAutosave.flush();
+    assert.equal(workspace.playerSaveState, 'saved');
+    assert.equal(sessionWrites.length, 1);
+    assert.equal(sessionWrites[0].memoryMd, customMemory);
+    assert.equal(sessionWrites[0].customized.memoryMd, true);
+    assert.deepEqual(workspace.getDocument().livingContent, makerLivingContent);
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: {
+      onPlayerRecipeChange: (payload) => playerChanges.push(structuredClone(payload)),
+    },
+    async savePlayerSessionRecord(_key, session) {
+      sessionWrites.push(structuredClone(session.livingContent));
+    },
+  });
+});
+
+test('invalid Player Soul Markdown is accessible and blocks Complete OC', async () => {
+  const playerRoot = new FakeRoot();
+  const errors = [];
+  const completed = [];
+  await withWorkspace(async (workspace) => {
+    workspace.playerIntroOpen = false;
+    workspace.handlePlayerChange({
+      target: {
+        dataset: { action: 'player-soul-document', soulKey: 'memoryMd' },
+        value: '',
+      },
+    });
+    workspace.renderPlayer();
+
+    assert.match(
+      playerRoot.innerHTML,
+      /data-action="player-soul-document" data-soul-key="memoryMd"[^>]*aria-invalid="true"/,
+    );
+    assert.match(
+      playerRoot.innerHTML,
+      /data-player-soul-error="memoryMd"[^>]*>This document cannot be empty\.<\/span>/,
+    );
+    assert.match(playerRoot.innerHTML, /data-player-soul-card-status>Needs attention<\/em>/);
+    assert.match(
+      workspace.playerCompletionIssues(workspace.runtimeDocument(), workspace.playerRecipe).join(' '),
+      /This document cannot be empty/,
+    );
+    assert.match(
+      playerRoot.innerHTML,
+      /data-action="player-complete" disabled>Complete OC<\/button>/,
+    );
+
+    playerClick(workspace, 'player-complete');
+    assert.equal(completed.length, 0);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].message, /This document cannot be empty/);
+    assert.deepEqual(
+      workspace.getDocument().livingContent,
+      null,
+      'invalid Player drafts must not be written into the Maker document',
+    );
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: {
+      onCompleteOc: (payload) => completed.push(payload),
+      onPlayerError: (error) => errors.push(error),
+    },
+  });
+});
+
+test('connected Player must save and resolve every recovery branch before Complete OC', async () => {
+  const playerRoot = new FakeRoot();
+  const errors = [];
+  const completed = [];
+  await withWorkspace(async (workspace) => {
+    workspace.playerIntroOpen = false;
+    workspace.context = {
+      ...workspace.context,
+      walletAddress: '0xconnected',
+    };
+    assert.equal(workspace.context.walletAddress, '0xconnected');
+    const document = workspace.runtimeDocument();
+    workspace.playerRenderState = {
+      key: workspace.playerRenderKey(document, workspace.playerRecipe),
+      status: 'ready',
+      error: '',
+    };
+
+    const assertBlocked = ({
+      saveState,
+      errorCode = '',
+      branches = [],
+      message,
+    }) => {
+      workspace.playerSaveState = saveState;
+      workspace.playerSaveErrorCode = errorCode;
+      workspace.playerRecoveryBranches = branches;
+      workspace.renderPlayer();
+      assert.match(
+        workspace.playerCompletionIssues(document, workspace.playerRecipe).join(' '),
+        message,
+      );
+      assert.match(
+        playerRoot.innerHTML,
+        /data-action="player-complete" disabled>Complete OC<\/button>/,
+      );
+      const previousErrors = errors.length;
+      playerClick(workspace, 'player-complete');
+      assert.equal(completed.length, 0);
+      assert.equal(errors.length, previousErrors + 1);
+      assert.match(errors.at(-1).message, message);
+    };
+
+    assertBlocked({
+      saveState: 'dirty',
+      message: /finish saving before completing/,
+    });
+    assertBlocked({
+      saveState: 'error',
+      errorCode: 'PLAYER_SESSION_CONFLICT',
+      message: /Resolve every local recovery copy/,
+    });
+    assertBlocked({
+      saveState: 'saved',
+      branches: [{
+        writerId: 'other-tab',
+        revision: 2,
+        baseRevision: 1,
+        session: {},
+      }],
+      message: /Resolve every local recovery copy/,
+    });
+
+    workspace.playerSaveState = 'saved';
+    workspace.playerSaveErrorCode = '';
+    workspace.playerRecoveryBranches = [];
+    workspace.renderPlayer();
+    assert.equal(
+      workspace.playerCompletionIssues(document, workspace.playerRecipe).length,
+      0,
+    );
+    assert.match(
+      playerRoot.innerHTML,
+      /data-action="player-complete" >Complete OC<\/button>/,
+    );
+    playerClick(workspace, 'player-complete');
+    assert.equal(completed.length, 1);
+    assert.equal(errors.length, 3);
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: {
+      onCompleteOc: (payload) => completed.push(payload),
+      onPlayerError: (error) => errors.push(error),
+    },
+  });
 });
 
 test('Maker metadata refreshes uncustomized Soul defaults inside the MakerDocument only', async () => {

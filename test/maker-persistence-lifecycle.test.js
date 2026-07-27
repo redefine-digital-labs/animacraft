@@ -1183,6 +1183,176 @@ test('a completed Item thumbnail import immediately flushes its document and Blo
   })
 ));
 
+test('a completed Maker cover import atomically saves its metadata and original image Blob', async () => (
+  withWorkspaceGlobals(async () => {
+    const previousCreateImageBitmap = globalThis.createImageBitmap;
+    globalThis.createImageBitmap = async () => ({
+      width: 1600,
+      height: 1000,
+      close() {},
+    });
+    try {
+      const repository = controllableDraftRepository();
+      const workspace = createMakerWorkspace({
+        draftRepository: repository,
+        callbacks: {},
+        walStorage: null,
+      });
+      const document = createCharacterMakerV5Starter({
+        makerId: 'cover-flush',
+        name: 'Cover Flush',
+      });
+      await workspace.setContext({
+        makerKey: 'wallet::cover-flush',
+        walletAddress: '0x1',
+        document,
+        assets: [],
+      });
+      repository.snapshots.length = 0;
+      const file = new Blob(['creator-cover-pixels'], { type: 'image/jpeg' });
+      Object.defineProperty(file, 'name', { value: 'maker-cover.jpg' });
+
+      await workspace.handleCreatorChange({
+        target: {
+          dataset: { action: 'maker-cover' },
+          files: [file],
+          value: '',
+        },
+      });
+
+      assert.equal(repository.snapshots.length, 1);
+      const persisted = repository.snapshots[0].snapshot;
+      assert.ok(persisted.document.metadata.coverAssetId);
+      const descriptor = persisted.document.assets.find(
+        (asset) => asset.id === persisted.document.metadata.coverAssetId,
+      );
+      assert.equal(descriptor.kind, 'maker-cover');
+      assert.equal(descriptor.mediaType, 'image/jpeg');
+      assert.equal(descriptor.width, 1600);
+      assert.equal(descriptor.height, 1000);
+      const asset = persisted.assets.find(
+        (record) => record.assetId === persisted.document.metadata.coverAssetId,
+      );
+      assert.ok(asset?.blob instanceof Blob);
+      assert.equal(await asset.blob.text(), 'creator-cover-pixels');
+      assert.equal(workspace.store.getState().dirty, false);
+      workspace.context.walletAddress = '';
+      workspace.destroy();
+    } finally {
+      globalThis.createImageBitmap = previousCreateImageBitmap;
+    }
+  })
+));
+
+test('replacing and removing a Maker cover save the visible fallback while Undo restores each prior cover', async () => (
+  withWorkspaceGlobals(async () => {
+    const previousCreateImageBitmap = globalThis.createImageBitmap;
+    globalThis.createImageBitmap = async () => ({
+      width: 1600,
+      height: 1000,
+      close() {},
+    });
+    try {
+      const repository = controllableDraftRepository();
+      const workspace = createMakerWorkspace({
+        draftRepository: repository,
+        callbacks: {},
+        walStorage: null,
+      });
+      const document = createCharacterMakerV5Starter({
+        makerId: 'cover-replace-remove',
+        name: 'Cover Replace Remove',
+      });
+      document.metadata.coverAssetId = 'original-cover';
+      document.assets.push({
+        id: 'original-cover',
+        identifier: 'original-cover.png',
+        kind: 'maker-cover',
+        mediaType: 'image/png',
+        width: 1024,
+        height: 1024,
+        source: 'local',
+      });
+      const originalCover = new Blob(['original-cover-pixels'], { type: 'image/png' });
+      await workspace.setContext({
+        makerKey: 'wallet::cover-replace-remove',
+        walletAddress: '0x1',
+        document,
+        assets: [{
+          assetId: 'original-cover',
+          blob: originalCover,
+          fileName: 'original-cover.png',
+          source: 'local',
+        }],
+      });
+      repository.snapshots.length = 0;
+
+      const replacementCover = new Blob(['replacement-cover-pixels'], { type: 'image/jpeg' });
+      Object.defineProperty(replacementCover, 'name', { value: 'replacement-cover.jpg' });
+      await workspace.handleCreatorChange({
+        target: {
+          dataset: { action: 'maker-cover' },
+          files: [replacementCover],
+          value: '',
+        },
+      });
+
+      const replacementId = workspace.getDocument().metadata.coverAssetId;
+      assert.notEqual(replacementId, 'original-cover');
+      assert.equal(
+        workspace.getDocument().assets.some((asset) => asset.id === 'original-cover'),
+        false,
+        'the replaced cover must no longer remain in public Maker asset metadata',
+      );
+      assert.equal(repository.snapshots.length, 1);
+      assert.equal(repository.snapshots[0].snapshot.document.metadata.coverAssetId, replacementId);
+      assert.equal(
+        await repository.snapshots[0].snapshot.assets
+          .find((asset) => asset.assetId === replacementId).blob.text(),
+        'replacement-cover-pixels',
+      );
+
+      workspace.store.undo();
+      assert.equal(workspace.getDocument().metadata.coverAssetId, 'original-cover');
+      assert.ok(workspace.makerCoverUrl(), 'Undo must retain the detached original Blob for preview');
+      workspace.store.redo();
+      assert.equal(workspace.getDocument().metadata.coverAssetId, replacementId);
+      assert.ok(workspace.makerCoverUrl(), 'Redo must restore the replacement cover preview');
+
+      const removeButton = {
+        dataset: { action: 'remove-maker-cover' },
+        matches: () => false,
+      };
+      removeButton.closest = () => removeButton;
+      workspace.handleCreatorClick({ target: removeButton });
+      assert.equal(workspace.getDocument().metadata.coverAssetId, null);
+      assert.equal(workspace.makerCoverUrl(), '', 'removal must immediately expose the generated fallback state');
+      assert.equal(
+        workspace.getDocument().assets.some((asset) => asset.id === replacementId),
+        false,
+        'the removed cover must no longer remain in public Maker asset metadata',
+      );
+
+      const removalSave = await workspace.flushPendingChanges({ reason: 'cover-removal-test' });
+      assert.equal(removalSave.saved, true);
+      const persistedRemoval = repository.snapshots.at(-1).snapshot;
+      assert.equal(persistedRemoval.document.metadata.coverAssetId, null);
+      assert.equal(
+        persistedRemoval.document.assets.some((asset) => asset.id === replacementId),
+        false,
+      );
+
+      workspace.store.undo();
+      assert.equal(workspace.getDocument().metadata.coverAssetId, replacementId);
+      assert.ok(workspace.makerCoverUrl(), 'Undo after removal must restore the replacement cover');
+      workspace.context.walletAddress = '';
+      workspace.destroy();
+    } finally {
+      globalThis.createImageBitmap = previousCreateImageBitmap;
+    }
+  })
+));
+
 test('Undo retains the detached runtime Blob needed by the restored document', async () => (
   withWorkspaceGlobals(async () => {
     const workspace = createMakerWorkspace({

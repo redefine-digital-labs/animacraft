@@ -944,6 +944,27 @@ function renderSignature(style) {
   });
 }
 
+function coverAssetIdOf(maker) {
+  return String(maker?.metadata?.coverAssetId ?? '');
+}
+
+function nonCoverAssetIds(maker) {
+  const ids = new Set();
+  asArray(maker?.layerTracks).forEach((track) => {
+    if (track?.referenceAssetId) ids.add(String(track.referenceAssetId));
+  });
+  partsOf(maker).forEach((part) => {
+    if (part?.iconAssetId) ids.add(String(part.iconAssetId));
+    itemsOf(part).forEach((item) => {
+      if (item?.thumbnailAssetId) ids.add(String(item.thumbnailAssetId));
+      stylesOf(item).forEach((style) => {
+        if (style?.assetId) ids.add(String(style.assetId));
+      });
+    });
+  });
+  return ids;
+}
+
 /**
  * Compare two immutable Maker releases and explain whether old recipes and
  * rendered appearances can safely opt into the new version.
@@ -970,6 +991,11 @@ export function compareMakerCompatibility(previous, next) {
   if (stableJson(previousCanvas) !== stableJson(nextCanvas)) addBreaking('canvas-changed', 'canvas', 'Canvas dimensions or display mode changed.', 'render');
   if (stableJson(previous?.defaultRecipe ?? null) !== stableJson(next?.defaultRecipe ?? null)) {
     addWarning('default-recipe-changed', 'defaultRecipe', 'Existing OCs remain pinned, but the initial player preview will change.');
+  }
+  const previousCoverAssetId = coverAssetIdOf(previous);
+  const nextCoverAssetId = coverAssetIdOf(next);
+  if (previousCoverAssetId !== nextCoverAssetId) {
+    addWarning('cover-reference-changed', 'metadata.coverAssetId', 'The Maker cover changed; OC recipes and rendering are unaffected.');
   }
 
   const previousTracks = mapBy(previous?.layerTracks, trackIdOf);
@@ -1074,13 +1100,33 @@ export function compareMakerCompatibility(previous, next) {
 
   const previousAssets = mapBy(previous?.assets, (asset) => String(asset?.id ?? asset?.identifier ?? ''));
   const nextAssets = mapBy(next?.assets, (asset) => String(asset?.id ?? asset?.identifier ?? ''));
+  const coverAssetIds = new Set([previousCoverAssetId, nextCoverAssetId].filter(Boolean));
+  const assetsReferencedOutsideCover = new Set([
+    ...nonCoverAssetIds(previous),
+    ...nonCoverAssetIds(next),
+  ]);
+  const isCoverOnlyAsset = (assetId) => (
+    coverAssetIds.has(assetId)
+    && !assetsReferencedOutsideCover.has(assetId)
+  );
   previousAssets.forEach((asset, assetId) => {
     const nextAsset = nextAssets.get(assetId);
-    if (!nextAsset) addBreaking('asset-removed', `assets.${assetId}`, 'A runtime asset was removed.', 'render');
-    else {
+    if (!nextAsset) {
+      if (isCoverOnlyAsset(assetId)) {
+        addWarning('cover-asset-removed', `assets.${assetId}`, 'A previous Maker cover asset was removed; OC rendering is unchanged.');
+      } else {
+        addBreaking('asset-removed', `assets.${assetId}`, 'A runtime asset was removed.', 'render');
+      }
+    } else {
       const previousLocator = String(asset.contentHash ?? asset.digest ?? asset.blobId ?? asset.identifier ?? '');
       const nextLocator = String(nextAsset.contentHash ?? nextAsset.digest ?? nextAsset.blobId ?? nextAsset.identifier ?? '');
-      if (previousLocator !== nextLocator) addBreaking('asset-content-changed', `assets.${assetId}`, 'An existing asset id now resolves to different bytes.', 'render');
+      if (previousLocator !== nextLocator) {
+        if (isCoverOnlyAsset(assetId)) {
+          addWarning('cover-asset-content-changed', `assets.${assetId}`, 'The Maker cover bytes changed; OC rendering is unchanged.');
+        } else {
+          addBreaking('asset-content-changed', `assets.${assetId}`, 'An existing asset id now resolves to different bytes.', 'render');
+        }
+      }
     }
   });
 
