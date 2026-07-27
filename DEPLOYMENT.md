@@ -4,16 +4,25 @@ Animacraft is a static Vite app with direct wallet-signed Sui and Walrus writes.
 
 ## Current Mainnet Release
 
-- Original package: `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`
-- Publish transaction: `GxU8kpBPf4BU2KP9761sh7tgHnAsaYZ8dq5dipw3n185`
-- Checkpoint: `297352663`
+- Protocol version: `4`
+- Callable package: `0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc`
+- Original package / stable type identity: `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`
+- v4 upgrade transaction: `92DUvaqv35eYA78zB5wP5pKpqvKa3QV6eJ4YUASEAMh6`
+- v4 upgrade checkpoint: `303378234`
+- Protocol-fee initialization transaction: `HpSsqqsNqzREwE6pjRws9LwfNYT5qtRFFf9qMdWJiEpt`
+- Protocol-fee initialization checkpoint: `303378555`
+- `ProtocolFeeConfig`: `0x60d141c7b9c5726a85a3b53dd08879d86af313cf3fe96d5e6440a8d5cb60ee32`
+- `ProtocolTreasury<USDC>`: `0xf859174faa620adcdae10d2554eb356cb8a499dcbe47f15327a1347fe752af54`
+- `ProtocolFeeAdminCap`: `0x28a99dfbfc37b474b4bdb3330eeb1a2ef3bb1139e0268112d91bd11a4e3fdcbd`
+- Canonical Soul mint gate: `false`
+- Initial protocol fee: `5000` bps
 - `UpgradeCap`: `0xe7d1269532bbfbf5e448cb5c58f07fc6720ed3d22e7853e9f13b7b6282746520`
-- `Publisher`: `0xfc5a8e6f32e5d7a77492373e5b301809a2b0ca4cbec7282a43668995d7ae2ddb`
+- Historical `Publisher` consumed into the AdminCap during initialization: `0xfc5a8e6f32e5d7a77492373e5b301809a2b0ca4cbec7282a43668995d7ae2ddb`
 - `Display<OCMaker>`: `0xeec472b0f5eeb1a6ca07ca10d9e470a4aa1946f005d8ff29299365b0e3003877`
 - Publisher address: `0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f`
-- Source tree: `6ecafa9db67f1c683f53679a3c07d0036d7f88c5`
-- Merged source commit: `979a4161ac79f4e275d30575f2ce2e76195a9cfa`
-- Source verification: successful at `2026-07-11T20:32:31Z` with Sui CLI `1.74.1-8fc60f1fa966`
+- Source tree: `2ce7795c62e3776049e3c711fb5389cfa19320fc`
+- Merged source commit: `b5af0f92e2178a32d561da6cf650f3e97b4a5de4`
+- Source verification: successful at `2026-07-27T00:14:06Z` with Sui CLI `1.75.2-027e13b2c140`
 
 The canonical machine-readable record is [`deployments/mainnet.json`](deployments/mainnet.json).
 For Soulidity's Move dependency, the original package ID remains the stable
@@ -190,7 +199,9 @@ window.ANIMACRAFT_CONFIG = {
   paymentCoinDecimals: 6,
   walrusAggregatorUrl: 'https://aggregator.walrus-mainnet.walrus.space',
   walrusUploadRelayUrl: 'https://upload-relay.mainnet.walrus.space',
-  walrusRelayMaxTipMist: 1000000,
+  // Client-side safety ceiling (0.1 SUI), not the amount charged. The publish
+  // dialog shows the relay's exact live quote before the signature request.
+  walrusRelayMaxTipMist: 100000000,
   walrusEpochs: 53,
   featuredMakers: {},
   appUrl: 'https://animacraft.soulidity.ai',

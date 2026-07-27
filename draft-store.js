@@ -44,6 +44,44 @@ function transactionComplete(transaction) {
   });
 }
 
+function uploadRecoveryRevision(recovery) {
+  const revision = Number(recovery?.recoveryRevision ?? 0);
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
+}
+
+function uploadRecoverySessionId(recovery) {
+  const explicit = String(recovery?.uploadSessionId || '').trim();
+  if (explicit) return explicit;
+  const owner = String(recovery?.owner || 'unknown-owner').trim().toLowerCase();
+  const blobId = String(
+    recovery?.quiltBlobId
+      || recovery?.checkpoint?.blobId
+      || recovery?.checkpoint?.blobObjectId
+      || 'unknown-quilt',
+  ).trim();
+  return `legacy:${owner}:${blobId}`;
+}
+
+function expectedUploadRecoveryRevision(value) {
+  const revision = Number(value);
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw new TypeError('The expected upload recovery revision must be a non-negative safe integer.');
+  }
+  return revision;
+}
+
+function uploadRecoveryConflict(makerKey, expectedRevision, actualRevision, uploadSessionId, actualSessionId) {
+  const error = new Error(
+    `The Walrus upload recovery for ${makerKey} changed in another operation. Reload its latest checkpoint before saving again.`,
+  );
+  error.code = 'UPLOAD_RECOVERY_CONFLICT';
+  error.expectedRevision = expectedRevision;
+  error.actualRevision = actualRevision;
+  error.uploadSessionId = uploadSessionId;
+  error.actualSessionId = actualSessionId;
+  return error;
+}
+
 export async function replaceMakerAssets(makerKey, records) {
   if (!makerKey) throw new Error('A Maker key is required to save local assets.');
   const database = await openDraftDatabase();
@@ -128,13 +166,48 @@ export async function deleteMakerDraftRecord(makerKey) {
   }
 }
 
-export async function saveMakerUploadRecovery(makerKey, recovery) {
+export async function saveMakerUploadRecovery(makerKey, recovery, { expectedRevision } = {}) {
   if (!makerKey) throw new Error('A Maker key is required to save upload recovery.');
   const database = await openDraftDatabase();
   try {
     const transaction = database.transaction(UPLOAD_STORE, 'readwrite');
-    transaction.objectStore(UPLOAD_STORE).put({ ...recovery, makerKey, savedAt: Date.now() });
+    const store = transaction.objectStore(UPLOAD_STORE);
+    const current = await requestResult(store.get(makerKey));
+    const currentRevision = uploadRecoveryRevision(current);
+    const incomingSessionId = uploadRecoverySessionId(recovery);
+    const currentSessionId = current ? uploadRecoverySessionId(current) : '';
+    const hasExpectedRevision = expectedRevision !== undefined;
+    const requestedRevision = hasExpectedRevision
+      ? expectedUploadRecoveryRevision(expectedRevision)
+      : currentRevision;
+
+    if (
+      hasExpectedRevision
+      && (
+        requestedRevision !== currentRevision
+        || (current && incomingSessionId !== currentSessionId)
+      )
+    ) {
+      await transactionComplete(transaction);
+      throw uploadRecoveryConflict(
+        makerKey,
+        requestedRevision,
+        currentRevision,
+        incomingSessionId,
+        currentSessionId,
+      );
+    }
+
+    const stored = {
+      ...recovery,
+      makerKey,
+      uploadSessionId: incomingSessionId,
+      recoveryRevision: requestedRevision + 1,
+      savedAt: Date.now(),
+    };
+    store.put(stored);
     await transactionComplete(transaction);
+    return stored;
   } finally {
     database.close();
   }
@@ -153,13 +226,33 @@ export async function loadMakerUploadRecovery(makerKey) {
   }
 }
 
-export async function deleteMakerUploadRecovery(makerKey) {
-  if (!makerKey) return;
+export async function deleteMakerUploadRecovery(
+  makerKey,
+  { expectedRevision, uploadSessionId } = {},
+) {
+  if (!makerKey) return false;
   const database = await openDraftDatabase();
   try {
     const transaction = database.transaction(UPLOAD_STORE, 'readwrite');
-    transaction.objectStore(UPLOAD_STORE).delete(makerKey);
+    const store = transaction.objectStore(UPLOAD_STORE);
+    const current = await requestResult(store.get(makerKey));
+    if (!current) {
+      await transactionComplete(transaction);
+      return false;
+    }
+
+    const revisionMatches = expectedRevision === undefined
+      || expectedUploadRecoveryRevision(expectedRevision) === uploadRecoveryRevision(current);
+    const sessionMatches = uploadSessionId === undefined
+      || String(uploadSessionId) === uploadRecoverySessionId(current);
+    if (!revisionMatches || !sessionMatches) {
+      await transactionComplete(transaction);
+      return false;
+    }
+
+    store.delete(makerKey);
     await transactionComplete(transaction);
+    return true;
   } finally {
     database.close();
   }

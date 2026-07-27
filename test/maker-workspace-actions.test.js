@@ -14,10 +14,18 @@ class FakeRoot {
   constructor(selectors = {}) {
     this.innerHTML = '';
     this.selectors = selectors;
+    this.addedListeners = [];
+    this.removedListeners = [];
   }
 
-  addEventListener() {}
-  removeEventListener() {}
+  addEventListener(type, listener) {
+    this.addedListeners.push([type, listener]);
+  }
+
+  removeEventListener(type, listener) {
+    this.removedListeners.push([type, listener]);
+  }
+
   contains() { return false; }
   querySelector(selector) { return this.selectors[selector] || null; }
 }
@@ -1368,6 +1376,411 @@ test('Player completion stays blocked until the exact current scene has rendered
       false,
     );
   }, { playable: true });
+});
+
+test('Creator and Player publication states share one isolated quote and error contract', async () => {
+  await withWorkspace(async (workspace) => {
+    const expectedKeys = [
+      'actions',
+      'busy',
+      'digest',
+      'error',
+      'relayTipMist',
+      'relayTipQuotedAt',
+      'stage',
+      'status',
+      'walrusStorageCostFrost',
+      'walrusTotalCostFrost',
+      'walrusWriteCostFrost',
+    ].sort();
+    assert.deepEqual(Object.keys(workspace.creatorPublishState).sort(), expectedKeys);
+    assert.deepEqual(Object.keys(workspace.playerPublishState).sort(), expectedKeys);
+
+    workspace.setCreatorPublishState({
+      stage: 'encoded',
+      relayTipMist: '9007199254740993',
+      walrusStorageCostFrost: '2000000001',
+      walrusWriteCostFrost: '3000000002',
+      walrusTotalCostFrost: '5000000003',
+      error: { code: 'UPLOAD_QUOTE_CHANGED', action: 'prepare', diagnostic: 'old quote' },
+      actions: { prepare: true, register: false },
+    });
+    assert.equal(workspace.playerPublishState.stage, 'idle');
+    assert.equal(workspace.playerPublishState.relayTipMist, null);
+
+    workspace.setCreatorPublishState({
+      error: null,
+      relayTipMist: null,
+      walrusStorageCostFrost: null,
+      walrusWriteCostFrost: null,
+      walrusTotalCostFrost: null,
+      actions: { prepare: false, register: true },
+    });
+    assert.equal(workspace.creatorPublishState.stage, 'encoded', 'unmentioned state survives an incremental update');
+    assert.equal(workspace.creatorPublishState.error, null);
+    assert.equal(workspace.creatorPublishState.relayTipMist, null);
+    assert.equal(workspace.creatorPublishState.actions.prepare, false);
+    assert.equal(workspace.creatorPublishState.actions.register, true);
+  }, { playable: true });
+});
+
+test('Creator and Player render the same guarded four-step fee modal with exact BigInt quotes', async () => {
+  const creatorRoot = new FakeRoot();
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const quote = {
+      stage: 'encoded',
+      status: 'Quote ready',
+      busy: false,
+      relayTipMist: '9007199254740993',
+      relayTipQuotedAt: '2026-07-27T12:34:00.000Z',
+      walrusStorageCostFrost: '2000000001',
+      walrusWriteCostFrost: '3000000002',
+      walrusTotalCostFrost: '5000000003',
+      error: null,
+      actions: { register: true },
+    };
+    workspace.creatorPublishOpen = true;
+    workspace.playerPublishOpen = true;
+    workspace.setCreatorPublishState(quote);
+    workspace.setPlayerPublishState(quote);
+    workspace.render();
+
+    [
+      ['creator', creatorRoot, 'makerCreatorPublishDialog'],
+      ['player', playerRoot, 'makerPlayerPublishDialog'],
+    ].forEach(([kind, root, dialogId]) => {
+      assert.match(root.innerHTML, new RegExp(`data-action="close-${kind}-publish-backdrop"`));
+      assert.match(root.innerHTML, new RegExp(`id="${dialogId}"[^>]*role="dialog" aria-modal="true"`));
+      assert.equal(
+        (root.innerHTML.match(new RegExp(`class="v4-chain-flow ${kind}"`, 'g')) || []).length,
+        1,
+        `${kind} must render exactly one shared publication flow and no legacy inline panel`,
+      );
+      assert.ok(
+        root.innerHTML.indexOf('class="v4-modal-backdrop v4-chain-flow-backdrop"')
+          < root.innerHTML.indexOf(`id="${dialogId}"`),
+        `${kind} publication flow must live inside its modal backdrop`,
+      );
+      assert.match(root.innerHTML, /9,007,199,254,740,993 MIST/);
+      assert.match(root.innerHTML, /datetime="2026-07-27T12:34:00\.000Z"/);
+      assert.match(root.innerHTML, /9007199\.254740993 SUI/);
+      assert.match(root.innerHTML, /2,000,000,001 FROST/);
+      assert.match(root.innerHTML, /2\.000000001 WAL/);
+      assert.match(root.innerHTML, /3,000,000,002 FROST/);
+      assert.match(root.innerHTML, /3\.000000002 WAL/);
+      assert.match(root.innerHTML, /5,000,000,003 FROST/);
+      assert.match(root.innerHTML, /5\.000000003 WAL/);
+      assert.match(root.innerHTML, /not a complete Sui gas estimate/);
+      assert.match(root.innerHTML, /Confirm this quote/);
+    });
+
+    workspace.setCreatorPublishState({
+      relayTipMist: 'invalid',
+      walrusStorageCostFrost: null,
+      walrusWriteCostFrost: null,
+      walrusTotalCostFrost: null,
+    });
+    assert.doesNotMatch(creatorRoot.innerHTML, /class="v4-chain-fee"/);
+    assert.match(creatorRoot.innerHTML, />2\. Register &amp; upload</);
+  }, {
+    creatorRoot,
+    playerRoot,
+    playable: true,
+  });
+});
+
+test('publication quotes preserve exact grouping in all five supported locales', async () => {
+  await withWorkspace(async (workspace) => {
+    const amount = 9007199254740993n;
+    const localeMap = {
+      en: 'en-US',
+      zh: 'zh-CN',
+      ja: 'ja-JP',
+      ko: 'ko-KR',
+      vi: 'vi-VN',
+    };
+    workspace.creatorPublishOpen = true;
+    workspace.setCreatorPublishState({
+      stage: 'encoded',
+      relayTipMist: String(amount),
+      walrusStorageCostFrost: '1',
+      walrusWriteCostFrost: '2',
+      walrusTotalCostFrost: '3',
+      actions: { register: true },
+    });
+    Object.entries(localeMap).forEach(([locale, numberLocale]) => {
+      workspace.setLocale(locale, { render: false });
+      const html = workspace.renderPublicationFlow('creator');
+      assert.ok(
+        html.includes(`${new Intl.NumberFormat(numberLocale).format(amount)} MIST`),
+        `${locale} must format the full BigInt without precision loss`,
+      );
+    });
+  }, { playable: true });
+});
+
+test('Creator and Player map every pending publication stage to one of four visible steps', async () => {
+  await withWorkspace(async (workspace) => {
+    const cases = [
+      ['idle', 0, 1, 3],
+      ['encoded', 1, 1, 2],
+      ['register-pending', 1, 1, 2],
+      ['registered', 1, 1, 2],
+      ['uploaded', 2, 1, 1],
+      ['certify-pending', 2, 1, 1],
+      ['certified', 3, 1, 0],
+      ['publish-pending', 3, 1, 0],
+    ];
+    for (const kind of ['creator', 'player']) {
+      workspace[`${kind}PublishOpen`] = true;
+      for (const [stage, completed, current, pending] of cases) {
+        workspace[`${kind}PublishState`] = {
+          ...workspace[`${kind}PublishState`],
+          stage,
+          digest: '',
+          error: null,
+        };
+        const html = workspace.renderPublicationFlow(kind);
+        assert.equal((html.match(/class="completed"/g) || []).length, completed, `${kind} ${stage} completed`);
+        assert.equal((html.match(/class="current"/g) || []).length, current, `${kind} ${stage} current`);
+        assert.equal((html.match(/class="pending"/g) || []).length, pending, `${kind} ${stage} pending`);
+      }
+      workspace[`${kind}PublishState`].stage = 'idle';
+      workspace[`${kind}PublishState`].digest = '0xdone';
+      const completedHtml = workspace.renderPublicationFlow(kind);
+      assert.equal((completedHtml.match(/class="completed"/g) || []).length, 4);
+      assert.doesNotMatch(completedHtml, /aria-current="step"/);
+    }
+  }, { playable: true });
+});
+
+test('Creator and Player classify quote/pending errors and never duplicate a review action', async () => {
+  const creatorRoot = new FakeRoot();
+  const playerRoot = new FakeRoot();
+  const actions = { creator: [], player: [] };
+  await withWorkspace(async (workspace) => {
+    for (const kind of ['creator', 'player']) {
+      workspace[`${kind}PublishOpen`] = true;
+      workspace[`set${kind[0].toUpperCase()}${kind.slice(1)}PublishState`]({
+        stage: 'register-pending',
+        busy: false,
+        error: {
+          code: 'TRANSACTION_OUTCOME_PENDING',
+          action: 'review',
+          diagnostic: 'The signed transaction may already be on-chain.',
+        },
+        actions: { review: true },
+      });
+      const root = kind === 'creator' ? creatorRoot : playerRoot;
+      assert.match(root.innerHTML, /The transaction outcome is still being confirmed/);
+      assert.equal((root.innerHTML.match(new RegExp(`data-action="${kind}-publish-review"`, 'g')) || []).length, 1);
+      assert.doesNotMatch(root.innerHTML, new RegExp(`data-action="${kind}-publish-retry"`));
+      assert.doesNotMatch(root.innerHTML, new RegExp(`data-action="${kind}-publish-recover"`));
+      (kind === 'creator' ? creatorClick : playerClick)(workspace, `${kind}-publish-review`);
+      assert.deepEqual(actions[kind], ['review']);
+
+      workspace[`set${kind[0].toUpperCase()}${kind.slice(1)}PublishState`]({
+        error: {
+          code: 'TRANSACTION_OUTCOME_PENDING',
+          action: 'register',
+          diagnostic: 'The signed registration is being checked.',
+        },
+        actions: { register: true, review: false },
+      });
+      assert.doesNotMatch(root.innerHTML, new RegExp(`data-action="${kind}-publish-retry"`));
+      assert.match(root.innerHTML, new RegExp(`data-action="${kind}-publish-recover" data-publish-action="register"`));
+      assert.match(root.innerHTML, /Check transaction status/);
+      (kind === 'creator' ? creatorClick : playerClick)(
+        workspace,
+        `${kind}-publish-recover`,
+        { publishAction: 'register' },
+      );
+      assert.deepEqual(actions[kind], ['review', 'register']);
+
+      workspace[`set${kind[0].toUpperCase()}${kind.slice(1)}PublishState`]({
+        error: {
+          code: kind === 'creator' ? 'INSUFFICIENT_WAL_BALANCE' : 'INSUFFICIENT_SUI_BALANCE',
+          action: 'prepare',
+          diagnostic: 'Balance preflight failed.',
+        },
+        actions: { prepare: true, register: false },
+      });
+      assert.match(
+        root.innerHTML,
+        kind === 'creator'
+          ? /The wallet does not have enough WAL/
+          : /The wallet does not have enough SUI/,
+      );
+
+      workspace[`set${kind[0].toUpperCase()}${kind.slice(1)}PublishState`]({
+        error: {
+          code: 'UPLOAD_QUOTE_CHANGED',
+          action: 'prepare',
+          diagnostic: 'Walrus price changed.',
+        },
+        actions: { prepare: true, review: false },
+      });
+      assert.match(root.innerHTML, /The upload quote changed/);
+      assert.match(root.innerHTML, new RegExp(`data-action="${kind}-publish-retry" data-publish-action="prepare"`));
+      assert.match(root.innerHTML, /Prepare a new quote/);
+
+      workspace[`set${kind[0].toUpperCase()}${kind.slice(1)}PublishState`]({
+        error: {
+          code: 'UPLOAD_RECOVERY_MISMATCH',
+          action: 'resume',
+          diagnostic: 'The saved upload no longer matches.',
+        },
+        actions: { resume: true, discard: true, prepare: false },
+      });
+      assert.match(root.innerHTML, /saved upload belongs to an earlier edit/);
+      assert.match(root.innerHTML, new RegExp(`data-action="${kind}-publish-discard"`));
+      (kind === 'creator' ? creatorClick : playerClick)(workspace, `${kind}-publish-discard`);
+      assert.deepEqual(actions[kind], ['review', 'register', 'discard']);
+    }
+  }, {
+    creatorRoot,
+    playerRoot,
+    playable: true,
+    callbacks: {
+      onCreatorPublishAction: (action) => actions.creator.push(action),
+      onPlayerPublishAction: (action) => actions.player.push(action),
+    },
+  });
+});
+
+test('busy Creator and Player close confirmation settles automatically without closing the modal', async () => {
+  const creatorRoot = new FakeRoot();
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    for (const kind of ['creator', 'player']) {
+      const root = kind === 'creator' ? creatorRoot : playerRoot;
+      const click = kind === 'creator' ? creatorClick : playerClick;
+      const setState = workspace[`set${kind[0].toUpperCase()}${kind.slice(1)}PublishState`].bind(workspace);
+      workspace[`${kind}PublishOpen`] = true;
+      setState({ busy: true, status: 'Signing', error: null });
+      click(workspace, `close-${kind}-publish`);
+      assert.equal(workspace[`${kind}PublishOpen`], true);
+      assert.equal(workspace[`${kind}PublishCloseConfirm`], true);
+      assert.match(root.innerHTML, /A release step is still running/);
+      assert.match(root.innerHTML, /class="v4-chain-flow-content" inert aria-hidden="true"/);
+
+      setState({ busy: true, status: 'Still signing' });
+      assert.equal(workspace[`${kind}PublishCloseConfirm`], true);
+      setState({
+        busy: false,
+        status: 'Finished',
+        ...(kind === 'player' ? { error: { code: 'NETWORK_UNAVAILABLE', diagnostic: 'settled' } } : {}),
+      });
+      assert.equal(workspace[`${kind}PublishOpen`], true);
+      assert.equal(workspace[`${kind}PublishCloseConfirm`], false);
+      assert.doesNotMatch(root.innerHTML, /A release step is still running/);
+    }
+  }, {
+    creatorRoot,
+    playerRoot,
+    playable: true,
+  });
+});
+
+test('publication close confirmation owns focus, Escape restores the close button, and listeners clean up', async () => {
+  class FocusNode {
+    constructor(name, active, children = []) {
+      this.name = name;
+      this.active = active;
+      this.children = children;
+      this.hidden = false;
+      this.focusCount = 0;
+    }
+
+    focus() {
+      this.focusCount += 1;
+      this.active.current = this;
+    }
+
+    querySelectorAll() {
+      return this.children;
+    }
+
+    contains(node) {
+      return node === this || this.children.includes(node);
+    }
+
+    getAttribute() {
+      return null;
+    }
+  }
+
+  const previousDocument = globalThis.document;
+  const active = { current: null };
+  const roots = {};
+  for (const kind of ['creator', 'player']) {
+    const root = new FakeRoot();
+    const keep = new FocusNode(`${kind}-keep`, active);
+    const force = new FocusNode(`${kind}-force`, active);
+    const close = new FocusNode(`${kind}-close`, active);
+    const normalAction = new FocusNode(`${kind}-action`, active);
+    const dialog = new FocusNode(`${kind}-dialog`, active, [close, normalAction]);
+    const confirm = new FocusNode(`${kind}-confirm`, active, [keep, force]);
+    const cap = kind[0].toUpperCase() + kind.slice(1);
+    root.selectors[`#maker${cap}PublishDialog`] = dialog;
+    root.selectors[`#maker${cap}PublishCloseConfirm`] = confirm;
+    root.selectors[`[data-action="keep-${kind}-publish-open"]`] = keep;
+    root.selectors[`[data-action="close-${kind}-publish"]`] = close;
+    root.selectors[kind === 'creator' ? '[data-action="publish"]' : '[data-action="player-complete"]'] = normalAction;
+    roots[kind] = { root, keep, force, close, normalAction };
+  }
+
+  try {
+    await withWorkspace(async (workspace) => {
+      globalThis.document = {
+        get activeElement() {
+          return active.current;
+        },
+      };
+      for (const kind of ['creator', 'player']) {
+        const { keep, force, close, normalAction } = roots[kind];
+        const setState = workspace[`set${kind[0].toUpperCase()}${kind.slice(1)}PublishState`].bind(workspace);
+        workspace[`${kind}PublishOpen`] = true;
+        setState({ busy: true });
+        workspace.requestClosePublication(kind);
+        assert.equal(active.current, keep);
+
+        active.current = normalAction;
+        let prevented = false;
+        workspace.handlePublishDialogKeydown(kind, {
+          key: 'Tab',
+          shiftKey: false,
+          preventDefault: () => { prevented = true; },
+        });
+        assert.equal(prevented, true);
+        assert.equal(active.current, keep, `${kind} Tab enters the exclusive confirmation`);
+
+        active.current = keep;
+        workspace.handlePublishDialogKeydown(kind, {
+          key: 'Tab',
+          shiftKey: true,
+          preventDefault() {},
+        });
+        assert.equal(active.current, force, `${kind} Shift+Tab wraps inside confirmation`);
+
+        workspace.handlePublishDialogKeydown(kind, { key: 'Escape', preventDefault() {} });
+        assert.equal(workspace[`${kind}PublishCloseConfirm`], false);
+        assert.equal(workspace[`${kind}PublishOpen`], true);
+        assert.equal(active.current, close);
+      }
+    }, {
+      creatorRoot: roots.creator.root,
+      playerRoot: roots.player.root,
+      playable: true,
+    });
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+
+  assert.ok(roots.player.root.addedListeners.some(([type]) => type === 'keydown'));
+  assert.ok(roots.player.root.removedListeners.some(([type]) => type === 'keydown'));
 });
 
 test('Player session writes stay ordered and only the newest snapshot may report saved', async () => {

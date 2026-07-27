@@ -53,6 +53,9 @@ test('all 5 Maker Studio dictionaries cover every editor and player detail key',
     assets: 8,
     drawn: 6,
     skipped: 2,
+    mist: '4,534,560',
+    sui: '0.00453456',
+    time: '12:34',
   };
 
   assert.deepEqual(MAKER_WORKSPACE_LOCALES, ['en', 'zh', 'ja', 'ko', 'vi']);
@@ -67,7 +70,7 @@ test('all 5 Maker Studio dictionaries cover every editor and player detail key',
       assert.ok(Object.hasOwn(dictionary, key), `${locale}.${key} must be owned by that locale`);
       const value = makerWorkspaceText(locale, key, variables);
       assert.ok(value.trim(), `${locale}.${key} must not be blank`);
-      assert.doesNotMatch(value, /\{(?:count|items|styles|layers|part|item|creator|version|name|breaking|warnings|additions|parts|assets|drawn|skipped)\}/, `${locale}.${key} must interpolate its variables`);
+      assert.doesNotMatch(value, /\{(?:count|items|styles|layers|part|item|creator|version|name|breaking|warnings|additions|parts|assets|drawn|skipped|mist|sui|time)\}/, `${locale}.${key} must interpolate its variables`);
     });
   });
 });
@@ -126,6 +129,21 @@ test('critical nested editor details do not fall back to English outside English
     'publishMakerStep',
     'prepareQuilt',
     'registerAndUpload',
+    'publishQuoteTitle',
+    'publishQuoteAt',
+    'walrusStorageEstimate',
+    'walrusWriteEstimate',
+    'walrusTotalEstimate',
+    'publishQuoteGasWarning',
+    'publishErrorQuoteChangedTitle',
+    'publishErrorQuoteChangedCopy',
+    'publishErrorPendingTitle',
+    'publishErrorPendingCopy',
+    'publishErrorWalBalanceTitle',
+    'publishErrorWalBalanceCopy',
+    'publishErrorSuiBalanceTitle',
+    'publishErrorSuiBalanceCopy',
+    'recoverPendingRelease',
     'finishOcStep',
     'continueToSoulidity',
     'readyWithWarnings',

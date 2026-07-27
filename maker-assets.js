@@ -1,6 +1,134 @@
 const MAX_MAKER_ASSET_BYTES = 20 * 1024 * 1024;
 const MAX_MAKER_ASSET_EDGE = 8_192;
+const MAX_MAKER_ASSET_PIXELS = 16 * 1024 * 1024;
+const MAX_MAKER_ASSET_CACHE_PIXELS = 32 * 1024 * 1024;
 const PNG_SIGNATURE = Object.freeze([137, 80, 78, 71, 13, 10, 26, 10]);
+
+function makerAssetLimitError(message) {
+  const error = new Error(message);
+  error.code = 'MAKER_ASSET_LIMIT_EXCEEDED';
+  return error;
+}
+
+function makerAssetAbortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  if (typeof DOMException === 'function') return new DOMException('Maker asset loading was aborted.', 'AbortError');
+  const error = new Error('Maker asset loading was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function makerAssetLabel(value) {
+  const label = String(value || '').trim();
+  return label || 'Maker asset';
+}
+
+function declaredResponseBytes(response) {
+  const raw = response?.headers?.get?.('content-length');
+  if (raw === null || raw === undefined || String(raw).trim() === '') return null;
+  const normalized = String(raw).trim();
+  if (!/^\d+$/.test(normalized)) return null;
+  const bytes = Number(normalized);
+  return Number.isSafeInteger(bytes) ? bytes : Number.POSITIVE_INFINITY;
+}
+
+async function responseBlobWithinMakerAssetLimit(response, {
+  controller,
+  label,
+  maxBytes = MAX_MAKER_ASSET_BYTES,
+} = {}) {
+  const assetLabel = makerAssetLabel(label);
+  const declaredBytes = declaredResponseBytes(response);
+  if (declaredBytes !== null && declaredBytes > maxBytes) {
+    controller?.abort?.();
+    throw makerAssetLimitError(`${assetLabel} is larger than 20 MB.`);
+  }
+
+  const contentType = String(response?.headers?.get?.('content-type') || 'image/png');
+  const reader = response?.body?.getReader?.();
+  if (!reader) {
+    controller?.abort?.();
+    const error = new Error(`${assetLabel} cannot be safely streamed.`);
+    error.code = 'MAKER_ASSET_STREAM_UNAVAILABLE';
+    throw error;
+  }
+
+  const chunks = [];
+  let bytesRead = 0;
+  try {
+    while (true) {
+      if (controller?.signal?.aborted) throw makerAssetAbortError(controller.signal);
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || 0);
+      bytesRead += chunk.byteLength;
+      if (bytesRead > maxBytes) {
+        const error = makerAssetLimitError(`${assetLabel} is larger than 20 MB.`);
+        try {
+          await reader.cancel(error);
+        } catch {
+          // The size error below is authoritative even if stream cancellation fails.
+        }
+        controller?.abort?.(error);
+        throw error;
+      }
+      chunks.push(chunk);
+    }
+  } catch (error) {
+    try {
+      await reader.cancel(error);
+    } catch {
+      // Preserve the original read, limit, or abort failure.
+    }
+    throw error;
+  } finally {
+    reader.releaseLock?.();
+  }
+  return new Blob(chunks, { type: contentType });
+}
+
+export async function fetchMakerAssetBlob(url, {
+  signal,
+  label,
+  maxBytes = MAX_MAKER_ASSET_BYTES,
+} = {}) {
+  if (typeof fetch !== 'function') throw new Error('Remote Maker assets require browser fetch support.');
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) forwardAbort();
+  else signal?.addEventListener?.('abort', forwardAbort, { once: true });
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`${makerAssetLabel(label)} returned ${response.status}.`);
+    return await responseBlobWithinMakerAssetLimit(response, {
+      controller,
+      label,
+      maxBytes,
+    });
+  } catch (error) {
+    controller.abort(error);
+    throw error;
+  } finally {
+    signal?.removeEventListener?.('abort', forwardAbort);
+  }
+}
+
+export function assertMakerAssetDimensions(source, label) {
+  const width = Number(source?.width ?? source?.naturalWidth ?? source?.videoWidth ?? 0);
+  const height = Number(source?.height ?? source?.naturalHeight ?? source?.videoHeight ?? 0);
+  if (
+    !Number.isFinite(width)
+    || !Number.isFinite(height)
+    || width <= 0
+    || height <= 0
+    || width > MAX_MAKER_ASSET_EDGE
+    || height > MAX_MAKER_ASSET_EDGE
+    || width * height > MAX_MAKER_ASSET_PIXELS
+  ) {
+    throw makerAssetLimitError(`${makerAssetLabel(label)} has unsupported dimensions.`);
+  }
+  return { width, height };
+}
 
 function normalizedToken(value) {
   return String(value || '')
@@ -148,8 +276,14 @@ export async function inspectPngAsset(file, makerCanvas) {
     throw new Error(`${file.name || 'Maker artwork'} is not a real PNG file.`);
   }
   const bitmap = await createImageBitmap(file);
-  const width = bitmap.width;
-  const height = bitmap.height;
+  let dimensions;
+  try {
+    dimensions = assertMakerAssetDimensions(bitmap, file.name || 'Maker artwork');
+  } catch (error) {
+    bitmap.close?.();
+    throw error;
+  }
+  const { width, height } = dimensions;
   let alphaBounds = null;
   let alphaAnalyzed = false;
   let visiblePixelCount = 0;
@@ -202,9 +336,6 @@ export async function inspectPngAsset(file, makerCanvas) {
     alphaBounds = null;
   }
   bitmap.close();
-  if (!width || !height || width > MAX_MAKER_ASSET_EDGE || height > MAX_MAKER_ASSET_EDGE) {
-    throw new Error(`${file.name} has unsupported dimensions.`);
-  }
   const canvasWidth = Number(makerCanvas?.width || 0);
   const canvasHeight = Number(makerCanvas?.height || 0);
   const fullCanvas = width === canvasWidth && height === canvasHeight;
@@ -229,13 +360,22 @@ function canvasToBlob(canvas, type = 'image/png', quality) {
 }
 
 export async function createAlphaCroppedThumbnail(blob, size = 256) {
+  if (Number(blob?.size || 0) > MAX_MAKER_ASSET_BYTES) {
+    throw makerAssetLimitError('Maker thumbnail source is larger than 20 MB.');
+  }
   const bitmap = await createImageBitmap(blob);
-  const readCanvas = document.createElement('canvas');
-  readCanvas.width = bitmap.width;
-  readCanvas.height = bitmap.height;
-  const readContext = readCanvas.getContext('2d', { willReadFrequently: true });
-  readContext.drawImage(bitmap, 0, 0);
-  bitmap.close();
+  let readCanvas;
+  let readContext;
+  try {
+    const dimensions = assertMakerAssetDimensions(bitmap, 'Maker thumbnail source');
+    readCanvas = document.createElement('canvas');
+    readCanvas.width = dimensions.width;
+    readCanvas.height = dimensions.height;
+    readContext = readCanvas.getContext('2d', { willReadFrequently: true });
+    readContext.drawImage(bitmap, 0, 0);
+  } finally {
+    bitmap.close?.();
+  }
   const pixels = readContext.getImageData(0, 0, readCanvas.width, readCanvas.height);
   let minX = readCanvas.width;
   let minY = readCanvas.height;
@@ -375,39 +515,84 @@ export function revokeRuntimeAsset(record) {
 export function createCachedAssetResolver(assetMap) {
   const bitmapCache = new Map();
   const pending = new Map();
+  let decodedPixelTotal = 0;
+  let generation = 0;
   const resolveRecord = (assetId) => assetMap instanceof Map ? assetMap.get(assetId) : assetMap?.[assetId];
+  const cachedBitmap = (assetId) => {
+    const entry = bitmapCache.get(assetId);
+    if (!entry) return null;
+    // Map insertion order doubles as a deterministic least-recently-used queue.
+    bitmapCache.delete(assetId);
+    bitmapCache.set(assetId, entry);
+    return entry.bitmap;
+  };
+  const cacheBitmap = (assetId, bitmap, pixels) => {
+    bitmapCache.set(assetId, { bitmap, pixels });
+    decodedPixelTotal += pixels;
+    while (decodedPixelTotal > MAX_MAKER_ASSET_CACHE_PIXELS && bitmapCache.size > 1) {
+      const [oldestAssetId, oldest] = bitmapCache.entries().next().value;
+      bitmapCache.delete(oldestAssetId);
+      decodedPixelTotal -= oldest.pixels;
+      oldest.bitmap?.close?.();
+    }
+  };
   return {
     async resolve(assetId) {
-      if (bitmapCache.has(assetId)) return bitmapCache.get(assetId);
-      if (pending.has(assetId)) return pending.get(assetId);
+      const cached = cachedBitmap(assetId);
+      if (cached) return cached;
+      if (pending.has(assetId)) return pending.get(assetId).promise;
       const record = resolveRecord(assetId);
       if (!record) throw new Error(`Missing Maker asset: ${assetId}`);
+      const controller = new AbortController();
+      const taskGeneration = generation;
       const task = (async () => {
         const source = record.blob || record.file || record.url;
         if (!source) throw new Error(`Maker asset ${assetId} has no readable source.`);
-        let bitmap;
-        if (typeof source === 'string') {
-          const response = await fetch(source);
-          if (!response.ok) throw new Error(`Maker asset ${assetId} returned ${response.status}.`);
-          bitmap = await createImageBitmap(await response.blob());
-        } else {
-          bitmap = await createImageBitmap(source);
+        let bitmap = null;
+        try {
+          let bitmapSource = source;
+          if (typeof source === 'string') {
+            bitmapSource = await fetchMakerAssetBlob(source, {
+              signal: controller.signal,
+              label: `Maker asset ${assetId}`,
+            });
+          } else if (typeof Blob !== 'undefined' && source instanceof Blob && source.size > MAX_MAKER_ASSET_BYTES) {
+            throw makerAssetLimitError(`Maker asset ${assetId} is larger than 20 MB.`);
+          }
+          bitmap = await createImageBitmap(bitmapSource);
+          const dimensions = assertMakerAssetDimensions(bitmap, `Maker asset ${assetId}`);
+          if (controller.signal.aborted || taskGeneration !== generation) {
+            throw makerAssetAbortError(controller.signal);
+          }
+          cacheBitmap(assetId, bitmap, dimensions.width * dimensions.height);
+          return bitmap;
+        } catch (error) {
+          bitmap?.close?.();
+          throw error;
         }
-        bitmapCache.set(assetId, bitmap);
-        return bitmap;
-      })().finally(() => pending.delete(assetId));
-      pending.set(assetId, task);
+      })().finally(() => {
+        if (pending.get(assetId)?.promise === task) pending.delete(assetId);
+      });
+      pending.set(assetId, { promise: task, controller });
       return task;
     },
     prefetch(assetIds) {
       return Promise.allSettled([...new Set(assetIds)].map((assetId) => this.resolve(assetId)));
     },
     clear() {
-      bitmapCache.forEach((bitmap) => bitmap?.close?.());
+      generation += 1;
+      pending.forEach((entry) => entry.controller.abort());
+      bitmapCache.forEach((entry) => entry.bitmap?.close?.());
       bitmapCache.clear();
+      decodedPixelTotal = 0;
       pending.clear();
     },
   };
 }
 
-export { MAX_MAKER_ASSET_BYTES, MAX_MAKER_ASSET_EDGE };
+export {
+  MAX_MAKER_ASSET_BYTES,
+  MAX_MAKER_ASSET_CACHE_PIXELS,
+  MAX_MAKER_ASSET_EDGE,
+  MAX_MAKER_ASSET_PIXELS,
+};

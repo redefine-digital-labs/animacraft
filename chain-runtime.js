@@ -1,13 +1,19 @@
 import '@mysten/dapp-kit-core/web';
 import { createDAppKit } from '@mysten/dapp-kit-core';
+import { fromBase64, toBase64 } from '@mysten/bcs';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
-import { Transaction } from '@mysten/sui/transactions';
+import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 import { bcs } from '@mysten/sui/bcs';
 import { normalizeStructTag } from '@mysten/sui/utils';
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
 import { assertProtocolV3IncludedItemGates } from './manifest-validation.js';
 import { hashRecipe, recipeSlotBcs, recipeValue } from './recipe-hash.js';
-import { resolveCallablePackageId, resolveOriginalPackageId } from './runtime-config.js';
+import {
+  ANIMACRAFT_MAX_WALRUS_RELAY_TIP_MIST,
+  ANIMACRAFT_MAX_WALRUS_UPLOAD_BYTES,
+  resolveCallablePackageId,
+  resolveOriginalPackageId,
+} from './runtime-config.js';
 import { publishedMakerFromIntentEvent } from './chain-publication-recovery.js';
 
 export { hashRecipe } from './recipe-hash.js';
@@ -25,6 +31,22 @@ let walrusClient;
 let WalrusFileClass;
 let suiClient;
 let graphqlClient;
+
+const walrusSessionOperations = new WeakSet();
+const walCoinTypeByStakingPackage = new Map();
+const WalrusCertificateBcs = bcs.struct('AnimacraftWalrusCertificate', {
+  signers: bcs.vector(bcs.u16()),
+  serializedMessage: bcs.byteVector(),
+  signature: bcs.byteVector(),
+});
+const WalrusQuiltPatchIdBcs = bcs.struct('AnimacraftWalrusQuiltPatchId', {
+  quiltId: bcs.u256(),
+  patchId: bcs.struct('AnimacraftWalrusInternalQuiltPatchId', {
+    version: bcs.u8(),
+    startIndex: bcs.u16(),
+    endIndex: bcs.u16(),
+  }),
+});
 
 const walletModalI18n = Object.freeze({
   en: Object.freeze({
@@ -455,22 +477,485 @@ export async function findPublishedMakerByIntent({ creator, manifestBlobId, limi
   return null;
 }
 
-async function ensureWalrusRuntime() {
-  if (!runtimeConfig?.walrusUploadRelayUrl) throw new Error('Configure the Walrus Mainnet upload relay first.');
-  if (!walrusClient) {
-    const { WalrusFile, walrus } = await import('@mysten/walrus');
-    WalrusFileClass = WalrusFile;
-    walrusClient = new SuiGrpcClient({
-      network: runtimeConfig.network,
-      baseUrl: runtimeConfig.grpcUrl || runtimeConfig.rpcUrl,
-    }).$extend(walrus({
-      wasmUrl: walrusWasmUrl,
-      uploadRelay: {
-        host: runtimeConfig.walrusUploadRelayUrl,
-        sendTip: { max: Number(runtimeConfig.walrusRelayMaxTipMist || 1_000_000) },
-      },
-    }));
+function nonNegativeIntegerBigInt(value, label) {
+  let amount;
+  try {
+    amount = BigInt(String(value));
+  } catch {
+    throw new TypeError(`${label} must be a non-negative integer.`);
   }
+  if (amount < 0n) throw new TypeError(`${label} must be a non-negative integer.`);
+  return amount;
+}
+
+function walrusRelayTipCapMistBigInt() {
+  return nonNegativeIntegerBigInt(
+    runtimeConfig.walrusRelayMaxTipMist
+      ?? ANIMACRAFT_MAX_WALRUS_RELAY_TIP_MIST,
+    'The Walrus relay tip policy cap',
+  );
+}
+
+function safeRelayTipNumber(amount, label) {
+  if (amount > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw walrusStateError(
+      'TIP_TOO_HIGH',
+      `${label} exceeds JavaScript's exact integer range and cannot be approved safely.`,
+    );
+  }
+  return Number(amount);
+}
+
+function walrusRelayTipCapMist() {
+  return safeRelayTipNumber(
+    walrusRelayTipCapMistBigInt(),
+    'The Walrus relay tip policy cap',
+  );
+}
+
+function assertWalrusRelayTipWithinPolicy(relayTipMist) {
+  const tip = nonNegativeIntegerBigInt(relayTipMist, 'The Walrus relay tip');
+  const cap = walrusRelayTipCapMistBigInt();
+  if (tip > cap) {
+    throw walrusStateError(
+      'TIP_TOO_HIGH',
+      `The live Walrus relay tip (${tip} MIST) exceeds Animacraft's policy cap (${cap} MIST).`,
+    );
+  }
+  return safeRelayTipNumber(tip, 'The Walrus relay tip');
+}
+
+function walrusStorageEpochs() {
+  const configuredEpochs = Number(runtimeConfig.walrusEpochs ?? 53);
+  return Number.isInteger(configuredEpochs)
+    ? Math.min(53, Math.max(1, configuredEpochs))
+    : 53;
+}
+
+async function createWalrusRuntime(maxRelayTipMist = walrusRelayTipCapMist()) {
+  if (!runtimeConfig?.walrusUploadRelayUrl) throw new Error('Configure the Walrus Mainnet upload relay first.');
+  const { WalrusFile, walrus } = await import('@mysten/walrus');
+  WalrusFileClass = WalrusFile;
+  return new SuiGrpcClient({
+    network: runtimeConfig.network,
+    baseUrl: runtimeConfig.grpcUrl || runtimeConfig.rpcUrl,
+  }).$extend(walrus({
+    wasmUrl: walrusWasmUrl,
+    uploadRelay: {
+      host: runtimeConfig.walrusUploadRelayUrl,
+      // `max` is a hard client-side ceiling. Registration creates a fresh
+      // client with the exact user-confirmed quote as this value.
+      sendTip: { max: Number(maxRelayTipMist) },
+    },
+  }));
+}
+
+async function ensureWalrusRuntime() {
+  if (!walrusClient) walrusClient = await createWalrusRuntime();
+}
+
+function walrusStateError(code, message, cause) {
+  const error = new Error(message, cause === undefined ? undefined : { cause });
+  error.code = code;
+  return error;
+}
+
+async function checkpointWalrusSession(session, onCheckpoint) {
+  if (typeof onCheckpoint === 'function') await onCheckpoint(session);
+}
+
+async function withWalrusSessionOperation(session, operation, callback) {
+  if (!session || typeof session !== 'object') throw new Error('The Walrus upload session is missing.');
+  if (walrusSessionOperations.has(session)) {
+    throw walrusStateError(
+      'WALRUS_OPERATION_IN_PROGRESS',
+      `A Walrus ${operation} operation is already running for this upload.`,
+    );
+  }
+  walrusSessionOperations.add(session);
+  try {
+    return await callback();
+  } finally {
+    walrusSessionOperations.delete(session);
+  }
+}
+
+function applyWalrusQuote(session, quote) {
+  session.relayTipMist = Number(quote.relayTipMist);
+  session.relayTipQuotedAt = String(quote.relayTipQuotedAt);
+  session.walrusStorageCostFrost = String(quote.walrusStorageCostFrost);
+  session.walrusWriteCostFrost = String(quote.walrusWriteCostFrost);
+  session.walrusTotalCostFrost = String(quote.walrusTotalCostFrost);
+}
+
+async function calculateWalrusQuote(client, unencodedSize) {
+  const [relayTipMist, costs] = await Promise.all([
+    client.walrus.calculateUploadRelayTip({ size: unencodedSize }),
+    client.walrus.storageCost(unencodedSize, walrusStorageEpochs()),
+  ]);
+  assertWalrusRelayTipWithinPolicy(relayTipMist);
+  return walrusQuoteFromCosts(relayTipMist, costs);
+}
+
+async function walCoinTypeForClient(client) {
+  const blobType = normalizeStructTag(await client.walrus.getBlobType());
+  const stakingPackageId = blobType.split('::')[0];
+  let pending = walCoinTypeByStakingPackage.get(stakingPackageId);
+  if (!pending) {
+    pending = (async () => {
+      const stakeWithPool = await client.core.getMoveFunction({
+        packageId: stakingPackageId,
+        moduleName: 'staking',
+        name: 'stake_with_pool',
+      });
+      const toStake = stakeWithPool.function?.parameters?.[1];
+      const toStakeCoin = toStake?.body?.$kind === 'datatype'
+        ? toStake.body.datatype
+        : null;
+      const toStakeCoinType = toStakeCoin?.typeParameters?.[0]?.$kind === 'datatype'
+        ? toStakeCoin.typeParameters[0]
+        : null;
+      if (toStakeCoinType?.$kind !== 'datatype') {
+        throw new Error('Could not discover the WAL coin type from staking::stake_with_pool.');
+      }
+      return normalizeStructTag(toStakeCoinType.datatype.typeName);
+    })();
+    walCoinTypeByStakingPackage.set(stakingPackageId, pending);
+  }
+  try {
+    return await pending;
+  } catch (error) {
+    if (walCoinTypeByStakingPackage.get(stakingPackageId) === pending) {
+      walCoinTypeByStakingPackage.delete(stakingPackageId);
+    }
+    throw error;
+  }
+}
+
+async function walrusWalletBalances(owner, client = walrusClient) {
+  const walCoinType = await walCoinTypeForClient(client);
+  const balances = [];
+  let cursor = null;
+  do {
+    const page = await suiClient.listBalances({
+      owner,
+      cursor,
+      limit: 200,
+    });
+    balances.push(...(page.balances || []));
+    cursor = page.hasNextPage ? page.cursor : null;
+  } while (cursor && balances.length < 1_000);
+  const suiCoinType = normalizeStructTag('0x2::sui::SUI');
+  const sui = balances.find((balance) => normalizeStructTag(balance.coinType) === suiCoinType);
+  const wal = balances.find((balance) => normalizeStructTag(balance.coinType) === walCoinType);
+  return {
+    walletSuiBalanceMist: String(sui?.balance || '0'),
+    walletWalBalanceFrost: String(wal?.balance || '0'),
+  };
+}
+
+function applyWalrusWalletBalances(session, balances) {
+  session.walletSuiBalanceMist = String(balances.walletSuiBalanceMist);
+  session.walletWalBalanceFrost = String(balances.walletWalBalanceFrost);
+}
+
+function assertWalrusWalletBalances(session) {
+  if (BigInt(session.walletWalBalanceFrost || 0) < BigInt(session.walrusTotalCostFrost || 0)) {
+    throw walrusStateError(
+      'INSUFFICIENT_WAL_BALANCE',
+      `The connected wallet has ${session.walletWalBalanceFrost || 0} FROST but this upload requires ${session.walrusTotalCostFrost || 0} FROST before gas.`,
+    );
+  }
+  if (BigInt(session.walletSuiBalanceMist || 0) < BigInt(session.relayTipMist || 0)) {
+    throw walrusStateError(
+      'INSUFFICIENT_SUI_BALANCE',
+      `The connected wallet has ${session.walletSuiBalanceMist || 0} MIST but the relay tip requires ${session.relayTipMist || 0} MIST before gas.`,
+    );
+  }
+}
+
+function walrusQuoteFromCosts(relayTipMist, costs) {
+  // Validate before Number conversion; relay values are policy/security data.
+  assertWalrusRelayTipWithinPolicy(relayTipMist);
+  return {
+    relayTipMist: Number(relayTipMist),
+    relayTipQuotedAt: new Date().toISOString(),
+    walrusStorageCostFrost: String(costs.storageCost),
+    walrusWriteCostFrost: String(costs.writeCost),
+    walrusTotalCostFrost: String(costs.totalCost),
+  };
+}
+
+function walrusQuoteAmountsChanged(session, quote) {
+  return Number(session.relayTipMist) !== Number(quote.relayTipMist)
+    || String(session.walrusStorageCostFrost ?? '') !== String(quote.walrusStorageCostFrost)
+    || String(session.walrusWriteCostFrost ?? '') !== String(quote.walrusWriteCostFrost)
+    || String(session.walrusTotalCostFrost ?? '') !== String(quote.walrusTotalCostFrost);
+}
+
+async function refreshedRegistrationFlow(session, onCheckpoint) {
+  // This client is intentionally new: relay tip configuration and Walrus
+  // system prices must not come from the long-lived runtime cache.
+  const quoteClient = await createWalrusRuntime(walrusRelayTipCapMist());
+  const [quote, balances] = await Promise.all([
+    calculateWalrusQuote(quoteClient, session.encoded.unencodedSize),
+    walrusWalletBalances(session.owner, quoteClient),
+  ]);
+  applyWalrusWalletBalances(session, balances);
+  if (walrusQuoteAmountsChanged(session, quote)) {
+    applyWalrusQuote(session, quote);
+    await checkpointWalrusSession(session, onCheckpoint);
+    throw walrusStateError(
+      'UPLOAD_QUOTE_CHANGED',
+      'The live Walrus upload quote changed. Review and confirm the new relay tip and WAL cost before signing.',
+    );
+  }
+
+  // Build the transaction with another fresh client whose hard maximum is
+  // exactly the quote the user approved, rather than the application's cap.
+  // Compare as BigInt before creating the exact-quote client so an oversized
+  // or precision-losing relay value can never become an SDK willingness cap.
+  const exactRelayTipMist = assertWalrusRelayTipWithinPolicy(quote.relayTipMist);
+  const exactQuoteClient = await createWalrusRuntime(exactRelayTipMist);
+  const exactQuote = await calculateWalrusQuote(exactQuoteClient, session.encoded.unencodedSize);
+  if (walrusQuoteAmountsChanged(session, exactQuote)) {
+    applyWalrusQuote(session, exactQuote);
+    await checkpointWalrusSession(session, onCheckpoint);
+    throw walrusStateError(
+      'UPLOAD_QUOTE_CHANGED',
+      'The live Walrus upload quote changed while preparing the transaction. Review and confirm it again.',
+    );
+  }
+  session.relayTipQuotedAt = exactQuote.relayTipQuotedAt;
+  await checkpointWalrusSession(session, onCheckpoint);
+  assertWalrusWalletBalances(session);
+
+  const flow = exactQuoteClient.walrus.writeFilesFlow({
+    files: session.walrusFiles,
+    resume: session.encoded,
+  });
+  const encoded = await flow.encode();
+  if (encoded.blobId !== session.quiltBlobId) {
+    throw new Error('The Walrus quilt changed while refreshing its upload quote.');
+  }
+  session.flow = flow;
+  session.walrusClient = exactQuoteClient;
+  return flow;
+}
+
+function normalizedSignedTransaction(signed) {
+  const bytes = typeof signed?.bytes === 'string' ? signed.bytes : toBase64(signed?.bytes || new Uint8Array());
+  const signature = String(signed?.signature || '');
+  if (!bytes || !signature) throw new Error('The wallet did not return serializable signed transaction bytes.');
+  return {
+    bytes,
+    signature,
+    digest: TransactionDataBuilder.getDigestFromBytes(fromBase64(bytes)),
+    signedAt: new Date().toISOString(),
+  };
+}
+
+function transactionNotFound(error) {
+  return /transaction .* not found|not found.*transaction|could not find.*transaction/i.test(String(error?.message || error || ''));
+}
+
+async function querySignedTransaction(digest) {
+  try {
+    return {
+      found: true,
+      result: await suiClient.getTransaction({
+        digest,
+        include: { effects: true, objectTypes: true },
+      }),
+    };
+  } catch (error) {
+    if (transactionNotFound(error)) return { found: false, result: null };
+    throw walrusStateError(
+      'TRANSACTION_OUTCOME_PENDING',
+      `Could not verify Sui transaction ${digest}. Its signed bytes were kept for a safe retry.`,
+      error,
+    );
+  }
+}
+
+async function settlePendingTransaction(
+  session,
+  {
+    pendingKey,
+    digestKey,
+    successStage,
+    failureStage,
+    result,
+    onCheckpoint,
+  },
+) {
+  const pending = session[pendingKey];
+  if (result?.FailedTransaction) {
+    session[pendingKey] = null;
+    session[digestKey] = '';
+    session.stage = failureStage;
+    await checkpointWalrusSession(session, onCheckpoint);
+    throw walrusStateError(
+      'WALRUS_TRANSACTION_FAILED',
+      result.FailedTransaction.status?.error?.message
+        || `Walrus transaction ${pending?.digest || ''} failed on Sui.`,
+    );
+  }
+  const transaction = unwrapTransaction(result);
+  if (transaction.digest !== pending?.digest) {
+    throw walrusStateError(
+      'WALRUS_TRANSACTION_DIGEST_MISMATCH',
+      'Sui returned a different transaction digest than the signed Walrus transaction.',
+    );
+  }
+
+  session[digestKey] = transaction.digest;
+  session.stage = successStage;
+  pending.confirmedAt = new Date().toISOString();
+  await checkpointWalrusSession(session, onCheckpoint);
+
+  // Persist the confirmed digest before removing the replay material. If this
+  // second checkpoint fails, restore pending in memory; the durable copy with
+  // pending bytes remains safe and will only query/replay the same digest.
+  session[pendingKey] = null;
+  try {
+    await checkpointWalrusSession(session, onCheckpoint);
+  } catch (error) {
+    session[pendingKey] = pending;
+    throw error;
+  }
+  return transaction;
+}
+
+async function executePendingTransaction(
+  session,
+  {
+    pendingKey,
+    digestKey,
+    successStage,
+    failureStage,
+    onCheckpoint,
+  },
+) {
+  const pending = session[pendingKey];
+  if (!pending?.digest || !pending.bytes || !pending.signature) {
+    throw new Error('The saved signed Walrus transaction is incomplete.');
+  }
+
+  if (pending.lastBroadcastAt) {
+    const status = await querySignedTransaction(pending.digest);
+    if (status.found) {
+      return settlePendingTransaction(session, {
+        pendingKey,
+        digestKey,
+        successStage,
+        failureStage,
+        result: status.result,
+        onCheckpoint,
+      });
+    }
+  }
+
+  pending.lastBroadcastAt = new Date().toISOString();
+  pending.broadcastAttempts = Number(pending.broadcastAttempts || 0) + 1;
+  await checkpointWalrusSession(session, onCheckpoint);
+  try {
+    const result = await suiClient.executeTransaction({
+      transaction: fromBase64(pending.bytes),
+      signatures: [pending.signature],
+      include: { effects: true, objectTypes: true },
+    });
+    return await settlePendingTransaction(session, {
+      pendingKey,
+      digestKey,
+      successStage,
+      failureStage,
+      result,
+      onCheckpoint,
+    });
+  } catch (broadcastError) {
+    let status;
+    try {
+      status = await querySignedTransaction(pending.digest);
+    } catch (queryError) {
+      throw queryError;
+    }
+    if (status.found) {
+      return settlePendingTransaction(session, {
+        pendingKey,
+        digestKey,
+        successStage,
+        failureStage,
+        result: status.result,
+        onCheckpoint,
+      });
+    }
+    throw walrusStateError(
+      'TRANSACTION_OUTCOME_PENDING',
+      `Sui did not confirm transaction ${pending.digest}. Retry will query or replay these exact signed bytes; it will not request a new signature.`,
+      broadcastError,
+    );
+  }
+}
+
+async function signWalrusTransaction(session, pendingKey, transaction, onCheckpoint) {
+  await checkpointWalrusSession(session, onCheckpoint);
+  const signed = normalizedSignedTransaction(await dAppKit.signTransaction({ transaction }));
+  session[pendingKey] = signed;
+  await checkpointWalrusSession(session, onCheckpoint);
+  return signed;
+}
+
+function parseWalrusCertificate(base64) {
+  const certificate = WalrusCertificateBcs.fromBase64(base64);
+  return {
+    signers: certificate.signers,
+    serializedMessage: new Uint8Array(certificate.serializedMessage),
+    signature: new Uint8Array(certificate.signature),
+  };
+}
+
+function fromUrlSafeBase64(value) {
+  const standard = String(value || '').replaceAll('-', '+').replaceAll('_', '/');
+  return fromBase64(standard.padEnd(Math.ceil(standard.length / 4) * 4, '='));
+}
+
+function toUrlSafeBase64(bytes) {
+  return toBase64(bytes).replace(/=*$/, '').replaceAll('+', '-').replaceAll('/', '_');
+}
+
+function encodeWalrusQuiltPatchId(blobId, patch) {
+  const quiltId = bcs.u256().parse(fromUrlSafeBase64(blobId));
+  return toUrlSafeBase64(WalrusQuiltPatchIdBcs.serialize({
+    quiltId,
+    patchId: {
+      version: 1,
+      startIndex: patch.startIndex,
+      endIndex: patch.endIndex,
+    },
+  }).toBytes());
+}
+
+async function listQuiltFilesFromCheckpoint(session) {
+  if (Array.isArray(session.files) && session.files.length > 0) return session.files;
+  const blobObjectId = session.checkpoint?.blobObjectId;
+  if (!blobObjectId) throw new Error('The Walrus upload checkpoint is missing its Blob object id.');
+  const client = session.walrusClient || walrusClient;
+  const blobs = await Promise.all(session.walrusFiles.map(async (file, index) => ({
+    contents: await file.bytes(),
+    identifier: await file.getIdentifier() ?? `file-${index}`,
+    tags: await file.getTags() ?? {},
+  })));
+  const [{ index }, blobObject] = await Promise.all([
+    client.walrus.encodeQuilt({ blobs }),
+    client.walrus.getBlobObject(blobObjectId),
+  ]);
+  session.files = index.patches.map((patch) => ({
+    id: encodeWalrusQuiltPatchId(session.quiltBlobId, patch),
+    blobId: session.quiltBlobId,
+    blobObject,
+  }));
+  return session.files;
 }
 
 async function walrusFiles(entries) {
@@ -483,7 +968,7 @@ async function walrusFiles(entries) {
   }
   if (new Set(identifiers).size !== identifiers.length) throw new Error('Every Walrus quilt file must have a unique identifier.');
   const totalBytes = entries.reduce((total, entry) => total + Number(entry.blob?.size || 0), 0);
-  if (totalBytes > 500 * 1024 * 1024) throw new Error('A single Animacraft upload cannot exceed 500 MB. Split this Maker into a smaller release.');
+  if (totalBytes > ANIMACRAFT_MAX_WALRUS_UPLOAD_BYTES) throw new Error('A single Animacraft upload cannot exceed 500 MB. Split this Maker into a smaller release.');
 
   return Promise.all(entries.map(async (entry) => WalrusFileClass.from({
     contents: new Uint8Array(await entry.blob.arrayBuffer()),
@@ -495,16 +980,55 @@ async function walrusFiles(entries) {
   })));
 }
 
+function createUploadSessionId() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  const entropy = new Uint8Array(16);
+  globalThis.crypto?.getRandomValues?.(entropy);
+  const suffix = Array.from(entropy, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `upload-${Date.now().toString(36)}-${suffix || Math.random().toString(36).slice(2)}`;
+}
+
+function legacyUploadSessionId(recovery) {
+  const owner = String(recovery?.owner || 'unknown-owner').trim().toLowerCase();
+  const blobId = String(
+    recovery?.quiltBlobId
+      || recovery?.checkpoint?.blobId
+      || recovery?.checkpoint?.blobObjectId
+      || 'unknown-quilt',
+  ).trim();
+  return `legacy:${owner}:${blobId}`;
+}
+
+function recoveryRevision(recovery) {
+  const revision = Number(recovery?.recoveryRevision ?? 0);
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
+}
+
 export async function prepareWalrusUpload(entries) {
   const connection = requireConnection();
   await ensureWalrusRuntime();
   const files = await walrusFiles(entries);
   const flow = walrusClient.walrus.writeFilesFlow({ files });
   const encoded = await flow.encode();
-  return {
+  const [relayTipMist, costs, balances] = await Promise.all([
+    walrusClient.walrus.calculateUploadRelayTip({
+      size: encoded.unencodedSize,
+    }),
+    walrusClient.walrus.storageCost(encoded.unencodedSize, walrusStorageEpochs()),
+    walrusWalletBalances(connection.account.address, walrusClient),
+  ]);
+  const quote = walrusQuoteFromCosts(relayTipMist, costs);
+  const session = {
+    uploadSessionId: createUploadSessionId(),
+    recoveryRevision: 0,
     flow,
+    walrusClient,
+    walrusFiles: files,
     entries,
     encoded,
+    relayTipCapMist: walrusRelayTipCapMist(),
     checkpoint: encoded,
     quiltBlobId: encoded.blobId,
     owner: connection.account.address,
@@ -514,7 +1038,12 @@ export async function prepareWalrusUpload(entries) {
     uploaded: null,
     files: [],
     recoveringUploaded: false,
+    pendingRegisterTransaction: null,
+    pendingCertifyTransaction: null,
   };
+  applyWalrusQuote(session, quote);
+  applyWalrusWalletBalances(session, balances);
+  return session;
 }
 
 export async function resumeWalrusUpload(entries, recovery) {
@@ -529,9 +1058,22 @@ export async function resumeWalrusUpload(entries, recovery) {
     throw new Error('The local Maker assets no longer match the saved Walrus upload. Prepare a new quilt.');
   }
   const session = {
+    uploadSessionId: String(recovery.uploadSessionId || '').trim()
+      || legacyUploadSessionId(recovery),
+    recoveryRevision: recoveryRevision(recovery),
     flow,
+    walrusClient,
+    walrusFiles: files,
     entries,
     encoded,
+    relayTipMist: recovery.relayTipMist == null ? null : Number(recovery.relayTipMist),
+    relayTipQuotedAt: String(recovery.relayTipQuotedAt || ''),
+    walrusStorageCostFrost: recovery.walrusStorageCostFrost == null ? '' : String(recovery.walrusStorageCostFrost),
+    walrusWriteCostFrost: recovery.walrusWriteCostFrost == null ? '' : String(recovery.walrusWriteCostFrost),
+    walrusTotalCostFrost: recovery.walrusTotalCostFrost == null ? '' : String(recovery.walrusTotalCostFrost),
+    walletSuiBalanceMist: recovery.walletSuiBalanceMist == null ? '' : String(recovery.walletSuiBalanceMist),
+    walletWalBalanceFrost: recovery.walletWalBalanceFrost == null ? '' : String(recovery.walletWalBalanceFrost),
+    relayTipCapMist: walrusRelayTipCapMist(),
     quiltBlobId: encoded.blobId,
     owner: recovery.owner,
     stage: recovery.stage || recovery.checkpoint.step,
@@ -539,86 +1081,174 @@ export async function resumeWalrusUpload(entries, recovery) {
     certifyDigest: recovery.certifyDigest || '',
     uploaded: recovery.checkpoint.step === 'uploaded' ? recovery.checkpoint : null,
     checkpoint: recovery.checkpoint,
-    files: [],
+    files: Array.isArray(recovery.files) ? recovery.files : [],
     recoveringUploaded: false,
+    pendingRegisterTransaction: recovery.pendingRegisterTransaction || null,
+    pendingCertifyTransaction: recovery.pendingCertifyTransaction || null,
   };
-  if (session.stage === 'uploaded') {
-    session.stage = 'registered';
-    session.recoveringUploaded = true;
-  } else if (session.stage === 'certified') {
-    if (!Array.isArray(recovery.files) || recovery.files.length === 0) {
-      throw new Error('The certified Walrus checkpoint is missing its local Quilt file index. Prepare the upload again from the saved source files.');
-    }
-    session.files = recovery.files;
+  // Only an encoded recovery needs a current quote. Paid, uploaded, certified,
+  // and signed-pending recoveries must remain usable even if the relay changes
+  // its current pricing or is temporarily unavailable.
+  const needsInitialQuote = session.stage === 'encoded'
+    && !session.pendingRegisterTransaction
+    && session.relayTipMist == null;
+  if (needsInitialQuote) {
+    const [relayTipMist, costs, balances] = await Promise.all([
+      walrusClient.walrus.calculateUploadRelayTip({
+        size: encoded.unencodedSize,
+      }),
+      walrusClient.walrus.storageCost(encoded.unencodedSize, walrusStorageEpochs()),
+      walrusWalletBalances(session.owner, walrusClient),
+    ]);
+    applyWalrusQuote(session, walrusQuoteFromCosts(relayTipMist, costs));
+    applyWalrusWalletBalances(session, balances);
+  }
+  if (session.stage === 'certified' && session.files.length === 0) {
+    await listQuiltFilesFromCheckpoint(session);
   }
   return session;
 }
 
-export async function registerAndUploadWalrus(session) {
-  const connection = requireConnection();
-  if (!session?.flow || !['encoded', 'registered'].includes(session.stage)) {
-    throw new Error('Prepare the Walrus quilt before registering it.');
-  }
-  if (session.owner !== connection.account.address) {
-    throw new Error('Reconnect the wallet that prepared this Walrus upload.');
-  }
-  if (session.stage === 'encoded') {
-    const configuredEpochs = Number(runtimeConfig.walrusEpochs ?? 53);
-    const storageEpochs = Number.isInteger(configuredEpochs) ? Math.min(53, Math.max(1, configuredEpochs)) : 53;
-    const registerTx = session.flow.register({
-      epochs: storageEpochs,
-      owner: connection.account.address,
-      deletable: false,
-    });
-    const registered = unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: registerTx }));
-    session.registerDigest = registered.digest;
-    session.stage = 'registered';
-  }
-  session.uploaded = await session.flow.upload({ digest: session.registerDigest });
-  session.checkpoint = {
-    ...session.uploaded,
-    ...(session.encoded.nonce ? { nonce: session.encoded.nonce } : {}),
-  };
-  if (session.recoveringUploaded) session.files = await session.flow.listFiles();
-  if (session.files[0]?.blobObject?.certified_epoch != null) {
-    const blobObject = session.files[0].blobObject;
+export async function registerAndUploadWalrus(session, { onCheckpoint = null } = {}) {
+  return withWalrusSessionOperation(session, 'register/upload', async () => {
+    const connection = requireConnection();
+    if (!session?.flow || !['encoded', 'registered', 'uploaded', 'certified'].includes(session.stage)) {
+      throw new Error('Prepare the Walrus quilt before registering it.');
+    }
+    if (session.owner !== connection.account.address) {
+      throw new Error('Reconnect the wallet that prepared this Walrus upload.');
+    }
+    if (session.stage === 'certified') return session;
+    if (session.stage === 'uploaded') {
+      await listQuiltFilesFromCheckpoint(session);
+      await checkpointWalrusSession(session, onCheckpoint);
+      return session;
+    }
+
+    if (session.stage === 'encoded' || session.pendingRegisterTransaction) {
+      if (session.stage === 'encoded' && !session.pendingRegisterTransaction) {
+        const flow = await refreshedRegistrationFlow(session, onCheckpoint);
+        const registerTx = flow.register({
+          epochs: walrusStorageEpochs(),
+          owner: connection.account.address,
+          deletable: false,
+        });
+        await signWalrusTransaction(session, 'pendingRegisterTransaction', registerTx, onCheckpoint);
+      }
+      if (session.pendingRegisterTransaction) {
+        await executePendingTransaction(session, {
+          pendingKey: 'pendingRegisterTransaction',
+          digestKey: 'registerDigest',
+          successStage: 'registered',
+          failureStage: 'encoded',
+          onCheckpoint,
+        });
+      }
+    }
+
+    // The confirmed register digest is durable before the long relay request.
+    await checkpointWalrusSession(session, onCheckpoint);
+    session.uploaded = await session.flow.upload({ digest: session.registerDigest });
+    session.checkpoint = {
+      ...session.uploaded,
+      ...(session.encoded.nonce ? { nonce: session.encoded.nonce } : {}),
+    };
+    session.stage = 'uploaded';
+    await checkpointWalrusSession(session, onCheckpoint);
+
+    session.files = await session.flow.listFiles();
+    if (session.files[0]?.blobObject?.certified_epoch != null) {
+      const blobObject = session.files[0].blobObject;
+      session.checkpoint = {
+        step: 'certified',
+        blobId: session.files[0].blobId,
+        blobObjectId: blobObject.id,
+        blobObject,
+        ...(session.encoded.nonce ? { nonce: session.encoded.nonce } : {}),
+      };
+      session.stage = 'certified';
+    }
+    session.recoveringUploaded = false;
+    await checkpointWalrusSession(session, onCheckpoint);
+    return session;
+  });
+}
+
+export async function certifyWalrusUpload(session, { onCheckpoint = null } = {}) {
+  return withWalrusSessionOperation(session, 'certify', async () => {
+    const connection = requireConnection();
+    if (!session?.flow || !['uploaded', 'certified'].includes(session.stage)) {
+      throw new Error('Register and upload the Walrus quilt before certification.');
+    }
+    if (session.owner !== connection.account.address) {
+      throw new Error('Reconnect the wallet that prepared this Walrus upload.');
+    }
+    if (session.stage === 'certified') return session;
+
+    if (!session.pendingCertifyTransaction && session.certifyDigest) {
+      const status = await querySignedTransaction(session.certifyDigest);
+      if (!status.found) {
+        throw walrusStateError(
+          'TRANSACTION_OUTCOME_PENDING',
+          `The saved Walrus certify transaction ${session.certifyDigest} is not visible yet. No replacement transaction was signed.`,
+        );
+      }
+      if (status.result?.FailedTransaction) {
+        session.certifyDigest = '';
+        await checkpointWalrusSession(session, onCheckpoint);
+        throw walrusStateError(
+          'WALRUS_TRANSACTION_FAILED',
+          status.result.FailedTransaction.status?.error?.message || 'The Walrus certification transaction failed.',
+        );
+      }
+    } else {
+      if (!session.pendingCertifyTransaction) {
+        const certificate = session.checkpoint?.certificate;
+        const blobObjectId = session.checkpoint?.blobObjectId;
+        if (!certificate || !blobObjectId) {
+          throw new Error('The uploaded Walrus checkpoint is missing its certificate or Blob object id.');
+        }
+        const certifyTx = (session.walrusClient || walrusClient).walrus.certifyBlobTransaction({
+          blobId: session.quiltBlobId,
+          blobObjectId,
+          certificate: parseWalrusCertificate(certificate),
+          deletable: false,
+        });
+        await signWalrusTransaction(session, 'pendingCertifyTransaction', certifyTx, onCheckpoint);
+      }
+      await executePendingTransaction(session, {
+        pendingKey: 'pendingCertifyTransaction',
+        digestKey: 'certifyDigest',
+        successStage: 'uploaded',
+        failureStage: 'uploaded',
+        onCheckpoint,
+      });
+    }
+
+    // Certification is already confirmed on Sui. Reconstructing the local file
+    // index does not contact the relay and is safe for old uploaded checkpoints.
+    session.files = await listQuiltFilesFromCheckpoint(session);
+    const blobObject = await (session.walrusClient || walrusClient).walrus.getBlobObject(
+      session.checkpoint.blobObjectId,
+    );
+    if (blobObject.certified_epoch == null) {
+      throw walrusStateError(
+        'WALRUS_CERTIFICATION_NOT_VISIBLE',
+        `Walrus certification ${session.certifyDigest} is confirmed but the certified Blob object is not visible yet. Retry will only query it.`,
+      );
+    }
+    session.files = session.files.map((file) => ({ ...file, blobObject }));
     session.checkpoint = {
       step: 'certified',
-      blobId: session.files[0].blobId,
+      blobId: session.quiltBlobId,
       blobObjectId: blobObject.id,
       blobObject,
       ...(session.encoded.nonce ? { nonce: session.encoded.nonce } : {}),
     };
     session.stage = 'certified';
-  } else {
-    session.stage = 'uploaded';
-  }
-  session.recoveringUploaded = false;
-  return session;
-}
-
-export async function certifyWalrusUpload(session) {
-  const connection = requireConnection();
-  if (!session?.flow || session.stage !== 'uploaded') throw new Error('Register and upload the Walrus quilt before certification.');
-  if (session.owner !== connection.account.address) {
-    throw new Error('Reconnect the wallet that prepared this Walrus upload.');
-  }
-  if (!session.certifyDigest) {
-    const certifyTx = session.flow.certify();
-    const certified = unwrapTransaction(await dAppKit.signAndExecuteTransaction({ transaction: certifyTx }));
-    session.certifyDigest = certified.digest;
-  }
-  session.files = await session.flow.listFiles();
-  const blobObject = session.files[0]?.blobObject;
-  session.checkpoint = blobObject ? {
-    step: 'certified',
-    blobId: session.files[0].blobId,
-    blobObjectId: blobObject.id,
-    blobObject,
-    ...(session.encoded.nonce ? { nonce: session.encoded.nonce } : {}),
-  } : session.checkpoint;
-  session.stage = 'certified';
-  return session;
+    await checkpointWalrusSession(session, onCheckpoint);
+    return session;
+  });
 }
 
 export function walrusFileUrl(quiltPatchId) {

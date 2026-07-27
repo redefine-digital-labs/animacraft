@@ -5,6 +5,12 @@
  * interpretation.
  */
 
+import {
+  MAX_MAKER_ASSET_BYTES,
+  assertMakerAssetDimensions,
+  fetchMakerAssetBlob,
+} from './maker-assets.js';
+
 export const MAKER_SCENE_VERSION = 'animacraft.resolved-scene.v2';
 
 export const BLEND_MODES = Object.freeze({
@@ -582,10 +588,23 @@ async function loadUrl(url, signal) {
   if (typeof fetch !== 'function' || typeof createImageBitmap !== 'function') {
     throw new Error('URL assets require browser fetch and createImageBitmap support.');
   }
-  const response = await fetch(url, { signal });
-  if (!response.ok) throw new Error(`Could not load Maker asset (${response.status}).`);
-  const bitmap = await createImageBitmap(await response.blob());
-  return { source: bitmap, dispose: () => bitmap.close?.() };
+  const blob = await fetchMakerAssetBlob(url, { signal, label: 'Maker asset' });
+  let bitmap = null;
+  try {
+    bitmap = await createImageBitmap(blob);
+    assertMakerAssetDimensions(bitmap, 'Maker asset');
+    if (signal?.aborted) {
+      if (signal.reason instanceof Error) throw signal.reason;
+      if (typeof DOMException === 'function') throw new DOMException('Maker asset loading was aborted.', 'AbortError');
+      const error = new Error('Maker asset loading was aborted.');
+      error.name = 'AbortError';
+      throw error;
+    }
+    return { source: bitmap, dispose: () => bitmap.close?.() };
+  } catch (error) {
+    bitmap?.close?.();
+    throw error;
+  }
 }
 
 async function defaultAssetSource(layer, signal) {
@@ -601,11 +620,33 @@ async function defaultAssetSource(layer, signal) {
     drawable(descriptor?.source) ? descriptor.source : undefined,
     descriptor,
   );
-  if (drawable(candidate)) return { source: candidate, dispose: null };
+  if (drawable(candidate)) {
+    assertMakerAssetDimensions(candidate, `Asset "${layer.assetId}"`);
+    return { source: candidate, dispose: null };
+  }
   if (typeof Blob !== 'undefined' && candidate instanceof Blob) {
     if (typeof createImageBitmap !== 'function') throw new Error('Blob assets require createImageBitmap support.');
-    const bitmap = await createImageBitmap(candidate);
-    return { source: bitmap, dispose: () => bitmap.close?.() };
+    if (candidate.size > MAX_MAKER_ASSET_BYTES) {
+      const error = new Error(`Asset "${layer.assetId}" is larger than 20 MB.`);
+      error.code = 'MAKER_ASSET_LIMIT_EXCEEDED';
+      throw error;
+    }
+    let bitmap = null;
+    try {
+      bitmap = await createImageBitmap(candidate);
+      assertMakerAssetDimensions(bitmap, `Asset "${layer.assetId}"`);
+      if (signal?.aborted) {
+        if (signal.reason instanceof Error) throw signal.reason;
+        if (typeof DOMException === 'function') throw new DOMException('Maker asset loading was aborted.', 'AbortError');
+        const error = new Error('Maker asset loading was aborted.');
+        error.name = 'AbortError';
+        throw error;
+      }
+      return { source: bitmap, dispose: () => bitmap.close?.() };
+    } catch (error) {
+      bitmap?.close?.();
+      throw error;
+    }
   }
   if (typeof candidate === 'string') return loadUrl(candidate, signal);
   throw new Error(`Asset "${layer.assetId}" has no drawable source.`);

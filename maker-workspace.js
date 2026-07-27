@@ -774,7 +774,21 @@ export class MakerWorkspace {
     this.playerRenderState = { key: '', status: 'idle', error: '' };
     this.playerIntroOpen = false;
     this.creatorPublishOpen = false;
-    this.creatorPublishState = { stage: 'idle', status: '', busy: false, digest: '', actions: {} };
+    this.creatorPublishState = {
+      stage: 'idle',
+      status: '',
+      busy: false,
+      digest: '',
+      error: null,
+      relayTipMist: null,
+      relayTipQuotedAt: '',
+      walrusStorageCostFrost: null,
+      walrusWriteCostFrost: null,
+      walrusTotalCostFrost: null,
+      actions: {},
+    };
+    this.creatorPublishCloseConfirm = false;
+    this.creatorPublishCopyState = 'idle';
     this.versionHistoryOpen = false;
     this.versionHistoryStatus = 'idle';
     this.versionHistoryEntries = [];
@@ -783,7 +797,21 @@ export class MakerWorkspace {
     this.versionHistoryRequestId = 0;
     this.restoringCheckpointRevision = null;
     this.playerPublishOpen = false;
-    this.playerPublishState = { stage: 'idle', status: '', busy: false, digest: '', actions: {} };
+    this.playerPublishState = {
+      stage: 'idle',
+      status: '',
+      busy: false,
+      digest: '',
+      error: null,
+      relayTipMist: null,
+      relayTipQuotedAt: '',
+      walrusStorageCostFrost: null,
+      walrusWriteCostFrost: null,
+      walrusTotalCostFrost: null,
+      actions: {},
+    };
+    this.playerPublishCloseConfirm = false;
+    this.playerPublishCopyState = 'idle';
     this.enabledExpansionIds = new Set();
     this.pendingImport = null;
     this.pendingCreatorText = null;
@@ -827,6 +855,7 @@ export class MakerWorkspace {
       if (this.captureCreatorText(event.target)) this.flushPendingCreatorText();
     };
     this.boundCreatorKeydown = (event) => {
+      if (this.handlePublishDialogKeydown('creator', event)) return;
       const editingText = event.target?.matches?.('input, textarea, select, [contenteditable="true"]');
       if (event.code === 'Space' && !editingText) {
         this.creatorSpacePressed = true;
@@ -845,6 +874,9 @@ export class MakerWorkspace {
     };
     this.boundPlayerClick = (event) => this.handlePlayerClick(event);
     this.boundPlayerChange = (event) => this.handlePlayerChange(event);
+    this.boundPlayerKeydown = (event) => {
+      this.handlePublishDialogKeydown('player', event);
+    };
     this.attachRootListeners();
     this.renderEmpty();
   }
@@ -865,6 +897,7 @@ export class MakerWorkspace {
       this.playerRoot.addEventListener('click', this.boundPlayerClick);
       this.playerRoot.addEventListener('change', this.boundPlayerChange);
       this.playerRoot.addEventListener('input', this.boundPlayerChange);
+      this.playerRoot.addEventListener('keydown', this.boundPlayerKeydown);
     }
   }
 
@@ -2189,17 +2222,230 @@ export class MakerWorkspace {
   }
 
   setCreatorPublishState(nextState = {}) {
-    const next = { ...this.creatorPublishState, ...nextState, actions: { ...this.creatorPublishState.actions, ...(nextState.actions || {}) } };
-    const changed = JSON.stringify(next) !== JSON.stringify(this.creatorPublishState);
-    this.creatorPublishState = next;
-    if (changed && this.store) requestAnimationFrame(() => this.render());
+    this.setPublicationState('creator', nextState);
+  }
+
+  openCreatorPublication() {
+    const document = this.store?.getState?.().document;
+    if (!document) return;
+    const issues = this.blockingPublicationIssues(document);
+    if (issues.length) {
+      this.creatorTab = 'validate';
+      this.render();
+      return;
+    }
+    const operation = this.captureMakerOperation();
+    void this.flushPendingChanges({ reason: 'publish' }).then((result) => {
+      if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
+      if (!result.saved) {
+        operation.store.setSaveState('error', operation.store.getState().saveMessage || this.tr('saveFailed'));
+        return;
+      }
+      const savedDocument = operation.store.getState().document;
+      const savedIssues = this.blockingPublicationIssues(savedDocument);
+      if (savedIssues.length) {
+        this.creatorTab = 'validate';
+        this.render();
+        return;
+      }
+      this.creatorPublishOpen = true;
+      this.creatorPublishCloseConfirm = false;
+      this.callbacks.onPublish?.({
+        document: savedDocument,
+        recipe: savedDocument.defaultRecipe,
+        assets: this.assets,
+        compatibility: this.compatibilityReport(savedDocument),
+      });
+      this.render();
+      this.focusCreatorPublishDialog();
+    }).catch((error) => {
+      if (this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) {
+        operation.store.setSaveState('error', error.message || this.tr('saveFailed'));
+      }
+    });
   }
 
   setPlayerPublishState(nextState = {}) {
-    const next = { ...this.playerPublishState, ...nextState, actions: { ...this.playerPublishState.actions, ...(nextState.actions || {}) } };
-    const changed = JSON.stringify(next) !== JSON.stringify(this.playerPublishState);
-    this.playerPublishState = next;
-    if (changed && this.store) requestAnimationFrame(() => this.render());
+    this.setPublicationState('player', nextState);
+  }
+
+  setPublicationState(kind, nextState = {}) {
+    const stateKey = kind === 'creator' ? 'creatorPublishState' : 'playerPublishState';
+    const closeConfirmKey = kind === 'creator'
+      ? 'creatorPublishCloseConfirm'
+      : 'playerPublishCloseConfirm';
+    const copyStateKey = kind === 'creator'
+      ? 'creatorPublishCopyState'
+      : 'playerPublishCopyState';
+    const previous = this[stateKey];
+    const next = {
+      ...previous,
+      ...nextState,
+      actions: { ...previous.actions, ...(nextState.actions || {}) },
+    };
+    const changed = JSON.stringify(next) !== JSON.stringify(previous);
+    if (next.error?.diagnostic !== previous.error?.diagnostic) this[copyStateKey] = 'idle';
+    const closeConfirmationSettled = Boolean(this[closeConfirmKey] && !next.busy);
+    if (closeConfirmationSettled) this[closeConfirmKey] = false;
+    this[stateKey] = next;
+    if ((changed || closeConfirmationSettled) && this.store) {
+      requestAnimationFrame(() => {
+        this.render();
+        if (closeConfirmationSettled && this[`${kind}PublishOpen`]) {
+          this.focusPublishDialog(kind);
+        }
+      });
+    }
+  }
+
+  focusPublishDialog(kind, selector = '') {
+    const root = kind === 'creator' ? this.creatorRoot : this.playerRoot;
+    const dialogId = kind === 'creator' ? 'makerCreatorPublishDialog' : 'makerPlayerPublishDialog';
+    requestAnimationFrame(() => {
+      root?.querySelector(selector || `#${dialogId}`)?.focus?.({ preventScroll: true });
+    });
+  }
+
+  focusCreatorPublishDialog(selector = '#makerCreatorPublishDialog') {
+    this.focusPublishDialog('creator', selector);
+  }
+
+  focusPlayerPublishDialog(selector = '#makerPlayerPublishDialog') {
+    this.focusPublishDialog('player', selector);
+  }
+
+  trapPublishFocus(kind, event) {
+    const root = kind === 'creator' ? this.creatorRoot : this.playerRoot;
+    const closeConfirm = kind === 'creator'
+      ? this.creatorPublishCloseConfirm
+      : this.playerPublishCloseConfirm;
+    const dialogId = kind === 'creator' ? 'makerCreatorPublishDialog' : 'makerPlayerPublishDialog';
+    const confirmId = kind === 'creator'
+      ? 'makerCreatorPublishCloseConfirm'
+      : 'makerPlayerPublishCloseConfirm';
+    const dialog = root?.querySelector(`#${dialogId}`);
+    if (!dialog?.querySelectorAll) return;
+    const scope = closeConfirm ? root?.querySelector(`#${confirmId}`) : dialog;
+    if (!scope?.querySelectorAll) return;
+    const focusable = [...scope.querySelectorAll('button:not([disabled]), details > summary, [href], [tabindex]:not([tabindex="-1"])')]
+      .filter((node) => !node.hidden && node.getAttribute?.('aria-hidden') !== 'true');
+    if (!focusable.length) {
+      event.preventDefault?.();
+      scope.focus?.();
+      return;
+    }
+    const active = globalThis.document?.activeElement;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && (active === first || !scope.contains?.(active))) {
+      event.preventDefault?.();
+      last.focus?.();
+    } else if (!event.shiftKey && (active === last || !scope.contains?.(active))) {
+      event.preventDefault?.();
+      first.focus?.();
+    }
+  }
+
+  trapCreatorPublishFocus(event) {
+    this.trapPublishFocus('creator', event);
+  }
+
+  trapPlayerPublishFocus(event) {
+    this.trapPublishFocus('player', event);
+  }
+
+  handlePublishDialogKeydown(kind, event) {
+    const open = kind === 'creator' ? this.creatorPublishOpen : this.playerPublishOpen;
+    if (!open) return false;
+    if (event.key === 'Tab') {
+      this.trapPublishFocus(kind, event);
+    } else if (event.key === 'Escape') {
+      event.preventDefault?.();
+      const closeConfirmKey = kind === 'creator'
+        ? 'creatorPublishCloseConfirm'
+        : 'playerPublishCloseConfirm';
+      if (this[closeConfirmKey]) {
+        this[closeConfirmKey] = false;
+        this.render();
+        this.focusPublishDialog(
+          kind,
+          `[data-action="close-${kind}-publish"]`,
+        );
+      } else {
+        this.requestClosePublication(kind);
+      }
+    }
+    return true;
+  }
+
+  requestClosePublication(kind, { force = false } = {}) {
+    const state = kind === 'creator' ? this.creatorPublishState : this.playerPublishState;
+    const closeConfirmKey = kind === 'creator'
+      ? 'creatorPublishCloseConfirm'
+      : 'playerPublishCloseConfirm';
+    if (state.busy && !force) {
+      this[closeConfirmKey] = true;
+      this.render();
+      this.focusPublishDialog(kind, `[data-action="keep-${kind}-publish-open"]`);
+      return;
+    }
+    this[`${kind}PublishOpen`] = false;
+    this[closeConfirmKey] = false;
+    this.render();
+    const returnSelector = kind === 'creator'
+      ? '[data-action="publish"]'
+      : '[data-action="player-complete"]';
+    requestAnimationFrame(() => {
+      const root = kind === 'creator' ? this.creatorRoot : this.playerRoot;
+      root?.querySelector(returnSelector)?.focus?.({ preventScroll: true });
+    });
+  }
+
+  requestCloseCreatorPublish(options = {}) {
+    this.requestClosePublication('creator', options);
+  }
+
+  requestClosePlayerPublish(options = {}) {
+    this.requestClosePublication('player', options);
+  }
+
+  async copyPublishError(kind) {
+    const state = kind === 'creator' ? this.creatorPublishState : this.playerPublishState;
+    const copyStateKey = kind === 'creator'
+      ? 'creatorPublishCopyState'
+      : 'playerPublishCopyState';
+    const text = String(state.error?.diagnostic || state.error?.details || '');
+    if (!text) return;
+    try {
+      if (globalThis.navigator?.clipboard?.writeText) {
+        await globalThis.navigator.clipboard.writeText(text);
+      } else {
+        const textarea = globalThis.document?.createElement?.('textarea');
+        if (!textarea || !globalThis.document?.body) throw new Error('Clipboard unavailable');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        globalThis.document.body.append(textarea);
+        textarea.select();
+        const copied = globalThis.document.execCommand?.('copy');
+        textarea.remove();
+        if (!copied) throw new Error('Clipboard unavailable');
+      }
+      this[copyStateKey] = 'copied';
+    } catch {
+      this[copyStateKey] = 'error';
+    }
+    this.render();
+    this.focusPublishDialog(kind, `[data-action="copy-${kind}-publish-error"]`);
+  }
+
+  async copyCreatorPublishError() {
+    await this.copyPublishError('creator');
+  }
+
+  async copyPlayerPublishError() {
+    await this.copyPublishError('player');
   }
 
   openCreatorTab(tab = 'structure') {
@@ -2716,53 +2962,306 @@ export class MakerWorkspace {
     `;
   }
 
-  renderCreatorPublishFlow() {
-    if (!this.creatorPublishOpen) return '';
-    const state = this.creatorPublishState;
-    const actions = state.actions || {};
-    const step = state.stage === 'certified' ? 4 : state.stage === 'uploaded' ? 3 : ['encoded', 'registered'].includes(state.stage) ? 2 : state.digest ? 5 : 1;
+  publicationLocale() {
+    return {
+      en: 'en-US',
+      zh: 'zh-CN',
+      ja: 'ja-JP',
+      ko: 'ko-KR',
+      vi: 'vi-VN',
+    }[this.locale] || 'en-US';
+  }
+
+  publicationAtomicAmount(value) {
+    if (value == null || !String(value).trim()) return null;
+    try {
+      const atomic = BigInt(String(value));
+      if (atomic < 0n) return null;
+      const whole = atomic / 1_000_000_000n;
+      const fraction = String(atomic % 1_000_000_000n).padStart(9, '0').replace(/0+$/, '');
+      return {
+        atomic: new Intl.NumberFormat(this.publicationLocale()).format(atomic),
+        token: fraction ? `${whole}.${fraction}` : String(whole),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  publicationQuoteTime(value) {
+    if (!value) return null;
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return null;
+    try {
+      return {
+        datetime: date.toISOString(),
+        label: new Intl.DateTimeFormat(this.publicationLocale(), {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        }).format(date),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  publicationQuote(state) {
+    const nested = state.quote && typeof state.quote === 'object' ? state.quote : {};
+    const storage = state.walrusStorageCostFrost
+      ?? nested.walrusStorageCostFrost
+      ?? nested.storageCostFrost
+      ?? null;
+    const write = state.walrusWriteCostFrost
+      ?? nested.walrusWriteCostFrost
+      ?? nested.writeCostFrost
+      ?? null;
+    let total = state.walrusTotalCostFrost
+      ?? nested.walrusTotalCostFrost
+      ?? nested.totalCostFrost
+      ?? null;
+    if (total == null && storage != null && write != null) {
+      try {
+        total = String(BigInt(String(storage)) + BigInt(String(write)));
+      } catch {
+        total = null;
+      }
+    }
+    return {
+      relayTipMist: state.relayTipMist ?? nested.relayTipMist ?? null,
+      relayTipQuotedAt: state.relayTipQuotedAt ?? nested.relayTipQuotedAt ?? '',
+      walrusStorageCostFrost: storage,
+      walrusWriteCostFrost: write,
+      walrusTotalCostFrost: total,
+    };
+  }
+
+  renderPublicationQuote(state, prefix) {
+    const quote = this.publicationQuote(state);
+    const relay = this.publicationAtomicAmount(quote.relayTipMist);
+    const quotedAt = this.publicationQuoteTime(quote.relayTipQuotedAt);
+    const storage = this.publicationAtomicAmount(quote.walrusStorageCostFrost);
+    const write = this.publicationAtomicAmount(quote.walrusWriteCostFrost);
+    const total = this.publicationAtomicAmount(quote.walrusTotalCostFrost);
+    if (!relay && !storage && !write && !total) return '';
+    const unavailable = escapeHtml(this.tr('publishQuoteUnavailable'));
+    const walrusValue = (amount) => amount
+      ? `<strong>${escapeHtml(`${amount.atomic} FROST`)}</strong><small>${escapeHtml(`${amount.token} WAL`)}</small>`
+      : `<strong>${unavailable}</strong>`;
+    const quoteTitleId = `maker${prefix === 'creator' ? 'Creator' : 'Player'}PublishQuoteTitle`;
     return `
-      <section class="v4-chain-flow">
-        <header><div><span class="v4-eyebrow">${escapeHtml(this.tr('creatorReleaseEyebrow'))}</span><h3>${escapeHtml(this.tr('publishMakerStep', { step }))}</h3></div><button type="button" data-action="close-creator-publish" aria-label="${escapeHtml(this.tr('close'))}">×</button></header>
-        <ol>
-          <li class="${step >= 1 ? 'active' : ''}">${escapeHtml(this.tr('prepareQuilt'))}</li>
-          <li class="${step >= 2 ? 'active' : ''}">${escapeHtml(this.tr('registerAndUpload'))}</li>
-          <li class="${step >= 3 ? 'active' : ''}">${escapeHtml(this.tr('certifyWalrus'))}</li>
-          <li class="${step >= 4 ? 'active' : ''}">${escapeHtml(this.tr('publishOnSui'))}</li>
-        </ol>
-        <p>${escapeHtml(state.status || this.tr('immutableMakerPublishCopy'))}</p>
-        <div>
-          ${actions.resume ? `<button type="button" data-action="creator-publish-resume">${escapeHtml(this.tr('resumeUpload'))}</button>` : ''}
-          ${actions.prepare ? `<button type="button" data-action="creator-publish-prepare">${escapeHtml(this.tr('prepareQuiltStep'))}</button>` : ''}
-          ${actions.register ? `<button type="button" data-action="creator-publish-register">${escapeHtml(this.tr(state.stage === 'registered' ? 'retryUploadStep' : 'registerUploadStep'))}</button>` : ''}
-          ${actions.certify ? `<button type="button" data-action="creator-publish-certify">${escapeHtml(this.tr('certifyStep'))}</button>` : ''}
-          ${actions.publish ? `<button class="primary" type="button" data-action="creator-publish-onchain">${escapeHtml(this.tr('publishMakerStepButton'))}</button>` : ''}
-          ${state.digest ? `<strong>${escapeHtml(this.tr('publishedDone'))}</strong>` : ''}
+      <aside class="v4-chain-fee" aria-labelledby="${quoteTitleId}">
+        <div class="v4-chain-fee-heading">
+          <span id="${quoteTitleId}">${escapeHtml(this.tr('publishQuoteTitle'))}</span>
+          <small>${escapeHtml(this.tr('publishQuoteCopy'))}</small>
+          ${quotedAt ? `<time datetime="${escapeHtml(quotedAt.datetime)}">${escapeHtml(this.tr('publishQuoteAt', { time: quotedAt.label }))}</time>` : ''}
         </div>
-      </section>
+        <dl>
+          <div>
+            <dt>${escapeHtml(this.tr('relayTipEstimate'))}</dt>
+            <dd>
+              ${relay
+                ? `<strong>${escapeHtml(`${relay.atomic} MIST`)}</strong><small>${escapeHtml(`${relay.token} SUI`)}</small>`
+                : `<strong>${unavailable}</strong>`}
+            </dd>
+          </div>
+          <div>
+            <dt>${escapeHtml(this.tr('walrusStorageEstimate'))}</dt>
+            <dd>${walrusValue(storage)}</dd>
+          </div>
+          <div>
+            <dt>${escapeHtml(this.tr('walrusWriteEstimate'))}</dt>
+            <dd>${walrusValue(write)}</dd>
+          </div>
+          <div class="total">
+            <dt>${escapeHtml(this.tr('walrusTotalEstimate'))}</dt>
+            <dd>${walrusValue(total)}</dd>
+          </div>
+        </dl>
+        ${relay ? `<p>${escapeHtml(this.tr('relayTipEstimateCopy', { mist: relay.atomic, sui: relay.token }))}</p>` : ''}
+        <p class="v4-chain-fee-warning">${escapeHtml(this.tr('publishQuoteGasWarning'))}</p>
+      </aside>
     `;
   }
 
-  renderPlayerPublishFlow() {
-    if (!this.playerPublishOpen) return '';
-    const state = this.playerPublishState;
+  renderPublicationFlow(kind) {
+    const creator = kind === 'creator';
+    const open = creator ? this.creatorPublishOpen : this.playerPublishOpen;
+    if (!open) return '';
+    const state = creator ? this.creatorPublishState : this.playerPublishState;
     const actions = state.actions || {};
-    const step = state.stage === 'certified' ? 4 : state.stage === 'uploaded' ? 3 : ['encoded', 'registered'].includes(state.stage) ? 2 : state.digest ? 5 : 1;
-    return `
-      <section class="v4-chain-flow player">
-        <header><div><span class="v4-eyebrow">${escapeHtml(this.tr('playerReleaseEyebrow'))}</span><h3>${escapeHtml(this.tr('finishOcStep', { step }))}</h3></div><button type="button" data-action="close-player-publish" aria-label="${escapeHtml(this.tr('close'))}">×</button></header>
-        <ol><li class="${step >= 1 ? 'active' : ''}">${escapeHtml(this.tr('prepareFiles'))}</li><li class="${step >= 2 ? 'active' : ''}">${escapeHtml(this.tr('registerAndUpload'))}</li><li class="${step >= 3 ? 'active' : ''}">${escapeHtml(this.tr('certifyWalrus'))}</li><li class="${step >= 4 ? 'active' : ''}">${escapeHtml(this.tr('continueToSoulidity'))}</li></ol>
-        <p>${escapeHtml(state.status || this.tr('pinnedOcPublishCopy'))}</p>
+    const closeConfirm = creator
+      ? this.creatorPublishCloseConfirm
+      : this.playerPublishCloseConfirm;
+    const copyState = creator
+      ? this.creatorPublishCopyState
+      : this.playerPublishCopyState;
+    const prefix = creator ? 'creator' : 'player';
+    const dialogId = creator ? 'makerCreatorPublishDialog' : 'makerPlayerPublishDialog';
+    const titleId = creator ? 'makerCreatorPublishTitle' : 'makerPlayerPublishTitle';
+    const copyId = creator ? 'makerCreatorPublishCopy' : 'makerPlayerPublishCopy';
+    const confirmId = creator
+      ? 'makerCreatorPublishCloseConfirm'
+      : 'makerPlayerPublishCloseConfirm';
+    const step = state.digest
+      ? 4
+      : ['certified', 'publish-pending'].includes(state.stage)
+        ? 4
+        : ['uploaded', 'certify-pending'].includes(state.stage)
+          ? 3
+          : ['encoded', 'register-pending', 'registered'].includes(state.stage)
+            ? 2
+            : 1;
+    const steps = [
+      this.tr(creator ? 'prepareQuilt' : 'prepareFiles'),
+      this.tr('registerAndUpload'),
+      this.tr('certifyWalrus'),
+      this.tr(creator ? 'publishOnSui' : 'continueToSoulidity'),
+    ];
+    const stepItems = steps.map((label, index) => {
+      const number = index + 1;
+      const completed = Boolean(state.digest) || number < step;
+      const current = !state.digest && number === step;
+      const status = completed
+        ? this.tr('publishStepCompleted')
+        : current ? this.tr('publishStepCurrent') : this.tr('publishStepPending');
+      return `
+        <li class="${completed ? 'completed' : current ? 'current' : 'pending'}" ${current ? 'aria-current="step"' : ''}>
+          <span>${number}</span>
+          <strong>${escapeHtml(label)}</strong>
+          <small>${escapeHtml(status)}</small>
+        </li>
+      `;
+    }).join('');
+    const errorKeys = {
+      TIP_TOO_HIGH: ['publishErrorTipTitle', 'publishErrorTipCopy'],
+      WALLET_REJECTED: ['publishErrorRejectedTitle', 'publishErrorRejectedCopy'],
+      INSUFFICIENT_GAS: ['publishErrorGasTitle', 'publishErrorGasCopy'],
+      INSUFFICIENT_WAL_BALANCE: ['publishErrorWalBalanceTitle', 'publishErrorWalBalanceCopy'],
+      INSUFFICIENT_SUI_BALANCE: ['publishErrorSuiBalanceTitle', 'publishErrorSuiBalanceCopy'],
+      NETWORK_UNAVAILABLE: ['publishErrorNetworkTitle', 'publishErrorNetworkCopy'],
+      UPLOAD_QUOTE_CHANGED: ['publishErrorQuoteChangedTitle', 'publishErrorQuoteChangedCopy'],
+      TRANSACTION_OUTCOME_PENDING: ['publishErrorPendingTitle', 'publishErrorPendingCopy'],
+      UPLOAD_RECOVERY_MISMATCH: ['publishErrorRecoveryMismatchTitle', 'publishErrorRecoveryMismatchCopy'],
+    };
+    const errorCopy = state.error
+      ? errorKeys[state.error.code] || ['publishErrorTitle', 'publishErrorGeneric']
+      : null;
+    const retryAction = String(state.error?.action || '');
+    const retryAvailable = actions[retryAction]
+      || (retryAction === 'onchain' && actions.publish);
+    const canRetry = Boolean(
+      !state.busy
+      && retryAction
+      && retryAction !== 'review'
+      && state.error?.code !== 'TRANSACTION_OUTCOME_PENDING'
+      && retryAvailable,
+    );
+    const canRecoverPending = Boolean(
+      !state.busy
+      && state.error?.code === 'TRANSACTION_OUTCOME_PENDING'
+      && retryAction
+      && retryAction !== 'review'
+      && retryAvailable
+    );
+    const retryLabel = state.error?.code === 'UPLOAD_QUOTE_CHANGED' && retryAction === 'prepare'
+      ? this.tr('refreshUploadQuote')
+      : retryAction === 'resume'
+        ? this.tr('resumeUpload')
+        : this.tr('retryReleaseStep');
+    const copyLabel = copyState === 'copied'
+      ? this.tr('errorDetailsCopied')
+      : copyState === 'error'
+        ? this.tr('errorDetailsCopyFailed')
+        : this.tr('copyErrorDetails');
+    const pendingResume = Boolean(
+      !state.busy
+      && state.error?.code === 'TRANSACTION_OUTCOME_PENDING'
+      && actions.resume
+      && !actions.review,
+    );
+    const errorPanel = state.error ? `
+      <aside class="v4-chain-error" role="alert" aria-live="assertive">
         <div>
-          ${actions.resume ? `<button type="button" data-action="player-publish-resume">${escapeHtml(this.tr('resumeUpload'))}</button>` : ''}
-          ${actions.prepare ? `<button type="button" data-action="player-publish-prepare">${escapeHtml(this.tr('prepareOcStep'))}</button>` : ''}
-          ${actions.register ? `<button type="button" data-action="player-publish-register">${escapeHtml(this.tr(state.stage === 'registered' ? 'retryUploadStep' : 'registerUploadStep'))}</button>` : ''}
-          ${actions.certify ? `<button type="button" data-action="player-publish-certify">${escapeHtml(this.tr('certifyStep'))}</button>` : ''}
-          ${actions.publish ? `<button class="primary" type="button" data-action="player-publish-onchain">${escapeHtml(this.tr('continueSoulidityStep'))}</button>` : ''}
-          ${state.digest ? `<strong>${escapeHtml(this.tr('completedDone'))}</strong>` : ''}
+          <span>${escapeHtml(state.error.code || 'CHAIN_ACTION_FAILED')}</span>
+          <strong>${escapeHtml(this.tr(errorCopy[0]))}</strong>
         </div>
-      </section>
+        <p>${escapeHtml(this.tr(errorCopy[1]))}</p>
+        <details>
+          <summary>${escapeHtml(this.tr('technicalDetails'))}</summary>
+          <pre>${escapeHtml(state.error.diagnostic || state.error.details || '')}</pre>
+        </details>
+        <div class="v4-chain-error-actions">
+          <button type="button" data-action="copy-${prefix}-publish-error">${escapeHtml(copyLabel)}</button>
+          ${canRetry ? `<button class="primary" type="button" data-action="${prefix}-publish-retry" data-publish-action="${escapeHtml(retryAction)}">${escapeHtml(retryLabel)}</button>` : ''}
+          ${canRecoverPending ? `<button class="primary" type="button" data-action="${prefix}-publish-recover" data-publish-action="${escapeHtml(retryAction)}">${escapeHtml(this.tr('recoverPendingRelease'))}</button>` : ''}
+          ${pendingResume ? `<button class="primary" type="button" data-action="${prefix}-publish-resume">${escapeHtml(this.tr('resumeUpload'))}</button>` : ''}
+          ${!state.busy && actions.review ? `<button class="primary" type="button" data-action="${prefix}-publish-review">${escapeHtml(this.tr('reviewPendingRelease'))}</button>` : ''}
+          ${!state.busy && actions.discard ? `<button type="button" data-action="${prefix}-publish-discard">${escapeHtml(this.tr('discardSavedUpload'))}</button>` : ''}
+        </div>
+      </aside>
+    ` : '';
+    const closeConfirmation = closeConfirm ? `
+      <aside id="${confirmId}" class="v4-chain-close-confirm" role="alertdialog" aria-labelledby="${confirmId}Title" aria-describedby="${confirmId}Copy" tabindex="-1">
+        <strong id="${confirmId}Title">${escapeHtml(this.tr('publishCloseConfirmTitle'))}</strong>
+        <p id="${confirmId}Copy">${escapeHtml(this.tr('publishCloseConfirmCopy'))}</p>
+        <div>
+          <button class="primary" type="button" data-action="keep-${prefix}-publish-open">${escapeHtml(this.tr('keepPublishOpen'))}</button>
+          <button type="button" data-action="force-close-${prefix}-publish">${escapeHtml(this.tr('closePublishAnyway'))}</button>
+        </div>
+      </aside>
+    ` : '';
+    const quote = this.publicationQuote(state);
+    const hasQuote = Object.values(quote).some((value) => this.publicationAtomicAmount(value));
+    const registerLabel = state.stage === 'registered'
+      ? this.tr('retryUploadStep')
+      : hasQuote ? this.tr('confirmRegisterUploadStep') : this.tr('registerUploadStep');
+    const title = this.tr(creator ? 'publishMakerStep' : 'finishOcStep', { step });
+    const status = state.status || this.tr(creator ? 'immutableMakerPublishCopy' : 'pinnedOcPublishCopy');
+    const contentState = closeConfirm ? 'inert aria-hidden="true"' : '';
+    const activeTitleId = closeConfirm ? `${confirmId}Title` : titleId;
+    const activeCopyId = closeConfirm ? `${confirmId}Copy` : copyId;
+    return `
+      <div class="v4-modal-backdrop v4-chain-flow-backdrop" data-action="close-${prefix}-publish-backdrop">
+        <section id="${dialogId}" class="v4-chain-flow ${creator ? 'creator' : 'player'}" role="dialog" aria-modal="true" aria-labelledby="${activeTitleId}" aria-describedby="${activeCopyId}" aria-busy="${state.busy ? 'true' : 'false'}" tabindex="-1">
+          <div class="v4-chain-flow-content" ${contentState}>
+            <header>
+              <div>
+                <span class="v4-eyebrow">${escapeHtml(this.tr(creator ? 'creatorReleaseEyebrow' : 'playerReleaseEyebrow'))}</span>
+                <h3 id="${titleId}">${escapeHtml(title)}</h3>
+                <p id="${copyId}">${escapeHtml(this.tr('publishDialogCopy'))}</p>
+              </div>
+              <button type="button" data-action="close-${prefix}-publish" aria-label="${escapeHtml(this.tr('close'))}">×</button>
+            </header>
+            <ol>${stepItems}</ol>
+            ${this.renderPublicationQuote(state, prefix)}
+            <div class="v4-chain-status ${state.busy ? 'busy' : ''}" role="status" aria-live="polite">
+              ${state.busy ? '<i aria-hidden="true"></i>' : ''}
+              <span>${escapeHtml(status)}</span>
+              ${state.busy ? `<small>${escapeHtml(this.tr('publishWorking'))}</small>` : ''}
+            </div>
+            ${errorPanel}
+            <footer>
+              ${!state.busy && !state.error && actions.resume ? `<button type="button" data-action="${prefix}-publish-resume">${escapeHtml(this.tr('resumeUpload'))}</button>` : ''}
+              ${!state.busy && !state.error && actions.prepare ? `<button type="button" data-action="${prefix}-publish-prepare">${escapeHtml(this.tr(creator ? 'prepareQuiltStep' : 'prepareOcStep'))}</button>` : ''}
+              ${!state.busy && !state.error && actions.register ? `<button class="primary" type="button" data-action="${prefix}-publish-register">${escapeHtml(registerLabel)}</button>` : ''}
+              ${!state.busy && !state.error && actions.certify ? `<button class="primary" type="button" data-action="${prefix}-publish-certify">${escapeHtml(this.tr('certifyStep'))}</button>` : ''}
+              ${!state.busy && !state.error && actions.publish ? `<button class="primary" type="button" data-action="${prefix}-publish-onchain">${escapeHtml(this.tr(creator ? 'publishMakerStepButton' : 'continueSoulidityStep'))}</button>` : ''}
+              ${!state.busy && actions.review && !state.error ? `<button class="primary" type="button" data-action="${prefix}-publish-review">${escapeHtml(this.tr('reviewPendingRelease'))}</button>` : ''}
+              ${state.digest ? `<strong class="v4-chain-published">${escapeHtml(this.tr(creator ? 'publishedDone' : 'completedDone'))}</strong>` : ''}
+            </footer>
+          </div>
+          ${closeConfirmation}
+        </section>
+      </div>
     `;
+  }
+
+  renderCreatorPublishFlow() {
+    return this.renderPublicationFlow('creator');
+  }
+
+  renderPlayerPublishFlow() {
+    return this.renderPublicationFlow('player');
   }
 
   renderCreatorInspector(document, part, item, style) {
@@ -3932,6 +4431,13 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'back-library') {
+      if (this.creatorPublishState.busy) {
+        this.creatorPublishOpen = true;
+        this.creatorPublishCloseConfirm = false;
+        this.render();
+        this.focusCreatorPublishDialog();
+        return;
+      }
       const operation = this.captureMakerOperation();
       void this.flushPendingChanges({ reason: 'back-library' }).then((result) => {
         if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
@@ -4050,49 +4556,52 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'publish') {
-      const issues = this.blockingPublicationIssues(document);
-      if (issues.length) {
-        this.creatorTab = 'validate';
-        this.render();
-        return;
-      }
-      const operation = this.captureMakerOperation();
-      void this.flushPendingChanges({ reason: 'publish' }).then((result) => {
-        if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
-        if (!result.saved) {
-          operation.store.setSaveState('error', operation.store.getState().saveMessage || this.tr('saveFailed'));
-          return;
-        }
-        const savedDocument = operation.store.getState().document;
-        const savedIssues = this.blockingPublicationIssues(savedDocument);
-        if (savedIssues.length) {
-          this.creatorTab = 'validate';
-          this.render();
-          return;
-        }
-        this.creatorPublishOpen = true;
-        this.callbacks.onPublish?.({
-          document: savedDocument,
-          recipe: savedDocument.defaultRecipe,
-          assets: this.assets,
-          compatibility: this.compatibilityReport(savedDocument),
-        });
-        this.render();
-      }).catch((error) => {
-        if (this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) {
-          operation.store.setSaveState('error', error.message || this.tr('saveFailed'));
-        }
-      });
+      this.openCreatorPublication();
       return;
     }
-    if (action === 'close-creator-publish') {
-      this.creatorPublishOpen = false;
+    if (
+      action === 'close-creator-publish'
+      || (action === 'close-creator-publish-backdrop' && event.target === button)
+    ) {
+      this.requestCloseCreatorPublish();
+      return;
+    }
+    if (action === 'keep-creator-publish-open') {
+      this.creatorPublishCloseConfirm = false;
       this.render();
+      this.focusCreatorPublishDialog('[data-action="close-creator-publish"]');
       return;
     }
-    const creatorPublishActions = new Set(['creator-publish-resume', 'creator-publish-prepare', 'creator-publish-register', 'creator-publish-certify', 'creator-publish-onchain']);
+    if (action === 'force-close-creator-publish') {
+      this.requestCloseCreatorPublish({ force: true });
+      return;
+    }
+    if (action === 'copy-creator-publish-error') {
+      void this.copyCreatorPublishError();
+      return;
+    }
+    if (action === 'creator-publish-retry') {
+      const retryAction = String(button.dataset.publishAction || '');
+      if (!['resume', 'prepare', 'register', 'certify', 'onchain', 'review'].includes(retryAction)) return;
+      if (retryAction === 'review' || this.creatorPublishState.error?.code === 'TRANSACTION_OUTCOME_PENDING') return;
+      this.creatorPublishCopyState = 'idle';
+      this.callbacks.onCreatorPublishAction?.(retryAction);
+      return;
+    }
+    if (action === 'creator-publish-recover') {
+      const recoveryAction = String(button.dataset.publishAction || '');
+      if (
+        this.creatorPublishState.error?.code !== 'TRANSACTION_OUTCOME_PENDING'
+        || !['resume', 'register', 'certify', 'onchain'].includes(recoveryAction)
+      ) return;
+      this.creatorPublishCopyState = 'idle';
+      this.callbacks.onCreatorPublishAction?.(recoveryAction);
+      return;
+    }
+    const creatorPublishActions = new Set(['creator-publish-resume', 'creator-publish-prepare', 'creator-publish-register', 'creator-publish-certify', 'creator-publish-onchain', 'creator-publish-review', 'creator-publish-discard']);
     if (creatorPublishActions.has(action)) {
       this.creatorPublishOpen = true;
+      this.creatorPublishCloseConfirm = false;
       this.callbacks.onCreatorPublishAction?.(action.replace('creator-publish-', ''));
       return;
     }
@@ -5433,18 +5942,55 @@ export class MakerWorkspace {
         return;
       }
       this.playerPublishOpen = true;
+      this.playerPublishCloseConfirm = false;
       this.callbacks.onCompleteOc?.({ document, recipe: this.playerRecipe, profile: this.playerProfile, assets: this.assets });
       this.render();
+      this.focusPlayerPublishDialog();
       return;
     }
-    if (action === 'close-player-publish') {
-      this.playerPublishOpen = false;
+    if (
+      action === 'close-player-publish'
+      || (action === 'close-player-publish-backdrop' && event.target === button)
+    ) {
+      this.requestClosePlayerPublish();
+      return;
+    }
+    if (action === 'keep-player-publish-open') {
+      this.playerPublishCloseConfirm = false;
       this.render();
+      this.focusPlayerPublishDialog('[data-action="close-player-publish"]');
       return;
     }
-    const playerPublishActions = new Set(['player-publish-resume', 'player-publish-prepare', 'player-publish-register', 'player-publish-certify', 'player-publish-onchain']);
+    if (action === 'force-close-player-publish') {
+      this.requestClosePlayerPublish({ force: true });
+      return;
+    }
+    if (action === 'copy-player-publish-error') {
+      void this.copyPlayerPublishError();
+      return;
+    }
+    if (action === 'player-publish-retry') {
+      const retryAction = String(button.dataset.publishAction || '');
+      if (!['resume', 'prepare', 'register', 'certify', 'onchain', 'review'].includes(retryAction)) return;
+      if (retryAction === 'review' || this.playerPublishState.error?.code === 'TRANSACTION_OUTCOME_PENDING') return;
+      this.playerPublishCopyState = 'idle';
+      this.callbacks.onPlayerPublishAction?.(retryAction);
+      return;
+    }
+    if (action === 'player-publish-recover') {
+      const recoveryAction = String(button.dataset.publishAction || '');
+      if (
+        this.playerPublishState.error?.code !== 'TRANSACTION_OUTCOME_PENDING'
+        || !['resume', 'register', 'certify', 'onchain'].includes(recoveryAction)
+      ) return;
+      this.playerPublishCopyState = 'idle';
+      this.callbacks.onPlayerPublishAction?.(recoveryAction);
+      return;
+    }
+    const playerPublishActions = new Set(['player-publish-resume', 'player-publish-prepare', 'player-publish-register', 'player-publish-certify', 'player-publish-onchain', 'player-publish-review', 'player-publish-discard']);
     if (playerPublishActions.has(action)) {
       this.playerPublishOpen = true;
+      this.playerPublishCloseConfirm = false;
       this.callbacks.onPlayerPublishAction?.(action.replace('player-publish-', ''));
     }
   }
@@ -5525,6 +6071,7 @@ export class MakerWorkspace {
     this.playerRoot?.removeEventListener('click', this.boundPlayerClick);
     this.playerRoot?.removeEventListener('change', this.boundPlayerChange);
     this.playerRoot?.removeEventListener('input', this.boundPlayerChange);
+    this.playerRoot?.removeEventListener('keydown', this.boundPlayerKeydown);
     this.assetResolver.clear();
     this.assets.forEach(revokeRuntimeAsset);
     this.renderAbort.creator?.abort();

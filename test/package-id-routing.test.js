@@ -113,16 +113,18 @@ test('publication recovery matches the immutable creator and Manifest intent', (
 test('application stores publication intent before signing and uses the complete v2 projection', async () => {
   const app = await source('app.js');
 
-  assert.match(app, /state\.makerPublicationIntent = \{[\s\S]*?status: 'awaiting-signature'[\s\S]*?await persistMakerUploadRecovery\(\);[\s\S]*?const transaction = await publishMaker\(/);
-  assert.match(app, /onSubmitted: async \(\{ digest \}\) => \{[\s\S]*?status: 'submitted'[\s\S]*?await persistMakerUploadRecovery\(\)/);
+  assert.match(app, /publicationIntent = \{[\s\S]*?status: 'awaiting-signature'[\s\S]*?await persistPublicationIntent\(publicationIntent\);[\s\S]*?const transaction = await publishMaker\(/);
+  assert.match(app, /onSubmitted: async \(\{ digest \}\) => \{[\s\S]*?status: 'submitted'[\s\S]*?await persistPublicationIntent\(publicationIntent\)/);
   assert.match(app, /findPublishedMakerByIntent\(\{[\s\S]*?creator: intent\.creator,[\s\S]*?manifestBlobId: intent\.manifestBlobId/);
   assert.match(app, /function makerPublicationRecoveryPending\(\) \{[\s\S]*?intent\.creator\.toLowerCase\(\) === String\(state\.walletAddress \|\| ''\)\.toLowerCase\(\)/);
   assert.match(app, /const pendingPublicationForWallet = pendingIntent[\s\S]*?pendingIntent\.creator\.toLowerCase\(\)[\s\S]*?if \(pendingPublicationForWallet\)/);
   assert.match(app, /function invalidateMakerUpload[\s\S]*?if \(makerPublicationRecoveryPending\(\)\) \{[\s\S]*?return false;/);
   assert.match(app, /canMutateDocument\(\) \{[\s\S]*?return !makerPublicationRecoveryPending\(\);/);
   assert.match(app, /const uploadedMakerDocument = state\.pendingMakerV4Bundle\?\.manifest;[\s\S]*?publishedMakerDocumentV4 = structuredClone\(uploadedMakerDocument\)/);
+  assert.match(app, /const saveResult = await saveCurrentMakerDraft\(\{ silent: true \}\);[\s\S]*?saved = saveResult\?\.confirmed === true;[\s\S]*?if \(state\.makerObjectId && saved\) \{[\s\S]*?await clearMakerUploadRecovery\(\)/);
   assert.match(app, /reviewPendingMakerPublication[\s\S]*?clearPendingPublicationTitle[\s\S]*?clearPendingPublicationConfirm/);
-  assert.match(app, /if \(!publicationSignatureRequested[\s\S]*?state\.makerPublicationIntent = null/);
+  assert.match(app, /const clearUnsignedIntent = Boolean\([\s\S]*?!publicationSignatureRequested \|\| knownPreSubmissionFailure[\s\S]*?persistPublicationIntent\(clearUnsignedIntent \? null : currentIntent\)/);
+  assert.match(app, /withBrowserUploadLock\(operation\.recoveryKey,[\s\S]*?guard: publicationContextIsActive/);
   assert.doesNotMatch(app, /publicationIntentAge|ageMs < 90_000/);
   assert.match(app, /buildMakerV4MoveSummaryV2\(publishedManifest, \{/);
   assert.match(app, /auxiliaryLocation,/);
@@ -130,4 +132,23 @@ test('application stores publication intent before signing and uses the complete
   assert.match(app, /const documentV4 = structuredClone\(state\.makerDocumentV4\);/);
   assert.doesNotMatch(app, /\bbuildMakerV4MoveSummary\(/);
   assert.doesNotMatch(app, /\bmergeExpansionPacks\(/);
+});
+
+test('application persists and serializes every irreversible Walrus checkpoint', async () => {
+  const app = await source('app.js');
+
+  assert.match(app, /pendingRegisterTransaction: session\?\.pendingRegisterTransaction/);
+  assert.match(app, /pendingCertifyTransaction: session\?\.pendingCertifyTransaction/);
+  assert.match(app, /async function saveVerifiedUploadRecovery[\s\S]*?await saveMakerUploadRecovery[\s\S]*?await loadMakerUploadRecovery/);
+  assert.match(app, /globalThis\.navigator\?\.locks\?\.request/);
+  assert.match(app, /function makerChainOperationIsActive[\s\S]*?operation\.recoveryKey === makerAssetStorageKey\(\)/);
+  assert.match(app, /function ocChainOperationIsActive[\s\S]*?operation\.recoveryKey === ocUploadStorageKey\(\)/);
+  assert.match(app, /function activateMakerModel[\s\S]*?restoreMakerUploadRecovery\(templateId, \{ force: true \}\)/);
+  assert.match(app, /onRestored\(payload\)[\s\S]*?restoreMakerUploadRecovery\(state\.templateId, \{ force: true \}\)/);
+  assert.match(app, /if \(state\.page === 'make'\) setTimeout\(\(\) => restoreOcUploadRecovery\(state\.templateId, \{ force: true \}\), 0\)/);
+  assert.match(app, /registerAndUploadWalrus\(session, \{[\s\S]*?onCheckpoint: makerUploadCheckpointHandler\(session, persistenceContext\)[\s\S]*?await persistMakerUploadRecovery\(session, persistenceContext\)/);
+  assert.match(app, /certifyWalrusUpload\(session, \{[\s\S]*?onCheckpoint: makerUploadCheckpointHandler\(session, persistenceContext\)[\s\S]*?await persistMakerUploadRecovery\(session, persistenceContext\)/);
+  assert.match(app, /registerAndUploadWalrus\(session, \{[\s\S]*?onCheckpoint: ocUploadCheckpointHandler\(session, persistenceContext\)[\s\S]*?await persistOcUploadRecovery\(session, persistenceContext\)/);
+  assert.match(app, /certifyWalrusUpload\(session, \{[\s\S]*?onCheckpoint: ocUploadCheckpointHandler\(session, persistenceContext\)[\s\S]*?await persistOcUploadRecovery\(session, persistenceContext\)/);
+  assert.match(app, /'WALLET_REJECTED',[\s\S]*?'INSUFFICIENT_GAS'/);
 });
