@@ -2,7 +2,7 @@
 
 ## Release State
 
-Animacraft product version `0.5.0` is a pre-v1 production candidate. Product v1 is reserved for a proven ecosystem at roughly 1,000 active creators. Move protocol numbers are tracked separately: the original protocol v3 package `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` is live and source-verified at the recorded deployment commit. The repository now contains a **protocol v4 upgrade candidate** that preserves existing Maker object layouts and adds non-bypassable primary protocol-fee splitting. Protocol v4 is not Mainnet-active until the UpgradeCap holder signs the upgrade and initializes the canonical Protocol Fee objects. Canonical Soul minting remains blocked until the separate Soulidity adapter is reviewed and deployed.
+Animacraft product version `0.5.0` is a pre-v1 production candidate. Product v1 is reserved for a proven ecosystem at roughly 1,000 active creators. Move protocol numbers are tracked separately: the stable original package/legacy TypeOrigin is `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`, while the source-verified **protocol v4 callable package** is `0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc`. The v4 upgrade is live on Mainnet and its canonical native-USDC Protocol Fee objects have been initialized. Their integration gate remains disabled, so canonical Soul minting is still blocked until the separate Soulidity v2 adapter and market migration are deployed and verified.
 
 The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio, local draft ownership, Walrus writes, publication, archive, and Soulidity handoff require a connected wallet.
 
@@ -42,18 +42,17 @@ Current Mainnet truth: the published package is configured, but discovery curren
 - Vercel rewrites, CSP including Walrus WASM support, non-cached runtime config, and baseline security headers.
 - Pull requests run config preflight, the web/config integrity suite, syntax checks, and a production build; Move protocol changes also run the contract suite.
 
-## Manual Mainnet Activation
+## Remaining Mainnet Activation
 
-1. Move the published `UpgradeCap`, `Publisher`, and `Display<OCMaker>` objects into the documented protocol custody arrangement.
-2. Sign the reviewed v4 upgrade, then initialize the canonical native-USDC `ProtocolFeeConfig`, `ProtocolTreasury`, and `ProtocolFeeAdminCap` with the Publisher.
-3. Record those IDs, run `npm run preflight:mainnet`, and deploy a Vercel Preview.
-4. Publish one small real Maker through all four Walrus/Sui stages.
-5. Publish the reviewed Soulidity adapter pinned to the Animacraft original package ID and verify Soulidity's secondary platform fee remains 250 bps.
-6. Open the Maker from a disconnected browser, connect a second wallet, complete free and paid canonical Soul mints, then withdraw both Maker and protocol shares with their respective Caps.
-7. Verify Maker/Treasury/Cap discovery, Living Content, Soulidity profile/collection, 2.5% resale settlement, archive rejection, restore, and transaction links.
-8. Record the evidence in the release PR before enabling canonical mint.
+1. Keep the live `UpgradeCap`, `ProtocolFeeAdminCap`, and `Display<OCMaker>` under the documented protocol custody arrangement. The one-time Publisher is now sealed inside the AdminCap.
+2. Merge and deploy the evidence-bearing v4 runtime configuration after CI and Vercel Preview pass.
+3. Publish one small real Maker through all four Walrus/Sui stages.
+4. Publish the reviewed Soulidity adapter pinned to the v4 release record and verify Soulidity's secondary platform fee remains 250 bps.
+5. Open the Maker from a disconnected browser, connect a second wallet, complete free and paid canonical Soul mints, then withdraw both Maker and protocol shares with their respective Caps.
+6. Verify Maker/Treasury/Cap discovery, Living Content, Soulidity profile/collection, 2.5% resale settlement, archive rejection, restore, and transaction links.
+7. Record the evidence in the release PR before enabling canonical mint.
 
-Until steps 2, 4, and 5 are evidenced, this is a creator production candidate rather than a completed end-to-end Soul mint release. `canonicalSoulMintEnabled` remains `false`, paid mint controls remain fail-closed, and no UI copy should imply that an OC has already been minted.
+Until the real Maker smoke and Soulidity migration are evidenced, this is a creator production candidate rather than a completed end-to-end Soul mint release. `canonicalSoulMintEnabled` and the on-chain ProtocolFeeConfig gate both remain `false`, paid mint controls remain fail-closed, and no UI copy should imply that an OC has already been minted.
 
 ## Invited Pilot Boundary
 

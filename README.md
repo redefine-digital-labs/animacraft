@@ -48,7 +48,7 @@ npm run dev
 
 ## Runtime Configuration
 
-Public configuration lives in `public/config.js`; `config.example.js` documents every field. The source-verified Mainnet package is `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`; its transaction, package digest, source tree, and custody objects are recorded in `deployments/mainnet.json`.
+Public configuration lives in `public/config.js`; `config.example.js` documents every field. The source-verified Mainnet v4 callable package is `0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc`; the stable v3 TypeOrigin remains `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`. Upgrade and initialization transactions, package digest, source tree, custody objects, and the disabled canonical-mint gate are recorded in `deployments/mainnet.json`.
 
 Before promoting the invited-creator release:
 
