@@ -245,6 +245,12 @@ const MAX_COLORS_PER_PART = 32;
 const suppliedConfig = window.ANIMACRAFT_CONFIG || {};
 const runtimeConfig = normalizeRuntimeConfig(suppliedConfig, location.origin);
 const canonicalSoulMintEnabled = runtimeConfig.canonicalSoulMintEnabled === true;
+const visualThemeRuntime = window.ANIMACRAFT_THEME;
+const visualThemeIds = visualThemeRuntime?.THEME_IDS || ['auto', 'animacraft', 'soulidity'];
+const storedVisualThemePreference = visualThemeRuntime?.readPreference?.();
+let visualThemePreference = visualThemeIds.includes(storedVisualThemePreference)
+  ? storedVisualThemePreference
+  : 'auto';
 const localUiTest = ['127.0.0.1', 'localhost'].includes(location.hostname)
   && new URLSearchParams(location.search).get('ui-test') === '1';
 
@@ -2283,6 +2289,61 @@ const draftRecoveryProductionI18n = {
 
 Object.entries(draftRecoveryProductionI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
 
+const visualThemeI18n = {
+  en: {
+    visualThemeLabel: 'Visual theme',
+    themeButtonAria: 'Choose visual theme',
+    themeAuto: 'Automatic',
+    themeAutoCopy: 'Use Animacraft by default',
+    themeAnimacraft: 'Animacraft',
+    themeAnimacraftCopy: 'Light maker workspace',
+    themeSoulidity: 'Soulidity',
+    themeSoulidityCopy: 'Dark Soulidity workspace',
+  },
+  zh: {
+    visualThemeLabel: '视觉主题',
+    themeButtonAria: '选择视觉主题',
+    themeAuto: '自动',
+    themeAutoCopy: '默认使用 Animacraft',
+    themeAnimacraft: 'Animacraft',
+    themeAnimacraftCopy: '浅色 Maker 创作空间',
+    themeSoulidity: 'Soulidity',
+    themeSoulidityCopy: '深色 Soulidity 创作空间',
+  },
+  ja: {
+    visualThemeLabel: '表示テーマ',
+    themeButtonAria: '表示テーマを選択',
+    themeAuto: '自動',
+    themeAutoCopy: 'デフォルトでは Animacraft を使用',
+    themeAnimacraft: 'Animacraft',
+    themeAnimacraftCopy: '明るい Maker ワークスペース',
+    themeSoulidity: 'Soulidity',
+    themeSoulidityCopy: '暗い Soulidity ワークスペース',
+  },
+  ko: {
+    visualThemeLabel: '화면 테마',
+    themeButtonAria: '화면 테마 선택',
+    themeAuto: '자동',
+    themeAutoCopy: '기본값으로 Animacraft 사용',
+    themeAnimacraft: 'Animacraft',
+    themeAnimacraftCopy: '밝은 Maker 작업 공간',
+    themeSoulidity: 'Soulidity',
+    themeSoulidityCopy: '어두운 Soulidity 작업 공간',
+  },
+  vi: {
+    visualThemeLabel: 'Giao diện hiển thị',
+    themeButtonAria: 'Chọn giao diện hiển thị',
+    themeAuto: 'Tự động',
+    themeAutoCopy: 'Mặc định dùng Animacraft',
+    themeAnimacraft: 'Animacraft',
+    themeAnimacraftCopy: 'Không gian Maker nền sáng',
+    themeSoulidity: 'Soulidity',
+    themeSoulidityCopy: 'Không gian Soulidity nền tối',
+  },
+};
+
+Object.entries(visualThemeI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
+
 const requiredLocaleKeys = Object.keys(i18n.en);
 Object.entries(i18n).forEach(([locale, dictionary]) => {
   const missing = requiredLocaleKeys.filter((key) => !Object.hasOwn(dictionary, key));
@@ -2719,6 +2780,37 @@ function setLocale(locale) {
   renderAll();
 }
 
+function renderThemeControl() {
+  const normalized = visualThemeIds.includes(visualThemePreference) ? visualThemePreference : 'auto';
+  const themeButton = $('themeButton');
+  if (themeButton) themeButton.dataset.themePreference = normalized;
+  document.querySelectorAll('[data-theme-option]').forEach((button) => {
+    const selected = button.dataset.themeOption === normalized;
+    button.setAttribute('aria-checked', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+}
+
+function setVisualThemePreference(preference) {
+  const normalized = visualThemeIds.includes(preference) ? preference : 'auto';
+  visualThemePreference = visualThemeRuntime?.setPreference?.(normalized) || normalized;
+  if (!visualThemeRuntime) {
+    document.documentElement.setAttribute(
+      'data-theme',
+      normalized === 'soulidity' ? 'soulidity' : 'animacraft',
+    );
+  }
+  renderThemeControl();
+}
+
+function syncVisualThemePreference() {
+  const persisted = visualThemeRuntime?.readPreference?.();
+  const normalized = visualThemeIds.includes(persisted) ? persisted : 'auto';
+  visualThemePreference = normalized;
+  visualThemeRuntime?.applyPreference?.(normalized);
+  renderThemeControl();
+}
+
 function renderI18n() {
   document.documentElement.lang = state.locale === 'zh' ? 'zh-CN' : state.locale;
   document.querySelectorAll('[data-i18n]').forEach((node) => {
@@ -2736,6 +2828,7 @@ function renderI18n() {
   ['accountLanguage'].forEach((id) => {
     if ($(id)) $(id).value = state.locale;
   });
+  renderThemeControl();
   if ($('walletButton')) {
     const label = $('walletButton').querySelector('[data-i18n="walletConnect"]');
     if (label) label.textContent = state.walletConnected ? t('walletConnected') : t('walletConnect');
@@ -7752,7 +7845,34 @@ function closePartModal() {
   $('partRegistrationModal').setAttribute('aria-hidden', 'true');
 }
 
+function themeMenuIsOpen() {
+  return $('themeMenu')?.classList.contains('active') === true;
+}
+
+function openThemeMenu() {
+  if (!$('themeMenu') || !$('themeButton')) return;
+  if ($('accountPanel')?.classList.contains('active')) closeAccountPanel();
+  $('themeMenu').hidden = false;
+  $('themeMenu').classList.add('active');
+  $('themeMenu').setAttribute('aria-hidden', 'false');
+  $('themeButton').setAttribute('aria-expanded', 'true');
+  const selected = $('themeMenu').querySelector('[role="menuitemradio"][aria-checked="true"]')
+    || $('themeMenu').querySelector('[role="menuitemradio"]');
+  selected?.focus({ preventScroll: true });
+}
+
+function closeThemeMenu({ returnFocus = true } = {}) {
+  if (!$('themeMenu') || !$('themeButton')) return;
+  const wasOpen = themeMenuIsOpen();
+  $('themeMenu').classList.remove('active');
+  $('themeMenu').setAttribute('aria-hidden', 'true');
+  $('themeMenu').hidden = true;
+  $('themeButton').setAttribute('aria-expanded', 'false');
+  if (wasOpen && returnFocus) $('themeButton').focus({ preventScroll: true });
+}
+
 function openAccountPanel() {
+  closeThemeMenu({ returnFocus: false });
   $('accountPanel').classList.add('active');
   $('accountPanel').setAttribute('aria-hidden', 'false');
   $('accountButton').setAttribute('aria-expanded', 'true');
@@ -9179,6 +9299,58 @@ $('accountPanel').addEventListener('click', (event) => {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 });
 
+$('themeButton')?.addEventListener('click', () => {
+  if (themeMenuIsOpen()) closeThemeMenu();
+  else openThemeMenu();
+});
+
+$('themeButton')?.addEventListener('keydown', (event) => {
+  if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+  event.preventDefault();
+  openThemeMenu();
+});
+
+$('themeMenu')?.addEventListener('click', (event) => {
+  const option = event.target.closest('[data-theme-option]');
+  if (!option) return;
+  setVisualThemePreference(option.dataset.themeOption);
+  closeThemeMenu();
+});
+
+$('themeMenu')?.addEventListener('keydown', (event) => {
+  const options = [...$('themeMenu').querySelectorAll('[role="menuitemradio"]')];
+  if (!options.length) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    closeThemeMenu();
+    return;
+  }
+  if (event.key === 'Tab') {
+    closeThemeMenu({ returnFocus: false });
+    return;
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const currentIndex = Math.max(0, options.indexOf(document.activeElement));
+  const nextIndex = event.key === 'Home'
+    ? 0
+    : event.key === 'End'
+      ? options.length - 1
+      : event.key === 'ArrowDown'
+        ? (currentIndex + 1) % options.length
+        : (currentIndex - 1 + options.length) % options.length;
+  options[nextIndex].focus({ preventScroll: true });
+});
+
+document.addEventListener('click', (event) => {
+  if (!themeMenuIsOpen() || event.target.closest('.theme-control')) return;
+  closeThemeMenu();
+});
+
+window.addEventListener('focus', syncVisualThemePreference);
+window.addEventListener('pageshow', syncVisualThemePreference);
+
 $('accountButton').addEventListener('click', () => {
   if ($('accountPanel').classList.contains('active')) closeAccountPanel();
   else openAccountPanel();
@@ -9702,7 +9874,8 @@ $('confirmActionButton').addEventListener('click', async () => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if ($('draftRecoveryModal').classList.contains('active')) closeDraftRecoveryCenter();
+  if (themeMenuIsOpen()) closeThemeMenu();
+  else if ($('draftRecoveryModal').classList.contains('active')) closeDraftRecoveryCenter();
   else if ($('confirmActionModal').classList.contains('active')) closeConfirmation();
   else if ($('partRegistrationModal').classList.contains('active')) closePartModal();
   else if ($('makerRegistrationModal').classList.contains('active')) closeMakerModal();
