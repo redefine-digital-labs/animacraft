@@ -277,7 +277,7 @@
                   <button id="playMakerPreview" class="secondary" type="button" data-i18n="preview">Preview</button>
                   <button id="saveMakerDraft" class="secondary" type="button" data-i18n="saveDraft">Save draft</button>
                   <button id="downloadManifest" class="secondary" type="button" data-i18n="exportManifest">Manifest</button>
-                  <button class="primary" data-editor-panel-button="publish" data-i18n="release">Release</button>
+                  <button class="primary" data-open-maker-release data-i18n="release">Release</button>
                 </div>
               </div>
               <aside class="maker-section-nav">
@@ -285,7 +285,7 @@
                   <button class="active" data-editor-panel-button="top" data-i18n="makerTop">Maker Top</button>
                   <button data-editor-panel-button="parts" data-i18n="characterMaker">Character Maker</button>
                   <button data-editor-panel-button="living" data-i18n="livingContent">Living Content</button>
-                  <button data-editor-panel-button="publish" data-i18n="onchainPublish">On-chain Publish</button>
+                  <button data-open-maker-release data-i18n="onchainPublish">On-chain Publish</button>
                   <button data-editor-panel-button="settings" data-i18n="settings">Settings</button>
                 </nav>
               </aside>
@@ -324,7 +324,7 @@
                       <strong id="makerTopReadiness" data-i18n="notReady">Not ready</strong>
                       <small data-i18n="playerFlowAssets">Player flow and required assets</small>
                     </button>
-                    <button class="maker-home-action" data-editor-panel-button="publish">
+                    <button class="maker-home-action" data-open-maker-release>
                       <span data-i18n="publication">Publication</span>
                       <strong id="makerTopChainState" data-i18n="localDraft">Local draft</strong>
                       <small data-i18n="walrusAndSui">Walrus storage and Sui object</small>
@@ -532,60 +532,19 @@
                   </section>
                 </div>
 
-                <div class="creator-function-grid editor-panel" data-editor-panel="publish">
-                  <section class="function-card primary-function">
-                    <p class="kicker" data-i18n="onchainAssets">On-chain Assets</p>
-                    <h2 data-i18n="assetRegistry">Asset registry</h2>
-                    <div class="publish-runtime-card" id="publishRuntimeCard"></div>
-                    <div class="asset-status-list">
-                      <div><strong data-i18n="walrusQuilt">Walrus quilt</strong><span data-i18n="walrusQuiltAssets">Layer PNGs, optional picker icons, cover, and the versioned Maker manifest</span></div>
-                      <div><strong data-i18n="suiObjects">Sui objects</strong><span data-i18n="suiObjectsCopy">CreatorProfile, OCMaker, MakerTreasury, MakerAdminCap, recipe rules, policy snapshots, and ownership</span></div>
-                      <div><strong data-i18n="revenueRoyalty">Revenue &amp; royalty</strong><span data-i18n="revenueRoyaltyCopy">The Maker Treasury path is ready; paid mint and 0%–5% resale settlement activate with the reviewed Soulidity adapter.</span></div>
-                    </div>
-                    <div class="production-action" id="makerPublishAction">
-                      <div>
-                        <strong data-i18n="publishThisMaker">Publish this Maker</strong>
-                        <span id="makerPublishStatus" data-i18n="publishPrereq">Resolve every Preflight issue, connect a wallet, and configure the Move package.</span>
-                      </div>
-                      <div class="production-button-row">
-                        <button id="resumeMakerUpload" class="secondary" type="button" data-i18n="resumeSavedUpload">Resume saved upload</button>
-                        <button id="prepareMakerUpload" class="secondary" type="button" data-i18n="prepareStep">1. Prepare</button>
-                        <button id="registerMakerUpload" class="secondary" type="button" data-i18n="registerUploadStep">2. Register &amp; upload</button>
-                        <button id="certifyMakerUpload" class="secondary" type="button" data-i18n="certifyStep">3. Certify</button>
-                        <button id="publishMakerOnchain" class="primary" type="button" data-i18n="publishMakerStep">4. Publish Maker</button>
-                        <button id="reviewPendingMakerPublication" class="secondary" type="button" data-i18n="reviewPendingPublication" hidden>Review pending publication</button>
-                      </div>
-                    </div>
-                    <div class="production-action lifecycle-action" id="makerLifecycleAction" hidden>
-                      <div>
-                        <strong id="makerLifecycleActionTitle" data-i18n="publishedMaker">Published Maker</strong>
-                        <span id="makerLifecycleActionCopy" data-i18n="publishedRecordCopy">Published records remain on Sui and certified Walrus assets remain available for their storage term.</span>
-                      </div>
-                      <button id="archiveMakerOnchain" class="danger-button" type="button" data-i18n="archiveMaker">Archive Maker</button>
-                    </div>
-                  </section>
-                  <section class="function-card">
-                    <p class="kicker" data-i18n="publishSteps">Publish Steps</p>
-                    <h2 data-i18n="chainExecution">Chain execution</h2>
-                    <div class="chain-action-list" data-chain-action-list></div>
-                  </section>
-                  <section class="function-card">
-                    <p class="kicker" data-i18n="publicationRecord">Publication Record</p>
-                    <h2 data-i18n="immutableRecord">What becomes immutable</h2>
-                    <div class="asset-status-list">
-                      <div><strong data-i18n="provenance">Provenance</strong><span data-i18n="provenanceCopy">Creator wallet, Maker object, package version, and publication transaction.</span></div>
-                      <div><strong data-i18n="assetVersion">Asset version</strong><span data-i18n="assetVersionCopy">The certified Walrus manifest and every referenced layer image.</span></div>
-                      <div><strong data-i18n="rulesRecord">Rules</strong><span data-i18n="rulesRecordCopy">Part, Item, Color, order, selection, palette, and BCS recipe-hash integrity enforced when a Soul is minted.</span></div>
-                    </div>
-                  </section>
-                </div>
-
                 <div class="creator-settings-grid editor-panel" data-editor-panel="settings">
                   <section class="creator-card lifecycle-card" id="makerLifecycleCard">
                     <p class="kicker" data-i18n="lifecycle">Lifecycle</p>
                     <h2 id="makerLifecycleTitle">Local draft</h2>
                     <p id="makerLifecycleCopy" data-i18n="draftLifecycleCopy">Draft content is stored locally and can still be edited or permanently deleted.</p>
                     <button id="deleteMakerDraft" class="danger-button" type="button" data-i18n="deleteDraft">Delete draft</button>
+                  </section>
+                  <section class="creator-card lifecycle-action" id="makerLifecycleAction" hidden>
+                    <div>
+                      <strong id="makerLifecycleActionTitle" data-i18n="publishedMaker">Published Maker</strong>
+                      <span id="makerLifecycleActionCopy" data-i18n="publishedRecordCopy">Published records remain on Sui and certified Walrus assets remain available for their storage term.</span>
+                    </div>
+                    <button id="archiveMakerOnchain" class="danger-button" type="button" data-i18n="archiveMaker">Archive Maker</button>
                   </section>
                   <section class="creator-card setup-card">
                     <p class="kicker" data-i18n="makerSettings">Maker Settings</p>

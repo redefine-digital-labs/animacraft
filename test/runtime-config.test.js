@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_RUNTIME_CONFIG,
+  ANIMACRAFT_MAX_WALRUS_RELAY_TIP_MIST,
   SUI_MAINNET_USDC_TYPE,
   assertSupportedMakerMintEconomics,
   assertSupportedMakerPaymentCoin,
@@ -155,6 +156,18 @@ test('rejects unsafe Walrus retention and malformed featured ids', () => {
   assert.equal(result.valid, false);
   assert.match(result.errors.join(' '), /walrusEpochs/);
   assert.match(result.errors.join(' '), /featuredMakers/);
+});
+
+test('keeps the Walrus relay tip ceiling bounded while allowing production quilts', () => {
+  const config = productionConfig();
+  assert.equal(
+    config.walrusRelayMaxTipMist,
+    ANIMACRAFT_MAX_WALRUS_RELAY_TIP_MIST,
+  );
+  config.walrusRelayMaxTipMist = ANIMACRAFT_MAX_WALRUS_RELAY_TIP_MIST + 1;
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /walrusRelayMaxTipMist/);
 });
 
 test('requires an explicit boolean canonical Soul mint gate', () => {

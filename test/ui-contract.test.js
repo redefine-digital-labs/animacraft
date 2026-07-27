@@ -98,6 +98,13 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(workspaceI18n, /reviewIssues: 'Review \{count\} issues'/);
   assert.match(workspace, /class="v4-tool-modal-backdrop" data-action="close-tool-backdrop"/);
   assert.match(workspace, /id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true"/);
+  assert.match(workspace, /renderPublicationFlow\(kind\)/);
+  assert.match(workspace, /const dialogId = creator \? 'makerCreatorPublishDialog' : 'makerPlayerPublishDialog'/);
+  assert.match(workspace, /data-action="copy-\$\{prefix\}-publish-error"/);
+  assert.match(workspace, /data-action="force-close-\$\{prefix\}-publish"/);
+  assert.match(styles, /\.v4-chain-flow-backdrop\s*\{[^}]*z-index:\s*1500;/s);
+  assert.match(styles, /\.v4-chain-flow button\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px;/s);
+  assert.match(styles, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.v4-chain-status > i\s*\{[^}]*animation:\s*none;/);
   assert.match(workspace, /role="tab" aria-selected=/);
   assert.match(workspace, /else if \(style\.positionConfirmed === false\)/);
   assert.match(workspace, /data-action="focus-issue"/);
@@ -110,6 +117,24 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(styles, /@media \(max-width:\s*820px\)[\s\S]*?\.creator-function-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   assert.match(styles, /@media \(max-width:\s*560px\)[\s\S]*?\.v4-studio-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
   assert.match(styles, /\.v4-player-header\s*\{\s*position:\s*relative;/s);
+});
+
+test('every Creator release entry opens the shared modal without a legacy inline flow', async () => {
+  const [html, app, workspace] = await Promise.all([
+    readFile(new URL('../index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+  ]);
+
+  assert.equal((html.match(/data-open-maker-release/g) || []).length, 3);
+  assert.doesNotMatch(html, /data-editor-panel="publish"/);
+  assert.doesNotMatch(html, /id="(?:makerPublishAction|resumeMakerUpload|prepareMakerUpload|registerMakerUpload|certifyMakerUpload|publishMakerOnchain|reviewPendingMakerPublication)"/);
+  assert.match(
+    app,
+    /document\.querySelectorAll\('\[data-open-maker-release\]'\)[\s\S]*?setEditorPanel\('parts'\);[\s\S]*?makerWorkspace\?\.openCreatorPublication\?\.\(\);/,
+  );
+  assert.match(workspace, /openCreatorPublication\(\) \{[\s\S]*?this\.creatorPublishOpen = true;/);
+  assert.match(workspace, /if \(action === 'publish'\) \{\s*this\.openCreatorPublication\(\);/);
 });
 
 test('every static editor translation hook is backed by the application dictionary', async () => {

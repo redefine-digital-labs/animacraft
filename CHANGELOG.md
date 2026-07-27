@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1 — Mainnet publishing hotfix
+
+- Moves the complete four-step Walrus + Sui Maker release workflow into an accessible, responsive modal with localized progress, recovery, fee confirmation, and safe diagnostics.
+- Quotes the exact live Walrus upload-relay fee before the first signing step and raises the bounded client ceiling so production-size Maker quilts can be registered.
+- Makes every Walrus and final Sui transaction resumable and idempotent with signed-byte checkpoints, per-upload CAS revisions, cross-tab locks, wallet/Maker identity guards, and explicit recovery review.
+- Resolves the actual Mainnet WAL coin type from the staking ABI, verifies SUI/WAL balances before signing, and adds a live Mainnet relay-policy preflight.
+- Bounds remote artwork by encoded bytes, decoded pixels, and an LRU bitmap budget so public Maker assets cannot exhaust the Player or Creator browser.
+- Keeps obsolete recovery records recoverable or explicitly discardable without hiding large duplicate PNG blobs, and never removes the final publication checkpoint until the local Maker save is confirmed.
+
 ## 0.5.0 — Production-readiness candidate
 
 - Completes the `Maker → Part → Item → Style → PNG` authoring model with independent Style transforms, global z-only Layer Tracks, deep-copy isolation, and one shared Renderer for Creator, Player, export, and publication.

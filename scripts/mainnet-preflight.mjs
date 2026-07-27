@@ -3,7 +3,12 @@ import vm from 'node:vm';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
-import { normalizeRuntimeConfig, validateRuntimeConfig } from '../runtime-config.js';
+import { walrus } from '@mysten/walrus';
+import {
+  ANIMACRAFT_MAX_WALRUS_UPLOAD_BYTES,
+  normalizeRuntimeConfig,
+  validateRuntimeConfig,
+} from '../runtime-config.js';
 
 const args = new Set(process.argv.slice(2));
 const strict = args.has('--strict');
@@ -294,6 +299,34 @@ async function checkHttp(name, url, path) {
   }
 }
 
+async function checkWalrusRelayTipPolicy(client, config) {
+  try {
+    const capMist = Number(config.walrusRelayMaxTipMist);
+    const relayClient = client.$extend(walrus({
+      uploadRelay: {
+        host: config.walrusUploadRelayUrl,
+        sendTip: { max: capMist },
+      },
+    }));
+    const [minimumQuote, maximumQuote] = await deadline(
+      'Walrus relay tip policy',
+      () => Promise.all([
+        relayClient.walrus.calculateUploadRelayTip({ size: 1 }),
+        relayClient.walrus.calculateUploadRelayTip({
+          size: ANIMACRAFT_MAX_WALRUS_UPLOAD_BYTES,
+        }),
+      ]),
+    );
+    record(
+      'Walrus relay tip policy',
+      maximumQuote <= BigInt(capMist),
+      `live minimum=${minimumQuote} MIST; 500 MiB ceiling quote=${maximumQuote} MIST; configured cap=${capMist} MIST`,
+    );
+  } catch (error) {
+    record('Walrus relay tip policy', false, error.message);
+  }
+}
+
 async function checkNetwork(config, validation) {
   const client = new SuiGrpcClient({ network: 'mainnet', baseUrl: config.grpcUrl });
   try {
@@ -347,6 +380,7 @@ async function checkNetwork(config, validation) {
       ? [checkHttp('Soulidity Animacraft route', config.soulidityAppUrl, config.soulidityIntegrationPath)]
       : []),
   ]);
+  await checkWalrusRelayTipPolicy(client, config);
 
   if (validation.callablePackageReady) {
     await checkAnimacraftAbi(

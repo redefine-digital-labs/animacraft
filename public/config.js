@@ -10,7 +10,8 @@ window.ANIMACRAFT_CONFIG = {
   paymentCoinDecimals: 6,
   walrusAggregatorUrl: 'https://aggregator.walrus-mainnet.walrus.space',
   walrusUploadRelayUrl: 'https://upload-relay.mainnet.walrus.space',
-  walrusRelayMaxTipMist: 1000000,
+  // Client-side ceiling. The relay charges its exact live quote, not this cap.
+  walrusRelayMaxTipMist: 100000000,
   walrusEpochs: 53,
   featuredMakers: {},
   appUrl: 'https://animacraft.soulidity.ai',

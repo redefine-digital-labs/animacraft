@@ -77,6 +77,7 @@ import {
   MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER,
   prepareMakerV4ProjectionV2Document,
 } from './maker-publication-v4.js';
+import { classifyChainUiError } from './chain-error-ui.js';
 
 let makerStorageInitializationError = null;
 try {
@@ -1299,6 +1300,11 @@ const productionPublicationRecoveryI18n = {
     clearPendingPublicationTitle: 'Clear pending publication?',
     clearPendingPublicationMessage: 'Only clear this recovery record after confirming that the wallet rejected the request or that no transaction exists on-chain. Clearing it allows a new publication signature.',
     clearPendingPublicationConfirm: 'Clear and retry',
+    discardUploadRecoveryTitle: 'Archive the old upload and prepare again?',
+    discardMakerUploadRecoveryMessage: 'The current Maker no longer matches this saved Walrus upload. Animacraft will preserve a lightweight audit record, remove the obsolete local checkpoint, and let you prepare a new upload. This does not cancel any transaction already submitted.',
+    discardOcUploadRecoveryMessage: 'The current OC no longer matches this saved Walrus upload. Animacraft will preserve a lightweight audit record, remove the obsolete local checkpoint, and let you prepare a new upload. This does not cancel any transaction already submitted.',
+    discardUploadRecoveryConfirm: 'Archive and prepare again',
+    uploadRecoveryDiscarded: 'The old upload was archived. Prepare a new upload from the current work.',
     makerIndexResolving: 'Published transaction found. Resolving the OCMaker object ID from Sui indexing…',
     makerIndexObjectMissing: 'The publication transaction is indexed, but its OCMaker object was not found.',
     makerIndexUnavailable: 'The OCMaker object ID is not available yet.',
@@ -1340,6 +1346,11 @@ const productionPublicationRecoveryI18n = {
     clearPendingPublicationTitle: '清除未决发布记录？',
     clearPendingPublicationMessage: '只有在确认钱包已拒绝请求，或确认链上不存在该交易后，才可清除此恢复记录。清除后将允许重新请求发布签名。',
     clearPendingPublicationConfirm: '清除并重试',
+    discardUploadRecoveryTitle: '归档旧上传并重新准备？',
+    discardMakerUploadRecoveryMessage: '当前 Maker 已与这份 Walrus 上传不一致。Animacraft 会保留一条轻量审计记录、删除已过期的本地检查点，并允许你从当前内容重新准备。此操作不会取消已经提交的交易。',
+    discardOcUploadRecoveryMessage: '当前 OC 已与这份 Walrus 上传不一致。Animacraft 会保留一条轻量审计记录、删除已过期的本地检查点，并允许你从当前内容重新准备。此操作不会取消已经提交的交易。',
+    discardUploadRecoveryConfirm: '归档并重新准备',
+    uploadRecoveryDiscarded: '旧上传已归档，请从当前内容重新准备上传。',
     makerIndexResolving: '已找到发布交易，正在等待 Sui 索引解析 OCMaker 对象 ID…',
     makerIndexObjectMissing: '发布交易已被索引，但未找到其中的 OCMaker 对象。',
     makerIndexUnavailable: 'OCMaker 对象 ID 暂时不可用。',
@@ -1381,6 +1392,11 @@ const productionPublicationRecoveryI18n = {
     clearPendingPublicationTitle: '保留中の公開記録を消去しますか？',
     clearPendingPublicationMessage: 'ウォレットが要求を拒否したか、オンチェーンに取引が存在しないことを確認した場合に限り、この復旧記録を消去してください。消去後は新しい公開署名を要求できます。',
     clearPendingPublicationConfirm: '消去して再試行',
+    discardUploadRecoveryTitle: '古いアップロードを保存して準備し直しますか？',
+    discardMakerUploadRecoveryMessage: '現在の Maker は保存済み Walrus アップロードと一致しません。Animacraft は軽量な監査記録を保持し、古いローカルチェックポイントを削除して、現在の内容から再準備できるようにします。送信済み取引は取り消されません。',
+    discardOcUploadRecoveryMessage: '現在の OC は保存済み Walrus アップロードと一致しません。Animacraft は軽量な監査記録を保持し、古いローカルチェックポイントを削除して、現在の内容から再準備できるようにします。送信済み取引は取り消されません。',
+    discardUploadRecoveryConfirm: '保存して準備し直す',
+    uploadRecoveryDiscarded: '古いアップロードを保存しました。現在の内容から新しく準備してください。',
     makerIndexResolving: '公開取引を確認しました。Sui の索引から OCMaker オブジェクト ID を解決中…',
     makerIndexObjectMissing: '公開取引は索引済みですが、OCMaker オブジェクトが見つかりません。',
     makerIndexUnavailable: 'OCMaker オブジェクト ID はまだ利用できません。',
@@ -1422,6 +1438,11 @@ const productionPublicationRecoveryI18n = {
     clearPendingPublicationTitle: '대기 중인 게시 기록을 지울까요?',
     clearPendingPublicationMessage: '지갑이 요청을 거절했거나 온체인에 트랜잭션이 없음을 확인한 경우에만 이 복구 기록을 지우세요. 기록을 지우면 새 게시 서명을 요청할 수 있습니다.',
     clearPendingPublicationConfirm: '지우고 다시 시도',
+    discardUploadRecoveryTitle: '이전 업로드를 보관하고 다시 준비할까요?',
+    discardMakerUploadRecoveryMessage: '현재 Maker가 저장된 Walrus 업로드와 일치하지 않습니다. Animacraft가 가벼운 감사 기록을 보관하고 오래된 로컬 체크포인트를 삭제한 뒤 현재 작업으로 새 업로드를 준비할 수 있게 합니다. 이미 제출된 트랜잭션은 취소되지 않습니다.',
+    discardOcUploadRecoveryMessage: '현재 OC가 저장된 Walrus 업로드와 일치하지 않습니다. Animacraft가 가벼운 감사 기록을 보관하고 오래된 로컬 체크포인트를 삭제한 뒤 현재 작업으로 새 업로드를 준비할 수 있게 합니다. 이미 제출된 트랜잭션은 취소되지 않습니다.',
+    discardUploadRecoveryConfirm: '보관하고 다시 준비',
+    uploadRecoveryDiscarded: '이전 업로드를 보관했습니다. 현재 작업으로 새 업로드를 준비하세요.',
     makerIndexResolving: '게시 트랜잭션을 찾았습니다. Sui 인덱스에서 OCMaker 오브젝트 ID를 확인하는 중…',
     makerIndexObjectMissing: '게시 트랜잭션은 인덱싱되었지만 OCMaker 오브젝트를 찾지 못했습니다.',
     makerIndexUnavailable: 'OCMaker 오브젝트 ID를 아직 사용할 수 없습니다.',
@@ -1463,6 +1484,11 @@ const productionPublicationRecoveryI18n = {
     clearPendingPublicationTitle: 'Xóa bản ghi đăng đang chờ?',
     clearPendingPublicationMessage: 'Chỉ xóa bản ghi khôi phục này sau khi xác nhận ví đã từ chối yêu cầu hoặc không có giao dịch trên chuỗi. Sau khi xóa, có thể yêu cầu chữ ký đăng mới.',
     clearPendingPublicationConfirm: 'Xóa và thử lại',
+    discardUploadRecoveryTitle: 'Lưu lượt tải cũ và chuẩn bị lại?',
+    discardMakerUploadRecoveryMessage: 'Maker hiện tại không còn khớp lượt tải Walrus đã lưu. Animacraft sẽ giữ một bản ghi kiểm toán gọn nhẹ, xóa điểm kiểm tra cục bộ đã cũ và cho phép chuẩn bị lượt tải mới từ nội dung hiện tại. Thao tác này không hủy giao dịch đã gửi.',
+    discardOcUploadRecoveryMessage: 'OC hiện tại không còn khớp lượt tải Walrus đã lưu. Animacraft sẽ giữ một bản ghi kiểm toán gọn nhẹ, xóa điểm kiểm tra cục bộ đã cũ và cho phép chuẩn bị lượt tải mới từ nội dung hiện tại. Thao tác này không hủy giao dịch đã gửi.',
+    discardUploadRecoveryConfirm: 'Lưu và chuẩn bị lại',
+    uploadRecoveryDiscarded: 'Lượt tải cũ đã được lưu. Hãy chuẩn bị lượt tải mới từ nội dung hiện tại.',
     makerIndexResolving: 'Đã tìm thấy giao dịch đăng. Đang lấy ID đối tượng OCMaker từ chỉ mục Sui…',
     makerIndexObjectMissing: 'Giao dịch đăng đã được lập chỉ mục nhưng không tìm thấy đối tượng OCMaker.',
     makerIndexUnavailable: 'ID đối tượng OCMaker chưa khả dụng.',
@@ -2325,6 +2351,7 @@ const state = {
   publishing: false,
   publishStatus: '',
   publishDigest: '',
+  makerPublishError: null,
   makerObjectId: '',
   makerTreasuryObjectId: '',
   makerAdminCapObjectId: '',
@@ -2343,6 +2370,7 @@ const state = {
   minting: false,
   mintStatus: '',
   mintDigest: '',
+  ocPublishError: null,
   mintObjectId: '',
   ocUploadSession: null,
   ocUploadStage: 'idle',
@@ -2396,6 +2424,13 @@ let makerAutosaveTimer = null;
 let makerWorkspace = null;
 let draftRecoveryRequestId = 0;
 let makerPublicationRecoveryTimer = null;
+let makerUploadRestoreRequestId = 0;
+let ocUploadRestoreRequestId = 0;
+let makerChainOperationId = 0;
+let ocChainOperationId = 0;
+let treasuryBalanceRequestId = 0;
+const makerUploadRestoreRequests = new Map();
+const ocUploadRestoreRequests = new Map();
 
 function makerDraftStorageKey(templateId = state.templateId) {
   return `animacraft-maker-draft-v2:${state.walletAddress || 'local'}:${templateId}`;
@@ -2408,6 +2443,44 @@ function makerAssetStorageKey(templateId = state.templateId) {
 function ocUploadStorageKey(templateId = state.templateId) {
   const template = templates.find((candidate) => candidate.id === templateId);
   return `${state.walletAddress || 'local'}:oc:${template?.objectId || runtimeConfig.featuredMakers?.[templateId] || templateId}`;
+}
+
+function beginMakerChainOperation() {
+  return Object.freeze({
+    id: ++makerChainOperationId,
+    recoveryKey: makerAssetStorageKey(),
+    templateId: state.templateId,
+    walletAddress: state.walletAddress,
+  });
+}
+
+function makerChainOperationIsActive(operation) {
+  return Boolean(
+    operation
+    && operation.id === makerChainOperationId
+    && operation.templateId === state.templateId
+    && operation.walletAddress === state.walletAddress
+    && operation.recoveryKey === makerAssetStorageKey(),
+  );
+}
+
+function beginOcChainOperation() {
+  return Object.freeze({
+    id: ++ocChainOperationId,
+    recoveryKey: ocUploadStorageKey(),
+    templateId: state.templateId,
+    walletAddress: state.walletAddress,
+  });
+}
+
+function ocChainOperationIsActive(operation) {
+  return Boolean(
+    operation
+    && operation.id === ocChainOperationId
+    && operation.templateId === state.templateId
+    && operation.walletAddress === state.walletAddress
+    && operation.recoveryKey === ocUploadStorageKey(),
+  );
 }
 
 function defaultMakerVisual() {
@@ -2492,9 +2565,12 @@ function syncActiveMakerModelRefs() {
 }
 
 function resetOcUploadState() {
+  ocUploadRestoreRequestId += 1;
+  ocChainOperationId += 1;
   state.minting = false;
   state.mintStatus = '';
   state.mintDigest = '';
+  state.ocPublishError = null;
   state.mintObjectId = '';
   state.ocUploadSession = null;
   state.ocUploadStage = 'idle';
@@ -2507,6 +2583,28 @@ function resetOcUploadState() {
   state.pendingOcRecipeHash = null;
   state.pendingOcRecipeJson = '';
   state.pendingOcFingerprint = '';
+}
+
+function resetMakerUploadMemoryState({ clearPublicationIntent = true } = {}) {
+  makerUploadRestoreRequestId += 1;
+  makerChainOperationId += 1;
+  treasuryBalanceRequestId += 1;
+  state.treasuryBalanceLoading = false;
+  if (makerPublicationRecoveryTimer) {
+    clearTimeout(makerPublicationRecoveryTimer);
+    makerPublicationRecoveryTimer = null;
+  }
+  state.publishing = false;
+  state.makerUploadSession = null;
+  state.pendingMakerAssets = [];
+  state.makerUploadStage = 'idle';
+  state.makerQuiltId = '';
+  state.pendingMakerCoverBlob = null;
+  state.hasMakerUploadRecovery = false;
+  state.pendingMakerManifestJson = '';
+  state.pendingMakerV4Bundle = null;
+  if (clearPublicationIntent) state.makerPublicationIntent = null;
+  clearMakerPublishError();
 }
 
 function applyMakerModelToState(templateId, model) {
@@ -2532,19 +2630,13 @@ function applyMakerModelToState(templateId, model) {
   state.playerRuntimeDocumentV4 = null;
   state.publishDigest = model.publishDigest;
   state.publishStatus = model.publishStatus;
+  state.makerPublishError = null;
   state.makerObjectId = model.makerObjectId || '';
   state.makerTreasuryObjectId = model.makerTreasuryObjectId || '';
   state.makerAdminCapObjectId = model.makerAdminCapObjectId || '';
   if (state.makerTreasuryObjectId !== state.treasuryBalanceLoadedFor) state.treasuryBalanceLoadedFor = '';
   state.makerArchived = Boolean(model.makerArchived);
-  state.makerUploadSession = null;
-  state.pendingMakerAssets = [];
-  state.makerUploadStage = 'idle';
-  state.makerQuiltId = '';
-  state.pendingMakerCoverBlob = null;
-  state.hasMakerUploadRecovery = false;
-  state.pendingMakerManifestJson = '';
-  state.pendingMakerV4Bundle = null;
+  resetMakerUploadMemoryState({ clearPublicationIntent: false });
   state.makerPublicationIntent = model.makerPublicationIntent || null;
   state.selectedSlot = state.slotOrder[0] || '';
   state.selectedItem = state.selectedSlot ? state.visual[state.selectedSlot] || slotItems(state.selectedSlot)[0]?.id || '' : '';
@@ -2554,6 +2646,12 @@ function applyMakerModelToState(templateId, model) {
 }
 
 function activateMakerModel(templateId, options = {}) {
+  if ((state.publishing || state.minting) && templateId !== state.templateId) {
+    if (state.publishing) state.publishStatus = t('publishingStatus');
+    if (state.minting) state.mintStatus = t('preparingHandoff');
+    renderAll();
+    return false;
+  }
   if (makerAutosaveTimer) {
     clearTimeout(makerAutosaveTimer);
     makerAutosaveTimer = null;
@@ -2563,7 +2661,18 @@ function activateMakerModel(templateId, options = {}) {
   if (!makerModels.has(templateId)) makerModels.set(templateId, createMakerModel(options));
   const model = makerModels.get(templateId);
   applyMakerModelToState(templateId, model);
-  if (state.walletConnected && !loadedMakerDrafts.has(makerDraftStorageKey(templateId))) restoreMakerDraft(templateId);
+  if (state.walletConnected) {
+    const draftKey = makerDraftStorageKey(templateId);
+    const draftAlreadyLoaded = loadedMakerDrafts.has(draftKey);
+    if (!draftAlreadyLoaded) restoreMakerDraft(templateId);
+    if (draftAlreadyLoaded || isMakerV4Document(model.makerDocumentV4)) {
+      setTimeout(() => restoreMakerUploadRecovery(templateId, { force: true }), 0);
+    }
+    if (state.page === 'make') {
+      setTimeout(() => restoreOcUploadRecovery(templateId, { force: true }), 0);
+    }
+  }
+  return true;
 }
 
 makerModels.set(state.templateId, {
@@ -3650,7 +3759,7 @@ async function loadChainMakers(owner = state.walletAddress) {
   }
   state.chainMakersLoading = false;
   renderAll();
-  if (state.page === 'make') restoreOcUploadRecovery(state.templateId);
+  if (state.page === 'make') restoreOcUploadRecovery(state.templateId, { force: true });
 }
 
 function renderOwnedCharacters() {
@@ -3684,6 +3793,15 @@ async function loadOwnedCharacters({ force = false } = {}) {
 async function loadActiveTreasuryBalance({ force = false } = {}) {
   const treasuryId = activeTemplate()?.treasuryId || state.makerTreasuryObjectId;
   if (!treasuryId || state.treasuryBalanceLoading || (!force && state.treasuryBalanceLoadedFor === treasuryId)) return;
+  const requestId = ++treasuryBalanceRequestId;
+  const templateId = state.templateId;
+  const walletAddress = state.walletAddress;
+  const isActiveRequest = () => (
+    requestId === treasuryBalanceRequestId
+    && templateId === state.templateId
+    && walletAddress === state.walletAddress
+    && treasuryId === (activeTemplate()?.treasuryId || state.makerTreasuryObjectId)
+  );
   state.treasuryBalanceLoading = true;
   if ($('makerTreasuryBalance')) $('makerTreasuryBalance').textContent = t('treasuryLoadingSui');
   try {
@@ -3692,6 +3810,7 @@ async function loadActiveTreasuryBalance({ force = false } = {}) {
       { expectedStructName: 'MakerTreasury', generic: true },
     );
     if (!treasury) throw new Error(t('treasuryUnavailable'));
+    if (!isActiveRequest()) return;
     const fields = suiObjectFields(treasury);
     const revenue = suiField(fields, 'revenue') || {};
     const revenueFields = revenue.fields && typeof revenue.fields === 'object' ? revenue.fields : revenue;
@@ -3699,11 +3818,15 @@ async function loadActiveTreasuryBalance({ force = false } = {}) {
     activeTemplate().treasuryBalanceAtomic = Number.isSafeInteger(balanceAtomic) ? balanceAtomic : 0;
     state.treasuryBalanceLoadedFor = treasuryId;
   } catch (error) {
-    activeTemplate().treasuryBalanceError = error.message || 'Treasury balance unavailable.';
-    state.treasuryBalanceLoadedFor = '';
+    if (isActiveRequest()) {
+      activeTemplate().treasuryBalanceError = error.message || 'Treasury balance unavailable.';
+      state.treasuryBalanceLoadedFor = '';
+    }
   } finally {
-    state.treasuryBalanceLoading = false;
-    renderMakerLifecycle();
+    if (requestId === treasuryBalanceRequestId) {
+      state.treasuryBalanceLoading = false;
+      if (isActiveRequest()) renderMakerLifecycle();
+    }
   }
 }
 
@@ -3746,7 +3869,12 @@ async function recoverPublishedMakerIndex() {
   }
 }
 
-async function finalizeMakerPublication(transaction, makerPayload = null, { recovered = false } = {}) {
+async function finalizeMakerPublication(transaction, makerPayload = null, {
+  recovered = false,
+  guard = () => true,
+} = {}) {
+  if (!guard()) return false;
+  clearMakerPublishError();
   state.publishDigest = String(transaction?.digest || state.makerPublicationIntent?.digest || '');
   state.makerObjectId = String(transaction?.makerObjectId || '');
   state.makerTreasuryObjectId = String(transaction?.makerTreasuryObjectId || '');
@@ -3795,25 +3923,35 @@ async function finalizeMakerPublication(transaction, makerPayload = null, { reco
   persistLocalMakerIndex();
   let saved = false;
   try {
-    await saveCurrentMakerDraft({ silent: true });
-    saved = true;
+    const saveResult = await saveCurrentMakerDraft({ silent: true });
+    saved = saveResult?.confirmed === true;
+    if (!saved) {
+      throw new Error('The published Maker state has not been confirmed in local storage yet.');
+    }
   } catch (error) {
     console.warn('The Maker is published, but its local publication state could not be saved yet.', error);
     state.publishStatus = state.locale === 'en' && error?.message
       ? `${state.publishStatus || t('publicationAlreadyRecovered')} ${error.message}`.trim()
       : state.publishStatus || t('publicationAlreadyRecovered');
   }
+  if (!guard()) return false;
   if (state.makerObjectId && saved) {
     await clearMakerUploadRecovery();
+    if (!guard()) return false;
     state.chainMakersLoadedFor = '';
     await loadChainMakers(state.walletAddress);
   } else if (!state.makerObjectId && state.publishDigest) {
     setTimeout(recoverPublishedMakerIndex, 4_000);
   }
-  if (state.makerTreasuryObjectId) loadActiveTreasuryBalance({ force: true });
+  if (guard() && state.makerTreasuryObjectId) loadActiveTreasuryBalance({ force: true });
+  return true;
 }
 
-async function recoverMakerPublicationIntent({ scheduleRetry = false } = {}) {
+async function recoverMakerPublicationIntent({
+  scheduleRetry = false,
+  guard = () => true,
+} = {}) {
+  if (!guard()) return null;
   const intent = normalizedMakerPublicationIntent(state.makerPublicationIntent);
   if (!intent
     || intent.creator.toLowerCase() !== String(state.walletAddress || '').toLowerCase()
@@ -3829,19 +3967,21 @@ async function recoverMakerPublicationIntent({ scheduleRetry = false } = {}) {
     manifestBlobId: intent.manifestBlobId,
     limit: 500,
   });
+  if (!guard()) return null;
   if (!match && intent.digest) {
     try {
       const indexed = await resolvePublishedMakerObjects(intent.digest, 12_000);
+      if (!guard()) return null;
       if (indexed.makerObjectId) match = { ...indexed, digest: intent.digest };
     } catch (error) {
       console.warn('Submitted Maker publication is not indexed yet.', error);
     }
   }
   if (!match) {
-    if (scheduleRetry && !makerPublicationRecoveryTimer) {
+    if (scheduleRetry && guard() && !makerPublicationRecoveryTimer) {
       makerPublicationRecoveryTimer = setTimeout(() => {
         makerPublicationRecoveryTimer = null;
-        recoverMakerPublicationIntent().catch((error) => {
+        recoverMakerPublicationIntent({ guard }).catch((error) => {
           console.warn('Maker publication recovery retry failed.', error);
         }).finally(renderAll);
       }, 10_000);
@@ -3852,6 +3992,7 @@ async function recoverMakerPublicationIntent({ scheduleRetry = false } = {}) {
   if (match.digest) {
     try {
       indexed = await resolvePublishedMakerObjects(match.digest, 20_000);
+      if (!guard()) return null;
     } catch (error) {
       console.warn('Recovered the Maker event before all created objects were indexed.', error);
     }
@@ -3862,7 +4003,8 @@ async function recoverMakerPublicationIntent({ scheduleRetry = false } = {}) {
     makerObjectId: indexed.makerObjectId || match.makerObjectId,
     digest: match.digest || intent.digest,
   };
-  await finalizeMakerPublication(transaction, null, { recovered: true });
+  if (!guard()) return null;
+  await finalizeMakerPublication(transaction, null, { recovered: true, guard });
   return transaction;
 }
 
@@ -4060,6 +4202,7 @@ async function saveCurrentMakerDraft({ silent = false } = {}) {
   };
   state.draftSaveStatus = 'saving';
   state.draftSaveMessage = '';
+  let confirmed = false;
   if (!silent) renderMakerLifecycle();
   try {
     const records = makerAssetRecords();
@@ -4068,6 +4211,7 @@ async function saveCurrentMakerDraft({ silent = false } = {}) {
     localStorage.removeItem(storageKey);
     persistLocalMakerIndex();
     loadedMakerAssetDrafts.add(assetStorageKey);
+    confirmed = true;
     if (state.templateId === templateId) {
       state.draftSaveStatus = 'saved';
     state.draftSaveMessage = t('localAssetsSaved', { count: records.length });
@@ -4083,7 +4227,7 @@ async function saveCurrentMakerDraft({ silent = false } = {}) {
   } finally {
     if (state.templateId === templateId) renderMakerLifecycle();
   }
-  return draft;
+  return { ...draft, confirmed };
 }
 
 function scheduleMakerAutosave() {
@@ -4289,6 +4433,9 @@ function invalidateMakerUpload(message = '') {
     clearTimeout(makerPublicationRecoveryTimer);
     makerPublicationRecoveryTimer = null;
   }
+  makerUploadRestoreRequestId += 1;
+  const staleSession = state.makerUploadSession;
+  const recoveryKey = makerAssetStorageKey();
   state.makerUploadSession = null;
   state.pendingMakerAssets = [];
   state.makerUploadStage = 'idle';
@@ -4299,9 +4446,20 @@ function invalidateMakerUpload(message = '') {
   state.makerPublicationIntent = null;
   state.publishDigest = '';
   state.publishStatus = message;
-  const recoveryKey = makerAssetStorageKey();
+  clearMakerPublishError();
   loadedMakerUploadRecoveries.delete(recoveryKey);
-  deleteMakerUploadRecovery(recoveryKey).catch((error) => console.warn('Could not clear stale Walrus recovery data.', error));
+  withBrowserUploadLock(recoveryKey, async () => {
+    const recovery = await loadMakerUploadRecovery(recoveryKey);
+    if (
+      staleSession?.uploadSessionId
+      && recovery?.uploadSessionId
+      && recovery.uploadSessionId !== staleSession.uploadSessionId
+    ) return;
+    await deleteMakerUploadRecovery(recoveryKey, {
+      expectedRevision: recovery?.recoveryRevision,
+      uploadSessionId: recovery?.uploadSessionId,
+    });
+  }).catch((error) => console.warn('Could not clear stale Walrus recovery data.', error));
   scheduleMakerAutosave();
   return true;
 }
@@ -4322,6 +4480,19 @@ function normalizedMakerPublicationIntent(value) {
   };
 }
 
+function sameMakerPublicationIntent(left, right) {
+  const a = normalizedMakerPublicationIntent(left);
+  const b = normalizedMakerPublicationIntent(right);
+  return Boolean(
+    a
+    && b
+    && a.creator.toLowerCase() === b.creator.toLowerCase()
+    && a.manifestBlobId === b.manifestBlobId
+    && a.status === b.status
+    && a.digest === b.digest,
+  );
+}
+
 function makerPublicationRecoveryPending() {
   const intent = normalizedMakerPublicationIntent(state.makerPublicationIntent);
   return Boolean(
@@ -4330,34 +4501,347 @@ function makerPublicationRecoveryPending() {
   );
 }
 
-async function persistMakerUploadRecovery() {
-  const session = state.makerUploadSession;
-  if (!session?.checkpoint || !state.pendingMakerCoverBlob || !state.pendingMakerManifestJson) return;
-  const recoveryKey = makerAssetStorageKey();
-  await saveMakerUploadRecovery(recoveryKey, {
+function clearMakerPublishError() {
+  state.makerPublishError = null;
+}
+
+function recordMakerPublishError(error, action, fallbackKey = 'makerPublicationFailed') {
+  const classified = classifyChainUiError(error, { action });
+  state.makerPublishError = classified;
+  state.publishStatus = t(fallbackKey);
+  return classified;
+}
+
+function clearOcPublishError() {
+  state.ocPublishError = null;
+}
+
+function recordOcPublishError(error, action, fallbackKey = 'ocUploadFailed') {
+  const classified = classifyChainUiError(error, { action });
+  state.ocPublishError = classified;
+  state.mintStatus = t(fallbackKey);
+  return classified;
+}
+
+function uploadRecoveryMismatch(message) {
+  const error = new Error(`UPLOAD_RECOVERY_MISMATCH: ${message}`);
+  error.code = 'UPLOAD_RECOVERY_MISMATCH';
+  return error;
+}
+
+const uploadStageRank = Object.freeze({
+  idle: 0,
+  encoded: 1,
+  'register-pending': 2,
+  registered: 3,
+  uploaded: 4,
+  'certify-pending': 5,
+  certified: 6,
+});
+
+function uploadStageIsAhead(recovery, session, localStage) {
+  if (!recovery) return false;
+  const recoveryStage = String(recovery.stage || recovery.checkpoint?.step || 'idle');
+  const sessionStage = String(session?.stage || localStage || 'idle');
+  const recoveryRank = uploadStageRank[recoveryStage] ?? -1;
+  const sessionRank = uploadStageRank[sessionStage] ?? -1;
+  if (recoveryRank !== sessionRank) return recoveryRank > sessionRank;
+  const pendingRegisterDigest = String(recovery.pendingRegisterTransaction?.digest || '');
+  const sessionRegisterDigest = String(session?.pendingRegisterTransaction?.digest || '');
+  if (pendingRegisterDigest && !sessionRegisterDigest) return true;
+  const pendingCertifyDigest = String(recovery.pendingCertifyTransaction?.digest || '');
+  const sessionCertifyDigest = String(session?.pendingCertifyTransaction?.digest || '');
+  if (pendingCertifyDigest && !sessionCertifyDigest) return true;
+  if (
+    String(recovery.uploadSessionId || '') === String(session?.uploadSessionId || '')
+    && Number(recovery.recoveryRevision || 0) > Number(session?.recoveryRevision || 0)
+  ) return true;
+  return Number(recovery.savedAt || 0) > Number(session?.recoverySavedAt || 0);
+}
+
+async function withBrowserUploadLock(recoveryKey, callback) {
+  const lockName = `animacraft-upload:${String(recoveryKey || 'unknown')}`;
+  if (globalThis.navigator?.locks?.request) {
+    return globalThis.navigator.locks.request(lockName, { mode: 'exclusive' }, callback);
+  }
+  return callback();
+}
+
+function uploadRecoveryQuote(session) {
+  return {
+    relayTipMist: session?.relayTipMist == null ? null : String(session.relayTipMist),
+    relayTipQuotedAt: String(session?.relayTipQuotedAt || ''),
+    walrusStorageCostFrost: session?.walrusStorageCostFrost == null
+      ? null
+      : String(session.walrusStorageCostFrost),
+    walrusWriteCostFrost: session?.walrusWriteCostFrost == null
+      ? null
+      : String(session.walrusWriteCostFrost),
+    walrusTotalCostFrost: session?.walrusTotalCostFrost == null
+      ? null
+      : String(session.walrusTotalCostFrost),
+    walletSuiBalanceMist: session?.walletSuiBalanceMist == null
+      ? null
+      : String(session.walletSuiBalanceMist),
+    walletWalBalanceFrost: session?.walletWalBalanceFrost == null
+      ? null
+      : String(session.walletWalBalanceFrost),
+  };
+}
+
+function uploadRecoveryTransactions(session) {
+  return {
+    pendingRegisterTransaction: session?.pendingRegisterTransaction
+      ? structuredClone(session.pendingRegisterTransaction)
+      : null,
+    pendingCertifyTransaction: session?.pendingCertifyTransaction
+      ? structuredClone(session.pendingCertifyTransaction)
+      : null,
+  };
+}
+
+async function saveVerifiedUploadRecovery(recoveryKey, record) {
+  const expectedRevision = Number(record.recoveryRevision || 0);
+  await saveMakerUploadRecovery(recoveryKey, record, { expectedRevision });
+  const verified = await loadMakerUploadRecovery(recoveryKey);
+  const expectedStage = String(record.stage || record.checkpoint?.step || '');
+  const actualStage = String(verified?.stage || verified?.checkpoint?.step || '');
+  const matchesField = (field) => String(verified?.[field] ?? '') === String(record[field] ?? '');
+  const matchesPendingTransaction = (field) => {
+    const expected = record[field];
+    const actual = verified?.[field];
+    if (!expected) return !actual;
+    return Boolean(
+      actual
+      && String(actual.digest || '') === String(expected.digest || '')
+      && String(actual.bytes || '') === String(expected.bytes || '')
+      && String(actual.signature || '') === String(expected.signature || '')
+      && String(actual.lastBroadcastAt || '') === String(expected.lastBroadcastAt || '')
+      && Number(actual.broadcastAttempts || 0) === Number(expected.broadcastAttempts || 0),
+    );
+  };
+  const quoteAndBalanceFields = [
+    'relayTipMist',
+    'relayTipQuotedAt',
+    'walrusStorageCostFrost',
+    'walrusWriteCostFrost',
+    'walrusTotalCostFrost',
+    'walletSuiBalanceMist',
+    'walletWalBalanceFrost',
+  ];
+  const checkpointIdentityFields = ['step', 'blobId', 'blobObjectId', 'txDigest', 'nonce'];
+  const checkpointMatches = checkpointIdentityFields.every((field) => (
+    String(verified?.checkpoint?.[field] ?? '') === String(record.checkpoint?.[field] ?? '')
+  ));
+  if (!verified
+    || actualStage !== expectedStage
+    || String(verified.uploadSessionId || '') !== String(record.uploadSessionId || '')
+    || Number(verified.recoveryRevision || 0) !== expectedRevision + 1
+    || !matchesField('owner')
+    || !matchesField('quiltBlobId')
+    || !matchesField('kind')
+    || !matchesField('manifestJson')
+    || !matchesField('fingerprint')
+    || !matchesField('recipeJson')
+    || JSON.stringify(verified.files || []) !== JSON.stringify(record.files || [])
+    || !checkpointMatches
+    || !matchesField('registerDigest')
+    || !matchesField('certifyDigest')
+    || !quoteAndBalanceFields.every(matchesField)
+    || !matchesPendingTransaction('pendingRegisterTransaction')
+    || !matchesPendingTransaction('pendingCertifyTransaction')) {
+    throw new Error('The local upload checkpoint could not be verified. No new chain step was started.');
+  }
+  return verified;
+}
+
+function captureMakerUploadPersistenceContext(session = state.makerUploadSession) {
+  if (!session?.checkpoint || !state.pendingMakerCoverBlob || !state.pendingMakerManifestJson) return null;
+  return Object.freeze({
+    recoveryKey: makerAssetStorageKey(),
+    templateId: state.templateId,
+    coverBlob: state.pendingMakerCoverBlob,
+    manifestJson: state.pendingMakerManifestJson,
+    publicationIntent: normalizedMakerPublicationIntent(state.makerPublicationIntent),
+    quiltBlobId: state.makerQuiltId || session.quiltBlobId || '',
+  });
+}
+
+function makerUploadContextWithPublicationIntent(context, publicationIntent) {
+  if (!context) return null;
+  return Object.freeze({
+    ...context,
+    publicationIntent: normalizedMakerPublicationIntent(publicationIntent),
+  });
+}
+
+function makerUploadContextIsActive(session, context) {
+  return Boolean(
+    session
+    && context
+    && state.makerUploadSession === session
+    && state.templateId === context.templateId
+    && makerAssetStorageKey() === context.recoveryKey,
+  );
+}
+
+async function persistMakerUploadRecovery(
+  session = state.makerUploadSession,
+  context = captureMakerUploadPersistenceContext(session),
+) {
+  if (!session?.checkpoint || !context) {
+    throw new Error('The Maker upload checkpoint has no stable persistence context.');
+  }
+  const active = makerUploadContextIsActive(session, context);
+  const stage = session.stage || (active ? state.makerUploadStage : session.checkpoint.step);
+  const verified = await saveVerifiedUploadRecovery(context.recoveryKey, {
     owner: session.owner,
-    stage: state.makerUploadStage,
+    uploadSessionId: session.uploadSessionId || '',
+    recoveryRevision: Number(session.recoveryRevision || 0),
+    stage,
     checkpoint: session.checkpoint,
     registerDigest: session.registerDigest || '',
     certifyDigest: session.certifyDigest || '',
-    quiltBlobId: state.makerQuiltId || session.quiltBlobId || '',
+    ...uploadRecoveryQuote(session),
+    ...uploadRecoveryTransactions(session),
+    quiltBlobId: context.quiltBlobId || session.quiltBlobId || '',
     files: (session.files || []).map(({ id, blobId }) => ({ id, blobId })),
-    manifestJson: state.pendingMakerManifestJson,
-    coverBlob: state.pendingMakerCoverBlob,
-    publicationIntent: normalizedMakerPublicationIntent(state.makerPublicationIntent),
+    manifestJson: context.manifestJson,
+    coverBlob: context.coverBlob,
+    publicationIntent: normalizedMakerPublicationIntent(context.publicationIntent),
   });
-  state.hasMakerUploadRecovery = true;
-  loadedMakerUploadRecoveries.add(recoveryKey);
+  session.recoveryRevision = Number(verified.recoveryRevision || session.recoveryRevision || 0);
+  session.recoverySavedAt = Number(verified.savedAt || Date.now());
+  if (active) {
+    state.makerUploadStage = stage;
+    state.hasMakerUploadRecovery = true;
+    loadedMakerUploadRecoveries.add(context.recoveryKey);
+  }
+  return verified;
+}
+
+function makerUploadCheckpointHandler(session, context) {
+  return async (checkpointSession) => {
+    if (checkpointSession !== session) throw new Error('Walrus returned a different Maker upload session.');
+    await persistMakerUploadRecovery(checkpointSession, context);
+    if (!makerUploadContextIsActive(checkpointSession, context)) {
+      throw new Error('The active Maker changed. The signed upload checkpoint was saved, and no later chain step was started.');
+    }
+    state.makerUploadStage = checkpointSession.stage;
+    renderPublishAction();
+  };
 }
 
 async function clearMakerUploadRecovery(templateId = state.templateId) {
   const recoveryKey = makerAssetStorageKey(templateId);
   loadedMakerUploadRecoveries.delete(recoveryKey);
-  await deleteMakerUploadRecovery(recoveryKey);
-  if (state.templateId === templateId) {
+  const recovery = await loadMakerUploadRecovery(recoveryKey);
+  const deleted = !recovery || await deleteMakerUploadRecovery(recoveryKey, {
+    expectedRevision: recovery.recoveryRevision,
+    uploadSessionId: recovery.uploadSessionId,
+  });
+  if (
+    deleted
+    && state.templateId === templateId
+    && makerAssetStorageKey(templateId) === recoveryKey
+  ) {
     state.hasMakerUploadRecovery = false;
     state.makerPublicationIntent = null;
   }
+  return deleted;
+}
+
+async function archiveAndDeleteUploadRecovery(recoveryKey, expectedRecovery) {
+  return withBrowserUploadLock(recoveryKey, async () => {
+    const recovery = await loadMakerUploadRecovery(recoveryKey);
+    if (!recovery) return { deleted: true, archivedKey: '' };
+    if (
+      Number(recovery.recoveryRevision || 0) !== Number(expectedRecovery?.recoveryRevision || 0)
+      || String(recovery.uploadSessionId || '') !== String(expectedRecovery?.uploadSessionId || '')
+    ) {
+      return { deleted: false, archivedKey: '' };
+    }
+    const deleted = await deleteMakerUploadRecovery(recoveryKey, {
+      expectedRevision: recovery.recoveryRevision,
+      uploadSessionId: recovery.uploadSessionId,
+    });
+    if (deleted) {
+      const auditKey = 'animacraft-abandoned-upload-audit-v1';
+      let history = [];
+      try {
+        history = JSON.parse(localStorage.getItem(auditKey) || '[]');
+      } catch {
+        history = [];
+      }
+      const entry = {
+        archivedAt: new Date().toISOString(),
+        archivedFrom: recoveryKey,
+        owner: String(recovery.owner || ''),
+        uploadSessionId: String(recovery.uploadSessionId || ''),
+        recoveryRevision: Number(recovery.recoveryRevision || 0),
+        stage: String(recovery.stage || recovery.checkpoint?.step || ''),
+        quiltBlobId: String(recovery.quiltBlobId || ''),
+        registerDigest: String(recovery.registerDigest || ''),
+        certifyDigest: String(recovery.certifyDigest || ''),
+        publicationDigest: String(recovery.publicationIntent?.digest || ''),
+      };
+      localStorage.setItem(auditKey, JSON.stringify([entry, ...history].slice(0, 10)));
+    }
+    return { deleted };
+  });
+}
+
+async function requestDiscardMakerUploadRecovery() {
+  const recoveryKey = makerAssetStorageKey();
+  const templateId = state.templateId;
+  const recovery = await loadMakerUploadRecovery(recoveryKey);
+  if (!recovery) {
+    loadedMakerUploadRecoveries.delete(recoveryKey);
+    resetMakerUploadMemoryState();
+    renderAll();
+    return;
+  }
+  openConfirmation({
+    title: t('discardUploadRecoveryTitle'),
+    message: t('discardMakerUploadRecoveryMessage'),
+    confirmLabel: t('discardUploadRecoveryConfirm'),
+    action: async () => {
+      const isActive = () => (
+        state.templateId === templateId
+        && makerAssetStorageKey(templateId) === recoveryKey
+      );
+      if (!isActive()) return;
+      let deleted;
+      try {
+        ({ deleted } = await archiveAndDeleteUploadRecovery(recoveryKey, recovery));
+      } catch (error) {
+        if (isActive()) throw error;
+        console.warn('The obsolete Maker upload could not be discarded after context changed.', error);
+        return;
+      }
+      if (!deleted) {
+        if (isActive()) {
+          loadedMakerUploadRecoveries.delete(recoveryKey);
+          await restoreMakerUploadRecovery(templateId, { force: true });
+        }
+        return;
+      }
+      loadedMakerUploadRecoveries.delete(recoveryKey);
+      if (isActive()) {
+        resetMakerUploadMemoryState();
+        state.publishStatus = t('uploadRecoveryDiscarded');
+        renderAll();
+      }
+    },
+  });
+}
+
+async function syncLatestMakerUploadRecovery() {
+  const recoveryKey = makerAssetStorageKey();
+  const recovery = await loadMakerUploadRecovery(recoveryKey);
+  if (!uploadStageIsAhead(recovery, state.makerUploadSession, state.makerUploadStage)) return false;
+  await restoreMakerUploadRecovery(state.templateId, { force: true });
+  return true;
 }
 
 async function localPngAsset(file) {
@@ -4592,6 +5076,12 @@ function makerHasRenderableAssets() {
 function setPage(page) {
   const previousPage = state.page;
   const requestedPage = page === 'editor' ? 'make' : page === 'protocol' ? 'docs' : page;
+  if ((state.publishing || state.minting) && requestedPage !== previousPage) {
+    if (state.publishing) state.publishStatus = t('publishingStatus');
+    if (state.minting) state.mintStatus = t('preparingHandoff');
+    renderAll();
+    return false;
+  }
   const walletAllowedPage = !state.walletConnected && !['templates', 'template', 'docs'].includes(requestedPage) ? 'templates' : requestedPage;
   state.page = walletAllowedPage === 'make' && !canOpenPlayer() ? 'templates' : walletAllowedPage;
   if (state.page === 'make') {
@@ -4613,8 +5103,9 @@ function setPage(page) {
   history.replaceState(null, '', onDeepLink && state.page !== 'template' ? `/#${state.page}` : `#${state.page}`);
   closeAccountPanel();
   if (state.page !== previousPage) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-  if (state.page === 'make') setTimeout(() => restoreOcUploadRecovery(state.templateId), 0);
+  if (state.page === 'make') setTimeout(() => restoreOcUploadRecovery(state.templateId, { force: true }), 0);
   if (state.page === 'collection') setTimeout(() => loadOwnedCharacters(), 0);
+  return true;
 }
 
 function setCreatorView(view) {
@@ -5444,45 +5935,173 @@ function ocUploadEntries() {
   ];
 }
 
-async function persistOcUploadRecovery() {
-  const session = state.ocUploadSession;
-  if (!session?.checkpoint || !state.pendingOcImageBlob || !state.pendingOcProfileBlob || !state.pendingOcPackage) return;
-  const recoveryKey = ocUploadStorageKey();
-  await saveMakerUploadRecovery(recoveryKey, {
-    kind: 'oc-mint',
-    owner: session.owner,
-    stage: state.ocUploadStage,
-    checkpoint: session.checkpoint,
-    registerDigest: session.registerDigest || '',
-    certifyDigest: session.certifyDigest || '',
-    quiltBlobId: session.quiltBlobId || '',
-    files: (session.files || []).map(({ id, blobId }) => ({ id, blobId })),
+function captureOcUploadPersistenceContext(session = state.ocUploadSession) {
+  if (!session?.checkpoint || !state.pendingOcImageBlob || !state.pendingOcProfileBlob || !state.pendingOcPackage) return null;
+  return Object.freeze({
+    recoveryKey: ocUploadStorageKey(),
+    templateId: state.templateId,
     imageBlob: state.pendingOcImageBlob,
     profileBlob: state.pendingOcProfileBlob,
-    ocPackage: state.pendingOcPackage,
-    recipeHash: state.pendingOcRecipeHash,
+    ocPackage: structuredClone(state.pendingOcPackage),
+    recipeHash: state.pendingOcRecipeHash instanceof Uint8Array
+      ? new Uint8Array(state.pendingOcRecipeHash)
+      : state.pendingOcRecipeHash,
     recipeJson: state.pendingOcRecipeJson,
     fingerprint: state.pendingOcFingerprint,
   });
-  state.hasOcUploadRecovery = true;
-  loadedOcUploadRecoveries.add(recoveryKey);
+}
+
+function ocUploadContextIsActive(session, context) {
+  return Boolean(
+    session
+    && context
+    && state.ocUploadSession === session
+    && state.templateId === context.templateId
+    && ocUploadStorageKey() === context.recoveryKey,
+  );
+}
+
+async function persistOcUploadRecovery(
+  session = state.ocUploadSession,
+  context = captureOcUploadPersistenceContext(session),
+) {
+  if (!session?.checkpoint || !context) {
+    throw new Error('The OC upload checkpoint has no stable persistence context.');
+  }
+  const active = ocUploadContextIsActive(session, context);
+  const stage = session.stage || (active ? state.ocUploadStage : session.checkpoint.step);
+  const verified = await saveVerifiedUploadRecovery(context.recoveryKey, {
+    kind: 'oc-mint',
+    owner: session.owner,
+    uploadSessionId: session.uploadSessionId || '',
+    recoveryRevision: Number(session.recoveryRevision || 0),
+    stage,
+    checkpoint: session.checkpoint,
+    registerDigest: session.registerDigest || '',
+    certifyDigest: session.certifyDigest || '',
+    ...uploadRecoveryQuote(session),
+    ...uploadRecoveryTransactions(session),
+    quiltBlobId: session.quiltBlobId || '',
+    files: (session.files || []).map(({ id, blobId }) => ({ id, blobId })),
+    imageBlob: context.imageBlob,
+    profileBlob: context.profileBlob,
+    ocPackage: context.ocPackage,
+    recipeHash: context.recipeHash,
+    recipeJson: context.recipeJson,
+    fingerprint: context.fingerprint,
+  });
+  session.recoveryRevision = Number(verified.recoveryRevision || session.recoveryRevision || 0);
+  session.recoverySavedAt = Number(verified.savedAt || Date.now());
+  if (active) {
+    state.ocUploadStage = stage;
+    state.hasOcUploadRecovery = true;
+    loadedOcUploadRecoveries.add(context.recoveryKey);
+  }
+  return verified;
+}
+
+function ocUploadCheckpointHandler(session, context) {
+  return async (checkpointSession) => {
+    if (checkpointSession !== session) throw new Error('Walrus returned a different OC upload session.');
+    await persistOcUploadRecovery(checkpointSession, context);
+    if (!ocUploadContextIsActive(checkpointSession, context)) {
+      throw new Error('The active Maker changed. The signed OC checkpoint was saved, and no later chain step was started.');
+    }
+    state.ocUploadStage = checkpointSession.stage;
+    renderMintAction();
+  };
 }
 
 async function clearOcUploadRecovery(templateId = state.templateId) {
   const recoveryKey = ocUploadStorageKey(templateId);
   loadedOcUploadRecoveries.delete(recoveryKey);
-  await deleteMakerUploadRecovery(recoveryKey);
-  if (state.templateId === templateId) state.hasOcUploadRecovery = false;
+  const recovery = await loadMakerUploadRecovery(recoveryKey);
+  const deleted = !recovery || await deleteMakerUploadRecovery(recoveryKey, {
+    expectedRevision: recovery.recoveryRevision,
+    uploadSessionId: recovery.uploadSessionId,
+  });
+  if (
+    deleted
+    && state.templateId === templateId
+    && ocUploadStorageKey(templateId) === recoveryKey
+  ) state.hasOcUploadRecovery = false;
+  return deleted;
+}
+
+async function requestDiscardOcUploadRecovery() {
+  const recoveryKey = ocUploadStorageKey();
+  const templateId = state.templateId;
+  const recovery = await loadMakerUploadRecovery(recoveryKey);
+  if (!recovery) {
+    loadedOcUploadRecoveries.delete(recoveryKey);
+    resetOcUploadState();
+    renderAll();
+    return;
+  }
+  openConfirmation({
+    title: t('discardUploadRecoveryTitle'),
+    message: t('discardOcUploadRecoveryMessage'),
+    confirmLabel: t('discardUploadRecoveryConfirm'),
+    action: async () => {
+      const isActive = () => (
+        state.templateId === templateId
+        && ocUploadStorageKey(templateId) === recoveryKey
+      );
+      if (!isActive()) return;
+      let deleted;
+      try {
+        ({ deleted } = await archiveAndDeleteUploadRecovery(recoveryKey, recovery));
+      } catch (error) {
+        if (isActive()) throw error;
+        console.warn('The obsolete OC upload could not be discarded after context changed.', error);
+        return;
+      }
+      if (!deleted) {
+        if (isActive()) {
+          loadedOcUploadRecoveries.delete(recoveryKey);
+          await restoreOcUploadRecovery(templateId, { force: true });
+        }
+        return;
+      }
+      loadedOcUploadRecoveries.delete(recoveryKey);
+      if (isActive()) {
+        resetOcUploadState();
+        state.mintStatus = t('uploadRecoveryDiscarded');
+        renderAll();
+      }
+    },
+  });
+}
+
+async function syncLatestOcUploadRecovery() {
+  const recoveryKey = ocUploadStorageKey();
+  const recovery = await loadMakerUploadRecovery(recoveryKey);
+  if (!uploadStageIsAhead(recovery, state.ocUploadSession, state.ocUploadStage)) return false;
+  await restoreOcUploadRecovery(state.templateId, { force: true });
+  return true;
 }
 
 function invalidateOcUpload(message = 'The OC changed. Prepare a new mint upload.') {
   if (state.minting) return;
+  ocUploadRestoreRequestId += 1;
   const hadPreparedUpload = state.ocUploadStage !== 'idle' || state.hasOcUploadRecovery || state.mintDigest;
   const recoveryKey = ocUploadStorageKey();
+  const staleSession = state.ocUploadSession;
   resetOcUploadState();
   if (hadPreparedUpload) state.mintStatus = message;
   loadedOcUploadRecoveries.delete(recoveryKey);
-  deleteMakerUploadRecovery(recoveryKey).catch((error) => console.warn('Could not clear stale OC upload recovery.', error));
+  withBrowserUploadLock(recoveryKey, async () => {
+    const recovery = await loadMakerUploadRecovery(recoveryKey);
+    if (
+      staleSession?.uploadSessionId
+      && recovery?.uploadSessionId
+      && recovery.uploadSessionId !== staleSession.uploadSessionId
+    ) return;
+    await deleteMakerUploadRecovery(recoveryKey, {
+      expectedRevision: recovery?.recoveryRevision,
+      uploadSessionId: recovery?.uploadSessionId,
+    });
+  }).catch((error) => console.warn('Could not clear stale OC upload recovery.', error));
 }
 
 function renderChecklist() {
@@ -5881,16 +6500,22 @@ function renderMintAction() {
   const adapterReady = canonicalSoulMintEnabled;
   const baseReady = packageConfigured() && soulidityReady && activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId()) && state.walletConnected && mintOpen && treasuryReady && adapterReady && ocRecipeIssues().length === 0;
   const chainMakerReady = activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId());
+  const failedAction = String(state.ocPublishError?.action || '');
+  const canRetryPrepareCheckpoint = failedAction === 'prepare' && Boolean(state.ocUploadSession?.checkpoint);
+  const canRetryRegisterCheckpoint = failedAction === 'register'
+    && ['uploaded', 'certified'].includes(state.ocUploadStage);
+  const canRetryCertifyCheckpoint = failedAction === 'certify'
+    && state.ocUploadStage === 'certified';
   $('resumeOcUpload').hidden = !chainMakerReady || !state.hasOcUploadRecovery || state.ocUploadStage !== 'idle';
   $('prepareOcUpload').hidden = !chainMakerReady || state.ocUploadStage !== 'idle' || state.hasOcUploadRecovery;
-  $('registerOcUpload').hidden = !['encoded', 'registered'].includes(state.ocUploadStage);
-  $('certifyOcUpload').hidden = state.ocUploadStage !== 'uploaded';
+  $('registerOcUpload').hidden = !['encoded', 'register-pending', 'registered'].includes(state.ocUploadStage);
+  $('certifyOcUpload').hidden = !['uploaded', 'certify-pending'].includes(state.ocUploadStage);
   $('mintOcOnchain').hidden = state.ocUploadStage !== 'certified';
   $('resumeOcUpload').disabled = state.minting || !state.walletConnected || activeTemplate()?.source !== 'chain' || !state.hasOcUploadRecovery;
   $('prepareOcUpload').disabled = state.minting || !baseReady || state.ocUploadStage !== 'idle';
-  $('registerOcUpload').disabled = state.minting || !state.walletConnected || !['encoded', 'registered'].includes(state.ocUploadStage);
+  $('registerOcUpload').disabled = state.minting || !adapterReady || !state.walletConnected || !['encoded', 'register-pending', 'registered'].includes(state.ocUploadStage);
   $('registerOcUpload').textContent = state.ocUploadStage === 'registered' ? t('retryUpload') : t('registerUpload');
-  $('certifyOcUpload').disabled = state.minting || !state.walletConnected || state.ocUploadStage !== 'uploaded';
+  $('certifyOcUpload').disabled = state.minting || !adapterReady || !state.walletConnected || !['uploaded', 'certify-pending'].includes(state.ocUploadStage);
   $('mintOcOnchain').disabled = state.minting || !baseReady || state.ocUploadStage !== 'certified';
   $('mintOcOnchain').textContent = state.minting ? t('preparingHandoff') : t('mintOc');
   $('mintOcStatus').textContent = state.mintStatus || mintReadiness();
@@ -5902,12 +6527,39 @@ function renderMintAction() {
     status: state.mintStatus || mintReadiness(),
     busy: state.minting,
     digest: state.mintDigest,
+    error: state.ocPublishError,
+    relayTipMist: state.ocUploadSession?.relayTipMist == null
+      ? null
+      : String(state.ocUploadSession.relayTipMist),
+    relayTipQuotedAt: String(state.ocUploadSession?.relayTipQuotedAt || ''),
+    walrusStorageCostFrost: state.ocUploadSession?.walrusStorageCostFrost == null
+      ? null
+      : String(state.ocUploadSession.walrusStorageCostFrost),
+    walrusWriteCostFrost: state.ocUploadSession?.walrusWriteCostFrost == null
+      ? null
+      : String(state.ocUploadSession.walrusWriteCostFrost),
+    walrusTotalCostFrost: state.ocUploadSession?.walrusTotalCostFrost == null
+      ? null
+      : String(state.ocUploadSession.walrusTotalCostFrost),
     actions: {
       resume: !state.minting && chainMakerReady && state.hasOcUploadRecovery && state.ocUploadStage === 'idle',
-      prepare: !state.minting && baseReady && state.ocUploadStage === 'idle' && !state.hasOcUploadRecovery,
-      register: !state.minting && state.walletConnected && ['encoded', 'registered'].includes(state.ocUploadStage),
-      certify: !state.minting && state.walletConnected && state.ocUploadStage === 'uploaded',
-      publish: !state.minting && state.walletConnected && state.ocUploadStage === 'certified',
+      discard: !state.minting
+        && state.hasOcUploadRecovery
+        && state.ocUploadStage === 'idle'
+        && failedAction === 'resume',
+      prepare: !state.minting && adapterReady && (
+        (baseReady && state.ocUploadStage === 'idle' && !state.hasOcUploadRecovery)
+        || canRetryPrepareCheckpoint
+      ),
+      register: !state.minting && adapterReady && state.walletConnected && (
+        ['encoded', 'register-pending', 'registered'].includes(state.ocUploadStage)
+        || canRetryRegisterCheckpoint
+      ),
+      certify: !state.minting && adapterReady && state.walletConnected && (
+        ['uploaded', 'certify-pending'].includes(state.ocUploadStage)
+        || canRetryCertifyCheckpoint
+      ),
+      publish: !state.minting && adapterReady && state.walletConnected && state.ocUploadStage === 'certified',
     },
   });
 }
@@ -5996,32 +6648,46 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
   const recoveryKey = makerAssetStorageKey(templateId);
   if (force) loadedMakerUploadRecoveries.delete(recoveryKey);
   if (loadedMakerUploadRecoveries.has(recoveryKey) || (makerIsPublished() && !makerHasPendingV4Version())) return;
+  const requestId = ++makerUploadRestoreRequestId;
+  const requestToken = Symbol(recoveryKey);
+  makerUploadRestoreRequests.set(recoveryKey, requestToken);
+  const ownsRequest = () => makerUploadRestoreRequests.get(recoveryKey) === requestToken;
+  const isCurrentRequest = () => (
+    ownsRequest()
+    &&
+    requestId === makerUploadRestoreRequestId
+    && state.templateId === templateId
+    && makerAssetStorageKey(templateId) === recoveryKey
+  );
+  clearMakerPublishError();
   loadedMakerUploadRecoveries.add(recoveryKey);
   try {
     const recovery = await loadMakerUploadRecovery(recoveryKey);
+    if (!isCurrentRequest()) return;
     state.hasMakerUploadRecovery = Boolean(recovery);
-    if (!recovery || state.templateId !== templateId) return;
+    if (!recovery) return;
     syncCreatorAssets();
     if (JSON.stringify(creatorUploadManifest()) !== recovery.manifestJson) {
-      await clearMakerUploadRecovery(templateId);
-      throw new Error(t('makerRecoveryDraftChanged'));
+      throw uploadRecoveryMismatch(t('makerRecoveryDraftChanged'));
     }
     if (!recovery.coverBlob) throw new Error(t('makerRecoveryCoverMissing'));
-    state.pendingMakerCoverBlob = recovery.coverBlob;
+    let pendingBundle = null;
+    let pendingAssets;
     if (isMakerV4Document(state.makerDocumentV4)) {
       const documentV4 = makerV4DocumentForRelease({ includeGeneratedCover: true });
       const projection = compileMakerV4MoveProjectionV2(documentV4);
       assertMakerV4ProjectionV2SinglePublishBudget(projection);
       const runtimeAssets = await makerV4RuntimeAssetsForRelease(documentV4, recovery.coverBlob);
-      state.pendingMakerV4Bundle = buildMakerV4PublicationBundle(documentV4, runtimeAssets, {
+      if (!isCurrentRequest()) return;
+      pendingBundle = buildMakerV4PublicationBundle(documentV4, runtimeAssets, {
         previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
         publicExtensions: makerV4PublicExtensions(documentV4),
         projectionAuxiliaryBlob: makerProjectionAuxiliaryPngBlob(),
       });
-      if (state.pendingMakerV4Bundle.manifestJson !== recovery.manifestJson) {
-        throw new Error(t('makerRecoveryGraphMismatch'));
+      if (pendingBundle.manifestJson !== recovery.manifestJson) {
+        throw uploadRecoveryMismatch(t('makerRecoveryGraphMismatch'));
       }
-      state.pendingMakerAssets = state.pendingMakerV4Bundle.assetEntries.map((entry) => ({
+      pendingAssets = pendingBundle.assetEntries.map((entry) => ({
         assetId: entry.assetId,
         file: entry.blob,
         blob: entry.blob,
@@ -6036,53 +6702,76 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
         blobId: '',
       }));
     } else {
-      state.pendingMakerV4Bundle = null;
-      state.pendingMakerAssets = [...publishableAssets(), makerCoverAsset(recovery.coverBlob)];
+      pendingAssets = [...publishableAssets(), makerCoverAsset(recovery.coverBlob)];
     }
-    state.pendingMakerAssets.forEach((asset) => {
+    pendingAssets.forEach((asset) => {
       if (!asset.file) throw new Error(t('makerRecoveryAssetMissing', { name: asset.name }));
     });
-    state.pendingMakerManifestJson = recovery.manifestJson;
-    state.makerPublicationIntent = normalizedMakerPublicationIntent(recovery.publicationIntent);
-    state.makerUploadSession = await resumeWalrusUpload(makerUploadEntries(), recovery);
-    state.makerUploadStage = state.makerUploadSession.stage;
-    state.makerQuiltId = recovery.quiltBlobId || state.makerUploadSession.quiltBlobId;
-    if (state.makerUploadStage === 'certified') {
-      if (state.makerUploadSession.files.length !== state.pendingMakerAssets.length + 1) {
+    const uploadEntries = pendingBundle?.entries?.length
+      ? pendingBundle.entries
+      : [
+        ...pendingAssets.map((asset) => ({ blob: asset.file, identifier: asset.identifier, kind: asset.kind })),
+        {
+          blob: new Blob([recovery.manifestJson], { type: 'application/json' }),
+          identifier: 'animacraft-manifest.json',
+          kind: 'maker-manifest',
+        },
+      ];
+    const uploadSession = await resumeWalrusUpload(uploadEntries, recovery);
+    if (!isCurrentRequest()) return;
+    uploadSession.recoverySavedAt = Number(recovery.savedAt || 0);
+    const uploadStage = uploadSession.stage;
+    if (uploadStage === 'certified') {
+      if (uploadSession.files.length !== pendingAssets.length + 1) {
         throw new Error(t('makerRecoveryCertifiedMismatch'));
       }
-      state.pendingMakerAssets.forEach((asset, index) => {
-        asset.patchId = state.makerUploadSession.files[index].id;
-        asset.blobId = state.makerUploadSession.files[index].blobId;
+      pendingAssets.forEach((asset, index) => {
+        asset.patchId = uploadSession.files[index].id;
+        asset.blobId = uploadSession.files[index].blobId;
       });
     }
+    state.pendingMakerCoverBlob = recovery.coverBlob;
+    state.pendingMakerV4Bundle = pendingBundle;
+    state.pendingMakerAssets = pendingAssets;
+    state.pendingMakerManifestJson = recovery.manifestJson;
+    state.makerPublicationIntent = normalizedMakerPublicationIntent(recovery.publicationIntent);
+    state.makerUploadSession = uploadSession;
+    state.makerUploadStage = uploadStage;
+    state.makerQuiltId = recovery.quiltBlobId || uploadSession.quiltBlobId;
     state.publishStatus = {
       encoded: t('makerRecoveryEncoded'),
       registered: t('makerRecoveryRegistered'),
       uploaded: t('makerRecoveryUploaded'),
       certified: t('makerRecoveryCertified'),
-    }[state.makerUploadStage] || t('makerRecoveryRestored');
-    if (state.makerPublicationIntent) {
+    }[uploadStage] || t('makerRecoveryRestored');
+    if (state.makerPublicationIntent && isCurrentRequest()) {
       try {
-        await recoverMakerPublicationIntent({ scheduleRetry: true });
+        await recoverMakerPublicationIntent({
+          scheduleRetry: true,
+          guard: isCurrentRequest,
+        });
       } catch (error) {
-        state.publishStatus = state.locale === 'en' && error?.message
-          ? error.message
-          : t('publicationSubmittedRecovering');
+        if (isCurrentRequest()) {
+          recordMakerPublishError(error, 'review', 'publicationSubmittedRecovering');
+        }
       }
     }
   } catch (error) {
+    if (!isCurrentRequest()) return;
     state.makerUploadSession = null;
     state.pendingMakerAssets = [];
     state.pendingMakerCoverBlob = null;
     state.pendingMakerManifestJson = '';
     state.pendingMakerV4Bundle = null;
     state.makerUploadStage = 'idle';
-    state.publishStatus = state.locale === 'en' && error?.message
-      ? error.message
-      : t('makerRecoveryFailed');
+    recordMakerPublishError(error, 'resume', 'makerRecoveryFailed');
   } finally {
-    renderAll();
+    const current = isCurrentRequest();
+    if (ownsRequest()) {
+      makerUploadRestoreRequests.delete(recoveryKey);
+      if (!current) loadedMakerUploadRecoveries.delete(recoveryKey);
+    }
+    if (current) renderAll();
   }
 }
 
@@ -6091,37 +6780,62 @@ async function restoreOcUploadRecovery(templateId = state.templateId, { force = 
   const recoveryKey = ocUploadStorageKey(templateId);
   if (force) loadedOcUploadRecoveries.delete(recoveryKey);
   if (loadedOcUploadRecoveries.has(recoveryKey) || state.mintDigest) return;
+  const requestId = ++ocUploadRestoreRequestId;
+  const requestToken = Symbol(recoveryKey);
+  ocUploadRestoreRequests.set(recoveryKey, requestToken);
+  const ownsRequest = () => ocUploadRestoreRequests.get(recoveryKey) === requestToken;
+  const isCurrentRequest = () => (
+    ownsRequest()
+    &&
+    requestId === ocUploadRestoreRequestId
+    && state.templateId === templateId
+    && ocUploadStorageKey(templateId) === recoveryKey
+  );
+  clearOcPublishError();
   loadedOcUploadRecoveries.add(recoveryKey);
   try {
     const recovery = await loadMakerUploadRecovery(recoveryKey);
+    if (!isCurrentRequest()) return;
     state.hasOcUploadRecovery = Boolean(recovery);
-    if (!recovery || recovery.kind !== 'oc-mint' || state.templateId !== templateId) return;
+    if (!recovery || recovery.kind !== 'oc-mint') return;
     if (ocFingerprint() !== recovery.fingerprint) {
-      await clearOcUploadRecovery(templateId);
-      throw new Error(t('ocRecoveryMismatch'));
+      throw uploadRecoveryMismatch(t('ocRecoveryMismatch'));
+    }
+    const recipeHash = recovery.recipeHash instanceof Uint8Array
+      ? recovery.recipeHash
+      : new Uint8Array(recovery.recipeHash || []);
+    const uploadSession = await resumeWalrusUpload([
+      { blob: recovery.imageBlob, identifier: 'animacraft-oc.png', kind: 'oc-image' },
+      { blob: recovery.profileBlob, identifier: 'animacraft-oc.json', kind: 'oc-profile' },
+    ], recovery);
+    if (!isCurrentRequest()) return;
+    uploadSession.recoverySavedAt = Number(recovery.savedAt || 0);
+    const uploadStage = uploadSession.stage;
+    let imagePatchId = '';
+    let profilePatchId = '';
+    if (uploadStage === 'certified') {
+      if (uploadSession.files.length !== 2) throw new Error(t('ocRecoveryCertifiedMismatch'));
+      imagePatchId = uploadSession.files[0].id;
+      profilePatchId = uploadSession.files[1].id;
     }
     state.pendingOcImageBlob = recovery.imageBlob;
     state.pendingOcProfileBlob = recovery.profileBlob;
     state.pendingOcPackage = recovery.ocPackage;
-    state.pendingOcRecipeHash = recovery.recipeHash instanceof Uint8Array
-      ? recovery.recipeHash
-      : new Uint8Array(recovery.recipeHash || []);
+    state.pendingOcRecipeHash = recipeHash;
     state.pendingOcRecipeJson = recovery.recipeJson;
     state.pendingOcFingerprint = recovery.fingerprint;
-    state.ocUploadSession = await resumeWalrusUpload(ocUploadEntries(), recovery);
-    state.ocUploadStage = state.ocUploadSession.stage;
-    if (state.ocUploadStage === 'certified') {
-      if (state.ocUploadSession.files.length !== 2) throw new Error(t('ocRecoveryCertifiedMismatch'));
-      state.ocImagePatchId = state.ocUploadSession.files[0].id;
-      state.ocProfilePatchId = state.ocUploadSession.files[1].id;
-    }
+    state.ocUploadSession = uploadSession;
+    state.ocUploadStage = uploadStage;
+    state.ocImagePatchId = imagePatchId;
+    state.ocProfilePatchId = profilePatchId;
     state.mintStatus = {
       encoded: t('ocRecoveryEncoded'),
       registered: t('ocRecoveryRegistered'),
       uploaded: t('ocRecoveryUploaded'),
       certified: t('ocRecoveryCertified'),
-    }[state.ocUploadStage] || t('ocRecoveryRestored');
+    }[uploadStage] || t('ocRecoveryRestored');
   } catch (error) {
+    if (!isCurrentRequest()) return;
     state.ocUploadSession = null;
     state.ocUploadStage = 'idle';
     state.ocImagePatchId = '';
@@ -6132,11 +6846,48 @@ async function restoreOcUploadRecovery(templateId = state.templateId, { force = 
     state.pendingOcRecipeHash = null;
     state.pendingOcRecipeJson = '';
     state.pendingOcFingerprint = '';
-    state.mintStatus = state.locale === 'en' && error?.message
-      ? error.message
-      : t('ocRecoveryFailed');
+    recordOcPublishError(error, 'resume', 'ocRecoveryFailed');
   } finally {
-    renderAll();
+    const current = isCurrentRequest();
+    if (ownsRequest()) {
+      ocUploadRestoreRequests.delete(recoveryKey);
+      if (!current) loadedOcUploadRecoveries.delete(recoveryKey);
+    }
+    if (current) renderAll();
+  }
+}
+
+async function resumeMakerUploadRecovery() {
+  if (state.publishing) return;
+  const operation = beginMakerChainOperation();
+  clearMakerPublishError();
+  state.publishing = true;
+  state.publishStatus = t('restoringUpload');
+  renderAll();
+  try {
+    await restoreMakerUploadRecovery(operation.templateId, { force: true });
+  } finally {
+    if (makerChainOperationIsActive(operation)) {
+      state.publishing = false;
+      renderAll();
+    }
+  }
+}
+
+async function resumeOcUploadRecovery() {
+  if (state.minting) return;
+  const operation = beginOcChainOperation();
+  clearOcPublishError();
+  state.minting = true;
+  state.mintStatus = t('restoringOcUpload');
+  renderAll();
+  try {
+    await restoreOcUploadRecovery(operation.templateId, { force: true });
+  } finally {
+    if (ocChainOperationIsActive(operation)) {
+      state.minting = false;
+      renderAll();
+    }
   }
 }
 
@@ -7014,6 +7765,12 @@ function closeAccountPanel() {
 }
 
 function toggleWallet() {
+  if (state.publishing || state.minting) {
+    if (state.publishing) state.publishStatus = t('publishingStatus');
+    if (state.minting) state.mintStatus = t('preparingHandoff');
+    renderAll();
+    return;
+  }
   connectSuiWallet();
 }
 
@@ -7085,41 +7842,62 @@ function publishReadiness() {
 }
 
 function renderPublishAction() {
-  if (!$('publishMakerOnchain')) return;
   const locked = makerIsPublished() && !makerHasPendingV4Version();
   const hasMakerAssets = isMakerV4Document(state.makerDocumentV4)
     ? state.makerDocumentV4.parts.some((part) => part.items.some((item) => (item.styles || []).some((style) => style.assetId)))
     : itemLayerAssets().length > 0;
   const publicationRecoveryPending = makerPublicationRecoveryPending();
   const baseReady = !locked && packageConfigured() && state.walletConnected && hasMakerAssets;
-  $('resumeMakerUpload').disabled = locked || state.publishing || !state.walletConnected || !state.hasMakerUploadRecovery;
-  $('prepareMakerUpload').disabled = state.publishing || !baseReady || state.makerUploadStage !== 'idle';
-  $('registerMakerUpload').disabled = state.publishing || !state.walletConnected || !['encoded', 'registered'].includes(state.makerUploadStage);
-  $('registerMakerUpload').textContent = state.makerUploadStage === 'registered' ? t('retryUploadStep') : t('registerUploadStep');
-  $('certifyMakerUpload').disabled = state.publishing || !state.walletConnected || state.makerUploadStage !== 'uploaded';
-  $('publishMakerOnchain').disabled = locked || state.publishing || publicationRecoveryPending || !state.walletConnected || state.makerUploadStage !== 'certified';
-  $('publishMakerOnchain').textContent = state.publishing ? t('publishingStatus') : state.publishDigest ? t('published') : t('publishMakerStep');
-  $('reviewPendingMakerPublication').hidden = !publicationRecoveryPending;
-  $('reviewPendingMakerPublication').disabled = state.publishing;
-  $('reviewPendingMakerPublication').textContent = t('reviewPendingPublication');
-  $('makerPublishAction').classList.toggle('success', Boolean(state.publishDigest));
-  $('makerPublishAction').classList.toggle('busy', state.publishing);
-  if (state.publishDigest) {
-    $('makerPublishStatus').innerHTML = `${escapeHtml(t('publishedNetwork', { network: runtimeConfig.network }))} <a href="${escapeHtml(explorerTransactionUrl(state.publishDigest))}" target="_blank" rel="noreferrer">${escapeHtml(t('viewTransaction'))}</a>`;
-  } else {
-    $('makerPublishStatus').textContent = state.publishStatus || publishReadiness();
-  }
+  const failedAction = String(state.makerPublishError?.action || '');
+  const canRetryPrepareCheckpoint = failedAction === 'prepare' && Boolean(state.makerUploadSession?.checkpoint);
+  const canRetryRegisterCheckpoint = failedAction === 'register'
+    && ['uploaded', 'certified'].includes(state.makerUploadStage);
+  const canRetryCertifyCheckpoint = failedAction === 'certify'
+    && state.makerUploadStage === 'certified';
   makerWorkspace?.setCreatorPublishState?.({
     stage: state.makerUploadStage,
     status: state.publishStatus || publishReadiness(),
     busy: state.publishing,
     digest: state.publishDigest,
+    error: state.makerPublishError,
+    relayTipMist: state.makerUploadSession?.relayTipMist == null
+      ? null
+      : String(state.makerUploadSession.relayTipMist),
+    relayTipQuotedAt: String(state.makerUploadSession?.relayTipQuotedAt || ''),
+    walrusStorageCostFrost: state.makerUploadSession?.walrusStorageCostFrost == null
+      ? null
+      : String(state.makerUploadSession.walrusStorageCostFrost),
+    walrusWriteCostFrost: state.makerUploadSession?.walrusWriteCostFrost == null
+      ? null
+      : String(state.makerUploadSession.walrusWriteCostFrost),
+    walrusTotalCostFrost: state.makerUploadSession?.walrusTotalCostFrost == null
+      ? null
+      : String(state.makerUploadSession.walrusTotalCostFrost),
     actions: {
-      resume: !locked && !state.publishing && state.walletConnected && state.hasMakerUploadRecovery,
-      prepare: !state.publishing && baseReady && state.makerUploadStage === 'idle' && !state.hasMakerUploadRecovery,
-      register: !state.publishing && state.walletConnected && ['encoded', 'registered'].includes(state.makerUploadStage),
-      certify: !state.publishing && state.walletConnected && state.makerUploadStage === 'uploaded',
+      resume: !locked
+        && !state.publishing
+        && state.walletConnected
+        && state.hasMakerUploadRecovery
+        && (!state.makerUploadSession || state.makerUploadStage === 'idle'),
+      discard: !locked
+        && !state.publishing
+        && state.hasMakerUploadRecovery
+        && state.makerUploadStage === 'idle'
+        && failedAction === 'resume',
+      prepare: !state.publishing && (
+        (baseReady && state.makerUploadStage === 'idle' && !state.hasMakerUploadRecovery)
+        || canRetryPrepareCheckpoint
+      ),
+      register: !state.publishing && state.walletConnected && (
+        ['encoded', 'register-pending', 'registered'].includes(state.makerUploadStage)
+        || canRetryRegisterCheckpoint
+      ),
+      certify: !state.publishing && state.walletConnected && (
+        ['uploaded', 'certify-pending'].includes(state.makerUploadStage)
+        || canRetryCertifyCheckpoint
+      ),
       publish: !locked && !state.publishing && !publicationRecoveryPending && state.walletConnected && state.makerUploadStage === 'certified',
+      review: !state.publishing && publicationRecoveryPending,
     },
   });
 }
@@ -7189,143 +7967,235 @@ function renderChainActions() {
 }
 
 async function prepareMakerUpload() {
+  if (state.publishing) return;
+  const operation = beginMakerChainOperation();
+  clearMakerPublishError();
   state.publishing = true;
   state.publishDigest = '';
   state.publishStatus = t('encodingQuilt');
   renderPublishAction();
   try {
-    syncCreatorAssets();
-    const issues = makerPublicationIssues();
-    if (issues.length) throw new Error(issues[0]);
-    const documentV4 = isMakerV4Document(state.makerDocumentV4)
-      ? makerV4DocumentForRelease({ includeGeneratedCover: true })
-      : null;
-    if (documentV4) {
-      const projection = compileMakerV4MoveProjectionV2(documentV4);
-      assertMakerV4ProjectionV2SinglePublishBudget(projection);
-    }
-    const coverBlob = await renderOcImageBlob(state.makerDocumentV4?.defaultRecipe || null);
-    state.pendingMakerCoverBlob = coverBlob;
-    if (documentV4) {
-      const runtimeAssets = await makerV4RuntimeAssetsForRelease(documentV4, coverBlob);
-      const bundle = buildMakerV4PublicationBundle(documentV4, runtimeAssets, {
-        previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
-        publicExtensions: makerV4PublicExtensions(documentV4),
-        projectionAuxiliaryBlob: makerProjectionAuxiliaryPngBlob(),
+    await withBrowserUploadLock(operation.recoveryKey, async () => {
+      const restoredNewer = await syncLatestMakerUploadRecovery();
+      if (!makerChainOperationIsActive(operation)) return;
+      if (restoredNewer && state.makerUploadStage !== 'idle') return;
+      if (state.makerUploadSession?.checkpoint && state.makerUploadStage !== 'idle') {
+        await persistMakerUploadRecovery();
+        if (!makerChainOperationIsActive(operation)) return;
+        state.publishStatus = t('makerRecoveryRestored');
+        return;
+      }
+      syncCreatorAssets();
+      const issues = makerPublicationIssues();
+      if (issues.length) throw new Error(issues[0]);
+      const documentV4 = isMakerV4Document(state.makerDocumentV4)
+        ? makerV4DocumentForRelease({ includeGeneratedCover: true })
+        : null;
+      if (documentV4) {
+        const projection = compileMakerV4MoveProjectionV2(documentV4);
+        assertMakerV4ProjectionV2SinglePublishBudget(projection);
+      }
+      const coverBlob = await renderOcImageBlob(state.makerDocumentV4?.defaultRecipe || null);
+      if (!makerChainOperationIsActive(operation)) return;
+      state.pendingMakerCoverBlob = coverBlob;
+      if (documentV4) {
+        const runtimeAssets = await makerV4RuntimeAssetsForRelease(documentV4, coverBlob);
+        if (!makerChainOperationIsActive(operation)) return;
+        const bundle = buildMakerV4PublicationBundle(documentV4, runtimeAssets, {
+          previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
+          publicExtensions: makerV4PublicExtensions(documentV4),
+          projectionAuxiliaryBlob: makerProjectionAuxiliaryPngBlob(),
+        });
+        state.pendingMakerV4Bundle = bundle;
+        state.pendingMakerAssets = bundle.assetEntries.map((entry) => ({
+          assetId: entry.assetId,
+          file: entry.blob,
+          blob: entry.blob,
+          name: entry.identifier,
+          size: entry.blob?.size || 0,
+          type: entry.blob?.type || 'application/octet-stream',
+          kind: entry.kind,
+          identifier: entry.identifier,
+          projectionOnly: entry.projectionOnly === true,
+          renderAsset: entry.renderAsset !== false,
+          patchId: '',
+          blobId: '',
+        }));
+        state.pendingMakerManifestJson = bundle.manifestJson;
+      } else {
+        state.pendingMakerV4Bundle = null;
+        state.pendingMakerAssets = [
+          ...publishableAssets(),
+          makerCoverAsset(coverBlob),
+        ];
+        state.pendingMakerManifestJson = JSON.stringify(creatorUploadManifest());
+      }
+      state.pendingMakerAssets.forEach((asset) => {
+        if (!asset.file) throw new Error(t('makerAssetUnavailable', { name: asset.name }));
       });
-      state.pendingMakerV4Bundle = bundle;
-      state.pendingMakerAssets = bundle.assetEntries.map((entry) => ({
-        assetId: entry.assetId,
-        file: entry.blob,
-        blob: entry.blob,
-        name: entry.identifier,
-        size: entry.blob?.size || 0,
-        type: entry.blob?.type || 'application/octet-stream',
-        kind: entry.kind,
-        identifier: entry.identifier,
-        projectionOnly: entry.projectionOnly === true,
-        renderAsset: entry.renderAsset !== false,
-        patchId: '',
-        blobId: '',
-      }));
-      state.pendingMakerManifestJson = bundle.manifestJson;
-    } else {
-      state.pendingMakerV4Bundle = null;
-      state.pendingMakerAssets = [
-        ...publishableAssets(),
-        makerCoverAsset(coverBlob),
-      ];
-      state.pendingMakerManifestJson = JSON.stringify(creatorUploadManifest());
-    }
-    state.pendingMakerAssets.forEach((asset) => {
-      if (!asset.file) throw new Error(t('makerAssetUnavailable', { name: asset.name }));
+      const uploadSession = await prepareWalrusUpload(makerUploadEntries());
+      if (!makerChainOperationIsActive(operation)) return;
+      state.makerUploadSession = uploadSession;
+      state.makerQuiltId = uploadSession.quiltBlobId;
+      state.makerUploadStage = uploadSession.stage;
+      state.publishStatus = t('quiltEncoded');
+      await persistMakerUploadRecovery();
     });
-    state.makerUploadSession = await prepareWalrusUpload(makerUploadEntries());
-    state.makerQuiltId = state.makerUploadSession.quiltBlobId;
-    state.makerUploadStage = 'encoded';
-    state.publishStatus = t('quiltEncoded');
-    await persistMakerUploadRecovery();
   } catch (error) {
-    state.publishStatus = state.locale === 'en' && error?.message
-      ? error.message
-      : t('prepareQuiltFailed');
-  } finally {
-    if (state.makerUploadSession?.checkpoint) {
-      persistMakerUploadRecovery().catch((error) => console.warn('Could not save Walrus upload recovery.', error));
+    if (makerChainOperationIsActive(operation)) {
+      recordMakerPublishError(error, 'prepare', 'prepareQuiltFailed');
     }
-    state.publishing = false;
-    renderAll();
+  } finally {
+    if (makerChainOperationIsActive(operation)) {
+      state.publishing = false;
+      renderAll();
+    }
   }
 }
 
 async function registerMakerUpload() {
+  if (state.publishing) return;
+  const operation = beginMakerChainOperation();
+  const retryingAdvancedCheckpoint = state.makerPublishError?.action === 'register'
+    && ['uploaded', 'certified'].includes(state.makerUploadStage);
+  clearMakerPublishError();
   state.publishing = true;
   state.publishStatus = t('registeringQuilt');
   renderPublishAction();
   try {
-    await registerAndUploadWalrus(state.makerUploadSession);
-    state.makerUploadStage = state.makerUploadSession.stage;
-    if (state.makerUploadStage === 'certified') {
-      if (state.makerUploadSession.files.length !== state.pendingMakerAssets.length + 1) throw new Error(t('unexpectedMakerQuilt'));
-      state.pendingMakerAssets.forEach((asset, index) => {
-        asset.patchId = state.makerUploadSession.files[index].id;
-        asset.blobId = state.makerUploadSession.files[index].blobId;
+    await withBrowserUploadLock(operation.recoveryKey, async () => {
+      await syncLatestMakerUploadRecovery();
+      if (!makerChainOperationIsActive(operation)) return;
+      if (![
+        'encoded',
+        'register-pending',
+        'registered',
+        ...(retryingAdvancedCheckpoint ? ['uploaded', 'certified'] : []),
+      ].includes(state.makerUploadSession?.stage)) return;
+      const session = state.makerUploadSession;
+      const persistenceContext = captureMakerUploadPersistenceContext(session);
+      await registerAndUploadWalrus(session, {
+        onCheckpoint: makerUploadCheckpointHandler(session, persistenceContext),
       });
-      state.makerQuiltId = state.makerUploadSession.files[0]?.blobId || state.makerQuiltId;
-      state.publishStatus = t('recoveredCertified');
-    } else {
-      state.publishStatus = t('quiltUploaded');
-    }
+      await persistMakerUploadRecovery(session, persistenceContext);
+      if (!makerChainOperationIsActive(operation)) return;
+      state.makerUploadStage = session.stage;
+      if (state.makerUploadStage === 'certified') {
+        if (session.files.length !== state.pendingMakerAssets.length + 1) throw new Error(t('unexpectedMakerQuilt'));
+        state.pendingMakerAssets.forEach((asset, index) => {
+          asset.patchId = session.files[index].id;
+          asset.blobId = session.files[index].blobId;
+        });
+        state.makerQuiltId = session.files[0]?.blobId || state.makerQuiltId;
+        state.publishStatus = t('recoveredCertified');
+      } else {
+        state.publishStatus = t('quiltUploaded');
+      }
+    });
   } catch (error) {
-    state.makerUploadStage = state.makerUploadSession?.stage || state.makerUploadStage;
-    state.publishStatus = state.locale === 'en' && error?.message
-      ? error.message
-      : t('registrationFailed');
-  } finally {
-    if (state.makerUploadSession?.checkpoint) {
-      persistMakerUploadRecovery().catch((error) => console.warn('Could not save Walrus upload recovery.', error));
+    if (makerChainOperationIsActive(operation)) {
+      state.makerUploadStage = state.makerUploadSession?.stage || state.makerUploadStage;
+      recordMakerPublishError(error, 'register', 'registrationFailed');
     }
-    state.publishing = false;
-    renderAll();
+  } finally {
+    if (makerChainOperationIsActive(operation)) {
+      state.publishing = false;
+      renderAll();
+    }
   }
 }
 
 async function certifyMakerUpload() {
+  if (state.publishing) return;
+  const operation = beginMakerChainOperation();
+  const retryingCertifiedCheckpoint = state.makerPublishError?.action === 'certify'
+    && state.makerUploadStage === 'certified';
+  clearMakerPublishError();
   state.publishing = true;
   state.publishStatus = t('certifyingQuilt');
   renderPublishAction();
   try {
-    await certifyWalrusUpload(state.makerUploadSession);
-    if (state.makerUploadSession.files.length !== state.pendingMakerAssets.length + 1) {
-      throw new Error(t('unexpectedMakerQuilt'));
-    }
-    state.pendingMakerAssets.forEach((asset, index) => {
-      asset.patchId = state.makerUploadSession.files[index].id;
-      asset.blobId = state.makerUploadSession.files[index].blobId;
+    await withBrowserUploadLock(operation.recoveryKey, async () => {
+      await syncLatestMakerUploadRecovery();
+      if (!makerChainOperationIsActive(operation)) return;
+      if (![
+        'uploaded',
+        'certify-pending',
+        ...(retryingCertifiedCheckpoint ? ['certified'] : []),
+      ].includes(state.makerUploadSession?.stage)) return;
+      const session = state.makerUploadSession;
+      const persistenceContext = captureMakerUploadPersistenceContext(session);
+      await certifyWalrusUpload(session, {
+        onCheckpoint: makerUploadCheckpointHandler(session, persistenceContext),
+      });
+      await persistMakerUploadRecovery(session, persistenceContext);
+      if (!makerChainOperationIsActive(operation)) return;
+      if (session.files.length !== state.pendingMakerAssets.length + 1) {
+        throw new Error(t('unexpectedMakerQuilt'));
+      }
+      state.pendingMakerAssets.forEach((asset, index) => {
+        asset.patchId = session.files[index].id;
+        asset.blobId = session.files[index].blobId;
+      });
+      state.makerQuiltId = session.files[0]?.blobId || state.makerQuiltId;
+      state.makerUploadStage = 'certified';
+      state.publishStatus = t('quiltCertified');
     });
-    state.makerQuiltId = state.makerUploadSession.files[0]?.blobId || state.makerQuiltId;
-    state.makerUploadStage = 'certified';
-    state.publishStatus = t('quiltCertified');
   } catch (error) {
-    state.publishStatus = state.locale === 'en' && error?.message
-      ? error.message
-      : t('certificationFailed');
-  } finally {
-    if (state.makerUploadSession?.checkpoint) {
-      persistMakerUploadRecovery().catch((error) => console.warn('Could not save Walrus upload recovery.', error));
+    if (makerChainOperationIsActive(operation)) {
+      recordMakerPublishError(error, 'certify', 'certificationFailed');
     }
-    state.publishing = false;
-    renderAll();
+  } finally {
+    if (makerChainOperationIsActive(operation)) {
+      state.publishing = false;
+      renderAll();
+    }
   }
 }
 
 async function publishCurrentMaker() {
   if (state.publishing || state.makerUploadStage !== 'certified') return;
+  const operation = beginMakerChainOperation();
+  clearMakerPublishError();
   let publicationSignatureRequested = false;
+  let publicationSession = null;
+  let publicationContext = null;
+  let publicationIntent = null;
+  let submissionCheckpointSaved = false;
+  const publicationContextIsActive = () => (
+    makerChainOperationIsActive(operation)
+    && (!publicationSession || makerUploadContextIsActive(publicationSession, publicationContext))
+  );
+  const persistPublicationIntent = async (nextIntent) => {
+    publicationIntent = normalizedMakerPublicationIntent(nextIntent);
+    if (!publicationSession || !publicationContext) {
+      throw new Error('The Maker publication has no stable upload checkpoint context.');
+    }
+    publicationContext = makerUploadContextWithPublicationIntent(
+      publicationContext,
+      publicationIntent,
+    );
+    const verified = await persistMakerUploadRecovery(publicationSession, publicationContext);
+    if (publicationContextIsActive()) {
+      state.makerPublicationIntent = publicationIntent;
+    }
+    return verified;
+  };
   state.publishing = true;
   state.publishStatus = t('waitingSuiPublish');
   renderPublishAction();
   try {
+    await withBrowserUploadLock(operation.recoveryKey, async () => {
+    await syncLatestMakerUploadRecovery();
+    if (!makerChainOperationIsActive(operation)) return;
+    if (state.makerUploadStage !== 'certified' || !state.makerUploadSession) {
+      throw new Error(t('makerRecoveryFailed'));
+    }
+    publicationSession = state.makerUploadSession;
+    publicationContext = captureMakerUploadPersistenceContext(publicationSession);
+    if (!publicationContext || !publicationContextIsActive()) {
+      throw new Error('The active Maker changed before publication could start.');
+    }
     if (JSON.stringify(creatorUploadManifest()) !== state.pendingMakerManifestJson) {
       state.makerUploadSession = null;
       state.makerUploadStage = 'idle';
@@ -7339,14 +8209,40 @@ async function publishCurrentMaker() {
       throw new Error(t('makerChangedAfterUpload'));
     }
     const pendingIntent = normalizedMakerPublicationIntent(state.makerPublicationIntent);
+    publicationIntent = pendingIntent;
     const pendingPublicationForWallet = pendingIntent
-      && pendingIntent.creator.toLowerCase() === String(state.walletAddress || '').toLowerCase();
+      && pendingIntent.creator.toLowerCase() === String(operation.walletAddress || '').toLowerCase();
     if (pendingPublicationForWallet) {
-      const recovered = await recoverMakerPublicationIntent({ scheduleRetry: true });
+      const recovered = await recoverMakerPublicationIntent({
+        scheduleRetry: true,
+        guard: publicationContextIsActive,
+      });
+      if (!publicationContextIsActive()) return;
       if (recovered) return;
       state.publishStatus = pendingIntent.digest
         ? t('publicationSubmittedRecovering')
         : t('publicationPendingReview');
+      return;
+    }
+    const alreadyPublished = await findPublishedMakerByIntent({
+      creator: operation.walletAddress,
+      manifestBlobId: publicationContext.quiltBlobId,
+      limit: 500,
+    });
+    if (!publicationContextIsActive()) return;
+    if (alreadyPublished) {
+      let indexed = {};
+      if (alreadyPublished.digest) {
+        indexed = await resolvePublishedMakerObjects(alreadyPublished.digest, 20_000);
+      }
+      await finalizeMakerPublication({
+        ...alreadyPublished,
+        ...indexed,
+        digest: alreadyPublished.digest || indexed.digest || '',
+      }, null, {
+        recovered: true,
+        guard: publicationContextIsActive,
+      });
       return;
     }
     let makerParts;
@@ -7359,7 +8255,7 @@ async function publishCurrentMaker() {
     if (isMakerV4Document(state.makerDocumentV4)) {
       const publishedManifest = JSON.parse(state.pendingMakerManifestJson);
       const uploadEntries = state.pendingMakerV4Bundle?.entries || makerUploadEntries();
-      const locations = indexMakerV4UploadResults(uploadEntries, state.makerUploadSession.files);
+      const locations = indexMakerV4UploadResults(uploadEntries, publicationSession.files);
       const coverLocation = locations.get(publishedManifest.metadata.coverAssetId);
       const auxiliaryLocation = state.pendingMakerAssets.find((asset) => (
         asset.identifier === MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER
@@ -7422,14 +8318,19 @@ async function publishCurrentMaker() {
     }
 
     state.publishStatus = t('publicationIntentSaving');
-    state.makerPublicationIntent = {
-      creator: state.walletAddress,
-      manifestBlobId: state.makerQuiltId,
+    publicationIntent = {
+      creator: operation.walletAddress,
+      manifestBlobId: publicationContext.quiltBlobId,
       createdAt: new Date().toISOString(),
       status: 'awaiting-signature',
       digest: '',
     };
-    await persistMakerUploadRecovery();
+    state.makerPublicationIntent = publicationIntent;
+    await persistPublicationIntent(publicationIntent);
+    if (!publicationContextIsActive()) {
+      await persistPublicationIntent(null);
+      return;
+    }
     if (makerPublicationRecoveryTimer) {
       clearTimeout(makerPublicationRecoveryTimer);
       makerPublicationRecoveryTimer = null;
@@ -7445,61 +8346,186 @@ async function publishCurrentMaker() {
         avatarUrl: '',
       },
       maker: makerPayload,
-      manifestBlobId: state.makerQuiltId,
+      manifestBlobId: publicationContext.quiltBlobId,
       parts: makerParts,
       items: makerItems,
       rules: makerRules,
       paletteLinks: makerPaletteLinks,
       onSubmitted: async ({ digest }) => {
-        state.makerPublicationIntent = {
-          ...state.makerPublicationIntent,
+        publicationIntent = {
+          ...publicationIntent,
           status: 'submitted',
           digest,
         };
-        state.publishStatus = t('publicationSubmittedRecovering');
-        await persistMakerUploadRecovery();
-        renderPublishAction();
+        await persistPublicationIntent(publicationIntent);
+        submissionCheckpointSaved = true;
+        if (publicationContextIsActive()) {
+          state.publishStatus = t('publicationSubmittedRecovering');
+          renderPublishAction();
+        }
       },
     });
-    await finalizeMakerPublication(transaction, makerPayload);
+    if (!submissionCheckpointSaved && transaction?.digest) {
+      publicationIntent = {
+        ...publicationIntent,
+        status: 'submitted',
+        digest: transaction.digest,
+      };
+      await persistPublicationIntent(publicationIntent);
+      submissionCheckpointSaved = true;
+    }
+    if (!publicationContextIsActive()) return;
+    await finalizeMakerPublication(transaction, makerPayload, {
+      guard: publicationContextIsActive,
+    });
+    });
   } catch (error) {
     console.error('Maker publication failed', error);
-    if (!publicationSignatureRequested
-      && !state.makerPublicationIntent?.digest
-      && state.makerPublicationIntent?.status === 'awaiting-signature') {
-      state.makerPublicationIntent = null;
-      if (state.makerUploadSession?.checkpoint) {
-        persistMakerUploadRecovery().catch((persistError) => {
-          console.warn('Could not clear the unsigned publication intent.', persistError);
+    const active = publicationContextIsActive();
+    const classifiedError = active
+      ? recordMakerPublishError(error, 'onchain', 'makerPublicationFailed')
+      : classifyChainUiError(error, { action: 'onchain' });
+    const knownPreSubmissionFailure = new Set([
+      'TIP_TOO_HIGH',
+      'UPLOAD_QUOTE_CHANGED',
+      'WALLET_REJECTED',
+      'INSUFFICIENT_GAS',
+      'INSUFFICIENT_SUI_BALANCE',
+    ]).has(classifiedError.code);
+    const currentIntent = normalizedMakerPublicationIntent(publicationIntent);
+    const clearUnsignedIntent = Boolean(
+      currentIntent
+      && !currentIntent.digest
+      && currentIntent.status === 'awaiting-signature'
+      && (!publicationSignatureRequested || knownPreSubmissionFailure),
+    );
+    let intentPersisted = !publicationSession || !publicationContext;
+    if (publicationSession?.checkpoint && publicationContext) {
+      try {
+        await withBrowserUploadLock(operation.recoveryKey, async () => {
+          const durable = await loadMakerUploadRecovery(operation.recoveryKey);
+          if (
+            !durable
+            || durable.uploadSessionId !== publicationSession.uploadSessionId
+            || Number(durable.recoveryRevision || 0) !== Number(publicationSession.recoveryRevision || 0)
+          ) return;
+          await persistPublicationIntent(clearUnsignedIntent ? null : currentIntent);
+          intentPersisted = true;
         });
+      } catch (persistError) {
+        console.warn('Could not update the failed publication intent checkpoint.', persistError);
       }
-    } else if (!state.makerPublicationIntent?.digest
-      && state.makerPublicationIntent?.status === 'awaiting-signature') {
-      state.publishStatus = t('publicationPendingReview');
-      persistMakerUploadRecovery().catch((persistError) => {
-        console.warn('Could not preserve the uncertain publication intent.', persistError);
-      });
     }
-    if (!state.makerPublicationIntent) {
-      state.publishStatus = state.locale === 'en' && error?.message
-        ? error.message
-        : t('makerPublicationFailed');
+    if (publicationContextIsActive()) {
+      if (clearUnsignedIntent && intentPersisted) {
+        state.makerPublicationIntent = null;
+      } else if (currentIntent) {
+        state.makerPublicationIntent = currentIntent;
+        state.publishStatus = t('publicationPendingReview');
+      }
     }
   } finally {
-    state.publishing = false;
-    renderAll();
+    if (makerChainOperationIsActive(operation)) {
+      state.publishing = false;
+      renderAll();
+    }
+  }
+}
+
+async function reviewPendingMakerPublication() {
+  if (state.publishing || !normalizedMakerPublicationIntent(state.makerPublicationIntent)) return;
+  const operation = beginMakerChainOperation();
+  clearMakerPublishError();
+  state.publishing = true;
+  renderAll();
+  try {
+    let review = null;
+    const recovered = await withBrowserUploadLock(operation.recoveryKey, async () => {
+      await syncLatestMakerUploadRecovery();
+      if (!makerChainOperationIsActive(operation)) return null;
+      const session = state.makerUploadSession;
+      const context = captureMakerUploadPersistenceContext(session);
+      const intent = normalizedMakerPublicationIntent(state.makerPublicationIntent);
+      if (!session?.checkpoint || !context || !intent) return null;
+      const guard = () => (
+        makerChainOperationIsActive(operation)
+        && makerUploadContextIsActive(session, context)
+      );
+      review = Object.freeze({
+        session,
+        context,
+        intent,
+        guard,
+      });
+      return recoverMakerPublicationIntent({ scheduleRetry: true, guard });
+    });
+    if (recovered || !review || !review.guard()) return;
+    openConfirmation({
+      title: t('clearPendingPublicationTitle'),
+      message: t('clearPendingPublicationMessage'),
+      confirmLabel: t('clearPendingPublicationConfirm'),
+      action: async () => {
+        if (!review.guard()) return;
+        try {
+          await withBrowserUploadLock(operation.recoveryKey, async () => {
+            const recovery = await loadMakerUploadRecovery(operation.recoveryKey);
+            if (
+              !review.guard()
+              || !recovery
+              || recovery.uploadSessionId !== review.session.uploadSessionId
+              || !sameMakerPublicationIntent(recovery.publicationIntent, review.intent)
+            ) return;
+            const verified = await saveVerifiedUploadRecovery(operation.recoveryKey, {
+              ...recovery,
+              recoveryRevision: Number(recovery.recoveryRevision || 0),
+              publicationIntent: null,
+            });
+            if (!review.guard()) return;
+            review.session.recoveryRevision = Number(verified.recoveryRevision || 0);
+            if (makerPublicationRecoveryTimer) {
+              clearTimeout(makerPublicationRecoveryTimer);
+              makerPublicationRecoveryTimer = null;
+            }
+            state.makerPublicationIntent = null;
+            state.publishStatus = '';
+            clearMakerPublishError();
+          });
+        } catch (error) {
+          if (review.guard()) throw error;
+          console.warn('Pending Maker publication review stopped after context changed.', error);
+          return;
+        }
+        if (review.guard()) {
+          syncActiveMakerModelRefs();
+          renderAll();
+        }
+      },
+    });
+  } catch (error) {
+    if (makerChainOperationIsActive(operation)) {
+      recordMakerPublishError(error, 'review', 'makerPublicationFailed');
+    }
+  } finally {
+    if (makerChainOperationIsActive(operation)) {
+      state.publishing = false;
+      renderAll();
+    }
   }
 }
 
 async function updateMakerArchiveState(archived) {
   if (state.publishing || !state.makerObjectId || !makerIsPublished()) return;
+  const operation = beginMakerChainOperation();
+  const makerObjectId = state.makerObjectId;
+  const makerAdminCapObjectId = state.makerAdminCapObjectId;
   state.publishing = true;
   state.publishStatus = archived
     ? t('archiveWaiting')
     : t('restoreWaiting');
   renderAll();
   try {
-    const transaction = await setMakerArchived(state.makerObjectId, state.makerAdminCapObjectId, archived);
+    const transaction = await setMakerArchived(makerObjectId, makerAdminCapObjectId, archived);
+    if (!makerChainOperationIsActive(operation)) return;
     state.makerArchived = archived;
     state.publishStatus = t(archived ? 'archivedOnNetwork' : 'restoredOnNetwork', {
       network: runtimeConfig.network,
@@ -7507,139 +8533,215 @@ async function updateMakerArchiveState(archived) {
     });
     await saveCurrentMakerDraft();
   } catch (error) {
-    state.publishStatus = state.locale === 'en' && error?.message
-      ? error.message
-      : t(archived ? 'archiveMakerFailed' : 'restoreMakerFailed');
+    if (makerChainOperationIsActive(operation)) {
+      state.publishStatus = state.locale === 'en' && error?.message
+        ? error.message
+        : t(archived ? 'archiveMakerFailed' : 'restoreMakerFailed');
+    }
   } finally {
-    state.publishing = false;
-    renderAll();
+    if (makerChainOperationIsActive(operation)) {
+      state.publishing = false;
+      renderAll();
+    }
   }
 }
 
 async function prepareOcUpload() {
+  if (state.minting) return;
+  if (!canonicalSoulMintEnabled) {
+    state.mintStatus = t('canonicalMintGateClosed');
+    renderMintAction();
+    return;
+  }
+  const operation = beginOcChainOperation();
+  clearOcPublishError();
   state.minting = true;
   state.mintDigest = '';
   state.mintStatus = t('ocRenderingQuilt');
   renderMintAction();
   try {
-    const issues = ocRecipeIssues();
-    if (issues.length) throw new Error(issues[0]);
-    const image = await renderOcImageBlob();
-    const useV4 = isMakerV4Document(state.makerDocumentV4);
-    const createdAt = new Date().toISOString();
-    let oc;
-    let recipeJson;
-    let chainRecipe;
-    let v4Bundle = null;
-    if (useV4) {
-      v4Bundle = currentMakerV4OcBundle({ createdAt });
-      chainRecipe = v4Bundle.suiRecipe;
-      recipeJson = v4Bundle.fullRecipeJson;
-    } else {
-      oc = ocPackage();
-      recipeJson = JSON.stringify(oc.recipe);
-      chainRecipe = oc.recipe.map((slot) => ({
-        partKey: slot.slot,
-        itemKey: slot.part,
-        colorHex: slot.color,
-        renderOrder: slot.renderOrder,
-      }));
-    }
-    const recipeHash = await hashRecipe(chainRecipe);
-    const integrity = {
-      recipeEncoding: 'BCS vector<RecipeSlot>',
-      recipeHashAlgorithm: 'SHA-256',
-      recipeHash: bytesToHex(recipeHash),
-    };
-    let profile;
-    if (useV4) {
-      v4Bundle = currentMakerV4OcBundle({ createdAt, integrity });
-      oc = v4Bundle.package;
-      recipeJson = v4Bundle.fullRecipeJson;
-      const entries = buildMakerV4OcUploadEntries(image, v4Bundle);
-      profile = entries[1].blob;
-    } else {
-      oc.integrity = integrity;
-      profile = new Blob([JSON.stringify(oc)], { type: 'application/json' });
-    }
-    state.pendingOcPackage = oc;
-    state.pendingOcImageBlob = image;
-    state.pendingOcProfileBlob = profile;
-    state.pendingOcRecipeJson = recipeJson;
-    state.pendingOcRecipeHash = recipeHash;
-    state.pendingOcFingerprint = ocFingerprint(oc);
-    state.ocUploadSession = await prepareWalrusUpload(ocUploadEntries());
-    state.ocUploadStage = 'encoded';
-    state.mintStatus = t('ocQuiltEncoded');
-    await persistOcUploadRecovery();
+    await withBrowserUploadLock(operation.recoveryKey, async () => {
+      const restoredNewer = await syncLatestOcUploadRecovery();
+      if (!ocChainOperationIsActive(operation)) return;
+      if (restoredNewer && state.ocUploadStage !== 'idle') return;
+      if (state.ocUploadSession?.checkpoint && state.ocUploadStage !== 'idle') {
+        await persistOcUploadRecovery();
+        if (!ocChainOperationIsActive(operation)) return;
+        state.mintStatus = t('ocRecoveryRestored');
+        return;
+      }
+      const issues = ocRecipeIssues();
+      if (issues.length) throw new Error(issues[0]);
+      const image = await renderOcImageBlob();
+      if (!ocChainOperationIsActive(operation)) return;
+      const useV4 = isMakerV4Document(state.makerDocumentV4);
+      const createdAt = new Date().toISOString();
+      let oc;
+      let recipeJson;
+      let chainRecipe;
+      let v4Bundle = null;
+      if (useV4) {
+        v4Bundle = currentMakerV4OcBundle({ createdAt });
+        chainRecipe = v4Bundle.suiRecipe;
+        recipeJson = v4Bundle.fullRecipeJson;
+      } else {
+        oc = ocPackage();
+        recipeJson = JSON.stringify(oc.recipe);
+        chainRecipe = oc.recipe.map((slot) => ({
+          partKey: slot.slot,
+          itemKey: slot.part,
+          colorHex: slot.color,
+          renderOrder: slot.renderOrder,
+        }));
+      }
+      const recipeHash = await hashRecipe(chainRecipe);
+      if (!ocChainOperationIsActive(operation)) return;
+      const integrity = {
+        recipeEncoding: 'BCS vector<RecipeSlot>',
+        recipeHashAlgorithm: 'SHA-256',
+        recipeHash: bytesToHex(recipeHash),
+      };
+      let profile;
+      if (useV4) {
+        v4Bundle = currentMakerV4OcBundle({ createdAt, integrity });
+        oc = v4Bundle.package;
+        recipeJson = v4Bundle.fullRecipeJson;
+        const entries = buildMakerV4OcUploadEntries(image, v4Bundle);
+        profile = entries[1].blob;
+      } else {
+        oc.integrity = integrity;
+        profile = new Blob([JSON.stringify(oc)], { type: 'application/json' });
+      }
+      state.pendingOcPackage = oc;
+      state.pendingOcImageBlob = image;
+      state.pendingOcProfileBlob = profile;
+      state.pendingOcRecipeJson = recipeJson;
+      state.pendingOcRecipeHash = recipeHash;
+      state.pendingOcFingerprint = ocFingerprint(oc);
+      const uploadSession = await prepareWalrusUpload(ocUploadEntries());
+      if (!ocChainOperationIsActive(operation)) return;
+      state.ocUploadSession = uploadSession;
+      state.ocUploadStage = uploadSession.stage;
+      state.mintStatus = t('ocQuiltEncoded');
+      await persistOcUploadRecovery();
+    });
   } catch (error) {
-    state.mintStatus = state.locale === 'en' && error?.message
-      ? error.message
-      : t('ocQuiltPrepareFailed');
-  } finally {
-    if (state.ocUploadSession?.checkpoint) {
-      persistOcUploadRecovery().catch((error) => console.warn('Could not save OC upload recovery.', error));
+    if (ocChainOperationIsActive(operation)) {
+      recordOcPublishError(error, 'prepare', 'ocQuiltPrepareFailed');
     }
-    state.minting = false;
-    renderMintAction();
+  } finally {
+    if (ocChainOperationIsActive(operation)) {
+      state.minting = false;
+      renderMintAction();
+    }
   }
 }
 
 async function registerOcUpload() {
+  if (state.minting) return;
+  if (!canonicalSoulMintEnabled) {
+    state.mintStatus = t('canonicalMintGateClosed');
+    renderMintAction();
+    return;
+  }
+  const operation = beginOcChainOperation();
+  const retryingAdvancedCheckpoint = state.ocPublishError?.action === 'register'
+    && ['uploaded', 'certified'].includes(state.ocUploadStage);
+  clearOcPublishError();
   state.minting = true;
   state.mintStatus = t('ocWaitingUpload');
   renderMintAction();
   try {
-    await registerAndUploadWalrus(state.ocUploadSession);
-    state.ocUploadStage = state.ocUploadSession.stage;
-    if (state.ocUploadStage === 'certified') {
-      if (state.ocUploadSession.files.length !== 2) throw new Error(t('ocUnexpectedQuilt'));
-      state.ocImagePatchId = state.ocUploadSession.files[0].id;
-      state.ocProfilePatchId = state.ocUploadSession.files[1].id;
-      state.mintStatus = t('ocRecoveredCertified');
-    } else {
-      state.mintStatus = t('ocUploadedCertify');
-    }
+    await withBrowserUploadLock(operation.recoveryKey, async () => {
+      await syncLatestOcUploadRecovery();
+      if (!ocChainOperationIsActive(operation)) return;
+      if (![
+        'encoded',
+        'register-pending',
+        'registered',
+        ...(retryingAdvancedCheckpoint ? ['uploaded', 'certified'] : []),
+      ].includes(state.ocUploadSession?.stage)) return;
+      const session = state.ocUploadSession;
+      const persistenceContext = captureOcUploadPersistenceContext(session);
+      await registerAndUploadWalrus(session, {
+        onCheckpoint: ocUploadCheckpointHandler(session, persistenceContext),
+      });
+      await persistOcUploadRecovery(session, persistenceContext);
+      if (!ocChainOperationIsActive(operation)) return;
+      state.ocUploadStage = session.stage;
+      if (state.ocUploadStage === 'certified') {
+        if (session.files.length !== 2) throw new Error(t('ocUnexpectedQuilt'));
+        state.ocImagePatchId = session.files[0].id;
+        state.ocProfilePatchId = session.files[1].id;
+        state.mintStatus = t('ocRecoveredCertified');
+      } else {
+        state.mintStatus = t('ocUploadedCertify');
+      }
+    });
   } catch (error) {
-    state.ocUploadStage = state.ocUploadSession?.stage || state.ocUploadStage;
-    state.mintStatus = state.locale === 'en' && error?.message
-      ? error.message
-      : t('ocUploadFailed');
-  } finally {
-    if (state.ocUploadSession?.checkpoint) {
-      persistOcUploadRecovery().catch((error) => console.warn('Could not save OC upload recovery.', error));
+    if (ocChainOperationIsActive(operation)) {
+      state.ocUploadStage = state.ocUploadSession?.stage || state.ocUploadStage;
+      recordOcPublishError(error, 'register', 'ocUploadFailed');
     }
-    state.minting = false;
-    renderMintAction();
+  } finally {
+    if (ocChainOperationIsActive(operation)) {
+      state.minting = false;
+      renderMintAction();
+    }
   }
 }
 
 async function certifyOcUpload() {
+  if (state.minting) return;
+  if (!canonicalSoulMintEnabled) {
+    state.mintStatus = t('canonicalMintGateClosed');
+    renderMintAction();
+    return;
+  }
+  const operation = beginOcChainOperation();
+  const retryingCertifiedCheckpoint = state.ocPublishError?.action === 'certify'
+    && state.ocUploadStage === 'certified';
+  clearOcPublishError();
   state.minting = true;
   state.mintStatus = t('ocWaitingCertification');
   renderMintAction();
   try {
-    await certifyWalrusUpload(state.ocUploadSession);
-    if (state.ocUploadSession.files.length !== 2) throw new Error(t('ocUnexpectedQuilt'));
-    state.ocImagePatchId = state.ocUploadSession.files[0].id;
-    state.ocProfilePatchId = state.ocUploadSession.files[1].id;
-    state.ocUploadStage = 'certified';
-    state.mintStatus = t('ocFilesCertified');
+    await withBrowserUploadLock(operation.recoveryKey, async () => {
+      await syncLatestOcUploadRecovery();
+      if (!ocChainOperationIsActive(operation)) return;
+      if (![
+        'uploaded',
+        'certify-pending',
+        ...(retryingCertifiedCheckpoint ? ['certified'] : []),
+      ].includes(state.ocUploadSession?.stage)) return;
+      const session = state.ocUploadSession;
+      const persistenceContext = captureOcUploadPersistenceContext(session);
+      await certifyWalrusUpload(session, {
+        onCheckpoint: ocUploadCheckpointHandler(session, persistenceContext),
+      });
+      await persistOcUploadRecovery(session, persistenceContext);
+      if (!ocChainOperationIsActive(operation)) return;
+      if (session.files.length !== 2) throw new Error(t('ocUnexpectedQuilt'));
+      state.ocImagePatchId = session.files[0].id;
+      state.ocProfilePatchId = session.files[1].id;
+      state.ocUploadStage = 'certified';
+      state.mintStatus = t('ocFilesCertified');
+    });
   } catch (error) {
-    state.mintStatus = state.locale === 'en' && error?.message
-      ? error.message
-      : t('ocCertificationFailed');
-  } finally {
-    if (state.ocUploadSession?.checkpoint) {
-      persistOcUploadRecovery().catch((error) => console.warn('Could not save OC upload recovery.', error));
+    if (ocChainOperationIsActive(operation)) {
+      recordOcPublishError(error, 'certify', 'ocCertificationFailed');
     }
-    state.minting = false;
-    renderMintAction();
+  } finally {
+    if (ocChainOperationIsActive(operation)) {
+      state.minting = false;
+      renderMintAction();
+    }
   }
 }
 
 async function mintCurrentOc() {
   if (state.minting || state.ocUploadStage !== 'certified') return;
+  clearOcPublishError();
   state.minting = true;
   state.mintStatus = t('soulHandoffPreparing');
   renderMintAction();
@@ -7689,9 +8791,7 @@ async function mintCurrentOc() {
     state.mintStatus = t('soulHandoffComplete');
   } catch (error) {
     console.error('Soulidity handoff failed', error);
-    state.mintStatus = state.locale === 'en' && error?.message
-      ? error.message
-      : t('soulHandoffFailed');
+    recordOcPublishError(error, 'onchain', 'soulHandoffFailed');
   } finally {
     state.minting = false;
     renderMintAction();
@@ -8097,6 +9197,10 @@ $('creatorGateWalletButton')?.addEventListener('click', toggleWallet);
   $(id)?.addEventListener('change', (event) => setLocale(event.target.value));
 });
 $('backToMakerList').addEventListener('click', () => {
+  if (state.publishing || state.minting) {
+    renderAll();
+    return;
+  }
   setCreatorView('list');
   renderAll();
   focusCreatorTop();
@@ -8109,6 +9213,13 @@ document.querySelectorAll('[data-editor-panel-button]').forEach((button) => {
     if (button.hasAttribute('data-focus-composition')) {
       $('compositionOrder')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
+  });
+});
+
+document.querySelectorAll('[data-open-maker-release]').forEach((button) => {
+  button.addEventListener('click', () => {
+    setEditorPanel('parts');
+    makerWorkspace?.openCreatorPublication?.();
   });
 });
 
@@ -8274,49 +9385,6 @@ const creatorLicenseLabels = {
   });
 });
 
-$('prepareMakerUpload')?.addEventListener('click', prepareMakerUpload);
-$('resumeMakerUpload')?.addEventListener('click', async () => {
-  state.publishing = true;
-  state.publishStatus = t('restoringUpload');
-  renderAll();
-  await restoreMakerUploadRecovery(state.templateId, { force: true });
-  state.publishing = false;
-  renderAll();
-});
-$('registerMakerUpload')?.addEventListener('click', registerMakerUpload);
-$('certifyMakerUpload')?.addEventListener('click', certifyMakerUpload);
-$('publishMakerOnchain')?.addEventListener('click', publishCurrentMaker);
-$('reviewPendingMakerPublication')?.addEventListener('click', async () => {
-  if (state.publishing || !normalizedMakerPublicationIntent(state.makerPublicationIntent)) return;
-  state.publishing = true;
-  try {
-    const recovered = await recoverMakerPublicationIntent({ scheduleRetry: true });
-    if (recovered) return;
-    openConfirmation({
-      title: t('clearPendingPublicationTitle'),
-      message: t('clearPendingPublicationMessage'),
-      confirmLabel: t('clearPendingPublicationConfirm'),
-      action: async () => {
-        if (makerPublicationRecoveryTimer) {
-          clearTimeout(makerPublicationRecoveryTimer);
-          makerPublicationRecoveryTimer = null;
-        }
-        state.makerPublicationIntent = null;
-        state.publishStatus = '';
-        await persistMakerUploadRecovery();
-        syncActiveMakerModelRefs();
-        renderAll();
-      },
-    });
-  } catch (error) {
-    state.publishStatus = state.locale === 'en' && error?.message
-      ? error.message
-      : t('makerPublicationFailed');
-  } finally {
-    state.publishing = false;
-    renderAll();
-  }
-});
 $('archiveMakerOnchain')?.addEventListener('click', () => {
   if (state.makerArchived) {
     updateMakerArchiveState(false);
@@ -8350,33 +9418,44 @@ $('updateMakerEconomics')?.addEventListener('click', async () => {
     });
     return;
   }
+  const operation = beginMakerChainOperation();
+  const makerObjectId = state.makerObjectId;
+  const makerAdminCapObjectId = state.makerAdminCapObjectId;
+  const mintingEnabled = $('creatorMintingEnabled').checked;
+  const mintFeeEnabled = $('creatorMintFeeEnabled').checked;
+  const mintPriceLabel = $('creatorMintPrice').value;
   state.publishing = true;
   $('makerEconomicsStatus').textContent = t('adminSignatureWaiting');
   try {
     const transaction = await configureMakerEconomics({
-      makerId: state.makerObjectId,
-      adminCapId: state.makerAdminCapObjectId,
-      mintingEnabled: $('creatorMintingEnabled').checked,
-      mintFeeEnabled: $('creatorMintFeeEnabled').checked,
+      makerId: makerObjectId,
+      adminCapId: makerAdminCapObjectId,
+      mintingEnabled,
+      mintFeeEnabled,
       mintPriceAtomic,
       royaltyBps,
     });
+    if (!makerChainOperationIsActive(operation)) return;
     Object.assign(activeTemplate(), {
-      mintingEnabled: $('creatorMintingEnabled').checked,
-      mintFeeEnabled: $('creatorMintFeeEnabled').checked,
+      mintingEnabled,
+      mintFeeEnabled,
       mintPriceAtomic,
       royaltyBps,
-      price: mintPriceAtomic ? `${$('creatorMintPrice').value} ${runtimeConfig.paymentCoinSymbol}` : 'Free mint',
+      price: mintPriceAtomic ? `${mintPriceLabel} ${runtimeConfig.paymentCoinSymbol}` : 'Free mint',
     });
     $('makerEconomicsStatus').textContent = t('onchainSettingsUpdated', { digest: transaction.digest });
     await saveCurrentMakerDraft({ silent: true });
   } catch (error) {
-    $('makerEconomicsStatus').textContent = state.locale === 'en' && error?.message
-      ? error.message
-      : t('onchainSettingsFailed');
+    if (makerChainOperationIsActive(operation)) {
+      $('makerEconomicsStatus').textContent = state.locale === 'en' && error?.message
+        ? error.message
+        : t('onchainSettingsFailed');
+    }
   } finally {
-    state.publishing = false;
-    renderAll();
+    if (makerChainOperationIsActive(operation)) {
+      state.publishing = false;
+      renderAll();
+    }
   }
 });
 $('withdrawMakerRevenue')?.addEventListener('click', async () => {
@@ -8391,29 +9470,40 @@ $('withdrawMakerRevenue')?.addEventListener('click', async () => {
     });
     return;
   }
+  const operation = beginMakerChainOperation();
+  const makerObjectId = state.makerObjectId;
+  const makerTreasuryObjectId = state.makerTreasuryObjectId;
+  const makerAdminCapObjectId = state.makerAdminCapObjectId;
+  const recipient = state.walletAddress;
+  const amountLabel = $('creatorWithdrawAmount').value;
   state.publishing = true;
   $('makerEconomicsStatus').textContent = t('adminSignatureWaiting');
   try {
     const transaction = await withdrawMakerRevenue({
-      makerId: state.makerObjectId,
-      treasuryId: state.makerTreasuryObjectId,
-      adminCapId: state.makerAdminCapObjectId,
+      makerId: makerObjectId,
+      treasuryId: makerTreasuryObjectId,
+      adminCapId: makerAdminCapObjectId,
       amountAtomic,
-      recipient: state.walletAddress,
+      recipient,
     });
+    if (!makerChainOperationIsActive(operation)) return;
     $('makerEconomicsStatus').textContent = t('revenueWithdrawn', {
-      amount: $('creatorWithdrawAmount').value,
+      amount: amountLabel,
       symbol: runtimeConfig.paymentCoinSymbol,
       digest: transaction.digest,
     });
     await loadActiveTreasuryBalance({ force: true });
   } catch (error) {
-    $('makerEconomicsStatus').textContent = state.locale === 'en' && error?.message
-      ? error.message
-      : t('treasuryWithdrawalFailed');
+    if (makerChainOperationIsActive(operation)) {
+      $('makerEconomicsStatus').textContent = state.locale === 'en' && error?.message
+        ? error.message
+        : t('treasuryWithdrawalFailed');
+    }
   } finally {
-    state.publishing = false;
-    renderAll();
+    if (makerChainOperationIsActive(operation)) {
+      state.publishing = false;
+      renderAll();
+    }
   }
 });
 $('deleteMakerDraft')?.addEventListener('click', () => requestDeleteMaker());
@@ -8487,14 +9577,7 @@ $('downloadPackage').addEventListener('click', () => {
 });
 
 $('prepareOcUpload')?.addEventListener('click', prepareOcUpload);
-$('resumeOcUpload')?.addEventListener('click', async () => {
-  state.minting = true;
-  state.mintStatus = t('restoringOcUpload');
-  renderAll();
-  await restoreOcUploadRecovery(state.templateId, { force: true });
-  state.minting = false;
-  renderAll();
-});
+$('resumeOcUpload')?.addEventListener('click', resumeOcUploadRecovery);
 $('registerOcUpload')?.addEventListener('click', registerOcUpload);
 $('certifyOcUpload')?.addEventListener('click', certifyOcUpload);
 $('mintOcOnchain')?.addEventListener('click', mintCurrentOc);
@@ -8833,6 +9916,7 @@ makerWorkspace = createMakerWorkspace({
       state.draftSaveMessage = payload.savedAt
         ? t('makerRestoredAt', { time: new Date(payload.savedAt).toLocaleTimeString(state.locale) })
         : t('makerRestored');
+      void restoreMakerUploadRecovery(state.templateId, { force: true });
     },
     onDocumentChange(payload) {
       if (!syncV4WorkspaceState(payload)) return;
@@ -8844,11 +9928,19 @@ makerWorkspace = createMakerWorkspace({
       state.draftSaveMessage = payload.automatic ? t('makerAutosaved') : t('makerSaved');
     },
     onBackToLibrary() {
+      if (state.publishing || state.minting) {
+        renderAll();
+        return;
+      }
       setCreatorView('list');
       renderAll();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     },
     onOpenPlayer(payload) {
+      if (state.publishing || state.minting) {
+        renderAll();
+        return;
+      }
       syncV4WorkspaceState(payload);
       state.previewingMaker = true;
       if ($('legacyPlayerEditor')) $('legacyPlayerEditor').hidden = true;
@@ -8865,14 +9957,9 @@ makerWorkspace = createMakerWorkspace({
       else if (action === 'register') await registerMakerUpload();
       else if (action === 'certify') await certifyMakerUpload();
       else if (action === 'onchain') await publishCurrentMaker();
-      else if (action === 'resume') {
-        state.publishing = true;
-        state.publishStatus = t('restoringUpload');
-        renderAll();
-        await restoreMakerUploadRecovery(state.templateId, { force: true });
-        state.publishing = false;
-        renderAll();
-      }
+      else if (action === 'review') await reviewPendingMakerPublication();
+      else if (action === 'discard') await requestDiscardMakerUploadRecovery();
+      else if (action === 'resume') await resumeMakerUploadRecovery();
     },
     onPlayerRecipeChange(payload) {
       syncPlayerV4State(payload);
@@ -8888,21 +9975,21 @@ makerWorkspace = createMakerWorkspace({
         return;
       }
       renderMintAction();
-      if (state.ocUploadStage === 'idle' && activeTemplate()?.source === 'chain' && !makerHasPendingV4Version() && !state.minting) prepareOcUpload();
+      if (
+        canonicalSoulMintEnabled
+        && state.ocUploadStage === 'idle'
+        && activeTemplate()?.source === 'chain'
+        && !makerHasPendingV4Version()
+        && !state.minting
+      ) prepareOcUpload();
     },
     async onPlayerPublishAction(action) {
       if (action === 'prepare') await prepareOcUpload();
       else if (action === 'register') await registerOcUpload();
       else if (action === 'certify') await certifyOcUpload();
       else if (action === 'onchain') await mintCurrentOc();
-      else if (action === 'resume') {
-        state.minting = true;
-        state.mintStatus = t('restoringOcUpload');
-        renderAll();
-        await restoreOcUploadRecovery(state.templateId, { force: true });
-        state.minting = false;
-        renderAll();
-      }
+      else if (action === 'discard') await requestDiscardOcUploadRecovery();
+      else if (action === 'resume') await resumeOcUploadRecovery();
     },
     onPlayerError(error) {
       state.mintStatus = state.locale === 'en' && error?.message ? error.message : t('currentRulesInvalid');
@@ -8929,21 +10016,26 @@ initializeChain(runtimeConfig, (connection) => {
   const previousWalletAddress = state.walletAddress;
   const walletChanged = previousWalletAddress !== connection.address;
   if (walletChanged) {
+    resetMakerUploadMemoryState();
+    const activeModel = makerModels.get(state.templateId);
+    if (activeModel) activeModel.makerPublicationIntent = null;
     resetOcUploadState();
     state.ownedCharacters = [];
     state.ownedCharactersLoadedFor = '';
     state.ownedCharactersError = '';
     templates.filter((template) => template.source === 'chain').forEach((template) => { template.owned = false; });
+  }
+  state.walletConnected = connection.connected;
+  state.walletAddress = connection.address;
+  state.walletProvider = connection.provider;
+  state.walletStatus = connection.status;
+  if (walletChanged) {
     const currentTemplate = activeTemplate();
     if (currentTemplate?.source === 'local' && currentTemplate.owner && currentTemplate.owner !== connection.address) {
       activateMakerModel(templates.find((template) => template.source === 'starter')?.id || templates[0].id);
       syncTemplateFields();
     }
   }
-  state.walletConnected = connection.connected;
-  state.walletAddress = connection.address;
-  state.walletProvider = connection.provider;
-  state.walletStatus = connection.status;
   if (!connection.connected || walletChanged) state.creatorProfileObjectId = '';
   if (connection.connected) {
     loadLocalMakerIndex(connection.address);

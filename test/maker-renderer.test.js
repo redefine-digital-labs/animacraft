@@ -6,6 +6,10 @@ import {
   renderMakerToCanvas,
   resolveMakerScene,
 } from '../maker-renderer.js';
+import {
+  MAX_MAKER_ASSET_BYTES,
+  MAX_MAKER_ASSET_EDGE,
+} from '../maker-assets.js';
 
 function style(id, trackId, assetId, extra = {}) {
   return {
@@ -279,6 +283,91 @@ function fakeCanvas() {
   context.canvas = canvas;
   return { canvas, operations };
 }
+
+function remoteAssetMaker(url) {
+  const maker = makerFixture();
+  maker.parts = [maker.parts.find((entry) => entry.id === 'hair-back')];
+  maker.assets = [{
+    id: 'hair-back-black',
+    width: 400,
+    height: 300,
+    url,
+  }];
+  return maker;
+}
+
+test('Canvas renderer rejects oversized remote metadata before decoding the response body', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousBitmap = globalThis.createImageBitmap;
+  let requestSignal = null;
+  let bitmapCalls = 0;
+  globalThis.fetch = async (_url, options = {}) => {
+    requestSignal = options.signal;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        'content-length': String(MAX_MAKER_ASSET_BYTES + 1),
+        'content-type': 'image/png',
+      }),
+      body: {
+        getReader() {
+          throw new Error('oversized response body must not be read');
+        },
+      },
+    };
+  };
+  globalThis.createImageBitmap = async () => {
+    bitmapCalls += 1;
+    return { width: 4, height: 4, close() {} };
+  };
+  try {
+    await assert.rejects(
+      () => renderMakerToCanvas(
+        remoteAssetMaker('https://aggregator.example/oversized.png'),
+        { selections: [{ partId: 'hair-back', itemId: 'default', styleId: 'default' }] },
+        fakeCanvas().canvas,
+      ),
+      (error) => error?.code === 'MAKER_ASSET_LIMIT_EXCEEDED',
+    );
+    assert.equal(bitmapCalls, 0);
+    assert.equal(requestSignal?.aborted, true);
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.createImageBitmap = previousBitmap;
+  }
+});
+
+test('Canvas renderer closes a decoded remote bitmap that exceeds the dimension limit', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousBitmap = globalThis.createImageBitmap;
+  let closeCount = 0;
+  globalThis.fetch = async () => new Response(new Uint8Array([1, 2, 3]), {
+    status: 200,
+    headers: { 'content-type': 'image/png' },
+  });
+  globalThis.createImageBitmap = async () => ({
+    width: 64,
+    height: MAX_MAKER_ASSET_EDGE + 1,
+    close() {
+      closeCount += 1;
+    },
+  });
+  try {
+    await assert.rejects(
+      () => renderMakerToCanvas(
+        remoteAssetMaker('https://aggregator.example/tall.png'),
+        { selections: [{ partId: 'hair-back', itemId: 'default', styleId: 'default' }] },
+        fakeCanvas().canvas,
+      ),
+      (error) => error?.code === 'MAKER_ASSET_LIMIT_EXCEEDED',
+    );
+    assert.equal(closeCount, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.createImageBitmap = previousBitmap;
+  }
+});
 
 test('Canvas renderer applies direct Style transforms, blend, pixel mode and color hook', async () => {
   const maker = makerFixture();

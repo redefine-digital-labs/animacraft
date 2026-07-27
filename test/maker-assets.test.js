@@ -3,6 +3,9 @@ import test from 'node:test';
 
 import {
   MAX_MAKER_ASSET_BYTES,
+  MAX_MAKER_ASSET_CACHE_PIXELS,
+  MAX_MAKER_ASSET_EDGE,
+  MAX_MAKER_ASSET_PIXELS,
   buildAssetImportMapping,
   buildProjectAssetImportMapping,
   collectTrackAlignmentWarnings,
@@ -192,7 +195,7 @@ test('cached asset resolver deduplicates concurrent work, caches bitmaps and clo
   globalThis.createImageBitmap = async (source) => {
     createCount += 1;
     await Promise.resolve();
-    return { source, close: () => { closeCount += 1; } };
+    return { source, width: 4, height: 4, close: () => { closeCount += 1; } };
   };
   try {
     const blob = new Blob(['image'], { type: 'image/png' });
@@ -218,13 +221,248 @@ test('cached resolver clears failed pending requests so a corrected asset can re
   await assert.rejects(() => resolver.resolve('broken'), /no readable source/);
   records.broken.blob = new Blob(['fixed'], { type: 'image/png' });
   const previous = globalThis.createImageBitmap;
-  globalThis.createImageBitmap = async () => ({ close() {} });
+  globalThis.createImageBitmap = async () => ({ width: 4, height: 4, close() {} });
   try {
     await assert.doesNotReject(() => resolver.resolve('broken'));
   } finally {
     resolver.clear();
     globalThis.createImageBitmap = previous;
   }
+});
+
+test('cached resolver rejects an oversized remote Content-Length before reading or decoding', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousBitmap = globalThis.createImageBitmap;
+  let requestSignal = null;
+  let bodyRead = false;
+  let bitmapCalls = 0;
+  globalThis.fetch = async (_url, options = {}) => {
+    requestSignal = options.signal;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        'content-length': String(MAX_MAKER_ASSET_BYTES + 1),
+        'content-type': 'image/png',
+      }),
+      body: {
+        getReader() {
+          bodyRead = true;
+          throw new Error('body must not be read');
+        },
+      },
+    };
+  };
+  globalThis.createImageBitmap = async () => {
+    bitmapCalls += 1;
+    return { width: 4, height: 4, close() {} };
+  };
+  const resolver = createCachedAssetResolver({
+    remote: { url: 'https://aggregator.example/oversized.png' },
+  });
+  try {
+    await assert.rejects(
+      () => resolver.resolve('remote'),
+      (error) => error?.code === 'MAKER_ASSET_LIMIT_EXCEEDED',
+    );
+    assert.equal(bodyRead, false);
+    assert.equal(bitmapCalls, 0);
+    assert.equal(requestSignal?.aborted, true);
+  } finally {
+    resolver.clear();
+    globalThis.fetch = previousFetch;
+    globalThis.createImageBitmap = previousBitmap;
+  }
+});
+
+test('cached resolver enforces the actual streamed byte limit when Content-Length is absent or false', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousBitmap = globalThis.createImageBitmap;
+  let requestSignal = null;
+  let canceled = false;
+  let released = false;
+  let readIndex = 0;
+  let bitmapCalls = 0;
+  const chunks = [
+    new Uint8Array(MAX_MAKER_ASSET_BYTES),
+    new Uint8Array(1),
+  ];
+  globalThis.fetch = async (_url, options = {}) => {
+    requestSignal = options.signal;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        // Deliberately lies: the stream is larger than this declaration.
+        'content-length': '8',
+        'content-type': 'image/png',
+      }),
+      body: {
+        getReader() {
+          return {
+            async read() {
+              if (readIndex < chunks.length) return { done: false, value: chunks[readIndex++] };
+              return { done: true, value: undefined };
+            },
+            async cancel() {
+              canceled = true;
+            },
+            releaseLock() {
+              released = true;
+            },
+          };
+        },
+      },
+    };
+  };
+  globalThis.createImageBitmap = async () => {
+    bitmapCalls += 1;
+    return { width: 4, height: 4, close() {} };
+  };
+  const resolver = createCachedAssetResolver({
+    remote: { url: 'https://aggregator.example/lying-length.png' },
+  });
+  try {
+    await assert.rejects(
+      () => resolver.resolve('remote'),
+      (error) => error?.code === 'MAKER_ASSET_LIMIT_EXCEEDED',
+    );
+    assert.equal(readIndex, 2);
+    assert.equal(canceled, true);
+    assert.equal(released, true);
+    assert.equal(bitmapCalls, 0);
+    assert.equal(requestSignal?.aborted, true);
+  } finally {
+    resolver.clear();
+    globalThis.fetch = previousFetch;
+    globalThis.createImageBitmap = previousBitmap;
+  }
+});
+
+test('cached resolver validates decoded dimensions and closes invalid or cleared bitmaps', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousBitmap = globalThis.createImageBitmap;
+  let closeCount = 0;
+  globalThis.fetch = async () => new Response(new Uint8Array([1, 2, 3]), {
+    status: 200,
+    headers: { 'content-type': 'image/png' },
+  });
+  globalThis.createImageBitmap = async () => ({
+    width: MAX_MAKER_ASSET_EDGE + 1,
+    height: 32,
+    close() {
+      closeCount += 1;
+    },
+  });
+  const invalidResolver = createCachedAssetResolver({
+    remote: { url: 'https://aggregator.example/wide.png' },
+  });
+  try {
+    await assert.rejects(
+      () => invalidResolver.resolve('remote'),
+      (error) => error?.code === 'MAKER_ASSET_LIMIT_EXCEEDED',
+    );
+    assert.equal(closeCount, 1);
+
+    let releaseBitmap;
+    let markDecodeStarted;
+    const decodeStarted = new Promise((resolve) => {
+      markDecodeStarted = resolve;
+    });
+    globalThis.createImageBitmap = async () => {
+      markDecodeStarted();
+      return new Promise((resolve) => {
+        releaseBitmap = resolve;
+      });
+    };
+    const clearedResolver = createCachedAssetResolver({
+      local: { blob: new Blob(['png'], { type: 'image/png' }) },
+    });
+    const pending = clearedResolver.resolve('local');
+    await decodeStarted;
+    clearedResolver.clear();
+    releaseBitmap({
+      width: 32,
+      height: 32,
+      close() {
+        closeCount += 1;
+      },
+    });
+    await assert.rejects(pending, (error) => error?.name === 'AbortError');
+    assert.equal(closeCount, 2);
+    clearedResolver.clear();
+  } finally {
+    invalidResolver.clear();
+    globalThis.fetch = previousFetch;
+    globalThis.createImageBitmap = previousBitmap;
+  }
+});
+
+test('decoded pixel limit rejects a compressed-image bomb even when both edges are permitted', async () => {
+  const previousBitmap = globalThis.createImageBitmap;
+  let closeCount = 0;
+  globalThis.createImageBitmap = async () => ({
+    width: MAX_MAKER_ASSET_EDGE,
+    height: MAX_MAKER_ASSET_EDGE / 2,
+    close() {
+      closeCount += 1;
+    },
+  });
+  const resolver = createCachedAssetResolver({
+    bomb: { blob: new Blob(['small compressed PNG'], { type: 'image/png' }) },
+  });
+  try {
+    assert.ok(MAX_MAKER_ASSET_EDGE * (MAX_MAKER_ASSET_EDGE / 2) > MAX_MAKER_ASSET_PIXELS);
+    await assert.rejects(
+      () => resolver.resolve('bomb'),
+      (error) => error?.code === 'MAKER_ASSET_LIMIT_EXCEEDED',
+    );
+    assert.equal(closeCount, 1);
+  } finally {
+    resolver.clear();
+    globalThis.createImageBitmap = previousBitmap;
+  }
+});
+
+test('decoded bitmap cache uses a total pixel budget and LRU-closes consecutive Style assets', async () => {
+  const previousBitmap = globalThis.createImageBitmap;
+  const decodes = [];
+  const closes = [];
+  const stylePixels = 4096 * 4096;
+  assert.equal(stylePixels, MAX_MAKER_ASSET_PIXELS);
+  assert.equal(MAX_MAKER_ASSET_CACHE_PIXELS, stylePixels * 2);
+  globalThis.createImageBitmap = async (source) => {
+    decodes.push(source.name);
+    return {
+      name: source.name,
+      width: 4096,
+      height: 4096,
+      close() {
+        closes.push(source.name);
+      },
+    };
+  };
+  const resolver = createCachedAssetResolver({
+    'style-a': { file: { name: 'style-a' } },
+    'style-b': { file: { name: 'style-b' } },
+    'style-c': { file: { name: 'style-c' } },
+  });
+  try {
+    const firstA = await resolver.resolve('style-a');
+    await resolver.resolve('style-b');
+    assert.equal(await resolver.resolve('style-a'), firstA, 'cache hit must promote Style A to most-recent');
+    await resolver.resolve('style-c');
+    assert.deepEqual(closes, ['style-b'], 'third full-budget Style must evict the least-recent Style B');
+    assert.deepEqual(decodes, ['style-a', 'style-b', 'style-c']);
+
+    await resolver.resolve('style-b');
+    assert.deepEqual(decodes, ['style-a', 'style-b', 'style-c', 'style-b']);
+    assert.deepEqual(closes, ['style-b', 'style-a']);
+  } finally {
+    resolver.clear();
+    globalThis.createImageBitmap = previousBitmap;
+  }
+  assert.deepEqual(closes, ['style-b', 'style-a', 'style-c', 'style-b']);
 });
 
 test('runtime records create and revoke only owned object URLs', () => {

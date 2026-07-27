@@ -1,6 +1,12 @@
 import { normalizeStructTag } from '@mysten/sui/utils';
 
 export const SUI_MAINNET_USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+export const ANIMACRAFT_MAX_WALRUS_UPLOAD_BYTES = 500 * 1024 * 1024;
+// This is a client-side spend ceiling, not the amount charged. The Mainnet
+// relay quotes the exact tip from the encoded blob size and the wallet only
+// transfers that quote. At the current 40 MIST / encoded KiB schedule, a
+// 500 MiB Animacraft upload needs about 0.095 SUI.
+export const ANIMACRAFT_MAX_WALRUS_RELAY_TIP_MIST = 100_000_000;
 
 export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   network: 'mainnet',
@@ -14,7 +20,7 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   paymentCoinDecimals: 6,
   walrusAggregatorUrl: 'https://aggregator.walrus-mainnet.walrus.space',
   walrusUploadRelayUrl: 'https://upload-relay.mainnet.walrus.space',
-  walrusRelayMaxTipMist: 1_000_000,
+  walrusRelayMaxTipMist: ANIMACRAFT_MAX_WALRUS_RELAY_TIP_MIST,
   walrusEpochs: 53,
   featuredMakers: {},
   appUrl: '',
@@ -180,7 +186,11 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   if (!MOVE_TYPE.test(String(config.paymentCoinType || ''))) errors.push('paymentCoinType is not a valid Sui Move coin type.');
   if (config.paymentCoinType !== SUI_MAINNET_USDC_TYPE) errors.push('Mainnet Maker payments must use Circle native Sui USDC.');
   if (config.paymentCoinSymbol !== 'USDC' || Number(config.paymentCoinDecimals) !== 6) errors.push('USDC symbol and decimals must be USDC / 6.');
-  if (!Number.isSafeInteger(Number(config.walrusRelayMaxTipMist)) || Number(config.walrusRelayMaxTipMist) < 0) errors.push('walrusRelayMaxTipMist must be a non-negative safe integer.');
+  if (!Number.isSafeInteger(Number(config.walrusRelayMaxTipMist))
+    || Number(config.walrusRelayMaxTipMist) < 0
+    || Number(config.walrusRelayMaxTipMist) > ANIMACRAFT_MAX_WALRUS_RELAY_TIP_MIST) {
+    errors.push(`walrusRelayMaxTipMist must be a non-negative safe integer no greater than ${ANIMACRAFT_MAX_WALRUS_RELAY_TIP_MIST}.`);
+  }
   if (!Number.isInteger(Number(config.walrusEpochs)) || Number(config.walrusEpochs) < 1 || Number(config.walrusEpochs) > 53) errors.push('walrusEpochs must be an integer from 1 to 53.');
 
   Object.entries(config.featuredMakers || {}).forEach(([key, objectId]) => {
