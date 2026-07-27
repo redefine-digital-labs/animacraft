@@ -24,15 +24,6 @@ function moveTypeEndsWith(parameter, suffix) {
   return moveDatatypeName(parameter).endsWith(suffix);
 }
 
-function moveTypeEquals(parameter, expectedType) {
-  try {
-    return normalizeStructTag(moveDatatypeName(parameter))
-      === normalizeStructTag(expectedType);
-  } catch {
-    return false;
-  }
-}
-
 function jsonField(value, ...names) {
   if (!value || typeof value !== 'object') return undefined;
   for (const name of names) {
@@ -67,6 +58,10 @@ function optionHasValue(value) {
   if (value.$kind === 'Some') return true;
   if (Object.hasOwn(value, 'Some')) return true;
   if (Array.isArray(value.vec)) return value.vec.length === 1;
+  // Sui gRPC's Move JSON projection unwraps Option<T> when it contains a
+  // single struct. The sealed package::Publisher therefore appears directly
+  // as { id, module_name, package } instead of { vec: [...] }.
+  if (value.id && value.module_name && value.package) return true;
   return false;
 }
 
@@ -78,6 +73,25 @@ async function moveFunction(client, packageId, name) {
   });
   if (!result.function) throw new Error(`${name} ABI is missing.`);
   return result.function;
+}
+
+async function moveDatatype(client, packageId, name) {
+  const { response } = await client.movePackageService.getDatatype({
+    packageId,
+    moduleName: 'animacraft',
+    name,
+  });
+  if (!response.datatype) throw new Error(`${name} datatype is missing.`);
+  return response.datatype;
+}
+
+function datatypeHasTypeOrigin(datatype, packageId) {
+  try {
+    return normalizeSuiAddress(datatype.definingId)
+      === normalizeSuiAddress(packageId);
+  } catch {
+    return false;
+  }
 }
 
 async function simulateProtocolVersion(client, packageId) {
@@ -101,14 +115,6 @@ async function simulateProtocolVersion(client, packageId) {
 async function checkAnimacraftAbi(client, packageId, protocolFeePackageId) {
   try {
     const protocolFeeTypeOrigin = normalizeSuiAddress(protocolFeePackageId);
-    const protocolFeeConfigType =
-      `${protocolFeeTypeOrigin}::animacraft::ProtocolFeeConfig`;
-    const protocolTreasuryType =
-      `${protocolFeeTypeOrigin}::animacraft::ProtocolTreasury`;
-    const protocolFeeAdminCapType =
-      `${protocolFeeTypeOrigin}::animacraft::ProtocolFeeAdminCap`;
-    const canonicalAuthorizationType =
-      `${protocolFeeTypeOrigin}::animacraft::CanonicalSoulMintAuthorization`;
     const [
       versionFn,
       initializeFn,
@@ -117,6 +123,10 @@ async function checkAnimacraftAbi(client, packageId, protocolFeePackageId) {
       paidFn,
       legacyConsumeFn,
       canonicalConsumeFn,
+      protocolFeeConfigDatatype,
+      protocolTreasuryDatatype,
+      protocolFeeAdminCapDatatype,
+      canonicalAuthorizationDatatype,
       version,
     ] = await Promise.all([
       moveFunction(client, packageId, 'protocol_version'),
@@ -126,8 +136,21 @@ async function checkAnimacraftAbi(client, packageId, protocolFeePackageId) {
       moveFunction(client, packageId, 'authorize_soul_mint_paid_with_protocol_fee'),
       moveFunction(client, packageId, 'consume_soul_mint_authorization'),
       moveFunction(client, packageId, 'consume_canonical_soul_mint_authorization'),
+      moveDatatype(client, packageId, 'ProtocolFeeConfig'),
+      moveDatatype(client, packageId, 'ProtocolTreasury'),
+      moveDatatype(client, packageId, 'ProtocolFeeAdminCap'),
+      moveDatatype(client, packageId, 'CanonicalSoulMintAuthorization'),
       simulateProtocolVersion(client, packageId),
     ]);
+    // getMoveFunction resolves self-module datatype names through the original
+    // package identity after an upgrade. getDatatype.definingId is the
+    // authoritative TypeOrigin for types first introduced by v4.
+    const canonicalTypeOriginsReady = [
+      protocolFeeConfigDatatype,
+      protocolTreasuryDatatype,
+      protocolFeeAdminCapDatatype,
+      canonicalAuthorizationDatatype,
+    ].every((datatype) => datatypeHasTypeOrigin(datatype, protocolFeeTypeOrigin));
     const abiReady = versionFn.parameters.length === 0
       && versionFn.returns.length === 1
       && versionFn.returns[0]?.body?.$kind === 'u64'
@@ -135,29 +158,30 @@ async function checkAnimacraftAbi(client, packageId, protocolFeePackageId) {
       && initializeFn.parameters.length === 2
       && moveTypeEndsWith(initializeFn.parameters[0], '::package::Publisher')
       && initializeFn.returns.length === 1
-      && moveTypeEquals(initializeFn.returns[0], protocolFeeAdminCapType)
+      && moveTypeEndsWith(initializeFn.returns[0], '::animacraft::ProtocolFeeAdminCap')
       && legacyFreeFn.parameters.length === 9
       && freeFn.parameters.length === 10
       && moveTypeEndsWith(freeFn.parameters[0], '::animacraft::OCMaker')
-      && moveTypeEquals(freeFn.parameters[1], protocolFeeConfigType)
+      && moveTypeEndsWith(freeFn.parameters[1], '::animacraft::ProtocolFeeConfig')
       && freeFn.returns.length === 1
-      && moveTypeEquals(freeFn.returns[0], canonicalAuthorizationType)
+      && moveTypeEndsWith(freeFn.returns[0], '::animacraft::CanonicalSoulMintAuthorization')
       && paidFn.typeParameters.length === 1
       && paidFn.parameters.length === 13
-      && moveTypeEquals(paidFn.parameters[2], protocolFeeConfigType)
-      && moveTypeEquals(paidFn.parameters[3], protocolTreasuryType)
+      && moveTypeEndsWith(paidFn.parameters[2], '::animacraft::ProtocolFeeConfig')
+      && moveTypeEndsWith(paidFn.parameters[3], '::animacraft::ProtocolTreasury')
       && paidFn.returns.length === 1
-      && moveTypeEquals(paidFn.returns[0], canonicalAuthorizationType)
+      && moveTypeEndsWith(paidFn.returns[0], '::animacraft::CanonicalSoulMintAuthorization')
       && legacyConsumeFn.parameters.length === 1
       && moveTypeEndsWith(
         legacyConsumeFn.parameters[0],
         '::animacraft::SoulMintAuthorization',
       )
       && canonicalConsumeFn.parameters.length === 1
-      && moveTypeEquals(
+      && moveTypeEndsWith(
         canonicalConsumeFn.parameters[0],
-        canonicalAuthorizationType,
-      );
+        '::animacraft::CanonicalSoulMintAuthorization',
+      )
+      && canonicalTypeOriginsReady;
     record(
       'Animacraft v4 ABI',
       abiReady && version === 4,

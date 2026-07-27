@@ -60,10 +60,15 @@ candidate first:
 ```bash
 sui client upgrade move/animacraft \
   --upgrade-capability 0xe7d1269532bbfbf5e448cb5c58f07fc6720ed3d22e7853e9f13b7b6282746520 \
-  --build-env mainnet \
+  --verify-deps \
+  --force \
   --dry-run \
   --json
 ```
+
+Sui CLI `1.75.2` rejects `--build-env mainnet` on this upgrade path even
+though the option remains visible in help. The package already pins its
+Mainnet environment; use the explicit dependency verification shown above.
 
 For a multisig or hardware-wallet ceremony, create the unsigned transaction
 with the same source, capability and Mainnet environment using

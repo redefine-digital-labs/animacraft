@@ -35,29 +35,45 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(runtime.graphqlUrl, 'https://graphql.mainnet.sui.io/graphql');
   assert.equal(runtime.paymentCoinType, SUI_MAINNET_USDC_TYPE);
   assert.equal(runtime.canonicalSoulMintEnabled, false, 'canonical mint stays gated until the reviewed adapter is deployed');
-  assert.equal(deployment.protocolVersion, 3, 'the deployment record remains on the signed v3 package until upgrade');
-  assert.match(moveSource, /const VERSION: u64 = 4;/, 'the source tree contains the reviewed v4 upgrade candidate');
-  assert.equal(runtime.protocolFeeConfigId, '', 'v4 fee objects are recorded only after signed initialization');
-  assert.equal(runtime.protocolFeePackageId, '', 'v4 fee TypeOrigin is recorded only after signed upgrade');
-  assert.equal(runtime.protocolTreasuryId, '', 'v4 fee objects are recorded only after signed initialization');
-  assert.equal(runtime.protocolFeeAdminCapId, '', 'v4 fee AdminCap is recorded only after signed initialization');
-  assert.equal(runtime.protocolFeeAdminCapOwner, '', 'v4 fee AdminCap owner is recorded only after signed initialization');
-  assert.equal(deployment.upgradeTxDigest, '', 'v4 upgrade digest is recorded only after signed execution');
-  assert.equal(deployment.protocolFeeInitializationTxDigest, '', 'v4 initializer digest is recorded only after signed execution');
-  assert.equal(deployment.protocolFeePackageId, '', 'v4 fee TypeOrigin is recorded only after signed upgrade');
-  assert.equal(deployment.protocolFeeConfigId, '', 'v4 fee config is recorded only after signed initialization');
-  assert.equal(deployment.protocolTreasuryId, '', 'v4 fee treasury is recorded only after signed initialization');
-  assert.equal(deployment.protocolFeeAdminCapId, '', 'v4 fee AdminCap is recorded only after signed initialization');
-  assert.equal(deployment.protocolFeeAdminCapOwner, '', 'v4 fee AdminCap owner is recorded only after signed initialization');
+  assert.equal(deployment.protocolVersion, 4, 'the deployment record tracks the source-verified v4 upgrade');
+  assert.match(moveSource, /const VERSION: u64 = 4;/, 'the source tree matches the published v4 protocol');
+  assert.notEqual(runtime.callablePackageId, runtime.originalPackageId, 'the callable upgrade package is distinct from the stable v3 TypeOrigin');
+  assert.equal(runtime.protocolFeePackageId, runtime.callablePackageId, 'v4 is the stable TypeOrigin for canonical fee types');
+  assert.equal(runtime.protocolFeePackageId, deployment.protocolFeePackageId);
+  assert.equal(runtime.protocolFeeConfigId, deployment.protocolFeeConfigId);
+  assert.equal(runtime.protocolTreasuryId, deployment.protocolTreasuryId);
+  assert.equal(runtime.protocolFeeAdminCapId, deployment.protocolFeeAdminCapId);
+  assert.equal(runtime.protocolFeeAdminCapOwner, deployment.protocolFeeAdminCapOwner);
+  assert.match(deployment.upgradeTxDigest, /^[1-9A-HJ-NP-Za-km-z]{43,44}$/);
+  assert.match(deployment.protocolFeeInitializationTxDigest, /^[1-9A-HJ-NP-Za-km-z]{43,44}$/);
   assert.equal(runtime.primaryProtocolFeeBps, 5_000);
+  assert.equal(deployment.primaryProtocolFeeBps, runtime.primaryProtocolFeeBps);
+  assert.equal(deployment.canonicalSoulMintEnabled, false);
+  assert.equal(deployment.verification.protocolFeeObjectsReadBack, true);
+  assert.equal(deployment.verification.protocolFeeEnabled, false);
 
-  for (const field of ['packageId', 'callablePackageId', 'originalPackageId', 'publisherAddress', 'upgradeCapId', 'publisherObjectId', 'displayObjectId']) {
+  for (const field of [
+    'packageId',
+    'callablePackageId',
+    'originalPackageId',
+    'protocolFeePackageId',
+    'protocolFeeConfigId',
+    'protocolTreasuryId',
+    'protocolFeeAdminCapId',
+    'protocolFeeAdminCapOwner',
+    'publisherAddress',
+    'upgradeCapId',
+    'publisherObjectId',
+    'displayObjectId',
+  ]) {
     assert.match(deployment[field], SUI_OBJECT_ID, `${field} must be a canonical 32-byte Sui id`);
   }
 
   assert.match(deployment.publishDigest, /^[1-9A-HJ-NP-Za-km-z]{43,44}$/);
   assert.match(deployment.verification.packageDigest, /^[1-9A-HJ-NP-Za-km-z]{43,44}$/);
   assert.equal(deployment.verification.transactionStatus, 'success');
+  assert.equal(deployment.verification.upgradeTransactionStatus, 'success');
+  assert.equal(deployment.verification.protocolFeeInitializationStatus, 'success');
   assert.equal(deployment.verification.sourceStatus, 'success');
   assert.match(deployment.verification.sourceVerifiedAtUtc, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   const integrationReadiness = validateRuntimeConfig(runtime, { strict: true, requireSoulidity: true });

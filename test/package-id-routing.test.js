@@ -37,23 +37,27 @@ test('preflight verifies callable ABI and original event discovery independently
 
   assert.match(preflight, /`\$\{config\.originalPackageId\}::animacraft::OCMakerPublished`/);
   assert.match(preflight, /checkAnimacraftAbi\([\s\S]*?config\.callablePackageId,[\s\S]*?config\.protocolFeePackageId/);
-  assert.match(preflight, /moveTypeEquals\(freeFn\.parameters\[1\], protocolFeeConfigType\)/);
+  assert.match(preflight, /moveTypeEndsWith\(freeFn\.parameters\[1\], '::animacraft::ProtocolFeeConfig'\)/);
   assert.match(preflight, /normalizeSuiAddress\(config\.protocolFeePackageId\)/);
   assert.match(preflight, /`\$\{typeOrigin\}::animacraft::ProtocolFeeConfig`/);
   assert.doesNotMatch(preflight, /`\$\{original\}::animacraft::ProtocolFeeConfig`/);
   assert.match(
     preflight,
-    /`\$\{protocolFeeTypeOrigin\}::animacraft::CanonicalSoulMintAuthorization`/,
+    /moveDatatype\(client, packageId, 'CanonicalSoulMintAuthorization'\)/,
+  );
+  assert.match(
+    preflight,
+    /every\(\(datatype\) => datatypeHasTypeOrigin\(datatype, protocolFeeTypeOrigin\)\)/,
   );
   assert.match(
     preflight,
     /moveFunction\(client, packageId, 'consume_canonical_soul_mint_authorization'\)/,
   );
-  assert.match(preflight, /moveTypeEquals\(freeFn\.returns\[0\], canonicalAuthorizationType\)/);
-  assert.match(preflight, /moveTypeEquals\(paidFn\.returns\[0\], canonicalAuthorizationType\)/);
+  assert.match(preflight, /moveTypeEndsWith\(freeFn\.returns\[0\], '::animacraft::CanonicalSoulMintAuthorization'\)/);
+  assert.match(preflight, /moveTypeEndsWith\(paidFn\.returns\[0\], '::animacraft::CanonicalSoulMintAuthorization'\)/);
   assert.match(
     preflight,
-    /moveTypeEquals\(\s*canonicalConsumeFn\.parameters\[0\],\s*canonicalAuthorizationType,/,
+    /moveTypeEndsWith\(\s*canonicalConsumeFn\.parameters\[0\],\s*'::animacraft::CanonicalSoulMintAuthorization',/,
   );
   assert.match(preflight, /simulateProtocolVersion/);
   assert.match(preflight, /protocol_version=\$\{version\}/);

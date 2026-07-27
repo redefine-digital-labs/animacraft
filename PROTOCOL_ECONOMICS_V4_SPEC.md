@@ -1,7 +1,7 @@
 # Animacraft Protocol Economics v4
 
 `v4` is the internal Move protocol/ABI compatibility number. The Animacraft
-product remains pre-v1 and this candidate ships as product version `0.4.0`.
+product remains pre-v1 and this release ships as product version `0.5.0`.
 Product v1 is reserved for a proven creator ecosystem at roughly 1,000 active
 creators, not merely a contract upgrade.
 
@@ -45,8 +45,8 @@ runtime configuration after the signed initialization transaction.
 - Protocol version becomes `4`; new authorizations snapshot version `4`.
 - The legacy paid authorization entry aborts after the upgrade.
 - The new paid entry requires the canonical config and matching typed Protocol
-  Treasury, then deposits both shares before returning the non-droppable
-  `SoulMintAuthorization`.
+  Treasury, then deposits both shares before returning the v4-only
+  non-droppable `CanonicalSoulMintAuthorization`.
 - Any later Soulidity failure aborts the whole PTB and rolls back both deposits.
 - Free authorization remains available without Protocol Fee objects.
 
@@ -65,12 +65,11 @@ runtime configuration after the signed initialization transaction.
 
 ## Deployment Gate
 
-Code and tests may be merged before activation. Mainnet activation still
-requires human signatures for:
+The Animacraft v4 upgrade and one-time native-USDC initialization have been
+signed, source-verified, and recorded on Mainnet with the integration gate
+disabled. Completing activation still requires human signatures for:
 
-1. upgrading the original Animacraft package;
-2. initializing the canonical v4 Protocol Fee objects with native USDC;
-3. upgrading Soulidity with the pinned Animacraft adapter;
-4. confirming Soulidity secondary platform fee remains 250 bps;
-5. recording object IDs and enabling the browser release gate only after a
+1. upgrading Soulidity with the pinned Animacraft adapter;
+2. confirming Soulidity secondary platform fee remains 250 bps;
+3. enabling the on-chain and browser release gates only after a
    signed free and paid end-to-end evidence run.
