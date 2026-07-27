@@ -196,6 +196,75 @@ test('namespaces pack definitions without mutating the base Maker', () => {
   assert.equal(evaluateRecipe(merged, merged.defaultRecipe).valid, true);
 });
 
+test('an embedded Item added to an existing Part reuses identical base Track, Asset and color clones', () => {
+  const base = baseMaker();
+  base.colorChannels.push({
+    id: 'tone',
+    name: 'Tone',
+    order: 0,
+    mode: 'gradient-map',
+    defaultSwatchId: 'default',
+    swatches: [{
+      id: 'default',
+      name: 'Default',
+      hintColor: '#888888',
+      stops: [{ offset: 0, color: '#000000' }, { offset: 1, color: '#ffffff' }],
+    }],
+  });
+  const pack = moonPack();
+  pack.layerTracks.push(structuredClone(base.layerTracks[0]));
+  pack.assets.push(structuredClone(base.assets[0]));
+  pack.colorChannels.push(structuredClone(base.colorChannels[0]));
+  pack.parts[0].items[0].styles[0].assetId = 'body-art';
+  pack.parts[0].items[0].styles[0].colorChannelId = 'tone';
+
+  const result = checkExpansionPackCompatibility(base, pack);
+  assert.equal(result.compatible, true, JSON.stringify(result.errors));
+  assert.deepEqual(
+    result.merged.layerTracks.map((track) => track.id),
+    ['body-track', 'moon__hat-track'],
+  );
+  const addedItem = result.merged.parts
+    .find((part) => part.id === 'body')
+    .items.find((item) => item.id === 'moon__armored-body');
+  assert.equal(addedItem.styles[0].layerTrackId, 'body-track');
+  assert.equal(addedItem.styles[0].assetId, 'body-art');
+  assert.equal(addedItem.styles[0].colorChannelId, 'tone');
+  assert.equal(result.merged.layerTracks.some((track) => track.id === 'moon__body-track'), false);
+  assert.equal(result.merged.assets.some((asset) => asset.id === 'moon__body-art'), false);
+  assert.equal(result.merged.colorChannels.some((channel) => channel.id === 'moon__tone'), false);
+
+  const conflicting = moonPack();
+  conflicting.layerTracks.push({ ...structuredClone(base.layerTracks[0]), name: 'Different Track' });
+  const conflict = checkExpansionPackCompatibility(base, conflicting);
+  assert.equal(conflict.compatible, false);
+  assert.ok(conflict.errors.some((issue) => (
+    issue.code === 'pack-base-track-definition-mismatch'
+    && issue.id === 'body-track'
+  )));
+
+  const conflictingAsset = moonPack();
+  conflictingAsset.assets.push({ ...structuredClone(base.assets[0]), identifier: 'different.png' });
+  const assetConflict = checkExpansionPackCompatibility(base, conflictingAsset);
+  assert.equal(assetConflict.compatible, false);
+  assert.ok(assetConflict.errors.some((issue) => (
+    issue.code === 'pack-base-asset-definition-mismatch'
+    && issue.id === 'body-art'
+  )));
+
+  const conflictingColor = moonPack();
+  conflictingColor.colorChannels.push({
+    ...structuredClone(base.colorChannels[0]),
+    mode: 'different-mode',
+  });
+  const colorConflict = checkExpansionPackCompatibility(base, conflictingColor);
+  assert.equal(colorConflict.compatible, false);
+  assert.ok(colorConflict.errors.some((issue) => (
+    issue.code === 'pack-base-color-definition-mismatch'
+    && issue.id === 'tone'
+  )));
+});
+
 test('mergeExpansionPack returns the same additive runtime view as compatibility preflight', () => {
   const merged = mergeExpansionPack(baseMaker(), moonPack());
   assert.equal(merged.parts.length, 2);

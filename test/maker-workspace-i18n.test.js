@@ -122,8 +122,22 @@ test('critical nested editor details do not fall back to English outside English
     'playerOutputReady',
     'trackBindings',
     'noTrackBindings',
+    'styleLockedTrack',
     'moveTrackBack',
     'moveTrackFront',
+    'partLinkedTrack',
+    'partTrackUnassigned',
+    'partCustomStacking',
+    'movePartUp',
+    'movePartDown',
+    'playerMenuLinkedOrder',
+    'playerMenuLinkedOrderCopy',
+    'trackFollowsPart',
+    'trackCustomOwners',
+    'trackUnassigned',
+    'linkedOrderSynced',
+    'syncLinkedOrder',
+    'issuePartTrackOrder',
     'advancedVisibilityCondition',
     'advancedVisibilityPreserved',
     'publishMakerStep',
@@ -167,6 +181,22 @@ test('critical nested editor details do not fall back to English outside English
     const dictionary = makerWorkspaceDictionary(locale);
     keys.forEach((key) => assert.notEqual(dictionary[key], english[key], `${locale}.${key} must be localized`));
   });
+});
+
+test('linked Part and Layer Track copy describes bidirectional standard order without hiding custom stacking', () => {
+  const expectations = {
+    en: [/both directions/, /custom or shared Tracks/],
+    zh: [/双向联动/, /自定义或共享轨道/],
+    ja: [/双方向/, /カスタムまたは共有トラック/],
+    ko: [/양방향/, /사용자 지정 또는 공유 트랙/],
+    vi: [/hai chiều/, /tùy chỉnh hoặc dùng chung/],
+  };
+
+  Object.entries(expectations).forEach(([locale, patterns]) => {
+    const copy = makerWorkspaceText(locale, 'layerOrderCopy');
+    patterns.forEach((pattern) => assert.match(copy, pattern, `${locale} must explain both order modes`));
+  });
+  assert.doesNotMatch(makerWorkspaceText('en', 'layerOrderCopy'), /never controls visual z-order/);
 });
 
 test('Player completion converts recipe and renderer issue codes into all five UI languages', () => {

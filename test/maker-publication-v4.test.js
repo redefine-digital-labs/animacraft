@@ -4,6 +4,8 @@ import test from 'node:test';
 import { createMakerV5Document, validateMakerV5Document } from '../maker-v4.js';
 import { resolveMakerScene } from '../maker-renderer.js';
 import {
+  MAKER_V4_EMBEDDED_EXPANSION_CONTAINER,
+  MAKER_V4_EMBEDDED_EXPANSION_RUNTIME,
   MAKER_V4_MANIFEST_IDENTIFIER,
   MAKER_V4_NEUTRAL_COLOR,
   MakerV4PublicationError,
@@ -315,6 +317,85 @@ test('embedded ExpansionPack assets stay in the immutable release graph', () => 
   });
   assert.equal(manifest.assets[0].id, 'unused');
   assert.equal(manifest.extensions.expansionRuntime, 'embedded-v1');
+});
+
+test('publication bundle normalizes legacy ExpansionPack paths to the real embedded manifest', async () => {
+  const document = publicationMaker();
+  document.expansionPacks = [{
+    id: 'season-one',
+    name: 'Season One',
+    version: 1,
+    manifestIdentifier: 'expansions/season-one.json',
+    baseMakerId: document.version.rootMakerId,
+    baseMakerVersion: document.version.number,
+    required: false,
+  }];
+  document.extensions.expansionDrafts = [{
+    schemaVersion: 'animacraft.expansion-pack.v1',
+    packId: 'season-one',
+    namespace: 's1',
+    version: '1.0.0',
+    baseMakerId: document.version.rootMakerId,
+    baseVersion: String(document.version.number),
+    assets: [structuredClone(document.assets.find((asset) => asset.id === 'unused'))],
+    parts: [],
+    layerTracks: [],
+    colorChannels: [],
+    rules: [],
+  }];
+  const runtime = runtimeAssets(document);
+  runtime.set('unused', { blob: new Blob(['unused'], { type: 'image/png' }) });
+  const manifestIdentifier = 'maker-release.json';
+  const bundle = buildMakerV4PublicationBundle(document, runtime, {
+    manifestIdentifier,
+    projectionAuxiliaryBlob: new Blob(['transparent'], { type: 'image/png' }),
+  });
+  const descriptor = bundle.manifest.expansionPacks[0];
+
+  assert.equal(descriptor.manifestIdentifier, manifestIdentifier);
+  assert.deepEqual(descriptor.content, {
+    kind: 'embedded',
+    runtime: MAKER_V4_EMBEDDED_EXPANSION_RUNTIME,
+    container: MAKER_V4_EMBEDDED_EXPANSION_CONTAINER,
+    packId: 'season-one',
+  });
+  assert.equal(bundle.manifest.extensions.expansionRuntime, MAKER_V4_EMBEDDED_EXPANSION_RUNTIME);
+  assert.equal(bundle.manifest.extensions.expansionContainer, MAKER_V4_EMBEDDED_EXPANSION_CONTAINER);
+  assert.equal(bundle.manifest.extensions.expansionDrafts[0].packId, 'season-one');
+  assert.equal(Object.hasOwn(bundle.manifest.extensions.expansionDrafts[0].assets[0], 'url'), false);
+  assert.deepEqual(bundle.manifest.moveProjectionV2.expansionRuntime, {
+    kind: 'embedded',
+    runtime: MAKER_V4_EMBEDDED_EXPANSION_RUNTIME,
+    container: MAKER_V4_EMBEDDED_EXPANSION_CONTAINER,
+    coverage: 'complete',
+  });
+  assert.equal(bundle.manifest.moveProjectionV2.expansionPacks[0].manifestIdentifier, manifestIdentifier);
+  assert.equal(bundle.entries.some((entry) => entry.identifier === 'expansions/season-one.json'), false);
+  assert.equal(bundle.entries.some((entry) => (
+    entry.identifier === descriptor.manifestIdentifier
+    && entry.kind === 'maker-manifest'
+  )), true);
+  assert.doesNotMatch(JSON.stringify(bundle.manifest), /expansions\/season-one\.json/);
+  assert.deepEqual(JSON.parse(await bundle.entries.at(-1).blob.text()), bundle.manifest);
+});
+
+test('publication rejects dangling ExpansionPack metadata without embedded content', () => {
+  const document = publicationMaker();
+  document.expansionPacks = [{
+    id: 'missing-pack',
+    name: 'Missing Pack',
+    version: 1,
+    manifestIdentifier: 'expansions/missing-pack.json',
+    baseMakerId: document.version.rootMakerId,
+    baseMakerVersion: document.version.number,
+    required: false,
+  }];
+  assert.throws(
+    () => buildMakerV4PublicationManifest(document),
+    (error) => error instanceof MakerV4PublicationError
+      && error.code === 'missing-embedded-expansion-draft'
+      && error.details.packIds.includes('missing-pack'),
+  );
 });
 
 test('asset collection fails rather than silently replacing a missing Blob', () => {
