@@ -1,6 +1,6 @@
 {
   "name": "animacraft",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "type": "module",
   "description": "The Fully Onchain Character Maker & Creator",
@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "node --test",
-    "check": "node --check app.js && node --check chain-runtime.js && node --check chain-error-ui.js && node --check chain-publication-recovery.js && node --check draft-store.js && node --check living-content.js && node --check manifest-validation.js && node --check recipe-hash.js && node --check remote-read.js && node --check runtime-config.js && node --check maker-v4.js && node --check maker-renderer.js && node --check maker-rules.js && node --check expansion-packs.js && node --check maker-publication-v4.js && node --check maker-workspace.js && node --check maker-workspace-i18n.js && node --check maker-workspace-store.js && node --check maker-storage-initializer.js && node --check maker-legacy-recovery.js && node --check maker-draft-store.js && node --check maker-draft-repository.js && node --check maker-draft-wal.js && node --check maker-soul-config.js && node --check maker-command-store.js && node --check maker-document-ops.js && node --check maker-assets.js && node --check maker-project-archive.js && node --check maker-color.js && node --check scripts/import-angie-v4.mjs && node --check scripts/mainnet-preflight.mjs && npm run preflight:config && npm test && npm run build",
+    "check": "node --check app.js && node --check chain-runtime.js && node --check chain-error-ui.js && node --check chain-publication-recovery.js && node --check walrus-certification.js && node --check draft-store.js && node --check living-content.js && node --check manifest-validation.js && node --check recipe-hash.js && node --check remote-read.js && node --check runtime-config.js && node --check maker-v4.js && node --check maker-renderer.js && node --check maker-rules.js && node --check expansion-packs.js && node --check maker-publication-v4.js && node --check maker-workspace.js && node --check maker-workspace-i18n.js && node --check maker-workspace-store.js && node --check maker-storage-initializer.js && node --check maker-legacy-recovery.js && node --check maker-draft-store.js && node --check maker-draft-repository.js && node --check maker-draft-wal.js && node --check maker-soul-config.js && node --check maker-command-store.js && node --check maker-document-ops.js && node --check maker-assets.js && node --check maker-project-archive.js && node --check maker-color.js && node --check scripts/import-angie-v4.mjs && node --check scripts/mainnet-preflight.mjs && npm run preflight:config && npm test && npm run build",
     "preflight:config": "node scripts/mainnet-preflight.mjs",
     "preflight:mainnet": "node scripts/mainnet-preflight.mjs --strict --network",
     "preflight:integration": "node scripts/mainnet-preflight.mjs --strict --network --require-soulidity",

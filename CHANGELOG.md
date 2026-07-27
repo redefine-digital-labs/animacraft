@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.2 — Walrus certification visibility hotfix
+
+- Stops reading and caching an uncertified Walrus Blob before its certification transaction.
+- Clears the Walrus SDK object cache and performs bounded read-only state refreshes after an already-confirmed certification, without requesting another signature or broadcasting another transaction.
+- Preserves uploaded checkpoints and certification digests so affected Maker and OC releases can resume after refresh without re-uploading or paying again.
+- Distinguishes “certification succeeded; Blob state is syncing” from a failed chain action in the Creator and Player release modals across English, Chinese, Japanese, Korean, and Vietnamese.
+- Verifies the refreshed Sui Blob object and Walrus Blob identity before advancing to the certified release stage.
+
 ## 0.5.1 — Mainnet publishing hotfix
 
 - Moves the complete four-step Walrus + Sui Maker release workflow into an accessible, responsive modal with localized progress, recovery, fee confirmation, and safe diagnostics.

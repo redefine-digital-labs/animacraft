@@ -15,6 +15,7 @@ import {
   resolveOriginalPackageId,
 } from './runtime-config.js';
 import { publishedMakerFromIntentEvent } from './chain-publication-recovery.js';
+import { waitForCertifiedWalrusBlobObject } from './walrus-certification.js';
 
 export { hashRecipe } from './recipe-hash.js';
 export { publishedMakerFromIntentEvent } from './chain-publication-recovery.js';
@@ -936,8 +937,8 @@ function encodeWalrusQuiltPatchId(blobId, patch) {
   }).toBytes());
 }
 
-async function listQuiltFilesFromCheckpoint(session) {
-  if (Array.isArray(session.files) && session.files.length > 0) return session.files;
+async function listQuiltFilesFromCheckpoint(session, { blobObject = null } = {}) {
+  if (!blobObject && Array.isArray(session.files) && session.files.length > 0) return session.files;
   const blobObjectId = session.checkpoint?.blobObjectId;
   if (!blobObjectId) throw new Error('The Walrus upload checkpoint is missing its Blob object id.');
   const client = session.walrusClient || walrusClient;
@@ -946,14 +947,14 @@ async function listQuiltFilesFromCheckpoint(session) {
     identifier: await file.getIdentifier() ?? `file-${index}`,
     tags: await file.getTags() ?? {},
   })));
-  const [{ index }, blobObject] = await Promise.all([
+  const [{ index }, resolvedBlobObject] = await Promise.all([
     client.walrus.encodeQuilt({ blobs }),
-    client.walrus.getBlobObject(blobObjectId),
+    blobObject || client.walrus.getBlobObject(blobObjectId),
   ]);
   session.files = index.patches.map((patch) => ({
     id: encodeWalrusQuiltPatchId(session.quiltBlobId, patch),
     blobId: session.quiltBlobId,
-    blobObject,
+    blobObject: resolvedBlobObject,
   }));
   return session.files;
 }
@@ -1103,8 +1104,16 @@ export async function resumeWalrusUpload(entries, recovery) {
     applyWalrusQuote(session, walrusQuoteFromCosts(relayTipMist, costs));
     applyWalrusWalletBalances(session, balances);
   }
-  if (session.stage === 'certified' && session.files.length === 0) {
-    await listQuiltFilesFromCheckpoint(session);
+  if (session.stage === 'certified') {
+    const blobObject = await waitForCertifiedWalrusBlobObject(
+      session.walrusClient || walrusClient,
+      session.checkpoint?.blobObjectId,
+      {
+        certifyDigest: session.certifyDigest,
+        expectedBlobId: session.quiltBlobId,
+      },
+    );
+    await listQuiltFilesFromCheckpoint(session, { blobObject });
   }
   return session;
 }
@@ -1120,7 +1129,6 @@ export async function registerAndUploadWalrus(session, { onCheckpoint = null } =
     }
     if (session.stage === 'certified') return session;
     if (session.stage === 'uploaded') {
-      await listQuiltFilesFromCheckpoint(session);
       await checkpointWalrusSession(session, onCheckpoint);
       return session;
     }
@@ -1156,18 +1164,10 @@ export async function registerAndUploadWalrus(session, { onCheckpoint = null } =
     session.stage = 'uploaded';
     await checkpointWalrusSession(session, onCheckpoint);
 
-    session.files = await session.flow.listFiles();
-    if (session.files[0]?.blobObject?.certified_epoch != null) {
-      const blobObject = session.files[0].blobObject;
-      session.checkpoint = {
-        step: 'certified',
-        blobId: session.files[0].blobId,
-        blobObjectId: blobObject.id,
-        blobObject,
-        ...(session.encoded.nonce ? { nonce: session.encoded.nonce } : {}),
-      };
-      session.stage = 'certified';
-    }
+    // Patch IDs are reconstructed only after certification. Calling listFiles()
+    // here would cache the pre-certification Blob object inside WalrusClient and
+    // make a later getBlobObject() return certified_epoch: null indefinitely.
+    session.files = [];
     session.recoveringUploaded = false;
     await checkpointWalrusSession(session, onCheckpoint);
     return session;
@@ -1225,19 +1225,18 @@ export async function certifyWalrusUpload(session, { onCheckpoint = null } = {})
       });
     }
 
-    // Certification is already confirmed on Sui. Reconstructing the local file
-    // index does not contact the relay and is safe for old uploaded checkpoints.
-    session.files = await listQuiltFilesFromCheckpoint(session);
-    const blobObject = await (session.walrusClient || walrusClient).walrus.getBlobObject(
+    // Certification is already confirmed on Sui. WalrusClient may still hold a
+    // pre-certification Blob object, so every read-only attempt clears its
+    // object cache before querying again. This path never signs another tx.
+    const blobObject = await waitForCertifiedWalrusBlobObject(
+      session.walrusClient || walrusClient,
       session.checkpoint.blobObjectId,
+      {
+        certifyDigest: session.certifyDigest,
+        expectedBlobId: session.quiltBlobId,
+      },
     );
-    if (blobObject.certified_epoch == null) {
-      throw walrusStateError(
-        'WALRUS_CERTIFICATION_NOT_VISIBLE',
-        `Walrus certification ${session.certifyDigest} is confirmed but the certified Blob object is not visible yet. Retry will only query it.`,
-      );
-    }
-    session.files = session.files.map((file) => ({ ...file, blobObject }));
+    session.files = await listQuiltFilesFromCheckpoint(session, { blobObject });
     session.checkpoint = {
       step: 'certified',
       blobId: session.quiltBlobId,
