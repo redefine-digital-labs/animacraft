@@ -1817,6 +1817,46 @@ test('published version drafts rebuild as one chain-bound successor after refres
   );
 });
 
+test('Maker lifecycle action cards isolate their tones and contain translated copy', async () => {
+  const [app, styles] = await Promise.all([
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  ]);
+
+  const actionStart = app.indexOf('function lifecycleActionButton(');
+  const actionEnd = app.indexOf('\nfunction makerLifecycleVersionTargetLabel', actionStart);
+  const actionRenderer = app.slice(actionStart, actionEnd);
+  assert.ok(actionStart >= 0 && actionEnd > actionStart);
+  assert.match(actionRenderer, /const toneAttribute = tone \? ` data-tone=/);
+  assert.match(actionRenderer, /class="maker-lifecycle-manager-action"/);
+  assert.doesNotMatch(
+    actionRenderer,
+    /class="maker-lifecycle-manager-action \$\{/,
+    'lifecycle cards must not inherit global primary/danger button layout rules',
+  );
+
+  assert.match(
+    styles,
+    /\.maker-lifecycle-manager-actions\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s,
+    'desktop lifecycle actions must use readable two-column cards',
+  );
+  assert.match(
+    styles,
+    /\.maker-lifecycle-manager-action,\s*\.maker-lifecycle-manager-actions > button\s*\{[^}]*min-width:\s*0;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s,
+    'action cards must contain and wrap long translated copy',
+  );
+  assert.match(
+    styles,
+    /\.maker-lifecycle-manager-action small,\s*\.maker-lifecycle-manager-actions > button small\s*\{[^}]*max-width:\s*100%;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s,
+    'action descriptions must never inherit nowrap from a generic button class',
+  );
+  assert.match(
+    styles,
+    /\.maker-lifecycle-manager-action:disabled,\s*\.maker-lifecycle-manager-actions > button:disabled\s*\{[^}]*background:\s*var\(--ui-surface-muted\);[^}]*opacity:\s*1;/s,
+    'disabled lifecycle actions must remain legible instead of fading the entire card',
+  );
+});
+
 test('the Sui wallet selector localizes every operational state in all five languages', async () => {
   const [chainRuntime, app] = await Promise.all([
     readFile(new URL('../chain-runtime.js', import.meta.url), 'utf8'),

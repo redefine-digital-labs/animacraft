@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.2 — Lifecycle manager layout hotfix
+
+- Isolates lifecycle action-card tones from generic button classes so long translated descriptions wrap inside their own cards instead of overlapping adjacent actions.
+- Uses a readable two-column desktop layout and a single-column mobile layout for the complete Draft, Publishing, Recoverable, Active, Paused, Archived, and Version draft action set.
+- Keeps unavailable lifecycle actions clearly disabled without fading their explanations below a practical reading contrast.
+- Adds a UI contract that prevents generic `nowrap` button styling from leaking back into lifecycle cards.
+
 ## 0.7.1 — Player Smart Color palette
 
 - Promotes creator-linked Smart Color channels to a first-level Player palette beside the Part tabs, while keeping Layer Tracks and link management creator-only.
