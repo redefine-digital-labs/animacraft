@@ -9706,8 +9706,9 @@ function lifecycleActionButton(action, label, copy, {
   disabled = false,
 } = {}) {
   const unavailable = disabled ? ` title="${escapeHtml(t('makerLifecycleActionUnavailable'))}"` : '';
+  const toneAttribute = tone ? ` data-tone="${escapeHtml(tone)}"` : '';
   return `
-    <button class="maker-lifecycle-manager-action ${escapeHtml(tone)}" type="button" data-lifecycle-action="${escapeHtml(action)}" ${disabled ? 'disabled aria-disabled="true"' : ''}${unavailable}>
+    <button class="maker-lifecycle-manager-action" type="button" data-lifecycle-action="${escapeHtml(action)}"${toneAttribute} ${disabled ? 'disabled aria-disabled="true"' : ''}${unavailable}>
       <strong>${escapeHtml(label)}</strong>
       <small>${escapeHtml(copy)}</small>
     </button>

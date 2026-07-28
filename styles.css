@@ -3120,7 +3120,7 @@ input[type="color"] {
 
 .maker-lifecycle-manager-actions {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -3133,6 +3133,8 @@ input[type="color"] {
   display: grid;
   gap: 5px;
   align-content: start;
+  width: 100%;
+  min-width: 0;
   min-height: 92px;
   border: 1px solid var(--ui-border);
   border-radius: 10px;
@@ -3140,31 +3142,41 @@ input[type="color"] {
   background: var(--ui-surface-raised);
   color: var(--ui-text);
   text-align: left;
+  white-space: normal;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .maker-lifecycle-manager-action strong,
 .maker-lifecycle-manager-actions > button strong {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   font-size: 13px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .maker-lifecycle-manager-action small,
 .maker-lifecycle-manager-actions > button small {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   color: var(--ui-muted);
   font-size: 10px;
   line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
-.maker-lifecycle-manager-action.primary,
-.maker-lifecycle-manager-actions > button.primary,
 .maker-lifecycle-manager-action[data-tone="primary"] {
   border-color: var(--ui-tech);
   background: color-mix(in srgb, var(--ui-tech) 9%, var(--ui-surface));
+  box-shadow: var(--ui-shadow-accent);
 }
 
-.maker-lifecycle-manager-action.danger,
-.maker-lifecycle-manager-action.danger-button,
-.maker-lifecycle-manager-actions > button.danger,
-.maker-lifecycle-manager-actions > button.danger-button,
 .maker-lifecycle-manager-action[data-tone="danger"] {
   border-color: color-mix(in srgb, var(--ui-danger) 58%, var(--ui-border));
   background: var(--ui-surface-danger);
@@ -3174,7 +3186,11 @@ input[type="color"] {
 .maker-lifecycle-manager-action:disabled,
 .maker-lifecycle-manager-actions > button:disabled {
   cursor: not-allowed;
-  opacity: 0.52;
+  border-color: var(--ui-border);
+  background: var(--ui-surface-muted);
+  color: var(--ui-muted);
+  box-shadow: none;
+  opacity: 1;
 }
 
 .maker-lifecycle-manager-retirement {
