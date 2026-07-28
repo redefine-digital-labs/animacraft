@@ -55,6 +55,7 @@ import {
   normalizeRuntimeConfig,
 } from './runtime-config.js';
 import { createMakerWorkspace } from './maker-workspace.js';
+import { findMakerVersionDraftConflict } from './maker-version-lineage.js';
 import { initializeMakerDraftStorage } from './maker-storage-initializer.js';
 import {
   legacyRecoveryExportPayload,
@@ -764,7 +765,7 @@ const makerLifecycleStatusI18n = {
   ja: {
     makerLifecycleDraft: '下書き',
     makerLifecycleStarter: 'スターター',
-    makerLifecyclePublishing: '公開中',
+    makerLifecyclePublishing: '公開処理中',
     makerLifecycleRecoverable: '復旧可能',
     makerLifecycleActive: '有効',
     makerLifecyclePaused: '一時停止',
@@ -783,7 +784,7 @@ const makerLifecycleStatusI18n = {
   ko: {
     makerLifecycleDraft: '초안',
     makerLifecycleStarter: '시작 예시',
-    makerLifecyclePublishing: '게시 중',
+    makerLifecyclePublishing: '게시 처리 중',
     makerLifecycleRecoverable: '복구 가능',
     makerLifecycleActive: '활성',
     makerLifecyclePaused: '일시 중지',
@@ -821,6 +822,346 @@ const makerLifecycleStatusI18n = {
 };
 
 Object.entries(makerLifecycleStatusI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
+
+const makerLifecycleManagerI18n = {
+  en: {
+    makerLifecycleManagerKicker: 'Maker control',
+    makerLifecycleManagerTitle: 'Lifecycle & on-chain status',
+    makerLifecycleManagerCopy: 'Review the editable workspace and its published chain version before choosing an action.',
+    makerLifecycleManagerClose: 'Close lifecycle manager',
+    makerLifecycleManagerOpenEditor: 'Open editor',
+    makerLifecycleManagerInspectEditor: 'Inspect published version',
+    makerLifecycleManage: 'Manage status',
+    makerLifecycleWorkingVersion: 'Working version',
+    makerLifecyclePublishedVersion: 'Published chain version',
+    makerLifecycleVersionHistoryTitle: 'Published version history',
+    makerLifecycleVersionHistoryCopy: 'Every immutable OCMaker under this stable Maker root remains independently manageable.',
+    makerLifecycleVersionCurrent: 'Current',
+    makerLifecycleVersionPrevious: 'Previous',
+    makerLifecycleVersionHistoryEmpty: 'No published version history is available yet.',
+    makerLifecycleVersionHistoryNoAuthority: 'The connected wallet does not currently expose a matching MakerAdminCap for this object.',
+    makerLifecycleNoPublishedVersion: 'No version has been published on Sui yet.',
+    makerLifecycleLocalScope: 'Local workspace',
+    makerLifecycleChainScope: 'Sui Mainnet',
+    makerLifecycleVersion: 'Version',
+    makerLifecycleObject: 'Maker object',
+    makerLifecycleAuthority: 'Management authority',
+    makerLifecycleAuthorityReady: 'MakerAdminCap available',
+    makerLifecycleAuthorityUnavailable: 'Connect the owner wallet and refresh the library to manage this chain version.',
+    makerLifecycleActionContinue: 'Continue editing',
+    makerLifecycleActionRelease: 'Open release progress',
+    makerLifecycleActionPublishVersion: 'Review & publish version',
+    makerLifecycleActionStartVersion: 'Create next version',
+    makerLifecycleActionDiscardVersion: 'Discard version draft',
+    makerLifecycleActionPause: 'Pause new Soul authorizations',
+    makerLifecycleActionResume: 'Resume new Soul authorizations',
+    makerLifecycleActionResumeFree: 'Resume as free',
+    makerLifecycleActionArchive: 'Archive chain version',
+    makerLifecycleActionRestore: 'Restore chain version',
+    makerLifecycleActionDeleteDraft: 'Delete local draft',
+    makerLifecycleDraftActionCopy: 'This draft only exists in the current wallet workspace. Continue editing or delete its local record.',
+    makerLifecyclePublishingActionCopy: 'A release is currently running. Reopen the saved progress without starting a second transaction.',
+    makerLifecycleRecoverableActionCopy: 'A Walrus checkpoint or submitted Sui transaction is saved. Resume or review it before publishing again.',
+    makerLifecycleActiveActionCopy: 'This immutable chain version is public and currently accepts new Soul authorizations.',
+    makerLifecyclePausedActionCopy: 'This chain version remains public, but new Soul authorizations are disabled.',
+    makerLifecycleArchivedActionCopy: 'This chain version is hidden from discovery and blocks new Soul authorizations. Existing records remain valid.',
+    makerLifecycleVersionDraftActionCopy: 'The working version is editable. Its previously published chain version remains independently manageable below.',
+    makerLifecycleStartVersionCopy: 'Create an editable local successor from the published version. Nothing changes on-chain until you publish it.',
+    makerLifecycleDiscardVersionTitle: 'Discard this version draft?',
+    makerLifecycleDiscardVersionCopy: 'The working version will return to the last published document. Its Sui object, Walrus assets, and existing OCs are not changed.',
+    makerLifecycleDiscardVersionConfirm: 'Discard version draft',
+    makerLifecyclePauseTitle: 'Pause new Soul authorizations?',
+    makerLifecyclePauseCopy: 'Players may still inspect and try this Maker, while new Soul authorizations are blocked until you resume them. The current mint fee and royalty settings are saved before the transaction.',
+    makerLifecyclePauseConfirm: 'Pause authorizations',
+    makerLifecycleResumeTitle: 'Resume new Soul authorizations?',
+    makerLifecycleResumeCopy: 'The saved pre-pause mint fee and royalty settings will be restored after current chain authority is revalidated.',
+    makerLifecycleResumeFreeCopy: 'No pre-pause economics snapshot is available. Resuming will enable free Soul authorizations and keep the current royalty.',
+    makerLifecycleResumeConfirm: 'Resume authorizations',
+    makerLifecycleResumeFreeConfirm: 'Resume as free',
+    makerLifecycleEconomicsSnapshotSaveFailed: 'The current Maker economics could not be saved safely. No Sui signature was requested.',
+    makerLifecyclePermanentRetirementTitle: 'Permanent retirement is protocol-locked',
+    makerLifecyclePermanentRetirementCopy: 'Permanent retirement and on-chain supersession require a reviewed protocol upgrade. Use reversible Archive for this release.',
+    makerLifecycleVersionWarning: 'Publishing a version draft creates a separate immutable OCMaker. The previous chain version remains until you archive it manually.',
+    makerLifecycleNoAuthority: 'This wallet cannot manage the published version because its MakerAdminCap is unavailable.',
+    makerLifecycleStatusReady: 'Choose an action for this Maker.',
+    makerLifecycleChainVersionImmutable: 'Published content and rules are immutable.',
+    makerLifecycleExistingOcSafe: 'Existing OCs and provenance remain valid.',
+    makerLifecycleNewVersionSeparate: 'New releases create a separate chain object.',
+    makerLifecycleActionUnavailable: 'This action is unavailable until the current operation finishes.',
+    makerLifecycleVersionStarted: 'The next version draft is ready.',
+    makerLifecycleVersionDiscarded: 'The version draft was discarded and the last published version was restored locally.',
+  },
+  zh: {
+    makerLifecycleManagerKicker: 'Maker 管理',
+    makerLifecycleManagerTitle: '生命周期与链上状态',
+    makerLifecycleManagerCopy: '操作前先分别确认可编辑工作版本和已经发布的链上版本。',
+    makerLifecycleManagerClose: '关闭生命周期管理',
+    makerLifecycleManagerOpenEditor: '打开编辑器',
+    makerLifecycleManagerInspectEditor: '查看已发布版本',
+    makerLifecycleManage: '管理状态',
+    makerLifecycleWorkingVersion: '当前工作版本',
+    makerLifecyclePublishedVersion: '已发布链上版本',
+    makerLifecycleVersionHistoryTitle: '已发布版本历史',
+    makerLifecycleVersionHistoryCopy: '同一稳定 Maker 根下的每个不可变 OCMaker 都可以独立管理。',
+    makerLifecycleVersionCurrent: '当前版本',
+    makerLifecycleVersionPrevious: '历史版本',
+    makerLifecycleVersionHistoryEmpty: '尚无可用的已发布版本历史。',
+    makerLifecycleVersionHistoryNoAuthority: '当前连接的钱包没有提供与此对象匹配的 MakerAdminCap。',
+    makerLifecycleNoPublishedVersion: '尚未在 Sui 上发布任何版本。',
+    makerLifecycleLocalScope: '本地工作区',
+    makerLifecycleChainScope: 'Sui 主网',
+    makerLifecycleVersion: '版本',
+    makerLifecycleObject: 'Maker 对象',
+    makerLifecycleAuthority: '管理权限',
+    makerLifecycleAuthorityReady: 'MakerAdminCap 可用',
+    makerLifecycleAuthorityUnavailable: '请连接持有者钱包并刷新模板库，才能管理这个链上版本。',
+    makerLifecycleActionContinue: '继续编辑',
+    makerLifecycleActionRelease: '打开发布进度',
+    makerLifecycleActionPublishVersion: '审核并发布版本',
+    makerLifecycleActionStartVersion: '创建下一版本',
+    makerLifecycleActionDiscardVersion: '放弃版本草稿',
+    makerLifecycleActionPause: '暂停新的 Soul 授权',
+    makerLifecycleActionResume: '恢复新的 Soul 授权',
+    makerLifecycleActionResumeFree: '按免费授权恢复',
+    makerLifecycleActionArchive: '归档链上版本',
+    makerLifecycleActionRestore: '恢复链上版本',
+    makerLifecycleActionDeleteDraft: '删除本地草稿',
+    makerLifecycleDraftActionCopy: '此草稿只存在于当前钱包的本地工作区中，可以继续编辑或删除本地记录。',
+    makerLifecyclePublishingActionCopy: '发布流程正在执行。重新打开已保存进度，不会发起第二笔交易。',
+    makerLifecycleRecoverableActionCopy: '已保存 Walrus 检查点或已提交的 Sui 交易。再次发布前请先恢复或检查。',
+    makerLifecycleActiveActionCopy: '这个不可变的链上版本已公开，并正在接受新的 Soul 授权。',
+    makerLifecyclePausedActionCopy: '这个链上版本仍可查看，但已停止新的 Soul 授权。',
+    makerLifecycleArchivedActionCopy: '这个链上版本已从发现页隐藏，并阻止新的 Soul 授权；现有记录仍然有效。',
+    makerLifecycleVersionDraftActionCopy: '当前工作版本可以编辑；它之前的已发布链上版本仍可在下方独立管理。',
+    makerLifecycleStartVersionCopy: '从已发布版本创建可编辑的本地后继版本；发布前不会改变任何链上状态。',
+    makerLifecycleDiscardVersionTitle: '放弃这个版本草稿？',
+    makerLifecycleDiscardVersionCopy: '当前工作版本会恢复为最后一次发布的文档；Sui 对象、Walrus 素材和现有 OC 都不会改变。',
+    makerLifecycleDiscardVersionConfirm: '放弃版本草稿',
+    makerLifecyclePauseTitle: '暂停新的 Soul 授权？',
+    makerLifecyclePauseCopy: '玩家仍可查看和试玩此 Maker，但在你恢复之前不能产生新的 Soul 授权。发起交易前会先保存当前铸造费用与版税设置。',
+    makerLifecyclePauseConfirm: '暂停授权',
+    makerLifecycleResumeTitle: '恢复新的 Soul 授权？',
+    makerLifecycleResumeCopy: '重新确认当前链上权限后，会恢复暂停前保存的铸造费用与版税设置。',
+    makerLifecycleResumeFreeCopy: '没有找到暂停前的经济参数快照。恢复后将启用免费 Soul 授权，并保留当前版税。',
+    makerLifecycleResumeConfirm: '恢复授权',
+    makerLifecycleResumeFreeConfirm: '按免费授权恢复',
+    makerLifecycleEconomicsSnapshotSaveFailed: '无法安全保存当前 Maker 的经济参数，因此没有请求 Sui 签名。',
+    makerLifecyclePermanentRetirementTitle: '永久退役仍受协议限制',
+    makerLifecyclePermanentRetirementCopy: '永久退役和链上版本取代关系需要经过审核的协议升级。本版本请使用可恢复的“归档”。',
+    makerLifecycleVersionWarning: '发布版本草稿会创建独立且不可变的新 OCMaker；旧链上版本会继续存在，直到你手动归档。',
+    makerLifecycleNoAuthority: '当前钱包没有可用的 MakerAdminCap，因此不能管理这个已发布版本。',
+    makerLifecycleStatusReady: '请选择这个 Maker 的管理操作。',
+    makerLifecycleChainVersionImmutable: '已发布内容和规则不可修改。',
+    makerLifecycleExistingOcSafe: '现有 OC 与来源记录继续有效。',
+    makerLifecycleNewVersionSeparate: '新版本会创建独立链上对象。',
+    makerLifecycleActionUnavailable: '当前操作完成前，此操作暂不可用。',
+    makerLifecycleVersionStarted: '下一版本草稿已创建。',
+    makerLifecycleVersionDiscarded: '版本草稿已放弃，并已在本地恢复最后发布版本。',
+  },
+  ja: {
+    makerLifecycleManagerKicker: 'Maker 管理',
+    makerLifecycleManagerTitle: 'ライフサイクルとオンチェーン状態',
+    makerLifecycleManagerCopy: '操作前に、編集可能な作業版と公開済みチェーン版をそれぞれ確認します。',
+    makerLifecycleManagerClose: 'ライフサイクル管理を閉じる',
+    makerLifecycleManagerOpenEditor: 'エディターを開く',
+    makerLifecycleManagerInspectEditor: '公開済み版を確認',
+    makerLifecycleManage: '状態を管理',
+    makerLifecycleWorkingVersion: '作業中バージョン',
+    makerLifecyclePublishedVersion: '公開済みチェーン版',
+    makerLifecycleVersionHistoryTitle: '公開済みバージョン履歴',
+    makerLifecycleVersionHistoryCopy: '同じ安定 Maker ルートに属する各不変 OCMaker を個別に管理できます。',
+    makerLifecycleVersionCurrent: '現在',
+    makerLifecycleVersionPrevious: '以前',
+    makerLifecycleVersionHistoryEmpty: '公開済みバージョン履歴はまだありません。',
+    makerLifecycleVersionHistoryNoAuthority: '接続中のウォレットに、このオブジェクトと一致する MakerAdminCap がありません。',
+    makerLifecycleNoPublishedVersion: 'Sui にはまだ公開されていません。',
+    makerLifecycleLocalScope: 'ローカルワークスペース',
+    makerLifecycleChainScope: 'Sui Mainnet',
+    makerLifecycleVersion: 'バージョン',
+    makerLifecycleObject: 'Maker オブジェクト',
+    makerLifecycleAuthority: '管理権限',
+    makerLifecycleAuthorityReady: 'MakerAdminCap 利用可能',
+    makerLifecycleAuthorityUnavailable: '所有者ウォレットを接続し、ライブラリを更新すると管理できます。',
+    makerLifecycleActionContinue: '編集を続ける',
+    makerLifecycleActionRelease: '公開進捗を開く',
+    makerLifecycleActionPublishVersion: '確認してバージョンを公開',
+    makerLifecycleActionStartVersion: '次のバージョンを作成',
+    makerLifecycleActionDiscardVersion: 'バージョン下書きを破棄',
+    makerLifecycleActionPause: '新しい Soul 認可を停止',
+    makerLifecycleActionResume: '新しい Soul 認可を再開',
+    makerLifecycleActionResumeFree: '無料認可として再開',
+    makerLifecycleActionArchive: 'チェーン版をアーカイブ',
+    makerLifecycleActionRestore: 'チェーン版を復元',
+    makerLifecycleActionDeleteDraft: 'ローカル下書きを削除',
+    makerLifecycleDraftActionCopy: 'この下書きは現在のウォレットのローカル領域だけにあります。編集継続または削除ができます。',
+    makerLifecyclePublishingActionCopy: '公開処理中です。二重送信せず保存済み進捗を再表示します。',
+    makerLifecycleRecoverableActionCopy: 'Walrus チェックポイントまたは送信済み Sui 取引があります。再公開前に復旧または確認してください。',
+    makerLifecycleActiveActionCopy: 'この不変のチェーン版は公開中で、新しい Soul 認可を受け付けています。',
+    makerLifecyclePausedActionCopy: 'このチェーン版は閲覧できますが、新しい Soul 認可は停止中です。',
+    makerLifecycleArchivedActionCopy: 'このチェーン版は一覧から隠れ、新しい Soul 認可を停止しています。既存記録は有効です。',
+    makerLifecycleVersionDraftActionCopy: '作業中バージョンは編集可能です。以前の公開済みチェーン版は下で個別に管理できます。',
+    makerLifecycleStartVersionCopy: '公開済み版から編集可能な後継下書きを作ります。公開するまでチェーン状態は変わりません。',
+    makerLifecycleDiscardVersionTitle: 'このバージョン下書きを破棄しますか？',
+    makerLifecycleDiscardVersionCopy: '作業版を最後の公開文書へ戻します。Sui オブジェクト、Walrus 素材、既存 OC は変わりません。',
+    makerLifecycleDiscardVersionConfirm: 'バージョン下書きを破棄',
+    makerLifecyclePauseTitle: '新しい Soul 認可を停止しますか？',
+    makerLifecyclePauseCopy: '閲覧と試用はできますが、再開するまで新しい Soul 認可は作成できません。取引前に現在のミント料金とロイヤリティ設定を保存します。',
+    makerLifecyclePauseConfirm: '認可を停止',
+    makerLifecycleResumeTitle: '新しい Soul 認可を再開しますか？',
+    makerLifecycleResumeCopy: '現在のチェーン権限を再確認した後、停止前に保存したミント料金とロイヤリティ設定を復元します。',
+    makerLifecycleResumeFreeCopy: '停止前の経済設定スナップショットがありません。無料の Soul 認可として再開し、現在のロイヤリティを維持します。',
+    makerLifecycleResumeConfirm: '認可を再開',
+    makerLifecycleResumeFreeConfirm: '無料認可として再開',
+    makerLifecycleEconomicsSnapshotSaveFailed: '現在の Maker 経済設定を安全に保存できなかったため、Sui 署名は要求されませんでした。',
+    makerLifecyclePermanentRetirementTitle: '完全廃止はプロトコル制限中',
+    makerLifecyclePermanentRetirementCopy: '完全廃止とオンチェーン後継指定にはレビュー済み更新が必要です。現版では復元可能なアーカイブを使います。',
+    makerLifecycleVersionWarning: 'バージョン下書きの公開は別の不変 OCMaker を作成します。旧版は手動でアーカイブするまで残ります。',
+    makerLifecycleNoAuthority: 'このウォレットでは MakerAdminCap を利用できないため、公開版を管理できません。',
+    makerLifecycleStatusReady: 'この Maker の操作を選択してください。',
+    makerLifecycleChainVersionImmutable: '公開済み内容と規則は不変です。',
+    makerLifecycleExistingOcSafe: '既存 OC と来歴は有効です。',
+    makerLifecycleNewVersionSeparate: '新しい公開は別のチェーンオブジェクトです。',
+    makerLifecycleActionUnavailable: '現在の処理が終わるまで利用できません。',
+    makerLifecycleVersionStarted: '次のバージョン下書きを作成しました。',
+    makerLifecycleVersionDiscarded: 'バージョン下書きを破棄し、最後の公開版をローカルへ戻しました。',
+  },
+  ko: {
+    makerLifecycleManagerKicker: 'Maker 관리',
+    makerLifecycleManagerTitle: '수명 주기 및 온체인 상태',
+    makerLifecycleManagerCopy: '작업하기 전에 편집 가능한 작업 버전과 게시된 체인 버전을 각각 확인하세요.',
+    makerLifecycleManagerClose: '수명 주기 관리자 닫기',
+    makerLifecycleManagerOpenEditor: '편집기 열기',
+    makerLifecycleManagerInspectEditor: '게시 버전 확인',
+    makerLifecycleManage: '상태 관리',
+    makerLifecycleWorkingVersion: '작업 버전',
+    makerLifecyclePublishedVersion: '게시된 체인 버전',
+    makerLifecycleVersionHistoryTitle: '게시 버전 기록',
+    makerLifecycleVersionHistoryCopy: '같은 안정 Maker 루트의 모든 불변 OCMaker를 각각 관리할 수 있습니다.',
+    makerLifecycleVersionCurrent: '현재',
+    makerLifecycleVersionPrevious: '이전',
+    makerLifecycleVersionHistoryEmpty: '아직 게시 버전 기록이 없습니다.',
+    makerLifecycleVersionHistoryNoAuthority: '연결된 지갑에 이 객체와 일치하는 MakerAdminCap이 없습니다.',
+    makerLifecycleNoPublishedVersion: '아직 Sui에 게시된 버전이 없습니다.',
+    makerLifecycleLocalScope: '로컬 작업 공간',
+    makerLifecycleChainScope: 'Sui Mainnet',
+    makerLifecycleVersion: '버전',
+    makerLifecycleObject: 'Maker 객체',
+    makerLifecycleAuthority: '관리 권한',
+    makerLifecycleAuthorityReady: 'MakerAdminCap 사용 가능',
+    makerLifecycleAuthorityUnavailable: '소유자 지갑을 연결하고 라이브러리를 새로고침해 관리하세요.',
+    makerLifecycleActionContinue: '계속 편집',
+    makerLifecycleActionRelease: '게시 진행 상황 열기',
+    makerLifecycleActionPublishVersion: '검토 후 버전 게시',
+    makerLifecycleActionStartVersion: '다음 버전 만들기',
+    makerLifecycleActionDiscardVersion: '버전 초안 폐기',
+    makerLifecycleActionPause: '새 Soul 승인 일시 중지',
+    makerLifecycleActionResume: '새 Soul 승인 재개',
+    makerLifecycleActionResumeFree: '무료 승인으로 재개',
+    makerLifecycleActionArchive: '체인 버전 보관',
+    makerLifecycleActionRestore: '체인 버전 복원',
+    makerLifecycleActionDeleteDraft: '로컬 초안 삭제',
+    makerLifecycleDraftActionCopy: '이 초안은 현재 지갑의 로컬 작업 공간에만 있습니다. 계속 편집하거나 삭제할 수 있습니다.',
+    makerLifecyclePublishingActionCopy: '게시 작업이 진행 중입니다. 두 번째 거래 없이 저장된 진행 상황을 다시 엽니다.',
+    makerLifecycleRecoverableActionCopy: 'Walrus 체크포인트 또는 제출된 Sui 거래가 저장되어 있습니다. 다시 게시하기 전에 복구하거나 검토하세요.',
+    makerLifecycleActiveActionCopy: '이 불변 체인 버전은 공개되어 있으며 새 Soul 승인을 받습니다.',
+    makerLifecyclePausedActionCopy: '이 체인 버전은 공개 상태지만 새 Soul 승인은 중지되었습니다.',
+    makerLifecycleArchivedActionCopy: '이 체인 버전은 검색에서 숨겨지고 새 Soul 승인을 차단합니다. 기존 기록은 유효합니다.',
+    makerLifecycleVersionDraftActionCopy: '작업 버전은 편집 가능하며 이전 게시 체인 버전은 아래에서 별도로 관리할 수 있습니다.',
+    makerLifecycleStartVersionCopy: '게시 버전에서 편집 가능한 후속 초안을 만듭니다. 게시 전에는 온체인 상태가 바뀌지 않습니다.',
+    makerLifecycleDiscardVersionTitle: '이 버전 초안을 폐기할까요?',
+    makerLifecycleDiscardVersionCopy: '작업 버전을 마지막 게시 문서로 되돌립니다. Sui 객체, Walrus 자산, 기존 OC는 바뀌지 않습니다.',
+    makerLifecycleDiscardVersionConfirm: '버전 초안 폐기',
+    makerLifecyclePauseTitle: '새 Soul 승인을 일시 중지할까요?',
+    makerLifecyclePauseCopy: '플레이어는 계속 보고 체험할 수 있지만 재개 전까지 새 Soul 승인은 만들 수 없습니다. 거래 전에 현재 민팅 수수료와 로열티 설정을 저장합니다.',
+    makerLifecyclePauseConfirm: '승인 일시 중지',
+    makerLifecycleResumeTitle: '새 Soul 승인을 재개할까요?',
+    makerLifecycleResumeCopy: '현재 체인 권한을 다시 확인한 뒤 일시 중지 전에 저장한 민팅 수수료와 로열티 설정을 복원합니다.',
+    makerLifecycleResumeFreeCopy: '일시 중지 전 경제 설정 스냅샷이 없습니다. 무료 Soul 승인으로 재개하고 현재 로열티를 유지합니다.',
+    makerLifecycleResumeConfirm: '승인 재개',
+    makerLifecycleResumeFreeConfirm: '무료 승인으로 재개',
+    makerLifecycleEconomicsSnapshotSaveFailed: '현재 Maker 경제 설정을 안전하게 저장하지 못해 Sui 서명을 요청하지 않았습니다.',
+    makerLifecyclePermanentRetirementTitle: '영구 폐기는 프로토콜에서 잠겨 있음',
+    makerLifecyclePermanentRetirementCopy: '영구 폐기와 온체인 대체 표시는 검토된 업그레이드가 필요합니다. 현재는 복원 가능한 보관을 사용하세요.',
+    makerLifecycleVersionWarning: '버전 초안을 게시하면 별도의 불변 OCMaker가 생성됩니다. 이전 버전은 직접 보관할 때까지 남습니다.',
+    makerLifecycleNoAuthority: '이 지갑에는 사용할 수 있는 MakerAdminCap이 없어 게시 버전을 관리할 수 없습니다.',
+    makerLifecycleStatusReady: '이 Maker에 적용할 작업을 선택하세요.',
+    makerLifecycleChainVersionImmutable: '게시된 콘텐츠와 규칙은 변경되지 않습니다.',
+    makerLifecycleExistingOcSafe: '기존 OC와 출처는 계속 유효합니다.',
+    makerLifecycleNewVersionSeparate: '새 릴리스는 별도의 체인 객체를 만듭니다.',
+    makerLifecycleActionUnavailable: '현재 작업이 끝날 때까지 사용할 수 없습니다.',
+    makerLifecycleVersionStarted: '다음 버전 초안이 준비되었습니다.',
+    makerLifecycleVersionDiscarded: '버전 초안을 폐기하고 마지막 게시 버전을 로컬에 복원했습니다.',
+  },
+  vi: {
+    makerLifecycleManagerKicker: 'Quản lý Maker',
+    makerLifecycleManagerTitle: 'Vòng đời & trạng thái on-chain',
+    makerLifecycleManagerCopy: 'Kiểm tra riêng phiên bản đang sửa và phiên bản đã đăng on-chain trước khi thao tác.',
+    makerLifecycleManagerClose: 'Đóng quản lý vòng đời',
+    makerLifecycleManagerOpenEditor: 'Mở trình chỉnh sửa',
+    makerLifecycleManagerInspectEditor: 'Xem phiên bản đã đăng',
+    makerLifecycleManage: 'Quản lý trạng thái',
+    makerLifecycleWorkingVersion: 'Phiên bản đang làm',
+    makerLifecyclePublishedVersion: 'Phiên bản đã đăng on-chain',
+    makerLifecycleVersionHistoryTitle: 'Lịch sử phiên bản đã đăng',
+    makerLifecycleVersionHistoryCopy: 'Mỗi OCMaker bất biến trong cùng gốc Maker ổn định đều có thể được quản lý riêng.',
+    makerLifecycleVersionCurrent: 'Hiện tại',
+    makerLifecycleVersionPrevious: 'Trước đây',
+    makerLifecycleVersionHistoryEmpty: 'Chưa có lịch sử phiên bản đã đăng.',
+    makerLifecycleVersionHistoryNoAuthority: 'Ví đang kết nối không có MakerAdminCap khớp với đối tượng này.',
+    makerLifecycleNoPublishedVersion: 'Chưa có phiên bản nào được đăng lên Sui.',
+    makerLifecycleLocalScope: 'Không gian cục bộ',
+    makerLifecycleChainScope: 'Sui Mainnet',
+    makerLifecycleVersion: 'Phiên bản',
+    makerLifecycleObject: 'Đối tượng Maker',
+    makerLifecycleAuthority: 'Quyền quản lý',
+    makerLifecycleAuthorityReady: 'Có MakerAdminCap',
+    makerLifecycleAuthorityUnavailable: 'Kết nối ví chủ sở hữu và làm mới thư viện để quản lý phiên bản này.',
+    makerLifecycleActionContinue: 'Tiếp tục chỉnh sửa',
+    makerLifecycleActionRelease: 'Mở tiến trình đăng',
+    makerLifecycleActionPublishVersion: 'Xem lại & đăng phiên bản',
+    makerLifecycleActionStartVersion: 'Tạo phiên bản tiếp theo',
+    makerLifecycleActionDiscardVersion: 'Bỏ bản nháp phiên bản',
+    makerLifecycleActionPause: 'Tạm dừng phê duyệt Soul mới',
+    makerLifecycleActionResume: 'Tiếp tục phê duyệt Soul mới',
+    makerLifecycleActionResumeFree: 'Tiếp tục miễn phí',
+    makerLifecycleActionArchive: 'Lưu trữ phiên bản on-chain',
+    makerLifecycleActionRestore: 'Khôi phục phiên bản on-chain',
+    makerLifecycleActionDeleteDraft: 'Xóa bản nháp cục bộ',
+    makerLifecycleDraftActionCopy: 'Bản nháp này chỉ có trong không gian cục bộ của ví hiện tại. Bạn có thể sửa tiếp hoặc xóa.',
+    makerLifecyclePublishingActionCopy: 'Quy trình đăng đang chạy. Mở lại tiến trình đã lưu mà không tạo giao dịch thứ hai.',
+    makerLifecycleRecoverableActionCopy: 'Có điểm kiểm tra Walrus hoặc giao dịch Sui đã gửi. Hãy khôi phục hoặc xem lại trước khi đăng lại.',
+    makerLifecycleActiveActionCopy: 'Phiên bản on-chain bất biến này đang công khai và nhận phê duyệt Soul mới.',
+    makerLifecyclePausedActionCopy: 'Phiên bản này vẫn công khai nhưng không nhận phê duyệt Soul mới.',
+    makerLifecycleArchivedActionCopy: 'Phiên bản này bị ẩn khỏi khám phá và chặn phê duyệt Soul mới. Bản ghi cũ vẫn hợp lệ.',
+    makerLifecycleVersionDraftActionCopy: 'Phiên bản đang làm có thể sửa; phiên bản on-chain trước đó vẫn được quản lý riêng bên dưới.',
+    makerLifecycleStartVersionCopy: 'Tạo bản kế nhiệm cục bộ có thể sửa từ phiên bản đã đăng. On-chain không đổi cho đến khi bạn đăng.',
+    makerLifecycleDiscardVersionTitle: 'Bỏ bản nháp phiên bản này?',
+    makerLifecycleDiscardVersionCopy: 'Phiên bản đang làm sẽ trở về tài liệu đã đăng gần nhất. Đối tượng Sui, tài nguyên Walrus và OC hiện có không đổi.',
+    makerLifecycleDiscardVersionConfirm: 'Bỏ bản nháp phiên bản',
+    makerLifecyclePauseTitle: 'Tạm dừng phê duyệt Soul mới?',
+    makerLifecyclePauseCopy: 'Người chơi vẫn xem và thử được, nhưng không thể tạo phê duyệt Soul mới cho đến khi tiếp tục. Phí mint và tiền bản quyền hiện tại được lưu trước giao dịch.',
+    makerLifecyclePauseConfirm: 'Tạm dừng phê duyệt',
+    makerLifecycleResumeTitle: 'Tiếp tục phê duyệt Soul mới?',
+    makerLifecycleResumeCopy: 'Sau khi xác minh lại quyền on-chain hiện tại, phí mint và tiền bản quyền đã lưu trước khi tạm dừng sẽ được khôi phục.',
+    makerLifecycleResumeFreeCopy: 'Không có ảnh chụp cấu hình kinh tế trước khi tạm dừng. Maker sẽ tiếp tục với phê duyệt Soul miễn phí và giữ tiền bản quyền hiện tại.',
+    makerLifecycleResumeConfirm: 'Tiếp tục phê duyệt',
+    makerLifecycleResumeFreeConfirm: 'Tiếp tục miễn phí',
+    makerLifecycleEconomicsSnapshotSaveFailed: 'Không thể lưu an toàn cấu hình kinh tế hiện tại của Maker nên không yêu cầu chữ ký Sui.',
+    makerLifecyclePermanentRetirementTitle: 'Ngừng vĩnh viễn bị khóa bởi giao thức',
+    makerLifecyclePermanentRetirementCopy: 'Ngừng vĩnh viễn và thay thế on-chain cần nâng cấp giao thức đã duyệt. Hiện hãy dùng Lưu trữ có thể khôi phục.',
+    makerLifecycleVersionWarning: 'Đăng bản nháp phiên bản tạo một OCMaker bất biến riêng. Phiên bản cũ còn tồn tại đến khi bạn tự lưu trữ.',
+    makerLifecycleNoAuthority: 'Ví này không có MakerAdminCap nên không thể quản lý phiên bản đã đăng.',
+    makerLifecycleStatusReady: 'Chọn một thao tác cho Maker này.',
+    makerLifecycleChainVersionImmutable: 'Nội dung và quy tắc đã đăng là bất biến.',
+    makerLifecycleExistingOcSafe: 'OC và nguồn gốc hiện có vẫn hợp lệ.',
+    makerLifecycleNewVersionSeparate: 'Bản phát hành mới tạo đối tượng on-chain riêng.',
+    makerLifecycleActionUnavailable: 'Thao tác chưa dùng được cho đến khi quy trình hiện tại hoàn tất.',
+    makerLifecycleVersionStarted: 'Bản nháp phiên bản tiếp theo đã sẵn sàng.',
+    makerLifecycleVersionDiscarded: 'Đã bỏ bản nháp và khôi phục phiên bản đã đăng gần nhất ở cục bộ.',
+  },
+};
+
+Object.entries(makerLifecycleManagerI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
 
 const licenseOptionI18n = {
   en: { licensePersonal: 'Personal use', licenseRemix: 'Free remix', licenseCommercial: 'Paid commercial', licenseExclusive: 'Exclusive commission' },
@@ -2460,6 +2801,31 @@ const visualThemeI18n = {
 
 Object.entries(visualThemeI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
 
+const makerLifecycleConflictI18n = {
+  en: {
+    makerVersionDraftConflict: 'A newer on-chain version {version} was published from {parent} in another session. Discard this local draft, sync the latest chain version, then start a new version before publishing.',
+    makerVersionLineageFork: 'This Maker has multiple on-chain successors ({versions}) from parent {parent}. Creating or publishing another version is locked until the lineage fork is resolved by a protocol upgrade.',
+  },
+  zh: {
+    makerVersionDraftConflict: '另一个会话已从 {parent} 发布了更新的链上版本 {version}。请先丢弃此本地版本草稿、同步最新链上版本，再创建新版本后发布。',
+    makerVersionLineageFork: '此 Maker 已从父版本 {parent} 产生多个链上后继版本（{versions}）。在协议升级解决这条分叉之前，系统将锁定继续创建或发布版本。',
+  },
+  ja: {
+    makerVersionDraftConflict: '別のセッションで {parent} から新しいオンチェーン版 {version} が公開されました。このローカル下書きを破棄し、最新のチェーン版を同期してから新しい版を作成してください。',
+    makerVersionLineageFork: 'この Maker では親バージョン {parent} から複数のオンチェーン後継版（{versions}）が公開されています。プロトコル更新で分岐が解決されるまで、新しい版の作成と公開はロックされます。',
+  },
+  ko: {
+    makerVersionDraftConflict: '다른 세션에서 {parent} 기반의 더 최신 온체인 버전 {version}이 게시되었습니다. 이 로컬 버전 초안을 폐기하고 최신 체인 버전을 동기화한 뒤 새 버전을 만들어 게시하세요.',
+    makerVersionLineageFork: '이 Maker는 상위 버전 {parent}에서 여러 온체인 후속 버전({versions})이 생성되었습니다. 프로토콜 업그레이드로 분기가 해결될 때까지 새 버전 생성과 게시가 잠깁니다.',
+  },
+  vi: {
+    makerVersionDraftConflict: 'Một phiên khác đã đăng phiên bản on-chain mới hơn {version} từ {parent}. Hãy bỏ bản nháp cục bộ này, đồng bộ phiên bản mới nhất rồi tạo phiên bản mới trước khi đăng.',
+    makerVersionLineageFork: 'Maker này có nhiều phiên bản kế nhiệm on-chain ({versions}) từ phiên bản cha {parent}. Việc tạo hoặc đăng phiên bản mới bị khóa cho đến khi nâng cấp giao thức giải quyết nhánh rẽ.',
+  },
+};
+
+Object.entries(makerLifecycleConflictI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
+
 const requiredLocaleKeys = Object.keys(i18n.en);
 Object.entries(i18n).forEach(([locale, dictionary]) => {
   const missing = requiredLocaleKeys.filter((key) => !Object.hasOwn(dictionary, key));
@@ -2516,6 +2882,8 @@ const state = {
   makerRecipeV4: null,
   makerRuntimeAssetsV4: new Map(),
   publishedMakerDocumentV4: null,
+  publishedMakerRecipeV4: null,
+  publishedMakerVersions: [],
   playerRecipeV4: null,
   playerProfileV4: null,
   playerRuntimeDocumentV4: null,
@@ -2527,7 +2895,10 @@ const state = {
   walletProvider: null,
   walletStatus: 'disconnected',
   publishing: false,
+  makerReleaseInFlight: false,
+  makerLifecycleActionBusy: false,
   publishStatus: '',
+  publishStatusI18n: null,
   publishDigest: '',
   makerPublishError: null,
   makerObjectId: '',
@@ -2600,6 +2971,11 @@ const loadedOcUploadRecoveries = new Set();
 const localMakerCoverObjectUrls = new Map();
 const localMakerCoverRestoreTokens = new Map();
 let pendingConfirmation = null;
+let confirmationReturnFocus = null;
+let confirmationSuspendedLifecycle = false;
+let makerLifecycleManagerReturnFocus = null;
+let makerLifecycleManagerSyncRequestId = 0;
+let makerWorkspaceLifecycleOperationId = 0;
 let makerAutosaveTimer = null;
 let makerWorkspace = null;
 let draftRecoveryRequestId = 0;
@@ -2609,15 +2985,22 @@ let ocUploadRestoreRequestId = 0;
 let makerChainOperationId = 0;
 let ocChainOperationId = 0;
 let treasuryBalanceRequestId = 0;
+let chainMakerLoadRequestId = 0;
 const makerUploadRestoreRequests = new Map();
 const ocUploadRestoreRequests = new Map();
 
-function makerDraftStorageKey(templateId = state.templateId) {
-  return `animacraft-maker-draft-v2:${state.walletAddress || 'local'}:${templateId}`;
+function makerDraftStorageKey(
+  templateId = state.templateId,
+  walletAddress = state.walletAddress,
+) {
+  return `animacraft-maker-draft-v2:${walletAddress || 'local'}:${templateId}`;
 }
 
-function makerAssetStorageKey(templateId = state.templateId) {
-  return `${state.walletAddress || 'local'}:${templateId}`;
+function makerAssetStorageKey(
+  templateId = state.templateId,
+  walletAddress = state.walletAddress,
+) {
+  return `${walletAddress || 'local'}:${templateId}`;
 }
 
 function ocUploadStorageKey(templateId = state.templateId) {
@@ -2625,12 +3008,13 @@ function ocUploadStorageKey(templateId = state.templateId) {
   return `${state.walletAddress || 'local'}:oc:${template?.objectId || runtimeConfig.featuredMakers?.[templateId] || templateId}`;
 }
 
-function beginMakerChainOperation() {
+function beginMakerChainOperation({ bindMakerObject = false } = {}) {
   return Object.freeze({
     id: ++makerChainOperationId,
     recoveryKey: makerAssetStorageKey(),
     templateId: state.templateId,
     walletAddress: state.walletAddress,
+    makerObjectId: bindMakerObject ? suiJsonId(state.makerObjectId) : '',
   });
 }
 
@@ -2640,7 +3024,81 @@ function makerChainOperationIsActive(operation) {
     && operation.id === makerChainOperationId
     && operation.templateId === state.templateId
     && operation.walletAddress === state.walletAddress
-    && operation.recoveryKey === makerAssetStorageKey(),
+    && operation.recoveryKey === makerAssetStorageKey()
+    && (
+      !operation.makerObjectId
+      || comparableSuiId(operation.makerObjectId) === comparableSuiId(state.makerObjectId)
+    ),
+  );
+}
+
+function beginPublishedMakerVersionOperation(makerObjectId) {
+  const targetMakerObjectId = suiJsonId(makerObjectId);
+  const template = activeTemplate();
+  const document = currentMakerV4Source();
+  return Object.freeze({
+    id: ++makerChainOperationId,
+    templateId: state.templateId,
+    walletAddress: state.walletAddress,
+    recoveryKey: makerAssetStorageKey(),
+    rootMakerId: document?.version?.rootMakerId || template?.id || state.templateId,
+    targetMakerObjectId,
+  });
+}
+
+function publishedMakerVersionOperationIsActive(operation) {
+  const activeRootMakerId = currentMakerV4Source()?.version?.rootMakerId
+    || activeTemplate()?.id
+    || state.templateId;
+  if (
+    !operation
+    || operation.id !== makerChainOperationId
+    || operation.templateId !== state.templateId
+    || operation.walletAddress !== state.walletAddress
+    || operation.recoveryKey !== makerAssetStorageKey()
+    || operation.rootMakerId !== activeRootMakerId
+  ) return false;
+  return publishedMakerVersionHistory().some((entry) => (
+    comparableSuiId(entry.makerObjectId)
+    === comparableSuiId(operation.targetMakerObjectId)
+  ));
+}
+
+function invalidateChainMakerDiscovery() {
+  chainMakerLoadRequestId += 1;
+  state.chainMakersLoading = false;
+  state.chainMakersLoadedFor = '';
+  state.chainMakerLoadError = '';
+}
+
+function reloadChainMakerDiscoveryAfterOperation(operation) {
+  if (
+    !operation
+    || !state.walletConnected
+    || operation.walletAddress !== state.walletAddress
+  ) return;
+  state.chainMakersLoadedFor = '';
+  void loadChainMakers(operation.walletAddress);
+}
+
+function captureMakerWorkspaceOperation() {
+  const document = currentMakerV4Source();
+  const rootMakerId = document?.version?.rootMakerId
+    || activeTemplate()?.id
+    || state.templateId;
+  return Object.freeze({
+    templateId: state.templateId,
+    walletAddress: state.walletAddress,
+    makerKey: `${state.walletAddress || 'wallet'}:${rootMakerId}`,
+  });
+}
+
+function makerWorkspaceOperationIsActive(operation) {
+  return Boolean(
+    operation
+    && operation.templateId === state.templateId
+    && operation.walletAddress === state.walletAddress
+    && operation.makerKey === makerWorkspace?.makerKey
   );
 }
 
@@ -2706,12 +3164,15 @@ function createMakerModel({ empty = false, starter = false, canvas = { width: 10
     makerRecipeV4: null,
     makerRuntimeAssetsV4: new Map(),
     publishedMakerDocumentV4: null,
+    publishedMakerRecipeV4: null,
+    publishedMakerVersions: [],
     publishDigest: '',
     publishStatus: '',
     makerObjectId: '',
     makerTreasuryObjectId: '',
     makerAdminCapObjectId: '',
     makerArchived: false,
+    pausedEconomics: null,
     makerPublicationIntent: null,
   };
 }
@@ -2734,12 +3195,16 @@ function syncActiveMakerModelRefs() {
     makerRecipeV4: state.makerRecipeV4,
     makerRuntimeAssetsV4: state.makerRuntimeAssetsV4,
     publishedMakerDocumentV4: state.publishedMakerDocumentV4,
+    publishedMakerRecipeV4: state.publishedMakerRecipeV4,
+    publishedMakerVersions: state.publishedMakerVersions,
     publishDigest: state.publishDigest,
     publishStatus: state.publishStatus,
+    publishStatusI18n: state.publishStatusI18n,
     makerObjectId: state.makerObjectId,
     makerTreasuryObjectId: state.makerTreasuryObjectId,
     makerAdminCapObjectId: state.makerAdminCapObjectId,
     makerArchived: state.makerArchived,
+    pausedEconomics: activeTemplate()?.pausedEconomics || null,
     makerPublicationIntent: state.makerPublicationIntent,
   });
 }
@@ -2768,6 +3233,7 @@ function resetOcUploadState() {
 function resetMakerUploadMemoryState({ clearPublicationIntent = true } = {}) {
   makerUploadRestoreRequestId += 1;
   makerChainOperationId += 1;
+  makerWorkspaceLifecycleOperationId += 1;
   treasuryBalanceRequestId += 1;
   state.treasuryBalanceLoading = false;
   if (makerPublicationRecoveryTimer) {
@@ -2775,6 +3241,8 @@ function resetMakerUploadMemoryState({ clearPublicationIntent = true } = {}) {
     makerPublicationRecoveryTimer = null;
   }
   state.publishing = false;
+  state.makerReleaseInFlight = false;
+  state.makerLifecycleActionBusy = false;
   state.makerUploadSession = null;
   state.pendingMakerAssets = [];
   state.makerUploadStage = 'idle';
@@ -2805,18 +3273,26 @@ function applyMakerModelToState(templateId, model) {
   state.makerRecipeV4 = model.makerRecipeV4 || null;
   state.makerRuntimeAssetsV4 = model.makerRuntimeAssetsV4 instanceof Map ? model.makerRuntimeAssetsV4 : new Map();
   state.publishedMakerDocumentV4 = model.publishedMakerDocumentV4 || (model.makerDocumentV4?.version?.createdAt ? model.makerDocumentV4 : null);
+  state.publishedMakerRecipeV4 = model.publishedMakerRecipeV4
+    || state.publishedMakerDocumentV4?.defaultRecipe
+    || null;
+  state.publishedMakerVersions = Array.isArray(model.publishedMakerVersions)
+    ? structuredClone(model.publishedMakerVersions)
+    : [];
   state.playerRecipeV4 = null;
   state.playerProfileV4 = null;
   state.playerRuntimeDocumentV4 = null;
   state.playerCompletionSnapshotV4 = null;
   state.publishDigest = model.publishDigest;
   state.publishStatus = model.publishStatus;
+  state.publishStatusI18n = model.publishStatusI18n || null;
   state.makerPublishError = null;
   state.makerObjectId = model.makerObjectId || '';
   state.makerTreasuryObjectId = model.makerTreasuryObjectId || '';
   state.makerAdminCapObjectId = model.makerAdminCapObjectId || '';
   if (state.makerTreasuryObjectId !== state.treasuryBalanceLoadedFor) state.treasuryBalanceLoadedFor = '';
   state.makerArchived = Boolean(model.makerArchived);
+  if (activeTemplate()) activeTemplate().pausedEconomics = model.pausedEconomics || null;
   resetMakerUploadMemoryState({ clearPublicationIntent: false });
   state.makerPublicationIntent = model.makerPublicationIntent || null;
   state.selectedSlot = state.slotOrder[0] || '';
@@ -2827,7 +3303,10 @@ function applyMakerModelToState(templateId, model) {
 }
 
 function activateMakerModel(templateId, options = {}) {
-  if ((state.publishing || state.minting) && templateId !== state.templateId) {
+  if (
+    (state.publishing || state.makerLifecycleActionBusy || state.minting)
+    && templateId !== state.templateId
+  ) {
     if (state.publishing) state.publishStatus = t('publishingStatus');
     if (state.minting) state.mintStatus = t('preparingHandoff');
     renderAll();
@@ -2871,12 +3350,16 @@ makerModels.set(state.templateId, {
   makerRecipeV4: state.makerRecipeV4,
   makerRuntimeAssetsV4: state.makerRuntimeAssetsV4,
   publishedMakerDocumentV4: state.publishedMakerDocumentV4,
+  publishedMakerRecipeV4: state.publishedMakerRecipeV4,
+  publishedMakerVersions: state.publishedMakerVersions,
   publishDigest: state.publishDigest,
   publishStatus: state.publishStatus,
+  publishStatusI18n: state.publishStatusI18n,
   makerObjectId: state.makerObjectId,
   makerTreasuryObjectId: state.makerTreasuryObjectId,
   makerAdminCapObjectId: state.makerAdminCapObjectId,
   makerArchived: state.makerArchived,
+  pausedEconomics: activeTemplate()?.pausedEconomics || null,
   makerPublicationIntent: state.makerPublicationIntent,
 });
 
@@ -2892,11 +3375,34 @@ function t(key, variables = {}) {
   );
 }
 
+function setLocalizedPublishStatus(key, variables = {}) {
+  const normalizedVariables = { ...variables };
+  const rendered = t(key, normalizedVariables);
+  state.publishStatus = rendered;
+  state.publishStatusI18n = {
+    key,
+    variables: normalizedVariables,
+    rendered,
+  };
+  return rendered;
+}
+
 function setLocale(locale) {
   state.locale = i18n[locale] ? locale : 'en';
   localStorage.setItem('animacraft-locale', state.locale);
   document.documentElement.lang = state.locale === 'zh' ? 'zh-CN' : state.locale;
   setWalletModalLocale(state.locale);
+  if (
+    state.publishStatusI18n
+    && state.publishStatusI18n.rendered === state.publishStatus
+  ) {
+    const rendered = t(
+      state.publishStatusI18n.key,
+      state.publishStatusI18n.variables,
+    );
+    state.publishStatus = rendered;
+    state.publishStatusI18n.rendered = rendered;
+  }
   renderAll();
 }
 
@@ -2975,6 +3481,96 @@ function makerModelHasPendingV4Version(model) {
     && model.makerDocumentV4.version.versionId !== model.publishedMakerDocumentV4.version.versionId;
 }
 
+function makerVersionDraftConflict(template = activeTemplate()) {
+  const model = template ? makerModels.get(template.id) : null;
+  const isActive = Boolean(template && template.id === state.templateId);
+  const workingDocument = isActive
+    ? state.makerDocumentV4
+    : model?.makerDocumentV4;
+  const publishedDocument = isActive
+    ? state.publishedMakerDocumentV4
+    : model?.publishedMakerDocumentV4;
+  if (!isMakerV4Document(workingDocument) || !isMakerV4Document(publishedDocument)) {
+    return null;
+  }
+  return findMakerVersionDraftConflict({
+    workingDocument,
+    publishedDocument,
+    publishedVersions: publishedMakerVersionHistory(template),
+    currentMakerObjectId: isActive
+      ? state.makerObjectId || template?.objectId
+      : model?.makerObjectId || template?.objectId,
+  });
+}
+
+function directPublishedMakerSuccessor(
+  document = state.publishedMakerDocumentV4,
+  template = activeTemplate(),
+) {
+  const currentVersionId = String(document?.version?.versionId || '');
+  if (!currentVersionId) return null;
+  return publishedMakerVersionHistory(template)
+    .filter((version) => (
+      String(version.parentVersionId || '') === currentVersionId
+      && String(version.versionId || '') !== currentVersionId
+    ))
+    .sort((left, right) => (
+      Number(right.versionNumber || 0) - Number(left.versionNumber || 0)
+      || Number(right.profileOrder ?? -1) - Number(left.profileOrder ?? -1)
+    ))[0] || null;
+}
+
+function makerPublishedLineageFork(template = activeTemplate()) {
+  const versionsByParent = new Map();
+  publishedMakerVersionHistory(template).forEach((version) => {
+    const parentVersionId = String(version.parentVersionId || '');
+    const versionId = String(version.versionId || '');
+    const makerObjectId = comparableSuiId(version.makerObjectId);
+    if (!parentVersionId || !versionId || !makerObjectId) return;
+    const siblings = versionsByParent.get(parentVersionId) || new Map();
+    siblings.set(`${versionId}:${makerObjectId}`, version);
+    versionsByParent.set(parentVersionId, siblings);
+  });
+  return [...versionsByParent.entries()]
+    .map(([parentVersionId, siblings]) => ({
+      parentVersionId,
+      versions: [...siblings.values()].sort((left, right) => (
+        Number(right.versionNumber || 0) - Number(left.versionNumber || 0)
+        || String(right.versionId || '').localeCompare(
+          String(left.versionId || ''),
+          undefined,
+          { numeric: true },
+        )
+        || comparableSuiId(right.makerObjectId).localeCompare(
+          comparableSuiId(left.makerObjectId),
+        )
+      )),
+    }))
+    .filter((fork) => fork.versions.length > 1)
+    .sort((left, right) => (
+      left.parentVersionId.localeCompare(right.parentVersionId)
+    ))[0] || null;
+}
+
+function makerVersionDraftConflictMessage(
+  conflict = makerVersionDraftConflict(),
+  document = currentMakerV4Source(),
+) {
+  if (!conflict) return '';
+  return t('makerVersionDraftConflict', {
+    version: conflict.versionId || '—',
+    parent: document?.version?.parentVersionId || '—',
+  });
+}
+
+function makerVersionLineageForkMessage(fork = makerPublishedLineageFork()) {
+  if (!fork) return '';
+  return t('makerVersionLineageFork', {
+    parent: fork.parentVersionId,
+    versions: fork.versions.map((version) => version.versionId).join(', '),
+  });
+}
+
 function makerLifecycleDescriptor(template = activeTemplate()) {
   const model = template ? makerModels.get(template.id) : null;
   const isActive = Boolean(template && template.id === state.templateId);
@@ -2986,6 +3582,12 @@ function makerLifecycleDescriptor(template = activeTemplate()) {
   const versionDraft = isActive
     ? makerHasPendingV4Version()
     : makerModelHasPendingV4Version(model);
+  const versionConflict = versionDraft
+    ? makerVersionDraftConflict(template)
+    : null;
+  const lineageFork = published
+    ? makerPublishedLineageFork(template)
+    : null;
   const archived = published && Boolean(isActive ? state.makerArchived : model?.makerArchived);
   const mintingEnabled = template?.mintingEnabled !== false;
   const hasActivePublicationCheckpoint = isActive && (
@@ -2996,9 +3598,7 @@ function makerLifecycleDescriptor(template = activeTemplate()) {
   const hasStoredPublicationIntent = Boolean(
     isActive ? state.makerPublicationIntent : model?.makerPublicationIntent,
   );
-  const publicationInFlight = isActive
-    && state.publishing
-    && (!published || versionDraft || hasActivePublicationCheckpoint || hasStoredPublicationIntent);
+  const publicationInFlight = isActive && state.makerReleaseInFlight;
 
   let id = template?.source === 'local' ? 'draft' : 'starter';
   if (publicationInFlight) id = 'publishing';
@@ -3032,6 +3632,8 @@ function makerLifecycleDescriptor(template = activeTemplate()) {
     copyVariables,
     published,
     versionDraft,
+    versionConflict,
+    lineageFork,
     archived,
     mintingEnabled,
   };
@@ -3044,10 +3646,11 @@ function ensureMakerEditable() {
     return false;
   }
   if (!makerIsPublished() || makerHasPendingV4Version()) return true;
-  if (isMakerV4Document(state.makerDocumentV4) && makerWorkspace?.beginNextVersion?.()) return true;
-  state.publishStatus = state.makerArchived
-    ? t('archivedMakerImmutable')
-    : t('publishedMakerImmutable');
+  state.publishStatus = makerPublishedLineageFork()
+    ? makerVersionLineageForkMessage()
+    : state.makerArchived
+      ? t('archivedMakerImmutable')
+      : t('makerLifecycleStartVersionCopy');
   renderPublishAction();
   return false;
 }
@@ -3060,6 +3663,612 @@ function stableMakerCoverUrl(value) {
   const candidate = String(value || '').trim();
   if (!candidate || candidate.startsWith('blob:')) return '';
   return safeExternalUrl(candidate);
+}
+
+function normalizedMakerUpdatedAtMs(value) {
+  const candidate = String(value ?? '').trim();
+  if (!/^\d+$/.test(candidate)) return '';
+  try {
+    const normalized = BigInt(candidate);
+    return normalized > 0n ? normalized.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function walletAddressesMatch(left, right) {
+  const normalizedLeft = String(left || '').trim().toLowerCase();
+  const normalizedRight = String(right || '').trim().toLowerCase();
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
+function templateIsOwnedByWallet(
+  template = activeTemplate(),
+  walletAddress = state.walletAddress,
+) {
+  if (!template || !walletAddressesMatch(template.owner, walletAddress)) return false;
+  return template.source === 'chain'
+    ? template.owned === true
+    : template.source === 'local';
+}
+
+function normalizedPausedEconomicsMutationWitness(value) {
+  if (!value || typeof value !== 'object') return null;
+  const digest = String(value.digest || '').trim().slice(0, 256);
+  const kind = ['pause', 'archive', 'restore'].includes(value.kind)
+    ? value.kind
+    : '';
+  const createdAt = String(value.createdAt || '');
+  if (!digest || !kind || !createdAt || !Number.isFinite(Date.parse(createdAt))) {
+    return null;
+  }
+  return {
+    digest,
+    kind,
+    expectedMintingEnabled: Boolean(value.expectedMintingEnabled),
+    expectedArchived: typeof value.expectedArchived === 'boolean'
+      ? value.expectedArchived
+      : null,
+    createdAt,
+  };
+}
+
+function normalizedWorkspacePausedEconomics(value, makerObjectId = '') {
+  if (!value || typeof value !== 'object') return null;
+  const pausedMakerObjectId = suiJsonId(value.makerObjectId);
+  const expectedMakerObjectId = suiJsonId(makerObjectId);
+  if (
+    !pausedMakerObjectId
+    || (expectedMakerObjectId && comparableSuiId(pausedMakerObjectId) !== comparableSuiId(expectedMakerObjectId))
+  ) return null;
+  const capturedAt = String(value.capturedAt || '');
+  if (!capturedAt || !Number.isFinite(Date.parse(capturedAt))) return null;
+  return {
+    makerObjectId: pausedMakerObjectId,
+    mintFeeEnabled: Boolean(value.mintFeeEnabled),
+    mintPriceAtomic: Math.max(0, Math.floor(Number(value.mintPriceAtomic || 0))),
+    royaltyBps: Math.max(0, Math.min(10_000, Math.floor(Number(value.royaltyBps || 0)))),
+    makerUpdatedAtMs: normalizedMakerUpdatedAtMs(value.makerUpdatedAtMs),
+    pendingMutation: normalizedPausedEconomicsMutationWitness(
+      value.pendingMutation,
+    ),
+    capturedAt,
+  };
+}
+
+function pausedEconomicsForLiveMaker(value, {
+  makerObjectId = '',
+  mintingEnabled = true,
+  makerUpdatedAtMs = '',
+  makerArchived = null,
+  makerPreviousTransaction = '',
+} = {}) {
+  const snapshot = normalizedWorkspacePausedEconomics(value, makerObjectId);
+  if (!snapshot) return null;
+  const liveTimestamp = normalizedMakerUpdatedAtMs(makerUpdatedAtMs);
+  const witness = snapshot.pendingMutation;
+  if (witness) {
+    const expectedStateVisible = (
+      mintingEnabled === witness.expectedMintingEnabled
+      && (
+        witness.expectedArchived === null
+        || Boolean(makerArchived) === witness.expectedArchived
+      )
+    );
+    const witnessTransactionVisible = Boolean(
+      makerPreviousTransaction
+      && String(makerPreviousTransaction) === witness.digest,
+    );
+    if (witnessTransactionVisible && expectedStateVisible) {
+      return liveTimestamp
+        ? {
+            ...snapshot,
+            makerUpdatedAtMs: liveTimestamp,
+            pendingMutation: null,
+          }
+        : snapshot;
+    }
+    // A bounded read immediately after broadcast may still return the exact
+    // pre-mutation object. Keep the witness only while its chain timestamp is
+    // unchanged. Any unrelated later transaction invalidates the snapshot.
+    if (
+      liveTimestamp
+      && snapshot.makerUpdatedAtMs
+      && liveTimestamp === snapshot.makerUpdatedAtMs
+    ) return snapshot;
+    return null;
+  }
+  if (mintingEnabled) return null;
+  return (
+    liveTimestamp
+    && snapshot.makerUpdatedAtMs
+    && snapshot.makerUpdatedAtMs === liveTimestamp
+  )
+    ? snapshot
+    : null;
+}
+
+function pausedEconomicsWithMutationWitness(value, {
+  digest = '',
+  kind = '',
+  expectedMintingEnabled = false,
+  expectedArchived = null,
+} = {}) {
+  const snapshot = normalizedWorkspacePausedEconomics(value);
+  const pendingMutation = normalizedPausedEconomicsMutationWitness({
+    digest,
+    kind,
+    expectedMintingEnabled,
+    expectedArchived,
+    createdAt: new Date().toISOString(),
+  });
+  return snapshot && pendingMutation
+    ? {
+        ...snapshot,
+        pendingMutation,
+      }
+    : snapshot;
+}
+
+function pausedEconomicsWithRecoveredLocalWitness(
+  durableValue,
+  localValue,
+  makerObjectId = '',
+) {
+  const durable = normalizedWorkspacePausedEconomics(
+    durableValue,
+    makerObjectId,
+  );
+  // An explicit durable null is the Resume tombstone and must never be
+  // resurrected from localStorage.
+  if (!durable) return null;
+  if (durable.pendingMutation) return durable;
+  const local = normalizedWorkspacePausedEconomics(localValue, makerObjectId);
+  if (!local?.pendingMutation) return durable;
+  const sameSnapshot = (
+    comparableSuiId(local.makerObjectId) === comparableSuiId(durable.makerObjectId)
+    && local.mintFeeEnabled === durable.mintFeeEnabled
+    && local.mintPriceAtomic === durable.mintPriceAtomic
+    && local.royaltyBps === durable.royaltyBps
+    && local.makerUpdatedAtMs === durable.makerUpdatedAtMs
+    && local.capturedAt === durable.capturedAt
+  );
+  return sameSnapshot
+    ? {
+        ...durable,
+        pendingMutation: local.pendingMutation,
+      }
+    : durable;
+}
+
+function activePausedEconomicsSnapshot() {
+  return normalizedWorkspacePausedEconomics(
+    activeTemplate()?.pausedEconomics,
+    state.makerObjectId || activeTemplate()?.objectId,
+  );
+}
+
+function setActivePausedEconomicsSnapshot(value) {
+  const template = activeTemplate();
+  if (!template) return null;
+  const makerObjectId = state.makerObjectId || template.objectId;
+  const snapshot = normalizedWorkspacePausedEconomics(value, makerObjectId);
+  template.pausedEconomics = snapshot;
+  const model = makerModels.get(template.id);
+  if (model) model.pausedEconomics = snapshot;
+  syncActiveMakerModelRefs();
+  persistLocalMakerIndex(template.owner || state.walletAddress);
+  return snapshot;
+}
+
+async function persistActiveMakerLifecycleBinding({ required = false } = {}) {
+  syncActiveMakerModelRefs();
+  persistLocalMakerIndex(activeTemplate()?.owner || state.walletAddress);
+  try {
+    const result = await saveCurrentMakerDraft({
+      silent: true,
+      forceWorkspace: true,
+    });
+    if (result?.confirmed) return true;
+  } catch (error) {
+    console.warn('Maker lifecycle Workspace persistence failed.', error);
+  }
+  state.draftSaveStatus = 'error';
+  state.draftSaveMessage = t('localDraftSaveFailed');
+  if (required) {
+    throw makerAuthorityError(
+      'MAKER_ECONOMICS_SNAPSHOT_SAVE_FAILED',
+      'makerLifecycleEconomicsSnapshotSaveFailed',
+    );
+  }
+  return false;
+}
+
+function normalizedPublishedMakerVersion(value, {
+  rootMakerId = '',
+} = {}) {
+  if (!value || typeof value !== 'object') return null;
+  const makerObjectId = suiJsonId(value.makerObjectId);
+  const versionId = safeDraftText(value.versionId, '', 128);
+  const recordRootMakerId = safeDraftText(
+    value.rootMakerId || rootMakerId,
+    '',
+    128,
+  );
+  if (
+    !makerObjectId
+    || !versionId
+    || !recordRootMakerId
+    || (rootMakerId && recordRootMakerId !== rootMakerId)
+  ) return null;
+  const normalized = {
+    rootMakerId: recordRootMakerId,
+    versionId,
+    parentVersionId: safeDraftText(value.parentVersionId, '', 128),
+    versionNumber: Math.max(0, Math.floor(Number(value.versionNumber || 0))),
+    profileOrder: Math.max(-1, Math.floor(Number(value.profileOrder ?? -1))),
+    makerObjectId,
+    makerTreasuryObjectId: suiJsonId(value.makerTreasuryObjectId),
+    publishDigest: safeDraftText(value.publishDigest, '', 256),
+    archived: Boolean(value.archived),
+    mintingEnabled: value.mintingEnabled !== false,
+    mintFeeEnabled: Boolean(value.mintFeeEnabled),
+    mintPriceAtomic: Math.max(0, Math.floor(Number(value.mintPriceAtomic || 0))),
+    royaltyBps: Math.max(0, Math.min(10_000, Math.floor(Number(value.royaltyBps || 0)))),
+    current: Boolean(value.current),
+  };
+  if (Object.prototype.hasOwnProperty.call(value, 'makerAdminCapObjectId')) {
+    normalized.makerAdminCapObjectId = suiJsonId(value.makerAdminCapObjectId);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'makerUpdatedAtMs')) {
+    normalized.makerUpdatedAtMs = normalizedMakerUpdatedAtMs(
+      value.makerUpdatedAtMs,
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'makerPreviousTransaction')) {
+    normalized.makerPreviousTransaction = safeDraftText(
+      value.makerPreviousTransaction,
+      '',
+      256,
+    );
+  }
+  // A chain discovery record cannot reconstruct the local pre-pause economics
+  // snapshot. Preserve an existing snapshot when the field is absent, while
+  // still allowing an explicit null after Resume to clear it.
+  if (Object.prototype.hasOwnProperty.call(value, 'pausedEconomics')) {
+    normalized.pausedEconomics = normalizedWorkspacePausedEconomics(
+      value.pausedEconomics,
+      makerObjectId,
+    );
+  }
+  return normalized;
+}
+
+function mergePublishedMakerVersions(
+  sources,
+  {
+    rootMakerId = '',
+    currentMakerObjectId = '',
+  } = {},
+) {
+  const byObjectId = new Map();
+  (Array.isArray(sources) ? sources : [sources]).flat().forEach((value) => {
+    const normalized = normalizedPublishedMakerVersion(value, { rootMakerId });
+    if (!normalized) return;
+    const key = comparableSuiId(normalized.makerObjectId);
+    const previous = byObjectId.get(key);
+    const updatesPausedEconomics = Object.prototype.hasOwnProperty.call(
+      normalized,
+      'pausedEconomics',
+    );
+    if (!previous) {
+      byObjectId.set(key, normalized);
+      return;
+    }
+    const updatesAdminCap = Object.prototype.hasOwnProperty.call(
+      normalized,
+      'makerAdminCapObjectId',
+    );
+    const updatesMakerTimestamp = Object.prototype.hasOwnProperty.call(
+      normalized,
+      'makerUpdatedAtMs',
+    );
+    const updatesPreviousTransaction = Object.prototype.hasOwnProperty.call(
+      normalized,
+      'makerPreviousTransaction',
+    );
+    const merged = {
+      ...previous,
+      ...normalized,
+      makerTreasuryObjectId: normalized.makerTreasuryObjectId
+        || previous.makerTreasuryObjectId,
+      makerAdminCapObjectId: updatesAdminCap
+        ? normalized.makerAdminCapObjectId
+        : previous.makerAdminCapObjectId,
+      publishDigest: normalized.publishDigest || previous.publishDigest,
+      makerPreviousTransaction: updatesPreviousTransaction
+        ? normalized.makerPreviousTransaction
+        : previous.makerPreviousTransaction,
+      profileOrder: normalized.profileOrder >= 0
+        ? normalized.profileOrder
+        : previous.profileOrder,
+    };
+    if (updatesMakerTimestamp) {
+      merged.makerUpdatedAtMs = normalized.makerUpdatedAtMs;
+    } else if (Object.prototype.hasOwnProperty.call(previous, 'makerUpdatedAtMs')) {
+      merged.makerUpdatedAtMs = previous.makerUpdatedAtMs;
+    } else {
+      delete merged.makerUpdatedAtMs;
+    }
+    if (updatesPausedEconomics) {
+      merged.pausedEconomics = normalized.pausedEconomics
+        ? pausedEconomicsWithRecoveredLocalWitness(
+            normalized.pausedEconomics,
+            previous.pausedEconomics,
+            normalized.makerObjectId,
+          )
+        : null;
+    } else if (updatesMakerTimestamp) {
+      merged.pausedEconomics = pausedEconomicsForLiveMaker(
+        previous.pausedEconomics,
+        {
+          makerObjectId: normalized.makerObjectId,
+          mintingEnabled: normalized.mintingEnabled,
+          makerUpdatedAtMs: normalized.makerUpdatedAtMs,
+          makerArchived: normalized.archived,
+          makerPreviousTransaction: normalized.makerPreviousTransaction,
+        },
+      );
+    } else if (Object.prototype.hasOwnProperty.call(previous, 'pausedEconomics')) {
+      merged.pausedEconomics = previous.pausedEconomics;
+    } else {
+      delete merged.pausedEconomics;
+    }
+    byObjectId.set(key, merged);
+  });
+  const currentId = comparableSuiId(currentMakerObjectId);
+  return [...byObjectId.values()]
+    .map((entry) => ({
+      ...entry,
+      current: currentId
+        ? comparableSuiId(entry.makerObjectId) === currentId
+        : entry.current,
+    }))
+    .sort((left, right) => (
+      Number(right.current) - Number(left.current)
+      || Number(right.versionNumber || 0) - Number(left.versionNumber || 0)
+      || right.versionId.localeCompare(left.versionId, undefined, { numeric: true })
+    ))
+    .slice(0, 100);
+}
+
+function currentPublishedMakerVersionRecord({
+  template = activeTemplate(),
+  model = makerModels.get(template?.id),
+} = {}) {
+  const makerObjectId = suiJsonId(
+    template?.id === state.templateId
+      ? state.makerObjectId || template?.objectId
+      : model?.makerObjectId || template?.objectId,
+  );
+  if (!makerObjectId) return null;
+  const publishedDocument = template?.id === state.templateId
+    ? state.publishedMakerDocumentV4
+    : model?.publishedMakerDocumentV4;
+  const rootMakerId = safeDraftText(
+    publishedDocument?.version?.rootMakerId || template?.id,
+    '',
+    128,
+  );
+  const versionId = safeDraftText(
+    publishedDocument?.version?.versionId
+      || model?.makerDocumentV4?.version?.versionId
+      || template?.id,
+    '',
+    128,
+  );
+  if (!rootMakerId || !versionId) return null;
+  return normalizedPublishedMakerVersion({
+    rootMakerId,
+    versionId,
+    parentVersionId: publishedDocument?.version?.parentVersionId || '',
+    versionNumber: publishedDocument?.version?.number || 0,
+    makerObjectId,
+    makerTreasuryObjectId: template?.id === state.templateId
+      ? state.makerTreasuryObjectId || template?.treasuryId
+      : model?.makerTreasuryObjectId || template?.treasuryId,
+    makerAdminCapObjectId: template?.id === state.templateId
+      ? state.makerAdminCapObjectId || template?.adminCapId
+      : model?.makerAdminCapObjectId || template?.adminCapId,
+    publishDigest: template?.id === state.templateId
+      ? state.publishDigest
+      : model?.publishDigest,
+    archived: template?.id === state.templateId
+      ? state.makerArchived
+      : model?.makerArchived,
+    mintingEnabled: template?.mintingEnabled !== false,
+    mintFeeEnabled: Boolean(template?.mintFeeEnabled),
+    mintPriceAtomic: Number(template?.mintPriceAtomic || 0),
+    royaltyBps: Number(template?.royaltyBps || 0),
+    current: true,
+    pausedEconomics: normalizedWorkspacePausedEconomics(
+      template?.pausedEconomics,
+      makerObjectId,
+    ),
+  }, { rootMakerId });
+}
+
+function publishedMakerVersionHistory(template = activeTemplate()) {
+  const model = makerModels.get(template?.id);
+  const rootMakerId = safeDraftText(
+    model?.makerDocumentV4?.version?.rootMakerId
+      || model?.publishedMakerDocumentV4?.version?.rootMakerId
+      || template?.id,
+    '',
+    128,
+  );
+  const current = currentPublishedMakerVersionRecord({ template, model });
+  const currentMakerObjectId = current?.makerObjectId
+    || model?.makerObjectId
+    || template?.objectId
+    || '';
+  return mergePublishedMakerVersions([
+    template?.publishedVersions || [],
+    model?.publishedMakerVersions || [],
+    template?.id === state.templateId ? state.publishedMakerVersions : [],
+    current,
+  ], {
+    rootMakerId,
+    currentMakerObjectId,
+  });
+}
+
+function setPublishedMakerVersionHistory(template, versions) {
+  if (!template) return [];
+  const model = makerModels.get(template.id);
+  const rootMakerId = safeDraftText(
+    model?.makerDocumentV4?.version?.rootMakerId
+      || model?.publishedMakerDocumentV4?.version?.rootMakerId
+      || template.id,
+    '',
+    128,
+  );
+  const currentObjectId = suiJsonId(
+    template.id === state.templateId
+      ? state.makerObjectId || template.objectId
+      : model?.makerObjectId || template.objectId,
+  );
+  const normalized = mergePublishedMakerVersions(versions, {
+    rootMakerId,
+    currentMakerObjectId: currentObjectId,
+  });
+  template.publishedVersions = normalized;
+  if (model) model.publishedMakerVersions = structuredClone(normalized);
+  if (template.id === state.templateId) {
+    state.publishedMakerVersions = structuredClone(normalized);
+  }
+  return normalized;
+}
+
+function discoveredMakerVersionSupersedesCurrent({
+  bindingPinned = false,
+  hasLocalVersionDraft = false,
+  currentVersionNumber = 0,
+  currentVersionId = '',
+  currentProfileOrder = -1,
+  incomingVersionNumber = 0,
+  incomingParentVersionId = '',
+  incomingProfileOrder = -1,
+} = {}) {
+  if (bindingPinned) {
+    return !hasLocalVersionDraft
+      && Number(incomingVersionNumber || 0) > Number(currentVersionNumber || 0)
+      && Boolean(
+        incomingParentVersionId
+        && incomingParentVersionId === currentVersionId,
+      );
+  }
+  return Number(incomingVersionNumber || 0) > Number(currentVersionNumber || 0)
+    || Boolean(
+      incomingParentVersionId
+      && incomingParentVersionId === currentVersionId,
+    )
+    || (
+      Number(incomingVersionNumber || 0) === Number(currentVersionNumber || 0)
+      && Number(incomingProfileOrder ?? -1) > Number(currentProfileOrder ?? -1)
+    );
+}
+
+function normalizedWorkspaceChainBinding(metadata, {
+  owner = '',
+  rootMakerId = '',
+} = {}) {
+  const value = metadata?.chainBinding;
+  if (!value || typeof value !== 'object') return null;
+  const bindingRootMakerId = safeDraftText(value.rootMakerId, '', 128);
+  const bindingOwner = String(value.ownerWallet || '').trim();
+  if (
+    !bindingRootMakerId
+    || (rootMakerId && bindingRootMakerId !== rootMakerId)
+    || (owner && bindingOwner.toLowerCase() !== String(owner).trim().toLowerCase())
+  ) return null;
+  const makerObjectId = suiJsonId(value.makerObjectId);
+  if (!makerObjectId) return null;
+  return {
+    schema: 'animacraft.chain-binding.v1',
+    rootMakerId: bindingRootMakerId,
+    ownerWallet: bindingOwner,
+    makerObjectId,
+    makerTreasuryObjectId: suiJsonId(value.makerTreasuryObjectId),
+    makerAdminCapObjectId: suiJsonId(value.makerAdminCapObjectId),
+    publishDigest: safeDraftText(value.publishDigest, '', 256),
+    archived: Boolean(value.archived),
+    mintingEnabled: value.mintingEnabled !== false,
+    mintFeeEnabled: Boolean(value.mintFeeEnabled),
+    mintPriceAtomic: Math.max(0, Math.floor(Number(value.mintPriceAtomic || 0))),
+    royaltyBps: Math.max(0, Math.min(10_000, Math.floor(Number(value.royaltyBps || 0)))),
+    pausedEconomics: normalizedWorkspacePausedEconomics(
+      value.pausedEconomics,
+      makerObjectId,
+    ),
+    publishedVersions: mergePublishedMakerVersions(
+      value.publishedVersions || [],
+      {
+        rootMakerId: bindingRootMakerId,
+        currentMakerObjectId: makerObjectId,
+      },
+    ),
+  };
+}
+
+function normalizedWorkspacePublishedSnapshot(metadata, rootMakerId = '') {
+  const value = metadata?.publishedSnapshot;
+  const document = value?.document;
+  if (
+    !isMakerV4Document(document)
+    || (rootMakerId && document.version.rootMakerId !== rootMakerId)
+  ) return null;
+  return {
+    document: structuredClone(document),
+    recipe: cloneV4Recipe(value.recipe || document.defaultRecipe),
+  };
+}
+
+function currentWorkspaceChainBinding(document = currentMakerV4Source()) {
+  const template = activeTemplate();
+  if (!templateIsOwnedByWallet(template)) return null;
+  const makerObjectId = suiJsonId(state.makerObjectId || template?.objectId);
+  if (!makerObjectId || !document?.version?.rootMakerId || !state.walletAddress) return null;
+  const currentVersion = currentPublishedMakerVersionRecord({
+    template,
+    model: makerModels.get(template?.id),
+  });
+  const publishedVersions = mergePublishedMakerVersions([
+    publishedMakerVersionHistory(template),
+    currentVersion,
+  ], {
+    rootMakerId: document.version.rootMakerId,
+    currentMakerObjectId: makerObjectId,
+  });
+  return {
+    schema: 'animacraft.chain-binding.v1',
+    rootMakerId: document.version.rootMakerId,
+    ownerWallet: state.walletAddress,
+    makerObjectId,
+    makerTreasuryObjectId: suiJsonId(state.makerTreasuryObjectId || template?.treasuryId),
+    makerAdminCapObjectId: suiJsonId(state.makerAdminCapObjectId || template?.adminCapId),
+    publishDigest: String(state.publishDigest || ''),
+    archived: Boolean(state.makerArchived),
+    mintingEnabled: template?.mintingEnabled !== false,
+    mintFeeEnabled: Boolean(template?.mintFeeEnabled),
+    mintPriceAtomic: Number(template?.mintPriceAtomic || 0),
+    royaltyBps: Number(template?.royaltyBps || 0),
+    pausedEconomics: normalizedWorkspacePausedEconomics(
+      template?.pausedEconomics,
+      makerObjectId,
+    ),
+    publishedVersions,
+  };
 }
 
 function revokeLocalMakerCoverObjectUrl(templateId, { clearTemplate = true } = {}) {
@@ -3088,10 +4297,21 @@ function localMakerCoverObjectUrl(template, coverAssetId, blob) {
 function persistLocalMakerIndex(address = state.walletAddress) {
   const owner = String(address || '').trim();
   if (!owner) return;
-  const records = templates.filter((template) => template.source === 'local' && template.owner === owner).map((template) => ({
+  const records = templates.filter((template) => (
+    template.owner === owner
+    && (template.source === 'local' || suiJsonId(template.objectId))
+  )).map((template) => {
+    const model = makerModels.get(template.id);
+    const makerObjectId = suiJsonId(template.objectId || model?.makerObjectId);
+    return {
     id: template.id,
-    source: 'local',
+    source: makerObjectId ? 'chain' : 'local',
     owner,
+    objectId: makerObjectId,
+    treasuryId: suiJsonId(template.treasuryId || model?.makerTreasuryObjectId),
+    adminCapId: suiJsonId(template.adminCapId || model?.makerAdminCapObjectId),
+    publishDigest: safeDraftText(model?.publishDigest, '', 256),
+    archived: Boolean(model?.makerArchived),
     name: template.name,
     category: template.category,
     creator: template.creator,
@@ -3107,8 +4327,23 @@ function persistLocalMakerIndex(address = state.walletAddress) {
     summary: template.summary,
     licenseNote: template.licenseNote,
     coverUrl: stableMakerCoverUrl(template.coverUrl),
-  }));
-  localStorage.setItem(localMakerIndexKey(owner), JSON.stringify(records));
+    pausedEconomics: normalizedWorkspacePausedEconomics(
+      template.pausedEconomics,
+      makerObjectId,
+    ),
+    publishedVersions: publishedMakerVersionHistory(template),
+  };
+  });
+  try {
+    localStorage.setItem(localMakerIndexKey(owner), JSON.stringify(records));
+    return true;
+  } catch (error) {
+    // The local index is only a discoverability cache. A quota or browser
+    // privacy failure must never prevent the authoritative Workspace/IndexedDB
+    // revision (including lifecycle mutation witnesses) from being saved.
+    console.warn('Could not update the local Maker index.', error);
+    return false;
+  }
 }
 
 function loadLocalMakerIndex(address = state.walletAddress) {
@@ -3121,10 +4356,27 @@ function loadLocalMakerIndex(address = state.walletAddress) {
     records.slice().reverse().forEach((record) => {
       const id = safeDraftText(record?.id, '', 128);
       if (!isSafeKey(id) || templates.some((template) => template.id === id)) return;
+      const objectId = suiJsonId(record.objectId);
       templates.unshift({
         id,
-        source: 'local',
+        source: objectId ? 'chain' : 'local',
         owner: address,
+        owned: Boolean(objectId),
+        objectId,
+        treasuryId: suiJsonId(record.treasuryId),
+        adminCapId: suiJsonId(record.adminCapId),
+        pausedEconomics: normalizedWorkspacePausedEconomics(
+          record.pausedEconomics,
+          objectId,
+        ),
+        chainBindingPinned: Boolean(objectId),
+        publishedVersions: mergePublishedMakerVersions(
+          record.publishedVersions || [],
+          {
+            rootMakerId: id,
+            currentMakerObjectId: objectId,
+          },
+        ),
         name: safeDraftText(record.name, 'Untitled OC Maker', 128),
         category: ['daily', 'fantasy', 'chibi'].includes(record.category) ? record.category : 'daily',
         creator: safeDraftText(record.creator, shortAddress(address) || 'Creator', 128),
@@ -3141,6 +4393,28 @@ function loadLocalMakerIndex(address = state.walletAddress) {
         licenseNote: safeDraftText(record.licenseNote, 'Draft maker.', 2_000),
         coverUrl: stableMakerCoverUrl(record.coverUrl),
       });
+      if (objectId) {
+        const model = createMakerModel({ empty: true });
+        Object.assign(model, {
+          publishDigest: safeDraftText(record.publishDigest, '', 256),
+          makerObjectId: objectId,
+          makerTreasuryObjectId: suiJsonId(record.treasuryId),
+          makerAdminCapObjectId: suiJsonId(record.adminCapId),
+          makerArchived: Boolean(record.archived),
+          pausedEconomics: normalizedWorkspacePausedEconomics(
+            record.pausedEconomics,
+            objectId,
+          ),
+          publishedMakerVersions: mergePublishedMakerVersions(
+            record.publishedVersions || [],
+            {
+              rootMakerId: id,
+              currentMakerObjectId: objectId,
+            },
+          ),
+        });
+        makerModels.set(id, model);
+      }
     });
   } catch (error) {
     console.warn('Ignored an unreadable local Maker index.', error);
@@ -3156,7 +4430,6 @@ async function restoreLocalMakerCoverFromV6(record, owner) {
   const makerKey = String(record?.makerKey || '');
   const template = templates.find((candidate) => (
     candidate.id === makerId
-    && candidate.source === 'local'
     && candidate.owner === owner
   ));
   if (!template || !makerKey || !makerWorkspace) return false;
@@ -3171,7 +4444,6 @@ async function restoreLocalMakerCoverFromV6(record, owner) {
     ) return false;
     const currentTemplate = templates.find((candidate) => (
       candidate.id === makerId
-      && candidate.source === 'local'
       && candidate.owner === owner
     ));
     if (!currentTemplate) return false;
@@ -3215,11 +4487,43 @@ async function recoverStableMakerIndex(address = state.walletAddress) {
         128,
       );
       if (!isSafeKey(id)) return;
-      if (!templates.some((template) => template.id === id)) {
-        templates.unshift({
+      const chainBinding = normalizedWorkspaceChainBinding(record?.metadata, {
+        owner,
+        rootMakerId: id,
+      });
+      const publishedSnapshot = normalizedWorkspacePublishedSnapshot(
+        record?.metadata,
+        id,
+      );
+      let template = templates.find((candidate) => candidate.id === id) || null;
+      const objectDuplicate = chainBinding
+        ? templates.find((candidate) => (
+            candidate.id !== id
+            && comparableSuiId(candidate.objectId) === comparableSuiId(chainBinding.makerObjectId)
+          ))
+        : null;
+      if (!template && objectDuplicate) {
+        const previousId = objectDuplicate.id;
+        objectDuplicate.id = id;
+        template = objectDuplicate;
+        const duplicateModel = makerModels.get(previousId);
+        if (duplicateModel && !makerModels.has(id)) makerModels.set(id, duplicateModel);
+        makerModels.delete(previousId);
+        if (state.templateId === previousId) state.templateId = id;
+      } else if (template && objectDuplicate) {
+        const duplicateIndex = templates.indexOf(objectDuplicate);
+        if (duplicateIndex >= 0) templates.splice(duplicateIndex, 1);
+        makerModels.delete(objectDuplicate.id);
+      }
+      if (!template) {
+        template = {
           id,
-          source: 'local',
+          source: chainBinding ? 'chain' : 'local',
           owner,
+          owned: Boolean(chainBinding),
+          objectId: chainBinding?.makerObjectId || '',
+          treasuryId: chainBinding?.makerTreasuryObjectId || '',
+          adminCapId: chainBinding?.makerAdminCapObjectId || '',
           name: safeDraftText(document?.metadata?.name, 'Untitled OC Maker', 128),
           category: 'daily',
           creator: safeDraftText(document?.metadata?.creator, shortAddress(owner) || 'Creator', 128),
@@ -3235,8 +4539,86 @@ async function recoverStableMakerIndex(address = state.walletAddress) {
           summary: safeDraftText(document?.metadata?.summary, 'Character Maker draft.', 2_000),
           licenseNote: safeDraftText(document?.metadata?.license?.note, 'Draft maker.', 2_000),
           coverUrl: '',
+          pausedEconomics: chainBinding?.pausedEconomics || null,
+          publishedVersions: chainBinding?.publishedVersions || [],
+          chainBindingPinned: Boolean(chainBinding),
+        };
+        templates.unshift(template);
+      } else {
+        const recoveredPausedEconomics = chainBinding
+          ? pausedEconomicsWithRecoveredLocalWitness(
+              chainBinding.pausedEconomics,
+              template.pausedEconomics,
+              chainBinding.makerObjectId,
+            )
+          : template.pausedEconomics || null;
+        Object.assign(template, {
+          owner,
+          source: chainBinding ? 'chain' : template.source,
+          owned: chainBinding ? true : template.owned,
+          objectId: chainBinding?.makerObjectId || template.objectId || '',
+          treasuryId: chainBinding?.makerTreasuryObjectId || template.treasuryId || '',
+          // A durable Workspace binding is authoritative even when a value was
+          // deliberately cleared. Do not resurrect a stale local AdminCap or a
+          // pre-Resume economics snapshot with truthy fallback semantics.
+          adminCapId: chainBinding
+            ? chainBinding.makerAdminCapObjectId
+            : template.adminCapId || '',
+          pausedEconomics: chainBinding
+            ? recoveredPausedEconomics
+            : template.pausedEconomics || null,
+          publishedVersions: mergePublishedMakerVersions([
+            template.publishedVersions || [],
+            chainBinding?.publishedVersions || [],
+          ], {
+            rootMakerId: id,
+            currentMakerObjectId: chainBinding?.makerObjectId || template.objectId || '',
+          }),
+          chainBindingPinned: Boolean(chainBinding) || template.chainBindingPinned,
         });
       }
+      if (chainBinding) {
+        Object.assign(template, {
+          mintingEnabled: chainBinding.mintingEnabled,
+          mintFeeEnabled: chainBinding.mintFeeEnabled,
+          mintPriceAtomic: chainBinding.mintPriceAtomic,
+          royaltyBps: chainBinding.royaltyBps,
+        });
+      }
+      const model = makerModels.get(id) || createMakerModel({
+        empty: true,
+        canvas: document?.canvas,
+      });
+      Object.assign(model, {
+        makerDocumentV4: isMakerV4Document(document) ? structuredClone(document) : model.makerDocumentV4,
+        makerRecipeV4: isMakerV4Document(document)
+          ? cloneV4Recipe(record?.metadata?.recipe || document.defaultRecipe)
+          : model.makerRecipeV4,
+        publishedMakerDocumentV4: publishedSnapshot?.document
+          || model.publishedMakerDocumentV4,
+        publishedMakerRecipeV4: publishedSnapshot?.recipe
+          || model.publishedMakerRecipeV4,
+        publishDigest: chainBinding?.publishDigest || model.publishDigest || '',
+        makerObjectId: chainBinding?.makerObjectId || model.makerObjectId || '',
+        makerTreasuryObjectId: chainBinding?.makerTreasuryObjectId
+          || model.makerTreasuryObjectId
+          || '',
+        makerAdminCapObjectId: chainBinding
+          ? chainBinding.makerAdminCapObjectId
+          : model.makerAdminCapObjectId || '',
+        makerArchived: chainBinding?.archived ?? model.makerArchived,
+        pausedEconomics: chainBinding
+          ? template.pausedEconomics
+          : model.pausedEconomics || null,
+        publishedMakerVersions: mergePublishedMakerVersions([
+          model.publishedMakerVersions || [],
+          chainBinding?.publishedVersions || [],
+        ], {
+          rootMakerId: id,
+          currentMakerObjectId: chainBinding?.makerObjectId || model.makerObjectId || '',
+        }),
+      });
+      makerModels.set(id, model);
     });
     persistLocalMakerIndex();
     renderAll();
@@ -3813,6 +5195,9 @@ function makerModelFromV4Manifest(document, resolveAssetUrl, object = {}) {
     makerRecipeV4: cloneV4Recipe(editableDocument.defaultRecipe),
     makerRuntimeAssetsV4: new Map(runtimeAssets.map((asset) => [asset.assetId, asset])),
     publishedMakerDocumentV4: object.objectId ? structuredClone(editableDocument) : null,
+    publishedMakerRecipeV4: object.objectId
+      ? cloneV4Recipe(editableDocument.defaultRecipe)
+      : null,
     publishDigest: object.previousTransaction || '',
     publishStatus: '',
     makerObjectId: object.objectId || '',
@@ -3981,7 +5366,10 @@ async function loadBundledMakers() {
   renderAll();
 }
 
-async function hydrateChainMaker(object) {
+async function hydrateChainMaker(object, {
+  guard = () => true,
+} = {}) {
+  if (!guard()) return false;
   const fields = suiObjectFields(object);
   assertSupportedMakerPaymentCoin(
     suiField(fields, 'payment_coin_type', 'paymentCoinType'),
@@ -3992,6 +5380,15 @@ async function hydrateChainMaker(object) {
     mintFeeEnabled: [true, 'true', 1, '1'].includes(suiField(fields, 'mint_fee_enabled', 'mintFeeEnabled')),
     mintPriceAtomic: suiField(fields, 'mint_price_atomic', 'mintPriceAtomic') || 0,
   });
+  const liveMakerUpdatedAtMs = normalizedMakerUpdatedAtMs(
+    suiField(fields, 'updated_at_ms', 'updatedAtMs'),
+  );
+  const liveMakerArchived = [true, 'true', 1, '1'].includes(
+    suiField(fields, 'archived'),
+  );
+  const liveMakerPreviousTransaction = String(
+    object.previousTransaction || '',
+  );
   const quiltId = String(suiField(fields, 'manifest_blob_id', 'manifestBlobId') || '');
   if (!quiltId) throw new Error(`OCMaker ${shortAddress(object.objectId)} has no Walrus Quilt ID.`);
   const response = await fetchWalrusWithBackoff(walrusQuiltFileUrl(quiltId, 'animacraft-manifest.json'));
@@ -4004,12 +5401,112 @@ async function hydrateChainMaker(object) {
     throw new Error('The Maker manifest is not valid JSON.');
   }
   validateAnyMakerManifest(manifest);
+  if (!guard()) return false;
   const featuredKey = Object.entries(runtimeConfig.featuredMakers || {}).find(([, objectId]) => objectId === object.objectId)?.[0];
-  const recoveredTemplate = templates.find((candidate) => candidate.objectId === object.objectId);
-  const id = featuredKey || recoveredTemplate?.id || `chain-${object.objectId}`;
+  const stableRootMakerId = isMakerV4Document(manifest)
+    ? safeDraftText(manifest.version?.rootMakerId, '', 128)
+    : '';
+  const recoveredByObject = templates.find((candidate) => (
+    comparableSuiId(candidate.objectId) === comparableSuiId(object.objectId)
+  ));
+  const belongsToActiveCreatorLineage = Boolean(
+    object.owned || object.profilePublished,
+  );
+  const stableRootTemplate = belongsToActiveCreatorLineage && stableRootMakerId
+    ? templates.find((candidate) => (
+        candidate.id === stableRootMakerId
+        && candidate.owner
+        && String(candidate.owner).toLowerCase() === String(state.walletAddress).toLowerCase()
+      ))
+    : null;
   const policy = suiField(fields, 'policy') || {};
+  const publicationData = isMakerV4Document(manifest)
+    ? manifest.publication || {}
+    : manifest.template || {};
+  const chainVersionRecord = stableRootMakerId && isMakerV4Document(manifest)
+    ? normalizedPublishedMakerVersion({
+        rootMakerId: stableRootMakerId,
+        versionId: manifest.version.versionId,
+        parentVersionId: manifest.version.parentVersionId || '',
+        versionNumber: manifest.version.number,
+        profileOrder: object.profileOrder,
+        makerObjectId: object.objectId,
+        makerTreasuryObjectId: object.treasuryId
+          || suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
+        makerAdminCapObjectId: object.adminCapId || '',
+        publishDigest: object.previousTransaction || '',
+        makerPreviousTransaction: liveMakerPreviousTransaction,
+        makerUpdatedAtMs: liveMakerUpdatedAtMs,
+        archived: liveMakerArchived,
+        mintingEnabled: economics.mintingEnabled,
+        mintFeeEnabled: economics.mintFeeEnabled,
+        mintPriceAtomic: economics.mintPriceAtomic,
+        royaltyBps: Number(
+          suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps')
+          || publicationData.royaltyBps
+          || 0,
+        ),
+        current: stableRootTemplate
+          ? comparableSuiId(stableRootTemplate.objectId) === comparableSuiId(object.objectId)
+          : true,
+      }, { rootMakerId: stableRootMakerId })
+    : null;
+  const stableRootModel = stableRootTemplate
+    ? makerModels.get(stableRootTemplate.id)
+    : null;
+  const stableCurrentDocument = stableRootModel?.publishedMakerDocumentV4
+    || stableRootModel?.makerDocumentV4
+    || null;
+  const stableCurrentVersionNumber = Number(
+    stableCurrentDocument?.version?.number || 0,
+  );
+  const stableCurrentVersionId = String(
+    stableCurrentDocument?.version?.versionId || '',
+  );
+  const stableCurrentProfileOrder = Number(
+    stableRootTemplate
+      ? publishedMakerVersionHistory(stableRootTemplate)
+        .find((entry) => entry.current)?.profileOrder ?? -1
+      : -1,
+  );
+  const incomingVersionNumber = Number(manifest?.version?.number || 0);
+  const incomingSupersedesCurrent = discoveredMakerVersionSupersedesCurrent({
+    bindingPinned: Boolean(stableRootTemplate?.chainBindingPinned),
+    hasLocalVersionDraft: makerModelHasPendingV4Version(stableRootModel),
+    currentVersionNumber: stableCurrentVersionNumber,
+    currentVersionId: stableCurrentVersionId,
+    currentProfileOrder: stableCurrentProfileOrder,
+    incomingVersionNumber,
+    incomingParentVersionId: manifest?.version?.parentVersionId || '',
+    incomingProfileOrder: Number(object.profileOrder ?? -1),
+  });
+  const keepPersistedOrNewerCurrent = !incomingSupersedesCurrent;
+  if (
+    stableRootTemplate?.objectId
+    && comparableSuiId(stableRootTemplate.objectId) !== comparableSuiId(object.objectId)
+    && (keepPersistedOrNewerCurrent || !object.owned)
+  ) {
+    // A stable Workspace root owns one Library card. Older immutable objects
+    // remain independently manageable through that card's version history.
+    // CreatorProfile entries whose AdminCap was transferred remain immutable
+    // lineage witnesses, but must never impersonate current control.
+    if (chainVersionRecord) {
+      setPublishedMakerVersionHistory(stableRootTemplate, [
+        ...publishedMakerVersionHistory(stableRootTemplate),
+        chainVersionRecord,
+      ]);
+      persistLocalMakerIndex(stableRootTemplate.owner || state.walletAddress);
+    }
+    return true;
+  }
+  const recoveredByStableRoot = stableRootTemplate;
+  const recoveredTemplate = recoveredByObject || recoveredByStableRoot;
+  const id = recoveredTemplate?.id
+    || (belongsToActiveCreatorLineage && stableRootMakerId ? stableRootMakerId : '')
+    || featuredKey
+    || `chain-${object.objectId}`;
   const templateData = isMakerV4Document(manifest) ? manifest.metadata || {} : manifest.template || {};
-  const publicationData = isMakerV4Document(manifest) ? manifest.publication || {} : templateData;
+  const resolvedPublicationData = isMakerV4Document(manifest) ? publicationData : templateData;
   const coverDescriptor = isMakerV4Document(manifest)
     ? manifest.assets?.find((asset) => asset.id === templateData.coverAssetId)
     : null;
@@ -4018,10 +5515,14 @@ async function hydrateChainMaker(object) {
     category: 'daily',
     accent: '#27c5c8',
     secondary: '#f0a23a',
+    chainBindingPinned: false,
   };
   Object.assign(template, {
     source: 'chain',
     owned: Boolean(object.owned),
+    owner: object.owned
+      ? state.walletAddress
+      : template.owner || (object.profilePublished ? state.walletAddress : ''),
     objectId: object.objectId,
     quiltId,
     name: String(suiField(fields, 'name') || templateData.name || 'On-chain OC Maker'),
@@ -4031,12 +5532,22 @@ async function hydrateChainMaker(object) {
     creatorWallet: String(suiField(fields, 'creator') || ''),
     style: String(templateData.style || 'OC Maker'),
     license: makerLicenseLabel(policy),
-    royaltyBps: Number(suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || publicationData.royaltyBps || 0),
+    royaltyBps: Number(suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || resolvedPublicationData.royaltyBps || 0),
     mintingEnabled: economics.mintingEnabled,
     mintFeeEnabled: economics.mintFeeEnabled,
     mintPriceAtomic: economics.mintPriceAtomic,
     treasuryId: object.treasuryId || suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
     adminCapId: object.adminCapId || '',
+    pausedEconomics: pausedEconomicsForLiveMaker(
+      template.pausedEconomics,
+      {
+        makerObjectId: object.objectId,
+        mintingEnabled: economics.mintingEnabled,
+        makerUpdatedAtMs: liveMakerUpdatedAtMs,
+        makerArchived: liveMakerArchived,
+        makerPreviousTransaction: liveMakerPreviousTransaction,
+      },
+    ),
     price: economics.mintPriceAtomic > 0
       ? `${(economics.mintPriceAtomic / (10 ** runtimeConfig.paymentCoinDecimals)).toLocaleString()} ${runtimeConfig.paymentCoinSymbol}`
       : 'Free mint',
@@ -4050,14 +5561,247 @@ async function hydrateChainMaker(object) {
     ),
   });
   if (!templates.includes(template)) templates.unshift(template);
-  const model = makerModelFromManifest(manifest, (identifier) => walrusQuiltFileUrl(quiltId, identifier), object);
+  if (chainVersionRecord) {
+    setPublishedMakerVersionHistory(template, [
+      ...publishedMakerVersionHistory(template),
+      chainVersionRecord,
+    ]);
+  }
+  const chainModel = makerModelFromManifest(
+    manifest,
+    (identifier) => walrusQuiltFileUrl(quiltId, identifier),
+    object,
+  );
+  const recoveredModel = makerModels.get(id);
+  const recoveredDocument = recoveredModel?.makerDocumentV4;
+  const chainDocument = chainModel.publishedMakerDocumentV4;
+  const isSuccessorDraft = Boolean(
+    object.owned
+    && templateIsOwnedByWallet(template)
+    && isMakerV4Document(recoveredDocument)
+    && isMakerV4Document(chainDocument)
+    && recoveredDocument.version.rootMakerId === chainDocument.version.rootMakerId
+    && recoveredDocument.version.versionId !== chainDocument.version.versionId
+    && (
+      recoveredDocument.version.parentVersionId === chainDocument.version.versionId
+      || Number(recoveredDocument.version.number || 0) > Number(chainDocument.version.number || 0)
+    )
+  );
+  const model = isSuccessorDraft
+    ? {
+        ...chainModel,
+        makerDocumentV4: recoveredDocument,
+        makerRecipeV4: recoveredModel.makerRecipeV4
+          || cloneV4Recipe(recoveredDocument.defaultRecipe),
+        makerRuntimeAssetsV4: recoveredModel.makerRuntimeAssetsV4 instanceof Map
+          ? recoveredModel.makerRuntimeAssetsV4
+          : new Map(),
+        publishedMakerDocumentV4: chainDocument,
+        publishedMakerRecipeV4: chainModel.publishedMakerRecipeV4
+          || cloneV4Recipe(chainDocument.defaultRecipe),
+        pausedEconomics: template.pausedEconomics || null,
+        publishedMakerVersions: mergePublishedMakerVersions([
+          recoveredModel.publishedMakerVersions || [],
+          template.publishedVersions || [],
+          chainVersionRecord,
+        ], {
+          rootMakerId: stableRootMakerId || id,
+          currentMakerObjectId: object.objectId,
+        }),
+      }
+    : {
+        ...chainModel,
+        pausedEconomics: template.pausedEconomics || null,
+        publishedMakerVersions: mergePublishedMakerVersions([
+          recoveredModel?.publishedMakerVersions || [],
+          template.publishedVersions || [],
+          chainVersionRecord,
+        ], {
+          rootMakerId: stableRootMakerId || id,
+          currentMakerObjectId: object.objectId,
+        }),
+  };
   makerModels.set(id, model);
-  if (state.templateId === id) applyMakerModelToState(id, model);
+  setPublishedMakerVersionHistory(template, model.publishedMakerVersions);
+  if (object.owned && template.owner) persistLocalMakerIndex(template.owner);
+  if (
+    state.templateId === id
+    && !state.publishing
+    && !state.makerLifecycleActionBusy
+    && guard()
+  ) {
+    applyMakerModelToState(id, model);
+  }
+  return true;
+}
+
+async function reconcileOwnedMakerSuccessors(objects, {
+  guard = () => true,
+} = {}) {
+  const objectsById = new Map(
+    (objects || [])
+      .filter((object) => object?.owned && object.objectId)
+      .map((object) => [comparableSuiId(object.objectId), object]),
+  );
+  for (let pass = 0; pass < objectsById.size && guard(); pass += 1) {
+    let advanced = false;
+    const ownedTemplates = templates.filter((template) => (
+      template.owned
+      && template.owner
+      && walletAddressesMatch(template.owner, state.walletAddress)
+    ));
+    for (const template of ownedTemplates) {
+      if (!guard()) return;
+      const model = makerModels.get(template.id);
+      if (makerModelHasPendingV4Version(model)) continue;
+      const publishedDocument = model?.publishedMakerDocumentV4
+        || model?.makerDocumentV4;
+      const currentVersionId = String(
+        publishedDocument?.version?.versionId || '',
+      );
+      if (!currentVersionId) continue;
+      const successor = publishedMakerVersionHistory(template)
+        .filter((version) => (
+          version.parentVersionId === currentVersionId
+          && comparableSuiId(version.makerObjectId)
+            !== comparableSuiId(template.objectId)
+        ))
+        .sort((left, right) => (
+          Number(right.versionNumber || 0) - Number(left.versionNumber || 0)
+          || Number(right.profileOrder ?? -1) - Number(left.profileOrder ?? -1)
+        ))[0];
+      const successorObject = successor
+        ? objectsById.get(comparableSuiId(successor.makerObjectId))
+        : null;
+      if (!successorObject) continue;
+      const previousObjectId = comparableSuiId(template.objectId);
+      try {
+        await hydrateChainMaker(successorObject, { guard });
+      } catch (error) {
+        console.warn(
+          `Could not reconcile Maker successor ${successor.versionId}.`,
+          error,
+        );
+        continue;
+      }
+      if (!guard()) return;
+      if (comparableSuiId(template.objectId) !== previousObjectId) {
+        advanced = true;
+      }
+    }
+    if (!advanced) break;
+  }
+}
+
+async function refreshOwnedMakerVersionLineage({
+  walletAddress = state.walletAddress,
+  requiredMakerObjectId = state.makerObjectId,
+  guard = () => true,
+} = {}) {
+  const owner = String(walletAddress || '');
+  if (!owner || !packageConfigured() || !guard()) {
+    throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+  }
+  let adminCaps;
+  let profiles;
+  try {
+    [adminCaps, profiles] = await Promise.all([
+      listOwnedMakerAdminCaps(owner),
+      listOwnedCreatorProfiles(owner),
+    ]);
+  } catch (error) {
+    throw makerAuthorityError('MAKER_VERSION_DISCOVERY_FAILED', 'makerDiscoveryFailed');
+  }
+  if (!guard()) {
+    throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+  }
+  const capsByMaker = new Map(adminCaps.map((cap) => {
+    const fields = suiObjectFields(cap);
+    const makerId = suiJsonId(suiField(fields, 'maker_id', 'makerId'));
+    return [comparableSuiId(makerId), {
+      makerId,
+      adminCapId: cap.objectId,
+      treasuryId: suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
+    }];
+  }).filter(([makerId]) => makerId));
+  const profileMakerIds = profiles.flatMap(creatorProfileMakerIds);
+  const profileOrderByMaker = new Map();
+  profileMakerIds.forEach((makerId, profileOrder) => {
+    const comparableId = comparableSuiId(makerId);
+    if (comparableId && !profileOrderByMaker.has(comparableId)) {
+      profileOrderByMaker.set(comparableId, profileOrder);
+    }
+  });
+  const requiredId = comparableSuiId(requiredMakerObjectId);
+  if (requiredId && !capsByMaker.has(requiredId)) {
+    throw makerAuthorityError('MAKER_ADMIN_CAP_NOT_OWNED', 'makerAuthorityChanged');
+  }
+  const makerIdsByComparable = new Map();
+  capsByMaker.forEach((authority, comparableId) => {
+    makerIdsByComparable.set(comparableId, authority.makerId);
+  });
+  profileMakerIds.forEach((makerId) => {
+    const comparableId = comparableSuiId(makerId);
+    if (comparableId && !makerIdsByComparable.has(comparableId)) {
+      makerIdsByComparable.set(comparableId, makerId);
+    }
+  });
+  const makerIds = [...makerIdsByComparable.values()];
+  let makers;
+  try {
+    makers = makerIds.length
+      ? await getMakerObjects(makerIds, { expectedStructName: 'OCMaker' })
+      : [];
+  } catch (error) {
+    throw makerAuthorityError('MAKER_VERSION_DISCOVERY_FAILED', 'makerDiscoveryFailed');
+  }
+  if (!guard()) {
+    throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+  }
+  const returnedIds = new Set(makers.map((maker) => comparableSuiId(maker.objectId)));
+  if (makerIds.some((makerId) => !returnedIds.has(comparableSuiId(makerId)))) {
+    throw makerAuthorityError('MAKER_VERSION_DISCOVERY_FAILED', 'makerDiscoveryFailed');
+  }
+  const lineageMakers = makers.map((maker) => {
+    const comparableId = comparableSuiId(maker.objectId);
+    const authority = capsByMaker.get(comparableId);
+    const profileOrder = profileOrderByMaker.get(comparableId);
+    return {
+      ...maker,
+      ...(authority || {}),
+      owned: Boolean(authority),
+      profilePublished: profileOrder !== undefined,
+      profileOrder: profileOrder ?? -1,
+    };
+  });
+  const hydrated = await Promise.allSettled(
+    lineageMakers.map((maker) => hydrateChainMaker(maker, { guard })),
+  );
+  if (!guard()) {
+    throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+  }
+  const failures = hydrated.filter((result) => result.status === 'rejected');
+  if (failures.length) {
+    const error = new Error(t('makerVerificationFailed', { count: failures.length }));
+    error.code = 'MAKER_VERSION_DISCOVERY_FAILED';
+    throw error;
+  }
+  await reconcileOwnedMakerSuccessors(lineageMakers, { guard });
+  if (!guard()) {
+    throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+  }
+  return true;
 }
 
 async function loadChainMakers(owner = state.walletAddress) {
   const loadKey = owner || 'public';
   if (!packageConfigured() || state.chainMakersLoadedFor === loadKey) return;
+  const requestId = ++chainMakerLoadRequestId;
+  const requestedOwner = String(owner || '');
+  const isActiveRequest = () => (
+    requestId === chainMakerLoadRequestId
+    && requestedOwner === String(state.walletAddress || '')
+  );
   state.chainMakersLoadedFor = loadKey;
   state.chainMakersLoading = true;
   state.chainMakerLoadError = '';
@@ -4073,6 +5817,7 @@ async function loadChainMakers(owner = state.walletAddress) {
         return [];
       }),
     ]);
+    if (!isActiveRequest()) return;
     if (owner) state.creatorProfileObjectId = profiles[0]?.objectId || '';
     const profileMakerIds = profiles.flatMap(creatorProfileMakerIds);
     const capsByMaker = new Map(adminCaps.map((cap) => {
@@ -4096,11 +5841,23 @@ async function loadChainMakers(owner = state.walletAddress) {
       return [object.objectId, {
         ...object,
         ...authority,
+        profileOrder: profileMakerIds.findIndex((makerId) => (
+          comparableSuiId(makerId) === comparableSuiId(object.objectId)
+        )),
         treasuryId: authority.treasuryId || suiJsonId(suiField(makerFields, 'treasury_id', 'treasuryId')),
         owned: ownedIds.has(object.objectId),
       }];
     }));
-    const results = await Promise.allSettled([...byId.values()].map(hydrateChainMaker));
+    const results = await Promise.allSettled(
+      [...byId.values()].map((object) => hydrateChainMaker(object, {
+        guard: isActiveRequest,
+      })),
+    );
+    if (!isActiveRequest()) return;
+    await reconcileOwnedMakerSuccessors([...byId.values()], {
+      guard: isActiveRequest,
+    });
+    if (!isActiveRequest()) return;
     const failures = results.filter((result) => result.status === 'rejected');
     if (failures.length) state.chainMakerLoadError = t('makerVerificationFailed', { count: failures.length });
     else if (discoveryWarning) state.chainMakerLoadError = discoveryWarning;
@@ -4114,11 +5871,13 @@ async function loadChainMakers(owner = state.walletAddress) {
       }
     }
   } catch (error) {
+    if (!isActiveRequest()) return;
     state.chainMakerLoadError = state.locale === 'en' && error?.message
       ? error.message
       : t('makerDiscoveryFailed');
     state.chainMakersLoadedFor = '';
   }
+  if (!isActiveRequest()) return;
   state.chainMakersLoading = false;
   renderAll();
   if (state.page === 'make') restoreOcUploadRecovery(state.templateId, { force: true });
@@ -4210,7 +5969,9 @@ function makerAuthorityError(code, messageKey) {
   return error;
 }
 
-async function refreshMakerLifecycleAuthority(operation) {
+async function refreshMakerLifecycleAuthority(operation, {
+  preserveKnownAuthority = false,
+} = {}) {
   const makerObjectId = state.makerObjectId;
   const walletAddress = state.walletAddress;
   if (!makerObjectId || !walletAddress || !makerChainOperationIsActive(operation)) {
@@ -4237,10 +5998,15 @@ async function refreshMakerLifecycleAuthority(operation) {
   });
   const makerIsChainPublished = suiBoolean(suiField(fields, 'published'), false);
   if (!maker || !makerIsChainPublished || !linkedAdminCapId || !linkedTreasuryId || !adminCap) {
-    state.makerAdminCapObjectId = '';
-    if (activeTemplate()) activeTemplate().adminCapId = '';
-    syncActiveMakerModelRefs();
-    throw makerAuthorityError('MAKER_ADMIN_CAP_NOT_OWNED', 'makerAuthorityChanged');
+    if (!preserveKnownAuthority) {
+      state.makerAdminCapObjectId = '';
+      if (activeTemplate()) activeTemplate().adminCapId = '';
+      syncActiveMakerModelRefs();
+    }
+    throw makerAuthorityError(
+      preserveKnownAuthority ? 'MAKER_AUTHORITY_NOT_VISIBLE' : 'MAKER_ADMIN_CAP_NOT_OWNED',
+      preserveKnownAuthority ? 'makerStateReadbackPending' : 'makerAuthorityChanged',
+    );
   }
 
   const policy = suiField(fields, 'policy') || {};
@@ -4251,6 +6017,12 @@ async function refreshMakerLifecycleAuthority(operation) {
   });
   const archived = suiBoolean(suiField(fields, 'archived'), false);
   const royaltyBps = Number(suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || 0);
+  const makerUpdatedAtMs = normalizedMakerUpdatedAtMs(
+    suiField(fields, 'updated_at_ms', 'updatedAtMs'),
+  );
+  const makerPreviousTransaction = String(
+    maker.previousTransaction || '',
+  );
   state.makerObjectId = maker.objectId;
   state.makerTreasuryObjectId = suiJsonId(suiField(fields, 'treasury_id', 'treasuryId'));
   state.makerAdminCapObjectId = adminCap.objectId;
@@ -4269,17 +6041,223 @@ async function refreshMakerLifecycleAuthority(operation) {
       ? `${atomicCoinToDecimal(economics.mintPriceAtomic)} ${runtimeConfig.paymentCoinSymbol}`
       : 'Free mint',
   });
+  setActivePausedEconomicsSnapshot(pausedEconomicsForLiveMaker(
+    activePausedEconomicsSnapshot(),
+    {
+      makerObjectId: maker.objectId,
+      mintingEnabled: economics.mintingEnabled,
+      makerUpdatedAtMs,
+      makerArchived: archived,
+      makerPreviousTransaction,
+    },
+  ));
   syncActiveMakerModelRefs();
-  return {
+  const authority = {
     makerObjectId: maker.objectId,
     makerTreasuryObjectId: state.makerTreasuryObjectId,
     makerAdminCapObjectId: adminCap.objectId,
+    makerUpdatedAtMs,
+    makerPreviousTransaction,
     archived,
     mintingEnabled: economics.mintingEnabled,
     mintFeeEnabled: economics.mintFeeEnabled,
     mintPriceAtomic: economics.mintPriceAtomic,
     royaltyBps,
   };
+  updatePublishedMakerVersionRecord(maker.objectId, authority);
+  return authority;
+}
+
+async function refreshMakerLifecycleAuthorityAfterWrite(operation, {
+  matches = () => true,
+} = {}) {
+  const delays = [0, 250, 600, 1_200, 2_400];
+  let lastError = null;
+  for (const delayMs of delays) {
+    if (delayMs) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    if (!makerChainOperationIsActive(operation)) {
+      throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+    }
+    try {
+      const result = await refreshMakerLifecycleAuthority(operation, {
+        preserveKnownAuthority: true,
+      });
+      if (matches(result)) return result;
+      lastError = makerAuthorityError(
+        'MAKER_STATE_NOT_CONFIRMED',
+        'makerAuthorityChanged',
+      );
+    } catch (error) {
+      if (error?.code === 'MAKER_CONTEXT_CHANGED') throw error;
+      lastError = error;
+    }
+  }
+  throw lastError || makerAuthorityError(
+    'MAKER_AUTHORITY_NOT_VISIBLE',
+    'makerAuthorityChanged',
+  );
+}
+
+function updatePublishedMakerVersionRecord(makerObjectId, patch = {}) {
+  const template = activeTemplate();
+  const history = publishedMakerVersionHistory(template);
+  const targetId = comparableSuiId(makerObjectId);
+  const target = history.find((entry) => (
+    comparableSuiId(entry.makerObjectId) === targetId
+  ));
+  if (!target) return null;
+  const next = normalizedPublishedMakerVersion({
+    ...target,
+    ...patch,
+    makerObjectId: target.makerObjectId,
+    rootMakerId: target.rootMakerId,
+    versionId: target.versionId,
+  }, { rootMakerId: target.rootMakerId });
+  if (!next) return null;
+  setPublishedMakerVersionHistory(template, [
+    ...history.filter((entry) => comparableSuiId(entry.makerObjectId) !== targetId),
+    next,
+  ]);
+  persistLocalMakerIndex(template.owner || state.walletAddress);
+  return next;
+}
+
+async function refreshPublishedMakerVersionAuthority(operation, {
+  preserveKnownAuthority = false,
+} = {}) {
+  const makerObjectId = suiJsonId(operation?.targetMakerObjectId);
+  const walletAddress = state.walletAddress;
+  if (
+    !makerObjectId
+    || !walletAddress
+    || !publishedMakerVersionOperationIsActive(operation)
+  ) {
+    throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+  }
+  const [makers, adminCaps] = await Promise.all([
+    getMakerObjects([makerObjectId], { expectedStructName: 'OCMaker' }),
+    listOwnedMakerAdminCaps(walletAddress),
+  ]);
+  if (!publishedMakerVersionOperationIsActive(operation)) {
+    throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+  }
+  const maker = makers.find((candidate) => (
+    comparableSuiId(candidate.objectId) === comparableSuiId(makerObjectId)
+  ));
+  const fields = suiObjectFields(maker);
+  const linkedAdminCapId = comparableSuiId(
+    suiField(fields, 'admin_cap_id', 'adminCapId'),
+  );
+  const linkedTreasuryId = comparableSuiId(
+    suiField(fields, 'treasury_id', 'treasuryId'),
+  );
+  const adminCap = adminCaps.find((candidate) => {
+    const capFields = suiObjectFields(candidate);
+    return comparableSuiId(candidate.objectId) === linkedAdminCapId
+      && comparableSuiId(suiField(capFields, 'maker_id', 'makerId'))
+        === comparableSuiId(makerObjectId)
+      && comparableSuiId(suiField(capFields, 'treasury_id', 'treasuryId'))
+        === linkedTreasuryId;
+  });
+  if (
+    !maker
+    || !suiBoolean(suiField(fields, 'published'), false)
+    || !linkedAdminCapId
+    || !linkedTreasuryId
+    || !adminCap
+  ) {
+    if (!preserveKnownAuthority) {
+      updatePublishedMakerVersionRecord(makerObjectId, {
+        makerAdminCapObjectId: '',
+      });
+    }
+    throw makerAuthorityError(
+      preserveKnownAuthority ? 'MAKER_AUTHORITY_NOT_VISIBLE' : 'MAKER_ADMIN_CAP_NOT_OWNED',
+      preserveKnownAuthority ? 'makerStateReadbackPending' : 'makerAuthorityChanged',
+    );
+  }
+  const policy = suiField(fields, 'policy') || {};
+  const economics = assertSupportedMakerMintEconomics({
+    mintingEnabled: suiBoolean(
+      suiField(fields, 'minting_enabled', 'mintingEnabled'),
+      true,
+    ),
+    mintFeeEnabled: suiBoolean(
+      suiField(fields, 'mint_fee_enabled', 'mintFeeEnabled'),
+      false,
+    ),
+    mintPriceAtomic: suiField(fields, 'mint_price_atomic', 'mintPriceAtomic') || 0,
+  });
+  const archived = suiBoolean(suiField(fields, 'archived'), false);
+  const makerPreviousTransaction = String(
+    maker.previousTransaction || '',
+  );
+  const existing = publishedMakerVersionHistory().find((entry) => (
+    comparableSuiId(entry.makerObjectId) === comparableSuiId(makerObjectId)
+  ));
+  const makerUpdatedAtMs = normalizedMakerUpdatedAtMs(
+    suiField(fields, 'updated_at_ms', 'updatedAtMs'),
+  );
+  const result = {
+    makerObjectId: maker.objectId,
+    makerTreasuryObjectId: suiJsonId(
+      suiField(fields, 'treasury_id', 'treasuryId'),
+    ),
+    makerAdminCapObjectId: adminCap.objectId,
+    makerUpdatedAtMs,
+    makerPreviousTransaction,
+    archived,
+    mintingEnabled: economics.mintingEnabled,
+    mintFeeEnabled: economics.mintFeeEnabled,
+    mintPriceAtomic: economics.mintPriceAtomic,
+    royaltyBps: Number(
+      suiField(policy.fields || policy, 'royalty_bps', 'royaltyBps') || 0,
+    ),
+    pausedEconomics: pausedEconomicsForLiveMaker(
+      existing?.pausedEconomics,
+      {
+        makerObjectId: maker.objectId,
+        mintingEnabled: economics.mintingEnabled,
+        makerUpdatedAtMs,
+        makerArchived: archived,
+        makerPreviousTransaction,
+      },
+    ),
+  };
+  updatePublishedMakerVersionRecord(makerObjectId, result);
+  return result;
+}
+
+async function refreshPublishedMakerVersionAuthorityAfterWrite(operation, {
+  matches = () => true,
+} = {}) {
+  const delays = [0, 250, 600, 1_200, 2_400];
+  let lastError = null;
+  for (const delayMs of delays) {
+    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (!publishedMakerVersionOperationIsActive(operation)) {
+      throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+    }
+    try {
+      const result = await refreshPublishedMakerVersionAuthority(operation, {
+        preserveKnownAuthority: true,
+      });
+      if (matches(result)) return result;
+      lastError = makerAuthorityError(
+        'MAKER_STATE_NOT_CONFIRMED',
+        'makerAuthorityChanged',
+      );
+    } catch (error) {
+      if (error?.code === 'MAKER_CONTEXT_CHANGED') throw error;
+      lastError = error;
+    }
+  }
+  throw lastError || makerAuthorityError(
+    'MAKER_AUTHORITY_NOT_VISIBLE',
+    'makerAuthorityChanged',
+  );
 }
 
 async function recoverPublishedMakerIndex() {
@@ -4306,8 +6284,12 @@ async function recoverPublishedMakerIndex() {
       quiltId: state.makerQuiltId || activeTemplate().quiltId || '',
       price: activeTemplate().mintFeeEnabled ? `${atomicCoinToDecimal(activeTemplate().mintPriceAtomic)} ${runtimeConfig.paymentCoinSymbol}` : 'Free mint',
     });
+    setPublishedMakerVersionHistory(activeTemplate(), [
+      ...publishedMakerVersionHistory(activeTemplate()),
+      currentPublishedMakerVersionRecord(),
+    ]);
     syncActiveMakerModelRefs();
-    await saveCurrentMakerDraft({ silent: true });
+    await saveCurrentMakerDraft({ silent: true, forceWorkspace: true });
     persistLocalMakerIndex();
     state.chainMakersLoadedFor = '';
     await loadChainMakers(state.walletAddress);
@@ -4348,11 +6330,15 @@ async function finalizeMakerPublication(transaction, makerPayload = null, {
   const uploadedMakerDocument = state.pendingMakerV4Bundle?.manifest;
   if (isMakerV4Document(uploadedMakerDocument)) {
     state.publishedMakerDocumentV4 = structuredClone(uploadedMakerDocument);
+    state.publishedMakerRecipeV4 = cloneV4Recipe(uploadedMakerDocument.defaultRecipe);
   } else if (isMakerV4Document(state.makerDocumentV4)) {
     // Legacy publication paths do not produce a v5 bundle. Keep this fallback
     // isolated from the normal v5 path, whose immutable uploaded Manifest is
     // the only safe publication snapshot.
     state.publishedMakerDocumentV4 = structuredClone(state.makerDocumentV4);
+    state.publishedMakerRecipeV4 = cloneV4Recipe(
+      state.makerRecipeV4 || state.makerDocumentV4.defaultRecipe,
+    );
   }
   Object.assign(activeTemplate(), {
     source: state.makerObjectId ? 'chain' : 'local',
@@ -4371,11 +6357,20 @@ async function finalizeMakerPublication(transaction, makerPayload = null, {
       ? `${$('creatorMintPrice').value} ${runtimeConfig.paymentCoinSymbol}`
       : state.makerObjectId ? 'Free mint' : 'Indexing',
   });
+  if (state.makerObjectId) {
+    setPublishedMakerVersionHistory(activeTemplate(), [
+      ...publishedMakerVersionHistory(activeTemplate()),
+      currentPublishedMakerVersionRecord(),
+    ]);
+  }
   syncActiveMakerModelRefs();
   persistLocalMakerIndex();
   let saved = false;
   try {
-    const saveResult = await saveCurrentMakerDraft({ silent: true });
+    const saveResult = await saveCurrentMakerDraft({
+      silent: true,
+      forceWorkspace: true,
+    });
     saved = saveResult?.confirmed === true;
     if (!saved) {
       throw new Error('The published Maker state has not been confirmed in local storage yet.');
@@ -4461,19 +6456,55 @@ async function recoverMakerPublicationIntent({
 }
 
 function openConfirmation({ title, message, confirmLabel = 'Delete', action }) {
+  const confirmationModal = $('confirmActionModal');
+  const lifecycleModal = $('makerLifecycleManagerModal');
+  confirmationReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
+  confirmationSuspendedLifecycle = Boolean(lifecycleModal?.classList.contains('active'));
+  if (confirmationSuspendedLifecycle) {
+    lifecycleModal.inert = true;
+    lifecycleModal.setAttribute('aria-hidden', 'true');
+    $('makerLifecycleManagerDialog')?.setAttribute('aria-modal', 'false');
+  }
   pendingConfirmation = action;
   $('confirmActionTitle').textContent = title;
   $('confirmActionMessage').textContent = message;
   $('confirmActionButton').textContent = confirmLabel;
-  $('confirmActionModal').classList.add('active');
-  $('confirmActionModal').setAttribute('aria-hidden', 'false');
+  confirmationModal.classList.add('active');
+  confirmationModal.setAttribute('aria-hidden', 'false');
   $('confirmActionButton').focus();
 }
 
 function closeConfirmation() {
+  const returnFocus = confirmationReturnFocus;
+  const restoreLifecycle = confirmationSuspendedLifecycle;
   pendingConfirmation = null;
+  confirmationReturnFocus = null;
+  confirmationSuspendedLifecycle = false;
   $('confirmActionModal').classList.remove('active');
   $('confirmActionModal').setAttribute('aria-hidden', 'true');
+  if (restoreLifecycle) {
+    const lifecycleModal = $('makerLifecycleManagerModal');
+    lifecycleModal.inert = false;
+    lifecycleModal.removeAttribute('inert');
+    lifecycleModal.setAttribute(
+      'aria-hidden',
+      lifecycleModal.classList.contains('active') ? 'false' : 'true',
+    );
+    $('makerLifecycleManagerDialog')?.setAttribute('aria-modal', 'true');
+  }
+  if (
+    returnFocus?.isConnected
+    && !returnFocus.closest('[inert]')
+    && !returnFocus.disabled
+  ) {
+    returnFocus.focus();
+  } else if (restoreLifecycle && $('makerLifecycleManagerModal')?.classList.contains('active')) {
+    $('makerLifecycleManagerModal')
+      .querySelector('[data-close-maker-lifecycle]')
+      ?.focus();
+  }
 }
 
 function revokeMakerObjectUrls(model = makerModels.get(state.templateId)) {
@@ -4618,14 +6649,24 @@ async function restoreMakerAssets(templateId = state.templateId) {
   }
 }
 
-async function saveCurrentMakerDraft({ silent = false } = {}) {
+async function saveCurrentMakerDraft({
+  silent = false,
+  forceWorkspace = false,
+} = {}) {
   if (!state.walletConnected || !state.walletAddress) {
     if (silent) return null;
     throw new Error(t('makerDraftOwnerWalletRequired'));
   }
+  if (!templateIsOwnedByWallet()) {
+    if (silent) return null;
+    throw new Error(t('makerLifecycleNoAuthority'));
+  }
   if (isMakerV4Document(state.makerDocumentV4) && makerWorkspace) {
     await syncMakerWorkspaceContext();
-    const result = await makerWorkspace.save({ automatic: silent });
+    const result = await makerWorkspace.save({
+      automatic: silent,
+      force: forceWorkspace,
+    });
     if (!result && !silent) {
       throw new Error(makerWorkspace.store?.getState().saveMessage || t('localDraftSaveFailed'));
     }
@@ -5191,8 +7232,11 @@ function makerUploadCheckpointHandler(session, context) {
   };
 }
 
-async function clearMakerUploadRecovery(templateId = state.templateId) {
-  const recoveryKey = makerAssetStorageKey(templateId);
+async function clearMakerUploadRecovery(
+  templateId = state.templateId,
+  walletAddress = state.walletAddress,
+) {
+  const recoveryKey = makerAssetStorageKey(templateId, walletAddress);
   loadedMakerUploadRecoveries.delete(recoveryKey);
   const recovery = await loadMakerUploadRecovery(recoveryKey);
   const deleted = !recovery || await deleteMakerUploadRecovery(recoveryKey, {
@@ -5202,7 +7246,8 @@ async function clearMakerUploadRecovery(templateId = state.templateId) {
   if (
     deleted
     && state.templateId === templateId
-    && makerAssetStorageKey(templateId) === recoveryKey
+    && state.walletAddress === walletAddress
+    && makerAssetStorageKey(templateId, walletAddress) === recoveryKey
   ) {
     state.hasMakerUploadRecovery = false;
     state.makerPublicationIntent = null;
@@ -6705,6 +8750,17 @@ function renderRuleItemOptions(selectId, partKey, preferredValue = '') {
 function makerPublicationIssues() {
   if (isMakerV4Document(state.makerDocumentV4)) {
     const issues = (makerWorkspace?.getPublicationIssues?.() || []).map((issue) => issue.message || String(issue));
+    const lineageFork = makerPublishedLineageFork();
+    if (lineageFork) {
+      issues.unshift(makerVersionLineageForkMessage(lineageFork));
+    }
+    const versionConflict = makerVersionDraftConflict();
+    if (versionConflict) {
+      issues.unshift(makerVersionDraftConflictMessage(
+        versionConflict,
+        state.makerDocumentV4,
+      ));
+    }
     try {
       creatorUploadManifest();
     } catch (error) {
@@ -7399,6 +9455,7 @@ async function resumeMakerUploadRecovery() {
   const operation = beginMakerChainOperation();
   clearMakerPublishError();
   state.publishing = true;
+  state.makerReleaseInFlight = true;
   state.publishStatus = t('restoringUpload');
   renderAll();
   try {
@@ -7406,6 +9463,7 @@ async function resumeMakerUploadRecovery() {
   } finally {
     if (makerChainOperationIsActive(operation)) {
       state.publishing = false;
+      state.makerReleaseInFlight = false;
       renderAll();
     }
   }
@@ -7457,7 +9515,8 @@ function renderImageMakerList() {
           <div class="maker-card-actions">
             <button class="secondary" data-preview-maker="${escapeHtml(template.id)}">${t('preview')}</button>
             ${template.source === 'local' && !published ? `<button class="icon-button danger-icon" data-delete-maker="${escapeHtml(template.id)}" title="${t('deleteDraft')}" aria-label="${t('deleteDraft')}: ${escapeHtml(template.name)}">×</button>` : ''}
-            <button class="primary" data-edit-maker="${escapeHtml(template.id)}">${t(published ? 'manage' : 'edit')}</button>
+            <button class="secondary" data-manage-lifecycle="${escapeHtml(template.id)}">${t('makerLifecycleManage')}</button>
+            <button class="primary" data-edit-maker="${escapeHtml(template.id)}">${t('edit')}</button>
           </div>
         </article>
       `;
@@ -7489,33 +9548,49 @@ function renderImageMakerList() {
   document.querySelectorAll('[data-delete-maker]').forEach((button) => {
     button.addEventListener('click', () => requestDeleteMaker(button.dataset.deleteMaker));
   });
+
+  document.querySelectorAll('[data-manage-lifecycle]').forEach((button) => {
+    button.addEventListener('click', () => openMakerLifecycleManager(button.dataset.manageLifecycle));
+  });
 }
 
 function requestDeleteMaker(templateId = state.templateId) {
   const template = templates.find((candidate) => candidate.id === templateId);
   const model = makerModels.get(templateId);
   if (!template || template.source !== 'local' || model?.publishDigest || model?.makerObjectId) return;
+  const owner = String(template.owner || state.walletAddress || '');
+  const workspaceKey = `${owner || 'wallet'}:${templateId}`;
+  const draftStorageKey = makerDraftStorageKey(templateId, owner);
+  const assetStorageKey = makerAssetStorageKey(templateId, owner);
   openConfirmation({
     title: t('deleteLocalDraftTitle'),
     message: t('deleteLocalDraftCopy', { name: template.name }),
     confirmLabel: t('deleteLocalDraft'),
     action: async () => {
+      const currentTemplate = templates.find((candidate) => candidate.id === templateId);
+      const currentModel = makerModels.get(templateId);
+      if (
+        !currentTemplate
+        || currentTemplate.source !== 'local'
+        || String(currentTemplate.owner || '') !== owner
+        || currentModel?.publishDigest
+        || currentModel?.makerObjectId
+      ) return;
       const wasActive = state.templateId === templateId;
-      const assetStorageKey = makerAssetStorageKey(templateId);
-      revokeMakerObjectUrls(model);
+      await makerWorkspace?.deleteDraftProject?.(workspaceKey);
+      revokeMakerObjectUrls(currentModel);
       localMakerCoverRestoreTokens.delete(templateId);
       revokeLocalMakerCoverObjectUrl(templateId);
-      localStorage.removeItem(makerDraftStorageKey(templateId));
-      loadedMakerDrafts.delete(makerDraftStorageKey(templateId));
+      localStorage.removeItem(draftStorageKey);
+      loadedMakerDrafts.delete(draftStorageKey);
       loadedMakerAssetDrafts.delete(assetStorageKey);
-      await makerWorkspace?.deleteDraftProject?.(`${state.walletAddress}:${templateId}`);
-      await deleteMakerDraftRecord(makerDraftStorageKey(templateId));
+      await deleteMakerDraftRecord(draftStorageKey);
       await deleteMakerAssets(assetStorageKey);
-      await clearMakerUploadRecovery(templateId);
+      await clearMakerUploadRecovery(templateId, owner);
       makerModels.delete(templateId);
       const templateIndex = templates.findIndex((candidate) => candidate.id === templateId);
       if (templateIndex >= 0) templates.splice(templateIndex, 1);
-      persistLocalMakerIndex();
+      persistLocalMakerIndex(owner);
       const fallback = wasActive ? templates[0] : activeTemplate();
       if (wasActive && fallback) {
         activateMakerModel(fallback.id);
@@ -7535,10 +9610,14 @@ function renderMakerLifecycle() {
   const locked = releaseLocked || (lifecycle.published && !lifecycle.versionDraft);
   const chainManageable = !releaseLocked
     && lifecycle.published
-    && !lifecycle.versionDraft
     && Boolean(state.makerObjectId);
+  const economicsManageable = chainManageable && !lifecycle.versionDraft;
   const title = t(lifecycle.labelKey);
-  const copy = t(lifecycle.copyKey, lifecycle.copyVariables);
+  const copy = lifecycle.lineageFork
+    ? makerVersionLineageForkMessage(lifecycle.lineageFork)
+    : lifecycle.versionConflict
+      ? makerVersionDraftConflictMessage(lifecycle.versionConflict)
+      : t(lifecycle.copyKey, lifecycle.copyVariables);
   if ($('makerLifecycleBadge')) {
     $('makerLifecycleBadge').textContent = title;
     $('makerLifecycleBadge').className = `maker-lifecycle-badge ${lifecycle.badgeClass}`;
@@ -7556,7 +9635,11 @@ function renderMakerLifecycle() {
   if ($('archiveMakerOnchain')) {
     $('archiveMakerOnchain').textContent = lifecycle.archived ? t('restoreMaker') : t('archiveMaker');
     $('archiveMakerOnchain').className = lifecycle.archived ? 'secondary' : 'danger-button';
-    $('archiveMakerOnchain').disabled = !chainManageable || !state.makerAdminCapObjectId || !state.walletConnected || state.publishing;
+    $('archiveMakerOnchain').disabled = !chainManageable
+      || !state.makerAdminCapObjectId
+      || !state.walletConnected
+      || state.publishing
+      || state.makerLifecycleActionBusy;
   }
 
   ['creatorTemplateName', 'creatorDescription', 'creatorName', 'creatorWorld', 'creatorLicense', 'creatorLicenseNote'].forEach((id) => {
@@ -7574,8 +9657,17 @@ function renderMakerLifecycle() {
       || !canonicalSoulMintEnabled
       || !$('creatorMintFeeEnabled').checked;
   }
-  if ($('updateMakerEconomics')) $('updateMakerEconomics').disabled = !chainManageable || !state.makerAdminCapObjectId || !state.walletConnected || state.publishing;
-  if ($('withdrawMakerRevenue')) $('withdrawMakerRevenue').disabled = !chainManageable || !state.makerAdminCapObjectId || !state.makerTreasuryObjectId || !state.walletConnected || state.publishing;
+  if ($('updateMakerEconomics')) $('updateMakerEconomics').disabled = !economicsManageable
+    || !state.makerAdminCapObjectId
+    || !state.walletConnected
+    || state.publishing
+    || state.makerLifecycleActionBusy;
+  if ($('withdrawMakerRevenue')) $('withdrawMakerRevenue').disabled = !chainManageable
+    || !state.makerAdminCapObjectId
+    || !state.makerTreasuryObjectId
+    || !state.walletConnected
+    || state.publishing
+    || state.makerLifecycleActionBusy;
   if ($('makerTreasuryBalance')) {
     const template = activeTemplate();
     $('makerTreasuryBalance').textContent = locked && state.makerTreasuryObjectId
@@ -7602,6 +9694,748 @@ function renderMakerLifecycle() {
   document.querySelectorAll('#partWorkspace input, #partWorkspace select, #layerDetailsPanel input, #layerDetailsPanel select').forEach((control) => {
     control.disabled = locked;
   });
+  renderMakerLifecycleManager();
+}
+
+function lifecycleFact(label, value) {
+  return `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || '—')}</dd></div>`;
+}
+
+function lifecycleActionButton(action, label, copy, {
+  tone = '',
+  disabled = false,
+} = {}) {
+  const unavailable = disabled ? ` title="${escapeHtml(t('makerLifecycleActionUnavailable'))}"` : '';
+  return `
+    <button class="maker-lifecycle-manager-action ${escapeHtml(tone)}" type="button" data-lifecycle-action="${escapeHtml(action)}" ${disabled ? 'disabled aria-disabled="true"' : ''}${unavailable}>
+      <strong>${escapeHtml(label)}</strong>
+      <small>${escapeHtml(copy)}</small>
+    </button>
+  `;
+}
+
+function makerLifecycleVersionTargetLabel(version) {
+  return [
+    `${t('makerLifecycleVersion')} ${version?.versionId || '—'}`,
+    `${t('makerLifecycleObject')} ${shortAddress(version?.makerObjectId || '') || '—'}`,
+  ].join(' · ');
+}
+
+function makerLifecycleVersionActionLabel(actionLabel, version) {
+  return `${actionLabel} · ${makerLifecycleVersionTargetLabel(version)}`;
+}
+
+function renderMakerLifecycleManager() {
+  const modal = $('makerLifecycleManagerModal');
+  if (!modal) return;
+  const focusedElement = document.activeElement;
+  const modalWasActive = modal.classList.contains('active');
+  const focusedInsideModal = modalWasActive && modal.contains(focusedElement);
+  const focusedLifecycleAction = focusedInsideModal
+    ? focusedElement?.closest?.('[data-lifecycle-action]')?.dataset?.lifecycleAction || ''
+    : '';
+  const template = activeTemplate();
+  const lifecycle = makerLifecycleDescriptor(template);
+  const workingDocument = isMakerV4Document(state.makerDocumentV4) ? state.makerDocumentV4 : null;
+  const publishedDocument = isMakerV4Document(state.publishedMakerDocumentV4)
+    ? state.publishedMakerDocumentV4
+    : null;
+  const title = t(lifecycle.labelKey);
+  const actionCopyKey = {
+    draft: 'makerLifecycleDraftActionCopy',
+    starter: 'makerLifecycleDraftActionCopy',
+    publishing: 'makerLifecyclePublishingActionCopy',
+    recoverable: 'makerLifecycleRecoverableActionCopy',
+    active: 'makerLifecycleActiveActionCopy',
+    paused: 'makerLifecyclePausedActionCopy',
+    archived: 'makerLifecycleArchivedActionCopy',
+    'version-draft': 'makerLifecycleVersionDraftActionCopy',
+  }[lifecycle.id];
+  const actionCopy = lifecycle.lineageFork
+    ? makerVersionLineageForkMessage(lifecycle.lineageFork)
+    : lifecycle.versionConflict
+      ? makerVersionDraftConflictMessage(lifecycle.versionConflict, workingDocument)
+      : t(actionCopyKey);
+  const publishedObjectId = state.makerObjectId || template?.objectId || '';
+  const hasAuthority = Boolean(
+    state.walletConnected
+    && state.makerAdminCapObjectId
+    && publishedObjectId,
+  );
+  const releaseLocked = ['publishing', 'recoverable'].includes(lifecycle.id);
+  const operationBusy = state.publishing || state.makerLifecycleActionBusy;
+  const chainActionDisabled = operationBusy || releaseLocked || !hasAuthority;
+  const pausedEconomics = lifecycle.mintingEnabled
+    ? null
+    : activePausedEconomicsSnapshot();
+
+  if ($('makerLifecycleManagerTitle')) $('makerLifecycleManagerTitle').textContent = t('makerLifecycleManagerTitle');
+  if ($('makerLifecycleManagerCopy')) $('makerLifecycleManagerCopy').textContent = t('makerLifecycleManagerCopy');
+  if ($('makerLifecycleManagerBadge')) {
+    $('makerLifecycleManagerBadge').textContent = title;
+    $('makerLifecycleManagerBadge').className = `maker-lifecycle-manager-badge ${lifecycle.badgeClass}`;
+    $('makerLifecycleManagerBadge').dataset.state = lifecycle.id;
+  }
+  if ($('makerLifecycleManagerName')) $('makerLifecycleManagerName').textContent = template?.name || 'Maker';
+  if ($('makerLifecycleManagerScope')) {
+    $('makerLifecycleManagerScope').textContent = lifecycle.published
+      ? `${t('makerLifecycleLocalScope')} + ${t('makerLifecycleChainScope')}`
+      : t('makerLifecycleLocalScope');
+  }
+  if ($('makerLifecycleManagerFacts')) {
+    $('makerLifecycleManagerFacts').innerHTML = [
+      lifecycleFact(t('lifecycle'), title),
+      lifecycleFact(
+        t('makerLifecycleAuthority'),
+        lifecycle.published
+          ? hasAuthority ? t('makerLifecycleAuthorityReady') : t('makerLifecycleAuthorityUnavailable')
+          : t('makerLifecycleLocalScope'),
+      ),
+      lifecycleFact(t('makerLifecycleVersion'), workingDocument?.version?.versionId || '—'),
+      lifecycleFact(t('makerLifecycleObject'), publishedObjectId ? shortAddress(publishedObjectId) : '—'),
+    ].join('');
+  }
+
+  if ($('lifecycleWorkingVersionCard')) {
+    $('lifecycleWorkingVersionCard').innerHTML = `
+      <h3>${escapeHtml(t('makerLifecycleWorkingVersion'))}</h3>
+      <p>${escapeHtml(actionCopy)}</p>
+      <dl>
+        <div><dt>${escapeHtml(t('makerLifecycleVersion'))}</dt><dd>${escapeHtml(workingDocument?.version?.versionId || '—')}</dd></div>
+        <div><dt>${escapeHtml(t('makerLifecycleLocalScope'))}</dt><dd>${escapeHtml(lifecycle.versionDraft ? t('makerLifecycleVersionDraft') : title)}</dd></div>
+      </dl>
+    `;
+  }
+  if ($('lifecyclePublishedVersionCard')) {
+    if (lifecycle.published) {
+      const objectValue = publishedObjectId
+        ? `<a href="${escapeHtml(explorerObjectUrl(publishedObjectId))}" target="_blank" rel="noreferrer">${escapeHtml(shortAddress(publishedObjectId))}</a>`
+        : '—';
+      $('lifecyclePublishedVersionCard').innerHTML = `
+        <h3>${escapeHtml(t('makerLifecyclePublishedVersion'))}</h3>
+        <p>${escapeHtml(t('makerLifecycleChainVersionImmutable'))} ${escapeHtml(t('makerLifecycleExistingOcSafe'))}</p>
+        <dl>
+          <div><dt>${escapeHtml(t('makerLifecycleVersion'))}</dt><dd>${escapeHtml(publishedDocument?.version?.versionId || workingDocument?.version?.versionId || '—')}</dd></div>
+          <div><dt>${escapeHtml(t('makerLifecycleObject'))}</dt><dd>${objectValue}</dd></div>
+          <div><dt>${escapeHtml(t('makerLifecycleAuthority'))}</dt><dd>${escapeHtml(hasAuthority ? t('makerLifecycleAuthorityReady') : t('makerLifecycleNoAuthority'))}</dd></div>
+        </dl>
+      `;
+    } else {
+      $('lifecyclePublishedVersionCard').innerHTML = `
+        <h3>${escapeHtml(t('makerLifecyclePublishedVersion'))}</h3>
+        <p>${escapeHtml(t('makerLifecycleNoPublishedVersion'))}</p>
+      `;
+    }
+  }
+  if ($('makerLifecycleVersionHistory')) {
+    const versions = lifecycle.published
+      ? publishedMakerVersionHistory(template)
+      : [];
+    $('makerLifecycleVersionHistory').innerHTML = versions.length
+      ? versions.map((version) => {
+          const versionState = version.archived
+            ? 'archived'
+            : version.mintingEnabled
+              ? 'active'
+              : 'paused';
+          const versionStateLabel = t({
+            active: 'makerLifecycleActive',
+            paused: 'makerLifecyclePaused',
+            archived: 'makerLifecycleArchived',
+          }[versionState]);
+          const authorityReady = Boolean(
+            state.walletConnected
+            && version.makerAdminCapObjectId,
+          );
+          const canAttemptAuthority = Boolean(
+            state.walletConnected
+            && template?.owned,
+          );
+          const disabled = operationBusy || releaseLocked || !canAttemptAuthority;
+          const target = escapeHtml(version.makerObjectId);
+          const resumeWithoutSnapshot = !version.mintingEnabled
+            && !version.pausedEconomics;
+          const restoreLabel = t('makerLifecycleActionRestore');
+          const pauseOrResumeLabel = t(
+            version.mintingEnabled
+              ? 'makerLifecycleActionPause'
+              : resumeWithoutSnapshot
+                ? 'makerLifecycleActionResumeFree'
+                : 'makerLifecycleActionResume',
+          );
+          const archiveLabel = t('makerLifecycleActionArchive');
+          const buttons = version.archived
+            ? `
+                <button type="button" data-lifecycle-action="history-restore:${target}" aria-label="${escapeHtml(makerLifecycleVersionActionLabel(restoreLabel, version))}" ${disabled ? 'disabled aria-disabled="true"' : ''}>
+                  ${escapeHtml(restoreLabel)}
+                </button>
+              `
+            : `
+                <button type="button" data-lifecycle-action="${version.mintingEnabled ? 'history-pause' : 'history-resume'}:${target}" aria-label="${escapeHtml(makerLifecycleVersionActionLabel(pauseOrResumeLabel, version))}" ${disabled ? 'disabled aria-disabled="true"' : ''}>
+                  ${escapeHtml(pauseOrResumeLabel)}
+                </button>
+                <button class="danger" type="button" data-lifecycle-action="history-archive:${target}" aria-label="${escapeHtml(makerLifecycleVersionActionLabel(archiveLabel, version))}" ${disabled ? 'disabled aria-disabled="true"' : ''}>
+                  ${escapeHtml(archiveLabel)}
+                </button>
+              `;
+          return `
+            <article class="maker-lifecycle-version-history-item ${version.current ? 'is-current' : ''}" data-maker-version-object="${target}">
+              <div class="maker-lifecycle-version-history-identity">
+                <strong>${escapeHtml(version.versionId)}</strong>
+                <small>${escapeHtml(shortAddress(version.makerObjectId))}</small>
+              </div>
+              <div class="maker-lifecycle-version-history-meta">
+                <span>${escapeHtml(t(version.current ? 'makerLifecycleVersionCurrent' : 'makerLifecycleVersionPrevious'))}</span>
+                <span class="is-${escapeHtml(versionState)}">${escapeHtml(versionStateLabel)}</span>
+                <span>${escapeHtml(
+                  authorityReady
+                    ? t('makerLifecycleAuthorityReady')
+                    : t('makerLifecycleVersionHistoryNoAuthority'),
+                )}</span>
+              </div>
+              <div class="maker-lifecycle-version-history-actions">
+                <a href="${escapeHtml(explorerObjectUrl(version.makerObjectId))}" target="_blank" rel="noreferrer">${escapeHtml(t('viewSuiMaker'))}</a>
+                ${buttons}
+              </div>
+            </article>
+          `;
+        }).join('')
+      : `<div class="maker-lifecycle-version-history-empty">${escapeHtml(t('makerLifecycleVersionHistoryEmpty'))}</div>`;
+  }
+
+  const actions = [];
+  if (['publishing', 'recoverable'].includes(lifecycle.id)) {
+    actions.push(lifecycleActionButton(
+      'open-release',
+      t('makerLifecycleActionRelease'),
+      t(lifecycle.id === 'publishing' ? 'makerLifecyclePublishingActionCopy' : 'makerLifecycleRecoverableActionCopy'),
+      { tone: 'primary' },
+    ));
+  }
+  if (
+    lifecycle.published
+    && !lifecycle.versionDraft
+    && !releaseLocked
+    && workingDocument
+  ) {
+    actions.push(lifecycleActionButton(
+      'start-version',
+      t('makerLifecycleActionStartVersion'),
+      lifecycle.lineageFork
+        ? makerVersionLineageForkMessage(lifecycle.lineageFork)
+        : t('makerLifecycleStartVersionCopy'),
+      {
+        tone: 'primary',
+        disabled: operationBusy || Boolean(lifecycle.lineageFork),
+      },
+    ));
+  }
+  if (lifecycle.versionDraft) {
+    actions.push(lifecycleActionButton(
+      'open-release',
+      t('makerLifecycleActionPublishVersion'),
+      lifecycle.lineageFork
+        ? makerVersionLineageForkMessage(lifecycle.lineageFork)
+        : lifecycle.versionConflict
+          ? makerVersionDraftConflictMessage(lifecycle.versionConflict, workingDocument)
+          : t('makerLifecycleVersionWarning'),
+      {
+        tone: 'primary',
+        disabled: operationBusy
+          || Boolean(lifecycle.versionConflict)
+          || Boolean(lifecycle.lineageFork),
+      },
+    ));
+    actions.push(lifecycleActionButton(
+      'discard-version',
+      t('makerLifecycleActionDiscardVersion'),
+      t('makerLifecycleDiscardVersionCopy'),
+      { tone: 'danger', disabled: operationBusy },
+    ));
+  }
+  if (lifecycle.published) {
+    if (lifecycle.archived) {
+      actions.push(lifecycleActionButton(
+        'restore-chain',
+        t('makerLifecycleActionRestore'),
+        t('archivedLifecycleCopy'),
+        { disabled: chainActionDisabled },
+      ));
+    } else {
+      const resumingWithoutSnapshot = !lifecycle.mintingEnabled && !pausedEconomics;
+      actions.push(lifecycleActionButton(
+        lifecycle.mintingEnabled ? 'pause-authorizations' : 'resume-authorizations',
+        t(
+          lifecycle.mintingEnabled
+            ? 'makerLifecycleActionPause'
+            : resumingWithoutSnapshot
+              ? 'makerLifecycleActionResumeFree'
+              : 'makerLifecycleActionResume',
+        ),
+        t(
+          lifecycle.mintingEnabled
+            ? 'makerLifecyclePauseCopy'
+            : resumingWithoutSnapshot
+              ? 'makerLifecycleResumeFreeCopy'
+              : 'makerLifecycleResumeCopy',
+        ),
+        { disabled: chainActionDisabled },
+      ));
+      actions.push(lifecycleActionButton(
+        'archive-chain',
+        t('makerLifecycleActionArchive'),
+        t('archiveMakerCopy'),
+        { tone: 'danger', disabled: chainActionDisabled },
+      ));
+    }
+  } else if (template?.source === 'local') {
+    actions.push(lifecycleActionButton(
+      'delete-draft',
+      t('makerLifecycleActionDeleteDraft'),
+      t('deleteLocalDraftCopy', { name: template.name }),
+      { tone: 'danger', disabled: operationBusy },
+    ));
+  }
+  if ($('makerLifecycleManagerActions')) $('makerLifecycleManagerActions').innerHTML = actions.join('');
+  const footerEditorAction = modal.querySelector('.maker-lifecycle-manager-footer [data-lifecycle-action="open-editor"]');
+  if (footerEditorAction) {
+    footerEditorAction.disabled = operationBusy || releaseLocked;
+    footerEditorAction.setAttribute('aria-disabled', String(footerEditorAction.disabled));
+    footerEditorAction.textContent = t(
+      releaseLocked
+        ? 'makerLifecycleManagerOpenEditor'
+        : lifecycle.published && !lifecycle.versionDraft
+          ? 'makerLifecycleManagerInspectEditor'
+          : 'makerLifecycleActionContinue',
+    );
+  }
+
+  if ($('makerLifecyclePermanentRetirement')) {
+    $('makerLifecyclePermanentRetirement').hidden = !lifecycle.published;
+  }
+  if ($('makerLifecycleManagerNotice')) {
+    const notice = lifecycle.lineageFork
+      ? makerVersionLineageForkMessage(lifecycle.lineageFork)
+      : lifecycle.versionDraft
+        ? t('makerLifecycleVersionWarning')
+        : lifecycle.published && !hasAuthority
+          ? t('makerLifecycleNoAuthority')
+          : '';
+    $('makerLifecycleManagerNotice').hidden = !notice;
+    $('makerLifecycleManagerNotice').textContent = notice;
+  }
+  if ($('makerLifecycleManagerStatus')) {
+    $('makerLifecycleManagerStatus').textContent = state.publishStatus || t('makerLifecycleStatusReady');
+  }
+  if (
+    focusedInsideModal
+    && !$('confirmActionModal')?.classList.contains('active')
+    && !modal.contains(document.activeElement)
+  ) {
+    const replacement = focusedLifecycleAction
+      ? Array.from(modal.querySelectorAll('[data-lifecycle-action]')).find((button) => (
+          button.dataset.lifecycleAction === focusedLifecycleAction
+          && !button.disabled
+        ))
+      : null;
+    (replacement || $('makerLifecycleManagerStatus') || modal.querySelector('[data-close-maker-lifecycle]'))
+      ?.focus({ preventScroll: true });
+  }
+}
+
+function openMakerLifecycleManager(templateId = state.templateId) {
+  const requestedTemplateId = String(templateId || state.templateId);
+  if (requestedTemplateId !== state.templateId && !activateMakerModel(requestedTemplateId)) return;
+  syncTemplateFields();
+  const requestId = ++makerLifecycleManagerSyncRequestId;
+  const requestedWallet = state.walletAddress;
+  makerLifecycleManagerReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
+  renderMakerLifecycleManager();
+  $('makerLifecycleManagerModal')?.classList.add('active');
+  if ($('makerLifecycleManagerModal')) {
+    $('makerLifecycleManagerModal').inert = false;
+    $('makerLifecycleManagerModal').removeAttribute('inert');
+  }
+  $('makerLifecycleManagerModal')?.setAttribute('aria-hidden', 'false');
+  $('makerLifecycleManagerDialog')?.setAttribute('aria-modal', 'true');
+  $('makerLifecycleManagerModal')
+    ?.querySelector('[data-close-maker-lifecycle]')
+    ?.focus();
+  void syncMakerWorkspaceContext().catch((error) => {
+    if (
+      requestId !== makerLifecycleManagerSyncRequestId
+      || requestedTemplateId !== state.templateId
+      || requestedWallet !== state.walletAddress
+      || !$('makerLifecycleManagerModal')?.classList.contains('active')
+    ) return;
+    state.publishStatusI18n = null;
+    state.publishStatus = state.locale === 'en' && error?.message
+      ? error.message
+      : t('makerWorkspaceRestoreFailed');
+    renderMakerLifecycleManager();
+  });
+  void loadActiveTreasuryBalance();
+}
+
+function closeMakerLifecycleManager({ restoreFocus = true } = {}) {
+  makerLifecycleManagerSyncRequestId += 1;
+  $('makerLifecycleManagerModal')?.classList.remove('active');
+  if ($('makerLifecycleManagerModal')) {
+    $('makerLifecycleManagerModal').inert = false;
+    $('makerLifecycleManagerModal').removeAttribute('inert');
+  }
+  $('makerLifecycleManagerModal')?.setAttribute('aria-hidden', 'true');
+  $('makerLifecycleManagerDialog')?.setAttribute('aria-modal', 'true');
+  if (restoreFocus && makerLifecycleManagerReturnFocus?.isConnected) {
+    makerLifecycleManagerReturnFocus.focus();
+  } else if (restoreFocus) {
+    const replacement = Array.from(document.querySelectorAll('[data-manage-lifecycle]'))
+      .find((button) => (
+        button.dataset.manageLifecycle === state.templateId
+        && button.offsetParent !== null
+      ))
+      || Array.from(document.querySelectorAll('[data-action="manage-lifecycle"]'))
+        .find((button) => button.offsetParent !== null);
+    replacement?.focus();
+  }
+  makerLifecycleManagerReturnFocus = null;
+}
+
+function openMakerEditorFromLifecycle() {
+  closeMakerLifecycleManager({ restoreFocus: false });
+  state.editorPanel = 'parts';
+  setCreatorView('edit');
+  renderAll();
+  void loadActiveTreasuryBalance();
+  focusCreatorTop();
+}
+
+async function openMakerReleaseFromLifecycle() {
+  const operation = captureMakerWorkspaceOperation();
+  closeMakerLifecycleManager({ restoreFocus: false });
+  state.editorPanel = 'parts';
+  setCreatorView('edit');
+  renderAll();
+  await syncMakerWorkspaceContext();
+  if (!makerWorkspaceOperationIsActive(operation)) return false;
+  makerWorkspace?.openCreatorReleaseManager?.();
+  return true;
+}
+
+function applyRefreshedOwnedMakerModel() {
+  const template = activeTemplate();
+  const model = template ? makerModels.get(template.id) : null;
+  const refreshedDocument = model?.publishedMakerDocumentV4
+    || model?.makerDocumentV4;
+  const currentRootMakerId = currentMakerV4Source()?.version?.rootMakerId
+    || state.publishedMakerDocumentV4?.version?.rootMakerId;
+  if (
+    !templateIsOwnedByWallet(template)
+    || makerModelHasPendingV4Version(model)
+    || !isMakerV4Document(refreshedDocument)
+    || (
+      currentRootMakerId
+      && refreshedDocument.version.rootMakerId !== currentRootMakerId
+    )
+  ) return false;
+  applyMakerModelToState(template.id, model);
+  syncTemplateFields();
+  return true;
+}
+
+async function rebindRefreshedOwnedMakerWorkspace({
+  guard = () => true,
+} = {}) {
+  if (!guard() || !applyRefreshedOwnedMakerModel()) {
+    throw makerAuthorityError('MAKER_VERSION_REBIND_FAILED', 'makerDiscoveryFailed');
+  }
+  await syncMakerWorkspaceContext({ replaceDocument: true });
+  if (!guard()) {
+    throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+  }
+  const expectedDocument = state.publishedMakerDocumentV4;
+  const reboundDocument = makerWorkspace?.getDocument?.();
+  const reboundAssets = makerWorkspace?.getPlayerSnapshot?.().assets;
+  const versionMatches = Boolean(
+    isMakerV4Document(expectedDocument)
+    && isMakerV4Document(reboundDocument)
+    && reboundDocument.version.rootMakerId === expectedDocument.version.rootMakerId
+    && reboundDocument.version.versionId === expectedDocument.version.versionId,
+  );
+  const assetsMatch = Boolean(
+    reboundAssets instanceof Map
+    && (expectedDocument?.assets || []).every((asset) => reboundAssets.has(asset.id)),
+  );
+  if (!versionMatches || !assetsMatch) {
+    throw makerAuthorityError('MAKER_VERSION_REBIND_FAILED', 'makerDiscoveryFailed');
+  }
+  const saved = await makerWorkspace?.save?.({
+    automatic: false,
+    force: true,
+  });
+  if (!guard()) {
+    throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+  }
+  if (!saved?.confirmed) {
+    throw makerAuthorityError(
+      'MAKER_VERSION_REBIND_SAVE_FAILED',
+      'localDraftSaveFailed',
+    );
+  }
+  return true;
+}
+
+async function beginMakerVersionDraft() {
+  if (
+    state.publishing
+    || state.makerLifecycleActionBusy
+    || !makerIsPublished()
+    || makerHasPendingV4Version()
+    || !isMakerV4Document(state.makerDocumentV4)
+  ) return false;
+  const operation = captureMakerWorkspaceOperation();
+  const lifecycleOperationId = ++makerWorkspaceLifecycleOperationId;
+  state.makerLifecycleActionBusy = true;
+  renderAll();
+  try {
+    const operationIsActive = () => (
+      lifecycleOperationId === makerWorkspaceLifecycleOperationId
+      && makerWorkspaceOperationIsActive(operation)
+    );
+    await refreshOwnedMakerVersionLineage({
+      walletAddress: operation.walletAddress,
+      requiredMakerObjectId: state.makerObjectId || activeTemplate()?.objectId,
+      guard: operationIsActive,
+    });
+    if (!operationIsActive()) return false;
+    await rebindRefreshedOwnedMakerWorkspace({ guard: operationIsActive });
+    if (!operationIsActive()) return false;
+    const lineageFork = makerPublishedLineageFork();
+    if (lineageFork) {
+      state.publishStatusI18n = null;
+      state.publishStatus = makerVersionLineageForkMessage(lineageFork);
+      return false;
+    }
+    const knownSuccessor = directPublishedMakerSuccessor();
+    if (knownSuccessor) {
+      state.publishStatusI18n = null;
+      state.publishStatus = makerVersionDraftConflictMessage(
+        knownSuccessor,
+        {
+          version: {
+            parentVersionId: state.publishedMakerDocumentV4?.version?.versionId || '—',
+          },
+        },
+      );
+      return false;
+    }
+    const started = makerWorkspace?.beginNextVersion?.() === true;
+    if (!started) return false;
+    const saved = await makerWorkspace?.save?.({ automatic: false });
+    if (
+      !saved?.confirmed
+      || !operationIsActive()
+    ) return false;
+    setLocalizedPublishStatus('makerLifecycleVersionStarted');
+    return true;
+  } finally {
+    if (lifecycleOperationId === makerWorkspaceLifecycleOperationId) {
+      state.makerLifecycleActionBusy = false;
+      renderAll();
+    }
+  }
+}
+
+async function discardMakerVersionDraft() {
+  if (
+    state.publishing
+    || state.makerLifecycleActionBusy
+    || !makerHasPendingV4Version()
+  ) return false;
+  const operation = captureMakerWorkspaceOperation();
+  const lifecycleOperationId = ++makerWorkspaceLifecycleOperationId;
+  state.makerLifecycleActionBusy = true;
+  renderAll();
+  try {
+    await syncMakerWorkspaceContext();
+    if (
+      lifecycleOperationId !== makerWorkspaceLifecycleOperationId
+      || !makerWorkspaceOperationIsActive(operation)
+    ) return false;
+    const discarded = await makerWorkspace?.discardVersionDraft?.();
+    if (
+      !discarded
+      || lifecycleOperationId !== makerWorkspaceLifecycleOperationId
+      || !makerWorkspaceOperationIsActive(operation)
+    ) return false;
+    const operationIsActive = () => (
+      lifecycleOperationId === makerWorkspaceLifecycleOperationId
+      && makerWorkspaceOperationIsActive(operation)
+    );
+    await refreshOwnedMakerVersionLineage({
+      walletAddress: operation.walletAddress,
+      requiredMakerObjectId: state.makerObjectId || activeTemplate()?.objectId,
+      guard: operationIsActive,
+    });
+    if (!operationIsActive()) return false;
+    await rebindRefreshedOwnedMakerWorkspace({ guard: operationIsActive });
+    if (!operationIsActive()) return false;
+    const lineageFork = makerPublishedLineageFork();
+    if (lineageFork) {
+      state.publishStatusI18n = null;
+      state.publishStatus = makerVersionLineageForkMessage(lineageFork);
+    } else {
+      setLocalizedPublishStatus('makerLifecycleVersionDiscarded');
+    }
+    return true;
+  } finally {
+    if (lifecycleOperationId === makerWorkspaceLifecycleOperationId) {
+      state.makerLifecycleActionBusy = false;
+      renderAll();
+    }
+  }
+}
+
+async function handleMakerLifecycleAction(action) {
+  if (!action) return;
+  const historySeparator = action.indexOf(':');
+  if (historySeparator > 0 && action.startsWith('history-')) {
+    const historyAction = action.slice(0, historySeparator);
+    const makerObjectId = suiJsonId(action.slice(historySeparator + 1));
+    const version = publishedMakerVersionHistory().find((entry) => (
+      comparableSuiId(entry.makerObjectId) === comparableSuiId(makerObjectId)
+    ));
+    if (!makerObjectId || !version) return;
+    const targetLabel = makerLifecycleVersionTargetLabel(version);
+    if (historyAction === 'history-pause') {
+      openConfirmation({
+        title: `${t('makerLifecyclePauseTitle')} ${version.versionId}`,
+        message: `${targetLabel}. ${t('makerLifecyclePauseCopy')}`,
+        confirmLabel: t('makerLifecyclePauseConfirm'),
+        action: () => updateHistoricalMakerAuthorizationState(makerObjectId, false),
+      });
+      return;
+    }
+    if (historyAction === 'history-resume') {
+      const hasPausedEconomics = Boolean(version.pausedEconomics);
+      openConfirmation({
+        title: `${t('makerLifecycleResumeTitle')} ${version.versionId}`,
+        message: `${targetLabel}. ${t(
+          hasPausedEconomics
+            ? 'makerLifecycleResumeCopy'
+            : 'makerLifecycleResumeFreeCopy',
+        )}`,
+        confirmLabel: t(
+          hasPausedEconomics
+            ? 'makerLifecycleResumeConfirm'
+            : 'makerLifecycleResumeFreeConfirm',
+        ),
+        action: () => updateHistoricalMakerAuthorizationState(makerObjectId, true),
+      });
+      return;
+    }
+    if (historyAction === 'history-archive') {
+      openConfirmation({
+        title: `${t('archiveMakerTitle')} ${version.versionId}`,
+        message: `${targetLabel}. ${t('archiveMakerCopy')}`,
+        confirmLabel: t('archiveMakerConfirm'),
+        action: () => updateHistoricalMakerArchiveState(makerObjectId, true),
+      });
+      return;
+    }
+    if (historyAction === 'history-restore') {
+      openConfirmation({
+        title: `${t('makerLifecycleActionRestore')}? ${version.versionId}`,
+        message: `${targetLabel}. ${t('archivedLifecycleCopy')}`,
+        confirmLabel: t('makerLifecycleActionRestore'),
+        action: () => updateHistoricalMakerArchiveState(makerObjectId, false),
+      });
+      return;
+    }
+  }
+  if (action === 'open-editor') {
+    openMakerEditorFromLifecycle();
+    return;
+  }
+  if (action === 'open-release') {
+    try {
+      await openMakerReleaseFromLifecycle();
+    } catch (error) {
+      state.publishStatusI18n = null;
+      state.publishStatus = state.locale === 'en' && error?.message
+        ? error.message
+        : t('requestedActionFailed');
+      renderAll();
+    }
+    return;
+  }
+  if (action === 'start-version') {
+    try {
+      await beginMakerVersionDraft();
+    } catch (error) {
+      state.publishStatusI18n = null;
+      state.publishStatus = state.locale === 'en' && error?.message
+        ? error.message
+        : t('requestedActionFailed');
+      renderAll();
+    }
+    return;
+  }
+  if (action === 'discard-version') {
+    openConfirmation({
+      title: t('makerLifecycleDiscardVersionTitle'),
+      message: t('makerLifecycleDiscardVersionCopy'),
+      confirmLabel: t('makerLifecycleDiscardVersionConfirm'),
+      action: discardMakerVersionDraft,
+    });
+    return;
+  }
+  if (action === 'pause-authorizations') {
+    openConfirmation({
+      title: t('makerLifecyclePauseTitle'),
+      message: t('makerLifecyclePauseCopy'),
+      confirmLabel: t('makerLifecyclePauseConfirm'),
+      action: () => updateMakerSoulAuthorizationState(false),
+    });
+    return;
+  }
+  if (action === 'resume-authorizations') {
+    const hasPausedEconomics = Boolean(activePausedEconomicsSnapshot());
+    openConfirmation({
+      title: t('makerLifecycleResumeTitle'),
+      message: t(
+        hasPausedEconomics
+          ? 'makerLifecycleResumeCopy'
+          : 'makerLifecycleResumeFreeCopy',
+      ),
+      confirmLabel: t(
+        hasPausedEconomics
+          ? 'makerLifecycleResumeConfirm'
+          : 'makerLifecycleResumeFreeConfirm',
+      ),
+      action: () => updateMakerSoulAuthorizationState(true),
+    });
+    return;
+  }
+  if (action === 'archive-chain') {
+    openConfirmation({
+      title: t('archiveMakerTitle'),
+      message: t('archiveMakerCopy'),
+      confirmLabel: t('archiveMakerConfirm'),
+      action: () => updateMakerArchiveState(true),
+    });
+    return;
+  }
+  if (action === 'restore-chain') {
+    await updateMakerArchiveState(false);
+    return;
+  }
+  if (action === 'delete-draft') {
+    closeMakerLifecycleManager();
+    requestDeleteMaker();
+  }
 }
 
 function requestDeletePart(slotKey) {
@@ -8406,6 +11240,8 @@ function publishReadiness() {
 
 function renderPublishAction() {
   const locked = makerIsPublished() && !makerHasPendingV4Version();
+  const versionDraftConflict = makerVersionDraftConflict();
+  const lineageFork = makerPublishedLineageFork();
   const hasMakerAssets = isMakerV4Document(state.makerDocumentV4)
     ? state.makerDocumentV4.parts.some((part) => part.items.some((item) => (item.styles || []).some((style) => style.assetId)))
     : itemLayerAssets().length > 0;
@@ -8459,7 +11295,13 @@ function renderPublishAction() {
         ['uploaded', 'certify-pending'].includes(state.makerUploadStage)
         || canRetryCertifyCheckpoint
       ),
-      publish: !locked && !state.publishing && !publicationRecoveryPending && state.walletConnected && state.makerUploadStage === 'certified',
+      publish: !locked
+        && !versionDraftConflict
+        && !lineageFork
+        && !state.publishing
+        && !publicationRecoveryPending
+        && state.walletConnected
+        && state.makerUploadStage === 'certified',
       review: !state.publishing && publicationRecoveryPending,
     },
   });
@@ -8534,6 +11376,7 @@ async function prepareMakerUpload() {
   const operation = beginMakerChainOperation();
   clearMakerPublishError();
   state.publishing = true;
+  state.makerReleaseInFlight = true;
   state.publishDigest = '';
   state.publishStatus = t('encodingQuilt');
   renderPublishAction();
@@ -8618,6 +11461,7 @@ async function prepareMakerUpload() {
   } finally {
     if (makerChainOperationIsActive(operation)) {
       state.publishing = false;
+      state.makerReleaseInFlight = false;
       renderAll();
     }
   }
@@ -8630,6 +11474,7 @@ async function registerMakerUpload() {
     && ['uploaded', 'certified'].includes(state.makerUploadStage);
   clearMakerPublishError();
   state.publishing = true;
+  state.makerReleaseInFlight = true;
   state.publishStatus = t('registeringQuilt');
   renderPublishAction();
   try {
@@ -8670,6 +11515,7 @@ async function registerMakerUpload() {
   } finally {
     if (makerChainOperationIsActive(operation)) {
       state.publishing = false;
+      state.makerReleaseInFlight = false;
       renderAll();
     }
   }
@@ -8683,6 +11529,7 @@ async function certifyMakerUpload() {
     && state.makerUploadStage === 'certified';
   clearMakerPublishError();
   state.publishing = true;
+  state.makerReleaseInFlight = true;
   state.publishStatus = t(recheckingCertificationVisibility ? 'certificationSyncing' : 'certifyingQuilt');
   renderPublishAction();
   try {
@@ -8722,9 +11569,35 @@ async function certifyMakerUpload() {
   } finally {
     if (makerChainOperationIsActive(operation)) {
       state.publishing = false;
+      state.makerReleaseInFlight = false;
       renderAll();
     }
   }
+}
+
+async function assertMakerPublicationStillValid(operation, {
+  guard = () => makerChainOperationIsActive(operation),
+} = {}) {
+  if (!guard()) {
+    throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+  }
+  if (makerHasPendingV4Version()) {
+    await refreshOwnedMakerVersionLineage({
+      walletAddress: operation.walletAddress,
+      requiredMakerObjectId: state.makerObjectId || activeTemplate()?.objectId,
+      guard,
+    });
+  }
+  if (!guard()) {
+    throw makerAuthorityError('MAKER_CONTEXT_CHANGED', 'makerContextChanged');
+  }
+  const issues = makerPublicationIssues();
+  if (!issues.length) return true;
+  const error = new Error(issues[0]);
+  error.code = makerVersionDraftConflict()
+    ? 'MAKER_VERSION_DRAFT_CONFLICT'
+    : 'MAKER_PREFLIGHT_FAILED';
+  throw error;
 }
 
 async function publishCurrentMaker() {
@@ -8756,6 +11629,7 @@ async function publishCurrentMaker() {
     return verified;
   };
   state.publishing = true;
+  state.makerReleaseInFlight = true;
   state.publishStatus = t('waitingSuiPublish');
   renderPublishAction();
   try {
@@ -8891,6 +11765,10 @@ async function publishCurrentMaker() {
       };
     }
 
+    await assertMakerPublicationStillValid(operation, {
+      guard: publicationContextIsActive,
+    });
+    if (!publicationContextIsActive()) return;
     state.publishStatus = t('publicationIntentSaving');
     publicationIntent = {
       creator: operation.walletAddress,
@@ -9001,6 +11879,7 @@ async function publishCurrentMaker() {
   } finally {
     if (makerChainOperationIsActive(operation)) {
       state.publishing = false;
+      state.makerReleaseInFlight = false;
       renderAll();
     }
   }
@@ -9011,6 +11890,7 @@ async function reviewPendingMakerPublication() {
   const operation = beginMakerChainOperation();
   clearMakerPublishError();
   state.publishing = true;
+  state.makerReleaseInFlight = true;
   renderAll();
   try {
     let review = null;
@@ -9082,28 +11962,42 @@ async function reviewPendingMakerPublication() {
   } finally {
     if (makerChainOperationIsActive(operation)) {
       state.publishing = false;
+      state.makerReleaseInFlight = false;
       renderAll();
     }
   }
 }
 
 async function updateMakerArchiveState(archived) {
-  if (state.publishing || !state.makerObjectId || !makerIsPublished()) return;
-  const operation = beginMakerChainOperation();
+  if (
+    state.publishing
+    || state.makerLifecycleActionBusy
+    || !state.makerObjectId
+    || !makerIsPublished()
+  ) return;
+  const operation = beginMakerChainOperation({ bindMakerObject: true });
+  invalidateChainMakerDiscovery();
   let transaction = null;
-  state.publishing = true;
-  state.publishStatus = t('makerAuthorityChecking');
+  state.makerLifecycleActionBusy = true;
+  setLocalizedPublishStatus('makerAuthorityChecking');
   renderAll();
   try {
     const authority = await refreshMakerLifecycleAuthority(operation);
     if (!makerChainOperationIsActive(operation)) return;
     if (authority.archived === archived) {
-      state.publishStatus = t(archived ? 'makerLifecycleArchived' : authority.mintingEnabled ? 'makerLifecycleActive' : 'makerLifecyclePaused');
+      setLocalizedPublishStatus(
+        archived
+          ? 'makerLifecycleArchived'
+          : authority.mintingEnabled
+            ? 'makerLifecycleActive'
+            : 'makerLifecyclePaused',
+      );
       syncTemplateFields();
       persistLocalMakerIndex();
+      await persistActiveMakerLifecycleBinding();
       return;
     }
-    state.publishStatus = t(archived ? 'archiveWaiting' : 'restoreWaiting');
+    setLocalizedPublishStatus(archived ? 'archiveWaiting' : 'restoreWaiting');
     renderAll();
     transaction = await setMakerArchived(
       authority.makerObjectId,
@@ -9111,27 +12005,44 @@ async function updateMakerArchiveState(archived) {
       archived,
     );
     if (!makerChainOperationIsActive(operation)) return;
+    const pausedEconomics = activePausedEconomicsSnapshot();
+    if (pausedEconomics) {
+      setActivePausedEconomicsSnapshot(pausedEconomicsWithMutationWitness(
+        pausedEconomics,
+        {
+          digest: transaction.digest,
+          kind: archived ? 'archive' : 'restore',
+          expectedMintingEnabled: false,
+          expectedArchived: archived,
+        },
+      ));
+      await persistActiveMakerLifecycleBinding({ required: true });
+      if (!makerChainOperationIsActive(operation)) return;
+    }
     let confirmed;
     try {
-      confirmed = await refreshMakerLifecycleAuthority(operation);
+      confirmed = await refreshMakerLifecycleAuthorityAfterWrite(operation, {
+        matches: (candidate) => candidate.archived === archived,
+      });
     } catch (error) {
       if (!makerChainOperationIsActive(operation)) return;
-      state.publishStatus = t('makerStateReadbackPending', { digest: transaction.digest });
+      setLocalizedPublishStatus('makerStateReadbackPending', { digest: transaction.digest });
       return;
     }
     if (confirmed.archived !== archived) {
-      state.publishStatus = t('makerStateReadbackPending', { digest: transaction.digest });
+      setLocalizedPublishStatus('makerStateReadbackPending', { digest: transaction.digest });
       return;
     }
-    state.publishStatus = t(archived ? 'archivedOnNetwork' : 'restoredOnNetwork', {
+    setLocalizedPublishStatus(archived ? 'archivedOnNetwork' : 'restoredOnNetwork', {
       network: runtimeConfig.network,
       digest: transaction.digest,
     });
     syncTemplateFields();
     persistLocalMakerIndex();
-    await saveCurrentMakerDraft();
+    await persistActiveMakerLifecycleBinding();
   } catch (error) {
     if (makerChainOperationIsActive(operation)) {
+      state.publishStatusI18n = null;
       state.publishStatus = ['MAKER_CONTEXT_CHANGED', 'MAKER_ADMIN_CAP_NOT_OWNED'].includes(error?.code)
         ? error.message
         : state.locale === 'en' && error?.message
@@ -9140,7 +12051,419 @@ async function updateMakerArchiveState(archived) {
     }
   } finally {
     if (makerChainOperationIsActive(operation)) {
-      state.publishing = false;
+      state.makerLifecycleActionBusy = false;
+      reloadChainMakerDiscoveryAfterOperation(operation);
+      renderAll();
+    }
+  }
+}
+
+async function updateMakerSoulAuthorizationState(mintingEnabled) {
+  if (
+    state.publishing
+    || state.makerLifecycleActionBusy
+    || !state.makerObjectId
+    || !makerIsPublished()
+  ) return false;
+  const operation = beginMakerChainOperation({ bindMakerObject: true });
+  invalidateChainMakerDiscovery();
+  let transaction = null;
+  state.makerLifecycleActionBusy = true;
+  setLocalizedPublishStatus('makerAuthorityChecking');
+  if ($('makerEconomicsStatus')) $('makerEconomicsStatus').textContent = state.publishStatus;
+  renderAll();
+  try {
+    const authority = await refreshMakerLifecycleAuthority(operation);
+    if (!makerChainOperationIsActive(operation)) return false;
+    if (authority.mintingEnabled === mintingEnabled) {
+      const pendingPause = mintingEnabled
+        ? activePausedEconomicsSnapshot()?.pendingMutation
+        : null;
+      if (pendingPause?.expectedMintingEnabled === false) {
+        setLocalizedPublishStatus('makerStateReadbackPending', {
+          digest: pendingPause.digest,
+        });
+        return false;
+      }
+      if (mintingEnabled && activePausedEconomicsSnapshot()) {
+        setActivePausedEconomicsSnapshot(null);
+      }
+      setLocalizedPublishStatus(mintingEnabled ? 'makerLifecycleActive' : 'makerLifecyclePaused');
+      syncTemplateFields();
+      persistLocalMakerIndex();
+      await persistActiveMakerLifecycleBinding();
+      return true;
+    }
+    let pausedEconomics = mintingEnabled
+      ? activePausedEconomicsSnapshot()
+      : null;
+    if (!mintingEnabled) {
+      pausedEconomics = setActivePausedEconomicsSnapshot({
+        makerObjectId: authority.makerObjectId,
+        mintFeeEnabled: authority.mintFeeEnabled,
+        mintPriceAtomic: authority.mintPriceAtomic,
+        royaltyBps: authority.royaltyBps,
+        makerUpdatedAtMs: authority.makerUpdatedAtMs,
+        capturedAt: new Date().toISOString(),
+      });
+      await persistActiveMakerLifecycleBinding({ required: true });
+      if (!makerChainOperationIsActive(operation)) return false;
+      if (!pausedEconomics) {
+        throw makerAuthorityError(
+          'MAKER_ECONOMICS_SNAPSHOT_SAVE_FAILED',
+          'makerLifecycleEconomicsSnapshotSaveFailed',
+        );
+      }
+    }
+    const mintFeeEnabled = mintingEnabled
+      ? Boolean(pausedEconomics?.mintFeeEnabled)
+      : false;
+    const mintPriceAtomic = mintingEnabled
+      ? Number(pausedEconomics?.mintPriceAtomic || 0)
+      : 0;
+    // Pausing never clears royalty on-chain. Resume only restores the fee
+    // fields; the freshly read chain royalty remains authoritative in case it
+    // was deliberately changed while the Maker was paused.
+    const royaltyBps = authority.royaltyBps;
+    setLocalizedPublishStatus('adminSignatureWaiting');
+    if ($('makerEconomicsStatus')) $('makerEconomicsStatus').textContent = state.publishStatus;
+    renderMakerLifecycleManager();
+    transaction = await configureMakerEconomics({
+      makerId: authority.makerObjectId,
+      adminCapId: authority.makerAdminCapObjectId,
+      mintingEnabled,
+      mintFeeEnabled,
+      mintPriceAtomic,
+      royaltyBps,
+    });
+    if (!makerChainOperationIsActive(operation)) return false;
+    if (!mintingEnabled) {
+      pausedEconomics = pausedEconomicsWithMutationWitness(
+        pausedEconomics,
+        {
+          digest: transaction.digest,
+          kind: 'pause',
+          expectedMintingEnabled: false,
+          expectedArchived: authority.archived,
+        },
+      );
+      setActivePausedEconomicsSnapshot(pausedEconomics);
+      await persistActiveMakerLifecycleBinding({ required: true });
+      if (!makerChainOperationIsActive(operation)) return false;
+    }
+    let confirmed;
+    try {
+      confirmed = await refreshMakerLifecycleAuthorityAfterWrite(operation, {
+        matches: (candidate) => (
+          candidate.mintingEnabled === mintingEnabled
+          && candidate.mintFeeEnabled === mintFeeEnabled
+          && Number(candidate.mintPriceAtomic || 0) === Number(mintPriceAtomic || 0)
+          && Number(candidate.royaltyBps || 0) === Number(royaltyBps || 0)
+        ),
+      });
+    } catch (error) {
+      if (!makerChainOperationIsActive(operation)) return false;
+      setLocalizedPublishStatus('makerStateReadbackPending', { digest: transaction.digest });
+      return false;
+    }
+    if (
+      confirmed.mintingEnabled !== mintingEnabled
+      || confirmed.mintFeeEnabled !== mintFeeEnabled
+      || Number(confirmed.mintPriceAtomic || 0) !== Number(mintPriceAtomic || 0)
+      || Number(confirmed.royaltyBps || 0) !== Number(royaltyBps || 0)
+    ) {
+      setLocalizedPublishStatus('makerStateReadbackPending', { digest: transaction.digest });
+      return false;
+    }
+    if (mintingEnabled) {
+      setActivePausedEconomicsSnapshot(null);
+    } else {
+      pausedEconomics = {
+        ...pausedEconomics,
+        makerUpdatedAtMs: confirmed.makerUpdatedAtMs,
+        pendingMutation: null,
+      };
+      setActivePausedEconomicsSnapshot(pausedEconomics);
+    }
+    setLocalizedPublishStatus('onchainSettingsUpdated', { digest: transaction.digest });
+    syncTemplateFields();
+    persistLocalMakerIndex();
+    await persistActiveMakerLifecycleBinding();
+    return true;
+  } catch (error) {
+    if (makerChainOperationIsActive(operation)) {
+      state.publishStatusI18n = null;
+      state.publishStatus = [
+        'MAKER_CONTEXT_CHANGED',
+        'MAKER_ADMIN_CAP_NOT_OWNED',
+        'MAKER_ECONOMICS_SNAPSHOT_SAVE_FAILED',
+      ].includes(error?.code)
+        ? error.message
+        : state.locale === 'en' && error?.message
+          ? error.message
+          : t('onchainSettingsFailed');
+    }
+    return false;
+  } finally {
+    if (makerChainOperationIsActive(operation)) {
+      state.makerLifecycleActionBusy = false;
+      reloadChainMakerDiscoveryAfterOperation(operation);
+      if ($('makerEconomicsStatus')) $('makerEconomicsStatus').textContent = state.publishStatus;
+      renderAll();
+    }
+  }
+}
+
+async function updateHistoricalMakerArchiveState(makerObjectId, archived) {
+  if (
+    state.publishing
+    || state.makerLifecycleActionBusy
+    || !makerObjectId
+    || !makerIsPublished()
+  ) return false;
+  if (comparableSuiId(makerObjectId) === comparableSuiId(state.makerObjectId)) {
+    await updateMakerArchiveState(archived);
+    return true;
+  }
+  const operation = beginPublishedMakerVersionOperation(makerObjectId);
+  invalidateChainMakerDiscovery();
+  let transaction = null;
+  state.makerLifecycleActionBusy = true;
+  setLocalizedPublishStatus('makerAuthorityChecking');
+  renderAll();
+  try {
+    const authority = await refreshPublishedMakerVersionAuthority(operation);
+    if (!publishedMakerVersionOperationIsActive(operation)) return false;
+    if (authority.archived === archived) {
+      setLocalizedPublishStatus(
+        archived
+          ? 'makerLifecycleArchived'
+          : authority.mintingEnabled
+            ? 'makerLifecycleActive'
+            : 'makerLifecyclePaused',
+      );
+      await persistActiveMakerLifecycleBinding();
+      return true;
+    }
+    setLocalizedPublishStatus(archived ? 'archiveWaiting' : 'restoreWaiting');
+    renderMakerLifecycleManager();
+    transaction = await setMakerArchived(
+      authority.makerObjectId,
+      authority.makerAdminCapObjectId,
+      archived,
+    );
+    if (!publishedMakerVersionOperationIsActive(operation)) return false;
+    const existing = publishedMakerVersionHistory().find((entry) => (
+      comparableSuiId(entry.makerObjectId) === comparableSuiId(makerObjectId)
+    ));
+    const pausedEconomics = normalizedWorkspacePausedEconomics(
+      existing?.pausedEconomics,
+      authority.makerObjectId,
+    );
+    if (pausedEconomics) {
+      updatePublishedMakerVersionRecord(makerObjectId, {
+        pausedEconomics: pausedEconomicsWithMutationWitness(
+          pausedEconomics,
+          {
+            digest: transaction.digest,
+            kind: archived ? 'archive' : 'restore',
+            expectedMintingEnabled: false,
+            expectedArchived: archived,
+          },
+        ),
+      });
+      await persistActiveMakerLifecycleBinding({ required: true });
+      if (!publishedMakerVersionOperationIsActive(operation)) return false;
+    }
+    try {
+      await refreshPublishedMakerVersionAuthorityAfterWrite(operation, {
+        matches: (candidate) => candidate.archived === archived,
+      });
+    } catch {
+      if (!publishedMakerVersionOperationIsActive(operation)) return false;
+      setLocalizedPublishStatus('makerStateReadbackPending', {
+        digest: transaction.digest,
+      });
+      return false;
+    }
+    setLocalizedPublishStatus(archived ? 'archivedOnNetwork' : 'restoredOnNetwork', {
+      network: runtimeConfig.network,
+      digest: transaction.digest,
+    });
+    await persistActiveMakerLifecycleBinding();
+    return true;
+  } catch (error) {
+    if (publishedMakerVersionOperationIsActive(operation)) {
+      state.publishStatusI18n = null;
+      state.publishStatus = ['MAKER_CONTEXT_CHANGED', 'MAKER_ADMIN_CAP_NOT_OWNED'].includes(error?.code)
+        ? error.message
+        : state.locale === 'en' && error?.message
+          ? error.message
+          : t(archived ? 'archiveMakerFailed' : 'restoreMakerFailed');
+    }
+    return false;
+  } finally {
+    if (publishedMakerVersionOperationIsActive(operation)) {
+      state.makerLifecycleActionBusy = false;
+      reloadChainMakerDiscoveryAfterOperation(operation);
+      renderAll();
+    }
+  }
+}
+
+async function updateHistoricalMakerAuthorizationState(makerObjectId, mintingEnabled) {
+  if (
+    state.publishing
+    || state.makerLifecycleActionBusy
+    || !makerObjectId
+    || !makerIsPublished()
+  ) return false;
+  if (comparableSuiId(makerObjectId) === comparableSuiId(state.makerObjectId)) {
+    return updateMakerSoulAuthorizationState(mintingEnabled);
+  }
+  const operation = beginPublishedMakerVersionOperation(makerObjectId);
+  invalidateChainMakerDiscovery();
+  let transaction = null;
+  state.makerLifecycleActionBusy = true;
+  setLocalizedPublishStatus('makerAuthorityChecking');
+  renderAll();
+  try {
+    const authority = await refreshPublishedMakerVersionAuthority(operation);
+    if (!publishedMakerVersionOperationIsActive(operation)) return false;
+    const existing = publishedMakerVersionHistory().find((entry) => (
+      comparableSuiId(entry.makerObjectId) === comparableSuiId(makerObjectId)
+    ));
+    if (authority.mintingEnabled === mintingEnabled) {
+      const pendingPause = mintingEnabled
+        ? normalizedWorkspacePausedEconomics(
+            existing?.pausedEconomics,
+            authority.makerObjectId,
+          )?.pendingMutation
+        : null;
+      if (pendingPause?.expectedMintingEnabled === false) {
+        setLocalizedPublishStatus('makerStateReadbackPending', {
+          digest: pendingPause.digest,
+        });
+        return false;
+      }
+      if (mintingEnabled) {
+        updatePublishedMakerVersionRecord(makerObjectId, {
+          ...authority,
+          pausedEconomics: null,
+        });
+      }
+      setLocalizedPublishStatus(
+        mintingEnabled ? 'makerLifecycleActive' : 'makerLifecyclePaused',
+      );
+      await persistActiveMakerLifecycleBinding();
+      return true;
+    }
+    let pausedEconomics = mintingEnabled
+      ? normalizedWorkspacePausedEconomics(
+          existing?.pausedEconomics,
+          authority.makerObjectId,
+        )
+      : null;
+    if (!mintingEnabled) {
+      pausedEconomics = normalizedWorkspacePausedEconomics({
+        makerObjectId: authority.makerObjectId,
+        mintFeeEnabled: authority.mintFeeEnabled,
+        mintPriceAtomic: authority.mintPriceAtomic,
+        royaltyBps: authority.royaltyBps,
+        makerUpdatedAtMs: authority.makerUpdatedAtMs,
+        capturedAt: new Date().toISOString(),
+      }, authority.makerObjectId);
+      updatePublishedMakerVersionRecord(makerObjectId, {
+        ...authority,
+        pausedEconomics,
+      });
+      await persistActiveMakerLifecycleBinding({ required: true });
+      if (!publishedMakerVersionOperationIsActive(operation)) return false;
+    }
+    const mintFeeEnabled = mintingEnabled
+      ? Boolean(pausedEconomics?.mintFeeEnabled)
+      : false;
+    const mintPriceAtomic = mintingEnabled
+      ? Number(pausedEconomics?.mintPriceAtomic || 0)
+      : 0;
+    const royaltyBps = authority.royaltyBps;
+    setLocalizedPublishStatus('adminSignatureWaiting');
+    renderMakerLifecycleManager();
+    transaction = await configureMakerEconomics({
+      makerId: authority.makerObjectId,
+      adminCapId: authority.makerAdminCapObjectId,
+      mintingEnabled,
+      mintFeeEnabled,
+      mintPriceAtomic,
+      royaltyBps,
+    });
+    if (!publishedMakerVersionOperationIsActive(operation)) return false;
+    if (!mintingEnabled) {
+      pausedEconomics = pausedEconomicsWithMutationWitness(
+        pausedEconomics,
+        {
+          digest: transaction.digest,
+          kind: 'pause',
+          expectedMintingEnabled: false,
+          expectedArchived: authority.archived,
+        },
+      );
+      updatePublishedMakerVersionRecord(makerObjectId, {
+        pausedEconomics,
+      });
+      await persistActiveMakerLifecycleBinding({ required: true });
+      if (!publishedMakerVersionOperationIsActive(operation)) return false;
+    }
+    let confirmed;
+    try {
+      confirmed = await refreshPublishedMakerVersionAuthorityAfterWrite(operation, {
+        matches: (candidate) => (
+          candidate.mintingEnabled === mintingEnabled
+          && candidate.mintFeeEnabled === mintFeeEnabled
+          && Number(candidate.mintPriceAtomic || 0) === Number(mintPriceAtomic || 0)
+          && Number(candidate.royaltyBps || 0) === Number(royaltyBps || 0)
+        ),
+      });
+    } catch {
+      if (!publishedMakerVersionOperationIsActive(operation)) return false;
+      setLocalizedPublishStatus('makerStateReadbackPending', {
+        digest: transaction.digest,
+      });
+      return false;
+    }
+    updatePublishedMakerVersionRecord(makerObjectId, {
+      ...confirmed,
+      pausedEconomics: mintingEnabled
+        ? null
+        : {
+            ...pausedEconomics,
+            makerUpdatedAtMs: confirmed.makerUpdatedAtMs,
+            pendingMutation: null,
+          },
+    });
+    setLocalizedPublishStatus('onchainSettingsUpdated', {
+      digest: transaction.digest,
+    });
+    await persistActiveMakerLifecycleBinding();
+    return true;
+  } catch (error) {
+    if (publishedMakerVersionOperationIsActive(operation)) {
+      state.publishStatusI18n = null;
+      state.publishStatus = [
+        'MAKER_CONTEXT_CHANGED',
+        'MAKER_ADMIN_CAP_NOT_OWNED',
+        'MAKER_ECONOMICS_SNAPSHOT_SAVE_FAILED',
+      ].includes(error?.code)
+        ? error.message
+        : state.locale === 'en' && error?.message
+          ? error.message
+          : t('onchainSettingsFailed');
+    }
+    return false;
+  } finally {
+    if (publishedMakerVersionOperationIsActive(operation)) {
+      state.makerLifecycleActionBusy = false;
+      reloadChainMakerDiscoveryAfterOperation(operation);
       renderAll();
     }
   }
@@ -9672,17 +12995,88 @@ function makerV4WorkspaceLicenseLabel(kind, fallback = 'Personal use') {
   }[kind] || fallback;
 }
 
+function applyWorkspacePersistenceBinding({
+  template,
+  model,
+  metadata,
+  rootMakerId,
+  active = false,
+}) {
+  const chainBinding = normalizedWorkspaceChainBinding(metadata, {
+    owner: state.walletAddress,
+    rootMakerId,
+  });
+  const publishedSnapshot = normalizedWorkspacePublishedSnapshot(
+    metadata,
+    rootMakerId,
+  );
+  if (publishedSnapshot && model) {
+    model.publishedMakerDocumentV4 = publishedSnapshot.document;
+    model.publishedMakerRecipeV4 = publishedSnapshot.recipe;
+  }
+  if (chainBinding && template && model) {
+    Object.assign(template, {
+      source: 'chain',
+      owner: template.owner || state.walletAddress,
+      owned: true,
+      objectId: chainBinding.makerObjectId,
+      treasuryId: chainBinding.makerTreasuryObjectId,
+      adminCapId: chainBinding.makerAdminCapObjectId,
+      mintingEnabled: chainBinding.mintingEnabled,
+      mintFeeEnabled: chainBinding.mintFeeEnabled,
+      mintPriceAtomic: chainBinding.mintPriceAtomic,
+      royaltyBps: chainBinding.royaltyBps,
+      pausedEconomics: chainBinding.pausedEconomics,
+      publishedVersions: chainBinding.publishedVersions,
+      chainBindingPinned: true,
+    });
+    Object.assign(model, {
+      publishDigest: chainBinding.publishDigest,
+      makerObjectId: chainBinding.makerObjectId,
+      makerTreasuryObjectId: chainBinding.makerTreasuryObjectId,
+      makerAdminCapObjectId: chainBinding.makerAdminCapObjectId,
+      makerArchived: chainBinding.archived,
+      pausedEconomics: chainBinding.pausedEconomics,
+      publishedMakerVersions: chainBinding.publishedVersions,
+    });
+  }
+  if (active) {
+    if (publishedSnapshot) {
+      state.publishedMakerDocumentV4 = publishedSnapshot.document;
+      state.publishedMakerRecipeV4 = publishedSnapshot.recipe;
+    }
+    if (chainBinding) {
+      state.publishDigest = chainBinding.publishDigest;
+      state.makerObjectId = chainBinding.makerObjectId;
+      state.makerTreasuryObjectId = chainBinding.makerTreasuryObjectId;
+      state.makerAdminCapObjectId = chainBinding.makerAdminCapObjectId;
+      state.makerArchived = chainBinding.archived;
+      state.publishedMakerVersions = structuredClone(chainBinding.publishedVersions || []);
+    }
+  }
+  return { chainBinding, publishedSnapshot };
+}
+
 function syncV4WorkspaceState({
   makerKey = '',
   document,
   recipe,
   assets,
   profile = null,
+  metadata = null,
 }) {
   const rootMakerId = String(document?.version?.rootMakerId || '');
+  const persistedBinding = normalizedWorkspaceChainBinding(metadata, {
+    owner: state.walletAddress,
+    rootMakerId,
+  });
   const targetTemplate = templates.find((template) => (
     template.id === rootMakerId
     || template.objectId === rootMakerId
+    || (
+      persistedBinding
+      && comparableSuiId(template.objectId) === comparableSuiId(persistedBinding.makerObjectId)
+    )
   )) || null;
   const activeRootMakerId = currentMakerV4Source()?.version?.rootMakerId
     || activeTemplate()?.id
@@ -9706,11 +13100,17 @@ function syncV4WorkspaceState({
         license: makerV4WorkspaceLicenseLabel(document.metadata.license?.kind, targetTemplate.license),
         licenseNote: document.metadata.license?.note ?? targetTemplate.licenseNote,
         coverUrl,
-        royaltyBps: document.publication?.royaltyBps ?? targetTemplate.royaltyBps,
-        mintingEnabled: document.publication?.mintingEnabled ?? targetTemplate.mintingEnabled,
-        mintFeeEnabled: document.publication?.mintFeeEnabled ?? targetTemplate.mintFeeEnabled,
-        mintPriceAtomic: document.publication?.mintPriceAtomic ?? targetTemplate.mintPriceAtomic,
       });
+      const targetPublished = targetTemplate.source === 'chain'
+        || Boolean(targetModel.publishDigest || targetModel.makerObjectId);
+      if (!targetPublished) {
+        Object.assign(targetTemplate, {
+          royaltyBps: document.publication?.royaltyBps ?? targetTemplate.royaltyBps,
+          mintingEnabled: document.publication?.mintingEnabled ?? targetTemplate.mintingEnabled,
+          mintFeeEnabled: document.publication?.mintFeeEnabled ?? targetTemplate.mintFeeEnabled,
+          mintPriceAtomic: document.publication?.mintPriceAtomic ?? targetTemplate.mintPriceAtomic,
+        });
+      }
     }
     Object.assign(targetModel, {
       makerDocumentV4: document,
@@ -9722,6 +13122,12 @@ function syncV4WorkspaceState({
       livingContent: document
         ? normalizeLivingContent(document.livingContent, document.metadata)
         : targetModel.livingContent,
+    });
+    applyWorkspacePersistenceBinding({
+      template: targetTemplate,
+      model: targetModel,
+      metadata,
+      rootMakerId,
     });
     if (targetTemplate.owner) persistLocalMakerIndex(targetTemplate.owner);
     return false;
@@ -9744,15 +13150,26 @@ function syncV4WorkspaceState({
       license: makerV4WorkspaceLicenseLabel(document.metadata.license?.kind, template.license),
       licenseNote: document.metadata.license?.note ?? template.licenseNote,
       coverUrl,
-      royaltyBps: document.publication?.royaltyBps ?? template.royaltyBps,
-      mintingEnabled: document.publication?.mintingEnabled ?? template.mintingEnabled,
-      mintFeeEnabled: document.publication?.mintFeeEnabled ?? template.mintFeeEnabled,
-      mintPriceAtomic: document.publication?.mintPriceAtomic ?? template.mintPriceAtomic,
     });
+    if (!makerIsPublished()) {
+      Object.assign(template, {
+        royaltyBps: document.publication?.royaltyBps ?? template.royaltyBps,
+        mintingEnabled: document.publication?.mintingEnabled ?? template.mintingEnabled,
+        mintFeeEnabled: document.publication?.mintFeeEnabled ?? template.mintFeeEnabled,
+        mintPriceAtomic: document.publication?.mintPriceAtomic ?? template.mintPriceAtomic,
+      });
+    }
     state.makerCanvas = { width: document.canvas.width, height: document.canvas.height };
     state.livingContent = normalizeLivingContent(document.livingContent, document.metadata);
     syncTemplateFields();
   }
+  applyWorkspacePersistenceBinding({
+    template,
+    model: makerModels.get(template.id),
+    metadata,
+    rootMakerId,
+    active: true,
+  });
   syncLegacyVisualFromV4(document, recipe);
   syncActiveMakerModelRefs();
   persistLocalMakerIndex();
@@ -9788,28 +13205,77 @@ function syncPlayerV4State({
   invalidateOcUpload();
 }
 
-function syncMakerWorkspaceContext() {
+function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
   if (!makerWorkspace) return Promise.resolve();
   const template = activeTemplate();
-  const document = currentMakerV4Source();
-  if (!document && template?.source !== 'local') return Promise.resolve();
+  const workingDocument = currentMakerV4Source();
+  if (!workingDocument && template?.source !== 'local') {
+    return makerWorkspace.setContext({ makerKey: '' });
+  }
+  const lifecycle = makerLifecycleDescriptor(template);
+  const creatorPersistenceEnabled = templateIsOwnedByWallet(template);
+  // A non-owner may play the immutable published Maker, but must never receive
+  // another wallet's unpublished successor document in a Creator workspace.
+  const document = creatorPersistenceEnabled
+    ? workingDocument
+    : isMakerV4Document(state.publishedMakerDocumentV4)
+      ? state.publishedMakerDocumentV4
+      : workingDocument;
+  const recipe = creatorPersistenceEnabled
+    ? state.makerRecipeV4 || document?.defaultRecipe
+    : state.publishedMakerRecipeV4 || document?.defaultRecipe;
   const rootMakerId = document?.version?.rootMakerId || template.id || state.templateId;
-  const makerKey = `${state.walletAddress || 'wallet'}:${rootMakerId}`;
+  const makerKey = creatorPersistenceEnabled
+    ? `${state.walletAddress}:${rootMakerId}`
+    : `public:${rootMakerId}:${suiJsonId(template?.objectId) || document?.version?.versionId || 'draft'}`;
   return makerWorkspace.setContext({
     makerKey,
     walletAddress: state.walletAddress,
+    creatorPersistenceEnabled,
+    replaceDocument: creatorPersistenceEnabled && replaceDocument,
     name: template.name,
     creator: template.creator,
     rootMakerId,
     document,
-    recipe: state.makerRecipeV4 || document?.defaultRecipe,
+    recipe,
     playerRecipe: state.playerRecipeV4 || document?.defaultRecipe,
     profile: v4ProfileFromLegacy(),
     assets: currentV4RuntimeAssets(),
     publishedDocument: state.publishedMakerDocumentV4,
+    publishedRecipe: state.publishedMakerRecipeV4
+      || state.publishedMakerDocumentV4?.defaultRecipe
+      || null,
+    chainBinding: creatorPersistenceEnabled
+      ? currentWorkspaceChainBinding(document)
+      : null,
     versionId: document?.version?.versionId,
     isPublished: makerIsPublished(),
     creatorPreview: state.previewingMaker,
+    lifecycle: {
+      id: lifecycle.id,
+      label: t(lifecycle.labelKey),
+      badgeClass: lifecycle.badgeClass,
+      manageLabel: t('makerLifecycleManage'),
+    },
+    externalPublicationIssues: [
+      ...(lifecycle.lineageFork
+        ? [{
+            code: 'external_version_lineage_fork',
+            path: 'version.parentVersionId',
+            message: makerVersionLineageForkMessage(lifecycle.lineageFork),
+          }]
+        : []),
+      ...(lifecycle.versionConflict
+        ? [{
+          code: 'external_version_draft_conflict',
+          path: 'version.parentVersionId',
+          message: makerVersionDraftConflictMessage(
+            lifecycle.versionConflict,
+            document,
+          ),
+        }]
+        : []),
+    ],
   });
 }
 
@@ -10148,7 +13614,7 @@ $('updateMakerEconomics')?.addEventListener('click', async () => {
     $('makerEconomicsStatus').textContent = t('makerSettingsFirstPublish');
     return;
   }
-  const mintPriceAtomic = $('creatorMintFeeEnabled').checked ? decimalCoinToAtomic($('creatorMintPrice').value) : 0;
+  let mintPriceAtomic = $('creatorMintFeeEnabled').checked ? decimalCoinToAtomic($('creatorMintPrice').value) : 0;
   const royaltyBps = Number($('creatorRoyalty').value || 0);
   if ($('creatorMintFeeEnabled').checked && !canonicalSoulMintEnabled) {
     $('makerEconomicsStatus').textContent = t('paidMintReleaseGated');
@@ -10160,10 +13626,10 @@ $('updateMakerEconomics')?.addEventListener('click', async () => {
     });
     return;
   }
-  const operation = beginMakerChainOperation();
+  const operation = beginMakerChainOperation({ bindMakerObject: true });
+  invalidateChainMakerDiscovery();
   const mintingEnabled = $('creatorMintingEnabled').checked;
-  const mintFeeEnabled = $('creatorMintFeeEnabled').checked;
-  const mintPriceLabel = $('creatorMintPrice').value;
+  let mintFeeEnabled = $('creatorMintFeeEnabled').checked;
   let transaction = null;
   state.publishing = true;
   $('makerEconomicsStatus').textContent = t('makerAuthorityChecking');
@@ -10171,6 +13637,39 @@ $('updateMakerEconomics')?.addEventListener('click', async () => {
   try {
     const authority = await refreshMakerLifecycleAuthority(operation);
     if (!makerChainOperationIsActive(operation)) return;
+    const pendingPause = mintingEnabled
+      ? activePausedEconomicsSnapshot()?.pendingMutation
+      : null;
+    if (
+      mintingEnabled
+      && authority.mintingEnabled
+      && pendingPause?.expectedMintingEnabled === false
+    ) {
+      $('makerEconomicsStatus').textContent = t('makerStateReadbackPending', {
+        digest: pendingPause.digest,
+      });
+      return;
+    }
+    if (authority.mintingEnabled && !mintingEnabled) {
+      setActivePausedEconomicsSnapshot({
+        makerObjectId: authority.makerObjectId,
+        mintFeeEnabled: authority.mintFeeEnabled,
+        mintPriceAtomic: authority.mintPriceAtomic,
+        royaltyBps: authority.royaltyBps,
+        makerUpdatedAtMs: authority.makerUpdatedAtMs,
+        capturedAt: new Date().toISOString(),
+      });
+      await persistActiveMakerLifecycleBinding({ required: true });
+      if (!makerChainOperationIsActive(operation)) return;
+      mintFeeEnabled = false;
+      mintPriceAtomic = 0;
+    } else if (!authority.mintingEnabled && mintingEnabled) {
+      const pausedEconomics = activePausedEconomicsSnapshot();
+      if (pausedEconomics) {
+        mintFeeEnabled = pausedEconomics.mintFeeEnabled;
+        mintPriceAtomic = pausedEconomics.mintPriceAtomic;
+      }
+    }
     $('makerEconomicsStatus').textContent = t('adminSignatureWaiting');
     transaction = await configureMakerEconomics({
       makerId: authority.makerObjectId,
@@ -10181,9 +13680,30 @@ $('updateMakerEconomics')?.addEventListener('click', async () => {
       royaltyBps,
     });
     if (!makerChainOperationIsActive(operation)) return;
+    if (!mintingEnabled) {
+      const pausedEconomics = pausedEconomicsWithMutationWitness(
+        activePausedEconomicsSnapshot(),
+        {
+          digest: transaction.digest,
+          kind: 'pause',
+          expectedMintingEnabled: false,
+          expectedArchived: authority.archived,
+        },
+      );
+      setActivePausedEconomicsSnapshot(pausedEconomics);
+      await persistActiveMakerLifecycleBinding({ required: true });
+      if (!makerChainOperationIsActive(operation)) return;
+    }
     let confirmed;
     try {
-      confirmed = await refreshMakerLifecycleAuthority(operation);
+      confirmed = await refreshMakerLifecycleAuthorityAfterWrite(operation, {
+        matches: (candidate) => (
+          candidate.mintingEnabled === mintingEnabled
+          && candidate.mintFeeEnabled === mintFeeEnabled
+          && Number(candidate.mintPriceAtomic || 0) === Number(mintPriceAtomic || 0)
+          && Number(candidate.royaltyBps || 0) === Number(royaltyBps || 0)
+        ),
+      });
     } catch (error) {
       if (!makerChainOperationIsActive(operation)) return;
       $('makerEconomicsStatus').textContent = t('makerStateReadbackPending', { digest: transaction.digest });
@@ -10199,15 +13719,32 @@ $('updateMakerEconomics')?.addEventListener('click', async () => {
       return;
     }
     activeTemplate().price = mintPriceAtomic
-      ? `${mintPriceLabel} ${runtimeConfig.paymentCoinSymbol}`
+      ? `${atomicCoinToDecimal(mintPriceAtomic)} ${runtimeConfig.paymentCoinSymbol}`
       : 'Free mint';
+    if (mintingEnabled) {
+      setActivePausedEconomicsSnapshot(null);
+    } else {
+      const pausedEconomics = activePausedEconomicsSnapshot();
+      if (pausedEconomics) {
+        setActivePausedEconomicsSnapshot({
+          ...pausedEconomics,
+          royaltyBps,
+          makerUpdatedAtMs: confirmed.makerUpdatedAtMs,
+          pendingMutation: null,
+        });
+      }
+    }
     syncTemplateFields();
     persistLocalMakerIndex();
     $('makerEconomicsStatus').textContent = t('onchainSettingsUpdated', { digest: transaction.digest });
-    await saveCurrentMakerDraft({ silent: true });
+    await persistActiveMakerLifecycleBinding();
   } catch (error) {
     if (makerChainOperationIsActive(operation)) {
-      $('makerEconomicsStatus').textContent = ['MAKER_CONTEXT_CHANGED', 'MAKER_ADMIN_CAP_NOT_OWNED'].includes(error?.code)
+      $('makerEconomicsStatus').textContent = [
+        'MAKER_CONTEXT_CHANGED',
+        'MAKER_ADMIN_CAP_NOT_OWNED',
+        'MAKER_ECONOMICS_SNAPSHOT_SAVE_FAILED',
+      ].includes(error?.code)
         ? error.message
         : state.locale === 'en' && error?.message
           ? error.message
@@ -10216,6 +13753,7 @@ $('updateMakerEconomics')?.addEventListener('click', async () => {
   } finally {
     if (makerChainOperationIsActive(operation)) {
       state.publishing = false;
+      reloadChainMakerDiscoveryAfterOperation(operation);
       renderAll();
     }
   }
@@ -10232,7 +13770,7 @@ $('withdrawMakerRevenue')?.addEventListener('click', async () => {
     });
     return;
   }
-  const operation = beginMakerChainOperation();
+  const operation = beginMakerChainOperation({ bindMakerObject: true });
   const recipient = state.walletAddress;
   const amountLabel = $('creatorWithdrawAmount').value;
   state.publishing = true;
@@ -10376,6 +13914,54 @@ document.querySelectorAll('[data-close-draft-recovery]').forEach((button) => {
   button.addEventListener('click', closeDraftRecoveryCenter);
 });
 
+document.querySelectorAll('[data-close-maker-lifecycle]').forEach((button) => {
+  button.addEventListener('click', () => closeMakerLifecycleManager());
+});
+
+$('makerLifecycleManagerModal')?.addEventListener('click', (event) => {
+  if (event.target === $('makerLifecycleManagerModal')) {
+    closeMakerLifecycleManager();
+    return;
+  }
+  const actionButton = event.target.closest('[data-lifecycle-action]');
+  if (!actionButton || actionButton.disabled) return;
+  actionButton.focus();
+  void handleMakerLifecycleAction(actionButton.dataset.lifecycleAction);
+});
+
+$('makerLifecycleManagerModal')?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Tab') return;
+  const focusable = Array.from(
+    $('makerLifecycleManagerModal').querySelectorAll(
+      'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((node) => node.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (!$('makerLifecycleManagerModal').contains(document.activeElement)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+
+document.addEventListener('focusin', (event) => {
+  const lifecycleModal = $('makerLifecycleManagerModal');
+  if (
+    !lifecycleModal?.classList.contains('active')
+    || $('confirmActionModal')?.classList.contains('active')
+    || lifecycleModal.contains(event.target)
+  ) return;
+  ($('makerLifecycleManagerStatus') || lifecycleModal.querySelector('[data-close-maker-lifecycle]'))
+    ?.focus({ preventScroll: true });
+});
+
 $('rescanDraftRecovery')?.addEventListener('click', () => {
   void refreshDraftRecoveryCenter();
 });
@@ -10451,6 +14037,25 @@ $('confirmActionModal').addEventListener('click', (event) => {
   if (event.target === $('confirmActionModal')) closeConfirmation();
 });
 
+$('confirmActionModal').addEventListener('keydown', (event) => {
+  if (event.key !== 'Tab') return;
+  const focusable = Array.from(
+    $('confirmActionModal').querySelectorAll(
+      'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((node) => node.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+
 $('confirmActionButton').addEventListener('click', async () => {
   const action = pendingConfirmation;
   closeConfirmation();
@@ -10470,6 +14075,7 @@ document.addEventListener('keydown', (event) => {
   if (themeMenuIsOpen()) closeThemeMenu();
   else if ($('draftRecoveryModal').classList.contains('active')) closeDraftRecoveryCenter();
   else if ($('confirmActionModal').classList.contains('active')) closeConfirmation();
+  else if ($('makerLifecycleManagerModal')?.classList.contains('active')) closeMakerLifecycleManager();
   else if ($('partRegistrationModal').classList.contains('active')) closePartModal();
   else if ($('makerRegistrationModal').classList.contains('active')) closeMakerModal();
   else if ($('accountPanel').classList.contains('active')) closeAccountPanel();
@@ -10627,7 +14233,9 @@ window.addEventListener('popstate', () => {
 });
 
 window.addEventListener('beforeunload', (event) => {
-  const makerInFlight = state.publishing || ['registered', 'uploaded', 'certified'].includes(state.makerUploadStage);
+  const makerInFlight = state.publishing
+    || state.makerLifecycleActionBusy
+    || ['registered', 'uploaded', 'certified'].includes(state.makerUploadStage);
   const ocInFlight = state.minting || ['registered', 'uploaded', 'certified'].includes(state.ocUploadStage);
   const makerDraftDirty = makerWorkspace?.hasUnsavedChanges?.() === true;
   if (!makerInFlight && !ocInFlight && !makerDraftDirty) return;
@@ -10692,6 +14300,9 @@ makerWorkspace = createMakerWorkspace({
       if (!syncV4WorkspaceState(payload)) return;
       state.draftSaveStatus = 'saved';
       state.draftSaveMessage = payload.automatic ? t('makerAutosaved') : t('makerSaved');
+    },
+    onManageLifecycle() {
+      openMakerLifecycleManager();
     },
     onBackToLibrary() {
       if (state.publishing || state.minting) {
@@ -10790,7 +14401,65 @@ makerWorkspace = createMakerWorkspace({
   },
 });
 
-initializeChain(runtimeConfig, (connection) => {
+function activatePublishedMakerForPlayer(templateId) {
+  const template = templates.find((candidate) => candidate.id === templateId);
+  const model = makerModels.get(templateId);
+  if (!template || template.source !== 'chain' || !model || model.makerArchived) return false;
+  const publishedDocument = isMakerV4Document(model.publishedMakerDocumentV4)
+    ? model.publishedMakerDocumentV4
+    : isMakerV4Document(model.makerDocumentV4)
+      && model.makerDocumentV4.version?.createdAt
+      ? model.makerDocumentV4
+      : null;
+  if (!publishedDocument) return false;
+  const publishedRecipe = model.publishedMakerRecipeV4
+    || publishedDocument.defaultRecipe;
+  const publicModel = {
+    ...model,
+    makerDocumentV4: structuredClone(publishedDocument),
+    makerRecipeV4: cloneV4Recipe(publishedRecipe),
+    publishedMakerDocumentV4: structuredClone(publishedDocument),
+    publishedMakerRecipeV4: cloneV4Recipe(publishedRecipe),
+    makerAdminCapObjectId: '',
+    makerPublicationIntent: null,
+  };
+  template.owned = false;
+  template.adminCapId = '';
+  makerModels.set(templateId, publicModel);
+  applyMakerModelToState(templateId, publicModel);
+  return true;
+}
+
+async function flushActiveMakerBeforeWalletChange(previousWalletAddress) {
+  if (!previousWalletAddress) return;
+  if (makerAutosaveTimer) {
+    clearTimeout(makerAutosaveTimer);
+    makerAutosaveTimer = null;
+  }
+  syncActiveMakerModelRefs();
+  try {
+    if (isMakerV4Document(state.makerDocumentV4) && makerWorkspace) {
+      const flushed = await makerWorkspace.flushPendingChanges({
+        reason: 'wallet-change',
+      });
+      if (flushed?.saved === false) {
+        throw new Error(makerWorkspace.store?.getState().saveMessage || t('localDraftSaveFailed'));
+      }
+    } else if (templateIsOwnedByWallet(activeTemplate(), previousWalletAddress)) {
+      await saveCurrentMakerDraft({ silent: true });
+    }
+  } catch (error) {
+    // The v6 write-ahead log remains scoped to the previous wallet and can be
+    // recovered later. Never continue an old timer under the next wallet.
+    state.draftSaveStatus = 'error';
+    state.draftSaveMessage = state.locale === 'en' && error?.message
+      ? error.message
+      : t('localDraftSaveFailed');
+    console.error('Maker wallet-change flush failed.', error);
+  }
+}
+
+async function applyWalletConnection(connection) {
   if (localUiTest) connection = {
     connected: true,
     address: '0xc0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0de',
@@ -10800,6 +14469,11 @@ initializeChain(runtimeConfig, (connection) => {
   const previousWalletAddress = state.walletAddress;
   const walletChanged = previousWalletAddress !== connection.address;
   if (walletChanged) {
+    await flushActiveMakerBeforeWalletChange(previousWalletAddress);
+    chainMakerLoadRequestId += 1;
+    state.chainMakersLoading = false;
+    state.chainMakersLoadedFor = '';
+    state.chainMakerLoadError = '';
     templates
       .filter((template) => template.source === 'local' && template.owner === previousWalletAddress)
       .forEach((template) => {
@@ -10822,29 +14496,88 @@ initializeChain(runtimeConfig, (connection) => {
   state.walletStatus = connection.status;
   if (walletChanged) {
     const currentTemplate = activeTemplate();
-    if (currentTemplate?.source === 'local' && currentTemplate.owner && currentTemplate.owner !== connection.address) {
-      activateMakerModel(templates.find((template) => template.source === 'starter')?.id || templates[0].id);
+    if (
+      currentTemplate?.owner
+      && !templateIsOwnedByWallet(currentTemplate, connection.address)
+    ) {
+      const keptPublishedPlayer = (
+        state.page === 'make'
+        && activatePublishedMakerForPlayer(currentTemplate.id)
+      );
+      if (!keptPublishedPlayer) {
+        const starter = templates.find((template) => template.source === 'starter')
+          || templates[0];
+        if (!makerModels.has(starter.id)) makerModels.set(starter.id, createMakerModel());
+        applyMakerModelToState(starter.id, makerModels.get(starter.id));
+      }
       syncTemplateFields();
     }
   }
   if (!connection.connected || walletChanged) state.creatorProfileObjectId = '';
   if (connection.connected) {
     loadLocalMakerIndex(connection.address);
-    void recoverStableMakerIndex(connection.address);
+    void recoverStableMakerIndex(connection.address).finally(() => {
+      if (
+        state.walletConnected
+        && String(state.walletAddress) === String(connection.address)
+      ) loadChainMakers(connection.address);
+    });
     restoreMakerDraft(state.templateId);
-    loadChainMakers(connection.address);
     loadOwnedCharacters();
+    let pendingWalletTemplateReady = !state.pendingWalletTemplateId;
     if (state.pendingWalletTemplateId) {
-      activateMakerModel(state.pendingWalletTemplateId);
-      syncTemplateFields();
+      const pendingTemplate = templates.find((template) => (
+        template.id === state.pendingWalletTemplateId
+      ));
+      const pendingOwnedByWallet = templateIsOwnedByWallet(
+        pendingTemplate,
+        connection.address,
+      );
+      const openedPublishedPlayer = Boolean(
+        pendingTemplate
+        && !pendingOwnedByWallet
+        && state.pendingWalletPage === 'make'
+        && activatePublishedMakerForPlayer(pendingTemplate.id)
+      );
+      if (openedPublishedPlayer) {
+        pendingWalletTemplateReady = true;
+        syncTemplateFields();
+      } else if (
+        pendingTemplate
+        && (
+          pendingOwnedByWallet
+          || (pendingTemplate.source !== 'chain' && !pendingTemplate.owner)
+        )
+      ) {
+        pendingWalletTemplateReady = activateMakerModel(state.pendingWalletTemplateId);
+        if (pendingWalletTemplateReady) syncTemplateFields();
+      }
     }
-    if (state.pendingWalletPage) setPage(state.pendingWalletPage);
+    if (state.pendingWalletPage && pendingWalletTemplateReady) {
+      setPage(state.pendingWalletPage);
+    }
     state.pendingWalletPage = '';
     state.pendingWalletTemplateId = '';
   } else if (!['templates', 'template', 'docs'].includes(state.page)) {
     setPage('templates');
   }
   renderAll();
+}
+
+let walletConnectionApplyQueue = Promise.resolve();
+initializeChain(runtimeConfig, (connection) => {
+  walletConnectionApplyQueue = walletConnectionApplyQueue
+    .catch(() => {})
+    .then(() => applyWalletConnection(connection))
+    .catch((error) => {
+      state.walletStatus = 'error';
+      state.draftSaveStatus = 'error';
+      state.draftSaveMessage = state.locale === 'en' && error?.message
+        ? error.message
+        : t('requestedActionFailed');
+      console.error('Wallet connection transition failed.', error);
+      renderAll();
+    });
 });
 setWalletModalLocale(state.locale);
 

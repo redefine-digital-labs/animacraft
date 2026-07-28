@@ -3280,6 +3280,61 @@ test('an unresolved on-chain publication makes the Creator document read-only un
   });
 });
 
+test('Creator lifecycle management delegates to the shell and can reopen publication without publishing', async () => {
+  const releaseDialog = {
+    focusCount: 0,
+    focus() {
+      this.focusCount += 1;
+    },
+  };
+  const creatorRoot = new FakeRoot({
+    '#makerCreatorPublishDialog': releaseDialog,
+  });
+  let lifecycleCalls = 0;
+  let publishCalls = 0;
+  let publishActionCalls = 0;
+
+  await withWorkspace(async (workspace) => {
+    await workspace.setContext({
+      makerKey: workspace.makerKey,
+      lifecycle: {
+        label: 'Version draft',
+        manageLabel: 'Manage Maker lifecycle',
+        badgeClass: 'version-draft',
+      },
+    });
+
+    assert.match(
+      creatorRoot.innerHTML,
+      /class="maker-lifecycle-badge version-draft" data-action="manage-lifecycle" aria-label="Manage Maker lifecycle">Version draft<\/button>/,
+    );
+    creatorClick(workspace, 'manage-lifecycle');
+    assert.equal(lifecycleCalls, 1);
+    assert.equal(workspace.creatorPublishOpen, false);
+    assert.equal(publishCalls, 0);
+    assert.equal(publishActionCalls, 0);
+
+    assert.equal(workspace.openCreatorReleaseManager(), true);
+    assert.equal(workspace.creatorPublishOpen, true);
+    assert.equal(releaseDialog.focusCount, 1);
+    assert.equal(publishCalls, 0);
+    assert.equal(publishActionCalls, 0);
+  }, {
+    creatorRoot,
+    callbacks: {
+      onManageLifecycle() {
+        lifecycleCalls += 1;
+      },
+      onPublish() {
+        publishCalls += 1;
+      },
+      onCreatorPublishAction() {
+        publishActionCalls += 1;
+      },
+    },
+  });
+});
+
 test('every rendered Maker Studio data-action is backed by a handler or an intentional passive form value', async () => {
   const source = await readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8');
   const actions = [...new Set([...source.matchAll(/data-action="([^"$]+)"/g)].map((match) => match[1]))].sort();

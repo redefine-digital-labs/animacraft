@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.0 — Maker lifecycle management
+
+- Adds one responsive, accessible Maker lifecycle manager to both Creator Library cards and the Creator Studio toolbar.
+- Covers Draft, Publishing, Recoverable, Active, Paused, Archived, and Version draft states while keeping the editable workspace distinct from its immutable published chain version.
+- Revalidates the current MakerAdminCap before every pause, resume, archive, and restore transaction, then reads the Maker back from Sui before reporting success.
+- Preserves each paid Maker's pre-pause mint settings in the durable Workspace so Resume restores its fee configuration; an unavailable legacy snapshot is explicitly resumed as free instead of guessed.
+- Groups every immutable Sui publication under one stable Maker card, persists the history in Workspace v6, and lets the current Cap holder manage each historical version independently without replacing the active editor.
+- Selects the current chain version deterministically across out-of-order discovery while retaining a verified local binding and never allowing a historical object to overwrite a successor draft.
+- Refreshes both the creator's immutable `CreatorProfile.maker_ids` lineage and currently owned AdminCaps immediately before publication, so transferred Caps and same-name cross-device successor drafts cannot hide a competing on-chain version.
+- Detects already-forked sibling publications by Sui object identity and locks further version publication until the lineage is reconciled; a protocol-level atomic successor lock remains reserved for a later Move upgrade.
+- Lets creators begin a compatible next-version workspace, reopen publication recovery, or discard only the unpublished version while preserving the released Maker and upload checkpoints.
+- Keeps permanent retirement protocol-locked and explanatory instead of exposing an irreversible or misleading browser action.
+- Localizes the complete lifecycle flow in English, Simplified Chinese, Japanese, Korean, and Vietnamese, including keyboard focus management and mobile layouts.
+
 ## 0.6.0 — Production Player export
 
 - Rebuilds Player Part, Item, Style, and linked Smart Color controls around image-first selection with stronger visual and keyboard feedback.

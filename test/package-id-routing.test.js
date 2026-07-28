@@ -121,7 +121,7 @@ test('application stores publication intent before signing and uses the complete
   assert.match(app, /function invalidateMakerUpload[\s\S]*?if \(makerPublicationRecoveryPending\(\)\) \{[\s\S]*?return false;/);
   assert.match(app, /canMutateDocument\(\) \{[\s\S]*?return !makerPublicationRecoveryPending\(\);/);
   assert.match(app, /const uploadedMakerDocument = state\.pendingMakerV4Bundle\?\.manifest;[\s\S]*?publishedMakerDocumentV4 = structuredClone\(uploadedMakerDocument\)/);
-  assert.match(app, /const saveResult = await saveCurrentMakerDraft\(\{ silent: true \}\);[\s\S]*?saved = saveResult\?\.confirmed === true;[\s\S]*?if \(state\.makerObjectId && saved\) \{[\s\S]*?await clearMakerUploadRecovery\(\)/);
+  assert.match(app, /const saveResult = await saveCurrentMakerDraft\(\{[\s\S]*?silent: true,[\s\S]*?forceWorkspace: true,[\s\S]*?\}\);[\s\S]*?saved = saveResult\?\.confirmed === true;[\s\S]*?if \(state\.makerObjectId && saved\) \{[\s\S]*?await clearMakerUploadRecovery\(\)/);
   assert.match(app, /reviewPendingMakerPublication[\s\S]*?clearPendingPublicationTitle[\s\S]*?clearPendingPublicationConfirm/);
   assert.match(app, /const clearUnsignedIntent = Boolean\([\s\S]*?!publicationSignatureRequested \|\| knownPreSubmissionFailure[\s\S]*?persistPublicationIntent\(clearUnsignedIntent \? null : currentIntent\)/);
   assert.match(app, /withBrowserUploadLock\(operation\.recoveryKey,[\s\S]*?guard: publicationContextIsActive/);
