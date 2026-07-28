@@ -178,6 +178,133 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function workspacePausedEconomicsMetadata(value, fallbackMakerObjectId = '') {
+  if (!value || typeof value !== 'object') return null;
+  const rawMutation = value.pendingMutation;
+  const mutationKind = String(rawMutation?.kind || '');
+  const mutationCreatedAt = String(rawMutation?.createdAt || '');
+  const pendingMutation = rawMutation
+    && typeof rawMutation === 'object'
+    && String(rawMutation.digest || '')
+    && ['pause', 'archive', 'restore'].includes(mutationKind)
+    && mutationCreatedAt
+    && Number.isFinite(Date.parse(mutationCreatedAt))
+    ? {
+        digest: String(rawMutation.digest),
+        kind: mutationKind,
+        expectedMintingEnabled: Boolean(rawMutation.expectedMintingEnabled),
+        expectedArchived: typeof rawMutation.expectedArchived === 'boolean'
+          ? rawMutation.expectedArchived
+          : null,
+        createdAt: mutationCreatedAt,
+      }
+    : null;
+  return {
+    makerObjectId: String(value.makerObjectId || fallbackMakerObjectId),
+    mintFeeEnabled: Boolean(value.mintFeeEnabled),
+    mintPriceAtomic: Number(value.mintPriceAtomic || 0),
+    royaltyBps: Number(value.royaltyBps || 0),
+    makerUpdatedAtMs: String(value.makerUpdatedAtMs || ''),
+    pendingMutation,
+    capturedAt: String(value.capturedAt || ''),
+  };
+}
+
+function workspacePersistenceMetadata(context, snapshot, walletAddress) {
+  const rootMakerId = String(snapshot?.document?.version?.rootMakerId || '');
+  const candidateBinding = context?.chainBinding;
+  const bindingOwner = String(candidateBinding?.ownerWallet || '').trim();
+  const bindingRootMakerId = String(candidateBinding?.rootMakerId || '').trim();
+  const normalizedWallet = String(walletAddress || '').trim();
+  // Treat the shell as untrusted input at the persistence boundary. A stale
+  // callback must never relabel another wallet's AdminCap or OCMaker object.
+  const rawBinding = candidateBinding
+    && typeof candidateBinding === 'object'
+    && bindingOwner
+    && normalizedWallet
+    && bindingOwner.toLowerCase() === normalizedWallet.toLowerCase()
+    && bindingRootMakerId === rootMakerId
+    ? candidateBinding
+    : null;
+  const publishedVersions = Array.isArray(rawBinding?.publishedVersions)
+    ? rawBinding.publishedVersions.reduce((entries, rawVersion) => {
+        if (!rawVersion || typeof rawVersion !== 'object') return entries;
+        const makerObjectId = String(rawVersion.makerObjectId || '');
+        const versionId = String(rawVersion.versionId || '');
+        if (!makerObjectId || !versionId) return entries;
+        const normalized = {
+          rootMakerId: String(rawVersion.rootMakerId || rootMakerId),
+          versionId,
+          parentVersionId: String(rawVersion.parentVersionId || ''),
+          versionNumber: Math.max(0, Math.floor(Number(rawVersion.versionNumber || 0))),
+          profileOrder: Math.max(-1, Math.floor(Number(rawVersion.profileOrder ?? -1))),
+          makerObjectId,
+          makerTreasuryObjectId: String(rawVersion.makerTreasuryObjectId || ''),
+          makerAdminCapObjectId: String(rawVersion.makerAdminCapObjectId || ''),
+          publishDigest: String(rawVersion.publishDigest || ''),
+          makerPreviousTransaction: String(rawVersion.makerPreviousTransaction || ''),
+          archived: Boolean(rawVersion.archived),
+          mintingEnabled: rawVersion.mintingEnabled !== false,
+          mintFeeEnabled: Boolean(rawVersion.mintFeeEnabled),
+          mintPriceAtomic: Number(rawVersion.mintPriceAtomic || 0),
+          royaltyBps: Number(rawVersion.royaltyBps || 0),
+          makerUpdatedAtMs: String(rawVersion.makerUpdatedAtMs || ''),
+          current: Boolean(rawVersion.current),
+          pausedEconomics: workspacePausedEconomicsMetadata(
+            rawVersion.pausedEconomics,
+            makerObjectId,
+          ),
+        };
+        const previousIndex = entries.findIndex(
+          (entry) => entry.makerObjectId.toLowerCase() === makerObjectId.toLowerCase(),
+        );
+        if (previousIndex >= 0) entries[previousIndex] = normalized;
+        else entries.push(normalized);
+        return entries;
+      }, [])
+    : [];
+  const rawPausedEconomics = rawBinding?.pausedEconomics;
+  const pausedEconomics = workspacePausedEconomicsMetadata(rawPausedEconomics);
+  const chainBinding = rawBinding && typeof rawBinding === 'object'
+    ? {
+        schema: 'animacraft.chain-binding.v1',
+        rootMakerId,
+        ownerWallet: bindingOwner,
+        makerObjectId: String(rawBinding.makerObjectId || ''),
+        makerTreasuryObjectId: String(rawBinding.makerTreasuryObjectId || ''),
+        makerAdminCapObjectId: String(rawBinding.makerAdminCapObjectId || ''),
+        publishDigest: String(rawBinding.publishDigest || ''),
+        archived: Boolean(rawBinding.archived),
+        mintingEnabled: rawBinding.mintingEnabled !== false,
+        mintFeeEnabled: Boolean(rawBinding.mintFeeEnabled),
+        mintPriceAtomic: Number(rawBinding.mintPriceAtomic || 0),
+        royaltyBps: Number(rawBinding.royaltyBps || 0),
+        pausedEconomics,
+        publishedVersions,
+      }
+    : null;
+  const publishedDocument = isMakerV5Document(context?.publishedDocument)
+    && context.publishedDocument.version.rootMakerId === rootMakerId
+    ? clone(context.publishedDocument)
+    : null;
+  const publishedRecipe = publishedDocument
+    ? clone(context?.publishedRecipe || publishedDocument.defaultRecipe)
+    : null;
+  return {
+    makerVersionId: snapshot.document.version.versionId,
+    rootMakerId,
+    walletAddress,
+    name: snapshot.document.metadata.name,
+    chainBinding,
+    publishedSnapshot: publishedDocument
+      ? {
+          document: publishedDocument,
+          recipe: publishedRecipe,
+        }
+      : null,
+  };
+}
+
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
   Object.values(value).forEach(deepFreeze);
@@ -1031,6 +1158,8 @@ export class MakerWorkspace {
     this.contextSwitchInProgress = false;
     this.restoreInProgress = false;
     this.restoreError = '';
+    this.lifecycleMutationMakerKeys = new Set();
+    this.deletedMakerKeys = new Set();
     this.walStorage = Object.hasOwn(options, 'walStorage')
       ? options.walStorage
       : browserLocalStorage();
@@ -1149,6 +1278,10 @@ export class MakerWorkspace {
     return String(this.context?.makerKey || '');
   }
 
+  get creatorPersistenceEnabled() {
+    return this.context?.creatorPersistenceEnabled !== false;
+  }
+
   get playerSessionKey() {
     if (this.playerSessionContextKey) return this.playerSessionContextKey;
     const wallet = String(this.context?.walletAddress || 'wallet');
@@ -1185,7 +1318,12 @@ export class MakerWorkspace {
   }
 
   documentMutationBlocked() {
-    return this.callbacks.canMutateDocument?.() === false;
+    return Boolean(
+      !this.creatorPersistenceEnabled
+      || this.lifecycleMutationMakerKeys.has(this.makerKey)
+      || this.deletedMakerKeys.has(this.makerKey)
+      || this.callbacks.canMutateDocument?.() === false
+    );
   }
 
   documentMutationBlockedMessage() {
@@ -1221,6 +1359,70 @@ export class MakerWorkspace {
     normalizeDocumentOrders(document);
     synchronizeDefaultRecipe(document);
     return document;
+  }
+
+  runtimeAssetsForContext(context, document) {
+    const suppliedAssets = context.assets instanceof Map
+      ? [...context.assets.values()]
+      : Array.from(context.assets || []);
+    const nextAssets = new Map();
+    suppliedAssets.forEach((record) => {
+      const assetId = String(record.assetId || record.id || record.identifier || '');
+      if (!assetId) return;
+      const revived = record.url || record.thumbnailUrl
+        ? { ...record, assetId }
+        : reviveRuntimeAssetRecord({
+            ...record,
+            assetId,
+            blob: record.blob || record.file,
+          });
+      nextAssets.set(assetId, revived);
+    });
+    document.assets.forEach((descriptor) => {
+      if (nextAssets.has(descriptor.id)) return;
+      const supplied = suppliedAssets.find((asset) => (
+        [asset.id, asset.assetId, asset.identifier].includes(descriptor.id)
+        || asset.identifier === descriptor.identifier
+      ));
+      if (supplied) {
+        const blob = supplied.blob || supplied.file;
+        nextAssets.set(descriptor.id, supplied.url
+          ? { ...supplied, assetId: descriptor.id, blob }
+          : reviveRuntimeAssetRecord({ ...supplied, assetId: descriptor.id, blob }));
+      } else if (descriptor.url || descriptor.legacy?.url) {
+        nextAssets.set(descriptor.id, {
+          assetId: descriptor.id,
+          url: descriptor.url || descriptor.legacy.url,
+          thumbnailUrl: descriptor.thumbnailUrl || '',
+          width: descriptor.width,
+          height: descriptor.height,
+          identifier: descriptor.identifier,
+          source: 'remote',
+        });
+      }
+    });
+    return nextAssets;
+  }
+
+  replaceRuntimeAssets(nextAssets) {
+    const retainedObjectUrls = new Set(
+      [...nextAssets.values()]
+        .flatMap((record) => [record?.url, record?.thumbnailUrl])
+        .filter((url) => String(url || '').startsWith('blob:')),
+    );
+    this.assets.forEach((record) => {
+      [record?.url, record?.thumbnailUrl].forEach((url) => {
+        if (
+          String(url || '').startsWith('blob:')
+          && !retainedObjectUrls.has(url)
+        ) URL.revokeObjectURL(url);
+      });
+    });
+    this.assetResolver.clear();
+    this.assets = nextAssets;
+    this.assetResolver = createCachedAssetResolver(this.assets);
+    this.rulePreflightCache = new WeakMap();
+    this.releasePreflightCache = new WeakMap();
   }
 
   async setContext(context) {
@@ -1308,9 +1510,19 @@ export class MakerWorkspace {
       if (context.replaceDocument === true && isMakerV5Document(context.document) && !this.store.getState().dirty) {
         const incoming = this.normalizeDocument(clone(context.document));
         const current = this.store.getState().document;
-        if (JSON.stringify(incoming) !== JSON.stringify(current)) {
+        const incomingRecipe = recipeWithColors(
+          incoming,
+          context.recipe || incoming.defaultRecipe,
+        );
+        const currentRecipe = this.store.getState().recipe;
+        const documentChanged = JSON.stringify(incoming) !== JSON.stringify(current);
+        const recipeChanged = JSON.stringify(incomingRecipe) !== JSON.stringify(currentRecipe);
+        const nextAssets = this.runtimeAssetsForContext(context, incoming);
+        this.replaceRuntimeAssets(nextAssets);
+        if (documentChanged || recipeChanged) {
           this.resetPlayerExport();
-          this.store.replace(incoming, context.recipe || incoming.defaultRecipe, { clearHistory: true, markSaved: true });
+          this.store.replace(incoming, incomingRecipe, { clearHistory: true, markSaved: true });
+          this.creatorRecipe = clone(incomingRecipe);
           this.ensureCreatorSelection(incoming);
           while (this.playerSessionSwitchInProgress) {
             await this.playerSessionTransitionPromise;
@@ -1365,35 +1577,8 @@ export class MakerWorkspace {
           creator: context.creator || '',
         });
     this.normalizeDocument(document);
-    (context.assets || []).forEach((record) => {
-      const assetId = String(record.assetId || record.id || record.identifier || '');
-      if (!assetId) return;
-      const revived = record.url || record.thumbnailUrl
-        ? { ...record, assetId }
-        : reviveRuntimeAssetRecord({ ...record, assetId, blob: record.blob || record.file });
-      this.assets.set(assetId, revived);
-    });
-    document.assets.forEach((descriptor) => {
-      if (this.assets.has(descriptor.id)) return;
-      const supplied = (context.assets || []).find((asset) => [asset.id, asset.assetId, asset.identifier].includes(descriptor.id)
-        || asset.identifier === descriptor.identifier);
-      if (supplied) {
-        const blob = supplied.blob || supplied.file;
-        this.assets.set(descriptor.id, supplied.url
-          ? { ...supplied, assetId: descriptor.id, blob }
-          : reviveRuntimeAssetRecord({ ...supplied, assetId: descriptor.id, blob }));
-      } else if (descriptor.url || descriptor.legacy?.url) {
-        this.assets.set(descriptor.id, {
-          assetId: descriptor.id,
-          url: descriptor.url || descriptor.legacy.url,
-          thumbnailUrl: descriptor.thumbnailUrl || '',
-          width: descriptor.width,
-          height: descriptor.height,
-          identifier: descriptor.identifier,
-          source: 'remote',
-        });
-      }
-    });
+    this.assets = this.runtimeAssetsForContext(context, document);
+    this.assetResolver = createCachedAssetResolver(this.assets);
     const recipe = recipeWithColors(document, context.recipe || document.defaultRecipe);
     this.store = createMakerCommandStore(document, recipe);
     this.creatorRecipe = clone(recipe);
@@ -1486,9 +1671,21 @@ export class MakerWorkspace {
     this.playerUndo = [];
     this.playerRedo = [];
     this.playerIntroOpen = true;
-    this.restoreInProgress = Boolean(this.makerKey && this.context?.walletAddress);
+    this.restoreInProgress = Boolean(
+      this.creatorPersistenceEnabled
+      && this.makerKey
+      && this.context?.walletAddress,
+    );
     this.render();
-    if (this.restoreInProgress) await this.restoreLocalWorkspace(contextEpoch);
+    if (this.restoreInProgress) {
+      await this.restoreLocalWorkspace(contextEpoch);
+    } else if (this.context?.walletAddress) {
+      const playerSessionRequestId = ++this.playerSessionRequestId;
+      await this.restorePlayerSessionForDocument(document, {
+        requestId: playerSessionRequestId,
+      });
+      if (this.contextEpoch === contextEpoch) this.render();
+    }
   }
 
   playerSessionConflictMessage() {
@@ -1798,7 +1995,11 @@ export class MakerWorkspace {
   }
 
   async restoreLocalWorkspace(contextEpoch = this.contextEpoch) {
-    if (!this.makerKey || !this.context?.walletAddress) return;
+    if (
+      !this.creatorPersistenceEnabled
+      || !this.makerKey
+      || !this.context?.walletAddress
+    ) return;
     const requestedMakerKey = this.makerKey;
     const requestedStore = this.store;
     const baseRevision = requestedStore?.getState().revision ?? 0;
@@ -1865,6 +2066,7 @@ export class MakerWorkspace {
           document: restored,
           recipe: saved.recipe || restored.defaultRecipe,
           assets: this.assets,
+          metadata: clone(saved.metadata || {}),
           revision: saved.revision,
           savedAt: saved.savedAt,
         });
@@ -1917,6 +2119,7 @@ export class MakerWorkspace {
             document: recoveredDocument,
             recipe: recoveredRecipe,
             assets: this.assets,
+            metadata: clone(saved?.metadata || {}),
             revision: requestedStore.getState().revision,
             savedAt: writeAhead.updatedAt,
             recoveredFromWriteAhead: true,
@@ -1964,7 +2167,13 @@ export class MakerWorkspace {
   }
 
   async retryLocalWorkspaceRestore() {
-    if (!this.store || !this.makerKey || !this.context?.walletAddress || this.restoreInProgress) return;
+    if (
+      !this.creatorPersistenceEnabled
+      || !this.store
+      || !this.makerKey
+      || !this.context?.walletAddress
+      || this.restoreInProgress
+    ) return;
     if (this.store.getState().dirty) {
       this.restoreError = this.tr('workspaceRestoreBlocked');
       this.render();
@@ -2046,7 +2255,13 @@ export class MakerWorkspace {
   }
 
   persistWriteAheadSnapshot(requestedStore = this.store, requestedMakerKey = this.makerKey) {
-    if (!requestedStore || !requestedMakerKey || !this.walStorage) return false;
+    if (
+      !this.creatorPersistenceEnabled
+      || !requestedStore
+      || !requestedMakerKey
+      || !this.walStorage
+      || this.deletedMakerKeys.has(requestedMakerKey)
+    ) return false;
     try {
       const snapshot = requestedStore.snapshotForSave();
       writeMakerDraftWal(this.walStorage, requestedMakerKey, snapshot, {
@@ -2126,7 +2341,14 @@ export class MakerWorkspace {
     force = false,
     allowDuringRestore = false,
   } = {}) {
-    if (!this.store || !this.makerKey || !this.context?.walletAddress) return null;
+    if (
+      !this.creatorPersistenceEnabled
+      || !this.store
+      || !this.makerKey
+      || !this.context?.walletAddress
+      || this.lifecycleMutationMakerKeys.has(this.makerKey)
+      || this.deletedMakerKeys.has(this.makerKey)
+    ) return null;
     if ((!allowDuringRestore && this.restoreInProgress) || this.restoreError) return null;
     this.flushPendingCreatorText();
     if (!automatic) this.autosave.cancel();
@@ -2134,7 +2356,24 @@ export class MakerWorkspace {
     const requestedMakerKey = this.makerKey;
     const requestedContextEpoch = this.contextEpoch;
     const requestedWallet = this.context.walletAddress;
-    const stateBeforeSave = requestedStore.getState();
+    let stateBeforeSave = requestedStore.getState();
+    if (
+      force
+      && !stateBeforeSave.dirty
+      && Number.isSafeInteger(stateBeforeSave.persistedRevision)
+    ) {
+      // Repository revisions are strictly monotonic. A confirmed publication
+      // can change only Workspace persistence metadata (chain binding and the
+      // immutable published snapshot) while leaving the editable document
+      // byte-for-byte unchanged, so advance the local revision without adding
+      // a fake Undo command before committing that metadata.
+      requestedStore.replace(
+        stateBeforeSave.document,
+        stateBeforeSave.recipe,
+        { clearHistory: false, markSaved: false },
+      );
+      stateBeforeSave = requestedStore.getState();
+    }
     if (!force && !stateBeforeSave.dirty) {
       return {
         makerKey: requestedMakerKey,
@@ -2160,17 +2399,20 @@ export class MakerWorkspace {
       const result = await this.draftRepository.save(requestedMakerKey, {
         ...snapshot,
         assets,
-        metadata: {
-          makerVersionId: snapshot.document.version.versionId,
-          rootMakerId: snapshot.document.version.rootMakerId,
-          walletAddress: requestedWallet,
-          name: snapshot.document.metadata.name,
-        },
+        metadata: workspacePersistenceMetadata(
+          this.context,
+          snapshot,
+          requestedWallet,
+        ),
       });
       if (
         this.store !== requestedStore
         || this.makerKey !== requestedMakerKey
         || this.contextEpoch !== requestedContextEpoch
+      ) return result;
+      if (
+        this.lifecycleMutationMakerKeys.has(requestedMakerKey)
+        || this.deletedMakerKeys.has(requestedMakerKey)
       ) return result;
       if (result.confirmed) {
         const savedAt = result.savedAt
@@ -2214,7 +2456,12 @@ export class MakerWorkspace {
       }
       return result;
     } catch (error) {
-      if (this.store === requestedStore && this.makerKey === requestedMakerKey) {
+      if (
+        this.store === requestedStore
+        && this.makerKey === requestedMakerKey
+        && !this.lifecycleMutationMakerKeys.has(requestedMakerKey)
+        && !this.deletedMakerKeys.has(requestedMakerKey)
+      ) {
         requestedStore.setSaveState('error', error.message || this.tr('saveFailed'));
       }
       return null;
@@ -2248,6 +2495,24 @@ export class MakerWorkspace {
     await this.playerSaveQueue;
     const requestedStore = this.store;
     const requestedMakerKey = this.makerKey;
+    if (!this.creatorPersistenceEnabled) {
+      this.autosave.cancel();
+      return {
+        makerKey: requestedMakerKey,
+        reason,
+        saved: !['dirty', 'saving', 'error'].includes(this.playerSaveState),
+        creatorPersistenceSkipped: true,
+      };
+    }
+    if (this.deletedMakerKeys.has(requestedMakerKey)) {
+      this.autosave.cancel();
+      return {
+        makerKey: requestedMakerKey,
+        reason,
+        saved: true,
+        deleted: true,
+      };
+    }
     if (!requestedStore || !requestedMakerKey || !this.context?.walletAddress) {
       this.autosave.cancel();
       return {
@@ -2462,6 +2727,7 @@ export class MakerWorkspace {
         document: restoredDocument,
         recipe: restoredRecipe,
         assets: this.assets,
+        metadata: clone(saved.metadata || {}),
         revision: saved.revision,
         savedAt: saved.savedAt,
         restoredFromRevision: checkpointRevision,
@@ -2873,6 +3139,16 @@ export class MakerWorkspace {
     const issues = collectMakerV5ValidationIssues(document, { mode: 'publish' })
       .filter((issue) => issue.path !== 'metadata.coverAssetId')
       .map(compactIssue);
+    const externalIssues = Array.isArray(this.context?.externalPublicationIssues)
+      ? this.context.externalPublicationIssues
+      : [];
+    issues.unshift(...externalIssues
+      .filter((issue) => issue && typeof issue === 'object' && issue.message)
+      .map((issue) => ({
+        code: String(issue.code || 'external_publication_issue'),
+        path: String(issue.path || 'publication'),
+        message: String(issue.message),
+      })));
     if (document.extensions?.stressTest?.doNotPublish === true) {
       issues.unshift({
         code: 'fixture_do_not_publish',
@@ -3109,10 +3385,40 @@ export class MakerWorkspace {
   }
 
   async deleteDraftProject(makerKey) {
+    const requestedMakerKey = String(makerKey || '').trim();
+    if (!requestedMakerKey) throw new Error('Maker key is required.');
+    const deletingCurrentMaker = Boolean(
+      requestedMakerKey
+      && requestedMakerKey === this.makerKey
+    );
+    const pendingCreatorText = deletingCurrentMaker
+      ? this.pendingCreatorText
+      : null;
+    this.deletedMakerKeys.add(requestedMakerKey);
     try {
-      await this.draftRepository.deleteProject(makerKey);
-      this.clearWriteAheadSnapshot(makerKey);
+      if (deletingCurrentMaker) {
+        // Prevent delayed input and autosave callbacks from publishing another
+        // revision after the repository tombstone. Already-running saves are
+        // allowed to finish before deleteProject is queued.
+        this.textAutosave.cancel();
+        this.autosave.cancel();
+        await this.textAutosave.flush();
+        await this.autosave.flush();
+      }
+      await this.draftRepository.flush?.(requestedMakerKey);
+      const result = await this.draftRepository.deleteProject(requestedMakerKey);
+      if (deletingCurrentMaker && this.makerKey === requestedMakerKey) {
+        this.pendingCreatorText = null;
+      }
+      this.clearWriteAheadSnapshot(requestedMakerKey);
+      return result;
     } catch (error) {
+      this.deletedMakerKeys.delete(requestedMakerKey);
+      if (deletingCurrentMaker && this.makerKey === requestedMakerKey) {
+        this.pendingCreatorText = pendingCreatorText;
+        if (this.pendingCreatorText) this.textAutosave();
+        if (this.store?.getState().dirty) this.autosave();
+      }
       if (error?.code === 'MAKER_DRAFT_DELETE_CONFLICT') {
         const localized = new Error(this.tr('workspaceDeleteConflict'));
         localized.code = error.code;
@@ -3162,6 +3468,169 @@ export class MakerWorkspace {
 
   setCreatorPublishState(nextState = {}) {
     this.setPublicationState('creator', nextState);
+  }
+
+  openCreatorReleaseManager() {
+    if (!this.store) return false;
+    this.creatorPublishOpen = true;
+    this.creatorPublishCloseConfirm = false;
+    this.render();
+    this.focusCreatorPublishDialog();
+    return true;
+  }
+
+  async discardVersionDraft() {
+    const operation = this.captureMakerOperation();
+    if (this.lifecycleMutationMakerKeys.has(operation.makerKey)) return false;
+    const publishedSource = this.context?.publishedDocument;
+    const currentDocument = operation.store?.getState?.().document;
+    const currentVersionId = String(currentDocument?.version?.versionId || '');
+    const publishedVersionId = String(publishedSource?.version?.versionId || '');
+    if (
+      this.context?.isPublished !== true
+      || !isMakerV5Document(publishedSource)
+      || !currentVersionId
+      || !publishedVersionId
+      || currentVersionId === publishedVersionId
+    ) return false;
+
+    const pendingCreatorText = this.pendingCreatorText;
+    this.lifecycleMutationMakerKeys.add(operation.makerKey);
+    this.textAutosave.cancel();
+    this.autosave.cancel();
+    try {
+      // Wait for a save that had already begun before this lifecycle action.
+      // No later save for this Maker can start while the mutation lock is held.
+      await this.textAutosave.flush();
+      await this.autosave.flush();
+      await this.draftRepository.flush?.(operation.makerKey);
+      if (!this.isCurrentMakerOperation(
+        operation.makerKey,
+        operation.store,
+        operation.contextEpoch,
+      )) return false;
+
+      const publishedDocument = this.normalizeDocument(clone(publishedSource));
+      const publishedRecipe = clone(
+        this.context?.publishedRecipe || publishedDocument.defaultRecipe,
+      );
+      const repositoryStatus = this.draftRepository.getStatus?.(operation.makerKey) || {};
+      const originalSnapshot = operation.store.snapshotForSave();
+      const persistedRevision = Number.isSafeInteger(repositoryStatus.persistedRevision)
+        ? repositoryStatus.persistedRevision
+        : originalSnapshot.baseRevision;
+      const nextRevision = Math.max(
+        originalSnapshot.revision,
+        Number.isSafeInteger(repositoryStatus.latestRequestedRevision)
+          ? repositoryStatus.latestRequestedRevision
+          : -1,
+        Number.isSafeInteger(persistedRevision) ? persistedRevision : -1,
+      ) + 1;
+      const assets = [...this.assets.values()].map((record) => ({
+        ...record,
+        url: persistedAssetUrl(record.url),
+        thumbnailUrl: persistedAssetUrl(record.thumbnailUrl),
+      }));
+
+      operation.store.setSaveState('saving', this.tr('savingChanges'));
+      let result;
+      try {
+        result = await this.draftRepository.save(operation.makerKey, {
+          revision: nextRevision,
+          baseRevision: Number.isSafeInteger(persistedRevision)
+            ? persistedRevision
+            : null,
+          document: publishedDocument,
+          recipe: publishedRecipe,
+          journal: [],
+          assets,
+          metadata: workspacePersistenceMetadata(
+            this.context,
+            { document: publishedDocument },
+            this.context.walletAddress,
+          ),
+        });
+        await this.draftRepository.flush?.(operation.makerKey);
+      } catch (error) {
+        if (this.isCurrentMakerOperation(
+          operation.makerKey,
+          operation.store,
+          operation.contextEpoch,
+        )) {
+          operation.store.setSaveState('error', error.message || this.tr('saveFailed'));
+        }
+        return false;
+      }
+
+      const current = this.isCurrentMakerOperation(
+        operation.makerKey,
+        operation.store,
+        operation.contextEpoch,
+      );
+      if (!current || !result?.confirmed || result.conflict === true) {
+        if (current) operation.store.setSaveState('error', this.tr('saveFailed'));
+        return false;
+      }
+
+      // Persistence is now confirmed. Only at this point is the visible
+      // workspace switched to the published snapshot, making failure rollback
+      // implicit: before confirmation no document, history, selection, or
+      // Player state has been touched.
+      this.pendingCreatorText = null;
+      this.resetPlayerExport();
+      operation.store.replace(publishedDocument, publishedRecipe, {
+        clearHistory: true,
+        markSaved: true,
+        persistedRevision: Number.isSafeInteger(result.persistedRevision)
+          ? result.persistedRevision
+          : nextRevision,
+      });
+      this.creatorRecipe = clone(publishedRecipe);
+      const playablePlayerRecipe = normalizePlayablePlayerRecipe(
+        publishedDocument,
+        publishedRecipe,
+        this.playerOptionSettings(publishedDocument),
+      );
+      this.playerRecipe = playablePlayerRecipe.documentRecipe;
+      this.playerUndo = [];
+      this.playerRedo = [];
+      this.ensureCreatorSelection(publishedDocument);
+      this.clearWriteAheadSnapshot(operation.makerKey);
+
+      const revision = operation.store.getState().revision;
+      const payload = {
+        makerKey: operation.makerKey,
+        document: operation.store.getState().document,
+        recipe: operation.store.getState().recipe,
+        assets: this.assets,
+        automatic: false,
+        revision,
+      };
+      this.callbacks.onDocumentChange?.({
+        ...payload,
+        event: {
+          reason: 'discard-version-draft',
+          label: 'Discard version draft',
+        },
+      });
+      this.callbacks.onSaved?.(payload);
+      this.render();
+      return true;
+    } finally {
+      this.lifecycleMutationMakerKeys.delete(operation.makerKey);
+      if (
+        this.isCurrentMakerOperation(
+          operation.makerKey,
+          operation.store,
+          operation.contextEpoch,
+        )
+        && operation.store.getState().document.version.versionId === currentVersionId
+      ) {
+        this.pendingCreatorText = pendingCreatorText;
+        if (this.pendingCreatorText) this.textAutosave();
+        if (operation.store.getState().dirty) this.autosave();
+      }
+    }
   }
 
   openCreatorPublication() {
@@ -3607,6 +4076,9 @@ export class MakerWorkspace {
   }
 
   issueText(issue, context = {}) {
+    if (issue.code === 'external_version_draft_conflict') {
+      return issue.message || this.tr('issueInvalid');
+    }
     if (issue.code === 'runtime_asset_missing') return this.tr('missingAsset', context);
     if (issue.code === 'position_unconfirmed') return this.tr('positionUnconfirmed', context);
     if (issue.code === 'transparent_public_style') return this.tr('transparentPublicStyle', context);
@@ -4140,6 +4612,10 @@ export class MakerWorkspace {
     if (!canComparePreviewLayers && this.creatorPreviewMode !== 'all') this.creatorPreviewMode = 'all';
     const blockingIssues = issues.filter((issue) => issue.severity !== 'warning');
     const compatibility = this.compatibilityReport(document);
+    const lifecycle = this.context?.lifecycle || {};
+    const lifecycleLabel = String(lifecycle.label || this.tr('publishMainnet'));
+    const lifecycleManageLabel = String(lifecycle.manageLabel || lifecycleLabel);
+    const lifecycleBadgeClass = String(lifecycle.badgeClass || '');
     const partRows = document.parts.map((candidate, index) => {
       const linkage = partTrackLinkage(document, candidate.id);
       const linkedTrack = linkage.mode === 'linked'
@@ -4203,6 +4679,7 @@ export class MakerWorkspace {
           </div>
           <div class="v4-save-indicator ${escapeHtml(state.saveState)}"><i></i><span>${escapeHtml(this.saveStateText(state))}</span></div>
           <div class="v4-top-actions">
+            <button type="button" class="maker-lifecycle-badge ${escapeHtml(lifecycleBadgeClass)}" data-action="manage-lifecycle" aria-label="${escapeHtml(lifecycleManageLabel)}">${escapeHtml(lifecycleLabel)}</button>
             <button type="button" data-action="back-library">${escapeHtml(this.tr('backToLibrary'))}</button>
             <button type="button" data-action="undo" ${state.canUndo ? '' : 'disabled'} title="${escapeHtml(state.canUndo ? this.tr('undoHint') : this.tr('undoUnavailable'))}">↶ ${escapeHtml(this.tr('undo'))}</button>
             <button type="button" data-action="redo" ${state.canRedo ? '' : 'disabled'} title="${escapeHtml(state.canRedo ? this.tr('redoHint') : this.tr('redoUnavailable'))}">↷ ${escapeHtml(this.tr('redo'))}</button>
@@ -6285,6 +6762,10 @@ export class MakerWorkspace {
     const button = event.target.closest('[data-action]');
     if (!button || button.matches('input,select,textarea,label')) return;
     const action = button.dataset.action;
+    if (action === 'manage-lifecycle') {
+      this.callbacks.onManageLifecycle?.();
+      return;
+    }
     if (
       this.contextSwitchInProgress
       || this.restoreInProgress

@@ -14,6 +14,9 @@ async function withAnimationFrame(run) {
   try {
     await run();
   } finally {
+    // Workspace teardown intentionally flushes pending persistence without
+    // blocking navigation. Keep the test frame shim alive through that turn.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     globalThis.requestAnimationFrame = previous;
   }
 }
@@ -66,6 +69,122 @@ test('same-key context replaces an early shell with the restored v5 draft', asyn
   assert.equal(result.parts.length, 8);
   assert.ok(result.parts.every((part) => part.items[0].styles.length === 1));
   assert.ok(result.parts.every((part) => part.items[0].defaultStyleId === part.items[0].styles[0].id));
+  workspace.destroy();
+}));
+
+test('same-key chain successor rebind replaces document, recipe and assets before the next version is saved', async () => withAnimationFrame(async () => {
+  const makerKey = '0xcreator:successor-rebind';
+  const walletAddress = '0xcreator';
+  const v1 = createCharacterMakerV5Starter({
+    makerId: 'successor-rebind',
+    name: 'Successor v1',
+  });
+  const v1Style = v1.parts[0].items[0].styles[0];
+  addRemoteStyleAsset(v1, v1Style, 'v1-style-png');
+  synchronizeDefaultRecipe(v1);
+
+  const v2 = structuredClone(v1);
+  v2.metadata.name = 'Successor v2';
+  v2.version = {
+    ...v2.version,
+    number: 2,
+    parentVersionId: v1.version.versionId,
+    versionId: 'successor-rebind-v2',
+    createdAt: '2026-07-28T02:00:00.000Z',
+  };
+  const v2Style = v2.parts[0].items[0].styles[0];
+  v2Style.assetId = 'v2-style-png';
+  v2.assets = [{
+    id: 'v2-style-png',
+    identifier: 'v2-style-png.png',
+    kind: 'layer',
+    mediaType: 'image/png',
+    width: 1024,
+    height: 1024,
+    url: 'https://assets.example/v2-style-png.png',
+  }];
+  synchronizeDefaultRecipe(v2);
+
+  let persistedRevision = null;
+  let persistedSnapshot = null;
+  const repository = {
+    async load() {
+      return null;
+    },
+    async save(requestedMakerKey, snapshot) {
+      assert.equal(requestedMakerKey, makerKey);
+      persistedRevision = snapshot.revision;
+      persistedSnapshot = structuredClone(snapshot);
+      return {
+        confirmed: true,
+        conflict: false,
+        persistedRevision,
+        savedAt: 1_000,
+      };
+    },
+    async flush() {},
+    getStatus() {
+      return {
+        persistedRevision,
+        latestRequestedRevision: persistedRevision,
+        savedAt: persistedRevision === null ? null : 1_000,
+      };
+    },
+  };
+  const workspace = createMakerWorkspace({
+    callbacks: {},
+    draftRepository: repository,
+    walStorage: null,
+    loadPlayerSessionRecord: async () => null,
+    savePlayerSessionRecord: async () => {},
+  });
+
+  await workspace.setContext({
+    makerKey,
+    walletAddress,
+    document: v1,
+    recipe: v1.defaultRecipe,
+    isPublished: true,
+    publishedDocument: v1,
+    publishedRecipe: v1.defaultRecipe,
+    assets: [{
+      assetId: 'v1-style-png',
+      url: 'https://assets.example/v1-style-png.png',
+    }],
+  });
+  await workspace.setContext({
+    makerKey,
+    walletAddress,
+    document: v2,
+    recipe: v2.defaultRecipe,
+    isPublished: true,
+    publishedDocument: v2,
+    publishedRecipe: v2.defaultRecipe,
+    assets: [{
+      assetId: 'v2-style-png',
+      url: 'https://assets.example/v2-style-png.png',
+    }],
+    replaceDocument: true,
+  });
+
+  assert.equal(workspace.getDocument().version.versionId, 'successor-rebind-v2');
+  const reboundAssets = workspace.getPlayerSnapshot().assets;
+  assert.equal(reboundAssets.has('v2-style-png'), true);
+  assert.equal(reboundAssets.has('v1-style-png'), false);
+
+  const saved = await workspace.save({ automatic: false, force: true });
+  assert.equal(saved.confirmed, true);
+  assert.equal(persistedSnapshot.document.version.versionId, 'successor-rebind-v2');
+  assert.deepEqual(
+    persistedSnapshot.assets.map((asset) => asset.assetId),
+    ['v2-style-png'],
+  );
+
+  assert.equal(workspace.beginNextVersion(), true);
+  const v3 = workspace.getDocument();
+  assert.equal(v3.version.number, 3);
+  assert.equal(v3.version.parentVersionId, 'successor-rebind-v2');
+  await workspace.save({ automatic: false });
   workspace.destroy();
 }));
 
@@ -156,6 +275,202 @@ test('remote-backed drafts preserve readable URLs across restore, save, and Play
     'stable remote URLs must remain in the persisted draft',
   );
   workspace.destroy();
+}));
+
+test('Workspace refresh preserves the published chain binding and immutable predecessor snapshot', async () => withAnimationFrame(async () => {
+  const makerKey = '0xcreator:stable-root';
+  const walletAddress = '0xcreator';
+  const published = createCharacterMakerV5Starter({
+    makerId: 'stable-root',
+    name: 'Published v1',
+  });
+  const successor = structuredClone(published);
+  successor.version = {
+    ...successor.version,
+    versionId: 'stable-root-v2',
+    number: 2,
+    parentVersionId: published.version.versionId,
+    createdAt: null,
+  };
+  let persisted = null;
+  const repository = {
+    async load(requestedMakerKey) {
+      assert.equal(requestedMakerKey, makerKey);
+      return persisted ? structuredClone(persisted) : null;
+    },
+    async save(requestedMakerKey, snapshot) {
+      assert.equal(requestedMakerKey, makerKey);
+      persisted = {
+        makerKey,
+        revision: snapshot.revision,
+        document: structuredClone(snapshot.document),
+        recipe: structuredClone(snapshot.recipe),
+        assets: structuredClone(snapshot.assets || []),
+        metadata: structuredClone(snapshot.metadata || {}),
+        savedAt: 1_000 + snapshot.revision,
+      };
+      return {
+        confirmed: true,
+        conflict: false,
+        persistedRevision: snapshot.revision,
+        savedAt: persisted.savedAt,
+      };
+    },
+    async flush() {},
+    getStatus() {
+      return {
+        persistedRevision: persisted?.revision ?? null,
+        savedAt: persisted?.savedAt ?? null,
+      };
+    },
+  };
+  const workspace = createMakerWorkspace({
+    callbacks: {},
+    draftRepository: repository,
+    walStorage: null,
+    loadPlayerSessionRecord: async () => null,
+    savePlayerSessionRecord: async () => {},
+  });
+  const firstBinding = {
+    rootMakerId: 'stable-root',
+    ownerWallet: walletAddress,
+    makerObjectId: '0x1111',
+    makerTreasuryObjectId: '0x2222',
+    makerAdminCapObjectId: '0x3333',
+    publishDigest: 'digest-one',
+    pausedEconomics: {
+      makerObjectId: '0x1111',
+      mintFeeEnabled: true,
+      mintPriceAtomic: 42,
+      royaltyBps: 300,
+      makerUpdatedAtMs: '100',
+      pendingMutation: {
+        digest: 'pause-digest',
+        kind: 'pause',
+        expectedMintingEnabled: false,
+        expectedArchived: false,
+        createdAt: '2026-07-28T00:01:00.000Z',
+      },
+      capturedAt: '2026-07-28T00:00:00.000Z',
+    },
+    publishedVersions: [
+      {
+        rootMakerId: 'stable-root',
+        versionId: 'stable-root-v1',
+        parentVersionId: '',
+        versionNumber: 1,
+        makerObjectId: '0x1111',
+        makerTreasuryObjectId: '0x2222',
+        makerAdminCapObjectId: '0x3333',
+        publishDigest: 'digest-one',
+        makerPreviousTransaction: 'pause-digest',
+        archived: false,
+        mintingEnabled: true,
+        mintFeeEnabled: true,
+        mintPriceAtomic: 42,
+        royaltyBps: 300,
+        current: true,
+      },
+      {
+        rootMakerId: 'stable-root',
+        versionId: 'stable-root-v0',
+        versionNumber: 0,
+        makerObjectId: '0x0111',
+        makerTreasuryObjectId: '0x0222',
+        makerAdminCapObjectId: '0x0333',
+        publishDigest: 'digest-zero',
+        archived: true,
+        mintingEnabled: false,
+        mintFeeEnabled: false,
+        mintPriceAtomic: 0,
+        royaltyBps: 100,
+        current: false,
+      },
+    ],
+  };
+  await workspace.setContext({
+    makerKey,
+    walletAddress,
+    document: successor,
+    recipe: successor.defaultRecipe,
+    publishedDocument: published,
+    publishedRecipe: published.defaultRecipe,
+    chainBinding: firstBinding,
+  });
+  assert.equal(persisted.metadata.chainBinding.makerObjectId, '0x1111');
+  assert.equal(
+    persisted.metadata.chainBinding.pausedEconomics.pendingMutation.digest,
+    'pause-digest',
+  );
+  assert.deepEqual(
+    persisted.metadata.chainBinding.publishedVersions.map((entry) => entry.versionId),
+    ['stable-root-v1', 'stable-root-v0'],
+  );
+  assert.equal(persisted.metadata.publishedSnapshot.document.version.versionId, published.version.versionId);
+
+  await workspace.setContext({
+    makerKey,
+    walletAddress,
+    chainBinding: {
+      ...firstBinding,
+      makerObjectId: '0xaaaa',
+      makerTreasuryObjectId: '0xbbbb',
+      makerAdminCapObjectId: '0xcccc',
+      pausedEconomics: {
+        ...firstBinding.pausedEconomics,
+        makerObjectId: '0xaaaa',
+      },
+    },
+  });
+  const metadataOnlySave = await workspace.save({ force: true });
+  assert.equal(metadataOnlySave.confirmed, true);
+  assert.equal(persisted.revision, 1, 'a metadata-only chain update must advance the durable revision');
+  assert.equal(persisted.metadata.chainBinding.makerObjectId, '0xaaaa');
+  assert.equal(persisted.metadata.chainBinding.pausedEconomics.mintPriceAtomic, 42);
+  assert.equal(
+    persisted.metadata.chainBinding.pausedEconomics.pendingMutation.kind,
+    'pause',
+  );
+  assert.equal(
+    persisted.metadata.chainBinding.publishedVersions[0].makerPreviousTransaction,
+    'pause-digest',
+  );
+  workspace.destroy();
+
+  let restoredPayload = null;
+  const reloaded = createMakerWorkspace({
+    callbacks: {
+      onRestored(payload) {
+        restoredPayload = payload;
+      },
+    },
+    draftRepository: repository,
+    walStorage: null,
+    loadPlayerSessionRecord: async () => null,
+    savePlayerSessionRecord: async () => {},
+  });
+  await reloaded.setContext({
+    makerKey,
+    walletAddress,
+    document: successor,
+    recipe: successor.defaultRecipe,
+  });
+  assert.equal(reloaded.getDocument().version.versionId, 'stable-root-v2');
+  assert.equal(restoredPayload.metadata.chainBinding.makerObjectId, '0xaaaa');
+  assert.equal(
+    restoredPayload.metadata.chainBinding.pausedEconomics.pendingMutation.digest,
+    'pause-digest',
+  );
+  assert.equal(restoredPayload.metadata.chainBinding.publishedVersions.length, 2);
+  assert.equal(
+    restoredPayload.metadata.chainBinding.publishedVersions[1].makerObjectId,
+    '0x0111',
+  );
+  assert.equal(
+    restoredPayload.metadata.publishedSnapshot.document.version.versionId,
+    published.version.versionId,
+  );
+  reloaded.destroy();
 }));
 
 test('Player Expansion Pack choices restore by wallet and Maker version, then clear on Maker switch', async () => withAnimationFrame(async () => {
@@ -756,5 +1071,371 @@ test('pending Creator text is committed before toolbar actions and becomes undoa
   assert.equal(workspace.store.getState().canUndo, true);
   workspace.store.undo();
   assert.equal(workspace.getDocument().parts[0].name, 'Background');
+  workspace.destroy();
+}));
+
+test('discarding a published Maker version draft restores and immediately saves the published snapshot', async () => withAnimationFrame(async () => {
+  const makerKey = '0xcreator:discard-version';
+  const published = createCharacterMakerV5Starter({
+    makerId: 'discard-version',
+    name: 'Published Maker',
+  });
+  synchronizeDefaultRecipe(published);
+  const publishedRecipe = structuredClone(published.defaultRecipe);
+  const draft = structuredClone(published);
+  draft.version = {
+    ...draft.version,
+    versionId: 'discard-version-v2',
+    number: 2,
+    parentVersionId: published.version.versionId,
+    compatibility: 'compatible',
+  };
+  draft.metadata.name = 'Version Draft';
+
+  let savedSnapshot = null;
+  let saveCalls = 0;
+  let deletedCheckpointCalls = 0;
+  const synchronizedSnapshots = [];
+  const savedPayloads = [];
+  const retainedCheckpoints = ['checkpoint-1'];
+  const repository = {
+    async save(requestedMakerKey, snapshot) {
+      assert.equal(requestedMakerKey, makerKey);
+      saveCalls += 1;
+      savedSnapshot = snapshot;
+      return {
+        confirmed: true,
+        conflict: false,
+        persistedRevision: snapshot.revision,
+        savedAt: 456,
+      };
+    },
+    async flush() {
+      return { persistedRevision: savedSnapshot?.revision ?? 0 };
+    },
+    getStatus() {
+      return {
+        persistedRevision: savedSnapshot?.revision ?? null,
+        savedAt: 456,
+      };
+    },
+    async deleteCheckpoint() {
+      deletedCheckpointCalls += 1;
+    },
+  };
+  const workspace = createMakerWorkspace({
+    callbacks: {
+      onDocumentChange(payload) {
+        synchronizedSnapshots.push(payload);
+      },
+      onSaved(payload) {
+        savedPayloads.push(payload);
+      },
+    },
+    draftRepository: repository,
+    walStorage: null,
+    loadPlayerSessionRecord: async () => null,
+    savePlayerSessionRecord: async () => {},
+  });
+
+  await workspace.setContext({
+    makerKey,
+    walletAddress: '',
+    document: draft,
+    assets: [],
+    isPublished: false,
+    publishedDocument: published,
+    publishedRecipe,
+  });
+  assert.equal(await workspace.discardVersionDraft(), false, 'an unpublished Maker cannot discard to a release');
+  assert.equal(saveCalls, 0);
+
+  await workspace.setContext({
+    makerKey,
+    walletAddress: '0xcreator',
+    isPublished: true,
+  });
+  const retainedBlob = new Blob(['draft-asset'], { type: 'image/png' });
+  workspace.assets.set('detached-draft-blob', {
+    assetId: 'detached-draft-blob',
+    identifier: 'detached-draft-blob.png',
+    kind: 'layer',
+    mediaType: 'image/png',
+    blob: retainedBlob,
+  });
+  workspace.captureCreatorText({
+    value: 'Pending draft name',
+    dataset: { action: 'maker-name' },
+  });
+  workspace.selectedPartId = 'missing-draft-part';
+  workspace.selectedItemId = 'missing-draft-item';
+  workspace.selectedStyleId = 'missing-draft-style';
+  workspace.playerExportOpen = true;
+  workspace.playerExportState = 'ready';
+  workspace.playerExportSnapshot = { versionId: draft.version.versionId };
+
+  const result = await workspace.discardVersionDraft();
+  await workspace.playerSessionTransitionPromise;
+  const state = workspace.store.getState();
+  assert.equal(result, true);
+  assert.equal(state.document.version.versionId, published.version.versionId);
+  assert.equal(state.document.metadata.name, 'Published Maker');
+  assert.deepEqual(state.recipe, publishedRecipe);
+  assert.equal(state.canUndo, false);
+  assert.equal(state.canRedo, false);
+  assert.equal(state.dirty, false);
+  assert.equal(workspace.playerExportOpen, false);
+  assert.equal(workspace.playerExportSnapshot, null);
+  assert.equal(workspace.selectedPartId, published.parts[0].id);
+  assert.equal(workspace.assets.get('detached-draft-blob').blob, retainedBlob);
+  assert.equal(savedSnapshot.document.version.versionId, published.version.versionId);
+  assert.deepEqual(savedSnapshot.recipe, publishedRecipe);
+  assert.equal(
+    savedSnapshot.assets.find((asset) => asset.assetId === 'detached-draft-blob').blob,
+    retainedBlob,
+  );
+  assert.deepEqual(retainedCheckpoints, ['checkpoint-1']);
+  assert.equal(deletedCheckpointCalls, 0);
+  assert.equal(published.version.versionId, 'discard-version-v1', 'the published source remains immutable');
+  assert.equal(published.metadata.name, 'Published Maker');
+  assert.equal(synchronizedSnapshots.length, 1);
+  assert.equal(synchronizedSnapshots[0].event.reason, 'discard-version-draft');
+  assert.equal(
+    synchronizedSnapshots[0].document.version.versionId,
+    published.version.versionId,
+    'the outer Creator model is synchronized only after persistence succeeds',
+  );
+  assert.equal(savedPayloads.length, 1);
+  assert.equal(savedPayloads[0].revision, state.revision);
+
+  assert.equal(
+    await workspace.discardVersionDraft(),
+    false,
+    'the restored release is no longer a distinct version draft',
+  );
+  assert.equal(saveCalls, 1);
+  workspace.destroy();
+}));
+
+test('a failed version-draft discard leaves the complete editing session untouched', async () => withAnimationFrame(async () => {
+  const makerKey = '0xcreator:discard-version-failure';
+  const published = createCharacterMakerV5Starter({
+    makerId: 'discard-version-failure',
+    name: 'Published Maker',
+  });
+  synchronizeDefaultRecipe(published);
+  const draft = structuredClone(published);
+  draft.version = {
+    ...draft.version,
+    versionId: 'discard-version-failure-v2',
+    number: 2,
+    parentVersionId: published.version.versionId,
+  };
+  draft.metadata.name = 'Version Draft';
+
+  let saveCalls = 0;
+  const synchronizedSnapshots = [];
+  const repository = {
+    async save(requestedMakerKey) {
+      assert.equal(requestedMakerKey, makerKey);
+      saveCalls += 1;
+      return {
+        confirmed: false,
+        conflict: true,
+        persistedRevision: 9,
+      };
+    },
+    async flush() {
+      return { persistedRevision: 0 };
+    },
+    getStatus() {
+      return {
+        persistedRevision: 0,
+        latestRequestedRevision: 0,
+        savedAt: 123,
+      };
+    },
+  };
+  const workspace = createMakerWorkspace({
+    callbacks: {
+      onDocumentChange(payload) {
+        synchronizedSnapshots.push(payload);
+      },
+    },
+    draftRepository: repository,
+    walStorage: null,
+    loadPlayerSessionRecord: async () => null,
+    savePlayerSessionRecord: async () => {},
+  });
+
+  await workspace.setContext({
+    makerKey,
+    walletAddress: '',
+    document: draft,
+    assets: [],
+    isPublished: true,
+    publishedDocument: published,
+    publishedRecipe: published.defaultRecipe,
+  });
+  await workspace.setContext({ makerKey, walletAddress: '0xcreator' });
+  workspace.executeDocument('Keep this draft edit', ({ document }) => {
+    document.metadata.summary = 'Unsaved draft-only summary';
+  });
+  workspace.autosave.cancel();
+  synchronizedSnapshots.length = 0;
+
+  const selectedPart = workspace.getDocument().parts[1];
+  const selectedItem = selectedPart.items[0];
+  const selectedStyle = selectedItem.styles[0];
+  workspace.selectedPartId = selectedPart.id;
+  workspace.selectedItemId = selectedItem.id;
+  workspace.selectedStyleId = selectedStyle.id;
+  workspace.playerPartId = selectedPart.id;
+  workspace.playerUndo = [{ recipe: { marker: 'player-undo' } }];
+  workspace.playerRedo = [{ recipe: { marker: 'player-redo' } }];
+  workspace.playerExportOpen = true;
+  workspace.playerExportState = 'ready';
+  workspace.playerExportSnapshot = { versionId: draft.version.versionId };
+  assert.equal(workspace.captureCreatorText({
+    value: 'Pending draft title',
+    dataset: { action: 'maker-name' },
+  }), true);
+
+  const beforeStore = workspace.store.snapshotForSave();
+  const beforePlayerRecipe = structuredClone(workspace.playerRecipe);
+  const beforePlayerUndo = structuredClone(workspace.playerUndo);
+  const beforePlayerRedo = structuredClone(workspace.playerRedo);
+  const beforePendingText = structuredClone(workspace.pendingCreatorText);
+
+  assert.equal(await workspace.discardVersionDraft(), false);
+  workspace.textAutosave.cancel();
+  workspace.autosave.cancel();
+
+  const afterStore = workspace.store.snapshotForSave();
+  assert.deepEqual(afterStore.document, beforeStore.document);
+  assert.deepEqual(afterStore.recipe, beforeStore.recipe);
+  assert.deepEqual(afterStore.journal, beforeStore.journal);
+  assert.equal(workspace.store.getState().canUndo, true);
+  assert.equal(workspace.selectedPartId, selectedPart.id);
+  assert.equal(workspace.selectedItemId, selectedItem.id);
+  assert.equal(workspace.selectedStyleId, selectedStyle.id);
+  assert.equal(workspace.playerPartId, selectedPart.id);
+  assert.deepEqual(workspace.playerRecipe, beforePlayerRecipe);
+  assert.deepEqual(workspace.playerUndo, beforePlayerUndo);
+  assert.deepEqual(workspace.playerRedo, beforePlayerRedo);
+  assert.equal(workspace.playerExportOpen, true);
+  assert.equal(workspace.playerExportState, 'ready');
+  assert.deepEqual(workspace.playerExportSnapshot, { versionId: draft.version.versionId });
+  assert.deepEqual(workspace.pendingCreatorText, beforePendingText);
+  assert.equal(synchronizedSnapshots.length, 0);
+  assert.equal(saveCalls, 1);
+  workspace.destroy();
+}));
+
+test('deleting the active draft waits for an in-flight save and blocks every later autosave', async () => withAnimationFrame(async () => {
+  const makerKey = '0xcreator:delete-concurrency';
+  const document = createCharacterMakerV5Starter({
+    makerId: 'delete-concurrency',
+    name: 'Delete Concurrency',
+  });
+  let releaseSave;
+  let notifySaveStarted;
+  const saveStarted = new Promise((resolve) => {
+    notifySaveStarted = resolve;
+  });
+  const saveGate = new Promise((resolve) => {
+    releaseSave = resolve;
+  });
+  const calls = [];
+  let pendingSave = Promise.resolve();
+  let saveCalls = 0;
+  let savedCallbacks = 0;
+  const repository = {
+    save(requestedMakerKey, snapshot) {
+      assert.equal(requestedMakerKey, makerKey);
+      saveCalls += 1;
+      calls.push('save:start');
+      notifySaveStarted();
+      pendingSave = saveGate.then(() => {
+        calls.push('save:finish');
+        return {
+          confirmed: true,
+          conflict: false,
+          persistedRevision: snapshot.revision,
+          savedAt: 456,
+        };
+      });
+      return pendingSave;
+    },
+    async flush(requestedMakerKey) {
+      assert.equal(requestedMakerKey, makerKey);
+      await pendingSave;
+      calls.push('flush');
+      return { persistedRevision: 1 };
+    },
+    getStatus() {
+      return { persistedRevision: 0, savedAt: 123 };
+    },
+    async deleteProject(requestedMakerKey) {
+      assert.equal(requestedMakerKey, makerKey);
+      calls.push('delete');
+      return {
+        makerKey,
+        deleted: true,
+        persistedRevision: 2,
+        savedAt: 789,
+      };
+    },
+  };
+  const workspace = createMakerWorkspace({
+    callbacks: {
+      onSaved() {
+        savedCallbacks += 1;
+      },
+    },
+    draftRepository: repository,
+    walStorage: null,
+    loadPlayerSessionRecord: async () => null,
+    savePlayerSessionRecord: async () => {},
+  });
+
+  await workspace.setContext({
+    makerKey,
+    walletAddress: '',
+    document,
+    assets: [],
+  });
+  await workspace.setContext({ makerKey, walletAddress: '0xcreator' });
+  workspace.executeDocument('Dirty before delete', ({ document: next }) => {
+    next.metadata.summary = 'This save must finish before the tombstone.';
+  });
+  workspace.autosave.cancel();
+  assert.equal(workspace.captureCreatorText({
+    value: 'Never resurrect this Maker',
+    dataset: { action: 'maker-name' },
+  }), true);
+
+  const inFlightSave = workspace.save({ automatic: true });
+  await saveStarted;
+  const deletion = workspace.deleteDraftProject(makerKey);
+  assert.equal(
+    workspace.executeDocument('Blocked during delete', ({ document: next }) => {
+      next.metadata.name = 'Resurrected';
+    }),
+    false,
+  );
+  workspace.autosave();
+  const lateAutosave = workspace.autosave.flush();
+  releaseSave();
+  await Promise.all([inFlightSave, lateAutosave, deletion]);
+
+  assert.deepEqual(calls, ['save:start', 'save:finish', 'flush', 'delete']);
+  assert.equal(saveCalls, 1);
+  assert.equal(savedCallbacks, 0, 'the isolated in-flight save cannot publish stale outer state');
+  assert.equal(workspace.pendingCreatorText, null);
+  assert.equal(await workspace.save(), null);
+  workspace.autosave();
+  await workspace.autosave.flush();
+  assert.equal(saveCalls, 1, 'a delayed timer cannot write after the deletion tombstone');
   workspace.destroy();
 }));

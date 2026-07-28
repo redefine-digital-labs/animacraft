@@ -751,6 +751,59 @@
           </div>
         </div>
 
+        <div id="makerLifecycleManagerModal" class="maker-modal" aria-hidden="true">
+          <div id="makerLifecycleManagerDialog" class="modal-card maker-lifecycle-manager-dialog" role="dialog" aria-modal="true" aria-labelledby="makerLifecycleManagerTitle" aria-describedby="makerLifecycleManagerCopy">
+            <div class="modal-head maker-lifecycle-manager-head">
+              <div class="maker-lifecycle-manager-heading">
+                <p id="makerLifecycleManagerKicker" class="kicker" data-i18n="makerLifecycleManagerKicker">Maker control</p>
+                <h2 id="makerLifecycleManagerTitle" data-i18n="makerLifecycleManagerTitle">Lifecycle &amp; on-chain status</h2>
+                <p id="makerLifecycleManagerCopy" data-i18n="makerLifecycleManagerCopy">Review the editable workspace and its published chain version before choosing an action.</p>
+              </div>
+              <button class="modal-close" type="button" data-close-maker-lifecycle aria-label="Close" data-i18n-aria-label="makerLifecycleManagerClose">×</button>
+            </div>
+            <div class="modal-body maker-lifecycle-manager-body">
+              <section class="maker-lifecycle-manager-summary">
+                <div class="maker-lifecycle-manager-identity">
+                  <span id="makerLifecycleManagerBadge" class="maker-lifecycle-manager-badge"></span>
+                  <h3 id="makerLifecycleManagerName"></h3>
+                  <p id="makerLifecycleManagerScope"></p>
+                </div>
+                <dl id="makerLifecycleManagerFacts" class="maker-lifecycle-manager-facts"></dl>
+              </section>
+
+              <div class="maker-lifecycle-manager-versions">
+                <article id="lifecycleWorkingVersionCard" class="maker-lifecycle-manager-version-card maker-lifecycle-manager-working-card"></article>
+                <article id="lifecyclePublishedVersionCard" class="maker-lifecycle-manager-version-card maker-lifecycle-manager-published-card"></article>
+              </div>
+
+              <section class="maker-lifecycle-version-history" aria-labelledby="makerLifecycleVersionHistoryTitle">
+                <div class="maker-lifecycle-version-history-head">
+                  <h3 id="makerLifecycleVersionHistoryTitle" data-i18n="makerLifecycleVersionHistoryTitle">Published version history</h3>
+                  <p data-i18n="makerLifecycleVersionHistoryCopy">Every immutable OCMaker under this stable Maker root remains independently manageable.</p>
+                </div>
+                <div id="makerLifecycleVersionHistory" class="maker-lifecycle-version-history-list"></div>
+              </section>
+
+              <section id="makerLifecycleManagerActions" class="maker-lifecycle-manager-actions"></section>
+
+              <aside id="makerLifecyclePermanentRetirement" class="maker-lifecycle-manager-retirement" hidden>
+                <span class="maker-lifecycle-manager-retirement-mark" aria-hidden="true">!</span>
+                <div>
+                  <h3 data-i18n="makerLifecyclePermanentRetirementTitle">Permanent retirement is protocol-locked</h3>
+                  <p data-i18n="makerLifecyclePermanentRetirementCopy">Permanent retirement and on-chain supersession require a reviewed protocol upgrade. Use reversible Archive for this release.</p>
+                </div>
+              </aside>
+
+              <div id="makerLifecycleManagerNotice" class="maker-lifecycle-manager-notice" hidden></div>
+              <p id="makerLifecycleManagerStatus" class="maker-lifecycle-manager-status" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></p>
+            </div>
+            <div class="modal-actions maker-lifecycle-manager-footer">
+              <button class="secondary" type="button" data-close-maker-lifecycle data-i18n="makerLifecycleManagerClose">Close lifecycle manager</button>
+              <button class="primary" type="button" data-lifecycle-action="open-editor" data-i18n="makerLifecycleManagerOpenEditor">Open editor</button>
+            </div>
+          </div>
+        </div>
+
         <div id="partRegistrationModal" class="maker-modal" aria-hidden="true">
           <div class="modal-card compact-modal" role="dialog" aria-modal="true" aria-labelledby="partRegistrationTitle">
             <div class="modal-head">
@@ -802,7 +855,7 @@
         </div>
 
         <div id="confirmActionModal" class="maker-modal" aria-hidden="true">
-          <div class="modal-card confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="confirmActionTitle" aria-describedby="confirmActionMessage">
+          <div id="confirmActionDialog" class="modal-card confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="confirmActionTitle" aria-describedby="confirmActionMessage">
             <div class="modal-head">
               <h2 id="confirmActionTitle">Confirm action</h2>
               <button class="modal-close" data-close-confirm-modal aria-label="Close" data-i18n-aria-label="close">×</button>

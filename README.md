@@ -16,6 +16,19 @@ Animacraft and Soulidity are separate products, repositories, and Sui packages. 
 6. A user makes an OC, stores its rendered image and package on Walrus, and enters Soulidity's canonical mint flow. The final asset is a Soul, not a second Animacraft token.
 7. Published art and composition rules cannot be silently edited. The current Cap owner may update future mint economics, withdraw revenue, archive/restore the Maker, or transfer the Cap through Soulidity.
 
+## Maker Lifecycle Management
+
+Creators open lifecycle management from **Creator Library → Manage status** or from the lifecycle badge in Creator Studio. One Maker card owns one stable editing root and lists every immutable Sui publication under that root instead of exposing historical releases as duplicate library cards.
+
+- **Draft:** local and editable; it may be permanently deleted from this browser.
+- **Publishing / Recoverable:** a Walrus or Sui release operation is active or has a resumable checkpoint.
+- **Active:** the selected immutable Sui publication accepts new Soul authorizations.
+- **Paused:** new authorizations are disabled while existing OCs, provenance, royalties, and released assets remain valid. Resuming restores the captured pre-pause mint settings when that snapshot is available.
+- **Archived:** the publication remains on Sui and Walrus but is intentionally removed from active use; its `MakerAdminCap` holder may restore it.
+- **Version draft:** an editable successor derived from a published snapshot. Publishing creates another immutable version without modifying previous OCs.
+
+Every on-chain action re-reads the target `OCMaker` and live `MakerAdminCap` owner before requesting a wallet signature, then waits until the resulting chain state is observable. Version publication also refreshes the creator's complete `CreatorProfile.maker_ids` lineage, including publications whose AdminCap has since moved, and rejects a competing successor by Sui object identity before opening the wallet. Historical versions remain independently manageable from the same lifecycle dialog. Existing sibling forks are locked in the client; an atomic on-chain successor lock and permanent retirement remain deliberately unavailable until a reviewed protocol upgrade defines their semantics.
+
 ## Bundled Creator Packs
 
 Animacraft ships two first-party, AI-assisted original creator packs for launch QA and later on-chain publication:

@@ -2739,6 +2739,535 @@ input[type="color"] {
   white-space: nowrap;
 }
 
+.maker-lifecycle-manager-dialog {
+  width: min(1080px, 100%);
+  max-height: min(880px, calc(100dvh - 48px));
+}
+
+.maker-lifecycle-manager-head {
+  align-items: flex-start;
+}
+
+.maker-lifecycle-manager-heading {
+  min-width: 0;
+}
+
+.maker-lifecycle-manager-heading .kicker {
+  margin: 0 0 4px;
+}
+
+.maker-lifecycle-manager-heading h2 {
+  margin: 0;
+}
+
+.maker-lifecycle-manager-heading > p:last-child {
+  max-width: 76ch;
+  margin: 7px 0 0;
+  color: var(--ui-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.maker-lifecycle-manager-body {
+  align-content: start;
+  gap: 16px;
+}
+
+.maker-lifecycle-manager-summary {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr);
+  gap: 18px;
+  align-items: stretch;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  padding: 16px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--ui-tech) 8%, transparent), transparent 58%),
+    var(--ui-surface-subtle);
+}
+
+.maker-lifecycle-manager-identity {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  min-width: 0;
+}
+
+.maker-lifecycle-manager-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  margin-bottom: 9px;
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: var(--ui-surface);
+  color: var(--ui-muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.maker-lifecycle-manager-badge:empty {
+  display: none;
+}
+
+.maker-lifecycle-manager-badge.active,
+.maker-lifecycle-manager-badge.published,
+.maker-lifecycle-manager-badge[data-state="active"],
+.maker-lifecycle-manager-badge[data-state="published"] {
+  border-color: color-mix(in srgb, var(--ui-success) 52%, var(--ui-border));
+  background: var(--ui-surface-success);
+  color: var(--ui-success);
+}
+
+.maker-lifecycle-manager-badge.draft,
+.maker-lifecycle-manager-badge.version-draft,
+.maker-lifecycle-manager-badge[data-state="draft"],
+.maker-lifecycle-manager-badge[data-state="version-draft"] {
+  border-color: color-mix(in srgb, var(--ui-tech) 48%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-tech) 9%, var(--ui-surface));
+  color: var(--ui-tech);
+}
+
+.maker-lifecycle-manager-badge.paused,
+.maker-lifecycle-manager-badge.archived,
+.maker-lifecycle-manager-badge.publishing,
+.maker-lifecycle-manager-badge.recoverable,
+.maker-lifecycle-manager-badge[data-state="paused"],
+.maker-lifecycle-manager-badge[data-state="archived"],
+.maker-lifecycle-manager-badge[data-state="publishing"],
+.maker-lifecycle-manager-badge[data-state="recoverable"] {
+  border-color: color-mix(in srgb, var(--ui-warning) 48%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-warning) 10%, var(--ui-surface));
+  color: var(--ui-warning);
+}
+
+.maker-lifecycle-manager-badge.retired,
+.maker-lifecycle-manager-badge[data-state="retired"] {
+  border-color: color-mix(in srgb, var(--ui-danger) 52%, var(--ui-border));
+  background: var(--ui-surface-danger);
+  color: var(--ui-danger);
+}
+
+.maker-lifecycle-manager-identity h3 {
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--ui-text);
+  font-size: clamp(21px, 3vw, 30px);
+}
+
+.maker-lifecycle-manager-identity > p {
+  margin: 6px 0 0;
+  color: var(--ui-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.maker-lifecycle-manager-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+}
+
+.maker-lifecycle-manager-facts:empty {
+  display: none;
+}
+
+.maker-lifecycle-manager-facts > div {
+  min-width: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: 9px;
+  padding: 10px 11px;
+  background: color-mix(in srgb, var(--ui-surface) 92%, transparent);
+}
+
+.maker-lifecycle-manager-facts dt,
+.maker-lifecycle-manager-facts dd {
+  margin: 0;
+}
+
+.maker-lifecycle-manager-facts dt {
+  color: var(--ui-muted);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.maker-lifecycle-manager-facts dd {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  color: var(--ui-text);
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.4;
+}
+
+.maker-lifecycle-manager-versions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.maker-lifecycle-manager-version-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 170px;
+  border: 1px solid var(--ui-border);
+  border-top: 4px solid var(--ui-tech);
+  border-radius: 12px;
+  padding: 15px;
+  background: var(--ui-surface);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ui-bg) 15%, transparent);
+}
+
+.maker-lifecycle-manager-published-card {
+  border-top-color: var(--ui-success);
+}
+
+.maker-lifecycle-manager-version-card[hidden] {
+  display: none;
+}
+
+.maker-lifecycle-manager-version-card h3,
+.maker-lifecycle-manager-version-card p,
+.maker-lifecycle-manager-version-card dl {
+  margin: 0;
+}
+
+.maker-lifecycle-manager-version-card h3 {
+  color: var(--ui-text);
+  font-size: 17px;
+}
+
+.maker-lifecycle-manager-version-card p {
+  color: var(--ui-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.maker-lifecycle-manager-version-card dl {
+  display: grid;
+  gap: 6px;
+}
+
+.maker-lifecycle-manager-version-card dl > div {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.55fr) minmax(0, 1fr);
+  gap: 8px;
+  border-top: 1px solid var(--ui-border);
+  padding-top: 7px;
+}
+
+.maker-lifecycle-manager-version-card dt {
+  color: var(--ui-muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.maker-lifecycle-manager-version-card dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--ui-text);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: right;
+}
+
+.maker-lifecycle-version-history {
+  display: grid;
+  gap: 10px;
+}
+
+.maker-lifecycle-version-history-head h3,
+.maker-lifecycle-version-history-head p {
+  margin: 0;
+}
+
+.maker-lifecycle-version-history-head h3 {
+  color: var(--ui-text);
+  font-size: 16px;
+}
+
+.maker-lifecycle-version-history-head p {
+  margin-top: 4px;
+  color: var(--ui-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.maker-lifecycle-version-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.maker-lifecycle-version-history-empty {
+  border: 1px dashed var(--ui-border);
+  border-radius: 10px;
+  padding: 14px;
+  color: var(--ui-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.maker-lifecycle-version-history-item {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.75fr) minmax(210px, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--ui-surface);
+}
+
+.maker-lifecycle-version-history-item.is-current {
+  border-color: color-mix(in srgb, var(--ui-success) 52%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-success) 5%, var(--ui-surface));
+}
+
+.maker-lifecycle-version-history-identity {
+  min-width: 0;
+}
+
+.maker-lifecycle-version-history-identity strong,
+.maker-lifecycle-version-history-identity small {
+  display: block;
+}
+
+.maker-lifecycle-version-history-identity strong {
+  overflow-wrap: anywhere;
+  color: var(--ui-text);
+  font-size: 13px;
+}
+
+.maker-lifecycle-version-history-identity small {
+  margin-top: 4px;
+  color: var(--ui-muted);
+  font-size: 10px;
+}
+
+.maker-lifecycle-version-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.maker-lifecycle-version-history-meta span {
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: var(--ui-muted);
+  font-size: 9px;
+  font-weight: 850;
+}
+
+.maker-lifecycle-version-history-meta .is-active {
+  border-color: color-mix(in srgb, var(--ui-success) 52%, var(--ui-border));
+  background: var(--ui-surface-success);
+  color: var(--ui-success);
+}
+
+.maker-lifecycle-version-history-meta .is-paused,
+.maker-lifecycle-version-history-meta .is-archived {
+  border-color: color-mix(in srgb, var(--ui-warning) 48%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-warning) 10%, var(--ui-surface));
+  color: var(--ui-warning);
+}
+
+.maker-lifecycle-version-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.maker-lifecycle-version-history-actions button,
+.maker-lifecycle-version-history-actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  background: var(--ui-surface-raised);
+  color: var(--ui-text);
+  font-size: 10px;
+  font-weight: 850;
+  text-decoration: none;
+}
+
+.maker-lifecycle-version-history-actions button.danger {
+  border-color: color-mix(in srgb, var(--ui-danger) 58%, var(--ui-border));
+  background: var(--ui-surface-danger);
+  color: var(--ui-danger);
+}
+
+.maker-lifecycle-version-history-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.maker-lifecycle-manager-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.maker-lifecycle-manager-actions:empty {
+  display: none;
+}
+
+.maker-lifecycle-manager-action,
+.maker-lifecycle-manager-actions > button {
+  display: grid;
+  gap: 5px;
+  align-content: start;
+  min-height: 92px;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  padding: 13px;
+  background: var(--ui-surface-raised);
+  color: var(--ui-text);
+  text-align: left;
+}
+
+.maker-lifecycle-manager-action strong,
+.maker-lifecycle-manager-actions > button strong {
+  font-size: 13px;
+}
+
+.maker-lifecycle-manager-action small,
+.maker-lifecycle-manager-actions > button small {
+  color: var(--ui-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.maker-lifecycle-manager-action.primary,
+.maker-lifecycle-manager-actions > button.primary,
+.maker-lifecycle-manager-action[data-tone="primary"] {
+  border-color: var(--ui-tech);
+  background: color-mix(in srgb, var(--ui-tech) 9%, var(--ui-surface));
+}
+
+.maker-lifecycle-manager-action.danger,
+.maker-lifecycle-manager-action.danger-button,
+.maker-lifecycle-manager-actions > button.danger,
+.maker-lifecycle-manager-actions > button.danger-button,
+.maker-lifecycle-manager-action[data-tone="danger"] {
+  border-color: color-mix(in srgb, var(--ui-danger) 58%, var(--ui-border));
+  background: var(--ui-surface-danger);
+  color: var(--ui-danger);
+}
+
+.maker-lifecycle-manager-action:disabled,
+.maker-lifecycle-manager-actions > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.maker-lifecycle-manager-retirement {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  border: 1px solid color-mix(in srgb, var(--ui-danger) 52%, var(--ui-border));
+  border-radius: 10px;
+  padding: 13px;
+  background: var(--ui-surface-danger);
+}
+
+.maker-lifecycle-manager-retirement[hidden] {
+  display: none;
+}
+
+.maker-lifecycle-manager-retirement-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--ui-danger);
+  color: var(--ui-on-danger);
+  font-weight: 950;
+}
+
+.maker-lifecycle-manager-retirement h3,
+.maker-lifecycle-manager-retirement p {
+  margin: 0;
+}
+
+.maker-lifecycle-manager-retirement h3 {
+  color: var(--ui-danger);
+  font-size: 14px;
+}
+
+.maker-lifecycle-manager-retirement p {
+  margin-top: 4px;
+  color: var(--ui-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.maker-lifecycle-manager-notice {
+  border-left: 4px solid var(--ui-warning);
+  border-radius: 8px;
+  padding: 11px 13px;
+  background: color-mix(in srgb, var(--ui-warning) 9%, var(--ui-surface));
+  color: var(--ui-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.maker-lifecycle-manager-notice[hidden] {
+  display: none;
+}
+
+.maker-lifecycle-manager-notice.error,
+.maker-lifecycle-manager-notice[data-tone="danger"] {
+  border-left-color: var(--ui-danger);
+  background: var(--ui-surface-danger);
+  color: var(--ui-danger);
+}
+
+.maker-lifecycle-manager-status {
+  min-height: 20px;
+  margin: 0;
+  color: var(--ui-muted);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
+.maker-lifecycle-manager-status:empty {
+  min-height: 0;
+}
+
+.maker-lifecycle-manager-status.error,
+.maker-lifecycle-manager-status[data-state="error"] {
+  color: var(--ui-danger);
+}
+
+.maker-lifecycle-manager-status.success,
+.maker-lifecycle-manager-status[data-state="success"] {
+  color: var(--ui-success);
+}
+
+.maker-lifecycle-manager-footer {
+  flex-wrap: wrap;
+}
+
 .confirmation-modal .modal-body p {
   margin: 0;
   color: var(--muted);
@@ -5339,6 +5868,27 @@ pre {
     text-align: left;
   }
 
+  .maker-lifecycle-manager-summary,
+  .maker-lifecycle-manager-versions {
+    grid-template-columns: 1fr;
+  }
+
+  .maker-lifecycle-manager-version-card {
+    min-height: 0;
+  }
+
+  .maker-lifecycle-manager-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .maker-lifecycle-version-history-item {
+    grid-template-columns: 1fr;
+  }
+
+  .maker-lifecycle-version-history-actions {
+    justify-content: flex-start;
+  }
+
   .maker-detail-sidebar {
     min-height: auto;
   }
@@ -5397,6 +5947,37 @@ pre {
   .modal-body {
     padding-right: 14px;
     padding-left: 14px;
+  }
+
+  .maker-lifecycle-manager-dialog {
+    max-height: calc(100dvh - 20px);
+  }
+
+  .maker-lifecycle-manager-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .maker-lifecycle-manager-version-card dl > div {
+    grid-template-columns: 1fr;
+  }
+
+  .maker-lifecycle-manager-version-card dd {
+    text-align: left;
+  }
+
+  .maker-lifecycle-version-history-actions button {
+    flex: 1 1 auto;
+  }
+
+  .maker-lifecycle-manager-footer {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .maker-lifecycle-manager-footer .primary,
+  .maker-lifecycle-manager-footer .secondary {
+    width: 100%;
+    min-width: 0;
   }
 
   .creator-workshop-actions,
