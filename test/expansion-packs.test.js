@@ -75,6 +75,26 @@ function baseMaker() {
   };
 }
 
+function smartColorChannel() {
+  return {
+    id: 'tone',
+    name: 'Tone',
+    order: 0,
+    mode: 'gradient-map',
+    defaultSwatchId: 'warm',
+    swatches: [{
+      id: 'warm',
+      name: 'Warm',
+      hintColor: '#d68f72',
+      stops: [
+        { offset: 0, color: '#261a14' },
+        { offset: 0.5, color: '#d68f72' },
+        { offset: 1, color: '#f7e9e3' },
+      ],
+    }],
+  };
+}
+
 function moonPack() {
   return {
     schemaVersion: EXPANSION_PACK_SCHEMA,
@@ -469,6 +489,104 @@ test('reports an additive Maker update as compatible', () => {
   assert.equal(result.compatible, true, JSON.stringify(result.breaking));
   assert.equal(result.recommendedVersionBump, 'minor');
   assert.ok(result.additions.some((change) => change.code === 'item-added'));
+});
+
+test('treats a new Smart Color preset on an existing channel as an additive update', () => {
+  const previous = baseMaker();
+  previous.colorChannels.push(smartColorChannel());
+  previous.defaultRecipe.colors.push({ channelId: 'tone', swatchId: 'warm' });
+
+  const next = structuredClone(previous);
+  next.version = { ...next.version, versionId: 'astral-maker-v3', number: 3, parentVersionId: 'astral-maker-v2' };
+  next.colorChannels[0].swatches.push({
+    id: 'cool',
+    name: 'Cool',
+    hintColor: '#7ba6d8',
+    stops: [
+      { offset: 0, color: '#162039' },
+      { offset: 0.5, color: '#7ba6d8' },
+      { offset: 1, color: '#e4effb' },
+    ],
+  });
+
+  const result = compareMakerCompatibility(previous, next);
+  assert.equal(result.compatible, true, JSON.stringify(result.breaking));
+  assert.equal(result.renderCompatible, true);
+  assert.equal(result.recommendedVersionBump, 'minor');
+  assert.ok(result.additions.some((change) => (
+    change.code === 'color-swatch-added'
+    && change.path === 'colorChannels.tone.swatches.cool'
+  )));
+  assert.equal(result.breaking.some((change) => change.code.startsWith('color-swatch-')), false);
+});
+
+test('keeps Smart Color preset removal and rendering changes breaking', () => {
+  const previous = baseMaker();
+  const channel = smartColorChannel();
+  channel.swatches.push({
+    id: 'cool',
+    name: 'Cool',
+    hintColor: '#7ba6d8',
+    stops: [
+      { offset: 0, color: '#162039' },
+      { offset: 0.5, color: '#7ba6d8' },
+      { offset: 1, color: '#e4effb' },
+    ],
+  });
+  previous.colorChannels.push(channel);
+  previous.defaultRecipe.colors.push({ channelId: 'tone', swatchId: 'warm' });
+
+  const removed = structuredClone(previous);
+  removed.version = { ...removed.version, versionId: 'astral-maker-v3', number: 3, parentVersionId: 'astral-maker-v2' };
+  removed.colorChannels[0].swatches = removed.colorChannels[0].swatches.filter((swatch) => swatch.id !== 'cool');
+  const removedResult = compareMakerCompatibility(previous, removed);
+  assert.equal(removedResult.compatible, false);
+  assert.ok(removedResult.breaking.some((change) => (
+    change.code === 'color-swatch-removed'
+    && change.path === 'colorChannels.tone.swatches.cool'
+  )));
+
+  const changed = structuredClone(previous);
+  changed.version = { ...changed.version, versionId: 'astral-maker-v3', number: 3, parentVersionId: 'astral-maker-v2' };
+  changed.colorChannels[0].swatches[0].stops[1].color = '#123456';
+  const changedResult = compareMakerCompatibility(previous, changed);
+  assert.equal(changedResult.compatible, false);
+  assert.equal(changedResult.renderCompatible, false);
+  assert.ok(changedResult.breaking.some((change) => (
+    change.code === 'color-swatch-rendering-changed'
+    && change.path === 'colorChannels.tone.swatches.warm'
+  )));
+});
+
+test('reports Smart Color display names and default preset changes as warnings', () => {
+  const previous = baseMaker();
+  const channel = smartColorChannel();
+  channel.swatches.push({
+    id: 'cool',
+    name: 'Cool',
+    hintColor: '#7ba6d8',
+    stops: [
+      { offset: 0, color: '#162039' },
+      { offset: 0.5, color: '#7ba6d8' },
+      { offset: 1, color: '#e4effb' },
+    ],
+  });
+  previous.colorChannels.push(channel);
+  previous.defaultRecipe.colors.push({ channelId: 'tone', swatchId: 'warm' });
+
+  const next = structuredClone(previous);
+  next.version = { ...next.version, versionId: 'astral-maker-v3', number: 3, parentVersionId: 'astral-maker-v2' };
+  next.colorChannels[0].name = 'Skin tone';
+  next.colorChannels[0].defaultSwatchId = 'cool';
+  next.colorChannels[0].swatches[0].name = 'Sunlit';
+
+  const result = compareMakerCompatibility(previous, next);
+  assert.equal(result.compatible, true, JSON.stringify(result.breaking));
+  assert.equal(result.renderCompatible, true);
+  assert.equal(result.recommendedVersionBump, 'patch');
+  assert.ok(result.warnings.some((change) => change.code === 'color-channel-name-changed'));
+  assert.ok(result.warnings.some((change) => change.code === 'color-channel-default-changed'));
+  assert.ok(result.warnings.some((change) => change.code === 'color-swatch-name-changed'));
 });
 
 test('treats Maker cover replacement as metadata-only while preserving renderer asset checks', () => {

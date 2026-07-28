@@ -1147,6 +1147,18 @@ test('color, rule, and Expansion Pack controls perform real document operations'
     const addedSwatch = document.colorChannels[0].swatches.at(-1);
     await workspace.handleCreatorChange({ target: { dataset: { action: 'channel-default-swatch' }, value: addedSwatch.id, type: 'radio' } });
     assert.equal(workspace.getDocument().colorChannels[0].defaultSwatchId, addedSwatch.id);
+    assert.deepEqual(
+      workspace.getDocument().defaultRecipe.colors.find((entry) => entry.channelId === channelId),
+      { channelId, swatchId: addedSwatch.id },
+    );
+    assert.deepEqual(
+      workspace.store.getState().recipe.colors.find((entry) => entry.channelId === channelId),
+      { channelId, swatchId: addedSwatch.id },
+    );
+    assert.deepEqual(
+      workspace.getCreatorRecipe().colors.find((entry) => entry.channelId === channelId),
+      { channelId, swatchId: addedSwatch.id },
+    );
     creatorClick(workspace, 'delete-swatch', { swatchId: addedSwatch.id });
     assert.equal(workspace.getDocument().colorChannels[0].swatches.length, originalSwatchCount);
 
@@ -1201,6 +1213,65 @@ test('color, rule, and Expansion Pack controls perform real document operations'
     creatorClick(workspace, 'delete-channel');
     assert.equal(workspace.getDocument().colorChannels.length, 0);
   }, { playable: true });
+});
+
+test('Creator primary color edits update the rendered gradient without an autosave rerender race', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'add-channel');
+    workspace.creatorTab = 'colors';
+    workspace.render();
+
+    const channel = workspace.getDocument().colorChannels[0];
+    const swatch = channel.swatches[0];
+    const originalHint = swatch.hintColor;
+    const target = {
+      dataset: {
+        action: 'swatch-hint',
+        channelId: channel.id,
+        swatchId: swatch.id,
+      },
+      value: '#22aa66',
+      type: 'color',
+    };
+
+    workspace.handleCreatorInput({ target });
+    assert.equal(
+      workspace.getDocument().colorChannels[0].swatches[0].hintColor,
+      originalHint,
+      'native picker input remains a preview until the interaction commits',
+    );
+    assert.deepEqual(workspace.pendingSmartColorEdit, {
+      action: 'swatch-hint',
+      channelId: channel.id,
+      swatchId: swatch.id,
+      stopIndex: '',
+      value: '#22aa66',
+    });
+
+    const markupBeforeAutosave = creatorRoot.innerHTML;
+    workspace.store.setSaveState('saving', 'Saving…');
+    assert.equal(
+      creatorRoot.innerHTML,
+      markupBeforeAutosave,
+      'save-state notifications must not replace the open native color picker',
+    );
+
+    await workspace.handleCreatorChange({ target });
+    const updated = workspace.getDocument().colorChannels[0].swatches[0];
+    assert.equal(updated.hintColor, '#22aa66');
+    assert.deepEqual(updated.stops, [
+      { offset: 0, color: '#061f12' },
+      { offset: 0.5, color: '#22aa66' },
+      { offset: 1, color: '#ceecdd' },
+    ]);
+    assert.equal(workspace.pendingSmartColorEdit, null);
+    assert.match(
+      creatorRoot.innerHTML,
+      /value="#22aa66"[^>]*data-action="swatch-hint"/,
+      'the committed primary color stays visible after the Creator rerender',
+    );
+  }, { creatorRoot, playable: true });
 });
 
 test('deleting Smart Color definitions repairs Creator, stored, and Player Recipes', async () => {
@@ -1754,6 +1825,150 @@ test('Player Smart Color is a first-level palette whose selection recolors every
       document.parts[0].items[0].styles[0].colorChannelId = 'background-tone';
       document.parts[2].items[0].styles[0].colorChannelId = 'skin-tone';
       document.parts[3].items[0].styles[0].colorChannelId = 'skin-tone';
+    },
+  });
+});
+
+test('Player Palette exposes every creator preset instead of decorative or truncated colors', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    workspace.playerIntroOpen = false;
+    workspace.renderPlayer();
+
+    assert.match(
+      playerRoot.innerHTML,
+      /class="v4-player-palette-icon" data-count="4"/,
+    );
+    assert.match(playerRoot.innerHTML, /1 channel\(s\) · 4 preset\(s\)/);
+
+    playerClick(workspace, 'player-palette');
+    const presetButtons = playerRoot.innerHTML.match(/data-action="player-color"/g) || [];
+    assert.equal(presetButtons.length, 4);
+    ['#dd3344', '#22aa66', '#3366dd', '#f2b134'].forEach((color) => {
+      assert.match(playerRoot.innerHTML, new RegExp(`--swatch:${color}`));
+    });
+  }, {
+    playable: true,
+    playerRoot,
+    prepareDocument(document) {
+      document.colorChannels.push({
+        id: 'four-presets',
+        name: 'Four presets',
+        order: 0,
+        mode: 'gradient-map',
+        defaultSwatchId: 'preset-1',
+        swatches: ['#dd3344', '#22aa66', '#3366dd', '#f2b134'].map((color, index) => ({
+          id: `preset-${index + 1}`,
+          name: `Preset ${index + 1}`,
+          hintColor: color,
+          stops: [
+            { offset: 0, color: '#111111' },
+            { offset: 0.5, color },
+            { offset: 1, color: '#ffffff' },
+          ],
+        })),
+      });
+      document.parts[0].items[0].styles[0].colorChannelId = 'four-presets';
+    },
+  });
+});
+
+test('Player Palette toggles, Back, and Escape restore Part and Palette scroll without changing the OC', async () => {
+  const playerRoot = new FakeRoot();
+  const rail = { scrollLeft: 0, scrollTop: 0 };
+  const pickerNodes = new Map();
+  let html = '';
+  Object.defineProperty(playerRoot, 'innerHTML', {
+    configurable: true,
+    get() {
+      return html;
+    },
+    set(value) {
+      html = value;
+      playerRoot.selectors['.v4-player-part-rail'] = rail;
+      const context = value.match(/data-player-picker-context="([^"]*)"/)?.[1] || '';
+      if (!context) return;
+      if (!pickerNodes.has(context)) {
+        pickerNodes.set(context, {
+          dataset: { playerPickerContext: context },
+          scrollLeft: 0,
+          scrollTop: 0,
+        });
+      }
+      playerRoot.selectors['.v4-player-picker'] = pickerNodes.get(context);
+    },
+  });
+
+  await withWorkspace(async (workspace) => {
+    workspace.playerIntroOpen = false;
+    workspace.renderPlayer();
+    const partId = workspace.playerPartId;
+    const partPicker = pickerNodes.get(partId);
+    assert.ok(partPicker);
+    partPicker.scrollLeft = 17;
+    partPicker.scrollTop = 420;
+    rail.scrollLeft = 240;
+
+    const revision = workspace.playerSessionRevision;
+    const undoCount = workspace.playerUndo.length;
+    playerClick(workspace, 'player-palette');
+    assert.equal(workspace.playerPickerPanel, 'colors');
+    assert.match(playerRoot.innerHTML, /data-action="player-close-palette"/);
+    const palettePicker = pickerNodes.get('colors');
+    palettePicker.scrollLeft = 13;
+    palettePicker.scrollTop = 700;
+
+    playerClick(workspace, 'player-palette');
+    assert.equal(workspace.playerPickerPanel, 'parts');
+    assert.deepEqual(
+      [partPicker.scrollLeft, partPicker.scrollTop, rail.scrollLeft],
+      [17, 420, 240],
+      'clicking the active Palette tab returns to the exact previous Part view',
+    );
+
+    playerClick(workspace, 'player-palette');
+    assert.deepEqual(
+      [palettePicker.scrollLeft, palettePicker.scrollTop, rail.scrollLeft],
+      [13, 700, 240],
+      'reopening Palette restores its independent scroll position',
+    );
+    let prevented = false;
+    workspace.boundPlayerKeydown({
+      key: 'Escape',
+      target: {},
+      preventDefault() { prevented = true; },
+    });
+    assert.equal(prevented, true);
+    assert.equal(workspace.playerPickerPanel, 'parts');
+    assert.deepEqual([partPicker.scrollLeft, partPicker.scrollTop], [17, 420]);
+
+    playerClick(workspace, 'player-palette');
+    playerClick(workspace, 'player-close-palette');
+    assert.equal(workspace.playerPickerPanel, 'parts');
+    assert.deepEqual([partPicker.scrollLeft, partPicker.scrollTop], [17, 420]);
+    assert.equal(workspace.playerSessionRevision, revision);
+    assert.equal(workspace.playerUndo.length, undoCount);
+  }, {
+    playable: true,
+    playerRoot,
+    prepareDocument(document) {
+      document.colorChannels.push({
+        id: 'tone',
+        name: 'Tone',
+        order: 0,
+        mode: 'gradient-map',
+        defaultSwatchId: 'default',
+        swatches: [{
+          id: 'default',
+          name: 'Default',
+          hintColor: '#2255aa',
+          stops: [
+            { offset: 0, color: '#102040' },
+            { offset: 1, color: '#dce8ff' },
+          ],
+        }],
+      });
+      document.parts[0].items[0].styles[0].colorChannelId = 'tone';
     },
   });
 });

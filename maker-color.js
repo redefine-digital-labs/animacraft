@@ -12,6 +12,41 @@ function parseHex(color) {
   ];
 }
 
+function byteToHex(value) {
+  return Math.min(255, Math.max(0, Math.round(Number(value) || 0)))
+    .toString(16)
+    .padStart(2, '0');
+}
+
+function rgbToHex(red, green, blue) {
+  return `#${byteToHex(red)}${byteToHex(green)}${byteToHex(blue)}`;
+}
+
+/**
+ * Build a luminance-preserving gradient map from one creator-facing primary
+ * color. Keeping this derivation shared prevents the palette preview and the
+ * rendered PNG from drifting apart.
+ */
+export function gradientStopsForColor(color) {
+  const [red, green, blue] = parseHex(color);
+  const normalized = rgbToHex(red, green, blue);
+  return [
+    {
+      offset: 0,
+      color: rgbToHex(red * 0.18, green * 0.18, blue * 0.18),
+    },
+    { offset: 0.5, color: normalized },
+    {
+      offset: 1,
+      color: rgbToHex(
+        red + ((255 - red) * 0.78),
+        green + ((255 - green) * 0.78),
+        blue + ((255 - blue) * 0.78),
+      ),
+    },
+  ];
+}
+
 function normalizeStops(channel) {
   const raw = channel?.valueDefinition?.stops || channel?.swatch?.stops || [];
   if (Array.isArray(raw) && raw.length >= 2) {
@@ -20,12 +55,10 @@ function normalizeStops(channel) {
       .sort((left, right) => left.offset - right.offset);
   }
   const color = channel?.valueDefinition?.hintColor || channel?.value || '#7b5cff';
-  const [red, green, blue, alpha] = parseHex(color);
-  return [
-    { offset: 0, rgba: [Math.round(red * 0.18), Math.round(green * 0.18), Math.round(blue * 0.18), alpha] },
-    { offset: 0.5, rgba: [red, green, blue, alpha] },
-    { offset: 1, rgba: [Math.round(red + ((255 - red) * 0.78)), Math.round(green + ((255 - green) * 0.78)), Math.round(blue + ((255 - blue) * 0.78)), alpha] },
-  ];
+  return gradientStopsForColor(color).map((stop) => ({
+    offset: stop.offset,
+    rgba: parseHex(stop.color),
+  }));
 }
 
 function sampleStops(stops, value) {

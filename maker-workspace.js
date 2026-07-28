@@ -70,7 +70,10 @@ import {
   revokeRuntimeAsset,
   runtimeAssetRecord,
 } from './maker-assets.js';
-import { createGradientColorProcessor } from './maker-color.js';
+import {
+  createGradientColorProcessor,
+  gradientStopsForColor,
+} from './maker-color.js';
 import { createMakerProjectArchive, readMakerProjectArchive } from './maker-project-archive.js';
 import {
   buildMakerV4PublicationBundle,
@@ -728,6 +731,53 @@ function recipeWithColors(document, recipe) {
   return next;
 }
 
+function setRecipeColorSelection(recipe, channelId, swatchId) {
+  recipe.colors ||= [];
+  const index = recipe.colors.findIndex((entry) => entry.channelId === channelId);
+  const selection = { channelId, swatchId };
+  if (index >= 0) recipe.colors[index] = selection;
+  else recipe.colors.push(selection);
+  return recipe;
+}
+
+function applySmartColorEdit(document, edit) {
+  if (!document || !edit) return false;
+  const channel = document.colorChannels?.find((candidate) => candidate.id === edit.channelId);
+  const swatch = channel?.swatches?.find((candidate) => candidate.id === edit.swatchId);
+  if (!channel || !swatch || channel.mode !== 'gradient-map') return false;
+  const value = String(edit.value || '');
+  if (edit.action === 'swatch-hint') {
+    swatch.hintColor = value;
+    swatch.stops = gradientStopsForColor(value);
+    return true;
+  }
+  if (edit.action === 'swatch-stop') {
+    const stop = swatch.stops?.[Number(edit.stopIndex)];
+    if (!stop) return false;
+    stop.color = value;
+    return true;
+  }
+  if (edit.action !== 'swatch-mid') return false;
+  swatch.stops ||= [];
+  if (!swatch.stops.length) {
+    swatch.stops = gradientStopsForColor(value);
+  } else if (swatch.stops.length === 1) {
+    swatch.stops = [
+      { offset: 0, color: swatch.stops[0].color },
+      { offset: 0.5, color: value },
+      { offset: 1, color: swatch.stops[0].color },
+    ];
+  } else if (swatch.stops.length === 2) {
+    swatch.stops.splice(1, 0, { offset: 0.5, color: value });
+  } else {
+    swatch.stops[Math.floor((swatch.stops.length - 1) / 2)].color = value;
+  }
+  // The Player chip always represents the actual midpoint used by the
+  // renderer, never a detached decorative color.
+  swatch.hintColor = value;
+  return true;
+}
+
 function itemContainsLockedStyle(item) {
   return Boolean(item?.styles?.some((style) => style.styleLocked));
 }
@@ -1063,6 +1113,8 @@ export class MakerWorkspace {
     this.selectedSoulDocumentKey = 'soulMd';
     this.playerPartId = '';
     this.playerPickerPanel = 'parts';
+    this.playerPickerViewByContext = new Map();
+    this.playerPartRailView = { left: 0, top: 0 };
     this.creatorRecipe = { selections: [], colors: [] };
     this.playerRecipe = { selections: [], colors: [] };
     this.playerUndo = [];
@@ -1146,6 +1198,7 @@ export class MakerWorkspace {
     this.enabledExpansionIds = new Set();
     this.pendingImport = null;
     this.pendingCreatorText = null;
+    this.pendingSmartColorEdit = null;
     this.ruleBuilderError = '';
     this.creatorZoom = 1;
     this.creatorSpacePressed = false;
@@ -1189,6 +1242,7 @@ export class MakerWorkspace {
     this.boundCreatorInput = (event) => this.handleCreatorInput(event);
     this.boundCreatorFocusout = (event) => {
       if (this.captureCreatorText(event.target)) this.flushPendingCreatorText();
+      if (this.captureSmartColorInput(event.target)) this.flushPendingSmartColorEdit();
     };
     this.boundCreatorKeydown = (event) => {
       if (this.handlePublishDialogKeydown('creator', event)) return;
@@ -1238,6 +1292,11 @@ export class MakerWorkspace {
       }
       if (this.handlePlayerTabKeydown(event)) return;
       if (this.handlePlayerRadioKeydown(event)) return;
+      if (!this.playerIntroOpen && event.key === 'Escape' && this.playerPickerPanel === 'colors') {
+        event.preventDefault?.();
+        this.setPlayerPickerPanel('parts');
+        return;
+      }
       if (!this.playerIntroOpen) return;
       if (event.key === 'Tab') {
         this.trapModalFocus(
@@ -1548,6 +1607,7 @@ export class MakerWorkspace {
     this.selectedStyleId = '';
     this.selectedTrackId = '';
     this.selectedChannelId = '';
+    this.pendingSmartColorEdit = null;
     this.enabledExpansionIds = new Set();
     this.playerLivingContent = null;
     this.playerSessionRequestId += 1;
@@ -1557,6 +1617,8 @@ export class MakerWorkspace {
     this.playerCreatorPreview = Boolean(context.creatorPreview);
     this.hiddenStyleKeys.clear();
     this.creatorHiddenPartIds.clear();
+    this.playerPickerViewByContext.clear();
+    this.playerPartRailView = { left: 0, top: 0 };
     this.editingPositionStyleKey = '';
     this.dragPreview = null;
     this.styleScalePreview = null;
@@ -1634,7 +1696,11 @@ export class MakerWorkspace {
           this.playerRecipe = nextPlayerRecipe;
         }
       }
-      this.render();
+      if (event.reason === 'save-state' && this.pendingSmartColorEdit) {
+        this.drawCreatorCanvas();
+      } else {
+        this.render();
+      }
       if (event.reason !== 'save-state' && next.dirty) {
         this.persistWriteAheadSnapshot(this.store, this.makerKey);
       }
@@ -2230,8 +2296,14 @@ export class MakerWorkspace {
 
   syncCreatorRecipeSelection({ partId = this.selectedPartId, itemId = this.selectedItemId, styleId = this.selectedStyleId } = {}) {
     if (!this.store) return;
-    const document = this.store.getState().document;
+    const state = this.store.getState();
+    const document = state.document;
     const desired = clone(this.creatorRecipe || this.store.getState().recipe || document.defaultRecipe);
+    // Creator part browsing is intentionally independent from the stored
+    // default selection, but Smart Color has no separate preview picker here.
+    // Always take color selections from the canonical command-store Recipe so
+    // changing a default swatch cannot leave the canvas on the old purple one.
+    desired.colors = clone(state.recipe.colors || []);
     const completeSelection = Boolean(itemId && styleId && findStyle(document, partId, itemId, styleId));
     replaceRecipeSelection(desired, { partId, itemId: completeSelection ? itemId : '', styleId });
     if (!completeSelection) {
@@ -2357,6 +2429,7 @@ export class MakerWorkspace {
     ) return null;
     if ((!allowDuringRestore && this.restoreInProgress) || this.restoreError) return null;
     this.flushPendingCreatorText();
+    if (!automatic) this.flushPendingSmartColorEdit();
     if (!automatic) this.autosave.cancel();
     const requestedStore = this.store;
     const requestedMakerKey = this.makerKey;
@@ -2479,6 +2552,7 @@ export class MakerWorkspace {
     const state = this.store.getState();
     return Boolean(
       this.pendingCreatorText
+      || this.pendingSmartColorEdit
       || this.textAutosave.pending()
       || this.autosave.pending()
       || state.dirty
@@ -2492,6 +2566,7 @@ export class MakerWorkspace {
   async flushPendingChanges({ reason = 'flush' } = {}) {
     this.textAutosave.cancel();
     this.flushPendingCreatorText();
+    this.flushPendingSmartColorEdit();
     if (
       this.context?.walletAddress
       && ['dirty', 'error'].includes(this.playerSaveState)
@@ -3992,7 +4067,7 @@ export class MakerWorkspace {
     const rail = this.playerRoot?.querySelector?.('.v4-player-part-rail');
     const picker = this.playerRoot?.querySelector?.('.v4-player-picker');
     if (!rail && !picker) return null;
-    return {
+    const viewState = {
       rail: rail ? {
         left: Number(rail.scrollLeft || 0),
         top: Number(rail.scrollTop || 0),
@@ -4003,26 +4078,60 @@ export class MakerWorkspace {
         top: Number(picker.scrollTop || 0),
       } : null,
     };
+    if (viewState.rail) this.playerPartRailView = viewState.rail;
+    if (viewState.picker?.context) {
+      this.playerPickerViewByContext.set(viewState.picker.context, {
+        left: viewState.picker.left,
+        top: viewState.picker.top,
+      });
+    }
+    return viewState;
   }
 
   restorePlayerPickerViewState(viewState) {
-    if (!viewState) return;
+    if (viewState?.rail) this.playerPartRailView = viewState.rail;
+    if (viewState?.picker?.context) {
+      this.playerPickerViewByContext.set(viewState.picker.context, {
+        left: viewState.picker.left,
+        top: viewState.picker.top,
+      });
+    }
+    const rail = this.playerRoot?.querySelector?.('.v4-player-part-rail');
+    if (rail && this.playerPartRailView) {
+      rail.scrollLeft = this.playerPartRailView.left;
+      rail.scrollTop = this.playerPartRailView.top;
+    }
+    const picker = this.playerRoot?.querySelector?.('.v4-player-picker');
+    const context = String(picker?.dataset?.playerPickerContext || '');
+    const pickerPosition = context ? this.playerPickerViewByContext.get(context) : null;
+    if (picker && pickerPosition) {
+      picker.scrollLeft = pickerPosition.left;
+      picker.scrollTop = pickerPosition.top;
+    }
+  }
+
+  setPlayerPickerPanel(panel) {
+    const nextPanel = panel === 'colors' ? 'colors' : 'parts';
+    const document = this.runtimeDocument();
+    if (
+      !document
+      || (
+        nextPanel === 'colors'
+        && !resolvedPlayerColorChannelUsage(document, this.playerRecipe).size
+      )
+    ) return false;
+    this.playerPickerPanel = nextPanel;
+    this.render();
     requestAnimationFrame(() => {
-      const rail = this.playerRoot?.querySelector?.('.v4-player-part-rail');
-      if (rail && viewState.rail) {
-        rail.scrollLeft = viewState.rail.left;
-        rail.scrollTop = viewState.rail.top;
+      if (nextPanel === 'colors') {
+        this.playerRoot?.querySelector('[data-action="player-palette"]')?.focus?.({ preventScroll: true });
+        return;
       }
-      const picker = this.playerRoot?.querySelector?.('.v4-player-picker');
-      if (
-        picker
-        && viewState.picker
-        && String(picker.dataset?.playerPickerContext || '') === viewState.picker.context
-      ) {
-        picker.scrollLeft = viewState.picker.left;
-        picker.scrollTop = viewState.picker.top;
-      }
+      [...(this.playerRoot?.querySelectorAll?.('[data-action="player-part"]') || [])]
+        .find((candidate) => String(candidate.dataset?.partId || '') === String(this.playerPartId))
+        ?.focus?.({ preventScroll: true });
     });
+    return true;
   }
 
   closePlayerInfo() {
@@ -5485,11 +5594,16 @@ export class MakerWorkspace {
       const swatches = selectedChannel?.swatches.map((swatch) => `
         <div class="v4-swatch-editor ${swatch.id === selectedChannel.defaultSwatchId ? 'default' : ''}">
           <input type="radio" name="v4-default-swatch" value="${escapeHtml(swatch.id)}" ${checked(swatch.id === selectedChannel.defaultSwatchId)} data-action="channel-default-swatch" title="${escapeHtml(this.tr('defaultColor'))}" ${channelDisabled} />
-          <input value="${escapeHtml(swatch.name)}" data-action="swatch-name" data-swatch-id="${escapeHtml(swatch.id)}" maxlength="128" ${channelDisabled} />
-          <label>${escapeHtml(this.tr('hint'))}<input type="color" value="${escapeHtml(swatch.hintColor)}" data-action="swatch-hint" data-swatch-id="${escapeHtml(swatch.id)}" ${channelDisabled} /></label>
-          <label>${escapeHtml(this.tr('shadow'))}<input type="color" value="${escapeHtml(swatch.stops[0]?.color || '#111111')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="0" ${channelDisabled} /></label>
-          <label>${escapeHtml(this.tr('mid'))}<input type="color" value="${escapeHtml(swatch.stops[Math.floor((swatch.stops.length - 1) / 2)]?.color || swatch.hintColor)}" data-action="swatch-mid" data-swatch-id="${escapeHtml(swatch.id)}" ${channelDisabled} /></label>
-          <label>${escapeHtml(this.tr('light'))}<input type="color" value="${escapeHtml(swatch.stops.at(-1)?.color || '#ffffff')}" data-action="swatch-stop" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="${Math.max(1, swatch.stops.length - 1)}" ${channelDisabled} /></label>
+          <label class="v4-swatch-name"><span>${escapeHtml(this.tr('playerColorPresetName'))}</span><input value="${escapeHtml(swatch.name)}" data-action="swatch-name" data-channel-id="${escapeHtml(selectedChannel.id)}" data-swatch-id="${escapeHtml(swatch.id)}" maxlength="128" ${channelDisabled} /></label>
+          <label class="v4-swatch-primary">${escapeHtml(this.tr('primaryColor'))}<input type="color" value="${escapeHtml(swatch.hintColor)}" data-action="swatch-hint" data-channel-id="${escapeHtml(selectedChannel.id)}" data-swatch-id="${escapeHtml(swatch.id)}" ${channelDisabled} /></label>
+          <details class="v4-swatch-gradient">
+            <summary>${escapeHtml(this.tr('advancedGradient'))}</summary>
+            <div>
+              <label>${escapeHtml(this.tr('shadow'))}<input type="color" value="${escapeHtml(swatch.stops[0]?.color || '#111111')}" data-action="swatch-stop" data-channel-id="${escapeHtml(selectedChannel.id)}" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="0" ${channelDisabled} /></label>
+              <label>${escapeHtml(this.tr('mid'))}<input type="color" value="${escapeHtml(swatch.stops[Math.floor((swatch.stops.length - 1) / 2)]?.color || swatch.hintColor)}" data-action="swatch-mid" data-channel-id="${escapeHtml(selectedChannel.id)}" data-swatch-id="${escapeHtml(swatch.id)}" ${channelDisabled} /></label>
+              <label>${escapeHtml(this.tr('light'))}<input type="color" value="${escapeHtml(swatch.stops.at(-1)?.color || '#ffffff')}" data-action="swatch-stop" data-channel-id="${escapeHtml(selectedChannel.id)}" data-swatch-id="${escapeHtml(swatch.id)}" data-stop-index="${Math.max(1, swatch.stops.length - 1)}" ${channelDisabled} /></label>
+            </div>
+          </details>
           <button type="button" data-action="delete-swatch" data-swatch-id="${escapeHtml(swatch.id)}" aria-label="${escapeHtml(this.tr('deleteColorPresetAria'))}" ${selectedChannel.swatches.length <= 1 || channelLocked ? channelDisabled || 'disabled' : ''}>×</button>
         </div>
       `).join('') || '';
@@ -5499,6 +5613,7 @@ export class MakerWorkspace {
           <div class="v4-color-channel-list">${channels || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('createChannelCopy'))}</span></div>`}</div>
           ${selectedChannel ? `<div class="v4-color-detail">
             <div class="v4-form-row"><label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(selectedChannel.name)}" data-action="channel-name" ${channelDisabled} /></label><span>${escapeHtml(this.tr('gradientMap'))}</span><button type="button" class="danger" data-action="delete-channel" ${channelDisabled}>${escapeHtml(this.tr('delete'))}</button></div>
+            <p class="v4-color-preset-copy">${escapeHtml(this.tr('playerSelectableColorPresets'))}</p>
             <div class="v4-swatch-list">${swatches}</div>
             <button type="button" data-action="add-swatch" ${channelDisabled}>${escapeHtml(this.tr('colorPreset'))}</button>
             <p class="v4-linked-copy"><strong>${escapeHtml(this.tr('linkedStyles'))}</strong> ${linkedStyles.length ? linkedStyles.map(escapeHtml).join(' · ') : escapeHtml(this.tr('noneYet'))}</p>
@@ -6302,6 +6417,13 @@ export class MakerWorkspace {
       this.playerPickerPanel = 'parts';
     }
     const paletteActive = this.playerPickerPanel === 'colors';
+    const palettePresetCount = activeColorChannels.reduce(
+      (count, channel) => count + channel.swatches.length,
+      0,
+    );
+    const palettePreviewSwatches = activeColorChannels
+      .flatMap((channel) => channel.swatches)
+      .slice(0, 4);
     const paletteButton = activeColorChannels.length ? `
       <button
         type="button"
@@ -6312,11 +6434,14 @@ export class MakerWorkspace {
         aria-selected="${paletteActive ? 'true' : 'false'}"
         aria-controls="v4PlayerPickerPanel"
         tabindex="${paletteActive ? '0' : '-1'}"
-        title="${escapeHtml(this.tr('openPlayerPalette'))}"
+        title="${escapeHtml(this.tr(paletteActive ? 'playerPaletteReturnHint' : 'openPlayerPalette'))}"
       >
-        <span class="v4-player-palette-icon" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span class="v4-player-palette-icon" data-count="${palettePreviewSwatches.length}" aria-hidden="true">${palettePreviewSwatches.map((swatch) => `<i style="--swatch:${escapeHtml(swatch.hintColor || swatch.stops?.[Math.floor((swatch.stops.length - 1) / 2)]?.color || '#808080')}"></i>`).join('')}</span>
         <strong>${escapeHtml(this.tr('playerPalette'))}</strong>
-        <small>${escapeHtml(this.tr('playerPaletteChannelCount', { count: activeColorChannels.length }))}</small>
+        <small>${escapeHtml(this.tr('playerPaletteSummary', {
+          channels: activeColorChannels.length,
+          presets: palettePresetCount,
+        }))}</small>
         ${paletteActive ? '<i class="v4-player-selected-mark" aria-hidden="true">✓</i>' : ''}
       </button>
     ` : '';
@@ -6397,8 +6522,14 @@ export class MakerWorkspace {
     const colorControls = colorRows ? `
       <section class="v4-player-palette-panel">
         <header>
-          <div><span>${escapeHtml(this.tr('smartColor'))}</span><h2>${escapeHtml(this.tr('activeOcColors'))}</h2><p>${escapeHtml(this.tr('playerPaletteCopy'))}</p></div>
-          <strong>${escapeHtml(this.tr('playerPaletteChannelCount', { count: activeColorChannels.length }))}</strong>
+          <div><span>${escapeHtml(this.tr('smartColor'))}</span><h2>${escapeHtml(this.tr('activeOcColors'))}</h2><p>${escapeHtml(this.tr('playerPaletteCopy'))} ${escapeHtml(this.tr('playerPaletteReturnHint'))}</p></div>
+          <div class="v4-player-palette-actions">
+            <strong>${escapeHtml(this.tr('playerPaletteSummary', {
+              channels: activeColorChannels.length,
+              presets: palettePresetCount,
+            }))}</strong>
+            <button type="button" data-action="player-close-palette" title="${escapeHtml(part?.name || this.tr('currentPart'))}">← ${escapeHtml(this.tr('returnToCurrentPart'))}</button>
+          </div>
         </header>
         <div class="v4-player-color-channel-grid">${colorRows}</div>
       </section>
@@ -6505,6 +6636,7 @@ export class MakerWorkspace {
 
   documentWithCreatorPreview() {
     const base = clone(this.runtimeDocument());
+    applySmartColorEdit(base, this.pendingSmartColorEdit);
     if (!this.dragPreview && this.styleScalePreview == null) return base;
     const style = findStyle(base, this.selectedPartId, this.selectedItemId, this.selectedStyleId);
     if (!style) return base;
@@ -6814,6 +6946,50 @@ export class MakerWorkspace {
     return true;
   }
 
+  captureSmartColorInput(input) {
+    const action = String(input?.dataset?.action || '');
+    if (!['swatch-hint', 'swatch-stop', 'swatch-mid'].includes(action)) return false;
+    const document = this.store?.getState?.().document;
+    const channelId = String(input.dataset.channelId || this.selectedChannelId || '');
+    const swatchId = String(input.dataset.swatchId || '');
+    if (!document
+      || !channelId
+      || !swatchId
+      || colorChannelHasLockedStyle(document, channelId)) return false;
+    const next = {
+      action,
+      channelId,
+      swatchId,
+      stopIndex: input.dataset.stopIndex ?? '',
+      value: String(input.value || ''),
+    };
+    if (
+      this.pendingSmartColorEdit
+      && (
+        this.pendingSmartColorEdit.action !== next.action
+        || this.pendingSmartColorEdit.channelId !== next.channelId
+        || this.pendingSmartColorEdit.swatchId !== next.swatchId
+        || String(this.pendingSmartColorEdit.stopIndex) !== String(next.stopIndex)
+      )
+    ) this.flushPendingSmartColorEdit();
+    this.pendingSmartColorEdit = next;
+    return true;
+  }
+
+  flushPendingSmartColorEdit() {
+    const pending = this.pendingSmartColorEdit;
+    this.pendingSmartColorEdit = null;
+    if (!pending || !this.store) return false;
+    const document = this.store.getState().document;
+    if (colorChannelHasLockedStyle(document, pending.channelId)) return false;
+    const current = clone(document);
+    if (!applySmartColorEdit(current, pending)) return false;
+    if (JSON.stringify(current.colorChannels) === JSON.stringify(document.colorChannels)) return false;
+    return this.executeDocument('Edit smart color preset', ({ document: next }) => {
+      applySmartColorEdit(next, pending);
+    });
+  }
+
   flushPendingCreatorText() {
     const pending = this.pendingCreatorText;
     this.pendingCreatorText = null;
@@ -6916,6 +7092,7 @@ export class MakerWorkspace {
       return;
     }
     this.flushPendingCreatorText();
+    this.flushPendingSmartColorEdit();
     const state = this.store?.getState();
     if (!state) return;
     const document = state.document;
@@ -7577,7 +7754,13 @@ export class MakerWorkspace {
         const target = next.colorChannels.find((candidate) => candidate.id === channel.id);
         if (!target || colorChannelHasLockedStyle(next, target.id)) return;
         const id = uniqueDocumentId(`color-${target.swatches.length + 1}`, [target.swatches], 'color');
-        target.swatches.push({ id, name: `Color ${target.swatches.length + 1}`, hintColor: '#f06f8f', stops: target.mode === 'gradient-map' ? [{ offset: 0, color: '#3d101c' }, { offset: 0.5, color: '#f06f8f' }, { offset: 1, color: '#ffe8ef' }] : [] });
+        const primaryColor = '#f06f8f';
+        target.swatches.push({
+          id,
+          name: `Color ${target.swatches.length + 1}`,
+          hintColor: primaryColor,
+          stops: target.mode === 'gradient-map' ? gradientStopsForColor(primaryColor) : [],
+        });
       });
       return;
     }
@@ -7693,6 +7876,10 @@ export class MakerWorkspace {
       this.textAutosave();
       return;
     }
+    if (this.captureSmartColorInput(event.target)) {
+      this.drawCreatorCanvas();
+      return;
+    }
     if (action === 'style-scale-preview') {
       const { style } = this.selectedCreatorRecords();
       if (!style || style.positionLocked || style.styleLocked) return;
@@ -7719,6 +7906,10 @@ export class MakerWorkspace {
     if (this.captureCreatorText(input)) {
       this.updateMakerInfoByteStatus(input);
       this.flushPendingCreatorText();
+      return;
+    }
+    if (this.captureSmartColorInput(input)) {
+      this.flushPendingSmartColorEdit();
       return;
     }
     const state = this.store.getState();
@@ -7943,7 +8134,7 @@ export class MakerWorkspace {
       && document.colorChannels
         .find((channel) => channel.id === this.selectedChannelId)
         ?.swatches.some((swatch) => swatch.id === input.value)
-    ) this.executeDocument('Change default color', ({ document: next }) => {
+    ) this.executeDocument('Change default color', ({ document: next, recipe: nextRecipe }) => {
       const channel = next.colorChannels.find((candidate) => candidate.id === this.selectedChannelId);
       if (
         !channel
@@ -7951,39 +8142,17 @@ export class MakerWorkspace {
         || !channel.swatches.some((swatch) => swatch.id === input.value)
       ) return;
       channel.defaultSwatchId = input.value;
-      const selection = next.defaultRecipe.colors.find((entry) => entry.channelId === channel.id);
-      if (selection) selection.swatchId = input.value;
+      setRecipeColorSelection(next.defaultRecipe, channel.id, input.value);
+      setRecipeColorSelection(nextRecipe, channel.id, input.value);
     });
-    else if (['swatch-name', 'swatch-hint', 'swatch-stop', 'swatch-mid'].includes(action)
+    else if (action === 'swatch-name'
       && !colorChannelHasLockedStyle(document, this.selectedChannelId)) {
       this.executeDocument('Edit smart color preset', ({ document: next }) => {
         const channel = next.colorChannels.find((candidate) => candidate.id === this.selectedChannelId);
         if (!channel || colorChannelHasLockedStyle(next, channel.id)) return;
         const swatch = channel?.swatches.find((candidate) => candidate.id === input.dataset.swatchId);
         if (!swatch) return;
-        if (action === 'swatch-name') swatch.name = input.value.trim() || swatch.name;
-        else if (action === 'swatch-hint') swatch.hintColor = input.value;
-        else if (action === 'swatch-stop') {
-          const stop = swatch.stops[Number(input.dataset.stopIndex)];
-          if (stop) stop.color = input.value;
-        }
-        else {
-          if (!swatch.stops.length) {
-            swatch.stops = [
-              { offset: 0, color: input.value },
-              { offset: 1, color: input.value },
-            ];
-            return;
-          }
-          if (swatch.stops.length === 1) {
-            swatch.stops.push({ offset: 1, color: input.value });
-            swatch.stops[0].offset = 0;
-            return;
-          }
-          const middle = Math.floor((swatch.stops.length - 1) / 2);
-          if (swatch.stops.length === 2) swatch.stops.splice(1, 0, { offset: 0.5, color: input.value });
-          else swatch.stops[middle].color = input.value;
-        }
+        swatch.name = input.value.trim() || swatch.name;
       });
     }
   }
@@ -8644,23 +8813,16 @@ export class MakerWorkspace {
     const current = selections.get(part?.id);
     const item = part?.items.find((candidate) => candidate.id === current?.itemId);
     if (action === 'player-palette') {
-      if (!resolvedPlayerColorChannelUsage(document, this.playerRecipe).size) return;
-      this.playerPickerPanel = 'colors';
-      this.render();
-      requestAnimationFrame(() => {
-        this.playerRoot?.querySelector('[data-action="player-palette"]')?.focus?.({ preventScroll: true });
-      });
+      this.setPlayerPickerPanel(this.playerPickerPanel === 'colors' ? 'parts' : 'colors');
+      return;
+    }
+    if (action === 'player-close-palette') {
+      this.setPlayerPickerPanel('parts');
       return;
     }
     if (action === 'player-part') {
       this.playerPartId = button.dataset.partId;
-      this.playerPickerPanel = 'parts';
-      this.render();
-      requestAnimationFrame(() => {
-        [...(this.playerRoot?.querySelectorAll?.('[data-action="player-part"]') || [])]
-          .find((candidate) => String(candidate.dataset?.partId || '') === String(this.playerPartId))
-          ?.focus?.({ preventScroll: true });
-      });
+      this.setPlayerPickerPanel('parts');
       return;
     }
     if (action === 'player-item' && part) {
@@ -8699,6 +8861,11 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'player-color') {
+      const channel = document.colorChannels.find((candidate) => (
+        candidate.id === button.dataset.channelId
+        && candidate.mode === 'gradient-map'
+      ));
+      if (!channel?.swatches.some((swatch) => swatch.id === button.dataset.swatchId)) return;
       const next = clone(this.playerRecipe);
       next.colors ||= [];
       const index = next.colors.findIndex((entry) => entry.channelId === button.dataset.channelId);

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.3 — Smart Color preset and Palette reliability
+
+- Makes every creator Color preset a real player-selectable swatch and derives the rendered shadow, midtone, and highlight from the chosen primary color instead of leaving the artwork on a stale purple gradient.
+- Keeps the channel default, Maker default Recipe, Creator preview Recipe, Player Recipe, Renderer, autosave, and publication document on one canonical color selection.
+- Prevents save-status rerenders from closing the native color picker before its final value commits.
+- Replaces the decorative four-dot Palette icon with the actual configured colors and displays the real channel and preset counts.
+- Removes the sticky Palette overlay, preserves independent Part/Palette view positions, and adds three smooth return paths: click Palette again, use Back to current Part, or press Escape.
+- Classifies newly added presets as compatible additive Maker updates while preserving breaking warnings for removed or visually changed existing presets.
+- Adds complete English, Simplified Chinese, Japanese, Korean, and Vietnamese copy plus desktop and mobile regression coverage.
+
 ## 0.7.2 — Lifecycle manager layout hotfix
 
 - Isolates lifecycle action-card tones from generic button classes so long translated descriptions wrap inside their own cards instead of overlapping adjacent actions.
