@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1 — Player Smart Color palette
+
+- Promotes creator-linked Smart Color channels to a first-level Player palette beside the Part tabs, while keeping Layer Tracks and link management creator-only.
+- Shows only color channels used by the current resolved OC, including the number of visible linked Styles affected by each choice.
+- Applies one preset selection to every linked Style through the canonical Recipe path, including Renderer updates, Undo/Redo, autosave, recovery, preview, PNG export, and publication snapshots.
+- Adds image-first swatches, persistent current-color feedback, roving keyboard navigation, 44px touch targets, forced-colors support, and responsive mobile layouts.
+- Preserves long palette and Part-rail scroll positions across live rerenders and bounds full-resolution gradient-map canvases with a 16-megapixel LRU budget for complex mobile artwork.
+- Localizes the complete palette flow in English, Simplified Chinese, Japanese, Korean, and Vietnamese.
+- Busts cached Player assets so production browsers receive the new controls without requiring a manual hard refresh.
+
 ## 0.7.0 — Maker lifecycle management
 
 - Adds one responsive, accessible Maker lifecycle manager to both Creator Library cards and the Creator Studio toolbar.

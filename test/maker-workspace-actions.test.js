@@ -5,6 +5,7 @@ import test from 'node:test';
 import { createCharacterMakerV5Starter } from '../maker-v4.js';
 import { synchronizeDefaultRecipe } from '../maker-document-ops.js';
 import { createMakerProjectArchive } from '../maker-project-archive.js';
+import { resolveMakerScene } from '../maker-renderer.js';
 import {
   createMakerWorkspace,
   enabledExpansionIdsForDocument,
@@ -1604,23 +1605,119 @@ test('Player Expansion Pack toggles clear undo entries from the previous runtime
   }, { playable: true });
 });
 
-test('Player Smart Color shows every channel used by the resolved OC scene', async () => {
+test('Player Smart Color is a first-level palette whose selection recolors every linked visible Style', async () => {
   const playerRoot = new FakeRoot();
+  let html = '';
+  let replacePickerNodes = false;
+  const replacementRail = { scrollLeft: 0, scrollTop: 0 };
+  const replacementPicker = {
+    dataset: { playerPickerContext: 'colors' },
+    scrollLeft: 0,
+    scrollTop: 0,
+  };
+  Object.defineProperty(playerRoot, 'innerHTML', {
+    configurable: true,
+    get() {
+      return html;
+    },
+    set(value) {
+      html = value;
+      if (replacePickerNodes) {
+        playerRoot.selectors['.v4-player-part-rail'] = replacementRail;
+        playerRoot.selectors['.v4-player-picker'] = replacementPicker;
+      }
+    },
+  });
+  const changes = [];
   await withWorkspace(async (workspace) => {
     workspace.playerIntroOpen = false;
     workspace.playerPartId = workspace.getDocument().parts[0].id;
     workspace.renderPlayer();
 
+    assert.match(playerRoot.innerHTML, /data-action="player-palette"/);
+    assert.match(playerRoot.innerHTML, /role="tab"[^>]*aria-selected="false"/);
+    assert.doesNotMatch(playerRoot.innerHTML, /Colors used by this OC/);
+    assert.doesNotMatch(playerRoot.innerHTML, /data-channel-id="unused-tone"/);
+
+    playerClick(workspace, 'player-palette');
+    assert.equal(workspace.playerPickerPanel, 'colors');
     assert.match(playerRoot.innerHTML, /Colors used by this OC/);
     assert.match(playerRoot.innerHTML, /data-channel-id="background-tone"/);
     assert.match(playerRoot.innerHTML, /data-channel-id="skin-tone"/);
+    assert.match(playerRoot.innerHTML, /2 visible linked layer\(s\)/);
     assert.match(playerRoot.innerHTML, /class="v4-player-colors" role="radiogroup"/);
     assert.match(playerRoot.innerHTML, /role="radio"[^>]*data-player-radio-group="color-0"/);
     assert.match(playerRoot.innerHTML, /aria-checked="true" tabindex="0"/);
     assert.doesNotMatch(playerRoot.innerHTML, /data-channel-id="unused-tone"/);
+
+    const initialRevision = workspace.playerSessionRevision;
+    const initialRenderKey = workspace.playerRenderKey(workspace.runtimeDocument(), workspace.playerRecipe);
+    playerRoot.selectors['.v4-player-part-rail'] = { scrollLeft: 246, scrollTop: 0 };
+    playerRoot.selectors['.v4-player-picker'] = {
+      dataset: { playerPickerContext: 'colors' },
+      scrollLeft: 9,
+      scrollTop: 716,
+    };
+    replacePickerNodes = true;
+    playerClick(workspace, 'player-color', {
+      channelId: 'skin-tone',
+      swatchId: 'alternate',
+    });
+
+    assert.deepEqual(
+      workspace.playerRecipe.colors.find((entry) => entry.channelId === 'skin-tone'),
+      { channelId: 'skin-tone', swatchId: 'alternate' },
+    );
+    assert.equal(workspace.playerPickerPanel, 'colors');
+    assert.equal(workspace.playerUndo.length, 1);
+    assert.equal(workspace.playerSessionRevision, initialRevision + 1);
+    assert.equal(changes.at(-1).recipe.colors.find((entry) => entry.channelId === 'skin-tone')?.swatchId, 'alternate');
+    assert.notEqual(workspace.playerRenderKey(workspace.runtimeDocument(), workspace.playerRecipe), initialRenderKey);
+    assert.deepEqual(
+      [replacementRail.scrollLeft, replacementPicker.scrollLeft, replacementPicker.scrollTop],
+      [246, 9, 716],
+      'a long palette and Part rail keep their scroll position after a swatch rerender',
+    );
+
+    const scene = resolveMakerScene(workspace.runtimeDocument(), workspace.playerRecipe);
+    const linkedLayers = scene.layers.filter((layer) => layer.colorChannel?.id === 'skin-tone');
+    assert.equal(linkedLayers.length, 2);
+    assert.deepEqual(linkedLayers.map((layer) => layer.colorChannel.valueId), ['alternate', 'alternate']);
+
+    playerClick(workspace, 'player-undo');
+    assert.equal(
+      workspace.playerRecipe.colors.find((entry) => entry.channelId === 'skin-tone')?.swatchId,
+      'default',
+    );
+    playerClick(workspace, 'player-redo');
+    assert.equal(
+      workspace.playerRecipe.colors.find((entry) => entry.channelId === 'skin-tone')?.swatchId,
+      'alternate',
+    );
+
+    const undoCount = workspace.playerUndo.length;
+    const revision = workspace.playerSessionRevision;
+    playerClick(workspace, 'player-color', {
+      channelId: 'skin-tone',
+      swatchId: 'alternate',
+    });
+    assert.equal(workspace.playerUndo.length, undoCount);
+    assert.equal(workspace.playerSessionRevision, revision);
+
+    const originalPartId = workspace.playerPartId;
+    playerClick(workspace, 'player-part', { partId: workspace.runtimeDocument().parts[4].id });
+    assert.equal(workspace.playerPickerPanel, 'parts');
+    assert.notEqual(workspace.playerPartId, originalPartId);
+    assert.equal(
+      workspace.playerRecipe.colors.find((entry) => entry.channelId === 'skin-tone')?.swatchId,
+      'alternate',
+    );
   }, {
     playable: true,
     playerRoot,
+    callbacks: {
+      onPlayerRecipeChange: (payload) => changes.push(structuredClone(payload)),
+    },
     prepareDocument(document) {
       const channel = (id, name, color) => ({
         id,
@@ -1628,15 +1725,26 @@ test('Player Smart Color shows every channel used by the resolved OC scene', asy
         order: document.colorChannels.length,
         mode: 'gradient-map',
         defaultSwatchId: 'default',
-        swatches: [{
-          id: 'default',
-          name: 'Default',
-          hintColor: color,
-          stops: [
-            { offset: 0, color },
-            { offset: 1, color: '#ffffff' },
-          ],
-        }],
+        swatches: [
+          {
+            id: 'default',
+            name: 'Default',
+            hintColor: color,
+            stops: [
+              { offset: 0, color },
+              { offset: 1, color: '#ffffff' },
+            ],
+          },
+          {
+            id: 'alternate',
+            name: 'Alternate',
+            hintColor: '#f06f8f',
+            stops: [
+              { offset: 0, color: '#3d101c' },
+              { offset: 1, color: '#ffe8ef' },
+            ],
+          },
+        ],
       });
       document.colorChannels.push(
         channel('background-tone', 'Background tone', '#221144'),
@@ -1645,6 +1753,7 @@ test('Player Smart Color shows every channel used by the resolved OC scene', asy
       );
       document.parts[0].items[0].styles[0].colorChannelId = 'background-tone';
       document.parts[2].items[0].styles[0].colorChannelId = 'skin-tone';
+      document.parts[3].items[0].styles[0].colorChannelId = 'skin-tone';
     },
   });
 });
@@ -2279,7 +2388,7 @@ test('Player image-first controls expose one current Part and strong Item, Style
     });
     workspace.renderPlayer();
 
-    assert.equal((playerRoot.innerHTML.match(/aria-current="true"/g) || []).length, 1);
+    assert.equal((playerRoot.innerHTML.match(/role="tab"[\s\S]*?aria-selected="true"/g) || []).length, 1);
     assert.match(playerRoot.innerHTML, /v4-player-part active has-selection/);
     assert.match(playerRoot.innerHTML, /first-style-thumb\.png/);
     assert.match(playerRoot.innerHTML, /class="v4-player-item-grid" role="radiogroup"/);
@@ -2361,6 +2470,81 @@ test('Player radio groups use roving focus and arrow keys without activating una
   }, { playable: true, playerRoot });
 });
 
+test('Player palette and Part tabs support arrow, Home, and End keyboard navigation', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    let activatedIndex = -1;
+    let focusedIndex = -1;
+    const tablist = {
+      querySelectorAll: () => tabs,
+    };
+    const createTab = (index, action, partId = '') => ({
+      dataset: { action, partId },
+      hidden: false,
+      disabled: false,
+      closest(selector) {
+        if (selector === '[role="tab"][data-action]') return this;
+        if (selector === '[role="tablist"]') return tablist;
+        return null;
+      },
+      click() {
+        activatedIndex = index;
+      },
+      focus() {
+        focusedIndex = index;
+      },
+    });
+    const tabs = [
+      createTab(0, 'player-palette'),
+      createTab(1, 'player-part', 'part-one'),
+      createTab(2, 'player-part', 'part-two'),
+    ];
+    playerRoot.querySelectorAll = (selector) => (
+      selector === '[data-action="player-palette"]'
+        ? [tabs[0]]
+        : selector === '[data-action="player-part"]'
+          ? tabs.slice(1)
+          : []
+    );
+    let prevented = false;
+
+    assert.equal(workspace.handlePlayerTabKeydown({
+      key: 'ArrowRight',
+      target: tabs[0],
+      preventDefault() {
+        prevented = true;
+      },
+    }), true);
+    assert.equal(prevented, true);
+    assert.equal(activatedIndex, 1);
+    assert.equal(focusedIndex, 1);
+
+    workspace.handlePlayerTabKeydown({
+      key: 'End',
+      target: tabs[1],
+      preventDefault() {},
+    });
+    assert.equal(activatedIndex, 2);
+    assert.equal(focusedIndex, 2);
+
+    workspace.handlePlayerTabKeydown({
+      key: 'Home',
+      target: tabs[2],
+      preventDefault() {},
+    });
+    assert.equal(activatedIndex, 0);
+    assert.equal(focusedIndex, 0);
+
+    assert.equal(workspace.handlePlayerTabKeydown({
+      key: 'ArrowDown',
+      target: tabs[0],
+      preventDefault() {
+        assert.fail('a horizontal tablist must not block vertical page scrolling');
+      },
+    }), false);
+  }, { playable: true, playerRoot });
+});
+
 test('reselecting the current Player option is a no-op and does not create phantom Undo history', async () => {
   await withWorkspace(async (workspace) => {
     const current = workspace.playerRecipe.selections[0];
@@ -2390,6 +2574,10 @@ test('final preview freezes the exact OC snapshot used by completion and support
       renderedBlobs.push(blob);
       return blob;
     };
+    playerClick(workspace, 'player-color', {
+      channelId: 'export-tone',
+      swatchId: 'alternate',
+    });
 
     playerClick(workspace, 'player-complete');
     await new Promise((resolve) => setImmediate(resolve));
@@ -2418,11 +2606,23 @@ test('final preview freezes the exact OC snapshot used by completion and support
 
     workspace.playerProfile.name = 'Changed behind modal';
     workspace.playerRecipe.selections = [];
+    workspace.playerRecipe.colors = [{
+      channelId: 'export-tone',
+      swatchId: 'default',
+    }];
     playerClick(workspace, 'player-confirm-complete');
 
     assert.equal(completed.length, 1);
     assert.equal(completed[0].profile.name, 'Frozen OC');
     assert.equal(completed[0].profile.description, 'Frozen description');
+    assert.equal(
+      renders[0].recipe.colors.find((entry) => entry.channelId === 'export-tone')?.swatchId,
+      'alternate',
+    );
+    assert.equal(
+      completed[0].recipe.colors.find((entry) => entry.channelId === 'export-tone')?.swatchId,
+      'alternate',
+    );
     assert.deepEqual(completed[0].recipe, renders[0].recipe);
     assert.equal(completed[0].imageBlob, renderedBlobs.at(-1));
     assert.equal(workspace.playerPublishOpen, true, 'a real Player completion continues to publication');
@@ -2437,6 +2637,36 @@ test('final preview freezes the exact OC snapshot used by completion and support
     playable: true,
     playerRoot: new FakeRoot(),
     callbacks: { onCompleteOc: (payload) => completed.push(payload) },
+    prepareDocument(document) {
+      document.colorChannels.push({
+        id: 'export-tone',
+        name: 'Export tone',
+        order: 0,
+        mode: 'gradient-map',
+        defaultSwatchId: 'default',
+        swatches: [
+          {
+            id: 'default',
+            name: 'Default',
+            hintColor: '#553355',
+            stops: [
+              { offset: 0, color: '#110811' },
+              { offset: 1, color: '#fff0ff' },
+            ],
+          },
+          {
+            id: 'alternate',
+            name: 'Alternate',
+            hintColor: '#336699',
+            stops: [
+              { offset: 0, color: '#081122' },
+              { offset: 1, color: '#eef8ff' },
+            ],
+          },
+        ],
+      });
+      document.parts[0].items[0].styles[0].colorChannelId = 'export-tone';
+    },
   });
 });
 

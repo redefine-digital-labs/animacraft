@@ -46,6 +46,8 @@ function sourceSize(source) {
   };
 }
 
+const MAX_GRADIENT_COLOR_CACHE_PIXELS = 16 * 1024 * 1024;
+
 export function gradientMapPixels(imageData, stops) {
   const result = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
   const data = result.data;
@@ -62,15 +64,60 @@ export function gradientMapPixels(imageData, stops) {
   return result;
 }
 
-export function createGradientColorProcessor() {
+export function createGradientColorProcessor({
+  maxCachePixels = MAX_GRADIENT_COLOR_CACHE_PIXELS,
+} = {}) {
   const cache = new WeakMap();
-  return async function applyColorChannel({ source, channel }) {
+  const lru = new Set();
+  const pixelBudget = Math.max(1, Number(maxCachePixels) || MAX_GRADIENT_COLOR_CACHE_PIXELS);
+  let cachedPixels = 0;
+
+  const touch = (entry) => {
+    lru.delete(entry);
+    lru.add(entry);
+  };
+  const releaseCanvas = (entry) => {
+    if (entry.released || entry.users > 0) return;
+    entry.canvas.width = 0;
+    entry.canvas.height = 0;
+    entry.released = true;
+  };
+  const evict = (entry) => {
+    if (!entry || entry.evicted) return;
+    entry.evicted = true;
+    entry.sourceCache.delete(entry.cacheKey);
+    lru.delete(entry);
+    cachedPixels -= entry.pixels;
+    releaseCanvas(entry);
+  };
+  const trim = () => {
+    while (cachedPixels > pixelBudget && lru.size > 1) {
+      evict(lru.values().next().value);
+    }
+  };
+  const acquire = (entry) => {
+    entry.users += 1;
+    touch(entry);
+    let disposed = false;
+    return {
+      source: entry.canvas,
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        entry.users = Math.max(0, entry.users - 1);
+        if (entry.evicted) releaseCanvas(entry);
+      },
+    };
+  };
+
+  const applyColorChannel = async function applyColorChannel({ source, channel }) {
     if (String(channel?.mode || '').toLowerCase() !== 'gradient-map') return source;
     const stops = normalizeStops(channel);
     const cacheKey = JSON.stringify(stops);
     if (source && typeof source === 'object') {
       const sourceCache = cache.get(source);
-      if (sourceCache?.has(cacheKey)) return sourceCache.get(cacheKey);
+      const entry = sourceCache?.get(cacheKey);
+      if (entry && !entry.evicted) return acquire(entry);
     }
     const { width, height } = sourceSize(source);
     if (!width || !height) return source;
@@ -83,9 +130,30 @@ export function createGradientColorProcessor() {
     context.putImageData(gradientMapPixels(pixels, stops), 0, 0);
     if (source && typeof source === 'object') {
       const sourceCache = cache.get(source) || new Map();
-      sourceCache.set(cacheKey, canvas);
+      const entry = {
+        cacheKey,
+        canvas,
+        evicted: false,
+        pixels: width * height,
+        released: false,
+        sourceCache,
+        users: 0,
+      };
+      sourceCache.set(cacheKey, entry);
       cache.set(source, sourceCache);
+      cachedPixels += entry.pixels;
+      touch(entry);
+      trim();
+      return acquire(entry);
     }
     return canvas;
   };
+  applyColorChannel.clear = () => {
+    [...lru].forEach(evict);
+    lru.clear();
+    cachedPixels = 0;
+  };
+  return applyColorChannel;
 }
+
+export { MAX_GRADIENT_COLOR_CACHE_PIXELS };

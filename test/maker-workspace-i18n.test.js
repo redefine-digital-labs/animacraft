@@ -57,6 +57,8 @@ test('all 5 Maker Studio dictionaries cover every editor and player detail key',
     sui: '0.00453456',
     time: '12:34',
     filename: 'soul.md',
+    channel: 'Hair color',
+    swatch: 'Midnight blue',
     limit: 65_536,
   };
 
@@ -72,7 +74,7 @@ test('all 5 Maker Studio dictionaries cover every editor and player detail key',
       assert.ok(Object.hasOwn(dictionary, key), `${locale}.${key} must be owned by that locale`);
       const value = makerWorkspaceText(locale, key, variables);
       assert.ok(value.trim(), `${locale}.${key} must not be blank`);
-      assert.doesNotMatch(value, /\{(?:count|items|styles|layers|part|item|creator|version|name|breaking|warnings|additions|parts|assets|drawn|skipped|mist|sui|time|filename|limit)\}/, `${locale}.${key} must interpolate its variables`);
+      assert.doesNotMatch(value, /\{(?:count|items|styles|layers|part|item|creator|version|name|breaking|warnings|additions|parts|assets|drawn|skipped|mist|sui|time|filename|channel|swatch|limit)\}/, `${locale}.${key} must interpolate its variables`);
     });
   });
 });
@@ -113,6 +115,13 @@ test('critical nested editor details do not fall back to English outside English
     'compatibleUpdate',
     'infoLicense',
     'activeOcColors',
+    'playerPalette',
+    'openPlayerPalette',
+    'playerPickerNavigation',
+    'playerPaletteCopy',
+    'playerPaletteChannelCount',
+    'playerPaletteLinkedLayerCount',
+    'playerPaletteSwatchLabel',
     'expansionSelectionSaved',
     'makerInfo',
     'makerInfoTitle',

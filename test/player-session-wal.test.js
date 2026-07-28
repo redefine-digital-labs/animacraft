@@ -308,6 +308,143 @@ test('a live Player edit writes WAL immediately and a confirmed session save cle
   })
 ));
 
+test('non-default Smart Color survives immediate WAL, confirmed save and crash recovery refreshes', async () => (
+  withAnimationFrame(async () => {
+    const storage = memoryStorage();
+    const document = createCharacterMakerV5Starter({
+      makerId: 'player-smart-color-wal',
+      name: 'Player Smart Color WAL',
+    });
+    document.colorChannels.push({
+      id: 'skin-tone',
+      name: 'Skin tone',
+      order: 0,
+      mode: 'gradient-map',
+      defaultSwatchId: 'warm',
+      swatches: [
+        {
+          id: 'warm',
+          name: 'Warm',
+          hintColor: '#d68f72',
+          stops: [{ offset: 0, color: '#3b1e18' }, { offset: 1, color: '#fff1e9' }],
+        },
+        {
+          id: 'cool',
+          name: 'Cool',
+          hintColor: '#9db4d9',
+          stops: [{ offset: 0, color: '#18233b' }, { offset: 1, color: '#eef4ff' }],
+        },
+        {
+          id: 'violet',
+          name: 'Violet',
+          hintColor: '#8268c7',
+          stops: [{ offset: 0, color: '#211532' }, { offset: 1, color: '#f1eaff' }],
+        },
+      ],
+    });
+    document.defaultRecipe.colors = [{ channelId: 'skin-tone', swatchId: 'warm' }];
+
+    const sessionKey = `0xwallet::${document.version.versionId}`;
+    const backend = playerSessionCasBackend();
+    const context = {
+      makerKey: '0xwallet:player-smart-color-wal',
+      walletAddress: '0xwallet',
+      document,
+      assets: [],
+    };
+    const original = createMakerWorkspace({
+      callbacks: {},
+      draftRepository: restoredMakerRepository(document),
+      walStorage: storage,
+      playerWalWriterId: 'smart-color-original',
+      loadPlayerSessionRecord: (key) => backend.load(key),
+      savePlayerSessionRecord: (key, session, metadata) => backend.save(key, session, metadata),
+    });
+    await original.setContext(context);
+
+    const coolRecipe = structuredClone(original.playerRecipe);
+    coolRecipe.colors = [{ channelId: 'skin-tone', swatchId: 'cool' }];
+    assert.equal(original.setPlayerRecipe(coolRecipe, 'Choose cool skin tone'), true);
+
+    const immediateCool = loadPlayerSessionWal(storage, sessionKey, {
+      writerId: 'smart-color-original',
+    });
+    assert.equal(immediateCool.revision, 1);
+    assert.deepEqual(immediateCool.session.recipe.colors, [
+      { channelId: 'skin-tone', swatchId: 'cool' },
+    ]);
+    assert.equal(backend.current(), null, 'the durable session must still be pending');
+
+    await original.sessionAutosave.flush();
+    assert.deepEqual(backend.current().session.recipe.colors, [
+      { channelId: 'skin-tone', swatchId: 'cool' },
+    ]);
+    assert.equal(loadPlayerSessionWal(storage, sessionKey), null);
+    assert.equal(original.playerSaveState, 'saved');
+
+    const violetRecipe = structuredClone(original.playerRecipe);
+    violetRecipe.colors = [{ channelId: 'skin-tone', swatchId: 'violet' }];
+    assert.equal(original.setPlayerRecipe(violetRecipe, 'Choose violet skin tone'), true);
+    original.sessionAutosave.cancel();
+    assert.deepEqual(
+      loadPlayerSessionWal(storage, sessionKey, {
+        writerId: 'smart-color-original',
+      }).session.recipe.colors,
+      [{ channelId: 'skin-tone', swatchId: 'violet' }],
+      'the second non-default color must be recoverable before IndexedDB runs',
+    );
+    assert.deepEqual(
+      backend.current().session.recipe.colors,
+      [{ channelId: 'skin-tone', swatchId: 'cool' }],
+      'the simulated crash leaves the last confirmed color unchanged',
+    );
+    original.context.walletAddress = '';
+    original.destroy();
+
+    const recovered = createMakerWorkspace({
+      callbacks: {},
+      draftRepository: restoredMakerRepository(document),
+      walStorage: storage,
+      playerWalWriterId: 'smart-color-recovery',
+      loadPlayerSessionRecord: (key) => backend.load(key),
+      savePlayerSessionRecord: (key, session, metadata) => backend.save(key, session, metadata),
+    });
+    await recovered.setContext(context);
+
+    assert.deepEqual(recovered.playerRecipe.colors, [
+      { channelId: 'skin-tone', swatchId: 'violet' },
+    ]);
+    assert.deepEqual(backend.current().session.recipe.colors, [
+      { channelId: 'skin-tone', swatchId: 'violet' },
+    ]);
+    assert.equal(backend.current().revision, 2);
+    assert.equal(listPlayerSessionWals(storage, sessionKey).length, 0);
+    assert.equal(recovered.playerSaveState, 'saved');
+    recovered.context.walletAddress = '';
+    recovered.destroy();
+
+    const refreshed = createMakerWorkspace({
+      callbacks: {},
+      draftRepository: restoredMakerRepository(document),
+      walStorage: storage,
+      playerWalWriterId: 'smart-color-refresh',
+      loadPlayerSessionRecord: (key) => backend.load(key),
+      savePlayerSessionRecord: (key, session, metadata) => backend.save(key, session, metadata),
+    });
+    await refreshed.setContext(context);
+
+    assert.deepEqual(
+      refreshed.playerRecipe.colors,
+      [{ channelId: 'skin-tone', swatchId: 'violet' }],
+      'a later refresh must restore the color from the confirmed durable session',
+    );
+    assert.equal(refreshed.playerPersistedRevision, 2);
+    assert.equal(listPlayerSessionWals(storage, sessionKey).length, 0);
+    refreshed.context.walletAddress = '';
+    refreshed.destroy();
+  })
+));
+
 test('two Workspaces at one revision keep independent WAL branches and surface the losing CAS conflict', async () => (
   withAnimationFrame(async () => {
     const storage = memoryStorage();
