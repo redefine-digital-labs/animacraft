@@ -1,3 +1,5 @@
+import { gradientStopsForColor } from './maker-color.js';
+
 function slug(value, fallback = 'item') {
   const result = String(value || '')
     .normalize('NFKD')
@@ -120,6 +122,7 @@ export function createItem(part, name = 'New Item') {
 
 export function createGradientColorChannel(document, name = 'New Color') {
   const channelId = uniqueDocumentId(name, [document.colorChannels || []], 'color');
+  const primaryColor = '#7b5cff';
   return {
     id: channelId,
     name,
@@ -129,12 +132,8 @@ export function createGradientColorChannel(document, name = 'New Color') {
     swatches: [{
       id: 'default',
       name: 'Default',
-      hintColor: '#7b5cff',
-      stops: [
-        { offset: 0, color: '#211343' },
-        { offset: 0.5, color: '#7b5cff' },
-        { offset: 1, color: '#f0eaff' },
-      ],
+      hintColor: primaryColor,
+      stops: gradientStopsForColor(primaryColor),
     }],
   };
 }

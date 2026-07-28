@@ -83,6 +83,10 @@ function paletteIdOf(palette) {
   return String(palette?.id ?? palette?.key ?? '');
 }
 
+function swatchIdOf(swatch) {
+  return String(swatch?.id ?? swatch?.key ?? '');
+}
+
 function makerIdOf(maker) {
   return String(maker?.version?.rootMakerId ?? maker?.makerId ?? maker?.rootMakerId ?? maker?.metadata?.id ?? maker?.id ?? maker?.template?.id ?? '');
 }
@@ -944,6 +948,16 @@ function renderSignature(style) {
   });
 }
 
+function colorSwatchRenderSignature(swatch) {
+  return stableJson({
+    hintColor: String(swatch?.hintColor ?? '').toLowerCase(),
+    stops: asArray(swatch?.stops).map((stop) => ({
+      offset: Number(stop?.offset),
+      color: String(stop?.color ?? '').toLowerCase(),
+    })),
+  });
+}
+
 function coverAssetIdOf(maker) {
   return String(maker?.metadata?.coverAssetId ?? '');
 }
@@ -1089,10 +1103,35 @@ export function compareMakerCompatibility(previous, next) {
       addBreaking('color-channel-removed', `colorChannels.${channelId}`, 'A ColorChannel referenced by old recipes was removed.');
       return;
     }
-    if (stableJson({ mode: channel.mode, swatches: channel.swatches })
-      !== stableJson({ mode: replacement.mode, swatches: replacement.swatches })) {
-      addBreaking('color-channel-changed', `colorChannels.${channelId}`, 'Existing swatches or gradient mapping changed.', 'render');
+    if (String(channel.mode ?? '') !== String(replacement.mode ?? '')) {
+      addBreaking('color-channel-mode-changed', `colorChannels.${channelId}.mode`, 'The ColorChannel mapping mode changed.', 'render');
     }
+    if (String(channel.name ?? '') !== String(replacement.name ?? '')) {
+      addWarning('color-channel-name-changed', `colorChannels.${channelId}.name`, 'The ColorChannel display name changed.');
+    }
+    if (String(channel.defaultSwatchId ?? '') !== String(replacement.defaultSwatchId ?? '')) {
+      addWarning('color-channel-default-changed', `colorChannels.${channelId}.defaultSwatchId`, 'Existing OCs remain pinned, but the initial color preset will change.');
+    }
+
+    const previousSwatches = mapBy(channel.swatches, swatchIdOf);
+    const nextSwatches = mapBy(replacement.swatches, swatchIdOf);
+    previousSwatches.forEach((swatch, swatchId) => {
+      const nextSwatch = nextSwatches.get(swatchId);
+      if (!nextSwatch) {
+        addBreaking('color-swatch-removed', `colorChannels.${channelId}.swatches.${swatchId}`, 'A color preset referenced by old recipes was removed.');
+        return;
+      }
+      if (colorSwatchRenderSignature(swatch) !== colorSwatchRenderSignature(nextSwatch)) {
+        addBreaking('color-swatch-rendering-changed', `colorChannels.${channelId}.swatches.${swatchId}`, 'An existing color preset now renders a different gradient.', 'render');
+      } else if (String(swatch.name ?? '') !== String(nextSwatch.name ?? '')) {
+        addWarning('color-swatch-name-changed', `colorChannels.${channelId}.swatches.${swatchId}.name`, 'A color preset display name changed.');
+      }
+    });
+    nextSwatches.forEach((_, swatchId) => {
+      if (!previousSwatches.has(swatchId)) {
+        addAddition('color-swatch-added', `colorChannels.${channelId}.swatches.${swatchId}`, 'A player-selectable color preset was added.');
+      }
+    });
   });
   nextChannels.forEach((_, channelId) => {
     if (!previousChannels.has(channelId)) addAddition('color-channel-added', `colorChannels.${channelId}`, 'A ColorChannel was added.');

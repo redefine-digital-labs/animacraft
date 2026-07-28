@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   createGradientColorProcessor,
+  gradientStopsForColor,
   gradientMapPixels,
 } from '../maker-color.js';
 
@@ -13,6 +14,14 @@ class TestImageData {
     this.height = height;
   }
 }
+
+test('one creator primary color deterministically derives the rendered shadow, midtone, and highlight', () => {
+  assert.deepEqual(gradientStopsForColor('#22aa66'), [
+    { offset: 0, color: '#061f12' },
+    { offset: 0.5, color: '#22aa66' },
+    { offset: 1, color: '#ceecdd' },
+  ]);
+});
 
 test('gradient-map preserves alpha and deterministically maps dark, mid, light, and transparent pixels', () => {
   const previousImageData = globalThis.ImageData;

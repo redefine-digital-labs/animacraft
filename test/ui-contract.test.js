@@ -108,8 +108,8 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
-  assert.match(html, /styles\.css\?v=animacraft-player-palette-v1/);
-  assert.match(html, /app\.js\?v=animacraft-player-palette-v1/);
+  assert.match(html, /styles\.css\?v=animacraft-player-palette-v2/);
+  assert.match(html, /app\.js\?v=animacraft-player-palette-v2/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
   assert.match(app, /buildMakerV4PublicationBundle/);
