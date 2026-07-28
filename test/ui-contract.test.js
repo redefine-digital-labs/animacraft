@@ -108,8 +108,8 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
-  assert.match(html, /styles\.css\?v=animacraft-player-export-v1/);
-  assert.match(html, /app\.js\?v=animacraft-player-export-v1/);
+  assert.match(html, /styles\.css\?v=animacraft-player-palette-v1/);
+  assert.match(html, /app\.js\?v=animacraft-player-palette-v1/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
   assert.match(app, /buildMakerV4PublicationBundle/);
@@ -122,14 +122,19 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(workspace, /data-action="player-export-size"/);
   assert.match(workspace, /data-action="player-export-background"/);
   assert.match(workspace, /data-action="player-copy-maker-link"/);
-  assert.match(workspace, /aria-current="\$\{active \? 'true' : 'false'\}"/);
+  assert.match(workspace, /data-action="player-palette"/);
+  assert.match(workspace, /role="tab"/);
+  assert.match(workspace, /aria-selected="\$\{active \? 'true' : 'false'\}"/);
+  assert.match(workspace, /id="v4PlayerPickerPanel"/);
   assert.match(workspace, /class="v4-player-style-option/);
   assert.match(workspace, /class="v4-player-item-grid" role="radiogroup"/);
   assert.match(workspace, /type="button" role="radio" class="v4-player-item/);
   assert.match(workspace, /class="v4-player-style-picker" role="radiogroup"/);
   assert.match(workspace, /data-player-radio-group="style"/);
   assert.match(workspace, /class="v4-player-colors" role="radiogroup"/);
+  assert.match(workspace, /handlePlayerTabKeydown\(event\)/);
   assert.match(workspace, /handlePlayerRadioKeydown\(event\)/);
+  assert.match(workspace, /this\.restorePlayerPickerViewState\(pickerViewState\)/);
   assert.match(workspace, /const removePartReasonId = 'v4PlayerRemovePartReason'/);
   assert.match(workspace, /const clearOptionalReasonId = 'v4PlayerClearOptionalReason'/);
   assert.match(

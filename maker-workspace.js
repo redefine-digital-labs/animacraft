@@ -558,14 +558,17 @@ export function enabledExpansionIdsForDocument(document, enabledIds = []) {
     .filter((packId) => packId && requested.has(packId));
 }
 
-function resolvedPlayerColorChannelIds(document, recipe) {
+function resolvedPlayerColorChannelUsage(document, recipe) {
   try {
     const scene = resolveMakerScene(document, recipe, { strict: false });
-    return new Set(scene.layers
-      .map((layer) => String(layer?.colorChannel?.id || ''))
-      .filter(Boolean));
+    return scene.layers.reduce((usage, layer) => {
+      const channelId = String(layer?.colorChannel?.id || '');
+      if (!channelId) return usage;
+      usage.set(channelId, (usage.get(channelId) || 0) + 1);
+      return usage;
+    }, new Map());
   } catch {
-    return new Set();
+    return new Map();
   }
 }
 
@@ -1059,6 +1062,7 @@ export class MakerWorkspace {
     this.selectedChannelId = '';
     this.selectedSoulDocumentKey = 'soulMd';
     this.playerPartId = '';
+    this.playerPickerPanel = 'parts';
     this.creatorRecipe = { selections: [], colors: [] };
     this.playerRecipe = { selections: [], colors: [] };
     this.playerUndo = [];
@@ -1232,6 +1236,7 @@ export class MakerWorkspace {
         }
         return;
       }
+      if (this.handlePlayerTabKeydown(event)) return;
       if (this.handlePlayerRadioKeydown(event)) return;
       if (!this.playerIntroOpen) return;
       if (event.key === 'Tab') {
@@ -1653,6 +1658,7 @@ export class MakerWorkspace {
     );
     this.playerRecipe = playablePlayerRecipe.documentRecipe;
     this.playerPartId = document.parts.find((part) => part.menuVisible)?.id || document.parts[0]?.id || '';
+    this.playerPickerPanel = 'parts';
     this.playerProfile = {
       name: context.profile?.name || this.tr('untitledOc'),
       world: context.profile?.world || document.metadata.style || '',
@@ -3897,6 +3903,38 @@ export class MakerWorkspace {
     });
   }
 
+  handlePlayerTabKeydown(event) {
+    const keys = new Set(['ArrowLeft', 'ArrowRight', 'Home', 'End']);
+    if (!keys.has(event?.key)) return false;
+    const current = event.target?.closest?.('[role="tab"][data-action]');
+    const tablist = current?.closest?.('[role="tablist"]');
+    if (!current || !tablist?.querySelectorAll) return false;
+    const tabs = [...tablist.querySelectorAll('[role="tab"][data-action]')]
+      .filter((tab) => !tab.hidden && !tab.disabled);
+    const currentIndex = tabs.indexOf(current);
+    if (currentIndex < 0 || tabs.length === 0) return false;
+    let nextIndex = currentIndex;
+    if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = tabs.length - 1;
+    else if (event.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    }
+    event.preventDefault?.();
+    const next = tabs[nextIndex];
+    next.click?.();
+    requestAnimationFrame(() => {
+      const action = String(next.dataset?.action || '');
+      const partId = String(next.dataset?.partId || '');
+      const candidates = this.playerRoot?.querySelectorAll?.(`[data-action="${action}"]`) || [];
+      [...candidates].find((candidate) => (
+        action !== 'player-part' || String(candidate.dataset?.partId || '') === partId
+      ))?.focus?.({ preventScroll: true });
+    });
+    return true;
+  }
+
   handlePlayerRadioKeydown(event) {
     const keys = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
     if (!keys.has(event?.key)) return false;
@@ -3947,6 +3985,43 @@ export class MakerWorkspace {
       if (!body) return;
       body.scrollLeft = position.left;
       body.scrollTop = position.top;
+    });
+  }
+
+  capturePlayerPickerViewState() {
+    const rail = this.playerRoot?.querySelector?.('.v4-player-part-rail');
+    const picker = this.playerRoot?.querySelector?.('.v4-player-picker');
+    if (!rail && !picker) return null;
+    return {
+      rail: rail ? {
+        left: Number(rail.scrollLeft || 0),
+        top: Number(rail.scrollTop || 0),
+      } : null,
+      picker: picker ? {
+        context: String(picker.dataset?.playerPickerContext || ''),
+        left: Number(picker.scrollLeft || 0),
+        top: Number(picker.scrollTop || 0),
+      } : null,
+    };
+  }
+
+  restorePlayerPickerViewState(viewState) {
+    if (!viewState) return;
+    requestAnimationFrame(() => {
+      const rail = this.playerRoot?.querySelector?.('.v4-player-part-rail');
+      if (rail && viewState.rail) {
+        rail.scrollLeft = viewState.rail.left;
+        rail.scrollTop = viewState.rail.top;
+      }
+      const picker = this.playerRoot?.querySelector?.('.v4-player-picker');
+      if (
+        picker
+        && viewState.picker
+        && String(picker.dataset?.playerPickerContext || '') === viewState.picker.context
+      ) {
+        picker.scrollLeft = viewState.picker.left;
+        picker.scrollTop = viewState.picker.top;
+      }
     });
   }
 
@@ -6171,6 +6246,7 @@ export class MakerWorkspace {
 
   renderPlayer() {
     if (!this.playerRoot || !this.store) return;
+    const pickerViewState = this.capturePlayerPickerViewState();
     const exportScroll = this.playerExportOpen ? this.capturePlayerExportScroll() : null;
     const document = this.runtimeDocument();
     if (!document) return;
@@ -6218,12 +6294,48 @@ export class MakerWorkspace {
       : this.playerOptionReasonText(clearOptionalOption, document);
     const removePartReasonId = 'v4PlayerRemovePartReason';
     const clearOptionalReasonId = 'v4PlayerClearOptionalReason';
+    const colorChannelUsage = resolvedPlayerColorChannelUsage(document, recipe);
+    const activeColorChannels = document.colorChannels.filter((channel) => (
+      channel.mode === 'gradient-map' && colorChannelUsage.has(channel.id)
+    ));
+    if (this.playerPickerPanel === 'colors' && activeColorChannels.length === 0) {
+      this.playerPickerPanel = 'parts';
+    }
+    const paletteActive = this.playerPickerPanel === 'colors';
+    const paletteButton = activeColorChannels.length ? `
+      <button
+        type="button"
+        id="v4PlayerPaletteTab"
+        role="tab"
+        class="v4-player-part v4-player-palette-tab ${paletteActive ? 'active' : ''}"
+        data-action="player-palette"
+        aria-selected="${paletteActive ? 'true' : 'false'}"
+        aria-controls="v4PlayerPickerPanel"
+        tabindex="${paletteActive ? '0' : '-1'}"
+        title="${escapeHtml(this.tr('openPlayerPalette'))}"
+      >
+        <span class="v4-player-palette-icon" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <strong>${escapeHtml(this.tr('playerPalette'))}</strong>
+        <small>${escapeHtml(this.tr('playerPaletteChannelCount', { count: activeColorChannels.length }))}</small>
+        ${paletteActive ? '<i class="v4-player-selected-mark" aria-hidden="true">✓</i>' : ''}
+      </button>
+    ` : '';
     const partButtons = parts.map((candidate) => {
       const selection = selectionMap.get(candidate.id);
       const thumbnail = this.partThumbnailUrl(candidate, selection);
-      const active = candidate.id === part?.id;
+      const active = !paletteActive && candidate.id === part?.id;
       return `
-        <button type="button" class="v4-player-part ${active ? 'active' : ''} ${selection?.itemId ? 'has-selection' : ''}" data-action="player-part" data-part-id="${escapeHtml(candidate.id)}" aria-current="${active ? 'true' : 'false'}">
+        <button
+          type="button"
+          id="v4PlayerPartTab-${escapeHtml(candidate.id)}"
+          role="tab"
+          class="v4-player-part ${active ? 'active' : ''} ${selection?.itemId ? 'has-selection' : ''}"
+          data-action="player-part"
+          data-part-id="${escapeHtml(candidate.id)}"
+          aria-selected="${active ? 'true' : 'false'}"
+          aria-controls="v4PlayerPickerPanel"
+          tabindex="${active ? '0' : '-1'}"
+        >
           <span>${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : escapeHtml(candidate.name.slice(0, 2).toUpperCase())}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
           <small>${escapeHtml(this.tr(selection?.itemId ? 'selectedState' : candidate.required ? 'required' : 'noneState'))}</small>
@@ -6263,20 +6375,34 @@ export class MakerWorkspace {
         </button>
       `;
     }).join('') || '';
-    const usedChannelIds = resolvedPlayerColorChannelIds(document, recipe);
-    const colorRows = document.colorChannels.filter((channel) => usedChannelIds.has(channel.id)).map((channel, channelIndex) => {
+    const colorRows = activeColorChannels.map((channel, channelIndex) => {
       const selectedColor = recipe.colors?.find((entry) => entry.channelId === channel.id)?.swatchId || channel.defaultSwatchId;
       const colorRovingId = channel.swatches.some((swatch) => swatch.id === selectedColor)
         ? selectedColor
         : channel.swatches[0]?.id;
       const colorLabelId = `v4PlayerColorGroupLabel-${channelIndex}`;
+      const linkedLayerCount = colorChannelUsage.get(channel.id) || 0;
       return `
-        <div class="v4-player-colors" role="radiogroup" aria-labelledby="${colorLabelId}"><span id="${colorLabelId}">${escapeHtml(channel.name)}</span><div>${channel.swatches.map((swatch, swatchIndex) => `<button type="button" role="radio" class="${swatch.id === selectedColor ? 'active' : ''}" style="--swatch:${escapeHtml(swatch.hintColor)}" data-action="player-color" data-channel-id="${escapeHtml(channel.id)}" data-swatch-id="${escapeHtml(swatch.id)}" data-player-radio-group="color-${channelIndex}" data-player-radio-index="${swatchIndex}" title="${escapeHtml(swatch.name)}" aria-label="${escapeHtml(`${channel.name}: ${swatch.name}`)}" aria-checked="${swatch.id === selectedColor ? 'true' : 'false'}" tabindex="${swatch.id === colorRovingId ? '0' : '-1'}"><i></i>${swatch.id === selectedColor ? '<b aria-hidden="true">✓</b>' : ''}</button>`).join('')}</div></div>
+        <article class="v4-player-color-channel-card">
+          <header>
+            <div><strong id="${colorLabelId}">${escapeHtml(channel.name)}</strong><small>${escapeHtml(this.tr('playerPaletteLinkedLayerCount', { count: linkedLayerCount }))}</small></div>
+            <span style="--swatch:${escapeHtml(channel.swatches.find((swatch) => swatch.id === selectedColor)?.hintColor || channel.swatches[0]?.hintColor || '#7b5cff')}" aria-hidden="true"></span>
+          </header>
+          <div class="v4-player-colors" role="radiogroup" aria-labelledby="${colorLabelId}">
+            <div>${channel.swatches.map((swatch, swatchIndex) => `<button type="button" role="radio" class="${swatch.id === selectedColor ? 'active' : ''}" style="--swatch:${escapeHtml(swatch.hintColor)}" data-action="player-color" data-channel-id="${escapeHtml(channel.id)}" data-swatch-id="${escapeHtml(swatch.id)}" data-player-radio-group="color-${channelIndex}" data-player-radio-index="${swatchIndex}" title="${escapeHtml(swatch.name)}" aria-label="${escapeHtml(this.tr('playerPaletteSwatchLabel', { channel: channel.name, swatch: swatch.name }))}" aria-checked="${swatch.id === selectedColor ? 'true' : 'false'}" tabindex="${swatch.id === colorRovingId ? '0' : '-1'}"><i></i><span>${escapeHtml(swatch.name)}</span>${swatch.id === selectedColor ? '<b aria-hidden="true">✓</b>' : ''}</button>`).join('')}</div>
+          </div>
+        </article>
       `;
     }).join('');
-    const colorControls = colorRows
-      ? `<section class="v4-player-color-controls"><strong>${escapeHtml(this.tr('activeOcColors'))}</strong>${colorRows}</section>`
-      : '';
+    const colorControls = colorRows ? `
+      <section class="v4-player-palette-panel">
+        <header>
+          <div><span>${escapeHtml(this.tr('smartColor'))}</span><h2>${escapeHtml(this.tr('activeOcColors'))}</h2><p>${escapeHtml(this.tr('playerPaletteCopy'))}</p></div>
+          <strong>${escapeHtml(this.tr('playerPaletteChannelCount', { count: activeColorChannels.length }))}</strong>
+        </header>
+        <div class="v4-player-color-channel-grid">${colorRows}</div>
+      </section>
+    ` : '';
     const packs = this.store.getState().document.extensions?.expansionDrafts || [];
     const selectedSummary = parts.map((candidate) => {
       const selectedItem = candidate.items.find((item) => item.id === selectionMap.get(candidate.id)?.itemId);
@@ -6314,16 +6440,23 @@ export class MakerWorkspace {
             <div class="v4-player-recipe-strip">${selectedSummary}</div>
           </section>
           <section class="v4-player-controls">
-            <div class="v4-player-part-rail">${partButtons}</div>
-            <div class="v4-player-picker">
-              <header><div><span>${escapeHtml(this.tr('currentPart'))}</span><h2 id="v4PlayerItemGroupLabel">${escapeHtml(part?.name || this.tr('noPlayableParts'))}</h2></div>${removePartOption?.visible ? `<div class="v4-player-remove-control"><button type="button" data-action="player-none" class="secondary" ${removePartOption.selectable ? '' : `aria-disabled="true" aria-describedby="${removePartReasonId}"`} title="${escapeHtml(removePartReason || this.tr('noneRemove'))}">${escapeHtml(this.tr('noneRemove'))}</button>${removePartReason ? `<small id="${removePartReasonId}" class="v4-player-disabled-reason">${escapeHtml(removePartReason)}</small>` : ''}</div>` : ''}</header>
-              <div class="v4-player-item-grid" role="radiogroup" aria-labelledby="v4PlayerItemGroupLabel">${itemButtons || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noAvailableItems'))}</span></div>`}</div>
-              ${currentItem && visibleStyles.length > 1 ? `<div class="v4-player-style-picker" role="radiogroup" aria-labelledby="v4PlayerStyleGroupLabel"><span id="v4PlayerStyleGroupLabel">${escapeHtml(this.tr('style'))}</span>${styleButtons}</div>` : ''}
-              ${colorControls}
-              ${packs.length ? `<details class="v4-player-expansions"><summary>${escapeHtml(this.tr('expansionPacks'))}</summary><p>${escapeHtml(this.tr('expansionSelectionSaved'))}</p>${packs.map((pack) => {
-                const compatibility = checkExpansionPackCompatibility(this.store.getState().document, pack);
-                return `<label><input type="checkbox" data-action="player-expansion" value="${escapeHtml(pack.packId)}" ${checked(this.enabledExpansionIds.has(pack.packId))} ${compatibility.compatible ? '' : 'disabled'} /><span><strong>${escapeHtml(pack.name)}</strong><small>${escapeHtml(this.tr(compatibility.compatible ? 'optionalContentPack' : 'incompatibleVersion'))}</small></span></label>`;
-              }).join('')}</details>` : ''}
+            <div class="v4-player-part-rail" role="tablist" aria-label="${escapeHtml(this.tr('playerPickerNavigation'))}">${paletteButton}${partButtons}</div>
+            <div
+              id="v4PlayerPickerPanel"
+              class="v4-player-picker ${paletteActive ? 'palette-active' : ''}"
+              role="tabpanel"
+              data-player-picker-context="${escapeHtml(paletteActive ? 'colors' : (part?.id || ''))}"
+              aria-labelledby="${paletteActive ? 'v4PlayerPaletteTab' : `v4PlayerPartTab-${escapeHtml(part?.id || '')}`}"
+            >
+              ${paletteActive ? colorControls : `
+                <header><div><span>${escapeHtml(this.tr('currentPart'))}</span><h2 id="v4PlayerItemGroupLabel">${escapeHtml(part?.name || this.tr('noPlayableParts'))}</h2></div>${removePartOption?.visible ? `<div class="v4-player-remove-control"><button type="button" data-action="player-none" class="secondary" ${removePartOption.selectable ? '' : `aria-disabled="true" aria-describedby="${removePartReasonId}"`} title="${escapeHtml(removePartReason || this.tr('noneRemove'))}">${escapeHtml(this.tr('noneRemove'))}</button>${removePartReason ? `<small id="${removePartReasonId}" class="v4-player-disabled-reason">${escapeHtml(removePartReason)}</small>` : ''}</div>` : ''}</header>
+                <div class="v4-player-item-grid" role="radiogroup" aria-labelledby="v4PlayerItemGroupLabel">${itemButtons || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noAvailableItems'))}</span></div>`}</div>
+                ${currentItem && visibleStyles.length > 1 ? `<div class="v4-player-style-picker" role="radiogroup" aria-labelledby="v4PlayerStyleGroupLabel"><span id="v4PlayerStyleGroupLabel">${escapeHtml(this.tr('style'))}</span>${styleButtons}</div>` : ''}
+                ${packs.length ? `<details class="v4-player-expansions"><summary>${escapeHtml(this.tr('expansionPacks'))}</summary><p>${escapeHtml(this.tr('expansionSelectionSaved'))}</p>${packs.map((pack) => {
+                  const compatibility = checkExpansionPackCompatibility(this.store.getState().document, pack);
+                  return `<label><input type="checkbox" data-action="player-expansion" value="${escapeHtml(pack.packId)}" ${checked(this.enabledExpansionIds.has(pack.packId))} ${compatibility.compatible ? '' : 'disabled'} /><span><strong>${escapeHtml(pack.name)}</strong><small>${escapeHtml(this.tr(compatibility.compatible ? 'optionalContentPack' : 'incompatibleVersion'))}</small></span></label>`;
+                }).join('')}</details>` : ''}
+              `}
             </div>
           </section>
         </div>
@@ -6363,6 +6496,7 @@ export class MakerWorkspace {
       ` : ''}
       ${this.renderPlayerExportModal(document)}
     `;
+    this.restorePlayerPickerViewState(pickerViewState);
     if (this.playerExportOpen) {
       this.restorePlayerExportScroll(exportScroll);
       this.focusPlayerExportDialog();
@@ -8509,9 +8643,24 @@ export class MakerWorkspace {
     const selections = recipeSelectionMap(this.playerRecipe);
     const current = selections.get(part?.id);
     const item = part?.items.find((candidate) => candidate.id === current?.itemId);
+    if (action === 'player-palette') {
+      if (!resolvedPlayerColorChannelUsage(document, this.playerRecipe).size) return;
+      this.playerPickerPanel = 'colors';
+      this.render();
+      requestAnimationFrame(() => {
+        this.playerRoot?.querySelector('[data-action="player-palette"]')?.focus?.({ preventScroll: true });
+      });
+      return;
+    }
     if (action === 'player-part') {
       this.playerPartId = button.dataset.partId;
+      this.playerPickerPanel = 'parts';
       this.render();
+      requestAnimationFrame(() => {
+        [...(this.playerRoot?.querySelectorAll?.('[data-action="player-part"]') || [])]
+          .find((candidate) => String(candidate.dataset?.partId || '') === String(this.playerPartId))
+          ?.focus?.({ preventScroll: true });
+      });
       return;
     }
     if (action === 'player-item' && part) {
@@ -8554,9 +8703,22 @@ export class MakerWorkspace {
       next.colors ||= [];
       const index = next.colors.findIndex((entry) => entry.channelId === button.dataset.channelId);
       const selection = { channelId: button.dataset.channelId, swatchId: button.dataset.swatchId };
+      if (
+        index >= 0
+        && next.colors[index].channelId === selection.channelId
+        && next.colors[index].swatchId === selection.swatchId
+      ) return;
       if (index >= 0) next.colors[index] = selection;
       else next.colors.push(selection);
       this.setPlayerRecipe(next, 'Change color');
+      requestAnimationFrame(() => {
+        [...(this.playerRoot?.querySelectorAll?.('[data-action="player-color"]') || [])]
+          .find((candidate) => (
+            String(candidate.dataset?.channelId || '') === String(selection.channelId)
+            && String(candidate.dataset?.swatchId || '') === String(selection.swatchId)
+          ))
+          ?.focus?.({ preventScroll: true });
+      });
       return;
     }
     if (action === 'player-undo') {
@@ -8792,6 +8954,7 @@ export class MakerWorkspace {
     this.playerRoot?.removeEventListener('change', this.boundPlayerChange);
     this.playerRoot?.removeEventListener('input', this.boundPlayerChange);
     this.playerRoot?.removeEventListener('keydown', this.boundPlayerKeydown);
+    this.applyColorChannel.clear?.();
     this.assetResolver.clear();
     this.assets.forEach(revokeRuntimeAsset);
     this.renderAbort.creator?.abort();
