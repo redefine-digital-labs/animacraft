@@ -56,10 +56,11 @@ test('the player workbench constrains the canvas and scrolls its side panels', a
 });
 
 test('the certified OC handoff uses the dedicated Soulidity adapter for free and paid Makers', async () => {
-  const [html, app, runtime] = await Promise.all([
+  const [html, app, runtime, docsContent] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),
     readFile(new URL('../app.js', import.meta.url), 'utf8'),
     readFile(new URL('../runtime-config.js', import.meta.url), 'utf8'),
+    readFile(new URL('../docs-center-content.js', import.meta.url), 'utf8'),
   ]);
 
   assert.match(runtime, /soulidityIntegrationPath:\s*'\/integrations\/animacraft'/);
@@ -71,7 +72,8 @@ test('the certified OC handoff uses the dedicated Soulidity adapter for free and
   assert.match(app, /if \(!canonicalSoulMintEnabled\) throw new Error\(t\('canonicalMintDisabled'\)\);/);
   assert.doesNotMatch(app, /&& !activeTemplate\(\)\?\.mintFeeEnabled && ocRecipeIssues/);
   assert.match(html, /id="soulidityMySoulsLink" data-soulidity-auth/);
-  assert.match(html, /<strong[^>]*data-i18n="docsHandoffTitle"[^>]*>Dedicated handoff<\/strong>/);
+  assert.match(docsContent, /id:\s*'soul-configuration'/);
+  assert.match(docsContent, /Soulidity/);
   assert.doesNotMatch(html, /<strong>Temporary Import Kit<\/strong>/);
 });
 
@@ -108,8 +110,8 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
-  assert.match(html, /styles\.css\?v=animacraft-production-rules-v4/);
-  assert.match(html, /app\.js\?v=animacraft-production-rules-v4/);
+  assert.match(html, /styles\.css\?v=animacraft-docs-center-v1/);
+  assert.match(html, /app\.js\?v=animacraft-docs-center-v1/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
   assert.match(app, /buildMakerV4PublicationBundle/);
@@ -444,10 +446,10 @@ test('production static pages and accessibility labels are fully wired to five-l
     assert.match(app, new RegExp(`\\b${key}:`), `missing application translation key: ${key}`);
   });
   assert.ok(app.includes("document.querySelectorAll('[data-i18n-aria-label]')"));
-  assert.match(html, /data-i18n="docsHierarchyToken">Maker → Part → Item → Style → PNG/);
+  assert.match(html, /id="docsHandbook"[^>]*class="docs-handbook"/);
+  assert.match(app, /import\('\.\/docs-center\.js'\)/);
+  assert.match(app, /createDocsCenter\(root\)/);
   assert.doesNotMatch(html, />Part → Item → Image</);
-  assert.match(html, /The separate Layer Tracks panel only controls global back-to-front order/);
-  assert.doesNotMatch(html, /One Style owns one PNG on one LayerTrack/);
   assert.match(app, /titleKey: 'chainActionWalletTitle'/);
   assert.match(app, /escapeHtml\(t\(action\.titleKey\)\)/);
   assert.match(app, /\['01', 'docsProtocolStep1Title', 'docsProtocolStep1Copy'\]/);
@@ -510,15 +512,21 @@ test('production gallery is chain-derived and creator packs are local test fixtu
 });
 
 test('Maker v5 exposes the four-level P0 creator workflow without legacy visual sublayers', async () => {
-  const [html, app, workspace, workspaceI18n, styles] = await Promise.all([
+  const [html, app, workspace, workspaceI18n, styles, docsContent] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),
     readFile(new URL('../app.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace-i18n.js', import.meta.url), 'utf8'),
     readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+    readFile(new URL('../docs-center-content.js', import.meta.url), 'utf8'),
   ]);
 
-  assert.match(html, /every Style directly owns one PNG plus its position and render settings/);
+  assert.match(html, /id="docsHandbook"/);
+  assert.match(docsContent, /Maker/);
+  assert.match(docsContent, /Part/);
+  assert.match(docsContent, /Item/);
+  assert.match(docsContent, /Style/);
+  assert.match(docsContent, /PNG/);
   assert.match(app, /classList\.toggle\('v4-parts-active', state\.editorPanel === 'parts'\)/);
   assert.match(app, /const items = Array\.isArray\(part\.items\) \? part\.items : \[\];/);
   assert.match(app, /const styles = items\.flatMap\(\(item\) => item\.styles \|\| \[\]\);/);

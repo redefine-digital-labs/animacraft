@@ -7,7 +7,7 @@
     <meta name="description" content="Animacraft is The Fully Onchain Character Maker & Creator." />
     <meta name="theme-color" content="#f3f7f8" />
     <script src="/theme-bootstrap.js?v=animacraft-theme-v1"></script>
-    <link rel="stylesheet" href="./styles.css?v=animacraft-production-rules-v4" />
+    <link rel="stylesheet" href="./styles.css?v=animacraft-docs-center-v1" />
     <script src="/config.js"></script>
   </head>
   <body>
@@ -882,24 +882,8 @@
             </p>
           </div>
         </div>
-        <div class="docs-callout-grid">
-          <section class="protocol-card">
-            <span>0x</span>
-            <h2 data-i18n="docsNoSignerTitle">No backend signer</h2>
-            <p data-i18n="docsNoSignerCopy">Creators and users sign their own transactions. Public reads use Sui GraphQL, while every core write belongs to Sui objects and wallet PTBs.</p>
-          </section>
-          <section class="protocol-card">
-            <span>W</span>
-            <h2 data-i18n="docsWalrusAssetsTitle">Walrus as asset layer</h2>
-            <p data-i18n="docsWalrusAssetsCopy">Style PNGs, picker icons, Maker manifests, finished OC images, and profile JSON resolve from browser-certified Walrus Quilts. Sui records bounded Quilt and patch locators.</p>
-          </section>
-          <section class="protocol-card">
-            <span>PR</span>
-            <h2 data-i18n="docsOpenSourceTitle">Open-source releases</h2>
-            <p data-i18n="docsOpenSourceCopy">Production changes land through pull requests, CI checks, and CODEOWNERS review before shipping to Vercel.</p>
-          </section>
-        </div>
-        <section class="chain-status-panel docs-chain-panel">
+        <div id="docsHandbook" class="docs-handbook"></div>
+        <section class="chain-status-panel docs-chain-panel docs-live-reference">
           <div>
             <p class="kicker" data-i18n="docsArchitectureKicker">Production Architecture</p>
             <h2 data-i18n="docsArchitectureTitle">Creator to player without a backend database</h2>
@@ -907,55 +891,10 @@
           </div>
           <div class="chain-action-list" data-chain-action-list></div>
         </section>
-        <section class="docs-guide">
-          <div class="docs-guide-head">
-            <div><p class="kicker" data-i18n="docsCreatorGuide">Creator Guide</p><h2 data-i18n="docsBuildMakerTitle">Build one Character Maker</h2></div>
-            <span class="template-token" data-i18n="docsHierarchyToken">Maker → Part → Item → Style → PNG</span>
-          </div>
-          <div class="docs-workflow">
-            <article><span>01</span><strong data-i18n="docsStep1Title">Library & Maker Top</strong><p data-i18n="docsStep1Copy">Create or open a Maker in the library, then use Maker Top to review structure, files, rules, and release readiness.</p></article>
-            <article><span>02</span><strong data-i18n="docsStep2Title">Character Maker</strong><p data-i18n="docsStep2Copy">Work in one studio: Part is the player menu, Item is one choice, and every Style directly owns one PNG plus its position and render settings.</p></article>
-            <article><span>03</span><strong data-i18n="docsStep3Title">Layer Tracks</strong><p data-i18n="docsStep3Copy">Arrange the global back-to-front render order, then position, scale, rotate, blend, hide, solo, and confirm each bound PNG on the shared canvas.</p></article>
-            <article><span>04</span><strong data-i18n="docsStep4Title">Smart Color & Rules</strong><p data-i18n="docsStep4Copy">Create deterministic linked color channels and enforce Item or Style requirements, exclusions, parent visibility, and valid random combinations.</p></article>
-            <article><span>05</span><strong data-i18n="docsStep5Title">Player Test & Preflight</strong><p data-i18n="docsStep5Copy">Use the exact player renderer, then resolve every missing asset, unconfirmed position, invalid default, rule conflict, and compatibility issue.</p></article>
-            <article><span>06</span><strong data-i18n="docsStep6Title">On-chain Publish</strong><p data-i18n="docsStep6Copy">Prepare one Walrus quilt, register and upload it, certify availability, then publish and share the OCMaker on Sui. Interrupted stages can resume locally.</p></article>
-          </div>
-        </section>
-        <section class="docs-model">
-          <div><p class="kicker" data-i18n="docsDataModelKicker">Maker Data Model</p><h2 data-i18n="docsDataModelTitle">Where each setting belongs</h2></div>
-          <div class="docs-model-grid">
-            <article><strong data-i18n="docsPartTerm">Part</strong><span data-i18n="docsPartCopy">One player menu category with required/optional behavior, parent visibility, icon, default Item, and selection rules.</span></article>
-            <article><strong data-i18n="docsItemStyleTerm">Item & Style</strong><span data-i18n="docsItemStyleCopy">Item is one player click. Style is the required visual choice under that Item; both may carry requires/excludes rules.</span></article>
-            <article><strong data-i18n="docsLayerTrackTerm">LayerTrack</strong><span data-i18n="docsLayerTrackCopy">A global back-to-front render lane shared across Parts. Player menu order never changes visual z-order.</span></article>
-            <article><strong data-i18n="docsStylePngTerm">Style PNG</strong><span data-i18n="docsStylePngCopy">One Style directly owns one PNG with its own transform, opacity, blend mode, visibility, locking, and optional Smart Color. The separate Layer Tracks panel only controls global back-to-front order.</span></article>
-            <article><strong data-i18n="docsColorChannelTerm">ColorChannel</strong><span data-i18n="docsColorChannelCopy">A deterministic gradient-map palette shared by Styles that recolor their one PNG together.</span></article>
-            <article><strong>OCMaker</strong><span data-i18n="docsOcMakerCopy">The shared Sui object binds original creator, Quilt Blob ID, public Parts/Items/Colors, rules, mint economics, license policy, and archive state.</span></article>
-            <article><strong>MakerTreasury</strong><span data-i18n="docsTreasuryCopy">A shared coin-typed vault receives exact native-USDC mint fees and records collection and withdrawal totals.</span></article>
-            <article><strong>MakerAdminCap</strong><span data-i18n="docsAdminCapCopy">The transferable management right controls economics, withdrawals, and lifecycle. Cap ownership is separate from original art provenance.</span></article>
-          </div>
-        </section>
-        <section class="docs-model">
-          <div><p class="kicker" data-i18n="docsProtocolBoundary">Protocol Boundary</p><h2 data-i18n="docsBoundaryTitle">One Maker, one canonical Soul</h2></div>
-          <div class="docs-model-grid">
-            <article><strong>Animacraft</strong><span data-i18n="docsAnimacraftCopy">Publishes the shared Maker, USDC Treasury, transferable AdminCap, immutable recipe rules, and a one-PTB Soul mint authorization. It does not mint a finished character token.</span></article>
-            <article><strong>Soulidity</strong><span data-i18n="docsSoulidityCopy">Consumes the authorization, creates the only Soul, binds mandatory Soul Character and Memory Blobs, locks ownership in a personal Kiosk, and handles social and marketplace activity.</span></article>
-            <article><strong data-i18n="docsHandoffTitle">Dedicated handoff</strong><span data-i18n="docsHandoffCopy">The certified OC profile opens Soulidity's Animacraft integration route. The downloaded handoff archive is recovery material, not a second mint path.</span></article>
-            <article><strong data-i18n="docsAdapterTitle">Canonical adapter</strong><span data-i18n="docsAdapterCopy">Free and paid Maker authorization, verified provenance, Maker resale royalty, and the Soul mint execute through the reviewed cross-package path after its Mainnet release gate is enabled.</span></article>
-          </div>
-        </section>
-        <section class="docs-model">
-          <div><p class="kicker" data-i18n="docsLifecycleKicker">Maker Lifecycle</p><h2 data-i18n="docsLifecycleTitle">Delete locally, archive on-chain</h2></div>
-          <div class="docs-model-grid">
-            <article><strong data-i18n="docsLocalDraftTitle">Local draft</strong><span data-i18n="docsLocalDraftCopy">IndexedDB stores wallet-scoped structure, source files, and upload checkpoints. Maker, Part, Item, Style, and Color records may be permanently deleted before publication.</span></article>
-            <article><strong data-i18n="docsPublishedMakerTitle">Published Maker</strong><span data-i18n="docsPublishedMakerCopy">Publication locks art, rules, and the previously certified Walrus manifest locator. The Cap holder may only change future mint economics and archive state.</span></article>
-            <article><strong data-i18n="docsArchivedMakerTitle">Archived Maker</strong><span data-i18n="docsArchivedMakerCopy">The creator may archive or restore a published Maker with a wallet signature. Archive blocks new Soul authorizations while preserving existing Souls, rights snapshots, and provenance.</span></article>
-            <article><strong data-i18n="docsWalrusRetentionTitle">Walrus retention</strong><span data-i18n="docsWalrusRetentionCopy">Production uploads request 53 Mainnet epochs, currently about two years. Removing a local reference does not erase certified storage, but retention must be extended before expiry.</span></article>
-          </div>
-        </section>
-        <div id="protocolSteps" class="protocol-grid"></div>
+        <div id="protocolSteps" class="protocol-grid docs-protocol-grid"></div>
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=animacraft-production-rules-v4"></script>
+    <script type="module" src="./app.js?v=animacraft-docs-center-v1"></script>
   </body>
 </html>

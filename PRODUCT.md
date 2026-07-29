@@ -6,7 +6,7 @@
 
 It serves two linked roles:
 
-- **Maker creators:** artists package reusable Parts, Items, Layers, Colors, rules, and usage policy.
+- **Maker creators:** artists package reusable Parts, Items, Styles, Layer Tracks, Smart Color channels, rules, and usage policy.
 - **OC makers:** users choose a published Maker, combine its options, and mint the resulting character as a Soul in Soulidity.
 
 ## Public Without a Wallet
@@ -29,7 +29,7 @@ The wallet is the account. There is no separate Animacraft password or backend s
 ## What Animacraft Owns
 
 - Character Maker editor and player
-- Part -> Item -> Layer x Color asset model
+- Maker -> Part -> Item -> Style -> one PNG asset model, with global z-only Layer Tracks and shared gradient-map Color Channels
 - Draft persistence and upload recovery
 - Public Maker discovery and manifest hydration
 - CreatorProfile, OCMaker, MakerTreasury, MakerAdminCap, and SoulMintAuthorization Move types
