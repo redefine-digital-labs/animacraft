@@ -144,6 +144,49 @@ test('an empty default Style is hidden while a valid alternative keeps its Item 
   assert.deepEqual(recipe, recipeBefore);
 });
 
+test('Style visibility controls Player availability while another visible Style keeps the Item playable', () => {
+  const maker = optionMaker();
+  const casual = maker.parts.find((part) => part.id === 'outfit')
+    .items.find((candidate) => candidate.id === 'casual');
+  casual.styles[0].visibleWhen = {
+    op: 'selected',
+    partId: 'accessory',
+    itemId: 'sword',
+  };
+  casual.styles.push(style('alternate', 'casual-alternate-art'));
+  maker.assets.push(png('casual-alternate-art'));
+
+  const hidden = evaluatePlayerStyleOption(maker, maker.defaultRecipe, {
+    partId: 'outfit',
+    itemId: 'casual',
+    styleId: 'default',
+  });
+  assert.equal(hidden.visible, false);
+  assert.equal(hidden.selectable, false);
+
+  const itemOption = evaluatePlayerItemOption(maker, maker.defaultRecipe, {
+    partId: 'outfit',
+    itemId: 'casual',
+  });
+  assert.equal(itemOption.visible, true);
+  assert.equal(itemOption.selectable, true);
+  assert.equal(itemOption.preferredStyleId, 'alternate');
+
+  const swordRecipe = structuredClone(maker.defaultRecipe);
+  swordRecipe.selections = swordRecipe.selections.map((selection) => (
+    selection.partId === 'accessory'
+      ? { partId: 'accessory', itemId: 'sword', styleId: 'default' }
+      : selection
+  ));
+  const visible = evaluatePlayerStyleOption(maker, swordRecipe, {
+    partId: 'outfit',
+    itemId: 'casual',
+    styleId: 'default',
+  });
+  assert.equal(visible.visible, true);
+  assert.equal(visible.selectable, true);
+});
+
 test('requires disables a candidate instead of replacing another selected Part', () => {
   const maker = optionMaker();
   const recipe = structuredClone(maker.defaultRecipe);

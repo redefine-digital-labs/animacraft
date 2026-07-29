@@ -108,8 +108,8 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
-  assert.match(html, /styles\.css\?v=animacraft-contextual-palette-v3/);
-  assert.match(html, /app\.js\?v=animacraft-contextual-palette-v3/);
+  assert.match(html, /styles\.css\?v=animacraft-production-rules-v4/);
+  assert.match(html, /app\.js\?v=animacraft-production-rules-v4/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
   assert.match(app, /buildMakerV4PublicationBundle/);
@@ -182,7 +182,9 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(styles, /\.v4-player-part\.active\s*\{[^}]*box-shadow:/s);
   assert.match(styles, /\.v4-chain-flow button\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px;/s);
   assert.match(styles, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.v4-chain-status > i\s*\{[^}]*animation:\s*none;/);
-  assert.match(workspace, /role="tab" aria-selected=/);
+  assert.match(workspace, /id="makerV4Tab-\$\{id\}"[\s\S]*?aria-pressed="\$\{this\.creatorTab === id\}"/);
+  assert.match(workspace, /id="v4RuleAvailabilityTab"[\s\S]*?role="tab"[\s\S]*?aria-selected=/);
+  assert.match(workspace, /id="v4RuleVisibilityPanel"[\s\S]*?role="tabpanel"/);
   assert.match(workspace, /else if \(style\.positionConfirmed === false\)/);
   assert.match(workspace, /data-action="focus-issue"/);
   assert.match(workspace, /data-action="style-asset"/);

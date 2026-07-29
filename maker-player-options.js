@@ -126,21 +126,26 @@ function firstCandidateViolation(context, evaluation, candidate) {
 
 function selectorLabel(maker, selector) {
   const part = findPart(maker, selector?.partId);
-  const item = part && (selector?.itemId
-    ? findItem(part, selector.itemId)
-    : Array.isArray(selector?.itemIds) && selector.itemIds.length === 1
-      ? findItem(part, selector.itemIds[0])
-      : null);
-  const style = item && (selector?.styleId
-    ? findStyle(item, selector.styleId)
-    : Array.isArray(selector?.styleIds) && selector.styleIds.length === 1
-      ? findStyle(item, selector.styleIds[0])
-      : null);
-  const labels = [
-    part?.name || selector?.partId,
-    item?.name || selector?.itemId,
-    style?.name || selector?.styleId,
-  ].filter(Boolean);
+  const itemIds = selector?.itemId
+    ? [selector.itemId]
+    : Array.isArray(selector?.itemIds)
+      ? selector.itemIds
+      : [];
+  const itemNames = itemIds
+    .map((itemId) => findItem(part, itemId)?.name || stringId(itemId))
+    .filter(Boolean);
+  const item = part && itemIds.length === 1 ? findItem(part, itemIds[0]) : null;
+  const styleIds = selector?.styleId
+    ? [selector.styleId]
+    : Array.isArray(selector?.styleIds)
+      ? selector.styleIds
+      : [];
+  const styleNames = styleIds
+    .map((styleId) => findStyle(item, styleId)?.name || stringId(styleId))
+    .filter(Boolean);
+  const labels = [part?.name || selector?.partId].filter(Boolean);
+  if (itemNames.length) labels.push(itemNames.join(' or '));
+  if (styleNames.length) labels.push(styleNames.join(' or '));
   return labels.join(' › ') || 'the required option';
 }
 

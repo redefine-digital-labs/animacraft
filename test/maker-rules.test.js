@@ -3,12 +3,14 @@ import test from 'node:test';
 
 import {
   MakerRuleError,
+  collectMakerRules,
   composeRuleTargets,
   createMakerRuleIndex,
   evaluateRecipe,
   evaluateVisibleWhen,
   generateValidRecipe,
   isStyleVisible,
+  migrateLegacyMakerRules,
   normalizeRecipe,
   ruleSelectorKey,
 } from '../maker-rules.js';
@@ -150,6 +152,72 @@ test('composes canonical ALL and same-Part ANY targets with stable set identity'
   );
 });
 
+test('migrates resolvable legacy global and nested rules without silently dropping ambiguous rules', () => {
+  const maker = ruleMaker();
+  const casual = maker.parts[1].items[0];
+  casual.rules = {
+    requires: [{ partId: 'accessory', itemId: 'ring' }],
+  };
+  maker.rules.push({
+    id: 'ambiguous-owner',
+    type: 'requires',
+    trigger: { partId: 'accessory', itemIds: ['ring', 'sword'] },
+    targets: [{ partId: 'body', itemId: 'base' }],
+  });
+
+  const result = migrateLegacyMakerRules(maker);
+  const heavy = maker.parts[1].items[1].styles.find((entry) => entry.id === 'heavy');
+
+  assert.equal(result.migrated, 2);
+  assert.deepEqual(casual.requires, [{ partId: 'accessory', itemId: 'ring' }]);
+  assert.equal(Object.hasOwn(casual, 'rules'), false);
+  assert.deepEqual(heavy.excludes, [{ partId: 'hat' }]);
+  assert.equal(maker.rules.length, 1);
+  assert.equal(maker.rules[0].id, 'ambiguous-owner');
+  assert.deepEqual(result.unresolved, [{
+    path: 'rules[1]',
+    reason: 'ambiguous-or-missing-trigger',
+  }]);
+
+  const secondPass = migrateLegacyMakerRules(maker);
+  assert.equal(secondPass.migrated, 0);
+  assert.equal(secondPass.unresolved.length, 1);
+});
+
+test('legacy nested shorthand targets inherit only their owner Part during migration', () => {
+  const maker = ruleMaker();
+  maker.rules = [];
+  const outfit = maker.parts.find((part) => part.id === 'outfit');
+  const casual = outfit.items.find((item) => item.id === 'casual');
+  casual.rules = {
+    requires: [{ itemId: 'armor', styleId: 'light' }],
+    excludes: [{ itemId: 'armor', styleId: 'heavy' }],
+  };
+
+  const before = collectMakerRules(maker)
+    .filter((rule) => rule.trigger.partId === 'outfit' && rule.trigger.itemId === 'casual')
+    .map(({ type, targets }) => ({ type, targets }));
+  const result = migrateLegacyMakerRules(maker);
+  const after = collectMakerRules(maker)
+    .filter((rule) => rule.trigger.partId === 'outfit' && rule.trigger.itemId === 'casual')
+    .map(({ type, targets }) => ({ type, targets }));
+
+  assert.equal(result.migrated, 2);
+  assert.deepEqual(result.unresolved, []);
+  assert.deepEqual(after, before);
+  assert.deepEqual(casual.requires, [{
+    partId: 'outfit',
+    itemId: 'armor',
+    styleId: 'light',
+  }]);
+  assert.deepEqual(casual.excludes, [{
+    partId: 'outfit',
+    itemId: 'armor',
+    styleId: 'heavy',
+  }]);
+  assert.equal(Object.hasOwn(casual, 'rules'), false);
+});
+
 test('runtime treats itemIds groups as ANY while requires lists remain ALL and excludes express NOT', () => {
   const maker = ruleMaker();
   const casual = maker.parts.find((part) => part.id === 'outfit').items.find((entry) => entry.id === 'casual');
@@ -266,6 +334,20 @@ test('evaluates Style-aware selected/all/any/not visibleWhen conditions', () => 
   assert.equal(evaluateVisibleWhen(condition, recipe), true);
   assert.equal(isStyleVisible({ partId: 'outfit', itemId: 'casual', styleId: 'default', visibleWhen: condition }, recipe), true);
   assert.equal(isStyleVisible({ partId: 'outfit', itemId: 'armor', styleId: 'light', visibleWhen: condition }, recipe), false);
+});
+
+test('final visibility treats an omitted optional Part as explicitly not selected', () => {
+  const condition = {
+    op: 'not',
+    condition: { op: 'selected', partId: 'hat', itemId: 'cap' },
+  };
+  assert.equal(evaluateVisibleWhen(condition, { selections: [] }), true);
+  assert.equal(evaluateVisibleWhen(condition, {
+    selections: [{ partId: 'hat', itemId: 'cap', styleId: 'default' }],
+  }), false);
+  assert.equal(evaluateVisibleWhen(condition, {
+    selections: [{ partId: 'hat', itemId: 'beanie', styleId: 'default' }],
+  }), true);
 });
 
 test('isStyleVisible ignores obsolete hidden, enabled and visibilityCondition aliases', () => {

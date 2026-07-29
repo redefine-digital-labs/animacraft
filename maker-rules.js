@@ -219,6 +219,112 @@ function normalizeGlobalRule(rule, index) {
   };
 }
 
+function exactRuleOwner(maker, selectorInput) {
+  const selector = normalizeRuleSelector(selectorInput);
+  if (
+    !selector.partId
+    || selector.itemIds?.length
+    || selector.styleIds?.length
+  ) return null;
+  const part = makerParts(maker).find((candidate) => partIdOf(candidate) === selector.partId);
+  if (!part) return null;
+  if (!selector.itemId) return part;
+  const item = partItems(part).find((candidate) => itemIdOf(candidate) === selector.itemId);
+  if (!item) return null;
+  if (!selector.styleId) return item;
+  return itemStyles(item).find((candidate) => styleIdOf(candidate) === selector.styleId) || null;
+}
+
+function appendCanonicalTargets(owner, type, targets, context = {}) {
+  owner[type] = asArray(owner[type]).map((target) => normalizeRuleSelector(target, context));
+  const existing = new Set(owner[type].map(ruleSelectorKey));
+  let appended = 0;
+  targets
+    .map((target) => normalizeRuleSelector(target, context))
+    .filter((target) => target.partId)
+    .forEach((target) => {
+      const key = ruleSelectorKey(target);
+      if (existing.has(key)) return;
+      owner[type].push(target);
+      existing.add(key);
+      appended += 1;
+    });
+  return appended;
+}
+
+/**
+ * Upgrade legacy top-level and nested rule containers into the canonical
+ * Part / Item / Style `requires` and `excludes` arrays.
+ *
+ * The migration mutates the supplied Maker so every downstream consumer sees
+ * the same rule graph. Global rules whose trigger cannot resolve to exactly
+ * one owner remain in `maker.rules` and are reported as unresolved; release
+ * code can then fail closed instead of silently dropping them.
+ */
+export function migrateLegacyMakerRules(maker) {
+  if (!maker || typeof maker !== 'object') return { migrated: 0, unresolved: [] };
+  let migrated = 0;
+  const unresolved = [];
+
+  const migrateNestedOwner = (owner, path, context = {}) => {
+    if (!owner || typeof owner !== 'object' || !owner.rules || typeof owner.rules !== 'object') return;
+    RULE_TYPES.forEach((type) => {
+      const legacyTargets = asArray(owner.rules[type]);
+      if (!legacyTargets.length) return;
+      migrated += appendCanonicalTargets(owner, type, legacyTargets, context);
+      delete owner.rules[type];
+    });
+    if (!Object.keys(owner.rules).length) delete owner.rules;
+    else unresolved.push({ path: `${path}.rules`, reason: 'unsupported-nested-rule-fields' });
+  };
+
+  makerParts(maker).forEach((part) => {
+    const partId = partIdOf(part);
+    const context = { partId };
+    migrateNestedOwner(part, `parts.${partId}`, context);
+    partItems(part).forEach((item) => {
+      const itemId = itemIdOf(item);
+      migrateNestedOwner(item, `parts.${partId}.items.${itemId}`, context);
+      itemStyles(item).forEach((style) => {
+        migrateNestedOwner(
+          style,
+          `parts.${partId}.items.${itemId}.styles.${styleIdOf(style)}`,
+          context,
+        );
+      });
+    });
+  });
+
+  const remainingGlobalRules = [];
+  asArray(maker.rules).forEach((sourceRule, index) => {
+    const rule = normalizeGlobalRule(sourceRule, index);
+    const owner = RULE_TYPES.has(rule.type) ? exactRuleOwner(maker, rule.trigger) : null;
+    const validTargets = rule.targets.filter((target) => target.partId);
+    if (!owner || !validTargets.length || validTargets.length !== rule.targets.length) {
+      remainingGlobalRules.push(sourceRule);
+      unresolved.push({
+        path: `rules[${index}]`,
+        reason: !RULE_TYPES.has(rule.type)
+          ? 'unsupported-rule-type'
+          : !owner
+            ? 'ambiguous-or-missing-trigger'
+            : 'invalid-target',
+      });
+      return;
+    }
+    migrated += appendCanonicalTargets(
+      owner,
+      rule.type,
+      validTargets,
+      { partId: rule.trigger.partId },
+    );
+  });
+  if (remainingGlobalRules.length) maker.rules = remainingGlobalRules;
+  else delete maker.rules;
+
+  return { migrated, unresolved };
+}
+
 /** Collect global and embedded Part / Item / Style rules into one form. */
 export function collectMakerRules(maker) {
   const result = asArray(maker?.rules).map(normalizeGlobalRule);
@@ -501,8 +607,8 @@ function selectionCandidates(index, part, desired, random) {
   return candidates;
 }
 
-function selectorState(selector, assignments) {
-  if (!assignments.has(selector.partId)) return 'unknown';
+function selectorState(selector, assignments, complete = false) {
+  if (!assignments.has(selector.partId)) return complete ? 'miss' : 'unknown';
   const selected = assignments.get(selector.partId);
   if (!selected) return 'miss';
   if (selector.itemId && selected.itemId !== selector.itemId) return 'miss';
@@ -512,37 +618,37 @@ function selectorState(selector, assignments) {
   return 'match';
 }
 
-function conditionState(condition, assignments) {
+function conditionState(condition, assignments, complete = false) {
   if (condition == null) return 'match';
   if (typeof condition === 'boolean') return condition ? 'match' : 'miss';
   if (Array.isArray(condition)) {
-    const states = condition.map((entry) => conditionState(entry, assignments));
+    const states = condition.map((entry) => conditionState(entry, assignments, complete));
     if (states.includes('miss')) return 'miss';
     return states.includes('unknown') ? 'unknown' : 'match';
   }
-  if (condition?.op === 'selected') return selectorState(normalizeRuleSelector(condition), assignments);
+  if (condition?.op === 'selected') return selectorState(normalizeRuleSelector(condition), assignments, complete);
   if (condition?.op === 'not') {
-    const state = conditionState(condition.condition, assignments);
+    const state = conditionState(condition.condition, assignments, complete);
     return state === 'unknown' ? 'unknown' : state === 'match' ? 'miss' : 'match';
   }
-  if (condition?.op === 'all') return conditionState(asArray(condition.conditions), assignments);
+  if (condition?.op === 'all') return conditionState(asArray(condition.conditions), assignments, complete);
   if (condition?.op === 'any') {
-    const states = asArray(condition.conditions).map((entry) => conditionState(entry, assignments));
+    const states = asArray(condition.conditions).map((entry) => conditionState(entry, assignments, complete));
     if (states.includes('match')) return 'match';
     return states.includes('unknown') ? 'unknown' : 'miss';
   }
   if (typeof condition === 'string' || condition?.partId || condition?.partKey || condition?.part) {
-    return selectorState(normalizeRuleSelector(condition), assignments);
+    return selectorState(normalizeRuleSelector(condition), assignments, complete);
   }
   if (condition && typeof condition === 'object') {
     const all = asArray(condition.all ?? condition.requires);
     const any = asArray(condition.any);
     const not = asArray(condition.not ?? condition.excludes);
-    const allStates = all.map((entry) => conditionState(entry, assignments));
+    const allStates = all.map((entry) => conditionState(entry, assignments, complete));
     if (allStates.includes('miss')) return 'miss';
-    const anyStates = any.map((entry) => conditionState(entry, assignments));
+    const anyStates = any.map((entry) => conditionState(entry, assignments, complete));
     if (any.length && anyStates.every((state) => state === 'miss')) return 'miss';
-    const notStates = not.map((entry) => conditionState(entry, assignments));
+    const notStates = not.map((entry) => conditionState(entry, assignments, complete));
     if (notStates.includes('match')) return 'miss';
     if (allStates.includes('unknown') || anyStates.includes('unknown') || notStates.includes('unknown')) return 'unknown';
     return 'match';
@@ -856,7 +962,7 @@ export function evaluateVisibleWhen(condition, recipe) {
   const assignments = recipe?.selection
     ? new Map(Object.entries(recipe.selection))
     : parseRecipeInput(recipe).selection;
-  return conditionState(condition, assignments) === 'match';
+  return conditionState(condition, assignments, true) === 'match';
 }
 
 /** Determine whether a Style should render for the current recipe. */
@@ -870,8 +976,8 @@ export function isStyleVisible(style, recipe) {
     itemId: style.itemId ?? style.itemKey,
     styleId: style.styleId ?? style.styleKey ?? style.id,
   });
-  if (ownerSelector.partId && selectorState(ownerSelector, assignments) !== 'match') return false;
-  return conditionState(style.visibleWhen, assignments) === 'match';
+  if (ownerSelector.partId && selectorState(ownerSelector, assignments, true) !== 'match') return false;
+  return conditionState(style.visibleWhen, assignments, true) === 'match';
 }
 
 export const isLayerVisible = isStyleVisible;

@@ -9,7 +9,12 @@
  */
 
 import { compareMakerCompatibility, mergeExpansionPacks } from './expansion-packs.js';
-import { collectMakerRules, evaluateRecipe, normalizeRuleSelector } from './maker-rules.js';
+import {
+  collectMakerRules,
+  evaluateRecipe,
+  migrateLegacyMakerRules,
+  normalizeRuleSelector,
+} from './maker-rules.js';
 import { MAKER_V4_SCHEMA_VERSION, validateMakerV4Document } from './maker-v4.js';
 
 export const MAKER_V4_MANIFEST_IDENTIFIER = 'animacraft-manifest.json';
@@ -47,6 +52,26 @@ function clone(value) {
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function assertNoUnresolvedLegacyRuleRecovery(document) {
+  const recovery = document?.extensions?.unresolvedLegacyRules;
+  const rules = asArray(recovery?.rules);
+  if (!rules.length) return;
+  const issues = asArray(recovery?.issues);
+  throw new MakerV4PublicationError(
+    'Legacy Maker rules could not be mapped to one Part, Item, or Style owner.',
+    'unresolved-legacy-maker-rules',
+    {
+      rules: issues.length
+        ? issues
+        : rules.map((rule, index) => ({
+          path: `extensions.unresolvedLegacyRules.rules[${index}]`,
+          reason: 'unresolved-recovery-rule',
+          id: String(rule?.id || ''),
+        })),
+    },
+  );
 }
 
 function compareText(left, right) {
@@ -234,6 +259,15 @@ export function collapseMakerV4ProjectionAssetAliases(document) {
  */
 export function prepareMakerV4ProjectionV2Document(document, options = {}) {
   const base = clone(document);
+  assertNoUnresolvedLegacyRuleRecovery(base);
+  const legacyRuleMigration = migrateLegacyMakerRules(base);
+  if (legacyRuleMigration.unresolved.length) {
+    throw new MakerV4PublicationError(
+      'Legacy Maker rules could not be mapped to one Part, Item, or Style owner.',
+      'unresolved-legacy-maker-rules',
+      { rules: legacyRuleMigration.unresolved },
+    );
+  }
   const packs = options.expansionPacks === undefined
     ? asArray(base?.extensions?.expansionDrafts)
     : asArray(options.expansionPacks);
@@ -1507,6 +1541,16 @@ function releaseProjection(document) {
  * fields are omitted by construction.
  */
 export function buildMakerV4PublicationManifest(document, options = {}) {
+  document = clone(document);
+  assertNoUnresolvedLegacyRuleRecovery(document);
+  const legacyRuleMigration = migrateLegacyMakerRules(document);
+  if (legacyRuleMigration.unresolved.length) {
+    throw new MakerV4PublicationError(
+      'Legacy Maker rules could not be mapped to one Part, Item, or Style owner.',
+      'unresolved-legacy-maker-rules',
+      { rules: legacyRuleMigration.unresolved },
+    );
+  }
   validateMakerV4Document(document, { mode: 'publish' });
   const manifestIdentifier = String(options.manifestIdentifier || MAKER_V4_MANIFEST_IDENTIFIER);
   const embeddedExpansion = normalizeEmbeddedExpansionPublication(

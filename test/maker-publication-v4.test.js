@@ -19,6 +19,7 @@ import {
   collectReferencedMakerV4AssetIds,
   flattenMakerV4Recipe,
   indexMakerV4UploadResults,
+  prepareMakerV4ProjectionV2Document,
 } from '../maker-publication-v4.js';
 
 function style(id, track, asset, colorChannelId = null, extra = {}) {
@@ -293,6 +294,78 @@ test('excludes draft and private Items and their artwork from immutable publicat
   const manifest = buildMakerV4PublicationManifest(document);
   assert.deepEqual(manifest.parts[0].items.map((item) => item.id), ['shape']);
   assert.equal(manifest.assets.some((asset) => asset.id === 'private-art'), false);
+});
+
+test('publication migrates exact legacy rules and fails closed for ambiguous owners', () => {
+  const document = publicationMaker();
+  document.rules = [{
+    id: 'legacy-hat-rule',
+    type: 'requires',
+    trigger: { partId: 'hat', itemId: 'moon-hat' },
+    targets: [{ partId: 'body', itemId: 'shape', styleId: 'default' }],
+  }];
+
+  const manifest = buildMakerV4PublicationManifest(document);
+  assert.deepEqual(manifest.parts[1].items[0].requires, [{
+    partId: 'body',
+    itemId: 'shape',
+    styleId: 'default',
+  }]);
+  assert.equal(Object.hasOwn(manifest, 'rules'), false);
+  assert.equal(document.rules[0].id, 'legacy-hat-rule');
+
+  document.rules = [{
+    id: 'ambiguous-owner',
+    type: 'requires',
+    trigger: { partId: 'body', itemIds: ['shape'] },
+    targets: [{ partId: 'hat', itemId: 'moon-hat' }],
+  }];
+  assert.throws(
+    () => buildMakerV4PublicationManifest(document),
+    (error) => error instanceof MakerV4PublicationError
+      && error.code === 'unresolved-legacy-maker-rules'
+      && error.details.rules[0].path === 'rules[0]',
+  );
+
+  delete document.rules;
+  document.extensions.unresolvedLegacyRules = {
+    rules: [{
+      id: 'preserved-ambiguous-owner',
+      type: 'requires',
+      trigger: { itemId: 'shape' },
+      targets: [{ partId: 'hat', itemId: 'moon-hat' }],
+    }],
+    issues: [{ path: 'rules[0]', reason: 'ambiguous-or-missing-trigger' }],
+  };
+  assert.throws(
+    () => buildMakerV4PublicationManifest(document),
+    (error) => error instanceof MakerV4PublicationError
+      && error.code === 'unresolved-legacy-maker-rules'
+      && error.details.rules[0].reason === 'ambiguous-or-missing-trigger',
+  );
+});
+
+test('publication preparation preserves nested shorthand rules before protocol representability checks', () => {
+  const document = publicationMaker();
+  document.parts[0].items[0].rules = {
+    excludes: [{ itemId: 'shape', styleId: 'armored' }],
+  };
+
+  const prepared = prepareMakerV4ProjectionV2Document(document);
+  assert.deepEqual(prepared.parts[0].items[0].excludes, [{
+    partId: 'body',
+    itemId: 'shape',
+    styleId: 'armored',
+  }]);
+  assert.equal(Object.hasOwn(prepared.parts[0].items[0], 'rules'), false);
+  assert.deepEqual(document.parts[0].items[0].rules, {
+    excludes: [{ itemId: 'shape', styleId: 'armored' }],
+  });
+  assert.throws(
+    () => buildMakerV4PublicationManifest(document),
+    (error) => error instanceof MakerV4PublicationError
+      && error.code === 'unrepresentable-same-part-constraint',
+  );
 });
 
 test('referenced assets and quilt entries have deterministic identifier order', async () => {
