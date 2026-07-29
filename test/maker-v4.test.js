@@ -425,6 +425,41 @@ test('rejects malformed, duplicate and missing IDs inside grouped rule targets',
   assert.ok(issues.some((entry) => entry.path === 'parts[1].requires[2].styleIds' && entry.code === 'invalid_rule_target'));
 });
 
+test('publish validation rejects public rules and visibility conditions that target unpublished Items', () => {
+  const document = validV5Document();
+  const privateItem = structuredClone(document.parts[0].items[0]);
+  privateItem.id = 'private-body';
+  privateItem.name = 'Private Body';
+  privateItem.importKey = 'private-body';
+  privateItem.displayOrder = 1;
+  privateItem.status = 'private';
+  privateItem.requires = [];
+  privateItem.excludes = [];
+  document.parts[0].items.push(privateItem);
+
+  document.parts[1].requires = [{ partId: 'body', itemId: 'private-body' }];
+  document.parts[1].items[0].styles[0].visibleWhen = {
+    op: 'selected',
+    partId: 'body',
+    itemId: 'private-body',
+  };
+  let issues = collectMakerV5ValidationIssues(document, { mode: 'publish' });
+  assert.ok(issues.some((entry) => (
+    entry.path === 'parts[1].requires[0].itemId'
+    && entry.code === 'unpublished_rule_target'
+  )));
+  assert.ok(issues.some((entry) => (
+    entry.path === 'parts[1].items[0].styles[0].visibleWhen.itemId'
+    && entry.code === 'unpublished_rule_target'
+  )));
+
+  document.parts[1].requires = [];
+  document.parts[1].items[0].styles[0].visibleWhen = null;
+  privateItem.requires = [{ partId: 'body', itemId: 'private-body' }];
+  issues = collectMakerV5ValidationIssues(document, { mode: 'publish' });
+  assert.equal(issues.some((entry) => entry.code === 'unpublished_rule_target'), false);
+});
+
 test('legacy documents are deliberately not migrated, while v5 input is deeply cloned', () => {
   assert.throws(
     () => migrateMakerV3ToV5({ schemaVersion: 'animacraft.creator-template.v3' }),

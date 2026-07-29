@@ -8,6 +8,7 @@ import {
   composeRuleTargets,
   createMakerRuleIndex,
   evaluateRecipe,
+  migrateLegacyMakerRules,
   normalizeRecipe,
   normalizeRuleSelector,
   ruleSelectorKey,
@@ -1104,6 +1105,195 @@ function ruleTargetSummary(document, target) {
   return { any: false, label: part?.name || selector.partId };
 }
 
+function ruleDefinitionRecords(document, options = {}) {
+  const excludedPartId = String(options.excludePartId || '');
+  return document.parts
+    .filter((part) => part.id !== excludedPartId)
+    .flatMap((part) => [
+      {
+        value: part.id,
+        partId: part.id,
+        itemId: '',
+        styleId: '',
+        kind: 'part',
+        label: part.name,
+        path: part.name,
+      },
+      ...part.items.flatMap((item) => [
+        {
+          value: `${part.id}::${item.id}`,
+          partId: part.id,
+          itemId: item.id,
+          styleId: '',
+          kind: 'item',
+          status: item.status || 'draft',
+          label: item.name,
+          path: `${part.name} › ${item.name}`,
+        },
+        ...item.styles.map((style) => ({
+          value: `${part.id}::${item.id}::${style.id}`,
+          partId: part.id,
+          itemId: item.id,
+          styleId: style.id,
+          kind: 'style',
+          status: item.status || 'draft',
+          label: style.name,
+          path: `${part.name} › ${item.name} › ${style.name}`,
+        })),
+      ]),
+    ]);
+}
+
+function ruleRecordDisplayLabel(record) {
+  if (record?.kind !== 'style') return record?.label || '';
+  return String(record.path || record.label || '')
+    .split(' › ')
+    .slice(-2)
+    .join(' › ');
+}
+
+function ruleSelectorFromDefinition(definition) {
+  const [partId = '', itemId = '', styleId = ''] = String(definition || '').split('::');
+  if (!partId) return null;
+  return {
+    partId,
+    ...(itemId ? { itemId } : {}),
+    ...(styleId ? { styleId } : {}),
+  };
+}
+
+function ruleDefinitionFromSelector(selectorInput) {
+  const selector = normalizeRuleSelector(selectorInput);
+  if (!selector.partId || selector.itemIds?.length || selector.styleIds?.length) return '';
+  return [selector.partId, selector.itemId, selector.styleId].filter(Boolean).join('::');
+}
+
+function visibilityEditorModel(condition) {
+  if (condition == null || condition === true) {
+    return {
+      advanced: false,
+      logic: 'all',
+      polarity: 'selected',
+      definitions: [],
+    };
+  }
+  let logic = 'all';
+  let children = [condition];
+  if (condition?.op === 'all' || condition?.op === 'any') {
+    logic = condition.op;
+    children = Array.isArray(condition.conditions) ? condition.conditions : [];
+    if (!children.length) {
+      return { advanced: true, logic, polarity: 'selected', definitions: [] };
+    }
+  }
+  let polarity = null;
+  const definitions = [];
+  for (const child of children) {
+    const negative = child?.op === 'not';
+    const selectedCondition = negative ? child.condition : child;
+    if (!selectedCondition || selectedCondition.op !== 'selected') {
+      return { advanced: true, logic, polarity: 'selected', definitions: [] };
+    }
+    const definition = ruleDefinitionFromSelector(selectedCondition);
+    if (!definition || (polarity !== null && polarity !== (negative ? 'not-selected' : 'selected'))) {
+      return { advanced: true, logic, polarity: 'selected', definitions: [] };
+    }
+    polarity = negative ? 'not-selected' : 'selected';
+    definitions.push(definition);
+  }
+  const selectors = definitions.map(ruleSelectorFromDefinition).filter(Boolean);
+  if (logic === 'any' && new Set(selectors.map((selector) => selector.partId)).size > 1) {
+    return { advanced: true, logic, polarity: polarity || 'selected', definitions: [] };
+  }
+  if (logic === 'all' && polarity !== 'not-selected' && !exactSelectorsCanMatchTogether(selectors)) {
+    return { advanced: true, logic, polarity: polarity || 'selected', definitions: [] };
+  }
+  if (logic === 'any' && polarity === 'not-selected' && definitions.length > 1) {
+    return { advanced: true, logic, polarity, definitions: [] };
+  }
+  return {
+    advanced: false,
+    logic,
+    polarity: polarity || 'selected',
+    definitions: [...new Set(definitions)],
+  };
+}
+
+function visibilityConditionFromDefinitions(definitions, logic = 'all', polarity = 'selected') {
+  const conditions = definitions
+    .map(ruleSelectorFromDefinition)
+    .filter(Boolean)
+    .map((selector) => ({ op: 'selected', ...selector }))
+    .map((condition) => (
+      polarity === 'not-selected'
+        ? { op: 'not', condition }
+        : condition
+    ));
+  if (!conditions.length) return null;
+  if (conditions.length === 1) return conditions[0];
+  return {
+    op: logic === 'any' ? 'any' : 'all',
+    conditions,
+  };
+}
+
+function visibilityConditionSummary(document, condition) {
+  const model = visibilityEditorModel(condition);
+  if (condition == null || condition === true) return { advanced: false, labels: [], model };
+  if (model.advanced) return { advanced: true, labels: [], model };
+  const records = new Map(ruleDefinitionRecords(document).map((record) => [record.value, record]));
+  const labels = model.definitions.map((definition) => records.get(definition)?.path || definition);
+  return {
+    advanced: false,
+    labels,
+    model,
+  };
+}
+
+function exactSelectorsCanMatchTogether(selectors) {
+  const byPart = new Map();
+  selectors.forEach((selector) => {
+    const entries = byPart.get(selector.partId) || [];
+    entries.push(selector);
+    byPart.set(selector.partId, entries);
+  });
+  return [...byPart.values()].every((entries) => {
+    const itemIds = new Set(entries.map((entry) => entry.itemId).filter(Boolean));
+    const styleIds = new Set(entries.map((entry) => entry.styleId).filter(Boolean));
+    return itemIds.size <= 1 && styleIds.size <= 1;
+  });
+}
+
+function partIsAlwaysSelected(part) {
+  return Boolean(
+    part
+    && part.required === true
+    && !part.parentPartId
+    && part.visibleWhen == null,
+  );
+}
+
+function selectorIsAlwaysSelectedPart(document, selector) {
+  return Boolean(
+    selector
+    && !selector.itemId
+    && !selector.itemIds?.length
+    && !selector.styleId
+    && !selector.styleIds?.length
+    && partIsAlwaysSelected(findPart(document, selector.partId)),
+  );
+}
+
+function selectorReferencesUnpublishedItem(document, selector) {
+  const itemIds = [
+    ...(selector?.itemId ? [selector.itemId] : []),
+    ...(selector?.itemIds || []),
+  ];
+  return itemIds.some((itemId) => (
+    findItem(document, selector.partId, itemId)?.status !== 'public'
+  ));
+}
+
 export function ruleOwnerFromDefinition(document, definition) {
   const [partId = '', itemId = '', styleId = ''] = String(definition || '').split('::');
   const part = findPart(document, partId);
@@ -1246,6 +1436,14 @@ export class MakerWorkspace {
     this.pendingCreatorText = null;
     this.pendingSmartColorEdit = null;
     this.ruleBuilderError = '';
+    this.visibilityBuilderError = '';
+    this.rulesEditorIntent = 'availability';
+    this.ruleBuilderDraft = null;
+    this.visibilityBuilderDraft = null;
+    this.unresolvedLegacyRuleIssues = [];
+    this.ruleOwnerQuery = '';
+    this.ruleTargetQuery = '';
+    this.visibilityTargetQuery = '';
     this.creatorZoom = 1;
     this.creatorSpacePressed = false;
     this.creatorPreviewMode = 'all';
@@ -1292,6 +1490,7 @@ export class MakerWorkspace {
     };
     this.boundCreatorKeydown = (event) => {
       if (this.handlePublishDialogKeydown('creator', event)) return;
+      if (this.handleCreatorTabKeydown(event)) return;
       if (this.creatorTab !== 'structure') {
         if (event.key === 'Tab') {
           this.trapModalFocus(
@@ -1466,6 +1665,67 @@ export class MakerWorkspace {
     document.parts ||= [];
     document.assets ||= [];
     document.expansionPacks ||= [];
+    const storedLegacyRuleRecovery = document.extensions.unresolvedLegacyRules;
+    const storedLegacyRules = Array.isArray(storedLegacyRuleRecovery?.rules)
+      ? storedLegacyRuleRecovery.rules
+      : [];
+    const storedLegacyRuleIssues = Array.isArray(storedLegacyRuleRecovery?.issues)
+      ? storedLegacyRuleRecovery.issues
+      : [];
+    const completeStoredLegacyRuleIssues = [
+      ...storedLegacyRuleIssues,
+      ...storedLegacyRules.slice(storedLegacyRuleIssues.length).map((rule, index) => ({
+        path: `extensions.unresolvedLegacyRules.rules[${storedLegacyRuleIssues.length + index}]`,
+        reason: 'unresolved-recovery-rule',
+        id: String(rule?.id || ''),
+      })),
+    ];
+    const legacyRuleMigration = migrateLegacyMakerRules(document);
+    const unresolvedGlobalRules = (legacyRuleMigration.unresolved || [])
+      .filter((issue) => String(issue.path || '').startsWith('rules['));
+    const newlyUnresolvedLegacyRules = unresolvedGlobalRules.length
+      && Array.isArray(document.rules)
+      ? document.rules
+      : [];
+    const combinedLegacyRules = [...storedLegacyRules, ...newlyUnresolvedLegacyRules]
+      .filter((rule, index, entries) => {
+        const key = JSON.stringify(rule);
+        return entries.findIndex((candidate) => JSON.stringify(candidate) === key) === index;
+      });
+    const combinedLegacyRuleIssues = [...completeStoredLegacyRuleIssues, ...unresolvedGlobalRules]
+      .filter((issue, index, entries) => entries.findIndex(
+        (candidate) => candidate.path === issue.path && candidate.reason === issue.reason,
+      ) === index);
+    if (combinedLegacyRules.length) {
+      const recoveryIssues = combinedLegacyRuleIssues.length
+        ? combinedLegacyRuleIssues
+        : combinedLegacyRules.map((rule, index) => ({
+          path: `extensions.unresolvedLegacyRules.rules[${index}]`,
+          reason: 'unresolved-recovery-rule',
+          id: String(rule?.id || ''),
+        }));
+      document.extensions.unresolvedLegacyRules = {
+        rules: clone(combinedLegacyRules),
+        issues: clone(recoveryIssues),
+      };
+    }
+    if (newlyUnresolvedLegacyRules.length) delete document.rules;
+    this.unresolvedLegacyRuleIssues = [
+      ...(document.extensions.unresolvedLegacyRules?.issues || []),
+      ...(legacyRuleMigration.unresolved || [])
+        .filter((issue) => !String(issue.path || '').startsWith('rules[')),
+    ].filter((issue, index, entries) => entries.findIndex(
+      (candidate) => candidate.path === issue.path && candidate.reason === issue.reason,
+    ) === index);
+    document.parts.forEach((part) => {
+      if (part.visibleWhen === true) part.visibleWhen = null;
+      part.items.forEach((item) => {
+        if (item.visibleWhen === true) item.visibleWhen = null;
+        item.styles.forEach((style) => {
+          if (style.visibleWhen === true) style.visibleWhen = null;
+        });
+      });
+    });
     normalizeDocumentOrders(document);
     synchronizeDefaultRecipe(document);
     return document;
@@ -1540,6 +1800,15 @@ export class MakerWorkspace {
     const requestedMakerKey = String(context?.makerKey || '');
     const previousMakerKey = this.makerKey;
     const sameMaker = Boolean(requestedMakerKey && previousMakerKey === requestedMakerKey);
+    if (!sameMaker) {
+      this.ruleBuilderDraft = null;
+      this.visibilityBuilderDraft = null;
+      this.ruleBuilderError = '';
+      this.visibilityBuilderError = '';
+      this.ruleOwnerQuery = '';
+      this.ruleTargetQuery = '';
+      this.visibilityTargetQuery = '';
+    }
 
     if (!requestedMakerKey) {
       if (previousMakerKey) {
@@ -4002,7 +4271,10 @@ export class MakerWorkspace {
   openCreatorTab(tab = 'structure') {
     const allowed = new Set(['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'soul', 'validate']);
     this.creatorTab = allowed.has(tab) ? tab : 'structure';
-    if (this.creatorTab !== 'rules') this.ruleBuilderError = '';
+    if (this.creatorTab !== 'rules') {
+      this.ruleBuilderError = '';
+      this.visibilityBuilderError = '';
+    }
     this.render();
     requestAnimationFrame(() => {
       const selector = this.creatorTab === 'structure'
@@ -4022,6 +4294,38 @@ export class MakerWorkspace {
     requestAnimationFrame(() => {
       this.playerRoot?.querySelector(selector)?.focus?.({ preventScroll: true });
     });
+  }
+
+  handleCreatorTabKeydown(event) {
+    const keys = new Set(['ArrowLeft', 'ArrowRight', 'Home', 'End']);
+    if (!keys.has(event?.key)) return false;
+    const current = event.target?.closest?.('.v4-rule-intents [role="tab"]');
+    const tablist = current?.closest?.('[role="tablist"]');
+    if (!current || !tablist?.querySelectorAll) return false;
+    const tabs = [...tablist.querySelectorAll('[role="tab"]')]
+      .filter((tab) => !tab.hidden && !tab.disabled);
+    const currentIndex = tabs.indexOf(current);
+    if (currentIndex < 0 || !tabs.length) return false;
+    let nextIndex = currentIndex;
+    if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = tabs.length - 1;
+    else if (event.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    }
+    const nextIntent = tabs[nextIndex].dataset.intent === 'visibility' ? 'visibility' : 'availability';
+    event.preventDefault?.();
+    this.rulesEditorIntent = nextIntent;
+    this.ruleBuilderError = '';
+    this.visibilityBuilderError = '';
+    this.render();
+    requestAnimationFrame(() => {
+      this.creatorRoot?.querySelector(
+        nextIntent === 'visibility' ? '#v4RuleVisibilityTab' : '#v4RuleAvailabilityTab',
+      )?.focus?.({ preventScroll: true });
+    });
+    return true;
   }
 
   handlePlayerTabKeydown(event) {
@@ -4927,7 +5231,7 @@ export class MakerWorkspace {
         </header>
         ${this.documentMutationBlocked() ? `<div class="v4-version-history-notice" role="status" aria-live="polite">${escapeHtml(this.documentMutationBlockedMessage())}</div>` : ''}
 
-        <nav class="v4-studio-tabs" aria-label="${escapeHtml(this.tr('makerToolsLabel'))}" role="tablist">
+        <nav class="v4-studio-tabs" aria-label="${escapeHtml(this.tr('makerToolsLabel'))}">
           ${[
             ['structure', this.tr('partsItems')],
             ['info', this.tr('makerInfo')],
@@ -4937,10 +5241,10 @@ export class MakerWorkspace {
             ['expansions', this.tr('expansionPacks')],
             ['soul', this.tr('soulConfig')],
             ['validate', this.tr(issues.length ? 'preflightCount' : 'preflightReady', { count: issues.length })],
-          ].map(([id, label]) => `<button type="button" id="makerV4Tab-${id}" class="${this.creatorTab === id ? 'active' : ''}" data-action="creator-tab" data-tab="${id}" role="tab" aria-selected="${this.creatorTab === id}" aria-controls="${id === 'structure' ? 'makerV4ToolPanel' : 'makerV4ToolDialog'}" tabindex="${this.creatorTab === id ? '0' : '-1'}">${escapeHtml(label)}</button>`).join('')}
+          ].map(([id, label]) => `<button type="button" id="makerV4Tab-${id}" class="${this.creatorTab === id ? 'active' : ''}" data-action="creator-tab" data-tab="${id}" aria-pressed="${this.creatorTab === id}" ${id === 'structure' ? 'aria-controls="makerV4ToolPanel"' : ''}>${escapeHtml(label)}</button>`).join('')}
         </nav>
 
-        <div id="makerV4ToolPanel" class="v4-studio-workspace" role="tabpanel" aria-labelledby="makerV4Tab-structure">
+        <div id="makerV4ToolPanel" class="v4-studio-workspace">
           <aside class="v4-parts-browser">
             <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('parts'))}</span><strong>${escapeHtml(this.tr('playerMenuLinkedOrder'))}</strong><small>${escapeHtml(this.tr('playerMenuLinkedOrderCopy'))}</small></div><button type="button" data-action="add-part" aria-label="${escapeHtml(this.tr('addPartAria'))}">＋</button></div>
             <div class="v4-parts-list">${partRows || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('createFirstPart'))}</span></div>`}</div>
@@ -4999,6 +5303,11 @@ export class MakerWorkspace {
       ${this.renderImportDialog(document)}
     `;
     this.restoreCreatorViewState(viewState);
+    if (this.creatorTab === 'rules') {
+      this.filterRuleOwnerOptions(this.ruleOwnerQuery);
+      this.filterRuleTargetTree('availability', this.ruleTargetQuery);
+      this.filterRuleTargetTree('visibility', this.visibilityTargetQuery);
+    }
   }
 
   renderWorkspaceRestoreGuard() {
@@ -5404,15 +5713,47 @@ export class MakerWorkspace {
 
   renderCreatorInspector(document, part, item, style) {
     if (!part) return `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noPartSelected'))}</strong><span>${escapeHtml(this.tr('noPartSelectedCopy'))}</span></div>`;
+    const ruleRows = ownerRuleRows(document);
+    const combinationRuleEntry = (definition, ownerType) => {
+      const [partId = '', itemId = '', styleId = ''] = definition.split('::');
+      const count = ruleRows.filter((row) => (
+        row.ownerType === ownerType
+        && row.ownerPartId === partId
+        && row.ownerItemId === itemId
+        && row.ownerStyleId === styleId
+      )).length;
+      return `
+        <div class="v4-object-rule-entry">
+          <span><strong>${escapeHtml(this.tr('combinationRules'))}</strong><small>${escapeHtml(this.tr('combinationRuleCount', { count }))}</small></span>
+          <button type="button" data-action="edit-selection-rules" data-rule-owner="${escapeHtml(definition)}">${escapeHtml(this.tr(count ? 'editCombinationRules' : 'addCombinationRule'))}</button>
+        </div>
+      `;
+    };
     const defaultOptions = part.items.map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(part.defaultItemId, candidate.id)}>${escapeHtml(candidate.name)}</option>`).join('');
     const channelOptions = [`<option value="">${escapeHtml(this.tr('noSmartColor'))}</option>`, ...document.colorChannels.filter((channel) => channel.mode === 'gradient-map').map((channel) => `<option value="${escapeHtml(channel.id)}" ${selected(style?.colorChannelId, channel.id)}>${escapeHtml(channel.name)}</option>`)].join('');
-    const visibleWhenPartId = simpleVisibleWhenPartId(style?.visibleWhen);
-    const advancedVisibility = Boolean(style?.visibleWhen && visibleWhenPartId === null);
-    const visibleOptions = [
-      ...(advancedVisibility ? [`<option value="__advanced__" selected>${escapeHtml(this.tr('advancedVisibilityCondition'))}</option>`] : []),
-      `<option value="" ${selected(visibleWhenPartId, '')}>${escapeHtml(this.tr('alwaysVisible'))}</option>`,
-      ...document.parts.filter((candidate) => candidate.id !== part.id).map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(visibleWhenPartId, candidate.id)}>${escapeHtml(this.tr('whenPartSelected', { part: candidate.name }))}</option>`),
-    ].join('');
+    const visibilitySummary = visibilityConditionSummary(document, style?.visibleWhen);
+    const visibilityTargets = visibilitySummary.labels.join(
+      visibilitySummary.model.logic === 'any'
+        ? this.tr('visibilityOrSeparator')
+        : this.tr('visibilityAndSeparator'),
+    );
+    const visibilityText = visibilitySummary.advanced
+      ? this.tr('visibilityAdvancedSummary')
+      : !style?.visibleWhen
+        ? this.tr('alwaysVisible')
+        : visibilitySummary.model.polarity === 'not-selected'
+          ? this.tr(
+            visibilitySummary.model.logic === 'any'
+              ? 'visibilityAnyNotSelectedSummary'
+              : 'visibilityAllNotSelectedSummary',
+            { targets: visibilityTargets },
+          )
+          : this.tr(
+            visibilitySummary.model.logic === 'any'
+              ? 'visibilityAnySelectedSummary'
+              : 'visibilityAllSelectedSummary',
+            { targets: visibilityTargets },
+          );
     const styleKey = style ? styleSceneKey(part.id, item.id, style.id) : '';
     const styleLocked = Boolean(style?.styleLocked);
     const positionLocked = styleLocked || Boolean(style?.positionLocked);
@@ -5433,12 +5774,14 @@ export class MakerWorkspace {
           <label><input type="checkbox" ${checked(exportBackground)} data-action="part-export-background" /> ${escapeHtml(this.tr('exportBackgroundPart'))}</label>
         </div>
         <label>${escapeHtml(this.tr('defaultItem'))}<select data-action="part-default" ${part.items.length ? '' : 'disabled'}><option value="">${escapeHtml(this.tr('none'))}</option>${defaultOptions}</select></label>
+        ${combinationRuleEntry(part.id, 'part')}
         <label class="v4-file-button wide">${escapeHtml(this.tr('uploadPartIcon'))}<input type="file" accept="image/png,image/jpeg" data-action="part-icon" /></label>
       </div>
       ${item ? `
         <div class="v4-inspector-section">
           <span class="v4-inspector-label">${escapeHtml(this.tr('item'))}</span>
           <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(item.name)}" data-action="item-name" maxlength="128" /></label>
+          ${combinationRuleEntry(`${part.id}::${item.id}`, 'item')}
           <div class="v4-inline-actions"><button type="button" data-action="copy-item">${escapeHtml(this.tr('duplicate'))}</button><button type="button" class="danger" data-action="delete-item" ${itemContainsLockedStyle(item) ? 'disabled' : ''}>${escapeHtml(this.tr('delete'))}</button></div>
           <label class="v4-file-button wide">${escapeHtml(this.tr('customThumbnail'))}<input type="file" accept="image/png,image/jpeg" data-action="item-thumbnail" /></label>
         </div>
@@ -5447,6 +5790,7 @@ export class MakerWorkspace {
           <p class="v4-style-concept">${escapeHtml(this.tr('stylePngCopy'))}</p>
           ${style ? `
             <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(style.name)}" data-action="style-name" maxlength="128" ${styleDisabled} /></label>
+            ${combinationRuleEntry(`${part.id}::${item.id}::${style.id}`, 'style')}
             <div class="v4-inline-actions">
               <button type="button" data-action="copy-style">${escapeHtml(this.tr('duplicate'))}</button>
               <button type="button" data-action="set-default-style" ${styleLocked || item.defaultStyleId === style.id ? 'disabled' : ''}>${escapeHtml(item.defaultStyleId === style.id ? this.tr('defaultStyle') : this.tr('setDefaultStyle'))}</button>
@@ -5473,7 +5817,15 @@ export class MakerWorkspace {
             <label>${escapeHtml(this.tr('opacity'))}<input type="range" min="0" max="100" value="${Math.round(style.opacity * 100)}" data-action="style-opacity" ${styleDisabled} /></label>
             <label>${escapeHtml(this.tr('blendMode'))}<select data-action="style-blend" ${styleDisabled}>${['normal','multiply','screen','overlay','darken','lighten','color-dodge','color-burn','hard-light','soft-light','difference','exclusion','hue','saturation','color','luminosity','linear-dodge'].map((mode) => `<option value="${mode}" ${selected(style.blendMode, mode)}>${escapeHtml(this.blendModeText(mode))}</option>`).join('')}</select></label>
             <label>${escapeHtml(this.tr('smartColor'))}<select data-action="style-channel" ${styleDisabled}>${channelOptions}</select></label>
-            <label>${escapeHtml(this.tr('showThisStyle'))}<select data-action="style-visible-when" ${styleDisabled || advancedVisibility ? 'disabled' : ''}>${visibleOptions}</select>${advancedVisibility ? `<small>${escapeHtml(this.tr('advancedVisibilityPreserved'))}</small>` : ''}</label>
+            <section class="v4-visibility-summary">
+              <span>${escapeHtml(this.tr('showThisStyle'))}</span>
+              <strong>${escapeHtml(visibilityText)}</strong>
+              <small>${escapeHtml(this.tr('visibilityDoesNotChangeRecipe'))}</small>
+              <div>
+                <button type="button" data-action="edit-style-visibility" ${styleDisabled}>${escapeHtml(this.tr('editVisibilityCondition'))}</button>
+                <button type="button" data-action="clear-style-visibility" ${styleDisabled || !style.visibleWhen ? 'disabled' : ''}>${escapeHtml(this.tr('setAlwaysVisible'))}</button>
+              </div>
+            </section>
             <div class="v4-inline-actions">
               <button type="button" data-action="toggle-style-hidden">${escapeHtml(this.tr(this.hiddenStyleKeys.has(styleKey) ? 'showStyle' : 'hideStyle'))}</button>
             </div>
@@ -5673,40 +6025,252 @@ export class MakerWorkspace {
     }
     if (this.creatorTab === 'rules') {
       const groups = ownerRuleGroups(document);
-      const definitionOptions = document.parts.flatMap((part) => [
-        `<option value="${escapeHtml(part.id)}">${escapeHtml(part.name)} / ${escapeHtml(this.tr('anyItem'))}</option>`,
-        ...part.items.flatMap((item) => [
-          `<option value="${escapeHtml(`${part.id}::${item.id}`)}">${escapeHtml(part.name)} / ${escapeHtml(item.name)}</option>`,
-          ...item.styles.map((style) => `<option value="${escapeHtml(`${part.id}::${item.id}::${style.id}`)}">${escapeHtml(part.name)} / ${escapeHtml(item.name)} / ${escapeHtml(style.name)}</option>`),
-        ]),
-      ]).join('');
+      const records = ruleDefinitionRecords(document);
+      const { part: selectedPart, item: selectedItem, style: selectedStyle } = this.selectedCreatorRecords(document);
+      const selectedOwnerDefinition = [
+        selectedPart?.id,
+        selectedItem?.id,
+        selectedStyle?.id,
+      ].filter(Boolean).join('::');
+      const recordValues = new Set(records.map((record) => record.value));
+      const draftOwnerDefinition = recordValues.has(this.ruleBuilderDraft?.ownerDefinition)
+        ? this.ruleBuilderDraft.ownerDefinition
+        : selectedOwnerDefinition;
+      const draftOwnerPartId = ruleSelectorFromDefinition(draftOwnerDefinition)?.partId || '';
+      const draftOwnerSelector = ruleSelectorFromDefinition(draftOwnerDefinition);
+      const draftOwnerItem = draftOwnerSelector?.itemId
+        ? findItem(document, draftOwnerSelector.partId, draftOwnerSelector.itemId)
+        : null;
+      const draftOwnerIsPublic = !draftOwnerItem || draftOwnerItem.status === 'public';
+      const draftRuleType = this.ruleBuilderDraft?.type === 'requires' ? 'requires' : 'excludes';
+      const draftMatchMode = draftRuleType === 'requires' && this.ruleBuilderDraft?.matchMode === 'any'
+        ? 'any'
+        : 'all';
+      const draftTargets = new Set((this.ruleBuilderDraft?.definitions || [])
+        .filter((definition) => (
+          recordValues.has(definition)
+          && ruleSelectorFromDefinition(definition)?.partId !== draftOwnerPartId
+        )));
+      const availabilityTargetRecords = records.filter(
+        (record) => record.partId !== draftOwnerPartId,
+      );
+      this.ruleBuilderDraft = {
+        ownerDefinition: draftOwnerDefinition,
+        type: draftRuleType,
+        matchMode: draftMatchMode,
+        definitions: [...draftTargets],
+      };
+      const definitionOptions = document.parts.map((part) => {
+        const partRecords = records.filter((record) => record.partId === part.id);
+        return `<optgroup label="${escapeHtml(part.name)}">${partRecords.map((record) => `
+          ${(() => {
+            const owner = ruleOwnerFromDefinition(document, record.value);
+            const locked = record.kind === 'style' && owner?.styleLocked;
+            const publicationState = record.kind !== 'part' && record.status !== 'public'
+              ? ` · ${this.tr(record.status === 'private' ? 'statusPrivate' : 'statusDraft')}`
+              : '';
+            const label = record.kind === 'part'
+              ? this.tr('wholePartSelection', { part: part.name })
+              : `${record.path}${publicationState}`;
+            return `<option value="${escapeHtml(record.value)}" data-rule-owner-option="${escapeHtml(record.path)}" data-rule-owner-locked="${locked ? 'true' : 'false'}" ${selected(record.value, draftOwnerDefinition)} ${locked ? 'disabled' : ''}>${escapeHtml(label)}${locked ? ` · ${escapeHtml(this.tr('styleLock'))}` : ''}</option>`;
+          })()}
+        `).join('')}</optgroup>`;
+      }).join('');
+      const targetGroups = document.parts
+        .filter((part) => part.id !== draftOwnerPartId)
+        .map((part) => `
+        <details class="v4-rule-target-group" data-rule-target-group ${part.id === draftOwnerPartId ? '' : 'open'}>
+          <summary><strong>${escapeHtml(part.name)}</strong><span>${escapeHtml(this.tr('part'))}</span></summary>
+          ${records.filter((record) => record.partId === part.id).map((record) => `
+            ${(() => {
+              const sameOwnerPart = record.partId === draftOwnerPartId;
+              const alwaysSelectedPart = record.kind === 'part' && partIsAlwaysSelected(part);
+              const unpublishedTarget = draftOwnerIsPublic
+                && record.kind !== 'part'
+                && record.status !== 'public';
+              const disabledReason = sameOwnerPart
+                ? this.tr('ruleSamePartTargetHint')
+                : alwaysSelectedPart
+                  ? this.tr('ruleRequiredPartTargetHint', { part: part.name })
+                  : unpublishedTarget
+                    ? this.tr('ruleUnpublishedTargetHint', { target: record.path })
+                    : '';
+              return `<label class="${record.kind} ${disabledReason ? 'disabled' : ''}" data-rule-search-record="${escapeHtml(`${record.path} ${record.kind}`)}" ${disabledReason ? `title="${escapeHtml(disabledReason)}"` : ''}>
+              <input type="checkbox" data-action="rule-target-choice" data-rule-target value="${escapeHtml(record.value)}" ${checked(draftTargets.has(record.value))} ${disabledReason ? 'disabled' : ''} />
+              <span><strong>${escapeHtml(
+                record.kind === 'part'
+                  ? this.tr('anyItemInPart', { part: part.name })
+                  : ruleRecordDisplayLabel(record),
+              )}</strong><small>${escapeHtml(disabledReason || this.tr(`ruleTarget${record.kind[0].toUpperCase()}${record.kind.slice(1)}`))}</small></span>
+            </label>`;
+            })()}
+          `).join('')}
+        </details>
+      `).join('');
+      const visibilityModel = visibilityEditorModel(selectedStyle?.visibleWhen);
+      const visibilityStyleKey = selectedStyle
+        ? styleSceneKey(selectedPart.id, selectedItem.id, selectedStyle.id)
+        : '';
+      const currentVisibilityDraft = this.visibilityBuilderDraft?.styleKey === visibilityStyleKey
+        ? this.visibilityBuilderDraft
+        : {
+          styleKey: visibilityStyleKey,
+          logic: visibilityModel.logic,
+          polarity: visibilityModel.polarity,
+          definitions: visibilityModel.definitions,
+        };
+      const visibilityRecords = selectedStyle
+        ? ruleDefinitionRecords(document, { excludePartId: selectedPart.id })
+        : [];
+      const visibilityOwnerIsPublic = selectedItem?.status === 'public';
+      const visibilityRecordValues = new Set(visibilityRecords.map((record) => record.value));
+      const visibilityDraft = {
+        styleKey: visibilityStyleKey,
+        logic: currentVisibilityDraft.logic === 'any' ? 'any' : 'all',
+        polarity: currentVisibilityDraft.polarity === 'not-selected' ? 'not-selected' : 'selected',
+        definitions: [...new Set(currentVisibilityDraft.definitions || [])]
+          .filter((definition) => visibilityRecordValues.has(definition)),
+      };
+      this.visibilityBuilderDraft = selectedStyle ? visibilityDraft : null;
+      const visibilityDraftLabels = visibilityDraft.definitions
+        .map((definition) => visibilityRecords.find((record) => record.value === definition)?.path || definition);
+      const visibilityDraftTargets = visibilityDraftLabels.join(
+        visibilityDraft.logic === 'any'
+          ? this.tr('visibilityOrSeparator')
+          : this.tr('visibilityAndSeparator'),
+      );
+      const visibilityDraftText = !visibilityDraftLabels.length
+        ? this.tr('visibilityPreviewEmpty')
+        : visibilityDraft.polarity === 'not-selected'
+          ? this.tr(
+            visibilityDraft.logic === 'any'
+              ? 'visibilityAnyNotSelectedSummary'
+              : 'visibilityAllNotSelectedSummary',
+            { targets: visibilityDraftTargets },
+          )
+          : this.tr(
+            visibilityDraft.logic === 'any'
+              ? 'visibilityAnySelectedSummary'
+              : 'visibilityAllSelectedSummary',
+            { targets: visibilityDraftTargets },
+          );
+      const visibilityTargets = document.parts
+        .filter((part) => part.id !== selectedPart?.id)
+        .map((part) => `
+          <details class="v4-rule-target-group" data-rule-target-group open>
+            <summary><strong>${escapeHtml(part.name)}</strong><span>${escapeHtml(this.tr('visibilityDependency'))}</span></summary>
+            ${visibilityRecords.filter((record) => record.partId === part.id).map((record) => `
+              ${(() => {
+                const alwaysSelectedPart = record.kind === 'part' && partIsAlwaysSelected(part);
+                const unpublishedTarget = visibilityOwnerIsPublic
+                  && record.kind !== 'part'
+                  && record.status !== 'public';
+                const disabledReason = alwaysSelectedPart
+                  ? this.tr('visibilityRequiredPartTargetHint', { part: part.name })
+                  : unpublishedTarget
+                    ? this.tr('visibilityUnpublishedTargetHint', { target: record.path })
+                    : '';
+                return `<label class="${record.kind} ${disabledReason ? 'disabled' : ''}" data-rule-search-record="${escapeHtml(`${record.path} ${record.kind}`)}" ${disabledReason ? `title="${escapeHtml(disabledReason)}"` : ''}>
+                <input type="checkbox" data-action="visibility-target-choice" data-visibility-target value="${escapeHtml(record.value)}" ${checked(visibilityDraft.definitions.includes(record.value))} ${disabledReason ? 'disabled' : ''} />
+                <span><strong>${escapeHtml(
+                  record.kind === 'part'
+                    ? this.tr('anyItemInPart', { part: part.name })
+                    : ruleRecordDisplayLabel(record),
+                )}</strong><small>${escapeHtml(disabledReason || this.tr(`ruleTarget${record.kind[0].toUpperCase()}${record.kind.slice(1)}`))}</small></span>
+              </label>`;
+              })()}
+            `).join('')}
+          </details>
+        `).join('');
+      const availabilityPanel = `
+        <section id="v4RuleAvailabilityPanel" class="v4-rule-editor-panel" role="tabpanel" aria-labelledby="v4RuleAvailabilityTab" ${this.rulesEditorIntent === 'availability' ? '' : 'hidden'}>
+          <div class="v4-rule-builder">
+            <div class="v4-rule-owner-picker">
+              <label>${escapeHtml(this.tr('ruleSearchOwner'))}<input type="search" data-action="rule-owner-search" value="${escapeHtml(this.ruleOwnerQuery)}" placeholder="${escapeHtml(this.tr('ruleSearchPlaceholder'))}" /></label>
+              <label>${escapeHtml(this.tr('ruleWhenSelection'))}<select id="v4RuleOwnerDefinition" data-action="rule-owner-choice">${definitionOptions}</select></label>
+              <small data-rule-owner-search-count>${escapeHtml(this.tr('ruleSearchResultCount', { count: records.length }))}</small>
+            </div>
+            <fieldset class="v4-rule-type-picker">
+              <legend>${escapeHtml(this.tr('ruleResult'))}</legend>
+              <label><input type="radio" name="v4-rule-type" value="excludes" data-action="rule-type-choice" ${checked(draftRuleType === 'excludes')} /> <span><strong>${escapeHtml(this.tr('cannotCombineWith'))}</strong><small>${escapeHtml(this.tr('ruleConflictShort'))}</small></span></label>
+              <label><input type="radio" name="v4-rule-type" value="requires" data-action="rule-type-choice" ${checked(draftRuleType === 'requires')} /> <span><strong>${escapeHtml(this.tr('requiresLabel'))}</strong><small>${escapeHtml(this.tr('ruleRequiresShort'))}</small></span></label>
+              <select id="v4RuleType" aria-hidden="true" tabindex="-1"><option value="excludes">excludes</option><option value="requires">requires</option></select>
+            </fieldset>
+            ${draftRuleType === 'requires' ? `<label class="v4-rule-match-mode">${escapeHtml(this.tr('ruleMatchMode'))}<select id="v4RuleMatchMode" data-action="rule-match-choice"><option value="all" ${selected(draftMatchMode, 'all')}>${escapeHtml(this.tr('ruleAllTargets'))}</option><option value="any" ${selected(draftMatchMode, 'any')}>${escapeHtml(this.tr('ruleAnyTargets'))}</option></select><small>${escapeHtml(this.tr('ruleLogicHelp'))}</small></label>` : ''}
+            <div class="v4-rule-target-picker">
+              <span>${escapeHtml(this.tr('targetDefinition'))}</span>
+              <small>${escapeHtml(this.tr('ruleTreeHint'))}</small>
+              <label class="v4-rule-search">${escapeHtml(this.tr('ruleSearchTargets'))}<input type="search" data-action="rule-target-search" value="${escapeHtml(this.ruleTargetQuery)}" placeholder="${escapeHtml(this.tr('ruleSearchPlaceholder'))}" /></label>
+              <small data-rule-search-count>${escapeHtml(this.tr('ruleSearchResultCount', { count: availabilityTargetRecords.length }))}</small>
+              <div class="v4-rule-target-tree" data-rule-target-tree="availability">${targetGroups}<div class="v4-inline-empty" data-rule-search-empty hidden><span>${escapeHtml(this.tr('ruleSearchEmpty'))}</span></div></div>
+            </div>
+            <button class="primary" type="button" data-action="add-rule">${escapeHtml(this.tr('addRule'))}</button>
+          </div>
+          ${this.ruleBuilderError ? `<div class="v4-rule-error" role="alert">${escapeHtml(this.ruleBuilderError)}</div>` : ''}
+          <div class="v4-rule-list">${groups.map((group) => {
+            const ownerStyle = group.ownerStyleId ? findStyle(document, group.ownerPartId, group.ownerItemId, group.ownerStyleId) : null;
+            const logic = group.type === 'excludes'
+              ? this.tr('ruleNotBadge')
+              : group.rows.length > 1 ? this.tr('ruleAllBadge') : this.tr('requiresLabel');
+            return `
+              <article class="v4-rule-group">
+                <header><div><span>${escapeHtml(this.tr('ruleWhenSelection'))}</span><strong>${escapeHtml(group.ownerName)}${ownerStyle?.styleLocked ? ' 🔒' : ''}</strong></div><b>${escapeHtml(logic)}</b></header>
+                <div class="v4-rule-targets">
+                  ${group.rows.map((row) => {
+                    const summary = ruleTargetSummary(document, row.target);
+                    return `<span>${summary.any ? `<em>${escapeHtml(this.tr('ruleAnyBadge'))}</em>` : ''}<strong>${escapeHtml(summary.label)}</strong><button type="button" data-action="delete-rule" data-rule-id="${escapeHtml(row.id)}" aria-label="${escapeHtml(this.tr('deleteRuleAria'))}" ${ownerStyle?.styleLocked ? 'disabled' : ''}>×</button></span>`;
+                  }).join('')}
+                </div>
+              </article>
+            `;
+          }).join('') || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noConstraints'))}</strong><span>${escapeHtml(this.tr('noConstraintsHelp'))}</span></div>`}</div>
+        </section>
+      `;
+      const visibilityPanel = `
+        <section id="v4RuleVisibilityPanel" class="v4-rule-editor-panel" role="tabpanel" aria-labelledby="v4RuleVisibilityTab" ${this.rulesEditorIntent === 'visibility' ? '' : 'hidden'}>
+          ${selectedStyle ? `
+            <header class="v4-visibility-current">
+              <div><span>${escapeHtml(this.tr('currentStyle'))}</span><strong>${escapeHtml(`${selectedPart.name} › ${selectedItem.name} › ${selectedStyle.name}`)}</strong></div>
+              <small>${escapeHtml(this.tr('visibilityDoesNotChangeRecipe'))}</small>
+            </header>
+            ${visibilityModel.advanced ? `<div class="v4-rule-warning"><strong>${escapeHtml(this.tr('visibilityAdvancedSummary'))}</strong><span>${escapeHtml(this.tr('visibilityAdvancedReplaceHelp'))}</span></div>` : ''}
+            ${selectedStyle.styleLocked ? `<div id="v4VisibilityLockedHint" class="v4-rule-warning"><strong>${escapeHtml(this.tr('styleLock'))}</strong><span>${escapeHtml(this.tr('visibilityLockedHelp'))}</span></div>` : ''}
+            <fieldset class="v4-visibility-builder" ${selectedStyle.styleLocked ? 'disabled aria-describedby="v4VisibilityLockedHint"' : ''}>
+              <label>${escapeHtml(this.tr('visibilityLogic'))}<select id="v4VisibilityMatchMode" data-action="visibility-match-choice"><option value="all" ${selected(visibilityDraft.logic, 'all')}>${escapeHtml(this.tr('visibilityAllTargets'))}</option><option value="any" ${selected(visibilityDraft.logic, 'any')}>${escapeHtml(this.tr('visibilityAnyTargets'))}</option></select></label>
+              <label>${escapeHtml(this.tr('visibilityState'))}<select id="v4VisibilityPolarity" data-action="visibility-polarity-choice"><option value="selected" ${selected(visibilityDraft.polarity, 'selected')}>${escapeHtml(this.tr('visibilityWhenSelected'))}</option><option value="not-selected" ${selected(visibilityDraft.polarity, 'not-selected')}>${escapeHtml(this.tr('visibilityWhenNotSelected'))}</option></select></label>
+              <div class="v4-rule-target-picker">
+                <span>${escapeHtml(this.tr('visibilityTargets'))}</span>
+                <small>${escapeHtml(this.tr('visibilityTreeHint'))}</small>
+                <label class="v4-rule-search">${escapeHtml(this.tr('ruleSearchTargets'))}<input type="search" data-action="visibility-target-search" value="${escapeHtml(this.visibilityTargetQuery)}" placeholder="${escapeHtml(this.tr('ruleSearchPlaceholder'))}" /></label>
+                <small data-rule-search-count>${escapeHtml(this.tr('ruleSearchResultCount', { count: visibilityRecords.length }))}</small>
+                <div class="v4-rule-target-tree" data-rule-target-tree="visibility">${visibilityTargets || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('visibilityNoOtherParts'))}</span></div>`}<div class="v4-inline-empty" data-rule-search-empty hidden><span>${escapeHtml(this.tr('ruleSearchEmpty'))}</span></div></div>
+              </div>
+              <p class="v4-visibility-preview" aria-live="polite"><span>${escapeHtml(this.tr('visibilityPreview'))}</span><strong>${escapeHtml(visibilityDraftText)}</strong></p>
+              <div class="v4-inline-actions">
+                <button class="primary" type="button" data-action="apply-style-visibility" ${selectedStyle.styleLocked ? 'disabled' : ''}>${escapeHtml(this.tr('applyVisibilityCondition'))}</button>
+                <button type="button" data-action="clear-style-visibility" ${selectedStyle.styleLocked || !selectedStyle.visibleWhen ? 'disabled' : ''}>${escapeHtml(this.tr('setAlwaysVisible'))}</button>
+              </div>
+            </fieldset>
+            ${this.visibilityBuilderError ? `<div class="v4-rule-error" role="alert">${escapeHtml(this.visibilityBuilderError)}</div>` : ''}
+          ` : `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noStyleForVisibility'))}</strong><span>${escapeHtml(this.tr('noStyleForVisibilityHelp'))}</span></div>`}
+        </section>
+      `;
+      const unresolvedLegacyRulesBanner = this.unresolvedLegacyRuleIssues.length ? `
+        <div class="v4-rule-warning" role="alert">
+          <strong>${escapeHtml(this.tr('legacyRulesNeedRepair'))}</strong>
+          <span>${escapeHtml(this.tr('legacyRulesNeedRepairCopy', { count: this.unresolvedLegacyRuleIssues.length }))}</span>
+          <div class="v4-inline-actions"><button type="button" data-action="review-rule-preflight">${escapeHtml(this.tr('publishPreflight'))}</button></div>
+        </div>
+      ` : '';
       return `
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('rules'))}</span><h3>${escapeHtml(this.tr('rulesTitle'))}</h3><p>${escapeHtml(this.tr('rulesCopy'))}</p></div></div>
-        <div class="v4-rule-builder">
-          <label>${escapeHtml(this.tr('whenPart'))}<select id="v4RuleOwnerDefinition">${definitionOptions}</select></label>
-          <label>${escapeHtml(this.tr('ruleLabel'))}<select id="v4RuleType"><option value="excludes">${escapeHtml(this.tr('cannotCombineWith'))}</option><option value="requires">${escapeHtml(this.tr('requiresLabel'))}</option></select></label>
-          <label>${escapeHtml(this.tr('ruleMatchMode'))}<select id="v4RuleMatchMode"><option value="all">${escapeHtml(this.tr('ruleAllTargets'))}</option><option value="any">${escapeHtml(this.tr('ruleAnyTargets'))}</option></select></label>
-          <label class="v4-rule-target-picker">${escapeHtml(this.tr('targetDefinition'))}<select id="v4RuleTargetDefinitions" multiple size="8">${definitionOptions}</select><small>${escapeHtml(this.tr('ruleMultiSelectHint'))}</small></label>
-          <button type="button" data-action="add-rule">${escapeHtml(this.tr('addRule'))}</button>
-        </div>
-        ${this.ruleBuilderError ? `<div class="v4-rule-error" role="alert">${escapeHtml(this.ruleBuilderError)}</div>` : ''}
-        <div class="v4-rule-list">${groups.map((group) => {
-          const ownerStyle = group.ownerStyleId ? findStyle(document, group.ownerPartId, group.ownerItemId, group.ownerStyleId) : null;
-          const logic = group.type === 'excludes'
-            ? this.tr('ruleNotBadge')
-            : group.rows.length > 1 ? this.tr('ruleAllBadge') : this.tr('requiresLabel');
-          return `
-            <div class="v4-rule-group">
-              <header><span>${escapeHtml(group.ownerName)}${ownerStyle?.styleLocked ? ' 🔒' : ''}</span><b>${escapeHtml(logic)}</b></header>
-              <div class="v4-rule-targets">
-                ${group.rows.map((row) => {
-                  const summary = ruleTargetSummary(document, row.target);
-                  return `<span>${summary.any ? `<em>${escapeHtml(this.tr('ruleAnyBadge'))}</em>` : ''}<strong>${escapeHtml(summary.label)}</strong><button type="button" data-action="delete-rule" data-rule-id="${escapeHtml(row.id)}" aria-label="${escapeHtml(this.tr('deleteRuleAria'))}" ${ownerStyle?.styleLocked ? 'disabled' : ''}>×</button></span>`;
-                }).join('')}
-              </div>
-            </div>
-          `;
-        }).join('') || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noConstraints'))}</span></div>`}</div>
+        ${unresolvedLegacyRulesBanner}
+        <nav class="v4-rule-intents" role="tablist" aria-label="${escapeHtml(this.tr('rules'))}">
+          <button type="button" id="v4RuleAvailabilityTab" class="${this.rulesEditorIntent === 'availability' ? 'active' : ''}" data-action="rules-editor-intent" data-intent="availability" role="tab" aria-controls="v4RuleAvailabilityPanel" aria-selected="${this.rulesEditorIntent === 'availability'}" tabindex="${this.rulesEditorIntent === 'availability' ? '0' : '-1'}"><strong>${escapeHtml(this.tr('combinationRules'))}</strong><small>${escapeHtml(this.tr('combinationRulesCopy'))}</small></button>
+          <button type="button" id="v4RuleVisibilityTab" class="${this.rulesEditorIntent === 'visibility' ? 'active' : ''}" data-action="rules-editor-intent" data-intent="visibility" role="tab" aria-controls="v4RuleVisibilityPanel" aria-selected="${this.rulesEditorIntent === 'visibility'}" tabindex="${this.rulesEditorIntent === 'visibility' ? '0' : '-1'}"><strong>${escapeHtml(this.tr('styleVisibilityRules'))}</strong><small>${escapeHtml(this.tr('styleVisibilityRulesCopy'))}</small></button>
+        </nav>
+        ${availabilityPanel}
+        ${visibilityPanel}
       `;
     }
     if (this.creatorTab === 'expansions') {
@@ -5909,11 +6473,31 @@ export class MakerWorkspace {
         || option?.reason?.details?.target
         || {};
       const part = findPart(document, target.partId);
-      const item = target.itemId ? findItem(document, target.partId, target.itemId) : null;
-      const style = target.styleId && item
-        ? item.styles.find((candidate) => candidate.id === target.styleId)
-        : null;
-      const targetLabel = [part?.name || target.partId, item?.name, style?.name].filter(Boolean).join(' › ');
+      const itemIds = target.itemId
+        ? [target.itemId]
+        : Array.isArray(target.itemIds) ? target.itemIds : [];
+      const items = itemIds
+        .map((itemId) => findItem(document, target.partId, itemId))
+        .filter(Boolean);
+      const itemNames = itemIds
+        .map((itemId) => findItem(document, target.partId, itemId)?.name || itemId)
+        .filter(Boolean);
+      const styleIds = target.styleId
+        ? [target.styleId]
+        : Array.isArray(target.styleIds) ? target.styleIds : [];
+      const styleNames = styleIds
+        .map((styleId) => (
+          items.length === 1
+            ? items[0].styles.find((candidate) => candidate.id === styleId)?.name
+            : ''
+        ) || styleId)
+        .filter(Boolean);
+      const alternativeSeparator = this.tr('visibilityOrSeparator');
+      const targetLabel = [
+        part?.name || target.partId,
+        itemNames.join(alternativeSeparator),
+        styleNames.join(alternativeSeparator),
+      ].filter(Boolean).join(' › ');
       return this.tr(code === 'requires-rule' ? 'optionRequires' : 'optionExcludes', {
         target: targetLabel || this.tr('optionUnavailable'),
       });
@@ -7216,6 +7800,8 @@ export class MakerWorkspace {
       'delete-swatch',
       'add-rule',
       'delete-rule',
+      'apply-style-visibility',
+      'clear-style-visibility',
       'add-expansion',
       'delete-expansion',
       'add-selected-to-expansion',
@@ -7244,6 +7830,44 @@ export class MakerWorkspace {
     }
     if (action === 'creator-tab') {
       this.openCreatorTab(button.dataset.tab);
+      return;
+    }
+    if (action === 'edit-style-visibility') {
+      this.rulesEditorIntent = 'visibility';
+      this.openCreatorTab('rules');
+      return;
+    }
+    if (action === 'edit-selection-rules') {
+      const ownerDefinition = button.dataset.ruleOwner || '';
+      if (!ruleOwnerFromDefinition(document, ownerDefinition)) return;
+      this.ruleBuilderDraft = {
+        ownerDefinition,
+        type: this.ruleBuilderDraft?.type === 'requires' ? 'requires' : 'excludes',
+        matchMode: this.ruleBuilderDraft?.matchMode === 'any' ? 'any' : 'all',
+        definitions: [],
+      };
+      this.ruleBuilderError = '';
+      this.rulesEditorIntent = 'availability';
+      this.openCreatorTab('rules');
+      return;
+    }
+    if (action === 'rules-editor-intent') {
+      this.rulesEditorIntent = button.dataset.intent === 'visibility' ? 'visibility' : 'availability';
+      this.ruleBuilderError = '';
+      this.visibilityBuilderError = '';
+      this.render();
+      return;
+    }
+    if (action === 'review-rule-preflight') {
+      this.openCreatorTab('validate');
+      return;
+    }
+    if (action === 'apply-style-visibility') {
+      this.applySelectedStyleVisibility();
+      return;
+    }
+    if (action === 'clear-style-visibility') {
+      this.clearSelectedStyleVisibility();
       return;
     }
     if (action === 'select-soul-document') {
@@ -7957,6 +8581,18 @@ export class MakerWorkspace {
       this.setCreatorZoom(Number(event.target.value || 100) / 100);
       return;
     }
+    if (action === 'rule-owner-search') {
+      this.ruleOwnerQuery = event.target.value || '';
+      this.filterRuleOwnerOptions(event.target.value);
+      return;
+    }
+    if (action === 'rule-target-search' || action === 'visibility-target-search') {
+      const kind = action === 'rule-target-search' ? 'availability' : 'visibility';
+      if (kind === 'availability') this.ruleTargetQuery = event.target.value || '';
+      else this.visibilityTargetQuery = event.target.value || '';
+      this.filterRuleTargetTree(kind, event.target.value);
+      return;
+    }
     if (this.documentMutationBlocked()) return;
     if (this.captureCreatorText(event.target)) {
       this.updateMakerInfoByteStatus(event.target);
@@ -7975,6 +8611,85 @@ export class MakerWorkspace {
     }
   }
 
+  filterRuleTargetTree(kind, queryInput) {
+    const tree = this.creatorRoot?.querySelector?.(`[data-rule-target-tree="${kind}"]`);
+    if (!tree?.querySelectorAll) return;
+    const query = String(queryInput || '').trim().toLocaleLowerCase();
+    let visibleCount = 0;
+    tree.querySelectorAll('[data-rule-target-group]').forEach((group) => {
+      let groupCount = 0;
+      group.querySelectorAll('[data-rule-search-record]').forEach((record) => {
+        const haystack = String(record.dataset.ruleSearchRecord || record.textContent || '')
+          .toLocaleLowerCase();
+        const selectedRecord = Boolean(record.querySelector?.('input')?.checked);
+        const matches = !query || haystack.includes(query) || selectedRecord;
+        record.hidden = !matches;
+        if (matches) {
+          groupCount += 1;
+          visibleCount += 1;
+        }
+      });
+      group.hidden = Boolean(query && !groupCount);
+      if (query && groupCount) group.open = true;
+    });
+    const empty = tree.querySelector('[data-rule-search-empty]');
+    if (empty) empty.hidden = visibleCount > 0;
+    const count = tree.parentElement?.querySelector?.('[data-rule-search-count]');
+    if (count) count.textContent = this.tr('ruleSearchResultCount', { count: visibleCount });
+  }
+
+  filterRuleOwnerOptions(queryInput) {
+    const select = this.creatorRoot?.querySelector?.('#v4RuleOwnerDefinition');
+    if (!select?.querySelectorAll) return;
+    const query = String(queryInput || '').trim().toLocaleLowerCase();
+    let visibleCount = 0;
+    select.querySelectorAll('[data-rule-owner-option]').forEach((option) => {
+      const haystack = String(option.dataset.ruleOwnerOption || option.textContent || '')
+        .toLocaleLowerCase();
+      const matches = !query || haystack.includes(query) || option.selected;
+      option.hidden = !matches;
+      option.disabled = option.dataset.ruleOwnerLocked === 'true' || !matches;
+      if (matches) visibleCount += 1;
+    });
+    select.querySelectorAll('optgroup').forEach((group) => {
+      group.hidden = ![...group.querySelectorAll('option')].some((option) => !option.hidden);
+    });
+    const count = this.creatorRoot.querySelector?.('[data-rule-owner-search-count]');
+    if (count) count.textContent = this.tr('ruleSearchResultCount', { count: visibleCount });
+  }
+
+  visibilityBuilderPreviewText(
+    document = this.store?.getState?.().document,
+    draft = this.visibilityBuilderDraft,
+  ) {
+    if (!document || !draft) return this.tr('visibilityPreviewEmpty');
+    const records = new Map(ruleDefinitionRecords(document).map((record) => [record.value, record]));
+    const labels = [...new Set(draft.definitions || [])]
+      .map((definition) => records.get(definition)?.path || definition)
+      .filter(Boolean);
+    if (!labels.length) return this.tr('visibilityPreviewEmpty');
+    const logic = draft.logic === 'any' ? 'any' : 'all';
+    const targets = labels.join(
+      logic === 'any'
+        ? this.tr('visibilityOrSeparator')
+        : this.tr('visibilityAndSeparator'),
+    );
+    const polarity = draft.polarity === 'not-selected' ? 'not-selected' : 'selected';
+    const key = polarity === 'not-selected'
+      ? logic === 'any'
+        ? 'visibilityAnyNotSelectedSummary'
+        : 'visibilityAllNotSelectedSummary'
+      : logic === 'any'
+        ? 'visibilityAnySelectedSummary'
+        : 'visibilityAllSelectedSummary';
+    return this.tr(key, { targets });
+  }
+
+  updateVisibilityBuilderPreview() {
+    const preview = this.creatorRoot?.querySelector?.('.v4-visibility-preview strong');
+    if (preview) preview.textContent = this.visibilityBuilderPreviewText();
+  }
+
   async handleCreatorChange(event) {
     if (
       this.contextSwitchInProgress
@@ -7985,6 +8700,81 @@ export class MakerWorkspace {
     const input = event.target;
     const action = input.dataset.action;
     if (!action || !this.store) return;
+    if (action === 'rule-owner-choice') {
+      const ownerPartId = ruleSelectorFromDefinition(input.value)?.partId || '';
+      this.ruleBuilderDraft = {
+        ownerDefinition: input.value,
+        type: this.ruleBuilderDraft?.type === 'requires' ? 'requires' : 'excludes',
+        matchMode: this.ruleBuilderDraft?.matchMode === 'any' ? 'any' : 'all',
+        definitions: (this.ruleBuilderDraft?.definitions || []).filter((definition) => (
+          ruleSelectorFromDefinition(definition)?.partId !== ownerPartId
+        )),
+      };
+      this.ruleBuilderError = '';
+      this.render();
+      return;
+    }
+    if (action === 'rule-type-choice') {
+      this.ruleBuilderDraft = {
+        ownerDefinition: this.ruleBuilderDraft?.ownerDefinition || this.selectedPartId,
+        type: input.value === 'requires' ? 'requires' : 'excludes',
+        matchMode: input.value === 'requires' && this.ruleBuilderDraft?.matchMode === 'any' ? 'any' : 'all',
+        definitions: [...(this.ruleBuilderDraft?.definitions || [])],
+      };
+      this.ruleBuilderError = '';
+      this.render();
+      return;
+    }
+    if (action === 'rule-match-choice') {
+      this.ruleBuilderDraft = {
+        ownerDefinition: this.ruleBuilderDraft?.ownerDefinition || this.selectedPartId,
+        type: 'requires',
+        matchMode: input.value === 'any' ? 'any' : 'all',
+        definitions: [...(this.ruleBuilderDraft?.definitions || [])],
+      };
+      this.ruleBuilderError = '';
+      return;
+    }
+    if (action === 'rule-target-choice') {
+      const definitions = new Set(this.ruleBuilderDraft?.definitions || []);
+      if (input.checked) definitions.add(input.value);
+      else definitions.delete(input.value);
+      this.ruleBuilderDraft = {
+        ownerDefinition: this.ruleBuilderDraft?.ownerDefinition || this.selectedPartId,
+        type: this.ruleBuilderDraft?.type === 'requires' ? 'requires' : 'excludes',
+        matchMode: this.ruleBuilderDraft?.matchMode === 'any' ? 'any' : 'all',
+        definitions: [...definitions],
+      };
+      this.ruleBuilderError = '';
+      return;
+    }
+    if (action === 'visibility-match-choice') {
+      if (this.visibilityBuilderDraft) {
+        this.visibilityBuilderDraft.logic = input.value === 'any' ? 'any' : 'all';
+        this.visibilityBuilderError = '';
+        this.updateVisibilityBuilderPreview();
+      }
+      return;
+    }
+    if (action === 'visibility-polarity-choice') {
+      if (this.visibilityBuilderDraft) {
+        this.visibilityBuilderDraft.polarity = input.value === 'not-selected' ? 'not-selected' : 'selected';
+        this.visibilityBuilderError = '';
+        this.updateVisibilityBuilderPreview();
+      }
+      return;
+    }
+    if (action === 'visibility-target-choice') {
+      if (this.visibilityBuilderDraft) {
+        const definitions = new Set(this.visibilityBuilderDraft.definitions || []);
+        if (input.checked) definitions.add(input.value);
+        else definitions.delete(input.value);
+        this.visibilityBuilderDraft.definitions = [...definitions];
+        this.visibilityBuilderError = '';
+        this.updateVisibilityBuilderPreview();
+      }
+      return;
+    }
     if (this.documentMutationBlocked()) {
       this.callbacks.onMutationBlocked?.(this.documentMutationBlockedMessage());
       this.render();
@@ -8559,26 +9349,75 @@ export class MakerWorkspace {
 
   addRuleFromBuilder() {
     const document = this.store.getState().document;
-    const ownerDefinition = this.creatorRoot.querySelector('#v4RuleOwnerDefinition')?.value || this.selectedPartId;
-    const requestedType = this.creatorRoot.querySelector('#v4RuleType')?.value || 'excludes';
+    const ownerDefinition = this.creatorRoot.querySelector('#v4RuleOwnerDefinition')?.value
+      || this.ruleBuilderDraft?.ownerDefinition
+      || this.selectedPartId;
+    const requestedType = this.creatorRoot.querySelector('input[name="v4-rule-type"]:checked')?.value
+      || this.creatorRoot.querySelector('#v4RuleType')?.value
+      || this.ruleBuilderDraft?.type
+      || 'excludes';
     const type = requestedType === 'requires' ? 'requires' : 'excludes';
-    const matchMode = this.creatorRoot.querySelector('#v4RuleMatchMode')?.value === 'any' ? 'any' : 'all';
+    const requestedMatchMode = this.creatorRoot.querySelector('#v4RuleMatchMode')?.value
+      || this.ruleBuilderDraft?.matchMode;
+    const matchMode = type === 'requires' && requestedMatchMode === 'any'
+      ? 'any'
+      : 'all';
     const targetPicker = this.creatorRoot.querySelector('#v4RuleTargetDefinitions');
     const legacyTarget = this.creatorRoot.querySelector('#v4RuleTargetDefinition')?.value || '';
-    const definitions = targetPicker?.selectedOptions
-      ? [...targetPicker.selectedOptions].map((option) => option.value).filter(Boolean)
-      : [targetPicker?.value || legacyTarget].filter(Boolean);
-    if (!ownerDefinition || !definitions.length) return;
+    const checkedTargets = this.creatorRoot.querySelectorAll
+      ? [...this.creatorRoot.querySelectorAll('[data-rule-target]:checked')]
+        .map((input) => input.value)
+        .filter(Boolean)
+      : [];
+    const definitions = checkedTargets.length
+      ? checkedTargets
+      : targetPicker?.selectedOptions
+        ? [...targetPicker.selectedOptions].map((option) => option.value).filter(Boolean)
+        : [targetPicker?.value || legacyTarget].filter(Boolean).length
+          ? [targetPicker?.value || legacyTarget].filter(Boolean)
+          : [...(this.ruleBuilderDraft?.definitions || [])];
+    this.ruleBuilderDraft = {
+      ownerDefinition,
+      type,
+      matchMode,
+      definitions: [...new Set(definitions)],
+    };
+    if (!ownerDefinition || !definitions.length) {
+      this.ruleBuilderError = this.tr('ruleChooseTargetError');
+      this.render();
+      return;
+    }
     const currentOwner = ruleOwnerFromDefinition(document, ownerDefinition);
-    if (!currentOwner || currentOwner.styleLocked) return;
-    const selectors = definitions.map((definition) => {
-      const [partId = '', itemId = '', styleId = ''] = String(definition).split('::');
-      return {
-        partId,
-        ...(itemId ? { itemId } : {}),
-        ...(styleId ? { styleId } : {}),
-      };
-    });
+    if (!currentOwner) return;
+    if (currentOwner.styleLocked) {
+      this.ruleBuilderError = this.tr('ruleOwnerLockedError');
+      this.render();
+      return;
+    }
+    const selectors = definitions.map(ruleSelectorFromDefinition).filter(Boolean);
+    const [ownerPartId = '', ownerItemId = '', ownerStyleId = ''] = String(ownerDefinition).split('::');
+    const ownerItem = ownerItemId ? findItem(document, ownerPartId, ownerItemId) : null;
+    const ownerIsPublic = !ownerItem || ownerItem.status === 'public';
+    if (selectors.some((selector) => selector.partId === ownerPartId)) {
+      this.ruleBuilderError = this.tr('ruleSamePartError');
+      this.render();
+      return;
+    }
+    if (selectors.some((selector) => selectorIsAlwaysSelectedPart(document, selector))) {
+      this.ruleBuilderError = this.tr('ruleRequiredPartTargetError');
+      this.render();
+      return;
+    }
+    if (ownerIsPublic && selectors.some((selector) => selectorReferencesUnpublishedItem(document, selector))) {
+      this.ruleBuilderError = this.tr('ruleUnpublishedTargetError');
+      this.render();
+      return;
+    }
+    if (type === 'requires' && matchMode === 'all' && !exactSelectorsCanMatchTogether(selectors)) {
+      this.ruleBuilderError = this.tr('ruleImpossibleAllError');
+      this.render();
+      return;
+    }
     let targets;
     try {
       targets = composeRuleTargets(selectors, matchMode);
@@ -8591,7 +9430,6 @@ export class MakerWorkspace {
       this.render();
       return;
     }
-    const [ownerPartId = '', ownerItemId = '', ownerStyleId = ''] = String(ownerDefinition).split('::');
     const ownerKey = ruleSelectorKey({
       partId: ownerPartId,
       ...(ownerItemId ? { itemId: ownerItemId } : {}),
@@ -8599,6 +9437,12 @@ export class MakerWorkspace {
     });
     if (targets.some((target) => ruleSelectorKey(target) === ownerKey)) return;
     this.ruleBuilderError = '';
+    this.ruleBuilderDraft = {
+      ownerDefinition,
+      type,
+      matchMode,
+      definitions: [],
+    };
     this.executeDocument(`Add ${type} rule`, ({ document: next }) => {
       const owner = ruleOwnerFromDefinition(next, ownerDefinition);
       if (!owner || owner.styleLocked) return;
@@ -8610,6 +9454,106 @@ export class MakerWorkspace {
         owner[type].push(target);
         existing.add(key);
       });
+    });
+  }
+
+  applySelectedStyleVisibility() {
+    const document = this.store.getState().document;
+    const { part, item, style } = this.selectedCreatorRecords(document);
+    if (!part || !item || !style || style.styleLocked) return;
+    const checkedTargets = this.creatorRoot.querySelectorAll
+      ? [...this.creatorRoot.querySelectorAll('[data-visibility-target]:checked')]
+        .map((input) => input.value)
+        .filter(Boolean)
+      : [];
+    const definitions = [...new Set(
+      checkedTargets.length
+        ? checkedTargets
+        : this.visibilityBuilderDraft?.definitions || [],
+    )];
+    const logic = this.creatorRoot.querySelector('#v4VisibilityMatchMode')?.value
+      || this.visibilityBuilderDraft?.logic;
+    const polarity = this.creatorRoot.querySelector('#v4VisibilityPolarity')?.value
+      || this.visibilityBuilderDraft?.polarity;
+    this.visibilityBuilderDraft = {
+      styleKey: styleSceneKey(part.id, item.id, style.id),
+      logic: logic === 'any' ? 'any' : 'all',
+      polarity: polarity === 'not-selected' ? 'not-selected' : 'selected',
+      definitions,
+    };
+    if (!definitions.length) {
+      this.visibilityBuilderError = this.tr('visibilityChooseTargetError');
+      this.render();
+      return;
+    }
+    const selectors = definitions.map(ruleSelectorFromDefinition).filter(Boolean);
+    if (selectors.some((selector) => selector.partId === part.id)) {
+      this.visibilityBuilderError = this.tr('visibilitySamePartError');
+      this.render();
+      return;
+    }
+    if (selectors.some((selector) => selectorIsAlwaysSelectedPart(document, selector))) {
+      this.visibilityBuilderError = this.tr('visibilityRequiredPartTargetError');
+      this.render();
+      return;
+    }
+    if (item.status === 'public'
+      && selectors.some((selector) => selectorReferencesUnpublishedItem(document, selector))) {
+      this.visibilityBuilderError = this.tr('visibilityUnpublishedTargetError');
+      this.render();
+      return;
+    }
+    if (this.visibilityBuilderDraft.logic === 'any' && new Set(selectors.map((selector) => selector.partId)).size > 1) {
+      this.visibilityBuilderError = this.tr('visibilityAnySamePartError');
+      this.render();
+      return;
+    }
+    if (this.visibilityBuilderDraft.logic === 'all'
+      && this.visibilityBuilderDraft.polarity === 'selected'
+      && !exactSelectorsCanMatchTogether(selectors)) {
+      this.visibilityBuilderError = this.tr('visibilityImpossibleAllError');
+      this.render();
+      return;
+    }
+    if (this.visibilityBuilderDraft.logic === 'any'
+      && this.visibilityBuilderDraft.polarity === 'not-selected'
+      && definitions.length > 1) {
+      this.visibilityBuilderError = this.tr('visibilityAnyNotSelectedError');
+      this.render();
+      return;
+    }
+    const condition = visibilityConditionFromDefinitions(
+      definitions,
+      this.visibilityBuilderDraft.logic,
+      this.visibilityBuilderDraft.polarity,
+    );
+    this.visibilityBuilderError = '';
+    this.executeDocument('Change Style visibility condition', ({ document: next }) => {
+      const target = findStyle(next, part.id, item.id, style.id);
+      if (!target || target.styleLocked) return;
+      target.visibleWhen = condition;
+    });
+  }
+
+  clearSelectedStyleVisibility() {
+    const document = this.store.getState().document;
+    const { part, item, style } = this.selectedCreatorRecords(document);
+    if (!part || !item || !style || style.styleLocked || !style.visibleWhen) return;
+    if (
+      visibilityEditorModel(style.visibleWhen).advanced
+      && !this.confirmDelete(this.tr('clearAdvancedVisibilityConfirm'))
+    ) return;
+    this.visibilityBuilderError = '';
+    this.visibilityBuilderDraft = {
+      styleKey: styleSceneKey(part.id, item.id, style.id),
+      logic: 'all',
+      polarity: 'selected',
+      definitions: [],
+    };
+    this.executeDocument('Set Style always visible', ({ document: next }) => {
+      const target = findStyle(next, part.id, item.id, style.id);
+      if (!target || target.styleLocked) return;
+      target.visibleWhen = null;
     });
   }
 

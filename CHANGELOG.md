@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 — Production Creator Rules
+
+- Rebuilds Combination Rules as an exact Part → Item → Style tree with requires/excludes, ALL/ANY grouping, full-path labels, search, object-adjacent entry points, and publication-safe draft/private target handling.
+- Replaces the broad Style visibility dropdown with selected/not-selected conditions over exact Parts, Items, and Styles, including live Player-result previews and a fully disabled editor for locked Styles.
+- Uses the same canonical rule graph for Player availability, Renderer visibility, constraint-safe Random, Preflight, Walrus manifests, and the Sui projection so editor behavior cannot diverge after publication.
+- Migrates legacy global and nested rules into canonical owners without dropping shorthand targets; ambiguous historical rules are preserved in recovery, shown in Rules, and blocked by Preflight until repaired.
+- Rejects public rules that reference unpublished content while allowing draft owners to prepare relationships between draft content before release.
+- Improves Rules accessibility, mobile layout, keyboard tab behavior, five-language terminology, and regression coverage across Creator, Player, migration, projection, publication, and recovery.
+
 ## 0.7.4 — Contextual Player Palette
 
 - Makes Palette availability follow the Player's exact current Part → Item → Style selection instead of unrelated Smart Color channels elsewhere in the composed OC.

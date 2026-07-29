@@ -686,7 +686,7 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
     }
   });
 
-  function validateTarget(target, path) {
+  function validateTarget(target, path, { requirePublic = false } = {}) {
     if (!isObject(target)) {
       issue(path, 'must be a selection target object', 'invalid_rule_target');
       return;
@@ -734,13 +734,19 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
       issue(`${path}.itemId`, 'must be a non-empty ID string', 'invalid_rule_target');
     }
     directItemIds.forEach((itemId) => {
-      if (!itemByPart.get(target.partId)?.has(itemId)) {
+      const targetItem = itemByPart.get(target.partId)?.get(itemId);
+      if (!targetItem) {
         issue(`${path}.itemId`, 'references a missing Item in the target Part', 'missing_reference');
+      } else if (requirePublic && targetItem.status !== 'public') {
+        issue(`${path}.itemId`, 'must reference a public Item for publication', 'unpublished_rule_target');
       }
     });
     groupedItemIds.forEach((itemId, index) => {
-      if (!itemByPart.get(target.partId)?.has(itemId)) {
+      const targetItem = itemByPart.get(target.partId)?.get(itemId);
+      if (!targetItem) {
         issue(`${path}.itemIds[${index}]`, 'references a missing Item in the target Part', 'missing_reference');
+      } else if (requirePublic && targetItem.status !== 'public') {
+        issue(`${path}.itemIds[${index}]`, 'must reference a public Item for publication', 'unpublished_rule_target');
       }
     });
 
@@ -781,13 +787,15 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
     }
   }
 
-  function validateRuleLists(owner, path) {
+  function validateRuleLists(owner, path, { publishable = true } = {}) {
     ['requires', 'excludes'].forEach((field) => {
       const targets = Array.isArray(owner?.[field]) ? owner[field] : [];
       if (targets.length > LIMITS.maxRuleTargets) issue(`${path}.${field}`, `cannot contain more than ${LIMITS.maxRuleTargets} targets`, 'limit');
       const keys = new Set();
       targets.forEach((target, index) => {
-        validateTarget(target, `${path}.${field}[${index}]`);
+        validateTarget(target, `${path}.${field}[${index}]`, {
+          requirePublic: publish && publishable,
+        });
         const key = selectionTargetKey(target);
         if (keys.has(key)) issue(`${path}.${field}[${index}]`, 'duplicates another target', 'duplicate');
         keys.add(key);
@@ -799,7 +807,7 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
     });
   }
 
-  function validateCondition(condition, path, depth = 0) {
+  function validateCondition(condition, path, depth = 0, { publishable = true } = {}) {
     if (condition === null || condition === undefined) return;
     if (depth > LIMITS.maxConditionDepth) {
       issue(path, `exceeds the maximum nesting depth of ${LIMITS.maxConditionDepth}`, 'condition_depth');
@@ -810,12 +818,14 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
       return;
     }
     if (condition.op === 'selected') {
-      validateTarget(condition, path);
+      validateTarget(condition, path, {
+        requirePublic: publish && publishable,
+      });
       return;
     }
     if (condition.op === 'not') {
       if (!condition.condition) issue(`${path}.condition`, 'is required for a not condition', 'invalid_condition');
-      validateCondition(condition.condition, `${path}.condition`, depth + 1);
+      validateCondition(condition.condition, `${path}.condition`, depth + 1, { publishable });
       return;
     }
     if (condition.op === 'all' || condition.op === 'any') {
@@ -823,7 +833,9 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
         issue(`${path}.conditions`, 'must be a non-empty array', 'invalid_condition');
         return;
       }
-      condition.conditions.forEach((child, index) => validateCondition(child, `${path}.conditions[${index}]`, depth + 1));
+      condition.conditions.forEach((child, index) => (
+        validateCondition(child, `${path}.conditions[${index}]`, depth + 1, { publishable })
+      ));
       return;
     }
     issue(`${path}.op`, 'must be selected, not, all, or any', 'invalid_condition');
@@ -832,16 +844,17 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
   parts.forEach((part, partIndex) => {
     if (!isObject(part)) return;
     const partPath = `parts[${partIndex}]`;
-    validateRuleLists(part, partPath);
-    validateCondition(part.visibleWhen, `${partPath}.visibleWhen`);
+    validateRuleLists(part, partPath, { publishable: true });
+    validateCondition(part.visibleWhen, `${partPath}.visibleWhen`, 0, { publishable: true });
     (part.items || []).forEach((item, itemIndex) => {
       const itemPath = `${partPath}.items[${itemIndex}]`;
-      validateRuleLists(item, itemPath);
-      validateCondition(item.visibleWhen, `${itemPath}.visibleWhen`);
+      const publishable = item?.status === 'public';
+      validateRuleLists(item, itemPath, { publishable });
+      validateCondition(item.visibleWhen, `${itemPath}.visibleWhen`, 0, { publishable });
       (item.styles || []).forEach((style, styleIndex) => {
         const stylePath = `${itemPath}.styles[${styleIndex}]`;
-        validateRuleLists(style, stylePath);
-        validateCondition(style.visibleWhen, `${stylePath}.visibleWhen`);
+        validateRuleLists(style, stylePath, { publishable });
+        validateCondition(style.visibleWhen, `${stylePath}.visibleWhen`, 0, { publishable });
       });
     });
   });
@@ -861,7 +874,7 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
     }
     if (selectionParts.has(selection.partId)) issue(`${path}.partId`, 'duplicates another default Part selection', 'duplicate');
     selectionParts.add(selection.partId);
-    validateTarget(selection, path);
+    validateTarget(selection, path, { requirePublic: publish });
     if (!selection.itemId) issue(`${path}.itemId`, 'is required in a Recipe selection', 'missing_reference');
     if (!selection.styleId) issue(`${path}.styleId`, 'is required in a Recipe selection', 'missing_reference');
     const part = partById.get(selection.partId);

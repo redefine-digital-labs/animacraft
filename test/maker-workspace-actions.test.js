@@ -1101,7 +1101,37 @@ test('whole Style lock cannot be bypassed by deleting its parent Item or Part', 
   }, { creatorRoot, playable: true });
 });
 
-test('the quick Style visibility selector never destroys an imported advanced condition', async () => {
+test('workspace restore preserves legacy nested shorthand rules with the owner Part context', async () => {
+  await withWorkspace(async (workspace) => {
+    const part = workspace.getDocument().parts[0];
+    const owner = part.items[0];
+    const target = part.items[1];
+
+    assert.deepEqual(owner.requires, [{
+      partId: part.id,
+      itemId: target.id,
+      styleId: target.styles[0].id,
+    }]);
+    assert.equal(Object.hasOwn(owner, 'rules'), false);
+  }, {
+    prepareDocument(document) {
+      const part = document.parts[0];
+      const owner = part.items[0];
+      const target = structuredClone(owner);
+      target.id = `${part.id}-legacy-target`;
+      target.name = 'Legacy target';
+      target.importKey = target.id;
+      target.styles[0].id = `${target.id}-style`;
+      target.defaultStyleId = target.styles[0].id;
+      part.items.push(target);
+      owner.rules = {
+        requires: [{ itemId: target.id, styleId: target.styles[0].id }],
+      };
+    },
+  });
+});
+
+test('the Style visibility editor preserves imported advanced conditions until an explicit replacement or clear', async () => {
   const creatorRoot = new FakeRoot();
   await withWorkspace(async (workspace) => {
     const { part, item, style } = workspace.selectedCreatorRecords();
@@ -1119,8 +1149,10 @@ test('the quick Style visibility selector never destroys an imported advanced co
         .visibleWhen = structuredClone(condition);
     });
     workspace.render();
-    assert.match(creatorRoot.innerHTML, /Advanced condition \(preserved\)/);
-    assert.match(creatorRoot.innerHTML, /data-action="style-visible-when" disabled/);
+    assert.match(creatorRoot.innerHTML, /Advanced visibility condition/);
+    assert.match(creatorRoot.innerHTML, /data-action="edit-style-visibility"/);
+    assert.match(creatorRoot.innerHTML, /data-action="clear-style-visibility"/);
+    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="style-visible-when"/);
 
     await workspace.handleCreatorChange({
       target: {
@@ -1130,7 +1162,283 @@ test('the quick Style visibility selector never destroys an imported advanced co
       },
     });
     assert.deepEqual(workspace.selectedCreatorRecords().style.visibleWhen, condition);
+
+    creatorClick(workspace, 'edit-style-visibility');
+    assert.equal(workspace.creatorTab, 'rules');
+    assert.equal(workspace.rulesEditorIntent, 'visibility');
+    assert.match(creatorRoot.innerHTML, /This existing complex condition stays unchanged/);
+    assert.deepEqual(workspace.selectedCreatorRecords().style.visibleWhen, condition);
+
+    creatorClick(workspace, 'clear-style-visibility');
+    assert.equal(workspace.selectedCreatorRecords().style.visibleWhen, null);
   }, { creatorRoot, playable: true });
+});
+
+test('Style visibility can target an exact Item and rejects ambiguous or impossible conditions without losing the draft', async () => {
+  const creatorRoot = new FakeRoot();
+  creatorRoot.querySelectorAll = (selector) => (
+    selector === '[data-visibility-target]:checked'
+      ? creatorRoot.visibilityTargets || []
+      : []
+  );
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    const { part, item, style } = workspace.selectedCreatorRecords();
+    const targetPart = document.parts.find((candidate) => candidate.id !== part.id && !candidate.required);
+    const targetItem = targetPart.items[0];
+    const definition = `${targetPart.id}::${targetItem.id}`;
+    creatorRoot.visibilityTargets = [{ value: definition }];
+    creatorRoot.selectors = {
+      '#v4VisibilityMatchMode': { value: 'all' },
+      '#v4VisibilityPolarity': { value: 'selected' },
+    };
+
+    workspace.applySelectedStyleVisibility();
+    assert.deepEqual(workspace.selectedCreatorRecords().style.visibleWhen, {
+      op: 'selected',
+      partId: targetPart.id,
+      itemId: targetItem.id,
+    });
+
+    creatorRoot.visibilityTargets = [
+      { value: `${targetPart.id}::${targetPart.items[0].id}` },
+      { value: `${targetPart.id}::${targetPart.items[1]?.id || targetPart.items[0].id}::${targetPart.items[0].styles[0].id}` },
+    ];
+    creatorRoot.selectors['#v4VisibilityMatchMode'].value = 'any';
+    creatorRoot.selectors['#v4VisibilityPolarity'].value = 'not-selected';
+    workspace.applySelectedStyleVisibility();
+    assert.equal(workspace.visibilityBuilderError, workspace.tr('visibilityAnyNotSelectedError'));
+    assert.equal(workspace.visibilityBuilderDraft.definitions.length, 2);
+    assert.deepEqual(
+      workspace.getDocument().parts.find((candidate) => candidate.id === part.id)
+        .items.find((candidate) => candidate.id === item.id)
+        .styles.find((candidate) => candidate.id === style.id)
+        .visibleWhen,
+      { op: 'selected', partId: targetPart.id, itemId: targetItem.id },
+    );
+  }, {
+    creatorRoot,
+    playable: true,
+    prepareDocument(document) {
+      const targetPart = document.parts.filter((candidate) => !candidate.required)[1];
+      const alternate = structuredClone(targetPart.items[0]);
+      alternate.id = `${targetPart.id}-alternate`;
+      alternate.name = 'Alternate';
+      alternate.styles[0].id = `${targetPart.id}-alternate-style`;
+      targetPart.items.push(alternate);
+    },
+  });
+});
+
+test('Style visibility preview updates immediately and a locked Style disables the whole builder', async () => {
+  const preview = { textContent: '' };
+  const creatorRoot = new FakeRoot({
+    '.v4-visibility-preview strong': preview,
+  });
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    const { part, item, style } = workspace.selectedCreatorRecords();
+    const targetPart = document.parts.find((candidate) => candidate.id !== part.id && !candidate.required);
+    const targetItem = targetPart.items[0];
+    const definition = `${targetPart.id}::${targetItem.id}`;
+    workspace.visibilityBuilderDraft = {
+      styleKey: `${part.id}/${item.id}/${style.id}`,
+      logic: 'all',
+      polarity: 'selected',
+      definitions: [],
+    };
+
+    await workspace.handleCreatorChange({
+      target: {
+        dataset: { action: 'visibility-target-choice' },
+        value: definition,
+        checked: true,
+      },
+    });
+    assert.match(preview.textContent, new RegExp(targetPart.name));
+    assert.match(preview.textContent, new RegExp(targetItem.name));
+
+    await workspace.handleCreatorChange({
+      target: {
+        dataset: { action: 'visibility-polarity-choice' },
+        value: 'not-selected',
+      },
+    });
+    assert.match(preview.textContent, /not selected|none (?:of|are)/i);
+
+    workspace.executeDocument('Lock Style', ({ document: next }) => {
+      next.parts.find((candidate) => candidate.id === part.id)
+        .items.find((candidate) => candidate.id === item.id)
+        .styles.find((candidate) => candidate.id === style.id)
+        .styleLocked = true;
+    });
+    workspace.creatorTab = 'rules';
+    workspace.rulesEditorIntent = 'visibility';
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /id="v4VisibilityLockedHint"/);
+    assert.match(
+      creatorRoot.innerHTML,
+      /<fieldset class="v4-visibility-builder" disabled aria-describedby="v4VisibilityLockedHint">/,
+    );
+  }, { creatorRoot, playable: true });
+});
+
+test('unresolved legacy rules are visible in Rules and lead directly to publication preflight', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    workspace.creatorTab = 'rules';
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /Legacy rules need repair/);
+    assert.match(creatorRoot.innerHTML, /Found 2 legacy rule/);
+    assert.match(creatorRoot.innerHTML, /data-action="review-rule-preflight"/);
+    assert.equal(
+      workspace.getDocument().extensions.unresolvedLegacyRules.rules.length,
+      2,
+    );
+    assert.equal(
+      workspace.getDocument().extensions.unresolvedLegacyRules.issues.length,
+      2,
+    );
+
+    creatorClick(workspace, 'review-rule-preflight');
+    assert.equal(workspace.creatorTab, 'validate');
+    assert.ok(workspace.blockingPublicationIssues().some(
+      (issue) => issue.code === 'release_unresolved-legacy-maker-rules',
+    ));
+    assert.match(creatorRoot.innerHTML, /Preflight/);
+  }, {
+    creatorRoot,
+    playable: true,
+    prepareDocument(document) {
+      document.extensions.unresolvedLegacyRules = {
+        rules: [{
+          id: 'stored-ambiguous-legacy-rule',
+          type: 'excludes',
+          trigger: { itemId: 'stored-missing-owner-part' },
+          targets: [{ partId: document.parts[2].id }],
+        }],
+        issues: [],
+      };
+      document.rules = [{
+        id: 'ambiguous-legacy-rule',
+        type: 'requires',
+        trigger: { itemId: 'missing-owner-part' },
+        targets: [{ partId: document.parts[1].id }],
+      }];
+    },
+  });
+});
+
+test('draft owners may prepare draft-target rules while public owners remain publication-safe', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    const ownerPart = document.parts.find((part) => !part.required);
+    const targetPart = document.parts.find((part) => part.id !== ownerPart.id && !part.required);
+    const ownerItem = ownerPart.items[0];
+    const ownerStyle = ownerItem.styles[0];
+    const targetItem = targetPart.items[0];
+    const ownerDefinition = `${ownerPart.id}::${ownerItem.id}::${ownerStyle.id}`;
+    const targetDefinition = `${targetPart.id}::${targetItem.id}`;
+    creatorRoot.selectors = {
+      '#v4RuleOwnerDefinition': { value: ownerDefinition },
+      '#v4RuleType': { value: 'requires' },
+      '#v4RuleMatchMode': { value: 'all' },
+      '#v4RuleTargetDefinitions': {
+        selectedOptions: [{ value: targetDefinition }],
+      },
+    };
+
+    workspace.executeDocument('Prepare draft relationship', ({ document: next }) => {
+      next.parts.find((part) => part.id === ownerPart.id)
+        .items.find((item) => item.id === ownerItem.id).status = 'draft';
+      next.parts.find((part) => part.id === targetPart.id)
+        .items.find((item) => item.id === targetItem.id).status = 'draft';
+    });
+    workspace.addRuleFromBuilder();
+    assert.deepEqual(
+      workspace.getDocument().parts.find((part) => part.id === ownerPart.id)
+        .items.find((item) => item.id === ownerItem.id)
+        .styles.find((style) => style.id === ownerStyle.id).requires,
+      [{ partId: targetPart.id, itemId: targetItem.id }],
+    );
+
+    workspace.executeDocument('Publish owner only', ({ document: next }) => {
+      const owner = next.parts.find((part) => part.id === ownerPart.id)
+        .items.find((item) => item.id === ownerItem.id);
+      owner.status = 'public';
+      owner.styles.find((style) => style.id === ownerStyle.id).requires = [];
+    });
+    workspace.addRuleFromBuilder();
+    assert.equal(workspace.ruleBuilderError, workspace.tr('ruleUnpublishedTargetError'));
+    assert.equal(
+      workspace.getDocument().parts.find((part) => part.id === ownerPart.id)
+        .items.find((item) => item.id === ownerItem.id)
+        .styles.find((style) => style.id === ownerStyle.id).requires.length,
+      0,
+    );
+  }, { creatorRoot, playable: true });
+});
+
+test('Combination Rules keep a failed builder draft and block empty, same-Part, always-true, and impossible targets', async () => {
+  const creatorRoot = new FakeRoot();
+  creatorRoot.querySelectorAll = (selector) => (
+    selector === '[data-rule-target]:checked'
+      ? creatorRoot.ruleTargets || []
+      : []
+  );
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    const ownerPart = document.parts.find((part) => !part.required);
+    const ownerItem = ownerPart.items[0];
+    const ownerStyle = ownerItem.styles[0];
+    const ownerDefinition = `${ownerPart.id}::${ownerItem.id}::${ownerStyle.id}`;
+    creatorRoot.selectors = {
+      '#v4RuleOwnerDefinition': { value: ownerDefinition },
+      'input[name="v4-rule-type"]:checked': { value: 'requires' },
+      '#v4RuleMatchMode': { value: 'all' },
+    };
+
+    creatorRoot.ruleTargets = [];
+    workspace.addRuleFromBuilder();
+    assert.equal(workspace.ruleBuilderError, workspace.tr('ruleChooseTargetError'));
+
+    creatorRoot.ruleTargets = [{ value: `${ownerPart.id}::${ownerItem.id}` }];
+    workspace.addRuleFromBuilder();
+    assert.equal(workspace.ruleBuilderError, workspace.tr('ruleSamePartError'));
+    assert.deepEqual(workspace.ruleBuilderDraft.definitions, [`${ownerPart.id}::${ownerItem.id}`]);
+
+    const requiredPart = document.parts.find((part) => part.required);
+    creatorRoot.ruleTargets = [{ value: requiredPart.id }];
+    workspace.addRuleFromBuilder();
+    assert.equal(workspace.ruleBuilderError, workspace.tr('ruleRequiredPartTargetError'));
+
+    const targetPart = document.parts.find((part) => part.id !== ownerPart.id && !part.required);
+    creatorRoot.ruleTargets = targetPart.items.slice(0, 2).map((targetItem) => ({
+      value: `${targetPart.id}::${targetItem.id}`,
+    }));
+    workspace.addRuleFromBuilder();
+    assert.equal(workspace.ruleBuilderError, workspace.tr('ruleImpossibleAllError'));
+    assert.equal(workspace.ruleBuilderDraft.definitions.length, 2);
+    assert.equal(workspace.selectedCreatorRecords().style.requires.length, 0);
+
+    workspace.creatorTab = 'rules';
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /data-action="rule-owner-choice"/);
+    assert.match(creatorRoot.innerHTML, /data-action="rule-target-choice"/);
+    assert.match(creatorRoot.innerHTML, /disabled/);
+  }, {
+    creatorRoot,
+    playable: true,
+    prepareDocument(document) {
+      const targetPart = document.parts.filter((part) => !part.required)[1];
+      const alternate = structuredClone(targetPart.items[0]);
+      alternate.id = `${targetPart.id}-rule-alternate`;
+      alternate.name = 'Rule Alternate';
+      alternate.styles[0].id = `${targetPart.id}-rule-alternate-style`;
+      targetPart.items.push(alternate);
+    },
+  });
 });
 
 test('color, rule, and Expansion Pack controls perform real document operations', async () => {

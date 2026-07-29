@@ -212,6 +212,10 @@ test('evaluates style-aware selected/all/any/not and color conditions', () => {
   ] }, context), true);
   assert.equal(evaluateVisibleWhen({ partId: 'hat', selected: false }, context), true);
   assert.equal(evaluateVisibleWhen({
+    op: 'not',
+    condition: { op: 'selected', partId: 'accessory', itemId: 'ring' },
+  }, context), true);
+  assert.equal(evaluateVisibleWhen({
     requires: [{ partId: 'face', itemIds: ['smile'], styleIds: ['open'] }],
     excludes: [{ colorChannelId: 'eyes', equals: '#7755ff' }],
   }, context), false);

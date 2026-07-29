@@ -208,6 +208,17 @@ function expectPublicationError(callback, code) {
   });
 }
 
+function projectedConflictsFor(projection, mapping) {
+  return projection.rules.filter((rule) => (
+    (rule.leftPartKey === mapping.partKey && rule.leftItemKey === mapping.itemKey)
+    || (rule.rightPartKey === mapping.partKey && rule.rightItemKey === mapping.itemKey)
+  )).map((rule) => (
+    rule.leftPartKey === mapping.partKey && rule.leftItemKey === mapping.itemKey
+      ? `${rule.rightPartKey}\u0000${rule.rightItemKey}`
+      : `${rule.leftPartKey}\u0000${rule.leftItemKey}`
+  )).sort();
+}
+
 test('projection v2 is complete, bijective, neutral and independent from LayerTrack order', () => {
   const document = projectionMaker();
   const projection = compileMakerV4MoveProjectionV2(document);
@@ -463,6 +474,117 @@ test('grouped Item/Style selectors enumerate exact keys without wildcards', () =
   )).sort();
   assert.deepEqual(paired, hatKeys);
   assert.equal(projection.rules.some((rule) => !rule.leftItemKey || !rule.rightItemKey), false);
+});
+
+test('Style visibility projects exact Item and Style selectors and survives publication Preflight', () => {
+  const document = projectionMaker();
+  document.assets.push(pngAsset('hat-helmet'));
+  document.parts[1].items.push(item('helmet', 1, [
+    style('heavy', 0, 'hat-track', 'hat-helmet'),
+  ]));
+  document.parts[0].items[0].styles[0].visibleWhen = {
+    op: 'selected',
+    partId: 'hat',
+    itemId: 'cap',
+  };
+  document.parts[0].items[0].styles[1].visibleWhen = {
+    op: 'selected',
+    partId: 'hat',
+    itemId: 'cap',
+    styleId: 'star',
+  };
+
+  const projection = compileMakerV4MoveProjectionV2(document);
+  const mapping = new Map(projection.mappings.styles.map((entry) => [
+    `${entry.partId}/${entry.itemId}/${entry.styleId}`,
+    entry,
+  ]));
+  const none = projection.mappings.none.find((entry) => entry.partId === 'hat');
+  const base = mapping.get('body/shape/base');
+  const armored = mapping.get('body/shape/armored');
+  const plain = mapping.get('hat/cap/plain');
+  const star = mapping.get('hat/cap/star');
+  const heavy = mapping.get('hat/helmet/heavy');
+
+  assert.deepEqual(projectedConflictsFor(projection, base), [
+    `${heavy.partKey}\u0000${heavy.itemKey}`,
+    `${none.partKey}\u0000${none.itemKey}`,
+  ].sort(), 'an exact Item selector must allow every Style in that Item');
+  assert.deepEqual(projectedConflictsFor(projection, armored), [
+    `${heavy.partKey}\u0000${heavy.itemKey}`,
+    `${none.partKey}\u0000${none.itemKey}`,
+    `${plain.partKey}\u0000${plain.itemKey}`,
+  ].sort(), 'an exact Style selector must allow only that Style');
+  assert.equal(
+    projectedConflictsFor(projection, armored).includes(`${star.partKey}\u0000${star.itemKey}`),
+    false,
+  );
+
+  const manifest = buildMakerV4PublicationManifest(document);
+  assert.deepEqual(
+    manifest.moveProjectionV2.rules,
+    projection.rules,
+    'the publication Preflight manifest must store the same exact visibility projection',
+  );
+});
+
+test('not-selected visibility treats an omitted optional Part as None in Sui projection and Preflight', () => {
+  const document = projectionMaker();
+  document.parts[0].items[0].styles[0].visibleWhen = {
+    op: 'not',
+    condition: {
+      op: 'selected',
+      partId: 'hat',
+      itemId: 'cap',
+      styleId: 'star',
+    },
+  };
+
+  const projection = compileMakerV4MoveProjectionV2(document);
+  const mapping = new Map(projection.mappings.styles.map((entry) => [
+    `${entry.partId}/${entry.itemId}/${entry.styleId}`,
+    entry,
+  ]));
+  const base = mapping.get('body/shape/base');
+  const star = mapping.get('hat/cap/star');
+  const none = projection.mappings.none.find((entry) => entry.partId === 'hat');
+
+  assert.deepEqual(
+    projectedConflictsFor(projection, base),
+    [`${star.partKey}\u0000${star.itemKey}`],
+    'not-selected must forbid only the selected target, not the optional None sentinel',
+  );
+  assert.equal(
+    projectedConflictsFor(projection, base).includes(`${none.partKey}\u0000${none.itemKey}`),
+    false,
+  );
+
+  const omitted = {
+    selections: [{ partId: 'body', itemId: 'shape', styleId: 'base' }],
+    colors: [{ channelId: 'skin', swatchId: 'warm' }],
+  };
+  assert.equal(evaluateRecipe(document, omitted).valid, true);
+  assert.doesNotThrow(() => flattenMakerV4RecipeV2(document, omitted));
+
+  const selected = {
+    selections: [
+      { partId: 'body', itemId: 'shape', styleId: 'base' },
+      { partId: 'hat', itemId: 'cap', styleId: 'star' },
+    ],
+    colors: [{ channelId: 'skin', swatchId: 'warm' }],
+  };
+  assert.equal(evaluateRecipe(document, selected).valid, false);
+  expectPublicationError(
+    () => flattenMakerV4RecipeV2(document, selected),
+    'invalid-maker-recipe',
+  );
+
+  const manifest = buildMakerV4PublicationManifest(document);
+  assert.deepEqual(
+    manifest.moveProjectionV2.rules,
+    projection.rules,
+    'publication Preflight must preserve the optional-Part not-selected projection',
+  );
 });
 
 test('pairwise projection authorizes exactly the same finite recipe space', () => {

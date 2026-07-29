@@ -175,6 +175,9 @@ test('critical nested editor details do not fall back to English outside English
     'issuePartTrackOrder',
     'advancedVisibilityCondition',
     'advancedVisibilityPreserved',
+    'visibilityLockedHelp',
+    'legacyRulesNeedRepair',
+    'legacyRulesNeedRepairCopy',
     'publishMakerStep',
     'prepareQuilt',
     'registerAndUpload',
@@ -217,6 +220,23 @@ test('critical nested editor details do not fall back to English outside English
   ['zh', 'ja', 'ko', 'vi'].forEach((locale) => {
     const dictionary = makerWorkspaceDictionary(locale);
     keys.forEach((key) => assert.notEqual(dictionary[key], english[key], `${locale}.${key} must be localized`));
+  });
+});
+
+test('Rules and visibility copy uses the Vietnamese Kiểu term consistently', () => {
+  const keys = [
+    'ruleSamePartTargetHint',
+    'ruleRequiredPartTargetHint',
+    'ruleRequiredPartTargetError',
+    'visibilityRequiredPartTargetHint',
+    'visibilityRequiredPartTargetError',
+    'visibilityLockedHelp',
+  ];
+
+  keys.forEach((key) => {
+    const value = makerWorkspaceText('vi', key, { part: 'Tóc' });
+    assert.match(value, /Kiểu/, `vi.${key} must use the localized Style term`);
+    assert.doesNotMatch(value, /\bStyle\b/, `vi.${key} must not retain the English Style term`);
   });
 });
 
