@@ -1373,7 +1373,7 @@ const productionRuntimeI18n = {
     unexpectedMakerQuilt: 'Walrus returned an unexpected number of Maker quilt files.',
     expansionNoLongerCompatible: 'An embedded Expansion Pack is no longer compatible with this Maker version.',
     ruleAssetMismatch: 'Every rule must reference a Part with uploaded PNG Items.',
-    makerPublishedPartial: 'Published. Full hierarchy and visibility rules remain authoritative in the versioned Walrus manifest; Sui indexes its supported subset.',
+    makerPublishedPartial: 'Published. The versioned Walrus manifest keeps the full Maker graph, while Sui stores its complete v2 authorization and color projection for recipe verification.',
     makerPublishedIndexing: 'Published on Sui. The object ID is still indexing, so this browser is retaining the recovery draft.',
     archiveWaiting: 'Waiting for your Sui signature to archive this Maker…',
     restoreWaiting: 'Waiting for your Sui signature to restore this Maker…',
@@ -1407,7 +1407,7 @@ const productionRuntimeI18n = {
     treasuryLoadingSui: '正在从 Sui 读取 Treasury 余额…', treasuryUnavailable: '无法读取关联的 Maker Treasury。', syncingMakers: '正在同步 Maker…', refreshMakers: '刷新 Maker', networkLabel: '网络', packageLabel: '合约包', walrusLabel: 'Walrus', signerLabel: '签名钱包', publishPackageFirstShort: '请先发布合约包', epochRetention: '保留 {count} 个 epoch', configureUploadRelay: '请配置上传中继', signerConnected: '已连接', signerConnectWallet: '连接钱包',
     movePackageMissing: '尚未配置 Move 合约包。', previewMintLocked: '此模板仍是预览；载入已发布的 Sui Maker 和 Walrus 清单后才能铸造。', makerMintClosed: '此 Maker 当前不接受新的 Soul 授权。', paidTreasuryMissing: '此付费 Maker 缺少链上 Treasury 引用。', connectMintWallet: '请连接 Sui 钱包后铸造此 OC。', soulidityPackageMissing: '请先配置 Soulidity 合约包，再启用规范 Soul 铸造。', canonicalMintGateClosed: '经审核的 Soulidity 适配器发布开关尚未启用，当前不能铸造规范 Soul。', mintNextStep: '请准备并认证 OC 包，然后前往 Soulidity 铸造唯一的规范 Soul。', retryUpload: '重试上传', registerUpload: '注册并上传', preparingHandoff: '正在准备交接…',
     ocRenderingQuilt: '正在渲染 OC 并编码为一个 Walrus Quilt…', ocQuiltEncoded: 'OC Quilt 已编码，请在 Walrus 主网上注册。', ocQuiltPrepareFailed: '无法准备 OC Quilt。', completeOcBeforePublishing: '请重新点击“完成 OC”，把最新的角色资料、组合配方与 Soul 文档冻结后再发布。', ocWaitingUpload: '正在等待注册签名，随后上传 OC Quilt…', ocUnexpectedQuilt: 'Walrus 返回的 OC Quilt 文件数量不正确。', ocRecoveredCertified: '恢复的 OC Quilt 已认证，可前往 Soulidity 进行规范铸造。', ocUploadedCertify: 'OC Quilt 已上传，请再签名一次完成认证。', ocUploadFailed: 'OC 注册或上传失败。', ocWaitingCertification: '正在等待 Walrus 认证签名…', ocFilesCertified: 'OC 文件已认证，可前往 Soulidity 铸造规范 Soul。', ocCertificationFailed: 'OC 认证失败。', transparentStylePng: '素材「{name}」没有任何可见像素。请用“可选部位”的未选择状态表示“无”，不要上传空 PNG。', pngVerificationFailed: '无法复检所有待发布的样式 PNG，请重新导入有问题的 PNG 后重试。', soulHandoffPreparing: '正在准备规范 Soulidity 交接…', canonicalMintDisabled: '此版本尚未启用规范 Soul 铸造。', ocChangedAfterUpload: '上传后 OC 资料或配方已变更，请重新准备铸造 Quilt。', soulHandoffComplete: '已打开 Soulidity 并下载恢复交接包；该集成只创建一个规范 Soul。', soulHandoffFailed: 'Soulidity 交接失败。', restoringOcUpload: '正在恢复已保存的 OC 上传检查点…',
-    makerAssetUnavailable: '素材「{name}」已不可用，请重新选择 PNG。', unexpectedMakerQuilt: 'Walrus 返回的 Maker Quilt 文件数量不正确。', expansionNoLongerCompatible: '内嵌扩展包已不再兼容当前 Maker 版本。', ruleAssetMismatch: '每条规则都必须引用已有 PNG 部件的部位。', makerPublishedPartial: '已发布。完整层级和显示规则以版本化 Walrus 清单为准；Sui 只索引其支持的子集。', makerPublishedIndexing: '已发布到 Sui。对象 ID 仍在建立索引，浏览器会暂时保留恢复草稿。', archiveWaiting: '正在等待你的 Sui 签名以归档此 Maker…', restoreWaiting: '正在等待你的 Sui 签名以恢复此 Maker…', archivedOnNetwork: '已在 {network} 归档：{digest}', restoredOnNetwork: '已在 {network} 恢复：{digest}', archiveMakerFailed: '无法归档此 Maker。', restoreMakerFailed: '无法恢复此 Maker。',
+    makerAssetUnavailable: '素材「{name}」已不可用，请重新选择 PNG。', unexpectedMakerQuilt: 'Walrus 返回的 Maker Quilt 文件数量不正确。', expansionNoLongerCompatible: '内嵌扩展包已不再兼容当前 Maker 版本。', ruleAssetMismatch: '每条规则都必须引用已有 PNG 部件的部位。', makerPublishedPartial: '已发布。版本化 Walrus 清单保存完整 Maker 图；Sui 保存完整的 v2 授权与颜色投影，用于验证配方。', makerPublishedIndexing: '已发布到 Sui。对象 ID 仍在建立索引，浏览器会暂时保留恢复草稿。', archiveWaiting: '正在等待你的 Sui 签名以归档此 Maker…', restoreWaiting: '正在等待你的 Sui 签名以恢复此 Maker…', archivedOnNetwork: '已在 {network} 归档：{digest}', restoredOnNetwork: '已在 {network} 恢复：{digest}', archiveMakerFailed: '无法归档此 Maker。', restoreMakerFailed: '无法恢复此 Maker。',
     makerRestoredAt: 'Maker 工作区已恢复 · {time}', makerRestored: 'Maker 工作区已恢复', makerVersionChanged: 'Maker 版本已变更，发布前请重新准备 Walrus Quilt。', makerAutosaved: 'Maker 已自动保存', makerSaved: 'Maker 已保存', makerWorkspaceRestoreFailed: '无法恢复 Maker 工作区。', currentRulesInvalid: '当前 Maker 规则无法生成有效 OC。', creatorAssetImportFailed: '无法导入所选 Maker 素材。', ocDraftLocalFailed: '无法在本地保存 OC 草稿。',
     makerSettingsFirstPublish: '这些设置会在首次发布 Maker 时写入。', makerAdminOwnerRequired: '请连接当前持有 MakerAdminCap 的钱包。', paidMintReleaseGated: '付费铸造仍受发布开关限制，请先关闭费用再更新。', validMintPriceRequired: '请输入有效的 {symbol} 铸造价格。', adminSignatureWaiting: '正在等待 MakerAdminCap 持有者签名…', onchainSettingsUpdated: '链上设置已更新：{digest}', onchainSettingsFailed: '链上设置更新失败。', makerTreasuryRequired: '需要已发布的 Maker、Treasury 和 MakerAdminCap。', validWithdrawalRequired: '请输入有效的 {symbol} 提现金额。', revenueWithdrawn: '已提取 {amount} {symbol}：{digest}', treasuryWithdrawalFailed: 'Treasury 提现失败。',
   },
@@ -1416,7 +1416,7 @@ const productionRuntimeI18n = {
     treasuryLoadingSui: 'Sui から Treasury 残高を読み込み中…', treasuryUnavailable: '関連付けられた Maker Treasury を読み込めません。', syncingMakers: 'Maker を同期中…', refreshMakers: 'Maker を更新', networkLabel: 'ネットワーク', packageLabel: 'パッケージ', walrusLabel: 'Walrus', signerLabel: '署名者', publishPackageFirstShort: '先にパッケージを公開', epochRetention: '{count} epoch 保持', configureUploadRelay: 'アップロードリレーを設定', signerConnected: '接続済み', signerConnectWallet: 'ウォレット接続',
     movePackageMissing: 'Move パッケージが未設定です。', previewMintLocked: 'このテンプレートはプレビューです。公開済み Sui Maker と Walrus マニフェストの読み込み後にミントできます。', makerMintClosed: 'この Maker は新しい Soul 承認を受け付けていません。', paidTreasuryMissing: 'この有料 Maker にはオンチェーン Treasury の参照がありません。', connectMintWallet: 'この OC をミントするには Sui ウォレットを接続してください。', soulidityPackageMissing: '正規 Soul ミントを有効にする前に Soulidity パッケージを設定してください。', canonicalMintGateClosed: '審査済み Soulidity アダプターの公開ゲートが有効になるまで正規 Soul はミントできません。', mintNextStep: 'OC パッケージを準備・認証し、Soulidity で正規 Soul をミントしてください。', retryUpload: 'アップロード再試行', registerUpload: '登録してアップロード', preparingHandoff: '連携を準備中…',
     ocRenderingQuilt: 'OC を描画し、1つの Walrus Quilt にエンコード中…', ocQuiltEncoded: 'OC Quilt をエンコードしました。Walrus Mainnet に登録してください。', ocQuiltPrepareFailed: 'OC Quilt を準備できませんでした。', completeOcBeforePublishing: '最新のプロフィール、レシピ、Soul 文書を固定するため、公開前にもう一度「OC を完成」を実行してください。', ocWaitingUpload: '登録署名を待機し、その後 OC Quilt をアップロードします…', ocUnexpectedQuilt: 'Walrus から予期しない OC Quilt 結果が返されました。', ocRecoveredCertified: '復旧した OC Quilt は認証済みです。Soulidity で正規ミントを続けてください。', ocUploadedCertify: 'OC Quilt をアップロードしました。もう一度署名して認証してください。', ocUploadFailed: 'OC の登録またはアップロードに失敗しました。', ocWaitingCertification: 'Walrus の認証署名を待機中…', ocFilesCertified: 'OC ファイルを認証しました。Soulidity で正規 Soul をミントしてください。', ocCertificationFailed: 'OC の認証に失敗しました。', transparentStylePng: '素材「{name}」に表示可能なピクセルがありません。「なし」は空 PNG ではなく任意パーツの未選択状態で表現してください。', pngVerificationFailed: '公開する全スタイル PNG を再検証できませんでした。該当 PNG を読み込み直して再試行してください。', soulHandoffPreparing: '正規 Soulidity 連携を準備中…', canonicalMintDisabled: 'このリリースでは正規 Soul ミントが有効ではありません。', ocChangedAfterUpload: 'アップロード後に OC プロフィールまたはレシピが変更されました。新しい Quilt を準備してください。', soulHandoffComplete: 'Soulidity を開き、復旧用連携パッケージをダウンロードしました。この連携は正規 Soul を1つだけ作成します。', soulHandoffFailed: 'Soulidity 連携に失敗しました。', restoringOcUpload: '保存済み OC アップロードのチェックポイントを復元中…',
-    makerAssetUnavailable: '素材「{name}」は利用できません。PNG を選び直してください。', unexpectedMakerQuilt: 'Walrus から予期しない数の Maker Quilt ファイルが返されました。', expansionNoLongerCompatible: '埋め込み拡張パックは現在の Maker バージョンと互換性がありません。', ruleAssetMismatch: 'すべてのルールは PNG アイテムを持つパーツを参照する必要があります。', makerPublishedPartial: '公開しました。完全な階層・表示ルールはバージョン付き Walrus マニフェストが正本で、Sui は対応する一部を索引します。', makerPublishedIndexing: 'Sui に公開しました。オブジェクト ID の索引中は復旧下書きをブラウザに保持します。', archiveWaiting: 'この Maker をアーカイブする Sui 署名を待機中…', restoreWaiting: 'この Maker を復元する Sui 署名を待機中…', archivedOnNetwork: '{network} でアーカイブ済み：{digest}', restoredOnNetwork: '{network} で復元済み：{digest}', archiveMakerFailed: 'この Maker をアーカイブできませんでした。', restoreMakerFailed: 'この Maker を復元できませんでした。',
+    makerAssetUnavailable: '素材「{name}」は利用できません。PNG を選び直してください。', unexpectedMakerQuilt: 'Walrus から予期しない数の Maker Quilt ファイルが返されました。', expansionNoLongerCompatible: '埋め込み拡張パックは現在の Maker バージョンと互換性がありません。', ruleAssetMismatch: 'すべてのルールは PNG アイテムを持つパーツを参照する必要があります。', makerPublishedPartial: '公開しました。バージョン付き Walrus マニフェストが完全な Maker グラフを保持し、Sui はレシピ検証用の完全な v2 認可・色投影を保存します。', makerPublishedIndexing: 'Sui に公開しました。オブジェクト ID の索引中は復旧下書きをブラウザに保持します。', archiveWaiting: 'この Maker をアーカイブする Sui 署名を待機中…', restoreWaiting: 'この Maker を復元する Sui 署名を待機中…', archivedOnNetwork: '{network} でアーカイブ済み：{digest}', restoredOnNetwork: '{network} で復元済み：{digest}', archiveMakerFailed: 'この Maker をアーカイブできませんでした。', restoreMakerFailed: 'この Maker を復元できませんでした。',
     makerRestoredAt: 'Maker ワークスペースを復元しました · {time}', makerRestored: 'Maker ワークスペースを復元しました', makerVersionChanged: 'Maker バージョンが変更されました。公開前に新しい Walrus Quilt を準備してください。', makerAutosaved: 'Maker を自動保存しました', makerSaved: 'Maker を保存しました', makerWorkspaceRestoreFailed: 'Maker ワークスペースを復元できませんでした。', currentRulesInvalid: '現在の Maker ルールでは有効な OC を作成できません。', creatorAssetImportFailed: '選択した Maker 素材を読み込めませんでした。', ocDraftLocalFailed: 'OC 下書きをローカル保存できませんでした。',
     makerSettingsFirstPublish: 'この設定は Maker の初回公開時に反映されます。', makerAdminOwnerRequired: '現在 MakerAdminCap を所有するウォレットを接続してください。', paidMintReleaseGated: '有料ミントは公開ゲートで制限中です。更新前に料金を無効にしてください。', validMintPriceRequired: '有効な {symbol} ミント価格を入力してください。', adminSignatureWaiting: 'MakerAdminCap 所有者の署名を待機中…', onchainSettingsUpdated: 'オンチェーン設定を更新しました：{digest}', onchainSettingsFailed: 'オンチェーン設定の更新に失敗しました。', makerTreasuryRequired: '公開済み Maker、Treasury、MakerAdminCap が必要です。', validWithdrawalRequired: '有効な {symbol} 出金額を入力してください。', revenueWithdrawn: '{amount} {symbol} を出金しました：{digest}', treasuryWithdrawalFailed: 'Treasury からの出金に失敗しました。',
   },
@@ -1425,7 +1425,7 @@ const productionRuntimeI18n = {
     treasuryLoadingSui: 'Sui에서 Treasury 잔액 불러오는 중…', treasuryUnavailable: '연결된 Maker Treasury를 불러올 수 없습니다.', syncingMakers: 'Maker 동기화 중…', refreshMakers: 'Maker 새로고침', networkLabel: '네트워크', packageLabel: '패키지', walrusLabel: 'Walrus', signerLabel: '서명자', publishPackageFirstShort: '먼저 패키지 게시', epochRetention: '{count} epoch 보관', configureUploadRelay: '업로드 릴레이 설정', signerConnected: '연결됨', signerConnectWallet: '지갑 연결',
     movePackageMissing: 'Move 패키지가 설정되지 않았습니다.', previewMintLocked: '이 템플릿은 미리보기입니다. 게시된 Sui Maker와 Walrus 매니페스트를 불러오면 민팅할 수 있습니다.', makerMintClosed: '이 Maker는 새 Soul 승인을 받지 않습니다.', paidTreasuryMissing: '유료 Maker에 온체인 Treasury 참조가 없습니다.', connectMintWallet: '이 OC를 민팅하려면 Sui 지갑을 연결하세요.', soulidityPackageMissing: '정식 Soul 민팅을 활성화하기 전에 Soulidity 패키지를 설정하세요.', canonicalMintGateClosed: '검토된 Soulidity 어댑터 릴리스 게이트가 활성화될 때까지 정식 Soul을 민팅할 수 없습니다.', mintNextStep: 'OC 패키지를 준비하고 인증한 뒤 Soulidity에서 정식 Soul을 민팅하세요.', retryUpload: '업로드 재시도', registerUpload: '등록 및 업로드', preparingHandoff: '연동 준비 중…',
     ocRenderingQuilt: 'OC를 렌더링하고 하나의 Walrus Quilt로 인코딩 중…', ocQuiltEncoded: 'OC Quilt 인코딩 완료. Walrus Mainnet에 등록하세요.', ocQuiltPrepareFailed: 'OC Quilt를 준비하지 못했습니다.', completeOcBeforePublishing: '최신 프로필, 레시피와 Soul 문서를 고정하려면 게시 전에 “OC 완성”을 다시 실행하세요.', ocWaitingUpload: '등록 서명을 기다린 뒤 OC Quilt를 업로드합니다…', ocUnexpectedQuilt: 'Walrus가 예상하지 못한 OC Quilt 결과를 반환했습니다.', ocRecoveredCertified: '복구된 OC Quilt가 인증되었습니다. Soulidity에서 정식 민팅을 계속하세요.', ocUploadedCertify: 'OC Quilt 업로드 완료. 한 번 더 서명해 인증하세요.', ocUploadFailed: 'OC 등록 또는 업로드에 실패했습니다.', ocWaitingCertification: 'Walrus 인증 서명을 기다리는 중…', ocFilesCertified: 'OC 파일 인증 완료. Soulidity에서 정식 Soul을 민팅하세요.', ocCertificationFailed: 'OC 인증에 실패했습니다.', transparentStylePng: '에셋 “{name}”에 보이는 픽셀이 없습니다. 빈 PNG 대신 선택 파트의 미선택 상태로 “없음”을 표현하세요.', pngVerificationFailed: '게시할 모든 스타일 PNG를 다시 확인하지 못했습니다. 문제가 있는 PNG를 다시 가져온 뒤 재시도하세요.', soulHandoffPreparing: '정식 Soulidity 연동 준비 중…', canonicalMintDisabled: '이 릴리스에서는 정식 Soul 민팅이 활성화되지 않았습니다.', ocChangedAfterUpload: '업로드 후 OC 프로필 또는 레시피가 변경되었습니다. 새 Quilt를 준비하세요.', soulHandoffComplete: 'Soulidity를 열고 복구 연동 패키지를 다운로드했습니다. 이 연동은 정식 Soul 하나만 생성합니다.', soulHandoffFailed: 'Soulidity 연동에 실패했습니다.', restoringOcUpload: '저장된 OC 업로드 체크포인트 복원 중…',
-    makerAssetUnavailable: '에셋 “{name}”을(를) 더 이상 사용할 수 없습니다. PNG를 다시 선택하세요.', unexpectedMakerQuilt: 'Walrus가 예상하지 못한 수의 Maker Quilt 파일을 반환했습니다.', expansionNoLongerCompatible: '포함된 확장 팩이 현재 Maker 버전과 더 이상 호환되지 않습니다.', ruleAssetMismatch: '모든 규칙은 PNG 아이템이 업로드된 파트를 참조해야 합니다.', makerPublishedPartial: '게시되었습니다. 전체 계층 및 표시 규칙은 버전이 지정된 Walrus 매니페스트가 기준이며 Sui는 지원하는 일부만 인덱싱합니다.', makerPublishedIndexing: 'Sui에 게시되었습니다. 오브젝트 ID 인덱싱 중에는 복구 초안을 브라우저에 유지합니다.', archiveWaiting: '이 Maker를 보관하기 위한 Sui 서명을 기다리는 중…', restoreWaiting: '이 Maker를 복원하기 위한 Sui 서명을 기다리는 중…', archivedOnNetwork: '{network}에 보관됨: {digest}', restoredOnNetwork: '{network}에 복원됨: {digest}', archiveMakerFailed: '이 Maker를 보관하지 못했습니다.', restoreMakerFailed: '이 Maker를 복원하지 못했습니다.',
+    makerAssetUnavailable: '에셋 “{name}”을(를) 더 이상 사용할 수 없습니다. PNG를 다시 선택하세요.', unexpectedMakerQuilt: 'Walrus가 예상하지 못한 수의 Maker Quilt 파일을 반환했습니다.', expansionNoLongerCompatible: '포함된 확장 팩이 현재 Maker 버전과 더 이상 호환되지 않습니다.', ruleAssetMismatch: '모든 규칙은 PNG 아이템이 업로드된 파트를 참조해야 합니다.', makerPublishedPartial: '게시되었습니다. 버전이 지정된 Walrus 매니페스트는 전체 Maker 그래프를 보관하고 Sui는 레시피 검증용 완전한 v2 승인 및 색상 투영을 저장합니다.', makerPublishedIndexing: 'Sui에 게시되었습니다. 오브젝트 ID 인덱싱 중에는 복구 초안을 브라우저에 유지합니다.', archiveWaiting: '이 Maker를 보관하기 위한 Sui 서명을 기다리는 중…', restoreWaiting: '이 Maker를 복원하기 위한 Sui 서명을 기다리는 중…', archivedOnNetwork: '{network}에 보관됨: {digest}', restoredOnNetwork: '{network}에 복원됨: {digest}', archiveMakerFailed: '이 Maker를 보관하지 못했습니다.', restoreMakerFailed: '이 Maker를 복원하지 못했습니다.',
     makerRestoredAt: 'Maker 작업 공간 복원됨 · {time}', makerRestored: 'Maker 작업 공간 복원됨', makerVersionChanged: 'Maker 버전이 변경되었습니다. 게시 전에 새 Walrus Quilt를 준비하세요.', makerAutosaved: 'Maker 자동 저장됨', makerSaved: 'Maker 저장됨', makerWorkspaceRestoreFailed: 'Maker 작업 공간을 복원하지 못했습니다.', currentRulesInvalid: '현재 Maker 규칙으로 유효한 OC를 만들 수 없습니다.', creatorAssetImportFailed: '선택한 Maker 에셋을 가져오지 못했습니다.', ocDraftLocalFailed: 'OC 초안을 로컬에 저장하지 못했습니다.',
     makerSettingsFirstPublish: '이 설정은 Maker를 처음 게시할 때 반영됩니다.', makerAdminOwnerRequired: '현재 MakerAdminCap을 소유한 지갑을 연결하세요.', paidMintReleaseGated: '유료 민팅은 릴리스 게이트로 제한됩니다. 업데이트 전에 수수료를 끄세요.', validMintPriceRequired: '유효한 {symbol} 민팅 가격을 입력하세요.', adminSignatureWaiting: 'MakerAdminCap 소유자 서명을 기다리는 중…', onchainSettingsUpdated: '온체인 설정 업데이트됨: {digest}', onchainSettingsFailed: '온체인 설정 업데이트에 실패했습니다.', makerTreasuryRequired: '게시된 Maker, Treasury, MakerAdminCap이 필요합니다.', validWithdrawalRequired: '유효한 {symbol} 인출 금액을 입력하세요.', revenueWithdrawn: '{amount} {symbol} 인출됨: {digest}', treasuryWithdrawalFailed: 'Treasury 인출에 실패했습니다.',
   },
@@ -1434,7 +1434,7 @@ const productionRuntimeI18n = {
     treasuryLoadingSui: 'Đang tải số dư Treasury từ Sui…', treasuryUnavailable: 'Không thể tải Maker Treasury đã liên kết.', syncingMakers: 'Đang đồng bộ Maker…', refreshMakers: 'Làm mới Maker', networkLabel: 'Mạng', packageLabel: 'Gói', walrusLabel: 'Walrus', signerLabel: 'Ví ký', publishPackageFirstShort: 'Đăng gói trước', epochRetention: 'Lưu {count} epoch', configureUploadRelay: 'Cấu hình relay tải lên', signerConnected: 'Đã kết nối', signerConnectWallet: 'Kết nối ví',
     movePackageMissing: 'Chưa cấu hình gói Move.', previewMintLocked: 'Mẫu này đang ở chế độ xem trước. Có thể mint sau khi tải Maker Sui đã đăng và Manifest Walrus.', makerMintClosed: 'Maker này không nhận thêm phê duyệt Soul.', paidTreasuryMissing: 'Maker trả phí này thiếu tham chiếu Treasury on-chain.', connectMintWallet: 'Kết nối ví Sui để mint OC này.', soulidityPackageMissing: 'Cấu hình gói Soulidity trước khi bật mint Soul chuẩn.', canonicalMintGateClosed: 'Chưa thể mint Soul chuẩn cho đến khi bật cổng phát hành của bộ điều hợp Soulidity đã duyệt.', mintNextStep: 'Chuẩn bị và chứng nhận gói OC, rồi tiếp tục tới Soulidity để mint Soul chuẩn.', retryUpload: 'Thử tải lại', registerUpload: 'Đăng ký & tải lên', preparingHandoff: 'Đang chuẩn bị chuyển giao…',
     ocRenderingQuilt: 'Đang kết xuất OC và mã hóa thành một Walrus Quilt…', ocQuiltEncoded: 'Đã mã hóa OC Quilt. Hãy đăng ký trên Walrus Mainnet.', ocQuiltPrepareFailed: 'Không thể chuẩn bị OC Quilt.', completeOcBeforePublishing: 'Hãy hoàn tất OC lại trước khi đăng để cố định hồ sơ, công thức và tài liệu Soul mới nhất.', ocWaitingUpload: 'Đang chờ chữ ký đăng ký rồi tải OC Quilt lên…', ocUnexpectedQuilt: 'Walrus trả về kết quả OC Quilt không đúng.', ocRecoveredCertified: 'OC Quilt khôi phục đã được chứng nhận. Tiếp tục tới Soulidity để mint chuẩn.', ocUploadedCertify: 'OC Quilt đã tải lên. Ký thêm một lần để chứng nhận.', ocUploadFailed: 'Đăng ký hoặc tải OC thất bại.', ocWaitingCertification: 'Đang chờ chữ ký chứng nhận Walrus…', ocFilesCertified: 'Tệp OC đã chứng nhận. Tiếp tục tới Soulidity để mint Soul chuẩn.', ocCertificationFailed: 'Chứng nhận OC thất bại.', transparentStylePng: 'Tài nguyên “{name}” không có pixel nào hiển thị. Hãy dùng trạng thái không chọn của Bộ phận tùy chọn cho “Không có”, thay vì PNG rỗng.', pngVerificationFailed: 'Không thể xác minh lại mọi PNG Kiểu sẽ đăng. Hãy nhập lại PNG bị lỗi rồi thử lại.', soulHandoffPreparing: 'Đang chuẩn bị chuyển giao Soulidity chuẩn…', canonicalMintDisabled: 'Bản phát hành này chưa bật mint Soul chuẩn.', ocChangedAfterUpload: 'Hồ sơ hoặc công thức OC đã đổi sau khi tải lên. Hãy chuẩn bị Quilt mới.', soulHandoffComplete: 'Đã mở Soulidity và tải gói chuyển giao khôi phục. Tích hợp này chỉ tạo một Soul chuẩn.', soulHandoffFailed: 'Chuyển giao Soulidity thất bại.', restoringOcUpload: 'Đang khôi phục điểm kiểm tra tải OC đã lưu…',
-    makerAssetUnavailable: 'Tài nguyên “{name}” không còn khả dụng. Hãy chọn lại PNG.', unexpectedMakerQuilt: 'Walrus trả về số lượng tệp Maker Quilt không đúng.', expansionNoLongerCompatible: 'Gói mở rộng nhúng không còn tương thích với phiên bản Maker này.', ruleAssetMismatch: 'Mỗi quy tắc phải tham chiếu Bộ phận có Vật phẩm PNG đã tải lên.', makerPublishedPartial: 'Đã đăng. Cấu trúc và điều kiện hiển thị đầy đủ lấy Manifest Walrus theo phiên bản làm chuẩn; Sui lập chỉ mục phần được hỗ trợ.', makerPublishedIndexing: 'Đã đăng lên Sui. ID đối tượng đang được lập chỉ mục nên trình duyệt vẫn giữ bản nháp khôi phục.', archiveWaiting: 'Đang chờ chữ ký Sui để lưu trữ Maker này…', restoreWaiting: 'Đang chờ chữ ký Sui để khôi phục Maker này…', archivedOnNetwork: 'Đã lưu trữ trên {network}: {digest}', restoredOnNetwork: 'Đã khôi phục trên {network}: {digest}', archiveMakerFailed: 'Không thể lưu trữ Maker này.', restoreMakerFailed: 'Không thể khôi phục Maker này.',
+    makerAssetUnavailable: 'Tài nguyên “{name}” không còn khả dụng. Hãy chọn lại PNG.', unexpectedMakerQuilt: 'Walrus trả về số lượng tệp Maker Quilt không đúng.', expansionNoLongerCompatible: 'Gói mở rộng nhúng không còn tương thích với phiên bản Maker này.', ruleAssetMismatch: 'Mỗi quy tắc phải tham chiếu Bộ phận có Vật phẩm PNG đã tải lên.', makerPublishedPartial: 'Đã đăng. Manifest Walrus theo phiên bản giữ toàn bộ đồ thị Maker; Sui lưu phép chiếu quyền và màu v2 đầy đủ để xác minh công thức.', makerPublishedIndexing: 'Đã đăng lên Sui. ID đối tượng đang được lập chỉ mục nên trình duyệt vẫn giữ bản nháp khôi phục.', archiveWaiting: 'Đang chờ chữ ký Sui để lưu trữ Maker này…', restoreWaiting: 'Đang chờ chữ ký Sui để khôi phục Maker này…', archivedOnNetwork: 'Đã lưu trữ trên {network}: {digest}', restoredOnNetwork: 'Đã khôi phục trên {network}: {digest}', archiveMakerFailed: 'Không thể lưu trữ Maker này.', restoreMakerFailed: 'Không thể khôi phục Maker này.',
     makerRestoredAt: 'Đã khôi phục không gian Maker · {time}', makerRestored: 'Đã khôi phục không gian Maker', makerVersionChanged: 'Phiên bản Maker đã đổi. Hãy chuẩn bị Walrus Quilt mới trước khi đăng.', makerAutosaved: 'Maker đã tự lưu', makerSaved: 'Maker đã lưu', makerWorkspaceRestoreFailed: 'Không thể khôi phục không gian Maker.', currentRulesInvalid: 'Quy tắc Maker hiện tại không thể tạo OC hợp lệ.', creatorAssetImportFailed: 'Không thể nhập tài nguyên Maker đã chọn.', ocDraftLocalFailed: 'Không thể lưu cục bộ bản nháp OC.',
     makerSettingsFirstPublish: 'Các cài đặt này sẽ được ghi khi Maker được đăng lần đầu.', makerAdminOwnerRequired: 'Kết nối ví hiện đang sở hữu MakerAdminCap.', paidMintReleaseGated: 'Mint trả phí vẫn bị khóa theo bản phát hành. Hãy tắt phí trước khi cập nhật.', validMintPriceRequired: 'Nhập giá mint {symbol} hợp lệ.', adminSignatureWaiting: 'Đang chờ chữ ký của chủ MakerAdminCap…', onchainSettingsUpdated: 'Đã cập nhật cài đặt on-chain: {digest}', onchainSettingsFailed: 'Cập nhật cài đặt on-chain thất bại.', makerTreasuryRequired: 'Cần Maker đã đăng, Treasury và MakerAdminCap.', validWithdrawalRequired: 'Nhập số tiền rút {symbol} hợp lệ.', revenueWithdrawn: 'Đã rút {amount} {symbol}: {digest}', treasuryWithdrawalFailed: 'Rút tiền từ Treasury thất bại.',
   },
@@ -2213,8 +2213,8 @@ Object.entries(staticProductionPageI18n).forEach(([locale, details]) => Object.a
 
 const docsPageI18n = {
   en: {
-    docsTitle: 'On-chain rules for OC creation',
-    docsIntro: 'Animacraft keeps the Maker experience simple while Sui and Walrus record Maker provenance, license policy, and recipe authorization. Soulidity owns the finished character and its Living Content.',
+    docsTitle: 'The Animacraft Handbook',
+    docsIntro: 'Choose a player, creator, publication, or reference path. Every guide follows the current production Maker → OC workflow and clearly labels the still-gated Canonical Soul boundary.',
     docsNoSignerTitle: 'No backend signer',
     docsNoSignerCopy: 'Creators and players sign their own transactions. Public reads use Sui GraphQL, while every core write belongs to Sui objects and wallet PTBs.',
     docsWalrusAssetsTitle: 'Walrus as the asset layer',
@@ -2223,7 +2223,7 @@ const docsPageI18n = {
     docsOpenSourceCopy: 'Production changes land through pull requests, CI checks, and CODEOWNERS review before shipping to Vercel.',
     docsArchitectureKicker: 'Production Architecture',
     docsArchitectureTitle: 'Creator to player without a backend database',
-    docsArchitectureCopy: 'Wallets sign core writes, Walrus stores assets, and Sui verifies ownership and recipes. Published Maker events drive the public gallery without an Animacraft database.',
+    docsArchitectureCopy: 'Wallets sign core writes, Walrus stores the complete versioned package, and Sui records Maker ownership, lifecycle, economics, and an equivalent rule projection. Published Maker events drive the public gallery without an Animacraft database.',
     docsCreatorGuide: 'Creator Guide',
     docsBuildMakerTitle: 'Build one Character Maker',
     docsHierarchyToken: 'Maker → Part → Item → Style → PNG',
@@ -2277,9 +2277,9 @@ const docsPageI18n = {
     chainActionWalrusTitle: 'Walrus assets',
     chainActionWalrusCopy: 'Stage Style PNGs, picker icons, Maker manifests, finished OC images, and profile JSON as Quilt patches.',
     chainActionMakerTitle: 'OCMaker object',
-    chainActionMakerCopy: 'Register the creator profile, public Parts, Items, Styles, Smart Color, rules, archive state, and license policy on Sui.',
-    chainActionSoulTitle: 'Soulidity mint',
-    chainActionSoulCopy: 'Animacraft validates one Maker recipe and hands Living Content to Soulidity, which mints the only finished Soul object.',
+    chainActionMakerCopy: 'Publish Maker provenance, public choice identities, economics, lifecycle state, and an equivalent compiled rule and color projection on Sui.',
+    chainActionSoulTitle: 'Soulidity handoff · gated',
+    chainActionSoulCopy: 'After the Canonical Soul Mainnet gate opens, Animacraft authorization and Living Content can enter Soulidity’s only finished-Soul mint path.',
     docsProtocolStep1Title: 'Style Assets',
     docsProtocolStep1Copy: 'Creators upload Style PNGs with their transforms and global Layer Track order to Walrus.',
     docsProtocolStep2Title: 'Maker Contract',
@@ -2288,14 +2288,14 @@ const docsPageI18n = {
     docsProtocolStep3Copy: 'An OC recipe pins one Maker version and records its Parts, Items, Styles, Smart Color choices, valid rules, and license snapshot.',
     docsProtocolStep4Title: 'Living Content',
     docsProtocolStep4Copy: 'Soul Character, Memory, and Skills & Docs resolve from editable Maker defaults.',
-    docsProtocolStep5Title: 'Canonical Soul',
-    docsProtocolStep5Copy: 'Soulidity consumes the Maker authorization and mints the only finished character object.',
-    docsProtocolStep6Title: 'Community Flywheel',
-    docsProtocolStep6Copy: 'Great Makers bring OC creators; great OCs bring Maker use and secondary-market activity.',
+    docsProtocolStep5Title: 'Canonical Soul · gated',
+    docsProtocolStep5Copy: 'The reviewed Soulidity adapter will consume Maker authorization and mint the only finished character object after the Mainnet gate is enabled.',
+    docsProtocolStep6Title: 'Community after activation',
+    docsProtocolStep6Copy: 'Social and secondary-market activity belongs to Soulidity and begins only after the reviewed integration is activated.',
   },
   zh: {
-    docsTitle: 'OC 创作的链上规则',
-    docsIntro: 'Animacraft 保持 Maker 创作体验简洁；Sui 与 Walrus 记录 Maker 来源、授权政策和配方许可。成品角色及其生命内容由 Soulidity 管理。',
+    docsTitle: 'Animacraft 使用手册',
+    docsIntro: '按玩家、创作者、发布或参考路径阅读。每篇指南都遵循当前生产版本真实可用的 Maker → OC 流程，并明确标记尚未开启的规范 Soul 边界。',
     docsNoSignerTitle: '没有后端代签',
     docsNoSignerCopy: '创作者与玩家自行签署交易。公开读取使用 Sui GraphQL，所有核心写入都归属于 Sui 对象与钱包 PTB。',
     docsWalrusAssetsTitle: 'Walrus 作为素材层',
@@ -2304,7 +2304,7 @@ const docsPageI18n = {
     docsOpenSourceCopy: '生产变更通过 Pull Request、CI 检查和 CODEOWNERS 审核后，才会部署到 Vercel。',
     docsArchitectureKicker: '生产架构',
     docsArchitectureTitle: '无需后端数据库，连接创作者与玩家',
-    docsArchitectureCopy: '钱包签署核心写入，Walrus 保存素材，Sui 验证所有权与配方。已发布 Maker 的事件直接驱动公开广场，不依赖 Animacraft 数据库。',
+    docsArchitectureCopy: '钱包签署核心写入，Walrus 保存完整的版本化发布包，Sui 记录 Maker 所有权、生命周期、经济参数及等价规则投影。已发布 Maker 的事件直接驱动公开广场，不依赖 Animacraft 数据库。',
     docsCreatorGuide: '创作者指南',
     docsBuildMakerTitle: '创建一个角色 Maker',
     docsHierarchyToken: 'Maker → 部位 → 部件 → 样式 → PNG',
@@ -2358,9 +2358,9 @@ const docsPageI18n = {
     chainActionWalrusTitle: 'Walrus 素材',
     chainActionWalrusCopy: '把样式 PNG、选择器图标、Maker 清单、成品 OC 图片和资料 JSON 作为 Quilt 补丁暂存。',
     chainActionMakerTitle: 'OCMaker 对象',
-    chainActionMakerCopy: '在 Sui 登记创作者资料、公开部位、部件、样式、联动配色、规则、归档状态和授权政策。',
-    chainActionSoulTitle: 'Soulidity 铸造',
-    chainActionSoulCopy: 'Animacraft 验证同一 Maker 的配方并把生命内容交给 Soulidity，由其铸造唯一的成品 Soul 对象。',
+    chainActionMakerCopy: '在 Sui 发布 Maker 来源、公开选择标识、经济参数、生命周期状态，以及等价编译的规则与颜色投影。',
+    chainActionSoulTitle: 'Soulidity 交接 · 尚未开启',
+    chainActionSoulCopy: '规范 Soul 主网开关开启后，Animacraft 授权与生命内容才会进入 Soulidity 唯一的成品 Soul 铸造路径。',
     docsProtocolStep1Title: '样式素材',
     docsProtocolStep1Copy: '创作者把样式 PNG、坐标变换和全局叠放顺序上传到 Walrus。',
     docsProtocolStep2Title: 'Maker 合约',
@@ -2369,14 +2369,14 @@ const docsPageI18n = {
     docsProtocolStep3Copy: 'OC 配方固定到一个 Maker 版本，并记录其部位、部件、样式、联动配色选择、有效规则和授权快照。',
     docsProtocolStep4Title: '生命内容',
     docsProtocolStep4Copy: 'Soul Character、记忆以及技能与文档从 Maker 的可编辑默认内容解析。',
-    docsProtocolStep5Title: '规范 Soul',
-    docsProtocolStep5Copy: 'Soulidity 消费 Maker 授权并铸造唯一的成品角色对象。',
-    docsProtocolStep6Title: '社区飞轮',
-    docsProtocolStep6Copy: '优秀 Maker 带来 OC 创作者，优秀 OC 带来 Maker 使用与二级市场活动。',
+    docsProtocolStep5Title: '规范 Soul · 尚未开启',
+    docsProtocolStep5Copy: '主网开关启用后，经审核的 Soulidity 适配器才会消费 Maker 授权并铸造唯一的成品角色对象。',
+    docsProtocolStep6Title: '启用后的社区',
+    docsProtocolStep6Copy: '社交和二级市场活动属于 Soulidity，并只在经审核的集成启用后开始。',
   },
   ja: {
-    docsTitle: 'OC 制作のオンチェーン規則',
-    docsIntro: 'Animacraft は Maker 制作をシンプルに保ち、Sui と Walrus が Maker の来歴、ライセンス方針、レシピ認可を記録します。完成キャラクターとリビングコンテンツは Soulidity が管理します。',
+    docsTitle: 'Animacraft ハンドブック',
+    docsIntro: 'プレイヤー、制作者、公開、リファレンスの経路から選べます。各ガイドは現行本番版の Maker → OC フローに沿い、未有効の Canonical Soul 境界を明示します。',
     docsNoSignerTitle: 'バックエンド署名者なし',
     docsNoSignerCopy: '制作者とプレイヤーが自分の取引に署名します。公開読み取りは Sui GraphQL を使用し、主要な書き込みは Sui オブジェクトとウォレット PTB に属します。',
     docsWalrusAssetsTitle: '素材レイヤーとしての Walrus',
@@ -2385,7 +2385,7 @@ const docsPageI18n = {
     docsOpenSourceCopy: '本番変更は Pull Request、CI、CODEOWNERS のレビューを通過してから Vercel へ配備されます。',
     docsArchitectureKicker: '本番アーキテクチャ',
     docsArchitectureTitle: 'バックエンド DB なしで制作者からプレイヤーへ',
-    docsArchitectureCopy: 'ウォレットが主要な書き込みに署名し、Walrus が素材を保存し、Sui が所有権とレシピを検証します。公開 Maker イベントが Animacraft DB なしで公開広場を構成します。',
+    docsArchitectureCopy: 'ウォレットが主要な書き込みに署名し、Walrus が完全なバージョン付き公開パッケージを保存し、Sui が Maker の所有権、ライフサイクル、経済設定、等価なルール投影を記録します。公開 Maker イベントが Animacraft DB なしで公開広場を構成します。',
     docsCreatorGuide: '制作者ガイド',
     docsBuildMakerTitle: 'キャラクター Maker を作る',
     docsHierarchyToken: 'Maker → パーツ → アイテム → スタイル → PNG',
@@ -2439,9 +2439,9 @@ const docsPageI18n = {
     chainActionWalrusTitle: 'Walrus 素材',
     chainActionWalrusCopy: 'スタイル PNG、選択アイコン、Maker マニフェスト、完成 OC 画像、プロフィール JSON を Quilt パッチとして準備します。',
     chainActionMakerTitle: 'OCMaker オブジェクト',
-    chainActionMakerCopy: '制作者プロフィール、公開パーツ、アイテム、スタイル、スマートカラー、ルール、アーカイブ状態、ライセンス方針を Sui に登録します。',
-    chainActionSoulTitle: 'Soulidity ミント',
-    chainActionSoulCopy: 'Animacraft が1つの Maker レシピを検証してリビングコンテンツを Soulidity へ渡し、唯一の完成 Soul オブジェクトをミントします。',
+    chainActionMakerCopy: 'Maker の来歴、公開選択 ID、経済設定、ライフサイクル状態、等価にコンパイルされたルールとカラー投影を Sui に公開します。',
+    chainActionSoulTitle: 'Soulidity 連携 · 未有効',
+    chainActionSoulCopy: 'Canonical Soul Mainnet ゲートの有効化後にのみ、Animacraft 認可とリビングコンテンツが Soulidity の唯一の完成 Soul ミント経路へ進みます。',
     docsProtocolStep1Title: 'スタイル素材',
     docsProtocolStep1Copy: '制作者がスタイル PNG、その変形、全体レイヤートラック順を Walrus へアップロードします。',
     docsProtocolStep2Title: 'Maker コントラクト',
@@ -2450,14 +2450,14 @@ const docsPageI18n = {
     docsProtocolStep3Copy: 'OC レシピは1つの Maker バージョンに固定され、パーツ、アイテム、スタイル、スマートカラー選択、有効なルール、ライセンスのスナップショットを記録します。',
     docsProtocolStep4Title: 'リビングコンテンツ',
     docsProtocolStep4Copy: 'Soul Character、メモリー、スキルと文書は Maker の編集可能な初期内容から解決されます。',
-    docsProtocolStep5Title: '正規 Soul',
-    docsProtocolStep5Copy: 'Soulidity が Maker 認可を消費し、唯一の完成キャラクターオブジェクトをミントします。',
-    docsProtocolStep6Title: 'コミュニティ循環',
-    docsProtocolStep6Copy: '優れた Maker が OC 制作者を呼び、優れた OC が Maker 利用と二次市場活動を生みます。',
+    docsProtocolStep5Title: '正規 Soul · 未有効',
+    docsProtocolStep5Copy: 'Mainnet ゲートの有効化後、審査済み Soulidity アダプターが Maker 認可を消費し、唯一の完成キャラクターオブジェクトをミントします。',
+    docsProtocolStep6Title: '有効化後のコミュニティ',
+    docsProtocolStep6Copy: 'ソーシャルと二次市場の活動は Soulidity が担当し、審査済み連携の有効化後にのみ始まります。',
   },
   ko: {
-    docsTitle: 'OC 제작을 위한 온체인 규칙',
-    docsIntro: 'Animacraft는 Maker 제작 경험을 단순하게 유지하고 Sui와 Walrus는 Maker 출처, 라이선스 정책, 레시피 승인을 기록합니다. 완성 캐릭터와 리빙 콘텐츠는 Soulidity가 관리합니다.',
+    docsTitle: 'Animacraft 사용 설명서',
+    docsIntro: '플레이어, 제작자, 게시 또는 참고 경로를 선택하세요. 모든 가이드는 현재 프로덕션 Maker → OC 흐름을 따르고 아직 비활성인 Canonical Soul 경계를 명확히 표시합니다.',
     docsNoSignerTitle: '백엔드 서명자 없음',
     docsNoSignerCopy: '제작자와 플레이어가 자신의 트랜잭션에 직접 서명합니다. 공개 읽기는 Sui GraphQL을 사용하고, 핵심 쓰기는 Sui 오브젝트와 지갑 PTB에 속합니다.',
     docsWalrusAssetsTitle: '에셋 레이어로서의 Walrus',
@@ -2466,7 +2466,7 @@ const docsPageI18n = {
     docsOpenSourceCopy: '프로덕션 변경은 Pull Request, CI 검사, CODEOWNERS 검토를 거친 뒤 Vercel에 배포됩니다.',
     docsArchitectureKicker: '프로덕션 아키텍처',
     docsArchitectureTitle: '백엔드 데이터베이스 없이 제작자에서 플레이어까지',
-    docsArchitectureCopy: '지갑이 핵심 쓰기에 서명하고 Walrus가 에셋을 저장하며 Sui가 소유권과 레시피를 검증합니다. 게시된 Maker 이벤트가 Animacraft 데이터베이스 없이 공개 갤러리를 구성합니다.',
+    docsArchitectureCopy: '지갑이 핵심 쓰기에 서명하고 Walrus가 완전한 버전형 게시 패키지를 저장하며 Sui가 Maker 소유권, 수명 주기, 경제 설정과 동등한 규칙 투영을 기록합니다. 게시된 Maker 이벤트가 Animacraft 데이터베이스 없이 공개 갤러리를 구성합니다.',
     docsCreatorGuide: '제작자 가이드',
     docsBuildMakerTitle: '캐릭터 Maker 만들기',
     docsHierarchyToken: 'Maker → 파트 → 아이템 → 스타일 → PNG',
@@ -2520,9 +2520,9 @@ const docsPageI18n = {
     chainActionWalrusTitle: 'Walrus 에셋',
     chainActionWalrusCopy: '스타일 PNG, 선택 아이콘, Maker 매니페스트, 완성 OC 이미지, 프로필 JSON을 Quilt 패치로 준비합니다.',
     chainActionMakerTitle: 'OCMaker 오브젝트',
-    chainActionMakerCopy: '제작자 프로필, 공개 파트, 아이템, 스타일, 스마트 컬러, 규칙, 보관 상태, 라이선스 정책을 Sui에 등록합니다.',
-    chainActionSoulTitle: 'Soulidity 민팅',
-    chainActionSoulCopy: 'Animacraft가 하나의 Maker 레시피를 검증해 리빙 콘텐츠를 Soulidity로 넘기고, Soulidity가 유일한 완성 Soul 오브젝트를 민팅합니다.',
+    chainActionMakerCopy: 'Maker 출처, 공개 선택 ID, 경제 설정, 수명 주기 상태와 동등하게 컴파일된 규칙·색상 투영을 Sui에 게시합니다.',
+    chainActionSoulTitle: 'Soulidity 연동 · 비활성',
+    chainActionSoulCopy: 'Canonical Soul Mainnet 게이트가 열린 뒤에만 Animacraft 승인과 리빙 콘텐츠가 Soulidity의 유일한 완성 Soul 민팅 경로로 이동합니다.',
     docsProtocolStep1Title: '스타일 에셋',
     docsProtocolStep1Copy: '제작자가 스타일 PNG, 변형, 전체 레이어 트랙 순서를 Walrus에 업로드합니다.',
     docsProtocolStep2Title: 'Maker 컨트랙트',
@@ -2531,14 +2531,14 @@ const docsPageI18n = {
     docsProtocolStep3Copy: 'OC 레시피는 Maker 버전 하나에 고정되고 파트, 아이템, 스타일, 스마트 컬러 선택, 유효한 규칙, 라이선스 스냅샷을 기록합니다.',
     docsProtocolStep4Title: '리빙 콘텐츠',
     docsProtocolStep4Copy: 'Soul Character, 메모리, 스킬과 문서는 편집 가능한 Maker 기본값에서 결정됩니다.',
-    docsProtocolStep5Title: '정식 Soul',
-    docsProtocolStep5Copy: 'Soulidity가 Maker 승인을 사용해 유일한 완성 캐릭터 오브젝트를 민팅합니다.',
-    docsProtocolStep6Title: '커뮤니티 선순환',
-    docsProtocolStep6Copy: '훌륭한 Maker는 OC 제작자를 부르고, 훌륭한 OC는 Maker 사용과 2차 시장 활동을 만듭니다.',
+    docsProtocolStep5Title: '정식 Soul · 비활성',
+    docsProtocolStep5Copy: 'Mainnet 게이트가 활성화된 뒤 검토된 Soulidity 어댑터가 Maker 승인을 사용해 유일한 완성 캐릭터 오브젝트를 민팅합니다.',
+    docsProtocolStep6Title: '활성화 이후 커뮤니티',
+    docsProtocolStep6Copy: '소셜과 2차 시장 활동은 Soulidity가 담당하며 검토된 연동이 활성화된 뒤에만 시작됩니다.',
   },
   vi: {
-    docsTitle: 'Quy tắc trên chuỗi để tạo OC',
-    docsIntro: 'Animacraft giữ trải nghiệm tạo Maker đơn giản, còn Sui và Walrus ghi nguồn gốc Maker, chính sách giấy phép và quyền dùng công thức. Soulidity quản lý nhân vật hoàn tất cùng Nội dung sống.',
+    docsTitle: 'Cẩm nang Animacraft',
+    docsIntro: 'Chọn lộ trình dành cho người chơi, tác giả, phát hành hoặc tham khảo. Mỗi hướng dẫn bám sát quy trình Maker → OC hiện có và ghi rõ ranh giới Canonical Soul vẫn đang khóa.',
     docsNoSignerTitle: 'Không có bên ký ở máy chủ',
     docsNoSignerCopy: 'Tác giả và người chơi tự ký giao dịch. Dữ liệu công khai được đọc qua Sui GraphQL, còn mọi ghi chép cốt lõi thuộc về đối tượng Sui và PTB của ví.',
     docsWalrusAssetsTitle: 'Walrus làm lớp tài nguyên',
@@ -2547,7 +2547,7 @@ const docsPageI18n = {
     docsOpenSourceCopy: 'Thay đổi sản xuất phải qua Pull Request, kiểm tra CI và duyệt CODEOWNERS trước khi triển khai lên Vercel.',
     docsArchitectureKicker: 'Kiến trúc sản xuất',
     docsArchitectureTitle: 'Từ tác giả đến người chơi mà không cần cơ sở dữ liệu máy chủ',
-    docsArchitectureCopy: 'Ví ký các ghi chép cốt lõi, Walrus lưu tài nguyên và Sui xác minh quyền sở hữu cùng công thức. Sự kiện Maker đã đăng tạo thư viện công khai mà không cần cơ sở dữ liệu Animacraft.',
+    docsArchitectureCopy: 'Ví ký các ghi chép cốt lõi, Walrus lưu gói phát hành có phiên bản đầy đủ, còn Sui ghi quyền sở hữu, vòng đời, kinh tế và phép chiếu quy tắc tương đương của Maker. Sự kiện Maker đã đăng tạo thư viện công khai mà không cần cơ sở dữ liệu Animacraft.',
     docsCreatorGuide: 'Hướng dẫn tác giả',
     docsBuildMakerTitle: 'Tạo một Maker nhân vật',
     docsHierarchyToken: 'Maker → Bộ phận → Vật phẩm → Kiểu → PNG',
@@ -2601,9 +2601,9 @@ const docsPageI18n = {
     chainActionWalrusTitle: 'Tài nguyên Walrus',
     chainActionWalrusCopy: 'Chuẩn bị PNG của Kiểu, biểu tượng lựa chọn, bản kê khai Maker, ảnh OC hoàn tất và JSON hồ sơ dưới dạng bản vá Quilt.',
     chainActionMakerTitle: 'Đối tượng OCMaker',
-    chainActionMakerCopy: 'Đăng ký hồ sơ tác giả, Bộ phận, Vật phẩm, Kiểu, Màu liên kết, quy tắc, trạng thái lưu trữ và chính sách giấy phép công khai trên Sui.',
-    chainActionSoulTitle: 'Đúc trên Soulidity',
-    chainActionSoulCopy: 'Animacraft xác minh một công thức Maker rồi chuyển Nội dung sống cho Soulidity để đúc đối tượng Soul hoàn tất duy nhất.',
+    chainActionMakerCopy: 'Đăng nguồn gốc Maker, ID lựa chọn công khai, kinh tế, trạng thái vòng đời cùng phép chiếu quy tắc và màu được biên dịch tương đương trên Sui.',
+    chainActionSoulTitle: 'Bàn giao Soulidity · đang khóa',
+    chainActionSoulCopy: 'Chỉ sau khi cổng Canonical Soul Mainnet mở, quyền Animacraft và Nội dung sống mới đi vào tuyến đúc Soul hoàn tất duy nhất của Soulidity.',
     docsProtocolStep1Title: 'Tài nguyên Kiểu',
     docsProtocolStep1Copy: 'Tác giả tải PNG của Kiểu cùng biến đổi và thứ tự lớp toàn cục lên Walrus.',
     docsProtocolStep2Title: 'Hợp đồng Maker',
@@ -2612,10 +2612,10 @@ const docsPageI18n = {
     docsProtocolStep3Copy: 'Công thức OC được ghim vào một phiên bản Maker và ghi Bộ phận, Vật phẩm, Kiểu, lựa chọn Màu liên kết, quy tắc hợp lệ cùng ảnh chụp giấy phép.',
     docsProtocolStep4Title: 'Nội dung sống',
     docsProtocolStep4Copy: 'Soul Character, Ký ức, Kỹ năng và Tài liệu được xác định từ mặc định Maker có thể sửa.',
-    docsProtocolStep5Title: 'Soul chuẩn',
-    docsProtocolStep5Copy: 'Soulidity dùng quyền Maker và đúc đối tượng nhân vật hoàn tất duy nhất.',
-    docsProtocolStep6Title: 'Vòng quay cộng đồng',
-    docsProtocolStep6Copy: 'Maker tốt thu hút người tạo OC; OC tốt thúc đẩy việc dùng Maker và hoạt động thị trường thứ cấp.',
+    docsProtocolStep5Title: 'Soul chuẩn · đang khóa',
+    docsProtocolStep5Copy: 'Sau khi cổng Mainnet bật, bộ chuyển tiếp Soulidity đã duyệt mới dùng quyền Maker để đúc đối tượng nhân vật hoàn tất duy nhất.',
+    docsProtocolStep6Title: 'Cộng đồng sau khi kích hoạt',
+    docsProtocolStep6Copy: 'Hoạt động xã hội và thị trường thứ cấp thuộc Soulidity và chỉ bắt đầu sau khi tích hợp đã duyệt được kích hoạt.',
   },
 };
 
@@ -7611,6 +7611,7 @@ function setPage(page) {
   if (state.page !== previousPage) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   if (state.page === 'make') setTimeout(() => restoreOcUploadRecovery(state.templateId, { force: true }), 0);
   if (state.page === 'collection') setTimeout(() => loadOwnedCharacters(), 0);
+  if (state.page === 'docs') void renderDocsHandbook();
   return true;
 }
 
@@ -11360,6 +11361,36 @@ function renderProtocol() {
   `).join('');
 }
 
+let docsCenter = null;
+let docsCenterInitializationPromise = null;
+let docsCenterInitializationFailed = false;
+
+async function renderDocsHandbook() {
+  const root = $('docsHandbook');
+  if (!root || docsCenterInitializationFailed) return;
+  if (!docsCenter && state.page !== 'docs') return;
+  try {
+    if (!docsCenter) {
+      docsCenter = await (docsCenterInitializationPromise ||= import('./docs-center.js')
+        .then(({ createDocsCenter }) => createDocsCenter(root)));
+      if (!root.isConnected) return;
+    }
+    docsCenter.render(state.locale);
+  } catch (error) {
+    docsCenterInitializationFailed = true;
+    root.replaceChildren();
+    const fallback = document.createElement('section');
+    fallback.className = 'docs-empty protocol-card';
+    const title = document.createElement('h2');
+    title.textContent = t('docsTitle');
+    const copy = document.createElement('p');
+    copy.textContent = t('docsIntro');
+    fallback.append(title, copy);
+    root.append(fallback);
+    console.error('The Docs handbook could not be initialized.', error);
+  }
+}
+
 function renderChainActions() {
   document.querySelectorAll('[data-chain-action-list]').forEach((node) => {
     node.innerHTML = chainActions.map((action, index) => `
@@ -13298,6 +13329,7 @@ function renderAll() {
   renderImageMakerList();
   renderDraftRecoveryCenter();
   renderCreatorDetails();
+  void renderDocsHandbook();
   renderProtocol();
   renderChainStatus();
   renderChainActions();

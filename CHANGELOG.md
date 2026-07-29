@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1 — Official Docs Center
+
+- Replaces the static protocol summary with a searchable, responsive handbook covering player onboarding, creator workflow, artwork preparation, PNG import, Canvas and Layer Tracks, Smart Color, Rules, Soul Configuration, Preflight, publication recovery, lifecycle, Expansion Packs, and chain truth.
+- Ships complete English, Simplified Chinese, Japanese, Korean, and Vietnamese documentation with one validated information architecture and production-accurate capability boundaries.
+- Documents the reliable full-canvas artwork workflow while accurately retaining the current centered, scale-down-only behavior for loose PNG imports.
+- Separates editable browser drafts, immutable Walrus release data, Sui protocol projection, and the currently disabled Canonical Soul Mainnet handoff.
+- Adds keyboard navigation, IME-safe search, mobile topic navigation, reduced-motion behavior, accessible article pagination, cache busting, and regression coverage.
+
 ## 0.8.0 — Production Creator Rules
 
 - Rebuilds Combination Rules as an exact Part → Item → Style tree with requires/excludes, ALL/ANY grouping, full-path labels, search, object-adjacent entry points, and publication-safe draft/private target handling.
