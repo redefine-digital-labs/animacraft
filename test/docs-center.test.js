@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { access, readFile } from 'node:fs/promises';
 
 import {
   DOCS_CONTENT,
@@ -7,6 +8,12 @@ import {
   DOCS_VERSION,
 } from '../docs-center-content.js';
 import { validateDocsContent } from '../docs-center.js';
+import {
+  DOCS_ARTICLE_FIGURES,
+  DOCS_FIGURE_SPECS,
+  DOCS_FIGURE_TERMS,
+  DOCS_FIGURE_TYPES,
+} from '../docs-center-figures.js';
 
 const REQUIRED_ARTICLES = [
   'introduction',
@@ -29,7 +36,7 @@ const REQUIRED_ARTICLES = [
 
 test('Docs handbook ships the complete five-language information architecture', () => {
   const report = validateDocsContent();
-  assert.equal(DOCS_VERSION, '0.8.1');
+  assert.equal(DOCS_VERSION, '0.8.2');
   assert.deepEqual(DOCS_LOCALES, ['en', 'zh', 'ja', 'ko', 'vi']);
   assert.equal(report.locales.length, 5);
   assert.equal(report.categories, 5);
@@ -136,4 +143,79 @@ test('Docs pin the current production boundaries instead of documenting planned 
       assert.match(localized, new RegExp(marker.replace('.', '\\.')), `${locale}: ${marker}`);
     });
   });
+});
+
+test('Docs figures use one trusted structure with complete five-language labels', async () => {
+  const articleIds = new Set(DOCS_CONTENT.en.articles.map((article) => article.id));
+  const figureTypes = new Set(DOCS_FIGURE_TYPES);
+  const englishTermKeys = Object.keys(DOCS_FIGURE_TERMS.en).sort();
+
+  assert.equal(Object.keys(DOCS_FIGURE_SPECS).length, 9);
+  assert.equal(Object.keys(DOCS_ARTICLE_FIGURES).length, 12);
+  assert.ok(Object.keys(DOCS_ARTICLE_FIGURES).length < REQUIRED_ARTICLES.length);
+
+  DOCS_LOCALES.forEach((locale) => {
+    assert.deepEqual(
+      Object.keys(DOCS_FIGURE_TERMS[locale]).sort(),
+      englishTermKeys,
+      `${locale} figure terms`,
+    );
+    englishTermKeys.forEach((key) => {
+      assert.ok(DOCS_FIGURE_TERMS[locale][key].trim(), `${locale}.${key}`);
+    });
+  });
+
+  Object.entries(DOCS_ARTICLE_FIGURES).forEach(([articleId, figureId]) => {
+    assert.ok(articleIds.has(articleId), articleId);
+    assert.ok(DOCS_FIGURE_SPECS[figureId], figureId);
+  });
+
+  const assets = [];
+  Object.values(DOCS_FIGURE_SPECS).forEach((spec) => {
+    assert.ok(figureTypes.has(spec.type), spec.type);
+    Object.values(spec.assets || {}).forEach((value) => {
+      if (typeof value === 'string') assets.push(value);
+      if (Array.isArray(value)) {
+        value.forEach((entry) => assets.push(typeof entry === 'string' ? entry : entry.src));
+      }
+    });
+  });
+  assert.ok(assets.length > 0);
+  assets.forEach((src) => assert.match(src, /^\/makers\/[a-z0-9/-]+\.png$/));
+  await Promise.all(assets.map((src) => access(new URL(`../public${src}`, import.meta.url))));
+
+  const astral = JSON.parse(
+    await readFile(
+      new URL('../public/makers/astral-courier/animacraft-maker-v5.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  const hairItems = new Set(
+    astral.parts.find((part) => part.name === 'Hair').items.map((item) => item.name),
+  );
+  DOCS_FIGURE_SPECS['player-surface'].assets.choices.forEach((choice) => {
+    assert.ok(hairItems.has(choice.name), `${choice.name} must be a real Hair Item`);
+  });
+});
+
+test('Docs renderer exposes accessible, lazy, captioned figures without arbitrary content HTML', async () => {
+  const [renderer, styles] = await Promise.all([
+    readFile(new URL('../docs-center.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(renderer, /function articleFigureMarkup\(article, locale\)/);
+  assert.match(renderer, /role="img"/);
+  assert.match(renderer, /<figcaption id=/);
+  assert.match(renderer, /loading="lazy"/);
+  assert.match(renderer, /decoding="async"/);
+  assert.match(renderer, /docs-article-figure--\$\{escapeHtml\(spec\.type\)\}/);
+  assert.doesNotMatch(renderer, /class="docs-article-figure docs-figure-\$\{escapeHtml\(spec\.type\)\}"/);
+  assert.match(renderer, /escapeHtml\(`\$\{article\.title\}\. \$\{article\.summary\}`\)/);
+  assert.match(renderer, /DOCS_FIGURE_SPECS\[figureId\]/);
+  assert.doesNotMatch(renderer, />Style \$\{index \+ 1\}</);
+  assert.doesNotMatch(renderer, /WHEN SELECTED|SAME GRAPH|Fit \+ Center|checkpoint · 2|>Renderer<|>Random<|>Preflight</);
+  assert.doesNotMatch(renderer, /article\.figureHtml|section\.figureHtml/);
+  assert.match(styles, /\.docs-article-figure \{\s*container-type: inline-size;/);
+  assert.match(styles, /@container \(max-width: 760px\)/);
 });

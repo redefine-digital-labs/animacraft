@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.2 — Visual Docs Guides
+
+- Adds nine reusable, localized visual explanations across twelve high-value handbook articles, covering Maker hierarchy, Player choices, full-canvas alignment, import decisions, Layer Tracks, Smart Color, Rules, Walrus/Sui publication, and Soul data boundaries.
+- Uses current 1024×1024 Maker layers to demonstrate real alignment and composition behavior while explicitly labeling AI-assisted fixture artwork as a technical example rather than an aesthetic standard.
+- Keeps every diagram on one controlled, injection-safe structure with complete English, Simplified Chinese, Japanese, Korean, and Vietnamese labels.
+- Adds semantic figures and captions, lazy-loaded images, responsive mobile layouts, print behavior, trusted-asset validation, and regression coverage for every referenced visual.
+
 ## 0.8.1 — Official Docs Center
 
 - Replaces the static protocol summary with a searchable, responsive handbook covering player onboarding, creator workflow, artwork preparation, PNG import, Canvas and Layer Tracks, Smart Color, Rules, Soul Configuration, Preflight, publication recovery, lifecycle, Expansion Packs, and chain truth.

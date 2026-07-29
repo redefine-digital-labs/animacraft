@@ -3,6 +3,12 @@ import {
   DOCS_LOCALES,
   DOCS_VERSION,
 } from './docs-center-content.js';
+import {
+  DOCS_ARTICLE_FIGURES,
+  DOCS_FIGURE_SPECS,
+  DOCS_FIGURE_TERMS,
+  DOCS_FIGURE_TYPES,
+} from './docs-center-figures.js';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -43,6 +49,48 @@ function articleIndex(content) {
 
 function categoryIndex(content) {
   return new Map(content.categories.map((category) => [category.id, category]));
+}
+
+function validateDocsFigures(articleIds) {
+  const englishTermKeys = Object.keys(DOCS_FIGURE_TERMS.en || {}).sort();
+  DOCS_LOCALES.forEach((locale) => {
+    const terms = DOCS_FIGURE_TERMS[locale];
+    if (!terms) throw new Error(`Docs figure terms are missing for ${locale}.`);
+    if (JSON.stringify(Object.keys(terms).sort()) !== JSON.stringify(englishTermKeys)) {
+      throw new Error(`Docs figure term keys differ for ${locale}.`);
+    }
+    englishTermKeys.forEach((key) => {
+      if (!String(terms[key] || '').trim()) {
+        throw new Error(`Docs figure term ${locale}.${key} is empty.`);
+      }
+    });
+  });
+  const allowedTypes = new Set(DOCS_FIGURE_TYPES);
+  Object.entries(DOCS_FIGURE_SPECS).forEach(([figureId, spec]) => {
+    if (!allowedTypes.has(spec.type)) {
+      throw new Error(`Docs figure ${figureId} uses an unsupported type.`);
+    }
+    const assets = [
+      ...Object.values(spec.assets || {}).filter((value) => typeof value === 'string'),
+      ...Object.values(spec.assets || {})
+        .filter(Array.isArray)
+        .flat()
+        .map((value) => (typeof value === 'string' ? value : value?.src)),
+    ].filter(Boolean);
+    assets.forEach((src) => {
+      if (!String(src).startsWith('/makers/')) {
+        throw new Error(`Docs figure ${figureId} must use a trusted local Maker asset.`);
+      }
+    });
+  });
+  Object.entries(DOCS_ARTICLE_FIGURES).forEach(([articleId, figureId]) => {
+    if (!articleIds.includes(articleId)) {
+      throw new Error(`Docs figure mapping references unknown article ${articleId}.`);
+    }
+    if (!DOCS_FIGURE_SPECS[figureId]) {
+      throw new Error(`Docs article ${articleId} references unknown figure ${figureId}.`);
+    }
+  });
 }
 
 function validateLocaleContent(locale, content, canonical) {
@@ -137,6 +185,7 @@ function validateLocaleContent(locale, content, canonical) {
 
 export function validateDocsContent() {
   const english = validateLocaleContent('en', DOCS_CONTENT.en, null);
+  validateDocsFigures(english.articleIds);
   DOCS_LOCALES.filter((locale) => locale !== 'en').forEach((locale) => {
     validateLocaleContent(locale, DOCS_CONTENT[locale], english);
   });
@@ -146,6 +195,302 @@ export function validateDocsContent() {
     articles: english.articleIds.length,
     version: DOCS_VERSION,
   };
+}
+
+function figureImage(src, className = '') {
+  return `
+    <img
+      src="${escapeHtml(src)}"
+      class="${escapeHtml(className)}"
+      alt=""
+      width="1024"
+      height="1024"
+      loading="lazy"
+      decoding="async"
+      draggable="false"
+    />
+  `;
+}
+
+function figureNode(label, className = '') {
+  return `<span class="docs-figure-node ${escapeHtml(className)}">${escapeHtml(label)}</span>`;
+}
+
+function compositeMarkup(layers, className = '') {
+  return `
+    <div class="docs-figure-composite ${escapeHtml(className)}">
+      ${layers.map((src) => figureImage(src, '')).join('')}
+      <span class="docs-figure-crosshair"></span>
+    </div>
+  `;
+}
+
+function hierarchyFigure(terms) {
+  return `
+    <div class="docs-figure-hierarchy">
+      <div class="docs-figure-person">
+        <span aria-hidden="true">✦</span>
+        <strong>${escapeHtml(terms.creator)}</strong>
+      </div>
+      <span class="docs-figure-arrow" aria-hidden="true">→</span>
+      <div class="docs-hierarchy-stack">
+        ${figureNode(terms.maker, 'level-maker')}
+        ${figureNode(terms.part, 'level-part')}
+        ${figureNode(terms.item, 'level-item')}
+        ${figureNode(terms.style, 'level-style')}
+        ${figureNode(terms.pngLayer, 'level-png')}
+      </div>
+      <span class="docs-figure-arrow" aria-hidden="true">→</span>
+      <div class="docs-figure-person">
+        <span aria-hidden="true">◎</span>
+        <strong>${escapeHtml(terms.player)}</strong>
+        <small>OC</small>
+      </div>
+    </div>
+  `;
+}
+
+function playerFigure(spec, terms) {
+  return `
+    <div class="docs-figure-player">
+      <div class="docs-player-preview">
+        ${figureImage(spec.assets.cover, '')}
+        <span>OC</span>
+      </div>
+      <div class="docs-player-controls">
+        <div class="docs-player-parts">
+          ${[terms.background, terms.skinBase, terms.eyes, terms.outfit, terms.frontHair].map((label, index) => `
+            <span class="${index === 4 ? 'active' : ''}">${escapeHtml(label)}</span>
+          `).join('')}
+        </div>
+        <div class="docs-player-items">
+          ${spec.assets.choices.map((choice, index) => `
+            <span class="${index === 0 ? 'active' : ''}">
+              ${figureImage(choice.src, '')}
+              <strong>${escapeHtml(choice.name)}</strong>
+              <small>${escapeHtml(terms.item)} · ${escapeHtml(terms.defaultStyle)}</small>
+            </span>
+          `).join('')}
+        </div>
+        <div class="docs-player-palette" aria-hidden="true">
+          ${['#25386f', '#75c8ef', '#7b52ff', '#f4b45e'].map((color) => (
+            `<span style="--docs-swatch:${color}"></span>`
+          )).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function alignmentFigure(spec, terms) {
+  const layers = spec.assets.layers;
+  return `
+    <div class="docs-figure-alignment">
+      <div class="docs-alignment-master">
+        <span class="docs-figure-eyebrow">${escapeHtml(terms.masterCanvas)} · 1024 × 1024</span>
+        ${compositeMarkup(layers, 'with-grid')}
+      </div>
+      <span class="docs-figure-arrow" aria-hidden="true">→</span>
+      <div class="docs-alignment-layers">
+        <span class="docs-figure-eyebrow">${escapeHtml(terms.sameCanvas)}</span>
+        <div>
+          ${layers.map((src) => `<span>${figureImage(src, '')}<small>1024²</small></span>`).join('')}
+        </div>
+      </div>
+      <span class="docs-figure-arrow" aria-hidden="true">→</span>
+      <div class="docs-alignment-output">
+        <span class="docs-figure-eyebrow">${escapeHtml(terms.alignedComposite)}</span>
+        ${compositeMarkup(layers, '')}
+        <div><span>X 0</span><span>Y 0</span><span>1×</span></div>
+      </div>
+    </div>
+  `;
+}
+
+function importFigure(terms) {
+  return `
+    <div class="docs-figure-decision">
+      <div class="docs-decision-start">${figureNode(terms.pngLayer, 'level-png')}<strong>${escapeHtml(terms.review)}</strong></div>
+      <span class="docs-figure-arrow" aria-hidden="true">→</span>
+      <div class="docs-decision-branches">
+        <div>
+          <strong>${escapeHtml(terms.exactCanvas)}</strong>
+          <span>1024² → X 0 · Y 0 · 1×</span>
+          <small class="success">${escapeHtml(terms.ready)}</small>
+        </div>
+        <div>
+          <strong>${escapeHtml(terms.loosePng)}</strong>
+          <span>${escapeHtml(terms.fitAndCenter)}</span>
+          <small>${escapeHtml(terms.review)}</small>
+        </div>
+      </div>
+      <span class="docs-figure-arrow" aria-hidden="true">→</span>
+      <div class="docs-decision-lock">
+        <strong>positionLocked</strong>
+        <span>true → ${escapeHtml(terms.keepTransform)}</span>
+        <span>false → ${escapeHtml(terms.resetTransform)}</span>
+      </div>
+    </div>
+  `;
+}
+
+function tracksFigure(spec, terms) {
+  return `
+    <div class="docs-figure-tracks">
+      <div class="docs-track-menu">
+        <span class="docs-figure-eyebrow">${escapeHtml(terms.part)} · ${escapeHtml(terms.playerMenu)}</span>
+        <div>${[terms.frontHair, terms.background, terms.skinBase, terms.outfit, terms.eyes].map((label, index) => (
+          `<span><b>${index + 1}</b>${escapeHtml(label)}</span>`
+        )).join('')}</div>
+      </div>
+      <div class="docs-track-order">
+        <div class="docs-track-axis"><span>${escapeHtml(terms.back)}</span><strong>${escapeHtml(terms.renderOrder)}</strong><span>${escapeHtml(terms.front)}</span></div>
+        ${spec.assets.layers.map((layer, index) => `
+          <div style="--track-index:${index}">
+            ${figureImage(layer.src, '')}
+            <strong>${escapeHtml(terms[layer.term])}</strong>
+            <span>${index + 1}</span>
+          </div>
+        `).join('')}
+      </div>
+      <div class="docs-track-preview">${figureImage(spec.assets.cover, '')}<span>${escapeHtml(terms.zOrder)}</span></div>
+    </div>
+  `;
+}
+
+function colorFigure(spec, terms) {
+  return `
+    <div class="docs-figure-color">
+      <div class="docs-color-linked">
+        ${spec.assets.layers.map((src, index) => `
+          <div>${figureImage(src, '')}<span>${escapeHtml(terms.style)} ${index + 1}</span></div>
+        `).join('')}
+        <strong>${escapeHtml(terms.linkedStyles)}</strong>
+      </div>
+      <div class="docs-color-link-lines" aria-hidden="true"><span></span><span></span></div>
+      <div class="docs-color-channel">
+        <span aria-hidden="true">◉</span>
+        <strong>${escapeHtml(terms.colorChannel)}</strong>
+        <div>${['#182755', '#5bc1e9', '#7957ff', '#ef8fbe'].map((color) => (
+          `<span style="--docs-swatch:${color}"></span>`
+        )).join('')}</div>
+        <small>${escapeHtml(terms.oneChannelPerStyle)}</small>
+      </div>
+    </div>
+  `;
+}
+
+function rulesFigure(terms) {
+  return `
+    <div class="docs-figure-rules">
+      <div class="docs-rule-owner"><small>${escapeHtml(terms.whenSelected)}</small><strong>${escapeHtml(terms.outfit)} / ${escapeHtml(terms.item)} A</strong></div>
+      <div class="docs-rule-columns">
+        <div class="docs-rule-branch requires">
+          <strong>${escapeHtml(terms.requiresAll)}</strong>
+          <span>${escapeHtml(terms.frontHair)} / ${escapeHtml(terms.style)} 2</span>
+          <span>${escapeHtml(terms.eyes)} / ${escapeHtml(terms.style)} 1</span>
+          <b aria-hidden="true">✓</b>
+        </div>
+        <div class="docs-rule-branch excludes">
+          <strong>${escapeHtml(terms.excludes)}</strong>
+          <span>${escapeHtml(terms.accessory)} / ${escapeHtml(terms.item)} A</span>
+          <span>${escapeHtml(terms.accessory)} / ${escapeHtml(terms.item)} B</span>
+          <b aria-hidden="true">×</b>
+        </div>
+      </div>
+      <div class="docs-rule-result">
+        <span>${escapeHtml(terms.renderer)}</span>
+        <span>${escapeHtml(terms.random)}</span>
+        <span>${escapeHtml(terms.preflight)}</span>
+        <strong>${escapeHtml(terms.sameRuleGraph)}</strong>
+      </div>
+    </div>
+  `;
+}
+
+function publishFigure(terms) {
+  const steps = [
+    ['1', terms.prepare, 'Quilt'],
+    ['2', terms.upload, 'Walrus'],
+    ['3', terms.certify, 'Walrus'],
+    ['4', terms.publish, 'Sui'],
+  ];
+  return `
+    <div class="docs-figure-publish">
+      ${steps.map(([number, label, target], index) => `
+        <div class="${index === 3 ? 'final' : ''}">
+          <span>${number}</span>
+          <strong>${escapeHtml(label)}</strong>
+          <small>${escapeHtml(target)}</small>
+          ${index < steps.length - 1 ? '<i aria-hidden="true">→</i>' : ''}
+        </div>
+      `).join('')}
+      <div class="docs-publish-retry"><span>↺</span><strong>${escapeHtml(terms.retry)}</strong><small>${escapeHtml(terms.checkpoint)} · 2 ↔ 3</small></div>
+    </div>
+  `;
+}
+
+function chainFigure(spec, terms) {
+  return `
+    <div class="docs-figure-chain">
+      <div class="docs-chain-oc">
+        ${figureImage(spec.assets.cover, '')}
+        <span>PNG</span>
+        <strong>animacraft-oc.json</strong>
+      </div>
+      <div class="docs-chain-documents">
+        <span>soul.md<small>${escapeHtml(terms.identity)}</small></span>
+        <span>memory.md<small>${escapeHtml(terms.memory)}</small></span>
+        <span>SKILL.md<small>${escapeHtml(terms.skills)}</small></span>
+      </div>
+      <div class="docs-chain-boundary">
+        <span><b>01</b><strong>${escapeHtml(terms.local)}</strong><small>${escapeHtml(terms.editable)}</small></span>
+        <i aria-hidden="true">→</i>
+        <span><b>02</b><strong>Walrus</strong><small>${escapeHtml(terms.immutable)}</small></span>
+        <i aria-hidden="true">→</i>
+        <span><b>03</b><strong>Sui</strong><small>OCMaker</small></span>
+        <i aria-hidden="true">→</i>
+        <span class="gated"><b>04</b><strong>Soulidity</strong><small>🔒 ${escapeHtml(terms.gated)}</small></span>
+      </div>
+    </div>
+  `;
+}
+
+function articleFigureMarkup(article, locale) {
+  const figureId = DOCS_ARTICLE_FIGURES[article.id];
+  const spec = DOCS_FIGURE_SPECS[figureId];
+  if (!figureId || !spec) return '';
+  const terms = DOCS_FIGURE_TERMS[normalizedLocale(locale)];
+  const stage = {
+    hierarchy: () => hierarchyFigure(terms),
+    player: () => playerFigure(spec, terms),
+    alignment: () => alignmentFigure(spec, terms),
+    import: () => importFigure(terms),
+    tracks: () => tracksFigure(spec, terms),
+    color: () => colorFigure(spec, terms),
+    rules: () => rulesFigure(terms),
+    publish: () => publishFigure(terms),
+    chain: () => chainFigure(spec, terms),
+  }[spec.type]?.();
+  if (!stage) return '';
+  const captionId = `docsFigure-${figureId}-caption`;
+  const usesFixtureArt = ['player', 'alignment', 'tracks', 'color', 'chain'].includes(spec.type);
+  return `
+    <figure class="docs-article-figure docs-article-figure--${escapeHtml(spec.type)}" aria-labelledby="${escapeHtml(captionId)}">
+      <div
+        class="docs-figure-stage"
+        role="img"
+        aria-label="${escapeHtml(`${article.title}. ${article.summary}`)}"
+      >
+        ${usesFixtureArt ? `<span class="docs-figure-fixture-note">${escapeHtml(terms.technicalExample)}</span>` : ''}
+        ${stage}
+      </div>
+      <figcaption id="${escapeHtml(captionId)}">
+        <strong>${escapeHtml(article.title)}</strong>
+        <span>${escapeHtml(article.summary)}</span>
+      </figcaption>
+    </figure>
+  `;
 }
 
 function sectionMarkup(section) {
@@ -274,6 +619,7 @@ export function createDocsCenter(root) {
             </div>
             <span class="docs-version-badge">${escapeHtml(content.ui.updatedLabel)} · v${escapeHtml(DOCS_VERSION)}</span>
           </header>
+          ${articleFigureMarkup(article, locale)}
           <div class="docs-article-body">
             ${article.sections.map(sectionMarkup).join('')}
           </div>
