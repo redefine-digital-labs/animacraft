@@ -108,8 +108,8 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
-  assert.match(html, /styles\.css\?v=animacraft-player-palette-v2/);
-  assert.match(html, /app\.js\?v=animacraft-player-palette-v2/);
+  assert.match(html, /styles\.css\?v=animacraft-contextual-palette-v3/);
+  assert.match(html, /app\.js\?v=animacraft-contextual-palette-v3/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
   assert.match(app, /buildMakerV4PublicationBundle/);
@@ -123,6 +123,11 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(workspace, /data-action="player-export-background"/);
   assert.match(workspace, /data-action="player-copy-maker-link"/);
   assert.match(workspace, /data-action="player-palette"/);
+  assert.match(workspace, /function playerPaletteContext\(document, recipe, requestedPartId\)/);
+  assert.match(workspace, /paletteAvailable \? 'available' : 'unavailable'/);
+  assert.match(workspace, /aria-disabled="\$\{paletteAvailable \? 'false' : 'true'\}"/);
+  assert.match(workspace, /paletteAvailable \? '' : 'disabled'/);
+  assert.match(workspace, /colors:\$\{paletteContext\.partId\}:\$\{paletteContext\.itemId\}:\$\{paletteContext\.styleId\}/);
   assert.match(workspace, /role="tab"/);
   assert.match(workspace, /aria-selected="\$\{active \? 'true' : 'false'\}"/);
   assert.match(workspace, /id="v4PlayerPickerPanel"/);

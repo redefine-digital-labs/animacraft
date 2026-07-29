@@ -1676,13 +1676,13 @@ test('Player Expansion Pack toggles clear undo entries from the previous runtime
   }, { playable: true });
 });
 
-test('Player Smart Color is a first-level palette whose selection recolors every linked visible Style', async () => {
+test('Player Smart Color follows the selected Part while a shared choice recolors every linked visible Style', async () => {
   const playerRoot = new FakeRoot();
   let html = '';
   let replacePickerNodes = false;
   const replacementRail = { scrollLeft: 0, scrollTop: 0 };
   const replacementPicker = {
-    dataset: { playerPickerContext: 'colors' },
+    dataset: { playerPickerContext: '' },
     scrollLeft: 0,
     scrollTop: 0,
   };
@@ -1707,25 +1707,39 @@ test('Player Smart Color is a first-level palette whose selection recolors every
 
     assert.match(playerRoot.innerHTML, /data-action="player-palette"/);
     assert.match(playerRoot.innerHTML, /role="tab"[^>]*aria-selected="false"/);
-    assert.doesNotMatch(playerRoot.innerHTML, /Colors used by this OC/);
+    assert.match(playerRoot.innerHTML, /v4-player-palette-tab available/);
+    assert.match(playerRoot.innerHTML, /aria-disabled="false"/);
     assert.doesNotMatch(playerRoot.innerHTML, /data-channel-id="unused-tone"/);
 
     playerClick(workspace, 'player-palette');
     assert.equal(workspace.playerPickerPanel, 'colors');
-    assert.match(playerRoot.innerHTML, /Colors used by this OC/);
+    assert.match(playerRoot.innerHTML, /Background colors/);
     assert.match(playerRoot.innerHTML, /data-channel-id="background-tone"/);
-    assert.match(playerRoot.innerHTML, /data-channel-id="skin-tone"/);
-    assert.match(playerRoot.innerHTML, /2 visible linked layer\(s\)/);
+    assert.doesNotMatch(playerRoot.innerHTML, /data-channel-id="skin-tone"/);
+    assert.doesNotMatch(playerRoot.innerHTML, /2 visible linked layer\(s\)/);
     assert.match(playerRoot.innerHTML, /class="v4-player-colors" role="radiogroup"/);
     assert.match(playerRoot.innerHTML, /role="radio"[^>]*data-player-radio-group="color-0"/);
     assert.match(playerRoot.innerHTML, /aria-checked="true" tabindex="0"/);
     assert.doesNotMatch(playerRoot.innerHTML, /data-channel-id="unused-tone"/);
 
+    playerClick(workspace, 'player-palette');
+    const skinPartId = workspace.runtimeDocument().parts[2].id;
+    playerClick(workspace, 'player-part', { partId: skinPartId });
+    playerClick(workspace, 'player-palette');
+    assert.equal(workspace.playerPickerPanel, 'colors');
+    assert.match(playerRoot.innerHTML, /data-channel-id="skin-tone"/);
+    assert.doesNotMatch(playerRoot.innerHTML, /data-channel-id="background-tone"/);
+    assert.match(playerRoot.innerHTML, /2 visible linked layer\(s\)/);
+
     const initialRevision = workspace.playerSessionRevision;
     const initialRenderKey = workspace.playerRenderKey(workspace.runtimeDocument(), workspace.playerRecipe);
+    const skinPaletteContext = playerRoot.innerHTML
+      .match(/data-player-picker-context="(colors:[^"]+)"/)?.[1];
+    assert.ok(skinPaletteContext);
+    replacementPicker.dataset.playerPickerContext = skinPaletteContext;
     playerRoot.selectors['.v4-player-part-rail'] = { scrollLeft: 246, scrollTop: 0 };
     playerRoot.selectors['.v4-player-picker'] = {
-      dataset: { playerPickerContext: 'colors' },
+      dataset: { playerPickerContext: skinPaletteContext },
       scrollLeft: 9,
       scrollTop: 716,
     };
@@ -1779,10 +1793,26 @@ test('Player Smart Color is a first-level palette whose selection recolors every
     playerClick(workspace, 'player-part', { partId: workspace.runtimeDocument().parts[4].id });
     assert.equal(workspace.playerPickerPanel, 'parts');
     assert.notEqual(workspace.playerPartId, originalPartId);
+    assert.match(playerRoot.innerHTML, /v4-player-palette-tab unavailable/);
+    assert.match(playerRoot.innerHTML, /aria-disabled="true"/);
+    assert.match(playerRoot.innerHTML, /data-count="0"/);
+    assert.match(playerRoot.innerHTML, /No adjustable colors/);
+    assert.equal(workspace.setPlayerPickerPanel('colors'), false);
     assert.equal(
       workspace.playerRecipe.colors.find((entry) => entry.channelId === 'skin-tone')?.swatchId,
       'alternate',
     );
+    playerClick(workspace, 'player-color', {
+      channelId: 'skin-tone',
+      swatchId: 'default',
+    });
+    assert.equal(
+      workspace.playerRecipe.colors.find((entry) => entry.channelId === 'skin-tone')?.swatchId,
+      'alternate',
+      'a stale color event from another Part must not change the Recipe',
+    );
+    assert.equal(workspace.playerSessionRevision, revision);
+    assert.equal(workspace.playerUndo.length, undoCount);
   }, {
     playable: true,
     playerRoot,
@@ -1829,6 +1859,294 @@ test('Player Smart Color is a first-level palette whose selection recolors every
   });
 });
 
+test('Player Palette lights only for the selected Item and Style with a usable Smart Color channel', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    workspace.playerIntroOpen = false;
+    workspace.renderPlayer();
+    const document = workspace.runtimeDocument();
+    const part = document.parts[0];
+    const linkedItem = part.items[0];
+    const linkedStyle = linkedItem.styles[0];
+
+    assert.match(playerRoot.innerHTML, /v4-player-palette-tab available/);
+    assert.match(playerRoot.innerHTML, /aria-disabled="false"/);
+
+    playerClick(workspace, 'player-style', { styleId: 'unlinked-style' });
+    assert.equal(
+      workspace.playerRecipe.selections.find((selection) => selection.partId === part.id)?.styleId,
+      'unlinked-style',
+    );
+    assert.match(playerRoot.innerHTML, /v4-player-palette-tab unavailable/);
+    assert.match(playerRoot.innerHTML, /aria-disabled="true"/);
+    assert.equal(workspace.setPlayerPickerPanel('colors'), false);
+
+    playerClick(workspace, 'player-style', { styleId: linkedStyle.id });
+    assert.match(playerRoot.innerHTML, /v4-player-palette-tab available/);
+
+    playerClick(workspace, 'player-item', { itemId: 'unlinked-item' });
+    assert.equal(
+      workspace.playerRecipe.selections.find((selection) => selection.partId === part.id)?.itemId,
+      'unlinked-item',
+    );
+    assert.match(playerRoot.innerHTML, /v4-player-palette-tab unavailable/);
+    assert.match(playerRoot.innerHTML, /No adjustable colors/);
+
+    const beforeRecipe = structuredClone(workspace.playerRecipe);
+    const beforeRevision = workspace.playerSessionRevision;
+    const beforeUndo = workspace.playerUndo.length;
+    playerClick(workspace, 'player-palette');
+    playerClick(workspace, 'player-color', {
+      channelId: 'valid-tone',
+      swatchId: 'alternate',
+    });
+    assert.equal(workspace.playerPickerPanel, 'parts');
+    assert.deepEqual(workspace.playerRecipe, beforeRecipe);
+    assert.equal(workspace.playerSessionRevision, beforeRevision);
+    assert.equal(workspace.playerUndo.length, beforeUndo);
+
+    playerClick(workspace, 'player-item', { itemId: linkedItem.id });
+    assert.match(playerRoot.innerHTML, /v4-player-palette-tab available/);
+    playerClick(workspace, 'player-palette');
+    assert.match(playerRoot.innerHTML, /data-channel-id="valid-tone"/);
+    playerClick(workspace, 'player-palette');
+    const closedRecipe = structuredClone(workspace.playerRecipe);
+    const closedRevision = workspace.playerSessionRevision;
+    const closedUndo = workspace.playerUndo.length;
+    playerClick(workspace, 'player-color', {
+      channelId: 'valid-tone',
+      swatchId: 'alternate',
+    });
+    assert.equal(workspace.playerPickerPanel, 'parts');
+    assert.deepEqual(workspace.playerRecipe, closedRecipe);
+    assert.equal(workspace.playerSessionRevision, closedRevision);
+    assert.equal(workspace.playerUndo.length, closedUndo);
+  }, {
+    playable: true,
+    playerRoot,
+    prepareDocument(document) {
+      const part = document.parts[0];
+      const linkedItem = part.items[0];
+      const linkedStyle = linkedItem.styles[0];
+      const baseAsset = document.assets.find((asset) => asset.id === linkedStyle.assetId);
+      const addAsset = (id) => {
+        document.assets.push({
+          ...structuredClone(baseAsset),
+          id,
+          identifier: `${id}.png`,
+          url: `memory://${id}`,
+        });
+      };
+      document.colorChannels.push({
+        id: 'valid-tone',
+        name: 'Valid tone',
+        order: 0,
+        mode: 'gradient-map',
+        defaultSwatchId: 'default',
+        swatches: [
+          {
+            id: 'default',
+            name: 'Default',
+            hintColor: '#335577',
+            stops: [{ offset: 0, color: '#112233' }, { offset: 1, color: '#ddeeff' }],
+          },
+          {
+            id: 'alternate',
+            name: 'Alternate',
+            hintColor: '#aa4466',
+            stops: [{ offset: 0, color: '#331122' }, { offset: 1, color: '#ffe0eb' }],
+          },
+        ],
+      });
+      linkedStyle.colorChannelId = 'valid-tone';
+
+      const unlinkedStyle = structuredClone(linkedStyle);
+      unlinkedStyle.id = 'unlinked-style';
+      unlinkedStyle.name = 'Unlinked style';
+      unlinkedStyle.assetId = 'unlinked-style-art';
+      unlinkedStyle.colorChannelId = '';
+      addAsset(unlinkedStyle.assetId);
+      linkedItem.styles.push(unlinkedStyle);
+
+      const createItemFixture = (id, channelId) => {
+        const item = structuredClone(linkedItem);
+        item.id = id;
+        item.name = id;
+        item.status = 'public';
+        item.styles = [structuredClone(linkedStyle)];
+        item.styles[0].id = `${id}-style`;
+        item.styles[0].name = `${id} style`;
+        item.styles[0].assetId = `${id}-art`;
+        item.styles[0].colorChannelId = channelId;
+        item.defaultStyleId = item.styles[0].id;
+        addAsset(item.styles[0].assetId);
+        return item;
+      };
+      part.items.push(createItemFixture('unlinked-item', ''));
+      document.parts[1].items[0].styles[0].colorChannelId = 'valid-tone';
+    },
+  });
+});
+
+test('Player Palette stays disabled for missing, non-gradient, and empty Smart Color channels', async () => {
+  const scenarios = [
+    {
+      name: 'missing',
+      prepare(document, style) {
+        style.colorChannelId = 'missing-tone';
+      },
+    },
+    {
+      name: 'non-gradient',
+      prepare(document, style) {
+        document.colorChannels.push({
+          id: 'flat-tone',
+          name: 'Flat tone',
+          order: 0,
+          mode: 'flat',
+          defaultSwatchId: 'default',
+          swatches: [{ id: 'default', name: 'Default', hintColor: '#335577', stops: [] }],
+        });
+        style.colorChannelId = 'flat-tone';
+      },
+    },
+    {
+      name: 'empty',
+      prepare(document, style) {
+        document.colorChannels.push({
+          id: 'empty-tone',
+          name: 'Empty tone',
+          order: 0,
+          mode: 'gradient-map',
+          defaultSwatchId: '',
+          swatches: [],
+        });
+        style.colorChannelId = 'empty-tone';
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const playerRoot = new FakeRoot();
+    await withWorkspace(async (workspace) => {
+      workspace.playerIntroOpen = false;
+      workspace.renderPlayer();
+      assert.match(
+        playerRoot.innerHTML,
+        /v4-player-palette-tab unavailable/,
+        `${scenario.name} channel must not light the Palette`,
+      );
+      assert.match(playerRoot.innerHTML, /aria-disabled="true"/);
+      assert.match(playerRoot.innerHTML, /data-count="0"/);
+      assert.equal(workspace.setPlayerPickerPanel('colors'), false);
+    }, {
+      playable: true,
+      playerRoot,
+      prepareDocument(document) {
+        scenario.prepare(document, document.parts[0].items[0].styles[0]);
+      },
+    });
+  }
+});
+
+test('Player Palette does not fall back to a legacy Part channel when the selected Style channel exists but is unusable', async () => {
+  for (const invalidMode of ['flat', 'empty']) {
+    const playerRoot = new FakeRoot();
+    await withWorkspace(async (workspace) => {
+      workspace.playerIntroOpen = false;
+      workspace.renderPlayer();
+      assert.match(playerRoot.innerHTML, /v4-player-palette-tab unavailable/);
+      assert.match(playerRoot.innerHTML, /aria-disabled="true"/);
+      assert.doesNotMatch(playerRoot.innerHTML, /data-channel-id="legacy-tone"/);
+      assert.equal(workspace.setPlayerPickerPanel('colors'), false);
+    }, {
+      playable: true,
+      playerRoot,
+      prepareDocument(document) {
+        const swatch = {
+          id: 'default',
+          name: 'Default',
+          hintColor: '#335577',
+          stops: [{ offset: 0, color: '#112233' }, { offset: 1, color: '#ddeeff' }],
+        };
+        document.colorChannels.push(
+          {
+            id: 'legacy-tone',
+            name: 'Legacy Part tone',
+            order: 0,
+            mode: 'gradient-map',
+            defaultSwatchId: 'default',
+            swatches: [swatch],
+          },
+          {
+            id: 'invalid-style-tone',
+            name: 'Invalid Style tone',
+            order: 1,
+            mode: invalidMode === 'flat' ? 'flat' : 'gradient-map',
+            defaultSwatchId: invalidMode === 'flat' ? 'default' : '',
+            swatches: invalidMode === 'flat' ? [structuredClone(swatch)] : [],
+          },
+        );
+        const part = document.parts[0];
+        part.colorChannelId = 'legacy-tone';
+        part.items[0].styles[0].colorChannelId = 'invalid-style-tone';
+      },
+    });
+  }
+});
+
+test('Player Palette can reveal a selected Style whose visibility depends on its Smart Color', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    workspace.playerIntroOpen = false;
+    workspace.renderPlayer();
+    const before = resolveMakerScene(workspace.runtimeDocument(), workspace.playerRecipe, { strict: false });
+    assert.equal(before.layers.some((layer) => layer.partId === workspace.playerPartId), false);
+    assert.match(playerRoot.innerHTML, /v4-player-palette-tab available/);
+
+    playerClick(workspace, 'player-palette');
+    playerClick(workspace, 'player-color', {
+      channelId: 'visibility-tone',
+      swatchId: 'show',
+    });
+
+    const after = resolveMakerScene(workspace.runtimeDocument(), workspace.playerRecipe, { strict: false });
+    assert.equal(after.layers.some((layer) => (
+      layer.partId === workspace.playerPartId
+      && layer.colorChannel?.valueId === 'show'
+    )), true);
+  }, {
+    playable: true,
+    playerRoot,
+    prepareDocument(document) {
+      document.colorChannels.push({
+        id: 'visibility-tone',
+        name: 'Visibility tone',
+        order: 0,
+        mode: 'gradient-map',
+        defaultSwatchId: 'hide',
+        swatches: [
+          {
+            id: 'hide',
+            name: 'Hide',
+            hintColor: '#111111',
+            stops: [{ offset: 0, color: '#000000' }, { offset: 1, color: '#222222' }],
+          },
+          {
+            id: 'show',
+            name: 'Show',
+            hintColor: '#f5b942',
+            stops: [{ offset: 0, color: '#5a3500' }, { offset: 1, color: '#fff0bd' }],
+          },
+        ],
+      });
+      const style = document.parts[0].items[0].styles[0];
+      style.colorChannelId = 'visibility-tone';
+      style.visibleWhen = { colorChannelId: 'visibility-tone', equals: 'show' };
+    },
+  });
+});
+
 test('Player Palette exposes every creator preset instead of decorative or truncated colors', async () => {
   const playerRoot = new FakeRoot();
   await withWorkspace(async (workspace) => {
@@ -1839,7 +2157,7 @@ test('Player Palette exposes every creator preset instead of decorative or trunc
       playerRoot.innerHTML,
       /class="v4-player-palette-icon" data-count="4"/,
     );
-    assert.match(playerRoot.innerHTML, /1 channel\(s\) · 4 preset\(s\)/);
+    assert.match(playerRoot.innerHTML, /1 color group\(s\) · 4 color\(s\)/);
 
     playerClick(workspace, 'player-palette');
     const presetButtons = playerRoot.innerHTML.match(/data-action="player-color"/g) || [];
@@ -1914,7 +2232,11 @@ test('Player Palette toggles, Back, and Escape restore Part and Palette scroll w
     playerClick(workspace, 'player-palette');
     assert.equal(workspace.playerPickerPanel, 'colors');
     assert.match(playerRoot.innerHTML, /data-action="player-close-palette"/);
-    const palettePicker = pickerNodes.get('colors');
+    const paletteContext = playerRoot.innerHTML
+      .match(/data-player-picker-context="(colors:[^"]+)"/)?.[1];
+    assert.ok(paletteContext);
+    const palettePicker = pickerNodes.get(paletteContext);
+    assert.ok(palettePicker);
     palettePicker.scrollLeft = 13;
     palettePicker.scrollTop = 700;
 
@@ -2750,9 +3072,20 @@ test('Player palette and Part tabs support arrow, Home, and End keyboard navigat
     assert.equal(activatedIndex, 0);
     assert.equal(focusedIndex, 0);
 
+    tabs[0].disabled = true;
+    activatedIndex = -1;
+    focusedIndex = -1;
+    workspace.handlePlayerTabKeydown({
+      key: 'Home',
+      target: tabs[2],
+      preventDefault() {},
+    });
+    assert.equal(activatedIndex, 1, 'an unavailable Palette is skipped by tab navigation');
+    assert.equal(focusedIndex, 1);
+
     assert.equal(workspace.handlePlayerTabKeydown({
       key: 'ArrowDown',
-      target: tabs[0],
+      target: tabs[1],
       preventDefault() {
         assert.fail('a horizontal tablist must not block vertical page scrolling');
       },
@@ -2789,6 +3122,7 @@ test('final preview freezes the exact OC snapshot used by completion and support
       renderedBlobs.push(blob);
       return blob;
     };
+    playerClick(workspace, 'player-palette');
     playerClick(workspace, 'player-color', {
       channelId: 'export-tone',
       swatchId: 'alternate',
