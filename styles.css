@@ -8373,7 +8373,7 @@ pre {
   height: 12px;
   border: 2px solid var(--ui-surface);
   border-radius: 50%;
-  background: var(--swatch);
+  background: var(--swatch, var(--line));
 }
 
 .v4-player-palette-icon {
@@ -8391,6 +8391,28 @@ pre {
 .v4-player-palette-icon[data-count="1"] > i {
   width: 18px;
   height: 18px;
+}
+
+.v4-player-palette-tab.available:not(.active) {
+  border-color: color-mix(in srgb, var(--violet) 38%, var(--line));
+}
+
+.v4-player-shell .v4-player-palette-tab.unavailable:disabled {
+  border-color: var(--line);
+  background: var(--ui-surface-muted);
+  color: var(--muted);
+  opacity: 1;
+  filter: grayscale(1);
+}
+
+.v4-player-palette-tab.unavailable > .v4-player-palette-icon {
+  border-color: var(--line);
+  background: var(--ui-surface-muted);
+}
+
+.v4-player-palette-tab.unavailable > .v4-player-palette-icon > i {
+  border-color: var(--ui-surface-muted);
+  background: color-mix(in srgb, var(--muted) 48%, var(--ui-surface));
 }
 
 .v4-player-picker.palette-active {
@@ -8580,6 +8602,11 @@ pre {
   .v4-player-colors button b {
     color: HighlightText;
     background: Highlight;
+  }
+
+  .v4-player-palette-tab.unavailable:disabled {
+    border-color: GrayText;
+    color: GrayText;
   }
 }
 

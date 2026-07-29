@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.4 — Contextual Player Palette
+
+- Makes Palette availability follow the Player's exact current Part → Item → Style selection instead of unrelated Smart Color channels elsewhere in the composed OC.
+- Keeps Palette visible as a predictable first navigation entry: real configured colors light it up, while an unlinked, missing, incompatible, or empty channel produces a readable disabled state.
+- Shows only the selected Style's color group while preserving global creator-authored linking, so choosing one color still recolors every visible Style connected to the same channel.
+- Revalidates every color action against the current selection to prevent delayed clicks from an earlier Part or Style from changing an unrelated channel.
+- Separates Palette scroll and focus state by Part, Item, and Style, automatically returns to the current Part when colors become unavailable, and skips the disabled Palette during keyboard navigation.
+- Updates English, Simplified Chinese, Japanese, Korean, and Vietnamese copy and adds regression coverage for linked, unlinked, invalid, shared, visibility-dependent, keyboard, and stale-event cases.
+
 ## 0.7.3 — Smart Color preset and Palette reliability
 
 - Makes every creator Color preset a real player-selectable swatch and derives the rendered shadow, midtone, and highlight from the chosen primary color instead of leaving the artwork on a stale purple gradient.

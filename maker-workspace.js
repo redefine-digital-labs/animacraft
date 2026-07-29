@@ -575,6 +575,52 @@ function resolvedPlayerColorChannelUsage(document, recipe) {
   }
 }
 
+function playerPaletteContext(document, recipe, requestedPartId) {
+  const partId = String(requestedPartId || '');
+  const empty = {
+    partId,
+    itemId: '',
+    styleId: '',
+    channels: [],
+  };
+  if (!document || !partId) return empty;
+  const part = (document.parts || []).find((candidate) => String(candidate?.id || '') === partId);
+  const selection = recipeSelectionMap(recipe).get(partId);
+  const item = part?.items?.find((candidate) => String(candidate?.id || '') === String(selection?.itemId || ''));
+  if (!part || !item) return empty;
+  const styles = Array.isArray(item.styles) ? item.styles : [];
+  const style = selection?.styleId
+    ? styles.find((candidate) => String(candidate?.id || '') === String(selection.styleId))
+    : styles.find((candidate) => String(candidate?.id || '') === String(item.defaultStyleId || ''))
+      || (styles.length === 1 ? styles[0] : null);
+  if (!style) return { ...empty, itemId: String(item.id || '') };
+  const channels = Array.isArray(document.colorChannels) ? document.colorChannels : [];
+  const findChannel = (channelId) => channels.find((channel) => (
+    String(channel?.id || '') === String(channelId || '')
+  )) || null;
+  const usableChannel = (channel) => (
+    channel?.mode === 'gradient-map'
+    && Array.isArray(channel.swatches)
+    && channel.swatches.length > 0
+      ? channel
+      : null
+  );
+  const explicitStyleChannelId = String(style.colorChannelId || style.paletteId || '');
+  const explicitStyleChannel = explicitStyleChannelId
+    ? findChannel(explicitStyleChannelId)
+    : null;
+  const channel = explicitStyleChannel
+    ? usableChannel(explicitStyleChannel)
+    : usableChannel(findChannel(part.colorChannelId || part.paletteId))
+      || null;
+  return {
+    partId,
+    itemId: String(item.id || ''),
+    styleId: String(style.id || ''),
+    channels: channel ? [channel] : [],
+  };
+}
+
 function workspaceStyleRecords(document) {
   const base = (document?.parts || []).flatMap((part) => (part.items || []).flatMap((item) => (
     (item.styles || []).map((style) => ({
@@ -4113,11 +4159,15 @@ export class MakerWorkspace {
   setPlayerPickerPanel(panel) {
     const nextPanel = panel === 'colors' ? 'colors' : 'parts';
     const document = this.runtimeDocument();
+    const recipe = document ? recipeWithColors(document, this.playerRecipe) : this.playerRecipe;
+    const parts = document ? this.activePlayerParts(document, recipe) : [];
+    const part = parts.find((candidate) => candidate.id === this.playerPartId) || parts[0] || null;
+    const paletteContext = playerPaletteContext(document, recipe, part?.id);
     if (
       !document
       || (
         nextPanel === 'colors'
-        && !resolvedPlayerColorChannelUsage(document, this.playerRecipe).size
+        && paletteContext.channels.length === 0
       )
     ) return false;
     this.playerPickerPanel = nextPanel;
@@ -6367,7 +6417,9 @@ export class MakerWorkspace {
     if (!document) return;
     const recipe = recipeWithColors(document, this.playerRecipe);
     const parts = this.activePlayerParts(document, recipe);
+    const requestedPartId = String(this.playerPartId || '');
     let part = parts.find((candidate) => candidate.id === this.playerPartId) || parts[0] || null;
+    const playerPartChanged = Boolean(requestedPartId && part?.id && part.id !== requestedPartId);
     this.playerPartId = part?.id || '';
     const selectionMap = recipeSelectionMap(recipe);
     const optionSettings = this.playerOptionSettings(document);
@@ -6410,13 +6462,17 @@ export class MakerWorkspace {
     const removePartReasonId = 'v4PlayerRemovePartReason';
     const clearOptionalReasonId = 'v4PlayerClearOptionalReason';
     const colorChannelUsage = resolvedPlayerColorChannelUsage(document, recipe);
-    const activeColorChannels = document.colorChannels.filter((channel) => (
-      channel.mode === 'gradient-map' && colorChannelUsage.has(channel.id)
-    ));
-    if (this.playerPickerPanel === 'colors' && activeColorChannels.length === 0) {
+    const paletteContext = playerPaletteContext(document, recipe, part?.id);
+    const activeColorChannels = paletteContext.channels;
+    const paletteClosedForContext = (
+      this.playerPickerPanel === 'colors'
+      && (activeColorChannels.length === 0 || playerPartChanged)
+    );
+    if (paletteClosedForContext) {
       this.playerPickerPanel = 'parts';
     }
     const paletteActive = this.playerPickerPanel === 'colors';
+    const paletteAvailable = activeColorChannels.length > 0;
     const palettePresetCount = activeColorChannels.reduce(
       (count, channel) => count + channel.swatches.length,
       0,
@@ -6424,27 +6480,49 @@ export class MakerWorkspace {
     const palettePreviewSwatches = activeColorChannels
       .flatMap((channel) => channel.swatches)
       .slice(0, 4);
-    const paletteButton = activeColorChannels.length ? `
+    const paletteDots = paletteAvailable
+      ? palettePreviewSwatches.map((swatch) => `<i style="--swatch:${escapeHtml(swatch.hintColor || swatch.stops?.[Math.floor((swatch.stops.length - 1) / 2)]?.color || '#808080')}"></i>`).join('')
+      : '<i></i><i></i><i></i><i></i>';
+    const paletteButton = `
       <button
         type="button"
         id="v4PlayerPaletteTab"
         role="tab"
-        class="v4-player-part v4-player-palette-tab ${paletteActive ? 'active' : ''}"
+        class="v4-player-part v4-player-palette-tab ${paletteAvailable ? 'available' : 'unavailable'} ${paletteActive ? 'active' : ''}"
         data-action="player-palette"
         aria-selected="${paletteActive ? 'true' : 'false'}"
+        aria-disabled="${paletteAvailable ? 'false' : 'true'}"
         aria-controls="v4PlayerPickerPanel"
         tabindex="${paletteActive ? '0' : '-1'}"
-        title="${escapeHtml(this.tr(paletteActive ? 'playerPaletteReturnHint' : 'openPlayerPalette'))}"
+        title="${escapeHtml(this.tr(
+          paletteActive
+            ? 'playerPaletteReturnForPart'
+            : paletteAvailable
+              ? 'openPlayerPaletteForPart'
+              : 'playerPaletteUnavailableTitle',
+          { part: part?.name || this.tr('currentPart') },
+        ))}"
+        aria-label="${escapeHtml(this.tr(
+          paletteActive
+            ? 'playerPaletteReturnForPart'
+            : paletteAvailable
+              ? 'openPlayerPaletteForPart'
+              : 'playerPaletteUnavailableTitle',
+          { part: part?.name || this.tr('currentPart') },
+        ))}"
+        ${paletteAvailable ? '' : 'disabled'}
       >
-        <span class="v4-player-palette-icon" data-count="${palettePreviewSwatches.length}" aria-hidden="true">${palettePreviewSwatches.map((swatch) => `<i style="--swatch:${escapeHtml(swatch.hintColor || swatch.stops?.[Math.floor((swatch.stops.length - 1) / 2)]?.color || '#808080')}"></i>`).join('')}</span>
+        <span class="v4-player-palette-icon" data-count="${palettePreviewSwatches.length}" aria-hidden="true">${paletteDots}</span>
         <strong>${escapeHtml(this.tr('playerPalette'))}</strong>
-        <small>${escapeHtml(this.tr('playerPaletteSummary', {
-          channels: activeColorChannels.length,
-          presets: palettePresetCount,
-        }))}</small>
+        <small>${escapeHtml(paletteAvailable
+          ? this.tr('playerPaletteSummary', {
+            channels: activeColorChannels.length,
+            presets: palettePresetCount,
+          })
+          : this.tr('playerPaletteUnavailable'))}</small>
         ${paletteActive ? '<i class="v4-player-selected-mark" aria-hidden="true">✓</i>' : ''}
       </button>
-    ` : '';
+    `;
     const partButtons = parts.map((candidate) => {
       const selection = selectionMap.get(candidate.id);
       const thumbnail = this.partThumbnailUrl(candidate, selection);
@@ -6522,13 +6600,13 @@ export class MakerWorkspace {
     const colorControls = colorRows ? `
       <section class="v4-player-palette-panel">
         <header>
-          <div><span>${escapeHtml(this.tr('smartColor'))}</span><h2>${escapeHtml(this.tr('activeOcColors'))}</h2><p>${escapeHtml(this.tr('playerPaletteCopy'))} ${escapeHtml(this.tr('playerPaletteReturnHint'))}</p></div>
+          <div><span>${escapeHtml(this.tr('smartColor'))}</span><h2>${escapeHtml(this.tr('currentPartColors', { part: part?.name || this.tr('currentPart') }))}</h2><p>${escapeHtml(this.tr('playerPaletteContextCopy'))} ${escapeHtml(this.tr('playerPaletteReturnHint'))}</p></div>
           <div class="v4-player-palette-actions">
             <strong>${escapeHtml(this.tr('playerPaletteSummary', {
               channels: activeColorChannels.length,
               presets: palettePresetCount,
             }))}</strong>
-            <button type="button" data-action="player-close-palette" title="${escapeHtml(part?.name || this.tr('currentPart'))}">← ${escapeHtml(this.tr('returnToCurrentPart'))}</button>
+            <button type="button" data-action="player-close-palette" title="${escapeHtml(this.tr('playerPaletteReturnForPart', { part: part?.name || this.tr('currentPart') }))}" aria-label="${escapeHtml(this.tr('playerPaletteReturnForPart', { part: part?.name || this.tr('currentPart') }))}">← ${escapeHtml(this.tr('returnToCurrentPart'))}</button>
           </div>
         </header>
         <div class="v4-player-color-channel-grid">${colorRows}</div>
@@ -6576,7 +6654,9 @@ export class MakerWorkspace {
               id="v4PlayerPickerPanel"
               class="v4-player-picker ${paletteActive ? 'palette-active' : ''}"
               role="tabpanel"
-              data-player-picker-context="${escapeHtml(paletteActive ? 'colors' : (part?.id || ''))}"
+              data-player-picker-context="${escapeHtml(paletteActive
+                ? `colors:${paletteContext.partId}:${paletteContext.itemId}:${paletteContext.styleId}`
+                : (part?.id || ''))}"
               aria-labelledby="${paletteActive ? 'v4PlayerPaletteTab' : `v4PlayerPartTab-${escapeHtml(part?.id || '')}`}"
             >
               ${paletteActive ? colorControls : `
@@ -6632,6 +6712,13 @@ export class MakerWorkspace {
       this.restorePlayerExportScroll(exportScroll);
       this.focusPlayerExportDialog();
     } else if (this.playerIntroOpen) this.focusPlayerInfoDialog();
+    else if (paletteClosedForContext) {
+      requestAnimationFrame(() => {
+        [...(this.playerRoot?.querySelectorAll?.('[data-action="player-part"]') || [])]
+          .find((candidate) => String(candidate.dataset?.partId || '') === String(this.playerPartId))
+          ?.focus?.({ preventScroll: true });
+      });
+    }
   }
 
   documentWithCreatorPreview() {
@@ -8861,6 +8948,15 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'player-color') {
+      if (this.playerPickerPanel !== 'colors') return;
+      const paletteContext = playerPaletteContext(
+        document,
+        recipeWithColors(document, this.playerRecipe),
+        part?.id,
+      );
+      if (!paletteContext.channels.some((channel) => (
+        String(channel.id || '') === String(button.dataset.channelId || '')
+      ))) return;
       const channel = document.colorChannels.find((candidate) => (
         candidate.id === button.dataset.channelId
         && candidate.mode === 'gradient-map'
