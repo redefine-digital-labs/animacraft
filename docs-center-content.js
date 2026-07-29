@@ -1,4 +1,4 @@
-export const DOCS_VERSION = '0.8.2';
+export const DOCS_VERSION = '0.8.3';
 
 export const DOCS_LOCALES = Object.freeze(['en', 'zh', 'ja', 'ko', 'vi']);
 
@@ -12,6 +12,8 @@ export const DOCS_CONTENT = {
       previous: 'Previous',
       next: 'Next',
       allTopics: 'All topics',
+      backToHome: 'Back to all guides',
+      onThisPage: 'On this page',
     },
     categories: [
       { id: 'start', title: 'Start here', description: 'Understand Animacraft and choose the path for your role.' },
@@ -480,6 +482,8 @@ export const DOCS_CONTENT = {
       previous: '上一篇',
       next: '下一篇',
       allTopics: '全部主题',
+      backToHome: '返回全部指南',
+      onThisPage: '本页内容',
     },
     categories: [
       { id: 'start', title: '从这里开始', description: '了解 Animacraft，并根据你的角色选择阅读路径。' },
@@ -948,6 +952,8 @@ export const DOCS_CONTENT = {
       previous: '前へ',
       next: '次へ',
       allTopics: 'すべてのトピック',
+      backToHome: 'すべてのガイドに戻る',
+      onThisPage: 'このページの内容',
     },
     categories: [
       { id: 'start', title: 'はじめに', description: 'Animacraft を理解し、自分の役割に合った読み方を選びます。' },
@@ -1416,6 +1422,8 @@ export const DOCS_CONTENT = {
       previous: '이전',
       next: '다음',
       allTopics: '모든 주제',
+      backToHome: '모든 가이드로 돌아가기',
+      onThisPage: '이 페이지의 내용',
     },
     categories: [
       { id: 'start', title: '시작하기', description: 'Animacraft를 이해하고 역할에 맞는 경로를 선택합니다.' },
@@ -1884,6 +1892,8 @@ export const DOCS_CONTENT = {
       previous: 'Trước',
       next: 'Tiếp',
       allTopics: 'Tất cả chủ đề',
+      backToHome: 'Quay lại tất cả hướng dẫn',
+      onThisPage: 'Trong trang này',
     },
     categories: [
       { id: 'start', title: 'Bắt đầu tại đây', description: 'Hiểu Animacraft và chọn lộ trình phù hợp với vai trò của bạn.' },

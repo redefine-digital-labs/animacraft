@@ -2,7 +2,7 @@
 
 ## Release State
 
-Animacraft product version `0.8.2` is a pre-v1 production candidate. Product v1 is reserved for a proven ecosystem at roughly 1,000 active creators. Move protocol numbers are tracked separately: the stable original package/legacy TypeOrigin is `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`, while the source-verified **protocol v4 callable package** is `0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc`. The v4 upgrade is live on Mainnet and its canonical native-USDC Protocol Fee objects have been initialized. Their integration gate remains disabled, so canonical Soul minting is still blocked until the separate Soulidity v2 adapter and market migration are deployed and verified.
+Animacraft product version `0.8.3` is a pre-v1 production candidate. Product v1 is reserved for a proven ecosystem at roughly 1,000 active creators. Move protocol numbers are tracked separately: the stable original package/legacy TypeOrigin is `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`, while the source-verified **protocol v4 callable package** is `0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc`. The v4 upgrade is live on Mainnet and its canonical native-USDC Protocol Fee objects have been initialized. Their integration gate remains disabled, so canonical Soul minting is still blocked until the separate Soulidity v2 adapter and market migration are deployed and verified.
 
 The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio, local draft ownership, Walrus writes, publication, archive, and Soulidity handoff require a connected wallet.
 
@@ -42,6 +42,7 @@ Current Mainnet truth: the published package is configured, but discovery curren
 - Vercel rewrites, CSP including Walrus WASM support, non-cached runtime config, and baseline security headers.
 - Pull requests run config preflight, the web/config integrity suite, syntax checks, and a production build; Move protocol changes also run the contract suite.
 - The public Docs Center provides a searchable, responsive, five-language handbook for players, creators, artists, publishing, recovery, lifecycle management, and the exact local/Walrus/Sui/Soulidity boundary.
+- Docs now separates a concise article-card home from directly linkable article detail pages and uses one browser-controlled page scroll across desktop and mobile.
 - Twelve high-value Docs articles include accessible, responsive visual explanations for the Maker hierarchy, Player selection surface, full-canvas alignment, import decisions, Layer Track order, Smart Color linkage, Rules outcomes, four-step publication, and the Soul/chain boundary. Existing AI-assisted fixture art is labeled as a technical alignment example rather than an aesthetic reference.
 
 ## Remaining Mainnet Activation

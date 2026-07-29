@@ -27,6 +27,16 @@ function normalizedText(value) {
   return String(value || '').trim().toLocaleLowerCase();
 }
 
+export function docsArticleIdFromHash(hash = globalThis.location?.hash || '') {
+  const match = String(hash).match(/^#docs\/([a-z0-9]+(?:-[a-z0-9]+)*)$/);
+  return match?.[1] || '';
+}
+
+export function docsArticleHref(articleId) {
+  const id = String(articleId || '');
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) ? `#docs/${id}` : '#docs';
+}
+
 function articleSearchText(article) {
   return normalizedText([
     article.title,
@@ -105,6 +115,8 @@ function validateLocaleContent(locale, content, canonical) {
     'previous',
     'next',
     'allTopics',
+    'backToHome',
+    'onThisPage',
   ];
   requiredUiKeys.forEach((key) => {
     if (!String(content.ui?.[key] || '').trim()) {
@@ -216,11 +228,11 @@ function figureNode(label, className = '') {
   return `<span class="docs-figure-node ${escapeHtml(className)}">${escapeHtml(label)}</span>`;
 }
 
-function compositeMarkup(layers, className = '') {
+function compositeMarkup(layers, className = '', showCrosshair = true) {
   return `
     <div class="docs-figure-composite ${escapeHtml(className)}">
       ${layers.map((src) => figureImage(src, '')).join('')}
-      <span class="docs-figure-crosshair"></span>
+      ${showCrosshair ? '<span class="docs-figure-crosshair"></span>' : ''}
     </div>
   `;
 }
@@ -288,7 +300,7 @@ function alignmentFigure(spec, terms) {
     <div class="docs-figure-alignment">
       <div class="docs-alignment-master">
         <span class="docs-figure-eyebrow">${escapeHtml(terms.masterCanvas)} · 1024 × 1024</span>
-        ${compositeMarkup(layers, 'with-grid')}
+        ${compositeMarkup([spec.assets.cover], 'with-grid')}
       </div>
       <span class="docs-figure-arrow" aria-hidden="true">→</span>
       <div class="docs-alignment-layers">
@@ -300,7 +312,7 @@ function alignmentFigure(spec, terms) {
       <span class="docs-figure-arrow" aria-hidden="true">→</span>
       <div class="docs-alignment-output">
         <span class="docs-figure-eyebrow">${escapeHtml(terms.alignedComposite)}</span>
-        ${compositeMarkup(layers, '')}
+        ${compositeMarkup([spec.assets.cover], '', false)}
         <div><span>X 0</span><span>Y 0</span><span>1×</span></div>
       </div>
     </div>
@@ -493,10 +505,19 @@ function articleFigureMarkup(article, locale) {
   `;
 }
 
-function sectionMarkup(section) {
+function articleSectionId(articleId, index) {
+  return `docs-section-${articleId}-${index + 1}`;
+}
+
+function sectionMarkup(section, articleId, index) {
+  const sectionId = articleSectionId(articleId, index);
   return `
-    <section class="docs-article-section">
-      <h3>${escapeHtml(section.title)}</h3>
+    <section
+      id="${escapeHtml(sectionId)}"
+      class="docs-article-section"
+      data-doc-section-content="${escapeHtml(sectionId)}"
+    >
+      <h3 tabindex="-1">${escapeHtml(section.title)}</h3>
       ${(section.paragraphs || []).map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join('')}
       ${(section.bullets || []).length
         ? `<ul>${section.bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join('')}</ul>`
@@ -508,7 +529,7 @@ function sectionMarkup(section) {
   `;
 }
 
-function categoryMarkup(category, articles, activeId, query) {
+function categoryMarkup(category, articles, query, readLabel) {
   const visible = articles.filter((article) => {
     if (article.category !== category.id) return false;
     return !query || articleSearchText(article).includes(query);
@@ -517,23 +538,112 @@ function categoryMarkup(category, articles, activeId, query) {
   return `
     <section class="docs-directory-group" data-doc-category="${escapeHtml(category.id)}">
       <div>
-        <strong class="docs-directory-category-title">${escapeHtml(category.title)}</strong>
+        <h3 class="docs-directory-category-title">${escapeHtml(category.title)}</h3>
         <p>${escapeHtml(category.description || '')}</p>
       </div>
       <div class="docs-directory-links">
-        ${visible.map((article) => `
-          <button
-            type="button"
-            class="docs-topic-button${article.id === activeId ? ' active' : ''}"
-            data-doc-article="${escapeHtml(article.id)}"
-            ${article.id === activeId ? 'aria-current="page"' : ''}
+        ${visible.map((article, index) => `
+          <a
+            class="docs-guide-card"
+            href="${escapeHtml(docsArticleHref(article.id))}"
           >
-            <strong>${escapeHtml(article.title)}</strong>
-            <span>${escapeHtml(article.summary)}</span>
-          </button>
+            <span class="docs-guide-card-index">${String(index + 1).padStart(2, '0')}</span>
+            <span class="docs-guide-card-copy">
+              <strong>${escapeHtml(article.title)}</strong>
+              <span>${escapeHtml(article.summary)}</span>
+            </span>
+            <b>${escapeHtml(readLabel)} →</b>
+          </a>
         `).join('')}
       </div>
     </section>
+  `;
+}
+
+function docsHomeMarkup(content, query, rawQuery) {
+  const directory = content.categories
+    .map((entry) => categoryMarkup(entry, content.articles, query, content.ui.readLabel))
+    .join('');
+  const resultCount = content.articles.filter((entry) => (
+    !query || articleSearchText(entry).includes(query)
+  )).length;
+  return `
+    <section class="docs-home-directory" aria-labelledby="docsDirectoryTitle">
+      <div class="docs-home-toolbar">
+        <div>
+          <p class="kicker">${escapeHtml(content.ui.updatedLabel)} · v${escapeHtml(DOCS_VERSION)}</p>
+          <h2 id="docsDirectoryTitle" tabindex="-1">${escapeHtml(content.ui.allTopics)}</h2>
+        </div>
+        <label class="docs-search">
+          <span>${escapeHtml(content.ui.searchPlaceholder)}</span>
+          <input
+            id="docsSearchInput"
+            type="search"
+            value="${escapeHtml(rawQuery)}"
+            placeholder="${escapeHtml(content.ui.searchPlaceholder)}"
+            autocomplete="off"
+          />
+        </label>
+        <p class="docs-result-count" aria-live="polite">
+          ${query ? `${resultCount} · ${escapeHtml(content.ui.allTopics)}` : escapeHtml(content.ui.allTopics)}
+        </p>
+      </div>
+      <div class="docs-home-groups">
+        ${directory || `<p class="docs-empty">${escapeHtml(content.ui.noResults)}</p>`}
+      </div>
+    </section>
+  `;
+}
+
+function docsDetailMarkup(content, article, category, index) {
+  const previous = content.articles[index - 1] || null;
+  const next = content.articles[index + 1] || null;
+  return `
+    <div class="docs-detail-shell">
+      <aside class="docs-detail-toc">
+        <a class="docs-back-link" href="#docs">← ${escapeHtml(content.ui.backToHome)}</a>
+        <div class="docs-detail-context">
+          <p class="kicker">${escapeHtml(category?.title || '')}</p>
+          <strong>${escapeHtml(article.title)}</strong>
+        </div>
+        <nav aria-label="${escapeHtml(content.ui.onThisPage)}">
+          <span>${escapeHtml(content.ui.onThisPage)}</span>
+          ${article.sections.map((section, sectionIndex) => `
+            <button
+              type="button"
+              data-doc-section="${escapeHtml(articleSectionId(article.id, sectionIndex))}"
+            >${escapeHtml(section.title)}</button>
+          `).join('')}
+        </nav>
+      </aside>
+      <article
+        id="docsArticleReader"
+        class="docs-article-reader"
+        tabindex="-1"
+        aria-labelledby="docsArticleTitle"
+      >
+        <header class="docs-article-head">
+          <div>
+            <p class="kicker">${escapeHtml(category?.title || '')}</p>
+            <h1 id="docsArticleTitle">${escapeHtml(article.title)}</h1>
+            <p>${escapeHtml(article.summary)}</p>
+          </div>
+          <span class="docs-version-badge">${escapeHtml(content.ui.updatedLabel)} · v${escapeHtml(DOCS_VERSION)}</span>
+        </header>
+        ${articleFigureMarkup(article, content.locale)}
+        <div class="docs-article-body">
+          ${article.sections.map((section, sectionIndex) => sectionMarkup(section, article.id, sectionIndex)).join('')}
+        </div>
+        <nav class="docs-article-pagination" aria-label="${escapeHtml(content.ui.readLabel)}">
+          ${previous
+            ? `<a href="${escapeHtml(docsArticleHref(previous.id))}"><span>← ${escapeHtml(content.ui.previous)}</span><strong>${escapeHtml(previous.title)}</strong></a>`
+            : '<span></span>'}
+          ${next
+            ? `<a href="${escapeHtml(docsArticleHref(next.id))}"><span>${escapeHtml(content.ui.next)} →</span><strong>${escapeHtml(next.title)}</strong></a>`
+            : '<span></span>'}
+        </nav>
+      </article>
+    </div>
   `;
 }
 
@@ -543,100 +653,52 @@ export function createDocsCenter(root) {
 
   let locale = 'en';
   let renderedLocale = null;
-  let activeId = DOCS_CONTENT.en.articles[0].id;
+  let renderedRoute = null;
   let rawQuery = '';
   let normalizedQuery = '';
   let searchSelection = null;
   let composingSearch = false;
 
-  function scrollArticleIntoView() {
-    const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-    root.querySelector('#docsArticleReader')
-      ?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+  function focusRouteTarget(selector, expectedRoute) {
+    const applyFocus = () => {
+      if (docsArticleIdFromHash() !== expectedRoute) return;
+      root.querySelector(selector)?.focus({ preventScroll: true });
+    };
+    applyFocus();
+    globalThis.requestAnimationFrame?.(applyFocus);
   }
 
   function render({ focusArticle = false, focusSearch = false } = {}) {
-    const content = DOCS_CONTENT[normalizedLocale(locale)];
-    const articles = content.articles;
+    const localeKey = normalizedLocale(locale);
+    const content = { ...DOCS_CONTENT[localeKey], locale: localeKey };
     const articlesById = articleIndex(content);
     const categoriesById = categoryIndex(content);
-    if (!articlesById.has(activeId)) activeId = articles[0].id;
-    const { article, index } = articlesById.get(activeId);
-    const category = categoriesById.get(article.category);
-    const previous = articles[index - 1] || null;
-    const next = articles[index + 1] || null;
-    const directory = content.categories
-      .map((entry) => categoryMarkup(entry, articles, activeId, normalizedQuery))
-      .join('');
-    const resultCount = content.articles.filter((entry) => (
-      !normalizedQuery || articleSearchText(entry).includes(normalizedQuery)
-    )).length;
-
-    root.innerHTML = `
-      <nav class="docs-category-strip" aria-label="${escapeHtml(content.ui.allTopics)}">
-        ${content.categories.map((entry) => `
-          <button
-            type="button"
-            data-doc-category-jump="${escapeHtml(entry.id)}"
-            class="${entry.id === article.category ? 'active' : ''}"
-            aria-pressed="${entry.id === article.category ? 'true' : 'false'}"
-          >
-            <strong>${escapeHtml(entry.title)}</strong>
-            <span>${escapeHtml(entry.description || '')}</span>
-          </button>
-        `).join('')}
-      </nav>
-      <div class="docs-center-shell">
-        <aside class="docs-directory">
-          <label class="docs-search">
-            <span>${escapeHtml(content.ui.searchPlaceholder)}</span>
-            <input
-              id="docsSearchInput"
-              type="search"
-              value="${escapeHtml(rawQuery)}"
-              placeholder="${escapeHtml(content.ui.searchPlaceholder)}"
-              autocomplete="off"
-            />
-          </label>
-          <p class="docs-result-count" aria-live="polite">
-            ${normalizedQuery ? `${resultCount} · ${escapeHtml(content.ui.allTopics)}` : escapeHtml(content.ui.allTopics)}
-          </p>
-          <nav class="docs-directory-nav" aria-label="${escapeHtml(content.ui.allTopics)}">
-            ${directory || `<p class="docs-empty">${escapeHtml(content.ui.noResults)}</p>`}
-          </nav>
-        </aside>
-        <article
-          id="docsArticleReader"
-          class="docs-article-reader"
-          tabindex="-1"
-          aria-labelledby="docsArticleTitle"
-        >
-          <header class="docs-article-head">
-            <div>
-              <p class="kicker">${escapeHtml(category?.title || '')}</p>
-              <h2 id="docsArticleTitle">${escapeHtml(article.title)}</h2>
-              <p>${escapeHtml(article.summary)}</p>
-            </div>
-            <span class="docs-version-badge">${escapeHtml(content.ui.updatedLabel)} · v${escapeHtml(DOCS_VERSION)}</span>
-          </header>
-          ${articleFigureMarkup(article, locale)}
-          <div class="docs-article-body">
-            ${article.sections.map(sectionMarkup).join('')}
-          </div>
-          <nav class="docs-article-pagination" aria-label="${escapeHtml(content.ui.readLabel)}">
-            ${previous
-              ? `<button type="button" data-doc-article="${escapeHtml(previous.id)}"><span>← ${escapeHtml(content.ui.previous)}</span><strong>${escapeHtml(previous.title)}</strong></button>`
-              : '<span></span>'}
-            ${next
-              ? `<button type="button" data-doc-article="${escapeHtml(next.id)}"><span>${escapeHtml(content.ui.next)} →</span><strong>${escapeHtml(next.title)}</strong></button>`
-              : '<span></span>'}
-          </nav>
-        </article>
-      </div>
-    `;
+    const requestedArticleId = docsArticleIdFromHash();
+    const articleEntry = articlesById.get(requestedArticleId) || null;
+    if (requestedArticleId && !articleEntry) {
+      globalThis.history?.replaceState?.(null, '', '#docs');
+    }
+    const article = articleEntry?.article || null;
+    const route = article?.id || '';
+    const routeChanged = route !== renderedRoute;
+    const category = article ? categoriesById.get(article.category) : null;
+    root.closest('#docs')?.setAttribute('data-docs-view', article ? 'detail' : 'home');
+    root.innerHTML = article
+      ? docsDetailMarkup(content, article, category, articleEntry.index)
+      : docsHomeMarkup(content, normalizedQuery, rawQuery);
     renderedLocale = locale;
+    renderedRoute = route;
+    if (globalThis.document) {
+      document.title = article ? `${article.title} · Animacraft Docs` : 'Animacraft';
+    }
 
-    if (focusArticle) root.querySelector('#docsArticleReader')?.focus({ preventScroll: true });
+    if (article && (focusArticle || routeChanged)) {
+      globalThis.scrollTo?.({ top: 0, left: 0, behavior: 'auto' });
+      focusRouteTarget('#docsArticleReader', route);
+    } else if (!article && routeChanged) {
+      globalThis.scrollTo?.({ top: 0, left: 0, behavior: 'auto' });
+      focusRouteTarget('#docsDirectoryTitle', '');
+    }
     if (focusSearch) {
       const input = root.querySelector('#docsSearchInput');
       input?.focus({ preventScroll: true });
@@ -645,27 +707,13 @@ export function createDocsCenter(root) {
   }
 
   root.addEventListener('click', (event) => {
-    const articleButton = event.target.closest('[data-doc-article]');
-    if (articleButton) {
-      activeId = articleButton.dataset.docArticle;
-      rawQuery = '';
-      normalizedQuery = '';
-      render({ focusArticle: true });
-      scrollArticleIntoView();
-      return;
-    }
-    const categoryButton = event.target.closest('[data-doc-category-jump]');
-    if (!categoryButton) return;
-    const content = DOCS_CONTENT[normalizedLocale(locale)];
-    const target = content.articles.find((article) => (
-      article.category === categoryButton.dataset.docCategoryJump
-    ));
-    if (!target) return;
-    activeId = target.id;
-    rawQuery = '';
-    normalizedQuery = '';
-    render({ focusArticle: true });
-    scrollArticleIntoView();
+    const sectionButton = event.target.closest('[data-doc-section]');
+    if (!sectionButton) return;
+    const target = root.querySelector(`[data-doc-section-content="${sectionButton.dataset.docSection}"]`);
+    const heading = target?.querySelector('h3');
+    const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    target?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+    heading?.focus({ preventScroll: true });
   });
 
   root.addEventListener('input', (event) => {
@@ -697,41 +745,29 @@ export function createDocsCenter(root) {
     render({ focusSearch: true });
   });
 
-  root.addEventListener('keydown', (event) => {
-    const current = event.target.closest('.docs-topic-button');
-    if (!current || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
-    const buttons = [...root.querySelectorAll('.docs-topic-button')];
-    const currentIndex = buttons.indexOf(current);
-    if (currentIndex < 0 || !buttons.length) return;
-    event.preventDefault();
-    const nextIndex = event.key === 'Home'
-      ? 0
-      : event.key === 'End'
-        ? buttons.length - 1
-        : event.key === 'ArrowDown'
-          ? Math.min(buttons.length - 1, currentIndex + 1)
-          : Math.max(0, currentIndex - 1);
-    buttons[nextIndex]?.focus();
-  });
-
   return {
     render(nextLocale = locale) {
       const normalized = normalizedLocale(nextLocale);
-      if (renderedLocale === normalized && root.childElementCount) return;
+      const route = docsArticleIdFromHash();
+      if (renderedLocale === normalized && renderedRoute === route && root.childElementCount) return;
       locale = normalized;
-      render();
+      render({ focusArticle: Boolean(route) });
     },
     select(articleId, { focus = false } = {}) {
       const content = DOCS_CONTENT[normalizedLocale(locale)];
       if (!content.articles.some((article) => article.id === articleId)) return false;
-      activeId = articleId;
       rawQuery = '';
       normalizedQuery = '';
-      render({ focusArticle: focus });
+      const href = docsArticleHref(articleId);
+      if (globalThis.location?.hash === href) {
+        render({ focusArticle: focus });
+      } else if (globalThis.location) {
+        globalThis.location.hash = href;
+      }
       return true;
     },
     getActiveArticleId() {
-      return activeId;
+      return renderedRoute || '';
     },
   };
 }
