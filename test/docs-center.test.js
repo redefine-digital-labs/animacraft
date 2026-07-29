@@ -7,7 +7,11 @@ import {
   DOCS_LOCALES,
   DOCS_VERSION,
 } from '../docs-center-content.js';
-import { validateDocsContent } from '../docs-center.js';
+import {
+  docsArticleHref,
+  docsArticleIdFromHash,
+  validateDocsContent,
+} from '../docs-center.js';
 import {
   DOCS_ARTICLE_FIGURES,
   DOCS_FIGURE_SPECS,
@@ -36,7 +40,7 @@ const REQUIRED_ARTICLES = [
 
 test('Docs handbook ships the complete five-language information architecture', () => {
   const report = validateDocsContent();
-  assert.equal(DOCS_VERSION, '0.8.2');
+  assert.equal(DOCS_VERSION, '0.8.3');
   assert.deepEqual(DOCS_LOCALES, ['en', 'zh', 'ja', 'ko', 'vi']);
   assert.equal(report.locales.length, 5);
   assert.equal(report.categories, 5);
@@ -49,6 +53,62 @@ test('Docs handbook ships the complete five-language information architecture', 
       `${locale} article order`,
     );
   });
+});
+
+test('Docs detail navigation is localized in all five supported languages', () => {
+  const expected = {
+    en: {
+      backToHome: 'Back to all guides',
+      onThisPage: 'On this page',
+    },
+    zh: {
+      backToHome: '返回全部指南',
+      onThisPage: '本页内容',
+    },
+    ja: {
+      backToHome: 'すべてのガイドに戻る',
+      onThisPage: 'このページの内容',
+    },
+    ko: {
+      backToHome: '모든 가이드로 돌아가기',
+      onThisPage: '이 페이지의 내용',
+    },
+    vi: {
+      backToHome: 'Quay lại tất cả hướng dẫn',
+      onThisPage: 'Trong trang này',
+    },
+  };
+
+  DOCS_LOCALES.forEach((locale) => {
+    assert.equal(DOCS_CONTENT[locale].ui.backToHome, expected[locale].backToHome);
+    assert.equal(DOCS_CONTENT[locale].ui.onThisPage, expected[locale].onThisPage);
+  });
+});
+
+test('Docs home and article detail routes use stable real hash URLs', () => {
+  assert.equal(docsArticleIdFromHash('#docs'), '');
+  assert.equal(docsArticleIdFromHash('#docs/'), '');
+  assert.equal(docsArticleHref(''), '#docs');
+
+  REQUIRED_ARTICLES.forEach((articleId) => {
+    const href = `#docs/${articleId}`;
+    assert.equal(docsArticleHref(articleId), href);
+    assert.equal(docsArticleIdFromHash(href), articleId);
+  });
+
+  [
+    '#docs/Introduction',
+    '#docs/player-quick-start/extra',
+    '#docs/player-quick-start?locale=zh',
+    '#docs/../creator',
+    '#creator',
+  ].forEach((hash) => assert.equal(docsArticleIdFromHash(hash), '', hash));
+  [
+    'Introduction',
+    'player quick start',
+    'player-quick-start/extra',
+    '../creator',
+  ].forEach((articleId) => assert.equal(docsArticleHref(articleId), '#docs', articleId));
 });
 
 test('Docs describe the production Maker hierarchy and current import behavior honestly', () => {
@@ -184,6 +244,32 @@ test('Docs figures use one trusted structure with complete five-language labels'
   assets.forEach((src) => assert.match(src, /^\/makers\/[a-z0-9/-]+\.png$/));
   await Promise.all(assets.map((src) => access(new URL(`../public${src}`, import.meta.url))));
 
+  const expectedCover = '/makers/astral-courier/cover.png';
+  const coverAssets = Object.values(DOCS_FIGURE_SPECS)
+    .map((spec) => spec.assets?.cover)
+    .filter(Boolean);
+  assert.ok(coverAssets.length > 0);
+  coverAssets.forEach((src) => assert.equal(src, expectedCover));
+  assert.equal(DOCS_FIGURE_SPECS['player-surface'].assets.cover, expectedCover);
+  assert.equal(DOCS_FIGURE_SPECS['master-canvas-alignment'].assets.cover, expectedCover);
+  assert.ok(
+    DOCS_FIGURE_SPECS['master-canvas-alignment'].assets.layers
+      .includes('/makers/astral-courier/layers/background/moon-portal.png'),
+    'the layer breakdown must include the background visible in the complete cover',
+  );
+  assert.ok(
+    DOCS_FIGURE_SPECS['master-canvas-alignment'].assets.layers
+      .includes('/makers/astral-courier/layers/accessory/crescent-clip.png'),
+    'the layer breakdown must include the accessory visible in the complete cover',
+  );
+
+  const cover = await readFile(
+    new URL('../public/makers/astral-courier/cover.png', import.meta.url),
+  );
+  assert.equal(cover.subarray(1, 4).toString('ascii'), 'PNG');
+  assert.equal(cover.readUInt32BE(16), 1024, 'Astral cover width');
+  assert.equal(cover.readUInt32BE(20), 1024, 'Astral cover height');
+
   const astral = JSON.parse(
     await readFile(
       new URL('../public/makers/astral-courier/animacraft-maker-v5.json', import.meta.url),
@@ -218,4 +304,44 @@ test('Docs renderer exposes accessible, lazy, captioned figures without arbitrar
   assert.doesNotMatch(renderer, /article\.figureHtml|section\.figureHtml/);
   assert.match(styles, /\.docs-article-figure \{\s*container-type: inline-size;/);
   assert.match(styles, /@container \(max-width: 760px\)/);
+});
+
+test('Docs renderer keeps home and detail pages separate without the old internal directory scroller', async () => {
+  const [renderer, styles, app] = await Promise.all([
+    readFile(new URL('../docs-center.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(renderer, /const requestedArticleId = docsArticleIdFromHash\(\);/);
+  assert.match(
+    renderer,
+    /root\.closest\('#docs'\)\?\.setAttribute\('data-docs-view', article \? 'detail' : 'home'\);/,
+  );
+  assert.match(
+    renderer,
+    /class="docs-guide-card"[\s\S]{0,120}href="\$\{escapeHtml\(docsArticleHref\(article\.id\)\)\}"/,
+  );
+  assert.match(renderer, /<a class="docs-back-link" href="#docs">/);
+  assert.match(renderer, /docsArticleHref\(previous\.id\)/);
+  assert.match(renderer, /docsArticleHref\(next\.id\)/);
+  assert.ok(app.includes('const docsArticleHash = preserveRoute'));
+  assert.ok(app.includes("&& /^#docs\\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(location.hash)"));
+  assert.ok(app.includes('function syncPageFromLocation()'));
+  assert.ok(app.includes('setPage(appPageFromHash(), { preserveRoute: true });'));
+  assert.ok(app.includes('if (route === lastHandledBrowserRoute) return false;'));
+
+  assert.doesNotMatch(renderer, /data-doc-article=/);
+  assert.doesNotMatch(renderer, /class="docs-topic-button"/);
+  assert.doesNotMatch(renderer, /class="docs-directory"/);
+  assert.doesNotMatch(styles, /\.docs-directory\s*\{/);
+
+  const internalDirectoryRules = [
+    ...styles.matchAll(/\.(?:docs-home-directory|docs-detail-toc)\s*\{([^}]*)\}/g),
+  ];
+  assert.ok(internalDirectoryRules.length > 0);
+  internalDirectoryRules.forEach(([, declarations]) => {
+    assert.doesNotMatch(declarations, /overflow(?:-y)?\s*:\s*(?:auto|scroll)/i);
+    assert.doesNotMatch(declarations, /max-height\s*:/i);
+  });
 });

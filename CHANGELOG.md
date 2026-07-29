@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.3 — Docs Single-Scroll Navigation
+
+- Splits the public handbook into a concise `#docs` home with searchable article cards and stable `#docs/<article-id>` detail routes.
+- Makes every guide directly linkable, refresh-safe, and compatible with browser back/forward navigation while preserving the current five-language content and visual explanations.
+- Removes nested Docs navigation scrollers so the handbook uses one browser-controlled page scroll across desktop and mobile.
+- Keeps production architecture and protocol references on the Docs home while giving each article a focused reading surface with localized back, previous, and next navigation.
+
 ## 0.8.2 — Visual Docs Guides
 
 - Adds nine reusable, localized visual explanations across twelve high-value handbook articles, covering Maker hierarchy, Player choices, full-canvas alignment, import decisions, Layer Tracks, Smart Color, Rules, Walrus/Sui publication, and Soul data boundaries.

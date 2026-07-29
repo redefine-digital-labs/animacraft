@@ -7579,9 +7579,22 @@ function makerHasRenderableAssets() {
   return state.assets.some((asset) => Boolean(asset?.blob || asset?.file || asset?.url));
 }
 
-function setPage(page) {
+function appPageFromHash(hash = location.hash) {
+  return String(hash || '').replace(/^#/, '').split('/')[0] || 'templates';
+}
+
+let lastHandledBrowserRoute = '';
+
+function browserRouteKey() {
+  return `${location.pathname}${location.search}${location.hash}`;
+}
+
+function setPage(page, { preserveRoute = false } = {}) {
   const previousPage = state.page;
-  const requestedPage = page === 'editor' ? 'make' : page === 'protocol' ? 'docs' : page;
+  const aliasedPage = page === 'editor' ? 'make' : page === 'protocol' ? 'docs' : page;
+  const requestedPage = ['templates', 'template', 'make', 'collection', 'creator', 'docs'].includes(aliasedPage)
+    ? aliasedPage
+    : 'templates';
   if ((state.publishing || state.minting) && requestedPage !== previousPage) {
     if (state.publishing) state.publishStatus = t('publishingStatus');
     if (state.minting) state.mintStatus = t('preparingHandoff');
@@ -7606,13 +7619,29 @@ function setPage(page) {
     button.classList.toggle('active', button.dataset.page === state.page);
   });
   const onDeepLink = /^\/(maker|oc)\//.test(location.pathname);
-  history.replaceState(null, '', onDeepLink && state.page !== 'template' ? `/#${state.page}` : `#${state.page}`);
+  const docsArticleHash = preserveRoute
+    && state.page === 'docs'
+    && /^#docs\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(location.hash)
+    ? location.hash
+    : '';
+  const pageHash = docsArticleHash || `#${state.page}`;
+  history.replaceState(null, '', onDeepLink && state.page !== 'template' ? `/${pageHash}` : pageHash);
+  lastHandledBrowserRoute = browserRouteKey();
+  if (state.page !== 'docs') document.title = 'Animacraft';
   closeAccountPanel();
   if (state.page !== previousPage) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   if (state.page === 'make') setTimeout(() => restoreOcUploadRecovery(state.templateId, { force: true }), 0);
   if (state.page === 'collection') setTimeout(() => loadOwnedCharacters(), 0);
   if (state.page === 'docs') void renderDocsHandbook();
   return true;
+}
+
+function syncPageFromLocation() {
+  const route = browserRouteKey();
+  if (route === lastHandledBrowserRoute) return false;
+  const changed = setPage(appPageFromHash(), { preserveRoute: true });
+  if (!changed) lastHandledBrowserRoute = route;
+  return changed;
 }
 
 function setCreatorView(view) {
@@ -11371,7 +11400,7 @@ async function renderDocsHandbook() {
   if (!docsCenter && state.page !== 'docs') return;
   try {
     if (!docsCenter) {
-      docsCenter = await (docsCenterInitializationPromise ||= import('./docs-center.js')
+      docsCenter = await (docsCenterInitializationPromise ||= import('./docs-center.js?v=animacraft-docs-single-scroll-v5')
         .then(({ createDocsCenter }) => createDocsCenter(root)));
       if (!root.isConnected) return;
     }
@@ -14238,8 +14267,7 @@ $('registerPart').addEventListener('click', () => {
 });
 
 window.addEventListener('hashchange', () => {
-  const page = location.hash.replace('#', '') || 'templates';
-  if (['templates', 'template', 'make', 'collection', 'creator', 'docs', 'protocol', 'editor'].includes(page)) setPage(page);
+  syncPageFromLocation();
 });
 
 window.addEventListener('popstate', () => {
@@ -14260,9 +14288,7 @@ window.addEventListener('popstate', () => {
       state.routeMakerReference = '';
     }
   }
-  const page = location.hash.replace('#', '') || 'templates';
-  setPage(['templates', 'template', 'make', 'collection', 'creator', 'docs'].includes(page) ? page : 'templates');
-  renderAll();
+  syncPageFromLocation();
 });
 
 window.addEventListener('beforeunload', (event) => {
@@ -14287,7 +14313,7 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-let initialPage = location.hash.replace('#', '') || 'templates';
+let initialPage = appPageFromHash();
 const directMakerMatch = location.pathname.match(/\/maker\/([^/]+)$/);
 if (directMakerMatch) {
   try {
@@ -14616,6 +14642,6 @@ setWalletModalLocale(state.locale);
 
 syncTemplateFields();
 renderAll();
-setPage(initialPage);
+setPage(initialPage, { preserveRoute: true });
 loadBundledMakers();
 loadChainMakers();

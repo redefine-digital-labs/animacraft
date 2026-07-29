@@ -110,8 +110,8 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
-  assert.match(html, /styles\.css\?v=animacraft-docs-visuals-v2/);
-  assert.match(html, /app\.js\?v=animacraft-docs-visuals-v2/);
+  assert.match(html, /styles\.css\?v=animacraft-docs-single-scroll-v5/);
+  assert.match(html, /app\.js\?v=animacraft-docs-single-scroll-v5/);
   assert.match(html, /id="makerV4PlayerMount"/);
   assert.match(html, /id="legacyPlayerEditor"[^>]*hidden/);
   assert.match(app, /buildMakerV4PublicationBundle/);
@@ -447,13 +447,61 @@ test('production static pages and accessibility labels are fully wired to five-l
   });
   assert.ok(app.includes("document.querySelectorAll('[data-i18n-aria-label]')"));
   assert.match(html, /id="docsHandbook"[^>]*class="docs-handbook"/);
-  assert.match(app, /import\('\.\/docs-center\.js'\)/);
+  assert.match(app, /import\('\.\/docs-center\.js\?v=animacraft-docs-single-scroll-v5'\)/);
   assert.match(app, /createDocsCenter\(root\)/);
   assert.doesNotMatch(html, />Part → Item → Image</);
   assert.match(app, /titleKey: 'chainActionWalletTitle'/);
   assert.match(app, /escapeHtml\(t\(action\.titleKey\)\)/);
   assert.match(app, /\['01', 'docsProtocolStep1Title', 'docsProtocolStep1Copy'\]/);
   assert.match(app, /escapeHtml\(t\(titleKey\)\)/);
+});
+
+test('Docs deep links preserve one browser scroll surface across home and article routes', async () => {
+  const [html, app, docsCenter, styles] = await Promise.all([
+    readFile(new URL('../index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../docs-center.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(app, /function appPageFromHash\(hash = location\.hash\)/);
+  assert.match(app, /\.replace\(\/\^#\/, ''\)\.split\('\/'\)\[0\]/);
+  assert.match(app, /function setPage\(page, \{ preserveRoute = false \} = \{\}\)/);
+  assert.match(
+    app,
+    /\['templates', 'template', 'make', 'collection', 'creator', 'docs'\]\.includes\(aliasedPage\)[\s\S]*?: 'templates'/,
+  );
+  assert.match(app, /\^#docs\\\/\[a-z0-9\]\+\(\?:-\[a-z0-9\]\+\)\*\$/);
+  assert.match(app, /function syncPageFromLocation\(\)/);
+  assert.match(app, /if \(route === lastHandledBrowserRoute\) return false;/);
+  assert.match(app, /setPage\(appPageFromHash\(\), \{ preserveRoute: true \}\)/);
+  assert.match(app, /window\.addEventListener\('hashchange', \(\) => \{\s*syncPageFromLocation\(\);/s);
+  assert.match(app, /window\.addEventListener\('popstate', \(\) => \{[\s\S]*?syncPageFromLocation\(\);\s*\}\);/);
+
+  assert.match(docsCenter, /function docsHomeMarkup\(/);
+  assert.match(docsCenter, /function docsDetailMarkup\(/);
+  assert.match(docsCenter, /href="#docs"/);
+  assert.match(docsCenter, /docsArticleHref\(article\.id\)/);
+  assert.match(docsCenter, /<h3 class="docs-directory-category-title">/);
+  assert.match(docsCenter, /id="docsDirectoryTitle" tabindex="-1"/);
+  assert.match(docsCenter, /function focusRouteTarget\(selector, expectedRoute\)/);
+  assert.match(docsCenter, /focusRouteTarget\('#docsDirectoryTitle', ''\)/);
+  assert.match(docsCenter, /data-docs-view', article \? 'detail' : 'home'/);
+  assert.doesNotMatch(docsCenter, /data-doc-category-jump=/);
+  assert.doesNotMatch(docsCenter, /class="docs-topic-button/);
+
+  assert.match(
+    styles,
+    /#docs\[data-docs-view="detail"\] > \.page-head,[\s\S]*?> \.docs-protocol-grid\s*\{\s*display:\s*none;/,
+  );
+  assert.match(styles, /\.docs-detail-toc\s*\{[^}]*position:\s*sticky;/s);
+  const detailTocRule = styles.match(/\.docs-detail-toc\s*\{([^}]*)\}/s)?.[1] || '';
+  assert.doesNotMatch(detailTocRule, /overflow|max-height/);
+  assert.doesNotMatch(styles, /\.docs-directory\s*\{[^}]*overflow:\s*(?:auto|scroll)/s);
+  assert.doesNotMatch(styles, /\.docs-article-section\s*\{[^}]*scroll-margin/s);
+  assert.match(styles, /color:\s*var\(--ui-brand-strong,\s*var\(--ui-brand\)\);/);
+  assert.match(styles, /\.docs-player-parts\s*\{[^}]*flex-wrap:\s*wrap;/s);
+  assert.match(html, /animacraft-docs-single-scroll-v5/);
 });
 
 test('production terminology stays native and consistent in all five application languages', async () => {

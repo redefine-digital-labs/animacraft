@@ -325,11 +325,14 @@ export const DOCS_FIGURE_SPECS = Object.freeze({
   'master-canvas-alignment': {
     type: 'alignment',
     assets: {
+      cover: `${ASTRAL_ROOT}/cover.png`,
       layers: [
+        `${ASTRAL_ROOT}/layers/background/moon-portal.png`,
         `${ASTRAL_ROOT}/layers/base/porcelain.png`,
         `${ASTRAL_ROOT}/layers/outfit/courier-jacket.png`,
         `${ASTRAL_ROOT}/layers/expression/calm-violet.png`,
         `${ASTRAL_ROOT}/layers/hair/moonlit-wolf.png`,
+        `${ASTRAL_ROOT}/layers/accessory/crescent-clip.png`,
       ],
     },
   },
