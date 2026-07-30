@@ -134,6 +134,17 @@ async function withWorkspace(run, options = {}) {
           url: `memory://${selectedStyle.assetId}`,
         });
       });
+      const coverAssetId = 'qa-maker-cover';
+      document.metadata.coverAssetId = coverAssetId;
+      document.assets.push({
+        id: coverAssetId,
+        identifier: `${coverAssetId}.png`,
+        kind: 'maker-cover',
+        mediaType: 'image/png',
+        width: 1024,
+        height: 1024,
+        url: `memory://${coverAssetId}`,
+      });
       synchronizeDefaultRecipe(document);
     }
     if (typeof prepareDocument === 'function') {
@@ -2316,6 +2327,137 @@ test('Preflight compiles the final Walrus manifest and Sui projection before upl
   }, { playable: true });
 });
 
+test('publication requires the configured creator cover and validates its publishable source', async () => {
+  await withWorkspace(async (workspace) => {
+    workspace.executeDocument('Prepare publishable Maker metadata', ({ document }) => {
+      document.metadata.creator = 'QA Creator';
+      document.metadata.license.note = 'Personal use QA release.';
+    });
+    assert.equal(
+      workspace.publicationIssues().some((issue) => issue.path === 'metadata.coverAssetId'),
+      false,
+      'a configured image cover with a reloadable remote URL must pass cover validation',
+    );
+
+    workspace.executeDocument('Point Maker cover at a non-cover image Asset', ({ document }) => {
+      const cover = document.assets.find((asset) => asset.id === document.metadata.coverAssetId);
+      cover.kind = 'style';
+    });
+    assert.ok(
+      workspace.publicationIssues().some((issue) => (
+        issue.code === 'maker_cover_invalid_kind'
+        && issue.path === 'metadata.coverAssetId'
+      )),
+      'a Style or background PNG must never masquerade as the Maker cover',
+    );
+
+    workspace.executeDocument('Use a non-image Maker cover', ({ document }) => {
+      const cover = document.assets.find((asset) => asset.id === document.metadata.coverAssetId);
+      cover.kind = 'maker-cover';
+      cover.mediaType = 'application/octet-stream';
+    });
+    assert.ok(
+      workspace.publicationIssues().some((issue) => (
+        issue.code === 'maker_cover_invalid_media_type'
+        && issue.path === 'metadata.coverAssetId'
+      )),
+      'the configured cover descriptor must use an image MIME type',
+    );
+
+    workspace.executeDocument('Use a generated release cover', ({ document }) => {
+      const cover = document.assets.find((asset) => asset.id === document.metadata.coverAssetId);
+      cover.mediaType = 'image/png';
+      cover.source = 'generated-release';
+    });
+    assert.ok(
+      workspace.publicationIssues().some((issue) => (
+        issue.code === 'maker_cover_generated_release'
+        && issue.path === 'metadata.coverAssetId'
+      )),
+      'a release-generated fallback must never masquerade as a creator-approved Maker cover',
+    );
+
+    workspace.executeDocument('Remove the Maker cover source', ({ document }) => {
+      const cover = document.assets.find((asset) => asset.id === document.metadata.coverAssetId);
+      cover.source = 'local';
+      delete cover.url;
+      delete cover.legacy;
+    });
+    workspace.assets.delete(workspace.getDocument().metadata.coverAssetId);
+    assert.ok(
+      workspace.publicationIssues().some((issue) => (
+        issue.code === 'maker_cover_source_missing'
+        && issue.path === 'metadata.coverAssetId'
+      )),
+      'a cover descriptor without a local Blob/File or reloadable remote URL must block publication',
+    );
+    assert.ok(
+      workspace.publicationIssues().some((issue) => issue.code === 'release_missing-runtime-asset'),
+      'the final release compiler must receive the configured cover instead of an injected fallback',
+    );
+
+    const coverAssetId = workspace.getDocument().metadata.coverAssetId;
+    workspace.assets.set(coverAssetId, {
+      assetId: coverAssetId,
+      blob: new Blob(['creator-cover'], { type: 'image/png' }),
+    });
+    assert.equal(workspace.runtimeAsset(coverAssetId)?.blob instanceof Blob, true);
+    workspace.releasePreflightCache = new WeakMap();
+    assert.equal(
+      workspace.publicationIssues().some((issue) => (
+        issue.code === 'maker_cover_source_missing'
+        || issue.code === 'release_missing-runtime-asset'
+      )),
+      false,
+      'a readable local cover Blob must satisfy both Workspace and final release validation',
+    );
+  }, { playable: true });
+
+  await withWorkspace(async (workspace) => {
+    workspace.executeDocument('Remove configured Maker cover', ({ document }) => {
+      document.metadata.coverAssetId = null;
+    });
+    assert.ok(
+      workspace.publicationIssues().some((issue) => (
+        issue.code === 'missing_reference'
+        && issue.path === 'metadata.coverAssetId'
+      )),
+      'the Maker schema cover requirement must remain visible in publication issues',
+    );
+  }, { playable: true });
+
+  await withWorkspace(async (workspace) => {
+    workspace.executeDocument('Reference a missing Maker cover descriptor', ({ document }) => {
+      document.metadata.coverAssetId = 'missing-cover-descriptor';
+    });
+    assert.ok(
+      workspace.publicationIssues().some((issue) => (
+        issue.code === 'missing_reference'
+        && issue.path === 'metadata.coverAssetId'
+      )),
+      'a dangling cover Asset reference must block publication',
+    );
+  }, { playable: true });
+});
+
+test('release Preflight compiles the configured cover without replacing it', async () => {
+  await withWorkspace(async (workspace) => {
+    workspace.executeDocument('Reserve the configured cover identifier', ({ document }) => {
+      document.metadata.creator = 'QA Creator';
+      document.metadata.license.note = 'Personal use QA release.';
+      const cover = document.assets.find((asset) => asset.id === document.metadata.coverAssetId);
+      cover.identifier = 'animacraft-manifest.json';
+    });
+    assert.ok(
+      workspace.publicationIssues().some((issue) => (
+        issue.code === 'release_reserved-manifest-identifier'
+        && issue.path === 'publication.release'
+      )),
+      'the release compiler must validate the configured cover rather than replacing it with a generated cover',
+    );
+  }, { playable: true });
+});
+
 test('Preflight validates the final Quilt bundle before Step 1', async () => {
   await withWorkspace(async (workspace) => {
     workspace.executeDocument('Prepare release metadata', ({ document }) => {
@@ -2371,10 +2513,10 @@ test('Preflight validates the final Quilt bundle before Step 1', async () => {
       document.metadata.creator = 'QA Creator';
       document.metadata.license.note = 'Personal use QA release.';
       const pack = document.extensions.expansionDrafts[0];
-      // Leave exactly 4,999 render assets after the generated cover. Because
-      // this Maker has optional Parts, its required v2 auxiliary PNG plus the
-      // manifest must make the real Quilt count 5,001 and fail Preflight.
-      const expansionAssetCount = 4_999 - document.assets.length - 1;
+      // Leave exactly 4,999 render assets including the configured cover.
+      // Because this Maker has optional Parts, its required v2 auxiliary PNG
+      // plus the manifest must make the real Quilt count 5,001 and fail Preflight.
+      const expansionAssetCount = 4_999 - document.assets.length;
       pack.assets = Array.from({ length: expansionAssetCount }, (_, index) => ({
         id: `quilt-boundary-${index}`,
         identifier: `quilt-boundary-${index}.png`,

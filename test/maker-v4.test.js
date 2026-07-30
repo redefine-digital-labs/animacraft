@@ -52,7 +52,7 @@ function validV5Document() {
   document.metadata.license.note = 'Personal use with creator credit.';
   document.metadata.coverAssetId = 'cover';
   document.assets = [
-    { id: 'cover', identifier: 'maker-cover.png', kind: 'cover', mediaType: 'image/png', width: 1024, height: 1024 },
+    { id: 'cover', identifier: 'maker-cover.png', kind: 'maker-cover', mediaType: 'image/png', width: 1024, height: 1024 },
     { id: 'body-default', identifier: 'body-default.png', kind: 'layer', mediaType: 'image/png', width: 1024, height: 1024 },
     { id: 'body-armored', identifier: 'body-armored.png', kind: 'layer', mediaType: 'image/png', width: 1024, height: 1024 },
     { id: 'hat-default', identifier: 'hat-default.png', kind: 'layer', mediaType: 'image/png', width: 1024, height: 1024 },
@@ -211,6 +211,20 @@ test('validates Maker → Part → Item → Style and direct Style render fields
   assert.equal(hatStyle.layerTrackId, 'hat-track');
   assert.equal(hatStyle.blendMode, 'multiply');
   assert.equal(hatStyle.transform.y, -8);
+});
+
+test('Maker cover metadata can only reference a dedicated maker-cover Asset', () => {
+  const document = validV5Document();
+  document.assets.find((asset) => asset.id === document.metadata.coverAssetId).kind = 'style';
+  const issues = collectMakerV5ValidationIssues(document, { mode: 'publish' });
+  assert.ok(issues.some((entry) => (
+    entry.path === 'metadata.coverAssetId'
+    && entry.code === 'invalid_cover_asset'
+  )));
+  assert.throws(
+    () => validateMakerV5Document(document, { mode: 'publish' }),
+    MakerV5ValidationError,
+  );
 });
 
 test('player export background Part IDs must be unique existing Part references', () => {

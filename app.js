@@ -3366,18 +3366,33 @@ makerModels.set(state.templateId, {
 const makerCoverUriI18n = {
   en: {
     makerCoverUriTooLong: 'The final Maker cover URL is {bytes} UTF-8 bytes, but Sui allows at most {maximum}. Re-upload the cover in Maker Info so Animacraft assigns a short on-chain filename, then prepare the release again. No Walrus upload or Sui transaction was submitted.',
+    makerExplicitCoverRequired: 'This Maker does not have a readable creator-uploaded cover. Upload and wait for the cover to show “Saved” in Maker Info, then prepare the release again. Animacraft will not use an internal OC composite as the Maker cover.',
+    legacyMakerMigrationRequired: 'This legacy Maker cannot use the retired publisher because it generated an internal OC composite as the cover. Restore or rebuild it as a current Maker v5 draft, upload a real cover in Maker Info, and publish the new version.',
+    noPublishedMakerCover: 'No published cover',
   },
   zh: {
     makerCoverUriTooLong: '最终 Maker 封面 URL 为 {bytes} 个 UTF-8 字节，但 Sui 最多允许 {maximum} 个。请在 Maker 信息中重新上传封面，让 Animacraft 分配较短的链上文件名，然后重新准备发布。本次未上传到 Walrus，也未提交 Sui 交易。',
+    makerExplicitCoverRequired: '此 Maker 没有可读取、由创作者上传的真实封面。请在 Maker 信息中上传封面并等待状态显示“已保存”，然后重新准备发布。Animacraft 不会再把内部 OC 合成图当作 Maker 封面。',
+    legacyMakerMigrationRequired: '此旧版 Maker 不能再使用已停用的旧发布器，因为它会把内部 OC 合成图生成成封面。请先恢复或重建为当前 Maker v5 草稿，在 Maker 信息中上传真实封面，再发布新版本。',
+    noPublishedMakerCover: '此版本未发布封面',
   },
   ja: {
     makerCoverUriTooLong: '最終 Maker カバー URL は {bytes} UTF-8 バイトですが、Sui の上限は {maximum} バイトです。Maker 情報でカバーを再アップロードして短いオンチェーンファイル名を割り当て、公開を準備し直してください。Walrus アップロードおよび Sui 取引は送信されていません。',
+    makerExplicitCoverRequired: 'この Maker には読み取り可能なクリエイター投稿カバーがありません。Maker 情報でカバーをアップロードし、「保存済み」と表示されてから公開を準備し直してください。内部 OC 合成画像が Maker カバーとして使用されることはありません。',
+    legacyMakerMigrationRequired: 'この旧形式 Maker は、内部 OC 合成画像をカバーとして生成する廃止済み公開機能を使用できません。現在の Maker v5 下書きとして復元または再構築し、Maker 情報で実際のカバーをアップロードしてから新しいバージョンを公開してください。',
+    noPublishedMakerCover: '公開済みカバーなし',
   },
   ko: {
     makerCoverUriTooLong: '최종 Maker 커버 URL은 UTF-8 기준 {bytes}바이트이지만 Sui 한도는 {maximum}바이트입니다. Maker 정보에서 커버를 다시 업로드해 짧은 온체인 파일명을 받은 뒤 릴리스를 다시 준비하세요. Walrus 업로드나 Sui 트랜잭션은 제출되지 않았습니다.',
+    makerExplicitCoverRequired: '이 Maker에는 읽을 수 있는 크리에이터 업로드 커버가 없습니다. Maker 정보에서 커버를 업로드하고 “저장됨” 상태를 확인한 뒤 릴리스를 다시 준비하세요. 내부 OC 합성 이미지는 Maker 커버로 사용되지 않습니다.',
+    legacyMakerMigrationRequired: '이 레거시 Maker는 내부 OC 합성 이미지를 커버로 생성하던 폐기된 게시 경로를 사용할 수 없습니다. 현재 Maker v5 초안으로 복원하거나 다시 만든 뒤 Maker 정보에서 실제 커버를 업로드하고 새 버전을 게시하세요.',
+    noPublishedMakerCover: '게시된 커버 없음',
   },
   vi: {
     makerCoverUriTooLong: 'URL ảnh bìa Maker cuối cùng dài {bytes} byte UTF-8, nhưng Sui chỉ cho phép tối đa {maximum}. Hãy tải lại ảnh bìa trong Thông tin Maker để Animacraft gán tên tệp on-chain ngắn, rồi chuẩn bị lại bản phát hành. Chưa có lượt tải Walrus hay giao dịch Sui nào được gửi.',
+    makerExplicitCoverRequired: 'Maker này chưa có ảnh bìa do nhà sáng tạo tải lên mà Animacraft có thể đọc. Hãy tải ảnh bìa trong Thông tin Maker, chờ trạng thái “Đã lưu”, rồi chuẩn bị lại bản phát hành. Ảnh OC ghép nội bộ sẽ không được dùng làm ảnh bìa Maker.',
+    legacyMakerMigrationRequired: 'Maker định dạng cũ này không thể dùng luồng xuất bản đã ngừng hoạt động vì luồng đó tạo ảnh OC ghép nội bộ làm ảnh bìa. Hãy khôi phục hoặc dựng lại dưới dạng bản nháp Maker v5 hiện tại, tải ảnh bìa thật trong Thông tin Maker rồi xuất bản phiên bản mới.',
+    noPublishedMakerCover: 'Chưa có ảnh bìa đã đăng',
   },
 };
 Object.entries(makerCoverUriI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
@@ -3682,6 +3697,67 @@ function stableMakerCoverUrl(value) {
   const candidate = String(value || '').trim();
   if (!candidate || candidate.startsWith('blob:')) return '';
   return safeExternalUrl(candidate);
+}
+
+function displayMakerCoverUrl(value) {
+  const candidate = String(value || '').trim();
+  if (!candidate) return '';
+  return candidate.startsWith('blob:') ? candidate : safeExternalUrl(candidate);
+}
+
+function templatePublishedCoverUrl(template) {
+  if (!template) return '';
+  if (template.source === 'chain') {
+    return displayMakerCoverUrl(template.publishedCoverUrl || '');
+  }
+  return displayMakerCoverUrl(
+    template.publishedCoverUrl
+    || template.coverUrl
+    || template.draftCoverUrl
+    || '',
+  );
+}
+
+function templateDraftCoverUrl(template) {
+  if (!template) return '';
+  return displayMakerCoverUrl(
+    template.draftCoverUrl
+    || (template.source !== 'chain' ? template.coverUrl : '')
+    || '',
+  );
+}
+
+function templateLibraryCoverUrl(template) {
+  return templateDraftCoverUrl(template) || templatePublishedCoverUrl(template);
+}
+
+function templateCoverPlaceholder(template, { hidden = false } = {}) {
+  const hiddenAttribute = hidden ? ' hidden' : '';
+  if (template?.source === 'chain') {
+    return `<div class="published-cover-placeholder" data-maker-cover-fallback${hiddenAttribute}><strong>Maker</strong><span>${escapeHtml(t('noPublishedMakerCover'))}</span></div>`;
+  }
+  return `<div class="cover-face" data-maker-cover-fallback${hiddenAttribute}>
+    <span class="cover-hair"></span>
+    <span class="cover-eye left"></span>
+    <span class="cover-eye right"></span>
+    <span class="cover-mouth"></span>
+  </div>`;
+}
+
+function templateCoverMarkup(template, coverUrl, alt, { lazy = false } = {}) {
+  if (!coverUrl) return templateCoverPlaceholder(template);
+  return `<img class="template-cover-image" data-maker-cover-image src="${escapeHtml(coverUrl)}" alt="${escapeHtml(alt)}"${lazy ? ' loading="lazy"' : ''} />
+    ${templateCoverPlaceholder(template, { hidden: true })}`;
+}
+
+function bindTemplateCoverImageFallbacks(container) {
+  container?.querySelectorAll('[data-maker-cover-image]').forEach((image) => {
+    image.addEventListener('error', () => {
+      image.hidden = true;
+      const fallback = image.nextElementSibling;
+      if (fallback?.matches('[data-maker-cover-fallback]')) fallback.hidden = false;
+    }, { once: true });
+  });
 }
 
 function normalizedMakerUpdatedAtMs(value) {
@@ -4298,7 +4374,7 @@ function revokeLocalMakerCoverObjectUrl(templateId, { clearTemplate = true } = {
   URL.revokeObjectURL(entry.url);
   if (!clearTemplate) return;
   const template = templates.find((candidate) => candidate.id === normalizedTemplateId);
-  if (template?.coverUrl === entry.url) template.coverUrl = '';
+  if (template?.draftCoverUrl === entry.url) template.draftCoverUrl = '';
 }
 
 function localMakerCoverObjectUrl(template, coverAssetId, blob) {
@@ -4309,7 +4385,7 @@ function localMakerCoverObjectUrl(template, coverAssetId, blob) {
   revokeLocalMakerCoverObjectUrl(template.id);
   const url = URL.createObjectURL(blob);
   localMakerCoverObjectUrls.set(template.id, { assetId, blob, url });
-  template.coverUrl = url;
+  template.draftCoverUrl = url;
   return url;
 }
 
@@ -4345,7 +4421,13 @@ function persistLocalMakerIndex(address = state.walletAddress) {
     secondary: template.secondary,
     summary: template.summary,
     licenseNote: template.licenseNote,
-    coverUrl: stableMakerCoverUrl(template.coverUrl),
+    coverUrl: stableMakerCoverUrl(
+      template.draftCoverUrl
+      || (template.source !== 'chain' ? template.coverUrl : '')
+      || template.publishedCoverUrl,
+    ),
+    draftCoverUrl: stableMakerCoverUrl(template.draftCoverUrl),
+    publishedCoverUrl: stableMakerCoverUrl(template.publishedCoverUrl),
     pausedEconomics: normalizedWorkspacePausedEconomics(
       template.pausedEconomics,
       makerObjectId,
@@ -4410,7 +4492,11 @@ function loadLocalMakerIndex(address = state.walletAddress) {
         secondary: safeCssColor(record.secondary, '#f0a23a'),
         summary: safeDraftText(record.summary, 'Character Maker draft.', 2_000),
         licenseNote: safeDraftText(record.licenseNote, 'Draft maker.', 2_000),
-        coverUrl: stableMakerCoverUrl(record.coverUrl),
+        coverUrl: objectId ? '' : stableMakerCoverUrl(record.coverUrl),
+        draftCoverUrl: stableMakerCoverUrl(record.draftCoverUrl),
+        publishedCoverUrl: objectId
+          ? stableMakerCoverUrl(record.publishedCoverUrl)
+          : '',
       });
       if (objectId) {
         const model = createMakerModel({ empty: true });
@@ -4558,6 +4644,8 @@ async function recoverStableMakerIndex(address = state.walletAddress) {
           summary: safeDraftText(document?.metadata?.summary, 'Character Maker draft.', 2_000),
           licenseNote: safeDraftText(document?.metadata?.license?.note, 'Draft maker.', 2_000),
           coverUrl: '',
+          draftCoverUrl: '',
+          publishedCoverUrl: '',
           pausedEconomics: chainBinding?.pausedEconomics || null,
           publishedVersions: chainBinding?.publishedVersions || [],
           chainBindingPinned: Boolean(chainBinding),
@@ -4973,6 +5061,9 @@ function recoveredTemplate(document, makerId, ownerWallet) {
     secondary: '#f0a23a',
     summary: safeDraftText(document.metadata.summary, 'Recovered Character Maker draft.', 2_000),
     licenseNote: safeDraftText(document.metadata.license?.note, 'Recovered local draft.', 2_000),
+    coverUrl: '',
+    draftCoverUrl: '',
+    publishedCoverUrl: '',
   };
 }
 
@@ -5394,7 +5485,12 @@ function makerManifestCoverUrl(manifest, quiltId) {
     const coverDescriptor = (manifest.assets || []).find((asset) => (
       String(asset?.id || '') === coverAssetId
     ));
-    if (coverAssetId && coverDescriptor?.identifier) {
+    if (
+      coverAssetId
+      && coverDescriptor?.identifier
+      && coverDescriptor.kind === 'maker-cover'
+      && String(coverDescriptor.mediaType || '').toLowerCase().startsWith('image/')
+    ) {
       return walrusQuiltFileUrl(quiltId, coverDescriptor.identifier);
     }
   }
@@ -5402,19 +5498,53 @@ function makerManifestCoverUrl(manifest, quiltId) {
   return legacyIdentifier ? walrusQuiltFileUrl(quiltId, legacyIdentifier) : '';
 }
 
+function makerManifestCoverIsGenerated(manifest) {
+  if (!isMakerV4Document(manifest)) {
+    // The retired v3 publisher always synthesized this fixed identifier from
+    // the default OC composition. It was never a creator-uploaded cover.
+    return String(manifest?.template?.coverIdentifier || '') === 'maker-cover.png';
+  }
+  const coverAssetId = String(manifest.metadata?.coverAssetId || '');
+  const descriptor = (manifest.assets || []).find((asset) => (
+    String(asset?.id || '') === coverAssetId
+  ));
+  return Boolean(
+    /^maker-release-cover(?:-\d+)?$/.test(coverAssetId)
+    || (
+      descriptor
+      && (
+        descriptor.provenance === 'generated'
+        || ['generated-release', 'generated-release-preflight'].includes(String(descriptor.source || ''))
+      )
+    )
+  );
+}
+
 function hydratedMakerCoverUrl(manifest, quiltId, fields) {
   const templateData = isMakerV4Document(manifest)
     ? manifest.metadata || {}
     : manifest?.template || {};
-  return safeExternalUrl(
+  // Old releases sometimes wrote the default OC composite into a synthetic
+  // "generated-release" Asset. That image is playable Maker content, not a
+  // creator-authored cover, so the public Library must show its stable empty
+  // cover state until the creator publishes a successor with a real cover.
+  if (makerManifestCoverIsGenerated(manifest)) return '';
+  if (isMakerV4Document(manifest)) {
+    // Current manifests are canonical. Never let an old Sui compatibility
+    // field impersonate a missing or invalid manifest cover.
+    const coverUrl = makerManifestCoverUrl(manifest, quiltId);
+    return coverUrl ? safeExternalUrl(coverUrl) : '';
+  }
+  const coverUrl = (
     makerManifestCoverUrl(manifest, quiltId)
     // Legacy manifests may carry a direct cover URL without an Asset id.
     || templateData.coverUrl
     // Old OCMaker objects remain readable when their manifest predates both
     // forms above. For current releases this field is only a compatibility
     // index; the immutable Walrus manifest is canonical.
-    || suiField(fields, 'cover_url', 'coverUrl'),
+    || suiField(fields, 'cover_url', 'coverUrl')
   );
+  return coverUrl ? safeExternalUrl(coverUrl) : '';
 }
 
 function certifiedMakerCoverUrl(manifest, quiltId, assetLocations) {
@@ -5629,7 +5759,7 @@ async function hydrateChainMaker(object, {
       : 'Free mint',
     summary: String(suiField(fields, 'description') || 'Published Animacraft Character Maker.'),
     licenseNote: String(templateData.license?.note || templateData.licenseNote || 'License and royalty policy are read from the published Sui OCMaker.'),
-    coverUrl: hydratedMakerCoverUrl(manifest, quiltId, fields),
+    publishedCoverUrl: hydratedMakerCoverUrl(manifest, quiltId, fields),
   });
   if (!templates.includes(template)) templates.unshift(template);
   if (chainVersionRecord) {
@@ -6417,7 +6547,7 @@ async function finalizeMakerPublication(transaction, makerPayload = null, {
     objectId: state.makerObjectId,
     treasuryId: state.makerTreasuryObjectId,
     adminCapId: state.makerAdminCapObjectId,
-    coverUrl: makerPayload?.coverUrl || activeTemplate().coverUrl || '',
+    publishedCoverUrl: makerPayload?.coverUrl || activeTemplate().publishedCoverUrl || '',
     mintingEnabled: $('creatorMintingEnabled').checked,
     mintFeeEnabled: $('creatorMintFeeEnabled').checked,
     mintPriceAtomic: $('creatorMintFeeEnabled').checked
@@ -7787,17 +7917,16 @@ function renderTemplates() {
   $('templateGrid').innerHTML = list.length ? list.map((template) => {
     const metrics = templateModelMetrics(template);
     const sourceLabel = templateSourceLabel(template);
+    const coverUrl = templatePublishedCoverUrl(template);
     return `
     <article class="template-card ${template.id === state.templateId ? 'active' : ''}" data-template="${escapeHtml(template.id)}">
       <div class="template-cover" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
-        ${template.coverUrl
-          ? `<img class="template-cover-image" src="${escapeHtml(template.coverUrl)}" alt="${escapeHtml(t('makerPreviewAlt', { name: template.name }))}" loading="lazy" />`
-          : `<div class="cover-face">
-              <span class="cover-hair"></span>
-              <span class="cover-eye left"></span>
-              <span class="cover-eye right"></span>
-              <span class="cover-mouth"></span>
-            </div>`}
+        ${templateCoverMarkup(
+          template,
+          coverUrl,
+          t('makerPreviewAlt', { name: template.name }),
+          { lazy: true },
+        )}
         <span class="cover-style">${escapeHtml(template.style)}</span>
       </div>
       <div class="template-body">
@@ -7831,6 +7960,8 @@ function renderTemplates() {
       <button class="primary" type="button" data-create-first-maker>${t('createFirstMaker')}</button>
     </section>
   ` : `<div class="empty-state">${t('noMatchingMakers')}</div>`;
+
+  bindTemplateCoverImageFallbacks($('templateGrid'));
 
   document.querySelector('[data-create-first-maker]')?.addEventListener('click', async () => {
     if (!state.walletConnected) {
@@ -7898,12 +8029,11 @@ function renderTemplateDetail() {
     ? walrusQuiltFileUrl(template.quiltId, 'animacraft-manifest.json')
     : template.manifestUrl || '';
   const partLabels = (model?.slots || slots).slice(0, 12).map((slot) => slot.label);
+  const coverUrl = templatePublishedCoverUrl(template);
   $('templateDetail').innerHTML = `
     <div class="template-detail-media" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
       <div class="template-cover">
-        ${template.coverUrl
-          ? `<img class="template-cover-image" src="${escapeHtml(template.coverUrl)}" alt="${escapeHtml(t('makerPreviewAlt', { name: template.name }))}" />`
-          : `<div class="cover-face"><span class="cover-hair"></span><span class="cover-eye left"></span><span class="cover-eye right"></span><span class="cover-mouth"></span></div>`}
+        ${templateCoverMarkup(template, coverUrl, t('makerPreviewAlt', { name: template.name }))}
         <span class="cover-style">${escapeHtml(template.style)}</span>
       </div>
     </div>
@@ -7932,6 +8062,7 @@ function renderTemplateDetail() {
       </div>
     </div>
   `;
+  bindTemplateCoverImageFallbacks($('templateDetail'));
   document.querySelector('[data-detail-start]')?.addEventListener('click', () => {
     if (!state.walletConnected) {
       state.pendingWalletPage = 'make';
@@ -8167,16 +8298,32 @@ function makerV4RuntimeAssetSource(record) {
 function makerV4HasUsableCover(documentV4) {
   const coverAssetId = String(documentV4?.metadata?.coverAssetId || '');
   const descriptor = makerV4AssetDescriptor(documentV4, coverAssetId);
-  if (!descriptor || !descriptor.identifier || !String(descriptor.mediaType || '').startsWith('image/')) return false;
+  if (
+    !descriptor
+    || !descriptor.identifier
+    || descriptor.kind !== 'maker-cover'
+    || !String(descriptor.mediaType || '').startsWith('image/')
+    || /^maker-release-cover(?:-\d+)?$/.test(coverAssetId)
+    || descriptor.provenance === 'generated'
+    || ['generated-release', 'generated-release-preflight'].includes(String(descriptor.source || ''))
+  ) return false;
   const record = makerV4RuntimeAssetRecord(coverAssetId);
   if (makerV4RuntimeAssetSource(record)) return true;
   if (record?.url || descriptor.url || descriptor.legacy?.url) return true;
-  return Boolean(activeTemplate()?.quiltId && descriptor.identifier);
+  return false;
 }
 
 function makerV4ReleaseCoverIsGenerated(documentV4) {
-  const descriptor = makerV4AssetDescriptor(documentV4, documentV4?.metadata?.coverAssetId);
-  return descriptor?.source === 'generated-release';
+  const coverAssetId = String(documentV4?.metadata?.coverAssetId || '');
+  const descriptor = makerV4AssetDescriptor(documentV4, coverAssetId);
+  return Boolean(
+    descriptor
+    && (
+      /^maker-release-cover(?:-\d+)?$/.test(coverAssetId)
+      || descriptor.provenance === 'generated'
+      || ['generated-release', 'generated-release-preflight'].includes(String(descriptor.source || ''))
+    ),
+  );
 }
 
 function makerV4ReleaseCoverBlob(documentV4, runtimeAssets) {
@@ -8184,7 +8331,34 @@ function makerV4ReleaseCoverBlob(documentV4, runtimeAssets) {
   return makerV4RuntimeAssetSource(record);
 }
 
-function makerV4DocumentForRelease({ includeGeneratedCover = false, sourceDocument = state.makerDocumentV4 } = {}) {
+async function verifyMakerV4ReleaseCoverBlob(blob, descriptor) {
+  const declaredMediaType = String(descriptor?.mediaType || '').split(';', 1)[0].trim().toLowerCase();
+  const actualMediaType = String(blob?.type || '').split(';', 1)[0].trim().toLowerCase();
+  const supportedMediaTypes = new Set(['image/png', 'image/jpeg']);
+  const invalid = () => {
+    const error = new Error(t('makerExplicitCoverRequired'));
+    error.code = 'MAKER_COVER_INVALID';
+    return error;
+  };
+  if (
+    !(blob instanceof Blob)
+    || !supportedMediaTypes.has(declaredMediaType)
+    || !supportedMediaTypes.has(actualMediaType)
+    || actualMediaType !== declaredMediaType
+  ) throw invalid();
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(blob);
+    if (!Number(bitmap?.width) || !Number(bitmap?.height)) throw invalid();
+  } catch {
+    throw invalid();
+  } finally {
+    bitmap?.close?.();
+  }
+  return blob;
+}
+
+function makerV4DocumentForRelease({ sourceDocument = state.makerDocumentV4 } = {}) {
   if (!isMakerV4Document(sourceDocument)) return null;
   const documentV4 = structuredClone(sourceDocument);
   // MakerDocument is the canonical source for public metadata. The legacy
@@ -8209,33 +8383,6 @@ function makerV4DocumentForRelease({ includeGeneratedCover = false, sourceDocume
     assetAddressing: 'walrus-quilt-id+identifier',
   };
   documentV4.livingContent = normalizeLivingContent(documentV4.livingContent, documentV4.metadata);
-  if (!includeGeneratedCover) return documentV4;
-  if (makerV4HasUsableCover(documentV4)) return documentV4;
-
-  const usedIds = new Set(documentV4.assets.map((asset) => asset.id));
-  const usedIdentifiers = new Set(documentV4.assets.map((asset) => asset.identifier).filter(Boolean));
-  let coverAssetId = 'maker-release-cover';
-  let suffix = 2;
-  while (usedIds.has(coverAssetId)) {
-    coverAssetId = `maker-release-cover-${suffix}`;
-    suffix += 1;
-  }
-  let identifier = 'maker-cover.png';
-  suffix = 2;
-  while (usedIdentifiers.has(identifier)) {
-    identifier = `maker-cover-${suffix}.png`;
-    suffix += 1;
-  }
-  documentV4.assets.push({
-    id: coverAssetId,
-    identifier,
-    kind: 'maker-cover',
-    mediaType: 'image/png',
-    width: documentV4.canvas.width,
-    height: documentV4.canvas.height,
-    source: 'generated-release',
-  });
-  documentV4.metadata.coverAssetId = coverAssetId;
   return documentV4;
 }
 
@@ -8263,17 +8410,26 @@ async function makerV4RuntimeAssetsForRelease(documentV4, providedCoverBlob = nu
     const record = runtimeAssets.get(descriptor.id);
     const url = record?.url
       || descriptor.url
-      || descriptor.legacy?.url
-      || (activeTemplate()?.quiltId && descriptor.identifier ? walrusQuiltFileUrl(activeTemplate().quiltId, descriptor.identifier) : '');
+      || descriptor.legacy?.url;
     if (!url) continue;
     const response = await fetchWalrusWithBackoff(url);
     if (!response.ok) throw new Error(`Could not reload ${descriptor.identifier} for this Maker version (${response.status}).`);
     const blob = await responseBlobWithinLimit(response, 20 * 1024 * 1024, `Maker asset ${descriptor.identifier}`);
     runtimeAssets.set(descriptor.id, { ...record, assetId: descriptor.id, blob, file: blob, url });
   }
-  if (!coverDescriptor || !makerV4ReleaseCoverBlob(documentV4, runtimeAssets)) {
-    throw new Error('The Maker cover has no readable image source. Re-upload the cover or generate a new release cover.');
+  const releaseCoverBlob = makerV4ReleaseCoverBlob(documentV4, runtimeAssets);
+  if (
+    !coverDescriptor
+    || coverDescriptor.kind !== 'maker-cover'
+    || !String(coverDescriptor.mediaType || '').startsWith('image/')
+    || makerV4ReleaseCoverIsGenerated(documentV4)
+    || !releaseCoverBlob
+  ) {
+    const error = new Error(t('makerExplicitCoverRequired'));
+    error.code = 'MAKER_COVER_UNAVAILABLE';
+    throw error;
   }
+  await verifyMakerV4ReleaseCoverBlob(releaseCoverBlob, coverDescriptor);
   const descriptorById = new Map(
     projectionDocument.assets.map((descriptor) => [String(descriptor.id || ''), descriptor]),
   );
@@ -8413,52 +8569,16 @@ function creatorManifest() {
 }
 
 function creatorUploadManifest() {
-  const documentV4 = makerV4DocumentForRelease({ includeGeneratedCover: true });
-  if (documentV4) {
-    return buildMakerV4PublicationManifest(documentV4, {
-      previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
-      publicExtensions: makerV4PublicExtensions(documentV4),
-    });
+  const documentV4 = makerV4DocumentForRelease();
+  if (!documentV4) {
+    const error = new Error(t('legacyMakerMigrationRequired'));
+    error.code = 'LEGACY_MAKER_MIGRATION_REQUIRED';
+    throw error;
   }
-  const manifest = creatorManifest();
-  manifest.template.coverIdentifier = 'maker-cover.png';
-  manifest.parts = manifest.parts.map((part) => {
-    const publicItems = part.items.filter((item) => item.visibility !== 'private');
-    return {
-      ...part,
-      defaultItemId: publicItems.some((item) => item.id === part.defaultItemId) ? part.defaultItemId : publicItems[0]?.id || '',
-      items: publicItems,
-    };
+  return buildMakerV4PublicationManifest(documentV4, {
+    previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
+    publicExtensions: makerV4PublicExtensions(documentV4),
   });
-  manifest.assets = publishableAssets().map(({ name, size, type, kind, slot, partId, itemId, layerId, colorId, identifier = '' }) => ({
-    name,
-    size,
-    type,
-    kind,
-    slot,
-    partId,
-    itemId,
-    layerId,
-    colorId,
-    identifier,
-    patchId: '',
-    blobId: '',
-  }));
-  manifest.assets.push({
-    name: 'maker-cover.png',
-    size: 0,
-    type: 'image/png',
-    kind: 'maker-cover',
-    slot: '',
-    partId: '',
-    itemId: '',
-    layerId: '',
-    colorId: '',
-    identifier: 'maker-cover.png',
-    patchId: '',
-    blobId: '',
-  });
-  return manifest;
 }
 
 function publishableAssets() {
@@ -8466,23 +8586,6 @@ function publishableAssets() {
     if (!asset.itemId) return true;
     return slotItems(asset.slot).some((item) => item.id === asset.itemId && item.visibility !== 'private');
   });
-}
-
-function makerCoverAsset(coverBlob) {
-  const coverFile = new File([coverBlob], 'maker-cover.png', { type: 'image/png', lastModified: Date.now() });
-  return {
-    file: coverFile,
-    name: coverFile.name,
-    size: coverFile.size,
-    type: coverFile.type,
-    kind: 'maker-cover',
-    slot: '',
-    partId: '',
-    itemId: '',
-    layerId: '',
-    colorId: '',
-    identifier: 'maker-cover.png',
-  };
 }
 
 function makerUploadEntries() {
@@ -9356,7 +9459,7 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
     let pendingBundle = null;
     let pendingAssets;
     if (isMakerV4Document(state.makerDocumentV4)) {
-      const documentV4 = makerV4DocumentForRelease({ includeGeneratedCover: true });
+      const documentV4 = makerV4DocumentForRelease();
       const projection = compileMakerV4MoveProjectionV2(documentV4);
       assertMakerV4ProjectionV2SinglePublishBudget(projection);
       const runtimeAssets = await makerV4RuntimeAssetsForRelease(documentV4, recovery.coverBlob);
@@ -9384,7 +9487,9 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
         blobId: '',
       }));
     } else {
-      pendingAssets = [...publishableAssets(), makerCoverAsset(recovery.coverBlob)];
+      const error = new Error(t('legacyMakerMigrationRequired'));
+      error.code = 'LEGACY_MAKER_MIGRATION_REQUIRED';
+      throw error;
     }
     pendingAssets.forEach((asset) => {
       if (!asset.file) throw new Error(t('makerRecoveryAssetMissing', { name: asset.name }));
@@ -9599,10 +9704,13 @@ function renderImageMakerList() {
       const published = lifecycle.published;
       const lifecycleLabel = t(lifecycle.labelKey);
       const canvasLabel = model?.canvas?.width === model?.canvas?.height ? '1:1' : '9:16';
+      const coverUrl = templateLibraryCoverUrl(template);
       return `
         <article class="creator-maker-card ${template.id === state.templateId ? 'active' : ''}" data-maker="${escapeHtml(template.id)}" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
           <div class="maker-cover-mini">
-            ${template.coverUrl ? `<img src="${escapeHtml(template.coverUrl)}" alt="${escapeHtml(t('makerCoverAlt', { name: template.name }))}" />` : '<span class="mini-face"></span>'}
+            ${coverUrl
+              ? `<img data-maker-cover-image src="${escapeHtml(coverUrl)}" alt="${escapeHtml(t('makerCoverAlt', { name: template.name }))}" /><span class="mini-face" data-maker-cover-fallback hidden></span>`
+              : '<span class="mini-face"></span>'}
           </div>
           <div class="maker-card-body">
             <div class="maker-tags">
@@ -9623,6 +9731,7 @@ function renderImageMakerList() {
       `;
     }).join('') : `<div class="empty-state">${t('noOwnedMakers')}</div>`}
   `;
+  bindTemplateCoverImageFallbacks($('imageMakerList'));
 
   document.querySelectorAll('[data-preview-maker], [data-open-maker]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -11527,18 +11636,14 @@ async function prepareMakerUpload() {
       const issues = makerPublicationIssues();
       if (issues.length) throw new Error(issues[0]);
       const documentV4 = isMakerV4Document(state.makerDocumentV4)
-        ? makerV4DocumentForRelease({ includeGeneratedCover: true })
+        ? makerV4DocumentForRelease()
         : null;
       if (documentV4) {
         const projection = compileMakerV4MoveProjectionV2(documentV4);
         assertMakerV4ProjectionV2SinglePublishBudget(projection);
       }
       if (documentV4) {
-        const generatedCoverBlob = makerV4ReleaseCoverIsGenerated(documentV4)
-          ? await renderOcImageBlob(state.makerDocumentV4?.defaultRecipe || null)
-          : null;
-        if (!makerChainOperationIsActive(operation)) return;
-        const runtimeAssets = await makerV4RuntimeAssetsForRelease(documentV4, generatedCoverBlob);
+        const runtimeAssets = await makerV4RuntimeAssetsForRelease(documentV4);
         if (!makerChainOperationIsActive(operation)) return;
         const coverBlob = makerV4ReleaseCoverBlob(documentV4, runtimeAssets);
         if (!coverBlob) throw new Error(t('makerRecoveryCoverMissing'));
@@ -11565,15 +11670,9 @@ async function prepareMakerUpload() {
         }));
         state.pendingMakerManifestJson = bundle.manifestJson;
       } else {
-        const coverBlob = await renderOcImageBlob(null);
-        if (!makerChainOperationIsActive(operation)) return;
-        state.pendingMakerCoverBlob = coverBlob;
-        state.pendingMakerV4Bundle = null;
-        state.pendingMakerAssets = [
-          ...publishableAssets(),
-          makerCoverAsset(coverBlob),
-        ];
-        state.pendingMakerManifestJson = JSON.stringify(creatorUploadManifest());
+        const error = new Error(t('legacyMakerMigrationRequired'));
+        error.code = 'LEGACY_MAKER_MIGRATION_REQUIRED';
+        throw error;
       }
       state.pendingMakerAssets.forEach((asset) => {
         if (!asset.file) throw new Error(t('makerAssetUnavailable', { name: asset.name }));
@@ -13126,7 +13225,7 @@ function makerV4WorkspaceCoverUrl(document, assets, template = null) {
     const existing = localMakerCoverObjectUrls.get(template.id);
     if (!stableUrl && existing?.assetId === coverAssetId) return existing.url;
     revokeLocalMakerCoverObjectUrl(template.id);
-    template.coverUrl = stableUrl;
+    template.draftCoverUrl = stableUrl;
   }
   return stableUrl;
 }
@@ -13244,7 +13343,7 @@ function syncV4WorkspaceState({
         style: document.metadata.style,
         license: makerV4WorkspaceLicenseLabel(document.metadata.license?.kind, targetTemplate.license),
         licenseNote: document.metadata.license?.note ?? targetTemplate.licenseNote,
-        coverUrl,
+        draftCoverUrl: coverUrl,
       });
       const targetPublished = targetTemplate.source === 'chain'
         || Boolean(targetModel.publishDigest || targetModel.makerObjectId);
@@ -13294,7 +13393,7 @@ function syncV4WorkspaceState({
       style: document.metadata.style,
       license: makerV4WorkspaceLicenseLabel(document.metadata.license?.kind, template.license),
       licenseNote: document.metadata.license?.note ?? template.licenseNote,
-      coverUrl,
+      draftCoverUrl: coverUrl,
     });
     if (!makerIsPublished()) {
       Object.assign(template, {

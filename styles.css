@@ -1010,6 +1010,36 @@ textarea:focus {
   background: #fff;
 }
 
+.published-cover-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 28px;
+  color: color-mix(in srgb, var(--ink) 72%, transparent);
+  text-align: center;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 58%),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.42) 0 12px, rgba(255, 255, 255, 0.16) 12px 24px);
+}
+
+.published-cover-placeholder strong {
+  font-size: clamp(28px, 5vw, 48px);
+  letter-spacing: 0.08em;
+}
+
+.published-cover-placeholder span {
+  font-weight: 900;
+}
+
+.published-cover-placeholder[hidden],
+.cover-face[hidden],
+.template-cover-image[hidden] {
+  display: none;
+}
+
 .cover-face {
   position: absolute;
   left: 50%;
@@ -8760,6 +8790,12 @@ pre {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.v4-maker-cover-preview img[hidden],
+.v4-maker-cover-preview [data-maker-cover-preview-fallback][hidden],
+.maker-cover-mini [data-maker-cover-fallback][hidden] {
+  display: none;
 }
 
 .v4-maker-cover-editor > div:last-child {

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const appSource = await readFile(new URL('../app.js', import.meta.url), 'utf8');
+const stylesSource = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
 
 function functionSource(name) {
   const declaration = `function ${name}`;
@@ -34,7 +35,10 @@ function functionSource(name) {
   assert.fail(`unterminated ${name}`);
 }
 
-function coverHarness(runtimeRecords = [], template = {}) {
+function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (blob) => {
+  if ((await blob.text()).includes('broken-image')) throw new Error('decode failed');
+  return { width: 1200, height: 630, close() {} };
+}) {
   const functions = [
     'makerV4AssetDescriptor',
     'makerV4RuntimeAssetRecord',
@@ -42,10 +46,11 @@ function coverHarness(runtimeRecords = [], template = {}) {
     'makerV4HasUsableCover',
     'makerV4ReleaseCoverIsGenerated',
     'makerV4ReleaseCoverBlob',
+    'verifyMakerV4ReleaseCoverBlob',
     'makerV4DocumentForRelease',
     'makerV4RuntimeAssetsForRelease',
   ].map(functionSource).join('\n');
-  return new Function('runtimeRecords', 'template', `
+  return new Function('runtimeRecords', 'template', 'decodeBitmap', `
     const currentV4RuntimeAssets = () => runtimeRecords;
     const activeTemplate = () => template;
     const state = { makerDocumentV4: null };
@@ -65,21 +70,24 @@ function coverHarness(runtimeRecords = [], template = {}) {
     const fetchWalrusWithBackoff = async () => { throw new Error('unexpected network request'); };
     const responseBlobWithinLimit = async () => { throw new Error('unexpected network response'); };
     const inspectPngAsset = async () => ({ alphaAnalyzed: true, hasVisiblePixels: true });
+    const createImageBitmap = decodeBitmap;
     const t = (key) => key;
     ${functions}
     return {
       makerV4HasUsableCover,
       makerV4ReleaseCoverIsGenerated,
       makerV4ReleaseCoverBlob,
+      verifyMakerV4ReleaseCoverBlob,
       makerV4DocumentForRelease,
       makerV4RuntimeAssetsForRelease,
     };
-  `)(runtimeRecords, template);
+  `)(runtimeRecords, template, decodeBitmap);
 }
 
 function chainCoverHarness() {
   const functions = [
     'makerManifestCoverUrl',
+    'makerManifestCoverIsGenerated',
     'hydratedMakerCoverUrl',
     'certifiedMakerCoverUrl',
     'assertSuiMakerCoverUrl',
@@ -103,7 +111,7 @@ function chainCoverHarness() {
     };
     const suiField = (fields, snake, camel) => fields?.[snake] ?? fields?.[camel];
     ${functions}
-    return { makerManifestCoverUrl, hydratedMakerCoverUrl, certifiedMakerCoverUrl, assertSuiMakerCoverUrl };
+    return { makerManifestCoverUrl, makerManifestCoverIsGenerated, hydratedMakerCoverUrl, certifiedMakerCoverUrl, assertSuiMakerCoverUrl };
   `)();
 }
 
@@ -146,7 +154,6 @@ test('Maker v4 release preserves a readable creator cover instead of generating 
 
   assert.equal(harness.makerV4HasUsableCover(source), true);
   const release = harness.makerV4DocumentForRelease({
-    includeGeneratedCover: true,
     sourceDocument: source,
   });
   assert.equal(release.metadata.coverAssetId, 'custom-cover');
@@ -157,19 +164,62 @@ test('Maker v4 release preserves a readable creator cover instead of generating 
   assert.equal(harness.makerV4ReleaseCoverBlob(release, runtimeAssets), creatorCover);
 });
 
-test('Maker v4 release generates a deterministic fallback only when its configured cover is unavailable', () => {
+test('Maker v4 release never replaces an unavailable creator cover with an OC composite', async () => {
   const harness = coverHarness();
   const source = minimalDocument();
 
   assert.equal(harness.makerV4HasUsableCover(source), false);
   const release = harness.makerV4DocumentForRelease({
-    includeGeneratedCover: true,
     sourceDocument: source,
   });
-  assert.equal(release.metadata.coverAssetId, 'maker-release-cover');
-  assert.equal(release.assets.length, 2);
-  assert.equal(release.assets.at(-1).source, 'generated-release');
-  assert.equal(harness.makerV4ReleaseCoverIsGenerated(release), true);
+  assert.equal(release.metadata.coverAssetId, 'custom-cover');
+  assert.equal(release.assets.length, 1);
+  assert.equal(harness.makerV4ReleaseCoverIsGenerated(release), false);
+  await assert.rejects(
+    () => harness.makerV4RuntimeAssetsForRelease(release),
+    /makerExplicitCoverRequired/,
+  );
+});
+
+test('Maker v4 release rejects a Style or background PNG referenced as the cover', async () => {
+  const creatorCover = new Blob(['style-artwork'], { type: 'image/jpeg' });
+  const harness = coverHarness([{
+    assetId: 'custom-cover',
+    blob: creatorCover,
+    file: creatorCover,
+  }]);
+  const source = minimalDocument();
+  source.assets[0].kind = 'style';
+
+  assert.equal(harness.makerV4HasUsableCover(source), false);
+  await assert.rejects(
+    () => harness.makerV4RuntimeAssetsForRelease(source),
+    /makerExplicitCoverRequired/,
+  );
+});
+
+test('Maker v4 release verifies the real cover Blob MIME and decodes its pixels', async () => {
+  const htmlBlob = new Blob(['<html>not an image</html>'], { type: 'text/html' });
+  const htmlHarness = coverHarness([{
+    assetId: 'custom-cover',
+    blob: htmlBlob,
+    file: htmlBlob,
+  }]);
+  await assert.rejects(
+    () => htmlHarness.makerV4RuntimeAssetsForRelease(minimalDocument()),
+    /makerExplicitCoverRequired/,
+  );
+
+  const brokenImage = new Blob(['broken-image'], { type: 'image/jpeg' });
+  const brokenHarness = coverHarness([{
+    assetId: 'custom-cover',
+    blob: brokenImage,
+    file: brokenImage,
+  }]);
+  await assert.rejects(
+    () => brokenHarness.makerV4RuntimeAssetsForRelease(minimalDocument()),
+    /makerExplicitCoverRequired/,
+  );
 });
 
 test('chain hydration trusts the manifest cover Asset when the Sui cover URL is stale', () => {
@@ -187,6 +237,13 @@ test('chain hydration trusts the manifest cover Asset when the Sui cover URL is 
       cover_url: 'https://old.example/stale-cover.png',
     }),
     'https://aggregator.test/v1/blobs/by-quilt-id/certified-quilt/creator-cover.jpg',
+  );
+  manifest.assets.find((asset) => asset.id === manifest.metadata.coverAssetId).kind = 'style';
+  assert.equal(
+    harness.hydratedMakerCoverUrl(manifest, 'certified-quilt', {
+      cover_url: 'https://old.example/style-artwork.png',
+    }),
+    '',
   );
 });
 
@@ -279,6 +336,39 @@ test('old Maker manifests retain safe cover fallbacks', () => {
   );
 });
 
+test('historical generated OC composites are not presented as public Maker covers', () => {
+  const harness = chainCoverHarness();
+  const manifest = minimalDocument();
+  manifest.metadata.coverAssetId = 'maker-release-cover';
+  manifest.assets = [{
+    id: 'maker-release-cover',
+    identifier: 'maker-cover.png',
+    kind: 'maker-cover',
+    mediaType: 'image/png',
+  }];
+
+  assert.equal(harness.makerManifestCoverIsGenerated(manifest), true);
+  assert.equal(
+    harness.hydratedMakerCoverUrl(manifest, 'legacy-generated-quilt', {
+      cover_url: 'https://chain.example/generated-default-oc.png',
+    }),
+    '',
+  );
+  const legacyManifest = {
+    template: {
+      coverIdentifier: 'maker-cover.png',
+      coverUrl: 'https://chain.example/generated-legacy-oc.png',
+    },
+  };
+  assert.equal(harness.makerManifestCoverIsGenerated(legacyManifest), true);
+  assert.equal(
+    harness.hydratedMakerCoverUrl(legacyManifest, 'legacy-v3-quilt', {
+      cover_url: 'https://chain.example/generated-legacy-oc.png',
+    }),
+    '',
+  );
+});
+
 test('a persisted recovery cover wins over a remote runtime record for byte-exact resume', async () => {
   const remoteCover = new Blob(['remote'], { type: 'image/jpeg' });
   const recoveredCover = new Blob(['recovered'], { type: 'image/jpeg' });
@@ -306,7 +396,7 @@ test('chain hydration and Workspace projection retain cover, license and display
     appSource.indexOf('function syncV4WorkspaceState'),
     appSource.indexOf('\nfunction syncPlayerV4State'),
   );
-  assert.equal((sync.match(/\bcoverUrl,/g) || []).length, 2);
+  assert.equal((sync.match(/draftCoverUrl:\s*coverUrl/g) || []).length, 2);
   assert.equal((sync.match(/license:\s*makerV4WorkspaceLicenseLabel/g) || []).length, 2);
   assert.match(sync, /name:\s*document\.metadata\.name/);
   assert.match(sync, /summary:\s*document\.metadata\.summary/);
@@ -342,17 +432,19 @@ test('Maker release metadata stays canonical and chain hydration preserves the c
   );
 });
 
-test('publication renders a composite cover only for the generated fallback path', () => {
+test('publication never renders an internal OC composite as a Maker cover', () => {
   const prepare = appSource.slice(
     appSource.indexOf('async function prepareMakerUpload'),
     appSource.indexOf('\nasync function registerMakerUpload'),
   );
-  assert.match(
-    prepare,
-    /const generatedCoverBlob = makerV4ReleaseCoverIsGenerated\(documentV4\)\s*\?\s*await renderOcImageBlob/,
-  );
-  assert.match(prepare, /makerV4RuntimeAssetsForRelease\(documentV4, generatedCoverBlob\)/);
+  assert.doesNotMatch(prepare, /generatedCoverBlob|renderOcImageBlob/);
+  assert.match(prepare, /makerV4RuntimeAssetsForRelease\(documentV4\)/);
   assert.match(prepare, /state\.pendingMakerCoverBlob = coverBlob/);
+  assert.match(prepare, /LEGACY_MAKER_MIGRATION_REQUIRED/);
+  const uploadManifest = functionSource('creatorUploadManifest');
+  assert.match(uploadManifest, /LEGACY_MAKER_MIGRATION_REQUIRED/);
+  assert.doesNotMatch(uploadManifest, /coverIdentifier/);
+  assert.doesNotMatch(appSource, /function makerCoverAsset/);
 });
 
 test('local Maker index never treats a session blob URL as durable cover metadata', () => {
@@ -371,14 +463,16 @@ test('local Maker index never treats a session blob URL as durable cover metadat
     appSource.indexOf('function persistLocalMakerIndex'),
     appSource.indexOf('\nasync function restoreLocalMakerCoverFromV6'),
   );
-  assert.match(indexPersistence, /coverUrl:\s*stableMakerCoverUrl\(template\.coverUrl\)/);
-  assert.match(indexPersistence, /coverUrl:\s*stableMakerCoverUrl\(record\.coverUrl\)/);
+  assert.match(indexPersistence, /draftCoverUrl:\s*stableMakerCoverUrl\(template\.draftCoverUrl\)/);
+  assert.match(indexPersistence, /publishedCoverUrl:\s*stableMakerCoverUrl\(template\.publishedCoverUrl\)/);
+  assert.match(indexPersistence, /coverUrl:\s*objectId\s*\?\s*''\s*:\s*stableMakerCoverUrl\(record\.coverUrl\)/);
+  assert.match(indexPersistence, /publishedCoverUrl:\s*objectId[\s\S]*stableMakerCoverUrl\(record\.publishedCoverUrl\)/);
 });
 
 test('session cover object URLs are reused, replaced and revoked by explicit ownership', () => {
   const revoked = [];
   let sequence = 0;
-  const template = { id: 'local-maker', coverUrl: '' };
+  const template = { id: 'local-maker', coverUrl: '', draftCoverUrl: '', publishedCoverUrl: '' };
   const harness = new Function('templates', 'urlApi', `
     const URL = urlApi;
     const localMakerCoverObjectUrls = new Map();
@@ -400,11 +494,81 @@ test('session cover object URLs are reused, replaced and revoked by explicit own
   const secondUrl = harness.localMakerCoverObjectUrl(template, 'cover-b', secondBlob);
   assert.equal(secondUrl, 'blob:session-2');
   assert.deepEqual(revoked, ['blob:session-1']);
-  assert.equal(template.coverUrl, secondUrl);
+  assert.equal(template.draftCoverUrl, secondUrl);
+  assert.equal(template.publishedCoverUrl, '');
 
   harness.revokeLocalMakerCoverObjectUrl(template.id);
   assert.deepEqual(revoked, ['blob:session-1', 'blob:session-2']);
-  assert.equal(template.coverUrl, '');
+  assert.equal(template.draftCoverUrl, '');
+});
+
+test('public chain cards and Creator Library use separate published and draft cover fields', () => {
+  const coverUrlHarness = new Function(`
+    const location = { origin: 'https://animacraft.test' };
+    ${functionSource('safeExternalUrl')}
+    ${functionSource('displayMakerCoverUrl')}
+    ${functionSource('templatePublishedCoverUrl')}
+    return { displayMakerCoverUrl, templatePublishedCoverUrl };
+  `)();
+  const publicRender = appSource.slice(
+    appSource.indexOf('function renderTemplates'),
+    appSource.indexOf('\nfunction openTemplateDetail'),
+  );
+  const detailRender = functionSource('renderTemplateDetail');
+  const creatorRender = functionSource('renderImageMakerList');
+  const hydration = functionSource('hydrateChainMaker');
+  const workspaceSync = functionSource('syncV4WorkspaceState');
+
+  assert.match(publicRender, /templatePublishedCoverUrl\(template\)/);
+  assert.match(detailRender, /templatePublishedCoverUrl\(template\)/);
+  assert.match(creatorRender, /templateLibraryCoverUrl\(template\)/);
+  assert.match(creatorRender, /data-maker-cover-image/);
+  assert.match(creatorRender, /bindTemplateCoverImageFallbacks/);
+  assert.match(hydration, /publishedCoverUrl:\s*hydratedMakerCoverUrl/);
+  assert.equal((workspaceSync.match(/draftCoverUrl:\s*coverUrl/g) || []).length, 2);
+  assert.doesNotMatch(workspaceSync, /publishedCoverUrl:\s*coverUrl/);
+  assert.equal(coverUrlHarness.displayMakerCoverUrl(''), '');
+  assert.equal(
+    coverUrlHarness.templatePublishedCoverUrl({
+      source: 'chain',
+      publishedCoverUrl: '',
+      draftCoverUrl: 'blob:https://animacraft.test/private-draft-cover',
+    }),
+    '',
+  );
+  assert.equal(
+    coverUrlHarness.templatePublishedCoverUrl({
+      source: 'chain',
+      publishedCoverUrl: 'https://aggregator.test/real-maker-cover.png',
+    }),
+    'https://aggregator.test/real-maker-cover.png',
+  );
+});
+
+test('a failed public cover request reveals the stable Maker placeholder', () => {
+  let errorHandler = null;
+  const fallback = {
+    hidden: true,
+    matches: (selector) => selector === '[data-maker-cover-fallback]',
+  };
+  const image = {
+    hidden: false,
+    nextElementSibling: fallback,
+    addEventListener: (type, handler) => {
+      if (type === 'error') errorHandler = handler;
+    },
+  };
+  const bind = new Function(`
+    ${functionSource('bindTemplateCoverImageFallbacks')}
+    return bindTemplateCoverImageFallbacks;
+  `)();
+
+  bind({ querySelectorAll: () => [image] });
+  assert.equal(typeof errorHandler, 'function');
+  errorHandler();
+  assert.equal(image.hidden, true);
+  assert.equal(fallback.hidden, false);
+  assert.match(stylesSource, /\.published-cover-placeholder\[hidden\][\s\S]*display:\s*none/);
 });
 
 test('Creator Library restores its cover lazily from the v6 document and asset repository', () => {

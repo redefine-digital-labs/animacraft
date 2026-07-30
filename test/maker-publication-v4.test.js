@@ -88,7 +88,7 @@ function publicationMaker({ version = 1, compatibility = version === 1 ? 'initia
   }];
   document.assets = [
     { id: 'unused', identifier: '00-unused.png', kind: 'layer', mediaType: 'image/png', width: 1024, height: 1024, url: 'blob:leak' },
-    { id: 'cover', identifier: '10-cover.png', kind: 'cover', mediaType: 'image/png', width: 1024, height: 1024, source: 'local-draft' },
+    { id: 'cover', identifier: '10-cover.png', kind: 'maker-cover', mediaType: 'image/png', width: 1024, height: 1024, source: 'local-draft' },
     { id: 'body-thumb', identifier: '20-body-thumb.png', kind: 'thumbnail', mediaType: 'image/png', width: 256, height: 256 },
     { id: 'body-default', identifier: '30-body-default.png', kind: 'layer', mediaType: 'image/png', width: 1024, height: 1024, legacy: { url: 'blob:leak' } },
     { id: 'body-armored', identifier: '40-body-armored.png', kind: 'layer', mediaType: 'image/png', width: 1024, height: 1024 },
@@ -213,6 +213,7 @@ test('publication manifest is immutable, referenced-only and strips runtime stat
   assert.deepEqual(manifest.extensions, {});
   assert.deepEqual(manifest.assets.map((asset) => asset.id), ['cover', 'body-thumb', 'body-default', 'body-armored', 'hat']);
   assert.equal(manifest.assets.some((asset) => 'url' in asset || 'source' in asset || 'legacy' in asset), false);
+  assert.equal(manifest.assets.find((asset) => asset.id === 'cover')?.provenance, 'creator-upload');
   assert.equal(JSON.stringify(manifest).includes('0xprivate'), false);
   assert.equal(JSON.stringify(manifest).includes('blob:private'), false);
   assert.equal(manifest.release.update.level, 'initial');

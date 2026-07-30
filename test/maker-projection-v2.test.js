@@ -84,6 +84,13 @@ function pngAsset(id) {
   };
 }
 
+function makerCoverAsset(id = 'maker-cover') {
+  return {
+    ...pngAsset(id),
+    kind: 'maker-cover',
+  };
+}
+
 function swatch(id, hintColor) {
   return {
     id,
@@ -98,7 +105,11 @@ function swatch(id, hintColor) {
 
 function makePublishableMetadata(document, coverAssetId) {
   document.metadata.license.note = 'Test publication license.';
-  document.metadata.coverAssetId = coverAssetId;
+  const dedicatedCoverAssetId = `${coverAssetId}-maker-cover`;
+  if (!document.assets.some((asset) => asset.id === dedicatedCoverAssetId)) {
+    document.assets.push(makerCoverAsset(dedicatedCoverAssetId));
+  }
+  document.metadata.coverAssetId = dedicatedCoverAssetId;
   return document;
 }
 
@@ -110,13 +121,14 @@ function projectionMaker() {
   });
   document.metadata.summary = 'Projection v2 test fixture.';
   document.metadata.license.note = 'Test publication license.';
-  document.metadata.coverAssetId = 'body-base';
+  document.metadata.coverAssetId = 'projection-maker-cover';
   // Track order deliberately differs from recipe/menu order.
   document.layerTracks = [
     { id: 'body-track', name: 'Body', order: 1, locked: true, referenceAssetId: null },
     { id: 'hat-track', name: 'Hat', order: 0, locked: true, referenceAssetId: null },
   ];
   document.assets = [
+    makerCoverAsset('projection-maker-cover'),
     pngAsset('body-base'),
     pngAsset('body-armored'),
     pngAsset('hat-plain'),
