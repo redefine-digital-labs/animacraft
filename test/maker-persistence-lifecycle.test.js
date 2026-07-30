@@ -178,7 +178,13 @@ function controllableDraftRepository({ load } = {}) {
   return {
     snapshots,
     async load(makerKey) {
-      return load ? load(makerKey) : null;
+      if (load) return load(makerKey);
+      const latest = [...snapshots].reverse().find((entry) => entry.makerKey === makerKey);
+      return latest ? structuredClone({
+        makerKey,
+        ...latest.snapshot,
+        savedAt: latest.snapshot.savedAt || Date.now(),
+      }) : null;
     },
     async save(makerKey, snapshot) {
       const captured = structuredClone(snapshot);
@@ -1230,12 +1236,84 @@ test('a completed Maker cover import atomically saves its metadata and original 
       assert.equal(descriptor.mediaType, 'image/jpeg');
       assert.equal(descriptor.width, 1600);
       assert.equal(descriptor.height, 1000);
+      assert.match(descriptor.identifier, /^maker-cover-[a-z0-9-]+\.jpg$/);
+      assert.doesNotMatch(descriptor.identifier, /maker-cover\.jpg/);
       const asset = persisted.assets.find(
         (record) => record.assetId === persisted.document.metadata.coverAssetId,
       );
       assert.ok(asset?.blob instanceof Blob);
       assert.equal(await asset.blob.text(), 'creator-cover-pixels');
       assert.equal(workspace.store.getState().dirty, false);
+      assert.equal(workspace.makerCoverSaveState, 'saved');
+      assert.equal(workspace.makerCoverSavedAssetId, persisted.document.metadata.coverAssetId);
+      assert.equal(workspace.makerCoverSavedRevision, workspace.store.getState().revision);
+      workspace.context.walletAddress = '';
+      workspace.destroy();
+    } finally {
+      globalThis.createImageBitmap = previousCreateImageBitmap;
+    }
+  })
+));
+
+test('a failed Maker cover verification clears the file input so the same file can be retried', async () => (
+  withWorkspaceGlobals(async () => {
+    const previousCreateImageBitmap = globalThis.createImageBitmap;
+    globalThis.createImageBitmap = async () => ({
+      width: 1200,
+      height: 630,
+      close() {},
+    });
+    try {
+      const repository = controllableDraftRepository();
+      const verifiedLoad = repository.load.bind(repository);
+      let failReadback = true;
+      repository.load = async (makerKey) => (
+        failReadback ? null : verifiedLoad(makerKey)
+      );
+      const workspace = createMakerWorkspace({
+        draftRepository: repository,
+        callbacks: {},
+        walStorage: null,
+      });
+      const document = createCharacterMakerV5Starter({
+        makerId: 'cover-retry',
+        name: 'Cover Retry',
+      });
+      await workspace.setContext({
+        makerKey: 'wallet::cover-retry',
+        walletAddress: '0x1',
+        document,
+        assets: [],
+      });
+      repository.snapshots.length = 0;
+      const file = new Blob(['same-cover-pixels'], { type: 'image/png' });
+      Object.defineProperty(file, 'name', { value: '同一封面.png' });
+      const input = {
+        dataset: { action: 'maker-cover' },
+        files: [file],
+        value: 'selected-file',
+      };
+
+      await assert.rejects(
+        workspace.handleCreatorChange({ target: input }),
+        /cover save could not be verified/i,
+      );
+      assert.equal(input.value, '', 'the failed file input must be reset in finally');
+      assert.equal(workspace.makerCoverSaveState, 'error');
+      assert.equal(workspace.makerCoverSavedAssetId, '');
+      assert.equal(workspace.makerCoverSavedRevision, null);
+
+      failReadback = false;
+      input.value = 'selected-file';
+      await workspace.handleCreatorChange({ target: input });
+      assert.equal(input.value, '');
+      assert.equal(workspace.makerCoverSaveState, 'saved');
+      assert.equal(repository.snapshots.length, 2);
+      assert.equal(
+        await repository.snapshots.at(-1).snapshot.assets
+          .find((asset) => asset.assetId === workspace.makerCoverSavedAssetId).blob.text(),
+        'same-cover-pixels',
+      );
       workspace.context.walletAddress = '';
       workspace.destroy();
     } finally {
@@ -1299,6 +1377,9 @@ test('replacing and removing a Maker cover save the visible fallback while Undo 
 
       const replacementId = workspace.getDocument().metadata.coverAssetId;
       assert.notEqual(replacementId, 'original-cover');
+      assert.equal(workspace.makerCoverSaveState, 'saved');
+      assert.equal(workspace.makerCoverSavedAssetId, replacementId);
+      assert.equal(workspace.makerCoverSavedRevision, workspace.store.getState().revision);
       assert.equal(
         workspace.getDocument().assets.some((asset) => asset.id === 'original-cover'),
         false,
@@ -1315,9 +1396,14 @@ test('replacing and removing a Maker cover save the visible fallback while Undo 
       workspace.store.undo();
       assert.equal(workspace.getDocument().metadata.coverAssetId, 'original-cover');
       assert.ok(workspace.makerCoverUrl(), 'Undo must retain the detached original Blob for preview');
+      assert.equal(workspace.makerCoverSaveState, 'idle');
+      assert.equal(workspace.makerCoverSaveMessage, '');
+      assert.equal(workspace.makerCoverSavedAssetId, '');
+      assert.equal(workspace.makerCoverSavedRevision, null);
       workspace.store.redo();
       assert.equal(workspace.getDocument().metadata.coverAssetId, replacementId);
       assert.ok(workspace.makerCoverUrl(), 'Redo must restore the replacement cover preview');
+      assert.equal(workspace.makerCoverSaveState, 'idle');
 
       const removeButton = {
         dataset: { action: 'remove-maker-cover' },

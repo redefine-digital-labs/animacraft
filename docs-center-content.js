@@ -1,4 +1,4 @@
-export const DOCS_VERSION = '0.8.3';
+export const DOCS_VERSION = '0.8.4';
 
 export const DOCS_LOCALES = Object.freeze(['en', 'zh', 'ja', 'ko', 'vi']);
 

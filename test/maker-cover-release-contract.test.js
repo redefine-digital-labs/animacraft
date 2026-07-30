@@ -77,6 +77,36 @@ function coverHarness(runtimeRecords = [], template = {}) {
   `)(runtimeRecords, template);
 }
 
+function chainCoverHarness() {
+  const functions = [
+    'makerManifestCoverUrl',
+    'hydratedMakerCoverUrl',
+    'certifiedMakerCoverUrl',
+    'assertSuiMakerCoverUrl',
+  ].map(functionSource).join('\n');
+  return new Function(`
+    const isMakerV4Document = (manifest) => Boolean(manifest?.metadata && Array.isArray(manifest?.assets));
+    const utf8Length = (value) => new TextEncoder().encode(String(value || '')).length;
+    const t = (key, variables) => \`\${key}:\${variables.bytes}/\${variables.maximum}\`;
+    const walrusQuiltFileUrl = (quiltId, identifier) => (
+      quiltId && identifier
+        ? \`https://aggregator.test/v1/blobs/by-quilt-id/\${encodeURIComponent(quiltId)}/\${encodeURIComponent(identifier)}\`
+        : ''
+    );
+    const safeExternalUrl = (value) => {
+      try {
+        const url = new URL(String(value || ''), 'https://animacraft.test');
+        return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+      } catch {
+        return '';
+      }
+    };
+    const suiField = (fields, snake, camel) => fields?.[snake] ?? fields?.[camel];
+    ${functions}
+    return { makerManifestCoverUrl, hydratedMakerCoverUrl, certifiedMakerCoverUrl, assertSuiMakerCoverUrl };
+  `)();
+}
+
 function minimalDocument() {
   return {
     metadata: {
@@ -140,6 +170,113 @@ test('Maker v4 release generates a deterministic fallback only when its configur
   assert.equal(release.assets.length, 2);
   assert.equal(release.assets.at(-1).source, 'generated-release');
   assert.equal(harness.makerV4ReleaseCoverIsGenerated(release), true);
+});
+
+test('chain hydration trusts the manifest cover Asset when the Sui cover URL is stale', () => {
+  const harness = chainCoverHarness();
+  const manifest = minimalDocument();
+  manifest.assets.unshift({
+    id: 'unrelated-image',
+    identifier: 'wrong-cover.png',
+    kind: 'maker-cover',
+    mediaType: 'image/png',
+  });
+
+  assert.equal(
+    harness.hydratedMakerCoverUrl(manifest, 'certified-quilt', {
+      cover_url: 'https://old.example/stale-cover.png',
+    }),
+    'https://aggregator.test/v1/blobs/by-quilt-id/certified-quilt/creator-cover.jpg',
+  );
+});
+
+test('publication writes the configured manifest cover Quilt URL, not an unrelated patch URL', () => {
+  const harness = chainCoverHarness();
+  const manifest = minimalDocument();
+  const locations = new Map([
+    ['custom-cover', {
+      id: 'patch-id-must-not-become-the-cover-source',
+      blobId: 'certified-cover-quilt',
+    }],
+  ]);
+
+  assert.equal(
+    harness.certifiedMakerCoverUrl(manifest, 'checkpoint-quilt', locations),
+    'https://aggregator.test/v1/blobs/by-quilt-id/certified-cover-quilt/creator-cover.jpg',
+  );
+  assert.throws(
+    () => harness.certifiedMakerCoverUrl(manifest, 'checkpoint-quilt', new Map()),
+    /missing the configured Maker cover/,
+  );
+
+  const publication = functionSource('publishCurrentMaker');
+  assert.match(publication, /publishedCoverUrl\s*=\s*assertSuiMakerCoverUrl\(certifiedMakerCoverUrl\(/);
+  assert.match(publication, /coverUrl:\s*publishedCoverUrl/);
+});
+
+test('publication blocks an encoded cover URL that exceeds the Sui 512-byte URI cap', () => {
+  const harness = chainCoverHarness();
+  const manifest = minimalDocument();
+  manifest.assets[0].identifier = `${'封'.repeat(60)}.png`;
+  assert.ok(
+    new TextEncoder().encode(manifest.assets[0].identifier).length <= 512,
+    'the Asset identifier itself remains legal for Walrus',
+  );
+  const coverUrl = harness.makerManifestCoverUrl(manifest, 'certified-quilt');
+  assert.ok(new TextEncoder().encode(coverUrl).length > 512);
+
+  assert.throws(
+    () => harness.assertSuiMakerCoverUrl(coverUrl),
+    (error) => (
+      error.code === 'MAKER_COVER_URI_TOO_LONG'
+      && error.details.bytes > error.details.maximum
+      && error.details.maximum === 512
+    ),
+  );
+
+  const prepare = appSource.slice(
+    appSource.indexOf('async function prepareMakerUpload'),
+    appSource.indexOf('\nasync function registerMakerUpload'),
+  );
+  const checkIndex = prepare.indexOf('assertSuiMakerCoverUrl(makerManifestCoverUrl(');
+  const uploadIndex = prepare.indexOf('state.makerUploadSession = uploadSession');
+  assert.ok(checkIndex > -1 && checkIndex < uploadIndex, 'the exact URL must fail before an upload session can advance');
+  const publish = appSource.slice(
+    appSource.indexOf('async function publishCurrentMaker'),
+    appSource.indexOf('\nfunction onChainMakerAction'),
+  );
+  assert.match(publish, /publishedCoverUrl\s*=\s*assertSuiMakerCoverUrl\(certifiedMakerCoverUrl\(/);
+});
+
+test('old Maker manifests retain safe cover fallbacks', () => {
+  const harness = chainCoverHarness();
+  const legacyWithIdentifier = {
+    template: {
+      coverIdentifier: 'legacy cover.png',
+      coverUrl: 'https://legacy.example/direct-cover.png',
+    },
+  };
+  assert.equal(
+    harness.hydratedMakerCoverUrl(legacyWithIdentifier, 'legacy-quilt', {
+      cover_url: 'https://chain.example/old-cover.png',
+    }),
+    'https://aggregator.test/v1/blobs/by-quilt-id/legacy-quilt/legacy%20cover.png',
+  );
+
+  assert.equal(
+    harness.hydratedMakerCoverUrl({
+      template: { coverUrl: 'https://legacy.example/direct-cover.png' },
+    }, 'legacy-quilt', {
+      cover_url: 'https://chain.example/old-cover.png',
+    }),
+    'https://legacy.example/direct-cover.png',
+  );
+  assert.equal(
+    harness.hydratedMakerCoverUrl({ template: {} }, 'legacy-quilt', {
+      cover_url: 'https://chain.example/old-cover.png',
+    }),
+    'https://chain.example/old-cover.png',
+  );
 });
 
 test('a persisted recovery cover wins over a remote runtime record for byte-exact resume', async () => {

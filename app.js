@@ -3363,6 +3363,25 @@ makerModels.set(state.templateId, {
   makerPublicationIntent: state.makerPublicationIntent,
 });
 
+const makerCoverUriI18n = {
+  en: {
+    makerCoverUriTooLong: 'The final Maker cover URL is {bytes} UTF-8 bytes, but Sui allows at most {maximum}. Re-upload the cover in Maker Info so Animacraft assigns a short on-chain filename, then prepare the release again. No Walrus upload or Sui transaction was submitted.',
+  },
+  zh: {
+    makerCoverUriTooLong: '最终 Maker 封面 URL 为 {bytes} 个 UTF-8 字节，但 Sui 最多允许 {maximum} 个。请在 Maker 信息中重新上传封面，让 Animacraft 分配较短的链上文件名，然后重新准备发布。本次未上传到 Walrus，也未提交 Sui 交易。',
+  },
+  ja: {
+    makerCoverUriTooLong: '最終 Maker カバー URL は {bytes} UTF-8 バイトですが、Sui の上限は {maximum} バイトです。Maker 情報でカバーを再アップロードして短いオンチェーンファイル名を割り当て、公開を準備し直してください。Walrus アップロードおよび Sui 取引は送信されていません。',
+  },
+  ko: {
+    makerCoverUriTooLong: '최종 Maker 커버 URL은 UTF-8 기준 {bytes}바이트이지만 Sui 한도는 {maximum}바이트입니다. Maker 정보에서 커버를 다시 업로드해 짧은 온체인 파일명을 받은 뒤 릴리스를 다시 준비하세요. Walrus 업로드나 Sui 트랜잭션은 제출되지 않았습니다.',
+  },
+  vi: {
+    makerCoverUriTooLong: 'URL ảnh bìa Maker cuối cùng dài {bytes} byte UTF-8, nhưng Sui chỉ cho phép tối đa {maximum}. Hãy tải lại ảnh bìa trong Thông tin Maker để Animacraft gán tên tệp on-chain ngắn, rồi chuẩn bị lại bản phát hành. Chưa có lượt tải Walrus hay giao dịch Sui nào được gửi.',
+  },
+};
+Object.entries(makerCoverUriI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
+
 function $(id) {
   return document.getElementById(id);
 }
@@ -5366,6 +5385,66 @@ async function loadBundledMakers() {
   renderAll();
 }
 
+function makerManifestCoverUrl(manifest, quiltId) {
+  const templateData = isMakerV4Document(manifest)
+    ? manifest.metadata || {}
+    : manifest?.template || {};
+  if (isMakerV4Document(manifest)) {
+    const coverAssetId = String(templateData.coverAssetId || '');
+    const coverDescriptor = (manifest.assets || []).find((asset) => (
+      String(asset?.id || '') === coverAssetId
+    ));
+    if (coverAssetId && coverDescriptor?.identifier) {
+      return walrusQuiltFileUrl(quiltId, coverDescriptor.identifier);
+    }
+  }
+  const legacyIdentifier = String(templateData.coverIdentifier || '');
+  return legacyIdentifier ? walrusQuiltFileUrl(quiltId, legacyIdentifier) : '';
+}
+
+function hydratedMakerCoverUrl(manifest, quiltId, fields) {
+  const templateData = isMakerV4Document(manifest)
+    ? manifest.metadata || {}
+    : manifest?.template || {};
+  return safeExternalUrl(
+    makerManifestCoverUrl(manifest, quiltId)
+    // Legacy manifests may carry a direct cover URL without an Asset id.
+    || templateData.coverUrl
+    // Old OCMaker objects remain readable when their manifest predates both
+    // forms above. For current releases this field is only a compatibility
+    // index; the immutable Walrus manifest is canonical.
+    || suiField(fields, 'cover_url', 'coverUrl'),
+  );
+}
+
+function certifiedMakerCoverUrl(manifest, quiltId, assetLocations) {
+  const coverAssetId = isMakerV4Document(manifest)
+    ? String(manifest.metadata?.coverAssetId || '')
+    : '';
+  const coverLocation = assetLocations instanceof Map
+    ? assetLocations.get(coverAssetId)
+    : assetLocations?.[coverAssetId];
+  const coverQuiltId = String(coverLocation?.blobId || quiltId || '');
+  const coverUrl = makerManifestCoverUrl(manifest, coverQuiltId);
+  if (!coverAssetId || !coverLocation || !coverUrl) {
+    throw new Error('The certified Walrus quilt is missing the configured Maker cover.');
+  }
+  return coverUrl;
+}
+
+function assertSuiMakerCoverUrl(coverUrl) {
+  const normalized = String(coverUrl || '');
+  const bytes = utf8Length(normalized);
+  const maximum = 512;
+  if (!normalized || bytes > maximum) {
+    const error = new Error(t('makerCoverUriTooLong', { bytes, maximum }));
+    error.code = 'MAKER_COVER_URI_TOO_LONG';
+    error.details = { bytes, maximum };
+    throw error;
+  }
+  return normalized;
+}
+
 async function hydrateChainMaker(object, {
   guard = () => true,
 } = {}) {
@@ -5507,9 +5586,6 @@ async function hydrateChainMaker(object, {
     || `chain-${object.objectId}`;
   const templateData = isMakerV4Document(manifest) ? manifest.metadata || {} : manifest.template || {};
   const resolvedPublicationData = isMakerV4Document(manifest) ? publicationData : templateData;
-  const coverDescriptor = isMakerV4Document(manifest)
-    ? manifest.assets?.find((asset) => asset.id === templateData.coverAssetId)
-    : null;
   const template = templates.find((candidate) => candidate.id === id) || {
     id,
     category: 'daily',
@@ -5553,12 +5629,7 @@ async function hydrateChainMaker(object, {
       : 'Free mint',
     summary: String(suiField(fields, 'description') || 'Published Animacraft Character Maker.'),
     licenseNote: String(templateData.license?.note || templateData.licenseNote || 'License and royalty policy are read from the published Sui OCMaker.'),
-    coverUrl: safeExternalUrl(
-      suiField(fields, 'cover_url', 'coverUrl')
-      || templateData.coverUrl
-      || (coverDescriptor?.identifier ? walrusQuiltFileUrl(quiltId, coverDescriptor.identifier) : '')
-      || (templateData.coverIdentifier ? walrusQuiltFileUrl(quiltId, templateData.coverIdentifier) : ''),
-    ),
+    coverUrl: hydratedMakerCoverUrl(manifest, quiltId, fields),
   });
   if (!templates.includes(template)) templates.unshift(template);
   if (chainVersionRecord) {
@@ -11508,6 +11579,15 @@ async function prepareMakerUpload() {
         if (!asset.file) throw new Error(t('makerAssetUnavailable', { name: asset.name }));
       });
       const uploadSession = await prepareWalrusUpload(makerUploadEntries());
+      if (documentV4) {
+        // Encoding reveals the final Quilt id, so this is the earliest point
+        // where the exact URL written to OCMaker can be measured. Abort before
+        // any Walrus registration/upload transaction if it exceeds Move's cap.
+        assertSuiMakerCoverUrl(makerManifestCoverUrl(
+          state.pendingMakerV4Bundle.manifest,
+          uploadSession.quiltBlobId,
+        ));
+      }
       if (!makerChainOperationIsActive(operation)) return;
       state.makerUploadSession = uploadSession;
       state.makerQuiltId = uploadSession.quiltBlobId;
@@ -11765,14 +11845,18 @@ async function publishCurrentMaker() {
       const publishedManifest = JSON.parse(state.pendingMakerManifestJson);
       const uploadEntries = state.pendingMakerV4Bundle?.entries || makerUploadEntries();
       const locations = indexMakerV4UploadResults(uploadEntries, publicationSession.files);
-      const coverLocation = locations.get(publishedManifest.metadata.coverAssetId);
+      const publishedCoverUrl = assertSuiMakerCoverUrl(certifiedMakerCoverUrl(
+        publishedManifest,
+        publicationContext.quiltBlobId || publicationSession.quiltBlobId,
+        locations,
+      ));
       const auxiliaryLocation = state.pendingMakerAssets.find((asset) => (
         asset.identifier === MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER
       ));
       const summary = buildMakerV4MoveSummaryV2(publishedManifest, {
         assetLocations: locations,
         auxiliaryLocation,
-        coverUrl: walrusFileUrl(coverLocation?.id || coverLocation?.patchId || ''),
+        coverUrl: publishedCoverUrl,
         previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
       });
       makerParts = summary.parts;
