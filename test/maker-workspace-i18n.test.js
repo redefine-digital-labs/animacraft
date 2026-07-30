@@ -60,6 +60,7 @@ test('all 5 Maker Studio dictionaries cover every editor and player detail key',
     channel: 'Hair color',
     swatch: 'Midnight blue',
     limit: 65_536,
+    index: 2,
   };
 
   assert.deepEqual(MAKER_WORKSPACE_LOCALES, ['en', 'zh', 'ja', 'ko', 'vi']);
@@ -74,7 +75,7 @@ test('all 5 Maker Studio dictionaries cover every editor and player detail key',
       assert.ok(Object.hasOwn(dictionary, key), `${locale}.${key} must be owned by that locale`);
       const value = makerWorkspaceText(locale, key, variables);
       assert.ok(value.trim(), `${locale}.${key} must not be blank`);
-      assert.doesNotMatch(value, /\{(?:count|items|styles|layers|part|item|creator|version|name|breaking|warnings|additions|parts|assets|drawn|skipped|mist|sui|time|filename|channel|swatch|limit)\}/, `${locale}.${key} must interpolate its variables`);
+      assert.doesNotMatch(value, /\{(?:count|items|styles|layers|part|item|creator|version|name|breaking|warnings|additions|parts|assets|drawn|skipped|mist|sui|time|filename|channel|swatch|limit|index)\}/, `${locale}.${key} must interpolate its variables`);
     });
   });
 });
@@ -220,6 +221,70 @@ test('critical nested editor details do not fall back to English outside English
   ['zh', 'ja', 'ko', 'vi'].forEach((locale) => {
     const dictionary = makerWorkspaceDictionary(locale);
     keys.forEach((key) => assert.notEqual(dictionary[key], english[key], `${locale}.${key} must be localized`));
+  });
+});
+
+test('batch import distinguishes Item and Style creation in all five languages', () => {
+  const keys = [
+    'batchImportItems',
+    'batchImportStyles',
+    'batchImportItemsTitle',
+    'batchImportItemsCopy',
+    'batchImportStylesTitle',
+    'batchImportStylesCopy',
+    'importIntoPart',
+    'importIntoItem',
+    'itemName',
+    'styleName',
+    'inheritedLayerTrack',
+    'importMappingScope',
+    'importItemsPngCount',
+    'importStylesPngCount',
+    'importedItems',
+    'importedStyles',
+    'importReview',
+    'importUnmapped',
+    'importFileLabel',
+  ];
+  const english = makerWorkspaceDictionary('en');
+
+  ['zh', 'ja', 'ko', 'vi'].forEach((locale) => {
+    const dictionary = makerWorkspaceDictionary(locale);
+    keys.forEach((key) => {
+      assert.notEqual(dictionary[key], english[key], `${locale}.${key} must be localized`);
+      assert.notEqual(makerWorkspaceText(locale, key, { count: 3, index: 2 }), key, `${locale}.${key} must not expose a raw key`);
+    });
+  });
+
+  const copyExpectations = {
+    en: {
+      items: [/Each PNG/, /one new Item/, /one default Style/, /only global back-to-front draw order/],
+      styles: [/Each PNG/, /one new Style/, /current Item/, /only global back-to-front draw order/],
+    },
+    zh: {
+      items: [/每张 PNG/, /新建一个部件/, /默认样式/, /只控制全局从后到前的绘制顺序/],
+      styles: [/每张 PNG/, /新建一个样式/, /当前部件/, /只控制全局从后到前的绘制顺序/],
+    },
+    ja: {
+      items: [/各 PNG/, /アイテムを1つ/, /デフォルトスタイル/, /描画順だけ/],
+      styles: [/各 PNG/, /スタイルを1つ/, /現在のアイテム/, /描画順だけ/],
+    },
+    ko: {
+      items: [/각 PNG/, /새 아이템 하나/, /기본 스타일 하나/, /그리기 순서만/],
+      styles: [/각 PNG/, /새 스타일 하나/, /현재 아이템/, /그리기 순서만/],
+    },
+    vi: {
+      items: [/Mỗi PNG/, /một Vật phẩm mới/, /một Kiểu mặc định/, /chỉ kiểm soát thứ tự vẽ/],
+      styles: [/Mỗi PNG/, /một Kiểu mới/, /Vật phẩm hiện tại/, /chỉ kiểm soát thứ tự vẽ/],
+    },
+  };
+
+  Object.entries(copyExpectations).forEach(([locale, expected]) => {
+    expected.items.forEach((pattern) => assert.match(makerWorkspaceText(locale, 'batchImportItemsCopy'), pattern));
+    expected.styles.forEach((pattern) => assert.match(makerWorkspaceText(locale, 'batchImportStylesCopy'), pattern));
+    assert.doesNotMatch(makerWorkspaceText(locale, 'importReview'), /^importReview$/);
+    assert.doesNotMatch(makerWorkspaceText(locale, 'importUnmapped'), /^importUnmapped$/);
+    assert.doesNotMatch(makerWorkspaceText(locale, 'importFileLabel', { index: 2 }), /\{index\}/);
   });
 });
 

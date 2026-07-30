@@ -7853,7 +7853,7 @@ pre {
 .v4-part-actions,
 .v4-canvas-tools,
 .v4-panel-head > div:last-child,
-.v4-import-dialog footer,
+.v4-import-dialog > footer,
 .v4-expansion-card footer,
 .v4-expansion-card > div:last-child {
   display: flex;
@@ -7993,6 +7993,28 @@ pre {
   display: grid;
   gap: 7px;
   margin: 12px 0;
+}
+
+.v4-record-entry {
+  min-width: 0;
+}
+
+.v4-part-entry {
+  display: grid;
+  gap: 4px;
+}
+
+.v4-record-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.v4-record-actions button {
+  min-height: 27px !important;
+  padding: 4px 7px !important;
+  border-radius: 6px !important;
+  font-size: 9px;
 }
 
 .v4-part-row {
@@ -8340,6 +8362,16 @@ pre {
   text-align: left;
 }
 
+.v4-item-entry {
+  display: grid;
+  gap: 5px;
+  align-content: start;
+}
+
+.v4-item-entry > .v4-item-card {
+  width: 100%;
+}
+
 .v4-item-thumb,
 .v4-player-item > span {
   display: grid;
@@ -8397,6 +8429,17 @@ pre {
   align-items: center;
   min-width: 150px;
   text-align: left;
+}
+
+.v4-style-entry {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 4px;
+  min-width: 150px;
+}
+
+.v4-style-entry > .v4-style-chip {
+  width: 100%;
 }
 
 .v4-style-chip > span:nth-child(2) {
@@ -8579,11 +8622,14 @@ pre {
 }
 
 .v4-advanced-panel.primary-tool {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   width: min(1180px, 100%);
-  min-height: min(620px, calc(100dvh - 56px));
+  height: min(860px, calc(100dvh - 56px));
+  min-height: 0;
   max-height: calc(100dvh - 56px);
-  overflow: auto;
-  padding: clamp(18px, 2.5vw, 32px);
+  overflow: hidden;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--ui-surface-subtle);
@@ -8596,23 +8642,31 @@ pre {
   inset: 0;
   display: grid;
   place-items: center;
-  overflow: auto;
+  overflow: hidden;
   padding: 28px;
   background: var(--ui-overlay);
   backdrop-filter: blur(4px);
 }
 
 .v4-tool-context {
-  position: sticky;
+  position: relative;
   z-index: 5;
-  top: 0;
   display: flex;
   gap: 10px;
   align-items: center;
-  margin: -2px -2px 22px;
-  padding: 2px 2px 13px;
+  margin: 0;
+  padding: 18px clamp(18px, 2.5vw, 32px) 13px;
   border-bottom: 1px solid var(--line);
   background: var(--ui-surface-subtle);
+}
+
+.v4-tool-body {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 20px clamp(18px, 2.5vw, 32px) 28px;
+  scrollbar-gutter: stable;
 }
 
 .v4-tool-context > div {
@@ -8719,6 +8773,55 @@ pre {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.5;
+}
+
+.v4-maker-cover-editor .v4-maker-cover-save-status {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  width: fit-content;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--ui-surface);
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.v4-maker-cover-save-status i {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.v4-maker-cover-save-status.processing i,
+.v4-maker-cover-save-status.saving i {
+  border: 2px solid var(--soft);
+  border-top-color: var(--violet);
+  background: transparent;
+  animation: v4-history-spin 0.8s linear infinite;
+}
+
+.v4-maker-cover-save-status.saved {
+  border-color: color-mix(in srgb, var(--mint) 55%, var(--line));
+  background: var(--ui-surface-success);
+  color: var(--mint-dark);
+}
+
+.v4-maker-cover-save-status.saved i {
+  background: var(--mint);
+}
+
+.v4-maker-cover-save-status.error {
+  border-color: color-mix(in srgb, var(--ui-danger) 55%, var(--line));
+  background: var(--ui-surface-danger);
+  color: var(--ui-danger);
+}
+
+.v4-maker-cover-save-status.error i {
+  background: var(--ui-danger);
 }
 
 .v4-maker-info-form {
@@ -9244,17 +9347,20 @@ pre {
 
 .v4-rule-target-tree {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 9px;
-  max-height: 390px;
-  overflow: auto;
+  align-items: start;
+  max-height: none;
+  overflow: visible;
   padding: 3px;
 }
 
 .v4-rule-target-group {
   display: grid;
   gap: 5px;
+  align-self: start;
   min-width: 0;
+  height: max-content;
   margin: 0;
   padding: 9px;
   border: 1px solid var(--soft);
@@ -9271,6 +9377,10 @@ pre {
   list-style-position: outside;
 }
 
+.v4-rule-target-group:not([open]) > :not(summary) {
+  display: none;
+}
+
 .v4-rule-target-group > summary span {
   color: var(--muted);
   font-size: 9px;
@@ -9280,7 +9390,6 @@ pre {
 
 .v4-rule-target-group > label {
   display: flex;
-  grid-template-columns: auto minmax(0, 1fr);
   gap: 8px;
   align-items: flex-start;
   padding: 7px 8px;
@@ -9288,6 +9397,16 @@ pre {
   border-radius: 8px;
   color: var(--ink);
   cursor: pointer;
+}
+
+.v4-rule-target-group > label > input[type="checkbox"] {
+  flex: 0 0 18px;
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 2px 0 0;
+  padding: 0;
 }
 
 .v4-rule-target-group > label:has(input:checked) {
@@ -9480,9 +9599,27 @@ pre {
 }
 
 .v4-visibility-builder > .v4-rule-target-picker,
-.v4-visibility-builder > .v4-inline-actions,
-.v4-visibility-builder > .v4-visibility-preview {
+.v4-visibility-builder > .v4-visibility-footer {
   grid-column: 1 / -1;
+}
+
+.v4-visibility-footer {
+  position: sticky;
+  z-index: 3;
+  bottom: -16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin: 2px -6px -8px;
+  padding: 10px 6px 8px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ui-surface-muted) 94%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.v4-visibility-footer > .v4-inline-actions {
+  justify-content: flex-end;
 }
 
 .v4-visibility-preview {
@@ -9796,11 +9933,16 @@ pre {
 .v4-player-info-dialog {
   width: min(780px, 100%);
   max-height: min(760px, calc(100vh - 44px));
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--ui-border-strong);
   border-radius: var(--ui-radius-modal);
   background: var(--ui-surface);
   box-shadow: var(--ui-shadow-modal), var(--ui-shadow-accent);
+}
+
+.v4-import-dialog {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
 .v4-version-history-backdrop {
@@ -10022,8 +10164,8 @@ pre {
   to { transform: rotate(360deg); }
 }
 
-.v4-import-dialog header,
-.v4-import-dialog footer {
+.v4-import-dialog > header,
+.v4-import-dialog > footer {
   display: flex;
   gap: 12px;
   align-items: center;
@@ -10032,7 +10174,7 @@ pre {
   border-bottom: 1px solid var(--line);
 }
 
-.v4-import-dialog footer {
+.v4-import-dialog > footer {
   justify-content: flex-end;
   border-top: 1px solid var(--line);
   border-bottom: 0;
@@ -10043,40 +10185,127 @@ pre {
   margin: 2px 0;
 }
 
-.v4-import-dialog > p {
-  padding: 0 16px;
+.v4-import-intro {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px 4px;
+}
+
+.v4-import-intro > p {
+  margin: 0;
   color: var(--muted);
   font-size: 11px;
 }
 
+.v4-import-destination {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  max-width: none;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--ui-surface-muted);
+}
+
+.v4-import-destination span {
+  font-size: 9px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.v4-import-destination strong {
+  color: var(--ink);
+}
+
 .v4-import-list {
   display: grid;
-  gap: 6px;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 12px 16px;
 }
 
-.v4-import-list > div {
+.v4-import-mapping-card {
   display: grid;
-  grid-template-columns: minmax(130px, 1fr) 80px minmax(170px, 1fr) minmax(150px, 1fr);
-  gap: 8px;
-  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--ui-surface-muted);
+}
+
+.v4-import-file {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.v4-import-file > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.v4-import-file span,
+.v4-import-inherited-track span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.v4-import-file strong {
+  overflow-wrap: anywhere;
+}
+
+.v4-import-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.v4-import-fields > label,
+.v4-import-inherited-track {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.v4-import-inherited-track {
+  align-content: center;
+  padding: 7px 9px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+
+.v4-import-inherited-track strong {
+  color: var(--ink);
 }
 
 .v4-import-dialog.project-matrix {
   width: min(1180px, 100%);
 }
 
-.v4-import-dialog.project-matrix .v4-import-list > div {
-  grid-template-columns: minmax(140px, 1fr) 70px minmax(210px, 1.2fr) minmax(160px, 0.9fr) minmax(150px, 0.8fr);
+.v4-import-dialog.project-matrix .v4-import-fields {
+  grid-template-columns: minmax(260px, 1.4fr) minmax(190px, 1fr);
 }
 
-.v4-import-list > div.conflict {
-  border-radius: 8px;
+.v4-import-mapping-card.conflict {
   outline: 2px solid var(--ui-warning);
   outline-offset: 3px;
 }
 
-.v4-import-list em {
+.v4-import-file em {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: var(--ui-surface-success);
   color: var(--mint);
   font-size: 9px;
   font-style: normal;
@@ -11808,7 +12037,9 @@ pre {
   .v4-rule-builder,
   .v4-rule-intents,
   .v4-rule-purpose,
+  .v4-rule-target-tree,
   .v4-visibility-builder,
+  .v4-visibility-footer,
   .v4-form-row {
     grid-template-columns: 1fr;
   }
@@ -11971,14 +12202,37 @@ pre {
   }
 
   .v4-advanced-panel.primary-tool {
-    min-height: calc(100dvh - 20px);
+    height: calc(100dvh - 20px);
+    min-height: 0;
     max-height: calc(100dvh - 20px);
-    padding: 14px;
+    padding: 0;
     border-radius: 10px;
   }
 
   .v4-tool-modal-backdrop {
     padding: 10px;
+  }
+
+  .v4-tool-context,
+  .v4-tool-body {
+    padding-inline: 14px;
+  }
+
+  .v4-visibility-footer {
+    position: static;
+    margin: 0;
+    padding: 10px 0 0;
+    background: transparent;
+    backdrop-filter: none;
+  }
+
+  .v4-visibility-footer > .v4-inline-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .v4-visibility-footer button {
+    width: 100%;
   }
 
   .v4-top-actions button.primary:last-child {
@@ -12107,7 +12361,7 @@ pre {
 
   .v4-track-row,
   .v4-rule-list > div,
-  .v4-import-list > div,
+  .v4-import-fields,
   .v4-preflight-list li,
   .v4-preflight-list li > button {
     grid-template-columns: 1fr;

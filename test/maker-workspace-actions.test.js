@@ -314,19 +314,21 @@ test('pixel mode exposes a grid and snaps edited coordinates to integers', async
   }, { creatorRoot });
 });
 
-test('Item batch import targets the empty default Style and one inherited Layer Track', async () => {
+test('batch import exposes separate Item and Style modes with an explicit inherited Layer Track', async () => {
   await withWorkspace(async (workspace) => {
     const { part, item, style } = workspace.selectedCreatorRecords();
     await workspace.handleCreatorChange({
       target: {
-        dataset: { action: 'batch-import' },
+        dataset: { action: 'batch-import-styles' },
         files: [
           { name: 'black.png', type: 'image/png' },
           { name: 'blue-streak.png', type: 'image/png' },
         ],
+        value: '',
       },
     });
 
+    assert.equal(workspace.pendingImport.mode, 'styles');
     assert.equal(workspace.pendingImport.partId, part.id);
     assert.equal(workspace.pendingImport.itemId, item.id);
     assert.equal(workspace.pendingImport.defaultStyleId, style.id);
@@ -334,7 +336,373 @@ test('Item batch import targets the empty default Style and one inherited Layer 
       workspace.pendingImport.mapping.map((entry) => entry.trackId),
       [style.layerTrackId, style.layerTrackId],
     );
+
+    await workspace.handleCreatorChange({
+      target: {
+        dataset: { action: 'batch-import-items' },
+        files: [
+          { name: 'long-hair.png', type: 'image/png' },
+          { name: 'short-hair.png', type: 'image/png' },
+        ],
+        value: '',
+      },
+    });
+
+    assert.equal(workspace.pendingImport.mode, 'items');
+    assert.equal(workspace.pendingImport.partId, part.id);
+    assert.equal(workspace.pendingImport.itemId, '');
+    assert.deepEqual(
+      workspace.pendingImport.mapping.map((entry) => entry.suggestedItemName),
+      ['long hair', 'short hair'],
+    );
+    assert.deepEqual(
+      workspace.pendingImport.mapping.map((entry) => entry.trackId),
+      [style.layerTrackId, style.layerTrackId],
+    );
   });
+});
+
+test('Item batch import gives an empty Part a dedicated Track instead of borrowing global selection', async () => {
+  const previousDocument = globalThis.document;
+  const previousBitmap = globalThis.createImageBitmap;
+  const previousOffscreenCanvas = globalThis.OffscreenCanvas;
+  const pngFile = (name) => {
+    const file = new Blob([
+      Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      name,
+    ], { type: 'image/png' });
+    Object.defineProperty(file, 'name', { value: name });
+    return file;
+  };
+  const makeCanvas = () => ({
+    width: 0,
+    height: 0,
+    getContext() {
+      return {
+        clearRect() {},
+        drawImage() {},
+        getImageData: () => {
+          const data = new Uint8ClampedArray(Math.max(1, this.width * this.height * 4));
+          for (let index = 3; index < data.length; index += 4) data[index] = 255;
+          return { data };
+        },
+      };
+    },
+    toBlob(callback) { callback(new Blob(['thumbnail'], { type: 'image/png' })); },
+  });
+  globalThis.document = { createElement: () => makeCanvas() };
+  globalThis.OffscreenCanvas = undefined;
+  globalThis.createImageBitmap = async () => ({ width: 16, height: 16, close() {} });
+  try {
+    await withWorkspace(async (workspace) => {
+      workspace.flushCompletedAssetOperation = async () => true;
+      const emptyPart = workspace.selectedCreatorRecords().part;
+      const existingTrackIds = new Set(workspace.getDocument().layerTracks.map((track) => track.id));
+      assert.ok(existingTrackIds.has(workspace.selectedTrackId), 'the UI still has an unrelated global Track selected');
+
+      await workspace.handleCreatorChange({
+        target: {
+          dataset: { action: 'batch-import-items' },
+          files: [pngFile('Hat A.png'), pngFile('Hat B.png')],
+          value: '',
+        },
+      });
+
+      assert.deepEqual(
+        workspace.pendingImport.mapping.map((entry) => entry.trackId),
+        ['', ''],
+        'an empty Part must not inherit selectedTrackId or the first global Track',
+      );
+      assert.deepEqual(
+        workspace.pendingImport.mapping.map((entry) => entry.suggestedTrackName),
+        [emptyPart.name, emptyPart.name],
+      );
+
+      const trackCount = workspace.getDocument().layerTracks.length;
+      await workspace.confirmBatchImport();
+
+      const importedPart = workspace.getDocument().parts.find((part) => part.id === emptyPart.id);
+      const importedTrackIds = new Set(importedPart.items.flatMap((item) => (
+        item.styles.map((style) => style.layerTrackId)
+      )));
+      assert.equal(importedPart.items.length, 2);
+      assert.equal(importedTrackIds.size, 1, 'all imported Items in the batch share the new Part Track');
+      const [importedTrackId] = importedTrackIds;
+      assert.equal(existingTrackIds.has(importedTrackId), false);
+      assert.equal(workspace.getDocument().layerTracks.length, trackCount + 1);
+      assert.equal(
+        workspace.getDocument().layerTracks.find((track) => track.id === importedTrackId)?.name,
+        emptyPart.name,
+      );
+    }, {
+      prepareDocument(document) {
+        document.parts[0].name = 'Empty Hats';
+        document.parts[0].items = [];
+        document.parts[0].defaultItemId = null;
+      },
+    });
+  } finally {
+    globalThis.document = previousDocument;
+    globalThis.createImageBitmap = previousBitmap;
+    globalThis.OffscreenCanvas = previousOffscreenCanvas;
+  }
+});
+
+test('batch PNG preparation settles every worker before reporting one bad file and creates no orphan URLs', async () => {
+  const previousDocument = globalThis.document;
+  const previousBitmap = globalThis.createImageBitmap;
+  const previousOffscreenCanvas = globalThis.OffscreenCanvas;
+  const previousCreateObjectUrl = URL.createObjectURL;
+  const previousRevokeObjectUrl = URL.revokeObjectURL;
+  let releaseGoodDecode;
+  let markGoodDecodeStarted;
+  const goodDecodeGate = new Promise((resolve) => { releaseGoodDecode = resolve; });
+  const goodDecodeStarted = new Promise((resolve) => { markGoodDecodeStarted = resolve; });
+  const goodFile = new Blob([
+    Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    'valid',
+  ], { type: 'image/png' });
+  Object.defineProperty(goodFile, 'name', { value: 'good.png' });
+  const badFile = new Blob(['not-a-png'], { type: 'image/png' });
+  Object.defineProperty(badFile, 'name', { value: 'bad.png' });
+  const objectUrls = [];
+  const revokedUrls = [];
+  const makeCanvas = () => ({
+    width: 0,
+    height: 0,
+    getContext() {
+      return {
+        clearRect() {},
+        drawImage() {},
+        getImageData: () => {
+          const data = new Uint8ClampedArray(Math.max(1, this.width * this.height * 4));
+          for (let index = 3; index < data.length; index += 4) data[index] = 255;
+          return { data };
+        },
+      };
+    },
+    toBlob(callback) { callback(new Blob(['thumbnail'], { type: 'image/png' })); },
+  });
+  globalThis.document = { createElement: () => makeCanvas() };
+  globalThis.OffscreenCanvas = undefined;
+  globalThis.createImageBitmap = async (blob) => {
+    if (blob === goodFile) {
+      markGoodDecodeStarted();
+      await goodDecodeGate;
+    }
+    return { width: 16, height: 16, close() {} };
+  };
+  URL.createObjectURL = () => {
+    const url = `blob:batch-${objectUrls.length + 1}`;
+    objectUrls.push(url);
+    return url;
+  };
+  URL.revokeObjectURL = (url) => revokedUrls.push(url);
+  try {
+    await withWorkspace(async (workspace) => {
+      const assetCount = workspace.assets.size;
+      await workspace.handleCreatorChange({
+        target: {
+          dataset: { action: 'batch-import-items' },
+          files: [goodFile, badFile],
+          value: '',
+        },
+      });
+
+      let confirmationSettled = false;
+      const confirmation = workspace.confirmBatchImport().then(() => {
+        confirmationSettled = true;
+      });
+      await goodDecodeStarted;
+      await new Promise((resolve) => setImmediate(resolve));
+      const settledBeforeRemainingWorkers = confirmationSettled;
+      releaseGoodDecode();
+      await confirmation;
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(
+        settledBeforeRemainingWorkers,
+        false,
+        'a bad PNG must not make confirmBatchImport return while another worker is running',
+      );
+      assert.equal(workspace.assets.size, assetCount);
+      assert.equal(workspace.store.getState().saveState, 'error');
+      assert.deepEqual(objectUrls, [], 'runtime records are created only after every PNG validates');
+      assert.deepEqual(revokedUrls, []);
+    });
+  } finally {
+    releaseGoodDecode();
+    globalThis.document = previousDocument;
+    globalThis.createImageBitmap = previousBitmap;
+    globalThis.OffscreenCanvas = previousOffscreenCanvas;
+    URL.createObjectURL = previousCreateObjectUrl;
+    URL.revokeObjectURL = previousRevokeObjectUrl;
+  }
+});
+
+test('batch import confirmation is single-flight and a rapid second submit cannot duplicate records', async () => {
+  const previousDocument = globalThis.document;
+  const previousBitmap = globalThis.createImageBitmap;
+  const previousOffscreenCanvas = globalThis.OffscreenCanvas;
+  let releaseDecode;
+  let markDecodeStarted;
+  const decodeGate = new Promise((resolve) => { releaseDecode = resolve; });
+  const decodeStarted = new Promise((resolve) => { markDecodeStarted = resolve; });
+  const file = new Blob([
+    Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    'single-flight',
+  ], { type: 'image/png' });
+  Object.defineProperty(file, 'name', { value: 'Only Once.png' });
+  const makeCanvas = () => ({
+    width: 0,
+    height: 0,
+    getContext() {
+      return {
+        clearRect() {},
+        drawImage() {},
+        getImageData: () => {
+          const data = new Uint8ClampedArray(Math.max(1, this.width * this.height * 4));
+          for (let index = 3; index < data.length; index += 4) data[index] = 255;
+          return { data };
+        },
+      };
+    },
+    toBlob(callback) { callback(new Blob(['thumbnail'], { type: 'image/png' })); },
+  });
+  globalThis.document = { createElement: () => makeCanvas() };
+  globalThis.OffscreenCanvas = undefined;
+  globalThis.createImageBitmap = async () => {
+    markDecodeStarted();
+    await decodeGate;
+    return { width: 16, height: 16, close() {} };
+  };
+  try {
+    const creatorRoot = new FakeRoot();
+    await withWorkspace(async (workspace) => {
+      workspace.flushCompletedAssetOperation = async () => true;
+      const { part } = workspace.selectedCreatorRecords();
+      const itemCount = part.items.length;
+      const revision = workspace.store.getState().revision;
+      await workspace.handleCreatorChange({
+        target: {
+          dataset: { action: 'batch-import-items' },
+          files: [file],
+          value: '',
+        },
+      });
+
+      const firstConfirmation = workspace.confirmBatchImport();
+      await decodeStarted;
+      assert.equal(workspace.batchImportInFlight, true);
+      assert.match(creatorRoot.innerHTML, /aria-busy="true"/);
+      assert.match(
+        creatorRoot.innerHTML,
+        /data-action="confirm-import" disabled/,
+        'the visible confirm control must be disabled while PNG work is active',
+      );
+
+      const secondConfirmation = await workspace.confirmBatchImport();
+      assert.equal(secondConfirmation, false);
+      releaseDecode();
+      assert.equal(await firstConfirmation, true);
+
+      const importedPart = workspace.getDocument().parts.find((candidate) => candidate.id === part.id);
+      assert.equal(importedPart.items.length, itemCount + 1);
+      assert.equal(workspace.store.getState().revision, revision + 1);
+      assert.equal(workspace.pendingImport, null);
+      assert.equal(workspace.batchImportInFlight, false);
+    }, { creatorRoot });
+  } finally {
+    releaseDecode();
+    globalThis.document = previousDocument;
+    globalThis.createImageBitmap = previousBitmap;
+    globalThis.OffscreenCanvas = previousOffscreenCanvas;
+  }
+});
+
+test('confirmed batch import creates one Item plus default Style per PNG and fills Styles independently', async () => {
+  const previousDocument = globalThis.document;
+  const previousBitmap = globalThis.createImageBitmap;
+  const previousOffscreenCanvas = globalThis.OffscreenCanvas;
+  const pngFile = (name) => {
+    const file = new Blob([
+      Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      name,
+    ], { type: 'image/png' });
+    Object.defineProperty(file, 'name', { value: name });
+    return file;
+  };
+  const makeCanvas = () => ({
+    width: 0,
+    height: 0,
+    getContext() {
+      return {
+        clearRect() {},
+        drawImage() {},
+        getImageData: () => {
+          const data = new Uint8ClampedArray(Math.max(1, this.width * this.height * 4));
+          for (let index = 3; index < data.length; index += 4) data[index] = 255;
+          return { data };
+        },
+      };
+    },
+    toBlob(callback) { callback(new Blob(['thumbnail'], { type: 'image/png' })); },
+  });
+  globalThis.document = { createElement: () => makeCanvas() };
+  globalThis.OffscreenCanvas = undefined;
+  globalThis.createImageBitmap = async () => ({ width: 16, height: 16, close() {} });
+  try {
+    await withWorkspace(async (workspace) => {
+      workspace.flushCompletedAssetOperation = async () => true;
+      const { part, item, style } = workspace.selectedCreatorRecords();
+      const originalItemCount = part.items.length;
+
+      await workspace.handleCreatorChange({
+        target: {
+          dataset: { action: 'batch-import-items' },
+          files: [pngFile('Long Hair.png'), pngFile('Short Hair.png')],
+          value: '',
+        },
+      });
+      await workspace.confirmBatchImport();
+
+      const importedPart = workspace.getDocument().parts.find((candidate) => candidate.id === part.id);
+      assert.equal(importedPart.items.length, originalItemCount + 2);
+      const importedItems = importedPart.items.slice(-2);
+      assert.deepEqual(importedItems.map((candidate) => candidate.name), ['long hair', 'short hair']);
+      importedItems.forEach((candidate) => {
+        assert.equal(candidate.styles.length, 1);
+        assert.ok(candidate.styles[0].assetId);
+        assert.equal(candidate.styles[0].layerTrackId, style.layerTrackId);
+      });
+      assert.notEqual(importedItems[0].styles[0], importedItems[1].styles[0]);
+
+      creatorClick(workspace, 'select-item', { itemId: item.id });
+      creatorClick(workspace, 'select-style', { styleId: style.id });
+      await workspace.handleCreatorChange({
+        target: {
+          dataset: { action: 'batch-import-styles' },
+          files: [pngFile('Black.png'), pngFile('Blue Streak.png')],
+          value: '',
+        },
+      });
+      await workspace.confirmBatchImport();
+
+      const updatedItem = workspace.getDocument().parts
+        .find((candidate) => candidate.id === part.id).items
+        .find((candidate) => candidate.id === item.id);
+      assert.equal(updatedItem.styles.length, 2);
+      assert.deepEqual(updatedItem.styles.map((candidate) => candidate.name), ['black', 'blue streak']);
+      assert.equal(new Set(updatedItem.styles.map((candidate) => candidate.assetId)).size, 2);
+      updatedItem.styles.forEach((candidate) => {
+        assert.equal(candidate.layerTrackId, style.layerTrackId);
+      });
+    });
+  } finally {
+    globalThis.document = previousDocument;
+    globalThis.createImageBitmap = previousBitmap;
+    globalThis.OffscreenCanvas = previousOffscreenCanvas;
+  }
 });
 
 test('Creator structure keeps Layer Tracks global and exposes a current Style breadcrumb', async () => {
@@ -568,6 +936,122 @@ test('creator structure controls mutate the v5 document and remain undoable', as
     creatorClick(workspace, 'delete-track', { trackId: unusedTrack });
     assert.equal(workspace.getDocument().layerTracks.length, trackCount);
   });
+});
+
+test('every record action targets its own Part, Item, or Style and copies visual parameters deeply', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const initialPart = workspace.selectedCreatorRecords().part;
+    creatorClick(workspace, 'add-item');
+    creatorClick(workspace, 'add-style');
+
+    const sourceItemId = workspace.selectedItemId;
+    const sourceStyleId = workspace.selectedStyleId;
+    workspace.executeDocument('Configure exact copy source', ({ document }) => {
+      const sourceItem = document.parts[0].items.find((candidate) => candidate.id === sourceItemId);
+      sourceItem.name = 'Exact copy source';
+      sourceItem.status = 'draft';
+      const sourceStyle = sourceItem.styles.find((candidate) => candidate.id === sourceStyleId);
+      sourceStyle.name = 'Configured Style';
+      sourceStyle.transform = {
+        x: 37.5,
+        y: -14.25,
+        scale: 0.73,
+        rotation: 18,
+      };
+      sourceStyle.opacity = 0.42;
+      sourceStyle.blendMode = 'multiply';
+      sourceStyle.positionLocked = true;
+    });
+
+    const untouchedItemId = workspace.getDocument().parts[0].items[0].id;
+    creatorClick(workspace, 'select-item', { itemId: untouchedItemId });
+    assert.equal(workspace.selectedItemId, untouchedItemId);
+    workspace.render();
+    assert.match(
+      creatorRoot.innerHTML,
+      new RegExp(`data-action="copy-item" data-part-id="${initialPart.id}" data-item-id="${sourceItemId}"`),
+      'every Item card must own its own Duplicate control',
+    );
+
+    creatorClick(workspace, 'copy-item', {
+      partId: initialPart.id,
+      itemId: sourceItemId,
+    });
+    const copiedItem = workspace.selectedCreatorRecords().item;
+    const sourceItem = workspace.getDocument().parts[0].items.find(
+      (candidate) => candidate.id === sourceItemId,
+    );
+    assert.notEqual(copiedItem.id, sourceItem.id);
+    assert.equal(copiedItem.name, 'Exact copy source Copy');
+    assert.equal(copiedItem.importKey, copiedItem.id);
+    assert.equal(copiedItem.styles.length, sourceItem.styles.length);
+    const copiedConfiguredStyle = copiedItem.styles.find(
+      (candidate) => candidate.name === 'Configured Style',
+    );
+    const sourceConfiguredStyle = sourceItem.styles.find(
+      (candidate) => candidate.name === 'Configured Style',
+    );
+    assert.deepEqual(copiedConfiguredStyle.transform, sourceConfiguredStyle.transform);
+    assert.equal(copiedConfiguredStyle.opacity, sourceConfiguredStyle.opacity);
+    assert.equal(copiedConfiguredStyle.blendMode, sourceConfiguredStyle.blendMode);
+    assert.notEqual(copiedConfiguredStyle.id, sourceConfiguredStyle.id);
+
+    workspace.executeDocument('Move only copied Style', ({ document }) => {
+      const copy = document.parts[0].items.find((candidate) => candidate.id === copiedItem.id);
+      copy.styles.find((candidate) => candidate.id === copiedConfiguredStyle.id).transform.x = 99;
+    });
+    assert.equal(
+      workspace.getDocument().parts[0].items
+        .find((candidate) => candidate.id === sourceItemId)
+        .styles.find((candidate) => candidate.id === sourceStyleId)
+        .transform.x,
+      37.5,
+      'copying an Item must not share Style transform objects with the source',
+    );
+
+    creatorClick(workspace, 'copy-style', {
+      partId: initialPart.id,
+      itemId: copiedItem.id,
+      styleId: copiedConfiguredStyle.id,
+    });
+    const copiedStyle = workspace.selectedCreatorRecords().style;
+    assert.notEqual(copiedStyle.id, copiedConfiguredStyle.id);
+    assert.deepEqual(copiedStyle.transform, { ...copiedConfiguredStyle.transform, x: 99 });
+    assert.equal(copiedStyle.opacity, copiedConfiguredStyle.opacity);
+    assert.equal(copiedStyle.blendMode, copiedConfiguredStyle.blendMode);
+
+    creatorClick(workspace, 'delete-style', {
+      partId: initialPart.id,
+      itemId: copiedItem.id,
+      styleId: copiedConfiguredStyle.id,
+    });
+    assert.equal(workspace.selectedStyleId, copiedStyle.id);
+    assert.equal(
+      workspace.selectedCreatorRecords().item.styles.some(
+        (candidate) => candidate.id === copiedConfiguredStyle.id,
+      ),
+      false,
+    );
+
+    creatorClick(workspace, 'delete-item', {
+      partId: initialPart.id,
+      itemId: sourceItemId,
+    });
+    assert.equal(workspace.selectedItemId, copiedItem.id);
+    assert.equal(
+      workspace.getDocument().parts[0].items.some((candidate) => candidate.id === sourceItemId),
+      false,
+    );
+
+    const nonSelectedPart = workspace.getDocument().parts[1];
+    creatorClick(workspace, 'copy-part', { partId: nonSelectedPart.id });
+    const copiedPart = workspace.selectedCreatorRecords().part;
+    assert.notEqual(copiedPart.id, nonSelectedPart.id);
+    assert.equal(copiedPart.name, `${nonSelectedPart.name} Copy`);
+    assert.equal(copiedPart.items.length, nonSelectedPart.items.length);
+    assert.equal(copiedPart.items[0].importKey, copiedPart.items[0].id);
+  }, { creatorRoot });
 });
 
 test('Maker Info tab edits the public Maker metadata used by Player and publication', async () => {
@@ -1089,8 +1573,8 @@ test('whole Style lock cannot be bypassed by deleting its parent Item or Part', 
     const partCount = workspace.getDocument().parts.length;
     const itemCount = workspace.selectedCreatorRecords().part.items.length;
     workspace.render();
-    assert.match(creatorRoot.innerHTML, /data-action="delete-part" class="danger" disabled/);
-    assert.match(creatorRoot.innerHTML, /data-action="delete-item" disabled/);
+    assert.match(creatorRoot.innerHTML, /data-action="delete-part"[^>]*disabled/);
+    assert.match(creatorRoot.innerHTML, /data-action="delete-item"[^>]*disabled/);
 
     creatorClick(workspace, 'delete-item');
     assert.equal(workspace.selectedCreatorRecords().part.items.length, itemCount);

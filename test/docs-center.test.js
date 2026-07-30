@@ -40,7 +40,7 @@ const REQUIRED_ARTICLES = [
 
 test('Docs handbook ships the complete five-language information architecture', () => {
   const report = validateDocsContent();
-  assert.equal(DOCS_VERSION, '0.8.3');
+  assert.equal(DOCS_VERSION, '0.8.4');
   assert.deepEqual(DOCS_LOCALES, ['en', 'zh', 'ja', 'ko', 'vi']);
   assert.equal(report.locales.length, 5);
   assert.equal(report.categories, 5);

@@ -1415,6 +1415,11 @@ export class MakerWorkspace {
     this.versionHistoryMessage = '';
     this.versionHistoryRequestId = 0;
     this.restoringCheckpointRevision = null;
+    this.makerCoverRequestId = 0;
+    this.makerCoverSaveState = 'idle';
+    this.makerCoverSaveMessage = '';
+    this.makerCoverSavedAssetId = '';
+    this.makerCoverSavedRevision = null;
     this.playerPublishOpen = false;
     this.playerPublishState = {
       stage: 'idle',
@@ -1433,6 +1438,8 @@ export class MakerWorkspace {
     this.playerPublishCopyState = 'idle';
     this.enabledExpansionIds = new Set();
     this.pendingImport = null;
+    this.batchImportRequestId = 0;
+    this.batchImportInFlight = false;
     this.pendingCreatorText = null;
     this.pendingSmartColorEdit = null;
     this.ruleBuilderError = '';
@@ -1944,8 +1951,15 @@ export class MakerWorkspace {
     this.versionHistoryMessage = '';
     this.versionHistoryRequestId += 1;
     this.restoringCheckpointRevision = null;
+    this.makerCoverRequestId += 1;
+    this.makerCoverSaveState = 'idle';
+    this.makerCoverSaveMessage = '';
+    this.makerCoverSavedAssetId = '';
+    this.makerCoverSavedRevision = null;
     this.restoreError = '';
     this.recoveryWriteAhead = null;
+    this.batchImportRequestId += 1;
+    this.batchImportInFlight = false;
     this.pendingImport = null;
 
     if (context.document && !isMakerV5Document(context.document)) {
@@ -1992,6 +2006,18 @@ export class MakerWorkspace {
       }
       this.ensureCreatorSelection(next.document);
       this.syncCreatorRecipeSelection();
+      if (
+        this.makerCoverSaveState === 'saved'
+        && (
+          String(next.document?.metadata?.coverAssetId || '') !== this.makerCoverSavedAssetId
+          || next.revision !== this.makerCoverSavedRevision
+        )
+      ) {
+        this.makerCoverSaveState = 'idle';
+        this.makerCoverSaveMessage = '';
+        this.makerCoverSavedAssetId = '';
+        this.makerCoverSavedRevision = null;
+      }
       if (['execute', 'undo', 'redo'].includes(event.reason)) {
         // Player history is valid only for one immutable Maker graph. Even a
         // document edit that leaves the current Recipe unchanged can delete an
@@ -4271,6 +4297,7 @@ export class MakerWorkspace {
   openCreatorTab(tab = 'structure') {
     const allowed = new Set(['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'soul', 'validate']);
     this.creatorTab = allowed.has(tab) ? tab : 'structure';
+    this.resetCreatorToolScroll = this.creatorTab !== 'structure';
     if (this.creatorTab !== 'rules') {
       this.ruleBuilderError = '';
       this.visibilityBuilderError = '';
@@ -4659,7 +4686,7 @@ export class MakerWorkspace {
   captureCreatorViewState() {
     if (!this.creatorRoot?.querySelector) return null;
     const scrollSelectors = [
-      '.v4-parts-list', '.v4-canvas-viewport', '.v4-inspector', '.v4-item-grid', '.v4-advanced-panel',
+      '.v4-parts-list', '.v4-canvas-viewport', '.v4-inspector', '.v4-item-grid', '.v4-tool-body',
       '.v4-track-list', '.v4-color-workspace', '.v4-rule-list', '.v4-expansion-grid', '.v4-soul-editor', '.v4-preflight-list',
     ];
     const scroll = scrollSelectors.map((selector) => {
@@ -5171,6 +5198,7 @@ export class MakerWorkspace {
       const nextBlocked = nextIndex >= document.parts.length
         || partMoveCrossesLockedLinkedTrack(document, index, nextIndex);
       return `
+        <article class="v4-record-entry v4-part-entry">
         <div class="v4-part-row ${candidate.id === part?.id ? 'active' : ''} ${this.creatorHiddenPartIds.has(candidate.id) ? 'preview-hidden' : ''} ${linkage.mode === 'linked' ? 'linked-track' : 'custom-track'}" draggable="true" data-drag-kind="part" data-drag-id="${escapeHtml(candidate.id)}">
           <span class="v4-part-drag" aria-hidden="true">⋮⋮<b>${String(index + 1).padStart(2, '0')}</b></span>
           <button class="v4-part-select" type="button" data-action="select-part" data-part-id="${escapeHtml(candidate.id)}">
@@ -5184,27 +5212,44 @@ export class MakerWorkspace {
           </div>
           <button class="v4-part-eye ${this.creatorHiddenPartIds.has(candidate.id) ? '' : 'active'}" type="button" data-action="toggle-part-preview" data-part-id="${escapeHtml(candidate.id)}" aria-pressed="${!this.creatorHiddenPartIds.has(candidate.id)}" aria-label="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}" title="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}">${this.creatorHiddenPartIds.has(candidate.id) ? '◎' : '◉'}</button>
         </div>
+        <div class="v4-record-actions">
+          <button type="button" data-action="copy-part" data-part-id="${escapeHtml(candidate.id)}">${escapeHtml(this.tr('duplicate'))}</button>
+          <button type="button" data-action="delete-part" data-part-id="${escapeHtml(candidate.id)}" class="danger" ${partContainsLockedStyle(candidate) ? 'disabled' : ''}>${escapeHtml(this.tr('delete'))}</button>
+        </div>
+        </article>
       `;
     }).join('');
     const itemRows = part?.items.map((candidate) => {
       const thumbnail = this.itemThumbnailUrl(candidate);
       return `
-        <button class="v4-item-card ${candidate.id === item?.id ? 'active' : ''}" type="button" draggable="true" data-drag-kind="item" data-parent-id="${escapeHtml(part.id)}" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-item" data-item-id="${escapeHtml(candidate.id)}">
+        <article class="v4-record-entry v4-item-entry" draggable="true" data-drag-kind="item" data-parent-id="${escapeHtml(part.id)}" data-drag-id="${escapeHtml(candidate.id)}">
+        <button class="v4-item-card ${candidate.id === item?.id ? 'active' : ''}" type="button" data-action="select-item" data-item-id="${escapeHtml(candidate.id)}">
           <span class="v4-item-thumb">${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" />` : '<i>PNG</i>'}</span>
           <strong>${escapeHtml(candidate.name)}</strong>
           <small>${escapeHtml(this.tr('styleCount', { count: candidate.styles.length }))}</small>
         </button>
+        <div class="v4-record-actions">
+          <button type="button" data-action="copy-item" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(candidate.id)}">${escapeHtml(this.tr('duplicate'))}</button>
+          <button type="button" class="danger" data-action="delete-item" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(candidate.id)}" ${itemContainsLockedStyle(candidate) ? 'disabled' : ''}>${escapeHtml(this.tr('delete'))}</button>
+        </div>
+        </article>
       `;
     }).join('') || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noItemsYet'))}</strong><span>${escapeHtml(this.tr('noItemsCopy'))}</span></div>`;
     const styleRows = item?.styles.map((candidate) => {
       const runtime = this.runtimeAsset(candidate.assetId);
       const key = styleSceneKey(part.id, item.id, candidate.id);
       return `
-        <button class="v4-style-chip ${candidate.id === style?.id ? 'active' : ''} ${this.hiddenStyleKeys.has(key) ? 'muted' : ''}" type="button" draggable="${candidate.styleLocked ? 'false' : 'true'}" data-drag-kind="style" data-parent-id="${escapeHtml(`${part.id}/${item.id}`)}" data-drag-id="${escapeHtml(candidate.id)}" data-action="select-style" data-style-id="${escapeHtml(candidate.id)}">
+        <article class="v4-record-entry v4-style-entry" draggable="${candidate.styleLocked ? 'false' : 'true'}" data-drag-kind="style" data-parent-id="${escapeHtml(`${part.id}/${item.id}`)}" data-drag-id="${escapeHtml(candidate.id)}">
+        <button class="v4-style-chip ${candidate.id === style?.id ? 'active' : ''} ${this.hiddenStyleKeys.has(key) ? 'muted' : ''}" type="button" data-action="select-style" data-style-id="${escapeHtml(candidate.id)}">
           <span class="v4-style-chip-thumb">${runtime?.thumbnailUrl || runtime?.url ? `<img src="${escapeHtml(runtime.thumbnailUrl || runtime.url)}" alt="" />` : '<i>PNG</i>'}</span>
           <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(candidate.id === item.defaultStyleId ? this.tr('defaultStyle') : this.tr('style'))}</small></span>
           ${candidate.styleLocked ? '<em>🔒</em>' : candidate.positionLocked ? '<em>⌖</em>' : ''}
         </button>
+        <div class="v4-record-actions">
+          <button type="button" data-action="copy-style" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(item.id)}" data-style-id="${escapeHtml(candidate.id)}">${escapeHtml(this.tr('duplicate'))}</button>
+          <button type="button" class="danger" data-action="delete-style" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(item.id)}" data-style-id="${escapeHtml(candidate.id)}" ${candidate.styleLocked ? 'disabled' : ''}>${escapeHtml(this.tr('delete'))}</button>
+        </div>
+        </article>
       `;
     }).join('') || `<span class="v4-style-empty">${escapeHtml(this.tr('noStylesYet'))}</span>`;
 
@@ -5248,7 +5293,6 @@ export class MakerWorkspace {
           <aside class="v4-parts-browser">
             <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('parts'))}</span><strong>${escapeHtml(this.tr('playerMenuLinkedOrder'))}</strong><small>${escapeHtml(this.tr('playerMenuLinkedOrderCopy'))}</small></div><button type="button" data-action="add-part" aria-label="${escapeHtml(this.tr('addPartAria'))}">＋</button></div>
             <div class="v4-parts-list">${partRows || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('createFirstPart'))}</span></div>`}</div>
-            ${part ? `<div class="v4-part-actions"><button type="button" data-action="copy-part">${escapeHtml(this.tr('duplicate'))}</button><button type="button" data-action="delete-part" class="danger" ${partContainsLockedStyle(part) ? 'disabled' : ''}>${escapeHtml(this.tr('delete'))}</button></div>` : ''}
           </aside>
 
           <main class="v4-canvas-column">
@@ -5276,12 +5320,12 @@ export class MakerWorkspace {
                 <div><span>${escapeHtml(this.tr('items'))}</span><strong>${escapeHtml(part?.name || this.tr('selectPart'))}</strong></div>
                 <div>
                   <button type="button" data-action="add-item" ${part ? '' : 'disabled'}>${escapeHtml(this.tr('addItem'))}</button>
-                  <label class="v4-file-button ${item ? '' : 'disabled'}">${escapeHtml(this.tr('batchImport'))}<input type="file" accept="image/png" multiple data-action="batch-import" ${item ? '' : 'disabled'} /></label>
+                  <label class="v4-file-button ${part ? '' : 'disabled'}">${escapeHtml(this.tr('batchImportItems'))}<input type="file" accept="image/png" multiple data-action="batch-import-items" ${part ? '' : 'disabled'} /></label>
                   <label class="v4-file-button">${escapeHtml(this.tr('importMatrixFolder'))}<input type="file" accept="image/png" multiple webkitdirectory directory data-action="project-import" /></label>
                 </div>
               </div>
               <div class="v4-item-grid">${itemRows}</div>
-              ${item ? `<div class="v4-style-row"><span>${escapeHtml(this.tr('styles'))}</span>${styleRows}<button type="button" data-action="add-style">${escapeHtml(this.tr('addStyle'))}</button></div>` : ''}
+              ${item ? `<div class="v4-style-row"><span>${escapeHtml(this.tr('styles'))}</span>${styleRows}<button type="button" data-action="add-style">${escapeHtml(this.tr('addStyle'))}</button><label class="v4-file-button">${escapeHtml(this.tr('batchImportStyles'))}<input type="file" accept="image/png" multiple data-action="batch-import-styles" /></label></div>` : ''}
             </div>
           </main>
 
@@ -5293,7 +5337,7 @@ export class MakerWorkspace {
         ${this.creatorTab !== 'structure' ? `<div class="v4-tool-modal-backdrop" data-action="close-tool-backdrop">
           <section id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true" aria-labelledby="makerV4ToolTitle" tabindex="-1">
             <header class="v4-tool-context"><div><span>${escapeHtml(this.creatorTabLabel(this.creatorTab, issues.length))}</span><strong id="makerV4ToolTitle">${escapeHtml(document.metadata.name)}</strong></div><button type="button" data-action="close-tool" aria-label="${escapeHtml(this.tr('close'))}">×</button></header>
-            ${this.renderCreatorAdvanced(document, issues, compatibility)}
+            <div class="v4-tool-body">${this.renderCreatorAdvanced(document, issues, compatibility)}</div>
           </section>
         </div>` : ''}
         ${this.renderCreatorPublishFlow()}
@@ -5303,6 +5347,14 @@ export class MakerWorkspace {
       ${this.renderImportDialog(document)}
     `;
     this.restoreCreatorViewState(viewState);
+    if (this.resetCreatorToolScroll) {
+      const toolBody = this.creatorRoot?.querySelector?.('.v4-tool-body');
+      if (toolBody) {
+        toolBody.scrollTop = 0;
+        toolBody.scrollLeft = 0;
+      }
+      this.resetCreatorToolScroll = false;
+    }
     if (this.creatorTab === 'rules') {
       this.filterRuleOwnerOptions(this.ruleOwnerQuery);
       this.filterRuleTargetTree('availability', this.ruleTargetQuery);
@@ -5782,7 +5834,6 @@ export class MakerWorkspace {
           <span class="v4-inspector-label">${escapeHtml(this.tr('item'))}</span>
           <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(item.name)}" data-action="item-name" maxlength="128" /></label>
           ${combinationRuleEntry(`${part.id}::${item.id}`, 'item')}
-          <div class="v4-inline-actions"><button type="button" data-action="copy-item">${escapeHtml(this.tr('duplicate'))}</button><button type="button" class="danger" data-action="delete-item" ${itemContainsLockedStyle(item) ? 'disabled' : ''}>${escapeHtml(this.tr('delete'))}</button></div>
           <label class="v4-file-button wide">${escapeHtml(this.tr('customThumbnail'))}<input type="file" accept="image/png,image/jpeg" data-action="item-thumbnail" /></label>
         </div>
         <div class="v4-inspector-section">
@@ -5792,9 +5843,7 @@ export class MakerWorkspace {
             <label>${escapeHtml(this.tr('name'))}<input value="${escapeHtml(style.name)}" data-action="style-name" maxlength="128" ${styleDisabled} /></label>
             ${combinationRuleEntry(`${part.id}::${item.id}::${style.id}`, 'style')}
             <div class="v4-inline-actions">
-              <button type="button" data-action="copy-style">${escapeHtml(this.tr('duplicate'))}</button>
               <button type="button" data-action="set-default-style" ${styleLocked || item.defaultStyleId === style.id ? 'disabled' : ''}>${escapeHtml(item.defaultStyleId === style.id ? this.tr('defaultStyle') : this.tr('setDefaultStyle'))}</button>
-              <button type="button" class="danger" data-action="delete-style" ${styleDisabled}>${escapeHtml(this.tr('delete'))}</button>
             </div>
             <div class="v4-style-locks">
               <label><input type="checkbox" ${checked(style.positionLocked)} data-action="style-position-locked" ${styleLocked ? 'disabled' : ''} /> ${escapeHtml(this.tr('positionLock'))}</label>
@@ -5851,6 +5900,21 @@ export class MakerWorkspace {
     if (this.creatorTab === 'info') {
       const coverUrl = this.makerCoverUrl(document);
       const coverInitials = String(document.metadata.name || 'Maker').trim().slice(0, 2).toUpperCase();
+      const coverSaving = ['processing', 'saving'].includes(this.makerCoverSaveState);
+      const coverStatusMatchesCurrentRevision = (
+        this.makerCoverSaveState === 'saved'
+        && String(document.metadata.coverAssetId || '') === this.makerCoverSavedAssetId
+        && this.store?.getState().revision === this.makerCoverSavedRevision
+      );
+      const coverStatusMessage = (
+        this.makerCoverSaveState === 'saved' && !coverStatusMatchesCurrentRevision
+          ? ''
+          : this.makerCoverSaveMessage
+      ) || (
+        document.metadata.coverAssetId && this.store?.getState().dirty === false
+          ? this.tr('makerCoverSaved')
+          : ''
+      );
       const licenseOptions = [
         'personal-use',
         'free-remix',
@@ -5893,9 +5957,10 @@ export class MakerWorkspace {
               <strong>${escapeHtml(this.tr('makerCover'))}</strong>
               <p>${escapeHtml(this.tr('makerCoverCopy'))}</p>
               <div class="v4-inline-actions">
-                <label class="v4-file-button">${escapeHtml(this.tr(coverUrl ? 'replaceMakerCover' : 'uploadMakerCover'))}<input type="file" accept="image/png,image/jpeg" data-action="maker-cover" /></label>
-                <button type="button" class="danger" data-action="remove-maker-cover" ${document.metadata.coverAssetId ? '' : 'disabled'}>${escapeHtml(this.tr('removeMakerCover'))}</button>
+                <label class="v4-file-button ${coverSaving ? 'disabled' : ''}">${escapeHtml(this.tr(coverUrl ? 'replaceMakerCover' : 'uploadMakerCover'))}<input type="file" accept="image/png,image/jpeg" data-action="maker-cover" ${coverSaving ? 'disabled' : ''} /></label>
+                <button type="button" class="danger" data-action="remove-maker-cover" ${document.metadata.coverAssetId && !coverSaving ? '' : 'disabled'}>${escapeHtml(this.tr('removeMakerCover'))}</button>
               </div>
+              ${coverStatusMessage ? `<p class="v4-maker-cover-save-status ${escapeHtml(this.makerCoverSaveState)}" role="status" aria-live="polite"><i aria-hidden="true"></i><span>${escapeHtml(coverStatusMessage)}</span></p>` : ''}
               <small>${escapeHtml(this.tr('makerCoverRequirements'))}</small>
             </div>
           </section>
@@ -6078,10 +6143,13 @@ export class MakerWorkspace {
       }).join('');
       const targetGroups = document.parts
         .filter((part) => part.id !== draftOwnerPartId)
-        .map((part) => `
-        <details class="v4-rule-target-group" data-rule-target-group ${part.id === draftOwnerPartId ? '' : 'open'}>
+        .map((part) => {
+          const partRecords = records.filter((record) => record.partId === part.id);
+          const partHasSelectedTarget = partRecords.some((record) => draftTargets.has(record.value));
+          return `
+        <details class="v4-rule-target-group" data-rule-target-group ${partHasSelectedTarget ? 'open' : ''}>
           <summary><strong>${escapeHtml(part.name)}</strong><span>${escapeHtml(this.tr('part'))}</span></summary>
-          ${records.filter((record) => record.partId === part.id).map((record) => `
+          ${partRecords.map((record) => `
             ${(() => {
               const sameOwnerPart = record.partId === draftOwnerPartId;
               const alwaysSelectedPart = record.kind === 'part' && partIsAlwaysSelected(part);
@@ -6106,7 +6174,8 @@ export class MakerWorkspace {
             })()}
           `).join('')}
         </details>
-      `).join('');
+      `;
+        }).join('');
       const visibilityModel = visibilityEditorModel(selectedStyle?.visibleWhen);
       const visibilityStyleKey = selectedStyle
         ? styleSceneKey(selectedPart.id, selectedItem.id, selectedStyle.id)
@@ -6154,12 +6223,16 @@ export class MakerWorkspace {
               : 'visibilityAllSelectedSummary',
             { targets: visibilityDraftTargets },
           );
+      const visibilityDraftDefinitions = new Set(visibilityDraft.definitions);
       const visibilityTargets = document.parts
         .filter((part) => part.id !== selectedPart?.id)
-        .map((part) => `
-          <details class="v4-rule-target-group" data-rule-target-group open>
+        .map((part) => {
+          const partRecords = visibilityRecords.filter((record) => record.partId === part.id);
+          const partHasSelectedTarget = partRecords.some((record) => visibilityDraftDefinitions.has(record.value));
+          return `
+          <details class="v4-rule-target-group" data-rule-target-group ${partHasSelectedTarget ? 'open' : ''}>
             <summary><strong>${escapeHtml(part.name)}</strong><span>${escapeHtml(this.tr('visibilityDependency'))}</span></summary>
-            ${visibilityRecords.filter((record) => record.partId === part.id).map((record) => `
+            ${partRecords.map((record) => `
               ${(() => {
                 const alwaysSelectedPart = record.kind === 'part' && partIsAlwaysSelected(part);
                 const unpublishedTarget = visibilityOwnerIsPublic
@@ -6181,7 +6254,8 @@ export class MakerWorkspace {
               })()}
             `).join('')}
           </details>
-        `).join('');
+        `;
+        }).join('');
       const availabilityPanel = `
         <section id="v4RuleAvailabilityPanel" class="v4-rule-editor-panel" role="tabpanel" aria-labelledby="v4RuleAvailabilityTab" ${this.rulesEditorIntent === 'availability' ? '' : 'hidden'}>
           <div class="v4-rule-builder">
@@ -6245,10 +6319,12 @@ export class MakerWorkspace {
                 <small data-rule-search-count>${escapeHtml(this.tr('ruleSearchResultCount', { count: visibilityRecords.length }))}</small>
                 <div class="v4-rule-target-tree" data-rule-target-tree="visibility">${visibilityTargets || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('visibilityNoOtherParts'))}</span></div>`}<div class="v4-inline-empty" data-rule-search-empty hidden><span>${escapeHtml(this.tr('ruleSearchEmpty'))}</span></div></div>
               </div>
-              <p class="v4-visibility-preview" aria-live="polite"><span>${escapeHtml(this.tr('visibilityPreview'))}</span><strong>${escapeHtml(visibilityDraftText)}</strong></p>
-              <div class="v4-inline-actions">
-                <button class="primary" type="button" data-action="apply-style-visibility" ${selectedStyle.styleLocked ? 'disabled' : ''}>${escapeHtml(this.tr('applyVisibilityCondition'))}</button>
-                <button type="button" data-action="clear-style-visibility" ${selectedStyle.styleLocked || !selectedStyle.visibleWhen ? 'disabled' : ''}>${escapeHtml(this.tr('setAlwaysVisible'))}</button>
+              <div class="v4-visibility-footer">
+                <p class="v4-visibility-preview" aria-live="polite"><span>${escapeHtml(this.tr('visibilityPreview'))}</span><strong>${escapeHtml(visibilityDraftText)}</strong></p>
+                <div class="v4-inline-actions">
+                  <button class="primary" type="button" data-action="apply-style-visibility" ${selectedStyle.styleLocked ? 'disabled' : ''}>${escapeHtml(this.tr('applyVisibilityCondition'))}</button>
+                  <button type="button" data-action="clear-style-visibility" ${selectedStyle.styleLocked || !selectedStyle.visibleWhen ? 'disabled' : ''}>${escapeHtml(this.tr('setAlwaysVisible'))}</button>
+                </div>
               </div>
             </fieldset>
             ${this.visibilityBuilderError ? `<div class="v4-rule-error" role="alert">${escapeHtml(this.visibilityBuilderError)}</div>` : ''}
@@ -6379,36 +6455,78 @@ export class MakerWorkspace {
 
   renderImportDialog(document) {
     if (!this.pendingImport) return '';
+    const mode = this.pendingImport.mode;
+    const projectMode = mode === 'project';
+    const itemMode = mode === 'items';
+    const styleMode = mode === 'styles';
+    const importBusy = this.batchImportInFlight;
+    const targetPart = findPart(document, this.pendingImport.partId);
+    const targetItem = targetPart && this.pendingImport.itemId
+      ? findItem(document, targetPart.id, this.pendingImport.itemId)
+      : null;
     const trackOptions = (value) => [`<option value="">${escapeHtml(this.tr('createNewLayerTrack'))}</option>`, ...document.layerTracks.map((track) => `<option value="${escapeHtml(track.id)}" ${selected(value, track.id)}>${escapeHtml(track.name)}</option>`)].join('');
     const targetOptions = (value) => [`<option value="">${escapeHtml(this.tr('chooseItemStyle'))}</option>`, ...document.parts.flatMap((part) => part.items.flatMap((item) => item.styles.map((style) => {
       const definition = `${part.id}::${item.id}::${style.id}`;
       return `<option value="${escapeHtml(definition)}" ${selected(value, definition)} ${style.styleLocked ? 'disabled' : ''}>${escapeHtml(part.name)} / ${escapeHtml(item.name)} / ${escapeHtml(style.name)}${style.styleLocked ? ' 🔒' : ''}</option>`;
     })))].join('');
-    const projectMode = this.pendingImport.mode === 'project';
     const targetCounts = new Map();
-    const importTargetKey = (mapping, index) => projectMode
-      ? mapping.targetDefinition
-      : `new-style:${index}`;
+    const importTargetKey = (mapping, index) => projectMode ? mapping.targetDefinition : `${mode}:${index}`;
     this.pendingImport.mapping.forEach((mapping, index) => {
       const key = importTargetKey(mapping, index);
       targetCounts.set(key, (targetCounts.get(key) || 0) + 1);
     });
-    const hasConflicts = this.pendingImport.mapping.some((mapping, index) => targetCounts.get(importTargetKey(mapping, index)) > 1);
+    const hasConflicts = projectMode && this.pendingImport.mapping
+      .some((mapping, index) => targetCounts.get(importTargetKey(mapping, index)) > 1);
+    const confidenceKeys = {
+      matched: 'importMatched',
+      ordered: 'importOrdered',
+      'new-track': 'importNewTrack',
+      review: 'importReview',
+      unmapped: 'importUnmapped',
+    };
+    const titleKey = projectMode
+      ? 'projectImportTitle'
+      : itemMode ? 'batchImportItemsTitle' : 'batchImportStylesTitle';
+    const copyKey = projectMode
+      ? 'projectImportCopy'
+      : itemMode ? 'batchImportItemsCopy' : 'batchImportStylesCopy';
+    const countKey = itemMode
+      ? 'importItemsPngCount'
+      : styleMode ? 'importStylesPngCount' : 'importPngCount';
+    const scopeLabel = itemMode
+      ? this.tr('importIntoPart')
+      : styleMode ? this.tr('importIntoItem') : this.tr('importMappingScope');
+    const scopeValue = itemMode
+      ? targetPart?.name || '—'
+      : styleMode ? [targetPart?.name, targetItem?.name].filter(Boolean).join(' › ') || '—' : '';
+    const invalidProjectTarget = projectMode
+      && this.pendingImport.mapping.some((mapping) => !mapping.targetDefinition);
     return `
-      <div class="v4-modal-backdrop" role="dialog" aria-modal="true" aria-label="${escapeHtml(this.tr('confirmBatchImport'))}">
-        <section class="v4-import-dialog ${projectMode ? 'project-matrix' : ''}">
-          <header><div><span>${escapeHtml(this.tr('confirmBatchImport'))}</span><h3>${escapeHtml(this.tr(projectMode ? 'projectImportTitle' : 'batchImportTitle'))}</h3></div><button type="button" data-action="cancel-import" aria-label="${escapeHtml(this.tr('cancel'))}">×</button></header>
-          <p>${escapeHtml(this.tr(projectMode ? 'projectImportCopy' : 'batchImportCopy'))}</p>
+      <div class="v4-modal-backdrop">
+        <section class="v4-import-dialog ${projectMode ? 'project-matrix' : `mode-${mode}`}" role="dialog" aria-modal="true" aria-busy="${importBusy}" aria-label="${escapeHtml(this.tr('confirmBatchImport'))}">
+          <header><div><span>${escapeHtml(this.tr('confirmBatchImport'))}</span><h3>${escapeHtml(this.tr(titleKey))}</h3></div><button type="button" data-action="cancel-import" aria-label="${escapeHtml(this.tr('cancel'))}" ${importBusy ? 'disabled' : ''}>×</button></header>
+          <div class="v4-import-intro">
+            <p>${escapeHtml(this.tr(copyKey))}</p>
+            ${projectMode ? '' : `<p class="v4-import-destination"><span>${escapeHtml(scopeLabel)}</span><strong>${escapeHtml(scopeValue)}</strong></p>`}
+          </div>
           <div class="v4-import-list">${this.pendingImport.mapping.map((mapping, index) => `
-            <div class="${targetCounts.get(importTargetKey(mapping, index)) > 1 ? 'conflict' : ''}">
-              <span>${escapeHtml(mapping.fileName)}</span><em>${escapeHtml(mapping.confidence)}</em>
-              ${projectMode ? `<select data-action="import-target" data-import-index="${index}">${targetOptions(mapping.targetDefinition)}</select>` : ''}
-              ${projectMode ? '' : `<input data-action="import-style-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedStyleName || '')}" aria-label="${escapeHtml(this.tr('style'))}" />`}
-              <select data-action="import-track" data-import-index="${index}">${trackOptions(mapping.trackId)}</select>
-              ${projectMode ? '' : `<input data-action="import-track-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedTrackName)}" aria-label="${escapeHtml(this.tr('newTrackName'))}" />`}
-            </div>
+            <article class="v4-import-mapping-card ${targetCounts.get(importTargetKey(mapping, index)) > 1 ? 'conflict' : ''}">
+              <header class="v4-import-file">
+                <div><span>${escapeHtml(this.tr('importFileLabel', { index: index + 1 }))}</span><strong>${escapeHtml(mapping.fileName)}</strong></div>
+                <em>${escapeHtml(this.tr(confidenceKeys[mapping.confidence] || 'importReview'))}</em>
+              </header>
+              <div class="v4-import-fields">
+                ${projectMode ? `<label>${escapeHtml(this.tr('importMappingScope'))}<select data-action="import-target" data-import-index="${index}" ${importBusy ? 'disabled' : ''}>${targetOptions(mapping.targetDefinition)}</select></label>` : ''}
+                ${itemMode ? `<label>${escapeHtml(this.tr('itemName'))}<input data-action="import-item-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedItemName || '')}" ${importBusy ? 'disabled' : ''} /></label>` : ''}
+                ${styleMode ? `<label>${escapeHtml(this.tr('styleName'))}<input data-action="import-style-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedStyleName || '')}" ${importBusy ? 'disabled' : ''} /></label>` : ''}
+                <label>${escapeHtml(this.tr('layerTrack'))}<select data-action="import-track" data-import-index="${index}" ${importBusy ? 'disabled' : ''}>${trackOptions(mapping.trackId)}</select></label>
+                ${mapping.trackId
+                  ? `<div class="v4-import-inherited-track"><span>${escapeHtml(this.tr('inheritedLayerTrack'))}</span><strong>${escapeHtml(document.layerTracks.find((track) => track.id === mapping.trackId)?.name || mapping.suggestedTrackName || '—')}</strong></div>`
+                  : `<label>${escapeHtml(this.tr('newTrackName'))}<input data-action="import-track-name" data-import-index="${index}" value="${escapeHtml(mapping.suggestedTrackName || '')}" ${importBusy ? 'disabled' : ''} /></label>`}
+              </div>
+            </article>
           `).join('')}</div>
-          <footer><button type="button" data-action="cancel-import">${escapeHtml(this.tr('cancel'))}</button><button class="primary" type="button" data-action="confirm-import" ${hasConflicts || (projectMode && this.pendingImport.mapping.some((mapping) => !mapping.targetDefinition)) ? 'disabled' : ''}>${escapeHtml(hasConflicts ? this.tr('resolveDuplicateMappings') : this.tr('importPngCount', { count: this.pendingImport.mapping.length }))}</button></footer>
+          <footer><button type="button" data-action="cancel-import" ${importBusy ? 'disabled' : ''}>${escapeHtml(this.tr('cancel'))}</button><button class="primary" type="button" data-action="confirm-import" ${importBusy || hasConflicts || invalidProjectTarget ? 'disabled' : ''}>${escapeHtml(importBusy ? this.tr('inspectingPngs', { count: this.pendingImport.mapping.length }) : hasConflicts ? this.tr('resolveDuplicateMappings') : this.tr(countKey, { count: this.pendingImport.mapping.length }))}</button></footer>
         </section>
       </div>
     `;
@@ -7855,6 +7973,7 @@ export class MakerWorkspace {
       this.rulesEditorIntent = button.dataset.intent === 'visibility' ? 'visibility' : 'availability';
       this.ruleBuilderError = '';
       this.visibilityBuilderError = '';
+      this.resetCreatorToolScroll = true;
       this.render();
       return;
     }
@@ -7895,6 +8014,11 @@ export class MakerWorkspace {
     }
     if (action === 'remove-maker-cover') {
       if (!document.metadata.coverAssetId || !this.confirmDelete(this.tr('removeMakerCoverConfirm'))) return;
+      this.makerCoverRequestId += 1;
+      this.makerCoverSaveState = 'idle';
+      this.makerCoverSaveMessage = '';
+      this.makerCoverSavedAssetId = '';
+      this.makerCoverSavedRevision = null;
       this.executeDocument('Remove Maker cover', ({ document: next }) => {
         next.metadata.coverAssetId = null;
         removeUnreferencedAssetMetadata(next);
@@ -8198,10 +8322,19 @@ export class MakerWorkspace {
       });
       return;
     }
-    if (action === 'copy-part' && part) {
+    const actionPart = button.dataset.partId
+      ? findPart(document, button.dataset.partId)
+      : part;
+    const actionItem = button.dataset.itemId && actionPart
+      ? findItem(document, actionPart.id, button.dataset.itemId)
+      : item;
+    const actionStyle = button.dataset.styleId && actionPart && actionItem
+      ? findStyle(document, actionPart.id, actionItem.id, button.dataset.styleId)
+      : style;
+    if (action === 'copy-part' && actionPart) {
       this.executeDocument('Duplicate Part', ({ document: next }) => {
-        const duplicatesExportBackground = this.playerBackgroundPartIds(next).has(part.id);
-        const duplicate = duplicatePart(next, part.id);
+        const duplicatesExportBackground = this.playerBackgroundPartIds(next).has(actionPart.id);
+        const duplicate = duplicatePart(next, actionPart.id);
         if (!duplicate) return;
         if (duplicatesExportBackground) {
           next.extensions ||= {};
@@ -8226,35 +8359,38 @@ export class MakerWorkspace {
     }
     if (
       action === 'delete-part'
-      && part
-      && !partContainsLockedStyle(part)
-      && this.confirmDelete(this.tr('deletePartConfirm', { name: part.name }))
+      && actionPart
+      && !partContainsLockedStyle(actionPart)
+      && this.confirmDelete(this.tr('deletePartConfirm', { name: actionPart.name }))
     ) {
+      const deletingSelectedPart = actionPart.id === this.selectedPartId;
       this.executeDocument('Delete Part', ({ document: next, recipe: nextRecipe }) => {
-        const removedPart = findPart(next, part.id);
+        const removedPart = findPart(next, actionPart.id);
         const candidateTrackIds = new Set(partLayerTrackIds(removedPart));
-        next.parts = next.parts.filter((candidate) => candidate.id !== part.id);
+        next.parts = next.parts.filter((candidate) => candidate.id !== actionPart.id);
         if (Array.isArray(next.extensions?.playerExport?.backgroundPartIds)) {
           next.extensions.playerExport.backgroundPartIds = next.extensions.playerExport.backgroundPartIds
-            .filter((partId) => partId !== part.id);
+            .filter((partId) => partId !== actionPart.id);
         }
         next.parts.forEach((candidate) => {
-          if (candidate.parentPartId === part.id) candidate.parentPartId = null;
-          candidate.requires = candidate.requires.filter((target) => target.partId !== part.id);
-          candidate.excludes = candidate.excludes.filter((target) => target.partId !== part.id);
+          if (candidate.parentPartId === actionPart.id) candidate.parentPartId = null;
+          candidate.requires = candidate.requires.filter((target) => target.partId !== actionPart.id);
+          candidate.excludes = candidate.excludes.filter((target) => target.partId !== actionPart.id);
         });
-        pruneDeletedDefinitionReferences(next, { partId: part.id });
-        replaceRecipeSelection(nextRecipe, { partId: part.id, itemId: '' });
+        pruneDeletedDefinitionReferences(next, { partId: actionPart.id });
+        replaceRecipeSelection(nextRecipe, { partId: actionPart.id, itemId: '' });
         const usedTrackIds = new Set(next.parts.flatMap((candidate) => partLayerTrackIds(candidate)));
         next.layerTracks = next.layerTracks.filter((track) => (
           !candidateTrackIds.has(track.id) || usedTrackIds.has(track.id) || track.locked
         ));
         removeUnreferencedAssetMetadata(next);
       });
-      this.selectedPartId = '';
-      this.selectedItemId = '';
-      this.selectedStyleId = '';
-      this.ensureCreatorSelection(this.store.getState().document);
+      if (deletingSelectedPart) {
+        this.selectedPartId = '';
+        this.selectedItemId = '';
+        this.selectedStyleId = '';
+        this.ensureCreatorSelection(this.store.getState().document);
+      }
       this.syncCreatorRecipeSelection();
       return;
     }
@@ -8282,33 +8418,43 @@ export class MakerWorkspace {
       this.syncCreatorRecipeSelection();
       return;
     }
-    if (action === 'copy-item' && item) {
+    if (action === 'copy-item' && actionPart && actionItem) {
       this.executeDocument('Duplicate Item', ({ document: next }) => {
-        const duplicate = duplicateItem(next, part.id, item.id);
+        const duplicate = duplicateItem(next, actionPart.id, actionItem.id);
         if (!duplicate) return;
+        this.selectedPartId = actionPart.id;
         this.selectedItemId = duplicate.id;
         this.selectedStyleId = duplicate.defaultStyleId || duplicate.styles[0]?.id || '';
+        const duplicateStyle = duplicate.styles.find((candidate) => candidate.id === this.selectedStyleId)
+          || duplicate.styles[0]
+          || null;
+        this.selectedTrackId = duplicateStyle?.layerTrackId || this.selectedTrackId;
       });
       this.syncCreatorRecipeSelection();
       return;
     }
     if (
       action === 'delete-item'
-      && item
-      && !itemContainsLockedStyle(item)
-      && this.confirmDelete(this.tr('deleteItemConfirm', { name: item.name }))
+      && actionPart
+      && actionItem
+      && !itemContainsLockedStyle(actionItem)
+      && this.confirmDelete(this.tr('deleteItemConfirm', { name: actionItem.name }))
     ) {
+      const deletingSelectedItem = actionPart.id === this.selectedPartId
+        && actionItem.id === this.selectedItemId;
       this.executeDocument('Delete Item', ({ document: next, recipe: nextRecipe }) => {
-        const targetPart = findPart(next, part.id);
-        targetPart.items = targetPart.items.filter((candidate) => candidate.id !== item.id);
-        if (targetPart.defaultItemId === item.id) targetPart.defaultItemId = targetPart.items[0]?.id || null;
-        pruneDeletedDefinitionReferences(next, { partId: part.id, itemId: item.id });
-        replaceRecipeSelection(nextRecipe, { partId: part.id, itemId: '' });
+        const targetPart = findPart(next, actionPart.id);
+        targetPart.items = targetPart.items.filter((candidate) => candidate.id !== actionItem.id);
+        if (targetPart.defaultItemId === actionItem.id) targetPart.defaultItemId = targetPart.items[0]?.id || null;
+        pruneDeletedDefinitionReferences(next, { partId: actionPart.id, itemId: actionItem.id });
+        replaceRecipeSelection(nextRecipe, { partId: actionPart.id, itemId: '' });
         removeUnreferencedAssetMetadata(next);
       });
-      this.selectedItemId = '';
-      this.selectedStyleId = '';
-      this.ensureCreatorSelection(this.store.getState().document);
+      if (deletingSelectedItem) {
+        this.selectedItemId = '';
+        this.selectedStyleId = '';
+        this.ensureCreatorSelection(this.store.getState().document);
+      }
       this.syncCreatorRecipeSelection();
       return;
     }
@@ -8336,27 +8482,40 @@ export class MakerWorkspace {
       this.syncCreatorRecipeSelection();
       return;
     }
-    if (action === 'copy-style' && style) {
+    if (action === 'copy-style' && actionPart && actionItem && actionStyle) {
       this.executeDocument('Duplicate Style', ({ document: next }) => {
-        const duplicate = duplicateStyle(next, part.id, item.id, style.id);
+        const duplicate = duplicateStyle(next, actionPart.id, actionItem.id, actionStyle.id);
         if (!duplicate) return;
+        this.selectedPartId = actionPart.id;
+        this.selectedItemId = actionItem.id;
         this.selectedStyleId = duplicate.id;
+        this.selectedTrackId = duplicate.layerTrackId || this.selectedTrackId;
       });
       this.syncCreatorRecipeSelection();
       return;
     }
-    if (action === 'delete-style' && style && !style.styleLocked && this.confirmDelete(this.tr('deleteStyleConfirm', { name: style.name }))) {
+    if (
+      action === 'delete-style'
+      && actionPart
+      && actionItem
+      && actionStyle
+      && !actionStyle.styleLocked
+      && this.confirmDelete(this.tr('deleteStyleConfirm', { name: actionStyle.name }))
+    ) {
+      const deletingSelectedStyle = actionPart.id === this.selectedPartId
+        && actionItem.id === this.selectedItemId
+        && actionStyle.id === this.selectedStyleId;
       this.executeDocument('Delete Style', ({ document: next }) => {
-        const targetItem = findItem(next, part.id, item.id);
-        targetItem.styles = targetItem.styles.filter((candidate) => candidate.id !== style.id);
-        if (targetItem.defaultStyleId === style.id) targetItem.defaultStyleId = targetItem.styles[0]?.id || null;
+        const targetItem = findItem(next, actionPart.id, actionItem.id);
+        targetItem.styles = targetItem.styles.filter((candidate) => candidate.id !== actionStyle.id);
+        if (targetItem.defaultStyleId === actionStyle.id) targetItem.defaultStyleId = targetItem.styles[0]?.id || null;
         pruneDeletedDefinitionReferences(next, {
-          partId: part.id,
-          itemId: item.id,
-          styleId: style.id,
+          partId: actionPart.id,
+          itemId: actionItem.id,
+          styleId: actionStyle.id,
         });
         removeUnreferencedAssetMetadata(next);
-        this.selectedStyleId = targetItem.defaultStyleId || targetItem.styles[0]?.id || '';
+        if (deletingSelectedStyle) this.selectedStyleId = targetItem.defaultStyleId || targetItem.styles[0]?.id || '';
       });
       this.syncCreatorRecipeSelection();
       return;
@@ -8560,12 +8719,13 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'cancel-import') {
+      if (this.batchImportInFlight) return;
       this.pendingImport = null;
       this.render();
       return;
     }
     if (action === 'confirm-import') {
-      this.confirmBatchImport();
+      if (!this.batchImportInFlight) void this.confirmBatchImport();
     }
   }
 
@@ -8780,6 +8940,16 @@ export class MakerWorkspace {
       this.render();
       return;
     }
+    if (
+      this.batchImportInFlight
+      && (
+        action === 'import-project'
+        || action === 'project-import'
+        || action === 'batch-import-items'
+        || action === 'batch-import-styles'
+        || action?.startsWith('import-')
+      )
+    ) return;
     if (this.captureCreatorText(input)) {
       this.updateMakerInfoByteStatus(input);
       this.flushPendingCreatorText();
@@ -8797,29 +8967,62 @@ export class MakerWorkspace {
       input.value = '';
       return;
     }
-    if (action === 'batch-import') {
-      const files = [...(input.files || [])];
-      if (!files.length || !item) return;
-      const defaultStyle = item.styles.find((candidate) => candidate.id === item.defaultStyleId)
-        || item.styles[0]
+    if (action === 'batch-import-items' || action === 'batch-import-styles') {
+      const files = [...(input.files || [])]
+        .filter((file) => String(file.name || '').toLowerCase().endsWith('.png'));
+      const importingItems = action === 'batch-import-items';
+      if (!files.length || !part || (!importingItems && !item)) return;
+      const declaredTrackIds = new Set(
+        document.layerTracks.map((track) => String(track.id)),
+      );
+      const linkage = partTrackLinkage(document, part.id);
+      const sourceItem = item || part.items[0] || null;
+      const sourceStyle = sourceItem?.styles.find((candidate) => candidate.id === sourceItem.defaultStyleId)
+        || sourceItem?.styles[0]
         || null;
-      const inheritedTrackId = defaultStyle?.layerTrackId || this.selectedTrackId || document.layerTracks[0]?.id || '';
+      const linkedTrackId = linkage.mode === 'linked'
+        && declaredTrackIds.has(String(linkage.trackId || ''))
+        ? linkage.trackId
+        : '';
+      const sourceStyleTrackId = declaredTrackIds.has(String(sourceStyle?.layerTrackId || ''))
+        ? sourceStyle.layerTrackId
+        : '';
+      const existingPartTrackId = part.items
+        .flatMap((candidate) => candidate.styles || [])
+        .map((candidate) => candidate.layerTrackId)
+        .find((trackId) => declaredTrackIds.has(String(trackId || '')))
+        || '';
+      // Item imports belong to the selected Part. Never fall back to the
+      // previously selected or first global Track: an empty Part must create
+      // its own Track rather than silently render inside another Part.
+      const inheritedTrackId = linkedTrackId || sourceStyleTrackId || existingPartTrackId;
       const inheritedTrackName = document.layerTracks.find((track) => track.id === inheritedTrackId)?.name
-        || `${part.name} layer`;
+        || part.name;
+      const defaultStyle = !importingItems
+        ? item.styles.find((candidate) => candidate.id === item.defaultStyleId) || item.styles[0] || null
+        : null;
       this.pendingImport = {
-        mode: 'item',
+        mode: importingItems ? 'items' : 'styles',
         partId: part.id,
-        itemId: item.id,
+        itemId: importingItems ? '' : item.id,
         defaultStyleId: defaultStyle && !defaultStyle.assetId && !defaultStyle.styleLocked
           ? defaultStyle.id
           : '',
-        mapping: buildAssetImportMapping(files, document.layerTracks).map((mapping, index) => ({
-          ...mapping,
-          trackId: inheritedTrackId,
-          suggestedTrackName: inheritedTrackName,
-          suggestedStyleName: safeFileName(mapping.fileName, `style-${index + 1}`).replaceAll('-', ' '),
-        })),
+        mapping: buildAssetImportMapping(files, document.layerTracks).map((mapping, index) => {
+          const suggestedName = safeFileName(
+            mapping.fileName,
+            `${importingItems ? 'item' : 'style'}-${index + 1}`,
+          ).replaceAll('-', ' ');
+          return {
+            ...mapping,
+            trackId: inheritedTrackId,
+            suggestedTrackName: inheritedTrackName,
+            suggestedItemName: importingItems ? suggestedName : '',
+            suggestedStyleName: importingItems ? 'Default Style' : suggestedName,
+          };
+        }),
       };
+      input.value = '';
       this.render();
       return;
     }
@@ -8859,17 +9062,83 @@ export class MakerWorkspace {
       if (mapping) mapping.suggestedStyleName = input.value.trim() || mapping.suggestedStyleName;
       return;
     }
+    if (action === 'import-item-name') {
+      const mapping = this.pendingImport?.mapping[Number(input.dataset.importIndex)];
+      if (mapping) mapping.suggestedItemName = input.value.trim() || mapping.suggestedItemName;
+      return;
+    }
     if (action === 'maker-cover' && input.files?.[0]) {
+      const file = input.files[0];
       const operation = this.captureMakerOperation();
-      const asset = await this.importDisplayAsset(input.files[0], 'maker-cover', operation);
-      input.value = '';
-      if (!asset || !this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
-      this.executeDocument('Update Maker cover', ({ document: next }) => {
-        addDocumentAsset(next, asset);
-        next.metadata.coverAssetId = asset.assetId;
-        removeUnreferencedAssetMetadata(next);
-      });
-      await this.flushCompletedAssetOperation(operation, 'maker-cover-import');
+      const coverRequestId = ++this.makerCoverRequestId;
+      this.makerCoverSaveState = 'processing';
+      this.makerCoverSaveMessage = this.tr('makerCoverProcessing');
+      this.makerCoverSavedAssetId = '';
+      this.makerCoverSavedRevision = null;
+      this.render();
+      let asset = null;
+      try {
+        asset = await this.importDisplayAsset(file, 'maker-cover', operation);
+        if (
+          coverRequestId !== this.makerCoverRequestId
+          || !this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)
+        ) {
+          if (asset) {
+            if (this.assets.get(asset.assetId) === asset) this.assets.delete(asset.assetId);
+            revokeRuntimeAsset(asset);
+          }
+          return;
+        }
+        if (!asset) return;
+        this.makerCoverSaveState = 'saving';
+        this.makerCoverSaveMessage = this.tr('makerCoverSaving');
+        this.render();
+        this.executeDocument('Update Maker cover', ({ document: next }) => {
+          addDocumentAsset(next, asset);
+          next.metadata.coverAssetId = asset.assetId;
+          removeUnreferencedAssetMetadata(next);
+        });
+        await this.flushCompletedAssetOperation(operation, 'maker-cover-import');
+        if (
+          coverRequestId !== this.makerCoverRequestId
+          || !this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)
+        ) return;
+        const persisted = await this.draftRepository.load(operation.makerKey);
+        const persistedAsset = (persisted?.assets || []).find((record) => (
+          String(record?.assetId || '') === asset.assetId
+        ));
+        const persistedBlob = persistedAssetBlob(persistedAsset);
+        const currentRevision = operation.store.getState().revision;
+        if (
+          persisted?.revision !== currentRevision
+          || persisted?.document?.metadata?.coverAssetId !== asset.assetId
+          || !persistedBlob
+          || !await blobPayloadsEqual(file, persistedBlob)
+        ) {
+          throw new Error(this.tr('makerCoverVerificationFailed'));
+        }
+        this.makerCoverSaveState = 'saved';
+        this.makerCoverSaveMessage = this.tr('makerCoverSavedAt', {
+          time: this.formatSavedClock(persisted.savedAt || Date.now()),
+        });
+        this.makerCoverSavedAssetId = asset.assetId;
+        this.makerCoverSavedRevision = currentRevision;
+        this.render();
+      } catch (error) {
+        if (
+          coverRequestId === this.makerCoverRequestId
+          && this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)
+        ) {
+          this.makerCoverSaveState = 'error';
+          this.makerCoverSaveMessage = error?.message || this.tr('makerCoverSaveFailed');
+          this.makerCoverSavedAssetId = '';
+          this.makerCoverSavedRevision = null;
+          this.render();
+        }
+        throw error;
+      } finally {
+        input.value = '';
+      }
       return;
     }
     if (action === 'part-icon' && part && input.files?.[0]) {
@@ -9053,7 +9322,13 @@ export class MakerWorkspace {
     const assetId = createAssetId(kind);
     const record = runtimeAssetRecord({ assetId, blob: file, fileName: file.name, width, height, source: 'local' });
     record.kind = kind;
-    record.identifier = `${safeFileName(file.name, assetId)}-${assetId.slice(-8)}.${String(file.type).includes('jpeg') ? 'jpg' : 'png'}`;
+    const extension = String(file.type).includes('jpeg') ? 'jpg' : 'png';
+    // OCMaker.cover_url is capped at 512 UTF-8 bytes on Sui. Keep cover
+    // identifiers short and ASCII regardless of the creator's local filename;
+    // the original filename remains in the private runtime Asset record.
+    record.identifier = kind === 'maker-cover'
+      ? `maker-cover-${safeFileName(assetId.slice(-12), 'asset')}.${extension}`
+      : `${safeFileName(file.name, assetId)}-${assetId.slice(-8)}.${extension}`;
     this.assets.set(assetId, record);
     this.assetResolver.clear();
     this.assetResolver = createCachedAssetResolver(this.assets);
@@ -9209,12 +9484,15 @@ export class MakerWorkspace {
 
   async confirmBatchImport() {
     const pending = this.pendingImport;
-    if (!pending || !this.store || this.documentMutationBlocked()) return;
+    if (!pending || !this.store || this.documentMutationBlocked() || this.batchImportInFlight) return false;
+    const batchImportRequestId = ++this.batchImportRequestId;
+    this.batchImportInFlight = true;
     const operation = this.captureMakerOperation();
     let prepared = [];
     const createdRecords = [];
     let documentCommitted = false;
     operation.store.setSaveState('saving', this.tr('inspectingPngs', { count: pending.mapping.length }));
+    this.render();
     try {
       if (pending.mode === 'project') {
         const targetKeys = pending.mapping.map((mapping) => mapping.targetDefinition);
@@ -9234,9 +9512,14 @@ export class MakerWorkspace {
         });
       }
       const canvas = operation.store.getState().document.canvas;
-      prepared = await Promise.all(pending.mapping.map(async (mapping) => {
+      const preparationResults = await Promise.allSettled(pending.mapping.map(async (mapping) => {
         const inspection = await inspectPngAsset(mapping.file, canvas);
         const thumbnailBlob = await createAlphaCroppedThumbnail(mapping.file);
+        return { mapping, inspection, thumbnailBlob };
+      }));
+      const failedPreparation = preparationResults.find((result) => result.status === 'rejected');
+      if (failedPreparation) throw failedPreparation.reason;
+      prepared = preparationResults.map(({ value: { mapping, inspection, thumbnailBlob } }) => {
         const assetId = createAssetId(mapping.fileName);
         const record = runtimeAssetRecord({
           assetId,
@@ -9254,29 +9537,50 @@ export class MakerWorkspace {
         const result = { mapping, inspection, record };
         createdRecords.push(result);
         return result;
-      }));
+      });
       if (
-        this.pendingImport !== pending
+        batchImportRequestId !== this.batchImportRequestId
+        || !this.batchImportInFlight
+        || this.pendingImport !== pending
         || !this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)
       ) {
         createdRecords.forEach(({ record }) => revokeRuntimeAsset(record));
-        return;
+        return false;
       }
       prepared.forEach(({ record }) => this.assets.set(record.assetId, record));
       this.assetResolver.clear();
       this.assetResolver = createCachedAssetResolver(this.assets);
-      this.executeDocument(`Batch import ${prepared.length} Style PNGs`, ({ document }) => {
+      let firstImportedSelection = null;
+      this.executeDocument(`Batch import ${prepared.length} PNGs as ${pending.mode}`, ({ document }) => {
         const newTrackByName = new Map();
         prepared.forEach(({ mapping, inspection, record }, preparedIndex) => {
-          const [partId, itemId, requestedStyleId] = String(mapping.targetDefinition || `${pending.partId}::${pending.itemId}`).split('::');
-          const targetItem = findItem(document, partId, itemId);
-          if (!targetItem) throw new Error(this.tr('projectInvalidItemTarget', { file: mapping.fileName }));
-          let targetStyle = requestedStyleId ? findStyle(document, partId, itemId, requestedStyleId) : null;
-          if (
-            pending.mode === 'item'
-            && preparedIndex === 0
-            && pending.defaultStyleId
-          ) {
+          let partId = pending.partId;
+          let itemId = pending.itemId;
+          let requestedStyleId = '';
+          let targetItem = null;
+          let targetStyle = null;
+          if (pending.mode === 'items') {
+            const targetPart = findPart(document, pending.partId);
+            if (!targetPart) throw new Error(this.tr('projectInvalidItemTarget', { file: mapping.fileName }));
+            targetItem = createItem(
+              targetPart,
+              mapping.suggestedItemName || safeFileName(mapping.fileName, `Item ${targetPart.items.length + 1}`),
+            );
+            targetPart.items.push(targetItem);
+            targetPart.defaultItemId ||= targetItem.id;
+            targetStyle = targetItem.styles.find((candidate) => candidate.id === targetItem.defaultStyleId)
+              || targetItem.styles[0];
+            partId = targetPart.id;
+            itemId = targetItem.id;
+          } else {
+            [partId, itemId, requestedStyleId] = String(
+              mapping.targetDefinition || `${pending.partId}::${pending.itemId}`,
+            ).split('::');
+            targetItem = findItem(document, partId, itemId);
+            if (!targetItem) throw new Error(this.tr('projectInvalidItemTarget', { file: mapping.fileName }));
+            targetStyle = requestedStyleId ? findStyle(document, partId, itemId, requestedStyleId) : null;
+          }
+          if (pending.mode === 'styles' && preparedIndex === 0 && pending.defaultStyleId) {
             const emptyDefault = findStyle(document, partId, itemId, pending.defaultStyleId);
             if (emptyDefault && !emptyDefault.assetId) targetStyle = emptyDefault;
           }
@@ -9290,6 +9594,8 @@ export class MakerWorkspace {
             targetStyle = createStyle(targetItem, mapping.suggestedStyleName || safeFileName(mapping.fileName, `Style ${targetItem.styles.length + 1}`));
             targetItem.styles.push(targetStyle);
             targetItem.defaultStyleId ||= targetStyle.id;
+          } else if (pending.mode === 'styles' && !targetStyle.assetId && mapping.suggestedStyleName) {
+            targetStyle.name = mapping.suggestedStyleName;
           }
           let trackId = mapping.trackId;
           const proposedTrackName = mapping.suggestedTrackName || `Layer ${document.layerTracks.length + 1}`;
@@ -9312,26 +9618,47 @@ export class MakerWorkspace {
             };
             targetStyle.positionConfirmed = false;
           }
-          if (!targetStyle.positionLocked) {
-            this.editingPositionStyleKey = styleSceneKey(partId, itemId, targetStyle.id);
-          }
           const targetTrack = document.layerTracks.find((candidate) => candidate.id === trackId);
           if (targetTrack) {
             targetTrack.alignmentApproved = false;
             targetTrack.referenceAssetId ||= record.assetId;
           }
-          this.selectedPartId = partId;
-          this.selectedItemId = itemId;
-          this.selectedStyleId = targetStyle.id;
+          firstImportedSelection ||= {
+            partId,
+            itemId,
+            styleId: targetStyle.id,
+            canEditPosition: !targetStyle.positionLocked,
+          };
         });
         removeUnreferencedAssetMetadata(document);
       });
+      if (firstImportedSelection) {
+        this.selectedPartId = firstImportedSelection.partId;
+        this.selectedItemId = firstImportedSelection.itemId;
+        this.selectedStyleId = firstImportedSelection.styleId;
+        this.editingPositionStyleKey = firstImportedSelection.canEditPosition
+          ? styleSceneKey(
+              firstImportedSelection.partId,
+              firstImportedSelection.itemId,
+              firstImportedSelection.styleId,
+            )
+          : '';
+      }
       documentCommitted = true;
       this.pendingImport = null;
       this.syncCreatorRecipeSelection();
-      operation.store.setSaveState('dirty', this.tr('importedPngs', { count: prepared.length }));
+      operation.store.setSaveState(
+        'dirty',
+        this.tr(
+          pending.mode === 'items'
+            ? 'importedItems'
+            : pending.mode === 'styles' ? 'importedStyles' : 'importedPngs',
+          { count: prepared.length },
+        ),
+      );
       this.render();
       await this.flushCompletedAssetOperation(operation, 'batch-png-import');
+      return true;
     } catch (error) {
       if (!documentCommitted && createdRecords.length) {
         createdRecords.forEach(({ record }) => {
@@ -9343,6 +9670,12 @@ export class MakerWorkspace {
       }
       if (this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) {
         operation.store.setSaveState('error', error.message || this.tr('batchImportFailed'));
+      }
+      return false;
+    } finally {
+      if (batchImportRequestId === this.batchImportRequestId) {
+        this.batchImportInFlight = false;
+        this.render();
       }
     }
   }

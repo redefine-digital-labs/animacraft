@@ -488,6 +488,8 @@ test('duplicates a Part deeply and re-keys all nested editor identities', () => 
   assert.notEqual(duplicate.id, source.id);
   assert.equal(duplicate.parentPartId, source.parentPartId);
   assert.notEqual(duplicate.items[0].id, source.items[0].id);
+  assert.equal(duplicate.items[0].importKey, duplicate.items[0].id);
+  assert.notEqual(duplicate.items[0].importKey, source.items[0].importKey);
   assert.notEqual(duplicate.items[0].styles[0].id, source.items[0].styles[0].id);
   assert.equal(duplicate.defaultItemId, duplicate.items[0].id);
   assert.equal(duplicate.items[0].defaultStyleId, duplicate.items[0].styles[0].id);
@@ -564,6 +566,8 @@ test('duplicates an Item with deep Style copies and rewritten internal self refe
   const duplicate = duplicateItem(document, part.id, source.id);
   const copiedStyle = duplicate.styles[0];
   assert.notEqual(duplicate.id, source.id);
+  assert.equal(duplicate.importKey, duplicate.id);
+  assert.notEqual(duplicate.importKey, source.importKey);
   assert.notEqual(copiedStyle.id, sourceStyle.id);
   assert.equal(duplicate.defaultStyleId, copiedStyle.id);
   assert.deepEqual(duplicate.requires, [{
@@ -600,6 +604,62 @@ test('duplicates Item ANY selectors without retaining array references to the so
   assert.notDeepEqual(duplicate.requires[0].styleIds, source.requires[0].styleIds);
 });
 
+test('duplicates an Item and rewrites nested visibleWhen shorthand without changing external references', () => {
+  const document = playableDocument();
+  const part = document.parts[0];
+  const source = part.items[0];
+  const sourceStyle = source.styles[0];
+  source.visibleWhen = {
+    requires: [{
+      all: [
+        { partId: part.id, itemId: source.id, styleId: sourceStyle.id },
+        { partId: 'external-part', itemId: 'external-item', styleId: 'external-style' },
+      ],
+    }],
+    excludes: [{
+      requires: [{
+        partId: part.id,
+        itemIds: [source.id],
+        styleIds: [sourceStyle.id],
+      }],
+    }],
+  };
+
+  const duplicate = duplicateItem(document, part.id, source.id);
+  const copiedStyle = duplicate.styles[0];
+  const copiedSelfSelector = duplicate.visibleWhen.requires[0].all[0];
+  const copiedExternalSelector = duplicate.visibleWhen.requires[0].all[1];
+  const copiedNestedSelector = duplicate.visibleWhen.excludes[0].requires[0];
+
+  assert.deepEqual(copiedSelfSelector, {
+    partId: part.id,
+    itemId: duplicate.id,
+    styleId: copiedStyle.id,
+  });
+  assert.deepEqual(copiedExternalSelector, {
+    partId: 'external-part',
+    itemId: 'external-item',
+    styleId: 'external-style',
+  });
+  assert.deepEqual(copiedNestedSelector, {
+    partId: part.id,
+    itemIds: [duplicate.id],
+    styleIds: [copiedStyle.id],
+  });
+  assert.notEqual(duplicate.visibleWhen, source.visibleWhen);
+  assert.notEqual(duplicate.visibleWhen.requires, source.visibleWhen.requires);
+  assert.notEqual(duplicate.visibleWhen.requires[0], source.visibleWhen.requires[0]);
+  assert.notEqual(copiedSelfSelector, source.visibleWhen.requires[0].all[0]);
+  assert.notEqual(copiedExternalSelector, source.visibleWhen.requires[0].all[1]);
+  assert.notEqual(copiedNestedSelector.itemIds, source.visibleWhen.excludes[0].requires[0].itemIds);
+  assert.notEqual(copiedNestedSelector.styleIds, source.visibleWhen.excludes[0].requires[0].styleIds);
+
+  copiedExternalSelector.itemId = 'changed-only-on-copy';
+  copiedNestedSelector.itemIds.push('copy-only-item');
+  assert.equal(source.visibleWhen.requires[0].all[1].itemId, 'external-item');
+  assert.deepEqual(source.visibleWhen.excludes[0].requires[0].itemIds, [source.id]);
+});
+
 test('duplicates a Style with identical parameters, a new ID and rewritten self rules', () => {
   const document = playableDocument();
   const part = document.parts[0];
@@ -632,6 +692,60 @@ test('duplicates a Style and rewrites its identity inside an ANY style selector'
   const duplicate = duplicateStyle(document, part.id, item.id, source.id);
   assert.deepEqual(duplicate.visibleWhen.styleIds, [duplicate.id]);
   assert.deepEqual(source.visibleWhen.styleIds, [source.id]);
+});
+
+test('duplicates a Style and rewrites nested visibleWhen shorthand without changing external references', () => {
+  const document = playableDocument();
+  const part = document.parts[0];
+  const item = part.items[0];
+  const source = item.styles[0];
+  source.visibleWhen = {
+    requires: [{
+      any: [
+        { partId: part.id, itemId: item.id, styleId: source.id },
+        { partId: 'external-part', itemId: 'external-item', styleId: 'external-style' },
+      ],
+    }],
+    excludes: [{
+      all: [{
+        partId: part.id,
+        itemIds: [item.id],
+        styleIds: [source.id],
+      }],
+    }],
+  };
+
+  const duplicate = duplicateStyle(document, part.id, item.id, source.id);
+  const copiedSelfSelector = duplicate.visibleWhen.requires[0].any[0];
+  const copiedExternalSelector = duplicate.visibleWhen.requires[0].any[1];
+  const copiedNestedSelector = duplicate.visibleWhen.excludes[0].all[0];
+
+  assert.deepEqual(copiedSelfSelector, {
+    partId: part.id,
+    itemId: item.id,
+    styleId: duplicate.id,
+  });
+  assert.deepEqual(copiedExternalSelector, {
+    partId: 'external-part',
+    itemId: 'external-item',
+    styleId: 'external-style',
+  });
+  assert.deepEqual(copiedNestedSelector, {
+    partId: part.id,
+    itemIds: [item.id],
+    styleIds: [duplicate.id],
+  });
+  assert.notEqual(duplicate.visibleWhen, source.visibleWhen);
+  assert.notEqual(duplicate.visibleWhen.requires, source.visibleWhen.requires);
+  assert.notEqual(duplicate.visibleWhen.requires[0].any, source.visibleWhen.requires[0].any);
+  assert.notEqual(copiedSelfSelector, source.visibleWhen.requires[0].any[0]);
+  assert.notEqual(copiedExternalSelector, source.visibleWhen.requires[0].any[1]);
+  assert.notEqual(copiedNestedSelector.styleIds, source.visibleWhen.excludes[0].all[0].styleIds);
+
+  copiedExternalSelector.styleId = 'changed-only-on-copy';
+  copiedNestedSelector.styleIds.push('copy-only-style');
+  assert.equal(source.visibleWhen.requires[0].any[1].styleId, 'external-style');
+  assert.deepEqual(source.visibleWhen.excludes[0].all[0].styleIds, [source.id]);
 });
 
 test('duplicates a Part and rekeys Style arrays scoped through a single itemIds selector', () => {

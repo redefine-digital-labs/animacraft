@@ -187,6 +187,36 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(workspace, /id="makerV4Tab-\$\{id\}"[\s\S]*?aria-pressed="\$\{this\.creatorTab === id\}"/);
   assert.match(workspace, /id="v4RuleAvailabilityTab"[\s\S]*?role="tab"[\s\S]*?aria-selected=/);
   assert.match(workspace, /id="v4RuleVisibilityPanel"[\s\S]*?role="tabpanel"/);
+  assert.match(
+    workspace,
+    /class="v4-tool-body">\$\{this\.renderCreatorAdvanced\(document, issues, compatibility\)\}<\/div>/,
+    'advanced Creator tools must share one dedicated scroll surface',
+  );
+  assert.match(
+    styles,
+    /\.v4-rule-target-tree\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);[^}]*overflow:\s*visible;/s,
+    'rule targets must remain in a readable two-column grid without a nested scrollbar',
+  );
+  assert.match(
+    styles,
+    /\.v4-rule-target-group:not\(\[open\]\) > :not\(summary\)\s*\{\s*display:\s*none;/s,
+    'collapsed Part groups must actually hide their Item and Style choices',
+  );
+  assert.match(
+    styles,
+    /\.v4-rule-target-group > label > input\[type="checkbox"\]\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;/s,
+    'rule target checkboxes must not inherit the global full-width input layout',
+  );
+  assert.match(
+    workspace,
+    /const partHasSelectedTarget = partRecords\.some\(\(record\) => draftTargets\.has\(record\.value\)\);[\s\S]*?partHasSelectedTarget \? 'open' : ''/,
+    'combination Rule Part groups should stay collapsed unless they contain a selected target',
+  );
+  assert.match(
+    workspace,
+    /const partHasSelectedTarget = partRecords\.some\(\(record\) => visibilityDraftDefinitions\.has\(record\.value\)\);[\s\S]*?partHasSelectedTarget \? 'open' : ''/,
+    'Style visibility Part groups should stay collapsed unless they contain a selected target',
+  );
   assert.match(workspace, /else if \(style\.positionConfirmed === false\)/);
   assert.match(workspace, /data-action="focus-issue"/);
   assert.match(workspace, /data-action="style-asset"/);
@@ -309,6 +339,7 @@ test('every application dictionary group has exact five-language key and interpo
     'docsPageI18n',
     'draftRecoveryProductionI18n',
     'visualThemeI18n',
+    'makerCoverUriI18n',
   ];
   const tokens = (value) => [...String(value).matchAll(/\{([a-zA-Z0-9_]+)\}/g)]
     .map((match) => match[1])
@@ -395,6 +426,7 @@ test('non-English application copy only matches English for intentional product 
     'docsPageI18n',
     'draftRecoveryProductionI18n',
     'visualThemeI18n',
+    'makerCoverUriI18n',
   ];
   const intentional = {
     i18n: {

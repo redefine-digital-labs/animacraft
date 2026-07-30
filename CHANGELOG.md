@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.4 — Creator Import, Rules and Cover Reliability
+
+- Rebuilds the combination-rule and Style visibility-condition pickers as collapsed Part groups in a readable two-column layout with fixed-size controls, one modal scroll surface, live Player-result preview, and reliable return to the current Style.
+- Separates batch PNG import into explicit Item creation and Style creation flows, with one reviewed mapping card per file, editable names, destination scope, inherited Layer Track, and independent records.
+- Moves Duplicate/Delete controls onto every Part, Item, and Style; exact-record actions now deep-copy all visual and rule parameters while re-keying editor identities so later edits cannot leak back to the source.
+- Verifies Maker cover Blob bytes after the atomic Workspace save, reports processing/saving/saved/error states, and makes the configured manifest cover authoritative in the public on-chain gallery and Sui publication summary.
+- Adds complete five-language import and cover-save copy plus behavior, persistence, publication, accessibility, layout, and browser regression coverage.
+
 ## 0.8.3 — Docs Single-Scroll Navigation
 
 - Splits the public handbook into a concise `#docs` home with searchable article cards and stable `#docs/<article-id>` detail routes.

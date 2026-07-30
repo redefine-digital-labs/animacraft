@@ -439,6 +439,9 @@ export function duplicatePart(document, partId) {
     usedItemIds.add(copiedItemId);
     itemIdMap.set(sourceItem.id, copiedItemId);
     copiedItem.id = copiedItemId;
+    // Import keys are record identities, not visual parameters. Re-key them
+    // with the copied Item so future matrix imports cannot target the source.
+    copiedItem.importKey = copiedItemId;
 
     const usedStyleIds = new Set();
     (sourceItem.styles || []).forEach((sourceStyle, styleIndex) => {
@@ -546,7 +549,17 @@ function rewriteCopiedOwnerReferences(owner, rewriteTarget) {
     if (Array.isArray(condition)) return condition.map(rewriteCondition);
     if (!condition || typeof condition !== 'object') return condition;
     const result = { ...rewriteTarget(condition) };
-    ['condition', 'conditions', 'all', 'any', 'and', 'or', 'not'].forEach((field) => {
+    [
+      'condition',
+      'conditions',
+      'all',
+      'any',
+      'and',
+      'or',
+      'not',
+      'requires',
+      'excludes',
+    ].forEach((field) => {
       if (result[field] !== undefined) result[field] = rewriteCondition(result[field]);
     });
     return result;
@@ -564,6 +577,7 @@ export function duplicateItem(document, partId, itemId) {
   const duplicate = structuredClone(source);
   duplicate.id = uniqueDocumentId(`${source.id}-copy`, [part.items], 'item-copy');
   duplicate.name = `${source.name} Copy`;
+  duplicate.importKey = duplicate.id;
 
   const styleIdMap = new Map();
   const usedStyleIds = new Set();
