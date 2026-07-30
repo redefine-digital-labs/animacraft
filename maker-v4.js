@@ -412,8 +412,18 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
       }
     });
   });
-  if (metadata.coverAssetId !== null && metadata.coverAssetId !== undefined && !assetById.has(metadata.coverAssetId)) {
-    issue('metadata.coverAssetId', 'references a missing Asset', 'missing_reference');
+  if (metadata.coverAssetId !== null && metadata.coverAssetId !== undefined) {
+    const coverAsset = assetById.get(metadata.coverAssetId);
+    if (!coverAsset) {
+      issue('metadata.coverAssetId', 'references a missing Asset', 'missing_reference');
+    } else {
+      if (coverAsset.kind !== 'maker-cover') {
+        issue('metadata.coverAssetId', 'must reference a dedicated maker-cover Asset', 'invalid_cover_asset');
+      }
+      if (!String(coverAsset.mediaType || '').toLowerCase().startsWith('image/')) {
+        issue('metadata.coverAssetId', 'must reference an image Asset', 'invalid_cover_asset');
+      }
+    }
   }
   if (publish && !metadata.coverAssetId) issue('metadata.coverAssetId', 'is required for publication', 'missing_reference');
 

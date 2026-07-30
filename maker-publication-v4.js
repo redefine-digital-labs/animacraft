@@ -1180,6 +1180,14 @@ function sanitizeVersion(version = {}) {
 }
 
 function sanitizeAsset(asset) {
+  const source = String(asset.source || '');
+  const provenance = asset.kind === 'maker-cover'
+    ? (
+        ['generated-release', 'generated-release-preflight'].includes(source)
+          ? 'generated'
+          : 'creator-upload'
+      )
+    : '';
   return {
     id: String(asset.id || ''),
     identifier: String(asset.identifier || ''),
@@ -1187,6 +1195,7 @@ function sanitizeAsset(asset) {
     mediaType: String(asset.mediaType || ''),
     width: asset.width ?? null,
     height: asset.height ?? null,
+    ...(provenance ? { provenance } : {}),
     ...(asset.contentHash ? { contentHash: String(asset.contentHash) } : {}),
     ...(asset.digest ? { digest: String(asset.digest) } : {}),
   };

@@ -3559,7 +3559,6 @@ export class MakerWorkspace {
   publicationIssues(document = this.store?.getState().document) {
     if (!document) return [];
     const issues = collectMakerV5ValidationIssues(document, { mode: 'publish' })
-      .filter((issue) => issue.path !== 'metadata.coverAssetId')
       .map(compactIssue);
     const externalIssues = Array.isArray(this.context?.externalPublicationIssues)
       ? this.context.externalPublicationIssues
@@ -3590,6 +3589,54 @@ export class MakerWorkspace {
         path: 'layerTracks',
         message: 'Standard Part order and linked Layer Track order differ. Sync them before publishing so Player, Renderer, Walrus and Sui use one order.',
       });
+    }
+    const coverAssetId = String(document.metadata?.coverAssetId || '');
+    const coverDescriptor = coverAssetId
+      ? workspaceAssetDescriptor(document, coverAssetId)
+      : null;
+    const coverRuntime = coverAssetId ? this.runtimeAsset(coverAssetId) : null;
+    if (coverAssetId && coverDescriptor) {
+      const descriptorMediaType = String(coverDescriptor.mediaType || '').toLowerCase();
+      const coverBlob = persistedAssetBlob(coverRuntime);
+      const runtimeMediaType = String(coverBlob?.type || coverRuntime?.type || '').toLowerCase();
+      if (coverDescriptor.kind !== 'maker-cover') {
+        issues.push({
+          code: 'maker_cover_invalid_kind',
+          path: 'metadata.coverAssetId',
+          message: 'The Maker cover must reference a dedicated maker-cover Asset, not a Style, background, thumbnail, or Part icon.',
+        });
+      }
+      if (
+        !descriptorMediaType.startsWith('image/')
+        || (runtimeMediaType && !runtimeMediaType.startsWith('image/'))
+      ) {
+        issues.push({
+          code: 'maker_cover_invalid_media_type',
+          path: 'metadata.coverAssetId',
+          message: 'The Maker cover must reference an image Asset with an image MIME type.',
+        });
+      }
+      if (
+        /^maker-release-cover(?:-\d+)?$/.test(coverAssetId)
+        || coverDescriptor.provenance === 'generated'
+        || String(coverDescriptor.source || '').startsWith('generated-release')
+      ) {
+        issues.push({
+          code: 'maker_cover_generated_release',
+          path: 'metadata.coverAssetId',
+          message: 'A generated release cover cannot be published as the Maker cover. Upload a creator-approved cover.',
+        });
+      }
+      const remoteUrl = persistedAssetUrl(coverRuntime?.url)
+        || persistedAssetUrl(coverDescriptor.url)
+        || persistedAssetUrl(coverDescriptor.legacy?.url);
+      if (!coverBlob && !remoteUrl) {
+        issues.push({
+          code: 'maker_cover_source_missing',
+          path: 'metadata.coverAssetId',
+          message: 'The Maker cover has no readable local Blob/File or reloadable remote URL. Re-upload it before publishing.',
+        });
+      }
     }
     workspaceStyleRecords(document)
       .filter(({ item }) => (item.status || 'public') === 'public')
@@ -3641,36 +3688,8 @@ export class MakerWorkspace {
       try {
         const expansionDrafts = clone(document.extensions?.expansionDrafts || []);
         const releaseDocument = clone(document);
-        const usedAssetIds = new Set(releaseDocument.assets.map((asset) => asset.id));
-        const usedIdentifiers = new Set(releaseDocument.assets.map((asset) => asset.identifier).filter(Boolean));
-        let coverAssetId = 'maker-release-cover';
-        let coverSuffix = 2;
-        while (usedAssetIds.has(coverAssetId)) {
-          coverAssetId = `maker-release-cover-${coverSuffix}`;
-          coverSuffix += 1;
-        }
-        let coverIdentifier = 'maker-cover.png';
-        coverSuffix = 2;
-        while (usedIdentifiers.has(coverIdentifier)) {
-          coverIdentifier = `maker-cover-${coverSuffix}.png`;
-          coverSuffix += 1;
-        }
-        releaseDocument.assets.push({
-          id: coverAssetId,
-          identifier: coverIdentifier,
-          kind: 'maker-cover',
-          mediaType: 'image/png',
-          width: releaseDocument.canvas.width,
-          height: releaseDocument.canvas.height,
-          source: 'generated-release-preflight',
-        });
-        releaseDocument.metadata.coverAssetId = coverAssetId;
         const runtimeAssets = new Map();
         collectReferencedMakerV4AssetIds(releaseDocument).forEach((assetId) => {
-          if (assetId === coverAssetId) {
-            runtimeAssets.set(assetId, publicationPreflightPngBlob());
-            return;
-          }
           const descriptor = workspaceAssetDescriptor(releaseDocument, assetId);
           const blob = publicationPreflightAssetBlob(this.runtimeAsset(assetId), descriptor);
           if (blob) runtimeAssets.set(assetId, blob);
@@ -5360,6 +5379,13 @@ export class MakerWorkspace {
       this.filterRuleTargetTree('availability', this.ruleTargetQuery);
       this.filterRuleTargetTree('visibility', this.visibilityTargetQuery);
     }
+    this.creatorRoot.querySelectorAll?.('[data-maker-cover-preview-image]')?.forEach((image) => {
+      image.addEventListener('error', () => {
+        image.hidden = true;
+        const fallback = image.nextElementSibling;
+        if (fallback?.matches('[data-maker-cover-preview-fallback]')) fallback.hidden = false;
+      }, { once: true });
+    });
   }
 
   renderWorkspaceRestoreGuard() {
@@ -5950,7 +5976,7 @@ export class MakerWorkspace {
           <section class="v4-maker-cover-editor">
             <div class="v4-maker-cover-preview ${coverUrl ? 'has-image' : ''}">
               ${coverUrl
-                ? `<img src="${escapeHtml(coverUrl)}" alt="${escapeHtml(this.tr('makerCoverAlt', { name: document.metadata.name }))}" />`
+                ? `<img data-maker-cover-preview-image src="${escapeHtml(coverUrl)}" alt="${escapeHtml(this.tr('makerCoverAlt', { name: document.metadata.name }))}" /><span data-maker-cover-preview-fallback hidden aria-hidden="true">${escapeHtml(coverInitials || 'MA')}</span>`
                 : `<span aria-hidden="true">${escapeHtml(coverInitials || 'MA')}</span>`}
             </div>
             <div>
