@@ -34,6 +34,12 @@ window.ANIMACRAFT_CONFIG = {
   commerceV5LogicalAuxiliaryBlobId: 'YOUR_INDEPENDENT_TRANSPARENT_WALRUS_BLOB_ID',
   commerceV5SoulBindingProofType: '0xSOULIDITY_ANIMACRAFT_PROVENANCE_TYPE_ORIGIN::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5',
   commerceV5ReleaseEnabled: false,
+  compositionV6TypeOriginPackageId: '0xV6_COMPOSITION_TYPE_ORIGIN_PACKAGE',
+  compositionProtocolConfigV6Id: '0xYOUR_DISABLED_V6_COMPOSITION_PROTOCOL_CONFIG',
+  compositionProtocolTreasuryV6Id: '0xYOUR_V6_COMPOSITION_PROTOCOL_TREASURY',
+  compositionRegistryV6Id: '0xYOUR_V6_COMPOSITION_REGISTRY',
+  compositionV6SoulOwnerProofType: '0xSOULIDITY_TYPE_ORIGIN::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
+  compositionV6ReleaseEnabled: false,
   sealV5PackageId: '0xV5_COMMERCE_AND_SEAL_CALLABLE_PACKAGE',
   // Official Mainnet committee. The SDK sees one outer server (1-of-1);
   // Mysten's committee internally performs 5-of-8 key-share recovery.

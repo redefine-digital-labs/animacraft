@@ -69,10 +69,25 @@ import {
   validateLivingContent,
 } from './living-content.js';
 import {
+  attachComposableV6OcAppearanceCompanion,
+  buildComposableV6OcAppearanceCompanion,
   canonicalOcPackageFingerprint,
   certifiedLivingContentSource,
   createPlayerCompletionSnapshot,
+  verifyComposableV6OcAppearanceCompanion,
 } from './oc-handoff.js';
+import {
+  executeComposableV6PlayerAction,
+  hydrateComposableV6PlayerState,
+} from './maker-composable-player-v6-app.js';
+import {
+  advanceComposableV6Publication,
+  discoverComposableV6ValidatorAuthority,
+  prepareComposableV6Publication,
+  readComposableV6PublicationSubmission,
+  transactionFromComposableV6PublicationAction,
+} from './maker-composable-publication-v6-app.js';
+import { hashMakerComposableV6BaseManifest } from './maker-composable-v6-bridge.js';
 import { createOcOutputPreviewBlobV5 } from './oc-output-preview-v5.js';
 import {
   SOULIDITY_COMPLETION_RECEIPT_V5_SCHEMA,
@@ -3257,6 +3272,7 @@ const state = {
   publishedMakerVersions: [],
   playerRecipeV4: null,
   playerProfileV4: null,
+  playerComposableV6: null,
   playerRuntimeDocumentV4: null,
   playerCompletionSnapshotV4: null,
   livingContent: createDefaultLivingContent(),
@@ -3351,6 +3367,10 @@ if (makerStorageInitializationError) {
 const makerModels = new Map();
 const commerceV5StateCache = new Map();
 const commerceV5StatePending = new Map();
+const composableV6StateCache = new Map();
+const composableV6StatePending = new Map();
+let makerComposableV6Publication = null;
+let playerComposableV6TrustedSnapshot = null;
 const makerSealPolicyCacheV5 = new Map();
 const makerSealSessionCacheV5 = new Map();
 const makerSealPlaintextCacheV5 = new Map();
@@ -3680,6 +3700,9 @@ function resetMakerUploadMemoryState({ clearPublicationIntent = true } = {}) {
     error: null,
   });
   commerceV5StateCache.clear();
+  composableV6StateCache.clear();
+  composableV6StatePending.clear();
+  playerComposableV6TrustedSnapshot = null;
   makerSealPolicyCacheV5.clear();
   makerSealSessionCacheV5.clear();
   makerSealPlaintextCacheV5.clear();
@@ -8554,6 +8577,156 @@ function makerCommerceV5PublicationDependencies(scope, publication) {
   });
 }
 
+function composableV6WalrusRecovery(session) {
+  return {
+    uploadSessionId: session.uploadSessionId,
+    recoveryRevision: Number(session.recoveryRevision || 0),
+    owner: session.owner,
+    stage: session.stage,
+    checkpoint: session.checkpoint,
+    quiltBlobId: session.quiltBlobId,
+    registerDigest: session.registerDigest || '',
+    certifyDigest: session.certifyDigest || '',
+    pendingRegisterTransaction: session.pendingRegisterTransaction || null,
+    pendingCertifyTransaction: session.pendingCertifyTransaction || null,
+    relayTipMist: session.relayTipMist,
+    relayTipQuotedAt: session.relayTipQuotedAt,
+    walrusStorageCostFrost: session.walrusStorageCostFrost,
+    walrusWriteCostFrost: session.walrusWriteCostFrost,
+    walrusTotalCostFrost: session.walrusTotalCostFrost,
+    walletSuiBalanceMist: session.walletSuiBalanceMist,
+    walletWalBalanceFrost: session.walletWalBalanceFrost,
+  };
+}
+
+async function prepareCurrentMakerComposableV6Publication() {
+  const document = currentMakerV4Source();
+  const baseManifest = state.publishedMakerDocumentV4;
+  const baseMakerRootId = suiJsonId(state.commerceV5RootObjectId);
+  const owner = suiJsonId(state.walletAddress);
+  const controlCapId = suiJsonId(state.commerceV5ControlCapObjectId);
+  if (!document || !isMakerV4Document(baseManifest) || !baseMakerRootId || !owner || !controlCapId) {
+    return null;
+  }
+  // Do not perform validator discovery or create a final, byte-locked
+  // checkpoint while the public release gate is closed. In particular, never
+  // lock empty validator fields into a plan that cannot later attest Items.
+  if (runtimeConfig.compositionV6ReleaseEnabled !== true) return null;
+  const validator = await discoverComposableV6ValidatorAuthority({
+    suiClient: getSuiClient(),
+    configId: runtimeConfig.compositionProtocolConfigV6Id,
+  });
+  const baseManifestJson = JSON.stringify(baseManifest);
+  try {
+    makerComposableV6Publication = await prepareComposableV6Publication({
+      document,
+      baseManifest,
+      baseManifestJson,
+      baseManifestHash: await hashMakerComposableV6BaseManifest(baseManifestJson),
+      baseMakerRootId,
+      makerOwner: owner,
+      context: {
+        makerKey: `${owner}:${document.version.rootMakerId}`,
+        owner,
+        makerControlCapId: controlCapId,
+        // Technical attestation is a distinct protocol-operator role. These
+        // public authority references are discovered from current chain state;
+        // the Creator wallet is never silently treated as the validator.
+        validatorCapId: validator.validatorCapId,
+        validatorAddress: validator.validatorAddress,
+        openAdmissionSubmitter: owner,
+      },
+      runtime: composableV6RuntimeContext(),
+    });
+    return makerComposableV6Publication;
+  } catch (error) {
+    if (error?.code === 'COMPOSABLE_V6_PUBLICATION_NOT_REQUIRED') return null;
+    throw error;
+  }
+}
+
+async function advanceCurrentMakerComposableV6Publication() {
+  const publication = makerComposableV6Publication
+    || await prepareCurrentMakerComposableV6Publication();
+  if (!publication) return null;
+  let walrusSession = null;
+  const entry = {
+    identifier: 'animacraft-composable-v6.json',
+    kind: 'composable-v6-manifest',
+    blob: new Blob([publication.plan.companion.manifestJson], {
+      type: 'application/json',
+    }),
+  };
+  const result = await advanceComposableV6Publication({
+    publication,
+    runtime: composableV6RuntimeContext(),
+    async executeWalrusAction({ action, checkpoint }) {
+      const priorRecovery = checkpoint.actions
+        .find((candidate) => candidate.id === 'walrus.companion.upload')
+        ?.submission?.recovery;
+      walrusSession = priorRecovery
+        ? await resumeWalrusUpload([entry], priorRecovery)
+        : await prepareWalrusUpload([entry]);
+      if (action.id === 'walrus.companion.upload') {
+        walrusSession = await registerAndUploadWalrus(walrusSession);
+      } else {
+        walrusSession = await certifyWalrusUpload(walrusSession);
+      }
+      return {
+        uploadId: walrusSession.uploadSessionId,
+        blobId: walrusSession.quiltBlobId,
+        recovery: composableV6WalrusRecovery(walrusSession),
+      };
+    },
+    async executeSuiAction({ action }) {
+      const connected = suiJsonId(getConnectedWalletAddress());
+      if (comparableSuiId(connected) !== comparableSuiId(action.authority.signer)) {
+        throw commerceV5Error(
+          'COMPOSABLE_V6_AUTHORITY_REQUIRED',
+          action.authority.role === 'PROTOCOL_VALIDATOR'
+            ? 'Waiting for independent technical validation by the protocol validator wallet.'
+            : `Reconnect the ${action.authority.role} wallet required by this recoverable v6 step.`,
+          { role: action.authority.role, signer: action.authority.signer },
+        );
+      }
+      const submitted = await signExecuteAndWait(
+        transactionFromComposableV6PublicationAction(action),
+        { expectedWallet: action.authority.signer },
+      );
+      // Persist the digest, not an ephemeral SDK response. A refresh resumes
+      // by querying this exact transaction and cannot request a second wallet
+      // signature for the same intent.
+      return { transactionDigest: submitted.digest };
+    },
+    async confirmAction({ action, submission }) {
+      if (action.transport === 'SUI') return readComposableV6PublicationSubmission({
+        action,
+        submission,
+        suiClient: getSuiClient(),
+      });
+      return {
+        blobId: submission.blobId,
+        observedHash: publication.plan.companion.manifestHash,
+        ...(action.id === 'walrus.companion.certify' ? { certified: true } : {}),
+      };
+    },
+    onStatus(status, detail) {
+      state.publishStatus = `Composable v6 · ${detail?.action?.id || status}`;
+      renderPublishAction();
+    },
+  });
+  makerComposableV6Publication = result;
+  if (result?.recoverable) {
+    state.publishStatus = result.message;
+  } else if (result?.gated) {
+    state.publishStatus = 'Commerce v5 is Active. Composable v6 is prepared and remains release-gated.';
+  } else if (result?.completed) {
+    state.publishStatus = 'Commerce v5 and Composable Assets v6 are Active.';
+  }
+  renderPublishAction();
+  return result;
+}
+
 async function finishMakerCommerceV5Publication(scope, publication) {
   const dependencies = makerCommerceV5PublicationDependencies(scope, publication);
   const reconciled = await reconcileMakerCommerceV5Publication({
@@ -8602,6 +8775,15 @@ async function finishMakerCommerceV5Publication(scope, publication) {
     ...checkpoint,
     stage: MAKER_COMMERCE_PUBLICATION_V5_STAGES.ACTIVE,
   });
+  // v5 completion is final before the optional companion begins. Any v6
+  // checkpoint or authority handoff remains independently recoverable and can
+  // never turn this already-active v5 root back into a failed release.
+  try {
+    await advanceCurrentMakerComposableV6Publication();
+  } catch (error) {
+    console.warn('Composable v6 companion preparation was retained for recovery.', error);
+    state.publishStatus = `Commerce v5 is Active · ${error?.message || 'Composable v6 requires review.'}`;
+  }
   return true;
 }
 
@@ -10360,6 +10542,7 @@ function currentMakerV4OcBundle({
   createdAt = new Date().toISOString(),
   integrity = null,
   requireCompletion = false,
+  composableAppearance = null,
 } = {}) {
   if (!isMakerV4Document(state.makerDocumentV4)) return null;
   // Provenance must always reference the complete immutable Maker manifest.
@@ -10388,7 +10571,7 @@ function currentMakerV4OcBundle({
       profile,
     },
   );
-  return buildMakerV4OcPackage({
+  const bundle = buildMakerV4OcPackage({
     document: documentV4,
     recipe: completion?.recipe || state.playerRecipeV4 || state.makerRecipeV4 || documentV4.defaultRecipe,
     profile,
@@ -10398,6 +10581,9 @@ function currentMakerV4OcBundle({
     createdAt,
     integrity,
   });
+  return composableAppearance
+    ? attachComposableV6OcAppearanceCompanion(bundle, composableAppearance)
+    : bundle;
 }
 
 function ocPackage() {
@@ -10667,6 +10853,13 @@ function captureOcUploadPersistenceContext(session = state.ocUploadSession) {
           livingContent: structuredClone(
             state.playerCompletionSnapshotV4.livingContent,
           ),
+          ...(state.playerCompletionSnapshotV4.composableV6
+            ? {
+                composableV6: structuredClone(
+                  state.playerCompletionSnapshotV4.composableV6,
+                ),
+              }
+            : {}),
           imageExport: structuredClone(
             state.playerCompletionSnapshotV4.imageExport,
           ),
@@ -11774,6 +11967,9 @@ async function restoreOcUploadRecovery(templateId = state.templateId, { force = 
     // A persisted receipt is evidence to re-check, never authority by itself.
     state.pendingOcCompletionReceipt = null;
     const completionContext = recovery.playerCompletionContext;
+    if (recovery.ocPackage?.composableAppearance && !completionContext) {
+      throw uploadRecoveryMismatch(t('ocRecoveryMismatch'));
+    }
     if (completionContext && state.pendingOcExportKey) {
       const expectedVersion = String(
         recovery.ocPackage?.maker?.versionId
@@ -11786,9 +11982,23 @@ async function restoreOcUploadRecovery(templateId = state.templateId, { force = 
       if (expectedVersion && restoredVersion !== expectedVersion) {
         throw uploadRecoveryMismatch(t('ocRecoveryMismatch'));
       }
+      try {
+        await verifyComposableV6OcAppearanceCompanion({
+          document: completionContext.document,
+          completion: completionContext,
+          packageValue: recovery.ocPackage,
+          makerObjectId: recovery.ocPackage?.maker?.makerObjectId || '',
+          baseManifestBlobId: recovery.ocPackage?.maker?.manifestBlobId || '',
+        });
+      } catch {
+        throw uploadRecoveryMismatch(t('ocRecoveryMismatch'));
+      }
       state.playerRuntimeDocumentV4 = structuredClone(completionContext.document);
       state.playerRecipeV4 = structuredClone(completionContext.recipe);
       state.playerProfileV4 = structuredClone(completionContext.profile);
+      state.playerComposableV6 = completionContext.composableV6
+        ? structuredClone(completionContext.composableV6)
+        : null;
       state.playerCompletionSnapshotV4 = createPlayerCompletionSnapshot({
         ...completionContext,
         imageBlob: recovery.imageBlob,
@@ -13954,6 +14164,12 @@ function renderPublishAction() {
     state.makerCommerceV5Publication,
   );
   const commercePublicationPending = makerCommerceV5PublicationPending();
+  const composableV6PublicationPending = Boolean(
+    runtimeConfig.compositionV6ReleaseEnabled === true
+    && locked
+    && state.commerceV5RootObjectId
+    && state.commerceV5ControlCapObjectId
+  );
   const versionDraftConflict = makerVersionDraftConflict();
   const lineageFork = makerPublishedLineageFork();
   const hasMakerAssets = isMakerV4Document(state.makerDocumentV4)
@@ -14030,8 +14246,9 @@ function renderPublishAction() {
       ),
       publish: !state.publishing
         && state.walletConnected
-        && state.makerUploadStage === 'certified'
         && (
+          composableV6PublicationPending
+          || (state.makerUploadStage === 'certified' && (
           commercePublicationPending
           || (
             !locked
@@ -14039,6 +14256,7 @@ function renderPublishAction() {
             && !lineageFork
             && !publicationRecoveryPending
           )
+          ))
         ),
       review: !state.publishing && publicationRecoveryPending,
     },
@@ -14459,7 +14677,23 @@ async function advanceCurrentMakerCommerceV5Publication() {
 }
 
 async function publishCurrentMaker() {
-  if (state.publishing || state.makerUploadStage !== 'certified') return;
+  if (state.publishing) return;
+  if (
+    runtimeConfig.compositionV6ReleaseEnabled === true
+    && state.commerceV5RootObjectId
+    && state.commerceV5ControlCapObjectId
+    && !makerHasPendingV4Version()
+  ) {
+    state.publishing = true;
+    try {
+      await advanceCurrentMakerComposableV6Publication();
+    } finally {
+      state.publishing = false;
+      renderAll();
+    }
+    return;
+  }
+  if (state.makerUploadStage !== 'certified') return;
   if (
     runtimeConfig.commerceV5ReleaseEnabled === true
     && makerIsPublished()
@@ -15503,7 +15737,26 @@ async function prepareOcUpload() {
       };
       let profile;
       if (useV4) {
-        v4Bundle = currentMakerV4OcBundle({ createdAt, integrity, requireCompletion: true });
+        let composableAppearance = null;
+        if (completion?.composableV6) {
+          if (runtimeConfig.compositionV6ReleaseEnabled !== true) {
+            const error = new Error('Composable Assets v6 publication is disabled in this deployment.');
+            error.code = 'COMPOSABLE_V6_RELEASE_DISABLED';
+            throw error;
+          }
+          composableAppearance = await buildComposableV6OcAppearanceCompanion({
+            document: state.makerDocumentV4,
+            completion,
+            makerObjectId: activeMakerObjectId(),
+            baseManifestBlobId: activeTemplate()?.quiltId || state.makerQuiltId || '',
+          });
+        }
+        v4Bundle = currentMakerV4OcBundle({
+          createdAt,
+          integrity,
+          requireCompletion: true,
+          composableAppearance,
+        });
         oc = v4Bundle.package;
         recipeJson = v4Bundle.fullRecipeJson;
       } else {
@@ -16480,19 +16733,27 @@ function syncPlayerV4State({
   recipe,
   profile,
   livingContent = null,
+  composableV6 = null,
   imageBlob = null,
   imageExport = null,
   exportKey = '',
 }, { completed = false } = {}) {
+  const trustedComposableV6 = playerComposableV6CompletionState({
+    document,
+    trusted: playerComposableV6TrustedSnapshot,
+    player: composableV6,
+  });
   state.playerRuntimeDocumentV4 = document;
   state.playerRecipeV4 = recipe;
   state.playerProfileV4 = { ...profile };
+  state.playerComposableV6 = trustedComposableV6;
   state.playerCompletionSnapshotV4 = completed
     ? createPlayerCompletionSnapshot({
         document,
         recipe,
         profile,
         livingContent,
+        composableV6: trustedComposableV6,
         imageBlob,
         imageExport,
       })
@@ -16504,6 +16765,39 @@ function syncPlayerV4State({
   if ($('profileTags')) $('profileTags').value = profile.tags || '';
   invalidateOcUpload();
   state.pendingOcExportKey = completed ? String(exportKey || '') : '';
+}
+
+function playerComposableV6CompletionState({ document, trusted, player } = {}) {
+  const playerState = player && typeof player === 'object' ? player : {};
+  const trustedState = trusted && typeof trusted === 'object' ? trusted : {};
+  const companionManifest = trustedState.companionManifest;
+  const baseMaker = companionManifest?.baseMaker;
+  const version = document?.version;
+  const samePublishedVersion = Boolean(
+    trustedState.trusted === true
+    && companionManifest?.schemaVersion === 'animacraft.maker-composable.v6'
+    && String(baseMaker?.rootMakerId || '') === String(version?.rootMakerId || '')
+    && String(baseMaker?.versionId || '') === String(version?.versionId || '')
+    && Number(baseMaker?.versionNumber) === Number(version?.number),
+  );
+  if (!samePublishedVersion) {
+    return Object.keys(playerState).length ? structuredClone(playerState) : null;
+  }
+  // Keep this projection deliberately narrow: oc-handoff.js rejects unknown
+  // fields and independently verifies every identity against the exact
+  // companion hash before Complete OC can cross the immutable boundary.
+  return {
+    loadout: structuredClone(playerState.loadout || trustedState.loadout || []),
+    appearanceRevision: Number.isSafeInteger(playerState.appearanceRevision)
+      ? playerState.appearanceRevision
+      : Number(trustedState.appearanceRevision || 0),
+    profileObjectId: String(trustedState.profileObjectId || ''),
+    companionManifestBlobId: String(trustedState.companionManifestBlobId || ''),
+    companionManifestHash: String(trustedState.companionManifestHash || ''),
+    productObjectIds: structuredClone(trustedState.productObjectIds || {}),
+    entitlements: structuredClone(trustedState.entitlements || []),
+    companionManifest: structuredClone(companionManifest),
+  };
 }
 
 const COMMERCE_V5_CACHE_TTL_MS = 15_000;
@@ -16524,6 +16818,444 @@ function commerceV5RuntimeContext() {
     commerceV5TypeOriginPackageId: runtimeConfig.commerceV5TypeOriginPackageId,
     commerceV5ReleaseEnabled: runtimeConfig.commerceV5ReleaseEnabled === true,
   };
+}
+
+function composableV6RuntimeContext() {
+  return {
+    network: runtimeConfig.network,
+    packageId: runtimeConfig.callablePackageId,
+    callablePackageId: runtimeConfig.callablePackageId,
+    paymentCoinType: runtimeConfig.paymentCoinType,
+    commerceProtocolConfigV5Id: runtimeConfig.commerceProtocolConfigV5Id,
+    commerceV5ReleaseEnabled: runtimeConfig.commerceV5ReleaseEnabled === true,
+    compositionV6TypeOriginPackageId: runtimeConfig.compositionV6TypeOriginPackageId,
+    compositionProtocolConfigV6Id: runtimeConfig.compositionProtocolConfigV6Id,
+    compositionProtocolTreasuryV6Id: runtimeConfig.compositionProtocolTreasuryV6Id,
+    compositionRegistryV6Id: runtimeConfig.compositionRegistryV6Id,
+    compositionV6SoulOwnerProofType: runtimeConfig.compositionV6SoulOwnerProofType,
+    compositionV6ReleaseEnabled: runtimeConfig.compositionV6ReleaseEnabled === true,
+    soulidityCallablePackageId: runtimeConfig.soulidityPackageId,
+    soulidityPackageId: runtimeConfig.soulidityPackageId,
+    soulidityTypeOriginPackageId: runtimeConfig.soulidityTypeOriginPackageId,
+    canonicalSoulMintEnabled,
+  };
+}
+
+function composableV6CacheKey({
+  wallet,
+  makerRootId,
+  soulId = '',
+  soulStateId = '',
+  appearanceStateId = '',
+  appearanceRevision = 0,
+}) {
+  return [
+    comparableSuiId(wallet),
+    comparableSuiId(makerRootId),
+    comparableSuiId(soulId),
+    comparableSuiId(soulStateId),
+    comparableSuiId(appearanceStateId),
+    String(appearanceRevision || 0),
+    comparableSuiId(runtimeConfig.compositionProtocolConfigV6Id),
+    comparableSuiId(runtimeConfig.compositionRegistryV6Id),
+  ].join(':');
+}
+
+async function hydratePlayerComposableV6(document = currentMakerV4Source(), {
+  force = false,
+  soulId = playerComposableV6TrustedSnapshot?.soulId || state.playerComposableV6?.soulId || '',
+  soulStateId = playerComposableV6TrustedSnapshot?.soulStateId
+    || state.playerComposableV6?.soulStateId || '',
+  appearanceStateId = playerComposableV6TrustedSnapshot?.appearanceStateId
+    || state.playerComposableV6?.appearanceStateId || '',
+  appearanceRevision = playerComposableV6TrustedSnapshot?.appearanceRevision
+    ?? state.playerComposableV6?.appearanceRevision ?? 0,
+} = {}) {
+  // This return must remain before getSuiClient(), Commerce hydration and the
+  // Walrus loader. A closed v6 gate performs zero v6 network requests.
+  if (runtimeConfig.compositionV6ReleaseEnabled !== true
+      || activeTemplate()?.source !== 'chain') return null;
+  const wallet = suiJsonId(state.walletAddress);
+  if (!wallet) throw commerceV5Error('WALLET_CONTEXT_CHANGED', 'Connect the Player wallet before loading Composable Items.');
+  const commerce = await requirePlayerCommerceV5(document);
+  const makerRootId = suiJsonId(commerce.binding?.rootObjectId || commerce.chain?.root?.objectId);
+  if (!makerRootId) throw commerceV5Error('COMPOSABLE_PLAYER_V6_MAKER_ROOT_MISSING', 'The v6 Profile cannot be linked to this MakerRootV5.');
+  const cacheKey = composableV6CacheKey({
+    wallet,
+    makerRootId,
+    soulId,
+    soulStateId,
+    appearanceStateId,
+    appearanceRevision,
+  });
+  const cached = composableV6StateCache.get(cacheKey);
+  if (!force && cached && Date.now() - cached.loadedAt < COMMERCE_V5_CACHE_TTL_MS) {
+    return cached.state;
+  }
+  if (composableV6StatePending.has(cacheKey)) return composableV6StatePending.get(cacheKey);
+  const pending = (async () => {
+    const hydrated = await hydrateComposableV6PlayerState({
+      runtime: composableV6RuntimeContext(),
+      client: getSuiClient(),
+      walletAddress: wallet,
+      makerRootId,
+      soulId,
+      soulStateId,
+      appearanceStateId,
+      appearanceRevision,
+      async companionLoader(blobId) {
+        const response = await fetchWalrusWithBackoff(walrusFileUrl(blobId));
+        if (!response.ok) throw commerceV5Error(
+          'COMPOSABLE_PLAYER_V6_COMPANION_UNAVAILABLE',
+          `Could not load the v6 companion (${response.status}).`,
+        );
+        return responseBytesWithinLimit(response, 10 * 1024 * 1024, 'The v6 companion');
+      },
+      assetUrl: (blobId) => walrusFileUrl(blobId),
+    });
+    composableV6StateCache.set(cacheKey, { loadedAt: Date.now(), state: hydrated });
+    return hydrated;
+  })().finally(() => composableV6StatePending.delete(cacheKey));
+  composableV6StatePending.set(cacheKey, pending);
+  return pending;
+}
+
+async function sufficientComposablePaymentCoinId(wallet, priceAtomic) {
+  const expected = BigInt(priceAtomic);
+  let cursor = null;
+  do {
+    const page = await getSuiClient().listCoins({
+      owner: wallet,
+      coinType: runtimeConfig.paymentCoinType,
+      cursor,
+      limit: 50,
+    });
+    const sufficient = (page.coins || []).find((coin) => {
+      try { return BigInt(coin.balance) >= expected; } catch { return false; }
+    });
+    if (sufficient) return suiJsonId(sufficient.coinObjectId || sufficient.objectId);
+    cursor = page.hasNextPage ? page.cursor : null;
+  } while (cursor);
+  throw commerceV5Error(
+    'COMPOSABLE_PLAYER_V6_PAYMENT_BALANCE_REQUIRED',
+    'This Item purchase requires a USDC Coin object with at least the exact price.',
+    { priceAtomic: expected.toString() },
+  );
+}
+
+async function acquirePlayerComposableItemV6({ product, makerRootId, soulId, recovery, onStatus }) {
+  if (runtimeConfig.compositionV6ReleaseEnabled !== true) {
+    throw commerceV5Error('COMPOSABLE_PLAYER_V6_RELEASE_DISABLED', 'Composable Assets v6 is not enabled.');
+  }
+  const document = currentMakerV4Source();
+  const current = await hydratePlayerComposableV6(document);
+  const wallet = suiJsonId(state.walletAddress);
+  const rootId = suiJsonId(makerRootId || current?.compatibility?.makerRootId);
+  const productObjectId = suiJsonId(current?.productObjectIds?.[product?.id]);
+  if (!current?.trusted || !current.profileObjectId || !rootId || !productObjectId) {
+    throw commerceV5Error('COMPOSABLE_PLAYER_V6_TRUSTED_STATE_MISSING', 'Refresh the trusted v6 Item catalog before acquiring this Item.');
+  }
+  const paid = product.access?.mode === 'PAID_ONCE';
+  const paymentCoinId = paid && !recovery?.digest
+    ? await sufficientComposablePaymentCoinId(wallet, product.access.priceAtomic)
+    : '';
+  let refreshed = null;
+  const result = await executeComposableV6PlayerAction({
+    runtime: composableV6RuntimeContext(),
+    input: {
+      context: {
+        wallet,
+        makerRootId: rootId,
+        profileId: current.profileObjectId,
+        productId: productObjectId,
+        soulId: suiJsonId(soulId),
+        // Soul-bound acquisition is intentionally unavailable until the
+        // canonical Soul state is present in the Player handoff.
+        soulStateId: suiJsonId(state.playerComposableV6?.soulStateId),
+        paymentCoinId,
+      },
+      product: { ...product, onchainProductId: productObjectId },
+    },
+    recovery,
+    signAndWait: (transaction) => signExecuteAndWait(transaction, { expectedWallet: wallet }),
+    async confirmReadback({ digest, plan }) {
+      refreshed = await hydratePlayerComposableV6(document, { force: true, soulId });
+      const entitlement = refreshed.entitlements.find((entry) => entry.productId === product.id);
+      if (!entitlement) throw commerceV5Error(
+        'COMPOSABLE_PLAYER_V6_ENTITLEMENT_NOT_VISIBLE',
+        'The transaction succeeded, but the v6 entitlement is not indexed yet. Retry will only confirm it.',
+        { digest, recoverable: true },
+      );
+      const subjectId = product.access.binding === 'SOUL_BOUND'
+        ? suiJsonId(soulId)
+        : wallet;
+      return {
+        transactionDigest: digest,
+        readbackVerified: true,
+        entitlementExists: true,
+        profileId: current.profileObjectId,
+        productId: productObjectId,
+        subjectId,
+        paidAtomic: String(product.access.priceAtomic || 0),
+        ...(product.access.binding === 'OWNED' ? { ownedInstanceId: entitlement.id } : {}),
+      };
+    },
+    onStatus,
+  });
+  if (result.recoverable) return result;
+  const preservedLoadout = Array.isArray(state.playerComposableV6?.loadout)
+    ? state.playerComposableV6.loadout
+    : current.loadout;
+  const composableV6State = {
+    ...(refreshed || await hydratePlayerComposableV6(document, { force: true, soulId })),
+    selected: [...preservedLoadout],
+    loadout: [...preservedLoadout],
+  };
+  playerComposableV6TrustedSnapshot = composableV6State;
+  state.playerComposableV6 = playerComposableV6CompletionState({
+    document,
+    trusted: composableV6State,
+    player: composableV6State,
+  });
+  return {
+    confirmed: true,
+    digest: result.digest,
+    composableV6State,
+    entitlements: composableV6State.entitlements,
+    loadout: composableV6State.loadout,
+    appearanceRevision: composableV6State.appearanceRevision,
+  };
+}
+
+function randomComposableV6Commitment() {
+  return [...crypto.getRandomValues(new Uint8Array(32))]
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function updatePlayerComposableAppearanceV6({
+  loadout,
+  makerRootId,
+  soulId,
+  soulStateId,
+  appearanceStateId,
+  expectedRevision,
+  recovery,
+  onStatus,
+}) {
+  if (runtimeConfig.compositionV6ReleaseEnabled !== true) {
+    throw commerceV5Error(
+      'COMPOSABLE_PLAYER_V6_RELEASE_DISABLED',
+      'Composable Assets v6 is not enabled.',
+    );
+  }
+  const wallet = suiJsonId(state.walletAddress);
+  const normalizedSoulId = suiJsonId(soulId);
+  const normalizedSoulStateId = suiJsonId(soulStateId);
+  const normalizedAppearanceStateId = suiJsonId(appearanceStateId);
+  if (!normalizedSoulId || !normalizedSoulStateId || !normalizedAppearanceStateId) {
+    throw commerceV5Error(
+      'COMPOSABLE_PLAYER_V6_APPEARANCE_STATE_REQUIRED',
+      'Minted Wardrobe updates require the exact Soul, SoulState and SoulAppearanceStateV6 object IDs.',
+    );
+  }
+  const document = currentMakerV4Source();
+  const current = await hydratePlayerComposableV6(document, {
+    soulId: normalizedSoulId,
+    soulStateId: normalizedSoulStateId,
+    appearanceStateId: normalizedAppearanceStateId,
+    appearanceRevision: Number(expectedRevision || 0),
+  });
+  const rootId = suiJsonId(makerRootId || current?.compatibility?.makerRootId);
+  if (!current?.trusted || !current.profileObjectId || !rootId) {
+    throw commerceV5Error(
+      'COMPOSABLE_PLAYER_V6_TRUSTED_STATE_MISSING',
+      'Refresh the trusted v6 Item catalog before changing the minted appearance.',
+    );
+  }
+  const products = new Map((current.products || []).map((product) => [product.id, product]));
+  const owned = new Map((current.entitlements || [])
+    .filter((entry) => entry.binding === 'OWNED' || entry.kind === 'OWNED')
+    .map((entry) => [entry.productId, entry]));
+  const selections = (loadout || []).map((logicalId) => {
+    const product = products.get(logicalId);
+    const productId = suiJsonId(current.productObjectIds?.[logicalId]);
+    if (!product || !productId) {
+      throw commerceV5Error(
+        'COMPOSABLE_PLAYER_V6_LOADOUT_PRODUCT_MISSING',
+        `The selected v6 Item ${logicalId} is not present in the trusted chain catalog.`,
+      );
+    }
+    const bindingMode = product.access?.binding;
+    const ownedInstanceId = bindingMode === 'OWNED'
+      ? suiJsonId(owned.get(logicalId)?.id)
+      : '';
+    if (bindingMode === 'OWNED' && !ownedInstanceId) {
+      throw commerceV5Error(
+        'COMPOSABLE_PLAYER_V6_OWNED_INSTANCE_REQUIRED',
+        `The selected Owned Item ${logicalId} has no wallet-owned instance.`,
+      );
+    }
+    return {
+      productId,
+      slotKey: product.slotClaims?.[0]?.slotId || '',
+      bindingMode,
+      ...(ownedInstanceId ? { ownedInstanceId } : {}),
+    };
+  });
+  let refreshed = null;
+  const revision = String(expectedRevision ?? current.appearanceRevision ?? 0);
+  const result = await executeComposableV6PlayerAction({
+    runtime: composableV6RuntimeContext(),
+    input: {
+      operation: 'AUTHORIZE_APPEARANCE_UPDATE',
+      context: {
+        wallet,
+        makerRootId: rootId,
+        profileId: current.profileObjectId,
+        soulId: normalizedSoulId,
+        soulStateId: normalizedSoulStateId,
+        appearanceStateId: normalizedAppearanceStateId,
+        expectedRevision: revision,
+      },
+      selections,
+      clientNonce: randomComposableV6Commitment(),
+    },
+    recovery,
+    signAndWait: (transaction) => signExecuteAndWait(transaction, { expectedWallet: wallet }),
+    async confirmReadback({ digest, plan }) {
+      const page = await getSuiClient().getObjects({
+        objectIds: [normalizedAppearanceStateId],
+        include: { json: true, previousTransaction: true },
+      });
+      const appearance = page?.objects?.find((entry) => !entry?.error);
+      const fields = suiObjectFields(appearance);
+      const visibleRevision = String(suiField(fields, 'revision') ?? '');
+      const expectedNext = String(BigInt(plan.context.expectedRevision) + 1n);
+      if (visibleRevision !== expectedNext) {
+        throw commerceV5Error(
+          'COMPOSABLE_PLAYER_V6_APPEARANCE_NOT_VISIBLE',
+          'The appearance transaction succeeded, but its next revision is not indexed yet. Retry will only confirm it.',
+          { digest, recoverable: true },
+        );
+      }
+      refreshed = await hydratePlayerComposableV6(document, {
+        force: true,
+        soulId: normalizedSoulId,
+        soulStateId: normalizedSoulStateId,
+        appearanceStateId: normalizedAppearanceStateId,
+        appearanceRevision: Number(visibleRevision),
+      });
+      return {
+        transactionDigest: digest,
+        readbackVerified: true,
+        appearanceRevisionReadback: true,
+        appearanceStateId: normalizedAppearanceStateId,
+        soulId: normalizedSoulId,
+        previousRevision: plan.context.expectedRevision,
+        revision: visibleRevision,
+      };
+    },
+    onStatus,
+  });
+  if (result.recoverable) return result;
+  const composableV6State = {
+    ...(refreshed || current),
+    selected: [...loadout],
+    loadout: [...loadout],
+    revision: Number(result.outputs?.revision ?? Number(revision) + 1),
+    appearanceRevision: Number(result.outputs?.revision ?? Number(revision) + 1),
+    soulId: normalizedSoulId,
+    soulStateId: normalizedSoulStateId,
+    appearanceStateId: normalizedAppearanceStateId,
+  };
+  playerComposableV6TrustedSnapshot = composableV6State;
+  return {
+    confirmed: true,
+    digest: result.digest,
+    composableV6State,
+    loadout: [...loadout],
+    appearanceRevision: composableV6State.appearanceRevision,
+  };
+}
+
+async function setPlayerComposableOwnedLockV6({
+  entitlementId,
+  locked,
+  makerRootId,
+  soulId,
+  soulStateId,
+  recovery,
+  onStatus,
+}) {
+  if (runtimeConfig.compositionV6ReleaseEnabled !== true) {
+    throw commerceV5Error('COMPOSABLE_PLAYER_V6_RELEASE_DISABLED', 'Composable Assets v6 is not enabled.');
+  }
+  const wallet = suiJsonId(state.walletAddress);
+  const ownedItemId = suiJsonId(entitlementId);
+  const normalizedSoulId = suiJsonId(soulId);
+  const normalizedSoulStateId = suiJsonId(soulStateId);
+  if (!ownedItemId || !normalizedSoulId || !normalizedSoulStateId) {
+    throw commerceV5Error(
+      'COMPOSABLE_PLAYER_V6_OWNED_LOCK_CONTEXT_REQUIRED',
+      'Owned Item lock changes require the exact OwnedItemV6, Soul and SoulState object IDs.',
+    );
+  }
+  const document = currentMakerV4Source();
+  const current = await hydratePlayerComposableV6(document, {
+    soulId: normalizedSoulId,
+    soulStateId: normalizedSoulStateId,
+  });
+  const rootId = suiJsonId(makerRootId || current?.compatibility?.makerRootId);
+  const result = await executeComposableV6PlayerAction({
+    runtime: composableV6RuntimeContext(),
+    input: {
+      operation: locked ? 'LOCK_OWNED_ITEM' : 'UNLOCK_OWNED_ITEM',
+      context: {
+        wallet,
+        makerRootId: rootId,
+        profileId: current.profileObjectId,
+        ownedItemId,
+        soulId: normalizedSoulId,
+        soulStateId: normalizedSoulStateId,
+      },
+    },
+    recovery,
+    signAndWait: (transaction) => signExecuteAndWait(transaction, { expectedWallet: wallet }),
+    async confirmReadback({ digest }) {
+      const refreshed = await hydratePlayerComposableV6(document, {
+        force: true,
+        soulId: normalizedSoulId,
+        soulStateId: normalizedSoulStateId,
+      });
+      const entitlement = refreshed.entitlements.find((entry) => entry.id === ownedItemId);
+      const visibleLocked = suiJsonId(entitlement?.equippedSoulId) === normalizedSoulId;
+      if (!entitlement || visibleLocked !== Boolean(locked)) {
+        throw commerceV5Error(
+          'COMPOSABLE_PLAYER_V6_OWNED_LOCK_NOT_VISIBLE',
+          'The lock transaction succeeded, but the exact Owned Item state is not indexed yet. Retry will only confirm it.',
+          { digest, recoverable: true },
+        );
+      }
+      return {
+        transactionDigest: digest,
+        readbackVerified: true,
+        lockReadbackVerified: true,
+        locked: Boolean(locked),
+        ownedItemId,
+        soulId: normalizedSoulId,
+      };
+    },
+    onStatus,
+  });
+  if (result.recoverable) return result;
+  const composableV6State = await hydratePlayerComposableV6(document, {
+    force: true,
+    soulId: normalizedSoulId,
+    soulStateId: normalizedSoulStateId,
+  });
+  playerComposableV6TrustedSnapshot = composableV6State;
+  return { confirmed: true, digest: result.digest, composableV6State };
 }
 
 function configuredMakerSealClientV5(serverConfigs = runtimeConfig.sealKeyServers) {
@@ -18258,6 +18990,7 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
     ? `${state.walletAddress}:${rootMakerId}`
     : `public:${rootMakerId}:${suiJsonId(template?.objectId) || document?.version?.versionId || 'draft'}`;
   let commerceState = null;
+  let composableV6State = null;
   if (template?.source === 'chain') {
     if (runtimeConfig.commerceV5ReleaseEnabled !== true) {
       commerceState = commerceV5FailClosedState(commerceV5Error(
@@ -18273,6 +19006,41 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
       }
     }
   }
+  if (
+    template?.source === 'chain'
+    && runtimeConfig.compositionV6ReleaseEnabled === true
+  ) {
+    try {
+      composableV6State = await hydratePlayerComposableV6(document);
+    } catch (error) {
+      console.warn('Composable Assets v6 state could not be hydrated.', error);
+      // Do not fall back to the document's creator draft when a published
+      // chain catalog fails verification. An explicit Fixed profile removes
+      // every external Item from Player/Complete until trusted hydration wins.
+      composableV6State = Object.freeze({
+        trusted: false,
+        manifest: Object.freeze({
+          profile: Object.freeze({ mode: 'FIXED', loadoutMutable: false }),
+          items: Object.freeze([]),
+        }),
+        products: Object.freeze([]),
+        entitlements: Object.freeze([]),
+        assets: Object.freeze([]),
+        errorCode: String(error?.code || 'COMPOSABLE_PLAYER_V6_UNAVAILABLE'),
+        errorMessage: String(error?.message || 'Composable Assets v6 is unavailable.'),
+      });
+    }
+  }
+  playerComposableV6TrustedSnapshot = composableV6State?.trusted === true
+    ? composableV6State
+    : null;
+  state.playerComposableV6 = playerComposableV6TrustedSnapshot
+    ? playerComposableV6CompletionState({
+        document,
+        trusted: playerComposableV6TrustedSnapshot,
+        player: state.playerComposableV6,
+      })
+    : null;
   return makerWorkspace.setContext({
     makerKey,
     walletAddress: state.walletAddress,
@@ -18297,7 +19065,9 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
     isPublished: makerIsPublished(),
     creatorPreview: state.previewingMaker,
     commerceV5ReleaseEnabled: runtimeConfig.commerceV5ReleaseEnabled === true,
+    compositionV6ReleaseEnabled: runtimeConfig.compositionV6ReleaseEnabled === true,
     ...(commerceState ? { commerceState } : {}),
+    ...(composableV6State ? { composableV6State } : {}),
     lifecycle: {
       id: lifecycle.id,
       label: t(lifecycle.labelKey),
@@ -19417,6 +20187,17 @@ makerWorkspace = createMakerWorkspace({
     async onPurchaseExpansionPack(payload) {
       return purchasePlayerExpansionPackV5(payload);
     },
+    ...(runtimeConfig.compositionV6ReleaseEnabled === true ? {
+      async onComposableItemAction(payload) {
+        return acquirePlayerComposableItemV6(payload);
+      },
+      async onComposableAppearanceAction(payload) {
+        return updatePlayerComposableAppearanceV6(payload);
+      },
+      async onComposableOwnedLockAction(payload) {
+        return setPlayerComposableOwnedLockV6(payload);
+      },
+    } : {}),
     onPlayerRecipeChange(payload) {
       syncPlayerV4State(payload);
     },

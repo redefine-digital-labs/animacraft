@@ -53,6 +53,17 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   commerceV5LogicalAuxiliaryBlobId: '',
   commerceV5SoulBindingProofType: '',
   commerceV5ReleaseEnabled: false,
+  // Composable Assets v6 is a companion to one already-published v5 Maker
+  // release. Keep the complete object tuple empty and the gate false until
+  // both Animacraft composition_v6 and Soulidity appearance_v6 have been
+  // upgraded, initialized disabled, bound to the exact owner-proof TypeOrigin,
+  // and verified through read-back plus adversarial Mainnet rehearsal.
+  compositionV6TypeOriginPackageId: '',
+  compositionProtocolConfigV6Id: '',
+  compositionProtocolTreasuryV6Id: '',
+  compositionRegistryV6Id: '',
+  compositionV6SoulOwnerProofType: '',
+  compositionV6ReleaseEnabled: false,
   // Seal remains fail-closed until the reviewed v5 package and an authenticated
   // Mainnet committee endpoint are configured. One committee is one outer
   // server with weight 1 / threshold 1; its internal committee is 5-of-8.
@@ -311,6 +322,96 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     errors.push('Commerce v5 requires the canonical Soulidity mint gate, callable package, and stable TypeOrigin because every Complete output is atomically bound to one Soul.');
   }
 
+  const compositionV6TypeOriginPackageReady = SUI_ID.test(
+    String(config.compositionV6TypeOriginPackageId || ''),
+  );
+  const compositionProtocolConfigV6Ready = SUI_ID.test(
+    String(config.compositionProtocolConfigV6Id || ''),
+  );
+  const compositionProtocolTreasuryV6Ready = SUI_ID.test(
+    String(config.compositionProtocolTreasuryV6Id || ''),
+  );
+  const compositionRegistryV6Ready = SUI_ID.test(
+    String(config.compositionRegistryV6Id || ''),
+  );
+  let compositionV6SoulOwnerProofType = '';
+  try {
+    compositionV6SoulOwnerProofType = normalizeStructTag(
+      String(config.compositionV6SoulOwnerProofType || '').trim(),
+    );
+  } catch {
+    compositionV6SoulOwnerProofType = '';
+  }
+  const expectedSoulOwnerProofType = soulidityTypeOriginReady
+    ? normalizeStructTag(
+      `${soulidityTypeOrigin}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
+    )
+    : '';
+  const compositionV6SoulOwnerProofReady = Boolean(
+    compositionV6SoulOwnerProofType
+      && expectedSoulOwnerProofType
+      && compositionV6SoulOwnerProofType === expectedSoulOwnerProofType,
+  );
+  const compositionV6ObjectsConfigured = Boolean(
+    config.compositionV6TypeOriginPackageId
+      || config.compositionProtocolConfigV6Id
+      || config.compositionProtocolTreasuryV6Id
+      || config.compositionRegistryV6Id
+      || config.compositionV6SoulOwnerProofType,
+  );
+  if (typeof config.compositionV6ReleaseEnabled !== 'boolean') {
+    errors.push('compositionV6ReleaseEnabled must be a boolean release gate.');
+  }
+  if (config.compositionV6TypeOriginPackageId && !compositionV6TypeOriginPackageReady) {
+    errors.push('compositionV6TypeOriginPackageId must be a valid Sui package ID.');
+  }
+  if (config.compositionProtocolConfigV6Id && !compositionProtocolConfigV6Ready) {
+    errors.push('compositionProtocolConfigV6Id must be a valid Sui object ID.');
+  }
+  if (config.compositionProtocolTreasuryV6Id && !compositionProtocolTreasuryV6Ready) {
+    errors.push('compositionProtocolTreasuryV6Id must be a valid Sui object ID.');
+  }
+  if (config.compositionRegistryV6Id && !compositionRegistryV6Ready) {
+    errors.push('compositionRegistryV6Id must be a valid Sui object ID.');
+  }
+  if (
+    config.compositionV6SoulOwnerProofType
+    && !compositionV6SoulOwnerProofReady
+  ) {
+    errors.push('compositionV6SoulOwnerProofType must be the exact AnimacraftSoulOwnerProofV6 defined by the stable Soulidity TypeOrigin.');
+  }
+  if (
+    compositionV6ObjectsConfigured
+    && (!compositionV6TypeOriginPackageReady
+      || !compositionProtocolConfigV6Ready
+      || !compositionProtocolTreasuryV6Ready
+      || !compositionRegistryV6Ready
+      || !compositionV6SoulOwnerProofReady)
+  ) {
+    errors.push('Composable Assets v6 configuration must include its stable TypeOrigin, protocol config, protocol treasury, registry, and exact Soulidity owner-proof type together.');
+  }
+  if (
+    config.compositionV6ReleaseEnabled
+    && (!compositionV6TypeOriginPackageReady
+      || !compositionProtocolConfigV6Ready
+      || !compositionProtocolTreasuryV6Ready
+      || !compositionRegistryV6Ready
+      || !compositionV6SoulOwnerProofReady)
+  ) {
+    errors.push('Composable Assets v6 cannot be released before its complete object tuple and exact Soulidity owner-proof type are configured.');
+  }
+  if (
+    config.compositionV6ReleaseEnabled
+    && (
+      config.commerceV5ReleaseEnabled !== true
+      || config.canonicalSoulMintEnabled !== true
+      || !soulidityReady
+      || !soulidityTypeOriginReady
+    )
+  ) {
+    errors.push('Composable Assets v6 requires active Commerce v5, canonical Soul minting, and the reviewed Soulidity v6 appearance adapter.');
+  }
+
   const sealV5PackageReady = SUI_ID.test(String(config.sealV5PackageId || ''));
   const sealServers = Array.isArray(config.sealKeyServers)
     ? config.sealKeyServers
@@ -429,6 +530,11 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     commerceProtocolTreasuryV5Ready,
     commerceV5LogicalAuxiliaryBlobReady,
     commerceV5SoulBindingProofReady,
+    compositionV6TypeOriginPackageReady,
+    compositionProtocolConfigV6Ready,
+    compositionProtocolTreasuryV6Ready,
+    compositionRegistryV6Ready,
+    compositionV6SoulOwnerProofReady,
     sealV5PackageReady,
     sealServersReady,
     sealThresholdReady,

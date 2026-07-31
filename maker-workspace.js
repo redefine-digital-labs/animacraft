@@ -46,6 +46,28 @@ import {
   quotePackPurchaseV5,
   recipeUsedPackIds,
 } from './maker-commerce-v5.js';
+import {
+  COMPOSABLE_PROFILE_MODES,
+  ITEM_ACCESS_MODES,
+  ITEM_BINDING_MODES,
+  ITEM_ORIGIN_CLASSES,
+  THIRD_PARTY_ADMISSION_MODES,
+  createComposableProfileV6,
+} from './maker-composable-v6.js';
+import {
+  collectMakerComposableV6PreflightIssues,
+  getMakerComposableV6Draft,
+  normalizeMakerComposableV6Draft,
+} from './maker-composable-v6-bridge.js';
+import {
+  createOfficialEmbeddedItemProductDraftV6,
+  deriveMakerLocalCompatibilityV6,
+  deriveWardrobeCardsV6,
+  inspectThirdPartyItemManifestV6,
+  itemProductComponentsToRendererLayersV6,
+  mergeEmbeddedProductSelectionIntoRecipeV6,
+  validateWardrobeLoadoutV6,
+} from './maker-composable-v6-workspace.js';
 import { evaluateVisibleWhen, renderResolvedScene, resolveMakerScene } from './maker-renderer.js';
 import { createMakerCommandStore } from './maker-command-store.js';
 import {
@@ -76,6 +98,7 @@ import {
   synchronizeDefaultRecipe,
   uniqueDocumentId,
 } from './maker-document-ops.js';
+
 import {
   buildAssetImportMapping,
   buildProjectAssetImportMapping,
@@ -132,6 +155,24 @@ import {
   safePngFilename,
 } from './player-export.js';
 import { makerWorkspaceText } from './maker-workspace-i18n.js';
+
+const COMPOSABLE_ITEM_TX_STATES = Object.freeze(new Set([
+  'idle',
+  'planning',
+  'awaiting-signature',
+  'submitted',
+  'confirming',
+  'confirmed',
+  'failed',
+  'recoverable',
+]));
+
+const COMPOSABLE_ITEM_TX_BUSY_STATES = Object.freeze(new Set([
+  'planning',
+  'awaiting-signature',
+  'submitted',
+  'confirming',
+]));
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (character) => ({
@@ -1384,12 +1425,19 @@ export class MakerWorkspace {
     this.selectedTrackId = '';
     this.selectedChannelId = '';
     this.selectedSoulDocumentKey = 'soulMd';
+    this.selectedComposableProductId = '';
+    this.composableImportError = '';
     this.playerPartId = '';
     this.playerPickerPanel = 'parts';
     this.playerPickerViewByContext = new Map();
     this.playerPartRailView = { left: 0, top: 0 };
     this.creatorRecipe = { selections: [], colors: [] };
     this.playerRecipe = { selections: [], colors: [] };
+    this.playerComposableLoadout = [];
+    this.playerAppearanceRevision = 0;
+    this.playerComposableItemTransactions = new Map();
+    this.playerComposableItemActionRequestId = 0;
+    this.playerComposableAppearancePending = false;
     this.playerUndo = [];
     this.playerRedo = [];
     this.playerCreatorPreview = false;
@@ -1587,7 +1635,11 @@ export class MakerWorkspace {
       }
       if (this.handlePlayerTabKeydown(event)) return;
       if (this.handlePlayerRadioKeydown(event)) return;
-      if (!this.playerIntroOpen && event.key === 'Escape' && this.playerPickerPanel === 'colors') {
+      if (
+        !this.playerIntroOpen
+        && event.key === 'Escape'
+        && ['colors', 'wardrobe'].includes(this.playerPickerPanel)
+      ) {
         event.preventDefault?.();
         this.setPlayerPickerPanel('parts');
         return;
@@ -1782,6 +1834,330 @@ export class MakerWorkspace {
     }[quote?.reason] || this.tr('playerCommerceUnavailable');
   }
 
+  makerComposableDraft(document = this.store?.getState().document) {
+    return document ? getMakerComposableV6Draft(document) : null;
+  }
+
+  playerComposableState(document = this.runtimeDocument()) {
+    const contextState = this.context?.composableV6State
+      && typeof this.context.composableV6State === 'object'
+      ? this.context.composableV6State
+      : {};
+    const manifest = contextState.manifest
+      && typeof contextState.manifest === 'object'
+      ? contextState.manifest
+      : null;
+    const draft = this.makerComposableDraft(document);
+    const profile = contextState.profile
+      || manifest?.profile
+      || draft?.profile
+      || createComposableProfileV6();
+    const compatibility = contextState.compatibility
+      || manifest?.compatibility
+      || draft?.compatibility
+      || null;
+    const products = Array.isArray(contextState.products)
+      ? contextState.products
+      : Array.isArray(manifest?.items)
+        ? manifest.items
+        : draft?.items || [];
+    return {
+      profile,
+      compatibility,
+      products,
+      entitlements: Array.isArray(contextState.entitlements)
+        ? contextState.entitlements
+        : [],
+      ownerAddress: String(contextState.ownerAddress || this.context?.walletAddress || ''),
+      soulId: String(contextState.soulId || ''),
+      soulStateId: String(contextState.soulStateId || ''),
+      appearanceStateId: String(contextState.appearanceStateId || ''),
+      productObjectIds: contextState.productObjectIds
+        && typeof contextState.productObjectIds === 'object'
+        ? contextState.productObjectIds
+        : {},
+      revision: Math.max(0, Number(contextState.revision || this.playerAppearanceRevision || 0)),
+      releaseEnabled: this.context?.compositionV6ReleaseEnabled === true,
+      source: manifest || contextState.trusted === true ? 'published' : draft ? 'draft' : 'fixed',
+    };
+  }
+
+  playerComposableItemTransaction(productId) {
+    const id = String(productId || '');
+    return this.playerComposableItemTransactions.get(id) || {
+      productId: id,
+      state: 'idle',
+      action: '',
+      message: '',
+      digest: '',
+      requestId: 0,
+    };
+  }
+
+  setPlayerComposableItemTransaction(productId, value, { requestId = null } = {}) {
+    const id = String(productId || '');
+    if (!id) return false;
+    const previous = this.playerComposableItemTransaction(id);
+    if (requestId != null && previous.requestId !== requestId) return false;
+    const state = COMPOSABLE_ITEM_TX_STATES.has(value?.state) ? value.state : previous.state;
+    if (
+      ['confirmed', 'failed', 'recoverable'].includes(previous.state)
+      && state !== previous.state
+    ) return false;
+    this.playerComposableItemTransactions.set(id, {
+      ...previous,
+      ...value,
+      productId: id,
+      state,
+      message: String(value?.message ?? previous.message ?? ''),
+      digest: String(value?.digest ?? previous.digest ?? ''),
+    });
+    this.render();
+    return true;
+  }
+
+  playerComposableItemTransactionText(transaction) {
+    if (!transaction || transaction.state === 'idle') return '';
+    if (transaction.message) return transaction.message;
+    const key = {
+      planning: 'itemTxPlanning',
+      'awaiting-signature': 'itemTxAwaitingSignature',
+      submitted: 'itemTxSubmitted',
+      confirming: 'itemTxConfirming',
+      confirmed: 'itemTxConfirmed',
+      failed: 'itemTxFailed',
+      recoverable: 'itemTxRecoverable',
+    }[transaction.state];
+    return key ? this.tr(key) : '';
+  }
+
+  applyPlayerComposableItemActionResult(result = {}) {
+    const rehydrated = result?.composableV6State || result?.rehydratedState;
+    if (rehydrated && typeof rehydrated === 'object' && !Array.isArray(rehydrated)) {
+      this.context = {
+        ...this.context,
+        composableV6State: clone(rehydrated),
+      };
+    } else {
+      const current = this.context?.composableV6State
+        && typeof this.context.composableV6State === 'object'
+        ? this.context.composableV6State
+        : {};
+      const patch = {};
+      if (Array.isArray(result?.entitlements)) patch.entitlements = clone(result.entitlements);
+      if (Array.isArray(result?.products)) patch.products = clone(result.products);
+      if (result?.manifest && typeof result.manifest === 'object') patch.manifest = clone(result.manifest);
+      if (Object.keys(patch).length) {
+        this.context = {
+          ...this.context,
+          composableV6State: { ...current, ...patch },
+        };
+      }
+    }
+    if (Array.isArray(result?.loadout)) {
+      this.playerComposableLoadout = [...new Set(result.loadout.map(String).filter(Boolean))];
+    }
+    if (Number.isSafeInteger(result?.appearanceRevision) && result.appearanceRevision >= 0) {
+      this.playerAppearanceRevision = result.appearanceRevision;
+    } else if (Number.isSafeInteger(this.context?.composableV6State?.revision)) {
+      this.playerAppearanceRevision = Math.max(
+        this.playerAppearanceRevision,
+        this.context.composableV6State.revision,
+      );
+    }
+  }
+
+  async runPlayerComposableItemAction(productId) {
+    const id = String(productId || '');
+    const document = this.runtimeDocument();
+    const composableState = this.playerComposableState(document);
+    const card = this.playerWardrobeCards(document)
+      .find((candidate) => candidate.productId === id);
+    const current = this.playerComposableItemTransaction(id);
+    if (
+      !id
+      || !card
+      || !['claim', 'purchase'].includes(card.action)
+      || !composableState.releaseEnabled
+      || typeof this.callbacks.onComposableItemAction !== 'function'
+      || COMPOSABLE_ITEM_TX_BUSY_STATES.has(current.state)
+      || current.state === 'confirmed'
+    ) return false;
+
+    const requestId = ++this.playerComposableItemActionRequestId;
+    const recovery = current.state === 'recoverable'
+      ? { digest: current.digest, message: current.message }
+      : null;
+    this.playerComposableItemTransactions.set(id, {
+      productId: id,
+      state: 'planning',
+      action: card.action,
+      message: '',
+      digest: current.digest || '',
+      requestId,
+    });
+    this.render();
+
+    const onStatus = (nextState, detail = {}) => {
+      const update = nextState && typeof nextState === 'object'
+        ? nextState
+        : { ...detail, state: nextState };
+      if (!COMPOSABLE_ITEM_TX_BUSY_STATES.has(update.state)) return false;
+      return this.setPlayerComposableItemTransaction(id, update, { requestId });
+    };
+
+    try {
+      const result = await this.callbacks.onComposableItemAction({
+        action: card.action,
+        product: clone(card.product),
+        makerRootId: composableState.compatibility?.makerRootId || '',
+        soulId: composableState.soulId,
+        ...(recovery ? { recovery } : {}),
+        onStatus,
+      });
+      if (this.playerComposableItemTransaction(id).requestId !== requestId) return false;
+      if (result?.recoverable === true || result?.status === 'recoverable') {
+        this.setPlayerComposableItemTransaction(id, {
+          state: 'recoverable',
+          message: result?.message || this.tr('itemTxRecoverable'),
+          digest: result?.digest || current.digest || '',
+        }, { requestId });
+        return false;
+      }
+      if (result?.confirmed !== true && result?.status !== 'confirmed') {
+        throw new Error(result?.message || this.tr('itemTxFailed'));
+      }
+      this.applyPlayerComposableItemActionResult(result);
+      this.setPlayerComposableItemTransaction(id, {
+        state: 'confirmed',
+        message: result?.message || this.tr('itemTxConfirmed'),
+        digest: result?.digest || '',
+      }, { requestId });
+      return true;
+    } catch (error) {
+      if (this.playerComposableItemTransaction(id).requestId !== requestId) return false;
+      const recoverable = error?.recoverable === true || error?.status === 'recoverable';
+      this.setPlayerComposableItemTransaction(id, {
+        state: recoverable ? 'recoverable' : 'failed',
+        message: error?.message || this.tr(recoverable ? 'itemTxRecoverable' : 'itemTxFailed'),
+        digest: error?.digest || current.digest || '',
+      }, { requestId });
+      this.callbacks.onPlayerError?.(error);
+      return false;
+    }
+  }
+
+  playerWardrobeCards(document = this.runtimeDocument(), {
+    selected = this.playerComposableLoadout,
+    creatorPreview = this.playerCreatorPreview,
+  } = {}) {
+    const state = this.playerComposableState(document);
+    if (!state.compatibility) return [];
+    const cards = deriveWardrobeCardsV6({
+      ...state,
+      selected,
+    });
+    if (!creatorPreview || state.source !== 'draft') return cards;
+    // Creator Preview may exercise only the Maker's own embedded artwork
+    // before validator attestation. This never changes the product's real
+    // validation badge and never makes an external/unentitled Item usable.
+    return cards.map((card) => (
+      card.originClass === ITEM_ORIGIN_CLASSES.OFFICIAL
+      && card.accessMode === ITEM_ACCESS_MODES.EMBEDDED
+      && card.binding === ITEM_BINDING_MODES.EMBEDDED
+        ? {
+            ...card,
+            available: true,
+            locked: false,
+            canEquip: state.profile.mode === COMPOSABLE_PROFILE_MODES.COMPOSABLE,
+            action: 'included',
+            disabledReason: '',
+            creatorPreviewPendingValidation: !card.technicallyValidated,
+          }
+        : card
+    ));
+  }
+
+  setComposableDraft(document, value) {
+    document.extensions ||= {};
+    document.extensions.composableV6 = normalizeMakerComposableV6Draft(value);
+  }
+
+  createComposableDraftForDocument(document) {
+    const existing = getMakerComposableV6Draft(document);
+    if (existing) return existing;
+    return normalizeMakerComposableV6Draft({
+      profile: createComposableProfileV6({
+        mode: COMPOSABLE_PROFILE_MODES.COMPOSABLE,
+        thirdPartyAdmission: THIRD_PARTY_ADMISSION_MODES.DISABLED,
+        itemAssetization: false,
+      }),
+      compatibility: deriveMakerLocalCompatibilityV6(document, {
+        makerRootId: this.context?.chainBinding?.commerceV5RootObjectId
+          || document.version?.rootMakerId,
+        rendererVersion: 'animacraft.shared-renderer.v5',
+      }),
+      compatibilitySealed: false,
+      items: [],
+    });
+  }
+
+  composableCreatorIssues(document = this.store?.getState().document) {
+    const draft = document ? getMakerComposableV6Draft(document) : null;
+    if (!draft || draft.profile.mode !== COMPOSABLE_PROFILE_MODES.COMPOSABLE) return [];
+    return collectMakerComposableV6PreflightIssues(document, {
+      publish: false,
+      makerOwner: this.context?.walletAddress || '',
+      currentOwnershipEpoch: this.context?.composableV6State?.ownershipEpoch || 0,
+      baseMakerRootId: draft.compatibility?.makerRootId || '',
+    });
+  }
+
+  playerComposableRendererLayers(document = this.runtimeDocument(), {
+    selected = this.playerComposableLoadout,
+    creatorPreview = this.playerCreatorPreview,
+  } = {}) {
+    const state = this.playerComposableState(document);
+    if (
+      state.profile.mode !== COMPOSABLE_PROFILE_MODES.COMPOSABLE
+      || !state.compatibility
+    ) return { layers: [], issues: [], occupiedExternalSlotIds: [] };
+    const selectedIds = new Set(selected);
+    const cards = this.playerWardrobeCards(document, { selected, creatorPreview });
+    const layers = [];
+    const issues = [];
+    const occupiedExternalSlotIds = new Set();
+    cards.filter((card) => card.equipped && selectedIds.has(card.productId)).forEach((card) => {
+      if (!card.available) {
+        issues.push({ code: 'item-not-entitled', productId: card.productId });
+        return;
+      }
+      try {
+        const productLayers = itemProductComponentsToRendererLayersV6(card.product, {
+          profile: state.profile,
+          compatibility: state.compatibility,
+          layerTracks: document.layerTracks,
+        });
+        if (productLayers.length) {
+          card.product.slotClaims?.forEach((claim) => occupiedExternalSlotIds.add(claim.slotId));
+          layers.push(...productLayers);
+        }
+      } catch (error) {
+        // Embedded products render through their exact baseSource selection.
+        // External products fail closed instead of silently drawing a drifted
+        // or unvalidated layer.
+        if (card.product?.components?.some((component) => !component.baseSource)) {
+          issues.push({
+            code: error?.code || 'item-render-invalid',
+            productId: card.productId,
+            message: error?.message || '',
+          });
+        }
+      }
+    });
+    return { layers, issues, occupiedExternalSlotIds: [...occupiedExternalSlotIds] };
+  }
+
   basePlayerDocument() {
     return this.store?.getState?.().document || null;
   }
@@ -1824,6 +2200,7 @@ export class MakerWorkspace {
       recipe: snapshot.recipe,
       profile: snapshot.profile,
       livingContent: snapshot.livingContent,
+      composableV6: snapshot.composableV6 || null,
       imageExport: {
         sizeMode: String(imageExport.sizeMode || this.playerExportSizeMode || 'standard'),
         transparentBackground: Boolean(
@@ -1889,6 +2266,7 @@ export class MakerWorkspace {
     recipe,
     profile,
     livingContent,
+    composableV6 = null,
     imageBlob,
     imageExport,
     exportKey,
@@ -1910,6 +2288,7 @@ export class MakerWorkspace {
       recipe: clone(recipe),
       profile: clone(profile),
       livingContent: clone(livingContent),
+      ...(composableV6 ? { composableV6: clone(composableV6) } : {}),
     });
     this.playerPendingCompletedExport = {
       exportKey: String(exportKey),
@@ -2180,9 +2559,13 @@ export class MakerWorkspace {
   }
 
   runtimeAssetsForContext(context, document) {
-    const suppliedAssets = context.assets instanceof Map
+    const baseAssets = context.assets instanceof Map
       ? [...context.assets.values()]
       : Array.from(context.assets || []);
+    const composableAssets = context.composableV6State?.assets instanceof Map
+      ? [...context.composableV6State.assets.values()]
+      : Array.from(context.composableV6State?.assets || []);
+    const suppliedAssets = [...baseAssets, ...composableAssets];
     const nextAssets = new Map();
     suppliedAssets.forEach((record) => {
       const assetId = String(record.assetId || record.id || record.identifier || '');
@@ -2293,6 +2676,10 @@ export class MakerWorkspace {
       this.playerCompletedExportKey = '';
       this.playerPendingCompletedExport = null;
       this.playerLivingContent = null;
+      this.playerComposableLoadout = [];
+      this.playerAppearanceRevision = 0;
+      this.playerComposableItemTransactions.clear();
+      this.playerComposableItemActionRequestId += 1;
       this.playerSessionRequestId += 1;
       this.playerSessionSwitchInProgress = false;
       this.resetPlayerSessionPersistence();
@@ -2379,10 +2766,16 @@ export class MakerWorkspace {
     this.selectedStyleId = '';
     this.selectedTrackId = '';
     this.selectedChannelId = '';
+    this.selectedComposableProductId = '';
+    this.composableImportError = '';
     this.pendingSmartColorEdit = null;
     this.enabledExpansionIds = new Set();
     this.hydratePlayerCommerceContext(this.context);
     this.playerLivingContent = null;
+    this.playerComposableLoadout = [];
+    this.playerAppearanceRevision = 0;
+    this.playerComposableItemTransactions.clear();
+    this.playerComposableItemActionRequestId += 1;
     this.playerSessionRequestId += 1;
     this.playerSessionSwitchInProgress = false;
     this.resetPlayerSessionPersistence();
@@ -2429,6 +2822,19 @@ export class MakerWorkspace {
     const recipe = recipeWithColors(document, context.recipe || document.defaultRecipe);
     this.store = createMakerCommandStore(document, recipe);
     this.creatorRecipe = clone(recipe);
+    const composableState = context.composableV6State
+      && typeof context.composableV6State === 'object'
+      ? context.composableV6State
+      : {};
+    const composableDraft = getMakerComposableV6Draft(document);
+    const fallbackProductIds = composableState.manifest?.compatibility?.fallbackProductIds
+      || composableDraft?.compatibility?.fallbackProductIds
+      || [];
+    this.playerComposableLoadout = clone(
+      Array.isArray(composableState.selected) ? composableState.selected : fallbackProductIds,
+    );
+    this.playerAppearanceRevision = Math.max(0, Number(composableState.revision || 0));
+    this.selectedComposableProductId = composableDraft?.items?.[0]?.id || '';
     this.unsubscribe = this.store.subscribe((next, event) => {
       const nextVersionId = String(next.document.version?.versionId || '');
       const playerVersionChanged = Boolean(
@@ -2582,6 +2988,16 @@ export class MakerWorkspace {
       session.livingContent,
       runtimeDocument,
     );
+    const composableState = this.playerComposableState(runtimeDocument);
+    if (composableState.profile.mode === COMPOSABLE_PROFILE_MODES.COMPOSABLE) {
+      this.playerComposableLoadout = Array.isArray(session.composableLoadout)
+        ? [...new Set(session.composableLoadout.map(String).filter(Boolean))]
+        : this.playerComposableLoadout;
+      this.playerAppearanceRevision = Math.max(
+        0,
+        Number(session.appearanceRevision || this.playerAppearanceRevision || 0),
+      );
+    }
     if (closeIntro) this.playerIntroOpen = false;
     return true;
   }
@@ -3734,6 +4150,8 @@ export class MakerWorkspace {
       recipe: clone(this.playerRecipe),
       profile: clone(this.playerProfile),
       livingContent: clone(this.playerLivingContentDraft(this.runtimeDocument())),
+      composableLoadout: clone(this.playerComposableLoadout),
+      appearanceRevision: this.playerAppearanceRevision,
       enabledExpansionIds: enabledExpansionIdsForDocument(baseDocument, this.enabledExpansionIds),
       updatedAt: new Date().toISOString(),
     };
@@ -4352,6 +4770,10 @@ export class MakerWorkspace {
       recipe: clone(this.playerRecipe),
       profile: clone(this.playerProfile),
       livingContent: clone(this.resolvedPlayerLivingContent(document)?.content || null),
+      composableV6: {
+        loadout: clone(this.playerComposableLoadout),
+        appearanceRevision: this.playerAppearanceRevision,
+      },
       assets: new Map(this.assets),
     };
   }
@@ -4794,7 +5216,7 @@ export class MakerWorkspace {
   }
 
   openCreatorTab(tab = 'structure') {
-    const allowed = new Set(['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'commerce', 'soul', 'validate']);
+    const allowed = new Set(['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'composable', 'commerce', 'soul', 'validate']);
     this.creatorTab = allowed.has(tab) ? tab : 'structure';
     this.resetCreatorToolScroll = this.creatorTab !== 'structure';
     if (this.creatorTab !== 'rules') {
@@ -4987,17 +5409,25 @@ export class MakerWorkspace {
   }
 
   setPlayerPickerPanel(panel) {
-    const nextPanel = panel === 'colors' ? 'colors' : 'parts';
+    const nextPanel = ['colors', 'wardrobe'].includes(panel) ? panel : 'parts';
     const document = this.runtimeDocument();
     const recipe = document ? recipeWithColors(document, this.playerRecipe) : this.playerRecipe;
     const parts = document ? this.activePlayerParts(document, recipe) : [];
     const part = parts.find((candidate) => candidate.id === this.playerPartId) || parts[0] || null;
     const paletteContext = playerPaletteContext(document, recipe, part?.id);
+    const composableState = document ? this.playerComposableState(document) : null;
     if (
       !document
       || (
         nextPanel === 'colors'
         && paletteContext.channels.length === 0
+      )
+      || (
+        nextPanel === 'wardrobe'
+        && (
+          composableState?.profile.mode !== COMPOSABLE_PROFILE_MODES.COMPOSABLE
+          || !composableState.compatibility
+        )
       )
     ) return false;
     this.playerPickerPanel = nextPanel;
@@ -5005,6 +5435,10 @@ export class MakerWorkspace {
     requestAnimationFrame(() => {
       if (nextPanel === 'colors') {
         this.playerRoot?.querySelector('[data-action="player-palette"]')?.focus?.({ preventScroll: true });
+        return;
+      }
+      if (nextPanel === 'wardrobe') {
+        this.playerRoot?.querySelector('[data-action="player-wardrobe"]')?.focus?.({ preventScroll: true });
         return;
       }
       [...(this.playerRoot?.querySelectorAll?.('[data-action="player-part"]') || [])]
@@ -5189,7 +5623,7 @@ export class MakerWorkspace {
     if (!this.creatorRoot?.querySelector) return null;
     const scrollSelectors = [
       '.v4-parts-list', '.v4-canvas-viewport', '.v4-inspector', '.v4-item-grid', '.v4-tool-body',
-      '.v4-track-list', '.v4-color-workspace', '.v4-rule-list', '.v4-expansion-grid', '.v4-commerce-workspace', '.v4-soul-editor', '.v4-preflight-list',
+      '.v4-track-list', '.v4-color-workspace', '.v4-rule-list', '.v4-expansion-grid', '.v4-composable-workspace', '.v4-commerce-workspace', '.v4-soul-editor', '.v4-preflight-list',
     ];
     const scroll = scrollSelectors.map((selector) => {
       const node = this.creatorRoot.querySelector(selector);
@@ -5245,6 +5679,7 @@ export class MakerWorkspace {
       colors: this.tr('smartColor'),
       rules: this.tr('rules'),
       expansions: this.tr('expansionPacks'),
+      composable: this.tr('composableItems'),
       commerce: this.tr('commerceRights'),
       soul: this.tr('soulConfig'),
       validate: this.tr(issueCount ? 'preflightCount' : 'preflightReady', { count: issueCount }),
@@ -5460,6 +5895,7 @@ export class MakerWorkspace {
     document: documentOverride = null,
     sizeMode = 'original',
     transparentBackground = false,
+    composableV6 = null,
     signal = null,
   } = {}) {
     const document = documentOverride || this.runtimeDocument();
@@ -5468,6 +5904,20 @@ export class MakerWorkspace {
     const canvas = globalThis.document?.createElement?.('canvas');
     if (!canvas) throw new Error(this.tr('canvasExportBrowserOnly'));
     const scene = resolveMakerScene(document, recipe, { strict: true });
+    const composableScene = this.playerComposableRendererLayers(document, {
+      selected: composableV6?.loadout || this.playerComposableLoadout,
+      creatorPreview: this.playerCreatorPreview,
+    });
+    if (composableScene.issues.length) throw new Error(this.tr('wardrobeUnavailable'));
+    const replacedSlots = new Set(composableScene.occupiedExternalSlotIds);
+    scene.layers = scene.layers.filter((layer) => !replacedSlots.has(layer.partId));
+    scene.layers.push(...composableScene.layers);
+    scene.layers.sort((left, right) => (
+      Number(left.trackOrder || 0) - Number(right.trackOrder || 0)
+      || String(left.trackId || '').localeCompare(String(right.trackId || ''))
+      || Number(left.order || 0) - Number(right.order || 0)
+      || String(left.key || '').localeCompare(String(right.key || ''))
+    ));
     if (transparentBackground) {
       const backgroundPartIds = this.playerBackgroundPartIds(document);
       scene.background = null;
@@ -5530,6 +5980,10 @@ export class MakerWorkspace {
       recipe: clone(recipeWithColors(document, this.playerRecipe)),
       profile: clone(this.playerProfile),
       livingContent: clone(this.resolvedPlayerLivingContent(document)?.content || null),
+      composableV6: {
+        loadout: clone(this.playerComposableLoadout),
+        appearanceRevision: this.playerAppearanceRevision,
+      },
       createdAt: new Date().toISOString(),
     });
   }
@@ -5610,6 +6064,7 @@ export class MakerWorkspace {
         document: snapshot.document,
         sizeMode: this.playerExportSizeMode,
         transparentBackground: this.playerExportTransparent,
+        composableV6: snapshot.composableV6,
         signal: abortController.signal,
       });
       if (!this.playerExportOpen || requestId !== this.playerExportRequestId) return;
@@ -5658,12 +6113,24 @@ export class MakerWorkspace {
       ? snapshot.livingContent
       : this.resolvedPlayerLivingContent(document)?.content || null;
     const profile = snapshot?.profile || this.playerProfile;
+    const composable = this.playerComposableState(document).profile.mode
+      === COMPOSABLE_PROFILE_MODES.COMPOSABLE;
     const payload = {
-      schemaVersion: 'animacraft.player-recipe.v5',
+      schemaVersion: composable
+        ? 'animacraft.player-recipe.v6'
+        : 'animacraft.player-recipe.v5',
       makerVersionId: document.version.versionId,
       recipe: snapshot?.recipe || this.playerRecipe,
       profile,
       livingContent,
+      ...(composable
+        ? {
+            composableV6: clone(snapshot?.composableV6 || {
+              loadout: this.playerComposableLoadout,
+              appearanceRevision: this.playerAppearanceRevision,
+            }),
+          }
+        : {}),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -5733,6 +6200,7 @@ export class MakerWorkspace {
     const issues = this.playerCompletionIssues(snapshot.document, snapshot.recipe, {
       profile: snapshot.profile,
       livingContent: snapshot.livingContent,
+      composableV6: snapshot.composableV6,
     });
     if (issues.length) {
       this.callbacks.onPlayerError?.(new Error(issues[0]));
@@ -5769,6 +6237,7 @@ export class MakerWorkspace {
       recipe: snapshot.recipe,
       profile: snapshot.profile,
       livingContent: snapshot.livingContent,
+      composableV6: snapshot.composableV6,
       imageBlob,
       imageExport,
       exportKey,
@@ -5917,6 +6386,7 @@ export class MakerWorkspace {
             ['colors', this.tr('smartColor')],
             ['rules', this.tr('rules')],
             ['expansions', this.tr('expansionPacks')],
+            ['composable', this.tr('composableItems')],
             ['commerce', this.tr('commerceRights')],
             ['soul', this.tr('soulConfig')],
             ['validate', this.tr(issues.length ? 'preflightCount' : 'preflightReady', { count: issues.length })],
@@ -7020,6 +7490,104 @@ export class MakerWorkspace {
         <div class="v4-expansion-grid">${cards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noExpansionPacks'))}</strong><span>${escapeHtml(this.tr('noExpansionCopy'))}</span></div>`}</div>
       `;
     }
+    if (this.creatorTab === 'composable') {
+      const draft = getMakerComposableV6Draft(document);
+      const composable = draft?.profile.mode === COMPOSABLE_PROFILE_MODES.COMPOSABLE;
+      const compatibility = composable ? draft.compatibility : null;
+      const selectedRecords = this.selectedCreatorRecords(document);
+      const selectedCanBecomeProduct = Boolean(
+        composable
+        && compatibility
+        && !draft.compatibilitySealed
+        && selectedRecords.style?.assetId,
+      );
+      const originLabels = {
+        [ITEM_ORIGIN_CLASSES.OFFICIAL]: 'itemOriginOfficial',
+        [ITEM_ORIGIN_CLASSES.CERTIFIED]: 'itemOriginCertified',
+        [ITEM_ORIGIN_CLASSES.OPEN]: 'itemOriginOpen',
+      };
+      const accessLabels = {
+        [ITEM_ACCESS_MODES.EMBEDDED]: 'itemAccessEmbedded',
+        [ITEM_ACCESS_MODES.FREE_CLAIM]: 'itemAccessFreeClaim',
+        [ITEM_ACCESS_MODES.PAID_ONCE]: 'itemAccessPaidOnce',
+      };
+      const bindingLabels = {
+        [ITEM_BINDING_MODES.EMBEDDED]: 'itemBindingEmbedded',
+        [ITEM_BINDING_MODES.ACCOUNT]: 'itemBindingAccount',
+        [ITEM_BINDING_MODES.SOUL_BOUND]: 'itemBindingSoul',
+        [ITEM_BINDING_MODES.OWNED]: 'itemBindingOwned',
+      };
+      const productCards = (draft?.items || []).map((product) => {
+        const source = product.components?.find((component) => component.baseSource)?.baseSource;
+        const sourceStyle = source
+          ? findStyle(document, source.partId, source.itemId, source.styleId)
+          : null;
+        const thumbnail = sourceStyle ? this.styleThumbnailUrl(sourceStyle) : '';
+        const valid = product.validation?.passed === true
+          && Boolean(product.validation?.attestationId);
+        const active = product.id === this.selectedComposableProductId;
+        const slotId = product.slotClaims?.[0]?.slotId || '';
+        const fallback = draft.compatibility?.fallbackProductIds?.includes(product.id) === true;
+        const canBecomeFallback = product.originClass === ITEM_ORIGIN_CLASSES.OFFICIAL
+          && product.access?.mode === ITEM_ACCESS_MODES.EMBEDDED
+          && product.access?.binding === ITEM_BINDING_MODES.EMBEDDED
+          && Boolean(slotId);
+        return `
+          <article class="v4-item-product-card ${active ? 'active' : ''} ${valid ? 'valid' : 'pending'}">
+            <button type="button" data-action="select-composable-product" data-product-id="${escapeHtml(product.id)}">
+              <span>${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : '<i>PNG</i>'}</span>
+              <div><strong>${escapeHtml(product.display?.name || product.id)}</strong><small>${escapeHtml(this.tr(originLabels[product.originClass] || 'itemOriginOpen'))} · ${escapeHtml(this.tr(accessLabels[product.access?.mode] || 'itemAccessEmbedded'))}</small></div>
+              <em>${escapeHtml(this.tr(valid ? 'itemValidated' : 'itemValidationPending'))}</em>
+            </button>
+            <dl>
+              <div><dt>${escapeHtml(this.tr('itemSlot', { slot: product.slotClaims?.[0]?.slotId || '—' }))}</dt><dd>${escapeHtml(this.tr('itemComponents', { count: product.components?.length || 0 }))}</dd></div>
+              <div><dt>${escapeHtml(this.tr(bindingLabels[product.access?.binding] || 'itemBindingEmbedded'))}</dt><dd><code>${escapeHtml(product.id)}</code></dd></div>
+            </dl>
+            <div class="v4-item-product-actions">
+              ${canBecomeFallback ? `<button type="button" data-action="set-composable-fallback" data-product-id="${escapeHtml(product.id)}" ${draft.compatibilitySealed || fallback ? 'disabled' : ''}>${escapeHtml(this.tr(fallback ? 'slotFallback' : 'setSlotFallback'))}</button>` : ''}
+              <button type="button" class="danger" data-action="remove-composable-product" data-product-id="${escapeHtml(product.id)}" ${draft.compatibilitySealed ? 'disabled' : ''}>${escapeHtml(this.tr('removeItemProduct'))}</button>
+            </div>
+          </article>
+        `;
+      }).join('');
+      const draftIssues = composable ? this.composableCreatorIssues(document) : [];
+      return `
+        <div class="v4-advanced-head">
+          <div><span>${escapeHtml(this.tr('itemStudio'))}</span><h3>${escapeHtml(this.tr('itemStudioTitle'))}</h3><p>${escapeHtml(this.tr('itemStudioCopy'))}</p></div>
+        </div>
+        <div class="v4-composable-workspace">
+          <section class="v4-composable-mode">
+            <header><strong>${escapeHtml(this.tr('makerCompositionMode'))}</strong></header>
+            <div class="v4-composable-mode-grid">
+              <button type="button" class="${composable ? '' : 'active'}" data-action="composable-mode" data-mode="${COMPOSABLE_PROFILE_MODES.FIXED}" aria-pressed="${!composable}"><strong>${escapeHtml(this.tr('fixedMaker'))}</strong><small>${escapeHtml(this.tr('fixedMakerCopy'))}</small></button>
+              <button type="button" class="${composable ? 'active' : ''}" data-action="composable-mode" data-mode="${COMPOSABLE_PROFILE_MODES.COMPOSABLE}" aria-pressed="${composable}"><strong>${escapeHtml(this.tr('composableMaker'))}</strong><small>${escapeHtml(this.tr('composableMakerCopy'))}</small></button>
+            </div>
+          </section>
+          ${composable ? `
+            <section class="v4-composable-policy">
+              <label>${escapeHtml(this.tr('thirdPartyAdmission'))}<select data-action="composable-admission" ${draft.compatibilitySealed ? 'disabled' : ''}>
+                <option value="${THIRD_PARTY_ADMISSION_MODES.DISABLED}" ${selected(draft.profile.thirdPartyAdmission, THIRD_PARTY_ADMISSION_MODES.DISABLED)}>${escapeHtml(this.tr('admissionDisabled'))}</option>
+                <option value="${THIRD_PARTY_ADMISSION_MODES.CERTIFIED}" ${selected(draft.profile.thirdPartyAdmission, THIRD_PARTY_ADMISSION_MODES.CERTIFIED)}>${escapeHtml(this.tr('admissionCertified'))}</option>
+                <option value="${THIRD_PARTY_ADMISSION_MODES.OPEN}" ${selected(draft.profile.thirdPartyAdmission, THIRD_PARTY_ADMISSION_MODES.OPEN)}>${escapeHtml(this.tr('admissionOpen'))}</option>
+                </select><small>${escapeHtml(this.tr('admissionCopy'))}</small></label>
+              <label class="v4-check-row"><input type="checkbox" data-action="composable-assetization" ${checked(draft.profile.itemAssetization)} ${draft.compatibilitySealed ? 'disabled' : ''} /><span><strong>${escapeHtml(this.tr('itemAssetization'))}</strong></span></label>
+            </section>
+            <section class="v4-composable-compatibility ${draft.compatibilitySealed ? 'sealed' : 'draft'}">
+              <header><div><span>${escapeHtml(this.tr('compatibilityContract'))}</span><strong>${escapeHtml(this.tr(draft.compatibilitySealed ? 'compatibilitySealed' : 'compatibilityDraft'))}</strong></div><div><button type="button" data-action="composable-sync" ${draft.compatibilitySealed ? 'disabled' : ''}>${escapeHtml(this.tr('syncMakerCompatibility'))}</button><button type="button" data-action="composable-seal">${escapeHtml(this.tr(draft.compatibilitySealed ? 'unlockMakerCompatibility' : 'sealMakerCompatibility'))}</button></div></header>
+              <p>${escapeHtml(this.tr('compatibilitySummaryV6', { tracks: compatibility.layerTrackIds?.length || 0, slots: compatibility.slots?.length || 0, width: compatibility.canvas?.width || 0, height: compatibility.canvas?.height || 0 }))}</p>
+              <small>${escapeHtml(this.tr('compatibilityPlacement'))}</small>
+            </section>
+            <section class="v4-composable-catalog">
+              <header><div><span>${escapeHtml(this.tr('officialItemCatalog'))}</span><strong>${escapeHtml(this.tr('itemProductCount', { count: draft.items.length }))}</strong></div><div><button type="button" data-action="add-selected-official-item" ${selectedCanBecomeProduct ? '' : 'disabled'}>${escapeHtml(this.tr('addSelectedOfficialItem'))}</button><label class="v4-file-button ${draft.profile.thirdPartyAdmission === THIRD_PARTY_ADMISSION_MODES.DISABLED || draft.compatibilitySealed ? 'disabled' : ''}">${escapeHtml(this.tr('importThirdPartyItem'))}<input type="file" accept="application/json,.json" data-action="import-composable-item" ${draft.profile.thirdPartyAdmission === THIRD_PARTY_ADMISSION_MODES.DISABLED || draft.compatibilitySealed ? 'disabled' : ''} /></label></div></header>
+              ${this.composableImportError ? `<div class="v4-rule-error" role="alert">${escapeHtml(this.composableImportError)}</div>` : ''}
+              <div class="v4-item-product-grid">${productCards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noComposableItems'))}</strong></div>`}</div>
+            </section>
+            ${draftIssues.length ? `<section class="v4-composable-issues" role="status"><strong>${escapeHtml(this.tr('reviewIssues', { count: draftIssues.length }))}</strong><ul>${draftIssues.slice(0, 6).map((entry) => `<li>${escapeHtml(entry.message)}</li>`).join('')}</ul></section>` : ''}
+            <div class="v4-composable-gate" role="note">${escapeHtml(this.tr('v6MainnetGateClosed'))}</div>
+          ` : ''}
+        </div>
+      `;
+    }
     if (this.creatorTab === 'commerce') {
       const packIds = expansionPackIds(document);
       const commerce = normalizeMakerCommerceV5(document.commerce, { packIds });
@@ -7404,6 +7972,8 @@ export class MakerWorkspace {
       revision: this.store?.getState().revision || 0,
       expansions: [...this.enabledExpansionIds].sort(),
       recipe: recipeWithColors(document, recipe),
+      composableLoadout: [...this.playerComposableLoadout].sort(),
+      appearanceRevision: this.playerAppearanceRevision,
     });
   }
 
@@ -7486,6 +8056,7 @@ export class MakerWorkspace {
   playerCompletionIssues(document, recipe, {
     profile = this.playerProfile,
     livingContent = null,
+    composableV6 = null,
   } = {}) {
     const issues = [];
     if (this.context?.walletAddress) {
@@ -7525,6 +8096,35 @@ export class MakerWorkspace {
     const commerceQuote = this.playerCommerceQuote(document, recipe);
     const commerceIssue = this.playerCommerceQuoteIssue(document, commerceQuote);
     if (commerceIssue) issues.push(commerceIssue);
+    const composableState = this.playerComposableState(document);
+    if (
+      composableState.profile.mode === COMPOSABLE_PROFILE_MODES.COMPOSABLE
+      && composableState.compatibility
+      && (composableState.source === 'published' || composableState.releaseEnabled)
+    ) {
+      const loadout = validateWardrobeLoadoutV6({
+        ...composableState,
+        selected: composableV6?.loadout || this.playerComposableLoadout,
+        postMint: true,
+      });
+      if (!loadout.valid) {
+        issues.push(this.locale === 'en' && loadout.issues[0]?.message
+          ? loadout.issues[0].message
+          : this.tr('wardrobeUnavailable'));
+      }
+      const external = this.playerComposableRendererLayers(document, {
+        selected: composableV6?.loadout || this.playerComposableLoadout,
+      });
+      if (external.issues.length) issues.push(this.tr('wardrobeUnavailable'));
+      external.layers.forEach((layer) => {
+        if (!this.runtimeAsset(layer.assetId)) {
+          issues.push(this.tr('playerArtworkUnavailable', {
+            part: this.tr('wardrobe'),
+            item: layer.productId,
+          }));
+        }
+      });
+    }
     try {
       const scene = resolveMakerScene(document, recipe, { strict: false });
       if (!scene.layers.length) issues.push(this.tr('playerNoVisibleArtwork'));
@@ -7815,6 +8415,7 @@ export class MakerWorkspace {
     const completionIssues = this.playerCompletionIssues(snapshot.document, snapshot.recipe, {
       profile: snapshot.profile,
       livingContent: snapshot.livingContent,
+      composableV6: snapshot.composableV6,
     });
     const canComplete = canRenderFinal && completionIssues.length === 0;
     const completeLabel = this.playerCreatorPreview
@@ -7991,10 +8592,19 @@ export class MakerWorkspace {
       this.playerPickerPanel === 'colors'
       && (activeColorChannels.length === 0 || playerPartChanged)
     );
+    const composablePlayerState = this.playerComposableState(document);
+    const wardrobeAvailable = Boolean(
+      composablePlayerState.profile.mode === COMPOSABLE_PROFILE_MODES.COMPOSABLE
+      && composablePlayerState.compatibility,
+    );
     if (paletteClosedForContext) {
       this.playerPickerPanel = 'parts';
     }
+    if (this.playerPickerPanel === 'wardrobe' && !wardrobeAvailable) {
+      this.playerPickerPanel = 'parts';
+    }
     const paletteActive = this.playerPickerPanel === 'colors';
+    const wardrobeActive = this.playerPickerPanel === 'wardrobe';
     const paletteAvailable = activeColorChannels.length > 0;
     const palettePresetCount = activeColorChannels.reduce(
       (count, channel) => count + channel.swatches.length,
@@ -8046,10 +8656,28 @@ export class MakerWorkspace {
         ${paletteActive ? '<i class="v4-player-selected-mark" aria-hidden="true">✓</i>' : ''}
       </button>
     `;
+    const wardrobeCards = wardrobeAvailable ? this.playerWardrobeCards(document) : [];
+    const wardrobeButton = wardrobeAvailable ? `
+      <button
+        type="button"
+        id="v4PlayerWardrobeTab"
+        role="tab"
+        class="v4-player-part v4-player-wardrobe-tab ${wardrobeActive ? 'active' : ''}"
+        data-action="player-wardrobe"
+        aria-selected="${wardrobeActive ? 'true' : 'false'}"
+        aria-controls="v4PlayerPickerPanel"
+        tabindex="${wardrobeActive ? '0' : '-1'}"
+      >
+        <span class="v4-player-wardrobe-icon" aria-hidden="true">◇</span>
+        <strong>${escapeHtml(this.tr('wardrobe'))}</strong>
+        <small>${escapeHtml(this.tr('itemProductCount', { count: wardrobeCards.length }))}</small>
+        ${wardrobeActive ? '<i class="v4-player-selected-mark" aria-hidden="true">✓</i>' : ''}
+      </button>
+    ` : '';
     const partButtons = parts.map((candidate) => {
       const selection = selectionMap.get(candidate.id);
       const thumbnail = this.partThumbnailUrl(candidate, selection);
-      const active = !paletteActive && candidate.id === part?.id;
+      const active = !paletteActive && !wardrobeActive && candidate.id === part?.id;
       return `
         <button
           type="button"
@@ -8133,6 +8761,97 @@ export class MakerWorkspace {
           </div>
         </header>
         <div class="v4-player-color-channel-grid">${colorRows}</div>
+      </section>
+    ` : '';
+    const wardrobeOriginLabels = {
+      [ITEM_ORIGIN_CLASSES.OFFICIAL]: 'itemOriginOfficial',
+      [ITEM_ORIGIN_CLASSES.CERTIFIED]: 'itemOriginCertified',
+      [ITEM_ORIGIN_CLASSES.OPEN]: 'itemOriginOpen',
+    };
+    const wardrobeBindingLabels = {
+      [ITEM_BINDING_MODES.EMBEDDED]: 'itemBindingEmbedded',
+      [ITEM_BINDING_MODES.ACCOUNT]: 'itemBindingAccount',
+      [ITEM_BINDING_MODES.SOUL_BOUND]: 'itemBindingSoul',
+      [ITEM_BINDING_MODES.OWNED]: 'itemBindingOwned',
+    };
+    const wardrobeProductCards = wardrobeCards.map((card) => {
+      const baseSource = card.product.components?.find((component) => component.baseSource)?.baseSource;
+      const baseStyle = baseSource
+        ? findStyle(document, baseSource.partId, baseSource.itemId, baseSource.styleId)
+        : null;
+      const externalThumb = card.thumbnailBlobId
+        ? this.runtimeAsset(card.thumbnailBlobId)
+        : null;
+      const thumbnail = baseStyle
+        ? this.styleThumbnailUrl(baseStyle)
+        : externalThumb?.thumbnailUrl || externalThumb?.url || '';
+      const requiredSlotWithoutAlternative = card.equipped
+        && card.product.slotClaims?.some((claim) => {
+          const slot = composablePlayerState.compatibility.slots
+            .find((candidate) => candidate.id === claim.slotId);
+          const alternative = composablePlayerState.compatibility.fallbackProductIds
+            .some((fallbackId) => (
+              fallbackId !== card.productId
+              && composablePlayerState.products.find((product) => product.id === fallbackId)
+                ?.slotClaims?.some((fallbackClaim) => fallbackClaim.slotId === claim.slotId)
+            ));
+          return slot?.required && !alternative;
+        });
+      const acquireAction = ['claim', 'purchase'].includes(card.action);
+      const transaction = this.playerComposableItemTransaction(card.productId);
+      const transactionBusy = COMPOSABLE_ITEM_TX_BUSY_STATES.has(transaction.state);
+      const transactionStatus = this.playerComposableItemTransactionText(transaction);
+      const transactionStatusId = `v4-player-item-tx-${card.productId}`;
+      const acquireVisible = acquireAction
+        && composablePlayerState.releaseEnabled
+        && typeof this.callbacks.onComposableItemAction === 'function';
+      const acquireLabel = transactionBusy
+        ? this.tr({
+            planning: 'itemTxPlanning',
+            'awaiting-signature': 'itemTxAwaitingSignature',
+            submitted: 'itemTxSubmitted',
+            confirming: 'itemTxConfirming',
+          }[transaction.state] || 'itemTxPlanning')
+        : transaction.state === 'recoverable'
+          ? this.tr('itemTxResume')
+          : transaction.state === 'failed'
+            ? this.tr('itemTxRetry')
+            : transaction.state === 'confirmed'
+              ? this.tr('itemTxConfirmed')
+              : `${this.tr(card.action === 'claim' ? 'itemAccessFreeClaim' : 'itemAccessPaidOnce')}${card.priceAtomic > 0 ? ` · ${atomicToCoin(card.priceAtomic)} USDC` : ''}`;
+      const actionControl = card.canEquip
+        ? `<button type="button" class="${card.equipped ? 'secondary' : 'primary'}" data-action="player-composable-equip" data-product-id="${escapeHtml(card.productId)}" ${requiredSlotWithoutAlternative || this.playerComposableAppearancePending ? 'disabled' : ''}>${escapeHtml(this.playerComposableAppearancePending ? this.tr('itemTxConfirming') : this.tr(card.equipped ? 'wardrobeRemove' : 'wardrobeEquip'))}</button>`
+        : acquireVisible
+          ? `<button type="button" data-action="player-composable-acquire" data-product-id="${escapeHtml(card.productId)}" data-tx-state="${escapeHtml(transaction.state)}" ${transactionBusy || transaction.state === 'confirmed' ? 'disabled' : ''} ${transactionStatus ? `aria-describedby="${escapeHtml(transactionStatusId)}"` : ''}>${escapeHtml(acquireLabel)}</button>`
+          : `<button type="button" disabled>${escapeHtml(this.tr('wardrobeLocked'))}</button>`;
+      const ownedLockControl = card.binding === ITEM_BINDING_MODES.OWNED
+        && card.entitlementId
+        && composablePlayerState.releaseEnabled
+        && composablePlayerState.soulId
+        && composablePlayerState.soulStateId
+        && typeof this.callbacks.onComposableOwnedLockAction === 'function'
+        ? `<button type="button" class="secondary" data-action="player-composable-owned-lock" data-product-id="${escapeHtml(card.productId)}" ${this.playerComposableAppearancePending ? 'disabled' : ''}>${card.lockedSoulId === composablePlayerState.soulId ? '🔓' : '🔒'} ${escapeHtml(this.tr(card.lockedSoulId === composablePlayerState.soulId ? 'unlockTrack' : 'lockTrack'))}</button>`
+        : '';
+      return `
+        <article class="v4-player-wardrobe-card ${card.equipped ? 'equipped' : ''} ${card.locked ? 'locked' : ''} ${card.technicallyValidated ? 'valid' : 'pending'} tx-${escapeHtml(transaction.state)}" data-product-id="${escapeHtml(card.productId)}" data-tx-state="${escapeHtml(transaction.state)}">
+          <div class="v4-player-wardrobe-thumb">${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : '<i>PNG</i>'}</div>
+          <div class="v4-player-wardrobe-copy">
+            <span>${escapeHtml(this.tr(wardrobeOriginLabels[card.originClass] || 'itemOriginOpen'))}</span>
+            <strong>${escapeHtml(card.name)}</strong>
+            <p>${escapeHtml(card.description)}</p>
+            <small>${escapeHtml(this.tr(wardrobeBindingLabels[card.binding] || 'itemBindingEmbedded'))} · ${escapeHtml(this.tr(card.technicallyValidated ? 'itemValidated' : 'itemValidationPending'))}</small>
+          </div>
+          <div class="v4-player-wardrobe-action">${card.equipped ? `<em>${escapeHtml(this.tr('wardrobeEquipped'))}</em>` : ''}${actionControl}${ownedLockControl}${transactionStatus ? `<small id="${escapeHtml(transactionStatusId)}" role="status" aria-live="polite">${escapeHtml(transactionStatus)}${transaction.digest ? ` · ${escapeHtml(transaction.digest.length > 16 ? `${transaction.digest.slice(0, 8)}…${transaction.digest.slice(-6)}` : transaction.digest)}` : ''}</small>` : ''}</div>
+        </article>
+      `;
+    }).join('');
+    const wardrobeControls = wardrobeAvailable ? `
+      <section class="v4-player-wardrobe-panel">
+        <header>
+          <div><span>${escapeHtml(this.tr('composableItems'))}</span><h2>${escapeHtml(this.tr('wardrobeTitle'))}</h2><p>${escapeHtml(this.tr('wardrobeCopy'))}</p></div>
+          <div><strong>${escapeHtml(this.tr('currentAppearanceRevision', { revision: this.playerAppearanceRevision }))}</strong><button type="button" data-action="player-close-wardrobe">← ${escapeHtml(this.tr('returnToCurrentPart'))}</button></div>
+        </header>
+        <div class="v4-player-wardrobe-grid">${wardrobeProductCards || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('wardrobeEmpty'))}</span></div>`}</div>
       </section>
     ` : '';
     const basePlayerDocument = this.basePlayerDocument();
@@ -8237,17 +8956,19 @@ export class MakerWorkspace {
             <div class="v4-player-recipe-strip">${selectedSummary}</div>
           </section>
           <section class="v4-player-controls">
-            <div class="v4-player-part-rail" role="tablist" aria-label="${escapeHtml(this.tr('playerPickerNavigation'))}">${paletteButton}${partButtons}</div>
+            <div class="v4-player-part-rail" role="tablist" aria-label="${escapeHtml(this.tr('playerPickerNavigation'))}">${paletteButton}${wardrobeButton}${partButtons}</div>
             <div
               id="v4PlayerPickerPanel"
-              class="v4-player-picker ${paletteActive ? 'palette-active' : ''}"
+              class="v4-player-picker ${paletteActive ? 'palette-active' : ''} ${wardrobeActive ? 'wardrobe-active' : ''}"
               role="tabpanel"
-              data-player-picker-context="${escapeHtml(paletteActive
-                ? `colors:${paletteContext.partId}:${paletteContext.itemId}:${paletteContext.styleId}`
-                : (part?.id || ''))}"
-              aria-labelledby="${paletteActive ? 'v4PlayerPaletteTab' : `v4PlayerPartTab-${escapeHtml(part?.id || '')}`}"
+              data-player-picker-context="${escapeHtml(wardrobeActive
+                ? 'wardrobe'
+                : paletteActive
+                  ? `colors:${paletteContext.partId}:${paletteContext.itemId}:${paletteContext.styleId}`
+                  : (part?.id || ''))}"
+              aria-labelledby="${wardrobeActive ? 'v4PlayerWardrobeTab' : paletteActive ? 'v4PlayerPaletteTab' : `v4PlayerPartTab-${escapeHtml(part?.id || '')}`}"
             >
-              ${paletteActive ? colorControls : `
+              ${wardrobeActive ? wardrobeControls : paletteActive ? colorControls : `
                 <header><div><span>${escapeHtml(this.tr('currentPart'))}</span><h2 id="v4PlayerItemGroupLabel">${escapeHtml(part?.name || this.tr('noPlayableParts'))}</h2></div>${removePartOption?.visible ? `<div class="v4-player-remove-control"><button type="button" data-action="player-none" class="secondary" ${removePartOption.selectable ? '' : `aria-disabled="true" aria-describedby="${removePartReasonId}"`} title="${escapeHtml(removePartReason || this.tr('noneRemove'))}">${escapeHtml(this.tr('noneRemove'))}</button>${removePartReason ? `<small id="${removePartReasonId}" class="v4-player-disabled-reason">${escapeHtml(removePartReason)}</small>` : ''}</div>` : ''}</header>
                 <div class="v4-player-item-grid" role="radiogroup" aria-labelledby="v4PlayerItemGroupLabel">${itemButtons || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noAvailableItems'))}</span></div>`}</div>
                 ${currentItem && visibleStyles.length > 1 ? `<div class="v4-player-style-picker" role="radiogroup" aria-labelledby="v4PlayerStyleGroupLabel"><span id="v4PlayerStyleGroupLabel">${escapeHtml(this.tr('style'))}</span>${styleButtons}</div>` : ''}
@@ -8395,6 +9116,19 @@ export class MakerWorkspace {
       const document = this.runtimeDocument();
       renderKey = this.playerRenderKey(document, this.playerRecipe);
       const scene = resolveMakerScene(document, this.playerRecipe, { strict: false });
+      const composableScene = this.playerComposableRendererLayers(document);
+      if (composableScene.issues.length) {
+        throw new Error(this.tr('wardrobeUnavailable'));
+      }
+      const replacedSlots = new Set(composableScene.occupiedExternalSlotIds);
+      scene.layers = scene.layers.filter((layer) => !replacedSlots.has(layer.partId));
+      scene.layers.push(...composableScene.layers);
+      scene.layers.sort((left, right) => (
+        Number(left.trackOrder || 0) - Number(right.trackOrder || 0)
+        || String(left.trackId || '').localeCompare(String(right.trackId || ''))
+        || Number(left.order || 0) - Number(right.order || 0)
+        || String(left.key || '').localeCompare(String(right.key || ''))
+      ));
       scene.layers.forEach((layer) => this.ensureAssetAlias(layer.assetId));
       const result = await renderResolvedScene(scene, canvas, {
         signal: controller.signal,
@@ -8822,6 +9556,11 @@ export class MakerWorkspace {
       'add-expansion',
       'delete-expansion',
       'add-selected-to-expansion',
+      'composable-mode',
+      'composable-sync',
+      'composable-seal',
+      'add-selected-official-item',
+      'remove-composable-product',
       'set-default-recipe',
       'set-version-compatibility',
       'confirm-import',
@@ -9018,6 +9757,231 @@ export class MakerWorkspace {
       this.render();
       return;
     }
+    if (action === 'composable-mode') {
+      const mode = button.dataset.mode;
+      if (!Object.values(COMPOSABLE_PROFILE_MODES).includes(mode)) return;
+      const currentDraft = getMakerComposableV6Draft(document);
+      if (currentDraft?.compatibilitySealed && currentDraft.profile.mode !== mode) {
+        this.composableImportError = this.tr('compatibilityLockedError');
+        this.render();
+        return;
+      }
+      this.composableImportError = '';
+      this.executeDocument('Change Maker composition mode', (next) => {
+        if (mode === COMPOSABLE_PROFILE_MODES.FIXED) {
+          const draft = this.createComposableDraftForDocument(next.document);
+          draft.profile = createComposableProfileV6({
+            ...draft.profile,
+            mode: COMPOSABLE_PROFILE_MODES.FIXED,
+          });
+          this.setComposableDraft(next.document, draft);
+          this.playerComposableLoadout = [];
+          this.playerAppearanceRevision = 0;
+          return;
+        }
+        const draft = this.createComposableDraftForDocument(next.document);
+        draft.profile = createComposableProfileV6({
+          ...draft.profile,
+          mode: COMPOSABLE_PROFILE_MODES.COMPOSABLE,
+        });
+        this.setComposableDraft(next.document, draft);
+      });
+      return;
+    }
+    if (action === 'composable-sync') {
+      this.composableImportError = '';
+      this.executeDocument('Sync Composable compatibility', ({ document: next }) => {
+        const draft = this.createComposableDraftForDocument(next);
+        if (draft.compatibilitySealed) return;
+        const fallbackProductIds = [];
+        const occupiedSlots = new Set();
+        const defaultSelections = new Map(
+          (next.defaultRecipe?.selections || []).map((selection) => [
+            selection.partId,
+            selection,
+          ]),
+        );
+        const eligible = draft.items.filter((product) => (
+          product.originClass === ITEM_ORIGIN_CLASSES.OFFICIAL
+          && product.access?.mode === ITEM_ACCESS_MODES.EMBEDDED
+          && product.access?.binding === ITEM_BINDING_MODES.EMBEDDED
+        ));
+        const preferred = eligible.filter((product) => {
+          const slotId = product.slotClaims?.[0]?.slotId;
+          const selection = defaultSelections.get(slotId);
+          return selection && product.components?.some((component) => (
+            component.baseSource?.partId === slotId
+            && component.baseSource?.itemId === selection.itemId
+            && component.baseSource?.styleId === selection.styleId
+          ));
+        });
+        const previous = eligible.filter((product) => (
+          draft.compatibility.fallbackProductIds.includes(product.id)
+        ));
+        [...preferred, ...previous, ...eligible].forEach((product) => {
+          if (
+            product.originClass !== ITEM_ORIGIN_CLASSES.OFFICIAL
+            || product.access?.mode !== ITEM_ACCESS_MODES.EMBEDDED
+            || product.access?.binding !== ITEM_BINDING_MODES.EMBEDDED
+          ) return;
+          const slotId = product.slotClaims?.[0]?.slotId;
+          if (slotId && !occupiedSlots.has(slotId)) {
+            occupiedSlots.add(slotId);
+            fallbackProductIds.push(product.id);
+          }
+        });
+        draft.compatibility = deriveMakerLocalCompatibilityV6(next, {
+          makerRootId: this.context?.chainBinding?.commerceV5RootObjectId
+            || next.version?.rootMakerId,
+          rendererVersion: 'animacraft.shared-renderer.v5',
+          fallbackProductIds,
+        });
+        draft.items = draft.items.map((product) => ({
+          ...product,
+          makerRootId: draft.compatibility.makerRootId,
+          compatibilityHash: draft.compatibility.manifestHash,
+        }));
+        this.setComposableDraft(next, draft);
+      });
+      return;
+    }
+    if (action === 'composable-seal') {
+      this.executeDocument('Change Composable compatibility lock', ({ document: next }) => {
+        const draft = this.createComposableDraftForDocument(next);
+        draft.compatibilitySealed = !draft.compatibilitySealed;
+        this.setComposableDraft(next, draft);
+      });
+      return;
+    }
+    if (action === 'select-composable-product') {
+      const draft = getMakerComposableV6Draft(document);
+      if (!draft?.items.some((product) => product.id === button.dataset.productId)) return;
+      this.selectedComposableProductId = button.dataset.productId;
+      this.render();
+      return;
+    }
+    if (action === 'add-selected-official-item') {
+      if (!part || !item || !style?.assetId) return;
+      const existingDraft = getMakerComposableV6Draft(document);
+      if (!existingDraft || existingDraft.profile.mode !== COMPOSABLE_PROFILE_MODES.COMPOSABLE) return;
+      if (existingDraft.compatibilitySealed) {
+        this.composableImportError = this.tr('compatibilityLockedError');
+        this.render();
+        return;
+      }
+      const existing = existingDraft.items.find((product) => product.components?.some((component) => (
+        component.baseSource?.partId === part.id
+        && component.baseSource?.itemId === item.id
+        && component.baseSource?.styleId === style.id
+      )));
+      if (existing) {
+        this.selectedComposableProductId = existing.id;
+        this.render();
+        return;
+      }
+      const runtime = this.runtimeAsset(style.assetId) || {};
+      const descriptor = document.assets.find((asset) => asset.id === style.assetId) || {};
+      try {
+        const product = createOfficialEmbeddedItemProductDraftV6({
+          document,
+          compatibility: existingDraft.compatibility,
+          partId: part.id,
+          itemId: item.id,
+          styleId: style.id,
+          asset: {
+            ...descriptor,
+            ...runtime,
+            assetId: style.assetId,
+            assetBlobId: descriptor.assetBlobId || descriptor.blobId || '',
+            assetHash: descriptor.assetHash || descriptor.contentHash || '',
+            width: runtime.width || descriptor.width,
+            height: runtime.height || descriptor.height,
+          },
+          display: { name: item.name, description: `${part.name} / ${item.name} / ${style.name}` },
+          creator: this.context?.walletAddress || '',
+          publisher: this.context?.walletAddress || '',
+        });
+        this.selectedComposableProductId = product.id;
+        this.composableImportError = '';
+        this.executeDocument('Add Official Item Product', ({ document: next }) => {
+          const draft = this.createComposableDraftForDocument(next);
+          draft.items.push(product);
+          const slotId = product.slotClaims?.[0]?.slotId;
+          const existingFallbackForSlot = draft.items.some((candidate) => (
+            candidate.id !== product.id
+            && draft.compatibility.fallbackProductIds.includes(candidate.id)
+            && candidate.slotClaims?.some((claim) => claim.slotId === slotId)
+          ));
+          if (slotId && !existingFallbackForSlot) {
+            draft.compatibility.fallbackProductIds = [
+              ...draft.compatibility.fallbackProductIds,
+              product.id,
+            ];
+          }
+          this.setComposableDraft(next, draft);
+        });
+      } catch (error) {
+        this.composableImportError = error?.message || this.tr('itemImportFailed');
+        this.render();
+      }
+      return;
+    }
+    if (action === 'set-composable-fallback') {
+      const productId = button.dataset.productId;
+      const existingDraft = getMakerComposableV6Draft(document);
+      if (!productId || !existingDraft || existingDraft.compatibilitySealed) {
+        if (existingDraft?.compatibilitySealed) {
+          this.composableImportError = this.tr('compatibilityLockedError');
+          this.render();
+        }
+        return;
+      }
+      const product = existingDraft.items.find((candidate) => candidate.id === productId);
+      const slotId = product?.slotClaims?.[0]?.slotId;
+      if (
+        !slotId
+        || product.originClass !== ITEM_ORIGIN_CLASSES.OFFICIAL
+        || product.access?.mode !== ITEM_ACCESS_MODES.EMBEDDED
+        || product.access?.binding !== ITEM_BINDING_MODES.EMBEDDED
+      ) return;
+      this.executeDocument('Set Slot fallback Item', ({ document: next }) => {
+        const draft = this.createComposableDraftForDocument(next);
+        if (draft.compatibilitySealed) return;
+        const productIdsInSlot = new Set(draft.items
+          .filter((candidate) => candidate.slotClaims?.some((claim) => claim.slotId === slotId))
+          .map((candidate) => candidate.id));
+        draft.compatibility.fallbackProductIds = [
+          ...draft.compatibility.fallbackProductIds
+            .filter((candidateId) => !productIdsInSlot.has(candidateId)),
+          productId,
+        ];
+        this.setComposableDraft(next, draft);
+      });
+      return;
+    }
+    if (action === 'remove-composable-product') {
+      const productId = button.dataset.productId;
+      const existingDraft = getMakerComposableV6Draft(document);
+      if (existingDraft?.compatibilitySealed) {
+        this.composableImportError = this.tr('compatibilityLockedError');
+        this.render();
+        return;
+      }
+      if (!productId || !this.confirmDelete(this.tr('removeItemProduct'))) return;
+      this.executeDocument('Remove Item Product', ({ document: next }) => {
+        const draft = this.createComposableDraftForDocument(next);
+        draft.items = draft.items.filter((product) => product.id !== productId);
+        draft.compatibility.fallbackProductIds = draft.compatibility.fallbackProductIds
+          .filter((id) => id !== productId);
+        this.setComposableDraft(next, draft);
+      });
+      this.playerComposableLoadout = this.playerComposableLoadout
+        .filter((id) => id !== productId);
+      if (this.selectedComposableProductId === productId) {
+        this.selectedComposableProductId = '';
+      }
+      return;
+    }
     if (action === 'undo') return void this.store.undo();
     if (action === 'redo') return void this.store.redo();
     if (action === 'save') return void this.save();
@@ -9034,7 +9998,27 @@ export class MakerWorkspace {
           return;
         }
         this.playerCreatorPreview = true;
-        const previewRecipe = clone(this.creatorRecipe || operation.store.getState().recipe);
+        let previewRecipe = clone(this.creatorRecipe || operation.store.getState().recipe);
+        const composableState = this.playerComposableState(this.runtimeDocument());
+        if (
+          composableState.profile.mode === COMPOSABLE_PROFILE_MODES.COMPOSABLE
+          && composableState.compatibility
+        ) {
+          this.playerComposableLoadout = clone(
+            composableState.compatibility.fallbackProductIds || [],
+          );
+          this.playerAppearanceRevision = 0;
+          const productsById = new Map(
+            composableState.products.map((product) => [product.id, product]),
+          );
+          this.playerComposableLoadout.forEach((productId) => {
+            const product = productsById.get(productId);
+            if (
+              product?.originClass === ITEM_ORIGIN_CLASSES.OFFICIAL
+              && product.access?.binding === ITEM_BINDING_MODES.EMBEDDED
+            ) previewRecipe = mergeEmbeddedProductSelectionIntoRecipeV6(previewRecipe, product);
+          });
+        }
         const playablePreviewRecipe = normalizePlayablePlayerRecipe(
           this.runtimeDocument(),
           previewRecipe,
@@ -9867,6 +10851,94 @@ export class MakerWorkspace {
     const state = this.store.getState();
     const document = state.document;
     const { part, item, style } = this.selectedCreatorRecords(document);
+    if (action === 'composable-admission') {
+      if (!Object.values(THIRD_PARTY_ADMISSION_MODES).includes(input.value)) return;
+      const currentDraft = getMakerComposableV6Draft(document);
+      if (currentDraft?.compatibilitySealed) {
+        this.composableImportError = this.tr('compatibilityLockedError');
+        this.render();
+        return;
+      }
+      this.composableImportError = '';
+      this.executeDocument('Change third-party Item admission', ({ document: next }) => {
+        const draft = this.createComposableDraftForDocument(next);
+        draft.profile = createComposableProfileV6({
+          ...draft.profile,
+          mode: COMPOSABLE_PROFILE_MODES.COMPOSABLE,
+          thirdPartyAdmission: input.value,
+        });
+        this.setComposableDraft(next, draft);
+      });
+      return;
+    }
+    if (action === 'composable-assetization') {
+      const currentDraft = getMakerComposableV6Draft(document);
+      if (currentDraft?.compatibilitySealed) {
+        this.composableImportError = this.tr('compatibilityLockedError');
+        this.render();
+        return;
+      }
+      this.executeDocument('Change Item assetization', ({ document: next }) => {
+        const draft = this.createComposableDraftForDocument(next);
+        draft.profile = createComposableProfileV6({
+          ...draft.profile,
+          mode: COMPOSABLE_PROFILE_MODES.COMPOSABLE,
+          itemAssetization: input.checked,
+        });
+        this.setComposableDraft(next, draft);
+      });
+      return;
+    }
+    if (action === 'import-composable-item' && input.files?.[0]) {
+      const file = input.files[0];
+      const operation = this.captureMakerOperation();
+      input.value = '';
+      try {
+        const raw = await file.text();
+        if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
+        const currentDocument = operation.store.getState().document;
+        const draft = getMakerComposableV6Draft(currentDocument);
+        if (!draft || draft.profile.mode !== COMPOSABLE_PROFILE_MODES.COMPOSABLE) return;
+        if (draft.compatibilitySealed) {
+          this.composableImportError = this.tr('compatibilityLockedError');
+          this.render();
+          return;
+        }
+        const inspection = inspectThirdPartyItemManifestV6(raw, {
+          profile: draft.profile,
+          compatibility: draft.compatibility,
+          makerOwner: this.context?.walletAddress || '',
+          currentOwnershipEpoch: this.context?.composableV6State?.ownershipEpoch || 0,
+          publish: false,
+        });
+        if (!inspection.valid) {
+          this.composableImportError = this.locale === 'en'
+            ? inspection.issues[0]?.message || this.tr('itemImportFailed')
+            : this.tr('itemImportFailed');
+          this.render();
+          return;
+        }
+        if (draft.items.some((product) => product.id === inspection.product.id)) {
+          this.composableImportError = this.tr('itemImportFailed');
+          this.render();
+          return;
+        }
+        this.selectedComposableProductId = inspection.product.id;
+        this.composableImportError = '';
+        this.executeDocument('Import third-party Item draft', ({ document: next }) => {
+          const nextDraft = this.createComposableDraftForDocument(next);
+          nextDraft.items.push(inspection.product);
+          this.setComposableDraft(next, nextDraft);
+        });
+      } catch (error) {
+        if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
+        this.composableImportError = this.locale === 'en'
+          ? error?.message || this.tr('itemImportFailed')
+          : this.tr('itemImportFailed');
+        this.render();
+      }
+      return;
+    }
     if (this.updateCommerceFromInput(input)) return;
     if (action === 'import-project' && input.files?.[0]) {
       await this.importProjectArchive(input.files[0]);
@@ -10957,6 +12029,10 @@ export class MakerWorkspace {
       recipe: this.playerRecipe,
       profile: this.playerProfile,
       livingContent: this.resolvedPlayerLivingContent(document)?.content || null,
+      composableV6: {
+        loadout: clone(this.playerComposableLoadout),
+        appearanceRevision: this.playerAppearanceRevision,
+      },
     };
   }
 
@@ -10965,7 +12041,12 @@ export class MakerWorkspace {
     if (JSON.stringify(normalized) === JSON.stringify(this.playerRecipe)) return false;
     this.invalidatePlayerCompletion();
     const previous = clone(this.playerRecipe);
-    this.playerUndo.push({ label, recipe: previous });
+    this.playerUndo.push({
+      label,
+      recipe: previous,
+      composableLoadout: clone(this.playerComposableLoadout),
+      appearanceRevision: this.playerAppearanceRevision,
+    });
     if (this.playerUndo.length > 100) this.playerUndo.shift();
     this.playerRedo = [];
     this.playerRecipe = normalized;
@@ -10974,6 +12055,189 @@ export class MakerWorkspace {
     this.callbacks.onPlayerRecipeChange?.(this.playerStatePayload());
     this.render();
     return true;
+  }
+
+  setPlayerComposableLoadout(nextLoadout, nextRecipe, label, {
+    confirmedRevision = null,
+  } = {}) {
+    const document = this.runtimeDocument();
+    const state = this.playerComposableState(document);
+    if (
+      state.profile.mode !== COMPOSABLE_PROFILE_MODES.COMPOSABLE
+      || !state.compatibility
+    ) return false;
+    const selectedIds = [...new Set((nextLoadout || []).map(String).filter(Boolean))];
+    const normalizedRecipe = recipeWithColors(document, nextRecipe || this.playerRecipe);
+    if (
+      JSON.stringify(selectedIds) === JSON.stringify(this.playerComposableLoadout)
+      && JSON.stringify(normalizedRecipe) === JSON.stringify(this.playerRecipe)
+    ) return false;
+    if (!(this.playerCreatorPreview && state.source === 'draft')) {
+      const validation = validateWardrobeLoadoutV6({
+        ...state,
+        selected: selectedIds,
+        postMint: true,
+      });
+      if (!validation.valid) {
+        this.callbacks.onPlayerError?.(new Error(
+          this.locale === 'en' && validation.issues[0]?.message
+            ? validation.issues[0].message
+            : this.tr('wardrobeUnavailable'),
+        ));
+        return false;
+      }
+    }
+    this.invalidatePlayerCompletion();
+    this.playerUndo.push({
+      label,
+      recipe: clone(this.playerRecipe),
+      composableLoadout: clone(this.playerComposableLoadout),
+      appearanceRevision: this.playerAppearanceRevision,
+    });
+    if (this.playerUndo.length > 100) this.playerUndo.shift();
+    this.playerRedo = [];
+    this.playerRecipe = normalizedRecipe;
+    this.playerComposableLoadout = selectedIds;
+    this.playerAppearanceRevision = Number.isSafeInteger(confirmedRevision)
+      ? Math.max(0, confirmedRevision)
+      : this.playerAppearanceRevision + 1;
+    this.markPlayerSessionDirty();
+    this.sessionAutosave();
+    this.callbacks.onPlayerRecipeChange?.(this.playerStatePayload(document));
+    this.render();
+    return true;
+  }
+
+  async choosePlayerComposableProduct(productId) {
+    const document = this.runtimeDocument();
+    const state = this.playerComposableState(document);
+    const cards = this.playerWardrobeCards(document);
+    const card = cards.find((candidate) => candidate.productId === productId);
+    if (!card || !card.canEquip) return false;
+    const productsById = new Map(state.products.map((product) => [product.id, product]));
+    const selected = new Set(this.playerComposableLoadout);
+    const claimedSlots = new Set(card.product.slotClaims.map((claim) => claim.slotId));
+    let nextRecipe = clone(this.playerRecipe);
+
+    const removeConflicts = () => {
+      [...selected].forEach((selectedId) => {
+        const selectedProduct = productsById.get(selectedId);
+        if (selectedProduct?.slotClaims?.some((claim) => claimedSlots.has(claim.slotId))) {
+          selected.delete(selectedId);
+        }
+      });
+    };
+
+    if (card.equipped) {
+      selected.delete(card.productId);
+      for (const slotId of claimedSlots) {
+        const fallbackId = state.compatibility.fallbackProductIds.find((candidateId) => {
+          if (candidateId === card.productId) return false;
+          return productsById.get(candidateId)?.slotClaims?.some((claim) => claim.slotId === slotId);
+        });
+        if (fallbackId) {
+          const fallback = productsById.get(fallbackId);
+          selected.add(fallbackId);
+          if (
+            fallback?.originClass === ITEM_ORIGIN_CLASSES.OFFICIAL
+            && fallback.access?.binding === ITEM_BINDING_MODES.EMBEDDED
+          ) nextRecipe = mergeEmbeddedProductSelectionIntoRecipeV6(nextRecipe, fallback);
+          continue;
+        }
+        const slot = state.compatibility.slots.find((candidate) => candidate.id === slotId);
+        if (slot?.required) return false;
+        nextRecipe.selections = (nextRecipe.selections || [])
+          .filter((selection) => selection.partId !== slotId);
+      }
+    } else {
+      removeConflicts();
+      selected.add(card.productId);
+      if (
+        card.product.originClass === ITEM_ORIGIN_CLASSES.OFFICIAL
+        && card.product.access?.binding === ITEM_BINDING_MODES.EMBEDDED
+      ) nextRecipe = mergeEmbeddedProductSelectionIntoRecipeV6(nextRecipe, card.product);
+    }
+    const nextLoadout = [...selected];
+    const label = `${card.equipped ? 'Remove' : 'Equip'} ${card.name}`;
+    const postMint = Boolean(
+      state.releaseEnabled
+      && state.soulId
+      && state.soulStateId
+      && state.appearanceStateId
+    );
+    if (!postMint) {
+      return this.setPlayerComposableLoadout(nextLoadout, nextRecipe, label);
+    }
+    if (this.playerComposableAppearancePending
+        || typeof this.callbacks.onComposableAppearanceAction !== 'function') return false;
+    this.playerComposableAppearancePending = true;
+    this.render();
+    try {
+      const result = await this.callbacks.onComposableAppearanceAction({
+        loadout: clone(nextLoadout),
+        recipe: clone(nextRecipe),
+        makerRootId: state.compatibility?.makerRootId || '',
+        soulId: state.soulId,
+        soulStateId: state.soulStateId,
+        appearanceStateId: state.appearanceStateId,
+        expectedRevision: state.revision,
+      });
+      if (result?.recoverable === true || result?.confirmed !== true) {
+        throw Object.assign(new Error(
+          result?.message || this.tr('itemTxRecoverable'),
+        ), result || {});
+      }
+      this.applyPlayerComposableItemActionResult(result);
+      return this.setPlayerComposableLoadout(nextLoadout, nextRecipe, label, {
+        confirmedRevision: Number(result.appearanceRevision),
+      });
+    } catch (error) {
+      this.callbacks.onPlayerError?.(error);
+      return false;
+    } finally {
+      this.playerComposableAppearancePending = false;
+      this.render();
+    }
+  }
+
+  async togglePlayerComposableOwnedLock(productId) {
+    const document = this.runtimeDocument();
+    const state = this.playerComposableState(document);
+    const card = this.playerWardrobeCards(document)
+      .find((candidate) => candidate.productId === productId);
+    if (
+      !card
+      || card.binding !== ITEM_BINDING_MODES.OWNED
+      || !card.entitlementId
+      || !state.releaseEnabled
+      || !state.soulId
+      || !state.soulStateId
+      || this.playerComposableAppearancePending
+      || typeof this.callbacks.onComposableOwnedLockAction !== 'function'
+    ) return false;
+    const locked = card.lockedSoulId !== state.soulId;
+    this.playerComposableAppearancePending = true;
+    this.render();
+    try {
+      const result = await this.callbacks.onComposableOwnedLockAction({
+        entitlementId: card.entitlementId,
+        locked,
+        makerRootId: state.compatibility?.makerRootId || '',
+        soulId: state.soulId,
+        soulStateId: state.soulStateId,
+      });
+      if (result?.confirmed !== true) {
+        throw Object.assign(new Error(result?.message || this.tr('itemTxRecoverable')), result || {});
+      }
+      this.applyPlayerComposableItemActionResult(result);
+      return true;
+    } catch (error) {
+      this.callbacks.onPlayerError?.(error);
+      return false;
+    } finally {
+      this.playerComposableAppearancePending = false;
+      this.render();
+    }
   }
 
   handlePlayerClick(event) {
@@ -11108,8 +12372,28 @@ export class MakerWorkspace {
       this.setPlayerPickerPanel(this.playerPickerPanel === 'colors' ? 'parts' : 'colors');
       return;
     }
+    if (action === 'player-wardrobe') {
+      this.setPlayerPickerPanel(this.playerPickerPanel === 'wardrobe' ? 'parts' : 'wardrobe');
+      return;
+    }
     if (action === 'player-close-palette') {
       this.setPlayerPickerPanel('parts');
+      return;
+    }
+    if (action === 'player-close-wardrobe') {
+      this.setPlayerPickerPanel('parts');
+      return;
+    }
+    if (action === 'player-composable-equip') {
+      void this.choosePlayerComposableProduct(button.dataset.productId);
+      return;
+    }
+    if (action === 'player-composable-acquire') {
+      void this.runPlayerComposableItemAction(button.dataset.productId);
+      return;
+    }
+    if (action === 'player-composable-owned-lock') {
+      void this.togglePlayerComposableOwnedLock(button.dataset.productId);
       return;
     }
     if (action === 'player-part') {
@@ -11193,8 +12477,17 @@ export class MakerWorkspace {
       const command = this.playerUndo.pop();
       if (!command) return;
       this.invalidatePlayerCompletion();
-      this.playerRedo.push({ label: command.label, recipe: clone(this.playerRecipe) });
+      this.playerRedo.push({
+        label: command.label,
+        recipe: clone(this.playerRecipe),
+        composableLoadout: clone(this.playerComposableLoadout),
+        appearanceRevision: this.playerAppearanceRevision,
+      });
       this.playerRecipe = command.recipe;
+      if (Array.isArray(command.composableLoadout)) {
+        this.playerComposableLoadout = clone(command.composableLoadout);
+        this.playerAppearanceRevision = Math.max(0, Number(command.appearanceRevision || 0));
+      }
       this.markPlayerSessionDirty();
       this.sessionAutosave();
       this.callbacks.onPlayerRecipeChange?.(this.playerStatePayload());
@@ -11205,8 +12498,17 @@ export class MakerWorkspace {
       const command = this.playerRedo.pop();
       if (!command) return;
       this.invalidatePlayerCompletion();
-      this.playerUndo.push({ label: command.label, recipe: clone(this.playerRecipe) });
+      this.playerUndo.push({
+        label: command.label,
+        recipe: clone(this.playerRecipe),
+        composableLoadout: clone(this.playerComposableLoadout),
+        appearanceRevision: this.playerAppearanceRevision,
+      });
       this.playerRecipe = command.recipe;
+      if (Array.isArray(command.composableLoadout)) {
+        this.playerComposableLoadout = clone(command.composableLoadout);
+        this.playerAppearanceRevision = Math.max(0, Number(command.appearanceRevision || 0));
+      }
       this.markPlayerSessionDirty();
       this.sessionAutosave();
       this.callbacks.onPlayerRecipeChange?.(this.playerStatePayload());
@@ -11225,7 +12527,17 @@ export class MakerWorkspace {
         ));
         return;
       }
-      this.setPlayerRecipe(playable.documentRecipe, 'Reset OC');
+      const composableState = this.playerComposableState(document);
+      if (
+        composableState.profile.mode === COMPOSABLE_PROFILE_MODES.COMPOSABLE
+        && composableState.compatibility
+      ) {
+        this.setPlayerComposableLoadout(
+          composableState.compatibility.fallbackProductIds,
+          playable.documentRecipe,
+          'Reset OC',
+        );
+      } else this.setPlayerRecipe(playable.documentRecipe, 'Reset OC');
       return;
     }
     if (action === 'player-clear') {

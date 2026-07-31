@@ -95,7 +95,9 @@ function completionGateHarness() {
     const syncLegacyVisualFromV4 = () => {};
     const invalidateOcUpload = () => {};
     const $ = () => null;
+    const playerComposableV6TrustedSnapshot = null;
     ${functionSource('currentMakerV4OcBundle')}
+    ${functionSource('playerComposableV6CompletionState')}
     ${functionSource('syncPlayerV4State')}
     return {
       state,
