@@ -28,6 +28,24 @@ import {
   EXPANSION_PACK_SCHEMA,
   mergeExpansionPacks,
 } from './expansion-packs.js';
+import {
+  COMPLETION_MODES,
+  DEFAULT_PROTOCOL_COMMERCE_V5,
+  MAKER_ACCESS_MODES,
+  PACK_ACCESS_MODES,
+  RIGHTS_ORIGINS,
+  collectMakerCommerceV5Issues,
+  createCompletionPolicyV5,
+  createDefaultMakerCommerceV5,
+  createPackCommercePolicyV5,
+  expansionPackIds,
+  makerCommerceV5RequiresRelease,
+  normalizeMakerCommerceV5,
+  quoteCompleteV5,
+  quoteMakerPurchaseV5,
+  quotePackPurchaseV5,
+  recipeUsedPackIds,
+} from './maker-commerce-v5.js';
 import { evaluateVisibleWhen, renderResolvedScene, resolveMakerScene } from './maker-renderer.js';
 import { createMakerCommandStore } from './maker-command-store.js';
 import {
@@ -131,6 +149,25 @@ function checked(value) {
 
 function selected(value, expected) {
   return String(value ?? '') === String(expected ?? '') ? 'selected' : '';
+}
+
+const COMMERCE_COIN_DECIMALS = 6;
+
+function atomicToCoin(value, decimals = COMMERCE_COIN_DECIMALS) {
+  const atomic = Number.isSafeInteger(Number(value)) && Number(value) >= 0
+    ? Number(value)
+    : 0;
+  const scale = 10 ** decimals;
+  return (atomic / scale).toFixed(decimals).replace(/\.?0+$/, '') || '0';
+}
+
+function coinToAtomic(value, decimals = COMMERCE_COIN_DECIMALS) {
+  const input = String(value ?? '').trim();
+  if (!/^\d+(?:\.\d{0,6})?$/.test(input)) return 0;
+  const [whole = '0', fraction = ''] = input.split('.');
+  const atomic = (BigInt(whole) * (10n ** BigInt(decimals)))
+    + BigInt(fraction.padEnd(decimals, '0') || '0');
+  return atomic <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(atomic) : 0;
 }
 
 function colorChannelHasLockedStyle(document, channelId) {
@@ -1437,6 +1474,12 @@ export class MakerWorkspace {
     this.playerPublishCloseConfirm = false;
     this.playerPublishCopyState = 'idle';
     this.enabledExpansionIds = new Set();
+    this.playerOwnedPackIds = new Set();
+    this.playerOwnsMakerAccess = false;
+    this.playerCommercePending = '';
+    this.playerCommerceError = '';
+    this.playerCompletedExportKey = '';
+    this.playerPendingCompletedExport = null;
     this.pendingImport = null;
     this.batchImportRequestId = 0;
     this.batchImportInFlight = false;
@@ -1605,6 +1648,382 @@ export class MakerWorkspace {
     return `${wallet}::${version}`;
   }
 
+  hydratePlayerCommerceContext(context = this.context) {
+    const commerceState = context?.commerceState && typeof context.commerceState === 'object'
+      ? context.commerceState
+      : {};
+    this.playerOwnsMakerAccess = Boolean(commerceState.ownsMakerAccess);
+    this.playerOwnedPackIds = new Set(
+      (Array.isArray(commerceState.ownedPackIds) ? commerceState.ownedPackIds : [])
+        .map(String)
+        .filter(Boolean),
+    );
+    this.playerCommercePending = '';
+    this.playerCommerceError = '';
+    this.playerCompletedExportKey = String(commerceState.completedExportKey || '');
+    this.playerPendingCompletedExport = null;
+  }
+
+  playerCommerceState(document = this.runtimeDocument()) {
+    let external = {};
+    try {
+      external = this.callbacks.getPlayerCommerceState?.({
+        document,
+        makerKey: this.makerKey,
+        context: this.context,
+      }) || {};
+    } catch {
+      external = {};
+    }
+    const contextState = this.context?.commerceState && typeof this.context.commerceState === 'object'
+      ? this.context.commerceState
+      : {};
+    const protocol = {
+      ...DEFAULT_PROTOCOL_COMMERCE_V5,
+      ...(contextState.protocol || {}),
+      ...(external.protocol || {}),
+    };
+    const authoritativeQuoteRequired = Boolean(
+      external.authoritativeQuoteRequired
+      ?? contextState.authoritativeQuoteRequired
+      ?? false
+    );
+    return {
+      ownsMakerAccess: Boolean(
+        external.ownsMakerAccess
+        ?? contextState.ownsMakerAccess
+        ?? this.playerOwnsMakerAccess
+      ) || this.playerOwnsMakerAccess || this.playerCreatorPreview,
+      ownedPackIds: [...new Set([
+        ...(Array.isArray(contextState.ownedPackIds) ? contextState.ownedPackIds : []),
+        ...(Array.isArray(external.ownedPackIds) ? external.ownedPackIds : []),
+        ...this.playerOwnedPackIds,
+        ...(this.playerCreatorPreview ? expansionPackIds(document) : []),
+      ].map(String).filter(Boolean))],
+      walletBaseCount: Number(external.walletBaseCount ?? contextState.walletBaseCount ?? 0),
+      walletPackCounts: {
+        ...(contextState.walletPackCounts || {}),
+        ...(external.walletPackCounts || {}),
+      },
+      totalBaseCount: Number(external.totalBaseCount ?? contextState.totalBaseCount ?? 0),
+      totalPackCounts: {
+        ...(contextState.totalPackCounts || {}),
+        ...(external.totalPackCounts || {}),
+      },
+      protocol,
+      available: Boolean(
+        external.available
+        ?? contextState.available
+        ?? !authoritativeQuoteRequired
+      ),
+      protocolEnabled: Boolean(
+        external.protocolEnabled
+        ?? contextState.protocolEnabled
+        ?? (authoritativeQuoteRequired ? protocol.enabled : true)
+      ),
+      authoritativeQuoteRequired,
+      lifecycle: external.lifecycle ?? contextState.lifecycle ?? '',
+      errorCode: String(external.errorCode ?? contextState.errorCode ?? ''),
+      errorMessage: String(external.errorMessage ?? contextState.errorMessage ?? ''),
+    };
+  }
+
+  playerCommerceQuote(document = this.runtimeDocument(), recipe = this.playerRecipe) {
+    return quoteCompleteV5(document, recipe, this.playerCommerceState(document));
+  }
+
+  playerCommerceBlockingMessage(document = this.runtimeDocument()) {
+    if (this.playerCreatorPreview) return '';
+    const state = this.playerCommerceState(document);
+    if (!state.available) {
+      if (state.errorCode === 'COMMERCE_V5_RELEASE_DISABLED') {
+        return this.tr('playerCommerceReleaseDisabled');
+      }
+      if ([
+        'COMMERCE_V5_CONFIG_MISSING',
+        'COMMERCE_V5_MIGRATION_NOT_FOUND',
+        'COMMERCE_V5_LEGACY_MAKER_MISSING',
+      ].includes(state.errorCode)) {
+        return this.tr('playerCommerceBindingResolving');
+      }
+      return this.tr('playerCommerceUnavailable');
+    }
+    if (!state.protocolEnabled) return this.tr('playerCommerceProtocolDisabled');
+    const lifecycleKnown = state.lifecycle !== '' && state.lifecycle !== null;
+    const lifecycleActive = [0, '0', 'ACTIVE'].includes(state.lifecycle);
+    if (lifecycleKnown && !lifecycleActive) {
+      const lifecycleLabel = ['ACTIVE', 'PAUSED', 'ARCHIVED', 'SALE_PENDING'][
+        Number(state.lifecycle)
+      ] || String(state.lifecycle);
+      return this.tr('playerCommerceMakerInactive', { state: lifecycleLabel });
+    }
+    return '';
+  }
+
+  playerCommerceQuoteIssue(document, quote) {
+    const blocking = this.playerCommerceBlockingMessage(document);
+    if (blocking) return blocking;
+    if (quote?.valid) return '';
+    const state = this.playerCommerceState(document);
+    if (
+      state.authoritativeQuoteRequired
+      && ['TOTAL_CAP_REACHED', 'FREE_QUOTA_EXHAUSTED'].includes(quote?.reason)
+    ) {
+      // Wallet quota counters are shared on-chain tables. A browser-side
+      // zero/default estimate must never become the final price or quota
+      // decision; the signed Sui quote remains authoritative.
+      return '';
+    }
+    return {
+      MAKER_ACCESS_REQUIRED: this.tr('playerMakerAccessRequired'),
+      PACK_ACCESS_REQUIRED: this.tr('playerPackAccessRequired'),
+      TOTAL_CAP_REACHED: this.tr('playerCompleteCapReached'),
+      FREE_QUOTA_EXHAUSTED: this.tr('playerCompleteQuotaExhausted'),
+    }[quote?.reason] || this.tr('playerCommerceUnavailable');
+  }
+
+  basePlayerDocument() {
+    return this.store?.getState?.().document || null;
+  }
+
+  playerCommerce(document = this.basePlayerDocument()) {
+    return normalizeMakerCommerceV5(document?.commerce, {
+      packIds: expansionPackIds(document),
+    });
+  }
+
+  playerMakerAccessLocked(document = this.basePlayerDocument()) {
+    const commerce = this.playerCommerce(document);
+    const state = this.playerCommerceState(document);
+    return commerce.makerAccess.mode === MAKER_ACCESS_MODES.ONE_TIME_PAID
+      && !state.ownsMakerAccess;
+  }
+
+  playerPackAccessState(packId, document = this.basePlayerDocument()) {
+    const id = String(packId || '');
+    const commerce = this.playerCommerce(document);
+    const policy = commerce.packPolicies.find((entry) => entry.packId === id)
+      || createPackCommercePolicyV5(id);
+    const owned = this.playerCommerceState(document).ownedPackIds.includes(id);
+    const included = policy.accessMode === PACK_ACCESS_MODES.REQUIRED_CORE;
+    const free = policy.accessMode === PACK_ACCESS_MODES.FREE;
+    return {
+      policy,
+      included,
+      free,
+      owned,
+      accessible: included || free || owned,
+      enabled: included || this.enabledExpansionIds.has(id),
+    };
+  }
+
+  playerExportKey(snapshot, imageExport = {}) {
+    if (!snapshot) return '';
+    return JSON.stringify({
+      makerVersionId: String(snapshot.document?.version?.versionId || ''),
+      recipe: snapshot.recipe,
+      profile: snapshot.profile,
+      livingContent: snapshot.livingContent,
+      imageExport: {
+        sizeMode: String(imageExport.sizeMode || this.playerExportSizeMode || 'standard'),
+        transparentBackground: Boolean(
+          imageExport.transparentBackground ?? this.playerExportTransparent,
+        ),
+        width: Number(imageExport.width || this.playerExportDimensions?.width || 0),
+        height: Number(imageExport.height || this.playerExportDimensions?.height || 0),
+        mediaType: String(imageExport.mediaType || 'image/png'),
+      },
+    });
+  }
+
+  invalidatePlayerCompletion() {
+    this.playerCompletedExportKey = '';
+    this.playerPendingCompletedExport = null;
+  }
+
+  confirmPlayerCompletion({
+    exportKey = '',
+    digest = '',
+  } = {}) {
+    const pending = this.playerPendingCompletedExport;
+    if (!pending) return false;
+    if (exportKey && exportKey !== pending.exportKey) return false;
+    if (
+      pending.confirmed
+      && this.playerCompletedExportKey === pending.exportKey
+    ) return false;
+    this.playerCompletedExportKey = pending.exportKey;
+    this.playerPublishOpen = false;
+    this.playerPublishCloseConfirm = false;
+    this.resetPlayerExport({ preservePreferences: true });
+    this.playerExportOpen = true;
+    this.playerExportIntent = 'download';
+    this.playerExportSnapshot = pending.snapshot;
+    this.playerExportPreviewBlob = pending.imageBlob;
+    this.playerExportPreviewUrl = URL.createObjectURL(pending.imageBlob);
+    this.playerExportSizeMode = pending.imageExport.sizeMode;
+    this.playerExportTransparent = pending.imageExport.transparentBackground;
+    this.playerExportDimensions = {
+      width: pending.imageExport.width,
+      height: pending.imageExport.height,
+    };
+    this.playerExportState = 'ready';
+    this.playerCommerceError = '';
+    this.playerPendingCompletedExport = {
+      ...pending,
+      digest: String(digest || pending.digest || ''),
+      confirmed: true,
+    };
+    this.render();
+    this.focusPlayerExportDialog('[data-action="player-download-png"]');
+    return true;
+  }
+
+  /**
+   * Rebuild the local pending export after a page reload. The caller must
+   * first verify the persisted upload fingerprint; this method only restores
+   * browser UI state and never treats a chain action as confirmed.
+   */
+  restorePlayerPendingCompletion({
+    document,
+    recipe,
+    profile,
+    livingContent,
+    imageBlob,
+    imageExport,
+    exportKey,
+    commerceQuote = null,
+    digest = '',
+  } = {}) {
+    if (
+      !document
+      || !recipe
+      || !profile
+      || !livingContent
+      || !imageBlob?.size
+      || imageBlob.type !== 'image/png'
+      || !imageExport
+      || !String(exportKey || '')
+    ) return false;
+    const snapshot = deepFreeze({
+      document: clone(document),
+      recipe: clone(recipe),
+      profile: clone(profile),
+      livingContent: clone(livingContent),
+    });
+    this.playerPendingCompletedExport = {
+      exportKey: String(exportKey),
+      snapshot,
+      imageBlob,
+      imageExport: deepFreeze(clone(imageExport)),
+      commerceQuote: commerceQuote ? deepFreeze(clone(commerceQuote)) : null,
+      confirmed: false,
+      digest: String(digest || ''),
+    };
+    this.playerCompletedExportKey = '';
+    return true;
+  }
+
+  async purchasePlayerMakerAccess() {
+    const document = this.basePlayerDocument();
+    if (!document || this.playerCommercePending) return false;
+    const commerce = this.playerCommerce(document);
+    const commerceState = this.playerCommerceState(document);
+    const blocking = this.playerCommerceBlockingMessage(document);
+    if (blocking) {
+      this.playerCommerceError = blocking;
+      this.callbacks.onPlayerError?.(new Error(blocking));
+      this.render();
+      return false;
+    }
+    const quote = quoteMakerPurchaseV5(commerce, commerceState);
+    if (!quote.valid) return false;
+    this.playerCommercePending = 'maker';
+    this.playerCommerceError = '';
+    this.render();
+    try {
+      const result = await this.callbacks.onPurchaseMakerAccess?.({
+        document,
+        commerce,
+        quote,
+        makerKey: this.makerKey,
+      });
+      if (!result?.confirmed && !result?.ownsMakerAccess) {
+        throw new Error(result?.message || this.tr('playerPurchaseUnavailable'));
+      }
+      this.playerOwnsMakerAccess = true;
+      this.playerCommercePending = '';
+      this.playerCommerceError = '';
+      this.render();
+      return true;
+    } catch (error) {
+      this.playerCommercePending = '';
+      this.playerCommerceError = error?.message || this.tr('playerPurchaseFailed');
+      this.callbacks.onPlayerError?.(error);
+      this.render();
+      return false;
+    }
+  }
+
+  async purchasePlayerPack(packId) {
+    const document = this.basePlayerDocument();
+    const id = String(packId || '');
+    if (!document || !id || this.playerCommercePending) return false;
+    const commerce = this.playerCommerce(document);
+    const commerceState = this.playerCommerceState(document);
+    const blocking = this.playerCommerceBlockingMessage(document);
+    if (blocking) {
+      this.playerCommerceError = blocking;
+      this.callbacks.onPlayerError?.(new Error(blocking));
+      this.render();
+      return false;
+    }
+    const quote = quotePackPurchaseV5(commerce, id, commerceState);
+    if (!quote.valid) return false;
+    this.playerCommercePending = `pack:${id}`;
+    this.playerCommerceError = '';
+    this.render();
+    try {
+      const result = await this.callbacks.onPurchaseExpansionPack?.({
+        document,
+        commerce,
+        packId: id,
+        quote,
+        makerKey: this.makerKey,
+      });
+      const confirmedPackIds = Array.isArray(result?.ownedPackIds)
+        ? result.ownedPackIds.map(String)
+        : [];
+      if (!result?.confirmed && !confirmedPackIds.includes(id)) {
+        throw new Error(result?.message || this.tr('playerPurchaseUnavailable'));
+      }
+      this.playerOwnedPackIds.add(id);
+      this.enabledExpansionIds.add(id);
+      this.playerCommercePending = '';
+      this.playerCommerceError = '';
+      const runtimeDocument = this.runtimeDocument();
+      const playable = normalizePlayablePlayerRecipe(
+        runtimeDocument,
+        this.playerRecipe,
+        this.playerOptionSettings(runtimeDocument),
+      );
+      if (playable.valid) this.playerRecipe = playable.documentRecipe;
+      this.playerUndo = [];
+      this.playerRedo = [];
+      this.markPlayerSessionDirty();
+      this.sessionAutosave();
+      this.callbacks.onPlayerRecipeChange?.(this.playerStatePayload(runtimeDocument));
+      this.render();
+      return true;
+    } catch (error) {
+      this.playerCommercePending = '';
+      this.playerCommerceError = error?.message || this.tr('playerPurchaseFailed');
+      this.callbacks.onPlayerError?.(error);
+      this.render();
+      return false;
+    }
+  }
+
   playerSessionKeyForDocument(document = this.store?.getState().document) {
     const wallet = String(this.context?.walletAddress || '');
     const version = String(document?.version?.versionId || '');
@@ -1658,7 +2077,10 @@ export class MakerWorkspace {
     if (!this.store) return null;
     const document = this.store.getState().document;
     const drafts = document.extensions?.expansionDrafts || [];
-    const enabled = drafts.filter((pack) => this.enabledExpansionIds.has(pack.packId));
+    const enabled = drafts.filter((pack) => {
+      const access = this.playerPackAccessState(pack.packId, document);
+      return access.accessible && access.enabled;
+    });
     if (!enabled.length) return document;
     const result = mergeExpansionPacks(document, enabled, { returnResult: true });
     return result.compatible ? result.maker : document;
@@ -1672,6 +2094,25 @@ export class MakerWorkspace {
     document.parts ||= [];
     document.assets ||= [];
     document.expansionPacks ||= [];
+    const hasExplicitCommerce = Boolean(
+      document.commerce
+      && typeof document.commerce === 'object'
+      && !Array.isArray(document.commerce),
+    );
+    const legacyMakerRoyaltyBps = Number(document.publication?.royaltyBps);
+    const commerceSource = hasExplicitCommerce
+      ? document.commerce
+      : createDefaultMakerCommerceV5({
+          ...(Number.isInteger(legacyMakerRoyaltyBps)
+            && legacyMakerRoyaltyBps >= 0
+            && legacyMakerRoyaltyBps <= 500
+            && legacyMakerRoyaltyBps % 50 === 0
+            ? { makerSourceRoyaltyBps: legacyMakerRoyaltyBps }
+            : {}),
+        });
+    document.commerce = normalizeMakerCommerceV5(commerceSource, {
+      packIds: expansionPackIds(document),
+    });
     const storedLegacyRuleRecovery = document.extensions.unresolvedLegacyRules;
     const storedLegacyRules = Array.isArray(storedLegacyRuleRecovery?.rules)
       ? storedLegacyRuleRecovery.rules
@@ -1845,6 +2286,12 @@ export class MakerWorkspace {
       this.store = null;
       this.resetPlayerExport();
       this.enabledExpansionIds = new Set();
+      this.playerOwnedPackIds = new Set();
+      this.playerOwnsMakerAccess = false;
+      this.playerCommercePending = '';
+      this.playerCommerceError = '';
+      this.playerCompletedExportKey = '';
+      this.playerPendingCompletedExport = null;
       this.playerLivingContent = null;
       this.playerSessionRequestId += 1;
       this.playerSessionSwitchInProgress = false;
@@ -1881,6 +2328,9 @@ export class MakerWorkspace {
     const contextEpoch = this.contextEpoch;
 
     this.context = { ...this.context, ...context };
+    if (sameMaker && Object.hasOwn(context, 'commerceState')) {
+      this.hydratePlayerCommerceContext(this.context);
+    }
     if (Object.hasOwn(context, 'publishedDocument')) {
       this.releasePreflightCache = new WeakMap();
     }
@@ -1931,6 +2381,7 @@ export class MakerWorkspace {
     this.selectedChannelId = '';
     this.pendingSmartColorEdit = null;
     this.enabledExpansionIds = new Set();
+    this.hydratePlayerCommerceContext(this.context);
     this.playerLivingContent = null;
     this.playerSessionRequestId += 1;
     this.playerSessionSwitchInProgress = false;
@@ -3560,6 +4011,27 @@ export class MakerWorkspace {
     if (!document) return [];
     const issues = collectMakerV5ValidationIssues(document, { mode: 'publish' })
       .map(compactIssue);
+    const commercePackIds = expansionPackIds(document);
+    const normalizedCommerce = normalizeMakerCommerceV5(document.commerce, {
+      packIds: commercePackIds,
+    });
+    if (this.context?.commerceV5ReleaseEnabled === true) {
+      issues.push(...collectMakerCommerceV5Issues(
+        normalizedCommerce,
+        {
+          packIds: commercePackIds,
+          publish: true,
+        },
+      ).map(compactIssue));
+    } else if (makerCommerceV5RequiresRelease(document.commerce, {
+      packIds: commercePackIds,
+    })) {
+      issues.push({
+        code: 'commerce_v5_release_disabled',
+        path: 'commerce',
+        message: 'Commerce v5 publication is not enabled. Paid access, Expansion Packs, Complete limits, confirmed rights and custom royalties remain draft-only until the reviewed release gate opens.',
+      });
+    }
     const externalIssues = Array.isArray(this.context?.externalPublicationIssues)
       ? this.context.externalPublicationIssues
       : [];
@@ -4126,17 +4598,25 @@ export class MakerWorkspace {
     const copyStateKey = kind === 'creator'
       ? 'creatorPublishCopyState'
       : 'playerPublishCopyState';
+    const completionReceipt = kind === 'player' ? nextState.completionReceipt : null;
+    const statePatch = { ...nextState };
+    delete statePatch.completionReceipt;
     const previous = this[stateKey];
     const next = {
       ...previous,
-      ...nextState,
-      actions: { ...previous.actions, ...(nextState.actions || {}) },
+      ...statePatch,
+      actions: { ...previous.actions, ...(statePatch.actions || {}) },
     };
     const changed = JSON.stringify(next) !== JSON.stringify(previous);
     if (next.error?.diagnostic !== previous.error?.diagnostic) this[copyStateKey] = 'idle';
     const closeConfirmationSettled = Boolean(this[closeConfirmKey] && !next.busy);
     if (closeConfirmationSettled) this[closeConfirmKey] = false;
     this[stateKey] = next;
+    if (
+      kind === 'player'
+      && completionReceipt?.confirmed
+      && this.confirmPlayerCompletion(completionReceipt)
+    ) return;
     if ((changed || closeConfirmationSettled) && this.store) {
       requestAnimationFrame(() => {
         this.render();
@@ -4314,7 +4794,7 @@ export class MakerWorkspace {
   }
 
   openCreatorTab(tab = 'structure') {
-    const allowed = new Set(['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'soul', 'validate']);
+    const allowed = new Set(['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'commerce', 'soul', 'validate']);
     this.creatorTab = allowed.has(tab) ? tab : 'structure';
     this.resetCreatorToolScroll = this.creatorTab !== 'structure';
     if (this.creatorTab !== 'rules') {
@@ -4667,6 +5147,9 @@ export class MakerWorkspace {
     if (issue.code === 'position_unconfirmed') return this.tr('positionUnconfirmed', context);
     if (issue.code === 'transparent_public_style') return this.tr('transparentPublicStyle', context);
     if (issue.code === 'fixture_do_not_publish') return this.tr('issueFixtureDoNotPublish');
+    if (issue.code === 'rights_origin_confirmation_required') {
+      return this.tr('rightsOriginConfirmationRequired');
+    }
     const makerInfoField = makerInfoFieldByPath(issue.path);
     if (issue.code === 'invalid_text' && makerInfoField) {
       return this.tr('makerInfoProtocolTextInvalid', {
@@ -4706,7 +5189,7 @@ export class MakerWorkspace {
     if (!this.creatorRoot?.querySelector) return null;
     const scrollSelectors = [
       '.v4-parts-list', '.v4-canvas-viewport', '.v4-inspector', '.v4-item-grid', '.v4-tool-body',
-      '.v4-track-list', '.v4-color-workspace', '.v4-rule-list', '.v4-expansion-grid', '.v4-soul-editor', '.v4-preflight-list',
+      '.v4-track-list', '.v4-color-workspace', '.v4-rule-list', '.v4-expansion-grid', '.v4-commerce-workspace', '.v4-soul-editor', '.v4-preflight-list',
     ];
     const scroll = scrollSelectors.map((selector) => {
       const node = this.creatorRoot.querySelector(selector);
@@ -4762,6 +5245,7 @@ export class MakerWorkspace {
       colors: this.tr('smartColor'),
       rules: this.tr('rules'),
       expansions: this.tr('expansionPacks'),
+      commerce: this.tr('commerceRights'),
       soul: this.tr('soulConfig'),
       validate: this.tr(issueCount ? 'preflightCount' : 'preflightReady', { count: issueCount }),
     }[tab] || this.tr('partsItems');
@@ -4828,6 +5312,14 @@ export class MakerWorkspace {
         paymentCoinType: String(nextComparable.paymentCoinType || ''),
         paymentCoinSymbol: String(nextComparable.paymentCoinSymbol || ''),
       });
+      // Soulidity consumes the immutable license snapshot carried by the
+      // published Maker. Keep that snapshot and the v5 Maker-source resale
+      // share identical so the Creator cannot configure one value in the
+      // workspace while a different value is enforced on-chain.
+      document.commerce = normalizeMakerCommerceV5(document.commerce, {
+        packIds: expansionPackIds(document),
+      });
+      document.commerce.makerSourceRoyaltyBps = Number(nextComparable.royaltyBps || 0);
       if (settings.livingContent !== undefined) {
         document.livingContent = clone(settings.livingContent);
       } else if (makerIdentityChanged) {
@@ -4838,6 +5330,100 @@ export class MakerWorkspace {
         document.livingContent = content;
       }
     });
+  }
+
+  updateCommerceFromInput(input) {
+    const action = String(input?.dataset?.action || '');
+    if (!action.startsWith('commerce-') || !this.store) return false;
+    const currentDocument = this.store.getState().document;
+    const packIds = expansionPackIds(currentDocument);
+    const publishedDocument = this.context?.publishedDocument;
+    const currentReleaseSealed = Boolean(
+      isMakerV5Document(publishedDocument)
+      && String(currentDocument.version?.versionId || '')
+        === String(publishedDocument.version?.versionId || ''),
+    );
+    const rightsOriginLocked = Boolean(
+      this.context?.chainBinding?.commerceV5RootObjectId
+    );
+    // MakerRootV5 freezes the original-author resale royalty when the exact
+    // Style registry is sealed. Do not let a control visually attached to the
+    // released version silently fork a successor. A version draft receives
+    // its own immutable projection and may choose its value before release.
+    if (action === 'commerce-maker-resale-royalty' && currentReleaseSealed) {
+      return false;
+    }
+    const completionForMode = (current, mode) => createCompletionPolicyV5({
+      mode,
+      freeQuotaPerWallet: current?.freeQuotaPerWallet || 1,
+      priceAtomic: current?.priceAtomic || 1_000_000,
+      totalCap: current?.totalCap ?? null,
+    });
+    this.executeDocument('Update commerce policy', ({ document }) => {
+      document.commerce = normalizeMakerCommerceV5(document.commerce, {
+        packIds: expansionPackIds(document),
+      });
+      const commerce = document.commerce;
+      const packId = String(input.dataset.packId || '');
+      const pack = packId
+        ? commerce.packPolicies.find((policy) => policy.packId === packId)
+        : null;
+      if (action === 'commerce-rights-origin') {
+        if (
+          !rightsOriginLocked
+          && Object.values(RIGHTS_ORIGINS).includes(input.value)
+        ) {
+          commerce.rightsOrigin = input.value;
+          commerce.rightsOriginConfirmed = true;
+        }
+      } else if (action === 'commerce-maker-access') {
+        commerce.makerAccess.mode = Object.values(MAKER_ACCESS_MODES).includes(input.value)
+          ? input.value
+          : MAKER_ACCESS_MODES.FREE;
+        commerce.makerAccess.purchasePriceAtomic = commerce.makerAccess.mode === MAKER_ACCESS_MODES.ONE_TIME_PAID
+          ? commerce.makerAccess.purchasePriceAtomic || 1_000_000
+          : 0;
+      } else if (action === 'commerce-maker-access-price') {
+        commerce.makerAccess.purchasePriceAtomic = coinToAtomic(input.value);
+      } else if (action === 'commerce-base-complete-mode') {
+        commerce.baseCompletion = completionForMode(commerce.baseCompletion, input.value);
+      } else if (action === 'commerce-base-complete-quota') {
+        commerce.baseCompletion.freeQuotaPerWallet = Math.max(0, Math.floor(Number(input.value || 0)));
+      } else if (action === 'commerce-base-complete-price') {
+        commerce.baseCompletion.priceAtomic = coinToAtomic(input.value);
+      } else if (action === 'commerce-base-complete-cap') {
+        commerce.baseCompletion.totalCap = input.value === ''
+          ? null
+          : Math.max(0, Math.floor(Number(input.value || 0)));
+      } else if (pack && action === 'commerce-pack-access') {
+        pack.accessMode = Object.values(PACK_ACCESS_MODES).includes(input.value)
+          ? input.value
+          : PACK_ACCESS_MODES.FREE;
+        pack.purchasePriceAtomic = pack.accessMode === PACK_ACCESS_MODES.ONE_TIME_PAID
+          ? pack.purchasePriceAtomic || 1_000_000
+          : 0;
+      } else if (pack && action === 'commerce-pack-price') {
+        pack.purchasePriceAtomic = coinToAtomic(input.value);
+      } else if (pack && action === 'commerce-pack-complete-mode') {
+        pack.completion = completionForMode(pack.completion, input.value);
+      } else if (pack && action === 'commerce-pack-complete-quota') {
+        pack.completion.freeQuotaPerWallet = Math.max(0, Math.floor(Number(input.value || 0)));
+      } else if (pack && action === 'commerce-pack-complete-price') {
+        pack.completion.priceAtomic = coinToAtomic(input.value);
+      } else if (pack && action === 'commerce-pack-complete-cap') {
+        pack.completion.totalCap = input.value === ''
+          ? null
+          : Math.max(0, Math.floor(Number(input.value || 0)));
+      } else if (action === 'commerce-soul-creator-royalty') {
+        commerce.soulCreatorRoyaltyBps = Number(input.value || 0);
+      } else if (action === 'commerce-maker-source-royalty') {
+        commerce.makerSourceRoyaltyBps = Number(input.value || 0);
+        document.publication.royaltyBps = commerce.makerSourceRoyaltyBps;
+      } else if (action === 'commerce-maker-resale-royalty') {
+        commerce.makerResaleRoyaltyBps = Number(input.value || 0);
+      }
+    });
+    return true;
   }
 
   playerBackgroundPartIds(document = this.runtimeDocument()) {
@@ -5047,6 +5633,15 @@ export class MakerWorkspace {
 
   downloadPlayerExport() {
     if (!this.playerExportPreviewBlob || !this.playerExportPreviewUrl || !this.playerExportSnapshot) return;
+    const imageExport = {
+      sizeMode: this.playerExportSizeMode,
+      transparentBackground: this.playerExportTransparent,
+      width: this.playerExportDimensions?.width || this.playerExportSnapshot.document.canvas.width,
+      height: this.playerExportDimensions?.height || this.playerExportSnapshot.document.canvas.height,
+      mediaType: 'image/png',
+    };
+    const exportKey = this.playerExportKey(this.playerExportSnapshot, imageExport);
+    if (!this.playerCreatorPreview && exportKey !== this.playerCompletedExportKey) return;
     const link = globalThis.document?.createElement?.('a');
     if (!link) return;
     link.href = this.playerExportPreviewUrl;
@@ -5150,6 +5745,22 @@ export class MakerWorkspace {
       height: this.playerExportDimensions?.height || snapshot.document.canvas.height,
       mediaType: 'image/png',
     });
+    const commerceQuote = this.playerCommerceQuote(snapshot.document, snapshot.recipe);
+    const commerceIssue = this.playerCommerceQuoteIssue(snapshot.document, commerceQuote);
+    if (commerceIssue) {
+      this.callbacks.onPlayerError?.(new Error(commerceIssue));
+      return;
+    }
+    const exportKey = this.playerExportKey(snapshot, imageExport);
+    this.playerPendingCompletedExport = {
+      exportKey,
+      snapshot,
+      imageBlob,
+      imageExport,
+      commerceQuote: deepFreeze(clone(commerceQuote)),
+      confirmed: false,
+      digest: '',
+    };
     this.resetPlayerExport({ preservePreferences: true });
     this.playerPublishOpen = !creatorPreview;
     this.playerPublishCloseConfirm = false;
@@ -5160,6 +5771,9 @@ export class MakerWorkspace {
       livingContent: snapshot.livingContent,
       imageBlob,
       imageExport,
+      exportKey,
+      commerceQuote: clone(commerceQuote),
+      usedPackIds: [...commerceQuote.usedPackIds],
       assets: this.assets,
     });
     this.render();
@@ -5303,6 +5917,7 @@ export class MakerWorkspace {
             ['colors', this.tr('smartColor')],
             ['rules', this.tr('rules')],
             ['expansions', this.tr('expansionPacks')],
+            ['commerce', this.tr('commerceRights')],
             ['soul', this.tr('soulConfig')],
             ['validate', this.tr(issues.length ? 'preflightCount' : 'preflightReady', { count: issues.length })],
           ].map(([id, label]) => `<button type="button" id="makerV4Tab-${id}" class="${this.creatorTab === id ? 'active' : ''}" data-action="creator-tab" data-tab="${id}" aria-pressed="${this.creatorTab === id}" ${id === 'structure' ? 'aria-controls="makerV4ToolPanel"' : ''}>${escapeHtml(label)}</button>`).join('')}
@@ -5764,6 +6379,13 @@ export class MakerWorkspace {
               <span>${escapeHtml(status)}</span>
               ${state.busy ? `<small>${escapeHtml(this.tr('publishWorking'))}</small>` : ''}
             </div>
+            ${creator && state.commerceV5Publication ? `
+              <div class="v4-chain-status commerce-v5-substage" role="status" aria-live="polite">
+                <strong>Commerce v5</strong>
+                <span>${escapeHtml(state.commerceV5Publication.label || state.commerceV5Publication.stage || '')}</span>
+                <small>${escapeHtml(state.commerceV5Publication.stage || '')}</small>
+              </div>
+            ` : ''}
             ${errorPanel}
             <footer>
               ${!state.busy && !state.error && actions.resume ? `<button type="button" data-action="${prefix}-publish-resume">${escapeHtml(this.tr('resumeUpload'))}</button>` : ''}
@@ -5772,7 +6394,11 @@ export class MakerWorkspace {
               ${!state.busy && !state.error && actions.certify ? `<button class="primary" type="button" data-action="${prefix}-publish-certify">${escapeHtml(this.tr('certifyStep'))}</button>` : ''}
               ${!state.busy && !state.error && actions.publish ? `<button class="primary" type="button" data-action="${prefix}-publish-onchain">${escapeHtml(this.tr(creator ? 'publishMakerStepButton' : 'continueSoulidityStep'))}</button>` : ''}
               ${!state.busy && actions.review && !state.error ? `<button class="primary" type="button" data-action="${prefix}-publish-review">${escapeHtml(this.tr('reviewPendingRelease'))}</button>` : ''}
-              ${state.digest ? `<strong class="v4-chain-published">${escapeHtml(this.tr(creator ? 'publishedDone' : 'completedDone'))}</strong>` : ''}
+              ${state.digest && (
+                !creator
+                || !state.commerceV5Publication
+                || state.commerceV5Publication.completed === true
+              ) ? `<strong class="v4-chain-published">${escapeHtml(this.tr(creator ? 'publishedDone' : 'completedDone'))}</strong>` : ''}
             </footer>
           </div>
           ${closeConfirmation}
@@ -6394,6 +7020,119 @@ export class MakerWorkspace {
         <div class="v4-expansion-grid">${cards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noExpansionPacks'))}</strong><span>${escapeHtml(this.tr('noExpansionCopy'))}</span></div>`}</div>
       `;
     }
+    if (this.creatorTab === 'commerce') {
+      const packIds = expansionPackIds(document);
+      const commerce = normalizeMakerCommerceV5(document.commerce, { packIds });
+      const publishedDocument = this.context?.publishedDocument;
+      const currentReleaseSealed = Boolean(
+        isMakerV5Document(publishedDocument)
+        && String(document.version?.versionId || '')
+          === String(publishedDocument.version?.versionId || ''),
+      );
+      const protocol = {
+        ...DEFAULT_PROTOCOL_COMMERCE_V5,
+        ...(this.context?.commerceState?.protocol || {}),
+      };
+      const rightsLocked = Boolean(
+        this.context?.chainBinding?.commerceV5RootObjectId
+      );
+      const rightsConfirmed = commerce.rightsOriginConfirmed === true;
+      const policyModeOptions = (mode) => [
+        [COMPLETION_MODES.UNLIMITED_FREE, this.tr('completeUnlimitedFree')],
+        [COMPLETION_MODES.FREE_QUOTA_THEN_PAID, this.tr('completeQuotaThenPaid')],
+        [COMPLETION_MODES.PAID_EVERY_TIME, this.tr('completePaidEveryTime')],
+        [COMPLETION_MODES.FREE_QUOTA_THEN_BLOCK, this.tr('completeQuotaThenBlock')],
+      ].map(([value, label]) => `<option value="${value}" ${selected(mode, value)}>${escapeHtml(label)}</option>`).join('');
+      const royaltyOptions = (value) => Array.from({ length: 11 }, (_, index) => index * 50)
+        .map((bps) => `<option value="${bps}" ${selected(value, bps)}>${bps / 100}%</option>`)
+        .join('');
+      const completionFields = (policy, scope, packId = '') => {
+        const quotaMode = [
+          COMPLETION_MODES.FREE_QUOTA_THEN_PAID,
+          COMPLETION_MODES.FREE_QUOTA_THEN_BLOCK,
+        ].includes(policy.mode);
+        const paidMode = [
+          COMPLETION_MODES.FREE_QUOTA_THEN_PAID,
+          COMPLETION_MODES.PAID_EVERY_TIME,
+        ].includes(policy.mode);
+        const attributes = packId ? ` data-pack-id="${escapeHtml(packId)}"` : '';
+        return `
+          <label>${escapeHtml(this.tr('completePolicy'))}<select data-action="commerce-${scope}-complete-mode"${attributes}>${policyModeOptions(policy.mode)}</select></label>
+          <label>${escapeHtml(this.tr('freeCompleteQuota'))}<input type="number" min="1" step="1" value="${quotaMode ? policy.freeQuotaPerWallet : ''}" data-action="commerce-${scope}-complete-quota"${attributes} ${quotaMode ? '' : 'disabled'} /></label>
+          <label>${escapeHtml(this.tr('completePriceUsdc'))}<input type="number" min="0.000001" step="0.000001" value="${paidMode ? atomicToCoin(policy.priceAtomic) : ''}" data-action="commerce-${scope}-complete-price"${attributes} ${paidMode ? '' : 'disabled'} /></label>
+          <label>${escapeHtml(this.tr('globalCompleteCap'))}<input type="number" min="1" step="1" value="${policy.totalCap ?? ''}" placeholder="${escapeHtml(this.tr('unlimited'))}" data-action="commerce-${scope}-complete-cap"${attributes} /></label>
+        `;
+      };
+      const packNameById = new Map(
+        (document.extensions?.expansionDrafts || [])
+          .map((pack) => [String(pack.packId || ''), String(pack.name || pack.packId || '')]),
+      );
+      const packCards = commerce.packPolicies.map((policy) => {
+        const paid = policy.accessMode === PACK_ACCESS_MODES.ONE_TIME_PAID;
+        return `
+          <article class="v4-commerce-pack-card">
+            <header><div><span>${escapeHtml(this.tr('expansionPack'))}</span><h4>${escapeHtml(packNameById.get(policy.packId) || policy.packId)}</h4></div><code>${escapeHtml(policy.packId)}</code></header>
+            <div class="v4-commerce-fields">
+              <label>${escapeHtml(this.tr('packAccess'))}<select data-action="commerce-pack-access" data-pack-id="${escapeHtml(policy.packId)}">
+                <option value="${PACK_ACCESS_MODES.FREE}" ${selected(policy.accessMode, PACK_ACCESS_MODES.FREE)}>${escapeHtml(this.tr('accessFree'))}</option>
+                <option value="${PACK_ACCESS_MODES.ONE_TIME_PAID}" ${selected(policy.accessMode, PACK_ACCESS_MODES.ONE_TIME_PAID)}>${escapeHtml(this.tr('accessPaidOnce'))}</option>
+                <option value="${PACK_ACCESS_MODES.REQUIRED_CORE}" ${selected(policy.accessMode, PACK_ACCESS_MODES.REQUIRED_CORE)}>${escapeHtml(this.tr('accessIncludedCore'))}</option>
+              </select></label>
+              <label>${escapeHtml(this.tr('packPriceUsdc'))}<input type="number" min="0.000001" step="0.000001" value="${paid ? atomicToCoin(policy.purchasePriceAtomic) : ''}" data-action="commerce-pack-price" data-pack-id="${escapeHtml(policy.packId)}" ${paid ? '' : 'disabled'} /></label>
+              ${completionFields(policy.completion, 'pack', policy.packId)}
+            </div>
+          </article>
+        `;
+      }).join('');
+      const commerceIssues = collectMakerCommerceV5Issues(commerce, {
+        packIds,
+        publish: true,
+      });
+      return `
+        <div class="v4-advanced-head">
+          <div><span>${escapeHtml(this.tr('commerceRights'))}</span><h3>${escapeHtml(this.tr('commerceTitle'))}</h3><p>${escapeHtml(this.tr('commerceCopy'))}</p></div>
+        </div>
+        <div class="v4-commerce-workspace">
+          <section class="v4-commerce-section">
+            <header><div><span>01</span><h4>${escapeHtml(this.tr('rightsOrigin'))}</h4></div><em>${escapeHtml(rightsLocked ? this.tr('immutableAfterFirstPublish') : rightsConfirmed ? this.tr('rightsOriginConfirmed') : this.tr('rightsOriginConfirmationRequired'))}</em></header>
+            <div class="v4-commerce-choice-grid">
+              <label class="${rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.ONCHAIN_NATIVE ? 'active' : ''}"><input type="radio" name="commerce-rights-origin" value="${RIGHTS_ORIGINS.ONCHAIN_NATIVE}" data-action="commerce-rights-origin" ${checked(rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.ONCHAIN_NATIVE)} ${rightsLocked ? 'disabled' : ''} /><span><strong>${escapeHtml(this.tr('rightsOnchainNative'))}</strong><small>${escapeHtml(this.tr('rightsOnchainNativeCopy'))}</small></span></label>
+              <label class="${rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.LICENSE_WRAPPED ? 'active' : ''}"><input type="radio" name="commerce-rights-origin" value="${RIGHTS_ORIGINS.LICENSE_WRAPPED}" data-action="commerce-rights-origin" ${checked(rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.LICENSE_WRAPPED)} ${rightsLocked ? 'disabled' : ''} /><span><strong>${escapeHtml(this.tr('rightsLicenseWrapped'))}</strong><small>${escapeHtml(this.tr('rightsLicenseWrappedCopy'))}</small></span></label>
+            </div>
+          </section>
+          <section class="v4-commerce-section">
+            <header><div><span>02</span><h4>${escapeHtml(this.tr('makerAccessAndComplete'))}</h4></div><em>${escapeHtml(this.tr('defaultFreeUnlimited'))}</em></header>
+            <div class="v4-commerce-fields">
+              <label>${escapeHtml(this.tr('makerAccess'))}<select data-action="commerce-maker-access">
+                <option value="${MAKER_ACCESS_MODES.FREE}" ${selected(commerce.makerAccess.mode, MAKER_ACCESS_MODES.FREE)}>${escapeHtml(this.tr('accessFree'))}</option>
+                <option value="${MAKER_ACCESS_MODES.ONE_TIME_PAID}" ${selected(commerce.makerAccess.mode, MAKER_ACCESS_MODES.ONE_TIME_PAID)}>${escapeHtml(this.tr('accessPaidOnce'))}</option>
+              </select></label>
+              <label>${escapeHtml(this.tr('makerAccessPriceUsdc'))}<input type="number" min="0.000001" step="0.000001" value="${commerce.makerAccess.mode === MAKER_ACCESS_MODES.ONE_TIME_PAID ? atomicToCoin(commerce.makerAccess.purchasePriceAtomic) : ''}" data-action="commerce-maker-access-price" ${commerce.makerAccess.mode === MAKER_ACCESS_MODES.ONE_TIME_PAID ? '' : 'disabled'} /></label>
+              ${completionFields(commerce.baseCompletion, 'base')}
+            </div>
+          </section>
+          <section class="v4-commerce-section">
+            <header><div><span>03</span><h4>${escapeHtml(this.tr('packCommerce'))}</h4></div><em>${escapeHtml(this.tr('onePassPermanent'))}</em></header>
+            <div class="v4-commerce-pack-grid">${packCards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noExpansionPacks'))}</strong><span>${escapeHtml(this.tr('packCommerceEmpty'))}</span></div>`}</div>
+          </section>
+          <section class="v4-commerce-section">
+            <header><div><span>04</span><h4>${escapeHtml(this.tr('secondaryRoyalties'))}</h4></div><em>0–5%</em></header>
+            <div class="v4-commerce-fields">
+              <label>${escapeHtml(this.tr('soulCreatorRoyalty'))}<select data-action="commerce-soul-creator-royalty">${royaltyOptions(commerce.soulCreatorRoyaltyBps)}</select></label>
+              <label>${escapeHtml(this.tr('makerSourceRoyalty'))}<select data-action="commerce-maker-source-royalty">${royaltyOptions(commerce.makerSourceRoyaltyBps)}</select></label>
+              <label>${escapeHtml(this.tr('makerResaleRoyalty'))}<select data-action="commerce-maker-resale-royalty" ${currentReleaseSealed ? 'disabled aria-describedby="makerResaleRoyaltyLock"' : ''}>${royaltyOptions(commerce.makerResaleRoyaltyBps)}</select>${currentReleaseSealed ? `<small id="makerResaleRoyaltyLock">${escapeHtml(this.tr('immutableReleasedRoyalty'))}</small>` : ''}</label>
+            </div>
+          </section>
+          <section class="v4-commerce-protocol">
+            <div><strong>${escapeHtml(this.tr('primarySplit'))}</strong><span>${escapeHtml(this.tr('primarySplitValue', { maker: (10_000 - protocol.primaryContentFeeBps) / 100, protocol: protocol.primaryContentFeeBps / 100 }))}</span></div>
+            <div><strong>${escapeHtml(this.tr('fixedCompleteProtocolFee'))}</strong><span>${escapeHtml(atomicToCoin(protocol.fixedCompleteFeeAtomic))} USDC</span></div>
+            <div><strong>${escapeHtml(this.tr('networkCosts'))}</strong><span>${escapeHtml(this.tr('networkCostsSeparate'))}</span></div>
+            <div><strong>${escapeHtml(this.tr('productionGate'))}</strong><span class="${protocol.enabled ? 'enabled' : 'disabled'}">${escapeHtml(this.tr(protocol.enabled ? 'enabled' : 'disabled'))}</span></div>
+          </section>
+          ${commerceIssues.length ? `<div class="v4-rule-warning" role="alert"><strong>${escapeHtml(this.tr('commerceNeedsAttention', { count: commerceIssues.length }))}</strong><span>${escapeHtml(commerceIssues[0].message)}</span></div>` : ''}
+        </div>
+      `;
+    }
     if (this.creatorTab === 'soul') {
       const validation = validateSoulConfig(document.livingContent, document);
       const selectedDocument = SOUL_CONFIG_DOCUMENTS.find(({ key }) => key === this.selectedSoulDocumentKey)
@@ -6783,6 +7522,9 @@ export class MakerWorkspace {
     }
     const recipeResult = evaluateRecipe(document, recipe);
     if (!recipeResult.valid) issues.push(...recipeResult.violations.map((violation) => this.playerViolationText(violation, document)));
+    const commerceQuote = this.playerCommerceQuote(document, recipe);
+    const commerceIssue = this.playerCommerceQuoteIssue(document, commerceQuote);
+    if (commerceIssue) issues.push(commerceIssue);
     try {
       const scene = resolveMakerScene(document, recipe, { strict: false });
       if (!scene.layers.length) issues.push(this.tr('playerNoVisibleArtwork'));
@@ -6825,7 +7567,14 @@ export class MakerWorkspace {
       status.dataset.state = issues.length ? 'blocked' : 'ready';
     }
     const complete = this.playerRoot.querySelector('[data-action="player-complete"]');
-    if (complete) complete.disabled = issues.length > 0;
+    if (complete) {
+      complete.disabled = issues.length > 0;
+      const commerceState = this.playerCommerceState(document);
+      complete.textContent = commerceState.authoritativeQuoteRequired
+        && !this.playerCommerceBlockingMessage(document)
+        ? this.tr('playerContinueToOnchainConfirmation')
+        : this.tr('completeOc');
+    }
   }
 
   playerLivingContentContext(document = this.runtimeDocument()) {
@@ -7044,16 +7793,37 @@ export class MakerWorkspace {
       : this.playerExportState === 'error'
         ? this.tr('finalImageFailed', { error: this.playerExportError || this.tr('previewRenderFailed') })
         : this.tr('finalImageReady');
-    const canDownload = this.playerExportState === 'ready' && Boolean(this.playerExportPreviewBlob);
+    const canRenderFinal = this.playerExportState === 'ready' && Boolean(this.playerExportPreviewBlob);
     const exportRendering = this.playerExportState === 'rendering';
+    const imageExport = {
+      sizeMode: this.playerExportSizeMode,
+      transparentBackground: this.playerExportTransparent,
+      width: dimensions.width,
+      height: dimensions.height,
+      mediaType: 'image/png',
+    };
+    const exportKey = this.playerExportKey(snapshot, imageExport);
+    const completionConfirmed = this.playerCreatorPreview
+      || exportKey === this.playerCompletedExportKey;
+    const canDownload = canRenderFinal && completionConfirmed;
+    const commerceQuote = this.playerCommerceQuote(snapshot.document, snapshot.recipe);
+    const commerceState = this.playerCommerceState(snapshot.document);
+    const commerceBlocking = this.playerCommerceBlockingMessage(snapshot.document);
+    const commerceNeedsChainQuote = Boolean(
+      commerceState.authoritativeQuoteRequired && !commerceBlocking,
+    );
     const completionIssues = this.playerCompletionIssues(snapshot.document, snapshot.recipe, {
       profile: snapshot.profile,
       livingContent: snapshot.livingContent,
     });
-    const canComplete = canDownload && completionIssues.length === 0;
+    const canComplete = canRenderFinal && completionIssues.length === 0;
     const completeLabel = this.playerCreatorPreview
       ? this.tr('returnToCreator')
-      : this.tr('continueToPublish');
+      : commerceNeedsChainQuote
+        ? this.tr('playerContinueToOnchainConfirmation')
+      : commerceQuote.grossAtomic > 0
+        ? `${this.tr('continueToPublish')} · ${atomicToCoin(commerceQuote.grossAtomic)} USDC`
+        : this.tr('continueToPublish');
 
     return `
       <div class="v4-modal-backdrop v4-player-export-backdrop" data-action="close-player-export-backdrop">
@@ -7108,6 +7878,25 @@ export class MakerWorkspace {
                 <strong>${escapeHtml(renderStatus)}</strong>
                 ${this.playerExportState === 'error' ? `<button type="button" data-action="player-export-retry">${escapeHtml(this.tr('retryRender'))}</button>` : ''}
               </div>
+              <section class="v4-player-commerce-quote" aria-labelledby="v4PlayerCommerceQuoteTitle">
+                <header>
+                  <strong id="v4PlayerCommerceQuoteTitle">${escapeHtml(this.tr('playerCommerceQuoteTitle'))}</strong>
+                  <span>${escapeHtml(commerceBlocking
+                    || (commerceNeedsChainQuote
+                      ? this.tr('playerCommerceVerifyingChainPrice')
+                      : commerceQuote.grossAtomic > 0
+                        ? this.tr('playerPaidComplete')
+                        : this.tr('playerCommerceFree')))}</span>
+                </header>
+                ${commerceNeedsChainQuote || commerceBlocking
+                  ? `<p>${escapeHtml(commerceBlocking || this.tr('playerCommerceAuthoritativeQuoteCopy'))}</p>`
+                  : `<dl>
+                      <div><dt>${escapeHtml(this.tr('playerCommerceContentCharge'))}</dt><dd>${escapeHtml(atomicToCoin(commerceQuote.contentAtomic))} USDC</dd></div>
+                      <div><dt>${escapeHtml(this.tr('playerCommerceProtocolFee'))}</dt><dd>${escapeHtml(atomicToCoin(commerceQuote.protocolAtomic))} USDC</dd></div>
+                      <div class="total"><dt>${escapeHtml(this.tr('playerCommerceTotal'))}</dt><dd>${escapeHtml(atomicToCoin(commerceQuote.grossAtomic))} USDC</dd></div>
+                    </dl>`}
+                <small>${escapeHtml(this.tr('playerCommerceNetworkSeparate'))}</small>
+              </section>
               <div class="v4-player-export-share">
                 <strong>${escapeHtml(this.tr('shareMaker'))}</strong>
                 <div>
@@ -7129,7 +7918,7 @@ export class MakerWorkspace {
             <p id="makerPlayerExportCompletionIssue" class="v4-player-export-completion-issue" ${completionIssues.length ? '' : 'hidden'}>${escapeHtml(completionIssues[0] || '')}</p>
             <button type="button" data-action="close-player-export">${escapeHtml(this.tr('continueEditing'))}</button>
             <button type="button" data-action="player-export-recipe">${escapeHtml(this.tr('downloadRecipePackage'))}</button>
-            <button type="button" data-action="player-download-png" ${canDownload ? '' : 'disabled'}>${escapeHtml(this.tr('downloadPng'))}</button>
+            <button type="button" data-action="player-download-png" ${canDownload ? '' : `disabled title="${escapeHtml(this.tr('playerDownloadAfterComplete'))}"`}>${escapeHtml(completionConfirmed ? this.tr('downloadPng') : this.tr('playerDownloadAfterComplete'))}</button>
             <button type="button" class="primary" data-action="player-confirm-complete" ${canComplete ? '' : 'disabled aria-describedby="makerPlayerExportCompletionIssue"'}>${escapeHtml(completeLabel)}</button>
           </footer>
         </section>
@@ -7181,6 +7970,12 @@ export class MakerWorkspace {
       this.playerRenderState = { key: renderKey, status: 'pending', error: '' };
     }
     const completionIssues = this.playerCompletionIssues(document, recipe);
+    const currentCommerceQuote = this.playerCommerceQuote(document, recipe);
+    const currentCommerceState = this.playerCommerceState(document);
+    const currentCommerceBlocking = this.playerCommerceBlockingMessage(document);
+    const currentCommerceNeedsChainQuote = Boolean(
+      currentCommerceState.authoritativeQuoteRequired && !currentCommerceBlocking,
+    );
     const removePartReason = removePartOption?.selectable
       ? ''
       : this.playerOptionReasonText(removePartOption, document);
@@ -7340,7 +8135,52 @@ export class MakerWorkspace {
         <div class="v4-player-color-channel-grid">${colorRows}</div>
       </section>
     ` : '';
-    const packs = this.store.getState().document.extensions?.expansionDrafts || [];
+    const basePlayerDocument = this.basePlayerDocument();
+    const packs = basePlayerDocument?.extensions?.expansionDrafts || [];
+    const commerce = this.playerCommerce(basePlayerDocument);
+    const commerceState = this.playerCommerceState(basePlayerDocument);
+    const commerceBlocking = this.playerCommerceBlockingMessage(basePlayerDocument);
+    const makerAccessLocked = this.playerMakerAccessLocked(basePlayerDocument);
+    const makerPurchaseQuote = quoteMakerPurchaseV5(commerce, commerceState);
+    const packPolicyById = new Map(
+      commerce.packPolicies.map((policy) => [policy.packId, policy]),
+    );
+    const packControls = packs.map((pack) => {
+      const compatibility = checkExpansionPackCompatibility(basePlayerDocument, pack);
+      const access = this.playerPackAccessState(pack.packId, basePlayerDocument);
+      const policy = packPolicyById.get(pack.packId) || access.policy;
+      const pending = this.playerCommercePending === `pack:${pack.packId}`;
+      const price = atomicToCoin(policy.purchasePriceAtomic);
+      const statusKey = !compatibility.compatible
+        ? 'incompatibleVersion'
+        : access.included
+          ? 'playerPackIncluded'
+          : access.owned
+            ? 'playerPackOwned'
+            : access.free
+              ? 'playerPackFree'
+              : 'playerPackContentLocked';
+      const control = access.accessible
+        ? `<label class="v4-player-expansion-toggle">
+            <input type="checkbox" data-action="player-expansion" value="${escapeHtml(pack.packId)}" ${checked(access.enabled)} ${access.included || !compatibility.compatible ? 'disabled' : ''} />
+            <span aria-hidden="true"></span>
+          </label>`
+        : `<button type="button" class="v4-player-expansion-unlock" data-action="player-unlock-pack" data-pack-id="${escapeHtml(pack.packId)}" ${pending || makerAccessLocked || !compatibility.compatible || commerceBlocking ? `disabled title="${escapeHtml(commerceBlocking || this.tr('playerPurchaseUnavailable'))}"` : ''}>
+            ${escapeHtml(pending
+              ? this.tr('playerPurchasePending')
+              : this.tr('playerUnlockPack'))}
+            <small>${escapeHtml(commerceBlocking || this.tr('playerPackUnlockPrice', { price }))}</small>
+          </button>`;
+      return `
+        <article class="v4-player-expansion-card ${access.accessible ? 'accessible' : 'locked'} ${access.enabled ? 'enabled' : ''}">
+          <div>
+            <strong>${escapeHtml(pack.name)}</strong>
+            <small>${escapeHtml(this.tr(statusKey))}</small>
+          </div>
+          ${control}
+        </article>
+      `;
+    }).join('');
     const selectedSummary = parts.map((candidate) => {
       const selectedItem = candidate.items.find((item) => item.id === selectionMap.get(candidate.id)?.itemId);
       return selectedItem ? `<span>${escapeHtml(candidate.name)}: ${escapeHtml(selectedItem.name)}</span>` : '';
@@ -7349,7 +8189,7 @@ export class MakerWorkspace {
     const externalLinks = this.playerExternalLinks(document);
 
     this.playerRoot.innerHTML = `
-      <section class="v4-player-shell">
+      <section class="v4-player-shell ${makerAccessLocked ? 'access-locked' : ''}">
         <header class="v4-player-header">
           <div class="v4-player-maker-heading">
             ${makerCoverUrl ? `<img src="${escapeHtml(makerCoverUrl)}" alt="" />` : ''}
@@ -7367,6 +8207,26 @@ export class MakerWorkspace {
             <button type="button" data-action="player-reset" title="${escapeHtml(this.tr('reset'))}">${escapeHtml(this.tr('reset'))}</button>
           </div>
         </header>
+        ${makerAccessLocked ? `
+          <section class="v4-player-access-gate" role="region" aria-labelledby="v4PlayerAccessTitle">
+            <div>
+              <span class="v4-eyebrow">${escapeHtml(this.tr('playerCommerceAccessTitle'))}</span>
+              <h2 id="v4PlayerAccessTitle">${escapeHtml(document.metadata.name)}</h2>
+              <p>${escapeHtml(this.tr('playerCommerceAccessCopy'))}</p>
+              ${this.playerCommerceError ? `<small role="alert">${escapeHtml(this.playerCommerceError)}</small>` : ''}
+            </div>
+            <button type="button" class="primary" data-action="player-unlock-maker" ${this.playerCommercePending || commerceBlocking ? `disabled title="${escapeHtml(commerceBlocking || this.tr('playerPurchaseUnavailable'))}"` : ''}>
+              ${escapeHtml(this.playerCommercePending === 'maker'
+                ? this.tr('playerPurchasePending')
+                : this.tr('playerUnlockMaker'))}
+              <small>${escapeHtml(commerceBlocking || this.tr('playerMakerUnlockPrice', {
+                price: atomicToCoin(makerPurchaseQuote.grossAtomic),
+              }))}</small>
+            </button>
+          </section>
+        ` : this.playerCommerceError ? `
+          <div class="v4-player-commerce-error" role="alert">${escapeHtml(this.playerCommerceError)}</div>
+        ` : ''}
         <div class="v4-player-main">
           <section class="v4-player-preview">
             <div class="v4-player-canvas-wrap ${document.canvas.pixelMode === 'pixelated' ? 'pixelated' : ''}">
@@ -7391,10 +8251,7 @@ export class MakerWorkspace {
                 <header><div><span>${escapeHtml(this.tr('currentPart'))}</span><h2 id="v4PlayerItemGroupLabel">${escapeHtml(part?.name || this.tr('noPlayableParts'))}</h2></div>${removePartOption?.visible ? `<div class="v4-player-remove-control"><button type="button" data-action="player-none" class="secondary" ${removePartOption.selectable ? '' : `aria-disabled="true" aria-describedby="${removePartReasonId}"`} title="${escapeHtml(removePartReason || this.tr('noneRemove'))}">${escapeHtml(this.tr('noneRemove'))}</button>${removePartReason ? `<small id="${removePartReasonId}" class="v4-player-disabled-reason">${escapeHtml(removePartReason)}</small>` : ''}</div>` : ''}</header>
                 <div class="v4-player-item-grid" role="radiogroup" aria-labelledby="v4PlayerItemGroupLabel">${itemButtons || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noAvailableItems'))}</span></div>`}</div>
                 ${currentItem && visibleStyles.length > 1 ? `<div class="v4-player-style-picker" role="radiogroup" aria-labelledby="v4PlayerStyleGroupLabel"><span id="v4PlayerStyleGroupLabel">${escapeHtml(this.tr('style'))}</span>${styleButtons}</div>` : ''}
-                ${packs.length ? `<details class="v4-player-expansions"><summary>${escapeHtml(this.tr('expansionPacks'))}</summary><p>${escapeHtml(this.tr('expansionSelectionSaved'))}</p>${packs.map((pack) => {
-                  const compatibility = checkExpansionPackCompatibility(this.store.getState().document, pack);
-                  return `<label><input type="checkbox" data-action="player-expansion" value="${escapeHtml(pack.packId)}" ${checked(this.enabledExpansionIds.has(pack.packId))} ${compatibility.compatible ? '' : 'disabled'} /><span><strong>${escapeHtml(pack.name)}</strong><small>${escapeHtml(this.tr(compatibility.compatible ? 'optionalContentPack' : 'incompatibleVersion'))}</small></span></label>`;
-                }).join('')}</details>` : ''}
+                ${packs.length ? `<details class="v4-player-expansions"><summary>${escapeHtml(this.tr('expansionPacks'))}</summary><p>${escapeHtml(this.tr('expansionSelectionSaved'))}</p><div class="v4-player-expansion-grid">${packControls}</div></details>` : ''}
               `}
             </div>
           </section>
@@ -7409,12 +8266,28 @@ export class MakerWorkspace {
             ${this.renderPlayerSoulConfiguration(document)}
           </div>
           ${this.renderPlayerRecoveryBranches()}
+          <section class="v4-player-commerce-summary" aria-label="${escapeHtml(this.tr('playerCommerceQuoteTitle'))}">
+            <div>
+              <span>${escapeHtml(this.tr('playerCommerceQuoteTitle'))}</span>
+              <strong>${escapeHtml(currentCommerceBlocking
+                || (currentCommerceNeedsChainQuote
+                  ? this.tr('playerCommerceVerifyingChainPrice')
+                  : currentCommerceQuote.grossAtomic > 0
+                    ? `${atomicToCoin(currentCommerceQuote.grossAtomic)} USDC`
+                    : this.tr('playerCommerceFree')))}</strong>
+              <small>${escapeHtml(currentCommerceNeedsChainQuote
+                ? this.tr('playerCommerceAuthoritativeQuoteCopy')
+                : this.tr('playerCommerceNetworkSeparate'))}</small>
+            </div>
+          </section>
           <div>
             <span class="v4-player-finish-status"><small id="v4PlayerSaveStatus" data-state="${escapeHtml(this.playerSaveState)}">${escapeHtml(this.playerSaveStatusText())}</small><strong id="v4PlayerCompletionStatus" data-state="${completionIssues.length ? 'blocked' : 'ready'}">${escapeHtml(completionIssues[0] || this.tr('playerOutputReady'))}</strong></span>
             <button type="button" data-action="player-retry-save" ${this.playerSaveState === 'error' ? '' : 'hidden'}>${escapeHtml(this.tr('retryPlayerSave'))}</button>
             <button type="button" data-action="player-export">${escapeHtml(this.tr('recipeJson'))}</button>
             <button type="button" data-action="player-preview-export">${escapeHtml(this.tr('previewExport'))}</button>
-            <button class="primary" type="button" data-action="player-complete" ${completionIssues.length ? 'disabled' : ''}>${escapeHtml(this.tr('completeOc'))}</button>
+            <button class="primary" type="button" data-action="player-complete" ${completionIssues.length ? 'disabled' : ''}>${escapeHtml(currentCommerceNeedsChainQuote
+              ? this.tr('playerContinueToOnchainConfirmation')
+              : this.tr('completeOc'))}</button>
           </div>
         </footer>
         ${this.renderPlayerPublishFlow()}
@@ -8692,6 +9565,9 @@ export class MakerWorkspace {
           baseMakerVersion: next.version.number,
           required: false,
         });
+        next.commerce = normalizeMakerCommerceV5(next.commerce, {
+          packIds: expansionPackIds(next),
+        });
       });
       return;
     }
@@ -8709,6 +9585,9 @@ export class MakerWorkspace {
       this.executeDocument('Delete Expansion Pack', ({ document: next }) => {
         next.extensions.expansionDrafts = next.extensions.expansionDrafts.filter((pack) => pack.packId !== packId);
         next.expansionPacks = next.expansionPacks.filter((pack) => pack.id !== packId);
+        next.commerce = normalizeMakerCommerceV5(next.commerce, {
+          packIds: expansionPackIds(next),
+        });
       });
       this.enabledExpansionIds.delete(packId);
       return;
@@ -8988,6 +9867,7 @@ export class MakerWorkspace {
     const state = this.store.getState();
     const document = state.document;
     const { part, item, style } = this.selectedCreatorRecords(document);
+    if (this.updateCommerceFromInput(input)) return;
     if (action === 'import-project' && input.files?.[0]) {
       await this.importProjectArchive(input.files[0]);
       input.value = '';
@@ -10083,6 +10963,7 @@ export class MakerWorkspace {
   setPlayerRecipe(nextRecipe, label) {
     const normalized = recipeWithColors(this.runtimeDocument(), nextRecipe);
     if (JSON.stringify(normalized) === JSON.stringify(this.playerRecipe)) return false;
+    this.invalidatePlayerCompletion();
     const previous = clone(this.playerRecipe);
     this.playerUndo.push({ label, recipe: previous });
     if (this.playerUndo.length > 100) this.playerUndo.shift();
@@ -10111,6 +10992,27 @@ export class MakerWorkspace {
       button.disabled
       || button.matches?.(':disabled')
       || button.getAttribute?.('aria-disabled') === 'true'
+    ) return;
+    if (action === 'player-unlock-maker') {
+      void this.purchasePlayerMakerAccess();
+      return;
+    }
+    if (action === 'player-unlock-pack') {
+      void this.purchasePlayerPack(button.dataset.packId);
+      return;
+    }
+    if (
+      this.playerMakerAccessLocked(this.basePlayerDocument())
+      && !new Set([
+        'player-info',
+        'close-player-info',
+        'close-player-export',
+        'close-player-export-backdrop',
+        'close-player-publish',
+        'close-player-publish-backdrop',
+        'keep-player-publish-open',
+        'force-close-player-publish',
+      ]).has(action)
     ) return;
     if (
       action === 'close-player-export'
@@ -10290,6 +11192,7 @@ export class MakerWorkspace {
     if (action === 'player-undo') {
       const command = this.playerUndo.pop();
       if (!command) return;
+      this.invalidatePlayerCompletion();
       this.playerRedo.push({ label: command.label, recipe: clone(this.playerRecipe) });
       this.playerRecipe = command.recipe;
       this.markPlayerSessionDirty();
@@ -10301,6 +11204,7 @@ export class MakerWorkspace {
     if (action === 'player-redo') {
       const command = this.playerRedo.pop();
       if (!command) return;
+      this.invalidatePlayerCompletion();
       this.playerUndo.push({ label: command.label, recipe: clone(this.playerRecipe) });
       this.playerRecipe = command.recipe;
       this.markPlayerSessionDirty();
@@ -10467,6 +11371,11 @@ export class MakerWorkspace {
         (candidate) => candidate.packId === input.value,
       );
       if (!pack || !checkExpansionPackCompatibility(baseDocument, pack).compatible) return;
+      const access = this.playerPackAccessState(input.value, baseDocument);
+      if (!access.accessible || access.included) {
+        input.checked = access.enabled;
+        return;
+      }
       const wasEnabled = this.enabledExpansionIds.has(input.value);
       if (Boolean(input.checked) === wasEnabled) return;
       if (input.checked) this.enabledExpansionIds.add(input.value);
@@ -10495,6 +11404,7 @@ export class MakerWorkspace {
       changed = true;
     }
     if (!changed) return;
+    this.invalidatePlayerCompletion();
     this.markPlayerSessionDirty();
     this.sessionAutosave();
     this.callbacks.onPlayerRecipeChange?.(this.playerStatePayload());

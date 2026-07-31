@@ -230,6 +230,56 @@ test('cached resolver clears failed pending requests so a corrected asset can re
   }
 });
 
+test('protected assets fail closed and only decode an authorized resolver Blob', async () => {
+  const previousBitmap = globalThis.createImageBitmap;
+  const protectedBlob = new Blob(['decrypted'], { type: 'image/png' });
+  let resolverCalls = 0;
+  globalThis.createImageBitmap = async (source) => ({
+    source,
+    width: 4,
+    height: 4,
+    close() {},
+  });
+  try {
+    const missingDecryptor = createCachedAssetResolver({
+      protected: {
+        protection: { schemaVersion: 'animacraft.sealed-asset.v5' },
+        // A public ciphertext URL or stale plaintext Blob must never bypass
+        // the entitlement + Seal resolver.
+        url: 'https://walrus.example/ciphertext',
+        blob: new Blob(['stale plaintext']),
+      },
+    });
+    await assert.rejects(
+      () => missingDecryptor.resolve('protected'),
+      (error) => error?.code === 'MAKER_ASSET_PROTECTED',
+    );
+
+    const authorized = createCachedAssetResolver({
+      protected: {
+        protection: { schemaVersion: 'animacraft.sealed-asset.v5' },
+        url: 'https://walrus.example/ciphertext',
+        async resolveBlob({ assetId, signal }) {
+          resolverCalls += 1;
+          assert.equal(assetId, 'protected');
+          assert.equal(signal.aborted, false);
+          return protectedBlob;
+        },
+      },
+    });
+    const [first, second] = await Promise.all([
+      authorized.resolve('protected'),
+      authorized.resolve('protected'),
+    ]);
+    assert.equal(first, second);
+    assert.equal(first.source, protectedBlob);
+    assert.equal(resolverCalls, 1);
+    authorized.clear();
+  } finally {
+    globalThis.createImageBitmap = previousBitmap;
+  }
+});
+
 test('cached resolver rejects an oversized remote Content-Length before reading or decoding', async () => {
   const previousFetch = globalThis.fetch;
   const previousBitmap = globalThis.createImageBitmap;

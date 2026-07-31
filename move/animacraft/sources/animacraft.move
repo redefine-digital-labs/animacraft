@@ -9,11 +9,13 @@ use sui::balance::{Self as balance, Balance};
 use sui::clock::Clock;
 use sui::coin::{Self as coin, Coin};
 use sui::display;
+use sui::dynamic_field as df;
 use sui::event;
 use sui::package;
 use sui::table::{Self as table, Table};
 
 const VERSION: u64 = 4;
+const COMMERCE_V5_VERSION: u64 = 5;
 const MAX_ROYALTY_BPS: u16 = 500;
 const DEFAULT_PRIMARY_PROTOCOL_FEE_BPS: u16 = 5_000;
 const MAX_PRIMARY_PROTOCOL_FEE_BPS: u16 = 5_000;
@@ -73,6 +75,7 @@ const EProtocolFeeDisabled: u64 = 45;
 const EDeprecatedPaidMint: u64 = 46;
 const EInsufficientProtocolRevenue: u64 = 47;
 const EDeprecatedFreeMint: u64 = 48;
+const ECommerceV5AlreadyInitialized: u64 = 49;
 
 const LICENSE_PERSONAL: u8 = 0;
 const LICENSE_FREE_REMIX: u8 = 1;
@@ -88,6 +91,12 @@ const ITEM_PAID_ADDON: u8 = 1;
 const ITEM_CREATOR_ONLY: u8 = 2;
 
 public struct ANIMACRAFT has drop {}
+
+/// One-time marker stored as a dynamic field on the canonical v4 protocol
+/// admin capability. Keeping the marker on the existing capability lets the
+/// additive v5 companion prove that a second canonical v5 config cannot be
+/// initialized without changing any published v4 object layout.
+public struct CommerceV5InitializedKey has copy, drop, store {}
 
 /// Creator-owned profile used by the creator workshop. This object is kept
 /// separate from OCMaker so creators can manage many maker templates from one
@@ -744,6 +753,160 @@ public fun protocol_fee_admin_treasury_id(self: &ProtocolFeeAdminCap): ID {
 
 public fun protocol_fee_admin_holds_publisher(self: &ProtocolFeeAdminCap): bool {
     self.publisher.is_some()
+}
+
+/// Package-only bridge used by the additive commerce_v5 module. It validates
+/// the canonical v4 config/admin linkage and permanently marks the AdminCap so
+/// exactly one v5 protocol config can be initialized from it.
+public(package) fun claim_commerce_v5_initializer(
+    config: &ProtocolFeeConfig,
+    cap: &mut ProtocolFeeAdminCap,
+) {
+    assert_protocol_fee_admin(config, cap);
+    let key = CommerceV5InitializedKey {};
+    assert!(!df::exists(&cap.id, key), ECommerceV5AlreadyInitialized);
+    df::add(&mut cap.id, key, true);
+}
+
+/// Package-only migration bridge. The legacy capability is validated against
+/// both shared v4 objects before every legacy Complete path is permanently
+/// disabled. The returned capability is immediately wrapped by commerce_v5 in
+/// a private key-only Vault; it is never returned to a wallet.
+public(package) fun disable_legacy_minting_for_v5<PaymentCoin>(
+    cap: MakerAdminCap,
+    maker: &mut OCMaker,
+    treasury: &MakerTreasury<PaymentCoin>,
+    clock: &Clock,
+    ctx: &TxContext,
+): MakerAdminCap {
+    assert_maker_admin(maker, &cap);
+    assert_treasury_matches(maker, treasury);
+    assert!(maker.published, EMakerNotPublished);
+    assert!(treasury.revenue.value() == 0, ETreasuryMismatch);
+
+    maker.minting_enabled = false;
+    maker.mint_fee_enabled = false;
+    maker.mint_price_atomic = 0;
+    maker.archived = true;
+    maker.updated_at_ms = clock.timestamp_ms();
+
+    event::emit(MakerEconomicsUpdated {
+        maker_id: object::id(maker),
+        updater: ctx.sender(),
+        minting_enabled: false,
+        mint_fee_enabled: false,
+        mint_price_atomic: 0,
+        royalty_bps: maker.policy.royalty_bps,
+    });
+    event::emit(OCMakerArchiveChanged {
+        maker_id: object::id(maker),
+        creator: ctx.sender(),
+        archived: true,
+    });
+    cap
+}
+
+/// The v5 companion deliberately reuses the battle-tested v4 recipe validator
+/// instead of maintaining a second interpretation of Parts, Items, colors,
+/// render order, and exclusion rules.
+public(package) fun assert_valid_recipe_for_v5(
+    maker: &OCMaker,
+    recipe: &vector<RecipeSlot>,
+) {
+    assert_valid_recipe(maker, recipe);
+}
+
+public(package) fun assert_item_exists_for_v5(
+    maker: &OCMaker,
+    part_key: &String,
+    item_key: &String,
+) {
+    assert_part_exists(maker, part_key);
+    assert!(item_exists(maker, part_key, item_key), EInvalidRecipe);
+}
+
+/// Returns the immutable Walrus blob committed by the published v4 Item that
+/// backs one exact commerce-v5 Style identity.
+public(package) fun item_blob_id_for_v5(
+    maker: &OCMaker,
+    part_key: &String,
+    item_key: &String,
+): String {
+    assert_part_exists(maker, part_key);
+    let key = PartKey { name: *part_key };
+    let items = maker.items_by_part.borrow(key);
+    let mut index = 0;
+    while (index < items.length()) {
+        if (&items[index].item_key == item_key) {
+            return items[index].walrus_blob_id
+        };
+        index = index + 1;
+    };
+    abort EInvalidRecipe
+}
+
+/// Package-only canonical bridge for the additive commerce_v5 module.
+///
+/// The v5 module performs policy, entitlement, exact Style, payment, and
+/// completion-count validation first. This constructor then emits the same
+/// `CanonicalSoulMintAuthorization` and `SoulMintAuthorization` layouts that
+/// Soulidity already consumes, with protocol version 5 and the stable v5
+/// MakerRoot/Treasury identities. `recipe_hash` commits to both the legacy
+/// RecipeSlots and their exact StyleSelectionV5 values.
+public(package) fun new_canonical_commerce_v5_authorization(
+    stable_maker_id: ID,
+    stable_treasury_id: ID,
+    original_creator: address,
+    payer: address,
+    legacy_maker: &OCMaker,
+    name: String,
+    profile_json_blob_id: String,
+    image_blob_id: String,
+    image_url: String,
+    recipe_hash: vector<u8>,
+    payment_coin_type: String,
+    total_paid_atomic: u64,
+    recipe: vector<RecipeSlot>,
+    protocol_config_id: ID,
+    protocol_treasury_id: ID,
+    protocol_fee_bps: u16,
+    protocol_fee_amount: u64,
+    clock: &Clock,
+): CanonicalSoulMintAuthorization {
+    assert!(legacy_maker.published, EMakerNotPublished);
+    assert_non_empty(&name);
+    assert_max_bytes(&name, MAX_KEY_BYTES);
+    assert_blob_id(&profile_json_blob_id);
+    assert_blob_id(&image_blob_id);
+    assert_non_empty(&image_url);
+    assert_max_bytes(&image_url, MAX_URI_BYTES);
+    assert!(recipe.length() > 0 && recipe.length() <= MAX_PARTS, EEmptyRecipe);
+    assert!(recipe_hash.length() == 32, EInvalidRecipeHash);
+    assert_valid_recipe(legacy_maker, &recipe);
+
+    CanonicalSoulMintAuthorization {
+        authorization: SoulMintAuthorization {
+            version: COMMERCE_V5_VERSION,
+            maker_id: stable_maker_id,
+            maker_treasury_id: stable_treasury_id,
+            maker_creator: original_creator,
+            payer,
+            name,
+            profile_json_blob_id,
+            image_blob_id,
+            image_url,
+            recipe_hash,
+            license_snapshot: legacy_maker.policy,
+            mint_payment_coin_type: payment_coin_type,
+            mint_price_atomic: total_paid_atomic,
+            recipe,
+            authorized_at_ms: clock.timestamp_ms(),
+        },
+        protocol_fee_config_id: protocol_config_id,
+        protocol_treasury_id,
+        protocol_fee_bps,
+        protocol_fee_amount,
+    }
 }
 
 public fun protocol_treasury_balance<PaymentCoin>(self: &ProtocolTreasury<PaymentCoin>): u64 {
@@ -2013,7 +2176,7 @@ fun assert_valid_license_kind(value: u8) {
 }
 
 fun assert_valid_royalty(value: u16) {
-    assert!(value == 0 || (value >= 100 && value <= MAX_ROYALTY_BPS && value % 100 == 0), EInvalidRoyalty);
+    assert!(value <= MAX_ROYALTY_BPS && value % 50 == 0, EInvalidRoyalty);
 }
 
 fun assert_valid_fee_config(minting_enabled: bool, mint_fee_enabled: bool, mint_price_atomic: u64) {
@@ -2684,7 +2847,7 @@ fun cap_controls_post_publish_economics_and_archive_state() {
 
 #[test, expected_failure(abort_code = EInvalidRoyalty)]
 fun rejects_non_tiered_royalty() {
-    assert_valid_royalty(250);
+    assert_valid_royalty(275);
 }
 
 #[test, expected_failure(abort_code = EInvalidAdminCap)]

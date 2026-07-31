@@ -65,6 +65,25 @@ test('preflight verifies callable ABI and original event discovery independently
   assert.match(preflight, /requireSoulidity \|\| config\.canonicalSoulMintEnabled/);
   assert.match(preflight, /'mint_animacraft_in_personal_kiosk'/);
   assert.match(preflight, /'Soulidity Animacraft route'/);
+  [
+    'update_protocol_enabled_v5',
+    'update_base_policy_v5',
+    'update_base_access_v5',
+    'update_maker_resale_royalty_v5',
+    'add_pack_v5',
+    'update_pack_v5',
+    'activate_maker_v5',
+    'pause_maker_v5',
+    'archive_maker_v5',
+    'withdraw_maker_revenue_v5',
+    'cancel_maker_listing_v5',
+  ].forEach((functionName) => assert.match(preflight, new RegExp(`'${functionName}'`)));
+  [
+    'MakerControlVaultV5',
+    'MakerControlCapV5',
+    'MakerListingV5',
+  ].forEach((datatypeName) => assert.match(preflight, new RegExp(`'${datatypeName}'`)));
+  assert.match(preflight, /publication, lifecycle, treasury, exact Style registry/);
 });
 
 test('application object hydration rejects types outside the original package', async () => {

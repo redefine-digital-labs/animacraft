@@ -1,11 +1,27 @@
 import {
+  COMMERCE_V5_ACCESS,
+  COMMERCE_V5_LIFECYCLE,
+  buildActivateMakerV5,
+  buildArchiveMakerV5,
+  buildBuyMakerV5,
+  buildCancelMakerListingV5,
+  buildListMakerForSaleV5,
+  buildPauseMakerV5,
   configureMakerEconomics,
   explorerObjectUrl,
   explorerTransactionUrl,
   certifyWalrusUpload,
+  buildPurchaseMakerAccessV5,
+  buildPurchasePackV5,
+  buildRestoreMakerV5,
+  buildWithdrawMakerRevenueV5,
+  findCommerceV5MigrationByLegacyMaker,
   findPublishedMakerByIntent,
+  getConnectedWalletAddress,
   getMakerObjects,
+  getSuiClient,
   hashRecipe,
+  hashCompleteSelectionV5,
   initializeChain,
   listOwnedCreatorProfiles,
   listOwnedMakerAdminCaps,
@@ -14,11 +30,20 @@ import {
   openWalletSelector,
   prepareWalrusUpload,
   publishMaker,
+  queryCommerceV5Objects,
+  queryOwnedCommerceV5State,
+  queryPackRecordsV5,
+  queryStyleBindingsV5,
+  parseCommerceProtocolConfigV5,
+  parseCommerceProtocolTreasuryV5,
   registerAndUploadWalrus,
   resolvePublishedMakerObjects,
   resumeWalrusUpload,
   setMakerArchived,
   setWalletModalLocale,
+  signExecuteAndWait,
+  signConnectedWalletPersonalMessage,
+  simulateCompleteQuoteV5,
   walrusFileUrl,
   walrusQuiltFileUrl,
   withdrawMakerRevenue,
@@ -48,6 +73,11 @@ import {
   certifiedLivingContentSource,
   createPlayerCompletionSnapshot,
 } from './oc-handoff.js';
+import { createOcOutputPreviewBlobV5 } from './oc-output-preview-v5.js';
+import {
+  SOULIDITY_COMPLETION_RECEIPT_V5_SCHEMA,
+  verifySoulidityCompletionReceiptV5,
+} from './completion-receipt-v5.js';
 import { responseBlobWithinLimit, responseBytesWithinLimit } from './remote-read.js';
 import {
   assertSupportedMakerMintEconomics,
@@ -55,6 +85,10 @@ import {
   normalizeRuntimeConfig,
 } from './runtime-config.js';
 import { createMakerWorkspace } from './maker-workspace.js';
+import {
+  expansionPackIds,
+  makerCommerceV5RequiresRelease,
+} from './maker-commerce-v5.js';
 import { findMakerVersionDraftConflict } from './maker-version-lineage.js';
 import { initializeMakerDraftStorage } from './maker-storage-initializer.js';
 import {
@@ -75,14 +109,46 @@ import {
   assertMakerV4ProjectionV2SinglePublishBudget,
   buildMakerV4MoveSummaryV2,
   buildMakerV4OcPackage,
-  buildMakerV4OcUploadEntries,
   buildMakerV4PublicationBundle,
   buildMakerV4PublicationManifest,
   compileMakerV4MoveProjectionV2,
   indexMakerV4UploadResults,
+  MAKER_V4_OC_PACKAGE_SCHEMA,
   MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER,
   prepareMakerV4ProjectionV2Document,
 } from './maker-publication-v4.js';
+import { buildMakerCommerceV5DeploymentPlan } from './maker-commerce-chain-v5.js';
+import {
+  MAKER_COMMERCE_PUBLICATION_V5_STAGES,
+  advanceMakerCommerceV5Publication,
+  createMakerCommerceV5PublicationCheckpoint,
+  hydrateMakerCommerceV5PublicationCheckpoint,
+  reconcileMakerCommerceV5Publication,
+} from './maker-commerce-publication-v5.js';
+import {
+  MAKER_SEAL_ASSET_V5_SCHEMA,
+  MAKER_SEAL_PRODUCT_BASE,
+  MAKER_SEAL_PRODUCT_PACK,
+  assertMakerSealPolicyReadbackV5,
+  bindMakerCompleteOutputCiphertextV5,
+  buildMakerSealApprovalTransactionV5,
+  buildMakerSealPublicationPlanV5,
+  createMakerSealClientV5,
+  createMakerSealSessionKeyV5,
+  decryptMakerSealAssetV5,
+  encryptMakerCompleteOutputV5,
+  makerCompleteOutputSealRecoveryPayloadV5,
+  makerSealRecoveryIdentityV5,
+  makerSealRecoveryPayloadV5,
+  makerV5RequiresSealProtection,
+  parseMakerSealPolicyV5,
+  protectMakerV5PaidPackAssetsForPublication,
+  queryMakerSealRegistrationsV5,
+  restoreMakerSealPublicationBundleV5,
+  verifyMakerCompleteOutputCiphertextV5,
+  verifyMakerCompleteOutputSealRecoveryPayloadV5,
+  verifyMakerSealRecoveryPayloadV5,
+} from './maker-seal-v5.js';
 import { classifyChainUiError } from './chain-error-ui.js';
 
 let makerStorageInitializationError = null;
@@ -1163,6 +1229,306 @@ const makerLifecycleManagerI18n = {
 
 Object.entries(makerLifecycleManagerI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
 
+const makerCommerceV5LifecycleI18n = {
+  en: {
+    makerCommerceV5PanelTitle: 'Commerce v5 operations',
+    makerCommerceV5PanelCopy: 'Lifecycle, revenue and a Maker sale are read directly from MakerRootV5 and MakerTreasuryV5.',
+    makerCommerceV5Loading: 'Reading the latest commerce v5 state from Sui…',
+    makerCommerceV5Unavailable: 'Commerce v5 state could not be verified. No transaction is available.',
+    makerCommerceV5BindingResolving: 'Resolving MakerRootV5…',
+    makerCommerceV5BindingResolvingCopy: 'Animacraft is resolving this migrated Maker from its Sui migration event. Player and sale actions stay disabled until verification finishes.',
+    makerCommerceV5ReleaseDisabled: 'Commerce v5 transactions are disabled in this Animacraft release.',
+    makerCommerceV5ProtocolDisabled: 'The on-chain Commerce v5 protocol is paused.',
+    makerCommerceV5ConnectToBuy: 'Connect wallet to buy',
+    makerCommerceV5Lifecycle: 'On-chain lifecycle',
+    makerCommerceV5Active: 'ACTIVE',
+    makerCommerceV5Paused: 'PAUSED',
+    makerCommerceV5Archived: 'ARCHIVED',
+    makerCommerceV5SalePending: 'SALE_PENDING',
+    makerCommerceV5CurrentOwner: 'Current operator',
+    makerCommerceV5OriginalCreator: 'Original creator',
+    makerCommerceV5ControlAuthority: 'Control authority',
+    makerCommerceV5ControlReady: 'Current MakerControlCapV5 owned',
+    makerCommerceV5ControlEscrowed: 'Control Cap consumed by active listing',
+    makerCommerceV5ControlUnavailable: 'This wallet does not own the current Control Cap',
+    makerCommerceV5Treasury: 'Maker treasury',
+    makerCommerceV5TreasuryExact: '{amount} {symbol} · exact on-chain balance',
+    makerCommerceV5WithdrawAmount: 'Amount to withdraw',
+    makerCommerceV5WithdrawAction: 'Withdraw revenue',
+    makerCommerceV5WithdrawCopy: 'Send an exact amount from MakerTreasuryV5 to the connected operator wallet.',
+    makerCommerceV5ListPrice: 'Exact sale price',
+    makerCommerceV5ListAction: 'List Maker for sale',
+    makerCommerceV5ListCopy: 'Only a PAUSED Maker with a zero treasury can be listed.',
+    makerCommerceV5ListingTitle: 'Active Maker listing',
+    makerCommerceV5ListingPrice: 'Listing price',
+    makerCommerceV5ListingSeller: 'Seller',
+    makerCommerceV5ProtocolFee: 'Animacraft market fee',
+    makerCommerceV5ProtocolFeeFrozen: '{rate}% · frozen when this listing opened',
+    makerCommerceV5SoulCreatorRoyalty: 'Soul creator resale royalty',
+    makerCommerceV5SoulCreatorRoyaltyFrozen: '{rate}% · frozen for this sealed release',
+    makerCommerceV5ResaleRoyalty: 'Original creator resale royalty',
+    makerCommerceV5ResaleRoyaltyFrozen: '{rate}% · frozen for this sealed release',
+    makerCommerceV5RegistrySealed: 'Exact Style registry sealed',
+    makerCommerceV5ActionPause: 'Pause Maker',
+    makerCommerceV5ActionResume: 'Resume Maker',
+    makerCommerceV5ActionArchive: 'Archive Maker',
+    makerCommerceV5ActionRestore: 'Restore Maker',
+    makerCommerceV5ActionCancelListing: 'Cancel listing',
+    makerCommerceV5ActionBuy: 'Buy Maker',
+    makerCommerceV5ActionRefresh: 'Refresh chain state',
+    makerCommerceV5PauseCopy: 'Stop purchases and Complete while keeping the release readable.',
+    makerCommerceV5ResumeCopy: 'Return this PAUSED or ARCHIVED release to ACTIVE.',
+    makerCommerceV5ArchiveCopy: 'Hide new commerce until the operator restores the release.',
+    makerCommerceV5CancelCopy: 'Cancel the sale and mint a new PAUSED Control Cap to the seller.',
+    makerCommerceV5BuyCopy: 'Pay the exact listing price. Ownership transfers PAUSED with a new Control Cap.',
+    makerCommerceV5PauseBeforeListing: 'Pause the Maker before listing it.',
+    makerCommerceV5EmptyTreasuryBeforeListing: 'Withdraw the complete Maker treasury before listing it.',
+    makerCommerceV5ExactAmountInvalid: 'Enter a positive {symbol} amount with no more than {decimals} decimal places.',
+    makerCommerceV5WalletRequired: 'Connect the wallet that will manage or buy this Maker.',
+    makerCommerceV5ActionConfirmed: 'Sui confirmed the action and Animacraft verified the new chain state. Transaction {digest}.',
+    makerCommerceV5ReadbackFailed: 'The transaction was submitted, but the required new MakerRootV5 state is not visible yet. Refresh before retrying.',
+    makerCommerceV5ActionFailed: 'Commerce v5 action failed: {message}',
+  },
+  zh: {
+    makerCommerceV5PanelTitle: 'Commerce v5 经营管理',
+    makerCommerceV5PanelCopy: '生命周期、收入和 Maker 出售状态均直接读取 MakerRootV5 与 MakerTreasuryV5。',
+    makerCommerceV5Loading: '正在从 Sui 读取最新 Commerce v5 状态…',
+    makerCommerceV5Unavailable: '无法验证 Commerce v5 链上状态，因此不会提供交易操作。',
+    makerCommerceV5BindingResolving: '正在解析 MakerRootV5…',
+    makerCommerceV5BindingResolvingCopy: 'Animacraft 正在根据 Sui 迁移事件解析此 Maker；验证完成前，玩家与购买操作保持禁用。',
+    makerCommerceV5ReleaseDisabled: '此 Animacraft 版本已关闭 Commerce v5 交易。',
+    makerCommerceV5ProtocolDisabled: '链上的 Commerce v5 协议当前已暂停。',
+    makerCommerceV5ConnectToBuy: '连接钱包购买',
+    makerCommerceV5Lifecycle: '链上生命周期',
+    makerCommerceV5Active: 'ACTIVE（启用）',
+    makerCommerceV5Paused: 'PAUSED（暂停）',
+    makerCommerceV5Archived: 'ARCHIVED（归档）',
+    makerCommerceV5SalePending: 'SALE_PENDING（出售中）',
+    makerCommerceV5CurrentOwner: '当前经营者',
+    makerCommerceV5OriginalCreator: '原始创作者',
+    makerCommerceV5ControlAuthority: '管理权限',
+    makerCommerceV5ControlReady: '当前 MakerControlCapV5 已由此钱包持有',
+    makerCommerceV5ControlEscrowed: '有效挂单已消耗 Control Cap',
+    makerCommerceV5ControlUnavailable: '此钱包未持有当前 Control Cap',
+    makerCommerceV5Treasury: 'Maker 金库',
+    makerCommerceV5TreasuryExact: '{amount} {symbol} · 链上精确余额',
+    makerCommerceV5WithdrawAmount: '提取金额',
+    makerCommerceV5WithdrawAction: '提取收入',
+    makerCommerceV5WithdrawCopy: '从 MakerTreasuryV5 向当前经营者钱包发送精确金额。',
+    makerCommerceV5ListPrice: '精确出售价格',
+    makerCommerceV5ListAction: '上架出售 Maker',
+    makerCommerceV5ListCopy: '只有 PAUSED 且金库余额为零的 Maker 才能上架。',
+    makerCommerceV5ListingTitle: '当前 Maker 挂单',
+    makerCommerceV5ListingPrice: '挂单价格',
+    makerCommerceV5ListingSeller: '卖家',
+    makerCommerceV5ProtocolFee: 'Animacraft 市场手续费',
+    makerCommerceV5ProtocolFeeFrozen: '{rate}% · 挂单创建时已冻结',
+    makerCommerceV5SoulCreatorRoyalty: 'Soul 创作者二级交易版税',
+    makerCommerceV5SoulCreatorRoyaltyFrozen: '{rate}% · 本次密封版本已冻结',
+    makerCommerceV5ResaleRoyalty: '原始创作者转售版税',
+    makerCommerceV5ResaleRoyaltyFrozen: '{rate}% · 本次密封版本已冻结',
+    makerCommerceV5RegistrySealed: '精确 Style 注册表已密封',
+    makerCommerceV5ActionPause: '暂停 Maker',
+    makerCommerceV5ActionResume: '恢复启用 Maker',
+    makerCommerceV5ActionArchive: '归档 Maker',
+    makerCommerceV5ActionRestore: '恢复 Maker',
+    makerCommerceV5ActionCancelListing: '取消挂单',
+    makerCommerceV5ActionBuy: '购买 Maker',
+    makerCommerceV5ActionRefresh: '刷新链上状态',
+    makerCommerceV5PauseCopy: '停止购买和 Complete，同时保留版本可读取。',
+    makerCommerceV5ResumeCopy: '把 PAUSED 或 ARCHIVED 版本恢复为 ACTIVE。',
+    makerCommerceV5ArchiveCopy: '停止新交易并隐藏该版本，直至经营者恢复。',
+    makerCommerceV5CancelCopy: '取消出售，并向卖家铸造新一代 PAUSED Control Cap。',
+    makerCommerceV5BuyCopy: '支付精确挂单价；所有权以 PAUSED 状态转移，并获得新的 Control Cap。',
+    makerCommerceV5PauseBeforeListing: '上架前请先暂停 Maker。',
+    makerCommerceV5EmptyTreasuryBeforeListing: '上架前必须提取 Maker 金库全部余额。',
+    makerCommerceV5ExactAmountInvalid: '请输入正数 {symbol}，且小数位不超过 {decimals} 位。',
+    makerCommerceV5WalletRequired: '请连接将管理或购买此 Maker 的钱包。',
+    makerCommerceV5ActionConfirmed: 'Sui 已确认交易，Animacraft 也已读回并验证新链上状态。交易 {digest}。',
+    makerCommerceV5ReadbackFailed: '交易已经提交，但所需的新 MakerRootV5 状态尚不可见。请先刷新，勿重复提交。',
+    makerCommerceV5ActionFailed: 'Commerce v5 操作失败：{message}',
+  },
+  ja: {
+    makerCommerceV5PanelTitle: 'Commerce v5 運営管理',
+    makerCommerceV5PanelCopy: 'ライフサイクル、収益、Maker 販売状態を MakerRootV5 と MakerTreasuryV5 から直接読み取ります。',
+    makerCommerceV5Loading: 'Sui から最新の Commerce v5 状態を読み込み中…',
+    makerCommerceV5Unavailable: 'Commerce v5 の状態を検証できないため、取引操作は利用できません。',
+    makerCommerceV5BindingResolving: 'MakerRootV5 を確認中…',
+    makerCommerceV5BindingResolvingCopy: 'Sui の移行イベントからこの Maker を確認しています。検証完了までプレイと購入は無効です。',
+    makerCommerceV5ReleaseDisabled: 'この Animacraft リリースでは Commerce v5 取引が無効です。',
+    makerCommerceV5ProtocolDisabled: 'オンチェーン Commerce v5 プロトコルは一時停止中です。',
+    makerCommerceV5ConnectToBuy: 'ウォレットを接続して購入',
+    makerCommerceV5Lifecycle: 'オンチェーン・ライフサイクル',
+    makerCommerceV5Active: 'ACTIVE',
+    makerCommerceV5Paused: 'PAUSED',
+    makerCommerceV5Archived: 'ARCHIVED',
+    makerCommerceV5SalePending: 'SALE_PENDING',
+    makerCommerceV5CurrentOwner: '現在の運営者',
+    makerCommerceV5OriginalCreator: '原制作者',
+    makerCommerceV5ControlAuthority: '管理権限',
+    makerCommerceV5ControlReady: '現在の MakerControlCapV5 を保有',
+    makerCommerceV5ControlEscrowed: '有効な出品により Control Cap は消費済み',
+    makerCommerceV5ControlUnavailable: 'このウォレットは現在の Control Cap を保有していません',
+    makerCommerceV5Treasury: 'Maker Treasury',
+    makerCommerceV5TreasuryExact: '{amount} {symbol} · オンチェーン正確残高',
+    makerCommerceV5WithdrawAmount: '引出額',
+    makerCommerceV5WithdrawAction: '収益を引き出す',
+    makerCommerceV5WithdrawCopy: 'MakerTreasuryV5 から接続中の運営者ウォレットへ正確な金額を送ります。',
+    makerCommerceV5ListPrice: '正確な販売価格',
+    makerCommerceV5ListAction: 'Maker を出品',
+    makerCommerceV5ListCopy: 'PAUSED かつ Treasury 残高がゼロの Maker のみ出品できます。',
+    makerCommerceV5ListingTitle: '有効な Maker 出品',
+    makerCommerceV5ListingPrice: '出品価格',
+    makerCommerceV5ListingSeller: '販売者',
+    makerCommerceV5ProtocolFee: 'Animacraft マーケット手数料',
+    makerCommerceV5ProtocolFeeFrozen: '{rate}% · 出品時に固定',
+    makerCommerceV5SoulCreatorRoyalty: 'Soul 制作者の再販ロイヤリティ',
+    makerCommerceV5SoulCreatorRoyaltyFrozen: '{rate}% · この sealed リリースでは固定',
+    makerCommerceV5ResaleRoyalty: '原制作者の再販ロイヤリティ',
+    makerCommerceV5ResaleRoyaltyFrozen: '{rate}% · この sealed リリースでは固定',
+    makerCommerceV5RegistrySealed: '正確な Style レジストリは sealed',
+    makerCommerceV5ActionPause: 'Maker を一時停止',
+    makerCommerceV5ActionResume: 'Maker を再開',
+    makerCommerceV5ActionArchive: 'Maker をアーカイブ',
+    makerCommerceV5ActionRestore: 'Maker を復元',
+    makerCommerceV5ActionCancelListing: '出品を取消',
+    makerCommerceV5ActionBuy: 'Maker を購入',
+    makerCommerceV5ActionRefresh: 'チェーン状態を更新',
+    makerCommerceV5PauseCopy: 'リリースを閲覧可能なまま購入と Complete を停止します。',
+    makerCommerceV5ResumeCopy: 'PAUSED または ARCHIVED を ACTIVE に戻します。',
+    makerCommerceV5ArchiveCopy: '運営者が復元するまで新規 Commerce を停止します。',
+    makerCommerceV5CancelCopy: '販売を取消し、販売者へ新しい PAUSED Control Cap を発行します。',
+    makerCommerceV5BuyCopy: '正確な出品価格を支払い、PAUSED の所有権と新しい Control Cap を受け取ります。',
+    makerCommerceV5PauseBeforeListing: '出品前に Maker を PAUSED にしてください。',
+    makerCommerceV5EmptyTreasuryBeforeListing: '出品前に Maker Treasury の全残高を引き出してください。',
+    makerCommerceV5ExactAmountInvalid: '正の {symbol} 金額を小数 {decimals} 桁以内で入力してください。',
+    makerCommerceV5WalletRequired: 'この Maker を管理または購入するウォレットを接続してください。',
+    makerCommerceV5ActionConfirmed: 'Sui が取引を確定し、Animacraft が新しい状態を検証しました。取引 {digest}。',
+    makerCommerceV5ReadbackFailed: '取引は送信済みですが、必要な MakerRootV5 の新状態はまだ確認できません。再送せず更新してください。',
+    makerCommerceV5ActionFailed: 'Commerce v5 操作に失敗しました：{message}',
+  },
+  ko: {
+    makerCommerceV5PanelTitle: 'Commerce v5 운영 관리',
+    makerCommerceV5PanelCopy: '수명 주기, 수익, Maker 판매 상태를 MakerRootV5와 MakerTreasuryV5에서 직접 읽습니다.',
+    makerCommerceV5Loading: 'Sui에서 최신 Commerce v5 상태를 읽는 중…',
+    makerCommerceV5Unavailable: 'Commerce v5 상태를 검증할 수 없어 거래 작업을 사용할 수 없습니다.',
+    makerCommerceV5BindingResolving: 'MakerRootV5 연결 확인 중…',
+    makerCommerceV5BindingResolvingCopy: 'Sui 마이그레이션 이벤트에서 이 Maker를 확인 중입니다. 검증이 끝날 때까지 플레이와 구매가 비활성화됩니다.',
+    makerCommerceV5ReleaseDisabled: '이 Animacraft 릴리스에서는 Commerce v5 거래가 비활성화되어 있습니다.',
+    makerCommerceV5ProtocolDisabled: '온체인 Commerce v5 프로토콜이 일시 중지되었습니다.',
+    makerCommerceV5ConnectToBuy: '지갑을 연결해 구매',
+    makerCommerceV5Lifecycle: '온체인 수명 주기',
+    makerCommerceV5Active: 'ACTIVE',
+    makerCommerceV5Paused: 'PAUSED',
+    makerCommerceV5Archived: 'ARCHIVED',
+    makerCommerceV5SalePending: 'SALE_PENDING',
+    makerCommerceV5CurrentOwner: '현재 운영자',
+    makerCommerceV5OriginalCreator: '원작자',
+    makerCommerceV5ControlAuthority: '관리 권한',
+    makerCommerceV5ControlReady: '현재 MakerControlCapV5 보유',
+    makerCommerceV5ControlEscrowed: '활성 판매로 Control Cap이 소모됨',
+    makerCommerceV5ControlUnavailable: '이 지갑은 현재 Control Cap을 보유하지 않음',
+    makerCommerceV5Treasury: 'Maker 금고',
+    makerCommerceV5TreasuryExact: '{amount} {symbol} · 온체인 정확 잔액',
+    makerCommerceV5WithdrawAmount: '출금 금액',
+    makerCommerceV5WithdrawAction: '수익 출금',
+    makerCommerceV5WithdrawCopy: 'MakerTreasuryV5에서 연결된 운영자 지갑으로 정확한 금액을 보냅니다.',
+    makerCommerceV5ListPrice: '정확한 판매 가격',
+    makerCommerceV5ListAction: 'Maker 판매 등록',
+    makerCommerceV5ListCopy: 'PAUSED 상태이고 금고가 0인 Maker만 판매할 수 있습니다.',
+    makerCommerceV5ListingTitle: '활성 Maker 판매',
+    makerCommerceV5ListingPrice: '판매 가격',
+    makerCommerceV5ListingSeller: '판매자',
+    makerCommerceV5ProtocolFee: 'Animacraft 마켓 수수료',
+    makerCommerceV5ProtocolFeeFrozen: '{rate}% · 판매 등록 시 고정',
+    makerCommerceV5SoulCreatorRoyalty: 'Soul 제작자 재판매 로열티',
+    makerCommerceV5SoulCreatorRoyaltyFrozen: '{rate}% · 이 sealed 릴리스에 고정',
+    makerCommerceV5ResaleRoyalty: '원작자 재판매 로열티',
+    makerCommerceV5ResaleRoyaltyFrozen: '{rate}% · 이 sealed 릴리스에 고정',
+    makerCommerceV5RegistrySealed: '정확한 Style 레지스트리 sealed',
+    makerCommerceV5ActionPause: 'Maker 일시 중지',
+    makerCommerceV5ActionResume: 'Maker 재개',
+    makerCommerceV5ActionArchive: 'Maker 보관',
+    makerCommerceV5ActionRestore: 'Maker 복원',
+    makerCommerceV5ActionCancelListing: '판매 취소',
+    makerCommerceV5ActionBuy: 'Maker 구매',
+    makerCommerceV5ActionRefresh: '체인 상태 새로고침',
+    makerCommerceV5PauseCopy: '릴리스는 읽을 수 있게 두고 구매와 Complete를 중지합니다.',
+    makerCommerceV5ResumeCopy: 'PAUSED 또는 ARCHIVED 릴리스를 ACTIVE로 되돌립니다.',
+    makerCommerceV5ArchiveCopy: '운영자가 복원할 때까지 새 Commerce를 중지합니다.',
+    makerCommerceV5CancelCopy: '판매를 취소하고 판매자에게 새 PAUSED Control Cap을 발행합니다.',
+    makerCommerceV5BuyCopy: '정확한 판매가를 지불하고 PAUSED 소유권과 새 Control Cap을 받습니다.',
+    makerCommerceV5PauseBeforeListing: '판매 등록 전에 Maker를 일시 중지하세요.',
+    makerCommerceV5EmptyTreasuryBeforeListing: '판매 등록 전에 Maker 금고 전액을 출금하세요.',
+    makerCommerceV5ExactAmountInvalid: '양수 {symbol} 금액을 소수 {decimals}자리 이내로 입력하세요.',
+    makerCommerceV5WalletRequired: '이 Maker를 관리하거나 구매할 지갑을 연결하세요.',
+    makerCommerceV5ActionConfirmed: 'Sui가 거래를 확정했고 Animacraft가 새 체인 상태를 검증했습니다. 거래 {digest}.',
+    makerCommerceV5ReadbackFailed: '거래는 제출되었지만 필요한 새 MakerRootV5 상태가 아직 보이지 않습니다. 재제출하지 말고 새로고침하세요.',
+    makerCommerceV5ActionFailed: 'Commerce v5 작업 실패: {message}',
+  },
+  vi: {
+    makerCommerceV5PanelTitle: 'Quản lý Commerce v5',
+    makerCommerceV5PanelCopy: 'Vòng đời, doanh thu và trạng thái bán Maker được đọc trực tiếp từ MakerRootV5 và MakerTreasuryV5.',
+    makerCommerceV5Loading: 'Đang đọc trạng thái Commerce v5 mới nhất từ Sui…',
+    makerCommerceV5Unavailable: 'Không thể xác minh trạng thái Commerce v5 nên không có thao tác giao dịch.',
+    makerCommerceV5BindingResolving: 'Đang xác minh MakerRootV5…',
+    makerCommerceV5BindingResolvingCopy: 'Animacraft đang xác minh Maker đã di chuyển từ sự kiện Sui. Chơi và mua vẫn bị khóa cho đến khi hoàn tất.',
+    makerCommerceV5ReleaseDisabled: 'Giao dịch Commerce v5 đã bị tắt trong bản Animacraft này.',
+    makerCommerceV5ProtocolDisabled: 'Giao thức Commerce v5 on-chain đang tạm dừng.',
+    makerCommerceV5ConnectToBuy: 'Kết nối ví để mua',
+    makerCommerceV5Lifecycle: 'Vòng đời on-chain',
+    makerCommerceV5Active: 'ACTIVE',
+    makerCommerceV5Paused: 'PAUSED',
+    makerCommerceV5Archived: 'ARCHIVED',
+    makerCommerceV5SalePending: 'SALE_PENDING',
+    makerCommerceV5CurrentOwner: 'Người vận hành hiện tại',
+    makerCommerceV5OriginalCreator: 'Nhà sáng tạo gốc',
+    makerCommerceV5ControlAuthority: 'Quyền quản lý',
+    makerCommerceV5ControlReady: 'Đang sở hữu MakerControlCapV5 hiện tại',
+    makerCommerceV5ControlEscrowed: 'Control Cap đã được tiêu thụ bởi niêm yết đang hoạt động',
+    makerCommerceV5ControlUnavailable: 'Ví này không sở hữu Control Cap hiện tại',
+    makerCommerceV5Treasury: 'Kho Maker',
+    makerCommerceV5TreasuryExact: '{amount} {symbol} · số dư on-chain chính xác',
+    makerCommerceV5WithdrawAmount: 'Số tiền rút',
+    makerCommerceV5WithdrawAction: 'Rút doanh thu',
+    makerCommerceV5WithdrawCopy: 'Gửi số tiền chính xác từ MakerTreasuryV5 đến ví vận hành đang kết nối.',
+    makerCommerceV5ListPrice: 'Giá bán chính xác',
+    makerCommerceV5ListAction: 'Niêm yết Maker',
+    makerCommerceV5ListCopy: 'Chỉ Maker PAUSED có số dư kho bằng 0 mới được niêm yết.',
+    makerCommerceV5ListingTitle: 'Niêm yết Maker đang hoạt động',
+    makerCommerceV5ListingPrice: 'Giá niêm yết',
+    makerCommerceV5ListingSeller: 'Người bán',
+    makerCommerceV5ProtocolFee: 'Phí thị trường Animacraft',
+    makerCommerceV5ProtocolFeeFrozen: '{rate}% · cố định khi mở niêm yết',
+    makerCommerceV5SoulCreatorRoyalty: 'Tiền bản quyền bán lại cho nhà sáng tạo Soul',
+    makerCommerceV5SoulCreatorRoyaltyFrozen: '{rate}% · đã cố định cho bản phát hành sealed này',
+    makerCommerceV5ResaleRoyalty: 'Tiền bản quyền bán lại cho nhà sáng tạo gốc',
+    makerCommerceV5ResaleRoyaltyFrozen: '{rate}% · đã cố định cho bản phát hành sealed này',
+    makerCommerceV5RegistrySealed: 'Registry Style chính xác đã sealed',
+    makerCommerceV5ActionPause: 'Tạm dừng Maker',
+    makerCommerceV5ActionResume: 'Tiếp tục Maker',
+    makerCommerceV5ActionArchive: 'Lưu trữ Maker',
+    makerCommerceV5ActionRestore: 'Khôi phục Maker',
+    makerCommerceV5ActionCancelListing: 'Hủy niêm yết',
+    makerCommerceV5ActionBuy: 'Mua Maker',
+    makerCommerceV5ActionRefresh: 'Làm mới trạng thái chain',
+    makerCommerceV5PauseCopy: 'Dừng mua và Complete nhưng vẫn cho phép đọc bản phát hành.',
+    makerCommerceV5ResumeCopy: 'Đưa bản PAUSED hoặc ARCHIVED trở lại ACTIVE.',
+    makerCommerceV5ArchiveCopy: 'Dừng Commerce mới cho đến khi người vận hành khôi phục.',
+    makerCommerceV5CancelCopy: 'Hủy bán và cấp Control Cap PAUSED mới cho người bán.',
+    makerCommerceV5BuyCopy: 'Trả đúng giá niêm yết để nhận quyền sở hữu PAUSED và Control Cap mới.',
+    makerCommerceV5PauseBeforeListing: 'Hãy tạm dừng Maker trước khi niêm yết.',
+    makerCommerceV5EmptyTreasuryBeforeListing: 'Phải rút toàn bộ kho Maker trước khi niêm yết.',
+    makerCommerceV5ExactAmountInvalid: 'Nhập số {symbol} dương với tối đa {decimals} chữ số thập phân.',
+    makerCommerceV5WalletRequired: 'Kết nối ví sẽ quản lý hoặc mua Maker này.',
+    makerCommerceV5ActionConfirmed: 'Sui đã xác nhận giao dịch và Animacraft đã kiểm tra trạng thái chain mới. Giao dịch {digest}.',
+    makerCommerceV5ReadbackFailed: 'Giao dịch đã gửi nhưng trạng thái MakerRootV5 mới chưa hiển thị. Hãy làm mới và không gửi lại.',
+    makerCommerceV5ActionFailed: 'Thao tác Commerce v5 thất bại: {message}',
+  },
+};
+
+Object.entries(makerCommerceV5LifecycleI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
+
 const licenseOptionI18n = {
   en: { licensePersonal: 'Personal use', licenseRemix: 'Free remix', licenseCommercial: 'Paid commercial', licenseExclusive: 'Exclusive commission' },
   zh: { licensePersonal: '个人使用', licenseRemix: '允许免费再创作', licenseCommercial: '付费商业使用', licenseExclusive: '独家委托' },
@@ -1367,6 +1733,11 @@ const productionRuntimeI18n = {
     canonicalMintDisabled: 'Canonical Soul minting is not activated for this release.',
     ocChangedAfterUpload: 'The OC profile or recipe changed after upload. Prepare a new mint quilt.',
     soulHandoffComplete: 'Soulidity opened and the recovery handoff was downloaded. The integration creates one canonical Soul.',
+    soulHandoffAwaitingReceipt: 'Soulidity opened. Complete the wallet transaction there; the final PNG unlocks only after Animacraft verifies the exact on-chain receipt.',
+    soulHandoffVerifying: 'Verifying the exact Soulidity transaction and frozen provenance on Sui…',
+    soulHandoffVerified: 'Soul verified on chain. The exact final PNG is now unlocked in Animacraft.',
+    soulHandoffVerifiedBackupFailed: 'Soul verified and the final PNG is unlocked, but the local recovery backup failed. Download the PNG now.',
+    soulHandoffReceiptFailed: 'The Soulidity completion receipt could not be verified. The final PNG remains locked.',
     soulHandoffFailed: 'Soulidity handoff failed.',
     restoringOcUpload: 'Restoring the saved OC upload checkpoint…',
     makerAssetUnavailable: '{name} is no longer available. Select the PNG files again.',
@@ -1406,7 +1777,7 @@ const productionRuntimeI18n = {
     walletConnectedAs: '钱包已连接：{address}', walletDisconnected: '钱包未连接', creatorProfileAfterFirstPublish: '首次发布 Maker 后会显示创作者资料', creatorProfileObject: '创作者资料 {address}', creatorProfileCreatedOnPublish: '首次发布时会创建创作者资料', accountGuest: 'Animacraft 用户', continueMakerSession: '继续当前选中的 Maker 会话', choosePublishedMaker: '请先从模板广场选择已发布的 Maker', openExactPlayer: '打开真实玩家编辑器', uploadStyleBeforePreview: '请至少上传一个样式 PNG 后再预览',
     treasuryLoadingSui: '正在从 Sui 读取 Treasury 余额…', treasuryUnavailable: '无法读取关联的 Maker Treasury。', syncingMakers: '正在同步 Maker…', refreshMakers: '刷新 Maker', networkLabel: '网络', packageLabel: '合约包', walrusLabel: 'Walrus', signerLabel: '签名钱包', publishPackageFirstShort: '请先发布合约包', epochRetention: '保留 {count} 个 epoch', configureUploadRelay: '请配置上传中继', signerConnected: '已连接', signerConnectWallet: '连接钱包',
     movePackageMissing: '尚未配置 Move 合约包。', previewMintLocked: '此模板仍是预览；载入已发布的 Sui Maker 和 Walrus 清单后才能铸造。', makerMintClosed: '此 Maker 当前不接受新的 Soul 授权。', paidTreasuryMissing: '此付费 Maker 缺少链上 Treasury 引用。', connectMintWallet: '请连接 Sui 钱包后铸造此 OC。', soulidityPackageMissing: '请先配置 Soulidity 合约包，再启用规范 Soul 铸造。', canonicalMintGateClosed: '经审核的 Soulidity 适配器发布开关尚未启用，当前不能铸造规范 Soul。', mintNextStep: '请准备并认证 OC 包，然后前往 Soulidity 铸造唯一的规范 Soul。', retryUpload: '重试上传', registerUpload: '注册并上传', preparingHandoff: '正在准备交接…',
-    ocRenderingQuilt: '正在渲染 OC 并编码为一个 Walrus Quilt…', ocQuiltEncoded: 'OC Quilt 已编码，请在 Walrus 主网上注册。', ocQuiltPrepareFailed: '无法准备 OC Quilt。', completeOcBeforePublishing: '请重新点击“完成 OC”，把最新的角色资料、组合配方与 Soul 文档冻结后再发布。', ocWaitingUpload: '正在等待注册签名，随后上传 OC Quilt…', ocUnexpectedQuilt: 'Walrus 返回的 OC Quilt 文件数量不正确。', ocRecoveredCertified: '恢复的 OC Quilt 已认证，可前往 Soulidity 进行规范铸造。', ocUploadedCertify: 'OC Quilt 已上传，请再签名一次完成认证。', ocUploadFailed: 'OC 注册或上传失败。', ocWaitingCertification: '正在等待 Walrus 认证签名…', ocFilesCertified: 'OC 文件已认证，可前往 Soulidity 铸造规范 Soul。', ocCertificationFailed: 'OC 认证失败。', transparentStylePng: '素材「{name}」没有任何可见像素。请用“可选部位”的未选择状态表示“无”，不要上传空 PNG。', pngVerificationFailed: '无法复检所有待发布的样式 PNG，请重新导入有问题的 PNG 后重试。', soulHandoffPreparing: '正在准备规范 Soulidity 交接…', canonicalMintDisabled: '此版本尚未启用规范 Soul 铸造。', ocChangedAfterUpload: '上传后 OC 资料或配方已变更，请重新准备铸造 Quilt。', soulHandoffComplete: '已打开 Soulidity 并下载恢复交接包；该集成只创建一个规范 Soul。', soulHandoffFailed: 'Soulidity 交接失败。', restoringOcUpload: '正在恢复已保存的 OC 上传检查点…',
+    ocRenderingQuilt: '正在渲染 OC 并编码为一个 Walrus Quilt…', ocQuiltEncoded: 'OC Quilt 已编码，请在 Walrus 主网上注册。', ocQuiltPrepareFailed: '无法准备 OC Quilt。', completeOcBeforePublishing: '请重新点击“完成 OC”，把最新的角色资料、组合配方与 Soul 文档冻结后再发布。', ocWaitingUpload: '正在等待注册签名，随后上传 OC Quilt…', ocUnexpectedQuilt: 'Walrus 返回的 OC Quilt 文件数量不正确。', ocRecoveredCertified: '恢复的 OC Quilt 已认证，可前往 Soulidity 进行规范铸造。', ocUploadedCertify: 'OC Quilt 已上传，请再签名一次完成认证。', ocUploadFailed: 'OC 注册或上传失败。', ocWaitingCertification: '正在等待 Walrus 认证签名…', ocFilesCertified: 'OC 文件已认证，可前往 Soulidity 铸造规范 Soul。', ocCertificationFailed: 'OC 认证失败。', transparentStylePng: '素材「{name}」没有任何可见像素。请用“可选部位”的未选择状态表示“无”，不要上传空 PNG。', pngVerificationFailed: '无法复检所有待发布的样式 PNG，请重新导入有问题的 PNG 后重试。', soulHandoffPreparing: '正在准备规范 Soulidity 交接…', canonicalMintDisabled: '此版本尚未启用规范 Soul 铸造。', ocChangedAfterUpload: '上传后 OC 资料或配方已变更，请重新准备铸造 Quilt。', soulHandoffComplete: '已打开 Soulidity 并下载恢复交接包；该集成只创建一个规范 Soul。', soulHandoffAwaitingReceipt: '已打开 Soulidity。请在那里完成钱包交易；Animacraft 精确验证链上回执后才会解锁最终 PNG。', soulHandoffVerifying: '正在 Sui 上核验精确的 Soulidity 交易与冻结来源对象…', soulHandoffVerified: '链上 Soul 已核验，Animacraft 现已解锁精确的最终 PNG。', soulHandoffVerifiedBackupFailed: '链上 Soul 已核验且最终 PNG 已解锁，但本地恢复备份失败，请现在下载 PNG。', soulHandoffReceiptFailed: '无法核验 Soulidity 完成回执，最终 PNG 仍保持锁定。', soulHandoffFailed: 'Soulidity 交接失败。', restoringOcUpload: '正在恢复已保存的 OC 上传检查点…',
     makerAssetUnavailable: '素材「{name}」已不可用，请重新选择 PNG。', unexpectedMakerQuilt: 'Walrus 返回的 Maker Quilt 文件数量不正确。', expansionNoLongerCompatible: '内嵌扩展包已不再兼容当前 Maker 版本。', ruleAssetMismatch: '每条规则都必须引用已有 PNG 部件的部位。', makerPublishedPartial: '已发布。版本化 Walrus 清单保存完整 Maker 图；Sui 保存完整的 v2 授权与颜色投影，用于验证配方。', makerPublishedIndexing: '已发布到 Sui。对象 ID 仍在建立索引，浏览器会暂时保留恢复草稿。', archiveWaiting: '正在等待你的 Sui 签名以归档此 Maker…', restoreWaiting: '正在等待你的 Sui 签名以恢复此 Maker…', archivedOnNetwork: '已在 {network} 归档：{digest}', restoredOnNetwork: '已在 {network} 恢复：{digest}', archiveMakerFailed: '无法归档此 Maker。', restoreMakerFailed: '无法恢复此 Maker。',
     makerRestoredAt: 'Maker 工作区已恢复 · {time}', makerRestored: 'Maker 工作区已恢复', makerVersionChanged: 'Maker 版本已变更，发布前请重新准备 Walrus Quilt。', makerAutosaved: 'Maker 已自动保存', makerSaved: 'Maker 已保存', makerWorkspaceRestoreFailed: '无法恢复 Maker 工作区。', currentRulesInvalid: '当前 Maker 规则无法生成有效 OC。', creatorAssetImportFailed: '无法导入所选 Maker 素材。', ocDraftLocalFailed: '无法在本地保存 OC 草稿。',
     makerSettingsFirstPublish: '这些设置会在首次发布 Maker 时写入。', makerAdminOwnerRequired: '请连接当前持有 MakerAdminCap 的钱包。', paidMintReleaseGated: '付费铸造仍受发布开关限制，请先关闭费用再更新。', validMintPriceRequired: '请输入有效的 {symbol} 铸造价格。', adminSignatureWaiting: '正在等待 MakerAdminCap 持有者签名…', onchainSettingsUpdated: '链上设置已更新：{digest}', onchainSettingsFailed: '链上设置更新失败。', makerTreasuryRequired: '需要已发布的 Maker、Treasury 和 MakerAdminCap。', validWithdrawalRequired: '请输入有效的 {symbol} 提现金额。', revenueWithdrawn: '已提取 {amount} {symbol}：{digest}', treasuryWithdrawalFailed: 'Treasury 提现失败。',
@@ -1415,7 +1786,7 @@ const productionRuntimeI18n = {
     walletConnectedAs: 'ウォレット接続済み：{address}', walletDisconnected: 'ウォレット未接続', creatorProfileAfterFirstPublish: 'Maker の初回公開後にクリエイタープロフィールが表示されます', creatorProfileObject: 'クリエイタープロフィール {address}', creatorProfileCreatedOnPublish: '初回公開時にクリエイタープロフィールが作成されます', accountGuest: 'Animacraft ユーザー', continueMakerSession: '選択中の Maker セッションを続ける', choosePublishedMaker: '先にテンプレートから公開済み Maker を選択してください', openExactPlayer: '実際のプレイヤーエディターを開く', uploadStyleBeforePreview: 'プレビュー前にスタイル PNG を1枚以上追加してください',
     treasuryLoadingSui: 'Sui から Treasury 残高を読み込み中…', treasuryUnavailable: '関連付けられた Maker Treasury を読み込めません。', syncingMakers: 'Maker を同期中…', refreshMakers: 'Maker を更新', networkLabel: 'ネットワーク', packageLabel: 'パッケージ', walrusLabel: 'Walrus', signerLabel: '署名者', publishPackageFirstShort: '先にパッケージを公開', epochRetention: '{count} epoch 保持', configureUploadRelay: 'アップロードリレーを設定', signerConnected: '接続済み', signerConnectWallet: 'ウォレット接続',
     movePackageMissing: 'Move パッケージが未設定です。', previewMintLocked: 'このテンプレートはプレビューです。公開済み Sui Maker と Walrus マニフェストの読み込み後にミントできます。', makerMintClosed: 'この Maker は新しい Soul 承認を受け付けていません。', paidTreasuryMissing: 'この有料 Maker にはオンチェーン Treasury の参照がありません。', connectMintWallet: 'この OC をミントするには Sui ウォレットを接続してください。', soulidityPackageMissing: '正規 Soul ミントを有効にする前に Soulidity パッケージを設定してください。', canonicalMintGateClosed: '審査済み Soulidity アダプターの公開ゲートが有効になるまで正規 Soul はミントできません。', mintNextStep: 'OC パッケージを準備・認証し、Soulidity で正規 Soul をミントしてください。', retryUpload: 'アップロード再試行', registerUpload: '登録してアップロード', preparingHandoff: '連携を準備中…',
-    ocRenderingQuilt: 'OC を描画し、1つの Walrus Quilt にエンコード中…', ocQuiltEncoded: 'OC Quilt をエンコードしました。Walrus Mainnet に登録してください。', ocQuiltPrepareFailed: 'OC Quilt を準備できませんでした。', completeOcBeforePublishing: '最新のプロフィール、レシピ、Soul 文書を固定するため、公開前にもう一度「OC を完成」を実行してください。', ocWaitingUpload: '登録署名を待機し、その後 OC Quilt をアップロードします…', ocUnexpectedQuilt: 'Walrus から予期しない OC Quilt 結果が返されました。', ocRecoveredCertified: '復旧した OC Quilt は認証済みです。Soulidity で正規ミントを続けてください。', ocUploadedCertify: 'OC Quilt をアップロードしました。もう一度署名して認証してください。', ocUploadFailed: 'OC の登録またはアップロードに失敗しました。', ocWaitingCertification: 'Walrus の認証署名を待機中…', ocFilesCertified: 'OC ファイルを認証しました。Soulidity で正規 Soul をミントしてください。', ocCertificationFailed: 'OC の認証に失敗しました。', transparentStylePng: '素材「{name}」に表示可能なピクセルがありません。「なし」は空 PNG ではなく任意パーツの未選択状態で表現してください。', pngVerificationFailed: '公開する全スタイル PNG を再検証できませんでした。該当 PNG を読み込み直して再試行してください。', soulHandoffPreparing: '正規 Soulidity 連携を準備中…', canonicalMintDisabled: 'このリリースでは正規 Soul ミントが有効ではありません。', ocChangedAfterUpload: 'アップロード後に OC プロフィールまたはレシピが変更されました。新しい Quilt を準備してください。', soulHandoffComplete: 'Soulidity を開き、復旧用連携パッケージをダウンロードしました。この連携は正規 Soul を1つだけ作成します。', soulHandoffFailed: 'Soulidity 連携に失敗しました。', restoringOcUpload: '保存済み OC アップロードのチェックポイントを復元中…',
+    ocRenderingQuilt: 'OC を描画し、1つの Walrus Quilt にエンコード中…', ocQuiltEncoded: 'OC Quilt をエンコードしました。Walrus Mainnet に登録してください。', ocQuiltPrepareFailed: 'OC Quilt を準備できませんでした。', completeOcBeforePublishing: '最新のプロフィール、レシピ、Soul 文書を固定するため、公開前にもう一度「OC を完成」を実行してください。', ocWaitingUpload: '登録署名を待機し、その後 OC Quilt をアップロードします…', ocUnexpectedQuilt: 'Walrus から予期しない OC Quilt 結果が返されました。', ocRecoveredCertified: '復旧した OC Quilt は認証済みです。Soulidity で正規ミントを続けてください。', ocUploadedCertify: 'OC Quilt をアップロードしました。もう一度署名して認証してください。', ocUploadFailed: 'OC の登録またはアップロードに失敗しました。', ocWaitingCertification: 'Walrus の認証署名を待機中…', ocFilesCertified: 'OC ファイルを認証しました。Soulidity で正規 Soul をミントしてください。', ocCertificationFailed: 'OC の認証に失敗しました。', transparentStylePng: '素材「{name}」に表示可能なピクセルがありません。「なし」は空 PNG ではなく任意パーツの未選択状態で表現してください。', pngVerificationFailed: '公開する全スタイル PNG を再検証できませんでした。該当 PNG を読み込み直して再試行してください。', soulHandoffPreparing: '正規 Soulidity 連携を準備中…', canonicalMintDisabled: 'このリリースでは正規 Soul ミントが有効ではありません。', ocChangedAfterUpload: 'アップロード後に OC プロフィールまたはレシピが変更されました。新しい Quilt を準備してください。', soulHandoffComplete: 'Soulidity を開き、復旧用連携パッケージをダウンロードしました。この連携は正規 Soul を1つだけ作成します。', soulHandoffAwaitingReceipt: 'Soulidity を開きました。ウォレット取引完了後、正確なオンチェーン受領を検証して最終 PNG を解除します。', soulHandoffVerifying: 'Sui 上の Soulidity 取引と凍結済み来歴を検証中…', soulHandoffVerified: 'オンチェーン Soul を検証しました。最終 PNG を解除しました。', soulHandoffVerifiedBackupFailed: 'Soul は検証済みで最終 PNG も解除されましたが、ローカル復旧バックアップに失敗しました。今すぐ PNG を保存してください。', soulHandoffReceiptFailed: 'Soulidity 完了受領を検証できません。最終 PNG はロックされたままです。', soulHandoffFailed: 'Soulidity 連携に失敗しました。', restoringOcUpload: '保存済み OC アップロードのチェックポイントを復元中…',
     makerAssetUnavailable: '素材「{name}」は利用できません。PNG を選び直してください。', unexpectedMakerQuilt: 'Walrus から予期しない数の Maker Quilt ファイルが返されました。', expansionNoLongerCompatible: '埋め込み拡張パックは現在の Maker バージョンと互換性がありません。', ruleAssetMismatch: 'すべてのルールは PNG アイテムを持つパーツを参照する必要があります。', makerPublishedPartial: '公開しました。バージョン付き Walrus マニフェストが完全な Maker グラフを保持し、Sui はレシピ検証用の完全な v2 認可・色投影を保存します。', makerPublishedIndexing: 'Sui に公開しました。オブジェクト ID の索引中は復旧下書きをブラウザに保持します。', archiveWaiting: 'この Maker をアーカイブする Sui 署名を待機中…', restoreWaiting: 'この Maker を復元する Sui 署名を待機中…', archivedOnNetwork: '{network} でアーカイブ済み：{digest}', restoredOnNetwork: '{network} で復元済み：{digest}', archiveMakerFailed: 'この Maker をアーカイブできませんでした。', restoreMakerFailed: 'この Maker を復元できませんでした。',
     makerRestoredAt: 'Maker ワークスペースを復元しました · {time}', makerRestored: 'Maker ワークスペースを復元しました', makerVersionChanged: 'Maker バージョンが変更されました。公開前に新しい Walrus Quilt を準備してください。', makerAutosaved: 'Maker を自動保存しました', makerSaved: 'Maker を保存しました', makerWorkspaceRestoreFailed: 'Maker ワークスペースを復元できませんでした。', currentRulesInvalid: '現在の Maker ルールでは有効な OC を作成できません。', creatorAssetImportFailed: '選択した Maker 素材を読み込めませんでした。', ocDraftLocalFailed: 'OC 下書きをローカル保存できませんでした。',
     makerSettingsFirstPublish: 'この設定は Maker の初回公開時に反映されます。', makerAdminOwnerRequired: '現在 MakerAdminCap を所有するウォレットを接続してください。', paidMintReleaseGated: '有料ミントは公開ゲートで制限中です。更新前に料金を無効にしてください。', validMintPriceRequired: '有効な {symbol} ミント価格を入力してください。', adminSignatureWaiting: 'MakerAdminCap 所有者の署名を待機中…', onchainSettingsUpdated: 'オンチェーン設定を更新しました：{digest}', onchainSettingsFailed: 'オンチェーン設定の更新に失敗しました。', makerTreasuryRequired: '公開済み Maker、Treasury、MakerAdminCap が必要です。', validWithdrawalRequired: '有効な {symbol} 出金額を入力してください。', revenueWithdrawn: '{amount} {symbol} を出金しました：{digest}', treasuryWithdrawalFailed: 'Treasury からの出金に失敗しました。',
@@ -1424,7 +1795,7 @@ const productionRuntimeI18n = {
     walletConnectedAs: '지갑 연결됨: {address}', walletDisconnected: '지갑 연결 안 됨', creatorProfileAfterFirstPublish: 'Maker를 처음 게시하면 크리에이터 프로필이 표시됩니다', creatorProfileObject: '크리에이터 프로필 {address}', creatorProfileCreatedOnPublish: '처음 게시할 때 크리에이터 프로필이 생성됩니다', accountGuest: 'Animacraft 사용자', continueMakerSession: '선택한 Maker 세션 계속', choosePublishedMaker: '먼저 템플릿에서 게시된 Maker를 선택하세요', openExactPlayer: '실제 플레이어 편집기 열기', uploadStyleBeforePreview: '미리보기 전에 스타일 PNG를 하나 이상 업로드하세요',
     treasuryLoadingSui: 'Sui에서 Treasury 잔액 불러오는 중…', treasuryUnavailable: '연결된 Maker Treasury를 불러올 수 없습니다.', syncingMakers: 'Maker 동기화 중…', refreshMakers: 'Maker 새로고침', networkLabel: '네트워크', packageLabel: '패키지', walrusLabel: 'Walrus', signerLabel: '서명자', publishPackageFirstShort: '먼저 패키지 게시', epochRetention: '{count} epoch 보관', configureUploadRelay: '업로드 릴레이 설정', signerConnected: '연결됨', signerConnectWallet: '지갑 연결',
     movePackageMissing: 'Move 패키지가 설정되지 않았습니다.', previewMintLocked: '이 템플릿은 미리보기입니다. 게시된 Sui Maker와 Walrus 매니페스트를 불러오면 민팅할 수 있습니다.', makerMintClosed: '이 Maker는 새 Soul 승인을 받지 않습니다.', paidTreasuryMissing: '유료 Maker에 온체인 Treasury 참조가 없습니다.', connectMintWallet: '이 OC를 민팅하려면 Sui 지갑을 연결하세요.', soulidityPackageMissing: '정식 Soul 민팅을 활성화하기 전에 Soulidity 패키지를 설정하세요.', canonicalMintGateClosed: '검토된 Soulidity 어댑터 릴리스 게이트가 활성화될 때까지 정식 Soul을 민팅할 수 없습니다.', mintNextStep: 'OC 패키지를 준비하고 인증한 뒤 Soulidity에서 정식 Soul을 민팅하세요.', retryUpload: '업로드 재시도', registerUpload: '등록 및 업로드', preparingHandoff: '연동 준비 중…',
-    ocRenderingQuilt: 'OC를 렌더링하고 하나의 Walrus Quilt로 인코딩 중…', ocQuiltEncoded: 'OC Quilt 인코딩 완료. Walrus Mainnet에 등록하세요.', ocQuiltPrepareFailed: 'OC Quilt를 준비하지 못했습니다.', completeOcBeforePublishing: '최신 프로필, 레시피와 Soul 문서를 고정하려면 게시 전에 “OC 완성”을 다시 실행하세요.', ocWaitingUpload: '등록 서명을 기다린 뒤 OC Quilt를 업로드합니다…', ocUnexpectedQuilt: 'Walrus가 예상하지 못한 OC Quilt 결과를 반환했습니다.', ocRecoveredCertified: '복구된 OC Quilt가 인증되었습니다. Soulidity에서 정식 민팅을 계속하세요.', ocUploadedCertify: 'OC Quilt 업로드 완료. 한 번 더 서명해 인증하세요.', ocUploadFailed: 'OC 등록 또는 업로드에 실패했습니다.', ocWaitingCertification: 'Walrus 인증 서명을 기다리는 중…', ocFilesCertified: 'OC 파일 인증 완료. Soulidity에서 정식 Soul을 민팅하세요.', ocCertificationFailed: 'OC 인증에 실패했습니다.', transparentStylePng: '에셋 “{name}”에 보이는 픽셀이 없습니다. 빈 PNG 대신 선택 파트의 미선택 상태로 “없음”을 표현하세요.', pngVerificationFailed: '게시할 모든 스타일 PNG를 다시 확인하지 못했습니다. 문제가 있는 PNG를 다시 가져온 뒤 재시도하세요.', soulHandoffPreparing: '정식 Soulidity 연동 준비 중…', canonicalMintDisabled: '이 릴리스에서는 정식 Soul 민팅이 활성화되지 않았습니다.', ocChangedAfterUpload: '업로드 후 OC 프로필 또는 레시피가 변경되었습니다. 새 Quilt를 준비하세요.', soulHandoffComplete: 'Soulidity를 열고 복구 연동 패키지를 다운로드했습니다. 이 연동은 정식 Soul 하나만 생성합니다.', soulHandoffFailed: 'Soulidity 연동에 실패했습니다.', restoringOcUpload: '저장된 OC 업로드 체크포인트 복원 중…',
+    ocRenderingQuilt: 'OC를 렌더링하고 하나의 Walrus Quilt로 인코딩 중…', ocQuiltEncoded: 'OC Quilt 인코딩 완료. Walrus Mainnet에 등록하세요.', ocQuiltPrepareFailed: 'OC Quilt를 준비하지 못했습니다.', completeOcBeforePublishing: '최신 프로필, 레시피와 Soul 문서를 고정하려면 게시 전에 “OC 완성”을 다시 실행하세요.', ocWaitingUpload: '등록 서명을 기다린 뒤 OC Quilt를 업로드합니다…', ocUnexpectedQuilt: 'Walrus가 예상하지 못한 OC Quilt 결과를 반환했습니다.', ocRecoveredCertified: '복구된 OC Quilt가 인증되었습니다. Soulidity에서 정식 민팅을 계속하세요.', ocUploadedCertify: 'OC Quilt 업로드 완료. 한 번 더 서명해 인증하세요.', ocUploadFailed: 'OC 등록 또는 업로드에 실패했습니다.', ocWaitingCertification: 'Walrus 인증 서명을 기다리는 중…', ocFilesCertified: 'OC 파일 인증 완료. Soulidity에서 정식 Soul을 민팅하세요.', ocCertificationFailed: 'OC 인증에 실패했습니다.', transparentStylePng: '에셋 “{name}”에 보이는 픽셀이 없습니다. 빈 PNG 대신 선택 파트의 미선택 상태로 “없음”을 표현하세요.', pngVerificationFailed: '게시할 모든 스타일 PNG를 다시 확인하지 못했습니다. 문제가 있는 PNG를 다시 가져온 뒤 재시도하세요.', soulHandoffPreparing: '정식 Soulidity 연동 준비 중…', canonicalMintDisabled: '이 릴리스에서는 정식 Soul 민팅이 활성화되지 않았습니다.', ocChangedAfterUpload: '업로드 후 OC 프로필 또는 레시피가 변경되었습니다. 새 Quilt를 준비하세요.', soulHandoffComplete: 'Soulidity를 열고 복구 연동 패키지를 다운로드했습니다. 이 연동은 정식 Soul 하나만 생성합니다.', soulHandoffAwaitingReceipt: 'Soulidity가 열렸습니다. 지갑 거래 후 정확한 온체인 영수증을 검증해야 최종 PNG가 잠금 해제됩니다.', soulHandoffVerifying: 'Sui의 Soulidity 거래와 고정 출처를 검증하는 중…', soulHandoffVerified: '온체인 Soul 검증 완료. 최종 PNG가 잠금 해제되었습니다.', soulHandoffVerifiedBackupFailed: 'Soul 검증 및 최종 PNG 잠금 해제는 완료되었지만 로컬 복구 백업에 실패했습니다. 지금 PNG를 저장하세요.', soulHandoffReceiptFailed: 'Soulidity 완료 영수증을 검증하지 못했습니다. 최종 PNG는 잠긴 상태입니다.', soulHandoffFailed: 'Soulidity 연동에 실패했습니다.', restoringOcUpload: '저장된 OC 업로드 체크포인트 복원 중…',
     makerAssetUnavailable: '에셋 “{name}”을(를) 더 이상 사용할 수 없습니다. PNG를 다시 선택하세요.', unexpectedMakerQuilt: 'Walrus가 예상하지 못한 수의 Maker Quilt 파일을 반환했습니다.', expansionNoLongerCompatible: '포함된 확장 팩이 현재 Maker 버전과 더 이상 호환되지 않습니다.', ruleAssetMismatch: '모든 규칙은 PNG 아이템이 업로드된 파트를 참조해야 합니다.', makerPublishedPartial: '게시되었습니다. 버전이 지정된 Walrus 매니페스트는 전체 Maker 그래프를 보관하고 Sui는 레시피 검증용 완전한 v2 승인 및 색상 투영을 저장합니다.', makerPublishedIndexing: 'Sui에 게시되었습니다. 오브젝트 ID 인덱싱 중에는 복구 초안을 브라우저에 유지합니다.', archiveWaiting: '이 Maker를 보관하기 위한 Sui 서명을 기다리는 중…', restoreWaiting: '이 Maker를 복원하기 위한 Sui 서명을 기다리는 중…', archivedOnNetwork: '{network}에 보관됨: {digest}', restoredOnNetwork: '{network}에 복원됨: {digest}', archiveMakerFailed: '이 Maker를 보관하지 못했습니다.', restoreMakerFailed: '이 Maker를 복원하지 못했습니다.',
     makerRestoredAt: 'Maker 작업 공간 복원됨 · {time}', makerRestored: 'Maker 작업 공간 복원됨', makerVersionChanged: 'Maker 버전이 변경되었습니다. 게시 전에 새 Walrus Quilt를 준비하세요.', makerAutosaved: 'Maker 자동 저장됨', makerSaved: 'Maker 저장됨', makerWorkspaceRestoreFailed: 'Maker 작업 공간을 복원하지 못했습니다.', currentRulesInvalid: '현재 Maker 규칙으로 유효한 OC를 만들 수 없습니다.', creatorAssetImportFailed: '선택한 Maker 에셋을 가져오지 못했습니다.', ocDraftLocalFailed: 'OC 초안을 로컬에 저장하지 못했습니다.',
     makerSettingsFirstPublish: '이 설정은 Maker를 처음 게시할 때 반영됩니다.', makerAdminOwnerRequired: '현재 MakerAdminCap을 소유한 지갑을 연결하세요.', paidMintReleaseGated: '유료 민팅은 릴리스 게이트로 제한됩니다. 업데이트 전에 수수료를 끄세요.', validMintPriceRequired: '유효한 {symbol} 민팅 가격을 입력하세요.', adminSignatureWaiting: 'MakerAdminCap 소유자 서명을 기다리는 중…', onchainSettingsUpdated: '온체인 설정 업데이트됨: {digest}', onchainSettingsFailed: '온체인 설정 업데이트에 실패했습니다.', makerTreasuryRequired: '게시된 Maker, Treasury, MakerAdminCap이 필요합니다.', validWithdrawalRequired: '유효한 {symbol} 인출 금액을 입력하세요.', revenueWithdrawn: '{amount} {symbol} 인출됨: {digest}', treasuryWithdrawalFailed: 'Treasury 인출에 실패했습니다.',
@@ -1433,7 +1804,7 @@ const productionRuntimeI18n = {
     walletConnectedAs: 'Đã kết nối ví: {address}', walletDisconnected: 'Chưa kết nối ví', creatorProfileAfterFirstPublish: 'Hồ sơ tác giả xuất hiện sau lần đăng Maker đầu tiên', creatorProfileObject: 'Hồ sơ tác giả {address}', creatorProfileCreatedOnPublish: 'Hồ sơ tác giả sẽ được tạo ở lần đăng đầu tiên', accountGuest: 'Người dùng Animacraft', continueMakerSession: 'Tiếp tục phiên Maker đã chọn', choosePublishedMaker: 'Hãy chọn một Maker đã đăng trong Mẫu trước', openExactPlayer: 'Mở đúng trình chỉnh sửa người chơi', uploadStyleBeforePreview: 'Tải lên ít nhất một PNG Kiểu trước khi xem thử',
     treasuryLoadingSui: 'Đang tải số dư Treasury từ Sui…', treasuryUnavailable: 'Không thể tải Maker Treasury đã liên kết.', syncingMakers: 'Đang đồng bộ Maker…', refreshMakers: 'Làm mới Maker', networkLabel: 'Mạng', packageLabel: 'Gói', walrusLabel: 'Walrus', signerLabel: 'Ví ký', publishPackageFirstShort: 'Đăng gói trước', epochRetention: 'Lưu {count} epoch', configureUploadRelay: 'Cấu hình relay tải lên', signerConnected: 'Đã kết nối', signerConnectWallet: 'Kết nối ví',
     movePackageMissing: 'Chưa cấu hình gói Move.', previewMintLocked: 'Mẫu này đang ở chế độ xem trước. Có thể mint sau khi tải Maker Sui đã đăng và Manifest Walrus.', makerMintClosed: 'Maker này không nhận thêm phê duyệt Soul.', paidTreasuryMissing: 'Maker trả phí này thiếu tham chiếu Treasury on-chain.', connectMintWallet: 'Kết nối ví Sui để mint OC này.', soulidityPackageMissing: 'Cấu hình gói Soulidity trước khi bật mint Soul chuẩn.', canonicalMintGateClosed: 'Chưa thể mint Soul chuẩn cho đến khi bật cổng phát hành của bộ điều hợp Soulidity đã duyệt.', mintNextStep: 'Chuẩn bị và chứng nhận gói OC, rồi tiếp tục tới Soulidity để mint Soul chuẩn.', retryUpload: 'Thử tải lại', registerUpload: 'Đăng ký & tải lên', preparingHandoff: 'Đang chuẩn bị chuyển giao…',
-    ocRenderingQuilt: 'Đang kết xuất OC và mã hóa thành một Walrus Quilt…', ocQuiltEncoded: 'Đã mã hóa OC Quilt. Hãy đăng ký trên Walrus Mainnet.', ocQuiltPrepareFailed: 'Không thể chuẩn bị OC Quilt.', completeOcBeforePublishing: 'Hãy hoàn tất OC lại trước khi đăng để cố định hồ sơ, công thức và tài liệu Soul mới nhất.', ocWaitingUpload: 'Đang chờ chữ ký đăng ký rồi tải OC Quilt lên…', ocUnexpectedQuilt: 'Walrus trả về kết quả OC Quilt không đúng.', ocRecoveredCertified: 'OC Quilt khôi phục đã được chứng nhận. Tiếp tục tới Soulidity để mint chuẩn.', ocUploadedCertify: 'OC Quilt đã tải lên. Ký thêm một lần để chứng nhận.', ocUploadFailed: 'Đăng ký hoặc tải OC thất bại.', ocWaitingCertification: 'Đang chờ chữ ký chứng nhận Walrus…', ocFilesCertified: 'Tệp OC đã chứng nhận. Tiếp tục tới Soulidity để mint Soul chuẩn.', ocCertificationFailed: 'Chứng nhận OC thất bại.', transparentStylePng: 'Tài nguyên “{name}” không có pixel nào hiển thị. Hãy dùng trạng thái không chọn của Bộ phận tùy chọn cho “Không có”, thay vì PNG rỗng.', pngVerificationFailed: 'Không thể xác minh lại mọi PNG Kiểu sẽ đăng. Hãy nhập lại PNG bị lỗi rồi thử lại.', soulHandoffPreparing: 'Đang chuẩn bị chuyển giao Soulidity chuẩn…', canonicalMintDisabled: 'Bản phát hành này chưa bật mint Soul chuẩn.', ocChangedAfterUpload: 'Hồ sơ hoặc công thức OC đã đổi sau khi tải lên. Hãy chuẩn bị Quilt mới.', soulHandoffComplete: 'Đã mở Soulidity và tải gói chuyển giao khôi phục. Tích hợp này chỉ tạo một Soul chuẩn.', soulHandoffFailed: 'Chuyển giao Soulidity thất bại.', restoringOcUpload: 'Đang khôi phục điểm kiểm tra tải OC đã lưu…',
+    ocRenderingQuilt: 'Đang kết xuất OC và mã hóa thành một Walrus Quilt…', ocQuiltEncoded: 'Đã mã hóa OC Quilt. Hãy đăng ký trên Walrus Mainnet.', ocQuiltPrepareFailed: 'Không thể chuẩn bị OC Quilt.', completeOcBeforePublishing: 'Hãy hoàn tất OC lại trước khi đăng để cố định hồ sơ, công thức và tài liệu Soul mới nhất.', ocWaitingUpload: 'Đang chờ chữ ký đăng ký rồi tải OC Quilt lên…', ocUnexpectedQuilt: 'Walrus trả về kết quả OC Quilt không đúng.', ocRecoveredCertified: 'OC Quilt khôi phục đã được chứng nhận. Tiếp tục tới Soulidity để mint chuẩn.', ocUploadedCertify: 'OC Quilt đã tải lên. Ký thêm một lần để chứng nhận.', ocUploadFailed: 'Đăng ký hoặc tải OC thất bại.', ocWaitingCertification: 'Đang chờ chữ ký chứng nhận Walrus…', ocFilesCertified: 'Tệp OC đã chứng nhận. Tiếp tục tới Soulidity để mint Soul chuẩn.', ocCertificationFailed: 'Chứng nhận OC thất bại.', transparentStylePng: 'Tài nguyên “{name}” không có pixel nào hiển thị. Hãy dùng trạng thái không chọn của Bộ phận tùy chọn cho “Không có”, thay vì PNG rỗng.', pngVerificationFailed: 'Không thể xác minh lại mọi PNG Kiểu sẽ đăng. Hãy nhập lại PNG bị lỗi rồi thử lại.', soulHandoffPreparing: 'Đang chuẩn bị chuyển giao Soulidity chuẩn…', canonicalMintDisabled: 'Bản phát hành này chưa bật mint Soul chuẩn.', ocChangedAfterUpload: 'Hồ sơ hoặc công thức OC đã đổi sau khi tải lên. Hãy chuẩn bị Quilt mới.', soulHandoffComplete: 'Đã mở Soulidity và tải gói chuyển giao khôi phục. Tích hợp này chỉ tạo một Soul chuẩn.', soulHandoffAwaitingReceipt: 'Đã mở Soulidity. PNG cuối chỉ được mở khóa sau khi giao dịch ví và biên nhận on-chain chính xác được xác minh.', soulHandoffVerifying: 'Đang xác minh giao dịch Soulidity và nguồn gốc cố định trên Sui…', soulHandoffVerified: 'Soul on-chain đã được xác minh. PNG cuối đã mở khóa.', soulHandoffVerifiedBackupFailed: 'Soul đã xác minh và PNG cuối đã mở khóa, nhưng sao lưu khôi phục cục bộ thất bại. Hãy tải PNG ngay.', soulHandoffReceiptFailed: 'Không thể xác minh biên nhận hoàn tất Soulidity. PNG cuối vẫn bị khóa.', soulHandoffFailed: 'Chuyển giao Soulidity thất bại.', restoringOcUpload: 'Đang khôi phục điểm kiểm tra tải OC đã lưu…',
     makerAssetUnavailable: 'Tài nguyên “{name}” không còn khả dụng. Hãy chọn lại PNG.', unexpectedMakerQuilt: 'Walrus trả về số lượng tệp Maker Quilt không đúng.', expansionNoLongerCompatible: 'Gói mở rộng nhúng không còn tương thích với phiên bản Maker này.', ruleAssetMismatch: 'Mỗi quy tắc phải tham chiếu Bộ phận có Vật phẩm PNG đã tải lên.', makerPublishedPartial: 'Đã đăng. Manifest Walrus theo phiên bản giữ toàn bộ đồ thị Maker; Sui lưu phép chiếu quyền và màu v2 đầy đủ để xác minh công thức.', makerPublishedIndexing: 'Đã đăng lên Sui. ID đối tượng đang được lập chỉ mục nên trình duyệt vẫn giữ bản nháp khôi phục.', archiveWaiting: 'Đang chờ chữ ký Sui để lưu trữ Maker này…', restoreWaiting: 'Đang chờ chữ ký Sui để khôi phục Maker này…', archivedOnNetwork: 'Đã lưu trữ trên {network}: {digest}', restoredOnNetwork: 'Đã khôi phục trên {network}: {digest}', archiveMakerFailed: 'Không thể lưu trữ Maker này.', restoreMakerFailed: 'Không thể khôi phục Maker này.',
     makerRestoredAt: 'Đã khôi phục không gian Maker · {time}', makerRestored: 'Đã khôi phục không gian Maker', makerVersionChanged: 'Phiên bản Maker đã đổi. Hãy chuẩn bị Walrus Quilt mới trước khi đăng.', makerAutosaved: 'Maker đã tự lưu', makerSaved: 'Maker đã lưu', makerWorkspaceRestoreFailed: 'Không thể khôi phục không gian Maker.', currentRulesInvalid: 'Quy tắc Maker hiện tại không thể tạo OC hợp lệ.', creatorAssetImportFailed: 'Không thể nhập tài nguyên Maker đã chọn.', ocDraftLocalFailed: 'Không thể lưu cục bộ bản nháp OC.',
     makerSettingsFirstPublish: 'Các cài đặt này sẽ được ghi khi Maker được đăng lần đầu.', makerAdminOwnerRequired: 'Kết nối ví hiện đang sở hữu MakerAdminCap.', paidMintReleaseGated: 'Mint trả phí vẫn bị khóa theo bản phát hành. Hãy tắt phí trước khi cập nhật.', validMintPriceRequired: 'Nhập giá mint {symbol} hợp lệ.', adminSignatureWaiting: 'Đang chờ chữ ký của chủ MakerAdminCap…', onchainSettingsUpdated: 'Đã cập nhật cài đặt on-chain: {digest}', onchainSettingsFailed: 'Cập nhật cài đặt on-chain thất bại.', makerTreasuryRequired: 'Cần Maker đã đăng, Treasury và MakerAdminCap.', validWithdrawalRequired: 'Nhập số tiền rút {symbol} hợp lệ.', revenueWithdrawn: 'Đã rút {amount} {symbol}: {digest}', treasuryWithdrawalFailed: 'Rút tiền từ Treasury thất bại.',
@@ -2218,7 +2589,7 @@ const docsPageI18n = {
     docsNoSignerTitle: 'No backend signer',
     docsNoSignerCopy: 'Creators and players sign their own transactions. Public reads use Sui GraphQL, while every core write belongs to Sui objects and wallet PTBs.',
     docsWalrusAssetsTitle: 'Walrus as the asset layer',
-    docsWalrusAssetsCopy: 'Style PNGs, picker icons, Maker manifests, finished OC images, and profile JSON resolve from browser-certified Walrus Quilts. Sui records bounded Quilt and patch locators.',
+    docsWalrusAssetsCopy: 'Public free Style PNGs, encrypted paid Styles, separate public previews, protected final-OC ciphertext, Maker manifests, and profile JSON resolve from browser-certified Walrus Quilts. Paid plaintext never enters a public Quilt; Sui records bounded Quilt and patch locators.',
     docsOpenSourceTitle: 'Open-source releases',
     docsOpenSourceCopy: 'Production changes land through pull requests, CI checks, and CODEOWNERS review before shipping to Vercel.',
     docsArchitectureKicker: 'Production Architecture',
@@ -2275,13 +2646,13 @@ const docsPageI18n = {
     chainActionWalletTitle: 'Wallet',
     chainActionWalletCopy: 'Connect a Sui wallet. Creators and players sign every write themselves.',
     chainActionWalrusTitle: 'Walrus assets',
-    chainActionWalrusCopy: 'Stage Style PNGs, picker icons, Maker manifests, finished OC images, and profile JSON as Quilt patches.',
+    chainActionWalrusCopy: 'Stage public free Style PNGs, encrypted paid Styles, separate public previews, protected final-OC ciphertext, Maker manifests, and profile JSON as Quilt patches.',
     chainActionMakerTitle: 'OCMaker object',
     chainActionMakerCopy: 'Publish Maker provenance, public choice identities, economics, lifecycle state, and an equivalent compiled rule and color projection on Sui.',
     chainActionSoulTitle: 'Soulidity handoff · gated',
     chainActionSoulCopy: 'After the Canonical Soul Mainnet gate opens, Animacraft authorization and Living Content can enter Soulidity’s only finished-Soul mint path.',
     docsProtocolStep1Title: 'Style Assets',
-    docsProtocolStep1Copy: 'Creators upload Style PNGs with their transforms and global Layer Track order to Walrus.',
+    docsProtocolStep1Copy: 'Creators upload free Style PNGs and encrypted paid Styles with their transforms and global Layer Track order to Walrus; public previews remain separate from paid plaintext.',
     docsProtocolStep2Title: 'Maker Contract',
     docsProtocolStep2Copy: 'A Maker links immutable art and rules to a transferable AdminCap and a native-USDC Treasury.',
     docsProtocolStep3Title: 'OC Recipe',
@@ -2299,7 +2670,7 @@ const docsPageI18n = {
     docsNoSignerTitle: '没有后端代签',
     docsNoSignerCopy: '创作者与玩家自行签署交易。公开读取使用 Sui GraphQL，所有核心写入都归属于 Sui 对象与钱包 PTB。',
     docsWalrusAssetsTitle: 'Walrus 作为素材层',
-    docsWalrusAssetsCopy: '样式 PNG、选择器图标、Maker 清单、成品 OC 图片和资料 JSON 均从浏览器认证的 Walrus Quilt 读取；Sui 记录有边界的 Quilt 与补丁定位信息。',
+    docsWalrusAssetsCopy: '公开免费样式 PNG、付费样式密文、独立公开预览、受保护的最终 OC 密文、Maker 清单与资料 JSON 均从浏览器认证的 Walrus Quilt 读取。付费明文绝不进入公开 Quilt；Sui 记录有边界的 Quilt 与补丁定位信息。',
     docsOpenSourceTitle: '开源发布流程',
     docsOpenSourceCopy: '生产变更通过 Pull Request、CI 检查和 CODEOWNERS 审核后，才会部署到 Vercel。',
     docsArchitectureKicker: '生产架构',
@@ -2356,13 +2727,13 @@ const docsPageI18n = {
     chainActionWalletTitle: '钱包',
     chainActionWalletCopy: '连接 Sui 钱包；创作者和玩家自行签署每一笔写入。',
     chainActionWalrusTitle: 'Walrus 素材',
-    chainActionWalrusCopy: '把样式 PNG、选择器图标、Maker 清单、成品 OC 图片和资料 JSON 作为 Quilt 补丁暂存。',
+    chainActionWalrusCopy: '把公开免费样式 PNG、付费样式密文、独立公开预览、受保护的最终 OC 密文、Maker 清单与资料 JSON 作为 Quilt 补丁暂存。',
     chainActionMakerTitle: 'OCMaker 对象',
     chainActionMakerCopy: '在 Sui 发布 Maker 来源、公开选择标识、经济参数、生命周期状态，以及等价编译的规则与颜色投影。',
     chainActionSoulTitle: 'Soulidity 交接 · 尚未开启',
     chainActionSoulCopy: '规范 Soul 主网开关开启后，Animacraft 授权与生命内容才会进入 Soulidity 唯一的成品 Soul 铸造路径。',
     docsProtocolStep1Title: '样式素材',
-    docsProtocolStep1Copy: '创作者把样式 PNG、坐标变换和全局叠放顺序上传到 Walrus。',
+    docsProtocolStep1Copy: '创作者把免费样式 PNG 与付费样式密文连同坐标变换和全局叠放顺序上传到 Walrus；公开预览与付费明文保持分离。',
     docsProtocolStep2Title: 'Maker 合约',
     docsProtocolStep2Copy: 'Maker 把不可变原画与规则绑定到可转让 AdminCap 和原生 USDC 资金库。',
     docsProtocolStep3Title: 'OC 配方',
@@ -2380,7 +2751,7 @@ const docsPageI18n = {
     docsNoSignerTitle: 'バックエンド署名者なし',
     docsNoSignerCopy: '制作者とプレイヤーが自分の取引に署名します。公開読み取りは Sui GraphQL を使用し、主要な書き込みは Sui オブジェクトとウォレット PTB に属します。',
     docsWalrusAssetsTitle: '素材レイヤーとしての Walrus',
-    docsWalrusAssetsCopy: 'スタイル PNG、選択アイコン、Maker マニフェスト、完成 OC 画像、プロフィール JSON は、ブラウザで認証した Walrus Quilt から取得します。Sui は制限付きの Quilt とパッチ位置を記録します。',
+    docsWalrusAssetsCopy: '公開無料 Style PNG、有料 Style ciphertext、独立した公開 preview、保護された最終 OC ciphertext、Maker manifest、profile JSON は、ブラウザで認証した Walrus Quilt から取得します。有料 plaintext は公開 Quilt に入らず、Sui が制限付き Quilt と patch locator を記録します。',
     docsOpenSourceTitle: 'オープンソースのリリース',
     docsOpenSourceCopy: '本番変更は Pull Request、CI、CODEOWNERS のレビューを通過してから Vercel へ配備されます。',
     docsArchitectureKicker: '本番アーキテクチャ',
@@ -2437,13 +2808,13 @@ const docsPageI18n = {
     chainActionWalletTitle: 'ウォレット',
     chainActionWalletCopy: 'Sui ウォレットを接続します。制作者とプレイヤーがすべての書き込みに自分で署名します。',
     chainActionWalrusTitle: 'Walrus 素材',
-    chainActionWalrusCopy: 'スタイル PNG、選択アイコン、Maker マニフェスト、完成 OC 画像、プロフィール JSON を Quilt パッチとして準備します。',
+    chainActionWalrusCopy: '公開無料 Style PNG、有料 Style ciphertext、独立した公開 preview、保護された最終 OC ciphertext、Maker manifest、profile JSON を Quilt patch として準備します。',
     chainActionMakerTitle: 'OCMaker オブジェクト',
     chainActionMakerCopy: 'Maker の来歴、公開選択 ID、経済設定、ライフサイクル状態、等価にコンパイルされたルールとカラー投影を Sui に公開します。',
     chainActionSoulTitle: 'Soulidity 連携 · 未有効',
     chainActionSoulCopy: 'Canonical Soul Mainnet ゲートの有効化後にのみ、Animacraft 認可とリビングコンテンツが Soulidity の唯一の完成 Soul ミント経路へ進みます。',
     docsProtocolStep1Title: 'スタイル素材',
-    docsProtocolStep1Copy: '制作者がスタイル PNG、その変形、全体レイヤートラック順を Walrus へアップロードします。',
+    docsProtocolStep1Copy: '制作者は無料 Style PNG と暗号化した有料 Style を、変形と全体 Layer Track 順とともに Walrus へアップロードします。公開 preview は有料 plaintext と分離します。',
     docsProtocolStep2Title: 'Maker コントラクト',
     docsProtocolStep2Copy: 'Maker は不変の原画とルールを譲渡可能な AdminCap とネイティブ USDC 金庫に結び付けます。',
     docsProtocolStep3Title: 'OC レシピ',
@@ -2461,7 +2832,7 @@ const docsPageI18n = {
     docsNoSignerTitle: '백엔드 서명자 없음',
     docsNoSignerCopy: '제작자와 플레이어가 자신의 트랜잭션에 직접 서명합니다. 공개 읽기는 Sui GraphQL을 사용하고, 핵심 쓰기는 Sui 오브젝트와 지갑 PTB에 속합니다.',
     docsWalrusAssetsTitle: '에셋 레이어로서의 Walrus',
-    docsWalrusAssetsCopy: '스타일 PNG, 선택 아이콘, Maker 매니페스트, 완성 OC 이미지, 프로필 JSON은 브라우저가 인증한 Walrus Quilt에서 가져옵니다. Sui는 제한된 Quilt 및 패치 위치를 기록합니다.',
+    docsWalrusAssetsCopy: '공개 무료 Style PNG, 유료 Style ciphertext, 별도 공개 preview, 보호된 최종 OC ciphertext, Maker manifest, profile JSON은 브라우저가 인증한 Walrus Quilt에서 가져옵니다. 유료 plaintext는 공개 Quilt에 들어가지 않으며 Sui가 제한된 Quilt와 patch locator를 기록합니다.',
     docsOpenSourceTitle: '오픈 소스 릴리스',
     docsOpenSourceCopy: '프로덕션 변경은 Pull Request, CI 검사, CODEOWNERS 검토를 거친 뒤 Vercel에 배포됩니다.',
     docsArchitectureKicker: '프로덕션 아키텍처',
@@ -2518,13 +2889,13 @@ const docsPageI18n = {
     chainActionWalletTitle: '지갑',
     chainActionWalletCopy: 'Sui 지갑을 연결합니다. 제작자와 플레이어가 모든 쓰기에 직접 서명합니다.',
     chainActionWalrusTitle: 'Walrus 에셋',
-    chainActionWalrusCopy: '스타일 PNG, 선택 아이콘, Maker 매니페스트, 완성 OC 이미지, 프로필 JSON을 Quilt 패치로 준비합니다.',
+    chainActionWalrusCopy: '공개 무료 Style PNG, 유료 Style ciphertext, 별도 공개 preview, 보호된 최종 OC ciphertext, Maker manifest, profile JSON을 Quilt patch로 준비합니다.',
     chainActionMakerTitle: 'OCMaker 오브젝트',
     chainActionMakerCopy: 'Maker 출처, 공개 선택 ID, 경제 설정, 수명 주기 상태와 동등하게 컴파일된 규칙·색상 투영을 Sui에 게시합니다.',
     chainActionSoulTitle: 'Soulidity 연동 · 비활성',
     chainActionSoulCopy: 'Canonical Soul Mainnet 게이트가 열린 뒤에만 Animacraft 승인과 리빙 콘텐츠가 Soulidity의 유일한 완성 Soul 민팅 경로로 이동합니다.',
     docsProtocolStep1Title: '스타일 에셋',
-    docsProtocolStep1Copy: '제작자가 스타일 PNG, 변형, 전체 레이어 트랙 순서를 Walrus에 업로드합니다.',
+    docsProtocolStep1Copy: '제작자는 무료 Style PNG와 암호화된 유료 Style을 변형 및 전체 Layer Track 순서와 함께 Walrus에 업로드하며, 공개 preview는 유료 plaintext와 분리합니다.',
     docsProtocolStep2Title: 'Maker 컨트랙트',
     docsProtocolStep2Copy: 'Maker는 불변 아트와 규칙을 양도 가능한 AdminCap 및 네이티브 USDC 금고에 연결합니다.',
     docsProtocolStep3Title: 'OC 레시피',
@@ -2542,7 +2913,7 @@ const docsPageI18n = {
     docsNoSignerTitle: 'Không có bên ký ở máy chủ',
     docsNoSignerCopy: 'Tác giả và người chơi tự ký giao dịch. Dữ liệu công khai được đọc qua Sui GraphQL, còn mọi ghi chép cốt lõi thuộc về đối tượng Sui và PTB của ví.',
     docsWalrusAssetsTitle: 'Walrus làm lớp tài nguyên',
-    docsWalrusAssetsCopy: 'PNG của Kiểu, biểu tượng lựa chọn, bản kê khai Maker, ảnh OC hoàn tất và JSON hồ sơ được lấy từ Walrus Quilt do trình duyệt chứng nhận. Sui ghi vị trí Quilt và bản vá có giới hạn.',
+    docsWalrusAssetsCopy: 'PNG Kiểu miễn phí công khai, ciphertext Kiểu trả phí, preview công khai riêng, ciphertext OC cuối được bảo vệ, Maker manifest và profile JSON được lấy từ Walrus Quilt do trình duyệt chứng nhận. Plaintext trả phí không vào Quilt công khai; Sui ghi Quilt và patch locator có giới hạn.',
     docsOpenSourceTitle: 'Phát hành mã nguồn mở',
     docsOpenSourceCopy: 'Thay đổi sản xuất phải qua Pull Request, kiểm tra CI và duyệt CODEOWNERS trước khi triển khai lên Vercel.',
     docsArchitectureKicker: 'Kiến trúc sản xuất',
@@ -2599,13 +2970,13 @@ const docsPageI18n = {
     chainActionWalletTitle: 'Ví',
     chainActionWalletCopy: 'Kết nối ví Sui. Tác giả và người chơi tự ký mọi ghi chép.',
     chainActionWalrusTitle: 'Tài nguyên Walrus',
-    chainActionWalrusCopy: 'Chuẩn bị PNG của Kiểu, biểu tượng lựa chọn, bản kê khai Maker, ảnh OC hoàn tất và JSON hồ sơ dưới dạng bản vá Quilt.',
+    chainActionWalrusCopy: 'Chuẩn bị PNG Kiểu miễn phí công khai, ciphertext Kiểu trả phí, preview công khai riêng, ciphertext OC cuối được bảo vệ, Maker manifest và profile JSON dưới dạng patch Quilt.',
     chainActionMakerTitle: 'Đối tượng OCMaker',
     chainActionMakerCopy: 'Đăng nguồn gốc Maker, ID lựa chọn công khai, kinh tế, trạng thái vòng đời cùng phép chiếu quy tắc và màu được biên dịch tương đương trên Sui.',
     chainActionSoulTitle: 'Bàn giao Soulidity · đang khóa',
     chainActionSoulCopy: 'Chỉ sau khi cổng Canonical Soul Mainnet mở, quyền Animacraft và Nội dung sống mới đi vào tuyến đúc Soul hoàn tất duy nhất của Soulidity.',
     docsProtocolStep1Title: 'Tài nguyên Kiểu',
-    docsProtocolStep1Copy: 'Tác giả tải PNG của Kiểu cùng biến đổi và thứ tự lớp toàn cục lên Walrus.',
+    docsProtocolStep1Copy: 'Tác giả tải PNG Kiểu miễn phí và Kiểu trả phí đã mã hóa cùng biến đổi và Thứ tự lớp toàn cục lên Walrus; preview công khai được tách khỏi plaintext trả phí.',
     docsProtocolStep2Title: 'Hợp đồng Maker',
     docsProtocolStep2Copy: 'Maker liên kết tác phẩm và quy tắc bất biến với AdminCap có thể chuyển nhượng cùng kho USDC gốc.',
     docsProtocolStep3Title: 'Công thức OC',
@@ -2904,6 +3275,12 @@ const state = {
   makerObjectId: '',
   makerTreasuryObjectId: '',
   makerAdminCapObjectId: '',
+  commerceV5RootObjectId: '',
+  commerceV5MakerTreasuryObjectId: '',
+  commerceV5ControlCapObjectId: '',
+  commerceV5ControlVaultObjectId: '',
+  commerceV5ListingObjectId: '',
+  makerCommerceV5Publication: null,
   treasuryBalanceLoadedFor: '',
   treasuryBalanceLoading: false,
   makerArchived: false,
@@ -2926,10 +3303,20 @@ const state = {
   hasOcUploadRecovery: false,
   ocImagePatchId: '',
   ocProfilePatchId: '',
+  ocPreviewPatchId: '',
   pendingOcImageBlob: null,
+  pendingOcEncryptedImageBlob: null,
+  pendingOcPreviewBlob: null,
   pendingOcProfileBlob: null,
   pendingOcPackage: null,
+  pendingOcOutputProtection: null,
+  pendingOcOutputDescriptor: null,
+  pendingOcExportKey: '',
+  pendingOcReturnNonce: '',
+  pendingOcCompletionReceipt: null,
   pendingOcRecipeHash: null,
+  pendingOcStyleSelectionsV5: null,
+  pendingOcCommerceQuoteV5: null,
   pendingOcRecipeJson: '',
   pendingOcFingerprint: '',
   previewingMaker: false,
@@ -2962,6 +3349,11 @@ if (makerStorageInitializationError) {
 }
 
 const makerModels = new Map();
+const commerceV5StateCache = new Map();
+const commerceV5StatePending = new Map();
+const makerSealPolicyCacheV5 = new Map();
+const makerSealSessionCacheV5 = new Map();
+const makerSealPlaintextCacheV5 = new Map();
 const loadedMakerDrafts = new Set();
 const loadedLocalMakerIndexes = new Set();
 const loadedStableMakerIndexes = new Set();
@@ -2976,6 +3368,15 @@ let confirmationSuspendedLifecycle = false;
 let makerLifecycleManagerReturnFocus = null;
 let makerLifecycleManagerSyncRequestId = 0;
 let makerWorkspaceLifecycleOperationId = 0;
+let makerCommerceV5LifecycleOperationId = 0;
+let makerCommerceV5LifecycleView = Object.freeze({
+  status: 'idle',
+  templateId: '',
+  wallet: '',
+  rootObjectId: '',
+  management: null,
+  error: null,
+});
 let makerAutosaveTimer = null;
 let makerWorkspace = null;
 let draftRecoveryRequestId = 0;
@@ -2984,6 +3385,8 @@ let makerUploadRestoreRequestId = 0;
 let ocUploadRestoreRequestId = 0;
 let makerChainOperationId = 0;
 let ocChainOperationId = 0;
+let soulidityCompletionWindow = null;
+let soulidityCompletionReceiptPending = false;
 let treasuryBalanceRequestId = 0;
 let chainMakerLoadRequestId = 0;
 const makerUploadRestoreRequests = new Map();
@@ -3171,6 +3574,12 @@ function createMakerModel({ empty = false, starter = false, canvas = { width: 10
     makerObjectId: '',
     makerTreasuryObjectId: '',
     makerAdminCapObjectId: '',
+    commerceV5RootObjectId: '',
+    commerceV5MakerTreasuryObjectId: '',
+    commerceV5ControlCapObjectId: '',
+    commerceV5ControlVaultObjectId: '',
+    commerceV5ListingObjectId: '',
+    makerCommerceV5Publication: null,
     makerArchived: false,
     pausedEconomics: null,
     makerPublicationIntent: null,
@@ -3203,6 +3612,12 @@ function syncActiveMakerModelRefs() {
     makerObjectId: state.makerObjectId,
     makerTreasuryObjectId: state.makerTreasuryObjectId,
     makerAdminCapObjectId: state.makerAdminCapObjectId,
+    commerceV5RootObjectId: state.commerceV5RootObjectId,
+    commerceV5MakerTreasuryObjectId: state.commerceV5MakerTreasuryObjectId,
+    commerceV5ControlCapObjectId: state.commerceV5ControlCapObjectId,
+    commerceV5ControlVaultObjectId: state.commerceV5ControlVaultObjectId,
+    commerceV5ListingObjectId: state.commerceV5ListingObjectId,
+    makerCommerceV5Publication: state.makerCommerceV5Publication,
     makerArchived: state.makerArchived,
     pausedEconomics: activeTemplate()?.pausedEconomics || null,
     makerPublicationIntent: state.makerPublicationIntent,
@@ -3212,6 +3627,8 @@ function syncActiveMakerModelRefs() {
 function resetOcUploadState() {
   ocUploadRestoreRequestId += 1;
   ocChainOperationId += 1;
+  soulidityCompletionWindow = null;
+  soulidityCompletionReceiptPending = false;
   state.minting = false;
   state.mintStatus = '';
   state.mintDigest = '';
@@ -3222,10 +3639,20 @@ function resetOcUploadState() {
   state.hasOcUploadRecovery = false;
   state.ocImagePatchId = '';
   state.ocProfilePatchId = '';
+  state.ocPreviewPatchId = '';
   state.pendingOcImageBlob = null;
+  state.pendingOcEncryptedImageBlob = null;
+  state.pendingOcPreviewBlob = null;
   state.pendingOcProfileBlob = null;
   state.pendingOcPackage = null;
+  state.pendingOcOutputProtection = null;
+  state.pendingOcOutputDescriptor = null;
+  state.pendingOcExportKey = '';
+  state.pendingOcReturnNonce = '';
+  state.pendingOcCompletionReceipt = null;
   state.pendingOcRecipeHash = null;
+  state.pendingOcStyleSelectionsV5 = null;
+  state.pendingOcCommerceQuoteV5 = null;
   state.pendingOcRecipeJson = '';
   state.pendingOcFingerprint = '';
 }
@@ -3234,6 +3661,7 @@ function resetMakerUploadMemoryState({ clearPublicationIntent = true } = {}) {
   makerUploadRestoreRequestId += 1;
   makerChainOperationId += 1;
   makerWorkspaceLifecycleOperationId += 1;
+  makerCommerceV5LifecycleOperationId += 1;
   treasuryBalanceRequestId += 1;
   state.treasuryBalanceLoading = false;
   if (makerPublicationRecoveryTimer) {
@@ -3243,6 +3671,18 @@ function resetMakerUploadMemoryState({ clearPublicationIntent = true } = {}) {
   state.publishing = false;
   state.makerReleaseInFlight = false;
   state.makerLifecycleActionBusy = false;
+  makerCommerceV5LifecycleView = Object.freeze({
+    status: 'idle',
+    templateId: state.templateId,
+    wallet: state.walletAddress,
+    rootObjectId: '',
+    management: null,
+    error: null,
+  });
+  commerceV5StateCache.clear();
+  makerSealPolicyCacheV5.clear();
+  makerSealSessionCacheV5.clear();
+  makerSealPlaintextCacheV5.clear();
   state.makerUploadSession = null;
   state.pendingMakerAssets = [];
   state.makerUploadStage = 'idle';
@@ -3251,14 +3691,34 @@ function resetMakerUploadMemoryState({ clearPublicationIntent = true } = {}) {
   state.hasMakerUploadRecovery = false;
   state.pendingMakerManifestJson = '';
   state.pendingMakerV4Bundle = null;
-  if (clearPublicationIntent) state.makerPublicationIntent = null;
+  if (clearPublicationIntent) {
+    state.makerPublicationIntent = null;
+    state.makerCommerceV5Publication = null;
+  }
   clearMakerPublishError();
 }
 
 function applyMakerModelToState(templateId, model) {
   const previousTemplateId = state.templateId;
   state.templateId = templateId;
-  if (previousTemplateId !== templateId) resetOcUploadState();
+  if (previousTemplateId !== templateId) {
+    resetOcUploadState();
+    makerCommerceV5LifecycleOperationId += 1;
+    if (
+      makerCommerceV5LifecycleView.status === 'loading'
+      && state.makerLifecycleActionBusy
+    ) {
+      state.makerLifecycleActionBusy = false;
+    }
+    makerCommerceV5LifecycleView = Object.freeze({
+      status: 'idle',
+      templateId,
+      wallet: state.walletAddress,
+      rootObjectId: '',
+      management: null,
+      error: null,
+    });
+  }
   state.makerCanvas = model.canvas;
   state.makerSlots = model.slots;
   state.makerParts = model.parts;
@@ -3290,6 +3750,14 @@ function applyMakerModelToState(templateId, model) {
   state.makerObjectId = model.makerObjectId || '';
   state.makerTreasuryObjectId = model.makerTreasuryObjectId || '';
   state.makerAdminCapObjectId = model.makerAdminCapObjectId || '';
+  state.commerceV5RootObjectId = model.commerceV5RootObjectId || '';
+  state.commerceV5MakerTreasuryObjectId = model.commerceV5MakerTreasuryObjectId || '';
+  state.commerceV5ControlCapObjectId = model.commerceV5ControlCapObjectId || '';
+  state.commerceV5ControlVaultObjectId = model.commerceV5ControlVaultObjectId || '';
+  state.commerceV5ListingObjectId = model.commerceV5ListingObjectId || '';
+  state.makerCommerceV5Publication = normalizedMakerCommerceV5Publication(
+    model.makerCommerceV5Publication,
+  );
   if (state.makerTreasuryObjectId !== state.treasuryBalanceLoadedFor) state.treasuryBalanceLoadedFor = '';
   state.makerArchived = Boolean(model.makerArchived);
   if (activeTemplate()) activeTemplate().pausedEconomics = model.pausedEconomics || null;
@@ -3358,6 +3826,12 @@ makerModels.set(state.templateId, {
   makerObjectId: state.makerObjectId,
   makerTreasuryObjectId: state.makerTreasuryObjectId,
   makerAdminCapObjectId: state.makerAdminCapObjectId,
+  commerceV5RootObjectId: state.commerceV5RootObjectId,
+  commerceV5MakerTreasuryObjectId: state.commerceV5MakerTreasuryObjectId,
+  commerceV5ControlCapObjectId: state.commerceV5ControlCapObjectId,
+  commerceV5ControlVaultObjectId: state.commerceV5ControlVaultObjectId,
+  commerceV5ListingObjectId: state.commerceV5ListingObjectId,
+  makerCommerceV5Publication: state.makerCommerceV5Publication,
   makerArchived: state.makerArchived,
   pausedEconomics: activeTemplate()?.pausedEconomics || null,
   makerPublicationIntent: state.makerPublicationIntent,
@@ -3608,6 +4082,7 @@ function makerVersionLineageForkMessage(fork = makerPublishedLineageFork()) {
 function makerLifecycleDescriptor(template = activeTemplate()) {
   const model = template ? makerModels.get(template.id) : null;
   const isActive = Boolean(template && template.id === state.templateId);
+  const commerce = isActive ? activeMakerCommerceV5Management() : null;
   const published = template?.source === 'chain' || Boolean(
     isActive
       ? state.publishDigest || state.makerObjectId
@@ -3622,8 +4097,12 @@ function makerLifecycleDescriptor(template = activeTemplate()) {
   const lineageFork = published
     ? makerPublishedLineageFork(template)
     : null;
-  const archived = published && Boolean(isActive ? state.makerArchived : model?.makerArchived);
-  const mintingEnabled = template?.mintingEnabled !== false;
+  const archived = commerce
+    ? commerce.chain.root.lifecycle === COMMERCE_V5_LIFECYCLE.ARCHIVED
+    : published && Boolean(isActive ? state.makerArchived : model?.makerArchived);
+  const mintingEnabled = commerce
+    ? commerce.chain.root.lifecycle === COMMERCE_V5_LIFECYCLE.ACTIVE
+    : template?.mintingEnabled !== false;
   const hasActivePublicationCheckpoint = isActive && (
     state.makerUploadStage !== 'idle'
     || state.hasMakerUploadRecovery
@@ -3638,6 +4117,9 @@ function makerLifecycleDescriptor(template = activeTemplate()) {
   if (publicationInFlight) id = 'publishing';
   else if (hasActivePublicationCheckpoint || hasStoredPublicationIntent) id = 'recoverable';
   else if (versionDraft) id = 'version-draft';
+  else if (
+    commerce?.chain.root.lifecycle === COMMERCE_V5_LIFECYCLE.SALE_PENDING
+  ) id = 'sale-pending';
   else if (archived) id = 'archived';
   else if (published && !mintingEnabled) id = 'paused';
   else if (published) id = 'active';
@@ -3650,6 +4132,7 @@ function makerLifecycleDescriptor(template = activeTemplate()) {
     active: ['makerLifecycleActive', 'activeLifecycleCopy'],
     paused: ['makerLifecyclePaused', 'pausedLifecycleCopy'],
     archived: ['makerLifecycleArchived', 'archivedLifecycleCopy'],
+    'sale-pending': ['makerCommerceV5SalePending', 'makerCommerceV5PanelCopy'],
     'version-draft': ['makerLifecycleVersionDraft', 'versionLifecycleCopy'],
   }[id];
   const copyVariables = id === 'version-draft'
@@ -3670,6 +4153,7 @@ function makerLifecycleDescriptor(template = activeTemplate()) {
     lineageFork,
     archived,
     mintingEnabled,
+    salePending: id === 'sale-pending',
   };
 }
 
@@ -4296,6 +4780,11 @@ function normalizedWorkspaceChainBinding(metadata, {
     makerObjectId,
     makerTreasuryObjectId: suiJsonId(value.makerTreasuryObjectId),
     makerAdminCapObjectId: suiJsonId(value.makerAdminCapObjectId),
+    commerceV5RootObjectId: suiJsonId(value.commerceV5RootObjectId),
+    commerceV5MakerTreasuryObjectId: suiJsonId(value.commerceV5MakerTreasuryObjectId),
+    commerceV5ControlCapObjectId: suiJsonId(value.commerceV5ControlCapObjectId),
+    commerceV5ControlVaultObjectId: suiJsonId(value.commerceV5ControlVaultObjectId),
+    commerceV5ListingObjectId: suiJsonId(value.commerceV5ListingObjectId),
     publishDigest: safeDraftText(value.publishDigest, '', 256),
     archived: Boolean(value.archived),
     mintingEnabled: value.mintingEnabled !== false,
@@ -4352,6 +4841,26 @@ function currentWorkspaceChainBinding(document = currentMakerV4Source()) {
     makerObjectId,
     makerTreasuryObjectId: suiJsonId(state.makerTreasuryObjectId || template?.treasuryId),
     makerAdminCapObjectId: suiJsonId(state.makerAdminCapObjectId || template?.adminCapId),
+    commerceV5RootObjectId: suiJsonId(
+      state.commerceV5RootObjectId
+      || template?.commerceV5RootObjectId,
+    ),
+    commerceV5MakerTreasuryObjectId: suiJsonId(
+      state.commerceV5MakerTreasuryObjectId
+      || template?.commerceV5MakerTreasuryObjectId,
+    ),
+    commerceV5ControlCapObjectId: suiJsonId(
+      state.commerceV5ControlCapObjectId
+      || template?.commerceV5ControlCapObjectId,
+    ),
+    commerceV5ControlVaultObjectId: suiJsonId(
+      state.commerceV5ControlVaultObjectId
+      || template?.commerceV5ControlVaultObjectId,
+    ),
+    commerceV5ListingObjectId: suiJsonId(
+      state.commerceV5ListingObjectId
+      || template?.commerceV5ListingObjectId,
+    ),
     publishDigest: String(state.publishDigest || ''),
     archived: Boolean(state.makerArchived),
     mintingEnabled: template?.mintingEnabled !== false,
@@ -4405,6 +4914,21 @@ function persistLocalMakerIndex(address = state.walletAddress) {
     objectId: makerObjectId,
     treasuryId: suiJsonId(template.treasuryId || model?.makerTreasuryObjectId),
     adminCapId: suiJsonId(template.adminCapId || model?.makerAdminCapObjectId),
+    commerceV5RootObjectId: suiJsonId(
+      template.commerceV5RootObjectId || model?.commerceV5RootObjectId,
+    ),
+    commerceV5MakerTreasuryObjectId: suiJsonId(
+      template.commerceV5MakerTreasuryObjectId || model?.commerceV5MakerTreasuryObjectId,
+    ),
+    commerceV5ControlCapObjectId: suiJsonId(
+      template.commerceV5ControlCapObjectId || model?.commerceV5ControlCapObjectId,
+    ),
+    commerceV5ControlVaultObjectId: suiJsonId(
+      template.commerceV5ControlVaultObjectId || model?.commerceV5ControlVaultObjectId,
+    ),
+    commerceV5ListingObjectId: suiJsonId(
+      template.commerceV5ListingObjectId || model?.commerceV5ListingObjectId,
+    ),
     publishDigest: safeDraftText(model?.publishDigest, '', 256),
     archived: Boolean(model?.makerArchived),
     name: template.name,
@@ -4466,6 +4990,11 @@ function loadLocalMakerIndex(address = state.walletAddress) {
         objectId,
         treasuryId: suiJsonId(record.treasuryId),
         adminCapId: suiJsonId(record.adminCapId),
+        commerceV5RootObjectId: suiJsonId(record.commerceV5RootObjectId),
+        commerceV5MakerTreasuryObjectId: suiJsonId(record.commerceV5MakerTreasuryObjectId),
+        commerceV5ControlCapObjectId: suiJsonId(record.commerceV5ControlCapObjectId),
+        commerceV5ControlVaultObjectId: suiJsonId(record.commerceV5ControlVaultObjectId),
+        commerceV5ListingObjectId: suiJsonId(record.commerceV5ListingObjectId),
         pausedEconomics: normalizedWorkspacePausedEconomics(
           record.pausedEconomics,
           objectId,
@@ -4505,6 +5034,11 @@ function loadLocalMakerIndex(address = state.walletAddress) {
           makerObjectId: objectId,
           makerTreasuryObjectId: suiJsonId(record.treasuryId),
           makerAdminCapObjectId: suiJsonId(record.adminCapId),
+          commerceV5RootObjectId: suiJsonId(record.commerceV5RootObjectId),
+          commerceV5MakerTreasuryObjectId: suiJsonId(record.commerceV5MakerTreasuryObjectId),
+          commerceV5ControlCapObjectId: suiJsonId(record.commerceV5ControlCapObjectId),
+          commerceV5ControlVaultObjectId: suiJsonId(record.commerceV5ControlVaultObjectId),
+          commerceV5ListingObjectId: suiJsonId(record.commerceV5ListingObjectId),
           makerArchived: Boolean(record.archived),
           pausedEconomics: normalizedWorkspacePausedEconomics(
             record.pausedEconomics,
@@ -4629,6 +5163,14 @@ async function recoverStableMakerIndex(address = state.walletAddress) {
           objectId: chainBinding?.makerObjectId || '',
           treasuryId: chainBinding?.makerTreasuryObjectId || '',
           adminCapId: chainBinding?.makerAdminCapObjectId || '',
+          commerceV5RootObjectId: chainBinding?.commerceV5RootObjectId || '',
+          commerceV5MakerTreasuryObjectId:
+            chainBinding?.commerceV5MakerTreasuryObjectId || '',
+          commerceV5ControlCapObjectId:
+            chainBinding?.commerceV5ControlCapObjectId || '',
+          commerceV5ControlVaultObjectId:
+            chainBinding?.commerceV5ControlVaultObjectId || '',
+          commerceV5ListingObjectId: chainBinding?.commerceV5ListingObjectId || '',
           name: safeDraftText(document?.metadata?.name, 'Untitled OC Maker', 128),
           category: 'daily',
           creator: safeDraftText(document?.metadata?.creator, shortAddress(owner) || 'Creator', 128),
@@ -4671,6 +5213,21 @@ async function recoverStableMakerIndex(address = state.walletAddress) {
           adminCapId: chainBinding
             ? chainBinding.makerAdminCapObjectId
             : template.adminCapId || '',
+          commerceV5RootObjectId: chainBinding
+            ? chainBinding.commerceV5RootObjectId
+            : template.commerceV5RootObjectId || '',
+          commerceV5MakerTreasuryObjectId: chainBinding
+            ? chainBinding.commerceV5MakerTreasuryObjectId
+            : template.commerceV5MakerTreasuryObjectId || '',
+          commerceV5ControlCapObjectId: chainBinding
+            ? chainBinding.commerceV5ControlCapObjectId
+            : template.commerceV5ControlCapObjectId || '',
+          commerceV5ControlVaultObjectId: chainBinding
+            ? chainBinding.commerceV5ControlVaultObjectId
+            : template.commerceV5ControlVaultObjectId || '',
+          commerceV5ListingObjectId: chainBinding
+            ? chainBinding.commerceV5ListingObjectId
+            : template.commerceV5ListingObjectId || '',
           pausedEconomics: chainBinding
             ? recoveredPausedEconomics
             : template.pausedEconomics || null,
@@ -4713,6 +5270,22 @@ async function recoverStableMakerIndex(address = state.walletAddress) {
         makerAdminCapObjectId: chainBinding
           ? chainBinding.makerAdminCapObjectId
           : model.makerAdminCapObjectId || '',
+        commerceV5RootObjectId: chainBinding?.commerceV5RootObjectId
+          || model.commerceV5RootObjectId
+          || '',
+        commerceV5MakerTreasuryObjectId:
+          chainBinding?.commerceV5MakerTreasuryObjectId
+          || model.commerceV5MakerTreasuryObjectId
+          || '',
+        commerceV5ControlCapObjectId: chainBinding?.commerceV5ControlCapObjectId
+          || model.commerceV5ControlCapObjectId
+          || '',
+        commerceV5ControlVaultObjectId: chainBinding?.commerceV5ControlVaultObjectId
+          || model.commerceV5ControlVaultObjectId
+          || '',
+        commerceV5ListingObjectId: chainBinding?.commerceV5ListingObjectId
+          || model.commerceV5ListingObjectId
+          || '',
         makerArchived: chainBinding?.archived ?? model.makerArchived,
         pausedEconomics: chainBinding
           ? template.pausedEconomics
@@ -5313,6 +5886,13 @@ function makerModelFromV4Manifest(document, resolveAssetUrl, object = {}) {
     makerObjectId: object.objectId || '',
     makerTreasuryObjectId: object.treasuryId || suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
     makerAdminCapObjectId: object.adminCapId || '',
+    commerceV5RootObjectId: suiJsonId(object.commerceV5RootObjectId),
+    commerceV5MakerTreasuryObjectId: suiJsonId(
+      object.commerceV5MakerTreasuryObjectId,
+    ),
+    commerceV5ControlCapObjectId: suiJsonId(object.commerceV5ControlCapObjectId),
+    commerceV5ControlVaultObjectId: suiJsonId(object.commerceV5ControlVaultObjectId),
+    commerceV5ListingObjectId: suiJsonId(object.commerceV5ListingObjectId),
     makerArchived: [true, 'true', 1, '1'].includes(suiField(fields, 'archived')),
   };
 }
@@ -5418,6 +5998,13 @@ function makerModelFromManifest(manifest, resolveAssetUrl, object = {}) {
     makerObjectId: object.objectId || '',
     makerTreasuryObjectId: object.treasuryId || suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
     makerAdminCapObjectId: object.adminCapId || '',
+    commerceV5RootObjectId: suiJsonId(object.commerceV5RootObjectId),
+    commerceV5MakerTreasuryObjectId: suiJsonId(
+      object.commerceV5MakerTreasuryObjectId,
+    ),
+    commerceV5ControlCapObjectId: suiJsonId(object.commerceV5ControlCapObjectId),
+    commerceV5ControlVaultObjectId: suiJsonId(object.commerceV5ControlVaultObjectId),
+    commerceV5ListingObjectId: suiJsonId(object.commerceV5ListingObjectId),
     makerArchived: [true, 'true', 1, '1'].includes(suiField(fields, 'archived')),
   };
 }
@@ -5744,6 +6331,24 @@ async function hydrateChainMaker(object, {
     mintPriceAtomic: economics.mintPriceAtomic,
     treasuryId: object.treasuryId || suiJsonId(suiField(fields, 'treasury_id', 'treasuryId')),
     adminCapId: object.adminCapId || '',
+    commerceV5RootObjectId: suiJsonId(
+      object.commerceV5RootObjectId || template.commerceV5RootObjectId,
+    ),
+    commerceV5MakerTreasuryObjectId: suiJsonId(
+      object.commerceV5MakerTreasuryObjectId
+      || template.commerceV5MakerTreasuryObjectId,
+    ),
+    commerceV5ControlCapObjectId: suiJsonId(
+      object.commerceV5ControlCapObjectId
+      || template.commerceV5ControlCapObjectId,
+    ),
+    commerceV5ControlVaultObjectId: suiJsonId(
+      object.commerceV5ControlVaultObjectId
+      || template.commerceV5ControlVaultObjectId,
+    ),
+    commerceV5ListingObjectId: suiJsonId(
+      object.commerceV5ListingObjectId || template.commerceV5ListingObjectId,
+    ),
     pausedEconomics: pausedEconomicsForLiveMaker(
       template.pausedEconomics,
       {
@@ -6584,7 +7189,33 @@ async function finalizeMakerPublication(transaction, makerPayload = null, {
   }
   if (!guard()) return false;
   if (state.makerObjectId && saved) {
-    await clearMakerUploadRecovery();
+    if (runtimeConfig.commerceV5ReleaseEnabled === true) {
+      const recoveryKey = makerAssetStorageKey();
+      const scope = Object.freeze({
+        recoveryKey,
+        templateId: state.templateId,
+        walletAddress: state.walletAddress,
+        guard: () => (
+          guard()
+          && recoveryKey === makerAssetStorageKey()
+          && comparableSuiId(state.walletAddress)
+            === comparableSuiId(getConnectedWalletAddress())
+        ),
+      });
+      const recovery = await loadMakerUploadRecovery(recoveryKey);
+      if (!recovery) {
+        throw commerceV5Error(
+          'COMMERCE_V5_PUBLICATION_RECOVERY_MISSING',
+          'The v4 Maker is published, but its certified recovery is missing. Commerce v5 was not started.',
+        );
+      }
+      await reconcileCurrentMakerCommerceV5Publication(scope, recovery);
+      if (state.makerCommerceV5Publication) {
+        state.publishStatus = makerCommerceV5PublicationStageLabel();
+      }
+    } else {
+      await clearMakerUploadRecovery();
+    }
     if (!guard()) return false;
     state.chainMakersLoadedFor = '';
     await loadChainMakers(state.walletAddress);
@@ -6891,6 +7522,11 @@ async function saveCurrentMakerDraft({
       makerObjectId: state.makerObjectId,
       makerTreasuryObjectId: state.makerTreasuryObjectId,
       makerAdminCapObjectId: state.makerAdminCapObjectId,
+      commerceV5RootObjectId: state.commerceV5RootObjectId,
+      commerceV5MakerTreasuryObjectId: state.commerceV5MakerTreasuryObjectId,
+      commerceV5ControlCapObjectId: state.commerceV5ControlCapObjectId,
+      commerceV5ControlVaultObjectId: state.commerceV5ControlVaultObjectId,
+      commerceV5ListingObjectId: state.commerceV5ListingObjectId,
       archived: state.makerArchived,
     },
   };
@@ -7138,6 +7774,7 @@ function invalidateMakerUpload(message = '') {
   state.pendingMakerManifestJson = '';
   state.pendingMakerV4Bundle = null;
   state.makerPublicationIntent = null;
+  state.makerCommerceV5Publication = null;
   state.publishDigest = '';
   state.publishStatus = message;
   clearMakerPublishError();
@@ -7191,8 +7828,807 @@ function makerPublicationRecoveryPending() {
   const intent = normalizedMakerPublicationIntent(state.makerPublicationIntent);
   return Boolean(
     intent
+      && intent.status !== 'recovered'
       && intent.creator.toLowerCase() === String(state.walletAddress || '').toLowerCase(),
   );
+}
+
+function normalizedMakerCommerceV5Publication(value) {
+  if (!value) return null;
+  return hydrateMakerCommerceV5PublicationCheckpoint(value);
+}
+
+function makerCommerceV5PublicationPending() {
+  if (runtimeConfig.commerceV5ReleaseEnabled !== true) return false;
+  const checkpoint = normalizedMakerCommerceV5Publication(
+    state.makerCommerceV5Publication,
+  );
+  return Boolean(
+    state.hasMakerUploadRecovery
+    && state.makerUploadStage === 'certified'
+    && (
+      !checkpoint
+      || checkpoint.completed !== true
+      || checkpoint.readbackVerified !== true
+      || checkpoint.stage !== MAKER_COMMERCE_PUBLICATION_V5_STAGES.ACTIVE
+    )
+  );
+}
+
+function makerCommerceV5PublicationStageLabel(checkpoint = state.makerCommerceV5Publication) {
+  const stage = normalizedMakerCommerceV5Publication(checkpoint)?.stage
+    || MAKER_COMMERCE_PUBLICATION_V5_STAGES.READY;
+  const labels = {
+    en: {
+      ready: 'Ready to migrate the published Maker',
+      migration: 'Migrating the legacy Maker',
+      migrated: 'Legacy Maker migrated',
+      policy: 'Writing Base and Pack policies',
+      styles: 'Registering exact Style bindings',
+      configured: 'Exact Style registry complete',
+      seal: 'Sealing the immutable Style registry',
+      sealed: 'Style registry sealed',
+      activate: 'Activating Maker commerce',
+      active: 'Commerce v5 active and verified',
+    },
+    zh: {
+      ready: '已准备迁移已发布 Maker',
+      migration: '正在迁移旧版 Maker',
+      migrated: '旧版 Maker 已迁移',
+      policy: '正在写入 Base 与扩展包规则',
+      styles: '正在登记精确样式绑定',
+      configured: '精确样式登记已完成',
+      seal: '正在封存不可变样式登记',
+      sealed: '样式登记已封存',
+      activate: '正在启用 Maker 商业协议',
+      active: 'Commerce v5 已启用并完成精确验证',
+    },
+    ja: {
+      ready: '公開済み Maker の移行準備完了',
+      migration: '旧 Maker を移行中',
+      migrated: '旧 Maker の移行完了',
+      policy: 'Base と Pack のポリシーを書き込み中',
+      styles: '正確な Style 関連を登録中',
+      configured: 'Style 登録が完全に一致',
+      seal: '不変の Style 登録を封印中',
+      sealed: 'Style 登録を封印済み',
+      activate: 'Maker Commerce を有効化中',
+      active: 'Commerce v5 が有効で検証済み',
+    },
+    ko: {
+      ready: '게시된 Maker 마이그레이션 준비 완료',
+      migration: '기존 Maker 마이그레이션 중',
+      migrated: '기존 Maker 마이그레이션 완료',
+      policy: 'Base 및 Pack 정책 기록 중',
+      styles: '정확한 Style 연결 등록 중',
+      configured: '정확한 Style 레지스트리 완료',
+      seal: '불변 Style 레지스트리 봉인 중',
+      sealed: 'Style 레지스트리 봉인 완료',
+      activate: 'Maker Commerce 활성화 중',
+      active: 'Commerce v5 활성화 및 검증 완료',
+    },
+    vi: {
+      ready: 'Sẵn sàng di chuyển Maker đã đăng',
+      migration: 'Đang di chuyển Maker cũ',
+      migrated: 'Đã di chuyển Maker cũ',
+      policy: 'Đang ghi chính sách Base và Pack',
+      styles: 'Đang đăng ký liên kết Style chính xác',
+      configured: 'Đã hoàn tất sổ Style chính xác',
+      seal: 'Đang niêm phong sổ Style bất biến',
+      sealed: 'Đã niêm phong sổ Style',
+      activate: 'Đang kích hoạt thương mại Maker',
+      active: 'Commerce v5 đã hoạt động và được xác minh',
+    },
+  };
+  const key = [
+    MAKER_COMMERCE_PUBLICATION_V5_STAGES.MIGRATION_INTENT,
+    MAKER_COMMERCE_PUBLICATION_V5_STAGES.MIGRATION_SUBMITTED,
+  ].includes(stage)
+    ? 'migration'
+    : stage === MAKER_COMMERCE_PUBLICATION_V5_STAGES.MIGRATED
+      ? 'migrated'
+      : [
+          MAKER_COMMERCE_PUBLICATION_V5_STAGES.POLICY_INTENT,
+          MAKER_COMMERCE_PUBLICATION_V5_STAGES.POLICY_SUBMITTED,
+        ].includes(stage)
+        ? 'policy'
+        : [
+            MAKER_COMMERCE_PUBLICATION_V5_STAGES.STYLES_INTENT,
+            MAKER_COMMERCE_PUBLICATION_V5_STAGES.STYLES_SUBMITTED,
+            MAKER_COMMERCE_PUBLICATION_V5_STAGES.STYLES_CONFIGURING,
+          ].includes(stage)
+          ? 'styles'
+          : stage === MAKER_COMMERCE_PUBLICATION_V5_STAGES.CONFIGURED
+            ? 'configured'
+            : [
+                MAKER_COMMERCE_PUBLICATION_V5_STAGES.SEAL_INTENT,
+                MAKER_COMMERCE_PUBLICATION_V5_STAGES.SEAL_SUBMITTED,
+              ].includes(stage)
+              ? 'seal'
+              : stage === MAKER_COMMERCE_PUBLICATION_V5_STAGES.SEALED
+                ? 'sealed'
+                : [
+                    MAKER_COMMERCE_PUBLICATION_V5_STAGES.ACTIVATE_INTENT,
+                    MAKER_COMMERCE_PUBLICATION_V5_STAGES.ACTIVATE_SUBMITTED,
+                  ].includes(stage)
+                  ? 'activate'
+                  : stage === MAKER_COMMERCE_PUBLICATION_V5_STAGES.ACTIVE
+                    ? 'active'
+                    : 'ready';
+  return labels[state.locale]?.[key] || labels.en[key];
+}
+
+function immutableMakerCommerceV5PublicationInput(recovery) {
+  const manifestJson = String(recovery?.manifestJson || '');
+  if (!manifestJson) {
+    throw commerceV5Error(
+      'COMMERCE_V5_IMMUTABLE_MANIFEST_MISSING',
+      'The certified Maker recovery does not contain its immutable Manifest.',
+    );
+  }
+  let manifest;
+  const inMemoryManifest = state.pendingMakerV4Bundle?.manifest;
+  if (
+    inMemoryManifest
+    && JSON.stringify(inMemoryManifest) === manifestJson
+  ) {
+    manifest = structuredClone(inMemoryManifest);
+  } else {
+    try {
+      manifest = JSON.parse(manifestJson);
+    } catch {
+      throw commerceV5Error(
+        'COMMERCE_V5_IMMUTABLE_MANIFEST_INVALID',
+        'The certified Maker Manifest is not valid JSON.',
+      );
+    }
+  }
+  if (!manifest?.moveProjectionV2) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PROJECTION_MISSING',
+      'The certified Maker Manifest does not contain moveProjectionV2.',
+    );
+  }
+  const commercePlan = buildMakerCommerceV5DeploymentPlan(
+    manifest.moveProjectionV2,
+  );
+  const sealPlan = buildMakerSealPublicationPlanV5({
+    manifest,
+    sealRecovery: recovery?.sealRecovery,
+    entries: recovery?.uploadEntries,
+    files: recovery?.files,
+  });
+  return Object.freeze({
+    manifest,
+    moveProjection: manifest.moveProjectionV2,
+    plan: Object.freeze({
+      ...commercePlan,
+      seal: sealPlan,
+    }),
+  });
+}
+
+async function exactLegacyMakerTreasuryBalanceAtomic(treasuryId) {
+  const [treasury] = await getMakerObjects(
+    [treasuryId],
+    { expectedStructName: 'MakerTreasury', generic: true },
+  );
+  if (!treasury) {
+    throw commerceV5Error(
+      'COMMERCE_V5_LEGACY_TREASURY_UNAVAILABLE',
+      'The legacy Maker Treasury is not visible, so migration cannot verify its exact balance.',
+    );
+  }
+  const fields = suiObjectFields(treasury);
+  const revenue = suiField(fields, 'revenue') || {};
+  const revenueFields = revenue.fields && typeof revenue.fields === 'object'
+    ? revenue.fields
+    : revenue;
+  let balance;
+  try {
+    balance = BigInt(suiField(revenueFields, 'value') ?? 0);
+  } catch {
+    throw commerceV5Error(
+      'COMMERCE_V5_LEGACY_TREASURY_INVALID',
+      'The legacy Maker Treasury returned a non-integer balance.',
+    );
+  }
+  if (balance < 0n) {
+    throw commerceV5Error(
+      'COMMERCE_V5_LEGACY_TREASURY_INVALID',
+      'The legacy Maker Treasury returned a negative balance.',
+    );
+  }
+  return balance.toString();
+}
+
+function assertMakerCommerceV5PublicationContextActive(scope, context) {
+  const connectedWallet = suiJsonId(getConnectedWalletAddress());
+  if (
+    !scope?.guard?.()
+    || comparableSuiId(connectedWallet) !== comparableSuiId(context.owner)
+    || comparableSuiId(state.makerObjectId) !== comparableSuiId(context.legacyMakerId)
+    || makerAssetStorageKey() !== context.makerKey
+    || String(state.makerQuiltId || '') !== String(context.manifestBlobId || '')
+    || (
+      state.publishDigest
+      && String(state.publishDigest) !== String(context.v4PublicationDigest)
+    )
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PUBLICATION_CONTEXT_CHANGED',
+      'The active Maker, wallet, v4 publication, or certified Manifest changed.',
+    );
+  }
+  return context;
+}
+
+async function makerCommerceV5PublicationContext(recovery, checkpoint, scope) {
+  if (checkpoint) {
+    const context = normalizedMakerCommerceV5Publication(checkpoint).context;
+    return assertMakerCommerceV5PublicationContextActive(scope, context);
+  }
+  const legacyMakerId = suiJsonId(state.makerObjectId);
+  const legacyMakerTreasuryId = suiJsonId(state.makerTreasuryObjectId);
+  const legacyMakerAdminCapId = suiJsonId(state.makerAdminCapObjectId);
+  const protocolConfigId = suiJsonId(runtimeConfig.commerceProtocolConfigV5Id);
+  const protocolTreasuryId = suiJsonId(runtimeConfig.commerceProtocolTreasuryV5Id);
+  const v4PublicationDigest = String(
+    state.publishDigest
+    || state.makerPublicationIntent?.digest
+    || recovery?.publicationIntent?.digest
+    || '',
+  );
+  const manifestBlobId = String(recovery?.quiltBlobId || state.makerQuiltId || '');
+  if (
+    !legacyMakerId
+    || !legacyMakerTreasuryId
+    || !legacyMakerAdminCapId
+    || !protocolConfigId
+    || !protocolTreasuryId
+    || !v4PublicationDigest
+    || !manifestBlobId
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PUBLICATION_CONTEXT_MISSING',
+      'The v4 Maker objects, protocol objects, digest, or certified Manifest ID are incomplete.',
+    );
+  }
+  const context = {
+    makerKey: scope.recoveryKey,
+    owner: scope.walletAddress,
+    legacyMakerId,
+    legacyMakerTreasuryId,
+    legacyMakerAdminCapId,
+    legacyMakerTreasuryBalanceAtomic:
+      await exactLegacyMakerTreasuryBalanceAtomic(legacyMakerTreasuryId),
+    protocolConfigId,
+    protocolTreasuryId,
+    v4PublicationDigest,
+    manifestBlobId,
+  };
+  return assertMakerCommerceV5PublicationContextActive(scope, context);
+}
+
+async function queryMakerCommerceV5Protocol(context) {
+  const client = getSuiClient();
+  const response = await client.getObjects({
+    objectIds: [context.protocolConfigId, context.protocolTreasuryId],
+    include: { json: true },
+  });
+  const objects = (response?.objects || []).filter((object) => !object?.error);
+  const byId = new Map(objects.map((object) => [
+    comparableSuiId(object.objectId || object.id),
+    object,
+  ]));
+  const configObject = byId.get(comparableSuiId(context.protocolConfigId));
+  const treasuryObject = byId.get(comparableSuiId(context.protocolTreasuryId));
+  if (!configObject || !treasuryObject) {
+    throw commerceV5Error(
+      'COMMERCE_V5_OBJECT_UNAVAILABLE',
+      'The Commerce v5 protocol config or treasury is not visible on Sui.',
+    );
+  }
+  const protocol = parseCommerceProtocolConfigV5(configObject);
+  const protocolTreasury = parseCommerceProtocolTreasuryV5(treasuryObject);
+  const expectedPackage = comparableSuiId(runtimeConfig.commerceV5TypeOriginPackageId);
+  for (const [label, object] of [
+    ['protocol config', protocol],
+    ['protocol treasury', protocolTreasury],
+  ]) {
+    if (
+      !expectedPackage
+      || comparableSuiId(String(object.type || '').split('::')[0]) !== expectedPackage
+    ) {
+      throw commerceV5Error(
+        'COMMERCE_V5_TYPE_ORIGIN_MISMATCH',
+        `The ${label} is not defined by the configured commerce v5 TypeOrigin.`,
+      );
+    }
+  }
+  if (
+    comparableSuiId(protocol.treasuryId) !== comparableSuiId(protocolTreasury.objectId)
+    || comparableSuiId(protocol.objectId) !== comparableSuiId(protocolTreasury.configId)
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_STATE_LINKAGE_MISMATCH',
+      'The Commerce v5 protocol config and treasury are not linked.',
+    );
+  }
+  return Object.freeze({ client, protocol, protocolTreasury });
+}
+
+async function queryCanonicalCommerceV5LogicalAuxiliaryBlobId({
+  expectedBlobId = '',
+} = {}) {
+  if (runtimeConfig.commerceV5ReleaseEnabled !== true) {
+    throw commerceV5Error(
+      'COMMERCE_V5_RELEASE_DISABLED',
+      'Commerce v5 publication remains disabled.',
+    );
+  }
+  const protocolConfigId = suiJsonId(
+    runtimeConfig.commerceProtocolConfigV5Id,
+  );
+  const protocolTreasuryId = suiJsonId(
+    runtimeConfig.commerceProtocolTreasuryV5Id,
+  );
+  const configuredBlobId = String(
+    runtimeConfig.commerceV5LogicalAuxiliaryBlobId || '',
+  ).trim();
+  const configuredProofType = String(
+    runtimeConfig.commerceV5SoulBindingProofType || '',
+  ).trim();
+  if (
+    !protocolConfigId
+    || !protocolTreasuryId
+    || !configuredBlobId
+    || !configuredProofType
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_LOGICAL_AUXILIARY_CONFIG_MISSING',
+      'The reviewed Commerce v5 protocol objects and canonical logical auxiliary Blob ID are not configured.',
+    );
+  }
+  const { protocol } = await queryMakerCommerceV5Protocol({
+    protocolConfigId,
+    protocolTreasuryId,
+  });
+  const chainBlobId = String(protocol.logicalAuxiliaryBlobId || '').trim();
+  const chainProofType = String(protocol.soulBindingProofType || '').trim();
+  if (
+    !chainBlobId
+    || chainBlobId !== configuredBlobId
+    || !chainProofType
+    || chainProofType !== configuredProofType
+    || (expectedBlobId && chainBlobId !== String(expectedBlobId).trim())
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_LOGICAL_AUXILIARY_MISMATCH',
+      'The Commerce v5 canonical logical auxiliary Blob or trusted Soulidity proof type does not match the reviewed runtime, protocol config and immutable Maker checkpoint.',
+    );
+  }
+  return chainBlobId;
+}
+
+async function queryMakerCommerceV5Publication({
+  checkpoint,
+  context,
+  plan,
+}) {
+  const protocolState = await queryMakerCommerceV5Protocol(context);
+  let rootId = suiJsonId(checkpoint?.objects?.rootId);
+  let makerTreasuryId = suiJsonId(checkpoint?.objects?.makerTreasuryId);
+  if (!rootId || !makerTreasuryId) {
+    // An intent can have landed even when the browser closed before the
+    // digest/event checkpoint was saved. Always discover before permitting a
+    // second migration signature.
+    const migration = await findCommerceV5MigrationByLegacyMaker(
+      context.legacyMakerId,
+    );
+    rootId = suiJsonId(migration?.rootId) || rootId;
+    makerTreasuryId = suiJsonId(migration?.treasuryId) || makerTreasuryId;
+  }
+  if (!rootId || !makerTreasuryId) {
+    return Object.freeze({
+      protocol: protocolState.protocol,
+      protocolTreasury: protocolState.protocolTreasury,
+      root: null,
+      transactionStatuses: Object.freeze({}),
+    });
+  }
+  const chain = await queryCommerceV5Objects(protocolState.client, {
+    protocolConfigId: context.protocolConfigId,
+    protocolTreasuryId: context.protocolTreasuryId,
+    makerRootId: rootId,
+    makerTreasuryId,
+  });
+  assertCommerceV5TypeOrigins(chain);
+  const [packs, styleBindings, walletState] = await Promise.all([
+    queryPackRecordsV5(protocolState.client, chain.root),
+    queryStyleBindingsV5(protocolState.client, chain.root),
+    queryOwnedCommerceV5State(protocolState.client, {
+      runtime: commerceV5RuntimeContext(),
+      owner: context.owner,
+      rootId: chain.root.objectId,
+      root: chain.root,
+    }),
+  ]);
+  let sealPolicyVerified = plan?.seal?.required !== true;
+  if (plan?.seal?.required === true) {
+    if (
+      chain.root.requiresSealPolicy !== true
+      || chain.root.protectedStyleCount !== BigInt(plan.seal.paidAssetCount)
+    ) {
+      throw commerceV5Error(
+        'MAKER_SEAL_V5_ROOT_COVERAGE_MISMATCH',
+        'MakerRootV5 does not commit to the exact number of encrypted Styles in this release.',
+      );
+    }
+    if (!chain.root.sealPolicyBound) {
+      sealPolicyVerified = false;
+    } else {
+      if (
+        comparableSuiId(plan.seal.sealPackageId)
+          !== comparableSuiId(runtimeConfig.sealV5PackageId)
+        || chain.root.sealReleaseCommitment !== plan.seal.releaseCommitment
+      ) {
+        throw commerceV5Error(
+          'MAKER_SEAL_V5_ROOT_BINDING_MISMATCH',
+          'MakerRootV5 is bound to another Seal package or release commitment.',
+        );
+      }
+      const response = await protocolState.client.getObjects({
+        objectIds: [chain.root.sealPolicyId],
+        include: { json: true },
+      });
+      const policyObject = (response?.objects || [])
+        .find((object) => object && !object.error);
+      if (!policyObject) {
+        sealPolicyVerified = false;
+      } else {
+        const policy = parseMakerSealPolicyV5(policyObject);
+        if (
+          comparableSuiId(String(policy.type || '').split('::')[0])
+            !== comparableSuiId(runtimeConfig.sealV5PackageId)
+        ) {
+          throw commerceV5Error(
+            'MAKER_SEAL_V5_TYPE_ORIGIN_MISMATCH',
+            'The root-bound MakerSealPolicyV5 is not defined by the configured Seal package.',
+          );
+        }
+        const registrations = await queryMakerSealRegistrationsV5(
+          protocolState.client,
+          policy,
+        );
+        assertMakerSealPolicyReadbackV5({
+          policy,
+          registrations,
+          makerRootId: chain.root.objectId,
+          releaseCommitment: plan.seal.releaseCommitment,
+          expectedRegistrations: plan.seal.registrations,
+        });
+        const commerceStyles = new Map(styleBindings.map((binding) => [
+          [binding.partKey, binding.itemKey, binding.styleKey].join('\u0000'),
+          binding,
+        ]));
+        for (const registration of plan.seal.registrations) {
+          const binding = commerceStyles.get([
+            registration.partKey,
+            registration.itemKey,
+            registration.styleKey,
+          ].join('\u0000'));
+          if (
+            !binding
+            || binding.sealProtected !== true
+            || String(binding.assetBlobId || '')
+              !== String(registration.ciphertextBlobId || '')
+          ) {
+            throw commerceV5Error(
+              'MAKER_SEAL_V5_COMMERCE_BINDING_MISMATCH',
+              'A Commerce Style does not commit to its certified Seal ciphertext Blob.',
+              { sealId: registration.sealId },
+            );
+          }
+        }
+        sealPolicyVerified = true;
+      }
+    }
+  } else if (
+    chain.root.requiresSealPolicy === true
+    || chain.root.sealPolicyBound === true
+    || chain.root.protectedStyleCount !== 0n
+  ) {
+    throw commerceV5Error(
+      'MAKER_SEAL_V5_UNEXPECTED_ROOT_BINDING',
+      'This public Manifest contains no paid content, but MakerRootV5 requires a Seal policy.',
+    );
+  }
+  return Object.freeze({
+    ...chain,
+    packs,
+    styleBindings,
+    sealPolicyVerified,
+    controlCap: walletState.currentControlCap,
+    transactionStatuses: Object.freeze({}),
+  });
+}
+
+function updateMakerCommerceV5PublicationState(checkpoint) {
+  state.makerCommerceV5Publication = normalizedMakerCommerceV5Publication(checkpoint);
+  syncActiveMakerModelRefs();
+  return state.makerCommerceV5Publication;
+}
+
+async function saveInitialMakerCommerceV5Publication(
+  scope,
+  recovery,
+  checkpoint,
+  { context, runtime, plan },
+) {
+  const durable = await loadMakerUploadRecovery(scope.recoveryKey);
+  if (!durable || !scope.guard()) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PUBLICATION_RECOVERY_MISSING',
+      'The certified Maker upload recovery is no longer available.',
+    );
+  }
+  const existing = normalizedMakerCommerceV5Publication(
+    durable.commerceV5Publication,
+  );
+  if (existing) {
+    const verifiedExisting = hydrateMakerCommerceV5PublicationCheckpoint(existing, {
+      context,
+      runtime,
+      plan,
+    });
+    return updateMakerCommerceV5PublicationState(verifiedExisting);
+  }
+  const candidate = hydrateMakerCommerceV5PublicationCheckpoint(checkpoint, {
+    context,
+    runtime,
+    plan,
+  });
+  const verified = await saveVerifiedUploadRecovery(scope.recoveryKey, {
+    ...durable,
+    recoveryRevision: Number(durable.recoveryRevision || 0),
+    commerceV5Publication: candidate,
+  });
+  if (!scope.guard()) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PUBLICATION_CONTEXT_CHANGED',
+      'The Maker changed while its Commerce v5 checkpoint was being saved.',
+    );
+  }
+  if (
+    state.makerUploadSession
+    && state.makerUploadSession.uploadSessionId === verified.uploadSessionId
+  ) {
+    state.makerUploadSession.recoveryRevision = Number(verified.recoveryRevision || 0);
+  }
+  state.hasMakerUploadRecovery = true;
+  return updateMakerCommerceV5PublicationState(
+    hydrateMakerCommerceV5PublicationCheckpoint(
+      verified.commerceV5Publication,
+      { context, runtime, plan },
+    ),
+  );
+}
+
+async function persistMakerCommerceV5Publication(
+  scope,
+  nextCheckpoint,
+  { expectedSequence, context, runtime, plan },
+) {
+  const durable = await loadMakerUploadRecovery(scope.recoveryKey);
+  if (!durable || !scope.guard()) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PUBLICATION_RECOVERY_MISSING',
+      'The certified Maker recovery disappeared before the Commerce checkpoint could be saved.',
+    );
+  }
+  const current = normalizedMakerCommerceV5Publication(
+    durable.commerceV5Publication,
+  );
+  if (
+    !current
+    || current.sequence !== Number(expectedSequence)
+    || current.contextIdentity !== nextCheckpoint.contextIdentity
+    || current.planIdentity !== nextCheckpoint.planIdentity
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PUBLICATION_CHECKPOINT_CONFLICT',
+      'Another tab or newer operation already changed this Commerce v5 checkpoint.',
+    );
+  }
+  const candidate = hydrateMakerCommerceV5PublicationCheckpoint(nextCheckpoint, {
+    context,
+    runtime,
+    plan,
+  });
+  const verified = await saveVerifiedUploadRecovery(scope.recoveryKey, {
+    ...durable,
+    recoveryRevision: Number(durable.recoveryRevision || 0),
+    commerceV5Publication: candidate,
+  });
+  const stored = hydrateMakerCommerceV5PublicationCheckpoint(
+    verified.commerceV5Publication,
+    { context, runtime, plan },
+  );
+  if (
+    stored.sequence !== candidate.sequence
+    || stored.stage !== candidate.stage
+    || stored.contextIdentity !== candidate.contextIdentity
+    || stored.planIdentity !== candidate.planIdentity
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PUBLICATION_PERSIST_UNVERIFIED',
+      'The Commerce v5 checkpoint did not read back at the expected sequence and stage.',
+    );
+  }
+  if (!scope.guard()) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PUBLICATION_CONTEXT_CHANGED',
+      'The Maker changed after its Commerce v5 checkpoint was saved.',
+    );
+  }
+  if (
+    state.makerUploadSession
+    && state.makerUploadSession.uploadSessionId === verified.uploadSessionId
+  ) {
+    state.makerUploadSession.recoveryRevision = Number(verified.recoveryRevision || 0);
+  }
+  state.hasMakerUploadRecovery = true;
+  return updateMakerCommerceV5PublicationState(stored);
+}
+
+async function ensureMakerCommerceV5Publication(scope, recovery = null) {
+  const durable = recovery || await loadMakerUploadRecovery(scope.recoveryKey);
+  if (!durable) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PUBLICATION_RECOVERY_MISSING',
+      'The certified Maker upload recovery is required for Commerce v5 publication.',
+    );
+  }
+  const immutable = immutableMakerCommerceV5PublicationInput(durable);
+  const runtime = commerceV5RuntimeContext();
+  const existing = normalizedMakerCommerceV5Publication(
+    durable.commerceV5Publication,
+  );
+  const context = await makerCommerceV5PublicationContext(
+    durable,
+    existing,
+    scope,
+  );
+  const checkpoint = existing
+    ? hydrateMakerCommerceV5PublicationCheckpoint(existing, {
+        context,
+        runtime,
+        plan: immutable.plan,
+      })
+    : createMakerCommerceV5PublicationCheckpoint({
+        context,
+        runtime,
+        plan: immutable.plan,
+      });
+  const stored = existing
+    ? updateMakerCommerceV5PublicationState(checkpoint)
+    : await saveInitialMakerCommerceV5Publication(
+        scope,
+        durable,
+        checkpoint,
+        { context, runtime, plan: immutable.plan },
+      );
+  return Object.freeze({
+    checkpoint: stored,
+    context,
+    runtime,
+    plan: immutable.plan,
+    manifest: immutable.manifest,
+  });
+}
+
+function makerCommerceV5PublicationDependencies(scope, publication) {
+  return Object.freeze({
+    client: getSuiClient(),
+    getContext: async () => (
+      assertMakerCommerceV5PublicationContextActive(scope, publication.context)
+    ),
+    query: ({ checkpoint }) => queryMakerCommerceV5Publication({
+      checkpoint,
+      context: publication.context,
+      plan: publication.plan,
+    }),
+    persist: (nextCheckpoint, { expectedSequence }) => (
+      persistMakerCommerceV5Publication(scope, nextCheckpoint, {
+        expectedSequence,
+        context: publication.context,
+        runtime: publication.runtime,
+        plan: publication.plan,
+      })
+    ),
+    signAndExecute: (transaction, { expectedWallet }) => signExecuteAndWait(
+      transaction,
+      { expectedWallet },
+    ),
+  });
+}
+
+async function finishMakerCommerceV5Publication(scope, publication) {
+  const dependencies = makerCommerceV5PublicationDependencies(scope, publication);
+  const reconciled = await reconcileMakerCommerceV5Publication({
+    checkpoint: publication.checkpoint,
+    context: publication.context,
+    runtime: publication.runtime,
+    plan: publication.plan,
+    dependencies,
+  });
+  const checkpoint = updateMakerCommerceV5PublicationState(reconciled.checkpoint);
+  if (
+    checkpoint.stage !== MAKER_COMMERCE_PUBLICATION_V5_STAGES.ACTIVE
+    || checkpoint.completed !== true
+    || checkpoint.readbackVerified !== true
+  ) return false;
+  applyActiveCommerceV5Binding({
+    rootObjectId: checkpoint.objects.rootId,
+    makerTreasuryObjectId: checkpoint.objects.makerTreasuryId,
+    controlCapObjectId: checkpoint.objects.controlCapId,
+    controlVaultObjectId: checkpoint.objects.vaultId,
+  });
+  const saved = await saveCurrentMakerDraft({
+    silent: true,
+    forceWorkspace: true,
+  });
+  if (saved?.confirmed !== true) {
+    throw commerceV5Error(
+      'COMMERCE_V5_BINDING_SAVE_UNVERIFIED',
+      'Commerce v5 is Active, but its exact object binding has not been read back from local draft storage.',
+    );
+  }
+  if (!scope.guard()) return false;
+  const cleared = await clearMakerUploadRecovery(
+    scope.templateId,
+    scope.walletAddress,
+  );
+  if (!cleared) {
+    throw commerceV5Error(
+      'COMMERCE_V5_RECOVERY_CLEAR_FAILED',
+      'Commerce v5 is Active, but its completed recovery checkpoint could not be finalized.',
+    );
+  }
+  state.chainMakersLoadedFor = '';
+  await loadChainMakers(state.walletAddress);
+  state.publishStatus = makerCommerceV5PublicationStageLabel({
+    ...checkpoint,
+    stage: MAKER_COMMERCE_PUBLICATION_V5_STAGES.ACTIVE,
+  });
+  return true;
+}
+
+async function reconcileCurrentMakerCommerceV5Publication(scope, recovery = null) {
+  if (runtimeConfig.commerceV5ReleaseEnabled !== true) return null;
+  const publication = await ensureMakerCommerceV5Publication(scope, recovery);
+  const dependencies = makerCommerceV5PublicationDependencies(scope, publication);
+  const result = await reconcileMakerCommerceV5Publication({
+    checkpoint: publication.checkpoint,
+    context: publication.context,
+    runtime: publication.runtime,
+    plan: publication.plan,
+    dependencies,
+  });
+  const checkpoint = updateMakerCommerceV5PublicationState(result.checkpoint);
+  state.publishStatus = makerCommerceV5PublicationStageLabel(checkpoint);
+  if (
+    checkpoint.stage === MAKER_COMMERCE_PUBLICATION_V5_STAGES.ACTIVE
+    && checkpoint.completed === true
+    && checkpoint.readbackVerified === true
+  ) {
+    await finishMakerCommerceV5Publication(scope, {
+      ...publication,
+      checkpoint,
+    });
+  }
+  return result;
 }
 
 function clearMakerPublishError() {
@@ -7301,7 +8737,69 @@ function uploadRecoveryTransactions(session) {
   };
 }
 
+async function uploadRecoveryBlobMatches(actual, expected) {
+  if (!actual && !expected) return true;
+  if (!actual || !expected) return false;
+  try {
+    return (
+      String(actual.type || '') === String(expected.type || '')
+      && Number(actual.size || 0) === Number(expected.size || 0)
+      && await sha256BlobHex(actual, 'Restored upload Blob')
+        === await sha256BlobHex(expected, 'Expected upload Blob')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function uploadRecoveryBytesHex(value) {
+  if (value instanceof Uint8Array) return bytesToHex(value);
+  if (Array.isArray(value)) return bytesToHex(Uint8Array.from(value));
+  if (value && typeof value === 'object') {
+    const entries = Object.keys(value)
+      .filter((key) => /^\d+$/.test(key))
+      .sort((left, right) => Number(left) - Number(right))
+      .map((key) => value[key]);
+    if (entries.length) return bytesToHex(Uint8Array.from(entries));
+  }
+  return String(value || '');
+}
+
+async function ocUploadRecoveryMatches(actual, expected) {
+  if (expected?.kind !== 'oc-mint') return true;
+  if (!actual || actual.kind !== 'oc-mint') return false;
+  const blobFields = [
+    'imageBlob',
+    'encryptedImageBlob',
+    'previewBlob',
+    'profileBlob',
+  ];
+  const blobsMatch = await Promise.all(
+    blobFields.map((field) => uploadRecoveryBlobMatches(actual[field], expected[field])),
+  );
+  if (blobsMatch.some((matches) => !matches)) return false;
+  const jsonFields = [
+    'ocPackage',
+    'styleSelectionsV5',
+    'outputProtection',
+    'outputDescriptor',
+    'completionReceipt',
+    'playerCompletionContext',
+  ];
+  return (
+    uploadRecoveryBytesHex(actual.recipeHash)
+      === uploadRecoveryBytesHex(expected.recipeHash)
+    && String(actual.exportKey || '') === String(expected.exportKey || '')
+    && String(actual.returnNonce || '') === String(expected.returnNonce || '')
+    && jsonFields.every((field) => (
+      JSON.stringify(actual[field] ?? null)
+        === JSON.stringify(expected[field] ?? null)
+    ))
+  );
+}
+
 async function saveVerifiedUploadRecovery(recoveryKey, record) {
+  await verifyMakerSealRecoveryPayloadV5(record.sealRecovery);
   const expectedRevision = Number(record.recoveryRevision || 0);
   await saveMakerUploadRecovery(recoveryKey, record, { expectedRevision });
   const verified = await loadMakerUploadRecovery(recoveryKey);
@@ -7334,6 +8832,8 @@ async function saveVerifiedUploadRecovery(recoveryKey, record) {
   const checkpointMatches = checkpointIdentityFields.every((field) => (
     String(verified?.checkpoint?.[field] ?? '') === String(record.checkpoint?.[field] ?? '')
   ));
+  const ocRecordMatches = await ocUploadRecoveryMatches(verified, record);
+  await verifyMakerSealRecoveryPayloadV5(verified?.sealRecovery);
   if (!verified
     || actualStage !== expectedStage
     || String(verified.uploadSessionId || '') !== String(record.uploadSessionId || '')
@@ -7342,15 +8842,23 @@ async function saveVerifiedUploadRecovery(recoveryKey, record) {
     || !matchesField('quiltBlobId')
     || !matchesField('kind')
     || !matchesField('manifestJson')
+    || !matchesField('sourceManifestJson')
     || !matchesField('fingerprint')
     || !matchesField('recipeJson')
     || JSON.stringify(verified.files || []) !== JSON.stringify(record.files || [])
+    || JSON.stringify(verified.uploadEntries || [])
+      !== JSON.stringify(record.uploadEntries || [])
+    || makerSealRecoveryIdentityV5(verified.sealRecovery)
+      !== makerSealRecoveryIdentityV5(record.sealRecovery)
     || !checkpointMatches
     || !matchesField('registerDigest')
     || !matchesField('certifyDigest')
     || !quoteAndBalanceFields.every(matchesField)
     || !matchesPendingTransaction('pendingRegisterTransaction')
-    || !matchesPendingTransaction('pendingCertifyTransaction')) {
+    || !matchesPendingTransaction('pendingCertifyTransaction')
+    || JSON.stringify(verified.commerceV5Publication || null)
+      !== JSON.stringify(record.commerceV5Publication || null)
+    || !ocRecordMatches) {
     throw new Error('The local upload checkpoint could not be verified. No new chain step was started.');
   }
   return verified;
@@ -7363,7 +8871,20 @@ function captureMakerUploadPersistenceContext(session = state.makerUploadSession
     templateId: state.templateId,
     coverBlob: state.pendingMakerCoverBlob,
     manifestJson: state.pendingMakerManifestJson,
+    sourceManifestJson: String(
+      state.pendingMakerV4Bundle?.seal?.sourceManifestJson
+      || state.pendingMakerManifestJson,
+    ),
+    sealRecovery: makerSealRecoveryPayloadV5(state.pendingMakerV4Bundle),
+    uploadEntries: (state.pendingMakerV4Bundle?.entries || []).map((entry) => ({
+      assetId: String(entry.assetId || ''),
+      identifier: String(entry.identifier || ''),
+      kind: String(entry.kind || ''),
+    })),
     publicationIntent: normalizedMakerPublicationIntent(state.makerPublicationIntent),
+    commerceV5Publication: normalizedMakerCommerceV5Publication(
+      state.makerCommerceV5Publication,
+    ),
     quiltBlobId: state.makerQuiltId || session.quiltBlobId || '',
   });
 }
@@ -7408,8 +8929,14 @@ async function persistMakerUploadRecovery(
     quiltBlobId: context.quiltBlobId || session.quiltBlobId || '',
     files: (session.files || []).map(({ id, blobId }) => ({ id, blobId })),
     manifestJson: context.manifestJson,
+    sourceManifestJson: context.sourceManifestJson,
+    sealRecovery: context.sealRecovery,
+    uploadEntries: context.uploadEntries,
     coverBlob: context.coverBlob,
     publicationIntent: normalizedMakerPublicationIntent(context.publicationIntent),
+    commerceV5Publication: normalizedMakerCommerceV5Publication(
+      context.commerceV5Publication,
+    ),
   });
   session.recoveryRevision = Number(verified.recoveryRevision || session.recoveryRevision || 0);
   session.recoverySavedAt = Number(verified.savedAt || Date.now());
@@ -7452,6 +8979,8 @@ async function clearMakerUploadRecovery(
   ) {
     state.hasMakerUploadRecovery = false;
     state.makerPublicationIntent = null;
+    state.makerCommerceV5Publication = null;
+    syncActiveMakerModelRefs();
   }
   return deleted;
 }
@@ -7631,6 +9160,10 @@ function soulidityAppLink(pathname, params = {}, { includeWallet = true } = {}) 
   url.hash = '';
   url.search = '';
   url.searchParams.set('source', 'animacraft');
+  url.searchParams.set(
+    'lang',
+    ['en', 'zh', 'ja', 'ko', 'vi'].includes(state.locale) ? state.locale : 'en',
+  );
   if (includeWallet && state.walletConnected && state.walletAddress) {
     url.searchParams.set('wallet', state.walletAddress);
   }
@@ -7638,6 +9171,24 @@ function soulidityAppLink(pathname, params = {}, { includeWallet = true } = {}) 
     if (value !== undefined && value !== null && String(value).trim()) url.searchParams.set(key, String(value));
   });
   return url.href;
+}
+
+function trustedSoulidityOrigin() {
+  const value = safeExternalUrl(runtimeConfig.soulidityAppUrl);
+  return value ? new URL(value).origin : '';
+}
+
+function animacraftReturnOrigin() {
+  const candidates = [location.origin, runtimeConfig.appUrl];
+  for (const candidate of candidates) {
+    try {
+      const url = new URL(String(candidate || ''));
+      if (['http:', 'https:'].includes(url.protocol)) return url.origin;
+    } catch {
+      // Try the configured production application URL.
+    }
+  }
+  throw new Error('Animacraft needs an HTTPS application origin for the Soulidity return receipt.');
 }
 
 function utf8Length(value) {
@@ -7655,6 +9206,18 @@ function utf8Truncate(value, maximumBytes) {
 
 function bytesToHex(bytes) {
   return `0x${[...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function randomHex32() {
+  return bytesToHex(globalThis.crypto.getRandomValues(new Uint8Array(32)));
+}
+
+async function sha256BlobHex(blob, label = 'Blob') {
+  if (!blob || typeof blob.arrayBuffer !== 'function') {
+    throw new TypeError(`${label} is missing.`);
+  }
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return bytesToHex(new Uint8Array(digest));
 }
 
 function safeCssColor(value, fallback = '#27c5c8') {
@@ -7740,12 +9303,89 @@ function chainStatusItems() {
   ];
 }
 
+function templateCommerceV5PublicState(template) {
+  const model = makerModels.get(template?.id);
+  const legacyArchived = Boolean(model?.makerArchived);
+  if (!template || template.source !== 'chain') {
+    return Object.freeze({
+      visible: true,
+      playable: true,
+      resolving: false,
+      verified: false,
+      lifecycle: '',
+      listing: null,
+      protocolEnabled: true,
+      error: null,
+    });
+  }
+  const releaseEnabled = runtimeConfig.commerceV5ReleaseEnabled === true;
+  const activeView = template.id === state.templateId && makerCommerceV5ViewMatches()
+    ? makerCommerceV5LifecycleView
+    : null;
+  const management = activeView?.status === 'ready'
+    ? activeView.management
+    : null;
+  if (management?.chain?.root) {
+    const lifecycle = management.chain.root.lifecycle;
+    const verified = true;
+    const protocolEnabled = management.chain.protocol?.enabled === true;
+    return Object.freeze({
+      visible: true,
+      playable: releaseEnabled
+        && protocolEnabled
+        && verified
+        && lifecycle === COMMERCE_V5_LIFECYCLE.ACTIVE,
+      resolving: false,
+      verified,
+      lifecycle,
+      listing: management.chain.listing || null,
+      protocolEnabled,
+      isSeller: management.isSeller,
+      error: null,
+    });
+  }
+  const rootObjectId = suiJsonId(
+    template.commerceV5RootObjectId || model?.commerceV5RootObjectId,
+  );
+  const couldBeMigrated = Boolean(
+    rootObjectId
+    || (
+      legacyArchived
+      && runtimeConfig.commerceV5TypeOriginPackageId
+      && runtimeConfig.commerceProtocolConfigV5Id
+      && runtimeConfig.commerceProtocolTreasuryV5Id
+    )
+  );
+  if (couldBeMigrated) {
+    return Object.freeze({
+      visible: true,
+      playable: false,
+      resolving: activeView?.status !== 'error',
+      verified: false,
+      lifecycle: '',
+      listing: null,
+      protocolEnabled: false,
+      error: activeView?.status === 'error' ? activeView.error : null,
+    });
+  }
+  return Object.freeze({
+    visible: !legacyArchived,
+    playable: false,
+    resolving: false,
+    verified: false,
+    lifecycle: legacyArchived ? 'ARCHIVED' : '',
+    listing: null,
+    protocolEnabled: false,
+    error: null,
+  });
+}
+
 function filteredTemplates() {
   const query = state.search.trim().toLowerCase();
   return templates.filter((template) => {
     if (template.source === 'local') return false;
     if (template.source !== 'chain' && !(localUiTest && template.source === 'creator-pack')) return false;
-    if (template.source === 'chain' && makerModels.get(template.id)?.makerArchived) return false;
+    if (template.source === 'chain' && !templateCommerceV5PublicState(template).visible) return false;
     const matchesFilter = state.filter === 'all' || template.category === state.filter;
     const haystack = `${template.name} ${template.creator} ${template.style} ${template.license} ${template.summary}`.toLowerCase();
     return matchesFilter && (!query || haystack.includes(query));
@@ -7770,7 +9410,7 @@ function templateModelMetrics(template) {
 
 function canOpenPlayer(template = activeTemplate()) {
   if (!template) return false;
-  if (template.source === 'chain') return !makerModels.get(template.id)?.makerArchived;
+  if (template.source === 'chain') return templateCommerceV5PublicState(template).playable;
   if (localUiTest && template.source === 'creator-pack') return makerModels.has(template.id);
   return Boolean(state.previewingMaker && template.source === 'local' && makerModels.has(template.id));
 }
@@ -7912,14 +9552,34 @@ function syncTemplateFields() {
 
 function renderTemplates() {
   const list = filteredTemplates();
-  const publicMakerCount = templates.filter((template) => template.source === 'chain' && !makerModels.get(template.id)?.makerArchived).length;
+  const publicMakerCount = templates.filter((template) => (
+    template.source === 'chain' && templateCommerceV5PublicState(template).visible
+  )).length;
   if ($('publicMakerCount')) $('publicMakerCount').textContent = String(publicMakerCount);
   $('templateGrid').innerHTML = list.length ? list.map((template) => {
     const metrics = templateModelMetrics(template);
     const sourceLabel = templateSourceLabel(template);
     const coverUrl = templatePublishedCoverUrl(template);
+    const publicState = templateCommerceV5PublicState(template);
+    const lifecycleLabel = publicState.verified
+      ? t(commerceV5LifecycleLabelKey(publicState.lifecycle))
+      : publicState.resolving
+        ? t('makerCommerceV5BindingResolving')
+        : publicState.error
+          ? t('makerCommerceV5Unavailable')
+          : '';
+    const startLabel = !state.walletConnected
+      ? t('connectToMake')
+      : publicState.playable
+        ? t('startMaking')
+        : lifecycleLabel || t('makerCommerceV5Unavailable');
+    const commerceStateToken = publicState.verified
+      ? String(publicState.lifecycle)
+      : publicState.resolving
+        ? 'resolving'
+        : 'legacy';
     return `
-    <article class="template-card ${template.id === state.templateId ? 'active' : ''}" data-template="${escapeHtml(template.id)}">
+    <article class="template-card ${template.id === state.templateId ? 'active' : ''}" data-template="${escapeHtml(template.id)}" data-commerce-state="${escapeHtml(commerceStateToken)}">
       <div class="template-cover" style="--accent:${safeCssColor(template.accent)}; --secondary:${safeCssColor(template.secondary, '#f0a23a')};">
         ${templateCoverMarkup(
           template,
@@ -7935,6 +9595,7 @@ function renderTemplates() {
           <span>${escapeHtml(template.license)}</span>
           <span>${metrics.parts} ${t('partsLabel')}</span>
           <span>${metrics.items} ${t('itemsLabel')}</span>
+          ${lifecycleLabel ? `<span>${escapeHtml(lifecycleLabel)}</span>` : ''}
         </div>
         <h2>${escapeHtml(template.name)}</h2>
         <p class="creator-line">${escapeHtml(t('byCreator', { creator: template.creator }))}</p>
@@ -7946,7 +9607,7 @@ function renderTemplates() {
           <span>${Number(template.royaltyBps || 0) / 100}% ${t('royaltyPolicy')}</span>
           <div class="template-card-actions">
             <button class="secondary" type="button" data-view-template="${escapeHtml(template.id)}">${t('viewMaker')}</button>
-            <button class="primary" data-use-template="${escapeHtml(template.id)}">${state.walletConnected ? t('startMaking') : t('connectToMake')}</button>
+            <button class="primary" data-use-template="${escapeHtml(template.id)}" ${state.walletConnected && !publicState.playable ? `disabled title="${escapeHtml(lifecycleLabel || t('makerCommerceV5Unavailable'))}"` : ''}>${escapeHtml(startLabel)}</button>
           </div>
         </div>
       </div>
@@ -7998,6 +9659,10 @@ function renderTemplates() {
       }
       activateMakerModel(button.dataset.useTemplate);
       syncTemplateFields();
+      if (!canOpenPlayer()) {
+        openTemplateDetail(button.dataset.useTemplate);
+        return;
+      }
       state.previewingMaker = false;
       setPage('make');
       renderAll();
@@ -8016,6 +9681,9 @@ function openTemplateDetail(templateId, { updatePath = true } = {}) {
   }
   setPage('template');
   renderAll();
+  if (template.source === 'chain' && makerCommerceV5LifecycleAvailable()) {
+    void refreshMakerCommerceV5Lifecycle({ silentWhenAbsent: true });
+  }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -8024,7 +9692,28 @@ function renderTemplateDetail() {
   const template = activeTemplate();
   const model = makerModels.get(template.id);
   const metrics = templateModelMetrics(template);
-  const archived = Boolean(model?.makerArchived);
+  const publicState = templateCommerceV5PublicState(template);
+  const lifecycleLabel = publicState.verified
+    ? t(commerceV5LifecycleLabelKey(publicState.lifecycle))
+    : publicState.resolving
+      ? t('makerCommerceV5BindingResolving')
+      : publicState.error
+        ? t('makerCommerceV5Unavailable')
+        : '';
+  const listing = publicState.listing;
+  const releaseEnabled = runtimeConfig.commerceV5ReleaseEnabled === true;
+  const buyBlockReason = !releaseEnabled
+    ? t('makerCommerceV5ReleaseDisabled')
+    : !publicState.protocolEnabled
+      ? t('makerCommerceV5ProtocolDisabled')
+      : '';
+  const canBuy = Boolean(
+    listing
+    && publicState.lifecycle === COMMERCE_V5_LIFECYCLE.SALE_PENDING
+    && !publicState.isSeller
+    && releaseEnabled
+    && publicState.protocolEnabled
+  );
   const manifestUrl = template.quiltId
     ? walrusQuiltFileUrl(template.quiltId, 'animacraft-manifest.json')
     : template.manifestUrl || '';
@@ -8041,7 +9730,7 @@ function renderTemplateDetail() {
       <div class="badge-row">
         <span>${templateSourceLabel(template)}</span>
         <span>${escapeHtml(template.license)}</span>
-        ${archived ? `<span>${escapeHtml(t('archived'))}</span>` : ''}
+        ${lifecycleLabel ? `<span>${escapeHtml(lifecycleLabel)}</span>` : ''}
       </div>
       <h1>${escapeHtml(template.name)}</h1>
       <p class="creator-line">${escapeHtml(t('byCreator', { creator: template.creator }))}</p>
@@ -8053,8 +9742,34 @@ function renderTemplateDetail() {
       </div>
       <div class="badge-row">${partLabels.map((label) => `<span>${escapeHtml(label)}</span>`).join('')}</div>
       <div class="template-detail-license"><strong>${escapeHtml(template.license)}</strong><p>${escapeHtml(template.licenseNote)}</p></div>
+      ${listing ? `
+        <section class="template-detail-commerce" aria-labelledby="templateDetailListingTitle">
+          <div>
+            <span>${escapeHtml(t('makerCommerceV5SalePending'))}</span>
+            <h2 id="templateDetailListingTitle">${escapeHtml(t('makerCommerceV5ListingTitle'))}</h2>
+          </div>
+          <dl>
+            <div><dt>${escapeHtml(t('makerCommerceV5ListingPrice'))}</dt><dd>${escapeHtml(commerceV5AtomicToDecimalText(listing.priceAtomic))} ${escapeHtml(runtimeConfig.paymentCoinSymbol)}</dd></div>
+            <div><dt>${escapeHtml(t('makerCommerceV5ListingSeller'))}</dt><dd title="${escapeHtml(listing.seller)}">${escapeHtml(shortAddress(listing.seller))}</dd></div>
+            <div><dt>${escapeHtml(t('makerCommerceV5ProtocolFee'))}</dt><dd>${escapeHtml(t('makerCommerceV5ProtocolFeeFrozen', { rate: commerceV5RoyaltyRateText(listing.protocolFeeBps) }))}</dd></div>
+          </dl>
+          ${buyBlockReason ? `<p role="status">${escapeHtml(buyBlockReason)}</p>` : ''}
+        </section>
+      ` : publicState.resolving || publicState.error ? `
+        <section class="template-detail-commerce resolving" role="status">
+          <strong>${escapeHtml(lifecycleLabel || t('makerCommerceV5Unavailable'))}</strong>
+          <p>${escapeHtml(
+            state.locale === 'en' && publicState.error?.message
+              ? publicState.error.message
+              : publicState.error
+                ? t('makerCommerceV5Unavailable')
+                : t('makerCommerceV5BindingResolvingCopy'),
+          )}</p>
+        </section>
+      ` : ''}
       <div class="template-detail-actions">
-        <button class="primary" type="button" data-detail-start ${archived ? 'disabled' : ''}>${state.walletConnected ? t('startMaking') : t('connectToMake')}</button>
+        ${listing && !publicState.isSeller ? `<button class="primary" type="button" data-detail-buy ${state.walletConnected && !canBuy ? `disabled title="${escapeHtml(buyBlockReason || t('makerCommerceV5Unavailable'))}"` : ''}>${escapeHtml(state.walletConnected ? t('makerCommerceV5ActionBuy') : t('makerCommerceV5ConnectToBuy'))}</button>` : ''}
+        <button class="${listing ? 'secondary' : 'primary'}" type="button" data-detail-start ${publicState.playable ? '' : `disabled title="${escapeHtml(lifecycleLabel || t('makerCommerceV5Unavailable'))}"`}>${escapeHtml(state.walletConnected ? t('startMaking') : t('connectToMake'))}</button>
       </div>
       <div class="template-detail-links">
         ${template.objectId ? `<a href="${escapeHtml(explorerObjectUrl(template.objectId))}" target="_blank" rel="noreferrer">${escapeHtml(t('viewSuiMaker'))}</a>` : ''}
@@ -8070,9 +9785,28 @@ function renderTemplateDetail() {
       connectSuiWallet();
       return;
     }
+    if (!canOpenPlayer(template)) return;
     state.previewingMaker = false;
     setPage('make');
     renderAll();
+  });
+  document.querySelector('[data-detail-buy]')?.addEventListener('click', async () => {
+    if (!state.walletConnected) {
+      await connectSuiWallet();
+      if (state.walletConnected && state.page === 'template') {
+        await refreshMakerCommerceV5Lifecycle({ silentWhenAbsent: false });
+      }
+      return;
+    }
+    const management = await refreshMakerCommerceV5Lifecycle({ silentWhenAbsent: false });
+    if (
+      !management?.chain?.listing
+      || management.chain.root.lifecycle !== COMMERCE_V5_LIFECYCLE.SALE_PENDING
+      || management.isSeller
+      || runtimeConfig.commerceV5ReleaseEnabled !== true
+      || management.chain.protocol?.enabled !== true
+    ) return;
+    await handleMakerLifecycleAction('commerce-v5-buy');
   });
 }
 
@@ -8361,15 +10095,24 @@ async function verifyMakerV4ReleaseCoverBlob(blob, descriptor) {
 function makerV4DocumentForRelease({ sourceDocument = state.makerDocumentV4 } = {}) {
   if (!isMakerV4Document(sourceDocument)) return null;
   const documentV4 = structuredClone(sourceDocument);
+  const commerceV5ReleaseEnabled = runtimeConfig.commerceV5ReleaseEnabled === true;
   // MakerDocument is the canonical source for public metadata. The legacy
   // shell inputs are only a compatibility projection and may lag behind the
   // Creator Workspace after a restore or an autosaved Maker Info edit.
   documentV4.publication = {
     ...documentV4.publication,
     royaltyBps: Number($('creatorRoyalty')?.value || 0),
-    mintingEnabled: $('creatorMintingEnabled')?.checked !== false,
-    mintFeeEnabled: Boolean($('creatorMintFeeEnabled')?.checked),
-    mintPriceAtomic: $('creatorMintFeeEnabled')?.checked ? decimalCoinToAtomic($('creatorMintPrice')?.value) || 0 : 0,
+    mintingEnabled: commerceV5ReleaseEnabled
+      ? false
+      : $('creatorMintingEnabled')?.checked !== false,
+    mintFeeEnabled: commerceV5ReleaseEnabled
+      ? false
+      : Boolean($('creatorMintFeeEnabled')?.checked),
+    mintPriceAtomic: commerceV5ReleaseEnabled
+      ? 0
+      : $('creatorMintFeeEnabled')?.checked
+        ? decimalCoinToAtomic($('creatorMintPrice')?.value) || 0
+        : 0,
     paymentCoinType: runtimeConfig.paymentCoinType,
     paymentCoinSymbol: runtimeConfig.paymentCoinSymbol,
     storage: 'walrus',
@@ -8383,6 +10126,17 @@ function makerV4DocumentForRelease({ sourceDocument = state.makerDocumentV4 } = 
     assetAddressing: 'walrus-quilt-id+identifier',
   };
   documentV4.livingContent = normalizeLivingContent(documentV4.livingContent, documentV4.metadata);
+  if (
+    !commerceV5ReleaseEnabled
+    && !makerCommerceV5RequiresRelease(documentV4.commerce, {
+      packIds: expansionPackIds(documentV4),
+    })
+  ) {
+    // Keep untouched free legacy Makers publishable while Commerce v5 is
+    // release-gated. The editable draft retains its defaults; only this v4
+    // release clone omits a Commerce projection it cannot enforce.
+    delete documentV4.commerce;
+  }
   return documentV4;
 }
 
@@ -8568,7 +10322,11 @@ function creatorManifest() {
   };
 }
 
-function creatorUploadManifest() {
+function creatorUploadManifest({
+  logicalAuxiliaryBlobId = runtimeConfig.commerceV5ReleaseEnabled === true
+    ? runtimeConfig.commerceV5LogicalAuxiliaryBlobId
+    : '',
+} = {}) {
   const documentV4 = makerV4DocumentForRelease();
   if (!documentV4) {
     const error = new Error(t('legacyMakerMigrationRequired'));
@@ -8578,6 +10336,7 @@ function creatorUploadManifest() {
   return buildMakerV4PublicationManifest(documentV4, {
     previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
     publicExtensions: makerV4PublicExtensions(documentV4),
+    logicalAuxiliaryBlobId,
   });
 }
 
@@ -8698,10 +10457,178 @@ function ocFingerprint(oc = state.pendingOcPackage || ocPackage()) {
 
 function ocUploadEntries() {
   if (!state.pendingOcImageBlob || !state.pendingOcProfileBlob) throw new Error(t('ocFilesMissing'));
+  if (state.pendingOcOutputProtection) {
+    if (!state.pendingOcEncryptedImageBlob || !state.pendingOcPreviewBlob) {
+      throw new Error('The protected final PNG or its public preview is missing.');
+    }
+    return [
+      {
+        blob: state.pendingOcEncryptedImageBlob,
+        identifier: 'animacraft-oc-output.seal',
+        kind: 'oc-image-ciphertext',
+      },
+      {
+        blob: state.pendingOcProfileBlob,
+        identifier: 'animacraft-oc.json',
+        kind: 'oc-profile',
+      },
+      {
+        blob: state.pendingOcPreviewBlob,
+        identifier: 'animacraft-oc-preview.png',
+        kind: 'oc-preview',
+      },
+    ];
+  }
   return [
     { blob: state.pendingOcImageBlob, identifier: 'animacraft-oc.png', kind: 'oc-image' },
     { blob: state.pendingOcProfileBlob, identifier: 'animacraft-oc.json', kind: 'oc-profile' },
   ];
+}
+
+function expectedOcUploadFileCount() {
+  return state.pendingOcOutputProtection ? 3 : 2;
+}
+
+function applyCertifiedOcUploadFiles(files) {
+  const expected = expectedOcUploadFileCount();
+  if (!Array.isArray(files) || files.length !== expected) {
+    throw new Error(t('ocUnexpectedQuilt'));
+  }
+  state.ocImagePatchId = files[0].id;
+  state.ocProfilePatchId = files[1].id;
+  state.ocPreviewPatchId = expected === 3 ? files[2].id : '';
+  if (state.pendingOcOutputProtection) {
+    const bound = bindMakerCompleteOutputCiphertextV5({
+      blob: state.pendingOcEncryptedImageBlob,
+      protection: state.pendingOcOutputProtection,
+    }, {
+      ciphertextBlobId: state.ocImagePatchId,
+      publicPreviewUrl: walrusFileUrl(state.ocPreviewPatchId),
+    });
+    state.pendingOcOutputProtection = bound.protection;
+    state.pendingOcOutputDescriptor = bound.completeOutput;
+  }
+}
+
+function pendingOcOutputIdentityV5({ requireBound = false } = {}) {
+  const oc = state.pendingOcPackage;
+  const protection = state.pendingOcOutputProtection;
+  const packaged = oc?.completeOutput?.protection;
+  const chainBinding = oc?.commerce?.chainBinding;
+  const descriptor = state.pendingOcOutputDescriptor;
+  const immutableFields = [
+    'schemaVersion',
+    'mode',
+    'sealPackageId',
+    'sealId',
+    'makerRootId',
+    'payer',
+    'recipeHash',
+    'outputNonce',
+    'outputDigest',
+    'ciphertextDigest',
+    'threshold',
+    'plaintextMediaType',
+    'ciphertextMediaType',
+    'aad',
+  ];
+  if (
+    !oc
+    || !protection
+    || !packaged
+    || !chainBinding
+    || oc.completeOutput.schemaVersion !== protection.schemaVersion
+    || oc.completeOutput.mode !== protection.mode
+    || immutableFields.some((field) => (
+      String(packaged[field] ?? '') !== String(protection[field] ?? '')
+    ))
+    || JSON.stringify(packaged.keyServers || [])
+      !== JSON.stringify(protection.keyServers || [])
+    || comparableSuiId(protection.makerRootId)
+      !== comparableSuiId(chainBinding.rootObjectId)
+    || comparableSuiId(protection.sealPackageId)
+      !== comparableSuiId(runtimeConfig.soulidityPackageId)
+    || comparableSuiId(protection.payer)
+      !== comparableSuiId(state.walletAddress)
+    || String(protection.recipeHash || '')
+      !== bytesToHex(state.pendingOcRecipeHash || new Uint8Array())
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_OUTPUT_IDENTITY_MISMATCH',
+      'The protected Complete output no longer matches its OC package, wallet, Recipe, or MakerRootV5.',
+    );
+  }
+  if (
+    requireBound
+    && (
+      !descriptor
+      || descriptor.outputSealId !== protection.sealId
+      || descriptor.outputNonce !== protection.outputNonce
+      || descriptor.outputDigest !== protection.outputDigest
+      || descriptor.ciphertextBlobId !== protection.ciphertextBlobId
+      || descriptor.publicPreviewUrl !== protection.publicPreviewUrl
+      || protection.ciphertextBlobId !== state.ocImagePatchId
+      || protection.publicPreviewUrl !== walrusFileUrl(state.ocPreviewPatchId)
+    )
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_OUTPUT_LOCATION_MISMATCH',
+      'The certified Complete output locations do not match its immutable Seal descriptor.',
+    );
+  }
+  return Object.freeze({
+    oc,
+    protection,
+    descriptor,
+    chainBinding,
+  });
+}
+
+async function verifyPendingOcCompleteOutputPlaintextV5({
+  requireBound = false,
+} = {}) {
+  const identity = pendingOcOutputIdentityV5({ requireBound });
+  if (
+    !state.pendingOcImageBlob
+    || state.pendingOcImageBlob.type !== 'image/png'
+    || state.pendingOcImageBlob.size < 1
+    || await sha256BlobHex(state.pendingOcImageBlob, 'Completed OC PNG')
+      !== identity.protection.outputDigest
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_OUTPUT_PLAINTEXT_MISMATCH',
+      'The locally reviewed final PNG does not match its immutable output digest.',
+    );
+  }
+  return identity;
+}
+
+async function verifyPendingOcCompleteOutputRecovery() {
+  if (!state.pendingOcOutputProtection) return true;
+  await verifyPendingOcCompleteOutputPlaintextV5({ requireBound: true });
+  const payload = makerCompleteOutputSealRecoveryPayloadV5({
+    blob: state.pendingOcEncryptedImageBlob,
+    protection: state.pendingOcOutputProtection,
+  });
+  return verifyMakerCompleteOutputSealRecoveryPayloadV5(payload);
+}
+
+async function verifyPendingOcCompleteOutputCiphertextBeforeUploadV5() {
+  if (!state.pendingOcOutputProtection) return true;
+  const immutableProtection = state.pendingOcPackage?.completeOutput?.protection;
+  if (!state.pendingOcEncryptedImageBlob || !immutableProtection) {
+    throw commerceV5Error(
+      'COMMERCE_V5_OUTPUT_CIPHERTEXT_MISSING',
+      'The protected Complete output is missing its immutable ciphertext checkpoint.',
+    );
+  }
+  return verifyMakerCompleteOutputCiphertextV5({
+    protection: state.pendingOcOutputProtection,
+    blob: state.pendingOcEncryptedImageBlob,
+  }, {
+    expectedProtection: immutableProtection,
+    requireLocations: false,
+  });
 }
 
 function captureOcUploadPersistenceContext(session = state.ocUploadSession) {
@@ -8710,11 +10637,41 @@ function captureOcUploadPersistenceContext(session = state.ocUploadSession) {
     recoveryKey: ocUploadStorageKey(),
     templateId: state.templateId,
     imageBlob: state.pendingOcImageBlob,
+    encryptedImageBlob: state.pendingOcEncryptedImageBlob,
+    previewBlob: state.pendingOcPreviewBlob,
     profileBlob: state.pendingOcProfileBlob,
     ocPackage: structuredClone(state.pendingOcPackage),
     recipeHash: state.pendingOcRecipeHash instanceof Uint8Array
       ? new Uint8Array(state.pendingOcRecipeHash)
       : state.pendingOcRecipeHash,
+    styleSelectionsV5: state.pendingOcStyleSelectionsV5
+      ? structuredClone(state.pendingOcStyleSelectionsV5)
+      : null,
+    outputProtection: state.pendingOcOutputProtection
+      ? structuredClone(state.pendingOcOutputProtection)
+      : null,
+    outputDescriptor: state.pendingOcOutputDescriptor
+      ? structuredClone(state.pendingOcOutputDescriptor)
+      : null,
+    exportKey: state.pendingOcExportKey,
+    returnNonce: state.pendingOcReturnNonce,
+    completionReceipt: state.pendingOcCompletionReceipt
+      ? structuredClone(state.pendingOcCompletionReceipt)
+      : null,
+    playerCompletionContext: state.playerCompletionSnapshotV4
+      && state.playerRuntimeDocumentV4
+      ? {
+          document: structuredClone(state.playerRuntimeDocumentV4),
+          recipe: structuredClone(state.playerCompletionSnapshotV4.recipe),
+          profile: structuredClone(state.playerCompletionSnapshotV4.profile),
+          livingContent: structuredClone(
+            state.playerCompletionSnapshotV4.livingContent,
+          ),
+          imageExport: structuredClone(
+            state.playerCompletionSnapshotV4.imageExport,
+          ),
+        }
+      : null,
     recipeJson: state.pendingOcRecipeJson,
     fingerprint: state.pendingOcFingerprint,
   });
@@ -8753,9 +10710,18 @@ async function persistOcUploadRecovery(
     quiltBlobId: session.quiltBlobId || '',
     files: (session.files || []).map(({ id, blobId }) => ({ id, blobId })),
     imageBlob: context.imageBlob,
+    encryptedImageBlob: context.encryptedImageBlob,
+    previewBlob: context.previewBlob,
     profileBlob: context.profileBlob,
     ocPackage: context.ocPackage,
     recipeHash: context.recipeHash,
+    styleSelectionsV5: context.styleSelectionsV5,
+    outputProtection: context.outputProtection,
+    outputDescriptor: context.outputDescriptor,
+    exportKey: context.exportKey,
+    returnNonce: context.returnNonce,
+    completionReceipt: context.completionReceipt,
+    playerCompletionContext: context.playerCompletionContext,
     recipeJson: context.recipeJson,
     fingerprint: context.fingerprint,
   });
@@ -9301,7 +11267,10 @@ function renderMintAction() {
   $('registerOcUpload').disabled = state.minting || !adapterReady || !state.walletConnected || !['encoded', 'register-pending', 'registered'].includes(state.ocUploadStage);
   $('registerOcUpload').textContent = state.ocUploadStage === 'registered' ? t('retryUpload') : t('registerUpload');
   $('certifyOcUpload').disabled = state.minting || !adapterReady || !state.walletConnected || !['uploaded', 'certify-pending'].includes(state.ocUploadStage);
-  $('mintOcOnchain').disabled = state.minting || !baseReady || state.ocUploadStage !== 'certified';
+  $('mintOcOnchain').disabled = state.minting
+    || !baseReady
+    || state.ocUploadStage !== 'certified'
+    || state.pendingOcCompletionReceipt?.confirmed === true;
   $('mintOcOnchain').textContent = state.minting ? t('preparingHandoff') : t('mintOc');
   $('mintOcStatus').textContent = state.mintStatus || mintReadiness();
   ['profileName', 'profileWorld', 'profileDescription', 'profileTags'].forEach((id) => {
@@ -9313,6 +11282,7 @@ function renderMintAction() {
     busy: state.minting,
     digest: state.mintDigest,
     error: state.ocPublishError,
+    completionReceipt: state.pendingOcCompletionReceipt,
     relayTipMist: state.ocUploadSession?.relayTipMist == null
       ? null
       : String(state.ocUploadSession.relayTipMist),
@@ -9344,7 +11314,11 @@ function renderMintAction() {
         ['uploaded', 'certify-pending'].includes(state.ocUploadStage)
         || canRetryCertifyCheckpoint
       ),
-      publish: !state.minting && adapterReady && state.walletConnected && state.ocUploadStage === 'certified',
+      publish: !state.minting
+        && adapterReady
+        && state.walletConnected
+        && state.ocUploadStage === 'certified'
+        && state.pendingOcCompletionReceipt?.confirmed !== true,
     },
   });
 }
@@ -9432,7 +11406,14 @@ async function renderOcImageBlob(recipeOverride = null) {
 async function restoreMakerUploadRecovery(templateId = state.templateId, { force = false } = {}) {
   const recoveryKey = makerAssetStorageKey(templateId);
   if (force) loadedMakerUploadRecoveries.delete(recoveryKey);
-  if (loadedMakerUploadRecoveries.has(recoveryKey) || (makerIsPublished() && !makerHasPendingV4Version())) return;
+  if (
+    loadedMakerUploadRecoveries.has(recoveryKey)
+    || (
+      runtimeConfig.commerceV5ReleaseEnabled !== true
+      && makerIsPublished()
+      && !makerHasPendingV4Version()
+    )
+  ) return;
   const requestId = ++makerUploadRestoreRequestId;
   const requestToken = Symbol(recoveryKey);
   makerUploadRestoreRequests.set(recoveryKey, requestToken);
@@ -9452,26 +11433,80 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
     state.hasMakerUploadRecovery = Boolean(recovery);
     if (!recovery) return;
     syncCreatorAssets();
-    if (JSON.stringify(creatorUploadManifest()) !== recovery.manifestJson) {
+    const recoverySourceManifestJson = String(
+      recovery.sourceManifestJson || recovery.manifestJson || '',
+    );
+    let recoverySourceManifest;
+    try {
+      recoverySourceManifest = JSON.parse(recoverySourceManifestJson);
+    } catch {
+      throw uploadRecoveryMismatch(t('makerRecoveryGraphMismatch'));
+    }
+    const recoveryLogicalAuxiliaryBlobId = String(
+      recoverySourceManifest?.moveProjectionV2?.commerce
+        ?.logicalAuxiliaryBlobId || '',
+    ).trim();
+    const recoveredDocumentV4 = makerV4DocumentForRelease();
+    if (
+      recoveredDocumentV4?.commerce
+      && runtimeConfig.commerceV5ReleaseEnabled !== true
+    ) {
+      throw commerceV5Error(
+        'COMMERCE_V5_RELEASE_DISABLED',
+        'This Commerce v5 release checkpoint cannot resume while the reviewed release gate is closed.',
+      );
+    }
+    const canonicalLogicalAuxiliaryBlobId = recoveredDocumentV4?.commerce
+      ? await queryCanonicalCommerceV5LogicalAuxiliaryBlobId({
+          expectedBlobId: recoveryLogicalAuxiliaryBlobId,
+        })
+      : '';
+    if (JSON.stringify(creatorUploadManifest({
+      logicalAuxiliaryBlobId: canonicalLogicalAuxiliaryBlobId,
+    })) !== recoverySourceManifestJson) {
       throw uploadRecoveryMismatch(t('makerRecoveryDraftChanged'));
     }
     if (!recovery.coverBlob) throw new Error(t('makerRecoveryCoverMissing'));
     let pendingBundle = null;
     let pendingAssets;
     if (isMakerV4Document(state.makerDocumentV4)) {
-      const documentV4 = makerV4DocumentForRelease();
+      const documentV4 = recoveredDocumentV4;
       const projection = compileMakerV4MoveProjectionV2(documentV4);
       assertMakerV4ProjectionV2SinglePublishBudget(projection);
       const runtimeAssets = await makerV4RuntimeAssetsForRelease(documentV4, recovery.coverBlob);
       if (!isCurrentRequest()) return;
-      pendingBundle = buildMakerV4PublicationBundle(documentV4, runtimeAssets, {
+      const sourceBundle = buildMakerV4PublicationBundle(documentV4, runtimeAssets, {
         previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
         publicExtensions: makerV4PublicExtensions(documentV4),
         projectionAuxiliaryBlob: makerProjectionAuxiliaryPngBlob(),
+        logicalAuxiliaryBlobId: canonicalLogicalAuxiliaryBlobId,
       });
-      if (pendingBundle.manifestJson !== recovery.manifestJson) {
+      if (sourceBundle.manifestJson !== recoverySourceManifestJson) {
         throw uploadRecoveryMismatch(t('makerRecoveryGraphMismatch'));
       }
+      const sourceRequiresSeal = makerV5RequiresSealProtection(
+        sourceBundle.manifest,
+      );
+      if (sourceRequiresSeal !== Boolean(recovery.sealRecovery)) {
+        throw uploadRecoveryMismatch(t('makerRecoveryGraphMismatch'));
+      }
+      pendingBundle = sourceRequiresSeal
+        ? await restoreMakerSealPublicationBundleV5({
+            sourceBundle,
+            manifestJson: recovery.manifestJson,
+            sealRecovery: recovery.sealRecovery,
+          })
+        : sourceBundle;
+      if (
+        sourceRequiresSeal
+        && (
+          pendingBundle?.seal?.required !== true
+          || pendingBundle.manifest?.seal?.required !== true
+        )
+      ) {
+        throw uploadRecoveryMismatch(t('makerRecoveryGraphMismatch'));
+      }
+      if (!isCurrentRequest()) return;
       pendingAssets = pendingBundle.assetEntries.map((entry) => ({
         assetId: entry.assetId,
         file: entry.blob,
@@ -9522,11 +11557,16 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
     state.pendingMakerAssets = pendingAssets;
     state.pendingMakerManifestJson = recovery.manifestJson;
     state.makerPublicationIntent = normalizedMakerPublicationIntent(recovery.publicationIntent);
+    state.makerCommerceV5Publication = normalizedMakerCommerceV5Publication(
+      recovery.commerceV5Publication,
+    );
     state.makerUploadSession = uploadSession;
     state.makerUploadStage = uploadStage;
     state.makerQuiltId = recovery.quiltBlobId || uploadSession.quiltBlobId;
     const certificationStateSyncing = uploadStage === 'uploaded' && Boolean(uploadSession.certifyDigest);
-    if (certificationStateSyncing) {
+    if (state.pendingOcCompletionReceipt?.confirmed) {
+      state.mintStatus = t('soulHandoffVerified');
+    } else if (certificationStateSyncing) {
       state.makerPublishError = restoredCertificationVisibilityError(uploadSession.certifyDigest);
       state.publishStatus = t('certificationSyncing');
     } else {
@@ -9546,6 +11586,34 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
       } catch (error) {
         if (isCurrentRequest()) {
           recordMakerPublishError(error, 'review', 'publicationSubmittedRecovering');
+        }
+      }
+    }
+    if (
+      runtimeConfig.commerceV5ReleaseEnabled === true
+      && isCurrentRequest()
+      && state.hasMakerUploadRecovery
+      && state.makerObjectId
+    ) {
+      const scope = Object.freeze({
+        recoveryKey,
+        templateId,
+        walletAddress: state.walletAddress,
+        guard: () => (
+          isCurrentRequest()
+          && recoveryKey === makerAssetStorageKey()
+          && comparableSuiId(state.walletAddress)
+            === comparableSuiId(getConnectedWalletAddress())
+        ),
+      });
+      try {
+        await reconcileCurrentMakerCommerceV5Publication(scope);
+      } catch (error) {
+        if (isCurrentRequest()) {
+          recordMakerPublishError(error, 'onchain', 'makerPublicationFailed');
+          if (state.makerCommerceV5Publication) {
+            state.publishStatus = makerCommerceV5PublicationStageLabel();
+          }
         }
       }
     }
@@ -9597,32 +11665,225 @@ async function restoreOcUploadRecovery(templateId = state.templateId, { force = 
     const recipeHash = recovery.recipeHash instanceof Uint8Array
       ? recovery.recipeHash
       : new Uint8Array(recovery.recipeHash || []);
-    const uploadSession = await resumeWalrusUpload([
-      { blob: recovery.imageBlob, identifier: 'animacraft-oc.png', kind: 'oc-image' },
-      { blob: recovery.profileBlob, identifier: 'animacraft-oc.json', kind: 'oc-profile' },
-    ], recovery);
+    const protectedOutputRequired = Boolean(
+      runtimeConfig.commerceV5ReleaseEnabled === true
+      && recovery.ocPackage?.schemaVersion === MAKER_V4_OC_PACKAGE_SCHEMA
+      && activeTemplate()?.source === 'chain',
+    );
+    const protectedOutputEvidence = Boolean(
+      recovery.outputProtection
+      || recovery.outputDescriptor
+      || recovery.encryptedImageBlob
+      || recovery.previewBlob
+      || recovery.ocPackage?.completeOutput
+      || recovery.ocPackage?.commerce?.chainBinding
+      || recovery.completionReceipt,
+    );
+    const protectedOutput = protectedOutputRequired || protectedOutputEvidence;
+    if (
+      protectedOutput
+      && (
+        !recovery.outputProtection
+        || !recovery.encryptedImageBlob?.size
+        || !recovery.previewBlob?.size
+        || !recovery.imageBlob?.size
+        || recovery.imageBlob.type !== 'image/png'
+        || !recovery.profileBlob?.size
+        || !recovery.ocPackage?.completeOutput?.protection
+        || !recovery.ocPackage?.commerce?.chainBinding
+        || !recovery.playerCompletionContext
+        || !String(recovery.exportKey || '')
+        || !/^0x[0-9a-f]{64}$/i.test(String(recovery.returnNonce || ''))
+      )
+    ) {
+      throw uploadRecoveryMismatch(t('ocRecoveryMismatch'));
+    }
+    if (
+      !recovery.profileBlob?.text
+      || await recovery.profileBlob.text() !== JSON.stringify(recovery.ocPackage)
+    ) {
+      throw uploadRecoveryMismatch(t('ocRecoveryMismatch'));
+    }
+    if (protectedOutput) {
+      await verifyMakerCompleteOutputCiphertextV5({
+        protection: recovery.outputProtection,
+        blob: recovery.encryptedImageBlob,
+      }, {
+        expectedProtection: recovery.ocPackage.completeOutput.protection,
+        requireLocations: false,
+      });
+    }
+    const recoveryEntries = protectedOutput
+      ? [
+          {
+            blob: recovery.encryptedImageBlob,
+            identifier: 'animacraft-oc-output.seal',
+            kind: 'oc-image-ciphertext',
+          },
+          {
+            blob: recovery.profileBlob,
+            identifier: 'animacraft-oc.json',
+            kind: 'oc-profile',
+          },
+          {
+            blob: recovery.previewBlob,
+            identifier: 'animacraft-oc-preview.png',
+            kind: 'oc-preview',
+          },
+        ]
+      : [
+          { blob: recovery.imageBlob, identifier: 'animacraft-oc.png', kind: 'oc-image' },
+          { blob: recovery.profileBlob, identifier: 'animacraft-oc.json', kind: 'oc-profile' },
+        ];
+    const uploadSession = await resumeWalrusUpload(recoveryEntries, recovery);
     if (!isCurrentRequest()) return;
     uploadSession.recoverySavedAt = Number(recovery.savedAt || 0);
     const uploadStage = uploadSession.stage;
     let imagePatchId = '';
     let profilePatchId = '';
+    let previewPatchId = '';
     if (uploadStage === 'certified') {
-      if (uploadSession.files.length !== 2) throw new Error(t('ocRecoveryCertifiedMismatch'));
+      const expectedFiles = protectedOutput ? 3 : 2;
+      if (uploadSession.files.length !== expectedFiles) {
+        throw new Error(t('ocRecoveryCertifiedMismatch'));
+      }
       imagePatchId = uploadSession.files[0].id;
       profilePatchId = uploadSession.files[1].id;
+      previewPatchId = protectedOutput ? uploadSession.files[2].id : '';
     }
     state.pendingOcImageBlob = recovery.imageBlob;
+    state.pendingOcEncryptedImageBlob = recovery.encryptedImageBlob || null;
+    state.pendingOcPreviewBlob = recovery.previewBlob || null;
     state.pendingOcProfileBlob = recovery.profileBlob;
     state.pendingOcPackage = recovery.ocPackage;
     state.pendingOcRecipeHash = recipeHash;
+    state.pendingOcStyleSelectionsV5 = Array.isArray(recovery.styleSelectionsV5)
+      ? structuredClone(recovery.styleSelectionsV5)
+      : null;
+    state.pendingOcOutputProtection = recovery.outputProtection
+      ? structuredClone(recovery.outputProtection)
+      : null;
+    state.pendingOcOutputDescriptor = recovery.outputDescriptor
+      ? structuredClone(recovery.outputDescriptor)
+      : null;
+    state.pendingOcExportKey = String(recovery.exportKey || '');
+    state.pendingOcReturnNonce = String(recovery.returnNonce || '');
+    const persistedCompletionReceipt = recovery.completionReceipt
+      ? structuredClone(recovery.completionReceipt)
+      : null;
+    // A persisted receipt is evidence to re-check, never authority by itself.
+    state.pendingOcCompletionReceipt = null;
+    const completionContext = recovery.playerCompletionContext;
+    if (completionContext && state.pendingOcExportKey) {
+      const expectedVersion = String(
+        recovery.ocPackage?.maker?.versionId
+          || recovery.ocPackage?.maker?.makerVersionId
+          || '',
+      );
+      const restoredVersion = String(
+        completionContext.document?.version?.versionId || '',
+      );
+      if (expectedVersion && restoredVersion !== expectedVersion) {
+        throw uploadRecoveryMismatch(t('ocRecoveryMismatch'));
+      }
+      state.playerRuntimeDocumentV4 = structuredClone(completionContext.document);
+      state.playerRecipeV4 = structuredClone(completionContext.recipe);
+      state.playerProfileV4 = structuredClone(completionContext.profile);
+      state.playerCompletionSnapshotV4 = createPlayerCompletionSnapshot({
+        ...completionContext,
+        imageBlob: recovery.imageBlob,
+      });
+      makerWorkspace?.restorePlayerPendingCompletion?.({
+        ...completionContext,
+        imageBlob: recovery.imageBlob,
+        exportKey: state.pendingOcExportKey,
+        commerceQuote: recovery.ocPackage?.commerce?.completeQuote || null,
+        digest: recovery.completionReceipt?.digest || '',
+      });
+    }
+    // A simulated quote is wallet/root/epoch specific. Always obtain a fresh
+    // quote after restoring a Walrus checkpoint.
+    state.pendingOcCommerceQuoteV5 = null;
     state.pendingOcRecipeJson = recovery.recipeJson;
     state.pendingOcFingerprint = recovery.fingerprint;
     state.ocUploadSession = uploadSession;
     state.ocUploadStage = uploadStage;
     state.ocImagePatchId = imagePatchId;
     state.ocProfilePatchId = profilePatchId;
+    state.ocPreviewPatchId = previewPatchId;
+    if (protectedOutput) {
+      await verifyPendingOcCompleteOutputPlaintextV5({
+        requireBound: false,
+      });
+    }
+    if (uploadStage === 'certified') {
+      applyCertifiedOcUploadFiles(uploadSession.files);
+      await verifyPendingOcCompleteOutputRecovery();
+    }
+    if (persistedCompletionReceipt?.confirmed) {
+      if (
+        uploadStage !== 'certified'
+        || !persistedCompletionReceipt.digest
+        || !persistedCompletionReceipt.soulObjectId
+        || !persistedCompletionReceipt.provenanceObjectId
+        || !persistedCompletionReceipt.outputProvenanceObjectId
+      ) {
+        throw uploadRecoveryMismatch(t('ocRecoveryMismatch'));
+      }
+      const context = pendingOcOutputIdentityV5({ requireBound: true });
+      const commerce = await requirePlayerCommerceV5(state.makerDocumentV4, {
+        force: true,
+      });
+      if (!isCurrentRequest()) return;
+      if (
+        comparableSuiId(commerce.chain.root.objectId)
+          !== comparableSuiId(context.chainBinding.rootObjectId)
+        || comparableSuiId(commerce.chain.makerTreasury.objectId)
+          !== comparableSuiId(context.chainBinding.makerTreasuryObjectId)
+      ) {
+        throw uploadRecoveryMismatch(t('ocRecoveryMismatch'));
+      }
+      const receipt = await verifySoulidityCompletionReceiptV5({
+        suiClient: getSuiClient(),
+        message: {
+          schemaVersion: SOULIDITY_COMPLETION_RECEIPT_V5_SCHEMA,
+          returnNonce: state.pendingOcReturnNonce,
+          txDigest: persistedCompletionReceipt.digest,
+          soulObjectId: persistedCompletionReceipt.soulObjectId,
+          provenanceObjectId: persistedCompletionReceipt.provenanceObjectId,
+          outputProvenanceObjectId:
+            persistedCompletionReceipt.outputProvenanceObjectId,
+        },
+        expected: {
+          returnNonce: state.pendingOcReturnNonce,
+          exportKey: state.pendingOcExportKey,
+          wallet: state.walletAddress,
+          rootObjectId: context.chainBinding.rootObjectId,
+          legacyMakerObjectId: state.pendingOcPackage.maker?.makerObjectId,
+          makerTreasuryObjectId:
+            context.chainBinding.makerTreasuryObjectId,
+          profileBlobId: state.ocProfilePatchId,
+          imageBlobId: state.ocImagePatchId,
+          imageUrl: walrusFileUrl(state.ocPreviewPatchId),
+          recipeHash: state.pendingOcRecipeHash,
+          outputSealId: context.descriptor.outputSealId,
+          outputNonce: context.descriptor.outputNonce,
+          outputDigest: context.descriptor.outputDigest,
+        },
+        commerceTypeOriginPackageId:
+          runtimeConfig.commerceV5TypeOriginPackageId,
+        soulidityTypeOriginPackageId:
+          runtimeConfig.soulidityTypeOriginPackageId
+          || runtimeConfig.soulidityPackageId,
+      });
+      if (!isCurrentRequest()) return;
+      state.pendingOcCompletionReceipt = receipt;
+      state.mintDigest = receipt.digest;
+    }
     const certificationStateSyncing = uploadStage === 'uploaded' && Boolean(uploadSession.certifyDigest);
-    if (certificationStateSyncing) {
+    if (state.pendingOcCompletionReceipt?.confirmed) {
+      state.mintStatus = t('soulHandoffVerified');
+    } else if (certificationStateSyncing) {
       state.ocPublishError = restoredCertificationVisibilityError(uploadSession.certifyDigest);
       state.mintStatus = t('ocCertificationSyncing');
     } else {
@@ -9639,10 +11900,20 @@ async function restoreOcUploadRecovery(templateId = state.templateId, { force = 
     state.ocUploadStage = 'idle';
     state.ocImagePatchId = '';
     state.ocProfilePatchId = '';
+    state.ocPreviewPatchId = '';
     state.pendingOcImageBlob = null;
+    state.pendingOcEncryptedImageBlob = null;
+    state.pendingOcPreviewBlob = null;
     state.pendingOcProfileBlob = null;
     state.pendingOcPackage = null;
+    state.pendingOcOutputProtection = null;
+    state.pendingOcOutputDescriptor = null;
+    state.pendingOcExportKey = '';
+    state.pendingOcReturnNonce = '';
+    state.pendingOcCompletionReceipt = null;
     state.pendingOcRecipeHash = null;
+    state.pendingOcStyleSelectionsV5 = null;
+    state.pendingOcCommerceQuoteV5 = null;
     state.pendingOcRecipeJson = '';
     state.pendingOcFingerprint = '';
     recordOcPublishError(error, 'resume', 'ocRecoveryFailed');
@@ -9816,6 +12087,17 @@ function requestDeleteMaker(templateId = state.templateId) {
 
 function renderMakerLifecycle() {
   const lifecycle = makerLifecycleDescriptor();
+  const commerceBinding = activeCommerceV5Binding();
+  const commerceView = makerCommerceV5ViewMatches()
+    ? makerCommerceV5LifecycleView
+    : null;
+  const commerceV5Managed = Boolean(
+    activeTemplate()?.source === 'chain'
+    && (
+      commerceBinding.rootObjectId
+      || ['loading', 'ready', 'error'].includes(commerceView?.status)
+    )
+  );
   const releaseLocked = ['publishing', 'recoverable'].includes(lifecycle.id);
   const locked = releaseLocked || (lifecycle.published && !lifecycle.versionDraft);
   const chainManageable = !releaseLocked
@@ -9838,8 +12120,8 @@ function renderMakerLifecycle() {
     $('deleteMakerDraft').hidden = lifecycle.id !== 'draft';
     $('deleteMakerDraft').disabled = lifecycle.id !== 'draft';
   }
-  if ($('makerRetirementNotice')) $('makerRetirementNotice').hidden = !chainManageable;
-  if ($('makerLifecycleAction')) $('makerLifecycleAction').hidden = !chainManageable;
+  if ($('makerRetirementNotice')) $('makerRetirementNotice').hidden = !chainManageable || commerceV5Managed;
+  if ($('makerLifecycleAction')) $('makerLifecycleAction').hidden = !chainManageable || commerceV5Managed;
   if ($('makerLifecycleActionTitle')) $('makerLifecycleActionTitle').textContent = title;
   if ($('makerLifecycleActionCopy')) $('makerLifecycleActionCopy').textContent = state.publishStatus || copy;
   if ($('archiveMakerOnchain')) {
@@ -9855,7 +12137,15 @@ function renderMakerLifecycle() {
   ['creatorTemplateName', 'creatorDescription', 'creatorName', 'creatorWorld', 'creatorLicense', 'creatorLicenseNote'].forEach((id) => {
     if ($(id)) $(id).disabled = locked;
   });
-  const canManageEconomics = !locked || Boolean(state.makerAdminCapObjectId);
+  const canManageEconomics = !commerceV5Managed
+    && (!locked || Boolean(state.makerAdminCapObjectId));
+  if ($('legacyMakerEconomicsPanel')) {
+    $('legacyMakerEconomicsPanel').hidden = commerceV5Managed;
+    $('legacyMakerEconomicsPanel').setAttribute(
+      'aria-hidden',
+      String(commerceV5Managed),
+    );
+  }
   ['creatorMintingEnabled', 'creatorRoyalty'].forEach((id) => {
     if ($(id)) $(id).disabled = !canManageEconomics;
   });
@@ -9867,12 +12157,14 @@ function renderMakerLifecycle() {
       || !canonicalSoulMintEnabled
       || !$('creatorMintFeeEnabled').checked;
   }
-  if ($('updateMakerEconomics')) $('updateMakerEconomics').disabled = !economicsManageable
+  if ($('updateMakerEconomics')) $('updateMakerEconomics').disabled = commerceV5Managed
+    || !economicsManageable
     || !state.makerAdminCapObjectId
     || !state.walletConnected
     || state.publishing
     || state.makerLifecycleActionBusy;
-  if ($('withdrawMakerRevenue')) $('withdrawMakerRevenue').disabled = !chainManageable
+  if ($('withdrawMakerRevenue')) $('withdrawMakerRevenue').disabled = commerceV5Managed
+    || !chainManageable
     || !state.makerAdminCapObjectId
     || !state.makerTreasuryObjectId
     || !state.walletConnected
@@ -9947,11 +12239,28 @@ function renderMakerLifecycleManager() {
     : '';
   const template = activeTemplate();
   const lifecycle = makerLifecycleDescriptor(template);
+  const commerceView = makerCommerceV5ViewMatches()
+    ? makerCommerceV5LifecycleView
+    : null;
+  const commerce = activeMakerCommerceV5Management();
+  const commerceMode = Boolean(
+    commerce
+    || commerceView?.status === 'loading'
+    || commerceView?.status === 'error',
+  );
   const workingDocument = isMakerV4Document(state.makerDocumentV4) ? state.makerDocumentV4 : null;
   const publishedDocument = isMakerV4Document(state.publishedMakerDocumentV4)
     ? state.publishedMakerDocumentV4
     : null;
-  const title = t(lifecycle.labelKey);
+  const title = commerce && !lifecycle.versionDraft
+    ? t(commerceV5LifecycleLabelKey(commerce.chain.root.lifecycle))
+    : t(lifecycle.labelKey);
+  const badgeClass = commerce && !lifecycle.versionDraft
+    ? commerceV5LifecycleBadgeClass(commerce.chain.root.lifecycle)
+    : lifecycle.badgeClass;
+  const badgeState = commerce && !lifecycle.versionDraft
+    ? badgeClass
+    : lifecycle.id;
   const actionCopyKey = {
     draft: 'makerLifecycleDraftActionCopy',
     starter: 'makerLifecycleDraftActionCopy',
@@ -9968,10 +12277,20 @@ function renderMakerLifecycleManager() {
       ? makerVersionDraftConflictMessage(lifecycle.versionConflict, workingDocument)
       : t(actionCopyKey);
   const publishedObjectId = state.makerObjectId || template?.objectId || '';
+  const managedObjectId = commerce?.chain.root.objectId || publishedObjectId;
   const hasAuthority = Boolean(
-    state.walletConnected
-    && state.makerAdminCapObjectId
-    && publishedObjectId,
+    commerce
+      ? state.walletConnected
+        && (
+          Boolean(commerce.controlCap && commerce.isOwner)
+          || (
+            commerce.chain.root.lifecycle === COMMERCE_V5_LIFECYCLE.SALE_PENDING
+            && commerce.isSeller
+          )
+        )
+      : state.walletConnected
+        && state.makerAdminCapObjectId
+        && publishedObjectId,
   );
   const releaseLocked = ['publishing', 'recoverable'].includes(lifecycle.id);
   const operationBusy = state.publishing || state.makerLifecycleActionBusy;
@@ -9984,8 +12303,8 @@ function renderMakerLifecycleManager() {
   if ($('makerLifecycleManagerCopy')) $('makerLifecycleManagerCopy').textContent = t('makerLifecycleManagerCopy');
   if ($('makerLifecycleManagerBadge')) {
     $('makerLifecycleManagerBadge').textContent = title;
-    $('makerLifecycleManagerBadge').className = `maker-lifecycle-manager-badge ${lifecycle.badgeClass}`;
-    $('makerLifecycleManagerBadge').dataset.state = lifecycle.id;
+    $('makerLifecycleManagerBadge').className = `maker-lifecycle-manager-badge ${badgeClass}`;
+    $('makerLifecycleManagerBadge').dataset.state = badgeState;
   }
   if ($('makerLifecycleManagerName')) $('makerLifecycleManagerName').textContent = template?.name || 'Maker';
   if ($('makerLifecycleManagerScope')) {
@@ -10003,7 +12322,7 @@ function renderMakerLifecycleManager() {
           : t('makerLifecycleLocalScope'),
       ),
       lifecycleFact(t('makerLifecycleVersion'), workingDocument?.version?.versionId || '—'),
-      lifecycleFact(t('makerLifecycleObject'), publishedObjectId ? shortAddress(publishedObjectId) : '—'),
+      lifecycleFact(t('makerLifecycleObject'), managedObjectId ? shortAddress(managedObjectId) : '—'),
     ].join('');
   }
 
@@ -10038,7 +12357,12 @@ function renderMakerLifecycleManager() {
       `;
     }
   }
-  if ($('makerLifecycleVersionHistory')) {
+  const lifecycleVersionHistorySection = $('makerLifecycleVersionHistory')
+    ?.closest('.maker-lifecycle-version-history');
+  if (lifecycleVersionHistorySection) {
+    lifecycleVersionHistorySection.hidden = commerceMode;
+  }
+  if ($('makerLifecycleVersionHistory') && !commerceMode) {
     const versions = lifecycle.published
       ? publishedMakerVersionHistory(template)
       : [];
@@ -10164,7 +12488,83 @@ function renderMakerLifecycleManager() {
       { tone: 'danger', disabled: operationBusy },
     ));
   }
-  if (lifecycle.published) {
+  if (lifecycle.published && commerce) {
+    const {
+      root,
+      listing,
+    } = commerce.chain;
+    const ownerControlReady = Boolean(commerce.isOwner && commerce.controlCap);
+    const commerceActionDisabled = operationBusy || releaseLocked;
+    if (root.lifecycle === COMMERCE_V5_LIFECYCLE.ACTIVE && ownerControlReady) {
+      actions.push(lifecycleActionButton(
+        'commerce-v5-pause',
+        t('makerCommerceV5ActionPause'),
+        t('makerCommerceV5PauseCopy'),
+        { disabled: commerceActionDisabled },
+      ));
+      actions.push(lifecycleActionButton(
+        'commerce-v5-archive',
+        t('makerCommerceV5ActionArchive'),
+        t('makerCommerceV5ArchiveCopy'),
+        { tone: 'danger', disabled: commerceActionDisabled },
+      ));
+    } else if (root.lifecycle === COMMERCE_V5_LIFECYCLE.PAUSED && ownerControlReady) {
+      actions.push(lifecycleActionButton(
+        'commerce-v5-resume',
+        t('makerCommerceV5ActionResume'),
+        t('makerCommerceV5ResumeCopy'),
+        { disabled: commerceActionDisabled },
+      ));
+      actions.push(lifecycleActionButton(
+        'commerce-v5-archive',
+        t('makerCommerceV5ActionArchive'),
+        t('makerCommerceV5ArchiveCopy'),
+        { tone: 'danger', disabled: commerceActionDisabled },
+      ));
+    } else if (root.lifecycle === COMMERCE_V5_LIFECYCLE.ARCHIVED && ownerControlReady) {
+      actions.push(lifecycleActionButton(
+        'commerce-v5-restore',
+        t('makerCommerceV5ActionRestore'),
+        t('makerCommerceV5ResumeCopy'),
+        { disabled: commerceActionDisabled },
+      ));
+    } else if (
+      root.lifecycle === COMMERCE_V5_LIFECYCLE.SALE_PENDING
+      && listing
+      && commerce.isSeller
+    ) {
+      actions.push(lifecycleActionButton(
+        'commerce-v5-cancel-listing',
+        t('makerCommerceV5ActionCancelListing'),
+        t('makerCommerceV5CancelCopy'),
+        { tone: 'danger', disabled: commerceActionDisabled },
+      ));
+    } else if (
+      root.lifecycle === COMMERCE_V5_LIFECYCLE.SALE_PENDING
+      && listing
+      && state.walletConnected
+      && !commerce.isSeller
+    ) {
+      const buyUnavailableReason = runtimeConfig.commerceV5ReleaseEnabled !== true
+        ? t('makerCommerceV5ReleaseDisabled')
+        : commerce.chain.protocol?.enabled !== true
+          ? t('makerCommerceV5ProtocolDisabled')
+          : '';
+      actions.push(lifecycleActionButton(
+        'commerce-v5-buy',
+        t('makerCommerceV5ActionBuy'),
+        buyUnavailableReason || `${t('makerCommerceV5BuyCopy')} ${commerceV5AtomicToDecimalText(
+          listing.priceAtomic,
+        )} ${runtimeConfig.paymentCoinSymbol}.`,
+        {
+          tone: 'primary',
+          disabled: commerceActionDisabled
+            || runtimeConfig.commerceV5ReleaseEnabled !== true
+            || commerce.chain.protocol?.enabled !== true,
+        },
+      ));
+    }
+  } else if (lifecycle.published && !commerceMode) {
     if (lifecycle.archived) {
       actions.push(lifecycleActionButton(
         'restore-chain',
@@ -10229,8 +12629,11 @@ function renderMakerLifecycleManager() {
       ? makerVersionLineageForkMessage(lifecycle.lineageFork)
       : lifecycle.versionDraft
         ? t('makerLifecycleVersionWarning')
-        : lifecycle.published && !hasAuthority
+        : lifecycle.published && !hasAuthority && !commerceMode
           ? t('makerLifecycleNoAuthority')
+          : commerce && !hasAuthority
+            && commerce.chain.root.lifecycle !== COMMERCE_V5_LIFECYCLE.SALE_PENDING
+            ? t('makerCommerceV5ControlUnavailable')
           : '';
     $('makerLifecycleManagerNotice').hidden = !notice;
     $('makerLifecycleManagerNotice').textContent = notice;
@@ -10238,6 +12641,7 @@ function renderMakerLifecycleManager() {
   if ($('makerLifecycleManagerStatus')) {
     $('makerLifecycleManagerStatus').textContent = state.publishStatus || t('makerLifecycleStatusReady');
   }
+  renderMakerCommerceV5LifecyclePanel();
   if (
     focusedInsideModal
     && !$('confirmActionModal')?.classList.contains('active')
@@ -10287,7 +12691,11 @@ function openMakerLifecycleManager(templateId = state.templateId) {
       : t('makerWorkspaceRestoreFailed');
     renderMakerLifecycleManager();
   });
-  void loadActiveTreasuryBalance();
+  if (makerCommerceV5LifecycleAvailable()) {
+    void refreshMakerCommerceV5Lifecycle({ silentWhenAbsent: true });
+  } else {
+    void loadActiveTreasuryBalance();
+  }
 }
 
 function closeMakerLifecycleManager({ restoreFocus = true } = {}) {
@@ -10511,6 +12919,97 @@ async function discardMakerVersionDraft() {
 
 async function handleMakerLifecycleAction(action) {
   if (!action) return;
+  if (action === 'commerce-v5-refresh') {
+    await refreshMakerCommerceV5Lifecycle({ silentWhenAbsent: false });
+    return;
+  }
+  if (action === 'commerce-v5-withdraw' || action === 'commerce-v5-list') {
+    const inputId = action === 'commerce-v5-withdraw'
+      ? 'makerCommerceV5WithdrawAmount'
+      : 'makerCommerceV5ListPrice';
+    const amountText = $(inputId)?.value?.trim() || '';
+    const amountAtomic = commerceV5DecimalToAtomicExact(amountText);
+    if (amountAtomic === null) {
+      state.publishStatusI18n = null;
+      state.publishStatus = t('makerCommerceV5ExactAmountInvalid', {
+        symbol: runtimeConfig.paymentCoinSymbol,
+        decimals: runtimeConfig.paymentCoinDecimals,
+      });
+      renderMakerLifecycleManager();
+      $(inputId)?.focus();
+      return;
+    }
+    const withdraw = action === 'commerce-v5-withdraw';
+    openConfirmation({
+      title: t(
+        withdraw
+          ? 'makerCommerceV5WithdrawAction'
+          : 'makerCommerceV5ListAction',
+      ),
+      message: `${t(
+        withdraw
+          ? 'makerCommerceV5WithdrawCopy'
+          : 'makerCommerceV5ListCopy',
+      )} ${amountText} ${runtimeConfig.paymentCoinSymbol}.`,
+      confirmLabel: t(
+        withdraw
+          ? 'makerCommerceV5WithdrawAction'
+          : 'makerCommerceV5ListAction',
+      ),
+      action: () => executeMakerCommerceV5Action(action, { amountText }),
+    });
+    return;
+  }
+  if ([
+    'commerce-v5-pause',
+    'commerce-v5-resume',
+    'commerce-v5-archive',
+    'commerce-v5-restore',
+    'commerce-v5-cancel-listing',
+    'commerce-v5-buy',
+  ].includes(action)) {
+    const config = {
+      'commerce-v5-pause': [
+        'makerCommerceV5ActionPause',
+        'makerCommerceV5PauseCopy',
+      ],
+      'commerce-v5-resume': [
+        'makerCommerceV5ActionResume',
+        'makerCommerceV5ResumeCopy',
+      ],
+      'commerce-v5-archive': [
+        'makerCommerceV5ActionArchive',
+        'makerCommerceV5ArchiveCopy',
+      ],
+      'commerce-v5-restore': [
+        'makerCommerceV5ActionRestore',
+        'makerCommerceV5ResumeCopy',
+      ],
+      'commerce-v5-cancel-listing': [
+        'makerCommerceV5ActionCancelListing',
+        'makerCommerceV5CancelCopy',
+      ],
+      'commerce-v5-buy': [
+        'makerCommerceV5ActionBuy',
+        'makerCommerceV5BuyCopy',
+      ],
+    }[action];
+    const management = activeMakerCommerceV5Management();
+    const listing = management?.chain?.listing || null;
+    const priceCopy = action === 'commerce-v5-buy' && listing
+      ? ` ${commerceV5AtomicToDecimalText(listing.priceAtomic)} ${runtimeConfig.paymentCoinSymbol}.`
+      : '';
+    openConfirmation({
+      title: t(config[0]),
+      message: `${t(config[1])}${priceCopy}`,
+      confirmLabel: t(config[0]),
+      action: () => executeMakerCommerceV5Action(action, {
+        expectedListingObjectId: listing?.objectId || '',
+        expectedListingPriceAtomic: listing?.priceAtomic?.toString() || '',
+      }),
+    });
+    return;
+  }
   const historySeparator = action.indexOf(':');
   if (historySeparator > 0 && action.startsWith('history-')) {
     const historyAction = action.slice(0, historySeparator);
@@ -11451,6 +13950,10 @@ function publishReadiness() {
 
 function renderPublishAction() {
   const locked = makerIsPublished() && !makerHasPendingV4Version();
+  const commercePublication = normalizedMakerCommerceV5Publication(
+    state.makerCommerceV5Publication,
+  );
+  const commercePublicationPending = makerCommerceV5PublicationPending();
   const versionDraftConflict = makerVersionDraftConflict();
   const lineageFork = makerPublishedLineageFork();
   const hasMakerAssets = isMakerV4Document(state.makerDocumentV4)
@@ -11470,6 +13973,25 @@ function renderPublishAction() {
     busy: state.publishing,
     digest: state.publishDigest,
     error: state.makerPublishError,
+    commerceV5Publication: commercePublication
+      ? {
+          stage: commercePublication.stage,
+          sequence: commercePublication.sequence,
+          completed: commercePublication.completed,
+          readbackVerified: commercePublication.readbackVerified,
+          confirmedStyleCount: commercePublication.confirmedStyleCount,
+          label: makerCommerceV5PublicationStageLabel(commercePublication),
+        }
+      : commercePublicationPending
+        ? {
+            stage: MAKER_COMMERCE_PUBLICATION_V5_STAGES.READY,
+            sequence: 0,
+            completed: false,
+            readbackVerified: false,
+            confirmedStyleCount: 0,
+            label: makerCommerceV5PublicationStageLabel(),
+          }
+        : null,
     relayTipMist: state.makerUploadSession?.relayTipMist == null
       ? null
       : String(state.makerUploadSession.relayTipMist),
@@ -11506,13 +14028,18 @@ function renderPublishAction() {
         ['uploaded', 'certify-pending'].includes(state.makerUploadStage)
         || canRetryCertifyCheckpoint
       ),
-      publish: !locked
-        && !versionDraftConflict
-        && !lineageFork
-        && !state.publishing
-        && !publicationRecoveryPending
+      publish: !state.publishing
         && state.walletConnected
-        && state.makerUploadStage === 'certified',
+        && state.makerUploadStage === 'certified'
+        && (
+          commercePublicationPending
+          || (
+            !locked
+            && !versionDraftConflict
+            && !lineageFork
+            && !publicationRecoveryPending
+          )
+        ),
       review: !state.publishing && publicationRecoveryPending,
     },
   });
@@ -11638,8 +14165,13 @@ async function prepareMakerUpload() {
       const documentV4 = isMakerV4Document(state.makerDocumentV4)
         ? makerV4DocumentForRelease()
         : null;
+      const logicalAuxiliaryBlobId = documentV4?.commerce
+        ? await queryCanonicalCommerceV5LogicalAuxiliaryBlobId()
+        : '';
       if (documentV4) {
-        const projection = compileMakerV4MoveProjectionV2(documentV4);
+        const projection = compileMakerV4MoveProjectionV2(documentV4, {
+          logicalAuxiliaryBlobId,
+        });
         assertMakerV4ProjectionV2SinglePublishBudget(projection);
       }
       if (documentV4) {
@@ -11648,11 +14180,26 @@ async function prepareMakerUpload() {
         const coverBlob = makerV4ReleaseCoverBlob(documentV4, runtimeAssets);
         if (!coverBlob) throw new Error(t('makerRecoveryCoverMissing'));
         state.pendingMakerCoverBlob = coverBlob;
-        const bundle = buildMakerV4PublicationBundle(documentV4, runtimeAssets, {
+        const sourceBundle = buildMakerV4PublicationBundle(documentV4, runtimeAssets, {
           previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
           publicExtensions: makerV4PublicExtensions(documentV4),
           projectionAuxiliaryBlob: makerProjectionAuxiliaryPngBlob(),
+          logicalAuxiliaryBlobId,
         });
+        const bundle = await protectMakerV5PaidPackAssetsForPublication({
+          document: documentV4,
+          bundle: sourceBundle,
+          runtimeAssets,
+          ...(makerV5RequiresSealProtection(sourceBundle.manifest)
+            ? {
+                sealClient: configuredMakerSealClientV5(),
+                sealPackageId: runtimeConfig.sealV5PackageId,
+                threshold: runtimeConfig.sealThreshold,
+                serverConfigs: runtimeConfig.sealKeyServers,
+              }
+            : {}),
+        });
+        if (!makerChainOperationIsActive(operation)) return;
         state.pendingMakerV4Bundle = bundle;
         state.pendingMakerAssets = bundle.assetEntries.map((entry) => ({
           assetId: entry.assetId,
@@ -11840,8 +14387,87 @@ async function assertMakerPublicationStillValid(operation, {
   throw error;
 }
 
+async function advanceCurrentMakerCommerceV5Publication() {
+  if (
+    runtimeConfig.commerceV5ReleaseEnabled !== true
+    || state.publishing
+    || state.makerUploadStage !== 'certified'
+  ) return false;
+  const operation = beginMakerChainOperation({ bindMakerObject: true });
+  const scope = Object.freeze({
+    recoveryKey: operation.recoveryKey,
+    templateId: operation.templateId,
+    walletAddress: operation.walletAddress,
+    guard: () => makerChainOperationIsActive(operation),
+  });
+  clearMakerPublishError();
+  state.publishing = true;
+  state.makerReleaseInFlight = true;
+  state.publishStatus = makerCommerceV5PublicationStageLabel();
+  renderPublishAction();
+  try {
+    await withBrowserUploadLock(operation.recoveryKey, async () => {
+      await syncLatestMakerUploadRecovery();
+      if (!scope.guard()) return;
+      const recovery = await loadMakerUploadRecovery(operation.recoveryKey);
+      const publication = await ensureMakerCommerceV5Publication(scope, recovery);
+      state.publishStatus = makerCommerceV5PublicationStageLabel(
+        publication.checkpoint,
+      );
+      renderPublishAction();
+      const result = await advanceMakerCommerceV5Publication({
+        checkpoint: publication.checkpoint,
+        context: publication.context,
+        runtime: publication.runtime,
+        plan: publication.plan,
+        dependencies: makerCommerceV5PublicationDependencies(scope, publication),
+      });
+      if (!scope.guard()) return;
+      const checkpoint = updateMakerCommerceV5PublicationState(result.checkpoint);
+      state.publishStatus = makerCommerceV5PublicationStageLabel(checkpoint);
+      if (
+        checkpoint.stage === MAKER_COMMERCE_PUBLICATION_V5_STAGES.ACTIVE
+        && checkpoint.completed === true
+        && checkpoint.readbackVerified === true
+      ) {
+        await finishMakerCommerceV5Publication(scope, {
+          ...publication,
+          checkpoint,
+        });
+      }
+    });
+    return true;
+  } catch (error) {
+    console.error('Maker Commerce v5 publication failed', error);
+    if (scope.guard()) {
+      if (error?.checkpoint) {
+        updateMakerCommerceV5PublicationState(error.checkpoint);
+      }
+      recordMakerPublishError(error, 'onchain', 'makerPublicationFailed');
+      if (state.makerCommerceV5Publication) {
+        state.publishStatus = makerCommerceV5PublicationStageLabel();
+      }
+    }
+    return false;
+  } finally {
+    if (scope.guard()) {
+      state.publishing = false;
+      state.makerReleaseInFlight = false;
+      renderAll();
+    }
+  }
+}
+
 async function publishCurrentMaker() {
   if (state.publishing || state.makerUploadStage !== 'certified') return;
+  if (
+    runtimeConfig.commerceV5ReleaseEnabled === true
+    && makerIsPublished()
+    && !makerHasPendingV4Version()
+  ) {
+    await advanceCurrentMakerCommerceV5Publication();
+    return;
+  }
   const operation = beginMakerChainOperation();
   clearMakerPublishError();
   let publicationSignatureRequested = false;
@@ -11884,7 +14510,38 @@ async function publishCurrentMaker() {
     if (!publicationContext || !publicationContextIsActive()) {
       throw new Error('The active Maker changed before publication could start.');
     }
-    if (JSON.stringify(creatorUploadManifest()) !== state.pendingMakerManifestJson) {
+    const pendingBundle = state.pendingMakerV4Bundle;
+    const pendingProtectedManifestJson = String(
+      pendingBundle?.manifestJson || '',
+    );
+    const expectedSourceManifestJson = String(
+      pendingBundle?.seal?.sourceManifestJson
+      || pendingProtectedManifestJson,
+    );
+    let expectedSourceManifest;
+    try {
+      expectedSourceManifest = JSON.parse(expectedSourceManifestJson);
+    } catch {
+      throw new Error(t('makerChangedAfterUpload'));
+    }
+    const pendingLogicalAuxiliaryBlobId = String(
+      expectedSourceManifest?.moveProjectionV2?.commerce
+        ?.logicalAuxiliaryBlobId || '',
+    ).trim();
+    const canonicalLogicalAuxiliaryBlobId = pendingLogicalAuxiliaryBlobId
+      ? await queryCanonicalCommerceV5LogicalAuxiliaryBlobId({
+          expectedBlobId: pendingLogicalAuxiliaryBlobId,
+        })
+      : '';
+    if (
+      JSON.stringify(creatorUploadManifest({
+        logicalAuxiliaryBlobId: canonicalLogicalAuxiliaryBlobId,
+      })) !== expectedSourceManifestJson
+      || !pendingProtectedManifestJson
+      || pendingProtectedManifestJson !== state.pendingMakerManifestJson
+      || JSON.stringify(pendingBundle?.manifest || null)
+        !== pendingProtectedManifestJson
+    ) {
       state.makerUploadSession = null;
       state.makerUploadStage = 'idle';
       state.makerQuiltId = '';
@@ -11895,6 +14552,13 @@ async function publishCurrentMaker() {
         asset.blobId = '';
       });
       throw new Error(t('makerChangedAfterUpload'));
+    }
+    if (pendingBundle?.seal?.required === true) {
+      const sealRecovery = makerSealRecoveryPayloadV5(pendingBundle);
+      if (!sealRecovery) {
+        throw new Error(t('makerRecoveryFailed'));
+      }
+      await verifyMakerSealRecoveryPayloadV5(sealRecovery);
     }
     const pendingIntent = normalizedMakerPublicationIntent(state.makerPublicationIntent);
     publicationIntent = pendingIntent;
@@ -11957,6 +14621,7 @@ async function publishCurrentMaker() {
         auxiliaryLocation,
         coverUrl: publishedCoverUrl,
         previousDocument: isMakerV4Document(state.publishedMakerDocumentV4) ? state.publishedMakerDocumentV4 : null,
+        logicalAuxiliaryBlobId: canonicalLogicalAuxiliaryBlobId,
       });
       makerParts = summary.parts;
       makerItems = summary.items;
@@ -12779,10 +15444,60 @@ async function prepareOcUpload() {
           renderOrder: slot.renderOrder,
         }));
       }
-      const recipeHash = await hashRecipe(chainRecipe);
+      const commerceV5CompleteRequired =
+        await activeChainMakerRequiresCommerceV5Complete(
+          useV4 ? state.makerDocumentV4 : null,
+        );
+      let commerceV5 = null;
+      let commerceQuoteV5 = null;
+      let recipeHash;
+      if (commerceV5CompleteRequired) {
+        commerceV5 = await requirePlayerCommerceV5(state.makerDocumentV4, {
+          force: true,
+        });
+        if (
+          !commerceV5.binding?.rootObjectId
+          || !commerceV5.binding?.makerTreasuryObjectId
+          || comparableSuiId(commerceV5.binding.rootObjectId)
+            !== comparableSuiId(commerceV5.chain.root.objectId)
+          || comparableSuiId(commerceV5.binding.makerTreasuryObjectId)
+            !== comparableSuiId(commerceV5.chain.makerTreasury.objectId)
+        ) {
+          throw commerceV5Error(
+            'COMMERCE_V5_HANDOFF_BINDING_MISSING',
+            'The verified commerce v5 MakerRootV5 and MakerTreasuryV5 binding is incomplete.',
+          );
+        }
+        commerceQuoteV5 = await simulateCompleteQuoteV5(getSuiClient(), {
+          runtime: commerceV5RuntimeContext(),
+          root: commerceV5.chain.root,
+          protocol: commerceV5.chain.protocol,
+          recipe: chainRecipe,
+          styleSelections: v4Bundle.styleSelections,
+          wallet: commerceV5.wallet,
+        });
+        recipeHash = await hashCompleteSelectionV5(
+          chainRecipe,
+          v4Bundle.styleSelections,
+        );
+        if (bytesToHex(recipeHash) !== commerceQuoteV5.recipeHashHex) {
+          throw commerceV5Error(
+            'COMMERCE_V5_QUOTE_HASH_MISMATCH',
+            'The verified Complete quote does not match the exact Recipe and Style selections.',
+          );
+        }
+        // Soulidity re-reads this exact Root/Treasury pair and consumes the
+        // non-droppable authorization in its canonical same-PTB mint adapter.
+        // Animacraft therefore prepares the certified Walrus inputs here
+        // without creating a parallel authorization or payment transaction.
+      } else {
+        recipeHash = await hashRecipe(chainRecipe);
+      }
       if (!ocChainOperationIsActive(operation)) return;
       const integrity = {
-        recipeEncoding: 'BCS vector<RecipeSlot>',
+        recipeEncoding: commerceV5CompleteRequired
+          ? 'BCS CompleteSelectionHashInputV5<RecipeSlot,StyleSelectionV5>'
+          : 'BCS vector<RecipeSlot>',
         recipeHashAlgorithm: 'SHA-256',
         recipeHash: bytesToHex(recipeHash),
       };
@@ -12791,17 +15506,65 @@ async function prepareOcUpload() {
         v4Bundle = currentMakerV4OcBundle({ createdAt, integrity, requireCompletion: true });
         oc = v4Bundle.package;
         recipeJson = v4Bundle.fullRecipeJson;
-        const entries = buildMakerV4OcUploadEntries(image, v4Bundle);
-        profile = entries[1].blob;
       } else {
         oc.integrity = integrity;
-        profile = new Blob([JSON.stringify(oc)], { type: 'application/json' });
       }
+      state.pendingOcEncryptedImageBlob = null;
+      state.pendingOcPreviewBlob = null;
+      state.pendingOcOutputProtection = null;
+      state.pendingOcOutputDescriptor = null;
+      state.pendingOcReturnNonce = '';
+      state.pendingOcCompletionReceipt = null;
+      if (commerceV5CompleteRequired) {
+        if (!String(state.pendingOcExportKey || '')) {
+          throw commerceV5Error(
+            'COMMERCE_V5_COMPLETION_CONTEXT_MISSING',
+            'Complete this OC again before preparing its protected output.',
+          );
+        }
+        const encryptedOutput = await encryptMakerCompleteOutputV5({
+          sealClient: configuredMakerSealClientV5(),
+          // Maker assets use Animacraft's policy package. A finished OC must
+          // follow Soul ownership after mint and resale, so its key policy is
+          // owned by Soulidity's current callable package.
+          sealPackageId: runtimeConfig.soulidityPackageId,
+          threshold: runtimeConfig.sealThreshold,
+          serverConfigs: runtimeConfig.sealKeyServers,
+          makerRootId: commerceV5.chain.root.objectId,
+          payer: commerceV5.wallet,
+          recipeHash,
+          outputBlob: image,
+        });
+        const previewBlob = await createOcOutputPreviewBlobV5(image);
+        state.pendingOcEncryptedImageBlob = encryptedOutput.blob;
+        state.pendingOcPreviewBlob = previewBlob;
+        state.pendingOcOutputProtection = encryptedOutput.protection;
+        state.pendingOcReturnNonce = randomHex32();
+        oc.commerce = {
+          ...(oc.commerce || {}),
+          chainBinding: {
+            rootObjectId: commerceV5.chain.root.objectId,
+            makerTreasuryObjectId: commerceV5.chain.makerTreasury.objectId,
+          },
+        };
+        oc.completeOutput = {
+          schemaVersion: encryptedOutput.protection.schemaVersion,
+          mode: encryptedOutput.protection.mode,
+          protection: structuredClone(encryptedOutput.protection),
+          ciphertextIdentifier: 'animacraft-oc-output.seal',
+          publicPreviewIdentifier: 'animacraft-oc-preview.png',
+        };
+      }
+      profile = new Blob([JSON.stringify(oc)], { type: 'application/json' });
       state.pendingOcPackage = oc;
       state.pendingOcImageBlob = image;
       state.pendingOcProfileBlob = profile;
       state.pendingOcRecipeJson = recipeJson;
       state.pendingOcRecipeHash = recipeHash;
+      state.pendingOcStyleSelectionsV5 = commerceV5CompleteRequired
+        ? structuredClone(v4Bundle.styleSelections)
+        : null;
+      state.pendingOcCommerceQuoteV5 = commerceQuoteV5;
       state.pendingOcFingerprint = ocFingerprint(oc);
       const uploadSession = await prepareWalrusUpload(ocUploadEntries());
       if (!ocChainOperationIsActive(operation)) return;
@@ -12846,6 +15609,8 @@ async function registerOcUpload() {
         'registered',
         ...(retryingAdvancedCheckpoint ? ['uploaded', 'certified'] : []),
       ].includes(state.ocUploadSession?.stage)) return;
+      await verifyPendingOcCompleteOutputCiphertextBeforeUploadV5();
+      if (!ocChainOperationIsActive(operation)) return;
       const session = state.ocUploadSession;
       const persistenceContext = captureOcUploadPersistenceContext(session);
       await registerAndUploadWalrus(session, {
@@ -12855,9 +15620,9 @@ async function registerOcUpload() {
       if (!ocChainOperationIsActive(operation)) return;
       state.ocUploadStage = session.stage;
       if (state.ocUploadStage === 'certified') {
-        if (session.files.length !== 2) throw new Error(t('ocUnexpectedQuilt'));
-        state.ocImagePatchId = session.files[0].id;
-        state.ocProfilePatchId = session.files[1].id;
+        applyCertifiedOcUploadFiles(session.files);
+        await verifyPendingOcCompleteOutputRecovery();
+        await persistOcUploadRecovery(session);
         state.mintStatus = t('ocRecoveredCertified');
       } else {
         state.mintStatus = t('ocUploadedCertify');
@@ -12907,9 +15672,9 @@ async function certifyOcUpload() {
       });
       await persistOcUploadRecovery(session, persistenceContext);
       if (!ocChainOperationIsActive(operation)) return;
-      if (session.files.length !== 2) throw new Error(t('ocUnexpectedQuilt'));
-      state.ocImagePatchId = session.files[0].id;
-      state.ocProfilePatchId = session.files[1].id;
+      applyCertifiedOcUploadFiles(session.files);
+      await verifyPendingOcCompleteOutputRecovery();
+      await persistOcUploadRecovery(session);
       state.ocUploadStage = 'certified';
       state.mintStatus = t('ocFilesCertified');
     });
@@ -12928,8 +15693,178 @@ async function certifyOcUpload() {
   }
 }
 
+async function handleSoulidityCompletionMessage(event) {
+  const expectedOrigin = trustedSoulidityOrigin();
+  const sourceWindow = soulidityCompletionWindow;
+  if (
+    !expectedOrigin
+    || event.origin !== expectedOrigin
+    || !sourceWindow
+    || event.source !== sourceWindow
+    || event.data?.schemaVersion !== SOULIDITY_COMPLETION_RECEIPT_V5_SCHEMA
+  ) return;
+  if (
+    state.pendingOcCompletionReceipt?.confirmed
+    || soulidityCompletionReceiptPending
+  ) return;
+
+  const operation = beginOcChainOperation();
+  const message = structuredClone(event.data);
+  let frozenContext = null;
+  const contextIsActive = () => Boolean(
+    frozenContext
+    && ocChainOperationIsActive(operation)
+    && state.ocUploadSession?.uploadSessionId
+      === frozenContext.uploadSessionId
+    && state.pendingOcFingerprint === frozenContext.fingerprint
+    && state.pendingOcReturnNonce === frozenContext.returnNonce
+    && state.pendingOcExportKey === frozenContext.exportKey
+    && state.ocImagePatchId === frozenContext.imageBlobId
+    && state.ocProfilePatchId === frozenContext.profileBlobId
+    && state.ocPreviewPatchId === frozenContext.previewBlobId
+    && JSON.stringify(state.pendingOcOutputDescriptor)
+      === frozenContext.outputDescriptorJson
+    && soulidityCompletionWindow === sourceWindow,
+  );
+  soulidityCompletionReceiptPending = true;
+  state.minting = true;
+  state.mintStatus = t('soulHandoffVerifying');
+  clearOcPublishError();
+  renderMintAction();
+  try {
+    const identity = await verifyPendingOcCompleteOutputPlaintextV5({
+      requireBound: true,
+    });
+    const { oc, descriptor, chainBinding } = identity;
+    if (
+      state.ocUploadStage !== 'certified'
+      || !state.pendingOcExportKey
+      || !state.pendingOcReturnNonce
+      || !state.ocImagePatchId
+      || !state.ocProfilePatchId
+      || !state.ocPreviewPatchId
+    ) {
+      throw commerceV5Error(
+        'COMMERCE_V5_COMPLETION_RECEIPT_CONTEXT',
+        'The protected OC completion context is incomplete or changed.',
+      );
+    }
+    frozenContext = Object.freeze({
+      uploadSessionId: state.ocUploadSession?.uploadSessionId,
+      fingerprint: state.pendingOcFingerprint,
+      returnNonce: state.pendingOcReturnNonce,
+      exportKey: state.pendingOcExportKey,
+      wallet: state.walletAddress,
+      rootObjectId: chainBinding.rootObjectId,
+      legacyMakerObjectId: oc.maker?.makerObjectId,
+      makerTreasuryObjectId: chainBinding.makerTreasuryObjectId,
+      profileBlobId: state.ocProfilePatchId,
+      imageBlobId: state.ocImagePatchId,
+      previewBlobId: state.ocPreviewPatchId,
+      imageUrl: walrusFileUrl(state.ocPreviewPatchId),
+      recipeHash: new Uint8Array(state.pendingOcRecipeHash),
+      outputSealId: descriptor.outputSealId,
+      outputNonce: descriptor.outputNonce,
+      outputDigest: descriptor.outputDigest,
+      outputDescriptorJson: JSON.stringify(descriptor),
+    });
+    if (!contextIsActive()) return;
+    const commerce = await requirePlayerCommerceV5(state.makerDocumentV4, {
+      force: true,
+    });
+    if (
+      !contextIsActive()
+      || comparableSuiId(commerce.chain.root.objectId)
+        !== comparableSuiId(frozenContext.rootObjectId)
+      || comparableSuiId(commerce.chain.makerTreasury.objectId)
+        !== comparableSuiId(frozenContext.makerTreasuryObjectId)
+    ) {
+      throw commerceV5Error(
+        'COMMERCE_V5_COMPLETION_RECEIPT_CONTEXT',
+        'The active Maker, wallet, or verified Commerce binding changed before the receipt arrived.',
+      );
+    }
+    const receipt = await verifySoulidityCompletionReceiptV5({
+      suiClient: getSuiClient(),
+      message,
+      expected: {
+        returnNonce: frozenContext.returnNonce,
+        exportKey: frozenContext.exportKey,
+        wallet: frozenContext.wallet,
+        rootObjectId: frozenContext.rootObjectId,
+        legacyMakerObjectId: frozenContext.legacyMakerObjectId,
+        makerTreasuryObjectId: frozenContext.makerTreasuryObjectId,
+        profileBlobId: frozenContext.profileBlobId,
+        imageBlobId: frozenContext.imageBlobId,
+        imageUrl: frozenContext.imageUrl,
+        recipeHash: frozenContext.recipeHash,
+        outputSealId: frozenContext.outputSealId,
+        outputNonce: frozenContext.outputNonce,
+        outputDigest: frozenContext.outputDigest,
+      },
+      commerceTypeOriginPackageId: runtimeConfig.commerceV5TypeOriginPackageId,
+      soulidityTypeOriginPackageId:
+        runtimeConfig.soulidityTypeOriginPackageId
+        || runtimeConfig.soulidityPackageId,
+    });
+    if (!contextIsActive()) {
+      throw commerceV5Error(
+        'COMMERCE_V5_COMPLETION_RECEIPT_CONTEXT',
+        'The active Maker or wallet changed while the receipt was being verified.',
+      );
+    }
+    state.pendingOcCompletionReceipt = receipt;
+    state.mintDigest = receipt.digest;
+    state.mintStatus = t('soulHandoffVerified');
+    makerWorkspace?.setPlayerPublishState?.({
+      stage: 'confirmed',
+      status: state.mintStatus,
+      busy: false,
+      digest: receipt.digest,
+      error: null,
+      completionReceipt: receipt,
+    });
+    soulidityCompletionWindow = null;
+    try {
+      await persistOcUploadRecovery();
+    } catch (backupError) {
+      console.warn('The verified Soul receipt could not be backed up locally.', backupError);
+      state.ocPublishError = classifyChainUiError(backupError, {
+        action: 'backup',
+      });
+      state.mintStatus = t('soulHandoffVerifiedBackupFailed');
+    }
+  } catch (error) {
+    if (!ocChainOperationIsActive(operation)) return;
+    console.error('Soulidity completion receipt verification failed', error);
+    recordOcPublishError(error, 'receipt', 'soulHandoffReceiptFailed');
+  } finally {
+    if (ocChainOperationIsActive(operation)) {
+      soulidityCompletionReceiptPending = false;
+      state.minting = false;
+      renderMintAction();
+    }
+  }
+}
+
+window.addEventListener('message', (event) => {
+  void handleSoulidityCompletionMessage(event);
+});
+
 async function mintCurrentOc() {
   if (state.minting || state.ocUploadStage !== 'certified') return;
+  if (state.pendingOcCompletionReceipt?.confirmed) {
+    state.mintStatus = t('soulHandoffVerified');
+    renderMintAction();
+    return;
+  }
+  if (soulidityCompletionWindow && !soulidityCompletionWindow.closed) {
+    soulidityCompletionWindow.focus();
+    state.mintStatus = t('soulHandoffAwaitingReceipt');
+    renderMintAction();
+    return;
+  }
+  const operation = beginOcChainOperation();
   clearOcPublishError();
   state.minting = true;
   state.mintStatus = t('soulHandoffPreparing');
@@ -12954,7 +15889,71 @@ async function mintCurrentOc() {
     if (certifiedRecipeHash !== bytesToHex(state.pendingOcRecipeHash)) {
       throw new Error(t('ocChangedAfterUpload'));
     }
-    const imageUrl = walrusFileUrl(state.ocImagePatchId);
+    const commerceV5HandoffRequired = Boolean(
+      oc?.completeOutput
+      || oc?.commerce?.chainBinding
+      || state.pendingOcOutputProtection
+      || state.pendingOcOutputDescriptor
+      || await activeChainMakerRequiresCommerceV5Complete(
+        state.makerDocumentV4,
+      )
+    );
+    let commerceV5Handoff = null;
+    if (commerceV5HandoffRequired) {
+      if (
+        !state.pendingOcOutputProtection
+        || !state.pendingOcOutputDescriptor
+        || !state.pendingOcEncryptedImageBlob
+        || !state.pendingOcPreviewBlob
+        || !state.ocPreviewPatchId
+        || !state.pendingOcReturnNonce
+        || !state.pendingOcExportKey
+      ) {
+        throw commerceV5Error(
+          'COMMERCE_V5_PROTECTED_OUTPUT_MISSING',
+          'The certified OC is missing its protected final output or return context.',
+        );
+      }
+      await verifyPendingOcCompleteOutputRecovery();
+      if (!ocChainOperationIsActive(operation)) return;
+      const commerce = await requirePlayerCommerceV5(state.makerDocumentV4, {
+        force: true,
+      });
+      if (!ocChainOperationIsActive(operation)) return;
+      const chainBinding = oc.commerce?.chainBinding;
+      if (
+        !commerce.binding?.rootObjectId
+        || !commerce.binding?.makerTreasuryObjectId
+        || comparableSuiId(commerce.chain.root.legacyMakerId)
+          !== comparableSuiId(certifiedMakerId)
+        || comparableSuiId(commerce.chain.root.objectId)
+          !== comparableSuiId(chainBinding?.rootObjectId)
+        || comparableSuiId(commerce.chain.makerTreasury.objectId)
+          !== comparableSuiId(chainBinding?.makerTreasuryObjectId)
+        || state.pendingOcOutputProtection.ciphertextBlobId
+          !== state.ocImagePatchId
+        || state.pendingOcOutputProtection.publicPreviewUrl
+          !== walrusFileUrl(state.ocPreviewPatchId)
+      ) {
+        throw commerceV5Error(
+          'COMMERCE_V5_HANDOFF_BINDING_MISSING',
+          'The certified OC is missing its exact MakerRootV5 or MakerTreasuryV5 binding.',
+        );
+      }
+      commerceV5Handoff = {
+        commerceRoot: commerce.chain.root.objectId,
+        commerceTreasury: commerce.chain.makerTreasury.objectId,
+        imagePreviewBlob: state.ocPreviewPatchId,
+        outputSealId: state.pendingOcOutputDescriptor.outputSealId,
+        outputNonce: state.pendingOcOutputDescriptor.outputNonce,
+        outputDigest: state.pendingOcOutputDescriptor.outputDigest,
+        returnOrigin: animacraftReturnOrigin(),
+        returnNonce: state.pendingOcReturnNonce,
+      };
+    }
+    const imageUrl = commerceV5HandoffRequired
+      ? walrusFileUrl(state.ocPreviewPatchId)
+      : walrusFileUrl(state.ocImagePatchId);
     const profileUrl = walrusFileUrl(state.ocProfilePatchId);
     const handoffUrl = soulidityAppLink(runtimeConfig.soulidityIntegrationPath, {
       maker: certifiedMakerId,
@@ -12963,36 +15962,46 @@ async function mintCurrentOc() {
       profileBlob: state.ocProfilePatchId,
       imageBlob: state.ocImagePatchId,
       recipeHash: certifiedRecipeHash,
+      ...(commerceV5Handoff || {}),
     });
-    window.open(handoffUrl, '_blank', 'noopener,noreferrer');
-
-    const importJson = createSoulidityImportJson(certifiedLivingContent, {
-      maker: oc.maker || activeTemplate(),
-      makerId: certifiedMakerId,
-      profile: oc.profile,
-      imageUrl,
-      profileUrl,
-      recipeHash: certifiedRecipeHash,
-    });
-    const imageBytes = new Uint8Array(await state.pendingOcImageBlob.arrayBuffer());
-    const { bytes } = createSoulidityImportBundle(certifiedLivingContent, {
-      maker: oc.maker || activeTemplate(),
-      makerId: certifiedMakerId,
-      profile: oc.profile,
-      imageUrl,
-      profileUrl,
-      recipeHash: certifiedRecipeHash,
-      importJson,
-      imageBytes,
-    });
-    download(`${slug(oc.profile.name)}-animacraft-soul-handoff.zip`, bytes, 'application/zip');
-    state.mintStatus = t('soulHandoffComplete');
+    const opened = window.open(handoffUrl, '_blank');
+    if (!opened) throw new Error('The browser blocked the Soulidity window.');
+    if (commerceV5HandoffRequired) {
+      soulidityCompletionWindow = opened;
+      state.mintStatus = t('soulHandoffAwaitingReceipt');
+    } else {
+      const importJson = createSoulidityImportJson(certifiedLivingContent, {
+        maker: oc.maker || activeTemplate(),
+        makerId: certifiedMakerId,
+        profile: oc.profile,
+        imageUrl,
+        profileUrl,
+        recipeHash: certifiedRecipeHash,
+      });
+      const imageBytes = new Uint8Array(await state.pendingOcImageBlob.arrayBuffer());
+      if (!ocChainOperationIsActive(operation)) return;
+      const { bytes } = createSoulidityImportBundle(certifiedLivingContent, {
+        maker: oc.maker || activeTemplate(),
+        makerId: certifiedMakerId,
+        profile: oc.profile,
+        imageUrl,
+        profileUrl,
+        recipeHash: certifiedRecipeHash,
+        importJson,
+        imageBytes,
+      });
+      download(`${slug(oc.profile.name)}-animacraft-soul-handoff.zip`, bytes, 'application/zip');
+      state.mintStatus = t('soulHandoffComplete');
+    }
   } catch (error) {
+    if (!ocChainOperationIsActive(operation)) return;
     console.error('Soulidity handoff failed', error);
     recordOcPublishError(error, 'onchain', 'soulHandoffFailed');
   } finally {
-    state.minting = false;
-    renderMintAction();
+    if (ocChainOperationIsActive(operation)) {
+      state.minting = false;
+      renderMintAction();
+    }
   }
 }
 
@@ -13138,6 +16147,19 @@ async function restoreMakerDraft(templateId = state.templateId) {
       state.makerObjectId = String(draft.chain.makerObjectId || '');
       state.makerTreasuryObjectId = String(draft.chain.makerTreasuryObjectId || '');
       state.makerAdminCapObjectId = String(draft.chain.makerAdminCapObjectId || '');
+      state.commerceV5RootObjectId = suiJsonId(draft.chain.commerceV5RootObjectId);
+      state.commerceV5MakerTreasuryObjectId = suiJsonId(
+        draft.chain.commerceV5MakerTreasuryObjectId,
+      );
+      state.commerceV5ControlCapObjectId = suiJsonId(
+        draft.chain.commerceV5ControlCapObjectId,
+      );
+      state.commerceV5ControlVaultObjectId = suiJsonId(
+        draft.chain.commerceV5ControlVaultObjectId,
+      );
+      state.commerceV5ListingObjectId = suiJsonId(
+        draft.chain.commerceV5ListingObjectId,
+      );
       state.makerArchived = Boolean(draft.chain.archived);
     }
     state.livingContent = normalizeLivingContent(draft.manifest?.livingContent, activeTemplate());
@@ -13155,7 +16177,7 @@ function currentMakerV4Source() {
   return isMakerV4Document(state.makerDocumentV4) ? state.makerDocumentV4 : null;
 }
 
-function currentV4RuntimeAssets() {
+function currentV4RuntimeAssets(document = currentMakerV4Source()) {
   const assets = [];
   if (state.makerRuntimeAssetsV4 instanceof Map) assets.push(...state.makerRuntimeAssetsV4.values());
   state.assets.forEach((asset) => assets.push({
@@ -13166,7 +16188,18 @@ function currentV4RuntimeAssets() {
   return assets.filter((asset, index) => {
     const key = asset.assetId || asset.identifier || asset.id;
     return key && assets.findIndex((candidate) => (candidate.assetId || candidate.identifier || candidate.id) === key) === index;
-  });
+  }).map((asset) => (
+    asset?.protection
+      ? {
+          ...asset,
+          resolveBlob: ({ signal } = {}) => resolveMakerSealRuntimeAssetV5(
+            document,
+            asset,
+            { signal },
+          ),
+        }
+      : asset
+  ));
 }
 
 function v4ProfileFromLegacy() {
@@ -13266,6 +16299,13 @@ function applyWorkspacePersistenceBinding({
       objectId: chainBinding.makerObjectId,
       treasuryId: chainBinding.makerTreasuryObjectId,
       adminCapId: chainBinding.makerAdminCapObjectId,
+      commerceV5RootObjectId: chainBinding.commerceV5RootObjectId,
+      commerceV5MakerTreasuryObjectId:
+        chainBinding.commerceV5MakerTreasuryObjectId,
+      commerceV5ControlCapObjectId: chainBinding.commerceV5ControlCapObjectId,
+      commerceV5ControlVaultObjectId:
+        chainBinding.commerceV5ControlVaultObjectId,
+      commerceV5ListingObjectId: chainBinding.commerceV5ListingObjectId,
       mintingEnabled: chainBinding.mintingEnabled,
       mintFeeEnabled: chainBinding.mintFeeEnabled,
       mintPriceAtomic: chainBinding.mintPriceAtomic,
@@ -13279,6 +16319,13 @@ function applyWorkspacePersistenceBinding({
       makerObjectId: chainBinding.makerObjectId,
       makerTreasuryObjectId: chainBinding.makerTreasuryObjectId,
       makerAdminCapObjectId: chainBinding.makerAdminCapObjectId,
+      commerceV5RootObjectId: chainBinding.commerceV5RootObjectId,
+      commerceV5MakerTreasuryObjectId:
+        chainBinding.commerceV5MakerTreasuryObjectId,
+      commerceV5ControlCapObjectId: chainBinding.commerceV5ControlCapObjectId,
+      commerceV5ControlVaultObjectId:
+        chainBinding.commerceV5ControlVaultObjectId,
+      commerceV5ListingObjectId: chainBinding.commerceV5ListingObjectId,
       makerArchived: chainBinding.archived,
       pausedEconomics: chainBinding.pausedEconomics,
       publishedMakerVersions: chainBinding.publishedVersions,
@@ -13294,6 +16341,14 @@ function applyWorkspacePersistenceBinding({
       state.makerObjectId = chainBinding.makerObjectId;
       state.makerTreasuryObjectId = chainBinding.makerTreasuryObjectId;
       state.makerAdminCapObjectId = chainBinding.makerAdminCapObjectId;
+      state.commerceV5RootObjectId = chainBinding.commerceV5RootObjectId;
+      state.commerceV5MakerTreasuryObjectId =
+        chainBinding.commerceV5MakerTreasuryObjectId;
+      state.commerceV5ControlCapObjectId =
+        chainBinding.commerceV5ControlCapObjectId;
+      state.commerceV5ControlVaultObjectId =
+        chainBinding.commerceV5ControlVaultObjectId;
+      state.commerceV5ListingObjectId = chainBinding.commerceV5ListingObjectId;
       state.makerArchived = chainBinding.archived;
       state.publishedMakerVersions = structuredClone(chainBinding.publishedVersions || []);
     }
@@ -13427,6 +16482,7 @@ function syncPlayerV4State({
   livingContent = null,
   imageBlob = null,
   imageExport = null,
+  exportKey = '',
 }, { completed = false } = {}) {
   state.playerRuntimeDocumentV4 = document;
   state.playerRecipeV4 = recipe;
@@ -13447,9 +16503,1738 @@ function syncPlayerV4State({
   if ($('profileDescription')) $('profileDescription').value = profile.description || '';
   if ($('profileTags')) $('profileTags').value = profile.tags || '';
   invalidateOcUpload();
+  state.pendingOcExportKey = completed ? String(exportKey || '') : '';
 }
 
-function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
+const COMMERCE_V5_CACHE_TTL_MS = 15_000;
+
+function commerceV5Error(code, message, details = {}) {
+  const error = new Error(message);
+  error.code = code;
+  Object.assign(error, details);
+  return error;
+}
+
+function commerceV5RuntimeContext() {
+  return {
+    network: runtimeConfig.network,
+    packageId: runtimeConfig.callablePackageId,
+    callablePackageId: runtimeConfig.callablePackageId,
+    paymentCoinType: runtimeConfig.paymentCoinType,
+    commerceV5TypeOriginPackageId: runtimeConfig.commerceV5TypeOriginPackageId,
+    commerceV5ReleaseEnabled: runtimeConfig.commerceV5ReleaseEnabled === true,
+  };
+}
+
+function configuredMakerSealClientV5(serverConfigs = runtimeConfig.sealKeyServers) {
+  if (
+    !runtimeConfig.sealV5PackageId
+    || comparableSuiId(runtimeConfig.sealV5PackageId)
+      !== comparableSuiId(runtimeConfig.callablePackageId)
+  ) {
+    throw commerceV5Error(
+      'MAKER_SEAL_V5_PACKAGE_MISMATCH',
+      'Paid Maker content requires sealV5PackageId to match the callable package that defines seal_v5.',
+    );
+  }
+  return createMakerSealClientV5({
+    suiClient: getSuiClient(),
+    serverConfigs,
+    verifyKeyServers: runtimeConfig.sealVerifyKeyServers !== false,
+    timeout: Number(runtimeConfig.sealTimeoutMs || 10_000),
+  });
+}
+
+function makerSealAbortErrorV5(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error('Maker Seal decryption was canceled.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function makerSealServerConfigsForProtectionV5(protection) {
+  const publicServers = Array.isArray(protection?.keyServers)
+    ? protection.keyServers
+    : [];
+  const configuredServers = Array.isArray(runtimeConfig.sealKeyServers)
+    ? runtimeConfig.sealKeyServers
+    : [];
+  const configuredById = new Map(configuredServers.map((server) => [
+    comparableSuiId(server?.objectId),
+    server,
+  ]));
+  if (
+    !publicServers.length
+    || publicServers.length !== configuredServers.length
+    || configuredById.size !== configuredServers.length
+  ) {
+    throw commerceV5Error(
+      'MAKER_SEAL_V5_SERVER_SET_MISMATCH',
+      'The immutable Maker Seal server set does not match this deployment.',
+    );
+  }
+  return publicServers.map((descriptor) => {
+    const configured = configuredById.get(comparableSuiId(descriptor?.objectId));
+    if (
+      !configured
+      || Number(configured.weight) !== Number(descriptor?.weight)
+      || String(configured.aggregatorUrl || '')
+        !== String(descriptor?.aggregatorUrl || '')
+      || Boolean(String(configured.apiKeyName || '').trim())
+        !== Boolean(String(configured.apiKey || '').trim())
+    ) {
+      throw commerceV5Error(
+        'MAKER_SEAL_V5_SERVER_SET_MISMATCH',
+        'A Maker Seal key server differs from the immutable publication descriptor.',
+      );
+    }
+    return configured;
+  });
+}
+
+function makerSealExpectedRegistrationsV5(document, styleBindings, root) {
+  const protectedAssets = (document?.assets || [])
+    .filter((asset) => asset?.protection);
+  if (
+    document?.seal?.required !== true
+    || Number(document.seal.paidAssetCount) !== protectedAssets.length
+    || root.protectedStyleCount !== BigInt(protectedAssets.length)
+  ) {
+    throw commerceV5Error(
+      'MAKER_SEAL_V5_MANIFEST_COVERAGE_MISMATCH',
+      'The public Maker Manifest does not contain exactly one protected Asset per protected Commerce Style.',
+    );
+  }
+  const bindings = new Map((styleBindings || []).map((binding) => [
+    [binding.partKey, binding.itemKey, binding.styleKey].join('\u0000'),
+    binding,
+  ]));
+  const sealIds = new Set();
+  const styleIds = new Set();
+  return protectedAssets.map((asset) => {
+    const protection = asset.protection;
+    const styleId = [
+      Number(protection?.productKind),
+      String(protection?.partKey || ''),
+      String(protection?.itemKey || ''),
+      String(protection?.styleKey || ''),
+      String(protection?.packKey || ''),
+    ].join('\u0000');
+    const binding = bindings.get([
+      protection?.partKey,
+      protection?.itemKey,
+      protection?.styleKey,
+    ].join('\u0000'));
+    if (
+      protection?.schemaVersion !== MAKER_SEAL_ASSET_V5_SCHEMA
+      || ![
+        MAKER_SEAL_PRODUCT_BASE,
+        MAKER_SEAL_PRODUCT_PACK,
+      ].includes(Number(protection?.productKind))
+      || protection?.releaseCommitment !== root.sealReleaseCommitment
+      || comparableSuiId(protection?.sealPackageId)
+        !== comparableSuiId(runtimeConfig.sealV5PackageId)
+      || !binding
+      || binding.sealProtected !== true
+      || String(binding.packKey || '') !== String(protection?.packKey || '')
+      || sealIds.has(String(protection?.sealId || ''))
+      || styleIds.has(styleId)
+    ) {
+      throw commerceV5Error(
+        'MAKER_SEAL_V5_MANIFEST_BINDING_MISMATCH',
+        'A protected Manifest Asset does not match one unique protected Commerce Style.',
+        { assetId: asset?.id || '' },
+      );
+    }
+    sealIds.add(String(protection.sealId));
+    styleIds.add(styleId);
+    return Object.freeze({
+      sealId: protection.sealId,
+      productKind: Number(protection.productKind),
+      partKey: String(protection.partKey),
+      itemKey: String(protection.itemKey),
+      styleKey: String(protection.styleKey),
+      packKey: String(protection.packKey || ''),
+      assetDigest: protection.assetDigest,
+      ciphertextBlobId: String(binding.assetBlobId),
+    });
+  });
+}
+
+async function verifiedMakerSealPolicyForPlayerV5(document, hydrated) {
+  const root = hydrated?.chain?.root;
+  if (
+    !root?.requiresSealPolicy
+    || !root.sealPolicyBound
+    || !root.sealPolicyId
+    || !root.sealReleaseCommitment
+    || document?.seal?.releaseCommitment !== root.sealReleaseCommitment
+    || comparableSuiId(document?.seal?.sealPackageId)
+      !== comparableSuiId(runtimeConfig.sealV5PackageId)
+  ) {
+    throw commerceV5Error(
+      'MAKER_SEAL_V5_ROOT_BINDING_MISMATCH',
+      'This Maker is not bound to its immutable paid-content Seal policy.',
+    );
+  }
+  const cacheKey = [
+    comparableSuiId(root.objectId),
+    comparableSuiId(root.sealPolicyId),
+    root.sealReleaseCommitment,
+    String(document?.version?.versionId || ''),
+  ].join(':');
+  if (makerSealPolicyCacheV5.has(cacheKey)) {
+    return makerSealPolicyCacheV5.get(cacheKey);
+  }
+  const pending = (async () => {
+    const client = getSuiClient();
+    const [response, styleBindings] = await Promise.all([
+      client.getObjects({
+        objectIds: [root.sealPolicyId],
+        include: { json: true },
+      }),
+      queryStyleBindingsV5(client, root),
+    ]);
+    const policyObject = (response?.objects || [])
+      .find((object) => object && !object.error);
+    if (!policyObject) {
+      throw commerceV5Error(
+        'MAKER_SEAL_V5_POLICY_UNAVAILABLE',
+        'The root-bound Maker Seal policy is not visible on Sui.',
+      );
+    }
+    const policy = parseMakerSealPolicyV5(policyObject);
+    if (
+      comparableSuiId(policy.objectId) !== comparableSuiId(root.sealPolicyId)
+      || comparableSuiId(String(policy.type || '').split('::')[0])
+        !== comparableSuiId(runtimeConfig.sealV5PackageId)
+    ) {
+      throw commerceV5Error(
+        'MAKER_SEAL_V5_TYPE_ORIGIN_MISMATCH',
+        'The root-bound Seal policy is not defined by the configured package.',
+      );
+    }
+    const expectedRegistrations = makerSealExpectedRegistrationsV5(
+      document,
+      styleBindings,
+      root,
+    );
+    const registrations = await queryMakerSealRegistrationsV5(client, policy);
+    assertMakerSealPolicyReadbackV5({
+      policy,
+      registrations,
+      makerRootId: root.objectId,
+      releaseCommitment: root.sealReleaseCommitment,
+      expectedRegistrations,
+    });
+    return Object.freeze({
+      policy,
+      registrations,
+      styleBindings,
+    });
+  })();
+  makerSealPolicyCacheV5.set(cacheKey, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    if (makerSealPolicyCacheV5.get(cacheKey) === pending) {
+      makerSealPolicyCacheV5.delete(cacheKey);
+    }
+    throw error;
+  }
+}
+
+function assertMakerSealEntitlementV5(hydrated, protection) {
+  const productKind = Number(protection?.productKind);
+  if (
+    !hydrated?.context?.ownsMakerAccess
+    || (
+      productKind === MAKER_SEAL_PRODUCT_PACK
+      && !hydrated.chain.walletState.ownedPackKeys.includes(
+        String(protection?.packKey || ''),
+      )
+    )
+  ) {
+    throw commerceV5Error(
+      productKind === MAKER_SEAL_PRODUCT_PACK
+        ? 'COMMERCE_V5_PACK_ENTITLEMENT_MISSING'
+        : 'COMMERCE_V5_BASE_ENTITLEMENT_MISSING',
+      productKind === MAKER_SEAL_PRODUCT_PACK
+        ? 'Purchase this Expansion Pack before loading its protected artwork.'
+        : 'Unlock this Maker before loading its protected artwork.',
+    );
+  }
+  if (productKind === MAKER_SEAL_PRODUCT_PACK) {
+    const pack = hydrated.chain.packById.get(String(protection.packKey || ''));
+    if (
+      !pack
+      || !pack.active
+      || pack.accessKind !== COMMERCE_V5_ACCESS.PAID_ONCE
+    ) {
+      throw commerceV5Error(
+        'COMMERCE_V5_PACK_UNAVAILABLE',
+        'This paid Expansion Pack is not active on Sui.',
+      );
+    }
+  } else if (String(protection?.packKey || '')) {
+    // A free Pack can still be encrypted under a paid Base entitlement. The
+    // Base purchase alone must not resurrect a removed or forged free Pack.
+    const pack = hydrated.chain.packById.get(String(protection.packKey));
+    if (
+      !pack
+      || !pack.active
+      || pack.accessKind !== COMMERCE_V5_ACCESS.FREE
+    ) {
+      throw commerceV5Error(
+        'COMMERCE_V5_FREE_PACK_UNAVAILABLE',
+        'This free Expansion Pack is not active on Sui.',
+      );
+    }
+  }
+}
+
+async function makerSealSessionForPlayerV5(hydrated) {
+  const key = [
+    comparableSuiId(hydrated.wallet),
+    comparableSuiId(runtimeConfig.sealV5PackageId),
+  ].join(':');
+  let session = await makerSealSessionCacheV5.get(key);
+  if (session && !session.isExpired?.()) return session;
+  const pending = createMakerSealSessionKeyV5({
+    suiClient: getSuiClient(),
+    address: hydrated.wallet,
+    sealPackageId: runtimeConfig.sealV5PackageId,
+    signPersonalMessage: ({ message }) => signConnectedWalletPersonalMessage(
+      message,
+      { expectedWallet: hydrated.wallet },
+    ),
+  });
+  makerSealSessionCacheV5.set(key, pending);
+  try {
+    session = await pending;
+    makerSealSessionCacheV5.set(key, session);
+    return session;
+  } catch (error) {
+    if (makerSealSessionCacheV5.get(key) === pending) {
+      makerSealSessionCacheV5.delete(key);
+    }
+    throw error;
+  }
+}
+
+async function resolveMakerSealRuntimeAssetV5(document, record, {
+  signal,
+} = {}) {
+  if (signal?.aborted) throw makerSealAbortErrorV5(signal);
+  const protection = record?.protection;
+  if (!isMakerV4Document(document) || !protection) {
+    throw commerceV5Error(
+      'MAKER_SEAL_V5_ASSET_INVALID',
+      'A protected Maker Asset requires its immutable v5 Manifest.',
+    );
+  }
+  const hydrated = await requirePlayerCommerceV5(document);
+  assertMakerSealEntitlementV5(hydrated, protection);
+  const verified = await verifiedMakerSealPolicyForPlayerV5(
+    document,
+    hydrated,
+  );
+  const registration = verified.registrations.find((candidate) => (
+    candidate.sealId === protection.sealId
+  ));
+  if (!registration) {
+    throw commerceV5Error(
+      'MAKER_SEAL_V5_REGISTRATION_MISSING',
+      'This protected Style is missing from the root-bound Seal policy.',
+    );
+  }
+  const plaintextKey = [
+    comparableSuiId(hydrated.wallet),
+    comparableSuiId(hydrated.chain.root.objectId),
+    protection.sealId,
+    registration.ciphertextBlobId,
+  ].join(':');
+  if (makerSealPlaintextCacheV5.has(plaintextKey)) {
+    return makerSealPlaintextCacheV5.get(plaintextKey);
+  }
+  const pending = (async () => {
+    const sessionKey = await makerSealSessionForPlayerV5(hydrated);
+    if (signal?.aborted) throw makerSealAbortErrorV5(signal);
+    const approval = buildMakerSealApprovalTransactionV5({
+      callablePackageId: runtimeConfig.callablePackageId,
+      policyId: verified.policy.objectId,
+      makerRootId: hydrated.chain.root.objectId,
+      sealId: protection.sealId,
+      sender: hydrated.wallet,
+    });
+    const txBytes = await approval.build({ client: getSuiClient() });
+    const url = String(record?.url || '');
+    if (!url) {
+      throw commerceV5Error(
+        'MAKER_SEAL_V5_CIPHERTEXT_URL_MISSING',
+        'The protected Maker Asset has no certified Walrus URL.',
+      );
+    }
+    const response = await fetchWalrusWithBackoff(
+      url,
+      { signal },
+    );
+    if (!response.ok) {
+      throw commerceV5Error(
+        'MAKER_SEAL_V5_CIPHERTEXT_UNAVAILABLE',
+        `Walrus returned ${response.status} for a protected Maker Asset.`,
+      );
+    }
+    const encryptedBlob = await responseBlobWithinLimit(
+      response,
+      24 * 1024 * 1024,
+      'A protected Maker Asset',
+    );
+    if (signal?.aborted) throw makerSealAbortErrorV5(signal);
+    const sealClient = configuredMakerSealClientV5(
+      makerSealServerConfigsForProtectionV5(protection),
+    );
+    return decryptMakerSealAssetV5({
+      encryptedBlob,
+      protection,
+      sealClient,
+      sessionKey,
+      txBytes,
+    });
+  })();
+  makerSealPlaintextCacheV5.set(plaintextKey, pending);
+  try {
+    const blob = await pending;
+    makerSealPlaintextCacheV5.set(plaintextKey, blob);
+    return blob;
+  } catch (error) {
+    if (makerSealPlaintextCacheV5.get(plaintextKey) === pending) {
+      makerSealPlaintextCacheV5.delete(plaintextKey);
+    }
+    throw error;
+  }
+}
+
+function activeCommerceV5Binding(document = currentMakerV4Source()) {
+  const template = activeTemplate();
+  const model = makerModels.get(template?.id);
+  return {
+    legacyMakerId: suiJsonId(
+      state.makerObjectId
+      || template?.objectId
+      || model?.makerObjectId,
+    ),
+    rootMakerId: String(document?.version?.rootMakerId || template?.id || ''),
+    rootObjectId: suiJsonId(
+      state.commerceV5RootObjectId
+      || template?.commerceV5RootObjectId
+      || model?.commerceV5RootObjectId,
+    ),
+    makerTreasuryObjectId: suiJsonId(
+      state.commerceV5MakerTreasuryObjectId
+      || template?.commerceV5MakerTreasuryObjectId
+      || model?.commerceV5MakerTreasuryObjectId,
+    ),
+    controlCapObjectId: suiJsonId(
+      state.commerceV5ControlCapObjectId
+      || template?.commerceV5ControlCapObjectId
+      || model?.commerceV5ControlCapObjectId,
+    ),
+    controlVaultObjectId: suiJsonId(
+      state.commerceV5ControlVaultObjectId
+      || template?.commerceV5ControlVaultObjectId
+      || model?.commerceV5ControlVaultObjectId,
+    ),
+    listingObjectId: suiJsonId(
+      state.commerceV5ListingObjectId
+      || template?.commerceV5ListingObjectId
+      || model?.commerceV5ListingObjectId,
+    ),
+  };
+}
+
+async function activeChainMakerRequiresCommerceV5Complete(
+  document = currentMakerV4Source(),
+) {
+  if (
+    !isMakerV4Document(document)
+    || activeTemplate()?.source !== 'chain'
+  ) return false;
+  const binding = activeCommerceV5Binding(document);
+  // A persisted root or treasury is durable migration evidence even when an
+  // operator temporarily disables the v5 release switch. Never downgrade a
+  // migrated Maker to plaintext output or the legacy handoff.
+  if (binding.rootObjectId || binding.makerTreasuryObjectId) return true;
+  if (runtimeConfig.commerceV5ReleaseEnabled === true) return true;
+  // A missing local binding or a bounded event-index query can never prove
+  // that this Maker is still eligible for the legacy plaintext Complete path.
+  // Migration atomically disables legacy minting and archives the v4 Maker, so
+  // only a fresh, exact OCMaker read may prove that plaintext remains safe.
+  if (!binding.legacyMakerId) return true;
+  const [legacyMaker] = await getMakerObjects(
+    [binding.legacyMakerId],
+    { expectedStructName: 'OCMaker' },
+  );
+  const legacyFields = legacyMaker ? suiObjectFields(legacyMaker) : null;
+  const legacyArchivedValue = suiField(legacyFields, 'archived');
+  const legacyPublished = [true, 'true', 1, '1'].includes(
+    suiField(legacyFields, 'published'),
+  );
+  const legacyMintingEnabled = [true, 'true', 1, '1'].includes(
+    suiField(legacyFields, 'minting_enabled', 'mintingEnabled'),
+  );
+  const legacyArchived = [true, 'true', 1, '1'].includes(
+    legacyArchivedValue,
+  );
+  const legacyArchivedIsKnown = [
+    true,
+    'true',
+    1,
+    '1',
+    false,
+    'false',
+    0,
+    '0',
+  ].includes(
+    legacyArchivedValue,
+  );
+  if (
+    legacyMaker
+    && comparableSuiId(legacyMaker.objectId) === comparableSuiId(binding.legacyMakerId)
+    && legacyPublished
+    && legacyMintingEnabled
+    && legacyArchivedIsKnown
+    && !legacyArchived
+  ) return false;
+
+  // Event discovery is recovery-only. A hit restores the durable v5 IDs; a
+  // miss leaves the operation fail-closed because the live v4 state did not
+  // prove that a plaintext Complete is allowed.
+  if (comparableSuiId(runtimeConfig.commerceV5TypeOriginPackageId)) {
+    const migration = await findCommerceV5MigrationByLegacyMaker(
+      binding.legacyMakerId,
+    );
+    if (migration?.rootId || migration?.treasuryId) {
+      applyActiveCommerceV5Binding({
+        rootObjectId: migration.rootId,
+        makerTreasuryObjectId: migration.treasuryId,
+        controlCapObjectId: migration.controlCapId,
+        controlVaultObjectId: migration.vaultId,
+      });
+    }
+  }
+  return true;
+}
+
+function applyActiveCommerceV5Binding({
+  rootObjectId = '',
+  makerTreasuryObjectId = '',
+  controlCapObjectId = '',
+  controlVaultObjectId = '',
+  listingObjectId,
+} = {}) {
+  const template = activeTemplate();
+  const model = makerModels.get(template?.id);
+  const next = {
+    commerceV5RootObjectId: suiJsonId(rootObjectId),
+    commerceV5MakerTreasuryObjectId: suiJsonId(makerTreasuryObjectId),
+    commerceV5ControlCapObjectId: suiJsonId(controlCapObjectId),
+    commerceV5ControlVaultObjectId: suiJsonId(controlVaultObjectId),
+    commerceV5ListingObjectId: listingObjectId === undefined
+      ? suiJsonId(
+          state.commerceV5ListingObjectId
+          || template?.commerceV5ListingObjectId
+          || model?.commerceV5ListingObjectId,
+        )
+      : suiJsonId(listingObjectId),
+  };
+  Object.assign(state, next);
+  if (template) Object.assign(template, next);
+  if (model) Object.assign(model, next);
+  syncActiveMakerModelRefs();
+  if (template?.owner) persistLocalMakerIndex(template.owner);
+  return activeCommerceV5Binding();
+}
+
+async function resolveActiveCommerceV5Binding(document = currentMakerV4Source()) {
+  const binding = activeCommerceV5Binding(document);
+  if (binding.rootObjectId && binding.makerTreasuryObjectId) return binding;
+  if (!binding.legacyMakerId) {
+    throw commerceV5Error(
+      'COMMERCE_V5_LEGACY_MAKER_MISSING',
+      'The published Maker object is missing, so commerce v5 cannot be resolved.',
+    );
+  }
+  const migration = await findCommerceV5MigrationByLegacyMaker(binding.legacyMakerId);
+  if (!migration?.rootId || !migration?.treasuryId) {
+    throw commerceV5Error(
+      'COMMERCE_V5_MIGRATION_NOT_FOUND',
+      'This published Maker has not been migrated to commerce v5.',
+      { legacyMakerId: binding.legacyMakerId },
+    );
+  }
+  return applyActiveCommerceV5Binding({
+    rootObjectId: migration.rootId,
+    makerTreasuryObjectId: migration.treasuryId,
+    controlCapObjectId: migration.controlCapId,
+    controlVaultObjectId: migration.vaultId,
+  });
+}
+
+function commerceV5LifecycleLabelKey(lifecycle) {
+  return {
+    [COMMERCE_V5_LIFECYCLE.ACTIVE]: 'makerCommerceV5Active',
+    [COMMERCE_V5_LIFECYCLE.PAUSED]: 'makerCommerceV5Paused',
+    [COMMERCE_V5_LIFECYCLE.ARCHIVED]: 'makerCommerceV5Archived',
+    [COMMERCE_V5_LIFECYCLE.SALE_PENDING]: 'makerCommerceV5SalePending',
+  }[lifecycle] || 'makerCommerceV5Unavailable';
+}
+
+function commerceV5LifecycleBadgeClass(lifecycle) {
+  return {
+    [COMMERCE_V5_LIFECYCLE.ACTIVE]: 'active',
+    [COMMERCE_V5_LIFECYCLE.PAUSED]: 'paused',
+    [COMMERCE_V5_LIFECYCLE.ARCHIVED]: 'archived',
+    [COMMERCE_V5_LIFECYCLE.SALE_PENDING]: 'sale-pending',
+  }[lifecycle] || 'recoverable';
+}
+
+function commerceV5AtomicToDecimalText(value, decimals = runtimeConfig.paymentCoinDecimals) {
+  const atomic = BigInt(value ?? 0);
+  const scale = Number(decimals);
+  if (atomic < 0n || !Number.isInteger(scale) || scale < 0 || scale > 18) {
+    throw commerceV5Error(
+      'COMMERCE_V5_INVALID_ATOMIC_AMOUNT',
+      'Commerce v5 amount or payment coin decimals are invalid.',
+    );
+  }
+  if (scale === 0) return atomic.toString();
+  const divisor = 10n ** BigInt(scale);
+  const whole = atomic / divisor;
+  const fraction = (atomic % divisor).toString().padStart(scale, '0').replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : whole.toString();
+}
+
+function commerceV5DecimalToAtomicExact(value, decimals = runtimeConfig.paymentCoinDecimals) {
+  const text = String(value ?? '').trim();
+  const scale = Number(decimals);
+  if (
+    !Number.isInteger(scale)
+    || scale < 0
+    || scale > 18
+    || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(text)
+  ) return null;
+  const [whole, fraction = ''] = text.split('.');
+  if (fraction.length > scale) return null;
+  const atomic = (
+    BigInt(whole) * (10n ** BigInt(scale))
+  ) + BigInt(fraction.padEnd(scale, '0') || '0');
+  return atomic > 0n && atomic <= ((1n << 64n) - 1n) ? atomic : null;
+}
+
+function commerceV5RoyaltyRateText(bps) {
+  const value = BigInt(bps ?? 0);
+  const whole = value / 100n;
+  const fraction = (value % 100n).toString().padStart(2, '0').replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : whole.toString();
+}
+
+function makerCommerceV5ViewMatches(view = makerCommerceV5LifecycleView) {
+  if (!view || view.templateId !== state.templateId) return false;
+  const wallet = suiJsonId(state.walletAddress);
+  if (view.wallet && comparableSuiId(view.wallet) !== comparableSuiId(wallet)) return false;
+  const binding = activeCommerceV5Binding();
+  return !view.rootObjectId
+    || !binding.rootObjectId
+    || comparableSuiId(view.rootObjectId) === comparableSuiId(binding.rootObjectId);
+}
+
+function activeMakerCommerceV5Management() {
+  return makerCommerceV5ViewMatches()
+    && makerCommerceV5LifecycleView.status === 'ready'
+    ? makerCommerceV5LifecycleView.management
+    : null;
+}
+
+function makerCommerceV5LifecycleAvailable() {
+  return Boolean(
+    makerIsPublished()
+    && runtimeConfig.commerceV5TypeOriginPackageId
+    && runtimeConfig.commerceProtocolConfigV5Id
+    && runtimeConfig.commerceProtocolTreasuryV5Id,
+  );
+}
+
+function beginMakerCommerceV5LifecycleOperation() {
+  const wallet = suiJsonId(state.walletAddress);
+  return Object.freeze({
+    id: ++makerCommerceV5LifecycleOperationId,
+    templateId: state.templateId,
+    wallet,
+    rootObjectId: activeCommerceV5Binding().rootObjectId,
+  });
+}
+
+function makerCommerceV5LifecycleOperationIsActive(operation) {
+  if (
+    !operation
+    || operation.id !== makerCommerceV5LifecycleOperationId
+    || operation.templateId !== state.templateId
+    || comparableSuiId(operation.wallet) !== comparableSuiId(suiJsonId(state.walletAddress))
+  ) return false;
+  if (operation.wallet) {
+    let connectedWallet = '';
+    try {
+      connectedWallet = suiJsonId(getConnectedWalletAddress());
+    } catch {
+      return false;
+    }
+    if (comparableSuiId(connectedWallet) !== comparableSuiId(operation.wallet)) return false;
+  }
+  const rootObjectId = activeCommerceV5Binding().rootObjectId;
+  return !operation.rootObjectId
+    || !rootObjectId
+    || comparableSuiId(operation.rootObjectId) === comparableSuiId(rootObjectId);
+}
+
+function assertMakerCommerceV5LifecycleOperation(operation) {
+  if (!makerCommerceV5LifecycleOperationIsActive(operation)) {
+    throw commerceV5Error(
+      'COMMERCE_V5_CONTEXT_CHANGED',
+      'The wallet, Maker or commerce root changed before the action completed.',
+    );
+  }
+}
+
+function assertCommerceV5ManagementTypeOrigin(management) {
+  assertCommerceV5TypeOrigins(management.chain);
+  const expected = comparableSuiId(runtimeConfig.commerceV5TypeOriginPackageId);
+  [
+    ['Maker listing', management.chain.listing],
+    ['Maker Control Cap', management.controlCap],
+  ].filter(([, object]) => object).forEach(([label, object]) => {
+    const packageId = String(object.type || '').split('::')[0];
+    if (!expected || comparableSuiId(packageId) !== expected) {
+      throw commerceV5Error(
+        'COMMERCE_V5_TYPE_ORIGIN_MISMATCH',
+        `${label} is not defined by the configured commerce v5 TypeOrigin.`,
+      );
+    }
+  });
+}
+
+async function readMakerCommerceV5Management(operation = null) {
+  const document = currentMakerV4Source();
+  const binding = await resolveActiveCommerceV5Binding(document);
+  if (operation) assertMakerCommerceV5LifecycleOperation(operation);
+  const protocolConfigId = suiJsonId(runtimeConfig.commerceProtocolConfigV5Id);
+  const protocolTreasuryId = suiJsonId(runtimeConfig.commerceProtocolTreasuryV5Id);
+  if (
+    !binding.rootObjectId
+    || !binding.makerTreasuryObjectId
+    || !protocolConfigId
+    || !protocolTreasuryId
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_CONFIG_MISSING',
+      'Commerce v5 protocol, Maker root or Maker treasury IDs are incomplete.',
+    );
+  }
+  const client = getSuiClient();
+  let chain = await queryCommerceV5Objects(client, {
+    protocolConfigId,
+    protocolTreasuryId,
+    makerRootId: binding.rootObjectId,
+    makerTreasuryId: binding.makerTreasuryObjectId,
+  });
+  if (operation) assertMakerCommerceV5LifecycleOperation(operation);
+  if (chain.root.activeListingId) {
+    chain = await queryCommerceV5Objects(client, {
+      protocolConfigId,
+      protocolTreasuryId,
+      makerRootId: chain.root.objectId,
+      makerTreasuryId: chain.makerTreasury.objectId,
+      listingId: chain.root.activeListingId,
+    });
+    if (operation) assertMakerCommerceV5LifecycleOperation(operation);
+  }
+  if (
+    binding.legacyMakerId
+    && comparableSuiId(chain.root.legacyMakerId) !== comparableSuiId(binding.legacyMakerId)
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_MAKER_MISMATCH',
+      'MakerRootV5 belongs to another published Maker.',
+    );
+  }
+  const wallet = suiJsonId(state.walletAddress);
+  const walletState = wallet
+    ? await queryOwnedCommerceV5State(client, {
+        runtime: commerceV5RuntimeContext(),
+        owner: wallet,
+        rootId: chain.root.objectId,
+        root: chain.root,
+      })
+    : null;
+  if (operation) assertMakerCommerceV5LifecycleOperation(operation);
+  const controlCap = walletState?.currentControlCap || null;
+  const isOwner = Boolean(
+    wallet
+    && comparableSuiId(chain.root.currentOwner) === comparableSuiId(wallet),
+  );
+  if (controlCap && !isOwner) {
+    throw commerceV5Error(
+      'COMMERCE_V5_CONTROL_CAP_OWNER_MISMATCH',
+      'Sui returned a current Control Cap to a wallet that is not the Maker operator.',
+    );
+  }
+  const management = Object.freeze({
+    wallet,
+    binding: Object.freeze({ ...binding }),
+    chain,
+    walletState,
+    controlCap,
+    isOwner,
+    isSeller: Boolean(
+      chain.listing
+      && wallet
+      && comparableSuiId(chain.listing.seller) === comparableSuiId(wallet),
+    ),
+  });
+  assertCommerceV5ManagementTypeOrigin(management);
+  applyActiveCommerceV5Binding({
+    rootObjectId: chain.root.objectId,
+    makerTreasuryObjectId: chain.makerTreasury.objectId,
+    controlCapObjectId: controlCap?.objectId || '',
+    controlVaultObjectId: chain.root.controlVaultId,
+    listingObjectId: chain.root.activeListingId || '',
+  });
+  const template = activeTemplate();
+  if (template && wallet) {
+    template.owned = isOwner;
+    if (isOwner) template.owner = wallet;
+    else if (walletAddressesMatch(template.owner, wallet)) template.owner = '';
+  }
+  syncActiveMakerModelRefs();
+  return management;
+}
+
+async function refreshMakerCommerceV5Lifecycle({
+  silentWhenAbsent = true,
+} = {}) {
+  if (!makerCommerceV5LifecycleAvailable()) return null;
+  const operation = beginMakerCommerceV5LifecycleOperation();
+  makerCommerceV5LifecycleView = Object.freeze({
+    status: 'loading',
+    templateId: operation.templateId,
+    wallet: operation.wallet,
+    rootObjectId: operation.rootObjectId,
+    management: null,
+    error: null,
+  });
+  renderMakerLifecycleManager();
+  try {
+    const management = await readMakerCommerceV5Management(operation);
+    assertMakerCommerceV5LifecycleOperation(operation);
+    makerCommerceV5LifecycleView = Object.freeze({
+      status: 'ready',
+      templateId: operation.templateId,
+      wallet: operation.wallet,
+      rootObjectId: management.chain.root.objectId,
+      management,
+      error: null,
+    });
+    renderAll();
+    return management;
+  } catch (error) {
+    if (!makerCommerceV5LifecycleOperationIsActive(operation)) return null;
+    const absent = silentWhenAbsent
+      && ['COMMERCE_V5_MIGRATION_NOT_FOUND', 'COMMERCE_V5_LEGACY_MAKER_MISSING'].includes(error?.code);
+    makerCommerceV5LifecycleView = Object.freeze({
+      status: absent ? 'absent' : 'error',
+      templateId: operation.templateId,
+      wallet: operation.wallet,
+      rootObjectId: operation.rootObjectId,
+      management: null,
+      error: absent ? null : error,
+    });
+    if (!absent) {
+      state.publishStatusI18n = null;
+      state.publishStatus = state.locale === 'en' && error?.message
+        ? error.message
+        : t('makerCommerceV5Unavailable');
+    }
+    renderMakerLifecycleManager();
+    return null;
+  }
+}
+
+async function readBackMakerCommerceV5Lifecycle(operation, matches, {
+  attempts = 6,
+} = {}) {
+  let last = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    assertMakerCommerceV5LifecycleOperation(operation);
+    try {
+      last = await readMakerCommerceV5Management(operation);
+      if (matches(last)) return last;
+    } catch (error) {
+      if (error?.code === 'COMMERCE_V5_CONTEXT_CHANGED') throw error;
+      if (attempt === attempts - 1) throw error;
+    }
+    if (attempt < attempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1)));
+    }
+  }
+  throw commerceV5Error(
+    'COMMERCE_V5_READBACK_PENDING',
+    t('makerCommerceV5ReadbackFailed'),
+    { last },
+  );
+}
+
+function renderMakerCommerceV5LifecyclePanel() {
+  const panel = $('makerCommerceV5LifecyclePanel');
+  const content = $('makerCommerceV5LifecycleContent');
+  if (!panel || !content) return;
+  const view = makerCommerceV5ViewMatches() ? makerCommerceV5LifecycleView : null;
+  const shouldShow = Boolean(
+    view
+    && ['loading', 'ready', 'error'].includes(view.status),
+  );
+  panel.hidden = !shouldShow;
+  if (!shouldShow) {
+    content.innerHTML = '';
+    return;
+  }
+  const refresh = panel.querySelector('[data-lifecycle-action="commerce-v5-refresh"]');
+  if (refresh) {
+    refresh.disabled = state.makerLifecycleActionBusy || view.status === 'loading';
+    refresh.setAttribute('aria-disabled', String(refresh.disabled));
+  }
+  if (view.status === 'loading') {
+    content.innerHTML = `<p class="maker-commerce-v5-loading" role="status">${escapeHtml(t('makerCommerceV5Loading'))}</p>`;
+    return;
+  }
+  if (view.status === 'error' || !view.management) {
+    const copy = state.locale === 'en' && view.error?.message
+      ? view.error.message
+      : t('makerCommerceV5Unavailable');
+    content.innerHTML = `<p class="maker-commerce-v5-error" role="alert">${escapeHtml(copy)}</p>`;
+    return;
+  }
+  const {
+    chain,
+    controlCap,
+    isOwner,
+    isSeller,
+  } = view.management;
+  const { root, makerTreasury, listing, protocol } = chain;
+  const symbol = runtimeConfig.paymentCoinSymbol;
+  const balance = commerceV5AtomicToDecimalText(makerTreasury.balanceAtomic);
+  const lifecycleKey = commerceV5LifecycleLabelKey(root.lifecycle);
+  const lifecycleClass = commerceV5LifecycleBadgeClass(root.lifecycle);
+  const controlCopy = controlCap
+    ? t('makerCommerceV5ControlReady')
+    : root.lifecycle === COMMERCE_V5_LIFECYCLE.SALE_PENDING && isSeller
+      ? t('makerCommerceV5ControlEscrowed')
+      : t('makerCommerceV5ControlUnavailable');
+  const soulCreatorRoyalty = commerceV5RoyaltyRateText(root.soulCreatorRoyaltyBps);
+  const royalty = commerceV5RoyaltyRateText(root.makerResaleRoyaltyBps);
+  const canWithdraw = isOwner && Boolean(controlCap) && makerTreasury.balanceAtomic > 0n;
+  const canList = isOwner
+    && Boolean(controlCap)
+    && root.lifecycle === COMMERCE_V5_LIFECYCLE.PAUSED
+    && makerTreasury.balanceAtomic === 0n
+    && runtimeConfig.commerceV5ReleaseEnabled === true
+    && protocol.enabled === true;
+  const listBlocker = runtimeConfig.commerceV5ReleaseEnabled !== true
+    ? t('makerCommerceV5ReleaseDisabled')
+    : protocol.enabled !== true
+      ? t('makerCommerceV5ProtocolDisabled')
+      : root.lifecycle !== COMMERCE_V5_LIFECYCLE.PAUSED
+        ? t('makerCommerceV5PauseBeforeListing')
+        : makerTreasury.balanceAtomic !== 0n
+          ? t('makerCommerceV5EmptyTreasuryBeforeListing')
+          : t('makerCommerceV5ListCopy');
+  const withdrawal = isOwner && controlCap
+    ? `
+      <article class="maker-commerce-v5-operation-card">
+        <label>
+          <span>${escapeHtml(t('makerCommerceV5WithdrawAmount'))} (${escapeHtml(symbol)})</span>
+          <input id="makerCommerceV5WithdrawAmount" type="text" inputmode="decimal" autocomplete="off" value="${escapeHtml(balance)}" ${canWithdraw ? '' : 'disabled'}>
+        </label>
+        <p>${escapeHtml(t('makerCommerceV5WithdrawCopy'))}</p>
+        <button class="secondary" type="button" data-lifecycle-action="commerce-v5-withdraw" ${canWithdraw ? '' : 'disabled aria-disabled="true"'}>
+          ${escapeHtml(t('makerCommerceV5WithdrawAction'))}
+        </button>
+      </article>
+    `
+    : '';
+  const sale = isOwner && root.lifecycle !== COMMERCE_V5_LIFECYCLE.SALE_PENDING
+    ? `
+      <article class="maker-commerce-v5-operation-card">
+        <label>
+          <span>${escapeHtml(t('makerCommerceV5ListPrice'))} (${escapeHtml(symbol)})</span>
+          <input id="makerCommerceV5ListPrice" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" ${canList ? '' : 'disabled'}>
+        </label>
+        <p>${escapeHtml(listBlocker)}</p>
+        <button class="secondary" type="button" data-lifecycle-action="commerce-v5-list" ${canList ? '' : 'disabled aria-disabled="true"'}>
+          ${escapeHtml(t('makerCommerceV5ListAction'))}
+        </button>
+      </article>
+    `
+    : '';
+  const listingMarkup = listing
+    ? `
+      <article class="maker-commerce-v5-listing-card">
+        <h4>${escapeHtml(t('makerCommerceV5ListingTitle'))}</h4>
+        <dl>
+          <div>
+            <dt>${escapeHtml(t('makerCommerceV5ListingPrice'))}</dt>
+            <dd>${escapeHtml(commerceV5AtomicToDecimalText(listing.priceAtomic))} ${escapeHtml(symbol)}</dd>
+          </div>
+          <div>
+            <dt>${escapeHtml(t('makerCommerceV5ListingSeller'))}</dt>
+            <dd title="${escapeHtml(listing.seller)}">${escapeHtml(shortAddress(listing.seller))}</dd>
+          </div>
+          <div>
+            <dt>${escapeHtml(t('makerCommerceV5ProtocolFee'))}</dt>
+            <dd>${escapeHtml(t('makerCommerceV5ProtocolFeeFrozen', {
+              rate: commerceV5RoyaltyRateText(listing.protocolFeeBps),
+            }))}</dd>
+          </div>
+          <div>
+            <dt>${escapeHtml(t('makerCommerceV5ResaleRoyalty'))}</dt>
+            <dd>${escapeHtml(t('makerCommerceV5ResaleRoyaltyFrozen', {
+              rate: commerceV5RoyaltyRateText(listing.makerResaleRoyaltyBps),
+            }))}</dd>
+          </div>
+        </dl>
+      </article>
+    `
+    : '';
+  content.innerHTML = `
+    <div class="maker-commerce-v5-state-grid">
+      <article class="maker-commerce-v5-state-card" data-state="${escapeHtml(lifecycleClass)}">
+        <span>${escapeHtml(t('makerCommerceV5Lifecycle'))}</span>
+        <strong>${escapeHtml(t(lifecycleKey))}</strong>
+        <small>${escapeHtml(shortAddress(root.objectId))}</small>
+      </article>
+      <article class="maker-commerce-v5-state-card">
+        <span>${escapeHtml(t('makerCommerceV5CurrentOwner'))}</span>
+        <strong title="${escapeHtml(root.currentOwner)}">${escapeHtml(shortAddress(root.currentOwner))}</strong>
+        <small>${escapeHtml(controlCopy)}</small>
+      </article>
+      <article class="maker-commerce-v5-state-card">
+        <span>${escapeHtml(t('makerCommerceV5OriginalCreator'))}</span>
+        <strong title="${escapeHtml(root.originalCreator)}">${escapeHtml(shortAddress(root.originalCreator))}</strong>
+        <small>${escapeHtml(t('makerCommerceV5RegistrySealed'))}</small>
+      </article>
+      <article class="maker-commerce-v5-state-card">
+        <span>${escapeHtml(t('makerCommerceV5Treasury'))}</span>
+        <strong>${escapeHtml(t('makerCommerceV5TreasuryExact', { amount: balance, symbol }))}</strong>
+        <small title="${escapeHtml(makerTreasury.objectId)}">${escapeHtml(shortAddress(makerTreasury.objectId))}</small>
+      </article>
+      <article class="maker-commerce-v5-state-card">
+        <span>${escapeHtml(t('makerCommerceV5SoulCreatorRoyalty'))}</span>
+        <strong>${escapeHtml(t('makerCommerceV5SoulCreatorRoyaltyFrozen', { rate: soulCreatorRoyalty }))}</strong>
+        <small>${escapeHtml(t('makerCommerceV5RegistrySealed'))}</small>
+      </article>
+      <article class="maker-commerce-v5-state-card">
+        <span>${escapeHtml(t('makerCommerceV5ResaleRoyalty'))}</span>
+        <strong>${escapeHtml(t('makerCommerceV5ResaleRoyaltyFrozen', { rate: royalty }))}</strong>
+        <small>${escapeHtml(t('makerCommerceV5RegistrySealed'))}</small>
+      </article>
+    </div>
+    ${listingMarkup}
+    ${withdrawal || sale ? `<div class="maker-commerce-v5-operation-grid">${withdrawal}${sale}</div>` : ''}
+  `;
+}
+
+function setMakerCommerceV5LifecycleReady(management) {
+  makerCommerceV5LifecycleView = Object.freeze({
+    status: 'ready',
+    templateId: state.templateId,
+    wallet: suiJsonId(state.walletAddress),
+    rootObjectId: management.chain.root.objectId,
+    management,
+    error: null,
+  });
+}
+
+function connectedMakerCommerceV5Wallet() {
+  let wallet = '';
+  try {
+    wallet = suiJsonId(getConnectedWalletAddress());
+  } catch {
+    throw commerceV5Error(
+      'COMMERCE_V5_WALLET_REQUIRED',
+      t('makerCommerceV5WalletRequired'),
+    );
+  }
+  if (
+    !wallet
+    || !state.walletConnected
+    || comparableSuiId(wallet) !== comparableSuiId(suiJsonId(state.walletAddress))
+  ) {
+    throw commerceV5Error(
+      'WALLET_CONTEXT_CHANGED',
+      t('makerCommerceV5WalletRequired'),
+    );
+  }
+  return wallet;
+}
+
+async function executeMakerCommerceV5Action(action, {
+  amountText = '',
+  expectedListingObjectId = '',
+  expectedListingPriceAtomic = '',
+} = {}) {
+  if (state.publishing || state.makerLifecycleActionBusy) return false;
+  const wallet = connectedMakerCommerceV5Wallet();
+  const operation = beginMakerCommerceV5LifecycleOperation();
+  let latestManagement = null;
+  let submitted = null;
+  state.makerLifecycleActionBusy = true;
+  state.publishStatusI18n = null;
+  state.publishStatus = t('makerCommerceV5Loading');
+  makerCommerceV5LifecycleView = Object.freeze({
+    status: 'loading',
+    templateId: operation.templateId,
+    wallet: operation.wallet,
+    rootObjectId: operation.rootObjectId,
+    management: null,
+    error: null,
+  });
+  renderAll();
+  try {
+    latestManagement = await readMakerCommerceV5Management(operation);
+    assertMakerCommerceV5LifecycleOperation(operation);
+    const {
+      chain,
+      controlCap,
+      isOwner,
+      isSeller,
+    } = latestManagement;
+    const {
+      root,
+      makerTreasury,
+      listing,
+      protocol,
+      protocolTreasury,
+    } = chain;
+    const runtime = commerceV5RuntimeContext();
+    let transaction;
+    let matches;
+    if (
+      ['commerce-v5-list', 'commerce-v5-buy'].includes(action)
+      && runtimeConfig.commerceV5ReleaseEnabled !== true
+    ) {
+      throw commerceV5Error(
+        'COMMERCE_V5_RELEASE_DISABLED',
+        t('makerCommerceV5ReleaseDisabled'),
+      );
+    }
+    if (
+      ['commerce-v5-list', 'commerce-v5-buy'].includes(action)
+      && protocol.enabled !== true
+    ) {
+      throw commerceV5Error(
+        'COMMERCE_V5_PROTOCOL_DISABLED',
+        t('makerCommerceV5ProtocolDisabled'),
+      );
+    }
+
+    if (action === 'commerce-v5-pause') {
+      transaction = buildPauseMakerV5({
+        runtime,
+        root,
+        controlCap,
+        sender: wallet,
+      });
+      matches = (candidate) => (
+        candidate.chain.root.lifecycle === COMMERCE_V5_LIFECYCLE.PAUSED
+        && comparableSuiId(candidate.chain.root.currentOwner) === comparableSuiId(wallet)
+        && Boolean(candidate.controlCap)
+      );
+    } else if (action === 'commerce-v5-resume') {
+      transaction = buildActivateMakerV5({
+        runtime,
+        root,
+        controlCap,
+        sender: wallet,
+      });
+      matches = (candidate) => (
+        candidate.chain.root.lifecycle === COMMERCE_V5_LIFECYCLE.ACTIVE
+        && comparableSuiId(candidate.chain.root.currentOwner) === comparableSuiId(wallet)
+        && Boolean(candidate.controlCap)
+      );
+    } else if (action === 'commerce-v5-archive') {
+      transaction = buildArchiveMakerV5({
+        runtime,
+        root,
+        controlCap,
+        sender: wallet,
+      });
+      matches = (candidate) => (
+        candidate.chain.root.lifecycle === COMMERCE_V5_LIFECYCLE.ARCHIVED
+        && comparableSuiId(candidate.chain.root.currentOwner) === comparableSuiId(wallet)
+        && Boolean(candidate.controlCap)
+      );
+    } else if (action === 'commerce-v5-restore') {
+      transaction = buildRestoreMakerV5({
+        runtime,
+        root,
+        controlCap,
+        sender: wallet,
+      });
+      matches = (candidate) => (
+        candidate.chain.root.lifecycle === COMMERCE_V5_LIFECYCLE.ACTIVE
+        && comparableSuiId(candidate.chain.root.currentOwner) === comparableSuiId(wallet)
+        && Boolean(candidate.controlCap)
+      );
+    } else if (action === 'commerce-v5-withdraw') {
+      const amountAtomic = commerceV5DecimalToAtomicExact(amountText);
+      if (amountAtomic === null) {
+        throw commerceV5Error(
+          'COMMERCE_V5_INVALID_WITHDRAWAL',
+          t('makerCommerceV5ExactAmountInvalid', {
+            symbol: runtimeConfig.paymentCoinSymbol,
+            decimals: runtimeConfig.paymentCoinDecimals,
+          }),
+        );
+      }
+      const expectedTotalWithdrawn = makerTreasury.totalWithdrawnAtomic + amountAtomic;
+      transaction = buildWithdrawMakerRevenueV5({
+        runtime,
+        root,
+        makerTreasury,
+        controlCap,
+        amountAtomic,
+        recipient: wallet,
+        sender: wallet,
+      });
+      matches = (candidate) => (
+        candidate.chain.makerTreasury.totalWithdrawnAtomic === expectedTotalWithdrawn
+        && comparableSuiId(candidate.chain.root.currentOwner) === comparableSuiId(wallet)
+        && Boolean(candidate.controlCap)
+      );
+    } else if (action === 'commerce-v5-list') {
+      const priceAtomic = commerceV5DecimalToAtomicExact(amountText);
+      if (priceAtomic === null) {
+        throw commerceV5Error(
+          'COMMERCE_V5_INVALID_LIST_PRICE',
+          t('makerCommerceV5ExactAmountInvalid', {
+            symbol: runtimeConfig.paymentCoinSymbol,
+            decimals: runtimeConfig.paymentCoinDecimals,
+          }),
+        );
+      }
+      transaction = buildListMakerForSaleV5({
+        runtime,
+        root,
+        makerTreasury,
+        controlCap,
+        protocol,
+        priceAtomic,
+        sender: wallet,
+      });
+      matches = (candidate) => (
+        candidate.chain.root.lifecycle === COMMERCE_V5_LIFECYCLE.SALE_PENDING
+        && candidate.chain.listing?.active === true
+        && candidate.chain.listing.priceAtomic === priceAtomic
+        && comparableSuiId(candidate.chain.listing.seller) === comparableSuiId(wallet)
+        && !candidate.controlCap
+      );
+    } else if (action === 'commerce-v5-cancel-listing') {
+      if (!isOwner || !isSeller) {
+        throw commerceV5Error(
+          'COMMERCE_V5_LISTING_SELLER_REQUIRED',
+          t('makerCommerceV5ControlUnavailable'),
+        );
+      }
+      if (
+        expectedListingObjectId
+        && comparableSuiId(listing?.objectId) !== comparableSuiId(expectedListingObjectId)
+      ) {
+        throw commerceV5Error(
+          'COMMERCE_V5_LISTING_CHANGED',
+          'The Maker listing changed after confirmation. Review the latest listing before continuing.',
+        );
+      }
+      transaction = buildCancelMakerListingV5({
+        runtime,
+        root,
+        listing,
+        sender: wallet,
+      });
+      matches = (candidate) => (
+        candidate.chain.root.lifecycle === COMMERCE_V5_LIFECYCLE.PAUSED
+        && !candidate.chain.root.activeListingId
+        && !candidate.chain.listing
+        && comparableSuiId(candidate.chain.root.currentOwner) === comparableSuiId(wallet)
+        && Boolean(candidate.controlCap)
+      );
+    } else if (action === 'commerce-v5-buy') {
+      if (
+        !listing
+        || isOwner
+        || comparableSuiId(listing.seller) === comparableSuiId(wallet)
+      ) {
+        throw commerceV5Error(
+          'COMMERCE_V5_BUY_UNAVAILABLE',
+          t('makerCommerceV5Unavailable'),
+        );
+      }
+      let confirmedPrice = null;
+      try {
+        confirmedPrice = expectedListingPriceAtomic === ''
+          ? null
+          : BigInt(expectedListingPriceAtomic);
+      } catch {
+        confirmedPrice = null;
+      }
+      if (
+        (
+          expectedListingObjectId
+          && comparableSuiId(listing.objectId) !== comparableSuiId(expectedListingObjectId)
+        )
+        || (
+          confirmedPrice !== null
+          && listing.priceAtomic !== confirmedPrice
+        )
+      ) {
+        throw commerceV5Error(
+          'COMMERCE_V5_LISTING_CHANGED',
+          'The Maker listing price or object changed after confirmation. Review the latest listing before continuing.',
+        );
+      }
+      transaction = buildBuyMakerV5({
+        runtime,
+        root,
+        makerTreasury,
+        listing,
+        protocol,
+        protocolTreasury,
+        sender: wallet,
+      });
+      matches = (candidate) => (
+        candidate.chain.root.lifecycle === COMMERCE_V5_LIFECYCLE.PAUSED
+        && !candidate.chain.root.activeListingId
+        && !candidate.chain.listing
+        && comparableSuiId(candidate.chain.root.currentOwner) === comparableSuiId(wallet)
+        && Boolean(candidate.controlCap)
+      );
+    } else {
+      throw commerceV5Error(
+        'COMMERCE_V5_ACTION_UNSUPPORTED',
+        `Unsupported commerce v5 action: ${action}`,
+      );
+    }
+
+    assertMakerCommerceV5LifecycleOperation(operation);
+    submitted = await signExecuteAndWait(transaction, {
+      expectedWallet: wallet,
+    });
+    assertMakerCommerceV5LifecycleOperation(operation);
+    commerceV5StateCache.clear();
+    latestManagement = await readBackMakerCommerceV5Lifecycle(operation, matches);
+    assertMakerCommerceV5LifecycleOperation(operation);
+    setMakerCommerceV5LifecycleReady(latestManagement);
+    const template = activeTemplate();
+    if (template?.owner) persistLocalMakerIndex(template.owner);
+    state.publishStatus = t('makerCommerceV5ActionConfirmed', {
+      digest: submitted.digest,
+    });
+    return true;
+  } catch (error) {
+    if (!makerCommerceV5LifecycleOperationIsActive(operation)) return false;
+    const readbackManagement = error?.last;
+    if (readbackManagement) latestManagement = readbackManagement;
+    if (latestManagement) {
+      setMakerCommerceV5LifecycleReady(latestManagement);
+    } else {
+      makerCommerceV5LifecycleView = Object.freeze({
+        status: 'error',
+        templateId: operation.templateId,
+        wallet: operation.wallet,
+        rootObjectId: operation.rootObjectId,
+        management: null,
+        error,
+      });
+    }
+    state.publishStatusI18n = null;
+    state.publishStatus = error?.code === 'COMMERCE_V5_READBACK_PENDING'
+      || Boolean(submitted)
+      ? t('makerCommerceV5ReadbackFailed')
+      : t('makerCommerceV5ActionFailed', {
+          message: String(error?.message || t('makerCommerceV5Unavailable')),
+        });
+    return false;
+  } finally {
+    if (makerCommerceV5LifecycleOperationIsActive(operation)) {
+      state.makerLifecycleActionBusy = false;
+      renderAll();
+    }
+  }
+}
+
+function commerceV5SafeUiNumber(value, label, { clamp = false } = {}) {
+  const exact = BigInt(value ?? 0);
+  if (exact < 0n) {
+    throw commerceV5Error('COMMERCE_V5_INVALID_U64', `${label} cannot be negative.`);
+  }
+  if (exact > BigInt(Number.MAX_SAFE_INTEGER)) {
+    if (clamp) return Number.MAX_SAFE_INTEGER;
+    throw commerceV5Error(
+      'COMMERCE_V5_UI_AMOUNT_UNSAFE',
+      `${label} is too large for this Animacraft client to display safely.`,
+    );
+  }
+  return Number(exact);
+}
+
+function commerceV5FailClosedState(error) {
+  return Object.freeze({
+    ownsMakerAccess: false,
+    ownedPackIds: Object.freeze([]),
+    walletBaseCount: 0,
+    walletPackCounts: Object.freeze({}),
+    totalBaseCount: 0,
+    totalPackCounts: Object.freeze({}),
+    protocol: Object.freeze({ enabled: false }),
+    available: false,
+    protocolEnabled: false,
+    authoritativeQuoteRequired: true,
+    errorCode: String(error?.code || 'COMMERCE_V5_UNAVAILABLE'),
+    errorMessage: String(error?.message || 'Commerce v5 state is unavailable.'),
+  });
+}
+
+function commerceV5CacheKey(binding, wallet, document) {
+  return [
+    comparableSuiId(wallet),
+    comparableSuiId(binding.legacyMakerId),
+    comparableSuiId(binding.rootObjectId),
+    comparableSuiId(binding.makerTreasuryObjectId),
+    comparableSuiId(runtimeConfig.commerceProtocolConfigV5Id),
+    comparableSuiId(runtimeConfig.commerceProtocolTreasuryV5Id),
+    String(document?.version?.versionId || ''),
+  ].join(':');
+}
+
+function assertCommerceV5TypeOrigins(chain) {
+  const expectedPackage = comparableSuiId(runtimeConfig.commerceV5TypeOriginPackageId);
+  const entries = [
+    ['protocol config', chain?.protocol],
+    ['protocol treasury', chain?.protocolTreasury],
+    ['Maker root', chain?.root],
+    ['Maker treasury', chain?.makerTreasury],
+  ];
+  entries.forEach(([label, object]) => {
+    const packageId = String(object?.type || '').split('::')[0];
+    if (!expectedPackage || comparableSuiId(packageId) !== expectedPackage) {
+      throw commerceV5Error(
+        'COMMERCE_V5_TYPE_ORIGIN_MISMATCH',
+        `The ${label} is not defined by the configured commerce v5 TypeOrigin.`,
+      );
+    }
+  });
+}
+
+function cachedPlayerCommerceV5(document = currentMakerV4Source()) {
+  if (runtimeConfig.commerceV5ReleaseEnabled !== true || activeTemplate()?.source !== 'chain') {
+    return null;
+  }
+  const wallet = suiJsonId(state.walletAddress);
+  const binding = activeCommerceV5Binding(document);
+  if (!wallet || !binding.rootObjectId || !binding.makerTreasuryObjectId) return null;
+  return commerceV5StateCache.get(commerceV5CacheKey(binding, wallet, document)) || null;
+}
+
+async function hydratePlayerCommerceV5(document = currentMakerV4Source(), {
+  force = false,
+} = {}) {
+  if (runtimeConfig.commerceV5ReleaseEnabled !== true || activeTemplate()?.source !== 'chain') {
+    return null;
+  }
+  if (!isMakerV4Document(document)) {
+    throw commerceV5Error(
+      'COMMERCE_V5_DOCUMENT_MISSING',
+      'A published Maker document is required for commerce v5.',
+    );
+  }
+  const connectedWallet = suiJsonId(getConnectedWalletAddress());
+  if (!connectedWallet || comparableSuiId(connectedWallet) !== comparableSuiId(state.walletAddress)) {
+    throw commerceV5Error(
+      'WALLET_CONTEXT_CHANGED',
+      'Reconnect the wallet that is using this Maker.',
+    );
+  }
+  const binding = await resolveActiveCommerceV5Binding(document);
+  const protocolConfigId = suiJsonId(runtimeConfig.commerceProtocolConfigV5Id);
+  const protocolTreasuryId = suiJsonId(runtimeConfig.commerceProtocolTreasuryV5Id);
+  if (
+    !binding.rootObjectId
+    || !binding.makerTreasuryObjectId
+    || !protocolConfigId
+    || !protocolTreasuryId
+    || !suiJsonId(runtimeConfig.commerceV5TypeOriginPackageId)
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_CONFIG_MISSING',
+      'Commerce v5 is enabled but its protocol or Maker object IDs are incomplete.',
+    );
+  }
+  const cacheKey = commerceV5CacheKey(binding, connectedWallet, document);
+  const cached = commerceV5StateCache.get(cacheKey);
+  if (!force && cached && Date.now() - cached.loadedAt < COMMERCE_V5_CACHE_TTL_MS) {
+    return cached;
+  }
+  if (commerceV5StatePending.has(cacheKey)) {
+    return commerceV5StatePending.get(cacheKey);
+  }
+  const pending = (async () => {
+    const client = getSuiClient();
+    const chain = await queryCommerceV5Objects(client, {
+      protocolConfigId,
+      protocolTreasuryId,
+      makerRootId: binding.rootObjectId,
+      makerTreasuryId: binding.makerTreasuryObjectId,
+    });
+    assertCommerceV5TypeOrigins(chain);
+    if (comparableSuiId(chain.root.legacyMakerId) !== comparableSuiId(binding.legacyMakerId)) {
+      throw commerceV5Error(
+        'COMMERCE_V5_MAKER_MISMATCH',
+        'The commerce v5 root belongs to another published Maker.',
+      );
+    }
+    const [packs, walletState] = await Promise.all([
+      queryPackRecordsV5(client, chain.root),
+      queryOwnedCommerceV5State(client, {
+        runtime: commerceV5RuntimeContext(),
+        owner: connectedWallet,
+        rootId: chain.root.objectId,
+        root: chain.root,
+      }),
+    ]);
+    const packById = new Map(packs.map((pack) => [String(pack.key), pack]));
+    const totalPackCounts = Object.fromEntries(packs.map((pack) => [
+      String(pack.key),
+      commerceV5SafeUiNumber(pack.completeCount, `Pack ${pack.key} Complete count`, {
+        clamp: true,
+      }),
+    ]));
+    const context = Object.freeze({
+      ownsMakerAccess: chain.root.baseAccess.kind === COMMERCE_V5_ACCESS.FREE
+        || walletState.ownsMakerAccess,
+      ownedPackIds: Object.freeze([...walletState.ownedPackKeys]),
+      // Wallet quota counters live in the shared root table and are evaluated
+      // authoritatively by quote_complete_v5. The Player UI treats these as
+      // advisory only; Complete never relies on them.
+      walletBaseCount: 0,
+      walletPackCounts: Object.freeze({}),
+      totalBaseCount: commerceV5SafeUiNumber(
+        chain.root.totalCompletes,
+        'Maker Complete count',
+        { clamp: true },
+      ),
+      totalPackCounts: Object.freeze(totalPackCounts),
+      protocol: Object.freeze({
+        enabled: chain.protocol.enabled,
+        primaryContentFeeBps: chain.protocol.primaryProtocolFeeBps,
+        fixedCompleteFeeAtomic: commerceV5SafeUiNumber(
+          chain.protocol.fixedCompleteFeeAtomic,
+          'Fixed Complete protocol fee',
+        ),
+        makerMarketFeeBps: chain.protocol.makerMarketFeeBps,
+      }),
+      available: true,
+      protocolEnabled: chain.protocol.enabled,
+      authoritativeQuoteRequired: true,
+      lifecycle: chain.root.lifecycle,
+    });
+    applyActiveCommerceV5Binding({
+      rootObjectId: chain.root.objectId,
+      makerTreasuryObjectId: chain.makerTreasury.objectId,
+      controlCapObjectId: binding.controlCapObjectId || chain.root.currentControlCapId,
+      controlVaultObjectId: binding.controlVaultObjectId || chain.root.controlVaultId,
+      listingObjectId: chain.root.activeListingId,
+    });
+    const hydrated = Object.freeze({
+      cacheKey,
+      loadedAt: Date.now(),
+      wallet: connectedWallet,
+      binding: Object.freeze({ ...activeCommerceV5Binding(document) }),
+      chain: Object.freeze({ ...chain, packs, packById, walletState }),
+      context,
+    });
+    commerceV5StateCache.set(cacheKey, hydrated);
+    return hydrated;
+  })().finally(() => {
+    commerceV5StatePending.delete(cacheKey);
+  });
+  commerceV5StatePending.set(cacheKey, pending);
+  return pending;
+}
+
+async function requirePlayerCommerceV5(document = currentMakerV4Source(), options = {}) {
+  if (runtimeConfig.commerceV5ReleaseEnabled !== true) {
+    throw commerceV5Error(
+      'COMMERCE_V5_RELEASE_DISABLED',
+      'Commerce v5 is not enabled in this Animacraft deployment.',
+    );
+  }
+  const hydrated = await hydratePlayerCommerceV5(document, options);
+  if (!hydrated?.context?.available) {
+    throw commerceV5Error(
+      'COMMERCE_V5_UNAVAILABLE',
+      'Commerce v5 state could not be verified.',
+    );
+  }
+  if (!hydrated.context.protocolEnabled) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PROTOCOL_DISABLED',
+      'The on-chain Commerce v5 protocol is paused.',
+    );
+  }
+  if (hydrated.context.lifecycle !== COMMERCE_V5_LIFECYCLE.ACTIVE) {
+    throw commerceV5Error(
+      'COMMERCE_V5_MAKER_INACTIVE',
+      `The Maker is ${hydrated.context.lifecycle || 'unavailable'} on Sui.`,
+    );
+  }
+  return hydrated;
+}
+
+function assertCommerceV5QuoteAmount(actual, expected, label) {
+  let actualAtomic;
+  try {
+    actualAtomic = BigInt(actual);
+  } catch {
+    throw commerceV5Error(
+      'COMMERCE_V5_QUOTE_INVALID',
+      `${label} is not an exact atomic USDC amount.`,
+    );
+  }
+  if (actualAtomic !== BigInt(expected)) {
+    throw commerceV5Error(
+      'COMMERCE_V5_MANIFEST_CHAIN_DRIFT',
+      `${label} no longer matches the verified on-chain policy. Reload the Maker.`,
+    );
+  }
+}
+
+async function purchasePlayerMakerAccessV5({ document, quote }) {
+  const hydrated = await requirePlayerCommerceV5(document, { force: true });
+  assertCommerceV5QuoteAmount(
+    quote?.grossAtomic,
+    hydrated.chain.root.baseAccess.purchasePriceAtomic,
+    'Maker access price',
+  );
+  const transaction = buildPurchaseMakerAccessV5({
+    runtime: commerceV5RuntimeContext(),
+    root: hydrated.chain.root,
+    makerTreasury: hydrated.chain.makerTreasury,
+    protocol: hydrated.chain.protocol,
+    protocolTreasury: hydrated.chain.protocolTreasury,
+    walletState: hydrated.chain.walletState,
+    sender: hydrated.wallet,
+  });
+  const submitted = await signExecuteAndWait(transaction, {
+    expectedWallet: hydrated.wallet,
+  });
+  const refreshed = await requirePlayerCommerceV5(document, { force: true });
+  if (!refreshed.chain.walletState.ownsMakerAccess) {
+    throw commerceV5Error(
+      'COMMERCE_V5_ENTITLEMENT_NOT_VISIBLE',
+      'The Maker access transaction succeeded, but its permanent pass is not visible yet. Retry after Sui indexes it.',
+      { digest: submitted.digest },
+    );
+  }
+  return Object.freeze({
+    confirmed: true,
+    ownsMakerAccess: true,
+    digest: submitted.digest,
+  });
+}
+
+async function purchasePlayerExpansionPackV5({ document, packId, quote }) {
+  const id = String(packId || '');
+  const hydrated = await requirePlayerCommerceV5(document, { force: true });
+  const pack = hydrated.chain.packById.get(id);
+  if (!pack) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PACK_NOT_FOUND',
+      'This Expansion Pack does not exist in the verified on-chain Maker.',
+      { packId: id },
+    );
+  }
+  if (
+    hydrated.chain.root.lifecycle !== COMMERCE_V5_LIFECYCLE.ACTIVE
+    || !hydrated.chain.protocol.enabled
+    || !pack.active
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_PACK_UNAVAILABLE',
+      'This Expansion Pack is not currently available.',
+      { packId: id },
+    );
+  }
+  if (
+    hydrated.chain.root.baseAccess.kind === COMMERCE_V5_ACCESS.PAID_ONCE
+    && !hydrated.chain.walletState.ownsMakerAccess
+  ) {
+    throw commerceV5Error(
+      'COMMERCE_V5_BASE_ENTITLEMENT_MISSING',
+      'Unlock the Maker before using this Expansion Pack.',
+      { packId: id },
+    );
+  }
+  if (pack.accessKind === COMMERCE_V5_ACCESS.FREE) {
+    assertCommerceV5QuoteAmount(quote?.grossAtomic, 0n, 'Expansion Pack price');
+    // FREE is a verified policy on the shared root. It deliberately creates no
+    // claim transaction and no pretend local receipt.
+    return Object.freeze({
+      ownedPackIds: Object.freeze([id]),
+      freeAccess: true,
+    });
+  }
+  assertCommerceV5QuoteAmount(
+    quote?.grossAtomic,
+    pack.purchasePriceAtomic,
+    'Expansion Pack price',
+  );
+  const transaction = buildPurchasePackV5({
+    runtime: commerceV5RuntimeContext(),
+    root: hydrated.chain.root,
+    makerTreasury: hydrated.chain.makerTreasury,
+    protocol: hydrated.chain.protocol,
+    protocolTreasury: hydrated.chain.protocolTreasury,
+    pack,
+    walletState: hydrated.chain.walletState,
+    sender: hydrated.wallet,
+  });
+  const submitted = await signExecuteAndWait(transaction, {
+    expectedWallet: hydrated.wallet,
+  });
+  const refreshed = await requirePlayerCommerceV5(document, { force: true });
+  if (!refreshed.chain.walletState.ownedPackKeys.includes(id)) {
+    throw commerceV5Error(
+      'COMMERCE_V5_ENTITLEMENT_NOT_VISIBLE',
+      'The Pack purchase succeeded, but its permanent pass is not visible yet. Retry after Sui indexes it.',
+      { digest: submitted.digest, packId: id },
+    );
+  }
+  return Object.freeze({
+    confirmed: true,
+    ownedPackIds: Object.freeze([...refreshed.chain.walletState.ownedPackKeys]),
+    digest: submitted.digest,
+  });
+}
+
+async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
   if (!makerWorkspace) return Promise.resolve();
   const template = activeTemplate();
   const workingDocument = currentMakerV4Source();
@@ -13472,6 +18257,22 @@ function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
   const makerKey = creatorPersistenceEnabled
     ? `${state.walletAddress}:${rootMakerId}`
     : `public:${rootMakerId}:${suiJsonId(template?.objectId) || document?.version?.versionId || 'draft'}`;
+  let commerceState = null;
+  if (template?.source === 'chain') {
+    if (runtimeConfig.commerceV5ReleaseEnabled !== true) {
+      commerceState = commerceV5FailClosedState(commerceV5Error(
+        'COMMERCE_V5_RELEASE_DISABLED',
+        'Commerce v5 is not enabled in this Animacraft deployment.',
+      ));
+    } else {
+      try {
+        commerceState = (await hydratePlayerCommerceV5(document))?.context || null;
+      } catch (error) {
+        console.warn('Commerce v5 state could not be hydrated.', error);
+        commerceState = commerceV5FailClosedState(error);
+      }
+    }
+  }
   return makerWorkspace.setContext({
     makerKey,
     walletAddress: state.walletAddress,
@@ -13484,7 +18285,7 @@ function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
     recipe,
     playerRecipe: state.playerRecipeV4 || document?.defaultRecipe,
     profile: v4ProfileFromLegacy(),
-    assets: currentV4RuntimeAssets(),
+    assets: currentV4RuntimeAssets(document),
     publishedDocument: state.publishedMakerDocumentV4,
     publishedRecipe: state.publishedMakerRecipeV4
       || state.publishedMakerDocumentV4?.defaultRecipe
@@ -13495,6 +18296,8 @@ function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
     versionId: document?.version?.versionId,
     isPublished: makerIsPublished(),
     creatorPreview: state.previewingMaker,
+    commerceV5ReleaseEnabled: runtimeConfig.commerceV5ReleaseEnabled === true,
+    ...(commerceState ? { commerceState } : {}),
     lifecycle: {
       id: lifecycle.id,
       label: t(lifecycle.labelKey),
@@ -14597,6 +19400,22 @@ makerWorkspace = createMakerWorkspace({
       else if (action === 'review') await reviewPendingMakerPublication();
       else if (action === 'discard') await requestDiscardMakerUploadRecovery();
       else if (action === 'resume') await resumeMakerUploadRecovery();
+    },
+    getPlayerCommerceState({ document }) {
+      if (activeTemplate()?.source !== 'chain') return {};
+      if (runtimeConfig.commerceV5ReleaseEnabled !== true) {
+        return commerceV5FailClosedState(commerceV5Error(
+          'COMMERCE_V5_RELEASE_DISABLED',
+          'Commerce v5 is not enabled in this Animacraft deployment.',
+        ));
+      }
+      return cachedPlayerCommerceV5(document)?.context || {};
+    },
+    async onPurchaseMakerAccess(payload) {
+      return purchasePlayerMakerAccessV5(payload);
+    },
+    async onPurchaseExpansionPack(payload) {
+      return purchasePlayerExpansionPackV5(payload);
     },
     onPlayerRecipeChange(payload) {
       syncPlayerV4State(payload);

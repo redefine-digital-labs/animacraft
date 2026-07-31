@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import {
+  COMPLETION_MODES,
+  MAKER_ACCESS_MODES,
+  PACK_ACCESS_MODES,
+  RIGHTS_ORIGINS,
+  createDefaultMakerCommerceV5,
+  createPackCommercePolicyV5,
+} from '../maker-commerce-v5.js';
 import { createMakerV5Document } from '../maker-v4.js';
 import { evaluateRecipe } from '../maker-rules.js';
 import {
+  MAKER_V4_COMMERCE_PROJECTION_V5_SCHEMA,
   MAKER_V4_ITEM_KEY_ENCODING_V2,
   MAKER_V4_MOVE_PROJECTION_V2_SCHEMA,
   MAKER_V4_NEUTRAL_COLOR,
@@ -16,6 +25,8 @@ import {
   createMakerV4ProjectionV2AuxiliaryEntry,
   flattenMakerV4RecipeV2,
 } from '../maker-publication-v4.js';
+
+const LOGICAL_AUXILIARY_BLOB_ID = 'protocol-logical-auxiliary-blob';
 
 function style(id, displayOrder, trackId, assetId, extra = {}) {
   return {
@@ -212,6 +223,94 @@ function optionalExpansionPack({ packId, namespace, partId }) {
   };
 }
 
+function styleExpansionPack({
+  packId = 'moon-styles',
+  namespace = 'moon',
+  styleId = 'moon-trim',
+  targetItemId = 'shape',
+} = {}) {
+  return {
+    schemaVersion: 'animacraft.expansion-pack.v1',
+    packId,
+    namespace,
+    name: 'Moon Styles',
+    version: '1.0.0',
+    baseMakerId: 'projection-maker',
+    baseVersion: '1',
+    layerTracks: [],
+    colorChannels: [],
+    assets: [],
+    rules: [],
+    parts: [{
+      extendsPartId: 'body',
+      items: [{
+        extendsItemId: targetItemId,
+        styles: [
+          style(styleId, 0, 'body-track', 'body-armored'),
+        ],
+      }],
+    }],
+  };
+}
+
+function itemExpansionPack({
+  packId = 'wardrobe-plus',
+  namespace = 'wardrobe',
+  itemId = 'coat',
+} = {}) {
+  return {
+    schemaVersion: 'animacraft.expansion-pack.v1',
+    packId,
+    namespace,
+    name: 'Wardrobe Plus',
+    version: '1.0.0',
+    baseMakerId: 'projection-maker',
+    baseVersion: '1',
+    layerTracks: [],
+    colorChannels: [],
+    assets: [],
+    rules: [],
+    parts: [{
+      extendsPartId: 'body',
+      items: [{
+        id: itemId,
+        name: 'Coat',
+        displayOrder: 0,
+        importKey: itemId,
+        status: 'public',
+        thumbnailAssetId: null,
+        visibleWhen: null,
+        requires: [],
+        excludes: [],
+        defaultStyleId: 'default',
+        styles: [style('default', 0, 'body-track', 'body-armored')],
+      }],
+    }],
+  };
+}
+
+function commerceForPacks(packPolicies, overrides = {}) {
+  const commerce = createDefaultMakerCommerceV5({
+    rightsOrigin: RIGHTS_ORIGINS.LICENSE_WRAPPED,
+    rightsOriginConfirmed: true,
+    makerAccess: {
+      mode: MAKER_ACCESS_MODES.ONE_TIME_PAID,
+      purchasePriceAtomic: 10_000_000,
+    },
+    baseCompletion: {
+      mode: COMPLETION_MODES.FREE_QUOTA_THEN_PAID,
+      freeQuotaPerWallet: 3,
+      priceAtomic: 1_000_000,
+    },
+    soulCreatorRoyaltyBps: 100,
+    makerSourceRoyaltyBps: 200,
+    makerResaleRoyaltyBps: 500,
+    ...overrides,
+  });
+  commerce.packPolicies = packPolicies;
+  return commerce;
+}
+
 function expectPublicationError(callback, code) {
   assert.throws(callback, (error) => {
     assert.ok(error instanceof MakerV4PublicationError);
@@ -393,6 +492,23 @@ test('all embedded ExpansionPacks define one stable projection independent of Pl
   ];
   const projection = compileMakerV4MoveProjectionV2(document);
   assert.deepEqual(
+    projection.commerce.packPolicies.map((policy) => ({
+      packId: policy.packId,
+      accessMode: policy.accessMode,
+      completionMode: policy.completion.mode,
+    })),
+    [{
+      packId: 'aura-pack',
+      accessMode: PACK_ACCESS_MODES.FREE,
+      completionMode: COMPLETION_MODES.UNLIMITED_FREE,
+    }, {
+      packId: 'crown-pack',
+      accessMode: PACK_ACCESS_MODES.FREE,
+      completionMode: COMPLETION_MODES.UNLIMITED_FREE,
+    }],
+    'legacy/newly-added Packs without an authored policy normalize to explicit FREE defaults',
+  );
+  assert.deepEqual(
     projection.parts.map((entry) => entry.sourcePartId || entry.sourceChannelId),
     ['body', 'hat', 'crown__crown', 'aura__aura', 'skin'],
   );
@@ -438,6 +554,7 @@ test('all embedded ExpansionPacks define one stable projection independent of Pl
   assert.equal(crownOnly.suiRecipe[auraOrder].itemKey, auraNone.itemKey);
 
   const manifest = buildMakerV4PublicationManifest(document, {
+    logicalAuxiliaryBlobId: LOGICAL_AUXILIARY_BLOB_ID,
     publicExtensions: {
       expansionRuntime: 'embedded-v1',
       expansionDrafts: document.extensions.expansionDrafts,
@@ -449,6 +566,7 @@ test('all embedded ExpansionPacks define one stable projection independent of Pl
   const summary = buildMakerV4MoveSummaryV2(manifest, {
     assetLocations: new Map(manifest.assets.map((asset) => [asset.id, `patch-${asset.id}`])),
     auxiliaryLocation: 'patch-auxiliary',
+    logicalAuxiliaryBlobId: LOGICAL_AUXILIARY_BLOB_ID,
   });
   assert.deepEqual(summary.projection.parts, projection.parts);
   assert.ok(summary.items
@@ -461,9 +579,304 @@ test('all embedded ExpansionPacks define one stable projection independent of Pl
     () => buildMakerV4MoveSummaryV2(tamperedManifest, {
       assetLocations: new Map(manifest.assets.map((asset) => [asset.id, `patch-${asset.id}`])),
       auxiliaryLocation: 'patch-auxiliary',
+      logicalAuxiliaryBlobId: LOGICAL_AUXILIARY_BLOB_ID,
     }),
     'move-projection-v2-manifest-mismatch',
   );
+});
+
+test('legacy v4 projections remain byte-shape compatible when Commerce v5 is absent', () => {
+  const document = projectionMaker();
+  delete document.commerce;
+  const projection = compileMakerV4MoveProjectionV2(document);
+
+  assert.equal(Object.hasOwn(projection, 'commerce'), false);
+  assert.equal(Object.hasOwn(projection.mappings, 'packBindings'), false);
+  assert.equal(Object.hasOwn(projection.counts, 'commercePacks'), false);
+  assert.ok(projection.items.every((entry) => (
+    !Object.hasOwn(entry, 'requiredPackIds')
+    && !Object.hasOwn(entry, 'selectedStylePackId')
+  )));
+
+  const manifest = buildMakerV4PublicationManifest(document);
+  assert.equal(Object.hasOwn(manifest, 'commerce'), false);
+  assert.equal(Object.hasOwn(manifest.moveProjectionV2, 'commerce'), false);
+});
+
+test('Commerce v5 publication binds a paid Pack Style added to a Base Item', () => {
+  const document = projectionMaker();
+  document.extensions.expansionDrafts = [styleExpansionPack()];
+  document.commerce = commerceForPacks([
+    createPackCommercePolicyV5('moon-styles', {
+      accessMode: PACK_ACCESS_MODES.ONE_TIME_PAID,
+      purchasePriceAtomic: 6_000_000,
+      completion: {
+        mode: COMPLETION_MODES.UNLIMITED_FREE,
+      },
+    }),
+  ]);
+  document.publication.royaltyBps = document.commerce.makerSourceRoyaltyBps;
+  document.commerce.privateRuntimeEndpoint = 'https://must-not-publish.invalid';
+  document.commerce.packPolicies[0].privateReceipt = 'must-not-publish';
+
+  const projection = compileMakerV4MoveProjectionV2(document);
+  const mapping = projection.mappings.styles.find((entry) => (
+    entry.partId === 'body'
+    && entry.itemId === 'shape'
+    && entry.styleId === 'moon__moon-trim'
+  ));
+  assert.ok(mapping);
+  const projectedItem = projection.items.find((entry) => (
+    entry.partKey === mapping.partKey && entry.itemKey === mapping.itemKey
+  ));
+  assert.deepEqual({
+    gateKind: projectedItem.gateKind,
+    sourcePartPackId: projectedItem.sourcePartPackId,
+    sourceItemPackId: projectedItem.sourceItemPackId,
+    sourceStylePackId: projectedItem.sourceStylePackId,
+    selectedStylePackId: projectedItem.selectedStylePackId,
+    requiredPackIds: projectedItem.requiredPackIds,
+  }, {
+    gateKind: 1,
+    sourcePartPackId: null,
+    sourceItemPackId: null,
+    sourceStylePackId: 'moon-styles',
+    selectedStylePackId: 'moon-styles',
+    requiredPackIds: ['moon-styles'],
+  });
+  assert.deepEqual(projection.mappings.packBindings, [{
+    packId: 'moon-styles',
+    partKey: mapping.partKey,
+    itemKey: mapping.itemKey,
+    sourcePartId: 'body',
+    sourceItemId: 'shape',
+    sourceStyleId: 'moon__moon-trim',
+    sources: ['style'],
+  }]);
+  assert.equal(
+    projection.commerce.schemaVersion,
+    MAKER_V4_COMMERCE_PROJECTION_V5_SCHEMA,
+  );
+  assert.deepEqual(projection.commerce.makerAccess, {
+    mode: MAKER_ACCESS_MODES.ONE_TIME_PAID,
+    purchasePriceAtomic: 10_000_000,
+  });
+  assert.deepEqual(projection.commerce.baseCompletion, {
+    mode: COMPLETION_MODES.FREE_QUOTA_THEN_PAID,
+    freeQuotaPerWallet: 3,
+    priceAtomic: 1_000_000,
+    totalCap: null,
+  });
+  assert.deepEqual(projection.commerce.royalties, {
+    soulCreatorBps: 100,
+    makerSourceBps: 200,
+    makerResaleBps: 500,
+  });
+  assert.deepEqual(projection.commerce.protocol, {
+    enabled: false,
+    primaryContentFeeBps: 1_000,
+    fixedCompleteFeeAtomic: 0,
+    makerMarketFeeBps: 250,
+    soulMarketFeeBps: 250,
+  });
+  const paidStyleProduct = projection.commerce.styleProducts.find((entry) => (
+    entry.partKey === mapping.partKey && entry.itemKey === mapping.itemKey
+  ));
+  assert.deepEqual(paidStyleProduct, {
+    partKey: mapping.partKey,
+    itemKey: mapping.itemKey,
+    styleKey: 'moon__moon-trim',
+    packId: 'moon-styles',
+    rowKind: 'VISUAL',
+  });
+  assert.equal(
+    projection.commerce.styleProducts.length,
+    projection.items.length,
+    'every real, None, and Smart Color projection Item receives one sealed Style product row',
+  );
+
+  const manifest = buildMakerV4PublicationManifest(document, {
+    logicalAuxiliaryBlobId: LOGICAL_AUXILIARY_BLOB_ID,
+  });
+  assert.deepEqual(manifest.commerce, {
+    schemaVersion: 'animacraft.maker-commerce.v5',
+    rightsOrigin: RIGHTS_ORIGINS.LICENSE_WRAPPED,
+    rightsOriginConfirmed: true,
+    makerAccess: {
+      mode: MAKER_ACCESS_MODES.ONE_TIME_PAID,
+      purchasePriceAtomic: 10_000_000,
+    },
+    baseCompletion: {
+      mode: COMPLETION_MODES.FREE_QUOTA_THEN_PAID,
+      freeQuotaPerWallet: 3,
+      priceAtomic: 1_000_000,
+      totalCap: null,
+    },
+    packPolicies: [{
+      packId: 'moon-styles',
+      accessMode: PACK_ACCESS_MODES.ONE_TIME_PAID,
+      purchasePriceAtomic: 6_000_000,
+      completion: {
+        mode: COMPLETION_MODES.UNLIMITED_FREE,
+        freeQuotaPerWallet: 0,
+        priceAtomic: 0,
+        totalCap: null,
+      },
+    }],
+    soulCreatorRoyaltyBps: 100,
+    makerSourceRoyaltyBps: 200,
+    makerResaleRoyaltyBps: 500,
+    protocol: {
+      enabled: false,
+      primaryContentFeeBps: 1_000,
+      fixedCompleteFeeAtomic: 0,
+      makerMarketFeeBps: 250,
+      soulMarketFeeBps: 250,
+    },
+  });
+  assert.equal(Object.hasOwn(manifest.commerce, 'privateRuntimeEndpoint'), false);
+  assert.equal(Object.hasOwn(manifest.commerce.packPolicies[0], 'privateReceipt'), false);
+  assert.deepEqual(
+    manifest.moveProjectionV2.mappings.packBindings,
+    projection.mappings.packBindings,
+  );
+
+  const summary = buildMakerV4MoveSummaryV2(manifest, {
+    assetLocations: new Map(manifest.assets.map((asset) => [
+      asset.id,
+      `patch-${asset.id}`,
+    ])),
+    auxiliaryLocation: 'patch-auxiliary',
+    logicalAuxiliaryBlobId: LOGICAL_AUXILIARY_BLOB_ID,
+  });
+  const summaryItem = summary.items.find((entry) => (
+    entry.partKey === mapping.partKey && entry.itemKey === mapping.itemKey
+  ));
+  assert.equal(summaryItem.gateKind, 1);
+  assert.deepEqual(summaryItem.requiredPackIds, ['moon-styles']);
+  assert.deepEqual(summary.packBindings, projection.mappings.packBindings);
+
+  const oc = buildMakerV4OcPackage({
+    document,
+    recipe: {
+      selections: [{
+        partId: 'body',
+        itemId: 'shape',
+        styleId: 'moon__moon-trim',
+      }],
+      colors: [{ channelId: 'skin', swatchId: 'warm' }],
+    },
+  });
+  assert.deepEqual(oc.usedPackIds, ['moon-styles']);
+  assert.deepEqual(oc.package.commerce.usedPackIds, ['moon-styles']);
+  assert.deepEqual(oc.package.suiSummary.usedPackIds, ['moon-styles']);
+  assert.deepEqual(
+    oc.package.commerce.royalties,
+    projection.commerce.royalties,
+    'the certified OC must freeze the same royalty projection used by the Maker release',
+  );
+  assert.equal(
+    oc.styleSelections.length,
+    oc.suiRecipe.length,
+    'the exact Style selection vector must align one-to-one with the legacy recipe',
+  );
+  assert.deepEqual(
+    oc.package.suiSummary.styleSelections,
+    oc.styleSelections,
+  );
+  assert.ok(oc.styleSelections.some((selection) => (
+    selection.partKey === mapping.partKey
+    && selection.itemKey === mapping.itemKey
+    && selection.styleKey === 'moon__moon-trim'
+  )));
+  assert.deepEqual(oc.package.commerce.packBindings, [{
+    packId: 'moon-styles',
+    partKey: mapping.partKey,
+    itemKey: mapping.itemKey,
+    sourcePartId: 'body',
+    sourceItemId: 'shape',
+    sourceStyleId: 'moon__moon-trim',
+    sources: ['style'],
+  }]);
+  assert.deepEqual(
+    oc.package.commerce.packPolicies.map((policy) => policy.packId),
+    ['moon-styles'],
+    'the OC provenance freezes only the Pack policies actually used by its exact Style',
+  );
+});
+
+test('Commerce v5 projection rejects one Style that depends on two independent paid products', () => {
+  const document = projectionMaker();
+  document.extensions.expansionDrafts = [
+    itemExpansionPack(),
+    styleExpansionPack({
+      packId: 'moon-effects',
+      namespace: 'moon',
+      targetItemId: 'wardrobe__coat',
+    }),
+  ];
+  document.commerce = commerceForPacks([
+    createPackCommercePolicyV5('moon-effects'),
+    createPackCommercePolicyV5('wardrobe-plus', {
+      accessMode: PACK_ACCESS_MODES.ONE_TIME_PAID,
+      purchasePriceAtomic: 8_000_000,
+    }),
+  ]);
+
+  assert.throws(
+    () => compileMakerV4MoveProjectionV2(document),
+    (error) => error?.code === 'ambiguous-style-pack-provenance'
+      && error.details?.packIds?.length === 2,
+  );
+});
+
+test('Commerce v5 publication normalizes a missing embedded Pack policy to FREE', () => {
+  const document = projectionMaker();
+  document.extensions.expansionDrafts = [styleExpansionPack()];
+  document.commerce = commerceForPacks([]);
+  document.publication.royaltyBps = document.commerce.makerSourceRoyaltyBps;
+
+  const manifest = buildMakerV4PublicationManifest(document);
+  assert.deepEqual(manifest.commerce.packPolicies, [{
+    packId: 'moon-styles',
+    accessMode: PACK_ACCESS_MODES.FREE,
+    purchasePriceAtomic: 0,
+    completion: {
+      mode: COMPLETION_MODES.UNLIMITED_FREE,
+      freeQuotaPerWallet: 0,
+      priceAtomic: 0,
+      totalCap: null,
+    },
+  }]);
+});
+
+test('Commerce v5 publication rejects a Maker-source royalty that differs from its Soulidity snapshot', () => {
+  const document = projectionMaker();
+  document.commerce = commerceForPacks([]);
+  document.publication.royaltyBps = 300;
+
+  expectPublicationError(
+    () => buildMakerV4PublicationManifest(document),
+    'maker-source-royalty-mismatch',
+  );
+});
+
+test('Commerce v5 publication still rejects a malformed authored policy', () => {
+  const document = projectionMaker();
+  document.extensions.expansionDrafts = [styleExpansionPack()];
+  document.commerce = commerceForPacks([
+    createPackCommercePolicyV5('moon-styles', {
+      accessMode: PACK_ACCESS_MODES.ONE_TIME_PAID,
+      purchasePriceAtomic: 6_000_000,
+    }),
+  ]);
+  document.commerce.packPolicies[0].purchasePriceAtomic = 0;
+
+  assert.throws(() => buildMakerV4PublicationManifest(document), (error) => {
+    assert.ok(Array.isArray(error.issues));
+    assert.ok(error.issues.some((issue) => issue.code === 'invalid_pack_price'));
+    return true;
+  });
 });
 
 test('grouped Item/Style selectors enumerate exact keys without wildcards', () => {
@@ -817,24 +1230,32 @@ test('v2 Move summary resolves every logical asset to one quilt-patch location',
       projectionOnly: true,
       renderAsset: false,
     },
+    logicalAuxiliaryBlobId: LOGICAL_AUXILIARY_BLOB_ID,
     coverUrl: 'https://example.test/cover',
   });
   assert.equal(summary.authorizationCoverage, 'complete');
   assert.equal(summary.auxiliary.patchId, 'patch-auxiliary');
+  assert.equal(
+    summary.auxiliary.canonicalBlobId,
+    LOGICAL_AUXILIARY_BLOB_ID,
+  );
   assert.equal(
     summary.items.find((entry) => entry.sourceAssetId === 'body-base').blobId,
     'patch-body-base',
   );
   assert.ok(summary.items
     .filter((entry) => entry.renderAsset === false)
-    .every((entry) => entry.blobId === 'patch-auxiliary'));
+    .every((entry) => entry.blobId === LOGICAL_AUXILIARY_BLOB_ID));
   assert.equal(
     summary.singlePublishRecords,
     (summary.parts.length * 2) + summary.items.length + summary.rules.length,
   );
 
   expectPublicationError(
-    () => buildMakerV4MoveSummaryV2(document, { assetLocations }),
+    () => buildMakerV4MoveSummaryV2(document, {
+      assetLocations,
+      logicalAuxiliaryBlobId: LOGICAL_AUXILIARY_BLOB_ID,
+    }),
     'missing-projection-auxiliary-location',
   );
   const missingRealAsset = new Map(assetLocations);
@@ -843,6 +1264,7 @@ test('v2 Move summary resolves every logical asset to one quilt-patch location',
     () => buildMakerV4MoveSummaryV2(document, {
       assetLocations: missingRealAsset,
       auxiliaryLocation: 'patch-auxiliary',
+      logicalAuxiliaryBlobId: LOGICAL_AUXILIARY_BLOB_ID,
     }),
     'missing-walrus-asset-location',
   );
@@ -878,6 +1300,7 @@ test('v2 summary rejects a Maker above the one-PTB publication record budget', (
 
 test('v5 OC packages use the same v2 projection and neutral complete recipe as publication', () => {
   const document = projectionMaker();
+  document.commerce.soulCreatorRoyaltyBps = 0;
   const bridge = buildMakerV4OcPackage({
     document,
     recipe: {
@@ -889,4 +1312,9 @@ test('v5 OC packages use the same v2 projection and neutral complete recipe as p
   assert.equal(bridge.package.suiSummary.itemKeyEncoding, MAKER_V4_ITEM_KEY_ENCODING_V2);
   assert.equal(bridge.suiRecipe.length, 3);
   assert.ok(bridge.suiRecipe.every((slot) => slot.colorHex === MAKER_V4_NEUTRAL_COLOR));
+  assert.equal(
+    bridge.package.commerce.royalties.soulCreatorBps,
+    0,
+    'an explicit zero creator royalty is immutable data and must not fall back to the v5 default',
+  );
 });

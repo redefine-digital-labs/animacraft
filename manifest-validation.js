@@ -52,7 +52,10 @@ export function validateRemoteMakerManifest(manifest) {
     || !String(manifest.template.licenseNote || '').trim()
     || utf8Length(manifest.template.licenseNote || '') > LIMITS.maxDescriptionBytes
     || !['personal-use', 'free-remix', 'paid-commercial', 'exclusive-commission'].includes(manifest.template.license || 'personal-use')
-    || ![0, 100, 200, 300, 400, 500].includes(Number(manifest.template.royaltyBps || 0))) {
+    || !Number.isSafeInteger(Number(manifest.template.royaltyBps || 0))
+    || Number(manifest.template.royaltyBps || 0) < 0
+    || Number(manifest.template.royaltyBps || 0) > 500
+    || Number(manifest.template.royaltyBps || 0) % 50 !== 0) {
     throw new Error('The Maker manifest has invalid public metadata.');
   }
   const mintingEnabled = manifest.template.mintingEnabled !== false;

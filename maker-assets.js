@@ -546,7 +546,23 @@ export function createCachedAssetResolver(assetMap) {
       const controller = new AbortController();
       const taskGeneration = generation;
       const task = (async () => {
-        const source = record.blob || record.file || record.url;
+        let source;
+        if (record.protection) {
+          if (typeof record.resolveBlob !== 'function') {
+            const error = new Error(
+              `Maker asset ${assetId} is protected and has no authorized decryptor.`,
+            );
+            error.code = 'MAKER_ASSET_PROTECTED';
+            throw error;
+          }
+          source = await record.resolveBlob({
+            assetId,
+            record,
+            signal: controller.signal,
+          });
+        } else {
+          source = record.blob || record.file || record.url;
+        }
         if (!source) throw new Error(`Maker asset ${assetId} has no readable source.`);
         let bitmap = null;
         try {

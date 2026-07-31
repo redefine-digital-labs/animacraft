@@ -4,7 +4,7 @@ import { fromBase64, toBase64 } from '@mysten/bcs';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 import { bcs } from '@mysten/sui/bcs';
-import { normalizeStructTag } from '@mysten/sui/utils';
+import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
 import { assertProtocolV3IncludedItemGates } from './manifest-validation.js';
 import { hashRecipe, recipeSlotBcs, recipeValue } from './recipe-hash.js';
@@ -16,9 +16,12 @@ import {
 } from './runtime-config.js';
 import { publishedMakerFromIntentEvent } from './chain-publication-recovery.js';
 import { waitForCertifiedWalrusBlobObject } from './walrus-certification.js';
+import { parseCommerceV5Event } from './chain-commerce-v5.js';
+import { parseMakerSealPolicyCreatedEventV5 } from './maker-seal-v5.js';
 
 export { hashRecipe } from './recipe-hash.js';
 export { publishedMakerFromIntentEvent } from './chain-publication-recovery.js';
+export * from './chain-commerce-v5.js';
 
 const CLOCK_OBJECT_ID = '0x6';
 
@@ -220,6 +223,94 @@ function requireConnection() {
   return connection;
 }
 
+/**
+ * Returns the initialized read-only Sui client. App code must use this getter
+ * instead of constructing a second client with potentially different runtime
+ * network configuration.
+ */
+export function getSuiClient() {
+  if (!suiClient) throw new Error('The Sui client runtime has not initialized.');
+  return suiClient;
+}
+
+export function getConnectedWalletAddress() {
+  return requireConnection().account.address;
+}
+
+export async function signConnectedWalletPersonalMessage(message, {
+  expectedWallet = '',
+} = {}) {
+  const bytes = message instanceof Uint8Array
+    ? message
+    : ArrayBuffer.isView(message)
+      ? new Uint8Array(message.buffer, message.byteOffset, message.byteLength)
+      : message instanceof ArrayBuffer
+        ? new Uint8Array(message)
+        : null;
+  if (!(bytes instanceof Uint8Array) || !bytes.length) {
+    throw new TypeError('A non-empty personal-message byte array is required.');
+  }
+  const connection = requireConnection();
+  const connectedWallet = normalizeSuiAddress(connection.account.address);
+  if (
+    expectedWallet
+    && normalizeSuiAddress(expectedWallet) !== connectedWallet
+  ) {
+    const error = new Error(
+      'The connected wallet changed before the personal message could be signed.',
+    );
+    error.code = 'WALLET_CONTEXT_CHANGED';
+    throw error;
+  }
+  return dAppKit.signPersonalMessage({ message: bytes });
+}
+
+/**
+ * Signs through the currently connected wallet, then waits for the submitted
+ * digest to be indexed. A pre-set transaction sender is checked before the
+ * wallet sees the request so a cached quote can never be signed by another
+ * account after a wallet switch.
+ */
+export async function signExecuteAndWait(transaction, {
+  expectedWallet = '',
+  timeout = 60_000,
+  include = { effects: true, objectTypes: true, events: true },
+} = {}) {
+  if (!(transaction instanceof Transaction)) {
+    throw new TypeError('A Sui Transaction is required.');
+  }
+  const connection = requireConnection();
+  const connectedWallet = normalizeSuiAddress(connection.account.address);
+  if (expectedWallet && normalizeSuiAddress(expectedWallet) !== connectedWallet) {
+    const error = new Error('The connected wallet changed before the transaction could be signed.');
+    error.code = 'WALLET_CONTEXT_CHANGED';
+    throw error;
+  }
+  const transactionSender = transaction.getData().sender;
+  if (transactionSender && normalizeSuiAddress(transactionSender) !== connectedWallet) {
+    const error = new Error('The transaction sender does not match the connected wallet.');
+    error.code = 'TRANSACTION_SENDER_MISMATCH';
+    throw error;
+  }
+  if (!transactionSender) transaction.setSender(connectedWallet);
+  const submitted = unwrapTransaction(
+    await dAppKit.signAndExecuteTransaction({ transaction }),
+  );
+  if (!submitted?.digest) {
+    throw new Error('The wallet did not return a Sui transaction digest.');
+  }
+  const indexed = unwrapTransaction(await getSuiClient().waitForTransaction({
+    digest: submitted.digest,
+    timeout,
+    include,
+  }));
+  return Object.freeze({
+    ...submitted,
+    digest: submitted.digest,
+    indexed,
+  });
+}
+
 function moveTarget(functionName) {
   return `${requireCallablePackageId()}::animacraft::${functionName}`;
 }
@@ -403,6 +494,119 @@ async function getGraphqlClient() {
     });
   }
   return graphqlClient;
+}
+
+export async function findCommerceV5MigrationByLegacyMaker(
+  legacyMakerId,
+  limit = 500,
+) {
+  const typeOrigin = requireConfiguredPackageId(
+    runtimeConfig?.commerceV5TypeOriginPackageId,
+    'commerceV5TypeOriginPackageId',
+  );
+  const expectedMakerId = normalizeSuiAddress(legacyMakerId);
+  const client = await getGraphqlClient();
+  const eventType = `${typeOrigin}::commerce_v5::LegacyMakerMigratedToV5`;
+  let before = null;
+  let inspected = 0;
+  do {
+    const pageSize = Math.min(50, limit - inspected);
+    const result = await client.query({
+      query: `
+        query AnimacraftCommerceV5Migrations($type: String!, $last: Int!, $before: String) {
+          events(filter: { type: $type }, last: $last, before: $before) {
+            pageInfo { hasPreviousPage startCursor }
+            nodes {
+              transaction { digest }
+              contents { type { repr } json }
+            }
+          }
+        }
+      `,
+      variables: { type: eventType, last: pageSize, before },
+    });
+    if (result.errors?.length) {
+      throw new Error(result.errors[0].message || 'Commerce v5 migration discovery failed.');
+    }
+    const connection = result.data?.events;
+    for (const event of connection?.nodes || []) {
+      const parsed = parseCommerceV5Event(event);
+      if (parsed?.legacyMakerId === expectedMakerId) return parsed;
+    }
+    inspected += (connection?.nodes || []).length;
+    before = connection?.pageInfo?.hasPreviousPage
+      ? connection.pageInfo.startCursor
+      : null;
+  } while (before && inspected < limit);
+  return null;
+}
+
+export async function findMakerSealPolicyByReleaseV5({
+  rootId,
+  releaseCommitment,
+  limit = 500,
+} = {}) {
+  const typeOrigin = requireConfiguredPackageId(
+    runtimeConfig?.commerceV5TypeOriginPackageId,
+    'commerceV5TypeOriginPackageId',
+  );
+  const expectedRootId = normalizeSuiAddress(rootId);
+  const expectedCommitment = String(releaseCommitment || '').toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(expectedCommitment)) {
+    throw new Error('Seal release commitment must be an exact 32-byte hex value.');
+  }
+  const client = await getGraphqlClient();
+  const eventType =
+    `${typeOrigin}::seal_v5::MakerSealPolicyCreatedV5`;
+  let before = null;
+  let inspected = 0;
+  const matches = new Map();
+  do {
+    const pageSize = Math.min(50, limit - inspected);
+    const result = await client.query({
+      query: `
+        query AnimacraftMakerSealPolicies($type: String!, $last: Int!, $before: String) {
+          events(filter: { type: $type }, last: $last, before: $before) {
+            pageInfo { hasPreviousPage startCursor }
+            nodes {
+              transaction { digest }
+              contents { type { repr } json }
+            }
+          }
+        }
+      `,
+      variables: { type: eventType, last: pageSize, before },
+    });
+    if (result.errors?.length) {
+      throw new Error(
+        result.errors[0].message || 'Seal policy discovery failed.',
+      );
+    }
+    const connection = result.data?.events;
+    for (const event of connection?.nodes || []) {
+      const parsed = parseMakerSealPolicyCreatedEventV5(event);
+      if (
+        parsed
+        && parsed.rootId === expectedRootId
+        && parsed.releaseCommitment.toLowerCase() === expectedCommitment
+      ) {
+        matches.set(parsed.policyId, parsed);
+      }
+    }
+    inspected += (connection?.nodes || []).length;
+    before = connection?.pageInfo?.hasPreviousPage
+      ? connection.pageInfo.startCursor
+      : null;
+  } while (before && inspected < limit);
+  if (matches.size > 1) {
+    const error = new Error(
+      'More than one Seal policy claims this immutable Maker release.',
+    );
+    error.code = 'MAKER_SEAL_V5_POLICY_AMBIGUOUS';
+    error.policyIds = [...matches.keys()];
+    throw error;
+  }
+  return matches.values().next().value || null;
 }
 
 export async function listPublishedMakerIds(limit = 500) {

@@ -20,11 +20,31 @@ window.ANIMACRAFT_CONFIG = {
   soulidityAppUrl: 'https://www.soulidity.ai',
   soulidityIntegrationPath: '/integrations/animacraft',
   soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  soulidityTypeOriginPackageId: '0xSOULIDITY_ANIMACRAFT_PROVENANCE_TYPE_ORIGIN',
   protocolFeePackageId: '0xV4_PROTOCOL_FEE_TYPE_ORIGIN_PACKAGE',
   protocolFeeConfigId: '0xYOUR_V4_PROTOCOL_FEE_CONFIG',
   protocolTreasuryId: '0xYOUR_V4_PROTOCOL_TREASURY',
   protocolFeeAdminCapId: '0xYOUR_V4_PROTOCOL_FEE_ADMIN_CAP',
   protocolFeeAdminCapOwner: '0xEXPECTED_ADMIN_WALLET',
   primaryProtocolFeeBps: 5000,
-  canonicalSoulMintEnabled: false
+  canonicalSoulMintEnabled: false,
+  commerceV5TypeOriginPackageId: '0xV5_COMMERCE_TYPE_ORIGIN_PACKAGE',
+  commerceProtocolConfigV5Id: '0xYOUR_DISABLED_V5_COMMERCE_PROTOCOL_CONFIG',
+  commerceProtocolTreasuryV5Id: '0xYOUR_V5_COMMERCE_PROTOCOL_TREASURY',
+  commerceV5LogicalAuxiliaryBlobId: 'YOUR_INDEPENDENT_TRANSPARENT_WALRUS_BLOB_ID',
+  commerceV5SoulBindingProofType: '0xSOULIDITY_ANIMACRAFT_PROVENANCE_TYPE_ORIGIN::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5',
+  commerceV5ReleaseEnabled: false,
+  sealV5PackageId: '0xV5_COMMERCE_AND_SEAL_CALLABLE_PACKAGE',
+  // Official Mainnet committee. The SDK sees one outer server (1-of-1);
+  // Mysten's committee internally performs 5-of-8 key-share recovery.
+  sealKeyServers: [{
+    objectId: '0x686098f1439237fff9f36b99c7329683c22979d2005c2465cb891acb012a7595',
+    aggregatorUrl: 'https://seal-aggregator-mainnet.mystenlabs.com',
+    weight: 1,
+    apiKeyName: 'X-API-Key',
+    apiKey: 'YOUR_ENOKI_API_KEY'
+  }],
+  sealThreshold: 1,
+  sealTimeoutMs: 10000,
+  sealVerifyKeyServers: true
 };

@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
+import {
+  expansionPackIds,
+  makerCommerceV5RequiresRelease,
+} from '../maker-commerce-v5.js';
+
 const appSource = await readFile(new URL('../app.js', import.meta.url), 'utf8');
 const stylesSource = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
 
@@ -38,7 +43,7 @@ function functionSource(name) {
 function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (blob) => {
   if ((await blob.text()).includes('broken-image')) throw new Error('decode failed');
   return { width: 1200, height: 630, close() {} };
-}) {
+}, commerceV5ReleaseEnabled = false) {
   const functions = [
     'makerV4AssetDescriptor',
     'makerV4RuntimeAssetRecord',
@@ -50,7 +55,7 @@ function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (
     'makerV4DocumentForRelease',
     'makerV4RuntimeAssetsForRelease',
   ].map(functionSource).join('\n');
-  return new Function('runtimeRecords', 'template', 'decodeBitmap', `
+  return new Function('runtimeRecords', 'template', 'decodeBitmap', 'commerceV5ReleaseEnabled', 'makerCommerceV5RequiresRelease', 'expansionPackIds', `
     const currentV4RuntimeAssets = () => runtimeRecords;
     const activeTemplate = () => template;
     const state = { makerDocumentV4: null };
@@ -64,6 +69,7 @@ function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (
       originalPackageId: '0x1',
       paymentCoinType: '0x2::sui::SUI',
       paymentCoinSymbol: 'SUI',
+      commerceV5ReleaseEnabled,
     };
     const prepareMakerV4ProjectionV2Document = (document) => document;
     const walrusQuiltFileUrl = (quiltId, identifier) => \`https://example.test/\${quiltId}/\${identifier}\`;
@@ -81,7 +87,14 @@ function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (
       makerV4DocumentForRelease,
       makerV4RuntimeAssetsForRelease,
     };
-  `)(runtimeRecords, template, decodeBitmap);
+  `)(
+    runtimeRecords,
+    template,
+    decodeBitmap,
+    commerceV5ReleaseEnabled,
+    makerCommerceV5RequiresRelease,
+    expansionPackIds,
+  );
 }
 
 function chainCoverHarness() {
@@ -430,6 +443,21 @@ test('Maker release metadata stays canonical and chain hydration preserves the c
     hydration,
     /creator:\s*String\(templateData\.creator\s*\|\|\s*suiField\(fields,\s*'creator'\)/,
   );
+});
+
+test('Commerce v5 release disables every legacy v4 mint surface in the immutable document', () => {
+  const source = minimalDocument();
+  source.publication = {
+    mintingEnabled: true,
+    mintFeeEnabled: true,
+    mintPriceAtomic: 99_000_000,
+  };
+  const release = coverHarness([], {}, undefined, true)
+    .makerV4DocumentForRelease({ sourceDocument: source });
+
+  assert.equal(release.publication.mintingEnabled, false);
+  assert.equal(release.publication.mintFeeEnabled, false);
+  assert.equal(release.publication.mintPriceAtomic, 0);
 });
 
 test('publication never renders an internal OC composite as a Maker cover', () => {

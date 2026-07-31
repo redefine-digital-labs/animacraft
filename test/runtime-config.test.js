@@ -36,7 +36,20 @@ test('accepts a complete Mainnet production configuration', () => {
   assert.equal(result.callablePackageReady, true);
   assert.equal(result.originalPackageReady, true);
   assert.equal(result.soulidityReady, true);
+  assert.equal(result.soulidityTypeOriginReady, true);
   assert.equal(config.canonicalSoulMintEnabled, true);
+});
+
+test('rejects a malformed stable Soulidity TypeOrigin before receipt verification is enabled', () => {
+  const config = productionConfig();
+  config.soulidityTypeOriginPackageId = 'not-a-package';
+  const result = validateRuntimeConfig(config, {
+    strict: true,
+    requireSoulidity: true,
+  });
+  assert.equal(result.valid, false);
+  assert.equal(result.soulidityTypeOriginReady, false);
+  assert.match(result.errors.join(' '), /soulidityTypeOriginPackageId/);
 });
 
 test('Soulidity integration preflight fails closed while canonical minting is gated off', () => {
@@ -176,6 +189,127 @@ test('requires an explicit boolean canonical Soul mint gate', () => {
   const result = validateRuntimeConfig(config, { strict: true });
   assert.equal(result.valid, false);
   assert.match(result.errors.join(' '), /canonicalSoulMintEnabled/);
+});
+
+test('keeps Commerce v5 disabled and unconfigured until its reviewed Mainnet initialization', () => {
+  const config = productionConfig();
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, true);
+  assert.equal(config.commerceV5ReleaseEnabled, false);
+  assert.equal(result.commerceV5TypeOriginPackageReady, false);
+  assert.equal(result.commerceProtocolConfigV5Ready, false);
+  assert.equal(result.commerceProtocolTreasuryV5Ready, false);
+  assert.equal(result.commerceV5LogicalAuxiliaryBlobReady, false);
+  assert.equal(result.commerceV5SoulBindingProofReady, false);
+});
+
+test('Commerce v5 release gate requires one complete stable object tuple', () => {
+  const missing = productionConfig();
+  missing.commerceV5ReleaseEnabled = true;
+  let result = validateRuntimeConfig(missing, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /Commerce v5 cannot be released/);
+
+  const partial = productionConfig();
+  partial.commerceV5TypeOriginPackageId = '0x5555';
+  result = validateRuntimeConfig(partial, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /must include its stable TypeOrigin/);
+
+  const ready = productionConfig();
+  Object.assign(ready, {
+    commerceV5TypeOriginPackageId: '0x5555',
+    commerceProtocolConfigV5Id: '0xc055',
+    commerceProtocolTreasuryV5Id: '0x7ea5',
+    commerceV5LogicalAuxiliaryBlobId:
+      '35uepW2PoPAgFnv8xTvAjHdc2JBCVMdcHxmxojH85x4e',
+    commerceV5SoulBindingProofType:
+      '0xabcd::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5',
+    commerceV5ReleaseEnabled: true,
+    canonicalSoulMintEnabled: true,
+    soulidityTypeOriginPackageId: '0xabcd',
+    protocolFeePackageId: '0x5678',
+    protocolFeeConfigId: '0xfeed',
+    protocolTreasuryId: '0xbeef',
+    protocolFeeAdminCapId: '0xcafe',
+    protocolFeeAdminCapOwner: '0xadea',
+    sealV5PackageId: '0x5555',
+    sealKeyServers: [{
+      objectId: '0x6860',
+      aggregatorUrl: 'https://seal.example.com',
+      weight: 1,
+    }],
+    sealThreshold: 1,
+  });
+  result = validateRuntimeConfig(ready, { strict: true });
+  assert.equal(result.valid, true);
+  assert.equal(result.commerceV5TypeOriginPackageReady, true);
+  assert.equal(result.commerceProtocolConfigV5Ready, true);
+  assert.equal(result.commerceProtocolTreasuryV5Ready, true);
+  assert.equal(result.commerceV5LogicalAuxiliaryBlobReady, true);
+  assert.equal(result.commerceV5SoulBindingProofReady, true);
+  assert.equal(result.sealV5PackageReady, true);
+  assert.equal(result.sealServersReady, true);
+  assert.equal(result.sealThresholdReady, true);
+});
+
+test('Commerce v5 cannot open before the atomic Soulidity completion gate', () => {
+  const config = productionConfig();
+  Object.assign(config, {
+    commerceV5TypeOriginPackageId: '0x5555',
+    commerceProtocolConfigV5Id: '0xc055',
+    commerceProtocolTreasuryV5Id: '0x7ea5',
+    commerceV5LogicalAuxiliaryBlobId:
+      '35uepW2PoPAgFnv8xTvAjHdc2JBCVMdcHxmxojH85x4e',
+    commerceV5SoulBindingProofType:
+      '0xabcd::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5',
+    commerceV5ReleaseEnabled: true,
+    sealV5PackageId: '0x5555',
+    sealKeyServers: [{
+      objectId: '0x6860',
+      aggregatorUrl: 'https://seal.example.com',
+      weight: 1,
+    }],
+    sealThreshold: 1,
+  });
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /canonical Soulidity mint gate/);
+});
+
+test('Commerce v5 proof type must come from the stable Soulidity TypeOrigin', () => {
+  const config = productionConfig();
+  Object.assign(config, {
+    commerceV5TypeOriginPackageId: '0x5555',
+    commerceProtocolConfigV5Id: '0xc055',
+    commerceProtocolTreasuryV5Id: '0x7ea5',
+    commerceV5LogicalAuxiliaryBlobId:
+      '35uepW2PoPAgFnv8xTvAjHdc2JBCVMdcHxmxojH85x4e',
+    commerceV5SoulBindingProofType:
+      '0x9999::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5',
+  });
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.equal(result.commerceV5SoulBindingProofReady, false);
+  assert.match(result.errors.join(' '), /exact AnimacraftSoulBindingProofV5/);
+});
+
+test('Seal v5 fails closed on partial credentials and invalid outer thresholds', () => {
+  const config = productionConfig();
+  Object.assign(config, {
+    sealV5PackageId: '0x5555',
+    sealKeyServers: [{
+      objectId: '0x6860',
+      aggregatorUrl: 'https://seal.example.com',
+      weight: 1,
+      apiKeyName: 'X-API-Key',
+    }],
+    sealThreshold: 5,
+  });
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /apiKeyName and apiKey together/);
+  assert.match(result.errors.join(' '), /outer weight threshold/);
 });
 
 test('requires canonical v4 protocol fee objects before enabling Soul mint', () => {
