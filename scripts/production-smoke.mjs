@@ -106,6 +106,7 @@ if (origin) {
       'appUrl',
       'soulidityAppUrl',
       'soulidityPackageId',
+      'soulidityTypeOriginPackageId',
       'protocolFeePackageId',
       'protocolFeeConfigId',
       'protocolTreasuryId',
@@ -113,9 +114,20 @@ if (origin) {
       'protocolFeeAdminCapOwner',
       'primaryProtocolFeeBps',
       'canonicalSoulMintEnabled',
+      'commerceV5TypeOriginPackageId',
+      'commerceProtocolConfigV5Id',
+      'commerceProtocolTreasuryV5Id',
+      'commerceV5LogicalAuxiliaryBlobId',
+      'commerceV5SoulBindingProofType',
+      'commerceV5ReleaseEnabled',
+      'sealV5PackageId',
+      'sealThreshold',
+      'sealTimeoutMs',
+      'sealVerifyKeyServers',
     ];
     const drift = exactFields.filter((field) => remote[field] !== expected[field]);
     if (!sameObject(remote.featuredMakers, expected.featuredMakers)) drift.push('featuredMakers');
+    if (!sameObject(remote.sealKeyServers, expected.sealKeyServers)) drift.push('sealKeyServers');
     record('Deployed config matches Git', drift.length === 0, drift.length ? `Drift: ${drift.join(', ')}` : 'No runtime drift detected.');
   }
 

@@ -34,13 +34,14 @@ const REQUIRED_ARTICLES = [
   'walrus-sui-publish',
   'lifecycle-versions',
   'expansion-packs',
+  'commerce-rights',
   'chain-truth',
   'troubleshooting',
 ];
 
 test('Docs handbook ships the complete five-language information architecture', () => {
   const report = validateDocsContent();
-  assert.equal(DOCS_VERSION, '0.8.5');
+  assert.equal(DOCS_VERSION, '0.9.0');
   assert.deepEqual(DOCS_LOCALES, ['en', 'zh', 'ja', 'ko', 'vi']);
   assert.equal(report.locales.length, 5);
   assert.equal(report.categories, 5);
@@ -136,6 +137,7 @@ test('Docs cover player, Rules, Smart Color, Soul, publication, lifecycle, and r
     'soul-configuration',
     'walrus-sui-publish',
     'lifecycle-versions',
+    'commerce-rights',
     'troubleshooting',
   ].forEach((id) => assert.ok(articles.has(id), id));
 
@@ -187,15 +189,23 @@ test('Docs pin the current production boundaries instead of documenting planned 
   assert.match(articles.get('soul-configuration'), /animacraft-oc\.json/);
   assert.match(articles.get('walrus-sui-publish'), /53 Walrus epochs/);
   assert.match(articles.get('lifecycle-versions'), /no successor link/i);
-  assert.match(articles.get('expansion-packs'), /embedded-v1/);
-  assert.match(articles.get('expansion-packs'), /not a separately published on-chain object/i);
+  assert.match(articles.get('expansion-packs'), /MakerRootV5/);
+  assert.match(articles.get('expansion-packs'), /permanent access/i);
+  assert.match(articles.get('commerce-rights'), /ONCHAIN_NATIVE/);
+  assert.match(articles.get('commerce-rights'), /LICENSE_WRAPPED/);
+  assert.match(articles.get('commerce-rights'), /90%/);
+  assert.match(articles.get('commerce-rights'), /same transaction|one transaction/i);
+  assert.match(articles.get('commerce-rights'), /92\.5%/);
+  assert.match(articles.get('commerce-rights'), /frozen/i);
   assert.match(articles.get('chain-truth'), /does not register a player Recipe/i);
 
   DOCS_LOCALES.forEach((locale) => {
     const localized = JSON.stringify(DOCS_CONTENT[locale]);
     [
       'positionLocked',
-      'embedded-v1',
+      'MakerRootV5',
+      'ONE_TIME_PAID',
+      'ONCHAIN_NATIVE',
       'animacraft-oc.json',
       '53',
       'successor',

@@ -1,3 +1,10 @@
+import {
+  collectMakerCommerceV5Issues,
+  createDefaultMakerCommerceV5,
+  expansionPackIds,
+  normalizeMakerCommerceV5,
+} from './maker-commerce-v5.js';
+
 const SCHEMA_VERSION = 'animacraft.maker.v5';
 
 const LIMITS = Object.freeze({
@@ -173,9 +180,10 @@ export function createMakerV5Document({
     parts: [],
     defaultRecipe: { selections: [], colors: [] },
     expansionPacks: [],
+    commerce: createDefaultMakerCommerceV5(),
     assets: [],
     publication: {
-      royaltyBps: 0,
+      royaltyBps: 250,
       mintingEnabled: true,
       mintFeeEnabled: false,
       mintPriceAtomic: 0,
@@ -948,10 +956,44 @@ export function collectMakerV5ValidationIssues(document, { mode = 'publish' } = 
     if (typeof pack.required !== 'boolean') issue(`${path}.required`, 'must be boolean', 'invalid_expansion_pack');
   });
 
+  const commercePackIds = expansionPackIds(document);
+  const sourceCommerce = document.commerce || createDefaultMakerCommerceV5();
+  const sourceCommerceIssues = collectMakerCommerceV5Issues(sourceCommerce, {
+    packIds: commercePackIds,
+    // A missing Pack policy is a backwards-compatible omission: the immutable
+    // projection fills it with the explicit FREE + unlimited default. All
+    // malformed, duplicate and unknown declarations still fail here.
+    publish: false,
+  });
+  const normalizedCommerceIssues = sourceCommerceIssues.length
+    ? []
+    : collectMakerCommerceV5Issues(
+      normalizeMakerCommerceV5(sourceCommerce, { packIds: commercePackIds }),
+      {
+        packIds: commercePackIds,
+        // Generic Maker publication must remain compatible with legacy v4
+        // releases while the Commerce v5 release gate is disabled. The
+        // explicit rights-origin acknowledgement is enforced at the first
+        // Commerce v5 deployment/migration boundary, where it can never be
+        // confused with an ordinary legacy projection compile.
+        publish: false,
+      },
+    );
+  [...sourceCommerceIssues, ...normalizedCommerceIssues].forEach((commerceIssue) => {
+    issue(
+      commerceIssue.path,
+      commerceIssue.message.replace(/\.$/, ''),
+      commerceIssue.code,
+    );
+  });
+
   const publication = isObject(document.publication) ? document.publication : {};
   if (!isObject(document.publication)) issue('publication', 'must be an object', 'invalid_publication');
-  if (![0, 100, 200, 300, 400, 500].includes(publication.royaltyBps)) {
-    issue('publication.royaltyBps', 'must be 0 or one of the supported 1% through 5% tiers', 'invalid_publication');
+  if (!Number.isSafeInteger(publication.royaltyBps)
+    || publication.royaltyBps < 0
+    || publication.royaltyBps > 500
+    || publication.royaltyBps % 50 !== 0) {
+    issue('publication.royaltyBps', 'must be 0% through 5% in 0.5% steps', 'invalid_publication');
   }
   if (typeof publication.mintingEnabled !== 'boolean' || typeof publication.mintFeeEnabled !== 'boolean') {
     issue('publication', 'must contain boolean mintingEnabled and mintFeeEnabled flags', 'invalid_publication');

@@ -3,6 +3,13 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { createCharacterMakerV5Starter } from '../maker-v4.js';
+import {
+  MAKER_ACCESS_MODES,
+  PACK_ACCESS_MODES,
+  RIGHTS_ORIGINS,
+  createPackCommercePolicyV5,
+  normalizeMakerCommerceV5,
+} from '../maker-commerce-v5.js';
 import { synchronizeDefaultRecipe } from '../maker-document-ops.js';
 import { createMakerProjectArchive } from '../maker-project-archive.js';
 import { resolveMakerScene } from '../maker-renderer.js';
@@ -117,6 +124,7 @@ async function withWorkspace(run, options = {}) {
   try {
     const document = createCharacterMakerV5Starter({ makerId: `qa-${Math.random()}`, name: 'QA Maker' });
     if (playable) {
+      document.commerce.rightsOriginConfirmed = true;
       document.parts.forEach((part, index) => {
         const item = part.items[0];
         const selectedStyle = item.styles[0];
@@ -1115,6 +1123,186 @@ test('Maker Info tab edits the public Maker metadata used by Player and publicat
     assert.match(creatorRoot.innerHTML, /Build a courier from layered moonlit artwork\./);
     assert.match(creatorRoot.innerHTML, /<option value="free-remix" selected>/);
   }, { creatorRoot });
+});
+
+test('Maker-source resale royalty and the immutable Soulidity license snapshot stay identical', async () => {
+  await withWorkspace(async (workspace) => {
+    await workspace.handleCreatorChange({
+      target: {
+        dataset: { action: 'commerce-maker-source-royalty' },
+        value: '400',
+        type: 'select-one',
+      },
+    });
+    let document = workspace.getDocument();
+    assert.equal(document.commerce.makerSourceRoyaltyBps, 400);
+    assert.equal(document.publication.royaltyBps, 400);
+
+    workspace.updateMakerSettings({ royaltyBps: 100 });
+    document = workspace.getDocument();
+    assert.equal(document.publication.royaltyBps, 100);
+    assert.equal(document.commerce.makerSourceRoyaltyBps, 100);
+  }, { playable: true });
+});
+
+test('legacy documents without commerce migrate their valid publication royalty into v5 defaults', async () => {
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    assert.equal(document.commerce.makerSourceRoyaltyBps, 350);
+    assert.equal(document.commerce.soulCreatorRoyaltyBps, 250);
+    assert.equal(document.commerce.rightsOrigin, RIGHTS_ORIGINS.LICENSE_WRAPPED);
+    assert.equal(document.commerce.rightsOriginConfirmed, false);
+  }, {
+    prepareDocument(document) {
+      delete document.commerce;
+      document.publication.royaltyBps = 350;
+    },
+  });
+});
+
+test('Creator must click a rights origin before first v5 publish and v4 publication does not lock it', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const publishedDocument = workspace.getDocument();
+    await workspace.setContext({
+      makerKey: workspace.makerKey,
+      walletAddress: '',
+      document: publishedDocument,
+      publishedDocument,
+      isPublished: true,
+      makerObjectId: `0x${'1'.repeat(64)}`,
+      chainBinding: {
+        commerceV5RootObjectId: '',
+      },
+      commerceV5ReleaseEnabled: true,
+      assets: [],
+    });
+    workspace.creatorTab = 'commerce';
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /Choose and confirm before first publish/);
+    assert.ok(workspace.blockingPublicationIssues().some(
+      (issue) => issue.code === 'rights_origin_confirmation_required',
+    ));
+
+    await workspace.handleCreatorChange({
+      target: {
+        dataset: { action: 'commerce-rights-origin' },
+        value: RIGHTS_ORIGINS.ONCHAIN_NATIVE,
+        type: 'radio',
+      },
+    });
+    const document = workspace.getDocument();
+    assert.equal(document.commerce.rightsOrigin, RIGHTS_ORIGINS.ONCHAIN_NATIVE);
+    assert.equal(document.commerce.rightsOriginConfirmed, true);
+    assert.equal(workspace.blockingPublicationIssues().some(
+      (issue) => issue.code === 'rights_origin_confirmation_required',
+    ), false);
+  }, {
+    creatorRoot,
+    playable: true,
+    prepareDocument(document) {
+      document.commerce = normalizeMakerCommerceV5({});
+    },
+  });
+});
+
+test('legacy v4 Preflight does not require the Commerce v5 acknowledgement while its release gate is off', async () => {
+  await withWorkspace(async (workspace) => {
+    assert.equal(
+      workspace.blockingPublicationIssues().some(
+        (issue) => issue.code === 'rights_origin_confirmation_required',
+      ),
+      false,
+    );
+  }, {
+    prepareDocument(document) {
+      document.commerce = normalizeMakerCommerceV5({});
+    },
+  });
+});
+
+test('v5 commerce cannot downgrade into a v4 publication while its release gate is off', async () => {
+  await withWorkspace(async (workspace) => {
+    assert.ok(
+      workspace.blockingPublicationIssues().some(
+        (issue) => issue.code === 'commerce_v5_release_disabled',
+      ),
+    );
+  }, {
+    prepareDocument(document) {
+      document.commerce = normalizeMakerCommerceV5({
+        makerAccess: {
+          mode: MAKER_ACCESS_MODES.ONE_TIME_PAID,
+          purchasePriceAtomic: 1_000_000,
+        },
+      });
+    },
+  });
+});
+
+test('explicit commerce royalty zero survives normalization and Creator offers 50 bps steps', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    assert.equal(document.commerce.makerSourceRoyaltyBps, 0);
+    workspace.creatorTab = 'commerce';
+    workspace.render();
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="commerce-maker-source-royalty"[\s\S]*?<option value="50"/,
+    );
+    assert.match(creatorRoot.innerHTML, /<option value="450"/);
+  }, {
+    creatorRoot,
+    prepareDocument(document) {
+      document.publication.royaltyBps = 350;
+      document.commerce = {
+        ...document.commerce,
+        makerSourceRoyaltyBps: 0,
+      };
+    },
+  });
+});
+
+test('a sealed published release presents Maker resale royalty as immutable until a successor exists', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const publishedDocument = workspace.getDocument();
+    const makerKey = workspace.makerKey;
+    await workspace.setContext({
+      makerKey,
+      walletAddress: '',
+      document: publishedDocument,
+      publishedDocument,
+      isPublished: true,
+      makerObjectId: `0x${'1'.repeat(64)}`,
+      assets: [],
+    });
+    workspace.creatorTab = 'commerce';
+    workspace.render();
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="commerce-maker-resale-royalty" disabled aria-describedby="makerResaleRoyaltyLock"/,
+    );
+
+    const beforeVersion = workspace.getDocument().version.versionId;
+    const beforeRoyalty = workspace.getDocument().commerce.makerResaleRoyaltyBps;
+    const changed = workspace.updateCommerceFromInput({
+      dataset: { action: 'commerce-maker-resale-royalty' },
+      value: String(beforeRoyalty === 500 ? 450 : 500),
+    });
+    assert.equal(changed, false);
+    assert.equal(workspace.getDocument().version.versionId, beforeVersion);
+    assert.equal(workspace.getDocument().commerce.makerResaleRoyaltyBps, beforeRoyalty);
+
+    workspace.beginNextVersion();
+    workspace.creatorTab = 'commerce';
+    workspace.render();
+    assert.doesNotMatch(
+      creatorRoot.innerHTML,
+      /data-action="commerce-maker-resale-royalty" disabled/,
+    );
+  }, { creatorRoot, playable: true });
 });
 
 test('Maker Info reports UTF-8 byte overflow inline and Preflight opens the invalid metadata field', async () => {
@@ -2608,6 +2796,149 @@ test('Player Expansion Pack toggles clear undo entries from the previous runtime
     assert.deepEqual(workspace.playerUndo, []);
     assert.deepEqual(workspace.playerRedo, []);
   }, { playable: true });
+});
+
+test('paid whole-Maker access blocks play until the wallet-bound purchase confirms', async () => {
+  const playerRoot = new FakeRoot();
+  const purchases = [];
+  await withWorkspace(async (workspace) => {
+    workspace.executeDocument('Configure paid Maker access', ({ document }) => {
+      document.commerce = normalizeMakerCommerceV5(document.commerce, {
+        packIds: [],
+      });
+      document.commerce.makerAccess = {
+        mode: MAKER_ACCESS_MODES.ONE_TIME_PAID,
+        purchasePriceAtomic: 10_000_000,
+      };
+    });
+    workspace.playerIntroOpen = false;
+    workspace.renderPlayer();
+
+    assert.match(playerRoot.innerHTML, /v4-player-access-gate/);
+    assert.match(playerRoot.innerHTML, /data-action="player-unlock-maker"/);
+    assert.match(
+      workspace.playerCompletionIssues(workspace.runtimeDocument(), workspace.playerRecipe).join(' '),
+      /access/i,
+    );
+
+    playerClick(workspace, 'player-unlock-maker');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(purchases.length, 1);
+    assert.equal(purchases[0].quote.grossAtomic, 10_000_000);
+    assert.equal(workspace.playerOwnsMakerAccess, true);
+    assert.doesNotMatch(playerRoot.innerHTML, /v4-player-access-gate/);
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: {
+      async onPurchaseMakerAccess(payload) {
+        purchases.push(payload);
+        return { confirmed: true, ownsMakerAccess: true };
+      },
+    },
+  });
+});
+
+test('a paid Expansion Pack cannot enter the runtime graph before PackPass confirmation', async () => {
+  const playerRoot = new FakeRoot();
+  const purchases = [];
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'add-expansion');
+    const packId = workspace.getDocument().extensions.expansionDrafts[0].packId;
+    creatorClick(workspace, 'add-selected-to-expansion', { packId });
+    workspace.executeDocument('Configure paid Pack', ({ document }) => {
+      document.commerce = normalizeMakerCommerceV5(document.commerce, {
+        packIds: [packId],
+      });
+      document.commerce.packPolicies = [
+        createPackCommercePolicyV5(packId, {
+          accessMode: PACK_ACCESS_MODES.ONE_TIME_PAID,
+          purchasePriceAtomic: 6_000_000,
+        }),
+      ];
+    });
+    workspace.playerIntroOpen = false;
+    workspace.renderPlayer();
+
+    assert.equal(workspace.enabledExpansionIds.has(packId), false);
+    assert.match(playerRoot.innerHTML, new RegExp(`data-action="player-unlock-pack" data-pack-id="${packId}"`));
+
+    workspace.handlePlayerChange({
+      target: {
+        dataset: { action: 'player-expansion' },
+        value: packId,
+        checked: true,
+      },
+    });
+    assert.equal(workspace.enabledExpansionIds.has(packId), false);
+
+    playerClick(workspace, 'player-unlock-pack', { packId });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(purchases.length, 1);
+    assert.equal(purchases[0].quote.grossAtomic, 6_000_000);
+    assert.equal(workspace.playerOwnedPackIds.has(packId), true);
+    assert.equal(workspace.enabledExpansionIds.has(packId), true);
+    assert.match(JSON.stringify(workspace.runtimeDocument()), new RegExp(packId));
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: {
+      async onPurchaseExpansionPack(payload) {
+        purchases.push(payload);
+        return { confirmed: true, ownedPackIds: [payload.packId] };
+      },
+    },
+  });
+});
+
+test('final PNG download unlocks only for the exact successfully completed OC snapshot', async () => {
+  const playerRoot = new FakeRoot();
+  const completed = [];
+  await withWorkspace(async (workspace) => {
+    workspace.playerIntroOpen = false;
+    const document = workspace.runtimeDocument();
+    workspace.playerRenderState = {
+      key: workspace.playerRenderKey(document, workspace.playerRecipe),
+      status: 'ready',
+      error: '',
+    };
+
+    await completePlayerThroughFinalPreview(workspace);
+    assert.equal(completed.length, 1);
+    assert.equal(completed[0].commerceQuote.valid, true);
+    assert.deepEqual(completed[0].usedPackIds, []);
+    assert.ok(completed[0].exportKey);
+    assert.equal(workspace.playerCompletedExportKey, '');
+
+    assert.equal(workspace.confirmPlayerCompletion({
+      confirmed: true,
+      exportKey: completed[0].exportKey,
+      digest: '0xcomplete',
+    }), true);
+    assert.equal(workspace.playerCompletedExportKey, completed[0].exportKey);
+    assert.match(
+      playerRoot.innerHTML,
+      /data-action="player-download-png" >Download PNG<\/button>/,
+    );
+
+    workspace.handlePlayerChange({
+      target: {
+        dataset: { action: 'player-profile-name' },
+        value: 'A different OC',
+      },
+    });
+    assert.equal(workspace.playerCompletedExportKey, '');
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: {
+      onCompleteOc(payload) {
+        completed.push(payload);
+      },
+    },
+  });
 });
 
 test('Player Smart Color follows the selected Part while a shared choice recolors every linked visible Style', async () => {

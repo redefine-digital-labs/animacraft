@@ -27,6 +27,9 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   soulidityAppUrl: 'https://www.soulidity.ai',
   soulidityIntegrationPath: '/integrations/animacraft',
   soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  // Stable defining package for Animacraft provenance types. It may differ
+  // from soulidityPackageId after a Soulidity package upgrade.
+  soulidityTypeOriginPackageId: '',
   // Defining package (TypeOrigin) for the protocol-v4 fee object types. This
   // remains fixed when a later package becomes the callable package.
   protocolFeePackageId: '',
@@ -36,10 +39,33 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   protocolFeeAdminCapOwner: '',
   primaryProtocolFeeBps: 5_000,
   canonicalSoulMintEnabled: false,
+  // Commerce v5 is an additive protocol. Its type origin is the package that
+  // first introduces `commerce_v5`; it remains stable across later upgrades.
+  // The release gate stays false until the package upgrade, disabled protocol
+  // objects, read-back verification, Maker migration, and Soulidity adapter
+  // have all passed production preflight.
+  commerceV5TypeOriginPackageId: '',
+  commerceProtocolConfigV5Id: '',
+  commerceProtocolTreasuryV5Id: '',
+  // Bind-once Commerce v5 dependencies. The auxiliary ID is one independent
+  // public transparent Walrus Blob shared by logical None/Smart Color rows;
+  // it is never a per-Maker Quilt patch.
+  commerceV5LogicalAuxiliaryBlobId: '',
+  commerceV5SoulBindingProofType: '',
+  commerceV5ReleaseEnabled: false,
+  // Seal remains fail-closed until the reviewed v5 package and an authenticated
+  // Mainnet committee endpoint are configured. One committee is one outer
+  // server with weight 1 / threshold 1; its internal committee is 5-of-8.
+  sealV5PackageId: '',
+  sealKeyServers: [],
+  sealThreshold: 0,
+  sealTimeoutMs: 10_000,
+  sealVerifyKeyServers: true,
 });
 
 const SUI_ID = /^0x[0-9a-f]+$/i;
 const MOVE_TYPE = /^0x[0-9a-f]+::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*$/i;
+const WALRUS_BLOB_ID = /^[A-Za-z0-9_-]{20,128}$/;
 
 export function assertSupportedMakerPaymentCoin(actualType, configuredType = SUI_MAINNET_USDC_TYPE) {
   let actual;
@@ -104,6 +130,9 @@ export function normalizeRuntimeConfig(overrides = {}, origin = '') {
     featuredMakers: overrides.featuredMakers && typeof overrides.featuredMakers === 'object'
       ? { ...overrides.featuredMakers }
       : {},
+    sealKeyServers: Array.isArray(overrides.sealKeyServers)
+      ? overrides.sealKeyServers.map((server) => ({ ...server }))
+      : [],
   };
 }
 
@@ -142,6 +171,17 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   }
   const soulidityReady = SUI_ID.test(String(config.soulidityPackageId || '')) && !String(config.soulidityPackageId).includes('TODO');
   if (!soulidityReady) (requireSoulidity ? errors : warnings).push('Set soulidityPackageId before enabling the Soulidity handoff.');
+  const soulidityTypeOrigin = String(
+    config.soulidityTypeOriginPackageId || config.soulidityPackageId || '',
+  );
+  const soulidityTypeOriginReady = SUI_ID.test(soulidityTypeOrigin)
+    && !soulidityTypeOrigin.includes('TODO');
+  if (config.soulidityTypeOriginPackageId && !soulidityTypeOriginReady) {
+    errors.push('soulidityTypeOriginPackageId must be a valid Sui package ID.');
+  }
+  if (requireSoulidity && !soulidityTypeOriginReady) {
+    errors.push('Set the stable Soulidity TypeOrigin package before enabling the completion receipt.');
+  }
   if (typeof config.canonicalSoulMintEnabled !== 'boolean') errors.push('canonicalSoulMintEnabled must be a boolean release gate.');
   if (requireSoulidity && config.canonicalSoulMintEnabled !== true) {
     errors.push('The Soulidity integration preflight requires canonicalSoulMintEnabled=true.');
@@ -183,6 +223,181 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     errors.push('primaryProtocolFeeBps must be an integer from 0 to 5000.');
   }
 
+  const commerceV5TypeOriginPackageReady = SUI_ID.test(
+    String(config.commerceV5TypeOriginPackageId || ''),
+  );
+  const commerceProtocolConfigV5Ready = SUI_ID.test(
+    String(config.commerceProtocolConfigV5Id || ''),
+  );
+  const commerceProtocolTreasuryV5Ready = SUI_ID.test(
+    String(config.commerceProtocolTreasuryV5Id || ''),
+  );
+  const commerceV5LogicalAuxiliaryBlobReady = WALRUS_BLOB_ID.test(
+    String(config.commerceV5LogicalAuxiliaryBlobId || '').trim(),
+  );
+  let commerceV5SoulBindingProofType = '';
+  try {
+    commerceV5SoulBindingProofType = normalizeStructTag(
+      String(config.commerceV5SoulBindingProofType || '').trim(),
+    );
+  } catch {
+    commerceV5SoulBindingProofType = '';
+  }
+  const expectedSoulBindingProofType = soulidityTypeOriginReady
+    ? normalizeStructTag(
+      `${soulidityTypeOrigin}::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5`,
+    )
+    : '';
+  const commerceV5SoulBindingProofReady = Boolean(
+    commerceV5SoulBindingProofType
+      && expectedSoulBindingProofType
+      && commerceV5SoulBindingProofType === expectedSoulBindingProofType,
+  );
+  const commerceV5ObjectsConfigured = Boolean(
+    config.commerceV5TypeOriginPackageId
+      || config.commerceProtocolConfigV5Id
+      || config.commerceProtocolTreasuryV5Id
+      || config.commerceV5LogicalAuxiliaryBlobId
+      || config.commerceV5SoulBindingProofType,
+  );
+  if (typeof config.commerceV5ReleaseEnabled !== 'boolean') {
+    errors.push('commerceV5ReleaseEnabled must be a boolean release gate.');
+  }
+  if (config.commerceV5TypeOriginPackageId && !commerceV5TypeOriginPackageReady) {
+    errors.push('commerceV5TypeOriginPackageId must be a valid Sui package ID.');
+  }
+  if (config.commerceProtocolConfigV5Id && !commerceProtocolConfigV5Ready) {
+    errors.push('commerceProtocolConfigV5Id must be a valid Sui object ID.');
+  }
+  if (config.commerceProtocolTreasuryV5Id && !commerceProtocolTreasuryV5Ready) {
+    errors.push('commerceProtocolTreasuryV5Id must be a valid Sui object ID.');
+  }
+  if (
+    config.commerceV5LogicalAuxiliaryBlobId
+    && !commerceV5LogicalAuxiliaryBlobReady
+  ) {
+    errors.push('commerceV5LogicalAuxiliaryBlobId must be a valid independent Walrus Blob ID.');
+  }
+  if (
+    config.commerceV5SoulBindingProofType
+    && !commerceV5SoulBindingProofReady
+  ) {
+    errors.push('commerceV5SoulBindingProofType must be the exact AnimacraftSoulBindingProofV5 defined by the stable Soulidity TypeOrigin.');
+  }
+  if (commerceV5ObjectsConfigured
+    && (!commerceV5TypeOriginPackageReady
+      || !commerceProtocolConfigV5Ready
+      || !commerceProtocolTreasuryV5Ready
+      || !commerceV5LogicalAuxiliaryBlobReady
+      || !commerceV5SoulBindingProofReady)) {
+    errors.push('Commerce v5 configuration must include its stable TypeOrigin, protocol config, protocol treasury, canonical logical Walrus Blob, and exact Soulidity proof type together.');
+  }
+  if (config.commerceV5ReleaseEnabled
+    && (!commerceV5TypeOriginPackageReady
+      || !commerceProtocolConfigV5Ready
+      || !commerceProtocolTreasuryV5Ready
+      || !commerceV5LogicalAuxiliaryBlobReady
+      || !commerceV5SoulBindingProofReady)) {
+    errors.push('Commerce v5 cannot be released before its TypeOrigin, protocol objects, canonical logical Walrus Blob, and exact Soulidity proof type are configured.');
+  }
+  if (
+    config.commerceV5ReleaseEnabled
+    && (
+      config.canonicalSoulMintEnabled !== true
+      || !soulidityReady
+      || !soulidityTypeOriginReady
+    )
+  ) {
+    errors.push('Commerce v5 requires the canonical Soulidity mint gate, callable package, and stable TypeOrigin because every Complete output is atomically bound to one Soul.');
+  }
+
+  const sealV5PackageReady = SUI_ID.test(String(config.sealV5PackageId || ''));
+  const sealServers = Array.isArray(config.sealKeyServers)
+    ? config.sealKeyServers
+    : [];
+  const sealServerIds = new Set();
+  let sealTotalWeight = 0;
+  let sealServersReady = sealServers.length > 0 && sealServers.length <= 32;
+  for (const [index, server] of sealServers.entries()) {
+    const objectId = String(server?.objectId || '');
+    const weight = Number(server?.weight);
+    const apiKeyName = String(server?.apiKeyName || '').trim();
+    const apiKey = String(server?.apiKey || '').trim();
+    const aggregatorUrl = String(server?.aggregatorUrl || '');
+    if (
+      !SUI_ID.test(objectId)
+      || sealServerIds.has(objectId.toLowerCase())
+      || !Number.isSafeInteger(weight)
+      || weight < 1
+      || weight > 255
+      || !validHttpsUrl(aggregatorUrl)
+      || Boolean(apiKeyName) !== Boolean(apiKey)
+    ) {
+      sealServersReady = false;
+    }
+    if (
+      aggregatorUrl === 'https://seal-aggregator-mainnet.mystenlabs.com'
+      && (apiKeyName !== 'X-API-Key' || !apiKey || /YOUR_|TODO/i.test(apiKey))
+    ) {
+      sealServersReady = false;
+    }
+    if (!SUI_ID.test(objectId)) {
+      errors.push(`sealKeyServers[${index}].objectId must be a valid Sui object ID.`);
+    }
+    if (!validHttpsUrl(aggregatorUrl)) {
+      errors.push(`sealKeyServers[${index}].aggregatorUrl must be a valid HTTPS URL.`);
+    }
+    if (!Number.isSafeInteger(weight) || weight < 1 || weight > 255) {
+      errors.push(`sealKeyServers[${index}].weight must be an integer from 1 to 255.`);
+    }
+    if (sealServerIds.has(objectId.toLowerCase())) {
+      errors.push('Seal key server object IDs must be unique.');
+    }
+    if (Boolean(apiKeyName) !== Boolean(apiKey)) {
+      errors.push(`sealKeyServers[${index}] must configure apiKeyName and apiKey together.`);
+    }
+    if (
+      aggregatorUrl === 'https://seal-aggregator-mainnet.mystenlabs.com'
+      && (apiKeyName !== 'X-API-Key' || !apiKey || /YOUR_|TODO/i.test(apiKey))
+    ) {
+      errors.push('The Mainnet Seal aggregator requires a real Enoki X-API-Key credential.');
+    }
+    if (SUI_ID.test(objectId)) sealServerIds.add(objectId.toLowerCase());
+    if (Number.isSafeInteger(weight) && weight > 0) sealTotalWeight += weight;
+  }
+  const sealThreshold = Number(config.sealThreshold);
+  const sealThresholdReady = Number.isSafeInteger(sealThreshold)
+    && sealThreshold >= 1
+    && sealThreshold <= sealTotalWeight;
+  const sealTimeoutMs = Number(config.sealTimeoutMs);
+  if (
+    !Number.isSafeInteger(sealTimeoutMs)
+    || sealTimeoutMs < 1_000
+    || sealTimeoutMs > 60_000
+  ) {
+    errors.push('sealTimeoutMs must be an integer from 1000 to 60000.');
+  }
+  if (typeof config.sealVerifyKeyServers !== 'boolean') {
+    errors.push('sealVerifyKeyServers must be a boolean.');
+  }
+  const sealConfigured = Boolean(
+    config.sealV5PackageId
+      || sealServers.length
+      || Number(config.sealThreshold) > 0,
+  );
+  if (config.sealV5PackageId && !sealV5PackageReady) {
+    errors.push('sealV5PackageId must be a valid Sui package ID.');
+  }
+  if (sealConfigured && (!sealV5PackageReady || !sealServersReady || !sealThresholdReady)) {
+    errors.push('Seal v5 configuration must include its package, authenticated key servers, and a valid outer weight threshold.');
+  }
+  if (
+    config.commerceV5ReleaseEnabled
+    && (!sealV5PackageReady || !sealServersReady || !sealThresholdReady)
+  ) {
+    errors.push('Commerce v5 cannot be released before paid Base/Pack Seal protection is configured.');
+  }
+
   if (!MOVE_TYPE.test(String(config.paymentCoinType || ''))) errors.push('paymentCoinType is not a valid Sui Move coin type.');
   if (config.paymentCoinType !== SUI_MAINNET_USDC_TYPE) errors.push('Mainnet Maker payments must use Circle native Sui USDC.');
   if (config.paymentCoinSymbol !== 'USDC' || Number(config.paymentCoinDecimals) !== 6) errors.push('USDC symbol and decimals must be USDC / 6.');
@@ -203,11 +418,20 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     callablePackageReady,
     originalPackageReady,
     soulidityReady,
+    soulidityTypeOriginReady,
     protocolFeePackageReady,
     protocolFeeConfigReady,
     protocolTreasuryReady,
     protocolFeeAdminCapReady,
     protocolFeeAdminCapOwnerReady,
+    commerceV5TypeOriginPackageReady,
+    commerceProtocolConfigV5Ready,
+    commerceProtocolTreasuryV5Ready,
+    commerceV5LogicalAuxiliaryBlobReady,
+    commerceV5SoulBindingProofReady,
+    sealV5PackageReady,
+    sealServersReady,
+    sealThresholdReady,
     errors,
     warnings,
   };

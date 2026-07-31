@@ -577,7 +577,15 @@ test('production gallery is chain-derived and creator packs are local test fixtu
   assert.match(app, /\/makers\/astral-courier\/animacraft-maker-v5\.json/);
   assert.match(app, /\/makers\/hanamori-spirit\/animacraft-maker-v5\.json/);
   assert.match(app, /localUiTest && template\.source === 'creator-pack' && makerModels\.has\(template\.id\)/);
-  assert.match(app, /template\.source === 'chain' && !makerModels\.get\(template\.id\)\?\.makerArchived/);
+  assert.match(
+    app,
+    /template\.source === 'chain' && !templateCommerceV5PublicState\(template\)\.visible/,
+  );
+  assert.match(
+    app,
+    /playable:\s*releaseEnabled\s*&&\s*protocolEnabled\s*&&\s*verified\s*&&\s*lifecycle === COMMERCE_V5_LIFECYCLE\.ACTIVE/,
+  );
+  assert.match(app, /visible:\s*!legacyArchived/);
   assert.match(app, /data-create-first-maker/);
   assert.match(app, /walletAllowedPage === 'make' && !canOpenPlayer\(\) \? 'templates'/);
   assert.match(app, /templateId === 'daily-starlit' \? localStorage\.getItem\('animacraft-maker-draft-v1'\) : null/);
@@ -615,7 +623,7 @@ test('Maker v5 exposes the four-level P0 creator workflow without legacy visual 
   assert.match(workspace, /this\.tr\('projectZip'\)/);
   assert.match(
     workspace,
-    /new Set\(\['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'soul', 'validate'\]\)/,
+    /new Set\(\['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'commerce', 'soul', 'validate'\]\)/,
   );
   assert.doesNotMatch(workspace, /this\.tr\('generateCompositeThumbnail'\)/);
   assert.doesNotMatch(workspace, /this\.tr\('parentPart'\)/);
@@ -1811,8 +1819,8 @@ test('published version drafts rebuild as one chain-bound successor after refres
   );
   assert.match(
     publishActions,
-    /publish:\s*!locked[\s\S]*?&& !versionDraftConflict[\s\S]*?state\.makerUploadStage === 'certified'/,
-    'a certified Quilt must not re-enable Publish Maker after a competing successor is known',
+    /publish:\s*!state\.publishing[\s\S]*?state\.makerUploadStage === 'certified'[\s\S]*?commercePublicationPending[\s\S]*?\|\| \([\s\S]*?!locked[\s\S]*?&& !versionDraftConflict[\s\S]*?&& !lineageFork[\s\S]*?&& !publicationRecoveryPending/,
+    'a certified Quilt may continue its same v4 Commerce migration, while a new v4 publish remains blocked by a competing successor',
   );
   const publicationGuard = app.slice(
     app.indexOf('async function assertMakerPublicationStillValid'),
@@ -1848,6 +1856,11 @@ test('published version drafts rebuild as one chain-bound successor after refres
   const publishFlow = app.slice(
     app.indexOf('async function publishCurrentMaker'),
     app.indexOf('\nasync function reviewPendingMakerPublication'),
+  );
+  assert.match(
+    publishFlow,
+    /commerceV5ReleaseEnabled === true[\s\S]*?makerIsPublished\(\)[\s\S]*?!makerHasPendingV4Version\(\)[\s\S]*?advanceCurrentMakerCommerceV5Publication\(\)[\s\S]*?return;/,
+    'an existing published v4 must resume its Commerce v5 continuation instead of creating a duplicate v4 object',
   );
   assert.match(
     publishFlow,

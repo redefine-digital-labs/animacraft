@@ -175,9 +175,11 @@ test('accepts a tiered royalty and USDC mint fee', () => {
   assert.equal(validateRemoteMakerManifest(manifest), manifest);
 });
 
-test('rejects arbitrary royalty basis points', () => {
+test('accepts half-percent royalty tiers and rejects arbitrary basis points', () => {
   const manifest = validManifest();
   manifest.template.royaltyBps = 250;
+  assert.equal(validateRemoteMakerManifest(manifest), manifest);
+  manifest.template.royaltyBps = 275;
   assert.throws(() => validateRemoteMakerManifest(manifest), /invalid public metadata/);
 });
 

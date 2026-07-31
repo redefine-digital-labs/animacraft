@@ -16,6 +16,14 @@ import {
   normalizeRuleSelector,
 } from './maker-rules.js';
 import { MAKER_V4_SCHEMA_VERSION, validateMakerV4Document } from './maker-v4.js';
+import {
+  DEFAULT_PROTOCOL_COMMERCE_V5,
+  MAKER_COMMERCE_V5_SCHEMA,
+  MAKER_ACCESS_MODES,
+  PACK_ACCESS_MODES,
+  collectMakerCommerceV5Issues,
+  normalizeMakerCommerceV5,
+} from './maker-commerce-v5.js';
 
 export const MAKER_V4_MANIFEST_IDENTIFIER = 'animacraft-manifest.json';
 export const MAKER_V4_RELEASE_SCHEMA = 'animacraft.maker-release.v1';
@@ -29,6 +37,14 @@ export const MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER = 'animacraft-chain-aux
 export const MAKER_V4_MAX_SINGLE_PUBLISH_RECORDS = 450;
 export const MAKER_V4_EMBEDDED_EXPANSION_RUNTIME = 'embedded-v1';
 export const MAKER_V4_EMBEDDED_EXPANSION_CONTAINER = 'extensions.expansionDrafts';
+export const MAKER_V4_COMMERCE_PROJECTION_V5_SCHEMA = 'animacraft.move-commerce-projection.v5';
+export const MAKER_V4_NONE_STYLE_KEY_V5 = '__animacraft_none__';
+export const MAKER_V4_COLOR_STYLE_KEY_PREFIX_V5 = '__animacraft_color__:';
+export const MAKER_V4_COMMERCE_STYLE_ROW_V5 = Object.freeze({
+  VISUAL: 'VISUAL',
+  LOGICAL_NONE: 'LOGICAL_NONE',
+  LOGICAL_COLOR: 'LOGICAL_COLOR',
+});
 
 const MOVE_MAX_KEY_BYTES = 128;
 const MOVE_MAX_PARTS = 750;
@@ -988,7 +1004,12 @@ function compilePreparedMakerV4MoveProjectionV2(document) {
   projectEmbeddedRules(state, document, index);
   state.rules.sort(projectionRuleSort);
 
-  const projectionItems = index.items.map((item) => clone(item));
+  const commerceProjection = compileMakerCommerceProjectionV5(
+    document,
+    embeddedExpansion.descriptors,
+    index.items,
+  );
+  const projectionItems = commerceProjection.items;
   const requiresAuxiliary = projectionItems.some((item) => item.renderAsset === false);
   const singlePublishRecords = (index.parts.length * 2) + index.items.length + state.rules.length;
   const auxiliaryIdentifierConflict = requiresAuxiliary
@@ -1005,6 +1026,10 @@ function compilePreparedMakerV4MoveProjectionV2(document) {
         identifier: MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER,
       },
     );
+  }
+  const mappings = clone(index.mappings);
+  if (commerceProjection.commerce) {
+    mappings.packBindings = clone(commerceProjection.bindings);
   }
   return {
     schemaVersion: MAKER_V4_MOVE_PROJECTION_V2_SCHEMA,
@@ -1026,6 +1051,9 @@ function compilePreparedMakerV4MoveProjectionV2(document) {
       pack,
       embeddedContainerManifestIdentifier(document),
     )),
+    ...(commerceProjection.commerce
+      ? { commerce: clone(commerceProjection.commerce) }
+      : {}),
     auxiliary: {
       identifier: MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER,
       kind: 'chain-auxiliary',
@@ -1038,21 +1066,38 @@ function compilePreparedMakerV4MoveProjectionV2(document) {
     items: projectionItems,
     rules: clone(state.rules),
     paletteLinks: [],
-    mappings: clone(index.mappings),
+    mappings,
     counts: {
       parts: index.parts.length,
       items: index.items.length,
       rules: state.rules.length,
       recipeSlots: index.parts.length,
       singlePublishRecords,
+      ...(commerceProjection.commerce
+        ? {
+          commercePacks: commerceProjection.commerce.counts.packs,
+          commerceItemPackBindings:
+            commerceProjection.commerce.counts.itemPackBindings,
+          commerceStyles: commerceProjection.commerce.counts.styles,
+        }
+        : {}),
     },
   };
 }
 
-export function compileMakerV4MoveProjectionV2(document) {
-  return compilePreparedMakerV4MoveProjectionV2(
+export function compileMakerV4MoveProjectionV2(document, options = {}) {
+  const projection = compilePreparedMakerV4MoveProjectionV2(
     prepareMakerV4ProjectionV2Document(document),
   );
+  const logicalAuxiliaryBlobId = String(
+    options.logicalAuxiliaryBlobId
+      ?? document?.moveProjectionV2?.commerce?.logicalAuxiliaryBlobId
+      ?? '',
+  ).trim();
+  if (projection.commerce && logicalAuxiliaryBlobId) {
+    projection.commerce.logicalAuxiliaryBlobId = logicalAuxiliaryBlobId;
+  }
+  return projection;
 }
 
 /** Enforce the current one-PTB publication record budget before Walrus spend. */
@@ -1409,6 +1454,300 @@ function sanitizeExpansionPack(pack, manifestIdentifier = MAKER_V4_MANIFEST_IDEN
   };
 }
 
+function packProvenanceId(value) {
+  return String(value?.expansionPackId ?? value?.packId ?? '');
+}
+
+function sanitizeCompletionPolicyV5(policy = {}) {
+  return {
+    mode: String(policy.mode || ''),
+    freeQuotaPerWallet: Number(policy.freeQuotaPerWallet || 0),
+    priceAtomic: Number(policy.priceAtomic || 0),
+    totalCap: policy.totalCap === null ? null : Number(policy.totalCap),
+  };
+}
+
+function immutableProtocolCommerceV5() {
+  return {
+    enabled: Boolean(DEFAULT_PROTOCOL_COMMERCE_V5.enabled),
+    primaryContentFeeBps: Number(
+      DEFAULT_PROTOCOL_COMMERCE_V5.primaryContentFeeBps,
+    ),
+    fixedCompleteFeeAtomic: Number(
+      DEFAULT_PROTOCOL_COMMERCE_V5.fixedCompleteFeeAtomic,
+    ),
+    makerMarketFeeBps: Number(
+      DEFAULT_PROTOCOL_COMMERCE_V5.makerMarketFeeBps,
+    ),
+    soulMarketFeeBps: Number(
+      DEFAULT_PROTOCOL_COMMERCE_V5.soulMarketFeeBps,
+    ),
+  };
+}
+
+function sanitizeMakerCommerceV5(
+  commerce,
+  packIds,
+  { licenseSnapshotRoyaltyBps = null } = {},
+) {
+  if (commerce === undefined || commerce === null) return null;
+  const declaredPackIds = [...new Set(asArray(packIds).map(String).filter(Boolean))]
+    .sort(compareText);
+  const sourceIssues = collectMakerCommerceV5Issues(commerce, {
+    packIds: declaredPackIds,
+    publish: false,
+  });
+  if (sourceIssues.length) {
+    throw new MakerV4PublicationError(
+      'The Maker Commerce & Rights declaration is not publishable.',
+      'invalid-maker-commerce-v5',
+      { issues: clone(sourceIssues) },
+    );
+  }
+  const normalized = normalizeMakerCommerceV5(commerce, {
+    packIds: declaredPackIds,
+  });
+  const normalizedIssues = collectMakerCommerceV5Issues(normalized, {
+    packIds: declaredPackIds,
+    // A v4 Manifest may be prepared while Commerce v5 is release-gated.
+    // Preserve the acknowledgement bit in the immutable projection and let
+    // the Commerce v5 deployment preflight require it before migration.
+    publish: false,
+  });
+  if (normalizedIssues.length) {
+    throw new MakerV4PublicationError(
+      'The normalized Maker Commerce & Rights declaration is not publishable.',
+      'invalid-maker-commerce-v5',
+      { issues: clone(normalizedIssues) },
+    );
+  }
+  if (licenseSnapshotRoyaltyBps !== null
+    && Number(normalized.makerSourceRoyaltyBps || 0) !== Number(licenseSnapshotRoyaltyBps || 0)) {
+    throw new MakerV4PublicationError(
+      'The Maker-source resale royalty must match the immutable license snapshot royalty.',
+      'maker-source-royalty-mismatch',
+      {
+        makerSourceRoyaltyBps: Number(normalized.makerSourceRoyaltyBps || 0),
+        licenseSnapshotRoyaltyBps: Number(licenseSnapshotRoyaltyBps || 0),
+      },
+    );
+  }
+  return {
+    schemaVersion: MAKER_COMMERCE_V5_SCHEMA,
+    rightsOrigin: String(normalized.rightsOrigin),
+    rightsOriginConfirmed: normalized.rightsOriginConfirmed === true,
+    makerAccess: {
+      mode: String(normalized.makerAccess.mode),
+      purchasePriceAtomic: Number(normalized.makerAccess.purchasePriceAtomic || 0),
+    },
+    baseCompletion: sanitizeCompletionPolicyV5(normalized.baseCompletion),
+    packPolicies: [...normalized.packPolicies]
+      .map((policy) => ({
+        packId: String(policy.packId),
+        accessMode: String(policy.accessMode),
+        purchasePriceAtomic: Number(policy.purchasePriceAtomic || 0),
+        completion: sanitizeCompletionPolicyV5(policy.completion),
+      }))
+      .sort((left, right) => compareText(left.packId, right.packId)),
+    soulCreatorRoyaltyBps: Number(normalized.soulCreatorRoyaltyBps || 0),
+    makerSourceRoyaltyBps: Number(normalized.makerSourceRoyaltyBps || 0),
+    makerResaleRoyaltyBps: Number(normalized.makerResaleRoyaltyBps || 0),
+    protocol: immutableProtocolCommerceV5(),
+  };
+}
+
+function stylePackProvenanceByTuple(document) {
+  const result = new Map();
+  orderedParts(document).forEach((part) => {
+    const partPackId = packProvenanceId(part);
+    orderedItems(part).forEach((item) => {
+      const itemPackId = packProvenanceId(item) || partPackId;
+      orderedStyles(item).forEach((style) => {
+        const stylePackId = packProvenanceId(style);
+        const requiredPackIds = [...new Set([
+          itemPackId,
+          stylePackId,
+        ].filter(Boolean))].sort(compareText);
+        result.set(tupleKey(part.id, item.id, style.id), {
+          sourcePartPackId: partPackId || null,
+          sourceItemPackId: itemPackId || null,
+          sourceStylePackId: stylePackId || null,
+          selectedStylePackId: stylePackId || itemPackId || null,
+          requiredPackIds,
+        });
+      });
+    });
+  });
+  return result;
+}
+
+function compileMakerCommerceProjectionV5(document, descriptors, projectionItems) {
+  if (document?.commerce === undefined || document?.commerce === null) {
+    return {
+      commerce: null,
+      items: projectionItems.map(clone),
+      bindings: [],
+    };
+  }
+  const orderedDescriptors = [...asArray(descriptors)]
+    .map((descriptor) => sanitizeExpansionPack(
+      descriptor,
+      embeddedContainerManifestIdentifier(document),
+    ))
+    .sort((left, right) => compareText(left.id, right.id));
+  const packIds = orderedDescriptors.map((descriptor) => descriptor.id);
+  const commerce = sanitizeMakerCommerceV5(document.commerce, packIds);
+  const policies = new Map(commerce.packPolicies.map((policy) => [policy.packId, policy]));
+  const provenance = stylePackProvenanceByTuple(document);
+  const bindings = [];
+  const items = projectionItems.map((item) => {
+    if (item.projectionKind !== 'style') return clone(item);
+    const record = provenance.get(tupleKey(
+      item.sourcePartId,
+      item.sourceItemId,
+      item.sourceStyleId,
+    )) || {
+      sourcePartPackId: null,
+      sourceItemPackId: null,
+      sourceStylePackId: null,
+      selectedStylePackId: null,
+      requiredPackIds: [],
+    };
+    const unknownPackIds = record.requiredPackIds.filter((packId) => !policies.has(packId));
+    if (unknownPackIds.length) {
+      throw new MakerV4PublicationError(
+        'Projected Maker content references an undeclared Expansion Pack commerce policy.',
+        'missing-projected-pack-commerce-policy',
+        {
+          partId: item.sourcePartId,
+          itemId: item.sourceItemId,
+          styleId: item.sourceStyleId,
+          packIds: unknownPackIds,
+        },
+      );
+    }
+    if (record.requiredPackIds.length > 1) {
+      throw new MakerV4PublicationError(
+        'One projected Style cannot belong to more than one Expansion Pack.',
+        'ambiguous-style-pack-provenance',
+        {
+          partId: item.sourcePartId,
+          itemId: item.sourceItemId,
+          styleId: item.sourceStyleId,
+          packIds: record.requiredPackIds,
+        },
+      );
+    }
+    record.requiredPackIds.forEach((packId) => {
+      const sources = [
+        record.sourcePartPackId === packId ? 'part' : '',
+        record.sourceItemPackId === packId ? 'item' : '',
+        record.sourceStylePackId === packId ? 'style' : '',
+      ].filter(Boolean);
+      bindings.push({
+        packId,
+        partKey: String(item.partKey),
+        itemKey: String(item.itemKey),
+        sourcePartId: String(item.sourcePartId),
+        sourceItemId: String(item.sourceItemId),
+        sourceStyleId: String(item.sourceStyleId),
+        sources,
+      });
+    });
+    const paidAddon = record.requiredPackIds.some((packId) => (
+      policies.get(packId)?.accessMode === PACK_ACCESS_MODES.ONE_TIME_PAID
+    ));
+    return {
+      ...clone(item),
+      gateKind: paidAddon ? 1 : 0,
+      ...record,
+    };
+  });
+  bindings.sort((left, right) => (
+    compareText(left.packId, right.packId)
+    || compareText(left.partKey, right.partKey)
+    || compareText(left.itemKey, right.itemKey)
+    || compareText(left.sourceStyleId, right.sourceStyleId)
+  ));
+  const styleProducts = items.map((item) => {
+    let styleKey;
+    let rowKind;
+    if (item.projectionKind === 'style') {
+      styleKey = String(item.sourceStyleId || '');
+      rowKind = MAKER_V4_COMMERCE_STYLE_ROW_V5.VISUAL;
+    } else if (item.projectionKind === 'none') {
+      styleKey = MAKER_V4_NONE_STYLE_KEY_V5;
+      rowKind = MAKER_V4_COMMERCE_STYLE_ROW_V5.LOGICAL_NONE;
+    } else if (item.projectionKind === 'color-swatch') {
+      styleKey = `${MAKER_V4_COLOR_STYLE_KEY_PREFIX_V5}${String(item.sourceSwatchId || '')}`;
+      rowKind = MAKER_V4_COMMERCE_STYLE_ROW_V5.LOGICAL_COLOR;
+    } else {
+      throw new MakerV4PublicationError(
+        'The Commerce v5 Style registry found an unsupported projected Item.',
+        'unsupported-commerce-style-product',
+        { item: clone(item) },
+      );
+    }
+    if (!styleKey) {
+      throw new MakerV4PublicationError(
+        'Every Commerce v5 projected Item must have a deterministic Style key.',
+        'missing-commerce-style-key',
+        { item: clone(item) },
+      );
+    }
+    return {
+      partKey: String(item.partKey),
+      itemKey: String(item.itemKey),
+      styleKey,
+      packId: item.projectionKind === 'style'
+        ? String(item.selectedStylePackId || '') || null
+        : null,
+      // Move derives Seal protection from the verified row kind plus the
+      // immutable Base/Pack access policy. Publication never supplies a
+      // caller-controlled protection boolean.
+      rowKind,
+    };
+  }).sort((left, right) => (
+    compareText(left.partKey, right.partKey)
+    || compareText(left.itemKey, right.itemKey)
+    || compareText(left.styleKey, right.styleKey)
+  ));
+  const descriptorById = new Map(orderedDescriptors.map((descriptor) => [
+    descriptor.id,
+    descriptor,
+  ]));
+  return {
+    commerce: {
+      schemaVersion: MAKER_V4_COMMERCE_PROJECTION_V5_SCHEMA,
+      sourceSchemaVersion: commerce.schemaVersion,
+      rightsOrigin: commerce.rightsOrigin,
+      rightsOriginConfirmed: commerce.rightsOriginConfirmed === true,
+      makerAccess: clone(commerce.makerAccess),
+      baseCompletion: clone(commerce.baseCompletion),
+      packPolicies: commerce.packPolicies.map((policy) => ({
+        ...clone(policy),
+        label: String(descriptorById.get(policy.packId)?.name || policy.packId),
+      })),
+      royalties: {
+        soulCreatorBps: commerce.soulCreatorRoyaltyBps,
+        makerSourceBps: commerce.makerSourceRoyaltyBps,
+        makerResaleBps: commerce.makerResaleRoyaltyBps,
+      },
+      protocol: clone(commerce.protocol),
+      itemPackBindings: clone(bindings),
+      styleProducts: clone(styleProducts),
+      counts: {
+        packs: commerce.packPolicies.length,
+        itemPackBindings: bindings.length,
+        styles: styleProducts.length,
+      },
+    },
+    items,
+    bindings,
+    styleProducts,
+  };
+}
+
 /** Build immutable version/update metadata for display and OC provenance. */
 export function buildMakerV4VersionMetadata(document, previousDocument = null) {
   const version = sanitizeVersion(document?.version);
@@ -1567,6 +1906,13 @@ export function buildMakerV4PublicationManifest(document, options = {}) {
     options.publicExtensions,
     manifestIdentifier,
   );
+  const commerce = sanitizeMakerCommerceV5(
+    document.commerce,
+    embeddedExpansion.descriptors.map((pack) => pack.id),
+    {
+      licenseSnapshotRoyaltyBps: document.publication?.royaltyBps,
+    },
+  );
   const release = buildMakerV4VersionMetadata(document, options.previousDocument || null);
   if (!options.allowCompatibilityMismatch
     && release.update.breaking.some((issue) => issue.code === 'compatibility-declaration-mismatch')) {
@@ -1637,6 +1983,7 @@ export function buildMakerV4PublicationManifest(document, options = {}) {
       storage: String(document.publication.storage || 'walrus'),
       chain: String(document.publication.chain || 'sui'),
     },
+    ...(commerce ? { commerce } : {}),
     // These containers are required by the v4 schema. They intentionally do
     // not inherit editor endpoints, local recovery data or Blob/Object URLs.
     runtime: {},
@@ -1645,7 +1992,9 @@ export function buildMakerV4PublicationManifest(document, options = {}) {
     legacyMoveProjection: releaseProjection(document),
     extensions: embeddedExpansion.extensions,
   };
-  manifest.moveProjectionV2 = compileMakerV4MoveProjectionV2(manifest);
+  manifest.moveProjectionV2 = compileMakerV4MoveProjectionV2(manifest, {
+    logicalAuxiliaryBlobId: options.logicalAuxiliaryBlobId,
+  });
   assertMakerV4ProjectionV2SinglePublishBudget(manifest.moveProjectionV2);
   if (options.requireCompleteRuleProjection && manifest.legacyMoveProjection.authorizationCoverage !== 'complete') {
     throw new MakerV4PublicationError(
@@ -1893,7 +2242,7 @@ function assertStoredMoveProjectionV2(document, projection) {
  * Items deliberately reuse one transparent projection-only patch.
  */
 export function buildMakerV4MoveSummaryV2(document, options = {}) {
-  const projection = compileMakerV4MoveProjectionV2(document);
+  const projection = compileMakerV4MoveProjectionV2(document, options);
   assertStoredMoveProjectionV2(document, projection);
   const totalRecords = assertMakerV4ProjectionV2SinglePublishBudget(
     projection,
@@ -1927,6 +2276,27 @@ export function buildMakerV4MoveSummaryV2(document, options = {}) {
       { identifier: MAKER_V4_PROJECTION_V2_AUXILIARY_IDENTIFIER },
     );
   }
+  const logicalAuxiliaryBlobId = String(
+    options.logicalAuxiliaryBlobId
+      ?? projection?.commerce?.logicalAuxiliaryBlobId
+      ?? '',
+  ).trim();
+  if (projection.commerce && !logicalAuxiliaryBlobId) {
+    throw new MakerV4PublicationError(
+      'Commerce v5 requires the protocol-bound canonical logical auxiliary Walrus Blob ID.',
+      'missing-commerce-v5-logical-auxiliary-blob',
+    );
+  }
+  if (
+    projection.commerce
+    && auxiliaryPatchId
+    && logicalAuxiliaryBlobId === auxiliaryPatchId
+  ) {
+    throw new MakerV4PublicationError(
+      'Commerce v5 logical rows must use the independent protocol Blob, not this Maker Quilt auxiliary patch.',
+      'commerce-v5-logical-auxiliary-is-quilt-patch',
+    );
+  }
 
   const missingLocations = new Set();
   const items = projection.items.map((item) => {
@@ -1935,7 +2305,9 @@ export function buildMakerV4MoveSummaryV2(document, options = {}) {
       blobId = quiltPatchLocationValue(options.assetLocations, String(item.assetRef.assetId || ''));
       if (!blobId) missingLocations.add(String(item.assetRef.assetId || ''));
     } else if (item.assetRef?.kind === 'projection-auxiliary') {
-      blobId = auxiliaryPatchId;
+      blobId = projection.commerce
+        ? logicalAuxiliaryBlobId
+        : auxiliaryPatchId;
     } else {
       throw new MakerV4PublicationError(
         'A v2 projection Item has an unknown asset reference.',
@@ -1954,7 +2326,7 @@ export function buildMakerV4MoveSummaryV2(document, options = {}) {
       label: item.label,
       blobId,
       iconBlobId,
-      gateKind: 0,
+      gateKind: Number(item.gateKind || 0),
       projectionKind: item.projectionKind,
       sourcePartId: item.sourcePartId ?? null,
       sourceItemId: item.sourceItemId ?? null,
@@ -1963,6 +2335,15 @@ export function buildMakerV4MoveSummaryV2(document, options = {}) {
       sourceSwatchId: item.sourceSwatchId ?? null,
       sourceAssetId: item.sourceAssetId ?? null,
       renderAsset: item.renderAsset === true,
+      ...(Array.isArray(item.requiredPackIds)
+        ? {
+          sourcePartPackId: item.sourcePartPackId ?? null,
+          sourceItemPackId: item.sourceItemPackId ?? null,
+          sourceStylePackId: item.sourceStylePackId ?? null,
+          selectedStylePackId: item.selectedStylePackId ?? null,
+          requiredPackIds: [...item.requiredPackIds],
+        }
+        : {}),
     };
   });
   if (missingLocations.size) {
@@ -2011,7 +2392,14 @@ export function buildMakerV4MoveSummaryV2(document, options = {}) {
     auxiliary: {
       ...clone(projection.auxiliary),
       patchId: auxiliaryPatchId,
+      canonicalBlobId: logicalAuxiliaryBlobId || null,
     },
+    ...(projection.commerce
+      ? {
+        commerce: clone(projection.commerce),
+        packBindings: clone(projection.mappings.packBindings || []),
+      }
+      : {}),
     projection,
     release: buildMakerV4VersionMetadata(document, options.previousDocument || null),
   };
@@ -2142,6 +2530,34 @@ function recipeWithExpansionColorDefaults(document, recipe) {
   delete result.colorChannels;
   delete result.palettes;
   return result;
+}
+
+function commerceUsageForProjectedRecipe(projection, recipe) {
+  if (!projection?.commerce) {
+    return { usedPackIds: [], packBindings: [] };
+  }
+  const mappingByTuple = new Map(asArray(projection?.mappings?.styles).map((mapping) => [
+    tupleKey(mapping.partId, mapping.itemId, mapping.styleId),
+    mapping,
+  ]));
+  const selectedProjectionKeys = new Set(asArray(recipe?.selections).flatMap((selection) => {
+    const mapping = mappingByTuple.get(tupleKey(
+      String(selection?.partId || ''),
+      String(selection?.itemId || ''),
+      String(selection?.styleId || ''),
+    ));
+    return mapping ? [`${mapping.partKey}\u0000${mapping.itemKey}`] : [];
+  }));
+  const packBindings = asArray(projection?.mappings?.packBindings)
+    .filter((binding) => selectedProjectionKeys.has(
+      `${binding.partKey}\u0000${binding.itemKey}`,
+    ))
+    .map(clone);
+  return {
+    usedPackIds: [...new Set(packBindings.map((binding) => String(binding.packId)))]
+      .sort(compareText),
+    packBindings,
+  };
 }
 
 /**
@@ -2354,11 +2770,39 @@ export function flattenMakerV4RecipeV2(document, recipe, options = {}) {
       { expected: projection.counts.recipeSlots, actual: suiRecipe.length },
     );
   }
+  const commerceUsage = commerceUsageForProjectedRecipe(
+    projection,
+    evaluated.documentRecipe,
+  );
+  const styleProductByItem = new Map(asArray(projection?.commerce?.styleProducts).map((entry) => [
+    `${entry.partKey}\u0000${entry.itemKey}`,
+    entry,
+  ]));
+  const styleSelections = projection.commerce
+    ? suiRecipe.map((slot) => {
+      const product = styleProductByItem.get(`${slot.partKey}\u0000${slot.itemKey}`);
+      if (!product) {
+        throw new MakerV4PublicationError(
+          'The Commerce v5 recipe is missing an exact Style registry row.',
+          'missing-commerce-style-selection',
+          { partKey: slot.partKey, itemKey: slot.itemKey },
+        );
+      }
+      return {
+        partKey: String(product.partKey),
+        itemKey: String(product.itemKey),
+        styleKey: String(product.styleKey),
+      };
+    })
+    : [];
   return {
     fullRecipe: clone(evaluated.documentRecipe),
     fullRecipeJson: JSON.stringify(evaluated.documentRecipe),
     suiRecipe,
     projection,
+    usedPackIds: commerceUsage.usedPackIds,
+    packBindings: commerceUsage.packBindings,
+    styleSelections,
     release: buildMakerV4VersionMetadata(document, options.previousDocument || null),
   };
 }
@@ -2376,6 +2820,20 @@ export function buildMakerV4OcPackage({
   integrity = null,
 } = {}) {
   const flattened = flattenMakerV4RecipeV2(document, recipe, { previousDocument });
+  const commerce = flattened.projection.commerce
+    ? {
+      schemaVersion: flattened.projection.commerce.sourceSchemaVersion,
+      rightsOrigin: flattened.projection.commerce.rightsOrigin,
+      makerAccess: clone(flattened.projection.commerce.makerAccess),
+      baseCompletion: clone(flattened.projection.commerce.baseCompletion),
+      packPolicies: clone(flattened.projection.commerce.packPolicies)
+        .filter((policy) => flattened.usedPackIds.includes(String(policy.packId))),
+      royalties: clone(flattened.projection.commerce.royalties),
+      protocol: clone(flattened.projection.commerce.protocol),
+      usedPackIds: [...flattened.usedPackIds],
+      packBindings: clone(flattened.packBindings),
+    }
+    : null;
   const packageValue = {
     schemaVersion: MAKER_V4_OC_PACKAGE_SCHEMA,
     createdAt,
@@ -2393,11 +2851,14 @@ export function buildMakerV4OcPackage({
     profile: clone(profile),
     livingContent: clone(livingContent),
     recipe: flattened.fullRecipe,
+    ...(commerce ? { commerce } : {}),
     suiSummary: {
       recipeEncoding: 'BCS vector<RecipeSlot>',
       projectionSchema: MAKER_V4_MOVE_PROJECTION_V2_SCHEMA,
       itemKeyEncoding: MAKER_V4_ITEM_KEY_ENCODING_V2,
       recipe: flattened.suiRecipe,
+      ...(commerce ? { usedPackIds: [...flattened.usedPackIds] } : {}),
+      ...(commerce ? { styleSelections: clone(flattened.styleSelections) } : {}),
     },
     release: flattened.release,
     ...(integrity ? { integrity: clone(integrity) } : {}),
@@ -2408,6 +2869,9 @@ export function buildMakerV4OcPackage({
     fullRecipe: flattened.fullRecipe,
     fullRecipeJson: flattened.fullRecipeJson,
     suiRecipe: flattened.suiRecipe,
+    usedPackIds: [...flattened.usedPackIds],
+    packBindings: clone(flattened.packBindings),
+    styleSelections: clone(flattened.styleSelections),
     release: flattened.release,
   };
 }
