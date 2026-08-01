@@ -142,6 +142,22 @@ function protocolTreasuryObject(overrides = {}) {
 }
 
 function rootObject(overrides = {}) {
+  const releaseFieldNames = new Set([
+    'pack_count',
+    'paid_pack_count',
+    'style_count',
+    'style_registry_sealed',
+    'protected_style_count',
+    'seal_policy_id',
+    'seal_release_commitment',
+    'complete_output_count',
+    'total_completes',
+  ]);
+  const rootOverrides = {};
+  const releaseOverrides = {};
+  for (const [key, value] of Object.entries(overrides)) {
+    (releaseFieldNames.has(key) ? releaseOverrides : rootOverrides)[key] = value;
+  }
   return object('MakerRootV5', IDS.root, {
     version: '5',
     legacy_maker_id: IDS.legacyMaker,
@@ -172,23 +188,28 @@ function rootObject(overrides = {}) {
     },
     packs: { fields: { id: { id: { bytes: IDS.packsTable } }, size: '1' } },
     pack_keys: ['pack-1'],
-    paid_pack_count: '1',
     style_registry: { fields: { id: { id: { bytes: IDS.stylesTable } }, size: '2' } },
-    style_registry_sealed: true,
-    protected_style_count: '2',
-    seal_policy_id: { vec: [IDS.sealPolicy] },
-    seal_release_commitment: Array(32).fill(5),
     complete_outputs: {
       fields: {
         id: { id: { bytes: IDS.completeOutputsTable } },
         size: '3',
       },
     },
-    complete_output_count: '3',
-    pack_count: '1',
-    style_count: '2',
-    total_completes: '3',
-    ...overrides,
+    release: {
+      fields: {
+        pack_count: '1',
+        paid_pack_count: '1',
+        style_count: '2',
+        style_registry_sealed: true,
+        protected_style_count: '2',
+        seal_policy_id: { vec: [IDS.sealPolicy] },
+        seal_release_commitment: Array(32).fill(5),
+        complete_output_count: '3',
+        total_completes: '3',
+        ...releaseOverrides,
+      },
+    },
+    ...rootOverrides,
   });
 }
 
@@ -320,6 +341,20 @@ test('v5 object parsers preserve every u64 as BigInt and reject an unexpected la
     () => parseCommerceProtocolConfigV5(protocolObject({ version: '4' })),
     { code: 'COMMERCE_V5_VERSION_MISMATCH' },
   );
+});
+
+test('MakerRootV5 parser preserves the public shape across flat diagnostics and Mainnet-safe nesting', () => {
+  const nestedObject = rootObject();
+  const flatObject = structuredClone(nestedObject);
+  Object.assign(flatObject.json.fields, flatObject.json.fields.release.fields);
+  delete flatObject.json.fields.release;
+
+  const nested = parseMakerRootV5(nestedObject);
+  const flat = parseMakerRootV5(flatObject);
+  assert.deepEqual(flat, nested);
+  assert.equal(nested.packCount, 1n);
+  assert.equal(nested.styleCount, 2n);
+  assert.equal(nested.totalCompletes, 3n);
 });
 
 test('access and Pack passes are parsed as wallet-bound v5 receipts', () => {
