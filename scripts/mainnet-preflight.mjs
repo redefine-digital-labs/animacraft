@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import { Buffer } from 'node:buffer';
 import vm from 'node:vm';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction } from '@mysten/sui/transactions';
@@ -25,7 +26,7 @@ const json = args.has('--json');
 const checks = [];
 const ZERO_SUI_ADDRESS = normalizeSuiAddress('0x0');
 
-export const COMPOSITION_V6_RUNTIME_FIELDS = Object.freeze([
+export const COMPOSITION_V6_CORE_RUNTIME_FIELDS = Object.freeze([
   'compositionV6TypeOriginPackageId',
   'compositionProtocolConfigV6Id',
   'compositionProtocolTreasuryV6Id',
@@ -36,25 +37,31 @@ export const COMPOSITION_V6_RUNTIME_FIELDS = Object.freeze([
   'compositionValidatorCapV6Owner',
   'compositionValidatorEpochV6',
   'compositionValidatorPolicyCommitmentV6',
+]);
+
+export const COMPOSITION_V6_BINDING_RUNTIME_FIELDS = Object.freeze([
   'compositionV6SoulOwnerProofType',
 ]);
 
-export const COMPOSITION_V6_DEPENDENCY_FIELDS = Object.freeze([
+export const COMPOSITION_V6_RUNTIME_FIELDS = Object.freeze([
+  ...COMPOSITION_V6_CORE_RUNTIME_FIELDS,
+  ...COMPOSITION_V6_BINDING_RUNTIME_FIELDS,
+]);
+
+export const COMPOSITION_V6_CORE_DEPENDENCY_FIELDS = Object.freeze([
   'commerceV5TypeOriginPackageId',
   'commerceProtocolConfigV5Id',
   'protocolFeeAdminCapId',
   'paymentCoinType',
+]);
+
+export const COMPOSITION_V6_BINDING_DEPENDENCY_FIELDS = Object.freeze([
   'soulidityTypeOriginPackageId',
 ]);
 
-const COMPOSITION_V6_REQUIRED_RUNTIME_FIELDS = Object.freeze([
-  ...COMPOSITION_V6_RUNTIME_FIELDS,
-  ...COMPOSITION_V6_DEPENDENCY_FIELDS,
-]);
-
-const COMPOSITION_V6_DEPLOYMENT_FIELDS = Object.freeze([
-  'callablePackageId',
-  ...COMPOSITION_V6_REQUIRED_RUNTIME_FIELDS,
+export const COMPOSITION_V6_DEPENDENCY_FIELDS = Object.freeze([
+  ...COMPOSITION_V6_CORE_DEPENDENCY_FIELDS,
+  ...COMPOSITION_V6_BINDING_DEPENDENCY_FIELDS,
 ]);
 
 function present(value) {
@@ -72,9 +79,17 @@ export function normalizeBytes32(value) {
     ))) return '';
     return `0x${bytes.map((entry) => Number(entry).toString(16).padStart(2, '0')).join('')}`;
   }
-  const normalized = String(bytes || '').trim().toLowerCase();
+  const serialized = String(bytes || '').trim();
+  const normalized = serialized.toLowerCase();
   const hex = normalized.startsWith('0x') ? normalized.slice(2) : normalized;
-  return /^[0-9a-f]{64}$/.test(hex) ? `0x${hex}` : '';
+  if (/^[0-9a-f]{64}$/.test(hex)) return `0x${hex}`;
+  // Sui gRPC JSON currently serializes vector<u8> values as base64 while
+  // other client surfaces expose an integer array. Accept both exact forms.
+  if (/^[a-z0-9+/]{43}=$/i.test(serialized)) {
+    const decoded = Buffer.from(serialized, 'base64');
+    if (decoded.length === 32) return `0x${decoded.toString('hex')}`;
+  }
+  return '';
 }
 
 export function compositionV6Declared(config = {}) {
@@ -121,10 +136,27 @@ export function inspectCompositionV6Deployment(
       mismatches: [],
     };
   }
-  const runtimeMissing = COMPOSITION_V6_REQUIRED_RUNTIME_FIELDS.filter((field) => (
+  const bindingDeclared = config.compositionV6ReleaseEnabled === true
+    || COMPOSITION_V6_BINDING_RUNTIME_FIELDS.some((field) => present(config[field]));
+  const requiredRuntimeFields = [
+    ...COMPOSITION_V6_CORE_RUNTIME_FIELDS,
+    ...COMPOSITION_V6_CORE_DEPENDENCY_FIELDS,
+    ...(bindingDeclared
+      ? [
+        ...COMPOSITION_V6_BINDING_RUNTIME_FIELDS,
+        ...COMPOSITION_V6_BINDING_DEPENDENCY_FIELDS,
+      ]
+      : []),
+  ];
+  const deploymentFields = ['callablePackageId', ...requiredRuntimeFields];
+  const runtimeMissing = requiredRuntimeFields.filter((field) => (
     !present(config[field])
   ));
-  const runtimeInvalid = COMPOSITION_V6_REQUIRED_RUNTIME_FIELDS
+  const runtimeInvalid = [
+    ...COMPOSITION_V6_CORE_RUNTIME_FIELDS,
+    ...COMPOSITION_V6_BINDING_RUNTIME_FIELDS,
+    ...COMPOSITION_V6_DEPENDENCY_FIELDS,
+  ]
     .filter((field) => present(config[field]))
     .filter((field) => {
       if (field === 'compositionValidatorEpochV6') {
@@ -139,10 +171,10 @@ export function inspectCompositionV6Deployment(
       }
       return !normalizeDeploymentValue(field, config[field]);
     });
-  const deploymentMissing = COMPOSITION_V6_DEPLOYMENT_FIELDS.filter((field) => (
+  const deploymentMissing = deploymentFields.filter((field) => (
     !present(deployment[field])
   ));
-  const mismatches = COMPOSITION_V6_DEPLOYMENT_FIELDS
+  const mismatches = deploymentFields
     .filter((field) => !deploymentMissing.includes(field))
     .filter((field) => {
       const runtimeField = field === 'callablePackageId' ? 'callablePackageId' : field;
@@ -906,15 +938,42 @@ async function checkProtocolFeeObjects(client, config, validation) {
   }
 }
 
+export function inspectCommerceV5BindingState(configJson = {}, config = {}) {
+  const logicalAuxiliaryBlobId = String(optionValue(jsonField(
+    configJson,
+    'logical_auxiliary_blob_id',
+    'logicalAuxiliaryBlobId',
+  )) || '');
+  const soulBindingProofType = normalizedStructTag(String(optionValue(jsonField(
+    configJson,
+    'soul_binding_proof_type',
+    'soulBindingProofType',
+  )) || ''));
+  const expectedLogicalAuxiliaryBlobId = String(
+    config.commerceV5LogicalAuxiliaryBlobId || '',
+  );
+  const expectedSoulBindingProofType = normalizedStructTag(
+    config.commerceV5SoulBindingProofType,
+  );
+  return {
+    ready: logicalAuxiliaryBlobId === expectedLogicalAuxiliaryBlobId
+      && soulBindingProofType === expectedSoulBindingProofType,
+    logicalAuxiliaryBlobId,
+    soulBindingProofType,
+  };
+}
+
 async function checkCommerceV5Objects(client, config, validation) {
-  const configured = [
+  const coreConfigured = [
     config.commerceV5TypeOriginPackageId,
     config.commerceProtocolConfigV5Id,
     config.commerceProtocolTreasuryV5Id,
+  ].filter(Boolean);
+  const bindingConfigured = [
     config.commerceV5LogicalAuxiliaryBlobId,
     config.commerceV5SoulBindingProofType,
   ].filter(Boolean);
-  if (!configured.length) {
+  if (!coreConfigured.length && !bindingConfigured.length) {
     if (config.commerceV5ReleaseEnabled) {
       record('Animacraft commerce v5 objects', false, 'Commerce v5 is enabled without its canonical protocol objects.');
     }
@@ -923,14 +982,17 @@ async function checkCommerceV5Objects(client, config, validation) {
   if (!validation.commerceV5TypeOriginPackageReady
     || !validation.commerceProtocolConfigV5Ready
     || !validation.commerceProtocolTreasuryV5Ready
-    || !validation.commerceV5LogicalAuxiliaryBlobReady
-    || !validation.commerceV5SoulBindingProofReady
     || !validation.protocolFeeConfigReady
-    || !validation.protocolFeeAdminCapReady) {
+    || !validation.protocolFeeAdminCapReady
+    || (config.commerceV5ReleaseEnabled
+      && (!validation.commerceV5LogicalAuxiliaryBlobReady
+        || !validation.commerceV5SoulBindingProofReady))) {
     record(
       'Animacraft commerce v5 objects',
       false,
-      'Commerce v5 TypeOrigin, config, treasury, canonical logical Blob, Soulidity proof type, and legacy v4 authority must be configured together.',
+      config.commerceV5ReleaseEnabled
+        ? 'Enabled Commerce v5 requires its core objects, canonical logical Blob, Soulidity proof type, and legacy v4 authority together.'
+        : 'Disabled Commerce v5 requires its complete core object tuple and legacy v4 authority; bind-once fields may remain empty.',
     );
     return;
   }
@@ -981,21 +1043,7 @@ async function checkCommerceV5Objects(client, config, validation) {
       'maker_market_fee_bps',
       'makerMarketFeeBps',
     ));
-    const logicalAuxiliaryBlobId = String(optionValue(jsonField(
-      configJson,
-      'logical_auxiliary_blob_id',
-      'logicalAuxiliaryBlobId',
-    )) || '');
-    let soulBindingProofType = '';
-    try {
-      soulBindingProofType = normalizeStructTag(String(optionValue(jsonField(
-        configJson,
-        'soul_binding_proof_type',
-        'soulBindingProofType',
-      )) || ''));
-    } catch {
-      soulBindingProofType = '';
-    }
+    const bindingState = inspectCommerceV5BindingState(configJson, config);
     const ready = normalizeStructTag(configObject.type) === configType
       && normalizeStructTag(treasuryObject.type) === treasuryType
       && isSharedOwner(configObject.owner)
@@ -1008,22 +1056,23 @@ async function checkCommerceV5Objects(client, config, validation) {
         === normalizeSuiAddress(config.protocolFeeAdminCapId)
       && suiId(jsonField(configJson, 'treasury_id', 'treasuryId')) === treasuryId
       && suiId(jsonField(treasuryJson, 'config_id', 'configId')) === configId
-      && String(jsonField(configJson, 'payment_coin_type', 'paymentCoinType')) === paymentType
+      && normalizedStructTag(jsonField(
+        configJson,
+        'payment_coin_type',
+        'paymentCoinType',
+      )) === paymentType
       && primaryFeeBps === 1_000
       && Number.isSafeInteger(fixedFee)
       && fixedFee >= 0
       && Number.isInteger(marketFeeBps)
       && marketFeeBps >= 0
       && marketFeeBps <= 1_000
-      && logicalAuxiliaryBlobId
-        === String(config.commerceV5LogicalAuxiliaryBlobId)
-      && soulBindingProofType
-        === normalizeStructTag(config.commerceV5SoulBindingProofType)
+      && bindingState.ready
       && enabled === Boolean(config.commerceV5ReleaseEnabled);
     record(
       'Animacraft commerce v5 objects',
       ready,
-      `TypeOrigin=${typeOrigin}; fee=${primaryFeeBps} bps + ${fixedFee} atomic; market=${marketFeeBps} bps; logicalBlob=${logicalAuxiliaryBlobId || 'missing'}; proof=${soulBindingProofType || 'missing'}; gate=${enabled}`,
+      `TypeOrigin=${typeOrigin}; fee=${primaryFeeBps} bps + ${fixedFee} atomic; market=${marketFeeBps} bps; logicalBlob=${bindingState.logicalAuxiliaryBlobId || 'unbound'}; proof=${bindingState.soulBindingProofType || 'unbound'}; gate=${enabled}`,
     );
   } catch (error) {
     record('Animacraft commerce v5 objects', false, error.message);
@@ -1101,6 +1150,8 @@ export function inspectCompositionV6ObjectState(
     config.compositionValidatorPolicyCommitmentV6,
   );
   const proofType = normalizedStructTag(config.compositionV6SoulOwnerProofType);
+  const proofBindingRequired = config.compositionV6ReleaseEnabled === true
+    || Boolean(proofType);
   const expectedProofType = normalizedStructTag(
     `${suiId(config.soulidityTypeOriginPackageId)}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
   );
@@ -1215,12 +1266,14 @@ export function inspectCompositionV6ObjectState(
       'soul_owner_proof_type',
       'soulOwnerProofType',
     )) || '')) === proofType,
-    'Soul owner proof type is absent or differs from the stable Soulidity TypeOrigin.',
+    'Soul owner proof binding differs from runtime configuration.',
   );
-  assert(
-    proofType === expectedProofType,
-    'Runtime Soul owner proof type does not use the stable Soulidity TypeOrigin.',
-  );
+  if (proofBindingRequired) {
+    assert(
+      proofType === expectedProofType,
+      'Runtime Soul owner proof type does not use the stable Soulidity TypeOrigin.',
+    );
+  }
   assert(
     normalizedStructTag(jsonField(configJson, 'payment_coin_type', 'paymentCoinType'))
       === paymentType,
@@ -1386,7 +1439,9 @@ function recordCompositionV6Deployment(status, config) {
           ? `invalid: ${status.runtimeInvalid.join(', ')}`
           : '',
       ].filter(Boolean).join('; ')
-      : 'Complete Config/Treasury/Registry/AdminCap/ValidatorCap, custody, epoch, policy, and proof tuple is recorded.',
+      : config.compositionV6SoulOwnerProofType
+        ? 'Complete disabled core and Soul owner-proof binding tuple is recorded.'
+        : 'Complete disabled Config/Treasury/Registry/AdminCap/ValidatorCap, custody, epoch, and policy core is recorded; Soul owner-proof binding remains intentionally empty.',
   );
   record(
     'Animacraft composition v6 deployment record',
@@ -1400,7 +1455,9 @@ function recordCompositionV6Deployment(status, config) {
           ? `runtime/deployment mismatch: ${status.mismatches.join(', ')}`
           : '',
       ].filter(Boolean).join('; ')
-      : 'Runtime IDs, custodians, validator policy, epoch, proof, and callable package match deployments/mainnet.json.',
+      : config.compositionV6SoulOwnerProofType
+        ? 'Runtime IDs, custodians, validator policy, epoch, proof, dependencies, and callable package match deployments/mainnet.json.'
+        : 'Runtime core IDs, custodians, validator policy, epoch, dependencies, and callable package match deployments/mainnet.json; no proof is claimed.',
   );
   record(
     'Animacraft composition v6 deployment gate',
@@ -1567,8 +1624,14 @@ async function checkNetwork(config, validation, compositionDeploymentStatus) {
     } catch (error) {
       record('Soulidity package', false, error.message);
     }
+    const soulidityCommerceV5Required = requireSoulidity
+      || config.commerceV5ReleaseEnabled === true
+      || Boolean(config.commerceV5SoulBindingProofType)
+      || config.compositionV6ReleaseEnabled === true
+      || Boolean(config.compositionV6SoulOwnerProofType);
     if (
-      validation.commerceV5TypeOriginPackageReady
+      soulidityCommerceV5Required
+      && validation.commerceV5TypeOriginPackageReady
       && validation.soulidityTypeOriginReady
     ) {
       await checkSoulidityCommerceV5Abi(

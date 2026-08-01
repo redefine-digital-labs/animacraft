@@ -35,8 +35,10 @@ window.ANIMACRAFT_CONFIG = {
   commerceV5TypeOriginPackageId: '0xV5_COMMERCE_TYPE_ORIGIN_PACKAGE',
   commerceProtocolConfigV5Id: '0xYOUR_DISABLED_V5_COMMERCE_PROTOCOL_CONFIG',
   commerceProtocolTreasuryV5Id: '0xYOUR_V5_COMMERCE_PROTOCOL_TREASURY',
-  commerceV5LogicalAuxiliaryBlobId: 'YOUR_INDEPENDENT_TRANSPARENT_WALRUS_BLOB_ID',
-  commerceV5SoulBindingProofType: '0xSOULIDITY_ANIMACRAFT_PROVENANCE_TYPE_ORIGIN::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5',
+  // Bind-once values may remain empty after disabled core initialization.
+  // Fill both only after the exact Blob and Soulidity TypeOrigin are final.
+  commerceV5LogicalAuxiliaryBlobId: '',
+  commerceV5SoulBindingProofType: '',
   commerceV5ReleaseEnabled: false,
   compositionV6TypeOriginPackageId: '0xV6_COMPOSITION_TYPE_ORIGIN_PACKAGE',
   compositionProtocolConfigV6Id: '0xYOUR_DISABLED_V6_COMPOSITION_PROTOCOL_CONFIG',
@@ -48,7 +50,8 @@ window.ANIMACRAFT_CONFIG = {
   compositionValidatorCapV6Owner: '0xEXPECTED_V6_VALIDATOR',
   compositionValidatorEpochV6: 0,
   compositionValidatorPolicyCommitmentV6: '0xYOUR_EXACT_32_BYTE_VALIDATOR_POLICY_COMMITMENT',
-  compositionV6SoulOwnerProofType: '0xSOULIDITY_TYPE_ORIGIN::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
+  // Empty is valid only while compositionV6ReleaseEnabled remains false.
+  compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,
   // Frozen v5 package used for every Seal approval call. Never advance this
   // to the latest Animacraft callable package after a later upgrade.

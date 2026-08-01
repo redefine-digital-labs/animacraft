@@ -60,10 +60,9 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   commerceV5SoulBindingProofType: '',
   commerceV5ReleaseEnabled: false,
   // Composable Assets v6 is a companion to one already-published v5 Maker
-  // release. Keep the complete object tuple empty and the gate false until
-  // both Animacraft composition_v6 and Soulidity appearance_v6 have been
-  // upgraded, initialized disabled, bound to the exact owner-proof TypeOrigin,
-  // and verified through read-back plus adversarial Mainnet rehearsal.
+  // release. A reviewed core tuple may be recorded after disabled Mainnet
+  // initialization. The gate must stay false until Soulidity appearance_v6 is
+  // deployed and the exact owner-proof TypeOrigin is bound and read back.
   compositionV6TypeOriginPackageId: '',
   compositionProtocolConfigV6Id: '',
   compositionProtocolTreasuryV6Id: '',
@@ -345,11 +344,16 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
       && expectedSoulBindingProofType
       && commerceV5SoulBindingProofType === expectedSoulBindingProofType,
   );
-  const commerceV5ObjectsConfigured = Boolean(
+  const commerceV5CoreConfigured = Boolean(
     config.commerceV5TypeOriginPackageId
       || config.commerceProtocolConfigV5Id
-      || config.commerceProtocolTreasuryV5Id
-      || config.commerceV5LogicalAuxiliaryBlobId
+      || config.commerceProtocolTreasuryV5Id,
+  );
+  const commerceV5CoreReady = commerceV5TypeOriginPackageReady
+    && commerceProtocolConfigV5Ready
+    && commerceProtocolTreasuryV5Ready;
+  const commerceV5BindingConfigured = Boolean(
+    config.commerceV5LogicalAuxiliaryBlobId
       || config.commerceV5SoulBindingProofType,
   );
   if (typeof config.commerceV5ReleaseEnabled !== 'boolean') {
@@ -376,18 +380,17 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   ) {
     errors.push('commerceV5SoulBindingProofType must be the exact AnimacraftSoulBindingProofV5 defined by the stable Soulidity TypeOrigin.');
   }
-  if (commerceV5ObjectsConfigured
-    && (!commerceV5TypeOriginPackageReady
-      || !commerceProtocolConfigV5Ready
-      || !commerceProtocolTreasuryV5Ready
-      || !commerceV5LogicalAuxiliaryBlobReady
+  if ((commerceV5CoreConfigured || commerceV5BindingConfigured)
+    && !commerceV5CoreReady) {
+    errors.push('Commerce v5 core configuration must include its stable TypeOrigin, protocol config, and protocol treasury together.');
+  }
+  if (commerceV5BindingConfigured
+    && (!commerceV5LogicalAuxiliaryBlobReady
       || !commerceV5SoulBindingProofReady)) {
-    errors.push('Commerce v5 configuration must include its stable TypeOrigin, protocol config, protocol treasury, canonical logical Walrus Blob, and exact Soulidity proof type together.');
+    errors.push('Commerce v5 bind-once configuration must include the canonical logical Walrus Blob and exact Soulidity proof type together.');
   }
   if (config.commerceV5ReleaseEnabled
-    && (!commerceV5TypeOriginPackageReady
-      || !commerceProtocolConfigV5Ready
-      || !commerceProtocolTreasuryV5Ready
+    && (!commerceV5CoreReady
       || !commerceV5LogicalAuxiliaryBlobReady
       || !commerceV5SoulBindingProofReady)) {
     errors.push('Commerce v5 cannot be released before its TypeOrigin, protocol objects, canonical logical Walrus Blob, and exact Soulidity proof type are configured.');
@@ -455,7 +458,7 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
       && expectedSoulOwnerProofType
       && compositionV6SoulOwnerProofType === expectedSoulOwnerProofType,
   );
-  const compositionV6ObjectsConfigured = Boolean(
+  const compositionV6CoreConfigured = Boolean(
     config.compositionV6TypeOriginPackageId
       || config.compositionProtocolConfigV6Id
       || config.compositionProtocolTreasuryV6Id
@@ -465,8 +468,20 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
       || config.compositionValidatorCapV6Id
       || config.compositionValidatorCapV6Owner
       || config.compositionValidatorEpochV6 !== ''
-      || config.compositionValidatorPolicyCommitmentV6
-      || config.compositionV6SoulOwnerProofType,
+      || config.compositionValidatorPolicyCommitmentV6,
+  );
+  const compositionV6CoreReady = compositionV6TypeOriginPackageReady
+    && compositionProtocolConfigV6Ready
+    && compositionProtocolTreasuryV6Ready
+    && compositionRegistryV6Ready
+    && compositionAdminCapV6Ready
+    && compositionAdminCapV6OwnerReady
+    && compositionValidatorCapV6Ready
+    && compositionValidatorCapV6OwnerReady
+    && compositionValidatorEpochV6Ready
+    && compositionValidatorPolicyCommitmentV6Ready;
+  const compositionV6BindingConfigured = Boolean(
+    config.compositionV6SoulOwnerProofType,
   );
   if (typeof config.compositionV6ReleaseEnabled !== 'boolean') {
     errors.push('compositionV6ReleaseEnabled must be a boolean release gate.');
@@ -509,33 +524,14 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     errors.push('compositionV6SoulOwnerProofType must be the exact AnimacraftSoulOwnerProofV6 defined by the stable Soulidity TypeOrigin.');
   }
   if (
-    compositionV6ObjectsConfigured
-    && (!compositionV6TypeOriginPackageReady
-      || !compositionProtocolConfigV6Ready
-      || !compositionProtocolTreasuryV6Ready
-      || !compositionRegistryV6Ready
-      || !compositionAdminCapV6Ready
-      || !compositionAdminCapV6OwnerReady
-      || !compositionValidatorCapV6Ready
-      || !compositionValidatorCapV6OwnerReady
-      || !compositionValidatorEpochV6Ready
-      || !compositionValidatorPolicyCommitmentV6Ready
-      || !compositionV6SoulOwnerProofReady)
+    (compositionV6CoreConfigured || compositionV6BindingConfigured)
+    && !compositionV6CoreReady
   ) {
-    errors.push('Composable Assets v6 configuration must include its stable TypeOrigin, full object/cap custody tuple, validator epoch and policy commitment, and exact Soulidity owner-proof type together.');
+    errors.push('Composable Assets v6 core configuration must include its stable TypeOrigin, full object/cap custody tuple, validator epoch, and policy commitment together.');
   }
   if (
     config.compositionV6ReleaseEnabled
-    && (!compositionV6TypeOriginPackageReady
-      || !compositionProtocolConfigV6Ready
-      || !compositionProtocolTreasuryV6Ready
-      || !compositionRegistryV6Ready
-      || !compositionAdminCapV6Ready
-      || !compositionAdminCapV6OwnerReady
-      || !compositionValidatorCapV6Ready
-      || !compositionValidatorCapV6OwnerReady
-      || !compositionValidatorEpochV6Ready
-      || !compositionValidatorPolicyCommitmentV6Ready
+    && (!compositionV6CoreReady
       || !compositionV6SoulOwnerProofReady)
   ) {
     errors.push('Composable Assets v6 cannot be released before its complete object/cap custody tuple, validator policy, and exact Soulidity owner-proof type are configured.');

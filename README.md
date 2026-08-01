@@ -160,7 +160,7 @@ npm run dev
 
 ## Runtime Configuration
 
-Public configuration lives in `public/config.js`; `config.example.js` documents every field. The source-verified Mainnet v4 callable package is `0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc`; the stable v3 TypeOrigin remains `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`. Upgrade and initialization transactions, package digest, source tree, custody objects, and the disabled canonical-mint gate are recorded in `deployments/mainnet.json`.
+Public configuration lives in `public/config.js`; `config.example.js` documents every field. Mainnet now calls the source-verified v6 package `0x2221610b5513ef3f926433229b7f0b565e850d56020e344266737cdca078af3b`. Type identities remain deliberately layered: the stable v3 publication TypeOrigin is `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`, the v4 fee TypeOrigin is `0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc`, the v5 Commerce/Seal TypeOrigin is `0xcf369b8b02ac1e997146fc3be3f03870db14eaccf3d2cb7a9b93724be463108e`, and the latest callable is also the v6 Composition TypeOrigin. The v5 and v6 cores are initialized but disabled; their Soul bind-once proofs, canonical Soul gate, and Seal endpoints remain empty or off. Upgrade and initialization transactions, source trees, package digests, custody objects, validator policy, and every disabled gate are recorded in `deployments/mainnet.json`.
 
 Before promoting the invited-creator release:
 
