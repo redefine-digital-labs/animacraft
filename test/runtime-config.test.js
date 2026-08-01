@@ -9,6 +9,10 @@ import {
   normalizeRuntimeConfig,
   resolveCallablePackageId,
   resolveOriginalPackageId,
+  resolveSealV5CallablePackageId,
+  resolveSealV5TypeOriginPackageId,
+  resolveSoulidityCallablePackageId,
+  resolveSouliditySealNamespacePackageId,
   validateRuntimeConfig,
 } from '../runtime-config.js';
 
@@ -23,6 +27,12 @@ function productionConfig() {
 function productionV6Config() {
   const config = productionConfig();
   Object.assign(config, {
+    packageId: '0x6666',
+    callablePackageId: '0x6666',
+    originalPackageId: '0x1234',
+    soulidityPackageId: '0xdddd',
+    soulidityCallablePackageId: '0xdddd',
+    souliditySealNamespacePackageId: '0xabcd',
     canonicalSoulMintEnabled: true,
     protocolFeePackageId: '0x5678',
     protocolFeeConfigId: '0xfeed',
@@ -38,7 +48,8 @@ function productionV6Config() {
     commerceV5SoulBindingProofType:
       '0xabcd::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5',
     commerceV5ReleaseEnabled: true,
-    sealV5PackageId: '0x5555',
+    sealV5CallablePackageId: '0x5555',
+    sealV5TypeOriginPackageId: '0x5555',
     sealKeyServers: [{
       objectId: '0x6860',
       aggregatorUrl: 'https://seal.example.com',
@@ -49,6 +60,12 @@ function productionV6Config() {
     compositionProtocolConfigV6Id: '0xc066',
     compositionProtocolTreasuryV6Id: '0x7ea6',
     compositionRegistryV6Id: '0xae66',
+    compositionAdminCapV6Id: '0xca66',
+    compositionAdminCapV6Owner: '0xadea',
+    compositionValidatorCapV6Id: '0xca67',
+    compositionValidatorCapV6Owner: '0xbeea',
+    compositionValidatorEpochV6: 0,
+    compositionValidatorPolicyCommitmentV6: `0x${'ab'.repeat(32)}`,
     compositionV6SoulOwnerProofType:
       '0xabcd::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
   });
@@ -100,6 +117,49 @@ test('keeps legacy packageId-only configurations upgrade compatible', () => {
   assert.equal(config.originalPackageId, '0x1234');
   assert.equal(resolveCallablePackageId({ packageId: '0x1234' }), '0x1234');
   assert.equal(resolveOriginalPackageId({ packageId: '0x1234' }), '0x1234');
+});
+
+test('keeps the Soulidity Seal namespace frozen while approval calls advance', () => {
+  const config = normalizeRuntimeConfig({
+    packageId: '0x1234',
+    soulidityPackageId: '0x2222',
+    soulidityCallablePackageId: '0x2222',
+    souliditySealNamespacePackageId: '0x1111',
+  });
+  const result = validateRuntimeConfig(config, {
+    strict: true,
+    requireSoulidity: true,
+  });
+  assert.equal(config.soulidityPackageId, '0x2222');
+  assert.equal(resolveSoulidityCallablePackageId(config), '0x2222');
+  assert.equal(resolveSouliditySealNamespacePackageId(config), '0x1111');
+  assert.equal(result.soulidityReady, true);
+  assert.equal(result.souliditySealNamespaceReady, true);
+  assert.match(result.errors.join(' '), /canonicalSoulMintEnabled=true/);
+  assert.doesNotMatch(result.errors.join(' '), /Seal namespace/);
+});
+
+test('keeps a legacy Seal package alias compatible before package upgrades', () => {
+  const config = normalizeRuntimeConfig({
+    packageId: '0x1234',
+    sealV5PackageId: '0x5555',
+  });
+  assert.equal(config.sealV5PackageId, '0x5555');
+  assert.equal(config.sealV5CallablePackageId, '0x5555');
+  assert.equal(config.sealV5TypeOriginPackageId, '0x5555');
+  assert.equal(resolveSealV5CallablePackageId(config), '0x5555');
+  assert.equal(resolveSealV5TypeOriginPackageId(config), '0x5555');
+});
+
+test('freezes Seal v5 callable and TypeOrigin while Animacraft advances to v6', () => {
+  const config = productionV6Config();
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(config.callablePackageId, '0x6666');
+  assert.equal(config.sealV5CallablePackageId, '0x5555');
+  assert.equal(config.sealV5TypeOriginPackageId, '0x5555');
+  assert.equal(result.sealV5CallablePackageReady, true);
+  assert.equal(result.sealV5TypeOriginPackageReady, true);
+  assert.equal(result.valid, true);
 });
 
 test('separates the callable upgrade package from the original type identity', () => {
@@ -268,7 +328,8 @@ test('Commerce v5 release gate requires one complete stable object tuple', () =>
     protocolTreasuryId: '0xbeef',
     protocolFeeAdminCapId: '0xcafe',
     protocolFeeAdminCapOwner: '0xadea',
-    sealV5PackageId: '0x5555',
+    sealV5CallablePackageId: '0x1234',
+    sealV5TypeOriginPackageId: '0x5555',
     sealKeyServers: [{
       objectId: '0x6860',
       aggregatorUrl: 'https://seal.example.com',
@@ -299,7 +360,8 @@ test('Commerce v5 cannot open before the atomic Soulidity completion gate', () =
     commerceV5SoulBindingProofType:
       '0xabcd::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5',
     commerceV5ReleaseEnabled: true,
-    sealV5PackageId: '0x5555',
+    sealV5CallablePackageId: '0x1234',
+    sealV5TypeOriginPackageId: '0x5555',
     sealKeyServers: [{
       objectId: '0x6860',
       aggregatorUrl: 'https://seal.example.com',
@@ -362,7 +424,24 @@ test('Composable Assets v6 release gate requires its complete tuple and active v
   assert.equal(result.compositionProtocolConfigV6Ready, true);
   assert.equal(result.compositionProtocolTreasuryV6Ready, true);
   assert.equal(result.compositionRegistryV6Ready, true);
+  assert.equal(result.compositionAdminCapV6Ready, true);
+  assert.equal(result.compositionAdminCapV6OwnerReady, true);
+  assert.equal(result.compositionValidatorCapV6Ready, true);
+  assert.equal(result.compositionValidatorCapV6OwnerReady, true);
+  assert.equal(result.compositionValidatorEpochV6Ready, true);
+  assert.equal(result.compositionValidatorPolicyCommitmentV6Ready, true);
   assert.equal(result.compositionV6SoulOwnerProofReady, true);
+});
+
+test('Composable Assets v6 rejects incomplete cap custody and validator policy evidence', () => {
+  const config = productionV6Config();
+  config.compositionValidatorPolicyCommitmentV6 = '0x1234';
+  config.compositionAdminCapV6Owner = '';
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.equal(result.compositionAdminCapV6OwnerReady, false);
+  assert.equal(result.compositionValidatorPolicyCommitmentV6Ready, false);
+  assert.match(result.errors.join(' '), /32-byte|full object\/cap custody tuple/);
 });
 
 test('Composable Assets v6 owner proof must come from Soulidity TypeOrigin', () => {
@@ -378,7 +457,8 @@ test('Composable Assets v6 owner proof must come from Soulidity TypeOrigin', () 
 test('Seal v5 fails closed on partial credentials and invalid outer thresholds', () => {
   const config = productionConfig();
   Object.assign(config, {
-    sealV5PackageId: '0x5555',
+    sealV5CallablePackageId: '0x1234',
+    sealV5TypeOriginPackageId: '0x1234',
     sealKeyServers: [{
       objectId: '0x6860',
       aggregatorUrl: 'https://seal.example.com',

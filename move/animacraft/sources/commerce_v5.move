@@ -251,6 +251,22 @@ public struct CompleteOutputSoulBindingV5 {
     seal_id: vector<u8>,
 }
 
+/// Mutable release counters and Seal binding grouped below one root field.
+/// Sui Mainnet protocol 130 permits at most 32 fields per struct; keeping this
+/// nine-field state in one `store` value leaves MakerRootV5 at 30 fields while
+/// preserving the exact public accessors and lifecycle semantics.
+public struct MakerRootReleaseStateV5 has store {
+    pack_count: u64,
+    paid_pack_count: u64,
+    style_count: u64,
+    style_registry_sealed: bool,
+    protected_style_count: u64,
+    seal_policy_id: Option<ID>,
+    seal_release_commitment: vector<u8>,
+    complete_output_count: u64,
+    total_completes: u64,
+}
+
 /// Per-release Maker identity and all mutable v5 policy state. The legacy v4
 /// Maker remains the immutable art/recipe source, while this shared Root
 /// survives owner rotation. A new immutable Maker version receives a new Root.
@@ -277,28 +293,20 @@ public struct MakerRootV5 has key {
     base_policy: CompletionPolicyV5,
     packs: Table<PackKeyV5, PackRecordV5>,
     pack_keys: vector<String>,
-    paid_pack_count: u64,
     style_registry: Table<StyleBindingKeyV5, StyleProductRecordV5>,
     /// Table is not iterable, so immutable keys are retained for a full
     /// adversarial re-audit before the registry can be sealed.
     style_keys: vector<StyleBindingKeyV5>,
-    style_registry_sealed: bool,
-    protected_style_count: u64,
     logical_auxiliary_blob_id: String,
-    /// A paid release binds exactly one immutable Seal policy before it can
-    /// become Active. The policy object itself lives in `seal_v5`; keeping its
-    /// ID and release commitment here makes chain state—not event discovery—
-    /// the authoritative linkage.
-    seal_policy_id: Option<ID>,
-    seal_release_commitment: vector<u8>,
     base_entitlement_registry: Table<address, EntitlementRecordV5>,
     entitlement_registry: Table<EntitlementKeyV5, EntitlementRecordV5>,
     completion_counts: Table<CompletionCountKeyV5, u64>,
     complete_outputs: Table<vector<u8>, CompleteOutputRecordV5>,
-    complete_output_count: u64,
-    pack_count: u64,
-    style_count: u64,
-    total_completes: u64,
+    /// A paid release binds exactly one immutable Seal policy before it can
+    /// become Active. The policy object itself lives in `seal_v5`; keeping its
+    /// ID and release commitment here makes chain state—not event discovery—
+    /// the authoritative linkage.
+    release: MakerRootReleaseStateV5,
 }
 
 /// Per-release Maker revenue vault. It follows MakerRootV5 across owner
@@ -930,23 +938,25 @@ fun new_migrated_maker_objects_v5<PaymentCoin>(
         base_policy,
         packs: table::new(ctx),
         pack_keys: vector[],
-        paid_pack_count: 0,
         style_registry: table::new(ctx),
         style_keys: vector[],
-        style_registry_sealed: false,
-        protected_style_count: 0,
         logical_auxiliary_blob_id:
             *protocol_config.logical_auxiliary_blob_id.borrow(),
-        seal_policy_id: option::none(),
-        seal_release_commitment: vector[],
         base_entitlement_registry: table::new(ctx),
         entitlement_registry: table::new(ctx),
         completion_counts: table::new(ctx),
         complete_outputs: table::new(ctx),
-        complete_output_count: 0,
-        pack_count: 0,
-        style_count: 0,
-        total_completes: 0,
+        release: MakerRootReleaseStateV5 {
+            pack_count: 0,
+            paid_pack_count: 0,
+            style_count: 0,
+            style_registry_sealed: false,
+            protected_style_count: 0,
+            seal_policy_id: option::none(),
+            seal_release_commitment: vector[],
+            complete_output_count: 0,
+            total_completes: 0,
+        },
     };
     event::emit(LegacyMakerMigratedToV5 {
         root_id,
@@ -1078,11 +1088,11 @@ public fun root_soul_creator_royalty_bps_v5(self: &MakerRootV5): u16 {
 }
 
 public fun root_pack_count_v5(self: &MakerRootV5): u64 {
-    self.pack_count
+    self.release.pack_count
 }
 
 public fun root_paid_pack_count_v5(self: &MakerRootV5): u64 {
-    self.paid_pack_count
+    self.release.paid_pack_count
 }
 
 public fun root_requires_seal_policy_v5(self: &MakerRootV5): bool {
@@ -1090,29 +1100,29 @@ public fun root_requires_seal_policy_v5(self: &MakerRootV5): bool {
 }
 
 public fun root_seal_policy_id_v5(self: &MakerRootV5): Option<ID> {
-    self.seal_policy_id
+    self.release.seal_policy_id
 }
 
 public fun root_seal_release_commitment_v5(
     self: &MakerRootV5,
 ): &vector<u8> {
-    &self.seal_release_commitment
+    &self.release.seal_release_commitment
 }
 
 public fun root_seal_policy_bound_v5(self: &MakerRootV5): bool {
-    self.seal_policy_id.is_some()
+    self.release.seal_policy_id.is_some()
 }
 
 public fun root_protected_style_count_v5(self: &MakerRootV5): u64 {
-    self.protected_style_count
+    self.release.protected_style_count
 }
 
 public fun root_total_completes_v5(self: &MakerRootV5): u64 {
-    self.total_completes
+    self.release.total_completes
 }
 
 public fun root_complete_output_count_v5(self: &MakerRootV5): u64 {
-    self.complete_output_count
+    self.release.complete_output_count
 }
 
 public fun root_complete_outputs_table_id_v5(self: &MakerRootV5): ID {
@@ -1287,11 +1297,11 @@ public fun activate_maker_v5(
         root.lifecycle == LIFECYCLE_PAUSED || root.lifecycle == LIFECYCLE_ARCHIVED,
         EInvalidLifecycle,
     );
-    assert!(root.style_registry_sealed, EStyleRegistryNotSealed);
+    assert!(root.release.style_registry_sealed, EStyleRegistryNotSealed);
     if (requires_seal_policy(root)) {
         assert!(
-            root.seal_policy_id.is_some()
-                && root.seal_release_commitment.length() == 32,
+            root.release.seal_policy_id.is_some()
+                && root.release.seal_release_commitment.length() == 32,
             ESealPolicyRequired,
         );
     };
@@ -1478,9 +1488,9 @@ public fun add_pack_v5(
         },
     );
     root.pack_keys.push_back(key);
-    root.pack_count = root.pack_count + 1;
+    root.release.pack_count = root.release.pack_count + 1;
     if (access_kind == PACK_ACCESS_PAID_ONCE) {
-        root.paid_pack_count = root.paid_pack_count + 1;
+        root.release.paid_pack_count = root.release.paid_pack_count + 1;
     };
     event::emit(PackConfiguredV5 {
         root_id: object::id(root),
@@ -1511,9 +1521,9 @@ public fun update_pack_v5(
     let was_paid = record.access_kind == PACK_ACCESS_PAID_ONCE;
     let becomes_paid = access_kind == PACK_ACCESS_PAID_ONCE;
     if (was_paid && !becomes_paid) {
-        root.paid_pack_count = root.paid_pack_count - 1;
+        root.release.paid_pack_count = root.release.paid_pack_count - 1;
     } else if (!was_paid && becomes_paid) {
-        root.paid_pack_count = root.paid_pack_count + 1;
+        root.release.paid_pack_count = root.release.paid_pack_count + 1;
     };
     record.label = label;
     record.access_kind = access_kind;
@@ -1657,7 +1667,7 @@ fun register_style_row_v5(
 ) {
     assert_control(root, cap, ctx);
     assert_configurable(root);
-    assert!(!root.style_registry_sealed, EStyleRegistrySealed);
+    assert!(!root.release.style_registry_sealed, EStyleRegistrySealed);
     assert_legacy_maker(root, legacy_maker);
     assert_non_empty(&style_key);
     assert_valid_style_row_kind(row_kind);
@@ -1700,7 +1710,7 @@ fun register_style_row_v5(
             seal_protected,
         },
     );
-    root.style_count = root.style_count + 1;
+    root.release.style_count = root.release.style_count + 1;
     if (pack_key.is_some()) {
         let pack = root.packs.borrow_mut(PackKeyV5 {
             name: *pack_key.borrow(),
@@ -1711,7 +1721,7 @@ fun register_style_row_v5(
         };
     };
     if (seal_protected) {
-        root.protected_style_count = root.protected_style_count + 1;
+        root.release.protected_style_count = root.release.protected_style_count + 1;
     };
 }
 
@@ -1724,9 +1734,9 @@ public fun seal_style_registry_v5(
 ) {
     assert_control(root, cap, ctx);
     assert_configurable(root);
-    assert!(!root.style_registry_sealed, EStyleRegistrySealed);
-    assert!(root.style_count > 0, EStyleMissing);
-    assert!(root.style_keys.length() == root.style_count, EStyleMissing);
+    assert!(!root.release.style_registry_sealed, EStyleRegistrySealed);
+    assert!(root.release.style_count > 0, EStyleMissing);
+    assert!(root.style_keys.length() == root.release.style_count, EStyleMissing);
     let mut protected_count = 0;
     let mut style_index = 0;
     while (style_index < root.style_keys.length()) {
@@ -1760,11 +1770,11 @@ public fun seal_style_registry_v5(
         style_index = style_index + 1;
     };
     assert!(
-        protected_count == root.protected_style_count,
+        protected_count == root.release.protected_style_count,
         ESealAssetCoverageMismatch,
     );
     if (root.base_access_kind == PACK_ACCESS_PAID_ONCE) {
-        assert!(root.protected_style_count > 0, EProtectedStyleMissing);
+        assert!(root.release.protected_style_count > 0, EProtectedStyleMissing);
     };
     let mut index = 0;
     while (index < root.pack_keys.length()) {
@@ -1780,7 +1790,7 @@ public fun seal_style_registry_v5(
         };
         index = index + 1;
     };
-    root.style_registry_sealed = true;
+    root.release.style_registry_sealed = true;
 }
 
 /// Called only by this package's reviewed Seal module after the exact Commerce
@@ -1794,24 +1804,24 @@ public(package) fun bind_seal_policy_v5(
     asset_count: u64,
 ) {
     assert_configurable(root);
-    assert!(root.style_registry_sealed, EStyleRegistryNotSealed);
+    assert!(root.release.style_registry_sealed, EStyleRegistryNotSealed);
     assert!(requires_seal_policy(root), ESealPolicyNotRequired);
-    assert!(root.seal_policy_id.is_none(), ESealPolicyAlreadyBound);
+    assert!(root.release.seal_policy_id.is_none(), ESealPolicyAlreadyBound);
     assert!(release_commitment.length() == 32, EInvalidSealCommitment);
     assert!(
-        asset_count > 0 && asset_count == root.protected_style_count,
+        asset_count > 0 && asset_count == root.release.protected_style_count,
         ESealAssetCoverageMismatch,
     );
-    root.seal_policy_id = option::some(policy_id);
-    root.seal_release_commitment = release_commitment;
+    root.release.seal_policy_id = option::some(policy_id);
+    root.release.seal_release_commitment = release_commitment;
 }
 
 public fun style_registry_sealed_v5(root: &MakerRootV5): bool {
-    root.style_registry_sealed
+    root.release.style_registry_sealed
 }
 
 public fun style_count_v5(root: &MakerRootV5): u64 {
-    root.style_count
+    root.release.style_count
 }
 
 /// Exact immutable Style-to-product lookup used by the Seal access policy.
@@ -2544,14 +2554,14 @@ fun assert_configurable(root: &MakerRootV5) {
 /// version/root so previously purchased access can never be revoked.
 fun assert_release_terms_mutable(root: &MakerRootV5) {
     assert!(
-        !root.style_registry_sealed && root.style_count == 0,
+        !root.release.style_registry_sealed && root.release.style_count == 0,
         EStyleRegistrySealed,
     );
 }
 
 fun requires_seal_policy(root: &MakerRootV5): bool {
     root.base_access_kind == PACK_ACCESS_PAID_ONCE
-        || root.paid_pack_count > 0
+        || root.release.paid_pack_count > 0
 }
 
 fun assert_listing(root: &MakerRootV5, listing: &MakerListingV5) {
@@ -2657,7 +2667,7 @@ fun build_complete_quote(
             product_key: b"".to_string(),
         },
     );
-    assert_policy_total_capacity(&root.base_policy, root.total_completes);
+    assert_policy_total_capacity(&root.base_policy, root.release.total_completes);
     let mut creator_charge = policy_charge(&root.base_policy, base_count);
     let used_pack_keys = derive_used_pack_keys(root, style_selections, wallet);
     let mut index = 0;
@@ -2761,7 +2771,7 @@ fun record_complete(
         record.complete_count = record.complete_count + 1;
         index = index + 1;
     };
-    root.total_completes = root.total_completes + 1;
+    root.release.total_completes = root.release.total_completes + 1;
 }
 
 fun record_complete_output(
@@ -2797,7 +2807,7 @@ fun record_complete_output(
             bound_soul_id: option::none(),
         },
     );
-    root.complete_output_count = root.complete_output_count + 1;
+    root.release.complete_output_count = root.release.complete_output_count + 1;
 }
 
 fun completion_count(root: &MakerRootV5, key: CompletionCountKeyV5): u64 {
@@ -3003,7 +3013,7 @@ fun assert_style_selection_alignment(
     recipe: &vector<RecipeSlot>,
     style_selections: &vector<StyleSelectionV5>,
 ) {
-    assert!(root.style_registry_sealed, EStyleRegistryNotSealed);
+    assert!(root.release.style_registry_sealed, EStyleRegistryNotSealed);
     assert!(
         style_selections.length() == recipe.length(),
         EStyleSelectionMismatch,
@@ -3585,7 +3595,7 @@ fun activate_maker_with_test_seal_if_required(
     ctx: &TxContext,
 ) {
     if (requires_seal_policy(root)) {
-        let protected_style_count = root.protected_style_count;
+        let protected_style_count = root.release.protected_style_count;
         bind_seal_policy_v5(
             root,
             object::id_from_address(@0x5EA1),
@@ -4999,7 +5009,7 @@ fun paid_maker_release_rejects_second_seal_policy_binding() {
         &ctx,
     );
     seal_style_registry_v5(&mut root, &cap, &ctx);
-    let protected_style_count = root.protected_style_count;
+    let protected_style_count = root.release.protected_style_count;
     bind_seal_policy_v5(
         &mut root,
         object::id_from_address(@0x5EA1),
@@ -5015,7 +5025,7 @@ fun paid_maker_release_rejects_second_seal_policy_binding() {
         root_seal_release_commitment_v5(&root)
             == &test_seal_release_commitment(),
     );
-    let protected_style_count = root.protected_style_count;
+    let protected_style_count = root.release.protected_style_count;
     bind_seal_policy_v5(
         &mut root,
         object::id_from_address(@0x5EA2),

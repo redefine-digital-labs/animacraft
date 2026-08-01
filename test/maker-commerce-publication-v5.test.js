@@ -14,6 +14,7 @@ import {
   advanceMakerCommerceV5Publication,
   createMakerCommerceV5PublicationCheckpoint,
   hydrateMakerCommerceV5PublicationCheckpoint,
+  resolveMakerSealCallablePackageV5,
   reconcileMakerCommerceV5Publication,
   serializeMakerCommerceV5PublicationCheckpoint,
 } from '../maker-commerce-publication-v5.js';
@@ -21,6 +22,7 @@ import {
 const id = (value) => normalizeSuiAddress(`0x${value}`);
 const IDS = Object.freeze({
   package: id('a'),
+  sealPackage: id('b'),
   owner: id('11'),
   otherOwner: id('12'),
   protocol: id('21'),
@@ -34,6 +36,18 @@ const IDS = Object.freeze({
   vault: id('44'),
   stylesTable: id('45'),
   packsTable: id('46'),
+});
+
+test('keeps Seal publication targets on the frozen v5 package after a v6 upgrade', () => {
+  assert.equal(resolveMakerSealCallablePackageV5({
+    callablePackageId: IDS.package,
+    sealV5CallablePackageId: IDS.sealPackage,
+    sealV5TypeOriginPackageId: IDS.sealPackage,
+  }), IDS.sealPackage);
+  assert.equal(resolveMakerSealCallablePackageV5({
+    callablePackageId: IDS.package,
+    sealV5PackageId: IDS.sealPackage,
+  }), IDS.sealPackage);
 });
 
 const PAYMENT = `${id('2')}::sui::SUI`;

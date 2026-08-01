@@ -605,6 +605,12 @@ export function parseCommerceProtocolTreasuryV5(object) {
 export function parseMakerRootV5(object) {
   const envelope = parseObjectEnvelope(object, 'MakerRootV5');
   const { fields } = envelope;
+  // Protocol-130 limits every Move struct to 32 fields. Current v5 roots keep
+  // release counters and Seal state in one nested store struct. Falling back
+  // to the flat shape keeps local pre-compat fixtures and diagnostic exports
+  // readable without changing the public parsed result.
+  const releaseValue = field(fields, 'release', 'release_state', 'releaseState');
+  const releaseFields = releaseValue?.fields || releaseValue || fields;
   const lifecycle = Number(u64(field(fields, 'lifecycle'), 'Maker lifecycle'));
   if (!Object.values(COMMERCE_V5_LIFECYCLE).includes(lifecycle)) {
     throw commerceError('COMMERCE_V5_INVALID_LIFECYCLE', 'MakerRootV5 contains an unsupported lifecycle value.');
@@ -622,18 +628,18 @@ export function parseMakerRootV5(object) {
     ? packKeysValue.map((value, index) => nonEmptyString(value, `Pack key ${index + 1}`))
     : [];
   const paidPackCount = u64(
-    field(fields, 'paid_pack_count', 'paidPackCount'),
+    field(releaseFields, 'paid_pack_count', 'paidPackCount'),
     'Maker paid Pack count',
   );
   const protectedStyleCount = u64(
-    field(fields, 'protected_style_count', 'protectedStyleCount'),
+    field(releaseFields, 'protected_style_count', 'protectedStyleCount'),
     'Maker Seal-protected Style count',
   );
   const sealPolicyId = optionalJsonId(
-    field(fields, 'seal_policy_id', 'sealPolicyId'),
+    field(releaseFields, 'seal_policy_id', 'sealPolicyId'),
   );
   const sealReleaseCommitmentBytes = byteVector(
-    field(fields, 'seal_release_commitment', 'sealReleaseCommitment'),
+    field(releaseFields, 'seal_release_commitment', 'sealReleaseCommitment'),
     'Maker Seal release commitment',
   );
   const sealPolicyBound = Boolean(sealPolicyId);
@@ -709,7 +715,7 @@ export function parseMakerRootV5(object) {
       'Maker logical auxiliary Walrus Blob ID',
     ),
     styleRegistrySealed: boolValue(
-      field(fields, 'style_registry_sealed', 'styleRegistrySealed'),
+      field(releaseFields, 'style_registry_sealed', 'styleRegistrySealed'),
       'Style registry sealed flag',
     ),
     completeOutputsTableId: normalizedSuiId(
@@ -717,7 +723,7 @@ export function parseMakerRootV5(object) {
       'Maker Complete output table ID',
     ),
     completeOutputCount: u64(
-      field(fields, 'complete_output_count', 'completeOutputCount'),
+      field(releaseFields, 'complete_output_count', 'completeOutputCount'),
       'Maker Complete output count',
     ),
     packKeys,
@@ -730,9 +736,9 @@ export function parseMakerRootV5(object) {
     sealReleaseCommitment: sealPolicyBound
       ? `0x${hexBytes(sealReleaseCommitmentBytes)}`
       : '',
-    packCount: u64(field(fields, 'pack_count', 'packCount'), 'Maker Pack count'),
-    styleCount: u64(field(fields, 'style_count', 'styleCount'), 'Maker Style count'),
-    totalCompletes: u64(field(fields, 'total_completes', 'totalCompletes'), 'Maker Complete count'),
+    packCount: u64(field(releaseFields, 'pack_count', 'packCount'), 'Maker Pack count'),
+    styleCount: u64(field(releaseFields, 'style_count', 'styleCount'), 'Maker Style count'),
+    totalCompletes: u64(field(releaseFields, 'total_completes', 'totalCompletes'), 'Maker Complete count'),
   });
 }
 

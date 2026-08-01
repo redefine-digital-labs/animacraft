@@ -16,6 +16,7 @@ use sui::table::{Self as table, Table};
 
 const VERSION: u64 = 4;
 const COMMERCE_V5_VERSION: u64 = 5;
+const COMPOSITION_V6_VERSION: u64 = 6;
 const MAX_ROYALTY_BPS: u16 = 500;
 const DEFAULT_PRIMARY_PROTOCOL_FEE_BPS: u16 = 5_000;
 const MAX_PRIMARY_PROTOCOL_FEE_BPS: u16 = 5_000;
@@ -76,6 +77,7 @@ const EDeprecatedPaidMint: u64 = 46;
 const EInsufficientProtocolRevenue: u64 = 47;
 const EDeprecatedFreeMint: u64 = 48;
 const ECommerceV5AlreadyInitialized: u64 = 49;
+const ECompositionV6AlreadyInitialized: u64 = 50;
 
 const LICENSE_PERSONAL: u8 = 0;
 const LICENSE_FREE_REMIX: u8 = 1;
@@ -97,6 +99,12 @@ public struct ANIMACRAFT has drop {}
 /// additive v5 companion prove that a second canonical v5 config cannot be
 /// initialized without changing any published v4 object layout.
 public struct CommerceV5InitializedKey has copy, drop, store {}
+
+/// One-time marker stored on the same canonical v4 protocol AdminCap after
+/// Commerce v5 has been initialized. The additive composition_v6 module uses
+/// this marker so one legacy authority can never mint a second canonical v6
+/// config/treasury/registry/capability set.
+public struct CompositionV6InitializedKey has copy, drop, store {}
 
 /// Creator-owned profile used by the creator workshop. This object is kept
 /// separate from OCMaker so creators can manage many maker templates from one
@@ -766,6 +774,29 @@ public(package) fun claim_commerce_v5_initializer(
     let key = CommerceV5InitializedKey {};
     assert!(!df::exists(&cap.id, key), ECommerceV5AlreadyInitialized);
     df::add(&mut cap.id, key, true);
+}
+
+/// Package-only bridge used by composition_v6 after Commerce v5 has verified
+/// the exact v5 config/AdminCap linkage. The marker is written before any v6
+/// object is created, making retries fail closed instead of creating another
+/// canonical object tuple.
+public(package) fun claim_composition_v6_initializer(
+    cap: &mut ProtocolFeeAdminCap,
+) {
+    let key = CompositionV6InitializedKey {};
+    assert!(!df::exists(&cap.id, key), ECompositionV6AlreadyInitialized);
+    df::add(&mut cap.id, key, COMPOSITION_V6_VERSION);
+}
+
+/// Read-only capability accessor used by deployment verification. Zero means
+/// v6 was never initialized; six identifies the exact claimed protocol
+/// generation without exposing a second mutation path.
+public fun composition_v6_initialized_version(
+    cap: &ProtocolFeeAdminCap,
+): u64 {
+    let key = CompositionV6InitializedKey {};
+    if (!df::exists(&cap.id, key)) return 0;
+    *df::borrow(&cap.id, key)
 }
 
 /// Package-only migration bridge. The legacy capability is validated against

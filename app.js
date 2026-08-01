@@ -8313,7 +8313,7 @@ async function queryMakerCommerceV5Publication({
         const policy = parseMakerSealPolicyV5(policyObject);
         if (
           comparableSuiId(String(policy.type || '').split('::')[0])
-            !== comparableSuiId(runtimeConfig.sealV5PackageId)
+            !== comparableSuiId(runtimeConfig.sealV5TypeOriginPackageId)
         ) {
           throw commerceV5Error(
             'MAKER_SEAL_V5_TYPE_ORIGIN_MISMATCH',
@@ -10733,7 +10733,7 @@ function pendingOcOutputIdentityV5({ requireBound = false } = {}) {
     || comparableSuiId(protection.makerRootId)
       !== comparableSuiId(chainBinding.rootObjectId)
     || comparableSuiId(protection.sealPackageId)
-      !== comparableSuiId(runtimeConfig.soulidityPackageId)
+      !== comparableSuiId(runtimeConfig.souliditySealNamespacePackageId)
     || comparableSuiId(protection.payer)
       !== comparableSuiId(state.walletAddress)
     || String(protection.recipeHash || '')
@@ -11427,7 +11427,7 @@ function mintReadiness() {
   if (activeTemplate().mintingEnabled === false || makerModels.get(activeTemplate().id)?.makerArchived) return t('makerMintClosed');
   if (activeTemplate().mintFeeEnabled && !activeTemplate().treasuryId && !state.makerTreasuryObjectId) return t('paidTreasuryMissing');
   if (!state.walletConnected) return t('connectMintWallet');
-  if (!/^0x[0-9a-f]+$/i.test(String(runtimeConfig.soulidityPackageId || '')) || String(runtimeConfig.soulidityPackageId).includes('TODO')) {
+  if (!/^0x[0-9a-f]+$/i.test(String(runtimeConfig.soulidityCallablePackageId || '')) || String(runtimeConfig.soulidityCallablePackageId).includes('TODO')) {
     return t('soulidityPackageMissing');
   }
   if (!canonicalSoulMintEnabled) return t('canonicalMintGateClosed');
@@ -11440,7 +11440,7 @@ function renderMintAction() {
   if (!$('mintOcOnchain')) return;
   const mintOpen = activeTemplate()?.mintingEnabled !== false && !makerModels.get(activeTemplate()?.id)?.makerArchived;
   const treasuryReady = !activeTemplate()?.mintFeeEnabled || Boolean(activeTemplate()?.treasuryId || state.makerTreasuryObjectId);
-  const soulidityReady = /^0x[0-9a-f]+$/i.test(String(runtimeConfig.soulidityPackageId || '')) && !String(runtimeConfig.soulidityPackageId).includes('TODO');
+  const soulidityReady = /^0x[0-9a-f]+$/i.test(String(runtimeConfig.soulidityCallablePackageId || '')) && !String(runtimeConfig.soulidityCallablePackageId).includes('TODO');
   const adapterReady = canonicalSoulMintEnabled;
   const baseReady = packageConfigured() && soulidityReady && activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId()) && state.walletConnected && mintOpen && treasuryReady && adapterReady && ocRecipeIssues().length === 0;
   const chainMakerReady = activeTemplate()?.source === 'chain' && Boolean(activeMakerObjectId());
@@ -12084,7 +12084,7 @@ async function restoreOcUploadRecovery(templateId = state.templateId, { force = 
           runtimeConfig.commerceV5TypeOriginPackageId,
         soulidityTypeOriginPackageId:
           runtimeConfig.soulidityTypeOriginPackageId
-          || runtimeConfig.soulidityPackageId,
+          || runtimeConfig.soulidityCallablePackageId,
       });
       if (!isCurrentRequest()) return;
       state.pendingOcCompletionReceipt = receipt;
@@ -15778,9 +15778,10 @@ async function prepareOcUpload() {
         const encryptedOutput = await encryptMakerCompleteOutputV5({
           sealClient: configuredMakerSealClientV5(),
           // Maker assets use Animacraft's policy package. A finished OC must
-          // follow Soul ownership after mint and resale, so its key policy is
-          // owned by Soulidity's current callable package.
-          sealPackageId: runtimeConfig.soulidityPackageId,
+          // follow Soul ownership after mint and resale. Ciphertext commits to
+          // Soulidity's permanent Seal namespace; approval calls may advance
+          // independently to the latest callable package after upgrades.
+          sealPackageId: runtimeConfig.souliditySealNamespacePackageId,
           threshold: runtimeConfig.sealThreshold,
           serverConfigs: runtimeConfig.sealKeyServers,
           makerRootId: commerceV5.chain.root.objectId,
@@ -16058,7 +16059,7 @@ async function handleSoulidityCompletionMessage(event) {
       commerceTypeOriginPackageId: runtimeConfig.commerceV5TypeOriginPackageId,
       soulidityTypeOriginPackageId:
         runtimeConfig.soulidityTypeOriginPackageId
-        || runtimeConfig.soulidityPackageId,
+        || runtimeConfig.soulidityCallablePackageId,
     });
     if (!contextIsActive()) {
       throw commerceV5Error(
@@ -16816,6 +16817,9 @@ function commerceV5RuntimeContext() {
     callablePackageId: runtimeConfig.callablePackageId,
     paymentCoinType: runtimeConfig.paymentCoinType,
     commerceV5TypeOriginPackageId: runtimeConfig.commerceV5TypeOriginPackageId,
+    sealV5CallablePackageId: runtimeConfig.sealV5CallablePackageId,
+    sealV5TypeOriginPackageId: runtimeConfig.sealV5TypeOriginPackageId,
+    sealV5PackageId: runtimeConfig.sealV5PackageId,
     commerceV5ReleaseEnabled: runtimeConfig.commerceV5ReleaseEnabled === true,
   };
 }
@@ -16832,10 +16836,18 @@ function composableV6RuntimeContext() {
     compositionProtocolConfigV6Id: runtimeConfig.compositionProtocolConfigV6Id,
     compositionProtocolTreasuryV6Id: runtimeConfig.compositionProtocolTreasuryV6Id,
     compositionRegistryV6Id: runtimeConfig.compositionRegistryV6Id,
+    compositionAdminCapV6Id: runtimeConfig.compositionAdminCapV6Id,
+    compositionAdminCapV6Owner: runtimeConfig.compositionAdminCapV6Owner,
+    compositionValidatorCapV6Id: runtimeConfig.compositionValidatorCapV6Id,
+    compositionValidatorCapV6Owner: runtimeConfig.compositionValidatorCapV6Owner,
+    compositionValidatorEpochV6: runtimeConfig.compositionValidatorEpochV6,
+    compositionValidatorPolicyCommitmentV6:
+      runtimeConfig.compositionValidatorPolicyCommitmentV6,
     compositionV6SoulOwnerProofType: runtimeConfig.compositionV6SoulOwnerProofType,
     compositionV6ReleaseEnabled: runtimeConfig.compositionV6ReleaseEnabled === true,
-    soulidityCallablePackageId: runtimeConfig.soulidityPackageId,
-    soulidityPackageId: runtimeConfig.soulidityPackageId,
+    soulidityCallablePackageId: runtimeConfig.soulidityCallablePackageId,
+    soulidityPackageId: runtimeConfig.soulidityCallablePackageId,
+    souliditySealNamespacePackageId: runtimeConfig.souliditySealNamespacePackageId,
     soulidityTypeOriginPackageId: runtimeConfig.soulidityTypeOriginPackageId,
     canonicalSoulMintEnabled,
   };
@@ -17261,12 +17273,11 @@ async function setPlayerComposableOwnedLockV6({
 function configuredMakerSealClientV5(serverConfigs = runtimeConfig.sealKeyServers) {
   if (
     !runtimeConfig.sealV5PackageId
-    || comparableSuiId(runtimeConfig.sealV5PackageId)
-      !== comparableSuiId(runtimeConfig.callablePackageId)
+    || !runtimeConfig.sealV5TypeOriginPackageId
   ) {
     throw commerceV5Error(
       'MAKER_SEAL_V5_PACKAGE_MISMATCH',
-      'Paid Maker content requires sealV5PackageId to match the callable package that defines seal_v5.',
+      'Paid Maker content requires the frozen Seal v5 callable package and stable TypeOrigin.',
     );
   }
   return createMakerSealClientV5({
@@ -17439,7 +17450,7 @@ async function verifiedMakerSealPolicyForPlayerV5(document, hydrated) {
     if (
       comparableSuiId(policy.objectId) !== comparableSuiId(root.sealPolicyId)
       || comparableSuiId(String(policy.type || '').split('::')[0])
-        !== comparableSuiId(runtimeConfig.sealV5PackageId)
+        !== comparableSuiId(runtimeConfig.sealV5TypeOriginPackageId)
     ) {
       throw commerceV5Error(
         'MAKER_SEAL_V5_TYPE_ORIGIN_MISMATCH',
@@ -17593,7 +17604,7 @@ async function resolveMakerSealRuntimeAssetV5(document, record, {
     const sessionKey = await makerSealSessionForPlayerV5(hydrated);
     if (signal?.aborted) throw makerSealAbortErrorV5(signal);
     const approval = buildMakerSealApprovalTransactionV5({
-      callablePackageId: runtimeConfig.callablePackageId,
+      callablePackageId: runtimeConfig.sealV5PackageId,
       policyId: verified.policy.objectId,
       makerRootId: hydrated.chain.root.objectId,
       sealId: protection.sealId,

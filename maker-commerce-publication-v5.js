@@ -149,6 +149,16 @@ function normalizedId(value, label) {
   }
 }
 
+export function resolveMakerSealCallablePackageV5(runtime = {}) {
+  return normalizedId(
+    runtime?.sealV5CallablePackageId
+      || runtime?.sealV5PackageId
+      || runtime?.callablePackageId
+      || runtime?.packageId,
+    'Seal v5 callable package ID',
+  );
+}
+
 function stableValue(value) {
   if (typeof value === 'bigint') return value.toString();
   if (Array.isArray(value)) return value.map(stableValue);
@@ -198,6 +208,7 @@ function normalizedRuntimeIdentity(runtime) {
         || runtime?.packageId,
       'Commerce v5 type-origin package ID',
     ),
+    sealV5CallablePackageId: resolveMakerSealCallablePackageV5(runtime),
     paymentCoinType: requiredString(
       runtime?.paymentCoinType,
       'Commerce v5 payment coin type',
@@ -1093,7 +1104,7 @@ function buildActionTransaction({
       });
       if (plan.seal?.required === true) {
         appendPublishMakerSealPolicyV5(transaction, {
-          callablePackageId: runtime.callablePackageId || runtime.packageId,
+          callablePackageId: resolveMakerSealCallablePackageV5(runtime),
           makerRootId: readback.root.objectId,
           releaseCommitment: plan.seal.releaseCommitment,
           registrations: plan.seal.registrations,

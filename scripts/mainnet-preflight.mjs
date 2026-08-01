@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction } from '@mysten/sui/transactions';
@@ -14,8 +15,153 @@ const args = new Set(process.argv.slice(2));
 const strict = args.has('--strict');
 const network = args.has('--network');
 const requireSoulidity = args.has('--require-soulidity');
+// Every strict Mainnet rehearsal after v6 ships must prove the complete tuple.
+// The explicit flag also lets CI exercise this fail-closed path without making
+// network calls.
+const requireCompositionV6 = args.has('--require-composition-v6')
+  || (strict && network);
+const allowCompositionV6Enabled = args.has('--allow-v6-enabled');
 const json = args.has('--json');
 const checks = [];
+const ZERO_SUI_ADDRESS = normalizeSuiAddress('0x0');
+
+export const COMPOSITION_V6_RUNTIME_FIELDS = Object.freeze([
+  'compositionV6TypeOriginPackageId',
+  'compositionProtocolConfigV6Id',
+  'compositionProtocolTreasuryV6Id',
+  'compositionRegistryV6Id',
+  'compositionAdminCapV6Id',
+  'compositionAdminCapV6Owner',
+  'compositionValidatorCapV6Id',
+  'compositionValidatorCapV6Owner',
+  'compositionValidatorEpochV6',
+  'compositionValidatorPolicyCommitmentV6',
+  'compositionV6SoulOwnerProofType',
+]);
+
+export const COMPOSITION_V6_DEPENDENCY_FIELDS = Object.freeze([
+  'commerceV5TypeOriginPackageId',
+  'commerceProtocolConfigV5Id',
+  'protocolFeeAdminCapId',
+  'paymentCoinType',
+  'soulidityTypeOriginPackageId',
+]);
+
+const COMPOSITION_V6_REQUIRED_RUNTIME_FIELDS = Object.freeze([
+  ...COMPOSITION_V6_RUNTIME_FIELDS,
+  ...COMPOSITION_V6_DEPENDENCY_FIELDS,
+]);
+
+const COMPOSITION_V6_DEPLOYMENT_FIELDS = Object.freeze([
+  'callablePackageId',
+  ...COMPOSITION_V6_REQUIRED_RUNTIME_FIELDS,
+]);
+
+function present(value) {
+  return value !== undefined && value !== null && String(value).trim() !== '';
+}
+
+export function normalizeBytes32(value) {
+  let bytes = value;
+  if (bytes && typeof bytes === 'object' && !Array.isArray(bytes)) {
+    bytes = bytes.bytes ?? bytes.vec ?? bytes.fields ?? bytes.value;
+  }
+  if (Array.isArray(bytes)) {
+    if (bytes.length !== 32 || bytes.some((entry) => (
+      !Number.isInteger(Number(entry)) || Number(entry) < 0 || Number(entry) > 255
+    ))) return '';
+    return `0x${bytes.map((entry) => Number(entry).toString(16).padStart(2, '0')).join('')}`;
+  }
+  const normalized = String(bytes || '').trim().toLowerCase();
+  const hex = normalized.startsWith('0x') ? normalized.slice(2) : normalized;
+  return /^[0-9a-f]{64}$/.test(hex) ? `0x${hex}` : '';
+}
+
+export function compositionV6Declared(config = {}) {
+  return config.compositionV6ReleaseEnabled === true
+    || COMPOSITION_V6_RUNTIME_FIELDS.some((field) => present(config[field]));
+}
+
+function normalizeDeploymentValue(field, value) {
+  if (field === 'compositionValidatorEpochV6') {
+    const epoch = Number(value);
+    return Number.isSafeInteger(epoch) && epoch >= 0 ? epoch : null;
+  }
+  if (field === 'compositionValidatorPolicyCommitmentV6') {
+    return normalizeBytes32(value);
+  }
+  if (field === 'compositionV6SoulOwnerProofType' || field === 'paymentCoinType') {
+    try {
+      return normalizeStructTag(String(value || ''));
+    } catch {
+      return '';
+    }
+  }
+  try {
+    const normalized = normalizeSuiAddress(String(value || ''));
+    return normalized === ZERO_SUI_ADDRESS ? '' : normalized;
+  } catch {
+    return '';
+  }
+}
+
+export function inspectCompositionV6Deployment(
+  config = {},
+  deployment = {},
+  { required = false } = {},
+) {
+  const declared = required || compositionV6Declared(config);
+  if (!declared) {
+    return {
+      declared: false,
+      ready: true,
+      runtimeMissing: [],
+      runtimeInvalid: [],
+      deploymentMissing: [],
+      mismatches: [],
+    };
+  }
+  const runtimeMissing = COMPOSITION_V6_REQUIRED_RUNTIME_FIELDS.filter((field) => (
+    !present(config[field])
+  ));
+  const runtimeInvalid = COMPOSITION_V6_REQUIRED_RUNTIME_FIELDS
+    .filter((field) => present(config[field]))
+    .filter((field) => {
+      if (field === 'compositionValidatorEpochV6') {
+        const epoch = Number(config[field]);
+        return !Number.isSafeInteger(epoch) || epoch < 0;
+      }
+      if (field === 'compositionValidatorPolicyCommitmentV6') {
+        return !normalizeBytes32(config[field]);
+      }
+      if (field === 'compositionV6SoulOwnerProofType') {
+        return !normalizeDeploymentValue(field, config[field]);
+      }
+      return !normalizeDeploymentValue(field, config[field]);
+    });
+  const deploymentMissing = COMPOSITION_V6_DEPLOYMENT_FIELDS.filter((field) => (
+    !present(deployment[field])
+  ));
+  const mismatches = COMPOSITION_V6_DEPLOYMENT_FIELDS
+    .filter((field) => !deploymentMissing.includes(field))
+    .filter((field) => {
+      const runtimeField = field === 'callablePackageId' ? 'callablePackageId' : field;
+      if (!present(config[runtimeField])) return false;
+      return normalizeDeploymentValue(field, deployment[field])
+        !== normalizeDeploymentValue(runtimeField, config[runtimeField]);
+    });
+  return {
+    declared: true,
+    ready: runtimeMissing.length === 0
+      && runtimeInvalid.length === 0
+      && deploymentMissing.length === 0
+      && mismatches.length === 0,
+    runtimeMissing,
+    runtimeInvalid,
+    deploymentMissing,
+    mismatches,
+  };
+}
 
 function record(name, ok, detail) {
   checks.push({ name, ok, detail: String(detail || '') });
@@ -118,22 +264,36 @@ function datatypeHasTypeOrigin(datatype, packageId) {
   }
 }
 
-async function simulateProtocolVersion(client, packageId, moduleName = 'animacraft') {
+async function simulateU64Function(
+  client,
+  packageId,
+  moduleName,
+  functionName,
+) {
   const tx = new Transaction();
-  tx.moveCall({ target: `${packageId}::${moduleName}::protocol_version` });
+  tx.moveCall({ target: `${packageId}::${moduleName}::${functionName}` });
   const result = await client.core.simulateTransaction({
     transaction: tx,
     checksEnabled: false,
     include: { commandResults: true },
   });
   if (result.$kind === 'FailedTransaction') {
-    throw new Error(result.FailedTransaction.status?.error?.message || 'protocol_version simulation failed.');
+    throw new Error(
+      result.FailedTransaction.status?.error?.message
+        || `${functionName} simulation failed.`,
+    );
   }
   const bytes = result.commandResults?.[0]?.returnValues?.[0]?.bcs;
-  if (!bytes || bytes.length !== 8) throw new Error('protocol_version did not return one BCS u64.');
+  if (!bytes || bytes.length !== 8) {
+    throw new Error(`${functionName} did not return one BCS u64.`);
+  }
   let value = 0n;
   for (let index = 7; index >= 0; index -= 1) value = (value << 8n) | BigInt(bytes[index]);
   return Number(value);
+}
+
+async function simulateProtocolVersion(client, packageId, moduleName = 'animacraft') {
+  return simulateU64Function(client, packageId, moduleName, 'protocol_version');
 }
 
 async function checkCommerceV5Abi(client, packageId, typeOriginPackageId) {
@@ -285,6 +445,187 @@ async function checkCommerceV5Abi(client, packageId, typeOriginPackageId) {
     );
   } catch (error) {
     record('Animacraft commerce v5 ABI', false, error.message);
+  }
+}
+
+async function checkCompositionV6Abi(client, packageId, typeOriginPackageId) {
+  if (!packageId || !typeOriginPackageId) return;
+  try {
+    const moduleName = 'composition_v6';
+    const functionNames = [
+      'composition_protocol_version_v6',
+      'initialize_composition_protocol_v6',
+      'bind_soul_owner_proof_type_v6',
+      'update_protocol_enabled_v6',
+      'rotate_validator_v6',
+      'transfer_composition_admin_cap_v6',
+      'transfer_validator_cap_v6',
+      'create_maker_profile_v6',
+      'seal_maker_profile_v6',
+      'cancel_unsealed_maker_profile_v6',
+      'publish_official_item_product_v6',
+      'publish_external_item_product_v6',
+      'publish_validator_attestation_v6',
+      'admit_official_item_v6',
+      'admit_certified_item_v6',
+      'admit_open_item_v6',
+      'deactivate_item_admission_v6',
+      'reactivate_item_admission_v6',
+      'claim_free_wallet_item_v6',
+      'claim_free_soul_item_v6',
+      'purchase_wallet_item_v6',
+      'purchase_soul_item_v6',
+      'transfer_owned_item_v6',
+      'lock_owned_item_to_soul_v6',
+      'unlock_owned_item_from_soul_v6',
+      'assert_secondary_market_loadout_v6',
+      'authorize_loadout_v6',
+      'consume_loadout_authorization_v6',
+      'authorize_initial_loadout_v6',
+      'consume_initial_loadout_authorization_v6',
+    ];
+    const datatypeNames = [
+      'CompositionProtocolConfigV6',
+      'CompositionProtocolTreasuryV6',
+      'CompositionAdminCapV6',
+      'ValidatorCapV6',
+      'WalletEntitlementKeyV6',
+      'SoulEntitlementKeyV6',
+      'LoadoutNonceKeyV6',
+      'EntitlementRecordV6',
+      'OwnedLockRecordV6',
+      'CompositionRegistryV6',
+      'MakerProfileV6',
+      'ItemProductV6',
+      'ValidatorAttestationV6',
+      'AdmissionRecordV6',
+      'OwnedItemV6',
+      'LoadoutSelectionV6',
+      'LoadoutAuthorizationV6',
+      'InitialLoadoutAuthorizationV6',
+    ];
+    const [functions, datatypes, version] = await Promise.all([
+      Promise.all(functionNames.map((name) => (
+        moveFunctionInModule(client, packageId, moduleName, name)
+      ))),
+      Promise.all(datatypeNames.map((name) => (
+        moveDatatypeInModule(client, packageId, moduleName, name)
+      ))),
+      simulateU64Function(
+        client,
+        packageId,
+        moduleName,
+        'composition_protocol_version_v6',
+      ),
+    ]);
+    const typeOrigin = normalizeSuiAddress(typeOriginPackageId);
+    const functionsByName = Object.fromEntries(
+      functionNames.map((name, index) => [name, functions[index]]),
+    );
+    const versionFn = functionsByName.composition_protocol_version_v6;
+    const initialize = functionsByName.initialize_composition_protocol_v6;
+    const bindProof = functionsByName.bind_soul_owner_proof_type_v6;
+    const updateGate = functionsByName.update_protocol_enabled_v6;
+    const rotateValidator = functionsByName.rotate_validator_v6;
+    const transferAdmin = functionsByName.transfer_composition_admin_cap_v6;
+    const transferValidator = functionsByName.transfer_validator_cap_v6;
+    const createProfile = functionsByName.create_maker_profile_v6;
+    const publishOfficial = functionsByName.publish_official_item_product_v6;
+    const publishExternal = functionsByName.publish_external_item_product_v6;
+    const purchaseWallet = functionsByName.purchase_wallet_item_v6;
+    const purchaseSoul = functionsByName.purchase_soul_item_v6;
+    const authorize = functionsByName.authorize_loadout_v6;
+    const consume = functionsByName.consume_loadout_authorization_v6;
+    const authorizeInitial = functionsByName.authorize_initial_loadout_v6;
+    const consumeInitial = functionsByName.consume_initial_loadout_authorization_v6;
+    const secondaryGuard = functionsByName.assert_secondary_market_loadout_v6;
+    const functionsReady = functions.every(Boolean)
+      && versionFn.parameters.length === 0
+      && versionFn.returns.length === 1
+      && versionFn.returns[0]?.body?.$kind === 'u64'
+      && initialize.typeParameters.length === 1
+      && initialize.parameters.length === 4
+      && moveTypeEndsWith(
+        initialize.parameters[0],
+        '::commerce_v5::CommerceProtocolConfigV5',
+      )
+      && moveTypeEndsWith(
+        initialize.parameters[1],
+        '::animacraft::ProtocolFeeAdminCap',
+      )
+      && initialize.returns.length === 0
+      && bindProof.typeParameters.length === 1
+      && bindProof.parameters.length === 3
+      && moveTypeEndsWith(
+        bindProof.parameters[0],
+        '::composition_v6::CompositionProtocolConfigV6',
+      )
+      && updateGate.parameters.length === 4
+      && rotateValidator.parameters.length === 6
+      && moveTypeEndsWith(
+        rotateValidator.parameters[3],
+        '::composition_v6::CompositionAdminCapV6',
+      )
+      && transferAdmin.parameters.length === 3
+      && moveTypeEndsWith(
+        transferAdmin.parameters[0],
+        '::composition_v6::CompositionAdminCapV6',
+      )
+      && transferValidator.parameters.length === 3
+      && moveTypeEndsWith(
+        transferValidator.parameters[0],
+        '::composition_v6::ValidatorCapV6',
+      )
+      && createProfile.parameters.length === 14
+      && publishOfficial.parameters.length === 18
+      && publishExternal.parameters.length === 18
+      && purchaseWallet.typeParameters.length === 1
+      && purchaseWallet.parameters.length === 10
+      && moveTypeEndsWith(
+        purchaseWallet.parameters[2],
+        '::composition_v6::CompositionProtocolTreasuryV6',
+      )
+      && purchaseSoul.typeParameters.length === 2
+      && purchaseSoul.parameters.length === 12
+      && authorize.typeParameters.length === 1
+      && authorize.parameters.length === 11
+      && authorize.returns.length === 1
+      && moveTypeEndsWith(
+        authorize.returns[0],
+        '::composition_v6::LoadoutAuthorizationV6',
+      )
+      && consume.parameters.length === 1
+      && moveTypeEndsWith(
+        consume.parameters[0],
+        '::composition_v6::LoadoutAuthorizationV6',
+      )
+      && consume.returns.length === 10
+      && authorizeInitial.typeParameters.length === 1
+      && authorizeInitial.parameters.length === 11
+      && authorizeInitial.returns.length === 1
+      && moveTypeEndsWith(
+        authorizeInitial.returns[0],
+        '::composition_v6::InitialLoadoutAuthorizationV6',
+      )
+      && consumeInitial.parameters.length === 1
+      && moveTypeEndsWith(
+        consumeInitial.parameters[0],
+        '::composition_v6::InitialLoadoutAuthorizationV6',
+      )
+      && consumeInitial.returns.length === 10
+      && secondaryGuard.parameters.length === 8;
+    const originsReady = datatypes.every((datatype) => (
+      datatypeHasTypeOrigin(datatype, typeOrigin)
+    ));
+    record(
+      'Animacraft composition v6 ABI',
+      version === 6 && functionsReady && originsReady,
+      version === 6 && functionsReady && originsReady
+        ? `protocol_version=6; caps, profiles, official/certified/open Items, entitlements, ownership locks, loadout authorizations, and secondary-market guard verified; TypeOrigin=${typeOrigin}`
+        : 'Required composition v6 ABI or stable TypeOrigin differs.',
+    );
+  } catch (error) {
+    record('Animacraft composition v6 ABI', false, error.message);
   }
 }
 
@@ -689,6 +1030,324 @@ async function checkCommerceV5Objects(client, config, validation) {
   }
 }
 
+function normalizedStructTag(value) {
+  try {
+    return normalizeStructTag(String(value || ''));
+  } catch {
+    return '';
+  }
+}
+
+function u64Value(value) {
+  let candidate = value;
+  const visited = new Set();
+  while (candidate && typeof candidate === 'object' && !visited.has(candidate)) {
+    visited.add(candidate);
+    candidate = candidate.value
+      ?? candidate.fields
+      ?? candidate.balance
+      ?? candidate.amount;
+  }
+  const number = Number(candidate);
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+
+export function inspectCompositionV6ObjectState(
+  objects,
+  config,
+  { allowEnabled = false } = {},
+) {
+  const [
+    configObject,
+    treasuryObject,
+    registryObject,
+    adminObject,
+    validatorObject,
+    v5ConfigObject,
+  ] = objects || [];
+  const failures = [];
+  const assert = (condition, message) => {
+    if (!condition) failures.push(message);
+  };
+  if ([
+    configObject,
+    treasuryObject,
+    registryObject,
+    adminObject,
+    validatorObject,
+    v5ConfigObject,
+  ].some((object) => !object || object instanceof Error)) {
+    return {
+      ready: false,
+      failures: ['One or more v6/v5 protocol objects are missing.'],
+      detail: 'Protocol object tuple is incomplete.',
+    };
+  }
+
+  const typeOrigin = suiId(config.compositionV6TypeOriginPackageId);
+  const v5TypeOrigin = suiId(config.commerceV5TypeOriginPackageId);
+  const paymentType = normalizedStructTag(config.paymentCoinType);
+  const configId = suiId(config.compositionProtocolConfigV6Id);
+  const treasuryId = suiId(config.compositionProtocolTreasuryV6Id);
+  const registryId = suiId(config.compositionRegistryV6Id);
+  const adminId = suiId(config.compositionAdminCapV6Id);
+  const validatorId = suiId(config.compositionValidatorCapV6Id);
+  const v5ConfigId = suiId(config.commerceProtocolConfigV5Id);
+  const v5AdminCapId = suiId(config.protocolFeeAdminCapId);
+  const adminOwner = suiId(config.compositionAdminCapV6Owner);
+  const validatorOwner = suiId(config.compositionValidatorCapV6Owner);
+  const validatorEpoch = Number(config.compositionValidatorEpochV6);
+  const policyCommitment = normalizeBytes32(
+    config.compositionValidatorPolicyCommitmentV6,
+  );
+  const proofType = normalizedStructTag(config.compositionV6SoulOwnerProofType);
+  const expectedProofType = normalizedStructTag(
+    `${suiId(config.soulidityTypeOriginPackageId)}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
+  );
+  const configJson = configObject.json || {};
+  const treasuryJson = treasuryObject.json || {};
+  const registryJson = registryObject.json || {};
+  const adminJson = adminObject.json || {};
+  const validatorJson = validatorObject.json || {};
+  const v5ConfigJson = v5ConfigObject.json || {};
+  const expectedTypes = [
+    `${typeOrigin}::composition_v6::CompositionProtocolConfigV6`,
+    `${typeOrigin}::composition_v6::CompositionProtocolTreasuryV6<${paymentType}>`,
+    `${typeOrigin}::composition_v6::CompositionRegistryV6`,
+    `${typeOrigin}::composition_v6::CompositionAdminCapV6`,
+    `${typeOrigin}::composition_v6::ValidatorCapV6`,
+    `${v5TypeOrigin}::commerce_v5::CommerceProtocolConfigV5`,
+  ].map(normalizedStructTag);
+  [
+    configObject,
+    treasuryObject,
+    registryObject,
+    adminObject,
+    validatorObject,
+    v5ConfigObject,
+  ].forEach((object, index) => {
+    assert(
+      normalizedStructTag(object.type) === expectedTypes[index],
+      `Object ${index + 1} has the wrong stable TypeOrigin or generic type.`,
+    );
+  });
+  assert(isSharedOwner(configObject.owner), 'Composition config is not shared.');
+  assert(isSharedOwner(treasuryObject.owner), 'Composition treasury is not shared.');
+  assert(isSharedOwner(registryObject.owner), 'Composition registry is not shared.');
+  assert(isSharedOwner(v5ConfigObject.owner), 'Bound Commerce v5 config is not shared.');
+  assert(
+    addressOwner(adminObject.owner) === adminOwner,
+    'Composition AdminCap owner differs from the recorded custodian.',
+  );
+  assert(
+    addressOwner(validatorObject.owner) === validatorOwner,
+    'ValidatorCap owner differs from the recorded validator custodian.',
+  );
+  [configJson, treasuryJson, registryJson, adminJson, validatorJson].forEach(
+    (value, index) => assert(
+      Number(jsonField(value, 'version')) === 6,
+      `Composition object ${index + 1} is not version 6.`,
+    ),
+  );
+  assert(
+    Number(jsonField(v5ConfigJson, 'version')) === 5,
+    'Bound Commerce config is not version 5.',
+  );
+  assert(
+    suiId(jsonField(configJson, 'v5_config_id', 'v5ConfigId')) === v5ConfigId,
+    'Composition config is bound to a different Commerce v5 config.',
+  );
+  assert(
+    suiId(jsonField(configJson, 'v5_admin_cap_id', 'v5AdminCapId'))
+      === v5AdminCapId,
+    'Composition config is bound to a different v4/v5 protocol authority.',
+  );
+  assert(
+    suiId(jsonField(configJson, 'treasury_id', 'treasuryId')) === treasuryId,
+    'Composition config points to a different treasury.',
+  );
+  assert(
+    suiId(jsonField(configJson, 'registry_id', 'registryId')) === registryId,
+    'Composition config points to a different registry.',
+  );
+  assert(
+    suiId(jsonField(configJson, 'validator_cap_id', 'validatorCapId'))
+      === validatorId,
+    'Composition config points to a different ValidatorCap.',
+  );
+  assert(
+    suiId(jsonField(treasuryJson, 'config_id', 'configId')) === configId,
+    'Composition treasury points to a different config.',
+  );
+  assert(
+    suiId(jsonField(registryJson, 'config_id', 'configId')) === configId,
+    'Composition registry points to a different config.',
+  );
+  assert(
+    suiId(jsonField(adminJson, 'config_id', 'configId')) === configId,
+    'Composition AdminCap points to a different config.',
+  );
+  assert(
+    suiId(jsonField(validatorJson, 'config_id', 'configId')) === configId,
+    'ValidatorCap points to a different config.',
+  );
+  assert(
+    Number(jsonField(configJson, 'validator_epoch', 'validatorEpoch'))
+      === validatorEpoch,
+    'Composition config validator epoch differs from runtime configuration.',
+  );
+  assert(
+    Number(jsonField(validatorJson, 'validator_epoch', 'validatorEpoch'))
+      === validatorEpoch,
+    'ValidatorCap epoch differs from the active config epoch.',
+  );
+  assert(
+    normalizeBytes32(jsonField(
+      configJson,
+      'validator_policy_commitment',
+      'validatorPolicyCommitment',
+    )) === policyCommitment,
+    'Validator policy commitment differs from runtime configuration.',
+  );
+  assert(
+    normalizedStructTag(String(optionValue(jsonField(
+      configJson,
+      'soul_owner_proof_type',
+      'soulOwnerProofType',
+    )) || '')) === proofType,
+    'Soul owner proof type is absent or differs from the stable Soulidity TypeOrigin.',
+  );
+  assert(
+    proofType === expectedProofType,
+    'Runtime Soul owner proof type does not use the stable Soulidity TypeOrigin.',
+  );
+  assert(
+    normalizedStructTag(jsonField(configJson, 'payment_coin_type', 'paymentCoinType'))
+      === paymentType,
+    'Composition config payment coin differs from native Sui USDC.',
+  );
+  assert(
+    normalizedStructTag(jsonField(
+      v5ConfigJson,
+      'payment_coin_type',
+      'paymentCoinType',
+    )) === paymentType,
+    'Commerce v5 config payment coin differs from the v6 payment coin.',
+  );
+  assert(
+    suiId(jsonField(v5ConfigJson, 'legacy_admin_cap_id', 'legacyAdminCapId'))
+      === v5AdminCapId,
+    'Commerce v5 config is bound to a different legacy AdminCap.',
+  );
+  const primaryFeeBps = Number(jsonField(
+    configJson,
+    'primary_protocol_fee_bps',
+    'primaryProtocolFeeBps',
+  ));
+  const v5PrimaryFeeBps = Number(jsonField(
+    v5ConfigJson,
+    'primary_protocol_fee_bps',
+    'primaryProtocolFeeBps',
+  ));
+  assert(
+    primaryFeeBps === v5PrimaryFeeBps,
+    'Composition primary fee snapshot differs from Commerce v5.',
+  );
+  const enabled = jsonField(configJson, 'enabled') === true;
+  const v5Enabled = jsonField(v5ConfigJson, 'enabled') === true;
+  assert(
+    enabled === (config.compositionV6ReleaseEnabled === true),
+    'Composition on-chain gate differs from runtime configuration.',
+  );
+  assert(
+    v5Enabled === (config.commerceV5ReleaseEnabled === true),
+    'Bound Commerce v5 on-chain gate differs from runtime configuration.',
+  );
+  if (!allowEnabled) {
+    assert(!enabled, 'Composition v6 must remain disabled during initial Mainnet preflight.');
+    assert(
+      config.compositionV6ReleaseEnabled === false,
+      'Runtime composition v6 gate must remain disabled during initial Mainnet preflight.',
+    );
+  }
+  const revenue = u64Value(jsonField(treasuryJson, 'revenue'));
+  const collected = u64Value(jsonField(
+    treasuryJson,
+    'total_collected',
+    'totalCollected',
+  ));
+  const withdrawn = u64Value(jsonField(
+    treasuryJson,
+    'total_withdrawn',
+    'totalWithdrawn',
+  ));
+  assert(revenue !== null, 'Composition treasury revenue is not a valid u64.');
+  assert(collected !== null, 'Composition treasury total_collected is not a valid u64.');
+  assert(withdrawn !== null, 'Composition treasury total_withdrawn is not a valid u64.');
+  assert(
+    collected >= withdrawn,
+    'Composition treasury total_withdrawn exceeds total_collected.',
+  );
+  assert(
+    revenue !== null && collected !== null && withdrawn !== null
+      && revenue === collected - withdrawn,
+    'Composition treasury balance does not equal collected minus withdrawn.',
+  );
+
+  return {
+    ready: failures.length === 0,
+    failures,
+    detail: `TypeOrigin=${typeOrigin}; config=${configId}; treasury=${treasuryId}; registry=${registryId}; AdminCap=${adminId} owner=${addressOwner(adminObject.owner) || 'unknown'}; ValidatorCap=${validatorId} owner=${addressOwner(validatorObject.owner) || 'unknown'} epoch=${validatorEpoch}; policy=${policyCommitment || 'missing'}; proof=${proofType || 'missing'}; fee=${primaryFeeBps} bps; gate=${enabled}`,
+  };
+}
+
+async function checkCompositionV6Objects(
+  client,
+  config,
+  deploymentStatus,
+) {
+  if (!deploymentStatus.declared) return;
+  if (!deploymentStatus.ready) {
+    record(
+      'Animacraft composition v6 objects',
+      false,
+      'The complete runtime and deployment record must agree before chain read-back.',
+    );
+    return;
+  }
+  try {
+    const result = await deadline('Animacraft composition v6 objects', () => (
+      client.core.getObjects({
+        objectIds: [
+          config.compositionProtocolConfigV6Id,
+          config.compositionProtocolTreasuryV6Id,
+          config.compositionRegistryV6Id,
+          config.compositionAdminCapV6Id,
+          config.compositionValidatorCapV6Id,
+          config.commerceProtocolConfigV5Id,
+        ],
+        include: { json: true },
+      })
+    ));
+    const errors = result.objects.filter((object) => object instanceof Error);
+    if (errors.length) {
+      throw new Error(errors.map((error) => error.message).join('; '));
+    }
+    const status = inspectCompositionV6ObjectState(result.objects, config, {
+      allowEnabled: allowCompositionV6Enabled,
+    });
+    record(
+      'Animacraft composition v6 objects',
+      status.ready,
+      status.ready
+        ? status.detail
+        : `${status.detail} | ${status.failures.join(' ')}`,
+    );
+  } catch (error) {
+    record('Animacraft composition v6 objects', false, error.message);
+  }
+}
+
 async function deadline(label, task, timeout = 12_000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`${label} timed out`)), timeout);
@@ -704,6 +1363,52 @@ async function loadPublicConfig() {
   const context = vm.createContext({ window: {} });
   new vm.Script(source, { filename: 'public/config.js' }).runInContext(context, { timeout: 1_000 });
   return normalizeRuntimeConfig(context.window.ANIMACRAFT_CONFIG || {});
+}
+
+async function loadMainnetDeployment() {
+  return JSON.parse(await readFile(
+    new URL('../deployments/mainnet.json', import.meta.url),
+    'utf8',
+  ));
+}
+
+function recordCompositionV6Deployment(status, config) {
+  if (!status.declared) return;
+  record(
+    'Animacraft composition v6 runtime tuple',
+    status.runtimeMissing.length === 0 && status.runtimeInvalid.length === 0,
+    status.runtimeMissing.length || status.runtimeInvalid.length
+      ? [
+        status.runtimeMissing.length
+          ? `missing: ${status.runtimeMissing.join(', ')}`
+          : '',
+        status.runtimeInvalid.length
+          ? `invalid: ${status.runtimeInvalid.join(', ')}`
+          : '',
+      ].filter(Boolean).join('; ')
+      : 'Complete Config/Treasury/Registry/AdminCap/ValidatorCap, custody, epoch, policy, and proof tuple is recorded.',
+  );
+  record(
+    'Animacraft composition v6 deployment record',
+    status.deploymentMissing.length === 0 && status.mismatches.length === 0,
+    status.deploymentMissing.length || status.mismatches.length
+      ? [
+        status.deploymentMissing.length
+          ? `missing: ${status.deploymentMissing.join(', ')}`
+          : '',
+        status.mismatches.length
+          ? `runtime/deployment mismatch: ${status.mismatches.join(', ')}`
+          : '',
+      ].filter(Boolean).join('; ')
+      : 'Runtime IDs, custodians, validator policy, epoch, proof, and callable package match deployments/mainnet.json.',
+  );
+  record(
+    'Animacraft composition v6 deployment gate',
+    allowCompositionV6Enabled || config.compositionV6ReleaseEnabled === false,
+    allowCompositionV6Enabled
+      ? 'Enabled-gate verification explicitly allowed for a post-activation audit.'
+      : 'Initial Mainnet preflight requires the runtime and on-chain v6 gates to remain disabled.',
+  );
 }
 
 async function checkHttp(name, url, path) {
@@ -743,7 +1448,7 @@ async function checkWalrusRelayTipPolicy(client, config) {
   }
 }
 
-async function checkNetwork(config, validation) {
+async function checkNetwork(config, validation, compositionDeploymentStatus) {
   const client = new SuiGrpcClient({ network: 'mainnet', baseUrl: config.grpcUrl });
   try {
     const result = await deadline('Sui gRPC', () => client.core.getChainIdentifier());
@@ -823,9 +1528,24 @@ async function checkNetwork(config, validation) {
         config.commerceV5TypeOriginPackageId,
       );
     }
+    if (
+      compositionDeploymentStatus.declared
+      && present(config.compositionV6TypeOriginPackageId)
+    ) {
+      await checkCompositionV6Abi(
+        client,
+        config.callablePackageId,
+        config.compositionV6TypeOriginPackageId,
+      );
+    }
   }
   await checkProtocolFeeObjects(client, config, validation);
   await checkCommerceV5Objects(client, config, validation);
+  await checkCompositionV6Objects(
+    client,
+    config,
+    compositionDeploymentStatus,
+  );
 
   if (validation.soulidityReady) {
     const soulidityMintFunction = config.commerceV5ReleaseEnabled
@@ -871,18 +1591,68 @@ async function checkNetwork(config, validation) {
   }
 }
 
-const config = await loadPublicConfig();
-const validation = validateRuntimeConfig(config, { strict, requireSoulidity });
-validation.errors.forEach((message) => record('Runtime config', false, message));
-validation.warnings.forEach((message) => record('Runtime config warning', true, message));
-if (!validation.errors.length) record('Runtime config', true, strict ? 'Strict production fields are complete.' : 'Source configuration is structurally valid.');
-if (network) await checkNetwork(config, validation);
+export async function runMainnetPreflight() {
+  checks.length = 0;
+  const config = await loadPublicConfig();
+  let deployment = {};
+  try {
+    deployment = await loadMainnetDeployment();
+  } catch (error) {
+    if (requireCompositionV6 || compositionV6Declared(config)) {
+      record(
+        'Animacraft composition v6 deployment record',
+        false,
+        `deployments/mainnet.json could not be loaded: ${error.message}`,
+      );
+    }
+  }
+  const compositionDeploymentStatus = inspectCompositionV6Deployment(
+    config,
+    deployment,
+    { required: requireCompositionV6 },
+  );
+  recordCompositionV6Deployment(compositionDeploymentStatus, config);
 
-const failed = checks.filter((check) => !check.ok);
-if (json) {
-  process.stdout.write(`${JSON.stringify({ ok: failed.length === 0, strict, network, checks }, null, 2)}\n`);
-} else {
-  checks.forEach((check) => process.stdout.write(`${check.ok ? 'PASS' : 'FAIL'}  ${check.name}: ${check.detail}\n`));
-  process.stdout.write(`\n${failed.length ? `${failed.length} preflight check(s) failed.` : 'Animacraft preflight passed.'}\n`);
+  const validation = validateRuntimeConfig(config, { strict, requireSoulidity });
+  validation.errors.forEach((message) => record('Runtime config', false, message));
+  validation.warnings.forEach((message) => record('Runtime config warning', true, message));
+  if (!validation.errors.length) {
+    record(
+      'Runtime config',
+      true,
+      strict
+        ? 'Strict production fields are complete.'
+        : 'Source configuration is structurally valid.',
+    );
+  }
+  if (network) {
+    await checkNetwork(config, validation, compositionDeploymentStatus);
+  }
+
+  const failed = checks.filter((check) => !check.ok);
+  if (json) {
+    process.stdout.write(`${JSON.stringify({
+      ok: failed.length === 0,
+      strict,
+      network,
+      requireCompositionV6,
+      allowCompositionV6Enabled,
+      checks,
+    }, null, 2)}\n`);
+  } else {
+    checks.forEach((check) => process.stdout.write(
+      `${check.ok ? 'PASS' : 'FAIL'}  ${check.name}: ${check.detail}\n`,
+    ));
+    process.stdout.write(
+      `\n${failed.length
+        ? `${failed.length} preflight check(s) failed.`
+        : 'Animacraft preflight passed.'}\n`,
+    );
+  }
+  process.exitCode = failed.length ? 1 : 0;
+  return { ok: failed.length === 0, checks: [...checks] };
 }
-process.exitCode = failed.length ? 1 : 0;
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await runMainnetPreflight();
+}

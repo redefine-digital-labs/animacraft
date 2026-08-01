@@ -1,6 +1,6 @@
 module animacraft::composition_v6;
 
-use animacraft::animacraft::ProtocolFeeAdminCap;
+use animacraft::animacraft::{Self as legacy, ProtocolFeeAdminCap};
 use animacraft::commerce_v5::{
     Self as commerce,
     CommerceProtocolConfigV5,
@@ -553,10 +553,18 @@ fun new_protocol_objects<PaymentCoin>(
 /// Additive v6 initialization. It never mutates or migrates a v5 Maker.
 public fun initialize_composition_protocol_v6<PaymentCoin>(
     v5_config: &CommerceProtocolConfigV5,
-    v5_admin: &ProtocolFeeAdminCap,
+    v5_admin: &mut ProtocolFeeAdminCap,
     validator_policy_commitment: vector<u8>,
     ctx: &mut TxContext,
 ) {
+    commerce::assert_extension_protocol_admin_v5(v5_config, v5_admin);
+    assert_hash(&validator_policy_commitment);
+    assert!(
+        &payment_coin_type_name<PaymentCoin>()
+            == commerce::extension_payment_coin_type_v5(v5_config),
+        EPaymentCoinMismatch,
+    );
+    legacy::claim_composition_v6_initializer(v5_admin);
     let (config, treasury, registry, admin, validator) =
         new_protocol_objects<PaymentCoin>(
             v5_config,
@@ -701,6 +709,53 @@ public fun rotate_validator_v6_for_testing(
         validator_policy_commitment,
         ctx,
     )
+}
+
+/// Explicit custody migration for the composition administrator. The Cap has
+/// no `store` ability, so it can move only through this reviewed module path.
+/// Passing the owned Cap proves current custody; the non-zero recipient check
+/// prevents accidentally burning production authority.
+public fun transfer_composition_admin_cap_v6(
+    cap: CompositionAdminCapV6,
+    recipient: address,
+    ctx: &TxContext,
+) {
+    assert!(recipient != @0x0 && recipient != ctx.sender(), EInvalidRecipient);
+    transfer::transfer(cap, recipient);
+}
+
+/// Explicit custody migration for the currently authoritative validator Cap.
+/// Stale rotated Caps may also be moved, but remain powerless because config
+/// continues to pin the active object ID and epoch.
+public fun transfer_validator_cap_v6(
+    cap: ValidatorCapV6,
+    recipient: address,
+    ctx: &TxContext,
+) {
+    assert!(recipient != @0x0 && recipient != ctx.sender(), EInvalidRecipient);
+    transfer::transfer(cap, recipient);
+}
+
+public fun composition_admin_cap_id_v6(self: &CompositionAdminCapV6): ID {
+    object::id(self)
+}
+
+public fun composition_admin_cap_config_id_v6(
+    self: &CompositionAdminCapV6,
+): ID {
+    self.config_id
+}
+
+public fun validator_cap_id_v6(self: &ValidatorCapV6): ID {
+    object::id(self)
+}
+
+public fun validator_cap_config_id_v6(self: &ValidatorCapV6): ID {
+    self.config_id
+}
+
+public fun validator_cap_epoch_v6(self: &ValidatorCapV6): u64 {
+    self.validator_epoch
 }
 
 public fun protocol_config_id_v6(self: &CompositionProtocolConfigV6): ID {
@@ -3060,6 +3115,9 @@ public struct TrustedSoulOwnerProofV6 has drop {}
 public struct UntrustedSoulOwnerProofV6 has drop {}
 
 #[test_only]
+public struct WrongPaymentCoinV6 has drop {}
+
+#[test_only]
 public fun trusted_soul_owner_proof_v6(): TrustedSoulOwnerProofV6 {
     TrustedSoulOwnerProofV6 {}
 }
@@ -3128,6 +3186,202 @@ fun companion_manifest_rejects_non_sha256_hash() {
         &b"walrus-companion-v6".to_string(),
         &vector[1, 2, 3],
     );
+}
+
+#[test, expected_failure(abort_code = 50, location = animacraft::animacraft)]
+fun canonical_v6_protocol_can_only_initialize_once() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 589, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (
+        _legacy_profile,
+        _maker,
+        _legacy_treasury,
+        _legacy_config,
+        _legacy_protocol_treasury,
+        mut protocol_admin,
+        v5_config,
+        _v5_protocol_treasury,
+        _root,
+        _v5_maker_treasury,
+        _vault,
+        _cap,
+    ) = commerce::v5_world_for_testing(
+        commerce::new_completion_policy(
+            commerce::policy_unlimited_free(),
+            0,
+            0,
+        ),
+        &mut ctx,
+        &clock,
+    );
+    initialize_composition_protocol_v6<sui::sui::SUI>(
+        &v5_config,
+        &mut protocol_admin,
+        test_commitment(88),
+        &mut ctx,
+    );
+    initialize_composition_protocol_v6<sui::sui::SUI>(
+        &v5_config,
+        &mut protocol_admin,
+        test_commitment(89),
+        &mut ctx,
+    );
+    abort 99
+}
+
+#[test, expected_failure(abort_code = 6, location = animacraft::composition_v6)]
+fun canonical_v6_initializer_rejects_invalid_policy_before_claim() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 586, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (
+        _legacy_profile,
+        _maker,
+        _legacy_treasury,
+        _legacy_config,
+        _legacy_protocol_treasury,
+        mut protocol_admin,
+        v5_config,
+        _v5_protocol_treasury,
+        _root,
+        _v5_maker_treasury,
+        _vault,
+        _cap,
+    ) = commerce::v5_world_for_testing(
+        commerce::new_completion_policy(
+            commerce::policy_unlimited_free(),
+            0,
+            0,
+        ),
+        &mut ctx,
+        &clock,
+    );
+    initialize_composition_protocol_v6<sui::sui::SUI>(
+        &v5_config,
+        &mut protocol_admin,
+        vector[1, 2, 3],
+        &mut ctx,
+    );
+    abort 99
+}
+
+#[test, expected_failure(abort_code = 3, location = animacraft::composition_v6)]
+fun canonical_v6_initializer_rejects_wrong_coin_before_claim() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 585, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (
+        _legacy_profile,
+        _maker,
+        _legacy_treasury,
+        _legacy_config,
+        _legacy_protocol_treasury,
+        mut protocol_admin,
+        v5_config,
+        _v5_protocol_treasury,
+        _root,
+        _v5_maker_treasury,
+        _vault,
+        _cap,
+    ) = commerce::v5_world_for_testing(
+        commerce::new_completion_policy(
+            commerce::policy_unlimited_free(),
+            0,
+            0,
+        ),
+        &mut ctx,
+        &clock,
+    );
+    initialize_composition_protocol_v6<WrongPaymentCoinV6>(
+        &v5_config,
+        &mut protocol_admin,
+        test_commitment(87),
+        &mut ctx,
+    );
+    abort 99
+}
+
+#[test]
+fun valid_v6_initializer_records_exact_marker_version() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 584, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (
+        legacy_profile,
+        maker,
+        legacy_treasury,
+        legacy_config,
+        legacy_protocol_treasury,
+        mut protocol_admin,
+        v5_config,
+        v5_protocol_treasury,
+        root,
+        v5_maker_treasury,
+        vault,
+        cap,
+    ) = commerce::v5_world_for_testing(
+        commerce::new_completion_policy(
+            commerce::policy_unlimited_free(),
+            0,
+            0,
+        ),
+        &mut ctx,
+        &clock,
+    );
+    assert!(legacy::composition_v6_initialized_version(&protocol_admin) == 0);
+    initialize_composition_protocol_v6<sui::sui::SUI>(
+        &v5_config,
+        &mut protocol_admin,
+        test_commitment(86),
+        &mut ctx,
+    );
+    assert!(legacy::composition_v6_initialized_version(&protocol_admin) == 6);
+    sui::clock::destroy_for_testing(clock);
+    commerce::destroy_v5_world_for_testing(
+        legacy_profile,
+        maker,
+        legacy_treasury,
+        legacy_config,
+        legacy_protocol_treasury,
+        protocol_admin,
+        v5_config,
+        v5_protocol_treasury,
+        root,
+        v5_maker_treasury,
+        vault,
+        cap,
+    );
+}
+
+#[test]
+fun composition_control_caps_support_explicit_custody_migration() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 588, 0, 0, 0);
+    let config_id = object::id_from_address(@0xC066);
+    let admin = CompositionAdminCapV6 {
+        id: object::new(&mut ctx),
+        version: VERSION,
+        config_id,
+    };
+    let validator = ValidatorCapV6 {
+        id: object::new(&mut ctx),
+        version: VERSION,
+        config_id,
+        validator_epoch: 0,
+    };
+    assert!(composition_admin_cap_config_id_v6(&admin) == config_id);
+    assert!(validator_cap_config_id_v6(&validator) == config_id);
+    assert!(validator_cap_epoch_v6(&validator) == 0);
+    transfer_composition_admin_cap_v6(admin, @0xBEEF, &ctx);
+    transfer_validator_cap_v6(validator, @0xCAFE, &ctx);
+}
+
+#[test, expected_failure(abort_code = 28, location = animacraft::composition_v6)]
+fun composition_control_cap_rejects_zero_recipient() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 587, 0, 0, 0);
+    let admin = CompositionAdminCapV6 {
+        id: object::new(&mut ctx),
+        version: VERSION,
+        config_id: object::id_from_address(@0xC066),
+    };
+    transfer_composition_admin_cap_v6(admin, @0x0, &ctx);
+    abort 99
 }
 
 #[test_only]
