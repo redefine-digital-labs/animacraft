@@ -543,18 +543,29 @@ test('plan target tampering and confirmation digest substitution are rejected', 
   );
 });
 
-test('every Player target name exists on the audited Animacraft or Soulidity Move surface', async () => {
+test('every Player target name exists on a repository-local audited Move interface', async () => {
   const animacraft = await readFile(
     new URL('../move/animacraft/sources/composition_v6.move', import.meta.url),
     'utf8',
   );
-  const soulidity = await readFile(
-    new URL(
-      '../../soulidity-composable-v6/move/soulidity/sources/animacraft_appearance_adapter_v6.move',
-      import.meta.url,
+  const soulidityInterface = JSON.parse(
+    await readFile(
+      new URL('./fixtures/soulidity-composable-v6-interface.json', import.meta.url),
+      'utf8',
     ),
-    'utf8',
   );
+  assert.equal(
+    soulidityInterface.schema,
+    'animacraft.soulidity-composable-v6-interface.v1',
+  );
+  assert.equal(soulidityInterface.contractVersion, 1);
+  assert.equal(soulidityInterface.repository, 'redefine-digital-labs/soulidity');
+  assert.match(soulidityInterface.sourceCommit, /^[0-9a-f]{40}$/);
+  assert.equal(
+    soulidityInterface.sourcePath,
+    'move/soulidity/sources/animacraft_appearance_adapter_v6.move',
+  );
+  assert.equal(soulidityInterface.module, 'animacraft_appearance_adapter_v6');
   const direct = [
     MAKER_COMPOSABLE_PLAYER_V6_MOVE_FUNCTIONS.CLAIM_FREE_WALLET_ITEM,
     MAKER_COMPOSABLE_PLAYER_V6_MOVE_FUNCTIONS.PURCHASE_WALLET_ITEM,
@@ -563,5 +574,12 @@ test('every Player target name exists on the audited Animacraft or Soulidity Mov
   const wrapped = Object.values(MAKER_COMPOSABLE_PLAYER_V6_MOVE_FUNCTIONS)
     .filter((name) => !direct.includes(name));
   direct.forEach((name) => assert.match(animacraft, new RegExp(`public fun ${name}(?:<|\\()`)));
-  wrapped.forEach((name) => assert.match(soulidity, new RegExp(`public fun ${name}(?:<|\\()`)));
+  assert.equal(
+    new Set(soulidityInterface.requiredPlayerFunctions).size,
+    soulidityInterface.requiredPlayerFunctions.length,
+  );
+  assert.deepEqual(
+    [...soulidityInterface.requiredPlayerFunctions].sort(),
+    [...wrapped].sort(),
+  );
 });

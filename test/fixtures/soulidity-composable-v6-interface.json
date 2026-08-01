@@ -1,0 +1,18 @@
+{
+  "schema": "animacraft.soulidity-composable-v6-interface.v1",
+  "contractVersion": 1,
+  "repository": "redefine-digital-labs/soulidity",
+  "sourceCommit": "c27bc8aca9e78b317dde517382a96990f3b523f5",
+  "sourcePath": "move/soulidity/sources/animacraft_appearance_adapter_v6.move",
+  "module": "animacraft_appearance_adapter_v6",
+  "requiredPlayerFunctions": [
+    "claim_free_soul_item_v6",
+    "purchase_soul_item_v6",
+    "lock_owned_item_to_soul_v6",
+    "unlock_owned_item_from_soul_v6",
+    "authorize_initial_appearance_v6",
+    "bind_initial_appearance_v6",
+    "authorize_appearance_update_v6",
+    "apply_authorized_appearance_update_v6"
+  ]
+}
