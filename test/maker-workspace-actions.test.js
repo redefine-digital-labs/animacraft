@@ -381,6 +381,340 @@ test('batch import exposes separate Item and Style modes with an explicit inheri
   });
 });
 
+test('switching a Composable Maker to Fixed preserves its Item catalog for a reversible mode change', async () => {
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'composable-mode', { mode: 'COMPOSABLE' });
+    creatorClick(workspace, 'add-selected-official-item');
+
+    const composableDocument = workspace.getDocument();
+    assert.equal(composableDocument.extensions.composableV6.profile.mode, 'COMPOSABLE');
+    assert.equal(composableDocument.extensions.composableV6.items.length, 1);
+    const productId = composableDocument.extensions.composableV6.items[0].id;
+
+    creatorClick(workspace, 'composable-mode', { mode: 'FIXED' });
+    const fixedDocument = workspace.getDocument();
+    assert.equal(fixedDocument.extensions.composableV6.profile.mode, 'FIXED');
+    assert.equal(fixedDocument.extensions.composableV6.profile.thirdPartyAdmission, 'DISABLED');
+    assert.deepEqual(
+      fixedDocument.extensions.composableV6.items.map((product) => product.id),
+      [productId],
+      'changing product behavior must not silently delete the Creator catalog',
+    );
+
+    creatorClick(workspace, 'composable-mode', { mode: 'COMPOSABLE' });
+    assert.equal(workspace.getDocument().extensions.composableV6.profile.mode, 'COMPOSABLE');
+    assert.deepEqual(
+      workspace.getDocument().extensions.composableV6.items.map((product) => product.id),
+      [productId],
+    );
+  }, { playable: true });
+});
+
+test('Composable Creator controls and Player Wardrobe expose the same Maker-local Item catalog', async () => {
+  const creatorRoot = new FakeRoot();
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'creator-tab', { tab: 'composable' });
+    creatorClick(workspace, 'composable-mode', { mode: 'COMPOSABLE' });
+    creatorClick(workspace, 'add-selected-official-item');
+
+    assert.match(creatorRoot.innerHTML, /data-action="composable-mode"/);
+    assert.match(creatorRoot.innerHTML, /data-action="composable-admission"/);
+    assert.match(creatorRoot.innerHTML, /data-action="composable-assetization"/);
+    assert.match(creatorRoot.innerHTML, /official:/);
+    assert.doesNotMatch(
+      creatorRoot.innerHTML,
+      /body anchor|human anchor|skeleton|durability|rental|consumable|enhancement|bundle sale/i,
+    );
+
+    const draft = workspace.getDocument().extensions.composableV6;
+    workspace.playerCreatorPreview = true;
+    workspace.playerComposableLoadout = [...draft.compatibility.fallbackProductIds];
+    workspace.playerIntroOpen = false;
+    workspace.renderPlayer();
+
+    assert.match(playerRoot.innerHTML, /data-action="player-wardrobe"/);
+    playerClick(workspace, 'player-wardrobe');
+    assert.equal(workspace.playerPickerPanel, 'wardrobe');
+    assert.match(playerRoot.innerHTML, /v4-player-wardrobe-panel/);
+    assert.match(playerRoot.innerHTML, /official:/);
+
+    let prevented = false;
+    workspace.boundPlayerKeydown({
+      key: 'Escape',
+      preventDefault() { prevented = true; },
+    });
+    assert.equal(prevented, true);
+    assert.equal(workspace.playerPickerPanel, 'parts');
+  }, { creatorRoot, playerRoot, playable: true });
+});
+
+test('Composable Item acquisition stays hidden while the Mainnet gate is closed', async () => {
+  const playerRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const product = {
+      id: 'certified:coat-v1',
+      name: 'Coat',
+      description: 'A certified external Item.',
+      originClass: 'CERTIFIED',
+      slotClaims: [],
+      components: [],
+    };
+    workspace.playerComposableState = () => ({
+      profile: { mode: 'COMPOSABLE' },
+      compatibility: { makerRootId: '0xmaker', slots: [], fallbackProductIds: [] },
+      products: [product],
+      entitlements: [],
+      soulId: '',
+      revision: 0,
+      releaseEnabled: false,
+      source: 'published',
+    });
+    workspace.playerWardrobeCards = () => [{
+      productId: product.id,
+      product,
+      name: product.name,
+      description: product.description,
+      originClass: 'CERTIFIED',
+      binding: 'ACCOUNT',
+      action: 'claim',
+      priceAtomic: 0,
+      canEquip: false,
+      equipped: false,
+      locked: true,
+      technicallyValidated: true,
+    }];
+    workspace.playerComposableRendererLayers = () => ({
+      layers: [], issues: [], occupiedExternalSlotIds: [],
+    });
+    workspace.playerPickerPanel = 'wardrobe';
+    workspace.playerIntroOpen = false;
+    workspace.renderPlayer();
+
+    assert.doesNotMatch(playerRoot.innerHTML, /data-action="player-composable-acquire"/);
+    assert.doesNotMatch(playerRoot.innerHTML, />Free claim</);
+    assert.match(playerRoot.innerHTML, />Locked</);
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: { onComposableItemAction: async () => ({ confirmed: true }) },
+  });
+});
+
+test('Composable Item acquisition is awaited, deduplicated and consumes trusted rehydrated state', async () => {
+  const playerRoot = new FakeRoot();
+  let resolveAction;
+  const calls = [];
+  await withWorkspace(async (workspace) => {
+    const product = {
+      id: 'certified:coat-v1',
+      name: 'Coat',
+      description: 'A certified external Item.',
+      originClass: 'CERTIFIED',
+      slotClaims: [],
+      components: [],
+    };
+    const state = () => ({
+      profile: { mode: 'COMPOSABLE' },
+      compatibility: { makerRootId: '0xmaker', slots: [], fallbackProductIds: [] },
+      products: [product],
+      entitlements: workspace.context?.composableV6State?.entitlements || [],
+      soulId: '',
+      revision: workspace.context?.composableV6State?.revision || 0,
+      releaseEnabled: true,
+      source: 'published',
+    });
+    workspace.playerComposableState = state;
+    workspace.playerWardrobeCards = () => {
+      const owned = state().entitlements.some((entry) => entry.productId === product.id);
+      return [{
+        productId: product.id,
+        product,
+        name: product.name,
+        description: product.description,
+        originClass: 'CERTIFIED',
+        binding: 'ACCOUNT',
+        action: owned ? 'included' : 'claim',
+        priceAtomic: 0,
+        canEquip: owned,
+        equipped: false,
+        locked: !owned,
+        technicallyValidated: true,
+      }];
+    };
+    workspace.playerComposableRendererLayers = () => ({
+      layers: [], issues: [], occupiedExternalSlotIds: [],
+    });
+    workspace.playerPickerPanel = 'wardrobe';
+    workspace.playerIntroOpen = false;
+    workspace.renderPlayer();
+
+    playerClick(workspace, 'player-composable-acquire', { productId: product.id });
+    playerClick(workspace, 'player-composable-acquire', { productId: product.id });
+    assert.equal(calls.length, 1, 'a pending Product transaction must ignore duplicate clicks');
+    assert.equal(workspace.playerComposableItemTransaction(product.id).state, 'awaiting-signature');
+    assert.match(playerRoot.innerHTML, /data-tx-state="awaiting-signature"/);
+
+    resolveAction({
+      confirmed: true,
+      digest: '0x1234567890abcdef1234',
+      composableV6State: {
+        ...state(),
+        trusted: true,
+        entitlements: [{ productId: product.id, binding: 'ACCOUNT' }],
+        revision: 7,
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(workspace.playerComposableItemTransaction(product.id).state, 'confirmed');
+    assert.equal(workspace.context.composableV6State.entitlements[0].productId, product.id);
+    assert.equal(workspace.playerAppearanceRevision, 7);
+    assert.match(playerRoot.innerHTML, /data-action="player-composable-equip"/);
+    assert.match(playerRoot.innerHTML, /Entitlement confirmed/);
+    delete workspace.playerComposableState;
+    const trustedState = workspace.playerComposableState();
+    assert.equal(trustedState.source, 'published');
+    assert.equal(trustedState.compatibility.makerRootId, '0xmaker');
+    assert.equal(trustedState.products[0].id, product.id);
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: {
+      onComposableItemAction(payload) {
+        calls.push(payload);
+        payload.onStatus('awaiting-signature');
+        return new Promise((resolve) => { resolveAction = resolve; });
+      },
+    },
+  });
+});
+
+test('Composable Item recoverable and failed actions expose an explicit safe retry path', async () => {
+  const playerRoot = new FakeRoot();
+  const calls = [];
+  await withWorkspace(async (workspace) => {
+    const product = {
+      id: 'open:scarf-v1',
+      name: 'Scarf',
+      description: 'An open external Item.',
+      originClass: 'OPEN',
+      slotClaims: [],
+      components: [],
+    };
+    workspace.playerComposableState = () => ({
+      profile: { mode: 'COMPOSABLE' },
+      compatibility: { makerRootId: '0xmaker', slots: [], fallbackProductIds: [] },
+      products: [product],
+      entitlements: [],
+      soulId: '',
+      revision: 0,
+      releaseEnabled: true,
+      source: 'published',
+    });
+    workspace.playerWardrobeCards = () => [{
+      productId: product.id,
+      product,
+      name: product.name,
+      description: product.description,
+      originClass: 'OPEN',
+      binding: 'ACCOUNT',
+      action: 'purchase',
+      priceAtomic: 1_000_000,
+      canEquip: false,
+      equipped: false,
+      locked: true,
+      technicallyValidated: true,
+    }];
+    workspace.playerComposableRendererLayers = () => ({
+      layers: [], issues: [], occupiedExternalSlotIds: [],
+    });
+    workspace.playerPickerPanel = 'wardrobe';
+    workspace.playerIntroOpen = false;
+    workspace.renderPlayer();
+
+    playerClick(workspace, 'player-composable-acquire', { productId: product.id });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(workspace.playerComposableItemTransaction(product.id).state, 'recoverable');
+    assert.match(playerRoot.innerHTML, />Check &amp; resume</);
+    assert.match(playerRoot.innerHTML, /Transaction may still be pending/);
+
+    playerClick(workspace, 'player-composable-acquire', { productId: product.id });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls[1].recovery.digest, '0xpending');
+    assert.equal(workspace.playerComposableItemTransaction(product.id).state, 'failed');
+    assert.match(playerRoot.innerHTML, />Retry</);
+    assert.match(playerRoot.innerHTML, /RPC unavailable/);
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: {
+      async onComposableItemAction(payload) {
+        calls.push(payload);
+        if (calls.length === 1) {
+          return {
+            recoverable: true,
+            digest: '0xpending',
+            message: 'Transaction may still be pending on Sui.',
+          };
+        }
+        throw new Error('RPC unavailable');
+      },
+    },
+  });
+});
+
+test('Composable Slot defaults are explicit and a sealed compatibility draft is immutable', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'creator-tab', { tab: 'composable' });
+    creatorClick(workspace, 'composable-mode', { mode: 'COMPOSABLE' });
+    const firstSelection = workspace.selectedCreatorRecords();
+    creatorClick(workspace, 'add-selected-official-item');
+    const firstProductId = workspace.getDocument().extensions.composableV6.items[0].id;
+
+    creatorClick(workspace, 'copy-item', {
+      partId: firstSelection.part.id,
+      itemId: firstSelection.item.id,
+    });
+    creatorClick(workspace, 'add-selected-official-item');
+    const openDraft = workspace.getDocument().extensions.composableV6;
+    assert.equal(openDraft.items.length, 2);
+    assert.deepEqual(openDraft.compatibility.fallbackProductIds, [firstProductId]);
+    const secondProductId = openDraft.items.find((product) => product.id !== firstProductId).id;
+
+    creatorClick(workspace, 'set-composable-fallback', { productId: secondProductId });
+    assert.deepEqual(
+      workspace.getDocument().extensions.composableV6.compatibility.fallbackProductIds,
+      [secondProductId],
+    );
+
+    creatorClick(workspace, 'composable-seal');
+    const sealedBefore = structuredClone(workspace.getDocument().extensions.composableV6);
+    assert.match(creatorRoot.innerHTML, /data-action="remove-composable-product"[^>]*disabled/);
+
+    creatorClick(workspace, 'remove-composable-product', { productId: secondProductId });
+    creatorClick(workspace, 'composable-mode', { mode: 'FIXED' });
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'composable-admission' }, value: 'OPEN' },
+    });
+    await workspace.handleCreatorChange({
+      target: { dataset: { action: 'composable-assetization' }, checked: true },
+    });
+    assert.deepEqual(workspace.getDocument().extensions.composableV6, sealedBefore);
+
+    creatorClick(workspace, 'composable-seal');
+    creatorClick(workspace, 'composable-sync');
+    const resynced = workspace.getDocument().extensions.composableV6;
+    assert.equal(resynced.compatibilitySealed, false);
+    assert.deepEqual(
+      resynced.compatibility.fallbackProductIds,
+      [firstProductId],
+      'Sync must derive the Slot fallback from the Maker default recipe before catalog order',
+    );
+  }, { creatorRoot, playable: true });
+});
+
 test('Item batch import gives an empty Part a dedicated Track instead of borrowing global selection', async () => {
   const previousDocument = globalThis.document;
   const previousBitmap = globalThis.createImageBitmap;
@@ -4381,6 +4715,8 @@ test('final preview freezes the exact OC snapshot used by completion and support
     workspace.playerCompletionIssues = () => [];
     workspace.playerProfile.name = 'Frozen OC';
     workspace.playerProfile.description = 'Frozen description';
+    workspace.playerComposableLoadout = ['third-party:item-v1'];
+    workspace.playerAppearanceRevision = 4;
     workspace.renderRecipeToBlob = async (recipe, options) => {
       renders.push({ recipe: structuredClone(recipe), options: { ...options } });
       const blob = new Blob([`render-${renders.length}`], { type: 'image/png' });
@@ -4417,6 +4753,10 @@ test('final preview freezes the exact OC snapshot used by completion and support
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(renders.at(-1).options.sizeMode, 'original');
     assert.equal(renders.at(-1).options.transparentBackground, true);
+    assert.deepEqual(renders.at(-1).options.composableV6, {
+      loadout: ['third-party:item-v1'],
+      appearanceRevision: 4,
+    });
 
     workspace.playerProfile.name = 'Changed behind modal';
     workspace.playerRecipe.selections = [];
@@ -4438,6 +4778,10 @@ test('final preview freezes the exact OC snapshot used by completion and support
       'alternate',
     );
     assert.deepEqual(completed[0].recipe, renders[0].recipe);
+    assert.deepEqual(completed[0].composableV6, {
+      loadout: ['third-party:item-v1'],
+      appearanceRevision: 4,
+    });
     assert.equal(completed[0].imageBlob, renderedBlobs.at(-1));
     assert.equal(workspace.playerPublishOpen, true, 'a real Player completion continues to publication');
     assert.deepEqual(completed[0].imageExport, {

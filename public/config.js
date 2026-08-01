@@ -34,6 +34,14 @@ window.ANIMACRAFT_CONFIG = {
   commerceV5LogicalAuxiliaryBlobId: '',
   commerceV5SoulBindingProofType: '',
   commerceV5ReleaseEnabled: false,
+  // v6 stays fail-closed until both package upgrades and disabled protocol
+  // objects have been deployed, bound, read back, and audited on Mainnet.
+  compositionV6TypeOriginPackageId: '',
+  compositionProtocolConfigV6Id: '',
+  compositionProtocolTreasuryV6Id: '',
+  compositionRegistryV6Id: '',
+  compositionV6SoulOwnerProofType: '',
+  compositionV6ReleaseEnabled: false,
   // Intentionally empty while the reviewed Commerce/Seal release gate is off.
   // Mainnet activation requires the official committee endpoint plus an Enoki
   // X-API-Key; never claim paid assets are protected without it.

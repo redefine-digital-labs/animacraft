@@ -37,6 +37,28 @@ test('Complete hashes exact Style selections and hands certified inputs to the a
   assert.doesNotMatch(appSource, /appendCompleteAuthorizationV5/);
 });
 
+test('Composable v6 Complete is gate-closed and binds its immutable Appearance companion to upload recovery', () => {
+  const prepare = appSource.slice(
+    appSource.indexOf('async function prepareOcUpload'),
+    appSource.indexOf('\nasync function registerOcUpload'),
+  );
+  const restore = appSource.slice(
+    appSource.indexOf('async function restoreOcUploadRecovery'),
+    appSource.indexOf('\nasync function resumeMakerUploadRecovery'),
+  );
+  assert.match(prepare, /runtimeConfig\.compositionV6ReleaseEnabled !== true/);
+  assert.match(prepare, /COMPOSABLE_V6_RELEASE_DISABLED/);
+  assert.match(prepare, /buildComposableV6OcAppearanceCompanion\(\{/);
+  assert.match(prepare, /composableAppearance,/);
+  assert.match(appSource, /attachComposableV6OcAppearanceCompanion\(bundle, composableAppearance\)/);
+  assert.match(restore, /verifyComposableV6OcAppearanceCompanion\(\{/);
+  assert.ok(
+    restore.indexOf('verifyComposableV6OcAppearanceCompanion({')
+      < restore.indexOf('state.playerCompletionSnapshotV4 = createPlayerCompletionSnapshot({'),
+    'recovery must verify the exact v6 Appearance before restoring the completion snapshot',
+  );
+});
+
 test('the Soulidity v5 handoff never downgrades a migrated Maker to plaintext', () => {
   const handoff = appSource.slice(
     appSource.indexOf('async function mintCurrentOc'),

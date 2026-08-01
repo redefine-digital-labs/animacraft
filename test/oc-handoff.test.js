@@ -9,9 +9,13 @@ import {
 } from '../maker-publication-v4.js';
 import { createCharacterMakerV5Starter } from '../maker-v4.js';
 import {
+  COMPOSABLE_V6_OC_APPEARANCE_SCHEMA,
+  attachComposableV6OcAppearanceCompanion,
+  buildComposableV6OcAppearanceCompanion,
   canonicalOcPackageFingerprint,
   certifiedLivingContentSource,
   createPlayerCompletionSnapshot,
+  verifyComposableV6OcAppearanceCompanion,
 } from '../oc-handoff.js';
 
 function playableMaker() {
@@ -85,6 +89,10 @@ test('Player completion snapshot becomes the exact Walrus OC profile and certifi
     recipe: document.defaultRecipe,
     profile,
     livingContent: resolvedLivingContent,
+    composableV6: {
+      loadout: ['item:official', 'item:official', 'item:certified'],
+      appearanceRevision: 7,
+    },
     imageBlob: reviewedImageBlob,
     imageExport: reviewedImageExport,
   });
@@ -98,6 +106,7 @@ test('Player completion snapshot becomes the exact Walrus OC profile and certifi
   assert.deepEqual(completion.imageExport, reviewedImageExport);
   assert.equal(completion.imageBlob.type, 'image/png');
   assert.equal(completion.imageExport.transparentBackground, true);
+  assert.equal(completion.composableV6, undefined, 'Fixed Maker keeps the existing v5 package shape');
   assert.equal(completion.livingContent.soulMd, '# Player-authored Soul\n\nMira keeps her own voice.');
   assert.equal(completion.livingContent.memoryMd, '# Player-authored Memory\n\nA calm courier between worlds.');
   assert.equal(completion.livingContent.skillMd, '---\nname: mira-courier\n---\n# Player-authored courier skill');
@@ -220,6 +229,286 @@ test('Player completion rejects invalid reviewed PNG export settings', () => {
         && /reviewed PNG export settings/.test(error.message),
     );
   });
+});
+
+test('Player completion rejects ambiguous Composable v6 loadout state', () => {
+  const document = playableMaker();
+  document.extensions ||= {};
+  document.extensions.composableV6 = { profile: { mode: 'COMPOSABLE' } };
+  const base = {
+    document,
+    recipe: document.defaultRecipe,
+    profile: { name: 'Mira' },
+    livingContent: {
+      soulMd: '# Mira',
+      memoryMd: '# Mira Memory',
+      skillMd: '---\nname: mira\n---\n# Mira Skill',
+    },
+    imageBlob: new Blob(['reviewed-png'], { type: 'image/png' }),
+    imageExport: {
+      sizeMode: 'standard',
+      transparentBackground: false,
+      width: 1024,
+      height: 1024,
+      mediaType: 'image/png',
+    },
+  };
+  for (const composableV6 of [
+    [],
+    { loadout: 'item:a', appearanceRevision: 0 },
+    { loadout: ['item:a', 'item:a'], appearanceRevision: 0 },
+    { loadout: ['item:a'], appearanceRevision: -1 },
+    { loadout: ['item:a'], appearanceRevision: 1.5 },
+  ]) {
+    assert.throws(
+      () => createPlayerCompletionSnapshot({ ...base, composableV6 }),
+      (error) => error instanceof TypeError && /Composable v6/.test(error.message),
+    );
+  }
+});
+
+async function sha256Canonical(value) {
+  const bytes = new TextEncoder().encode(canonicalOcPackageFingerprint(value));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)]
+    .map((entry) => entry.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function composableFixture(document) {
+  document.extensions ||= {};
+  document.extensions.composableV6 = { profile: { mode: 'COMPOSABLE' } };
+  const makerRootId = '0xa11ce';
+  const compatibilityHash = '22'.repeat(32);
+  const companionManifest = {
+    schemaVersion: 'animacraft.maker-composable.v6',
+    baseMaker: {
+      makerRootId,
+      rootMakerId: document.version.rootMakerId,
+      versionId: document.version.versionId,
+      versionNumber: document.version.number,
+      manifestHash: '11'.repeat(32),
+    },
+    profile: { mode: 'COMPOSABLE' },
+    compatibilitySealed: true,
+    compatibility: {
+      manifestBlobId: 'compatibility-walrus-blob',
+      manifestHash: compatibilityHash,
+    },
+    fallbackLoadout: {
+      productIds: ['item:embedded'],
+      commitment: '23'.repeat(32),
+    },
+    items: [
+      {
+        id: 'item:embedded',
+        version: 1,
+        makerRootId,
+        compatibilityHash,
+        manifestHash: '31'.repeat(32),
+        rightsManifestHash: '40'.repeat(32),
+        slotClaims: [{ slotId: 'base', units: 1 }],
+        access: { binding: 'EMBEDDED' },
+      },
+      {
+        id: 'item:account',
+        version: 2,
+        makerRootId,
+        compatibilityHash,
+        manifestHash: '32'.repeat(32),
+        rightsManifestHash: '41'.repeat(32),
+        slotClaims: [{ slotId: 'hair', units: 1 }],
+        access: { binding: 'ACCOUNT' },
+      },
+      {
+        id: 'item:owned',
+        version: 3,
+        makerRootId,
+        compatibilityHash,
+        manifestHash: '33'.repeat(32),
+        rightsManifestHash: '42'.repeat(32),
+        slotClaims: [{ slotId: 'accessory', units: 1 }],
+        access: { binding: 'OWNED' },
+      },
+    ],
+  };
+  return { makerRootId, compatibilityHash, companionManifest };
+}
+
+test('Composable Complete embeds exact Product, Slot, entitlement and manifest bindings under one integrity hash', async () => {
+  const document = playableMaker();
+  const { makerRootId, compatibilityHash, companionManifest } = composableFixture(document);
+  const companionManifestHash = await sha256Canonical(companionManifest);
+  const completion = createPlayerCompletionSnapshot({
+    document,
+    recipe: document.defaultRecipe,
+    profile: { name: 'Composable Mira' },
+    livingContent: {
+      soulMd: '# Mira',
+      memoryMd: '# Memory',
+      skillMd: '---\nname: mira\n---\n# Skill',
+    },
+    composableV6: {
+      loadout: ['item:embedded', 'item:account', 'item:owned'],
+      appearanceRevision: 9,
+      profileObjectId: '0xcafe',
+      companionManifestBlobId: 'companion-walrus-blob',
+      companionManifestHash,
+      productObjectIds: {
+        'item:embedded': '0x101',
+        'item:account': '0x102',
+        'item:owned': '0x103',
+      },
+      entitlements: [
+        {
+          schemaVersion: 1,
+          id: '0xe01',
+          productId: 'item:account',
+          itemVersion: 2,
+          makerRootId,
+          compatibilityHash,
+          binding: 'ACCOUNT',
+          holderAddress: '0xbeef',
+          soulId: null,
+          ownerAddress: null,
+          equippedSoulId: null,
+          issuedAtMs: 10,
+          paidAtomic: 0,
+          rightsSnapshotHash: '41'.repeat(32),
+          issuanceNonce: 'account-entitlement',
+          extensionsHash: '',
+        },
+        {
+          schemaVersion: 1,
+          id: '0xe02',
+          productId: 'item:owned',
+          itemVersion: 3,
+          makerRootId,
+          compatibilityHash,
+          binding: 'OWNED',
+          holderAddress: null,
+          soulId: null,
+          ownerAddress: '0xbeef',
+          equippedSoulId: '0x501',
+          issuedAtMs: 11,
+          paidAtomic: 100,
+          rightsSnapshotHash: '42'.repeat(32),
+          issuanceNonce: 'owned-entitlement',
+          extensionsHash: '',
+        },
+      ],
+      companionManifest,
+    },
+    imageBlob: new Blob(['png'], { type: 'image/png' }),
+    imageExport: {
+      sizeMode: 'original',
+      transparentBackground: true,
+      width: 1024,
+      height: 1024,
+      mediaType: 'image/png',
+    },
+  });
+  const appearance = await buildComposableV6OcAppearanceCompanion({
+    document,
+    completion,
+    makerObjectId: makerRootId,
+    baseManifestBlobId: 'base-walrus-blob',
+  });
+  assert.equal(appearance.companion.schemaVersion, COMPOSABLE_V6_OC_APPEARANCE_SCHEMA);
+  assert.equal(appearance.companion.appearanceRevision, 9);
+  assert.match(appearance.companion.loadoutHash, /^[0-9a-f]{64}$/);
+  assert.match(appearance.companion.binding.profileObjectId, /cafe$/);
+  assert.equal(appearance.companion.binding.companionManifestHash, companionManifestHash);
+  assert.equal(appearance.companion.selections[0].entitlement, null);
+  assert.match(appearance.companion.selections[1].entitlement.holderAddress, /beef$/);
+  assert.match(appearance.companion.selections[2].entitlement.ownedInstanceId, /e02$/);
+
+  const bridge = buildMakerV4OcPackage({
+    document,
+    recipe: completion.recipe,
+    profile: completion.profile,
+    livingContent: completion.livingContent,
+    makerObjectId: makerRootId,
+    manifestBlobId: 'base-walrus-blob',
+    integrity: { recipeHash: 'aa'.repeat(32) },
+  });
+  const finalBundle = attachComposableV6OcAppearanceCompanion(bridge, appearance);
+  assert.deepEqual(finalBundle.package.composableAppearance, appearance.companion);
+  assert.equal(finalBundle.package.integrity.composableAppearanceHash, appearance.integrityHash);
+  assert.equal(bridge.package.composableAppearance, undefined, 'v5 builder output remains untouched');
+  assert.equal(JSON.parse(finalBundle.packageJson).composableAppearance.loadoutHash, appearance.companion.loadoutHash);
+  await assert.doesNotReject(verifyComposableV6OcAppearanceCompanion({
+    document,
+    completion,
+    packageValue: finalBundle.package,
+    makerObjectId: makerRootId,
+    baseManifestBlobId: 'base-walrus-blob',
+  }));
+
+  const changed = structuredClone(finalBundle.package);
+  changed.composableAppearance.appearanceRevision += 1;
+  await assert.rejects(
+    verifyComposableV6OcAppearanceCompanion({
+      document,
+      completion,
+      packageValue: changed,
+      makerObjectId: makerRootId,
+      baseManifestBlobId: 'base-walrus-blob',
+    }),
+    /does not match/,
+  );
+  assert.notEqual(
+    canonicalOcPackageFingerprint(finalBundle.package),
+    canonicalOcPackageFingerprint(changed),
+    'upload recovery fingerprint covers the entire Appearance companion',
+  );
+});
+
+test('Composable Complete fails closed for unknown fields and missing chain identities', async () => {
+  const document = playableMaker();
+  const { makerRootId, companionManifest } = composableFixture(document);
+  const base = {
+    document,
+    recipe: document.defaultRecipe,
+    profile: { name: 'Mira' },
+    livingContent: {
+      soulMd: '# Mira',
+      memoryMd: '# Memory',
+      skillMd: '---\nname: mira\n---\n# Skill',
+    },
+    imageBlob: new Blob(['png'], { type: 'image/png' }),
+    imageExport: {
+      sizeMode: 'standard',
+      transparentBackground: false,
+      width: 1024,
+      height: 1024,
+      mediaType: 'image/png',
+    },
+  };
+  assert.throws(
+    () => createPlayerCompletionSnapshot({
+      ...base,
+      composableV6: { loadout: [], appearanceRevision: 0, gameplayStats: {} },
+    }),
+    /unknown field gameplayStats/,
+  );
+  const incomplete = createPlayerCompletionSnapshot({
+    ...base,
+    composableV6: {
+      loadout: ['item:embedded'],
+      appearanceRevision: 0,
+      companionManifest,
+    },
+  });
+  await assert.rejects(
+    buildComposableV6OcAppearanceCompanion({
+      document,
+      completion: incomplete,
+      makerObjectId: makerRootId,
+      baseManifestBlobId: 'base-walrus-blob',
+    }),
+    /Companion manifest hash/,
+  );
 });
 
 test('canonical OC fingerprint covers provenance, integrity and every Living Content document', () => {

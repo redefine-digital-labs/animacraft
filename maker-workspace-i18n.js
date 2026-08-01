@@ -2546,6 +2546,109 @@ const publicationModalDictionaries = {
 
 Object.entries(publicationModalDictionaries).forEach(([locale, details]) => Object.assign(dictionaries[locale], details));
 
+const composableV6Dictionaries = {
+  en: {
+    composableItems: 'Composable Items', itemStudio: 'Item Studio', itemStudioTitle: 'A Maker that can accept verified Items', itemStudioCopy: 'Compatibility is Maker-local: Canvas, Layer Tracks, Slots and the shared Renderer. No body skeleton or anatomy standard is introduced.', makerCompositionMode: 'Maker composition mode', fixedMaker: 'Fixed Maker', fixedMakerCopy: 'Genesis is final; players use only the embedded Maker catalog.', composableMaker: 'Composable Maker', composableMakerCopy: 'Keep an immutable Genesis image and save revisioned Current Appearances.', thirdPartyAdmission: 'Third-party Item admission', admissionDisabled: 'Disabled', admissionCertified: 'Certified only', admissionOpen: 'Certified + open', admissionCopy: 'Official, Certified and Open Items all require technical validation. Open means unendorsed, not unverified.', itemAssetization: 'Allow independently owned Item assets', compatibilityContract: 'Compatibility contract', syncMakerCompatibility: 'Sync from this Maker', sealMakerCompatibility: 'Lock compatibility draft', unlockMakerCompatibility: 'Unlock to edit', compatibilityDraft: 'Draft', compatibilitySealed: 'Locked', compatibilitySummaryV6: '{tracks} Layer Tracks · {slots} Slots · {width} × {height}', compatibilityNoAnchors: 'Placement uses only the Maker Canvas and explicit PNG transforms. Transparent bounds never move or resize source art.', officialItemCatalog: 'Item Product catalog', addSelectedOfficialItem: 'Add selected Style as Official Item', importThirdPartyItem: 'Import third-party Item JSON', noComposableItems: 'No Item Products yet. Select a Style in Parts & Items, then add it here.', itemProductCount: '{count} Item Products', itemOriginOfficial: 'Official', itemOriginCertified: 'Certified', itemOriginOpen: 'Open', itemAccessEmbedded: 'Embedded', itemAccessFreeClaim: 'Free claim', itemAccessPaidOnce: 'Paid once', itemBindingEmbedded: 'Embedded in Maker', itemBindingAccount: 'Account license', itemBindingSoul: 'Soul-bound', itemBindingOwned: 'Independently owned', itemValidated: 'Validated', itemValidationPending: 'Pending validator attestation', itemComponents: '{count} simultaneous PNG component(s)', itemSlot: 'Slot · {slot}', removeItemProduct: 'Remove Item Product', itemImportFailed: 'This Item manifest is invalid or incompatible with the current Maker.', v6MainnetGateClosed: 'Composable v6 Mainnet publication is currently disabled. Draft editing and exact Player testing remain available.', wardrobe: 'Wardrobe', wardrobeTitle: 'Items available to this OC', wardrobeCopy: 'Only real embedded, account, Soul-bound or owned entitlements appear here.', wardrobeEmpty: 'No compatible Items are available for this OC.', wardrobeLocked: 'Locked', wardrobeEquipped: 'Equipped', wardrobeEquip: 'Equip', wardrobeRemove: 'Remove', wardrobeUnavailable: 'Not available to this wallet or Soul', currentAppearanceRevision: 'Current Appearance · revision {revision}',
+  },
+  zh: {
+    composableItems: '可组合部件', itemStudio: 'Item Studio', itemStudioTitle: '可接入已验证 Item 的 Maker', itemStudioCopy: '兼容性只基于当前 Maker 的画布、图层轨道、插槽与共享渲染器，不引入人体骨架或人体标准。', makerCompositionMode: 'Maker 组合模式', fixedMaker: '固定 Maker', fixedMakerCopy: '创世外观即最终外观，玩家只使用 Maker 内置目录。', composableMaker: '可组合 Maker', composableMakerCopy: '保留不可变的创世图，并保存有版本的当前外观。', thirdPartyAdmission: '第三方 Item 准入', admissionDisabled: '关闭', admissionCertified: '仅认证', admissionOpen: '认证＋开放', admissionCopy: '官方、认证与开放 Item 都必须通过技术验证；开放仅表示未获 Maker 背书，不表示未验证。', itemAssetization: '允许独立所有权 Item 资产', compatibilityContract: '兼容性契约', syncMakerCompatibility: '从当前 Maker 同步', sealMakerCompatibility: '锁定兼容性草稿', unlockMakerCompatibility: '解锁编辑', compatibilityDraft: '草稿', compatibilitySealed: '已锁定', compatibilitySummaryV6: '{tracks} 个图层轨道 · {slots} 个插槽 · {width} × {height}', compatibilityNoAnchors: '定位只使用 Maker 画布与 PNG 显式变换；透明边不会改变源图位置或大小。', officialItemCatalog: 'Item Product 目录', addSelectedOfficialItem: '将当前样式加入官方 Item', importThirdPartyItem: '导入第三方 Item JSON', noComposableItems: '还没有 Item Product。请先在“部位与部件”选择一个样式，再加入这里。', itemProductCount: '{count} 个 Item Product', itemOriginOfficial: '官方', itemOriginCertified: '认证', itemOriginOpen: '开放', itemAccessEmbedded: '内置', itemAccessFreeClaim: '免费领取', itemAccessPaidOnce: '一次购买', itemBindingEmbedded: 'Maker 内置', itemBindingAccount: '账户许可', itemBindingSoul: '绑定 Soul', itemBindingOwned: '独立所有权', itemValidated: '已验证', itemValidationPending: '等待验证者证明', itemComponents: '{count} 个同时绘制的 PNG 组件', itemSlot: '插槽 · {slot}', removeItemProduct: '移除 Item Product', itemImportFailed: '该 Item manifest 无效或与当前 Maker 不兼容。', v6MainnetGateClosed: 'Composable v6 主网发布目前关闭；草稿编辑与真实玩家测试仍可使用。', wardrobe: '衣柜', wardrobeTitle: '这个 OC 可使用的 Item', wardrobeCopy: '这里只显示真实的 Maker 内置、账户许可、Soul 绑定或独立所有权权益。', wardrobeEmpty: '当前 OC 没有可使用的兼容 Item。', wardrobeLocked: '未解锁', wardrobeEquipped: '已装备', wardrobeEquip: '装备', wardrobeRemove: '移除', wardrobeUnavailable: '当前钱包或 Soul 无权使用', currentAppearanceRevision: '当前外观 · 修订 {revision}',
+  },
+  ja: {
+    composableItems: 'コンポーザブル Item', itemStudio: 'Item Studio', itemStudioTitle: '検証済み Item を受け入れる Maker', itemStudioCopy: '互換性は Maker 固有の Canvas、Layer Track、Slot、共通 Renderer のみです。人体骨格は導入しません。', makerCompositionMode: 'Maker 構成モード', fixedMaker: '固定 Maker', fixedMakerCopy: 'Genesis 外観が最終です。内蔵カタログのみ使用します。', composableMaker: 'コンポーザブル Maker', composableMakerCopy: '不変の Genesis と改訂可能な Current Appearance を持ちます。', thirdPartyAdmission: '第三者 Item の受け入れ', admissionDisabled: '無効', admissionCertified: '認証のみ', admissionOpen: '認証＋オープン', admissionCopy: 'Official / Certified / Open はすべて技術検証が必須です。Open は未推薦であり未検証ではありません。', itemAssetization: '独立所有 Item を許可', compatibilityContract: '互換性契約', syncMakerCompatibility: 'Maker から同期', sealMakerCompatibility: '互換性草稿をロック', unlockMakerCompatibility: '編集のため解除', compatibilityDraft: '下書き', compatibilitySealed: 'ロック済み', compatibilitySummaryV6: 'Layer Track {tracks} · Slot {slots} · {width} × {height}', compatibilityNoAnchors: 'Maker Canvas と明示 transform のみを使用し、透明余白で移動・拡縮しません。', officialItemCatalog: 'Item Product カタログ', addSelectedOfficialItem: '選択 Style を公式 Item に追加', importThirdPartyItem: '第三者 Item JSON を読み込む', noComposableItems: 'Item Product はまだありません。Style を選んで追加してください。', itemProductCount: 'Item Product {count}', itemOriginOfficial: '公式', itemOriginCertified: '認証', itemOriginOpen: 'オープン', itemAccessEmbedded: '内蔵', itemAccessFreeClaim: '無料取得', itemAccessPaidOnce: '買い切り', itemBindingEmbedded: 'Maker 内蔵', itemBindingAccount: 'アカウント権利', itemBindingSoul: 'Soul 固定', itemBindingOwned: '独立所有', itemValidated: '検証済み', itemValidationPending: '検証者証明待ち', itemComponents: '同時描画 PNG {count}', itemSlot: 'Slot · {slot}', removeItemProduct: 'Item Product を削除', itemImportFailed: 'Item manifest が無効、または互換性がありません。', v6MainnetGateClosed: 'Composable v6 の Mainnet 公開は現在無効です。編集と Player テストは利用できます。', wardrobe: 'Wardrobe', wardrobeTitle: 'この OC が使える Item', wardrobeCopy: '実在する内蔵・Account・Soul-bound・Owned 権利のみ表示します。', wardrobeEmpty: '利用可能な互換 Item はありません。', wardrobeLocked: 'ロック中', wardrobeEquipped: '装備中', wardrobeEquip: '装備', wardrobeRemove: '外す', wardrobeUnavailable: 'この Wallet / Soul では利用不可', currentAppearanceRevision: '現在の外観 · revision {revision}',
+  },
+  ko: {
+    composableItems: '컴포저블 아이템', itemStudio: 'Item Studio', itemStudioTitle: '검증된 Item을 받을 수 있는 Maker', itemStudioCopy: '호환성은 Maker의 Canvas, Layer Track, Slot, 공용 Renderer만 사용합니다. 인체 골격을 도입하지 않습니다.', makerCompositionMode: 'Maker 구성 모드', fixedMaker: '고정 Maker', fixedMakerCopy: 'Genesis 외형이 최종이며 내장 카탈로그만 사용합니다.', composableMaker: '컴포저블 Maker', composableMakerCopy: '불변 Genesis와 개정 가능한 Current Appearance를 함께 보존합니다.', thirdPartyAdmission: '제3자 Item 허용', admissionDisabled: '사용 안 함', admissionCertified: '인증만', admissionOpen: '인증＋오픈', admissionCopy: 'Official, Certified, Open 모두 기술 검증이 필수입니다. Open은 미승인이지 미검증이 아닙니다.', itemAssetization: '독립 소유 Item 허용', compatibilityContract: '호환성 계약', syncMakerCompatibility: 'Maker에서 동기화', sealMakerCompatibility: '호환성 초안 잠금', unlockMakerCompatibility: '편집 잠금 해제', compatibilityDraft: '초안', compatibilitySealed: '잠김', compatibilitySummaryV6: 'Layer Track {tracks} · Slot {slots} · {width} × {height}', compatibilityNoAnchors: 'Maker Canvas와 명시적 PNG transform만 사용하며 투명 여백으로 이동하거나 확대하지 않습니다.', officialItemCatalog: 'Item Product 카탈로그', addSelectedOfficialItem: '선택 Style을 공식 Item으로 추가', importThirdPartyItem: '제3자 Item JSON 가져오기', noComposableItems: 'Item Product가 없습니다. Style을 선택해 추가하세요.', itemProductCount: 'Item Product {count}개', itemOriginOfficial: '공식', itemOriginCertified: '인증', itemOriginOpen: '오픈', itemAccessEmbedded: '내장', itemAccessFreeClaim: '무료 청구', itemAccessPaidOnce: '1회 구매', itemBindingEmbedded: 'Maker 내장', itemBindingAccount: '계정 라이선스', itemBindingSoul: 'Soul 귀속', itemBindingOwned: '독립 소유', itemValidated: '검증됨', itemValidationPending: '검증자 증명 대기', itemComponents: '동시 PNG 구성요소 {count}개', itemSlot: 'Slot · {slot}', removeItemProduct: 'Item Product 삭제', itemImportFailed: 'Item manifest가 유효하지 않거나 호환되지 않습니다.', v6MainnetGateClosed: 'Composable v6 Mainnet 게이트가 닫혀 있습니다. 초안 편집과 Player 테스트는 사용할 수 있습니다.', wardrobe: 'Wardrobe', wardrobeTitle: '이 OC가 사용할 수 있는 Item', wardrobeCopy: '실제 내장, 계정, Soul-bound, Owned 권리만 표시합니다.', wardrobeEmpty: '사용 가능한 호환 Item이 없습니다.', wardrobeLocked: '잠김', wardrobeEquipped: '장착됨', wardrobeEquip: '장착', wardrobeRemove: '해제', wardrobeUnavailable: '현재 Wallet 또는 Soul에서 사용할 수 없음', currentAppearanceRevision: '현재 외형 · revision {revision}',
+  },
+  vi: {
+    composableItems: 'Vật phẩm ghép', itemStudio: 'Item Studio', itemStudioTitle: 'Maker nhận Item đã xác minh', itemStudioCopy: 'Tương thích chỉ dựa trên Canvas, Layer Track, Slot và Renderer của Maker; không có bộ xương cơ thể.', makerCompositionMode: 'Chế độ ghép Maker', fixedMaker: 'Maker cố định', fixedMakerCopy: 'Ngoại hình Genesis là cuối cùng và chỉ dùng danh mục tích hợp.', composableMaker: 'Maker có thể ghép', composableMakerCopy: 'Giữ Genesis bất biến và Current Appearance có phiên bản.', thirdPartyAdmission: 'Chấp nhận Item bên thứ ba', admissionDisabled: 'Tắt', admissionCertified: 'Chỉ chứng nhận', admissionOpen: 'Chứng nhận + mở', admissionCopy: 'Official, Certified và Open đều phải xác minh kỹ thuật; Open là không được Maker bảo chứng, không phải chưa xác minh.', itemAssetization: 'Cho phép Item sở hữu độc lập', compatibilityContract: 'Hợp đồng tương thích', syncMakerCompatibility: 'Đồng bộ từ Maker', sealMakerCompatibility: 'Khóa bản nháp tương thích', unlockMakerCompatibility: 'Mở khóa để sửa', compatibilityDraft: 'Bản nháp', compatibilitySealed: 'Đã khóa', compatibilitySummaryV6: '{tracks} Layer Track · {slots} Slot · {width} × {height}', compatibilityNoAnchors: 'Chỉ dùng Canvas Maker và transform PNG rõ ràng; vùng trong suốt không tự di chuyển hay đổi cỡ.', officialItemCatalog: 'Danh mục Item Product', addSelectedOfficialItem: 'Thêm Style đã chọn làm Item chính thức', importThirdPartyItem: 'Nhập JSON Item bên thứ ba', noComposableItems: 'Chưa có Item Product. Chọn một Style rồi thêm tại đây.', itemProductCount: '{count} Item Product', itemOriginOfficial: 'Chính thức', itemOriginCertified: 'Đã chứng nhận', itemOriginOpen: 'Mở', itemAccessEmbedded: 'Tích hợp', itemAccessFreeClaim: 'Nhận miễn phí', itemAccessPaidOnce: 'Mua một lần', itemBindingEmbedded: 'Tích hợp Maker', itemBindingAccount: 'Quyền tài khoản', itemBindingSoul: 'Gắn Soul', itemBindingOwned: 'Sở hữu độc lập', itemValidated: 'Đã xác minh', itemValidationPending: 'Chờ chứng thực validator', itemComponents: '{count} thành phần PNG đồng thời', itemSlot: 'Slot · {slot}', removeItemProduct: 'Xóa Item Product', itemImportFailed: 'Item manifest không hợp lệ hoặc không tương thích.', v6MainnetGateClosed: 'Cổng Mainnet Composable v6 đang tắt; vẫn có thể sửa bản nháp và thử đúng Player.', wardrobe: 'Tủ đồ', wardrobeTitle: 'Item dùng được cho OC này', wardrobeCopy: 'Chỉ hiển thị quyền tích hợp, tài khoản, Soul-bound hoặc owned thực tế.', wardrobeEmpty: 'Không có Item tương thích khả dụng.', wardrobeLocked: 'Đang khóa', wardrobeEquipped: 'Đã trang bị', wardrobeEquip: 'Trang bị', wardrobeRemove: 'Gỡ', wardrobeUnavailable: 'Ví hoặc Soul này không có quyền', currentAppearanceRevision: 'Ngoại hình hiện tại · revision {revision}',
+  },
+};
+
+// Keep the Player/Creator language focused on the supported v6 contract.
+// Compatibility is described positively through existing Maker primitives.
+Object.assign(composableV6Dictionaries.en, {
+  itemStudioCopy: 'Compatibility uses this Maker\'s Canvas, Layer Tracks, Slots and shared Renderer.',
+  compatibilityPlacement: 'Placement preserves the full source PNG dimensions and explicit transform; transparent bounds never move or resize artwork.',
+  setSlotFallback: 'Set as Slot default',
+  slotFallback: 'Slot default',
+  compatibilityLockedError: 'Unlock the compatibility draft before changing its policy, Slots or Item catalog.',
+  itemTxPlanning: 'Preparing transaction…',
+  itemTxAwaitingSignature: 'Waiting for wallet signature…',
+  itemTxSubmitted: 'Transaction submitted',
+  itemTxConfirming: 'Confirming on Sui…',
+  itemTxConfirmed: 'Entitlement confirmed',
+  itemTxFailed: 'Transaction failed. You can retry safely.',
+  itemTxRecoverable: 'Transaction may be pending. Check its on-chain status before retrying.',
+  itemTxRetry: 'Retry',
+  itemTxResume: 'Check & resume',
+});
+Object.assign(composableV6Dictionaries.zh, {
+  itemStudioCopy: '兼容性使用当前 Maker 的画布、图层轨道、插槽与共享渲染器。',
+  compatibilityPlacement: '定位保留源 PNG 的完整尺寸与显式变换；透明边不会移动或缩放素材。',
+  setSlotFallback: '设为插槽默认部件',
+  slotFallback: '插槽默认部件',
+  compatibilityLockedError: '请先解锁兼容性草稿，再修改准入、插槽或部件目录。',
+  itemTxPlanning: '正在准备交易…',
+  itemTxAwaitingSignature: '等待钱包签名…',
+  itemTxSubmitted: '交易已提交',
+  itemTxConfirming: '正在 Sui 上确认…',
+  itemTxConfirmed: '使用权益已确认',
+  itemTxFailed: '交易失败，可以安全重试。',
+  itemTxRecoverable: '交易可能仍在处理中，请先检查链上状态再重试。',
+  itemTxRetry: '重试',
+  itemTxResume: '检查并恢复',
+});
+Object.assign(composableV6Dictionaries.ja, {
+  itemStudioCopy: '互換性には、この Maker の Canvas、Layer Track、Slot、共通 Renderer を使用します。',
+  compatibilityPlacement: '元 PNG の全体寸法と明示 transform を維持し、透明余白では移動・拡縮しません。',
+  setSlotFallback: 'Slot のデフォルトに設定',
+  slotFallback: 'Slot のデフォルト',
+  compatibilityLockedError: '受け入れ方針、Slot、Item カタログを変更する前に互換性ドラフトのロックを解除してください。',
+  itemTxPlanning: 'トランザクションを準備中…',
+  itemTxAwaitingSignature: 'Wallet の署名を待っています…',
+  itemTxSubmitted: 'トランザクションを送信しました',
+  itemTxConfirming: 'Sui で確認中…',
+  itemTxConfirmed: '利用権を確認しました',
+  itemTxFailed: 'トランザクションに失敗しました。安全に再試行できます。',
+  itemTxRecoverable: '処理中の可能性があります。再試行前にオンチェーン状態を確認してください。',
+  itemTxRetry: '再試行',
+  itemTxResume: '確認して再開',
+});
+Object.assign(composableV6Dictionaries.ko, {
+  itemStudioCopy: '호환성은 이 Maker의 Canvas, Layer Track, Slot, 공용 Renderer를 사용합니다.',
+  compatibilityPlacement: '원본 PNG 전체 크기와 명시적 transform을 유지하며 투명 여백으로 이동하거나 확대하지 않습니다.',
+  setSlotFallback: 'Slot 기본 Item으로 설정',
+  slotFallback: 'Slot 기본 Item',
+  compatibilityLockedError: '허용 정책, Slot 또는 Item 카탈로그를 변경하기 전에 호환성 초안의 잠금을 해제하세요.',
+  itemTxPlanning: '트랜잭션 준비 중…',
+  itemTxAwaitingSignature: '지갑 서명 대기 중…',
+  itemTxSubmitted: '트랜잭션 제출됨',
+  itemTxConfirming: 'Sui에서 확인 중…',
+  itemTxConfirmed: '사용 권한 확인됨',
+  itemTxFailed: '트랜잭션이 실패했습니다. 안전하게 다시 시도할 수 있습니다.',
+  itemTxRecoverable: '아직 처리 중일 수 있습니다. 재시도 전에 온체인 상태를 확인하세요.',
+  itemTxRetry: '다시 시도',
+  itemTxResume: '확인 후 재개',
+});
+Object.assign(composableV6Dictionaries.vi, {
+  itemStudioCopy: 'Tương thích dùng Canvas, Layer Track, Slot và Renderer chung của Maker này.',
+  compatibilityPlacement: 'Giữ nguyên kích thước PNG nguồn và transform rõ ràng; vùng trong suốt không tự di chuyển hay đổi cỡ hình.',
+  setSlotFallback: 'Đặt làm Item mặc định của Slot',
+  slotFallback: 'Item mặc định của Slot',
+  compatibilityLockedError: 'Hãy mở khóa bản nháp tương thích trước khi đổi chính sách, Slot hoặc danh mục Item.',
+  itemTxPlanning: 'Đang chuẩn bị giao dịch…',
+  itemTxAwaitingSignature: 'Đang chờ chữ ký ví…',
+  itemTxSubmitted: 'Đã gửi giao dịch',
+  itemTxConfirming: 'Đang xác nhận trên Sui…',
+  itemTxConfirmed: 'Đã xác nhận quyền sử dụng',
+  itemTxFailed: 'Giao dịch thất bại. Bạn có thể thử lại an toàn.',
+  itemTxRecoverable: 'Giao dịch có thể vẫn đang xử lý. Hãy kiểm tra on-chain trước khi thử lại.',
+  itemTxRetry: 'Thử lại',
+  itemTxResume: 'Kiểm tra và tiếp tục',
+});
+
+Object.entries(composableV6Dictionaries).forEach(([locale, details]) => Object.assign(dictionaries[locale], details));
+
 export const MAKER_WORKSPACE_LOCALES = Object.freeze(Object.keys(dictionaries));
 export const MAKER_WORKSPACE_KEYS = Object.freeze(Object.keys(en));
 

@@ -62,6 +62,35 @@ Every paid Complete authorization and canonical Soul mint is designed as one
 Sui programmable transaction. If authorization, payment, or minting fails, the
 whole transaction rolls back; there is no partially paid OC.
 
+## Composable Assets v6 Preview
+
+Commerce & Rights v5 remains Animacraft's current production publication and
+commercial contract. Composable Assets v6 is an additive preview attached to
+one exact immutable v5 Maker release; it never rewrites the v5 Maker graph,
+Recipe, Complete output, rights or fee snapshots.
+
+v6 is intentionally limited to:
+
+- a Fixed or Composable Profile;
+- Maker-local Canvas, Layer Track, Slot, Rule and Renderer compatibility;
+- Official, Certified and Open Item Products, all of which require exact
+  technical validation;
+- immutable Genesis Appearance and revisioned Current Appearance companions;
+- optional independent Item ownership.
+
+Official and Certified identify Maker endorsement. Open identifies compatible
+content without Maker endorsement; it never means unchecked. Rental,
+consumables, durability, enhancement, game attributes and Bundle Sale are not
+implemented and have no placeholder product enum. Only the opaque
+`extensionsHash` is reserved for a future reviewed schema.
+
+Every v6 Walrus and Sui write gate is currently **OFF**. The production app
+must not publish, sell, claim or equip v6 content on Mainnet until the paired
+Animacraft/Soulidity packages, negative gate tests, testnet evidence and
+independent review are approved. See
+[Composable Assets v6](./COMPOSABLE_ASSETS_V6.md) for the exact model and gate
+matrix.
+
 ## Maker Lifecycle Management
 
 Creators open lifecycle management from **Creator Library → Manage status** or from the lifecycle badge in Creator Studio. One Maker card owns one stable editing root and lists every immutable Sui publication under that root instead of exposing historical releases as duplicate library cards.
@@ -154,6 +183,9 @@ Before promoting the invited-creator release:
 - `animacraft.maker.v5`: authoritative versioned Maker graph with direct Style PNGs, independent Canvas transforms, z-only LayerTracks, ColorChannels, rules, ExpansionPack metadata, and Walrus asset index.
 - `animacraft.maker-commerce.v5`: rights origin, Base and Pack access,
   per-wallet/global Complete policy, and immutable royalty inputs.
+- `animacraft.maker-composable.v6`: optional companion profile, Maker-local
+  compatibility contract, Item Product catalog and fallback Loadout. This
+  output is preview-only while every v6 Mainnet write gate is OFF.
 - `animacraft.oc-package.v2`: finished OC profile with the full v5 Recipe, immutable Maker version, Living Content, and its deterministic Sui RecipeSlot projection.
 - `animacraft.creator-template.v3`, `animacraft.maker.v4`, and their editor drafts are intentionally not migrated into the simplified v5 authoring graph.
 - `animacraft.living-content.v1`: editable Maker defaults for `soul.md`, `memory.md`, and `SKILL.md`.
@@ -185,4 +217,4 @@ The approved Creator Studio composition is frozen at [PR #15 and merge commit `e
 
 As of this release candidate, Mainnet discovery returns zero published Makers. That is intentionally shown as an honest creator-first empty state. Users cannot enter Player Editor from hidden examples, and `Make OC` becomes available only after selecting a verified on-chain Maker. Creator `Player test` is a separate draft-only path and unlocks after at least one actual PNG is available.
 
-See [CREATOR_ASSET_SPEC_V5.zh-CN.md](./CREATOR_ASSET_SPEC_V5.zh-CN.md), [CREATOR_GUIDE.md](./CREATOR_GUIDE.md), [DEPLOYMENT.md](./DEPLOYMENT.md), [PRODUCTION_STATUS.md](./PRODUCTION_STATUS.md), [SOULIDITY_ADAPTER_HANDOFF.md](./SOULIDITY_ADAPTER_HANDOFF.md), [MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md), and [move/animacraft/README.md](./move/animacraft/README.md).
+See [CREATOR_ASSET_SPEC_V5.zh-CN.md](./CREATOR_ASSET_SPEC_V5.zh-CN.md), [CREATOR_GUIDE.md](./CREATOR_GUIDE.md), [Composable Assets v6](./COMPOSABLE_ASSETS_V6.md), [DEPLOYMENT.md](./DEPLOYMENT.md), [PRODUCTION_STATUS.md](./PRODUCTION_STATUS.md), [SOULIDITY_ADAPTER_HANDOFF.md](./SOULIDITY_ADAPTER_HANDOFF.md), [MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md), and [move/animacraft/README.md](./move/animacraft/README.md).

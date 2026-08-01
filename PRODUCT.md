@@ -53,6 +53,23 @@ The wallet is the account. There is no separate Animacraft password or backend s
 
 Those capabilities may integrate later through explicit adapters. They must not appear as active controls before their contracts and user flows exist.
 
+## v5 Production and v6 Preview Boundary
+
+Commerce & Rights v5 is the current supported Maker publication, access,
+Complete, revenue and resale contract. Composable Assets v6 is an additive
+preview for one exact v5 Maker release. It adds only a Composable Profile,
+Maker-local compatibility, technically validated Official/Certified/Open Item
+Products, Genesis/Current Appearance companions and optional independent Item
+ownership.
+
+Open Item Products have no Maker endorsement, but they must pass the same
+technical validation as Official and Certified products. Every v6 Mainnet
+Walrus and Sui write gate is off. Rental, consumables, durability, enhancement,
+game attributes and Bundle Sale are not implemented; only an opaque
+`extensionsHash` reserves a reviewed future upgrade point. See
+[COMPOSABLE_ASSETS_V6.md](./COMPOSABLE_ASSETS_V6.md) for the complete boundary
+and promotion checklist.
+
 ## Product Architecture
 
 ```text

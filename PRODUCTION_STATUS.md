@@ -2,6 +2,9 @@
 
 ## Release State
 
+Commerce & Rights v5 is the current production contract. Composable Assets v6
+is an additive preview, and every v6 Mainnet Walrus/Sui write gate remains off.
+
 Animacraft product version `0.8.4` is a pre-v1 production candidate. Product v1 is reserved for a proven ecosystem at roughly 1,000 active creators. Move protocol numbers are tracked separately: the stable original package/legacy TypeOrigin is `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`, while the source-verified **protocol v4 callable package** is `0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc`. The v4 upgrade is live on Mainnet and its canonical native-USDC Protocol Fee objects have been initialized. Their integration gate remains disabled, so canonical Soul minting is still blocked until the separate Soulidity v2 adapter and market migration are deployed and verified.
 
 The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio, local draft ownership, Walrus writes, publication, archive, and Soulidity handoff require a connected wallet.
@@ -44,6 +47,27 @@ Current Mainnet truth: the published package is configured, but discovery curren
 - The public Docs Center provides a searchable, responsive, five-language handbook for players, creators, artists, publishing, recovery, lifecycle management, and the exact local/Walrus/Sui/Soulidity boundary.
 - Docs now separates a concise article-card home from directly linkable article detail pages and uses one browser-controlled page scroll across desktop and mobile.
 - Twelve high-value Docs articles include accessible, responsive visual explanations for the Maker hierarchy, Player selection surface, full-canvas alignment, import decisions, Layer Track order, Smart Color linkage, Rules outcomes, four-step publication, and the Soul/chain boundary. Existing AI-assisted fixture art is labeled as a technical alignment example rather than an aesthetic reference.
+
+## Composable Assets v6 Preview
+
+v6 is additive to the v5 production contract. Its supported scope is limited to
+a Composable Profile; Maker-local Canvas, Layer Track, Slot, Rule and Renderer
+compatibility; technically validated Official, Certified and Open Item
+Products; immutable Genesis and revisioned Current Appearance; and optional
+independent Item ownership.
+
+Open content has no Maker endorsement but must pass the same exact technical
+validation as Official and Certified content. Rental, consumables, durability,
+enhancement, game attributes and Bundle Sale are not implemented and have no
+placeholder protocol enum. Only an opaque `extensionsHash` reserves a future
+versioned upgrade point.
+
+Every v6 Mainnet Walrus and Sui write gate is off. The v6 authoring and
+validation model may be tested locally, but production must not publish a v6
+companion, admit or sell Item Products, create appearance companions, update a
+Soul appearance or transfer an owned Item. The exact boundary and promotion
+evidence are documented in
+[COMPOSABLE_ASSETS_V6.md](./COMPOSABLE_ASSETS_V6.md).
 
 ## Remaining Mainnet Activation
 

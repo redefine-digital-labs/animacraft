@@ -623,7 +623,7 @@ test('Maker v5 exposes the four-level P0 creator workflow without legacy visual 
   assert.match(workspace, /this\.tr\('projectZip'\)/);
   assert.match(
     workspace,
-    /new Set\(\['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'commerce', 'soul', 'validate'\]\)/,
+    /new Set\(\['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'composable', 'commerce', 'soul', 'validate'\]\)/,
   );
   assert.doesNotMatch(workspace, /this\.tr\('generateCompositeThumbnail'\)/);
   assert.doesNotMatch(workspace, /this\.tr\('parentPart'\)/);

@@ -20,6 +20,41 @@ function productionConfig() {
   });
 }
 
+function productionV6Config() {
+  const config = productionConfig();
+  Object.assign(config, {
+    canonicalSoulMintEnabled: true,
+    protocolFeePackageId: '0x5678',
+    protocolFeeConfigId: '0xfeed',
+    protocolTreasuryId: '0xbeef',
+    protocolFeeAdminCapId: '0xcafe',
+    protocolFeeAdminCapOwner: '0xadea',
+    soulidityTypeOriginPackageId: '0xabcd',
+    commerceV5TypeOriginPackageId: '0x5555',
+    commerceProtocolConfigV5Id: '0xc055',
+    commerceProtocolTreasuryV5Id: '0x7ea5',
+    commerceV5LogicalAuxiliaryBlobId:
+      '35uepW2PoPAgFnv8xTvAjHdc2JBCVMdcHxmxojH85x4e',
+    commerceV5SoulBindingProofType:
+      '0xabcd::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5',
+    commerceV5ReleaseEnabled: true,
+    sealV5PackageId: '0x5555',
+    sealKeyServers: [{
+      objectId: '0x6860',
+      aggregatorUrl: 'https://seal.example.com',
+      weight: 1,
+    }],
+    sealThreshold: 1,
+    compositionV6TypeOriginPackageId: '0x6666',
+    compositionProtocolConfigV6Id: '0xc066',
+    compositionProtocolTreasuryV6Id: '0x7ea6',
+    compositionRegistryV6Id: '0xae66',
+    compositionV6SoulOwnerProofType:
+      '0xabcd::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
+  });
+  return config;
+}
+
 test('accepts a complete Mainnet production configuration', () => {
   const config = productionConfig();
   Object.assign(config, {
@@ -292,6 +327,52 @@ test('Commerce v5 proof type must come from the stable Soulidity TypeOrigin', ()
   assert.equal(result.valid, false);
   assert.equal(result.commerceV5SoulBindingProofReady, false);
   assert.match(result.errors.join(' '), /exact AnimacraftSoulBindingProofV5/);
+});
+
+test('keeps Composable Assets v6 disabled and unconfigured by default', () => {
+  const config = productionConfig();
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, true);
+  assert.equal(config.compositionV6ReleaseEnabled, false);
+  assert.equal(result.compositionV6TypeOriginPackageReady, false);
+  assert.equal(result.compositionProtocolConfigV6Ready, false);
+  assert.equal(result.compositionProtocolTreasuryV6Ready, false);
+  assert.equal(result.compositionRegistryV6Ready, false);
+  assert.equal(result.compositionV6SoulOwnerProofReady, false);
+});
+
+test('Composable Assets v6 release gate requires its complete tuple and active v5', () => {
+  const missing = productionConfig();
+  missing.compositionV6ReleaseEnabled = true;
+  let result = validateRuntimeConfig(missing, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /Composable Assets v6 cannot be released/);
+
+  const partial = productionConfig();
+  partial.compositionV6TypeOriginPackageId = '0x6666';
+  result = validateRuntimeConfig(partial, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /complete object tuple|must include its stable TypeOrigin/);
+
+  const ready = productionV6Config();
+  ready.compositionV6ReleaseEnabled = true;
+  result = validateRuntimeConfig(ready, { strict: true });
+  assert.equal(result.valid, true);
+  assert.equal(result.compositionV6TypeOriginPackageReady, true);
+  assert.equal(result.compositionProtocolConfigV6Ready, true);
+  assert.equal(result.compositionProtocolTreasuryV6Ready, true);
+  assert.equal(result.compositionRegistryV6Ready, true);
+  assert.equal(result.compositionV6SoulOwnerProofReady, true);
+});
+
+test('Composable Assets v6 owner proof must come from Soulidity TypeOrigin', () => {
+  const config = productionV6Config();
+  config.compositionV6SoulOwnerProofType =
+    '0x9999::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6';
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.equal(result.compositionV6SoulOwnerProofReady, false);
+  assert.match(result.errors.join(' '), /exact AnimacraftSoulOwnerProofV6/);
 });
 
 test('Seal v5 fails closed on partial credentials and invalid outer thresholds', () => {
