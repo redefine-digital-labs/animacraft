@@ -27,6 +27,12 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   soulidityAppUrl: 'https://www.soulidity.ai',
   soulidityIntegrationPath: '/integrations/animacraft',
   soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  // Latest Soulidity package used only for Move approval calls. The legacy
+  // soulidityPackageId field remains a compatibility alias for this value.
+  soulidityCallablePackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  // Permanent original Soulidity Seal namespace. Ciphertext, SessionKey and
+  // recovery identities commit to this package and must survive upgrades.
+  souliditySealNamespacePackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
   // Stable defining package for Animacraft provenance types. It may differ
   // from soulidityPackageId after a Soulidity package upgrade.
   soulidityTypeOriginPackageId: '',
@@ -62,11 +68,26 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   compositionProtocolConfigV6Id: '',
   compositionProtocolTreasuryV6Id: '',
   compositionRegistryV6Id: '',
+  compositionAdminCapV6Id: '',
+  compositionAdminCapV6Owner: '',
+  compositionValidatorCapV6Id: '',
+  compositionValidatorCapV6Owner: '',
+  compositionValidatorEpochV6: '',
+  compositionValidatorPolicyCommitmentV6: '',
   compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,
   // Seal remains fail-closed until the reviewed v5 package and an authenticated
   // Mainnet committee endpoint are configured. One committee is one outer
   // server with weight 1 / threshold 1; its internal committee is 5-of-8.
+  // Frozen package used for Seal encryption, SessionKey scoping and approval
+  // calls. Existing ciphertext commits to this namespace, so a later
+  // Animacraft upgrade must not silently replace it.
+  sealV5CallablePackageId: '',
+  // Stable package that first defined seal_v5 object types. It never advances
+  // when a later package becomes callable.
+  sealV5TypeOriginPackageId: '',
+  // Backward-compatible alias for deployments created before callable and
+  // TypeOrigin were split. normalizeRuntimeConfig maps it to both identities.
   sealV5PackageId: '',
   sealKeyServers: [],
   sealThreshold: 0,
@@ -124,11 +145,49 @@ export function resolveOriginalPackageId(config = {}) {
   return String(config.originalPackageId || config.packageId || config.callablePackageId || '').trim();
 }
 
+export function resolveSoulidityCallablePackageId(config = {}) {
+  return String(
+    config.soulidityCallablePackageId
+      || config.soulidityPackageId
+      || '',
+  ).trim();
+}
+
+export function resolveSouliditySealNamespacePackageId(config = {}) {
+  return String(
+    config.souliditySealNamespacePackageId
+      || config.soulidityPackageId
+      || '',
+  ).trim();
+}
+
+export function resolveSealV5CallablePackageId(config = {}) {
+  return String(
+    config.sealV5CallablePackageId
+      || config.sealV5PackageId
+      || '',
+  ).trim();
+}
+
+export function resolveSealV5TypeOriginPackageId(config = {}) {
+  return String(
+    config.sealV5TypeOriginPackageId
+      || config.sealV5PackageId
+      || '',
+  ).trim();
+}
+
 export function normalizeRuntimeConfig(overrides = {}, origin = '') {
   const callablePackageId = resolveCallablePackageId(overrides)
     || DEFAULT_RUNTIME_CONFIG.callablePackageId;
   const originalPackageId = resolveOriginalPackageId(overrides)
     || DEFAULT_RUNTIME_CONFIG.originalPackageId;
+  const soulidityCallablePackageId = resolveSoulidityCallablePackageId(overrides)
+    || DEFAULT_RUNTIME_CONFIG.soulidityCallablePackageId;
+  const souliditySealNamespacePackageId = resolveSouliditySealNamespacePackageId(overrides)
+    || DEFAULT_RUNTIME_CONFIG.souliditySealNamespacePackageId;
+  const sealV5CallablePackageId = resolveSealV5CallablePackageId(overrides);
+  const sealV5TypeOriginPackageId = resolveSealV5TypeOriginPackageId(overrides);
   return {
     ...DEFAULT_RUNTIME_CONFIG,
     ...overrides,
@@ -136,6 +195,16 @@ export function normalizeRuntimeConfig(overrides = {}, origin = '') {
     packageId: callablePackageId,
     callablePackageId,
     originalPackageId,
+    // soulidityPackageId remains a compatibility alias for the latest
+    // callable package. Seal identities must use the explicit namespace.
+    soulidityPackageId: soulidityCallablePackageId,
+    soulidityCallablePackageId,
+    souliditySealNamespacePackageId,
+    // Keep the legacy alias callable for old application code and old static
+    // configs. Type checks must use sealV5TypeOriginPackageId instead.
+    sealV5PackageId: sealV5CallablePackageId,
+    sealV5CallablePackageId,
+    sealV5TypeOriginPackageId,
     grpcUrl: overrides.grpcUrl || overrides.rpcUrl || DEFAULT_RUNTIME_CONFIG.grpcUrl,
     appUrl: overrides.appUrl || origin || DEFAULT_RUNTIME_CONFIG.appUrl,
     featuredMakers: overrides.featuredMakers && typeof overrides.featuredMakers === 'object'
@@ -180,10 +249,22 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     && String(config.packageId).trim() !== String(config.callablePackageId).trim()) {
     errors.push('packageId is a compatibility alias and must match callablePackageId.');
   }
-  const soulidityReady = SUI_ID.test(String(config.soulidityPackageId || '')) && !String(config.soulidityPackageId).includes('TODO');
-  if (!soulidityReady) (requireSoulidity ? errors : warnings).push('Set soulidityPackageId before enabling the Soulidity handoff.');
+  const soulidityCallablePackageId = resolveSoulidityCallablePackageId(config);
+  const souliditySealNamespacePackageId = resolveSouliditySealNamespacePackageId(config);
+  const soulidityReady = SUI_ID.test(soulidityCallablePackageId)
+    && !soulidityCallablePackageId.includes('TODO');
+  const souliditySealNamespaceReady = SUI_ID.test(souliditySealNamespacePackageId)
+    && !souliditySealNamespacePackageId.includes('TODO');
+  if (!soulidityReady) (requireSoulidity ? errors : warnings).push('Set soulidityCallablePackageId before enabling the Soulidity handoff.');
+  if (!souliditySealNamespaceReady) {
+    (requireSoulidity ? errors : warnings).push('Set the permanent souliditySealNamespacePackageId before enabling protected Complete outputs.');
+  }
+  if (config.soulidityPackageId && config.soulidityCallablePackageId
+    && String(config.soulidityPackageId).trim() !== String(config.soulidityCallablePackageId).trim()) {
+    errors.push('soulidityPackageId is a compatibility alias and must match soulidityCallablePackageId.');
+  }
   const soulidityTypeOrigin = String(
-    config.soulidityTypeOriginPackageId || config.soulidityPackageId || '',
+    config.soulidityTypeOriginPackageId || soulidityCallablePackageId || '',
   );
   const soulidityTypeOriginReady = SUI_ID.test(soulidityTypeOrigin)
     && !soulidityTypeOrigin.includes('TODO');
@@ -316,10 +397,11 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     && (
       config.canonicalSoulMintEnabled !== true
       || !soulidityReady
+      || !souliditySealNamespaceReady
       || !soulidityTypeOriginReady
     )
   ) {
-    errors.push('Commerce v5 requires the canonical Soulidity mint gate, callable package, and stable TypeOrigin because every Complete output is atomically bound to one Soul.');
+    errors.push('Commerce v5 requires the canonical Soulidity mint gate, callable package, permanent Seal namespace, and stable TypeOrigin because every Complete output is atomically bound to one Soul.');
   }
 
   const compositionV6TypeOriginPackageReady = SUI_ID.test(
@@ -333,6 +415,27 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   );
   const compositionRegistryV6Ready = SUI_ID.test(
     String(config.compositionRegistryV6Id || ''),
+  );
+  const compositionAdminCapV6Ready = SUI_ID.test(
+    String(config.compositionAdminCapV6Id || ''),
+  );
+  const compositionAdminCapV6OwnerReady = SUI_ID.test(
+    String(config.compositionAdminCapV6Owner || ''),
+  );
+  const compositionValidatorCapV6Ready = SUI_ID.test(
+    String(config.compositionValidatorCapV6Id || ''),
+  );
+  const compositionValidatorCapV6OwnerReady = SUI_ID.test(
+    String(config.compositionValidatorCapV6Owner || ''),
+  );
+  const compositionValidatorEpochV6 = Number(config.compositionValidatorEpochV6);
+  const compositionValidatorEpochV6Ready = config.compositionValidatorEpochV6 !== ''
+    && config.compositionValidatorEpochV6 !== null
+    && config.compositionValidatorEpochV6 !== undefined
+    && Number.isSafeInteger(compositionValidatorEpochV6)
+    && compositionValidatorEpochV6 >= 0;
+  const compositionValidatorPolicyCommitmentV6Ready = /^0x[0-9a-f]{64}$/i.test(
+    String(config.compositionValidatorPolicyCommitmentV6 || ''),
   );
   let compositionV6SoulOwnerProofType = '';
   try {
@@ -357,6 +460,12 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
       || config.compositionProtocolConfigV6Id
       || config.compositionProtocolTreasuryV6Id
       || config.compositionRegistryV6Id
+      || config.compositionAdminCapV6Id
+      || config.compositionAdminCapV6Owner
+      || config.compositionValidatorCapV6Id
+      || config.compositionValidatorCapV6Owner
+      || config.compositionValidatorEpochV6 !== ''
+      || config.compositionValidatorPolicyCommitmentV6
       || config.compositionV6SoulOwnerProofType,
   );
   if (typeof config.compositionV6ReleaseEnabled !== 'boolean') {
@@ -374,6 +483,25 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   if (config.compositionRegistryV6Id && !compositionRegistryV6Ready) {
     errors.push('compositionRegistryV6Id must be a valid Sui object ID.');
   }
+  if (config.compositionAdminCapV6Id && !compositionAdminCapV6Ready) {
+    errors.push('compositionAdminCapV6Id must be a valid Sui object ID.');
+  }
+  if (config.compositionAdminCapV6Owner && !compositionAdminCapV6OwnerReady) {
+    errors.push('compositionAdminCapV6Owner must be a valid Sui address.');
+  }
+  if (config.compositionValidatorCapV6Id && !compositionValidatorCapV6Ready) {
+    errors.push('compositionValidatorCapV6Id must be a valid Sui object ID.');
+  }
+  if (config.compositionValidatorCapV6Owner && !compositionValidatorCapV6OwnerReady) {
+    errors.push('compositionValidatorCapV6Owner must be a valid Sui address.');
+  }
+  if (config.compositionValidatorEpochV6 !== '' && !compositionValidatorEpochV6Ready) {
+    errors.push('compositionValidatorEpochV6 must be a non-negative safe integer.');
+  }
+  if (config.compositionValidatorPolicyCommitmentV6
+    && !compositionValidatorPolicyCommitmentV6Ready) {
+    errors.push('compositionValidatorPolicyCommitmentV6 must be an exact 32-byte 0x-prefixed hex value.');
+  }
   if (
     config.compositionV6SoulOwnerProofType
     && !compositionV6SoulOwnerProofReady
@@ -386,9 +514,15 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
       || !compositionProtocolConfigV6Ready
       || !compositionProtocolTreasuryV6Ready
       || !compositionRegistryV6Ready
+      || !compositionAdminCapV6Ready
+      || !compositionAdminCapV6OwnerReady
+      || !compositionValidatorCapV6Ready
+      || !compositionValidatorCapV6OwnerReady
+      || !compositionValidatorEpochV6Ready
+      || !compositionValidatorPolicyCommitmentV6Ready
       || !compositionV6SoulOwnerProofReady)
   ) {
-    errors.push('Composable Assets v6 configuration must include its stable TypeOrigin, protocol config, protocol treasury, registry, and exact Soulidity owner-proof type together.');
+    errors.push('Composable Assets v6 configuration must include its stable TypeOrigin, full object/cap custody tuple, validator epoch and policy commitment, and exact Soulidity owner-proof type together.');
   }
   if (
     config.compositionV6ReleaseEnabled
@@ -396,9 +530,15 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
       || !compositionProtocolConfigV6Ready
       || !compositionProtocolTreasuryV6Ready
       || !compositionRegistryV6Ready
+      || !compositionAdminCapV6Ready
+      || !compositionAdminCapV6OwnerReady
+      || !compositionValidatorCapV6Ready
+      || !compositionValidatorCapV6OwnerReady
+      || !compositionValidatorEpochV6Ready
+      || !compositionValidatorPolicyCommitmentV6Ready
       || !compositionV6SoulOwnerProofReady)
   ) {
-    errors.push('Composable Assets v6 cannot be released before its complete object tuple and exact Soulidity owner-proof type are configured.');
+    errors.push('Composable Assets v6 cannot be released before its complete object/cap custody tuple, validator policy, and exact Soulidity owner-proof type are configured.');
   }
   if (
     config.compositionV6ReleaseEnabled
@@ -406,13 +546,17 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
       config.commerceV5ReleaseEnabled !== true
       || config.canonicalSoulMintEnabled !== true
       || !soulidityReady
+      || !souliditySealNamespaceReady
       || !soulidityTypeOriginReady
     )
   ) {
     errors.push('Composable Assets v6 requires active Commerce v5, canonical Soul minting, and the reviewed Soulidity v6 appearance adapter.');
   }
 
-  const sealV5PackageReady = SUI_ID.test(String(config.sealV5PackageId || ''));
+  const sealV5CallablePackageId = resolveSealV5CallablePackageId(config);
+  const sealV5TypeOriginPackageId = resolveSealV5TypeOriginPackageId(config);
+  const sealV5CallablePackageReady = SUI_ID.test(sealV5CallablePackageId);
+  const sealV5TypeOriginPackageReady = SUI_ID.test(sealV5TypeOriginPackageId);
   const sealServers = Array.isArray(config.sealKeyServers)
     ? config.sealKeyServers
     : [];
@@ -482,19 +626,40 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     errors.push('sealVerifyKeyServers must be a boolean.');
   }
   const sealConfigured = Boolean(
-    config.sealV5PackageId
+    sealV5CallablePackageId
+      || sealV5TypeOriginPackageId
       || sealServers.length
       || Number(config.sealThreshold) > 0,
   );
-  if (config.sealV5PackageId && !sealV5PackageReady) {
-    errors.push('sealV5PackageId must be a valid Sui package ID.');
+  if (sealV5CallablePackageId && !sealV5CallablePackageReady) {
+    errors.push('sealV5CallablePackageId must be a valid Sui package ID.');
   }
-  if (sealConfigured && (!sealV5PackageReady || !sealServersReady || !sealThresholdReady)) {
-    errors.push('Seal v5 configuration must include its package, authenticated key servers, and a valid outer weight threshold.');
+  if (sealV5TypeOriginPackageId && !sealV5TypeOriginPackageReady) {
+    errors.push('sealV5TypeOriginPackageId must be a valid Sui package ID.');
+  }
+  if (
+    sealV5TypeOriginPackageReady
+    && commerceV5TypeOriginPackageReady
+    && sealV5TypeOriginPackageId !== String(config.commerceV5TypeOriginPackageId)
+  ) {
+    errors.push('sealV5TypeOriginPackageId must match the stable Commerce v5 TypeOrigin package.');
+  }
+  if (sealConfigured && (
+    !sealV5CallablePackageReady
+    || !sealV5TypeOriginPackageReady
+    || !sealServersReady
+    || !sealThresholdReady
+  )) {
+    errors.push('Seal v5 configuration must include its callable package, stable TypeOrigin, authenticated key servers, and a valid outer weight threshold.');
   }
   if (
     config.commerceV5ReleaseEnabled
-    && (!sealV5PackageReady || !sealServersReady || !sealThresholdReady)
+    && (
+      !sealV5CallablePackageReady
+      || !sealV5TypeOriginPackageReady
+      || !sealServersReady
+      || !sealThresholdReady
+    )
   ) {
     errors.push('Commerce v5 cannot be released before paid Base/Pack Seal protection is configured.');
   }
@@ -519,6 +684,7 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     callablePackageReady,
     originalPackageReady,
     soulidityReady,
+    souliditySealNamespaceReady,
     soulidityTypeOriginReady,
     protocolFeePackageReady,
     protocolFeeConfigReady,
@@ -534,8 +700,18 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     compositionProtocolConfigV6Ready,
     compositionProtocolTreasuryV6Ready,
     compositionRegistryV6Ready,
+    compositionAdminCapV6Ready,
+    compositionAdminCapV6OwnerReady,
+    compositionValidatorCapV6Ready,
+    compositionValidatorCapV6OwnerReady,
+    compositionValidatorEpochV6Ready,
+    compositionValidatorPolicyCommitmentV6Ready,
     compositionV6SoulOwnerProofReady,
-    sealV5PackageReady,
+    // Retain the old result name for downstream status UI while exposing the
+    // two independently verified identities.
+    sealV5PackageReady: sealV5CallablePackageReady,
+    sealV5CallablePackageReady,
+    sealV5TypeOriginPackageReady,
     sealServersReady,
     sealThresholdReady,
     errors,

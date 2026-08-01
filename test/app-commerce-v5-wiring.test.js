@@ -88,7 +88,8 @@ test('v5 Complete protects the exact final PNG and exposes only a separate previ
   );
   assert.match(prepare, /const image = useV4 \? completion\.imageBlob : await renderOcImageBlob\(\)/);
   assert.match(prepare, /encryptMakerCompleteOutputV5\(\{[\s\S]*?outputBlob:\s*image/);
-  assert.match(prepare, /sealPackageId:\s*runtimeConfig\.soulidityPackageId/);
+  assert.match(prepare, /sealPackageId:\s*runtimeConfig\.souliditySealNamespacePackageId/);
+  assert.doesNotMatch(prepare, /sealPackageId:\s*runtimeConfig\.soulidityCallablePackageId/);
   assert.match(prepare, /createOcOutputPreviewBlobV5\(image\)/);
   assert.match(prepare, /pendingOcEncryptedImageBlob = encryptedOutput\.blob/);
   assert.match(prepare, /ciphertextIdentifier:\s*'animacraft-oc-output\.seal'/);
@@ -101,6 +102,30 @@ test('v5 Complete protects the exact final PNG and exposes only a separate previ
   assert.match(
     handoff,
     /if \(commerceV5HandoffRequired\) \{[\s\S]*?soulidityCompletionWindow = opened;[\s\S]*?\} else \{[\s\S]*?createSoulidityImportBundle/,
+  );
+});
+
+test('Soulidity upgrades keep Complete ciphertext identity frozen while calls advance', () => {
+  const identity = appSource.slice(
+    appSource.indexOf('function pendingOcOutputIdentityV5'),
+    appSource.indexOf('\nasync function verifyPendingOcCompleteOutputPlaintextV5'),
+  );
+  const composableRuntime = appSource.slice(
+    appSource.indexOf('function composableV6RuntimeContext'),
+    appSource.indexOf('\nfunction composableV6CacheKey'),
+  );
+  assert.match(
+    identity,
+    /protection\.sealPackageId[\s\S]*?runtimeConfig\.souliditySealNamespacePackageId/,
+  );
+  assert.doesNotMatch(identity, /runtimeConfig\.soulidityCallablePackageId/);
+  assert.match(
+    composableRuntime,
+    /soulidityCallablePackageId:\s*runtimeConfig\.soulidityCallablePackageId/,
+  );
+  assert.match(
+    composableRuntime,
+    /souliditySealNamespacePackageId:\s*runtimeConfig\.souliditySealNamespacePackageId/,
   );
 });
 

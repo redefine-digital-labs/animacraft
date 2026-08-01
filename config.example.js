@@ -19,7 +19,11 @@ window.ANIMACRAFT_CONFIG = {
   appUrl: 'https://animacraft.soulidity.ai',
   soulidityAppUrl: 'https://www.soulidity.ai',
   soulidityIntegrationPath: '/integrations/animacraft',
-  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  // Legacy callable alias. Keep equal to soulidityCallablePackageId.
+  soulidityPackageId: '0xCURRENT_SOULIDITY_CALLABLE_PACKAGE',
+  soulidityCallablePackageId: '0xCURRENT_SOULIDITY_CALLABLE_PACKAGE',
+  // Permanent original/v1 Seal namespace. Never advance this after upgrade.
+  souliditySealNamespacePackageId: '0xORIGINAL_SOULIDITY_SEAL_NAMESPACE',
   soulidityTypeOriginPackageId: '0xSOULIDITY_ANIMACRAFT_PROVENANCE_TYPE_ORIGIN',
   protocolFeePackageId: '0xV4_PROTOCOL_FEE_TYPE_ORIGIN_PACKAGE',
   protocolFeeConfigId: '0xYOUR_V4_PROTOCOL_FEE_CONFIG',
@@ -38,9 +42,20 @@ window.ANIMACRAFT_CONFIG = {
   compositionProtocolConfigV6Id: '0xYOUR_DISABLED_V6_COMPOSITION_PROTOCOL_CONFIG',
   compositionProtocolTreasuryV6Id: '0xYOUR_V6_COMPOSITION_PROTOCOL_TREASURY',
   compositionRegistryV6Id: '0xYOUR_V6_COMPOSITION_REGISTRY',
+  compositionAdminCapV6Id: '0xYOUR_V6_COMPOSITION_ADMIN_CAP',
+  compositionAdminCapV6Owner: '0xEXPECTED_V6_COMPOSITION_ADMIN',
+  compositionValidatorCapV6Id: '0xYOUR_V6_VALIDATOR_CAP',
+  compositionValidatorCapV6Owner: '0xEXPECTED_V6_VALIDATOR',
+  compositionValidatorEpochV6: 0,
+  compositionValidatorPolicyCommitmentV6: '0xYOUR_EXACT_32_BYTE_VALIDATOR_POLICY_COMMITMENT',
   compositionV6SoulOwnerProofType: '0xSOULIDITY_TYPE_ORIGIN::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
   compositionV6ReleaseEnabled: false,
-  sealV5PackageId: '0xV5_COMMERCE_AND_SEAL_CALLABLE_PACKAGE',
+  // Frozen v5 package used for every Seal approval call. Never advance this
+  // to the latest Animacraft callable package after a later upgrade.
+  sealV5CallablePackageId: '0xV5_SEAL_CALLABLE_PACKAGE',
+  sealV5TypeOriginPackageId: '0xV5_COMMERCE_AND_SEAL_TYPE_ORIGIN',
+  // Legacy alias only. Leave empty in new deployments.
+  sealV5PackageId: '',
   // Official Mainnet committee. The SDK sees one outer server (1-of-1);
   // Mysten's committee internally performs 5-of-8 key-share recovery.
   sealKeyServers: [{

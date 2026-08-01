@@ -18,6 +18,8 @@ window.ANIMACRAFT_CONFIG = {
   soulidityAppUrl: 'https://www.soulidity.ai',
   soulidityIntegrationPath: '/integrations/animacraft',
   soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  soulidityCallablePackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  souliditySealNamespacePackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
   soulidityTypeOriginPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
   protocolFeePackageId: '0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc',
   protocolFeeConfigId: '0x60d141c7b9c5726a85a3b53dd08879d86af313cf3fe96d5e6440a8d5cb60ee32',
@@ -40,11 +42,21 @@ window.ANIMACRAFT_CONFIG = {
   compositionProtocolConfigV6Id: '',
   compositionProtocolTreasuryV6Id: '',
   compositionRegistryV6Id: '',
+  compositionAdminCapV6Id: '',
+  compositionAdminCapV6Owner: '',
+  compositionValidatorCapV6Id: '',
+  compositionValidatorCapV6Owner: '',
+  compositionValidatorEpochV6: '',
+  compositionValidatorPolicyCommitmentV6: '',
   compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,
   // Intentionally empty while the reviewed Commerce/Seal release gate is off.
   // Mainnet activation requires the official committee endpoint plus an Enoki
   // X-API-Key; never claim paid assets are protected without it.
+  sealV5CallablePackageId: '',
+  sealV5TypeOriginPackageId: '',
+  // Deprecated compatibility alias. New deployments set the two identities
+  // above explicitly so later upgrades do not rewrite the stable TypeOrigin.
   sealV5PackageId: '',
   sealKeyServers: [],
   sealThreshold: 0,
