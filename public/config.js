@@ -2,8 +2,8 @@ window.ANIMACRAFT_CONFIG = {
   network: 'mainnet',
   grpcUrl: 'https://fullnode.mainnet.sui.io:443',
   graphqlUrl: 'https://graphql.mainnet.sui.io/graphql',
-  packageId: '0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc',
-  callablePackageId: '0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc',
+  packageId: '0x2221610b5513ef3f926433229b7f0b565e850d56020e344266737cdca078af3b',
+  callablePackageId: '0x2221610b5513ef3f926433229b7f0b565e850d56020e344266737cdca078af3b',
   originalPackageId: '0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea',
   paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
   paymentCoinSymbol: 'USDC',
@@ -28,26 +28,26 @@ window.ANIMACRAFT_CONFIG = {
   protocolFeeAdminCapOwner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
   primaryProtocolFeeBps: 5000,
   canonicalSoulMintEnabled: false,
-  // Populated only after the reviewed v5 upgrade and disabled-object
-  // initialization have been confirmed on Mainnet.
-  commerceV5TypeOriginPackageId: '',
-  commerceProtocolConfigV5Id: '',
-  commerceProtocolTreasuryV5Id: '',
+  // The reviewed v5 core is initialized on Mainnet with its release gate off.
+  // Bind-once Walrus/Soul fields remain empty until Soulidity activation.
+  commerceV5TypeOriginPackageId: '0xcf369b8b02ac1e997146fc3be3f03870db14eaccf3d2cb7a9b93724be463108e',
+  commerceProtocolConfigV5Id: '0xf63dc43bb3787fff47fec7f8c3ff2e777dd0966500570fa7deab2bef9b6da0d5',
+  commerceProtocolTreasuryV5Id: '0x97ba8042011d6c2d4857a33789a8250c16f6effeda622cb312fe481e0b907d44',
   commerceV5LogicalAuxiliaryBlobId: '',
   commerceV5SoulBindingProofType: '',
   commerceV5ReleaseEnabled: false,
-  // v6 stays fail-closed until both package upgrades and disabled protocol
-  // objects have been deployed, bound, read back, and audited on Mainnet.
-  compositionV6TypeOriginPackageId: '',
-  compositionProtocolConfigV6Id: '',
-  compositionProtocolTreasuryV6Id: '',
-  compositionRegistryV6Id: '',
-  compositionAdminCapV6Id: '',
-  compositionAdminCapV6Owner: '',
-  compositionValidatorCapV6Id: '',
-  compositionValidatorCapV6Owner: '',
-  compositionValidatorEpochV6: '',
-  compositionValidatorPolicyCommitmentV6: '',
+  // The reviewed v6 composition core is initialized disabled. The Soul owner
+  // proof remains deliberately unbound, so player release stays fail-closed.
+  compositionV6TypeOriginPackageId: '0x2221610b5513ef3f926433229b7f0b565e850d56020e344266737cdca078af3b',
+  compositionProtocolConfigV6Id: '0x23cc495061f62a9b6a4e1048e154cd1fdc41f3b251783887db5948644eaca26d',
+  compositionProtocolTreasuryV6Id: '0xa60448ef8c32690efdbfb07aff0c13b40c7c948b9819448181ae70257be9dc1c',
+  compositionRegistryV6Id: '0x2ffed9aadcdb3a5dc670bf75c1ce8ee671afe93d0f4770cf5a0604dbaec4e5ab',
+  compositionAdminCapV6Id: '0x3feb45f8ed2062fb3fb32ca92bb3c1fa4002d521fc73022a3265db6bbba27cdd',
+  compositionAdminCapV6Owner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
+  compositionValidatorCapV6Id: '0x0ce2ec07a69e0f8e0281df12e25e63709077880b6e0ba3060ab5362f46d88111',
+  compositionValidatorCapV6Owner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
+  compositionValidatorEpochV6: 0,
+  compositionValidatorPolicyCommitmentV6: '0x9afe83e5c22d9782c3b4f8cb1020816ed869c0ae71186b034043593527926682',
   compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,
   // Intentionally empty while the reviewed Commerce/Seal release gate is off.

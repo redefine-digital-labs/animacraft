@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import {
   COMPOSITION_V6_DEPENDENCY_FIELDS,
   COMPOSITION_V6_RUNTIME_FIELDS,
+  inspectCommerceV5BindingState,
   inspectCompositionV6Deployment,
   inspectCompositionV6ObjectState,
   normalizeBytes32,
@@ -103,7 +104,7 @@ function objectTuple(config = runtimeConfig()) {
         registry_id: config.compositionRegistryV6Id,
         validator_cap_id: config.compositionValidatorCapV6Id,
         validator_epoch: config.compositionValidatorEpochV6,
-        payment_coin_type: payment,
+        payment_coin_type: payment.replace(/^0x/, ''),
         primary_protocol_fee_bps: 1_000,
         validator_policy_commitment: Array(32).fill(0x2a),
         soul_owner_proof_type: config.compositionV6SoulOwnerProofType,
@@ -152,7 +153,7 @@ function objectTuple(config = runtimeConfig()) {
       json: {
         version: 5,
         legacy_admin_cap_id: config.protocolFeeAdminCapId,
-        payment_coin_type: payment,
+        payment_coin_type: payment.replace(/^0x/, ''),
         primary_protocol_fee_bps: 1_000,
         enabled: config.commerceV5ReleaseEnabled,
       },
@@ -162,10 +163,34 @@ function objectTuple(config = runtimeConfig()) {
 
 test('normalizes one exact SHA-256 commitment and rejects malformed values', () => {
   assert.equal(normalizeBytes32(Array(32).fill(0x2a)), POLICY);
+  assert.equal(
+    normalizeBytes32('KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio='),
+    POLICY,
+  );
   assert.equal(normalizeBytes32(POLICY.toUpperCase().replace('0X', '0x')), POLICY);
   assert.equal(normalizeBytes32(Array(31).fill(0x2a)), '');
   assert.equal(normalizeBytes32(Array(32).fill(256)), '');
   assert.equal(normalizeBytes32('0x1234'), '');
+});
+
+test('disabled Commerce v5 read-back accepts exact null bind-once options only', () => {
+  const config = {
+    commerceV5LogicalAuxiliaryBlobId: '',
+    commerceV5SoulBindingProofType: '',
+  };
+  const unbound = inspectCommerceV5BindingState({
+    logical_auxiliary_blob_id: { vec: [] },
+    soul_binding_proof_type: { vec: [] },
+  }, config);
+  assert.equal(unbound.ready, true);
+  assert.equal(unbound.logicalAuxiliaryBlobId, '');
+  assert.equal(unbound.soulBindingProofType, '');
+
+  const unexpectedBinding = inspectCommerceV5BindingState({
+    logical_auxiliary_blob_id: { vec: ['unexpected-blob'] },
+    soul_binding_proof_type: { vec: [] },
+  }, config);
+  assert.equal(unexpectedBinding.ready, false);
 });
 
 test('v6 ceremony fails closed on an incomplete or divergent runtime/deployment tuple', () => {
@@ -212,6 +237,35 @@ test('v6 ceremony fails closed on an incomplete or divergent runtime/deployment 
   assert.equal(zeroCustodian.ready, false);
   assert.deepEqual(zeroCustodian.runtimeInvalid, [
     'compositionAdminCapV6Owner',
+  ]);
+});
+
+test('v6 ceremony accepts a disabled initialized core before Soul owner proof binding', () => {
+  const config = {
+    ...runtimeConfig(),
+    soulidityTypeOriginPackageId: '',
+    compositionV6SoulOwnerProofType: '',
+    compositionV6ReleaseEnabled: false,
+  };
+  const status = inspectCompositionV6Deployment(config, deployment(config), {
+    required: true,
+  });
+  assert.equal(status.ready, true, JSON.stringify(status));
+  assert.deepEqual(status.runtimeMissing, []);
+  assert.deepEqual(status.deploymentMissing, []);
+
+  const objectStatus = inspectCompositionV6ObjectState(objectTuple(config), config);
+  assert.equal(objectStatus.ready, true, objectStatus.failures.join('\n'));
+
+  const enabled = inspectCompositionV6Deployment(
+    { ...config, compositionV6ReleaseEnabled: true },
+    deployment(config),
+    { required: true },
+  );
+  assert.equal(enabled.ready, false);
+  assert.deepEqual(enabled.runtimeMissing, [
+    'compositionV6SoulOwnerProofType',
+    'soulidityTypeOriginPackageId',
   ]);
 });
 
