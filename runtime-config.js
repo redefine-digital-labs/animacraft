@@ -26,17 +26,17 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   appUrl: '',
   soulidityAppUrl: 'https://www.soulidity.ai',
   soulidityIntegrationPath: '/integrations/animacraft',
-  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  soulidityPackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
   // Latest Soulidity package used only for Move approval calls. The legacy
   // soulidityPackageId field remains a compatibility alias for this value.
-  soulidityCallablePackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  soulidityCallablePackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
   // Permanent original Soulidity Seal namespace. Ciphertext, SessionKey and
   // recovery identities commit to this package and must survive upgrades.
-  souliditySealNamespacePackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  souliditySealNamespacePackageId: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d',
   // Stable defining package for the Soulidity v5 Animacraft provenance and
   // binding types. It may differ from soulidityPackageId after an upgrade,
   // and must never be advanced when v6 introduces a new owner-proof type.
-  soulidityTypeOriginPackageId: '',
+  soulidityTypeOriginPackageId: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d',
   // Defining package (TypeOrigin) for the protocol-v4 fee object types. This
   // remains fixed when a later package becomes the callable package.
   protocolFeePackageId: '',
@@ -77,7 +77,7 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   // Stable defining package for Soulidity's v6 AnimacraftSoulOwnerProofV6.
   // This is intentionally independent from the v5 provenance TypeOrigin.
   // It may remain empty while the v6 release gate and proof binding are off.
-  compositionV6SoulOwnerProofTypeOriginPackageId: '',
+  compositionV6SoulOwnerProofTypeOriginPackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
   compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,
   // Seal remains fail-closed until the reviewed v5 package and an authenticated
