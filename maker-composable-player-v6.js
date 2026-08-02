@@ -276,10 +276,10 @@ function normalizeTuple(runtime, { paid = false, soul = false } = {}) {
       : '',
     paymentCoinType: paid ? moveType(runtime?.paymentCoinType, 'Payment coin type') : '',
     soulidityCallablePackageId,
-    soulidityTypeOriginPackageId: soul
+    compositionV6SoulOwnerProofTypeOriginPackageId: soul
       ? suiId(
-        runtime?.soulidityTypeOriginPackageId || runtime?.soulidityPackageId,
-        'Soulidity TypeOrigin package',
+        runtime?.compositionV6SoulOwnerProofTypeOriginPackageId,
+        'Soulidity v6 owner-proof TypeOrigin package',
       )
       : '',
     compositionV6SoulOwnerProofType: soul
@@ -288,7 +288,7 @@ function normalizeTuple(runtime, { paid = false, soul = false } = {}) {
   };
   if (soul) {
     const expected = moveType(
-      `${tuple.soulidityTypeOriginPackageId}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
+      `${tuple.compositionV6SoulOwnerProofTypeOriginPackageId}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
       'Expected Soul owner proof type',
     );
     if (tuple.compositionV6SoulOwnerProofType !== expected) {
@@ -1001,7 +1001,10 @@ function assertRuntimeMatchesPlan(runtime, plan) {
   if (context.soulidityCallablePackageId) {
     fields.push(
       ['soulidityCallablePackageId', runtime?.soulidityCallablePackageId || runtime?.soulidityPackageId],
-      ['soulidityTypeOriginPackageId', runtime?.soulidityTypeOriginPackageId || runtime?.soulidityPackageId],
+      [
+        'compositionV6SoulOwnerProofTypeOriginPackageId',
+        runtime?.compositionV6SoulOwnerProofTypeOriginPackageId,
+      ],
       ['compositionV6SoulOwnerProofType', (() => {
         try { return normalizeStructTag(string(runtime?.compositionV6SoulOwnerProofType)); } catch { return ''; }
       })()],

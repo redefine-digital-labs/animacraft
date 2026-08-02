@@ -16848,6 +16848,8 @@ function composableV6RuntimeContext() {
     soulidityCallablePackageId: runtimeConfig.soulidityCallablePackageId,
     soulidityPackageId: runtimeConfig.soulidityCallablePackageId,
     souliditySealNamespacePackageId: runtimeConfig.souliditySealNamespacePackageId,
+    compositionV6SoulOwnerProofTypeOriginPackageId:
+      runtimeConfig.compositionV6SoulOwnerProofTypeOriginPackageId,
     soulidityTypeOriginPackageId: runtimeConfig.soulidityTypeOriginPackageId,
     canonicalSoulMintEnabled,
   };

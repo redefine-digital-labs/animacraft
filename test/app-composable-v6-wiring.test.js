@@ -46,6 +46,10 @@ test('app injects trusted v6 state and exposes writes only behind the release ga
   assert.match(source, /companionManifest:\s*structuredClone\(companionManifest\)/);
   assert.match(source, /entitlements:\s*structuredClone\(trustedState\.entitlements \|\| \[\]\)/);
   assert.match(source, /composableV6:\s*trustedComposableV6/);
+  assert.match(
+    source,
+    /compositionV6SoulOwnerProofTypeOriginPackageId:\s*\n\s*runtimeConfig\.compositionV6SoulOwnerProofTypeOriginPackageId/,
+  );
 });
 
 test('app preserves the recovery lifecycle and rehydrates confirmed Item acquisitions', async () => {

@@ -48,6 +48,9 @@ window.ANIMACRAFT_CONFIG = {
   compositionValidatorCapV6Owner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
   compositionValidatorEpochV6: 0,
   compositionValidatorPolicyCommitmentV6: '0x9afe83e5c22d9782c3b4f8cb1020816ed869c0ae71186b034043593527926682',
+  // Intentionally empty until Soulidity v6 is deployed and its new owner-proof
+  // TypeOrigin is reviewed. Do not reuse the v5 Soulidity TypeOrigin here.
+  compositionV6SoulOwnerProofTypeOriginPackageId: '',
   compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,
   // Intentionally empty while the reviewed Commerce/Seal release gate is off.

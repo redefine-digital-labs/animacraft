@@ -225,9 +225,10 @@ function runtime(enabled = false) {
     compositionProtocolConfigV6Id: '0x333',
     compositionProtocolTreasuryV6Id: '0x444',
     compositionRegistryV6Id: '0x555',
+    compositionV6SoulOwnerProofTypeOriginPackageId: '0x999',
     compositionV6SoulOwnerProofType:
       '0x999::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
-    soulidityTypeOriginPackageId: '0x999',
+    soulidityTypeOriginPackageId: '0x998',
     paymentCoinType: '0x2::usdc::USDC',
     commerceV5ReleaseEnabled: true,
     canonicalSoulMintEnabled: true,

@@ -84,8 +84,17 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(runtime.commerceV5LogicalAuxiliaryBlobId, '');
   assert.equal(runtime.commerceV5SoulBindingProofType, '');
   assert.equal(runtime.commerceV5ReleaseEnabled, false);
+  assert.equal(
+    runtime.soulidityTypeOriginPackageId,
+    deployment.soulidityTypeOriginPackageId,
+    'the existing v5 Soulidity TypeOrigin remains frozen',
+  );
+  assert.equal(runtime.compositionV6SoulOwnerProofTypeOriginPackageId, '');
+  assert.equal(deployment.compositionV6SoulOwnerProofTypeOriginPackageId, '');
   assert.equal(runtime.compositionV6SoulOwnerProofType, '');
   assert.equal(runtime.compositionV6ReleaseEnabled, false);
+  assert.equal(deployment.releases.compositionV6.soulOwnerProofTypeOriginPackageId, '');
+  assert.equal(deployment.releases.compositionV6.soulOwnerProofType, '');
   assert.equal(runtime.compositionValidatorEpochV6, 0);
   assert.equal(
     runtime.compositionValidatorPolicyCommitmentV6,

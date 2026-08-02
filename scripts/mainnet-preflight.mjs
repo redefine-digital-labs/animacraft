@@ -56,7 +56,7 @@ export const COMPOSITION_V6_CORE_DEPENDENCY_FIELDS = Object.freeze([
 ]);
 
 export const COMPOSITION_V6_BINDING_DEPENDENCY_FIELDS = Object.freeze([
-  'soulidityTypeOriginPackageId',
+  'compositionV6SoulOwnerProofTypeOriginPackageId',
 ]);
 
 export const COMPOSITION_V6_DEPENDENCY_FIELDS = Object.freeze([
@@ -782,6 +782,57 @@ async function checkSoulidityCommerceV5Abi(
   }
 }
 
+async function checkSoulidityCompositionV6Abi(
+  client,
+  callablePackageId,
+  ownerProofTypeOriginPackageId,
+) {
+  if (!callablePackageId || !ownerProofTypeOriginPackageId) return;
+  try {
+    const functionNames = [
+      'authorize_initial_appearance_v6',
+      'claim_free_soul_item_v6',
+      'purchase_soul_item_v6',
+      'lock_owned_item_to_soul_v6',
+      'unlock_owned_item_from_soul_v6',
+      'bind_initial_appearance_v6',
+      'authorize_appearance_update_v6',
+      'apply_authorized_appearance_update_v6',
+      'assert_secondary_market_appearance_v6',
+    ];
+    const [functions, ownerProofDatatype] = await Promise.all([
+      Promise.all(functionNames.map((name) => moveFunctionInModule(
+        client,
+        callablePackageId,
+        'animacraft_appearance_adapter_v6',
+        name,
+      ))),
+      moveDatatypeInModule(
+        client,
+        callablePackageId,
+        'animacraft_soul_owner_proof_v6',
+        'AnimacraftSoulOwnerProofV6',
+      ),
+    ]);
+    const typeOrigin = normalizeSuiAddress(ownerProofTypeOriginPackageId);
+    const expectedParameterCounts = [10, 9, 11, 8, 8, 5, 12, 6, 8];
+    const functionsReady = functions.every((fn, index) => (
+      fn && fn.parameters.length === expectedParameterCounts[index]
+    ));
+    const ready = functionsReady
+      && datatypeHasTypeOrigin(ownerProofDatatype, typeOrigin);
+    record(
+      'Soulidity Composition v6 ABI',
+      ready,
+      ready
+        ? `appearance adapter and owner proof verified; owner-proof TypeOrigin=${typeOrigin}`
+        : 'Required Soulidity v6 appearance adapter ABI or owner-proof TypeOrigin differs.',
+    );
+  } catch (error) {
+    record('Soulidity Composition v6 ABI', false, error.message);
+  }
+}
+
 async function checkAnimacraftAbi(client, packageId, protocolFeePackageId) {
   try {
     const protocolFeeTypeOrigin = normalizeSuiAddress(protocolFeePackageId);
@@ -1153,7 +1204,7 @@ export function inspectCompositionV6ObjectState(
   const proofBindingRequired = config.compositionV6ReleaseEnabled === true
     || Boolean(proofType);
   const expectedProofType = normalizedStructTag(
-    `${suiId(config.soulidityTypeOriginPackageId)}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
+    `${suiId(config.compositionV6SoulOwnerProofTypeOriginPackageId)}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
   );
   const configJson = configObject.json || {};
   const treasuryJson = treasuryObject.json || {};
@@ -1626,9 +1677,7 @@ async function checkNetwork(config, validation, compositionDeploymentStatus) {
     }
     const soulidityCommerceV5Required = requireSoulidity
       || config.commerceV5ReleaseEnabled === true
-      || Boolean(config.commerceV5SoulBindingProofType)
-      || config.compositionV6ReleaseEnabled === true
-      || Boolean(config.compositionV6SoulOwnerProofType);
+      || Boolean(config.commerceV5SoulBindingProofType);
     if (
       soulidityCommerceV5Required
       && validation.commerceV5TypeOriginPackageReady
@@ -1638,6 +1687,18 @@ async function checkNetwork(config, validation, compositionDeploymentStatus) {
         client,
         config.soulidityPackageId,
         config.soulidityTypeOriginPackageId,
+      );
+    }
+    const soulidityCompositionV6Required = config.compositionV6ReleaseEnabled === true
+      || Boolean(config.compositionV6SoulOwnerProofType);
+    if (
+      soulidityCompositionV6Required
+      && validation.compositionV6SoulOwnerProofTypeOriginPackageReady
+    ) {
+      await checkSoulidityCompositionV6Abi(
+        client,
+        config.soulidityPackageId,
+        config.compositionV6SoulOwnerProofTypeOriginPackageId,
       );
     }
   }
