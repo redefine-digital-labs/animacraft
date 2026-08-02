@@ -14,6 +14,7 @@ test('production smoke only requires the Soul mint gate when explicitly requeste
   assert.match(source, /args\.includes\('--require-soulidity'\)/);
   assert.match(source, /validateRuntimeConfig\(remote, \{ strict: true, requireSoulidity \}\)/);
   assert.doesNotMatch(source, /requireSoulidity:\s*true/);
+  assert.match(source, /'compositionV6SoulOwnerProofTypeOriginPackageId'/);
 });
 
 test('Vercel serves every SPA deep link through the clean root route', async () => {

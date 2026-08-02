@@ -407,6 +407,9 @@ function normalizePlanContext(context, runtime, manifest) {
     compositionProtocolConfigV6Id: string(runtime?.compositionProtocolConfigV6Id),
     compositionProtocolTreasuryV6Id: string(runtime?.compositionProtocolTreasuryV6Id),
     compositionRegistryV6Id: string(runtime?.compositionRegistryV6Id),
+    compositionV6SoulOwnerProofTypeOriginPackageId: string(
+      runtime?.compositionV6SoulOwnerProofTypeOriginPackageId,
+    ),
     compositionV6SoulOwnerProofType: string(runtime?.compositionV6SoulOwnerProofType),
     paymentCoinType: string(runtime?.paymentCoinType),
     clockObjectId: string(context?.clockObjectId) || CLOCK_OBJECT_ID,
@@ -915,6 +918,7 @@ function assertRuntimeGate(runtime) {
     'compositionProtocolConfigV6Id',
     'compositionProtocolTreasuryV6Id',
     'compositionRegistryV6Id',
+    'compositionV6SoulOwnerProofTypeOriginPackageId',
   ];
   const missing = ids.filter((field) => !validSuiId(runtime?.[field]));
   if (missing.length) {
@@ -933,20 +937,20 @@ function assertRuntimeGate(runtime) {
       'Composable Assets v6 requires active Commerce v5, canonical Soul minting, and the exact Soul owner proof type.',
     );
   }
-  const soulidityTypeOrigin = string(
-    runtime?.soulidityTypeOriginPackageId || runtime?.soulidityPackageId,
+  const soulOwnerProofTypeOrigin = string(
+    runtime?.compositionV6SoulOwnerProofTypeOriginPackageId,
   );
   let actualProofType = '';
   let expectedProofType = '';
   try {
     actualProofType = normalizeStructTag(runtime.compositionV6SoulOwnerProofType);
     expectedProofType = normalizeStructTag(
-      `${soulidityTypeOrigin}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
+      `${soulOwnerProofTypeOrigin}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
     );
   } catch {
     // Report the same fail-closed error below.
   }
-  if (!soulidityTypeOrigin || actualProofType !== expectedProofType) {
+  if (!soulOwnerProofTypeOrigin || actualProofType !== expectedProofType) {
     error(
       'COMPOSABLE_V6_RUNTIME_PROOF_TYPE_MISMATCH',
       'The v6 release runtime must use the exact Soulidity AnimacraftSoulOwnerProofV6 TypeOrigin.',
@@ -962,6 +966,7 @@ function assertRuntimeMatchesPlan(runtime, plan) {
     'compositionProtocolConfigV6Id',
     'compositionProtocolTreasuryV6Id',
     'compositionRegistryV6Id',
+    'compositionV6SoulOwnerProofTypeOriginPackageId',
     'compositionV6SoulOwnerProofType',
     'paymentCoinType',
   ];

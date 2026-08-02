@@ -132,6 +132,7 @@ if (origin) {
       'compositionValidatorCapV6Owner',
       'compositionValidatorEpochV6',
       'compositionValidatorPolicyCommitmentV6',
+      'compositionV6SoulOwnerProofTypeOriginPackageId',
       'compositionV6SoulOwnerProofType',
       'compositionV6ReleaseEnabled',
       'sealV5CallablePackageId',

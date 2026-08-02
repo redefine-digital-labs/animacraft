@@ -33,8 +33,9 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   // Permanent original Soulidity Seal namespace. Ciphertext, SessionKey and
   // recovery identities commit to this package and must survive upgrades.
   souliditySealNamespacePackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
-  // Stable defining package for Animacraft provenance types. It may differ
-  // from soulidityPackageId after a Soulidity package upgrade.
+  // Stable defining package for the Soulidity v5 Animacraft provenance and
+  // binding types. It may differ from soulidityPackageId after an upgrade,
+  // and must never be advanced when v6 introduces a new owner-proof type.
   soulidityTypeOriginPackageId: '',
   // Defining package (TypeOrigin) for the protocol-v4 fee object types. This
   // remains fixed when a later package becomes the callable package.
@@ -73,6 +74,10 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   compositionValidatorCapV6Owner: '',
   compositionValidatorEpochV6: '',
   compositionValidatorPolicyCommitmentV6: '',
+  // Stable defining package for Soulidity's v6 AnimacraftSoulOwnerProofV6.
+  // This is intentionally independent from the v5 provenance TypeOrigin.
+  // It may remain empty while the v6 release gate and proof binding are off.
+  compositionV6SoulOwnerProofTypeOriginPackageId: '',
   compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,
   // Seal remains fail-closed until the reviewed v5 package and an authenticated
@@ -440,6 +445,12 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   const compositionValidatorPolicyCommitmentV6Ready = /^0x[0-9a-f]{64}$/i.test(
     String(config.compositionValidatorPolicyCommitmentV6 || ''),
   );
+  const compositionV6SoulOwnerProofTypeOriginPackageId = String(
+    config.compositionV6SoulOwnerProofTypeOriginPackageId || '',
+  ).trim();
+  const compositionV6SoulOwnerProofTypeOriginPackageReady = SUI_ID.test(
+    compositionV6SoulOwnerProofTypeOriginPackageId,
+  ) && !compositionV6SoulOwnerProofTypeOriginPackageId.includes('TODO');
   let compositionV6SoulOwnerProofType = '';
   try {
     compositionV6SoulOwnerProofType = normalizeStructTag(
@@ -448,9 +459,9 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   } catch {
     compositionV6SoulOwnerProofType = '';
   }
-  const expectedSoulOwnerProofType = soulidityTypeOriginReady
+  const expectedSoulOwnerProofType = compositionV6SoulOwnerProofTypeOriginPackageReady
     ? normalizeStructTag(
-      `${soulidityTypeOrigin}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
+      `${compositionV6SoulOwnerProofTypeOriginPackageId}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
     )
     : '';
   const compositionV6SoulOwnerProofReady = Boolean(
@@ -517,11 +528,15 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     && !compositionValidatorPolicyCommitmentV6Ready) {
     errors.push('compositionValidatorPolicyCommitmentV6 must be an exact 32-byte 0x-prefixed hex value.');
   }
+  if (config.compositionV6SoulOwnerProofTypeOriginPackageId
+    && !compositionV6SoulOwnerProofTypeOriginPackageReady) {
+    errors.push('compositionV6SoulOwnerProofTypeOriginPackageId must be a valid Sui package ID.');
+  }
   if (
     config.compositionV6SoulOwnerProofType
     && !compositionV6SoulOwnerProofReady
   ) {
-    errors.push('compositionV6SoulOwnerProofType must be the exact AnimacraftSoulOwnerProofV6 defined by the stable Soulidity TypeOrigin.');
+    errors.push('compositionV6SoulOwnerProofType must be the exact AnimacraftSoulOwnerProofV6 defined by compositionV6SoulOwnerProofTypeOriginPackageId.');
   }
   if (
     (compositionV6CoreConfigured || compositionV6BindingConfigured)
@@ -532,6 +547,7 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   if (
     config.compositionV6ReleaseEnabled
     && (!compositionV6CoreReady
+      || !compositionV6SoulOwnerProofTypeOriginPackageReady
       || !compositionV6SoulOwnerProofReady)
   ) {
     errors.push('Composable Assets v6 cannot be released before its complete object/cap custody tuple, validator policy, and exact Soulidity owner-proof type are configured.');
@@ -543,7 +559,7 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
       || config.canonicalSoulMintEnabled !== true
       || !soulidityReady
       || !souliditySealNamespaceReady
-      || !soulidityTypeOriginReady
+      || !compositionV6SoulOwnerProofTypeOriginPackageReady
     )
   ) {
     errors.push('Composable Assets v6 requires active Commerce v5, canonical Soul minting, and the reviewed Soulidity v6 appearance adapter.');
@@ -702,6 +718,7 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     compositionValidatorCapV6OwnerReady,
     compositionValidatorEpochV6Ready,
     compositionValidatorPolicyCommitmentV6Ready,
+    compositionV6SoulOwnerProofTypeOriginPackageReady,
     compositionV6SoulOwnerProofReady,
     // Retain the old result name for downstream status UI while exposing the
     // two independently verified identities.

@@ -50,6 +50,9 @@ window.ANIMACRAFT_CONFIG = {
   compositionValidatorCapV6Owner: '0xEXPECTED_V6_VALIDATOR',
   compositionValidatorEpochV6: 0,
   compositionValidatorPolicyCommitmentV6: '0xYOUR_EXACT_32_BYTE_VALIDATOR_POLICY_COMMITMENT',
+  // Package that first defines Soulidity's AnimacraftSoulOwnerProofV6. This is
+  // independent from the v5 soulidityTypeOriginPackageId above.
+  compositionV6SoulOwnerProofTypeOriginPackageId: '0xV6_SOUL_OWNER_PROOF_TYPE_ORIGIN',
   // Empty is valid only while compositionV6ReleaseEnabled remains false.
   compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,

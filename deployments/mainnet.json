@@ -35,6 +35,7 @@
   "compositionValidatorEpochV6": 0,
   "compositionValidatorPolicyCommitmentV6": "0x9afe83e5c22d9782c3b4f8cb1020816ed869c0ae71186b034043593527926682",
   "compositionValidatorPolicyLabelV6": "animacraft-v6-validator-policy/mainnet/2026-08-01/disabled-launch",
+  "compositionV6SoulOwnerProofTypeOriginPackageId": "",
   "compositionV6SoulOwnerProofType": "",
   "compositionV6ReleaseEnabled": false,
   "sealV5CallablePackageId": "",
@@ -120,6 +121,7 @@
       "packageDigest": "HYNwBpdmcQLY1efFMNp7MGWhm25Z6jkwVWXnq5FCCUyj",
       "validatorPolicyLabel": "animacraft-v6-validator-policy/mainnet/2026-08-01/disabled-launch",
       "enabled": false,
+      "soulOwnerProofTypeOriginPackageId": "",
       "soulOwnerProofType": ""
     }
   },

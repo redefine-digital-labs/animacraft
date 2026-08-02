@@ -66,8 +66,9 @@ function productionV6Config() {
     compositionValidatorCapV6Owner: '0xbeea',
     compositionValidatorEpochV6: 0,
     compositionValidatorPolicyCommitmentV6: `0x${'ab'.repeat(32)}`,
+    compositionV6SoulOwnerProofTypeOriginPackageId: '0xdcba',
     compositionV6SoulOwnerProofType:
-      '0xabcd::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
+      '0xdcba::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
   });
   return config;
 }
@@ -321,6 +322,7 @@ test('accepts initialized disabled v5 and v6 cores before bind-once Soul depende
     compositionValidatorCapV6Owner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
     compositionValidatorEpochV6: 0,
     compositionValidatorPolicyCommitmentV6: '0x9afe83e5c22d9782c3b4f8cb1020816ed869c0ae71186b034043593527926682',
+    compositionV6SoulOwnerProofTypeOriginPackageId: '',
     compositionV6SoulOwnerProofType: '',
     compositionV6ReleaseEnabled: false,
   });
@@ -331,6 +333,7 @@ test('accepts initialized disabled v5 and v6 cores before bind-once Soul depende
   assert.equal(result.commerceV5LogicalAuxiliaryBlobReady, false);
   assert.equal(result.commerceV5SoulBindingProofReady, false);
   assert.equal(result.compositionV6TypeOriginPackageReady, true);
+  assert.equal(result.compositionV6SoulOwnerProofTypeOriginPackageReady, false);
   assert.equal(result.compositionV6SoulOwnerProofReady, false);
 });
 
@@ -436,6 +439,7 @@ test('keeps Composable Assets v6 disabled and unconfigured by default', () => {
   assert.equal(result.compositionProtocolConfigV6Ready, false);
   assert.equal(result.compositionProtocolTreasuryV6Ready, false);
   assert.equal(result.compositionRegistryV6Ready, false);
+  assert.equal(result.compositionV6SoulOwnerProofTypeOriginPackageReady, false);
   assert.equal(result.compositionV6SoulOwnerProofReady, false);
 });
 
@@ -466,6 +470,7 @@ test('Composable Assets v6 release gate requires its complete tuple and active v
   assert.equal(result.compositionValidatorCapV6OwnerReady, true);
   assert.equal(result.compositionValidatorEpochV6Ready, true);
   assert.equal(result.compositionValidatorPolicyCommitmentV6Ready, true);
+  assert.equal(result.compositionV6SoulOwnerProofTypeOriginPackageReady, true);
   assert.equal(result.compositionV6SoulOwnerProofReady, true);
 });
 
@@ -480,14 +485,33 @@ test('Composable Assets v6 rejects incomplete cap custody and validator policy e
   assert.match(result.errors.join(' '), /32-byte|full object\/cap custody tuple/);
 });
 
-test('Composable Assets v6 owner proof must come from Soulidity TypeOrigin', () => {
+test('Composable Assets v6 owner proof uses its own TypeOrigin without advancing v5', () => {
   const config = productionV6Config();
+  assert.equal(config.soulidityTypeOriginPackageId, '0xabcd');
+  assert.equal(config.compositionV6SoulOwnerProofTypeOriginPackageId, '0xdcba');
+  assert.equal(config.commerceV5SoulBindingProofType,
+    '0xabcd::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5');
+  assert.equal(config.compositionV6SoulOwnerProofType,
+    '0xdcba::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6');
+
   config.compositionV6SoulOwnerProofType =
     '0x9999::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6';
   const result = validateRuntimeConfig(config, { strict: true });
   assert.equal(result.valid, false);
   assert.equal(result.compositionV6SoulOwnerProofReady, false);
   assert.match(result.errors.join(' '), /exact AnimacraftSoulOwnerProofV6/);
+});
+
+test('Composable Assets v6 rejects a malformed independent owner-proof TypeOrigin', () => {
+  const config = productionV6Config();
+  config.compositionV6SoulOwnerProofTypeOriginPackageId = 'not-a-package';
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.valid, false);
+  assert.equal(result.compositionV6SoulOwnerProofTypeOriginPackageReady, false);
+  assert.match(
+    result.errors.join(' '),
+    /compositionV6SoulOwnerProofTypeOriginPackageId/,
+  );
 });
 
 test('Seal v5 fails closed on partial credentials and invalid outer thresholds', () => {

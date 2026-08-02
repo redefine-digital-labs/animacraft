@@ -53,6 +53,10 @@ test('v6 Mainnet ABI preflight covers the production surface and every stable co
   assert.match(source, /datatypes\.every\(\(datatype\) => \(\s*datatypeHasTypeOrigin/);
   assert.match(source, /strict && network/);
   assert.match(source, /--allow-v6-enabled/);
+  assert.match(source, /compositionV6SoulOwnerProofTypeOriginPackageId/);
+  assert.match(source, /Soulidity Composition v6 ABI/);
+  assert.match(source, /animacraft_appearance_adapter_v6/);
+  assert.match(source, /animacraft_soul_owner_proof_v6/);
 });
 
 function runtimeConfig() {
@@ -60,6 +64,7 @@ function runtimeConfig() {
     callablePackageId: '0x66',
     paymentCoinType: '0xd::usdc::USDC',
     soulidityTypeOriginPackageId: '0xabcd',
+    compositionV6SoulOwnerProofTypeOriginPackageId: '0xdcba',
     protocolFeeAdminCapId: '0xcafe',
     commerceV5TypeOriginPackageId: '0x55',
     commerceProtocolConfigV5Id: '0xc055',
@@ -75,7 +80,7 @@ function runtimeConfig() {
     compositionValidatorEpochV6: 0,
     compositionValidatorPolicyCommitmentV6: POLICY,
     compositionV6SoulOwnerProofType:
-      '0xabcd::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
+      '0xdcba::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
     compositionV6ReleaseEnabled: false,
   };
 }
@@ -243,16 +248,23 @@ test('v6 ceremony fails closed on an incomplete or divergent runtime/deployment 
 test('v6 ceremony accepts a disabled initialized core before Soul owner proof binding', () => {
   const config = {
     ...runtimeConfig(),
-    soulidityTypeOriginPackageId: '',
+    compositionV6SoulOwnerProofTypeOriginPackageId: '',
     compositionV6SoulOwnerProofType: '',
     compositionV6ReleaseEnabled: false,
   };
-  const status = inspectCompositionV6Deployment(config, deployment(config), {
+  const legacyDisabledRecord = deployment(config);
+  delete legacyDisabledRecord.compositionV6SoulOwnerProofTypeOriginPackageId;
+  const status = inspectCompositionV6Deployment(config, legacyDisabledRecord, {
     required: true,
   });
   assert.equal(status.ready, true, JSON.stringify(status));
   assert.deepEqual(status.runtimeMissing, []);
   assert.deepEqual(status.deploymentMissing, []);
+  assert.equal(
+    config.soulidityTypeOriginPackageId,
+    '0xabcd',
+    'the frozen v5 proof TypeOrigin remains available to Commerce v5',
+  );
 
   const objectStatus = inspectCompositionV6ObjectState(objectTuple(config), config);
   assert.equal(objectStatus.ready, true, objectStatus.failures.join('\n'));
@@ -265,7 +277,7 @@ test('v6 ceremony accepts a disabled initialized core before Soul owner proof bi
   assert.equal(enabled.ready, false);
   assert.deepEqual(enabled.runtimeMissing, [
     'compositionV6SoulOwnerProofType',
-    'soulidityTypeOriginPackageId',
+    'compositionV6SoulOwnerProofTypeOriginPackageId',
   ]);
 });
 

@@ -34,6 +34,7 @@ const IDS = Object.freeze({
   commerceConfig: '0xa6',
   soulidity: '0xb1',
   soulidityOrigin: '0xb2',
+  soulidityV5Origin: '0xb4',
   wallet: '0xc1',
   root: '0xc2',
   profile: '0xc3',
@@ -56,7 +57,8 @@ function runtime(overrides = {}) {
     commerceProtocolConfigV5Id: IDS.commerceConfig,
     paymentCoinType: '0xd1::usdc::USDC',
     soulidityPackageId: IDS.soulidity,
-    soulidityTypeOriginPackageId: IDS.soulidityOrigin,
+    soulidityTypeOriginPackageId: IDS.soulidityV5Origin,
+    compositionV6SoulOwnerProofTypeOriginPackageId: IDS.soulidityOrigin,
     compositionV6SoulOwnerProofType:
       `${IDS.soulidityOrigin}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
     compositionV6ReleaseEnabled: false,
