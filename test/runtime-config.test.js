@@ -430,7 +430,7 @@ test('Commerce v5 proof type must come from the stable Soulidity TypeOrigin', ()
   assert.match(result.errors.join(' '), /exact AnimacraftSoulBindingProofV5/);
 });
 
-test('keeps Composable Assets v6 disabled and unconfigured by default', () => {
+test('keeps Composable Assets v6 disabled and proof-unbound by default', () => {
   const config = productionConfig();
   const result = validateRuntimeConfig(config, { strict: true });
   assert.equal(result.valid, true);
@@ -439,7 +439,7 @@ test('keeps Composable Assets v6 disabled and unconfigured by default', () => {
   assert.equal(result.compositionProtocolConfigV6Ready, false);
   assert.equal(result.compositionProtocolTreasuryV6Ready, false);
   assert.equal(result.compositionRegistryV6Ready, false);
-  assert.equal(result.compositionV6SoulOwnerProofTypeOriginPackageReady, false);
+  assert.equal(result.compositionV6SoulOwnerProofTypeOriginPackageReady, true);
   assert.equal(result.compositionV6SoulOwnerProofReady, false);
 });
 
@@ -500,6 +500,17 @@ test('Composable Assets v6 owner proof uses its own TypeOrigin without advancing
   assert.equal(result.valid, false);
   assert.equal(result.compositionV6SoulOwnerProofReady, false);
   assert.match(result.errors.join(' '), /exact AnimacraftSoulOwnerProofV6/);
+});
+
+test('reviewed v6 TypeOrigin may be recorded before the bind-once proof ceremony', () => {
+  const config = productionV6Config();
+  config.compositionV6SoulOwnerProofType = '';
+  config.compositionV6ReleaseEnabled = false;
+
+  const result = validateRuntimeConfig(config, { strict: true });
+  assert.equal(result.compositionV6SoulOwnerProofTypeOriginPackageReady, true);
+  assert.equal(result.compositionV6SoulOwnerProofReady, false);
+  assert.doesNotMatch(result.errors.join(' '), /AnimacraftSoulOwnerProofV6/);
 });
 
 test('Composable Assets v6 rejects a malformed independent owner-proof TypeOrigin', () => {

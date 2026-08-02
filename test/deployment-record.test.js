@@ -6,6 +6,13 @@ import { SUI_MAINNET_USDC_TYPE, validateRuntimeConfig } from '../runtime-config.
 
 const ROOT = new URL('../', import.meta.url);
 const SUI_OBJECT_ID = /^0x[0-9a-f]{64}$/;
+const SOULIDITY_MAINNET = Object.freeze({
+  originalPackageId: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d',
+  callablePackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
+  sealNamespacePackageId: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d',
+  v5TypeOriginPackageId: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d',
+  v6TypeOriginPackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
+});
 
 async function readJson(path) {
   return JSON.parse(await readFile(new URL(path, ROOT), 'utf8'));
@@ -84,16 +91,23 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(runtime.commerceV5LogicalAuxiliaryBlobId, '');
   assert.equal(runtime.commerceV5SoulBindingProofType, '');
   assert.equal(runtime.commerceV5ReleaseEnabled, false);
+  assert.equal(runtime.soulidityPackageId, SOULIDITY_MAINNET.callablePackageId);
+  assert.equal(runtime.soulidityCallablePackageId, SOULIDITY_MAINNET.callablePackageId);
+  assert.equal(deployment.soulidityCallablePackageId, SOULIDITY_MAINNET.callablePackageId);
+  assert.equal(deployment.soulidityOriginalPackageId, SOULIDITY_MAINNET.originalPackageId);
+  assert.equal(runtime.souliditySealNamespacePackageId, SOULIDITY_MAINNET.sealNamespacePackageId);
+  assert.equal(deployment.souliditySealNamespacePackageId, SOULIDITY_MAINNET.sealNamespacePackageId);
   assert.equal(
     runtime.soulidityTypeOriginPackageId,
     deployment.soulidityTypeOriginPackageId,
     'the existing v5 Soulidity TypeOrigin remains frozen',
   );
-  assert.equal(runtime.compositionV6SoulOwnerProofTypeOriginPackageId, '');
-  assert.equal(deployment.compositionV6SoulOwnerProofTypeOriginPackageId, '');
+  assert.equal(runtime.soulidityTypeOriginPackageId, SOULIDITY_MAINNET.v5TypeOriginPackageId);
+  assert.equal(runtime.compositionV6SoulOwnerProofTypeOriginPackageId, deployment.compositionV6SoulOwnerProofTypeOriginPackageId);
+  assert.equal(runtime.compositionV6SoulOwnerProofTypeOriginPackageId, SOULIDITY_MAINNET.v6TypeOriginPackageId);
   assert.equal(runtime.compositionV6SoulOwnerProofType, '');
   assert.equal(runtime.compositionV6ReleaseEnabled, false);
-  assert.equal(deployment.releases.compositionV6.soulOwnerProofTypeOriginPackageId, '');
+  assert.equal(deployment.releases.compositionV6.soulOwnerProofTypeOriginPackageId, SOULIDITY_MAINNET.v6TypeOriginPackageId);
   assert.equal(deployment.releases.compositionV6.soulOwnerProofType, '');
   assert.equal(runtime.compositionValidatorEpochV6, 0);
   assert.equal(

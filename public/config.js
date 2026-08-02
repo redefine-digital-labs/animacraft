@@ -17,10 +17,10 @@ window.ANIMACRAFT_CONFIG = {
   appUrl: 'https://animacraft.soulidity.ai',
   soulidityAppUrl: 'https://www.soulidity.ai',
   soulidityIntegrationPath: '/integrations/animacraft',
-  soulidityPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
-  soulidityCallablePackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
-  souliditySealNamespacePackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
-  soulidityTypeOriginPackageId: '0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0',
+  soulidityPackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
+  soulidityCallablePackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
+  souliditySealNamespacePackageId: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d',
+  soulidityTypeOriginPackageId: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d',
   protocolFeePackageId: '0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc',
   protocolFeeConfigId: '0x60d141c7b9c5726a85a3b53dd08879d86af313cf3fe96d5e6440a8d5cb60ee32',
   protocolTreasuryId: '0xf859174faa620adcdae10d2554eb356cb8a499dcbe47f15327a1347fe752af54',
@@ -48,9 +48,9 @@ window.ANIMACRAFT_CONFIG = {
   compositionValidatorCapV6Owner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
   compositionValidatorEpochV6: 0,
   compositionValidatorPolicyCommitmentV6: '0x9afe83e5c22d9782c3b4f8cb1020816ed869c0ae71186b034043593527926682',
-  // Intentionally empty until Soulidity v6 is deployed and its new owner-proof
-  // TypeOrigin is reviewed. Do not reuse the v5 Soulidity TypeOrigin here.
-  compositionV6SoulOwnerProofTypeOriginPackageId: '',
+  // Soulidity v6 is deployed and its owner-proof TypeOrigin is recorded. The
+  // exact proof type stays empty until Animacraft's bind-once ceremony.
+  compositionV6SoulOwnerProofTypeOriginPackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
   compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,
   // Intentionally empty while the reviewed Commerce/Seal release gate is off.

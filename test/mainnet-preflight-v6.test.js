@@ -57,6 +57,8 @@ test('v6 Mainnet ABI preflight covers the production surface and every stable co
   assert.match(source, /Soulidity Composition v6 ABI/);
   assert.match(source, /animacraft_appearance_adapter_v6/);
   assert.match(source, /animacraft_soul_owner_proof_v6/);
+  assert.match(source, /Boolean\(config\.soulidityTypeOriginPackageId\)/);
+  assert.match(source, /Boolean\(config\.compositionV6SoulOwnerProofTypeOriginPackageId\)/);
 });
 
 function runtimeConfig() {
@@ -279,6 +281,23 @@ test('v6 ceremony accepts a disabled initialized core before Soul owner proof bi
     'compositionV6SoulOwnerProofType',
     'compositionV6SoulOwnerProofTypeOriginPackageId',
   ]);
+});
+
+test('v6 ceremony accepts a reviewed owner-proof TypeOrigin while the proof remains unbound', () => {
+  const config = {
+    ...runtimeConfig(),
+    compositionV6SoulOwnerProofType: '',
+    compositionV6ReleaseEnabled: false,
+  };
+  const status = inspectCompositionV6Deployment(config, deployment(config), {
+    required: true,
+  });
+  assert.equal(status.ready, true, JSON.stringify(status));
+  assert.deepEqual(status.runtimeMissing, []);
+  assert.deepEqual(status.deploymentMissing, []);
+
+  const objectStatus = inspectCompositionV6ObjectState(objectTuple(config), config);
+  assert.equal(objectStatus.ready, true, objectStatus.failures.join('\n'));
 });
 
 test('v6 object read-back pins TypeOrigin, custody, linkage, validator policy and disabled gate', () => {

@@ -1,6 +1,6 @@
 # Soulidity Adapter Handoff
 
-This document is the implementation contract between the independently managed Animacraft and Soulidity repositories. The candidate implementation lives on the reviewed integration branches, but remains inactive until both upgrades and the Mainnet evidence run are complete. It is not a second minting protocol.
+This document is the implementation contract between the independently managed Animacraft and Soulidity repositories. Soulidity v6 is the only current callable product package and contains the earlier modules needed by the integration. The Mainnet packages are deployed, but every Animacraft mint, Commerce v5, and Composition v6 release gate remains disabled until a separate activation ceremony. It is not a second minting protocol.
 
 ## Pinned Mainnet Identities
 
@@ -8,10 +8,13 @@ This document is the implementation contract between the independently managed A
 | --- | --- |
 | Animacraft original package | `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea` |
 | Animacraft module | `animacraft::animacraft` |
-| Animacraft deployed protocol | `3` |
-| Animacraft adapter target | `4` after reviewed upgrade |
+| Animacraft deployed base protocol | `4` |
+| Animacraft additive cores | Commerce v5 and Composition v6 deployed disabled |
 | Circle native Sui USDC | `0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC` |
-| Current Soulidity package | `0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0` |
+| Soulidity v6 callable package | `0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd` |
+| Soulidity original namespace / inherited TypeOrigin | `0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d` |
+| Soulidity v6 owner-proof TypeOrigin | `0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd` |
+| Release state | Canonical mint, Commerce v5, and Composition v6 all disabled |
 
 Soulidity must pin the Animacraft **original package ID** as `original-id` and
 the type identity. Its dependency `published-at` must separately name the
@@ -22,13 +25,7 @@ unreviewed upgrade.
 
 ## Verified Current Soulidity Baseline
 
-The read-only compatibility audit on 2026-07-11 used the local Soulidity package whose `Published.toml` binds Mainnet package `0x6680f74155dd9f1c2ae0109556e459b1259f80b7597679292a70572887cfb1c0`. A clean temporary copy passed:
-
-```bash
-sui client verify-source --force --build-env mainnet --json move/soulidity
-```
-
-with Sui CLI `1.74.1-8fc60f1fa966`. The verified baseline exposes `mint_imported_in_personal_kiosk`, the private `mint_soul_in_personal_kiosk_impl`, `InitialContentEntry` with actual Walrus `Blob` values, solo/collection fixed-price purchase entries, typed Soul content invariants, and personal Kiosk custody described below. This proves the handoff targets the current Mainnet source, not that the future adapter diff has been reviewed or deployed.
+The 2026-08-02 Mainnet evidence run upgraded the canonical Soulidity family to the v6 callable package above. Read-only package metadata confirms that v6 contains `market`, the inherited Animacraft v5 provenance and binding modules, and the new `animacraft_appearance_adapter_v6` and `animacraft_soul_owner_proof_v6` modules. The v5 binding datatype keeps its immutable original TypeOrigin, while the v6 owner proof is first defined by the v6 callable package. These are technical Sui type identities inside one current v6 product, not two separately exposed product versions.
 
 ## Non-Negotiable Boundary
 

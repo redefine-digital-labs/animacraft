@@ -1677,7 +1677,8 @@ async function checkNetwork(config, validation, compositionDeploymentStatus) {
     }
     const soulidityCommerceV5Required = requireSoulidity
       || config.commerceV5ReleaseEnabled === true
-      || Boolean(config.commerceV5SoulBindingProofType);
+      || Boolean(config.commerceV5SoulBindingProofType)
+      || Boolean(config.soulidityTypeOriginPackageId);
     if (
       soulidityCommerceV5Required
       && validation.commerceV5TypeOriginPackageReady
@@ -1690,7 +1691,8 @@ async function checkNetwork(config, validation, compositionDeploymentStatus) {
       );
     }
     const soulidityCompositionV6Required = config.compositionV6ReleaseEnabled === true
-      || Boolean(config.compositionV6SoulOwnerProofType);
+      || Boolean(config.compositionV6SoulOwnerProofType)
+      || Boolean(config.compositionV6SoulOwnerProofTypeOriginPackageId);
     if (
       soulidityCompositionV6Required
       && validation.compositionV6SoulOwnerProofTypeOriginPackageReady
