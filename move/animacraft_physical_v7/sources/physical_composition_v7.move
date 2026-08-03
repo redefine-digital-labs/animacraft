@@ -4080,7 +4080,7 @@ fun free_style_claim_replay_is_permanently_rejected() {
 #[test, expected_failure(abort_code = 23, location = animacraft_physical_v7::physical_composition_v7)]
 fun limited_style_supply_cannot_overmint() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7002, 0, 0, 0);
-    let product = test_style_product(
+    let mut product = test_style_product(
         object::id_from_address(@0x7007),
         object::id_from_address(@0x7008),
         SUPPLY_LIMITED_EDITION,
