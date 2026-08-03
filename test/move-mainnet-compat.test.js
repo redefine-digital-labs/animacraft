@@ -6,6 +6,10 @@ const sourceUrl = new URL(
   '../move/animacraft/sources/commerce_v5.move',
   import.meta.url,
 );
+const physicalSourceUrl = new URL(
+  '../move/animacraft_physical_v7/sources/physical_composition_v7.move',
+  import.meta.url,
+);
 
 function structFieldNames(source, name) {
   const match = source.match(new RegExp(
@@ -46,4 +50,11 @@ test('MakerRootV5 remains below the Mainnet protocol-130 struct field limit', as
     'complete_output_count',
     'total_completes',
   ]);
+});
+
+test('Physical v7 remains a separate companion package under the Mainnet package-size ceiling', async () => {
+  const source = await readFile(physicalSourceUrl, 'utf8');
+  assert.match(source, /module animacraft_physical_v7::physical_composition_v7;/);
+  assert.doesNotMatch(source, /module animacraft::physical_composition_v7;/);
+  assert.match(source, /use animacraft::composition_v6::/);
 });

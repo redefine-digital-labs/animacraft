@@ -3,6 +3,7 @@
 
 # Protocol changes should always be reviewed by a maintainer.
 /move/animacraft/ @soul893
+/move/animacraft_physical_v7/ @soul893
 
 # Product and creator-facing docs should always be reviewed.
 /PRODUCT.md @soul893

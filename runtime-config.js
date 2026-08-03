@@ -83,6 +83,10 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   // Physical Style Assets v7 is additive to v6. It remains authoring-only
   // until the wardrobe custody package and Soulidity adapter are deployed and
   // independently audited.
+  // v7 is a separate companion package because the combined Core + v7
+  // bytecode exceeds Sui Mainnet's package object-size limit. Calls must use
+  // this package while v4-v6 calls continue to use callablePackageId.
+  physicalV7CallablePackageId: '',
   physicalV7TypeOriginPackageId: '',
   physicalProtocolConfigV7Id: '',
   physicalRegistryV7Id: '',
@@ -512,6 +516,7 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     errors.push('physicalStyleV7ReleaseEnabled must be a boolean release gate.');
   }
   const physicalV7Fields = [
+    'physicalV7CallablePackageId',
     'physicalV7TypeOriginPackageId',
     'physicalProtocolConfigV7Id',
     'physicalRegistryV7Id',
@@ -529,14 +534,19 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   try {
     const proof = normalizeStructTag(String(config.physicalV7SoulOwnerProofType || '').trim());
     const origin = String(config.physicalV7SoulOwnerProofTypeOriginPackageId || '').toLowerCase();
-    physicalV7SoulOwnerProofReady = Boolean(proof && origin && proof.toLowerCase().startsWith(`${origin}::`));
+    const expected = origin
+      ? normalizeStructTag(
+        `${origin}::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6`,
+      )
+      : '';
+    physicalV7SoulOwnerProofReady = Boolean(proof && expected && proof === expected);
   } catch {
     physicalV7SoulOwnerProofReady = false;
   }
   const physicalV7CoreReady = physicalV7Fields.every((field) => SUI_ID.test(String(config[field] || '')))
     && physicalV7SoulOwnerProofReady;
   if (physicalV7Configured && !physicalV7CoreReady) {
-    errors.push('Physical Style Assets v7 configuration must include its TypeOrigin, Config, Registry, AdminCap custody and exact Soulidity owner-proof type together.');
+    errors.push('Physical Style Assets v7 configuration must include its companion callable package, TypeOrigin, Config, Registry, AdminCap custody and the exact v6 Soulidity owner-proof type together.');
   }
   if (config.physicalStyleV7ReleaseEnabled && (
     config.compositionV6ReleaseEnabled !== true

@@ -239,6 +239,7 @@ function runtime(enabled = false) {
   return {
     network: 'mainnet',
     callablePackageId: '0x555',
+    physicalV7CallablePackageId: '0x557',
     commerceProtocolConfigV5Id: '0x666',
     compositionProtocolConfigV6Id: '0x777',
     physicalProtocolConfigV7Id: '0x888',
@@ -278,6 +279,13 @@ test('v7 plan is strictly rooted in completed v6 and maps one admitted v6 object
   assert.ok(plan.actions.some((entry) => entry.id === 'chain.physical-profile.seal'));
   assert.equal(plan.actions.filter((entry) => entry.id.startsWith('chain.family.publish.')).length, 1);
   assert.equal(plan.actions.filter((entry) => entry.id.startsWith('chain.style-product.publish.')).length, 2);
+  assert.equal(plan.context.coreCallablePackageId, '0x555');
+  assert.equal(plan.context.physicalV7CallablePackageId, '0x557');
+  assert.ok(
+    plan.actions
+      .filter((entry) => entry.transport === 'SUI')
+      .every((entry) => entry.target.startsWith('0x557::physical_composition_v7::')),
+  );
 });
 
 test('v7 plan fails closed when exact Styles reuse one v6 Product', async () => {
@@ -338,7 +346,7 @@ test('profile readback uses the production getObjects response shape and rejects
     commerceProtocolConfigV5Id: plan.context.commerceProtocolConfigV5Id,
   };
   const indexed = {
-    objectTypes: { '0xb01': '0x555::physical_composition_v7::MakerPhysicalProfileV7' },
+    objectTypes: { '0xb01': '0x557::physical_composition_v7::MakerPhysicalProfileV7' },
     events: [],
   };
   const suiClient = {

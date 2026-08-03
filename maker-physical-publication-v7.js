@@ -452,13 +452,14 @@ function normalizeRuntimeContext(runtime, context, v6Plan, profileId) {
     makerControlCapId: exactId(context.makerControlCapId || v6Plan.context?.makerControlCapId, 'MakerControlCapV5'),
     baseMakerRootId: exactId(v6Plan.context?.baseMakerRootId, 'MakerRootV5'),
     v6ProfileId: exactId(profileId, 'MakerProfileV6'),
-    callablePackageId: exactId(runtime.callablePackageId || runtime.packageId, 'Callable v7 package'),
+    coreCallablePackageId: exactId(runtime.callablePackageId || runtime.packageId, 'Callable Animacraft Core package'),
+    physicalV7CallablePackageId: exactId(runtime.physicalV7CallablePackageId, 'Callable Physical v7 companion package'),
     commerceProtocolConfigV5Id: exactId(runtime.commerceProtocolConfigV5Id, 'CommerceProtocolConfigV5'),
     compositionProtocolConfigV6Id: exactId(runtime.compositionProtocolConfigV6Id, 'CompositionProtocolConfigV6'),
     physicalProtocolConfigV7Id: exactId(runtime.physicalProtocolConfigV7Id, 'PhysicalProtocolConfigV7'),
     physicalRegistryV7Id: exactId(runtime.physicalRegistryV7Id, 'PhysicalRegistryV7'),
   };
-  if (string(v6Plan.context?.callablePackageId).toLowerCase() !== result.callablePackageId
+  if (string(v6Plan.context?.callablePackageId).toLowerCase() !== result.coreCallablePackageId
       || string(v6Plan.context?.commerceProtocolConfigV5Id).toLowerCase() !== result.commerceProtocolConfigV5Id
       || string(v6Plan.context?.compositionProtocolConfigV6Id).toLowerCase() !== result.compositionProtocolConfigV6Id) {
     fail('PHYSICAL_V7_V6_RUNTIME_MISMATCH', 'The v7 runtime does not extend the callable package and protocol objects locked by v6.');
@@ -655,7 +656,7 @@ export async function buildMakerPhysicalV7PublicationPlan({
   actions.push(action({
     id: 'chain.physical-profile.create',
     stage: MAKER_PHYSICAL_PUBLICATION_V7_STAGES.PROFILE_CREATING,
-    target: moveTarget(planContext.callablePackageId, MAKER_PHYSICAL_V7_MOVE_FUNCTIONS.CREATE_PROFILE),
+    target: moveTarget(planContext.physicalV7CallablePackageId, MAKER_PHYSICAL_V7_MOVE_FUNCTIONS.CREATE_PROFILE),
     inputs: {
       physicalRegistryV7Id: contextRef('physicalRegistryV7Id'),
       physicalProtocolConfigV7Id: contextRef('physicalProtocolConfigV7Id'),
@@ -670,7 +671,7 @@ export async function buildMakerPhysicalV7PublicationPlan({
   partPolicies.forEach((policy) => actions.push(action({
     id: `chain.part-policy.register.${actionKey(policy.slotKey)}`,
     stage: MAKER_PHYSICAL_PUBLICATION_V7_STAGES.POLICIES_REGISTERING,
-    target: moveTarget(planContext.callablePackageId, MAKER_PHYSICAL_V7_MOVE_FUNCTIONS.REGISTER_PART_POLICY),
+    target: moveTarget(planContext.physicalV7CallablePackageId, MAKER_PHYSICAL_V7_MOVE_FUNCTIONS.REGISTER_PART_POLICY),
     inputs: {
       physicalProfileId: outputRef('chain.physical-profile.create', 'physicalProfileId'),
       physicalProtocolConfigV7Id: contextRef('physicalProtocolConfigV7Id'),
@@ -687,7 +688,7 @@ export async function buildMakerPhysicalV7PublicationPlan({
   actions.push(action({
     id: 'chain.physical-profile.seal',
     stage: MAKER_PHYSICAL_PUBLICATION_V7_STAGES.PROFILE_SEALING,
-    target: moveTarget(planContext.callablePackageId, MAKER_PHYSICAL_V7_MOVE_FUNCTIONS.SEAL_PROFILE),
+    target: moveTarget(planContext.physicalV7CallablePackageId, MAKER_PHYSICAL_V7_MOVE_FUNCTIONS.SEAL_PROFILE),
     inputs: {
       physicalProfileId: outputRef('chain.physical-profile.create', 'physicalProfileId'),
       physicalProtocolConfigV7Id: contextRef('physicalProtocolConfigV7Id'),
@@ -703,7 +704,7 @@ export async function buildMakerPhysicalV7PublicationPlan({
       id: `chain.family.publish.${actionKey(familyId)}`,
       stage: MAKER_PHYSICAL_PUBLICATION_V7_STAGES.FAMILIES_PUBLISHING,
       target: moveTarget(
-        planContext.callablePackageId,
+        planContext.physicalV7CallablePackageId,
         external
           ? MAKER_PHYSICAL_V7_MOVE_FUNCTIONS.PUBLISH_EXTERNAL_FAMILY
           : MAKER_PHYSICAL_V7_MOVE_FUNCTIONS.PUBLISH_FAMILY,
@@ -748,7 +749,7 @@ export async function buildMakerPhysicalV7PublicationPlan({
       id: `chain.style-product.publish.${actionKey(entry.product.id)}`,
       stage: MAKER_PHYSICAL_PUBLICATION_V7_STAGES.STYLES_PUBLISHING,
       target: moveTarget(
-        planContext.callablePackageId,
+        planContext.physicalV7CallablePackageId,
         external
           ? MAKER_PHYSICAL_V7_MOVE_FUNCTIONS.PUBLISH_EXTERNAL_STYLE
           : MAKER_PHYSICAL_V7_MOVE_FUNCTIONS.PUBLISH_STYLE,
@@ -914,8 +915,12 @@ function assertGate(runtime, plan) {
     fail('PHYSICAL_V7_DEPENDENCY_DISABLED', 'Physical v7 requires active canonical Soul mint, Commerce v5 and Composable v6.');
   }
   if (runtime?.network !== 'mainnet') fail('PHYSICAL_V7_NETWORK_MISMATCH', 'Production physical v7 publication is Mainnet-only.');
-  const fields = ['callablePackageId', 'commerceProtocolConfigV5Id', 'compositionProtocolConfigV6Id', 'physicalProtocolConfigV7Id', 'physicalRegistryV7Id'];
-  const mismatch = fields.filter((field) => string(runtime?.[field]).toLowerCase() !== string(plan?.context?.[field]).toLowerCase());
+  const fields = ['coreCallablePackageId', 'physicalV7CallablePackageId', 'commerceProtocolConfigV5Id', 'compositionProtocolConfigV6Id', 'physicalProtocolConfigV7Id', 'physicalRegistryV7Id'];
+  const runtimeScope = {
+    ...runtime,
+    coreCallablePackageId: runtime?.callablePackageId || runtime?.packageId,
+  };
+  const mismatch = fields.filter((field) => string(runtimeScope?.[field]).toLowerCase() !== string(plan?.context?.[field]).toLowerCase());
   if (mismatch.length) fail('PHYSICAL_V7_RUNTIME_SCOPE_MISMATCH', 'The runtime does not match this byte-locked v7 plan.', { fields: mismatch });
   try {
     if (runtime.physicalV7SoulOwnerProofType) normalizeStructTag(runtime.physicalV7SoulOwnerProofType);

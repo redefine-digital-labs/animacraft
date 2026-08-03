@@ -79,6 +79,8 @@ jobs:
           test -f styles.css
           test -f move/animacraft/Move.toml
           test -f move/animacraft/sources/animacraft.move
+          test -f move/animacraft_physical_v7/Move.toml
+          test -f move/animacraft_physical_v7/sources/physical_composition_v7.move
 
       - name: Prevent generated build artifacts
         run: |

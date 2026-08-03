@@ -782,21 +782,23 @@ public(package) fun assert_extension_protocol_admin_v5(
     assert_protocol_admin(config, legacy_admin);
 }
 
-/// Live upstream kill-switch check for additive protocol modules. Unlike the
+/// Live upstream kill-switch check for reviewed companion protocol modules.
+/// This assertion is public because physical v7 is a separate package under
+/// Sui's package-size limit; it exposes no state or authority. Unlike the
 /// Maker operational bridge, this intentionally does not require an Active
 /// Maker lifecycle so governance may prepare or review a paused release while
 /// still stopping every v6 write when the canonical v5 protocol is disabled.
-public(package) fun assert_extension_protocol_enabled_v5(
+public fun assert_extension_protocol_enabled_v5(
     config: &CommerceProtocolConfigV5,
 ) {
     assert!(config.enabled, EProtocolDisabled);
     assert_protocol_dependencies_bound(config);
 }
 
-/// Narrow package-only bridge for release-scoped extension administration.
+/// Narrow capability-gated bridge for release-scoped companion administration.
 /// The epoch-bound key-only cap keeps extension writes frozen while a Maker
 /// sale is pending and automatically rotates authority after purchase.
-public(package) fun assert_extension_control_v5(
+public fun assert_extension_control_v5(
     root: &MakerRootV5,
     cap: &MakerControlCapV5,
     ctx: &TxContext,
@@ -804,10 +806,10 @@ public(package) fun assert_extension_control_v5(
     assert_control(root, cap, ctx);
 }
 
-/// Narrow package-only bridge for player-facing extension actions. This keeps
+/// Narrow read-only assertion bridge for player-facing companion actions. This keeps
 /// v6 composition behind the same Active lifecycle, canonical v5 protocol
 /// gate and payment-coin linkage as Complete.
-public(package) fun assert_extension_operational_v5(
+public fun assert_extension_operational_v5(
     root: &MakerRootV5,
     config: &CommerceProtocolConfigV5,
 ) {
