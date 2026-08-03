@@ -68,6 +68,27 @@ import {
   mergeEmbeddedProductSelectionIntoRecipeV6,
   validateWardrobeLoadoutV6,
 } from './maker-composable-v6-workspace.js';
+import {
+  THIRD_PARTY_STYLE_PRODUCT_PACKAGE_V7_SCHEMA,
+  STYLE_PRODUCT_ADMISSION_CLASSES,
+  STYLE_PRODUCT_PLAYER_STATES,
+  STYLE_PRODUCT_RIGHTS_ORIGINS,
+  STYLE_PRODUCT_SUPPLY_MODES,
+  derivePhysicalStylePlayerCatalogV7,
+} from './maker-physical-v7.js';
+import {
+  addMakerStyleProductV7,
+  collectPhysicalStyleCatalogDocumentIssuesV7,
+  createPhysicalStyleCatalogV7DraftForDocument,
+  createThirdPartyStyleProductTemplateV7,
+  getPhysicalStyleCatalogV7Draft,
+  importThirdPartyStyleProductPackageV7,
+  inspectPhysicalStyleCatalogManifestV7,
+  removeStyleProductV7,
+  setPhysicalStyleCatalogV7Draft,
+  updateStyleProductV7,
+} from './maker-physical-v7-workspace.js';
+import { physicalStyleV7Text } from './maker-physical-v7-i18n.js';
 import { evaluateVisibleWhen, renderResolvedScene, resolveMakerScene } from './maker-renderer.js';
 import { createMakerCommandStore } from './maker-command-store.js';
 import {
@@ -1427,6 +1448,8 @@ export class MakerWorkspace {
     this.selectedSoulDocumentKey = 'soulMd';
     this.selectedComposableProductId = '';
     this.composableImportError = '';
+    this.selectedPhysicalStyleProductId = '';
+    this.physicalStyleImportError = '';
     this.playerPartId = '';
     this.playerPickerPanel = 'parts';
     this.playerPickerViewByContext = new Map();
@@ -2110,6 +2133,68 @@ export class MakerWorkspace {
       makerOwner: this.context?.walletAddress || '',
       currentOwnershipEpoch: this.context?.composableV6State?.ownershipEpoch || 0,
       baseMakerRootId: draft.compatibility?.makerRootId || '',
+    });
+  }
+
+  physicalStyleText(key, values = {}) {
+    return physicalStyleV7Text(this.locale, key, values);
+  }
+
+  physicalStyleDraft(document = this.store?.getState().document) {
+    return document ? getPhysicalStyleCatalogV7Draft(document) : null;
+  }
+
+  setPhysicalStyleDraft(document, value) {
+    return setPhysicalStyleCatalogV7Draft(document, value);
+  }
+
+  createPhysicalStyleDraftForDocument(document) {
+    const existing = getPhysicalStyleCatalogV7Draft(document);
+    if (existing) return existing;
+    const v6 = getMakerComposableV6Draft(document);
+    return createPhysicalStyleCatalogV7DraftForDocument(document, {
+      makerRootId: v6?.compatibility?.makerRootId
+        || this.context?.chainBinding?.commerceV5RootObjectId
+        || document.version?.rootMakerId,
+      profileId: this.context?.composableV6State?.profileId
+        || `profile:${document.version?.rootMakerId || 'maker'}:v7`,
+      compatibilityHash: v6?.compatibility?.manifestHash || '',
+      certified: true,
+      open: v6?.profile?.thirdPartyAdmission === THIRD_PARTY_ADMISSION_MODES.OPEN,
+    });
+  }
+
+  physicalStyleCreatorIssues(document = this.store?.getState().document) {
+    return document
+      ? collectPhysicalStyleCatalogDocumentIssuesV7(document, { publish: false })
+      : [];
+  }
+
+  playerPhysicalStyleState(document = this.runtimeDocument()) {
+    const state = this.context?.physicalStyleV7State
+      && typeof this.context.physicalStyleV7State === 'object'
+      ? this.context.physicalStyleV7State
+      : {};
+    const manifest = state.manifest && typeof state.manifest === 'object'
+      ? state.manifest
+      : null;
+    const catalog = manifest || state.catalog || this.physicalStyleDraft(document);
+    return {
+      catalog,
+      entitlements: Array.isArray(state.entitlements) ? state.entitlements : [],
+      styleAssets: Array.isArray(state.styleAssets) ? state.styleAssets : [],
+      releaseEnabled: this.context?.physicalStyleV7ReleaseEnabled === true,
+      source: manifest || state.trusted === true ? 'published' : catalog ? 'draft' : 'none',
+    };
+  }
+
+  playerPhysicalStyleCatalog(document = this.runtimeDocument()) {
+    const state = this.playerPhysicalStyleState(document);
+    if (!state.catalog?.enabled) return [];
+    return derivePhysicalStylePlayerCatalogV7({
+      ...state,
+      selectedProductIds: this.playerComposableLoadout,
+      creatorPreview: this.playerCreatorPreview,
     });
   }
 
@@ -7551,6 +7636,77 @@ export class MakerWorkspace {
         `;
       }).join('');
       const draftIssues = composable ? this.composableCreatorIssues(document) : [];
+      const physicalDraft = getPhysicalStyleCatalogV7Draft(document);
+      const physicalIssues = physicalDraft ? this.physicalStyleCreatorIssues(document) : [];
+      const selectedHasExactPng = Boolean(selectedRecords.style?.assetId);
+      const selectedUsesSmartColor = Boolean(selectedRecords.style?.colorChannelId);
+      const canCreatePhysicalProduct = selectedHasExactPng && !selectedUsesSmartColor;
+      const physicalCreateHint = selectedUsesSmartColor
+        ? this.physicalStyleText('smartColorMustBeBaked')
+        : this.physicalStyleText('selectedStyleNeedsPng');
+      const physicalProductCards = (physicalDraft?.families || []).flatMap((family) => (
+        family.styles.map((product) => {
+          const source = product.baseSource;
+          const sourceStyle = source
+            ? findStyle(document, source.partId, source.itemId, source.styleId)
+            : null;
+          const runtime = product.exactPng?.assetId
+            ? this.runtimeAsset(product.exactPng.assetId)
+            : null;
+          const thumbnail = sourceStyle
+            ? this.styleThumbnailUrl(sourceStyle)
+            : runtime?.thumbnailUrl || runtime?.url || '';
+          const supplyLabels = {
+            [STYLE_PRODUCT_SUPPLY_MODES.INCLUDED]: 'included',
+            [STYLE_PRODUCT_SUPPLY_MODES.OPEN_EDITION]: 'openEdition',
+            [STYLE_PRODUCT_SUPPLY_MODES.LIMITED_EDITION]: 'limitedEdition',
+          };
+          const admissionLabels = {
+            [STYLE_PRODUCT_ADMISSION_CLASSES.OFFICIAL]: 'official',
+            [STYLE_PRODUCT_ADMISSION_CLASSES.CERTIFIED]: 'certified',
+            [STYLE_PRODUCT_ADMISSION_CLASSES.OPEN]: 'openValidated',
+          };
+          return `
+            <article class="v7-style-product-card ${product.id === this.selectedPhysicalStyleProductId ? 'active' : ''}" data-product-id="${escapeHtml(product.id)}">
+              <button type="button" class="v7-style-product-summary" data-action="select-physical-style-product" data-product-id="${escapeHtml(product.id)}">
+                <span>${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : '<i>PNG</i>'}</span>
+                <div><small>${escapeHtml(family.name)} · ${escapeHtml(this.physicalStyleText(admissionLabels[product.admissionClass] || 'openValidated'))}</small><strong>${escapeHtml(product.name)}</strong><em>${escapeHtml(this.physicalStyleText(supplyLabels[product.supply.mode] || 'included'))}</em></div>
+              </button>
+              <div class="v7-style-product-fields">
+                <label>${escapeHtml(this.physicalStyleText('supply'))}<select data-action="physical-style-supply" data-product-id="${escapeHtml(product.id)}">
+                  ${Object.values(STYLE_PRODUCT_SUPPLY_MODES).map((mode) => `<option value="${mode}" ${selected(product.supply.mode, mode)}>${escapeHtml(this.physicalStyleText(supplyLabels[mode]))}</option>`).join('')}
+                </select></label>
+                <label>${escapeHtml(this.physicalStyleText('supplyCap'))}<input type="number" min="1" step="1" data-action="physical-style-cap" data-product-id="${escapeHtml(product.id)}" value="${product.supply.cap ?? ''}" ${product.supply.mode === STYLE_PRODUCT_SUPPLY_MODES.LIMITED_EDITION ? '' : 'disabled'} /></label>
+                <label>${escapeHtml(this.physicalStyleText('price'))}<input type="number" min="0" step="1" data-action="physical-style-price" data-product-id="${escapeHtml(product.id)}" value="${product.commerce.priceAtomic}" ${product.supply.mode === STYLE_PRODUCT_SUPPLY_MODES.INCLUDED ? 'disabled' : ''} /></label>
+                <label>${escapeHtml(this.physicalStyleText('admission'))}<select data-action="physical-style-admission" data-product-id="${escapeHtml(product.id)}">
+                  ${Object.values(STYLE_PRODUCT_ADMISSION_CLASSES).map((origin) => `<option value="${origin}" ${selected(product.admissionClass, origin)}>${escapeHtml(this.physicalStyleText(admissionLabels[origin]))}</option>`).join('')}
+                </select></label>
+                <label>${escapeHtml(this.physicalStyleText('rightsOrigin'))}<select data-action="physical-style-rights" data-product-id="${escapeHtml(product.id)}"><option value="${STYLE_PRODUCT_RIGHTS_ORIGINS.ONCHAIN_NATIVE}" ${selected(product.rights.origin, STYLE_PRODUCT_RIGHTS_ORIGINS.ONCHAIN_NATIVE)}>ONCHAIN_NATIVE</option><option value="${STYLE_PRODUCT_RIGHTS_ORIGINS.LICENSE_WRAPPED}" ${selected(product.rights.origin, STYLE_PRODUCT_RIGHTS_ORIGINS.LICENSE_WRAPPED)}>LICENSE_WRAPPED</option></select></label>
+                <label>${escapeHtml(this.physicalStyleText('royalty'))}<input type="number" min="0" max="10000" step="1" data-action="physical-style-royalty" data-product-id="${escapeHtml(product.id)}" value="${product.commerce.creatorRoyaltyBps}" /></label>
+              </div>
+              <footer><span><strong>${escapeHtml(this.physicalStyleText('exactPng'))}</strong> <code>${escapeHtml(product.exactPng.assetId || product.exactPng.blobId || '—')}</code></span><button type="button" class="danger" data-action="remove-physical-style-product" data-product-id="${escapeHtml(product.id)}">${escapeHtml(this.physicalStyleText('removeStyleProduct'))}</button></footer>
+            </article>
+          `;
+        })
+      )).join('');
+      const physicalPanel = `
+        <section class="v7-physical-style-studio">
+          <header>
+            <div><span>${escapeHtml(this.physicalStyleText('physicalStyleAssets'))}</span><h3>${escapeHtml(this.physicalStyleText('physicalStyleStudio'))}</h3><p>${escapeHtml(this.physicalStyleText('physicalStyleStudioCopy'))}</p></div>
+            ${physicalDraft ? `<strong>${escapeHtml(this.physicalStyleText('exactStyleProducts', { count: physicalDraft.families.reduce((sum, family) => sum + family.styles.length, 0) }))}</strong>` : ''}
+          </header>
+          ${physicalDraft ? `
+            <div class="v7-style-catalog-target"><span>${escapeHtml(this.physicalStyleText('targetProfile'))}</span><code>${escapeHtml(physicalDraft.target.profileId || '—')}</code><span>${escapeHtml(this.physicalStyleText('targetPart'))}</span><strong>${escapeHtml(selectedRecords.part?.name || '—')}</strong></div>
+            <div class="v7-style-admission-policy"><strong>${escapeHtml(this.physicalStyleText('supplierAdmission'))}</strong><label><input type="checkbox" data-action="physical-catalog-certified" ${checked(physicalDraft.admission.certified)} /> ${escapeHtml(this.physicalStyleText('acceptCertified'))}</label><label><input type="checkbox" data-action="physical-catalog-open" ${checked(physicalDraft.admission.open)} /> ${escapeHtml(this.physicalStyleText('acceptOpen'))}</label></div>
+            <div class="v7-style-studio-actions"><button type="button" data-action="add-selected-physical-style" ${canCreatePhysicalProduct ? '' : `disabled title="${escapeHtml(physicalCreateHint)}"`}>${escapeHtml(this.physicalStyleText('addSelectedStyleProduct'))}</button><label class="v4-file-button">${escapeHtml(this.physicalStyleText('importStyleCatalog'))}<input type="file" accept="application/json,.json" data-action="import-physical-style-catalog" /></label><button type="button" data-action="export-physical-supplier-template" ${selectedRecords.part ? '' : 'disabled'}>${escapeHtml(this.physicalStyleText('exportSupplierTemplate'))}</button></div>
+            <p class="v7-style-supplier-workflow">${escapeHtml(this.physicalStyleText('supplierWorkflow'))}</p>
+            ${this.physicalStyleImportError ? `<div class="v4-rule-error" role="alert">${escapeHtml(this.physicalStyleImportError)}</div>` : ''}
+            <div class="v7-style-product-list">${physicalProductCards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.physicalStyleText('noStyleProducts'))}</strong></div>`}</div>
+            ${physicalIssues.length ? `<div class="v4-composable-issues"><strong>${escapeHtml(this.tr('reviewIssues', { count: physicalIssues.length }))}</strong><ul>${physicalIssues.slice(0, 6).map((entry) => `<li>${escapeHtml(entry.message)}</li>`).join('')}</ul></div>` : ''}
+            <div class="v4-composable-gate" role="note">${escapeHtml(this.physicalStyleText('physicalGateClosed'))}</div>
+          ` : `<button type="button" class="primary" data-action="init-physical-style-catalog">${escapeHtml(this.physicalStyleText('enablePhysicalDraft'))}</button>`}
+        </section>
+      `;
       return `
         <div class="v4-advanced-head">
           <div><span>${escapeHtml(this.tr('itemStudio'))}</span><h3>${escapeHtml(this.tr('itemStudioTitle'))}</h3><p>${escapeHtml(this.tr('itemStudioCopy'))}</p></div>
@@ -7585,6 +7741,7 @@ export class MakerWorkspace {
             ${draftIssues.length ? `<section class="v4-composable-issues" role="status"><strong>${escapeHtml(this.tr('reviewIssues', { count: draftIssues.length }))}</strong><ul>${draftIssues.slice(0, 6).map((entry) => `<li>${escapeHtml(entry.message)}</li>`).join('')}</ul></section>` : ''}
             <div class="v4-composable-gate" role="note">${escapeHtml(this.tr('v6MainnetGateClosed'))}</div>
           ` : ''}
+          ${physicalPanel}
         </div>
       `;
     }
@@ -8593,9 +8750,16 @@ export class MakerWorkspace {
       && (activeColorChannels.length === 0 || playerPartChanged)
     );
     const composablePlayerState = this.playerComposableState(document);
+    const physicalPlayerState = this.playerPhysicalStyleState(document);
+    const physicalPlayerCatalog = physicalPlayerState.catalog?.enabled
+      ? this.playerPhysicalStyleCatalog(document)
+      : [];
     const wardrobeAvailable = Boolean(
-      composablePlayerState.profile.mode === COMPOSABLE_PROFILE_MODES.COMPOSABLE
-      && composablePlayerState.compatibility,
+      (
+        composablePlayerState.profile.mode === COMPOSABLE_PROFILE_MODES.COMPOSABLE
+        && composablePlayerState.compatibility
+      )
+      || physicalPlayerCatalog.length,
     );
     if (paletteClosedForContext) {
       this.playerPickerPanel = 'parts';
@@ -8656,7 +8820,12 @@ export class MakerWorkspace {
         ${paletteActive ? '<i class="v4-player-selected-mark" aria-hidden="true">✓</i>' : ''}
       </button>
     `;
-    const wardrobeCards = wardrobeAvailable ? this.playerWardrobeCards(document) : [];
+    const wardrobeCards = composablePlayerState.compatibility
+      ? this.playerWardrobeCards(document)
+      : [];
+    const physicalProductCount = physicalPlayerCatalog.reduce((partCount, partEntry) => (
+      partCount + partEntry.families.reduce((familyCount, family) => familyCount + family.styles.length, 0)
+    ), 0);
     const wardrobeButton = wardrobeAvailable ? `
       <button
         type="button"
@@ -8670,7 +8839,7 @@ export class MakerWorkspace {
       >
         <span class="v4-player-wardrobe-icon" aria-hidden="true">◇</span>
         <strong>${escapeHtml(this.tr('wardrobe'))}</strong>
-        <small>${escapeHtml(this.tr('itemProductCount', { count: wardrobeCards.length }))}</small>
+        <small>${escapeHtml(this.tr('itemProductCount', { count: wardrobeCards.length + physicalProductCount }))}</small>
         ${wardrobeActive ? '<i class="v4-player-selected-mark" aria-hidden="true">✓</i>' : ''}
       </button>
     ` : '';
@@ -8845,13 +9014,59 @@ export class MakerWorkspace {
         </article>
       `;
     }).join('');
+    const physicalStateLabels = {
+      [STYLE_PRODUCT_PLAYER_STATES.INCLUDED]: 'statusIncluded',
+      [STYLE_PRODUCT_PLAYER_STATES.OWNED]: 'statusOwned',
+      [STYLE_PRODUCT_PLAYER_STATES.FOR_SALE]: 'statusForSale',
+      [STYLE_PRODUCT_PLAYER_STATES.SOLD_OUT]: 'statusSoldOut',
+      [STYLE_PRODUCT_PLAYER_STATES.UNAVAILABLE]: 'statusUnavailable',
+    };
+    const physicalCatalogCards = physicalPlayerCatalog.map((partEntry) => {
+      const targetPart = findPart(document, partEntry.partId);
+      const families = partEntry.families.map((family) => `
+        <section class="v7-player-family">
+          <header><span>${escapeHtml(this.physicalStyleText('itemFamily'))}</span><strong>${escapeHtml(family.name)}</strong><small>${escapeHtml(targetPart?.name || family.targetPartId)}</small></header>
+          <div>${family.styles.map((card) => {
+            const source = card.product.baseSource;
+            const sourceStyle = source
+              ? findStyle(document, source.partId, source.itemId, source.styleId)
+              : null;
+            const runtime = card.product.exactPng?.assetId
+              ? this.runtimeAsset(card.product.exactPng.assetId)
+              : null;
+            const thumbnail = sourceStyle
+              ? this.styleThumbnailUrl(sourceStyle)
+              : runtime?.thumbnailUrl || runtime?.url || '';
+            const price = card.product.commerce.priceAtomic > 0
+              ? `${atomicToCoin(card.product.commerce.priceAtomic)} ${card.product.commerce.coinSymbol || 'USDC'}`
+              : '';
+            return `
+              <article class="v7-player-style-card state-${escapeHtml(card.state.toLowerCase())} ${card.selected ? 'selected' : ''}">
+                <span>${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : '<i>PNG</i>'}</span>
+                <div><strong>${escapeHtml(card.name)}</strong><small>${escapeHtml(this.physicalStyleText(physicalStateLabels[card.state] || 'statusUnavailable'))}${price ? ` · ${escapeHtml(price)}` : ''}</small></div>
+                <button type="button" disabled title="${escapeHtml(this.physicalStyleText('physicalChainUnavailable'))}">${escapeHtml(card.canEquip ? this.tr('wardrobeEquip') : card.canPurchase ? this.physicalStyleText('statusForSale') : this.physicalStyleText(physicalStateLabels[card.state] || 'statusUnavailable'))}</button>
+              </article>
+            `;
+          }).join('')}</div>
+        </section>
+      `).join('');
+      return `<section class="v7-player-part-catalog" data-part-id="${escapeHtml(partEntry.partId)}"><h3>${escapeHtml(targetPart?.name || partEntry.partId)}</h3>${families}</section>`;
+    }).join('');
+    const physicalCatalogPanel = physicalCatalogCards ? `
+      <section class="v7-player-style-catalog">
+        <header><div><span>${escapeHtml(this.physicalStyleText('physicalStyleAssets'))}</span><h2>${escapeHtml(this.physicalStyleText('physicalPlayerTitle'))}</h2><p>${escapeHtml(this.physicalStyleText('physicalPlayerCopy'))}</p></div><strong>${escapeHtml(this.physicalStyleText('exactStyleProducts', { count: physicalProductCount }))}</strong></header>
+        ${physicalCatalogCards}
+        ${physicalPlayerState.releaseEnabled ? '' : `<div class="v4-composable-gate">${escapeHtml(this.physicalStyleText('physicalChainUnavailable'))}</div>`}
+      </section>
+    ` : '';
     const wardrobeControls = wardrobeAvailable ? `
       <section class="v4-player-wardrobe-panel">
         <header>
           <div><span>${escapeHtml(this.tr('composableItems'))}</span><h2>${escapeHtml(this.tr('wardrobeTitle'))}</h2><p>${escapeHtml(this.tr('wardrobeCopy'))}</p></div>
           <div><strong>${escapeHtml(this.tr('currentAppearanceRevision', { revision: this.playerAppearanceRevision }))}</strong><button type="button" data-action="player-close-wardrobe">← ${escapeHtml(this.tr('returnToCurrentPart'))}</button></div>
         </header>
-        <div class="v4-player-wardrobe-grid">${wardrobeProductCards || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('wardrobeEmpty'))}</span></div>`}</div>
+        ${physicalCatalogPanel}
+        <div class="v4-player-wardrobe-grid">${wardrobeProductCards || (physicalCatalogPanel ? '' : `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('wardrobeEmpty'))}</span></div>`)}</div>
       </section>
     ` : '';
     const basePlayerDocument = this.basePlayerDocument();
@@ -9561,6 +9776,9 @@ export class MakerWorkspace {
       'composable-seal',
       'add-selected-official-item',
       'remove-composable-product',
+      'init-physical-style-catalog',
+      'add-selected-physical-style',
+      'remove-physical-style-product',
       'set-default-recipe',
       'set-version-compatibility',
       'confirm-import',
@@ -9586,6 +9804,89 @@ export class MakerWorkspace {
     }
     if (action === 'creator-tab') {
       this.openCreatorTab(button.dataset.tab);
+      return;
+    }
+    if (action === 'init-physical-style-catalog') {
+      this.physicalStyleImportError = '';
+      this.executeDocument('Create physical Style catalog v7', ({ document: next }) => {
+        this.setPhysicalStyleDraft(next, this.createPhysicalStyleDraftForDocument(next));
+      });
+      return;
+    }
+    if (action === 'export-physical-supplier-template') {
+      if (!part) return;
+      const catalog = getPhysicalStyleCatalogV7Draft(document)
+        || this.createPhysicalStyleDraftForDocument(document);
+      const payload = createThirdPartyStyleProductTemplateV7(catalog, {
+        targetPartId: part.id,
+      });
+      const content = JSON.stringify(payload, null, 2);
+      this.callbacks.onPhysicalSupplierTemplateExport?.({
+        package: clone(payload),
+        content,
+      });
+      if (
+        typeof globalThis.document?.createElement === 'function'
+        && typeof globalThis.URL?.createObjectURL === 'function'
+      ) {
+        const blob = new Blob([content], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = globalThis.document.createElement('a');
+        link.href = url;
+        link.download = `${safeFileName(document.metadata?.name, 'maker')}-${safeFileName(part.name, part.id)}-third-party-style-template-v7.json`;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+      return;
+    }
+    if (action === 'select-physical-style-product') {
+      const draft = getPhysicalStyleCatalogV7Draft(document);
+      const exists = draft?.families.some((family) => (
+        family.styles.some((product) => product.id === button.dataset.productId)
+      ));
+      if (!exists) return;
+      this.selectedPhysicalStyleProductId = button.dataset.productId;
+      this.render();
+      return;
+    }
+    if (action === 'add-selected-physical-style') {
+      if (!part || !item || !style?.assetId || style.colorChannelId) return;
+      try {
+        const runtime = this.runtimeAsset(style.assetId) || {};
+        const descriptor = document.assets.find((asset) => asset.id === style.assetId) || {};
+        const result = addMakerStyleProductV7(
+          getPhysicalStyleCatalogV7Draft(document)
+            || this.createPhysicalStyleDraftForDocument(document),
+          {
+            document,
+            partId: part.id,
+            itemId: item.id,
+            styleId: style.id,
+            asset: { ...descriptor, ...runtime },
+            creator: this.context?.walletAddress || document.metadata.creator || '',
+            publisher: this.context?.walletAddress || document.metadata.creator || '',
+          },
+        );
+        this.selectedPhysicalStyleProductId = result.productId;
+        this.physicalStyleImportError = '';
+        this.executeDocument('Add exact Style Product v7', ({ document: next }) => {
+          this.setPhysicalStyleDraft(next, result.catalog);
+        });
+      } catch (error) {
+        this.physicalStyleImportError = error?.message
+          || this.physicalStyleText('physicalCatalogInvalid');
+        this.render();
+      }
+      return;
+    }
+    if (action === 'remove-physical-style-product') {
+      const productId = String(button.dataset.productId || '');
+      if (!productId || !this.confirmDelete(this.physicalStyleText('removeStyleProduct'))) return;
+      this.executeDocument('Remove exact Style Product v7', ({ document: next }) => {
+        const draft = getPhysicalStyleCatalogV7Draft(next);
+        if (draft) this.setPhysicalStyleDraft(next, removeStyleProductV7(draft, productId));
+      });
+      if (this.selectedPhysicalStyleProductId === productId) this.selectedPhysicalStyleProductId = '';
       return;
     }
     if (action === 'edit-style-visibility') {
@@ -10851,6 +11152,129 @@ export class MakerWorkspace {
     const state = this.store.getState();
     const document = state.document;
     const { part, item, style } = this.selectedCreatorRecords(document);
+    if (action === 'physical-catalog-certified' || action === 'physical-catalog-open') {
+      const draft = getPhysicalStyleCatalogV7Draft(document);
+      if (!draft) return;
+      this.executeDocument('Update physical Style supplier admission v7', ({ document: next }) => {
+        const current = getPhysicalStyleCatalogV7Draft(next);
+        if (!current) return;
+        current.admission[action === 'physical-catalog-certified' ? 'certified' : 'open'] = input.checked;
+        this.setPhysicalStyleDraft(next, current);
+      });
+      return;
+    }
+    if ([
+      'physical-style-supply',
+      'physical-style-cap',
+      'physical-style-price',
+      'physical-style-admission',
+      'physical-style-rights',
+      'physical-style-royalty',
+    ].includes(action)) {
+      const productId = String(input.dataset.productId || '');
+      const draft = getPhysicalStyleCatalogV7Draft(document);
+      if (!draft || !productId) return;
+      let patch = {};
+      if (action === 'physical-style-supply') {
+        if (!Object.values(STYLE_PRODUCT_SUPPLY_MODES).includes(input.value)) return;
+        patch = {
+          supply: {
+            mode: input.value,
+            cap: input.value === STYLE_PRODUCT_SUPPLY_MODES.LIMITED_EDITION ? 1 : null,
+          },
+          ...(input.value === STYLE_PRODUCT_SUPPLY_MODES.INCLUDED
+            ? { commerce: { priceAtomic: 0 } }
+            : {}),
+        };
+      } else if (action === 'physical-style-cap') {
+        patch = { supply: { cap: Math.max(1, Math.floor(Number(input.value || 1))) } };
+      } else if (action === 'physical-style-price') {
+        patch = { commerce: { priceAtomic: Math.max(0, Math.floor(Number(input.value || 0))) } };
+      } else if (action === 'physical-style-admission') {
+        if (!Object.values(STYLE_PRODUCT_ADMISSION_CLASSES).includes(input.value)) return;
+        patch = { admissionClass: input.value };
+      } else if (action === 'physical-style-rights') {
+        if (!Object.values(STYLE_PRODUCT_RIGHTS_ORIGINS).includes(input.value)) return;
+        patch = { rights: { origin: input.value } };
+      } else if (action === 'physical-style-royalty') {
+        patch = { commerce: { creatorRoyaltyBps: Math.max(0, Math.min(10_000, Math.floor(Number(input.value || 0)))) } };
+      }
+      this.executeDocument('Update exact Style Product v7', ({ document: next }) => {
+        const current = getPhysicalStyleCatalogV7Draft(next);
+        if (!current) return;
+        const result = updateStyleProductV7(current, productId, patch);
+        if (!result.product) return;
+        if (result.product.admissionClass === STYLE_PRODUCT_ADMISSION_CLASSES.CERTIFIED) {
+          result.catalog.admission.certified = true;
+        }
+        if (result.product.admissionClass === STYLE_PRODUCT_ADMISSION_CLASSES.OPEN) {
+          result.catalog.admission.open = true;
+        }
+        this.setPhysicalStyleDraft(next, result.catalog);
+      });
+      return;
+    }
+    if (action === 'import-physical-style-catalog' && input.files?.[0]) {
+      const file = input.files[0];
+      const operation = this.captureMakerOperation();
+      input.value = '';
+      try {
+        const rawText = await file.text();
+        let rawValue;
+        try {
+          rawValue = JSON.parse(rawText);
+        } catch {
+          rawValue = null;
+        }
+        if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
+        const existing = getPhysicalStyleCatalogV7Draft(operation.store.getState().document);
+        if (rawValue?.schemaVersion === THIRD_PARTY_STYLE_PRODUCT_PACKAGE_V7_SCHEMA) {
+          try {
+            const baseCatalog = existing
+              || this.createPhysicalStyleDraftForDocument(operation.store.getState().document);
+            const result = importThirdPartyStyleProductPackageV7(baseCatalog, rawValue, {
+              publish: false,
+              document: operation.store.getState().document,
+            });
+            this.selectedPhysicalStyleProductId = result.productId;
+            this.physicalStyleImportError = '';
+            this.executeDocument('Import third-party physical Style Product v7', ({ document: next }) => {
+              this.setPhysicalStyleDraft(next, result.catalog);
+            });
+          } catch (error) {
+            this.physicalStyleImportError = error?.message
+              || this.physicalStyleText('supplierPackageInvalid');
+            this.render();
+          }
+          return;
+        }
+        const inspection = inspectPhysicalStyleCatalogManifestV7(rawValue ?? rawText, { publish: false });
+        if (!inspection.valid || !inspection.catalog) {
+          this.physicalStyleImportError = inspection.issues[0]?.message
+            || this.physicalStyleText('physicalCatalogInvalid');
+          this.render();
+          return;
+        }
+        if (existing && (
+          existing.target.makerRootId !== inspection.catalog.target.makerRootId
+          || existing.target.profileId !== inspection.catalog.target.profileId
+        )) {
+          this.physicalStyleImportError = this.physicalStyleText('physicalCatalogInvalid');
+          this.render();
+          return;
+        }
+        this.physicalStyleImportError = '';
+        this.executeDocument('Import physical Style catalog v7', ({ document: next }) => {
+          this.setPhysicalStyleDraft(next, inspection.catalog);
+        });
+      } catch (error) {
+        if (!this.isCurrentMakerOperation(operation.makerKey, operation.store, operation.contextEpoch)) return;
+        this.physicalStyleImportError = error?.message
+          || this.physicalStyleText('physicalCatalogInvalid');
+        this.render();
+      }
+      return;
+    }
     if (action === 'composable-admission') {
       if (!Object.values(THIRD_PARTY_ADMISSION_MODES).includes(input.value)) return;
       const currentDraft = getMakerComposableV6Draft(document);

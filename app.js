@@ -16845,6 +16845,7 @@ function composableV6RuntimeContext() {
       runtimeConfig.compositionValidatorPolicyCommitmentV6,
     compositionV6SoulOwnerProofType: runtimeConfig.compositionV6SoulOwnerProofType,
     compositionV6ReleaseEnabled: runtimeConfig.compositionV6ReleaseEnabled === true,
+    physicalStyleV7ReleaseEnabled: runtimeConfig.physicalStyleV7ReleaseEnabled === true,
     soulidityCallablePackageId: runtimeConfig.soulidityCallablePackageId,
     soulidityPackageId: runtimeConfig.soulidityCallablePackageId,
     souliditySealNamespacePackageId: runtimeConfig.souliditySealNamespacePackageId,
@@ -19079,6 +19080,7 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
     creatorPreview: state.previewingMaker,
     commerceV5ReleaseEnabled: runtimeConfig.commerceV5ReleaseEnabled === true,
     compositionV6ReleaseEnabled: runtimeConfig.compositionV6ReleaseEnabled === true,
+    physicalStyleV7ReleaseEnabled: runtimeConfig.physicalStyleV7ReleaseEnabled === true,
     ...(commerceState ? { commerceState } : {}),
     ...(composableV6State ? { composableV6State } : {}),
     lifecycle: {

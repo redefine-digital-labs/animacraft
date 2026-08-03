@@ -1103,6 +1103,16 @@ public fun consume_canonical_soul_mint_authorization(
     )
 }
 
+/// Read-only bridge for packages that must bind additional same-PTB state to
+/// the exact recipe already authenticated by the canonical Commerce path.
+/// Returning a reference preserves the non-storable, one-use authorization;
+/// callers cannot replace or mutate the committed recipe hash.
+public fun canonical_soul_mint_authorization_recipe_hash(
+    canonical: &CanonicalSoulMintAuthorization,
+): &vector<u8> {
+    &canonical.authorization.recipe_hash
+}
+
 public fun creator_maker_ids(profile: &CreatorProfile): &vector<ID> {
     &profile.maker_ids
 }

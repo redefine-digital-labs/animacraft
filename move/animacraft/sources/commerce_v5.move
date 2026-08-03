@@ -1375,6 +1375,21 @@ public fun has_base_entitlement_v5(root: &MakerRootV5, wallet: address): bool {
         || root.base_entitlement_registry.contains(wallet)
 }
 
+/// Test-only deterministic entitlement fixture. Production grants remain
+/// payment-gated through `purchase_base_access_v5`.
+#[test_only]
+public fun grant_base_entitlement_v5_for_testing(
+    root: &mut MakerRootV5,
+    wallet: address,
+) {
+    assert!(!root.base_entitlement_registry.contains(wallet), EEntitlementExists);
+    root.base_entitlement_registry.add(wallet, EntitlementRecordV5 {
+        granted_at_ms: 0,
+        paid_atomic: root.base_purchase_price_atomic,
+        ownership_epoch: root.ownership_epoch,
+    });
+}
+
 public fun purchase_base_access_v5<PaymentCoin>(
     root: &mut MakerRootV5,
     maker_treasury: &mut MakerTreasuryV5<PaymentCoin>,
@@ -1914,6 +1929,26 @@ public fun has_pack_entitlement_v5(
             pack_key,
             wallet,
         })
+}
+
+/// Test-only deterministic Pack entitlement fixture. Production grants remain
+/// payment/claim-gated and issue the corresponding Pass object.
+#[test_only]
+public fun grant_pack_entitlement_v5_for_testing(
+    root: &mut MakerRootV5,
+    pack_key: String,
+    wallet: address,
+) {
+    let key = EntitlementKeyV5 { pack_key: *&pack_key, wallet };
+    assert!(!root.entitlement_registry.contains(key), EEntitlementExists);
+    root.entitlement_registry.add(key, EntitlementRecordV5 {
+        granted_at_ms: 0,
+        paid_atomic: root.packs.borrow(PackKeyV5 { name: *&pack_key })
+            .purchase_price_atomic,
+        ownership_epoch: root.ownership_epoch,
+    });
+    let record = root.packs.borrow_mut(PackKeyV5 { name: pack_key });
+    record.entitlement_count = record.entitlement_count + 1;
 }
 
 /// Optionally records a free Pack claim and issues a wallet receipt. A claim is
@@ -2952,6 +2987,17 @@ public fun consume_commerce_v5_soul_mint_authorization(
         output_binding,
     } = authorization;
     (canonical, soul_creator_royalty_bps, output_binding)
+}
+
+/// Canonical recipe hash already authenticated by v5 Complete. Soulidity and
+/// additive composition modules must snapshot this reference before consuming
+/// the authorization; no client-supplied replacement hash is accepted.
+public fun complete_authorization_recipe_hash_v5(
+    authorization: &CommerceV5SoulMintAuthorization,
+): &vector<u8> {
+    legacy::canonical_soul_mint_authorization_recipe_hash(
+        &authorization.canonical,
+    )
 }
 
 fun assert_complete_metadata(
@@ -4586,6 +4632,7 @@ fun exact_pack_style_on_base_item_is_charged_and_committed() {
         &clock,
         &mut ctx,
     );
+    assert!(complete_authorization_recipe_hash_v5(&authorization) == &recipe_hash);
     let (authorization, soul_creator_royalty_bps, output_binding) =
         consume_commerce_v5_soul_mint_authorization(authorization);
     assert!(soul_creator_royalty_bps == 250);

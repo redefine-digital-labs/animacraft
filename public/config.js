@@ -53,6 +53,16 @@ window.ANIMACRAFT_CONFIG = {
   compositionV6SoulOwnerProofTypeOriginPackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
   compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,
+  // v7 remains fail-closed until the package upgrade, disabled protocol
+  // initialization and Soulidity wardrobe adapter have all been verified.
+  physicalV7TypeOriginPackageId: '',
+  physicalProtocolConfigV7Id: '',
+  physicalRegistryV7Id: '',
+  physicalAdminCapV7Id: '',
+  physicalAdminCapV7Owner: '',
+  physicalV7SoulOwnerProofTypeOriginPackageId: '',
+  physicalV7SoulOwnerProofType: '',
+  physicalStyleV7ReleaseEnabled: false,
   // Intentionally empty while the reviewed Commerce/Seal release gate is off.
   // Mainnet activation requires the official committee endpoint plus an Enoki
   // X-API-Key; never claim paid assets are protected without it.

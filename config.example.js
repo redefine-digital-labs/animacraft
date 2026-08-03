@@ -56,6 +56,16 @@ window.ANIMACRAFT_CONFIG = {
   // Empty is valid only while compositionV6ReleaseEnabled remains false.
   compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,
+  // Authoring may be previewed while false. Never enable before the v7
+  // wardrobe custody package and Soulidity adapter are deployed and audited.
+  physicalV7TypeOriginPackageId: '0xV7_PHYSICAL_TYPE_ORIGIN_PACKAGE',
+  physicalProtocolConfigV7Id: '0xYOUR_DISABLED_V7_PHYSICAL_PROTOCOL_CONFIG',
+  physicalRegistryV7Id: '0xYOUR_V7_PHYSICAL_REGISTRY',
+  physicalAdminCapV7Id: '0xYOUR_V7_PHYSICAL_ADMIN_CAP',
+  physicalAdminCapV7Owner: '0xEXPECTED_V7_PHYSICAL_ADMIN',
+  physicalV7SoulOwnerProofTypeOriginPackageId: '0xV7_SOUL_OWNER_PROOF_TYPE_ORIGIN',
+  physicalV7SoulOwnerProofType: '',
+  physicalStyleV7ReleaseEnabled: false,
   // Frozen v5 package used for every Seal approval call. Never advance this
   // to the latest Animacraft callable package after a later upgrade.
   sealV5CallablePackageId: '0xV5_SEAL_CALLABLE_PACKAGE',

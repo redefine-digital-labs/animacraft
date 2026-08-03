@@ -368,10 +368,26 @@ function productPolicy(product) {
 }
 
 async function familyCommitment(product, baseMaker) {
+  const sources = array(product?.components)
+    .map((component) => object(component?.baseSource))
+    .filter((source) => string(source.partId) && string(source.itemId));
+  const exactBaseFamily = sources.length === array(product?.components).length
+    && sources.every((source) => (
+      string(source.partId) === string(sources[0]?.partId)
+      && string(source.itemId) === string(sources[0]?.itemId)
+    ));
+  // v7 makes Item the physical/commercial family and Style the exact
+  // product. Official v6 products created from Styles of one base Item must
+  // therefore share one immutable family commitment. Products that cannot
+  // prove a common base Item retain their v6 singleton identity; the v7
+  // planner rejects attempts to group such products into one family.
+  const familyId = exactBaseFamily
+    ? `family:${string(sources[0].partId)}:${string(sources[0].itemId)}`
+    : `product:${string(product.id)}`;
   return sha256(stableJson({
     schema: 'animacraft.item-product-family.v6',
     makerRootId: baseMaker.makerRootId,
-    productId: product.id,
+    familyId,
     creator: product.creator,
   }));
 }

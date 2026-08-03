@@ -15,6 +15,7 @@ use std::type_name;
 use sui::balance::{Self as balance, Balance};
 use sui::clock::Clock;
 use sui::coin::{Self as coin, Coin};
+use sui::dynamic_field as df;
 use sui::event;
 use sui::table::{Self as table, Table};
 
@@ -121,6 +122,7 @@ const EActiveSoulOwnedLocks: u64 = 56;
 const ESecondaryLoadoutUnsafe: u64 = 57;
 const EInvalidOriginKind: u64 = 58;
 const EProductOriginMismatch: u64 = 59;
+const EPhysicalV7AlreadyInitialized: u64 = 60;
 
 /// Fail-closed protocol linkage for the additive v6 composition surface.
 /// No rentals, games, durability, enhancement, consumption, or Bundle state
@@ -156,6 +158,11 @@ public struct CompositionAdminCapV6 has key {
     version: u64,
     config_id: ID,
 }
+
+/// One-time marker stored directly on the canonical v6 administration
+/// capability.  The additive physical_composition_v7 module claims it before
+/// constructing the only canonical v7 config/registry pair.
+public struct PhysicalV7InitializedKey has copy, drop, store {}
 
 public struct ValidatorCapV6 has key {
     id: UID,
@@ -746,6 +753,21 @@ public fun composition_admin_cap_config_id_v6(
     self.config_id
 }
 
+/// Package-internal one-time initializer bridge for physical composition v7.
+/// Keeping the marker on the canonical v6 key-only capability prevents a
+/// second config from being created by replaying an address-level authority.
+public(package) fun claim_physical_v7_initializer(
+    config: &CompositionProtocolConfigV6,
+    admin: &mut CompositionAdminCapV6,
+) {
+    assert_admin(config, admin);
+    assert!(
+        !df::exists(&admin.id, PhysicalV7InitializedKey {}),
+        EPhysicalV7AlreadyInitialized,
+    );
+    df::add(&mut admin.id, PhysicalV7InitializedKey {}, 7u64);
+}
+
 public fun validator_cap_id_v6(self: &ValidatorCapV6): ID {
     object::id(self)
 }
@@ -760,6 +782,15 @@ public fun validator_cap_epoch_v6(self: &ValidatorCapV6): u64 {
 
 public fun protocol_config_id_v6(self: &CompositionProtocolConfigV6): ID {
     object::id(self)
+}
+public fun protocol_v5_config_id_v6(self: &CompositionProtocolConfigV6): ID {
+    self.v5_config_id
+}
+
+public fun protocol_soul_owner_proof_type_v6(
+    self: &CompositionProtocolConfigV6,
+): Option<String> {
+    self.soul_owner_proof_type
 }
 
 public fun protocol_enabled_v6(self: &CompositionProtocolConfigV6): bool {
@@ -1024,6 +1055,7 @@ public fun cancel_unsealed_maker_profile_v6(
 }
 
 public fun profile_id_v6(self: &MakerProfileV6): ID { object::id(self) }
+public fun profile_config_id_v6(self: &MakerProfileV6): ID { self.config_id }
 public fun profile_root_id_v6(self: &MakerProfileV6): ID { self.root_id }
 public fun profile_mode_v6(self: &MakerProfileV6): u8 { self.mode }
 public fun profile_loadout_mutable_v6(self: &MakerProfileV6): bool {
@@ -1413,7 +1445,53 @@ public fun new_external_item_product_v6_for_testing(
     )
 }
 
+/// Minimal immutable external product fixture for cross-version authority
+/// tests. Production products can only be created by the reviewed publication
+/// paths above; this helper is absent from published bytecode.
+#[test_only]
+public fun new_external_item_product_stub_v6_for_testing(
+    config_id: ID,
+    publisher: address,
+    original_creator: address,
+    origin_kind: u8,
+    slot_key: String,
+    family_commitment: vector<u8>,
+    slot_schema_commitment: vector<u8>,
+    ctx: &mut TxContext,
+): ItemProductV6 {
+    ItemProductV6 {
+        id: object::new(ctx),
+        version: VERSION,
+        config_id,
+        source_root_id: option::none(),
+        publisher,
+        original_creator,
+        origin_kind,
+        family_commitment,
+        definition_commitment: test_commitment(91),
+        asset_commitment: test_commitment(92),
+        slot_key,
+        slot_schema_commitment,
+        rights_origin: RIGHTS_ONCHAIN_NATIVE,
+        access_kind: ACCESS_FREE,
+        binding_kind: BINDING_OWNED,
+        price_atomic: 0,
+        primary_protocol_fee_bps: 1_000,
+        maker_ecosystem_fee_bps: 0,
+        transferable: true,
+        required_product_ids: vector[],
+        excluded_product_ids: vector[],
+        extensions_hash: test_commitment(93),
+    }
+}
+
 public fun product_id_v6(self: &ItemProductV6): ID { object::id(self) }
+public fun product_config_id_v6(self: &ItemProductV6): ID { self.config_id }
+public fun product_family_commitment_v6(
+    self: &ItemProductV6,
+): &vector<u8> {
+    &self.family_commitment
+}
 public fun product_source_root_id_v6(self: &ItemProductV6): Option<ID> {
     self.source_root_id
 }
@@ -1433,11 +1511,22 @@ public fun product_asset_commitment_v6(self: &ItemProductV6): &vector<u8> {
     &self.asset_commitment
 }
 public fun product_slot_key_v6(self: &ItemProductV6): &String { &self.slot_key }
+public fun product_slot_schema_commitment_v6(
+    self: &ItemProductV6,
+): &vector<u8> {
+    &self.slot_schema_commitment
+}
+public fun product_rights_origin_v6(self: &ItemProductV6): u8 {
+    self.rights_origin
+}
 public fun product_access_kind_v6(self: &ItemProductV6): u8 { self.access_kind }
 public fun product_binding_kind_v6(self: &ItemProductV6): u8 { self.binding_kind }
 public fun product_price_atomic_v6(self: &ItemProductV6): u64 { self.price_atomic }
 public fun product_maker_ecosystem_fee_bps_v6(self: &ItemProductV6): u16 {
     self.maker_ecosystem_fee_bps
+}
+public fun product_primary_protocol_fee_bps_v6(self: &ItemProductV6): u16 {
+    self.primary_protocol_fee_bps
 }
 public fun product_transferable_v6(self: &ItemProductV6): bool {
     self.transferable
@@ -2035,6 +2124,107 @@ public fun purchase_wallet_item_v6<PaymentCoin>(
     } else {
         owned.destroy_none();
     };
+}
+
+/// Package-only atomic bridge used by physical composition v7. It preserves
+/// the exact v6 admission, entitlement and 90/10+Maker settlement semantics,
+/// but returns the newly-created key-only receipt so v7 can retire it and mint
+/// the concrete StyleAsset in the same transaction. No public caller can take
+/// an unmaterialized receipt through this ABI.
+public(package) fun claim_free_owned_item_for_physical_v7(
+    registry: &mut CompositionRegistryV6,
+    config: &CompositionProtocolConfigV6,
+    profile: &MakerProfileV6,
+    product: &ItemProductV6,
+    root: &MakerRootV5,
+    v5_config: &CommerceProtocolConfigV5,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): OwnedItemV6 {
+    assert_player_action(registry, config, profile, product, root, v5_config);
+    assert!(product.access_kind == ACCESS_FREE, EInvalidAccessKind);
+    assert!(product.binding_kind == BINDING_OWNED, EInvalidBinding);
+    grant_wallet_entitlement_internal(
+        registry,
+        config,
+        profile,
+        product,
+        0,
+        clock,
+        ctx,
+    ).destroy_some()
+}
+
+public(package) fun purchase_owned_item_for_physical_v7<PaymentCoin>(
+    registry: &mut CompositionRegistryV6,
+    config: &CompositionProtocolConfigV6,
+    treasury: &mut CompositionProtocolTreasuryV6<PaymentCoin>,
+    profile: &MakerProfileV6,
+    product: &ItemProductV6,
+    root: &MakerRootV5,
+    v5_config: &CommerceProtocolConfigV5,
+    payment: Coin<PaymentCoin>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): OwnedItemV6 {
+    assert_player_action(registry, config, profile, product, root, v5_config);
+    assert!(product.access_kind == ACCESS_PAID, EInvalidAccessKind);
+    assert!(product.binding_kind == BINDING_OWNED, EInvalidBinding);
+    let paid_atomic = coin::value(&payment);
+    split_item_payment(config, treasury, profile, product, root, payment, ctx);
+    grant_wallet_entitlement_internal(
+        registry,
+        config,
+        profile,
+        product,
+        paid_atomic,
+        clock,
+        ctx,
+    ).destroy_some()
+}
+
+/// Retire one legacy v6 OwnedItem after transferring its economic entitlement
+/// into the concrete v7 StyleAsset. This bridge is intentionally available
+/// while a Maker is paused/archived so an already-owned receipt cannot become
+/// trapped during an upgrade. It does not grant a new entitlement or perform a
+/// sale.
+public(package) fun consume_owned_item_for_physical_v7(
+    registry: &mut CompositionRegistryV6,
+    config: &CompositionProtocolConfigV6,
+    profile: &MakerProfileV6,
+    item: OwnedItemV6,
+    ctx: &TxContext,
+): (ID, address, bool, u64) {
+    assert_registry(config, registry);
+    assert!(profile.config_id == object::id(config), EProtocolMismatch);
+    assert!(item.config_id == object::id(config), EOwnedItemMismatch);
+    assert!(item.profile_id == object::id(profile), EOwnedItemMismatch);
+    assert!(item.holder == ctx.sender(), ENotOwnedItemHolder);
+    assert!(item.locked_soul.is_none(), EOwnedItemAlreadyLocked);
+    let instance_id = object::id(&item);
+    assert!(!registry.owned_locks.contains(instance_id), EOwnedItemAlreadyLocked);
+    let key = WalletEntitlementKeyV6 {
+        profile_id: item.profile_id,
+        product_id: item.product_id,
+        wallet: item.holder,
+    };
+    assert!(registry.wallet_entitlements.contains(key), EEntitlementMissing);
+    let record = registry.wallet_entitlements.remove(key);
+    assert!(record.owned_instance_id.is_some(), EOwnedInstanceRequired);
+    assert!(*record.owned_instance_id.borrow() == instance_id, EOwnedItemMismatch);
+    let OwnedItemV6 {
+        id,
+        version: _,
+        config_id: _,
+        profile_id: _,
+        product_id,
+        holder,
+        transferable,
+        locked_soul: _,
+        ownership_epoch,
+    } = item;
+    id.delete();
+    (product_id, holder, transferable, ownership_epoch)
 }
 
 public fun purchase_soul_item_v6<PaymentCoin, Proof: drop>(
@@ -3145,6 +3335,75 @@ public fun destroy_composition_protocol_v6_for_testing<PaymentCoin>(
 #[test_only]
 public fun destroy_profile_v6_for_testing(profile: MakerProfileV6) {
     std::unit_test::destroy(profile);
+}
+
+/// Minimal admission-only profile used by the physical v7 module's negative
+/// tests. It deliberately exposes no production constructor and exists only
+/// in test bytecode: v7 needs to prove that a present-but-revoked v6
+/// AdmissionRecord cannot be used for a new mint, deposit, or equip.
+#[test_only]
+public fun new_admission_profile_stub_v6_for_testing(
+    product_id: ID,
+    active: bool,
+    ctx: &mut TxContext,
+): MakerProfileV6 {
+    new_admission_profile_stub_with_source_v6_for_testing(
+        product_id,
+        ADMISSION_OFFICIAL,
+        active,
+        ctx,
+    )
+}
+
+/// Flexible admission-only fixture used to prove v7 external supplier source
+/// matching. It is intentionally unavailable in production bytecode.
+#[test_only]
+public fun new_admission_profile_stub_with_source_v6_for_testing(
+    product_id: ID,
+    source_kind: u8,
+    active: bool,
+    ctx: &mut TxContext,
+): MakerProfileV6 {
+    let mut admissions = table::new(ctx);
+    admissions.add(product_id, AdmissionRecordV6 {
+        source_kind,
+        attestation_id: option::none(),
+        admitted_by: ctx.sender(),
+        admitted_at_ms: 0,
+        definition_commitment: test_commitment(91),
+        asset_commitment: test_commitment(92),
+        slot_key: b"body".to_string(),
+        rights_origin: RIGHTS_ONCHAIN_NATIVE,
+        access_kind: ACCESS_FREE,
+        binding_kind: BINDING_OWNED,
+        price_atomic: 0,
+        maker_ecosystem_fee_bps: 0,
+        transferable: true,
+        required_product_ids: vector[],
+        excluded_product_ids: vector[],
+        publisher: ctx.sender(),
+        active,
+    });
+    MakerProfileV6 {
+        id: object::new(ctx),
+        version: VERSION,
+        config_id: object::id_from_address(@0x6006),
+        root_id: object::id_from_address(@0x5007),
+        mode: PROFILE_COMPOSABLE,
+        loadout_mutable: true,
+        item_assetization: true,
+        third_party_policy: THIRD_PARTY_OPEN,
+        slot_schema_commitment: test_commitment(93),
+        renderer_commitment: test_commitment(94),
+        rights_origin: RIGHTS_ONCHAIN_NATIVE,
+        primary_protocol_fee_bps: 1_000,
+        companion_manifest_blob_id: b"test-admission-profile-v6".to_string(),
+        companion_manifest_hash: test_commitment(95),
+        extensions_hash: test_commitment(96),
+        sealed: true,
+        admissions,
+        admission_count: 1,
+    }
 }
 
 #[test_only]
