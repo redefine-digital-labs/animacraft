@@ -80,6 +80,17 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   compositionV6SoulOwnerProofTypeOriginPackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
   compositionV6SoulOwnerProofType: '',
   compositionV6ReleaseEnabled: false,
+  // Physical Style Assets v7 is additive to v6. It remains authoring-only
+  // until the wardrobe custody package and Soulidity adapter are deployed and
+  // independently audited.
+  physicalV7TypeOriginPackageId: '',
+  physicalProtocolConfigV7Id: '',
+  physicalRegistryV7Id: '',
+  physicalAdminCapV7Id: '',
+  physicalAdminCapV7Owner: '',
+  physicalV7SoulOwnerProofTypeOriginPackageId: '',
+  physicalV7SoulOwnerProofType: '',
+  physicalStyleV7ReleaseEnabled: false,
   // Seal remains fail-closed until the reviewed v5 package and an authenticated
   // Mainnet committee endpoint are configured. One committee is one outer
   // server with weight 1 / threshold 1; its internal committee is 5-of-8.
@@ -497,6 +508,44 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   if (typeof config.compositionV6ReleaseEnabled !== 'boolean') {
     errors.push('compositionV6ReleaseEnabled must be a boolean release gate.');
   }
+  if (typeof config.physicalStyleV7ReleaseEnabled !== 'boolean') {
+    errors.push('physicalStyleV7ReleaseEnabled must be a boolean release gate.');
+  }
+  const physicalV7Fields = [
+    'physicalV7TypeOriginPackageId',
+    'physicalProtocolConfigV7Id',
+    'physicalRegistryV7Id',
+    'physicalAdminCapV7Id',
+    'physicalAdminCapV7Owner',
+    'physicalV7SoulOwnerProofTypeOriginPackageId',
+  ];
+  const physicalV7Configured = physicalV7Fields.some((field) => Boolean(config[field]))
+    || Boolean(config.physicalV7SoulOwnerProofType);
+  const invalidPhysicalV7Ids = physicalV7Fields.filter((field) => (
+    config[field] && !SUI_ID.test(String(config[field]))
+  ));
+  invalidPhysicalV7Ids.forEach((field) => errors.push(`${field} must be a valid Sui object, package or owner ID.`));
+  let physicalV7SoulOwnerProofReady = false;
+  try {
+    const proof = normalizeStructTag(String(config.physicalV7SoulOwnerProofType || '').trim());
+    const origin = String(config.physicalV7SoulOwnerProofTypeOriginPackageId || '').toLowerCase();
+    physicalV7SoulOwnerProofReady = Boolean(proof && origin && proof.toLowerCase().startsWith(`${origin}::`));
+  } catch {
+    physicalV7SoulOwnerProofReady = false;
+  }
+  const physicalV7CoreReady = physicalV7Fields.every((field) => SUI_ID.test(String(config[field] || '')))
+    && physicalV7SoulOwnerProofReady;
+  if (physicalV7Configured && !physicalV7CoreReady) {
+    errors.push('Physical Style Assets v7 configuration must include its TypeOrigin, Config, Registry, AdminCap custody and exact Soulidity owner-proof type together.');
+  }
+  if (config.physicalStyleV7ReleaseEnabled && (
+    config.compositionV6ReleaseEnabled !== true
+    || config.commerceV5ReleaseEnabled !== true
+    || config.canonicalSoulMintEnabled !== true
+    || !physicalV7CoreReady
+  )) {
+    errors.push('Physical Style Assets v7 requires Composable Assets v6, active canonical Soul mint, Commerce v5, and the complete reviewed v7 object/proof tuple.');
+  }
   if (config.compositionV6TypeOriginPackageId && !compositionV6TypeOriginPackageReady) {
     errors.push('compositionV6TypeOriginPackageId must be a valid Sui package ID.');
   }
@@ -720,6 +769,8 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     compositionValidatorPolicyCommitmentV6Ready,
     compositionV6SoulOwnerProofTypeOriginPackageReady,
     compositionV6SoulOwnerProofReady,
+    physicalV7CoreReady,
+    physicalV7SoulOwnerProofReady,
     // Retain the old result name for downstream status UI while exposing the
     // two independently verified identities.
     sealV5PackageReady: sealV5CallablePackageReady,

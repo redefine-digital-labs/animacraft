@@ -6,6 +6,11 @@ import {
   collectComposableProfileV6Issues,
   collectItemProductV6Issues,
 } from './maker-composable-v6.js';
+import {
+  PHYSICAL_V7_INITIAL_LOADOUT_SCHEMA,
+  buildPhysicalV7InitialLoadoutSummary,
+  createPhysicalV7CompletionSnapshot,
+} from './maker-physical-player-v7.js';
 
 export const COMPOSABLE_V6_OC_APPEARANCE_SCHEMA =
   'animacraft.oc-appearance-companion.v6';
@@ -479,6 +484,7 @@ export function createPlayerCompletionSnapshot({
   profile,
   livingContent,
   composableV6 = null,
+  physicalV7 = null,
   imageBlob,
   imageExport,
 } = {}) {
@@ -511,17 +517,88 @@ export function createPlayerCompletionSnapshot({
     throw new TypeError('The reviewed PNG export settings are required to complete an OC.');
   }
   const normalizedComposableV6 = normalizeComposableV6(composableV6, { document });
+  const normalizedPhysicalV7 = createPhysicalV7CompletionSnapshot(physicalV7);
   return deepFreeze({
     makerVersionId,
     recipe: clone(recipe),
     profile: clone(profile),
     livingContent: clone(livingContent),
     ...(normalizedComposableV6 ? { composableV6: normalizedComposableV6 } : {}),
+    ...(normalizedPhysicalV7 ? { physicalV7: normalizedPhysicalV7 } : {}),
     // Blob bytes are immutable by platform contract, so the exact reviewed
     // object can be retained without copying a potentially large PNG.
     imageBlob,
     imageExport: clone(imageExport),
   });
+}
+
+/**
+ * Attach the exact staged Physical v7 authorization summary to the existing
+ * immutable OC package. The v5 Recipe and StyleSelection arrays remain the
+ * sole ordering source; this helper never reorders them.
+ */
+export function attachPhysicalV7InitialLoadoutSummary(bundle, summary) {
+  if (!summary) return bundle;
+  if (summary.schemaVersion !== PHYSICAL_V7_INITIAL_LOADOUT_SCHEMA) {
+    throw new TypeError('A canonical Physical v7 initial-loadout summary is required.');
+  }
+  const next = clone(bundle);
+  const recipe = next?.package?.suiSummary?.recipe;
+  const selections = next?.package?.suiSummary?.styleSelections;
+  const rows = summary.initialAuthorizationRows;
+  if (!Array.isArray(recipe) || !Array.isArray(selections) || !Array.isArray(rows)
+      || recipe.length === 0 || recipe.length !== selections.length || rows.length !== recipe.length) {
+    throw new TypeError('Physical v7 must cover every canonical v5 Recipe/StyleSelection row.');
+  }
+  rows.forEach((row, index) => {
+    if (row.recipeIndex !== index
+        || String(row.partKey || '') !== String(recipe[index]?.partKey || '')
+        || String(row.recipeItemKey || '') !== String(recipe[index]?.itemKey || '')
+        || String(row.partKey || '') !== String(selections[index]?.partKey || '')
+        || String(row.recipeItemKey || '') !== String(selections[index]?.itemKey || '')
+        || String(row.styleKey || '') !== String(selections[index]?.styleKey || '')) {
+      throw new TypeError('Physical v7 authorization rows differ from the canonical v5 selection order.');
+    }
+  });
+  next.package.suiSummary.physicalV7 = clone(summary);
+  next.package.integrity = {
+    ...(next.package.integrity || {}),
+    physicalV7AuthorizationCommitment: normalizedHash(
+      summary.authorizationCommitment,
+      'Physical v7 authorization commitment',
+    ),
+  };
+  next.packageJson = JSON.stringify(next.package);
+  return next;
+}
+
+/** Rebuild and compare a restored Physical v7 completion without live state. */
+export async function verifyPhysicalV7OcInitialLoadout({
+  document,
+  completion,
+  packageValue,
+} = {}) {
+  const actual = packageValue?.suiSummary?.physicalV7 || null;
+  if (!completion?.physicalV7) {
+    if (actual || packageValue?.integrity?.physicalV7AuthorizationCommitment) {
+      throw new TypeError('OC package contains an unexpected Physical v7 authorization.');
+    }
+    return true;
+  }
+  const rebuilt = await buildPhysicalV7InitialLoadoutSummary({
+    document,
+    recipe: completion.recipe,
+    recipeHash: packageValue?.integrity?.recipeHash,
+    trusted: completion.physicalV7,
+  });
+  if (stableJson(actual) !== stableJson(rebuilt)
+      || normalizedHash(
+        packageValue?.integrity?.physicalV7AuthorizationCommitment,
+        'Restored Physical v7 authorization commitment',
+      ) !== rebuilt.authorizationCommitment) {
+    throw new TypeError('Restored Physical v7 initial loadout differs from the trusted completion snapshot.');
+  }
+  return true;
 }
 
 /**
