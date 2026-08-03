@@ -474,6 +474,30 @@ test('Composable Assets v6 release gate requires its complete tuple and active v
   assert.equal(result.compositionV6SoulOwnerProofReady, true);
 });
 
+test('Physical v7 requires an independently callable companion package', () => {
+  const missing = productionV6Config();
+  Object.assign(missing, {
+    compositionV6ReleaseEnabled: true,
+    physicalV7TypeOriginPackageId: '0x7777',
+    physicalProtocolConfigV7Id: '0xc077',
+    physicalRegistryV7Id: '0xae77',
+    physicalAdminCapV7Id: '0xca77',
+    physicalAdminCapV7Owner: '0xadea',
+    physicalV7SoulOwnerProofTypeOriginPackageId: '0xdcba',
+    physicalV7SoulOwnerProofType:
+      '0xdcba::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
+  });
+  let result = validateRuntimeConfig(missing, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /companion callable package/);
+
+  missing.physicalV7CallablePackageId = '0x7788';
+  missing.physicalStyleV7ReleaseEnabled = true;
+  result = validateRuntimeConfig(missing, { strict: true });
+  assert.equal(result.valid, true, result.errors.join('\n'));
+  assert.equal(result.physicalV7CoreReady, true);
+});
+
 test('Composable Assets v6 rejects incomplete cap custody and validator policy evidence', () => {
   const config = productionV6Config();
   config.compositionValidatorPolicyCommitmentV6 = '0x1234';

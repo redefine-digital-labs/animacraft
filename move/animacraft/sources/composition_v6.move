@@ -753,10 +753,13 @@ public fun composition_admin_cap_config_id_v6(
     self.config_id
 }
 
-/// Package-internal one-time initializer bridge for physical composition v7.
+/// Capability-gated one-time initializer bridge for the physical v7 companion
+/// package. This ABI is public because Sui's package-size limit requires v7 to
+/// live in a separate package; possession of the canonical mutable AdminCap is
+/// still required and the marker prevents replay.
 /// Keeping the marker on the canonical v6 key-only capability prevents a
 /// second config from being created by replaying an address-level authority.
-public(package) fun claim_physical_v7_initializer(
+public fun claim_physical_v7_initializer(
     config: &CompositionProtocolConfigV6,
     admin: &mut CompositionAdminCapV6,
 ) {
@@ -1969,7 +1972,7 @@ public fun claim_free_wallet_item_v6(
             || product.binding_kind == BINDING_OWNED,
         EInvalidBinding,
     );
-    let mut owned = grant_wallet_entitlement_internal(
+    let owned = grant_wallet_entitlement_internal(
         registry,
         config,
         profile,
@@ -2110,7 +2113,7 @@ public fun purchase_wallet_item_v6<PaymentCoin>(
     );
     let paid_atomic = coin::value(&payment);
     split_item_payment(config, treasury, profile, product, root, payment, ctx);
-    let mut owned = grant_wallet_entitlement_internal(
+    let owned = grant_wallet_entitlement_internal(
         registry,
         config,
         profile,
@@ -2126,12 +2129,13 @@ public fun purchase_wallet_item_v6<PaymentCoin>(
     };
 }
 
-/// Package-only atomic bridge used by physical composition v7. It preserves
+/// Atomic bridge used by the physical v7 companion package. It preserves
 /// the exact v6 admission, entitlement and 90/10+Maker settlement semantics,
 /// but returns the newly-created key-only receipt so v7 can retire it and mint
-/// the concrete StyleAsset in the same transaction. No public caller can take
-/// an unmaterialized receipt through this ABI.
-public(package) fun claim_free_owned_item_for_physical_v7(
+/// the concrete StyleAsset in the same transaction. Calling it directly never
+/// bypasses admission or ownership and only yields the same non-droppable v6
+/// receipt that the existing public claim path transfers to the player.
+public fun claim_free_owned_item_for_physical_v7(
     registry: &mut CompositionRegistryV6,
     config: &CompositionProtocolConfigV6,
     profile: &MakerProfileV6,
@@ -2155,7 +2159,7 @@ public(package) fun claim_free_owned_item_for_physical_v7(
     ).destroy_some()
 }
 
-public(package) fun purchase_owned_item_for_physical_v7<PaymentCoin>(
+public fun purchase_owned_item_for_physical_v7<PaymentCoin>(
     registry: &mut CompositionRegistryV6,
     config: &CompositionProtocolConfigV6,
     treasury: &mut CompositionProtocolTreasuryV6<PaymentCoin>,
@@ -2188,7 +2192,7 @@ public(package) fun purchase_owned_item_for_physical_v7<PaymentCoin>(
 /// while a Maker is paused/archived so an already-owned receipt cannot become
 /// trapped during an upgrade. It does not grant a new entitlement or perform a
 /// sale.
-public(package) fun consume_owned_item_for_physical_v7(
+public fun consume_owned_item_for_physical_v7(
     registry: &mut CompositionRegistryV6,
     config: &CompositionProtocolConfigV6,
     profile: &MakerProfileV6,

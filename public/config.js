@@ -55,6 +55,7 @@ window.ANIMACRAFT_CONFIG = {
   compositionV6ReleaseEnabled: false,
   // v7 remains fail-closed until the package upgrade, disabled protocol
   // initialization and Soulidity wardrobe adapter have all been verified.
+  physicalV7CallablePackageId: '',
   physicalV7TypeOriginPackageId: '',
   physicalProtocolConfigV7Id: '',
   physicalRegistryV7Id: '',

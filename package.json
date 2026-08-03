@@ -16,8 +16,8 @@
     "preflight:integration": "node scripts/mainnet-preflight.mjs --strict --network --require-soulidity",
     "makers:build": "python3 scripts/build-builtin-makers.py",
     "makers:verify": "python3 -m py_compile scripts/chroma_key.py scripts/build-builtin-makers.py && node --test test/bundled-makers.test.js",
-    "move:build": "cd move/animacraft && sui move build",
-    "move:test": "cd move/animacraft && sui move test"
+    "move:build": "sui move build --path move/animacraft && sui move build --path move/animacraft_physical_v7",
+    "move:test": "sui move test --path move/animacraft && sui move test --path move/animacraft_physical_v7"
   },
   "dependencies": {
     "@mysten/dapp-kit-core": "1.6.4",

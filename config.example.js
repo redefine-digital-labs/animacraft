@@ -58,6 +58,7 @@ window.ANIMACRAFT_CONFIG = {
   compositionV6ReleaseEnabled: false,
   // Authoring may be previewed while false. Never enable before the v7
   // wardrobe custody package and Soulidity adapter are deployed and audited.
+  physicalV7CallablePackageId: '0xV7_PHYSICAL_CALLABLE_PACKAGE',
   physicalV7TypeOriginPackageId: '0xV7_PHYSICAL_TYPE_ORIGIN_PACKAGE',
   physicalProtocolConfigV7Id: '0xYOUR_DISABLED_V7_PHYSICAL_PROTOCOL_CONFIG',
   physicalRegistryV7Id: '0xYOUR_V7_PHYSICAL_REGISTRY',

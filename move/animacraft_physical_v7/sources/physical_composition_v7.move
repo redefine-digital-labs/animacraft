@@ -6,7 +6,7 @@
 /// is deliberately `key`-only and is defined in this same module as
 /// SoulWardrobeV7: only these audited entry points can transfer or receive it.
 /// Smart Color is intentionally absent from every v7 type.
-module animacraft::physical_composition_v7;
+module animacraft_physical_v7::physical_composition_v7;
 
 use animacraft::animacraft::{Self as legacy, ProtocolFeeAdminCap, RecipeSlot};
 use animacraft::commerce_v5::{
@@ -2071,7 +2071,7 @@ fun equip_received_internal(
     assert_wardrobe_mutable(wardrobe, expected_revision);
     let receiving_id = transfer::receiving_object_id(&receiving);
     assert!(wardrobe.inventory.contains(receiving_id), EAssetNotDeposited);
-    let mut asset = transfer::receive(&mut wardrobe.id, receiving);
+    let asset = transfer::receive(&mut wardrobe.id, receiving);
     assert!(object::id(&asset) == receiving_id, EWrongReceivingAsset);
     assert_asset_product(wardrobe, product, &asset);
     assert_part_accepts_asset(profile, &asset);
@@ -2138,7 +2138,7 @@ public fun deposit_and_equip_style_v7<OwnerProof: drop>(
     v5_config: &CommerceProtocolConfigV5,
     soul_id: ID,
     proof: OwnerProof,
-    mut asset: StyleAssetV7,
+    asset: StyleAssetV7,
     expected_revision: u64,
     ctx: &TxContext,
 ) {
@@ -2206,7 +2206,7 @@ fun swap_internal(
     let new_id = transfer::receiving_object_id(&new_receiving);
     let old_id = transfer::receiving_object_id(&old_receiving);
     assert!(new_id != old_id, EAssetMismatch);
-    let mut new_asset = transfer::receive(&mut wardrobe.id, new_receiving);
+    let new_asset = transfer::receive(&mut wardrobe.id, new_receiving);
     let old_asset = transfer::receive(&mut wardrobe.id, old_receiving);
     assert_asset_product(wardrobe, new_product, &new_asset);
     assert_part_accepts_asset(profile, &new_asset);
@@ -4066,7 +4066,7 @@ fun owned_style_child_deposit_equip_unequip_withdraw_round_trip() {
     scenario.end();
 }
 
-#[test, expected_failure(abort_code = 51, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 51, location = animacraft_physical_v7::physical_composition_v7)]
 fun free_style_claim_replay_is_permanently_rejected() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7001, 0, 0, 0);
     let (_config, mut registry) = test_protocol(&mut ctx);
@@ -4077,10 +4077,10 @@ fun free_style_claim_replay_is_permanently_rejected() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 23, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 23, location = animacraft_physical_v7::physical_composition_v7)]
 fun limited_style_supply_cannot_overmint() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7002, 0, 0, 0);
-    let mut product = test_style_product(
+    let product = test_style_product(
         object::id_from_address(@0x7007),
         object::id_from_address(@0x7008),
         SUPPLY_LIMITED_EDITION,
@@ -4095,7 +4095,7 @@ fun limited_style_supply_cannot_overmint() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 30, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 30, location = animacraft_physical_v7::physical_composition_v7)]
 fun wardrobe_rejects_stale_revision() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7003, 0, 0, 0);
     let config_id = object::id_from_address(@0x7007);
@@ -4106,7 +4106,7 @@ fun wardrobe_rejects_stale_revision() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 44, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 44, location = animacraft_physical_v7::physical_composition_v7)]
 fun external_assets_must_leave_before_soul_transfer() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7004, 0, 0, 0);
     let config_id = object::id_from_address(@0x7007);
@@ -4117,7 +4117,7 @@ fun external_assets_must_leave_before_soul_transfer() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 50, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 50, location = animacraft_physical_v7::physical_composition_v7)]
 fun required_slot_completion_uses_canonical_profile_not_caller_input() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7005, 0, 0, 0);
     let config_id = object::id_from_address(@0x7007);
@@ -4127,7 +4127,7 @@ fun required_slot_completion_uses_canonical_profile_not_caller_input() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 53, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 53, location = animacraft_physical_v7::physical_composition_v7)]
 fun empty_initial_wardrobe_cannot_be_finalized() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7006, 0, 0, 0);
     let (config, _registry) = test_protocol(&mut ctx);
@@ -4145,7 +4145,7 @@ fun empty_initial_wardrobe_cannot_be_finalized() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 42, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 42, location = animacraft_physical_v7::physical_composition_v7)]
 fun required_rule_matches_v6_product_id_not_v7_object_id() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7007, 0, 0, 0);
     let config_id = object::id_from_address(@0x7007);
@@ -4269,7 +4269,7 @@ fun staged_initial_selection_materializes_only_selected_style_and_finalizes() {
     composition::destroy_profile_v6_for_testing(v6_profile);
 }
 
-#[test, expected_failure(abort_code = 46, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 46, location = animacraft_physical_v7::physical_composition_v7)]
 fun included_style_cannot_be_claimed_twice_for_one_soul() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7010, 0, 0, 0);
     let (config, _registry) = test_protocol(&mut ctx);
@@ -4318,7 +4318,7 @@ fun included_style_cannot_be_claimed_twice_for_one_soul() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 41, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 41, location = animacraft_physical_v7::physical_composition_v7)]
 fun required_part_cannot_be_unequipped() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7011, 0, 0, 0);
     let profile = test_profile(
@@ -4331,7 +4331,7 @@ fun required_part_cannot_be_unequipped() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 18, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 18, location = animacraft_physical_v7::physical_composition_v7)]
 fun revoked_v6_admission_blocks_initial_style_materialization() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7016, 0, 0, 0);
     let (config, _registry) = test_protocol(&mut ctx);
@@ -4369,7 +4369,7 @@ fun revoked_v6_admission_blocks_initial_style_materialization() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 18, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 18, location = animacraft_physical_v7::physical_composition_v7)]
 fun revoked_v6_admission_blocks_new_equip_gate() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7017, 0, 0, 0);
     let mut product = test_style_product(
@@ -4395,7 +4395,7 @@ fun revoked_v6_admission_blocks_new_equip_gate() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 43, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 43, location = animacraft_physical_v7::physical_composition_v7)]
 fun soul_local_asset_can_never_be_withdrawn() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7012, 0, 0, 0);
     let mut product = test_style_product(
@@ -4417,7 +4417,7 @@ fun soul_local_asset_can_never_be_withdrawn() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 29, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 29, location = animacraft_physical_v7::physical_composition_v7)]
 fun listed_wardrobe_rejects_mutation() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7013, 0, 0, 0);
     let config_id = object::id_from_address(@0x7007);
@@ -4428,7 +4428,7 @@ fun listed_wardrobe_rejects_mutation() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 52, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 52, location = animacraft_physical_v7::physical_composition_v7)]
 fun uninitialized_wardrobe_rejects_normal_mutation() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7014, 0, 0, 0);
     let config_id = object::id_from_address(@0x7007);
@@ -4464,13 +4464,13 @@ fun legacy_receipt_materialization_cannot_be_trapped_by_pause_or_cap() {
     std::unit_test::destroy(registry);
 }
 
-#[test, expected_failure(abort_code = 12, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 12, location = animacraft_physical_v7::physical_composition_v7)]
 fun required_open_part_is_rejected_before_profile_seal() {
     assert_part_policy(PART_OPEN, true, SOURCE_OPEN, &b"body".to_string());
     abort 99
 }
 
-#[test, expected_failure(abort_code = 40, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 40, location = animacraft_physical_v7::physical_composition_v7)]
 fun owned_style_cannot_publish_into_soul_local_part() {
     let policy = PartPolicyV7 {
         slot_key: b"body".to_string(),
@@ -4486,7 +4486,7 @@ fun owned_style_cannot_publish_into_soul_local_part() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 40, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 40, location = animacraft_physical_v7::physical_composition_v7)]
 fun included_style_cannot_publish_into_open_part() {
     let policy = PartPolicyV7 {
         slot_key: b"body".to_string(),
@@ -4502,7 +4502,7 @@ fun included_style_cannot_publish_into_open_part() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 24, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 24, location = animacraft_physical_v7::physical_composition_v7)]
 fun inactive_style_cannot_issue_a_new_asset() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7018, 0, 0, 0);
     let mut product = test_style_product(
@@ -4679,7 +4679,7 @@ fun paused_recovery_can_atomically_remove_equipped_external_style() {
     scenario.end();
 }
 
-#[test, expected_failure(abort_code = 55, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 55, location = animacraft_physical_v7::physical_composition_v7)]
 fun physical_initial_authorization_rejects_style_key_tampering() {
     let recipe = vector[legacy::new_recipe_slot(
         b"body".to_string(),
@@ -4885,7 +4885,7 @@ fun complete_authorization_keeps_logical_rows_but_materializes_visual_subset() {
     );
 }
 
-#[test, expected_failure(abort_code = 55, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 55, location = animacraft_physical_v7::physical_composition_v7)]
 fun initial_authorization_rejects_visual_rows_out_of_recipe_order() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7026, 0, 0, 0);
     let clock = sui::clock::create_for_testing(&mut ctx);
@@ -5005,7 +5005,7 @@ fun initial_authorization_rejects_visual_rows_out_of_recipe_order() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 28, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 28, location = animacraft_physical_v7::physical_composition_v7)]
 fun reconstructed_initial_authorization_cannot_replay_same_soul() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7027, 0, 0, 0);
     let (config, mut registry) = test_protocol(&mut ctx);
@@ -5072,7 +5072,7 @@ fun listing_freeze_round_trip_is_revisioned_and_transfer_safe() {
     std::unit_test::destroy(wardrobe);
 }
 
-#[test, expected_failure(abort_code = 44, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 44, location = animacraft_physical_v7::physical_composition_v7)]
 fun listing_rejects_wardrobe_with_external_custody() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7029, 0, 0, 0);
     let (config, _registry) = test_protocol(&mut ctx);
@@ -5092,7 +5092,7 @@ fun listing_rejects_wardrobe_with_external_custody() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 7, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 7, location = animacraft_physical_v7::physical_composition_v7)]
 fun listing_proof_type_binding_is_one_time() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7030, 0, 0, 0);
     let mut config = PhysicalProtocolConfigV7 {
@@ -5177,7 +5177,7 @@ fun certified_supplier_can_publish_only_its_own_admitted_product() {
     composition::destroy_profile_v6_for_testing(profile);
 }
 
-#[test, expected_failure(abort_code = 25, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 25, location = animacraft_physical_v7::physical_composition_v7)]
 fun external_supplier_cannot_squat_another_creators_product() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7033, 0, 0, 0);
     let product = composition::new_external_item_product_stub_v6_for_testing(
@@ -5200,7 +5200,7 @@ fun external_supplier_cannot_squat_another_creators_product() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 40, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 40, location = animacraft_physical_v7::physical_composition_v7)]
 fun external_supplier_source_must_match_exact_v6_admission() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7034, 0, 0, 0);
     let product = composition::new_external_item_product_stub_v6_for_testing(
@@ -5223,7 +5223,7 @@ fun external_supplier_source_must_match_exact_v6_admission() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 17, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 17, location = animacraft_physical_v7::physical_composition_v7)]
 fun v6_product_can_have_only_one_v7_style_registry_mapping() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7035, 0, 0, 0);
     let (_config, mut registry) = test_protocol(&mut ctx);
@@ -5233,7 +5233,7 @@ fun v6_product_can_have_only_one_v7_style_registry_mapping() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 16, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 16, location = animacraft_physical_v7::physical_composition_v7)]
 fun v6_seed_product_can_have_only_one_v7_family_mapping() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7036, 0, 0, 0);
     let (_config, mut registry) = test_protocol(&mut ctx);
@@ -5243,7 +5243,7 @@ fun v6_seed_product_can_have_only_one_v7_family_mapping() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 55, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 55, location = animacraft_physical_v7::physical_composition_v7)]
 fun finalization_rejects_partial_authenticated_initial_vector() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7021, 0, 0, 0);
     let (config, _registry) = test_protocol(&mut ctx);
@@ -5267,7 +5267,7 @@ fun finalization_rejects_partial_authenticated_initial_vector() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 58, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 58, location = animacraft_physical_v7::physical_composition_v7)]
 fun postmint_paid_base_included_style_requires_entitlement() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7022, 0, 0, 0);
     let clock = sui::clock::create_for_testing(&mut ctx);
@@ -5311,7 +5311,7 @@ fun postmint_paid_base_included_style_requires_entitlement() {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 58, location = animacraft::physical_composition_v7)]
+#[test, expected_failure(abort_code = 58, location = animacraft_physical_v7::physical_composition_v7)]
 fun postmint_paid_pack_included_style_requires_entitlement() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7023, 0, 0, 0);
     let clock = sui::clock::create_for_testing(&mut ctx);
