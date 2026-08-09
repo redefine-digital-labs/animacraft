@@ -488,7 +488,7 @@ export function collectCompatibilityProfileV6Issues(
     `compatibility.fallbackProductIds[${index}]`,
     'invalid_fallback_product',
   ));
-  if (publish && fallbackProductIds.length === 0) {
+  if (publish && fallbackProductIds.length === 0 && slots.some((slot) => slot?.required === true)) {
     issue(issues, 'compatibility.fallbackProductIds', 'missing_fallback_loadout', 'A complete free fallback Loadout is required.');
   }
 

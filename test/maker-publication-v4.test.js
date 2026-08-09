@@ -4,6 +4,10 @@ import test from 'node:test';
 import { createMakerV5Document, validateMakerV5Document } from '../maker-v4.js';
 import { resolveMakerScene } from '../maker-renderer.js';
 import {
+  CURRENT_MAKER_DATA_EPOCH,
+  isCurrentMakerDataEpoch,
+} from '../maker-release-epoch.js';
+import {
   MAKER_V4_EMBEDDED_EXPANSION_CONTAINER,
   MAKER_V4_EMBEDDED_EXPANSION_RUNTIME,
   MAKER_V4_MANIFEST_IDENTIFIER,
@@ -170,7 +174,10 @@ function publicationMaker({ version = 1, compatibility = version === 1 ? 'initia
     undoStack: [{ secret: true }],
   };
   document.assetsById = { cover: { blob: new Blob(['leak']) } };
-  document.extensions = { legacyV3: { unmappedTopLevel: { wallet: '0xprivate', objectUrl: 'blob:private' } } };
+  document.extensions = {
+    ...document.extensions,
+    legacyV3: { unmappedTopLevel: { wallet: '0xprivate', objectUrl: 'blob:private' } },
+  };
   validateMakerV5Document(document);
   return document;
 }
@@ -210,7 +217,9 @@ test('publication manifest is immutable, referenced-only and strips runtime stat
   assert.equal(manifest.schemaVersion, 'animacraft.maker.v5');
   assert.deepEqual(manifest.runtime, {});
   assert.equal('assetsById' in manifest, false);
-  assert.deepEqual(manifest.extensions, {});
+  assert.deepEqual(manifest.extensions, {
+    dataEpoch: CURRENT_MAKER_DATA_EPOCH,
+  });
   assert.deepEqual(manifest.assets.map((asset) => asset.id), ['cover', 'body-thumb', 'body-default', 'body-armored', 'hat']);
   assert.equal(manifest.assets.some((asset) => 'url' in asset || 'source' in asset || 'legacy' in asset), false);
   assert.equal(manifest.assets.find((asset) => asset.id === 'cover')?.provenance, 'creator-upload');
@@ -221,6 +230,22 @@ test('publication manifest is immutable, referenced-only and strips runtime stat
   assert.equal(manifest.legacyMoveProjection.parts[0].items[0].summaryItemKey, 'shape');
   assert.equal(manifest.legacyMoveProjection.parts[0].items[1].summaryItemKey, 'shape--armored');
   assert.equal(validateMakerV5Document(manifest), manifest);
+});
+
+test('new Maker data epoch survives the immutable publication round trip', () => {
+  const document = publicationMaker();
+  assert.equal(isCurrentMakerDataEpoch(document), true);
+
+  document.extensions.privateEditorState = {
+    wallet: '0xprivate-editor',
+    objectUrl: 'blob:private-editor',
+  };
+  const manifest = buildMakerV4PublicationManifest(document);
+
+  assert.equal(manifest.extensions.dataEpoch, CURRENT_MAKER_DATA_EPOCH);
+  assert.equal(isCurrentMakerDataEpoch(manifest), true);
+  assert.equal('legacyV3' in manifest.extensions, false);
+  assert.equal('privateEditorState' in manifest.extensions, false);
 });
 
 test('publication allowlists only the transparent-background Player export extension', () => {
@@ -250,6 +275,7 @@ test('publication allowlists only the transparent-background Player export exten
   });
 
   assert.deepEqual(manifest.extensions, {
+    dataEpoch: CURRENT_MAKER_DATA_EPOCH,
     playerExport: {
       backgroundPartIds: ['hat'],
     },

@@ -600,6 +600,7 @@ test('local Maker index quota failures remain best-effort and cannot block Works
     }]]),
     suiJsonId: (value) => String(value || ''),
     safeDraftText: (value, fallback = '') => String(value || fallback),
+    normalizedSha256Hex: (value) => String(value || '').replace(/^0x/i, '').toLowerCase(),
     normalizedWorkspacePausedEconomics: (value) => value,
     publishedMakerVersionHistory: () => [],
     stableMakerCoverUrl: (value) => String(value || ''),

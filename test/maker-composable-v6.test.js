@@ -238,6 +238,18 @@ test('Compatibility rejects unknown tracks, duplicate slots and incomplete relea
   assert.ok(codes.has('missing_fallback_loadout'));
 });
 
+test('an all-optional Compatibility Profile may publish with an empty fallback loadout', () => {
+  const compatibility = validCompatibility({
+    slots: [
+      { id: 'top', capacity: 1, required: false, layerTrackIds: ['wardrobe'] },
+      { id: 'accessory', capacity: 1, required: false, layerTrackIds: ['front'] },
+    ],
+    fallbackProductIds: [],
+  });
+  const issues = collectCompatibilityProfileV6Issues(compatibility, { publish: true });
+  assert.ok(!issues.some((entry) => entry.code === 'missing_fallback_loadout'));
+});
+
 test('Official Item publication snapshots current Maker authority and validation', () => {
   const product = validProduct();
   assert.deepEqual(publicationIssues(product), []);

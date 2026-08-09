@@ -4,6 +4,7 @@ import {
   expansionPackIds,
   normalizeMakerCommerceV5,
 } from './maker-commerce-v5.js';
+import { CURRENT_MAKER_DATA_EPOCH } from './maker-release-epoch.js';
 
 const SCHEMA_VERSION = 'animacraft.maker.v5';
 
@@ -194,7 +195,9 @@ export function createMakerV5Document({
     },
     runtime: {},
     livingContent: null,
-    extensions: {},
+    extensions: {
+      dataEpoch: CURRENT_MAKER_DATA_EPOCH,
+    },
   };
 }
 

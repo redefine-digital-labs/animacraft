@@ -292,11 +292,21 @@ export async function preparePhysicalV7Publication({
   document,
   catalog,
   v6Publication,
+  baseManifest = null,
+  baseManifestBlobId = '',
   context,
   runtime,
   storage = globalThis.localStorage,
 } = {}) {
-  const plan = await buildMakerPhysicalV7PublicationPlan({ document, catalog, v6Publication, context, runtime });
+  const plan = await buildMakerPhysicalV7PublicationPlan({
+    document,
+    catalog,
+    v6Publication,
+    baseManifest,
+    baseManifestBlobId,
+    context,
+    runtime,
+  });
   const key = keyFor(plan);
   const saved = storage?.getItem?.(key);
   const checkpoint = saved
@@ -332,7 +342,21 @@ export async function advancePhysicalV7Publication({
       const execute = action.transport === 'WALRUS' ? executeWalrusAction : executeSuiAction;
       if (typeof execute !== 'function') throw new Error(`No ${action.transport} executor is configured for ${action.id}.`);
       onStatus(action.transport === 'WALRUS' ? 'walrus' : 'awaiting-signature', { action });
-      submission = await execute({ action, plan, checkpoint });
+      const persistProgress = async (progress) => {
+        const actions = checkpoint.actions.map((entry, index) => (
+          index === checkpoint.currentActionIndex
+            ? { ...structuredClone(entry), progress: structuredClone(progress) }
+            : structuredClone(entry)
+        ));
+        checkpoint = await hydrateMakerPhysicalV7PublicationCheckpoint({
+          ...structuredClone(checkpoint),
+          actions,
+          sequence: Number(checkpoint.sequence || 0) + 1,
+          updatedAt: new Date().toISOString(),
+        }, { plan });
+        save(storage, key, plan, checkpoint);
+      };
+      submission = await execute({ action, plan, checkpoint, persistProgress });
       checkpoint = await markMakerPhysicalV7PublicationSubmitted({ checkpoint, plan, actionId: action.id, submission });
       save(storage, key, plan, checkpoint);
     }

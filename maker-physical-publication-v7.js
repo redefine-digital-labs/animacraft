@@ -446,6 +446,171 @@ function derivedPolicy(part, styles) {
   };
 }
 
+function sourceKindOf(value) {
+  return SOURCE_KIND[value];
+}
+
+function assertPartPolicyProductCompatibility(policy, styles) {
+  const included = styles.filter((entry) => (
+    [BASE_INCLUDED, PACK_INCLUDED].includes(entry.supply.supplyClass)
+  ));
+  if (policy.required && !included.length) {
+    fail(
+      'PHYSICAL_V7_REQUIRED_PART_NEEDS_INCLUDED_STYLE',
+      'A required physical Part needs at least one Base or Pack Included Style.',
+      { partId: policy.partId },
+    );
+  }
+  styles.forEach((entry) => {
+    const sourceKind = sourceKindOf(entry.product.admissionClass);
+    if (!Number.isSafeInteger(sourceKind) || sourceKind > policy.maxSourceKind) {
+      fail(
+        'PHYSICAL_V7_PART_POLICY_SOURCE_KIND_MISMATCH',
+        'A physical Style source exceeds the declared Part policy source class.',
+        {
+          partId: policy.partId,
+          productId: entry.product.id,
+          sourceKind: entry.product.admissionClass,
+          maxSourceKind: policy.maxSourceKind,
+        },
+      );
+    }
+    const soulLocal = [BASE_INCLUDED, PACK_INCLUDED].includes(entry.supply.supplyClass);
+    if (soulLocal && sourceKind !== SOURCE_KIND[STYLE_PRODUCT_ADMISSION_CLASSES.OFFICIAL]) {
+      fail(
+        'PHYSICAL_V7_PART_POLICY_SOURCE_KIND_MISMATCH',
+        'Base and Pack Included Styles must use the Official source class.',
+        { partId: policy.partId, productId: entry.product.id },
+      );
+    }
+    const behaviorAcceptsSupply = soulLocal
+      ? [
+          PHYSICAL_PART_BEHAVIORS.FIXED,
+          PHYSICAL_PART_BEHAVIORS.SOUL_LOCAL,
+          PHYSICAL_PART_BEHAVIORS.HYBRID,
+        ].includes(policy.behavior)
+      : [PHYSICAL_PART_BEHAVIORS.OPEN, PHYSICAL_PART_BEHAVIORS.HYBRID]
+        .includes(policy.behavior);
+    if (!behaviorAcceptsSupply) {
+      fail(
+        'PHYSICAL_V7_PART_POLICY_SUPPLY_MISMATCH',
+        'A physical Style supply class is incompatible with the declared Part behavior.',
+        {
+          partId: policy.partId,
+          productId: entry.product.id,
+          behavior: policy.behavior,
+          supplyClass: entry.supply.supplyClass,
+        },
+      );
+    }
+  });
+}
+
+function declaredPartPolicies({ catalogSource, catalog, document, projection, byPart }) {
+  const rawValue = object(catalogSource);
+  const rawPolicies = rawValue.partPolicies;
+  if (rawPolicies === undefined || (Array.isArray(rawPolicies) && rawPolicies.length === 0)) {
+    return null;
+  }
+  if (!Array.isArray(rawPolicies) || rawPolicies.length !== array(catalog.partPolicies).length) {
+    fail(
+      'PHYSICAL_V7_PART_POLICY_INVALID',
+      'Declared physical Part policies must be an array of exact policy objects.',
+    );
+  }
+
+  const documentParts = array(document?.parts);
+  const partsById = new Map(documentParts.map((part) => [String(part?.id), part]));
+  const projectedPartsById = new Map(array(projection?.parts)
+    .filter((entry) => entry?.projectionKind === 'part' && entry?.sourcePartId)
+    .map((entry) => [String(entry.sourcePartId), entry]));
+  const policiesByPart = new Map();
+
+  rawPolicies.forEach((rawPolicy, index) => {
+    if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) {
+      fail('PHYSICAL_V7_PART_POLICY_INVALID', 'Every declared Part policy must be an object.', { index });
+    }
+    const partId = string(rawPolicy.partId || rawPolicy.slotKey);
+    if (!partId || !partsById.has(partId) || !projectedPartsById.has(partId)) {
+      fail(
+        'PHYSICAL_V7_PART_POLICY_UNKNOWN',
+        'A declared physical Part policy targets an unknown Maker Part.',
+        { index, partId },
+      );
+    }
+    if (policiesByPart.has(partId)) {
+      fail(
+        'PHYSICAL_V7_PART_POLICY_DUPLICATE',
+        'Every Maker Part may declare exactly one physical policy.',
+        { partId },
+      );
+    }
+    if (!Object.values(PHYSICAL_PART_BEHAVIORS).includes(rawPolicy.behavior)) {
+      fail(
+        'PHYSICAL_V7_PART_POLICY_BEHAVIOR_INVALID',
+        'A declared Part policy uses an unsupported behavior.',
+        { partId, behavior: rawPolicy.behavior },
+      );
+    }
+    if (!Object.values(STYLE_PRODUCT_ADMISSION_CLASSES).includes(rawPolicy.maxSourceKind)) {
+      fail(
+        'PHYSICAL_V7_PART_POLICY_SOURCE_KIND_MISMATCH',
+        'A declared Part policy uses an unsupported maximum source class.',
+        { partId, maxSourceKind: rawPolicy.maxSourceKind },
+      );
+    }
+    const sourceKind = sourceKindOf(rawPolicy.maxSourceKind);
+    if ([PHYSICAL_PART_BEHAVIORS.FIXED, PHYSICAL_PART_BEHAVIORS.SOUL_LOCAL]
+      .includes(rawPolicy.behavior)
+      && sourceKind !== SOURCE_KIND[STYLE_PRODUCT_ADMISSION_CLASSES.OFFICIAL]) {
+      fail(
+        'PHYSICAL_V7_PART_POLICY_SOURCE_KIND_MISMATCH',
+        'Fixed and Soul-local Parts may admit only Official sources.',
+        { partId, behavior: rawPolicy.behavior, maxSourceKind: rawPolicy.maxSourceKind },
+      );
+    }
+    const requiredPart = partIsRequired(partsById.get(partId));
+    if (rawPolicy.required !== requiredPart) {
+      fail(
+        'PHYSICAL_V7_PART_POLICY_REQUIRED_MISMATCH',
+        'A declared Part policy must preserve the Maker Part required state.',
+        { partId, expected: requiredPart, actual: rawPolicy.required === true },
+      );
+    }
+    if (requiredPart && rawPolicy.behavior === PHYSICAL_PART_BEHAVIORS.OPEN) {
+      fail(
+        'PHYSICAL_V7_REQUIRED_OPEN_PART_INVALID',
+        'A required physical Part cannot use the Open-only behavior.',
+        { partId },
+      );
+    }
+    const policy = {
+      partId,
+      slotKey: String(projectedPartsById.get(partId).key),
+      behavior: rawPolicy.behavior,
+      behaviorKind: PART_BEHAVIOR_KIND[rawPolicy.behavior],
+      required: requiredPart,
+      maxSourceKind: sourceKind,
+    };
+    assertPartPolicyProductCompatibility(policy, byPart.get(partId) || []);
+    policiesByPart.set(partId, policy);
+  });
+
+  const missingPartIds = documentParts
+    .map((part) => String(part?.id))
+    .filter((partId) => projectedPartsById.has(partId) && !policiesByPart.has(partId));
+  if (missingPartIds.length) {
+    fail(
+      'PHYSICAL_V7_PART_POLICY_MISSING',
+      'A declared policy set must cover every Maker Part exactly once.',
+      { partIds: missingPartIds },
+    );
+  }
+  return documentParts
+    .map((part) => policiesByPart.get(String(part?.id)))
+    .filter(Boolean);
+}
+
 function normalizeRuntimeContext(runtime, context, v6Plan, profileId) {
   const result = {
     owner: required(context.owner || v6Plan.context?.owner, 'Maker owner'),
@@ -484,7 +649,8 @@ export async function buildMakerPhysicalV7PublicationPlan({
   runtime = {},
 } = {}) {
   const { plan: v6Plan, checkpoint: v6Checkpoint } = assertCompletedV6(v6Publication);
-  const catalog = createPhysicalStyleCatalogV7(catalogInput || getPhysicalStyleCatalogV7Draft(document));
+  const catalogSource = catalogInput || getPhysicalStyleCatalogV7Draft(document);
+  const catalog = createPhysicalStyleCatalogV7(catalogSource);
   const authoringIssues = collectPhysicalStyleCatalogV7Issues(catalog, { publish: false });
   if (!catalog.enabled || authoringIssues.length) {
     fail('PHYSICAL_V7_CATALOG_INVALID', 'Resolve the physical Style catalog before publication.', { issues: authoringIssues });
@@ -573,10 +739,19 @@ export async function buildMakerPhysicalV7PublicationPlan({
     if (!byPart.has(sourcePartId)) byPart.set(sourcePartId, []);
     byPart.get(sourcePartId).push(entry);
   });
-  const partPolicies = array(document?.parts)
+  const explicitPartPolicies = declaredPartPolicies({
+    catalogSource,
+    catalog,
+    document,
+    projection,
+    byPart,
+  });
+  const partPolicies = explicitPartPolicies || array(document?.parts)
     .filter((part) => byPart.has(String(part.id)))
     .map((part) => derivedPolicy(part, byPart.get(String(part.id))));
-  if (partPolicies.length !== byPart.size) fail('PHYSICAL_V7_PART_POLICY_MISSING', 'Every physical Part requires one deterministic policy.');
+  if (!explicitPartPolicies && partPolicies.length !== byPart.size) {
+    fail('PHYSICAL_V7_PART_POLICY_MISSING', 'Every physical Part requires one deterministic policy.');
+  }
 
   const rendererCommitment = commitment(v6Plan.companion?.manifest?.compatibility?.renderer?.commitment, 'v6 renderer commitment');
   const definitionGroups = new Map();

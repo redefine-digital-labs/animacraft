@@ -60,6 +60,12 @@ import {
   saveMakerUploadRecovery,
 } from './draft-store.js';
 import { validateRemoteMakerManifest as validateMakerManifest } from './manifest-validation.js';
+import { isCurrentMakerDataEpoch } from './maker-release-epoch.js';
+import {
+  createMakerWardrobeV7ReleaseSnapshot,
+  makerWardrobeV7Enabled,
+  makerWardrobeV7ReleaseSourceIdentity,
+} from './maker-wardrobe-v7.js';
 import {
   createDefaultLivingContent,
   createSoulidityImportBundle,
@@ -87,7 +93,14 @@ import {
   readComposableV6PublicationSubmission,
   transactionFromComposableV6PublicationAction,
 } from './maker-composable-publication-v6-app.js';
+import {
+  advancePhysicalV7Publication,
+  preparePhysicalV7Publication,
+  readPhysicalV7PublicationSubmission,
+  transactionFromPhysicalV7PublicationAction,
+} from './maker-physical-publication-v7-app.js';
 import { hashMakerComposableV6BaseManifest } from './maker-composable-v6-bridge.js';
+import { getPhysicalStyleCatalogV7Draft } from './maker-physical-v7-workspace.js';
 import { createOcOutputPreviewBlobV5 } from './oc-output-preview-v5.js';
 import {
   SOULIDITY_COMPLETION_RECEIPT_V5_SCHEMA,
@@ -1581,7 +1594,7 @@ const draftRecoveryI18n = {
     draftRecoveryUnsupported: 'Raw backup only; this older format cannot be migrated automatically.',
     draftRecoveryComplete: 'Recovered “{name}” as a new independent Maker.',
     draftRecoveryFailed: 'The selected draft could not be recovered safely.',
-    draftRecoveryCurrent: 'Current v6 workspace',
+    draftRecoveryCurrent: 'Current v7 workspace',
     draftRecoveryWorkspaceV4: 'Legacy Workspace v4',
     draftRecoveryCreatorDrafts: 'Legacy Creator draft',
     draftRecoveryLocalDraft: 'Legacy local draft',
@@ -1606,7 +1619,7 @@ const draftRecoveryI18n = {
     draftRecoveryUnsupported: '只能导出原始备份；这个旧格式无法安全地自动迁移。',
     draftRecoveryComplete: '已把“{name}”恢复为新的独立 Maker。',
     draftRecoveryFailed: '无法安全恢复所选草稿。',
-    draftRecoveryCurrent: '当前 v6 工作区',
+    draftRecoveryCurrent: '当前 v7 工作区',
     draftRecoveryWorkspaceV4: '旧版 Workspace v4',
     draftRecoveryCreatorDrafts: '旧版 Creator 草稿',
     draftRecoveryLocalDraft: '旧版本地草稿',
@@ -1631,7 +1644,7 @@ const draftRecoveryI18n = {
     draftRecoveryUnsupported: '元データの書き出しのみ可能です。この旧形式は自動移行できません。',
     draftRecoveryComplete: '「{name}」を新しい独立 Maker として復旧しました。',
     draftRecoveryFailed: '選択した下書きを安全に復旧できませんでした。',
-    draftRecoveryCurrent: '現在の v6 ワークスペース',
+    draftRecoveryCurrent: '現在の v7 ワークスペース',
     draftRecoveryWorkspaceV4: '旧 Workspace v4',
     draftRecoveryCreatorDrafts: '旧 Creator 下書き',
     draftRecoveryLocalDraft: '旧ローカル下書き',
@@ -1656,7 +1669,7 @@ const draftRecoveryI18n = {
     draftRecoveryUnsupported: '원본 백업만 가능합니다. 이 이전 형식은 자동 이전할 수 없습니다.',
     draftRecoveryComplete: '“{name}”을 새 독립 Maker로 복구했습니다.',
     draftRecoveryFailed: '선택한 초안을 안전하게 복구하지 못했습니다.',
-    draftRecoveryCurrent: '현재 v6 작업 공간',
+    draftRecoveryCurrent: '현재 v7 작업 공간',
     draftRecoveryWorkspaceV4: '이전 Workspace v4',
     draftRecoveryCreatorDrafts: '이전 Creator 초안',
     draftRecoveryLocalDraft: '이전 로컬 초안',
@@ -1681,7 +1694,7 @@ const draftRecoveryI18n = {
     draftRecoveryUnsupported: 'Chỉ có thể xuất bản sao lưu thô; định dạng cũ này không thể tự động di chuyển.',
     draftRecoveryComplete: 'Đã khôi phục “{name}” thành một Maker độc lập mới.',
     draftRecoveryFailed: 'Không thể khôi phục an toàn bản nháp đã chọn.',
-    draftRecoveryCurrent: 'Workspace v6 hiện tại',
+    draftRecoveryCurrent: 'Workspace v7 hiện tại',
     draftRecoveryWorkspaceV4: 'Workspace v4 cũ',
     draftRecoveryCreatorDrafts: 'Bản nháp Creator cũ',
     draftRecoveryLocalDraft: 'Bản nháp cục bộ cũ',
@@ -3308,6 +3321,7 @@ const state = {
   hasMakerUploadRecovery: false,
   pendingMakerManifestJson: '',
   pendingMakerV4Bundle: null,
+  makerReleaseSnapshotV7: null,
   makerPublicationIntent: null,
   minting: false,
   mintStatus: '',
@@ -3370,6 +3384,7 @@ const commerceV5StatePending = new Map();
 const composableV6StateCache = new Map();
 const composableV6StatePending = new Map();
 let makerComposableV6Publication = null;
+let makerPhysicalV7Publication = null;
 let playerComposableV6TrustedSnapshot = null;
 const makerSealPolicyCacheV5 = new Map();
 const makerSealSessionCacheV5 = new Map();
@@ -3702,6 +3717,8 @@ function resetMakerUploadMemoryState({ clearPublicationIntent = true } = {}) {
   commerceV5StateCache.clear();
   composableV6StateCache.clear();
   composableV6StatePending.clear();
+  makerComposableV6Publication = null;
+  makerPhysicalV7Publication = null;
   playerComposableV6TrustedSnapshot = null;
   makerSealPolicyCacheV5.clear();
   makerSealSessionCacheV5.clear();
@@ -3714,6 +3731,7 @@ function resetMakerUploadMemoryState({ clearPublicationIntent = true } = {}) {
   state.hasMakerUploadRecovery = false;
   state.pendingMakerManifestJson = '';
   state.pendingMakerV4Bundle = null;
+  state.makerReleaseSnapshotV7 = null;
   if (clearPublicationIntent) {
     state.makerPublicationIntent = null;
     state.makerCommerceV5Publication = null;
@@ -3866,30 +3884,35 @@ const makerCoverUriI18n = {
     makerExplicitCoverRequired: 'This Maker does not have a readable creator-uploaded cover. Upload and wait for the cover to show “Saved” in Maker Info, then prepare the release again. Animacraft will not use an internal OC composite as the Maker cover.',
     legacyMakerMigrationRequired: 'This legacy Maker cannot use the retired publisher because it generated an internal OC composite as the cover. Restore or rebuild it as a current Maker v5 draft, upload a real cover in Maker Info, and publish the new version.',
     noPublishedMakerCover: 'No published cover',
+    makerWardrobeReleaseBlocked: 'The Soul wardrobe still has {count} asset issue(s). Fix the highlighted Styles in Creator Studio before publishing.',
   },
   zh: {
     makerCoverUriTooLong: '最终 Maker 封面 URL 为 {bytes} 个 UTF-8 字节，但 Sui 最多允许 {maximum} 个。请在 Maker 信息中重新上传封面，让 Animacraft 分配较短的链上文件名，然后重新准备发布。本次未上传到 Walrus，也未提交 Sui 交易。',
     makerExplicitCoverRequired: '此 Maker 没有可读取、由创作者上传的真实封面。请在 Maker 信息中上传封面并等待状态显示“已保存”，然后重新准备发布。Animacraft 不会再把内部 OC 合成图当作 Maker 封面。',
     legacyMakerMigrationRequired: '此旧版 Maker 不能再使用已停用的旧发布器，因为它会把内部 OC 合成图生成成封面。请先恢复或重建为当前 Maker v5 草稿，在 Maker 信息中上传真实封面，再发布新版本。',
     noPublishedMakerCover: '此版本未发布封面',
+    makerWardrobeReleaseBlocked: 'Soul 衣柜仍有 {count} 个素材问题。请先在创作者工作台修复已标记的样式，再发布。',
   },
   ja: {
     makerCoverUriTooLong: '最終 Maker カバー URL は {bytes} UTF-8 バイトですが、Sui の上限は {maximum} バイトです。Maker 情報でカバーを再アップロードして短いオンチェーンファイル名を割り当て、公開を準備し直してください。Walrus アップロードおよび Sui 取引は送信されていません。',
     makerExplicitCoverRequired: 'この Maker には読み取り可能なクリエイター投稿カバーがありません。Maker 情報でカバーをアップロードし、「保存済み」と表示されてから公開を準備し直してください。内部 OC 合成画像が Maker カバーとして使用されることはありません。',
     legacyMakerMigrationRequired: 'この旧形式 Maker は、内部 OC 合成画像をカバーとして生成する廃止済み公開機能を使用できません。現在の Maker v5 下書きとして復元または再構築し、Maker 情報で実際のカバーをアップロードしてから新しいバージョンを公開してください。',
     noPublishedMakerCover: '公開済みカバーなし',
+    makerWardrobeReleaseBlocked: 'Soul ワードローブに素材の問題が {count} 件残っています。Creator Studio でマークされた Style を修正してから公開してください。',
   },
   ko: {
     makerCoverUriTooLong: '최종 Maker 커버 URL은 UTF-8 기준 {bytes}바이트이지만 Sui 한도는 {maximum}바이트입니다. Maker 정보에서 커버를 다시 업로드해 짧은 온체인 파일명을 받은 뒤 릴리스를 다시 준비하세요. Walrus 업로드나 Sui 트랜잭션은 제출되지 않았습니다.',
     makerExplicitCoverRequired: '이 Maker에는 읽을 수 있는 크리에이터 업로드 커버가 없습니다. Maker 정보에서 커버를 업로드하고 “저장됨” 상태를 확인한 뒤 릴리스를 다시 준비하세요. 내부 OC 합성 이미지는 Maker 커버로 사용되지 않습니다.',
     legacyMakerMigrationRequired: '이 레거시 Maker는 내부 OC 합성 이미지를 커버로 생성하던 폐기된 게시 경로를 사용할 수 없습니다. 현재 Maker v5 초안으로 복원하거나 다시 만든 뒤 Maker 정보에서 실제 커버를 업로드하고 새 버전을 게시하세요.',
     noPublishedMakerCover: '게시된 커버 없음',
+    makerWardrobeReleaseBlocked: 'Soul 옷장에 자산 문제 {count}개가 남아 있습니다. Creator Studio에서 표시된 Style을 수정한 뒤 게시하세요.',
   },
   vi: {
     makerCoverUriTooLong: 'URL ảnh bìa Maker cuối cùng dài {bytes} byte UTF-8, nhưng Sui chỉ cho phép tối đa {maximum}. Hãy tải lại ảnh bìa trong Thông tin Maker để Animacraft gán tên tệp on-chain ngắn, rồi chuẩn bị lại bản phát hành. Chưa có lượt tải Walrus hay giao dịch Sui nào được gửi.',
     makerExplicitCoverRequired: 'Maker này chưa có ảnh bìa do nhà sáng tạo tải lên mà Animacraft có thể đọc. Hãy tải ảnh bìa trong Thông tin Maker, chờ trạng thái “Đã lưu”, rồi chuẩn bị lại bản phát hành. Ảnh OC ghép nội bộ sẽ không được dùng làm ảnh bìa Maker.',
     legacyMakerMigrationRequired: 'Maker định dạng cũ này không thể dùng luồng xuất bản đã ngừng hoạt động vì luồng đó tạo ảnh OC ghép nội bộ làm ảnh bìa. Hãy khôi phục hoặc dựng lại dưới dạng bản nháp Maker v5 hiện tại, tải ảnh bìa thật trong Thông tin Maker rồi xuất bản phiên bản mới.',
     noPublishedMakerCover: 'Chưa có ảnh bìa đã đăng',
+    makerWardrobeReleaseBlocked: 'Tủ đồ Soul vẫn còn {count} lỗi tài sản. Hãy sửa các Style được đánh dấu trong Creator Studio trước khi xuất bản.',
   },
 };
 Object.entries(makerCoverUriI18n).forEach(([locale, details]) => Object.assign(i18n[locale], details));
@@ -4197,7 +4220,7 @@ function ensureMakerEditable() {
 }
 
 function localMakerIndexKey(address = state.walletAddress) {
-  return `animacraft-local-makers-v6:${address || 'local'}`;
+  return `animacraft-local-makers-v7:${address || 'local'}`;
 }
 
 function stableMakerCoverUrl(value) {
@@ -4935,6 +4958,8 @@ function persistLocalMakerIndex(address = state.walletAddress) {
     source: makerObjectId ? 'chain' : 'local',
     owner,
     objectId: makerObjectId,
+    quiltId: safeDraftText(template.quiltId, '', 512),
+    manifestSha256: normalizedSha256Hex(template.manifestSha256),
     treasuryId: suiJsonId(template.treasuryId || model?.makerTreasuryObjectId),
     adminCapId: suiJsonId(template.adminCapId || model?.makerAdminCapObjectId),
     commerceV5RootObjectId: suiJsonId(
@@ -5011,6 +5036,8 @@ function loadLocalMakerIndex(address = state.walletAddress) {
         owner: address,
         owned: Boolean(objectId),
         objectId,
+        quiltId: safeDraftText(record.quiltId, '', 512),
+        manifestSha256: normalizedSha256Hex(record.manifestSha256),
         treasuryId: suiJsonId(record.treasuryId),
         adminCapId: suiJsonId(record.adminCapId),
         commerceV5RootObjectId: suiJsonId(record.commerceV5RootObjectId),
@@ -5344,8 +5371,8 @@ function currentDraftRecoveryRecord(record) {
   const makerKey = String(record?.makerKey || '');
   const recoverable = isMakerV4Document(document);
   return {
-    id: `current-v6:${encodeURIComponent(makerKey)}:${revision ?? 'unknown'}`,
-    source: 'workspace-v6',
+    id: `current-v7:${encodeURIComponent(makerKey)}:${revision ?? 'unknown'}`,
+    source: 'workspace-v7',
     makerKey,
     makerId: String(record?.metadata?.rootMakerId || document?.version?.rootMakerId || ''),
     walletAddress: String(record?.metadata?.walletAddress || ''),
@@ -5358,7 +5385,7 @@ function currentDraftRecoveryRecord(record) {
     assets: [],
     assetCount: Array.isArray(document?.assets) ? document.assets.length : 0,
     raw: {
-      databaseName: 'animacraft-maker-workspace-v6',
+      databaseName: 'animacraft-maker-workspace-v7',
       projectRecord: structuredClone(record),
       assetsLoadedOnDemand: true,
     },
@@ -5366,7 +5393,7 @@ function currentDraftRecoveryRecord(record) {
     status: recoverable ? 'recoverable' : 'raw-only',
     issues: recoverable ? [] : [{
       code: 'maker-document-missing',
-      message: 'The v6 record does not contain a compatible animacraft.maker.v5 document.',
+      message: 'The v7 record does not contain a compatible animacraft.maker.v5 document.',
     }],
     sourceKey: makerKey,
   };
@@ -5374,7 +5401,7 @@ function currentDraftRecoveryRecord(record) {
 
 function draftRecoverySourceLabel(source) {
   return {
-    'workspace-v6': t('draftRecoveryCurrent'),
+    'workspace-v7': t('draftRecoveryCurrent'),
     'workspace-v4': t('draftRecoveryWorkspaceV4'),
     'creator-drafts': t('draftRecoveryCreatorDrafts'),
     'local-storage-draft': t('draftRecoveryLocalDraft'),
@@ -5565,7 +5592,7 @@ function draftRecoveryRecord(recordId) {
 }
 
 async function materializeDraftRecoveryRecord(record) {
-  if (record.source !== 'workspace-v6') return record;
+  if (record.source !== 'workspace-v7') return record;
   const loaded = await makerWorkspace.loadDraftProject(record.makerKey);
   if (!loaded?.document) throw new Error(t('draftRecoveryV6Missing'));
   return {
@@ -6213,6 +6240,7 @@ async function hydrateChainMaker(object, {
   const response = await fetchWalrusWithBackoff(walrusQuiltFileUrl(quiltId, 'animacraft-manifest.json'));
   if (!response.ok) throw new Error(`Could not load Maker manifest (${response.status}).`);
   const manifestBytes = await responseBytesWithinLimit(response, 10 * 1024 * 1024, 'The Maker manifest');
+  const manifestSha256 = await sha256BytesHex(manifestBytes, 'The Maker manifest');
   let manifest;
   try {
     manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
@@ -6220,6 +6248,10 @@ async function hydrateChainMaker(object, {
     throw new Error('The Maker manifest is not valid JSON.');
   }
   validateAnyMakerManifest(manifest);
+  // v7 deliberately starts a clean production catalog. Older immutable chain
+  // objects remain on Sui for provenance, but are not mixed into the v7 player
+  // experience or interpreted through the new composable-wardrobe contract.
+  if (!isMakerV4Document(manifest) || !isCurrentMakerDataEpoch(manifest)) return false;
   if (!guard()) return false;
   const featuredKey = Object.entries(runtimeConfig.featuredMakers || {}).find(([, objectId]) => objectId === object.objectId)?.[0];
   const stableRootMakerId = isMakerV4Document(manifest)
@@ -6341,6 +6373,8 @@ async function hydrateChainMaker(object, {
       : template.owner || (object.profilePublished ? state.walletAddress : ''),
     objectId: object.objectId,
     quiltId,
+    manifestSha256,
+    manifestIdentityVerified: true,
     name: String(suiField(fields, 'name') || templateData.name || 'On-chain OC Maker'),
     // The Move field is the immutable publisher address. The human-facing
     // creator display name belongs to the signed Walrus Maker metadata.
@@ -7169,12 +7203,17 @@ async function finalizeMakerPublication(transaction, makerPayload = null, {
       state.makerRecipeV4 || state.makerDocumentV4.defaultRecipe,
     );
   }
+  const publishedManifestSha256 = state.pendingMakerManifestJson
+    ? await sha256Utf8Hex(state.pendingMakerManifestJson, 'The published Maker manifest')
+    : normalizedSha256Hex(activeTemplate().manifestSha256);
   Object.assign(activeTemplate(), {
     source: state.makerObjectId ? 'chain' : 'local',
     owned: true,
     objectId: state.makerObjectId,
     treasuryId: state.makerTreasuryObjectId,
     adminCapId: state.makerAdminCapObjectId,
+    manifestSha256: publishedManifestSha256,
+    manifestIdentityVerified: Boolean(state.makerObjectId && publishedManifestSha256),
     publishedCoverUrl: makerPayload?.coverUrl || activeTemplate().publishedCoverUrl || '',
     mintingEnabled: $('creatorMintingEnabled').checked,
     mintFeeEnabled: $('creatorMintFeeEnabled').checked,
@@ -7776,7 +7815,11 @@ function syncCreatorAssets() {
 }
 
 function invalidateMakerUpload(message = '') {
-  if (makerIsPublished() && !makerHasPendingV4Version()) return;
+  if (
+    makerIsPublished()
+    && !makerHasPendingV4Version()
+    && !state.makerReleaseSnapshotV7
+  ) return;
   if (makerPublicationRecoveryPending()) {
     state.publishStatus = t('publicationPendingReview');
     renderPublishAction();
@@ -7796,6 +7839,9 @@ function invalidateMakerUpload(message = '') {
   state.pendingMakerCoverBlob = null;
   state.pendingMakerManifestJson = '';
   state.pendingMakerV4Bundle = null;
+  state.makerReleaseSnapshotV7 = null;
+  makerComposableV6Publication = null;
+  makerPhysicalV7Publication = null;
   state.makerPublicationIntent = null;
   state.makerCommerceV5Publication = null;
   state.publishDigest = '';
@@ -8599,9 +8645,128 @@ function composableV6WalrusRecovery(session) {
   };
 }
 
+function physicalV7CatalogForCurrentMaker(document = (
+  state.makerReleaseSnapshotV7?.document || currentMakerV4Source()
+)) {
+  const catalog = document ? getPhysicalStyleCatalogV7Draft(document) : null;
+  return catalog?.enabled === true ? catalog : null;
+}
+
+function physicalV7ReleaseRequired() {
+  return runtimeConfig.physicalStyleV7ReleaseEnabled === true
+    && Boolean(physicalV7CatalogForCurrentMaker());
+}
+
+function physicalV7DefinitionFiles(action, plan) {
+  const direct = Array.isArray(action?.inputs?.files) ? action.inputs.files : [];
+  if (direct.length && direct.every((file) => typeof file?.manifestJson === 'string')) return direct;
+  const groupKey = String(action?.policy?.groupKey || '');
+  const upload = plan?.actions?.find((candidate) => (
+    candidate.id.startsWith('walrus.definitions.upload.')
+    && String(candidate.policy?.groupKey || '') === groupKey
+  ));
+  const files = Array.isArray(upload?.inputs?.files) ? upload.inputs.files : [];
+  if (!files.length || files.some((file) => typeof file?.manifestJson !== 'string')) {
+    throw commerceV5Error(
+      'PHYSICAL_V7_DEFINITION_BYTES_MISSING',
+      'The byte-locked Physical v7 definition files are missing from this release plan.',
+    );
+  }
+  return files;
+}
+
+function physicalV7DefinitionEntries(action, plan) {
+  return physicalV7DefinitionFiles(action, plan).map((file) => ({
+    identifier: String(file.identifier),
+    kind: 'physical-v7-style-definition',
+    blob: new Blob([file.manifestJson], { type: String(file.contentType || 'application/json') }),
+  }));
+}
+
+function physicalV7ObservedDefinitionHashes(action, plan) {
+  return Object.fromEntries(physicalV7DefinitionFiles(action, plan).map((file) => [
+    String(file.identifier),
+    String(file.manifestHash || file.expectedHash || '').replace(/^0x/i, '').toLowerCase(),
+  ]));
+}
+
+function assertPhysicalV7WriteAuthority(action) {
+  const connected = suiJsonId(getConnectedWalletAddress());
+  const signer = suiJsonId(action?.authority?.signer);
+  if (!signer || comparableSuiId(connected) !== comparableSuiId(signer)) {
+    throw commerceV5Error(
+      'PHYSICAL_V7_AUTHORITY_REQUIRED',
+      `Reconnect the ${action?.authority?.role || 'required'} wallet for this recoverable Physical v7 step.`,
+      { role: action?.authority?.role || '', signer },
+    );
+  }
+}
+
+async function verifyPhysicalV7CertifiedAsset(action) {
+  const blobId = String(action.inputs?.blobId || '');
+  const identifier = String(action.inputs?.identifier || '');
+  const url = identifier
+    ? walrusQuiltFileUrl(blobId, identifier)
+    : `${runtimeConfig.walrusAggregatorUrl.replace(/\/$/, '')}/v1/blobs/${encodeURIComponent(blobId)}`;
+  const response = await fetchWalrusWithBackoff(url);
+  if (!response.ok) {
+    throw commerceV5Error(
+      'PHYSICAL_V7_ASSET_NOT_VISIBLE',
+      `The certified Physical v7 PNG is not readable from Walrus (${response.status}).`,
+      { blobId, identifier },
+    );
+  }
+  const blob = await responseBlobWithinLimit(
+    response,
+    20 * 1024 * 1024,
+    `Physical v7 asset ${identifier || blobId}`,
+  );
+  const observedHash = (await sha256BlobHex(blob, 'Physical v7 PNG'))
+    .replace(/^0x/i, '')
+    .toLowerCase();
+  const expectedHash = String(action.inputs?.expectedHash || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+  if (observedHash !== expectedHash) {
+    throw commerceV5Error(
+      'PHYSICAL_V7_ASSET_HASH_MISMATCH',
+      'The certified Walrus PNG bytes do not match the byte-locked Physical v7 release.',
+      { blobId, identifier, expectedHash, observedHash },
+    );
+  }
+  const bitmap = await createImageBitmap(blob);
+  try {
+    if (bitmap.width !== Number(action.inputs?.width)
+        || bitmap.height !== Number(action.inputs?.height)) {
+      throw commerceV5Error(
+        'PHYSICAL_V7_ASSET_DIMENSIONS_MISMATCH',
+        'The certified Walrus PNG dimensions do not match the Physical v7 Style definition.',
+        {
+          blobId,
+          identifier,
+          expectedWidth: Number(action.inputs?.width),
+          expectedHeight: Number(action.inputs?.height),
+          observedWidth: bitmap.width,
+          observedHeight: bitmap.height,
+        },
+      );
+    }
+  } finally {
+    bitmap.close();
+  }
+  return {
+    blobId,
+    identifier,
+    observedHash,
+    certified: true,
+    assetVerified: true,
+  };
+}
+
 async function prepareCurrentMakerComposableV6Publication() {
-  const document = currentMakerV4Source();
-  const baseManifest = state.publishedMakerDocumentV4;
+  const document = currentMakerReleaseDocumentV7();
+  const baseManifest = state.pendingMakerV4Bundle?.manifest
+    || state.publishedMakerDocumentV4;
   const baseMakerRootId = suiJsonId(state.commerceV5RootObjectId);
   const owner = suiJsonId(state.walletAddress);
   const controlCapId = suiJsonId(state.commerceV5ControlCapObjectId);
@@ -8725,6 +8890,146 @@ async function advanceCurrentMakerComposableV6Publication() {
   }
   renderPublishAction();
   return result;
+}
+
+async function prepareCurrentMakerPhysicalV7Publication({
+  v6Publication = makerComposableV6Publication,
+} = {}) {
+  // Keep the release switch as the first check. A closed v7 gate performs no
+  // plan build, local checkpoint write, Walrus read or Sui query.
+  if (runtimeConfig.physicalStyleV7ReleaseEnabled !== true) return null;
+  const document = currentMakerReleaseDocumentV7();
+  const baseManifest = state.pendingMakerV4Bundle?.manifest
+    || state.publishedMakerDocumentV4;
+  const catalog = physicalV7CatalogForCurrentMaker(document);
+  const baseManifestBlobId = String(activeTemplate()?.quiltId || state.makerQuiltId || '');
+  const owner = suiJsonId(state.walletAddress);
+  const makerControlCapId = suiJsonId(state.commerceV5ControlCapObjectId);
+  if (!document
+      || !isMakerV4Document(baseManifest)
+      || !catalog
+      || !baseManifestBlobId
+      || !owner
+      || !makerControlCapId
+      || v6Publication?.checkpoint?.completed !== true) {
+    return null;
+  }
+  makerPhysicalV7Publication = await preparePhysicalV7Publication({
+    document,
+    catalog,
+    v6Publication,
+    baseManifest,
+    baseManifestBlobId,
+    context: { owner, makerControlCapId },
+    runtime: physicalV7RuntimeContext(),
+  });
+  return makerPhysicalV7Publication;
+}
+
+async function advanceCurrentMakerPhysicalV7Publication({
+  v6Publication = makerComposableV6Publication,
+} = {}) {
+  const publication = makerPhysicalV7Publication
+    || await prepareCurrentMakerPhysicalV7Publication({ v6Publication });
+  if (!publication) return null;
+  clearMakerPublishError();
+  const result = await advancePhysicalV7Publication({
+    publication,
+    runtime: physicalV7RuntimeContext(),
+    async executeWalrusAction({ action, plan, checkpoint, persistProgress }) {
+      if (action.target === 'walrus:verify-certified-file') {
+        return verifyPhysicalV7CertifiedAsset(action);
+      }
+      assertPhysicalV7WriteAuthority(action);
+      const entries = physicalV7DefinitionEntries(action, plan);
+      const current = checkpoint.actions[checkpoint.currentActionIndex];
+      const groupKey = String(action.policy?.groupKey || '');
+      const uploadCheckpoint = checkpoint.actions.find((candidate) => (
+        candidate.id.startsWith('walrus.definitions.upload.')
+        && String(plan.actions.find((planned) => planned.id === candidate.id)?.policy?.groupKey || '') === groupKey
+      ));
+      const priorRecovery = current?.progress?.walrusRecovery
+        || current?.submission?.recovery
+        || uploadCheckpoint?.progress?.walrusRecovery
+        || uploadCheckpoint?.submission?.recovery;
+      let session = priorRecovery
+        ? await resumeWalrusUpload(entries, priorRecovery)
+        : await prepareWalrusUpload(entries);
+      const onCheckpoint = async (nextSession) => {
+        await persistProgress({
+          walrusRecovery: composableV6WalrusRecovery(nextSession),
+        });
+      };
+      if (action.target === 'walrus:register-and-upload') {
+        session = await registerAndUploadWalrus(session, { onCheckpoint });
+        return {
+          blobId: session.quiltBlobId,
+          uploadDigest: session.registerDigest,
+          observedHashes: physicalV7ObservedDefinitionHashes(action, plan),
+          recovery: composableV6WalrusRecovery(session),
+        };
+      }
+      if (action.target === 'walrus:certify-and-readback') {
+        session = await certifyWalrusUpload(session, { onCheckpoint });
+        return {
+          blobId: session.quiltBlobId,
+          certified: true,
+          observedHashes: physicalV7ObservedDefinitionHashes(action, plan),
+          recovery: composableV6WalrusRecovery(session),
+        };
+      }
+      throw commerceV5Error(
+        'PHYSICAL_V7_WALRUS_ACTION_UNSUPPORTED',
+        `Unsupported Physical v7 Walrus action ${action.target}.`,
+      );
+    },
+    async executeSuiAction({ action }) {
+      assertPhysicalV7WriteAuthority(action);
+      const submitted = await signExecuteAndWait(
+        transactionFromPhysicalV7PublicationAction(action),
+        { expectedWallet: action.authority.signer },
+      );
+      return { transactionDigest: submitted.digest };
+    },
+    async confirmAction({ action, submission }) {
+      if (action.transport === 'SUI') {
+        return readPhysicalV7PublicationSubmission({
+          action,
+          submission,
+          suiClient: getSuiClient(),
+        });
+      }
+      return submission;
+    },
+    onStatus(status, detail) {
+      state.publishStatus = `Physical Style v7 · ${detail?.action?.id || status}`;
+      renderPublishAction();
+    },
+  });
+  makerPhysicalV7Publication = result;
+  if (result?.recoverable) {
+    recordMakerPublishError(result.error, 'onchain', 'makerPublicationFailed');
+    state.publishStatus = `Physical Style v7 · ${result.message}`;
+  } else if (result?.gated) {
+    state.publishStatus = 'Physical Style v7 remains release-gated. No transaction was sent.';
+  } else if (result?.completed) {
+    state.publishStatus = 'Commerce v5, Composable Assets v6 and Physical Style Assets v7 are Active.';
+  }
+  renderPublishAction();
+  return result;
+}
+
+async function advanceCurrentMakerAdditivePublication() {
+  const v6Publication = makerComposableV6Publication
+    || await prepareCurrentMakerComposableV6Publication();
+  if (!v6Publication) return null;
+  if (v6Publication.checkpoint?.completed !== true) {
+    return advanceCurrentMakerComposableV6Publication();
+  }
+  if (physicalV7ReleaseRequired()) {
+    return advanceCurrentMakerPhysicalV7Publication({ v6Publication });
+  }
+  return v6Publication;
 }
 
 async function finishMakerCommerceV5Publication(scope, publication) {
@@ -9040,6 +9345,8 @@ async function saveVerifiedUploadRecovery(recoveryKey, record) {
     || !matchesPendingTransaction('pendingCertifyTransaction')
     || JSON.stringify(verified.commerceV5Publication || null)
       !== JSON.stringify(record.commerceV5Publication || null)
+    || JSON.stringify(verified.releaseSnapshotV7 || null)
+      !== JSON.stringify(record.releaseSnapshotV7 || null)
     || !ocRecordMatches) {
     throw new Error('The local upload checkpoint could not be verified. No new chain step was started.');
   }
@@ -9067,6 +9374,9 @@ function captureMakerUploadPersistenceContext(session = state.makerUploadSession
     commerceV5Publication: normalizedMakerCommerceV5Publication(
       state.makerCommerceV5Publication,
     ),
+    releaseSnapshotV7: state.makerReleaseSnapshotV7
+      ? structuredClone(state.makerReleaseSnapshotV7)
+      : null,
     quiltBlobId: state.makerQuiltId || session.quiltBlobId || '',
   });
 }
@@ -9119,6 +9429,9 @@ async function persistMakerUploadRecovery(
     commerceV5Publication: normalizedMakerCommerceV5Publication(
       context.commerceV5Publication,
     ),
+    releaseSnapshotV7: context.releaseSnapshotV7
+      ? structuredClone(context.releaseSnapshotV7)
+      : null,
   });
   session.recoveryRevision = Number(verified.recoveryRevision || session.recoveryRevision || 0);
   session.recoverySavedAt = Number(verified.savedAt || Date.now());
@@ -9390,6 +9703,27 @@ function bytesToHex(bytes) {
   return `0x${[...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
 }
 
+function normalizedSha256Hex(value) {
+  const normalized = String(value || '').trim().replace(/^0x/i, '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(normalized) ? normalized : '';
+}
+
+async function sha256BytesHex(bytes, label = 'Bytes') {
+  if (!(bytes instanceof Uint8Array)) {
+    throw new TypeError(`${label} are missing.`);
+  }
+  const digest = await globalThis.crypto.subtle.digest(
+    'SHA-256',
+    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  );
+  return normalizedSha256Hex(bytesToHex(new Uint8Array(digest)));
+}
+
+async function sha256Utf8Hex(value, label = 'Text') {
+  if (typeof value !== 'string' || !value) throw new TypeError(`${label} is missing.`);
+  return sha256BytesHex(new TextEncoder().encode(value), label);
+}
+
 function randomHex32() {
   return bytesToHex(globalThis.crypto.getRandomValues(new Uint8Array(32)));
 }
@@ -9476,12 +9810,24 @@ function chainStatusItems() {
   const walrusReady = Boolean(runtimeConfig.walrusUploadRelayUrl && runtimeConfig.walrusAggregatorUrl);
   const discoveryKey = state.walletAddress || 'public';
   const discoveryReady = packageReady && !state.chainMakersLoading && !state.chainMakerLoadError && state.chainMakersLoadedFor === discoveryKey;
+  const physicalCatalogEnabled = Boolean(physicalV7CatalogForCurrentMaker());
+  const physicalCheckpoint = makerPhysicalV7Publication?.checkpoint || null;
+  const physicalStatus = !physicalCatalogEnabled
+    ? ['Not configured', 'Enable a Physical Style catalog only when this Maker needs exact on-chain Style products.', 'wait']
+    : runtimeConfig.physicalStyleV7ReleaseEnabled !== true
+      ? ['Release-gated', 'Creator data is preserved. No v7 publication, purchase or equip transaction can be sent while the reviewed release switch is closed.', 'wait']
+      : physicalCheckpoint?.completed === true
+        ? ['Published', 'The Physical v7 Profile and exact Style products are confirmed. Player purchase/equip remains explicitly disabled until its reviewed transaction adapter is available.', 'ready']
+        : makerPhysicalV7Publication?.recoverable
+          ? ['Recoverable', 'Resume the exact saved Physical v7 checkpoint; confirmed prior actions will not be repeated.', 'wait']
+          : [physicalCheckpoint?.stage || 'Ready after v6', 'Creator publication is enabled and advances one recoverable Walrus or Sui action at a time. Player purchase/equip is not implemented.', 'wait'];
   return [
     [t('networkLabel'), runtimeConfig.network, t('chainNetworkNote'), 'ready'],
     [t('chainWalletLabel'), walletReady ? shortAddress(state.walletAddress) || t('signerConnected') : t('chainWalletNotConnected'), walletReady ? t('chainWalletReady') : t('chainWalletNeedConnect'), walletReady ? 'ready' : 'wait'],
     [t('packageLabel'), packageReady ? shortAddress(runtimeConfig.callablePackageId) : t('chainPackageDraft'), packageReady ? t('chainPackageReady') : t('chainPackageNeedPublish'), packageReady ? 'ready' : 'wait'],
     [t('walrusLabel'), walrusReady ? t('walrusConfigured', { network: runtimeConfig.network }) : t('endpointMissing'), t('walrusAssetNote'), walrusReady ? 'ready' : 'wait'],
     [t('discoveryLabel'), state.chainMakersLoading ? t('discoverySyncing') : state.chainMakerLoadError || (discoveryReady ? t('chainDerived') : t('waiting')), discoveryReady ? t('discoveryReadyNote') : t('discoverySetupNote'), discoveryReady ? 'ready' : 'wait'],
+    ['Physical Style v7', ...physicalStatus],
   ];
 }
 
@@ -10322,6 +10668,70 @@ function makerV4DocumentForRelease({ sourceDocument = state.makerDocumentV4 } = 
   return documentV4;
 }
 
+function makerWardrobeV7ReleaseOptions(documentV4) {
+  return {
+    makerRootId: String(documentV4?.version?.rootMakerId || ''),
+    creator: String(state.walletAddress || documentV4?.metadata?.creator || ''),
+    rendererVersion: 'animacraft.shared-renderer.v5',
+  };
+}
+
+function makerReleaseSnapshotV7IsBusy() {
+  return Boolean(
+    state.pendingMakerV4Bundle
+    || state.makerUploadStage !== 'idle'
+    || state.makerPublicationIntent
+    || state.makerCommerceV5Publication,
+  );
+}
+
+function currentMakerReleaseSnapshotV7({
+  sourceDocument = state.makerDocumentV4,
+  allowCreate = true,
+} = {}) {
+  const source = makerV4DocumentForRelease({ sourceDocument });
+  if (!source) return null;
+  const options = makerWardrobeV7ReleaseOptions(source);
+  const sourceIdentity = makerWardrobeV7ReleaseSourceIdentity(source, options);
+  const current = state.makerReleaseSnapshotV7;
+  if (current?.sourceIdentity === sourceIdentity && isMakerV4Document(current.document)) {
+    return current;
+  }
+  if (current && makerReleaseSnapshotV7IsBusy()) {
+    const error = new Error(t('makerChangedAfterUpload'));
+    error.code = 'MAKER_RELEASE_SNAPSHOT_STALE';
+    throw error;
+  }
+  if (!allowCreate) {
+    const error = new Error(t('makerRecoveryDraftChanged'));
+    error.code = 'MAKER_RELEASE_SNAPSHOT_MISSING';
+    throw error;
+  }
+  const snapshot = createMakerWardrobeV7ReleaseSnapshot(source, options);
+  if (snapshot.issues.length) {
+    const error = new Error(t('makerWardrobeReleaseBlocked', {
+      count: snapshot.issues.length,
+    }));
+    error.code = 'MAKER_WARDROBE_V7_NOT_READY';
+    error.issues = snapshot.issues;
+    throw error;
+  }
+  state.makerReleaseSnapshotV7 = Object.freeze({
+    schemaVersion: 'animacraft.maker-release-snapshot.v1',
+    sourceIdentity: snapshot.sourceIdentity,
+    document: structuredClone(snapshot.document),
+    createdAt: new Date().toISOString(),
+  });
+  makerComposableV6Publication = null;
+  makerPhysicalV7Publication = null;
+  return state.makerReleaseSnapshotV7;
+}
+
+function currentMakerReleaseDocumentV7(options = {}) {
+  const snapshot = currentMakerReleaseSnapshotV7(options);
+  return snapshot ? structuredClone(snapshot.document) : null;
+}
+
 async function makerV4RuntimeAssetsForRelease(documentV4, providedCoverBlob = null) {
   const projectionDocument = prepareMakerV4ProjectionV2Document(documentV4);
   const runtimeAssets = new Map();
@@ -10508,8 +10918,11 @@ function creatorUploadManifest({
   logicalAuxiliaryBlobId = runtimeConfig.commerceV5ReleaseEnabled === true
     ? runtimeConfig.commerceV5LogicalAuxiliaryBlobId
     : '',
+  releaseDocument = null,
 } = {}) {
-  const documentV4 = makerV4DocumentForRelease();
+  const documentV4 = releaseDocument
+    ? structuredClone(releaseDocument)
+    : currentMakerReleaseDocumentV7();
   if (!documentV4) {
     const error = new Error(t('legacyMakerMigrationRequired'));
     error.code = 'LEGACY_MAKER_MIGRATION_REQUIRED';
@@ -11635,11 +12048,41 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
     } catch {
       throw uploadRecoveryMismatch(t('makerRecoveryGraphMismatch'));
     }
+    const persistedReleaseSnapshot = recovery.releaseSnapshotV7;
+    const releaseSourceDocument = makerV4DocumentForRelease();
+    if (
+      persistedReleaseSnapshot?.schemaVersion !== 'animacraft.maker-release-snapshot.v1'
+      || !isMakerV4Document(persistedReleaseSnapshot.document)
+      || !isMakerV4Document(releaseSourceDocument)
+    ) {
+      throw uploadRecoveryMismatch(t('makerRecoveryGraphMismatch'));
+    }
+    const releaseOptions = makerWardrobeV7ReleaseOptions(releaseSourceDocument);
+    const expectedSourceIdentity = makerWardrobeV7ReleaseSourceIdentity(
+      releaseSourceDocument,
+      releaseOptions,
+    );
+    if (persistedReleaseSnapshot.sourceIdentity !== expectedSourceIdentity) {
+      throw uploadRecoveryMismatch(t('makerRecoveryDraftChanged'));
+    }
+    const expectedReleaseSnapshot = createMakerWardrobeV7ReleaseSnapshot(
+      releaseSourceDocument,
+      releaseOptions,
+    );
+    if (
+      expectedReleaseSnapshot.issues.length
+      || expectedReleaseSnapshot.sourceIdentity !== persistedReleaseSnapshot.sourceIdentity
+      || JSON.stringify(expectedReleaseSnapshot.document)
+        !== JSON.stringify(persistedReleaseSnapshot.document)
+    ) {
+      throw uploadRecoveryMismatch(t('makerRecoveryGraphMismatch'));
+    }
+    state.makerReleaseSnapshotV7 = Object.freeze(structuredClone(persistedReleaseSnapshot));
     const recoveryLogicalAuxiliaryBlobId = String(
       recoverySourceManifest?.moveProjectionV2?.commerce
         ?.logicalAuxiliaryBlobId || '',
     ).trim();
-    const recoveredDocumentV4 = makerV4DocumentForRelease();
+    const recoveredDocumentV4 = structuredClone(persistedReleaseSnapshot.document);
     if (
       recoveredDocumentV4?.commerce
       && runtimeConfig.commerceV5ReleaseEnabled !== true
@@ -11656,6 +12099,7 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
       : '';
     if (JSON.stringify(creatorUploadManifest({
       logicalAuxiliaryBlobId: canonicalLogicalAuxiliaryBlobId,
+      releaseDocument: recoveredDocumentV4,
     })) !== recoverySourceManifestJson) {
       throw uploadRecoveryMismatch(t('makerRecoveryDraftChanged'));
     }
@@ -11817,6 +12261,9 @@ async function restoreMakerUploadRecovery(templateId = state.templateId, { force
     state.pendingMakerCoverBlob = null;
     state.pendingMakerManifestJson = '';
     state.pendingMakerV4Bundle = null;
+    state.makerReleaseSnapshotV7 = null;
+    makerComposableV6Publication = null;
+    makerPhysicalV7Publication = null;
     state.makerUploadStage = 'idle';
     recordMakerPublishError(error, 'resume', 'makerRecoveryFailed');
   } finally {
@@ -14164,11 +14611,19 @@ function renderPublishAction() {
     state.makerCommerceV5Publication,
   );
   const commercePublicationPending = makerCommerceV5PublicationPending();
+  const additivePublicationCompleted = Boolean(
+    makerComposableV6Publication?.checkpoint?.completed === true
+    && (
+      !physicalV7ReleaseRequired()
+      || makerPhysicalV7Publication?.checkpoint?.completed === true
+    )
+  );
   const composableV6PublicationPending = Boolean(
     runtimeConfig.compositionV6ReleaseEnabled === true
     && locked
     && state.commerceV5RootObjectId
     && state.commerceV5ControlCapObjectId
+    && !additivePublicationCompleted
   );
   const versionDraftConflict = makerVersionDraftConflict();
   const lineageFork = makerPublishedLineageFork();
@@ -14381,7 +14836,7 @@ async function prepareMakerUpload() {
       const issues = makerPublicationIssues();
       if (issues.length) throw new Error(issues[0]);
       const documentV4 = isMakerV4Document(state.makerDocumentV4)
-        ? makerV4DocumentForRelease()
+        ? currentMakerReleaseDocumentV7()
         : null;
       const logicalAuxiliaryBlobId = documentV4?.commerce
         ? await queryCanonicalCommerceV5LogicalAuxiliaryBlobId()
@@ -14686,7 +15141,10 @@ async function publishCurrentMaker() {
   ) {
     state.publishing = true;
     try {
-      await advanceCurrentMakerComposableV6Publication();
+      await advanceCurrentMakerAdditivePublication();
+    } catch (error) {
+      recordMakerPublishError(error, 'onchain', 'makerPublicationFailed');
+      state.publishStatus = `Additive Maker release · ${error?.message || t('makerPublicationFailed')}`;
     } finally {
       state.publishing = false;
       renderAll();
@@ -16856,6 +17314,21 @@ function composableV6RuntimeContext() {
   };
 }
 
+function physicalV7RuntimeContext() {
+  return {
+    ...composableV6RuntimeContext(),
+    physicalV7CallablePackageId: runtimeConfig.physicalV7CallablePackageId,
+    physicalV7TypeOriginPackageId: runtimeConfig.physicalV7TypeOriginPackageId,
+    physicalProtocolConfigV7Id: runtimeConfig.physicalProtocolConfigV7Id,
+    physicalRegistryV7Id: runtimeConfig.physicalRegistryV7Id,
+    physicalV7SoulOwnerProofTypeOriginPackageId:
+      runtimeConfig.physicalV7SoulOwnerProofTypeOriginPackageId,
+    physicalV7SoulOwnerProofType: runtimeConfig.physicalV7SoulOwnerProofType,
+    physicalStyleV7ReleaseEnabled:
+      runtimeConfig.physicalStyleV7ReleaseEnabled === true,
+  };
+}
+
 function composableV6CacheKey({
   wallet,
   makerRootId,
@@ -18980,6 +19453,35 @@ async function purchasePlayerExpansionPackV5({ document, packId, quote }) {
   });
 }
 
+function expansionPackParentReleaseForDocument(document) {
+  if (!isMakerV4Document(document) || !isMakerV4Document(state.publishedMakerDocumentV4)) {
+    return null;
+  }
+  const published = state.publishedMakerDocumentV4;
+  if (
+    String(document.version?.rootMakerId || '') !== String(published.version?.rootMakerId || '')
+    || String(document.version?.versionId || '') !== String(published.version?.versionId || '')
+    || Number(document.version?.number || 0) !== Number(published.version?.number || 0)
+  ) return null;
+  const template = activeTemplate();
+  if (template?.manifestIdentityVerified !== true) return null;
+  const releaseId = suiJsonId(template?.objectId || state.makerObjectId);
+  const manifestBlobId = String(template?.quiltId || state.makerQuiltId || '').trim();
+  const manifestHash = normalizedSha256Hex(template?.manifestSha256);
+  if (!releaseId || !manifestBlobId || !manifestHash) return null;
+  return Object.freeze({
+    identityVerified: true,
+    published: true,
+    state: 'published',
+    rootMakerId: String(document.version.rootMakerId),
+    versionNumber: String(document.version.number),
+    versionId: String(document.version.versionId),
+    releaseId,
+    manifestBlobId,
+    manifestHash,
+  });
+}
+
 async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
   if (!makerWorkspace) return Promise.resolve();
   const template = activeTemplate();
@@ -19072,6 +19574,7 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
     publishedRecipe: state.publishedMakerRecipeV4
       || state.publishedMakerDocumentV4?.defaultRecipe
       || null,
+    expansionPackParentRelease: expansionPackParentReleaseForDocument(document),
     chainBinding: creatorPersistenceEnabled
       ? currentWorkspaceChainBinding(document)
       : null,
@@ -19081,6 +19584,9 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
     commerceV5ReleaseEnabled: runtimeConfig.commerceV5ReleaseEnabled === true,
     compositionV6ReleaseEnabled: runtimeConfig.compositionV6ReleaseEnabled === true,
     physicalStyleV7ReleaseEnabled: runtimeConfig.physicalStyleV7ReleaseEnabled === true,
+    // No reviewed purchase/equip transaction adapter exists yet. Publication
+    // is live, but Player writes stay visibly fail-closed.
+    physicalStyleV7PlayerActionsEnabled: false,
     ...(commerceState ? { commerceState } : {}),
     ...(composableV6State ? { composableV6State } : {}),
     lifecycle: {
@@ -20124,7 +20630,11 @@ makerWorkspace = createMakerWorkspace({
     },
     onDocumentChange(payload) {
       if (!syncV4WorkspaceState(payload)) return;
-      if (makerHasPendingV4Version()) invalidateMakerUpload(t('makerVersionChanged'));
+      if (
+        !makerIsPublished()
+        || makerHasPendingV4Version()
+        || state.makerReleaseSnapshotV7
+      ) invalidateMakerUpload(t('makerVersionChanged'));
     },
     onSaved(payload) {
       if (!syncV4WorkspaceState(payload)) return;

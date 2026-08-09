@@ -146,24 +146,29 @@ export function deriveMakerLocalCompatibilityV6(document, options = {}) {
   const tracks = tracksInRenderOrder(document);
   const trackIds = tracks.map((track) => string(track?.id)).filter(Boolean);
   const trackSet = new Set(trackIds);
-  const slots = array(document.parts).map((part) => {
-    const usedTracks = [];
-    array(part?.items).forEach((item) => {
-      array(item?.styles).forEach((style) => {
-        const trackId = string(style?.layerTrackId);
-        if (trackId && trackSet.has(trackId) && !usedTracks.includes(trackId)) {
-          usedTracks.push(trackId);
-        }
+  const slotPartIds = Array.isArray(options.slotPartIds)
+    ? new Set(options.slotPartIds.map(string).filter(Boolean))
+    : null;
+  const slots = array(document.parts)
+    .filter((part) => slotPartIds === null || slotPartIds.has(string(part?.id)))
+    .map((part) => {
+      const usedTracks = [];
+      array(part?.items).forEach((item) => {
+        array(item?.styles).forEach((style) => {
+          const trackId = string(style?.layerTrackId);
+          if (trackId && trackSet.has(trackId) && !usedTracks.includes(trackId)) {
+            usedTracks.push(trackId);
+          }
+        });
       });
+      usedTracks.sort((left, right) => trackIds.indexOf(left) - trackIds.indexOf(right));
+      return {
+        id: string(part?.id),
+        capacity: 1,
+        required: part?.required === true,
+        layerTrackIds: usedTracks,
+      };
     });
-    usedTracks.sort((left, right) => trackIds.indexOf(left) - trackIds.indexOf(right));
-    return {
-      id: string(part?.id),
-      capacity: 1,
-      required: part?.required === true,
-      layerTrackIds: usedTracks,
-    };
-  });
   const canvas = object(document.canvas);
   return createCompatibilityProfileV6({
     makerRootId: string(first(

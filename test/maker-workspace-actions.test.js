@@ -13,6 +13,7 @@ import {
 import { synchronizeDefaultRecipe } from '../maker-document-ops.js';
 import { createMakerProjectArchive } from '../maker-project-archive.js';
 import { resolveMakerScene } from '../maker-renderer.js';
+import { EXPANSION_PACK_SCHEMA } from '../expansion-packs.js';
 import {
   createMakerWorkspace,
   enabledExpansionIdsForDocument,
@@ -102,6 +103,108 @@ function creatorClick(workspace, action, dataset = {}, textContent = '') {
 
 function playerClick(workspace, action, dataset = {}, textContent = '') {
   workspace.handlePlayerClick({ target: actionTarget(action, dataset, textContent) });
+}
+
+function installLegacyEmbeddedExpansion(workspace, { copySelected = true } = {}) {
+  const source = workspace.getDocument();
+  const index = source.extensions?.expansionDrafts?.length || 0;
+  const packId = `legacy-pack-${index + 1}`;
+  const pack = {
+    schemaVersion: EXPANSION_PACK_SCHEMA,
+    packId,
+    namespace: `legacypack${index + 1}`,
+    name: `Legacy Pack ${index + 1}`,
+    version: '1.0.0',
+    baseMakerId: source.version.rootMakerId,
+    baseVersion: String(source.version.number),
+    layerTracks: [],
+    colorChannels: [],
+    assets: [],
+    parts: [],
+    rules: [],
+  };
+  workspace.executeDocument('Install embedded Expansion Pack fixture', ({ document }) => {
+    document.extensions ||= {};
+    document.extensions.expansionDrafts ||= [];
+    document.expansionPacks ||= [];
+    document.extensions.expansionDrafts.push(structuredClone(pack));
+    document.expansionPacks.push({
+      id: packId,
+      name: pack.name,
+      version: 1,
+      manifestIdentifier: 'animacraft-manifest.json',
+      content: {
+        kind: 'embedded',
+        runtime: 'embedded-v1',
+        container: 'extensions.expansionDrafts',
+        packId,
+      },
+      baseMakerId: document.version.rootMakerId,
+      baseMakerVersion: document.version.number,
+      required: false,
+    });
+  });
+  if (copySelected) workspace.addSelectedItemToExpansion(packId);
+  return packId;
+}
+
+function memoryExpansionPackStore() {
+  const records = new Map();
+  const key = (identity) => (
+    [
+      identity.walletAddress,
+      identity.parentRootId,
+      identity.parentVersion,
+      identity.parentBindingKind || 'local-draft',
+      identity.parentVersionId || '~version',
+      identity.parentReleaseId || '~local',
+      identity.parentManifestBlobId || '~local',
+      identity.parentManifestHash || '~local',
+      identity.packId,
+    ].join(':')
+  );
+  return {
+    records,
+    async load(identity) {
+      const record = records.get(key(identity));
+      return record ? structuredClone(record) : null;
+    },
+    async list(filter = {}) {
+      return [...records.values()]
+        .filter((record) => !filter.walletAddress || record.walletAddress === String(filter.walletAddress).toLowerCase())
+        .filter((record) => !filter.parentRootId || record.parentRootId === filter.parentRootId)
+        .filter((record) => !filter.parentVersion || record.parentVersion === String(filter.parentVersion))
+        .map((record) => structuredClone(record));
+    },
+    async save(identity, project, options) {
+      const recordKey = key(identity);
+      const existing = records.get(recordKey) || null;
+      const matches = options.expectedRevision === null
+        ? !existing
+        : existing?.revision === options.expectedRevision;
+      if (!matches) {
+        return {
+          saved: false,
+          conflict: true,
+          persistedRevision: existing?.revision ?? null,
+          savedAt: existing?.savedAt ?? null,
+        };
+      }
+      const record = {
+        ...structuredClone(identity),
+        project: structuredClone(project),
+        revision: options.revision,
+        savedAt: options.revision * 1_000,
+      };
+      records.set(recordKey, record);
+      return {
+        saved: true,
+        conflict: false,
+        persistedRevision: record.revision,
+        savedAt: record.savedAt,
+      };
+    },
+  };
 }
 
 async function completePlayerThroughFinalPreview(workspace) {
@@ -384,12 +487,14 @@ test('batch import exposes separate Item and Style modes with an explicit inheri
 test('switching a Composable Maker to Fixed preserves its Item catalog for a reversible mode change', async () => {
   await withWorkspace(async (workspace) => {
     creatorClick(workspace, 'composable-mode', { mode: 'COMPOSABLE' });
-    creatorClick(workspace, 'add-selected-official-item');
+    creatorClick(workspace, 'wardrobe-part-mode', { partId: 'skin-base', mode: 'SLOT' });
+    creatorClick(workspace, 'wardrobe-part-mode', { partId: 'front-hair', mode: 'SLOT' });
 
     const composableDocument = workspace.getDocument();
     assert.equal(composableDocument.extensions.composableV6.profile.mode, 'COMPOSABLE');
-    assert.equal(composableDocument.extensions.composableV6.items.length, 1);
-    const productId = composableDocument.extensions.composableV6.items[0].id;
+    assert.ok(composableDocument.extensions.composableV6.items.length > 1);
+    const productIds = composableDocument.extensions.composableV6.items.map((product) => product.id);
+    assert.equal(new Set(productIds).size, productIds.length);
 
     creatorClick(workspace, 'composable-mode', { mode: 'FIXED' });
     const fixedDocument = workspace.getDocument();
@@ -397,7 +502,7 @@ test('switching a Composable Maker to Fixed preserves its Item catalog for a rev
     assert.equal(fixedDocument.extensions.composableV6.profile.thirdPartyAdmission, 'DISABLED');
     assert.deepEqual(
       fixedDocument.extensions.composableV6.items.map((product) => product.id),
-      [productId],
+      productIds,
       'changing product behavior must not silently delete the Creator catalog',
     );
 
@@ -405,7 +510,7 @@ test('switching a Composable Maker to Fixed preserves its Item catalog for a rev
     assert.equal(workspace.getDocument().extensions.composableV6.profile.mode, 'COMPOSABLE');
     assert.deepEqual(
       workspace.getDocument().extensions.composableV6.items.map((product) => product.id),
-      [productId],
+      productIds,
     );
   }, { playable: true });
 });
@@ -416,12 +521,13 @@ test('Composable Creator controls and Player Wardrobe expose the same Maker-loca
   await withWorkspace(async (workspace) => {
     creatorClick(workspace, 'creator-tab', { tab: 'composable' });
     creatorClick(workspace, 'composable-mode', { mode: 'COMPOSABLE' });
-    creatorClick(workspace, 'add-selected-official-item');
+    creatorClick(workspace, 'wardrobe-part-mode', { partId: 'front-hair', mode: 'SLOT' });
 
     assert.match(creatorRoot.innerHTML, /data-action="composable-mode"/);
-    assert.match(creatorRoot.innerHTML, /data-action="composable-admission"/);
-    assert.match(creatorRoot.innerHTML, /data-action="composable-assetization"/);
-    assert.match(creatorRoot.innerHTML, /official:/);
+    assert.match(creatorRoot.innerHTML, /data-action="wardrobe-part-mode"/);
+    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="composable-admission"/);
+    assert.doesNotMatch(creatorRoot.innerHTML, /data-action="composable-assetization"/);
+    assert.match(creatorRoot.innerHTML, /Automatically managed|Auto-managed/i);
     assert.doesNotMatch(
       creatorRoot.innerHTML,
       /body anchor|human anchor|skeleton|durability|rental|consumable|enhancement|bundle sale/i,
@@ -669,31 +775,20 @@ test('Composable Slot defaults are explicit and a sealed compatibility draft is 
   await withWorkspace(async (workspace) => {
     creatorClick(workspace, 'creator-tab', { tab: 'composable' });
     creatorClick(workspace, 'composable-mode', { mode: 'COMPOSABLE' });
-    const firstSelection = workspace.selectedCreatorRecords();
-    creatorClick(workspace, 'add-selected-official-item');
-    const firstProductId = workspace.getDocument().extensions.composableV6.items[0].id;
-
-    creatorClick(workspace, 'copy-item', {
-      partId: firstSelection.part.id,
-      itemId: firstSelection.item.id,
-    });
-    creatorClick(workspace, 'add-selected-official-item');
+    creatorClick(workspace, 'wardrobe-part-mode', { partId: 'skin-base', mode: 'SLOT' });
+    creatorClick(workspace, 'wardrobe-part-mode', { partId: 'front-hair', mode: 'SLOT' });
     const openDraft = workspace.getDocument().extensions.composableV6;
-    assert.equal(openDraft.items.length, 2);
-    assert.deepEqual(openDraft.compatibility.fallbackProductIds, [firstProductId]);
-    const secondProductId = openDraft.items.find((product) => product.id !== firstProductId).id;
-
-    creatorClick(workspace, 'set-composable-fallback', { productId: secondProductId });
-    assert.deepEqual(
-      workspace.getDocument().extensions.composableV6.compatibility.fallbackProductIds,
-      [secondProductId],
-    );
+    assert.ok(openDraft.items.length > 1);
+    assert.ok(openDraft.compatibility.fallbackProductIds.length > 1);
+    const products = new Map(openDraft.items.map((product) => [product.id, product]));
+    const fallbackSlots = openDraft.compatibility.fallbackProductIds.map((productId) => (
+      products.get(productId)?.slotClaims?.[0]?.slotId
+    ));
+    assert.equal(new Set(fallbackSlots).size, fallbackSlots.length);
 
     creatorClick(workspace, 'composable-seal');
     const sealedBefore = structuredClone(workspace.getDocument().extensions.composableV6);
-    assert.match(creatorRoot.innerHTML, /data-action="remove-composable-product"[^>]*disabled/);
 
-    creatorClick(workspace, 'remove-composable-product', { productId: secondProductId });
     creatorClick(workspace, 'composable-mode', { mode: 'FIXED' });
     await workspace.handleCreatorChange({
       target: { dataset: { action: 'composable-admission' }, value: 'OPEN' },
@@ -702,16 +797,7 @@ test('Composable Slot defaults are explicit and a sealed compatibility draft is 
       target: { dataset: { action: 'composable-assetization' }, checked: true },
     });
     assert.deepEqual(workspace.getDocument().extensions.composableV6, sealedBefore);
-
-    creatorClick(workspace, 'composable-seal');
-    creatorClick(workspace, 'composable-sync');
-    const resynced = workspace.getDocument().extensions.composableV6;
-    assert.equal(resynced.compatibilitySealed, false);
-    assert.deepEqual(
-      resynced.compatibility.fallbackProductIds,
-      [firstProductId],
-      'Sync must derive the Slot fallback from the Maker default recipe before catalog order',
-    );
+    assert.match(creatorRoot.innerHTML, /Start a new Maker version|locked/i);
   }, { creatorRoot, playable: true });
 });
 
@@ -2458,7 +2544,7 @@ test('Combination Rules keep a failed builder draft and block empty, same-Part, 
   });
 });
 
-test('color, rule, and Expansion Pack controls perform real document operations', async () => {
+test('color and rule controls perform real document operations', async () => {
   await withWorkspace(async (workspace) => {
     creatorClick(workspace, 'add-channel');
     let document = workspace.getDocument();
@@ -2516,28 +2602,193 @@ test('color, rule, and Expansion Pack controls perform real document operations'
     workspace.deleteRule(ruleId);
     assert.equal(workspace.getDocument().parts[0].excludes.length, 0);
 
-    creatorClick(workspace, 'add-expansion');
-    document = workspace.getDocument();
-    assert.equal(document.extensions.expansionDrafts.length, 1);
-    const packId = document.extensions.expansionDrafts[0].packId;
-    assert.equal(document.expansionPacks[0].manifestIdentifier, 'animacraft-manifest.json');
-    assert.deepEqual(document.expansionPacks[0].content, {
-      kind: 'embedded',
-      runtime: 'embedded-v1',
-      container: 'extensions.expansionDrafts',
-      packId,
-    });
-    creatorClick(workspace, 'add-selected-to-expansion', { packId });
-    assert.equal(workspace.getDocument().extensions.expansionDrafts[0].parts[0].items.length, 1);
-    creatorClick(workspace, 'toggle-expansion', { packId });
-    assert.equal(workspace.enabledExpansionIds.has(packId), true);
-    creatorClick(workspace, 'delete-expansion', { packId });
-    assert.equal(workspace.getDocument().extensions.expansionDrafts.length, 0);
-
     workspace.selectedChannelId = channelId;
     creatorClick(workspace, 'delete-channel');
     assert.equal(workspace.getDocument().colorChannels.length, 0);
   }, { playable: true });
+});
+
+test('Expansion Pack Studio creates an isolated version-bound child without mutating the parent Maker', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    const parentBefore = structuredClone(workspace.getDocument());
+    creatorClick(workspace, 'add-expansion');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.ok(workspace.expansionPackWorkspace, 'the child Studio opens independently');
+    assert.deepEqual(
+      workspace.getDocument().extensions.expansionDrafts,
+      parentBefore.extensions.expansionDrafts,
+      'the parent Maker no longer stores embedded child drafts',
+    );
+    let child = workspace.expansionPackWorkspace.getState();
+    assert.equal(child.identity.parentVersion, String(parentBefore.version.number));
+    assert.deepEqual(child.project.parentSnapshot.canvas, parentBefore.canvas);
+    assert.deepEqual(child.project.parentSnapshot.layerTracks, parentBefore.layerTracks);
+    assert.deepEqual(child.project.parentSnapshot.defaultRecipe, parentBefore.defaultRecipe);
+    assert.deepEqual(child.project.parentSnapshot.livingContent, parentBefore.livingContent);
+
+    workspace.requestExpansionPackAdd({ kind: 'part', partId: '', itemId: '' });
+    child = workspace.expansionPackWorkspace.getState();
+    const optionalPart = child.project.pack.parts.find((part) => part.id);
+    assert.ok(optionalPart);
+    assert.equal(optionalPart.items.length, 1);
+    assert.equal(optionalPart.items[0].styles.length, 1);
+    assert.equal(optionalPart.items[0].styles[0].layerTrackId, optionalPart.defaultLayerTrackId);
+    assert.ok(child.project.pack.layerTracks.some((track) => track.id === optionalPart.defaultLayerTrackId));
+    assert.deepEqual(workspace.getDocument(), parentBefore, 'child authoring never changes the parent document');
+
+    const packId = child.project.packId;
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    assert.equal(expansionPackDraftStore.records.size, 1);
+    await workspace.openExpansionPackWorkspace(packId);
+    child = workspace.expansionPackWorkspace.getState();
+    assert.equal(child.project.pack.parts.length, 1);
+    assert.equal(child.save.phase, 'saved');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+      document.livingContent = { soulMd: '# Parent Soul' };
+    },
+  });
+});
+
+test('a new Expansion Pack inherits one exact published parent and exports a deterministic candidate', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const candidates = [];
+  await withWorkspace(async (workspace) => {
+    const parent = workspace.getDocument();
+    const release = {
+      identityVerified: true,
+      published: true,
+      state: 'published',
+      rootMakerId: parent.version.rootMakerId,
+      versionNumber: String(parent.version.number),
+      versionId: parent.version.versionId,
+      releaseId: `0x${'1'.repeat(64)}`,
+      manifestBlobId: 'published-parent-quilt',
+      manifestHash: 'a'.repeat(64),
+    };
+    await workspace.setContext({
+      makerKey: workspace.makerKey,
+      walletAddress: '0xcreator',
+      document: parent,
+      publishedDocument: parent,
+      expansionPackParentRelease: release,
+      assets: [],
+    });
+    creatorClick(workspace, 'add-expansion');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    let child = workspace.expansionPackWorkspace.getState();
+    assert.equal(child.project.parentBinding.kind, 'published-release');
+    assert.equal(child.project.parentBinding.releaseId, release.releaseId);
+    assert.equal(child.project.parentBinding.manifestBlobId, release.manifestBlobId);
+    assert.equal(child.project.parentBinding.manifestHash, release.manifestHash);
+    assert.deepEqual(child.project.parentSnapshot.canvas, parent.canvas);
+    assert.deepEqual(child.project.parentSnapshot.rules, parent.rules);
+    assert.deepEqual(child.project.parentSnapshot.livingContent, parent.livingContent);
+
+    workspace.requestExpansionPackAdd({ kind: 'part', partId: '', itemId: '' });
+    child = workspace.expansionPackWorkspace.getState();
+    const part = child.project.pack.parts[0];
+    const item = part.items[0];
+    const style = item.styles[0];
+    workspace.expansionPackWorkspace.updateStyle(
+      part.id,
+      item.id,
+      style.id,
+      { assetId: 'pack-art' },
+      {
+        assets: [{
+          id: 'pack-art',
+          identifier: 'pack-art.png',
+          kind: 'style',
+          mediaType: 'image/png',
+          sha256: 'b'.repeat(64),
+          contentHash: 'b'.repeat(64),
+          byteLength: 128,
+          width: 1024,
+          height: 1024,
+        }],
+      },
+    );
+    const candidate = await workspace.prepareActiveExpansionPackPublicationCandidate();
+    assert.equal(candidate.state, 'CANDIDATE');
+    assert.equal(candidate.published, false);
+    assert.equal(candidate.manifest.parent.releaseId, release.releaseId);
+    assert.equal(candidate.manifest.parent.manifestSha256, release.manifestHash);
+    assert.equal(candidate.manifest.inheritance.canvas, 'inherit-readonly');
+    assert.equal(candidate.manifest.publicationBoundary.walrus, 'not-uploaded');
+    assert.equal(candidate.manifest.publicationBoundary.sui, 'not-registered');
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].manifestSha256, candidate.manifestSha256);
+    assert.deepEqual(workspace.getDocument(), parent, 'the child never writes inherited data back to the parent');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    callbacks: {
+      onExpansionPackPublicationCandidate: (candidate) => candidates.push(candidate),
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+      document.livingContent = { soulMd: '# Parent Soul' };
+    },
+  });
+});
+
+test('a local Pack rebinds non-destructively after the identical parent version is published', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    const parent = workspace.getDocument();
+    creatorClick(workspace, 'add-expansion');
+    await new Promise((resolve) => setImmediate(resolve));
+    workspace.requestExpansionPackAdd({ kind: 'part', partId: '', itemId: '' });
+    const authored = workspace.expansionPackWorkspace.getState().project.pack.parts[0];
+    workspace.expansionPackWorkspace.updateStyle(
+      authored.id,
+      authored.items[0].id,
+      authored.items[0].styles[0].id,
+      { assetId: parent.parts[0].items[0].styles[0].assetId },
+    );
+    await workspace.saveExpansionPackWorkspace();
+    const local = workspace.expansionPackWorkspace.getState();
+    assert.equal(local.project.parentBinding.kind, 'local-draft');
+
+    const release = {
+      identityVerified: true,
+      published: true,
+      state: 'published',
+      rootMakerId: parent.version.rootMakerId,
+      versionNumber: String(parent.version.number),
+      versionId: parent.version.versionId,
+      releaseId: `0x${'2'.repeat(64)}`,
+      manifestBlobId: 'rebound-parent-quilt',
+      manifestHash: 'c'.repeat(64),
+    };
+    await workspace.setContext({
+      makerKey: workspace.makerKey,
+      walletAddress: '0xcreator',
+      document: parent,
+      publishedDocument: parent,
+      expansionPackParentRelease: release,
+      assets: [],
+    });
+    await workspace.rebindActiveExpansionPackToPublishedParent();
+    const rebound = workspace.expansionPackWorkspace.getState();
+    assert.equal(rebound.project.parentBinding.kind, 'published-release');
+    assert.equal(rebound.project.parentBinding.releaseId, release.releaseId);
+    assert.deepEqual(rebound.project.pack.parts, local.project.pack.parts);
+    assert.equal(expansionPackDraftStore.records.size, 2, 'the local draft remains recoverable beside the exact release-bound copy');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
 });
 
 test('Creator primary color edits update the rendered gradient without an autosave rerender race', async () => {
@@ -2648,9 +2899,7 @@ test('Expansion Item copies rewrite Item self references instead of pointing bac
         styleId: style.id,
       };
     });
-    creatorClick(workspace, 'add-expansion');
-    const packId = workspace.getDocument().extensions.expansionDrafts[0].packId;
-    creatorClick(workspace, 'add-selected-to-expansion', { packId });
+    const packId = installLegacyEmbeddedExpansion(workspace);
 
     const copy = workspace.getDocument().extensions.expansionDrafts[0].parts[0].items[0];
     assert.notEqual(copy.id, item.id);
@@ -2756,9 +3005,7 @@ test('Maker ZIP import re-inspects Style PNG pixels and blocks fully transparent
       });
       workspace.flushCompletedAssetOperation = async () => true;
 
-      creatorClick(workspace, 'add-expansion');
-      const packId = workspace.getDocument().extensions.expansionDrafts[0].packId;
-      creatorClick(workspace, 'add-selected-to-expansion', { packId });
+      const packId = installLegacyEmbeddedExpansion(workspace);
       const document = workspace.getDocument();
       const pack = document.extensions.expansionDrafts[0];
       const style = pack.parts[0].items[0].styles[0];
@@ -3030,7 +3277,7 @@ test('Preflight validates the final Quilt bundle before Step 1', async () => {
   }, { playable: true });
 
   await withWorkspace(async (workspace) => {
-    creatorClick(workspace, 'add-expansion');
+    installLegacyEmbeddedExpansion(workspace, { copySelected: false });
     workspace.executeDocument('Fill the exact Walrus Quilt boundary', ({ document }) => {
       document.metadata.creator = 'QA Creator';
       document.metadata.license.note = 'Personal use QA release.';
@@ -3113,9 +3360,7 @@ test('duplicate Player input/change events do not create duplicate save revision
 
 test('Player Expansion Pack toggles clear undo entries from the previous runtime graph', async () => {
   await withWorkspace(async (workspace) => {
-    creatorClick(workspace, 'add-expansion');
-    const packId = workspace.getDocument().extensions.expansionDrafts[0].packId;
-    creatorClick(workspace, 'add-selected-to-expansion', { packId });
+    const packId = installLegacyEmbeddedExpansion(workspace);
     workspace.playerUndo = [{ label: 'Old graph', recipe: structuredClone(workspace.playerRecipe) }];
     workspace.playerRedo = [{ label: 'Old graph redo', recipe: structuredClone(workspace.playerRecipe) }];
 
@@ -3178,9 +3423,7 @@ test('a paid Expansion Pack cannot enter the runtime graph before PackPass confi
   const playerRoot = new FakeRoot();
   const purchases = [];
   await withWorkspace(async (workspace) => {
-    creatorClick(workspace, 'add-expansion');
-    const packId = workspace.getDocument().extensions.expansionDrafts[0].packId;
-    creatorClick(workspace, 'add-selected-to-expansion', { packId });
+    const packId = installLegacyEmbeddedExpansion(workspace);
     workspace.executeDocument('Configure paid Pack', ({ document }) => {
       document.commerce = normalizeMakerCommerceV5(document.commerce, {
         packIds: [packId],

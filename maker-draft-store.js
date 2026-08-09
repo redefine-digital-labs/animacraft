@@ -1,4 +1,4 @@
-export const MAKER_DRAFT_DATABASE_NAME = 'animacraft-maker-workspace-v6';
+export const MAKER_DRAFT_DATABASE_NAME = 'animacraft-maker-workspace-v7';
 export const MAKER_DRAFT_DATABASE_VERSION = 2;
 export const MAKER_DRAFT_PROJECT_STORE = 'maker-projects';
 export const MAKER_DRAFT_ASSET_STORE = 'maker-assets';

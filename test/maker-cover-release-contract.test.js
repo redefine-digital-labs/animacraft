@@ -76,6 +76,8 @@ function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (
     const fetchWalrusWithBackoff = async () => { throw new Error('unexpected network request'); };
     const responseBlobWithinLimit = async () => { throw new Error('unexpected network response'); };
     const inspectPngAsset = async () => ({ alphaAnalyzed: true, hasVisiblePixels: true });
+    const makerWardrobeV7Enabled = () => false;
+    const synchronizeMakerWardrobeV7 = (document) => ({ document, issues: [] });
     const createImageBitmap = decodeBitmap;
     const t = (key) => key;
     ${functions}

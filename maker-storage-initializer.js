@@ -6,11 +6,12 @@
  * interpreted as permission to delete a database, clear an object store, or
  * remove a localStorage draft key.
  */
-export const MAKER_DRAFT_SCHEMA_EPOCH = 'maker-v5-stable-storage-1';
+export const MAKER_DRAFT_SCHEMA_EPOCH = 'maker-v7-clean-storage-1';
 export const MAKER_DRAFT_SCHEMA_EPOCH_KEY = 'animacraft-maker-draft-schema-epoch';
 
 export const LEGACY_MAKER_DATABASES = Object.freeze([
   'animacraft-creator-drafts',
+  'animacraft-maker-workspace-v6',
 ]);
 
 export const LEGACY_WORKSPACE_DATABASE = 'animacraft-maker-workspace-v4';
@@ -150,7 +151,7 @@ async function runInitialization({
  * Inspects known legacy Maker storage without modifying it.
  *
  * This function never opens, deletes, or clears an IndexedDB database/store and
- * never removes a localStorage key. The v6 workspace is neither opened nor
+ * never removes a localStorage key. The active v7 workspace is neither opened nor
  * otherwise touched.
  */
 export async function initializeMakerDraftStorage(options = {}) {

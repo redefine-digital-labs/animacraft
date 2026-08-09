@@ -20,10 +20,13 @@ import {
   physicalV7PublicationObjectIds,
 } from '../maker-physical-publication-v7.js';
 import {
+  advancePhysicalV7Publication,
+  preparePhysicalV7Publication,
   readPhysicalV7PublicationSubmission,
   transactionFromPhysicalV7PublicationAction,
 } from '../maker-physical-publication-v7-app.js';
 import {
+  PHYSICAL_PART_BEHAVIORS,
   STYLE_PRODUCT_ADMISSION_CLASSES,
   STYLE_PRODUCT_RIGHTS_ORIGINS,
   STYLE_PRODUCT_SUPPLY_MODES,
@@ -253,9 +256,13 @@ function runtime(enabled = false) {
 
 async function planFixture() {
   const document = documentFixture();
+  return buildPlan({ document });
+}
+
+async function buildPlan({ document = documentFixture(), catalog = catalogFixture() } = {}) {
   return buildMakerPhysicalV7PublicationPlan({
     document,
-    catalog: catalogFixture(),
+    catalog,
     v6Publication: await v6Publication(),
     baseManifest: document,
     baseManifestBlobId: 'base-maker-quilt',
@@ -275,6 +282,8 @@ test('v7 plan is strictly rooted in completed v6 and maps one admitted v6 object
     definitionQuiltCount: 1,
     assetVerificationCount: 2,
   });
+  assert.equal(plan.projection.partPolicies[0].behavior, PHYSICAL_PART_BEHAVIORS.SOUL_LOCAL);
+  assert.equal(plan.projection.partPolicies[0].behaviorKind, 1);
   assert.deepEqual(plan.projection.products.map((entry) => entry.v6ProductObjectId), ['0x901', '0x902']);
   assert.ok(plan.actions.some((entry) => entry.id === 'chain.physical-profile.seal'));
   assert.equal(plan.actions.filter((entry) => entry.id.startsWith('chain.family.publish.')).length, 1);
@@ -286,6 +295,136 @@ test('v7 plan is strictly rooted in completed v6 and maps one admitted v6 object
       .filter((entry) => entry.transport === 'SUI')
       .every((entry) => entry.target.startsWith('0x557::physical_composition_v7::')),
   );
+});
+
+test('declared HYBRID policy reaches the exact on-chain registration action', async () => {
+  const catalog = catalogFixture();
+  catalog.partPolicies = [{
+    partId: 'hair',
+    behavior: PHYSICAL_PART_BEHAVIORS.HYBRID,
+    required: true,
+    maxSourceKind: STYLE_PRODUCT_ADMISSION_CLASSES.OPEN,
+  }];
+  const plan = await buildPlan({ catalog });
+  const policy = plan.projection.partPolicies[0];
+  const action = plan.actions.find((entry) => entry.id === 'chain.part-policy.register.hair');
+
+  assert.deepEqual(policy, {
+    partId: 'hair',
+    slotKey: 'hair',
+    behavior: PHYSICAL_PART_BEHAVIORS.HYBRID,
+    behaviorKind: 3,
+    required: true,
+    maxSourceKind: 2,
+  });
+  assert.equal(action.inputs.behaviorKind, 3);
+  assert.equal(action.inputs.required, true);
+  assert.equal(action.inputs.maxSourceKind, 2);
+  assert.equal(action.policy.behavior, PHYSICAL_PART_BEHAVIORS.HYBRID);
+});
+
+test('declared policies reject a required OPEN Part before any action exists', async () => {
+  const catalog = catalogFixture();
+  catalog.partPolicies = [{
+    partId: 'hair',
+    behavior: PHYSICAL_PART_BEHAVIORS.OPEN,
+    required: true,
+    maxSourceKind: STYLE_PRODUCT_ADMISSION_CLASSES.OPEN,
+  }];
+  await assert.rejects(
+    buildPlan({ catalog }),
+    (error) => (
+      error instanceof MakerPhysicalV7PublicationError
+      && error.code === 'PHYSICAL_V7_REQUIRED_OPEN_PART_INVALID'
+    ),
+  );
+});
+
+test('declared policies reject source-class drift from the Move policy contract', async () => {
+  const catalog = catalogFixture();
+  catalog.partPolicies = [{
+    partId: 'hair',
+    behavior: PHYSICAL_PART_BEHAVIORS.SOUL_LOCAL,
+    required: true,
+    maxSourceKind: STYLE_PRODUCT_ADMISSION_CLASSES.OPEN,
+  }];
+  await assert.rejects(
+    buildPlan({ catalog }),
+    (error) => (
+      error instanceof MakerPhysicalV7PublicationError
+      && error.code === 'PHYSICAL_V7_PART_POLICY_SOURCE_KIND_MISMATCH'
+    ),
+  );
+});
+
+test('declared policy sets reject duplicate and missing Part coverage', async () => {
+  const duplicate = catalogFixture();
+  const hairPolicy = {
+    partId: 'hair',
+    behavior: PHYSICAL_PART_BEHAVIORS.HYBRID,
+    required: true,
+    maxSourceKind: STYLE_PRODUCT_ADMISSION_CLASSES.OPEN,
+  };
+  duplicate.partPolicies = [hairPolicy, { ...hairPolicy }];
+  await assert.rejects(
+    buildPlan({ catalog: duplicate }),
+    (error) => (
+      error instanceof MakerPhysicalV7PublicationError
+      && error.code === 'PHYSICAL_V7_PART_POLICY_DUPLICATE'
+    ),
+  );
+
+  const document = documentFixture();
+  document.parts.push({
+    id: 'eyes',
+    name: 'Eyes',
+    menuOrder: 1,
+    menuVisible: true,
+    required: false,
+    defaultItemId: 'gaze',
+    parentPartId: null,
+    iconAssetId: null,
+    visibleWhen: null,
+    requires: [],
+    excludes: [],
+    items: [{
+      id: 'gaze',
+      name: 'Gaze',
+      displayOrder: 0,
+      importKey: 'gaze',
+      status: 'public',
+      thumbnailAssetId: null,
+      visibleWhen: null,
+      requires: [],
+      excludes: [],
+      defaultStyleId: 'soft',
+      styles: [{ ...style('soft', 'blue-png'), displayOrder: 0 }],
+    }],
+  });
+  document.defaultRecipe.selections.push({ partId: 'eyes', itemId: 'gaze', styleId: 'soft' });
+  const missing = catalogFixture();
+  missing.partPolicies = [hairPolicy];
+  await assert.rejects(
+    buildPlan({ document, catalog: missing }),
+    (error) => (
+      error instanceof MakerPhysicalV7PublicationError
+      && error.code === 'PHYSICAL_V7_PART_POLICY_MISSING'
+      && error.details.partIds.includes('eyes')
+    ),
+  );
+
+  const complete = catalogFixture();
+  complete.partPolicies = [hairPolicy, {
+    partId: 'eyes',
+    behavior: PHYSICAL_PART_BEHAVIORS.OPEN,
+    required: false,
+    maxSourceKind: STYLE_PRODUCT_ADMISSION_CLASSES.OPEN,
+  }];
+  const plan = await buildPlan({ document, catalog: complete });
+  assert.equal(plan.summary.partPolicyCount, 2);
+  const eyesAction = plan.actions.find((entry) => entry.id === 'chain.part-policy.register.eyes');
+  assert.equal(eyesAction.inputs.behaviorKind, 2);
+  assert.equal(eyesAction.inputs.required, false);
 });
 
 test('v7 plan fails closed when exact Styles reuse one v6 Product', async () => {
@@ -331,6 +470,70 @@ test('v7 checkpoint is recoverable, ordered and performs zero action while gate 
     },
   });
   assert.equal(checkpoint.currentActionIndex, 1);
+});
+
+test('v7 app preparation locks the certified base Quilt and durably retains in-action recovery progress', async () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  };
+  const document = documentFixture();
+  const publication = await preparePhysicalV7Publication({
+    document,
+    catalog: catalogFixture(),
+    v6Publication: await v6Publication(),
+    baseManifest: document,
+    baseManifestBlobId: 'base-maker-quilt',
+    runtime: runtime(false),
+    storage,
+  });
+  assert.equal(publication.plan.binding.baseManifestBlobId, 'base-maker-quilt');
+  assert.equal(publication.plan.actions[0].inputs.blobId, 'base-maker-quilt');
+
+  const interrupted = await advancePhysicalV7Publication({
+    publication,
+    runtime: runtime(true),
+    storage,
+    async executeWalrusAction({ persistProgress }) {
+      await persistProgress({ walrusRecovery: { stage: 'uploaded', quiltBlobId: 'base-maker-quilt' } });
+      const error = new Error('temporary readback interruption');
+      error.code = 'NETWORK_UNAVAILABLE';
+      throw error;
+    },
+    async confirmAction() {
+      assert.fail('The interrupted action must not be confirmed.');
+    },
+  });
+  assert.equal(interrupted.recoverable, true);
+  const durable = JSON.parse(values.get(publication.key));
+  assert.deepEqual(
+    durable.checkpoint.actions[0].progress.walrusRecovery,
+    { stage: 'uploaded', quiltBlobId: 'base-maker-quilt' },
+  );
+
+  const resumed = await advancePhysicalV7Publication({
+    publication: { ...interrupted, checkpoint: durable.checkpoint },
+    runtime: runtime(true),
+    storage,
+    async executeWalrusAction({ checkpoint }) {
+      assert.equal(checkpoint.actions[0].progress.walrusRecovery.stage, 'uploaded');
+      return {
+        blobId: 'base-maker-quilt',
+        identifier: 'blue.png',
+        observedHash: HASH_A,
+        certified: true,
+        assetVerified: true,
+      };
+    },
+    async confirmAction({ submission }) {
+      return submission;
+    },
+  });
+  assert.equal(resumed.recoverable, undefined);
+  assert.equal(resumed.checkpoint.currentActionIndex, 1);
+  assert.equal(resumed.checkpoint.actions[0].status, 'CONFIRMED');
 });
 
 test('profile readback uses the production getObjects response shape and rejects drift', async () => {

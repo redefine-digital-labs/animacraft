@@ -16,6 +16,7 @@ import {
   normalizeRuleSelector,
 } from './maker-rules.js';
 import { MAKER_V4_SCHEMA_VERSION, validateMakerV4Document } from './maker-v4.js';
+import { CURRENT_MAKER_DATA_EPOCH } from './maker-release-epoch.js';
 import {
   DEFAULT_PROTOCOL_COMMERCE_V5,
   MAKER_COMMERCE_V5_SCHEMA,
@@ -1350,6 +1351,11 @@ function sanitizePlayerExportPublicationExtension(document) {
   };
 }
 
+function sanitizeMakerDataEpochPublicationExtension(document) {
+  const dataEpoch = String(document?.extensions?.dataEpoch || '').trim();
+  return dataEpoch === CURRENT_MAKER_DATA_EPOCH ? dataEpoch : null;
+}
+
 function normalizeEmbeddedExpansionPublication(document, publicExtensions, manifestIdentifier) {
   const suppliedExtensions = jsonObject(publicExtensions);
   const documentDrafts = asArray(document?.extensions?.expansionDrafts);
@@ -1417,6 +1423,8 @@ function normalizeEmbeddedExpansionPublication(document, publicExtensions, manif
   // copy arbitrary editor/private extension data from either the document or
   // caller-supplied options into the immutable Walrus manifest.
   const extensions = {};
+  const dataEpoch = sanitizeMakerDataEpochPublicationExtension(document);
+  if (dataEpoch) extensions.dataEpoch = dataEpoch;
   const playerExport = sanitizePlayerExportPublicationExtension(document);
   if (playerExport) extensions.playerExport = playerExport;
   if (drafts.length) {
