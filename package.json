@@ -14,6 +14,7 @@
     "preflight:config": "node scripts/mainnet-preflight.mjs",
     "preflight:mainnet": "node scripts/mainnet-preflight.mjs --strict --network",
     "preflight:v8-mainnet": "node scripts/mainnet-preflight.mjs --strict --network --require-expansion-pack-v8 --expansion-pack-v8-only",
+    "ceremony:v8-pack": "node scripts/expansion-pack-v8-pack-ceremony.mjs",
     "preflight:integration": "node scripts/mainnet-preflight.mjs --strict --network --require-soulidity",
     "makers:build": "python3 scripts/build-builtin-makers.py",
     "makers:verify": "python3 -m py_compile scripts/chroma_key.py scripts/build-builtin-makers.py && node --test test/bundled-makers.test.js",
