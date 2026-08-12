@@ -121,15 +121,6 @@ const ABI_FUNCTION_SPECS = Object.freeze({
   bind_expansion_pack_complete_to_soul_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 1, parameters: 5, returns: 'type0' },
   authorization_pack_selection_commitment_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'bytesRef' },
   authorization_selection_count_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'u64' },
-  provenance_id_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'id' },
-  provenance_soul_id_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'id' },
-  provenance_parent_root_id_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'id' },
-  provenance_payer_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'address' },
-  provenance_base_recipe_hash_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'bytesRef' },
-  provenance_output_seal_id_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'bytesRef' },
-  provenance_pack_selection_commitment_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'bytesRef' },
-  provenance_complete_authorization_commitment_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'bytesRef' },
-  provenance_selection_count_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'u64' },
   bind_maker_release_evidence_v5: { moduleName: 'commerce_v5', typeParameters: 0, parameters: 7 },
 });
 
@@ -212,11 +203,6 @@ function functionParameters(name, count) {
     'ExpansionPackCompleteSoulBindingV8',
     [],
     reference,
-  );
-  const completeProvenance = () => defined(
-    TYPE_ORIGIN,
-    'expansion_pack_complete_v8',
-    'ExpansionPackCompleteProvenanceV8',
   );
   const objectId = () => moveDatatype('0x2::object::ID', [], null);
   const string = () => moveDatatype('0x1::string::String');
@@ -328,15 +314,6 @@ function functionParameters(name, count) {
     ],
     authorization_pack_selection_commitment_v8: [completeAuthorization('immutable')],
     authorization_selection_count_v8: [completeAuthorization('immutable')],
-    provenance_id_v8: [completeProvenance()],
-    provenance_soul_id_v8: [completeProvenance()],
-    provenance_parent_root_id_v8: [completeProvenance()],
-    provenance_payer_v8: [completeProvenance()],
-    provenance_base_recipe_hash_v8: [completeProvenance()],
-    provenance_output_seal_id_v8: [completeProvenance()],
-    provenance_pack_selection_commitment_v8: [completeProvenance()],
-    provenance_complete_authorization_commitment_v8: [completeProvenance()],
-    provenance_selection_count_v8: [completeProvenance()],
     bind_maker_release_evidence_v5: [
       root('mutable'), control(), maker(), string(), string(), bytes(), context(),
     ],
@@ -410,8 +387,6 @@ function packageAbiClient({
             )],
             type0: [signature(null, typeParameter(0))],
             bytesRef: [vector({ $kind: 'u8' }, 'immutable')],
-            id: [moveDatatype('0x2::object::ID')],
-            address: [primitive('address')],
           };
           const returns = returnValues[spec.returns] || [];
           if (request.name === driftReturnFunction && returns[0]) {

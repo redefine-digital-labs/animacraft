@@ -447,53 +447,9 @@ public fun authorization_selection_count_v8(
     authorization.selections.length()
 }
 
-public fun provenance_id_v8(self: &ExpansionPackCompleteProvenanceV8): ID {
-    object::id(self)
-}
-
-public fun provenance_soul_id_v8(self: &ExpansionPackCompleteProvenanceV8): ID {
-    self.soul_id
-}
-
-public fun provenance_parent_root_id_v8(
-    self: &ExpansionPackCompleteProvenanceV8,
-): ID {
-    self.parent_root_id
-}
-
-public fun provenance_payer_v8(self: &ExpansionPackCompleteProvenanceV8): address {
-    self.payer
-}
-
-public fun provenance_base_recipe_hash_v8(
-    self: &ExpansionPackCompleteProvenanceV8,
-): &vector<u8> {
-    &self.base_recipe_hash
-}
-
-public fun provenance_output_seal_id_v8(
-    self: &ExpansionPackCompleteProvenanceV8,
-): &vector<u8> {
-    &self.complete_output_seal_id
-}
-
-public fun provenance_pack_selection_commitment_v8(
-    self: &ExpansionPackCompleteProvenanceV8,
-): &vector<u8> {
-    &self.pack_selection_commitment
-}
-
-public fun provenance_complete_authorization_commitment_v8(
-    self: &ExpansionPackCompleteProvenanceV8,
-): &vector<u8> {
-    &self.complete_authorization_commitment
-}
-
-public fun provenance_selection_count_v8(
-    self: &ExpansionPackCompleteProvenanceV8,
-): u64 {
-    self.selections.length()
-}
+// Complete provenance remains durable on-chain, but its public read adapter is
+// intentionally deferred while Complete is disabled to retain Mainnet package
+// size headroom. TypeOrigin and fail-closed gate readback remain mandatory.
 
 #[test_only]
 public fun destroy_provenance_v8_for_testing(

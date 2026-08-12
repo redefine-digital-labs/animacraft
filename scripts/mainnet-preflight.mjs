@@ -727,13 +727,6 @@ export async function inspectExpansionPackV8PackageAbi(
     [],
     reference,
   );
-  const completeProvenance = (reference = 'immutable') => datatype(
-    typeOrigin,
-    completeModuleName,
-    'ExpansionPackCompleteProvenanceV8',
-    [],
-    reference,
-  );
   const objectId = (reference = null) => datatype(
     suiPackage,
     'object',
@@ -1006,43 +999,6 @@ export async function inspectExpansionPackV8PackageAbi(
       name: 'authorization_selection_count_v8',
       typeParameters: [],
       parameters: [completeAuthorization('immutable')],
-      returns: [primitive('u64')],
-    },
-    ...[
-      'provenance_id_v8',
-      'provenance_soul_id_v8',
-      'provenance_parent_root_id_v8',
-    ].map((name) => ({
-      moduleName: completeModuleName,
-      name,
-      typeParameters: [],
-      parameters: [completeProvenance()],
-      returns: [objectId()],
-    })),
-    {
-      moduleName: completeModuleName,
-      name: 'provenance_payer_v8',
-      typeParameters: [],
-      parameters: [completeProvenance()],
-      returns: [primitive('address')],
-    },
-    ...[
-      'provenance_base_recipe_hash_v8',
-      'provenance_output_seal_id_v8',
-      'provenance_pack_selection_commitment_v8',
-      'provenance_complete_authorization_commitment_v8',
-    ].map((name) => ({
-      moduleName: completeModuleName,
-      name,
-      typeParameters: [],
-      parameters: [completeProvenance()],
-      returns: [vector({ $kind: 'u8' }, 'immutable')],
-    })),
-    {
-      moduleName: completeModuleName,
-      name: 'provenance_selection_count_v8',
-      typeParameters: [],
-      parameters: [completeProvenance()],
       returns: [primitive('u64')],
     },
   ].map((spec) => ({
