@@ -13,7 +13,10 @@ import {
   stableJson,
   validateWorktreeStatus,
 } from '../scripts/lib/expansion-pack-v8-pack-ceremony.mjs';
-import { encodeCeremonyQuiltPatchId } from '../scripts/lib/expansion-pack-v8-pack-ceremony-adapters.mjs';
+import {
+  encodeCeremonyQuiltPatchId,
+  recoverWalrusFromCheckpoint,
+} from '../scripts/lib/expansion-pack-v8-pack-ceremony-adapters.mjs';
 
 const SIGNER = '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f';
 
@@ -110,6 +113,24 @@ test('atomic persistence rejects a symlink state target', async () => {
   const alias = join(directory, 'alias.json');
   await symlink(target, alias);
   await assert.rejects(atomicWriteJson0600(alias, { ok: false }), /never a symlink/);
+});
+
+test('submitted Walrus terminal checkpoints recover confirmation without signing or broadcasting', async () => {
+  const action = { id: 'walrus.pack.register-upload' };
+  const progress = { stage: 'uploaded', uploadSessionId: 'session', quiltBlobId: 'quilt',
+    blobObjectId: '0xblob', certificate: 'certificate', registerDigest: 'register',
+    checkpoint: { step: 'uploaded', blobId: 'quilt', rootHash: 'root', unencodedSize: 7, nonce: 'nonce' } };
+  const state = { locks: { [action.id]: { lock: { quiltBlobId: 'quilt',
+    checkpoint: { ...progress.checkpoint, step: 'encoded' } } } },
+    recovery: { currentActionIndex: 0, actions: [{ status: 'SUBMITTED',
+      submission: { registerDigest: 'register' } }] } };
+  let signatures = 0; let broadcasts = 0;
+  const result = await recoverWalrusFromCheckpoint({ action, state, progress,
+    sign: () => { signatures += 1; }, broadcast: () => { broadcasts += 1; } });
+  assert.equal(result.confirmation.registerDigest, 'register');
+  assert.equal(result.confirmation.uploaded, true);
+  assert.equal(signatures, 0);
+  assert.equal(broadcasts, 0);
 });
 
 test('stable authorization hashing is deterministic', () => {

@@ -214,6 +214,14 @@ function sameCheckpoint(actual, expected, label) {
   }
 }
 
+function sameEncodingIdentity(actual, expected, label) {
+  for (const key of ['blobId', 'rootHash', 'unencodedSize', 'nonce']) {
+    if (stableJson(actual?.[key]) !== stableJson(expected?.[key])) {
+      fail(`${label} encoding identity drifted at ${key}.`, 'PACK_CEREMONY_WALRUS_CHECKPOINT_DRIFT');
+    }
+  }
+}
+
 async function encodeWithIndex(extended, exact) {
   return extended.walrus.encodeQuilt({ blobs: exact.map(({ bytes, identifier, mediaType, kind }) => ({
     contents: bytes, identifier, tags: { 'content-type': mediaType, 'animacraft-kind': kind },
@@ -479,6 +487,65 @@ async function executeWalrus({ action, state, checkpoint }) {
   fail(`Unsupported Walrus action ${action.id}.`);
 }
 
+function certifiedConfirmation(action, progress) {
+  const manifestIdentifier = action.inputs.manifestIdentifier;
+  const registryRows = action.inputs.styles.map((style) => ({ partKey: style.partKey,
+    itemKey: style.itemKey, styleKey: style.styleKey,
+    assetBlobId: progress.filePatchIds[style.assetIdentifier], assetSha256: style.assetSha256,
+    assetSealId: style.assetSealId }));
+  return { uploadSessionId: progress.uploadSessionId, quiltBlobId: progress.quiltBlobId,
+    blobObjectId: progress.blobObjectId, certifyDigest: progress.certifyDigest,
+    certified: true, certificationVisible: true,
+    manifestQuiltPatchId: progress.filePatchIds[manifestIdentifier], manifestIdentifier,
+    manifestSha256: action.inputs.manifestSha256, filePatchIds: progress.filePatchIds,
+    styleRegistryCommitment: sha256(stableJson(registryRows)), walrusRecovery: progress };
+}
+
+export async function recoverWalrusFromCheckpoint({ action, state, progress }) {
+  const lock = state.locks?.[action.id]?.lock;
+  if (!lock || progress?.quiltBlobId !== lock.quiltBlobId) {
+    fail('Walrus terminal checkpoint differs from the exact action lock.',
+      'PACK_CEREMONY_WALRUS_CHECKPOINT_DRIFT');
+  }
+  const expectedStage = action.id === 'walrus.pack.prepare' ? 'encoded'
+    : action.id === 'walrus.pack.register-upload' ? 'uploaded'
+      : action.id === 'walrus.pack.certify' ? 'certified' : '';
+  assertWalrusCheckpoint(progress, expectedStage);
+  const checkpoint = progress.checkpoint || lock.checkpoint;
+  if (expectedStage === 'encoded') sameCheckpoint(checkpoint, lock.checkpoint, action.id);
+  else {
+    if (checkpoint.step !== 'uploaded') fail('Walrus uploaded checkpoint has the wrong SDK step.',
+      'PACK_CEREMONY_WALRUS_CHECKPOINT_DRIFT');
+    sameEncodingIdentity(checkpoint, lock.checkpoint, action.id);
+  }
+  if (expectedStage === 'encoded') return { confirmation: { uploadSessionId: progress.uploadSessionId,
+    quiltBlobId: progress.quiltBlobId, walrusRecovery: progress } };
+  if (expectedStage === 'uploaded') {
+    if (text(progress.registerDigest) !== text(state.recovery.actions[state.recovery.currentActionIndex]
+      ?.submission?.registerDigest)) fail('Walrus register digest drifted from the submitted recovery state.',
+      'PACK_CEREMONY_WALRUS_CHECKPOINT_DRIFT');
+    return { confirmation: { uploadSessionId: progress.uploadSessionId,
+      quiltBlobId: progress.quiltBlobId, blobObjectId: progress.blobObjectId,
+      registerDigest: progress.registerDigest, uploaded: true, walrusRecovery: progress } };
+  }
+  if (text(progress.certifyDigest) !== text(state.recovery.actions[state.recovery.currentActionIndex]
+    ?.submission?.certifyDigest)) fail('Walrus certify digest drifted from the submitted recovery state.',
+    'PACK_CEREMONY_WALRUS_CHECKPOINT_DRIFT');
+  const readiness = JSON.parse(await readFile(state.readiness.path, 'utf8'));
+  if (progress.readbacks?.length !== readiness.lock.walrus.files.length) {
+    fail('Walrus certified checkpoint is missing exact readbacks.', 'PACK_CEREMONY_WALRUS_CHECKPOINT_DRIFT');
+  }
+  for (const descriptor of readiness.lock.walrus.files) {
+    const readback = progress.readbacks.find((entry) => entry.identifier === descriptor.identifier);
+    if (!readback || readback.patchId !== progress.filePatchIds[descriptor.identifier]
+      || readback.sha256 !== descriptor.sha256 || readback.byteLength !== descriptor.byteLength) {
+      fail(`Walrus certified readback drifted for ${descriptor.identifier}.`,
+        'PACK_CEREMONY_WALRUS_CHECKPOINT_DRIFT');
+    }
+  }
+  return { confirmation: certifiedConfirmation(action, progress) };
+}
+
 export function createDefaultCeremonyAdapters() {
   return { lockSui: suiLock, lockWalrus: walrusLock,
     lockLocal: async ({ action }) => ({ kind: action.transport, actionId: action.id }),
@@ -491,8 +558,6 @@ export function createDefaultCeremonyAdapters() {
       Buffer.from(lock.transaction.bytesBase64, 'base64'), signed.signature,
       { address: state.plan.context.owner }),
     querySui, broadcastSui, waitSui, readbackSui,
-    executeWalrus,
-    recoverWalrus: async () => fail('Use execute with the persisted Walrus checkpoint; no alternate signature is allowed.',
-      'PACK_CEREMONY_WALRUS_USE_EXECUTE'),
+    executeWalrus, recoverWalrus: recoverWalrusFromCheckpoint,
   };
 }
