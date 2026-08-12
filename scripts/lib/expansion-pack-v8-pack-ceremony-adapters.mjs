@@ -18,6 +18,7 @@ import {
 import {
   assertWalrusCheckpoint,
   candidateFileBytes,
+  loadActualConfiguration,
   sha256,
   stableJson,
 } from './expansion-pack-v8-pack-ceremony.mjs';
@@ -50,19 +51,12 @@ function simulation(value) {
     events: tx.events, objectTypes: tx.objectTypes, commandResults: tx.commandResults });
 }
 
-async function runtimeFor(state) {
-  const publicSource = await readFile(`${state.repoRoot}/public/config.js`, 'utf8');
-  const field = (name) => text(publicSource.match(new RegExp(`${name}:\\s*['\"]([^'\"]+)['\"]`))?.[1]);
-  return {
-    grpcUrl: state.plan.context.grpcUrl || field('grpcUrl'),
-    walrusAggregatorUrl: state.plan.context.walrusAggregatorUrl || field('walrusAggregatorUrl'),
-    walrusUploadRelayUrl: state.plan.context.walrusUploadRelayUrl || field('walrusUploadRelayUrl'),
-    expansionPackV8ReleaseEnabled: true,
-    ...state.plan.context,
-  };
+export async function ceremonyRuntimeFor(state) {
+  const { runtime } = await loadActualConfiguration(state.repoRoot);
+  return Object.freeze({ ...runtime, expansionPackV8ReleaseEnabled: true });
 }
 async function clientFor(state) {
-  const runtime = await runtimeFor(state);
+  const runtime = await ceremonyRuntimeFor(state);
   return { runtime, client: new SuiGrpcClient({ network: 'mainnet', baseUrl: runtime.grpcUrl }) };
 }
 

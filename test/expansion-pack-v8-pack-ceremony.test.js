@@ -15,6 +15,7 @@ import {
 } from '../scripts/lib/expansion-pack-v8-pack-ceremony.mjs';
 import {
   encodeCeremonyQuiltPatchId,
+  ceremonyRuntimeFor,
   recoverWalrusFromCheckpoint,
 } from '../scripts/lib/expansion-pack-v8-pack-ceremony-adapters.mjs';
 
@@ -131,6 +132,21 @@ test('submitted Walrus terminal checkpoints recover confirmation without signing
   assert.equal(result.confirmation.uploaded, true);
   assert.equal(signatures, 0);
   assert.equal(broadcasts, 0);
+});
+
+test('ceremony verifier runtime preserves complete normalized Mainnet identities', async () => {
+  const repoRoot = join(new URL('..', import.meta.url).pathname);
+  const runtime = await ceremonyRuntimeFor({ repoRoot, plan: { context: {} } });
+  const publicSource = await readFile(join(repoRoot, 'public/config.js'), 'utf8');
+  for (const field of ['commerceV5TypeOriginPackageId', 'commerceV5CallablePackageId',
+    'originalPackageId', 'protocolFeePackageId', 'protocolFeeConfigId',
+    'protocolTreasuryId', 'protocolFeeAdminCapId']) {
+    const expected = publicSource.match(new RegExp(`${field}:\\s*['\"]([^'\"]+)['\"]`))?.[1];
+    assert.ok(expected, `${field} must exist in public config`);
+    assert.equal(runtime[field], expected);
+  }
+  assert.equal(runtime.commerceV5ReleaseEnabled, false);
+  assert.equal(runtime.expansionPackV8ReleaseEnabled, true);
 });
 
 test('stable authorization hashing is deterministic', () => {
