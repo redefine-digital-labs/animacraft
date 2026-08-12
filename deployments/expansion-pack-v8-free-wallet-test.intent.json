@@ -181,19 +181,19 @@
       }
     },
     "parentFinalize": {
-      "gasPriceMist": "",
-      "gasBudgetMist": "",
+      "gasPriceMist": "100",
+      "gasBudgetMist": "300000000",
       "gasMode": "address-balance",
       "payment": [],
       "expiration": {
-        "minEpoch": "",
-        "maxEpoch": "",
+        "minEpoch": "1217",
+        "maxEpoch": "1218",
         "minTimestamp": null,
         "maxTimestamp": null,
         "chain": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
-        "nonce": 0
+        "nonce": 4014638497
       },
-      "note": "Must be regenerated after the corrective package upgrade, exact zero-history audit hash, and evidence binding readback. Never reuse the retired parentStyles/parentSeal inputs."
+      "note": "Regenerated after the corrective package upgrade and exact evidence binding readback. The final lock must re-anchor zero-history and simulate the single atomic finalizer; never reuse the retired parentStyles/parentSeal inputs."
     }
   }
 }
