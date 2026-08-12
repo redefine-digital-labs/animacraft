@@ -778,6 +778,14 @@ test('current activation block binds the exact pre-gate receipt and readback', a
   assert.equal(activation.lifecycle, 'ACTIVE');
   assert.equal(activation.accessMode, 'FREE');
   assert.equal(activation.sealPolicyId, '');
+  assert.equal(
+    activation.receiptEvidence.path,
+    'deployments/expansion-pack-v8-pack-ceremony-receipt.json',
+  );
+  assert.equal(
+    activation.readbackEvidence.path,
+    'deployments/expansion-pack-v8-mainnet-readback.json',
+  );
   const status = await inspectExpansionPackV8ActivationEvidence(current.deployment);
   assert.equal(status.declared, true);
   assert.equal(status.ready, true, status.detail);

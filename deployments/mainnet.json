@@ -312,12 +312,12 @@
           ]
         },
         "receiptEvidence": {
-          "path": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/pack-ceremony-receipt.json",
+          "path": "deployments/expansion-pack-v8-pack-ceremony-receipt.json",
           "fileSha256": "4380b0708f64570e789ece49a96f732515ec49c23a4cb436993789413a96ef96",
           "contentSha256": "078c15e59c3b594c448271f21d5829feb2a4de35df2d6b75d9a6d79c50fcf10f"
         },
         "readbackEvidence": {
-          "path": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/pack-mainnet-readback.json",
+          "path": "deployments/expansion-pack-v8-mainnet-readback.json",
           "fileSha256": "1033348b92de24a81801dcb257fd6eee3920ef412e16c2cf9a474cab3d25fa6a"
         }
       },
