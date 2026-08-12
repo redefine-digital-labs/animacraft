@@ -518,10 +518,13 @@ test('Expansion Pack v8 package identities are paired and release stays fail-clo
     defaults.independentExtensionV5TypeOriginPackageId,
     defaults.expansionPackV8CallablePackageId,
   );
-  assert.equal(defaults.independentExtensionAuthorityV5Id, '');
+  assert.equal(
+    defaults.independentExtensionAuthorityV5Id,
+    '0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19',
+  );
   assert.equal(result.expansionPackV8CoreReady, true);
   assert.equal(result.independentExtensionV5TypeOriginPackageReady, true);
-  assert.equal(result.independentExtensionAuthorityV5Ready, false);
+  assert.equal(result.independentExtensionAuthorityV5Ready, true);
 
   const partial = productionConfig();
   partial.expansionPackV8TypeOriginPackageId = '';
@@ -533,6 +536,7 @@ test('Expansion Pack v8 package identities are paired and release stays fail-clo
   );
 
   const packageOnly = productionConfig();
+  packageOnly.independentExtensionAuthorityV5Id = '';
   result = validateRuntimeConfig(packageOnly, { strict: true });
   assert.equal(result.valid, true, result.errors.join('\n'));
   assert.equal(result.independentExtensionV5Ready, false);

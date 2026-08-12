@@ -103,9 +103,9 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   expansionPackV8TypeOriginPackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
   independentExtensionV5TypeOriginPackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
   legacyLogicalV5TypeOriginPackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
-  // Created only by the separately reviewed parent-finalization transaction.
-  // Package-only gate-false state therefore records an empty Authority ID.
-  independentExtensionAuthorityV5Id: '',
+  // Shared Authority created by the separately reviewed atomic parent
+  // finalizer. Its presence is evidence only and does not enable v8.
+  independentExtensionAuthorityV5Id: '0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19',
   expansionPackV8ReleaseEnabled: false,
   // Seal remains fail-closed until the reviewed v5 package and an authenticated
   // Mainnet committee endpoint are configured. One committee is one outer

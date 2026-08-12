@@ -1,7 +1,7 @@
 {
   "schemaVersion": "animacraft.expansion-pack-v8-free-wallet-test-intent.v1",
   "phase": "animacraft-expansion-pack-v8-wallet-test-activation",
-  "status": "atomic-parent-finalization-readiness",
+  "status": "parent-finalized-pack-publication-readiness",
   "network": {
     "name": "mainnet",
     "chainIdentifier": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
@@ -22,6 +22,7 @@
     "commerceV5CallablePackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
     "independentExtensionV5TypeOriginPackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
     "legacyLogicalV5TypeOriginPackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
+    "independentExtensionAuthorityV5Id": "0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19",
     "correctiveUpgradeEvidence": {
       "resultPath": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/v8-mainnet-corrective-upgrade-result.json",
       "abiReadbackPath": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/v8-mainnet-corrective-upgrade-abi-readback.json",
@@ -83,8 +84,25 @@
       "treasuryId": "0xd15c5d46862f9f7e0f2c0f133bc0659ad017696e77bf6bd7b7327851d11912d0",
       "controlVaultId": "0xfbdb00635113aea90281baf329516512d41cc0020d9221bcadbcd2670583d1ed",
       "controlCapId": "0x0b65aeb7cf70ff54fa8242275468b905e9b2643280330d04645131b6b7b61b93",
+      "retiredControlCapId": "0x0b65aeb7cf70ff54fa8242275468b905e9b2643280330d04645131b6b7b61b93",
+      "authorityId": "0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19",
+      "lockedOwnershipEpoch": "1",
       "migrationTransactionDigest": "7ZBCscHFvD4ZEvEGa3wgnMjBz6Q2FiUaSc8Env3z5Jfk",
       "migrationEvidencePath": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/parent-migration-result.json"
+    },
+    "finalization": {
+      "status": "success",
+      "transactionDigest": "9k3Zz7vyApXSCLWxFoJxqoMVxVN6vtwoBYp1BsHU5WCb",
+      "checkpoint": "309767464",
+      "checkpointDigest": "2uwJMcMG2nwsAaGkHHz1ZRCteLd9yki24J5xLGNnBmAD",
+      "finalizedAtMs": "1786522284537",
+      "authorityId": "0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19",
+      "auditHash": "7c2079974e4f59f4accec446124c0ed7f394d9114b8c99393be1265cca3cf658",
+      "lockFingerprintSha256": "a46cbf589aad792ecc7c2bd1ede42e52dc4522e0fc6180c631356ef30a5d9c8a",
+      "lockEvidencePath": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/parent-finalize-lock.json",
+      "lockEvidenceSha256": "77cccfe40673bc465b23b476c2f9905746e33a612e7f5011d7d1a150a4f045b9",
+      "resultEvidencePath": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/parent-finalize-result.json",
+      "resultEvidenceSha256": "c3833a3d10b93f1b4ea7e3dc447ec19ac5f4d17e5cfe1af8ea0dfd4ea3e5cb3e"
     }
   },
   "pack": {
@@ -181,6 +199,7 @@
       }
     },
     "parentFinalize": {
+      "status": "finalized",
       "gasPriceMist": "100",
       "gasBudgetMist": "300000000",
       "gasMode": "address-balance",
@@ -193,6 +212,9 @@
         "chain": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
         "nonce": 4014638497
       },
+      "transactionDigest": "9k3Zz7vyApXSCLWxFoJxqoMVxVN6vtwoBYp1BsHU5WCb",
+      "checkpoint": "309767464",
+      "lockFingerprintSha256": "a46cbf589aad792ecc7c2bd1ede42e52dc4522e0fc6180c631356ef30a5d9c8a",
       "note": "Regenerated after the corrective package upgrade and exact evidence binding readback. The final lock must re-anchor zero-history and simulate the single atomic finalizer; never reuse the retired parentStyles/parentSeal inputs."
     }
   }

@@ -98,7 +98,10 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(runtime.expansionPackV8TypeOriginPackageId, EXPANSION_PACK_V8_MAINNET.typeOriginPackageId);
   assert.equal(runtime.independentExtensionV5TypeOriginPackageId, EXPANSION_PACK_V8_MAINNET.packageId);
   assert.equal(runtime.legacyLogicalV5TypeOriginPackageId, EXPANSION_PACK_V8_MAINNET.packageId);
-  assert.equal(runtime.independentExtensionAuthorityV5Id, '');
+  assert.equal(
+    runtime.independentExtensionAuthorityV5Id,
+    '0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19',
+  );
   assert.equal(runtime.expansionPackV8ReleaseEnabled, false);
   assert.equal(deployment.expansionPackV8CallablePackageId, EXPANSION_PACK_V8_MAINNET.packageId);
   assert.equal(deployment.expansionPackV8TypeOriginPackageId, EXPANSION_PACK_V8_MAINNET.typeOriginPackageId);
@@ -139,6 +142,33 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
     BigInt(deployment.releases.expansionPackV8.gasUsedMist),
   );
   assert.equal(deployment.releases.expansionPackV8.enabled, false);
+  const parentFinalization = deployment.releases.expansionPackV8.parentFinalization;
+  assert.equal(parentFinalization.status, 'success');
+  assert.equal(
+    parentFinalization.transactionDigest,
+    '9k3Zz7vyApXSCLWxFoJxqoMVxVN6vtwoBYp1BsHU5WCb',
+  );
+  assert.equal(parentFinalization.checkpoint, '309767464');
+  assert.equal(parentFinalization.lifecycle, 'PAUSED');
+  assert.equal(parentFinalization.ownershipEpoch, '1');
+  assert.equal(parentFinalization.styleRegistrySealed, true);
+  assert.deepEqual(parentFinalization.styleCounts, {
+    visual: 19,
+    logicalNone: 3,
+    logicalColor: 4,
+    total: 26,
+  });
+  assert.equal(parentFinalization.packCount, 0);
+  assert.equal(parentFinalization.treasuryBalanceAtomic, '0');
+  assert.equal(parentFinalization.authorityId, runtime.independentExtensionAuthorityV5Id);
+  assert.equal(parentFinalization.retiredControlCap.deletionEffect, 'Deleted');
+  assert.equal(parentFinalization.retiredControlCap.readbackStatus, 'unavailable');
+  assert.equal(
+    BigInt(parentFinalization.gasComputationCostMist)
+      + BigInt(parentFinalization.gasStorageCostMist)
+      - BigInt(parentFinalization.gasStorageRebateMist),
+    BigInt(parentFinalization.gasUsedMist),
+  );
   assert.equal(deployment.verification.expansionPackV8UpgradeTransactionStatus, 'success');
   assert.equal(deployment.verification.expansionPackV8SourceStatus, 'success');
   assert.equal(deployment.verification.expansionPackV8PackageReadBack, true);

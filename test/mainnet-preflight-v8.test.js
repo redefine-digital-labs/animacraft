@@ -6,6 +6,7 @@ import {
   expansionPackV8Declared,
   inspectExpansionPackV8PackageAbi,
   inspectExpansionPackV8Deployment,
+  inspectExpansionPackV8ParentFinalizationEvidence,
   inspectCompositionV6RetirementEvidence,
 } from '../scripts/mainnet-preflight.mjs';
 
@@ -24,6 +25,7 @@ const UPGRADE_DIGEST = '1'.repeat(43);
 const PACKAGE_DIGEST = '2'.repeat(43);
 const SOURCE_COMMIT = 'a'.repeat(40);
 const SOURCE_TREE = 'b'.repeat(40);
+const AUTHORITY = '0xa888';
 const MAINNET_V8 = Object.freeze({
   packageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
   typeOriginPackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
@@ -33,7 +35,61 @@ const MAINNET_V8 = Object.freeze({
   sourceCommit: '3c2ffeeb86be6df2cd1f278454a72f5d02c796ea',
   sourceTree: '0872c4142ee5e811594efbadba032b7b21e5b57c',
   packageDigest: 'D9vH1VMhqckfGKP6kxbCzZsFuQa4gGhrdhNntAxCfaqe',
+  authorityId: '0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19',
+  parentFinalizationTxDigest: '9k3Zz7vyApXSCLWxFoJxqoMVxVN6vtwoBYp1BsHU5WCb',
+  parentFinalizationCheckpoint: '309767464',
 });
+
+function parentFinalization(overrides = {}) {
+  return {
+    status: 'success',
+    chainIdentifier: 'test-mainnet-chain',
+    transactionDigest: '3'.repeat(43),
+    checkpoint: '400000001',
+    checkpointDigest: '4'.repeat(43),
+    finalizedAtMs: '1800000000001',
+    rootId: '0xb001',
+    treasuryId: '0xb002',
+    legacyMakerId: '0xb003',
+    owner: '0xb004',
+    protocolConfigId: '0xb005',
+    protocolAdminCapId: '0xb006',
+    authorityId: AUTHORITY,
+    authorityTypeOriginPackageId: INDEPENDENT_EXTENSION_TYPE_ORIGIN,
+    retiredControlCap: {
+      id: '0xb007',
+      deletionEffect: 'Deleted',
+      readbackStatus: 'unavailable',
+    },
+    lifecycle: 'PAUSED',
+    lifecycleCode: 1,
+    retiredControlCapEpoch: '0',
+    ownershipEpoch: '1',
+    styleCounts: { visual: 19, logicalNone: 3, logicalColor: 4, total: 26 },
+    styleRegistrySealed: true,
+    packCount: 0,
+    paidPackCount: 0,
+    completeOutputCount: 0,
+    activeListingId: '',
+    treasuryBalanceAtomic: '0',
+    requiresSealPolicy: false,
+    sealPolicyBound: false,
+    auditHash: '5'.repeat(64),
+    lockFingerprintSha256: '6'.repeat(64),
+    resultPath: 'test/fixtures/parent-finalize-result.json',
+    resultSha256: '7'.repeat(64),
+    authorityShared: true,
+    gasUsedMist: '250',
+    gasComputationCostMist: '100',
+    gasStorageCostMist: '200',
+    gasStorageRebateMist: '50',
+    gasNonRefundableStorageFeeMist: '10',
+    legacyLogicalEventCount: 7,
+    finalizedEventCount: 1,
+    zeroHistoryTrustedClear: true,
+    ...overrides,
+  };
+}
 
 function runtime(overrides = {}) {
   return {
@@ -41,7 +97,7 @@ function runtime(overrides = {}) {
     expansionPackV8TypeOriginPackageId: TYPE_ORIGIN,
     independentExtensionV5TypeOriginPackageId: INDEPENDENT_EXTENSION_TYPE_ORIGIN,
     legacyLogicalV5TypeOriginPackageId: CALLABLE,
-    independentExtensionAuthorityV5Id: '0xa888',
+    independentExtensionAuthorityV5Id: AUTHORITY,
     expansionPackV8ReleaseEnabled: true,
     ...overrides,
   };
@@ -54,7 +110,7 @@ function deployment(overrides = {}) {
     expansionPackV8TypeOriginPackageId: TYPE_ORIGIN,
     independentExtensionV5TypeOriginPackageId: INDEPENDENT_EXTENSION_TYPE_ORIGIN,
     legacyLogicalV5TypeOriginPackageId: CALLABLE,
-    independentExtensionAuthorityV5Id: '0xa888',
+    independentExtensionAuthorityV5Id: AUTHORITY,
     expansionPackV8ReleaseEnabled: true,
     upgradeTxDigest: UPGRADE_DIGEST,
     upgradeCheckpoint: '400000000',
@@ -80,6 +136,7 @@ function deployment(overrides = {}) {
         packageObjectDigest: PACKAGE_DIGEST,
         upgradeCapPackageVersion: '7',
         upgradePolicy: 0,
+        parentFinalization: parentFinalization(),
         enabled: true,
       },
     },
@@ -88,6 +145,11 @@ function deployment(overrides = {}) {
       expansionPackV8UpgradeTransactionStatus: 'success',
       expansionPackV8SourceStatus: 'success',
       expansionPackV8PackageReadBack: true,
+      expansionPackV8ParentFinalizationStatus: 'success',
+      expansionPackV8ParentFinalizationReadBack: true,
+      expansionPackV8ParentAuthorityShared: true,
+      expansionPackV8ParentControlCapDeleted: true,
+      expansionPackV8ParentZeroHistoryClear: true,
       expansionPackV8Enabled: true,
     },
     ...overrides,
@@ -585,7 +647,7 @@ test('current Mainnet v8 tuple is fully evidenced while intentionally disabled',
   assert.equal(current.config.expansionPackV8TypeOriginPackageId, MAINNET_V8.typeOriginPackageId);
   assert.equal(current.config.independentExtensionV5TypeOriginPackageId, MAINNET_V8.packageId);
   assert.equal(current.config.legacyLogicalV5TypeOriginPackageId, MAINNET_V8.packageId);
-  assert.equal(current.config.independentExtensionAuthorityV5Id, '');
+  assert.equal(current.config.independentExtensionAuthorityV5Id, MAINNET_V8.authorityId);
   assert.equal(current.config.expansionPackV8ReleaseEnabled, false);
   assert.equal(current.deployment.expansionPackV8CallablePackageId, MAINNET_V8.packageId);
   assert.equal(current.deployment.expansionPackV8TypeOriginPackageId, MAINNET_V8.typeOriginPackageId);
@@ -598,6 +660,18 @@ test('current Mainnet v8 tuple is fully evidenced while intentionally disabled',
   assert.equal(current.deployment.releases.expansionPackV8.sourceCommit, MAINNET_V8.sourceCommit);
   assert.equal(current.deployment.releases.expansionPackV8.sourceTree, MAINNET_V8.sourceTree);
   assert.equal(current.deployment.releases.expansionPackV8.packageDigest, MAINNET_V8.packageDigest);
+  assert.equal(
+    current.deployment.releases.expansionPackV8.parentFinalization.transactionDigest,
+    MAINNET_V8.parentFinalizationTxDigest,
+  );
+  assert.equal(
+    current.deployment.releases.expansionPackV8.parentFinalization.checkpoint,
+    MAINNET_V8.parentFinalizationCheckpoint,
+  );
+  assert.equal(
+    current.deployment.releases.expansionPackV8.parentFinalization.authorityId,
+    MAINNET_V8.authorityId,
+  );
   assert.equal(current.deployment.releases.expansionPackV8.enabled, false);
   assert.equal(current.deployment.verification.expansionPackV8PackageReadBack, true);
   assert.equal(current.deployment.verification.expansionPackV8Enabled, false);
@@ -630,6 +704,10 @@ test('required v8 ceremony accepts the fully evidenced gate-false record', async
   assert.deepEqual(status.deploymentMissing, []);
   assert.deepEqual(status.deploymentInvalid, []);
   assert.deepEqual(status.mismatches, []);
+  const parentEvidence = await inspectExpansionPackV8ParentFinalizationEvidence(
+    current.deployment,
+  );
+  assert.equal(parentEvidence.ready, true, parentEvidence.detail);
   const retirement = inspectCompositionV6RetirementEvidence(current.deployment);
   assert.equal(retirement.ready, true, retirement.detail);
   assert.equal(retirement.retiredEntryPoints.length, 19);
@@ -646,7 +724,7 @@ test('enabled v8 requires one exact runtime, release and verification evidence t
   assert.deepEqual(status.mismatches, []);
 });
 
-test('a fully evidenced v8 deployment may remain gated off before Authority finalization', () => {
+test('a finalized gate-false v8 deployment rejects a missing Authority', () => {
   const config = runtime({
     independentExtensionAuthorityV5Id: '',
     expansionPackV8ReleaseEnabled: false,
@@ -659,7 +737,59 @@ test('a fully evidenced v8 deployment may remain gated off before Authority fina
   record.verification.expansionPackV8Enabled = false;
   const status = inspectExpansionPackV8Deployment(config, record);
   assert.equal(status.declared, true);
-  assert.equal(status.ready, true, JSON.stringify(status, null, 2));
+  assert.equal(status.ready, false);
+  assert.ok(status.runtimeMissing.includes('independentExtensionAuthorityV5Id'));
+  assert.ok(status.deploymentMissing.includes('independentExtensionAuthorityV5Id'));
+});
+
+test('a finalized gate-false v8 deployment rejects Authority and audit drift', () => {
+  const record = deployment();
+  record.releases.expansionPackV8.parentFinalization.authorityId = '0xa889';
+  record.releases.expansionPackV8.parentFinalization.auditHash = 'z'.repeat(64);
+  record.releases.expansionPackV8.enabled = false;
+  record.expansionPackV8ReleaseEnabled = false;
+  record.verification.expansionPackV8Enabled = false;
+  const status = inspectExpansionPackV8Deployment(
+    runtime({ expansionPackV8ReleaseEnabled: false }),
+    record,
+    { required: true },
+  );
+  assert.equal(status.ready, false);
+  assert.ok(status.mismatches.includes(
+    'releases.expansionPackV8.parentFinalization.authorityId',
+  ));
+  assert.ok(status.deploymentInvalid.includes(
+    'releases.expansionPackV8.parentFinalization.auditHash',
+  ));
+});
+
+test('a finalized gate-false v8 deployment rejects stale finalization claims', () => {
+  const record = deployment();
+  record.verification.expansionPackV8ParentAuthorityShared = false;
+  record.verification.expansionPackV8ParentControlCapDeleted = false;
+  const status = inspectExpansionPackV8Deployment(runtime(), record);
+  assert.equal(status.ready, false);
+  assert.ok(status.deploymentInvalid.includes(
+    'verification.expansionPackV8ParentAuthorityShared',
+  ));
+  assert.ok(status.deploymentInvalid.includes(
+    'verification.expansionPackV8ParentControlCapDeleted',
+  ));
+});
+
+test('a finalized v8 deployment rejects lifecycle, registry and gas drift', () => {
+  const record = deployment();
+  const evidence = record.releases.expansionPackV8.parentFinalization;
+  evidence.lifecycle = 'ACTIVE';
+  evidence.styleCounts.total = 25;
+  evidence.gasUsedMist = '251';
+  const status = inspectExpansionPackV8Deployment(runtime(), record);
+  assert.equal(status.ready, false);
+  for (const field of [
+    'releases.expansionPackV8.parentFinalization.lifecycle',
+    'releases.expansionPackV8.parentFinalization.styleCounts.total',
+    'releases.expansionPackV8.parentFinalization.gasUsedMist',
+  ]) assert.ok(status.deploymentInvalid.includes(field), field);
 });
 
 test('required gate-false v8 fails closed without independent-extension TypeOrigin evidence', () => {
@@ -901,6 +1031,7 @@ test('any partially populated v8 tuple fails closed', () => {
     'expansionPackV8TypeOriginPackageId',
     'independentExtensionV5TypeOriginPackageId',
     'legacyLogicalV5TypeOriginPackageId',
+    'independentExtensionAuthorityV5Id',
   ]);
   assert.ok(status.deploymentMissing.includes('expansionPackV8TypeOriginPackageId'));
   assert.ok(status.deploymentMissing.includes(

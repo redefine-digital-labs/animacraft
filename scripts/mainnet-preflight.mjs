@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { Buffer } from 'node:buffer';
 import vm from 'node:vm';
@@ -11,6 +12,13 @@ import {
   normalizeRuntimeConfig,
   validateRuntimeConfig,
 } from '../runtime-config.js';
+import {
+  parseIndependentExtensionAuthorityV5,
+  parseMakerRootV5,
+  parseMakerTreasuryV5,
+  queryStyleBindingsV5,
+} from '../chain-commerce-v5.js';
+import { queryIndependentExtensionLockV5 } from '../expansion-pack-publication-v8-app.js';
 
 const args = new Set(process.argv.slice(2));
 const strict = args.has('--strict');
@@ -99,11 +107,66 @@ export const EXPANSION_PACK_V8_VERIFICATION_FIELDS = Object.freeze([
   'expansionPackV8UpgradeTransactionStatus',
   'expansionPackV8SourceStatus',
   'expansionPackV8PackageReadBack',
+  'expansionPackV8ParentFinalizationStatus',
+  'expansionPackV8ParentFinalizationReadBack',
+  'expansionPackV8ParentAuthorityShared',
+  'expansionPackV8ParentControlCapDeleted',
+  'expansionPackV8ParentZeroHistoryClear',
   'expansionPackV8Enabled',
+]);
+
+export const EXPANSION_PACK_V8_PARENT_FINALIZATION_FIELDS = Object.freeze([
+  'status',
+  'chainIdentifier',
+  'transactionDigest',
+  'checkpoint',
+  'checkpointDigest',
+  'finalizedAtMs',
+  'rootId',
+  'treasuryId',
+  'legacyMakerId',
+  'owner',
+  'protocolConfigId',
+  'protocolAdminCapId',
+  'authorityId',
+  'authorityTypeOriginPackageId',
+  'retiredControlCap.id',
+  'retiredControlCap.deletionEffect',
+  'retiredControlCap.readbackStatus',
+  'lifecycle',
+  'lifecycleCode',
+  'retiredControlCapEpoch',
+  'ownershipEpoch',
+  'styleCounts.visual',
+  'styleCounts.logicalNone',
+  'styleCounts.logicalColor',
+  'styleCounts.total',
+  'styleRegistrySealed',
+  'packCount',
+  'paidPackCount',
+  'completeOutputCount',
+  'activeListingId',
+  'treasuryBalanceAtomic',
+  'requiresSealPolicy',
+  'sealPolicyBound',
+  'auditHash',
+  'lockFingerprintSha256',
+  'resultPath',
+  'resultSha256',
+  'authorityShared',
+  'gasUsedMist',
+  'gasComputationCostMist',
+  'gasStorageCostMist',
+  'gasStorageRebateMist',
+  'gasNonRefundableStorageFeeMist',
+  'legacyLogicalEventCount',
+  'finalizedEventCount',
+  'zeroHistoryTrustedClear',
 ]);
 
 const SUI_TRANSACTION_DIGEST = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/;
 const GIT_OBJECT_ID = /^[0-9a-f]{40}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 export const COMPOSITION_V6_RETIRED_ENTRY_POINTS = Object.freeze([
   'create_maker_profile_v6',
   'seal_maker_profile_v6',
@@ -240,15 +303,14 @@ export function inspectExpansionPackV8Deployment(
 
   const release = deployment.releases?.expansionPackV8 || {};
   const verification = deployment.verification || {};
-  const activationEvidenceRequired = config.expansionPackV8ReleaseEnabled === true
-    || deployment.expansionPackV8ReleaseEnabled === true
-    || release.enabled === true
-    || verification.expansionPackV8Enabled === true;
+  const parentFinalization = release.parentFinalization || {};
+  const parentFinalizationDeclared = Boolean(
+    parentFinalization && typeof parentFinalization === 'object'
+      && Object.keys(parentFinalization).length,
+  );
   const runtimeMissing = EXPANSION_PACK_V8_RUNTIME_FIELDS.filter((field) => (
     field === 'expansionPackV8ReleaseEnabled'
       ? typeof config[field] !== 'boolean'
-      : field === 'independentExtensionAuthorityV5Id'
-        ? activationEvidenceRequired && !present(config[field])
       : !present(config[field])
   ));
   const runtimeInvalid = [
@@ -265,7 +327,7 @@ export function inspectExpansionPackV8Deployment(
     'expansionPackV8TypeOriginPackageId',
     'independentExtensionV5TypeOriginPackageId',
     'legacyLogicalV5TypeOriginPackageId',
-    ...(activationEvidenceRequired ? ['independentExtensionAuthorityV5Id'] : []),
+    'independentExtensionAuthorityV5Id',
     'expansionPackV8ReleaseEnabled',
     ...EXPANSION_PACK_V8_RELEASE_EVIDENCE_FIELDS.map(
       (field) => `releases.expansionPackV8.${field}`,
@@ -273,15 +335,26 @@ export function inspectExpansionPackV8Deployment(
     ...EXPANSION_PACK_V8_VERIFICATION_FIELDS.map(
       (field) => `verification.${field}`,
     ),
+    ...EXPANSION_PACK_V8_PARENT_FINALIZATION_FIELDS.map(
+      (field) => `releases.expansionPackV8.parentFinalization.${field}`,
+    ),
   ];
   const booleanPaths = new Set([
     'expansionPackV8ReleaseEnabled',
     'releases.expansionPackV8.enabled',
     'verification.expansionPackV8PackageReadBack',
     'verification.expansionPackV8Enabled',
+    'releases.expansionPackV8.parentFinalization.styleRegistrySealed',
+    'releases.expansionPackV8.parentFinalization.requiresSealPolicy',
+    'releases.expansionPackV8.parentFinalization.sealPolicyBound',
+    'releases.expansionPackV8.parentFinalization.authorityShared',
+    'releases.expansionPackV8.parentFinalization.zeroHistoryTrustedClear',
   ]);
   const deploymentMissing = deploymentPaths.filter((path) => {
     const value = nestedValue(deployment, path);
+    if (path === 'releases.expansionPackV8.parentFinalization.activeListingId') {
+      return typeof value !== 'string';
+    }
     return booleanPaths.has(path) ? typeof value !== 'boolean' : !present(value);
   });
 
@@ -352,6 +425,104 @@ export function inspectExpansionPackV8Deployment(
     && verification.expansionPackV8PackageReadBack !== true) {
     deploymentInvalid.push('verification.expansionPackV8PackageReadBack');
   }
+  for (const [field, expected] of [
+    ['expansionPackV8ParentFinalizationStatus', 'success'],
+    ['expansionPackV8ParentFinalizationReadBack', true],
+    ['expansionPackV8ParentAuthorityShared', true],
+    ['expansionPackV8ParentControlCapDeleted', true],
+    ['expansionPackV8ParentZeroHistoryClear', true],
+  ]) {
+    if (present(verification[field]) && verification[field] !== expected) {
+      deploymentInvalid.push(`verification.${field}`);
+    }
+  }
+  if (parentFinalizationDeclared) {
+    const invalidParent = (field) => deploymentInvalid.push(
+      `releases.expansionPackV8.parentFinalization.${field}`,
+    );
+    const exactIds = [
+      'rootId', 'treasuryId', 'legacyMakerId', 'owner', 'protocolConfigId',
+      'protocolAdminCapId', 'authorityId', 'authorityTypeOriginPackageId',
+      'retiredControlCap.id',
+    ];
+    for (const field of exactIds) {
+      const value = nestedValue(parentFinalization, field);
+      if (present(value) && !validSuiId(value)) invalidParent(field);
+    }
+    if (parentFinalization.status !== 'success') invalidParent('status');
+    if (present(parentFinalization.transactionDigest)
+      && !SUI_TRANSACTION_DIGEST.test(String(parentFinalization.transactionDigest))) {
+      invalidParent('transactionDigest');
+    }
+    for (const field of ['checkpoint', 'finalizedAtMs']) {
+      if (present(parentFinalization[field]) && !positiveInteger(parentFinalization[field])) {
+        invalidParent(field);
+      }
+    }
+    if (present(parentFinalization.checkpoint)
+      && present(release.upgradeCheckpoint)
+      && BigInt(parentFinalization.checkpoint) < BigInt(release.upgradeCheckpoint)) {
+      invalidParent('checkpoint');
+    }
+    for (const field of [
+      'checkpointDigest', 'rootObjectDigest', 'authorityObjectDigest',
+    ]) {
+      if (present(parentFinalization[field])
+        && !SUI_TRANSACTION_DIGEST.test(String(parentFinalization[field]))) invalidParent(field);
+    }
+    for (const field of [
+      'auditHash', 'lockFingerprintSha256', 'lockEvidenceSha256',
+      'resultSha256', 'zeroHistoryAuditHash',
+    ]) {
+      if (present(parentFinalization[field])
+        && !SHA256.test(String(parentFinalization[field]))) invalidParent(field);
+    }
+    const exactValues = [
+      ['lifecycle', 'PAUSED'],
+      ['lifecycleCode', 1],
+      ['retiredControlCapEpoch', '0'],
+      ['ownershipEpoch', '1'],
+      ['styleCounts.visual', 19],
+      ['styleCounts.logicalNone', 3],
+      ['styleCounts.logicalColor', 4],
+      ['styleCounts.total', 26],
+      ['styleRegistrySealed', true],
+      ['packCount', 0],
+      ['paidPackCount', 0],
+      ['completeOutputCount', 0],
+      ['activeListingId', ''],
+      ['treasuryBalanceAtomic', '0'],
+      ['requiresSealPolicy', false],
+      ['sealPolicyBound', false],
+      ['retiredControlCap.deletionEffect', 'Deleted'],
+      ['retiredControlCap.readbackStatus', 'unavailable'],
+      ['authorityShared', true],
+      ['legacyLogicalEventCount', 7],
+      ['finalizedEventCount', 1],
+      ['zeroHistoryTrustedClear', true],
+    ];
+    for (const [field, expected] of exactValues) {
+      if (nestedValue(parentFinalization, field) !== expected) invalidParent(field);
+    }
+    for (const field of [
+      'gasUsedMist', 'gasComputationCostMist', 'gasStorageCostMist',
+      'gasStorageRebateMist', 'gasNonRefundableStorageFeeMist',
+    ]) {
+      if (present(parentFinalization[field])
+        && (!/^\d+$/.test(String(parentFinalization[field])))) invalidParent(field);
+    }
+    if ([
+      parentFinalization.gasUsedMist,
+      parentFinalization.gasComputationCostMist,
+      parentFinalization.gasStorageCostMist,
+      parentFinalization.gasStorageRebateMist,
+    ].every(present)) {
+      const net = BigInt(parentFinalization.gasComputationCostMist)
+        + BigInt(parentFinalization.gasStorageCostMist)
+        - BigInt(parentFinalization.gasStorageRebateMist);
+      if (net !== BigInt(parentFinalization.gasUsedMist)) invalidParent('gasUsedMist');
+    }
+  }
 
   const mismatches = [];
   const compareId = (path, actual, expected) => {
@@ -386,6 +557,38 @@ export function inspectExpansionPackV8Deployment(
     deployment.independentExtensionAuthorityV5Id,
     config.independentExtensionAuthorityV5Id,
   );
+  if (parentFinalizationDeclared) {
+    compareId(
+      'releases.expansionPackV8.parentFinalization.authorityId',
+      parentFinalization.authorityId,
+      config.independentExtensionAuthorityV5Id,
+    );
+    compareId(
+      'releases.expansionPackV8.parentFinalization.authorityTypeOriginPackageId',
+      parentFinalization.authorityTypeOriginPackageId,
+      config.independentExtensionV5TypeOriginPackageId,
+    );
+    compareId(
+      'releases.expansionPackV8.parentFinalization.protocolConfigId',
+      parentFinalization.protocolConfigId,
+      config.commerceProtocolConfigV5Id,
+    );
+    compareId(
+      'releases.expansionPackV8.parentFinalization.protocolAdminCapId',
+      parentFinalization.protocolAdminCapId,
+      config.protocolFeeAdminCapId,
+    );
+    compareId(
+      'releases.expansionPackV8.parentFinalization.owner',
+      parentFinalization.owner,
+      config.protocolFeeAdminCapOwner,
+    );
+    compareId(
+      'releases.expansionPackV8.parentFinalization.authorityId:deployment',
+      parentFinalization.authorityId,
+      deployment.independentExtensionAuthorityV5Id,
+    );
+  }
   compareId(
     'releases.expansionPackV8.callablePackageId',
     release.callablePackageId,
@@ -448,6 +651,114 @@ export function inspectExpansionPackV8Deployment(
     deploymentMissing,
     deploymentInvalid,
     mismatches,
+  };
+}
+
+export async function inspectExpansionPackV8ParentFinalizationEvidence(deployment = {}) {
+  const evidence = deployment.releases?.expansionPackV8?.parentFinalization || {};
+  const failures = [];
+  const failEvidence = (message) => failures.push(message);
+  const relativePath = String(evidence.resultPath || '');
+  let result;
+  let bytes;
+  try {
+    const resultUrl = new URL(relativePath, new URL('../', import.meta.url));
+    bytes = await readFile(resultUrl);
+    result = JSON.parse(bytes);
+  } catch (error) {
+    failEvidence(`result evidence unavailable: ${error.message}`);
+  }
+  if (bytes) {
+    const actualSha256 = createHash('sha256').update(bytes).digest('hex');
+    if (actualSha256 !== evidence.resultSha256) {
+      failEvidence('result evidence SHA-256 mismatch');
+    }
+  }
+  if (result) {
+    const gas = result.finalized?.effects?.gasUsed || {};
+    const expectedGas = {
+      computationCost: evidence.gasComputationCostMist,
+      storageCost: evidence.gasStorageCostMist,
+      storageRebate: evidence.gasStorageRebateMist,
+      nonRefundableStorageFee: evidence.gasNonRefundableStorageFeeMist,
+    };
+    const checks = [
+      [result.schemaVersion, 'animacraft.expansion-pack-v8-parent-stage-result.v1', 'schema'],
+      [result.stage, 'finalize', 'stage'],
+      [result.transactionDigest, evidence.transactionDigest, 'transaction digest'],
+      [result.checkpoint?.sequenceNumber, evidence.checkpoint, 'checkpoint'],
+      [result.checkpoint?.digest, evidence.checkpointDigest, 'checkpoint digest'],
+      [result.finalized?.effects?.status?.success, true, 'transaction status'],
+      [result.postState?.root?.objectId, evidence.rootId, 'Root ID'],
+      [result.postState?.root?.treasuryId, evidence.treasuryId, 'Treasury ID'],
+      [result.postState?.root?.legacyMakerId, evidence.legacyMakerId, 'legacy Maker ID'],
+      [result.postState?.root?.currentOwner, evidence.owner, 'Root owner'],
+      [result.postState?.root?.protocolConfigId, evidence.protocolConfigId, 'protocol Config ID'],
+      [result.postState?.root?.ownershipEpoch, evidence.ownershipEpoch, 'ownership epoch'],
+      [result.postState?.root?.lifecycle, evidence.lifecycleCode, 'Root lifecycle'],
+      [result.postState?.root?.styleRegistrySealed, true, 'registry sealed'],
+      [result.postState?.root?.styleCount, String(evidence.styleCounts?.total), 'style count'],
+      [result.postState?.root?.packCount, String(evidence.packCount), 'pack count'],
+      [result.postState?.root?.activeListingId, evidence.activeListingId, 'active listing'],
+      [result.postState?.root?.requiresSealPolicy, false, 'Seal requirement'],
+      [result.postState?.root?.sealPolicyBound, false, 'Seal policy'],
+      [result.postState?.makerTreasury?.balanceAtomic, evidence.treasuryBalanceAtomic, 'treasury balance'],
+      [result.postState?.authority?.objectId, evidence.authorityId, 'Authority ID'],
+      [result.postState?.authority?.protocolAdminCapId, evidence.protocolAdminCapId, 'protocol AdminCap'],
+      [result.postState?.authority?.rootId, evidence.rootId, 'Authority Root'],
+      [result.postState?.authority?.legacyMakerId, evidence.legacyMakerId, 'Authority legacy Maker'],
+      [result.postState?.authority?.protocolConfigId, evidence.protocolConfigId, 'Authority protocol Config'],
+      [result.postState?.authority?.owner, evidence.owner, 'Authority owner'],
+      [result.postState?.authority?.retiredControlCapId, evidence.retiredControlCap?.id, 'Authority retired cap'],
+      [result.postState?.authority?.retiredControlCapEpoch, evidence.retiredControlCapEpoch, 'Authority retired epoch'],
+      [result.postState?.authority?.lockedOwnershipEpoch, evidence.ownershipEpoch, 'Authority locked epoch'],
+      [result.postState?.authority?.auditHash?.replace(/^0x/, ''), evidence.auditHash, 'audit hash'],
+      [result.postState?.lock?.finalized, true, 'Root lock finalized'],
+      [result.postState?.lock?.rootId, evidence.rootId, 'lock Root'],
+      [result.postState?.lock?.authorityId, evidence.authorityId, 'lock Authority'],
+      [result.postState?.lock?.legacyMakerId, evidence.legacyMakerId, 'lock legacy Maker'],
+      [result.postState?.lock?.protocolConfigId, evidence.protocolConfigId, 'lock protocol Config'],
+      [result.postState?.lock?.protocolAdminCapId, evidence.protocolAdminCapId, 'lock protocol AdminCap'],
+      [result.postState?.lock?.owner, evidence.owner, 'lock owner'],
+      [result.postState?.lock?.retiredControlCapId, evidence.retiredControlCap?.id, 'lock retired cap'],
+      [result.postState?.lock?.retiredControlCapEpoch, evidence.retiredControlCapEpoch, 'lock retired epoch'],
+      [result.postState?.lock?.lockedOwnershipEpoch, evidence.ownershipEpoch, 'lock ownership epoch'],
+      [result.postState?.lock?.auditHash?.replace(/^0x/, ''), evidence.auditHash, 'lock audit hash'],
+      [result.postState?.retiredControlCap?.objectId, evidence.retiredControlCap?.id, 'retired cap ID'],
+      [result.postState?.retiredControlCap?.deletionEffect?.idOperation, evidence.retiredControlCap?.deletionEffect, 'cap deletion effect'],
+      [result.postState?.retiredControlCap?.status, evidence.retiredControlCap?.readbackStatus, 'cap readback'],
+      [result.lockFingerprintSha256, evidence.lockFingerprintSha256, 'lock fingerprint'],
+      [result.zeroHistoryContinuityEvidence?.trustedHistoryClear, true, 'zero-history continuation'],
+      [result.zeroHistoryContinuityEvidence?.auditHash, evidence.zeroHistoryAuditHash, 'zero-history audit hash'],
+      [result.zeroHistoryContinuityEvidence?.cutoff?.sequenceNumber, evidence.zeroHistoryCutoffCheckpoint, 'zero-history cutoff'],
+      [result.zeroHistoryContinuityEvidence?.chainIdentifier, evidence.chainIdentifier, 'chain identifier'],
+      [gas.computationCost, expectedGas.computationCost, 'gas computation'],
+      [gas.storageCost, expectedGas.storageCost, 'gas storage'],
+      [gas.storageRebate, expectedGas.storageRebate, 'gas rebate'],
+      [gas.nonRefundableStorageFee, expectedGas.nonRefundableStorageFee, 'gas non-refundable fee'],
+    ];
+    for (const [actual, expected, label] of checks) {
+      if (String(actual) !== String(expected)) failEvidence(`${label} mismatch`);
+    }
+    const rows = Array.isArray(result.postState?.styles) ? result.postState.styles : [];
+    const rowCounts = rows.reduce((counts, row) => {
+      const key = Number(row.rowKind);
+      counts[key] = (counts[key] || 0) + 1;
+      return counts;
+    }, {});
+    if (rowCounts[0] !== evidence.styleCounts?.visual
+      || rowCounts[1] !== evidence.styleCounts?.logicalNone
+      || rowCounts[2] !== evidence.styleCounts?.logicalColor
+      || rows.length !== evidence.styleCounts?.total) {
+      failEvidence('style split mismatch');
+    }
+  }
+  return {
+    ready: failures.length === 0,
+    failures,
+    detail: failures.length
+      ? failures.join('; ')
+      : 'Parent finalizer result hash, exact transaction, Root, Authority, lock, deleted ControlCap, 19/3/4 registry and zero-history continuation agree.',
   };
 }
 
@@ -1492,6 +1803,123 @@ async function checkExpansionPackV8PackageAbi(
     );
   } catch (error) {
     record('Animacraft Expansion Pack v8 package ABI', false, error.message);
+  }
+}
+
+async function checkExpansionPackV8ParentObjects(client, config, deployment) {
+  const evidence = deployment.releases?.expansionPackV8?.parentFinalization || {};
+  try {
+    const response = await deadline(
+      'Animacraft Expansion Pack v8 parent objects',
+      () => client.core.getObjects({
+        objectIds: [evidence.rootId, evidence.treasuryId, evidence.authorityId],
+        include: { json: true, owner: true },
+      }),
+    );
+    const [rootObject, treasuryObject, authorityObject] = response.objects || [];
+    if ([rootObject, treasuryObject, authorityObject].some((value) => (
+      !value || value instanceof Error || value.error || value.$kind === 'Error'
+    ))) throw new Error('Root, Treasury or Authority is unavailable.');
+    const root = parseMakerRootV5(rootObject);
+    const treasury = parseMakerTreasuryV5(treasuryObject);
+    const authority = parseIndependentExtensionAuthorityV5(authorityObject);
+    const lock = await queryIndependentExtensionLockV5(client.core, {
+      runtime: config,
+      rootId: evidence.rootId,
+    });
+    const styles = await queryStyleBindingsV5(client.core, root);
+    const counts = styles.reduce((result, row) => {
+      result[Number(row.rowKind)] = (result[Number(row.rowKind)] || 0) + 1;
+      return result;
+    }, {});
+    let retiredCapUnavailable = false;
+    try {
+      const retired = await client.core.getObjects({
+        objectIds: [evidence.retiredControlCap.id],
+        include: { json: true, owner: true },
+      });
+      const entry = retired.objects?.[0];
+      const message = String(entry?.message || entry?.error?.message || entry || '');
+      retiredCapUnavailable = Boolean(
+        entry instanceof Error
+          ? message.includes(evidence.retiredControlCap.id)
+            && /not found|does not exist|deleted/i.test(message)
+          : entry?.error && message.includes(evidence.retiredControlCap.id)
+            && /not found|does not exist|deleted/i.test(message),
+      );
+    } catch (error) {
+      const message = String(error?.message || error);
+      retiredCapUnavailable = message.includes(evidence.retiredControlCap.id)
+        && /not found|does not exist|deleted/i.test(message);
+    }
+    const rootType = `${config.commerceV5TypeOriginPackageId}::commerce_v5::MakerRootV5`;
+    const treasuryType = `${config.commerceV5TypeOriginPackageId}::commerce_v5::MakerTreasuryV5<${config.paymentCoinType}>`;
+    const authorityType = `${config.independentExtensionV5TypeOriginPackageId}::commerce_v5::IndependentExtensionAuthorityV5`;
+    const ready = normalizeSuiAddress(root.objectId) === normalizeSuiAddress(evidence.rootId)
+      && normalizedStructTag(root.type) === normalizedStructTag(rootType)
+      && normalizeSuiAddress(root.treasuryId) === normalizeSuiAddress(evidence.treasuryId)
+      && normalizeSuiAddress(root.legacyMakerId) === normalizeSuiAddress(evidence.legacyMakerId)
+      && normalizeSuiAddress(root.protocolConfigId) === normalizeSuiAddress(evidence.protocolConfigId)
+      && normalizeSuiAddress(root.currentOwner) === normalizeSuiAddress(evidence.owner)
+      && normalizeSuiAddress(root.currentControlCapId)
+        === normalizeSuiAddress(evidence.retiredControlCap.id)
+      && root.lifecycle === evidence.lifecycleCode
+      && root.ownershipEpoch === BigInt(evidence.ownershipEpoch)
+      && root.styleRegistrySealed === true
+      && root.styleCount === BigInt(evidence.styleCounts.total)
+      && root.packCount === 0n
+      && root.paidPackCount === 0n
+      && root.completeOutputCount === 0n
+      && root.activeListingId === ''
+      && root.requiresSealPolicy === false
+      && root.sealPolicyBound === false
+      && normalizeSuiAddress(treasury.objectId) === normalizeSuiAddress(evidence.treasuryId)
+      && normalizedStructTag(treasury.type) === normalizedStructTag(treasuryType)
+      && normalizeSuiAddress(treasury.rootId) === normalizeSuiAddress(evidence.rootId)
+      && treasury.balanceAtomic === 0n
+      && normalizeSuiAddress(authority.objectId) === normalizeSuiAddress(evidence.authorityId)
+      && normalizedStructTag(authority.type) === normalizedStructTag(authorityType)
+      && isSharedOwner(authorityObject.owner)
+      && normalizeSuiAddress(authority.rootId) === normalizeSuiAddress(evidence.rootId)
+      && normalizeSuiAddress(authority.legacyMakerId) === normalizeSuiAddress(evidence.legacyMakerId)
+      && normalizeSuiAddress(authority.protocolConfigId)
+        === normalizeSuiAddress(evidence.protocolConfigId)
+      && normalizeSuiAddress(authority.protocolAdminCapId)
+        === normalizeSuiAddress(evidence.protocolAdminCapId)
+      && normalizeSuiAddress(authority.owner) === normalizeSuiAddress(evidence.owner)
+      && normalizeSuiAddress(authority.retiredControlCapId)
+        === normalizeSuiAddress(evidence.retiredControlCap.id)
+      && authority.retiredControlCapEpoch === BigInt(evidence.retiredControlCapEpoch)
+      && authority.lockedOwnershipEpoch === BigInt(evidence.ownershipEpoch)
+      && authority.auditHash.replace(/^0x/, '') === evidence.auditHash
+      && lock.finalized === true
+      && lock.auditHash.replace(/^0x/, '') === evidence.auditHash
+      && normalizeSuiAddress(lock.authorityId) === normalizeSuiAddress(evidence.authorityId)
+      && normalizeSuiAddress(lock.rootId) === normalizeSuiAddress(evidence.rootId)
+      && normalizeSuiAddress(lock.legacyMakerId) === normalizeSuiAddress(evidence.legacyMakerId)
+      && normalizeSuiAddress(lock.protocolConfigId)
+        === normalizeSuiAddress(evidence.protocolConfigId)
+      && normalizeSuiAddress(lock.protocolAdminCapId)
+        === normalizeSuiAddress(evidence.protocolAdminCapId)
+      && normalizeSuiAddress(lock.owner) === normalizeSuiAddress(evidence.owner)
+      && normalizeSuiAddress(lock.retiredControlCapId)
+        === normalizeSuiAddress(evidence.retiredControlCap.id)
+      && lock.retiredControlCapEpoch === BigInt(evidence.retiredControlCapEpoch)
+      && lock.lockedOwnershipEpoch === BigInt(evidence.ownershipEpoch)
+      && counts[0] === evidence.styleCounts.visual
+      && counts[1] === evidence.styleCounts.logicalNone
+      && counts[2] === evidence.styleCounts.logicalColor
+      && styles.length === evidence.styleCounts.total
+      && retiredCapUnavailable;
+    record(
+      'Animacraft Expansion Pack v8 parent objects',
+      ready,
+      ready
+        ? 'Shared Authority, PAUSED epoch-1 Root, irreversible lock, deleted ControlCap, empty treasury and exact 19/3/4 sealed registry read back.'
+        : 'Parent Root, Authority, lock, retired ControlCap, treasury or exact registry differs.',
+    );
+  } catch (error) {
+    record('Animacraft Expansion Pack v8 parent objects', false, error.message);
   }
 }
 
@@ -2779,6 +3207,7 @@ async function checkNetwork(
   validation,
   compositionDeploymentStatus,
   expansionPackV8DeploymentStatus,
+  deployment,
 ) {
   const client = new SuiGrpcClient({ network: 'mainnet', baseUrl: config.grpcUrl });
   try {
@@ -2847,6 +3276,7 @@ async function checkNetwork(
       config,
       expansionPackV8DeploymentStatus,
     );
+    await checkExpansionPackV8ParentObjects(client, config, deployment);
     return;
   }
 
@@ -2990,7 +3420,15 @@ export async function runMainnetPreflight() {
     { required: requireExpansionPackV8 },
   );
   recordExpansionPackV8Deployment(expansionPackV8DeploymentStatus);
-  if (requireExpansionPackV8) recordCompositionV6RetirementEvidence(deployment);
+  if (requireExpansionPackV8) {
+    recordCompositionV6RetirementEvidence(deployment);
+    const parentEvidence = await inspectExpansionPackV8ParentFinalizationEvidence(deployment);
+    record(
+      'Animacraft Expansion Pack v8 parent finalization evidence',
+      parentEvidence.ready,
+      parentEvidence.detail,
+    );
+  }
 
   const validation = validateRuntimeConfig(config, { strict, requireSoulidity });
   validation.errors.forEach((message) => record('Runtime config', false, message));
@@ -3010,6 +3448,7 @@ export async function runMainnetPreflight() {
       validation,
       compositionDeploymentStatus,
       expansionPackV8DeploymentStatus,
+      deployment,
     );
   }
 
