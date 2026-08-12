@@ -409,6 +409,19 @@ function byteVector(value, label) {
         Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16)
       )),
     );
+  } else if (typeof candidate === 'string'
+    && candidate.length > 0
+    && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(candidate)) {
+    try {
+      const binary = atob(candidate);
+      if (btoa(binary) !== candidate) throw new Error('non-canonical base64');
+      bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    } catch {
+      throw commerceError(
+        'COMMERCE_V5_OBJECT_FIELD_INVALID',
+        `${label} is not canonical base64.`,
+      );
+    }
   } else if (candidate === '') {
     // Sui gRPC renders an empty `vector<u8>` JSON field as an empty string,
     // while non-empty vectors keep their byte-array/hex representation. This
@@ -2553,7 +2566,7 @@ function eventAmount(json, snake, camel) {
 }
 
 export function parseCommerceV5Event(event) {
-  const type = String(event?.type || event?.contents?.type?.repr || '');
+  const type = String(event?.eventType || event?.type || event?.contents?.type?.repr || '');
   const match = type.match(/::commerce_v5::([A-Za-z0-9_]+)$/);
   if (!match) return null;
   const name = match[1];

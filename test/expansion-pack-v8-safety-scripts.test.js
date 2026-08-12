@@ -14,6 +14,8 @@ import {
   requireIndependentExtensionTypeOrigin,
   requireMakerReleaseEvidenceTypeOrigin,
   unavailableObjectResult,
+  validateReadbackOnlyBoundary,
+  validateRetiredControlCapDeletionEffect,
   validateParentStagePrior,
 } from '../scripts/expansion-pack-v8-parent-stage.mjs';
 
@@ -361,10 +363,49 @@ test('retired-cap proof requires an exact unavailable code bound to the target I
     { allowMessage: false, requireReportedId: true },
   ), '');
   assert.equal(unavailableObjectResult(
+    new Error(`Object ${expected} not found`),
+    expected,
+    { allowMessage: true, requireReportedId: true, requireObjectMessage: true },
+  ), 'unavailable');
+  assert.equal(unavailableObjectResult(
     new Error(`transport endpoint not found for ${expected}`),
     expected,
-    { allowMessage: false, requireReportedId: true },
+    { allowMessage: true, requireReportedId: true, requireObjectMessage: true },
   ), '');
+});
+
+test('readback-only recovery cannot sign or broadcast and binds cap deletion to this transaction', () => {
+  assert.equal(validateReadbackOnlyBoundary(), true);
+  const deleted = {
+    objectId: CONTROL_CAP,
+    inputState: 'Exists',
+    outputState: 'DoesNotExist',
+    idOperation: 'Deleted',
+  };
+  const envelope = {
+    effects: { changedObjects: [deleted] },
+    objectTypes: {
+      [CONTROL_CAP]: `${TYPE_ORIGIN}::commerce_v5::MakerControlCapV5`,
+    },
+  };
+  assert.deepEqual(
+    validateRetiredControlCapDeletionEffect(envelope, CONTROL_CAP, TYPE_ORIGIN),
+    deleted,
+  );
+  for (const mutate of [
+    (value) => { value.effects.changedObjects[0].inputState = 'DoesNotExist'; },
+    (value) => { value.effects.changedObjects[0].outputState = 'ObjectWrite'; },
+    (value) => { value.effects.changedObjects[0].idOperation = 'None'; },
+    (value) => { value.objectTypes[CONTROL_CAP] = `${TYPE_ORIGIN}::commerce_v5::MakerRootV5`; },
+    (value) => { value.effects.changedObjects.push({ ...deleted }); },
+  ]) {
+    const drifted = structuredClone(envelope);
+    mutate(drifted);
+    assert.throws(
+      () => validateRetiredControlCapDeletionEffect(drifted, CONTROL_CAP, TYPE_ORIGIN),
+      /do not prove exact MakerControlCapV5 deletion/,
+    );
+  }
 });
 
 test('atomic-finalizer signing requires the current intent to retain a nonzero TypeOrigin', () => {

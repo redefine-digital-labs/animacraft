@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
 import { verifyTransactionSignature } from '@mysten/sui/verify';
@@ -56,6 +57,17 @@ const STAGE_INTENT = Object.freeze({
   evidence: 'parentEvidence',
   finalize: 'parentFinalize',
 });
+const FINALIZED_TRANSACTION_METADATA_QUERY = `
+  query FinalizedTransactionMetadata($digest: String!) {
+    transaction(digest: $digest) {
+      digest
+      effects {
+        status
+        checkpoint { sequenceNumber digest timestamp }
+      }
+    }
+  }
+`;
 
 function fail(message, details = {}) {
   const error = new Error(message);
@@ -350,6 +362,7 @@ function parseArgs(argv) {
     const argument = argv[index];
     if (argument === '--lock-only') args.mode = 'lock';
     else if (argument === '--execute') args.mode = 'execute';
+    else if (argument === '--readback-only') args.mode = 'readback';
     else if (['--stage', '--readiness', '--migration', '--prior', '--lock', '--output', '--expected-lock', '--result'].includes(argument)) {
       const key = argument.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
       args[key] = text(argv[index + 1]);
@@ -364,6 +377,12 @@ function parseArgs(argv) {
   if (args.mode === 'lock' && !args.output) fail('--output is required for lock-only mode.');
   if (args.mode === 'execute' && (!args.lock || !args.expectedLock || !args.result)) {
     fail('--lock, --expected-lock, and --result are required for execute mode.');
+  }
+  if (args.mode === 'readback' && (!args.lock || !args.expectedLock || !args.result)) {
+    fail('--lock, --expected-lock, and --result are required for readback-only mode.');
+  }
+  if (args.mode === 'readback' && args.stage !== 'finalize') {
+    fail('--readback-only is supported only for an already-finalized atomic parent transaction.');
   }
   return args;
 }
@@ -403,6 +422,7 @@ function isSharedObject(object) {
 export function unavailableObjectResult(value, expectedId, {
   allowMessage = true,
   requireReportedId = false,
+  requireObjectMessage = false,
 } = {}) {
   const source = value instanceof Error ? value : value?.error || value;
   if (!source || typeof source !== 'object') return '';
@@ -423,6 +443,14 @@ export function unavailableObjectResult(value, expectedId, {
   );
   if (!reportedId && messageIds.length > 0 && !messageReportsExpectedId) return '';
   if (requireReportedId && !reportedId && !messageReportsExpectedId) return '';
+  if (requireObjectMessage && !reportedId) {
+    const expectedRendered = exactId(expectedId, 'Expected unavailable object ID');
+    const exactObjectMessage = new RegExp(
+      `^Object\\s+${expectedRendered}\\s+(?:not found|deleted|does not exist|not exists)$`,
+      'i',
+    );
+    if (!exactObjectMessage.test(message)) return '';
+  }
   return code || 'unavailable';
 }
 
@@ -454,6 +482,49 @@ function simulationEnvelope(result, label) {
     objectTypes: stableValue(value?.objectTypes || result?.objectTypes || {}),
     commandResults: stableValue(value?.commandResults || result?.commandResults || []),
   };
+}
+
+export function validateRetiredControlCapDeletionEffect(
+  finalizedEnvelope,
+  retiredControlCapId,
+  commerceV5TypeOriginPackageId,
+) {
+  const expectedId = exactId(retiredControlCapId, 'Retired ControlCap effect ID');
+  const expectedType = normalizeStructTag(
+    `${exactId(commerceV5TypeOriginPackageId, 'Commerce v5 TypeOrigin')}::commerce_v5::MakerControlCapV5`,
+  );
+  const changed = (finalizedEnvelope?.effects?.changedObjects || []).filter(
+    (entry) => exactId(entry?.objectId, 'Changed object ID') === expectedId,
+  );
+  if (changed.length !== 1
+    || changed[0].inputState !== 'Exists'
+    || changed[0].outputState !== 'DoesNotExist'
+    || changed[0].idOperation !== 'Deleted'
+    || normalizeStructTag(finalizedEnvelope?.objectTypes?.[expectedId] || '') !== expectedType) {
+    fail('The finalized transaction effects do not prove exact MakerControlCapV5 deletion.', {
+      expectedId,
+      expectedType,
+      changed: stableValue(changed),
+      actualType: finalizedEnvelope?.objectTypes?.[expectedId],
+    });
+  }
+  return stableValue(changed[0]);
+}
+
+export function validateReadbackOnlyBoundary() {
+  const source = recoverFinalizedLock.toString();
+  for (const forbidden of [
+    'execFileAsync',
+    'signerEntry',
+    '.executeTransaction',
+    'waitForTransaction',
+    'keytool',
+  ]) {
+    if (source.includes(forbidden)) {
+      fail(`Readback-only recovery unexpectedly references ${forbidden}.`);
+    }
+  }
+  return true;
 }
 
 function gasUsed(simulation) {
@@ -552,8 +623,10 @@ async function currentState({ client, intent, migration }) {
 async function readFinalizedState({
   client, intent, migration, readiness, finalizedEnvelope, protocolIdentities,
 }) {
-  const expectedAuditHash = `0x${text(readiness.lock.parent.zeroV8History?.auditHash)
-    .replace(/^0x/i, '').toLowerCase()}`;
+  const expectedAuditHash = exactHash(
+    readiness.lock.parent.zeroV8History?.auditHash,
+    'Expected finalization audit hash',
+  );
   const expectedOrigin = requireIndependentExtensionTypeOrigin(intent);
   const expectedRootId = exactId(migration.event.root_id, 'Finalized root ID');
   const expectedMakerId = exactId(intent.parent.legacyMakerId, 'Finalized legacy Maker ID');
@@ -568,6 +641,11 @@ async function readFinalizedState({
   const expectedRetiredCapId = exactId(
     migration.event.control_cap_id,
     'Retired MakerControlCapV5 ID',
+  );
+  const retiredControlCapDeletionEffect = validateRetiredControlCapDeletionEffect(
+    finalizedEnvelope,
+    expectedRetiredCapId,
+    intent.protocol.commerceV5TypeOriginPackageId,
   );
   const finalizedEvents = finalizedEnvelope.events
     .map((event) => parseCommerceV5Event(event))
@@ -593,7 +671,7 @@ async function readFinalizedState({
   }
   if (event.retiredControlCapEpoch !== 0n
     || event.lockedOwnershipEpoch !== 1n
-    || text(event.auditHash).toLowerCase() !== expectedAuditHash) {
+    || exactHash(event.auditHash, 'Finalized event audit hash') !== expectedAuditHash) {
     fail('Finalized epoch or audit hash drifted.', {
       event: stableValue(event), expectedAuditHash,
     });
@@ -635,7 +713,7 @@ async function readFinalizedState({
     || authority.retiredControlCapId !== expectedRetiredCapId
     || authority.retiredControlCapEpoch !== 0n
     || authority.lockedOwnershipEpoch !== 1n
-    || text(authority.auditHash).toLowerCase() !== expectedAuditHash
+    || exactHash(authority.auditHash, 'Authority audit hash') !== expectedAuditHash
     || lock.finalized !== true
     || lock.authorityId !== authority.objectId
     || lock.legacyMakerId !== expectedMakerId
@@ -645,7 +723,7 @@ async function readFinalizedState({
     || lock.retiredControlCapId !== expectedRetiredCapId
     || lock.retiredControlCapEpoch !== 0n
     || lock.lockedOwnershipEpoch !== 1n
-    || text(lock.auditHash).toLowerCase() !== expectedAuditHash) {
+    || exactHash(lock.auditHash, 'Root lock audit hash') !== expectedAuditHash) {
     fail('Finalized Root/Authority/tombstone readback drifted.', {
       root: stableValue(root),
       makerTreasury: stableValue(makerTreasury),
@@ -664,8 +742,9 @@ async function readFinalizedState({
     });
   } catch (error) {
     const status = unavailableObjectResult(error, expectedRetiredCapId, {
-      allowMessage: false,
+      allowMessage: true,
       requireReportedId: true,
+      requireObjectMessage: true,
     });
     if (!status) {
       fail('Sui did not prove that the retired MakerControlCapV5 is unavailable.', {
@@ -677,8 +756,9 @@ async function readFinalizedState({
   const retiredEntries = retiredResult?.objects || [];
   const retiredControlCapStatus = retiredEntries.length === 1
     ? unavailableObjectResult(retiredEntries[0], expectedRetiredCapId, {
-      allowMessage: false,
+      allowMessage: true,
       requireReportedId: true,
+      requireObjectMessage: true,
     })
     : '';
   if (!retiredControlCapStatus) {
@@ -699,6 +779,7 @@ async function readFinalizedState({
     retiredControlCap: {
       objectId: expectedRetiredCapId,
       status: retiredControlCapStatus,
+      deletionEffect: retiredControlCapDeletionEffect,
     },
   };
 }
@@ -1096,6 +1177,141 @@ async function executeLock(args, intent, deployment, readiness, migration) {
   return result;
 }
 
+export async function recoverFinalizedLock(args, intent, deployment, readiness, migration) {
+  validateReadbackOnlyBoundary();
+  const [lockedBytes, readinessBytes, migrationBytes, priorBytes] = await Promise.all([
+    readFile(resolve(REPO_ROOT, args.lock)),
+    readFile(resolve(REPO_ROOT, args.readiness)),
+    readFile(resolve(REPO_ROOT, args.migration)),
+    readFile(resolve(REPO_ROOT, args.prior)),
+  ]);
+  const locked = JSON.parse(lockedBytes);
+  if (locked?.schemaVersion !== 'animacraft.expansion-pack-v8-parent-stage-lock.v1'
+    || locked?.lock?.stage !== 'finalize'
+    || locked.lockFingerprintSha256 !== args.expectedLock
+    || sha256(stableJson(locked.lock)) !== locked.lockFingerprintSha256) {
+    fail('The supplied finalized transaction lock is not self-consistent.');
+  }
+  if (locked.lock.readinessEvidenceSha256 !== sha256(readinessBytes)
+    || locked.lock.readinessLockFingerprintSha256 !== readiness.lockFingerprintSha256
+    || locked.lock.migrationResultSha256 !== sha256(migrationBytes)
+    || locked.lock.priorResultSha256 !== sha256(priorBytes)) {
+    fail('The finalized transaction lock no longer matches its durable readiness/prior evidence.');
+  }
+  validateParentStagePrior('finalize', JSON.parse(priorBytes), intent, deployment);
+  const protocolIdentities = requireFinalizerProtocolIdentities(intent, deployment);
+  if (stableJson(protocolIdentities) !== stableJson(locked.lock.protocolIdentities)) {
+    fail('The finalized transaction lock protocol identities drifted from current evidence.');
+  }
+  const transactionBytes = Buffer.from(locked.lock.transaction.bytesBase64, 'base64');
+  const expectedDigest = text(locked.lock.transaction.digest);
+  if (transactionBytes.byteLength !== Number(locked.lock.transaction.byteLength)
+    || sha256(transactionBytes) !== locked.lock.transaction.bytesSha256
+    || TransactionDataBuilder.getDigestFromBytes(transactionBytes) !== expectedDigest) {
+    fail('The finalized transaction lock bytes are corrupt.');
+  }
+  const client = new SuiGrpcClient({ network: 'mainnet', baseUrl: locked.lock.network.grpcUrl });
+  const finalized = await client.core.getTransaction({
+    digest: expectedDigest,
+    include: {
+      transaction: true,
+      bcs: true,
+      effects: true,
+      events: true,
+      objectTypes: true,
+      balanceChanges: true,
+    },
+  });
+  const finalizedValue = finalized?.Transaction || finalized?.FailedTransaction;
+  if (finalized?.$kind !== 'Transaction'
+    || !finalizedValue
+    || text(finalizedValue.digest) !== expectedDigest
+    || finalizedValue.effects?.status?.success !== true
+    || !(finalizedValue.bcs instanceof Uint8Array)
+    || !Buffer.from(finalizedValue.bcs).equals(transactionBytes)) {
+    fail('The finalized Mainnet transaction does not match the exact locked bytes/digest.');
+  }
+  if (!Array.isArray(finalizedValue.signatures) || finalizedValue.signatures.length !== 1) {
+    fail('The finalized Mainnet transaction does not have the expected single sender signature.');
+  }
+  await verifyTransactionSignature(transactionBytes, finalizedValue.signatures[0], {
+    address: intent.signer.address,
+  });
+  const envelope = simulationEnvelope(finalized, 'Finalized parent readback');
+  const metadataClient = new SuiGraphQLClient({
+    network: 'mainnet',
+    url: intent.network.graphqlUrl,
+  });
+  const metadataResponse = await metadataClient.query({
+    query: FINALIZED_TRANSACTION_METADATA_QUERY,
+    variables: { digest: expectedDigest },
+  });
+  const metadata = metadataResponse?.data?.transaction;
+  const checkpoint = metadata?.effects?.checkpoint;
+  if (metadataResponse?.errors?.length
+    || text(metadata?.digest) !== expectedDigest
+    || text(metadata?.effects?.status).toUpperCase() !== 'SUCCESS'
+    || !text(checkpoint?.sequenceNumber)
+    || !text(checkpoint?.digest)
+    || !text(checkpoint?.timestamp)) {
+    fail('The finalized transaction checkpoint metadata is incomplete or unsuccessful.');
+  }
+  const post = await readFinalizedState({
+    client,
+    intent,
+    migration,
+    readiness,
+    finalizedEnvelope: envelope,
+    protocolIdentities,
+  });
+  const anchored = readiness.lock.parent.zeroV8History;
+  const auditHash = text(anchored?.auditHash).replace(/^0x/i, '').toLowerCase();
+  const zeroHistoryContinuityEvidence = await scanV8HistoryWindow({
+    runtime: { graphqlUrl: intent.network.graphqlUrl },
+    intent: {
+      ...intent,
+      parent: {
+        ...intent.parent,
+        exactStyleRouteSha256: anchored?.finalization?.exactStyleRouteSha256,
+      },
+    },
+    source: readiness.lock.source,
+    afterCheckpoint: anchored?.cutoff?.sequenceNumber,
+    expectedAuditHash: auditHash,
+    expectedCutoff: anchored?.cutoff,
+    expectedChainIdentifier: anchored?.chainIdentifier,
+  });
+  if (!zeroHistoryContinuityEvidence?.continuityVerified
+    || zeroHistoryContinuityEvidence?.trustedHistoryClear !== true
+    || zeroHistoryContinuityEvidence?.targetPassCount !== 0
+    || zeroHistoryContinuityEvidence?.scans?.some(
+      (scan) => !scan.paginationCompleted || scan.matchingTargetRootCount !== 0,
+    )) {
+    fail('The recovered finalization zero-v8-history continuation proof is incomplete.');
+  }
+  const result = {
+    schemaVersion: 'animacraft.expansion-pack-v8-parent-stage-result.v1',
+    executedAt: text(checkpoint.timestamp),
+    recoveredAt: new Date().toISOString(),
+    stage: 'finalize',
+    lockFingerprintSha256: locked.lockFingerprintSha256,
+    transactionDigest: expectedDigest,
+    checkpoint: {
+      sequenceNumber: text(checkpoint.sequenceNumber),
+      digest: text(checkpoint.digest),
+      timestamp: text(checkpoint.timestamp),
+    },
+    finalized: stableValue(envelope),
+    postState: post,
+    zeroHistoryContinuityEvidence: stableValue(zeroHistoryContinuityEvidence),
+    recoveredFromFinalizedTransaction: true,
+    signatureRecorded: false,
+    signatureVerifiedLocally: true,
+  };
+  await writeJson(args.result, result);
+  return result;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const [intent, deployment, readiness, migration] = await Promise.all([
@@ -1132,9 +1348,12 @@ async function main() {
     }, 2)}\n`);
     return;
   }
-  const result = await executeLock(args, intent, deployment, readiness, migration);
+  const result = args.mode === 'readback'
+    ? await recoverFinalizedLock(args, intent, deployment, readiness, migration)
+    : await executeLock(args, intent, deployment, readiness, migration);
   process.stdout.write(`${stableJson({
-    executed: true,
+    executed: args.mode === 'execute',
+    readbackRecovered: args.mode === 'readback',
     stage: result.stage,
     transactionDigest: result.transactionDigest,
     lockFingerprintSha256: result.lockFingerprintSha256,

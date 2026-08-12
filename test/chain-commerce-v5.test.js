@@ -1598,6 +1598,21 @@ test('commerce v5 event parser exposes the atomic independent-extension authorit
       audit_hash: Array(32).fill(0xef),
     },
   });
+  const grpcParsed = parseCommerceV5Event({
+    eventType: `${PACKAGE}::commerce_v5::IndependentExtensionRootFinalizedV5`,
+    json: {
+      root_id: IDS.root,
+      authority_id: IDS.independentExtensionAuthority,
+      legacy_maker_id: IDS.legacyMaker,
+      protocol_config_id: IDS.protocol,
+      protocol_admin_cap_id: IDS.protocolAdmin,
+      owner: IDS.owner,
+      retired_control_cap_id: IDS.controlCap,
+      retired_control_cap_epoch: '7',
+      locked_ownership_epoch: '8',
+      audit_hash: btoa(String.fromCharCode(...Array(32).fill(0xef))),
+    },
+  });
   assert.equal(parsed.authorityId, IDS.independentExtensionAuthority);
   assert.equal(parsed.protocolConfigId, IDS.protocol);
   assert.equal(parsed.protocolAdminCapId, IDS.protocolAdmin);
@@ -1605,4 +1620,13 @@ test('commerce v5 event parser exposes the atomic independent-extension authorit
   assert.equal(parsed.retiredControlCapEpoch, 7n);
   assert.equal(parsed.lockedOwnershipEpoch, 8n);
   assert.equal(parsed.auditHash, `0x${'ef'.repeat(32)}`);
+  assert.equal(grpcParsed.authorityId, parsed.authorityId);
+  assert.equal(grpcParsed.auditHash, parsed.auditHash);
+  assert.throws(
+    () => parseCommerceV5Event({
+      eventType: `${PACKAGE}::commerce_v5::IndependentExtensionRootFinalizedV5`,
+      json: { audit_hash: 'not-canonical-base64' },
+    }),
+    { code: 'COMMERCE_V5_OBJECT_FIELD_INVALID' },
+  );
 });
