@@ -1097,7 +1097,7 @@ export async function inspectExpansionPackV8ActivationEvidence(deployment = {}, 
     ready: failures.length === 0,
     detail: failures.length
       ? failures.join('; ')
-      : 'Exact ceremony receipt bytes/semantic hash and Mainnet readback bind the ACTIVE FREE release, certified Walrus content, empty Seal tuple, and still-false product gate.',
+      : 'Exact ceremony receipt bytes/semantic hash and Mainnet readback bind the ACTIVE FREE release, certified Walrus content, empty Seal tuple, and pre-activation false gate.',
     failures,
   };
 }

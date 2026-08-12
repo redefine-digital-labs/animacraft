@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, stat, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -134,10 +134,31 @@ test('submitted Walrus terminal checkpoints recover confirmation without signing
   assert.equal(broadcasts, 0);
 });
 
-test('ceremony verifier runtime preserves complete normalized Mainnet identities', async () => {
+test('completed ceremony rejects the enabled production gate while its gate-false fixture preserves identities', async () => {
   const repoRoot = join(new URL('..', import.meta.url).pathname);
-  const runtime = await ceremonyRuntimeFor({ repoRoot, plan: { context: {} } });
   const publicSource = await readFile(join(repoRoot, 'public/config.js'), 'utf8');
+  await assert.rejects(
+    ceremonyRuntimeFor({ repoRoot, plan: { context: {} } }),
+    (error) => error?.code === 'PACK_CEREMONY_GATE_OPEN',
+  );
+
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'pack-ceremony-gate-false-'));
+  await mkdir(join(fixtureRoot, 'public'), { recursive: true });
+  await mkdir(join(fixtureRoot, 'deployments'), { recursive: true });
+  const gateFalsePublicSource = publicSource.replace(
+    'expansionPackV8ReleaseEnabled: true',
+    'expansionPackV8ReleaseEnabled: false',
+  );
+  assert.notEqual(gateFalsePublicSource, publicSource, 'fixture must close the production v8 gate');
+  const deployment = JSON.parse(await readFile(join(repoRoot, 'deployments/mainnet.json'), 'utf8'));
+  deployment.expansionPackV8ReleaseEnabled = false;
+  deployment.releases.expansionPackV8.enabled = false;
+  deployment.observedChainState.productRuntime.expansionPackV8ReleaseEnabled = false;
+  deployment.verification.expansionPackV8Enabled = false;
+  await writeFile(join(fixtureRoot, 'public/config.js'), gateFalsePublicSource);
+  await writeFile(join(fixtureRoot, 'deployments/mainnet.json'), JSON.stringify(deployment));
+
+  const runtime = await ceremonyRuntimeFor({ repoRoot: fixtureRoot, plan: { context: {} } });
   for (const field of ['commerceV5TypeOriginPackageId', 'commerceV5CallablePackageId',
     'originalPackageId', 'protocolFeePackageId', 'protocolFeeConfigId',
     'protocolTreasuryId', 'protocolFeeAdminCapId']) {
