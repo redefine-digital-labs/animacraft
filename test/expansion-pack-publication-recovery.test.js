@@ -34,9 +34,10 @@ import {
 const OWNER = '0x111';
 const BASE_ROOT = '0x222';
 const PARENT_RELEASE = '0x333';
-const MAKER_CAP = '0x444';
+const INDEPENDENT_EXTENSION_AUTHORITY = '0x444';
 const CALLABLE_PACKAGE = '0x555';
 const TYPE_ORIGIN_PACKAGE = '0x556';
+const INDEPENDENT_EXTENSION_TYPE_ORIGIN_PACKAGE = '0x557';
 const PARENT_HASH = '11'.repeat(32);
 const ASSET_HASH = '22'.repeat(32);
 
@@ -166,8 +167,10 @@ function runtime(enabled = true) {
     network: 'mainnet',
     expansionPackV8ReleaseEnabled: enabled,
     callablePackageId: CALLABLE_PACKAGE,
+    commerceV5CallablePackageId: '0x777',
     expansionPackV8CallablePackageId: CALLABLE_PACKAGE,
     expansionPackV8TypeOriginPackageId: TYPE_ORIGIN_PACKAGE,
+    independentExtensionV5TypeOriginPackageId: INDEPENDENT_EXTENSION_TYPE_ORIGIN_PACKAGE,
     commerceProtocolConfigV5Id: '0x666',
     paymentCoinType: '0x2::sui::SUI',
   };
@@ -180,7 +183,7 @@ async function planFixture(options = {}) {
       owner: OWNER,
       baseMakerRootId: BASE_ROOT,
       parentLegacyMakerId: PARENT_RELEASE,
-      makerControlCapId: MAKER_CAP,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     runtime: runtime(),
   });
@@ -191,39 +194,19 @@ function publicationContext() {
     owner: OWNER,
     baseMakerRootId: BASE_ROOT,
     parentLegacyMakerId: PARENT_RELEASE,
-    makerControlCapId: MAKER_CAP,
-  };
-}
-
-function parentEvidenceConfirmation(overrides = {}) {
-  return {
-    transactionDigest: 'parent-evidence-digest',
-    parentReleaseEvidenceBound: true,
-    parentEvidenceReadbackVerified: true,
-    baseMakerRootId: BASE_ROOT,
-    parentLegacyMakerId: PARENT_RELEASE,
-    parentVersion: '7',
-    parentManifestBlobId: 'parent-quilt',
-    parentManifestSha256: PARENT_HASH,
-    ...overrides,
+    independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
   };
 }
 
 async function executeReadback(recovery, plan, actionId, confirmation, submission = {}) {
   let next = recovery;
-  const pendingId = next.actions[next.currentActionIndex]?.id;
-  if (pendingId === 'chain.parent.evidence.bind'
-    && actionId !== 'chain.parent.evidence.bind') {
-    next = await executeReadback(
-      next,
-      plan,
-      'chain.parent.evidence.bind',
-      parentEvidenceConfirmation(),
-    );
-  }
   const exactConfirmation = actionId === 'parent.release.verify'
     && typeof confirmation?.parentReleaseEvidenceBound !== 'boolean'
-    ? { ...confirmation, parentReleaseEvidenceBound: false }
+    ? {
+        parentOwnershipEpoch: '7',
+        ...confirmation,
+        parentReleaseEvidenceBound: true,
+      }
     : confirmation;
   next = await beginExpansionPackPublicationAction({ recovery: next, plan, runtime: runtime() });
   assert.equal(next.actions[next.currentActionIndex].status, EXPANSION_PACK_PUBLICATION_ACTION_STATUS.INTENT);
@@ -253,15 +236,26 @@ test('builds a deterministic real Pack v8 lifecycle after the recoverable Walrus
   assert.equal(first.planIdentity, second.planIdentity);
   assert.equal(first.bindingIdentity, second.bindingIdentity);
   assert.equal(first.schema, EXPANSION_PACK_PUBLICATION_PLAN_SCHEMA);
-  assert.equal(first.version, 4);
-  assert.equal(first.context.commerceV5CallablePackageId, CALLABLE_PACKAGE);
+  assert.equal(first.version, 5);
+  assert.equal(first.context.commerceV5CallablePackageId, '0x777');
   assert.equal(first.context.expansionPackV8CallablePackageId, CALLABLE_PACKAGE);
   assert.equal(first.context.expansionPackV8TypeOriginPackageId, TYPE_ORIGIN_PACKAGE);
+  assert.equal(
+    first.context.independentExtensionV5TypeOriginPackageId,
+    INDEPENDENT_EXTENSION_TYPE_ORIGIN_PACKAGE,
+  );
   assert.equal(first.binding.expansionPackV8TypeOriginPackageId, TYPE_ORIGIN_PACKAGE);
+  assert.equal(
+    first.binding.independentExtensionAuthorityV5Id,
+    INDEPENDENT_EXTENSION_AUTHORITY,
+  );
+  assert.equal(
+    first.binding.independentExtensionV5TypeOriginPackageId,
+    INDEPENDENT_EXTENSION_TYPE_ORIGIN_PACKAGE,
+  );
   assert.notEqual(first.context.expansionPackV8CallablePackageId, TYPE_ORIGIN_PACKAGE);
   assert.deepEqual(first.actions.map((entry) => entry.id), [
     'parent.release.verify',
-    'chain.parent.evidence.bind',
     'chain.pack.create',
     'local.pack.materialize',
     'walrus.pack.prepare',
@@ -273,10 +267,13 @@ test('builds a deterministic real Pack v8 lifecycle after the recoverable Walrus
     'chain.pack.admit',
     'chain.pack.activate',
   ]);
-  assert.match(first.actions[1].target, /::commerce_v5::bind_maker_release_evidence_v5$/);
-  assert.match(first.actions[2].target, /::expansion_pack_v8::create_expansion_pack_v8$/);
-  assert.match(first.actions[7].target, /::expansion_pack_v8::bind_expansion_pack_manifest_v8$/);
-  assert.match(first.actions[8].target, /::expansion_pack_v8::register_style_asset_v8$/);
+  assert.match(first.actions[1].target, /::expansion_pack_v8::create_expansion_pack_v8$/);
+  assert.match(first.actions[6].target, /::expansion_pack_v8::bind_expansion_pack_manifest_v8$/);
+  assert.match(first.actions[7].target, /::expansion_pack_v8::register_style_asset_v8$/);
+  assert.match(first.actions[9].target, /::expansion_pack_v8::admit_expansion_pack_with_authority_v8$/);
+  assert.deepEqual(first.actions[9].inputs.independentExtensionAuthorityV5Id, {
+    $context: 'independentExtensionAuthorityV5Id',
+  });
   assert.equal(first.styles[0].assetIdentifier, 'assets/moon-armor.png');
   assert.equal(first.styles[0].assetSha256, ASSET_HASH);
   assert.match(first.styles[0].styleCommitment, /^[0-9a-f]{64}$/);
@@ -291,20 +288,15 @@ test('archives a definitive failed Sui digest before allowing a fresh signature'
   });
   recovery = await executeReadback(recovery, plan, 'parent.release.verify', {
     parentVerified: true,
-    makerControlCapVerified: true,
-    parentLifecycleState: 'ACTIVE',
+    independentExtensionAuthorityVerified: true,
+    parentLifecycleState: 'PAUSED',
+    parentOwnershipEpoch: '7',
     baseMakerRootId: BASE_ROOT,
     parentLegacyMakerId: PARENT_RELEASE,
     parentVersion: '7',
     parentManifestBlobId: 'parent-quilt',
     parentManifestSha256: PARENT_HASH,
   });
-  recovery = await executeReadback(
-    recovery,
-    plan,
-    'chain.parent.evidence.bind',
-    parentEvidenceConfirmation(),
-  );
   recovery = await beginExpansionPackPublicationAction({ recovery, plan, runtime: runtime() });
   recovery = await markExpansionPackPublicationSubmitted({
     recovery,
@@ -342,7 +334,7 @@ test('archives a definitive failed Sui digest before allowing a fresh signature'
   assert.equal(archivedCreate.status, EXPANSION_PACK_PUBLICATION_ACTION_STATUS.PENDING);
   assert.equal(archivedCreate.intentKey, '');
   assert.equal(archivedCreate.submission, null);
-  assert.equal(archived.currentActionIndex, 2);
+  assert.equal(archived.currentActionIndex, 1);
   assert.equal(archived.finalizedFailures.length, 1);
   assert.deepEqual(archived.finalizedFailures[0], {
     actionId: 'chain.pack.create',
@@ -404,20 +396,15 @@ test('rejects mismatched or conflicting definitive failure evidence and preserve
   });
   recovery = await executeReadback(recovery, plan, 'parent.release.verify', {
     parentVerified: true,
-    makerControlCapVerified: true,
-    parentLifecycleState: 'ACTIVE',
+    independentExtensionAuthorityVerified: true,
+    parentLifecycleState: 'PAUSED',
+    parentOwnershipEpoch: '7',
     baseMakerRootId: BASE_ROOT,
     parentLegacyMakerId: PARENT_RELEASE,
     parentVersion: '7',
     parentManifestBlobId: 'parent-quilt',
     parentManifestSha256: PARENT_HASH,
   });
-  recovery = await executeReadback(
-    recovery,
-    plan,
-    'chain.parent.evidence.bind',
-    parentEvidenceConfirmation(),
-  );
   recovery = await beginExpansionPackPublicationAction({ recovery, plan, runtime: runtime() });
   recovery = await markExpansionPackPublicationSubmitted({
     recovery,
@@ -556,14 +543,14 @@ test('derives paid Style Seal ids and inserts the exact release-as-policy bindin
   );
 });
 
-test('rejects disposable pre-v4 publication plans and recovery checkpoints', async () => {
+test('rejects disposable pre-v5 publication plans and recovery checkpoints', async () => {
   const plan = await planFixture();
   const recovery = await createExpansionPackPublicationRecovery({
     plan,
-    nonce: 'pack-recovery-v4-only',
+    nonce: 'pack-recovery-v5-only',
   });
   assert.equal(recovery.schema, EXPANSION_PACK_PUBLICATION_RECOVERY_SCHEMA);
-  assert.equal(recovery.version, 4);
+  assert.equal(recovery.version, 5);
 
   const v2Plan = structuredClone(plan);
   v2Plan.schema = 'animacraft.expansion-pack-publication-plan.v2';
@@ -611,6 +598,15 @@ test('gates all action execution and rejects a recovery from another immutable P
     (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_RUNTIME_SCOPE_MISMATCH'
       && error.details.fields.includes('expansionPackV8TypeOriginPackageId'),
   );
+  await assert.rejects(
+    nextExpansionPackPublicationAction({
+      recovery,
+      plan,
+      runtime: { ...runtime(), independentExtensionV5TypeOriginPackageId: '0x999' },
+    }),
+    (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_RUNTIME_SCOPE_MISMATCH'
+      && error.details.fields.includes('independentExtensionV5TypeOriginPackageId'),
+  );
   const otherPlan = structuredClone(plan);
   otherPlan.planIdentity = 'ff'.repeat(32);
   await assert.rejects(
@@ -634,8 +630,9 @@ test('persists signed Walrus progress, resumes submitted actions read-only and c
 
   recovery = await executeReadback(recovery, plan, 'parent.release.verify', {
     parentVerified: true,
-    makerControlCapVerified: true,
-    parentLifecycleState: 'ACTIVE',
+    independentExtensionAuthorityVerified: true,
+    parentLifecycleState: 'PAUSED',
+    parentOwnershipEpoch: '7',
     baseMakerRootId: BASE_ROOT,
     parentLegacyMakerId: PARENT_RELEASE,
     parentVersion: '7',
@@ -643,19 +640,6 @@ test('persists signed Walrus progress, resumes submitted actions read-only and c
     parentManifestSha256: PARENT_HASH,
   });
 
-  const evidenceAction = await nextExpansionPackPublicationAction({
-    recovery,
-    plan,
-    runtime: runtime(),
-  });
-  assert.equal(evidenceAction.id, 'chain.parent.evidence.bind');
-  assert.deepEqual(evidenceAction.typeArguments, []);
-  recovery = await executeReadback(
-    recovery,
-    plan,
-    evidenceAction.id,
-    parentEvidenceConfirmation(),
-  );
   const createAction = await nextExpansionPackPublicationAction({ recovery, plan, runtime: runtime() });
   assert.deepEqual(createAction.typeArguments, ['0x2::sui::SUI']);
   assert.equal(createAction.inputs.manifestBlobId, undefined);
@@ -824,6 +808,22 @@ test('persists signed Walrus progress, resumes submitted actions read-only and c
     styleRegistryCommitment: sealAction.inputs.styleRegistryCommitment,
   });
   const admitAction = await nextExpansionPackPublicationAction({ recovery, plan, runtime: runtime() });
+  await assert.rejects(
+    executeReadback(recovery, plan, 'chain.pack.admit', {
+      transactionDigest: 'stale-admit-digest',
+      admitted: true,
+      parentBindingVerified: true,
+      readbackVerified: true,
+      baseMakerRootId: admitAction.inputs.baseMakerRootId,
+      parentLegacyMakerId: admitAction.inputs.parentLegacyMakerId,
+      parentVersion: admitAction.inputs.parentVersion,
+      parentManifestBlobId: admitAction.inputs.parentManifestBlobId,
+      parentManifestSha256: admitAction.inputs.parentManifestSha256,
+      parentOwnershipEpoch: admitAction.inputs.parentOwnershipEpoch,
+      admittedParentOwnershipEpoch: '6',
+    }),
+    (error) => error?.code === 'EXPANSION_PACK_CHAIN_ADMISSION_EPOCH_MISMATCH',
+  );
   recovery = await executeReadback(recovery, plan, 'chain.pack.admit', {
     transactionDigest: 'admit-digest',
     admitted: true,
@@ -834,6 +834,8 @@ test('persists signed Walrus progress, resumes submitted actions read-only and c
     parentVersion: admitAction.inputs.parentVersion,
     parentManifestBlobId: admitAction.inputs.parentManifestBlobId,
     parentManifestSha256: admitAction.inputs.parentManifestSha256,
+    parentOwnershipEpoch: admitAction.inputs.parentOwnershipEpoch,
+    admittedParentOwnershipEpoch: admitAction.inputs.parentOwnershipEpoch,
   });
   recovery = await executeReadback(recovery, plan, 'chain.pack.activate', {
     transactionDigest: 'activate-digest',
@@ -878,9 +880,10 @@ test('fails closed when certification or parent readback differs from the immuta
       actionId: 'parent.release.verify',
       confirmation: {
         parentVerified: true,
-        makerControlCapVerified: true,
-        parentReleaseEvidenceBound: false,
-        parentLifecycleState: 'ACTIVE',
+        independentExtensionAuthorityVerified: true,
+        parentReleaseEvidenceBound: true,
+        parentLifecycleState: 'PAUSED',
+        parentOwnershipEpoch: '7',
         baseMakerRootId: BASE_ROOT,
         parentLegacyMakerId: '0x999',
         parentManifestBlobId: 'parent-quilt',
@@ -889,4 +892,63 @@ test('fails closed when certification or parent readback differs from the immuta
     }),
     (error) => error?.code === 'EXPANSION_PACK_PARENT_READBACK_MISMATCH',
   );
+
+  await assert.rejects(
+    confirmExpansionPackPublicationAction({
+      recovery,
+      plan,
+      actionId: 'parent.release.verify',
+      confirmation: {
+        parentVerified: true,
+        independentExtensionAuthorityVerified: true,
+        parentReleaseEvidenceBound: true,
+        parentLifecycleState: 'ACTIVE',
+        parentOwnershipEpoch: '7',
+        baseMakerRootId: BASE_ROOT,
+        parentLegacyMakerId: PARENT_RELEASE,
+        parentVersion: '7',
+        parentManifestBlobId: 'parent-quilt',
+        parentManifestSha256: PARENT_HASH,
+      },
+    }),
+    (error) => error?.code === 'EXPANSION_PACK_PARENT_INACTIVE',
+  );
+});
+
+test('recovery rejects missing, stale, unsafe, and out-of-range ownership epochs', async () => {
+  const plan = await planFixture();
+  const parentCases = [undefined, -1, 2 ** 53, '18446744073709551616'];
+  for (const parentOwnershipEpoch of parentCases) {
+    let recovery = await createExpansionPackPublicationRecovery({
+      plan,
+      nonce: `pack-parent-epoch-${String(parentOwnershipEpoch)}-0001`,
+    });
+    recovery = await beginExpansionPackPublicationAction({ recovery, plan, runtime: runtime() });
+    recovery = await markExpansionPackPublicationSubmitted({
+      recovery,
+      plan,
+      actionId: 'parent.release.verify',
+      submission: { query: 'parent' },
+    });
+    await assert.rejects(
+      confirmExpansionPackPublicationAction({
+        recovery,
+        plan,
+        actionId: 'parent.release.verify',
+        confirmation: {
+          parentVerified: true,
+          independentExtensionAuthorityVerified: true,
+          parentReleaseEvidenceBound: true,
+          parentLifecycleState: 'PAUSED',
+          parentOwnershipEpoch,
+          baseMakerRootId: BASE_ROOT,
+          parentLegacyMakerId: PARENT_RELEASE,
+          parentVersion: '7',
+          parentManifestBlobId: 'parent-quilt',
+          parentManifestSha256: PARENT_HASH,
+        },
+      }),
+      (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_U64_INVALID',
+    );
+  }
 });

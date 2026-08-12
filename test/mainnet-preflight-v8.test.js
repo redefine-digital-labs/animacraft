@@ -12,9 +12,11 @@ const CALLABLE = '0x8888';
 const TYPE_ORIGIN = '0x8008';
 const LEGACY_TYPE_ORIGIN = '0x7007';
 const COMMERCE_TYPE_ORIGIN = '0x5005';
+const INDEPENDENT_EXTENSION_TYPE_ORIGIN = '0x6006';
 const TYPE_ORIGINS = Object.freeze({
   originalPackageId: LEGACY_TYPE_ORIGIN,
   commerceV5TypeOriginPackageId: COMMERCE_TYPE_ORIGIN,
+  independentExtensionV5TypeOriginPackageId: INDEPENDENT_EXTENSION_TYPE_ORIGIN,
 });
 const UPGRADE_DIGEST = '1'.repeat(43);
 const PACKAGE_DIGEST = '2'.repeat(43);
@@ -34,6 +36,7 @@ function runtime(overrides = {}) {
   return {
     expansionPackV8CallablePackageId: CALLABLE,
     expansionPackV8TypeOriginPackageId: TYPE_ORIGIN,
+    independentExtensionV5TypeOriginPackageId: INDEPENDENT_EXTENSION_TYPE_ORIGIN,
     expansionPackV8ReleaseEnabled: true,
     ...overrides,
   };
@@ -44,6 +47,7 @@ function deployment(overrides = {}) {
     expansionPackProtocolVersion: 8,
     expansionPackV8CallablePackageId: CALLABLE,
     expansionPackV8TypeOriginPackageId: TYPE_ORIGIN,
+    independentExtensionV5TypeOriginPackageId: INDEPENDENT_EXTENSION_TYPE_ORIGIN,
     expansionPackV8ReleaseEnabled: true,
     upgradeTxDigest: UPGRADE_DIGEST,
     upgradeCheckpoint: '400000000',
@@ -108,6 +112,7 @@ const ABI_FUNCTION_SPECS = Object.freeze({
   seal_expansion_pack_v8: { moduleName: 'expansion_pack_v8', typeParameters: 0, parameters: 4 },
   bind_expansion_pack_seal_policy_v8: { moduleName: 'expansion_pack_v8', typeParameters: 0, parameters: 3 },
   admit_expansion_pack_v8: { moduleName: 'expansion_pack_v8', typeParameters: 0, parameters: 5 },
+  admit_expansion_pack_with_authority_v8: { moduleName: 'expansion_pack_v8', typeParameters: 0, parameters: 5 },
   activate_expansion_pack_v8: { moduleName: 'expansion_pack_v8', typeParameters: 0, parameters: 5 },
   pause_expansion_pack_v8: { moduleName: 'expansion_pack_v8', typeParameters: 0, parameters: 3 },
   resume_expansion_pack_v8: { moduleName: 'expansion_pack_v8', typeParameters: 0, parameters: 5 },
@@ -132,6 +137,7 @@ const ABI_FUNCTION_SPECS = Object.freeze({
   authorization_pack_selection_commitment_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'bytesRef' },
   authorization_selection_count_v8: { moduleName: 'expansion_pack_complete_v8', typeParameters: 0, parameters: 1, returns: 'u64' },
   bind_maker_release_evidence_v5: { moduleName: 'commerce_v5', typeParameters: 0, parameters: 7 },
+  finalize_independent_extension_root_v5: { moduleName: 'commerce_v5', typeParameters: 1, parameters: 12 },
 });
 
 const ABI_DATATYPES = Object.freeze([
@@ -148,7 +154,19 @@ const ABI_DATATYPES = Object.freeze([
   ['expansion_pack_complete_v8', 'ExpansionPackCompleteProvenanceV8'],
   ['expansion_pack_complete_v8', 'ExpansionPackCompleteAuthenticatedV8'],
   ['expansion_pack_complete_v8', 'ExpansionPackCompleteBoundToSoulV8'],
-  ['commerce_v5', 'MakerReleaseEvidenceV5'],
+]);
+
+const ABI_UPGRADE_DATATYPES = Object.freeze([
+  ['commerce_v5', 'LegacyLogicalCompatibilityStateV5'],
+  ['commerce_v5', 'LegacyLogicalStyleApprovalKeyV5'],
+  ['commerce_v5', 'LegacyLogicalStyleApprovalV5'],
+  ['commerce_v5', 'LegacyLogicalStyleRegisteredV5'],
+]);
+
+const ABI_INDEPENDENT_EXTENSION_DATATYPES = Object.freeze([
+  ['commerce_v5', 'IndependentExtensionLockStateV5'],
+  ['commerce_v5', 'IndependentExtensionAuthorityV5'],
+  ['commerce_v5', 'IndependentExtensionRootFinalizedV5'],
 ]);
 
 function functionParameters(name, count) {
@@ -184,16 +202,34 @@ function functionParameters(name, count) {
     [],
     reference,
   );
-  const control = () => defined(
+  const control = (reference = 'immutable') => defined(
     LEGACY_TYPE_ORIGIN,
     'commerce_v5',
     'MakerControlCapV5',
+    [],
+    reference,
   );
   const maker = () => defined(LEGACY_TYPE_ORIGIN, 'animacraft', 'OCMaker');
+  const protocolFeeAdmin = () => defined(
+    LEGACY_TYPE_ORIGIN,
+    'animacraft',
+    'ProtocolFeeAdminCap',
+  );
   const config = () => defined(
     LEGACY_TYPE_ORIGIN,
     'commerce_v5',
     'CommerceProtocolConfigV5',
+  );
+  const makerTreasury = () => defined(
+    LEGACY_TYPE_ORIGIN,
+    'commerce_v5',
+    'MakerTreasuryV5',
+    [typeParameter(0)],
+  );
+  const independentExtensionAuthority = () => defined(
+    LEGACY_TYPE_ORIGIN,
+    'commerce_v5',
+    'IndependentExtensionAuthorityV5',
   );
   const commerceAuthorization = () => defined(
     LEGACY_TYPE_ORIGIN,
@@ -247,6 +283,10 @@ function functionParameters(name, count) {
     ],
     admit_expansion_pack_v8: [
       release('mutable'), root(), maker(), control(), context(),
+    ],
+    admit_expansion_pack_with_authority_v8: [
+      release('mutable'), root(), maker(), independentExtensionAuthority(),
+      context(),
     ],
     activate_expansion_pack_v8: [
       release('mutable'), admin(), root(), config(), context(),
@@ -327,6 +367,11 @@ function functionParameters(name, count) {
     bind_maker_release_evidence_v5: [
       root('mutable'), control(), maker(), string(), string(), bytes(), context(),
     ],
+    finalize_independent_extension_root_v5: [
+      root('mutable'), makerTreasury(), control(null), maker(), config(),
+      protocolFeeAdmin(), vector(string().body), vector(string().body),
+      vector(string().body), bytes(), bytes(), context('mutable'),
+    ],
   };
   const parameters = exact[name];
   assert.ok(parameters, `${name} mock ABI is missing`);
@@ -346,6 +391,7 @@ function packageAbiClient({
   physicalBridgeAssertionAborts = true,
   releaseTypeOrigin = TYPE_ORIGIN,
   driftDatatype = '',
+  missingDatatype = '',
   createParameterCount = 13,
   missingFunction = '',
   driftFunction = '',
@@ -473,17 +519,32 @@ function packageAbiClient({
       movePackageService: {
         async getDatatype(request) {
           requests.push({ kind: 'datatype', ...request });
-          const known = ABI_DATATYPES.some(([moduleName, name]) => (
+          if (request.name === missingDatatype) {
+            return { response: { datatype: null } };
+          }
+          const known = [
+            ...ABI_DATATYPES,
+            ...ABI_UPGRADE_DATATYPES,
+            ...ABI_INDEPENDENT_EXTENSION_DATATYPES,
+            ['commerce_v5', 'MakerReleaseEvidenceV5'],
+          ].some(([moduleName, name]) => (
             moduleName === request.moduleName && name === request.name
           ));
           if (!known) return { response: { datatype: null } };
+          const expectedTypeOrigin = request.name === 'ExpansionPackReleaseV8'
+            ? releaseTypeOrigin
+            : ABI_INDEPENDENT_EXTENSION_DATATYPES.some(
+              ([, name]) => name === request.name
+            )
+              ? INDEPENDENT_EXTENSION_TYPE_ORIGIN
+              : ABI_UPGRADE_DATATYPES.some(([, name]) => name === request.name)
+                ? CALLABLE
+                : TYPE_ORIGIN;
           return {
             response: {
               datatype: { definingId: request.name === driftDatatype
-                ? CALLABLE
-                : request.name === 'ExpansionPackReleaseV8'
-                  ? releaseTypeOrigin
-                  : TYPE_ORIGIN },
+                ? expectedTypeOrigin === CALLABLE ? TYPE_ORIGIN : CALLABLE
+                : expectedTypeOrigin },
             },
           };
         },
@@ -566,13 +627,47 @@ test('enabled v8 requires one exact runtime, release and verification evidence t
 });
 
 test('a fully evidenced v8 deployment may remain gated off', () => {
-  const config = runtime({ expansionPackV8ReleaseEnabled: false });
-  const record = deployment({ expansionPackV8ReleaseEnabled: false });
+  const config = runtime({
+    independentExtensionV5TypeOriginPackageId: '',
+    expansionPackV8ReleaseEnabled: false,
+  });
+  const record = deployment({
+    independentExtensionV5TypeOriginPackageId: '',
+    expansionPackV8ReleaseEnabled: false,
+  });
   record.releases.expansionPackV8.enabled = false;
   record.verification.expansionPackV8Enabled = false;
   const status = inspectExpansionPackV8Deployment(config, record);
   assert.equal(status.declared, true);
   assert.equal(status.ready, true, JSON.stringify(status, null, 2));
+});
+
+test('enabled v8 fails closed without independent-extension TypeOrigin evidence', () => {
+  const config = runtime({ independentExtensionV5TypeOriginPackageId: '' });
+  const record = deployment({ independentExtensionV5TypeOriginPackageId: '' });
+  const status = inspectExpansionPackV8Deployment(config, record, {
+    required: true,
+  });
+  assert.equal(status.ready, false);
+  assert.deepEqual(status.runtimeMissing, [
+    'independentExtensionV5TypeOriginPackageId',
+  ]);
+  assert.deepEqual(status.deploymentMissing, [
+    'independentExtensionV5TypeOriginPackageId',
+  ]);
+});
+
+test('enabled v8 rejects independent-extension TypeOrigin drift', () => {
+  const record = deployment({
+    independentExtensionV5TypeOriginPackageId: '0x6007',
+  });
+  const status = inspectExpansionPackV8Deployment(runtime(), record, {
+    required: true,
+  });
+  assert.equal(status.ready, false);
+  assert.deepEqual(status.mismatches, [
+    'independentExtensionV5TypeOriginPackageId',
+  ]);
 });
 
 test('v8 rejects an explicit false package read-back claim', () => {
@@ -620,7 +715,12 @@ test('v8 package ABI read-back queries the callable module and stable TypeOrigin
     requests
       .filter((request) => request.kind === 'datatype')
       .map(({ packageId, moduleName, name }) => ({ packageId, moduleName, name })),
-    ABI_DATATYPES.map(([moduleName, name]) => ({
+    [
+      ...ABI_DATATYPES,
+      ...ABI_UPGRADE_DATATYPES,
+      ...ABI_INDEPENDENT_EXTENSION_DATATYPES,
+      ['commerce_v5', 'MakerReleaseEvidenceV5'],
+    ].map(([moduleName, name]) => ({
       packageId: CALLABLE,
       moduleName,
       name,
@@ -658,10 +758,17 @@ test('v8 package ABI read-back rejects missing entry points, critical argument d
     packageAbiClient({ version: 7 }),
     packageAbiClient({ createParameterCount: 12 }),
     packageAbiClient({ releaseTypeOrigin: CALLABLE }),
+    packageAbiClient({ driftDatatype: 'IndependentExtensionAuthorityV5' }),
+    packageAbiClient({ missingDatatype: 'IndependentExtensionLockStateV5' }),
+    packageAbiClient({ driftDatatype: 'LegacyLogicalStyleRegisteredV5' }),
     packageAbiClient({ missingFunction: 'purchase_expansion_pack_v8' }),
     packageAbiClient({ driftVisibilityFunction: 'purchase_expansion_pack_v8' }),
     packageAbiClient({ driftEntryFunction: 'seal_approve_style_v8' }),
     packageAbiClient({ driftEntryFunction: 'purchase_expansion_pack_v8' }),
+    packageAbiClient({ missingFunction: 'finalize_independent_extension_root_v5' }),
+    packageAbiClient({ driftVisibilityFunction: 'finalize_independent_extension_root_v5' }),
+    packageAbiClient({ missingFunction: 'admit_expansion_pack_with_authority_v8' }),
+    packageAbiClient({ driftVisibilityFunction: 'admit_expansion_pack_with_authority_v8' }),
     packageAbiClient({
       driftFunction: 'create_expansion_pack_v8',
       driftParameterIndex: 0,
@@ -694,7 +801,7 @@ test('v8 package ABI read-back rejects missing entry points, critical argument d
       );
       assert.equal(status.ready, false, status.detail);
     } catch (error) {
-      assert.match(error.message, /ABI is missing/);
+      assert.match(error.message, /(?:ABI|datatype) is missing/);
     }
   }
 });
@@ -711,6 +818,14 @@ test('v8 package ABI read-back rejects drift in every value, framework and gener
     ['purchase_expansion_pack_v8', 7, '&mut TxContext'],
     ['withdraw_expansion_pack_revenue_v8', 4, 'address'],
     ['bind_maker_release_evidence_v5', 6, '&TxContext'],
+    ['finalize_independent_extension_root_v5', 0, '&mut MakerRootV5'],
+    ['finalize_independent_extension_root_v5', 1, '&MakerTreasuryV5<PaymentCoin>'],
+    ['finalize_independent_extension_root_v5', 2, 'MakerControlCapV5'],
+    ['finalize_independent_extension_root_v5', 6, 'vector<String>'],
+    ['finalize_independent_extension_root_v5', 10, 'vector<u8>'],
+    ['finalize_independent_extension_root_v5', 11, '&mut TxContext'],
+    ['admit_expansion_pack_with_authority_v8', 3, '&IndependentExtensionAuthorityV5'],
+    ['admit_expansion_pack_with_authority_v8', 4, '&TxContext'],
   ];
   for (const [driftFunction, driftParameterIndex, label] of drifts) {
     const mock = packageAbiClient({ driftFunction, driftParameterIndex });
@@ -725,6 +840,7 @@ test('v8 package ABI read-back rejects drift in every value, framework and gener
 
   for (const mock of [
     packageAbiClient({ driftTypeParameterFunction: 'purchase_expansion_pack_v8' }),
+    packageAbiClient({ driftTypeParameterFunction: 'finalize_independent_extension_root_v5' }),
     packageAbiClient({ driftReturnFunction: 'verify_style_access_v8' }),
     packageAbiClient({ driftReturnFunction: 'check_style_seal_access_v8' }),
   ]) {

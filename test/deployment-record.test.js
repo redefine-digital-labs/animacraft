@@ -128,6 +128,7 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.match(publishedSource, /^version = 6$/m);
 
   for (const field of [
+    'commerceV5CallablePackageId',
     'commerceV5TypeOriginPackageId',
     'commerceProtocolConfigV5Id',
     'commerceProtocolTreasuryV5Id',
@@ -143,8 +144,8 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
     assert.equal(runtime[field], deployment[field], `${field} must match the runtime record`);
     assert.match(deployment[field], SUI_OBJECT_ID, `${field} must be a canonical 32-byte Sui id`);
   }
-  assert.equal(runtime.commerceV5LogicalAuxiliaryBlobId, '');
-  assert.equal(runtime.commerceV5SoulBindingProofType, '');
+  assert.equal(runtime.commerceV5LogicalAuxiliaryBlobId, deployment.observedChainState.commerceV5.logicalAuxiliaryBlobId);
+  assert.equal(runtime.commerceV5SoulBindingProofType, deployment.observedChainState.commerceV5.soulBindingProofType);
   assert.equal(runtime.commerceV5ReleaseEnabled, false);
   assert.equal(runtime.soulidityPackageId, SOULIDITY_MAINNET.callablePackageId);
   assert.equal(runtime.soulidityCallablePackageId, SOULIDITY_MAINNET.callablePackageId);
@@ -160,11 +161,11 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(runtime.soulidityTypeOriginPackageId, SOULIDITY_MAINNET.v5TypeOriginPackageId);
   assert.equal(runtime.compositionV6SoulOwnerProofTypeOriginPackageId, deployment.compositionV6SoulOwnerProofTypeOriginPackageId);
   assert.equal(runtime.compositionV6SoulOwnerProofTypeOriginPackageId, SOULIDITY_MAINNET.v6TypeOriginPackageId);
-  assert.equal(runtime.compositionV6SoulOwnerProofType, '');
+  assert.equal(runtime.compositionV6SoulOwnerProofType, deployment.observedChainState.compositionV6.soulOwnerProofType);
   assert.equal(runtime.compositionV6ReleaseEnabled, false);
   assert.equal(deployment.releases.compositionV6.soulOwnerProofTypeOriginPackageId, SOULIDITY_MAINNET.v6TypeOriginPackageId);
   assert.equal(deployment.releases.compositionV6.soulOwnerProofType, '');
-  assert.equal(runtime.compositionValidatorEpochV6, 0);
+  assert.equal(runtime.compositionValidatorEpochV6, deployment.observedChainState.compositionV6.validatorEpoch);
   assert.equal(
     runtime.compositionValidatorPolicyCommitmentV6,
     deployment.compositionValidatorPolicyCommitmentV6,

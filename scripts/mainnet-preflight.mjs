@@ -70,6 +70,7 @@ export const COMPOSITION_V6_DEPENDENCY_FIELDS = Object.freeze([
 export const EXPANSION_PACK_V8_RUNTIME_FIELDS = Object.freeze([
   'expansionPackV8CallablePackageId',
   'expansionPackV8TypeOriginPackageId',
+  'independentExtensionV5TypeOriginPackageId',
   'expansionPackV8ReleaseEnabled',
 ]);
 
@@ -158,9 +159,11 @@ export function expansionPackV8Declared(config = {}, deployment = {}) {
   return config.expansionPackV8ReleaseEnabled === true
     || present(config.expansionPackV8CallablePackageId)
     || present(config.expansionPackV8TypeOriginPackageId)
+    || present(config.independentExtensionV5TypeOriginPackageId)
     || deployment.expansionPackV8ReleaseEnabled === true
     || present(deployment.expansionPackV8CallablePackageId)
     || present(deployment.expansionPackV8TypeOriginPackageId)
+    || present(deployment.independentExtensionV5TypeOriginPackageId)
     || Boolean(release && typeof release === 'object' && Object.keys(release).length)
     || EXPANSION_PACK_V8_VERIFICATION_FIELDS.some((field) => (
       present(verification[field])
@@ -187,20 +190,30 @@ export function inspectExpansionPackV8Deployment(
 
   const release = deployment.releases?.expansionPackV8 || {};
   const verification = deployment.verification || {};
+  const activationEvidenceRequired = config.expansionPackV8ReleaseEnabled === true
+    || deployment.expansionPackV8ReleaseEnabled === true
+    || release.enabled === true
+    || verification.expansionPackV8Enabled === true;
   const runtimeMissing = EXPANSION_PACK_V8_RUNTIME_FIELDS.filter((field) => (
     field === 'expansionPackV8ReleaseEnabled'
       ? typeof config[field] !== 'boolean'
-      : !present(config[field])
+      : field === 'independentExtensionV5TypeOriginPackageId'
+        ? activationEvidenceRequired && !present(config[field])
+        : !present(config[field])
   ));
   const runtimeInvalid = [
     'expansionPackV8CallablePackageId',
     'expansionPackV8TypeOriginPackageId',
+    'independentExtensionV5TypeOriginPackageId',
   ].filter((field) => present(config[field]) && !validSuiId(config[field]));
 
   const deploymentPaths = [
     'expansionPackProtocolVersion',
     'expansionPackV8CallablePackageId',
     'expansionPackV8TypeOriginPackageId',
+    ...(activationEvidenceRequired
+      ? ['independentExtensionV5TypeOriginPackageId']
+      : []),
     'expansionPackV8ReleaseEnabled',
     ...EXPANSION_PACK_V8_RELEASE_EVIDENCE_FIELDS.map(
       (field) => `releases.expansionPackV8.${field}`,
@@ -228,6 +241,7 @@ export function inspectExpansionPackV8Deployment(
   [
     ['expansionPackV8CallablePackageId', deployment.expansionPackV8CallablePackageId],
     ['expansionPackV8TypeOriginPackageId', deployment.expansionPackV8TypeOriginPackageId],
+    ['independentExtensionV5TypeOriginPackageId', deployment.independentExtensionV5TypeOriginPackageId],
     ['releases.expansionPackV8.callablePackageId', release.callablePackageId],
     ['releases.expansionPackV8.typeOriginPackageId', release.typeOriginPackageId],
   ].forEach(([path, value]) => {
@@ -285,6 +299,11 @@ export function inspectExpansionPackV8Deployment(
     'expansionPackV8TypeOriginPackageId',
     deployment.expansionPackV8TypeOriginPackageId,
     config.expansionPackV8TypeOriginPackageId,
+  );
+  compareId(
+    'independentExtensionV5TypeOriginPackageId',
+    deployment.independentExtensionV5TypeOriginPackageId,
+    config.independentExtensionV5TypeOriginPackageId,
   );
   compareId(
     'releases.expansionPackV8.callablePackageId',
@@ -621,13 +640,18 @@ export async function inspectExpansionPackV8PackageAbi(
   {
     originalPackageId,
     commerceV5TypeOriginPackageId,
+    independentExtensionV5TypeOriginPackageId,
   } = {},
 ) {
   const moduleName = 'expansion_pack_v8';
   const completeModuleName = 'expansion_pack_complete_v8';
   const typeOrigin = normalizeSuiAddress(typeOriginPackageId);
+  const upgradeTypeOrigin = normalizeSuiAddress(callablePackageId);
   const legacyTypeOrigin = normalizeSuiAddress(originalPackageId);
   const commerceTypeOrigin = normalizeSuiAddress(commerceV5TypeOriginPackageId);
+  const independentExtensionTypeOrigin = present(independentExtensionV5TypeOriginPackageId)
+    ? normalizeSuiAddress(independentExtensionV5TypeOriginPackageId)
+    : '';
   // Sui function signatures use the package lineage's original namespace for
   // every module in an upgraded package. A datatype's independently stable
   // TypeOrigin is exposed by getDatatype().definingId and is verified below.
@@ -689,6 +713,13 @@ export async function inspectExpansionPackV8PackageAbi(
     [],
     reference,
   );
+  const protocolFeeAdmin = (reference = 'immutable') => datatype(
+    abiLineagePackage,
+    'animacraft',
+    'ProtocolFeeAdminCap',
+    [],
+    reference,
+  );
   const commerceConfig = (reference = 'immutable') => datatype(
     abiLineagePackage,
     'commerce_v5',
@@ -700,6 +731,20 @@ export async function inspectExpansionPackV8PackageAbi(
     abiLineagePackage,
     'commerce_v5',
     'MakerControlCapV5',
+    [],
+    reference,
+  );
+  const makerTreasury = (reference = 'immutable') => datatype(
+    abiLineagePackage,
+    'commerce_v5',
+    'MakerTreasuryV5',
+    [typeParameter(0)],
+    reference,
+  );
+  const independentExtensionAuthority = (reference = 'immutable') => datatype(
+    abiLineagePackage,
+    'commerce_v5',
+    'IndependentExtensionAuthorityV5',
     [],
     reference,
   );
@@ -806,6 +851,15 @@ export async function inspectExpansionPackV8PackageAbi(
       typeParameters: [],
       parameters: [
         release('mutable'), root(), maker(), controlCap(), context(),
+      ],
+      returns: [],
+    },
+    {
+      name: 'admit_expansion_pack_with_authority_v8',
+      typeParameters: [],
+      parameters: [
+        release('mutable'), root(), maker(), independentExtensionAuthority(),
+        context(),
       ],
       returns: [],
     },
@@ -1033,6 +1087,23 @@ export async function inspectExpansionPackV8PackageAbi(
     ],
     returns: [],
   };
+  const finalizeIndependentExtensionSpec = {
+    name: 'finalize_independent_extension_root_v5',
+    visibility: 'public',
+    isEntry: false,
+    typeParameters: [[]],
+    parameters: [
+      root('mutable'), makerTreasury(), controlCap(null), maker(),
+      commerceConfig(), protocolFeeAdmin(), vector(datatypeBody(
+        stdPackage,
+        'string',
+        'String',
+      )), vector(datatypeBody(stdPackage, 'string', 'String')),
+      vector(datatypeBody(stdPackage, 'string', 'String')),
+      vector({ $kind: 'u8' }), vector({ $kind: 'u8' }), context('mutable'),
+    ],
+    returns: [],
+  };
   const datatypeSpecs = [
     [moduleName, 'ExpansionPackReleaseV8'],
     [moduleName, 'ExpansionPackAdminCapV8'],
@@ -1048,10 +1119,29 @@ export async function inspectExpansionPackV8PackageAbi(
     [completeModuleName, 'ExpansionPackCompleteAuthenticatedV8'],
     [completeModuleName, 'ExpansionPackCompleteBoundToSoulV8'],
   ];
+  const upgradeDatatypeSpecs = [
+    ['commerce_v5', 'LegacyLogicalCompatibilityStateV5'],
+    ['commerce_v5', 'LegacyLogicalStyleApprovalKeyV5'],
+    ['commerce_v5', 'LegacyLogicalStyleApprovalV5'],
+    ['commerce_v5', 'LegacyLogicalStyleRegisteredV5'],
+  ];
+  const independentExtensionDatatypeSpecs = independentExtensionTypeOrigin
+    ? [
+      ['commerce_v5', 'IndependentExtensionLockStateV5'],
+      ['commerce_v5', 'IndependentExtensionAuthorityV5'],
+      ['commerce_v5', 'IndependentExtensionRootFinalizedV5'],
+    ]
+    : [];
+  const queriedDatatypeSpecs = [
+    ...datatypeSpecs,
+    ...upgradeDatatypeSpecs,
+    ...independentExtensionDatatypeSpecs,
+  ];
   const [
     functions,
     datatypes,
     parentEvidenceFunction,
+    finalizeIndependentExtensionFunction,
     parentEvidenceDatatype,
     version,
     completeVersion,
@@ -1064,7 +1154,7 @@ export async function inspectExpansionPackV8PackageAbi(
     Promise.all(functionSpecs.map(({ name, moduleName: specModule = moduleName }) => (
       moveFunctionInModule(client, callablePackageId, specModule, name)
     ))),
-    Promise.all(datatypeSpecs.map(([specModule, name]) => (
+    Promise.all(queriedDatatypeSpecs.map(([specModule, name]) => (
       moveDatatypeInModule(client, callablePackageId, specModule, name)
     ))),
     moveFunctionInModule(
@@ -1072,6 +1162,12 @@ export async function inspectExpansionPackV8PackageAbi(
       callablePackageId,
       'commerce_v5',
       'bind_maker_release_evidence_v5',
+    ),
+    moveFunctionInModule(
+      client,
+      callablePackageId,
+      'commerce_v5',
+      'finalize_independent_extension_root_v5',
     ),
     moveDatatypeInModule(
       client,
@@ -1187,18 +1283,38 @@ export async function inspectExpansionPackV8PackageAbi(
   if (!functionMatches(parentEvidenceFunction, parentEvidenceSpec)) {
     abiMismatches.push('commerce_v5::bind_maker_release_evidence_v5');
   }
+  if (!functionMatches(
+    finalizeIndependentExtensionFunction,
+    finalizeIndependentExtensionSpec,
+  )) {
+    abiMismatches.push('commerce_v5::finalize_independent_extension_root_v5');
+  }
   const originEntries = [
     ...datatypeSpecs.map(([specModule, name], index) => ({
       name: `${specModule}::${name}`,
       datatype: datatypes[index],
+      expectedTypeOrigin: typeOrigin,
+    })),
+    ...upgradeDatatypeSpecs.map(([specModule, name], index) => ({
+      name: `${specModule}::${name}`,
+      datatype: datatypes[datatypeSpecs.length + index],
+      expectedTypeOrigin: upgradeTypeOrigin,
+    })),
+    ...independentExtensionDatatypeSpecs.map(([specModule, name], index) => ({
+      name: `${specModule}::${name}`,
+      datatype: datatypes[
+        datatypeSpecs.length + upgradeDatatypeSpecs.length + index
+      ],
+      expectedTypeOrigin: independentExtensionTypeOrigin,
     })),
     {
       name: 'commerce_v5::MakerReleaseEvidenceV5',
       datatype: parentEvidenceDatatype,
+      expectedTypeOrigin: typeOrigin,
     },
   ];
-  const originMismatches = originEntries.filter(({ datatype }) => (
-    !datatypeHasTypeOrigin(datatype, typeOrigin)
+  const originMismatches = originEntries.filter(({ datatype, expectedTypeOrigin }) => (
+    !datatypeHasTypeOrigin(datatype, expectedTypeOrigin)
   )).map(({ name }) => name);
   const exactAbiReady = abiMismatches.length === 0;
   const originsReady = originMismatches.length === 0;
@@ -1223,7 +1339,7 @@ export async function inspectExpansionPackV8PackageAbi(
   return {
     ready,
     detail: ready
-      ? `version_v8=8; Complete/physical bridges and companion proof are false with aborting bridge assertions; exact entry/public ABI and legacy=${legacyTypeOrigin}, Commerce v5=${commerceTypeOrigin}, Expansion Pack v8=${typeOrigin} TypeOrigins verified`
+      ? `version_v8=8; Complete/physical bridges and companion proof are false with aborting bridge assertions; exact entry/public ABI and legacy=${legacyTypeOrigin}, Commerce v5=${commerceTypeOrigin}, Expansion Pack v8=${typeOrigin}, compatibility markers/events=${upgradeTypeOrigin}${independentExtensionTypeOrigin ? `, independent extension=${independentExtensionTypeOrigin}` : ''} TypeOrigins verified`
       : [
         'Required Expansion Pack v8 package read-back differs.',
         valueMismatches.length ? `Values: ${valueMismatches.join(', ')}.` : '',
@@ -1243,14 +1359,20 @@ async function checkExpansionPackV8PackageAbi(
   const typeOriginPackageId = config.expansionPackV8TypeOriginPackageId;
   const originalPackageId = config.originalPackageId;
   const commerceV5TypeOriginPackageId = config.commerceV5TypeOriginPackageId;
+  const independentExtensionV5TypeOriginPackageId =
+    config.independentExtensionV5TypeOriginPackageId;
+  const independentExtensionOriginRequired =
+    config.expansionPackV8ReleaseEnabled === true;
   if (!validSuiId(callablePackageId)
       || !validSuiId(typeOriginPackageId)
       || !validSuiId(originalPackageId)
-      || !validSuiId(commerceV5TypeOriginPackageId)) {
+      || !validSuiId(commerceV5TypeOriginPackageId)
+      || (independentExtensionOriginRequired
+        && !validSuiId(independentExtensionV5TypeOriginPackageId))) {
     record(
       'Animacraft Expansion Pack v8 package ABI',
       false,
-      'Valid callable, legacy Maker, Commerce v5 and Expansion Pack v8 TypeOrigins are required for chain read-back.',
+      'Valid callable, legacy Maker, Commerce v5 and Expansion Pack v8 TypeOrigins are required for chain read-back; enabled v8 also requires its independent-extension TypeOrigin.',
     );
     return;
   }
@@ -1261,7 +1383,11 @@ async function checkExpansionPackV8PackageAbi(
         client,
         callablePackageId,
         typeOriginPackageId,
-        { originalPackageId, commerceV5TypeOriginPackageId },
+        {
+          originalPackageId,
+          commerceV5TypeOriginPackageId,
+          independentExtensionV5TypeOriginPackageId,
+        },
       ),
     );
     record(

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { fromBase64 } from '@mysten/bcs';
 import { bcs } from '@mysten/sui/bcs';
 import { Transaction } from '@mysten/sui/transactions';
-import { normalizeSuiAddress } from '@mysten/sui/utils';
+import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
 import test from 'node:test';
 import {
   COMMERCE_V5_ACCESS,
@@ -19,6 +19,7 @@ import {
   buildConfigureDisabledCommerceProtocolV5,
   buildBindCommerceProtocolDependenciesV5,
   buildConfigureMakerV5,
+  buildFinalizeIndependentExtensionRootV5,
   buildInitializeCommerceProtocolV5,
   buildListMakerForSaleV5,
   buildMigrateLegacyMakerV5,
@@ -35,6 +36,7 @@ import {
   parseCommerceV5Event,
   parseMakerAccessPassV5,
   parseMakerControlCapV5,
+  parseIndependentExtensionAuthorityV5,
   parseMakerListingV5,
   parseMakerRootV5,
   parseMakerTreasuryV5,
@@ -86,6 +88,7 @@ const IDS = Object.freeze({
   accessPass: id('34'),
   packPass: id('35'),
   soul: id('36'),
+  independentExtensionAuthority: id('37'),
 });
 
 const freePolicy = Object.freeze({
@@ -234,6 +237,22 @@ function controlCapObject(overrides = {}) {
   });
 }
 
+function independentExtensionAuthorityObject(overrides = {}) {
+  return object('IndependentExtensionAuthorityV5', IDS.independentExtensionAuthority, {
+    version: '5',
+    root_id: IDS.root,
+    legacy_maker_id: IDS.legacyMaker,
+    protocol_config_id: IDS.protocol,
+    protocol_admin_cap_id: IDS.protocolAdmin,
+    owner: IDS.owner,
+    retired_control_cap_id: IDS.controlCap,
+    retired_control_cap_epoch: '7',
+    locked_ownership_epoch: '8',
+    audit_hash: Array(32).fill(0xab),
+    ...overrides,
+  });
+}
+
 function listingObject(overrides = {}) {
   return object('MakerListingV5', IDS.listing, {
     version: '5',
@@ -301,6 +320,34 @@ function pureBytesForArgument(transaction, commandIndex, argumentIndex) {
   return fromBase64(data.inputs[argument.Input].Pure.bytes);
 }
 
+function independentExtensionRows() {
+  return [
+    ...Array.from({ length: 19 }, (_, index) => ({
+      partKey: 'eyes',
+      itemKey: 'bright',
+      styleKey: index === 0 ? 'default' : `compat-visual-${index}`,
+      rowKind: COMMERCE_V5_STYLE_ROW.VISUAL,
+    })),
+    ...['a', 'b', 'c'].map((suffix) => ({
+      partKey: `legacy-none-${suffix}`,
+      itemKey: '__ac_none',
+      styleKey: '__animacraft_none__',
+      rowKind: COMMERCE_V5_STYLE_ROW.LOGICAL_NONE,
+    })),
+    ...[
+      ['__ac_color_color-1', 'default', '__animacraft_color__:default'],
+      ['__ac_color_color-1', 'color-2', '__animacraft_color__:color-2'],
+      ['__ac_color_color-2', 'default', '__animacraft_color__:default'],
+      ['__ac_color_color-2', 'color-2', '__animacraft_color__:color-2'],
+    ].map(([partKey, itemKey, styleKey]) => ({
+      partKey,
+      itemKey,
+      styleKey,
+      rowKind: COMMERCE_V5_STYLE_ROW.LOGICAL_COLOR,
+    })),
+  ];
+}
+
 const recipe = Object.freeze([
   { partKey: 'body', itemKey: 'base', colorHex: '#ffffff', renderOrder: 0 },
   { partKey: 'hair', itemKey: 'long', colorHex: '#000000', renderOrder: 1 },
@@ -331,6 +378,7 @@ test('v5 object parsers preserve every u64 as BigInt and reject an unexpected la
   );
   assert.equal(parsed.root.completeOutputCount, 3n);
   assert.equal(parsed.makerTreasury.balanceAtomic, 7_000_000n);
+  assert.equal(parsed.makerTreasury.paymentCoinType, PAYMENT);
   assert.equal(parsed.controlCap.ownershipEpoch, 7n);
   assert.equal(parsed.listing.priceAtomic, 25_000_000n);
   assert.throws(
@@ -340,6 +388,24 @@ test('v5 object parsers preserve every u64 as BigInt and reject an unexpected la
   assert.throws(
     () => parseCommerceProtocolConfigV5(protocolObject({ version: '4' })),
     { code: 'COMMERCE_V5_VERSION_MISMATCH' },
+  );
+});
+
+test('v5 object parsers normalize exact gRPC Move types without a 0x prefix', () => {
+  const payment = PAYMENT.replace(/^0x/, '');
+  const proof = `${id('b')}::animacraft_binding::AnimacraftSoulBindingProofV5`;
+  const parsed = parseCommerceProtocolConfigV5(protocolObject({
+    payment_coin_type: payment,
+    soul_binding_proof_type: { vec: [proof.replace(/^0x/, '')] },
+  }));
+
+  assert.equal(parsed.paymentCoinType, PAYMENT);
+  assert.equal(parsed.soulBindingProofType, normalizeStructTag(proof));
+  assert.throws(
+    () => parseCommerceProtocolConfigV5(protocolObject({
+      payment_coin_type: '2::sui::SUI',
+    })),
+    { code: 'COMMERCE_V5_INVALID_MOVE_TYPE' },
   );
 });
 
@@ -357,6 +423,20 @@ test('MakerRootV5 parser preserves the public shape across flat diagnostics and 
   assert.equal(nested.totalCompletes, 3n);
 });
 
+test('MakerRootV5 parser accepts the exact gRPC empty-vector Seal representation', () => {
+  const fixture = rootObject({
+    seal_policy_id: null,
+    seal_release_commitment: '',
+    paid_pack_count: '0',
+    protected_style_count: '0',
+    base_access_kind: COMMERCE_V5_ACCESS.FREE,
+    base_purchase_price_atomic: '0',
+  });
+  const parsed = parseMakerRootV5(fixture);
+  assert.equal(parsed.sealPolicyBound, false);
+  assert.equal(parsed.sealReleaseCommitment, '');
+});
+
 test('access and Pack passes are parsed as wallet-bound v5 receipts', () => {
   const access = parseMakerAccessPassV5(accessPassObject());
   const pack = parsePackPassV5(packPassObject());
@@ -364,6 +444,24 @@ test('access and Pack passes are parsed as wallet-bound v5 receipts', () => {
   assert.equal(access.holder, IDS.owner);
   assert.equal(pack.packKey, 'pack-1');
   assert.equal(pack.ownershipEpoch, 7n);
+});
+
+test('IndependentExtensionAuthorityV5 parser preserves the retired cap and 32-byte audit lock', () => {
+  const authority = parseIndependentExtensionAuthorityV5(
+    independentExtensionAuthorityObject(),
+  );
+  assert.equal(authority.rootId, IDS.root);
+  assert.equal(authority.protocolAdminCapId, IDS.protocolAdmin);
+  assert.equal(authority.retiredControlCapId, IDS.controlCap);
+  assert.equal(authority.retiredControlCapEpoch, 7n);
+  assert.equal(authority.lockedOwnershipEpoch, 8n);
+  assert.equal(authority.auditHash, `0x${'ab'.repeat(32)}`);
+  assert.throws(
+    () => parseIndependentExtensionAuthorityV5(
+      independentExtensionAuthorityObject({ audit_hash: Array(31).fill(0xab) }),
+    ),
+    { code: 'COMMERCE_V5_OBJECT_FIELD_INVALID' },
+  );
 });
 
 test('protocol initialization always starts through the disabled Move initializer', () => {
@@ -623,6 +721,141 @@ test('Maker configuration registers exact Base/Pack Styles, seals, then activate
       styleBindings: [{ partKey: 'body', itemKey: 'base', styleKey: 'late' }],
     }),
     { code: 'COMMERCE_V5_STYLE_REGISTRY_SEALED' },
+  );
+});
+
+test('legacy logical compatibility fails closed because its direct Move route is private', () => {
+  const { root, controlCap, protocol } = states({
+    rootOverrides: {
+      lifecycle: COMMERCE_V5_LIFECYCLE.PAUSED,
+      style_registry_sealed: false,
+      style_count: '19',
+    },
+  });
+  assert.throws(
+    () => buildConfigureMakerV5({
+      runtime,
+      root,
+      controlCap,
+      sender: IDS.owner,
+      configurePolicy: false,
+      legacyLogicalCompatibility: {
+        protocol,
+        protocolFeeAdminCapId: IDS.protocolAdmin,
+      },
+    }),
+    { code: 'COMMERCE_V5_LEGACY_LOGICAL_ROUTE_PRIVATE' },
+  );
+});
+
+test('atomic independent-extension finalizer emits one exact typed Move call', () => {
+  const { root, controlCap, protocol, makerTreasury } = states({
+    rootOverrides: {
+      lifecycle: COMMERCE_V5_LIFECYCLE.PAUSED,
+      active_listing_id: { vec: [] },
+      base_access_kind: COMMERCE_V5_ACCESS.FREE,
+      base_purchase_price_atomic: '0',
+      pack_count: '0',
+      paid_pack_count: '0',
+      pack_keys: [],
+      style_count: '0',
+      style_registry_sealed: false,
+      protected_style_count: '0',
+      complete_output_count: '0',
+      total_completes: '0',
+    },
+    treasuryOverrides: { revenue: { fields: { value: '0' } } },
+  });
+  const rows = independentExtensionRows();
+  const transaction = buildFinalizeIndependentExtensionRootV5({
+    runtime,
+    root,
+    makerTreasury,
+    controlCap,
+    protocol,
+    protocolFeeAdminCapId: IDS.protocolAdmin,
+    styleBindings: rows,
+    auditHash: `0x${'cd'.repeat(32)}`,
+    sender: IDS.owner,
+  });
+  assert.deepEqual(functions(transaction), ['finalize_independent_extension_root_v5']);
+  const call = moveCall(transaction);
+  assert.deepEqual(call.typeArguments, [PAYMENT]);
+  assert.equal(call.arguments.length, 11);
+  assert.deepEqual(
+    bcs.vector(bcs.string()).parse(pureBytesForArgument(transaction, 0, 6)),
+    rows.map((row) => row.partKey),
+  );
+  assert.deepEqual(
+    bcs.vector(bcs.u8()).parse(pureBytesForArgument(transaction, 0, 9)),
+    rows.map((row) => row.rowKind),
+  );
+  assert.deepEqual(
+    bcs.vector(bcs.u8()).parse(pureBytesForArgument(transaction, 0, 10)),
+    Array(32).fill(0xcd),
+  );
+});
+
+test('atomic independent-extension finalizer rejects any state, order, authority, or hash drift', () => {
+  const pristine = states({
+    rootOverrides: {
+      lifecycle: COMMERCE_V5_LIFECYCLE.PAUSED,
+      active_listing_id: { vec: [] },
+      base_access_kind: COMMERCE_V5_ACCESS.FREE,
+      base_purchase_price_atomic: '0',
+      pack_count: '0',
+      paid_pack_count: '0',
+      pack_keys: [],
+      style_count: '0',
+      style_registry_sealed: false,
+      protected_style_count: '0',
+      complete_output_count: '0',
+      total_completes: '0',
+    },
+    treasuryOverrides: { revenue: { fields: { value: '0' } } },
+  });
+  const options = {
+    runtime,
+    ...pristine,
+    protocolFeeAdminCapId: IDS.protocolAdmin,
+    styleBindings: independentExtensionRows(),
+    auditHash: `0x${'cd'.repeat(32)}`,
+    sender: IDS.owner,
+  };
+  assert.throws(
+    () => buildFinalizeIndependentExtensionRootV5({
+      ...options,
+      root: { ...pristine.root, styleCount: 1n },
+    }),
+    { code: 'COMMERCE_V5_INDEPENDENT_EXTENSION_ROOT_NOT_PRISTINE' },
+  );
+  assert.throws(
+    () => buildFinalizeIndependentExtensionRootV5({
+      ...options,
+      styleBindings: [options.styleBindings[19], ...options.styleBindings.slice(1)],
+    }),
+    { code: 'COMMERCE_V5_INDEPENDENT_EXTENSION_STYLE_MISMATCH' },
+  );
+  assert.throws(
+    () => buildFinalizeIndependentExtensionRootV5({
+      ...options,
+      protocolFeeAdminCapId: id('dead'),
+    }),
+    { code: 'COMMERCE_V5_PROTOCOL_ADMIN_MISMATCH' },
+  );
+  assert.throws(
+    () => buildFinalizeIndependentExtensionRootV5({
+      ...options,
+      makerTreasury: {
+        ...pristine.makerTreasury,
+        paymentCoinType: `${id('3')}::coin::OTHER`,
+      },
+    }),
+    { code: 'COMMERCE_V5_PAYMENT_COIN_MISMATCH' },
+  );
+  assert.throws(
+    () => buildFinalizeIndependentExtensionRootV5({ ...options, auditHash: 'cd'.repeat(32) }),
+    { code: 'COMMERCE_V5_INVALID_HASH' },
   );
 });
 
@@ -1347,4 +1580,29 @@ test('commerce v5 event parser exposes IDs and exact atomic amounts without Numb
   assert.equal(bound.payer, IDS.owner);
   assert.equal(bound.sealId, `0x${'11'.repeat(32)}`);
   assert.equal(parseCommerceV5Event({ type: `${PACKAGE}::animacraft::OCMakerPublished` }), null);
+});
+
+test('commerce v5 event parser exposes the atomic independent-extension authority tuple', () => {
+  const parsed = parseCommerceV5Event({
+    type: `${PACKAGE}::commerce_v5::IndependentExtensionRootFinalizedV5`,
+    parsedJson: {
+      root_id: IDS.root,
+      authority_id: IDS.independentExtensionAuthority,
+      legacy_maker_id: IDS.legacyMaker,
+      protocol_config_id: IDS.protocol,
+      protocol_admin_cap_id: IDS.protocolAdmin,
+      owner: IDS.owner,
+      retired_control_cap_id: IDS.controlCap,
+      retired_control_cap_epoch: '7',
+      locked_ownership_epoch: '8',
+      audit_hash: Array(32).fill(0xef),
+    },
+  });
+  assert.equal(parsed.authorityId, IDS.independentExtensionAuthority);
+  assert.equal(parsed.protocolConfigId, IDS.protocol);
+  assert.equal(parsed.protocolAdminCapId, IDS.protocolAdmin);
+  assert.equal(parsed.retiredControlCapId, IDS.controlCap);
+  assert.equal(parsed.retiredControlCapEpoch, 7n);
+  assert.equal(parsed.lockedOwnershipEpoch, 8n);
+  assert.equal(parsed.auditHash, `0x${'ef'.repeat(32)}`);
 });

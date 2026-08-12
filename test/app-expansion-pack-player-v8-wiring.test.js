@@ -49,6 +49,15 @@ test('v8 Player discovery requires package identity while the release gate contr
   assert.match(app, /releaseId: String\(entry\.releaseId \|\| ''\)/);
 });
 
+test('FREE v8 reads the Commerce core without opening Commerce product actions', () => {
+  assert.match(app, /allowExpansionPackV8 = false/);
+  assert.match(app, /allowExpansionPackV8\s*&&\s*expansionPackV8RuntimeConfigured\(\)/);
+  assert.match(app, /hydratePlayerCommerceV5\(document, \{[\s\S]*allowExpansionPackV8: true/);
+  assert.match(app, /requireExpansionPackV8ParentState\(document, \{/);
+  assert.match(app, /hydrated\.context\.lifecycle !== COMMERCE_V5_LIFECYCLE\.PAUSED/);
+  assert.match(app, /runtimeConfig\.commerceV5ReleaseEnabled !== true && !allowExpansionPackV8/);
+});
+
 test('v8 acquisition trusts neither a local id nor a transaction digest by itself', () => {
   const acquisition = section(
     'async function acquirePlayerExpansionPackV8',
@@ -116,6 +125,11 @@ test('paid v8 Player separates acquisition readiness from verified Seal plaintex
   assert.match(resolver, /entry\?\.parent\?\.ownershipEpoch/);
   assert.match(resolver, /entry\?\.release\?\.admittedParentOwnershipEpoch/);
   assert.ok(
+    resolver.indexOf('requireCurrentExpansionPackV8ParentEpoch(entry, parentScope)')
+      < resolver.indexOf('expansionPackV8RuntimeAssetCache.get(cacheKey)'),
+    'the authoritative parent epoch must be checked before any plaintext cache hit',
+  );
+  assert.ok(
     resolver.indexOf('expansionPackV8ServerConfigsForProtection(protection)')
       < resolver.indexOf('makerSealSessionForExpansionPackV8('),
     'public server policy must match before session signing or credential use',
@@ -128,6 +142,26 @@ test('paid v8 Player separates acquisition readiness from verified Seal plaintex
   assert.match(resolver, /URL\.createObjectURL\(plaintextBlob\)/);
   assert.match(resolver, /URL\.revokeObjectURL\(url\)/);
   assert.match(app, /if \(entry\.transportReady !== true\)/);
+});
+
+test('v8 Player cache installation is generation- and holder-fenced', () => {
+  const commerce = section(
+    'async function hydratePlayerCommerceV5',
+    '\nasync function requirePlayerCommerceV5',
+  );
+  const hydration = section(
+    'async function hydratePlayerExpansionPacksV8',
+    '\nasync function purchasePlayerMakerAccessV5',
+  );
+  assert.match(commerce, /generation !== commerceV5StateGeneration/);
+  assert.match(commerce, /commerceV5StatePending\.get\(cacheKey\) !== holder/);
+  assert.match(commerce, /commerceV5StatePending\.get\(cacheKey\) === holder/);
+  assert.match(hydration, /force: true,\s*allowExpansionPackV8: true/);
+  assert.match(hydration, /generation !== expansionPackV8StateGeneration/);
+  assert.match(hydration, /expansionPackV8StatePending\.get\(cacheKey\) !== holder/);
+  assert.match(hydration, /expansionPackV8StatePending\.get\(cacheKey\) === holder/);
+  assert.match(app, /function invalidateExpansionPackV8PlayerState/);
+  assert.match(app, /clearExpansionPackV8RuntimeAssetCache\(\)/);
 });
 
 test('v8 Seal policy comparison strips credentials before matching and reattaches only local config', () => {

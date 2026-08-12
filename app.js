@@ -3426,6 +3426,9 @@ const expansionPackV8RuntimeAssetCache = new Map();
 const expansionPackPlayerAcquisitionRecoveryStore =
   createExpansionPackPlayerAcquisitionRecoveryStore();
 let expansionPackV8RuntimeAssetCacheEpoch = 0;
+let commerceV5StateGeneration = 0;
+let expansionPackV8StateGeneration = 0;
+let expansionPackV8ObservedParentScope = null;
 let makerComposableV6Publication = null;
 let makerPhysicalV7Publication = null;
 let playerComposableV6TrustedSnapshot = null;
@@ -3490,6 +3493,23 @@ function clearExpansionPackV8RuntimeAssetCache() {
     else if (holder?.promise) holder.promise.then(revoke).catch(() => {});
   });
   expansionPackV8RuntimeAssetCache.clear();
+}
+
+function invalidateExpansionPackV8PlayerState({ preserveObservedParent = false } = {}) {
+  expansionPackV8StateGeneration += 1;
+  expansionPackV8StateCache.clear();
+  expansionPackV8StatePending.clear();
+  clearExpansionPackV8RuntimeAssetCache();
+  if (!preserveObservedParent) expansionPackV8ObservedParentScope = null;
+  return expansionPackV8StateGeneration;
+}
+
+function invalidateCommerceV5PlayerState() {
+  commerceV5StateGeneration += 1;
+  commerceV5StateCache.clear();
+  commerceV5StatePending.clear();
+  invalidateExpansionPackV8PlayerState();
+  return commerceV5StateGeneration;
 }
 const expansionPackPublicationStore = createExpansionPackPublicationStore();
 let draftRecoveryRequestId = 0;
@@ -3792,12 +3812,9 @@ function resetMakerUploadMemoryState({ clearPublicationIntent = true } = {}) {
     management: null,
     error: null,
   });
-  commerceV5StateCache.clear();
+  invalidateCommerceV5PlayerState();
   composableV6StateCache.clear();
   composableV6StatePending.clear();
-  expansionPackV8StateCache.clear();
-  expansionPackV8StatePending.clear();
-  clearExpansionPackV8RuntimeAssetCache();
   invalidateExpansionPackPublicationController();
   makerComposableV6Publication = null;
   makerPhysicalV7Publication = null;
@@ -17355,6 +17372,7 @@ function commerceV5RuntimeContext() {
     network: runtimeConfig.network,
     packageId: runtimeConfig.callablePackageId,
     callablePackageId: runtimeConfig.callablePackageId,
+    commerceV5CallablePackageId: runtimeConfig.commerceV5CallablePackageId,
     paymentCoinType: runtimeConfig.paymentCoinType,
     commerceV5TypeOriginPackageId: runtimeConfig.commerceV5TypeOriginPackageId,
     sealV5CallablePackageId: runtimeConfig.sealV5CallablePackageId,
@@ -17376,6 +17394,10 @@ function expansionPackV8RuntimeContext() {
     commerceProtocolTreasuryV5Id: runtimeConfig.commerceProtocolTreasuryV5Id,
     expansionPackV8CallablePackageId: runtimeConfig.expansionPackV8CallablePackageId,
     expansionPackV8TypeOriginPackageId: runtimeConfig.expansionPackV8TypeOriginPackageId,
+    independentExtensionV5TypeOriginPackageId:
+      runtimeConfig.independentExtensionV5TypeOriginPackageId,
+    independentExtensionAuthorityV5Id:
+      runtimeConfig.independentExtensionAuthorityV5Id,
     expansionPackV8ReleaseEnabled: runtimeConfig.expansionPackV8ReleaseEnabled === true,
   };
 }
@@ -17385,6 +17407,16 @@ function expansionPackV8RuntimeConfigured() {
   return Boolean(
     suiJsonId(runtime.expansionPackV8CallablePackageId)
     && suiJsonId(runtime.expansionPackV8TypeOriginPackageId)
+    && suiJsonId(runtime.independentExtensionV5TypeOriginPackageId)
+    && suiJsonId(runtime.independentExtensionAuthorityV5Id)
+    && suiJsonId(runtime.commerceV5CallablePackageId)
+    && suiJsonId(runtime.commerceV5TypeOriginPackageId)
+    && suiJsonId(runtime.commerceProtocolConfigV5Id)
+    && suiJsonId(runtime.commerceProtocolTreasuryV5Id)
+    && runtimeConfig.commerceV5ReleaseEnabled === false
+    && runtimeConfig.canonicalSoulMintEnabled === false
+    && runtimeConfig.compositionV6ReleaseEnabled === false
+    && runtimeConfig.physicalStyleV7ReleaseEnabled === false
   );
 }
 
@@ -18352,8 +18384,10 @@ async function makerSealSessionForExpansionPackV8(wallet, pinnedSealPackageId) {
 
 async function resolveExpansionPackV8RuntimeAsset({ entry, asset }, {
   signal,
+  parentScope,
 } = {}) {
   if (signal?.aborted) throw makerSealAbortErrorV5(signal);
+  requireCurrentExpansionPackV8ParentEpoch(entry, parentScope);
   const wallet = suiJsonId(state.walletAddress);
   const pass = entry?.access?.pass;
   if (
@@ -18515,6 +18549,12 @@ async function resolveExpansionPackV8RuntimeAsset({ entry, asset }, {
         'WALLET_CONTEXT_CHANGED',
         'The wallet or Maker changed while Pack artwork was being resolved.',
       );
+    }
+    try {
+      requireCurrentExpansionPackV8ParentEpoch(entry, parentScope);
+    } catch (error) {
+      URL.revokeObjectURL(url);
+      throw error;
     }
     holder.asset = runtimeAsset;
     return runtimeAsset;
@@ -19453,9 +19493,7 @@ async function executeMakerCommerceV5Action(action, {
       expectedWallet: wallet,
     });
     assertMakerCommerceV5LifecycleOperation(operation);
-    commerceV5StateCache.clear();
-    expansionPackV8StateCache.clear();
-    clearExpansionPackV8RuntimeAssetCache();
+    invalidateCommerceV5PlayerState();
     latestManagement = await readBackMakerCommerceV5Lifecycle(operation, matches);
     assertMakerCommerceV5LifecycleOperation(operation);
     setMakerCommerceV5LifecycleReady(latestManagement);
@@ -19572,8 +19610,13 @@ function cachedPlayerCommerceV5(document = currentMakerV4Source()) {
 
 async function hydratePlayerCommerceV5(document = currentMakerV4Source(), {
   force = false,
+  allowExpansionPackV8 = false,
 } = {}) {
-  if (runtimeConfig.commerceV5ReleaseEnabled !== true || activeTemplate()?.source !== 'chain') {
+  const commerceProductEnabled = runtimeConfig.commerceV5ReleaseEnabled === true;
+  const expansionPackCoreReadEnabled = allowExpansionPackV8
+    && expansionPackV8RuntimeConfigured();
+  if ((!commerceProductEnabled && !expansionPackCoreReadEnabled)
+    || activeTemplate()?.source !== 'chain') {
     return null;
   }
   if (!isMakerV4Document(document)) {
@@ -19609,9 +19652,11 @@ async function hydratePlayerCommerceV5(document = currentMakerV4Source(), {
   if (!force && cached && Date.now() - cached.loadedAt < COMMERCE_V5_CACHE_TTL_MS) {
     return cached;
   }
-  if (commerceV5StatePending.has(cacheKey)) {
-    return commerceV5StatePending.get(cacheKey);
+  if (!force && commerceV5StatePending.has(cacheKey)) {
+    return commerceV5StatePending.get(cacheKey).promise;
   }
+  const generation = commerceV5StateGeneration;
+  const holder = { generation, promise: null };
   const pending = (async () => {
     const client = getSuiClient();
     const chain = await queryCommerceV5Objects(client, {
@@ -19672,6 +19717,16 @@ async function hydratePlayerCommerceV5(document = currentMakerV4Source(), {
       authoritativeQuoteRequired: true,
       lifecycle: chain.root.lifecycle,
     });
+    if (
+      generation !== commerceV5StateGeneration
+      || commerceV5StatePending.get(cacheKey) !== holder
+      || comparableSuiId(state.walletAddress) !== comparableSuiId(connectedWallet)
+    ) {
+      throw commerceV5Error(
+        'COMMERCE_V5_CONTEXT_CHANGED',
+        'The wallet or Maker changed while Commerce v5 was being verified.',
+      );
+    }
     applyActiveCommerceV5Binding({
       rootObjectId: chain.root.objectId,
       makerTreasuryObjectId: chain.makerTreasury.objectId,
@@ -19687,17 +19742,33 @@ async function hydratePlayerCommerceV5(document = currentMakerV4Source(), {
       chain: Object.freeze({ ...chain, packs, packById, walletState }),
       context,
     });
+    if (
+      generation !== commerceV5StateGeneration
+      || commerceV5StatePending.get(cacheKey) !== holder
+      || comparableSuiId(state.walletAddress) !== comparableSuiId(connectedWallet)
+    ) {
+      throw commerceV5Error(
+        'COMMERCE_V5_CONTEXT_CHANGED',
+        'The wallet or Maker changed before Commerce v5 state could be installed.',
+      );
+    }
     commerceV5StateCache.set(cacheKey, hydrated);
     return hydrated;
   })().finally(() => {
-    commerceV5StatePending.delete(cacheKey);
+    if (commerceV5StatePending.get(cacheKey) === holder) {
+      commerceV5StatePending.delete(cacheKey);
+    }
   });
-  commerceV5StatePending.set(cacheKey, pending);
+  holder.promise = pending;
+  commerceV5StatePending.set(cacheKey, holder);
   return pending;
 }
 
 async function requirePlayerCommerceV5(document = currentMakerV4Source(), options = {}) {
-  if (runtimeConfig.commerceV5ReleaseEnabled !== true) {
+  const allowExpansionPackV8 = options.allowExpansionPackV8 === true
+    && runtimeConfig.expansionPackV8ReleaseEnabled === true
+    && expansionPackV8RuntimeConfigured();
+  if (runtimeConfig.commerceV5ReleaseEnabled !== true && !allowExpansionPackV8) {
     throw commerceV5Error(
       'COMMERCE_V5_RELEASE_DISABLED',
       'Commerce v5 is not enabled in this Animacraft deployment.',
@@ -19720,6 +19791,38 @@ async function requirePlayerCommerceV5(document = currentMakerV4Source(), option
     throw commerceV5Error(
       'COMMERCE_V5_MAKER_INACTIVE',
       `The Maker is ${hydrated.context.lifecycle || 'unavailable'} on Sui.`,
+    );
+  }
+  return hydrated;
+}
+
+async function requireExpansionPackV8ParentState(
+  document = currentMakerV4Source(),
+  { force = true } = {},
+) {
+  if (
+    runtimeConfig.expansionPackV8ReleaseEnabled !== true
+    || !expansionPackV8RuntimeConfigured()
+  ) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_V8_RELEASE_DISABLED',
+      'Expansion Pack v8 is not enabled in this Animacraft deployment.',
+    );
+  }
+  const hydrated = await hydratePlayerCommerceV5(document, {
+    force,
+    allowExpansionPackV8: true,
+  });
+  if (!hydrated?.context?.available || !hydrated.context.protocolEnabled) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_PARENT_UNAVAILABLE',
+      'The Expansion Pack parent protocol state could not be verified.',
+    );
+  }
+  if (hydrated.context.lifecycle !== COMMERCE_V5_LIFECYCLE.PAUSED) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_PARENT_LIFECYCLE_MISMATCH',
+      'Expansion Pack v8 requires its independent parent MakerRootV5 to remain Paused.',
     );
   }
   return hydrated;
@@ -19759,6 +19862,65 @@ function expansionPackV8PlayerCacheKey(document, parentRelease, wallet, ownershi
     String(ownershipEpoch ?? ''),
     comparableSuiId(runtimeConfig.expansionPackV8TypeOriginPackageId),
   ].join(':');
+}
+
+function expansionPackV8ParentScopeKey(wallet, rootId, ownershipEpoch) {
+  return [
+    comparableSuiId(wallet),
+    comparableSuiId(rootId),
+    String(ownershipEpoch ?? ''),
+  ].join(':');
+}
+
+function requireCurrentExpansionPackV8ParentEpoch(entry, scope) {
+  const current = entry?.parent?.ownershipEpoch;
+  const admitted = entry?.release?.admittedParentOwnershipEpoch;
+  let currentEpoch;
+  let admittedEpoch;
+  try {
+    if (current === null || current === undefined || String(current).trim() === '') throw new Error();
+    if (admitted === null || admitted === undefined || String(admitted).trim() === '') throw new Error();
+    if (typeof current === 'number' && !Number.isSafeInteger(current)) throw new Error();
+    if (typeof admitted === 'number' && !Number.isSafeInteger(admitted)) throw new Error();
+    if (typeof current === 'string' && !/^\d+$/.test(current.trim())) throw new Error();
+    if (typeof admitted === 'string' && !/^\d+$/.test(admitted.trim())) throw new Error();
+    currentEpoch = BigInt(current);
+    admittedEpoch = BigInt(admitted);
+  } catch {
+    throw commerceV5Error(
+      'PARENT_READMISSION_REQUIRED',
+      'The Expansion Pack parent ownership epoch is missing or invalid.',
+    );
+  }
+  const authoritative = scope?.currentOwnershipEpoch;
+  let scopeCurrent = null;
+  try {
+    if (authoritative === null || authoritative === undefined || String(authoritative).trim() === '') throw new Error();
+    if (typeof authoritative === 'number' && !Number.isSafeInteger(authoritative)) throw new Error();
+    if (typeof authoritative === 'string' && !/^\d+$/.test(authoritative.trim())) throw new Error();
+    scopeCurrent = BigInt(authoritative);
+  } catch {
+    scopeCurrent = null;
+  }
+  if (
+    currentEpoch < 0n
+    || admittedEpoch < 0n
+    || currentEpoch > ((1n << 64n) - 1n)
+    || admittedEpoch > ((1n << 64n) - 1n)
+    || (scopeCurrent !== null && (scopeCurrent < 0n || scopeCurrent > ((1n << 64n) - 1n)))
+    || currentEpoch !== admittedEpoch
+    || scopeCurrent === null
+    || currentEpoch !== scopeCurrent
+    || scope?.generation !== expansionPackV8StateGeneration
+    || comparableSuiId(scope?.wallet) !== comparableSuiId(state.walletAddress)
+    || comparableSuiId(scope?.rootId) !== comparableSuiId(entry?.parent?.baseMakerRootId)
+  ) {
+    throw commerceV5Error(
+      'PARENT_READMISSION_REQUIRED',
+      'The Expansion Pack must be re-admitted by the current parent owner before its artwork can be used.',
+    );
+  }
+  return currentEpoch;
 }
 
 function expansionPackV8ManifestStyleKeys(manifest) {
@@ -19809,11 +19971,23 @@ async function hydratePlayerExpansionPacksV8(document = currentMakerV4Source(), 
       'Reconnect the Player wallet before loading Expansion Packs.',
     );
   }
-  const commerce = await hydratePlayerCommerceV5(document, { force });
+  const commerce = await hydratePlayerCommerceV5(document, {
+    force: true,
+    allowExpansionPackV8: true,
+  });
   if (!commerce?.context?.available) {
     throw commerceV5Error(
       'EXPANSION_PACK_PLAYER_V8_PARENT_UNAVAILABLE',
       'The exact parent MakerRootV5 is unavailable.',
+    );
+  }
+  if (
+    commerce.context.protocolEnabled !== true
+    || commerce.context.lifecycle !== COMMERCE_V5_LIFECYCLE.PAUSED
+  ) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_PARENT_LIFECYCLE_MISMATCH',
+      'Expansion Pack v8 catalog reads require the exact enabled protocol and Paused parent MakerRootV5.',
     );
   }
   const observedParent = expansionPackParentReleaseForDocument(document);
@@ -19838,6 +20012,26 @@ async function hydratePlayerExpansionPacksV8(document = currentMakerV4Source(), 
     ...observedParent,
     ownershipEpoch: commerce.chain.root.ownershipEpoch,
   });
+  const observedScopeKey = expansionPackV8ParentScopeKey(
+    wallet,
+    parentRelease.baseMakerRootId,
+    commerce.chain.root.ownershipEpoch,
+  );
+  if (
+    expansionPackV8ObservedParentScope
+    && expansionPackV8ObservedParentScope !== observedScopeKey
+  ) {
+    invalidateExpansionPackV8PlayerState({ preserveObservedParent: true });
+  }
+  expansionPackV8ObservedParentScope = observedScopeKey;
+  if (force) invalidateExpansionPackV8PlayerState({ preserveObservedParent: true });
+  const generation = expansionPackV8StateGeneration;
+  const parentScope = Object.freeze({
+    generation,
+    wallet,
+    rootId: parentRelease.baseMakerRootId,
+    currentOwnershipEpoch: commerce.chain.root.ownershipEpoch,
+  });
   const cacheKey = expansionPackV8PlayerCacheKey(
     document,
     parentRelease,
@@ -19848,9 +20042,10 @@ async function hydratePlayerExpansionPacksV8(document = currentMakerV4Source(), 
   if (!force && cached && Date.now() - cached.loadedAt < COMMERCE_V5_CACHE_TTL_MS) {
     return cached.state;
   }
-  if (expansionPackV8StatePending.has(cacheKey)) {
-    return expansionPackV8StatePending.get(cacheKey);
+  if (!force && expansionPackV8StatePending.has(cacheKey)) {
+    return expansionPackV8StatePending.get(cacheKey).promise;
   }
+  const holder = { generation, promise: null };
   const pending = (async () => {
     const client = getSuiClient();
     const eventAdapter = createGraphqlMoveEventAdapter();
@@ -19921,7 +20116,7 @@ async function hydratePlayerExpansionPacksV8(document = currentMakerV4Source(), 
           salesEnabled: runtime.expansionPackV8ReleaseEnabled === true,
           sealPublicPolicy: expansionPackV8DeploymentSealPublicPolicy(),
           resolveRuntimeAsset: (runtimeAsset) => (
-            resolveExpansionPackV8RuntimeAsset(runtimeAsset)
+            resolveExpansionPackV8RuntimeAsset(runtimeAsset, { parentScope })
           ),
         }));
       } catch (error) {
@@ -19943,13 +20138,29 @@ async function hydratePlayerExpansionPacksV8(document = currentMakerV4Source(), 
       rejected: Object.freeze(rejected),
       loadedAt: new Date().toISOString(),
     });
+    if (
+      generation !== expansionPackV8StateGeneration
+      || expansionPackV8StatePending.get(cacheKey) !== holder
+      || expansionPackV8ObservedParentScope !== observedScopeKey
+      || comparableSuiId(state.walletAddress) !== comparableSuiId(wallet)
+    ) {
+      throw commerceV5Error(
+        'EXPANSION_PACK_PLAYER_V8_CONTEXT_CHANGED',
+        'The wallet or parent Maker changed while Expansion Packs were being verified.',
+      );
+    }
     expansionPackV8StateCache.set(cacheKey, {
       loadedAt: Date.now(),
       state: hydrated,
     });
     return hydrated;
-  })().finally(() => expansionPackV8StatePending.delete(cacheKey));
-  expansionPackV8StatePending.set(cacheKey, pending);
+  })().finally(() => {
+    if (expansionPackV8StatePending.get(cacheKey) === holder) {
+      expansionPackV8StatePending.delete(cacheKey);
+    }
+  });
+  holder.promise = pending;
+  expansionPackV8StatePending.set(cacheKey, holder);
   return pending;
 }
 
@@ -20207,7 +20418,9 @@ async function acquirePlayerExpansionPackV8({
   // Existing Pass holders only retry immutable readback and Seal
   // materialization. New-sale lifecycle checks must not turn that retry into a
   // second purchase or revoke already-owned artwork.
-  const commerce = await requirePlayerCommerceV5(document, { force: true });
+  const commerce = await requireExpansionPackV8ParentState(document, {
+    force: true,
+  });
   requireAcquisitionScope();
   if (!entry.access.availableForAcquire) {
     throw commerceV5Error(
@@ -20232,7 +20445,7 @@ async function acquirePlayerExpansionPackV8({
   ) {
     throw commerceV5Error(
       'EXPANSION_PACK_PLAYER_V8_PARENT_MISMATCH',
-      'The Expansion Pack no longer belongs to the active MakerRootV5.',
+      'The Expansion Pack no longer belongs to its exact Paused MakerRootV5.',
     );
   }
   const expectedPrice = BigInt(entry.access.priceAtomic || 0);
@@ -20468,10 +20681,8 @@ function expansionPackParentReleaseForDocument(document) {
     || state.commerceV5RootObjectId
     || template?.commerceV5RootObjectId,
   );
-  const makerControlCapId = suiJsonId(
-    chainBinding?.commerceV5ControlCapObjectId
-    || state.commerceV5ControlCapObjectId
-    || template?.commerceV5ControlCapObjectId,
+  const independentExtensionAuthorityV5Id = suiJsonId(
+    runtimeConfig.independentExtensionAuthorityV5Id,
   );
   return Object.freeze({
     identityVerified: true,
@@ -20485,7 +20696,7 @@ function expansionPackParentReleaseForDocument(document) {
     manifestHash,
     baseMakerRootId,
     parentLegacyMakerId: releaseId,
-    makerControlCapId,
+    independentExtensionAuthorityV5Id,
   });
 }
 
@@ -20620,11 +20831,14 @@ async function prepareExpansionPackV8Publication(payload) {
   }
   const baseMakerRootId = suiJsonId(parent.baseMakerRootId);
   const parentLegacyMakerId = suiJsonId(parent.parentLegacyMakerId || parent.releaseId);
-  const makerControlCapId = suiJsonId(parent.makerControlCapId);
-  if (!baseMakerRootId || !parentLegacyMakerId || !makerControlCapId) {
+  const independentExtensionAuthorityV5Id = suiJsonId(
+    parent.independentExtensionAuthorityV5Id
+      || runtimeConfig.independentExtensionAuthorityV5Id,
+  );
+  if (!baseMakerRootId || !parentLegacyMakerId || !independentExtensionAuthorityV5Id) {
     throw commerceV5Error(
       'EXPANSION_PACK_V8_PARENT_AUTHORITY_MISSING',
-      'The current parent Maker does not expose the exact Commerce root and current ControlCap required for Pack admission.',
+      'The current parent Maker does not expose the exact Commerce root and irreversible independent-extension Authority required for Pack admission.',
     );
   }
   const scope = expansionPackPublicationScope(payload);
@@ -20658,7 +20872,7 @@ async function prepareExpansionPackV8Publication(payload) {
       owner: wallet,
       baseMakerRootId,
       parentLegacyMakerId,
-      makerControlCapId,
+      independentExtensionAuthorityV5Id,
     },
     candidate: exactCandidate,
     project: restored?.project || payload.project,
@@ -20714,18 +20928,45 @@ async function prepareExpansionPackV8Publication(payload) {
         });
       },
       async readSuiSubmission(action, submission) {
-        return readExpansionPackV8PublicationSubmission({
+        const confirmation = await readExpansionPackV8PublicationSubmission({
           action,
           submission,
           suiClient: getSuiClient(),
           runtime,
         });
+        if (
+          confirmation?.readbackVerified === true
+          && ['chain.pack.admit', 'chain.pack.activate'].includes(action?.id)
+        ) {
+          invalidateExpansionPackV8PlayerState();
+          if (expansionPackPublicationScopeIsActive(scope)) {
+            Promise.resolve().then(() => hydratePlayerExpansionPacksV8(
+              currentMakerV4Source(),
+              { force: true },
+            )).catch((error) => {
+              console.warn(
+                'Expansion Pack Player refresh remains fail-closed after verified publication readback.',
+                error,
+              );
+            });
+          }
+        }
+        return confirmation;
       },
       async onCompleted(receipt) {
         if (
           controllerEpoch !== expansionPackPublicationControllerEpoch
           || !expansionPackPublicationScopeIsActive(scope)
         ) return;
+        invalidateExpansionPackV8PlayerState();
+        try {
+          await hydratePlayerExpansionPacksV8(currentMakerV4Source(), { force: true });
+        } catch (error) {
+          console.warn(
+            'Expansion Pack publication completed, but the Player catalog still awaits fresh readback.',
+            error,
+          );
+        }
         console.info('Expansion Pack v8 publication verified.', receipt);
       },
     },
@@ -20914,7 +21155,7 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
     runtimeConfig.expansionPackV8ReleaseEnabled === true
     && expansionPackV8RuntimeConfigured()
     && expansionPackParentRelease?.baseMakerRootId
-    && expansionPackParentRelease?.makerControlCapId,
+    && expansionPackParentRelease?.independentExtensionAuthorityV5Id,
   );
   if (!requestIsActive()) return undefined;
   return makerWorkspace.setContext({

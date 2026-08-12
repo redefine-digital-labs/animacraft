@@ -12,9 +12,10 @@ import { deriveExpansionPackSealReleaseCommitmentV8 } from '../maker-seal-v5.js'
 const OWNER = '0x111';
 const ROOT = '0x222';
 const LEGACY = '0x333';
-const CONTROL = '0x444';
+const INDEPENDENT_EXTENSION_AUTHORITY = '0x444';
 const CALLABLE_PACKAGE = '0x555';
 const TYPE_ORIGIN_PACKAGE = '0x556';
+const INDEPENDENT_EXTENSION_TYPE_ORIGIN_PACKAGE = '0x557';
 const PARENT_HASH = '11'.repeat(32);
 
 function parentMaker() {
@@ -112,22 +113,13 @@ function runtime() {
     expansionPackV8ReleaseEnabled: true,
     expansionPackV8CallablePackageId: CALLABLE_PACKAGE,
     expansionPackV8TypeOriginPackageId: TYPE_ORIGIN_PACKAGE,
+    independentExtensionV5TypeOriginPackageId: INDEPENDENT_EXTENSION_TYPE_ORIGIN_PACKAGE,
     commerceProtocolConfigV5Id: '0x666',
     paymentCoinType: '0x2::sui::SUI',
   };
 }
 
 async function chainConfirmation(action, digest) {
-  if (action.id === 'chain.parent.evidence.bind') return {
-    transactionDigest: digest,
-    parentReleaseEvidenceBound: true,
-    parentEvidenceReadbackVerified: true,
-    baseMakerRootId: action.inputs.baseMakerRootId,
-    parentLegacyMakerId: action.inputs.parentLegacyMakerId,
-    parentVersion: action.inputs.parentVersion,
-    parentManifestBlobId: action.inputs.parentManifestBlobId,
-    parentManifestSha256: action.inputs.parentManifestSha256,
-  };
   if (action.id === 'chain.pack.create') return {
     packReleaseId: '0x901',
     packAdminCapId: '0x902',
@@ -198,6 +190,8 @@ async function chainConfirmation(action, digest) {
     parentVersion: action.inputs.parentVersion,
     parentManifestBlobId: action.inputs.parentManifestBlobId,
     parentManifestSha256: action.inputs.parentManifestSha256,
+    parentOwnershipEpoch: action.inputs.parentOwnershipEpoch,
+    admittedParentOwnershipEpoch: action.inputs.parentOwnershipEpoch,
   };
   if (action.id === 'chain.pack.activate') return {
     transactionDigest: digest,
@@ -227,9 +221,10 @@ function dependencies(log) {
       log.push({ kind: 'parent', id: action.id });
       return {
         parentVerified: true,
-        makerControlCapVerified: true,
-        parentReleaseEvidenceBound: false,
-        parentLifecycleState: 'ACTIVE',
+        independentExtensionAuthorityVerified: true,
+        parentReleaseEvidenceBound: true,
+        parentLifecycleState: 'PAUSED',
+        parentOwnershipEpoch: '7',
         baseMakerRootId: ROOT,
         parentLegacyMakerId: LEGACY,
         parentVersion: '7',
@@ -331,7 +326,7 @@ async function certifiedController({ log, deps, isActive = () => true }) {
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate,
@@ -355,7 +350,7 @@ test('executes all four visible steps and persists a verified receipt before suc
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate,
@@ -373,7 +368,7 @@ test('executes all four visible steps and persists a verified receipt before suc
 
   const state = controller.uiState();
   assert.equal(state.receipt.packObjectId, '0x901');
-  assert.equal(state.receipt.digest, 'digest-7');
+  assert.equal(state.receipt.digest, 'digest-6');
   assert.deepEqual(state.completedSteps, [1, 2, 3, 4]);
   assert.deepEqual(log.find((entry) => entry.kind === 'prepare').identifiers, [
     'animacraft-expansion-pack-manifest.json',
@@ -395,7 +390,7 @@ test('keeps the exact Draft shell recoverable but fails before Walrus when a fro
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate,
@@ -425,7 +420,7 @@ test('encrypts every paid Pack PNG before Walrus preparation and freezes exact t
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate,
@@ -470,7 +465,7 @@ test('keeps the exact Draft shell recoverable but fails before Walrus without a 
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate,
@@ -497,7 +492,7 @@ test('rejects a changed paid ciphertext when restoring a publication checkpoint'
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate,
@@ -513,7 +508,7 @@ test('rejects a changed paid ciphertext when restoring a publication checkpoint'
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate: first.candidate,
@@ -548,7 +543,7 @@ test('keeps a submitted Sui digest recoverable when readback is delayed', async 
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate,
@@ -570,7 +565,7 @@ test('durably archives a finalized failed Sui digest before signing a fresh atte
   const originalExecute = deps.executeSignedTransactionAndWait;
   let failManifestOnce = true;
   deps.executeSignedTransactionAndWait = async (signed, options) => {
-    if (failManifestOnce && signed.digest === 'digest-3') {
+    if (failManifestOnce && signed.digest === 'digest-2') {
       failManifestOnce = false;
       const error = new Error('MoveAbort EInvalidLifecycle');
       error.code = 'TRANSACTION_FINALIZED_FAILURE';
@@ -601,7 +596,7 @@ test('durably archives a finalized failed Sui digest before signing a fresh atte
   assert.equal(controller.currentEntry().status, 'PENDING');
   assert.equal(controller.currentEntry().submission, null);
   assert.equal(controller.recovery.finalizedFailures.length, 1);
-  assert.equal(controller.recovery.finalizedFailures[0].transactionDigest, 'digest-3');
+  assert.equal(controller.recovery.finalizedFailures[0].transactionDigest, 'digest-2');
   const failureArchive = log.slice(baseline).find((entry) => (
     entry.kind === 'persist'
     && entry.actionId === 'chain.pack.manifest.bind'
@@ -615,8 +610,8 @@ test('durably archives a finalized failed Sui digest before signing a fresh atte
     entry.kind === 'sign' && entry.actionId === 'chain.pack.manifest.bind'
   ));
   assert.deepEqual(manifestSignatures.map((entry) => entry.signed.digest), [
+    'digest-2',
     'digest-3',
-    'digest-4',
   ]);
   assert.ok(controller.receipt);
 });
@@ -642,7 +637,7 @@ test('never retires failed signed bytes when finalized-failure persistence is un
     return originalPersist(snapshot);
   };
   deps.executeSignedTransactionAndWait = async (signed, options) => {
-    if (signed.digest === 'digest-3') {
+    if (signed.digest === 'digest-2') {
       const error = new Error('MoveAbort EInvalidLifecycle');
       error.code = 'TRANSACTION_FINALIZED_FAILURE';
       error.digest = signed.digest;
@@ -665,7 +660,7 @@ test('never retires failed signed bytes when finalized-failure persistence is un
 
   await assert.rejects(controller.publish(), /failure archive unavailable/);
   assert.equal(controller.currentEntry().status, 'SUBMITTED');
-  assert.equal(controller.currentEntry().submission.transactionDigest, 'digest-3');
+  assert.equal(controller.currentEntry().submission.transactionDigest, 'digest-2');
   assert.equal(controller.recovery.finalizedFailures.length, 0);
   assert.equal(log.filter((entry) => (
     entry.kind === 'sign' && entry.actionId === 'chain.pack.manifest.bind'
@@ -677,7 +672,7 @@ test('never retires failed signed bytes when finalized-failure persistence is un
     (error) => error?.code === 'TRANSACTION_FINALIZED_FAILURE',
   );
   assert.equal(controller.currentEntry().status, 'PENDING');
-  assert.equal(controller.recovery.finalizedFailures[0].transactionDigest, 'digest-3');
+  assert.equal(controller.recovery.finalizedFailures[0].transactionDigest, 'digest-2');
   assert.equal(log.filter((entry) => (
     entry.kind === 'sign' && entry.actionId === 'chain.pack.manifest.bind'
   )).length, 1, 'review must not sign a replacement before the archive is durable');
@@ -739,7 +734,7 @@ test('persists signed bytes but never broadcasts when activity changes during si
     controller.currentEntry().submission,
     fenced.find((entry) => entry.kind === 'persist' && entry.submission?.bytes)?.submission,
   );
-  assert.equal(controller.currentEntry().submission.bytes, 'bytes-3');
+  assert.equal(controller.currentEntry().submission.bytes, 'bytes-2');
 });
 
 test('restores controller recovery when a Walrus failure-archive checkpoint cannot persist', async () => {
@@ -791,7 +786,7 @@ test('restores controller recovery when a Walrus failure-archive checkpoint cann
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate,
@@ -830,7 +825,7 @@ test('resumes submitted Walrus registration from durable recovery without regist
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate,
@@ -858,7 +853,7 @@ test('resumes submitted Walrus registration from durable recovery without regist
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate: first.candidate,
@@ -895,7 +890,7 @@ test('resumes submitted Walrus certification by readback without certifying agai
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate,
@@ -929,7 +924,7 @@ test('resumes submitted Walrus certification by readback without certifying agai
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project,
     candidate: first.candidate,
@@ -976,7 +971,7 @@ test('rechecks activity after signed-byte persistence and replays only those exa
   assert.equal(fenced.filter((entry) => entry.kind === 'sign').length, 1);
   assert.equal(fenced.filter((entry) => entry.kind === 'execute').length, 0);
   const exactSubmission = structuredClone(controller.currentEntry().submission);
-  assert.equal(exactSubmission.bytes, 'bytes-3');
+  assert.equal(exactSubmission.bytes, 'bytes-2');
 
   active = true;
   flipDuringSignedPersist = false;

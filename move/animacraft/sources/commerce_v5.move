@@ -109,7 +109,11 @@ const EProtocolDependencyMissing: u64 = 49;
 const ESoulBindingProofMismatch: u64 = 50;
 const EMakerReleaseEvidenceMismatch: u64 = 51;
 const EMakerReleaseEvidenceMissing: u64 = 52;
+const EInvalidIndependentExtensionAudit: u64 = 53;
 const SHA256_LENGTH: u64 = 32;
+const LEGACY_LOGICAL_COMPAT_VISUAL_COUNT: u64 = 19;
+const LEGACY_LOGICAL_COMPAT_ROW_COUNT: u64 = 7;
+const LEGACY_LOGICAL_COMPAT_TOTAL_COUNT: u64 = 26;
 
 /// v5 protocol linkage. The canonical object starts disabled and must be
 /// explicitly enabled by the existing v4 protocol AdminCap after review.
@@ -280,6 +284,50 @@ public struct MakerReleaseEvidenceV5 has copy, drop, store {
     manifest_sha256: vector<u8>,
 }
 
+/// Root-owned audit state for the one reviewed pre-v5 projection format whose
+/// seven logical Items predate the protocol-governed auxiliary Blob. This is a
+/// dynamic field so deployed MakerRootV5 layouts remain unchanged.
+public struct LegacyLogicalCompatibilityStateV5 has copy, drop, store {
+    legacy_maker_id: ID,
+    protocol_config_id: ID,
+    protocol_admin_cap_id: ID,
+    registered_count: u64,
+}
+
+public struct LegacyLogicalStyleApprovalKeyV5 has copy, drop, store {
+    part_key: String,
+    item_key: String,
+    style_key: String,
+}
+
+/// Exact per-row governance approval for a legacy logical Item. The Style
+/// registry stores the canonical auxiliary Blob; this record retains the
+/// immutable legacy Item Blob observed on-chain for later re-audit.
+public struct LegacyLogicalStyleApprovalV5 has copy, drop, store {
+    legacy_maker_id: ID,
+    protocol_config_id: ID,
+    protocol_admin_cap_id: ID,
+    asset_blob_id: String,
+    row_kind: u8,
+}
+
+/// Root-owned irreversible record that retires every general Maker control
+/// path and binds this release to the independently published extension lane.
+/// It is stored as a dynamic field so existing MakerRootV5 layouts and type
+/// origins remain unchanged across the compatible package upgrade.
+public struct IndependentExtensionLockStateV5 has copy, drop, store {
+    authority_id: ID,
+    legacy_maker_id: ID,
+    protocol_config_id: ID,
+    protocol_admin_cap_id: ID,
+    owner: address,
+    retired_control_cap_id: ID,
+    retired_control_cap_epoch: u64,
+    locked_ownership_epoch: u64,
+    audit_hash: vector<u8>,
+    finalized: bool,
+}
+
 /// Per-release Maker identity and all mutable v5 policy state. The legacy v4
 /// Maker remains the immutable art/recipe source, while this shared Root
 /// survives owner rotation. A new immutable Maker version receives a new Root.
@@ -351,6 +399,24 @@ public struct MakerControlCapV5 has key {
     version: u64,
     root_id: ID,
     ownership_epoch: u64,
+}
+
+/// Shared, immutable proof that one exact parent was permanently reduced to
+/// the independent-extension surface. It grants no Base, Complete, market,
+/// composition, or physical authority; only this package's v8 admission path
+/// may inspect it together with the Root-owned lock record.
+public struct IndependentExtensionAuthorityV5 has key {
+    id: UID,
+    version: u64,
+    root_id: ID,
+    legacy_maker_id: ID,
+    protocol_config_id: ID,
+    protocol_admin_cap_id: ID,
+    owner: address,
+    retired_control_cap_id: ID,
+    retired_control_cap_epoch: u64,
+    locked_ownership_epoch: u64,
+    audit_hash: vector<u8>,
 }
 
 /// Wallet-bound, key-only permanent access receipt for a paid whole Maker/Base.
@@ -443,6 +509,33 @@ public struct MakerLifecycleChangedV5 has copy, drop {
     previous: u8,
     current: u8,
     ownership_epoch: u64,
+}
+
+public struct LegacyLogicalStyleRegisteredV5 has copy, drop {
+    root_id: ID,
+    legacy_maker_id: ID,
+    protocol_config_id: ID,
+    protocol_admin_cap_id: ID,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    row_kind: u8,
+    asset_blob_id: String,
+    compat_index: u64,
+    style_count_after: u64,
+}
+
+public struct IndependentExtensionRootFinalizedV5 has copy, drop {
+    root_id: ID,
+    authority_id: ID,
+    legacy_maker_id: ID,
+    protocol_config_id: ID,
+    protocol_admin_cap_id: ID,
+    owner: address,
+    retired_control_cap_id: ID,
+    retired_control_cap_epoch: u64,
+    locked_ownership_epoch: u64,
+    audit_hash: vector<u8>,
 }
 
 public struct PackConfiguredV5 has copy, drop {
@@ -840,6 +933,28 @@ public fun assert_extension_operational_v5(
     assert_operational(root, config);
 }
 
+/// Independent companions are deliberately bound to a PAUSED parent. This
+/// assertion does not inspect protocol configuration and is used only where a
+/// v8 lifecycle transition already holds the exact current Maker control cap.
+public(package) fun assert_independent_extension_parent_paused_v5(
+    root: &MakerRootV5,
+) {
+    assert!(root.lifecycle == LIFECYCLE_PAUSED, EInvalidLifecycle);
+    assert_independent_extension_locked_state_v5(root);
+}
+
+/// Package-only operational bridge for independently released companion
+/// products. A reviewed companion remains usable only while the Base Maker is
+/// PAUSED, which keeps every Base Commerce/Complete authorization fail-closed.
+/// External packages cannot use this bridge to bypass the Active lifecycle.
+public(package) fun assert_independent_extension_operational_v5(
+    root: &MakerRootV5,
+    config: &CommerceProtocolConfigV5,
+) {
+    assert_independent_extension_operational(root, config);
+    assert_independent_extension_locked_state_v5(root);
+}
+
 public(package) fun extension_payment_coin_type_v5(
     config: &CommerceProtocolConfigV5,
 ): &String {
@@ -860,6 +975,32 @@ public(package) fun collect_extension_primary_payment_v5<PaymentCoin>(
     ctx: &mut TxContext,
 ): Coin<PaymentCoin> {
     assert_operational(root, config);
+    assert_protocol_treasury(config, protocol_treasury);
+    assert!(root.protocol_config_id == object::id(config), EProtocolMismatch);
+    assert!(&root.payment_coin_type == &config.payment_coin_type, EPaymentCoinMismatch);
+    assert!(creator_charge > 0 && payment.value() == creator_charge, EWrongPayment);
+    let protocol_amount = bps_amount(creator_charge, PRIMARY_PROTOCOL_FEE_BPS);
+    if (protocol_amount > 0) {
+        let protocol_coin = coin::split(&mut payment, protocol_amount, ctx);
+        coin::put(&mut protocol_treasury.revenue, protocol_coin);
+        protocol_treasury.total_primary_collected =
+            protocol_treasury.total_primary_collected + protocol_amount;
+    };
+    payment
+}
+
+/// The independent companion payment split mirrors the canonical 10%/90%
+/// split without making the PAUSED Base Maker operational. Only modules in
+/// this exact package may call it.
+public(package) fun collect_independent_extension_primary_payment_v5<PaymentCoin>(
+    root: &MakerRootV5,
+    config: &CommerceProtocolConfigV5,
+    protocol_treasury: &mut CommerceProtocolTreasuryV5<PaymentCoin>,
+    mut payment: Coin<PaymentCoin>,
+    creator_charge: u64,
+    ctx: &mut TxContext,
+): Coin<PaymentCoin> {
+    assert_independent_extension_operational(root, config);
     assert_protocol_treasury(config, protocol_treasury);
     assert!(root.protocol_config_id == object::id(config), EProtocolMismatch);
     assert!(&root.payment_coin_type == &config.payment_coin_type, EPaymentCoinMismatch);
@@ -1183,6 +1324,57 @@ public fun root_complete_outputs_table_id_v5(self: &MakerRootV5): ID {
     object::id(&self.complete_outputs)
 }
 
+public fun root_legacy_logical_compatibility_enabled_v5(
+    root: &MakerRootV5,
+): bool {
+    df::exists(&root.id, legacy_logical_compatibility_state_key_v5())
+}
+
+public fun root_legacy_logical_compatibility_count_v5(
+    root: &MakerRootV5,
+): u64 {
+    let key = legacy_logical_compatibility_state_key_v5();
+    if (!df::exists(&root.id, key)) return 0;
+    let state: &LegacyLogicalCompatibilityStateV5 = df::borrow(&root.id, key);
+    state.registered_count
+}
+
+public fun root_independent_extension_locked_v5(root: &MakerRootV5): bool {
+    df::exists(&root.id, independent_extension_lock_state_key_v5())
+}
+
+public fun root_independent_extension_lock_v5(
+    root: &MakerRootV5,
+): &IndependentExtensionLockStateV5 {
+    let key = independent_extension_lock_state_key_v5();
+    assert!(df::exists(&root.id, key), EInvalidControlCap);
+    df::borrow(&root.id, key)
+}
+
+public fun independent_extension_authority_id_v5(
+    authority: &IndependentExtensionAuthorityV5,
+): ID { object::id(authority) }
+
+public fun independent_extension_authority_root_id_v5(
+    authority: &IndependentExtensionAuthorityV5,
+): ID { authority.root_id }
+
+public fun independent_extension_authority_legacy_maker_id_v5(
+    authority: &IndependentExtensionAuthorityV5,
+): ID { authority.legacy_maker_id }
+
+public fun independent_extension_authority_owner_v5(
+    authority: &IndependentExtensionAuthorityV5,
+): address { authority.owner }
+
+public fun independent_extension_authority_locked_epoch_v5(
+    authority: &IndependentExtensionAuthorityV5,
+): u64 { authority.locked_ownership_epoch }
+
+public fun independent_extension_authority_audit_hash_v5(
+    authority: &IndependentExtensionAuthorityV5,
+): &vector<u8> { &authority.audit_hash }
+
 /// Creates the exact semantic release anchor once, or verifies an already
 /// bound identical tuple. Only the current epoch-bound MakerControlCap holder
 /// may attest it, and the supplied Walrus Blob must be the one stored by the
@@ -1455,6 +1647,13 @@ public fun activate_maker_v5(
         EInvalidLifecycle,
     );
     assert!(root.release.style_registry_sealed, EStyleRegistryNotSealed);
+    // A governance-approved legacy-logical projection is intentionally an
+    // independent-extension-only parent. It can never activate Base
+    // Commerce/Complete; v8 has a separate package-only PAUSED bridge.
+    assert!(
+        !root_legacy_logical_compatibility_enabled_v5(root),
+        EInvalidLifecycle,
+    );
     if (requires_seal_policy(root)) {
         assert!(
             root.release.seal_policy_id.is_some()
@@ -1545,6 +1744,32 @@ public fun grant_base_entitlement_v5_for_testing(
         paid_atomic: root.base_purchase_price_atomic,
         ownership_epoch: root.ownership_epoch,
     });
+}
+
+#[test_only]
+public fun advance_maker_ownership_epoch_v5_for_testing(
+    root: &mut MakerRootV5,
+    cap: &mut MakerControlCapV5,
+) {
+    root.ownership_epoch = root.ownership_epoch + 1;
+    cap.ownership_epoch = root.ownership_epoch;
+}
+
+/// Test-only simulation of an impossible post-lock epoch drift. Production
+/// Root ownership cannot change after the finalizer destroys its ControlCap.
+#[test_only]
+public fun advance_independent_extension_epoch_v5_for_testing(
+    root: &mut MakerRootV5,
+    authority: &mut IndependentExtensionAuthorityV5,
+) {
+    root.ownership_epoch = root.ownership_epoch + 1;
+    let synthetic_retired_epoch = root.ownership_epoch - 1;
+    let key = independent_extension_lock_state_key_v5();
+    let lock: &mut IndependentExtensionLockStateV5 = df::borrow_mut(&mut root.id, key);
+    lock.retired_control_cap_epoch = synthetic_retired_epoch;
+    lock.locked_ownership_epoch = root.ownership_epoch;
+    authority.retired_control_cap_epoch = synthetic_retired_epoch;
+    authority.locked_ownership_epoch = root.ownership_epoch;
 }
 
 public fun purchase_base_access_v5<PaymentCoin>(
@@ -1801,6 +2026,110 @@ public fun register_base_logical_style_v5(
     );
 }
 
+/// Private row primitive used only by the atomic independent-extension
+/// finalizer. No transaction may expose a compatibility marker while a live
+/// MakerControlCap can still call historical Base/Complete bytecode.
+fun register_base_legacy_logical_style_v5(
+    root: &mut MakerRootV5,
+    cap: &MakerControlCapV5,
+    legacy_maker: &OCMaker,
+    protocol_config: &CommerceProtocolConfigV5,
+    protocol_admin: &ProtocolFeeAdminCap,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    row_kind: u8,
+    ctx: &TxContext,
+) {
+    assert_control(root, cap, ctx);
+    assert!(root.protocol_config_id == object::id(protocol_config), EProtocolMismatch);
+    assert_protocol_admin(protocol_config, protocol_admin);
+    assert!(protocol_config.enabled, EProtocolDisabled);
+    assert_protocol_dependencies_bound(protocol_config);
+    assert!(root.lifecycle == LIFECYCLE_PAUSED, EInvalidLifecycle);
+    assert_configurable(root);
+    assert!(!root.release.style_registry_sealed, EStyleRegistrySealed);
+    assert_legacy_maker(root, legacy_maker);
+    assert_non_empty(&style_key);
+    assert!(
+        row_kind == STYLE_ROW_LOGICAL_NONE
+            || row_kind == STYLE_ROW_LOGICAL_COLOR,
+        EInvalidStyleRowKind,
+    );
+    assert_legacy_logical_identity(&part_key, &item_key, &style_key, row_kind);
+    legacy::assert_item_exists_for_v5(legacy_maker, &part_key, &item_key);
+    let legacy_asset_blob_id =
+        legacy::item_blob_id_for_v5(legacy_maker, &part_key, &item_key);
+    assert!(
+        legacy_asset_blob_id != root.logical_auxiliary_blob_id,
+        EInvalidLogicalStyle,
+    );
+    assert!(
+        protocol_config.logical_auxiliary_blob_id.is_some()
+            && root.logical_auxiliary_blob_id
+                == *protocol_config.logical_auxiliary_blob_id.borrow(),
+        EProtocolMismatch,
+    );
+
+    let state_key = legacy_logical_compatibility_state_key_v5();
+    if (!df::exists(&root.id, state_key)) {
+        assert_legacy_logical_compatibility_pristine(root);
+        df::add(&mut root.id, state_key, LegacyLogicalCompatibilityStateV5 {
+            legacy_maker_id: legacy::maker_id(legacy_maker),
+            protocol_config_id: object::id(protocol_config),
+            protocol_admin_cap_id: object::id(protocol_admin),
+            registered_count: 0,
+        });
+    };
+    let state: &LegacyLogicalCompatibilityStateV5 = df::borrow(&root.id, state_key);
+    assert!(
+        state.legacy_maker_id == legacy::maker_id(legacy_maker)
+            && state.protocol_config_id == object::id(protocol_config)
+            && state.protocol_admin_cap_id == object::id(protocol_admin)
+            && state.registered_count < LEGACY_LOGICAL_COMPAT_ROW_COUNT,
+        EInvalidLogicalStyle,
+    );
+    let compat_index = state.registered_count + 1;
+    let binding_key = StyleBindingKeyV5 { part_key, item_key, style_key };
+    assert!(!root.style_registry.contains(binding_key), EStyleAlreadyExists);
+    let approval_key = legacy_logical_style_approval_key_v5(&binding_key);
+    assert!(!df::exists(&root.id, approval_key), EStyleAlreadyExists);
+    df::add(&mut root.id, approval_key, LegacyLogicalStyleApprovalV5 {
+        legacy_maker_id: legacy::maker_id(legacy_maker),
+        protocol_config_id: object::id(protocol_config),
+        protocol_admin_cap_id: object::id(protocol_admin),
+        asset_blob_id: legacy_asset_blob_id,
+        row_kind,
+    });
+    root.style_keys.push_back(binding_key);
+    root.style_registry.add(
+        binding_key,
+        StyleProductRecordV5 {
+            pack_key: option::none(),
+            asset_blob_id: root.logical_auxiliary_blob_id,
+            row_kind,
+            seal_protected: false,
+        },
+    );
+    root.release.style_count = root.release.style_count + 1;
+    let state: &mut LegacyLogicalCompatibilityStateV5 =
+        df::borrow_mut(&mut root.id, state_key);
+    state.registered_count = compat_index;
+    event::emit(LegacyLogicalStyleRegisteredV5 {
+        root_id: object::id(root),
+        legacy_maker_id: legacy::maker_id(legacy_maker),
+        protocol_config_id: object::id(protocol_config),
+        protocol_admin_cap_id: object::id(protocol_admin),
+        part_key,
+        item_key,
+        style_key,
+        row_kind,
+        asset_blob_id: legacy_asset_blob_id,
+        compat_index,
+        style_count_after: root.release.style_count,
+    });
+}
+
 /// Registers one exact Style as Pack-gated. The Pack ID is not supplied by
 /// players later; Complete derives it from this sealed on-chain row.
 public fun register_pack_style_v5(
@@ -1941,6 +2270,7 @@ public fun seal_style_registry_v5(
         };
         style_index = style_index + 1;
     };
+    assert_legacy_logical_compatibility_complete(root);
     assert!(
         protected_count == root.release.protected_style_count,
         ESealAssetCoverageMismatch,
@@ -1963,6 +2293,211 @@ public fun seal_style_registry_v5(
         index = index + 1;
     };
     root.release.style_registry_sealed = true;
+}
+
+/// Atomically completes the one reviewed 19+7 legacy projection, freezes the
+/// registry, advances the parent epoch, tombstones every general Maker control
+/// path and creates the sole immutable v8 admission authority. `audit_hash`
+/// commits the exhaustive pre-lock Mainnet scan proving this Root has no prior
+/// v8 Created/Admitted/Entitlement/Pass history. A permissionless Draft is not
+/// a trusted release; admission through the returned authority is the boundary.
+public fun finalize_independent_extension_root_v5<PaymentCoin>(
+    root: &mut MakerRootV5,
+    maker_treasury: &MakerTreasuryV5<PaymentCoin>,
+    control_cap: MakerControlCapV5,
+    legacy_maker: &OCMaker,
+    protocol_config: &CommerceProtocolConfigV5,
+    protocol_admin: &ProtocolFeeAdminCap,
+    part_keys: vector<String>,
+    item_keys: vector<String>,
+    style_keys: vector<String>,
+    row_kinds: vector<u8>,
+    audit_hash: vector<u8>,
+    ctx: &mut TxContext,
+) {
+    let authority = finalize_independent_extension_root_impl_v5(
+        root, maker_treasury, control_cap, legacy_maker,
+        protocol_config, protocol_admin, part_keys, item_keys,
+        style_keys, row_kinds, audit_hash, ctx,
+    );
+    transfer::share_object(authority);
+}
+
+fun finalize_independent_extension_root_impl_v5<PaymentCoin>(
+    root: &mut MakerRootV5,
+    maker_treasury: &MakerTreasuryV5<PaymentCoin>,
+    control_cap: MakerControlCapV5,
+    legacy_maker: &OCMaker,
+    protocol_config: &CommerceProtocolConfigV5,
+    protocol_admin: &ProtocolFeeAdminCap,
+    part_keys: vector<String>,
+    item_keys: vector<String>,
+    style_keys: vector<String>,
+    row_kinds: vector<u8>,
+    audit_hash: vector<u8>,
+    ctx: &mut TxContext,
+): IndependentExtensionAuthorityV5 {
+    assert_control(root, &control_cap, ctx);
+    assert_maker_treasury(root, maker_treasury);
+    assert!(maker_treasury.revenue.value() == 0, ETreasuryNotEmpty);
+    assert!(root.lifecycle == LIFECYCLE_PAUSED, EInvalidLifecycle);
+    assert!(root.active_listing_id.is_none(), EInvalidLifecycle);
+    assert!(!root.release.style_registry_sealed, EStyleRegistrySealed);
+    assert!(root.release.pack_count == 0 && root.pack_keys.length() == 0, EPackExists);
+    assert!(root.base_access_kind == PACK_ACCESS_FREE, EInvalidPackAccess);
+    assert!(root.base_purchase_price_atomic == 0, EWrongPayment);
+    assert!(root.release.protected_style_count == 0, EProtectedStyleMissing);
+    assert!(root.release.complete_output_count == 0, EInvalidCompleteOutput);
+    assert!(root.release.total_completes == 0, ECompletionBlocked);
+    assert!(table::is_empty(&root.base_entitlement_registry), EEntitlementExists);
+    assert!(table::is_empty(&root.entitlement_registry), EEntitlementExists);
+    assert!(table::is_empty(&root.completion_counts), ECompletionBlocked);
+    assert!(table::is_empty(&root.complete_outputs), EInvalidCompleteOutput);
+    assert!(!root_independent_extension_locked_v5(root), EInvalidControlCap);
+    assert_legacy_maker(root, legacy_maker);
+    assert!(root.protocol_config_id == object::id(protocol_config), EProtocolMismatch);
+    assert_protocol_admin(protocol_config, protocol_admin);
+    assert!(protocol_config.enabled, EProtocolDisabled);
+    assert_protocol_dependencies_bound(protocol_config);
+    assert!(root_maker_release_evidence_bound_v5(root), EMakerReleaseEvidenceMissing);
+    assert!(audit_hash.length() == SHA256_LENGTH, EInvalidIndependentExtensionAudit);
+    assert!(
+        part_keys.length() == LEGACY_LOGICAL_COMPAT_TOTAL_COUNT
+            && item_keys.length() == LEGACY_LOGICAL_COMPAT_TOTAL_COUNT
+            && style_keys.length() == LEGACY_LOGICAL_COMPAT_TOTAL_COUNT
+            && row_kinds.length() == LEGACY_LOGICAL_COMPAT_TOTAL_COUNT,
+        EInvalidLogicalStyle,
+    );
+    assert!(root.release.style_count == 0 && root.style_keys.length() == 0, EInvalidLogicalStyle);
+    let mut index = 0u64;
+    while (index < LEGACY_LOGICAL_COMPAT_VISUAL_COUNT) {
+        assert!(row_kinds[index] == STYLE_ROW_VISUAL, EInvalidLogicalStyle);
+        register_base_style_v5(
+            root,
+            &control_cap,
+            legacy_maker,
+            part_keys[index],
+            item_keys[index],
+            style_keys[index],
+            ctx,
+        );
+        index = index + 1;
+    };
+    assert_legacy_logical_compatibility_pristine(root);
+    while (index < LEGACY_LOGICAL_COMPAT_TOTAL_COUNT) {
+        assert!(
+            row_kinds[index] == STYLE_ROW_LOGICAL_NONE
+                || row_kinds[index] == STYLE_ROW_LOGICAL_COLOR,
+            EInvalidLogicalStyle,
+        );
+        register_base_legacy_logical_style_v5(
+            root,
+            &control_cap,
+            legacy_maker,
+            protocol_config,
+            protocol_admin,
+            part_keys[index],
+            item_keys[index],
+            style_keys[index],
+            row_kinds[index],
+            ctx,
+        );
+        index = index + 1;
+    };
+    seal_style_registry_v5(root, &control_cap, ctx);
+    assert_legacy_logical_compatibility_complete(root);
+
+    let retired_control_cap_id = object::id(&control_cap);
+    let retired_control_cap_epoch = control_cap.ownership_epoch;
+    assert!(retired_control_cap_epoch < 18_446_744_073_709_551_615, EInvalidControlCap);
+    let locked_ownership_epoch = retired_control_cap_epoch + 1;
+    root.ownership_epoch = locked_ownership_epoch;
+    // Preserve Some(deleted ID) as a tombstone: every legacy remint helper
+    // requires None, while every legacy admin helper requires the live object.
+    root.current_control_cap_id = option::some(retired_control_cap_id);
+    let MakerControlCapV5 {
+        id: retired_control_cap_uid,
+        version: _,
+        root_id: _,
+        ownership_epoch: _,
+    } = control_cap;
+    retired_control_cap_uid.delete();
+
+    let authority = new_independent_extension_authority_v5(
+        object::id(root), object::id(legacy_maker), object::id(protocol_config),
+        object::id(protocol_admin), ctx.sender(), retired_control_cap_id,
+        retired_control_cap_epoch, locked_ownership_epoch, audit_hash, ctx,
+    );
+    let authority_id = object::id(&authority);
+    df::add(&mut root.id, independent_extension_lock_state_key_v5(),
+        IndependentExtensionLockStateV5 {
+            authority_id,
+            legacy_maker_id: object::id(legacy_maker),
+            protocol_config_id: object::id(protocol_config),
+            protocol_admin_cap_id: object::id(protocol_admin),
+            owner: ctx.sender(),
+            retired_control_cap_id,
+            retired_control_cap_epoch,
+            locked_ownership_epoch,
+            audit_hash,
+            finalized: true,
+        },
+    );
+    event::emit(IndependentExtensionRootFinalizedV5 {
+        root_id: object::id(root),
+        authority_id,
+        legacy_maker_id: object::id(legacy_maker),
+        protocol_config_id: object::id(protocol_config),
+        protocol_admin_cap_id: object::id(protocol_admin),
+        owner: ctx.sender(),
+        retired_control_cap_id,
+        retired_control_cap_epoch,
+        locked_ownership_epoch,
+        audit_hash,
+    });
+    authority
+}
+
+fun new_independent_extension_authority_v5(
+    root_id: ID,
+    legacy_maker_id: ID,
+    protocol_config_id: ID,
+    protocol_admin_cap_id: ID,
+    owner: address,
+    retired_control_cap_id: ID,
+    retired_control_cap_epoch: u64,
+    locked_ownership_epoch: u64,
+    audit_hash: vector<u8>,
+    ctx: &mut TxContext,
+): IndependentExtensionAuthorityV5 {
+    IndependentExtensionAuthorityV5 {
+        id: object::new(ctx), version: VERSION, root_id, legacy_maker_id,
+        protocol_config_id, protocol_admin_cap_id, owner,
+        retired_control_cap_id, retired_control_cap_epoch,
+        locked_ownership_epoch, audit_hash,
+    }
+}
+
+#[test_only]
+public fun finalize_independent_extension_root_v5_for_testing<PaymentCoin>(
+    root: &mut MakerRootV5,
+    maker_treasury: &MakerTreasuryV5<PaymentCoin>,
+    control_cap: MakerControlCapV5,
+    legacy_maker: &OCMaker,
+    protocol_config: &CommerceProtocolConfigV5,
+    protocol_admin: &ProtocolFeeAdminCap,
+    part_keys: vector<String>,
+    item_keys: vector<String>,
+    style_keys: vector<String>,
+    row_kinds: vector<u8>,
+    audit_hash: vector<u8>,
+    ctx: &mut TxContext,
+): IndependentExtensionAuthorityV5 {
+    finalize_independent_extension_root_impl_v5(
+        root, maker_treasury, control_cap, legacy_maker,
+        protocol_config, protocol_admin, part_keys, item_keys,
+        style_keys, row_kinds, audit_hash, ctx,
+    )
 }
 
 /// Called only by this package's reviewed Seal module after the exact Commerce
@@ -2702,6 +3237,24 @@ fun maker_release_evidence_key_v5(): String {
     b"animacraft.maker-release-evidence.v5".to_string()
 }
 
+fun legacy_logical_compatibility_state_key_v5(): String {
+    b"animacraft.legacy-logical-compatibility.v5".to_string()
+}
+
+fun independent_extension_lock_state_key_v5(): String {
+    b"animacraft.independent-extension-lock.v5".to_string()
+}
+
+fun legacy_logical_style_approval_key_v5(
+    key: &StyleBindingKeyV5,
+): LegacyLogicalStyleApprovalKeyV5 {
+    LegacyLogicalStyleApprovalKeyV5 {
+        part_key: key.part_key,
+        item_key: key.item_key,
+        style_key: key.style_key,
+    }
+}
+
 fun assert_control(
     root: &MakerRootV5,
     cap: &MakerControlCapV5,
@@ -2723,6 +3276,17 @@ fun assert_legacy_maker(root: &MakerRootV5, maker: &OCMaker) {
 
 fun assert_operational(root: &MakerRootV5, config: &CommerceProtocolConfigV5) {
     assert!(root.lifecycle == LIFECYCLE_ACTIVE, EInvalidLifecycle);
+    assert!(config.enabled, EProtocolDisabled);
+    assert_protocol_dependencies_bound(config);
+    assert!(root.protocol_config_id == object::id(config), EProtocolMismatch);
+    assert!(&root.payment_coin_type == &config.payment_coin_type, EPaymentCoinMismatch);
+}
+
+fun assert_independent_extension_operational(
+    root: &MakerRootV5,
+    config: &CommerceProtocolConfigV5,
+) {
+    assert_independent_extension_parent_paused_v5(root);
     assert!(config.enabled, EProtocolDisabled);
     assert_protocol_dependencies_bound(config);
     assert!(root.protocol_config_id == object::id(config), EProtocolMismatch);
@@ -3368,6 +3932,185 @@ fun assert_style_row_identity(
     };
 }
 
+fun assert_legacy_logical_identity(
+    part_key: &String,
+    item_key: &String,
+    style_key: &String,
+    row_kind: u8,
+) {
+    let none_item_key = b"__ac_none".to_string();
+    let none_style_key = b"__animacraft_none__".to_string();
+    let color_part_prefix = b"__ac_color_".to_string();
+    let mut expected_color_style_key = b"__animacraft_color__:".to_string();
+    expected_color_style_key.append(*item_key);
+    if (row_kind == STYLE_ROW_LOGICAL_NONE) {
+        assert!(
+            item_key == &none_item_key
+                && style_key == &none_style_key
+                && !has_non_empty_string_prefix(part_key, &color_part_prefix),
+            EInvalidLogicalStyle,
+        );
+    } else if (row_kind == STYLE_ROW_LOGICAL_COLOR) {
+        assert!(
+            has_non_empty_string_prefix(part_key, &color_part_prefix)
+                && style_key == &expected_color_style_key,
+            EInvalidLogicalStyle,
+        );
+    } else {
+        abort EInvalidStyleRowKind
+    };
+}
+
+fun assert_legacy_logical_compatibility_pristine(root: &MakerRootV5) {
+    assert!(
+        root.release.style_count == LEGACY_LOGICAL_COMPAT_VISUAL_COUNT
+            && root.style_keys.length() == LEGACY_LOGICAL_COMPAT_VISUAL_COUNT,
+        EInvalidLogicalStyle,
+    );
+    let mut index = 0;
+    while (index < root.style_keys.length()) {
+        let key = root.style_keys[index];
+        let product = root.style_registry.borrow(key);
+        assert!(
+            product.row_kind == STYLE_ROW_VISUAL
+                && !df::exists(
+                    &root.id,
+                    legacy_logical_style_approval_key_v5(&key),
+                ),
+            EInvalidLogicalStyle,
+        );
+        index = index + 1;
+    };
+}
+
+fun assert_legacy_logical_compatibility_complete(root: &MakerRootV5) {
+    let state_key = legacy_logical_compatibility_state_key_v5();
+    if (!df::exists(&root.id, state_key)) return;
+    let state: &LegacyLogicalCompatibilityStateV5 = df::borrow(&root.id, state_key);
+    assert!(
+        state.legacy_maker_id == root.legacy_maker_id
+            && state.protocol_config_id == root.protocol_config_id
+            && state.registered_count == LEGACY_LOGICAL_COMPAT_ROW_COUNT
+            && root.release.style_count == LEGACY_LOGICAL_COMPAT_TOTAL_COUNT
+            && root.style_keys.length() == LEGACY_LOGICAL_COMPAT_TOTAL_COUNT,
+        EInvalidLogicalStyle,
+    );
+    let mut visual_count = 0u64;
+    let mut none_count = 0u64;
+    let mut color_count = 0u64;
+    let mut approval_count = 0u64;
+    let mut index = 0u64;
+    while (index < root.style_keys.length()) {
+        let key = root.style_keys[index];
+        let product = root.style_registry.borrow(key);
+        let approval_key = legacy_logical_style_approval_key_v5(&key);
+        if (product.row_kind == STYLE_ROW_VISUAL) {
+            assert!(!df::exists(&root.id, approval_key), EInvalidLogicalStyle);
+            visual_count = visual_count + 1;
+        } else {
+            assert!(df::exists(&root.id, approval_key), EInvalidLogicalStyle);
+            let approval: &LegacyLogicalStyleApprovalV5 =
+                df::borrow(&root.id, approval_key);
+            assert!(
+                approval.legacy_maker_id == state.legacy_maker_id
+                    && approval.protocol_config_id == state.protocol_config_id
+                    && approval.protocol_admin_cap_id == state.protocol_admin_cap_id
+                    && approval.row_kind == product.row_kind
+                    && approval.asset_blob_id != root.logical_auxiliary_blob_id,
+                EInvalidLogicalStyle,
+            );
+            approval_count = approval_count + 1;
+            if (product.row_kind == STYLE_ROW_LOGICAL_NONE) {
+                none_count = none_count + 1;
+            } else if (product.row_kind == STYLE_ROW_LOGICAL_COLOR) {
+                color_count = color_count + 1;
+            } else {
+                abort EInvalidStyleRowKind
+            };
+        };
+        index = index + 1;
+    };
+    assert!(
+        visual_count == LEGACY_LOGICAL_COMPAT_VISUAL_COUNT
+            && approval_count == LEGACY_LOGICAL_COMPAT_ROW_COUNT
+            && none_count == 3
+            && color_count == 4,
+        EInvalidLogicalStyle,
+    );
+}
+
+/// Package-only admission assertion. The shared Authority has no mutating or
+/// extraction API and is valid only when every field matches the Root-owned
+/// irreversible lock record and the original ControlCap remains tombstoned.
+public(package) fun assert_independent_extension_authority_v5(
+    root: &MakerRootV5,
+    legacy_maker: &OCMaker,
+    authority: &IndependentExtensionAuthorityV5,
+    ctx: &TxContext,
+) {
+    assert_independent_extension_parent_paused_v5(root);
+    assert_legacy_maker(root, legacy_maker);
+    assert!(root.active_listing_id.is_none(), EInvalidLifecycle);
+    assert!(root.current_control_cap_id.is_some(), EInvalidControlCap);
+    assert!(
+        *root.current_control_cap_id.borrow() == authority.retired_control_cap_id,
+        EInvalidControlCap,
+    );
+    assert!(root.ownership_epoch == authority.locked_ownership_epoch, EInvalidControlCap);
+    assert!(root.current_owner == ctx.sender() && authority.owner == ctx.sender(), ENotCurrentOwner);
+    assert!(authority.root_id == object::id(root), EInvalidControlCap);
+    assert!(authority.legacy_maker_id == object::id(legacy_maker), EProtocolMismatch);
+    assert!(authority.protocol_config_id == root.protocol_config_id, EProtocolMismatch);
+    assert!(authority.retired_control_cap_epoch < 18_446_744_073_709_551_615, EInvalidControlCap);
+    assert!(authority.retired_control_cap_epoch + 1 == authority.locked_ownership_epoch, EInvalidControlCap);
+    assert!(authority.audit_hash.length() == SHA256_LENGTH, EInvalidIndependentExtensionAudit);
+    assert!(root.release.style_registry_sealed, EStyleRegistryNotSealed);
+    assert_legacy_logical_compatibility_complete(root);
+    let lock = root_independent_extension_lock_v5(root);
+    assert!(
+        lock.finalized
+            && lock.authority_id == object::id(authority)
+            && lock.legacy_maker_id == authority.legacy_maker_id
+            && lock.protocol_config_id == authority.protocol_config_id
+            && lock.protocol_admin_cap_id == authority.protocol_admin_cap_id
+            && lock.owner == authority.owner
+            && lock.retired_control_cap_id == authority.retired_control_cap_id
+            && lock.retired_control_cap_epoch == authority.retired_control_cap_epoch
+            && lock.locked_ownership_epoch == authority.locked_ownership_epoch
+            && lock.audit_hash == authority.audit_hash,
+        EInvalidControlCap,
+    );
+}
+
+/// Every trusted v8 lifecycle/access path must be anchored to the irreversible
+/// Root-owned lock, not merely to a PAUSED lifecycle that an older callable
+/// could have produced. This helper intentionally does not require the shared
+/// Authority object so player claims and Seal checks remain read-only.
+fun assert_independent_extension_locked_state_v5(root: &MakerRootV5) {
+    assert!(root.active_listing_id.is_none(), EInvalidLifecycle);
+    assert!(root.current_control_cap_id.is_some(), EInvalidControlCap);
+    assert!(root.release.style_registry_sealed, EStyleRegistryNotSealed);
+    let lock = root_independent_extension_lock_v5(root);
+    assert!(lock.finalized, EInvalidControlCap);
+    assert!(lock.legacy_maker_id == root.legacy_maker_id, EProtocolMismatch);
+    assert!(lock.protocol_config_id == root.protocol_config_id, EProtocolMismatch);
+    assert!(
+        lock.retired_control_cap_id == *root.current_control_cap_id.borrow(),
+        EInvalidControlCap,
+    );
+    assert!(lock.locked_ownership_epoch == root.ownership_epoch, EInvalidControlCap);
+    assert!(
+        lock.retired_control_cap_epoch < 18_446_744_073_709_551_615,
+        EInvalidControlCap,
+    );
+    assert!(
+        lock.retired_control_cap_epoch + 1 == lock.locked_ownership_epoch,
+        EInvalidControlCap,
+    );
+    assert!(lock.audit_hash.length() == SHA256_LENGTH, EInvalidIndependentExtensionAudit);
+    assert_legacy_logical_compatibility_complete(root);
+}
+
 fun has_non_empty_string_prefix(value: &String, prefix: &String): bool {
     let value_bytes = string::as_bytes(value);
     let prefix_bytes = string::as_bytes(prefix);
@@ -3577,6 +4320,97 @@ fun legacy_maker_for_v5_testing(
         clock,
         ctx,
     );
+    // Legacy-logical compatibility fixture: these seven immutable Items use
+    // the pre-v5 projection Blob and therefore require dual-governance
+    // canonicalization during migration. They are non-required and do not
+    // alter the ordinary test recipes above.
+    legacy::admin_add_part(
+        &cap, &mut maker,
+        b"legacy-none-a".to_string(), b"Legacy None A".to_string(),
+        legacy::part_standard(), 2, false, false, clock, ctx,
+    );
+    legacy::admin_add_color(
+        &cap, &mut maker, b"legacy-none-a".to_string(),
+        b"#000000".to_string(), clock, ctx,
+    );
+    legacy::admin_add_item(
+        &cap, &mut maker,
+        b"legacy-none-a".to_string(), b"__ac_none".to_string(),
+        b"None".to_string(), b"legacy-projection-blob".to_string(),
+        b"".to_string(), legacy::item_included(), clock, ctx,
+    );
+    legacy::admin_add_part(
+        &cap, &mut maker,
+        b"legacy-none-b".to_string(), b"Legacy None B".to_string(),
+        legacy::part_standard(), 3, false, false, clock, ctx,
+    );
+    legacy::admin_add_color(
+        &cap, &mut maker, b"legacy-none-b".to_string(),
+        b"#000000".to_string(), clock, ctx,
+    );
+    legacy::admin_add_item(
+        &cap, &mut maker,
+        b"legacy-none-b".to_string(), b"__ac_none".to_string(),
+        b"None".to_string(), b"legacy-projection-blob".to_string(),
+        b"".to_string(), legacy::item_included(), clock, ctx,
+    );
+    legacy::admin_add_part(
+        &cap, &mut maker,
+        b"legacy-none-c".to_string(), b"Legacy None C".to_string(),
+        legacy::part_standard(), 4, false, false, clock, ctx,
+    );
+    legacy::admin_add_color(
+        &cap, &mut maker, b"legacy-none-c".to_string(),
+        b"#000000".to_string(), clock, ctx,
+    );
+    legacy::admin_add_item(
+        &cap, &mut maker,
+        b"legacy-none-c".to_string(), b"__ac_none".to_string(),
+        b"None".to_string(), b"legacy-projection-blob".to_string(),
+        b"".to_string(), legacy::item_included(), clock, ctx,
+    );
+    legacy::admin_add_part(
+        &cap, &mut maker,
+        b"__ac_color_color-1".to_string(), b"Legacy Color 1".to_string(),
+        legacy::part_standard(), 5, false, false, clock, ctx,
+    );
+    legacy::admin_add_color(
+        &cap, &mut maker, b"__ac_color_color-1".to_string(),
+        b"#000000".to_string(), clock, ctx,
+    );
+    legacy::admin_add_item(
+        &cap, &mut maker,
+        b"__ac_color_color-1".to_string(), b"default".to_string(),
+        b"Default".to_string(), b"legacy-projection-blob".to_string(),
+        b"".to_string(), legacy::item_included(), clock, ctx,
+    );
+    legacy::admin_add_item(
+        &cap, &mut maker,
+        b"__ac_color_color-1".to_string(), b"color-2".to_string(),
+        b"Color 2".to_string(), b"legacy-projection-blob".to_string(),
+        b"".to_string(), legacy::item_included(), clock, ctx,
+    );
+    legacy::admin_add_part(
+        &cap, &mut maker,
+        b"__ac_color_color-2".to_string(), b"Legacy Color 2".to_string(),
+        legacy::part_standard(), 6, false, false, clock, ctx,
+    );
+    legacy::admin_add_color(
+        &cap, &mut maker, b"__ac_color_color-2".to_string(),
+        b"#000000".to_string(), clock, ctx,
+    );
+    legacy::admin_add_item(
+        &cap, &mut maker,
+        b"__ac_color_color-2".to_string(), b"default".to_string(),
+        b"Default".to_string(), b"legacy-projection-blob".to_string(),
+        b"".to_string(), legacy::item_included(), clock, ctx,
+    );
+    legacy::admin_add_item(
+        &cap, &mut maker,
+        b"__ac_color_color-2".to_string(), b"color-2".to_string(),
+        b"Color 2".to_string(), b"legacy-projection-blob".to_string(),
+        b"".to_string(), legacy::item_included(), clock, ctx,
+    );
     legacy::admin_publish_maker(
         &cap,
         &mut maker,
@@ -3743,6 +4577,134 @@ fun register_default_base_styles(
 }
 
 #[test_only]
+fun register_legacy_compatibility_visual_rows(
+    root: &mut MakerRootV5,
+    cap: &MakerControlCapV5,
+    maker: &OCMaker,
+    ctx: &TxContext,
+) {
+    let mut index = 0u64;
+    while (index < LEGACY_LOGICAL_COMPAT_VISUAL_COUNT) {
+        let style_key = if (index == 0) {
+            b"default".to_string()
+        } else {
+            let mut key = b"compat-visual-".to_string();
+            key.append(index.to_string());
+            key
+        };
+        register_base_style_v5(
+            root, cap, maker,
+            b"eyes".to_string(), b"bright".to_string(), style_key, ctx,
+        );
+        index = index + 1;
+    };
+}
+
+#[test_only]
+fun register_legacy_compatibility_logical_rows(
+    root: &mut MakerRootV5,
+    cap: &MakerControlCapV5,
+    maker: &OCMaker,
+    config: &CommerceProtocolConfigV5,
+    protocol_admin: &ProtocolFeeAdminCap,
+    ctx: &TxContext,
+) {
+    register_base_legacy_logical_style_v5(
+        root, cap, maker, config, protocol_admin,
+        b"legacy-none-a".to_string(), b"__ac_none".to_string(),
+        b"__animacraft_none__".to_string(), STYLE_ROW_LOGICAL_NONE, ctx,
+    );
+    register_base_legacy_logical_style_v5(
+        root, cap, maker, config, protocol_admin,
+        b"legacy-none-b".to_string(), b"__ac_none".to_string(),
+        b"__animacraft_none__".to_string(), STYLE_ROW_LOGICAL_NONE, ctx,
+    );
+    register_base_legacy_logical_style_v5(
+        root, cap, maker, config, protocol_admin,
+        b"legacy-none-c".to_string(), b"__ac_none".to_string(),
+        b"__animacraft_none__".to_string(), STYLE_ROW_LOGICAL_NONE, ctx,
+    );
+    register_base_legacy_logical_style_v5(
+        root, cap, maker, config, protocol_admin,
+        b"__ac_color_color-1".to_string(), b"default".to_string(),
+        b"__animacraft_color__:default".to_string(),
+        STYLE_ROW_LOGICAL_COLOR, ctx,
+    );
+    register_base_legacy_logical_style_v5(
+        root, cap, maker, config, protocol_admin,
+        b"__ac_color_color-1".to_string(), b"color-2".to_string(),
+        b"__animacraft_color__:color-2".to_string(),
+        STYLE_ROW_LOGICAL_COLOR, ctx,
+    );
+    register_base_legacy_logical_style_v5(
+        root, cap, maker, config, protocol_admin,
+        b"__ac_color_color-2".to_string(), b"default".to_string(),
+        b"__animacraft_color__:default".to_string(),
+        STYLE_ROW_LOGICAL_COLOR, ctx,
+    );
+    register_base_legacy_logical_style_v5(
+        root, cap, maker, config, protocol_admin,
+        b"__ac_color_color-2".to_string(), b"color-2".to_string(),
+        b"__animacraft_color__:color-2".to_string(),
+        STYLE_ROW_LOGICAL_COLOR, ctx,
+    );
+}
+
+#[test_only]
+public fun legacy_compatibility_rows_for_testing(): (
+    vector<String>, vector<String>, vector<String>, vector<u8>,
+) {
+    let mut part_keys = vector[];
+    let mut item_keys = vector[];
+    let mut style_keys = vector[];
+    let mut row_kinds = vector[];
+    let mut index = 0u64;
+    while (index < LEGACY_LOGICAL_COMPAT_VISUAL_COUNT) {
+        part_keys.push_back(b"eyes".to_string());
+        item_keys.push_back(b"bright".to_string());
+        let style_key = if (index == 0) {
+            b"default".to_string()
+        } else {
+            let mut key = b"compat-visual-".to_string();
+            key.append(index.to_string());
+            key
+        };
+        style_keys.push_back(style_key);
+        row_kinds.push_back(STYLE_ROW_VISUAL);
+        index = index + 1;
+    };
+    part_keys.push_back(b"legacy-none-a".to_string());
+    item_keys.push_back(b"__ac_none".to_string());
+    style_keys.push_back(b"__animacraft_none__".to_string());
+    row_kinds.push_back(STYLE_ROW_LOGICAL_NONE);
+    part_keys.push_back(b"legacy-none-b".to_string());
+    item_keys.push_back(b"__ac_none".to_string());
+    style_keys.push_back(b"__animacraft_none__".to_string());
+    row_kinds.push_back(STYLE_ROW_LOGICAL_NONE);
+    part_keys.push_back(b"legacy-none-c".to_string());
+    item_keys.push_back(b"__ac_none".to_string());
+    style_keys.push_back(b"__animacraft_none__".to_string());
+    row_kinds.push_back(STYLE_ROW_LOGICAL_NONE);
+    part_keys.push_back(b"__ac_color_color-1".to_string());
+    item_keys.push_back(b"default".to_string());
+    style_keys.push_back(b"__animacraft_color__:default".to_string());
+    row_kinds.push_back(STYLE_ROW_LOGICAL_COLOR);
+    part_keys.push_back(b"__ac_color_color-1".to_string());
+    item_keys.push_back(b"color-2".to_string());
+    style_keys.push_back(b"__animacraft_color__:color-2".to_string());
+    row_kinds.push_back(STYLE_ROW_LOGICAL_COLOR);
+    part_keys.push_back(b"__ac_color_color-2".to_string());
+    item_keys.push_back(b"default".to_string());
+    style_keys.push_back(b"__animacraft_color__:default".to_string());
+    row_kinds.push_back(STYLE_ROW_LOGICAL_COLOR);
+    part_keys.push_back(b"__ac_color_color-2".to_string());
+    item_keys.push_back(b"color-2".to_string());
+    style_keys.push_back(b"__animacraft_color__:color-2".to_string());
+    row_kinds.push_back(STYLE_ROW_LOGICAL_COLOR);
+    (part_keys, item_keys, style_keys, row_kinds)
+}
+
+#[test_only]
 fun register_moon_pack_hat_style(
     root: &mut MakerRootV5,
     cap: &MakerControlCapV5,
@@ -3807,6 +4769,35 @@ public fun destroy_v5_world_for_testing(
     std::unit_test::destroy(treasury);
     std::unit_test::destroy(vault);
     std::unit_test::destroy(cap);
+}
+
+#[test_only]
+public fun destroy_v5_world_with_independent_authority_for_testing(
+    profile: CreatorProfile,
+    maker: OCMaker,
+    legacy_treasury: MakerTreasury<sui::sui::SUI>,
+    legacy_config: ProtocolFeeConfig,
+    legacy_protocol_treasury: ProtocolTreasury<sui::sui::SUI>,
+    protocol_admin: ProtocolFeeAdminCap,
+    config: CommerceProtocolConfigV5,
+    protocol_treasury: CommerceProtocolTreasuryV5<sui::sui::SUI>,
+    root: MakerRootV5,
+    treasury: MakerTreasuryV5<sui::sui::SUI>,
+    vault: MakerControlVaultV5,
+    authority: IndependentExtensionAuthorityV5,
+) {
+    std::unit_test::destroy(profile);
+    std::unit_test::destroy(maker);
+    std::unit_test::destroy(legacy_treasury);
+    std::unit_test::destroy(legacy_config);
+    std::unit_test::destroy(legacy_protocol_treasury);
+    std::unit_test::destroy(protocol_admin);
+    std::unit_test::destroy(config);
+    std::unit_test::destroy(protocol_treasury);
+    std::unit_test::destroy(root);
+    std::unit_test::destroy(treasury);
+    std::unit_test::destroy(vault);
+    std::unit_test::destroy(authority);
 }
 
 #[test_only]
@@ -5920,6 +6911,96 @@ fun paid_base_visual_asset_cannot_self_report_as_logical() {
         STYLE_ROW_LOGICAL_NONE,
         &ctx,
     );
+    abort 99
+}
+
+#[test]
+fun reviewed_legacy_logical_projection_seals_exact_nineteen_plus_seven() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 86, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (
+        profile, maker, legacy_treasury, legacy_config,
+        legacy_protocol_treasury, mut protocol_admin, mut config,
+        protocol_treasury, mut root, treasury, vault, cap,
+    ) = v5_world_for_testing(
+        new_completion_policy(POLICY_UNLIMITED_FREE, 0, 0),
+        &mut ctx,
+        &clock,
+    );
+    update_protocol_enabled_v5(&mut config, &protocol_admin, true);
+    register_legacy_compatibility_visual_rows(&mut root, &cap, &maker, &ctx);
+    register_legacy_compatibility_logical_rows(
+        &mut root, &cap, &maker, &config, &protocol_admin, &ctx,
+    );
+    assert!(root.release.style_count == LEGACY_LOGICAL_COMPAT_TOTAL_COUNT);
+    assert!(root_legacy_logical_compatibility_enabled_v5(&root));
+    assert!(
+        root_legacy_logical_compatibility_count_v5(&root)
+            == LEGACY_LOGICAL_COMPAT_ROW_COUNT,
+    );
+    assert!(
+        style_product_asset_blob_id_v5(
+            &root,
+            b"legacy-none-a".to_string(),
+            b"__ac_none".to_string(),
+            b"__animacraft_none__".to_string(),
+        ) == b"projection-auxiliary-blob".to_string(),
+    );
+    seal_style_registry_v5(&mut root, &cap, &ctx);
+    assert!(style_registry_sealed_v5(&root));
+    assert!(root_lifecycle_v5(&root) == LIFECYCLE_PAUSED);
+    sui::clock::destroy_for_testing(clock);
+    destroy_v5_world_for_testing(
+        profile, maker, legacy_treasury, legacy_config,
+        legacy_protocol_treasury, protocol_admin, config, protocol_treasury,
+        root, treasury, vault, cap,
+    );
+}
+
+#[test, expected_failure(abort_code = 1, location = animacraft::commerce_v5)]
+fun legacy_compatibility_parent_cannot_activate_base_commerce() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 87, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (
+        _profile, maker, _legacy_treasury, _legacy_config,
+        _legacy_protocol_treasury, protocol_admin, mut config,
+        _protocol_treasury, mut root, _treasury, _vault, cap,
+    ) = v5_world_for_testing(
+        new_completion_policy(POLICY_UNLIMITED_FREE, 0, 0),
+        &mut ctx,
+        &clock,
+    );
+    update_protocol_enabled_v5(&mut config, &protocol_admin, true);
+    register_legacy_compatibility_visual_rows(&mut root, &cap, &maker, &ctx);
+    register_legacy_compatibility_logical_rows(
+        &mut root, &cap, &maker, &config, &protocol_admin, &ctx,
+    );
+    seal_style_registry_v5(&mut root, &cap, &ctx);
+    activate_maker_v5(&mut root, &cap, &ctx);
+    abort 99
+}
+
+#[test, expected_failure(abort_code = 47, location = animacraft::commerce_v5)]
+fun partial_legacy_logical_projection_cannot_seal() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 88, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (
+        _profile, maker, _legacy_treasury, _legacy_config,
+        _legacy_protocol_treasury, protocol_admin, mut config,
+        _protocol_treasury, mut root, _treasury, _vault, cap,
+    ) = v5_world_for_testing(
+        new_completion_policy(POLICY_UNLIMITED_FREE, 0, 0),
+        &mut ctx,
+        &clock,
+    );
+    update_protocol_enabled_v5(&mut config, &protocol_admin, true);
+    register_legacy_compatibility_visual_rows(&mut root, &cap, &maker, &ctx);
+    register_base_legacy_logical_style_v5(
+        &mut root, &cap, &maker, &config, &protocol_admin,
+        b"legacy-none-a".to_string(), b"__ac_none".to_string(),
+        b"__animacraft_none__".to_string(), STYLE_ROW_LOGICAL_NONE, &ctx,
+    );
+    seal_style_registry_v5(&mut root, &cap, &ctx);
     abort 99
 }
 

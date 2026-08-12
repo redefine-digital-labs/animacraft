@@ -32,9 +32,10 @@ import {
 const OWNER = '0x111';
 const ROOT = '0x222';
 const LEGACY = '0x333';
-const CONTROL = '0x444';
+const INDEPENDENT_EXTENSION_AUTHORITY = '0x444';
 const CALLABLE_PACKAGE = '0x555';
 const TYPE_ORIGIN_PACKAGE = '0x556';
+const INDEPENDENT_EXTENSION_TYPE_ORIGIN_PACKAGE = '0x557';
 const PARENT_HASH = '11'.repeat(32);
 
 function clone(value) {
@@ -204,6 +205,7 @@ function runtime() {
     expansionPackV8ReleaseEnabled: true,
     expansionPackV8CallablePackageId: CALLABLE_PACKAGE,
     expansionPackV8TypeOriginPackageId: TYPE_ORIGIN_PACKAGE,
+    independentExtensionV5TypeOriginPackageId: INDEPENDENT_EXTENSION_TYPE_ORIGIN_PACKAGE,
     commerceProtocolConfigV5Id: '0x666',
     paymentCoinType: '0x2::sui::SUI',
   };
@@ -214,28 +216,19 @@ function publicationContext() {
     owner: OWNER,
     baseMakerRootId: ROOT,
     parentLegacyMakerId: LEGACY,
-    makerControlCapId: CONTROL,
+    independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
   };
 }
 
 async function confirmAction(recovery, plan, actionId, confirmation) {
   let next = recovery;
-  if (next.actions[next.currentActionIndex]?.id === 'chain.parent.evidence.bind'
-    && actionId !== 'chain.parent.evidence.bind') {
-    next = await confirmAction(next, plan, 'chain.parent.evidence.bind', {
-      transactionDigest: 'parent-evidence',
-      parentReleaseEvidenceBound: true,
-      parentEvidenceReadbackVerified: true,
-      baseMakerRootId: ROOT,
-      parentLegacyMakerId: LEGACY,
-      parentVersion: '7',
-      parentManifestBlobId: 'parent-quilt',
-      parentManifestSha256: PARENT_HASH,
-    });
-  }
   const exactConfirmation = actionId === 'parent.release.verify'
     && typeof confirmation?.parentReleaseEvidenceBound !== 'boolean'
-    ? { ...confirmation, parentReleaseEvidenceBound: false }
+    ? {
+        parentOwnershipEpoch: '7',
+        ...confirmation,
+        parentReleaseEvidenceBound: true,
+      }
     : confirmation;
   next = await beginExpansionPackPublicationAction({ recovery: next, plan, runtime: runtime() });
   const transactionDigest = exactConfirmation?.transactionDigest;
@@ -312,7 +305,7 @@ async function fixture({ paid = false } = {}) {
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     runtime: runtime(),
   });
@@ -399,36 +392,20 @@ test('keeps a paid ciphertext snapshot in its exact pre-encryption persistence l
   });
   recovery = await confirmAction(recovery, plan, 'parent.release.verify', {
     parentVerified: true,
-    makerControlCapVerified: true,
-    parentLifecycleState: 'ACTIVE',
+    independentExtensionAuthorityVerified: true,
+    parentLifecycleState: 'PAUSED',
+    parentOwnershipEpoch: '7',
     baseMakerRootId: ROOT,
     parentLegacyMakerId: LEGACY,
     parentVersion: '7',
     parentManifestBlobId: 'parent-quilt',
     parentManifestSha256: PARENT_HASH,
   });
-  let createAction = await nextExpansionPackPublicationAction({
+  const createAction = await nextExpansionPackPublicationAction({
     recovery,
     plan,
     runtime: runtime(),
   });
-  if (createAction.id === 'chain.parent.evidence.bind') {
-    recovery = await confirmAction(recovery, plan, createAction.id, {
-      transactionDigest: 'parent-evidence-paid',
-      parentReleaseEvidenceBound: true,
-      parentEvidenceReadbackVerified: true,
-      baseMakerRootId: ROOT,
-      parentLegacyMakerId: LEGACY,
-      parentVersion: '7',
-      parentManifestBlobId: 'parent-quilt',
-      parentManifestSha256: PARENT_HASH,
-    });
-    createAction = await nextExpansionPackPublicationAction({
-      recovery,
-      plan,
-      runtime: runtime(),
-    });
-  }
   recovery = await confirmAction(recovery, plan, 'chain.pack.create', {
     packReleaseId: '0x901',
     packAdminCapId: '0x902',
@@ -555,16 +532,6 @@ test('never lets another Walrus session or immutable candidate reuse a recovery 
 });
 
 function chainConfirmation(action, digest) {
-  if (action.id === 'chain.parent.evidence.bind') return {
-    transactionDigest: digest,
-    parentReleaseEvidenceBound: true,
-    parentEvidenceReadbackVerified: true,
-    baseMakerRootId: action.inputs.baseMakerRootId,
-    parentLegacyMakerId: action.inputs.parentLegacyMakerId,
-    parentVersion: action.inputs.parentVersion,
-    parentManifestBlobId: action.inputs.parentManifestBlobId,
-    parentManifestSha256: action.inputs.parentManifestSha256,
-  };
   if (action.id === 'chain.pack.create') return {
     packReleaseId: '0x901',
     packAdminCapId: '0x902',
@@ -619,6 +586,8 @@ function chainConfirmation(action, digest) {
     parentVersion: action.inputs.parentVersion,
     parentManifestBlobId: action.inputs.parentManifestBlobId,
     parentManifestSha256: action.inputs.parentManifestSha256,
+    parentOwnershipEpoch: action.inputs.parentOwnershipEpoch,
+    admittedParentOwnershipEpoch: action.inputs.parentOwnershipEpoch,
   };
   if (action.id === 'chain.pack.activate') return {
     transactionDigest: digest,
@@ -637,7 +606,7 @@ async function completedSnapshot(source) {
       owner: OWNER,
       baseMakerRootId: ROOT,
       parentLegacyMakerId: LEGACY,
-      makerControlCapId: CONTROL,
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     },
     project: source.project,
     candidate: source.candidate,
@@ -649,9 +618,10 @@ async function completedSnapshot(source) {
       async verifyParent() {
         return {
           parentVerified: true,
-          makerControlCapVerified: true,
-          parentReleaseEvidenceBound: false,
-          parentLifecycleState: 'ACTIVE',
+          independentExtensionAuthorityVerified: true,
+          parentReleaseEvidenceBound: true,
+          parentLifecycleState: 'PAUSED',
+          parentOwnershipEpoch: '7',
           baseMakerRootId: ROOT,
           parentLegacyMakerId: LEGACY,
           parentVersion: '7',

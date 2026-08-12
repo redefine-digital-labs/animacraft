@@ -380,6 +380,34 @@ test('parent ownership transfer suspends existing Pass access until exact re-adm
   assert.equal(readmitted.access.reason, '');
 });
 
+test('fails closed unless parent and admitted ownership epochs are exact u64 values', async () => {
+  const data = await fixture();
+  for (const ownershipEpoch of [undefined, -1, 2 ** 53, '18446744073709551616']) {
+    await assert.rejects(
+      verifyExpansionPackPlayerReleaseV8({
+        baseDocument: baseDocument(),
+        parentRelease: parentRelease({ ownershipEpoch }),
+        release: data.release,
+        manifest: data.manifestJson,
+        styleRecords: data.styleRecords,
+      }),
+      { code: 'EXPANSION_PACK_PLAYER_U64_INVALID' },
+    );
+  }
+  for (const admittedParentOwnershipEpoch of [undefined, -1, 2 ** 53, '18446744073709551616']) {
+    await assert.rejects(
+      verifyExpansionPackPlayerReleaseV8({
+        baseDocument: baseDocument(),
+        parentRelease: data.parent,
+        release: { ...data.release, admittedParentOwnershipEpoch },
+        manifest: data.manifestJson,
+        styleRecords: data.styleRecords,
+      }),
+      { code: 'EXPANSION_PACK_PLAYER_U64_INVALID' },
+    );
+  }
+});
+
 test('accepts publication-protected paid Seal transport and rejects missing or unscoped proof', async () => {
   const paid = await fixture({ paid: true });
   assert.equal(paid.manifest.transportProtection.contentCommitment, paid.contentCommitment);

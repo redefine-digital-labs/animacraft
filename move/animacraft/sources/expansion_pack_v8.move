@@ -5,6 +5,7 @@ use animacraft::commerce_v5::{
     Self as commerce,
     CommerceProtocolConfigV5,
     CommerceProtocolTreasuryV5,
+    IndependentExtensionAuthorityV5,
     MakerControlCapV5,
     MakerRootV5,
 };
@@ -385,6 +386,10 @@ public fun create_expansion_pack_v8<PaymentCoin>(
             == commerce::extension_payment_coin_type_v5(protocol_config),
         EPaymentCoinMismatch,
     );
+    commerce::assert_independent_extension_operational_v5(
+        parent_root,
+        protocol_config,
+    );
     let (release, treasury, admin_cap) = new_expansion_pack_objects_v8<PaymentCoin>(
         parent_root,
         parent_legacy_maker,
@@ -598,14 +603,29 @@ public fun bind_expansion_pack_seal_policy_v8(
 }
 
 /// The current parent owner explicitly admits the exact immutable child tuple.
-/// A Maker sale changes the ownership epoch, so new acquisition fails closed
-/// until the new owner re-admits it. Existing wallet entitlements remain
-/// verifiable against the immutable release and are never silently revoked.
+/// A Maker sale changes the ownership epoch, so all Pack access is suspended
+/// until the new owner re-admits the immutable child tuple. Entitlements and
+/// Pass objects remain permanent and resume after that current-epoch admission.
 public fun admit_expansion_pack_v8(
     release: &mut ExpansionPackReleaseV8,
     parent_root: &MakerRootV5,
     parent_legacy_maker: &OCMaker,
     parent_control_cap: &MakerControlCapV5,
+    ctx: &TxContext,
+) {
+    commerce::assert_extension_control_v5(parent_root, parent_control_cap, ctx);
+    admit_expansion_pack_impl_v8(
+        release,
+        parent_root,
+        parent_legacy_maker,
+        ctx,
+    );
+}
+
+fun admit_expansion_pack_impl_v8(
+    release: &mut ExpansionPackReleaseV8,
+    parent_root: &MakerRootV5,
+    parent_legacy_maker: &OCMaker,
     ctx: &TxContext,
 ) {
     assert!(release.lifecycle != LIFECYCLE_DRAFT, EInvalidLifecycle);
@@ -620,7 +640,7 @@ public fun admit_expansion_pack_v8(
         &release.parent_manifest_sha256,
     );
     assert!(commerce::style_registry_sealed_v5(parent_root), EInvalidBinding);
-    commerce::assert_extension_control_v5(parent_root, parent_control_cap, ctx);
+    commerce::assert_independent_extension_parent_paused_v5(parent_root);
     if (release.access_kind == ACCESS_PAID_ONCE) {
         assert!(release.seal_policy_id.is_some(), ESealPolicyMissing);
         assert!(release.seal_package_id.is_some(), ESealPolicyMissing);
@@ -650,6 +670,30 @@ public fun admit_expansion_pack_v8(
     });
 }
 
+/// Production admission after the parent irreversibly retires its general
+/// MakerControlCap. Historical callables can still create untrusted Draft
+/// shells, but only this authority-bound path can cross the admission boundary.
+public fun admit_expansion_pack_with_authority_v8(
+    release: &mut ExpansionPackReleaseV8,
+    parent_root: &MakerRootV5,
+    parent_legacy_maker: &OCMaker,
+    parent_authority: &IndependentExtensionAuthorityV5,
+    ctx: &TxContext,
+) {
+    commerce::assert_independent_extension_authority_v5(
+        parent_root,
+        parent_legacy_maker,
+        parent_authority,
+        ctx,
+    );
+    admit_expansion_pack_impl_v8(
+        release,
+        parent_root,
+        parent_legacy_maker,
+        ctx,
+    );
+}
+
 public fun activate_expansion_pack_v8(
     release: &mut ExpansionPackReleaseV8,
     admin_cap: &ExpansionPackAdminCapV8,
@@ -661,7 +705,7 @@ public fun activate_expansion_pack_v8(
     assert!(release.lifecycle == LIFECYCLE_ADMITTED, EInvalidLifecycle);
     assert_release_root(release, parent_root);
     assert_current_parent_epoch(release, parent_root);
-    commerce::assert_extension_operational_v5(parent_root, config);
+    commerce::assert_independent_extension_operational_v5(parent_root, config);
     set_lifecycle(release, LIFECYCLE_ACTIVE);
 }
 
@@ -686,7 +730,7 @@ public fun resume_expansion_pack_v8(
     assert!(release.lifecycle == LIFECYCLE_PAUSED, EInvalidLifecycle);
     assert_release_root(release, parent_root);
     assert_current_parent_epoch(release, parent_root);
-    commerce::assert_extension_operational_v5(parent_root, config);
+    commerce::assert_independent_extension_operational_v5(parent_root, config);
     set_lifecycle(release, LIFECYCLE_ACTIVE);
 }
 
@@ -730,7 +774,7 @@ public fun purchase_expansion_pack_v8<PaymentCoin>(
     assert!(!release.entitlements.contains(ctx.sender()), EEntitlementExists);
     let price = release.purchase_price_atomic;
     assert!(payment.value() == price, EWrongPayment);
-    let creator_payment = commerce::collect_extension_primary_payment_v5(
+    let creator_payment = commerce::collect_independent_extension_primary_payment_v5(
         parent_root,
         config,
         protocol_treasury,
@@ -777,10 +821,18 @@ public fun verify_style_access_v8(
     ctx: &TxContext,
 ): ExpansionPackStyleAccessProofV8 {
     // Acquisition is gated by Active state, the live v5 protocol and the
-    // current parent epoch. Previously acquired rights are deliberately not:
-    // pausing, archiving or selling a Maker must not revoke paid access.
+    // current parent epoch. Existing entitlements survive ownership transfer,
+    // but access is suspended until the release is re-admitted at that epoch.
     assert_release_root(release, parent_root);
-    assert!(release.lifecycle >= LIFECYCLE_ADMITTED, EInvalidLifecycle);
+    commerce::assert_independent_extension_parent_paused_v5(parent_root);
+    assert_current_parent_epoch(release, parent_root);
+    assert!(
+        release.lifecycle == LIFECYCLE_ADMITTED
+            || release.lifecycle == LIFECYCLE_ACTIVE
+            || release.lifecycle == LIFECYCLE_PAUSED
+            || release.lifecycle == LIFECYCLE_ARCHIVED,
+        EInvalidLifecycle,
+    );
     if (release.access_kind == ACCESS_PAID_ONCE) {
         assert!(release.seal_package_id.is_some(), ESealPolicyMissing);
         assert!(
@@ -828,7 +880,14 @@ public fun check_style_seal_access_v8(
     wallet: address,
 ): bool {
     assert_release_root(release, parent_root);
-    if (release.lifecycle < LIFECYCLE_ADMITTED) return false;
+    commerce::assert_independent_extension_parent_paused_v5(parent_root);
+    if (
+        release.lifecycle != LIFECYCLE_ADMITTED
+            && release.lifecycle != LIFECYCLE_ACTIVE
+            && release.lifecycle != LIFECYCLE_PAUSED
+            && release.lifecycle != LIFECYCLE_ARCHIVED
+    ) return false;
+    if (!is_current_parent_epoch(release, parent_root)) return false;
     if (release.seal_policy_id.is_none()) return false;
     if (*release.seal_policy_id.borrow() != object::id(release)) return false;
     if (release.seal_package_id.is_none()) return false;
@@ -1045,10 +1104,14 @@ fun assert_release_root(release: &ExpansionPackReleaseV8, root: &MakerRootV5) {
 }
 
 fun assert_current_parent_epoch(release: &ExpansionPackReleaseV8, root: &MakerRootV5) {
-    assert!(
-        release.admitted_parent_ownership_epoch == commerce::root_ownership_epoch_v5(root),
-        EParentEpochChanged,
-    );
+    assert!(is_current_parent_epoch(release, root), EParentEpochChanged);
+}
+
+fun is_current_parent_epoch(
+    release: &ExpansionPackReleaseV8,
+    root: &MakerRootV5,
+): bool {
+    release.admitted_parent_ownership_epoch == commerce::root_ownership_epoch_v5(root)
 }
 
 fun assert_release_operational(
@@ -1061,7 +1124,7 @@ fun assert_release_operational(
     assert_release_root(release, root);
     assert_current_parent_epoch(release, root);
     assert!(commerce::has_base_entitlement_v5(root, wallet), EEntitlementMissing);
-    commerce::assert_extension_operational_v5(root, config);
+    commerce::assert_independent_extension_operational_v5(root, config);
 }
 
 fun assert_valid_access(access_kind: u8, purchase_price_atomic: u64) {
@@ -1117,25 +1180,6 @@ fun paid_pack_purchase_splits_protocol_and_independent_treasury() {
         &mut ctx,
         &clock,
     );
-    commerce::register_base_style_v5(
-        &mut root,
-        &parent_cap,
-        &maker,
-        b"eyes".to_string(),
-        b"bright".to_string(),
-        b"default".to_string(),
-        &ctx,
-    );
-    commerce::register_base_style_v5(
-        &mut root,
-        &parent_cap,
-        &maker,
-        b"hat".to_string(),
-        b"moon".to_string(),
-        b"default".to_string(),
-        &ctx,
-    );
-    commerce::seal_style_registry_v5(&mut root, &parent_cap, &ctx);
     assert!(!commerce::root_maker_release_evidence_bound_v5(&root));
     commerce::bind_maker_release_evidence_v5(
         &mut root,
@@ -1170,7 +1214,15 @@ fun paid_pack_purchase_splits_protocol_and_independent_treasury() {
             == &digest(1),
     );
     commerce::update_protocol_enabled_v5(&mut config, &protocol_admin, true);
-    commerce::activate_maker_with_test_seal_if_required(&mut root, &parent_cap, &ctx);
+    let (parts, items, styles, row_kinds) =
+        commerce::legacy_compatibility_rows_for_testing();
+    let parent_authority = commerce::finalize_independent_extension_root_v5_for_testing(
+        &mut root, &maker_treasury, parent_cap, &maker, &config,
+        &protocol_admin, parts, items, styles, row_kinds, digest(30), &mut ctx,
+    );
+    // Expansion Pack v8 is independently operational while the parent remains
+    // PAUSED; Base Commerce/Complete therefore stays unavailable.
+    assert!(commerce::root_lifecycle_v5(&root) == commerce::lifecycle_paused());
 
     let (mut release, mut treasury, admin_cap) =
         new_expansion_pack_v8_for_testing<sui::sui::SUI>(
@@ -1263,7 +1315,9 @@ fun paid_pack_purchase_splits_protocol_and_independent_treasury() {
     assert!(
         *release_seal_package_id_v8(&release).borrow() == expected_seal_package_id,
     );
-    admit_expansion_pack_v8(&mut release, &root, &maker, &parent_cap, &ctx);
+    admit_expansion_pack_with_authority_v8(
+        &mut release, &root, &maker, &parent_authority, &ctx,
+    );
     activate_expansion_pack_v8(&mut release, &admin_cap, &root, &config, &ctx);
     assert!(
         *release_seal_package_id_v8(&release).borrow() == expected_seal_package_id,
@@ -1332,19 +1386,6 @@ fun paid_pack_purchase_splits_protocol_and_independent_treasury() {
         &root,
         @0xA11,
     ));
-    let archived_access = verify_style_access_v8(
-        &release,
-        &root,
-        b"hat".to_string(),
-        b"festival".to_string(),
-        b"red".to_string(),
-        &ctx,
-    );
-    let ExpansionPackStyleAccessProofV8 {
-        release_id: _, parent_root_id: _, holder: _, part_key: _, item_key: _,
-        style_key: _, asset_blob_id: _, asset_sha256: _, asset_seal_id: _,
-        content_commitment: _,
-    } = archived_access;
 
     let (mut free_release, free_treasury, free_admin_cap) =
         new_expansion_pack_v8_for_testing<sui::sui::SUI>(
@@ -1380,7 +1421,9 @@ fun paid_pack_purchase_splits_protocol_and_independent_treasury() {
         &ctx,
     );
     seal_expansion_pack_v8(&mut free_release, &free_admin_cap, digest(11), &ctx);
-    admit_expansion_pack_v8(&mut free_release, &root, &maker, &parent_cap, &ctx);
+    admit_expansion_pack_with_authority_v8(
+        &mut free_release, &root, &maker, &parent_authority, &ctx,
+    );
     activate_expansion_pack_v8(
         &mut free_release,
         &free_admin_cap,
@@ -1408,11 +1451,232 @@ fun paid_pack_purchase_splits_protocol_and_independent_treasury() {
     std::unit_test::destroy(free_release);
     std::unit_test::destroy(free_treasury);
     std::unit_test::destroy(free_admin_cap);
-    commerce::destroy_v5_world_for_testing(
+    commerce::destroy_v5_world_with_independent_authority_for_testing(
         profile, maker, legacy_treasury, legacy_config,
         legacy_protocol_treasury, protocol_admin, config, protocol_treasury,
-        root, maker_treasury, vault, parent_cap,
+        root, maker_treasury, vault, parent_authority,
     );
+}
+
+#[test]
+fun parent_epoch_change_suspends_and_readmission_restores_existing_free_access() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 84, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (
+        profile, maker, legacy_treasury, legacy_config,
+        legacy_protocol_treasury, mut protocol_admin, mut config,
+        protocol_treasury, mut root, maker_treasury, vault, parent_cap,
+    ) = commerce::v5_world_for_testing(
+        commerce::new_completion_policy(commerce::policy_unlimited_free(), 0, 0),
+        &mut ctx,
+        &clock,
+    );
+    commerce::bind_maker_release_evidence_v5(
+        &mut root, &parent_cap, &maker,
+        b"parent-v1".to_string(), b"manifest".to_string(), digest(1), &ctx,
+    );
+    commerce::update_protocol_enabled_v5(&mut config, &protocol_admin, true);
+    let (parts, items, styles, row_kinds) =
+        commerce::legacy_compatibility_rows_for_testing();
+    let mut parent_authority =
+        commerce::finalize_independent_extension_root_v5_for_testing(
+            &mut root, &maker_treasury, parent_cap, &maker, &config,
+            &protocol_admin, parts, items, styles, row_kinds, digest(30), &mut ctx,
+        );
+    let (mut release, treasury, admin_cap) =
+        new_expansion_pack_v8_for_testing<sui::sui::SUI>(
+            &root, &maker,
+            b"parent-v1".to_string(), b"manifest".to_string(), digest(1),
+            b"epoch-pack".to_string(), b"epoch".to_string(),
+            b"1.0.0".to_string(), digest(2), ACCESS_FREE, 0, &mut ctx,
+        );
+    bind_expansion_pack_manifest_v8(
+        &mut release, &admin_cap, b"pack-manifest".to_string(), digest(3), &ctx,
+    );
+    register_style_asset_v8(
+        &mut release, &admin_cap,
+        b"hat".to_string(), b"epoch".to_string(), b"blue".to_string(),
+        b"style-blob".to_string(), digest(4), vector[], &ctx,
+    );
+    seal_expansion_pack_v8(&mut release, &admin_cap, digest(5), &ctx);
+    admit_expansion_pack_with_authority_v8(
+        &mut release, &root, &maker, &parent_authority, &ctx,
+    );
+    activate_expansion_pack_v8(&mut release, &admin_cap, &root, &config, &ctx);
+    claim_free_expansion_pack_v8(&mut release, &root, &config, &clock, &mut ctx);
+    assert!(has_entitlement_v8(&release, @0xA11));
+    let entitlement_count = release_entitlement_count_v8(&release);
+    let admitted_epoch = release_admitted_parent_epoch_v8(&release);
+    commerce::advance_independent_extension_epoch_v5_for_testing(
+        &mut root,
+        &mut parent_authority,
+    );
+    assert!(
+        release_admitted_parent_epoch_v8(&release) == admitted_epoch,
+    );
+    assert!(release_entitlement_count_v8(&release) == entitlement_count);
+    assert!(!check_style_seal_access_v8(vector[], &release, &root, @0xA11));
+    admit_expansion_pack_with_authority_v8(
+        &mut release, &root, &maker, &parent_authority, &ctx,
+    );
+    assert!(release_entitlement_count_v8(&release) == entitlement_count);
+    let restored = verify_style_access_v8(
+        &release, &root,
+        b"hat".to_string(), b"epoch".to_string(), b"blue".to_string(), &ctx,
+    );
+    let ExpansionPackStyleAccessProofV8 {
+        release_id: _, parent_root_id: _, holder: _, part_key: _, item_key: _,
+        style_key: _, asset_blob_id: _, asset_sha256: _, asset_seal_id: _,
+        content_commitment: _,
+    } = restored;
+
+    sui::clock::destroy_for_testing(clock);
+    std::unit_test::destroy(release);
+    std::unit_test::destroy(treasury);
+    std::unit_test::destroy(admin_cap);
+    commerce::destroy_v5_world_with_independent_authority_for_testing(
+        profile, maker, legacy_treasury, legacy_config,
+        legacy_protocol_treasury, protocol_admin, config, protocol_treasury,
+        root, maker_treasury, vault, parent_authority,
+    );
+}
+
+#[test]
+fun atomic_parent_finalizer_retires_general_control_and_authorizes_v8_admission() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 89, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (
+        profile, maker, legacy_treasury, legacy_config,
+        legacy_protocol_treasury, mut protocol_admin, mut config,
+        protocol_treasury, mut root, maker_treasury, vault, parent_cap,
+    ) = commerce::v5_world_for_testing(
+        commerce::new_completion_policy(commerce::policy_unlimited_free(), 0, 0),
+        &mut ctx,
+        &clock,
+    );
+    commerce::bind_maker_release_evidence_v5(
+        &mut root, &parent_cap, &maker,
+        b"parent-v1".to_string(), b"manifest".to_string(), digest(1), &ctx,
+    );
+    commerce::update_protocol_enabled_v5(&mut config, &protocol_admin, true);
+    let (parts, items, styles, row_kinds) =
+        commerce::legacy_compatibility_rows_for_testing();
+    let authority = commerce::finalize_independent_extension_root_v5_for_testing(
+        &mut root,
+        &maker_treasury,
+        parent_cap,
+        &maker,
+        &config,
+        &protocol_admin,
+        parts,
+        items,
+        styles,
+        row_kinds,
+        digest(9),
+        &mut ctx,
+    );
+    assert!(commerce::root_independent_extension_locked_v5(&root));
+    assert!(commerce::style_count_v5(&root) == 26);
+    assert!(commerce::style_registry_sealed_v5(&root));
+    assert!(commerce::root_lifecycle_v5(&root) == commerce::lifecycle_paused());
+    assert!(commerce::root_ownership_epoch_v5(&root) == 1);
+    assert!(commerce::independent_extension_authority_root_id_v5(&authority)
+        == commerce::root_id_v5(&root));
+    assert!(commerce::independent_extension_authority_owner_v5(&authority) == @0xA11);
+    assert!(commerce::independent_extension_authority_locked_epoch_v5(&authority) == 1);
+    assert!(commerce::independent_extension_authority_audit_hash_v5(&authority) == &digest(9));
+
+    let (mut release, treasury, admin_cap) =
+        new_expansion_pack_v8_for_testing<sui::sui::SUI>(
+            &root, &maker,
+            b"parent-v1".to_string(), b"manifest".to_string(), digest(1),
+            b"locked-pack".to_string(), b"locked".to_string(),
+            b"1.0.0".to_string(), digest(2), ACCESS_FREE, 0, &mut ctx,
+        );
+    bind_expansion_pack_manifest_v8(
+        &mut release, &admin_cap, b"pack-manifest".to_string(), digest(3), &ctx,
+    );
+    register_style_asset_v8(
+        &mut release, &admin_cap,
+        b"hat".to_string(), b"locked".to_string(), b"blue".to_string(),
+        b"style-blob".to_string(), digest(4), vector[], &ctx,
+    );
+    seal_expansion_pack_v8(&mut release, &admin_cap, digest(5), &ctx);
+    admit_expansion_pack_with_authority_v8(
+        &mut release, &root, &maker, &authority, &ctx,
+    );
+    activate_expansion_pack_v8(&mut release, &admin_cap, &root, &config, &ctx);
+    claim_free_expansion_pack_v8(&mut release, &root, &config, &clock, &mut ctx);
+    assert!(has_entitlement_v8(&release, @0xA11));
+
+    sui::clock::destroy_for_testing(clock);
+    std::unit_test::destroy(release);
+    std::unit_test::destroy(treasury);
+    std::unit_test::destroy(admin_cap);
+    commerce::destroy_v5_world_with_independent_authority_for_testing(
+        profile, maker, legacy_treasury, legacy_config,
+        legacy_protocol_treasury, protocol_admin, config, protocol_treasury,
+        root, maker_treasury, vault, authority,
+    );
+}
+
+#[test, expected_failure(abort_code = 10, location = animacraft::expansion_pack_v8)]
+fun stale_parent_epoch_rejects_style_proof() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 85, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (
+        _profile, maker, _legacy_treasury, _legacy_config,
+        _legacy_protocol_treasury, mut protocol_admin, mut config,
+        _protocol_treasury, mut root, maker_treasury, _vault, parent_cap,
+    ) = commerce::v5_world_for_testing(
+        commerce::new_completion_policy(commerce::policy_unlimited_free(), 0, 0),
+        &mut ctx,
+        &clock,
+    );
+    commerce::bind_maker_release_evidence_v5(
+        &mut root, &parent_cap, &maker,
+        b"parent-v1".to_string(), b"manifest".to_string(), digest(1), &ctx,
+    );
+    commerce::update_protocol_enabled_v5(&mut config, &protocol_admin, true);
+    let (parts, items, styles, row_kinds) =
+        commerce::legacy_compatibility_rows_for_testing();
+    let mut parent_authority =
+        commerce::finalize_independent_extension_root_v5_for_testing(
+            &mut root, &maker_treasury, parent_cap, &maker, &config,
+            &protocol_admin, parts, items, styles, row_kinds, digest(30), &mut ctx,
+        );
+    let (mut release, _treasury, admin_cap) =
+        new_expansion_pack_v8_for_testing<sui::sui::SUI>(
+            &root, &maker,
+            b"parent-v1".to_string(), b"manifest".to_string(), digest(1),
+            b"stale-pack".to_string(), b"stale".to_string(),
+            b"1.0.0".to_string(), digest(2), ACCESS_FREE, 0, &mut ctx,
+        );
+    bind_expansion_pack_manifest_v8(
+        &mut release, &admin_cap, b"pack-manifest".to_string(), digest(3), &ctx,
+    );
+    register_style_asset_v8(
+        &mut release, &admin_cap,
+        b"hat".to_string(), b"stale".to_string(), b"blue".to_string(),
+        b"style-blob".to_string(), digest(4), vector[], &ctx,
+    );
+    release.lifecycle = LIFECYCLE_ADMITTED;
+    release.admitted_parent_ownership_epoch = commerce::root_ownership_epoch_v5(&root);
+    let issued_epoch = release.admitted_parent_ownership_epoch;
+    release.entitlements.add(@0xA11, EntitlementRecordV8 {
+        paid_atomic: 0,
+        issued_at_ms: 0,
+        admitted_parent_ownership_epoch: issued_epoch,
+    });
+    commerce::advance_independent_extension_epoch_v5_for_testing(
+        &mut root,
+        &mut parent_authority,
+    );
+    let _proof = verify_style_access_v8(
+        &release, &root,
+        b"hat".to_string(), b"stale".to_string(), b"blue".to_string(), &ctx,
+    );
+    abort 99
 }
 
 #[test, expected_failure(abort_code = 51, location = animacraft::commerce_v5)]

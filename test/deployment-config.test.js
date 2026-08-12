@@ -15,6 +15,25 @@ test('production smoke only requires the Soul mint gate when explicitly requeste
   assert.match(source, /validateRuntimeConfig\(remote, \{ strict: true, requireSoulidity \}\)/);
   assert.doesNotMatch(source, /requireSoulidity:\s*true/);
   assert.match(source, /'compositionV6SoulOwnerProofTypeOriginPackageId'/);
+  [
+    'commerceV5CallablePackageId',
+    'physicalV7CallablePackageId',
+    'physicalStyleV7ReleaseEnabled',
+    'expansionPackV8CallablePackageId',
+    'expansionPackV8TypeOriginPackageId',
+    'expansionPackV8ReleaseEnabled',
+    'independentExtensionV5TypeOriginPackageId',
+    'independentExtensionAuthorityV5Id',
+  ].forEach((field) => assert.match(source, new RegExp(`'${field}'`)));
+});
+
+test('example config documents every independent Expansion Pack v8 identity', async () => {
+  const source = await readFile(new URL('../config.example.js', import.meta.url), 'utf8');
+  [
+    'commerceV5CallablePackageId',
+    'independentExtensionV5TypeOriginPackageId',
+    'independentExtensionAuthorityV5Id',
+  ].forEach((field) => assert.match(source, new RegExp(`\\b${field}\\s*:`)));
 });
 
 test('Vercel serves every SPA deep link through the clean root route', async () => {

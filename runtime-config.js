@@ -51,6 +51,7 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   // The release gate stays false until the package upgrade, disabled protocol
   // objects, read-back verification, Maker migration, and Soulidity adapter
   // have all passed production preflight.
+  commerceV5CallablePackageId: '',
   commerceV5TypeOriginPackageId: '',
   commerceProtocolConfigV5Id: '',
   commerceProtocolTreasuryV5Id: '',
@@ -101,6 +102,8 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   // while the client gate remains false until a separate activation phase.
   expansionPackV8CallablePackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
   expansionPackV8TypeOriginPackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  independentExtensionV5TypeOriginPackageId: '',
+  independentExtensionAuthorityV5Id: '',
   expansionPackV8ReleaseEnabled: false,
   // Seal remains fail-closed until the reviewed v5 package and an authenticated
   // Mainnet committee endpoint are configured. One committee is one outer
@@ -341,6 +344,12 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     errors.push('primaryProtocolFeeBps must be an integer from 0 to 5000.');
   }
 
+  const commerceV5CallablePackageId = String(
+    config.commerceV5CallablePackageId || '',
+  );
+  const commerceV5CallablePackageReady = SUI_ID.test(
+    commerceV5CallablePackageId,
+  );
   const commerceV5TypeOriginPackageReady = SUI_ID.test(
     String(config.commerceV5TypeOriginPackageId || ''),
   );
@@ -372,11 +381,13 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
       && commerceV5SoulBindingProofType === expectedSoulBindingProofType,
   );
   const commerceV5CoreConfigured = Boolean(
-    config.commerceV5TypeOriginPackageId
+    config.commerceV5CallablePackageId
+      || config.commerceV5TypeOriginPackageId
       || config.commerceProtocolConfigV5Id
       || config.commerceProtocolTreasuryV5Id,
   );
-  const commerceV5CoreReady = commerceV5TypeOriginPackageReady
+  const commerceV5CoreReady = commerceV5CallablePackageReady
+    && commerceV5TypeOriginPackageReady
     && commerceProtocolConfigV5Ready
     && commerceProtocolTreasuryV5Ready;
   const commerceV5BindingConfigured = Boolean(
@@ -385,6 +396,9 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   );
   if (typeof config.commerceV5ReleaseEnabled !== 'boolean') {
     errors.push('commerceV5ReleaseEnabled must be a boolean release gate.');
+  }
+  if (config.commerceV5CallablePackageId && !commerceV5CallablePackageReady) {
+    errors.push('commerceV5CallablePackageId must be a valid Sui package ID.');
   }
   if (config.commerceV5TypeOriginPackageId && !commerceV5TypeOriginPackageReady) {
     errors.push('commerceV5TypeOriginPackageId must be a valid Sui package ID.');
@@ -409,7 +423,7 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   }
   if ((commerceV5CoreConfigured || commerceV5BindingConfigured)
     && !commerceV5CoreReady) {
-    errors.push('Commerce v5 core configuration must include its stable TypeOrigin, protocol config, and protocol treasury together.');
+    errors.push('Commerce v5 core configuration must include its stable TypeOrigin, callable package, protocol config, and protocol treasury together.');
   }
   if (commerceV5BindingConfigured
     && (!commerceV5LogicalAuxiliaryBlobReady
@@ -572,12 +586,24 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   const expansionPackV8TypeOriginPackageReady = SUI_ID.test(
     String(config.expansionPackV8TypeOriginPackageId || ''),
   );
+  const independentExtensionV5TypeOriginPackageReady = SUI_ID.test(
+    String(config.independentExtensionV5TypeOriginPackageId || ''),
+  );
+  const independentExtensionAuthorityV5Ready = SUI_ID.test(
+    String(config.independentExtensionAuthorityV5Id || ''),
+  );
   const expansionPackV8Configured = Boolean(
     config.expansionPackV8CallablePackageId
       || config.expansionPackV8TypeOriginPackageId,
   );
   const expansionPackV8CoreReady = expansionPackV8CallablePackageReady
     && expansionPackV8TypeOriginPackageReady;
+  const independentExtensionV5Configured = Boolean(
+    config.independentExtensionV5TypeOriginPackageId
+      || config.independentExtensionAuthorityV5Id,
+  );
+  const independentExtensionV5Ready = independentExtensionV5TypeOriginPackageReady
+    && independentExtensionAuthorityV5Ready;
   if (
     config.expansionPackV8CallablePackageId
     && !expansionPackV8CallablePackageReady
@@ -590,17 +616,33 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   ) {
     errors.push('expansionPackV8TypeOriginPackageId must be a valid Sui package ID.');
   }
+  if (config.independentExtensionV5TypeOriginPackageId
+    && !independentExtensionV5TypeOriginPackageReady) {
+    errors.push('independentExtensionV5TypeOriginPackageId must be a valid Sui package ID.');
+  }
+  if (config.independentExtensionAuthorityV5Id
+    && !independentExtensionAuthorityV5Ready) {
+    errors.push('independentExtensionAuthorityV5Id must be a valid Sui object ID.');
+  }
+  if (independentExtensionV5Configured && !independentExtensionV5Ready) {
+    errors.push('Independent extension v5 configuration must include its new TypeOrigin and immutable shared Authority together.');
+  }
   if (expansionPackV8Configured && !expansionPackV8CoreReady) {
-    errors.push('Expansion Pack v8 configuration must include its callable package and stable TypeOrigin together.');
+    errors.push('Expansion Pack v8 configuration must include its callable package, stable TypeOrigin, independent-extension TypeOrigin and immutable parent authority together.');
   }
   if (
     config.expansionPackV8ReleaseEnabled
     && (
       !expansionPackV8CoreReady
-      || config.commerceV5ReleaseEnabled !== true
+      || !independentExtensionV5Ready
+      || !commerceV5CoreReady
+      || config.canonicalSoulMintEnabled !== false
+      || config.commerceV5ReleaseEnabled !== false
+      || config.compositionV6ReleaseEnabled !== false
+      || config.physicalStyleV7ReleaseEnabled !== false
     )
   ) {
-    errors.push('Expansion Pack v8 requires its reviewed package identities and active Commerce v5 before independent Pack publication or purchase can open.');
+    errors.push('FREE Expansion Pack v8 requires its reviewed package identities, Commerce v5 core identities, and the immutable independent-extension Authority tuple while canonical Soul/Complete, Commerce, Composition v6, and physical v7 product gates remain false; logical auxiliary/proof and Seal configuration are not required.');
   }
   if (config.compositionV6TypeOriginPackageId && !compositionV6TypeOriginPackageReady) {
     errors.push('compositionV6TypeOriginPackageId must be a valid Sui package ID.');
@@ -829,6 +871,9 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     physicalV7SoulOwnerProofReady,
     expansionPackV8CallablePackageReady,
     expansionPackV8TypeOriginPackageReady,
+    independentExtensionV5TypeOriginPackageReady,
+    independentExtensionAuthorityV5Ready,
+    independentExtensionV5Ready,
     expansionPackV8CoreReady,
     // Retain the old result name for downstream status UI while exposing the
     // two independently verified identities.

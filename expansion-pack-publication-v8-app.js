@@ -9,6 +9,8 @@ export const EXPANSION_PACK_V8_MODULE = 'expansion_pack_v8';
 export const EXPANSION_PACK_V8_SEAL_APPROVE_FUNCTION = 'seal_approve_style_v8';
 export const MAKER_RELEASE_EVIDENCE_V5_FIELD_KEY =
   'animacraft.maker-release-evidence.v5';
+export const INDEPENDENT_EXTENSION_LOCK_V5_FIELD_KEY =
+  'animacraft.independent-extension-lock.v5';
 
 export const EXPANSION_PACK_V8_ACCESS = Object.freeze({
   FREE: 0,
@@ -47,6 +49,22 @@ const MAKER_RELEASE_EVIDENCE_V5_BCS = bcs.struct('MakerReleaseEvidenceV5', {
   manifest_blob_id: bcs.string(),
   manifest_sha256: bcs.byteVector(),
 });
+const SUI_ID_BCS = bcs.struct('ID', { bytes: bcs.Address });
+const INDEPENDENT_EXTENSION_LOCK_STATE_V5_BCS = bcs.struct(
+  'IndependentExtensionLockStateV5',
+  {
+    authority_id: SUI_ID_BCS,
+    legacy_maker_id: SUI_ID_BCS,
+    protocol_config_id: SUI_ID_BCS,
+    protocol_admin_cap_id: SUI_ID_BCS,
+    owner: bcs.Address,
+    retired_control_cap_id: SUI_ID_BCS,
+    retired_control_cap_epoch: bcs.u64(),
+    locked_ownership_epoch: bcs.u64(),
+    audit_hash: bcs.byteVector(),
+    finalized: bcs.bool(),
+  },
+);
 
 export class ExpansionPackV8AppError extends Error {
   constructor(message, code = 'EXPANSION_PACK_V8_APP_ERROR', details = {}) {
@@ -236,7 +254,12 @@ function addressOwner(value) {
 
 function isShared(value) {
   const owner = value?.owner || value?.data?.owner;
-  return Boolean(owner?.Shared || owner?.shared || owner === 'Shared');
+  return Boolean(
+    owner?.Shared
+      || owner?.shared
+      || owner?.$kind === 'Shared'
+      || owner === 'Shared',
+  );
 }
 
 function typeOrigin(runtime) {
@@ -253,10 +276,10 @@ function callablePackage(runtime) {
   );
 }
 
-function commerceCallablePackage(runtime) {
+function independentExtensionTypeOrigin(runtime) {
   return exactId(
-    runtime?.commerceV5CallablePackageId || runtime?.callablePackageId,
-    'Commerce v5 callable package',
+    runtime?.independentExtensionV5TypeOriginPackageId,
+    'Independent extension v5 TypeOrigin package',
   );
 }
 
@@ -465,10 +488,6 @@ function parseTreasury(value, { runtime, paymentCoinType } = {}) {
 }
 
 const INPUT_ORDER = Object.freeze({
-  bind_maker_release_evidence_v5: [
-    'baseMakerRootId', 'makerControlCapId', 'parentLegacyMakerId',
-    'parentVersion', 'parentManifestBlobId', 'parentManifestSha256',
-  ],
   create_expansion_pack_v8: [
     'baseMakerRootId', 'parentLegacyMakerId', 'commerceProtocolConfigV5Id',
     'parentVersion', 'parentManifestBlobId',
@@ -484,8 +503,9 @@ const INPUT_ORDER = Object.freeze({
   ],
   seal_expansion_pack_v8: ['packReleaseId', 'packAdminCapId', 'styleRegistryCommitment'],
   bind_expansion_pack_seal_policy_v8: ['packReleaseId', 'packAdminCapId'],
-  admit_expansion_pack_v8: [
-    'packReleaseId', 'baseMakerRootId', 'parentLegacyMakerId', 'makerControlCapId',
+  admit_expansion_pack_with_authority_v8: [
+    'packReleaseId', 'baseMakerRootId', 'parentLegacyMakerId',
+    'independentExtensionAuthorityV5Id',
   ],
   activate_expansion_pack_v8: [
     'packReleaseId', 'packAdminCapId', 'baseMakerRootId', 'commerceProtocolConfigV5Id',
@@ -511,7 +531,7 @@ const INPUT_ORDER = Object.freeze({
 const OBJECT_INPUTS = new Set([
   'baseMakerRootId',
   'parentLegacyMakerId',
-  'makerControlCapId',
+  'independentExtensionAuthorityV5Id',
   'commerceProtocolConfigV5Id',
   'commerceProtocolTreasuryV5Id',
   'packReleaseId',
@@ -778,7 +798,8 @@ export async function buildExpansionPackStyleSealApprovalV8({
 }
 
 function resultObjects(response) {
-  return array(response?.objects || response?.data || response).filter((entry) => entry && !entry.error);
+  return array(response?.objects || response?.data || response)
+    .filter((entry) => entry && !(entry instanceof Error) && !entry.error);
 }
 
 async function getExactObjects(suiClient, ids, label) {
@@ -877,6 +898,179 @@ export async function queryMakerReleaseEvidenceV5(client, {
   });
 }
 
+export async function queryIndependentExtensionLockV5(client, { runtime, rootId } = {}) {
+  if (!client?.getDynamicField) {
+    fail(
+      'EXPANSION_PACK_V8_CLIENT_MISSING',
+      'Independent extension lock verification requires getDynamicField.',
+    );
+  }
+  const parentId = exactId(rootId, 'Parent MakerRootV5 ID');
+  let response;
+  try {
+    response = await client.getDynamicField({
+      parentId,
+      name: {
+        type: MOVE_STRING,
+        bcs: bcs.string().serialize(INDEPENDENT_EXTENSION_LOCK_V5_FIELD_KEY).toBytes(),
+      },
+    });
+  } catch (cause) {
+    fail(
+      'EXPANSION_PACK_V8_PARENT_LOCK_MISSING',
+      'MakerRootV5 has no irreversible independent-extension lock.',
+      { cause, parentId },
+    );
+  }
+  const value = response?.dynamicField?.value;
+  const expected = `${independentExtensionTypeOrigin(runtime)}::commerce_v5::IndependentExtensionLockStateV5`;
+  if (!value?.type) {
+    fail(
+      'EXPANSION_PACK_V8_PARENT_LOCK_INVALID',
+      'Sui did not return the IndependentExtensionLockStateV5 TypeOrigin.',
+      { parentId },
+    );
+  }
+  try {
+    if (normalizeStructTag(value.type) !== normalizeStructTag(expected)) {
+      fail(
+        'EXPANSION_PACK_V8_PARENT_LOCK_INVALID',
+        'IndependentExtensionLockStateV5 has the wrong stable TypeOrigin.',
+        { expected: normalizeStructTag(expected), actual: normalizeStructTag(value.type) },
+      );
+    }
+  } catch (cause) {
+    if (cause instanceof ExpansionPackV8AppError) throw cause;
+    fail(
+      'EXPANSION_PACK_V8_PARENT_LOCK_INVALID',
+      'IndependentExtensionLockStateV5 has an invalid Move type.',
+      { cause, parentId },
+    );
+  }
+  const bytes = value.bcs;
+  if (!(bytes instanceof Uint8Array)) {
+    fail(
+      'EXPANSION_PACK_V8_PARENT_LOCK_MISSING',
+      'Sui did not return exact IndependentExtensionLockStateV5 BCS bytes.',
+      { parentId },
+    );
+  }
+  let parsed;
+  try {
+    parsed = INDEPENDENT_EXTENSION_LOCK_STATE_V5_BCS.parse(bytes);
+  } catch (cause) {
+    fail(
+      'EXPANSION_PACK_V8_PARENT_LOCK_INVALID',
+      'IndependentExtensionLockStateV5 has invalid BCS bytes.',
+      { cause, parentId },
+    );
+  }
+  return Object.freeze({
+    rootId: parentId,
+    type: normalizeStructTag(value.type),
+    authorityId: exactId(jsonId(parsed.authority_id), 'Locked authority ID'),
+    legacyMakerId: exactId(jsonId(parsed.legacy_maker_id), 'Locked legacy Maker ID'),
+    protocolConfigId: exactId(jsonId(parsed.protocol_config_id), 'Locked protocol config ID'),
+    protocolAdminCapId: exactId(
+      jsonId(parsed.protocol_admin_cap_id),
+      'Locked protocol admin ID',
+    ),
+    owner: exactId(parsed.owner, 'Locked owner'),
+    retiredControlCapId: exactId(
+      jsonId(parsed.retired_control_cap_id),
+      'Locked retired control cap ID',
+    ),
+    retiredControlCapEpoch: u64(parsed.retired_control_cap_epoch, 'Locked retired epoch'),
+    lockedOwnershipEpoch: u64(parsed.locked_ownership_epoch, 'Locked ownership epoch'),
+    auditHash: hex(parsed.audit_hash, 'Locked audit hash'),
+    finalized: parsed.finalized === true,
+  });
+}
+
+function unavailableObjectError(value, expectedId, {
+  allowMessage = true,
+  requireReportedId = false,
+} = {}) {
+  const source = value instanceof Error ? value : value?.error || value;
+  if (!source || typeof source !== 'object') return '';
+  const code = String(source.code || source.status || '').replace(/[^a-z]/gi, '').toLowerCase();
+  const message = String(source.message || source.error || '');
+  const unavailable = new Set([
+    'deleted',
+    'notexists',
+    'notfound',
+    'objectdeleted',
+    'objectnotexists',
+    'objectnotfound',
+  ]);
+  if (!unavailable.has(code)
+    && (!allowMessage
+      || !/\b(?:deleted|not[ -]?found|does not exist|not exists)\b/i.test(message))) {
+    return '';
+  }
+  const reportedId = jsonId(
+    source.object_id
+      || source.objectId
+      || source.details?.object_id
+      || source.details?.objectId
+      || source.details,
+  );
+  if (reportedId && !sameId(reportedId, expectedId)) return '';
+  const messageIds = [...message.matchAll(/0x[0-9a-f]{1,64}/ig)].map(([entry]) => entry);
+  const messageReportsExpectedId = messageIds.some((entry) => sameId(entry, expectedId));
+  if (!reportedId && messageIds.length > 0 && !messageReportsExpectedId) return '';
+  if (requireReportedId && !reportedId && !messageReportsExpectedId) return '';
+  return code || 'unavailable';
+}
+
+async function verifyRetiredControlCapUnavailable(suiClient, controlCapId) {
+  if (!suiClient?.getObjects) {
+    fail(
+      'EXPANSION_PACK_V8_CLIENT_MISSING',
+      'Retired MakerControlCapV5 verification requires getObjects.',
+    );
+  }
+  const retiredControlCapId = exactId(controlCapId, 'Retired MakerControlCapV5 ID');
+  let response;
+  try {
+    response = await suiClient.getObjects({
+      objectIds: [retiredControlCapId],
+      include: { json: true, type: true, owner: true },
+    });
+  } catch (cause) {
+    // A transport-level 404 is not object-deletion evidence. Only a thrown
+    // client error carrying an explicit object-unavailable code is accepted;
+    // per-object response errors below may use the SDK's message-only form.
+    const status = unavailableObjectError(cause, retiredControlCapId, {
+      allowMessage: false,
+      requireReportedId: true,
+    });
+    if (status) return Object.freeze({ retiredControlCapId, status });
+    fail(
+      'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH',
+      'Sui did not prove that the retired MakerControlCapV5 is unavailable.',
+      { cause, retiredControlCapId },
+    );
+  }
+  const entries = array(response?.objects || response?.data || response);
+  if (entries.length !== 1) {
+    fail(
+      'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH',
+      'Sui omitted the exact retired MakerControlCapV5 read result.',
+      { retiredControlCapId, resultCount: entries.length },
+    );
+  }
+  const status = unavailableObjectError(entries[0], retiredControlCapId);
+  if (!status) {
+    fail(
+      'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH',
+      'The retired MakerControlCapV5 still exists or its deletion is unproven.',
+      { retiredControlCapId },
+    );
+  }
+  return Object.freeze({ retiredControlCapId, status });
+}
+
 function minimalParentRoot(value, runtime) {
   const expected = `${exactId(runtime?.commerceV5TypeOriginPackageId, 'Commerce v5 TypeOrigin')}::commerce_v5::MakerRootV5`;
   assertExactType(value, expected, 'Parent MakerRootV5');
@@ -915,18 +1109,45 @@ function minimalLegacyMaker(value, runtime) {
   };
 }
 
-function minimalControlCap(value, runtime) {
-  const expected = `${exactId(runtime?.commerceV5TypeOriginPackageId, 'Commerce v5 TypeOrigin')}::commerce_v5::MakerControlCapV5`;
-  assertExactType(value, expected, 'Parent MakerControlCapV5');
+function minimalIndependentExtensionAuthority(value, runtime) {
+  const expected = `${independentExtensionTypeOrigin(runtime)}::commerce_v5::IndependentExtensionAuthorityV5`;
+  assertExactType(value, expected, 'IndependentExtensionAuthorityV5');
   const fields = objectFields(value);
   return {
-    objectId: exactId(objectId(value), 'MakerControlCapV5 ID'),
-    rootId: exactId(jsonId(field(fields, 'root_id', 'rootId')), 'MakerControlCapV5 root ID'),
-    ownershipEpoch: u64(field(fields, 'ownership_epoch', 'ownershipEpoch'), 'MakerControlCapV5 ownership epoch'),
-    owner: exactId(addressOwner(value), 'MakerControlCapV5 owner'),
+    objectId: exactId(objectId(value), 'IndependentExtensionAuthorityV5 ID'),
+    version: u64(field(fields, 'version'), 'IndependentExtensionAuthorityV5 version'),
+    rootId: exactId(jsonId(field(fields, 'root_id', 'rootId')), 'Authority root ID'),
+    legacyMakerId: exactId(
+      jsonId(field(fields, 'legacy_maker_id', 'legacyMakerId')),
+      'Authority legacy Maker ID',
+    ),
+    protocolConfigId: exactId(
+      jsonId(field(fields, 'protocol_config_id', 'protocolConfigId')),
+      'Authority protocol config ID',
+    ),
+    protocolAdminCapId: exactId(
+      jsonId(field(fields, 'protocol_admin_cap_id', 'protocolAdminCapId')),
+      'Authority protocol admin ID',
+    ),
+    owner: exactId(field(fields, 'owner'), 'Authority embedded owner'),
+    retiredControlCapId: exactId(
+      jsonId(field(fields, 'retired_control_cap_id', 'retiredControlCapId')),
+      'Retired MakerControlCapV5 ID',
+    ),
+    retiredControlCapEpoch: u64(
+      field(fields, 'retired_control_cap_epoch', 'retiredControlCapEpoch'),
+      'Retired control epoch',
+    ),
+    lockedOwnershipEpoch: u64(
+      field(fields, 'locked_ownership_epoch', 'lockedOwnershipEpoch'),
+      'Authority locked ownership epoch',
+    ),
+    auditHash: hex(field(fields, 'audit_hash', 'auditHash'), 'Authority audit hash'),
+    shared: isShared(value),
   };
 }
 
+/** Read the Root-owned irreversible independent-extension lock. */
 async function verifyParentObjects({
   suiClient,
   runtime,
@@ -938,29 +1159,63 @@ async function verifyParentObjects({
 }) {
   const rootId = exactId(inputs.baseMakerRootId, 'Parent MakerRootV5 ID');
   const legacyMakerId = exactId(inputs.parentLegacyMakerId, 'Parent OCMaker ID');
-  const capId = exactId(inputs.makerControlCapId, 'MakerControlCapV5 ID');
-  const [rootObject, legacyObject, capObject] = await getExactObjects(
+  const authorityId = exactId(
+    inputs.independentExtensionAuthorityV5Id,
+    'IndependentExtensionAuthorityV5 ID',
+  );
+  const configuredAuthorityId = exactId(
+    runtime?.independentExtensionAuthorityV5Id,
+    'Configured IndependentExtensionAuthorityV5 ID',
+  );
+  if (!sameId(authorityId, configuredAuthorityId)) {
+    fail(
+      'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH',
+      'The publication action does not use the configured IndependentExtensionAuthorityV5.',
+      { expected: configuredAuthorityId, actual: authorityId },
+    );
+  }
+  const [rootObject, legacyObject, authorityObject] = await getExactObjects(
     suiClient,
-    [rootId, legacyMakerId, capId],
+    [rootId, legacyMakerId, authorityId],
     'Parent authority object',
   );
   const root = minimalParentRoot(rootObject, runtime);
   const legacy = minimalLegacyMaker(legacyObject, runtime);
-  const cap = minimalControlCap(capObject, runtime);
+  const authority = minimalIndependentExtensionAuthority(authorityObject, runtime);
+  const lock = await queryIndependentExtensionLockV5(suiClient, { runtime, rootId });
   if (!sameId(root.legacyMakerId, legacy.objectId)
-    || !sameId(root.currentControlCapId, cap.objectId)
-    || !sameId(cap.rootId, root.objectId)
-    || root.ownershipEpoch !== cap.ownershipEpoch
+    || !sameId(root.currentControlCapId, authority.retiredControlCapId)
+    || !sameId(authority.rootId, root.objectId)
+    || !sameId(authority.legacyMakerId, legacy.objectId)
+    || !sameId(authority.protocolConfigId, root.protocolConfigId)
+    || authority.version !== 5n
+    || root.ownershipEpoch !== authority.lockedOwnershipEpoch
+    || authority.retiredControlCapEpoch + 1n !== authority.lockedOwnershipEpoch
     || !sameId(root.currentOwner, signer)
-    || !sameId(cap.owner, signer)
-    || root.lifecycle !== 0
+    || !sameId(authority.owner, signer)
+    || authority.shared !== true
+    || root.lifecycle !== 1
     || root.styleRegistrySealed !== true
+    || lock.finalized !== true
+    || !sameId(lock.authorityId, authority.objectId)
+    || !sameId(lock.legacyMakerId, authority.legacyMakerId)
+    || !sameId(lock.protocolConfigId, authority.protocolConfigId)
+    || !sameId(lock.protocolAdminCapId, authority.protocolAdminCapId)
+    || !sameId(lock.owner, authority.owner)
+    || !sameId(lock.retiredControlCapId, authority.retiredControlCapId)
+    || lock.retiredControlCapEpoch !== authority.retiredControlCapEpoch
+    || lock.lockedOwnershipEpoch !== authority.lockedOwnershipEpoch
+    || lock.auditHash !== authority.auditHash
     || legacy.manifestBlobId !== String(inputs.parentManifestBlobId || '')) {
     fail(
       'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH',
-      'The parent MakerRoot, OCMaker and current control capability do not form the exact active sealed parent tuple.',
+      'The parent MakerRoot, OCMaker, irreversible lock and shared authority do not form the exact paused sealed parent tuple.',
     );
   }
+  const retiredControlCap = await verifyRetiredControlCapUnavailable(
+    suiClient,
+    authority.retiredControlCapId,
+  );
   const evidence = await queryMakerReleaseEvidenceV5(suiClient, {
     rootId,
     allowMissing: !requireReleaseEvidence,
@@ -1001,7 +1256,7 @@ async function verifyParentObjects({
       fail('EXPANSION_PACK_V8_PARENT_MANIFEST_MISMATCH', 'Parent Walrus manifest evidence changed.');
     }
   }
-  return { root, legacy, cap, evidence, manifest };
+  return { root, legacy, authority, lock, retiredControlCap, evidence, manifest };
 }
 
 /** Verify the recovery plan's read-only parent action without submitting a transaction. */
@@ -1021,9 +1276,11 @@ export async function verifyExpansionPackV8ParentAction({
   });
   return Object.freeze({
     parentVerified: true,
-    makerControlCapVerified: true,
-    parentReleaseEvidenceBound: Boolean(parent.evidence),
-    parentLifecycleState: 'ACTIVE',
+    independentExtensionAuthorityVerified: true,
+    retiredMakerControlCapUnavailable: true,
+    parentReleaseEvidenceBound: parent.evidence !== null,
+    parentLifecycleState: 'PAUSED',
+    parentOwnershipEpoch: parent.root.ownershipEpoch.toString(),
     baseMakerRootId: action.inputs.baseMakerRootId,
     parentLegacyMakerId: action.inputs.parentLegacyMakerId,
     parentVersion: String(action.inputs.parentVersion),
@@ -1225,6 +1482,22 @@ export async function queryExpansionPackStyleRecordsV8(client, {
 export async function readExpansionPackV8Submission({
   action, submission, suiClient, runtime,
 } = {}) {
+  const functionName = moveFunction(action?.target);
+  if (action?.id === 'chain.parent.evidence.bind'
+    || functionName === 'bind_maker_release_evidence_v5'
+    || functionName === 'admit_expansion_pack_v8') {
+    fail(
+      'EXPANSION_PACK_V8_CHAIN_TARGET_UNSUPPORTED',
+      `Legacy publication target ${action?.target || action?.id || ''} is not supported.`,
+    );
+  }
+  if (action?.id === 'chain.pack.admit'
+    && functionName !== 'admit_expansion_pack_with_authority_v8') {
+    fail(
+      'EXPANSION_PACK_V8_CHAIN_TARGET_UNSUPPORTED',
+      'Pack admission must use admit_expansion_pack_with_authority_v8.',
+    );
+  }
   const transactionDigest = required(
     submission?.transactionDigest || submission?.digest,
     'Expansion Pack transaction digest',
@@ -1243,33 +1516,6 @@ export async function readExpansionPackV8Submission({
   }
   const events = array(indexed.events);
   const result = { transactionDigest };
-
-  if (action.id === 'chain.parent.evidence.bind') {
-    const expectedTarget = `${commerceCallablePackage(runtime)}::commerce_v5::bind_maker_release_evidence_v5`;
-    if (String(action.target || '').toLowerCase() !== expectedTarget.toLowerCase()) {
-      fail(
-        'EXPANSION_PACK_V8_CHAIN_TARGET_UNSUPPORTED',
-        'Parent evidence binding must call the reviewed Commerce v5 function.',
-      );
-    }
-    const parent = await verifyParentObjects({
-      suiClient,
-      runtime,
-      inputs: action.inputs,
-      signer: action.authority?.signer,
-      requireReleaseEvidence: true,
-    });
-    return Object.freeze({
-      ...result,
-      parentReleaseEvidenceBound: true,
-      parentEvidenceReadbackVerified: true,
-      baseMakerRootId: parent.root.objectId,
-      parentLegacyMakerId: parent.legacy.objectId,
-      parentVersion: parent.evidence.parentVersion,
-      parentManifestBlobId: parent.evidence.parentManifestBlobId,
-      parentManifestSha256: parent.evidence.parentManifestSha256,
-    });
-  }
 
   if (action.id === 'chain.pack.create') {
     const paymentCoinType = action.typeArguments?.[0];
@@ -1348,7 +1594,7 @@ export async function readExpansionPackV8Submission({
         runtime,
         inputs: {
           ...action.inputs,
-          makerControlCapId: action.authority.capability,
+          independentExtensionAuthorityV5Id: action.authority.capability,
         },
         signer: creator,
         requireReleaseEvidence: true,
@@ -1558,10 +1804,11 @@ export async function readExpansionPackV8Submission({
       parentVersion: action.inputs.parentVersion,
       parentManifestBlobId: action.inputs.parentManifestBlobId,
       parentManifestSha256: action.inputs.parentManifestSha256,
+      parentOwnershipEpoch: parent.root.ownershipEpoch.toString(),
+      admittedParentOwnershipEpoch: release.admittedParentOwnershipEpoch.toString(),
     });
   }
 
-  const functionName = moveFunction(action.target);
   const lifecycleCalls = {
     activate_expansion_pack_v8: ['chain.pack.activate', 'ExpansionPackLifecycleChangedV8', 3, 'ACTIVE'],
     pause_expansion_pack_v8: [null, 'ExpansionPackLifecycleChangedV8', 4, 'PAUSED'],
@@ -1583,8 +1830,9 @@ export async function readExpansionPackV8Submission({
       const root = minimalParentRoot(rootObject, runtime);
       if (release.admittedParentOwnershipEpoch !== root.ownershipEpoch
         || !sameId(release.parentRootId, root.objectId)
+        || root.lifecycle !== 1
         || !sameId(root.protocolConfigId, action.inputs.commerceProtocolConfigV5Id)) {
-        fail('EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH', 'Pack activation uses a stale parent epoch or Config.');
+        fail('EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH', 'Pack activation uses a stale parent epoch, non-Paused parent, or Config.');
       }
     }
     return Object.freeze({ ...result, readbackVerified: true, lifecycleState });

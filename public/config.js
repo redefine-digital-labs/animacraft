@@ -29,29 +29,31 @@ window.ANIMACRAFT_CONFIG = {
   primaryProtocolFeeBps: 5000,
   canonicalSoulMintEnabled: false,
   // The reviewed v5 core is initialized on Mainnet with its release gate off.
-  // Bind-once Walrus/Soul fields remain empty until Soulidity activation.
+  // The callable advances with the v8 package so recovery can reach the
+  // additive Maker release-evidence entrypoint while TypeOrigin stays frozen.
+  commerceV5CallablePackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
   commerceV5TypeOriginPackageId: '0xcf369b8b02ac1e997146fc3be3f03870db14eaccf3d2cb7a9b93724be463108e',
   commerceProtocolConfigV5Id: '0xf63dc43bb3787fff47fec7f8c3ff2e777dd0966500570fa7deab2bef9b6da0d5',
   commerceProtocolTreasuryV5Id: '0x97ba8042011d6c2d4857a33789a8250c16f6effeda622cb312fe481e0b907d44',
-  commerceV5LogicalAuxiliaryBlobId: '',
-  commerceV5SoulBindingProofType: '',
+  commerceV5LogicalAuxiliaryBlobId: '2W6FuNVQhJXdWonFSEf1e-1MuecbA1Cd3H8a4_Yrkm4',
+  commerceV5SoulBindingProofType: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5',
   commerceV5ReleaseEnabled: false,
-  // The reviewed v6 composition core is initialized disabled. The Soul owner
-  // proof remains deliberately unbound, so player release stays fail-closed.
+  // The reviewed v6 composition core and its Soul owner proof are bound on
+  // Mainnet, but the product release gate remains deliberately disabled.
   compositionV6TypeOriginPackageId: '0x2221610b5513ef3f926433229b7f0b565e850d56020e344266737cdca078af3b',
   compositionProtocolConfigV6Id: '0x23cc495061f62a9b6a4e1048e154cd1fdc41f3b251783887db5948644eaca26d',
   compositionProtocolTreasuryV6Id: '0xa60448ef8c32690efdbfb07aff0c13b40c7c948b9819448181ae70257be9dc1c',
   compositionRegistryV6Id: '0x2ffed9aadcdb3a5dc670bf75c1ce8ee671afe93d0f4770cf5a0604dbaec4e5ab',
   compositionAdminCapV6Id: '0x3feb45f8ed2062fb3fb32ca92bb3c1fa4002d521fc73022a3265db6bbba27cdd',
   compositionAdminCapV6Owner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
-  compositionValidatorCapV6Id: '0x0ce2ec07a69e0f8e0281df12e25e63709077880b6e0ba3060ab5362f46d88111',
+  compositionValidatorCapV6Id: '0x5d791f7752f3c7ca9509089de5c2376367a4d5fa8a70fc40b456a276c7bcee75',
   compositionValidatorCapV6Owner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
-  compositionValidatorEpochV6: 0,
-  compositionValidatorPolicyCommitmentV6: '0x9afe83e5c22d9782c3b4f8cb1020816ed869c0ae71186b034043593527926682',
-  // Soulidity v6 is deployed and its owner-proof TypeOrigin is recorded. The
-  // exact proof type stays empty until Animacraft's bind-once ceremony.
+  compositionValidatorEpochV6: 1,
+  compositionValidatorPolicyCommitmentV6: '0x26b7f87b8c4cb428288d1ac76cc1e9ba42de338dcaf1b21d305bafc133122f13',
+  // Soulidity v6 is deployed and the exact bound owner-proof TypeOrigin and
+  // concrete proof type are recorded for readback while its gate stays off.
   compositionV6SoulOwnerProofTypeOriginPackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
-  compositionV6SoulOwnerProofType: '',
+  compositionV6SoulOwnerProofType: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
   compositionV6ReleaseEnabled: false,
   // v7 remains fail-closed until the package upgrade, disabled protocol
   // initialization and Soulidity wardrobe adapter have all been verified.
@@ -68,6 +70,11 @@ window.ANIMACRAFT_CONFIG = {
   // remains fail-closed until a separate activation phase explicitly opens it.
   expansionPackV8CallablePackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
   expansionPackV8TypeOriginPackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  // Filled only after the corrective package upgrade and atomic parent
+  // finalization are finalized and read back. The v8 gate remains false until
+  // both immutable identities are present.
+  independentExtensionV5TypeOriginPackageId: '',
+  independentExtensionAuthorityV5Id: '',
   expansionPackV8ReleaseEnabled: false,
   // Intentionally empty while the reviewed Commerce/Seal release gate is off.
   // Mainnet activation requires the official committee endpoint plus an Enoki

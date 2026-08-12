@@ -15,9 +15,9 @@ import {
 } from './maker-seal-v5.js';
 
 export const EXPANSION_PACK_PUBLICATION_PLAN_SCHEMA =
-  'animacraft.expansion-pack-publication-plan.v4';
+  'animacraft.expansion-pack-publication-plan.v5';
 export const EXPANSION_PACK_PUBLICATION_RECOVERY_SCHEMA =
-  'animacraft.expansion-pack-publication-recovery.v4';
+  'animacraft.expansion-pack-publication-recovery.v5';
 
 export const EXPANSION_PACK_PUBLICATION_ACTION_STATUS = Object.freeze({
   PENDING: 'PENDING',
@@ -28,7 +28,6 @@ export const EXPANSION_PACK_PUBLICATION_ACTION_STATUS = Object.freeze({
 
 export const EXPANSION_PACK_PUBLICATION_STAGES = Object.freeze({
   PARENT_VERIFYING: 'PARENT_VERIFYING',
-  PARENT_EVIDENCE_BINDING: 'PARENT_EVIDENCE_BINDING',
   WALRUS_PREPARING: 'WALRUS_PREPARING',
   WALRUS_REGISTERING: 'WALRUS_REGISTERING',
   WALRUS_CERTIFYING: 'WALRUS_CERTIFYING',
@@ -51,15 +50,13 @@ export const EXPANSION_PACK_PUBLICATION_TRANSPORTS = Object.freeze({
 });
 
 export const EXPANSION_PACK_V8_MOVE_MODULE = 'expansion_pack_v8';
-export const COMMERCE_V5_MOVE_MODULE = 'commerce_v5';
 export const EXPANSION_PACK_V8_MOVE_FUNCTIONS = Object.freeze({
-  BIND_PARENT_EVIDENCE: 'bind_maker_release_evidence_v5',
   CREATE: 'create_expansion_pack_v8',
   BIND_MANIFEST: 'bind_expansion_pack_manifest_v8',
   REGISTER_STYLE: 'register_style_asset_v8',
   SEAL: 'seal_expansion_pack_v8',
   BIND_SEAL_POLICY: 'bind_expansion_pack_seal_policy_v8',
-  ADMIT: 'admit_expansion_pack_v8',
+  ADMIT: 'admit_expansion_pack_with_authority_v8',
   ACTIVATE: 'activate_expansion_pack_v8',
 });
 
@@ -162,7 +159,10 @@ function hash(value, label) {
 function u64(value, label) {
   let normalized;
   try {
-    normalized = BigInt(String(value));
+    if (value == null || value === '') throw new Error('missing');
+    if (typeof value === 'number' && !Number.isSafeInteger(value)) throw new Error('unsafe');
+    if (typeof value === 'string' && !/^\d+$/.test(value.trim())) throw new Error('syntax');
+    normalized = BigInt(value);
   } catch {
     fail('EXPANSION_PACK_PUBLICATION_U64_INVALID', `${label} must be an unsigned integer.`);
   }
@@ -649,7 +649,15 @@ function normalizedContext(candidate, contextValue, runtimeValue) {
     owner,
     baseMakerRootId: exactId(context.baseMakerRootId, 'Parent MakerRootV5'),
     parentLegacyMakerId,
-    makerControlCapId: exactId(context.makerControlCapId, 'MakerControlCapV5'),
+    independentExtensionAuthorityV5Id: exactId(
+      context.independentExtensionAuthorityV5Id,
+      'IndependentExtensionAuthorityV5',
+    ),
+    independentExtensionV5TypeOriginPackageId: exactId(
+      runtime.independentExtensionV5TypeOriginPackageId
+        || context.independentExtensionV5TypeOriginPackageId,
+      'Independent extension v5 TypeOrigin package',
+    ),
     commerceV5CallablePackageId: exactId(
       runtime.commerceV5CallablePackageId
         || runtime.callablePackageId
@@ -764,14 +772,14 @@ export async function buildExpansionPackPublicationPlan({
   }
   const styles = await packStyleAssets(candidate);
   const authority = {
-    role: 'MAKER',
+    role: 'INDEPENDENT_EXTENSION',
     signer: contextRef('owner'),
-    capability: contextRef('makerControlCapId'),
+    capability: contextRef('independentExtensionAuthorityV5Id'),
   };
   const packCreatorAuthority = {
     role: 'PACK_CREATOR',
     signer: contextRef('owner'),
-    capability: contextRef('makerControlCapId'),
+    capability: contextRef('independentExtensionAuthorityV5Id'),
   };
   const packAuthority = {
     role: 'PACK_ADMIN',
@@ -788,7 +796,8 @@ export async function buildExpansionPackPublicationPlan({
       inputs: {
         baseMakerRootId: contextRef('baseMakerRootId'),
         parentLegacyMakerId: contextRef('parentLegacyMakerId'),
-        makerControlCapId: contextRef('makerControlCapId'),
+        independentExtensionAuthorityV5Id:
+          contextRef('independentExtensionAuthorityV5Id'),
         parentLogicalMakerId: contextRef('parentLogicalMakerId'),
         parentVersionId: contextRef('parentVersionId'),
         parentVersion: contextRef('parentVersion'),
@@ -798,38 +807,10 @@ export async function buildExpansionPackPublicationPlan({
       },
       outputs: [
         'parentVerified',
-        'makerControlCapVerified',
+        'independentExtensionAuthorityVerified',
         'parentReleaseEvidenceBound',
         'parentLifecycleState',
-        'baseMakerRootId',
-        'parentLegacyMakerId',
-        'parentVersion',
-        'parentManifestBlobId',
-        'parentManifestSha256',
-      ],
-    }),
-    action({
-      id: 'chain.parent.evidence.bind',
-      stage: EXPANSION_PACK_PUBLICATION_STAGES.PARENT_EVIDENCE_BINDING,
-      transport: EXPANSION_PACK_PUBLICATION_TRANSPORTS.SUI,
-      target: moveTarget(
-        planContext.commerceV5CallablePackageId,
-        EXPANSION_PACK_V8_MOVE_FUNCTIONS.BIND_PARENT_EVIDENCE,
-        COMMERCE_V5_MOVE_MODULE,
-      ),
-      authority,
-      inputs: {
-        baseMakerRootId: contextRef('baseMakerRootId'),
-        makerControlCapId: contextRef('makerControlCapId'),
-        parentLegacyMakerId: contextRef('parentLegacyMakerId'),
-        parentVersion: contextRef('parentVersion'),
-        parentManifestBlobId: contextRef('parentManifestBlobId'),
-        parentManifestSha256: contextRef('parentManifestSha256'),
-      },
-      outputs: [
-        'transactionDigest',
-        'parentReleaseEvidenceBound',
-        'parentEvidenceReadbackVerified',
+        'parentOwnershipEpoch',
         'baseMakerRootId',
         'parentLegacyMakerId',
         'parentVersion',
@@ -850,7 +831,8 @@ export async function buildExpansionPackPublicationPlan({
       inputs: {
         baseMakerRootId: contextRef('baseMakerRootId'),
         parentLegacyMakerId: contextRef('parentLegacyMakerId'),
-        makerControlCapId: contextRef('makerControlCapId'),
+        independentExtensionAuthorityV5Id:
+          contextRef('independentExtensionAuthorityV5Id'),
         commerceProtocolConfigV5Id: contextRef('commerceProtocolConfigV5Id'),
         parentVersion: contextRef('parentVersion'),
         parentManifestBlobId: contextRef('parentManifestBlobId'),
@@ -1101,10 +1083,12 @@ export async function buildExpansionPackPublicationPlan({
       packReleaseId: outputRef('chain.pack.create', 'packReleaseId'),
       baseMakerRootId: contextRef('baseMakerRootId'),
       parentLegacyMakerId: contextRef('parentLegacyMakerId'),
-      makerControlCapId: contextRef('makerControlCapId'),
+      independentExtensionAuthorityV5Id:
+        contextRef('independentExtensionAuthorityV5Id'),
       parentVersion: contextRef('parentVersion'),
       parentManifestBlobId: contextRef('parentManifestBlobId'),
       parentManifestSha256: contextRef('parentManifestSha256'),
+      parentOwnershipEpoch: outputRef('parent.release.verify', 'parentOwnershipEpoch'),
     },
     outputs: [
       'transactionDigest',
@@ -1116,6 +1100,8 @@ export async function buildExpansionPackPublicationPlan({
       'parentVersion',
       'parentManifestBlobId',
       'parentManifestSha256',
+      'parentOwnershipEpoch',
+      'admittedParentOwnershipEpoch',
     ],
   }));
   actions.push(action({
@@ -1146,11 +1132,15 @@ export async function buildExpansionPackPublicationPlan({
     packNamespace: planContext.packNamespace,
     packVersion: planContext.packVersion,
     expansionPackV8TypeOriginPackageId: planContext.expansionPackV8TypeOriginPackageId,
+    independentExtensionAuthorityV5Id:
+      planContext.independentExtensionAuthorityV5Id,
+    independentExtensionV5TypeOriginPackageId:
+      planContext.independentExtensionV5TypeOriginPackageId,
   };
   const bindingIdentity = await hashExpansionPackContent(stableJson(binding));
   const draft = {
     schema: EXPANSION_PACK_PUBLICATION_PLAN_SCHEMA,
-    version: 4,
+    version: 5,
     binding,
     bindingIdentity,
     context: planContext,
@@ -1169,7 +1159,7 @@ export async function buildExpansionPackPublicationPlan({
 }
 
 export async function createExpansionPackPublicationRecovery({ plan, nonce, createdAt } = {}) {
-  if (plan?.schema !== EXPANSION_PACK_PUBLICATION_PLAN_SCHEMA || plan?.version !== 4) {
+  if (plan?.schema !== EXPANSION_PACK_PUBLICATION_PLAN_SCHEMA || plan?.version !== 5) {
     fail('EXPANSION_PACK_PUBLICATION_PLAN_INVALID', 'A supported immutable Pack publication plan is required.');
   }
   const exactNonce = required(nonce, 'Publication recovery nonce');
@@ -1187,7 +1177,7 @@ export async function createExpansionPackPublicationRecovery({ plan, nonce, crea
   const now = timestamp(createdAt);
   return freeze({
     schema: EXPANSION_PACK_PUBLICATION_RECOVERY_SCHEMA,
-    version: 4,
+    version: 5,
     sequence: 0,
     nonce: exactNonce,
     recoveryIdentity,
@@ -1349,9 +1339,9 @@ function finalizedFailureEvidence(value) {
 export async function hydrateExpansionPackPublicationRecovery(value, { plan } = {}) {
   if (
     value?.schema !== EXPANSION_PACK_PUBLICATION_RECOVERY_SCHEMA
-    || value?.version !== 4
+    || value?.version !== 5
     || plan?.schema !== EXPANSION_PACK_PUBLICATION_PLAN_SCHEMA
-    || plan?.version !== 4
+    || plan?.version !== 5
     || stableJson(value.binding) !== stableJson(plan.binding)
     || value.bindingIdentity !== plan.bindingIdentity
     || value.planIdentity !== plan.planIdentity
@@ -1455,13 +1445,17 @@ function assertRuntime(runtimeValue, plan) {
     );
   }
   const fields = [
+    'commerceV5CallablePackageId',
     'expansionPackV8CallablePackageId',
     'expansionPackV8TypeOriginPackageId',
+    'independentExtensionV5TypeOriginPackageId',
     'commerceProtocolConfigV5Id',
     'paymentCoinType',
   ];
   const runtimeScope = {
     ...runtime,
+    commerceV5CallablePackageId:
+      runtime.commerceV5CallablePackageId || runtime.callablePackageId,
     expansionPackV8CallablePackageId:
       runtime.expansionPackV8CallablePackageId || runtime.expansionPackV8PackageId,
   };
@@ -1638,22 +1632,23 @@ async function validateConfirmation(actionValue, confirmation) {
       'The exact parent Maker release was not verified.',
     );
     assertTrue(
-      confirmation.makerControlCapVerified,
+      confirmation.independentExtensionAuthorityVerified,
       'EXPANSION_PACK_PARENT_AUTHORITY_FAILED',
-      'The Maker control capability was not verified.',
+      'The irreversible independent-extension authority was not verified.',
     );
-    if (typeof confirmation.parentReleaseEvidenceBound !== 'boolean') {
+    if (confirmation.parentReleaseEvidenceBound !== true) {
       fail(
         'EXPANSION_PACK_PARENT_EVIDENCE_READBACK_INVALID',
-        'Parent verification did not report the Root-owned release evidence state.',
+        'Parent verification did not prove the exact Root-owned release evidence.',
       );
     }
     assertEqual(
       confirmation.parentLifecycleState,
-      'ACTIVE',
+      'PAUSED',
       'EXPANSION_PACK_PARENT_INACTIVE',
-      'The parent Maker must be Active before Pack publication.',
+      'The parent Maker must be Paused before independent Pack publication.',
     );
+    u64(confirmation.parentOwnershipEpoch, 'Parent ownership epoch');
     ['baseMakerRootId', 'parentLegacyMakerId', 'parentVersion', 'parentManifestBlobId', 'parentManifestSha256']
       .forEach((field) => assertEqual(
         confirmation[field],
@@ -1662,31 +1657,6 @@ async function validateConfirmation(actionValue, confirmation) {
         `Parent readback field ${field} does not match the immutable Pack binding.`,
         { field },
       ));
-  } else if (actionId === 'chain.parent.evidence.bind') {
-    assertTrue(
-      confirmation.parentReleaseEvidenceBound,
-      'EXPANSION_PACK_PARENT_EVIDENCE_BINDING_FAILED',
-      'MakerRootV5 did not bind the exact semantic parent release evidence.',
-    );
-    assertTrue(
-      confirmation.parentEvidenceReadbackVerified,
-      'EXPANSION_PACK_PARENT_EVIDENCE_READBACK_FAILED',
-      'The exact Root-owned parent release evidence was not read back.',
-    );
-    required(confirmation.transactionDigest, 'Parent evidence transaction digest');
-    [
-      'baseMakerRootId',
-      'parentLegacyMakerId',
-      'parentVersion',
-      'parentManifestBlobId',
-      'parentManifestSha256',
-    ].forEach((field) => assertEqual(
-      confirmation[field],
-      actionValue.inputs[field],
-      'EXPANSION_PACK_PARENT_EVIDENCE_MISMATCH',
-      `Root-owned parent evidence field ${field} does not match the immutable publication plan.`,
-      { field },
-    ));
   } else if (actionId === 'local.pack.materialize') {
     assertEqual(
       confirmation.packReleaseId,
@@ -2054,6 +2024,30 @@ async function validateConfirmation(actionValue, confirmation) {
       'The Pack admission event and object were not verified.',
     );
     required(confirmation.transactionDigest, 'Pack admission transaction digest');
+    const expectedParentOwnershipEpoch = u64(
+      actionValue.inputs.parentOwnershipEpoch,
+      'Expected parent ownership epoch',
+    );
+    const parentOwnershipEpoch = u64(
+      confirmation.parentOwnershipEpoch,
+      'Confirmed parent ownership epoch',
+    );
+    const admittedParentOwnershipEpoch = u64(
+      confirmation.admittedParentOwnershipEpoch,
+      'Confirmed admitted parent ownership epoch',
+    );
+    if (parentOwnershipEpoch !== expectedParentOwnershipEpoch
+      || admittedParentOwnershipEpoch !== expectedParentOwnershipEpoch) {
+      fail(
+        'EXPANSION_PACK_CHAIN_ADMISSION_EPOCH_MISMATCH',
+        'Pack admission must bind the exact verified parent ownership epoch.',
+        {
+          expected: expectedParentOwnershipEpoch,
+          parent: parentOwnershipEpoch,
+          admitted: admittedParentOwnershipEpoch,
+        },
+      );
+    }
     [
       'baseMakerRootId',
       'parentLegacyMakerId',

@@ -15,6 +15,10 @@ test('Player workspace exposes verified v5 state and real purchase callbacks', (
   assert.match(appSource, /queryOwnedCommerceV5State\(client,/);
   assert.match(appSource, /queryPackRecordsV5\(client, chain\.root\)/);
   assert.match(appSource, /assertCommerceV5TypeOrigins\(chain\)/);
+  assert.match(
+    appSource,
+    /function commerceV5RuntimeContext\(\)[\s\S]*commerceV5CallablePackageId:\s*runtimeConfig\.commerceV5CallablePackageId/,
+  );
 });
 
 test('FREE Packs use verified root policy without creating a claim transaction', () => {

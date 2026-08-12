@@ -4,6 +4,8 @@ import { bcs } from '@mysten/sui/bcs';
 import { deriveExpansionPackSealReleaseCommitmentV8 } from '../maker-seal-v5.js';
 import {
   EXPANSION_PACK_V8_LIFECYCLE,
+  INDEPENDENT_EXTENSION_LOCK_V5_FIELD_KEY,
+  MAKER_RELEASE_EVIDENCE_V5_FIELD_KEY,
   buildArchiveExpansionPackV8,
   buildClaimFreeExpansionPackV8,
   buildExpansionPackStyleSealApprovalV8,
@@ -13,6 +15,7 @@ import {
   buildWithdrawExpansionPackRevenueV8,
   parseExpansionPackPassV8,
   parseExpansionPackReleaseV8,
+  queryIndependentExtensionLockV5,
   queryMakerReleaseEvidenceV5,
   queryExpansionPackReleasesV8,
   queryExpansionPackStyleRecordsV8,
@@ -26,15 +29,22 @@ const TYPE_ORIGIN = '0xa';
 const CALLABLE = '0xb';
 const COMMERCE_ORIGIN = '0xc';
 const ORIGINAL = '0xd';
+const INDEPENDENT_EXTENSION_ORIGIN = '0xf';
 const PAYMENT = '0xe::usdc::USDC';
 const HASH = (byte) => byte.repeat(32);
 const BYTES = (byte) => Array(32).fill(Number.parseInt(byte, 16));
 const id = (value) => `0x${value}`;
+const INDEPENDENT_EXTENSION_AUTHORITY = id(70);
+const PROTOCOL_ADMIN_CAP = id(71);
+const RETIRED_CONTROL_CAP = id(8);
+const AUDIT_HASH = HASH('66');
 
 const runtime = Object.freeze({
   expansionPackV8TypeOriginPackageId: TYPE_ORIGIN,
   expansionPackV8CallablePackageId: CALLABLE,
   commerceV5TypeOriginPackageId: COMMERCE_ORIGIN,
+  independentExtensionV5TypeOriginPackageId: INDEPENDENT_EXTENSION_ORIGIN,
+  independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
   callablePackageId: CALLABLE,
   originalPackageId: ORIGINAL,
   commerceProtocolConfigV5Id: id(6),
@@ -167,7 +177,7 @@ function parentObjects() {
         current_owner: id(9),
         current_control_cap_id: id(8),
         ownership_epoch: '7',
-        lifecycle: 0,
+        lifecycle: 1,
         protocol_config_id: id(6),
         release: { fields: { style_registry_sealed: true } },
       } },
@@ -179,10 +189,21 @@ function parentObjects() {
       json: { fields: { manifest_blob_id: 'parent-quilt' } },
     },
     {
-      objectId: id(8),
-      type: `${COMMERCE_ORIGIN}::commerce_v5::MakerControlCapV5`,
-      owner: { AddressOwner: id(9) },
-      json: { fields: { root_id: id(1), ownership_epoch: '7' } },
+      objectId: INDEPENDENT_EXTENSION_AUTHORITY,
+      type: `${INDEPENDENT_EXTENSION_ORIGIN}::commerce_v5::IndependentExtensionAuthorityV5`,
+      owner: { $kind: 'Shared', Shared: { initialSharedVersion: '1' } },
+      json: { fields: {
+        version: '5',
+        root_id: id(1),
+        legacy_maker_id: id(2),
+        protocol_config_id: id(6),
+        protocol_admin_cap_id: PROTOCOL_ADMIN_CAP,
+        owner: id(9),
+        retired_control_cap_id: RETIRED_CONTROL_CAP,
+        retired_control_cap_epoch: '6',
+        locked_ownership_epoch: '7',
+        audit_hash: BYTES('66'),
+      } },
     },
   ];
 }
@@ -200,21 +221,84 @@ function parentEvidenceBytes(overrides = {}) {
   }).toBytes();
 }
 
-function getObjectsClient(objects) {
+function independentExtensionLockBytes(overrides = {}) {
+  const suiId = bcs.struct('ID', { bytes: bcs.Address });
+  return bcs.struct('IndependentExtensionLockStateV5', {
+    authority_id: suiId,
+    legacy_maker_id: suiId,
+    protocol_config_id: suiId,
+    protocol_admin_cap_id: suiId,
+    owner: bcs.Address,
+    retired_control_cap_id: suiId,
+    retired_control_cap_epoch: bcs.u64(),
+    locked_ownership_epoch: bcs.u64(),
+    audit_hash: bcs.byteVector(),
+    finalized: bcs.bool(),
+  }).serialize({
+    authority_id: { bytes: INDEPENDENT_EXTENSION_AUTHORITY },
+    legacy_maker_id: { bytes: id(2) },
+    protocol_config_id: { bytes: id(6) },
+    protocol_admin_cap_id: { bytes: PROTOCOL_ADMIN_CAP },
+    owner: id(9),
+    retired_control_cap_id: { bytes: RETIRED_CONTROL_CAP },
+    retired_control_cap_epoch: '6',
+    locked_ownership_epoch: '7',
+    audit_hash: BYTES('66'),
+    finalized: true,
+    ...overrides,
+  }).toBytes();
+}
+
+function getObjectsClient(objects, {
+  lockOverrides = {},
+  lockType = `${INDEPENDENT_EXTENSION_ORIGIN}::commerce_v5::IndependentExtensionLockStateV5`,
+  retiredControlCapState = 'deleted',
+} = {}) {
   const values = [...objects];
   return {
     async getObjects(request) {
       return {
-        objects: request.objectIds.map((requested) => values.find((entry) => {
-          const left = BigInt(entry.objectId);
-          const right = BigInt(requested);
-          return left === right;
-        })).filter(Boolean),
+        objects: request.objectIds.flatMap((requested) => {
+          const found = values.find((entry) => {
+            const left = BigInt(entry.objectId);
+            const right = BigInt(requested);
+            return left === right;
+          });
+          if (found) return [found];
+          if (BigInt(requested) === BigInt(RETIRED_CONTROL_CAP)) {
+            if (retiredControlCapState === 'omitted') return [];
+            if (retiredControlCapState === 'unknown') {
+              return [{ error: { code: 'unknown', object_id: requested } }];
+            }
+            return [{
+              error: {
+                code: 'deleted',
+                object_id: RETIRED_CONTROL_CAP,
+                version: '6',
+                digest: 'retired-control-cap',
+              },
+            }];
+          }
+          return [{ error: { code: 'notExists', object_id: requested } }];
+        }),
       };
     },
     async getDynamicField(request) {
       if (BigInt(request.parentId) !== 1n) throw new Error('dynamic field not found');
-      return { dynamicField: { value: { bcs: parentEvidenceBytes() } } };
+      const key = bcs.string().parse(request.name.bcs);
+      if (key === MAKER_RELEASE_EVIDENCE_V5_FIELD_KEY) {
+        return { dynamicField: { value: {
+          type: `${COMMERCE_ORIGIN}::commerce_v5::MakerReleaseEvidenceV5`,
+          bcs: parentEvidenceBytes(),
+        } } };
+      }
+      if (key === INDEPENDENT_EXTENSION_LOCK_V5_FIELD_KEY) {
+        return { dynamicField: { value: {
+          type: lockType,
+          bcs: independentExtensionLockBytes(lockOverrides),
+        } } };
+      }
+      throw new Error('dynamic field not found');
     },
   };
 }
@@ -224,7 +308,7 @@ function publicationAction(functionName, inputs, extra = {}) {
     id: extra.id || `fixture.${functionName}`,
     transport: 'SUI',
     target: extra.target || `${CALLABLE}::expansion_pack_v8::${functionName}`,
-    authority: { signer: id(9), capability: id(8) },
+    authority: { signer: id(9), capability: INDEPENDENT_EXTENSION_AUTHORITY },
     typeArguments: extra.typeArguments || [],
     inputs,
   };
@@ -248,7 +332,7 @@ test('publication PTBs encode the exact audited v8 Move argument orders', () => 
     purchasePriceAtomic: '0',
     packReleaseId: id(3),
     packAdminCapId: id(4),
-    makerControlCapId: id(8),
+    independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
     partKey: 'hair',
     itemKey: 'long',
     styleKey: 'black',
@@ -265,7 +349,7 @@ test('publication PTBs encode the exact audited v8 Move argument orders', () => 
     register_style_asset_v8: 8,
     seal_expansion_pack_v8: 3,
     bind_expansion_pack_seal_policy_v8: 2,
-    admit_expansion_pack_v8: 4,
+    admit_expansion_pack_with_authority_v8: 4,
     activate_expansion_pack_v8: 4,
   };
   for (const [functionName, count] of Object.entries(expected)) {
@@ -278,16 +362,19 @@ test('publication PTBs encode the exact audited v8 Move argument orders', () => 
     assert.equal(call.function, functionName);
     assert.equal(call.arguments.length, count);
   }
-  const bindParent = transactionFromExpansionPackV8PublicationAction(publicationAction(
-    'bind_maker_release_evidence_v5',
-    common,
-    { target: `${CALLABLE}::commerce_v5::bind_maker_release_evidence_v5` },
-  )).getData().commands[0].MoveCall;
-  assert.equal(bindParent.module, 'commerce_v5');
-  assert.equal(bindParent.function, 'bind_maker_release_evidence_v5');
-  assert.equal(bindParent.arguments.length, 6);
-  assert.ok(bindParent.arguments.slice(0, 3).every((entry) => entry.type === 'object'));
-  assert.ok(bindParent.arguments.slice(3).every((entry) => entry.type === 'pure'));
+  for (const [legacyFunction, target] of [
+    ['admit_expansion_pack_v8', `${CALLABLE}::expansion_pack_v8::admit_expansion_pack_v8`],
+    ['bind_maker_release_evidence_v5', `${CALLABLE}::commerce_v5::bind_maker_release_evidence_v5`],
+  ]) {
+    assert.throws(
+      () => transactionFromExpansionPackV8PublicationAction(publicationAction(
+        legacyFunction,
+        common,
+        { target },
+      )),
+      { code: 'EXPANSION_PACK_V8_CHAIN_TARGET_UNSUPPORTED' },
+    );
+  }
   const create = transactionFromExpansionPackV8PublicationAction(publicationAction(
     'create_expansion_pack_v8', common, { typeArguments: [PAYMENT] },
   )).getData();
@@ -419,14 +506,14 @@ test('release and wallet-bound Pass parsers require the stable TypeOrigin and ex
   );
 });
 
-test('parent verifier requires the exact root, legacy Maker, current Cap and Walrus evidence', async () => {
+test('parent verifier requires the exact Root lock, shared authority, deleted Cap and Walrus evidence', async () => {
   const action = {
     id: 'parent.release.verify',
     authority: { signer: id(9) },
     inputs: {
       baseMakerRootId: id(1),
       parentLegacyMakerId: id(2),
-      makerControlCapId: id(8),
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
       parentVersion: '1',
       parentVersionId: 'version-1',
       parentManifestBlobId: 'parent-quilt',
@@ -448,8 +535,11 @@ test('parent verifier requires the exact root, legacy Maker, current Cap and Wal
     },
   });
   assert.equal(verified.parentVerified, true);
-  assert.equal(verified.makerControlCapVerified, true);
+  assert.equal(verified.independentExtensionAuthorityVerified, true);
+  assert.equal(verified.retiredMakerControlCapUnavailable, true);
   assert.equal(verified.parentReleaseEvidenceBound, true);
+  assert.equal(verified.parentLifecycleState, 'PAUSED');
+  assert.equal(verified.parentOwnershipEpoch, '7');
   assert.deepEqual(await queryMakerReleaseEvidenceV5(
     getObjectsClient(parentObjects()),
     { rootId: id(1) },
@@ -459,9 +549,30 @@ test('parent verifier requires the exact root, legacy Maker, current Cap and Wal
     parentManifestBlobId: 'parent-quilt',
     parentManifestSha256: HASH('11'),
   });
+  const lock = await queryIndependentExtensionLockV5(
+    getObjectsClient(parentObjects()),
+    { runtime, rootId: id(1) },
+  );
+  assert.match(lock.type, /::commerce_v5::IndependentExtensionLockStateV5$/);
+  for (const [actual, expected] of [
+    [lock.rootId, id(1)],
+    [lock.authorityId, INDEPENDENT_EXTENSION_AUTHORITY],
+    [lock.legacyMakerId, id(2)],
+    [lock.protocolConfigId, id(6)],
+    [lock.protocolAdminCapId, PROTOCOL_ADMIN_CAP],
+    [lock.owner, id(9)],
+    [lock.retiredControlCapId, RETIRED_CONTROL_CAP],
+  ]) assert.equal(BigInt(actual), BigInt(expected));
+  assert.equal(lock.retiredControlCapEpoch, 6n);
+  assert.equal(lock.lockedOwnershipEpoch, 7n);
+  assert.equal(lock.auditHash, AUDIT_HASH);
+  assert.equal(lock.finalized, true);
 
   const drifted = parentObjects();
-  drifted[2] = { ...drifted[2], owner: { AddressOwner: '0x66' } };
+  drifted[2] = { ...drifted[2], json: { fields: {
+    ...drifted[2].json.fields,
+    audit_hash: BYTES('77'),
+  } } };
   await assert.rejects(
     verifyExpansionPackV8ParentAction({
       action,
@@ -473,9 +584,105 @@ test('parent verifier requires the exact root, legacy Maker, current Cap and Wal
     }),
     (error) => error.code === 'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH',
   );
+
+  await assert.rejects(
+    verifyExpansionPackV8ParentAction({
+      action,
+      runtime,
+      suiClient: getObjectsClient(parentObjects(), {
+        lockType: `${COMMERCE_ORIGIN}::commerce_v5::IndependentExtensionLockStateV5`,
+      }),
+      manifestReadback: async () => ({
+        sha256: HASH('11'), version: '1', versionId: 'version-1', identity: 'parent-identity',
+      }),
+    }),
+    (error) => error.code === 'EXPANSION_PACK_V8_PARENT_LOCK_INVALID',
+  );
+
+  const addressOwnedAuthority = parentObjects();
+  addressOwnedAuthority[2] = {
+    ...addressOwnedAuthority[2],
+    owner: { AddressOwner: id(9) },
+  };
+  await assert.rejects(
+    verifyExpansionPackV8ParentAction({
+      action,
+      runtime,
+      suiClient: getObjectsClient(addressOwnedAuthority),
+      manifestReadback: async () => ({
+        sha256: HASH('11'), version: '1', versionId: 'version-1', identity: 'parent-identity',
+      }),
+    }),
+    (error) => error.code === 'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH',
+  );
+
+  await assert.rejects(
+    verifyExpansionPackV8ParentAction({
+      action: {
+        ...action,
+        inputs: {
+          ...action.inputs,
+          independentExtensionAuthorityV5Id: id(72),
+        },
+      },
+      runtime,
+      suiClient: getObjectsClient(parentObjects()),
+      manifestReadback: async () => ({
+        sha256: HASH('11'), version: '1', versionId: 'version-1', identity: 'parent-identity',
+      }),
+    }),
+    (error) => error.code === 'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH',
+  );
+
+  for (const retiredControlCapState of ['omitted', 'unknown']) {
+    await assert.rejects(
+      verifyExpansionPackV8ParentAction({
+        action,
+        runtime,
+        suiClient: getObjectsClient(parentObjects(), { retiredControlCapState }),
+        manifestReadback: async () => ({
+          sha256: HASH('11'), version: '1', versionId: 'version-1', identity: 'parent-identity',
+        }),
+      }),
+      (error) => error.code === 'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH',
+      `retired Cap state ${retiredControlCapState} is not deletion proof`,
+    );
+  }
+
+  const liveRetiredCap = {
+    objectId: RETIRED_CONTROL_CAP,
+    type: `${COMMERCE_ORIGIN}::commerce_v5::MakerControlCapV5`,
+    owner: { AddressOwner: id(9) },
+    json: { fields: { version: '5', root_id: id(1), ownership_epoch: '6' } },
+  };
+  await assert.rejects(
+    verifyExpansionPackV8ParentAction({
+      action,
+      runtime,
+      suiClient: getObjectsClient([...parentObjects(), liveRetiredCap]),
+      manifestReadback: async () => ({
+        sha256: HASH('11'), version: '1', versionId: 'version-1', identity: 'parent-identity',
+      }),
+    }),
+    (error) => error.code === 'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH',
+  );
+
+  const active = parentObjects();
+  active[0].json.fields.lifecycle = 0;
+  await assert.rejects(
+    verifyExpansionPackV8ParentAction({
+      action,
+      runtime,
+      suiClient: getObjectsClient(active),
+      manifestReadback: async () => ({
+        sha256: HASH('11'), version: '1', versionId: 'version-1', identity: 'parent-identity',
+      }),
+    }),
+    (error) => error.code === 'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH',
+  );
 });
 
-test('parent evidence binding readback requires the exact Root-owned tuple', async () => {
+test('legacy parent evidence binding readback is not a v8 publication action', async () => {
   const action = publicationAction('bind_maker_release_evidence_v5', {
     baseMakerRootId: id(1),
     makerControlCapId: id(8),
@@ -487,34 +694,38 @@ test('parent evidence binding readback requires the exact Root-owned tuple', asy
     id: 'chain.parent.evidence.bind',
     target: `${CALLABLE}::commerce_v5::bind_maker_release_evidence_v5`,
   });
-  const confirmation = await readExpansionPackV8PublicationSubmission({
-    action,
-    submission: {
-      transactionDigest: 'parent-evidence',
-      indexed: { effects: { status: { status: 'success' } }, events: [] },
-    },
-    suiClient: getObjectsClient(parentObjects()),
-    runtime,
-  });
-  assert.equal(confirmation.parentReleaseEvidenceBound, true);
-  assert.equal(confirmation.parentEvidenceReadbackVerified, true);
-  assert.equal(confirmation.parentManifestSha256, HASH('11'));
-
-  const mismatch = getObjectsClient(parentObjects());
-  mismatch.getDynamicField = async () => ({
-    dynamicField: { value: { bcs: parentEvidenceBytes({ manifest_sha256: BYTES('22') }) } },
-  });
   await assert.rejects(
     readExpansionPackV8PublicationSubmission({
       action,
       submission: {
-        transactionDigest: 'parent-evidence-mismatch',
+        transactionDigest: 'parent-evidence',
         indexed: { effects: { status: { status: 'success' } }, events: [] },
       },
-      suiClient: mismatch,
+      suiClient: getObjectsClient(parentObjects()),
       runtime,
     }),
-    { code: 'EXPANSION_PACK_V8_PARENT_EVIDENCE_MISMATCH' },
+    { code: 'EXPANSION_PACK_V8_CHAIN_TARGET_UNSUPPORTED' },
+  );
+});
+
+test('legacy admission readback cannot masquerade as authority-bound admission', async () => {
+  const legacyAdmission = publicationAction('admit_expansion_pack_v8', {
+    packReleaseId: id(3),
+    baseMakerRootId: id(1),
+    parentLegacyMakerId: id(2),
+    makerControlCapId: RETIRED_CONTROL_CAP,
+  }, { id: 'chain.pack.admit' });
+  await assert.rejects(
+    readExpansionPackV8PublicationSubmission({
+      action: legacyAdmission,
+      submission: {
+        transactionDigest: 'legacy-admission',
+        indexed: { effects: { status: { status: 'success' } }, events: [] },
+      },
+      suiClient: getObjectsClient(parentObjects()),
+      runtime,
+    }),
+    { code: 'EXPANSION_PACK_V8_CHAIN_TARGET_UNSUPPORTED' },
   );
 });
 
@@ -770,11 +981,11 @@ test('Style, seal, admission and activation readbacks reject drift and expose re
     admitted_parent_ownership_epoch: '7',
   });
   const admittedResult = await readExpansionPackV8PublicationSubmission({
-    action: publicationAction('admit_expansion_pack_v8', {
+    action: publicationAction('admit_expansion_pack_with_authority_v8', {
       packReleaseId: id(3),
       baseMakerRootId: id(1),
       parentLegacyMakerId: id(2),
-      makerControlCapId: id(8),
+      independentExtensionAuthorityV5Id: INDEPENDENT_EXTENSION_AUTHORITY,
       parentVersion: '1',
       parentManifestBlobId: 'parent-quilt',
       parentManifestSha256: HASH('11'),
@@ -796,6 +1007,8 @@ test('Style, seal, admission and activation readbacks reject drift and expose re
     runtime,
   });
   assert.equal(admittedResult.parentBindingVerified, true);
+  assert.equal(admittedResult.parentOwnershipEpoch, '7');
+  assert.equal(admittedResult.admittedParentOwnershipEpoch, '7');
 
   const activeRelease = releaseObject({
     lifecycle: EXPANSION_PACK_V8_LIFECYCLE.ACTIVE,
@@ -819,6 +1032,26 @@ test('Style, seal, admission and activation readbacks reject drift and expose re
     runtime,
   });
   assert.equal(activeResult.lifecycleState, 'ACTIVE');
+
+  const activeParent = parentObjects()[0];
+  activeParent.json.fields.lifecycle = 0;
+  await assert.rejects(
+    readExpansionPackV8PublicationSubmission({
+      action: publicationAction('activate_expansion_pack_v8', {
+        packReleaseId: id(3),
+        packAdminCapId: id(4),
+        baseMakerRootId: id(1),
+        commerceProtocolConfigV5Id: id(6),
+      }, { id: 'chain.pack.activate' }),
+      submission: { transactionDigest: 'activate-active-parent', indexed: { events: [{
+        type: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackLifecycleChangedV8`,
+        parsedJson: { release_id: id(3), previous_lifecycle: 2, lifecycle: 3 },
+      }] } },
+      suiClient: getObjectsClient([activeRelease, capObject(), activeParent]),
+      runtime,
+    }),
+    { code: 'EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH' },
+  );
 });
 
 test('stable-origin release discovery and wallet Pass query reject event/object substitutions', async () => {

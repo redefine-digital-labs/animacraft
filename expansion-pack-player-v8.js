@@ -35,6 +35,7 @@ export const EXPANSION_PACK_PLAYER_V8_TRANSPORT_ERROR = Object.freeze({
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const SUI_ID = /^0x[0-9a-f]+$/i;
+const U64_MAX = (1n << 64n) - 1n;
 
 export class ExpansionPackPlayerV8Error extends Error {
   constructor(message, code = 'EXPANSION_PACK_PLAYER_V8_ERROR', details = {}) {
@@ -158,6 +159,28 @@ function required(value, label) {
   return result;
 }
 
+function exactU64(value, label) {
+  let result;
+  try {
+    if (value == null || value === '') throw new Error('missing');
+    if (typeof value === 'number' && !Number.isSafeInteger(value)) throw new Error('unsafe');
+    if (typeof value === 'string' && !/^\d+$/.test(value.trim())) throw new Error('syntax');
+    result = BigInt(value);
+  } catch {
+    fail(
+      'EXPANSION_PACK_PLAYER_U64_INVALID',
+      `${label} must be an exact unsigned 64-bit integer.`,
+      { label, value },
+    );
+  }
+  if (result < 0n || result > U64_MAX) fail(
+    'EXPANSION_PACK_PLAYER_U64_INVALID',
+    `${label} must be an exact unsigned 64-bit integer.`,
+    { label, value },
+  );
+  return result;
+}
+
 function freeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
   Object.values(value).forEach(freeze);
@@ -177,7 +200,7 @@ function parentTuple(parentValue) {
       parent.manifestSha256 || parent.manifestHash,
       'Parent Maker manifest hash',
     ),
-    ownershipEpoch: parent.ownershipEpoch == null ? null : BigInt(parent.ownershipEpoch),
+    ownershipEpoch: exactU64(parent.ownershipEpoch, 'Parent ownership epoch'),
   };
 }
 
@@ -717,8 +740,11 @@ export async function verifyExpansionPackPlayerReleaseV8({
   const wallet = text(walletAddress).toLowerCase();
   const pass = wallet ? exactPass({ ...packRelease, contentCommitment: releaseCommitment }, passes, wallet) : null;
   const lifecycle = Number(packRelease.lifecycle);
-  const parentEpochCurrent = parent.ownershipEpoch == null
-    || BigInt(packRelease.admittedParentOwnershipEpoch || 0) === parent.ownershipEpoch;
+  const admittedParentOwnershipEpoch = exactU64(
+    packRelease.admittedParentOwnershipEpoch,
+    'Pack admitted parent ownership epoch',
+  );
+  const parentEpochCurrent = admittedParentOwnershipEpoch === parent.ownershipEpoch;
   const availableForAcquire = lifecycle === EXPANSION_PACK_V8_LIFECYCLE.ACTIVE
     && parentEpochCurrent;
   const accessible = Boolean(pass)
