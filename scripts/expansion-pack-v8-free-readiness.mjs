@@ -39,9 +39,51 @@ const INTENT_URL = new URL(
   '../deployments/expansion-pack-v8-free-wallet-test.intent.json',
   import.meta.url,
 );
+const DEPLOYMENT_URL = new URL('../deployments/mainnet.json', import.meta.url);
 const PUBLIC_CONFIG_URL = new URL('../public/config.js', import.meta.url);
 const REPO_ROOT = resolve(new URL('..', import.meta.url).pathname);
 const SUI_TYPE = normalizeStructTag('0x2::sui::SUI');
+
+const CORRECTIVE_V7 = Object.freeze({
+  sourceCommit: '3c2ffeeb86be6df2cd1f278454a72f5d02c796ea',
+  sourceTree: '0872c4142ee5e811594efbadba032b7b21e5b57c',
+  transactionDigest: 'GFJYxZ6hc83ma5itvJ5CN2ZAtTAqjizrgi9o2jKuTwZt',
+  callablePackageId: normalizeSuiAddress(
+    '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
+  ),
+  stableV8TypeOriginPackageId: normalizeSuiAddress(
+    '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  ),
+  packageVersion: '7',
+});
+const CORRECTIVE_V7_ABI_FUNCTIONS = Object.freeze([
+  ['commerce_v5', 'finalize_independent_extension_root_v5', 12, 0],
+  ['expansion_pack_v8', 'admit_expansion_pack_with_authority_v8', 5, 0],
+  ['expansion_pack_v8', 'complete_bridge_enabled_v8', 0, 1],
+  ['expansion_pack_v8', 'physical_bridge_enabled_v8', 0, 1],
+  ['expansion_pack_v8', 'assert_complete_bridge_enabled_v8', 0, 0],
+  ['expansion_pack_v8', 'assert_physical_bridge_enabled_v8', 0, 0],
+  ['expansion_pack_complete_v8', 'companion_proof_available_v8', 0, 1],
+  ['expansion_pack_complete_v8', 'begin_expansion_pack_complete_authorization_v8', 3, 1],
+]);
+const CORRECTIVE_V7_NEW_ORIGIN_DATATYPES = Object.freeze([
+  ['commerce_v5', 'IndependentExtensionLockStateV5'],
+  ['commerce_v5', 'IndependentExtensionAuthorityV5'],
+  ['commerce_v5', 'IndependentExtensionRootFinalizedV5'],
+  ['commerce_v5', 'LegacyLogicalCompatibilityStateV5'],
+  ['commerce_v5', 'LegacyLogicalStyleApprovalKeyV5'],
+  ['commerce_v5', 'LegacyLogicalStyleApprovalV5'],
+  ['commerce_v5', 'LegacyLogicalStyleRegisteredV5'],
+]);
+const CORRECTIVE_V7_STABLE_ORIGIN_DATATYPES = Object.freeze([
+  ['expansion_pack_v8', 'ExpansionPackReleaseV8'],
+  ['expansion_pack_v8', 'ExpansionPackPassV8'],
+  ['expansion_pack_complete_v8', 'ExpansionPackCompleteAuthorizationV8'],
+  ['commerce_v5', 'MakerReleaseEvidenceV5'],
+]);
+const ALLOWED_UNTRACKED_READINESS_PATHS = Object.freeze(new Set([
+  'scripts/expansion-pack-v8-parent-migration.mjs',
+]));
 
 function fail(message, details = {}) {
   const error = new Error(message);
@@ -181,6 +223,233 @@ async function loadPublicConfig() {
 async function gitValue(...args) {
   const { stdout } = await execFileAsync('git', args, { cwd: REPO_ROOT });
   return text(stdout);
+}
+
+function sameText(actual, expected, label) {
+  if (text(actual) !== text(expected)) {
+    fail(`${label} drifted from the reviewed corrective v7 evidence.`, {
+      expected: text(expected),
+      actual: text(actual),
+    });
+  }
+}
+
+function sameId(actual, expected, label) {
+  const normalizedActual = exactNonzeroId(actual, label);
+  const normalizedExpected = exactNonzeroId(expected, `${label} expectation`);
+  if (normalizedActual !== normalizedExpected) {
+    fail(`${label} drifted from the reviewed corrective v7 evidence.`, {
+      expected: normalizedExpected,
+      actual: normalizedActual,
+    });
+  }
+}
+
+function requireSha256(value, label) {
+  const normalized = text(value).replace(/^0x/i, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(normalized)) fail(`${label} must be an exact SHA-256.`);
+  return normalized;
+}
+
+function statusEntry(line) {
+  const status = line.slice(0, 2);
+  const rawPath = line.slice(3).trim();
+  const path = rawPath.includes(' -> ') ? rawPath.split(' -> ').at(-1) : rawPath;
+  return { line, status, path };
+}
+
+export function validateReadinessWorktree(sourceStatus = '') {
+  const entries = text(sourceStatus) ? text(sourceStatus).split('\n').map(statusEntry) : [];
+  const trackedDirty = entries.filter(({ status }) => status !== '??');
+  const disallowedUntracked = entries.filter(
+    ({ status, path }) => status === '??' && !ALLOWED_UNTRACKED_READINESS_PATHS.has(path),
+  );
+  if (trackedDirty.length || disallowedUntracked.length) {
+    fail('The readiness worktree contains unreviewed changes.', {
+      trackedDirty: trackedDirty.map(({ line }) => line),
+      disallowedUntracked: disallowedUntracked.map(({ line }) => line),
+      allowedUntracked: [...ALLOWED_UNTRACKED_READINESS_PATHS],
+    });
+  }
+  return Object.freeze({
+    cleanForReadiness: true,
+    allowedUntracked: entries.filter(({ status }) => status === '??').map(({ path }) => path),
+  });
+}
+
+export function validateCorrectiveV7Evidence({
+  intent,
+  deployment,
+  resultBytes,
+  abiBytes,
+} = {}) {
+  const expected = intent?.protocol?.correctiveUpgradeEvidence;
+  if (!expected || typeof expected !== 'object') {
+    fail('The intent is missing corrective v7 upgrade evidence expectations.');
+  }
+  const resultSha256 = sha256(resultBytes);
+  const abiSha256 = sha256(abiBytes);
+  sameText(resultSha256, requireSha256(expected.resultSha256, 'Corrective result SHA-256'),
+    'Corrective result SHA-256');
+  sameText(abiSha256, requireSha256(expected.abiSha256, 'Corrective ABI SHA-256'),
+    'Corrective ABI SHA-256');
+
+  let result;
+  let abi;
+  try {
+    result = JSON.parse(resultBytes);
+    abi = JSON.parse(abiBytes);
+  } catch (error) {
+    fail('The corrective v7 evidence is not valid JSON.', { cause: error.message });
+  }
+  for (const [field, reviewed] of Object.entries(CORRECTIVE_V7)) {
+    sameText(expected[field], reviewed, `Intent corrective evidence ${field}`);
+  }
+  sameId(intent?.protocol?.callablePackageId, expected.callablePackageId,
+    'Intent v8 callable package');
+  sameId(intent?.protocol?.commerceV5CallablePackageId, expected.callablePackageId,
+    'Intent Commerce callable package');
+  sameId(intent?.protocol?.typeOriginPackageId, expected.stableV8TypeOriginPackageId,
+    'Intent stable v8 TypeOrigin');
+  sameId(intent?.protocol?.independentExtensionV5TypeOriginPackageId,
+    expected.independentExtensionV5TypeOriginPackageId,
+    'Intent independent-extension TypeOrigin');
+  sameId(intent?.protocol?.legacyLogicalV5TypeOriginPackageId,
+    expected.legacyLogicalV5TypeOriginPackageId,
+    'Intent legacy-logical TypeOrigin');
+  sameText(expected.independentExtensionV5TypeOriginPackageId,
+    CORRECTIVE_V7.callablePackageId, 'Intent independent-extension TypeOrigin');
+  sameText(expected.legacyLogicalV5TypeOriginPackageId,
+    CORRECTIVE_V7.callablePackageId, 'Intent legacy-logical TypeOrigin');
+
+  const release = deployment?.releases?.expansionPackV8 || {};
+  const verification = deployment?.verification || {};
+  const deploymentChecks = [
+    [deployment?.source?.sourceCommit, expected.sourceCommit, 'Deployment source commit'],
+    [deployment?.source?.sourceTree, expected.sourceTree, 'Deployment source tree'],
+    [release.sourceCommit, expected.sourceCommit, 'Deployment release source commit'],
+    [release.sourceTree, expected.sourceTree, 'Deployment release source tree'],
+    [deployment?.upgradeTxDigest, expected.transactionDigest, 'Deployment upgrade transaction'],
+    [release.upgradeTxDigest, expected.transactionDigest, 'Deployment release transaction'],
+    [release.packageVersion, expected.packageVersion, 'Deployment release package version'],
+    [release.packageObjectVersion, expected.packageVersion, 'Deployment package object version'],
+    [verification.expansionPackV8UpgradeTransactionStatus, 'success', 'Deployment upgrade status'],
+    [verification.expansionPackV8SourceStatus, 'success', 'Deployment source status'],
+    [verification.expansionPackV8PackageReadBack, true, 'Deployment package readback'],
+  ];
+  for (const [actual, reviewed, label] of deploymentChecks) sameText(actual, reviewed, label);
+  const deploymentIds = [
+    [deployment?.expansionPackV8CallablePackageId, expected.callablePackageId,
+      'Deployment v8 callable package'],
+    [deployment?.commerceV5CallablePackageId, expected.callablePackageId,
+      'Deployment Commerce callable package'],
+    [release.callablePackageId, expected.callablePackageId, 'Deployment release callable package'],
+    [deployment?.expansionPackV8TypeOriginPackageId, expected.stableV8TypeOriginPackageId,
+      'Deployment stable v8 TypeOrigin'],
+    [release.typeOriginPackageId, expected.stableV8TypeOriginPackageId,
+      'Deployment release stable v8 TypeOrigin'],
+    [deployment?.independentExtensionV5TypeOriginPackageId,
+      expected.independentExtensionV5TypeOriginPackageId,
+      'Deployment independent-extension TypeOrigin'],
+    [release.independentExtensionV5TypeOriginPackageId,
+      expected.independentExtensionV5TypeOriginPackageId,
+      'Deployment release independent-extension TypeOrigin'],
+    [deployment?.legacyLogicalV5TypeOriginPackageId,
+      expected.legacyLogicalV5TypeOriginPackageId,
+      'Deployment legacy-logical TypeOrigin'],
+    [release.legacyLogicalV5TypeOriginPackageId,
+      expected.legacyLogicalV5TypeOriginPackageId,
+      'Deployment release legacy-logical TypeOrigin'],
+  ];
+  for (const [actual, reviewed, label] of deploymentIds) sameId(actual, reviewed, label);
+
+  sameText(result?.source?.commit, expected.sourceCommit, 'Corrective result source commit');
+  sameText(result?.source?.tree, expected.sourceTree, 'Corrective result source tree');
+  sameText(result?.transactionDigest, expected.transactionDigest,
+    'Corrective result transaction digest');
+  sameText(result?.status?.success, true, 'Corrective result transaction status');
+  sameId(result?.expectedNewPackageId, expected.callablePackageId,
+    'Corrective result expected package');
+  sameId(result?.packageObject?.objectId, expected.callablePackageId,
+    'Corrective result package object');
+  sameText(result?.packageObject?.version, expected.packageVersion,
+    'Corrective result package version');
+  sameId(result?.upgradeCapPost?.package, expected.callablePackageId,
+    'Corrective result UpgradeCap package');
+  sameText(result?.upgradeCapPost?.packageVersion, expected.packageVersion,
+    'Corrective result UpgradeCap package version');
+  if (!Array.isArray(result?.events) || result.events.length !== 0) {
+    fail('The corrective result must contain zero Move events.');
+  }
+
+  sameId(abi?.packageId, expected.callablePackageId, 'Corrective ABI package');
+  for (const [moduleName, name, parameterCount, returnCount] of CORRECTIVE_V7_ABI_FUNCTIONS) {
+    const found = abi?.functions?.find(
+      (entry) => entry?.module === moduleName && entry?.name === name,
+    );
+    if (!found
+      || found.visibility !== 'public'
+      || found.isEntry !== false
+      || Number(found.parameterCount) !== parameterCount
+      || Number(found.returnCount) !== returnCount) {
+      fail(`Corrective ABI readback drifted for ${moduleName}::${name}.`, {
+        expected: { visibility: 'public', isEntry: false, parameterCount, returnCount },
+        actual: stableValue(found),
+      });
+    }
+  }
+  const requireDatatypeOrigin = (moduleName, name, origin) => {
+    const found = abi?.datatypes?.find(
+      (entry) => entry?.module === moduleName && entry?.name === name,
+    );
+    if (!found || found.matches !== true) {
+      fail(`Corrective ABI readback drifted for ${moduleName}::${name}.`, {
+        actual: stableValue(found),
+      });
+    }
+    sameId(found.definingId, origin, `Corrective ABI ${moduleName}::${name} origin`);
+    sameId(found.expected, origin, `Corrective ABI ${moduleName}::${name} expectation`);
+  };
+  for (const [moduleName, name] of CORRECTIVE_V7_NEW_ORIGIN_DATATYPES) {
+    requireDatatypeOrigin(moduleName, name, expected.independentExtensionV5TypeOriginPackageId);
+  }
+  for (const [moduleName, name] of CORRECTIVE_V7_STABLE_ORIGIN_DATATYPES) {
+    requireDatatypeOrigin(moduleName, name, expected.stableV8TypeOriginPackageId);
+  }
+  return Object.freeze({
+    deployedSourceCommit: expected.sourceCommit,
+    deployedSourceTree: expected.sourceTree,
+    transactionDigest: expected.transactionDigest,
+    callablePackageId: exactId(expected.callablePackageId, 'Corrective callable package'),
+    stableV8TypeOriginPackageId: exactId(
+      expected.stableV8TypeOriginPackageId,
+      'Corrective stable v8 TypeOrigin',
+    ),
+    independentExtensionV5TypeOriginPackageId: exactId(
+      expected.independentExtensionV5TypeOriginPackageId,
+      'Corrective independent-extension TypeOrigin',
+    ),
+    legacyLogicalV5TypeOriginPackageId: exactId(
+      expected.legacyLogicalV5TypeOriginPackageId,
+      'Corrective legacy-logical TypeOrigin',
+    ),
+    resultPath: text(expected.resultPath),
+    resultSha256,
+    abiReadbackPath: text(expected.abiReadbackPath),
+    abiSha256,
+  });
+}
+
+async function correctiveV7Evidence(intent, deployment) {
+  const expected = intent?.protocol?.correctiveUpgradeEvidence || {};
+  if (!text(expected.resultPath) || !text(expected.abiReadbackPath)) {
+    fail('The intent must name both corrective v7 durable evidence files.');
+  }
+  const [resultBytes, abiBytes] = await Promise.all([
+    readFile(resolve(REPO_ROOT, expected.resultPath)),
+    readFile(resolve(REPO_ROOT, expected.abiReadbackPath)),
+  ]);
+  return validateCorrectiveV7Evidence({ intent, deployment, resultBytes, abiBytes });
 }
 
 function ownerSummary(owner) {
@@ -1280,13 +1549,16 @@ async function migrationHistory(intent) {
 
 export async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const [intent, runtime, sourceCommit, sourceTree, sourceStatus] = await Promise.all([
+  const [intent, deployment, runtime, sourceCommit, sourceTree, sourceStatus] = await Promise.all([
     readFile(INTENT_URL, 'utf8').then(JSON.parse),
+    readFile(DEPLOYMENT_URL, 'utf8').then(JSON.parse),
     loadPublicConfig(),
     gitValue('rev-parse', 'HEAD'),
     gitValue('rev-parse', 'HEAD^{tree}'),
-    gitValue('status', '--short'),
+    gitValue('status', '--porcelain=v1', '--untracked-files=all'),
   ]);
+  const worktree = validateReadinessWorktree(sourceStatus);
+  const correctiveUpgradeEvidence = await correctiveV7Evidence(intent, deployment);
   if (intent.writeBoundary.signingAllowed !== false
     || intent.writeBoundary.broadcastAllowed !== false
     || intent.writeBoundary.currentMode !== 'read-only-readiness-only') {
@@ -1424,8 +1696,10 @@ export async function main() {
     headTree: sourceTree,
     dirty: Boolean(sourceStatus),
     dirtyPaths: sourceStatus ? sourceStatus.split('\n').filter(Boolean) : [],
-    deployedV8SourceCommit: '59cae42a8602f54a7b7902aee77971a1dff8a270',
-    deployedV8SourceTree: '794b18902c5d758889baf80431a3f99f59e4a8aa',
+    cleanForReadiness: worktree.cleanForReadiness,
+    allowedUntrackedPaths: worktree.allowedUntracked,
+    deployedV8SourceCommit: correctiveUpgradeEvidence.deployedSourceCommit,
+    deployedV8SourceTree: correctiveUpgradeEvidence.deployedSourceTree,
   };
   const zeroV8History = await zeroV8HistoryAudit({
     runtime,
@@ -1452,6 +1726,7 @@ export async function main() {
       },
     },
     source,
+    correctiveUpgradeEvidence,
     protocol: stableValue(intent.protocol),
     objects: objectFingerprints,
     parent: {

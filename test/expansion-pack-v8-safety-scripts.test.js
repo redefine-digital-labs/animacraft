@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 
-import { scanV8HistoryWindow } from '../scripts/expansion-pack-v8-free-readiness.mjs';
+import {
+  scanV8HistoryWindow,
+  validateCorrectiveV7Evidence,
+  validateReadinessWorktree,
+} from '../scripts/expansion-pack-v8-free-readiness.mjs';
 import {
   requireFinalizerProtocolIdentities,
   requireIndependentExtensionTypeOrigin,
@@ -26,6 +32,65 @@ const CUTOFF = Object.freeze({
   digest: 'CutoffDigest100',
   timestamp: '2026-08-12T00:00:00Z',
 });
+const CALLABLE_V7 = '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee';
+const STABLE_V8_ORIGIN = '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a';
+const SOURCE_COMMIT_V7 = '3c2ffeeb86be6df2cd1f278454a72f5d02c796ea';
+const SOURCE_TREE_V7 = '0872c4142ee5e811594efbadba032b7b21e5b57c';
+const UPGRADE_TX_V7 = 'GFJYxZ6hc83ma5itvJ5CN2ZAtTAqjizrgi9o2jKuTwZt';
+
+function digest(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+async function correctiveFixture() {
+  const [intentBytes, deploymentBytes] = await Promise.all([
+    readFile(new URL('../deployments/expansion-pack-v8-free-wallet-test.intent.json', import.meta.url)),
+    readFile(new URL('../deployments/mainnet.json', import.meta.url)),
+  ]);
+  const resultBytes = Buffer.from(JSON.stringify({
+    source: { commit: SOURCE_COMMIT_V7, tree: SOURCE_TREE_V7 },
+    transactionDigest: UPGRADE_TX_V7,
+    status: { success: true },
+    events: [],
+    expectedNewPackageId: CALLABLE_V7,
+    packageObject: { objectId: CALLABLE_V7, version: '7' },
+    upgradeCapPost: { package: CALLABLE_V7, packageVersion: '7' },
+  }));
+  const functions = [
+    ['commerce_v5', 'finalize_independent_extension_root_v5', 12, 0],
+    ['expansion_pack_v8', 'admit_expansion_pack_with_authority_v8', 5, 0],
+    ['expansion_pack_v8', 'complete_bridge_enabled_v8', 0, 1],
+    ['expansion_pack_v8', 'physical_bridge_enabled_v8', 0, 1],
+    ['expansion_pack_v8', 'assert_complete_bridge_enabled_v8', 0, 0],
+    ['expansion_pack_v8', 'assert_physical_bridge_enabled_v8', 0, 0],
+    ['expansion_pack_complete_v8', 'companion_proof_available_v8', 0, 1],
+    ['expansion_pack_complete_v8', 'begin_expansion_pack_complete_authorization_v8', 3, 1],
+  ].map(([module, name, parameterCount, returnCount]) => ({
+    module, name, visibility: 'public', isEntry: false, parameterCount, returnCount,
+  }));
+  const datatypes = [
+    ['commerce_v5', 'IndependentExtensionLockStateV5', CALLABLE_V7],
+    ['commerce_v5', 'IndependentExtensionAuthorityV5', CALLABLE_V7],
+    ['commerce_v5', 'IndependentExtensionRootFinalizedV5', CALLABLE_V7],
+    ['commerce_v5', 'LegacyLogicalCompatibilityStateV5', CALLABLE_V7],
+    ['commerce_v5', 'LegacyLogicalStyleApprovalKeyV5', CALLABLE_V7],
+    ['commerce_v5', 'LegacyLogicalStyleApprovalV5', CALLABLE_V7],
+    ['commerce_v5', 'LegacyLogicalStyleRegisteredV5', CALLABLE_V7],
+    ['expansion_pack_v8', 'ExpansionPackReleaseV8', STABLE_V8_ORIGIN],
+    ['expansion_pack_v8', 'ExpansionPackPassV8', STABLE_V8_ORIGIN],
+    ['expansion_pack_complete_v8', 'ExpansionPackCompleteAuthorizationV8', STABLE_V8_ORIGIN],
+    ['commerce_v5', 'MakerReleaseEvidenceV5', STABLE_V8_ORIGIN],
+  ].map(([module, name, definingId]) => ({
+    module, name, definingId, expected: definingId, matches: true,
+  }));
+  const abiBytes = Buffer.from(JSON.stringify({ packageId: CALLABLE_V7, functions, datatypes }));
+  const intent = JSON.parse(intentBytes);
+  intent.protocol.correctiveUpgradeEvidence.resultPath = 'fixtures/corrective-result.json';
+  intent.protocol.correctiveUpgradeEvidence.abiReadbackPath = 'fixtures/corrective-abi.json';
+  intent.protocol.correctiveUpgradeEvidence.resultSha256 = digest(resultBytes);
+  intent.protocol.correctiveUpgradeEvidence.abiSha256 = digest(abiBytes);
+  return { intent, deployment: JSON.parse(deploymentBytes), resultBytes, abiBytes };
+}
 
 function intent() {
   return {
@@ -372,5 +437,61 @@ test('finalizer identities fail closed on missing or mismatched v7 origins', () 
       releases: { expansionPackV8: { callablePackageId: INDEPENDENT_ORIGIN } },
     }),
     /callable identities drifted/,
+  );
+});
+
+test('readiness locks the deployed v7 tuple without requiring orchestration HEAD to equal source', async () => {
+  const fixture = await correctiveFixture();
+  const lock = validateCorrectiveV7Evidence(fixture);
+  assert.equal(lock.deployedSourceCommit, SOURCE_COMMIT_V7);
+  assert.equal(lock.deployedSourceTree, SOURCE_TREE_V7);
+  assert.equal(lock.transactionDigest, UPGRADE_TX_V7);
+  assert.equal(lock.callablePackageId, CALLABLE_V7);
+  assert.equal(lock.stableV8TypeOriginPackageId, STABLE_V8_ORIGIN);
+});
+
+test('readiness rejects the superseded 59ca deployment source', async () => {
+  const fixture = await correctiveFixture();
+  fixture.deployment.source.sourceCommit = '59cae42a8602f54a7b7902aee77971a1dff8a270';
+  assert.throws(() => validateCorrectiveV7Evidence(fixture), /Deployment source commit drifted/);
+});
+
+test('readiness rejects corrective upgrade result evidence drift', async () => {
+  const fixture = await correctiveFixture();
+  const result = JSON.parse(fixture.resultBytes);
+  result.transactionDigest = 'DifferentUpgradeDigest';
+  fixture.resultBytes = Buffer.from(JSON.stringify(result));
+  fixture.intent.protocol.correctiveUpgradeEvidence.resultSha256 = digest(fixture.resultBytes);
+  assert.throws(
+    () => validateCorrectiveV7Evidence(fixture),
+    /Corrective result transaction digest drifted/,
+  );
+});
+
+test('readiness rejects corrective ABI readback drift', async () => {
+  const fixture = await correctiveFixture();
+  const abi = JSON.parse(fixture.abiBytes);
+  abi.datatypes.find(({ name }) => name === 'ExpansionPackReleaseV8').definingId = CALLABLE_V7;
+  fixture.abiBytes = Buffer.from(JSON.stringify(abi));
+  fixture.intent.protocol.correctiveUpgradeEvidence.abiSha256 = digest(fixture.abiBytes);
+  assert.throws(
+    () => validateCorrectiveV7Evidence(fixture),
+    /ExpansionPackReleaseV8 origin drifted/,
+  );
+});
+
+test('readiness worktree policy allows only the migration executor as untracked', () => {
+  assert.equal(validateReadinessWorktree('').cleanForReadiness, true);
+  assert.deepEqual(
+    validateReadinessWorktree('?? scripts/expansion-pack-v8-parent-migration.mjs').allowedUntracked,
+    ['scripts/expansion-pack-v8-parent-migration.mjs'],
+  );
+  assert.throws(
+    () => validateReadinessWorktree(' M deployments/mainnet.json'),
+    /unreviewed changes/,
+  );
+  assert.throws(
+    () => validateReadinessWorktree('?? scripts/unreviewed.mjs'),
+    /unreviewed changes/,
   );
 });
