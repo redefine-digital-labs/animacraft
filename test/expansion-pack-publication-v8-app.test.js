@@ -540,6 +540,49 @@ test('parent verifier requires the exact Root lock, shared authority, deleted Ca
   assert.equal(verified.parentReleaseEvidenceBound, true);
   assert.equal(verified.parentLifecycleState, 'PAUSED');
   assert.equal(verified.parentOwnershipEpoch, '7');
+  const grpcJsonObjects = parentObjects();
+  grpcJsonObjects[2].json.fields.audit_hash = Buffer.from(BYTES('66')).toString('base64');
+  const grpcJsonVerified = await verifyExpansionPackV8ParentAction({
+    action,
+    runtime,
+    suiClient: getObjectsClient(grpcJsonObjects),
+    async manifestReadback() {
+      return {
+        sha256: HASH('11'),
+        version: '1',
+        versionId: 'version-1',
+        identity: 'parent-identity',
+      };
+    },
+  });
+  assert.equal(grpcJsonVerified.parentVerified, true);
+  assert.equal(grpcJsonVerified.independentExtensionAuthorityVerified, true);
+  for (const invalidAuditHash of [
+    Buffer.alloc(31, 0x66).toString('base64'),
+    Buffer.alloc(33, 0x66).toString('base64'),
+    Buffer.from(BYTES('66')).toString('base64').replace(/=$/, ''),
+    `${Buffer.from(BYTES('66')).toString('base64')}=`,
+    'fCB5l05PWfSszsRGEkwO1_OU2RFLjJk5O-EmXMo89lg=',
+  ]) {
+    const invalidObjects = parentObjects();
+    invalidObjects[2].json.fields.audit_hash = invalidAuditHash;
+    await assert.rejects(
+      verifyExpansionPackV8ParentAction({
+        action,
+        runtime,
+        suiClient: getObjectsClient(invalidObjects),
+        async manifestReadback() {
+          return {
+            sha256: HASH('11'),
+            version: '1',
+            versionId: 'version-1',
+            identity: 'parent-identity',
+          };
+        },
+      }),
+      (error) => error.code === 'EXPANSION_PACK_V8_HASH_INVALID',
+    );
+  }
   assert.deepEqual(await queryMakerReleaseEvidenceV5(
     getObjectsClient(parentObjects()),
     { rootId: id(1) },

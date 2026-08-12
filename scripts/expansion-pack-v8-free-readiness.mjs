@@ -16,6 +16,7 @@ import { WalrusFile, walrus } from '@mysten/walrus';
 import {
   parseCommerceProtocolConfigV5,
   parseCommerceProtocolTreasuryV5,
+  parseIndependentExtensionAuthorityV5,
   parseMakerControlCapV5,
   parseMakerRootV5,
   parseMakerTreasuryV5,
@@ -32,6 +33,7 @@ import {
   buildExpansionPackPublicationCandidate,
   canonicalExpansionPackJson,
 } from '../expansion-pack-publication.js';
+import { verifyExpansionPackV8ParentAction } from '../expansion-pack-publication-v8-app.js';
 import { normalizeRuntimeConfig } from '../runtime-config.js';
 
 const execFileAsync = promisify(execFile);
@@ -440,6 +442,94 @@ export function validateCorrectiveV7Evidence({
   });
 }
 
+export function validateParentFinalizationArtifacts({
+  intent,
+  deployment,
+  lockBytes,
+  resultBytes,
+} = {}) {
+  const reviewed = deployment?.releases?.expansionPackV8?.parentFinalization;
+  const expected = intent?.parent?.finalization;
+  if (!reviewed || reviewed.status !== 'success' || expected?.status !== 'success') {
+    fail('Parent-finalization durable evidence is not in the reviewed success state.');
+  }
+  sameText(sha256(lockBytes), requireSha256(reviewed.lockEvidenceSha256,
+    'Parent-finalization lock SHA-256'), 'Parent-finalization lock SHA-256');
+  sameText(sha256(resultBytes), requireSha256(reviewed.resultSha256,
+    'Parent-finalization result SHA-256'), 'Parent-finalization result SHA-256');
+  let lock;
+  let result;
+  try {
+    lock = JSON.parse(lockBytes);
+    result = JSON.parse(resultBytes);
+  } catch (error) {
+    fail('Parent-finalization durable evidence is not valid JSON.', { cause: error.message });
+  }
+  const lockFingerprint = requireSha256(lock?.lockFingerprintSha256,
+    'Parent-finalization lock fingerprint');
+  sameText(sha256(stableJson(lock?.lock)), lockFingerprint,
+    'Parent-finalization recomputed lock fingerprint');
+  const checks = [
+    [lock?.schemaVersion, 'animacraft.expansion-pack-v8-parent-stage-lock.v1',
+      'Parent-finalization lock schema'],
+    [lock?.lock?.stage, 'finalize', 'Parent-finalization lock stage'],
+    [lock?.lock?.transaction?.digest, reviewed.transactionDigest,
+      'Parent-finalization lock transaction'],
+    [result?.schemaVersion, 'animacraft.expansion-pack-v8-parent-stage-result.v1',
+      'Parent-finalization result schema'],
+    [result?.stage, 'finalize', 'Parent-finalization result stage'],
+    [result?.transactionDigest, reviewed.transactionDigest,
+      'Parent-finalization result transaction'],
+    [result?.finalized?.digest, reviewed.transactionDigest,
+      'Parent-finalization finalized transaction'],
+    [result?.checkpoint?.sequenceNumber, reviewed.checkpoint,
+      'Parent-finalization result checkpoint'],
+    [result?.checkpoint?.digest, reviewed.checkpointDigest,
+      'Parent-finalization result checkpoint digest'],
+    [result?.lockFingerprintSha256, lockFingerprint,
+      'Parent-finalization result lock fingerprint'],
+    [expected.lockFingerprintSha256, lockFingerprint,
+      'Intent parent-finalization lock fingerprint'],
+    [reviewed.lockFingerprintSha256, lockFingerprint,
+      'Deployment parent-finalization lock fingerprint'],
+    [result?.postState?.root?.objectId, reviewed.rootId,
+      'Parent-finalization Root'],
+    [result?.postState?.authority?.objectId, reviewed.authorityId,
+      'Parent-finalization Authority'],
+    [result?.postState?.lock?.auditHash, reviewed.auditHash,
+      'Parent-finalization audit hash'],
+    [result?.postState?.root?.ownershipEpoch, reviewed.ownershipEpoch,
+      'Parent-finalization ownership epoch'],
+  ];
+  for (const [actual, reviewedValue, label] of checks) sameText(actual, reviewedValue, label);
+  if (result?.recoveredFromFinalizedTransaction !== true
+    || result?.signatureRecorded !== false
+    || result?.signatureVerifiedLocally !== true
+    || result?.finalized?.effects?.status?.success !== true
+    || result?.finalized?.effects?.status?.error !== null
+    || result?.postState?.event?.name !== 'IndependentExtensionRootFinalizedV5'
+    || result?.postState?.event?.authorityId !== reviewed.authorityId
+    || result?.postState?.event?.auditHash?.replace(/^0x/i, '') !== reviewed.auditHash
+    || result?.postState?.root?.lifecycle !== 1
+    || result?.postState?.root?.styleRegistrySealed !== true
+    || result?.postState?.styles?.length !== 26
+    || result?.postState?.packs?.length !== 0
+    || result?.postState?.retiredControlCap?.status !== 'unavailable') {
+    fail('Parent-finalization durable readback lost a required finalized invariant.', {
+      postState: stableValue(result?.postState),
+    });
+  }
+  return Object.freeze({
+    lockPath: text(reviewed.lockEvidencePath),
+    lockSha256: sha256(lockBytes),
+    resultPath: text(reviewed.resultPath),
+    resultSha256: sha256(resultBytes),
+    lockFingerprintSha256: lockFingerprint,
+    transactionDigest: text(reviewed.transactionDigest),
+    checkpoint: text(reviewed.checkpoint),
+  });
+}
+
 async function correctiveV7Evidence(intent, deployment) {
   const expected = intent?.protocol?.correctiveUpgradeEvidence || {};
   if (!text(expected.resultPath) || !text(expected.abiReadbackPath)) {
@@ -450,6 +540,18 @@ async function correctiveV7Evidence(intent, deployment) {
     readFile(resolve(REPO_ROOT, expected.abiReadbackPath)),
   ]);
   return validateCorrectiveV7Evidence({ intent, deployment, resultBytes, abiBytes });
+}
+
+async function parentFinalizationArtifacts(intent, deployment) {
+  const reviewed = deployment?.releases?.expansionPackV8?.parentFinalization || {};
+  if (!text(reviewed.lockEvidencePath) || !text(reviewed.resultPath)) {
+    fail('The deployment must name both parent-finalization durable evidence files.');
+  }
+  const [lockBytes, resultBytes] = await Promise.all([
+    readFile(resolve(REPO_ROOT, reviewed.lockEvidencePath)),
+    readFile(resolve(REPO_ROOT, reviewed.resultPath)),
+  ]);
+  return validateParentFinalizationArtifacts({ intent, deployment, lockBytes, resultBytes });
 }
 
 function ownerSummary(owner) {
@@ -718,8 +820,13 @@ function assertShared(object, label) {
 }
 
 export function validateCurrentParentState({ objects, intent }) {
+  const finalized = intent.parent?.finalization?.status === 'success';
   const v4Package = exactId(intent.protocol.protocolFeePackageId, 'v4 ProtocolFee package');
   const v5Package = exactId(intent.protocol.commerceV5TypeOriginPackageId, 'Commerce v5 TypeOrigin');
+  const independentPackage = exactId(
+    intent.protocol.independentExtensionV5TypeOriginPackageId,
+    'Independent extension TypeOrigin',
+  );
   const payment = normalizeStructTag(intent.protocol.paymentCoinType);
   const ids = {
     v4Config: exactId(intent.protocol.protocolFeeConfigId, 'v4 ProtocolFeeConfig'),
@@ -729,8 +836,20 @@ export function validateCurrentParentState({ objects, intent }) {
     root: exactId(intent.parent.currentV5.rootId, 'current MakerRootV5'),
     treasury: exactId(intent.parent.currentV5.treasuryId, 'current MakerTreasuryV5'),
     vault: exactId(intent.parent.currentV5.controlVaultId, 'current MakerControlVaultV5'),
-    cap: exactId(intent.parent.currentV5.controlCapId, 'current MakerControlCapV5'),
+    ...(finalized ? {
+      authority: exactId(
+        intent.parent.currentV5.authorityId
+          || intent.protocol.independentExtensionAuthorityV5Id,
+        'current IndependentExtensionAuthorityV5',
+      ),
+    } : {
+      cap: exactId(intent.parent.currentV5.controlCapId, 'current MakerControlCapV5'),
+    }),
   };
+  const retiredControlCapId = exactId(
+    intent.parent.currentV5.retiredControlCapId || intent.parent.currentV5.controlCapId,
+    'retired MakerControlCapV5',
+  );
   const get = (id, label) => {
     const object = objects.get(id);
     if (!object || object instanceof Error || object?.error || object?.$kind === 'Error') {
@@ -746,7 +865,15 @@ export function validateCurrentParentState({ objects, intent }) {
   exactObjectType(current.root, `${v5Package}::commerce_v5::MakerRootV5`, 'MakerRootV5');
   exactObjectType(current.treasury, `${v5Package}::commerce_v5::MakerTreasuryV5<${payment}>`, 'MakerTreasuryV5');
   exactObjectType(current.vault, `${v5Package}::commerce_v5::MakerControlVaultV5`, 'MakerControlVaultV5');
-  exactObjectType(current.cap, `${v5Package}::commerce_v5::MakerControlCapV5`, 'MakerControlCapV5');
+  if (finalized) {
+    exactObjectType(
+      current.authority,
+      `${independentPackage}::commerce_v5::IndependentExtensionAuthorityV5`,
+      'IndependentExtensionAuthorityV5',
+    );
+  } else {
+    exactObjectType(current.cap, `${v5Package}::commerce_v5::MakerControlCapV5`, 'MakerControlCapV5');
+  }
   for (const [key, object] of Object.entries(current)) {
     if (key === 'v4Admin' || key === 'cap') assertAddressOwner(object, intent.signer.address, key);
     else assertShared(object, key);
@@ -768,7 +895,10 @@ export function validateCurrentParentState({ objects, intent }) {
   const protocolTreasury = parseCommerceProtocolTreasuryV5(current.v5Treasury);
   const root = parseMakerRootV5(current.root);
   const makerTreasury = parseMakerTreasuryV5(current.treasury);
-  const controlCap = parseMakerControlCapV5(current.cap);
+  const controlCap = finalized ? null : parseMakerControlCapV5(current.cap);
+  const authority = finalized
+    ? parseIndependentExtensionAuthorityV5(current.authority)
+    : null;
   const vaultJson = objectJson(current.vault);
   if (protocol.legacyConfigId !== ids.v4Config
     || protocol.legacyAdminCapId !== ids.v4Admin
@@ -779,21 +909,67 @@ export function validateCurrentParentState({ objects, intent }) {
     || root.legacyTreasuryId !== exactId(intent.parent.legacyTreasuryId, 'legacy treasury history')
     || root.controlVaultId !== ids.vault
     || root.treasuryId !== ids.treasury
-    || root.currentControlCapId !== ids.cap
     || root.currentOwner !== exactId(intent.signer.address, 'signer')
-    || root.ownershipEpoch !== controlCap.ownershipEpoch
     || makerTreasury.rootId !== ids.root
-    || controlCap.rootId !== ids.root
     || jsonId(jsonField(vaultJson, 'root_id', 'rootId')) !== ids.root
     || jsonId(jsonField(vaultJson, 'legacy_maker_id', 'legacyMakerId'))
       !== exactId(intent.parent.legacyMakerId, 'legacy Maker')
-    || root.lifecycle !== intent.parent.expectedLifecycleCode) {
+    || root.lifecycle !== intent.parent.expectedLifecycleCode
+    || (!finalized && (
+      root.currentControlCapId !== ids.cap
+      || root.ownershipEpoch !== controlCap.ownershipEpoch
+      || controlCap.rootId !== ids.root
+    ))) {
     fail('The current migrated PAUSED parent authority tuple drifted.', {
       protocol: stableValue(protocol), root: stableValue(root), makerTreasury: stableValue(makerTreasury),
-      controlCap: stableValue(controlCap), vault: stableValue(vaultJson),
+      controlCap: stableValue(controlCap), authority: stableValue(authority), vault: stableValue(vaultJson),
     });
   }
-  return { ids, current, protocol, protocolTreasury, root, makerTreasury, controlCap };
+  if (finalized) {
+    const finalization = intent.parent.finalization;
+    const lockedEpoch = BigInt(intent.parent.currentV5.lockedOwnershipEpoch);
+    const expectedAuditHash = `0x${text(finalization.auditHash).replace(/^0x/i, '').toLowerCase()}`;
+    if (root.currentControlCapId !== retiredControlCapId
+      || root.ownershipEpoch !== lockedEpoch
+      || !root.styleRegistrySealed
+      || root.styleCount !== BigInt(intent.parent.expectedStyleCount)
+      || root.packCount !== 0n
+      || root.paidPackCount !== 0n
+      || root.packKeys.length !== 0
+      || root.protectedStyleCount !== 0n
+      || root.completeOutputCount !== 0n
+      || root.totalCompletes !== 0n
+      || root.activeListingId
+      || root.baseAccess.kind !== 0
+      || root.baseAccess.purchasePriceAtomic !== 0n
+      || root.requiresSealPolicy
+      || root.sealPolicyBound
+      || makerTreasury.balanceAtomic !== 0n
+      || makerTreasury.totalPackCollectedAtomic !== 0n
+      || makerTreasury.totalCompleteCollectedAtomic !== 0n
+      || authority.objectId !== ids.authority
+      || authority.version !== 5
+      || authority.rootId !== ids.root
+      || authority.legacyMakerId !== exactId(intent.parent.legacyMakerId, 'legacy Maker')
+      || authority.protocolConfigId !== ids.v5Config
+      || authority.protocolAdminCapId !== ids.v4Admin
+      || authority.owner !== exactId(intent.signer.address, 'signer')
+      || authority.retiredControlCapId !== retiredControlCapId
+      || authority.retiredControlCapEpoch + 1n !== authority.lockedOwnershipEpoch
+      || authority.lockedOwnershipEpoch !== lockedEpoch
+      || authority.auditHash.toLowerCase() !== expectedAuditHash
+      || ids.authority !== exactId(finalization.authorityId, 'finalized Authority')) {
+      fail('The finalized independent-extension parent tuple drifted.', {
+        root: stableValue(root),
+        makerTreasury: stableValue(makerTreasury),
+        authority: stableValue(authority),
+        expectedAuditHash,
+      });
+    }
+  }
+  return {
+    ids, current, protocol, protocolTreasury, root, makerTreasury, controlCap, authority,
+  };
 }
 
 async function buildPackCandidate(parentManifest, intent, assetBytes) {
@@ -1568,7 +1744,10 @@ export async function main() {
     gitValue('status', '--porcelain=v1', '--untracked-files=all'),
   ]);
   const worktree = validateReadinessWorktree(sourceStatus);
-  const correctiveUpgradeEvidence = await correctiveV7Evidence(intent, deployment);
+  const [correctiveUpgradeEvidence, finalizedParentEvidence] = await Promise.all([
+    correctiveV7Evidence(intent, deployment),
+    parentFinalizationArtifacts(intent, deployment),
+  ]);
   if (intent.writeBoundary.signingAllowed !== false
     || intent.writeBoundary.broadcastAllowed !== false
     || intent.writeBoundary.currentMode !== 'read-only-readiness-only') {
@@ -1603,6 +1782,9 @@ export async function main() {
     ['commerceV5SoulBindingProofType', intent.protocol.soulBindingProofType],
     ['expansionPackV8CallablePackageId', intent.protocol.callablePackageId],
     ['expansionPackV8TypeOriginPackageId', intent.protocol.typeOriginPackageId],
+    ['independentExtensionV5TypeOriginPackageId', intent.protocol.independentExtensionV5TypeOriginPackageId],
+    ['legacyLogicalV5TypeOriginPackageId', intent.protocol.legacyLogicalV5TypeOriginPackageId],
+    ['independentExtensionAuthorityV5Id', intent.protocol.independentExtensionAuthorityV5Id],
     ['paymentCoinType', intent.protocol.paymentCoinType],
   ];
   for (const [field, expected] of exactRuntimeFields) {
@@ -1651,6 +1833,29 @@ export async function main() {
     network: 'mainnet',
     baseUrl: runtime.grpcUrl,
   });
+  const parentFinalized = intent.status === 'parent-finalized-pack-publication-readiness'
+    && intent.parent?.finalization?.status === 'success';
+  if (!parentFinalized) {
+    fail('Pack readiness requires the exact successful parent-finalization intent state.');
+  }
+  const finalizationEvidence = deployment?.releases?.expansionPackV8?.parentFinalization;
+  const finalizationChecks = [
+    [intent.parent.finalization.transactionDigest, finalizationEvidence?.transactionDigest,
+      'Parent finalization transaction'],
+    [intent.parent.finalization.checkpoint, finalizationEvidence?.checkpoint,
+      'Parent finalization checkpoint'],
+    [intent.parent.finalization.checkpointDigest, finalizationEvidence?.checkpointDigest,
+      'Parent finalization checkpoint digest'],
+    [intent.parent.finalization.authorityId, finalizationEvidence?.authorityId,
+      'Parent finalization Authority'],
+    [intent.parent.finalization.auditHash, finalizationEvidence?.auditHash,
+      'Parent finalization audit hash'],
+    [intent.parent.finalization.lockEvidenceSha256, finalizationEvidence?.lockEvidenceSha256,
+      'Parent finalization lock evidence SHA-256'],
+    [intent.parent.finalization.resultEvidenceSha256, finalizationEvidence?.resultSha256,
+      'Parent finalization result evidence SHA-256'],
+  ];
+  for (const [actual, expected, label] of finalizationChecks) sameText(actual, expected, label);
   const requiredIds = [
     intent.protocol.protocolFeeConfigId,
     intent.protocol.protocolFeeAdminCapId,
@@ -1659,7 +1864,7 @@ export async function main() {
     intent.parent.currentV5.rootId,
     intent.parent.currentV5.treasuryId,
     intent.parent.currentV5.controlVaultId,
-    intent.parent.currentV5.controlCapId,
+    intent.parent.currentV5.authorityId,
   ].map((id, index) => exactId(id, `Required object ${index + 1}`));
   const [chain, objectResponse, balances, addressBalance, gasPrice, history] = await Promise.all([
     client.core.getChainIdentifier(),
@@ -1692,6 +1897,54 @@ export async function main() {
   const styles = await queryStyleBindingsV5(client.core, currentParent.root);
   assertObservedStyles(styles, routePlan);
   const parentStage = currentParentStage(currentParent.root, styles);
+  if (parentStage !== 'finalized-readback') {
+    fail('Pack readiness requires the atomically finalized parent readback.');
+  }
+  const parentIdentity = [
+    'published-release',
+    intent.parent.rootMakerId,
+    intent.parent.legacyMakerId,
+    intent.parent.versionId,
+    intent.parent.manifestQuiltId,
+    intent.parent.manifestSha256,
+  ].join('|');
+  const parentVerification = await verifyExpansionPackV8ParentAction({
+    action: {
+      id: 'parent.release.verify',
+      authority: { signer: intent.signer.address },
+      inputs: {
+        baseMakerRootId: intent.parent.currentV5.rootId,
+        parentLegacyMakerId: intent.parent.legacyMakerId,
+        independentExtensionAuthorityV5Id: intent.parent.currentV5.authorityId,
+        parentVersion: intent.parent.versionNumber,
+        parentVersionId: intent.parent.versionId,
+        parentManifestBlobId: intent.parent.manifestQuiltId,
+        parentManifestSha256: intent.parent.manifestSha256,
+        parentIdentity,
+      },
+    },
+    suiClient: client.core,
+    runtime,
+    async manifestReadback() {
+      return {
+        sha256: parentSha256,
+        version: intent.parent.versionNumber,
+        versionId: intent.parent.versionId,
+        identity: parentIdentity,
+      };
+    },
+  });
+  if (!parentVerification.parentVerified
+    || !parentVerification.independentExtensionAuthorityVerified
+    || !parentVerification.retiredMakerControlCapUnavailable
+    || !parentVerification.parentReleaseEvidenceBound
+    || parentVerification.parentLifecycleState !== 'PAUSED'
+    || parentVerification.parentOwnershipEpoch
+      !== text(intent.parent.currentV5.lockedOwnershipEpoch)) {
+    fail('The publication parent verification did not return the exact finalized tuple.', {
+      parentVerification: stableValue(parentVerification),
+    });
+  }
   const walrusState = await walrusReadiness({
     client,
     runtime,
@@ -1737,6 +1990,7 @@ export async function main() {
     },
     source,
     correctiveUpgradeEvidence,
+    finalizedParentEvidence,
     protocol: stableValue(intent.protocol),
     objects: objectFingerprints,
     parent: {
@@ -1761,6 +2015,8 @@ export async function main() {
         root: stableValue(currentParent.root),
         makerTreasury: stableValue(currentParent.makerTreasury),
         controlCap: stableValue(currentParent.controlCap),
+        authority: stableValue(currentParent.authority),
+        publicationVerification: stableValue(parentVerification),
         protocolTreasury: stableValue(currentParent.protocolTreasury),
         vault: stableValue(objectJson(currentParent.current.vault)),
         styles: stableValue(styles),

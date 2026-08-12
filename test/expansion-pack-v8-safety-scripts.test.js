@@ -7,6 +7,7 @@ import {
   orderedIndependentExtensionStyleBindings,
   scanV8HistoryWindow,
   validateCorrectiveV7Evidence,
+  validateParentFinalizationArtifacts,
   validateReadinessWorktree,
 } from '../scripts/expansion-pack-v8-free-readiness.mjs';
 import {
@@ -570,5 +571,72 @@ test('readiness worktree policy allows only the migration executor as untracked'
   assert.throws(
     () => validateReadinessWorktree('?? scripts/unreviewed.mjs'),
     /unreviewed changes/,
+  );
+});
+
+test('readiness binds parent finalization summaries to the durable lock and readback bytes', () => {
+  const lock = {
+    schemaVersion: 'animacraft.expansion-pack-v8-parent-stage-lock.v1',
+    lock: { stage: 'finalize', transaction: { digest: 'FinalizerTx' } },
+  };
+  lock.lockFingerprintSha256 = digest(Buffer.from(JSON.stringify({
+    stage: 'finalize',
+    transaction: { digest: 'FinalizerTx' },
+  })));
+  const result = {
+    schemaVersion: 'animacraft.expansion-pack-v8-parent-stage-result.v1',
+    stage: 'finalize',
+    transactionDigest: 'FinalizerTx',
+    finalized: { digest: 'FinalizerTx', effects: { status: { success: true, error: null } } },
+    checkpoint: { sequenceNumber: '123', digest: 'CheckpointDigest' },
+    lockFingerprintSha256: lock.lockFingerprintSha256,
+    recoveredFromFinalizedTransaction: true,
+    signatureRecorded: false,
+    signatureVerifiedLocally: true,
+    postState: {
+      root: { objectId: ROOT, ownershipEpoch: '1', lifecycle: 1, styleRegistrySealed: true },
+      authority: { objectId: INDEPENDENT_ORIGIN },
+      lock: { auditHash: ROUTE },
+      event: {
+        name: 'IndependentExtensionRootFinalizedV5',
+        authorityId: INDEPENDENT_ORIGIN,
+        auditHash: `0x${ROUTE}`,
+      },
+      styles: Array(26).fill({}),
+      packs: [],
+      retiredControlCap: { status: 'unavailable' },
+    },
+  };
+  const lockBytes = Buffer.from(JSON.stringify(lock));
+  const resultBytes = Buffer.from(JSON.stringify(result));
+  const reviewedDeployment = {
+    releases: { expansionPackV8: { parentFinalization: {
+      status: 'success', transactionDigest: 'FinalizerTx', checkpoint: '123',
+      checkpointDigest: 'CheckpointDigest', rootId: ROOT,
+      authorityId: INDEPENDENT_ORIGIN, auditHash: ROUTE,
+      lockFingerprintSha256: lock.lockFingerprintSha256, lockEvidenceSha256: digest(lockBytes),
+      resultSha256: digest(resultBytes), lockEvidencePath: 'lock.json',
+      resultPath: 'result.json', ownershipEpoch: '1',
+    } } },
+  };
+  const reviewedIntent = { parent: { finalization: {
+    status: 'success', lockFingerprintSha256: lock.lockFingerprintSha256,
+  } } };
+  assert.equal(validateParentFinalizationArtifacts({
+    intent: reviewedIntent,
+    deployment: reviewedDeployment,
+    lockBytes,
+    resultBytes,
+  }).transactionDigest, 'FinalizerTx');
+  const drifted = Buffer.from(resultBytes);
+  drifted[drifted.length - 2] ^= 1;
+  assert.throws(
+    () => validateParentFinalizationArtifacts({
+      intent: reviewedIntent,
+      deployment: reviewedDeployment,
+      lockBytes,
+      resultBytes: drifted,
+    }),
+    /result SHA-256 drifted/,
   );
 });

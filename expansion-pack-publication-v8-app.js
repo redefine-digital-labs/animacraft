@@ -1,6 +1,11 @@
 import { bcs } from '@mysten/sui/bcs';
 import { Transaction } from '@mysten/sui/transactions';
-import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
+import {
+  fromBase64,
+  normalizeStructTag,
+  normalizeSuiAddress,
+  toBase64,
+} from '@mysten/sui/utils';
 import { deriveExpansionPackSealReleaseCommitmentV8 } from './maker-seal-v5.js';
 
 export const EXPANSION_PACK_V8_VERSION = 8;
@@ -162,8 +167,21 @@ function u64(value, label, { positive = false } = {}) {
 function hex(value, label, { allowEmpty = false } = {}) {
   if ((value === '' || value == null) && allowEmpty) return '';
   if (typeof value === 'string') {
-    const result = value.replace(/^0x/i, '').toLowerCase();
+    const candidate = value.trim();
+    const result = candidate.replace(/^0x/i, '').toLowerCase();
     if (HASH.test(result)) return result;
+    if (/^[A-Za-z0-9+/]{43}=$/.test(candidate)) {
+      try {
+        const bytes = fromBase64(candidate);
+        if (bytes.length === 32 && toBase64(bytes) === candidate) {
+          return [...bytes]
+            .map((entry) => entry.toString(16).padStart(2, '0'))
+            .join('');
+        }
+      } catch {
+        // Fall through to the single exact commitment error below.
+      }
+    }
   }
   const rawBytes = value?.bytes || value?.vec || value;
   const bytes = ArrayBuffer.isView(rawBytes) ? Array.from(rawBytes) : array(rawBytes);
