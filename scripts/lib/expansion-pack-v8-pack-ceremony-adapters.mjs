@@ -4,9 +4,10 @@ import { promisify } from 'node:util';
 
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
-import { normalizeSuiAddress } from '@mysten/sui/utils';
+import { normalizeStructTag, normalizeSuiAddress, SUI_TYPE_ARG } from '@mysten/sui/utils';
 import { verifyTransactionSignature } from '@mysten/sui/verify';
 import { WalrusFile, walrus } from '@mysten/walrus';
+import { waitForCertifiedWalrusBlobObject } from '../../walrus-certification.js';
 
 import { materializeExpansionPackPublicationCandidate } from '../../expansion-pack-publication-recovery.js';
 import {
@@ -38,11 +39,15 @@ function result(value) { return value?.Transaction || value?.transaction || valu
 function exactId(value) { return normalizeSuiAddress(text(value)); }
 function simulation(value) {
   const tx = result(value);
-  if (!tx || value?.FailedTransaction || value?.$kind === 'FailedTransaction') {
+  const effectsStatus = tx?.effects?.status;
+  const success = effectsStatus?.success === true && effectsStatus?.error == null
+    || text(effectsStatus?.status || effectsStatus || tx?.status).toLowerCase() === 'success';
+  if (!tx || value?.FailedTransaction || value?.$kind === 'FailedTransaction'
+    || !success) {
     fail('Transaction simulation failed.', 'PACK_CEREMONY_SIMULATION_FAILED', { value: stable(value) });
   }
-  return stable({ digest: tx.digest, effects: tx.effects, events: tx.events,
-    objectTypes: tx.objectTypes, commandResults: tx.commandResults });
+  return stable({ success, digest: tx.digest, effects: tx.effects,
+    events: tx.events, objectTypes: tx.objectTypes, commandResults: tx.commandResults });
 }
 
 async function runtimeFor(state) {
@@ -74,11 +79,13 @@ function exactGas(transaction, action, options) {
     fail('Sui lock requires --gas-price/--gas-budget/--min-epoch/--max-epoch/--chain/--nonce.',
       'PACK_CEREMONY_GAS_OPTIONS_MISSING');
   }
+  transaction.setSender(exactId(action.authority.signer));
   transaction.setGasOwner(exactId(action.authority.signer));
   transaction.setGasPrice(gasPrice);
   transaction.setGasBudget(gasBudget);
   transaction.setGasPayment([]);
-  transaction.setExpiration({ ValidDuring: { minEpoch, maxEpoch, chain, nonce } });
+  transaction.setExpiration({ ValidDuring: { minEpoch, maxEpoch,
+    minTimestamp: null, maxTimestamp: null, chain, nonce } });
 }
 
 async function suiLock({ action, options, state }) {
@@ -91,7 +98,10 @@ async function suiLock({ action, options, state }) {
   if (text(system.systemState.referenceGasPrice) !== text(options.gasPrice)) fail('Reference gas price drifted.');
   const epoch = BigInt(system.systemState.epoch);
   if (epoch < BigInt(options.minEpoch) || epoch > BigInt(options.maxEpoch)) fail('ValidDuring epoch is not current.');
-  if (BigInt(balance.balance.addressBalance) < BigInt(options.gasBudget)) fail('Address Balance cannot cover gas budget.');
+  if (balance.balance.addressBalance == null
+    || BigInt(balance.balance.addressBalance) < BigInt(options.gasBudget)) {
+    fail('Address Balance evidence cannot cover gas budget.');
+  }
   const transaction = transactionFromExpansionPackV8PublicationAction(action);
   exactGas(transaction, action, options);
   const bytes = await transaction.build({ client });
@@ -147,7 +157,9 @@ async function querySui({ state, signed }) {
     return await client.core.getTransaction({ digest: signed.submission.transactionDigest,
       include: { effects: true, events: true, objectTypes: true, balanceChanges: true } });
   } catch (error) {
-    if (/not found|could not find|unknown transaction/i.test(text(error?.message))) return null;
+    if (error?.code === 'NOT_FOUND' || error?.status === 404
+      || error?.cause?.code === 'NOT_FOUND' || error?.cause?.status === 404
+      || text(error?.message) === `Transaction ${signed.submission.transactionDigest} not found`) return null;
     throw error;
   }
 }
@@ -161,7 +173,20 @@ async function waitSui({ state, signed, indexed }) {
   return client.core.waitForTransaction({ result: indexed, digest: signed.submission.transactionDigest,
     timeout: 60_000, include: { effects: true, events: true, objectTypes: true, balanceChanges: true } });
 }
+function assertSuccessfulFinality(value, expectedDigest, label) {
+  const tx = result(value);
+  const digest = text(tx?.digest || tx?.transaction?.digest || tx?.effects?.transactionDigest);
+  const effectsStatus = tx?.effects?.status;
+  const success = effectsStatus?.success === true && effectsStatus?.error == null
+    || text(effectsStatus?.status || effectsStatus || tx?.status).toLowerCase() === 'success';
+  if (digest !== expectedDigest || !success) {
+    fail(`${label} did not finalize with the exact successful digest.`, 'PACK_CEREMONY_FINALITY_FAILED',
+      { expectedDigest, digest, success });
+  }
+  return value;
+}
 async function readbackSui({ action, state, signed, finalized }) {
+  assertSuccessfulFinality(finalized, signed.submission.transactionDigest, action.id);
   const { client, runtime } = await clientFor(state);
   return readExpansionPackV8Submission({ action,
     submission: { transactionDigest: signed.submission.transactionDigest, indexed: finalized },
@@ -181,6 +206,31 @@ async function filesAndFlow(state, quoteMax = null, resume = undefined) {
   return { client, runtime, extended, flow, exact };
 }
 
+function sameCheckpoint(actual, expected, label) {
+  for (const key of ['step', 'blobId', 'rootHash', 'unencodedSize', 'nonce']) {
+    if (stableJson(actual?.[key]) !== stableJson(expected?.[key])) {
+      fail(`${label} encoding checkpoint drifted at ${key}.`, 'PACK_CEREMONY_WALRUS_CHECKPOINT_DRIFT');
+    }
+  }
+}
+
+async function encodeWithIndex(extended, exact) {
+  return extended.walrus.encodeQuilt({ blobs: exact.map(({ bytes, identifier, mediaType, kind }) => ({
+    contents: bytes, identifier, tags: { 'content-type': mediaType, 'animacraft-kind': kind },
+  })) });
+}
+
+export function encodeCeremonyQuiltPatchId(quiltId, patch) {
+  // Equivalent to the SDK's internal encodeQuiltPatchId, using its public BCS dependency.
+  return import('@mysten/bcs').then(({ bcs, toBase64 }) => {
+    const bytes = bcs.struct('QuiltPatchId', { quiltId: bcs.u256(), patchId: bcs.struct('Patch', {
+      version: bcs.u8(), startIndex: bcs.u16(), endIndex: bcs.u16(),
+    }) }).serialize({ quiltId: BigInt(bcs.u256().fromBase64(quiltId.replaceAll('-', '+').replaceAll('_', '/'))),
+      patchId: { version: 1, startIndex: patch.startIndex, endIndex: patch.endIndex } }).toBytes();
+    return toBase64(bytes).replace(/=*$/, '').replaceAll('+', '-').replaceAll('/', '_');
+  });
+}
+
 async function balances(client, owner) {
   const rows = []; let cursor = null;
   do {
@@ -190,60 +240,71 @@ async function balances(client, owner) {
   return stable(rows);
 }
 
-async function transactionEvidence(transaction, action, options, client) {
+async function transactionEvidence(transaction, action, options, client, extraMist = '0') {
   exactGas(transaction, action, options);
+  const balance = await client.core.getBalance({ owner: action.authority.signer });
+  const required = BigInt(options.gasBudget) + BigInt(extraMist);
+  if (balance.balance.addressBalance == null || BigInt(balance.balance.addressBalance) < required) {
+    fail('Address Balance evidence cannot cover exact gas budget plus relay tip.', 'PACK_CEREMONY_GAS_INVALID');
+  }
   const bytes = await transaction.build({ client });
   if (!transaction.isFullyResolved()) fail('Walrus Sui transaction is not fully resolved.');
   const simulated = await client.core.simulateTransaction({ transaction: bytes, checksEnabled: true,
     include: { effects: true, events: true, objectTypes: true, commandResults: true } });
-  return { gasMode: 'address-balance', payment: [], objects: stable(transaction.getData().inputs || []),
+  return { gasMode: 'address-balance', payment: [], addressBalance: stable(balance.balance),
+    requiredAddressBalanceMist: text(required), objects: stable(transaction.getData().inputs || []),
     transaction: { bytesBase64: Buffer.from(bytes).toString('base64'), bytesSha256: sha256(bytes),
       byteLength: bytes.byteLength, digest: TransactionDataBuilder.getDigestFromBytes(bytes),
       data: stable(transaction.getData()) }, simulation: simulation(simulated) };
 }
 
 async function walrusLock({ action, state, options }) {
-  const base = await filesAndFlow(state);
-  const encoded = await base.flow.encode();
-  const [tip, costs, wallet] = await Promise.all([
-    base.extended.walrus.calculateUploadRelayTip({ size: encoded.unencodedSize }),
-    base.extended.walrus.storageCost(encoded.unencodedSize,
-      JSON.parse(await readFile(state.readiness.path, 'utf8')).lock.walrus.quote.epochs),
-    balances(base.client, state.plan.context.owner),
-  ]);
-  const quoted = await filesAndFlow(state, tip, encoded);
-  const reencoded = await quoted.flow.encode();
-  if (reencoded.blobId !== encoded.blobId || reencoded.rootHash !== encoded.rootHash
-    || reencoded.nonce !== encoded.nonce) fail('Walrus exact encoding drifted while pinning quote.');
   const readiness = JSON.parse(await readFile(state.readiness.path, 'utf8'));
+  const prepared = state.walrus['walrus.pack.prepare'];
+  const isPrepare = action.id === 'walrus.pack.prepare';
+  const base = await filesAndFlow(state, isPrepare ? null : prepared?.quote?.relayTipMist,
+    isPrepare ? readiness.lock.walrus.checkpoint : prepared?.checkpoint);
+  const encoded = await base.flow.encode();
+  sameCheckpoint(encoded, isPrepare ? readiness.lock.walrus.checkpoint : prepared?.checkpoint,
+    isPrepare ? 'Readiness' : 'Persisted prepare');
   if (encoded.blobId !== readiness.lock.walrus.quiltBlobId) fail('Walrus Quilt ID differs from readiness.');
-  if (BigInt(tip) > BigInt(readiness.lock.pack.intent?.walrusRelayTipCapMist
+  let tip = prepared?.quote?.relayTipMist; let costs = prepared?.quote; let wallet = [];
+  if (isPrepare) {
+    [tip, costs, wallet] = await Promise.all([
+      base.extended.walrus.calculateUploadRelayTip({ size: encoded.unencodedSize }),
+      base.extended.walrus.storageCost(encoded.unencodedSize, readiness.lock.walrus.quote.epochs),
+      balances(base.client, state.plan.context.owner),
+    ]);
+  }
+  if (isPrepare && BigInt(tip) > BigInt(readiness.lock.pack.intent?.walrusRelayTipCapMist
       || readiness.lock.walrus.quote.relayTipCapMist || '100000000')) {
     fail('Fresh Walrus relay quote exceeds the reviewed cap.');
   }
-  const expectedWalType = readiness.lock.walrus.quote.walCoinType;
-  const balanceByType = new Map(wallet.map((entry) => [text(entry.coinType), BigInt(entry.balance)]));
-  if (expectedWalType && (balanceByType.get(expectedWalType) || 0n) < BigInt(costs.totalCost)) {
+  const expectedWalType = text(readiness.lock.walrus.quote.walCoinType);
+  const balanceByType = new Map(wallet.map((entry) => [normalizeStructTag(text(entry.coinType)), BigInt(entry.balance)]));
+  if (isPrepare && expectedWalType
+    && (balanceByType.get(normalizeStructTag(expectedWalType)) || 0n) < BigInt(costs.totalCost)) {
     fail('Fresh wallet WAL balance cannot cover the exact Quilt cost.');
   }
-  const sui = wallet.find((entry) => /::sui::SUI$/i.test(text(entry.coinType)));
-  if (BigInt(sui?.balance || 0) < BigInt(tip)) fail('Fresh wallet SUI balance cannot cover relay tip before gas.');
+  const sui = wallet.find((entry) => normalizeStructTag(text(entry.coinType)) === normalizeStructTag(SUI_TYPE_ARG));
+  if (isPrepare && BigInt(sui?.balance || 0) < BigInt(tip)) fail('Fresh wallet SUI balance cannot cover relay tip before gas.');
   let transaction = {};
   if (action.id === 'walrus.pack.register-upload') {
-    transaction = await transactionEvidence(quoted.flow.register({
+    transaction = await transactionEvidence(base.flow.register({
       epochs: readiness.lock.walrus.quote.epochs, owner: state.plan.context.owner, deletable: false,
-    }), action, options, base.client);
+    }), action, options, base.client, prepared.quote.relayTipMist);
   } else if (action.id === 'walrus.pack.certify') {
     const uploaded = assertWalrusCheckpoint(state.walrus['walrus.pack.register-upload'], 'uploaded');
-    transaction = await transactionEvidence(quoted.extended.walrus.certifyBlobTransaction({
+    transaction = await transactionEvidence(base.extended.walrus.certifyBlobTransaction({
       blobId: uploaded.quiltBlobId, blobObjectId: uploaded.blobObjectId,
       certificate: uploaded.certificate, deletable: false,
     }), action, options, base.client);
   }
   return { fileCount: 2, files: base.exact.map(({ bytes, ...entry }) => ({ ...entry,
     byteLength: bytes.byteLength, sha256: sha256(bytes) })), quiltBlobId: encoded.blobId,
-    checkpoint: stable(encoded), quote: { relayTipMist: text(tip), storageCostFrost: text(costs.storageCost),
-      writeCostFrost: text(costs.writeCost), totalCostFrost: text(costs.totalCost) }, balances: wallet,
+    checkpoint: stable(encoded), quote: isPrepare ? { relayTipMist: text(tip), storageCostFrost: text(costs.storageCost),
+      writeCostFrost: text(costs.writeCost), totalCostFrost: text(costs.totalCost) } : stable(prepared.quote),
+    balances: isPrepare ? wallet : [],
     actionKind: action.id, ...transaction };
 }
 
@@ -276,6 +337,18 @@ async function signAndPersistWalrusTransaction({ action, state, checkpoint, kind
     submission: existing.pendingTransaction,
   } : null;
   if (!signed) signed = await signSui({ state, lock });
+  const signedBytes = Buffer.from(text(signed.bytesBase64), 'base64');
+  if (text(signed.bytesBase64) !== lock.transaction.bytesBase64
+    || text(signed.submission?.bytesBase64) !== lock.transaction.bytesBase64
+    || sha256(signedBytes) !== lock.transaction.bytesSha256
+    || text(signed.submission?.bytesSha256) !== lock.transaction.bytesSha256
+    || TransactionDataBuilder.getDigestFromBytes(signedBytes) !== lock.transaction.digest
+    || text(signed.submission?.transactionDigest) !== lock.transaction.digest
+    || text(signed.signature) !== text(signed.submission?.signature)) {
+    fail('Persisted Walrus signature envelope drifted from its exact lock.',
+      'PACK_CEREMONY_SIGNED_BYTES_MISMATCH');
+  }
+  await verifyTransactionSignature(signedBytes, signed.signature, { address: state.plan.context.owner });
   const digest = signed.submission.transactionDigest;
   // Critical boundary: the callback atomically persists signed bytes before any query/broadcast.
   if (!existing?.pendingTransaction) await checkpoint({ ...assertWalrusCheckpoint({ uploadSessionId: action.inputs.uploadSessionId || `walrus-${digest}`,
@@ -285,7 +358,8 @@ async function signAndPersistWalrusTransaction({ action, state, checkpoint, kind
     signedPersisted: true });
   let indexed = await querySui({ state, signed });
   if (!indexed) indexed = await broadcastSui({ state, signed });
-  await waitSui({ state, signed, indexed });
+  const finalized = await waitSui({ state, signed, indexed });
+  assertSuccessfulFinality(finalized, digest, `Walrus ${kind}`);
   return { digest, signed };
 }
 
@@ -312,6 +386,8 @@ async function executeWalrus({ action, state, checkpoint }) {
     : locked.checkpoint;
   const flowData = await filesAndFlow(state, locked.quote.relayTipMist, resumeCheckpoint);
   const flow = flowData.flow;
+  const resumedEncoding = await flow.encode();
+  sameCheckpoint(resumedEncoding, locked.checkpoint, action.id);
   if (action.id === 'walrus.pack.register-upload') {
     const existing = state.walrus[action.id];
     if (existing?.stage === 'uploaded') return { submission: { registerDigest: existing.registerDigest },
@@ -324,7 +400,7 @@ async function executeWalrus({ action, state, checkpoint }) {
     const progress = assertWalrusCheckpoint({ stage: 'uploaded', uploadSessionId: sessionId,
       quiltBlobId: locked.quiltBlobId, blobObjectId: uploaded.blobObjectId,
       certificate: uploaded.certificate, registerDigest: registered.digest,
-      checkpoint: stable(uploaded) }, 'uploaded');
+      checkpoint: { ...stable(locked.checkpoint), ...stable(uploaded), step: 'uploaded' } }, 'uploaded');
     await checkpoint(progress);
     return { submission: { registerDigest: registered.digest }, confirmation: {
       uploadSessionId: sessionId, quiltBlobId: locked.quiltBlobId,
@@ -350,21 +426,37 @@ async function executeWalrus({ action, state, checkpoint }) {
     const uploaded = assertWalrusCheckpoint(state.walrus['walrus.pack.register-upload'], 'uploaded');
     const certifiedTx = await signAndPersistWalrusTransaction({ action, state, checkpoint,
       kind: 'certify', lock: locked });
-    await flow.encode();
-    const files = await flow.listFiles();
+    await waitForCertifiedWalrusBlobObject(flowData.extended, uploaded.blobObjectId, {
+      certifyDigest: certifiedTx.digest, expectedBlobId: uploaded.quiltBlobId,
+    });
     const readiness = JSON.parse(await readFile(state.readiness.path, 'utf8'));
-    if (files.length !== readiness.lock.walrus.files.length) fail('Walrus listFiles count drifted.');
-    const patchIds = Object.fromEntries(readiness.lock.walrus.files.map((descriptor, index) => (
-      [descriptor.identifier, files[index]?.id]
-    )));
+    const { index } = await encodeWithIndex(flowData.extended, flowData.exact);
+    if (index.patches.length !== readiness.lock.walrus.files.length) fail('Walrus Quilt index count drifted.');
+    const patches = new Map(index.patches.map((patch) => [patch.identifier, patch]));
+    const patchIds = Object.fromEntries(await Promise.all(readiness.lock.walrus.files.map(async (descriptor) => {
+      const patch = patches.get(descriptor.identifier);
+      if (!patch) fail(`Walrus Quilt index is missing ${descriptor.identifier}.`);
+      return [descriptor.identifier, await encodeCeremonyQuiltPatchId(uploaded.quiltBlobId, patch)];
+    })));
     const readbacks = [];
     for (const descriptor of readiness.lock.walrus.files) {
       const url = `${flowData.runtime.walrusAggregatorUrl.replace(/\/$/, '')}/v1/blobs/by-quilt-patch-id/${patchIds[descriptor.identifier]}`;
-      const response = await fetch(url, { cache: 'no-store' });
-      if (!response.ok) fail(`Walrus aggregator readback failed for ${descriptor.identifier}.`);
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (sha256(bytes) !== descriptor.sha256) fail(`Walrus file SHA drifted for ${descriptor.identifier}.`);
-      readbacks.push({ identifier: descriptor.identifier, patchId: patchIds[descriptor.identifier], sha256: sha256(bytes) });
+      let bytes = null; let lastStatus = 0;
+      for (const delayMs of [0, 500, 1_000, 2_000, 4_000]) {
+        if (delayMs) await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+        const response = await fetch(url, { cache: 'no-store' }); lastStatus = response.status;
+        if (response.ok) { bytes = Buffer.from(await response.arrayBuffer()); break; }
+        if (![404, 408, 425, 429, 500, 502, 503, 504].includes(response.status)) break;
+      }
+      const expected = flowData.exact.find((entry) => entry.identifier === descriptor.identifier)?.bytes;
+      if (!bytes || !expected || bytes.byteLength !== descriptor.byteLength
+        || bytes.byteLength !== expected.byteLength || !bytes.equals(Buffer.from(expected))
+        || sha256(bytes) !== descriptor.sha256) {
+        fail(`Walrus exact file readback failed for ${descriptor.identifier}.`,
+          'PACK_CEREMONY_WALRUS_READBACK_FAILED', { status: lastStatus });
+      }
+      readbacks.push({ identifier: descriptor.identifier, patchId: patchIds[descriptor.identifier],
+        byteLength: bytes.byteLength, sha256: sha256(bytes) });
     }
     const progress = assertWalrusCheckpoint({ stage: 'certified', uploadSessionId: sessionId,
       quiltBlobId: uploaded.quiltBlobId, blobObjectId: uploaded.blobObjectId,
@@ -394,7 +486,11 @@ export function createDefaultCeremonyAdapters() {
       action.transport === 'SUI' ? suiLock({ action, options, state })
         : action.transport === 'WALRUS' ? walrusLock({ action, options, state })
           : { kind: action.transport, actionId: action.id }),
-    executeLocal, signSui, querySui, broadcastSui, waitSui, readbackSui,
+    executeLocal, signSui,
+    verifySigned: async ({ state, lock, signed }) => verifyTransactionSignature(
+      Buffer.from(lock.transaction.bytesBase64, 'base64'), signed.signature,
+      { address: state.plan.context.owner }),
+    querySui, broadcastSui, waitSui, readbackSui,
     executeWalrus,
     recoverWalrus: async () => fail('Use execute with the persisted Walrus checkpoint; no alternate signature is allowed.',
       'PACK_CEREMONY_WALRUS_USE_EXECUTE'),

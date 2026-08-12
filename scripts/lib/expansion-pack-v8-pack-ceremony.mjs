@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { chmod, lstat, mkdir, open, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import vm from 'node:vm';
 
@@ -33,13 +33,6 @@ export const ALLOWED_UNTRACKED = Object.freeze([
 ]);
 const SHA256 = /^[0-9a-f]{64}$/;
 const FORBIDDEN_ACTION = /seal-policy|\bgate\b|deploy/i;
-const CEREMONY_SOURCE_PATHS = Object.freeze(new Set([
-  'package.json',
-  'scripts/expansion-pack-v8-pack-ceremony.mjs',
-  'scripts/lib/expansion-pack-v8-pack-ceremony.mjs',
-  'scripts/lib/expansion-pack-v8-pack-ceremony-adapters.mjs',
-  'test/expansion-pack-v8-pack-ceremony.test.js',
-]));
 const GATES = Object.freeze([
   'expansionPackV8ReleaseEnabled',
   'commerceV5ReleaseEnabled',
@@ -80,13 +73,21 @@ function hash(value, label) {
 }
 function same(left, right, label) {
   if (stableJson(left) !== stableJson(right)) {
-    fail(`${label} drifted.`, 'PACK_CEREMONY_DRIFT', { expected: left, actual: right });
+    fail(`${label} drifted.`, 'PACK_CEREMONY_DRIFT', {
+      expectedSha256: sha256(stableJson(left)), actualSha256: sha256(stableJson(right)),
+    });
   }
 }
 
 export async function atomicWriteJson0600(path, value) {
-  const target = resolve(path);
-  await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+  const requested = resolve(path);
+  await mkdir(dirname(requested), { recursive: true, mode: 0o700 });
+  const parent = await realpath(dirname(requested));
+  const target = resolve(parent, basename(requested));
+  const existing = await lstat(target).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error));
+  if (existing?.isSymbolicLink() || (existing && !existing.isFile())) {
+    fail('Ceremony state must be a regular file, never a symlink.', 'PACK_CEREMONY_STATE_PATH_INVALID');
+  }
   const temporary = `${target}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`;
   try {
     await writeFile(temporary, `${stableJson(value, 2)}\n`, { mode: 0o600, flag: 'wx' });
@@ -96,6 +97,12 @@ export async function atomicWriteJson0600(path, value) {
     await chmod(temporary, 0o600);
     await rename(temporary, target);
     await chmod(target, 0o600);
+    const targetHandle = await open(target, 'r');
+    await targetHandle.sync();
+    await targetHandle.close();
+    const parentHandle = await open(parent, 'r');
+    await parentHandle.sync();
+    await parentHandle.close();
     const readback = JSON.parse(await readFile(target, 'utf8'));
     if (stableJson(readback) !== stableJson(value)) {
       fail('Atomic state readback differs from the persisted value.', 'PACK_CEREMONY_PERSISTENCE_FAILED');
@@ -109,13 +116,23 @@ export async function atomicWriteJson0600(path, value) {
   }
 }
 
-function assertExternalStatePath(repoRoot, statePath) {
-  const repo = resolve(repoRoot);
-  const state = resolve(statePath);
+async function assertExternalStatePath(repoRoot, statePath) {
+  const repo = await realpath(resolve(repoRoot));
+  const stateParent = await realpath(dirname(resolve(statePath)));
+  const state = resolve(stateParent, basename(resolve(statePath)));
   const rel = relative(repo, state);
   if (!rel || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))) {
     fail('Ceremony state must live outside the Git worktree.', 'PACK_CEREMONY_STATE_INSIDE_REPO');
   }
+  const entry = await lstat(state).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error));
+  if (entry?.isSymbolicLink() || (entry && !entry.isFile())) {
+    fail('Ceremony state must be a regular file, never a symlink.', 'PACK_CEREMONY_STATE_PATH_INVALID');
+  }
+  if (entry && ((entry.mode & 0o777) !== 0o600 || entry.nlink !== 1)) {
+    fail('Existing ceremony state must be mode 0600 with one regular-file link.',
+      'PACK_CEREMONY_PERMISSIONS_INVALID');
+  }
+  return { repo, state };
 }
 
 function statusEntry(line) {
@@ -133,9 +150,9 @@ export function validateWorktreeStatus(status) {
   return entries.map(({ path }) => path);
 }
 
-function assertActualFalse(config, label) {
+function assertActualFalse(config, label, requiredGates = GATES) {
   if (text(config?.network) !== 'mainnet') fail(`${label} is not Mainnet.`, 'PACK_CEREMONY_NETWORK_MISMATCH');
-  const enabled = GATES.filter((gate) => gate in config && config?.[gate] !== false);
+  const enabled = requiredGates.filter((gate) => config?.[gate] !== false);
   if (enabled.length) fail(`${label} has a product gate that is not exactly false.`,
     'PACK_CEREMONY_GATE_OPEN', { label, enabled });
 }
@@ -156,9 +173,10 @@ export async function loadActualConfiguration(repoRoot) {
   const runtime = normalizeRuntimeConfig(publicConfig);
   assertActualFalse(publicConfig, 'public/config.js');
   assertActualFalse(runtime, 'runtime config');
-  assertActualFalse(deployment, 'deployments/mainnet.json');
+  assertActualFalse(deployment, 'deployments/mainnet.json', GATES.filter((gate) => gate !== 'physicalStyleV7ReleaseEnabled'));
   const release = deployment?.releases?.expansionPackV8;
-  if (!release || deployment.observedChainState?.productRuntime?.expansionPackV8ReleaseEnabled !== false
+  if (!release || release.enabled !== false
+    || deployment.observedChainState?.productRuntime?.expansionPackV8ReleaseEnabled !== false
     || deployment.observedChainState?.productRuntime?.physicalStyleV7ReleaseEnabled !== false
     || deployment.verification?.expansionPackV8Enabled !== false
     || deployment.verification?.expansionPackV8CompleteToSoulidityEnabled !== false
@@ -258,24 +276,16 @@ export async function validateReadiness({ repoRoot, readinessPath, expected = nu
   const readinessTree = text(readiness.lock.source?.headTree);
   if (!readinessHead || !readinessTree) fail('Readiness has no exact source HEAD/tree.',
     'PACK_CEREMONY_SOURCE_DRIFT');
-  const [head, tree, status, configuration, exact, ancestry, changedSinceReadiness] = await Promise.all([
+  const [head, tree, status, configuration, exact] = await Promise.all([
     git(repoRoot, 'rev-parse', 'HEAD'),
     git(repoRoot, 'rev-parse', 'HEAD^{tree}'),
     git(repoRoot, 'status', '--porcelain=v1', '--untracked-files=all'),
     loadActualConfiguration(repoRoot),
     exactFiles(readiness, repoRoot),
-    execFileAsync('git', ['merge-base', '--is-ancestor', readinessHead, 'HEAD'], { cwd: repoRoot })
-      .then(() => true, () => false),
-    git(repoRoot, 'diff', '--name-only', `${readinessHead}..HEAD`).then((value) => (
-      value ? value.split('\n').filter(Boolean) : []
-    )),
   ]);
-  const readinessTreeActual = await git(repoRoot, 'rev-parse', `${readinessHead}^{tree}`);
-  if (!ancestry || readinessTreeActual !== readinessTree
-    || changedSinceReadiness.some((path) => !CEREMONY_SOURCE_PATHS.has(path))) {
-    fail('Readiness HEAD/tree is not the exact ancestor plus ceremony-only implementation.',
-      'PACK_CEREMONY_SOURCE_DRIFT', { readinessHead, readinessTree, readinessTreeActual,
-        head, tree, changedSinceReadiness });
+  if (head !== readinessHead || tree !== readinessTree) {
+    fail('Readiness HEAD/tree does not exactly equal the executing ceremony source.',
+      'PACK_CEREMONY_SOURCE_DRIFT', { readinessHead, readinessTree, head, tree });
   }
   const allowed = validateWorktreeStatus(status);
   const readinessUntracked = readiness.lock.source?.allowedUntrackedPaths || [];
@@ -284,14 +294,20 @@ export async function validateReadiness({ repoRoot, readinessPath, expected = nu
   }
   if (readiness.lock.productGates?.expansionPackV8ReleaseEnabledBeforePublication !== false
     || readiness.lock.productGates?.commerceV5ReleaseEnabled !== false
+    || readiness.lock.productGates?.canonicalSoulMintEnabled !== false
+    || readiness.lock.productGates?.compositionV6ReleaseEnabled !== false
+    || readiness.lock.productGates?.physicalStyleV7ReleaseEnabled !== false
     || readiness.lock.productGates?.completeBridgeEnabled !== false
-    || readiness.lock.productGates?.physicalBridgeEnabled !== false) {
+    || readiness.lock.productGates?.physicalBridgeEnabled !== false
+    || readiness.lock.writeBoundary?.signingAllowed !== false
+    || readiness.lock.writeBoundary?.broadcastAllowed !== false
+    || readiness.lock.writeBoundary?.productionDeploymentAllowedBeforeReadback !== false) {
     fail('Readiness product gates are not all false.', 'PACK_CEREMONY_GATE_OPEN');
   }
   const snapshot = {
     path: resolve(readinessPath), bytesSha256: sha256(readinessBytes),
     lockFingerprintSha256: fingerprint, head, tree, allowedUntrackedPaths: allowed,
-    readinessSource: { head: readinessHead, tree: readinessTree }, changedSinceReadiness,
+    readinessSource: { head: readinessHead, tree: readinessTree },
   };
   if (expected) same(snapshot, expected, 'Readiness/source snapshot');
   return { readiness, snapshot, configuration, exact };
@@ -302,17 +318,37 @@ export function assertExactSuiLock(data, action) {
   if (!transaction || !text(transaction.bytesBase64)
     || hash(transaction.bytesSha256, 'Transaction bytes SHA-256')
       !== sha256(Buffer.from(transaction.bytesBase64, 'base64'))
+    || transaction.byteLength !== Buffer.from(transaction.bytesBase64, 'base64').byteLength
+    || TransactionDataBuilder.getDigestFromBytes(fromBase64(transaction.bytesBase64)) !== transaction.digest
     || !text(transaction.digest) || !transaction.data || !data.simulation
     || !Array.isArray(data.objects)) {
     fail('Sui action lock is missing exact bytes/SHA/digest/data/simulation/objects.',
       'PACK_CEREMONY_SUI_LOCK_INCOMPLETE');
   }
   const gas = transaction.data.gasData || {};
+  const expiration = transaction.data.expiration?.ValidDuring;
   if (data.payment?.length !== 0 || data.gasMode !== 'address-balance'
+    || text(transaction.data.sender).toLowerCase() !== text(action.authority.signer).toLowerCase()
     || gas.payment?.length !== 0 || text(gas.owner).toLowerCase() !== text(action.authority.signer).toLowerCase()
-    || !text(gas.price) || !text(gas.budget) || !transaction.data.expiration?.ValidDuring) {
+    || !/^\d+$/.test(text(gas.price)) || !/^\d+$/.test(text(gas.budget))
+    || !expiration || !/^\d+$/.test(text(expiration.minEpoch)) || !/^\d+$/.test(text(expiration.maxEpoch))
+    || BigInt(expiration.minEpoch) > BigInt(expiration.maxEpoch)
+    || expiration.minTimestamp !== null || expiration.maxTimestamp !== null
+    || !text(expiration.chain) || !Number.isSafeInteger(Number(expiration.nonce))
+    || Number(expiration.nonce) < 0 || Number(expiration.nonce) > 0xffffffff) {
     fail('Sui lock must use Address Balance gas, payment=[], exact owner/price/budget and ValidDuring.',
       'PACK_CEREMONY_GAS_INVALID');
+  }
+  const sim = data.simulation;
+  const effectsStatus = sim?.effects?.status;
+  const simulationSucceeded = effectsStatus?.success === true && effectsStatus?.error == null
+    || text(effectsStatus?.status || effectsStatus || sim?.status).toLowerCase() === 'success';
+  if (!simulationSucceeded) {
+    fail('Sui simulation must contain explicit successful effects.', 'PACK_CEREMONY_SIMULATION_FAILED');
+  }
+  if (!data.addressBalance || data.addressBalance.addressBalance == null
+    || BigInt(data.addressBalance.addressBalance) < BigInt(gas.budget)) {
+    fail('Address Balance evidence does not cover the exact gas budget.', 'PACK_CEREMONY_GAS_INVALID');
   }
   return data;
 }
@@ -336,7 +372,8 @@ export function assertWalrusCheckpoint(progress, stage) {
 }
 
 export async function initializeCeremony({ repoRoot, readinessPath, statePath, nonce } = {}) {
-  assertExternalStatePath(repoRoot, statePath);
+  const paths = await assertExternalStatePath(repoRoot, statePath);
+  repoRoot = paths.repo; statePath = paths.state;
   const verified = await validateReadiness({ repoRoot, readinessPath });
   const overlay = actionRuntime(verified.configuration.runtime);
   const plan = await buildExpansionPackPublicationPlan({
@@ -363,8 +400,10 @@ export async function initializeCeremony({ repoRoot, readinessPath, statePath, n
   return atomicWriteJson0600(statePath, state);
 }
 
-export async function loadCeremony(statePath, { validate = true } = {}) {
-  const state = JSON.parse(await readFile(resolve(statePath), 'utf8'));
+export async function loadCeremony(statePath, { validate = true, repoRoot } = {}) {
+  if (!repoRoot) fail('A trusted repository root is required.', 'PACK_CEREMONY_TRUSTED_ROOT_REQUIRED');
+  const paths = await assertExternalStatePath(repoRoot, statePath);
+  const state = JSON.parse(await readFile(paths.state, 'utf8'));
   if (state.schemaVersion !== CEREMONY_SCHEMA || state.version !== 1
     || state.authorizationSha256 !== sha256(stableJson(state.authorization))
     || state.authorization?.actualExpansionPackV8ReleaseEnabled !== false
@@ -372,17 +411,34 @@ export async function loadCeremony(statePath, { validate = true } = {}) {
     || state.authorization?.planIdentity !== state.plan?.planIdentity) {
     fail('Ceremony state or authorization hash is invalid.', 'PACK_CEREMONY_STATE_INVALID');
   }
-  assertExternalStatePath(state.repoRoot, statePath);
+  if (await realpath(resolve(state.repoRoot)).catch(() => '') !== paths.repo) {
+    fail('Persisted repository root differs from the trusted CLI root.', 'PACK_CEREMONY_REPO_ROOT_MISMATCH');
+  }
+  if (resolve(state.statePath) !== paths.state) fail('Persisted state path drifted.', 'PACK_CEREMONY_STATE_PATH_INVALID');
   assertSafePlan(state.plan);
+  for (const [actionId, entry] of Object.entries(state.locks || {})) {
+    if (entry?.schemaVersion !== ACTION_LOCK_SCHEMA || entry.lock?.actionId !== actionId
+      || hash(entry.lockFingerprintSha256, `${actionId} lock fingerprint`) !== sha256(stableJson(entry.lock))) {
+      fail(`Action lock ${actionId} failed fingerprint validation.`, 'PACK_CEREMONY_ACTION_LOCK_INVALID');
+    }
+  }
   state.recovery = await hydrateExpansionPackPublicationRecovery(state.recovery, { plan: state.plan });
-  if (validate) await validateReadiness({
-    repoRoot: state.repoRoot, readinessPath: state.readiness.path, expected: state.readiness,
-  });
+  if (validate) {
+    const verified = await validateReadiness({
+      repoRoot: state.repoRoot, readinessPath: state.readiness.path, expected: state.readiness,
+    });
+    const overlay = actionRuntime(verified.configuration.runtime);
+    const rebuiltPlan = await buildExpansionPackPublicationPlan({
+      candidate: verified.exact.candidate,
+      context: planContext(verified.readiness, overlay), runtime: overlay,
+    });
+    same(rebuiltPlan, state.plan, 'Persisted publication plan');
+  }
   return state;
 }
 
-export async function ceremonyStatus(statePath) {
-  const state = await loadCeremony(statePath);
+export async function ceremonyStatus(statePath, options = {}) {
+  const state = await loadCeremony(statePath, options);
   const action = await nextExpansionPackPublicationAction({
     recovery: state.recovery, plan: state.plan, runtime: actionRuntime((await loadActualConfiguration(state.repoRoot)).runtime),
   });
@@ -391,8 +447,18 @@ export async function ceremonyStatus(statePath) {
     stage: state.recovery.stage, sequence: state.recovery.sequence,
     currentActionIndex: state.recovery.currentActionIndex,
     currentAction: action ? { id: action.id, transport: action.transport, target: action.target } : null,
-    readiness: state.readiness, authorizationSha256: state.authorizationSha256,
+    readiness: { bytesSha256: state.readiness.bytesSha256,
+      lockFingerprintSha256: state.readiness.lockFingerprintSha256,
+      readinessSource: state.readiness.readinessSource },
+    authorizationSha256: state.authorizationSha256,
   };
+}
+
+export function summarizeCeremonyState(state) {
+  return { schemaVersion: state.schemaVersion, version: state.version, createdAt: state.createdAt,
+    statePath: state.statePath, planIdentity: state.plan?.planIdentity,
+    recoveryIdentity: state.recovery?.recoveryIdentity, authorizationSha256: state.authorizationSha256,
+    readinessLockFingerprintSha256: state.readiness?.lockFingerprintSha256 };
 }
 
 function lockBody(action, snapshot, data) {
@@ -401,7 +467,7 @@ function lockBody(action, snapshot, data) {
 }
 
 export async function lockCurrentAction(statePath, options = {}, adapters = {}) {
-  const state = await loadCeremony(statePath);
+  const state = await loadCeremony(statePath, { repoRoot: options.repoRoot });
   const actual = await loadActualConfiguration(state.repoRoot);
   const overlay = actionRuntime(actual.runtime);
   let recovery = await beginExpansionPackPublicationAction({ recovery: state.recovery, plan: state.plan, runtime: overlay });
@@ -434,16 +500,38 @@ export async function lockCurrentAction(statePath, options = {}, adapters = {}) 
   state.recovery = recovery;
   state.locks[action.id] = existing || lock;
   await atomicWriteJson0600(statePath, state);
-  return state.locks[action.id];
+  return summarizeActionLock(state.locks[action.id]);
+}
+
+export function summarizeActionLock(entry) {
+  return { schemaVersion: entry.schemaVersion, createdAt: entry.createdAt,
+    actionId: entry.lock.actionId, transport: entry.lock.transport, target: entry.lock.target,
+    lockFingerprintSha256: entry.lockFingerprintSha256,
+    transactionDigest: entry.lock.transaction?.digest || null,
+    transactionBytesSha256: entry.lock.transaction?.bytesSha256 || null,
+    quiltBlobId: entry.lock.quiltBlobId || null };
+}
+
+function publicConfirmation(confirmation = {}) {
+  const allowed = ['transactionDigest', 'digest', 'registerDigest', 'certifyDigest', 'blobObjectId',
+    'quiltBlobId', 'manifestQuiltPatchId', 'manifestIdentifier', 'manifestSha256', 'packReleaseId',
+    'releaseId', 'registryId', 'created', 'verified', 'certified', 'uploaded',
+    'certificationVisible', 'fileReadbacksVerified', 'styleRegistryCommitment'];
+  return Object.fromEntries(allowed.filter((key) => confirmation[key] !== undefined)
+    .map((key) => [key, clone(confirmation[key])]));
 }
 
 async function confirmAndPersist(statePath, state, action, submission, confirmation) {
   state.recovery = await confirmExpansionPackPublicationAction({
     recovery: state.recovery, plan: state.plan, actionId: action.id, confirmation,
   });
-  state.receipts.push({ actionId: action.id, transport: action.transport, submission, confirmation });
+  state.receipts.push({ actionId: action.id, transport: action.transport,
+    submissionDigest: submission.transactionDigest || submission.digest || submission.registerDigest
+      || submission.certifyDigest || null,
+    confirmation: publicConfirmation(confirmation) });
   await atomicWriteJson0600(statePath, state);
-  return { actionId: action.id, completed: state.recovery.completed, confirmation };
+  return { actionId: action.id, completed: state.recovery.completed,
+    confirmation: publicConfirmation(confirmation) };
 }
 
 async function persistSubmitted(statePath, state, action, signed) {
@@ -453,13 +541,13 @@ async function persistSubmitted(statePath, state, action, signed) {
   });
   state.signed[action.id] = signed;
   await atomicWriteJson0600(statePath, state);
-  const readback = await loadCeremony(statePath);
+  const readback = await loadCeremony(statePath, { repoRoot: state.repoRoot });
   same(readback.signed[action.id], signed, 'Persisted signed transaction');
   return readback;
 }
 
 export async function executeCurrentAction(statePath, options = {}, adapters = {}) {
-  let state = await loadCeremony(statePath);
+  let state = await loadCeremony(statePath, { repoRoot: options.repoRoot });
   const actual = await loadActualConfiguration(state.repoRoot);
   const overlay = actionRuntime(actual.runtime);
   const action = await nextExpansionPackPublicationAction({ recovery: state.recovery, plan: state.plan, runtime: overlay });
@@ -488,7 +576,6 @@ export async function executeCurrentAction(statePath, options = {}, adapters = {
     const submission = { actionId: action.id, local: true };
     state.recovery = await markExpansionPackPublicationSubmitted({ recovery: state.recovery,
       plan: state.plan, actionId: action.id, submission });
-    await atomicWriteJson0600(statePath, state);
     return confirmAndPersist(statePath, state, action, submission, result);
   }
   if (action.transport === EXPANSION_PACK_PUBLICATION_TRANSPORTS.SUI) {
@@ -523,18 +610,20 @@ export async function executeCurrentAction(statePath, options = {}, adapters = {
 }
 
 export async function recoverSubmittedAction(statePath, options = {}, adapters = {}) {
-  const state = await loadCeremony(statePath);
+  const state = await loadCeremony(statePath, { repoRoot: options.repoRoot });
   const actual = await loadActualConfiguration(state.repoRoot);
   const action = await nextExpansionPackPublicationAction({ recovery: state.recovery, plan: state.plan,
     runtime: actionRuntime(actual.runtime) });
   const current = state.recovery.actions[state.recovery.currentActionIndex];
+  const locked = action && state.locks[action.id];
+  if (!locked || text(options.expectedLock) !== locked.lockFingerprintSha256) {
+    fail('--expected-lock must equal the current action lock for recovery.', 'PACK_CEREMONY_LOCK_MISMATCH');
+  }
   if (action?.transport === EXPANSION_PACK_PUBLICATION_TRANSPORTS.WALRUS
     && current.status === EXPANSION_PACK_PUBLICATION_ACTION_STATUS.INTENT
     && state.walrus[action.id]) {
-    const lock = state.locks[action.id];
-    if (!lock) fail('Walrus recovery is missing its immutable action lock.', 'PACK_CEREMONY_ACTION_UNLOCKED');
     return executeCurrentAction(statePath, { ...options,
-      expectedLock: lock.lockFingerprintSha256 }, adapters);
+      expectedLock: locked.lockFingerprintSha256 }, adapters);
   }
   if (!action || current.status !== EXPANSION_PACK_PUBLICATION_ACTION_STATUS.SUBMITTED) {
     fail('Current action has no durable submitted transaction to recover.', 'PACK_CEREMONY_NOT_SUBMITTED');
@@ -546,6 +635,18 @@ export async function recoverSubmittedAction(statePath, options = {}, adapters =
   }
   const signed = state.signed[action.id];
   if (!signed) fail('Submitted Sui action is missing durable signed bytes.', 'PACK_CEREMONY_SIGNED_BYTES_MISSING');
+  const signedBytes = fromBase64(text(signed.bytesBase64));
+  if (text(signed.bytesBase64) !== locked.lock.transaction.bytesBase64
+    || sha256(signedBytes) !== locked.lock.transaction.bytesSha256
+    || TransactionDataBuilder.getDigestFromBytes(signedBytes) !== locked.lock.transaction.digest
+    || text(signed.signature) !== text(signed.submission?.signature)
+    || text(signed.submission?.bytesBase64) !== text(signed.bytesBase64)
+    || hash(signed.submission?.bytesSha256, 'Signed bytes SHA-256') !== sha256(signedBytes)
+    || text(signed.submission?.transactionDigest) !== locked.lock.transaction.digest) {
+    fail('Durable signed envelope no longer matches the exact action lock.', 'PACK_CEREMONY_SIGNED_BYTES_MISMATCH');
+  }
+  if (!adapters.verifySigned) fail('Recovery signature verifier is unavailable.', 'PACK_CEREMONY_ADAPTER_MISSING');
+  await adapters.verifySigned({ action, state, lock: locked.lock, signed });
   // Mandatory query-first recovery: broadcast is reached only after a definitive not-found.
   let indexed = await adapters.querySui({ action, state, signed });
   if (!indexed) indexed = await adapters.broadcastSui({ action, state, signed });
@@ -554,12 +655,15 @@ export async function recoverSubmittedAction(statePath, options = {}, adapters =
   return confirmAndPersist(statePath, state, action, current.submission, confirmation);
 }
 
-export async function ceremonyReceipt(statePath) {
-  const state = await loadCeremony(statePath);
+export async function ceremonyReceipt(statePath, options = {}) {
+  const state = await loadCeremony(statePath, options);
   const completed = completedExpansionPackPublication({ plan: state.plan, recovery: state.recovery });
   const receipt = {
     schemaVersion: RECEIPT_SCHEMA, createdAt: new Date().toISOString(),
-    readiness: state.readiness, authorizationSha256: state.authorizationSha256,
+    readiness: { bytesSha256: state.readiness.bytesSha256,
+      lockFingerprintSha256: state.readiness.lockFingerprintSha256,
+      readinessSource: state.readiness.readinessSource },
+    authorizationSha256: state.authorizationSha256,
     planIdentity: state.plan.planIdentity, recoveryIdentity: state.recovery.recoveryIdentity,
     freeOnly: true, actualExpansionPackV8ReleaseEnabled: false,
     noSealPolicy: !state.plan.actions.some((entry) => /seal-policy/.test(entry.id)),

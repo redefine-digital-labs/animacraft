@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,6 +13,7 @@ import {
   stableJson,
   validateWorktreeStatus,
 } from '../scripts/lib/expansion-pack-v8-pack-ceremony.mjs';
+import { encodeCeremonyQuiltPatchId } from '../scripts/lib/expansion-pack-v8-pack-ceremony-adapters.mjs';
 
 const SIGNER = '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f';
 
@@ -24,6 +25,7 @@ test('persists ceremony and signed envelopes atomically with mode 0600 and exact
   assert.deepEqual(persisted, value);
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), value);
   assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.equal((await stat(path)).isFile(), true);
 });
 
 test('worktree validation permits only the exact parent-migration untracked path', () => {
@@ -32,16 +34,18 @@ test('worktree validation permits only the exact parent-migration untracked path
   assert.throws(() => validateWorktreeStatus('?? scripts/not-reviewed.mjs'), /only the reviewed parent-migration/);
 });
 
-test('Sui lock requires exact bytes plus Address Balance payment=[] and ValidDuring gas', () => {
+test('Sui lock requires exact bytes plus Address Balance payment=[] and ValidDuring gas', async () => {
   const bytes = Buffer.from('exact-transaction-bytes');
+  const digest = (await import('@mysten/sui/transactions')).TransactionDataBuilder.getDigestFromBytes(bytes);
   const base = {
     gasMode: 'address-balance', payment: [], objects: [{ objectId: '0x1', version: '7', digest: 'object-digest' }],
-    simulation: { success: true, commandCount: 1 },
-    transaction: {
-      bytesBase64: bytes.toString('base64'), bytesSha256: sha256(bytes), digest: 'transaction-digest',
-      data: { gasData: { owner: SIGNER, price: '100', budget: '20000000', payment: [] },
-        expiration: { ValidDuring: { minEpoch: '1', maxEpoch: '2', chain: 'mainnet', nonce: 7 } } },
-    },
+    addressBalance: { addressBalance: '9999999999' },
+    simulation: { success: true, effects: { status: { status: 'success' } } },
+    transaction: { bytesBase64: bytes.toString('base64'), bytesSha256: sha256(bytes),
+      byteLength: bytes.byteLength, digest,
+      data: { sender: SIGNER, gasData: { owner: SIGNER, price: '100', budget: '20000000', payment: [] },
+        expiration: { ValidDuring: { minEpoch: '1', maxEpoch: '2', minTimestamp: null,
+          maxTimestamp: null, chain: 'mainnet', nonce: 7 } } } },
   };
   assert.equal(assertExactSuiLock(base, { authority: { signer: SIGNER } }), base);
   assert.throws(() => assertExactSuiLock({ ...base, payment: [{ objectId: '0x2' }] },
@@ -67,9 +71,12 @@ test('Walrus recovery requires uploaded certificate and certified exact-readback
 
 test('CLI source keeps actual gates false, uses only an in-memory action overlay, and queries before broadcast', async () => {
   const source = await readFile(new URL('../scripts/lib/expansion-pack-v8-pack-ceremony.mjs', import.meta.url), 'utf8');
+  const adapterSource = await readFile(new URL('../scripts/lib/expansion-pack-v8-pack-ceremony-adapters.mjs', import.meta.url), 'utf8');
   assert.match(source, /actualExpansionPackV8ReleaseEnabled: false/);
   assert.match(source, /overlayExpansionPackV8ReleaseEnabled: true/);
   assert.match(source, /expansionPackV8ReleaseEnabled: true/);
+  assert.match(adapterSource, /Transaction \$\{signed\.submission\.transactionDigest\} not found/);
+  assert.doesNotMatch(adapterSource, /not found\|could not find\|unknown transaction/);
   assert.doesNotMatch(source, /writeFile\([^\n]*(?:public\/config|runtime-config|deployments\/mainnet)/);
   const query = source.indexOf('await adapters.querySui');
   const broadcast = source.indexOf('await adapters.broadcastSui');
@@ -82,10 +89,27 @@ test('CLI source keeps actual gates false, uses only an in-memory action overlay
 test('default Walrus adapter uses certifyBlobTransaction and per-file aggregator SHA readback', async () => {
   const source = await readFile(new URL('../scripts/lib/expansion-pack-v8-pack-ceremony-adapters.mjs', import.meta.url), 'utf8');
   assert.match(source, /certifyBlobTransaction\(\{/);
-  assert.match(source, /await flow\.listFiles\(\)/);
+  assert.doesNotMatch(source, /await flow\.listFiles\(\)/);
+  assert.match(source, /waitForCertifiedWalrusBlobObject/);
+  assert.match(source, /encodeWithIndex/);
   assert.match(source, /by-quilt-patch-id/);
   assert.match(source, /sha256\(bytes\) !== descriptor\.sha256/);
   assert.match(source, /await checkpoint\([\s\S]*signedPersisted: true/);
+});
+
+test('SDK-compatible Quilt patch IDs use the exact BlobId and u16 patch layout', async () => {
+  const quiltId = 'AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  assert.equal(await encodeCeremonyQuiltPatchId(quiltId, { startIndex: 0x1234, endIndex: 0xabcd }),
+    'AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABNBLNqw');
+});
+
+test('atomic persistence rejects a symlink state target', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pack-ceremony-symlink-'));
+  const target = join(directory, 'target.json');
+  await atomicWriteJson0600(target, { ok: true });
+  const alias = join(directory, 'alias.json');
+  await symlink(target, alias);
+  await assert.rejects(atomicWriteJson0600(alias, { ok: false }), /never a symlink/);
 });
 
 test('stable authorization hashing is deterministic', () => {
