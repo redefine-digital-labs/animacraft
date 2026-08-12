@@ -771,6 +771,33 @@ test('present activation schema fails closed on immutable tuple drift while gate
 test('live activation verifier accepts exact Pack, transaction, Blob and Walrus bytes', async () => {
   const current = await currentMainnetTuple();
   const activation = current.deployment.releases.expansionPackV8.activation;
+  let transactionRequest;
+  const client = {
+    ledgerService: {
+      getTransaction: async (request) => {
+        transactionRequest = request;
+        return { response: { transaction: {
+          digest: activation.transactionDigest,
+          checkpoint: BigInt(activation.checkpoint),
+          effects: { status: { success: true } },
+          events: { events: [{
+            eventType: `${current.config.expansionPackV8TypeOriginPackageId}`
+              + '::expansion_pack_v8::ExpansionPackLifecycleChangedV8',
+            json: {
+              kind: {
+                oneofKind: 'structValue',
+                structValue: { fields: {
+                  release_id: { kind: { oneofKind: 'stringValue', stringValue: activation.releaseId } },
+                  previous_lifecycle: { kind: { oneofKind: 'numberValue', numberValue: 2 } },
+                  lifecycle: { kind: { oneofKind: 'numberValue', numberValue: 3 } },
+                } },
+              },
+            },
+          }] },
+        } } };
+      },
+    },
+  };
   const release = {
     objectId: activation.releaseId,
     adminCapId: activation.adminCapId,
@@ -801,7 +828,7 @@ test('live activation verifier accepts exact Pack, transaction, Blob and Walrus 
   // Use the declared hashes by substituting a minimal Response-like body and
   // node crypto-compatible bytes only in the negative test below; the live
   // success path uses real durable evidence bytes tested by the file verifier.
-  const status = await inspectExpansionPackV8LiveActivation(null, current.config, current.deployment, {
+  const status = await inspectExpansionPackV8LiveActivation(client, current.config, current.deployment, {
     readers: {
       objects: async () => ({
         release,
@@ -811,8 +838,6 @@ test('live activation verifier accepts exact Pack, transaction, Blob and Walrus 
           balanceAtomic: 0n, totalCollectedAtomic: 0n, totalWithdrawnAtomic: 0n },
       }),
       styles: async () => [activation.style],
-      transaction: async () => ({ digest: activation.transactionDigest,
-        checkpoint: activation.checkpoint, effects: { status: { success: true } } }),
       blob: async () => ({ id: activation.walrus.blobObjectId,
         registered_epoch: activation.walrus.registeredEpoch,
         certified_epoch: activation.walrus.certifiedEpoch, deletable: false }),
@@ -827,6 +852,10 @@ test('live activation verifier accepts exact Pack, transaction, Blob and Walrus 
     },
   });
   assert.equal(status.ready, true, status.detail);
+  assert.deepEqual(transactionRequest, {
+    digest: activation.transactionDigest,
+    readMask: { paths: ['digest', 'effects.status', 'events', 'checkpoint'] },
+  });
 });
 
 test('live activation verifier rejects Pack and certified Blob drift', async () => {
@@ -835,7 +864,9 @@ test('live activation verifier rejects Pack and certified Blob drift', async () 
   const status = await inspectExpansionPackV8LiveActivation(null, current.config, current.deployment, {
     readers: {
       objects: async () => { throw new Error('release drift'); },
-      transaction: async () => ({ digest: 'wrong', checkpoint: '1', effects: { status: { success: false } } }),
+      transaction: async () => ({
+        digest: 'wrong', checkpoint: '1', effects: { status: { success: false } }, events: [],
+      }),
       blob: async () => ({ id: activation.walrus.blobObjectId, registered_epoch: 37,
         certified_epoch: null, deletable: false }),
     },
@@ -845,6 +876,37 @@ test('live activation verifier rejects Pack and certified Blob drift', async () 
   assert.ok(status.failures.some((failure) => failure.includes('Pack object readback failed')));
   assert.ok(status.failures.includes('Activation transaction mismatch'));
   assert.ok(status.failures.includes('Walrus certified epoch mismatch'));
+});
+
+test('live activation verifier rejects duplicate or non-ADMITTED lifecycle events', async () => {
+  const current = await currentMainnetTuple();
+  const activation = current.deployment.releases.expansionPackV8.activation;
+  const lifecycleEvent = (previousLifecycle) => ({
+    eventType: `${current.config.expansionPackV8TypeOriginPackageId}`
+      + '::expansion_pack_v8::ExpansionPackLifecycleChangedV8',
+    json: {
+      release_id: activation.releaseId,
+      previous_lifecycle: previousLifecycle,
+      lifecycle: 3,
+    },
+  });
+  const verify = (events) => inspectExpansionPackV8LiveActivation(null, current.config, current.deployment, {
+    readers: {
+      objects: async () => { throw new Error('irrelevant'); },
+      transaction: async () => ({
+        digest: activation.transactionDigest,
+        checkpoint: activation.checkpoint,
+        effects: { status: { success: true } },
+        events,
+      }),
+      blob: async () => { throw new Error('irrelevant'); },
+    },
+    fetchImpl: async () => { throw new Error('irrelevant'); },
+  });
+  const wrongTransition = await verify([lifecycleEvent(1)]);
+  assert.ok(wrongTransition.failures.includes('Activation transaction mismatch'));
+  const duplicate = await verify([lifecycleEvent(2), lifecycleEvent(2)]);
+  assert.ok(duplicate.failures.includes('Activation transaction mismatch'));
 });
 
 test('enabled v8 requires one exact runtime, release and verification evidence tuple', () => {

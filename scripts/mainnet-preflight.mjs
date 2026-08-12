@@ -1103,7 +1103,31 @@ export async function inspectExpansionPackV8ActivationEvidence(deployment = {}, 
 }
 
 function transactionEnvelope(value) {
-  return value?.Transaction || value?.transaction || value;
+  return value?.response?.transaction
+    || value?.Transaction
+    || value?.FailedTransaction
+    || value?.transaction
+    || value;
+}
+
+function protobufJsonValue(value) {
+  const kind = value?.kind;
+  if (!kind?.oneofKind) return value;
+  switch (kind.oneofKind) {
+    case 'nullValue': return null;
+    case 'numberValue': return kind.numberValue;
+    case 'stringValue': return kind.stringValue;
+    case 'boolValue': return kind.boolValue;
+    case 'listValue': return kind.listValue.values.map(protobufJsonValue);
+    case 'structValue': return Object.fromEntries(Object.entries(kind.structValue.fields)
+      .map(([key, entry]) => [key, protobufJsonValue(entry)]));
+    default: return undefined;
+  }
+}
+
+function transactionEventJson(event) {
+  const json = event?.parsedJson || event?.parsed_json || event?.json || event?.contents?.json;
+  return protobufJsonValue(json) || {};
 }
 
 export async function inspectExpansionPackV8LiveActivation(
@@ -1198,16 +1222,51 @@ export async function inspectExpansionPackV8LiveActivation(
     failures.push(`Pack object readback failed: ${error.message}`);
   }
   try {
-    const readTransaction = readers.transaction || (() => core.getTransaction({
-      digest: activation.transactionDigest,
-      include: { effects: true, events: true },
-    }));
+    const readTransaction = readers.transaction || (async () => {
+      if (!client?.ledgerService?.getTransaction) {
+        throw new Error('Sui LedgerService transaction reader is unavailable.');
+      }
+      return client.ledgerService.getTransaction({
+        digest: activation.transactionDigest,
+        readMask: { paths: ['digest', 'effects.status', 'events', 'checkpoint'] },
+      });
+    });
     const transaction = transactionEnvelope(await readTransaction());
     const successful = transaction?.effects?.status?.success === true
       || String(transaction?.effects?.status?.status || transaction?.effects?.status || '').toLowerCase() === 'success';
+    const events = Array.isArray(transaction?.events)
+      ? transaction.events
+      : (transaction?.events?.events || []);
+    const expectedLifecycleType = normalizeStructTag(
+      `${config.expansionPackV8TypeOriginPackageId}`
+      + '::expansion_pack_v8::ExpansionPackLifecycleChangedV8',
+    );
+    const lifecycleEvents = events.filter((event) => {
+      try {
+        return normalizeStructTag(String(
+          event?.eventType || event?.type || event?.event_type || event?.contents?.type?.repr || '',
+        )) === expectedLifecycleType;
+      } catch {
+        return false;
+      }
+    });
+    const lifecycle = transactionEventJson(lifecycleEvents[0]);
+    let releaseMatches = false;
+    try {
+      releaseMatches = normalizeSuiAddress(String(lifecycle.release_id || lifecycle.releaseId || ''))
+        === normalizeSuiAddress(activation.releaseId);
+    } catch {
+      releaseMatches = false;
+    }
     if (String(transaction?.digest || '') !== activation.transactionDigest
       || String(transaction?.checkpoint || transaction?.checkpointSequenceNumber || '') !== activation.checkpoint
-      || !successful) failures.push('Activation transaction mismatch');
+      || !successful
+      || lifecycleEvents.length !== 1
+      || !releaseMatches
+      || Number(lifecycle.previous_lifecycle ?? lifecycle.previousLifecycle) !== EXPANSION_PACK_V8_LIFECYCLE.ADMITTED
+      || Number(lifecycle.lifecycle) !== EXPANSION_PACK_V8_LIFECYCLE.ACTIVE) {
+      failures.push('Activation transaction mismatch');
+    }
   } catch (error) {
     failures.push(`Activation transaction readback failed: ${error.message}`);
   }
