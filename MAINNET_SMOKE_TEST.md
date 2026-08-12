@@ -2,6 +2,66 @@
 
 This is the signed release runbook for invited creators. It is designed to produce reviewable evidence, not merely a successful-looking browser session.
 
+## Current Expansion Pack v8 Pilot Decision
+
+The current pilot has passed its Mainnet, Walrus, runtime-gate, and web
+promotion gates:
+
+| Gate | Current result | Evidence |
+| --- | --- | --- |
+| v8 Release | PASS — `ACTIVE`, `FREE` | `0x8c2af3a0c7eb4bfe88bf5ed9e7b56cb407edae12f672a3331a09e41d046e071b` |
+| Activation | PASS | `8mw6HfPX1YHcfDwvgZbCNwawfUZHLHBMtYPQdSLcjdvv`, checkpoint `309818089` |
+| Walrus | PASS — certified | Quilt `We3YHgglZfOpzffEyrxCB0dVNUS8ox5v8oSjJlb1QWE` |
+| Parent authority lock | PASS | Root `PAUSED`, ownership epoch `1`, shared Authority bound |
+| Runtime gates | PASS | v8 `true`; canonical Soul, Commerce, Composition, Physical, Complete-to-Soulidity, Complete bridge, and physical bridge `false` |
+| Production web | PASS — promoted | `dpl_GDrUED8AwUfFsRRsSJ9Wzdi6zfW3` at `https://animacraft.soulidity.ai` |
+| Wallet claim | PENDING | No controlled browser currently has both the ChatGPT control extension and a Sui wallet |
+| Wallet-backed render | PENDING | Must follow and evidence the acceptance flow below |
+
+The chain/storage/web pilot is production-live, but it is not fully end-to-end
+accepted while either wallet row is pending. Do not use the completed ceremony
+or a static page load as a substitute for a signed claim and verified render.
+
+## Expansion Pack v8 Wallet Claim/Render Acceptance
+
+Use a controlled browser profile with both the ChatGPT control extension and a
+Sui wallet installed. If either extension is unavailable, stop and leave this
+section `PENDING`; do not simulate a signature or transplant wallet state from
+another browser.
+
+1. Record the controlled-browser profile, both extension versions, production
+   URL, promoted deployment ID, test start time, and expected Mainnet chain.
+2. Open `https://animacraft.soulidity.ai` with a fresh cache and verify the live
+   runtime exposes only `expansionPackV8ReleaseEnabled: true`. Confirm canonical
+   Soul, Commerce v5, Composition v6, Physical v7, Complete-to-Soulidity,
+   Complete, and physical bridge paths remain fail-closed.
+3. Connect the designated Sui wallet on Mainnet and record only its public
+   address. Confirm the UI resolves the exact ACTIVE/FREE Release and certified
+   Quilt in the decision table, with no bundled or local-fixture fallback.
+4. Start the FREE claim. In the wallet review, verify the network, caller, exact
+   Release ID, zero purchase price, and expected v8 claim target before signing
+   once. Record the transaction digest, checkpoint, and explorer link.
+5. Read back the created wallet-owned `ExpansionPackPassV8`. Record its object
+   ID, holder, Release ID, parent Root, parent ownership epoch (`1`), paid amount
+   (`0`), and content commitment. Every field must match the active release and
+   connected wallet.
+6. Reload the production page and reconnect the same wallet. Confirm recovery
+   finds the verified Pass and does not request a duplicate claim signature.
+7. Enable that exact Pack in Player, fetch the canonical manifest and PNG from
+   Quilt `We3YHgglZfOpzffEyrxCB0dVNUS8ox5v8oSjJlb1QWE`, and render the v8 Style.
+   Confirm there is no stale-cache, placeholder, local fixture, ownership-epoch,
+   or parent-`PAUSED` bypass.
+8. Capture the rendered result and record its viewport, screenshot/artifact
+   path, resolved manifest/asset identifiers, manifest and asset SHA-256 values,
+   and any browser console errors. Reload once more and confirm the same Pass
+   restores the same verified render without another signature.
+
+Pass condition: one controlled real browser completes a single signed FREE
+claim, verifies the exact wallet-bound Pass at epoch `1`, and renders the
+certified v8 asset after reload. Any missing evidence field, wrong identity,
+extra signature, fallback asset, or gate drift leaves wallet acceptance
+`PENDING` or `FAIL` and blocks a full end-to-end claim.
+
 ## Roles
 
 Use separate wallets. Never put seed phrases, private keys, or recovery exports in this repository, screenshots, CI, or issue comments.
@@ -16,7 +76,12 @@ Use separate wallets. Never put seed phrases, private keys, or recovery exports 
 
 Record only public addresses in the evidence table.
 
-## Release Preconditions
+## Legacy Full-Product Release Preconditions
+
+The remaining sections are retained for the broader Maker/canonical Soul
+release. Their unchecked gates do not reverse the completed v8 chain/storage/web
+pilot, but they do prevent claiming those legacy surfaces or the whole product
+as end-to-end accepted.
 
 - [ ] All release PRs are merged and CI is green.
 - [ ] `npm ci`, `npm run check`, and `npm run move:test` pass from a clean checkout.
@@ -39,6 +104,24 @@ If the public Sui RPC has not indexed the package checkpoint yet, record the end
 
 | Field | Value |
 | --- | --- |
+| v8 Release ID | `0x8c2af3a0c7eb4bfe88bf5ed9e7b56cb407edae12f672a3331a09e41d046e071b` |
+| v8 activation transaction / checkpoint | `8mw6HfPX1YHcfDwvgZbCNwawfUZHLHBMtYPQdSLcjdvv` / `309818089` |
+| v8 Walrus Quilt ID | `We3YHgglZfOpzffEyrxCB0dVNUS8ox5v8oSjJlb1QWE` |
+| Parent Root lifecycle / ownership epoch / Authority ID | `PAUSED` / `1` / `0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19` |
+| Production / rollback deployment IDs | `dpl_GDrUED8AwUfFsRRsSJ9Wzdi6zfW3` / `dpl_7NwkGiWLh75AbZoaWH2FvjRqbqTY` |
+| Runtime gate readback | v8 `true`; all canonical/Commerce/Composition/Physical/Complete bridges `false` |
+| Controlled browser profile / version | |
+| ChatGPT control extension version | |
+| Sui wallet name / version / Mainnet network | |
+| v8 claim wallet address | |
+| v8 claim transaction / checkpoint / explorer link | |
+| `ExpansionPackPassV8` object ID / holder / paid amount | |
+| Pass Release ID / parent Root / ownership epoch / content commitment | |
+| Manifest / asset identifiers and SHA-256 | |
+| Render viewport / screenshot or artifact path | |
+| Reload recovery result / extra signature count | |
+| Browser console errors | |
+| v8 wallet acceptance result / reviewer / UTC | `PENDING` / / |
 | Animacraft Git commit | |
 | Soulidity Git commit | |
 | Animacraft original / callable / protocol-fee TypeOrigin package IDs | |
@@ -158,7 +241,7 @@ Pass condition: the immutable Maker snapshot, not mutable web metadata, determin
 - refresh every route directly, including `/maker/:id`, `/oc/:id`, and hash routes;
 - confirm no private key, auth token, unpublished source image, or local draft enters Vercel logs or repository artifacts.
 
-## Final Release Decision
+## Legacy Full-Product Release Decision
 
 | Gate | Result | Evidence link / digest |
 | --- | --- | --- |
@@ -174,4 +257,12 @@ Pass condition: the immutable Maker snapshot, not mutable web metadata, determin
 | Independent Move review | | |
 | Upgrade custody confirmed | | |
 
-Do not describe the release as production-live while a required gate is blank. The invited creator pilot may launch with free Import Kit handoff only if it is visibly labeled unverified and paid mint, verified provenance, Cap sale, and resale royalty are disabled.
+The v8 chain/storage/web pilot may be described as production-live with wallet
+acceptance explicitly marked pending. Do not describe it as fully end-to-end
+accepted until the wallet claim and wallet-backed render both pass with the
+evidence above. Do not describe any canonical Soul, Commerce, Composition,
+Physical, Complete-to-Soulidity, Complete bridge, or physical bridge surface as
+live while its corresponding gate remains false or its legacy decision row is
+blank. The invited creator pilot may launch with free Import Kit handoff only
+if it is visibly labeled unverified and paid mint, verified provenance, Cap
+sale, and resale royalty are disabled.

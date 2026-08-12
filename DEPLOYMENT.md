@@ -2,7 +2,48 @@
 
 Animacraft is a static Vite app with direct wallet-signed Sui and Walrus writes. There is no application server, database, private signer, or secret runtime variable.
 
-## Current Mainnet Release
+## Current Production Deployment
+
+The authoritative production state as of 2026-08-12 is the bounded Expansion
+Pack v8 FREE one-Pack pilot:
+
+- Production origin: `https://animacraft.soulidity.ai`
+- Promoted Vercel deployment: `dpl_GDrUED8AwUfFsRRsSJ9Wzdi6zfW3`
+- Known rollback deployment: `dpl_7NwkGiWLh75AbZoaWH2FvjRqbqTY`
+- v8 Release: `0x8c2af3a0c7eb4bfe88bf5ed9e7b56cb407edae12f672a3331a09e41d046e071b`
+  (`ACTIVE`, `FREE`)
+- Certified Walrus Quilt: `We3YHgglZfOpzffEyrxCB0dVNUS8ox5v8oSjJlb1QWE`
+- Activation transaction/checkpoint:
+  `8mw6HfPX1YHcfDwvgZbCNwawfUZHLHBMtYPQdSLcjdvv` / `309818089`
+- v8 callable / stable TypeOrigin packages:
+  `0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee` /
+  `0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a`
+- Parent Root / shared Authority:
+  `0xb97ca9552c01557530f04b6302fb4b58c43f209c8371129e3400810f1576e08c` /
+  `0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19`.
+  The Root remains `PAUSED`, ownership epoch is `1`, and the retired general
+  ControlCap cannot be used to bypass the Authority/epoch lock.
+
+Only `expansionPackV8ReleaseEnabled` is `true`. Canonical Soul, Commerce v5,
+Composition v6, and Physical v7 product gates are `false`, and the
+Complete-to-Soulidity, Complete, and physical bridge checks remain `false`.
+This supersedes older all-gates-off and v8-not-live statements below.
+
+Chain readback, Walrus certification, production gate verification, and web
+promotion are complete. Signed browser wallet acceptance is not: the current
+environment does not provide one controlled browser with both the ChatGPT
+control extension and a Sui wallet. Do not claim full end-to-end acceptance
+until the claim/render checklist in
+[MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md) is completed.
+
+The canonical machine-readable chain record is
+[`deployments/mainnet.json`](deployments/mainnet.json).
+
+## Legacy Core Release Record
+
+The following v4 record and upgrade/initialization procedures are retained for
+dependency, custody, and recovery history. They are not the current v8 pilot
+callable or gate state.
 
 - Protocol version: `4`
 - Callable package: `0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc`
@@ -24,10 +65,9 @@ Animacraft is a static Vite app with direct wallet-signed Sui and Walrus writes.
 - Merged source commit: `b5af0f92e2178a32d561da6cf650f3e97b4a5de4`
 - Source verification: successful at `2026-07-27T00:14:06Z` with Sui CLI `1.75.2-027e13b2c140`
 
-The canonical machine-readable record is [`deployments/mainnet.json`](deployments/mainnet.json).
 For Soulidity's Move dependency, the original package ID remains the stable
 `original-id`/type identity, while `published-at` must be the separately
-reviewed current callable package (v4 for this release). Do not replace
+reviewed callable package for that integration. Do not replace
 `original-id` with an upgrade ID, and do not silently advance `published-at`
 to an unreviewed later upgrade.
 
@@ -184,6 +224,10 @@ npm run preflight:mainnet
 
 ## 4. Configure the Public Runtime
 
+The example below is the retained legacy core shape, not the complete current
+v8 production tuple. Use `public/config.js` and `deployments/mainnet.json` as
+the authority for the current runtime, including the v8-only true gate.
+
 Edit `public/config.js`:
 
 ```js
@@ -258,6 +302,11 @@ Only public values belong in this file. Vercel serves `config.js` with `no-store
 
 ## 5. Deploy Vercel
 
+Deployment `dpl_GDrUED8AwUfFsRRsSJ9Wzdi6zfW3` has completed this procedure and
+is promoted at `https://animacraft.soulidity.ai`. Keep
+`dpl_7NwkGiWLh75AbZoaWH2FvjRqbqTY` as the explicit web rollback deployment.
+The procedural steps remain for the next release.
+
 1. Import `redefine-digital-labs/animacraft`.
 2. Framework: `Vite`.
 3. Install command: `npm ci`.
@@ -288,6 +337,12 @@ node scripts/production-smoke.mjs --url=https://your-preview.vercel.app
 4. Update `appUrl` if the final origin differs, redeploy, and verify both apex navigation and deep rewrites.
 
 ## 7. Signed Mainnet Smoke Test
+
+The immediate release test is the v8 wallet claim/render acceptance in
+[MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md). It remains pending for lack of
+a controlled browser containing both required extensions. The legacy Maker and
+canonical Soul sequence below remains disabled and is not a substitute for the
+v8 acceptance.
 
 Use a small real Maker first:
 
@@ -332,4 +387,12 @@ multisig custody records and release tags.
 
 ## Rollback
 
-If the web release is faulty, roll Vercel back to the previous deployment. If a Maker is faulty, archive it; do not attempt to erase history. If the Move package needs an upgrade, stop onboarding, publish the reviewed upgrade through the documented `UpgradeCap` policy, update runtime config only if required, and repeat the smoke test.
+If the current web release is faulty, roll Vercel back to
+`dpl_7NwkGiWLh75AbZoaWH2FvjRqbqTY` and verify the custom domain resolves to that
+deployment before reopening the pilot. This web rollback does not reverse the
+Mainnet v8 Release or its certified Walrus Quilt; fail-close the v8 runtime gate
+if the reverted site cannot represent them safely. If a Maker is faulty,
+archive it; do not attempt to erase history. If the Move package needs an
+upgrade, stop onboarding, publish the reviewed upgrade through the documented
+`UpgradeCap` policy, update runtime config only if required, and repeat the
+smoke test.
