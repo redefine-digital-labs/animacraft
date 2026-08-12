@@ -82,6 +82,8 @@ function parentFinalization(overrides = {}) {
     lockFingerprintSha256: '6'.repeat(64),
     resultPath: 'test/fixtures/parent-finalize-result.json',
     resultSha256: '7'.repeat(64),
+    publicEvidencePath: 'test/fixtures/parent-finalization-public-evidence.json',
+    publicEvidenceSha256: '8'.repeat(64),
     authorityShared: true,
     gasUsedMist: '250',
     gasComputationCostMist: '100',
@@ -763,10 +765,67 @@ test('required v8 preflight accepts the fully evidenced enabled record', async (
     current.deployment,
   );
   assert.equal(parentEvidence.ready, true, parentEvidence.detail);
+  assert.equal(
+    current.deployment.releases.expansionPackV8.parentFinalization.publicEvidencePath,
+    'deployments/expansion-pack-v8-parent-finalization-public-evidence.json',
+  );
   const retirement = inspectCompositionV6RetirementEvidence(current.deployment);
   assert.equal(retirement.ready, true, retirement.detail);
   assert.equal(retirement.retiredEntryPoints.length, 19);
   assert.equal(new Set(retirement.retiredEntryPoints).size, 19);
+});
+
+test('parent finalization public evidence stays bound to the source result hash', async () => {
+  const current = await currentMainnetTuple();
+  const drifted = structuredClone(current.deployment);
+  drifted.releases.expansionPackV8.parentFinalization.resultSha256 = '0'.repeat(64);
+  const evidence = await inspectExpansionPackV8ParentFinalizationEvidence(drifted);
+  assert.equal(evidence.ready, false);
+  assert.ok(evidence.failures.includes('source result SHA-256 mismatch'));
+});
+
+test('parent finalization evidence cannot downgrade to the raw external result', async () => {
+  const current = await currentMainnetTuple();
+  const missing = structuredClone(current.deployment);
+  missing.releases.expansionPackV8.parentFinalization.publicEvidencePath = '';
+  missing.releases.expansionPackV8.parentFinalization.publicEvidenceSha256 = '';
+  const rejected = await inspectExpansionPackV8ParentFinalizationEvidence(missing);
+  assert.equal(rejected.ready, false);
+  assert.ok(rejected.failures.includes('public parent-finalization evidence path mismatch'));
+});
+
+test('parent finalization public evidence rejects absolute and traversing paths', async () => {
+  const current = await currentMainnetTuple();
+  for (const unsafePath of [
+    '/tmp/parent-finalization.json',
+    '../../docs/codex/assets/parent-finalize-result.json',
+  ]) {
+    const record = structuredClone(current.deployment);
+    record.releases.expansionPackV8.parentFinalization.publicEvidencePath = unsafePath;
+    const evidence = await inspectExpansionPackV8ParentFinalizationEvidence(record);
+    assert.equal(evidence.ready, false);
+    assert.ok(evidence.failures.includes(
+      'public parent-finalization evidence path mismatch',
+    ));
+  }
+});
+
+test('parent finalization public evidence rejects hash and source-lock drift', async () => {
+  const current = await currentMainnetTuple();
+  const hashDrift = structuredClone(current.deployment);
+  hashDrift.releases.expansionPackV8.parentFinalization.publicEvidenceSha256 = '0'.repeat(64);
+  const badHash = await inspectExpansionPackV8ParentFinalizationEvidence(hashDrift);
+  assert.ok(badHash.failures.includes(
+    'public parent-finalization evidence SHA-256 mismatch',
+  ));
+
+  const sourceDrift = structuredClone(current.deployment);
+  sourceDrift.releases.expansionPackV8.parentFinalization.lockEvidenceSha256 = '0'.repeat(64);
+  sourceDrift.releases.expansionPackV8.parentFinalization.lockFingerprintSha256 = '1'.repeat(64);
+  const badSource = await inspectExpansionPackV8ParentFinalizationEvidence(sourceDrift);
+  assert.equal(badSource.ready, false);
+  assert.ok(badSource.failures.includes('source lock evidence SHA-256 mismatch'));
+  assert.ok(badSource.failures.includes('source lock fingerprint mismatch'));
 });
 
 test('current activation block binds the exact pre-gate receipt and readback', async () => {

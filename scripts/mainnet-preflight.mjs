@@ -164,6 +164,8 @@ export const EXPANSION_PACK_V8_PARENT_FINALIZATION_FIELDS = Object.freeze([
   'lockFingerprintSha256',
   'resultPath',
   'resultSha256',
+  'publicEvidencePath',
+  'publicEvidenceSha256',
   'authorityShared',
   'gasUsedMist',
   'gasComputationCostMist',
@@ -644,7 +646,7 @@ export function inspectExpansionPackV8Deployment(
     }
     for (const field of [
       'auditHash', 'lockFingerprintSha256', 'lockEvidenceSha256',
-      'resultSha256', 'zeroHistoryAuditHash',
+      'resultSha256', 'publicEvidenceSha256', 'zeroHistoryAuditHash',
     ]) {
       if (present(parentFinalization[field])
         && !SHA256.test(String(parentFinalization[field]))) invalidParent(field);
@@ -1073,23 +1075,49 @@ export async function inspectExpansionPackV8ParentFinalizationEvidence(deploymen
   const evidence = deployment.releases?.expansionPackV8?.parentFinalization || {};
   const failures = [];
   const failEvidence = (message) => failures.push(message);
-  const relativePath = String(evidence.resultPath || '');
+  const relativePath = String(evidence.publicEvidencePath || '');
+  const canonicalPublicEvidencePath =
+    'deployments/expansion-pack-v8-parent-finalization-public-evidence.json';
+  if (relativePath !== canonicalPublicEvidencePath) {
+    failEvidence('public parent-finalization evidence path mismatch');
+  }
   let result;
   let bytes;
-  try {
-    const resultUrl = new URL(relativePath, new URL('../', import.meta.url));
-    bytes = await readFile(resultUrl);
-    result = JSON.parse(bytes);
-  } catch (error) {
-    failEvidence(`result evidence unavailable: ${error.message}`);
+  if (relativePath === canonicalPublicEvidencePath) {
+    try {
+      const resultUrl = new URL(relativePath, new URL('../', import.meta.url));
+      bytes = await readFile(resultUrl);
+      result = JSON.parse(bytes);
+    } catch (error) {
+      failEvidence(`public parent-finalization evidence unavailable: ${error.message}`);
+    }
   }
   if (bytes) {
     const actualSha256 = createHash('sha256').update(bytes).digest('hex');
-    if (actualSha256 !== evidence.resultSha256) {
-      failEvidence('result evidence SHA-256 mismatch');
+    if (actualSha256 !== evidence.publicEvidenceSha256) {
+      failEvidence('public parent-finalization evidence SHA-256 mismatch');
     }
   }
   if (result) {
+    const forbiddenFields = [];
+    const inspectPublicFields = (value, path = []) => {
+      if (Array.isArray(value)) {
+        value.forEach((entry, index) => inspectPublicFields(entry, [...path, String(index)]));
+        return;
+      }
+      if (!value || typeof value !== 'object') return;
+      for (const [key, entry] of Object.entries(value)) {
+        const nextPath = [...path, key];
+        if (/signature|signed|raw.?tx|bytes|bcs|certificate|token|secret|private|mnemonic|keypair/i.test(key)) {
+          forbiddenFields.push(nextPath.join('.'));
+        }
+        inspectPublicFields(entry, nextPath);
+      }
+    };
+    inspectPublicFields(result);
+    if (forbiddenFields.length) {
+      failEvidence(`public evidence contains forbidden operational fields: ${forbiddenFields.join(', ')}`);
+    }
     const gas = result.finalized?.effects?.gasUsed || {};
     const expectedGas = {
       computationCost: evidence.gasComputationCostMist,
@@ -1098,7 +1126,8 @@ export async function inspectExpansionPackV8ParentFinalizationEvidence(deploymen
       nonRefundableStorageFee: evidence.gasNonRefundableStorageFeeMist,
     };
     const checks = [
-      [result.schemaVersion, 'animacraft.expansion-pack-v8-parent-stage-result.v1', 'schema'],
+      [result.schemaVersion,
+        'animacraft.expansion-pack-v8-parent-finalization-public-evidence.v1', 'schema'],
       [result.stage, 'finalize', 'stage'],
       [result.transactionDigest, evidence.transactionDigest, 'transaction digest'],
       [result.checkpoint?.sequenceNumber, evidence.checkpoint, 'checkpoint'],
@@ -1152,6 +1181,13 @@ export async function inspectExpansionPackV8ParentFinalizationEvidence(deploymen
       [gas.storageRebate, expectedGas.storageRebate, 'gas rebate'],
       [gas.nonRefundableStorageFee, expectedGas.nonRefundableStorageFee, 'gas non-refundable fee'],
     ];
+    checks.push(
+      [result.source?.resultSha256, evidence.resultSha256, 'source result SHA-256'],
+      [result.source?.lockEvidenceSha256, evidence.lockEvidenceSha256,
+        'source lock evidence SHA-256'],
+      [result.source?.lockFingerprintSha256, evidence.lockFingerprintSha256,
+        'source lock fingerprint'],
+    );
     for (const [actual, expected, label] of checks) {
       if (String(actual) !== String(expected)) failEvidence(`${label} mismatch`);
     }

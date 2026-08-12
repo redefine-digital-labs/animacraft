@@ -217,6 +217,8 @@
         "lockEvidenceSha256": "77cccfe40673bc465b23b476c2f9905746e33a612e7f5011d7d1a150a4f045b9",
         "resultPath": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/parent-finalize-result.json",
         "resultSha256": "c3833a3d10b93f1b4ea7e3dc447ec19ac5f4d17e5cfe1af8ea0dfd4ea3e5cb3e",
+        "publicEvidencePath": "deployments/expansion-pack-v8-parent-finalization-public-evidence.json",
+        "publicEvidenceSha256": "42060e28fb1092887d4bf56340d3f129bdc2a6d101de170637fd836f9e61b294",
         "rootObjectVersion": "955119812",
         "rootObjectDigest": "ESbasjPZA291rF2KNnSLHoTV8jwPTE845z1gNvS1qAWt",
         "authorityObjectVersion": "955119812",

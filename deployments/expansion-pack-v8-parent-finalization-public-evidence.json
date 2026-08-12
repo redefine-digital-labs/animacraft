@@ -1,0 +1,98 @@
+{
+  "schemaVersion": "animacraft.expansion-pack-v8-parent-finalization-public-evidence.v1",
+  "stage": "finalize",
+  "transactionDigest": "9k3Zz7vyApXSCLWxFoJxqoMVxVN6vtwoBYp1BsHU5WCb",
+  "checkpoint": {
+    "sequenceNumber": "309767464",
+    "digest": "2uwJMcMG2nwsAaGkHHz1ZRCteLd9yki24J5xLGNnBmAD"
+  },
+  "source": {
+    "resultSha256": "c3833a3d10b93f1b4ea7e3dc447ec19ac5f4d17e5cfe1af8ea0dfd4ea3e5cb3e",
+    "lockEvidenceSha256": "77cccfe40673bc465b23b476c2f9905746e33a612e7f5011d7d1a150a4f045b9",
+    "lockFingerprintSha256": "a46cbf589aad792ecc7c2bd1ede42e52dc4522e0fc6180c631356ef30a5d9c8a"
+  },
+  "finalized": {
+    "effects": {
+      "status": {
+        "success": true,
+        "error": null
+      },
+      "gasUsed": {
+        "computationCost": "817000",
+        "storageCost": "134170400",
+        "storageRebate": "11338668",
+        "nonRefundableStorageFee": "114532"
+      }
+    }
+  },
+  "postState": {
+    "root": {
+      "objectId": "0xb97ca9552c01557530f04b6302fb4b58c43f209c8371129e3400810f1576e08c",
+      "treasuryId": "0xd15c5d46862f9f7e0f2c0f133bc0659ad017696e77bf6bd7b7327851d11912d0",
+      "legacyMakerId": "0x1329648b7ead8bc16dc7e209416922b2af25c68884def660534d6be541379390",
+      "currentOwner": "0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f",
+      "protocolConfigId": "0xf63dc43bb3787fff47fec7f8c3ff2e777dd0966500570fa7deab2bef9b6da0d5",
+      "ownershipEpoch": "1",
+      "lifecycle": 1,
+      "styleRegistrySealed": true,
+      "styleCount": "26",
+      "packCount": "0",
+      "activeListingId": "",
+      "requiresSealPolicy": false,
+      "sealPolicyBound": false
+    },
+    "makerTreasury": {
+      "balanceAtomic": "0"
+    },
+    "authority": {
+      "objectId": "0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19",
+      "protocolAdminCapId": "0x28a99dfbfc37b474b4bdb3330eeb1a2ef3bb1139e0268112d91bd11a4e3fdcbd",
+      "rootId": "0xb97ca9552c01557530f04b6302fb4b58c43f209c8371129e3400810f1576e08c",
+      "legacyMakerId": "0x1329648b7ead8bc16dc7e209416922b2af25c68884def660534d6be541379390",
+      "protocolConfigId": "0xf63dc43bb3787fff47fec7f8c3ff2e777dd0966500570fa7deab2bef9b6da0d5",
+      "owner": "0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f",
+      "retiredControlCapId": "0x0b65aeb7cf70ff54fa8242275468b905e9b2643280330d04645131b6b7b61b93",
+      "retiredControlCapEpoch": "0",
+      "lockedOwnershipEpoch": "1",
+      "auditHash": "0x7c2079974e4f59f4accec446124c0ed7f394d9114b8c99393be1265cca3cf658"
+    },
+    "lock": {
+      "finalized": true,
+      "rootId": "0xb97ca9552c01557530f04b6302fb4b58c43f209c8371129e3400810f1576e08c",
+      "authorityId": "0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19",
+      "legacyMakerId": "0x1329648b7ead8bc16dc7e209416922b2af25c68884def660534d6be541379390",
+      "protocolConfigId": "0xf63dc43bb3787fff47fec7f8c3ff2e777dd0966500570fa7deab2bef9b6da0d5",
+      "protocolAdminCapId": "0x28a99dfbfc37b474b4bdb3330eeb1a2ef3bb1139e0268112d91bd11a4e3fdcbd",
+      "owner": "0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f",
+      "retiredControlCapId": "0x0b65aeb7cf70ff54fa8242275468b905e9b2643280330d04645131b6b7b61b93",
+      "retiredControlCapEpoch": "0",
+      "lockedOwnershipEpoch": "1",
+      "auditHash": "7c2079974e4f59f4accec446124c0ed7f394d9114b8c99393be1265cca3cf658"
+    },
+    "retiredControlCap": {
+      "objectId": "0x0b65aeb7cf70ff54fa8242275468b905e9b2643280330d04645131b6b7b61b93",
+      "deletionEffect": {
+        "idOperation": "Deleted"
+      },
+      "status": "unavailable"
+    },
+    "styles": [
+      { "rowKind": 0 }, { "rowKind": 0 }, { "rowKind": 0 }, { "rowKind": 0 },
+      { "rowKind": 0 }, { "rowKind": 0 }, { "rowKind": 0 }, { "rowKind": 0 },
+      { "rowKind": 0 }, { "rowKind": 0 }, { "rowKind": 0 }, { "rowKind": 0 },
+      { "rowKind": 0 }, { "rowKind": 0 }, { "rowKind": 0 }, { "rowKind": 0 },
+      { "rowKind": 0 }, { "rowKind": 0 }, { "rowKind": 0 },
+      { "rowKind": 1 }, { "rowKind": 1 }, { "rowKind": 1 },
+      { "rowKind": 2 }, { "rowKind": 2 }, { "rowKind": 2 }, { "rowKind": 2 }
+    ]
+  },
+  "lockFingerprintSha256": "a46cbf589aad792ecc7c2bd1ede42e52dc4522e0fc6180c631356ef30a5d9c8a",
+  "zeroHistoryContinuityEvidence": {
+    "trustedHistoryClear": true,
+    "auditHash": "03626e074ab81d858b892547155997031be17cf520be831270aebf6f811fccf3",
+    "cutoff": {
+      "sequenceNumber": "309771202"
+    },
+    "chainIdentifier": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S"
+  }
+}
