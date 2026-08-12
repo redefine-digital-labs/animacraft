@@ -206,6 +206,52 @@ function controllableDraftRepository({ load } = {}) {
   };
 }
 
+function memoryExpansionPackDraftStore() {
+  const records = new Map();
+  const calls = [];
+  const key = (identity) => JSON.stringify(identity);
+  return {
+    records,
+    calls,
+    async load(identity) {
+      const record = records.get(key(identity));
+      return record ? structuredClone(record) : null;
+    },
+    async save(identity, project, options) {
+      calls.push({
+        identity: structuredClone(identity),
+        project: structuredClone(project),
+        options: structuredClone(options),
+      });
+      const recordKey = key(identity);
+      const existing = records.get(recordKey) || null;
+      const expectedMatches = options.expectedRevision === null
+        ? !existing
+        : existing?.revision === options.expectedRevision;
+      if (!expectedMatches) {
+        return {
+          saved: false,
+          conflict: true,
+          persistedRevision: existing?.revision ?? null,
+          savedAt: existing?.savedAt ?? null,
+        };
+      }
+      const record = {
+        project: structuredClone(project),
+        revision: options.revision,
+        savedAt: options.revision * 1_000,
+      };
+      records.set(recordKey, record);
+      return {
+        saved: true,
+        conflict: false,
+        persistedRevision: record.revision,
+        savedAt: record.savedAt,
+      };
+    },
+  };
+}
+
 test('an older save acknowledgement never marks a newer edit as saved', () => {
   const store = commandStoreFixture();
   store.execute('First edit', ({ document }) => {
@@ -727,6 +773,53 @@ test('visibility flush persists a dirty command and clears the unload guard stat
     assert.equal(result.saved, true);
     assert.equal(draftRepository.snapshots.at(-1).snapshot.document.metadata.name, 'Hidden but persisted');
     assert.equal(workspace.hasUnsavedChanges(), false);
+    workspace.destroy();
+  })
+));
+
+test('pagehide flush cancels Pack debounce and persists the exact active Pack identity', async () => (
+  withWorkspaceGlobals(async () => {
+    const draftRepository = controllableDraftRepository();
+    const expansionPackDraftStore = memoryExpansionPackDraftStore();
+    const workspace = createMakerWorkspace({
+      draftRepository,
+      expansionPackDraftStore,
+      callbacks: {},
+    });
+    const document = createCharacterMakerV5Starter({
+      makerId: 'pack-pagehide',
+      name: 'Pack parent',
+    });
+    await workspace.setContext({
+      makerKey: 'wallet::pack-pagehide',
+      walletAddress: '0x1',
+      document,
+      assets: [],
+    });
+    await workspace.openExpansionPackWorkspace('night-pack', { create: true });
+
+    workspace.expansionPackWorkspace.renamePack('Last Pack name before hiding');
+    const requestedIdentity = structuredClone(
+      workspace.expansionPackWorkspace.getState().identity,
+    );
+    assert.equal(workspace.expansionPackAutosave.pending(), true);
+    assert.equal(workspace.hasUnsavedChanges(), true);
+
+    const result = await workspace.flushPendingChanges({ reason: 'pagehide' });
+    assert.equal(result.reason, 'pagehide');
+    assert.equal(result.saved, true);
+    assert.equal(result.expansionPack.saved, true);
+    assert.deepEqual(result.expansionPack.identity, requestedIdentity);
+    assert.equal(workspace.expansionPackAutosave.pending(), false);
+    assert.equal(expansionPackDraftStore.calls.length, 1);
+    assert.deepEqual(expansionPackDraftStore.calls[0].identity, requestedIdentity);
+    assert.equal(
+      expansionPackDraftStore.calls[0].project.name,
+      'Last Pack name before hiding',
+    );
+    assert.equal(workspace.expansionPackWorkspace.getState().dirty, false);
+    assert.equal(workspace.hasUnsavedChanges(), false);
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
     workspace.destroy();
   })
 ));

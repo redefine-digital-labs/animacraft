@@ -498,6 +498,42 @@ test('Physical v7 requires an independently callable companion package', () => {
   assert.equal(result.physicalV7CoreReady, true);
 });
 
+test('Expansion Pack v8 package identities are paired and release stays fail-closed', () => {
+  const defaults = productionConfig();
+  let result = validateRuntimeConfig(defaults, { strict: true });
+  assert.equal(result.valid, true, result.errors.join('\n'));
+  assert.equal(defaults.expansionPackV8ReleaseEnabled, false);
+  assert.equal(result.expansionPackV8CoreReady, false);
+
+  const partial = productionConfig();
+  partial.expansionPackV8CallablePackageId = '0x8888';
+  result = validateRuntimeConfig(partial, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /callable package and stable TypeOrigin/);
+
+  const gated = productionConfig();
+  Object.assign(gated, {
+    expansionPackV8CallablePackageId: '0x8888',
+    expansionPackV8TypeOriginPackageId: '0x8888',
+    expansionPackV8ReleaseEnabled: true,
+  });
+  result = validateRuntimeConfig(gated, { strict: true });
+  assert.equal(result.valid, false);
+  assert.equal(result.expansionPackV8CoreReady, true);
+  assert.match(result.errors.join(' '), /active Commerce v5/);
+
+  const ready = productionV6Config();
+  Object.assign(ready, {
+    expansionPackV8CallablePackageId: '0x8888',
+    expansionPackV8TypeOriginPackageId: '0x8888',
+    expansionPackV8ReleaseEnabled: true,
+  });
+  result = validateRuntimeConfig(ready, { strict: true });
+  assert.equal(result.valid, true, result.errors.join('\n'));
+  assert.equal(result.expansionPackV8CallablePackageReady, true);
+  assert.equal(result.expansionPackV8TypeOriginPackageReady, true);
+});
+
 test('Composable Assets v6 rejects incomplete cap custody and validator policy evidence', () => {
   const config = productionV6Config();
   config.compositionValidatorPolicyCommitmentV6 = '0x1234';

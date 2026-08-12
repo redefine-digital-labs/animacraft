@@ -20,6 +20,7 @@ use std::type_name;
 use sui::balance::{Self as balance, Balance};
 use sui::clock::Clock;
 use sui::coin::{Self as coin, Coin};
+use sui::dynamic_field as df;
 use sui::event;
 use sui::table::{Self as table, Table};
 
@@ -106,6 +107,9 @@ const EInvalidLogicalStyle: u64 = 47;
 const EProtocolDependencyAlreadyBound: u64 = 48;
 const EProtocolDependencyMissing: u64 = 49;
 const ESoulBindingProofMismatch: u64 = 50;
+const EMakerReleaseEvidenceMismatch: u64 = 51;
+const EMakerReleaseEvidenceMissing: u64 = 52;
+const SHA256_LENGTH: u64 = 32;
 
 /// v5 protocol linkage. The canonical object starts disabled and must be
 /// explicitly enabled by the existing v4 protocol AdminCap after review.
@@ -265,6 +269,15 @@ public struct MakerRootReleaseStateV5 has store {
     seal_release_commitment: vector<u8>,
     complete_output_count: u64,
     total_completes: u64,
+}
+
+/// Bind-once semantic identity for the immutable Maker publication represented
+/// by one MakerRootV5. This lives as a dynamic field under the Root so deployed
+/// MakerRoot layouts remain unchanged across the callable package upgrade.
+public struct MakerReleaseEvidenceV5 has copy, drop, store {
+    parent_version: String,
+    manifest_blob_id: String,
+    manifest_sha256: vector<u8>,
 }
 
 /// Per-release Maker identity and all mutable v5 policy state. The legacy v4
@@ -501,6 +514,17 @@ public struct MakerPurchasedV5 has copy, drop {
     original_creator_royalty_atomic: u64,
     ownership_epoch: u64,
     control_cap_id: ID,
+}
+
+/// Emitted for every authorized bind/verify call. `newly_bound` is true only
+/// for the one transaction that created the immutable Root-owned evidence.
+public struct MakerReleaseEvidenceBoundV5 has copy, drop {
+    root_id: ID,
+    legacy_maker_id: ID,
+    parent_version: String,
+    manifest_blob_id: String,
+    manifest_sha256: vector<u8>,
+    newly_bound: bool,
 }
 
 public fun protocol_version(): u64 {
@@ -822,6 +846,34 @@ public(package) fun extension_payment_coin_type_v5(
     &config.payment_coin_type
 }
 
+/// Canonical v5 primary-fee split for independently-owned companion
+/// products. The companion receives the returned 90% Coin and must deposit it
+/// into its own release-bound treasury. This bridge deliberately reuses v5's
+/// live gate, dependency anchors, root/config linkage, payment TypeName and
+/// protocol treasury instead of letting an extension reproduce those checks.
+public(package) fun collect_extension_primary_payment_v5<PaymentCoin>(
+    root: &MakerRootV5,
+    config: &CommerceProtocolConfigV5,
+    protocol_treasury: &mut CommerceProtocolTreasuryV5<PaymentCoin>,
+    mut payment: Coin<PaymentCoin>,
+    creator_charge: u64,
+    ctx: &mut TxContext,
+): Coin<PaymentCoin> {
+    assert_operational(root, config);
+    assert_protocol_treasury(config, protocol_treasury);
+    assert!(root.protocol_config_id == object::id(config), EProtocolMismatch);
+    assert!(&root.payment_coin_type == &config.payment_coin_type, EPaymentCoinMismatch);
+    assert!(creator_charge > 0 && payment.value() == creator_charge, EWrongPayment);
+    let protocol_amount = bps_amount(creator_charge, PRIMARY_PROTOCOL_FEE_BPS);
+    if (protocol_amount > 0) {
+        let protocol_coin = coin::split(&mut payment, protocol_amount, ctx);
+        coin::put(&mut protocol_treasury.revenue, protocol_coin);
+        protocol_treasury.total_primary_collected =
+            protocol_treasury.total_primary_collected + protocol_amount;
+    };
+    payment
+}
+
 public fun protocol_logical_auxiliary_blob_id_v5(
     self: &CommerceProtocolConfigV5,
 ): &Option<String> {
@@ -1129,6 +1181,109 @@ public fun root_complete_output_count_v5(self: &MakerRootV5): u64 {
 
 public fun root_complete_outputs_table_id_v5(self: &MakerRootV5): ID {
     object::id(&self.complete_outputs)
+}
+
+/// Creates the exact semantic release anchor once, or verifies an already
+/// bound identical tuple. Only the current epoch-bound MakerControlCap holder
+/// may attest it, and the supplied Walrus Blob must be the one stored by the
+/// exact legacy OCMaker already linked to this Root.
+public fun bind_maker_release_evidence_v5(
+    root: &mut MakerRootV5,
+    cap: &MakerControlCapV5,
+    legacy_maker: &OCMaker,
+    parent_version: String,
+    manifest_blob_id: String,
+    manifest_sha256: vector<u8>,
+    ctx: &TxContext,
+) {
+    assert_control(root, cap, ctx);
+    assert_legacy_maker(root, legacy_maker);
+    assert_non_empty(&parent_version);
+    assert_non_empty(&manifest_blob_id);
+    assert!(manifest_sha256.length() == SHA256_LENGTH, EMakerReleaseEvidenceMismatch);
+    assert!(
+        legacy::maker_manifest_blob_id(legacy_maker) == &manifest_blob_id,
+        EMakerReleaseEvidenceMismatch,
+    );
+    let key = maker_release_evidence_key_v5();
+    let newly_bound = !df::exists(&root.id, key);
+    if (newly_bound) {
+        df::add(&mut root.id, key, MakerReleaseEvidenceV5 {
+            parent_version,
+            manifest_blob_id,
+            manifest_sha256,
+        });
+    } else {
+        let evidence: &MakerReleaseEvidenceV5 = df::borrow(&root.id, key);
+        assert!(
+            &evidence.parent_version == &parent_version
+                && &evidence.manifest_blob_id == &manifest_blob_id
+                && &evidence.manifest_sha256 == &manifest_sha256,
+            EMakerReleaseEvidenceMismatch,
+        );
+    };
+    event::emit(MakerReleaseEvidenceBoundV5 {
+        root_id: object::id(root),
+        legacy_maker_id: legacy::maker_id(legacy_maker),
+        parent_version,
+        manifest_blob_id,
+        manifest_sha256,
+        newly_bound,
+    });
+}
+
+public fun root_maker_release_evidence_bound_v5(root: &MakerRootV5): bool {
+    df::exists(&root.id, maker_release_evidence_key_v5())
+}
+
+public fun root_maker_release_evidence_v5(
+    root: &MakerRootV5,
+): &MakerReleaseEvidenceV5 {
+    let key = maker_release_evidence_key_v5();
+    assert!(df::exists(&root.id, key), EMakerReleaseEvidenceMissing);
+    df::borrow(&root.id, key)
+}
+
+public fun maker_release_parent_version_v5(
+    evidence: &MakerReleaseEvidenceV5,
+): &String {
+    &evidence.parent_version
+}
+
+public fun maker_release_manifest_blob_id_v5(
+    evidence: &MakerReleaseEvidenceV5,
+): &String {
+    &evidence.manifest_blob_id
+}
+
+public fun maker_release_manifest_sha256_v5(
+    evidence: &MakerReleaseEvidenceV5,
+): &vector<u8> {
+    &evidence.manifest_sha256
+}
+
+/// Package-only admission bridge for companion releases. It reuses the
+/// immutable Root-owned anchor and exact OCMaker linkage instead of accepting
+/// a child module's client-supplied version or hash as authority.
+public(package) fun assert_extension_maker_release_evidence_v5(
+    root: &MakerRootV5,
+    legacy_maker: &OCMaker,
+    parent_version: &String,
+    manifest_blob_id: &String,
+    manifest_sha256: &vector<u8>,
+) {
+    assert_legacy_maker(root, legacy_maker);
+    assert!(
+        legacy::maker_manifest_blob_id(legacy_maker) == manifest_blob_id,
+        EMakerReleaseEvidenceMismatch,
+    );
+    let evidence = root_maker_release_evidence_v5(root);
+    assert!(
+        &evidence.parent_version == parent_version
+            && &evidence.manifest_blob_id == manifest_blob_id
+            && &evidence.manifest_sha256 == manifest_sha256,
+        EMakerReleaseEvidenceMismatch,
+    );
 }
 
 public fun complete_output_exists_v5(
@@ -2541,6 +2696,12 @@ fun assert_payment_linkage<PaymentCoin>(
     assert!(&root.payment_coin_type == &config.payment_coin_type, EPaymentCoinMismatch);
 }
 
+/// A std::string dynamic-field name has a framework-stable TypeOrigin, so the
+/// evidence stays discoverable after later Commerce callable upgrades.
+fun maker_release_evidence_key_v5(): String {
+    b"animacraft.maker-release-evidence.v5".to_string()
+}
+
 fun assert_control(
     root: &MakerRootV5,
     cap: &MakerControlCapV5,
@@ -3002,6 +3163,49 @@ public fun complete_authorization_recipe_hash_v5(
     )
 }
 
+/// Stable MakerRoot identity authenticated by the non-storable Complete
+/// authorization. Companion modules use this instead of trusting a caller
+/// supplied root ID.
+public fun complete_authorization_root_id_v5(
+    authorization: &CommerceV5SoulMintAuthorization,
+): ID {
+    authorization.output_binding.root_id
+}
+
+/// Exact encrypted Complete output identity authenticated by Commerce v5.
+/// The Seal ID commits the root, payer, base recipe hash, nonce and output
+/// digest, so companion provenance cannot be replayed onto another output.
+public fun complete_authorization_output_seal_id_v5(
+    authorization: &CommerceV5SoulMintAuthorization,
+): &vector<u8> {
+    &authorization.output_binding.seal_id
+}
+
+/// Payer authenticated by the canonical authorization. It is intentionally a
+/// read-only bridge: additive modules cannot mutate or reconstruct the base
+/// authorization.
+public fun complete_authorization_payer_v5(
+    authorization: &CommerceV5SoulMintAuthorization,
+): address {
+    legacy::canonical_soul_mint_authorization_payer(
+        &authorization.canonical,
+    )
+}
+
+/// Package-only proof-type check for reviewed same-PTB companion modules.
+/// A public companion entry must still receive an actual value of `Proof`;
+/// callers cannot manufacture Soulidity's private-constructor type merely by
+/// naming it as a generic parameter.
+public(package) fun assert_extension_soul_binding_proof_type_v5<Proof: drop>(
+    config: &CommerceProtocolConfigV5,
+) {
+    assert!(config.soul_binding_proof_type.is_some(), EProtocolDependencyMissing);
+    assert!(
+        &defining_type_name<Proof>() == config.soul_binding_proof_type.borrow(),
+        ESoulBindingProofMismatch,
+    );
+}
+
 fun assert_complete_metadata(
     name: &String,
     profile_json_blob_id: &String,
@@ -3240,6 +3444,16 @@ public struct TrustedSoulBindingProofV5 has drop {}
 
 #[test_only]
 public struct UntrustedSoulBindingProofV5 has drop {}
+
+#[test_only]
+public fun trusted_soul_binding_proof_v5_for_testing(): TrustedSoulBindingProofV5 {
+    TrustedSoulBindingProofV5 {}
+}
+
+#[test_only]
+public fun untrusted_soul_binding_proof_v5_for_testing(): UntrustedSoulBindingProofV5 {
+    UntrustedSoulBindingProofV5 {}
+}
 
 #[test_only]
 fun legacy_maker_for_v5_testing(
@@ -3637,7 +3851,7 @@ fun test_complete_output_metadata(
 }
 
 #[test_only]
-fun activate_maker_with_test_seal_if_required(
+public fun activate_maker_with_test_seal_if_required(
     root: &mut MakerRootV5,
     cap: &MakerControlCapV5,
     ctx: &TxContext,

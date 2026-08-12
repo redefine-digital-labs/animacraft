@@ -15,6 +15,7 @@ import {
   buildPurchasePackV5,
   buildRestoreMakerV5,
   buildWithdrawMakerRevenueV5,
+  createGraphqlMoveEventAdapter,
   findCommerceV5MigrationByLegacyMaker,
   findPublishedMakerByIntent,
   getConnectedWalletAddress,
@@ -41,6 +42,8 @@ import {
   resumeWalrusUpload,
   setMakerArchived,
   setWalletModalLocale,
+  signTransactionForRecovery,
+  executeSignedTransactionAndWait,
   signExecuteAndWait,
   signConnectedWalletPersonalMessage,
   simulateCompleteQuoteV5,
@@ -59,6 +62,11 @@ import {
   saveMakerDraftRecord,
   saveMakerUploadRecovery,
 } from './draft-store.js';
+import {
+  EXPANSION_PACK_PLAYER_ACQUISITION_STATE,
+  createExpansionPackPlayerAcquisitionRecoveryStore,
+  expansionPackPlayerAcquisitionIdentity,
+} from './expansion-pack-player-acquisition-recovery-store.js';
 import { validateRemoteMakerManifest as validateMakerManifest } from './manifest-validation.js';
 import { isCurrentMakerDataEpoch } from './maker-release-epoch.js';
 import {
@@ -178,6 +186,35 @@ import {
   verifyMakerSealRecoveryPayloadV5,
 } from './maker-seal-v5.js';
 import { classifyChainUiError } from './chain-error-ui.js';
+import { createExpansionPackPublicationController } from './expansion-pack-publication-controller.js';
+import {
+  createExpansionPackPublicationStore,
+  expansionPackPublicationIdentity,
+} from './expansion-pack-publication-store.js';
+import {
+  EXPANSION_PACK_V8_ACCESS,
+  EXPANSION_PACK_V8_CLOCK_OBJECT_ID,
+  EXPANSION_PACK_V8_MODULE,
+  buildClaimFreeExpansionPackV8,
+  buildExpansionPackStyleSealApprovalV8,
+  buildPurchaseExpansionPackV8,
+  queryExpansionPackReleasesV8,
+  queryExpansionPackStyleRecordsV8,
+  queryOwnedExpansionPackPassesV8,
+  readExpansionPackV8Submission,
+  readExpansionPackV8PublicationSubmission,
+  transactionFromExpansionPackV8PublicationAction,
+  verifyExpansionPackV8ParentAction,
+} from './expansion-pack-publication-v8-app.js';
+import {
+  materializeExpansionPackPlayerEntryV8,
+  matchesExpansionPackSealPublicPolicyV8,
+  verifyExpansionPackPlayerReleaseV8,
+} from './expansion-pack-player-v8.js';
+import {
+  EXPANSION_PACK_MANIFEST_IDENTIFIER,
+} from './expansion-pack-publication.js';
+import { namespaceId as expansionPackNamespaceId } from './expansion-packs.js';
 
 let makerStorageInitializationError = null;
 try {
@@ -3383,6 +3420,12 @@ const commerceV5StateCache = new Map();
 const commerceV5StatePending = new Map();
 const composableV6StateCache = new Map();
 const composableV6StatePending = new Map();
+const expansionPackV8StateCache = new Map();
+const expansionPackV8StatePending = new Map();
+const expansionPackV8RuntimeAssetCache = new Map();
+const expansionPackPlayerAcquisitionRecoveryStore =
+  createExpansionPackPlayerAcquisitionRecoveryStore();
+let expansionPackV8RuntimeAssetCacheEpoch = 0;
 let makerComposableV6Publication = null;
 let makerPhysicalV7Publication = null;
 let playerComposableV6TrustedSnapshot = null;
@@ -3414,6 +3457,41 @@ let makerCommerceV5LifecycleView = Object.freeze({
 });
 let makerAutosaveTimer = null;
 let makerWorkspace = null;
+let makerWorkspaceContextSyncRequestId = 0;
+let expansionPackPublicationController = null;
+let expansionPackPublicationControllerScope = null;
+let expansionPackPublicationControllerEpoch = 0;
+
+function expansionPackPlayerAcquisitionSessionId() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return `pack-acquire-${globalThis.crypto.randomUUID()}`;
+  }
+  const bytes = new Uint8Array(24);
+  globalThis.crypto?.getRandomValues?.(bytes);
+  const suffix = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `pack-acquire-${Date.now().toString(36)}-${suffix || Math.random().toString(36).slice(2)}`;
+}
+
+function invalidateExpansionPackPublicationController() {
+  expansionPackPublicationControllerEpoch += 1;
+  expansionPackPublicationController = null;
+  expansionPackPublicationControllerScope = null;
+  return expansionPackPublicationControllerEpoch;
+}
+
+function clearExpansionPackV8RuntimeAssetCache() {
+  expansionPackV8RuntimeAssetCacheEpoch += 1;
+  expansionPackV8RuntimeAssetCache.forEach((holder) => {
+    const revoke = (asset) => {
+      const url = String(asset?.url || '');
+      if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+    };
+    if (holder?.asset) revoke(holder.asset);
+    else if (holder?.promise) holder.promise.then(revoke).catch(() => {});
+  });
+  expansionPackV8RuntimeAssetCache.clear();
+}
+const expansionPackPublicationStore = createExpansionPackPublicationStore();
 let draftRecoveryRequestId = 0;
 let makerPublicationRecoveryTimer = null;
 let makerUploadRestoreRequestId = 0;
@@ -3717,6 +3795,10 @@ function resetMakerUploadMemoryState({ clearPublicationIntent = true } = {}) {
   commerceV5StateCache.clear();
   composableV6StateCache.clear();
   composableV6StatePending.clear();
+  expansionPackV8StateCache.clear();
+  expansionPackV8StatePending.clear();
+  clearExpansionPackV8RuntimeAssetCache();
+  invalidateExpansionPackPublicationController();
   makerComposableV6Publication = null;
   makerPhysicalV7Publication = null;
   playerComposableV6TrustedSnapshot = null;
@@ -17282,6 +17364,30 @@ function commerceV5RuntimeContext() {
   };
 }
 
+function expansionPackV8RuntimeContext() {
+  return {
+    ...commerceV5RuntimeContext(),
+    // OCMaker keeps the TypeOrigin of the first Animacraft publication even
+    // after callable package upgrades. Parent verification must parse that
+    // stable type rather than the latest callable package.
+    originalPackageId: runtimeConfig.originalPackageId,
+    protocolFeePackageId: runtimeConfig.protocolFeePackageId,
+    commerceProtocolConfigV5Id: runtimeConfig.commerceProtocolConfigV5Id,
+    commerceProtocolTreasuryV5Id: runtimeConfig.commerceProtocolTreasuryV5Id,
+    expansionPackV8CallablePackageId: runtimeConfig.expansionPackV8CallablePackageId,
+    expansionPackV8TypeOriginPackageId: runtimeConfig.expansionPackV8TypeOriginPackageId,
+    expansionPackV8ReleaseEnabled: runtimeConfig.expansionPackV8ReleaseEnabled === true,
+  };
+}
+
+function expansionPackV8RuntimeConfigured() {
+  const runtime = expansionPackV8RuntimeContext();
+  return Boolean(
+    suiJsonId(runtime.expansionPackV8CallablePackageId)
+    && suiJsonId(runtime.expansionPackV8TypeOriginPackageId)
+  );
+}
+
 function composableV6RuntimeContext() {
   return {
     network: runtimeConfig.network,
@@ -17771,6 +17877,42 @@ function makerSealAbortErrorV5(signal) {
   return error;
 }
 
+function expansionPackV8DeploymentSealPublicPolicy() {
+  const configuredServers = Array.isArray(runtimeConfig.sealKeyServers)
+    ? runtimeConfig.sealKeyServers
+    : [];
+  return Object.freeze({
+    threshold: Number(runtimeConfig.sealThreshold),
+    // This is the complete deployment policy that is safe to compare with a
+    // public Manifest. Credential header names and values stay local and are
+    // deliberately not copied into Player state, recovery, or cache records.
+    keyServers: Object.freeze(configuredServers.map((server) => Object.freeze({
+      objectId: String(server?.objectId || ''),
+      weight: Number(server?.weight),
+      aggregatorUrl: String(server?.aggregatorUrl || ''),
+    }))),
+  });
+}
+
+function expansionPackV8EntryMatchesDeploymentSealPolicy(entry) {
+  if (entry?.access?.kind !== 'PAID_ONCE') return true;
+  const assets = Array.isArray(entry?.assets) ? entry.assets : [];
+  const deploymentPolicy = expansionPackV8DeploymentSealPublicPolicy();
+  return assets.length > 0 && assets.every((asset) => (
+    matchesExpansionPackSealPublicPolicyV8(asset?.protection, deploymentPolicy)
+  ));
+}
+
+function requireExpansionPackV8DeploymentSealPolicy(entry) {
+  if (!expansionPackV8EntryMatchesDeploymentSealPolicy(entry)) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_SEAL_PUBLIC_POLICY_MISMATCH',
+      'This Expansion Pack uses a Seal server policy that is not supported by this deployment.',
+      { releaseId: String(entry?.releaseId || '') },
+    );
+  }
+}
+
 function makerSealServerConfigsForProtectionV5(protection) {
   const publicServers = Array.isArray(protection?.keyServers)
     ? protection.keyServers
@@ -17805,6 +17947,42 @@ function makerSealServerConfigsForProtectionV5(protection) {
       throw commerceV5Error(
         'MAKER_SEAL_V5_SERVER_SET_MISMATCH',
         'A Maker Seal key server differs from the immutable publication descriptor.',
+      );
+    }
+    return configured;
+  });
+}
+
+function expansionPackV8ServerConfigsForProtection(protection) {
+  const publicServers = Array.isArray(protection?.keyServers)
+    ? protection.keyServers
+    : [];
+  const configuredServers = Array.isArray(runtimeConfig.sealKeyServers)
+    ? runtimeConfig.sealKeyServers
+    : [];
+  if (!matchesExpansionPackSealPublicPolicyV8(
+    protection,
+    expansionPackV8DeploymentSealPublicPolicy(),
+  )) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_SEAL_PUBLIC_POLICY_MISMATCH',
+      'The immutable Expansion Pack Seal server policy does not match this deployment.',
+    );
+  }
+  const configuredById = new Map(configuredServers.map((server) => [
+    comparableSuiId(server?.objectId),
+    server,
+  ]));
+  return publicServers.map((descriptor) => {
+    const configured = configuredById.get(comparableSuiId(descriptor?.objectId));
+    if (
+      !configured
+      || Boolean(String(configured.apiKeyName || '').trim())
+        !== Boolean(String(configured.apiKey || '').trim())
+    ) {
+      throw commerceV5Error(
+        'EXPANSION_PACK_PLAYER_V8_SEAL_SERVER_CONFIG_INVALID',
+        'A matched Expansion Pack Seal key server is missing its complete local credential configuration.',
       );
     }
     return configured;
@@ -18129,6 +18307,224 @@ async function resolveMakerSealRuntimeAssetV5(document, record, {
   } catch (error) {
     if (makerSealPlaintextCacheV5.get(plaintextKey) === pending) {
       makerSealPlaintextCacheV5.delete(plaintextKey);
+    }
+    throw error;
+  }
+}
+
+async function makerSealSessionForExpansionPackV8(wallet, pinnedSealPackageId) {
+  const packageId = suiJsonId(pinnedSealPackageId);
+  const expectedPackageId = suiJsonId(runtimeConfig.expansionPackV8TypeOriginPackageId);
+  if (
+    !packageId
+    || !expectedPackageId
+    || comparableSuiId(packageId) !== comparableSuiId(expectedPackageId)
+  ) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_V8_SEAL_PACKAGE_MISSING',
+      'Paid Expansion Packs require their immutable on-chain v8 TypeOrigin Seal package.',
+    );
+  }
+  const key = [comparableSuiId(wallet), comparableSuiId(packageId)].join(':');
+  let session = await makerSealSessionCacheV5.get(key);
+  if (session && !session.isExpired?.()) return session;
+  const pending = createMakerSealSessionKeyV5({
+    suiClient: getSuiClient(),
+    address: wallet,
+    sealPackageId: packageId,
+    signPersonalMessage: ({ message }) => signConnectedWalletPersonalMessage(
+      message,
+      { expectedWallet: wallet },
+    ),
+  });
+  makerSealSessionCacheV5.set(key, pending);
+  try {
+    session = await pending;
+    makerSealSessionCacheV5.set(key, session);
+    return session;
+  } catch (error) {
+    if (makerSealSessionCacheV5.get(key) === pending) {
+      makerSealSessionCacheV5.delete(key);
+    }
+    throw error;
+  }
+}
+
+async function resolveExpansionPackV8RuntimeAsset({ entry, asset }, {
+  signal,
+} = {}) {
+  if (signal?.aborted) throw makerSealAbortErrorV5(signal);
+  const wallet = suiJsonId(state.walletAddress);
+  const pass = entry?.access?.pass;
+  if (
+    !wallet
+    || entry?.trusted !== true
+    || entry?.access?.accessible !== true
+    || !pass
+    || comparableSuiId(pass.holder) !== comparableSuiId(wallet)
+    || comparableSuiId(pass.releaseId) !== comparableSuiId(entry.releaseId)
+  ) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_ENTITLEMENT_MISSING',
+      'The connected wallet does not hold the exact permanent Pack Pass.',
+    );
+  }
+  const localAssetId = String(asset?.assetId || '').trim();
+  const assetBlobId = String(asset?.assetBlobId || '').trim();
+  const expectedSha256 = normalizedSha256Hex(asset?.assetSha256);
+  if (!localAssetId || !assetBlobId || !expectedSha256) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_RUNTIME_ASSET_INVALID',
+      'A verified Pack Style is missing its exact Walrus patch or PNG digest.',
+    );
+  }
+  const protection = asset?.protection || null;
+  const paid = entry?.access?.kind === 'PAID_ONCE';
+  if (paid !== Boolean(protection)) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_TRANSPORT_BINDING_MISMATCH',
+      'The Pack access policy and immutable artwork transport do not match.',
+    );
+  }
+  const cacheKey = [
+    comparableSuiId(wallet),
+    comparableSuiId(entry?.parent?.baseMakerRootId),
+    String(entry?.parent?.ownershipEpoch ?? ''),
+    comparableSuiId(entry?.releaseId),
+    String(entry?.release?.admittedParentOwnershipEpoch ?? ''),
+    String(entry?.contentCommitment || ''),
+    localAssetId,
+    assetBlobId,
+    expectedSha256,
+    String(protection?.ciphertextDigest || ''),
+  ].join(':');
+  const cached = expansionPackV8RuntimeAssetCache.get(cacheKey);
+  if (cached?.asset) return cached.asset;
+  if (cached?.promise) return cached.promise;
+
+  const holder = { asset: null, promise: null };
+  const cacheEpoch = expansionPackV8RuntimeAssetCacheEpoch;
+  holder.promise = (async () => {
+    // Match immutable public metadata first. Only then may locally configured
+    // credential values be reattached for the Seal SDK client.
+    const serverConfigs = paid
+      ? expansionPackV8ServerConfigsForProtection(protection)
+      : null;
+    const response = await fetchWalrusWithBackoff(
+      walrusFileUrl(assetBlobId),
+      { signal, cache: 'no-store' },
+    );
+    if (!response.ok) {
+      throw commerceV5Error(
+        'EXPANSION_PACK_PLAYER_V8_ASSET_UNAVAILABLE',
+        `Walrus returned ${response.status} for Expansion Pack artwork.`,
+      );
+    }
+    const downloaded = await responseBlobWithinLimit(
+      response,
+      24 * 1024 * 1024,
+      'Expansion Pack artwork',
+    );
+    if (signal?.aborted) throw makerSealAbortErrorV5(signal);
+
+    let plaintextBlob;
+    if (paid) {
+      const pinnedSealPackageId = suiJsonId(entry?.release?.sealPackageId);
+      const sessionKey = await makerSealSessionForExpansionPackV8(
+        wallet,
+        pinnedSealPackageId,
+      );
+      if (signal?.aborted) throw makerSealAbortErrorV5(signal);
+      const approval = await buildExpansionPackStyleSealApprovalV8({
+        runtime: expansionPackV8RuntimeContext(),
+        releaseId: entry.releaseId,
+        parentRootId: entry.parent.baseMakerRootId,
+        sealId: asset.assetSealId,
+        sealPackageId: pinnedSealPackageId,
+        contentCommitment: entry.contentCommitment,
+        protection,
+        sender: wallet,
+      });
+      const txBytes = await approval.build({ client: getSuiClient() });
+      const sealClient = createMakerSealClientV5({
+        suiClient: getSuiClient(),
+        serverConfigs,
+        verifyKeyServers: runtimeConfig.sealVerifyKeyServers !== false,
+        timeout: Number(runtimeConfig.sealTimeoutMs || 10_000),
+      });
+      plaintextBlob = await decryptMakerSealAssetV5({
+        encryptedBlob: downloaded,
+        protection,
+        sealClient,
+        sessionKey,
+        txBytes,
+      });
+    } else {
+      const bytes = new Uint8Array(await downloaded.arrayBuffer());
+      const observedSha256 = await sha256BytesHex(bytes, 'Expansion Pack PNG');
+      if (observedSha256 !== expectedSha256) {
+        throw commerceV5Error(
+          'EXPANSION_PACK_PLAYER_V8_ASSET_HASH_MISMATCH',
+          'The downloaded Pack PNG does not match its immutable Sui Style digest.',
+        );
+      }
+      plaintextBlob = new Blob([bytes], {
+        type: String(asset?.mediaType || 'image/png'),
+      });
+    }
+    const plaintextBytes = new Uint8Array(await plaintextBlob.arrayBuffer());
+    const observedPlaintextSha256 = await sha256BytesHex(
+      plaintextBytes,
+      'Expansion Pack plaintext PNG',
+    );
+    if (observedPlaintextSha256 !== expectedSha256) {
+      throw commerceV5Error(
+        'EXPANSION_PACK_PLAYER_V8_PLAINTEXT_HASH_MISMATCH',
+        'The resolved Pack PNG does not match its immutable release digest.',
+      );
+    }
+    const descriptor = (Array.isArray(entry?.manifest?.overlay?.assets)
+      ? entry.manifest.overlay.assets
+      : []).find((candidate) => String(candidate?.id || '') === localAssetId) || {};
+    const runtimeAssetId = expansionPackNamespaceId(entry.pack.namespace, localAssetId);
+    const url = URL.createObjectURL(plaintextBlob);
+    const runtimeAsset = Object.freeze({
+      assetId: runtimeAssetId,
+      id: runtimeAssetId,
+      localAssetId,
+      identifier: String(asset?.identifier || descriptor.identifier || ''),
+      mediaType: String(asset?.mediaType || descriptor.mediaType || 'image/png'),
+      width: Number(descriptor.width || 0) || undefined,
+      height: Number(descriptor.height || 0) || undefined,
+      url,
+      source: paid
+        ? 'seal-expansion-pack-v8'
+        : 'walrus-expansion-pack-v8-verified',
+      releaseId: String(entry.releaseId || ''),
+      expansionPackReleaseId: String(entry.releaseId || ''),
+      expansionPackContentCommitment: String(entry.contentCommitment || ''),
+      sha256: expectedSha256,
+    });
+    if (
+      cacheEpoch !== expansionPackV8RuntimeAssetCacheEpoch
+      || expansionPackV8RuntimeAssetCache.get(cacheKey) !== holder
+      || comparableSuiId(state.walletAddress) !== comparableSuiId(wallet)
+    ) {
+      URL.revokeObjectURL(url);
+      throw commerceV5Error(
+        'WALLET_CONTEXT_CHANGED',
+        'The wallet or Maker changed while Pack artwork was being resolved.',
+      );
+    }
+    holder.asset = runtimeAsset;
+    return runtimeAsset;
+  })();
+  expansionPackV8RuntimeAssetCache.set(cacheKey, holder);
+  try {
+    return await holder.promise;
+  } catch (error) {
+    if (expansionPackV8RuntimeAssetCache.get(cacheKey) === holder) {
+      expansionPackV8RuntimeAssetCache.delete(cacheKey);
     }
     throw error;
   }
@@ -19058,6 +19454,8 @@ async function executeMakerCommerceV5Action(action, {
     });
     assertMakerCommerceV5LifecycleOperation(operation);
     commerceV5StateCache.clear();
+    expansionPackV8StateCache.clear();
+    clearExpansionPackV8RuntimeAssetCache();
     latestManagement = await readBackMakerCommerceV5Lifecycle(operation, matches);
     assertMakerCommerceV5LifecycleOperation(operation);
     setMakerCommerceV5LifecycleReady(latestManagement);
@@ -19345,6 +19743,216 @@ function assertCommerceV5QuoteAmount(actual, expected, label) {
   }
 }
 
+const EXPANSION_PACK_V8_PLAYER_STATE_SCHEMA =
+  'animacraft.expansion-pack-player-state.v1';
+const EXPANSION_PACK_V8_PLAYER_MANIFEST_BYTES = 10 * 1024 * 1024;
+
+function expansionPackV8PlayerCacheKey(document, parentRelease, wallet, ownershipEpoch) {
+  return [
+    comparableSuiId(wallet),
+    comparableSuiId(parentRelease?.baseMakerRootId),
+    comparableSuiId(parentRelease?.releaseId || parentRelease?.parentLegacyMakerId),
+    String(parentRelease?.versionNumber || ''),
+    String(parentRelease?.versionId || document?.version?.versionId || ''),
+    String(parentRelease?.manifestBlobId || ''),
+    normalizedSha256Hex(parentRelease?.manifestHash || parentRelease?.manifestSha256),
+    String(ownershipEpoch ?? ''),
+    comparableSuiId(runtimeConfig.expansionPackV8TypeOriginPackageId),
+  ].join(':');
+}
+
+function expansionPackV8ManifestStyleKeys(manifest) {
+  return (Array.isArray(manifest?.overlay?.parts) ? manifest.overlay.parts : [])
+    .flatMap((part) => (Array.isArray(part?.items) ? part.items : []).flatMap((item) => (
+      (Array.isArray(item?.styles) ? item.styles : []).map((style) => ({
+        partKey: String(part?.id || part?.extendsPartId || part?.targetPartId || '').trim(),
+        itemKey: String(item?.id || item?.extendsItemId || item?.targetItemId || '').trim(),
+        styleKey: String(style?.id || '').trim(),
+      }))
+    )));
+}
+
+function expansionPackV8FailClosedState(parentRelease, error) {
+  return Object.freeze({
+    schemaVersion: EXPANSION_PACK_V8_PLAYER_STATE_SCHEMA,
+    trusted: false,
+    walletAddress: String(state.walletAddress || ''),
+    parentRelease: parentRelease ? Object.freeze({ ...parentRelease }) : null,
+    entries: Object.freeze([]),
+    assets: Object.freeze([]),
+    rejected: Object.freeze([]),
+    errorCode: String(error?.code || 'EXPANSION_PACK_PLAYER_V8_UNAVAILABLE'),
+    errorMessage: String(error?.message || 'Expansion Pack v8 is unavailable.'),
+  });
+}
+
+async function hydratePlayerExpansionPacksV8(document = currentMakerV4Source(), {
+  force = false,
+} = {}) {
+  // Package identity controls read availability. The release gate controls
+  // only new publication and acquisition; turning sales off must never revoke
+  // an already-owned, wallet-bound Pack Pass.
+  if (
+    !expansionPackV8RuntimeConfigured()
+    || activeTemplate()?.source !== 'chain'
+  ) return null;
+  if (!isMakerV4Document(document)) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_DOCUMENT_MISSING',
+      'The exact published Maker document is required to discover Expansion Packs.',
+    );
+  }
+  const wallet = suiJsonId(getConnectedWalletAddress());
+  if (!wallet || comparableSuiId(wallet) !== comparableSuiId(state.walletAddress)) {
+    throw commerceV5Error(
+      'WALLET_CONTEXT_CHANGED',
+      'Reconnect the Player wallet before loading Expansion Packs.',
+    );
+  }
+  const commerce = await hydratePlayerCommerceV5(document, { force });
+  if (!commerce?.context?.available) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_PARENT_UNAVAILABLE',
+      'The exact parent MakerRootV5 is unavailable.',
+    );
+  }
+  const observedParent = expansionPackParentReleaseForDocument(document);
+  if (!observedParent?.identityVerified || !observedParent?.baseMakerRootId) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_PARENT_UNVERIFIED',
+      'Expansion Packs require the exact verified parent Maker release.',
+    );
+  }
+  if (
+    comparableSuiId(observedParent.baseMakerRootId)
+      !== comparableSuiId(commerce.chain?.root?.objectId)
+    || comparableSuiId(observedParent.releaseId)
+      !== comparableSuiId(commerce.chain?.root?.legacyMakerId)
+  ) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_PARENT_MISMATCH',
+      'The published Maker evidence and current MakerRootV5 do not match.',
+    );
+  }
+  const parentRelease = Object.freeze({
+    ...observedParent,
+    ownershipEpoch: commerce.chain.root.ownershipEpoch,
+  });
+  const cacheKey = expansionPackV8PlayerCacheKey(
+    document,
+    parentRelease,
+    wallet,
+    commerce.chain.root.ownershipEpoch,
+  );
+  const cached = expansionPackV8StateCache.get(cacheKey);
+  if (!force && cached && Date.now() - cached.loadedAt < COMMERCE_V5_CACHE_TTL_MS) {
+    return cached.state;
+  }
+  if (expansionPackV8StatePending.has(cacheKey)) {
+    return expansionPackV8StatePending.get(cacheKey);
+  }
+  const pending = (async () => {
+    const client = getSuiClient();
+    const eventAdapter = createGraphqlMoveEventAdapter();
+    const discoveryClient = Object.freeze({
+      queryEvents: (request) => eventAdapter.queryEvents(request),
+      getObjects: (request) => client.getObjects(request),
+    });
+    const runtime = expansionPackV8RuntimeContext();
+    const [releases, passes] = await Promise.all([
+      queryExpansionPackReleasesV8(discoveryClient, {
+        runtime,
+        parentRootId: parentRelease.baseMakerRootId,
+      }),
+      queryOwnedExpansionPackPassesV8(client, {
+        runtime,
+        owner: wallet,
+        parentRootId: parentRelease.baseMakerRootId,
+      }),
+    ]);
+    const entries = [];
+    const rejected = [];
+    for (const release of releases) {
+      try {
+        const response = await fetchWalrusWithBackoff(
+          walrusQuiltFileUrl(
+            release.manifestBlobId,
+            EXPANSION_PACK_MANIFEST_IDENTIFIER,
+          ),
+          { cache: 'no-store' },
+        );
+        if (!response.ok) {
+          throw commerceV5Error(
+            'EXPANSION_PACK_PLAYER_V8_MANIFEST_UNAVAILABLE',
+            `Walrus returned ${response.status} for Expansion Pack ${release.objectId}.`,
+          );
+        }
+        const manifestBytes = await responseBytesWithinLimit(
+          response,
+          EXPANSION_PACK_V8_PLAYER_MANIFEST_BYTES,
+          'The Expansion Pack manifest',
+        );
+        let manifest;
+        try {
+          manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
+        } catch {
+          throw commerceV5Error(
+            'EXPANSION_PACK_PLAYER_V8_MANIFEST_INVALID',
+            'The Expansion Pack manifest is not valid JSON.',
+          );
+        }
+        const styleRecords = await queryExpansionPackStyleRecordsV8(client, {
+          runtime,
+          release,
+          styles: expansionPackV8ManifestStyleKeys(manifest),
+        });
+        const verified = await verifyExpansionPackPlayerReleaseV8({
+          baseDocument: document,
+          parentRelease,
+          release,
+          manifest,
+          manifestBytes,
+          styleRecords,
+          passes,
+          walletAddress: wallet,
+          expectedSealPackageId: runtime.expansionPackV8TypeOriginPackageId,
+        });
+        entries.push(await materializeExpansionPackPlayerEntryV8(verified, {
+          salesEnabled: runtime.expansionPackV8ReleaseEnabled === true,
+          sealPublicPolicy: expansionPackV8DeploymentSealPublicPolicy(),
+          resolveRuntimeAsset: (runtimeAsset) => (
+            resolveExpansionPackV8RuntimeAsset(runtimeAsset)
+          ),
+        }));
+      } catch (error) {
+        rejected.push(Object.freeze({
+          releaseId: String(release?.objectId || ''),
+          code: String(error?.code || 'EXPANSION_PACK_PLAYER_V8_RELEASE_REJECTED'),
+          message: String(error?.message || 'Expansion Pack verification failed.'),
+        }));
+      }
+    }
+    const assets = Object.freeze(entries.flatMap((entry) => entry.runtimeAssets));
+    const hydrated = Object.freeze({
+      schemaVersion: EXPANSION_PACK_V8_PLAYER_STATE_SCHEMA,
+      trusted: true,
+      walletAddress: wallet,
+      parentRelease,
+      entries: Object.freeze(entries),
+      assets,
+      rejected: Object.freeze(rejected),
+      loadedAt: new Date().toISOString(),
+    });
+    expansionPackV8StateCache.set(cacheKey, {
+      loadedAt: Date.now(),
+      state: hydrated,
+    });
+    return hydrated;
+  })().finally(() => expansionPackV8StatePending.delete(cacheKey));
+  expansionPackV8StatePending.set(cacheKey, pending);
+  return pending;
+}
+
 async function purchasePlayerMakerAccessV5({ document, quote }) {
   const hydrated = await requirePlayerCommerceV5(document, { force: true });
   assertCommerceV5QuoteAmount(
@@ -19453,6 +20061,391 @@ async function purchasePlayerExpansionPackV5({ document, packId, quote }) {
   });
 }
 
+function expansionPackV8AcquisitionAction({ runtime, release, wallet }) {
+  const paid = release.accessKind === EXPANSION_PACK_V8_ACCESS.PAID_ONCE;
+  const callablePackageId = suiJsonId(runtime.expansionPackV8CallablePackageId);
+  if (!callablePackageId) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_V8_CONFIG_MISSING',
+      'The reviewed Expansion Pack v8 callable package is not configured.',
+    );
+  }
+  const functionName = paid
+    ? 'purchase_expansion_pack_v8'
+    : 'claim_free_expansion_pack_v8';
+  const inputs = {
+    packReleaseId: release.objectId,
+    baseMakerRootId: release.parentRootId,
+    commerceProtocolConfigV5Id: runtime.commerceProtocolConfigV5Id,
+    clockObjectId: EXPANSION_PACK_V8_CLOCK_OBJECT_ID,
+    ...(paid ? {
+      packTreasuryId: release.treasuryId,
+      commerceProtocolTreasuryV5Id: runtime.commerceProtocolTreasuryV5Id,
+      payment: true,
+      purchasePriceAtomic: String(release.purchasePriceAtomic),
+    } : {}),
+  };
+  return Object.freeze({
+    id: paid ? 'chain.pack.purchase' : 'chain.pack.claim.free',
+    transport: 'SUI',
+    target: `${callablePackageId}::${EXPANSION_PACK_V8_MODULE}::${functionName}`,
+    authority: Object.freeze({ signer: wallet }),
+    typeArguments: Object.freeze(paid ? [runtime.paymentCoinType] : []),
+    inputs: Object.freeze(inputs),
+  });
+}
+
+async function acquirePlayerExpansionPackV8({
+  document: requestedDocument,
+  releaseId,
+  priceAtomic,
+  quote,
+  makerKey: requestedMakerKey,
+  workspaceContextEpoch,
+  makerVersionId,
+  entryIdentity,
+} = {}) {
+  if (!expansionPackV8RuntimeConfigured()) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_V8_CONFIG_MISSING',
+      'The reviewed Expansion Pack v8 package identities are not configured.',
+    );
+  }
+  const document = isMakerV4Document(state.publishedMakerDocumentV4)
+    ? state.publishedMakerDocumentV4
+    : requestedDocument;
+  if (!isMakerV4Document(document)) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_DOCUMENT_MISSING',
+      'Reload the exact published Maker before acquiring this Expansion Pack.',
+    );
+  }
+  const wallet = suiJsonId(state.walletAddress);
+  if (!wallet || comparableSuiId(wallet) !== comparableSuiId(getConnectedWalletAddress())) {
+    throw commerceV5Error(
+      'WALLET_CONTEXT_CHANGED',
+      'Reconnect the wallet that will own this Expansion Pack Pass.',
+    );
+  }
+  const normalizedReleaseId = suiJsonId(releaseId);
+  if (!normalizedReleaseId) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_RELEASE_REQUIRED',
+      'Choose an exact verified Expansion Pack release.',
+    );
+  }
+  const acquisitionScope = Object.freeze({
+    templateId: String(state.templateId || ''),
+    wallet,
+    makerKey: String(requestedMakerKey || makerWorkspace?.makerKey || ''),
+    workspaceContextEpoch: Number.isSafeInteger(workspaceContextEpoch)
+      ? workspaceContextEpoch
+      : makerWorkspace?.contextEpoch,
+    rootMakerId: String(document.version?.rootMakerId || ''),
+    makerVersionId: String(makerVersionId || document.version?.versionId || ''),
+    releaseId: normalizedReleaseId,
+    entryIdentity: String(entryIdentity || ''),
+  });
+  const acquisitionScopeIsActive = () => {
+    const activeDocument = isMakerV4Document(state.publishedMakerDocumentV4)
+      ? state.publishedMakerDocumentV4
+      : currentMakerV4Source();
+    const activeEntry = makerWorkspace?.playerExpansionPackV8Entry?.(
+      acquisitionScope.releaseId,
+    );
+    return Boolean(
+      String(state.templateId || '') === acquisitionScope.templateId
+      && comparableSuiId(state.walletAddress) === comparableSuiId(acquisitionScope.wallet)
+      && comparableSuiId(getConnectedWalletAddress())
+        === comparableSuiId(acquisitionScope.wallet)
+      && String(makerWorkspace?.makerKey || '') === acquisitionScope.makerKey
+      && makerWorkspace?.contextEpoch === acquisitionScope.workspaceContextEpoch
+      && String(activeDocument?.version?.rootMakerId || '') === acquisitionScope.rootMakerId
+      && String(activeDocument?.version?.versionId || '') === acquisitionScope.makerVersionId
+      && (!acquisitionScope.entryIdentity
+        || String(activeEntry?.identity || '') === acquisitionScope.entryIdentity)
+    );
+  };
+  const requireAcquisitionScope = (details = {}) => {
+    if (!acquisitionScopeIsActive()) {
+      throw commerceV5Error(
+        'EXPANSION_PACK_PLAYER_V8_CONTEXT_CHANGED',
+        'The wallet, Maker version, or Expansion Pack changed before the transaction completed. Reopen the current Pack before trying again.',
+        { releaseId: normalizedReleaseId, recoverable: true, ...details },
+      );
+    }
+  };
+  requireAcquisitionScope();
+  const current = await hydratePlayerExpansionPacksV8(document, { force: true });
+  requireAcquisitionScope();
+  const entry = current?.entries?.find((candidate) => (
+    comparableSuiId(candidate.releaseId) === comparableSuiId(normalizedReleaseId)
+  ));
+  if (!entry?.trusted) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_RELEASE_UNVERIFIED',
+      'This Expansion Pack release did not pass exact Sui and Walrus verification.',
+      { releaseId: normalizedReleaseId },
+    );
+  }
+  if (entry.access.accessible && entry.access.pass) {
+    return Object.freeze({
+      confirmed: true,
+      alreadyOwned: true,
+      releaseId: entry.releaseId,
+      passId: entry.access.pass.objectId,
+      expansionPackV8State: current,
+    });
+  }
+  if (runtimeConfig.expansionPackV8ReleaseEnabled !== true) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_V8_RELEASE_DISABLED',
+      'New Expansion Pack claims and purchases are currently paused. Existing Pack Passes remain usable.',
+      { releaseId: entry.releaseId },
+    );
+  }
+  // Existing Pass holders only retry immutable readback and Seal
+  // materialization. New-sale lifecycle checks must not turn that retry into a
+  // second purchase or revoke already-owned artwork.
+  const commerce = await requirePlayerCommerceV5(document, { force: true });
+  requireAcquisitionScope();
+  if (!entry.access.availableForAcquire) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_NOT_ACTIVE',
+      'This Expansion Pack is not Active against the current parent ownership epoch.',
+      { releaseId: entry.releaseId },
+    );
+  }
+  if (entry.transportReady !== true) {
+    throw commerceV5Error(
+      entry.acquisitionBlockedReason || 'EXPANSION_PACK_PLAYER_V8_TRANSPORT_UNAVAILABLE',
+      'This Expansion Pack cannot be acquired until its exact immutable artwork transport is verified.',
+      { releaseId: entry.releaseId },
+    );
+  }
+  requireExpansionPackV8DeploymentSealPolicy(entry);
+  if (
+    comparableSuiId(commerce.chain.root.objectId)
+      !== comparableSuiId(entry.parent.baseMakerRootId)
+    || comparableSuiId(commerce.chain.root.legacyMakerId)
+      !== comparableSuiId(entry.parent.releaseId)
+  ) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_PARENT_MISMATCH',
+      'The Expansion Pack no longer belongs to the active MakerRootV5.',
+    );
+  }
+  const expectedPrice = BigInt(entry.access.priceAtomic || 0);
+  const confirmedPrice = priceAtomic ?? quote?.grossAtomic ?? quote?.priceAtomic;
+  let confirmedAtomic = null;
+  try {
+    if (confirmedPrice != null) confirmedAtomic = BigInt(confirmedPrice);
+  } catch {
+    confirmedAtomic = null;
+  }
+  if (confirmedAtomic === null || confirmedAtomic !== expectedPrice) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_PRICE_CHANGED',
+      'The Expansion Pack price changed. Review the exact current amount before signing.',
+      { expectedPriceAtomic: expectedPrice.toString() },
+    );
+  }
+  const runtime = expansionPackV8RuntimeContext();
+  const recoveryIdentity = expansionPackPlayerAcquisitionIdentity({
+    walletAddress: wallet,
+    parentRootId: entry.parent.baseMakerRootId,
+    makerVersionNumber: entry.parent.versionNumber,
+    makerVersionId: entry.parent.versionId,
+    releaseId: entry.releaseId,
+    accessKind: entry.access.kind,
+    priceAtomic: expectedPrice.toString(),
+    contentCommitment: entry.contentCommitment,
+  });
+  const completedRecovery = await expansionPackPlayerAcquisitionRecoveryStore
+    .loadVerifiedReceipt(recoveryIdentity);
+  if (completedRecovery) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_ENTITLEMENT_NOT_VISIBLE',
+      'This exact acquisition already has verified on-chain Pass readback. Wait for the Player catalog to index it; Animacraft will not request another signature.',
+      {
+        digest: completedRecovery.transactionDigest,
+        passId: completedRecovery.passId,
+        releaseId: entry.releaseId,
+        recoverable: true,
+      },
+    );
+  }
+  const action = expansionPackV8AcquisitionAction({
+    runtime,
+    release: entry.release,
+    wallet,
+  });
+  const transaction = entry.release.accessKind === EXPANSION_PACK_V8_ACCESS.FREE
+    ? buildClaimFreeExpansionPackV8({
+        runtime,
+        releaseId: entry.releaseId,
+        parentRootId: entry.parent.baseMakerRootId,
+        protocolConfigId: runtime.commerceProtocolConfigV5Id,
+        clockObjectId: EXPANSION_PACK_V8_CLOCK_OBJECT_ID,
+        sender: wallet,
+      })
+    : buildPurchaseExpansionPackV8({
+        runtime,
+        releaseId: entry.releaseId,
+        treasuryId: entry.release.treasuryId,
+        parentRootId: entry.parent.baseMakerRootId,
+        protocolConfigId: runtime.commerceProtocolConfigV5Id,
+        protocolTreasuryId: runtime.commerceProtocolTreasuryV5Id,
+        priceAtomic: expectedPrice,
+        clockObjectId: EXPANSION_PACK_V8_CLOCK_OBJECT_ID,
+        sender: wallet,
+      });
+  requireAcquisitionScope();
+  let pendingRecovery = await expansionPackPlayerAcquisitionRecoveryStore
+    .loadPending(recoveryIdentity);
+  if (!pendingRecovery) {
+    requireAcquisitionScope();
+    // Hydration already checked this immutable public policy. Recheck at the
+    // final wallet boundary so a deployment mismatch can never reach signing.
+    requireExpansionPackV8DeploymentSealPolicy(entry);
+    const signed = await signTransactionForRecovery(transaction, { expectedWallet: wallet });
+    // Persist first even if the user switches context while the wallet prompt
+    // is open. A stale signature remains recoverable but is never broadcast.
+    const persisted = await expansionPackPlayerAcquisitionRecoveryStore
+      .persistSignedTransaction(recoveryIdentity, signed, {
+        expectedRevision: 0,
+        sessionId: expansionPackPlayerAcquisitionSessionId(),
+      });
+    pendingRecovery = persisted.record;
+  }
+  requireAcquisitionScope({ digest: pendingRecovery.signed.digest });
+  // A recovered signature is not permission to pay under a deployment policy
+  // that no longer matches the Pack's immutable public Seal metadata.
+  requireExpansionPackV8DeploymentSealPolicy(entry);
+  pendingRecovery = await expansionPackPlayerAcquisitionRecoveryStore.checkpointPending(
+    recoveryIdentity,
+    {
+      state: EXPANSION_PACK_PLAYER_ACQUISITION_STATE.BROADCASTING,
+      lastErrorCode: '',
+    },
+    {
+      expectedRevision: pendingRecovery.revision,
+      sessionId: pendingRecovery.sessionId,
+    },
+  );
+  let submitted;
+  let readback;
+  try {
+    submitted = await executeSignedTransactionAndWait(pendingRecovery.signed, {
+      assertBeforeExecute: () => {
+        requireAcquisitionScope({ digest: pendingRecovery.signed.digest });
+        // Pending signed bytes are recoverable, but they must not become a paid
+        // broadcast under a currently incompatible local Seal deployment.
+        requireExpansionPackV8DeploymentSealPolicy(entry);
+      },
+    });
+    readback = await readExpansionPackV8Submission({
+      action,
+      submission: submitted,
+      suiClient: getSuiClient(),
+      runtime,
+    });
+    if (!readback?.readbackVerified || !readback?.entitlementGranted || !readback?.passId) {
+      throw commerceV5Error(
+        'EXPANSION_PACK_PLAYER_V8_READBACK_FAILED',
+        'Sui did not return the exact Expansion Pack Pass created by this transaction.',
+        { digest: submitted.digest },
+      );
+    }
+  } catch (error) {
+    if (error?.code === 'TRANSACTION_FINALIZED_FAILURE'
+      && error?.finalizedFailure?.finalized === true) {
+      await expansionPackPlayerAcquisitionRecoveryStore.storeFinalizedFailure(
+        recoveryIdentity,
+        error.finalizedFailure,
+        {
+          expectedRevision: pendingRecovery.revision,
+          sessionId: pendingRecovery.sessionId,
+        },
+      );
+      throw error;
+    }
+    try {
+      pendingRecovery = await expansionPackPlayerAcquisitionRecoveryStore.checkpointPending(
+        recoveryIdentity,
+        {
+          state: EXPANSION_PACK_PLAYER_ACQUISITION_STATE.OUTCOME_PENDING,
+          lastErrorCode: String(error?.code || 'EXPANSION_PACK_PLAYER_V8_OUTCOME_PENDING'),
+        },
+        {
+          expectedRevision: pendingRecovery.revision,
+          sessionId: pendingRecovery.sessionId,
+        },
+      );
+    } catch (checkpointError) {
+      console.warn('Expansion Pack acquisition recovery checkpoint could not be updated.', checkpointError);
+    }
+    throw error;
+  }
+  const durableReceipt = await expansionPackPlayerAcquisitionRecoveryStore
+    .storeVerifiedReceipt(
+      recoveryIdentity,
+      {
+        verifiedReadback: true,
+        passId: readback.passId,
+        transactionDigest: submitted.digest,
+        holder: wallet,
+        parentRootId: recoveryIdentity.parentRootId,
+        makerVersionNumber: recoveryIdentity.makerVersionNumber,
+        makerVersionId: recoveryIdentity.makerVersionId,
+        releaseId: recoveryIdentity.releaseId,
+        accessKind: recoveryIdentity.accessKind,
+        priceAtomic: recoveryIdentity.priceAtomic,
+        contentCommitment: recoveryIdentity.contentCommitment,
+      },
+      {
+        expectedRevision: pendingRecovery.revision,
+        sessionId: pendingRecovery.sessionId,
+      },
+    );
+  await expansionPackPlayerAcquisitionRecoveryStore.cleanupPending(
+    recoveryIdentity,
+    {
+      expectedRevision: pendingRecovery.revision,
+      receiptRevision: durableReceipt.record.receiptRevision,
+      sessionId: pendingRecovery.sessionId,
+      transactionDigest: submitted.digest,
+    },
+  );
+  requireAcquisitionScope({ digest: submitted.digest });
+  const refreshed = await hydratePlayerExpansionPacksV8(document, { force: true });
+  requireAcquisitionScope({ digest: submitted.digest });
+  const acquired = refreshed?.entries?.find((candidate) => (
+    comparableSuiId(candidate.releaseId) === comparableSuiId(entry.releaseId)
+  ));
+  if (
+    !acquired?.access?.accessible
+    || !acquired.access.pass
+    || comparableSuiId(acquired.access.pass.objectId) !== comparableSuiId(readback.passId)
+    || comparableSuiId(acquired.access.pass.holder) !== comparableSuiId(wallet)
+    || String(acquired.access.pass.contentCommitment || '')
+      !== String(entry.contentCommitment || '')
+  ) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PLAYER_V8_ENTITLEMENT_NOT_VISIBLE',
+      'The transaction finalized, but its exact permanent Pack Pass is not visible yet. Retry only after Sui indexes it.',
+      { digest: submitted.digest, releaseId: entry.releaseId, recoverable: true },
+    );
+  }
+  return Object.freeze({
+    confirmed: true,
+    digest: submitted.digest,
+    releaseId: acquired.releaseId,
+    passId: acquired.access.pass.objectId,
+    expansionPackV8State: refreshed,
+  });
+}
+
 function expansionPackParentReleaseForDocument(document) {
   if (!isMakerV4Document(document) || !isMakerV4Document(state.publishedMakerDocumentV4)) {
     return null;
@@ -19469,6 +20462,17 @@ function expansionPackParentReleaseForDocument(document) {
   const manifestBlobId = String(template?.quiltId || state.makerQuiltId || '').trim();
   const manifestHash = normalizedSha256Hex(template?.manifestSha256);
   if (!releaseId || !manifestBlobId || !manifestHash) return null;
+  const chainBinding = currentWorkspaceChainBinding(document);
+  const baseMakerRootId = suiJsonId(
+    chainBinding?.commerceV5RootObjectId
+    || state.commerceV5RootObjectId
+    || template?.commerceV5RootObjectId,
+  );
+  const makerControlCapId = suiJsonId(
+    chainBinding?.commerceV5ControlCapObjectId
+    || state.commerceV5ControlCapObjectId
+    || template?.commerceV5ControlCapObjectId,
+  );
   return Object.freeze({
     identityVerified: true,
     published: true,
@@ -19479,14 +20483,330 @@ function expansionPackParentReleaseForDocument(document) {
     releaseId,
     manifestBlobId,
     manifestHash,
+    baseMakerRootId,
+    parentLegacyMakerId: releaseId,
+    makerControlCapId,
   });
+}
+
+function expansionPackPublicationScope(payload) {
+  const project = payload?.project || {};
+  const parent = payload?.parentRelease || {};
+  return Object.freeze({
+    templateId: String(state.templateId || ''),
+    walletAddress: String(payload?.walletAddress || '').trim().toLowerCase(),
+    projectId: String(project.projectId || project.packId || ''),
+    packId: String(project.packId || ''),
+    packVersion: String(project.version || ''),
+    parentBindingIdentity: String(project.parentBinding?.identity || ''),
+    parentReleaseId: suiJsonId(parent.releaseId || parent.parentLegacyMakerId),
+    baseMakerRootId: suiJsonId(parent.baseMakerRootId),
+    draftRevision: Number.isSafeInteger(payload?.draftRevision)
+      ? payload.draftRevision
+      : null,
+    publicationRequestToken: Number.isSafeInteger(payload?.publicationRequestToken)
+      ? payload.publicationRequestToken
+      : null,
+  });
+}
+
+function expansionPackPublicationScopeIsActive(scope) {
+  const workspace = makerWorkspace?.expansionPackWorkspace;
+  const workspaceState = workspace?.getState?.();
+  const workspaceProject = workspaceState?.project;
+  const parent = makerWorkspace?.expansionPackPublishedParent?.()?.release;
+  return Boolean(
+    scope
+    && String(state.templateId || '') === scope.templateId
+    && String(state.walletAddress || '').trim().toLowerCase() === scope.walletAddress
+    && String(workspaceProject?.projectId || workspaceProject?.packId || '') === scope.projectId
+    && String(workspaceProject?.packId || '') === scope.packId
+    && String(workspaceProject?.version || '') === scope.packVersion
+    && String(workspaceProject?.parentBinding?.identity || '') === scope.parentBindingIdentity
+    && comparableSuiId(parent?.releaseId || parent?.parentLegacyMakerId) === comparableSuiId(scope.parentReleaseId)
+    && comparableSuiId(parent?.baseMakerRootId) === comparableSuiId(scope.baseMakerRootId)
+    && makerWorkspace?.expansionPackPublicationRequestIsActive?.({
+      requestToken: scope.publicationRequestToken,
+      workspace,
+      draftRevision: scope.draftRevision,
+    }) === true
+  );
+}
+
+function requireActiveExpansionPackPublicationScope(scope, epoch) {
+  if (
+    epoch !== expansionPackPublicationControllerEpoch
+    || !expansionPackPublicationScopeIsActive(scope)
+  ) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED',
+      'The Expansion Pack draft, wallet, parent release, or publication request changed. Reopen the current Pack before continuing.',
+      { recoverable: true },
+    );
+  }
+}
+
+async function readExpansionPackParentManifestEvidence({
+  blobId,
+  expectedSha256,
+  expectedVersion,
+  expectedVersionId,
+  expectedIdentity,
+  expectedRootMakerId,
+} = {}) {
+  const response = await fetchWalrusWithBackoff(
+    walrusQuiltFileUrl(blobId, 'animacraft-manifest.json'),
+    { cache: 'no-store' },
+  );
+  if (!response.ok) {
+    const error = new Error(`Could not read the exact parent Maker manifest (${response.status}).`);
+    error.code = 'EXPANSION_PACK_PARENT_MANIFEST_UNAVAILABLE';
+    throw error;
+  }
+  const bytes = await responseBytesWithinLimit(
+    response,
+    10 * 1024 * 1024,
+    'The Expansion Pack parent Maker manifest',
+  );
+  const sha256 = await sha256BytesHex(bytes, 'The Expansion Pack parent Maker manifest');
+  if (sha256 !== normalizedSha256Hex(expectedSha256)) {
+    const error = new Error('The parent Maker manifest bytes no longer match the Pack binding.');
+    error.code = 'EXPANSION_PACK_PARENT_MANIFEST_HASH_MISMATCH';
+    throw error;
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    const error = new Error('The parent Maker manifest is not valid JSON.');
+    error.code = 'EXPANSION_PACK_PARENT_MANIFEST_INVALID';
+    throw error;
+  }
+  validateAnyMakerManifest(manifest);
+  if (
+    !isMakerV4Document(manifest)
+    || String(manifest.version?.number || '') !== String(expectedVersion)
+    || String(manifest.version?.versionId || '') !== String(expectedVersionId)
+    || String(manifest.version?.rootMakerId || '') !== String(expectedRootMakerId)
+  ) {
+    const error = new Error('The parent Maker version identity changed after the Pack was bound.');
+    error.code = 'EXPANSION_PACK_PARENT_VERSION_MISMATCH';
+    throw error;
+  }
+  return Object.freeze({
+    sha256,
+    version: String(manifest.version.number),
+    versionId: String(manifest.version.versionId),
+    identity: String(expectedIdentity || ''),
+  });
+}
+
+async function prepareExpansionPackV8Publication(payload) {
+  const parent = payload?.parentRelease || {};
+  const candidateParent = payload?.candidate?.manifest?.parent || {};
+  const candidatePack = payload?.candidate?.manifest?.pack || {};
+  const wallet = suiJsonId(payload?.walletAddress);
+  if (runtimeConfig.expansionPackV8ReleaseEnabled !== true) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_V8_RELEASE_DISABLED',
+      'Expansion Pack v8 publication is disabled until the reviewed package is deployed.',
+    );
+  }
+  if (!wallet || wallet !== suiJsonId(state.walletAddress)) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_V8_WALLET_MISMATCH',
+      'Reconnect the wallet that owns this Expansion Pack project.',
+    );
+  }
+  const baseMakerRootId = suiJsonId(parent.baseMakerRootId);
+  const parentLegacyMakerId = suiJsonId(parent.parentLegacyMakerId || parent.releaseId);
+  const makerControlCapId = suiJsonId(parent.makerControlCapId);
+  if (!baseMakerRootId || !parentLegacyMakerId || !makerControlCapId) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_V8_PARENT_AUTHORITY_MISSING',
+      'The current parent Maker does not expose the exact Commerce root and current ControlCap required for Pack admission.',
+    );
+  }
+  const scope = expansionPackPublicationScope(payload);
+  const controllerEpoch = invalidateExpansionPackPublicationController();
+  requireActiveExpansionPackPublicationScope(scope, controllerEpoch);
+  const runtime = expansionPackV8RuntimeContext();
+  const requestedPublicationIdentity = expansionPackPublicationIdentity({
+    walletAddress: wallet,
+    baseMakerRootId,
+    parentVersionNumber: candidateParent.versionNumber,
+    parentVersionId: candidateParent.versionId,
+    parentReleaseId: parentLegacyMakerId,
+    parentManifestBlobId: candidateParent.manifestBlobId,
+    parentManifestSha256: candidateParent.manifestSha256,
+    packId: candidatePack.id,
+    packVersion: candidatePack.version,
+    candidateCommitment: payload?.candidate?.candidateCommitment,
+    manifestSha256: payload?.candidate?.manifestSha256,
+  });
+  const persisted = await expansionPackPublicationStore.load(requestedPublicationIdentity);
+  requireActiveExpansionPackPublicationScope(scope, controllerEpoch);
+  const publicationIdentity = persisted
+    ? expansionPackPublicationIdentity(persisted)
+    : requestedPublicationIdentity;
+  let persistenceRevision = persisted?.persistenceRevision ?? null;
+  const restored = persisted?.snapshot || null;
+  const exactCandidate = restored?.candidate || payload.candidate;
+  const controller = createExpansionPackPublicationController({
+    runtime,
+    context: {
+      owner: wallet,
+      baseMakerRootId,
+      parentLegacyMakerId,
+      makerControlCapId,
+    },
+    candidate: exactCandidate,
+    project: restored?.project || payload.project,
+    plan: restored?.plan || null,
+    recovery: restored?.recovery || null,
+    entries: restored?.entries || null,
+    receipt: restored?.receipt || null,
+    isActive: () => expansionPackPublicationScopeIsActive(scope),
+    onState: (nextState) => {
+      if (
+        controllerEpoch === expansionPackPublicationControllerEpoch
+        && expansionPackPublicationScopeIsActive(scope)
+      ) makerWorkspace?.setExpansionPackPublishState?.(nextState);
+    },
+    dependencies: {
+      // Free Packs never construct a Seal client. Paid Packs must receive the
+      // reviewed package, threshold and server configuration before any
+      // Walrus bytes are prepared.
+      ...(['PAID', 'PAID_ONCE'].includes(
+        String(exactCandidate?.manifest?.commerce?.accessMode || '').toUpperCase(),
+      ) ? {
+          sealClient: configuredMakerSealClientV5(),
+          sealThreshold: runtimeConfig.sealThreshold,
+          sealKeyServers: runtimeConfig.sealKeyServers,
+        } : {}),
+      prepareWalrusUpload,
+      resumeWalrusUpload,
+      registerAndUploadWalrus,
+      certifyWalrusUpload,
+      transactionFromAction: transactionFromExpansionPackV8PublicationAction,
+      signTransactionForRecovery,
+      executeSignedTransactionAndWait,
+      async persist(snapshot) {
+        const result = await expansionPackPublicationStore.save(
+          publicationIdentity,
+          snapshot,
+          { expectedRevision: persistenceRevision },
+        );
+        if (result?.saved && result?.verified) {
+          persistenceRevision = result.persistedRevision;
+        }
+        return result;
+      },
+      async verifyParent(action) {
+        return verifyExpansionPackV8ParentAction({
+          action,
+          suiClient: getSuiClient(),
+          runtime,
+          manifestReadback: (input) => readExpansionPackParentManifestEvidence({
+            ...input,
+            expectedRootMakerId: exactCandidate?.manifest?.parent?.rootMakerId,
+          }),
+        });
+      },
+      async readSuiSubmission(action, submission) {
+        return readExpansionPackV8PublicationSubmission({
+          action,
+          submission,
+          suiClient: getSuiClient(),
+          runtime,
+        });
+      },
+      async onCompleted(receipt) {
+        if (
+          controllerEpoch !== expansionPackPublicationControllerEpoch
+          || !expansionPackPublicationScopeIsActive(scope)
+        ) return;
+        console.info('Expansion Pack v8 publication verified.', receipt);
+      },
+    },
+  });
+  requireActiveExpansionPackPublicationScope(scope, controllerEpoch);
+  expansionPackPublicationController = controller;
+  expansionPackPublicationControllerScope = scope;
+  if (persisted) {
+    makerWorkspace?.setExpansionPackPublishState?.({
+      ...controller.uiState(),
+      status: restored?.receipt
+        ? 'Expansion Pack publication receipt restored.'
+        : 'Expansion Pack publication checkpoint restored.',
+    });
+  }
+  await controller.prepare();
+  requireActiveExpansionPackPublicationScope(scope, controllerEpoch);
+  if (controller !== expansionPackPublicationController) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED',
+      'A newer Expansion Pack publication request replaced this one.',
+      { recoverable: true },
+    );
+  }
+  return controller.uiState();
+}
+
+async function executeExpansionPackV8PublicationAction(action) {
+  const controller = expansionPackPublicationController;
+  const scope = expansionPackPublicationControllerScope;
+  const controllerEpoch = expansionPackPublicationControllerEpoch;
+  if (!controller) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_V8_RECOVERY_NOT_LOADED',
+      'Prepare or restore this Expansion Pack release before continuing.',
+    );
+  }
+  requireActiveExpansionPackPublicationScope(scope, controllerEpoch);
+  if (action === 'register') await controller.register();
+  else if (action === 'certify') await controller.certify();
+  else if (action === 'publish') await controller.publish();
+  else if (action === 'review') await controller.review();
+  else if (action === 'resume') await controller.resume();
+  else {
+    throw commerceV5Error(
+      'EXPANSION_PACK_V8_ACTION_UNSUPPORTED',
+      `Unsupported Expansion Pack publication action ${String(action || '')}.`,
+    );
+  }
+  requireActiveExpansionPackPublicationScope(scope, controllerEpoch);
+  if (controller !== expansionPackPublicationController) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED',
+      'A newer Expansion Pack publication request replaced this one.',
+      { recoverable: true },
+    );
+  }
+  return controller.uiState();
 }
 
 async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
   if (!makerWorkspace) return Promise.resolve();
+  const syncRequestId = ++makerWorkspaceContextSyncRequestId;
+  const requestedTemplateId = String(state.templateId || '');
+  const requestedWalletAddress = String(state.walletAddress || '');
   const template = activeTemplate();
   const workingDocument = currentMakerV4Source();
+  const requestedRootMakerId = String(workingDocument?.version?.rootMakerId || '');
+  const requestedVersionId = String(workingDocument?.version?.versionId || '');
+  const requestIsActive = () => {
+    const currentDocument = currentMakerV4Source();
+    return Boolean(
+      syncRequestId === makerWorkspaceContextSyncRequestId
+      && String(state.templateId || '') === requestedTemplateId
+      && String(state.walletAddress || '') === requestedWalletAddress
+      && String(currentDocument?.version?.rootMakerId || '') === requestedRootMakerId
+      && String(currentDocument?.version?.versionId || '') === requestedVersionId
+    );
+  };
   if (!workingDocument && template?.source !== 'local') {
+    if (!requestIsActive()) return undefined;
     return makerWorkspace.setContext({ makerKey: '' });
   }
   const lifecycle = makerLifecycleDescriptor(template);
@@ -19501,12 +20821,27 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
   const recipe = creatorPersistenceEnabled
     ? state.makerRecipeV4 || document?.defaultRecipe
     : state.publishedMakerRecipeV4 || document?.defaultRecipe;
+  const requestedPlayerRecipe = state.playerRecipeV4 || document?.defaultRecipe;
+  const requestedProfile = v4ProfileFromLegacy();
+  const requestedAssets = currentV4RuntimeAssets(document);
+  const requestedPublishedDocument = state.publishedMakerDocumentV4;
+  const requestedPublishedRecipe = state.publishedMakerRecipeV4
+    || state.publishedMakerDocumentV4?.defaultRecipe
+    || null;
+  const requestedChainBinding = creatorPersistenceEnabled
+    ? currentWorkspaceChainBinding(document)
+    : null;
+  const requestedIsPublished = makerIsPublished();
+  const requestedCreatorPreview = state.previewingMaker;
+  const requestedPlayerComposableV6 = state.playerComposableV6;
+  const expansionPackParentRelease = expansionPackParentReleaseForDocument(document);
   const rootMakerId = document?.version?.rootMakerId || template.id || state.templateId;
   const makerKey = creatorPersistenceEnabled
-    ? `${state.walletAddress}:${rootMakerId}`
+    ? `${requestedWalletAddress}:${rootMakerId}`
     : `public:${rootMakerId}:${suiJsonId(template?.objectId) || document?.version?.versionId || 'draft'}`;
   let commerceState = null;
   let composableV6State = null;
+  let expansionPackV8State = null;
   if (template?.source === 'chain') {
     if (runtimeConfig.commerceV5ReleaseEnabled !== true) {
       commerceState = commerceV5FailClosedState(commerceV5Error(
@@ -19522,6 +20857,7 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
       }
     }
   }
+  if (!requestIsActive()) return undefined;
   if (
     template?.source === 'chain'
     && runtimeConfig.compositionV6ReleaseEnabled === true
@@ -19547,6 +20883,7 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
       });
     }
   }
+  if (!requestIsActive()) return undefined;
   playerComposableV6TrustedSnapshot = composableV6State?.trusted === true
     ? composableV6State
     : null;
@@ -19554,12 +20891,35 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
     ? playerComposableV6CompletionState({
         document,
         trusted: playerComposableV6TrustedSnapshot,
-        player: state.playerComposableV6,
+        player: requestedPlayerComposableV6,
       })
     : null;
+  if (
+    template?.source === 'chain'
+    && expansionPackV8RuntimeConfigured()
+    && expansionPackParentRelease?.baseMakerRootId
+  ) {
+    try {
+      expansionPackV8State = await hydratePlayerExpansionPacksV8(document);
+    } catch (error) {
+      console.warn('Expansion Pack v8 Player catalog could not be hydrated.', error);
+      expansionPackV8State = expansionPackV8FailClosedState(
+        expansionPackParentRelease,
+        error,
+      );
+    }
+  }
+  if (!requestIsActive()) return undefined;
+  const expansionPackV8PublicationReady = Boolean(
+    runtimeConfig.expansionPackV8ReleaseEnabled === true
+    && expansionPackV8RuntimeConfigured()
+    && expansionPackParentRelease?.baseMakerRootId
+    && expansionPackParentRelease?.makerControlCapId,
+  );
+  if (!requestIsActive()) return undefined;
   return makerWorkspace.setContext({
     makerKey,
-    walletAddress: state.walletAddress,
+    walletAddress: requestedWalletAddress,
     creatorPersistenceEnabled,
     replaceDocument: creatorPersistenceEnabled && replaceDocument,
     name: template.name,
@@ -19567,28 +20927,28 @@ async function syncMakerWorkspaceContext({ replaceDocument = false } = {}) {
     rootMakerId,
     document,
     recipe,
-    playerRecipe: state.playerRecipeV4 || document?.defaultRecipe,
-    profile: v4ProfileFromLegacy(),
-    assets: currentV4RuntimeAssets(document),
-    publishedDocument: state.publishedMakerDocumentV4,
-    publishedRecipe: state.publishedMakerRecipeV4
-      || state.publishedMakerDocumentV4?.defaultRecipe
-      || null,
-    expansionPackParentRelease: expansionPackParentReleaseForDocument(document),
-    chainBinding: creatorPersistenceEnabled
-      ? currentWorkspaceChainBinding(document)
-      : null,
+    playerRecipe: requestedPlayerRecipe,
+    profile: requestedProfile,
+    assets: requestedAssets,
+    publishedDocument: requestedPublishedDocument,
+    publishedRecipe: requestedPublishedRecipe,
+    expansionPackParentRelease,
+    chainBinding: requestedChainBinding,
     versionId: document?.version?.versionId,
-    isPublished: makerIsPublished(),
-    creatorPreview: state.previewingMaker,
+    isPublished: requestedIsPublished,
+    creatorPreview: requestedCreatorPreview,
     commerceV5ReleaseEnabled: runtimeConfig.commerceV5ReleaseEnabled === true,
     compositionV6ReleaseEnabled: runtimeConfig.compositionV6ReleaseEnabled === true,
     physicalStyleV7ReleaseEnabled: runtimeConfig.physicalStyleV7ReleaseEnabled === true,
+    expansionPackV8ReleaseEnabled: expansionPackV8PublicationReady,
     // No reviewed purchase/equip transaction adapter exists yet. Publication
     // is live, but Player writes stay visibly fail-closed.
     physicalStyleV7PlayerActionsEnabled: false,
     ...(commerceState ? { commerceState } : {}),
     ...(composableV6State ? { composableV6State } : {}),
+    // Always pass the field so same-Maker version or gate changes cannot keep
+    // a previously verified Pack catalog alive after its parent disappears.
+    expansionPackV8State,
     lifecycle: {
       id: lifecycle.id,
       label: t(lifecycle.labelKey),
@@ -20696,6 +22056,15 @@ makerWorkspace = createMakerWorkspace({
       else if (action === 'discard') await requestDiscardMakerUploadRecovery();
       else if (action === 'resume') await resumeMakerUploadRecovery();
     },
+    async onPrepareExpansionPackPublication(payload) {
+      return prepareExpansionPackV8Publication(payload);
+    },
+    onResetExpansionPackPublication() {
+      invalidateExpansionPackPublicationController();
+    },
+    async onExpansionPackPublishAction(action) {
+      return executeExpansionPackV8PublicationAction(action);
+    },
     getPlayerCommerceState({ document }) {
       if (activeTemplate()?.source !== 'chain') return {};
       if (runtimeConfig.commerceV5ReleaseEnabled !== true) {
@@ -20710,7 +22079,11 @@ makerWorkspace = createMakerWorkspace({
       return purchasePlayerMakerAccessV5(payload);
     },
     async onPurchaseExpansionPack(payload) {
+      if (payload?.releaseId) return acquirePlayerExpansionPackV8(payload);
       return purchasePlayerExpansionPackV5(payload);
+    },
+    async onAcquireExpansionPackV8(payload) {
+      return acquirePlayerExpansionPackV8(payload);
     },
     ...(runtimeConfig.compositionV6ReleaseEnabled === true ? {
       async onComposableItemAction(payload) {

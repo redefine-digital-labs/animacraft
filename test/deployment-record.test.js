@@ -46,6 +46,7 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(deployment.packageVersion, 4);
   assert.equal(deployment.commerceProtocolVersion, 5);
   assert.equal(deployment.compositionProtocolVersion, 6);
+  assert.equal(deployment.expansionPackProtocolVersion, 8);
   assert.match(moveSource, /const VERSION: u64 = 4;/, 'v5/v6 are additive modules and do not relabel the base protocol');
   assert.notEqual(runtime.callablePackageId, runtime.originalPackageId, 'the callable upgrade package is distinct from the stable v3 TypeOrigin');
   assert.notEqual(runtime.protocolFeePackageId, runtime.callablePackageId, 'the v4 fee TypeOrigin remains frozen while the callable advances to v6');
@@ -71,6 +72,19 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(deployment.verification.compositionV6ObjectsReadBack, true);
   assert.equal(deployment.verification.compositionV6Enabled, false);
   assert.equal(deployment.verification.compositionV6SoulOwnerProofBound, false);
+  assert.equal(runtime.expansionPackV8CallablePackageId, '');
+  assert.equal(runtime.expansionPackV8TypeOriginPackageId, '');
+  assert.equal(runtime.expansionPackV8ReleaseEnabled, false);
+  assert.equal(deployment.expansionPackV8CallablePackageId, '');
+  assert.equal(deployment.expansionPackV8TypeOriginPackageId, '');
+  assert.equal(deployment.expansionPackV8ReleaseEnabled, false);
+  assert.equal(
+    deployment.releases.expansionPackV8,
+    undefined,
+    'the undeployed v8 release must not borrow v6 source or upgrade evidence',
+  );
+  assert.equal(deployment.verification.expansionPackV8PackageReadBack, undefined);
+  assert.equal(deployment.verification.expansionPackV8Enabled, undefined);
 
   for (const field of [
     'commerceV5TypeOriginPackageId',

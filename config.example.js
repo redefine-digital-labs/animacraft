@@ -67,6 +67,11 @@ window.ANIMACRAFT_CONFIG = {
   physicalV7SoulOwnerProofTypeOriginPackageId: '0xV7_SOUL_OWNER_PROOF_TYPE_ORIGIN',
   physicalV7SoulOwnerProofType: '',
   physicalStyleV7ReleaseEnabled: false,
+  // Independent child Pack release companion. Both package identities are
+  // required together; keep the gate false through deployment/read-back QA.
+  expansionPackV8CallablePackageId: '0xV8_EXPANSION_PACK_CALLABLE_PACKAGE',
+  expansionPackV8TypeOriginPackageId: '0xV8_EXPANSION_PACK_TYPE_ORIGIN_PACKAGE',
+  expansionPackV8ReleaseEnabled: false,
   // Frozen v5 package used for every Seal approval call. Never advance this
   // to the latest Animacraft callable package after a later upgrade.
   sealV5CallablePackageId: '0xV5_SEAL_CALLABLE_PACKAGE',

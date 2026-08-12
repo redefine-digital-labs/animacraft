@@ -8,6 +8,7 @@
  */
 
 import {
+  EXPANSION_PACK_ACCESS_MODES,
   addExpansionPackItem,
   addExpansionPackOptionalPart,
   addExpansionPackStyle,
@@ -22,6 +23,7 @@ import {
   renameExpansionPackPart,
   renameExpansionPackStyle,
   updateExpansionPackStyle,
+  updateExpansionPackCommerce,
 } from './expansion-pack-project.js';
 import {
   createExpansionPackDraftStore,
@@ -246,6 +248,7 @@ export function createExpansionPackWorkspaceTree(projectValue) {
     namespace: text(project.namespace),
     name: text(project.name),
     version: text(project.version),
+    commerce: clone(project.pack?.commerce || {}),
     parts,
   });
 }
@@ -502,6 +505,12 @@ export async function createExpansionPackWorkspace(options = {}) {
         'update-style',
       );
     },
+    updateCommerce(patch) {
+      return change(
+        updateExpansionPackCommerce(project, patch, { now: Number(clock()) }),
+        'update-commerce',
+      );
+    },
     save() {
       const operation = saveTail.then(async () => {
         if (destroyed) throw new ExpansionPackWorkspaceError('Expansion Pack workspace is destroyed.');
@@ -579,6 +588,46 @@ export async function createExpansionPackWorkspace(options = {}) {
       });
       saveTail = operation.catch(() => undefined);
       return operation;
+    },
+    async flush() {
+      if (destroyed) throw new ExpansionPackWorkspaceError('Expansion Pack workspace is destroyed.');
+      const flushIdentity = clone(identity);
+      let attempts = 0;
+
+      // A save may already be running when pagehide/visibilitychange fires.
+      // Wait for it first, then persist any mutation that landed while that
+      // snapshot was in flight. The controller identity is immutable, so this
+      // queue can never drift to a Pack opened later by the host workspace.
+      await saveTail;
+      while (dirty) {
+        attempts += 1;
+        if (attempts > 10) {
+          throw new ExpansionPackWorkspaceError(
+            'Expansion Pack kept changing while the save queue was being flushed.',
+            'expansion-pack-flush-did-not-quiesce',
+            { identity: flushIdentity },
+          );
+        }
+        const result = await api.save();
+        if (result?.conflict) {
+          return {
+            saved: false,
+            conflict: true,
+            identity: flushIdentity,
+            persistedRevision,
+            remoteRevision: saveState.remoteRevision,
+          };
+        }
+        await saveTail;
+      }
+
+      return {
+        saved: true,
+        conflict: false,
+        identity: flushIdentity,
+        persistedRevision,
+        savedAt,
+      };
     },
     async reload({ force = false } = {}) {
       await saveTail;
@@ -756,6 +805,8 @@ export function renderExpansionPackWorkspaceHtml(model, copy = {}) {
   const state = model || {};
   const parent = state.parent || {};
   const tree = state.tree || { parts: [] };
+  const commerce = tree.commerce || {};
+  const paidPack = commerce.accessMode === EXPANSION_PACK_ACCESS_MODES.PAID_ONCE;
   const preview = state.preview || {};
   const save = state.save || {};
   const previewLabel = preview.status === 'publishable'
@@ -785,12 +836,75 @@ export function renderExpansionPackWorkspaceHtml(model, copy = {}) {
     .replace('{parts}', String(preview.additions?.optionalParts || 0))
     .replace('{items}', String(preview.additions?.items || 0))
     .replace('{styles}', String(preview.additions?.styles || 0));
+  const publication = copy?.publicationState && typeof copy.publicationState === 'object'
+    ? copy.publicationState
+    : {};
+  const publicationActions = publication.actions && typeof publication.actions === 'object'
+    ? publication.actions
+    : {};
+  const publicationStep = Math.max(1, Math.min(4, Number(publication.step || 1)));
+  const publicationStarted = Boolean(
+    publication.started
+    || publication.busy
+    || publication.receipt
+    || publication.stage && !['', 'idle'].includes(publication.stage),
+  );
+  const publicationLocked = publication.locked === true || publicationStarted;
+  const publicationSteps = [
+    copyValue(copy, 'packReleasePrepareStep', 'Prepare Pack Quilt'),
+    copyValue(copy, 'packReleaseUploadStep', 'Register & upload'),
+    copyValue(copy, 'packReleaseCertifyStep', 'Certify Walrus'),
+    copyValue(copy, 'packReleasePublishStep', 'Publish on Sui'),
+  ];
+  const publicationStepCards = publicationSteps.map((label, index) => {
+    const step = index + 1;
+    const completed = Array.isArray(publication.completedSteps)
+      ? publication.completedSteps.includes(step)
+      : step < publicationStep;
+    const current = !publication.receipt && step === publicationStep;
+    const stateLabel = completed
+      ? copyValue(copy, 'packReleaseCompleted', 'Completed')
+      : current
+        ? copyValue(copy, 'packReleaseCurrentStep', 'Current step')
+        : copyValue(copy, 'packReleaseNotStarted', 'Not started');
+    return `<li class="expansion-pack-release-step${completed ? ' completed' : ''}${current ? ' current' : ''}">
+      <span>${step}</span><div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(stateLabel)}</small></div>
+    </li>`;
+  }).join('');
+  const actionButton = (action, label, primary = false) => publicationActions[action]
+    ? `<button type="button" ${primary ? 'class="primary"' : ''} data-action="pack-publication-action" data-pack-publication-action="${escapeHtml(action)}" ${publication.busy ? 'disabled' : ''}>${escapeHtml(label)}</button>`
+    : '';
+  const releasePanel = preview.publishable ? `
+    <section class="expansion-pack-release-panel" data-pack-release-stage="${escapeHtml(publication.stage || 'idle')}" aria-live="polite">
+      <header>
+        <div><span>${escapeHtml(copyValue(copy, 'packReleaseEyebrow', 'WALRUS + SUI RELEASE'))}</span><h3>${escapeHtml(copyValue(copy, 'publishExpansionPack', 'Publish Expansion Pack'))}</h3></div>
+        ${publication.recoverable ? `<strong>${escapeHtml(copyValue(copy, 'packReleaseRecoverable', 'Recoverable checkpoint'))}</strong>` : ''}
+      </header>
+      <ol class="expansion-pack-release-steps">${publicationStepCards}</ol>
+      ${publication.status ? `<p class="expansion-pack-release-status">${escapeHtml(publication.status)}</p>` : ''}
+      ${publication.error ? `<div class="expansion-pack-release-error" role="alert"><strong>${escapeHtml(publication.error.title || copyValue(copy, 'packReleaseFailed', 'Expansion Pack release failed'))}</strong><p>${escapeHtml(publication.error.message || publication.error)}</p></div>` : ''}
+      ${publication.receipt ? `<div class="expansion-pack-release-receipt">
+        <strong>${escapeHtml(copyValue(copy, 'packReleaseSuccess', 'Expansion Pack published'))}</strong>
+        ${publication.receipt.packObjectId ? `<small>${escapeHtml(copyValue(copy, 'packReleaseObjectId', 'Pack object'))}: <code>${escapeHtml(publication.receipt.packObjectId)}</code></small>` : ''}
+        ${publication.receipt.digest ? `<small>${escapeHtml(copyValue(copy, 'packReleaseTransaction', 'Transaction'))}: <code>${escapeHtml(publication.receipt.digest)}</code></small>` : ''}
+      </div>` : ''}
+      <div class="expansion-pack-release-actions">
+        ${actionButton('prepare', copyValue(copy, 'packReleasePrepareAction', '1. Prepare Pack Quilt'), true)}
+        ${actionButton('register', copyValue(copy, 'packReleaseUploadAction', '2. Register & upload'), true)}
+        ${actionButton('certify', copyValue(copy, 'packReleaseCertifyAction', '3. Certify Walrus'), true)}
+        ${actionButton('publish', copyValue(copy, 'packReleasePublishAction', '4. Publish Pack'), true)}
+        ${actionButton('resume', copyValue(copy, 'packReleaseResumeAction', 'Resume release'))}
+        ${actionButton('review', copyValue(copy, 'packReleaseReviewAction', 'Check chain status'))}
+        ${actionButton('export', copyValue(copy, 'packExportPublicationCandidate', 'Export diagnostic candidate'))}
+      </div>
+      ${publication.available === false && !publicationStarted ? `<small role="status">${escapeHtml(publication.unavailableReason || copyValue(copy, 'packReleaseUnavailable', 'Expansion Pack v8 publication is not enabled in this deployment.'))}</small>` : ''}
+    </section>` : '';
   return `
-    <section class="expansion-pack-workspace" data-expansion-pack-workspace data-scroll-owner="host" data-nested-scroll="false">
+    <section class="expansion-pack-workspace" data-expansion-pack-workspace data-scroll-owner="host" data-nested-scroll="false" data-publication-locked="${publicationLocked}">
       <header class="expansion-pack-workspace-header">
         <div>
           <span>${escapeHtml(copyValue(copy, 'studio', 'Expansion Pack Studio'))}</span>
-          <input type="text" value="${escapeHtml(tree.name || '')}" data-rename-kind="pack" aria-label="${escapeHtml(copyValue(copy, 'packName', 'Expansion Pack name'))}" />
+          <input type="text" value="${escapeHtml(tree.name || '')}" data-rename-kind="pack" aria-label="${escapeHtml(copyValue(copy, 'packName', 'Expansion Pack name'))}" ${publicationLocked ? 'disabled' : ''} />
           <small>${escapeHtml(tree.namespace || '')} · ${escapeHtml(tree.version || '')}</small>
         </div>
         <div class="expansion-pack-save-state" data-save-phase="${escapeHtml(save.phase || '')}" aria-live="polite">${escapeHtml(localizedSaveLabel(save, copy))}</div>
@@ -823,11 +937,34 @@ export function renderExpansionPackWorkspaceHtml(model, copy = {}) {
           </div>
         </aside>
 
-        <main class="expansion-pack-authoring-panel">
+        <main class="expansion-pack-authoring-panel" ${publicationLocked ? 'inert aria-disabled="true"' : ''}>
           <header>
             <div><span>${escapeHtml(copyValue(copy, 'overlay', 'Pack overlay'))}</span><h3>${escapeHtml(copyValue(copy, 'additiveOnly', 'Additive content only'))}</h3></div>
             <button type="button" data-action="request-add-part">${escapeHtml(copyValue(copy, 'addPart', '＋ Optional Part'))}</button>
           </header>
+          <section class="expansion-pack-commerce-panel" aria-labelledby="expansionPackCommerceTitle">
+            <div>
+              <span>${escapeHtml(copyValue(copy, 'commerceEyebrow', 'ACCESS & COMMERCE'))}</span>
+              <h3 id="expansionPackCommerceTitle">${escapeHtml(copyValue(copy, 'commerceTitle', 'How players unlock this Pack'))}</h3>
+              <p>${escapeHtml(copyValue(copy, 'commerceCopy', 'Free Packs remain available while Active. Paid Once creates a permanent wallet-bound Pack Pass.'))}</p>
+            </div>
+            <label>
+              <span>${escapeHtml(copyValue(copy, 'accessMode', 'Player access'))}</span>
+              <select data-pack-commerce-field="accessMode">
+                <option value="${EXPANSION_PACK_ACCESS_MODES.FREE}" ${paidPack ? '' : 'selected'}>${escapeHtml(copyValue(copy, 'accessFree', 'Free'))}</option>
+                <option value="${EXPANSION_PACK_ACCESS_MODES.PAID_ONCE}" ${paidPack ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'accessPaidOnce', 'Paid once · permanent access'))}</option>
+              </select>
+            </label>
+            <label>
+              <span>${escapeHtml(copyValue(copy, 'priceUsdc', 'Price (USDC)'))}</span>
+              <input type="number" inputmode="decimal" min="0" step="0.000001" value="${escapeHtml(commerce.priceDecimal || '0')}" data-pack-commerce-field="priceDecimal" ${paidPack ? '' : 'disabled'} />
+            </label>
+            <div class="expansion-pack-commerce-terms">
+              <strong>${escapeHtml(paidPack ? copyValue(copy, 'paidEntitlement', 'Permanent Pack Pass') : copyValue(copy, 'freeEntitlement', 'Free while this release is Active'))}</strong>
+              <small>${escapeHtml(copyValue(copy, 'commerceSplit', 'Creator / current operator 90% · Animacraft protocol 10% · Sui gas and Walrus costs shown separately.'))}</small>
+              <small>${escapeHtml(copyValue(copy, 'commerceComplete', 'After access is verified, this Pack can be used without an additional per-Complete fee.'))}</small>
+            </div>
+          </section>
           <div class="expansion-pack-tree">
             ${list(tree.parts).map((part) => renderPackPart(part, copy)).join('') || `
               <div class="expansion-pack-empty-state">
@@ -847,8 +984,8 @@ export function renderExpansionPackWorkspaceHtml(model, copy = {}) {
           <div class="expansion-pack-preview-actions">
             <button type="button" data-action="open-preview" ${preview.maker ? '' : 'disabled'}>${escapeHtml(copyValue(copy, 'openPreview', 'Refresh merged preview'))}</button>
             ${preview.parentBinding?.localParent ? `<button type="button" data-action="request-rebind-parent" ${copy?.canRebindParent === true ? '' : `disabled title="${escapeHtml(copyValue(copy, 'rebindUnavailable', 'Publish and verify this parent version before binding the Pack.'))}"`}>${escapeHtml(copyValue(copy, 'rebindParent', 'Bind published parent release'))}</button>${copy?.canRebindParent === true ? '' : `<small role="status">${escapeHtml(copyValue(copy, 'rebindUnavailable', 'Publish and verify this parent version before binding the Pack.'))}</small>`}` : ''}
-            ${preview.publishable ? `<button type="button" data-action="request-publication-candidate">${escapeHtml(copyValue(copy, 'preparePublicationCandidate', 'Prepare publication candidate'))}</button><small>${escapeHtml(copyValue(copy, 'publicationCandidateOnly', 'Candidate only · Walrus upload and Sui registration have not started.'))}</small>` : ''}
           </div>
+          ${releasePanel}
         </aside>
       </div>
     </section>`;
@@ -867,7 +1004,8 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
     throw new ExpansionPackWorkspaceError('Expansion Pack workspace controller is required.', 'missing-workspace');
   }
   const render = () => {
-    root.innerHTML = renderExpansionPackWorkspaceHtml(workspace.getState(), options.copy || {});
+    const copy = typeof options.copy === 'function' ? options.copy() : options.copy || {};
+    root.innerHTML = renderExpansionPackWorkspaceHtml(workspace.getState(), copy);
     options.onRendered?.(workspace.getPreviewModel());
   };
   const reportError = (error) => {
@@ -926,6 +1064,10 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
           target.dataset.styleId,
           patch,
         );
+      } else if (target?.dataset?.packCommerceField) {
+        workspace.updateCommerce({
+          [target.dataset.packCommerceField]: target.value,
+        });
       }
     } catch (error) {
       reportError(error);
@@ -949,8 +1091,11 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
         .catch(reportError);
       return;
     }
-    if (action === 'request-publication-candidate') {
-      Promise.resolve(options.onRequestPublicationCandidate?.(workspace.getState()))
+    if (action === 'pack-publication-action') {
+      Promise.resolve(options.onPublicationAction?.(
+        text(target.dataset.packPublicationAction),
+        workspace.getState(),
+      ))
         .catch(reportError);
       return;
     }

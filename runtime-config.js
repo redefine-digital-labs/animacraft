@@ -95,6 +95,14 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   physicalV7SoulOwnerProofTypeOriginPackageId: '',
   physicalV7SoulOwnerProofType: '',
   physicalStyleV7ReleaseEnabled: false,
+  // Independent Expansion Pack v8 is a companion protocol for adding one
+  // immutable child release to an exact, already-sealed v5 Maker release.
+  // It deliberately reuses the reviewed Commerce v5 protocol config and
+  // treasury split. Keep the client gate false until the companion package is
+  // deployed, its TypeOrigin is recorded, and read-back tests pass.
+  expansionPackV8CallablePackageId: '',
+  expansionPackV8TypeOriginPackageId: '',
+  expansionPackV8ReleaseEnabled: false,
   // Seal remains fail-closed until the reviewed v5 package and an authenticated
   // Mainnet committee endpoint are configured. One committee is one outer
   // server with weight 1 / threshold 1; its internal committee is 5-of-8.
@@ -515,6 +523,9 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   if (typeof config.physicalStyleV7ReleaseEnabled !== 'boolean') {
     errors.push('physicalStyleV7ReleaseEnabled must be a boolean release gate.');
   }
+  if (typeof config.expansionPackV8ReleaseEnabled !== 'boolean') {
+    errors.push('expansionPackV8ReleaseEnabled must be a boolean release gate.');
+  }
   const physicalV7Fields = [
     'physicalV7CallablePackageId',
     'physicalV7TypeOriginPackageId',
@@ -555,6 +566,42 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     || !physicalV7CoreReady
   )) {
     errors.push('Physical Style Assets v7 requires Composable Assets v6, active canonical Soul mint, Commerce v5, and the complete reviewed v7 object/proof tuple.');
+  }
+  const expansionPackV8CallablePackageReady = SUI_ID.test(
+    String(config.expansionPackV8CallablePackageId || ''),
+  );
+  const expansionPackV8TypeOriginPackageReady = SUI_ID.test(
+    String(config.expansionPackV8TypeOriginPackageId || ''),
+  );
+  const expansionPackV8Configured = Boolean(
+    config.expansionPackV8CallablePackageId
+      || config.expansionPackV8TypeOriginPackageId,
+  );
+  const expansionPackV8CoreReady = expansionPackV8CallablePackageReady
+    && expansionPackV8TypeOriginPackageReady;
+  if (
+    config.expansionPackV8CallablePackageId
+    && !expansionPackV8CallablePackageReady
+  ) {
+    errors.push('expansionPackV8CallablePackageId must be a valid Sui package ID.');
+  }
+  if (
+    config.expansionPackV8TypeOriginPackageId
+    && !expansionPackV8TypeOriginPackageReady
+  ) {
+    errors.push('expansionPackV8TypeOriginPackageId must be a valid Sui package ID.');
+  }
+  if (expansionPackV8Configured && !expansionPackV8CoreReady) {
+    errors.push('Expansion Pack v8 configuration must include its callable package and stable TypeOrigin together.');
+  }
+  if (
+    config.expansionPackV8ReleaseEnabled
+    && (
+      !expansionPackV8CoreReady
+      || config.commerceV5ReleaseEnabled !== true
+    )
+  ) {
+    errors.push('Expansion Pack v8 requires its reviewed package identities and active Commerce v5 before independent Pack publication or purchase can open.');
   }
   if (config.compositionV6TypeOriginPackageId && !compositionV6TypeOriginPackageReady) {
     errors.push('compositionV6TypeOriginPackageId must be a valid Sui package ID.');
@@ -781,6 +828,9 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     compositionV6SoulOwnerProofReady,
     physicalV7CoreReady,
     physicalV7SoulOwnerProofReady,
+    expansionPackV8CallablePackageReady,
+    expansionPackV8TypeOriginPackageReady,
+    expansionPackV8CoreReady,
     // Retain the old result name for downstream status UI while exposing the
     // two independently verified identities.
     sealV5PackageReady: sealV5CallablePackageReady,

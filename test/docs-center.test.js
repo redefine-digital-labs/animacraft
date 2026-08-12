@@ -189,8 +189,13 @@ test('Docs pin the current production boundaries instead of documenting planned 
   assert.match(articles.get('soul-configuration'), /animacraft-oc\.json/);
   assert.match(articles.get('walrus-sui-publish'), /53 Walrus epochs/);
   assert.match(articles.get('lifecycle-versions'), /no successor link/i);
-  assert.match(articles.get('expansion-packs'), /MakerRootV5/);
-  assert.match(articles.get('expansion-packs'), /permanent access/i);
+  assert.match(articles.get('expansion-packs'), /ExpansionPackReleaseV8/);
+  assert.match(articles.get('expansion-packs'), /wallet-bound ExpansionPackPassV8/i);
+  assert.match(articles.get('expansion-packs'), /ownership epoch/i);
+  assert.match(articles.get('expansion-packs'), /does not create a new Maker version/i);
+  assert.match(articles.get('expansion-packs'), /Seal ciphertext/i);
+  assert.match(articles.get('expansion-packs'), /Complete OC remains blocked/i);
+  assert.doesNotMatch(articles.get('expansion-packs'), /embedded in one immutable Walrus Maker package/i);
   assert.match(articles.get('commerce-rights'), /ONCHAIN_NATIVE/);
   assert.match(articles.get('commerce-rights'), /LICENSE_WRAPPED/);
   assert.match(articles.get('commerce-rights'), /90%/);
@@ -204,7 +209,10 @@ test('Docs pin the current production boundaries instead of documenting planned 
     [
       'positionLocked',
       'MakerRootV5',
+      'ExpansionPackReleaseV8',
       'ONE_TIME_PAID',
+      'Seal',
+      'Complete OC',
       'ONCHAIN_NATIVE',
       'animacraft-oc.json',
       '53',

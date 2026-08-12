@@ -311,16 +311,151 @@ export async function signExecuteAndWait(transaction, {
   });
 }
 
+/**
+ * Sign a transaction without broadcasting it. Callers must durably persist
+ * the returned bytes/signature/digest before `executeSignedTransactionAndWait`
+ * is allowed to touch the network. This is the publication recovery boundary
+ * used by Expansion Pack v8 so a timeout can only replay identical bytes.
+ */
+export async function signTransactionForRecovery(transaction, {
+  expectedWallet = '',
+} = {}) {
+  if (!(transaction instanceof Transaction)) {
+    throw new TypeError('A Sui Transaction is required.');
+  }
+  const connection = requireConnection();
+  const connectedWallet = normalizeSuiAddress(connection.account.address);
+  if (expectedWallet && normalizeSuiAddress(expectedWallet) !== connectedWallet) {
+    const error = new Error('The connected wallet changed before the transaction could be signed.');
+    error.code = 'WALLET_CONTEXT_CHANGED';
+    throw error;
+  }
+  const transactionSender = transaction.getData().sender;
+  if (transactionSender && normalizeSuiAddress(transactionSender) !== connectedWallet) {
+    const error = new Error('The transaction sender does not match the connected wallet.');
+    error.code = 'TRANSACTION_SENDER_MISMATCH';
+    throw error;
+  }
+  if (!transactionSender) transaction.setSender(connectedWallet);
+  return Object.freeze(normalizedSignedTransaction(
+    await dAppKit.signTransaction({ transaction }),
+  ));
+}
+
+/** Query first, then broadcast/replay only the exact persisted signed bytes. */
+export async function executeSignedTransactionAndWait(signedValue, {
+  timeout = 60_000,
+  include = { effects: true, objectTypes: true, events: true },
+  assertBeforeExecute = null,
+} = {}) {
+  const signed = normalizedSignedTransaction(signedValue);
+  const client = getSuiClient();
+  try {
+    const indexed = unwrapTransaction(await client.getTransaction({
+      digest: signed.digest,
+      include,
+    }), { expectedDigest: signed.digest });
+    return Object.freeze({ digest: signed.digest, indexed, alreadySubmitted: true });
+  } catch (error) {
+    if (!transactionNotFound(error)) throw error;
+  }
+  if (typeof assertBeforeExecute === 'function') await assertBeforeExecute();
+  try {
+    const executed = unwrapTransaction(await client.executeTransaction({
+      transaction: fromBase64(signed.bytes),
+      signatures: [signed.signature],
+      include,
+    }), { expectedDigest: signed.digest });
+    if (executed.digest !== signed.digest) {
+      const error = new Error('Sui returned a different digest for the persisted signed transaction.');
+      error.code = 'TRANSACTION_DIGEST_MISMATCH';
+      throw error;
+    }
+    const indexed = unwrapTransaction(await client.waitForTransaction({
+      digest: signed.digest,
+      timeout,
+      include,
+    }), { expectedDigest: signed.digest });
+    return Object.freeze({ digest: signed.digest, indexed, alreadySubmitted: false });
+  } catch (broadcastError) {
+    if (broadcastError?.code === 'TRANSACTION_FINALIZED_FAILURE') {
+      throw broadcastError;
+    }
+    try {
+      const indexed = unwrapTransaction(await client.getTransaction({
+        digest: signed.digest,
+        include,
+      }), { expectedDigest: signed.digest });
+      return Object.freeze({ digest: signed.digest, indexed, alreadySubmitted: true });
+    } catch (queryError) {
+      if (!transactionNotFound(queryError)) throw queryError;
+      const error = new Error(
+        `Sui did not confirm transaction ${signed.digest}. Retry will query or replay the exact persisted signed bytes.`,
+        { cause: broadcastError },
+      );
+      error.code = 'TRANSACTION_OUTCOME_PENDING';
+      error.digest = signed.digest;
+      throw error;
+    }
+  }
+}
+
 function moveTarget(functionName) {
   return `${requireCallablePackageId()}::animacraft::${functionName}`;
 }
 
-function unwrapTransaction(result) {
+function finalizedTransactionFailure(failed, expectedDigest = '') {
+  const digest = String(failed?.digest || '').trim();
+  if (!digest) {
+    const error = new Error('The finalized failed Sui transaction did not include a digest.');
+    error.code = 'TRANSACTION_RESULT_INVALID';
+    throw error;
+  }
+  if (expectedDigest && digest !== expectedDigest) {
+    const error = new Error('Sui returned a different digest for the persisted signed transaction.');
+    error.code = 'TRANSACTION_DIGEST_MISMATCH';
+    error.expectedDigest = expectedDigest;
+    error.digest = digest;
+    throw error;
+  }
+  if (failed?.status?.success !== false) {
+    const error = new Error('The Sui failed-transaction result did not contain definitive failure status.');
+    error.code = 'TRANSACTION_RESULT_INVALID';
+    throw error;
+  }
+  const executionError = failed.status.error || {};
+  const moveAbort = executionError.MoveAbort || executionError.moveAbort || {};
+  const command = Number(executionError.command);
+  const error = new Error(executionError.message || 'The Sui transaction failed.');
+  error.code = 'TRANSACTION_FINALIZED_FAILURE';
+  error.digest = digest;
+  error.finalizedFailure = Object.freeze({
+    finalized: true,
+    transactionDigest: digest,
+    executionStatus: 'FAILURE',
+    executionError: Object.freeze({
+      kind: String(executionError.$kind || executionError.kind || 'Unknown'),
+      message: String(executionError.message || 'The Sui transaction failed.'),
+      command: Number.isSafeInteger(command) && command >= 0 ? command : null,
+      abortCode: String(moveAbort.abortCode ?? moveAbort.abort_code ?? ''),
+    }),
+  });
+  return error;
+}
+
+function unwrapTransaction(result, { expectedDigest = '' } = {}) {
   if (result?.FailedTransaction) {
-    throw new Error(result.FailedTransaction.status?.error?.message || 'The Sui transaction failed.');
+    throw finalizedTransactionFailure(result.FailedTransaction, expectedDigest);
   }
   if (!result?.Transaction?.digest) {
     throw new Error('The wallet did not return a Sui transaction digest.');
+  }
+  if (expectedDigest && result.Transaction.digest !== expectedDigest) {
+    const error = new Error('Sui returned a different digest for the persisted signed transaction.');
+    error.code = 'TRANSACTION_DIGEST_MISMATCH';
+    error.expectedDigest = expectedDigest;
+    error.digest = result.Transaction.digest;
+    throw error;
   }
   return result.Transaction;
 }
@@ -494,6 +629,112 @@ async function getGraphqlClient() {
     });
   }
   return graphqlClient;
+}
+
+const GRAPHQL_MOVE_EVENTS_QUERY = `
+  query AnimacraftMoveEvents($type: String!, $last: Int!, $before: String) {
+    events(filter: { type: $type }, last: $last, before: $before) {
+      pageInfo { hasPreviousPage startCursor }
+      nodes {
+        transaction { digest }
+        sender { address }
+        timestamp
+        contents { type { repr } json bcs }
+      }
+    }
+  }
+`;
+
+function graphqlMoveEventError(message, code, cause) {
+  const error = new Error(message, cause ? { cause } : undefined);
+  error.code = code;
+  return error;
+}
+
+/**
+ * Supply queryEvents-compatible Move-event reads without coupling object reads
+ * to GraphQL. Callers can compose this adapter's `queryEvents` method with the
+ * initialized gRPC client's `getObjects` method.
+ */
+export function createGraphqlMoveEventAdapter({ client = null } = {}) {
+  return Object.freeze({
+    async queryEvents({ query, cursor = null, limit = 50, order = 'descending' } = {}) {
+      const moveEventType = typeof query?.MoveEventType === 'string'
+        ? query.MoveEventType.trim()
+        : '';
+      if (!moveEventType || Object.keys(query || {}).some((key) => key !== 'MoveEventType')) {
+        throw new TypeError('GraphQL event discovery requires only a MoveEventType query filter.');
+      }
+      if (order !== 'descending') {
+        throw new TypeError('GraphQL event discovery currently supports descending order only.');
+      }
+      if (cursor !== null && (typeof cursor !== 'string' || !cursor)) {
+        throw new TypeError('GraphQL event discovery cursor must be a non-empty string or null.');
+      }
+      const requestedLimit = Number(limit);
+      if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
+        throw new TypeError('GraphQL event discovery limit must be a positive safe integer.');
+      }
+
+      const graphql = client || await getGraphqlClient();
+      if (!graphql || typeof graphql.query !== 'function') {
+        throw new TypeError('A Sui GraphQL client with a query method is required.');
+      }
+      let result;
+      try {
+        result = await graphql.query({
+          query: GRAPHQL_MOVE_EVENTS_QUERY,
+          variables: {
+            type: moveEventType,
+            last: Math.min(50, requestedLimit),
+            before: cursor,
+          },
+        });
+      } catch (cause) {
+        throw graphqlMoveEventError(
+          'Sui GraphQL event discovery request failed.',
+          'SUI_GRAPHQL_EVENT_QUERY_FAILED',
+          cause,
+        );
+      }
+
+      if (result?.errors?.length) {
+        const message = result.errors.find((entry) => (
+          typeof entry?.message === 'string' && entry.message.trim()
+        ))?.message;
+        throw graphqlMoveEventError(
+          message || 'Sui GraphQL event discovery failed.',
+          'SUI_GRAPHQL_EVENT_QUERY_FAILED',
+        );
+      }
+      const connection = result?.data?.events;
+      if (!connection || !Array.isArray(connection.nodes)) {
+        throw graphqlMoveEventError(
+          'Sui GraphQL event discovery returned an invalid response.',
+          'SUI_GRAPHQL_EVENT_RESPONSE_INVALID',
+        );
+      }
+
+      const hasPreviousPage = connection.pageInfo?.hasPreviousPage === true;
+      const startCursor = connection.pageInfo?.startCursor;
+      if (
+        hasPreviousPage
+        && (typeof startCursor !== 'string' || !startCursor || startCursor === cursor)
+      ) {
+        throw graphqlMoveEventError(
+          'Sui GraphQL event discovery did not advance its pagination cursor.',
+          'SUI_GRAPHQL_EVENT_CURSOR_STALLED',
+        );
+      }
+      const nextCursor = hasPreviousPage ? startCursor : null;
+      return Object.freeze({
+        data: Object.freeze([...connection.nodes].reverse()),
+        hasNextPage: hasPreviousPage,
+        nextCursor,
+        cursor: nextCursor,
+      });
+    },
+  });
 }
 
 export async function findCommerceV5MigrationByLegacyMaker(
@@ -952,10 +1193,24 @@ function normalizedSignedTransaction(signed) {
   const bytes = typeof signed?.bytes === 'string' ? signed.bytes : toBase64(signed?.bytes || new Uint8Array());
   const signature = String(signed?.signature || '');
   if (!bytes || !signature) throw new Error('The wallet did not return serializable signed transaction bytes.');
+  const digest = TransactionDataBuilder.getDigestFromBytes(fromBase64(bytes));
+  for (const field of ['digest', 'transactionDigest']) {
+    const persistedDigest = String(signed?.[field] || '').trim();
+    if (persistedDigest && persistedDigest !== digest) {
+      const error = new Error(
+        `The persisted ${field} does not match the exact signed transaction bytes.`,
+      );
+      error.code = 'TRANSACTION_DIGEST_MISMATCH';
+      error.digestField = field;
+      error.persistedDigest = persistedDigest;
+      error.derivedDigest = digest;
+      throw error;
+    }
+  }
   return {
     bytes,
     signature,
-    digest: TransactionDataBuilder.getDigestFromBytes(fromBase64(bytes)),
+    digest: digest,
     signedAt: new Date().toISOString(),
   };
 }
@@ -983,6 +1238,69 @@ async function querySignedTransaction(digest) {
   }
 }
 
+function sameWalrusFinalizedFailure(left, right) {
+  return left?.finalized === right?.finalized
+    && left?.executionStatus === right?.executionStatus
+    && left?.executionError?.kind === right?.executionError?.kind
+    && left?.executionError?.message === right?.executionError?.message
+    && left?.executionError?.command === right?.executionError?.command
+    && left?.executionError?.abortCode === right?.executionError?.abortCode;
+}
+
+async function archiveWalrusFinalizedFailure(session, {
+  transactionKind,
+  expectedDigest,
+  result,
+  pendingKey = '',
+  digestKey,
+  failureStage,
+  onCheckpoint,
+}) {
+  const finalizedError = finalizedTransactionFailure(result.FailedTransaction, expectedDigest);
+  const proposed = {
+    transactionKind,
+    ...structuredClone(finalizedError.finalizedFailure),
+    recordedAt: new Date().toISOString(),
+  };
+  const previous = {
+    pending: pendingKey ? session[pendingKey] : null,
+    digest: session[digestKey],
+    stage: session.stage,
+    finalizedFailures: Array.isArray(session.finalizedFailures)
+      ? structuredClone(session.finalizedFailures)
+      : [],
+  };
+  const duplicate = previous.finalizedFailures.find((entry) => (
+    entry.transactionKind === transactionKind
+    && entry.transactionDigest === proposed.transactionDigest
+  ));
+  if (duplicate && !sameWalrusFinalizedFailure(duplicate, proposed)) {
+    throw walrusStateError(
+      'WALRUS_FINALIZED_FAILURE_CONFLICT',
+      'Conflicting finalized failure evidence exists for the same Walrus transaction.',
+    );
+  }
+  const finalizedFailure = duplicate || proposed;
+  session.finalizedFailures = duplicate
+    ? previous.finalizedFailures
+    : [...previous.finalizedFailures, finalizedFailure];
+  if (pendingKey) session[pendingKey] = null;
+  session[digestKey] = '';
+  session.stage = failureStage;
+  try {
+    // Persist definitive failure evidence before a replacement transaction
+    // can ever be signed for this Walrus action.
+    await checkpointWalrusSession(session, onCheckpoint);
+  } catch (checkpointError) {
+    if (pendingKey) session[pendingKey] = previous.pending;
+    session[digestKey] = previous.digest;
+    session.stage = previous.stage;
+    session.finalizedFailures = previous.finalizedFailures;
+    throw checkpointError;
+  }
+  return { finalizedError, finalizedFailure };
+}
+
 async function settlePendingTransaction(
   session,
   {
@@ -996,15 +1314,28 @@ async function settlePendingTransaction(
 ) {
   const pending = session[pendingKey];
   if (result?.FailedTransaction) {
-    session[pendingKey] = null;
-    session[digestKey] = '';
-    session.stage = failureStage;
-    await checkpointWalrusSession(session, onCheckpoint);
-    throw walrusStateError(
+    const transactionKind = pendingKey === 'pendingRegisterTransaction'
+      ? 'REGISTER'
+      : pendingKey === 'pendingCertifyTransaction'
+        ? 'CERTIFY'
+        : pendingKey;
+    const { finalizedError, finalizedFailure } = await archiveWalrusFinalizedFailure(session, {
+      transactionKind,
+      expectedDigest: pending?.digest || '',
+      result,
+      pendingKey,
+      digestKey,
+      failureStage,
+      onCheckpoint,
+    });
+    const failure = walrusStateError(
       'WALRUS_TRANSACTION_FAILED',
-      result.FailedTransaction.status?.error?.message
+      finalizedError.message
         || `Walrus transaction ${pending?.digest || ''} failed on Sui.`,
     );
+    failure.digest = finalizedFailure.transactionDigest;
+    failure.finalizedFailure = Object.freeze(structuredClone(finalizedFailure));
+    throw failure;
   }
   const transaction = unwrapTransaction(result);
   if (transaction.digest !== pending?.digest) {
@@ -1079,6 +1410,13 @@ async function executePendingTransaction(
       onCheckpoint,
     });
   } catch (broadcastError) {
+    if (
+      broadcastError?.code === 'WALRUS_TRANSACTION_FAILED'
+      || broadcastError?.code === 'TRANSACTION_FINALIZED_FAILURE'
+      || broadcastError?.finalizedFailure?.finalized === true
+    ) {
+      throw broadcastError;
+    }
     let status;
     try {
       status = await querySignedTransaction(pending.digest);
@@ -1211,6 +1549,61 @@ function recoveryRevision(recovery) {
   return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
 }
 
+function normalizedWalrusFinalizedFailures(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw walrusStateError(
+      'WALRUS_RECOVERY_FINALIZED_FAILURE_INVALID',
+      'The saved Walrus finalized-failure archive is invalid.',
+    );
+  }
+  const seen = new Set();
+  return value.map((entry) => {
+    const transactionKind = String(entry?.transactionKind || '').trim();
+    const transactionDigest = String(entry?.transactionDigest || '').trim();
+    const recordedAt = String(entry?.recordedAt || '').trim();
+    const recordedTime = Date.parse(recordedAt);
+    const command = entry?.executionError?.command == null
+      ? null
+      : Number(entry.executionError.command);
+    if (
+      !['REGISTER', 'CERTIFY'].includes(transactionKind)
+      || !transactionDigest
+      || entry?.finalized !== true
+      || entry?.executionStatus !== 'FAILURE'
+      || !entry?.executionError
+      || (command !== null && (!Number.isSafeInteger(command) || command < 0))
+      || !Number.isFinite(recordedTime)
+    ) {
+      throw walrusStateError(
+        'WALRUS_RECOVERY_FINALIZED_FAILURE_INVALID',
+        'The saved Walrus finalized-failure evidence is invalid.',
+      );
+    }
+    const identity = `${transactionKind}:${transactionDigest}`;
+    if (seen.has(identity)) {
+      throw walrusStateError(
+        'WALRUS_RECOVERY_FINALIZED_FAILURE_DUPLICATE',
+        'The saved Walrus finalized-failure archive contains a duplicate transaction.',
+      );
+    }
+    seen.add(identity);
+    return {
+      transactionKind,
+      transactionDigest,
+      finalized: true,
+      executionStatus: 'FAILURE',
+      executionError: {
+        kind: String(entry.executionError.kind || 'Unknown'),
+        message: String(entry.executionError.message || 'The Sui transaction failed.'),
+        command,
+        abortCode: String(entry.executionError.abortCode || ''),
+      },
+      recordedAt: new Date(recordedTime).toISOString(),
+    };
+  });
+}
+
 export async function prepareWalrusUpload(entries) {
   const connection = requireConnection();
   await ensureWalrusRuntime();
@@ -1245,6 +1638,7 @@ export async function prepareWalrusUpload(entries) {
     recoveringUploaded: false,
     pendingRegisterTransaction: null,
     pendingCertifyTransaction: null,
+    finalizedFailures: [],
   };
   applyWalrusQuote(session, quote);
   applyWalrusWalletBalances(session, balances);
@@ -1290,6 +1684,7 @@ export async function resumeWalrusUpload(entries, recovery) {
     recoveringUploaded: false,
     pendingRegisterTransaction: recovery.pendingRegisterTransaction || null,
     pendingCertifyTransaction: recovery.pendingCertifyTransaction || null,
+    finalizedFailures: normalizedWalrusFinalizedFailures(recovery.finalizedFailures),
   };
   // Only an encoded recovery needs a current quote. Paid, uploaded, certified,
   // and signed-pending recoveries must remain usable even if the relay changes
@@ -1398,12 +1793,21 @@ export async function certifyWalrusUpload(session, { onCheckpoint = null } = {})
         );
       }
       if (status.result?.FailedTransaction) {
-        session.certifyDigest = '';
-        await checkpointWalrusSession(session, onCheckpoint);
-        throw walrusStateError(
+        const { finalizedError, finalizedFailure } = await archiveWalrusFinalizedFailure(session, {
+          transactionKind: 'CERTIFY',
+          expectedDigest: session.certifyDigest,
+          result: status.result,
+          digestKey: 'certifyDigest',
+          failureStage: 'uploaded',
+          onCheckpoint,
+        });
+        const failure = walrusStateError(
           'WALRUS_TRANSACTION_FAILED',
-          status.result.FailedTransaction.status?.error?.message || 'The Walrus certification transaction failed.',
+          finalizedError.message || 'The Walrus certification transaction failed.',
         );
+        failure.digest = finalizedFailure.transactionDigest;
+        failure.finalizedFailure = Object.freeze(structuredClone(finalizedFailure));
+        throw failure;
       }
     } else {
       if (!session.pendingCertifyTransaction) {

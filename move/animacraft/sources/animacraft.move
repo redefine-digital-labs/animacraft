@@ -647,6 +647,13 @@ public fun maker_id(self: &OCMaker): ID {
     object::id(self)
 }
 
+/// Exact Walrus manifest currently anchored by the legacy Maker object.
+/// Companion release protocols use this read-only value when binding an
+/// additive release to one immutable parent publication.
+public fun maker_manifest_blob_id(self: &OCMaker): &String {
+    &self.manifest_blob_id
+}
+
 public fun maker_creator(self: &OCMaker): address {
     self.creator
 }
@@ -1111,6 +1118,16 @@ public fun canonical_soul_mint_authorization_recipe_hash(
     canonical: &CanonicalSoulMintAuthorization,
 ): &vector<u8> {
     &canonical.authorization.recipe_hash
+}
+
+/// Read-only identity bridge for additive same-PTB authorization modules.
+/// The returned sender is authenticated by the non-storable canonical
+/// authorization and cannot be substituted by a client after Commerce has
+/// recorded payment and Complete output state.
+public fun canonical_soul_mint_authorization_payer(
+    canonical: &CanonicalSoulMintAuthorization,
+): address {
+    canonical.authorization.payer
 }
 
 public fun creator_maker_ids(profile: &CreatorProfile): &vector<ID> {

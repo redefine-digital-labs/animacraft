@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  EXPANSION_PACK_ACCESS_MODES,
   EXPANSION_PACK_PARENT_INHERITANCE,
   EXPANSION_PACK_PARENT_BINDING_KINDS,
   EXPANSION_PACK_PROJECT_SCHEMA,
@@ -20,6 +21,7 @@ import {
   removeExpansionPackStyle,
   rehydrateExpansionPackProject,
   updateExpansionPackStyle,
+  updateExpansionPackCommerce,
 } from '../expansion-pack-project.js';
 
 function baseMaker() {
@@ -716,4 +718,40 @@ test('Style updates reject unsupported fields and invalid render parameters', ()
   assert.throws(() => update({ blendMode: 'unknown-mode' }), (error) => (
     error?.code === 'invalid-pack-style-blend-mode'
   ));
+});
+
+test('Pack commerce is independently configurable as Free or one-time permanent USDC access', () => {
+  const source = createProject();
+  assert.deepEqual(
+    {
+      accessMode: source.pack.commerce.accessMode,
+      price: source.pack.commerce.purchasePriceAtomic,
+      currency: source.pack.commerce.currency,
+      fee: source.pack.commerce.protocolFeeBps,
+    },
+    { accessMode: EXPANSION_PACK_ACCESS_MODES.FREE, price: '0', currency: 'USDC', fee: 1000 },
+  );
+
+  const paid = updateExpansionPackCommerce(source, {
+    accessMode: EXPANSION_PACK_ACCESS_MODES.PAID_ONCE,
+    priceDecimal: '6.25',
+  }, { now: 900 });
+  assert.equal(paid.pack.commerce.purchasePriceAtomic, '6250000');
+  assert.equal(paid.pack.commerce.priceDecimal, '6.25');
+  assert.equal(paid.pack.commerce.entitlement, 'PERMANENT_WALLET_BOUND_PASS');
+  assert.equal(paid.pack.commerce.completeMode, 'INHERIT_BASE_AND_UNLIMITED_AFTER_ACCESS');
+  assert.equal(source.pack.commerce.accessMode, EXPANSION_PACK_ACCESS_MODES.FREE);
+
+  const freeAgain = updateExpansionPackCommerce(paid, {
+    accessMode: EXPANSION_PACK_ACCESS_MODES.FREE,
+  });
+  assert.equal(freeAgain.pack.commerce.purchasePriceAtomic, '0');
+  assert.equal(freeAgain.pack.commerce.priceDecimal, '0');
+  assert.throws(
+    () => updateExpansionPackCommerce(source, {
+      accessMode: EXPANSION_PACK_ACCESS_MODES.PAID_ONCE,
+      priceDecimal: '1.0000001',
+    }),
+    { code: 'invalid-pack-purchase-price' },
+  );
 });

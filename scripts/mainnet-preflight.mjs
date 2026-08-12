@@ -22,6 +22,7 @@ const requireSoulidity = args.has('--require-soulidity');
 const requireCompositionV6 = args.has('--require-composition-v6')
   || (strict && network);
 const allowCompositionV6Enabled = args.has('--allow-v6-enabled');
+const requireExpansionPackV8 = args.has('--require-expansion-pack-v8');
 const json = args.has('--json');
 const checks = [];
 const ZERO_SUI_ADDRESS = normalizeSuiAddress('0x0');
@@ -64,6 +65,34 @@ export const COMPOSITION_V6_DEPENDENCY_FIELDS = Object.freeze([
   ...COMPOSITION_V6_BINDING_DEPENDENCY_FIELDS,
 ]);
 
+export const EXPANSION_PACK_V8_RUNTIME_FIELDS = Object.freeze([
+  'expansionPackV8CallablePackageId',
+  'expansionPackV8TypeOriginPackageId',
+  'expansionPackV8ReleaseEnabled',
+]);
+
+export const EXPANSION_PACK_V8_RELEASE_EVIDENCE_FIELDS = Object.freeze([
+  'callablePackageId',
+  'typeOriginPackageId',
+  'upgradeTxDigest',
+  'upgradeCheckpoint',
+  'upgradedAtMs',
+  'sourceCommit',
+  'sourceTree',
+  'packageDigest',
+  'enabled',
+]);
+
+export const EXPANSION_PACK_V8_VERIFICATION_FIELDS = Object.freeze([
+  'expansionPackV8UpgradeTransactionStatus',
+  'expansionPackV8SourceStatus',
+  'expansionPackV8PackageReadBack',
+  'expansionPackV8Enabled',
+]);
+
+const SUI_TRANSACTION_DIGEST = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/;
+const GIT_OBJECT_ID = /^[0-9a-f]{40}$/;
+
 function present(value) {
   return value !== undefined && value !== null && String(value).trim() !== '';
 }
@@ -95,6 +124,215 @@ export function normalizeBytes32(value) {
 export function compositionV6Declared(config = {}) {
   return config.compositionV6ReleaseEnabled === true
     || COMPOSITION_V6_RUNTIME_FIELDS.some((field) => present(config[field]));
+}
+
+function nestedValue(value, path) {
+  return String(path).split('.').reduce(
+    (current, field) => (current && typeof current === 'object'
+      ? current[field]
+      : undefined),
+    value,
+  );
+}
+
+function positiveInteger(value) {
+  if (value === '' || value === undefined || value === null) return false;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0;
+}
+
+function validSuiId(value) {
+  try {
+    return normalizeSuiAddress(String(value || '')) !== ZERO_SUI_ADDRESS;
+  } catch {
+    return false;
+  }
+}
+
+export function expansionPackV8Declared(config = {}, deployment = {}) {
+  const release = deployment.releases?.expansionPackV8;
+  const verification = deployment.verification || {};
+  return config.expansionPackV8ReleaseEnabled === true
+    || present(config.expansionPackV8CallablePackageId)
+    || present(config.expansionPackV8TypeOriginPackageId)
+    || deployment.expansionPackV8ReleaseEnabled === true
+    || present(deployment.expansionPackV8CallablePackageId)
+    || present(deployment.expansionPackV8TypeOriginPackageId)
+    || Boolean(release && typeof release === 'object' && Object.keys(release).length)
+    || EXPANSION_PACK_V8_VERIFICATION_FIELDS.some((field) => (
+      present(verification[field])
+    ));
+}
+
+export function inspectExpansionPackV8Deployment(
+  config = {},
+  deployment = {},
+  { required = false } = {},
+) {
+  const declared = required || expansionPackV8Declared(config, deployment);
+  if (!declared) {
+    return {
+      declared: false,
+      ready: true,
+      runtimeMissing: [],
+      runtimeInvalid: [],
+      deploymentMissing: [],
+      deploymentInvalid: [],
+      mismatches: [],
+    };
+  }
+
+  const release = deployment.releases?.expansionPackV8 || {};
+  const verification = deployment.verification || {};
+  const runtimeMissing = EXPANSION_PACK_V8_RUNTIME_FIELDS.filter((field) => (
+    field === 'expansionPackV8ReleaseEnabled'
+      ? typeof config[field] !== 'boolean'
+      : !present(config[field])
+  ));
+  const runtimeInvalid = [
+    'expansionPackV8CallablePackageId',
+    'expansionPackV8TypeOriginPackageId',
+  ].filter((field) => present(config[field]) && !validSuiId(config[field]));
+
+  const deploymentPaths = [
+    'expansionPackProtocolVersion',
+    'expansionPackV8CallablePackageId',
+    'expansionPackV8TypeOriginPackageId',
+    'expansionPackV8ReleaseEnabled',
+    ...EXPANSION_PACK_V8_RELEASE_EVIDENCE_FIELDS.map(
+      (field) => `releases.expansionPackV8.${field}`,
+    ),
+    ...EXPANSION_PACK_V8_VERIFICATION_FIELDS.map(
+      (field) => `verification.${field}`,
+    ),
+  ];
+  const booleanPaths = new Set([
+    'expansionPackV8ReleaseEnabled',
+    'releases.expansionPackV8.enabled',
+    'verification.expansionPackV8PackageReadBack',
+    'verification.expansionPackV8Enabled',
+  ]);
+  const deploymentMissing = deploymentPaths.filter((path) => {
+    const value = nestedValue(deployment, path);
+    return booleanPaths.has(path) ? typeof value !== 'boolean' : !present(value);
+  });
+
+  const deploymentInvalid = [];
+  if (present(deployment.expansionPackProtocolVersion)
+    && Number(deployment.expansionPackProtocolVersion) !== 8) {
+    deploymentInvalid.push('expansionPackProtocolVersion');
+  }
+  [
+    ['expansionPackV8CallablePackageId', deployment.expansionPackV8CallablePackageId],
+    ['expansionPackV8TypeOriginPackageId', deployment.expansionPackV8TypeOriginPackageId],
+    ['releases.expansionPackV8.callablePackageId', release.callablePackageId],
+    ['releases.expansionPackV8.typeOriginPackageId', release.typeOriginPackageId],
+  ].forEach(([path, value]) => {
+    if (present(value) && !validSuiId(value)) deploymentInvalid.push(path);
+  });
+  if (present(release.upgradeTxDigest)
+    && !SUI_TRANSACTION_DIGEST.test(String(release.upgradeTxDigest))) {
+    deploymentInvalid.push('releases.expansionPackV8.upgradeTxDigest');
+  }
+  if (present(release.upgradeCheckpoint) && !positiveInteger(release.upgradeCheckpoint)) {
+    deploymentInvalid.push('releases.expansionPackV8.upgradeCheckpoint');
+  }
+  if (present(release.upgradedAtMs) && !positiveInteger(release.upgradedAtMs)) {
+    deploymentInvalid.push('releases.expansionPackV8.upgradedAtMs');
+  }
+  for (const field of ['sourceCommit', 'sourceTree']) {
+    if (present(release[field]) && !GIT_OBJECT_ID.test(String(release[field]))) {
+      deploymentInvalid.push(`releases.expansionPackV8.${field}`);
+    }
+  }
+  if (present(release.packageDigest)
+    && !SUI_TRANSACTION_DIGEST.test(String(release.packageDigest))) {
+    deploymentInvalid.push('releases.expansionPackV8.packageDigest');
+  }
+  if (present(verification.expansionPackV8UpgradeTransactionStatus)
+    && verification.expansionPackV8UpgradeTransactionStatus !== 'success') {
+    deploymentInvalid.push('verification.expansionPackV8UpgradeTransactionStatus');
+  }
+  if (present(verification.expansionPackV8SourceStatus)
+    && verification.expansionPackV8SourceStatus !== 'success') {
+    deploymentInvalid.push('verification.expansionPackV8SourceStatus');
+  }
+  if (typeof verification.expansionPackV8PackageReadBack === 'boolean'
+    && verification.expansionPackV8PackageReadBack !== true) {
+    deploymentInvalid.push('verification.expansionPackV8PackageReadBack');
+  }
+
+  const mismatches = [];
+  const compareId = (path, actual, expected) => {
+    if (!present(actual) || !present(expected)) return;
+    if (!validSuiId(actual) || !validSuiId(expected)) return;
+    if (normalizeSuiAddress(String(actual)) !== normalizeSuiAddress(String(expected))) {
+      mismatches.push(path);
+    }
+  };
+  compareId(
+    'expansionPackV8CallablePackageId',
+    deployment.expansionPackV8CallablePackageId,
+    config.expansionPackV8CallablePackageId,
+  );
+  compareId(
+    'expansionPackV8TypeOriginPackageId',
+    deployment.expansionPackV8TypeOriginPackageId,
+    config.expansionPackV8TypeOriginPackageId,
+  );
+  compareId(
+    'releases.expansionPackV8.callablePackageId',
+    release.callablePackageId,
+    config.expansionPackV8CallablePackageId,
+  );
+  compareId(
+    'releases.expansionPackV8.typeOriginPackageId',
+    release.typeOriginPackageId,
+    config.expansionPackV8TypeOriginPackageId,
+  );
+  if (typeof deployment.expansionPackV8ReleaseEnabled === 'boolean'
+    && typeof config.expansionPackV8ReleaseEnabled === 'boolean'
+    && deployment.expansionPackV8ReleaseEnabled !== config.expansionPackV8ReleaseEnabled) {
+    mismatches.push('expansionPackV8ReleaseEnabled');
+  }
+  if (typeof release.enabled === 'boolean'
+    && typeof config.expansionPackV8ReleaseEnabled === 'boolean'
+    && release.enabled !== config.expansionPackV8ReleaseEnabled) {
+    mismatches.push('releases.expansionPackV8.enabled');
+  }
+  if (typeof verification.expansionPackV8Enabled === 'boolean'
+    && typeof config.expansionPackV8ReleaseEnabled === 'boolean'
+    && verification.expansionPackV8Enabled !== config.expansionPackV8ReleaseEnabled) {
+    mismatches.push('verification.expansionPackV8Enabled');
+  }
+  const evidenceComparisons = [
+    ['releases.expansionPackV8.upgradeTxDigest', release.upgradeTxDigest, deployment.upgradeTxDigest],
+    ['releases.expansionPackV8.upgradeCheckpoint', release.upgradeCheckpoint, deployment.upgradeCheckpoint],
+    ['releases.expansionPackV8.upgradedAtMs', release.upgradedAtMs, deployment.upgradedAtMs],
+    ['releases.expansionPackV8.sourceCommit', release.sourceCommit, deployment.source?.sourceCommit],
+    ['releases.expansionPackV8.sourceTree', release.sourceTree, deployment.source?.sourceTree],
+    ['releases.expansionPackV8.packageDigest', release.packageDigest, verification.packageDigest],
+  ];
+  evidenceComparisons.forEach(([path, releaseValue, canonicalValue]) => {
+    if (present(releaseValue) && present(canonicalValue)
+      && String(releaseValue) !== String(canonicalValue)) {
+      mismatches.push(path);
+    }
+  });
+
+  return {
+    declared: true,
+    ready: runtimeMissing.length === 0
+      && runtimeInvalid.length === 0
+      && deploymentMissing.length === 0
+      && deploymentInvalid.length === 0
+      && mismatches.length === 0,
+    runtimeMissing,
+    runtimeInvalid,
+    deploymentMissing,
+    deploymentInvalid,
+    mismatches,
+  };
 }
 
 function normalizeDeploymentValue(field, value) {
@@ -324,8 +562,720 @@ async function simulateU64Function(
   return Number(value);
 }
 
+async function simulateBoolFunction(
+  client,
+  packageId,
+  moduleName,
+  functionName,
+) {
+  const tx = new Transaction();
+  tx.moveCall({ target: `${packageId}::${moduleName}::${functionName}` });
+  const result = await client.core.simulateTransaction({
+    transaction: tx,
+    checksEnabled: false,
+    include: { commandResults: true },
+  });
+  if (result.$kind === 'FailedTransaction') {
+    throw new Error(
+      result.FailedTransaction.status?.error?.message
+        || `${functionName} simulation failed.`,
+    );
+  }
+  const bytes = result.commandResults?.[0]?.returnValues?.[0]?.bcs;
+  if (!bytes || bytes.length !== 1 || (bytes[0] !== 0 && bytes[0] !== 1)) {
+    throw new Error(`${functionName} did not return one canonical BCS bool.`);
+  }
+  return bytes[0] === 1;
+}
+
+async function simulateAbortingFunction(
+  client,
+  packageId,
+  moduleName,
+  functionName,
+) {
+  const tx = new Transaction();
+  tx.moveCall({ target: `${packageId}::${moduleName}::${functionName}` });
+  const result = await client.core.simulateTransaction({
+    transaction: tx,
+    checksEnabled: false,
+    include: { commandResults: true },
+  });
+  return result.$kind === 'FailedTransaction';
+}
+
 async function simulateProtocolVersion(client, packageId, moduleName = 'animacraft') {
   return simulateU64Function(client, packageId, moduleName, 'protocol_version');
+}
+
+export async function inspectExpansionPackV8PackageAbi(
+  client,
+  callablePackageId,
+  typeOriginPackageId,
+  {
+    originalPackageId,
+    commerceV5TypeOriginPackageId,
+  } = {},
+) {
+  const moduleName = 'expansion_pack_v8';
+  const completeModuleName = 'expansion_pack_complete_v8';
+  const typeOrigin = normalizeSuiAddress(typeOriginPackageId);
+  const legacyTypeOrigin = normalizeSuiAddress(originalPackageId);
+  const commerceTypeOrigin = normalizeSuiAddress(commerceV5TypeOriginPackageId);
+  const stdPackage = normalizeSuiAddress('0x1');
+  const suiPackage = normalizeSuiAddress('0x2');
+  const signature = (reference, body) => ({ reference, body });
+  const primitive = (kind, reference = null) => signature(reference, { $kind: kind });
+  const vector = (body, reference = null) => signature(reference, {
+    $kind: 'vector',
+    vector: body,
+  });
+  const typeParameter = (index) => ({ $kind: 'typeParameter', index });
+  const datatypeBody = (packageId, module, type, typeParameters = []) => ({
+    $kind: 'datatype',
+    datatype: {
+      typeName: `${normalizeSuiAddress(packageId)}::${module}::${type}`,
+      typeParameters,
+    },
+  });
+  const datatype = (
+    packageId,
+    module,
+    type,
+    typeParameters = [],
+    reference = null,
+  ) => signature(reference, datatypeBody(
+    packageId,
+    module,
+    type,
+    typeParameters,
+  ));
+  const stringType = (reference = null) => datatype(
+    stdPackage,
+    'string',
+    'String',
+    [],
+    reference,
+  );
+  const context = (reference = 'immutable') => datatype(
+    suiPackage,
+    'tx_context',
+    'TxContext',
+    [],
+    reference,
+  );
+  const root = (reference = 'immutable') => datatype(
+    commerceTypeOrigin,
+    'commerce_v5',
+    'MakerRootV5',
+    [],
+    reference,
+  );
+  const maker = (reference = 'immutable') => datatype(
+    legacyTypeOrigin,
+    'animacraft',
+    'OCMaker',
+    [],
+    reference,
+  );
+  const commerceConfig = (reference = 'immutable') => datatype(
+    commerceTypeOrigin,
+    'commerce_v5',
+    'CommerceProtocolConfigV5',
+    [],
+    reference,
+  );
+  const controlCap = (reference = 'immutable') => datatype(
+    commerceTypeOrigin,
+    'commerce_v5',
+    'MakerControlCapV5',
+    [],
+    reference,
+  );
+  const release = (reference = 'immutable') => datatype(
+    typeOrigin,
+    moduleName,
+    'ExpansionPackReleaseV8',
+    [],
+    reference,
+  );
+  const adminCap = (reference = 'immutable') => datatype(
+    typeOrigin,
+    moduleName,
+    'ExpansionPackAdminCapV8',
+    [],
+    reference,
+  );
+  const commerceAuthorization = (reference = 'immutable') => datatype(
+    commerceTypeOrigin,
+    'commerce_v5',
+    'CommerceV5SoulMintAuthorization',
+    [],
+    reference,
+  );
+  const completeAuthorization = (reference = null) => datatype(
+    typeOrigin,
+    completeModuleName,
+    'ExpansionPackCompleteAuthorizationV8',
+    [],
+    reference,
+  );
+  const completeBinding = (reference = null) => datatype(
+    typeOrigin,
+    completeModuleName,
+    'ExpansionPackCompleteSoulBindingV8',
+    [],
+    reference,
+  );
+  const completeProvenance = (reference = 'immutable') => datatype(
+    typeOrigin,
+    completeModuleName,
+    'ExpansionPackCompleteProvenanceV8',
+    [],
+    reference,
+  );
+  const objectId = (reference = null) => datatype(
+    suiPackage,
+    'object',
+    'ID',
+    [],
+    reference,
+  );
+  const paymentCoinBody = typeParameter(0);
+  const typeParameterValue = (index, reference = null) => signature(
+    reference,
+    typeParameter(index),
+  );
+  const functionSpecs = [
+    {
+      name: 'version_v8',
+      typeParameters: [],
+      parameters: [],
+      returns: [primitive('u64')],
+    },
+    {
+      name: 'create_expansion_pack_v8',
+      typeParameters: [[]],
+      parameters: [
+        root(), maker(), commerceConfig(),
+        stringType(), stringType(), vector({ $kind: 'u8' }),
+        stringType(), stringType(), stringType(), vector({ $kind: 'u8' }),
+        primitive('u8'), primitive('u64'), context('mutable'),
+      ],
+      returns: [],
+    },
+    {
+      name: 'bind_expansion_pack_manifest_v8',
+      typeParameters: [],
+      parameters: [
+        release('mutable'), adminCap(), stringType(),
+        vector({ $kind: 'u8' }), context(),
+      ],
+      returns: [],
+    },
+    {
+      name: 'register_style_asset_v8',
+      typeParameters: [],
+      parameters: [
+        release('mutable'), adminCap(),
+        stringType(), stringType(), stringType(), stringType(),
+        vector({ $kind: 'u8' }), vector({ $kind: 'u8' }), context(),
+      ],
+      returns: [],
+    },
+    {
+      name: 'seal_expansion_pack_v8',
+      typeParameters: [],
+      parameters: [
+        release('mutable'), adminCap(), vector({ $kind: 'u8' }), context(),
+      ],
+      returns: [],
+    },
+    {
+      name: 'bind_expansion_pack_seal_policy_v8',
+      typeParameters: [],
+      parameters: [release('mutable'), adminCap(), context()],
+      returns: [],
+    },
+    {
+      name: 'admit_expansion_pack_v8',
+      typeParameters: [],
+      parameters: [
+        release('mutable'), root(), maker(), controlCap(), context(),
+      ],
+      returns: [],
+    },
+    {
+      name: 'activate_expansion_pack_v8',
+      typeParameters: [],
+      parameters: [
+        release('mutable'), adminCap(), root(), commerceConfig(), context(),
+      ],
+      returns: [],
+    },
+    {
+      name: 'pause_expansion_pack_v8',
+      typeParameters: [],
+      parameters: [release('mutable'), adminCap(), context()],
+      returns: [],
+    },
+    {
+      name: 'resume_expansion_pack_v8',
+      typeParameters: [],
+      parameters: [
+        release('mutable'), adminCap(), root(), commerceConfig(), context(),
+      ],
+      returns: [],
+    },
+    {
+      name: 'archive_expansion_pack_v8',
+      typeParameters: [],
+      parameters: [release('mutable'), adminCap(), context()],
+      returns: [],
+    },
+    {
+      name: 'claim_free_expansion_pack_v8',
+      typeParameters: [],
+      parameters: [
+        release('mutable'), root(), commerceConfig(),
+        datatype(suiPackage, 'clock', 'Clock', [], 'immutable'),
+        context('mutable'),
+      ],
+      returns: [],
+    },
+    {
+      name: 'purchase_expansion_pack_v8',
+      typeParameters: [[]],
+      parameters: [
+        release('mutable'),
+        datatype(
+          typeOrigin,
+          moduleName,
+          'ExpansionPackTreasuryV8',
+          [paymentCoinBody],
+          'mutable',
+        ),
+        root(),
+        commerceConfig(),
+        datatype(
+          commerceTypeOrigin,
+          'commerce_v5',
+          'CommerceProtocolTreasuryV5',
+          [paymentCoinBody],
+          'mutable',
+        ),
+        datatype(suiPackage, 'coin', 'Coin', [paymentCoinBody]),
+        datatype(suiPackage, 'clock', 'Clock', [], 'immutable'),
+        context('mutable'),
+      ],
+      returns: [],
+    },
+    {
+      name: 'withdraw_expansion_pack_revenue_v8',
+      typeParameters: [[]],
+      parameters: [
+        release(),
+        datatype(
+          typeOrigin,
+          moduleName,
+          'ExpansionPackTreasuryV8',
+          [paymentCoinBody],
+          'mutable',
+        ),
+        adminCap(), primitive('u64'), primitive('address'), context('mutable'),
+      ],
+      returns: [],
+    },
+    {
+      name: 'verify_style_access_v8',
+      typeParameters: [],
+      parameters: [
+        release(), root(), stringType(), stringType(), stringType(), context(),
+      ],
+      returns: [datatype(
+        typeOrigin,
+        moduleName,
+        'ExpansionPackStyleAccessProofV8',
+      )],
+    },
+    {
+      name: 'seal_approve_style_v8',
+      typeParameters: [],
+      parameters: [vector({ $kind: 'u8' }), release(), root(), context()],
+      returns: [],
+    },
+    {
+      name: 'check_style_seal_access_v8',
+      typeParameters: [],
+      parameters: [
+        vector({ $kind: 'u8' }), release(), root(), primitive('address'),
+      ],
+      returns: [primitive('bool')],
+    },
+    {
+      name: 'complete_bridge_enabled_v8',
+      typeParameters: [],
+      parameters: [],
+      returns: [primitive('bool')],
+    },
+    {
+      name: 'physical_bridge_enabled_v8',
+      typeParameters: [],
+      parameters: [],
+      returns: [primitive('bool')],
+    },
+    {
+      name: 'assert_complete_bridge_enabled_v8',
+      typeParameters: [],
+      parameters: [],
+      returns: [],
+    },
+    {
+      name: 'assert_physical_bridge_enabled_v8',
+      typeParameters: [],
+      parameters: [],
+      returns: [],
+    },
+    {
+      moduleName: completeModuleName,
+      name: 'companion_proof_version_v8',
+      typeParameters: [],
+      parameters: [],
+      returns: [primitive('u64')],
+    },
+    {
+      moduleName: completeModuleName,
+      name: 'companion_proof_available_v8',
+      typeParameters: [],
+      parameters: [],
+      returns: [primitive('bool')],
+    },
+    {
+      moduleName: completeModuleName,
+      name: 'begin_expansion_pack_complete_authorization_v8',
+      typeParameters: [],
+      parameters: [root(), vector({ $kind: 'u8' }), context()],
+      returns: [completeAuthorization()],
+    },
+    {
+      moduleName: completeModuleName,
+      name: 'append_expansion_pack_complete_style_v8',
+      typeParameters: [],
+      parameters: [
+        completeAuthorization('mutable'), release(), root(),
+        stringType(), stringType(), stringType(), context(),
+      ],
+      returns: [],
+    },
+    {
+      moduleName: completeModuleName,
+      name: 'seal_expansion_pack_complete_authorization_v8',
+      typeParameters: [],
+      parameters: [completeAuthorization('mutable')],
+      returns: [],
+    },
+    {
+      moduleName: completeModuleName,
+      name: 'authenticate_expansion_pack_complete_v8',
+      typeParameters: [],
+      parameters: [
+        completeAuthorization(), commerceAuthorization(), root(),
+        commerceConfig(), context(),
+      ],
+      returns: [completeBinding()],
+    },
+    {
+      moduleName: completeModuleName,
+      name: 'bind_expansion_pack_complete_to_soul_v8',
+      typeParameters: [['drop']],
+      parameters: [
+        completeBinding(), commerceConfig(), objectId(),
+        typeParameterValue(0), context('mutable'),
+      ],
+      returns: [typeParameterValue(0)],
+    },
+    {
+      moduleName: completeModuleName,
+      name: 'authorization_pack_selection_commitment_v8',
+      typeParameters: [],
+      parameters: [completeAuthorization('immutable')],
+      returns: [vector({ $kind: 'u8' }, 'immutable')],
+    },
+    {
+      moduleName: completeModuleName,
+      name: 'authorization_selection_count_v8',
+      typeParameters: [],
+      parameters: [completeAuthorization('immutable')],
+      returns: [primitive('u64')],
+    },
+    ...[
+      'provenance_id_v8',
+      'provenance_soul_id_v8',
+      'provenance_parent_root_id_v8',
+    ].map((name) => ({
+      moduleName: completeModuleName,
+      name,
+      typeParameters: [],
+      parameters: [completeProvenance()],
+      returns: [objectId()],
+    })),
+    {
+      moduleName: completeModuleName,
+      name: 'provenance_payer_v8',
+      typeParameters: [],
+      parameters: [completeProvenance()],
+      returns: [primitive('address')],
+    },
+    ...[
+      'provenance_base_recipe_hash_v8',
+      'provenance_output_seal_id_v8',
+      'provenance_pack_selection_commitment_v8',
+      'provenance_complete_authorization_commitment_v8',
+    ].map((name) => ({
+      moduleName: completeModuleName,
+      name,
+      typeParameters: [],
+      parameters: [completeProvenance()],
+      returns: [vector({ $kind: 'u8' }, 'immutable')],
+    })),
+    {
+      moduleName: completeModuleName,
+      name: 'provenance_selection_count_v8',
+      typeParameters: [],
+      parameters: [completeProvenance()],
+      returns: [primitive('u64')],
+    },
+  ].map((spec) => ({
+    visibility: 'public',
+    isEntry: false,
+    ...spec,
+  }));
+  const sealApprovalSpec = functionSpecs.find(({ name }) => (
+    name === 'seal_approve_style_v8'
+  ));
+  sealApprovalSpec.visibility = 'private';
+  sealApprovalSpec.isEntry = true;
+  const parentEvidenceSpec = {
+    name: 'bind_maker_release_evidence_v5',
+    visibility: 'public',
+    isEntry: false,
+    typeParameters: [],
+    parameters: [
+      root('mutable'), controlCap(), maker(), stringType(), stringType(),
+      vector({ $kind: 'u8' }), context(),
+    ],
+    returns: [],
+  };
+  const datatypeSpecs = [
+    [moduleName, 'ExpansionPackReleaseV8'],
+    [moduleName, 'ExpansionPackAdminCapV8'],
+    [moduleName, 'ExpansionPackTreasuryV8'],
+    [moduleName, 'ExpansionPackPassV8'],
+    [moduleName, 'ExpansionPackStyleAccessProofV8'],
+    [completeModuleName, 'ExpansionPackCompleteStyleSelectionV8'],
+    [completeModuleName, 'ExpansionPackSelectionHashInputV8'],
+    [completeModuleName, 'ExpansionPackCompleteHashInputV8'],
+    [completeModuleName, 'ExpansionPackCompleteAuthorizationV8'],
+    [completeModuleName, 'ExpansionPackCompleteSoulBindingV8'],
+    [completeModuleName, 'ExpansionPackCompleteProvenanceV8'],
+    [completeModuleName, 'ExpansionPackCompleteAuthenticatedV8'],
+    [completeModuleName, 'ExpansionPackCompleteBoundToSoulV8'],
+  ];
+  const [
+    functions,
+    datatypes,
+    parentEvidenceFunction,
+    parentEvidenceDatatype,
+    version,
+    completeVersion,
+    completeBridgeEnabled,
+    physicalBridgeEnabled,
+    companionProofAvailable,
+    completeBridgeAssertionAborts,
+    physicalBridgeAssertionAborts,
+  ] = await Promise.all([
+    Promise.all(functionSpecs.map(({ name, moduleName: specModule = moduleName }) => (
+      moveFunctionInModule(client, callablePackageId, specModule, name)
+    ))),
+    Promise.all(datatypeSpecs.map(([specModule, name]) => (
+      moveDatatypeInModule(client, callablePackageId, specModule, name)
+    ))),
+    moveFunctionInModule(
+      client,
+      callablePackageId,
+      'commerce_v5',
+      'bind_maker_release_evidence_v5',
+    ),
+    moveDatatypeInModule(
+      client,
+      callablePackageId,
+      'commerce_v5',
+      'MakerReleaseEvidenceV5',
+    ),
+    simulateU64Function(client, callablePackageId, moduleName, 'version_v8'),
+    simulateU64Function(
+      client,
+      callablePackageId,
+      completeModuleName,
+      'companion_proof_version_v8',
+    ),
+    simulateBoolFunction(
+      client,
+      callablePackageId,
+      moduleName,
+      'complete_bridge_enabled_v8',
+    ),
+    simulateBoolFunction(
+      client,
+      callablePackageId,
+      moduleName,
+      'physical_bridge_enabled_v8',
+    ),
+    simulateBoolFunction(
+      client,
+      callablePackageId,
+      completeModuleName,
+      'companion_proof_available_v8',
+    ),
+    simulateAbortingFunction(
+      client,
+      callablePackageId,
+      moduleName,
+      'assert_complete_bridge_enabled_v8',
+    ),
+    simulateAbortingFunction(
+      client,
+      callablePackageId,
+      moduleName,
+      'assert_physical_bridge_enabled_v8',
+    ),
+  ]);
+  const functionsByName = Object.fromEntries(
+    functionSpecs.map(({ name }, index) => [name, functions[index]]),
+  );
+  const canonicalDatatypeName = (value) => {
+    const pieces = String(value || '').split('::');
+    if (pieces.length !== 3) return '';
+    try {
+      return `${normalizeSuiAddress(pieces[0])}::${pieces[1]}::${pieces[2]}`;
+    } catch {
+      return '';
+    }
+  };
+  const bodyMatches = (actual, expected) => {
+    if (!actual || !expected || actual.$kind !== expected.$kind) return false;
+    if (expected.$kind === 'vector') {
+      return bodyMatches(actual.vector, expected.vector);
+    }
+    if (expected.$kind === 'typeParameter') {
+      return actual.index === expected.index;
+    }
+    if (expected.$kind === 'datatype') {
+      const actualParameters = actual.datatype?.typeParameters;
+      const expectedParameters = expected.datatype?.typeParameters;
+      return canonicalDatatypeName(actual.datatype?.typeName)
+          === canonicalDatatypeName(expected.datatype?.typeName)
+        && Array.isArray(actualParameters)
+        && actualParameters.length === expectedParameters.length
+        && expectedParameters.every((parameter, index) => (
+          bodyMatches(actualParameters[index], parameter)
+        ));
+    }
+    return true;
+  };
+  const signatureMatches = (actual, expected) => (
+    (actual?.reference ?? null) === expected.reference
+      && bodyMatches(actual?.body, expected.body)
+  );
+  const typeParametersMatch = (actual, expected) => (
+    Array.isArray(actual)
+      && actual.length === expected.length
+      && expected.every((constraints, index) => {
+        const actualConstraints = actual[index]?.constraints;
+        return Array.isArray(actualConstraints)
+          && actualConstraints.length === constraints.length
+          && constraints.every((constraint, constraintIndex) => (
+            actualConstraints[constraintIndex] === constraint
+          ));
+      })
+  );
+  const functionMatches = (fn, spec) => (
+    fn?.visibility === spec.visibility
+      && fn?.isEntry === spec.isEntry
+      && typeParametersMatch(fn?.typeParameters, spec.typeParameters)
+      && Array.isArray(fn?.parameters)
+      && fn.parameters.length === spec.parameters.length
+      && spec.parameters.every((parameter, index) => (
+        signatureMatches(fn.parameters[index], parameter)
+      ))
+      && Array.isArray(fn?.returns)
+      && fn.returns.length === spec.returns.length
+      && spec.returns.every((result, index) => (
+        signatureMatches(fn.returns[index], result)
+      ))
+  );
+  const exactAbiReady = functionSpecs.every((spec) => (
+    functionMatches(functionsByName[spec.name], spec)
+  )) && functionMatches(parentEvidenceFunction, parentEvidenceSpec);
+  const originsReady = [...datatypes, parentEvidenceDatatype].every((datatype) => (
+    datatypeHasTypeOrigin(datatype, typeOrigin)
+  ));
+  const ready = version === 8
+    && completeVersion === 8
+    && completeBridgeEnabled === false
+    && physicalBridgeEnabled === false
+    && companionProofAvailable === false
+    && completeBridgeAssertionAborts
+    && physicalBridgeAssertionAborts
+    && exactAbiReady
+    && originsReady;
+  return {
+    ready,
+    detail: ready
+      ? `version_v8=8; Complete/physical bridges and companion proof are false with aborting bridge assertions; exact entry/public ABI and legacy=${legacyTypeOrigin}, Commerce v5=${commerceTypeOrigin}, Expansion Pack v8=${typeOrigin} TypeOrigins verified`
+      : `Required Expansion Pack v8 publication, Seal, lifecycle, acquisition, treasury, Complete fail-closed ABI/value or one stable TypeOrigin differs; observed version_v8=${version}, companion_proof_version_v8=${completeVersion}.`,
+  };
+}
+
+async function checkExpansionPackV8PackageAbi(
+  client,
+  config,
+  deploymentStatus,
+) {
+  if (!deploymentStatus.declared) return;
+  const callablePackageId = config.expansionPackV8CallablePackageId;
+  const typeOriginPackageId = config.expansionPackV8TypeOriginPackageId;
+  const originalPackageId = config.originalPackageId;
+  const commerceV5TypeOriginPackageId = config.commerceV5TypeOriginPackageId;
+  if (!validSuiId(callablePackageId)
+      || !validSuiId(typeOriginPackageId)
+      || !validSuiId(originalPackageId)
+      || !validSuiId(commerceV5TypeOriginPackageId)) {
+    record(
+      'Animacraft Expansion Pack v8 package ABI',
+      false,
+      'Valid callable, legacy Maker, Commerce v5 and Expansion Pack v8 TypeOrigins are required for chain read-back.',
+    );
+    return;
+  }
+  try {
+    const status = await deadline(
+      'Animacraft Expansion Pack v8 package ABI',
+      () => inspectExpansionPackV8PackageAbi(
+        client,
+        callablePackageId,
+        typeOriginPackageId,
+        { originalPackageId, commerceV5TypeOriginPackageId },
+      ),
+    );
+    record(
+      'Animacraft Expansion Pack v8 package ABI',
+      status.ready,
+      status.detail,
+    );
+  } catch (error) {
+    record('Animacraft Expansion Pack v8 package ABI', false, error.message);
+  }
 }
 
 async function checkCommerceV5Abi(client, packageId, typeOriginPackageId) {
@@ -1519,6 +2469,52 @@ function recordCompositionV6Deployment(status, config) {
   );
 }
 
+function recordExpansionPackV8Deployment(status) {
+  if (!status.declared) {
+    record(
+      'Animacraft Expansion Pack v8 deployment state',
+      true,
+      'Intentionally disabled: callable package and TypeOrigin are empty and the runtime/deployment gates are false.',
+    );
+    return;
+  }
+  record(
+    'Animacraft Expansion Pack v8 runtime tuple',
+    status.runtimeMissing.length === 0 && status.runtimeInvalid.length === 0,
+    status.runtimeMissing.length || status.runtimeInvalid.length
+      ? [
+        status.runtimeMissing.length
+          ? `missing: ${status.runtimeMissing.join(', ')}`
+          : '',
+        status.runtimeInvalid.length
+          ? `invalid: ${status.runtimeInvalid.join(', ')}`
+          : '',
+      ].filter(Boolean).join('; ')
+      : 'Callable package, stable TypeOrigin, and release gate are explicit and valid.',
+  );
+  record(
+    'Animacraft Expansion Pack v8 deployment evidence',
+    status.deploymentMissing.length === 0
+      && status.deploymentInvalid.length === 0
+      && status.mismatches.length === 0,
+    status.deploymentMissing.length
+      || status.deploymentInvalid.length
+      || status.mismatches.length
+      ? [
+        status.deploymentMissing.length
+          ? `missing: ${status.deploymentMissing.join(', ')}`
+          : '',
+        status.deploymentInvalid.length
+          ? `invalid: ${status.deploymentInvalid.join(', ')}`
+          : '',
+        status.mismatches.length
+          ? `runtime/deployment mismatch: ${status.mismatches.join(', ')}`
+          : '',
+      ].filter(Boolean).join('; ')
+      : 'Exact package identities, gate, upgrade checkpoint, source, package digest, and v8-scoped verification evidence agree.',
+  );
+}
+
 async function checkHttp(name, url, path) {
   try {
     const response = await deadline(name, (signal) => fetch(`${String(url).replace(/\/$/, '')}${path}`, { signal }));
@@ -1556,7 +2552,12 @@ async function checkWalrusRelayTipPolicy(client, config) {
   }
 }
 
-async function checkNetwork(config, validation, compositionDeploymentStatus) {
+async function checkNetwork(
+  config,
+  validation,
+  compositionDeploymentStatus,
+  expansionPackV8DeploymentStatus,
+) {
   const client = new SuiGrpcClient({ network: 'mainnet', baseUrl: config.grpcUrl });
   try {
     const result = await deadline('Sui gRPC', () => client.core.getChainIdentifier());
@@ -1647,6 +2648,11 @@ async function checkNetwork(config, validation, compositionDeploymentStatus) {
       );
     }
   }
+  await checkExpansionPackV8PackageAbi(
+    client,
+    config,
+    expansionPackV8DeploymentStatus,
+  );
   await checkProtocolFeeObjects(client, config, validation);
   await checkCommerceV5Objects(client, config, validation);
   await checkCompositionV6Objects(
@@ -1731,6 +2737,13 @@ export async function runMainnetPreflight() {
         `deployments/mainnet.json could not be loaded: ${error.message}`,
       );
     }
+    if (requireExpansionPackV8 || expansionPackV8Declared(config)) {
+      record(
+        'Animacraft Expansion Pack v8 deployment evidence',
+        false,
+        `deployments/mainnet.json could not be loaded: ${error.message}`,
+      );
+    }
   }
   const compositionDeploymentStatus = inspectCompositionV6Deployment(
     config,
@@ -1738,6 +2751,12 @@ export async function runMainnetPreflight() {
     { required: requireCompositionV6 },
   );
   recordCompositionV6Deployment(compositionDeploymentStatus, config);
+  const expansionPackV8DeploymentStatus = inspectExpansionPackV8Deployment(
+    config,
+    deployment,
+    { required: requireExpansionPackV8 },
+  );
+  recordExpansionPackV8Deployment(expansionPackV8DeploymentStatus);
 
   const validation = validateRuntimeConfig(config, { strict, requireSoulidity });
   validation.errors.forEach((message) => record('Runtime config', false, message));
@@ -1752,7 +2771,12 @@ export async function runMainnetPreflight() {
     );
   }
   if (network) {
-    await checkNetwork(config, validation, compositionDeploymentStatus);
+    await checkNetwork(
+      config,
+      validation,
+      compositionDeploymentStatus,
+      expansionPackV8DeploymentStatus,
+    );
   }
 
   const failed = checks.filter((check) => !check.ok);
@@ -1763,6 +2787,7 @@ export async function runMainnetPreflight() {
       network,
       requireCompositionV6,
       allowCompositionV6Enabled,
+      requireExpansionPackV8,
       checks,
     }, null, 2)}\n`);
   } else {

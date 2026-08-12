@@ -12,6 +12,133 @@ function section(start, end) {
   return source.slice(startIndex, endIndex);
 }
 
+function compiledSignedTransactionHelpers({ client, digest = 'derived-digest' } = {}) {
+  const normalization = section(
+    'function normalizedSignedTransaction',
+    'function transactionNotFound',
+  );
+  const execution = section(
+    'export async function executeSignedTransactionAndWait',
+    'function moveTarget',
+  ).replace('export async function', 'async function');
+  const unwrapping = section(
+    'function finalizedTransactionFailure',
+    'function licenseKind',
+  );
+  const normalizedSignedTransaction = new Function(
+    'toBase64',
+    'fromBase64',
+    'TransactionDataBuilder',
+    `${normalization}; return normalizedSignedTransaction;`,
+  )(
+    (bytes) => Buffer.from(bytes).toString('base64'),
+    (bytes) => bytes,
+    { getDigestFromBytes: () => digest },
+  );
+  const executeSignedTransactionAndWait = new Function(
+    'normalizedSignedTransaction',
+    'getSuiClient',
+    'unwrapTransaction',
+    'transactionNotFound',
+    'fromBase64',
+    `${execution}; return executeSignedTransactionAndWait;`,
+  )(
+    normalizedSignedTransaction,
+    () => client,
+    new Function(`${unwrapping}; return unwrapTransaction;`)(),
+    (error) => /not found/i.test(String(error?.message || error)),
+    (bytes) => bytes,
+  );
+  return { normalizedSignedTransaction, executeSignedTransactionAndWait };
+}
+
+function compiledWalrusSettlement() {
+  const settlement = section(
+    'function sameWalrusFinalizedFailure',
+    'async function executePendingTransaction',
+  );
+  const unwrapping = section(
+    'function finalizedTransactionFailure',
+    'function licenseKind',
+  );
+  const helpers = new Function(
+    `${unwrapping}; return { finalizedTransactionFailure, unwrapTransaction };`,
+  )();
+  const walrusStateError = (code, message, cause) => {
+    const error = new Error(message, cause === undefined ? undefined : { cause });
+    error.code = code;
+    return error;
+  };
+  const settlePendingTransaction = new Function(
+    'finalizedTransactionFailure',
+    'unwrapTransaction',
+    'walrusStateError',
+    'checkpointWalrusSession',
+    `${settlement}; return settlePendingTransaction;`,
+  )(
+    helpers.finalizedTransactionFailure,
+    helpers.unwrapTransaction,
+    walrusStateError,
+    async (session, onCheckpoint) => onCheckpoint?.(session),
+  );
+  return { settlePendingTransaction };
+}
+
+function compiledWalrusPendingExecution({ client, querySignedTransaction }) {
+  const sourceText = section(
+    'function sameWalrusFinalizedFailure',
+    'async function signWalrusTransaction',
+  );
+  const unwrapping = section(
+    'function finalizedTransactionFailure',
+    'function licenseKind',
+  );
+  const helpers = new Function(
+    `${unwrapping}; return { finalizedTransactionFailure, unwrapTransaction };`,
+  )();
+  const walrusStateError = (code, message, cause) => {
+    const error = new Error(message, cause === undefined ? undefined : { cause });
+    error.code = code;
+    return error;
+  };
+  return new Function(
+    'finalizedTransactionFailure',
+    'unwrapTransaction',
+    'walrusStateError',
+    'checkpointWalrusSession',
+    'querySignedTransaction',
+    'suiClient',
+    'fromBase64',
+    `${sourceText}; return executePendingTransaction;`,
+  )(
+    helpers.finalizedTransactionFailure,
+    helpers.unwrapTransaction,
+    walrusStateError,
+    async (session, onCheckpoint) => onCheckpoint?.(session),
+    querySignedTransaction,
+    client,
+    (bytes) => bytes,
+  );
+}
+
+function failedResult(digest = 'derived-digest', overrides = {}) {
+  return {
+    FailedTransaction: {
+      digest,
+      status: {
+        success: false,
+        error: {
+          $kind: 'MoveAbort',
+          message: 'MoveAbort EInvalidLifecycle',
+          command: 2,
+          MoveAbort: { abortCode: '17' },
+          ...overrides,
+        },
+      },
+    },
+  };
+}
+
 test('prepare exposes a timestamped relay and complete WAL/FROST quote', () => {
   const prepare = section(
     'export async function prepareWalrusUpload',
@@ -108,6 +235,113 @@ test('prepare and resume preserve a stable upload session identity and recovery 
   assert.match(resume, /uploadSessionId:\s*String\(recovery\.uploadSessionId/);
   assert.match(resume, /\|\| legacyUploadSessionId\(recovery\)/);
   assert.match(resume, /recoveryRevision:\s*recoveryRevision\(recovery\)/);
+  assert.match(prepare, /finalizedFailures:\s*\[\]/);
+  assert.match(resume, /finalizedFailures:\s*normalizedWalrusFinalizedFailures/);
+});
+
+test('Walrus archives definitive failed digests before clearing replay bytes', async () => {
+  const { settlePendingTransaction } = compiledWalrusSettlement();
+  const pending = {
+    digest: 'walrus-register-digest',
+    bytes: 'signed-bytes',
+    signature: 'signature',
+  };
+  const session = {
+    stage: 'encoded',
+    registerDigest: '',
+    pendingRegisterTransaction: pending,
+    finalizedFailures: [],
+  };
+  const checkpoints = [];
+  await assert.rejects(
+    settlePendingTransaction(session, {
+      pendingKey: 'pendingRegisterTransaction',
+      digestKey: 'registerDigest',
+      successStage: 'registered',
+      failureStage: 'encoded',
+      result: failedResult('walrus-register-digest'),
+      onCheckpoint(snapshot) {
+        checkpoints.push(structuredClone(snapshot));
+      },
+    }),
+    (error) => error?.code === 'WALRUS_TRANSACTION_FAILED'
+      && error?.digest === 'walrus-register-digest'
+      && error?.finalizedFailure?.transactionKind === 'REGISTER'
+      && error?.finalizedFailure?.executionStatus === 'FAILURE',
+  );
+  assert.equal(session.pendingRegisterTransaction, null);
+  assert.equal(session.registerDigest, '');
+  assert.equal(session.stage, 'encoded');
+  assert.equal(session.finalizedFailures.length, 1);
+  assert.equal(session.finalizedFailures[0].transactionDigest, 'walrus-register-digest');
+  assert.equal(checkpoints.length, 1);
+  assert.equal(checkpoints[0].pendingRegisterTransaction, null);
+  assert.equal(checkpoints[0].finalizedFailures.length, 1);
+
+  const unsafeSession = {
+    stage: 'encoded',
+    registerDigest: '',
+    pendingRegisterTransaction: structuredClone(pending),
+    finalizedFailures: [],
+  };
+  await assert.rejects(
+    settlePendingTransaction(unsafeSession, {
+      pendingKey: 'pendingRegisterTransaction',
+      digestKey: 'registerDigest',
+      successStage: 'registered',
+      failureStage: 'encoded',
+      result: failedResult('walrus-register-digest'),
+      async onCheckpoint() {
+        throw new Error('checkpoint unavailable');
+      },
+    }),
+    /checkpoint unavailable/,
+  );
+  assert.deepEqual(unsafeSession.pendingRegisterTransaction, pending);
+  assert.equal(unsafeSession.finalizedFailures.length, 0);
+});
+
+test('Walrus never re-queries a digest after its finalized failure is archived', async () => {
+  let queries = 0;
+  const executePendingTransaction = compiledWalrusPendingExecution({
+    client: {
+      async executeTransaction() {
+        return failedResult('walrus-register-digest');
+      },
+    },
+    async querySignedTransaction() {
+      queries += 1;
+      return { found: true, result: failedResult('walrus-register-digest') };
+    },
+  });
+  const session = {
+    stage: 'encoded',
+    registerDigest: '',
+    pendingRegisterTransaction: {
+      digest: 'walrus-register-digest',
+      bytes: 'signed-bytes',
+      signature: 'signature',
+    },
+    finalizedFailures: [],
+  };
+  const checkpoints = [];
+  await assert.rejects(
+    executePendingTransaction(session, {
+      pendingKey: 'pendingRegisterTransaction',
+      digestKey: 'registerDigest',
+      successStage: 'registered',
+      failureStage: 'encoded',
+      onCheckpoint(snapshot) {
+        checkpoints.push(structuredClone(snapshot));
+      },
+    }),
+    (error) => error?.code === 'WALRUS_TRANSACTION_FAILED'
+      && error?.finalizedFailure?.transactionDigest === 'walrus-register-digest',
+  );
+  assert.equal(queries, 0);
+  assert.equal(session.pendingRegisterTransaction, null);
+  assert.equal(session.finalizedFailures.length, 1);
+  assert.equal(checkpoints.filter((entry) => entry.finalizedFailures.length === 1).length, 1);
 });
 
 test('signed Walrus transactions are serializable and digest-stable before broadcast', () => {
@@ -137,6 +371,165 @@ test('signed Walrus transactions are serializable and digest-stable before broad
   assert.ok(persistAttempt >= 0 && persistAttempt < broadcast, 'signed bytes must checkpoint before broadcast');
   assert.match(pendingExecution, /transaction:\s*fromBase64\(pending\.bytes\)/);
   assert.match(pendingExecution, /signatures:\s*\[pending\.signature\]/);
+});
+
+test('persisted digest fields must match exact signed bytes before every network call', async () => {
+  let networkCalls = 0;
+  const client = {
+    async getTransaction() {
+      networkCalls += 1;
+      throw new Error('transaction not found');
+    },
+    async executeTransaction() {
+      networkCalls += 1;
+      throw new Error('must not execute');
+    },
+    async waitForTransaction() {
+      networkCalls += 1;
+      throw new Error('must not wait');
+    },
+  };
+  const { executeSignedTransactionAndWait } = compiledSignedTransactionHelpers({ client });
+
+  for (const mismatch of [
+    { digest: 'wrong-digest' },
+    { transactionDigest: 'wrong-transaction-digest' },
+    { digest: 'derived-digest', transactionDigest: 'wrong-transaction-digest' },
+  ]) {
+    await assert.rejects(
+      executeSignedTransactionAndWait({
+        bytes: 'exact-signed-bytes',
+        signature: 'exact-signature',
+        ...mismatch,
+      }),
+      (error) => error?.code === 'TRANSACTION_DIGEST_MISMATCH',
+    );
+  }
+  assert.equal(networkCalls, 0);
+});
+
+test('an exact persisted replay queries idempotently and guards the broadcast at the final boundary', async () => {
+  const events = [];
+  let finalized = true;
+  const client = {
+    async getTransaction({ digest }) {
+      events.push(`query:${digest}`);
+      if (!finalized) throw new Error('transaction not found');
+      return { Transaction: { digest } };
+    },
+    async executeTransaction() {
+      events.push('execute');
+      return { Transaction: { digest: 'derived-digest' } };
+    },
+    async waitForTransaction({ digest }) {
+      events.push(`wait:${digest}`);
+      return { Transaction: { digest } };
+    },
+  };
+  const { executeSignedTransactionAndWait } = compiledSignedTransactionHelpers({ client });
+  const exact = {
+    bytes: 'exact-signed-bytes',
+    signature: 'exact-signature',
+    digest: 'derived-digest',
+    transactionDigest: 'derived-digest',
+  };
+
+  const recovered = await executeSignedTransactionAndWait(exact, {
+    assertBeforeExecute: () => events.push('guard'),
+  });
+  assert.equal(recovered.alreadySubmitted, true);
+  assert.deepEqual(events, ['query:derived-digest']);
+
+  finalized = false;
+  await assert.rejects(
+    executeSignedTransactionAndWait(exact, {
+      assertBeforeExecute() {
+        events.push('guard');
+        const error = new Error('publication context changed');
+        error.code = 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED';
+        throw error;
+      },
+    }),
+    (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED',
+  );
+  assert.deepEqual(events, [
+    'query:derived-digest',
+    'query:derived-digest',
+    'guard',
+  ]);
+});
+
+test('definitive Sui failure preserves exact digest and structured execution evidence', async () => {
+  const client = {
+    async getTransaction() {
+      return failedResult();
+    },
+    async executeTransaction() {
+      throw new Error('must not execute a finalized digest');
+    },
+    async waitForTransaction() {
+      throw new Error('must not wait for a finalized digest');
+    },
+  };
+  const { executeSignedTransactionAndWait } = compiledSignedTransactionHelpers({ client });
+  await assert.rejects(
+    executeSignedTransactionAndWait({
+      bytes: 'exact-signed-bytes',
+      signature: 'exact-signature',
+      digest: 'derived-digest',
+    }),
+    (error) => (
+      error?.code === 'TRANSACTION_FINALIZED_FAILURE'
+      && error.digest === 'derived-digest'
+      && error.finalizedFailure?.finalized === true
+      && error.finalizedFailure?.executionStatus === 'FAILURE'
+      && error.finalizedFailure?.executionError?.abortCode === '17'
+    ),
+  );
+});
+
+test('execute and wait failures are definitive while mismatched failure digests never retire recovery', async () => {
+  const exact = {
+    bytes: 'exact-signed-bytes',
+    signature: 'exact-signature',
+    digest: 'derived-digest',
+  };
+  for (const failureAt of ['execute', 'wait']) {
+    const client = {
+      async getTransaction() {
+        throw new Error('transaction not found');
+      },
+      async executeTransaction() {
+        return failureAt === 'execute'
+          ? failedResult()
+          : { Transaction: { digest: 'derived-digest' } };
+      },
+      async waitForTransaction() {
+        return failedResult();
+      },
+    };
+    const { executeSignedTransactionAndWait } = compiledSignedTransactionHelpers({ client });
+    await assert.rejects(
+      executeSignedTransactionAndWait(exact),
+      (error) => error?.code === 'TRANSACTION_FINALIZED_FAILURE'
+        && error.digest === 'derived-digest',
+      failureAt,
+    );
+  }
+
+  const mismatchClient = {
+    async getTransaction() {
+      return failedResult('different-digest');
+    },
+  };
+  const { executeSignedTransactionAndWait } = compiledSignedTransactionHelpers({
+    client: mismatchClient,
+  });
+  await assert.rejects(
+    executeSignedTransactionAndWait(exact),
+    (error) => error?.code === 'TRANSACTION_DIGEST_MISMATCH'
+      && !error.finalizedFailure,
+  );
 });
 
 test('unknown transaction status retains and reuses the same signed transaction', () => {

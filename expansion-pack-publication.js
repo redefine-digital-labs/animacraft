@@ -8,9 +8,16 @@
 
 import {
   EXPANSION_PACK_PARENT_BINDING_KINDS,
+  normalizeExpansionPackCommerce,
   preflightExpansionPackProject,
   rehydrateExpansionPackProject,
 } from './expansion-pack-project.js';
+import {
+  MAKER_SEAL_CIPHERTEXT_MEDIA_TYPE,
+  MAKER_SEAL_PRODUCT_PACK,
+  deriveExpansionPackSealReleaseCommitmentV8,
+  encryptMakerPaidPackAssetV5,
+} from './maker-seal-v5.js';
 
 export const EXPANSION_PACK_MANIFEST_SCHEMA = 'animacraft.expansion-pack-manifest.v1';
 export const EXPANSION_PACK_PUBLICATION_CANDIDATE_SCHEMA =
@@ -19,6 +26,8 @@ export const EXPANSION_PACK_MANIFEST_IDENTIFIER = 'animacraft-expansion-pack-man
 export const EXPANSION_PACK_COMMERCE_DRAFT_SCHEMA = 'animacraft.expansion-pack-commerce-draft.v1';
 export const EXPANSION_PACK_RIGHTS_DRAFT_SCHEMA = 'animacraft.expansion-pack-rights-draft.v1';
 export const EXPANSION_PACK_LIFECYCLE_DRAFT_SCHEMA = 'animacraft.expansion-pack-lifecycle-draft.v1';
+export const EXPANSION_PACK_TRANSPORT_PROTECTION_SCHEMA =
+  'animacraft.expansion-pack-transport-protection.v2';
 
 const SHA256 = /^[0-9a-f]{64}$/;
 
@@ -248,21 +257,316 @@ function packOverlay(pack, descriptors) {
   };
 }
 
+/**
+ * The semantic Pack content committed on Sui. Transport metadata is
+ * deliberately excluded: paid ciphertext and its digest can only be produced
+ * after this commitment exists, because the commitment is part of the Seal
+ * identity and AAD. The final manifest SHA still commits transportProtection.
+ */
+export function expansionPackManifestContent(manifestValue) {
+  const manifest = plainObject(manifestValue);
+  return {
+    pack: manifest.pack,
+    parent: manifest.parent,
+    inheritance: manifest.inheritance,
+    overlay: manifest.overlay,
+    assetReferences: manifest.assetReferences,
+    commerce: manifest.commerce,
+    rights: manifest.rights,
+    lifecycle: manifest.lifecycle,
+  };
+}
+
+function candidateStyleBindings(manifest) {
+  const bindings = [];
+  list(manifest?.overlay?.parts).forEach((part) => list(part?.items).forEach((item) => (
+    list(item?.styles).forEach((style) => {
+      bindings.push({
+        assetId: required(style?.assetId, 'Pack Style asset id'),
+        partKey: required(
+          part?.id || part?.extendsPartId || part?.targetPartId,
+          'Pack Style Part key',
+        ),
+        itemKey: required(
+          item?.id || item?.extendsItemId || item?.targetItemId,
+          'Pack Style Item key',
+        ),
+        styleKey: required(style?.id, 'Pack Style key'),
+      });
+    })
+  )));
+  return bindings;
+}
+
+function localAssetSources(projectValue) {
+  const sources = new Map();
+  list(projectValue?.pack?.assets).forEach((asset) => {
+    const id = text(asset?.id ?? asset?.assetId);
+    if (id) sources.set(id, asset);
+  });
+  return sources;
+}
+
+function paidAccess(manifest) {
+  return ['PAID', 'PAID_ONCE'].includes(text(manifest?.commerce?.accessMode).toUpperCase());
+}
+
+/**
+ * Encrypt the exact Pack-local PNG bytes for a paid candidate.
+ *
+ * overlay.assets continues to describe and commit the plaintext. The separate
+ * transportProtection block commits the ciphertext transport and is included
+ * in the final manifest SHA, but not in the semantic content commitment. This
+ * removes the contentCommitment -> Seal ID -> ciphertext -> manifest cycle.
+ */
+export async function protectExpansionPackPublicationCandidate(candidateValue, projectValue, {
+  sealClient,
+  sealPackageId,
+  releaseId,
+  threshold,
+  serverConfigs = [],
+} = {}) {
+  const candidate = plainObject(candidateValue);
+  const manifest = plainObject(candidate.manifest);
+  if (!paidAccess(manifest)) {
+    throw new ExpansionPackPublicationError(
+      'Only a paid Expansion Pack candidate may use Seal transport protection.',
+      'expansion-pack-transport-protection-not-paid',
+    );
+  }
+  if (manifest.transportProtection || candidate.transportProtected === true) {
+    throw new ExpansionPackPublicationError(
+      'This Expansion Pack candidate already contains immutable transport protection.',
+      'expansion-pack-transport-protection-already-built',
+    );
+  }
+  const manifestJson = canonicalExpansionPackJson(manifest);
+  if (manifestJson !== candidate.manifestJson) {
+    throw new ExpansionPackPublicationError(
+      'The Pack manifest changed before Seal transport preparation.',
+      'expansion-pack-transport-manifest-changed',
+    );
+  }
+  const declaredCommitment = normalizeHash(candidate.contentCommitment, 'Pack content commitment');
+  const scopedRelease = await deriveExpansionPackSealReleaseCommitmentV8({
+    releaseId,
+    contentCommitment: declaredCommitment,
+  });
+  const sealReleaseCommitment = text(scopedRelease.id).replace(/^0x/i, '').toLowerCase();
+  const observedCommitment = await hashExpansionPackContent(
+    canonicalExpansionPackJson(expansionPackManifestContent(manifest)),
+  );
+  if (
+    observedCommitment !== declaredCommitment
+    || normalizeHash(manifest.integrity?.contentCommitment, 'Manifest content commitment')
+      !== declaredCommitment
+  ) {
+    throw new ExpansionPackPublicationError(
+      'The Pack semantic content does not match its declared commitment.',
+      'expansion-pack-transport-content-commitment-mismatch',
+    );
+  }
+
+  const descriptors = new Map(list(manifest.overlay?.assets).map((asset) => [text(asset?.id), asset]));
+  const sources = localAssetSources(projectValue);
+  const bindings = candidateStyleBindings(manifest);
+  const bindingByAsset = new Map();
+  bindings.forEach((binding) => {
+    if (bindingByAsset.has(binding.assetId)) {
+      throw new ExpansionPackPublicationError(
+        'A paid Pack cannot reuse one PNG across multiple Styles because every Style has a distinct Seal identity.',
+        'expansion-pack-paid-asset-binding-ambiguous',
+        { assetId: binding.assetId },
+      );
+    }
+    bindingByAsset.set(binding.assetId, binding);
+  });
+  const unboundAssets = [...descriptors.keys()].filter((assetId) => !bindingByAsset.has(assetId));
+  const nonLocalBindings = [...bindingByAsset.keys()].filter((assetId) => !descriptors.has(assetId));
+  if (bindingByAsset.size !== descriptors.size || unboundAssets.length || nonLocalBindings.length) {
+    throw new ExpansionPackPublicationError(
+      'Every paid Pack-local PNG must belong to exactly one Style.',
+      'expansion-pack-paid-asset-binding-incomplete',
+      {
+        assetIds: [...descriptors.keys()].sort(),
+        boundAssetIds: [...bindingByAsset.keys()].sort(),
+        unboundAssets: unboundAssets.sort(),
+        nonLocalBindings: nonLocalBindings.sort(),
+      },
+    );
+  }
+
+  const encryptedAssets = [];
+  for (const descriptor of [...descriptors.values()].sort((left, right) => (
+    text(left.identifier).localeCompare(text(right.identifier)) || text(left.id).localeCompare(text(right.id))
+  ))) {
+    const assetId = required(descriptor.id, 'Pack asset id');
+    const source = sources.get(assetId);
+    const blob = source?.blob || source?.file;
+    if (!(blob instanceof Blob)) {
+      throw new ExpansionPackPublicationError(
+        `The exact paid Pack asset ${assetId} is no longer available locally.`,
+        'expansion-pack-paid-asset-blob-missing',
+        { assetId },
+      );
+    }
+    const plaintextBytes = new Uint8Array(await blob.arrayBuffer());
+    const plaintextSha256 = await hashExpansionPackContent(plaintextBytes);
+    const descriptorSha256 = normalizeHash(descriptor.sha256, `Pack asset ${assetId} SHA-256`);
+    if (plaintextSha256 !== descriptorSha256) {
+      throw new ExpansionPackPublicationError(
+        `The bytes for paid Pack asset ${assetId} changed before encryption.`,
+        'expansion-pack-paid-asset-blob-changed',
+        { assetId, expected: descriptorSha256, actual: plaintextSha256 },
+      );
+    }
+    const binding = bindingByAsset.get(assetId);
+    const encrypted = await encryptMakerPaidPackAssetV5({
+      sealClient,
+      sealPackageId,
+      threshold,
+      releaseCommitment: sealReleaseCommitment,
+      binding: {
+        productKind: MAKER_SEAL_PRODUCT_PACK,
+        ...binding,
+        packKey: required(manifest.pack?.id, 'Expansion Pack id'),
+      },
+      assetBytes: plaintextBytes,
+      assetDigest: descriptorSha256,
+      plaintextMediaType: required(descriptor.mediaType, `Pack asset ${assetId} media type`),
+      serverConfigs,
+    });
+    encryptedAssets.push({
+      assetId,
+      identifier: required(descriptor.identifier, `Pack asset ${assetId} identifier`),
+      blob: encrypted.blob,
+      protection: {
+        assetId,
+        identifier: descriptor.identifier,
+        ...structuredClone(encrypted.protection),
+      },
+    });
+  }
+
+  const protectionAssets = encryptedAssets.map((entry) => entry.protection);
+  const sourceCandidateCommitment = normalizeHash(
+    candidate.candidateCommitment,
+    'Source Pack candidate commitment',
+  );
+  const sourceManifestSha256 = normalizeHash(
+    candidate.manifestSha256,
+    'Source Pack manifest SHA-256',
+  );
+  const transportSetCommitment = await hashExpansionPackContent(
+    canonicalExpansionPackJson(protectionAssets),
+  );
+  const transportProtection = {
+    schemaVersion: EXPANSION_PACK_TRANSPORT_PROTECTION_SCHEMA,
+    mode: 'SEAL_PAID_PACK',
+    releaseId: scopedRelease.releaseId,
+    contentCommitment: declaredCommitment,
+    sealReleaseCommitment,
+    sourceCandidateCommitment,
+    sourceManifestSha256,
+    assetCount: protectionAssets.length,
+    transportSetCommitment,
+    assets: protectionAssets,
+  };
+  const protectedManifest = {
+    ...structuredClone(manifest),
+    integrity: {
+      ...structuredClone(manifest.integrity),
+      transportSetCommitment,
+    },
+    transportProtection,
+    publicationBoundary: {
+      ...structuredClone(manifest.publicationBoundary),
+      sealPolicy: 'transport-protected',
+    },
+  };
+  const protectedManifestJson = canonicalExpansionPackJson(protectedManifest);
+  const manifestSha256 = await hashExpansionPackContent(protectedManifestJson);
+  const encryptedByIdentifier = new Map(encryptedAssets.map((entry) => [entry.identifier, entry]));
+  const files = list(candidate.files).map((file, index) => {
+    if (index === 0 || file.identifier === candidate.manifestIdentifier) {
+      return {
+        ...structuredClone(file),
+        sha256: manifestSha256,
+        byteLength: new TextEncoder().encode(protectedManifestJson).byteLength,
+      };
+    }
+    const encrypted = encryptedByIdentifier.get(text(file.identifier));
+    if (!encrypted) {
+      throw new ExpansionPackPublicationError(
+        `No ciphertext was produced for ${text(file.identifier)}.`,
+        'expansion-pack-paid-ciphertext-missing',
+        { identifier: text(file.identifier) },
+      );
+    }
+    return {
+      ...structuredClone(file),
+      mediaType: MAKER_SEAL_CIPHERTEXT_MEDIA_TYPE,
+      sha256: text(encrypted.protection.ciphertextDigest).replace(/^0x/i, '').toLowerCase(),
+      byteLength: encrypted.blob.size,
+      plaintextSha256: normalizeHash(file.sha256, `Pack file ${file.identifier} plaintext SHA-256`),
+    };
+  });
+  const candidateCommitment = await hashExpansionPackContent(canonicalExpansionPackJson({
+    manifestSha256,
+    parentIdentity: protectedManifest.parent?.identity,
+    packId: protectedManifest.pack?.id,
+    packVersion: protectedManifest.pack?.version,
+  }));
+  const protectedCandidate = freeze({
+    ...structuredClone(candidate),
+    manifest: protectedManifest,
+    manifestJson: protectedManifestJson,
+    manifestSha256,
+    candidateCommitment,
+    files,
+    transportProtected: true,
+    transportSource: {
+      candidateCommitment: sourceCandidateCommitment,
+      manifestSha256: sourceManifestSha256,
+    },
+  });
+  return Object.freeze({
+    candidate: protectedCandidate,
+    encryptedAssets: Object.freeze(encryptedAssets.map((entry) => Object.freeze({
+      assetId: entry.assetId,
+      identifier: entry.identifier,
+      blob: entry.blob,
+    }))),
+  });
+}
+
 function draftCommerce(project, override) {
   const source = {
     ...plainObject(project.pack?.commerce),
     ...plainObject(override),
   };
+  if (
+    (Object.hasOwn(plainObject(override), 'price')
+      || Object.hasOwn(plainObject(override), 'purchasePriceAtomic'))
+    && !Object.hasOwn(plainObject(override), 'priceDecimal')
+  ) {
+    source.purchasePriceAtomic = override.purchasePriceAtomic ?? override.price;
+    delete source.priceDecimal;
+  }
+  const normalized = normalizeExpansionPackCommerce(source);
   return {
     schemaVersion: EXPANSION_PACK_COMMERCE_DRAFT_SCHEMA,
     projectionState: 'not-built',
-    accessMode: text(source.accessMode) || 'FREE',
-    completeMode: text(source.completeMode) || 'FREE_UNLIMITED',
-    price: text(source.price) || '0',
-    currency: text(source.currency) || 'USDC',
-    protocolFeeBps: Number.isSafeInteger(Number(source.protocolFeeBps))
-      ? Number(source.protocolFeeBps)
-      : 1000,
+    accessMode: normalized.accessMode,
+    completeMode: normalized.completeMode,
+    purchasePriceAtomic: normalized.purchasePriceAtomic,
+    // Retained for deterministic compatibility with candidate v1 readers.
+    price: normalized.purchasePriceAtomic,
+    priceDecimal: normalized.priceDecimal,
+    currency: normalized.currency,
+    decimals: normalized.decimals,
+    protocolFeeBps: normalized.protocolFeeBps,
+    entitlement: normalized.entitlement,
   };
 }
 

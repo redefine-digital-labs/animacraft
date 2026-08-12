@@ -423,6 +423,43 @@ test('save state never claims a newer in-memory edit was persisted by an older s
   assert.equal(baseStore.calls[1].project.name, 'Changed while saving');
 });
 
+test('flush persists the last Pack mutation that lands while an older snapshot is saving', async () => {
+  const baseStore = memoryWorkspaceStore();
+  let releaseFirstSave;
+  let firstSaveStarted;
+  const firstSaveStartedPromise = new Promise((resolve) => { firstSaveStarted = resolve; });
+  let delayed = true;
+  const store = {
+    ...baseStore,
+    async save(...args) {
+      if (delayed) {
+        delayed = false;
+        firstSaveStarted();
+        await new Promise((resolve) => { releaseFirstSave = resolve; });
+      }
+      return baseStore.save(...args);
+    },
+  };
+  const workspace = await emptyWorkspace({ store });
+
+  workspace.renamePack('First queued name');
+  const flush = workspace.flush();
+  await firstSaveStartedPromise;
+  workspace.renamePack('Last name before pagehide');
+  releaseFirstSave();
+
+  const result = await flush;
+  const state = workspace.getState();
+  assert.equal(result.saved, true);
+  assert.deepEqual(result.identity, state.identity);
+  assert.equal(baseStore.calls.length, 2);
+  assert.equal(baseStore.calls[0].project.name, 'First queued name');
+  assert.equal(baseStore.calls[1].project.name, 'Last name before pagehide');
+  assert.equal(state.project.name, 'Last name before pagehide');
+  assert.equal(state.dirty, false);
+  assert.equal(state.save.phase, EXPANSION_PACK_WORKSPACE_SAVE_PHASES.SAVED);
+});
+
 test('resumes the exact persisted Pack revision instead of creating a second embedded draft', async () => {
   const store = memoryWorkspaceStore();
   const first = await emptyWorkspace({ store });
@@ -567,6 +604,8 @@ test('renders per-Style PNG and render controls, delegating PNG parsing to the h
   assert.match(html, /data-action="delete-style"/);
   assert.match(html, /data-action="delete-item"/);
   assert.match(html, /data-action="delete-part"/);
+  assert.match(html, /data-pack-commerce-field="accessMode"/);
+  assert.match(html, /data-pack-commerce-field="priceDecimal"/);
 
   const events = new Map();
   const root = {
@@ -638,6 +677,22 @@ test('renders per-Style PNG and render controls, delegating PNG parsing to the h
   state = workspace.getState();
   assert.equal(state.tree.parts[0].items[0].styles[0].transform.x, -33);
   assert.equal(state.tree.parts[0].items[0].styles[0].blendMode, 'multiply');
+
+  events.get('change')({
+    target: {
+      value: 'PAID_ONCE',
+      dataset: { packCommerceField: 'accessMode' },
+    },
+  });
+  events.get('change')({
+    target: {
+      value: '3.5',
+      dataset: { packCommerceField: 'priceDecimal' },
+    },
+  });
+  state = workspace.getState();
+  assert.equal(state.tree.commerce.accessMode, 'PAID_ONCE');
+  assert.equal(state.tree.commerce.purchasePriceAtomic, '3500000');
 
   events.get('click')({
     target: {

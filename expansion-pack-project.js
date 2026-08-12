@@ -21,6 +21,13 @@ export const EXPANSION_PACK_PARENT_BINDING_KINDS = Object.freeze({
   LOCAL_DRAFT: 'local-draft',
   PUBLISHED_RELEASE: 'published-release',
 });
+export const EXPANSION_PACK_ACCESS_MODES = Object.freeze({
+  FREE: 'FREE',
+  PAID_ONCE: 'PAID_ONCE',
+});
+export const EXPANSION_PACK_PAYMENT_CURRENCY = 'USDC';
+export const EXPANSION_PACK_PAYMENT_DECIMALS = 6;
+export const EXPANSION_PACK_PROTOCOL_FEE_BPS = 1000;
 export const EXPANSION_PACK_PARENT_INHERITANCE = Object.freeze({
   schemaVersion: EXPANSION_PACK_INHERITANCE_SCHEMA,
   mode: 'read-only-parent-release',
@@ -178,6 +185,70 @@ function safeNamespace(value, packId) {
   return generated;
 }
 
+function atomicToDecimal(value, decimals = EXPANSION_PACK_PAYMENT_DECIMALS) {
+  let amount;
+  try {
+    amount = BigInt(String(value ?? 0));
+  } catch {
+    amount = 0n;
+  }
+  const scale = 10n ** BigInt(decimals);
+  const whole = amount / scale;
+  const fraction = (amount % scale).toString().padStart(decimals, '0').replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : whole.toString();
+}
+
+function decimalToAtomic(value, decimals = EXPANSION_PACK_PAYMENT_DECIMALS) {
+  const normalized = String(value ?? '').trim();
+  const match = /^(0|[1-9][0-9]*)(?:\.([0-9]+))?$/.exec(normalized);
+  if (!match || (match[2] || '').length > decimals) {
+    throw new ExpansionPackProjectError(
+      `Pack price must be a non-negative ${EXPANSION_PACK_PAYMENT_CURRENCY} amount with at most ${decimals} decimal places.`,
+      'invalid-pack-purchase-price',
+      { value: normalized, decimals },
+    );
+  }
+  const fraction = (match[2] || '').padEnd(decimals, '0');
+  return (BigInt(match[1]) * (10n ** BigInt(decimals)) + BigInt(fraction || '0')).toString();
+}
+
+export function normalizeExpansionPackCommerce(value = {}) {
+  const requestedAccessMode = String(value?.accessMode || EXPANSION_PACK_ACCESS_MODES.FREE)
+    .trim()
+    .toUpperCase();
+  const accessMode = requestedAccessMode === 'PAID'
+    ? EXPANSION_PACK_ACCESS_MODES.PAID_ONCE
+    : requestedAccessMode;
+  if (!Object.values(EXPANSION_PACK_ACCESS_MODES).includes(accessMode)) {
+    throw new ExpansionPackProjectError(
+      'Expansion Pack access must be Free or Paid Once.',
+      'invalid-pack-access-mode',
+      { accessMode },
+    );
+  }
+  const requestedDecimal = Object.hasOwn(value || {}, 'priceDecimal')
+    ? String(value.priceDecimal ?? '').trim()
+    : atomicToDecimal(value?.purchasePriceAtomic ?? value?.price ?? '0');
+  const purchasePriceAtomic = accessMode === EXPANSION_PACK_ACCESS_MODES.FREE
+    ? '0'
+    : decimalToAtomic(requestedDecimal || '0');
+  return {
+    schemaVersion: 'animacraft.expansion-pack-commerce.v8',
+    accessMode,
+    purchasePriceAtomic,
+    priceDecimal: accessMode === EXPANSION_PACK_ACCESS_MODES.FREE
+      ? '0'
+      : atomicToDecimal(purchasePriceAtomic),
+    currency: EXPANSION_PACK_PAYMENT_CURRENCY,
+    decimals: EXPANSION_PACK_PAYMENT_DECIMALS,
+    protocolFeeBps: EXPANSION_PACK_PROTOCOL_FEE_BPS,
+    entitlement: accessMode === EXPANSION_PACK_ACCESS_MODES.FREE
+      ? 'ACTIVE_RELEASE_FREE_ACCESS'
+      : 'PERMANENT_WALLET_BOUND_PASS',
+    completeMode: 'INHERIT_BASE_AND_UNLIMITED_AFTER_ACCESS',
+  };
+}
+
 function deepFreeze(value, seen = new WeakSet()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
   if (ArrayBuffer.isView(value)) return value;
@@ -312,6 +383,7 @@ function emptyPack(binding, options) {
     assets: [],
     parts: [],
     rules: [],
+    commerce: normalizeExpansionPackCommerce(),
   };
 }
 
@@ -581,6 +653,9 @@ export function rehydrateExpansionPackProject(input) {
   }
   const project = clone(input);
   project.inheritance ||= clone(EXPANSION_PACK_PARENT_INHERITANCE);
+  if (project.pack && typeof project.pack === 'object' && !Array.isArray(project.pack)) {
+    project.pack.commerce = normalizeExpansionPackCommerce(project.pack.commerce || {});
+  }
   if (!project.parentSnapshot || typeof project.parentSnapshot !== 'object') {
     throw new ExpansionPackProjectError(
       'Expansion Pack project is missing its parent snapshot.',
@@ -734,6 +809,30 @@ function mutableProject(project) {
 function finishMutation(project, now = Date.now()) {
   project.updatedAt = Number.isFinite(now) ? Number(now) : Date.now();
   return project;
+}
+
+export function updateExpansionPackCommerce(projectValue, patchValue = {}, options = {}) {
+  const project = mutableProject(projectValue);
+  if (!patchValue || typeof patchValue !== 'object' || Array.isArray(patchValue)) {
+    throw new ExpansionPackProjectError(
+      'Expansion Pack commerce update must be an object.',
+      'invalid-pack-commerce-update',
+    );
+  }
+  const allowed = new Set(['accessMode', 'priceDecimal']);
+  const unsupported = Object.keys(patchValue).filter((field) => !allowed.has(field));
+  if (unsupported.length) {
+    throw new ExpansionPackProjectError(
+      'Expansion Pack commerce update contains unsupported fields.',
+      'unsupported-pack-commerce-update',
+      { fields: unsupported },
+    );
+  }
+  project.pack.commerce = normalizeExpansionPackCommerce({
+    ...(project.pack.commerce || {}),
+    ...patchValue,
+  });
+  return finishMutation(project, options.now);
 }
 
 function partsOf(maker) {
@@ -1441,6 +1540,27 @@ function projectOverlayIssues(project) {
       severity: 'warning',
       code: 'project-pack-name-mismatch',
       message: 'The project display name and publishable Pack name differ.',
+    });
+  }
+  let commerce;
+  try {
+    commerce = normalizeExpansionPackCommerce(project.pack?.commerce || {});
+  } catch (error) {
+    issues.push({
+      severity: 'error',
+      code: error.code || 'invalid-pack-commerce',
+      message: error.message,
+    });
+    return issues;
+  }
+  if (
+    commerce.accessMode === EXPANSION_PACK_ACCESS_MODES.PAID_ONCE
+    && BigInt(commerce.purchasePriceAtomic) <= 0n
+  ) {
+    issues.push({
+      severity: 'error',
+      code: 'paid-pack-price-required',
+      message: `Paid Once access requires a positive ${EXPANSION_PACK_PAYMENT_CURRENCY} price.`,
     });
   }
   return issues;

@@ -26,7 +26,14 @@ import {
   checkExpansionPackCompatibility,
   compareMakerCompatibility,
   mergeExpansionPacks,
+  namespaceId,
 } from './expansion-packs.js';
+import {
+  EXPANSION_PACK_PLAYER_V8_SCHEMA,
+  expansionPackPlayerSessionRefV8,
+  mergeVerifiedExpansionPackPlayersV8,
+  restoreExpansionPackPlayerSessionRefsV8,
+} from './expansion-pack-player-v8.js';
 import {
   createExpansionPackProjectPreviewRecipe,
   createExpansionPackProject,
@@ -677,6 +684,82 @@ export function enabledExpansionIdsForDocument(document, enabledIds = []) {
   return (document?.extensions?.expansionDrafts || [])
     .map((pack) => String(pack?.packId || ''))
     .filter((packId) => packId && requested.has(packId));
+}
+
+const EXPANSION_PACK_PLAYER_STATE_V8_SCHEMA =
+  'animacraft.expansion-pack-player-state.v1';
+
+/**
+ * Accept only entries produced by the v8 verification boundary. A duplicate
+ * release id is ambiguous and therefore removes every copy from the Player
+ * catalog instead of letting array order decide which release wins.
+ */
+export function verifiedExpansionPackV8CatalogEntries(stateValue = null) {
+  const state = stateValue && typeof stateValue === 'object' ? stateValue : {};
+  if (
+    state.schemaVersion !== EXPANSION_PACK_PLAYER_STATE_V8_SCHEMA
+    || state.trusted !== true
+  ) return [];
+  const candidates = (Array.isArray(state.entries) ? state.entries : []).filter((entry) => (
+    entry?.schemaVersion === EXPANSION_PACK_PLAYER_V8_SCHEMA
+    && entry?.trusted === true
+    && String(entry?.releaseId || '')
+  ));
+  const counts = candidates.reduce((result, entry) => {
+    const releaseId = String(entry.releaseId).toLowerCase();
+    result.set(releaseId, (result.get(releaseId) || 0) + 1);
+    return result;
+  }, new Map());
+  return candidates.filter((entry) => counts.get(String(entry.releaseId).toLowerCase()) === 1);
+}
+
+function suppliedExpansionPackV8Assets(stateValue, entries, preferredReleaseIds = []) {
+  const state = stateValue && typeof stateValue === 'object' ? stateValue : {};
+  const preferred = new Set(
+    Array.from(preferredReleaseIds || [])
+      .map((releaseId) => String(releaseId || '').toLowerCase())
+      .filter(Boolean),
+  );
+  const accessible = entries.filter((entry) => (
+    entry.access?.accessible === true && entry.playerUsable === true
+  ));
+  const allowedByAssetId = new Map();
+  accessible.forEach((entry) => {
+    (Array.isArray(entry.assets) ? entry.assets : []).forEach((asset) => {
+      let assetId = '';
+      try {
+        assetId = namespaceId(entry.pack?.namespace, asset.assetId);
+      } catch {
+        return;
+      }
+      const releaseId = String(entry.releaseId).toLowerCase();
+      const releases = allowedByAssetId.get(assetId) || new Set();
+      releases.add(releaseId);
+      allowedByAssetId.set(assetId, releases);
+    });
+  });
+  const supplied = state.assets instanceof Map
+    ? [...state.assets.values()]
+    : Array.from(state.assets || []);
+  return supplied.filter((record) => {
+    const assetId = String(record?.assetId || record?.id || '');
+    const releases = allowedByAssetId.get(assetId);
+    if (!releases?.size) return false;
+    // App-provided v8 asset records pin the independent release with
+    // `expansionPackReleaseId`. Prefer it over the older generic field so two
+    // versions that reuse one namespace/asset id can never cross-load art.
+    const releaseId = String(
+      record?.expansionPackReleaseId || record?.releaseId || '',
+    ).toLowerCase();
+    const preferredForAsset = [...releases].filter((id) => preferred.has(id));
+    if (preferredForAsset.length) {
+      return preferredForAsset.length === 1 && releaseId === preferredForAsset[0];
+    }
+    // Independent Pack art is runtime-visible only after one exact release is
+    // enabled. This also keeps an unselected free/owned catalog entry from
+    // shadowing a Maker asset before its overlay is merged.
+    return false;
+  });
 }
 
 function resolvedPlayerColorChannelUsage(document, recipe) {
@@ -1442,6 +1525,23 @@ export class MakerWorkspace {
     this.expansionPackProjectsError = '';
     this.expansionPackProjectNotice = '';
     this.expansionPackProjectRequestId = 0;
+    this.expansionPackPublicationRequestToken = 0;
+    this.expansionPackPublicationLaunch = null;
+    this.expansionPackPublishState = {
+      stage: 'idle',
+      step: 1,
+      completedSteps: [],
+      status: '',
+      busy: false,
+      started: false,
+      recoverable: false,
+      locked: false,
+      available: false,
+      unavailableReason: '',
+      error: null,
+      receipt: null,
+      actions: {},
+    };
     this.expansionPackAutosave = debounce(() => this.saveExpansionPackWorkspace(), 850);
     this.loadPlayerSessionRecord = options.loadPlayerSessionRecord || loadPlayerWorkspaceSession;
     this.savePlayerSessionRecord = options.savePlayerSessionRecord || savePlayerWorkspaceSession;
@@ -1557,6 +1657,9 @@ export class MakerWorkspace {
     this.playerPublishCloseConfirm = false;
     this.playerPublishCopyState = 'idle';
     this.enabledExpansionIds = new Set();
+    this.enabledExpansionReleaseIds = new Set();
+    this.enabledExpansionReleaseRefs = new Map();
+    this.expansionPackV8RuntimeAssetIds = new Set();
     this.playerOwnedPackIds = new Set();
     this.playerOwnsMakerAccess = false;
     this.playerCommercePending = '';
@@ -1588,6 +1691,7 @@ export class MakerWorkspace {
     this.dragSort = null;
     this.renderAbort = { creator: null, player: null };
     this.contextEpoch = 0;
+    this.playerExpansionPackV8CatalogEpoch = 0;
     this.contextRequestId = 0;
     this.contextSwitchInProgress = false;
     this.restoreInProgress = false;
@@ -2298,6 +2402,143 @@ export class MakerWorkspace {
     };
   }
 
+  playerExpansionPackV8Entries() {
+    const state = this.context?.expansionPackV8State;
+    const wallet = String(this.context?.walletAddress || '').toLowerCase();
+    const stateWallet = String(state?.walletAddress || '').toLowerCase();
+    if (!wallet || !stateWallet || wallet !== stateWallet) return [];
+    const document = this.basePlayerDocument();
+    return verifiedExpansionPackV8CatalogEntries(state).filter((entry) => (
+      document
+      && String(entry.parent?.rootMakerId || '').toLowerCase()
+        === String(document.version?.rootMakerId || '').toLowerCase()
+      && String(entry.parent?.versionId || '') === String(document.version?.versionId || '')
+      && String(entry.parent?.versionNumber || '') === String(document.version?.number || '')
+    ));
+  }
+
+  playerExpansionPackV8Entry(releaseId) {
+    const id = String(releaseId || '').toLowerCase();
+    return this.playerExpansionPackV8Entries().find(
+      (entry) => String(entry.releaseId).toLowerCase() === id,
+    ) || null;
+  }
+
+  playerExpansionPackV8AccessState(entryValue) {
+    const entry = entryValue?.releaseId
+      ? entryValue
+      : this.playerExpansionPackV8Entry(entryValue);
+    if (!entry) return {
+      entry: null,
+      accessible: false,
+      entitled: false,
+      availableForAcquire: false,
+      enabled: false,
+      status: 'unavailable',
+    };
+    const playerUsable = entry.playerUsable === true;
+    const transportReady = entry.transportReady === true;
+    const accessible = entry.access?.accessible === true && playerUsable;
+    const entitled = entry.access?.entitled === true;
+    // An owned paid Pack may temporarily fail to materialize when the user
+    // dismisses the Seal signature, a key server is unavailable, or the
+    // verified ciphertext is still being fetched. Retrying must rehydrate the
+    // existing Pass and decrypt the immutable artwork; it must never enter the
+    // purchase path again.
+    const canRetryRuntime = entitled
+      && entry.access?.accessible === true
+      && transportReady
+      && !playerUsable;
+    // A paid Pack must remain purchasable before its wallet owns a Pass. Seal
+    // ciphertext readiness authorizes acquisition; decrypted runtime artwork
+    // authorizes enabling and rendering only after the Pass is read back.
+    const availableForAcquire = entry.access?.availableForAcquire === true && transportReady;
+    const releaseId = String(entry.releaseId);
+    const enabled = accessible
+      && this.enabledExpansionReleaseIds.has(releaseId)
+      && JSON.stringify(this.enabledExpansionReleaseRefs.get(releaseId) || null)
+        === JSON.stringify(expansionPackPlayerSessionRefV8(entry));
+    return {
+      entry,
+      accessible,
+      entitled,
+      availableForAcquire,
+      canRetryRuntime,
+      enabled,
+      status: accessible
+        ? 'owned'
+        : canRetryRuntime
+          ? 'recoverable'
+        : !availableForAcquire
+          ? 'unavailable'
+          : entry.access?.kind === 'FREE'
+            ? 'free'
+            : 'paid',
+    };
+  }
+
+  playerEnabledExpansionPackV8Entries() {
+    return this.playerExpansionPackV8Entries().filter((entry) => (
+      entry.access?.accessible === true
+      && entry.playerUsable === true
+      && this.enabledExpansionReleaseIds.has(String(entry.releaseId))
+      && JSON.stringify(this.enabledExpansionReleaseRefs.get(String(entry.releaseId)) || null)
+        === JSON.stringify(expansionPackPlayerSessionRefV8(entry))
+    ));
+  }
+
+  playerEnabledExpansionPackV8SessionRefs() {
+    return this.playerEnabledExpansionPackV8Entries()
+      .map((entry) => expansionPackPlayerSessionRefV8(entry));
+  }
+
+  applyPlayerExpansionPackV8State(stateValue, { replaceAssets = true } = {}) {
+    const state = stateValue && typeof stateValue === 'object' ? stateValue : null;
+    this.context = {
+      ...this.context,
+      expansionPackV8State: state,
+    };
+    const accessibleReleaseIds = new Set(
+      this.playerExpansionPackV8Entries()
+        .filter((entry) => entry.access?.accessible === true && entry.playerUsable === true)
+        .map((entry) => String(entry.releaseId)),
+    );
+    this.enabledExpansionReleaseIds = new Set(
+      [...this.enabledExpansionReleaseIds].filter((releaseId) => {
+        const id = String(releaseId);
+        const entry = this.playerExpansionPackV8Entry(id);
+        if (!accessibleReleaseIds.has(id) || !entry) return false;
+        return JSON.stringify(this.enabledExpansionReleaseRefs.get(id) || null)
+          === JSON.stringify(expansionPackPlayerSessionRefV8(entry));
+      }),
+    );
+    this.enabledExpansionReleaseRefs = new Map(
+      [...this.enabledExpansionReleaseRefs]
+        .filter(([releaseId]) => this.enabledExpansionReleaseIds.has(String(releaseId))),
+    );
+    if (replaceAssets && this.store) {
+      this.refreshPlayerExpansionPackV8RuntimeAssets(this.basePlayerDocument());
+    }
+    if (this.store) {
+      const runtimeDocument = this.runtimeDocument();
+      const repaired = normalizePlayablePlayerRecipe(
+        runtimeDocument,
+        this.playerRecipe,
+        this.playerOptionSettings(runtimeDocument),
+      );
+      const nextRecipe = repaired.valid
+        ? repaired.documentRecipe
+        : recipeWithColors(runtimeDocument, this.playerRecipe);
+      if (JSON.stringify(nextRecipe) !== JSON.stringify(this.playerRecipe)) {
+        this.playerRecipe = nextRecipe;
+        this.playerUndo = [];
+        this.playerRedo = [];
+        this.invalidatePlayerCompletion();
+      }
+    }
+    return this.playerExpansionPackV8Entries();
+  }
+
   playerExportKey(snapshot, imageExport = {}) {
     if (!snapshot) return '';
     return JSON.stringify({
@@ -2306,6 +2547,7 @@ export class MakerWorkspace {
       profile: snapshot.profile,
       livingContent: snapshot.livingContent,
       composableV6: snapshot.composableV6 || null,
+      expansionPackV8: snapshot.expansionPackV8 || null,
       imageExport: {
         sizeMode: String(imageExport.sizeMode || this.playerExportSizeMode || 'standard'),
         transparentBackground: Boolean(
@@ -2372,6 +2614,7 @@ export class MakerWorkspace {
     profile,
     livingContent,
     composableV6 = null,
+    expansionPackV8 = null,
     imageBlob,
     imageExport,
     exportKey,
@@ -2394,6 +2637,7 @@ export class MakerWorkspace {
       profile: clone(profile),
       livingContent: clone(livingContent),
       ...(composableV6 ? { composableV6: clone(composableV6) } : {}),
+      ...(expansionPackV8 ? { expansionPackV8: clone(expansionPackV8) } : {}),
     });
     this.playerPendingCompletedExport = {
       exportKey: String(exportKey),
@@ -2508,6 +2752,104 @@ export class MakerWorkspace {
     }
   }
 
+  async acquirePlayerExpansionPackV8(releaseId) {
+    const baseDocument = this.basePlayerDocument();
+    const entry = this.playerExpansionPackV8Entry(releaseId);
+    const access = this.playerExpansionPackV8AccessState(entry);
+    const id = String(entry?.releaseId || '');
+    const requestContextEpoch = this.contextEpoch;
+    const requestCatalogEpoch = this.playerExpansionPackV8CatalogEpoch;
+    const requestMakerKey = this.makerKey;
+    const requestWalletAddress = String(this.context?.walletAddress || '').toLowerCase();
+    const requestVersionId = String(baseDocument?.version?.versionId || '');
+    const requestEntryIdentity = String(entry?.identity || '');
+    const contextIsActive = () => {
+      const currentDocument = this.basePlayerDocument();
+      const currentEntry = this.playerExpansionPackV8Entry(id);
+      return Boolean(
+        requestContextEpoch === this.contextEpoch
+        && requestCatalogEpoch === this.playerExpansionPackV8CatalogEpoch
+        && requestMakerKey === this.makerKey
+        && requestWalletAddress === String(this.context?.walletAddress || '').toLowerCase()
+        && String(currentDocument?.version?.versionId || '') === requestVersionId
+        && String(currentEntry?.identity || '') === requestEntryIdentity
+      );
+    };
+    const clearPendingIfSameContext = () => {
+      if (
+        requestContextEpoch === this.contextEpoch
+        && requestCatalogEpoch === this.playerExpansionPackV8CatalogEpoch
+        && requestMakerKey === this.makerKey
+        && requestWalletAddress === String(this.context?.walletAddress || '').toLowerCase()
+        && this.playerCommercePending === `pack-v8:${id}`
+      ) this.playerCommercePending = '';
+    };
+    if (!baseDocument || !id || this.playerCommercePending) return false;
+    if (access.accessible) {
+      return this.setPlayerExpansionPackV8Enabled(id, true);
+    }
+    if (
+      (!access.availableForAcquire && !access.canRetryRuntime)
+      || typeof this.callbacks.onAcquireExpansionPackV8 !== 'function'
+    ) {
+      const message = this.tr('playerPurchaseUnavailable');
+      this.playerCommerceError = message;
+      this.callbacks.onPlayerError?.(new Error(message));
+      this.render();
+      return false;
+    }
+    if (this.playerMakerAccessLocked(baseDocument)) return false;
+    this.playerCommercePending = `pack-v8:${id}`;
+    this.playerCommerceError = '';
+    this.render();
+    try {
+      const result = await this.callbacks.onAcquireExpansionPackV8({
+        document: baseDocument,
+        entry,
+        releaseId: id,
+        packId: String(entry.pack?.packId || ''),
+        accessKind: String(entry.access?.kind || ''),
+        priceAtomic: String(entry.access?.priceAtomic || '0'),
+        parentRelease: entry.parent,
+        makerKey: this.makerKey,
+        workspaceContextEpoch: requestContextEpoch,
+        makerVersionId: requestVersionId,
+        entryIdentity: requestEntryIdentity,
+      });
+      if (!contextIsActive()) {
+        clearPendingIfSameContext();
+        return false;
+      }
+      if (result?.expansionPackV8State) {
+        this.applyPlayerExpansionPackV8State(result.expansionPackV8State);
+      }
+      const confirmedEntry = this.playerExpansionPackV8Entry(id);
+      if (
+        !confirmedEntry
+        || confirmedEntry.access?.accessible !== true
+        || confirmedEntry.playerUsable !== true
+        || String(confirmedEntry.identity || '') !== String(entry.identity || '')
+        || String(confirmedEntry.manifestSha256 || '') !== String(entry.manifestSha256 || '')
+        || String(confirmedEntry.contentCommitment || '') !== String(entry.contentCommitment || '')
+      ) {
+        throw new Error(result?.message || this.tr('playerPurchaseUnavailable'));
+      }
+      this.playerCommercePending = '';
+      this.playerCommerceError = '';
+      return this.setPlayerExpansionPackV8Enabled(id, true);
+    } catch (error) {
+      if (!contextIsActive()) {
+        clearPendingIfSameContext();
+        return false;
+      }
+      this.playerCommercePending = '';
+      this.playerCommerceError = error?.message || this.tr('playerPurchaseFailed');
+      this.callbacks.onPlayerError?.(error);
+      this.render();
+      return false;
+    }
+  }
+
   playerSessionKeyForDocument(document = this.store?.getState().document) {
     const wallet = String(this.context?.walletAddress || '');
     const version = String(document?.version?.versionId || '');
@@ -2557,9 +2899,8 @@ export class MakerWorkspace {
     return null;
   }
 
-  runtimeDocument() {
-    if (!this.store) return null;
-    const document = this.store.getState().document;
+  legacyExpansionRuntimeDocument(document = this.basePlayerDocument()) {
+    if (!document) return null;
     const drafts = document.extensions?.expansionDrafts || [];
     const enabled = drafts.filter((pack) => {
       const access = this.playerPackAccessState(pack.packId, document);
@@ -2570,7 +2911,95 @@ export class MakerWorkspace {
     return result.compatible ? result.maker : document;
   }
 
+  runtimeDocument() {
+    if (!this.store) return null;
+    const document = this.legacyExpansionRuntimeDocument(
+      this.store.getState().document,
+    );
+    const enabled = this.playerEnabledExpansionPackV8Entries();
+    if (!enabled.length) return document;
+    try {
+      return mergeVerifiedExpansionPackPlayersV8(document, enabled).document;
+    } catch {
+      // An enabled set that becomes mutually incompatible must never leak a
+      // partially merged graph into rendering or export.
+      return document;
+    }
+  }
+
+  setPlayerExpansionPackV8Enabled(releaseId, enabled) {
+    const entry = this.playerExpansionPackV8Entry(releaseId);
+    const access = this.playerExpansionPackV8AccessState(entry);
+    const id = String(entry?.releaseId || '');
+    if (!entry || !id || !access.accessible) return false;
+    const wasEnabled = access.enabled;
+    const previousRef = this.enabledExpansionReleaseRefs.get(id) || null;
+    if (Boolean(enabled) === wasEnabled) {
+      if (!enabled) {
+        this.enabledExpansionReleaseIds.delete(id);
+        this.enabledExpansionReleaseRefs.delete(id);
+      }
+      return true;
+    }
+    if (enabled) {
+      this.enabledExpansionReleaseIds.add(id);
+      this.enabledExpansionReleaseRefs.set(id, expansionPackPlayerSessionRefV8(entry));
+    } else {
+      this.enabledExpansionReleaseIds.delete(id);
+      this.enabledExpansionReleaseRefs.delete(id);
+    }
+    let runtimeDocument;
+    try {
+      const legacyDocument = this.legacyExpansionRuntimeDocument();
+      const selectedEntries = this.playerEnabledExpansionPackV8Entries();
+      runtimeDocument = selectedEntries.length
+        ? mergeVerifiedExpansionPackPlayersV8(legacyDocument, selectedEntries).document
+        : legacyDocument;
+    } catch (error) {
+      if (wasEnabled) {
+        this.enabledExpansionReleaseIds.add(id);
+        if (previousRef) this.enabledExpansionReleaseRefs.set(id, previousRef);
+      } else {
+        this.enabledExpansionReleaseIds.delete(id);
+        this.enabledExpansionReleaseRefs.delete(id);
+      }
+      this.callbacks.onPlayerError?.(error);
+      this.render();
+      return false;
+    }
+    const normalized = normalizePlayablePlayerRecipe(
+      runtimeDocument,
+      this.playerRecipe,
+      this.playerOptionSettings(runtimeDocument),
+    );
+    if (!normalized.valid) {
+      if (wasEnabled) {
+        this.enabledExpansionReleaseIds.add(id);
+        if (previousRef) this.enabledExpansionReleaseRefs.set(id, previousRef);
+      } else {
+        this.enabledExpansionReleaseIds.delete(id);
+        this.enabledExpansionReleaseRefs.delete(id);
+      }
+      this.callbacks.onPlayerError?.(new Error(
+        this.playerOptionReasonText({ reasonCode: normalized.violations[0]?.code }, runtimeDocument),
+      ));
+      this.render();
+      return false;
+    }
+    this.playerRecipe = normalized.documentRecipe;
+    this.refreshPlayerExpansionPackV8RuntimeAssets(this.basePlayerDocument());
+    this.playerUndo = [];
+    this.playerRedo = [];
+    this.invalidatePlayerCompletion();
+    this.markPlayerSessionDirty();
+    this.sessionAutosave();
+    this.callbacks.onPlayerRecipeChange?.(this.playerStatePayload(runtimeDocument));
+    this.render();
+    return true;
+  }
+
   expansionPackCopy() {
+    const publicationState = this.currentExpansionPackPublishState();
     return {
       studio: this.tr('packStudio'),
       parentReadonly: this.tr('packParentReadonly'),
@@ -2648,7 +3077,134 @@ export class MakerWorkspace {
       preparePublicationCandidate: this.tr('packPreparePublicationCandidate'),
       publicationCandidateOnly: this.tr('packPublicationCandidateOnly'),
       canRebindParent: Boolean(this.expansionPackPublishedParent()),
+      packReleaseEyebrow: this.tr('packReleaseTitle'),
+      publishExpansionPack: this.tr('packPublishExpansionPack'),
+      packReleasePrepareStep: this.tr('packReleaseStepPrepare'),
+      packReleaseUploadStep: this.tr('packReleaseStepUpload'),
+      packReleaseCertifyStep: this.tr('packReleaseStepCertify'),
+      packReleasePublishStep: this.tr('packReleaseStepSui'),
+      packReleaseCompleted: this.tr('packReleaseStatusCompleted'),
+      packReleaseCurrentStep: this.tr('packReleaseStatusCurrent'),
+      packReleaseNotStarted: this.tr('packReleaseStatusNotStarted'),
+      packReleaseRecoverable: this.tr('packReleaseStatusRecoverable'),
+      packReleaseFailed: this.tr('packReleaseError'),
+      packReleaseSuccess: this.tr('packReleaseSuccess'),
+      packReleaseObjectId: this.tr('packReleaseSuccessObject'),
+      packReleaseTransaction: this.tr('packReleaseSuccessTransaction'),
+      packReleasePrepareAction: this.tr('packReleaseStepPrepare'),
+      packReleaseUploadAction: this.tr('packReleaseStepUpload'),
+      packReleaseCertifyAction: this.tr('packReleaseStepCertify'),
+      packReleasePublishAction: this.tr('packReleaseStepSui'),
+      packReleaseResumeAction: this.tr('packReleaseResume'),
+      packReleaseReviewAction: this.tr('packReleaseCheckStatus'),
+      packReleaseUnavailable: this.tr('packReleaseGateUnavailable'),
+      packExportPublicationCandidate: this.tr('packReleaseExportCandidate'),
+      commerceEyebrow: this.tr('packCommerceEyebrow'),
+      commerceTitle: this.tr('packCommerceTitle'),
+      commerceCopy: this.tr('packCommerceCopy'),
+      accessMode: this.tr('packCommerceAccessMode'),
+      accessFree: this.tr('packCommerceFree'),
+      accessPaidOnce: this.tr('packCommercePaidOnce'),
+      priceUsdc: this.tr('packCommercePriceUsdc'),
+      paidEntitlement: this.tr('packCommercePaidEntitlement'),
+      freeEntitlement: this.tr('packCommerceFreeEntitlement'),
+      commerceSplit: this.tr('packCommerceSplit'),
+      commerceComplete: this.tr('packCommerceComplete'),
+      publicationState,
     };
+  }
+
+  currentExpansionPackPublishState() {
+    const publishedParent = this.expansionPackPublishedParent();
+    const wallet = this.expansionPackChainWalletAddress();
+    const gateEnabled = this.context?.expansionPackV8ReleaseEnabled === true;
+    const available = Boolean(gateEnabled && publishedParent && wallet);
+    const state = this.expansionPackPublishState || {};
+    const idle = !state.started && !state.receipt && ['', 'idle'].includes(String(state.stage || ''));
+    const actions = { ...(state.actions || {}) };
+    if (idle) {
+      actions.prepare = available;
+      actions.export = Boolean(publishedParent);
+    }
+    let unavailableReason = String(state.unavailableReason || '');
+    if (!unavailableReason && !gateEnabled) unavailableReason = this.tr('packReleaseGateUnavailable');
+    else if (!unavailableReason && !wallet) unavailableReason = this.tr('packWalletRequired');
+    else if (!unavailableReason && !publishedParent) unavailableReason = this.tr('packRebindUnavailable');
+    return {
+      ...state,
+      available,
+      unavailableReason,
+      actions,
+    };
+  }
+
+  setExpansionPackPublishState(nextState = {}) {
+    const previous = this.expansionPackPublishState || {};
+    const next = {
+      ...previous,
+      ...nextState,
+      completedSteps: Array.isArray(nextState.completedSteps)
+        ? [...nextState.completedSteps]
+        : [...(previous.completedSteps || [])],
+      actions: { ...(previous.actions || {}), ...(nextState.actions || {}) },
+    };
+    this.expansionPackPublishState = next;
+    if (this.expansionPackWorkspaceMount) {
+      requestAnimationFrame(() => this.expansionPackWorkspaceMount?.render?.());
+    }
+    return this.currentExpansionPackPublishState();
+  }
+
+  resetExpansionPackPublication({ reason = 'reset', render = true } = {}) {
+    this.expansionPackPublicationRequestToken += 1;
+    this.expansionPackPublicationLaunch = null;
+    this.expansionPackPublishState = {
+      stage: 'idle',
+      step: 1,
+      completedSteps: [],
+      status: '',
+      busy: false,
+      started: false,
+      recoverable: false,
+      locked: false,
+      available: false,
+      unavailableReason: '',
+      error: null,
+      receipt: null,
+      actions: {},
+    };
+    this.callbacks.onResetExpansionPackPublication?.({
+      reason,
+      requestToken: this.expansionPackPublicationRequestToken,
+    });
+    if (render && this.expansionPackWorkspaceMount) {
+      requestAnimationFrame(() => this.expansionPackWorkspaceMount?.render?.());
+    }
+    return this.expansionPackPublicationRequestToken;
+  }
+
+  expansionPackPublicationRequestIsActive({
+    requestToken,
+    workspace = this.expansionPackWorkspace,
+    draftRevision,
+  } = {}) {
+    if (
+      !Number.isSafeInteger(requestToken)
+      || requestToken !== this.expansionPackPublicationRequestToken
+      || !workspace
+      || workspace !== this.expansionPackWorkspace
+    ) return false;
+    const state = workspace.getState?.();
+    return Boolean(
+      state
+      && !state.dirty
+      && Number.isSafeInteger(draftRevision)
+      && state.revision === draftRevision
+      && !['new', 'dirty', 'saving', 'conflict', 'failed', 'error'].includes(
+        String(state.save?.phase || ''),
+      )
+      && !state.save?.error
+    );
   }
 
   expansionPackParentDocument() {
@@ -2680,6 +3236,10 @@ export class MakerWorkspace {
       || this.store?.getState().document?.metadata?.creator
       || '',
     ).trim();
+  }
+
+  expansionPackChainWalletAddress() {
+    return String(this.context?.walletAddress || '').trim();
   }
 
   expansionPackLocalId(prefix = 'entry') {
@@ -2742,8 +3302,7 @@ export class MakerWorkspace {
     }
   }
 
-  async saveExpansionPackWorkspace() {
-    const workspace = this.expansionPackWorkspace;
+  async saveExpansionPackWorkspace(workspace = this.expansionPackWorkspace) {
     if (!workspace) return { saved: false, skipped: true };
     try {
       return await workspace.save();
@@ -2753,17 +3312,72 @@ export class MakerWorkspace {
     }
   }
 
+  async flushExpansionPackWorkspace(workspace = this.expansionPackWorkspace) {
+    if (!workspace) return { saved: true, skipped: true, identity: null };
+    const requestedState = workspace.getState?.();
+    const requestedIdentity = clone(requestedState?.identity || null);
+    try {
+      const result = typeof workspace.flush === 'function'
+        ? await workspace.flush()
+        : await this.saveExpansionPackWorkspace(workspace);
+      const finalState = workspace.getState?.();
+      const identityMatches = JSON.stringify(finalState?.identity || null)
+        === JSON.stringify(requestedIdentity);
+      const phase = String(finalState?.save?.phase || '');
+      const persistedRevision = Number.isSafeInteger(result?.persistedRevision)
+        ? result.persistedRevision
+        : finalState?.revision;
+      const revisionMatches = Number.isSafeInteger(finalState?.revision)
+        && Number.isSafeInteger(persistedRevision)
+        && finalState.revision === persistedRevision;
+      const saved = Boolean(
+        identityMatches
+        && revisionMatches
+        && !finalState?.dirty
+        && !['new', 'dirty', 'saving', 'conflict', 'failed', 'error'].includes(phase)
+        && !finalState?.save?.error
+        && result?.conflict !== true
+        && !result?.error
+      );
+      return {
+        ...result,
+        saved,
+        identity: requestedIdentity,
+        identityMatches,
+        revisionMatches,
+        persistedRevision,
+        revision: finalState?.revision ?? null,
+        project: clone(finalState?.project || null),
+      };
+    } catch (error) {
+      this.callbacks.onCreatorError?.(error);
+      return {
+        saved: false,
+        identity: requestedIdentity,
+        identityMatches: true,
+        error,
+      };
+    }
+  }
+
   async closeExpansionPackWorkspace({ save = true, render = true } = {}) {
+    const workspace = this.expansionPackWorkspace;
+    this.resetExpansionPackPublication({ reason: 'workspace-close', render: false });
     this.expansionPackAutosave.cancel();
     const packAssetIds = new Set(
-      (this.expansionPackWorkspace?.getState?.().project?.pack?.assets || [])
+      (workspace?.getState?.().project?.pack?.assets || [])
         .map((asset) => String(asset?.id || asset?.assetId || ''))
         .filter(Boolean),
     );
-    if (save && this.expansionPackWorkspace?.getState?.().dirty) {
-      const result = await this.saveExpansionPackWorkspace();
-      if (result?.error) throw result.error;
+    if (save && workspace) {
+      const result = await this.flushExpansionPackWorkspace(workspace);
+      if (!result.saved) {
+        throw result.error || new Error(
+          workspace.getState?.().save?.error || this.tr('packSaveFailed'),
+        );
+      }
     }
+    if (workspace !== this.expansionPackWorkspace) return;
     this.expansionPackWorkspaceMount?.unmount?.();
     this.expansionPackWorkspaceMount = null;
     this.expansionPackWorkspaceUnsubscribe?.();
@@ -2805,6 +3419,7 @@ export class MakerWorkspace {
       store: this.expansionPackDraftStore,
       resume,
     });
+    this.resetExpansionPackPublication({ reason: 'workspace-activate', render: false });
     this.expansionPackWorkspace = workspace;
     this.expansionPackWorkspaceState = workspace.getState();
     this.reviveExpansionPackAssets(this.expansionPackWorkspaceState.project);
@@ -2902,15 +3517,111 @@ export class MakerWorkspace {
   async prepareActiveExpansionPackPublicationCandidate() {
     const workspace = this.expansionPackWorkspace;
     if (!workspace) throw new Error(this.tr('packLoadFailed'));
-    if (workspace.getState().dirty) {
-      const saveResult = await this.saveExpansionPackWorkspace();
-      if (saveResult?.error || saveResult?.conflict) {
-        throw saveResult?.error || new Error(this.tr('packConflict'));
+    if (this.expansionPackPublishState.busy) return null;
+    const publishedParent = this.expansionPackPublishedParent();
+    if (!publishedParent) throw new Error(this.tr('packRebindUnavailable'));
+    const walletAddress = this.expansionPackChainWalletAddress();
+    if (!walletAddress) throw new Error(this.tr('packWalletRequired'));
+    const requestToken = this.resetExpansionPackPublication({
+      reason: 'publication-prepare',
+      render: false,
+    });
+    this.setExpansionPackPublishState({
+      busy: true,
+      status: this.tr('packReleaseBusyPreparing'),
+      error: null,
+      actions: { prepare: false, export: false },
+    });
+    let draftRevision = null;
+    const assertCurrent = () => {
+      if (!this.expansionPackPublicationRequestIsActive({
+        requestToken,
+        workspace,
+        draftRevision,
+      })) {
+        const error = new Error('Expansion Pack publication context changed. Reopen the current Pack before continuing.');
+        error.code = 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED';
+        throw error;
+      }
+    };
+    try {
+      const saveResult = await this.flushExpansionPackWorkspace(workspace);
+      if (!saveResult.saved) {
+        throw saveResult.error || new Error(
+          saveResult.conflict ? this.tr('packConflict') : this.tr('packSaveFailed'),
+        );
+      }
+      draftRevision = saveResult.persistedRevision;
+      assertCurrent();
+      const savedProject = clone(saveResult.project);
+      const projectOwner = String(savedProject?.walletAddress || '').trim().toLowerCase();
+      if (projectOwner && projectOwner !== walletAddress.toLowerCase()) {
+        throw new Error(this.tr('packReleaseAuthorityUnavailable'));
+      }
+      const candidate = await buildExpansionPackPublicationCandidate(savedProject);
+      assertCurrent();
+      const callback = this.callbacks.onPrepareExpansionPackPublication;
+      if (typeof callback !== 'function') throw new Error(this.tr('packReleaseGateUnavailable'));
+      this.expansionPackPublicationLaunch = Object.freeze({
+        requestToken,
+        workspace,
+        draftRevision,
+        identity: clone(saveResult.identity),
+      });
+      const nextState = await callback({
+        candidate,
+        project: savedProject,
+        parentRelease: clone(publishedParent.release),
+        document: clone(publishedParent.document),
+        walletAddress,
+        assets: new Map(this.assets),
+        draftRevision,
+        publicationRequestToken: requestToken,
+      });
+      assertCurrent();
+      if (nextState && typeof nextState === 'object') {
+        this.setExpansionPackPublishState(nextState);
+      }
+      return candidate;
+    } catch (error) {
+      if (requestToken === this.expansionPackPublicationRequestToken) {
+        this.setExpansionPackPublishState({
+          busy: false,
+          error: {
+            title: this.tr('packReleaseError'),
+            message: error?.message || this.tr('packReleaseError'),
+          },
+          actions: { prepare: true, export: true },
+        });
+      }
+      throw error;
+    } finally {
+      if (
+        requestToken === this.expansionPackPublicationRequestToken
+        && this.expansionPackPublishState.busy
+      ) {
+        this.setExpansionPackPublishState({ busy: false });
       }
     }
-    const candidate = await buildExpansionPackPublicationCandidate(
-      workspace.getState().project,
-    );
+  }
+
+  async exportActiveExpansionPackPublicationCandidate() {
+    const workspace = this.expansionPackWorkspace;
+    if (!workspace) throw new Error(this.tr('packLoadFailed'));
+    const flushed = await this.flushExpansionPackWorkspace(workspace);
+    if (!flushed.saved) throw flushed.error || new Error(this.tr('packSaveFailed'));
+    if (workspace !== this.expansionPackWorkspace || workspace.getState?.().dirty) {
+      throw new Error('Expansion Pack changed while its diagnostic candidate was being prepared.');
+    }
+    const candidate = await buildExpansionPackPublicationCandidate(flushed.project);
+    const stateAfterBuild = workspace.getState?.();
+    if (
+      workspace !== this.expansionPackWorkspace
+      || stateAfterBuild?.dirty
+      || stateAfterBuild?.revision !== flushed.persistedRevision
+    ) {
+      throw new Error('Expansion Pack changed while its diagnostic candidate was being prepared.');
+    }
     this.callbacks.onExpansionPackPublicationCandidate?.(candidate);
     if (globalThis.document && globalThis.URL?.createObjectURL) {
       const blob = new Blob([JSON.stringify(candidate, null, 2)], {
@@ -2926,6 +3637,52 @@ export class MakerWorkspace {
     this.expansionPackProjectNotice = this.tr('packPublicationCandidateDownloaded');
     this.render();
     return candidate;
+  }
+
+  async requestExpansionPackPublicationAction(action) {
+    const normalized = String(action || '').trim();
+    if (!normalized || this.expansionPackPublishState.busy) return null;
+    if (normalized === 'prepare') return this.prepareActiveExpansionPackPublicationCandidate();
+    if (normalized === 'export') return this.exportActiveExpansionPackPublicationCandidate();
+    const callback = this.callbacks.onExpansionPackPublishAction;
+    if (typeof callback !== 'function') throw new Error(this.tr('packReleaseGateUnavailable'));
+    const launch = this.expansionPackPublicationLaunch;
+    if (!launch || !this.expansionPackPublicationRequestIsActive(launch)) {
+      throw new Error('Expansion Pack publication context changed. Prepare this Pack again.');
+    }
+    const requestToken = launch.requestToken;
+    this.setExpansionPackPublishState({ busy: true, error: null });
+    try {
+      const nextState = await callback(normalized, {
+        publication: clone(this.expansionPackPublishState),
+        project: clone(this.expansionPackWorkspace?.getState?.().project || null),
+        parentRelease: clone(this.expansionPackPublishedParent()?.release || null),
+        walletAddress: this.expansionPackChainWalletAddress(),
+        draftRevision: launch.draftRevision,
+        publicationRequestToken: requestToken,
+      });
+      if (!this.expansionPackPublicationRequestIsActive(launch)) {
+        const error = new Error('Expansion Pack publication context changed while the action was running.');
+        error.code = 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED';
+        throw error;
+      }
+      if (nextState && typeof nextState === 'object') this.setExpansionPackPublishState(nextState);
+      return nextState;
+    } catch (error) {
+      if (requestToken === this.expansionPackPublicationRequestToken) {
+        this.setExpansionPackPublishState({
+          error: {
+            title: this.tr('packReleaseError'),
+            message: error?.message || this.tr('packReleaseError'),
+          },
+        });
+      }
+      throw error;
+    } finally {
+      if (requestToken === this.expansionPackPublicationRequestToken) {
+        this.setExpansionPackPublishState({ busy: false });
+      }
+    }
   }
 
   expansionPackReferenceStyle(partId, itemId = '') {
@@ -3090,11 +3847,11 @@ export class MakerWorkspace {
       host,
       this.expansionPackWorkspace,
       {
-        copy: this.expansionPackCopy(),
+        copy: () => this.expansionPackCopy(),
         onRequestAdd: (request) => this.requestExpansionPackAdd(request),
         onRequestAsset: (request) => this.importExpansionPackStyleAsset(request),
         onRequestRebindParent: () => this.rebindActiveExpansionPackToPublishedParent(),
-        onRequestPublicationCandidate: () => this.prepareActiveExpansionPackPublicationCandidate(),
+        onPublicationAction: (action) => this.requestExpansionPackPublicationAction(action),
         onPreview: () => this.renderExpansionPackPreview()
           .catch((error) => this.callbacks.onCreatorError?.(error)),
         onRendered: () => requestAnimationFrame(() => {
@@ -3206,7 +3963,30 @@ export class MakerWorkspace {
     const composableAssets = context.composableV6State?.assets instanceof Map
       ? [...context.composableV6State.assets.values()]
       : Array.from(context.composableV6State?.assets || []);
-    const suppliedAssets = [...baseAssets, ...composableAssets];
+    const packStateWallet = String(context.expansionPackV8State?.walletAddress || '').toLowerCase();
+    const contextWallet = String(context.walletAddress || '').toLowerCase();
+    const expansionPackV8Entries = (
+      contextWallet && packStateWallet === contextWallet
+        ? verifiedExpansionPackV8CatalogEntries(context.expansionPackV8State)
+        : []
+    ).filter((entry) => (
+      String(entry.parent?.rootMakerId || '').toLowerCase()
+        === String(document.version?.rootMakerId || '').toLowerCase()
+      && String(entry.parent?.versionId || '') === String(document.version?.versionId || '')
+      && String(entry.parent?.versionNumber || '') === String(document.version?.number || '')
+    ));
+    const expansionPackV8Assets = suppliedExpansionPackV8Assets(
+      context.expansionPackV8State,
+      expansionPackV8Entries,
+      expansionPackV8Entries
+        .filter((entry) => (
+          this.enabledExpansionReleaseIds.has(String(entry.releaseId))
+          && JSON.stringify(this.enabledExpansionReleaseRefs.get(String(entry.releaseId)) || null)
+            === JSON.stringify(expansionPackPlayerSessionRefV8(entry))
+        ))
+        .map((entry) => entry.releaseId),
+    );
+    const suppliedAssets = [...baseAssets, ...composableAssets, ...expansionPackV8Assets];
     const nextAssets = new Map();
     suppliedAssets.forEach((record) => {
       const assetId = String(record.assetId || record.id || record.identifier || '');
@@ -3267,6 +4047,39 @@ export class MakerWorkspace {
     this.releasePreflightCache = new WeakMap();
   }
 
+  refreshPlayerExpansionPackV8RuntimeAssets(
+    document = this.basePlayerDocument(),
+  ) {
+    if (!document || !this.context || !(this.assets instanceof Map)) return;
+    const selectedEntries = this.playerEnabledExpansionPackV8Entries();
+    const supplied = suppliedExpansionPackV8Assets(
+      this.context.expansionPackV8State,
+      selectedEntries,
+      selectedEntries.map((entry) => entry.releaseId),
+    );
+    const hydrated = new Map();
+    supplied.forEach((record) => {
+      const assetId = String(record?.assetId || record?.id || '');
+      if (!assetId) return;
+      hydrated.set(assetId, record.url || record.thumbnailUrl
+        ? { ...record, assetId }
+        : reviveRuntimeAssetRecord({
+            ...record,
+            assetId,
+            blob: record.blob || record.file,
+          }));
+    });
+    const nextAssets = new Map(this.assets);
+    this.expansionPackV8RuntimeAssetIds.forEach((assetId) => nextAssets.delete(assetId));
+    const retainedIds = new Set();
+    hydrated.forEach((record, assetId) => {
+      nextAssets.set(assetId, record);
+      retainedIds.add(assetId);
+    });
+    this.expansionPackV8RuntimeAssetIds = retainedIds;
+    this.replaceRuntimeAssets(nextAssets);
+  }
+
   async setContext(context) {
     const contextRequestId = ++this.contextRequestId;
     const requestedMakerKey = String(context?.makerKey || '');
@@ -3311,6 +4124,7 @@ export class MakerWorkspace {
       }
       if (contextRequestId !== this.contextRequestId) return;
       this.contextEpoch += 1;
+      this.playerExpansionPackV8CatalogEpoch += 1;
       this.contextSwitchInProgress = false;
       this.unsubscribe?.();
       this.unsubscribe = null;
@@ -3318,6 +4132,8 @@ export class MakerWorkspace {
       this.store = null;
       this.resetPlayerExport();
       this.enabledExpansionIds = new Set();
+      this.enabledExpansionReleaseIds = new Set();
+      this.enabledExpansionReleaseRefs = new Map();
       this.playerOwnedPackIds = new Set();
       this.playerOwnsMakerAccess = false;
       this.playerCommercePending = '';
@@ -3362,10 +4178,31 @@ export class MakerWorkspace {
       this.contextEpoch += 1;
     }
     const contextEpoch = this.contextEpoch;
+    const currentWalletAddress = String(this.context?.walletAddress || '').toLowerCase();
+    const requestedWalletAddress = Object.hasOwn(context, 'walletAddress')
+      ? String(context.walletAddress || '').toLowerCase()
+      : currentWalletAddress;
+    const refreshesPlayerExpansionPackV8Catalog = Object.hasOwn(
+      context,
+      'expansionPackV8State',
+    );
+    if (
+      !sameMaker
+      || requestedWalletAddress !== currentWalletAddress
+      || refreshesPlayerExpansionPackV8Catalog
+    ) {
+      this.playerExpansionPackV8CatalogEpoch += 1;
+      if (this.playerCommercePending.startsWith('pack-v8:')) {
+        this.playerCommercePending = '';
+      }
+    }
 
     this.context = { ...this.context, ...context };
     if (sameMaker && Object.hasOwn(context, 'commerceState')) {
       this.hydratePlayerCommerceContext(this.context);
+    }
+    if (sameMaker && this.store && Object.hasOwn(context, 'expansionPackV8State')) {
+      this.applyPlayerExpansionPackV8State(context.expansionPackV8State);
     }
     if (Object.hasOwn(context, 'publishedDocument')) {
       this.releasePreflightCache = new WeakMap();
@@ -3419,6 +4256,9 @@ export class MakerWorkspace {
     this.composableImportError = '';
     this.pendingSmartColorEdit = null;
     this.enabledExpansionIds = new Set();
+    this.enabledExpansionReleaseIds = new Set();
+    this.enabledExpansionReleaseRefs = new Map();
+    this.expansionPackV8RuntimeAssetIds = new Set();
     this.hydratePlayerCommerceContext(this.context);
     this.playerLivingContent = null;
     this.playerComposableLoadout = [];
@@ -3625,6 +4465,34 @@ export class MakerWorkspace {
       baseDocument,
       session.enabledExpansionIds,
     ));
+    try {
+      const restored = restoreExpansionPackPlayerSessionRefsV8(
+        this.playerExpansionPackV8Entries(),
+        Array.isArray(session.enabledExpansionV8Refs)
+          ? session.enabledExpansionV8Refs
+          : [],
+      );
+      if (restored.some((entry) => entry.playerUsable === false)) {
+        throw new Error(this.tr('playerPurchaseUnavailable'));
+      }
+      this.enabledExpansionReleaseIds = new Set(
+        restored.map((entry) => String(entry.releaseId)),
+      );
+      this.enabledExpansionReleaseRefs = new Map(
+        restored.map((entry) => [
+          String(entry.releaseId),
+          expansionPackPlayerSessionRefV8(entry),
+        ]),
+      );
+    } catch (error) {
+      // Exact release, manifest, content, parent and entitlement drift all
+      // fail closed. The rest of the local OC may still be recovered safely.
+      this.enabledExpansionReleaseIds = new Set();
+      this.enabledExpansionReleaseRefs = new Map();
+      this.playerCommerceError = error?.message || this.tr('playerPurchaseUnavailable');
+      this.callbacks.onPlayerError?.(error);
+    }
+    this.refreshPlayerExpansionPackV8RuntimeAssets(baseDocument);
     this.playerProfile = { ...this.playerProfile, ...(session.profile || {}) };
     const runtimeDocument = this.runtimeDocument();
     const playablePlayerRecipe = normalizePlayablePlayerRecipe(
@@ -4405,22 +5273,33 @@ export class MakerWorkspace {
   }
 
   hasUnsavedChanges() {
-    if (!this.store) return false;
-    const state = this.store.getState();
+    const state = this.store?.getState?.();
+    const packState = this.expansionPackWorkspace?.getState?.()
+      || this.expansionPackWorkspaceState;
+    const packSavePhase = String(packState?.save?.phase || '');
     return Boolean(
-      this.pendingCreatorText
+      this.expansionPackAutosave.pending()
+      || packState?.dirty
+      || ['new', 'dirty', 'saving', 'conflict', 'failed', 'error'].includes(packSavePhase)
+      || packState?.save?.error
+      || this.pendingCreatorText
       || this.pendingSmartColorEdit
       || this.textAutosave.pending()
       || this.autosave.pending()
-      || state.dirty
-      || state.saveState === 'saving'
-      || state.saveState === 'error'
+      || state?.dirty
+      || state?.saveState === 'saving'
+      || state?.saveState === 'error'
       || this.sessionAutosave.pending()
       || ['dirty', 'saving', 'error'].includes(this.playerSaveState)
     );
   }
 
   async flushPendingChanges({ reason = 'flush' } = {}) {
+    const requestedExpansionPackWorkspace = this.expansionPackWorkspace;
+    this.expansionPackAutosave.cancel();
+    const expansionPackFlush = await this.flushExpansionPackWorkspace(
+      requestedExpansionPackWorkspace,
+    );
     this.textAutosave.cancel();
     this.flushPendingCreatorText();
     this.flushPendingSmartColorEdit();
@@ -4438,7 +5317,11 @@ export class MakerWorkspace {
       return {
         makerKey: requestedMakerKey,
         reason,
-        saved: !['dirty', 'saving', 'error'].includes(this.playerSaveState),
+        saved: (
+          expansionPackFlush.saved
+          && !['dirty', 'saving', 'error'].includes(this.playerSaveState)
+        ),
+        expansionPack: expansionPackFlush,
         creatorPersistenceSkipped: true,
       };
     }
@@ -4447,7 +5330,8 @@ export class MakerWorkspace {
       return {
         makerKey: requestedMakerKey,
         reason,
-        saved: true,
+        saved: expansionPackFlush.saved,
+        expansionPack: expansionPackFlush,
         deleted: true,
       };
     }
@@ -4456,7 +5340,12 @@ export class MakerWorkspace {
       return {
         makerKey: requestedMakerKey,
         reason,
-        saved: !requestedStore?.getState().dirty && !['dirty', 'saving', 'error'].includes(this.playerSaveState),
+        saved: (
+          expansionPackFlush.saved
+          && !requestedStore?.getState().dirty
+          && !['dirty', 'saving', 'error'].includes(this.playerSaveState)
+        ),
+        expansionPack: expansionPackFlush,
       };
     }
 
@@ -4477,9 +5366,11 @@ export class MakerWorkspace {
       makerKey: requestedMakerKey,
       reason,
       saved: (
-        (this.store !== requestedStore || !requestedStore.getState().dirty)
+        expansionPackFlush.saved
+        && (this.store !== requestedStore || !requestedStore.getState().dirty)
         && !['dirty', 'saving', 'error'].includes(this.playerSaveState)
       ),
+      expansionPack: expansionPackFlush,
     };
   }
 
@@ -4794,6 +5685,7 @@ export class MakerWorkspace {
 
   playerSessionSnapshot(baseDocument = this.store?.getState().document) {
     if (!baseDocument) return null;
+    const enabledExpansionV8Refs = this.playerEnabledExpansionPackV8SessionRefs();
     return {
       makerVersionId: baseDocument.version.versionId,
       recipe: clone(this.playerRecipe),
@@ -4802,6 +5694,7 @@ export class MakerWorkspace {
       composableLoadout: clone(this.playerComposableLoadout),
       appearanceRevision: this.playerAppearanceRevision,
       enabledExpansionIds: enabledExpansionIdsForDocument(baseDocument, this.enabledExpansionIds),
+      enabledExpansionV8Refs,
       updatedAt: new Date().toISOString(),
     };
   }
@@ -6640,6 +7533,9 @@ export class MakerWorkspace {
         loadout: clone(this.playerComposableLoadout),
         appearanceRevision: this.playerAppearanceRevision,
       },
+      expansionPackV8: {
+        sessionRefs: clone(this.playerEnabledExpansionPackV8SessionRefs()),
+      },
       createdAt: new Date().toISOString(),
     });
   }
@@ -6787,6 +7683,9 @@ export class MakerWorkspace {
             }),
           }
         : {}),
+      expansionPackV8: clone(snapshot?.expansionPackV8 || {
+        sessionRefs: this.playerEnabledExpansionPackV8SessionRefs(),
+      }),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -6857,6 +7756,7 @@ export class MakerWorkspace {
       profile: snapshot.profile,
       livingContent: snapshot.livingContent,
       composableV6: snapshot.composableV6,
+      expansionPackV8: snapshot.expansionPackV8,
     });
     if (issues.length) {
       this.callbacks.onPlayerError?.(new Error(issues[0]));
@@ -6894,6 +7794,7 @@ export class MakerWorkspace {
       profile: snapshot.profile,
       livingContent: snapshot.livingContent,
       composableV6: snapshot.composableV6,
+      expansionPackV8: snapshot.expansionPackV8,
       imageBlob,
       imageExport,
       exportKey,
@@ -8601,6 +9502,7 @@ export class MakerWorkspace {
       versionId: document.version?.versionId || '',
       revision: this.store?.getState().revision || 0,
       expansions: [...this.enabledExpansionIds].sort(),
+      expansionReleasesV8: [...this.enabledExpansionReleaseIds].sort(),
       recipe: recipeWithColors(document, recipe),
       composableLoadout: [...this.playerComposableLoadout].sort(),
       appearanceRevision: this.playerAppearanceRevision,
@@ -8687,6 +9589,7 @@ export class MakerWorkspace {
     profile = this.playerProfile,
     livingContent = null,
     composableV6 = null,
+    expansionPackV8 = undefined,
   } = {}) {
     const issues = [];
     if (this.context?.walletAddress) {
@@ -8723,6 +9626,14 @@ export class MakerWorkspace {
     }
     const recipeResult = evaluateRecipe(document, recipe);
     if (!recipeResult.valid) issues.push(...recipeResult.violations.map((violation) => this.playerViolationText(violation, document)));
+    const expansionPackV8Refs = expansionPackV8 === undefined
+      ? this.playerEnabledExpansionPackV8SessionRefs()
+      : Array.isArray(expansionPackV8?.sessionRefs)
+        ? expansionPackV8.sessionRefs
+        : [];
+    if (expansionPackV8Refs.length) {
+      issues.push(this.tr('playerExpansionV8CompleteBridgeDisabled'));
+    }
     const commerceQuote = this.playerCommerceQuote(document, recipe);
     const commerceIssue = this.playerCommerceQuoteIssue(document, commerceQuote);
     if (commerceIssue) issues.push(commerceIssue);
@@ -9046,6 +9957,7 @@ export class MakerWorkspace {
       profile: snapshot.profile,
       livingContent: snapshot.livingContent,
       composableV6: snapshot.composableV6,
+      expansionPackV8: snapshot.expansionPackV8,
     });
     const canComplete = canRenderFinal && completionIssues.length === 0;
     const completeLabel = this.playerCreatorPreview
@@ -9588,6 +10500,64 @@ export class MakerWorkspace {
         </article>
       `;
     }).join('');
+    const expansionPackV8State = this.context?.expansionPackV8State || {};
+    const expansionPackV8Entries = this.playerExpansionPackV8Entries();
+    const expansionPackV8Loading = expansionPackV8State.loading === true
+      || expansionPackV8State.status === 'loading';
+    const expansionPackV8Notice = expansionPackV8Loading
+      ? this.tr('loadingDefaultRecipe')
+      : String(expansionPackV8State.errorMessage || expansionPackV8State.error || '');
+    const expansionPackV8Controls = expansionPackV8Entries.map((entry) => {
+      const access = this.playerExpansionPackV8AccessState(entry);
+      const pending = this.playerCommercePending === `pack-v8:${entry.releaseId}`;
+      const price = atomicToCoin(entry.access?.priceAtomic || '0');
+      const blockedReason = String(
+        entry.acquisitionBlockedReason
+        || entry.access?.reason
+        || this.tr('playerPurchaseUnavailable'),
+      );
+      const status = access.status === 'owned'
+        ? this.tr('playerPackOwned')
+        : access.status === 'recoverable'
+          ? this.tr('playerPackArtworkNeedsRetry')
+        : access.status === 'free'
+          ? this.tr('playerPackFree')
+          : access.status === 'paid'
+            ? this.tr('playerPackUnlockPrice', { price })
+            : this.tr('playerPurchaseUnavailable');
+      const control = access.accessible
+        ? `<label class="v4-player-expansion-toggle">
+            <input type="checkbox" data-action="player-expansion-v8" value="${escapeHtml(entry.releaseId)}" ${checked(access.enabled)} />
+            <span aria-hidden="true"></span>
+          </label>`
+        : access.availableForAcquire || access.canRetryRuntime
+          ? `<button type="button" class="v4-player-expansion-unlock" data-action="player-acquire-expansion-v8" data-release-id="${escapeHtml(entry.releaseId)}" ${access.canRetryRuntime ? `title="${escapeHtml(blockedReason)}"` : ''} ${pending || makerAccessLocked ? 'disabled' : ''}>
+              ${escapeHtml(pending
+                ? access.canRetryRuntime
+                  ? this.tr('playerPackArtworkRetrying')
+                  : this.tr('playerPurchasePending')
+                : access.canRetryRuntime
+                  ? this.tr('playerRetryPackArtwork')
+                  : this.tr('playerUnlockPack'))}
+              <small>${escapeHtml(status)}</small>
+            </button>`
+          : `<button type="button" class="v4-player-expansion-unlock" disabled title="${escapeHtml(blockedReason)}">
+              ${escapeHtml(this.tr('playerPurchaseUnavailable'))}
+            </button>`;
+      return `
+        <article class="v4-player-expansion-card independent-v8 ${access.accessible ? 'accessible' : 'locked'} ${access.enabled ? 'enabled' : ''}" data-release-id="${escapeHtml(entry.releaseId)}">
+          <div>
+            <strong>${escapeHtml(entry.pack?.name || entry.pack?.packId || entry.releaseId)}</strong>
+            <small>${escapeHtml(status)} · v${escapeHtml(entry.pack?.version || '')}</small>
+          </div>
+          ${control}
+        </article>
+      `;
+    }).join('');
+    const allPackControls = `${packControls}${expansionPackV8Controls}`;
+    const hasExpansionPackControls = Boolean(
+      packs.length || expansionPackV8Entries.length || expansionPackV8Notice,
+    );
     const selectedSummary = parts.map((candidate) => {
       const selectedItem = candidate.items.find((item) => item.id === selectionMap.get(candidate.id)?.itemId);
       return selectedItem ? `<span>${escapeHtml(candidate.name)}: ${escapeHtml(selectedItem.name)}</span>` : '';
@@ -9660,7 +10630,7 @@ export class MakerWorkspace {
                 <header><div><span>${escapeHtml(this.tr('currentPart'))}</span><h2 id="v4PlayerItemGroupLabel">${escapeHtml(part?.name || this.tr('noPlayableParts'))}</h2></div>${removePartOption?.visible ? `<div class="v4-player-remove-control"><button type="button" data-action="player-none" class="secondary" ${removePartOption.selectable ? '' : `aria-disabled="true" aria-describedby="${removePartReasonId}"`} title="${escapeHtml(removePartReason || this.tr('noneRemove'))}">${escapeHtml(this.tr('noneRemove'))}</button>${removePartReason ? `<small id="${removePartReasonId}" class="v4-player-disabled-reason">${escapeHtml(removePartReason)}</small>` : ''}</div>` : ''}</header>
                 <div class="v4-player-item-grid" role="radiogroup" aria-labelledby="v4PlayerItemGroupLabel">${itemButtons || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('noAvailableItems'))}</span></div>`}</div>
                 ${currentItem && visibleStyles.length > 1 ? `<div class="v4-player-style-picker" role="radiogroup" aria-labelledby="v4PlayerStyleGroupLabel"><span id="v4PlayerStyleGroupLabel">${escapeHtml(this.tr('style'))}</span>${styleButtons}</div>` : ''}
-                ${packs.length ? `<details class="v4-player-expansions"><summary>${escapeHtml(this.tr('expansionPacks'))}</summary><p>${escapeHtml(this.tr('expansionSelectionSaved'))}</p><div class="v4-player-expansion-grid">${packControls}</div></details>` : ''}
+                ${hasExpansionPackControls ? `<details class="v4-player-expansions"><summary>${escapeHtml(this.tr('expansionPacks'))}</summary><p>${escapeHtml(this.tr('expansionSelectionSaved'))}</p>${expansionPackV8Notice ? `<div class="v4-player-commerce-error" role="status">${escapeHtml(expansionPackV8Notice)}</div>` : ''}<div class="v4-player-expansion-grid">${allPackControls}</div></details>` : ''}
               `}
             </div>
           </section>
@@ -12975,6 +13945,9 @@ export class MakerWorkspace {
         loadout: clone(this.playerComposableLoadout),
         appearanceRevision: this.playerAppearanceRevision,
       },
+      expansionPackV8: {
+        sessionRefs: this.playerEnabledExpansionPackV8SessionRefs(),
+      },
     };
   }
 
@@ -13205,6 +14178,10 @@ export class MakerWorkspace {
     }
     if (action === 'player-unlock-pack') {
       void this.purchasePlayerPack(button.dataset.packId);
+      return;
+    }
+    if (action === 'player-acquire-expansion-v8') {
+      void this.acquirePlayerExpansionPackV8(button.dataset.releaseId);
       return;
     }
     if (
@@ -13656,6 +14633,19 @@ export class MakerWorkspace {
       this.playerUndo = [];
       this.playerRedo = [];
       changed = true;
+    } else if (action === 'player-expansion-v8') {
+      const entry = this.playerExpansionPackV8Entry(input.value);
+      const access = this.playerExpansionPackV8AccessState(entry);
+      if (!entry || !access.accessible) {
+        input.checked = false;
+        return;
+      }
+      const changedExpansion = this.setPlayerExpansionPackV8Enabled(
+        entry.releaseId,
+        Boolean(input.checked),
+      );
+      if (!changedExpansion) input.checked = access.enabled;
+      return;
     }
     if (!changed) return;
     this.invalidatePlayerCompletion();

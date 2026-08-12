@@ -64,6 +64,11 @@ window.ANIMACRAFT_CONFIG = {
   physicalV7SoulOwnerProofTypeOriginPackageId: '',
   physicalV7SoulOwnerProofType: '',
   physicalStyleV7ReleaseEnabled: false,
+  // Independent Expansion Pack v8 remains fail-closed until its companion
+  // package is deployed and verified against the exact parent Maker tuple.
+  expansionPackV8CallablePackageId: '',
+  expansionPackV8TypeOriginPackageId: '',
+  expansionPackV8ReleaseEnabled: false,
   // Intentionally empty while the reviewed Commerce/Seal release gate is off.
   // Mainnet activation requires the official committee endpoint plus an Enoki
   // X-API-Key; never claim paid assets are protected without it.

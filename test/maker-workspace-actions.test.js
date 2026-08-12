@@ -207,6 +207,60 @@ function memoryExpansionPackStore() {
   };
 }
 
+async function openPublishableExpansionPackFixture(workspace, {
+  packId = `pack-race-${Math.random().toString(36).slice(2)}`,
+} = {}) {
+  const parent = workspace.getDocument();
+  const release = {
+    identityVerified: true,
+    published: true,
+    state: 'published',
+    rootMakerId: parent.version.rootMakerId,
+    versionNumber: String(parent.version.number),
+    versionId: parent.version.versionId,
+    releaseId: `0x${'7'.repeat(64)}`,
+    manifestBlobId: 'race-parent-quilt',
+    manifestHash: '8'.repeat(64),
+    baseMakerRootId: `0x${'9'.repeat(64)}`,
+    parentLegacyMakerId: `0x${'7'.repeat(64)}`,
+    makerControlCapId: `0x${'6'.repeat(64)}`,
+  };
+  await workspace.setContext({
+    makerKey: workspace.makerKey,
+    walletAddress: '0xcreator',
+    document: parent,
+    publishedDocument: parent,
+    expansionPackParentRelease: release,
+    expansionPackV8ReleaseEnabled: true,
+    assets: [],
+  });
+  await workspace.openExpansionPackWorkspace(packId, { create: true });
+  workspace.requestExpansionPackAdd({ kind: 'part', partId: '', itemId: '' });
+  const part = workspace.expansionPackWorkspace.getState().project.pack.parts[0];
+  const item = part.items[0];
+  const style = item.styles[0];
+  workspace.expansionPackWorkspace.updateStyle(
+    part.id,
+    item.id,
+    style.id,
+    { assetId: 'pack-race-art' },
+    {
+      assets: [{
+        id: 'pack-race-art',
+        identifier: 'pack-race-art.png',
+        kind: 'style',
+        mediaType: 'image/png',
+        sha256: 'b'.repeat(64),
+        contentHash: 'b'.repeat(64),
+        byteLength: 128,
+        width: 1024,
+        height: 1024,
+      }],
+    },
+  );
+  return { packId, parent, release };
+}
+
 async function completePlayerThroughFinalPreview(workspace) {
   workspace.renderRecipeToBlob = async () => new Blob(['final-png'], { type: 'image/png' });
   playerClick(workspace, 'player-complete');
@@ -2655,7 +2709,7 @@ test('Expansion Pack Studio creates an isolated version-bound child without muta
   });
 });
 
-test('a new Expansion Pack inherits one exact published parent and exports a deterministic candidate', async () => {
+test('a new Expansion Pack inherits one exact published parent and exports a diagnostic candidate', async () => {
   const expansionPackDraftStore = memoryExpansionPackStore();
   const candidates = [];
   await withWorkspace(async (workspace) => {
@@ -2715,7 +2769,7 @@ test('a new Expansion Pack inherits one exact published parent and exports a det
         }],
       },
     );
-    const candidate = await workspace.prepareActiveExpansionPackPublicationCandidate();
+    const candidate = await workspace.exportActiveExpansionPackPublicationCandidate();
     assert.equal(candidate.state, 'CANDIDATE');
     assert.equal(candidate.published, false);
     assert.equal(candidate.manifest.parent.releaseId, release.releaseId);
@@ -2735,6 +2789,143 @@ test('a new Expansion Pack inherits one exact published parent and exports a det
     prepareDocument(document) {
       document.metadata.creator = '0xcreator';
       document.livingContent = { soulMd: '# Parent Soul' };
+    },
+  });
+});
+
+test('Expansion Pack publication never pairs a saved candidate with edits made after that revision', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  let prepareCalls = 0;
+  await withWorkspace(async (workspace) => {
+    await openPublishableExpansionPackFixture(workspace);
+    const originalFlush = workspace.flushExpansionPackWorkspace.bind(workspace);
+    let reportFlushed;
+    const flushed = new Promise((resolve) => { reportFlushed = resolve; });
+    let releaseFlush;
+    const continueFlush = new Promise((resolve) => { releaseFlush = resolve; });
+    workspace.flushExpansionPackWorkspace = async (...args) => {
+      const result = await originalFlush(...args);
+      reportFlushed(result);
+      await continueFlush;
+      return result;
+    };
+
+    const preparing = workspace.prepareActiveExpansionPackPublicationCandidate();
+    await flushed;
+    workspace.expansionPackWorkspace.renamePack('Edited after the saved revision');
+    releaseFlush();
+
+    await assert.rejects(
+      preparing,
+      (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED',
+    );
+    assert.equal(prepareCalls, 0, 'a mixed project/candidate snapshot must never reach the app shell');
+    assert.equal(workspace.expansionPackWorkspace.getState().dirty, true);
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    callbacks: {
+      onPrepareExpansionPackPublication() {
+        prepareCalls += 1;
+        return {};
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('closing and reopening the same Pack invalidates a late publication prepare callback', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  let callbackEntered;
+  const entered = new Promise((resolve) => { callbackEntered = resolve; });
+  let finishCallback;
+  const finish = new Promise((resolve) => { finishCallback = resolve; });
+  let resetCount = 0;
+  await withWorkspace(async (workspace) => {
+    const { packId } = await openPublishableExpansionPackFixture(workspace);
+    const preparing = workspace.prepareActiveExpansionPackPublicationCandidate();
+    await entered;
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.openExpansionPackWorkspace(packId);
+    finishCallback({
+      stage: 'walrus-prepared',
+      started: true,
+      locked: true,
+      status: 'stale callback must not render',
+    });
+
+    await assert.rejects(
+      preparing,
+      (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED',
+    );
+    assert.equal(workspace.expansionPackPublishState.stage, 'idle');
+    assert.equal(workspace.expansionPackPublishState.status, '');
+    assert.ok(resetCount >= 2, 'closing and activating both invalidate the previous controller lane');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    callbacks: {
+      onPrepareExpansionPackPublication() {
+        callbackEntered();
+        return finish;
+      },
+      onResetExpansionPackPublication() {
+        resetCount += 1;
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('an in-flight Expansion Pack release action cannot update a reopened workspace', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  let actionEntered;
+  const entered = new Promise((resolve) => { actionEntered = resolve; });
+  let finishAction;
+  const finish = new Promise((resolve) => { finishAction = resolve; });
+  await withWorkspace(async (workspace) => {
+    const { packId } = await openPublishableExpansionPackFixture(workspace);
+    await workspace.prepareActiveExpansionPackPublicationCandidate();
+    const action = workspace.requestExpansionPackPublicationAction('register');
+    await entered;
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.openExpansionPackWorkspace(packId);
+    finishAction({
+      stage: 'walrus-uploaded',
+      started: true,
+      locked: true,
+      status: 'stale action must not render',
+    });
+
+    await assert.rejects(
+      action,
+      (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED',
+    );
+    assert.equal(workspace.expansionPackPublishState.stage, 'idle');
+    assert.equal(workspace.expansionPackPublishState.status, '');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    callbacks: {
+      onPrepareExpansionPackPublication() {
+        return {
+          stage: 'walrus-prepared',
+          started: true,
+          locked: true,
+          actions: { register: true },
+        };
+      },
+      onExpansionPackPublishAction() {
+        actionEntered();
+        return finish;
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
     },
   });
 });
