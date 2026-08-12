@@ -23,6 +23,7 @@ test('production smoke only requires the Soul mint gate when explicitly requeste
     'expansionPackV8TypeOriginPackageId',
     'expansionPackV8ReleaseEnabled',
     'independentExtensionV5TypeOriginPackageId',
+    'legacyLogicalV5TypeOriginPackageId',
     'independentExtensionAuthorityV5Id',
   ].forEach((field) => assert.match(source, new RegExp(`'${field}'`)));
 });
@@ -32,6 +33,7 @@ test('example config documents every independent Expansion Pack v8 identity', as
   [
     'commerceV5CallablePackageId',
     'independentExtensionV5TypeOriginPackageId',
+    'legacyLogicalV5TypeOriginPackageId',
     'independentExtensionAuthorityV5Id',
   ].forEach((field) => assert.match(source, new RegExp(`\\b${field}\\s*:`)));
 });

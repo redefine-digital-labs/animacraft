@@ -71,6 +71,8 @@ export const EXPANSION_PACK_V8_RUNTIME_FIELDS = Object.freeze([
   'expansionPackV8CallablePackageId',
   'expansionPackV8TypeOriginPackageId',
   'independentExtensionV5TypeOriginPackageId',
+  'legacyLogicalV5TypeOriginPackageId',
+  'independentExtensionAuthorityV5Id',
   'expansionPackV8ReleaseEnabled',
 ]);
 
@@ -78,12 +80,18 @@ export const EXPANSION_PACK_V8_RELEASE_EVIDENCE_FIELDS = Object.freeze([
   'callablePackageId',
   'typeOriginPackageId',
   'packageVersion',
+  'packageObjectVersion',
   'upgradeTxDigest',
   'upgradeCheckpoint',
   'upgradedAtMs',
   'sourceCommit',
   'sourceTree',
   'packageDigest',
+  'packageObjectDigest',
+  'independentExtensionV5TypeOriginPackageId',
+  'legacyLogicalV5TypeOriginPackageId',
+  'upgradeCapPackageVersion',
+  'upgradePolicy',
   'enabled',
 ]);
 
@@ -96,6 +104,45 @@ export const EXPANSION_PACK_V8_VERIFICATION_FIELDS = Object.freeze([
 
 const SUI_TRANSACTION_DIGEST = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/;
 const GIT_OBJECT_ID = /^[0-9a-f]{40}$/;
+export const COMPOSITION_V6_RETIRED_ENTRY_POINTS = Object.freeze([
+  'create_maker_profile_v6',
+  'seal_maker_profile_v6',
+  'publish_official_item_product_v6',
+  'publish_external_item_product_v6',
+  'publish_validator_attestation_v6',
+  'admit_official_item_v6',
+  'admit_certified_item_v6',
+  'admit_open_item_v6',
+  'reactivate_item_admission_v6',
+  'claim_free_wallet_item_v6',
+  'claim_free_soul_item_v6',
+  'purchase_wallet_item_v6',
+  'purchase_soul_item_v6',
+  'transfer_owned_item_v6',
+  'lock_owned_item_to_soul_v6',
+  'authorize_loadout_v6',
+  'authorize_initial_loadout_v6',
+  'claim_free_owned_item_for_physical_v7',
+  'purchase_owned_item_for_physical_v7',
+]);
+
+export function inspectCompositionV6RetirementEvidence(deployment = {}) {
+  const evidence = deployment.verification || {};
+  const ready = evidence.compositionV6RetiredOperationCount
+      === COMPOSITION_V6_RETIRED_ENTRY_POINTS.length
+    && evidence.compositionV6RetirementAbortCode === 1
+    && positiveInteger(evidence.compositionV6RetirementEvidenceCheckpoint)
+    && /^[0-9a-f]{64}$/.test(
+      String(evidence.compositionV6RetirementEvidenceSha256 || ''),
+    );
+  return {
+    ready,
+    retiredEntryPoints: [...COMPOSITION_V6_RETIRED_ENTRY_POINTS],
+    detail: ready
+      ? 'Pre-upgrade zero-state evidence authorizes exactly 19 Composition v6 writes to abort EProtocolDisabled=1; six recovery/compatibility paths remain callable.'
+      : 'Composition v6 retirement evidence must record 19 operations, abort code 1, checkpoint, and exact evidence SHA-256.',
+  };
+}
 
 function present(value) {
   return value !== undefined && value !== null && String(value).trim() !== '';
@@ -160,10 +207,13 @@ export function expansionPackV8Declared(config = {}, deployment = {}) {
     || present(config.expansionPackV8CallablePackageId)
     || present(config.expansionPackV8TypeOriginPackageId)
     || present(config.independentExtensionV5TypeOriginPackageId)
+    || present(config.legacyLogicalV5TypeOriginPackageId)
+    || present(config.independentExtensionAuthorityV5Id)
     || deployment.expansionPackV8ReleaseEnabled === true
     || present(deployment.expansionPackV8CallablePackageId)
     || present(deployment.expansionPackV8TypeOriginPackageId)
     || present(deployment.independentExtensionV5TypeOriginPackageId)
+    || present(deployment.legacyLogicalV5TypeOriginPackageId)
     || Boolean(release && typeof release === 'object' && Object.keys(release).length)
     || EXPANSION_PACK_V8_VERIFICATION_FIELDS.some((field) => (
       present(verification[field])
@@ -197,23 +247,25 @@ export function inspectExpansionPackV8Deployment(
   const runtimeMissing = EXPANSION_PACK_V8_RUNTIME_FIELDS.filter((field) => (
     field === 'expansionPackV8ReleaseEnabled'
       ? typeof config[field] !== 'boolean'
-      : field === 'independentExtensionV5TypeOriginPackageId'
+      : field === 'independentExtensionAuthorityV5Id'
         ? activationEvidenceRequired && !present(config[field])
-        : !present(config[field])
+      : !present(config[field])
   ));
   const runtimeInvalid = [
     'expansionPackV8CallablePackageId',
     'expansionPackV8TypeOriginPackageId',
     'independentExtensionV5TypeOriginPackageId',
+    'legacyLogicalV5TypeOriginPackageId',
+    'independentExtensionAuthorityV5Id',
   ].filter((field) => present(config[field]) && !validSuiId(config[field]));
 
   const deploymentPaths = [
     'expansionPackProtocolVersion',
     'expansionPackV8CallablePackageId',
     'expansionPackV8TypeOriginPackageId',
-    ...(activationEvidenceRequired
-      ? ['independentExtensionV5TypeOriginPackageId']
-      : []),
+    'independentExtensionV5TypeOriginPackageId',
+    'legacyLogicalV5TypeOriginPackageId',
+    ...(activationEvidenceRequired ? ['independentExtensionAuthorityV5Id'] : []),
     'expansionPackV8ReleaseEnabled',
     ...EXPANSION_PACK_V8_RELEASE_EVIDENCE_FIELDS.map(
       (field) => `releases.expansionPackV8.${field}`,
@@ -242,13 +294,28 @@ export function inspectExpansionPackV8Deployment(
     ['expansionPackV8CallablePackageId', deployment.expansionPackV8CallablePackageId],
     ['expansionPackV8TypeOriginPackageId', deployment.expansionPackV8TypeOriginPackageId],
     ['independentExtensionV5TypeOriginPackageId', deployment.independentExtensionV5TypeOriginPackageId],
+    ['legacyLogicalV5TypeOriginPackageId', deployment.legacyLogicalV5TypeOriginPackageId],
+    ['independentExtensionAuthorityV5Id', deployment.independentExtensionAuthorityV5Id],
     ['releases.expansionPackV8.callablePackageId', release.callablePackageId],
     ['releases.expansionPackV8.typeOriginPackageId', release.typeOriginPackageId],
+    ['releases.expansionPackV8.independentExtensionV5TypeOriginPackageId', release.independentExtensionV5TypeOriginPackageId],
+    ['releases.expansionPackV8.legacyLogicalV5TypeOriginPackageId', release.legacyLogicalV5TypeOriginPackageId],
   ].forEach(([path, value]) => {
     if (present(value) && !validSuiId(value)) deploymentInvalid.push(path);
   });
-  if (present(release.packageVersion) && Number(release.packageVersion) !== 6) {
+  if (present(release.packageVersion) && Number(release.packageVersion) !== 7) {
     deploymentInvalid.push('releases.expansionPackV8.packageVersion');
+  }
+  if (present(release.packageObjectVersion)
+    && Number(release.packageObjectVersion) !== 7) {
+    deploymentInvalid.push('releases.expansionPackV8.packageObjectVersion');
+  }
+  if (present(release.upgradeCapPackageVersion)
+    && Number(release.upgradeCapPackageVersion) !== 7) {
+    deploymentInvalid.push('releases.expansionPackV8.upgradeCapPackageVersion');
+  }
+  if (present(release.upgradePolicy) && Number(release.upgradePolicy) !== 0) {
+    deploymentInvalid.push('releases.expansionPackV8.upgradePolicy');
   }
   if (present(release.upgradeTxDigest)
     && !SUI_TRANSACTION_DIGEST.test(String(release.upgradeTxDigest))) {
@@ -268,6 +335,10 @@ export function inspectExpansionPackV8Deployment(
   if (present(release.packageDigest)
     && !SUI_TRANSACTION_DIGEST.test(String(release.packageDigest))) {
     deploymentInvalid.push('releases.expansionPackV8.packageDigest');
+  }
+  if (present(release.packageObjectDigest)
+    && !SUI_TRANSACTION_DIGEST.test(String(release.packageObjectDigest))) {
+    deploymentInvalid.push('releases.expansionPackV8.packageObjectDigest');
   }
   if (present(verification.expansionPackV8UpgradeTransactionStatus)
     && verification.expansionPackV8UpgradeTransactionStatus !== 'success') {
@@ -306,6 +377,16 @@ export function inspectExpansionPackV8Deployment(
     config.independentExtensionV5TypeOriginPackageId,
   );
   compareId(
+    'legacyLogicalV5TypeOriginPackageId',
+    deployment.legacyLogicalV5TypeOriginPackageId,
+    config.legacyLogicalV5TypeOriginPackageId,
+  );
+  compareId(
+    'independentExtensionAuthorityV5Id',
+    deployment.independentExtensionAuthorityV5Id,
+    config.independentExtensionAuthorityV5Id,
+  );
+  compareId(
     'releases.expansionPackV8.callablePackageId',
     release.callablePackageId,
     config.expansionPackV8CallablePackageId,
@@ -314,6 +395,16 @@ export function inspectExpansionPackV8Deployment(
     'releases.expansionPackV8.typeOriginPackageId',
     release.typeOriginPackageId,
     config.expansionPackV8TypeOriginPackageId,
+  );
+  compareId(
+    'releases.expansionPackV8.independentExtensionV5TypeOriginPackageId',
+    release.independentExtensionV5TypeOriginPackageId,
+    config.independentExtensionV5TypeOriginPackageId,
+  );
+  compareId(
+    'releases.expansionPackV8.legacyLogicalV5TypeOriginPackageId',
+    release.legacyLogicalV5TypeOriginPackageId,
+    config.legacyLogicalV5TypeOriginPackageId,
   );
   if (typeof deployment.expansionPackV8ReleaseEnabled === 'boolean'
     && typeof config.expansionPackV8ReleaseEnabled === 'boolean'
@@ -641,16 +732,19 @@ export async function inspectExpansionPackV8PackageAbi(
     originalPackageId,
     commerceV5TypeOriginPackageId,
     independentExtensionV5TypeOriginPackageId,
+    legacyLogicalV5TypeOriginPackageId,
   } = {},
 ) {
   const moduleName = 'expansion_pack_v8';
   const completeModuleName = 'expansion_pack_complete_v8';
   const typeOrigin = normalizeSuiAddress(typeOriginPackageId);
-  const upgradeTypeOrigin = normalizeSuiAddress(callablePackageId);
   const legacyTypeOrigin = normalizeSuiAddress(originalPackageId);
   const commerceTypeOrigin = normalizeSuiAddress(commerceV5TypeOriginPackageId);
   const independentExtensionTypeOrigin = present(independentExtensionV5TypeOriginPackageId)
     ? normalizeSuiAddress(independentExtensionV5TypeOriginPackageId)
+    : '';
+  const legacyLogicalTypeOrigin = present(legacyLogicalV5TypeOriginPackageId)
+    ? normalizeSuiAddress(legacyLogicalV5TypeOriginPackageId)
     : '';
   // Sui function signatures use the package lineage's original namespace for
   // every module in an upgraded package. A datatype's independently stable
@@ -1119,7 +1213,7 @@ export async function inspectExpansionPackV8PackageAbi(
     [completeModuleName, 'ExpansionPackCompleteAuthenticatedV8'],
     [completeModuleName, 'ExpansionPackCompleteBoundToSoulV8'],
   ];
-  const upgradeDatatypeSpecs = [
+  const legacyLogicalDatatypeSpecs = [
     ['commerce_v5', 'LegacyLogicalCompatibilityStateV5'],
     ['commerce_v5', 'LegacyLogicalStyleApprovalKeyV5'],
     ['commerce_v5', 'LegacyLogicalStyleApprovalV5'],
@@ -1134,7 +1228,7 @@ export async function inspectExpansionPackV8PackageAbi(
     : [];
   const queriedDatatypeSpecs = [
     ...datatypeSpecs,
-    ...upgradeDatatypeSpecs,
+    ...legacyLogicalDatatypeSpecs,
     ...independentExtensionDatatypeSpecs,
   ];
   const [
@@ -1295,15 +1389,15 @@ export async function inspectExpansionPackV8PackageAbi(
       datatype: datatypes[index],
       expectedTypeOrigin: typeOrigin,
     })),
-    ...upgradeDatatypeSpecs.map(([specModule, name], index) => ({
+    ...legacyLogicalDatatypeSpecs.map(([specModule, name], index) => ({
       name: `${specModule}::${name}`,
       datatype: datatypes[datatypeSpecs.length + index],
-      expectedTypeOrigin: upgradeTypeOrigin,
+      expectedTypeOrigin: legacyLogicalTypeOrigin,
     })),
     ...independentExtensionDatatypeSpecs.map(([specModule, name], index) => ({
       name: `${specModule}::${name}`,
       datatype: datatypes[
-        datatypeSpecs.length + upgradeDatatypeSpecs.length + index
+        datatypeSpecs.length + legacyLogicalDatatypeSpecs.length + index
       ],
       expectedTypeOrigin: independentExtensionTypeOrigin,
     })),
@@ -1339,7 +1433,7 @@ export async function inspectExpansionPackV8PackageAbi(
   return {
     ready,
     detail: ready
-      ? `version_v8=8; Complete/physical bridges and companion proof are false with aborting bridge assertions; exact entry/public ABI and legacy=${legacyTypeOrigin}, Commerce v5=${commerceTypeOrigin}, Expansion Pack v8=${typeOrigin}, compatibility markers/events=${upgradeTypeOrigin}${independentExtensionTypeOrigin ? `, independent extension=${independentExtensionTypeOrigin}` : ''} TypeOrigins verified`
+      ? `version_v8=8; Complete/physical bridges and companion proof are false with aborting bridge assertions; exact entry/public ABI and legacy=${legacyTypeOrigin}, Commerce v5=${commerceTypeOrigin}, Expansion Pack v8=${typeOrigin}, legacy-logical=${legacyLogicalTypeOrigin}, independent extension=${independentExtensionTypeOrigin} TypeOrigins verified`
       : [
         'Required Expansion Pack v8 package read-back differs.',
         valueMismatches.length ? `Values: ${valueMismatches.join(', ')}.` : '',
@@ -1361,18 +1455,18 @@ async function checkExpansionPackV8PackageAbi(
   const commerceV5TypeOriginPackageId = config.commerceV5TypeOriginPackageId;
   const independentExtensionV5TypeOriginPackageId =
     config.independentExtensionV5TypeOriginPackageId;
-  const independentExtensionOriginRequired =
-    config.expansionPackV8ReleaseEnabled === true;
+  const legacyLogicalV5TypeOriginPackageId =
+    config.legacyLogicalV5TypeOriginPackageId;
   if (!validSuiId(callablePackageId)
       || !validSuiId(typeOriginPackageId)
       || !validSuiId(originalPackageId)
       || !validSuiId(commerceV5TypeOriginPackageId)
-      || (independentExtensionOriginRequired
-        && !validSuiId(independentExtensionV5TypeOriginPackageId))) {
+      || !validSuiId(independentExtensionV5TypeOriginPackageId)
+      || !validSuiId(legacyLogicalV5TypeOriginPackageId)) {
     record(
       'Animacraft Expansion Pack v8 package ABI',
       false,
-      'Valid callable, legacy Maker, Commerce v5 and Expansion Pack v8 TypeOrigins are required for chain read-back; enabled v8 also requires its independent-extension TypeOrigin.',
+      'Valid callable, legacy Maker, Commerce v5, Expansion Pack v8, independent-extension and legacy-logical TypeOrigins are required for chain read-back.',
     );
     return;
   }
@@ -1387,6 +1481,7 @@ async function checkExpansionPackV8PackageAbi(
           originalPackageId,
           commerceV5TypeOriginPackageId,
           independentExtensionV5TypeOriginPackageId,
+          legacyLogicalV5TypeOriginPackageId,
         },
       ),
     );
@@ -2637,6 +2732,11 @@ function recordExpansionPackV8Deployment(status) {
   );
 }
 
+function recordCompositionV6RetirementEvidence(deployment) {
+  const status = inspectCompositionV6RetirementEvidence(deployment);
+  record('Animacraft composition v6 retirement evidence', status.ready, status.detail);
+}
+
 async function checkHttp(name, url, path) {
   try {
     const response = await deadline(name, (signal) => fetch(`${String(url).replace(/\/$/, '')}${path}`, { signal }));
@@ -2890,6 +2990,7 @@ export async function runMainnetPreflight() {
     { required: requireExpansionPackV8 },
   );
   recordExpansionPackV8Deployment(expansionPackV8DeploymentStatus);
+  if (requireExpansionPackV8) recordCompositionV6RetirementEvidence(deployment);
 
   const validation = validateRuntimeConfig(config, { strict, requireSoulidity });
   validation.errors.forEach((message) => record('Runtime config', false, message));

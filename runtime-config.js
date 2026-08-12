@@ -96,13 +96,15 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   physicalV7SoulOwnerProofTypeOriginPackageId: '',
   physicalV7SoulOwnerProofType: '',
   physicalStyleV7ReleaseEnabled: false,
-  // Expansion Pack v8 is an additive protocol introduced by the reviewed
-  // Animacraft v6 core-package upgrade. It reuses the Commerce v5 protocol
-  // config and treasury split. The identities are recorded after read-back,
-  // while the client gate remains false until a separate activation phase.
-  expansionPackV8CallablePackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  // Expansion Pack v8 was introduced by v6 and keeps that stable TypeOrigin.
+  // The corrective package-only v7 upgrade advances only the callable package
+  // and defines the new independent-extension / legacy-logical datatypes.
+  expansionPackV8CallablePackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
   expansionPackV8TypeOriginPackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
-  independentExtensionV5TypeOriginPackageId: '',
+  independentExtensionV5TypeOriginPackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
+  legacyLogicalV5TypeOriginPackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
+  // Created only by the separately reviewed parent-finalization transaction.
+  // Package-only gate-false state therefore records an empty Authority ID.
   independentExtensionAuthorityV5Id: '',
   expansionPackV8ReleaseEnabled: false,
   // Seal remains fail-closed until the reviewed v5 package and an authenticated
@@ -589,6 +591,9 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   const independentExtensionV5TypeOriginPackageReady = SUI_ID.test(
     String(config.independentExtensionV5TypeOriginPackageId || ''),
   );
+  const legacyLogicalV5TypeOriginPackageReady = SUI_ID.test(
+    String(config.legacyLogicalV5TypeOriginPackageId || ''),
+  );
   const independentExtensionAuthorityV5Ready = SUI_ID.test(
     String(config.independentExtensionAuthorityV5Id || ''),
   );
@@ -598,10 +603,6 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   );
   const expansionPackV8CoreReady = expansionPackV8CallablePackageReady
     && expansionPackV8TypeOriginPackageReady;
-  const independentExtensionV5Configured = Boolean(
-    config.independentExtensionV5TypeOriginPackageId
-      || config.independentExtensionAuthorityV5Id,
-  );
   const independentExtensionV5Ready = independentExtensionV5TypeOriginPackageReady
     && independentExtensionAuthorityV5Ready;
   if (
@@ -620,20 +621,27 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     && !independentExtensionV5TypeOriginPackageReady) {
     errors.push('independentExtensionV5TypeOriginPackageId must be a valid Sui package ID.');
   }
+  if (config.legacyLogicalV5TypeOriginPackageId
+    && !legacyLogicalV5TypeOriginPackageReady) {
+    errors.push('legacyLogicalV5TypeOriginPackageId must be a valid Sui package ID.');
+  }
   if (config.independentExtensionAuthorityV5Id
     && !independentExtensionAuthorityV5Ready) {
     errors.push('independentExtensionAuthorityV5Id must be a valid Sui object ID.');
   }
-  if (independentExtensionV5Configured && !independentExtensionV5Ready) {
-    errors.push('Independent extension v5 configuration must include its new TypeOrigin and immutable shared Authority together.');
+  if (independentExtensionAuthorityV5Ready
+    && !independentExtensionV5TypeOriginPackageReady) {
+    errors.push('Independent extension v5 Authority requires its defining TypeOrigin package.');
   }
   if (expansionPackV8Configured && !expansionPackV8CoreReady) {
-    errors.push('Expansion Pack v8 configuration must include its callable package, stable TypeOrigin, independent-extension TypeOrigin and immutable parent authority together.');
+    errors.push('Expansion Pack v8 configuration must include its callable package and stable TypeOrigin together.');
   }
   if (
     config.expansionPackV8ReleaseEnabled
     && (
       !expansionPackV8CoreReady
+      || !independentExtensionV5TypeOriginPackageReady
+      || !legacyLogicalV5TypeOriginPackageReady
       || !independentExtensionV5Ready
       || !commerceV5CoreReady
       || config.canonicalSoulMintEnabled !== false
@@ -872,6 +880,7 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     expansionPackV8CallablePackageReady,
     expansionPackV8TypeOriginPackageReady,
     independentExtensionV5TypeOriginPackageReady,
+    legacyLogicalV5TypeOriginPackageReady,
     independentExtensionAuthorityV5Ready,
     independentExtensionV5Ready,
     expansionPackV8CoreReady,

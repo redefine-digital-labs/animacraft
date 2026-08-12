@@ -75,6 +75,7 @@ window.ANIMACRAFT_CONFIG = {
   // New types introduced by the corrective independent-extension upgrade and
   // the exact shared Authority created by atomic parent finalization.
   independentExtensionV5TypeOriginPackageId: '0xINDEPENDENT_EXTENSION_V5_TYPE_ORIGIN',
+  legacyLogicalV5TypeOriginPackageId: '0xLEGACY_LOGICAL_V5_TYPE_ORIGIN',
   independentExtensionAuthorityV5Id: '0xSHARED_INDEPENDENT_EXTENSION_AUTHORITY',
   expansionPackV8ReleaseEnabled: false,
   // Frozen v5 package used for every Seal approval call. Never advance this

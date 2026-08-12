@@ -31,7 +31,7 @@ window.ANIMACRAFT_CONFIG = {
   // The reviewed v5 core is initialized on Mainnet with its release gate off.
   // The callable advances with the v8 package so recovery can reach the
   // additive Maker release-evidence entrypoint while TypeOrigin stays frozen.
-  commerceV5CallablePackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  commerceV5CallablePackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
   commerceV5TypeOriginPackageId: '0xcf369b8b02ac1e997146fc3be3f03870db14eaccf3d2cb7a9b93724be463108e',
   commerceProtocolConfigV5Id: '0xf63dc43bb3787fff47fec7f8c3ff2e777dd0966500570fa7deab2bef9b6da0d5',
   commerceProtocolTreasuryV5Id: '0x97ba8042011d6c2d4857a33789a8250c16f6effeda622cb312fe481e0b907d44',
@@ -66,14 +66,14 @@ window.ANIMACRAFT_CONFIG = {
   physicalV7SoulOwnerProofTypeOriginPackageId: '',
   physicalV7SoulOwnerProofType: '',
   physicalStyleV7ReleaseEnabled: false,
-  // Expansion Pack v8 is present in the reviewed Animacraft v6 upgrade, but
-  // remains fail-closed until a separate activation phase explicitly opens it.
-  expansionPackV8CallablePackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  // v8 keeps its v6 TypeOrigin while the corrective package-only v7 upgrade
+  // supplies the callable package and new independent-extension datatypes.
+  expansionPackV8CallablePackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
   expansionPackV8TypeOriginPackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
-  // Filled only after the corrective package upgrade and atomic parent
-  // finalization are finalized and read back. The v8 gate remains false until
-  // both immutable identities are present.
-  independentExtensionV5TypeOriginPackageId: '',
+  independentExtensionV5TypeOriginPackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
+  legacyLogicalV5TypeOriginPackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
+  // Parent finalization has not run. Its shared Authority stays empty while
+  // the package-only v7 tuple and every product gate remain fail-closed.
   independentExtensionAuthorityV5Id: '',
   expansionPackV8ReleaseEnabled: false,
   // Intentionally empty while the reviewed Commerce/Seal release gate is off.

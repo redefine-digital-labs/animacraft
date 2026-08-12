@@ -124,6 +124,7 @@ if (origin) {
       'commerceV5SoulBindingProofType',
       'commerceV5ReleaseEnabled',
       'independentExtensionV5TypeOriginPackageId',
+      'legacyLogicalV5TypeOriginPackageId',
       'independentExtensionAuthorityV5Id',
       'compositionV6TypeOriginPackageId',
       'compositionProtocolConfigV6Id',
