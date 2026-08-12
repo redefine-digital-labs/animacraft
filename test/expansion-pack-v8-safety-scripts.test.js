@@ -185,7 +185,7 @@ function evidencePrior() {
       legacy_maker_id: MAKER,
       parent_version: '2',
       manifest_blob_id: 'parent-quilt',
-      manifest_sha256: `0x${'bb'.repeat(32)}`,
+      manifest_sha256: Buffer.from('bb'.repeat(32), 'hex').toString('base64'),
       newly_bound: true,
     },
   }];

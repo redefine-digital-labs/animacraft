@@ -191,11 +191,24 @@ function field(value, snake, camel = snake) {
 }
 
 function exactHash(value, label) {
-  const rendered = Array.isArray(value)
-    ? Buffer.from(value).toString('hex')
-    : text(value).replace(/^0x/i, '');
+  const raw = text(value);
+  let rendered;
+  if (Array.isArray(value)) {
+    rendered = Buffer.from(value).toString('hex');
+  } else if (/^(?:0x)?[0-9a-f]{64}$/i.test(raw)) {
+    rendered = raw.replace(/^0x/i, '');
+  } else if (/^[A-Za-z0-9+/]{43}=$/.test(raw)) {
+    const bytes = Buffer.from(raw, 'base64');
+    rendered = bytes.byteLength === 32 && bytes.toString('base64') === raw
+      ? bytes.toString('hex')
+      : '';
+  } else {
+    rendered = '';
+  }
   const hash = rendered.toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(hash)) fail(`${label} is not an exact SHA-256.`);
+  if (!/^[0-9a-f]{64}$/.test(hash)) {
+    fail(`${label} is not an exact SHA-256.`, { actual: stableValue(value) });
+  }
   return hash;
 }
 
