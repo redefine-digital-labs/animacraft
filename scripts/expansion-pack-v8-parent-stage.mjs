@@ -11,7 +11,10 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
 import { verifyTransactionSignature } from '@mysten/sui/verify';
-import { scanV8HistoryWindow } from './expansion-pack-v8-free-readiness.mjs';
+import {
+  orderedIndependentExtensionStyleBindings,
+  scanV8HistoryWindow,
+} from './expansion-pack-v8-free-readiness.mjs';
 import {
   queryIndependentExtensionLockV5,
   queryMakerReleaseEvidenceV5,
@@ -741,7 +744,7 @@ function buildStageTransaction(stage, { intent, state, plan, auditHash }) {
       controlCap: state.controlCap,
       protocol: state.protocol,
       protocolFeeAdminCapId: state.protocol.legacyAdminCapId,
-      styleBindings: plan.configuration.styleBindings,
+      styleBindings: orderedIndependentExtensionStyleBindings(plan),
       auditHash: `0x${auditHash}`,
       sender: intent.signer.address,
     });

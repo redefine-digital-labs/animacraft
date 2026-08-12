@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import {
+  orderedIndependentExtensionStyleBindings,
   scanV8HistoryWindow,
   validateCorrectiveV7Evidence,
   validateReadinessWorktree,
@@ -37,6 +38,41 @@ const STABLE_V8_ORIGIN = '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100
 const SOURCE_COMMIT_V7 = '3c2ffeeb86be6df2cd1f278454a72f5d02c796ea';
 const SOURCE_TREE_V7 = '0872c4142ee5e811594efbadba032b7b21e5b57c';
 const UPGRADE_TX_V7 = 'GFJYxZ6hc83ma5itvJ5CN2ZAtTAqjizrgi9o2jKuTwZt';
+
+test('independent-extension finalizer rows use one stable 19 + 3 + 4 order', () => {
+  const visual = Array.from({ length: 19 }, (_, index) => ({
+    partKey: `visual-${index + 1}`,
+    rowKind: 0,
+  }));
+  const none = Array.from({ length: 3 }, (_, index) => ({
+    partKey: `none-${index + 1}`,
+    rowKind: 1,
+  }));
+  const color = Array.from({ length: 4 }, (_, index) => ({
+    partKey: `color-${index + 1}`,
+    rowKind: 2,
+  }));
+  const interleaved = [
+    ...visual.slice(0, 3),
+    none[0],
+    ...visual.slice(3, 16),
+    none[1],
+    ...visual.slice(16),
+    none[2],
+    ...color,
+  ];
+  const ordered = orderedIndependentExtensionStyleBindings({
+    configuration: { styleBindings: interleaved },
+  });
+  assert.deepEqual(ordered.map((row) => row.rowKind), [
+    ...Array(19).fill(0),
+    ...Array(3).fill(1),
+    ...Array(4).fill(2),
+  ]);
+  assert.deepEqual(ordered.filter((row) => row.rowKind === 0), visual);
+  assert.deepEqual(ordered.filter((row) => row.rowKind === 1), none);
+  assert.deepEqual(ordered.filter((row) => row.rowKind === 2), color);
+});
 
 function digest(bytes) {
   return createHash('sha256').update(bytes).digest('hex');

@@ -641,14 +641,24 @@ function commerceProjection(parentManifest, intent) {
   };
 }
 
-export function buildParentRoutePlan(commercePlan, intent) {
+export function orderedIndependentExtensionStyleBindings(commercePlan) {
   const rows = commercePlan?.configuration?.styleBindings;
   if (!Array.isArray(rows)) fail('The Commerce plan has no Style route rows.');
+  const grouped = new Map([[0, []], [1, []], [2, []]]);
+  rows.forEach((row, index) => {
+    const rowKind = Number(row?.rowKind);
+    if (!grouped.has(rowKind)) fail(`Route row ${index + 1} has an unsupported kind.`);
+    grouped.get(rowKind).push(row);
+  });
+  return [0, 1, 2].flatMap((rowKind) => grouped.get(rowKind));
+}
+
+export function buildParentRoutePlan(commercePlan, intent) {
+  const rows = orderedIndependentExtensionStyleBindings(commercePlan);
   const routePlan = rows.map((row, index) => {
     const rowKind = Number(row.rowKind);
     const route = rowKind === 0 ? 'VISUAL' : 'LEGACY_LOGICAL_COMPATIBILITY';
     const logicalKind = rowKind === 1 ? 'NONE' : rowKind === 2 ? 'COLOR' : null;
-    if (![0, 1, 2].includes(rowKind)) fail(`Route row ${index + 1} has an unsupported kind.`);
     return {
       line: index + 1,
       partKey: text(row.partKey),
