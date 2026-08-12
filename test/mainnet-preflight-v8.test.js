@@ -8,6 +8,7 @@ import {
   inspectExpansionPackV8PackageAbi,
   inspectExpansionPackV8ActivationEvidence,
   inspectExpansionPackV8LiveActivation,
+  inspectExpansionPackV8PostClaimEvidence,
   inspectExpansionPackV8Deployment,
   inspectExpansionPackV8ParentFinalizationEvidence,
   inspectCompositionV6RetirementEvidence,
@@ -644,6 +645,57 @@ async function currentMainnetTuple() {
   };
 }
 
+function postClaim(activation, overrides = {}) {
+  return {
+    schemaVersion: 'animacraft.expansion-pack-v8-post-claim-evidence.v1',
+    status: 'success',
+    chainIdentifier: activation.chainIdentifier,
+    transactionDigest: '5'.repeat(43),
+    checkpoint: String(BigInt(activation.checkpoint) + 1n),
+    checkpointDigest: '6'.repeat(43),
+    claimedAtMs: '1800000000000',
+    claimedAtUtc: '2027-01-15T08:00:00.000Z',
+    releaseId: activation.releaseId,
+    releaseObjectVersion: String(BigInt(activation.releaseObjectVersion) + 1n),
+    releaseObjectDigest: '7'.repeat(43),
+    entitlementCount: 1,
+    walletAddress: activation.creator,
+    passId: '0xc001',
+    passObjectVersion: String(BigInt(activation.releaseObjectVersion) + 1n),
+    passObjectDigest: '8'.repeat(43),
+    holder: activation.creator,
+    parentRootId: activation.parentRootId,
+    paidAtomic: '0',
+    issuedAtMs: '1800000000000',
+    admittedParentOwnershipEpoch: activation.admittedParentOwnershipEpoch,
+    contentCommitment: activation.contentCommitment,
+    createdPassCount: 1,
+    entitlementEventCount: 1,
+    passCountForTestWallet: 1,
+    receiptEvidence: { path: 'claim.json', fileSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64) },
+    readbackEvidence: { path: 'readback.json', fileSha256: 'c'.repeat(64) },
+    walletAcceptanceEvidence: { path: 'wallet.json', fileSha256: 'd'.repeat(64) },
+    renderEvidence: {
+      path: 'render.json', fileSha256: 'e'.repeat(64),
+      artifactPath: 'render.png', artifactSha256: 'f'.repeat(64),
+    },
+    ...overrides,
+  };
+}
+
+function postClaimVerification() {
+  return {
+    expansionPackV8FreeClaimTransactionStatus: 'success',
+    expansionPackV8FreeClaimReadBack: true,
+    expansionPackV8FreeClaimPassReadBack: true,
+    expansionPackV8FreeClaimEventReadBack: true,
+    expansionPackV8FreeClaimCreatedPassCount: 1,
+    expansionPackV8FreeClaimPaidAtomic: '0',
+    expansionPackV8WalletAcceptance: true,
+    expansionPackV8RenderAcceptance: true,
+  };
+}
+
 test('current Mainnet v8 tuple is fully evidenced and exclusively enabled', async () => {
   const current = await currentMainnetTuple();
   assert.equal(current.config.expansionPackV8CallablePackageId, MAINNET_V8.packageId);
@@ -739,6 +791,163 @@ test('gate=true fails closed without activation evidence', async () => {
   assert.equal(status.declared, false);
   assert.equal(status.ready, false);
   assert.deepEqual(status.failures, ['activation evidence is missing']);
+});
+
+test('required post-claim evidence fails closed while the activation artifact stays valid', async () => {
+  const current = await currentMainnetTuple();
+  const before = structuredClone(current.deployment.releases.expansionPackV8.activation);
+  const status = inspectExpansionPackV8Deployment(current.config, current.deployment, {
+    required: true,
+    requirePostClaim: true,
+  });
+  assert.equal(status.ready, false);
+  assert.ok(status.deploymentMissing.includes(
+    'releases.expansionPackV8.postClaim.schemaVersion',
+  ));
+  const external = await inspectExpansionPackV8PostClaimEvidence(current.deployment, {
+    required: true,
+  });
+  assert.equal(external.ready, false);
+  assert.deepEqual(external.failures, ['post-claim evidence is missing']);
+  assert.deepEqual(current.deployment.releases.expansionPackV8.activation, before);
+  assert.equal(
+    (await inspectExpansionPackV8ActivationEvidence(current.deployment)).ready,
+    true,
+  );
+});
+
+test('post-claim schema binds the mutable Release and exact FREE wallet Pass', async () => {
+  const current = await currentMainnetTuple();
+  const record = structuredClone(current.deployment);
+  const activation = record.releases.expansionPackV8.activation;
+  record.releases.expansionPackV8.postClaim = postClaim(activation, {
+    claimedAtMs: '1800000000000',
+    claimedAtUtc: '2027-01-15T08:00:00.000Z',
+  });
+  record.observedChainState.observedThroughCheckpoint =
+    record.releases.expansionPackV8.postClaim.checkpoint;
+  Object.assign(record.verification, postClaimVerification());
+  const status = inspectExpansionPackV8Deployment(current.config, record, {
+    requirePostClaim: true,
+  });
+  assert.equal(status.ready, true, JSON.stringify(status, null, 2));
+  assert.equal(activation.entitlementCount, 0);
+  assert.equal(activation.passCountForTestWallet, 0);
+
+  const drift = structuredClone(record);
+  drift.releases.expansionPackV8.postClaim.holder = '0xbad';
+  drift.releases.expansionPackV8.postClaim.paidAtomic = '1';
+  drift.releases.expansionPackV8.postClaim.entitlementCount = 2;
+  const rejected = inspectExpansionPackV8Deployment(current.config, drift);
+  for (const field of ['holder', 'paidAtomic', 'entitlementCount']) {
+    assert.ok(rejected.deploymentInvalid.includes(
+      `releases.expansionPackV8.postClaim.${field}`,
+    ), field);
+  }
+});
+
+test('post-claim external evidence validator binds semantic hashes and acceptance artifacts', async () => {
+  const current = await currentMainnetTuple();
+  const record = structuredClone(current.deployment);
+  const activation = record.releases.expansionPackV8.activation;
+  const claim = postClaim(activation);
+  record.releases.expansionPackV8.postClaim = claim;
+  const receipt = {
+    schemaVersion: 'animacraft.expansion-pack-v8-free-claim-receipt.v1',
+    status: 'success', chainIdentifier: claim.chainIdentifier,
+    transactionDigest: claim.transactionDigest, checkpoint: claim.checkpoint,
+    checkpointDigest: claim.checkpointDigest, claimedAtMs: claim.claimedAtMs,
+    releaseId: claim.releaseId, releaseObjectVersion: claim.releaseObjectVersion,
+    releaseObjectDigest: claim.releaseObjectDigest, entitlementCount: 1,
+    walletAddress: claim.walletAddress, passId: claim.passId,
+    passObjectVersion: claim.passObjectVersion, passObjectDigest: claim.passObjectDigest,
+    holder: claim.holder, parentRootId: claim.parentRootId, paidAtomic: '0',
+    issuedAtMs: claim.issuedAtMs,
+    admittedParentOwnershipEpoch: claim.admittedParentOwnershipEpoch,
+    contentCommitment: claim.contentCommitment, createdPassCount: 1,
+    entitlementEventCount: 1,
+  };
+  const stable = (value) => {
+    if (Array.isArray(value)) return value.map(stable);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+  };
+  receipt.receiptSha256 = createHash('sha256')
+    .update(JSON.stringify(stable(receipt))).digest('hex');
+  claim.receiptEvidence.contentSha256 = receipt.receiptSha256;
+  const readback = {
+    schemaVersion: 'animacraft.expansion-pack-v8-post-claim-mainnet-readback.v1',
+    network: { chainIdentifier: claim.chainIdentifier },
+    source: {},
+    claim: {
+      transactionDigest: claim.transactionDigest, checkpoint: claim.checkpoint,
+      checkpointDigest: claim.checkpointDigest, claimedAtMs: claim.claimedAtMs,
+      createdPassCount: 1, entitlementEventCount: 1,
+    },
+    release: {
+      releaseId: claim.releaseId, objectVersion: claim.releaseObjectVersion,
+      objectDigest: claim.releaseObjectDigest, entitlementCount: 1,
+      lifecycle: activation.lifecycle, accessMode: activation.accessMode,
+    },
+    pass: {
+      passId: claim.passId, objectVersion: claim.passObjectVersion,
+      objectDigest: claim.passObjectDigest, holder: claim.holder,
+      releaseId: claim.releaseId, parentRootId: claim.parentRootId,
+      paidAtomic: '0', issuedAtMs: claim.issuedAtMs,
+      admittedParentOwnershipEpoch: claim.admittedParentOwnershipEpoch,
+      contentCommitment: claim.contentCommitment,
+    },
+    passCountForTestWallet: 1,
+    readbackVerified: true,
+  };
+  const wallet = {
+    schemaVersion: 'animacraft.expansion-pack-v8-wallet-acceptance.v1',
+    status: 'pass', chainIdentifier: claim.chainIdentifier,
+    releaseId: claim.releaseId, walletAddress: claim.walletAddress,
+    passId: claim.passId, transactionDigest: claim.transactionDigest,
+    contentCommitment: claim.contentCommitment, passVisible: true,
+    packAccessible: true, existingPassReused: true,
+  };
+  const render = {
+    schemaVersion: 'animacraft.expansion-pack-v8-render-evidence.v1',
+    status: 'pass', releaseId: claim.releaseId, walletAddress: claim.walletAddress,
+    passId: claim.passId, contentCommitment: claim.contentCommitment,
+    partKey: activation.style.partKey, itemKey: activation.style.itemKey,
+    styleKey: activation.style.styleKey, assetSha256: activation.style.assetSha256,
+    artifactPath: claim.renderEvidence.artifactPath,
+    artifactSha256: claim.renderEvidence.artifactSha256,
+    assetLoaded: true, sceneRendered: true,
+  };
+  const values = new Map([
+    [claim.receiptEvidence.path, receipt], [claim.readbackEvidence.path, readback],
+    [claim.walletAcceptanceEvidence.path, wallet], [claim.renderEvidence.path, render],
+  ]);
+  const bytes = new Map([...values].map(([path, value]) => [
+    path, Buffer.from(JSON.stringify(value)),
+  ]));
+  bytes.set(claim.renderEvidence.artifactPath, Buffer.from('rendered-pixels'));
+  claim.receiptEvidence.fileSha256 = createHash('sha256').update(bytes.get('claim.json')).digest('hex');
+  claim.readbackEvidence.fileSha256 = createHash('sha256').update(bytes.get('readback.json')).digest('hex');
+  claim.walletAcceptanceEvidence.fileSha256 = createHash('sha256').update(bytes.get('wallet.json')).digest('hex');
+  claim.renderEvidence.fileSha256 = createHash('sha256').update(bytes.get('render.json')).digest('hex');
+  claim.renderEvidence.artifactSha256 = createHash('sha256').update(bytes.get('render.png')).digest('hex');
+  render.artifactSha256 = claim.renderEvidence.artifactSha256;
+  bytes.set('render.json', Buffer.from(JSON.stringify(render)));
+  claim.renderEvidence.fileSha256 = createHash('sha256').update(bytes.get('render.json')).digest('hex');
+  readback.source.claimReceiptFileSha256 = claim.receiptEvidence.fileSha256;
+  readback.source.claimReceiptContentSha256 = claim.receiptEvidence.contentSha256;
+  bytes.set('readback.json', Buffer.from(JSON.stringify(readback)));
+  claim.readbackEvidence.fileSha256 = createHash('sha256').update(bytes.get('readback.json')).digest('hex');
+  const loader = async (descriptor) => ({
+    bytes: bytes.get(descriptor.path), value: values.get(descriptor.path) || null,
+  });
+  const accepted = await inspectExpansionPackV8PostClaimEvidence(record, { loader });
+  assert.equal(accepted.ready, true, accepted.detail);
+  const tampered = structuredClone(record);
+  tampered.releases.expansionPackV8.postClaim.passId = '0xc002';
+  const rejected = await inspectExpansionPackV8PostClaimEvidence(tampered, { loader });
+  assert.equal(rejected.ready, false);
+  assert.ok(rejected.failures.some((failure) => /Pass mismatch/.test(failure)));
 });
 
 test('present activation evidence fails closed on external evidence drift', async () => {
@@ -907,6 +1116,118 @@ test('live activation verifier rejects duplicate or non-ADMITTED lifecycle event
   assert.ok(wrongTransition.failures.includes('Activation transaction mismatch'));
   const duplicate = await verify([lifecycleEvent(2), lifecycleEvent(2)]);
   assert.ok(duplicate.failures.includes('Activation transaction mismatch'));
+});
+
+test('live verifier uses post-claim Release state and proves the exact created wallet Pass', async () => {
+  const current = await currentMainnetTuple();
+  const record = structuredClone(current.deployment);
+  const activation = record.releases.expansionPackV8.activation;
+  const claim = postClaim(activation);
+  record.releases.expansionPackV8.postClaim = claim;
+  const release = {
+    objectId: activation.releaseId, adminCapId: activation.adminCapId,
+    treasuryId: activation.treasuryId, creator: activation.creator,
+    parentRootId: activation.parentRootId,
+    parentLegacyMakerId: activation.parentLegacyMakerId,
+    admittedBy: activation.admittedBy, admittedParentOwnershipEpoch: 1n,
+    packId: activation.packId, namespace: activation.namespace,
+    packVersion: activation.version, accessKind: 0, purchasePriceAtomic: 0n,
+    lifecycle: 3, manifestBlobId: activation.manifestBlobId,
+    manifestSha256: activation.manifestSha256,
+    contentCommitment: activation.contentCommitment,
+    styleRegistryCommitment: activation.styleRegistryCommitment,
+    styleCount: 1n, entitlementCount: 1n,
+    sealPolicyId: '', sealPackageId: '', sealReleaseCommitment: '',
+  };
+  const pass = {
+    objectId: claim.passId, releaseId: claim.releaseId,
+    parentRootId: claim.parentRootId, holder: claim.holder,
+    paidAtomic: 0n, issuedAtMs: BigInt(claim.issuedAtMs),
+    admittedParentOwnershipEpoch: BigInt(claim.admittedParentOwnershipEpoch),
+    contentCommitment: claim.contentCommitment,
+  };
+  const activationEvent = {
+    eventType: `${current.config.expansionPackV8TypeOriginPackageId}`
+      + '::expansion_pack_v8::ExpansionPackLifecycleChangedV8',
+    json: { release_id: activation.releaseId, previous_lifecycle: 2, lifecycle: 3 },
+  };
+  const entitlementEvent = {
+    eventType: `${current.config.expansionPackV8TypeOriginPackageId}`
+      + '::expansion_pack_v8::ExpansionPackEntitlementGrantedV8',
+    json: {
+      release_id: claim.releaseId, parent_root_id: claim.parentRootId,
+      holder: claim.holder, paid_atomic: '0', pass_id: claim.passId,
+      admitted_parent_ownership_epoch: claim.admittedParentOwnershipEpoch,
+    },
+  };
+  const bytes = new Map(activation.walrus.files.map((file) => [
+    file.patchId, Buffer.alloc(file.byteLength),
+  ]));
+  const status = await inspectExpansionPackV8LiveActivation(
+    null,
+    current.config,
+    record,
+    {
+      readers: {
+        objects: async () => ({
+          release,
+          adminCap: { objectId: activation.adminCapId, releaseId: activation.releaseId,
+            creator: activation.creator, owner: activation.creator },
+          treasury: { objectId: activation.treasuryId, releaseId: activation.releaseId,
+            balanceAtomic: 0n, totalCollectedAtomic: 0n, totalWithdrawnAtomic: 0n },
+          pass,
+          raw: [
+            { version: claim.releaseObjectVersion, digest: claim.releaseObjectDigest },
+            { version: activation.adminCapObjectVersion, digest: activation.adminCapObjectDigest },
+            { version: activation.treasuryObjectVersion, digest: activation.treasuryObjectDigest },
+            { version: claim.passObjectVersion, digest: claim.passObjectDigest },
+          ],
+        }),
+        styles: async () => [activation.style],
+        transaction: async () => ({ digest: activation.transactionDigest,
+          checkpoint: activation.checkpoint, effects: { status: { success: true } },
+          events: [activationEvent] }),
+        claimTransaction: async () => ({
+          digest: claim.transactionDigest, checkpoint: claim.checkpoint,
+          effects: { status: { success: true }, changedObjects: [{
+            objectId: claim.passId, idOperation: 'Created',
+          }] },
+          events: [entitlementEvent],
+          objectTypes: {
+            [claim.passId]: `${current.config.expansionPackV8TypeOriginPackageId}`
+              + '::expansion_pack_v8::ExpansionPackPassV8',
+          },
+        }),
+        blob: async () => ({ id: activation.walrus.blobObjectId,
+          registered_epoch: activation.walrus.registeredEpoch,
+          certified_epoch: activation.walrus.certifiedEpoch, deletable: false }),
+      },
+      fetchImpl: async (url) => {
+        const patchId = String(url).split('/').at(-1);
+        const body = bytes.get(patchId);
+        const file = activation.walrus.files.find((entry) => entry.patchId === patchId);
+        file.sha256 = createHash('sha256').update(body).digest('hex');
+        return { ok: true, arrayBuffer: async () => body };
+      },
+    },
+  );
+  assert.equal(status.ready, true, status.detail);
+
+  const stale = structuredClone(record);
+  stale.releases.expansionPackV8.postClaim.releaseObjectDigest = activation.releaseObjectDigest;
+  const rejected = await inspectExpansionPackV8LiveActivation(null, current.config, stale, {
+    readers: {
+      objects: async () => ({ release, adminCap: {}, treasury: {}, pass, raw: [
+        { version: claim.releaseObjectVersion, digest: claim.releaseObjectDigest }, {}, {}, {},
+      ] }),
+      transaction: async () => { throw new Error('irrelevant'); },
+      claimTransaction: async () => { throw new Error('irrelevant'); },
+      blob: async () => { throw new Error('irrelevant'); },
+      styles: async () => [],
+    },
+    fetchImpl: async () => { throw new Error('irrelevant'); },
+  });
+  assert.ok(rejected.failures.includes('Release object digest mismatch'));
 });
 
 test('enabled v8 requires one exact runtime, release and verification evidence tuple', () => {

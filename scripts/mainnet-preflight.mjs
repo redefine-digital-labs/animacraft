@@ -23,6 +23,7 @@ import {
   EXPANSION_PACK_V8_ACCESS,
   EXPANSION_PACK_V8_LIFECYCLE,
   parseExpansionPackAdminCapV8,
+  parseExpansionPackPassV8,
   parseExpansionPackReleaseV8,
   parseExpansionPackTreasuryV8,
   queryExpansionPackStyleRecordsV8,
@@ -40,7 +41,9 @@ const requireCompositionV6 = args.has('--require-composition-v6')
   || (strict && network && !expansionPackV8Only);
 const allowCompositionV6Enabled = args.has('--allow-v6-enabled');
 const requireExpansionPackV8 = args.has('--require-expansion-pack-v8')
-  || expansionPackV8Only;
+  || expansionPackV8Only
+  || args.has('--require-expansion-pack-v8-post-claim');
+const requireExpansionPackV8PostClaim = args.has('--require-expansion-pack-v8-post-claim');
 const json = args.has('--json');
 const checks = [];
 const ZERO_SUI_ADDRESS = normalizeSuiAddress('0x0');
@@ -240,6 +243,59 @@ export const EXPANSION_PACK_V8_ACTIVATION_FIELDS = Object.freeze([
   'readbackEvidence.fileSha256',
 ]);
 
+// Activation evidence is a frozen pre-claim artifact. A claim mutates the
+// shared Release object, so all mutable post-claim values and wallet acceptance
+// evidence live in this separate, optional block.
+export const EXPANSION_PACK_V8_POST_CLAIM_FIELDS = Object.freeze([
+  'schemaVersion',
+  'status',
+  'chainIdentifier',
+  'transactionDigest',
+  'checkpoint',
+  'checkpointDigest',
+  'claimedAtMs',
+  'claimedAtUtc',
+  'releaseId',
+  'releaseObjectVersion',
+  'releaseObjectDigest',
+  'entitlementCount',
+  'walletAddress',
+  'passId',
+  'passObjectVersion',
+  'passObjectDigest',
+  'holder',
+  'parentRootId',
+  'paidAtomic',
+  'issuedAtMs',
+  'admittedParentOwnershipEpoch',
+  'contentCommitment',
+  'createdPassCount',
+  'entitlementEventCount',
+  'passCountForTestWallet',
+  'receiptEvidence.path',
+  'receiptEvidence.fileSha256',
+  'receiptEvidence.contentSha256',
+  'readbackEvidence.path',
+  'readbackEvidence.fileSha256',
+  'walletAcceptanceEvidence.path',
+  'walletAcceptanceEvidence.fileSha256',
+  'renderEvidence.path',
+  'renderEvidence.fileSha256',
+  'renderEvidence.artifactPath',
+  'renderEvidence.artifactSha256',
+]);
+
+export const EXPANSION_PACK_V8_POST_CLAIM_VERIFICATION_FIELDS = Object.freeze([
+  'expansionPackV8FreeClaimTransactionStatus',
+  'expansionPackV8FreeClaimReadBack',
+  'expansionPackV8FreeClaimPassReadBack',
+  'expansionPackV8FreeClaimEventReadBack',
+  'expansionPackV8FreeClaimCreatedPassCount',
+  'expansionPackV8FreeClaimPaidAtomic',
+  'expansionPackV8WalletAcceptance',
+  'expansionPackV8RenderAcceptance',
+]);
+
 const SUI_TRANSACTION_DIGEST = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/;
 const GIT_OBJECT_ID = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -362,7 +418,7 @@ export function expansionPackV8Declared(config = {}, deployment = {}) {
 export function inspectExpansionPackV8Deployment(
   config = {},
   deployment = {},
-  { required = false } = {},
+  { required = false, requirePostClaim = false } = {},
 ) {
   const declared = required || expansionPackV8Declared(config, deployment);
   if (!declared) {
@@ -387,6 +443,10 @@ export function inspectExpansionPackV8Deployment(
   const activation = release.activation || {};
   const activationDeclared = Boolean(
     activation && typeof activation === 'object' && Object.keys(activation).length,
+  );
+  const postClaim = release.postClaim || {};
+  const postClaimDeclared = Boolean(
+    postClaim && typeof postClaim === 'object' && Object.keys(postClaim).length,
   );
   // The file-level inspector validates any block that is present. The command
   // runner separately makes external activation evidence mandatory when the
@@ -428,6 +488,16 @@ export function inspectExpansionPackV8Deployment(
         (field) => `releases.expansionPackV8.activation.${field}`,
       )
       : []),
+    ...((postClaimDeclared || requirePostClaim)
+      ? [
+          ...EXPANSION_PACK_V8_POST_CLAIM_FIELDS.map(
+            (field) => `releases.expansionPackV8.postClaim.${field}`,
+          ),
+          ...EXPANSION_PACK_V8_POST_CLAIM_VERIFICATION_FIELDS.map(
+            (field) => `verification.${field}`,
+          ),
+        ]
+      : []),
   ];
   const booleanPaths = new Set([
     'expansionPackV8ReleaseEnabled',
@@ -440,6 +510,11 @@ export function inspectExpansionPackV8Deployment(
     'releases.expansionPackV8.parentFinalization.authorityShared',
     'releases.expansionPackV8.parentFinalization.zeroHistoryTrustedClear',
     'releases.expansionPackV8.activation.walrus.deletable',
+    'verification.expansionPackV8FreeClaimReadBack',
+    'verification.expansionPackV8FreeClaimPassReadBack',
+    'verification.expansionPackV8FreeClaimEventReadBack',
+    'verification.expansionPackV8WalletAcceptance',
+    'verification.expansionPackV8RenderAcceptance',
   ]);
   const deploymentMissing = deploymentPaths.filter((path) => {
     const value = nestedValue(deployment, path);
@@ -761,6 +836,106 @@ export function inspectExpansionPackV8Deployment(
       ['expansionPackV8WalrusWritesObserved', true],
     ]) {
       if (verification[field] !== expected) deploymentInvalid.push(`verification.${field}`);
+    }
+  }
+  if (postClaimDeclared || requirePostClaim) {
+    const invalidPostClaim = (field) => deploymentInvalid.push(
+      `releases.expansionPackV8.postClaim.${field}`,
+    );
+    if (postClaim.schemaVersion
+      !== 'animacraft.expansion-pack-v8-post-claim-evidence.v1') {
+      invalidPostClaim('schemaVersion');
+    }
+    for (const field of [
+      'releaseId', 'walletAddress', 'passId', 'holder', 'parentRootId',
+    ]) {
+      const value = nestedValue(postClaim, field);
+      if (present(value) && !validSuiId(value)) invalidPostClaim(field);
+    }
+    for (const field of [
+      'transactionDigest', 'checkpointDigest', 'releaseObjectDigest',
+      'passObjectDigest',
+    ]) {
+      const value = nestedValue(postClaim, field);
+      if (present(value) && !SUI_TRANSACTION_DIGEST.test(String(value))) {
+        invalidPostClaim(field);
+      }
+    }
+    for (const field of [
+      'checkpoint', 'claimedAtMs', 'releaseObjectVersion', 'entitlementCount',
+      'passObjectVersion', 'issuedAtMs', 'createdPassCount',
+      'entitlementEventCount', 'passCountForTestWallet',
+    ]) {
+      const value = nestedValue(postClaim, field);
+      if (present(value) && !positiveInteger(value)) invalidPostClaim(field);
+    }
+    for (const field of [
+      'contentCommitment', 'receiptEvidence.fileSha256',
+      'receiptEvidence.contentSha256', 'readbackEvidence.fileSha256',
+      'walletAcceptanceEvidence.fileSha256', 'renderEvidence.fileSha256',
+      'renderEvidence.artifactSha256',
+    ]) {
+      const value = nestedValue(postClaim, field);
+      if (present(value) && !SHA256.test(String(value))) invalidPostClaim(field);
+    }
+    const exactPostClaim = [
+      ['status', 'success'],
+      ['chainIdentifier', activation.chainIdentifier],
+      ['releaseId', activation.releaseId],
+      ['holder', postClaim.walletAddress],
+      ['parentRootId', activation.parentRootId],
+      ['paidAtomic', '0'],
+      ['admittedParentOwnershipEpoch', activation.admittedParentOwnershipEpoch],
+      ['contentCommitment', activation.contentCommitment],
+      ['entitlementCount', 1],
+      ['createdPassCount', 1],
+      ['entitlementEventCount', 1],
+      ['passCountForTestWallet', 1],
+    ];
+    for (const [field, expected] of exactPostClaim) {
+      if (nestedValue(postClaim, field) !== expected) invalidPostClaim(field);
+    }
+    if (present(postClaim.claimedAtMs) && present(postClaim.issuedAtMs)
+      && String(postClaim.claimedAtMs) !== String(postClaim.issuedAtMs)) {
+      invalidPostClaim('issuedAtMs');
+    }
+    if (present(postClaim.claimedAtMs) && present(postClaim.claimedAtUtc)) {
+      let expectedUtc = '';
+      try {
+        expectedUtc = new Date(Number(postClaim.claimedAtMs)).toISOString();
+      } catch {
+        expectedUtc = '';
+      }
+      if (expectedUtc !== postClaim.claimedAtUtc) invalidPostClaim('claimedAtUtc');
+    }
+    if (present(postClaim.checkpoint) && present(activation.checkpoint)
+      && BigInt(postClaim.checkpoint) <= BigInt(activation.checkpoint)) {
+      invalidPostClaim('checkpoint');
+    }
+    if (present(postClaim.releaseObjectVersion)
+      && present(activation.releaseObjectVersion)
+      && BigInt(postClaim.releaseObjectVersion) <= BigInt(activation.releaseObjectVersion)) {
+      invalidPostClaim('releaseObjectVersion');
+    }
+    if (present(postClaim.checkpoint)
+      && present(deployment.observedChainState?.observedThroughCheckpoint)
+      && BigInt(deployment.observedChainState.observedThroughCheckpoint)
+        < BigInt(postClaim.checkpoint)) {
+      invalidPostClaim('checkpoint');
+    }
+    for (const [field, expected] of [
+      ['expansionPackV8FreeClaimTransactionStatus', 'success'],
+      ['expansionPackV8FreeClaimReadBack', true],
+      ['expansionPackV8FreeClaimPassReadBack', true],
+      ['expansionPackV8FreeClaimEventReadBack', true],
+      ['expansionPackV8FreeClaimCreatedPassCount', 1],
+      ['expansionPackV8FreeClaimPaidAtomic', '0'],
+      ['expansionPackV8WalletAcceptance', true],
+      ['expansionPackV8RenderAcceptance', true],
+    ]) {
+      if (verification[field] !== expected) {
+        deploymentInvalid.push(`verification.${field}`);
+      }
     }
   }
 
@@ -1102,6 +1277,166 @@ export async function inspectExpansionPackV8ActivationEvidence(deployment = {}, 
   };
 }
 
+export async function inspectExpansionPackV8PostClaimEvidence(deployment = {}, {
+  required = false,
+  loader,
+} = {}) {
+  const releaseRecord = deployment.releases?.expansionPackV8 || {};
+  const activation = releaseRecord.activation || {};
+  const postClaim = releaseRecord.postClaim;
+  if (!postClaim || typeof postClaim !== 'object' || !Object.keys(postClaim).length) {
+    return {
+      declared: false,
+      ready: !required,
+      detail: required
+        ? 'Expansion Pack v8 post-claim evidence is required.'
+        : 'No Expansion Pack v8 post-claim evidence is declared.',
+      failures: required ? ['post-claim evidence is missing'] : [],
+    };
+  }
+  const failures = [];
+  const defaultLoader = async (descriptor, { json: parseJson = true } = {}) => {
+    const url = new URL(String(descriptor?.path || ''), new URL('../', import.meta.url));
+    const bytes = await readFile(url);
+    return { bytes, value: parseJson ? JSON.parse(bytes) : null };
+  };
+  const load = loader || defaultLoader;
+  const loadEvidence = async (descriptor, label, options = {}) => {
+    try {
+      const loaded = await load(descriptor, options);
+      const bytes = Buffer.from(loaded?.bytes || []);
+      const fileSha256 = createHash('sha256').update(bytes).digest('hex');
+      const expectedSha256 = options.artifact
+        ? descriptor?.artifactSha256
+        : descriptor?.fileSha256;
+      if (fileSha256 !== expectedSha256) {
+        failures.push(`${label} file SHA-256 mismatch`);
+      }
+      return loaded?.value ?? null;
+    } catch (error) {
+      failures.push(`${label} unavailable: ${error.message}`);
+      return null;
+    }
+  };
+  const [receipt, readback, walletAcceptance, render] = await Promise.all([
+    loadEvidence(postClaim.receiptEvidence, 'claim receipt'),
+    loadEvidence(postClaim.readbackEvidence, 'post-claim Mainnet readback'),
+    loadEvidence(postClaim.walletAcceptanceEvidence, 'wallet acceptance'),
+    loadEvidence(postClaim.renderEvidence, 'render evidence'),
+  ]);
+  if (receipt) {
+    const semantic = { ...receipt };
+    delete semantic.receiptSha256;
+    const contentSha256 = createHash('sha256')
+      .update(JSON.stringify(stableJsonValue(semantic)))
+      .digest('hex');
+    for (const [actual, expected, label] of [
+      [receipt.schemaVersion, 'animacraft.expansion-pack-v8-free-claim-receipt.v1', 'claim receipt schema'],
+      [receipt.status, 'success', 'claim receipt status'],
+      [receipt.receiptSha256, postClaim.receiptEvidence.contentSha256, 'claim receipt content SHA-256'],
+      [contentSha256, postClaim.receiptEvidence.contentSha256, 'computed claim receipt content SHA-256'],
+      [receipt.chainIdentifier, postClaim.chainIdentifier, 'claim receipt chain'],
+      [receipt.transactionDigest, postClaim.transactionDigest, 'claim receipt transaction'],
+      [String(receipt.checkpoint), postClaim.checkpoint, 'claim receipt checkpoint'],
+      [receipt.checkpointDigest, postClaim.checkpointDigest, 'claim receipt checkpoint digest'],
+      [String(receipt.claimedAtMs), postClaim.claimedAtMs, 'claim receipt timestamp'],
+      [receipt.releaseId, postClaim.releaseId, 'claim receipt release'],
+      [String(receipt.releaseObjectVersion), postClaim.releaseObjectVersion, 'claim receipt Release version'],
+      [receipt.releaseObjectDigest, postClaim.releaseObjectDigest, 'claim receipt Release digest'],
+      [Number(receipt.entitlementCount), postClaim.entitlementCount, 'claim receipt entitlement count'],
+      [receipt.walletAddress, postClaim.walletAddress, 'claim receipt wallet'],
+      [receipt.passId, postClaim.passId, 'claim receipt Pass'],
+      [String(receipt.passObjectVersion), postClaim.passObjectVersion, 'claim receipt Pass version'],
+      [receipt.passObjectDigest, postClaim.passObjectDigest, 'claim receipt Pass digest'],
+      [receipt.holder, postClaim.holder, 'claim receipt holder'],
+      [receipt.parentRootId, postClaim.parentRootId, 'claim receipt parent Root'],
+      [String(receipt.paidAtomic), postClaim.paidAtomic, 'claim receipt paid amount'],
+      [String(receipt.issuedAtMs), postClaim.issuedAtMs, 'claim receipt issue time'],
+      [String(receipt.admittedParentOwnershipEpoch), postClaim.admittedParentOwnershipEpoch, 'claim receipt parent epoch'],
+      [receipt.contentCommitment, postClaim.contentCommitment, 'claim receipt content commitment'],
+      [Number(receipt.createdPassCount), postClaim.createdPassCount, 'claim receipt created Pass count'],
+      [Number(receipt.entitlementEventCount), postClaim.entitlementEventCount, 'claim receipt event count'],
+    ]) if (actual !== expected) failures.push(`${label} mismatch`);
+  }
+  if (readback) {
+    for (const [actual, expected, label] of [
+      [readback.schemaVersion, 'animacraft.expansion-pack-v8-post-claim-mainnet-readback.v1', 'post-claim readback schema'],
+      [readback.network?.chainIdentifier, postClaim.chainIdentifier, 'post-claim readback chain'],
+      [readback.source?.claimReceiptFileSha256, postClaim.receiptEvidence.fileSha256, 'post-claim receipt file SHA-256'],
+      [readback.source?.claimReceiptContentSha256, postClaim.receiptEvidence.contentSha256, 'post-claim receipt content SHA-256'],
+      [readback.claim?.transactionDigest, postClaim.transactionDigest, 'post-claim transaction'],
+      [String(readback.claim?.checkpoint), postClaim.checkpoint, 'post-claim checkpoint'],
+      [readback.claim?.checkpointDigest, postClaim.checkpointDigest, 'post-claim checkpoint digest'],
+      [String(readback.claim?.claimedAtMs), postClaim.claimedAtMs, 'post-claim timestamp'],
+      [Number(readback.claim?.createdPassCount), postClaim.createdPassCount, 'post-claim created Pass count'],
+      [Number(readback.claim?.entitlementEventCount), postClaim.entitlementEventCount, 'post-claim event count'],
+      [readback.release?.releaseId, postClaim.releaseId, 'post-claim Release'],
+      [String(readback.release?.objectVersion), postClaim.releaseObjectVersion, 'post-claim Release version'],
+      [readback.release?.objectDigest, postClaim.releaseObjectDigest, 'post-claim Release digest'],
+      [Number(readback.release?.entitlementCount), postClaim.entitlementCount, 'post-claim entitlement count'],
+      [readback.release?.lifecycle, activation.lifecycle, 'post-claim lifecycle'],
+      [readback.release?.accessMode, activation.accessMode, 'post-claim access mode'],
+      [readback.pass?.passId, postClaim.passId, 'post-claim Pass'],
+      [String(readback.pass?.objectVersion), postClaim.passObjectVersion, 'post-claim Pass version'],
+      [readback.pass?.objectDigest, postClaim.passObjectDigest, 'post-claim Pass digest'],
+      [readback.pass?.holder, postClaim.holder, 'post-claim holder'],
+      [readback.pass?.releaseId, postClaim.releaseId, 'post-claim Pass release'],
+      [readback.pass?.parentRootId, postClaim.parentRootId, 'post-claim Pass parent'],
+      [String(readback.pass?.paidAtomic), postClaim.paidAtomic, 'post-claim paid amount'],
+      [String(readback.pass?.issuedAtMs), postClaim.issuedAtMs, 'post-claim issue time'],
+      [String(readback.pass?.admittedParentOwnershipEpoch), postClaim.admittedParentOwnershipEpoch, 'post-claim parent epoch'],
+      [readback.pass?.contentCommitment, postClaim.contentCommitment, 'post-claim content commitment'],
+      [Number(readback.passCountForTestWallet), postClaim.passCountForTestWallet, 'post-claim wallet Pass count'],
+      [readback.readbackVerified, true, 'post-claim readback verification'],
+    ]) if (actual !== expected) failures.push(`${label} mismatch`);
+  }
+  if (walletAcceptance) {
+    for (const [actual, expected, label] of [
+      [walletAcceptance.schemaVersion, 'animacraft.expansion-pack-v8-wallet-acceptance.v1', 'wallet acceptance schema'],
+      [walletAcceptance.status, 'pass', 'wallet acceptance status'],
+      [walletAcceptance.chainIdentifier, postClaim.chainIdentifier, 'wallet acceptance chain'],
+      [walletAcceptance.releaseId, postClaim.releaseId, 'wallet acceptance release'],
+      [walletAcceptance.walletAddress, postClaim.walletAddress, 'wallet acceptance wallet'],
+      [walletAcceptance.passId, postClaim.passId, 'wallet acceptance Pass'],
+      [walletAcceptance.transactionDigest, postClaim.transactionDigest, 'wallet acceptance transaction'],
+      [walletAcceptance.contentCommitment, postClaim.contentCommitment, 'wallet acceptance commitment'],
+      [walletAcceptance.passVisible, true, 'wallet acceptance Pass visibility'],
+      [walletAcceptance.packAccessible, true, 'wallet acceptance Pack access'],
+      [walletAcceptance.existingPassReused, true, 'wallet acceptance duplicate-signature guard'],
+    ]) if (actual !== expected) failures.push(`${label} mismatch`);
+  }
+  if (render) {
+    for (const [actual, expected, label] of [
+      [render.schemaVersion, 'animacraft.expansion-pack-v8-render-evidence.v1', 'render evidence schema'],
+      [render.status, 'pass', 'render evidence status'],
+      [render.releaseId, postClaim.releaseId, 'render evidence release'],
+      [render.walletAddress, postClaim.walletAddress, 'render evidence wallet'],
+      [render.passId, postClaim.passId, 'render evidence Pass'],
+      [render.contentCommitment, postClaim.contentCommitment, 'render evidence commitment'],
+      [render.partKey, activation.style?.partKey, 'render evidence Part'],
+      [render.itemKey, activation.style?.itemKey, 'render evidence Item'],
+      [render.styleKey, activation.style?.styleKey, 'render evidence Style'],
+      [render.assetSha256, activation.style?.assetSha256, 'render evidence asset'],
+      [render.artifactPath, postClaim.renderEvidence.artifactPath, 'render artifact path'],
+      [render.artifactSha256, postClaim.renderEvidence.artifactSha256, 'render artifact SHA-256'],
+      [render.assetLoaded, true, 'render asset load'],
+      [render.sceneRendered, true, 'render scene status'],
+    ]) if (actual !== expected) failures.push(`${label} mismatch`);
+    await loadEvidence({
+      path: postClaim.renderEvidence.artifactPath,
+      artifactSha256: postClaim.renderEvidence.artifactSha256,
+    }, 'render artifact', { json: false, artifact: true });
+  }
+  return {
+    declared: true,
+    ready: failures.length === 0,
+    detail: failures.length
+      ? failures.join('; ')
+      : 'Claim receipt, post-claim Mainnet readback, wallet acceptance and render artifact bind the exact FREE claim, mutable Release, wallet-owned Pass and accepted Style.',
+    failures,
+  };
+}
+
 function transactionEnvelope(value) {
   return value?.response?.transaction
     || value?.Transaction
@@ -1137,17 +1472,26 @@ export async function inspectExpansionPackV8LiveActivation(
   { fetchImpl = fetch, readers = {} } = {},
 ) {
   const activation = deployment.releases?.expansionPackV8?.activation || {};
+  const postClaim = deployment.releases?.expansionPackV8?.postClaim || {};
+  const postClaimDeclared = Boolean(Object.keys(postClaim).length);
+  const currentReleaseEvidence = postClaimDeclared ? postClaim : activation;
   const failures = [];
   const core = client?.core || client;
   const readObjects = readers.objects || (async () => {
     const response = await core.getObjects({
-      objectIds: [activation.releaseId, activation.adminCapId, activation.treasuryId],
+      objectIds: [
+        activation.releaseId,
+        activation.adminCapId,
+        activation.treasuryId,
+        ...(postClaimDeclared ? [postClaim.passId] : []),
+      ],
       include: { json: true, owner: true },
     });
     const objects = response.objects || [];
-    if (objects.length !== 3 || objects.some((value) => (
+    const expectedCount = postClaimDeclared ? 4 : 3;
+    if (objects.length !== expectedCount || objects.some((value) => (
       !value || value instanceof Error || value.error || value.$kind === 'Error'
-    ))) throw new Error('Release, AdminCap or Treasury is unavailable.');
+    ))) throw new Error('Release, AdminCap, Treasury or declared Pass is unavailable.');
     return {
       release: parseExpansionPackReleaseV8(objects[0], { runtime: config }),
       adminCap: parseExpansionPackAdminCapV8(objects[1], { runtime: config }),
@@ -1155,11 +1499,14 @@ export async function inspectExpansionPackV8LiveActivation(
         runtime: config,
         paymentCoinType: config.paymentCoinType,
       }),
+      pass: postClaimDeclared
+        ? parseExpansionPackPassV8(objects[3], { runtime: config })
+        : null,
       raw: objects,
     };
   });
   try {
-    const { release, adminCap, treasury, raw = [] } = await readObjects();
+    const { release, adminCap, treasury, pass, raw = [] } = await readObjects();
     const checks = [
       [release.objectId, activation.releaseId, 'Release ID'],
       [release.adminCapId, activation.adminCapId, 'Release AdminCap'],
@@ -1180,7 +1527,7 @@ export async function inspectExpansionPackV8LiveActivation(
       [release.contentCommitment, activation.contentCommitment, 'Content commitment'],
       [release.styleRegistryCommitment, activation.styleRegistryCommitment, 'Style commitment'],
       [String(release.styleCount), String(activation.styleCount), 'Style count'],
-      [String(release.entitlementCount), String(activation.entitlementCount), 'Entitlement count'],
+      [String(release.entitlementCount), String(currentReleaseEvidence.entitlementCount), 'Entitlement count'],
       [release.sealPolicyId, '', 'Seal policy'],
       [release.sealPackageId, '', 'Seal package'],
       [release.sealReleaseCommitment, '', 'Seal commitment'],
@@ -1198,8 +1545,8 @@ export async function inspectExpansionPackV8LiveActivation(
       if (actual !== expected) failures.push(`${label} mismatch`);
     }
     const rawChecks = [
-      [raw[0]?.version, activation.releaseObjectVersion, 'Release object version'],
-      [raw[0]?.digest, activation.releaseObjectDigest, 'Release object digest'],
+      [raw[0]?.version, currentReleaseEvidence.releaseObjectVersion, 'Release object version'],
+      [raw[0]?.digest, currentReleaseEvidence.releaseObjectDigest, 'Release object digest'],
       [raw[1]?.version, activation.adminCapObjectVersion, 'AdminCap object version'],
       [raw[1]?.digest, activation.adminCapObjectDigest, 'AdminCap object digest'],
       [raw[2]?.version, activation.treasuryObjectVersion, 'Treasury object version'],
@@ -1207,6 +1554,22 @@ export async function inspectExpansionPackV8LiveActivation(
     ];
     for (const [actual, expected, label] of rawChecks) {
       if (actual != null && String(actual) !== expected) failures.push(`${label} mismatch`);
+    }
+    if (postClaimDeclared) {
+      for (const [actual, expected, label] of [
+        [pass?.objectId, postClaim.passId, 'Pass ID'],
+        [pass?.releaseId, postClaim.releaseId, 'Pass release'],
+        [pass?.parentRootId, postClaim.parentRootId, 'Pass parent Root'],
+        [pass?.holder, postClaim.holder, 'Pass holder'],
+        [String(pass?.paidAtomic), postClaim.paidAtomic, 'Pass paid amount'],
+        [String(pass?.issuedAtMs), postClaim.issuedAtMs, 'Pass issue time'],
+        [String(pass?.admittedParentOwnershipEpoch), postClaim.admittedParentOwnershipEpoch, 'Pass parent epoch'],
+        [pass?.contentCommitment, postClaim.contentCommitment, 'Pass content commitment'],
+        [raw[3]?.version, postClaim.passObjectVersion, 'Pass object version'],
+        [raw[3]?.digest, postClaim.passObjectDigest, 'Pass object digest'],
+      ]) {
+        if (actual == null || String(actual) !== String(expected)) failures.push(`${label} mismatch`);
+      }
     }
     const readStyles = readers.styles || (() => queryExpansionPackStyleRecordsV8(core, {
       runtime: config,
@@ -1270,6 +1633,92 @@ export async function inspectExpansionPackV8LiveActivation(
   } catch (error) {
     failures.push(`Activation transaction readback failed: ${error.message}`);
   }
+  if (postClaimDeclared) {
+    try {
+      const readClaimTransaction = readers.claimTransaction || (async () => {
+        if (!core?.getTransaction) {
+          throw new Error('Sui Core transaction reader is unavailable.');
+        }
+        return core.getTransaction({
+          digest: postClaim.transactionDigest,
+          include: { effects: true, events: true, objectTypes: true },
+        });
+      });
+      const transaction = transactionEnvelope(await readClaimTransaction());
+      const successful = transaction?.effects?.status?.success === true
+        || String(transaction?.effects?.status?.status
+          || transaction?.effects?.status || '').toLowerCase() === 'success';
+      const events = Array.isArray(transaction?.events)
+        ? transaction.events
+        : (transaction?.events?.events || []);
+      const expectedEventType = normalizeStructTag(
+        `${config.expansionPackV8TypeOriginPackageId}`
+        + '::expansion_pack_v8::ExpansionPackEntitlementGrantedV8',
+      );
+      const entitlementEvents = events.filter((event) => {
+        try {
+          return normalizeStructTag(String(
+            event?.eventType || event?.type || event?.event_type
+              || event?.contents?.type?.repr || '',
+          )) === expectedEventType;
+        } catch {
+          return false;
+        }
+      });
+      const entitlement = transactionEventJson(entitlementEvents[0]);
+      const expectedPassType = normalizeStructTag(
+        `${config.expansionPackV8TypeOriginPackageId}`
+        + '::expansion_pack_v8::ExpansionPackPassV8',
+      );
+      const passTypeIds = Object.entries(
+        transaction?.objectTypes || transaction?.object_types || {},
+      ).filter(([, type]) => {
+        try {
+          return normalizeStructTag(String(type)) === expectedPassType;
+        } catch {
+          return false;
+        }
+      }).map(([id]) => normalizeSuiAddress(id));
+      const createdPasses = (transaction?.effects?.changedObjects || []).filter((change) => {
+        try {
+          return String(change?.idOperation || '').toLowerCase() === 'created'
+            && passTypeIds.includes(normalizeSuiAddress(String(change?.objectId || '')));
+        } catch {
+          return false;
+        }
+      });
+      const normalizeEventId = (value) => {
+        try {
+          return normalizeSuiAddress(String(value?.id || value?.bytes || value || ''));
+        } catch {
+          return '';
+        }
+      };
+      if (String(transaction?.digest || '') !== postClaim.transactionDigest
+        || String(transaction?.checkpoint || transaction?.checkpointSequenceNumber || '')
+          !== postClaim.checkpoint
+        || !successful
+        || entitlementEvents.length !== 1
+        || createdPasses.length !== 1
+        || passTypeIds.length !== 1
+        || normalizeEventId(entitlement.release_id || entitlement.releaseId)
+          !== normalizeSuiAddress(postClaim.releaseId)
+        || normalizeEventId(entitlement.parent_root_id || entitlement.parentRootId)
+          !== normalizeSuiAddress(postClaim.parentRootId)
+        || normalizeEventId(entitlement.pass_id || entitlement.passId)
+          !== normalizeSuiAddress(postClaim.passId)
+        || normalizeEventId(entitlement.holder) !== normalizeSuiAddress(postClaim.holder)
+        || String(entitlement.paid_atomic ?? entitlement.paidAtomic) !== postClaim.paidAtomic
+        || String(entitlement.admitted_parent_ownership_epoch
+          ?? entitlement.admittedParentOwnershipEpoch)
+          !== postClaim.admittedParentOwnershipEpoch
+        || normalizeSuiAddress(createdPasses[0]?.objectId) !== normalizeSuiAddress(postClaim.passId)) {
+        failures.push('Post-claim transaction mismatch');
+      }
+    } catch (error) {
+      failures.push(`Post-claim transaction readback failed: ${error.message}`);
+    }
+  }
   try {
     const readBlob = readers.blob || (async () => {
       const walrusClient = client.$extend(walrus());
@@ -1305,7 +1754,9 @@ export async function inspectExpansionPackV8LiveActivation(
     ready: failures.length === 0,
     detail: failures.length
       ? failures.join('; ')
-      : 'ACTIVE FREE Release/AdminCap/Treasury/Style, exact activation transaction, certified Blob, and manifest/asset bytes read back live.',
+      : postClaimDeclared
+        ? 'ACTIVE FREE Release/AdminCap/Treasury/Style, exact activation and claim transactions, mutable Release, wallet-owned Pass, certified Blob, and manifest/asset bytes read back live.'
+        : 'ACTIVE FREE Release/AdminCap/Treasury/Style, exact activation transaction, certified Blob, and manifest/asset bytes read back live.',
     failures,
   };
 }
@@ -3974,7 +4425,10 @@ export async function runMainnetPreflight() {
   const expansionPackV8DeploymentStatus = inspectExpansionPackV8Deployment(
     config,
     deployment,
-    { required: requireExpansionPackV8 },
+    {
+      required: requireExpansionPackV8,
+      requirePostClaim: requireExpansionPackV8PostClaim,
+    },
   );
   recordExpansionPackV8Deployment(expansionPackV8DeploymentStatus);
   const activationRequired = config.expansionPackV8ReleaseEnabled === true;
@@ -3990,6 +4444,20 @@ export async function runMainnetPreflight() {
       'Animacraft Expansion Pack v8 activation evidence',
       activationEvidence.ready,
       activationEvidence.detail,
+    );
+  }
+  const postClaimDeclared = Boolean(
+    deployment.releases?.expansionPackV8?.postClaim
+      && Object.keys(deployment.releases.expansionPackV8.postClaim).length,
+  );
+  if (postClaimDeclared || requireExpansionPackV8PostClaim) {
+    const postClaimEvidence = await inspectExpansionPackV8PostClaimEvidence(deployment, {
+      required: requireExpansionPackV8PostClaim,
+    });
+    record(
+      'Animacraft Expansion Pack v8 post-claim evidence',
+      postClaimEvidence.ready,
+      postClaimEvidence.detail,
     );
   }
   if (requireExpansionPackV8) {
@@ -4033,6 +4501,7 @@ export async function runMainnetPreflight() {
       requireCompositionV6,
       allowCompositionV6Enabled,
       requireExpansionPackV8,
+      requireExpansionPackV8PostClaim,
       expansionPackV8Only,
       checks,
     }, null, 2)}\n`);
