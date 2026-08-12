@@ -644,17 +644,17 @@ async function currentMainnetTuple() {
   };
 }
 
-test('current Mainnet v8 tuple is fully evidenced while intentionally disabled', async () => {
+test('current Mainnet v8 tuple is fully evidenced and exclusively enabled', async () => {
   const current = await currentMainnetTuple();
   assert.equal(current.config.expansionPackV8CallablePackageId, MAINNET_V8.packageId);
   assert.equal(current.config.expansionPackV8TypeOriginPackageId, MAINNET_V8.typeOriginPackageId);
   assert.equal(current.config.independentExtensionV5TypeOriginPackageId, MAINNET_V8.packageId);
   assert.equal(current.config.legacyLogicalV5TypeOriginPackageId, MAINNET_V8.packageId);
   assert.equal(current.config.independentExtensionAuthorityV5Id, MAINNET_V8.authorityId);
-  assert.equal(current.config.expansionPackV8ReleaseEnabled, false);
+  assert.equal(current.config.expansionPackV8ReleaseEnabled, true);
   assert.equal(current.deployment.expansionPackV8CallablePackageId, MAINNET_V8.packageId);
   assert.equal(current.deployment.expansionPackV8TypeOriginPackageId, MAINNET_V8.typeOriginPackageId);
-  assert.equal(current.deployment.expansionPackV8ReleaseEnabled, false);
+  assert.equal(current.deployment.expansionPackV8ReleaseEnabled, true);
   assert.equal(current.deployment.releases.expansionPackV8.callablePackageId, MAINNET_V8.packageId);
   assert.equal(current.deployment.releases.expansionPackV8.typeOriginPackageId, MAINNET_V8.typeOriginPackageId);
   assert.equal(current.deployment.releases.expansionPackV8.upgradeTxDigest, MAINNET_V8.upgradeTxDigest);
@@ -675,9 +675,9 @@ test('current Mainnet v8 tuple is fully evidenced while intentionally disabled',
     current.deployment.releases.expansionPackV8.parentFinalization.authorityId,
     MAINNET_V8.authorityId,
   );
-  assert.equal(current.deployment.releases.expansionPackV8.enabled, false);
+  assert.equal(current.deployment.releases.expansionPackV8.enabled, true);
   assert.equal(current.deployment.verification.expansionPackV8PackageReadBack, true);
-  assert.equal(current.deployment.verification.expansionPackV8Enabled, false);
+  assert.equal(current.deployment.verification.expansionPackV8Enabled, true);
   assert.equal(expansionPackV8Declared(current.config, current.deployment), true);
   assert.deepEqual(inspectExpansionPackV8Deployment(
     current.config,
@@ -693,7 +693,7 @@ test('current Mainnet v8 tuple is fully evidenced while intentionally disabled',
   });
 });
 
-test('required v8 ceremony accepts the fully evidenced gate-false record', async () => {
+test('required v8 preflight accepts the fully evidenced enabled record', async () => {
   const current = await currentMainnetTuple();
   const status = inspectExpansionPackV8Deployment(
     current.config,
@@ -717,12 +717,12 @@ test('required v8 ceremony accepts the fully evidenced gate-false record', async
   assert.equal(new Set(retirement.retiredEntryPoints).size, 19);
 });
 
-test('current gate-false activation block binds the exact external receipt and readback', async () => {
+test('current activation block binds the exact pre-gate receipt and readback', async () => {
   const current = await currentMainnetTuple();
   const activation = current.deployment.releases.expansionPackV8.activation;
-  assert.equal(current.config.expansionPackV8ReleaseEnabled, false);
-  assert.equal(current.deployment.releases.expansionPackV8.enabled, false);
-  assert.equal(current.deployment.verification.expansionPackV8Enabled, false);
+  assert.equal(current.config.expansionPackV8ReleaseEnabled, true);
+  assert.equal(current.deployment.releases.expansionPackV8.enabled, true);
+  assert.equal(current.deployment.verification.expansionPackV8Enabled, true);
   assert.equal(activation.lifecycle, 'ACTIVE');
   assert.equal(activation.accessMode, 'FREE');
   assert.equal(activation.sealPolicyId, '');

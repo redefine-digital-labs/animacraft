@@ -72,11 +72,10 @@ window.ANIMACRAFT_CONFIG = {
   expansionPackV8TypeOriginPackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
   independentExtensionV5TypeOriginPackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
   legacyLogicalV5TypeOriginPackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
-  // Shared Authority created by the reviewed atomic parent finalizer. Recording
-  // it does not open a product gate; the Root stays PAUSED and v8 stays false
-  // until one Pack is fully published and read back.
+  // Shared Authority created by the reviewed atomic parent finalizer. The Root
+  // stays PAUSED; only the independently verified FREE v8 Pack is exposed.
   independentExtensionAuthorityV5Id: '0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19',
-  expansionPackV8ReleaseEnabled: false,
+  expansionPackV8ReleaseEnabled: true,
   // Intentionally empty while the reviewed Commerce/Seal release gate is off.
   // Mainnet activation requires the official committee endpoint plus an Enoki
   // X-API-Key; never claim paid assets are protected without it.

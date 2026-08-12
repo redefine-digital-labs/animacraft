@@ -104,6 +104,7 @@ if (origin) {
       'walrusRelayMaxTipMist',
       'walrusEpochs',
       'appUrl',
+      'soulidityIntegrationPath',
       'soulidityAppUrl',
       'soulidityPackageId',
       'soulidityCallablePackageId',

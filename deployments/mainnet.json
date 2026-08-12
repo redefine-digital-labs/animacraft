@@ -48,7 +48,7 @@
   "independentExtensionV5TypeOriginPackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
   "legacyLogicalV5TypeOriginPackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
   "independentExtensionAuthorityV5Id": "0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19",
-  "expansionPackV8ReleaseEnabled": false,
+  "expansionPackV8ReleaseEnabled": true,
   "sealV5CallablePackageId": "",
   "sealV5TypeOriginPackageId": "",
   "sealKeyServers": [],
@@ -321,7 +321,7 @@
           "fileSha256": "1033348b92de24a81801dcb257fd6eee3920ef412e16c2cf9a474cab3d25fa6a"
         }
       },
-      "enabled": false
+      "enabled": true
     }
   },
   "observedChainState": {
@@ -362,7 +362,7 @@
       "commerceV5ReleaseEnabled": false,
       "compositionV6ReleaseEnabled": false,
       "physicalStyleV7ReleaseEnabled": false,
-      "expansionPackV8ReleaseEnabled": false
+      "expansionPackV8ReleaseEnabled": true
     }
   },
   "verification": {
@@ -377,7 +377,7 @@
     "sourceVerifiedAtUtc": "2026-08-12T07:41:57Z",
     "sourceVerificationCliVersion": "1.76.1-homebrew",
     "packageDigest": "D9vH1VMhqckfGKP6kxbCzZsFuQa4gGhrdhNntAxCfaqe",
-    "publicStateCheckpointObserved": "309771202",
+    "publicStateCheckpointObserved": "309818089",
     "protocolFeeObjectsReadBack": true,
     "protocolFeeEnabled": true,
     "commerceV5ObjectsReadBack": true,
@@ -404,7 +404,7 @@
     "expansionPackV8ManifestReadBack": true,
     "expansionPackV8WalrusCertified": true,
     "expansionPackV8NoSealPolicy": true,
-    "expansionPackV8Enabled": false,
+    "expansionPackV8Enabled": true,
     "expansionPackV8CompleteToSoulidityEnabled": false,
     "expansionPackV8CompleteBridgeEnabled": false,
     "expansionPackV8PhysicalBridgeEnabled": false,
@@ -417,6 +417,6 @@
     "compositionV6RetirementAbortCode": 1,
     "compositionV6RetirementEvidenceCheckpoint": "309741978",
     "compositionV6RetirementEvidenceSha256": "10d715156c159fad0984515a5ee412ed16ad584c871a3a5765ba672a22b64c4a",
-    "notes": "Animacraft v7 callable package was read back after the package-only corrective Mainnet upgrade. Expansion Pack v8 keeps its v6 TypeOrigin; IndependentExtensionV5 and LegacyLogicalV5 datatypes use the new v7 TypeOrigin. The reviewed parent finalizer atomically sealed exactly 19 visual + 3 None + 4 Color rows, kept the Root PAUSED, advanced ownership epoch to 1, created the shared Authority, and deleted the general ControlCap. One FREE Expansion Pack v8 release is ACTIVE with one certified Walrus-backed Style, three created v8 objects, eight v8 Move events, no Pass, and no Seal policy/write. The product remains pinned to the v4 callable and every product runtime gate and v8 bridge is false. The pre-upgrade Composition v6 zero-state contract authorizes exactly nineteen write entry points to abort EProtocolDisabled=1 while preserving six recovery/compatibility paths."
+    "notes": "Animacraft v7 callable package was read back after the package-only corrective Mainnet upgrade. Expansion Pack v8 keeps its v6 TypeOrigin; IndependentExtensionV5 and LegacyLogicalV5 datatypes use the new v7 TypeOrigin. The reviewed parent finalizer atomically sealed exactly 19 visual + 3 None + 4 Color rows, kept the Root PAUSED, advanced ownership epoch to 1, created the shared Authority, and deleted the general ControlCap. One FREE Expansion Pack v8 release is ACTIVE with one certified Walrus-backed Style, three created v8 objects, eight v8 Move events, no Pass at activation time, and no Seal policy/write. Only the Expansion Pack v8 web product gate is enabled; canonical Soul mint, Commerce v5 product, Composition v6 product, Physical v7 product, Complete bridge and physical bridge remain false. The pre-upgrade Composition v6 zero-state contract authorizes exactly nineteen write entry points to abort EProtocolDisabled=1 while preserving six recovery/compatibility paths."
   }
 }

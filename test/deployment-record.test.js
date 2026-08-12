@@ -92,7 +92,7 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(deployment.observedChainState.protocolFee.enabled, true);
   assert.equal(deployment.observedChainState.commerceV5.enabled, true);
   assert.equal(deployment.observedChainState.compositionV6.enabled, true);
-  assert.equal(deployment.observedChainState.productRuntime.expansionPackV8ReleaseEnabled, false);
+  assert.equal(deployment.observedChainState.productRuntime.expansionPackV8ReleaseEnabled, true);
   assert.equal(deployment.observedChainState.productRuntime.canonicalSoulMintEnabled, false);
   assert.equal(runtime.expansionPackV8CallablePackageId, EXPANSION_PACK_V8_MAINNET.packageId);
   assert.equal(runtime.expansionPackV8TypeOriginPackageId, EXPANSION_PACK_V8_MAINNET.typeOriginPackageId);
@@ -102,10 +102,10 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
     runtime.independentExtensionAuthorityV5Id,
     '0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19',
   );
-  assert.equal(runtime.expansionPackV8ReleaseEnabled, false);
+  assert.equal(runtime.expansionPackV8ReleaseEnabled, true);
   assert.equal(deployment.expansionPackV8CallablePackageId, EXPANSION_PACK_V8_MAINNET.packageId);
   assert.equal(deployment.expansionPackV8TypeOriginPackageId, EXPANSION_PACK_V8_MAINNET.typeOriginPackageId);
-  assert.equal(deployment.expansionPackV8ReleaseEnabled, false);
+  assert.equal(deployment.expansionPackV8ReleaseEnabled, true);
   assert.equal(runtime.callablePackageId, deployment.callablePackageId, 'the product remains pinned to the v4 callable');
   assert.notEqual(runtime.callablePackageId, runtime.expansionPackV8CallablePackageId);
   assert.equal(deployment.releases.expansionPackV8.callablePackageId, EXPANSION_PACK_V8_MAINNET.packageId);
@@ -141,7 +141,7 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
       - BigInt(deployment.releases.expansionPackV8.gasStorageRebateMist),
     BigInt(deployment.releases.expansionPackV8.gasUsedMist),
   );
-  assert.equal(deployment.releases.expansionPackV8.enabled, false);
+  assert.equal(deployment.releases.expansionPackV8.enabled, true);
   const activation = deployment.releases.expansionPackV8.activation;
   assert.equal(activation.lifecycle, 'ACTIVE');
   assert.equal(activation.accessMode, 'FREE');
@@ -185,7 +185,7 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(deployment.verification.expansionPackV8UpgradeTransactionStatus, 'success');
   assert.equal(deployment.verification.expansionPackV8SourceStatus, 'success');
   assert.equal(deployment.verification.expansionPackV8PackageReadBack, true);
-  assert.equal(deployment.verification.expansionPackV8Enabled, false);
+  assert.equal(deployment.verification.expansionPackV8Enabled, true);
   assert.equal(deployment.verification.expansionPackV8CompleteToSoulidityEnabled, false);
   assert.equal(deployment.verification.expansionPackV8CompleteBridgeEnabled, false);
   assert.equal(deployment.verification.expansionPackV8PhysicalBridgeEnabled, false);
