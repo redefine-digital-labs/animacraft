@@ -142,6 +142,19 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
     BigInt(deployment.releases.expansionPackV8.gasUsedMist),
   );
   assert.equal(deployment.releases.expansionPackV8.enabled, false);
+  const activation = deployment.releases.expansionPackV8.activation;
+  assert.equal(activation.lifecycle, 'ACTIVE');
+  assert.equal(activation.accessMode, 'FREE');
+  assert.equal(activation.releaseId, '0x8c2af3a0c7eb4bfe88bf5ed9e7b56cb407edae12f672a3331a09e41d046e071b');
+  assert.equal(activation.adminCapId, '0x04d453148397779bc881ec25202cf0a1c881b04f673417deb1a25ee3e5626098');
+  assert.equal(activation.treasuryId, '0x34a053862bf758074bfecf39150a09b5013f06e3546396dc08cef18708dbf001');
+  assert.equal(activation.transactionDigest, '8mw6HfPX1YHcfDwvgZbCNwawfUZHLHBMtYPQdSLcjdvv');
+  assert.equal(activation.checkpoint, '309818089');
+  assert.equal(activation.receiptEvidence.fileSha256, '4380b0708f64570e789ece49a96f732515ec49c23a4cb436993789413a96ef96');
+  assert.equal(activation.receiptEvidence.contentSha256, '078c15e59c3b594c448271f21d5829feb2a4de35df2d6b75d9a6d79c50fcf10f');
+  assert.equal(activation.readbackEvidence.fileSha256, '1033348b92de24a81801dcb257fd6eee3920ef412e16c2cf9a474cab3d25fa6a');
+  assert.equal(activation.style.assetSealId, '');
+  assert.equal(deployment.observedChainState.observedThroughCheckpoint, activation.checkpoint);
   const parentFinalization = deployment.releases.expansionPackV8.parentFinalization;
   assert.equal(parentFinalization.status, 'success');
   assert.equal(
@@ -177,10 +190,10 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(deployment.verification.expansionPackV8CompleteBridgeEnabled, false);
   assert.equal(deployment.verification.expansionPackV8PhysicalBridgeEnabled, false);
   assert.equal(deployment.verification.expansionPackV8CompanionProofAvailable, false);
-  assert.equal(deployment.verification.expansionPackV8ObjectsCreated, 0);
-  assert.equal(deployment.verification.expansionPackV8MoveEventsObserved, 0);
+  assert.equal(deployment.verification.expansionPackV8ObjectsCreated, 3);
+  assert.equal(deployment.verification.expansionPackV8MoveEventsObserved, 8);
   assert.equal(deployment.verification.expansionPackV8SealWritesObserved, false);
-  assert.equal(deployment.verification.expansionPackV8WalrusWritesObserved, false);
+  assert.equal(deployment.verification.expansionPackV8WalrusWritesObserved, true);
   assert.equal(deployment.verification.compositionV6RetiredOperationCount, 19);
   assert.equal(deployment.verification.compositionV6RetirementAbortCode, 1);
   assert.equal(new Set(COMPOSITION_V6_RETIRED_ENTRY_POINTS).size, 19);

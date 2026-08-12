@@ -19,6 +19,14 @@ import {
   queryStyleBindingsV5,
 } from '../chain-commerce-v5.js';
 import { queryIndependentExtensionLockV5 } from '../expansion-pack-publication-v8-app.js';
+import {
+  EXPANSION_PACK_V8_ACCESS,
+  EXPANSION_PACK_V8_LIFECYCLE,
+  parseExpansionPackAdminCapV8,
+  parseExpansionPackReleaseV8,
+  parseExpansionPackTreasuryV8,
+  queryExpansionPackStyleRecordsV8,
+} from '../expansion-pack-publication-v8-app.js';
 
 const args = new Set(process.argv.slice(2));
 const strict = args.has('--strict');
@@ -162,6 +170,74 @@ export const EXPANSION_PACK_V8_PARENT_FINALIZATION_FIELDS = Object.freeze([
   'legacyLogicalEventCount',
   'finalizedEventCount',
   'zeroHistoryTrustedClear',
+]);
+
+export const EXPANSION_PACK_V8_ACTIVATION_FIELDS = Object.freeze([
+  'schemaVersion',
+  'status',
+  'chainIdentifier',
+  'transactionDigest',
+  'checkpoint',
+  'checkpointDigest',
+  'activatedAtMs',
+  'activatedAtUtc',
+  'releaseId',
+  'releaseObjectVersion',
+  'releaseObjectDigest',
+  'adminCapId',
+  'adminCapObjectVersion',
+  'adminCapObjectDigest',
+  'treasuryId',
+  'treasuryObjectVersion',
+  'treasuryObjectDigest',
+  'packId',
+  'namespace',
+  'version',
+  'creator',
+  'parentRootId',
+  'parentLegacyMakerId',
+  'admittedBy',
+  'admittedParentOwnershipEpoch',
+  'accessMode',
+  'accessKind',
+  'purchasePriceAtomic',
+  'lifecycle',
+  'lifecycleCode',
+  'manifestBlobId',
+  'manifestSha256',
+  'contentCommitment',
+  'styleRegistryCommitment',
+  'styleCount',
+  'entitlementCount',
+  'passCountForTestWallet',
+  'sealPolicyId',
+  'sealPackageId',
+  'sealReleaseCommitment',
+  'treasuryBalanceAtomic',
+  'treasuryTotalCollectedAtomic',
+  'treasuryTotalWithdrawnAtomic',
+  'style.partKey',
+  'style.itemKey',
+  'style.styleKey',
+  'style.assetBlobId',
+  'style.assetSha256',
+  'style.assetSealId',
+  'walrus.blobObjectId',
+  'walrus.blobObjectVersion',
+  'walrus.blobObjectDigest',
+  'walrus.registeredEpoch',
+  'walrus.certifiedEpoch',
+  'walrus.storageStartEpoch',
+  'walrus.storageEndEpoch',
+  'walrus.deletable',
+  'walrus.manifestPatchId',
+  'walrus.assetPatchId',
+  'walrus.files',
+  'receiptEvidence.path',
+  'receiptEvidence.fileSha256',
+  'receiptEvidence.contentSha256',
+  'readbackEvidence.path',
+  'readbackEvidence.fileSha256',
 ]);
 
 const SUI_TRANSACTION_DIGEST = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/;
@@ -308,6 +384,15 @@ export function inspectExpansionPackV8Deployment(
     parentFinalization && typeof parentFinalization === 'object'
       && Object.keys(parentFinalization).length,
   );
+  const activation = release.activation || {};
+  const activationDeclared = Boolean(
+    activation && typeof activation === 'object' && Object.keys(activation).length,
+  );
+  // The file-level inspector validates any block that is present. The command
+  // runner separately makes external activation evidence mandatory when the
+  // public runtime gate is true, which keeps synthetic package-only fixtures
+  // useful without weakening the production gate.
+  const activationRequired = false;
   const runtimeMissing = EXPANSION_PACK_V8_RUNTIME_FIELDS.filter((field) => (
     field === 'expansionPackV8ReleaseEnabled'
       ? typeof config[field] !== 'boolean'
@@ -338,6 +423,11 @@ export function inspectExpansionPackV8Deployment(
     ...EXPANSION_PACK_V8_PARENT_FINALIZATION_FIELDS.map(
       (field) => `releases.expansionPackV8.parentFinalization.${field}`,
     ),
+    ...((activationDeclared || activationRequired)
+      ? EXPANSION_PACK_V8_ACTIVATION_FIELDS.map(
+        (field) => `releases.expansionPackV8.activation.${field}`,
+      )
+      : []),
   ];
   const booleanPaths = new Set([
     'expansionPackV8ReleaseEnabled',
@@ -349,12 +439,19 @@ export function inspectExpansionPackV8Deployment(
     'releases.expansionPackV8.parentFinalization.sealPolicyBound',
     'releases.expansionPackV8.parentFinalization.authorityShared',
     'releases.expansionPackV8.parentFinalization.zeroHistoryTrustedClear',
+    'releases.expansionPackV8.activation.walrus.deletable',
   ]);
   const deploymentMissing = deploymentPaths.filter((path) => {
     const value = nestedValue(deployment, path);
     if (path === 'releases.expansionPackV8.parentFinalization.activeListingId') {
       return typeof value !== 'string';
     }
+    if ([
+      'releases.expansionPackV8.activation.sealPolicyId',
+      'releases.expansionPackV8.activation.sealPackageId',
+      'releases.expansionPackV8.activation.sealReleaseCommitment',
+      'releases.expansionPackV8.activation.style.assetSealId',
+    ].includes(path)) return typeof value !== 'string';
     return booleanPaths.has(path) ? typeof value !== 'boolean' : !present(value);
   });
 
@@ -521,6 +618,149 @@ export function inspectExpansionPackV8Deployment(
         + BigInt(parentFinalization.gasStorageCostMist)
         - BigInt(parentFinalization.gasStorageRebateMist);
       if (net !== BigInt(parentFinalization.gasUsedMist)) invalidParent('gasUsedMist');
+    }
+  }
+  if (activationDeclared || activationRequired) {
+    const invalidActivation = (field) => deploymentInvalid.push(
+      `releases.expansionPackV8.activation.${field}`,
+    );
+    if (activation.schemaVersion !== 'animacraft.expansion-pack-v8-activation-evidence.v1') {
+      invalidActivation('schemaVersion');
+    }
+    const activationIds = [
+      'releaseId', 'adminCapId', 'treasuryId', 'creator', 'parentRootId',
+      'parentLegacyMakerId', 'admittedBy', 'walrus.blobObjectId',
+    ];
+    for (const field of activationIds) {
+      const value = nestedValue(activation, field);
+      if (present(value) && !validSuiId(value)) invalidActivation(field);
+    }
+    for (const field of [
+      'transactionDigest', 'checkpointDigest', 'releaseObjectDigest',
+      'adminCapObjectDigest', 'treasuryObjectDigest', 'walrus.blobObjectDigest',
+    ]) {
+      if (present(nestedValue(activation, field))
+        && !SUI_TRANSACTION_DIGEST.test(String(nestedValue(activation, field)))) {
+        invalidActivation(field);
+      }
+    }
+    for (const field of [
+      'checkpoint', 'activatedAtMs', 'releaseObjectVersion', 'adminCapObjectVersion',
+      'treasuryObjectVersion', 'walrus.blobObjectVersion', 'walrus.registeredEpoch',
+      'walrus.certifiedEpoch', 'walrus.storageStartEpoch', 'walrus.storageEndEpoch',
+    ]) {
+      if (present(nestedValue(activation, field))
+        && !positiveInteger(nestedValue(activation, field))) invalidActivation(field);
+    }
+    for (const field of [
+      'manifestSha256', 'contentCommitment', 'styleRegistryCommitment',
+      'style.assetSha256', 'receiptEvidence.fileSha256',
+      'receiptEvidence.contentSha256', 'readbackEvidence.fileSha256',
+    ]) {
+      if (present(nestedValue(activation, field))
+        && !SHA256.test(String(nestedValue(activation, field)))) invalidActivation(field);
+    }
+    const activationExact = [
+      ['status', 'success'],
+      ['chainIdentifier', parentFinalization.chainIdentifier],
+      ['releaseId', '0x8c2af3a0c7eb4bfe88bf5ed9e7b56cb407edae12f672a3331a09e41d046e071b'],
+      ['adminCapId', '0x04d453148397779bc881ec25202cf0a1c881b04f673417deb1a25ee3e5626098'],
+      ['treasuryId', '0x34a053862bf758074bfecf39150a09b5013f06e3546396dc08cef18708dbf001'],
+      ['packId', 'astral-courier-quiet-orbit-v8-test'],
+      ['namespace', 'quiet-orbit-v8'],
+      ['version', '1.0.0'],
+      ['creator', parentFinalization.owner],
+      ['parentRootId', parentFinalization.rootId],
+      ['parentLegacyMakerId', parentFinalization.legacyMakerId],
+      ['admittedBy', parentFinalization.owner],
+      ['admittedParentOwnershipEpoch', parentFinalization.ownershipEpoch],
+      ['accessMode', 'FREE'],
+      ['accessKind', 0],
+      ['purchasePriceAtomic', '0'],
+      ['lifecycle', 'ACTIVE'],
+      ['lifecycleCode', 3],
+      ['manifestBlobId', 'We3YHgglZfOpzffEyrxCB0dVNUS8ox5v8oSjJlb1QWE'],
+      ['manifestSha256', '036b8806d432a688d763b9668574cfddfa2ac765af54366844e787171be5a15c'],
+      ['contentCommitment', 'c517e3dcc7bd840604fa56f2fa0286fccc1a45d8924a3dd504b703391ff0a673'],
+      ['styleRegistryCommitment', '0a6f411a79ce3431087217b32247326c002ed05cec4e78fccfbea09ee97b6e9e'],
+      ['styleCount', 1],
+      ['entitlementCount', 0],
+      ['passCountForTestWallet', 0],
+      ['sealPolicyId', ''],
+      ['sealPackageId', ''],
+      ['sealReleaseCommitment', ''],
+      ['treasuryBalanceAtomic', '0'],
+      ['treasuryTotalCollectedAtomic', '0'],
+      ['treasuryTotalWithdrawnAtomic', '0'],
+      ['style.partKey', 'background'],
+      ['style.itemKey', 'background-default'],
+      ['style.styleKey', 'quiet-orbit-style'],
+      ['style.assetBlobId', 'We3YHgglZfOpzffEyrxCB0dVNUS8ox5v8oSjJlb1QWEBBwBoAg'],
+      ['style.assetSha256', '11bd408b5f96a4a32c48d86fefa1e98204f72df8bcc03c8ec9566369e29cc28e'],
+      ['style.assetSealId', ''],
+      ['walrus.blobObjectId', '0x425f023e44b015f24eba8f186bf737b45dc710696c5f3d7745e26e476a315161'],
+      ['walrus.deletable', false],
+      ['walrus.manifestPatchId', 'We3YHgglZfOpzffEyrxCB0dVNUS8ox5v8oSjJlb1QWEBAQAHAA'],
+      ['walrus.assetPatchId', 'We3YHgglZfOpzffEyrxCB0dVNUS8ox5v8oSjJlb1QWEBBwBoAg'],
+      ['receiptEvidence.fileSha256', '4380b0708f64570e789ece49a96f732515ec49c23a4cb436993789413a96ef96'],
+      ['receiptEvidence.contentSha256', '078c15e59c3b594c448271f21d5829feb2a4de35df2d6b75d9a6d79c50fcf10f'],
+      ['readbackEvidence.fileSha256', '1033348b92de24a81801dcb257fd6eee3920ef412e16c2cf9a474cab3d25fa6a'],
+    ];
+    for (const [field, expected] of activationExact) {
+      if (nestedValue(activation, field) !== expected) invalidActivation(field);
+    }
+    const expectedFiles = [
+      {
+        identifier: 'animacraft-expansion-pack-manifest.json',
+        patchId: activation.walrus?.manifestPatchId,
+        byteLength: 3721,
+        sha256: activation.manifestSha256,
+      },
+      {
+        identifier: 'assets/quiet-orbit.png',
+        patchId: activation.walrus?.assetPatchId,
+        byteLength: 406546,
+        sha256: activation.style?.assetSha256,
+      },
+    ];
+    if (JSON.stringify(activation.walrus?.files) !== JSON.stringify(expectedFiles)) {
+      invalidActivation('walrus.files');
+    }
+    if (present(activation.checkpoint) && present(parentFinalization.checkpoint)
+      && BigInt(activation.checkpoint) <= BigInt(parentFinalization.checkpoint)) {
+      invalidActivation('checkpoint');
+    }
+    if (present(activation.checkpoint) && present(deployment.observedChainState?.observedThroughCheckpoint)
+      && BigInt(deployment.observedChainState.observedThroughCheckpoint) < BigInt(activation.checkpoint)) {
+      invalidActivation('checkpoint');
+    }
+    if (present(activation.walrus?.registeredEpoch)
+      && present(activation.walrus?.certifiedEpoch)
+      && Number(activation.walrus.certifiedEpoch) < Number(activation.walrus.registeredEpoch)) {
+      invalidActivation('walrus.certifiedEpoch');
+    }
+    if (present(activation.walrus?.storageStartEpoch)
+      && present(activation.walrus?.storageEndEpoch)
+      && Number(activation.walrus.storageEndEpoch) <= Number(activation.walrus.storageStartEpoch)) {
+      invalidActivation('walrus.storageEndEpoch');
+    }
+    for (const [field, expected] of [
+      ['expansionPackV8ActivationTransactionStatus', 'success'],
+      ['expansionPackV8ActivationReadBack', true],
+      ['expansionPackV8ReleaseActive', true],
+      ['expansionPackV8ReleaseFree', true],
+      ['expansionPackV8AdminCapReadBack', true],
+      ['expansionPackV8TreasuryReadBack', true],
+      ['expansionPackV8StyleReadBack', true],
+      ['expansionPackV8ManifestReadBack', true],
+      ['expansionPackV8WalrusCertified', true],
+      ['expansionPackV8NoSealPolicy', true],
+      ['expansionPackV8ObjectsCreated', 3],
+      ['expansionPackV8MoveEventsObserved', 8],
+      ['expansionPackV8SealWritesObserved', false],
+      ['expansionPackV8WalrusWritesObserved', true],
+    ]) {
+      if (verification[field] !== expected) deploymentInvalid.push(`verification.${field}`);
     }
   }
 
@@ -759,6 +999,255 @@ export async function inspectExpansionPackV8ParentFinalizationEvidence(deploymen
     detail: failures.length
       ? failures.join('; ')
       : 'Parent finalizer result hash, exact transaction, Root, Authority, lock, deleted ControlCap, 19/3/4 registry and zero-history continuation agree.',
+  };
+}
+
+function stableJsonValue(value) {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => (
+    [key, stableJsonValue(value[key])]
+  )));
+}
+
+export async function inspectExpansionPackV8ActivationEvidence(deployment = {}, {
+  required = false,
+} = {}) {
+  const activation = deployment.releases?.expansionPackV8?.activation;
+  if (!activation || typeof activation !== 'object' || !Object.keys(activation).length) {
+    return {
+      declared: false,
+      ready: !required,
+      detail: required
+        ? 'Expansion Pack v8 activation evidence is required when the product gate is enabled.'
+        : 'No Expansion Pack v8 activation evidence is declared.',
+      failures: required ? ['activation evidence is missing'] : [],
+    };
+  }
+  const failures = [];
+  let receipt;
+  let readback;
+  const loadEvidence = async (descriptor, label) => {
+    try {
+      const url = new URL(String(descriptor?.path || ''), new URL('../', import.meta.url));
+      const bytes = await readFile(url);
+      const fileSha256 = createHash('sha256').update(bytes).digest('hex');
+      if (fileSha256 !== descriptor.fileSha256) failures.push(`${label} file SHA-256 mismatch`);
+      return JSON.parse(bytes);
+    } catch (error) {
+      failures.push(`${label} unavailable: ${error.message}`);
+      return null;
+    }
+  };
+  [receipt, readback] = await Promise.all([
+    loadEvidence(activation.receiptEvidence, 'ceremony receipt'),
+    loadEvidence(activation.readbackEvidence, 'Mainnet readback'),
+  ]);
+  if (receipt) {
+    const semantic = { ...receipt };
+    delete semantic.receiptSha256;
+    const contentSha256 = createHash('sha256')
+      .update(JSON.stringify(stableJsonValue(semantic)))
+      .digest('hex');
+    const activate = receipt.actions?.find((entry) => entry.actionId === 'chain.pack.activate');
+    for (const [actual, expected, label] of [
+      [receipt.schemaVersion, 'animacraft.expansion-pack-v8-pack-ceremony-receipt.v1', 'receipt schema'],
+      [receipt.receiptSha256, activation.receiptEvidence.contentSha256, 'receipt content SHA-256'],
+      [contentSha256, activation.receiptEvidence.contentSha256, 'computed receipt content SHA-256'],
+      [receipt.packReleaseId, activation.releaseId, 'receipt release'],
+      [receipt.packAdminCapId, activation.adminCapId, 'receipt AdminCap'],
+      [receipt.packTreasuryId, activation.treasuryId, 'receipt Treasury'],
+      [receipt.transactionDigest, activation.transactionDigest, 'receipt activation transaction'],
+      [receipt.manifestBlobId, activation.manifestBlobId, 'receipt manifest Quilt'],
+      [receipt.manifestSha256, activation.manifestSha256, 'receipt manifest SHA-256'],
+      [activate?.submissionDigest, activation.transactionDigest, 'receipt activation action'],
+      [receipt.actualExpansionPackV8ReleaseEnabled, false, 'receipt product gate'],
+      [receipt.freeOnly, true, 'receipt FREE-only claim'],
+      [receipt.noSealPolicy, true, 'receipt no-Seal claim'],
+    ]) if (actual !== expected) failures.push(`${label} mismatch`);
+  }
+  if (readback) {
+    const activate = readback.transactions?.find((entry) => entry.action === 'activate');
+    for (const [actual, expected, label] of [
+      [readback.schemaVersion, 'animacraft.expansion-pack-v8-mainnet-readback.v1', 'readback schema'],
+      [readback.network?.chainIdentifier, activation.chainIdentifier, 'readback chain'],
+      [readback.source?.receiptFileSha256, activation.receiptEvidence.fileSha256, 'readback receipt file SHA-256'],
+      [readback.source?.receiptContentSha256, activation.receiptEvidence.contentSha256, 'readback receipt content SHA-256'],
+      [readback.pack?.releaseId, activation.releaseId, 'readback release'],
+      [readback.pack?.adminCapId, activation.adminCapId, 'readback AdminCap'],
+      [readback.pack?.treasuryId, activation.treasuryId, 'readback Treasury'],
+      [readback.pack?.accessMode, activation.accessMode, 'readback access mode'],
+      [readback.pack?.lifecycle, activation.lifecycle, 'readback lifecycle'],
+      [readback.pack?.manifestBlobId, activation.manifestBlobId, 'readback manifest Quilt'],
+      [readback.pack?.manifestSha256, activation.manifestSha256, 'readback manifest SHA-256'],
+      [readback.pack?.contentCommitment, activation.contentCommitment, 'readback content commitment'],
+      [readback.pack?.styleRegistryCommitment, activation.styleRegistryCommitment, 'readback Style commitment'],
+      [readback.pack?.style?.assetBlobId, activation.style?.assetBlobId, 'readback Style asset'],
+      [readback.pack?.style?.assetSha256, activation.style?.assetSha256, 'readback Style SHA-256'],
+      [readback.pack?.style?.assetSealId, '', 'readback Style Seal'],
+      [readback.walrus?.blobObjectId, activation.walrus?.blobObjectId, 'readback Walrus Blob'],
+      [activate?.digest, activation.transactionDigest, 'readback activation transaction'],
+      [activate?.checkpoint, activation.checkpoint, 'readback activation checkpoint'],
+      [readback.productGatesObserved?.expansionPackV8ReleaseEnabled, false, 'readback product gate'],
+      [readback.readbackVerified, true, 'readback verification'],
+    ]) if (actual !== expected) failures.push(`${label} mismatch`);
+  }
+  return {
+    declared: true,
+    ready: failures.length === 0,
+    detail: failures.length
+      ? failures.join('; ')
+      : 'Exact ceremony receipt bytes/semantic hash and Mainnet readback bind the ACTIVE FREE release, certified Walrus content, empty Seal tuple, and still-false product gate.',
+    failures,
+  };
+}
+
+function transactionEnvelope(value) {
+  return value?.Transaction || value?.transaction || value;
+}
+
+export async function inspectExpansionPackV8LiveActivation(
+  client,
+  config,
+  deployment,
+  { fetchImpl = fetch, readers = {} } = {},
+) {
+  const activation = deployment.releases?.expansionPackV8?.activation || {};
+  const failures = [];
+  const core = client?.core || client;
+  const readObjects = readers.objects || (async () => {
+    const response = await core.getObjects({
+      objectIds: [activation.releaseId, activation.adminCapId, activation.treasuryId],
+      include: { json: true, owner: true },
+    });
+    const objects = response.objects || [];
+    if (objects.length !== 3 || objects.some((value) => (
+      !value || value instanceof Error || value.error || value.$kind === 'Error'
+    ))) throw new Error('Release, AdminCap or Treasury is unavailable.');
+    return {
+      release: parseExpansionPackReleaseV8(objects[0], { runtime: config }),
+      adminCap: parseExpansionPackAdminCapV8(objects[1], { runtime: config }),
+      treasury: parseExpansionPackTreasuryV8(objects[2], {
+        runtime: config,
+        paymentCoinType: config.paymentCoinType,
+      }),
+      raw: objects,
+    };
+  });
+  try {
+    const { release, adminCap, treasury, raw = [] } = await readObjects();
+    const checks = [
+      [release.objectId, activation.releaseId, 'Release ID'],
+      [release.adminCapId, activation.adminCapId, 'Release AdminCap'],
+      [release.treasuryId, activation.treasuryId, 'Release Treasury'],
+      [release.creator, activation.creator, 'Release creator'],
+      [release.parentRootId, activation.parentRootId, 'Release parent Root'],
+      [release.parentLegacyMakerId, activation.parentLegacyMakerId, 'Release parent Maker'],
+      [release.admittedBy, activation.admittedBy, 'Release admission wallet'],
+      [String(release.admittedParentOwnershipEpoch), activation.admittedParentOwnershipEpoch, 'Release admission epoch'],
+      [release.packId, activation.packId, 'Pack ID'],
+      [release.namespace, activation.namespace, 'Pack namespace'],
+      [release.packVersion, activation.version, 'Pack version'],
+      [release.accessKind, EXPANSION_PACK_V8_ACCESS.FREE, 'FREE access'],
+      [String(release.purchasePriceAtomic), activation.purchasePriceAtomic, 'Pack price'],
+      [release.lifecycle, EXPANSION_PACK_V8_LIFECYCLE.ACTIVE, 'ACTIVE lifecycle'],
+      [release.manifestBlobId, activation.manifestBlobId, 'Manifest Quilt'],
+      [release.manifestSha256, activation.manifestSha256, 'Manifest SHA-256'],
+      [release.contentCommitment, activation.contentCommitment, 'Content commitment'],
+      [release.styleRegistryCommitment, activation.styleRegistryCommitment, 'Style commitment'],
+      [String(release.styleCount), String(activation.styleCount), 'Style count'],
+      [String(release.entitlementCount), String(activation.entitlementCount), 'Entitlement count'],
+      [release.sealPolicyId, '', 'Seal policy'],
+      [release.sealPackageId, '', 'Seal package'],
+      [release.sealReleaseCommitment, '', 'Seal commitment'],
+      [adminCap.objectId, activation.adminCapId, 'AdminCap ID'],
+      [adminCap.releaseId, activation.releaseId, 'AdminCap release'],
+      [adminCap.creator, activation.creator, 'AdminCap creator'],
+      [adminCap.owner, activation.creator, 'AdminCap owner'],
+      [treasury.objectId, activation.treasuryId, 'Treasury ID'],
+      [treasury.releaseId, activation.releaseId, 'Treasury release'],
+      [String(treasury.balanceAtomic), activation.treasuryBalanceAtomic, 'Treasury balance'],
+      [String(treasury.totalCollectedAtomic), activation.treasuryTotalCollectedAtomic, 'Treasury collected'],
+      [String(treasury.totalWithdrawnAtomic), activation.treasuryTotalWithdrawnAtomic, 'Treasury withdrawn'],
+    ];
+    for (const [actual, expected, label] of checks) {
+      if (actual !== expected) failures.push(`${label} mismatch`);
+    }
+    const rawChecks = [
+      [raw[0]?.version, activation.releaseObjectVersion, 'Release object version'],
+      [raw[0]?.digest, activation.releaseObjectDigest, 'Release object digest'],
+      [raw[1]?.version, activation.adminCapObjectVersion, 'AdminCap object version'],
+      [raw[1]?.digest, activation.adminCapObjectDigest, 'AdminCap object digest'],
+      [raw[2]?.version, activation.treasuryObjectVersion, 'Treasury object version'],
+      [raw[2]?.digest, activation.treasuryObjectDigest, 'Treasury object digest'],
+    ];
+    for (const [actual, expected, label] of rawChecks) {
+      if (actual != null && String(actual) !== expected) failures.push(`${label} mismatch`);
+    }
+    const readStyles = readers.styles || (() => queryExpansionPackStyleRecordsV8(core, {
+      runtime: config,
+      release,
+      styles: [activation.style],
+    }));
+    const styles = await readStyles(release);
+    if (styles.length !== 1) failures.push('Style count mismatch');
+    for (const field of ['partKey', 'itemKey', 'styleKey', 'assetBlobId', 'assetSha256', 'assetSealId']) {
+      if (styles[0]?.[field] !== activation.style[field]) failures.push(`Style ${field} mismatch`);
+    }
+  } catch (error) {
+    failures.push(`Pack object readback failed: ${error.message}`);
+  }
+  try {
+    const readTransaction = readers.transaction || (() => core.getTransaction({
+      digest: activation.transactionDigest,
+      include: { effects: true, events: true },
+    }));
+    const transaction = transactionEnvelope(await readTransaction());
+    const successful = transaction?.effects?.status?.success === true
+      || String(transaction?.effects?.status?.status || transaction?.effects?.status || '').toLowerCase() === 'success';
+    if (String(transaction?.digest || '') !== activation.transactionDigest
+      || String(transaction?.checkpoint || transaction?.checkpointSequenceNumber || '') !== activation.checkpoint
+      || !successful) failures.push('Activation transaction mismatch');
+  } catch (error) {
+    failures.push(`Activation transaction readback failed: ${error.message}`);
+  }
+  try {
+    const readBlob = readers.blob || (async () => {
+      const walrusClient = client.$extend(walrus());
+      await walrusClient.walrus.reset();
+      return walrusClient.walrus.getBlobObject(activation.walrus.blobObjectId);
+    });
+    const blob = await readBlob();
+    for (const [actual, expected, label] of [
+      [String(blob?.id || ''), activation.walrus.blobObjectId, 'Walrus Blob object'],
+      [String(blob?.certified_epoch ?? ''), String(activation.walrus.certifiedEpoch), 'Walrus certified epoch'],
+      [String(blob?.registered_epoch ?? ''), String(activation.walrus.registeredEpoch), 'Walrus registered epoch'],
+      [Boolean(blob?.deletable), false, 'Walrus deletable flag'],
+    ]) if (actual !== expected) failures.push(`${label} mismatch`);
+  } catch (error) {
+    failures.push(`Walrus Blob readback failed: ${error.message}`);
+  }
+  for (const file of activation.walrus?.files || []) {
+    try {
+      const response = await fetchImpl(
+        `${config.walrusAggregatorUrl.replace(/\/$/, '')}/v1/blobs/by-quilt-patch-id/${file.patchId}`,
+        { cache: 'no-store' },
+      );
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      if (!response.ok || bytes.byteLength !== file.byteLength || digest !== file.sha256) {
+        failures.push(`Walrus file ${file.identifier} bytes mismatch`);
+      }
+    } catch (error) {
+      failures.push(`Walrus file ${file.identifier} readback failed: ${error.message}`);
+    }
+  }
+  return {
+    ready: failures.length === 0,
+    detail: failures.length
+      ? failures.join('; ')
+      : 'ACTIVE FREE Release/AdminCap/Treasury/Style, exact activation transaction, certified Blob, and manifest/asset bytes read back live.',
+    failures,
   };
 }
 
@@ -3270,6 +3759,15 @@ async function checkNetwork(
   ]);
   await checkWalrusRelayTipPolicy(client, config);
 
+  if (config.expansionPackV8ReleaseEnabled === true) {
+    const activation = await inspectExpansionPackV8LiveActivation(client, config, deployment);
+    record(
+      'Animacraft Expansion Pack v8 live activation',
+      activation.ready,
+      activation.detail,
+    );
+  }
+
   if (expansionPackV8Only) {
     await checkExpansionPackV8PackageAbi(
       client,
@@ -3420,6 +3918,21 @@ export async function runMainnetPreflight() {
     { required: requireExpansionPackV8 },
   );
   recordExpansionPackV8Deployment(expansionPackV8DeploymentStatus);
+  const activationRequired = config.expansionPackV8ReleaseEnabled === true;
+  const activationDeclared = Boolean(
+    deployment.releases?.expansionPackV8?.activation
+      && Object.keys(deployment.releases.expansionPackV8.activation).length,
+  );
+  if (activationDeclared || activationRequired) {
+    const activationEvidence = await inspectExpansionPackV8ActivationEvidence(deployment, {
+      required: activationRequired,
+    });
+    record(
+      'Animacraft Expansion Pack v8 activation evidence',
+      activationEvidence.ready,
+      activationEvidence.detail,
+    );
+  }
   if (requireExpansionPackV8) {
     recordCompositionV6RetirementEvidence(deployment);
     const parentEvidence = await inspectExpansionPackV8ParentFinalizationEvidence(deployment);

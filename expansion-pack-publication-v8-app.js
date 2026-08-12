@@ -474,7 +474,7 @@ export function parseExpansionPackPassV8(value, { runtime } = {}) {
   return Object.freeze(result);
 }
 
-function parseAdminCap(value, { runtime } = {}) {
+export function parseExpansionPackAdminCapV8(value, { runtime } = {}) {
   const parsed = envelope(value, runtime, 'ExpansionPackAdminCapV8');
   return Object.freeze({
     objectId: parsed.id,
@@ -486,7 +486,7 @@ function parseAdminCap(value, { runtime } = {}) {
   });
 }
 
-function parseTreasury(value, { runtime, paymentCoinType } = {}) {
+export function parseExpansionPackTreasuryV8(value, { runtime, paymentCoinType } = {}) {
   const parsed = envelope(value, runtime, 'ExpansionPackTreasuryV8', paymentCoinType);
   const revenue = field(parsed.fields, 'revenue');
   return Object.freeze({
@@ -1399,7 +1399,7 @@ async function getReleaseAndAdmin({ action, suiClient, runtime }) {
     'Expansion Pack administration object',
   );
   const release = parseExpansionPackReleaseV8(releaseObject, { runtime });
-  const cap = parseAdminCap(capObject, { runtime });
+  const cap = parseExpansionPackAdminCapV8(capObject, { runtime });
   if (!sameId(cap.releaseId, release.objectId)
     || !sameId(cap.objectId, release.adminCapId)
     || !sameId(cap.creator, release.creator)
@@ -1562,8 +1562,8 @@ export async function readExpansionPackV8Submission({
       'Created Expansion Pack object',
     );
     const release = parseExpansionPackReleaseV8(releaseObject, { runtime });
-    const cap = parseAdminCap(capObject, { runtime });
-    const treasury = parseTreasury(treasuryObject, { runtime, paymentCoinType });
+    const cap = parseExpansionPackAdminCapV8(capObject, { runtime });
+    const treasury = parseExpansionPackTreasuryV8(treasuryObject, { runtime, paymentCoinType });
     const creator = exactId(action.authority?.signer, 'Pack creator');
     if (!isShared(releaseObject) || !isShared(treasuryObject)
       || !sameId(cap.owner, creator)
@@ -1911,7 +1911,7 @@ export async function readExpansionPackV8Submission({
     }
     if (functionName === 'purchase_expansion_pack_v8') {
       const [treasuryObject] = await getExactObjects(suiClient, [action.inputs.packTreasuryId], 'Pack Treasury');
-      const treasury = parseTreasury(treasuryObject, { runtime, paymentCoinType });
+      const treasury = parseExpansionPackTreasuryV8(treasuryObject, { runtime, paymentCoinType });
       if (!sameId(treasury.releaseId, release.objectId)) {
         fail('EXPANSION_PACK_V8_CHAIN_READBACK_MISMATCH', 'Pack Treasury belongs to another release.');
       }
@@ -1937,8 +1937,8 @@ export async function readExpansionPackV8Submission({
       'Pack withdrawal object',
     );
     const release = parseExpansionPackReleaseV8(releaseObject, { runtime });
-    const treasury = parseTreasury(treasuryObject, { runtime, paymentCoinType });
-    const cap = parseAdminCap(capObject, { runtime });
+    const treasury = parseExpansionPackTreasuryV8(treasuryObject, { runtime, paymentCoinType });
+    const cap = parseExpansionPackAdminCapV8(capObject, { runtime });
     const withdrawn = exactEvent(events, runtime, 'ExpansionPackRevenueWithdrawnV8', (entry) => (
       sameId(eventId(entry.release_id || entry.releaseId, 'Withdrawal release'), release.objectId)
     ));
