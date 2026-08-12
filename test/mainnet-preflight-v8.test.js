@@ -20,6 +20,15 @@ const UPGRADE_DIGEST = '1'.repeat(43);
 const PACKAGE_DIGEST = '2'.repeat(43);
 const SOURCE_COMMIT = 'a'.repeat(40);
 const SOURCE_TREE = 'b'.repeat(40);
+const MAINNET_V8 = Object.freeze({
+  packageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  upgradeTxDigest: '2ef2pUjBBuhGDTuzVHZwo3ZkqgkqzUc6A2mNnjZeLLTF',
+  upgradeCheckpoint: '309641036',
+  upgradedAtMs: '1786494456691',
+  sourceCommit: '59cae42a8602f54a7b7902aee77971a1dff8a270',
+  sourceTree: '794b18902c5d758889baf80431a3f99f59e4a8aa',
+  packageDigest: 'Mquf4qbGQ5nFAJhS8MyzGZZbK6bgAnxqUF4jQVdA7kw',
+});
 
 function runtime(overrides = {}) {
   return {
@@ -47,6 +56,7 @@ function deployment(overrides = {}) {
       expansionPackV8: {
         callablePackageId: CALLABLE,
         typeOriginPackageId: TYPE_ORIGIN,
+        packageVersion: 6,
         upgradeTxDigest: UPGRADE_DIGEST,
         upgradeCheckpoint: '400000000',
         upgradedAtMs: '1800000000000',
@@ -156,49 +166,49 @@ function functionParameters(name, count) {
     )
   );
   const release = (reference = 'immutable') => defined(
-    TYPE_ORIGIN,
+    LEGACY_TYPE_ORIGIN,
     'expansion_pack_v8',
     'ExpansionPackReleaseV8',
     [],
     reference,
   );
   const admin = () => defined(
-    TYPE_ORIGIN,
+    LEGACY_TYPE_ORIGIN,
     'expansion_pack_v8',
     'ExpansionPackAdminCapV8',
   );
   const root = (reference = 'immutable') => defined(
-    COMMERCE_TYPE_ORIGIN,
+    LEGACY_TYPE_ORIGIN,
     'commerce_v5',
     'MakerRootV5',
     [],
     reference,
   );
   const control = () => defined(
-    COMMERCE_TYPE_ORIGIN,
+    LEGACY_TYPE_ORIGIN,
     'commerce_v5',
     'MakerControlCapV5',
   );
   const maker = () => defined(LEGACY_TYPE_ORIGIN, 'animacraft', 'OCMaker');
   const config = () => defined(
-    COMMERCE_TYPE_ORIGIN,
+    LEGACY_TYPE_ORIGIN,
     'commerce_v5',
     'CommerceProtocolConfigV5',
   );
   const commerceAuthorization = () => defined(
-    COMMERCE_TYPE_ORIGIN,
+    LEGACY_TYPE_ORIGIN,
     'commerce_v5',
     'CommerceV5SoulMintAuthorization',
   );
   const completeAuthorization = (reference = null) => defined(
-    TYPE_ORIGIN,
+    LEGACY_TYPE_ORIGIN,
     'expansion_pack_complete_v8',
     'ExpansionPackCompleteAuthorizationV8',
     [],
     reference,
   );
   const completeBinding = (reference = null) => defined(
-    TYPE_ORIGIN,
+    LEGACY_TYPE_ORIGIN,
     'expansion_pack_complete_v8',
     'ExpansionPackCompleteSoulBindingV8',
     [],
@@ -252,7 +262,7 @@ function functionParameters(name, count) {
     purchase_expansion_pack_v8: [
       release('mutable'),
       defined(
-        TYPE_ORIGIN,
+        LEGACY_TYPE_ORIGIN,
         'expansion_pack_v8',
         'ExpansionPackTreasuryV8',
         [paymentCoin],
@@ -261,7 +271,7 @@ function functionParameters(name, count) {
       root(),
       config(),
       defined(
-        COMMERCE_TYPE_ORIGIN,
+        LEGACY_TYPE_ORIGIN,
         'commerce_v5',
         'CommerceProtocolTreasuryV5',
         [paymentCoin],
@@ -274,7 +284,7 @@ function functionParameters(name, count) {
     withdraw_expansion_pack_revenue_v8: [
       release(),
       defined(
-        TYPE_ORIGIN,
+        LEGACY_TYPE_ORIGIN,
         'expansion_pack_v8',
         'ExpansionPackTreasuryV8',
         [paymentCoin],
@@ -378,12 +388,12 @@ function packageAbiClient({
           const returnValues = {
             u64: [primitive('u64')],
             bool: [primitive('bool')],
-            proof: [moveDatatype(`${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackStyleAccessProofV8`)],
+            proof: [moveDatatype(`${LEGACY_TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackStyleAccessProofV8`)],
             completeAuthorization: [moveDatatype(
-              `${TYPE_ORIGIN}::expansion_pack_complete_v8::ExpansionPackCompleteAuthorizationV8`,
+              `${LEGACY_TYPE_ORIGIN}::expansion_pack_complete_v8::ExpansionPackCompleteAuthorizationV8`,
             )],
             completeBinding: [moveDatatype(
-              `${TYPE_ORIGIN}::expansion_pack_complete_v8::ExpansionPackCompleteSoulBindingV8`,
+              `${LEGACY_TYPE_ORIGIN}::expansion_pack_complete_v8::ExpansionPackCompleteSoulBindingV8`,
             )],
             type0: [signature(null, typeParameter(0))],
             bytesRef: [vector({ $kind: 'u8' }, 'immutable')],
@@ -495,20 +505,31 @@ async function currentMainnetTuple() {
   };
 }
 
-test('current empty v8 package tuple is one valid intentionally disabled state', async () => {
+test('current Mainnet v8 tuple is fully evidenced while intentionally disabled', async () => {
   const current = await currentMainnetTuple();
-  assert.equal(current.config.expansionPackV8CallablePackageId, '');
-  assert.equal(current.config.expansionPackV8TypeOriginPackageId, '');
+  assert.equal(current.config.expansionPackV8CallablePackageId, MAINNET_V8.packageId);
+  assert.equal(current.config.expansionPackV8TypeOriginPackageId, MAINNET_V8.packageId);
   assert.equal(current.config.expansionPackV8ReleaseEnabled, false);
-  assert.equal(current.deployment.expansionPackV8CallablePackageId, '');
-  assert.equal(current.deployment.expansionPackV8TypeOriginPackageId, '');
+  assert.equal(current.deployment.expansionPackV8CallablePackageId, MAINNET_V8.packageId);
+  assert.equal(current.deployment.expansionPackV8TypeOriginPackageId, MAINNET_V8.packageId);
   assert.equal(current.deployment.expansionPackV8ReleaseEnabled, false);
-  assert.equal(expansionPackV8Declared(current.config, current.deployment), false);
+  assert.equal(current.deployment.releases.expansionPackV8.callablePackageId, MAINNET_V8.packageId);
+  assert.equal(current.deployment.releases.expansionPackV8.typeOriginPackageId, MAINNET_V8.packageId);
+  assert.equal(current.deployment.releases.expansionPackV8.upgradeTxDigest, MAINNET_V8.upgradeTxDigest);
+  assert.equal(current.deployment.releases.expansionPackV8.upgradeCheckpoint, MAINNET_V8.upgradeCheckpoint);
+  assert.equal(current.deployment.releases.expansionPackV8.upgradedAtMs, MAINNET_V8.upgradedAtMs);
+  assert.equal(current.deployment.releases.expansionPackV8.sourceCommit, MAINNET_V8.sourceCommit);
+  assert.equal(current.deployment.releases.expansionPackV8.sourceTree, MAINNET_V8.sourceTree);
+  assert.equal(current.deployment.releases.expansionPackV8.packageDigest, MAINNET_V8.packageDigest);
+  assert.equal(current.deployment.releases.expansionPackV8.enabled, false);
+  assert.equal(current.deployment.verification.expansionPackV8PackageReadBack, true);
+  assert.equal(current.deployment.verification.expansionPackV8Enabled, false);
+  assert.equal(expansionPackV8Declared(current.config, current.deployment), true);
   assert.deepEqual(inspectExpansionPackV8Deployment(
     current.config,
     current.deployment,
   ), {
-    declared: false,
+    declared: true,
     ready: true,
     runtimeMissing: [],
     runtimeInvalid: [],
@@ -518,7 +539,7 @@ test('current empty v8 package tuple is one valid intentionally disabled state',
   });
 });
 
-test('required v8 ceremony rejects the intentionally empty record without changing it', async () => {
+test('required v8 ceremony accepts the fully evidenced gate-false record', async () => {
   const current = await currentMainnetTuple();
   const status = inspectExpansionPackV8Deployment(
     current.config,
@@ -526,17 +547,12 @@ test('required v8 ceremony rejects the intentionally empty record without changi
     { required: true },
   );
   assert.equal(status.declared, true);
-  assert.equal(status.ready, false);
-  assert.deepEqual(status.runtimeMissing, [
-    'expansionPackV8CallablePackageId',
-    'expansionPackV8TypeOriginPackageId',
-  ]);
-  assert.ok(status.deploymentMissing.includes(
-    'releases.expansionPackV8.upgradeTxDigest',
-  ));
-  assert.ok(status.deploymentMissing.includes(
-    'verification.expansionPackV8PackageReadBack',
-  ));
+  assert.equal(status.ready, true, JSON.stringify(status, null, 2));
+  assert.deepEqual(status.runtimeMissing, []);
+  assert.deepEqual(status.runtimeInvalid, []);
+  assert.deepEqual(status.deploymentMissing, []);
+  assert.deepEqual(status.deploymentInvalid, []);
+  assert.deepEqual(status.mismatches, []);
 });
 
 test('enabled v8 requires one exact runtime, release and verification evidence tuple', () => {
@@ -567,6 +583,17 @@ test('v8 rejects an explicit false package read-back claim', () => {
   assert.deepEqual(status.deploymentMissing, []);
   assert.deepEqual(status.deploymentInvalid, [
     'verification.expansionPackV8PackageReadBack',
+  ]);
+});
+
+test('v8 rejects an incorrect deployed package version', () => {
+  const record = deployment();
+  record.releases.expansionPackV8.packageVersion = 5;
+  const status = inspectExpansionPackV8Deployment(runtime(), record);
+  assert.equal(status.ready, false);
+  assert.deepEqual(status.deploymentMissing, []);
+  assert.deepEqual(status.deploymentInvalid, [
+    'releases.expansionPackV8.packageVersion',
   ]);
 });
 

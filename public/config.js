@@ -64,10 +64,10 @@ window.ANIMACRAFT_CONFIG = {
   physicalV7SoulOwnerProofTypeOriginPackageId: '',
   physicalV7SoulOwnerProofType: '',
   physicalStyleV7ReleaseEnabled: false,
-  // Independent Expansion Pack v8 remains fail-closed until its companion
-  // package is deployed and verified against the exact parent Maker tuple.
-  expansionPackV8CallablePackageId: '',
-  expansionPackV8TypeOriginPackageId: '',
+  // Expansion Pack v8 is present in the reviewed Animacraft v6 upgrade, but
+  // remains fail-closed until a separate activation phase explicitly opens it.
+  expansionPackV8CallablePackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  expansionPackV8TypeOriginPackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
   expansionPackV8ReleaseEnabled: false,
   // Intentionally empty while the reviewed Commerce/Seal release gate is off.
   // Mainnet activation requires the official committee endpoint plus an Enoki

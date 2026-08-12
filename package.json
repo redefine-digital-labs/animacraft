@@ -13,6 +13,7 @@
     "check:seal": "node --check expansion-pack-player-acquisition-recovery-store.js && node --check maker-seal-v5.js && node --test test/maker-seal-v5.test.js",
     "preflight:config": "node scripts/mainnet-preflight.mjs",
     "preflight:mainnet": "node scripts/mainnet-preflight.mjs --strict --network",
+    "preflight:v8-mainnet": "node scripts/mainnet-preflight.mjs --strict --network --require-expansion-pack-v8 --expansion-pack-v8-only",
     "preflight:integration": "node scripts/mainnet-preflight.mjs --strict --network --require-soulidity",
     "makers:build": "python3 scripts/build-builtin-makers.py",
     "makers:verify": "python3 -m py_compile scripts/chroma_key.py scripts/build-builtin-makers.py && node --test test/bundled-makers.test.js",

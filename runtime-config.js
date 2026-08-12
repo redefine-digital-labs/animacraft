@@ -95,13 +95,12 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   physicalV7SoulOwnerProofTypeOriginPackageId: '',
   physicalV7SoulOwnerProofType: '',
   physicalStyleV7ReleaseEnabled: false,
-  // Independent Expansion Pack v8 is a companion protocol for adding one
-  // immutable child release to an exact, already-sealed v5 Maker release.
-  // It deliberately reuses the reviewed Commerce v5 protocol config and
-  // treasury split. Keep the client gate false until the companion package is
-  // deployed, its TypeOrigin is recorded, and read-back tests pass.
-  expansionPackV8CallablePackageId: '',
-  expansionPackV8TypeOriginPackageId: '',
+  // Expansion Pack v8 is an additive protocol introduced by the reviewed
+  // Animacraft v6 core-package upgrade. It reuses the Commerce v5 protocol
+  // config and treasury split. The identities are recorded after read-back,
+  // while the client gate remains false until a separate activation phase.
+  expansionPackV8CallablePackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  expansionPackV8TypeOriginPackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
   expansionPackV8ReleaseEnabled: false,
   // Seal remains fail-closed until the reviewed v5 package and an authenticated
   // Mainnet committee endpoint are configured. One committee is one outer

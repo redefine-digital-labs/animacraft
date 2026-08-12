@@ -503,10 +503,15 @@ test('Expansion Pack v8 package identities are paired and release stays fail-clo
   let result = validateRuntimeConfig(defaults, { strict: true });
   assert.equal(result.valid, true, result.errors.join('\n'));
   assert.equal(defaults.expansionPackV8ReleaseEnabled, false);
-  assert.equal(result.expansionPackV8CoreReady, false);
+  assert.equal(
+    defaults.expansionPackV8CallablePackageId,
+    '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  );
+  assert.equal(defaults.expansionPackV8TypeOriginPackageId, defaults.expansionPackV8CallablePackageId);
+  assert.equal(result.expansionPackV8CoreReady, true);
 
   const partial = productionConfig();
-  partial.expansionPackV8CallablePackageId = '0x8888';
+  partial.expansionPackV8TypeOriginPackageId = '';
   result = validateRuntimeConfig(partial, { strict: true });
   assert.equal(result.valid, false);
   assert.match(result.errors.join(' '), /callable package and stable TypeOrigin/);

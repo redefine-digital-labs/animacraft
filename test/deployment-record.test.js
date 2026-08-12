@@ -13,6 +13,16 @@ const SOULIDITY_MAINNET = Object.freeze({
   v5TypeOriginPackageId: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d',
   v6TypeOriginPackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
 });
+const EXPANSION_PACK_V8_MAINNET = Object.freeze({
+  packageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  upgradeTxDigest: '2ef2pUjBBuhGDTuzVHZwo3ZkqgkqzUc6A2mNnjZeLLTF',
+  upgradeCheckpoint: '309641036',
+  upgradedAtMs: '1786494456691',
+  sourceCommit: '59cae42a8602f54a7b7902aee77971a1dff8a270',
+  sourceTree: '794b18902c5d758889baf80431a3f99f59e4a8aa',
+  packageDigest: 'Mquf4qbGQ5nFAJhS8MyzGZZbK6bgAnxqUF4jQVdA7kw',
+  packageObjectDigest: '8Br3y89HNVPUndvAVhyddc4rV8GTCFZ2Pde8aMnEpfm',
+});
 
 async function readJson(path) {
   return JSON.parse(await readFile(new URL(path, ROOT), 'utf8'));
@@ -26,10 +36,11 @@ async function readPublicConfig() {
 }
 
 test('keeps the production runtime pinned to the canonical Mainnet deployment', async () => {
-  const [deployment, runtime, moveSource] = await Promise.all([
+  const [deployment, runtime, moveSource, publishedSource] = await Promise.all([
     readJson('deployments/mainnet.json'),
     readPublicConfig(),
     readFile(new URL('move/animacraft/sources/animacraft.move', ROOT), 'utf8'),
+    readFile(new URL('move/animacraft/Published.toml', ROOT), 'utf8'),
   ]);
 
   assert.equal(deployment.schemaVersion, 'animacraft.deployment.v1');
@@ -65,26 +76,56 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   assert.equal(deployment.primaryProtocolFeeBps, runtime.primaryProtocolFeeBps);
   assert.equal(deployment.canonicalSoulMintEnabled, false);
   assert.equal(deployment.verification.protocolFeeObjectsReadBack, true);
-  assert.equal(deployment.verification.protocolFeeEnabled, false);
+  assert.equal(deployment.verification.protocolFeeEnabled, true);
   assert.equal(deployment.verification.commerceV5ObjectsReadBack, true);
-  assert.equal(deployment.verification.commerceV5Enabled, false);
-  assert.equal(deployment.verification.commerceV5BindOnceDependenciesBound, false);
+  assert.equal(deployment.verification.commerceV5Enabled, true);
+  assert.equal(deployment.verification.commerceV5BindOnceDependenciesBound, true);
   assert.equal(deployment.verification.compositionV6ObjectsReadBack, true);
-  assert.equal(deployment.verification.compositionV6Enabled, false);
-  assert.equal(deployment.verification.compositionV6SoulOwnerProofBound, false);
-  assert.equal(runtime.expansionPackV8CallablePackageId, '');
-  assert.equal(runtime.expansionPackV8TypeOriginPackageId, '');
-  assert.equal(runtime.expansionPackV8ReleaseEnabled, false);
-  assert.equal(deployment.expansionPackV8CallablePackageId, '');
-  assert.equal(deployment.expansionPackV8TypeOriginPackageId, '');
-  assert.equal(deployment.expansionPackV8ReleaseEnabled, false);
+  assert.equal(deployment.verification.compositionV6Enabled, true);
+  assert.equal(deployment.verification.compositionV6SoulOwnerProofBound, true);
   assert.equal(
-    deployment.releases.expansionPackV8,
-    undefined,
-    'the undeployed v8 release must not borrow v6 source or upgrade evidence',
+    deployment.observedChainState.preexistingCoreActivationTxDigest,
+    'AVYsGvyfgSVFQ8mrQWXCpNbNzwDcPc4BboegLsetSYXT',
   );
-  assert.equal(deployment.verification.expansionPackV8PackageReadBack, undefined);
-  assert.equal(deployment.verification.expansionPackV8Enabled, undefined);
+  assert.equal(deployment.observedChainState.protocolFee.enabled, true);
+  assert.equal(deployment.observedChainState.commerceV5.enabled, true);
+  assert.equal(deployment.observedChainState.compositionV6.enabled, true);
+  assert.equal(deployment.observedChainState.productRuntime.expansionPackV8ReleaseEnabled, false);
+  assert.equal(deployment.observedChainState.productRuntime.canonicalSoulMintEnabled, false);
+  assert.equal(runtime.expansionPackV8CallablePackageId, EXPANSION_PACK_V8_MAINNET.packageId);
+  assert.equal(runtime.expansionPackV8TypeOriginPackageId, EXPANSION_PACK_V8_MAINNET.packageId);
+  assert.equal(runtime.expansionPackV8ReleaseEnabled, false);
+  assert.equal(deployment.expansionPackV8CallablePackageId, EXPANSION_PACK_V8_MAINNET.packageId);
+  assert.equal(deployment.expansionPackV8TypeOriginPackageId, EXPANSION_PACK_V8_MAINNET.packageId);
+  assert.equal(deployment.expansionPackV8ReleaseEnabled, false);
+  assert.equal(runtime.callablePackageId, deployment.callablePackageId, 'the product remains pinned to the v4 callable');
+  assert.notEqual(runtime.callablePackageId, runtime.expansionPackV8CallablePackageId);
+  assert.equal(deployment.releases.expansionPackV8.callablePackageId, EXPANSION_PACK_V8_MAINNET.packageId);
+  assert.equal(deployment.releases.expansionPackV8.typeOriginPackageId, EXPANSION_PACK_V8_MAINNET.packageId);
+  assert.equal(deployment.releases.expansionPackV8.packageVersion, 6);
+  assert.equal(deployment.releases.expansionPackV8.upgradeTxDigest, EXPANSION_PACK_V8_MAINNET.upgradeTxDigest);
+  assert.equal(deployment.releases.expansionPackV8.upgradeCheckpoint, EXPANSION_PACK_V8_MAINNET.upgradeCheckpoint);
+  assert.equal(deployment.releases.expansionPackV8.upgradedAtMs, EXPANSION_PACK_V8_MAINNET.upgradedAtMs);
+  assert.equal(deployment.releases.expansionPackV8.sourceCommit, EXPANSION_PACK_V8_MAINNET.sourceCommit);
+  assert.equal(deployment.releases.expansionPackV8.sourceTree, EXPANSION_PACK_V8_MAINNET.sourceTree);
+  assert.equal(deployment.releases.expansionPackV8.packageDigest, EXPANSION_PACK_V8_MAINNET.packageDigest);
+  assert.equal(deployment.releases.expansionPackV8.packageObjectDigest, EXPANSION_PACK_V8_MAINNET.packageObjectDigest);
+  assert.equal(deployment.releases.expansionPackV8.enabled, false);
+  assert.equal(deployment.verification.expansionPackV8UpgradeTransactionStatus, 'success');
+  assert.equal(deployment.verification.expansionPackV8SourceStatus, 'success');
+  assert.equal(deployment.verification.expansionPackV8PackageReadBack, true);
+  assert.equal(deployment.verification.expansionPackV8Enabled, false);
+  assert.equal(deployment.verification.expansionPackV8CompleteToSoulidityEnabled, false);
+  assert.equal(deployment.verification.expansionPackV8CompleteBridgeEnabled, false);
+  assert.equal(deployment.verification.expansionPackV8PhysicalBridgeEnabled, false);
+  assert.equal(deployment.verification.expansionPackV8CompanionProofAvailable, false);
+  assert.equal(deployment.verification.expansionPackV8ObjectsCreated, 0);
+  assert.equal(deployment.verification.expansionPackV8MoveEventsObserved, 0);
+  assert.equal(deployment.verification.expansionPackV8SealWritesObserved, false);
+  assert.equal(deployment.verification.expansionPackV8WalrusWritesObserved, false);
+  assert.match(publishedSource, /published-at = "0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a"/);
+  assert.match(publishedSource, /original-id = "0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea"/);
+  assert.match(publishedSource, /^version = 6$/m);
 
   for (const field of [
     'commerceV5TypeOriginPackageId',
@@ -134,7 +175,13 @@ test('keeps the production runtime pinned to the canonical Mainnet deployment', 
   );
   assert.equal(deployment.releases.commerceV5.sourceCommit, '31073bd3b90d0256571133198518621980fc22c1');
   assert.equal(deployment.releases.compositionV6.sourceCommit, '7fd4ff63c3164ca5bc0aeeb2c177acbfb3bf50d5');
-  assert.equal(deployment.releases.compositionV6.sourceTree, deployment.source.sourceTree);
+  assert.notEqual(deployment.releases.compositionV6.sourceTree, deployment.source.sourceTree);
+  assert.equal(deployment.releases.expansionPackV8.sourceTree, deployment.source.sourceTree);
+  assert.equal(deployment.releases.expansionPackV8.sourceCommit, deployment.source.sourceCommit);
+  assert.equal(deployment.releases.expansionPackV8.upgradeTxDigest, deployment.upgradeTxDigest);
+  assert.equal(deployment.releases.expansionPackV8.upgradeCheckpoint, deployment.upgradeCheckpoint);
+  assert.equal(deployment.releases.expansionPackV8.upgradedAtMs, deployment.upgradedAtMs);
+  assert.equal(deployment.releases.expansionPackV8.packageDigest, deployment.verification.packageDigest);
 
   for (const field of [
     'packageId',

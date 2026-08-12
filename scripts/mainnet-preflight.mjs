@@ -19,10 +19,12 @@ const requireSoulidity = args.has('--require-soulidity');
 // Every strict Mainnet rehearsal after v6 ships must prove the complete tuple.
 // The explicit flag also lets CI exercise this fail-closed path without making
 // network calls.
+const expansionPackV8Only = args.has('--expansion-pack-v8-only');
 const requireCompositionV6 = args.has('--require-composition-v6')
-  || (strict && network);
+  || (strict && network && !expansionPackV8Only);
 const allowCompositionV6Enabled = args.has('--allow-v6-enabled');
-const requireExpansionPackV8 = args.has('--require-expansion-pack-v8');
+const requireExpansionPackV8 = args.has('--require-expansion-pack-v8')
+  || expansionPackV8Only;
 const json = args.has('--json');
 const checks = [];
 const ZERO_SUI_ADDRESS = normalizeSuiAddress('0x0');
@@ -74,6 +76,7 @@ export const EXPANSION_PACK_V8_RUNTIME_FIELDS = Object.freeze([
 export const EXPANSION_PACK_V8_RELEASE_EVIDENCE_FIELDS = Object.freeze([
   'callablePackageId',
   'typeOriginPackageId',
+  'packageVersion',
   'upgradeTxDigest',
   'upgradeCheckpoint',
   'upgradedAtMs',
@@ -230,6 +233,9 @@ export function inspectExpansionPackV8Deployment(
   ].forEach(([path, value]) => {
     if (present(value) && !validSuiId(value)) deploymentInvalid.push(path);
   });
+  if (present(release.packageVersion) && Number(release.packageVersion) !== 6) {
+    deploymentInvalid.push('releases.expansionPackV8.packageVersion');
+  }
   if (present(release.upgradeTxDigest)
     && !SUI_TRANSACTION_DIGEST.test(String(release.upgradeTxDigest))) {
     deploymentInvalid.push('releases.expansionPackV8.upgradeTxDigest');
@@ -622,6 +628,11 @@ export async function inspectExpansionPackV8PackageAbi(
   const typeOrigin = normalizeSuiAddress(typeOriginPackageId);
   const legacyTypeOrigin = normalizeSuiAddress(originalPackageId);
   const commerceTypeOrigin = normalizeSuiAddress(commerceV5TypeOriginPackageId);
+  // Sui function signatures use the package lineage's original namespace for
+  // every module in an upgraded package. A datatype's independently stable
+  // TypeOrigin is exposed by getDatatype().definingId and is verified below.
+  // Do not compare signature typeName package IDs to TypeOrigin package IDs.
+  const abiLineagePackage = legacyTypeOrigin;
   const stdPackage = normalizeSuiAddress('0x1');
   const suiPackage = normalizeSuiAddress('0x2');
   const signature = (reference, body) => ({ reference, body });
@@ -665,7 +676,7 @@ export async function inspectExpansionPackV8PackageAbi(
     reference,
   );
   const root = (reference = 'immutable') => datatype(
-    commerceTypeOrigin,
+    abiLineagePackage,
     'commerce_v5',
     'MakerRootV5',
     [],
@@ -679,49 +690,49 @@ export async function inspectExpansionPackV8PackageAbi(
     reference,
   );
   const commerceConfig = (reference = 'immutable') => datatype(
-    commerceTypeOrigin,
+    abiLineagePackage,
     'commerce_v5',
     'CommerceProtocolConfigV5',
     [],
     reference,
   );
   const controlCap = (reference = 'immutable') => datatype(
-    commerceTypeOrigin,
+    abiLineagePackage,
     'commerce_v5',
     'MakerControlCapV5',
     [],
     reference,
   );
   const release = (reference = 'immutable') => datatype(
-    typeOrigin,
+    abiLineagePackage,
     moduleName,
     'ExpansionPackReleaseV8',
     [],
     reference,
   );
   const adminCap = (reference = 'immutable') => datatype(
-    typeOrigin,
+    abiLineagePackage,
     moduleName,
     'ExpansionPackAdminCapV8',
     [],
     reference,
   );
   const commerceAuthorization = (reference = 'immutable') => datatype(
-    commerceTypeOrigin,
+    abiLineagePackage,
     'commerce_v5',
     'CommerceV5SoulMintAuthorization',
     [],
     reference,
   );
   const completeAuthorization = (reference = null) => datatype(
-    typeOrigin,
+    abiLineagePackage,
     completeModuleName,
     'ExpansionPackCompleteAuthorizationV8',
     [],
     reference,
   );
   const completeBinding = (reference = null) => datatype(
-    typeOrigin,
+    abiLineagePackage,
     completeModuleName,
     'ExpansionPackCompleteSoulBindingV8',
     [],
@@ -842,7 +853,7 @@ export async function inspectExpansionPackV8PackageAbi(
       parameters: [
         release('mutable'),
         datatype(
-          typeOrigin,
+          abiLineagePackage,
           moduleName,
           'ExpansionPackTreasuryV8',
           [paymentCoinBody],
@@ -851,7 +862,7 @@ export async function inspectExpansionPackV8PackageAbi(
         root(),
         commerceConfig(),
         datatype(
-          commerceTypeOrigin,
+          abiLineagePackage,
           'commerce_v5',
           'CommerceProtocolTreasuryV5',
           [paymentCoinBody],
@@ -869,7 +880,7 @@ export async function inspectExpansionPackV8PackageAbi(
       parameters: [
         release(),
         datatype(
-          typeOrigin,
+          abiLineagePackage,
           moduleName,
           'ExpansionPackTreasuryV8',
           [paymentCoinBody],
@@ -886,7 +897,7 @@ export async function inspectExpansionPackV8PackageAbi(
         release(), root(), stringType(), stringType(), stringType(), context(),
       ],
       returns: [datatype(
-        typeOrigin,
+        abiLineagePackage,
         moduleName,
         'ExpansionPackStyleAccessProofV8',
       )],
@@ -1170,12 +1181,27 @@ export async function inspectExpansionPackV8PackageAbi(
         signatureMatches(fn.returns[index], result)
       ))
   );
-  const exactAbiReady = functionSpecs.every((spec) => (
-    functionMatches(functionsByName[spec.name], spec)
-  )) && functionMatches(parentEvidenceFunction, parentEvidenceSpec);
-  const originsReady = [...datatypes, parentEvidenceDatatype].every((datatype) => (
-    datatypeHasTypeOrigin(datatype, typeOrigin)
-  ));
+  const abiMismatches = functionSpecs.filter((spec) => (
+    !functionMatches(functionsByName[spec.name], spec)
+  )).map(({ name, moduleName: specModule = moduleName }) => `${specModule}::${name}`);
+  if (!functionMatches(parentEvidenceFunction, parentEvidenceSpec)) {
+    abiMismatches.push('commerce_v5::bind_maker_release_evidence_v5');
+  }
+  const originEntries = [
+    ...datatypeSpecs.map(([specModule, name], index) => ({
+      name: `${specModule}::${name}`,
+      datatype: datatypes[index],
+    })),
+    {
+      name: 'commerce_v5::MakerReleaseEvidenceV5',
+      datatype: parentEvidenceDatatype,
+    },
+  ];
+  const originMismatches = originEntries.filter(({ datatype }) => (
+    !datatypeHasTypeOrigin(datatype, typeOrigin)
+  )).map(({ name }) => name);
+  const exactAbiReady = abiMismatches.length === 0;
+  const originsReady = originMismatches.length === 0;
   const ready = version === 8
     && completeVersion === 8
     && completeBridgeEnabled === false
@@ -1185,11 +1211,25 @@ export async function inspectExpansionPackV8PackageAbi(
     && physicalBridgeAssertionAborts
     && exactAbiReady
     && originsReady;
+  const valueMismatches = [
+    version === 8 ? '' : `version_v8=${version}`,
+    completeVersion === 8 ? '' : `companion_proof_version_v8=${completeVersion}`,
+    completeBridgeEnabled === false ? '' : `complete_bridge_enabled_v8=${completeBridgeEnabled}`,
+    physicalBridgeEnabled === false ? '' : `physical_bridge_enabled_v8=${physicalBridgeEnabled}`,
+    companionProofAvailable === false ? '' : `companion_proof_available_v8=${companionProofAvailable}`,
+    completeBridgeAssertionAborts ? '' : 'assert_complete_bridge_enabled_v8 did not abort',
+    physicalBridgeAssertionAborts ? '' : 'assert_physical_bridge_enabled_v8 did not abort',
+  ].filter(Boolean);
   return {
     ready,
     detail: ready
       ? `version_v8=8; Complete/physical bridges and companion proof are false with aborting bridge assertions; exact entry/public ABI and legacy=${legacyTypeOrigin}, Commerce v5=${commerceTypeOrigin}, Expansion Pack v8=${typeOrigin} TypeOrigins verified`
-      : `Required Expansion Pack v8 publication, Seal, lifecycle, acquisition, treasury, Complete fail-closed ABI/value or one stable TypeOrigin differs; observed version_v8=${version}, companion_proof_version_v8=${completeVersion}.`,
+      : [
+        'Required Expansion Pack v8 package read-back differs.',
+        valueMismatches.length ? `Values: ${valueMismatches.join(', ')}.` : '',
+        abiMismatches.length ? `ABI: ${abiMismatches.join(', ')}.` : '',
+        originMismatches.length ? `TypeOrigin: ${originMismatches.join(', ')}.` : '',
+      ].filter(Boolean).join(' '),
   };
 }
 
@@ -2575,6 +2615,15 @@ async function checkNetwork(
   ]);
   await checkWalrusRelayTipPolicy(client, config);
 
+  if (expansionPackV8Only) {
+    await checkExpansionPackV8PackageAbi(
+      client,
+      config,
+      expansionPackV8DeploymentStatus,
+    );
+    return;
+  }
+
   if (validation.callablePackageReady) {
     await checkAnimacraftAbi(
       client,
@@ -2706,7 +2755,9 @@ export async function runMainnetPreflight() {
     deployment,
     { required: requireCompositionV6 },
   );
-  recordCompositionV6Deployment(compositionDeploymentStatus, config);
+  if (!expansionPackV8Only) {
+    recordCompositionV6Deployment(compositionDeploymentStatus, config);
+  }
   const expansionPackV8DeploymentStatus = inspectExpansionPackV8Deployment(
     config,
     deployment,
@@ -2744,6 +2795,7 @@ export async function runMainnetPreflight() {
       requireCompositionV6,
       allowCompositionV6Enabled,
       requireExpansionPackV8,
+      expansionPackV8Only,
       checks,
     }, null, 2)}\n`);
   } else {
