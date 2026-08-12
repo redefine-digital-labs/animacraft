@@ -796,18 +796,26 @@ test('create readback proves the exact three created objects, event and parent a
       manifest_bound: false,
       manifest_blob_id: '',
       manifest_sha256: [],
-    }), capObject(), treasuryObject(), ...parentObjects(),
+    }), capObject(), treasuryObject({
+      json: { fields: {
+        version: '8',
+        release_id: id(3),
+        revenue: '0',
+        total_collected: '0',
+        total_withdrawn: '0',
+      } },
+    }), ...parentObjects(),
   ]);
   client.getTransaction = async () => ({
-    effects: { status: { status: 'success' } },
+    effects: { status: { success: true, error: null } },
     objectTypes: {
       [id(3)]: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackReleaseV8`,
       [id(4)]: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackAdminCapV8`,
       [id(5)]: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackTreasuryV8<${PAYMENT}>`,
     },
     events: [{
-      type: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackCreatedV8`,
-      parsedJson: {
+      eventType: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackCreatedV8`,
+      json: {
         release_id: id(3),
         admin_cap_id: id(4),
         treasury_id: id(5),
@@ -833,7 +841,37 @@ test('create readback proves the exact three created objects, event and parent a
   assert.equal(confirmation.packTreasuryId, id(5));
   assert.equal(confirmation.manifestBound, false);
 
+  const missingStatus = { ...client, getTransaction: async () => ({
+    objectTypes: {},
+    events: [],
+  }) };
+  await assert.rejects(
+    readExpansionPackV8PublicationSubmission({
+      action,
+      submission: { transactionDigest: 'missing-status' },
+      suiClient: missingStatus,
+      runtime,
+    }),
+    { code: 'EXPANSION_PACK_V8_CHAIN_EXECUTION_FAILED' },
+  );
+
+  const failedStatus = { ...client, getTransaction: async () => ({
+    effects: { status: { success: false, error: 'move abort' } },
+    objectTypes: {},
+    events: [],
+  }) };
+  await assert.rejects(
+    readExpansionPackV8PublicationSubmission({
+      action,
+      submission: { transactionDigest: 'failed-status' },
+      suiClient: failedStatus,
+      runtime,
+    }),
+    { code: 'EXPANSION_PACK_V8_CHAIN_EXECUTION_FAILED' },
+  );
+
   const wrong = { ...client, getTransaction: async () => ({
+    effects: { status: { status: 'success' } },
     objectTypes: {
       [id(3)]: `${CALLABLE}::expansion_pack_v8::ExpansionPackReleaseV8`,
       [id(4)]: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackAdminCapV8`,
@@ -967,7 +1005,8 @@ test('Style, seal, admission and activation readbacks reject drift and expose re
   }, { id: 'chain.pack.style.register.fixture' });
   const styleResult = await readExpansionPackV8PublicationSubmission({
     action: styleAction,
-    submission: { transactionDigest: 'style', indexed: { events: [{
+    submission: { transactionDigest: 'style', indexed: {
+      effects: { status: { status: 'success' } }, events: [{
       type: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackStyleRegisteredV8`,
       parsedJson: {
         release_id: id(3),
@@ -1007,7 +1046,8 @@ test('Style, seal, admission and activation readbacks reject drift and expose re
     action: publicationAction('seal_expansion_pack_v8', {
       packReleaseId: id(3), packAdminCapId: id(4), styleRegistryCommitment: HASH('55'),
     }, { id: 'chain.pack.seal' }),
-    submission: { transactionDigest: 'seal', indexed: { events: [{
+    submission: { transactionDigest: 'seal', indexed: {
+      effects: { status: { status: 'success' } }, events: [{
       type: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackSealedV8`,
       parsedJson: { release_id: id(3), style_count: '1', style_registry_commitment: BYTES('55') },
     }] } },
@@ -1033,7 +1073,8 @@ test('Style, seal, admission and activation readbacks reject drift and expose re
       parentManifestBlobId: 'parent-quilt',
       parentManifestSha256: HASH('11'),
     }, { id: 'chain.pack.admit' }),
-    submission: { transactionDigest: 'admit', indexed: { events: [{
+    submission: { transactionDigest: 'admit', indexed: {
+      effects: { status: { status: 'success' } }, events: [{
       type: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackAdmittedV8`,
       parsedJson: {
         release_id: id(3),
@@ -1067,7 +1108,8 @@ test('Style, seal, admission and activation readbacks reject drift and expose re
       baseMakerRootId: id(1),
       commerceProtocolConfigV5Id: id(6),
     }, { id: 'chain.pack.activate' }),
-    submission: { transactionDigest: 'activate', indexed: { events: [{
+    submission: { transactionDigest: 'activate', indexed: {
+      effects: { status: { status: 'success' } }, events: [{
       type: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackLifecycleChangedV8`,
       parsedJson: { release_id: id(3), previous_lifecycle: 2, lifecycle: 3 },
     }] } },
@@ -1086,7 +1128,8 @@ test('Style, seal, admission and activation readbacks reject drift and expose re
         baseMakerRootId: id(1),
         commerceProtocolConfigV5Id: id(6),
       }, { id: 'chain.pack.activate' }),
-      submission: { transactionDigest: 'activate-active-parent', indexed: { events: [{
+      submission: { transactionDigest: 'activate-active-parent', indexed: {
+        effects: { status: { status: 'success' } }, events: [{
         type: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackLifecycleChangedV8`,
         parsedJson: { release_id: id(3), previous_lifecycle: 2, lifecycle: 3 },
       }] } },

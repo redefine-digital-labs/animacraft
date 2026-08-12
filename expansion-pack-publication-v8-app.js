@@ -488,12 +488,16 @@ function parseAdminCap(value, { runtime } = {}) {
 
 function parseTreasury(value, { runtime, paymentCoinType } = {}) {
   const parsed = envelope(value, runtime, 'ExpansionPackTreasuryV8', paymentCoinType);
+  const revenue = field(parsed.fields, 'revenue');
   return Object.freeze({
     objectId: parsed.id,
     type: parsed.type,
     version: EXPANSION_PACK_V8_VERSION,
     releaseId: exactId(jsonId(field(parsed.fields, 'release_id', 'releaseId')), 'Pack release ID'),
-    balanceAtomic: u64(field(field(parsed.fields, 'revenue'), 'value'), 'Pack Treasury balance'),
+    balanceAtomic: u64(
+      revenue && typeof revenue === 'object' ? field(revenue, 'value') : revenue,
+      'Pack Treasury balance',
+    ),
     totalCollectedAtomic: u64(
       field(parsed.fields, 'total_collected', 'totalCollected'),
       'Pack Treasury total collected',
@@ -1317,7 +1321,7 @@ function eventJson(value) {
 }
 
 function eventType(value) {
-  return String(value?.type || value?.contents?.type?.repr || '');
+  return String(value?.type || value?.eventType || value?.event_type || value?.contents?.type?.repr || '');
 }
 
 function eventNameType(runtime, name) {
@@ -1367,7 +1371,12 @@ function assertEqual(actual, expected, label, { id = false } = {}) {
 
 function transactionStatus(indexed) {
   const status = indexed?.effects?.status?.status || indexed?.effects?.status;
-  return typeof status === 'string' ? status.toLowerCase() : '';
+  if (typeof status === 'string') return status.toLowerCase();
+  if (status && typeof status === 'object') {
+    if (status.success === true && status.error == null) return 'success';
+    if (status.success === false || status.error != null) return 'failure';
+  }
+  return '';
 }
 
 function createdObjectIds(indexed, runtime, structName, typeArgument = '') {
@@ -1529,7 +1538,7 @@ export async function readExpansionPackV8Submission({
     fail('EXPANSION_PACK_V8_CHAIN_SUBMISSION_INVALID', 'Finalized Sui transaction evidence is unavailable.');
   }
   const status = transactionStatus(indexed);
-  if (status && status !== 'success') {
+  if (status !== 'success') {
     fail('EXPANSION_PACK_V8_CHAIN_EXECUTION_FAILED', 'The Expansion Pack transaction did not finalize successfully.');
   }
   const events = array(indexed.events);
