@@ -1888,13 +1888,25 @@ export async function readExpansionPackV8Submission({
     const expectedPaid = functionName === 'purchase_expansion_pack_v8'
       ? u64(action.inputs.purchasePriceAtomic, 'Pack purchase price')
       : 0n;
+    const grantedEpoch = u64(
+      granted.admitted_parent_ownership_epoch ?? granted.admittedParentOwnershipEpoch,
+      'Entitlement admitted parent epoch',
+    );
     if (!sameId(pass.releaseId, release.objectId)
       || !sameId(pass.parentRootId, release.parentRootId)
       || !sameId(pass.holder, holder)
       || pass.paidAtomic !== expectedPaid
       || pass.contentCommitment !== release.contentCommitment
+      || pass.admittedParentOwnershipEpoch !== release.admittedParentOwnershipEpoch
+      || release.lifecycle !== EXPANSION_PACK_V8_LIFECYCLE.ACTIVE
+      || release.entitlementCount === 0n
+      || !sameId(
+        eventId(granted.parent_root_id || granted.parentRootId, 'Entitlement parent root'),
+        release.parentRootId,
+      )
       || !sameId(granted.holder, holder)
-      || u64(granted.paid_atomic ?? granted.paidAtomic, 'Entitlement paid amount') !== expectedPaid) {
+      || u64(granted.paid_atomic ?? granted.paidAtomic, 'Entitlement paid amount') !== expectedPaid
+      || grantedEpoch !== release.admittedParentOwnershipEpoch) {
       fail('EXPANSION_PACK_V8_CHAIN_READBACK_MISMATCH', 'Pack Pass does not match the exact release, holder and payment.');
     }
     if (functionName === 'purchase_expansion_pack_v8') {
@@ -1904,7 +1916,17 @@ export async function readExpansionPackV8Submission({
         fail('EXPANSION_PACK_V8_CHAIN_READBACK_MISMATCH', 'Pack Treasury belongs to another release.');
       }
     }
-    return Object.freeze({ ...result, readbackVerified: true, entitlementGranted: true, passId: pass.objectId });
+    return Object.freeze({
+      ...result,
+      readbackVerified: true,
+      entitlementGranted: true,
+      passId: pass.objectId,
+      holder,
+      paidAtomic: expectedPaid.toString(),
+      issuedAtMs: pass.issuedAtMs.toString(),
+      admittedParentOwnershipEpoch: pass.admittedParentOwnershipEpoch.toString(),
+      entitlementCount: release.entitlementCount.toString(),
+    });
   }
 
   if (functionName === 'withdraw_expansion_pack_revenue_v8') {

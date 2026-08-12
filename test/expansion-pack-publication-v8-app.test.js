@@ -1140,6 +1140,79 @@ test('Style, seal, admission and activation readbacks reject drift and expose re
   );
 });
 
+test('FREE claim readback binds the created Pass and entitlement event to the active current parent epoch', async () => {
+  const action = publicationAction('claim_free_expansion_pack_v8', {
+    packReleaseId: id(3),
+    baseMakerRootId: id(1),
+    commerceProtocolConfigV5Id: id(6),
+    clockObjectId: '0x6',
+  }, { id: 'chain.pack.claim.free' });
+  const release = releaseObject({
+    lifecycle: EXPANSION_PACK_V8_LIFECYCLE.ACTIVE,
+    style_count: '1',
+    style_registry_commitment: BYTES('55'),
+    admitted_by: id(9),
+    admitted_parent_ownership_epoch: '7',
+    entitlement_count: '1',
+  });
+  const pass = passObject({}, { objectId: '0x44' });
+  const client = getObjectsClient([release, pass]);
+  client.getTransaction = async () => ({
+    effects: { status: { success: true, error: null } },
+    objectTypes: {
+      '0x44': `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackPassV8`,
+    },
+    events: [{
+      eventType: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackEntitlementGrantedV8`,
+      json: {
+        release_id: id(3),
+        parent_root_id: id(1),
+        holder: id(9),
+        paid_atomic: '0',
+        pass_id: '0x44',
+        admitted_parent_ownership_epoch: '7',
+      },
+    }],
+  });
+  const confirmation = await readExpansionPackV8PublicationSubmission({
+    action,
+    submission: { transactionDigest: 'claim-free' },
+    suiClient: client,
+    runtime,
+  });
+  assert.equal(confirmation.passId, '0x44');
+  assert.equal(confirmation.holder, id(9));
+  assert.equal(confirmation.paidAtomic, '0');
+  assert.equal(confirmation.issuedAtMs, '1234');
+  assert.equal(confirmation.admittedParentOwnershipEpoch, '7');
+  assert.equal(confirmation.entitlementCount, '1');
+
+  const staleEvent = { ...client, getTransaction: async () => ({
+    effects: { status: { status: 'success' } },
+    objectTypes: { '0x44': `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackPassV8` },
+    events: [{
+      type: `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackEntitlementGrantedV8`,
+      parsedJson: {
+        release_id: id(3),
+        parent_root_id: id(1),
+        holder: id(9),
+        paid_atomic: '0',
+        pass_id: '0x44',
+        admitted_parent_ownership_epoch: '6',
+      },
+    }],
+  }) };
+  await assert.rejects(
+    readExpansionPackV8PublicationSubmission({
+      action,
+      submission: { transactionDigest: 'claim-stale' },
+      suiClient: staleEvent,
+      runtime,
+    }),
+    { code: 'EXPANSION_PACK_V8_CHAIN_READBACK_MISMATCH' },
+  );
+});
+
 test('stable-origin release discovery and wallet Pass query reject event/object substitutions', async () => {
   const release = releaseObject({
     lifecycle: EXPANSION_PACK_V8_LIFECYCLE.ACTIVE,
