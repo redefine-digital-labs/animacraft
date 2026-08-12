@@ -12,7 +12,10 @@ import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
 import { verifyTransactionSignature } from '@mysten/sui/verify';
 import { scanV8HistoryWindow } from './expansion-pack-v8-free-readiness.mjs';
-import { queryIndependentExtensionLockV5 } from '../expansion-pack-publication-v8-app.js';
+import {
+  queryIndependentExtensionLockV5,
+  queryMakerReleaseEvidenceV5,
+} from '../expansion-pack-publication-v8-app.js';
 
 import {
   buildBindMakerReleaseEvidenceV5,
@@ -35,6 +38,7 @@ const INTENT_URL = new URL(
   '../deployments/expansion-pack-v8-free-wallet-test.intent.json',
   import.meta.url,
 );
+const DEPLOYMENT_URL = new URL('../deployments/mainnet.json', import.meta.url);
 const DEFAULT_READINESS_PATH = resolve(
   REPO_ROOT,
   '../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/pre-sign-readiness.json',
@@ -79,6 +83,78 @@ export function requireIndependentExtensionTypeOrigin(intent) {
   return origin;
 }
 
+function nonzeroId(value, label) {
+  const id = exactId(value, label);
+  if (id === normalizeSuiAddress('0x0')) fail(`${label} must be nonzero.`);
+  return id;
+}
+
+export function requireMakerReleaseEvidenceTypeOrigin(intent, deployment) {
+  const intentOrigin = nonzeroId(
+    intent?.protocol?.typeOriginPackageId,
+    'Expansion Pack v8 TypeOrigin',
+  );
+  const deployedOrigin = nonzeroId(
+    deployment?.releases?.expansionPackV8?.typeOriginPackageId,
+    'Deployed Expansion Pack v8 TypeOrigin',
+  );
+  if (intentOrigin !== deployedOrigin) {
+    fail('Maker release evidence TypeOrigin drifted from the deployed stable v6/v8 origin.', {
+      intentOrigin,
+      deployedOrigin,
+    });
+  }
+  const commerceOrigin = nonzeroId(
+    intent?.protocol?.commerceV5TypeOriginPackageId,
+    'Commerce v5 core TypeOrigin',
+  );
+  if (intentOrigin === commerceOrigin) {
+    fail('Maker release evidence must not use the Commerce v5 core TypeOrigin.');
+  }
+  return intentOrigin;
+}
+
+export function requireFinalizerProtocolIdentities(intent, deployment) {
+  const independentExtensionV5TypeOriginPackageId = nonzeroId(
+    intent?.protocol?.independentExtensionV5TypeOriginPackageId,
+    'Independent extension TypeOrigin',
+  );
+  const legacyLogicalV5TypeOriginPackageId = nonzeroId(
+    intent?.protocol?.legacyLogicalV5TypeOriginPackageId,
+    'Legacy logical TypeOrigin',
+  );
+  const callableCandidates = [
+    intent?.protocol?.callablePackageId,
+    intent?.protocol?.commerceV5CallablePackageId,
+    deployment?.releases?.expansionPackV8?.callablePackageId,
+  ].map((value, index) => nonzeroId(
+    value,
+    `Callable/deployment package proof ${index + 1}`,
+  ));
+  if (new Set(callableCandidates).size !== 1) {
+    fail('Finalizer callable identities drifted between intent and deployment proof.', {
+      callableCandidates,
+    });
+  }
+  const callablePackageId = callableCandidates[0];
+  for (const [origin, label] of [
+    [independentExtensionV5TypeOriginPackageId, 'Independent extension TypeOrigin'],
+    [legacyLogicalV5TypeOriginPackageId, 'Legacy logical TypeOrigin'],
+  ]) {
+    if (origin !== callablePackageId) {
+      fail(`${label} does not match the reviewed callable/deployment package proof.`, {
+        origin,
+        callableCandidates,
+      });
+    }
+  }
+  return {
+    callablePackageId,
+    independentExtensionV5TypeOriginPackageId,
+    legacyLogicalV5TypeOriginPackageId,
+  };
+}
+
 function stableValue(value) {
   if (typeof value === 'bigint') return value.toString();
   if (value instanceof Uint8Array) return [...value];
@@ -98,6 +174,148 @@ function stableJson(value, space = 0) {
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function eventType(event) {
+  return normalizeStructTag(text(event?.eventType || event?.type || event?.contents?.type?.repr));
+}
+
+function eventJson(event) {
+  const json = event?.json || event?.parsedJson || event?.contents?.json;
+  return json?.fields && typeof json.fields === 'object' ? json.fields : json;
+}
+
+function field(value, snake, camel = snake) {
+  if (value?.[snake] !== undefined) return value[snake];
+  return value?.[camel];
+}
+
+function exactHash(value, label) {
+  const rendered = Array.isArray(value)
+    ? Buffer.from(value).toString('hex')
+    : text(value).replace(/^0x/i, '');
+  const hash = rendered.toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hash)) fail(`${label} is not an exact SHA-256.`);
+  return hash;
+}
+
+function assertSuccessfulResult(result, expectedStage) {
+  if (result?.schemaVersion !== 'animacraft.expansion-pack-v8-parent-stage-result.v1'
+    || result?.stage !== expectedStage) {
+    fail(`Prior result must be the exact ${expectedStage} parent-stage result schema/stage.`);
+  }
+  const digest = text(result.transactionDigest);
+  if (!digest
+    || text(result.finalized?.digest) !== digest
+    || text(result.finalized?.effects?.transactionDigest) !== digest
+    || result.finalized?.effects?.status?.success !== true
+    || result.finalized?.effects?.status?.error !== null) {
+    fail(`Prior ${expectedStage} transaction is missing exact successful finality evidence.`);
+  }
+  if (!result.postState || typeof result.postState !== 'object') {
+    fail(`Prior ${expectedStage} result is missing authoritative readback.`);
+  }
+}
+
+function assertPausedEmptyUnsealedRoot(postState, intent, label) {
+  const root = postState?.root;
+  if (!root
+    || exactId(root.objectId, `${label} Root ID`) !== exactId(
+      intent?.parent?.currentV5?.rootId,
+      'Intent Root ID',
+    )
+    || root.lifecycle !== 1
+    || text(root.styleCount) !== '0'
+    || root.styleRegistrySealed !== false
+    || text(root.packCount) !== '0'
+    || root.requiresSealPolicy !== false
+    || root.sealPolicyBound !== false
+    || !Array.isArray(postState.styles)
+    || postState.styles.length !== 0
+    || !Array.isArray(postState.packs)
+    || postState.packs.length !== 0) {
+    fail(`${label} readback must be the exact empty, unsealed PAUSED parent.`);
+  }
+  if (root.baseAccess?.kind !== 0
+    || text(root.baseAccess?.purchasePriceAtomic) !== '0'
+    || root.basePolicy?.mode !== 0
+    || text(root.basePolicy?.freeQuotaPerWallet) !== '0'
+    || text(root.basePolicy?.priceAtomic) !== '0'
+    || text(root.basePolicy?.totalCap) !== '0') {
+    fail(`${label} readback must retain the exact FREE/zero Base policy.`);
+  }
+}
+
+function expectedReleaseEvidence(intent) {
+  return {
+    rootId: exactId(intent?.parent?.currentV5?.rootId, 'Evidence Root ID'),
+    legacyMakerId: exactId(intent?.parent?.legacyMakerId, 'Evidence legacy Maker ID'),
+    parentVersion: text(intent?.parent?.versionNumber),
+    parentManifestBlobId: text(intent?.parent?.manifestQuiltId),
+    parentManifestSha256: exactHash(intent?.parent?.manifestSha256, 'Evidence manifest SHA-256'),
+  };
+}
+
+function assertEvidenceEvent(result, intent, evidenceTypeOrigin) {
+  const expectedType = normalizeStructTag(
+    `${evidenceTypeOrigin}::commerce_v5::MakerReleaseEvidenceBoundV5`,
+  );
+  const matching = (result.finalized?.events || []).filter(
+    (event) => eventType(event) === expectedType,
+  );
+  if (matching.length !== 1) {
+    fail('Prior evidence result must contain exactly one stable-origin MakerReleaseEvidenceBoundV5 event.');
+  }
+  const json = eventJson(matching[0]);
+  const expected = expectedReleaseEvidence(intent);
+  if (!json
+    || exactId(field(json, 'root_id', 'rootId'), 'Evidence event Root ID') !== expected.rootId
+    || exactId(
+      field(json, 'legacy_maker_id', 'legacyMakerId'),
+      'Evidence event legacy Maker ID',
+    ) !== expected.legacyMakerId
+    || text(field(json, 'parent_version', 'parentVersion')) !== expected.parentVersion
+    || text(field(json, 'manifest_blob_id', 'manifestBlobId')) !== expected.parentManifestBlobId
+    || exactHash(
+      field(json, 'manifest_sha256', 'manifestSha256'),
+      'Evidence event manifest SHA-256',
+    ) !== expected.parentManifestSha256
+    || field(json, 'newly_bound', 'newlyBound') !== true) {
+    fail('Prior evidence event tuple drifted from the reviewed parent release evidence.');
+  }
+}
+
+function assertEvidenceDynamicField(postState, intent) {
+  const actual = postState?.releaseEvidence;
+  const expected = expectedReleaseEvidence(intent);
+  if (!actual
+    || exactId(actual.rootId, 'Evidence dynamic-field Root ID') !== expected.rootId
+    || text(actual.parentVersion) !== expected.parentVersion
+    || text(actual.parentManifestBlobId) !== expected.parentManifestBlobId
+    || exactHash(
+      actual.parentManifestSha256,
+      'Evidence dynamic-field manifest SHA-256',
+    ) !== expected.parentManifestSha256) {
+    fail('Prior evidence result lacks the exact bound Root evidence dynamic field.');
+  }
+}
+
+export function validateParentStagePrior(stage, prior, intent, deployment) {
+  if (stage === 'evidence') {
+    assertSuccessfulResult(prior, 'policy');
+    assertPausedEmptyUnsealedRoot(prior.postState, intent, 'Prior policy');
+    return stableValue(prior);
+  }
+  if (stage === 'finalize') {
+    assertSuccessfulResult(prior, 'evidence');
+    assertPausedEmptyUnsealedRoot(prior.postState, intent, 'Prior evidence');
+    const evidenceTypeOrigin = requireMakerReleaseEvidenceTypeOrigin(intent, deployment);
+    assertEvidenceEvent(prior, intent, evidenceTypeOrigin);
+    assertEvidenceDynamicField(prior.postState, intent);
+    return stableValue(prior);
+  }
+  if (stage === 'policy' && prior) fail('Policy stage does not accept --prior.');
+  return null;
 }
 
 function parseArgs(argv) {
@@ -124,6 +342,9 @@ function parseArgs(argv) {
     } else fail(`Unsupported argument: ${argument}`);
   }
   if (!STAGES.has(args.stage)) fail('--stage must be policy, evidence, or finalize.');
+  if (args.stage !== 'policy' && !args.prior) {
+    fail(`--prior is required for the ${args.stage} stage.`);
+  }
   if (args.mode === 'lock' && !args.output) fail('--output is required for lock-only mode.');
   if (args.mode === 'execute' && (!args.lock || !args.expectedLock || !args.result)) {
     fail('--lock, --expected-lock, and --result are required for execute mode.');
@@ -313,7 +534,7 @@ async function currentState({ client, intent, migration }) {
 }
 
 async function readFinalizedState({
-  client, intent, migration, readiness, finalizedEnvelope,
+  client, intent, migration, readiness, finalizedEnvelope, protocolIdentities,
 }) {
   const expectedAuditHash = `0x${text(readiness.lock.parent.zeroV8History?.auditHash)
     .replace(/^0x/i, '').toLowerCase()}`;
@@ -450,6 +671,7 @@ async function readFinalizedState({
     });
   }
   return {
+    protocolIdentities: stableValue(protocolIdentities),
     event: stableValue(event),
     root: stableValue(root),
     makerTreasury: stableValue(makerTreasury),
@@ -531,12 +753,12 @@ function setExactGas(transaction, reviewed) {
   transaction.setExpiration({ ValidDuring: stableValue(reviewed.expiration) });
 }
 
-function stableSemantic(stage, simulation, intent, plan) {
+function stableSemantic(stage, simulation, intent, deployment, plan) {
   const eventTypes = simulation.events.map((event) => normalizeStructTag(text(event.eventType || event.type))).sort();
   const callable = exactId(intent.protocol.commerceV5CallablePackageId, 'Callable package');
   const expectedLegacyLogical = `${callable}::commerce_v5::LegacyLogicalStyleRegisteredV5`;
   const expectedFinalized = `${callable}::commerce_v5::IndependentExtensionRootFinalizedV5`;
-  const expectedEvidence = `${exactId(intent.protocol.commerceV5TypeOriginPackageId, 'TypeOrigin')}::commerce_v5::MakerReleaseEvidenceBoundV5`;
+  const expectedEvidence = `${requireMakerReleaseEvidenceTypeOrigin(intent, deployment)}::commerce_v5::MakerReleaseEvidenceBoundV5`;
   if (stage === 'policy' && simulation.commandResults.length !== 4) {
     fail('Policy dry-run command count drifted.');
   }
@@ -553,6 +775,13 @@ function stableSemantic(stage, simulation, intent, plan) {
   if (stage === 'evidence' && !eventTypes.includes(expectedEvidence)) {
     fail('Evidence dry-run did not emit MakerReleaseEvidenceBoundV5.');
   }
+  if (stage === 'evidence') {
+    assertEvidenceEvent(
+      { finalized: { events: simulation.events } },
+      intent,
+      requireMakerReleaseEvidenceTypeOrigin(intent, deployment),
+    );
+  }
   const relevantEvents = simulation.events.map((event) => ({
     eventType: normalizeStructTag(text(event.eventType || event.type)),
     json: stableValue(event.json || event.parsedJson || {}),
@@ -566,10 +795,15 @@ function stableSemantic(stage, simulation, intent, plan) {
   };
 }
 
-async function buildLock(args, intent, readiness, migration) {
-  const independentExtensionV5TypeOriginPackageId = args.stage === 'finalize'
-    ? requireIndependentExtensionTypeOrigin(intent)
-    : '';
+async function buildLock(args, intent, deployment, readiness, migration) {
+  const protocolIdentities = args.stage === 'finalize'
+    ? requireFinalizerProtocolIdentities(intent, deployment)
+    : null;
+  const priorBytes = args.prior
+    ? await readFile(resolve(REPO_ROOT, args.prior))
+    : null;
+  const priorResult = priorBytes ? JSON.parse(priorBytes) : null;
+  validateParentStagePrior(args.stage, priorResult, intent, deployment);
   const client = new SuiGrpcClient({ network: 'mainnet', baseUrl: readiness.lock.network.grpcUrl });
   const [chain, system, balance] = await Promise.all([
     client.core.getChainIdentifier(),
@@ -653,11 +887,9 @@ async function buildLock(args, intent, readiness, migration) {
     readinessEvidenceSha256: sha256(await readFile(args.readiness)),
     readinessLockFingerprintSha256: readiness.lockFingerprintSha256,
     migrationResultSha256: sha256(await readFile(args.migration)),
-    priorResultSha256: args.prior ? sha256(await readFile(resolve(REPO_ROOT, args.prior))) : '',
+    priorResultSha256: priorBytes ? sha256(priorBytes) : '',
     network: stableValue(readiness.lock.network),
-    protocolIdentities: args.stage === 'finalize' ? {
-      independentExtensionV5TypeOriginPackageId,
-    } : null,
+    protocolIdentities,
     signer: stableValue(intent.signer),
     addressBalance: {
       balance: text(balance.balance.balance),
@@ -674,7 +906,7 @@ async function buildLock(args, intent, readiness, migration) {
       styles: stableValue(state.styles),
     },
     transaction: transactionLock,
-    simulationLock: stableSemantic(args.stage, simulation, intent, plan),
+    simulationLock: stableSemantic(args.stage, simulation, intent, deployment, plan),
     anchoredZeroHistory: args.stage === 'finalize' ? {
       auditHash,
       cutoff: stableValue(readiness.lock.parent.zeroV8History.cutoff),
@@ -709,13 +941,13 @@ async function signerEntry(intent) {
   return entry;
 }
 
-async function executeLock(args, intent, readiness, migration) {
+async function executeLock(args, intent, deployment, readiness, migration) {
   const locked = JSON.parse(await readFile(resolve(REPO_ROOT, args.lock), 'utf8'));
   if (locked.lockFingerprintSha256 !== args.expectedLock || locked.lock.stage !== args.stage) {
     fail('The supplied stage lock does not match --stage/--expected-lock.');
   }
-  if (args.stage === 'finalize') requireIndependentExtensionTypeOrigin(intent);
-  const rebuilt = await buildLock(args, intent, readiness, migration);
+  if (args.stage === 'finalize') requireFinalizerProtocolIdentities(intent, deployment);
+  const rebuilt = await buildLock(args, intent, deployment, readiness, migration);
   if (rebuilt.lockFingerprintSha256 !== locked.lockFingerprintSha256) {
     fail('Stage pre-sign inputs drifted; refusing to sign.', {
       expected: locked.lockFingerprintSha256,
@@ -782,6 +1014,7 @@ async function executeLock(args, intent, readiness, migration) {
       migration,
       readiness,
       finalizedEnvelope: envelope,
+      protocolIdentities: rebuilt.lock.protocolIdentities,
     });
     const result = {
       schemaVersion: 'animacraft.expansion-pack-v8-parent-stage-result.v1',
@@ -818,6 +1051,15 @@ async function executeLock(args, intent, readiness, migration) {
       fail('Policy execution readback does not match the reviewed FREE Base policy.');
     }
   } else if (args.stage === 'evidence') {
+    assertEvidenceEvent(
+      { finalized: { events: envelope.events } },
+      intent,
+      requireMakerReleaseEvidenceTypeOrigin(intent, deployment),
+    );
+    post.releaseEvidence = stableValue(await queryMakerReleaseEvidenceV5(client.core, {
+      rootId: state.root.objectId,
+    }));
+    assertEvidenceDynamicField(post, intent);
     if (state.styles.length !== 0 || state.root.styleCount !== 0n
       || state.root.styleRegistrySealed) {
       fail('Evidence readback must preserve the empty unsealed PAUSED parent before atomic finalization.');
@@ -840,8 +1082,9 @@ async function executeLock(args, intent, readiness, migration) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const [intent, readiness, migration] = await Promise.all([
+  const [intent, deployment, readiness, migration] = await Promise.all([
     readFile(INTENT_URL, 'utf8').then(JSON.parse),
+    readFile(DEPLOYMENT_URL, 'utf8').then(JSON.parse),
     readFile(resolve(REPO_ROOT, args.readiness), 'utf8').then(JSON.parse),
     readFile(resolve(REPO_ROOT, args.migration), 'utf8').then(JSON.parse),
   ]);
@@ -852,7 +1095,7 @@ async function main() {
     fail('The durable readiness boundary no longer forbids implicit signing.');
   }
   if (args.mode === 'lock') {
-    const locked = await buildLock(args, intent, readiness, migration);
+    const locked = await buildLock(args, intent, deployment, readiness, migration);
     await writeJson(args.output, locked);
     process.stdout.write(`${stableJson({
       ready: true,
@@ -873,7 +1116,7 @@ async function main() {
     }, 2)}\n`);
     return;
   }
-  const result = await executeLock(args, intent, readiness, migration);
+  const result = await executeLock(args, intent, deployment, readiness, migration);
   process.stdout.write(`${stableJson({
     executed: true,
     stage: result.stage,
