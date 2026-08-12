@@ -9942,10 +9942,15 @@ function templateCommerceV5PublicState(template) {
       lifecycle: '',
       listing: null,
       protocolEnabled: true,
+      commerceActionsEnabled: true,
       error: null,
     });
   }
   const releaseEnabled = runtimeConfig.commerceV5ReleaseEnabled === true;
+  const expansionPackV8PlayerEnabled = (
+    runtimeConfig.expansionPackV8ReleaseEnabled === true
+    && expansionPackV8RuntimeConfigured()
+  );
   const activeView = template.id === state.templateId && makerCommerceV5ViewMatches()
     ? makerCommerceV5LifecycleView
     : null;
@@ -9956,17 +9961,25 @@ function templateCommerceV5PublicState(template) {
     const lifecycle = management.chain.root.lifecycle;
     const verified = true;
     const protocolEnabled = management.chain.protocol?.enabled === true;
+    const commercePlayerAvailable = (
+      releaseEnabled
+      && lifecycle === COMMERCE_V5_LIFECYCLE.ACTIVE
+    );
+    const expansionPackV8PlayerAvailable = (
+      expansionPackV8PlayerEnabled
+      && lifecycle === COMMERCE_V5_LIFECYCLE.PAUSED
+    );
     return Object.freeze({
       visible: true,
-      playable: releaseEnabled
-        && protocolEnabled
+      playable: protocolEnabled
         && verified
-        && lifecycle === COMMERCE_V5_LIFECYCLE.ACTIVE,
+        && (commercePlayerAvailable || expansionPackV8PlayerAvailable),
       resolving: false,
       verified,
       lifecycle,
       listing: management.chain.listing || null,
       protocolEnabled,
+      commerceActionsEnabled: releaseEnabled && protocolEnabled,
       isSeller: management.isSeller,
       error: null,
     });
@@ -9992,6 +10005,7 @@ function templateCommerceV5PublicState(template) {
       lifecycle: '',
       listing: null,
       protocolEnabled: false,
+      commerceActionsEnabled: false,
       error: activeView?.status === 'error' ? activeView.error : null,
     });
   }
@@ -10003,6 +10017,7 @@ function templateCommerceV5PublicState(template) {
     lifecycle: legacyArchived ? 'ARCHIVED' : '',
     listing: null,
     protocolEnabled: false,
+    commerceActionsEnabled: false,
     error: null,
   });
 }
@@ -10040,6 +10055,14 @@ function canOpenPlayer(template = activeTemplate()) {
   if (template.source === 'chain') return templateCommerceV5PublicState(template).playable;
   if (localUiTest && template.source === 'creator-pack') return makerModels.has(template.id);
   return Boolean(state.previewingMaker && template.source === 'local' && makerModels.has(template.id));
+}
+
+function makerPlayerEntryControls(publicState, walletConnected) {
+  const playable = publicState?.playable === true;
+  return Object.freeze({
+    cardDisabled: Boolean(walletConnected && !playable),
+    detailDisabled: !playable,
+  });
 }
 
 function makerHasRenderableAssets() {
@@ -10188,6 +10211,7 @@ function renderTemplates() {
     const sourceLabel = templateSourceLabel(template);
     const coverUrl = templatePublishedCoverUrl(template);
     const publicState = templateCommerceV5PublicState(template);
+    const entryControls = makerPlayerEntryControls(publicState, state.walletConnected);
     const lifecycleLabel = publicState.verified
       ? t(commerceV5LifecycleLabelKey(publicState.lifecycle))
       : publicState.resolving
@@ -10234,7 +10258,7 @@ function renderTemplates() {
           <span>${Number(template.royaltyBps || 0) / 100}% ${t('royaltyPolicy')}</span>
           <div class="template-card-actions">
             <button class="secondary" type="button" data-view-template="${escapeHtml(template.id)}">${t('viewMaker')}</button>
-            <button class="primary" data-use-template="${escapeHtml(template.id)}" ${state.walletConnected && !publicState.playable ? `disabled title="${escapeHtml(lifecycleLabel || t('makerCommerceV5Unavailable'))}"` : ''}>${escapeHtml(startLabel)}</button>
+            <button class="primary" data-use-template="${escapeHtml(template.id)}" ${entryControls.cardDisabled ? `disabled title="${escapeHtml(lifecycleLabel || t('makerCommerceV5Unavailable'))}"` : ''}>${escapeHtml(startLabel)}</button>
           </div>
         </div>
       </div>
@@ -10320,6 +10344,7 @@ function renderTemplateDetail() {
   const model = makerModels.get(template.id);
   const metrics = templateModelMetrics(template);
   const publicState = templateCommerceV5PublicState(template);
+  const entryControls = makerPlayerEntryControls(publicState, state.walletConnected);
   const lifecycleLabel = publicState.verified
     ? t(commerceV5LifecycleLabelKey(publicState.lifecycle))
     : publicState.resolving
@@ -10338,8 +10363,7 @@ function renderTemplateDetail() {
     listing
     && publicState.lifecycle === COMMERCE_V5_LIFECYCLE.SALE_PENDING
     && !publicState.isSeller
-    && releaseEnabled
-    && publicState.protocolEnabled
+    && publicState.commerceActionsEnabled
   );
   const manifestUrl = template.quiltId
     ? walrusQuiltFileUrl(template.quiltId, 'animacraft-manifest.json')
@@ -10396,7 +10420,7 @@ function renderTemplateDetail() {
       ` : ''}
       <div class="template-detail-actions">
         ${listing && !publicState.isSeller ? `<button class="primary" type="button" data-detail-buy ${state.walletConnected && !canBuy ? `disabled title="${escapeHtml(buyBlockReason || t('makerCommerceV5Unavailable'))}"` : ''}>${escapeHtml(state.walletConnected ? t('makerCommerceV5ActionBuy') : t('makerCommerceV5ConnectToBuy'))}</button>` : ''}
-        <button class="${listing ? 'secondary' : 'primary'}" type="button" data-detail-start ${publicState.playable ? '' : `disabled title="${escapeHtml(lifecycleLabel || t('makerCommerceV5Unavailable'))}"`}>${escapeHtml(state.walletConnected ? t('startMaking') : t('connectToMake'))}</button>
+        <button class="${listing ? 'secondary' : 'primary'}" type="button" data-detail-start ${entryControls.detailDisabled ? `disabled title="${escapeHtml(lifecycleLabel || t('makerCommerceV5Unavailable'))}"` : ''}>${escapeHtml(state.walletConnected ? t('startMaking') : t('connectToMake'))}</button>
       </div>
       <div class="template-detail-links">
         ${template.objectId ? `<a href="${escapeHtml(explorerObjectUrl(template.objectId))}" target="_blank" rel="noreferrer">${escapeHtml(t('viewSuiMaker'))}</a>` : ''}

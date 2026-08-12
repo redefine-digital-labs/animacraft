@@ -41,6 +41,8 @@ function functionSource(name) {
 function publicState({
   source = 'chain',
   releaseEnabled = true,
+  expansionPackV8ReleaseEnabled = false,
+  expansionPackV8RuntimeReady = true,
   verified = true,
   protocolEnabled = true,
   lifecycle = 0,
@@ -60,7 +62,14 @@ function publicState({
     },
     isSeller: false,
   } : null;
-  return new Function('template', 'releaseEnabled', 'legacyArchived', 'management', `
+  return new Function(
+    'template',
+    'releaseEnabled',
+    'expansionPackV8ReleaseEnabled',
+    'expansionPackV8RuntimeReady',
+    'legacyArchived',
+    'management',
+    `
     const makerModels = new Map([['maker', {
       makerArchived: legacyArchived,
       commerceV5RootObjectId: template.commerceV5RootObjectId,
@@ -72,15 +81,42 @@ function publicState({
       : null;
     const runtimeConfig = {
       commerceV5ReleaseEnabled: releaseEnabled,
+      expansionPackV8ReleaseEnabled,
       commerceV5TypeOriginPackageId: '0x1',
       commerceProtocolConfigV5Id: '0x2',
       commerceProtocolTreasuryV5Id: '0x3',
     };
-    const COMMERCE_V5_LIFECYCLE = { ACTIVE: 0 };
+    const COMMERCE_V5_LIFECYCLE = { ACTIVE: 0, PAUSED: 1 };
+    const expansionPackV8RuntimeConfigured = () => expansionPackV8RuntimeReady;
     const suiJsonId = (value) => String(value || '');
     ${functionSource('templateCommerceV5PublicState')}
     return templateCommerceV5PublicState(template);
-  `)(template, releaseEnabled, legacyArchived, management);
+  `)(
+    template,
+    releaseEnabled,
+    expansionPackV8ReleaseEnabled,
+    expansionPackV8RuntimeReady,
+    legacyArchived,
+    management,
+  );
+}
+
+function playerEntryBehavior(options = {}, { walletConnected = true } = {}) {
+  const template = { id: 'maker', source: 'chain' };
+  const state = publicState(options);
+  return new Function('template', 'publicState', 'walletConnected', `
+    const activeTemplate = () => template;
+    const templateCommerceV5PublicState = () => publicState;
+    const localUiTest = false;
+    const makerModels = new Map();
+    const state = { previewingMaker: false };
+    ${functionSource('canOpenPlayer')}
+    ${functionSource('makerPlayerEntryControls')}
+    return {
+      canOpen: canOpenPlayer(template),
+      controls: makerPlayerEntryControls(publicState, walletConnected),
+    };
+  `)(template, state, walletConnected);
 }
 
 test('Player commerce propagates verified availability and never finalizes local quota estimates', () => {
@@ -120,7 +156,7 @@ test('Public Maker detail resolves v5 lifecycle and exposes a fresh-read SALE_PE
   assert.match(app, /function templateCommerceV5PublicState\(template\)/);
   assert.match(
     app,
-    /playable:\s*releaseEnabled[\s\S]*protocolEnabled[\s\S]*verified[\s\S]*lifecycle === COMMERCE_V5_LIFECYCLE\.ACTIVE/,
+    /const commercePlayerAvailable = \([\s\S]*releaseEnabled[\s\S]*lifecycle === COMMERCE_V5_LIFECYCLE\.ACTIVE/,
   );
   assert.match(
     app,
@@ -148,6 +184,61 @@ test('public chain Player opens only after release, protocol, readback and ACTIV
     'an unmigrated legacy chain Maker must fail closed',
   );
   assert.equal(publicState({ source: 'local' }).playable, true);
+});
+
+test('v8-only verified PAUSED parent opens card and detail Player entry without Commerce actions', () => {
+  const pausedV8 = publicState({
+    releaseEnabled: false,
+    expansionPackV8ReleaseEnabled: true,
+    lifecycle: 1,
+  });
+  assert.equal(pausedV8.playable, true);
+  assert.equal(pausedV8.commerceActionsEnabled, false);
+
+  const entry = playerEntryBehavior({
+    releaseEnabled: false,
+    expansionPackV8ReleaseEnabled: true,
+    lifecycle: 1,
+  });
+  assert.equal(entry.canOpen, true);
+  assert.equal(entry.controls.cardDisabled, false);
+  assert.equal(entry.controls.detailDisabled, false);
+
+  for (const blocked of [
+    { protocolEnabled: false },
+    { verified: false },
+    { expansionPackV8RuntimeReady: false },
+    { lifecycle: 0 },
+  ]) {
+    const result = playerEntryBehavior({
+      releaseEnabled: false,
+      expansionPackV8ReleaseEnabled: true,
+      lifecycle: 1,
+      ...blocked,
+    });
+    assert.equal(result.canOpen, false);
+    assert.equal(result.controls.cardDisabled, true);
+    assert.equal(result.controls.detailDisabled, true);
+  }
+});
+
+test('v8-only entry does not enable Commerce list, buy, or Complete gates', () => {
+  const pausedV8 = publicState({
+    releaseEnabled: false,
+    expansionPackV8ReleaseEnabled: true,
+    lifecycle: 1,
+  });
+  assert.equal(pausedV8.playable, true);
+  assert.equal(pausedV8.commerceActionsEnabled, false);
+  assert.equal(pausedV8.listing, null);
+
+  const commerceProductGate = false;
+  const listAllowed = commerceProductGate && pausedV8.commerceActionsEnabled;
+  const buyAllowed = commerceProductGate && pausedV8.commerceActionsEnabled;
+  const completeAllowed = commerceProductGate && pausedV8.lifecycle === 0;
+  assert.equal(listAllowed, false);
+  assert.equal(buyAllowed, false);
+  assert.equal(completeAllowed, false);
 });
 
 test('Migrated v5 Makers suppress legacy v4 economics controls', () => {

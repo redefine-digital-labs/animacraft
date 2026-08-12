@@ -583,7 +583,7 @@ test('production gallery is chain-derived and creator packs are local test fixtu
   );
   assert.match(
     app,
-    /playable:\s*releaseEnabled\s*&&\s*protocolEnabled\s*&&\s*verified\s*&&\s*lifecycle === COMMERCE_V5_LIFECYCLE\.ACTIVE/,
+    /const commercePlayerAvailable = \([\s\S]*releaseEnabled[\s\S]*lifecycle === COMMERCE_V5_LIFECYCLE\.ACTIVE/,
   );
   assert.match(app, /visible:\s*!legacyArchived/);
   assert.match(app, /data-create-first-maker/);
