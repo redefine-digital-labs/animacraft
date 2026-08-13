@@ -1544,6 +1544,7 @@ function expansionPackLifecycleState(lifecycle, fallback = 'unknown') {
     'archived',
     'publishing',
     'recoverable',
+    'finalized-failure',
     'unknown',
   ].includes(state) ? state : 'unknown';
 }
@@ -1558,6 +1559,7 @@ const EXPANSION_PACK_LIFECYCLE_LABEL_KEYS = Object.freeze({
   archived: 'expansionPackLifecycleArchived',
   publishing: 'expansionPackLifecyclePublishing',
   recoverable: 'expansionPackLifecycleRecoverable',
+  'finalized-failure': 'expansionPackLifecycleFinalizedFailure',
   unknown: 'expansionPackLifecycleUnknown',
 });
 

@@ -4,17 +4,27 @@ import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 
 export const EXPANSION_PACK_LIFECYCLE_RECOVERY_SCHEMA =
-  'animacraft.expansion-pack-lifecycle-recovery.v1';
+  'animacraft.expansion-pack-lifecycle-recovery.v2';
 export const EXPANSION_PACK_LIFECYCLE_RECEIPT_SCHEMA =
-  'animacraft.expansion-pack-lifecycle-receipt.v1';
+  'animacraft.expansion-pack-lifecycle-receipt.v2';
 export const EXPANSION_PACK_LIFECYCLE_FAILURE_SCHEMA =
-  'animacraft.expansion-pack-lifecycle-finalized-failure.v1';
+  'animacraft.expansion-pack-lifecycle-finalized-failure.v2';
 export const EXPANSION_PACK_LIFECYCLE_DATABASE_NAME =
   'animacraft-expansion-pack-lifecycle-v8';
-export const EXPANSION_PACK_LIFECYCLE_DATABASE_VERSION = 1;
-export const EXPANSION_PACK_LIFECYCLE_PENDING_STORE = 'pending-lifecycle-actions';
-export const EXPANSION_PACK_LIFECYCLE_RECEIPT_STORE = 'verified-lifecycle-receipts';
-export const EXPANSION_PACK_LIFECYCLE_FAILURE_STORE = 'finalized-lifecycle-failures';
+export const EXPANSION_PACK_LIFECYCLE_DATABASE_VERSION = 2;
+export const EXPANSION_PACK_LIFECYCLE_PENDING_STORE = 'pending-lifecycle-actions-v2';
+export const EXPANSION_PACK_LIFECYCLE_RECEIPT_STORE = 'verified-lifecycle-receipts-v2';
+export const EXPANSION_PACK_LIFECYCLE_FAILURE_STORE = 'finalized-lifecycle-failures-v2';
+
+// The pre-release v1 prototype did not bind the mutable shared Release object
+// version/digest, so those records cannot be promoted into a v2 action identity
+// without guessing. Keep the old stores intact and detect any old pending lane
+// fail-closed. This prevents a replacement signature while preserving the raw
+// v1 bytes for an explicit query-only recovery tool if a developer build ever
+// wrote them. The first public lifecycle release starts on v2.
+const LEGACY_V1_PENDING_STORE = 'pending-lifecycle-actions';
+const LEGACY_V1_RECEIPT_STORE = 'verified-lifecycle-receipts';
+const LEGACY_V1_FAILURE_STORE = 'finalized-lifecycle-failures';
 
 export const EXPANSION_PACK_LIFECYCLE_RECOVERY_STATE = Object.freeze({
   SIGNED: 'SIGNED',
@@ -37,6 +47,7 @@ export const EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR = Object.freeze({
   READBACK_MISMATCH: 'EXPANSION_PACK_LIFECYCLE_RECOVERY_READBACK_MISMATCH',
   INDEXEDDB_UNAVAILABLE: 'EXPANSION_PACK_LIFECYCLE_RECOVERY_INDEXEDDB_UNAVAILABLE',
   DATABASE_BLOCKED: 'EXPANSION_PACK_LIFECYCLE_RECOVERY_DATABASE_BLOCKED',
+  LEGACY_RECOVERY_REQUIRED: 'EXPANSION_PACK_LIFECYCLE_LEGACY_RECOVERY_REQUIRED',
   STORAGE_FAILED: 'EXPANSION_PACK_LIFECYCLE_RECOVERY_STORAGE_FAILED',
 });
 
@@ -75,6 +86,28 @@ function lifecycle(value, label) {
   return result;
 }
 
+function exactObjectVersion(value) {
+  const version = required(value, 'Release object version');
+  try {
+    if (!/^[0-9]+$/.test(version) || BigInt(version) < 1n) throw new Error('range');
+  } catch {
+    fail(
+      EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.IDENTITY_INVALID,
+      'Release object version must be an exact positive u64.',
+    );
+  }
+  return BigInt(version).toString();
+}
+
+function exactObjectDigest(value) {
+  const digest = required(value, 'Release object digest');
+  if (digest.length > 160 || /\s/.test(digest)) fail(
+    EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.IDENTITY_INVALID,
+    'Release object digest must be an exact opaque Sui digest.',
+  );
+  return digest;
+}
+
 const TRANSITIONS = Object.freeze({ pause: [3, 4], resume: [4, 3] });
 
 function identityFrom(value = {}) {
@@ -82,6 +115,12 @@ function identityFrom(value = {}) {
   const releaseId = exactId(value.releaseId ?? value.release?.objectId, 'Release id');
   const adminCapId = exactId(value.adminCapId ?? value.adminCap?.objectId, 'AdminCap id');
   const parentRootId = exactId(value.parentRootId ?? value.parent?.objectId, 'Parent root id');
+  const releaseObjectVersion = exactObjectVersion(
+    value.releaseObjectVersion ?? value.release?.objectVersion,
+  );
+  const releaseObjectDigest = exactObjectDigest(
+    value.releaseObjectDigest ?? value.release?.objectDigest,
+  );
   const action = required(value.action ?? value.kind, 'Lifecycle action').toLowerCase();
   if (!['pause', 'resume', 'archive'].includes(action)) fail(
     EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.IDENTITY_INVALID,
@@ -95,12 +134,14 @@ function identityFrom(value = {}) {
     EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.IDENTITY_INVALID,
     'Lifecycle action and exact from/to states do not form a protocol transition.',
   );
-  const parts = [walletAddress, releaseId, adminCapId, parentRootId, action,
+  const parts = [walletAddress, releaseId, adminCapId, parentRootId,
+    releaseObjectVersion, releaseObjectDigest, action,
     fromLifecycle, toLifecycle];
   const key = [EXPANSION_PACK_LIFECYCLE_RECOVERY_SCHEMA, ...parts]
     .map((entry) => encodeURIComponent(entry)).join(':');
   return deepFreeze({
-    walletAddress, releaseId, adminCapId, parentRootId, action,
+    walletAddress, releaseId, adminCapId, parentRootId,
+    releaseObjectVersion, releaseObjectDigest, action,
     fromLifecycle, toLifecycle, key,
     walletReleaseKey: [walletAddress, releaseId].map(encodeURIComponent).join(':'),
     releaseActionKey: [releaseId, action].map(encodeURIComponent).join(':'),
@@ -197,6 +238,22 @@ function openDatabase(indexedDB) {
     );
     request.onupgradeneeded = () => {
       const database = request.result;
+      // Always retain/create the unpublished v1 stores. Existing v1 bytes are
+      // never deleted during the v2 upgrade, and their presence is checked
+      // before a new signature can be persisted for the same wallet+Release.
+      if (!database.objectStoreNames.contains(LEGACY_V1_PENDING_STORE)) {
+        const store = database.createObjectStore(LEGACY_V1_PENDING_STORE, { keyPath: 'key' });
+        store.createIndex('walletReleaseKey', 'walletReleaseKey', { unique: false });
+        store.createIndex('releaseActionKey', 'releaseActionKey', { unique: false });
+      }
+      if (!database.objectStoreNames.contains(LEGACY_V1_RECEIPT_STORE)) {
+        const store = database.createObjectStore(LEGACY_V1_RECEIPT_STORE, { keyPath: 'key' });
+        store.createIndex('walletReleaseKey', 'walletReleaseKey', { unique: false });
+      }
+      if (!database.objectStoreNames.contains(LEGACY_V1_FAILURE_STORE)) {
+        const store = database.createObjectStore(LEGACY_V1_FAILURE_STORE, { keyPath: 'failureKey' });
+        store.createIndex('key', 'key', { unique: false });
+      }
       if (!database.objectStoreNames.contains(EXPANSION_PACK_LIFECYCLE_PENDING_STORE)) {
         const store = database.createObjectStore(EXPANSION_PACK_LIFECYCLE_PENDING_STORE, { keyPath: 'key' });
         store.createIndex('walletReleaseKey', 'walletReleaseKey', { unique: false });
@@ -255,6 +312,80 @@ export function createExpansionPackLifecycleRecoveryStore(options = {}) {
     : (bytes) => TransactionDataBuilder.getDigestFromBytes(fromBase64(bytes));
 
   const api = {
+    async listPendingForRelease({ walletAddress, releaseId } = {}) {
+      const walletReleaseKey = [
+        exactId(walletAddress, 'Wallet address'),
+        exactId(releaseId, 'Release id'),
+      ].map(encodeURIComponent).join(':');
+      const [records, legacyRecords] = await withDatabase(
+        indexedDB,
+        [EXPANSION_PACK_LIFECYCLE_PENDING_STORE, LEGACY_V1_PENDING_STORE],
+        'readonly',
+        (tx) => Promise.all([
+          requestResult(tx.objectStore(EXPANSION_PACK_LIFECYCLE_PENDING_STORE).getAll()),
+          requestResult(tx.objectStore(LEGACY_V1_PENDING_STORE).getAll()),
+        ]),
+      );
+      if ((legacyRecords || []).some((record) => record?.walletReleaseKey === walletReleaseKey)) fail(
+        EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.LEGACY_RECOVERY_REQUIRED,
+        'A pre-release lifecycle transaction is still pending. It must be resolved by digest before a new signature is allowed.',
+        { walletReleaseKey },
+      );
+      const matches = [];
+      for (const record of records || []) {
+        if (record?.walletReleaseKey !== walletReleaseKey) continue;
+        const identity = identityFrom(record);
+        storedIdentity(record, identity);
+        if (record.schemaVersion !== EXPANSION_PACK_LIFECYCLE_RECOVERY_SCHEMA) fail(
+          EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.READBACK_MISMATCH,
+          'Stored pending lifecycle recovery schema is unsupported.',
+        );
+        exactRevision(record.revision);
+        exactSession(record.sessionId);
+        const signed = await exactSigned(record.signed, deriveDigest, now);
+        if (!sameSigned(signed, record.signed)) fail(
+          EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.READBACK_MISMATCH,
+          'Stored signed lifecycle transaction changed.',
+        );
+        matches.push(publicRecord(record));
+      }
+      return deepFreeze(matches.sort((left, right) => (
+        Number(left.savedAt || 0) - Number(right.savedAt || 0)
+        || left.key.localeCompare(right.key)
+      )));
+    },
+
+    async listFinalizedFailuresForRelease({ walletAddress, releaseId } = {}) {
+      const walletReleaseKey = [
+        exactId(walletAddress, 'Wallet address'),
+        exactId(releaseId, 'Release id'),
+      ].map(encodeURIComponent).join(':');
+      const records = await withDatabase(
+        indexedDB,
+        [EXPANSION_PACK_LIFECYCLE_FAILURE_STORE],
+        'readonly',
+        (tx) => requestResult(tx.objectStore(EXPANSION_PACK_LIFECYCLE_FAILURE_STORE).getAll()),
+      );
+      const matches = [];
+      for (const record of records || []) {
+        if (record?.walletReleaseKey !== walletReleaseKey) continue;
+        const identity = identityFrom(record);
+        storedIdentity(record, identity);
+        if (record.schemaVersion !== EXPANSION_PACK_LIFECYCLE_FAILURE_SCHEMA
+          || record.failureKey !== failureKey(identity)
+          || !text(record.transactionDigest)
+          || record.finalized !== true || record.executionStatus !== 'FAILURE') fail(
+          EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.READBACK_MISMATCH,
+          'Stored finalized lifecycle failure is invalid.',
+        );
+        matches.push(publicRecord(record));
+      }
+      return deepFreeze(matches.sort((left, right) => (
+        Number(left.failedAt || 0) - Number(right.failedAt || 0)
+        || left.key.localeCompare(right.key)
+      )));
+    },
+
     async loadPending(identityValue) {
       const identity = identityFrom(identityValue);
       const record = await withDatabase(indexedDB, [EXPANSION_PACK_LIFECYCLE_PENDING_STORE], 'readonly',
@@ -291,16 +422,18 @@ export function createExpansionPackLifecycleRecoveryStore(options = {}) {
       return publicRecord(record);
     },
 
-    async loadFinalizedFailure(identityValue, digestValue) {
+    async loadFinalizedFailure(identityValue, digestValue = '') {
       const identity = identityFrom(identityValue);
-      const digest = required(digestValue, 'Transaction digest');
+      const digest = text(digestValue);
       const record = await withDatabase(indexedDB, [EXPANSION_PACK_LIFECYCLE_FAILURE_STORE], 'readonly',
         (tx) => requestResult(tx.objectStore(EXPANSION_PACK_LIFECYCLE_FAILURE_STORE)
           .get(failureKey(identity, digest))));
       if (!record) return null;
       storedIdentity(record, identity);
       if (record.schemaVersion !== EXPANSION_PACK_LIFECYCLE_FAILURE_SCHEMA
-        || record.failureKey !== failureKey(identity, digest) || record.transactionDigest !== digest
+        || record.failureKey !== failureKey(identity, digest)
+        || !text(record.transactionDigest)
+        || (digest && record.transactionDigest !== digest)
         || record.finalized !== true || record.executionStatus !== 'FAILURE') fail(
         EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.READBACK_MISMATCH,
         'Stored finalized lifecycle failure is invalid.',
@@ -318,9 +451,13 @@ export function createExpansionPackLifecycleRecoveryStore(options = {}) {
         EXPANSION_PACK_LIFECYCLE_PENDING_STORE,
         EXPANSION_PACK_LIFECYCLE_RECEIPT_STORE,
         EXPANSION_PACK_LIFECYCLE_FAILURE_STORE,
+        LEGACY_V1_PENDING_STORE,
       ], 'readwrite', async (tx) => {
         const pendingStore = tx.objectStore(EXPANSION_PACK_LIFECYCLE_PENDING_STORE);
-        const [pending, receipt, failure] = await Promise.all([
+        const [releasePending, legacyReleasePending, pending, receipt, failure] = await Promise.all([
+          requestResult(pendingStore.index('walletReleaseKey').getAll(identity.walletReleaseKey)),
+          requestResult(tx.objectStore(LEGACY_V1_PENDING_STORE)
+            .index('walletReleaseKey').getAll(identity.walletReleaseKey)),
           requestResult(pendingStore.get(identity.key)),
           requestResult(tx.objectStore(EXPANSION_PACK_LIFECYCLE_RECEIPT_STORE).get(identity.key)),
           requestResult(tx.objectStore(EXPANSION_PACK_LIFECYCLE_FAILURE_STORE)
@@ -330,6 +467,17 @@ export function createExpansionPackLifecycleRecoveryStore(options = {}) {
           'This lifecycle action already has verified readback.');
         if (failure) fail(EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.ALREADY_FINALIZED_FAILED,
           'This exact transaction finalized with failure and cannot be replayed.');
+        if ((legacyReleasePending || []).length) fail(
+          EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.LEGACY_RECOVERY_REQUIRED,
+          'A pre-release lifecycle transaction for this wallet and Release must be resolved before signing again.',
+          { walletReleaseKey: identity.walletReleaseKey },
+        );
+        const conflicting = (releasePending || []).find((record) => record?.key !== identity.key);
+        if (conflicting) fail(
+          EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.CAS_CONFLICT,
+          'Another lifecycle transition is already pending for this wallet and Release.',
+          { pendingKey: text(conflicting.key), requestedKey: identity.key },
+        );
         const actualRevision = pending?.revision ?? 0;
         if (actualRevision !== expectedRevision) fail(
           EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.CAS_CONFLICT,

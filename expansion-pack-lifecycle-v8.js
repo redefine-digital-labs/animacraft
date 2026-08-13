@@ -1,5 +1,9 @@
 import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
 import {
+  parseCommerceProtocolConfigV5,
+  parseMakerRootV5,
+} from './chain-commerce-v5.js';
+import {
   EXPANSION_PACK_V8_LIFECYCLE,
   EXPANSION_PACK_V8_MODULE,
   ExpansionPackV8AppError,
@@ -9,6 +13,7 @@ import {
   parseExpansionPackAdminCapV8,
   parseExpansionPackReleaseV8,
   parseExpansionPackTreasuryV8,
+  queryIndependentExtensionLockV5,
   readExpansionPackV8Submission,
 } from './expansion-pack-publication-v8-app.js';
 
@@ -66,31 +71,24 @@ function objectType(value) {
   return value?.type || value?.data?.type || value?.content?.type || value?.data?.content?.type || '';
 }
 
-function fields(value) {
-  return value?.json?.fields || value?.json || value?.data?.json?.fields || value?.data?.json
-    || value?.content?.fields || value?.data?.content?.fields || {};
-}
-
-function field(value, ...names) {
-  const source = value?.fields || value || {};
-  for (const name of names) if (source[name] !== undefined) return source[name];
-  return undefined;
-}
-
-function jsonId(value) {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map(jsonId).find(Boolean) || '';
-  if (!value || typeof value !== 'object') return '';
-  for (const key of ['bytes', 'objectId', 'object_id', 'id', 'address', 'some', 'vec', 'fields']) {
-    const result = jsonId(value[key]);
-    if (result) return result;
+function objectVersion(value) {
+  const version = String(value?.version ?? value?.data?.version ?? '').trim();
+  try {
+    if (!version || BigInt(version) < 1n) throw new Error('range');
+  } catch {
+    fail('EXPANSION_PACK_V8_CHAIN_READBACK_MISMATCH',
+      'ExpansionPackReleaseV8 object version is missing or invalid.');
   }
-  return '';
+  return version;
 }
 
-function addressOwner(value) {
-  const owner = value?.owner || value?.data?.owner || {};
-  return jsonId(owner.AddressOwner || owner.addressOwner || owner.address_owner || '');
+function objectDigest(value) {
+  const digest = String(value?.digest ?? value?.data?.digest ?? '').trim();
+  if (!digest) fail(
+    'EXPANSION_PACK_V8_CHAIN_READBACK_MISMATCH',
+    'ExpansionPackReleaseV8 object digest is missing.',
+  );
+  return digest;
 }
 
 function isShared(value) {
@@ -105,16 +103,6 @@ function exactType(value, expected, label) {
     fail('EXPANSION_PACK_V8_TYPE_ORIGIN_MISMATCH', `${label} has the wrong stable TypeOrigin.`, {
       expected: normalizeStructTag(expected), actual,
     });
-  }
-}
-
-function u64(value, label) {
-  try {
-    const result = BigInt(String(value));
-    if (result < 0n || result > ((1n << 64n) - 1n)) throw new Error('range');
-    return result;
-  } catch {
-    fail('EXPANSION_PACK_V8_OBJECT_FIELD_INVALID', `${label} must be an exact u64.`);
   }
 }
 
@@ -150,34 +138,61 @@ function optionalExactMatch(supplied, authoritative, label) {
 function parseParent(value, runtime) {
   const origin = exactId(runtime?.commerceV5TypeOriginPackageId, 'Commerce v5 TypeOrigin');
   exactType(value, `${origin}::commerce_v5::MakerRootV5`, 'Parent MakerRootV5');
-  const data = fields(value);
-  return Object.freeze({
-    objectId: exactId(objectId(value), 'Parent MakerRootV5 ID'),
-    currentOwner: exactId(field(data, 'current_owner', 'currentOwner'), 'Parent Maker owner'),
-    ownershipEpoch: u64(field(data, 'ownership_epoch', 'ownershipEpoch'), 'Parent ownership epoch'),
-    lifecycle: Number(field(data, 'lifecycle')),
-    lifecycleState: Number(field(data, 'lifecycle')) === 1 ? 'PAUSED' : 'NOT_PAUSED',
-    protocolConfigId: exactId(
-      jsonId(field(data, 'protocol_config_id', 'protocolConfigId')),
-      'CommerceProtocolConfigV5 ID',
-    ),
-  });
+  return parseMakerRootV5(value);
 }
 
 function parseConfig(value, runtime) {
   const origin = exactId(runtime?.commerceV5TypeOriginPackageId, 'Commerce v5 TypeOrigin');
   exactType(value, `${origin}::commerce_v5::CommerceProtocolConfigV5`, 'CommerceProtocolConfigV5');
-  const data = fields(value);
-  const result = Object.freeze({
-    objectId: exactId(objectId(value), 'CommerceProtocolConfigV5 ID'),
-    version: u64(field(data, 'version'), 'CommerceProtocolConfigV5 version'),
-    enabled: field(data, 'enabled') === true,
-  });
-  if (result.version !== 5n || !isShared(value)) fail(
+  const result = parseCommerceProtocolConfigV5(value);
+  if (!isShared(value)) fail(
     'EXPANSION_PACK_V8_CHAIN_READBACK_MISMATCH',
     'CommerceProtocolConfigV5 must be the exact shared v5 config.',
   );
   return result;
+}
+
+async function optionalIndependentExtensionLock(suiClient, runtime, rootId) {
+  try {
+    return await queryIndependentExtensionLockV5(suiClient, { runtime, rootId });
+  } catch (error) {
+    if (error?.code === 'EXPANSION_PACK_V8_PARENT_LOCK_MISSING') return null;
+    throw error;
+  }
+}
+
+function independentParentOperational({ parent, config, lock, release, runtime }) {
+  if (!lock) return false;
+  let paymentCoinLinked = false;
+  try {
+    const expectedPaymentCoin = normalizeStructTag(String(runtime?.paymentCoinType || ''));
+    paymentCoinLinked = normalizeStructTag(parent.paymentCoinType) === expectedPaymentCoin
+      && normalizeStructTag(config.paymentCoinType) === expectedPaymentCoin;
+  } catch {
+    return false;
+  }
+  return parent.lifecycle === 1
+    && !parent.activeListingId
+    && parent.styleRegistrySealed === true
+    && sameId(parent.currentControlCapId, lock.retiredControlCapId)
+    && parent.ownershipEpoch === release.admittedParentOwnershipEpoch
+    && parent.ownershipEpoch === lock.lockedOwnershipEpoch
+    && lock.retiredControlCapEpoch + 1n === lock.lockedOwnershipEpoch
+    && lock.finalized === true
+    && sameId(lock.authorityId, runtime?.independentExtensionAuthorityV5Id)
+    && sameId(lock.legacyMakerId, parent.legacyMakerId)
+    && sameId(lock.legacyMakerId, release.parentLegacyMakerId)
+    && sameId(lock.protocolConfigId, parent.protocolConfigId)
+    && sameId(lock.protocolConfigId, config.objectId)
+    && sameId(lock.protocolAdminCapId, config.legacyAdminCapId)
+    && sameId(lock.owner, parent.currentOwner)
+    && typeof lock.auditHash === 'string'
+    && /^[0-9a-f]{64}$/.test(lock.auditHash)
+    && config.enabled === true
+    && Boolean(String(config.logicalAuxiliaryBlobId || '').trim())
+    && Boolean(String(config.soulBindingProofType || '').trim())
+    && parent.logicalAuxiliaryBlobId === config.logicalAuxiliaryBlobId
+    && paymentCoinLinked;
 }
 
 function deepFreeze(value) {
@@ -198,7 +213,11 @@ export async function readExpansionPackLifecycleV8({
 } = {}) {
   const wallet = exactId(walletAddress, 'Wallet address');
   const [releaseObject] = await exactObjects(suiClient, [releaseId], 'ExpansionPackReleaseV8');
-  const release = parseExpansionPackReleaseV8(releaseObject, { runtime });
+  const release = Object.freeze({
+    ...parseExpansionPackReleaseV8(releaseObject, { runtime }),
+    objectVersion: objectVersion(releaseObject),
+    objectDigest: objectDigest(releaseObject),
+  });
   optionalExactMatch(adminCapId, release.adminCapId, 'ExpansionPackAdminCapV8 ID');
   optionalExactMatch(treasuryId, release.treasuryId, 'ExpansionPackTreasuryV8 ID');
   optionalExactMatch(parentRootId, release.parentRootId, 'Parent MakerRootV5 ID');
@@ -218,6 +237,10 @@ export async function readExpansionPackLifecycleV8({
     'CommerceProtocolConfigV5',
   );
   const config = parseConfig(configObject, runtime);
+  const state = STATE_BY_LIFECYCLE[release.lifecycle];
+  const lock = state === 'PAUSED'
+    ? await optionalIndependentExtensionLock(suiClient, runtime, parent.objectId)
+    : null;
 
   const linkageReady = sameId(adminCap.releaseId, release.objectId)
     && sameId(treasury.releaseId, release.objectId)
@@ -235,15 +258,17 @@ export async function readExpansionPackLifecycleV8({
     'Release, AdminCap, Treasury, owner and parent linkage are not exact.',
   );
 
-  const state = STATE_BY_LIFECYCLE[release.lifecycle];
   const authorityReady = sameId(wallet, adminCap.owner) && sameId(wallet, release.creator);
   const runtimeReady = runtime?.expansionPackV8ReleaseEnabled === true;
-  const parentReady = parent.lifecycle === 1
-    && parent.ownershipEpoch === release.admittedParentOwnershipEpoch
-    && config.enabled;
+  const resumeParentReady = independentParentOperational({ parent, config, lock, release, runtime });
+  const parentReady = state === 'PAUSED'
+    ? resumeParentReady
+    : parent.lifecycle === 1
+      && parent.ownershipEpoch === release.admittedParentOwnershipEpoch
+      && config.enabled;
   const stateActions = EXPANSION_PACK_LIFECYCLE_ACTIONS_V8[state] || [];
   const allowedActions = authorityReady && runtimeReady
-    ? stateActions.filter((kind) => kind !== 'resume' || parentReady)
+    ? stateActions.filter((kind) => kind !== 'resume' || resumeParentReady)
     : [];
 
   return deepFreeze({
@@ -252,7 +277,7 @@ export async function readExpansionPackLifecycleV8({
     release,
     adminCap,
     treasury,
-    parent: { ...parent, config, operational: parentReady },
+    parent: { ...parent, config, independentExtensionLock: lock, operational: parentReady },
     authorityReady,
     allowedActions: [...allowedActions],
     readbackVerified: true,

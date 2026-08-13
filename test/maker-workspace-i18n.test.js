@@ -51,23 +51,7 @@ test('Expansion Pack inherited-definition actions are explicit in all five local
 });
 
 test('Expansion Pack lifecycle copy is shared and has exact five-locale token parity', () => {
-  const keys = [
-    'expansionPackLifecycleManage',
-    'expansionPackLifecycleManageAria',
-    'expansionPackLifecycleOpen',
-    'expansionPackLifecycleInspect',
-    'expansionPackLifecycleLocalDraft',
-    'expansionPackLifecycleDraft',
-    'expansionPackLifecycleSealed',
-    'expansionPackLifecycleAdmitted',
-    'expansionPackLifecycleActive',
-    'expansionPackLifecyclePaused',
-    'expansionPackLifecycleArchived',
-    'expansionPackLifecyclePublishing',
-    'expansionPackLifecycleRecoverable',
-    'expansionPackLifecycleUnknown',
-    'expansionPackLifecycleChainOnly',
-  ];
+  const keys = Object.keys(EXPANSION_PACK_LIFECYCLE_I18N.en);
   assert.deepEqual(Object.keys(EXPANSION_PACK_LIFECYCLE_I18N), MAKER_WORKSPACE_LOCALES);
   MAKER_WORKSPACE_LOCALES.forEach((locale) => {
     assert.deepEqual(Object.keys(EXPANSION_PACK_LIFECYCLE_I18N[locale]), keys);

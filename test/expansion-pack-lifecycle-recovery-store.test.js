@@ -5,6 +5,7 @@ import { TransactionDataBuilder } from '@mysten/sui/transactions';
 
 import {
   EXPANSION_PACK_LIFECYCLE_DATABASE_NAME,
+  EXPANSION_PACK_LIFECYCLE_DATABASE_VERSION,
   EXPANSION_PACK_LIFECYCLE_FAILURE_STORE,
   EXPANSION_PACK_LIFECYCLE_PENDING_STORE,
   EXPANSION_PACK_LIFECYCLE_RECEIPT_STORE,
@@ -27,7 +28,20 @@ class Store {
     this.transaction = transaction; this.records = records; this.definition = definition;
   }
   createIndex(name, keyPath) { this.definition.indexes.set(name, keyPath); }
+  index(name) {
+    const keyPath = this.definition.indexes.get(name);
+    return {
+      getAll: (key) => {
+        const request = new Request(() => clone([...this.records.values()].filter(
+          (record) => key === undefined || record?.[keyPath] === key,
+        )));
+        this.transaction.touch();
+        return request;
+      },
+    };
+  }
   get(key) { const request = new Request(() => clone(this.records.get(key))); this.transaction.touch(); return request; }
+  getAll() { const request = new Request(() => clone([...this.records.values()])); this.transaction.touch(); return request; }
   put(value) { this.records.set(value[this.definition.keyPath], clone(value)); this.transaction.touch(); }
   delete(key) { this.records.delete(key); this.transaction.touch(); }
 }
@@ -75,6 +89,7 @@ const SESSION = 'lifecycle-session-0001';
 function identity(overrides = {}) {
   return {
     walletAddress: '0x9', releaseId: '0x3', adminCapId: '0x4', parentRootId: '0x1',
+    releaseObjectVersion: '17', releaseObjectDigest: 'release-digest-17',
     action: 'pause', fromLifecycle: 3, toLifecycle: 4, ...overrides,
   };
 }
@@ -111,6 +126,18 @@ test('signed bytes are durably persisted before broadcast and remain immutable u
   assert.deepEqual(saved.record.signed, exact);
   assert.equal(memory.database.records.get(EXPANSION_PACK_LIFECYCLE_PENDING_STORE).size, 1);
   assert.equal(memory.opens[0].name, EXPANSION_PACK_LIFECYCLE_DATABASE_NAME);
+  assert.equal(memory.opens[0].version, EXPANSION_PACK_LIFECYCLE_DATABASE_VERSION);
+  assert.equal(EXPANSION_PACK_LIFECYCLE_DATABASE_VERSION, 2);
+  const indexed = await store.listPendingForRelease({
+    walletAddress: identity().walletAddress,
+    releaseId: identity().releaseId,
+  });
+  assert.equal(indexed.length, 1);
+  assert.equal(indexed[0].signed.digest, exact.digest);
+  assert.deepEqual(await store.listPendingForRelease({
+    walletAddress: '0xa',
+    releaseId: identity().releaseId,
+  }), []);
 
   const broadcasting = await store.checkpointPending(identity(), { state: 'BROADCASTING' }, {
     expectedRevision: 1, sessionId: SESSION,
@@ -171,10 +198,72 @@ test('only definitive finalized failure retires replay bytes and blocks replacem
   assert.equal((await store.loadFinalizedFailure(identity(), exact.digest)).transactionDigest,
     exact.digest);
   assert.equal(memory.database.records.get(EXPANSION_PACK_LIFECYCLE_FAILURE_STORE).size, 1);
+  const discovered = await store.listFinalizedFailuresForRelease({
+    walletAddress: identity().walletAddress,
+    releaseId: identity().releaseId,
+  });
+  assert.equal(discovered.length, 1);
+  assert.equal(discovered[0].transactionDigest, exact.digest);
+  assert.equal((await store.loadFinalizedFailure(identity())).transactionDigest, exact.digest);
   await assert.rejects(store.persistSignedTransaction(identity(), exact, {
     expectedRevision: 0, sessionId: SESSION,
   }), { code: EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.ALREADY_FINALIZED_FAILED });
   await assert.rejects(store.persistSignedTransaction(identity(), signed('BAUG'), {
     expectedRevision: 0, sessionId: SESSION,
   }), { code: EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.ALREADY_FINALIZED_FAILED });
+});
+
+test('release object version and digest create a fresh immutable identity after later transitions', () => {
+  const firstPause = expansionPackLifecycleRecoveryIdentity(identity());
+  const secondPause = expansionPackLifecycleRecoveryIdentity(identity({
+    releaseObjectVersion: '19',
+    releaseObjectDigest: 'release-digest-19',
+  }));
+  assert.notEqual(firstPause.key, secondPause.key);
+});
+
+test('one wallet and Release cannot persist different pending lifecycle identities', async () => {
+  const memory = memoryIndexedDB();
+  const store = createExpansionPackLifecycleRecoveryStore({ indexedDB: memory.factory });
+  await store.persistSignedTransaction(identity(), signed(), {
+    expectedRevision: 0, sessionId: SESSION,
+  });
+  await assert.rejects(store.persistSignedTransaction(identity({
+    action: 'resume',
+    fromLifecycle: 4,
+    toLifecycle: 3,
+    releaseObjectVersion: '18',
+    releaseObjectDigest: 'release-digest-18',
+  }), signed('BAUG'), {
+    expectedRevision: 0, sessionId: 'lifecycle-session-0002',
+  }), { code: EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.CAS_CONFLICT });
+  assert.equal(memory.database.records.get(EXPANSION_PACK_LIFECYCLE_PENDING_STORE).size, 1);
+});
+
+test('v2 upgrade preserves pre-release stores and blocks replacement signing for legacy pending bytes', async () => {
+  const memory = memoryIndexedDB();
+  const store = createExpansionPackLifecycleRecoveryStore({ indexedDB: memory.factory });
+  // Open once so both retained v1 and new v2 stores are created.
+  assert.deepEqual(await store.listPendingForRelease({
+    walletAddress: identity().walletAddress,
+    releaseId: identity().releaseId,
+  }), []);
+  const legacyStore = memory.database.records.get('pending-lifecycle-actions');
+  const normalized = expansionPackLifecycleRecoveryIdentity(identity());
+  legacyStore.set('legacy-key', {
+    key: 'legacy-key',
+    walletReleaseKey: [normalized.walletAddress, normalized.releaseId]
+      .map(encodeURIComponent).join(':'),
+    signed: signed(),
+  });
+  await assert.rejects(store.listPendingForRelease({
+    walletAddress: identity().walletAddress,
+    releaseId: identity().releaseId,
+  }), { code: EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.LEGACY_RECOVERY_REQUIRED });
+  await assert.rejects(store.persistSignedTransaction(identity(), signed(), {
+    expectedRevision: 0,
+    sessionId: SESSION,
+  }), { code: EXPANSION_PACK_LIFECYCLE_RECOVERY_ERROR.LEGACY_RECOVERY_REQUIRED });
+  assert.equal(legacyStore.has('legacy-key'), true, 'the upgrade must not delete legacy signed bytes');
+  assert.equal(memory.database.records.get(EXPANSION_PACK_LIFECYCLE_PENDING_STORE).size, 0);
 });
