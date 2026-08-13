@@ -8141,14 +8141,19 @@ export class MakerWorkspace {
         ${this.documentMutationBlocked() ? `<div class="v4-version-history-notice" role="status" aria-live="polite">${escapeHtml(this.documentMutationBlockedMessage())}</div>` : ''}
 
         <nav class="v4-studio-tabs" aria-label="${escapeHtml(this.tr('makerToolsLabel'))}">
-          ${[
-            ...makerDefinitionEditorSections((key) => this.tr(key)).map((section) => [section.route, section.label]),
+          ${(() => {
+            const definitionSections = makerDefinitionEditorSections((key) => this.tr(key));
+            return [
+            [definitionSections[0].route, definitionSections[0].label],
             ['info', this.tr('makerInfo')],
+            ...definitionSections.slice(1, 4).map((section) => [section.route, section.label]),
             ['expansions', this.tr('expansionPacks')],
+            [definitionSections[4].route, definitionSections[4].label],
             ['commerce', this.tr('commerceRights')],
             ['soul', this.tr('soulConfig')],
             ['validate', this.tr(issues.length ? 'preflightCount' : 'preflightReady', { count: issues.length })],
-          ].map(([id, label]) => `<button type="button" id="makerV4Tab-${id}" class="${this.creatorTab === id ? 'active' : ''}" data-action="creator-tab" data-tab="${id}" aria-pressed="${this.creatorTab === id}" ${id === 'structure' ? 'aria-controls="makerV4ToolPanel"' : ''}>${escapeHtml(label)}</button>`).join('')}
+          ].map(([id, label]) => `<button type="button" id="makerV4Tab-${id}" class="${this.creatorTab === id ? 'active' : ''}" data-action="creator-tab" data-tab="${id}" aria-pressed="${this.creatorTab === id}" ${id === 'structure' ? 'aria-controls="makerV4ToolPanel"' : ''}>${escapeHtml(label)}</button>`).join('');
+          })()}
         </nav>
 
         <div id="makerV4ToolPanel" class="v4-studio-workspace">
