@@ -42,6 +42,7 @@ import {
   updateExpansionPackStyleRules,
   updateExpansionPackCommerce,
 } from '../expansion-pack-project.js';
+import { evaluateRecipe } from '../maker-rules.js';
 
 function baseMaker() {
   return {
@@ -603,6 +604,42 @@ test('merged preview Recipe selects Pack-owned Items, Styles and optional Parts 
   );
 });
 
+test('preflight rejects a Pack rule that makes its merged preview choice unreachable', () => {
+  let project = addExpansionPackItem(createProject(), {
+    partId: 'body',
+    item: {
+      id: 'armor',
+      name: 'Armor',
+      defaultStyleId: 'default',
+      styles: [{
+        id: 'default',
+        assetId: 'body-art',
+        layerTrackId: 'body-track',
+      }],
+    },
+  });
+  project = addExpansionPackRule(project, {
+    id: 'armor-excludes-body',
+    type: 'excludes',
+    trigger: { scope: 'pack', partId: 'body', itemId: 'armor' },
+    targets: [{ scope: 'base', partId: 'body' }],
+  });
+
+  const merged = mergeExpansionPackProjectPreview(project);
+  const previewRecipe = createExpansionPackProjectPreviewRecipe(project, merged);
+  assert.equal(evaluateRecipe(merged, previewRecipe).valid, false);
+
+  const result = preflightExpansionPackProject(project);
+  assert.equal(result.valid, false);
+  assert.equal(result.publishable, false);
+  assert.equal(result.preview, null);
+  assert.ok(result.errors.some((issue) => issue.code === 'pack-preview-recipe-rule-violation'));
+  assert.ok(result.errors.some((issue) => (
+    issue.code === 'unreachable-public-item-rules'
+    && issue.path === 'body/moon__armor'
+  )));
+});
+
 test('updates and removes only Pack-owned content while pruning empty parent extensions', () => {
   const parent = baseMaker();
   const parentBefore = structuredClone(parent);
@@ -1017,10 +1054,53 @@ test('Pack wardrobe modes namespace only optional Pack Parts and append compatib
   let noComposable = addExpansionPackOptionalPart(createProject(noComposableParent), {
     part: { id: 'cape', name: 'Cape', items: [] },
   });
-  noComposable = setExpansionPackPartMode(noComposable, 'cape', 'SLOT');
+  assert.throws(
+    () => setExpansionPackPartMode(noComposable, 'cape', 'SLOT'),
+    { code: 'pack-slot-requires-composable-v6-parent' },
+  );
+  noComposable = setExpansionPackPartMode(noComposable, 'cape', 'FIXED');
   const noComposableMerged = mergeExpansionPackProjectPreview(noComposable);
   assert.equal(Object.hasOwn(noComposableMerged.extensions, 'composableV6'), false);
-  assert.equal(noComposableMerged.extensions.wardrobeV7.partModes.moon__cape, 'SLOT');
+  assert.equal(noComposableMerged.extensions.wardrobeV7.partModes.moon__cape, 'FIXED');
+});
+
+test('SLOT requires both COMPOSABLE profile mode and compatibility, including for loaded legacy projects', () => {
+  const missingCompatibilityParent = baseMaker();
+  missingCompatibilityParent.extensions.composableV6 = {
+    schemaVersion: 'animacraft.maker-composable-draft.v6',
+    profile: { mode: 'COMPOSABLE' },
+  };
+  let missingCompatibility = addExpansionPackOptionalPart(createProject(missingCompatibilityParent), {
+    part: { id: 'cape', name: 'Cape', items: [] },
+  });
+  assert.throws(
+    () => setExpansionPackPartMode(missingCompatibility, 'cape', 'SLOT'),
+    { code: 'pack-slot-requires-composable-v6-parent' },
+  );
+
+  const fixedProfileParent = baseMaker();
+  fixedProfileParent.extensions.composableV6 = {
+    schemaVersion: 'animacraft.maker-composable-draft.v6',
+    profile: { mode: 'FIXED' },
+    compatibility: { makerRootId: 'maker-root', layerTrackIds: ['body-track'], slots: [] },
+  };
+  let fixedProfile = addExpansionPackOptionalPart(createProject(fixedProfileParent), {
+    part: { id: 'cape', name: 'Cape', items: [] },
+  });
+  assert.throws(
+    () => setExpansionPackPartMode(fixedProfile, 'cape', 'SLOT'),
+    { code: 'pack-slot-requires-composable-v6-parent' },
+  );
+
+  const legacyLoaded = rehydrateExpansionPackProject(fixedProfile);
+  legacyLoaded.pack.wardrobe.partModes.cape = 'SLOT';
+  const result = preflightExpansionPackProject(legacyLoaded);
+  assert.equal(result.valid, false);
+  assert.equal(result.publishable, false);
+  assert.ok(result.errors.some((issue) => (
+    issue.code === 'pack-slot-requires-composable-v6-parent'
+    && issue.partIds.includes('cape')
+  )));
 });
 
 test('legacy project rehydration backfills additive arrays and wardrobe without mutating input', () => {

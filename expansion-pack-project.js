@@ -13,6 +13,11 @@ import {
   namespaceId,
 } from './expansion-packs.js';
 import { BLEND_MODES } from './maker-renderer.js';
+import {
+  createMakerRuleIndex,
+  evaluateRecipe,
+  normalizeRecipe,
+} from './maker-rules.js';
 
 export const EXPANSION_PACK_PROJECT_SCHEMA = 'animacraft.expansion-pack-project.v2';
 export const EXPANSION_PACK_INHERITANCE_SCHEMA = 'animacraft.expansion-pack-inheritance.v2';
@@ -909,6 +914,139 @@ function idOf(value) {
   return String(value?.id ?? value?.key ?? '').trim();
 }
 
+function parentSupportsComposableV6(parentSnapshot) {
+  const composable = parentSnapshot?.extensions?.composableV6;
+  return Boolean(
+    composable
+    && typeof composable === 'object'
+    && !Array.isArray(composable)
+    && String(composable.profile?.mode || '').toUpperCase() === 'COMPOSABLE'
+    && composable.compatibility
+    && typeof composable.compatibility === 'object'
+    && !Array.isArray(composable.compatibility),
+  );
+}
+
+function recipeContainsSelection(recipe, expected) {
+  return (recipe?.selections || []).some((selection) => (
+    String(selection?.partId || '') === String(expected.partId)
+    && String(selection?.itemId || '') === String(expected.itemId)
+    && String(selection?.styleId || '') === String(expected.styleId)
+  ));
+}
+
+function makerRuleViolationCodes(result) {
+  return [...new Set((result?.violations || [])
+    .map((issue) => String(issue?.code || ''))
+    .filter(Boolean))];
+}
+
+function mergedRuleGraphIssues(project, merged) {
+  const issues = [];
+  try {
+    const index = createMakerRuleIndex(merged);
+    const previewRecipe = createExpansionPackProjectPreviewRecipe(project, merged);
+    const previewEvaluation = evaluateRecipe(merged, previewRecipe, { index });
+    if (!previewEvaluation.valid) {
+      issues.push({
+        severity: 'error',
+        code: 'pack-preview-recipe-rule-violation',
+        path: 'previewRecipe',
+        violations: makerRuleViolationCodes(previewEvaluation),
+        message: 'The merged Expansion Pack preview Recipe violates Maker rules or visibility conditions.',
+      });
+    }
+
+    const graphResult = normalizeRecipe(
+      merged,
+      { selections: [], colors: merged.defaultRecipe?.colors || [] },
+      { index },
+    );
+    if (!graphResult.valid) {
+      const exhausted = makerRuleViolationCodes(graphResult).includes('constraint-search-limit');
+      issues.push({
+        severity: 'error',
+        code: exhausted ? 'pack-rule-search-limit' : 'unsatisfiable-pack-rule-graph',
+        path: 'rules',
+        message: exhausted
+          ? 'Expansion Pack rule validation reached its safety limit.'
+          : 'No playable public Recipe satisfies the merged Expansion Pack rule graph.',
+      });
+      return issues;
+    }
+
+    let reachableStyleCount = 0;
+    let inconclusiveStyleCount = 0;
+    partsOf(merged).forEach((part) => {
+      itemsOf(part)
+        .filter((item) => item?.enabled !== false && String(item?.status || 'public').toLowerCase() === 'public')
+        .forEach((item) => {
+          let itemHasReachableStyle = false;
+          let itemReachabilityConclusive = true;
+          stylesOf(item).forEach((style) => {
+            const expected = { partId: idOf(part), itemId: idOf(item), styleId: idOf(style) };
+            const candidateResult = normalizeRecipe(
+              merged,
+              {
+                selections: [expected],
+                colors: merged.defaultRecipe?.colors || [],
+              },
+              { index, lockedPartIds: [expected.partId] },
+            );
+            const reachable = candidateResult.valid
+              && recipeContainsSelection(candidateResult.documentRecipe, expected);
+            if (reachable) {
+              itemHasReachableStyle = true;
+              reachableStyleCount += 1;
+              return;
+            }
+            if (makerRuleViolationCodes(candidateResult).includes('constraint-search-limit')) {
+              itemReachabilityConclusive = false;
+              inconclusiveStyleCount += 1;
+              issues.push({
+                severity: 'error',
+                code: 'pack-rule-search-limit',
+                path: `${expected.partId}/${expected.itemId}/${expected.styleId}`,
+                message: 'A public Style could not be proven reachable before the rule-search safety limit.',
+              });
+              return;
+            }
+            issues.push({
+              severity: 'error',
+              code: 'unreachable-public-style-rules',
+              path: `${expected.partId}/${expected.itemId}/${expected.styleId}`,
+              message: 'A public Style cannot appear in any valid merged player Recipe.',
+            });
+          });
+          if (!itemHasReachableStyle && itemReachabilityConclusive) {
+            issues.push({
+              severity: 'error',
+              code: 'unreachable-public-item-rules',
+              path: `${idOf(part)}/${idOf(item)}`,
+              message: 'A public Item cannot appear in any valid merged player Recipe.',
+            });
+          }
+        });
+    });
+    if (reachableStyleCount === 0 && inconclusiveStyleCount === 0) {
+      issues.push({
+        severity: 'error',
+        code: 'unsatisfiable-pack-rule-graph',
+        path: 'rules',
+        message: 'No public Style can appear in a playable merged Recipe.',
+      });
+    }
+  } catch (error) {
+    issues.push({
+      severity: 'error',
+      code: 'pack-rule-evaluation-failed',
+      path: 'rules',
+      message: error?.message || 'Merged Expansion Pack rules could not be evaluated.',
+    });
+  }
+  return issues;
+}
+
 function findParentPart(project, partId) {
   return partsOf(project.parentSnapshot).find((part) => idOf(part) === partId) || null;
 }
@@ -1598,6 +1736,13 @@ export function setExpansionPackPartMode(projectValue, partIdValue, modeValue, o
   if (!Object.values(EXPANSION_PACK_PART_MODES).includes(mode)) {
     throw new ExpansionPackProjectError('Part mode must be FIXED or SLOT.', 'invalid-pack-part-mode', { mode: modeValue });
   }
+  if (mode === EXPANSION_PACK_PART_MODES.SLOT && !parentSupportsComposableV6(project.parentSnapshot)) {
+    throw new ExpansionPackProjectError(
+      'SLOT mode requires an exact parent snapshot with composable v6 compatibility.',
+      'pack-slot-requires-composable-v6-parent',
+      { partId },
+    );
+  }
   project.pack.wardrobe.partModes[partId] = mode;
   return finishMutation(project, options.now);
 }
@@ -2238,6 +2383,17 @@ function projectOverlayIssues(project) {
       message: `Paid Once access requires a positive ${EXPANSION_PACK_PAYMENT_CURRENCY} price.`,
     });
   }
+  const slotPartIds = Object.entries(project.pack?.wardrobe?.partModes || {})
+    .filter(([, mode]) => mode === EXPANSION_PACK_PART_MODES.SLOT)
+    .map(([partId]) => partId);
+  if (slotPartIds.length && !parentSupportsComposableV6(project.parentSnapshot)) {
+    issues.push({
+      severity: 'error',
+      code: 'pack-slot-requires-composable-v6-parent',
+      partIds: slotPartIds,
+      message: 'SLOT mode requires an exact parent snapshot with composable v6 compatibility.',
+    });
+  }
   return issues;
 }
 
@@ -2289,6 +2445,7 @@ export function preflightExpansionPackProject(projectValue) {
   const compatibility = checkExpansionPackCompatibility(project.parentSnapshot, project.pack);
   compatibility.errors.forEach((entry) => issues.push({ severity: 'error', ...entry }));
   compatibility.warnings.forEach((entry) => issues.push({ severity: 'warning', ...entry }));
+  if (compatibility.merged) issues.push(...mergedRuleGraphIssues(project, compatibility.merged));
   const errors = issues.filter((issue) => issue.severity === 'error');
   const warnings = issues.filter((issue) => issue.severity !== 'error');
   const publishable = errors.length === 0

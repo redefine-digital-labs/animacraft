@@ -3,8 +3,11 @@ import test from 'node:test';
 
 import {
   addExpansionPackItem,
+  addExpansionPackOptionalPart,
+  addExpansionPackRule,
   createExpansionPackProject,
   rebindExpansionPackProjectToPublishedRelease,
+  rehydrateExpansionPackProject,
 } from '../expansion-pack-project.js';
 import {
   EXPANSION_PACK_MANIFEST_IDENTIFIER,
@@ -212,5 +215,42 @@ test('fails closed for local parents, incomplete published evidence and unhashed
   await assert.rejects(
     buildExpansionPackPublicationCandidate(project({ assetHash: 'not-a-sha256' })),
     (error) => error?.code === 'invalid-expansion-pack-content-hash',
+  );
+});
+
+test('publication rejects a Pack whose merged preview choice is rule-unreachable', async () => {
+  const unsafe = addExpansionPackRule(project(), {
+    id: 'armor-excludes-body',
+    type: 'excludes',
+    trigger: { scope: 'pack', partId: 'body', itemId: 'moon-armor' },
+    targets: [{ scope: 'base', partId: 'body' }],
+  });
+
+  await assert.rejects(
+    buildExpansionPackPublicationCandidate(unsafe),
+    (error) => (
+      error?.code === 'expansion-pack-publication-preflight-failed'
+      && error?.details?.errors?.some((issue) => issue.code === 'pack-preview-recipe-rule-violation')
+      && error?.details?.errors?.some((issue) => issue.code === 'unreachable-public-item-rules')
+    ),
+  );
+});
+
+test('publication rejects a loaded legacy SLOT Pack without composable v6 parent support', async () => {
+  const source = addExpansionPackOptionalPart(project(), {
+    part: { id: 'cape', name: 'Cape', items: [] },
+  });
+  const legacyLoaded = rehydrateExpansionPackProject(source);
+  legacyLoaded.pack.wardrobe.partModes.cape = 'SLOT';
+
+  await assert.rejects(
+    buildExpansionPackPublicationCandidate(legacyLoaded),
+    (error) => (
+      error?.code === 'expansion-pack-publication-preflight-failed'
+      && error?.details?.errors?.some((issue) => (
+        issue.code === 'pack-slot-requires-composable-v6-parent'
+        && issue.partIds.includes('cape')
+      ))
+    ),
   );
 });
