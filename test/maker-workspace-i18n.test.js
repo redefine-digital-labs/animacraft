@@ -40,6 +40,15 @@ test('independent Pack commerce centralization is translated in all five locales
   });
 });
 
+test('Expansion Pack inherited-definition actions are explicit in all five locales', () => {
+  MAKER_WORKSPACE_LOCALES.forEach((locale) => {
+    assert.notEqual(makerWorkspaceText(locale, 'packExtendWithItem'), 'packExtendWithItem');
+    assert.notEqual(makerWorkspaceText(locale, 'packExtendWithStyle'), 'packExtendWithStyle');
+  });
+  assert.equal(makerWorkspaceText('zh', 'packExtendWithItem'), '在扩展包中新增部件');
+  assert.equal(makerWorkspaceText('zh', 'packExtendWithStyle'), '在扩展包中新增样式');
+});
+
 test('unknown Maker Studio locales and keys fall back safely', () => {
   assert.equal(makerWorkspaceText('unknown', 'save'), 'Save');
   assert.equal(makerWorkspaceText('zh', 'unknownKey'), 'unknownKey');
