@@ -1547,6 +1547,7 @@ export class MakerWorkspace {
     this.expansionPackProjectsError = '';
     this.expansionPackProjectNotice = '';
     this.expansionPackProjectRequestId = 0;
+    this.expansionPackWorkspaceRequestId = 0;
     this.expansionPackCommerceSaveStates = new Map();
     this.expansionPackPublicationRequestToken = 0;
     this.expansionPackPublicationLaunch = null;
@@ -3343,6 +3344,25 @@ export class MakerWorkspace {
     return this.expansionPackPublicationRequestToken;
   }
 
+  beginExpansionPackPublicationRecovery() {
+    const requestToken = this.resetExpansionPackPublication({
+      reason: 'workspace-activate',
+      render: false,
+    });
+    this.setExpansionPackPublishState({
+      stage: 'checkpoint-loading',
+      status: this.tr('packReleaseBusyPreparing'),
+      busy: true,
+      locked: true,
+      recoverable: true,
+      actions: {
+        prepare: false,
+        export: false,
+      },
+    });
+    return requestToken;
+  }
+
   expansionPackPublicationRequestIsActive({
     requestToken,
     workspace = this.expansionPackWorkspace,
@@ -3708,13 +3728,21 @@ export class MakerWorkspace {
     this.assetResolver = createCachedAssetResolver(this.assets);
   }
 
-  async activateExpansionPackWorkspace(project, { resume = true, render = true } = {}) {
+  async activateExpansionPackWorkspace(project, {
+    resume = true,
+    render = true,
+    request = null,
+  } = {}) {
     const workspace = await createExpansionPackWorkspace({
       project,
       store: this.expansionPackDraftStore,
       resume,
     });
-    this.resetExpansionPackPublication({ reason: 'workspace-activate', render: false });
+    if (request && !this.expansionPackWorkspaceRequestIsActive(request, project)) {
+      workspace.destroy?.();
+      return null;
+    }
+    const requestToken = this.beginExpansionPackPublicationRecovery();
     this.expansionPackWorkspace = workspace;
     this.expansionPackWorkspaceState = workspace.getState();
     this.reviveExpansionPackAssets(this.expansionPackWorkspaceState.project);
@@ -3729,16 +3757,148 @@ export class MakerWorkspace {
       });
     });
     if (render) this.render();
+    const callback = this.callbacks.onLoadExpansionPackPublication;
+    if (typeof callback !== 'function') {
+      this.setExpansionPackPublishState({
+        stage: 'idle',
+        status: '',
+        busy: false,
+        locked: false,
+        recoverable: false,
+        actions: {},
+      });
+      return workspace;
+    }
+    const state = workspace.getState();
+    if (!Number.isSafeInteger(state.revision)) {
+      this.setExpansionPackPublishState({
+        stage: 'idle',
+        status: '',
+        busy: false,
+        locked: false,
+        recoverable: false,
+        actions: {},
+      });
+      return workspace;
+    }
+    const launch = Object.freeze({
+      requestToken,
+      workspace,
+      draftRevision: state.revision,
+      identity: clone(state.identity),
+    });
+    try {
+      const restored = await callback({
+        project: clone(state.project),
+        identity: clone(state.identity),
+        draftRevision: state.revision,
+        publicationRequestToken: requestToken,
+      });
+      if (
+        requestToken !== this.expansionPackPublicationRequestToken
+        || workspace !== this.expansionPackWorkspace
+      ) return null;
+      const currentState = workspace.getState?.();
+      let identityMatches = false;
+      try {
+        identityMatches = expansionPackDraftKey(currentState?.identity)
+          === expansionPackDraftKey(launch.identity);
+      } catch {
+        identityMatches = false;
+      }
+      if (
+        !identityMatches
+        || currentState?.dirty
+        || currentState?.revision !== launch.draftRevision
+      ) {
+        this.expansionPackPublicationLaunch = launch;
+        this.setExpansionPackPublishState({
+          stage: 'checkpoint-unknown',
+          busy: false,
+          locked: true,
+          recoverable: true,
+          error: {
+            title: this.tr('packReleaseError'),
+            message: this.tr('packReleaseContextChanged'),
+          },
+          actions: {},
+        });
+        return null;
+      }
+      if (restored && typeof restored === 'object') {
+        this.expansionPackPublicationLaunch = launch;
+        this.setExpansionPackPublishState(restored);
+      } else {
+        this.setExpansionPackPublishState({
+          stage: 'idle',
+          status: '',
+          busy: false,
+          locked: false,
+          recoverable: false,
+          actions: {},
+        });
+      }
+    } catch (error) {
+      if (
+        requestToken === this.expansionPackPublicationRequestToken
+        && workspace === this.expansionPackWorkspace
+      ) {
+        this.expansionPackPublicationLaunch = launch;
+        this.setExpansionPackPublishState({
+          stage: 'checkpoint-unknown',
+          busy: false,
+          locked: true,
+          recoverable: true,
+          error: {
+            title: this.tr('packReleaseError'),
+            message: error?.message || this.tr('packReleaseError'),
+          },
+          actions: {},
+        });
+      }
+      throw error;
+    }
     return workspace;
+  }
+
+  expansionPackWorkspaceRequestIsActive(request, project) {
+    if (
+      !request
+      || request.requestId !== this.expansionPackWorkspaceRequestId
+      || request.contextEpoch !== this.contextEpoch
+      || request.makerKey !== this.makerKey
+      || request.walletAddress !== this.expansionPackWalletAddress().toLowerCase()
+    ) return false;
+    const parent = this.expansionPackParentDocument();
+    return Boolean(
+      parent
+      && request.parentRootId === String(parent.version?.rootMakerId || parent.metadata?.id || '')
+      && request.parentVersion === String(parent.version?.number ?? parent.version?.versionId ?? '')
+      && request.parentVersionId === String(parent.version?.versionId || '')
+      && request.packId === String(project?.packId || '')
+      && request.parentBindingIdentity === String(project?.parentBinding?.identity || '')
+    );
   }
 
   async openExpansionPackWorkspace(packId, {
     create = false,
     parentBindingIdentity = '',
   } = {}) {
+    const requestId = ++this.expansionPackWorkspaceRequestId;
     const parent = this.expansionPackParentDocument();
     const walletAddress = this.expansionPackWalletAddress();
     if (!parent || !walletAddress) throw new Error(this.tr('packWalletRequired'));
+    const request = {
+      requestId,
+      contextEpoch: this.contextEpoch,
+      makerKey: this.makerKey,
+      walletAddress: walletAddress.toLowerCase(),
+      parentRootId: String(parent.version?.rootMakerId || parent.metadata?.id || ''),
+      parentVersion: String(parent.version?.number ?? parent.version?.versionId ?? ''),
+      parentVersionId: String(parent.version?.versionId || ''),
+      packId: '',
+      parentBindingIdentity: '',
+    };
     if (this.expansionPackWorkspace) {
       const closed = await this.closeExpansionPackWorkspace({ save: true, render: false });
       if (!closed) return this.expansionPackWorkspace;
@@ -3764,10 +3924,14 @@ export class MakerWorkspace {
         ...(publishedParent ? { parentRelease: publishedParent.release } : {}),
       });
     }
+    request.packId = String(project.packId || '');
+    request.parentBindingIdentity = String(project.parentBinding?.identity || '');
+    if (!this.expansionPackWorkspaceRequestIsActive(request, project)) return null;
     this.expansionPackProjectNotice = '';
     return this.activateExpansionPackWorkspace(project, {
       resume: create ? false : true,
       render: true,
+      request,
     });
   }
 
@@ -4012,7 +4176,7 @@ export class MakerWorkspace {
 
   requestExpansionPackAdd({ kind, partId, itemId }) {
     const workspace = this.expansionPackWorkspace;
-    if (!workspace) return;
+    if (!workspace || this.expansionPackPublicationIsLive()) return;
     const state = workspace.getState();
     const reference = this.expansionPackReferenceStyle(partId, itemId);
     const styleId = this.expansionPackLocalId('style');
@@ -4392,6 +4556,7 @@ export class MakerWorkspace {
 
   async setContext(context) {
     const contextRequestId = ++this.contextRequestId;
+    this.expansionPackWorkspaceRequestId += 1;
     const requestedMakerKey = String(context?.makerKey || '');
     const previousMakerKey = this.makerKey;
     const sameMaker = Boolean(requestedMakerKey && previousMakerKey === requestedMakerKey);

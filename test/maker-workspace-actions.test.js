@@ -207,6 +207,16 @@ function memoryExpansionPackStore() {
   };
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolveValue, rejectValue) => {
+    resolve = resolveValue;
+    reject = rejectValue;
+  });
+  return { promise, resolve, reject };
+}
+
 async function openPublishableExpansionPackFixture(workspace, {
   packId = `pack-race-${Math.random().toString(36).slice(2)}`,
 } = {}) {
@@ -3123,6 +3133,146 @@ test('Expansion Pack publication never pairs a saved candidate with edits made a
         return {};
       },
     },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('a saved Pack restores a recoverable publication checkpoint before editing is enabled', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  let loadCalls = 0;
+  await withWorkspace(async (workspace) => {
+    const { packId } = await openPublishableExpansionPackFixture(workspace);
+    await workspace.saveExpansionPackWorkspace();
+    await workspace.closeExpansionPackWorkspace({ save: false, render: false });
+    const pending = deferred();
+    workspace.callbacks.onLoadExpansionPackPublication = async () => {
+      loadCalls += 1;
+      return pending.promise;
+    };
+
+    const opening = workspace.openExpansionPackWorkspace(packId);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(workspace.expansionPackPublishState.locked, true);
+    assert.equal(workspace.expansionPackPublishState.busy, true);
+    assert.equal(workspace.expansionPackPublicationIsLive(), true);
+    const partCount = workspace.expansionPackWorkspace.getState().project.pack.parts.length;
+    workspace.requestExpansionPackAdd({ kind: 'part', partId: '', itemId: '' });
+    assert.equal(
+      workspace.expansionPackWorkspace.getState().project.pack.parts.length,
+      partCount,
+      'programmatic mutation entry points stay locked while recovery is unknown',
+    );
+    pending.resolve({
+      stage: 'walrus-prepared',
+      started: true,
+      recoverable: true,
+      locked: true,
+      busy: false,
+      actions: { register: true },
+    });
+
+    await opening;
+    assert.equal(loadCalls, 1);
+    assert.equal(workspace.expansionPackPublishState.recoverable, true);
+    assert.equal(workspace.expansionPackPublishState.locked, true);
+    assert.equal(workspace.expansionPackPublishState.stage, 'walrus-prepared');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('a Pack checkpoint load rejection remains fail-closed after busy clears', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    const { packId } = await openPublishableExpansionPackFixture(workspace);
+    await workspace.saveExpansionPackWorkspace();
+    await workspace.closeExpansionPackWorkspace({ save: false, render: false });
+    workspace.callbacks.onLoadExpansionPackPublication = async () => {
+      throw new Error('publication storage unavailable');
+    };
+
+    await assert.rejects(
+      workspace.openExpansionPackWorkspace(packId),
+      /publication storage unavailable/,
+    );
+    assert.equal(workspace.expansionPackPublishState.busy, false);
+    assert.equal(workspace.expansionPackPublishState.locked, true);
+    assert.equal(workspace.expansionPackPublishState.recoverable, true);
+    assert.equal(workspace.expansionPackPublishState.stage, 'checkpoint-unknown');
+    assert.equal(workspace.blockExpansionPackPublicationNavigation({ render: false }), true);
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('a deferred Pack A load cannot replace a newer Pack B workspace', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const firstLoad = deferred();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('pack-a', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.openExpansionPackWorkspace('pack-b', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+    let loadCount = 0;
+    const originalLoad = expansionPackDraftStore.load;
+    expansionPackDraftStore.load = async (identity) => {
+      if (identity.packId === 'pack-a' && loadCount++ === 0) return firstLoad.promise;
+      return originalLoad(identity);
+    };
+
+    const openingA = workspace.openExpansionPackWorkspace('pack-a');
+    await new Promise((resolve) => setImmediate(resolve));
+    const openingB = workspace.openExpansionPackWorkspace('pack-b');
+    await openingB;
+    firstLoad.resolve([...expansionPackDraftStore.records.values()].find(
+      (record) => record.packId === 'pack-a',
+    ));
+    assert.equal(await openingA, null);
+    assert.equal(workspace.expansionPackWorkspace.getState().project.packId, 'pack-b');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('a deferred Pack load cannot install after wallet or parent context changes', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const delayedLoad = deferred();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('scope-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+    expansionPackDraftStore.load = () => delayedLoad.promise;
+    const opening = workspace.openExpansionPackWorkspace('scope-pack');
+    await new Promise((resolve) => setImmediate(resolve));
+    const parent = workspace.getDocument();
+    await workspace.setContext({
+      makerKey: workspace.makerKey,
+      walletAddress: '0xother',
+      document: parent,
+      assets: [],
+    });
+    delayedLoad.resolve([...expansionPackDraftStore.records.values()][0]);
+
+    assert.equal(await opening, null);
+    assert.equal(workspace.expansionPackWorkspace, null);
+  }, {
+    playable: true,
+    expansionPackDraftStore,
     prepareDocument(document) {
       document.metadata.creator = '0xcreator';
     },

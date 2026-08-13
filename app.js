@@ -20781,6 +20781,65 @@ function requireActiveExpansionPackPublicationScope(scope, epoch) {
   }
 }
 
+async function loadExpansionPackV8Publication(payload) {
+  const project = payload?.project || {};
+  const parent = project.parentBinding || {};
+  const wallet = suiJsonId(project.ownerWalletAddress);
+  const publishedParent = makerWorkspace?.expansionPackPublishedParent?.();
+  const parentRelease = publishedParent?.release;
+  const baseMakerRootId = suiJsonId(parentRelease?.baseMakerRootId);
+  if (
+    !wallet
+    || !baseMakerRootId
+    || parent.kind !== 'published-release'
+    || !parent.publishable
+    || comparableSuiId(parent.releaseId) !== comparableSuiId(
+      parentRelease?.releaseId || parentRelease?.parentLegacyMakerId,
+    )
+    || String(parent.versionId || '') !== String(parentRelease?.versionId || '')
+    || String(parent.versionNumber || '') !== String(parentRelease?.versionNumber || '')
+    || String(parent.manifestBlobId || '') !== String(parentRelease?.manifestBlobId || '')
+    || normalizedSha256Hex(parent.manifestHash)
+      !== normalizedSha256Hex(parentRelease?.manifestHash)
+  ) return null;
+  const laneIdentity = expansionPackPublicationIdentity({
+    walletAddress: wallet,
+    baseMakerRootId,
+    parentVersionNumber: parent.versionNumber,
+    parentVersionId: parent.versionId,
+    parentReleaseId: parent.releaseId,
+    parentManifestBlobId: parent.manifestBlobId,
+    parentManifestSha256: parent.manifestHash,
+    packId: project.packId,
+    packVersion: project.version,
+    // Candidate hashes are immutable evidence but deliberately not part of
+    // the logical recovery-lane key. Placeholder hashes let activation check
+    // the lane before trusting any editable draft bytes.
+    candidateCommitment: '0'.repeat(64),
+    manifestSha256: '0'.repeat(64),
+  });
+  const persisted = await expansionPackPublicationStore.load(laneIdentity);
+  if (!persisted) return null;
+  const candidate = persisted.snapshot?.candidate;
+  if (!candidate) {
+    throw commerceV5Error(
+      'EXPANSION_PACK_PUBLICATION_CHECKPOINT_INVALID',
+      'The Expansion Pack publication checkpoint is missing its immutable candidate.',
+      { recoverable: true },
+    );
+  }
+  return prepareExpansionPackV8Publication({
+    ...payload,
+    candidate,
+    parentRelease,
+    document: publishedParent.document,
+    walletAddress: wallet,
+  }, {
+    persisted,
+    restoreOnly: true,
+  });
+}
+
 async function readExpansionPackParentManifestEvidence({
   blobId,
   expectedSha256,
@@ -20836,7 +20895,7 @@ async function readExpansionPackParentManifestEvidence({
   });
 }
 
-async function prepareExpansionPackV8Publication(payload) {
+async function prepareExpansionPackV8Publication(payload, options = {}) {
   const parent = payload?.parentRelease || {};
   const candidateParent = payload?.candidate?.manifest?.parent || {};
   const candidatePack = payload?.candidate?.manifest?.pack || {};
@@ -20882,7 +20941,9 @@ async function prepareExpansionPackV8Publication(payload) {
     candidateCommitment: payload?.candidate?.candidateCommitment,
     manifestSha256: payload?.candidate?.manifestSha256,
   });
-  const persisted = await expansionPackPublicationStore.load(requestedPublicationIdentity);
+  const persisted = Object.hasOwn(options, 'persisted')
+    ? options.persisted
+    : await expansionPackPublicationStore.load(requestedPublicationIdentity);
   requireActiveExpansionPackPublicationScope(scope, controllerEpoch);
   const publicationIdentity = persisted
     ? expansionPackPublicationIdentity(persisted)
@@ -21006,6 +21067,7 @@ async function prepareExpansionPackV8Publication(payload) {
         : 'Expansion Pack publication checkpoint restored.',
     });
   }
+  if (options.restoreOnly === true) return controller.uiState();
   await controller.prepare();
   requireActiveExpansionPackPublicationScope(scope, controllerEpoch);
   if (controller !== expansionPackPublicationController) {
@@ -22323,6 +22385,9 @@ makerWorkspace = createMakerWorkspace({
     },
     async onPrepareExpansionPackPublication(payload) {
       return prepareExpansionPackV8Publication(payload);
+    },
+    async onLoadExpansionPackPublication(payload) {
+      return loadExpansionPackV8Publication(payload);
     },
     onResetExpansionPackPublication() {
       invalidateExpansionPackPublicationController();
