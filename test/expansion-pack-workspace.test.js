@@ -874,6 +874,46 @@ test('deterministic Color add uses localized default swatch copy', async () => {
   mounted.unmount();
 });
 
+test('new Pack rule starts with distinct Pack trigger and inherited target', async () => {
+  const workspace = await emptyWorkspace();
+  workspace.addOptionalPart({ part: { id: 'hat', name: 'Hat', items: [] } });
+  workspace.addItem({
+    partId: 'hat',
+    item: { id: 'cap', name: 'Cap', styles: [{ id: 'default', name: 'Default', assetId: 'body-art', layerTrackId: 'body-track' }] },
+  });
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+    querySelector() { return { focus() {} }; },
+  };
+  const mounted = mountExpansionPackWorkspace(root, workspace);
+
+  events.get('click')({
+    target: { dataset: { action: 'select-pack-section', section: 'rules' } },
+    stopPropagation() {},
+  });
+  assert.match(root.innerHTML, /data-default-selector="pack\|hat\|cap\|"/);
+  assert.match(root.innerHTML, /data-default-target="base\|body\|\|"/);
+  events.get('click')({
+    target: {
+      dataset: {
+        action: 'add-pack-rule',
+        defaultSelector: 'pack|hat|cap|',
+        defaultTarget: 'base|body||',
+      },
+    },
+    stopPropagation() {},
+  });
+
+  const [rule] = workspace.getState().tree.rules;
+  assert.deepEqual(rule.trigger, { scope: 'pack', partId: 'hat', itemId: 'cap' });
+  assert.deepEqual(rule.targets, [{ scope: 'base', partId: 'body' }]);
+  assert.notDeepEqual(rule.trigger, rule.targets[0]);
+  mounted.unmount();
+});
+
 test('publication locking blocks both rendered controls and synthetic mutation events', async () => {
   const workspace = await emptyWorkspace();
   const events = new Map();

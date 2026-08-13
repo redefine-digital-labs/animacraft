@@ -984,9 +984,12 @@ function embeddedRules(ownerKind, part, item, style, entries, copy) {
 function renderRulesEditor(parent, tree, copy) {
   const entries = selectorEntries(parent, tree, copy);
   const firstPack = entries.find((entry) => entry.value.startsWith('pack|'))?.value || '';
+  const firstTarget = entries.find((entry) => entry.value.startsWith('base|') && entry.value !== firstPack)?.value
+    || entries.find((entry) => entry.value !== firstPack)?.value
+    || '';
   return `${readonlyDefinitionList(parent.rules, 'rule', copy)}
     <section class="expansion-pack-definition-group">
-      <header><div><span>${escapeHtml(copyValue(copy, 'packOwned', 'Pack owned'))}</span><h4>${escapeHtml(copyValue(copy, 'rules', 'Rules'))}</h4></div><button type="button" data-action="add-pack-rule" data-default-selector="${escapeHtml(firstPack)}" ${firstPack ? '' : 'disabled'}>${escapeHtml(copyValue(copy, 'addRule', '＋ Rule'))}</button></header>
+      <header><div><span>${escapeHtml(copyValue(copy, 'packOwned', 'Pack owned'))}</span><h4>${escapeHtml(copyValue(copy, 'rules', 'Rules'))}</h4></div><button type="button" data-action="add-pack-rule" data-default-selector="${escapeHtml(firstPack)}" data-default-target="${escapeHtml(firstTarget)}" ${firstPack && firstTarget ? '' : 'disabled'}>${escapeHtml(copyValue(copy, 'addRule', '＋ Rule'))}</button></header>
       <div class="expansion-pack-definition-list">${list(tree.rules).map((rule) => `<article class="expansion-pack-rule-row" data-rule-id="${escapeHtml(idOf(rule))}"><code>${escapeHtml(idOf(rule))}</code>
         <label><span>${escapeHtml(copyValue(copy, 'ruleType', 'Rule type'))}</span><select data-rule-field="type" data-rule-id="${escapeHtml(idOf(rule))}"><option value="requires" ${rule.type === 'requires' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'requires', 'Requires'))}</option><option value="excludes" ${rule.type === 'excludes' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'excludes', 'Excludes'))}</option></select></label>
         <label><span>${escapeHtml(copyValue(copy, 'triggerPart', 'Trigger'))}</span>${selectorSelect(entries, selectorValue(rule.trigger), `data-rule-field="trigger" data-rule-id="${escapeHtml(idOf(rule))}"`, copy, rule.type === 'requires')}</label>
@@ -1429,8 +1432,9 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
       if (action === 'delete-color-swatch') { workspace.removeColorSwatch(target.dataset.channelId, target.dataset.swatchId); return; }
       if (action === 'add-pack-rule') {
         const selector = selectorFromControl(target.dataset.defaultSelector);
+        const defaultTarget = selectorFromControl(target.dataset.defaultTarget);
         const id = nextLocalId(state.tree.rules, 'rule');
-        workspace.addRule({ id, type: 'excludes', trigger: selector, targets: [selector] });
+        workspace.addRule({ id, type: 'excludes', trigger: selector, targets: [defaultTarget] });
         return;
       }
       if (action === 'delete-pack-rule') { workspace.removeRule(target.dataset.ruleId); return; }
