@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -306,8 +307,8 @@ test('distinguishes local content readiness from an exact published parent relea
   assert.match(html, /0xmaker-release-v4/);
   assert.match(html, /walrus-parent-v4/);
   assert.match(html, new RegExp('ab'.repeat(32)));
-  assert.match(html, /Soul \/ Living Content/);
-  assert.match(html, /Wardrobe compatibility/);
+  assert.match(html, /data-publication-preflight-only/);
+  assert.doesNotMatch(html, /request-rebind-parent/);
 });
 
 test('updates and deletes Pack-owned Style data without exposing parent definitions to mutation', async () => {
@@ -533,13 +534,24 @@ test('renders and mounts in a host-owned scroll surface without a nested viewpor
   const html = renderExpansionPackWorkspaceHtml(workspace.getState());
   assert.match(html, /data-scroll-owner="host"/);
   assert.match(html, /data-nested-scroll="false"/);
-  assert.match(html, /Read-only parent Maker/);
+  assert.match(html, /data-maker-editor-shell="expansion-pack"/);
+  assert.match(html, /class="v4-studio-topbar"/);
+  assert.match(html, /class="v4-studio-tabs"/);
+  assert.match(html, /class="v4-studio-workspace"/);
+  assert.match(html, /data-shared-maker-part-browser/);
+  assert.match(html, /class="v4-canvas-column"/);
+  assert.match(html, /class="v4-inspector"/);
   assert.match(html, /Local draft parent/);
   assert.match(html, /Content ready · local parent only|Ready with issues/);
-  assert.match(html, /Inherited contract/);
+  assert.match(html, /Inherited · read only/);
   assert.match(html, /Smart Color/);
   assert.match(html, /data-action="request-add-part"/);
   assert.match(html, /data-action="save-pack"/);
+  assert.equal((html.match(/data-expansion-pack-preview-canvas/g) || []).length, 1);
+  assert.doesNotMatch(html, /v4-expansion-card|expansion-pack-workspace-layout/);
+  assert.doesNotMatch(html, /expansion-pack-(?:parent|preview|authoring)-panel/);
+  assert.doesNotMatch(html, /expansion-pack-embedded-rules|data-definition-rules/);
+  assert.doesNotMatch(html, /data-action="(?:open-preview|request-rebind-parent)"/);
   assert.doesNotMatch(html, /overflow\s*:/i);
   assert.doesNotMatch(html, /100vh|100dvh/i);
 
@@ -570,6 +582,169 @@ test('renders and mounts in a host-owned scroll surface without a nested viewpor
   mounted.unmount();
   assert.equal(root.innerHTML, '');
   assert.equal(events.size, 0);
+});
+
+test('Maker and Pack call the same host-neutral shell renderer', async () => {
+  const [makerSource, packSource, stylesSource] = await Promise.all([
+    readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../expansion-pack-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  ]);
+  for (const source of [makerSource, packSource]) {
+    assert.match(source, /import \{ renderMakerEditorShell \} from '\.\/maker-editor-shell\.js';/);
+    assert.match(source, /renderMakerEditorShell\(\{/);
+  }
+  assert.doesNotMatch(packSource, /function renderDefinitionTabs/);
+  assert.doesNotMatch(stylesSource, /expansion-pack-workspace-layout/);
+  assert.doesNotMatch(stylesSource, /expansion-pack-(?:parent|preview|authoring)-panel/);
+  assert.doesNotMatch(stylesSource, /expansion-pack-embedded-rules/);
+});
+
+test('shared Part list keeps inherited rows read only and Pack delta actions editable', async () => {
+  const workspace = await emptyWorkspace();
+  workspace.addOptionalPart({
+    part: {
+      id: 'hat',
+      name: 'Hat',
+      items: [{
+        id: 'cap',
+        name: 'Cap',
+        styles: [{ id: 'default', name: 'Default', assetId: 'body-art', layerTrackId: 'body-track' }],
+      }],
+    },
+  });
+  const html = renderExpansionPackWorkspaceHtml(workspace.getState());
+  assert.match(html, /class="maker-part-list[^\"]*" data-part-list/);
+  assert.match(html, /class="[^\"]*readonly[^\"]*"[^>]*data-part-row data-part-id="body"/);
+  assert.match(html, /data-part-row data-part-id="hat"/);
+  assert.match(html, /data-part-actions data-part-id="hat"/);
+  assert.match(html, /data-action="delete-pack-part" data-part-id="hat"/);
+  assert.doesNotMatch(html, /data-action="delete-part"/);
+});
+
+test('Part, Item and Style inspectors reuse one compact Combination Rules control', async () => {
+  const workspace = await emptyWorkspace();
+  workspace.addOptionalPart({
+    part: {
+      id: 'hat',
+      name: 'Hat',
+      items: [{
+        id: 'cap',
+        name: 'Cap',
+        styles: [{ id: 'default', name: 'Default', assetId: 'body-art', layerTrackId: 'body-track' }],
+      }],
+    },
+  });
+  const html = renderExpansionPackWorkspaceHtml(workspace.getState());
+  assert.equal((html.match(/data-shared-definition-rule-control/g) || []).length, 3);
+  assert.equal((html.match(/class="v4-object-rule-entry"/g) || []).length, 3);
+  assert.equal((html.match(/data-action="edit-pack-selection-rules"/g) || []).length, 3);
+  assert.doesNotMatch(html, /expansion-pack-embedded-rules|data-definition-rules|<select[^>]*multiple/);
+
+  const rulesHtml = renderExpansionPackWorkspaceHtml(workspace.getState(), {}, { activeSection: 'rules' });
+  assert.match(rulesHtml, /class="v4-inline-empty v4-pack-rule-empty"/);
+  assert.equal((rulesHtml.match(/data-action="add-pack-rule"/g) || []).length, 1);
+  assert.doesNotMatch(rulesHtml, /expansion-pack-embedded-rules|data-definition-rules/);
+
+  workspace.addRule({
+    id: 'hat-rule',
+    type: 'excludes',
+    trigger: { scope: 'pack', partId: 'hat', itemId: 'cap' },
+    targets: [{ scope: 'base', partId: 'body' }],
+  });
+  const populatedRulesHtml = renderExpansionPackWorkspaceHtml(
+    workspace.getState(),
+    {},
+    { activeSection: 'rules' },
+  );
+  assert.match(populatedRulesHtml, /class="v4-rule-list"><article class="v4-rule-group"/);
+  assert.doesNotMatch(populatedRulesHtml, /expansion-pack-rule-row/);
+
+  const [makerSource, packSource] = await Promise.all([
+    readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../expansion-pack-workspace.js', import.meta.url), 'utf8'),
+  ]);
+  for (const source of [makerSource, packSource]) {
+    assert.match(source, /renderDefinitionCombinationRuleControl\(/);
+  }
+});
+
+test('nested Pack control clicks stay inside the Pack adapter boundary', async () => {
+  const workspace = await emptyWorkspace();
+  workspace.addOptionalPart({
+    part: {
+      id: 'hat',
+      name: 'Hat',
+      items: [{ id: 'cap', name: 'Cap', styles: [] }],
+    },
+  });
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+    querySelector() { return { focus() {} }; },
+  };
+  const workspaceBoundary = {};
+  const button = {
+    dataset: {
+      action: 'edit-pack-selection-rules',
+      ruleOwner: 'hat::cap',
+      ruleOwnerType: 'item',
+    },
+    closest(selector) {
+      return selector === '[data-expansion-pack-workspace]' ? workspaceBoundary : null;
+    },
+  };
+  const nestedIcon = {
+    dataset: {},
+    closest(selector) {
+      if (selector === '[data-expansion-pack-workspace]') return workspaceBoundary;
+      if (selector === '[data-action]') return button;
+      return null;
+    },
+  };
+  const sections = [];
+  let stops = 0;
+  const mounted = mountExpansionPackWorkspace(root, workspace, {
+    onSectionChange: (...args) => sections.push(args),
+  });
+  events.get('click')({ target: nestedIcon, stopPropagation() { stops += 1; } });
+  assert.equal(stops, 1);
+  assert.equal(sections[0][0], 'rules');
+  assert.deepEqual(sections[0][1], { owner: 'hat::cap', ownerType: 'item' });
+  assert.match(root.innerHTML, /data-active-section="rules"/);
+
+  const plainChild = {
+    dataset: {},
+    closest(selector) {
+      return selector === '[data-expansion-pack-workspace]' ? workspaceBoundary : null;
+    },
+  };
+  events.get('click')({ target: plainChild, stopPropagation() { stops += 1; } });
+  assert.equal(stops, 2, 'even non-action clicks stop at the Pack boundary');
+  mounted.unmount();
+});
+
+test('merged preview re-renders automatically after every Pack delta mutation', async () => {
+  const workspace = await emptyWorkspace();
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+  };
+  const previews = [];
+  const mounted = mountExpansionPackWorkspace(root, workspace, {
+    onRendered: (preview) => previews.push(preview),
+  });
+  assert.equal(previews.length, 1);
+  workspace.addOptionalPart({ part: { id: 'hat', name: 'Hat', items: [] } });
+  assert.equal(previews.length, 2);
+  assert.equal(previews.at(-1).additions.optionalParts, 1);
+  assert.equal((root.innerHTML.match(/data-expansion-pack-preview-canvas/g) || []).length, 1);
+  assert.doesNotMatch(root.innerHTML, /data-action="open-preview"/);
+  mounted.unmount();
 });
 
 test('renders per-Style PNG and render controls, delegating PNG parsing to the host', async () => {
@@ -611,9 +786,9 @@ test('renders per-Style PNG and render controls, delegating PNG parsing to the h
   assert.match(html, /data-style-field="transform\.rotation"/);
   assert.match(html, /data-style-field="opacity"/);
   assert.match(html, /data-style-field="blendMode"/);
-  assert.match(html, /data-action="delete-style"/);
-  assert.match(html, /data-action="delete-item"/);
-  assert.match(html, /data-action="delete-part"/);
+  assert.match(html, /data-action="delete-pack-style"/);
+  assert.match(html, /data-action="delete-pack-item"/);
+  assert.match(html, /data-action="delete-pack-part"/);
   assert.match(html, /data-action="request-commerce-rights"/);
   assert.doesNotMatch(html, /data-pack-commerce-field=/);
   assert.doesNotMatch(html, /<select[^>]*pack-commerce/i);
@@ -691,7 +866,7 @@ test('renders per-Style PNG and render controls, delegating PNG parsing to the h
 
   events.get('click')({
     target: {
-      dataset: { action: 'delete-style', partId: 'body', itemId: 'armor', styleId: 'default' },
+      dataset: { action: 'delete-pack-style', partId: 'body', itemId: 'armor', styleId: 'default' },
     },
   });
   state = workspace.getState();
@@ -836,7 +1011,7 @@ test('Pack Studio commerce summary is read-only and delegates navigation to its 
     onRequestCommerceRights: (state) => requests.push(state.identity.packId),
   });
 
-  assert.match(root.innerHTML, /Go to Commerce &amp; Rights/);
+  assert.match(root.innerHTML, />Commerce &amp; Rights</);
   assert.doesNotMatch(root.innerHTML, /data-pack-commerce-field=/);
   events.get('click')({ target: { dataset: { action: 'request-commerce-rights' } } });
   await new Promise((resolve) => setImmediate(resolve));
@@ -1023,7 +1198,7 @@ test('other rule edits preserve all/any/not visibility logic and advanced condit
   };
   const mounted = mountExpansionPackWorkspace(root, workspace, { activeSection: 'rules' });
   assert.match(root.innerHTML, /Advanced condition · read only/);
-  assert.match(root.innerHTML, /data-definition-rule-field="visibleWhenOp" disabled/);
+  assert.doesNotMatch(root.innerHTML, /data-definition-rule-field=|data-definition-rules/);
   events.get('change')({
     target: {
       selectedOptions: [{ value: 'base|body||' }],
@@ -1081,7 +1256,7 @@ test('definition tabs expose structured editors, retain local active state and s
   assert.match(root.innerHTML, /data-section="colors"/);
   assert.match(root.innerHTML, /data-section="rules"/);
   assert.match(root.innerHTML, /data-section="wardrobe"/);
-  assert.match(root.innerHTML, /Extend in Pack with Item/);
+  assert.match(root.innerHTML, /data-action="request-add-item"/);
   assert.match(root.innerHTML, /data-style-field="layerTrackId"/);
   assert.match(root.innerHTML, /option value="body-track" selected/);
   assert.match(root.innerHTML, /option value="hat-track"/);
@@ -1202,20 +1377,39 @@ test('new Pack rule starts with distinct Pack trigger and inherited target', asy
 
 test('publication locking blocks both rendered controls and synthetic mutation events', async () => {
   const workspace = await emptyWorkspace();
+  workspace.addOptionalPart({ part: { id: 'hat', name: 'Hat', items: [] } });
   const events = new Map();
   const root = {
     innerHTML: '',
     addEventListener(type, listener) { events.set(type, listener); },
     removeEventListener(type) { events.delete(type); },
   };
+  let backRequests = 0;
+  let commerceRequests = 0;
   const mounted = mountExpansionPackWorkspace(root, workspace, {
+    activeSection: 'rules',
     copy: { publicationState: { locked: true } },
+    onRequestBackToMaker: () => { backRequests += 1; },
+    onRequestCommerceRights: () => { commerceRequests += 1; },
   });
   assert.match(root.innerHTML, /data-publication-locked="true"/);
   assert.match(root.innerHTML, /data-action="request-add-item"[^>]*disabled/);
+  assert.match(root.innerHTML, /data-action="request-back-to-maker"[^>]*disabled/);
+  assert.match(root.innerHTML, /data-action="request-commerce-rights"[^>]*disabled/);
+  assert.match(root.innerHTML, /data-action="save-pack"[^>]*disabled/);
+  assert.match(root.innerHTML, /data-rename-kind="pack"[^>]*disabled/);
   events.get('click')({ target: { dataset: { action: 'add-layer-track' } }, stopPropagation() {} });
+  events.get('click')({ target: { dataset: { action: 'request-back-to-maker' } }, stopPropagation() {} });
+  events.get('click')({ target: { dataset: { action: 'request-commerce-rights' } }, stopPropagation() {} });
+  events.get('click')({
+    target: { dataset: { action: 'select-pack-section', section: 'structure' } },
+    stopPropagation() {},
+  });
   events.get('change')({ target: { value: 'Blocked rename', dataset: { renameKind: 'pack' } } });
   assert.equal(workspace.getState().tree.layerTracks.length, 0);
   assert.equal(workspace.getState().project.name, 'Moon Pack');
+  assert.equal(backRequests, 0);
+  assert.equal(commerceRequests, 0);
+  assert.match(root.innerHTML, /data-active-section="rules"/);
   mounted.unmount();
 });

@@ -101,12 +101,13 @@ test('Player completion, Walrus profile and final Soulidity handoff share one im
 });
 
 test('Maker v5 mounts separate Creator and Player workspaces on one renderer', async () => {
-  const [html, app, workspace, workspaceI18n, styles] = await Promise.all([
+  const [html, app, workspace, workspaceI18n, styles, editorShell] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),
     readFile(new URL('../app.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace-i18n.js', import.meta.url), 'utf8'),
     readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-editor-shell.js', import.meta.url), 'utf8'),
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
@@ -184,7 +185,9 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(styles, /\.v4-player-part\.active\s*\{[^}]*box-shadow:/s);
   assert.match(styles, /\.v4-chain-flow button\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px;/s);
   assert.match(styles, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.v4-chain-status > i\s*\{[^}]*animation:\s*none;/);
-  assert.match(workspace, /id="makerV4Tab-\$\{id\}"[\s\S]*?aria-pressed="\$\{this\.creatorTab === id\}"/);
+  assert.match(workspace, /import \{ renderMakerEditorShell \} from '\.\/maker-editor-shell\.js';/);
+  assert.match(workspace, /renderMakerEditorShell\(\{/);
+  assert.match(editorShell, /id="\$\{escapeHtml\(idPrefix\)\}Tab-\$\{escapeHtml\(id\)\}"[\s\S]*?aria-pressed="\$\{selected\}"/);
   assert.match(workspace, /id="v4RuleAvailabilityTab"[\s\S]*?role="tab"[\s\S]*?aria-selected=/);
   assert.match(workspace, /id="v4RuleVisibilityPanel"[\s\S]*?role="tabpanel"/);
   assert.match(

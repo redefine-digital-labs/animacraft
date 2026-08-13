@@ -58,6 +58,8 @@ import {
   makerDefinitionEditorSections,
   renderMakerPartList,
 } from './maker-definition-editor.js';
+import { renderMakerEditorShell } from './maker-editor-shell.js';
+import { renderDefinitionCombinationRuleControl } from './maker-definition-rule-control.js';
 import {
   COMPLETION_MODES,
   DEFAULT_PROTOCOL_COMMERCE_V5,
@@ -4155,11 +4157,9 @@ export class MakerWorkspace {
         onRequestAsset: (request) => this.importExpansionPackStyleAsset(request),
         onAssetCommitted: (asset) => this.commitExpansionPackStyleAsset(asset),
         onAssetDiscarded: (asset) => this.discardExpansionPackStyleAsset(asset),
-        onRequestRebindParent: () => this.rebindActiveExpansionPackToPublishedParent(),
+        onRequestBackToMaker: () => this.closeExpansionPackWorkspace({ save: true, render: true }),
         onRequestCommerceRights: () => this.openCommerceFromExpansionPackStudio(),
         onPublicationAction: (action) => this.requestExpansionPackPublicationAction(action),
-        onPreview: () => this.renderExpansionPackPreview()
-          .catch((error) => this.callbacks.onCreatorError?.(error)),
         onRendered: () => requestAnimationFrame(() => {
           void this.renderExpansionPackPreview()
             .catch((error) => this.callbacks.onCreatorError?.(error));
@@ -8329,15 +8329,24 @@ export class MakerWorkspace {
       `;
     }).join('') || `<span class="v4-style-empty">${escapeHtml(this.tr('noStylesYet'))}</span>`;
 
-    this.creatorRoot.innerHTML = `
-      <section class="v4-studio-shell">
-        <header class="v4-studio-topbar">
-          <div class="v4-studio-title">
-            <span class="v4-eyebrow">${escapeHtml(this.tr('studio'))}</span>
-            <div><h2>${escapeHtml(document.metadata.name)}</h2><span class="v4-version-badge">${escapeHtml(document.version.versionId)} · ${document.canvas.width}×${document.canvas.height}</span></div>
-          </div>
-          <div class="v4-save-indicator ${escapeHtml(state.saveState)}"><i></i><span>${escapeHtml(this.saveStateText(state))}</span></div>
-          <div class="v4-top-actions">
+    const definitionSections = makerDefinitionEditorSections((key) => this.tr(key));
+    const creatorTabs = [
+      [definitionSections[0].route, definitionSections[0].label],
+      ['info', this.tr('makerInfo')],
+      ...definitionSections.slice(1, 4).map((section) => [section.route, section.label]),
+      ['expansions', this.tr('expansionPacks')],
+      [definitionSections[4].route, definitionSections[4].label],
+      ['commerce', this.tr('commerceRights')],
+      ['soul', this.tr('soulConfig')],
+      ['validate', this.tr(issues.length ? 'preflightCount' : 'preflightReady', { count: issues.length })],
+    ].map(([id, label]) => ({
+      id,
+      label,
+      action: 'creator-tab',
+      value: id,
+      controls: id === 'structure' ? 'makerV4ToolPanel' : '',
+    }));
+    const creatorActions = `
             <button type="button" class="maker-lifecycle-badge ${escapeHtml(lifecycleBadgeClass)}" data-action="manage-lifecycle" aria-label="${escapeHtml(lifecycleManageLabel)}">${escapeHtml(lifecycleLabel)}</button>
             <button type="button" data-action="back-library">${escapeHtml(this.tr('backToLibrary'))}</button>
             <button type="button" data-action="undo" ${state.canUndo ? '' : 'disabled'} title="${escapeHtml(state.canUndo ? this.tr('undoHint') : this.tr('undoUnavailable'))}">↶ ${escapeHtml(this.tr('undo'))}</button>
@@ -8347,34 +8356,11 @@ export class MakerWorkspace {
             <button type="button" data-action="export-project">${escapeHtml(this.tr('projectZip'))}</button>
             <label class="v4-file-button compact">${escapeHtml(this.tr('importZip'))}<input type="file" accept=".zip,application/zip" data-action="import-project" /></label>
             <button type="button" data-action="open-player" title="${escapeHtml(this.tr(previewAssetCount ? 'playerTestHint' : 'playerTestBlocked'))}">▶ ${escapeHtml(this.tr('playerTest'))}</button>
-            <button class="primary" type="button" data-action="publish">${escapeHtml(blockingIssues.length ? this.tr(blockingIssues.length === 1 ? 'reviewIssue' : 'reviewIssues', { count: blockingIssues.length }) : this.tr('publishMainnet'))}</button>
-          </div>
-        </header>
-        ${this.documentMutationBlocked() ? `<div class="v4-version-history-notice" role="status" aria-live="polite">${escapeHtml(this.documentMutationBlockedMessage())}</div>` : ''}
-
-        <nav class="v4-studio-tabs" aria-label="${escapeHtml(this.tr('makerToolsLabel'))}">
-          ${(() => {
-            const definitionSections = makerDefinitionEditorSections((key) => this.tr(key));
-            return [
-            [definitionSections[0].route, definitionSections[0].label],
-            ['info', this.tr('makerInfo')],
-            ...definitionSections.slice(1, 4).map((section) => [section.route, section.label]),
-            ['expansions', this.tr('expansionPacks')],
-            [definitionSections[4].route, definitionSections[4].label],
-            ['commerce', this.tr('commerceRights')],
-            ['soul', this.tr('soulConfig')],
-            ['validate', this.tr(issues.length ? 'preflightCount' : 'preflightReady', { count: issues.length })],
-          ].map(([id, label]) => `<button type="button" id="makerV4Tab-${id}" class="${this.creatorTab === id ? 'active' : ''}" data-action="creator-tab" data-tab="${id}" aria-pressed="${this.creatorTab === id}" ${id === 'structure' ? 'aria-controls="makerV4ToolPanel"' : ''}>${escapeHtml(label)}</button>`).join('');
-          })()}
-        </nav>
-
-        <div id="makerV4ToolPanel" class="v4-studio-workspace">
-          <aside class="v4-parts-browser">
+            <button class="primary" type="button" data-action="publish">${escapeHtml(blockingIssues.length ? this.tr(blockingIssues.length === 1 ? 'reviewIssue' : 'reviewIssues', { count: blockingIssues.length }) : this.tr('publishMainnet'))}</button>`;
+    const creatorLeft = `
             <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('parts'))}</span><strong>${escapeHtml(this.tr('playerMenuLinkedOrder'))}</strong><small>${escapeHtml(this.tr('playerMenuLinkedOrderCopy'))}</small></div><button type="button" data-action="add-part" aria-label="${escapeHtml(this.tr('addPartAria'))}">＋</button></div>
-            ${partList}
-          </aside>
-
-          <main class="v4-canvas-column">
+            ${partList}`;
+    const creatorCenter = `
             <div class="v4-canvas-toolbar">
               <div><strong>${escapeHtml(this.tr('runtimePreview'))}</strong><span id="v4CreatorRenderStatus">${escapeHtml(this.tr('runtimePreviewCopy'))}</span></div>
               <div class="v4-canvas-tools">
@@ -8405,26 +8391,38 @@ export class MakerWorkspace {
               </div>
               <div class="v4-item-grid">${itemRows}</div>
               ${item ? `<div class="v4-style-row"><span>${escapeHtml(this.tr('styles'))}</span>${styleRows}<button type="button" data-action="add-style">${escapeHtml(this.tr('addStyle'))}</button><label class="v4-file-button">${escapeHtml(this.tr('batchImportStyles'))}<input type="file" accept="image/png" multiple data-action="batch-import-styles" /></label></div>` : ''}
-            </div>
-          </main>
-
-          <aside class="v4-inspector">
+            </div>`;
+    const creatorRight = `
             <div class="v4-panel-head v4-inspector-context"><div><span>${escapeHtml(this.tr('currentStyle'))}</span><strong>${escapeHtml([part?.name || '—', item?.name || '—', style?.name || '—'].join(' › '))}</strong></div></div>
-            ${this.renderCreatorInspector(document, part, item, style)}
-          </aside>
-        </div>
-        ${this.creatorTab !== 'structure' ? `<div class="v4-tool-modal-backdrop" data-action="close-tool-backdrop">
+            ${this.renderCreatorInspector(document, part, item, style)}`;
+    const creatorOverlay = this.creatorTab !== 'structure' ? `<div class="v4-tool-modal-backdrop" data-action="close-tool-backdrop">
           <section id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true" aria-labelledby="makerV4ToolTitle" tabindex="-1">
             <header class="v4-tool-context"><div><span>${escapeHtml(this.creatorTabLabel(this.creatorTab, issues.length))}</span><strong id="makerV4ToolTitle">${escapeHtml(document.metadata.name)}</strong></div><button type="button" data-action="close-tool" aria-label="${escapeHtml(this.tr('close'))}">×</button></header>
             <div class="v4-tool-body">${this.renderCreatorAdvanced(document, issues, compatibility)}</div>
           </section>
-        </div>` : ''}
-        ${this.renderCreatorPublishFlow()}
-      </section>
-      ${this.renderWorkspaceRestoreGuard()}
-      ${this.renderVersionHistory()}
-      ${this.renderImportDialog(document)}
-    `;
+        </div>` : '';
+    this.creatorRoot.innerHTML = renderMakerEditorShell({
+      instanceId: 'maker',
+      idPrefix: 'makerV4',
+      workspaceId: 'makerV4ToolPanel',
+      activeTab: this.creatorTab,
+      tabDataKey: 'tab',
+      tabs: creatorTabs,
+      tabsLabel: this.tr('makerToolsLabel'),
+      title: {
+        eyebrow: this.tr('studio'),
+        contentHtml: `<h2>${escapeHtml(document.metadata.name)}</h2><span class="v4-version-badge">${escapeHtml(document.version.versionId)} · ${document.canvas.width}×${document.canvas.height}</span>`,
+      },
+      save: { phase: state.saveState, label: this.saveStateText(state) },
+      actionsHtml: creatorActions,
+      noticesHtml: this.documentMutationBlocked() ? `<div class="v4-version-history-notice" role="status" aria-live="polite">${escapeHtml(this.documentMutationBlockedMessage())}</div>` : '',
+      leftHtml: creatorLeft,
+      centerHtml: creatorCenter,
+      rightHtml: creatorRight,
+      overlayHtml: creatorOverlay,
+      footerHtml: this.renderCreatorPublishFlow(),
+      afterHtml: `${this.renderWorkspaceRestoreGuard()}${this.renderVersionHistory()}${this.renderImportDialog(document)}`,
+    });
     this.restoreCreatorViewState(viewState);
     if (this.resetCreatorToolScroll) {
       const toolBody = this.creatorRoot?.querySelector?.('.v4-tool-body');
@@ -8872,12 +8870,14 @@ export class MakerWorkspace {
         && row.ownerItemId === itemId
         && row.ownerStyleId === styleId
       )).length;
-      return `
-        <div class="v4-object-rule-entry">
-          <span><strong>${escapeHtml(this.tr('combinationRules'))}</strong><small>${escapeHtml(this.tr('combinationRuleCount', { count }))}</small></span>
-          <button type="button" data-action="edit-selection-rules" data-rule-owner="${escapeHtml(definition)}">${escapeHtml(this.tr(count ? 'editCombinationRules' : 'addCombinationRule'))}</button>
-        </div>
-      `;
+      return renderDefinitionCombinationRuleControl({
+        definition,
+        ownerType,
+        count,
+        title: this.tr('combinationRules'),
+        countLabel: this.tr('combinationRuleCount', { count }),
+        actionLabel: this.tr(count ? 'editCombinationRules' : 'addCombinationRule'),
+      });
     };
     const defaultOptions = part.items.map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${selected(part.defaultItemId, candidate.id)}>${escapeHtml(candidate.name)}</option>`).join('');
     const channelOptions = [`<option value="">${escapeHtml(this.tr('noSmartColor'))}</option>`, ...document.colorChannels.filter((channel) => channel.mode === 'gradient-map').map((channel) => `<option value="${escapeHtml(channel.id)}" ${selected(style?.colorChannelId, channel.id)}>${escapeHtml(channel.name)}</option>`)].join('');
@@ -9449,26 +9449,16 @@ export class MakerWorkspace {
     }
     if (this.creatorTab === 'expansions') {
       if (this.expansionPackWorkspace) {
-        const exactParent = this.expansionPackWorkspaceState?.project?.parentBinding?.publishable === true;
         return `
-          <div class="v4-advanced-head expansion-pack-studio-head">
-            <div><span>${escapeHtml(this.tr('expansionPacks'))}</span><h3>${escapeHtml(this.expansionPackWorkspaceState?.tree?.name || this.tr('packStudio'))}</h3><p>${escapeHtml(this.tr('packStudioBindingCopy'))}</p><strong>${escapeHtml(this.tr(exactParent ? 'packExactParentStatus' : 'packLocalParentStatus'))}</strong></div>
-            <button type="button" data-action="close-expansion-pack-studio">← ${escapeHtml(this.tr('packBackToProjects'))}</button>
-          </div>
           ${this.expansionPackProjectNotice ? `<div class="v4-rule-warning" role="status"><span>${escapeHtml(this.expansionPackProjectNotice)}</span></div>` : ''}
           <div data-expansion-pack-studio-host></div>
         `;
       }
-      const storedCards = this.expansionPackProjectSummaries.map((entry) => `
-        <article class="v4-expansion-card ${entry.publishable ? 'ready' : 'local'} independent">
-          <header><div><span>${escapeHtml(entry.namespace)}</span><h4>${escapeHtml(entry.name)}</h4></div><em>${escapeHtml(entry.version)}</em></header>
-          <p>${escapeHtml(this.tr('packIndependentBinding', { version: entry.parentVersion }))}</p>
-          <strong>${escapeHtml(this.tr(entry.publishable ? 'packExactParentStatus' : 'packLocalParentStatus'))}</strong>
-          ${entry.parentReleaseId ? `<code>${escapeHtml(entry.parentReleaseId)}</code>` : ''}
-          <small>${escapeHtml(this.tr('packSavedRevision', { revision: entry.revision }))}</small>
-          <div><button type="button" data-action="open-expansion-pack-studio" data-pack-id="${escapeHtml(entry.packId)}" data-parent-binding-identity="${escapeHtml(entry.parentBindingIdentity)}">${escapeHtml(this.tr('packOpenStudio'))}</button></div>
-        </article>
-      `).join('');
+      const storedRows = this.expansionPackProjectSummaries.map((entry) => `
+        <button type="button" class="v4-pack-project-row" data-action="open-expansion-pack-studio" data-pack-id="${escapeHtml(entry.packId)}" data-parent-binding-identity="${escapeHtml(entry.parentBindingIdentity)}">
+          <span><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.namespace)} · ${escapeHtml(entry.version)} · ${escapeHtml(this.tr('packSavedRevision', { revision: entry.revision }))}</small></span>
+          <em>${escapeHtml(this.tr(entry.publishable ? 'packExactParentStatus' : 'packLocalParentStatus'))}</em>
+        </button>`).join('');
       const status = this.expansionPackProjectsStatus === 'loading'
         ? `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('packLoading'))}</span></div>`
         : this.expansionPackProjectsStatus === 'wallet-required'
@@ -9480,7 +9470,7 @@ export class MakerWorkspace {
         <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('expansionPacks'))}</span><h3>${escapeHtml(this.tr('packIndependentTitle'))}</h3><p>${escapeHtml(this.tr('packIndependentCopy'))}</p></div><button type="button" data-action="add-expansion">${escapeHtml(this.tr('addExpansion'))}</button></div>
         ${this.expansionPackProjectNotice ? `<div class="v4-rule-warning" role="status"><span>${escapeHtml(this.expansionPackProjectNotice)}</span></div>` : ''}
         ${status}
-        <div class="v4-expansion-grid">${storedCards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noExpansionPacks'))}</strong><span>${escapeHtml(this.tr('packEmptyProjectCopy'))}</span></div>`}</div>
+        <div class="v4-pack-project-list" data-pack-project-list>${storedRows || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noExpansionPacks'))}</strong><span>${escapeHtml(this.tr('packEmptyProjectCopy'))}</span></div>`}</div>
       `;
     }
     if (this.creatorTab === 'composable') {
