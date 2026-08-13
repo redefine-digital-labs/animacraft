@@ -1837,19 +1837,32 @@ export async function readExpansionPackV8Submission({
   }
 
   const lifecycleCalls = {
-    activate_expansion_pack_v8: ['chain.pack.activate', 'ExpansionPackLifecycleChangedV8', 3, 'ACTIVE'],
-    pause_expansion_pack_v8: [null, 'ExpansionPackLifecycleChangedV8', 4, 'PAUSED'],
-    resume_expansion_pack_v8: [null, 'ExpansionPackLifecycleChangedV8', 3, 'ACTIVE'],
-    archive_expansion_pack_v8: [null, 'ExpansionPackLifecycleChangedV8', 5, 'ARCHIVED'],
+    activate_expansion_pack_v8: [2, 3, 'ACTIVE'],
+    pause_expansion_pack_v8: [3, 4, 'PAUSED'],
+    resume_expansion_pack_v8: [4, 3, 'ACTIVE'],
+    archive_expansion_pack_v8: [[0, 1, 2, 4], 5, 'ARCHIVED'],
   };
   if (lifecycleCalls[functionName]) {
-    const [, eventName, expectedLifecycle, lifecycleState] = lifecycleCalls[functionName];
+    const [defaultPrevious, expectedLifecycle, lifecycleState] = lifecycleCalls[functionName];
+    const expectedPrevious = action.fromLifecycle ?? defaultPrevious;
+    const acceptedPrevious = Array.isArray(expectedPrevious)
+      ? expectedPrevious
+      : [Number(expectedPrevious)];
+    if (action.toLifecycle != null && Number(action.toLifecycle) !== expectedLifecycle) {
+      fail(
+        'EXPANSION_PACK_V8_CHAIN_READBACK_MISMATCH',
+        'Lifecycle action declares the wrong destination state.',
+      );
+    }
     const { release } = await getReleaseAndAdmin({ action, suiClient, runtime });
-    exactEvent(events, runtime, eventName, (entry) => (
+    const changed = exactEvent(events, runtime, 'ExpansionPackLifecycleChangedV8', (entry) => (
       sameId(eventId(entry.release_id || entry.releaseId, 'Lifecycle release'), release.objectId)
-      && Number(entry.lifecycle) === expectedLifecycle
     ));
-    if (release.lifecycle !== expectedLifecycle) {
+    const previousLifecycle = Number(changed.previous_lifecycle ?? changed.previousLifecycle);
+    const currentLifecycle = Number(changed.lifecycle);
+    if (!acceptedPrevious.includes(previousLifecycle)
+      || currentLifecycle !== expectedLifecycle
+      || release.lifecycle !== expectedLifecycle) {
       fail('EXPANSION_PACK_V8_CHAIN_READBACK_MISMATCH', `Pack lifecycle is not ${lifecycleState}.`);
     }
     if (['activate_expansion_pack_v8', 'resume_expansion_pack_v8'].includes(functionName)) {
@@ -1862,7 +1875,13 @@ export async function readExpansionPackV8Submission({
         fail('EXPANSION_PACK_V8_PARENT_READBACK_MISMATCH', 'Pack activation uses a stale parent epoch, non-Paused parent, or Config.');
       }
     }
-    return Object.freeze({ ...result, readbackVerified: true, lifecycleState });
+    return Object.freeze({
+      ...result,
+      readbackVerified: true,
+      lifecycleState,
+      lifecycle: currentLifecycle,
+      previousLifecycle,
+    });
   }
 
   if (['claim_free_expansion_pack_v8', 'purchase_expansion_pack_v8'].includes(functionName)) {
