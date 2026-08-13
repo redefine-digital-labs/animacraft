@@ -23,7 +23,6 @@ import {
   renameExpansionPackPart,
   renameExpansionPackStyle,
   updateExpansionPackStyle,
-  updateExpansionPackCommerce,
 } from './expansion-pack-project.js';
 import {
   createExpansionPackDraftStore,
@@ -505,12 +504,6 @@ export async function createExpansionPackWorkspace(options = {}) {
         'update-style',
       );
     },
-    updateCommerce(patch) {
-      return change(
-        updateExpansionPackCommerce(project, patch, { now: Number(clock()) }),
-        'update-commerce',
-      );
-    },
     save() {
       const operation = saveTail.then(async () => {
         if (destroyed) throw new ExpansionPackWorkspaceError('Expansion Pack workspace is destroyed.');
@@ -944,25 +937,19 @@ export function renderExpansionPackWorkspaceHtml(model, copy = {}) {
           </header>
           <section class="expansion-pack-commerce-panel" aria-labelledby="expansionPackCommerceTitle">
             <div>
-              <span>${escapeHtml(copyValue(copy, 'commerceEyebrow', 'ACCESS & COMMERCE'))}</span>
-              <h3 id="expansionPackCommerceTitle">${escapeHtml(copyValue(copy, 'commerceTitle', 'How players unlock this Pack'))}</h3>
-              <p>${escapeHtml(copyValue(copy, 'commerceCopy', 'Free Packs remain available while Active. Paid Once creates a permanent wallet-bound Pack Pass.'))}</p>
+              <span>${escapeHtml(copyValue(copy, 'commerceEyebrow', 'COMMERCE SUMMARY'))}</span>
+              <h3 id="expansionPackCommerceTitle">${escapeHtml(copyValue(copy, 'commerceTitle', 'Access is managed in Commerce & Rights'))}</h3>
+              <p>${escapeHtml(copyValue(copy, 'commerceCopy', 'This Studio shows the saved policy without editing it.'))}</p>
             </div>
-            <label>
+            <div class="expansion-pack-commerce-summary">
               <span>${escapeHtml(copyValue(copy, 'accessMode', 'Player access'))}</span>
-              <select data-pack-commerce-field="accessMode">
-                <option value="${EXPANSION_PACK_ACCESS_MODES.FREE}" ${paidPack ? '' : 'selected'}>${escapeHtml(copyValue(copy, 'accessFree', 'Free'))}</option>
-                <option value="${EXPANSION_PACK_ACCESS_MODES.PAID_ONCE}" ${paidPack ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'accessPaidOnce', 'Paid once · permanent access'))}</option>
-              </select>
-            </label>
-            <label>
-              <span>${escapeHtml(copyValue(copy, 'priceUsdc', 'Price (USDC)'))}</span>
-              <input type="number" inputmode="decimal" min="0" step="0.000001" value="${escapeHtml(commerce.priceDecimal || '0')}" data-pack-commerce-field="priceDecimal" ${paidPack ? '' : 'disabled'} />
-            </label>
+              <strong>${escapeHtml(paidPack ? copyValue(copy, 'accessPaidOnce', 'Paid once · permanent access') : copyValue(copy, 'accessFree', 'Free'))}</strong>
+              ${paidPack ? `<small>${escapeHtml(copyValue(copy, 'priceUsdc', 'Price (USDC)'))}: ${escapeHtml(commerce.priceDecimal || '0')} USDC</small>` : ''}
+            </div>
+            <button type="button" data-action="request-commerce-rights">${escapeHtml(copyValue(copy, 'openCommerceRights', 'Go to Commerce & Rights'))}</button>
             <div class="expansion-pack-commerce-terms">
               <strong>${escapeHtml(paidPack ? copyValue(copy, 'paidEntitlement', 'Permanent Pack Pass') : copyValue(copy, 'freeEntitlement', 'Free while this release is Active'))}</strong>
-              <small>${escapeHtml(copyValue(copy, 'commerceSplit', 'Creator / current operator 90% · Animacraft protocol 10% · Sui gas and Walrus costs shown separately.'))}</small>
-              <small>${escapeHtml(copyValue(copy, 'commerceComplete', 'After access is verified, this Pack can be used without an additional per-Complete fee.'))}</small>
+              <small>${escapeHtml(copyValue(copy, 'commerceManagedElsewhere', 'Edit and validate this policy in the parent Maker Studio.'))}</small>
             </div>
           </section>
           <div class="expansion-pack-tree">
@@ -1064,10 +1051,6 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
           target.dataset.styleId,
           patch,
         );
-      } else if (target?.dataset?.packCommerceField) {
-        workspace.updateCommerce({
-          [target.dataset.packCommerceField]: target.value,
-        });
       }
     } catch (error) {
       reportError(error);
@@ -1084,6 +1067,11 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
     }
     if (action === 'open-preview') {
       options.onPreview?.(workspace.getPreviewModel());
+      return;
+    }
+    if (action === 'request-commerce-rights') {
+      Promise.resolve(options.onRequestCommerceRights?.(workspace.getState()))
+        .catch(reportError);
       return;
     }
     if (action === 'request-rebind-parent') {

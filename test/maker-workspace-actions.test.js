@@ -2798,6 +2798,86 @@ test('Expansion Pack Studio creates an isolated version-bound child without muta
   });
 });
 
+test('Commerce & Rights CAS-saves only independent Packs in the current wallet and parent version', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const embeddedPackId = installLegacyEmbeddedExpansion(workspace, { copySelected: false });
+    const embeddedBefore = structuredClone(workspace.getDocument().extensions.expansionDrafts);
+    await workspace.openExpansionPackWorkspace('independent-commerce-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+
+    assert.equal(workspace.expansionPackProjectSummaries.length, 1);
+    const summary = workspace.expansionPackProjectSummaries[0];
+    assert.equal(summary.identity.walletAddress, '0xcreator');
+    assert.equal(summary.identity.parentRootId, workspace.getDocument().version.rootMakerId);
+    assert.equal(summary.identity.parentVersion, String(workspace.getDocument().version.number));
+
+    workspace.openCreatorTab('commerce');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.match(creatorRoot.innerHTML, /data-action="independent-pack-commerce"/);
+    assert.match(creatorRoot.innerHTML, /independent-commerce-pack/);
+    assert.match(creatorRoot.innerHTML, new RegExp(`data-pack-id="${embeddedPackId}"`));
+
+    const saved = await workspace.saveIndependentExpansionPackCommerce({
+      value: 'PAID_ONCE',
+      dataset: {
+        independentPackKey: summary.key,
+        independentPackCommerceField: 'accessMode',
+      },
+    });
+    assert.equal(saved, true);
+    const record = [...expansionPackDraftStore.records.values()][0];
+    assert.equal(record.revision, 2);
+    assert.equal(record.project.pack.commerce.accessMode, 'PAID_ONCE');
+    assert.equal(record.project.pack.commerce.purchasePriceAtomic, '1000000');
+    assert.deepEqual(workspace.getDocument().extensions.expansionDrafts, embeddedBefore);
+
+    record.revision = 3;
+    const conflicted = await workspace.saveIndependentExpansionPackCommerce({
+      value: '2.5',
+      dataset: {
+        independentPackKey: summary.key,
+        independentPackCommerceField: 'priceDecimal',
+      },
+    });
+    assert.equal(conflicted, false);
+    assert.equal(workspace.expansionPackCommerceState(summary.key).phase, 'error');
+    assert.match(workspace.expansionPackCommerceState(summary.key).error, /newer|更新|最新/i);
+    assert.equal(record.project.pack.commerce.purchasePriceAtomic, '1000000');
+    assert.deepEqual(workspace.getDocument().extensions.expansionDrafts, embeddedBefore);
+  }, {
+    creatorRoot,
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('Pack Studio saves before routing commerce editing to the outer Maker tab', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('commerce-route-pack', { create: true });
+    workspace.expansionPackWorkspace.renamePack('Commerce route Pack');
+    assert.equal(workspace.expansionPackWorkspace.getState().dirty, true);
+
+    const opened = await workspace.openCommerceFromExpansionPackStudio();
+    assert.equal(opened, true);
+    assert.equal(workspace.expansionPackWorkspace, null);
+    assert.equal(workspace.creatorTab, 'commerce');
+    assert.equal([...expansionPackDraftStore.records.values()][0].project.name, 'Commerce route Pack');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
 test('a new Expansion Pack inherits one exact published parent and exports a diagnostic candidate', async () => {
   const expansionPackDraftStore = memoryExpansionPackStore();
   const candidates = [];

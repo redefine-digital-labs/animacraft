@@ -3330,6 +3330,42 @@ Object.entries(expansionPackWorkspaceDictionaries).forEach(
   ([locale, details]) => Object.assign(dictionaries[locale], details),
 );
 
+const independentPackCommerceDictionaries = {
+  en: {
+    independentExpansionPack: 'Independent Expansion Pack',
+    independentExpansionPacks: 'Independent Pack projects',
+    independentPackCommerceCopy: 'Loaded from isolated browser drafts for this wallet and exact parent Maker version. Each change is saved with revision checking.',
+    independentPackCommerceScope: 'Parent v{version} · draft revision {revision}',
+    independentPackCommerceSaved: 'Saved to the independent Pack draft',
+    independentPackCommerceConflict: 'A newer Pack draft exists. Reload Commerce & Rights before editing again.',
+    independentPackCommerceSaveFailed: 'The independent Pack policy could not be saved.',
+    independentPackCommerceScopeChanged: 'Wallet or parent Maker version changed. This Pack was not modified.',
+    independentPackCommerceNeedsAttention: 'Pack policy needs attention',
+    noIndependentExpansionPacks: 'No independent Pack projects',
+    independentPackCommerceEmpty: 'Create and save a Pack in Expansion Pack Studio, then manage its access here.',
+    embeddedLegacyPacks: 'Embedded legacy Packs',
+    embeddedLegacyPacksCopy: 'These older policies remain in the Maker document and are never updated through independent Pack controls.',
+    packCommerceManagedElsewhere: 'Edit and validate this policy in the parent Maker Studio.',
+    packOpenCommerceRights: 'Go to Commerce & Rights',
+  },
+  zh: {
+    independentExpansionPack: '独立扩展包', independentExpansionPacks: '独立扩展包项目', independentPackCommerceCopy: '仅载入当前钱包与母 Maker 精确版本的隔离浏览器草稿；每次修改都经过版本校验后保存。', independentPackCommerceScope: '母版本 v{version} · 草稿修订 {revision}', independentPackCommerceSaved: '已保存到独立扩展包草稿', independentPackCommerceConflict: '检测到更新的扩展包草稿；请重新打开“商业与权利”后再编辑。', independentPackCommerceSaveFailed: '无法保存独立扩展包策略。', independentPackCommerceScopeChanged: '钱包或母 Maker 版本已变化；未修改此扩展包。', independentPackCommerceNeedsAttention: '扩展包策略需要处理', noIndependentExpansionPacks: '没有独立扩展包项目', independentPackCommerceEmpty: '请先在扩展包工作室创建并保存扩展包，然后在这里管理访问策略。', embeddedLegacyPacks: '内嵌旧版扩展包', embeddedLegacyPacksCopy: '这些旧策略仍属于 Maker 文档，独立扩展包控件绝不会修改它们。', packCommerceManagedElsewhere: '请在外层 Maker Studio 的“商业与权利”中编辑和校验此策略。', packOpenCommerceRights: '前往“商业与权利”',
+  },
+  ja: {
+    independentExpansionPack: '独立拡張パック', independentExpansionPacks: '独立 Pack プロジェクト', independentPackCommerceCopy: 'この Wallet と正確な親 Maker バージョンの分離ブラウザー下書きだけを読み込み、変更はリビジョン確認付きで保存します。', independentPackCommerceScope: '親 v{version}・下書きリビジョン {revision}', independentPackCommerceSaved: '独立 Pack 下書きに保存しました', independentPackCommerceConflict: 'より新しい Pack 下書きがあります。「収益化と権利」を再読込してから編集してください。', independentPackCommerceSaveFailed: '独立 Pack ポリシーを保存できませんでした。', independentPackCommerceScopeChanged: 'Wallet または親 Maker バージョンが変わったため、この Pack は変更されていません。', independentPackCommerceNeedsAttention: 'Pack ポリシーを確認してください', noIndependentExpansionPacks: '独立 Pack プロジェクトはありません', independentPackCommerceEmpty: '拡張パック Studio で Pack を作成・保存してから、ここでアクセスを管理します。', embeddedLegacyPacks: '埋め込み旧式 Pack', embeddedLegacyPacksCopy: '旧式ポリシーは Maker 文書内に残り、独立 Pack 用コントロールからは変更されません。', packCommerceManagedElsewhere: '親 Maker Studio の「収益化と権利」で編集・検証します。', packOpenCommerceRights: '「収益化と権利」へ移動',
+  },
+  ko: {
+    independentExpansionPack: '독립 확장팩', independentExpansionPacks: '독립 Pack 프로젝트', independentPackCommerceCopy: '현재 지갑과 정확한 상위 Maker 버전에 해당하는 격리 브라우저 초안만 불러오며, 모든 변경은 리비전 검사 후 저장됩니다.', independentPackCommerceScope: '상위 v{version} · 초안 리비전 {revision}', independentPackCommerceSaved: '독립 Pack 초안에 저장됨', independentPackCommerceConflict: '더 최신 Pack 초안이 있습니다. “수익화 및 권리”를 다시 연 뒤 편집하세요.', independentPackCommerceSaveFailed: '독립 Pack 정책을 저장하지 못했습니다.', independentPackCommerceScopeChanged: '지갑 또는 상위 Maker 버전이 바뀌어 이 Pack을 수정하지 않았습니다.', independentPackCommerceNeedsAttention: 'Pack 정책 확인 필요', noIndependentExpansionPacks: '독립 Pack 프로젝트 없음', independentPackCommerceEmpty: '확장팩 스튜디오에서 Pack을 만들고 저장한 뒤 여기에서 접근 정책을 관리하세요.', embeddedLegacyPacks: '내장 레거시 Pack', embeddedLegacyPacksCopy: '이전 정책은 Maker 문서에 남으며 독립 Pack 컨트롤로 변경되지 않습니다.', packCommerceManagedElsewhere: '상위 Maker Studio의 “수익화 및 권리”에서 이 정책을 편집하고 검증하세요.', packOpenCommerceRights: '“수익화 및 권리”로 이동',
+  },
+  vi: {
+    independentExpansionPack: 'Gói mở rộng độc lập', independentExpansionPacks: 'Dự án Pack độc lập', independentPackCommerceCopy: 'Chỉ tải bản nháp trình duyệt tách biệt của ví này và đúng phiên bản Maker mẹ; mọi thay đổi được lưu kèm kiểm tra bản sửa.', independentPackCommerceScope: 'Bản mẹ v{version} · bản sửa nháp {revision}', independentPackCommerceSaved: 'Đã lưu vào bản nháp Pack độc lập', independentPackCommerceConflict: 'Có bản nháp Pack mới hơn. Hãy tải lại “Thương mại & quyền” trước khi sửa tiếp.', independentPackCommerceSaveFailed: 'Không thể lưu chính sách Pack độc lập.', independentPackCommerceScopeChanged: 'Ví hoặc phiên bản Maker mẹ đã đổi; Pack này không bị sửa.', independentPackCommerceNeedsAttention: 'Cần kiểm tra chính sách Pack', noIndependentExpansionPacks: 'Chưa có dự án Pack độc lập', independentPackCommerceEmpty: 'Tạo và lưu Pack trong Studio Gói mở rộng, rồi quản lý quyền truy cập tại đây.', embeddedLegacyPacks: 'Pack cũ nhúng trong Maker', embeddedLegacyPacksCopy: 'Các chính sách cũ vẫn thuộc tài liệu Maker và không bao giờ bị sửa bởi điều khiển Pack độc lập.', packCommerceManagedElsewhere: 'Sửa và kiểm tra chính sách này trong “Thương mại & quyền” của Maker Studio mẹ.', packOpenCommerceRights: 'Đi tới “Thương mại & quyền”',
+  },
+};
+
+Object.entries(independentPackCommerceDictionaries).forEach(
+  ([locale, details]) => Object.assign(dictionaries[locale], details),
+);
+
 export const MAKER_WORKSPACE_LOCALES = Object.freeze(Object.keys(dictionaries));
 export const MAKER_WORKSPACE_KEYS = Object.freeze(Object.keys(en));
 

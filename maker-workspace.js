@@ -39,12 +39,16 @@ import {
   createExpansionPackProjectPreviewRecipe,
   createExpansionPackProject,
   rebindExpansionPackProjectToPublishedRelease,
+  updateExpansionPackCommerce,
 } from './expansion-pack-project.js';
 import {
   buildExpansionPackPublicationCandidate,
   hashExpansionPackContent,
 } from './expansion-pack-publication.js';
-import { createExpansionPackDraftStore } from './expansion-pack-draft-store.js';
+import {
+  createExpansionPackDraftStore,
+  expansionPackDraftKey,
+} from './expansion-pack-draft-store.js';
 import {
   createExpansionPackWorkspace,
   mountExpansionPackWorkspace,
@@ -1537,6 +1541,7 @@ export class MakerWorkspace {
     this.expansionPackProjectsError = '';
     this.expansionPackProjectNotice = '';
     this.expansionPackProjectRequestId = 0;
+    this.expansionPackCommerceSaveStates = new Map();
     this.expansionPackPublicationRequestToken = 0;
     this.expansionPackPublicationLaunch = null;
     this.expansionPackPublishState = {
@@ -3124,6 +3129,8 @@ export class MakerWorkspace {
       freeEntitlement: this.tr('packCommerceFreeEntitlement'),
       commerceSplit: this.tr('packCommerceSplit'),
       commerceComplete: this.tr('packCommerceComplete'),
+      commerceManagedElsewhere: this.tr('packCommerceManagedElsewhere'),
+      openCommerceRights: this.tr('packOpenCommerceRights'),
       publicationState,
     };
   }
@@ -3290,6 +3297,18 @@ export class MakerWorkspace {
         || parentVersion !== String(currentVersion?.number ?? currentVersion?.versionId ?? '')
       ) return [];
       this.expansionPackProjectSummaries = records.map((record) => ({
+        key: record.key || expansionPackDraftKey(record),
+        identity: {
+          walletAddress: record.walletAddress,
+          parentRootId: record.parentRootId,
+          parentVersion: record.parentVersion,
+          parentBindingKind: record.parentBindingKind,
+          parentVersionId: record.parentVersionId,
+          parentReleaseId: record.parentReleaseId,
+          parentManifestBlobId: record.parentManifestBlobId,
+          parentManifestHash: record.parentManifestHash,
+          packId: record.packId,
+        },
         packId: record.project.packId,
         name: record.project.name,
         version: record.project.version,
@@ -3314,6 +3333,114 @@ export class MakerWorkspace {
       if (render) this.render();
       return [];
     }
+  }
+
+  expansionPackCommerceState(key) {
+    return this.expansionPackCommerceSaveStates.get(String(key || '')) || {
+      phase: 'idle',
+      error: '',
+    };
+  }
+
+  async saveIndependentExpansionPackCommerce(input) {
+    const key = String(input?.dataset?.independentPackKey || '');
+    const field = String(input?.dataset?.independentPackCommerceField || '');
+    const summary = this.expansionPackProjectSummaries.find((entry) => entry.key === key);
+    if (!summary || !['accessMode', 'priceDecimal'].includes(field)) return false;
+    const parent = this.expansionPackParentDocument();
+    const walletAddress = this.expansionPackWalletAddress().toLowerCase();
+    const rootMakerId = String(parent?.version?.rootMakerId || parent?.metadata?.id || '');
+    const parentVersion = String(parent?.version?.number ?? parent?.version?.versionId ?? '');
+    if (
+      !parent
+      || summary.identity.walletAddress !== walletAddress
+      || summary.identity.parentRootId !== rootMakerId
+      || summary.identity.parentVersion !== parentVersion
+    ) {
+      this.expansionPackCommerceSaveStates.set(key, {
+        phase: 'error',
+        error: this.tr('independentPackCommerceScopeChanged'),
+      });
+      this.render();
+      return false;
+    }
+    const requestedPatch = field === 'accessMode'
+      ? {
+          accessMode: input.value,
+          ...(input.value === 'PAID_ONCE'
+            && BigInt(summary.project.pack?.commerce?.purchasePriceAtomic || '0') === 0n
+            ? { priceDecimal: '1' }
+            : {}),
+        }
+      : { priceDecimal: input.value };
+    let project;
+    try {
+      project = updateExpansionPackCommerce(summary.project, requestedPatch, { now: Date.now() });
+    } catch (error) {
+      this.expansionPackCommerceSaveStates.set(key, {
+        phase: 'error',
+        error: error?.message || this.tr('independentPackCommerceSaveFailed'),
+      });
+      this.render();
+      return false;
+    }
+    const requestId = this.expansionPackProjectRequestId;
+    const expectedRevision = summary.revision;
+    this.expansionPackCommerceSaveStates.set(key, { phase: 'saving', error: '' });
+    this.render();
+    try {
+      const result = await this.expansionPackDraftStore.save(summary.identity, project, {
+        expectedRevision,
+        revision: expectedRevision + 1,
+      });
+      const stillCurrent = requestId === this.expansionPackProjectRequestId
+        && walletAddress === this.expansionPackWalletAddress().toLowerCase()
+        && rootMakerId === String(this.expansionPackParentDocument()?.version?.rootMakerId || '')
+        && parentVersion === String(
+          this.expansionPackParentDocument()?.version?.number
+          ?? this.expansionPackParentDocument()?.version?.versionId
+          ?? '',
+        );
+      if (!stillCurrent) return false;
+      if (!result?.saved) {
+        const error = result?.conflict
+          ? this.tr('independentPackCommerceConflict')
+          : this.tr('independentPackCommerceSaveFailed');
+        this.expansionPackCommerceSaveStates.set(key, { phase: 'error', error });
+        this.render();
+        return false;
+      }
+      summary.project = project;
+      summary.revision = result.persistedRevision;
+      summary.savedAt = result.savedAt;
+      this.expansionPackCommerceSaveStates.set(key, {
+        phase: 'saved',
+        error: '',
+        savedAt: result.savedAt,
+      });
+      this.render();
+      return true;
+    } catch (error) {
+      if (requestId !== this.expansionPackProjectRequestId) return false;
+      this.expansionPackCommerceSaveStates.set(key, {
+        phase: 'error',
+        error: error?.message || this.tr('independentPackCommerceSaveFailed'),
+      });
+      this.callbacks.onCreatorError?.(error);
+      this.render();
+      return false;
+    }
+  }
+
+  async openCommerceFromExpansionPackStudio() {
+    const workspace = this.expansionPackWorkspace;
+    if (workspace) {
+      const result = await this.flushExpansionPackWorkspace(workspace);
+      if (!result.saved) throw result.error || new Error(this.tr('packSaveFailed'));
+      await this.closeExpansionPackWorkspace({ save: false, render: false });
+    }
+    this.openCreatorTab('commerce');
+    return true;
   }
 
   async saveExpansionPackWorkspace(workspace = this.expansionPackWorkspace) {
@@ -3865,6 +3992,7 @@ export class MakerWorkspace {
         onRequestAdd: (request) => this.requestExpansionPackAdd(request),
         onRequestAsset: (request) => this.importExpansionPackStyleAsset(request),
         onRequestRebindParent: () => this.rebindActiveExpansionPackToPublishedParent(),
+        onRequestCommerceRights: () => this.openCommerceFromExpansionPackStudio(),
         onPublicationAction: (action) => this.requestExpansionPackPublicationAction(action),
         onPreview: () => this.renderExpansionPackPreview()
           .catch((error) => this.callbacks.onCreatorError?.(error)),
@@ -4106,6 +4234,7 @@ export class MakerWorkspace {
       }
       this.expansionPackProjectRequestId += 1;
       this.expansionPackProjectSummaries = [];
+      this.expansionPackCommerceSaveStates.clear();
       this.expansionPackProjectsStatus = 'idle';
       this.expansionPackProjectsError = '';
       this.ruleBuilderDraft = null;
@@ -4206,6 +4335,12 @@ export class MakerWorkspace {
       || refreshesPlayerExpansionPackV8Catalog
     ) {
       this.playerExpansionPackV8CatalogEpoch += 1;
+      if (requestedWalletAddress !== currentWalletAddress) {
+        this.expansionPackProjectRequestId += 1;
+        this.expansionPackProjectSummaries = [];
+        this.expansionPackCommerceSaveStates.clear();
+        this.expansionPackProjectsStatus = 'idle';
+      }
       if (this.playerCommercePending.startsWith('pack-v8:')) {
         this.playerCommercePending = '';
       }
@@ -6808,6 +6943,7 @@ export class MakerWorkspace {
     ) {
       void this.refreshExpansionPackProjects();
     }
+    if (this.creatorTab === 'commerce') void this.refreshExpansionPackProjects();
     requestAnimationFrame(() => {
       const selector = this.creatorTab === 'structure'
         ? '[data-action="creator-tab"][data-tab="structure"]'
@@ -9251,6 +9387,39 @@ export class MakerWorkspace {
           </article>
         `;
       }).join('');
+      const independentPackCards = this.expansionPackProjectSummaries.map((summary) => {
+        const policy = summary.project?.pack?.commerce || {};
+        const paid = policy.accessMode === 'PAID_ONCE';
+        const saveState = this.expansionPackCommerceState(summary.key);
+        const status = saveState.phase === 'saving'
+          ? this.tr('saving')
+          : saveState.phase === 'saved'
+            ? this.tr('independentPackCommerceSaved')
+            : '';
+        return `
+          <article class="v4-commerce-pack-card v4-independent-pack-commerce-card">
+            <header><div><span>${escapeHtml(this.tr('independentExpansionPack'))}</span><h4>${escapeHtml(summary.name || summary.packId)}</h4></div><code>${escapeHtml(summary.packId)}</code></header>
+            <p>${escapeHtml(this.tr('independentPackCommerceScope', {
+              version: summary.parentVersion,
+              revision: summary.revision,
+            }))}</p>
+            <div class="v4-commerce-fields">
+              <label>${escapeHtml(this.tr('packAccess'))}<select data-action="independent-pack-commerce" data-independent-pack-commerce-field="accessMode" data-independent-pack-key="${escapeHtml(summary.key)}" ${saveState.phase === 'saving' ? 'disabled' : ''}>
+                <option value="FREE" ${selected(policy.accessMode, 'FREE')}>${escapeHtml(this.tr('accessFree'))}</option>
+                <option value="PAID_ONCE" ${selected(policy.accessMode, 'PAID_ONCE')}>${escapeHtml(this.tr('accessPaidOnce'))}</option>
+              </select></label>
+              <label>${escapeHtml(this.tr('packPriceUsdc'))}<input type="number" inputmode="decimal" min="0.000001" step="0.000001" value="${paid ? escapeHtml(policy.priceDecimal || '') : ''}" data-action="independent-pack-commerce" data-independent-pack-commerce-field="priceDecimal" data-independent-pack-key="${escapeHtml(summary.key)}" ${paid && saveState.phase !== 'saving' ? '' : 'disabled'} /></label>
+            </div>
+            ${status ? `<small class="v4-commerce-pack-save-status" role="status">${escapeHtml(status)}</small>` : ''}
+            ${saveState.error ? `<div class="v4-rule-warning" role="alert"><strong>${escapeHtml(this.tr('independentPackCommerceNeedsAttention'))}</strong><span>${escapeHtml(saveState.error)}</span></div>` : ''}
+          </article>
+        `;
+      }).join('');
+      const independentPackContent = this.expansionPackProjectsStatus === 'loading'
+        ? `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('packLoading'))}</span></div>`
+        : this.expansionPackProjectsStatus === 'error'
+          ? `<div class="v4-rule-warning" role="alert"><strong>${escapeHtml(this.tr('independentPackCommerceNeedsAttention'))}</strong><span>${escapeHtml(this.expansionPackProjectsError)}</span></div>`
+          : independentPackCards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noIndependentExpansionPacks'))}</strong><span>${escapeHtml(this.tr('independentPackCommerceEmpty'))}</span></div>`;
       const commerceIssues = collectMakerCommerceV5Issues(commerce, {
         packIds,
         publish: true,
@@ -9280,7 +9449,11 @@ export class MakerWorkspace {
           </section>
           <section class="v4-commerce-section">
             <header><div><span>03</span><h4>${escapeHtml(this.tr('packCommerce'))}</h4></div><em>${escapeHtml(this.tr('onePassPermanent'))}</em></header>
-            <div class="v4-commerce-pack-grid">${packCards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noExpansionPacks'))}</strong><span>${escapeHtml(this.tr('packCommerceEmpty'))}</span></div>`}</div>
+            <div class="v4-commerce-pack-group">
+              <div><strong>${escapeHtml(this.tr('independentExpansionPacks'))}</strong><small>${escapeHtml(this.tr('independentPackCommerceCopy'))}</small></div>
+              <div class="v4-commerce-pack-grid">${independentPackContent}</div>
+            </div>
+            ${packCards ? `<div class="v4-commerce-pack-group legacy"><div><strong>${escapeHtml(this.tr('embeddedLegacyPacks'))}</strong><small>${escapeHtml(this.tr('embeddedLegacyPacksCopy'))}</small></div><div class="v4-commerce-pack-grid">${packCards}</div></div>` : ''}
           </section>
           <section class="v4-commerce-section">
             <header><div><span>04</span><h4>${escapeHtml(this.tr('secondaryRoyalties'))}</h4></div><em>0–5%</em></header>
@@ -12934,6 +13107,10 @@ export class MakerWorkspace {
           : this.tr('itemImportFailed');
         this.render();
       }
+      return;
+    }
+    if (action === 'independent-pack-commerce') {
+      await this.saveIndependentExpansionPackCommerce(input);
       return;
     }
     if (this.updateCommerceFromInput(input)) return;

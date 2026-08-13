@@ -23,6 +23,23 @@ test('Maker Studio core controls have English, Chinese, Japanese, Korean and Vie
   });
 });
 
+test('independent Pack commerce centralization is translated in all five locales', () => {
+  const keys = [
+    'independentExpansionPacks',
+    'independentPackCommerceCopy',
+    'independentPackCommerceConflict',
+    'embeddedLegacyPacksCopy',
+    'packCommerceManagedElsewhere',
+    'packOpenCommerceRights',
+  ];
+  MAKER_WORKSPACE_LOCALES.forEach((locale) => {
+    keys.forEach((key) => {
+      const value = makerWorkspaceText(locale, key);
+      assert.ok(value && value !== key, `${locale}.${key} must be translated`);
+    });
+  });
+});
+
 test('unknown Maker Studio locales and keys fall back safely', () => {
   assert.equal(makerWorkspaceText('unknown', 'save'), 'Save');
   assert.equal(makerWorkspaceText('zh', 'unknownKey'), 'unknownKey');

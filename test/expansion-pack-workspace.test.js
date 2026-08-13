@@ -604,8 +604,9 @@ test('renders per-Style PNG and render controls, delegating PNG parsing to the h
   assert.match(html, /data-action="delete-style"/);
   assert.match(html, /data-action="delete-item"/);
   assert.match(html, /data-action="delete-part"/);
-  assert.match(html, /data-pack-commerce-field="accessMode"/);
-  assert.match(html, /data-pack-commerce-field="priceDecimal"/);
+  assert.match(html, /data-action="request-commerce-rights"/);
+  assert.doesNotMatch(html, /data-pack-commerce-field=/);
+  assert.doesNotMatch(html, /<select[^>]*pack-commerce/i);
 
   const events = new Map();
   const root = {
@@ -678,22 +679,6 @@ test('renders per-Style PNG and render controls, delegating PNG parsing to the h
   assert.equal(state.tree.parts[0].items[0].styles[0].transform.x, -33);
   assert.equal(state.tree.parts[0].items[0].styles[0].blendMode, 'multiply');
 
-  events.get('change')({
-    target: {
-      value: 'PAID_ONCE',
-      dataset: { packCommerceField: 'accessMode' },
-    },
-  });
-  events.get('change')({
-    target: {
-      value: '3.5',
-      dataset: { packCommerceField: 'priceDecimal' },
-    },
-  });
-  state = workspace.getState();
-  assert.equal(state.tree.commerce.accessMode, 'PAID_ONCE');
-  assert.equal(state.tree.commerce.purchasePriceAtomic, '3500000');
-
   events.get('click')({
     target: {
       dataset: { action: 'delete-style', partId: 'body', itemId: 'armor', styleId: 'default' },
@@ -701,5 +686,27 @@ test('renders per-Style PNG and render controls, delegating PNG parsing to the h
   });
   state = workspace.getState();
   assert.deepEqual(state.tree.parts[0].items[0].styles, []);
+  mounted.unmount();
+});
+
+test('Pack Studio commerce summary is read-only and delegates navigation to its host', async () => {
+  const workspace = await emptyWorkspace();
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+  };
+  const requests = [];
+  const mounted = mountExpansionPackWorkspace(root, workspace, {
+    onRequestCommerceRights: (state) => requests.push(state.identity.packId),
+  });
+
+  assert.match(root.innerHTML, /Go to Commerce &amp; Rights/);
+  assert.doesNotMatch(root.innerHTML, /data-pack-commerce-field=/);
+  events.get('click')({ target: { dataset: { action: 'request-commerce-rights' } } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests, ['moon-pack']);
+  assert.equal(workspace.getState().dirty, true, 'navigation cannot mutate commerce or persistence state');
   mounted.unmount();
 });
