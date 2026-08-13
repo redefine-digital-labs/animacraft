@@ -55,6 +55,31 @@ test('the player workbench constrains the canvas and scrolls its side panels', a
   assert.match(styles, /\.parts-panel\s*\{[^}]*overflow-y:\s*auto;/s);
 });
 
+test('the Player info dialog keeps its action visible while tall content scrolls', async () => {
+  const [workspace, styles] = await Promise.all([
+    readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(
+    workspace,
+    /class="v4-player-info-body"[\s\S]*?<footer class="v4-player-info-actions">/,
+    'Player info content and its persistent action must be separate layout regions',
+  );
+  assert.match(
+    styles,
+    /\.v4-player-info-dialog\s*\{[^}]*display:\s*grid;[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\) auto;[^}]*max-height:\s*min\(760px,\s*calc\(100dvh - 44px\)\);/s,
+  );
+  assert.match(
+    styles,
+    /\.v4-player-info-body\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior:\s*contain;/s,
+  );
+  assert.match(
+    styles,
+    /\.v4-player-info-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*border-top:\s*1px solid var\(--line\);/s,
+  );
+});
+
 test('the certified OC handoff uses the dedicated Soulidity adapter for free and paid Makers', async () => {
   const [html, app, runtime, docsContent] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),

@@ -11313,16 +11313,20 @@ export class MakerWorkspace {
         ${this.renderPlayerPublishFlow()}
       </section>
       ${this.playerIntroOpen ? `
-        <div class="v4-modal-backdrop player-info">
-          <section id="makerPlayerInfoDialog" class="v4-player-info-dialog" role="dialog" aria-modal="true" aria-labelledby="makerPlayerInfoTitle" tabindex="-1">
-            ${makerCoverUrl ? `<img class="v4-player-info-cover" src="${escapeHtml(makerCoverUrl)}" alt="${escapeHtml(this.tr('makerCoverAlt', { name: document.metadata.name }))}" />` : ''}
-            <span class="v4-eyebrow">${escapeHtml(this.tr('beforeYouMake'))}</span>
-            <h2 id="makerPlayerInfoTitle">${escapeHtml(document.metadata.name)}</h2>
-            <p>${escapeHtml(document.metadata.summary || this.tr('combineCreatorParts'))}</p>
-            <dl><div><dt>${escapeHtml(this.tr('creator'))}</dt><dd>${escapeHtml(document.metadata.creator || this.tr('unknown'))}</dd></div><div><dt>${escapeHtml(this.tr('style'))}</dt><dd>${escapeHtml(document.metadata.style || this.tr('originalCharacter'))}</dd></div><div><dt>${escapeHtml(this.tr('license'))}</dt><dd>${escapeHtml(this.licenseText(document.metadata.license?.kind || 'personal-use'))}</dd></div><div><dt>${escapeHtml(this.tr('version'))}</dt><dd>${escapeHtml(document.version.versionId)}</dd></div></dl>
-            <blockquote>${escapeHtml(document.metadata.license?.note || this.tr('followCreatorPolicy'))}</blockquote>
-            ${(externalLinks.creatorUrl || externalLinks.communityUrl) ? `<nav class="v4-player-soulidity-links" aria-label="${escapeHtml(this.tr('openSoulidity'))}">${externalLinks.creatorUrl ? `<a href="${escapeHtml(externalLinks.creatorUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(this.tr('creatorOnSoulidity'))}</a>` : ''}${externalLinks.communityUrl ? `<a href="${escapeHtml(externalLinks.communityUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(this.tr('soulidityCommunity'))}</a>` : ''}</nav>` : ''}
-            <button type="button" class="primary" data-action="close-player-info">${escapeHtml(this.tr('startMaking'))}</button>
+        <div class="v4-modal-backdrop player-info" data-action="close-player-info-backdrop">
+          <section id="makerPlayerInfoDialog" class="v4-player-info-dialog" role="dialog" aria-modal="true" aria-labelledby="makerPlayerInfoTitle" aria-describedby="makerPlayerInfoSummary" tabindex="-1">
+            <div class="v4-player-info-body">
+              ${makerCoverUrl ? `<img class="v4-player-info-cover" src="${escapeHtml(makerCoverUrl)}" alt="${escapeHtml(this.tr('makerCoverAlt', { name: document.metadata.name }))}" />` : ''}
+              <span class="v4-eyebrow">${escapeHtml(this.tr('beforeYouMake'))}</span>
+              <h2 id="makerPlayerInfoTitle">${escapeHtml(document.metadata.name)}</h2>
+              <p id="makerPlayerInfoSummary">${escapeHtml(document.metadata.summary || this.tr('combineCreatorParts'))}</p>
+              <dl><div><dt>${escapeHtml(this.tr('creator'))}</dt><dd>${escapeHtml(document.metadata.creator || this.tr('unknown'))}</dd></div><div><dt>${escapeHtml(this.tr('style'))}</dt><dd>${escapeHtml(document.metadata.style || this.tr('originalCharacter'))}</dd></div><div><dt>${escapeHtml(this.tr('license'))}</dt><dd>${escapeHtml(this.licenseText(document.metadata.license?.kind || 'personal-use'))}</dd></div><div><dt>${escapeHtml(this.tr('version'))}</dt><dd>${escapeHtml(document.version.versionId)}</dd></div></dl>
+              <blockquote>${escapeHtml(document.metadata.license?.note || this.tr('followCreatorPolicy'))}</blockquote>
+              ${(externalLinks.creatorUrl || externalLinks.communityUrl) ? `<nav class="v4-player-soulidity-links" aria-label="${escapeHtml(this.tr('openSoulidity'))}">${externalLinks.creatorUrl ? `<a href="${escapeHtml(externalLinks.creatorUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(this.tr('creatorOnSoulidity'))}</a>` : ''}${externalLinks.communityUrl ? `<a href="${escapeHtml(externalLinks.communityUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(this.tr('soulidityCommunity'))}</a>` : ''}</nav>` : ''}
+            </div>
+            <footer class="v4-player-info-actions">
+              <button type="button" class="primary" data-action="close-player-info">${escapeHtml(this.tr('startMaking'))}</button>
+            </footer>
           </section>
         </div>
       ` : ''}
@@ -14859,6 +14863,7 @@ export class MakerWorkspace {
       && !new Set([
         'player-info',
         'close-player-info',
+        'close-player-info-backdrop',
         'close-player-export',
         'close-player-export-backdrop',
         'close-player-publish',
@@ -15157,7 +15162,10 @@ export class MakerWorkspace {
       this.render();
       return;
     }
-    if (action === 'close-player-info') {
+    if (
+      action === 'close-player-info'
+      || (action === 'close-player-info-backdrop' && event.target === button)
+    ) {
       this.closePlayerInfo();
       return;
     }

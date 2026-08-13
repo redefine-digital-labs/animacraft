@@ -11640,8 +11640,27 @@ pre {
 }
 
 .v4-player-info-dialog {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   width: min(520px, 100%);
+  max-height: min(760px, calc(100dvh - 44px));
+}
+
+.v4-player-info-body {
+  min-height: 0;
   padding: 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.v4-player-info-actions {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  padding: 14px 24px;
+  border-top: 1px solid var(--line);
+  background: var(--ui-surface);
 }
 
 .v4-player-info-cover {
@@ -11661,7 +11680,7 @@ pre {
   font-size: 30px;
 }
 
-.v4-player-info-dialog > p,
+.v4-player-info-body > p,
 .v4-player-info-dialog blockquote {
   color: var(--muted);
   line-height: 1.6;

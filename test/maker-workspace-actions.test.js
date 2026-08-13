@@ -2066,7 +2066,7 @@ test('Maker Info reports UTF-8 byte overflow inline and Preflight opens the inva
   }, { creatorRoot });
 });
 
-test('Creator and Player Maker Info dialogs expose labels, trap focus, close on Escape, and restore focus', async () => {
+test('Creator and Player Maker Info dialogs expose labels, trap focus, close safely, and restore focus', async () => {
   class FocusNode {
     constructor(name, active, children = []) {
       this.name = name;
@@ -2164,9 +2164,11 @@ test('Creator and Player Maker Info dialogs expose labels, trap focus, close on 
       assert.equal(workspace.playerIntroOpen, true);
       assert.match(
         playerRoot.innerHTML,
-        /id="makerPlayerInfoDialog"[^>]*role="dialog" aria-modal="true" aria-labelledby="makerPlayerInfoTitle" tabindex="-1"/,
+        /id="makerPlayerInfoDialog"[^>]*role="dialog" aria-modal="true" aria-labelledby="makerPlayerInfoTitle" aria-describedby="makerPlayerInfoSummary" tabindex="-1"/,
       );
       assert.match(playerRoot.innerHTML, /<h2 id="makerPlayerInfoTitle">QA Maker<\/h2>/);
+      assert.match(playerRoot.innerHTML, /class="v4-player-info-body"/);
+      assert.match(playerRoot.innerHTML, /<footer class="v4-player-info-actions">/);
       assert.equal(active.current, playerDialog, 'opening Player Maker Info must focus the dialog');
 
       active.current = playerDialog;
@@ -2192,6 +2194,25 @@ test('Creator and Player Maker Info dialogs expose labels, trap focus, close on 
       });
       assert.equal(prevented, true);
       assert.equal(active.current, playerStart, 'the single Player dialog action must retain focus');
+
+      const backdrop = actionTarget('close-player-info-backdrop');
+      workspace.handlePlayerClick({ target: { closest: () => backdrop } });
+      assert.equal(
+        workspace.playerIntroOpen,
+        true,
+        'clicks from inside the dialog must not bubble into backdrop dismissal',
+      );
+
+      workspace.handlePlayerClick({ target: backdrop });
+      assert.equal(workspace.playerIntroOpen, false, 'a direct backdrop click must close the dialog');
+      assert.equal(
+        active.current,
+        playerReturnButton,
+        'backdrop dismissal must return focus to the Player Maker Info trigger',
+      );
+
+      playerClick(workspace, 'player-info');
+      assert.equal(workspace.playerIntroOpen, true);
 
       workspace.boundPlayerKeydown({
         key: 'Escape',
@@ -4276,6 +4297,50 @@ test('paid whole-Maker access blocks play until the wallet-bound purchase confir
     assert.equal(purchases[0].quote.grossAtomic, 10_000_000);
     assert.equal(workspace.playerOwnsMakerAccess, true);
     assert.doesNotMatch(playerRoot.innerHTML, /v4-player-access-gate/);
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: {
+      async onPurchaseMakerAccess(payload) {
+        purchases.push(payload);
+        return { confirmed: true, ownsMakerAccess: true };
+      },
+    },
+  });
+});
+
+test('Player info dismissal cannot bypass paid whole-Maker access', async () => {
+  const playerRoot = new FakeRoot();
+  const purchases = [];
+  await withWorkspace(async (workspace) => {
+    const recipeBefore = structuredClone(workspace.playerRecipe);
+    workspace.executeDocument('Configure paid Maker access', ({ document }) => {
+      document.commerce = normalizeMakerCommerceV5(document.commerce, {
+        packIds: [],
+      });
+      document.commerce.makerAccess = {
+        mode: MAKER_ACCESS_MODES.ONE_TIME_PAID,
+        purchasePriceAtomic: 10_000_000,
+      };
+    });
+    workspace.playerIntroOpen = true;
+    workspace.renderPlayer();
+
+    const backdrop = actionTarget('close-player-info-backdrop');
+    workspace.handlePlayerClick({ target: backdrop });
+
+    assert.equal(workspace.playerIntroOpen, false);
+    assert.equal(workspace.playerOwnsMakerAccess, false);
+    assert.equal(purchases.length, 0, 'dismissing information must never synthesize a purchase');
+    assert.match(playerRoot.innerHTML, /class="v4-player-shell access-locked"/);
+    assert.match(playerRoot.innerHTML, /data-action="player-unlock-maker"/);
+
+    playerClick(workspace, 'player-random');
+    assert.deepEqual(
+      workspace.playerRecipe,
+      recipeBefore,
+      'Player controls must remain inert behind the existing access guard',
+    );
   }, {
     playable: true,
     playerRoot,
