@@ -49,6 +49,7 @@ import {
   createExpansionPackWorkspace,
   mountExpansionPackWorkspace,
 } from './expansion-pack-workspace.js';
+import { makerDefinitionEditorSections } from './maker-definition-editor.js';
 import {
   COMPLETION_MODES,
   DEFAULT_PROTOCOL_COMMERCE_V5,
@@ -8005,13 +8006,9 @@ export class MakerWorkspace {
 
         <nav class="v4-studio-tabs" aria-label="${escapeHtml(this.tr('makerToolsLabel'))}">
           ${[
-            ['structure', this.tr('partsItems')],
+            ...makerDefinitionEditorSections((key) => this.tr(key)).map((section) => [section.route, section.label]),
             ['info', this.tr('makerInfo')],
-            ['layers', this.tr('layerTracks')],
-            ['colors', this.tr('smartColor')],
-            ['rules', this.tr('rules')],
             ['expansions', this.tr('expansionPacks')],
-            ['composable', this.tr('composableItems')],
             ['commerce', this.tr('commerceRights')],
             ['soul', this.tr('soulConfig')],
             ['validate', this.tr(issues.length ? 'preflightCount' : 'preflightReady', { count: issues.length })],
