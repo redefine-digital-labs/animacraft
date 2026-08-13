@@ -91,7 +91,7 @@ export function renderSharedRuleList({ groups = [], emptyHtml = '' } = {}) {
         <div class="v4-rule-summary-targets">
           ${targets.map((row) => {
             const deleteAction = safeAction(row?.deleteAction);
-            return `<span${row?.advanced ? ' data-rule-advanced="true"' : ''}>${row?.typeLabel ? `<em>${escapeHtml(row.typeLabel)}</em>` : ''}${row?.any ? `<i>${escapeHtml(row.anyLabel || 'ANY')}</i>` : ''}<strong>${escapeHtml(row?.targetLabel)}</strong>${deleteAction ? `<button type="button" data-action="${escapeHtml(deleteAction)}"${dataAttributes(row?.data)} aria-label="${escapeHtml(row?.deleteLabel || 'Delete rule')}" ${row?.deleteDisabled ? 'disabled' : ''}>×</button>` : ''}</span>`;
+            return `<span${row?.advanced ? ' data-rule-advanced="true"' : ''}>${row?.typeLabel ? `<em>${escapeHtml(row.typeLabel)}</em>` : ''}${row?.any ? `<em>${escapeHtml(row.anyLabel || 'ANY')}</em>` : ''}<strong>${escapeHtml(row?.targetLabel)}</strong>${deleteAction ? `<button type="button" data-action="${escapeHtml(deleteAction)}"${dataAttributes(row?.data)} aria-label="${escapeHtml(row?.deleteLabel || 'Delete rule')}" ${row?.deleteDisabled ? 'disabled' : ''}>×</button>` : ''}</span>`;
           }).join('')}
         </div>
         ${editAction ? `<button type="button" class="v4-rule-summary-edit" data-action="${escapeHtml(editAction)}"${dataAttributes(group?.editData)} ${group?.editDisabled ? 'disabled' : ''}>${escapeHtml(group?.editLabel || 'Edit rules')}</button>` : ''}
