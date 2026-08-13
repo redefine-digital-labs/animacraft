@@ -3366,6 +3366,43 @@ Object.entries(independentPackCommerceDictionaries).forEach(
   ([locale, details]) => Object.assign(dictionaries[locale], details),
 );
 
+const expansionPackPublicationSafetyDictionaries = {
+  en: {
+    packPublicationNavigationLocked: 'This Pack release is active. Stay in Pack Studio and finish or recover the current publication before leaving.',
+    packReleaseContextChanged: 'Expansion Pack publication context changed. Prepare this Pack again.',
+    packReleaseDraftChanged: 'The saved Pack draft changed after publication started. Reload the Pack and prepare publication again.',
+    independentPackCommercePublicationLocked: 'This Pack release is active. Its access policy is locked until publication finishes or is recovered.',
+  },
+  zh: {
+    packPublicationNavigationLocked: '此扩展包正在发布。请留在扩展包工作室，完成或恢复当前发布后再离开。',
+    packReleaseContextChanged: '扩展包发布上下文已变化，请重新准备此扩展包。',
+    packReleaseDraftChanged: '发布开始后，已保存的扩展包草稿发生了变化。请重新载入扩展包并再次准备发布。',
+    independentPackCommercePublicationLocked: '此扩展包正在发布；发布完成或恢复前，访问策略保持锁定。',
+  },
+  ja: {
+    packPublicationNavigationLocked: 'この Pack は公開処理中です。現在の公開を完了または復旧するまで Pack Studio を離れないでください。',
+    packReleaseContextChanged: 'Pack の公開コンテキストが変わりました。この Pack をもう一度準備してください。',
+    packReleaseDraftChanged: '公開開始後に保存済み Pack 下書きが変更されました。Pack を再読込して公開を準備し直してください。',
+    independentPackCommercePublicationLocked: 'この Pack は公開処理中です。公開の完了または復旧までアクセス設定はロックされます。',
+  },
+  ko: {
+    packPublicationNavigationLocked: '이 Pack은 게시 중입니다. 현재 게시를 완료하거나 복구할 때까지 Pack Studio에 머무르세요.',
+    packReleaseContextChanged: 'Pack 게시 컨텍스트가 변경되었습니다. 이 Pack을 다시 준비하세요.',
+    packReleaseDraftChanged: '게시 시작 후 저장된 Pack 초안이 변경되었습니다. Pack을 다시 불러와 게시를 다시 준비하세요.',
+    independentPackCommercePublicationLocked: '이 Pack은 게시 중입니다. 게시가 완료되거나 복구될 때까지 접근 정책이 잠깁니다.',
+  },
+  vi: {
+    packPublicationNavigationLocked: 'Pack này đang được phát hành. Hãy ở lại Pack Studio để hoàn tất hoặc khôi phục lần phát hành hiện tại.',
+    packReleaseContextChanged: 'Ngữ cảnh phát hành Pack đã thay đổi. Hãy chuẩn bị lại Pack này.',
+    packReleaseDraftChanged: 'Bản nháp Pack đã lưu thay đổi sau khi bắt đầu phát hành. Hãy tải lại Pack và chuẩn bị phát hành lại.',
+    independentPackCommercePublicationLocked: 'Pack này đang được phát hành. Chính sách truy cập bị khóa cho đến khi hoàn tất hoặc khôi phục phát hành.',
+  },
+};
+
+Object.entries(expansionPackPublicationSafetyDictionaries).forEach(
+  ([locale, details]) => Object.assign(dictionaries[locale], details),
+);
+
 const expansionPackDefinitionEditorDictionaries = {
   en: {
     packDefinitionTabsLabel: 'Expansion Pack content editors',

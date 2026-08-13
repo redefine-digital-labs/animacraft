@@ -1757,7 +1757,9 @@ export class MakerWorkspace {
           event.preventDefault?.();
           if (this.creatorTab === 'expansions' && this.expansionPackWorkspace) {
             void this.closeExpansionPackWorkspace({ save: true, render: false })
-              .then(() => this.openCreatorTab('structure'))
+              .then((closed) => {
+                if (closed) this.openCreatorTab('structure');
+              })
               .catch((error) => this.callbacks.onCreatorError?.(error));
           } else {
             this.openCreatorTab('structure');
@@ -3208,6 +3210,83 @@ export class MakerWorkspace {
     };
   }
 
+  expansionPackPublicationIsLive(state = this.expansionPackPublishState) {
+    return Boolean(
+      state?.busy
+      || state?.started
+      || state?.recoverable
+      || state?.receipt
+      || state?.locked
+      || state?.stage && !['', 'idle'].includes(String(state.stage)),
+    );
+  }
+
+  expansionPackPublicationIdentityMatches(identity) {
+    const launchIdentity = this.expansionPackPublicationLaunch?.identity
+      || this.expansionPackWorkspace?.getState?.().identity;
+    if (!launchIdentity || !identity) return false;
+    try {
+      return expansionPackDraftKey(launchIdentity) === expansionPackDraftKey(identity);
+    } catch {
+      return false;
+    }
+  }
+
+  expansionPackPublicationLocksIdentity(identity) {
+    return this.expansionPackPublicationIsLive()
+      && this.expansionPackPublicationIdentityMatches(identity);
+  }
+
+  blockExpansionPackPublicationNavigation({ render = true } = {}) {
+    if (!this.expansionPackWorkspace || !this.expansionPackPublicationIsLive()) return false;
+    this.expansionPackProjectNotice = this.tr('packPublicationNavigationLocked');
+    if (render) this.render();
+    return true;
+  }
+
+  expansionPackPublicationContextError(messageKey = 'packReleaseDraftChanged') {
+    const error = new Error(this.tr(messageKey));
+    error.code = 'EXPANSION_PACK_PUBLICATION_DRAFT_CHANGED';
+    return error;
+  }
+
+  async assertExpansionPackPublicationDraftHead(launch) {
+    if (!launch || !this.expansionPackPublicationRequestIsActive(launch)) {
+      const error = new Error(this.tr('packReleaseContextChanged'));
+      error.code = 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED';
+      throw error;
+    }
+    let head;
+    try {
+      head = await this.expansionPackDraftStore.load(launch.identity);
+    } catch (error) {
+      if (error?.code === 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED') throw error;
+      throw this.expansionPackPublicationContextError();
+    }
+    if (!this.expansionPackPublicationRequestIsActive(launch)) {
+      const error = new Error(this.tr('packReleaseContextChanged'));
+      error.code = 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED';
+      throw error;
+    }
+    let identityMatches = false;
+    try {
+      const expectedKey = expansionPackDraftKey(launch.identity);
+      identityMatches = Boolean(
+        head
+        && expansionPackDraftKey(head) === expectedKey
+        && (!head.key || head.key === expectedKey),
+      );
+    } catch {
+      identityMatches = false;
+    }
+    if (
+      !identityMatches
+      || !Number.isSafeInteger(head?.revision)
+      || head.revision !== launch.draftRevision
+    ) throw this.expansionPackPublicationContextError();
+    return head;
+  }
+
   setExpansionPackPublishState(nextState = {}) {
     const previous = this.expansionPackPublishState || {};
     const next = {
@@ -3396,6 +3475,15 @@ export class MakerWorkspace {
     const field = String(input?.dataset?.independentPackCommerceField || '');
     const summary = this.expansionPackProjectSummaries.find((entry) => entry.key === key);
     if (!summary || !['accessMode', 'priceDecimal'].includes(field)) return false;
+    if (this.expansionPackPublicationLocksIdentity(summary.identity)) {
+      this.expansionPackCommerceSaveStates.set(key, {
+        phase: 'error',
+        error: this.tr('independentPackCommercePublicationLocked'),
+      });
+      this.expansionPackProjectNotice = this.tr('packPublicationNavigationLocked');
+      this.render();
+      return false;
+    }
     const parent = this.expansionPackParentDocument();
     const walletAddress = this.expansionPackWalletAddress().toLowerCase();
     const rootMakerId = String(parent?.version?.rootMakerId || parent?.metadata?.id || '');
@@ -3482,6 +3570,7 @@ export class MakerWorkspace {
   }
 
   async openCommerceFromExpansionPackStudio() {
+    if (this.blockExpansionPackPublicationNavigation()) return false;
     const workspace = this.expansionPackWorkspace;
     if (workspace) {
       const result = await this.flushExpansionPackWorkspace(workspace);
@@ -3552,6 +3641,7 @@ export class MakerWorkspace {
 
   async closeExpansionPackWorkspace({ save = true, render = true } = {}) {
     const workspace = this.expansionPackWorkspace;
+    if (workspace && this.blockExpansionPackPublicationNavigation({ render: true })) return false;
     this.resetExpansionPackPublication({ reason: 'workspace-close', render: false });
     this.expansionPackAutosave.cancel();
     if (save && workspace) {
@@ -3591,6 +3681,7 @@ export class MakerWorkspace {
       await this.refreshExpansionPackProjects({ render: false });
       this.render();
     }
+    return true;
   }
 
   reviveExpansionPackAssets(project) {
@@ -3637,7 +3728,10 @@ export class MakerWorkspace {
     const parent = this.expansionPackParentDocument();
     const walletAddress = this.expansionPackWalletAddress();
     if (!parent || !walletAddress) throw new Error(this.tr('packWalletRequired'));
-    if (this.expansionPackWorkspace) await this.closeExpansionPackWorkspace({ save: true, render: false });
+    if (this.expansionPackWorkspace) {
+      const closed = await this.closeExpansionPackWorkspace({ save: true, render: false });
+      if (!closed) return this.expansionPackWorkspace;
+    }
     const id = String(packId || this.expansionPackLocalId('pack'));
     const nextIndex = this.expansionPackProjectSummaries.length + 1;
     const stored = !create
@@ -3667,6 +3761,7 @@ export class MakerWorkspace {
   }
 
   async rebindActiveExpansionPackToPublishedParent() {
+    if (this.blockExpansionPackPublicationNavigation()) return null;
     const workspace = this.expansionPackWorkspace;
     const publishedParent = this.expansionPackPublishedParent();
     if (!workspace) throw new Error(this.tr('packLoadFailed'));
@@ -3761,6 +3856,7 @@ export class MakerWorkspace {
         draftRevision,
         identity: clone(saveResult.identity),
       });
+      await this.assertExpansionPackPublicationDraftHead(this.expansionPackPublicationLaunch);
       const nextState = await callback({
         candidate,
         project: savedProject,
@@ -3846,9 +3942,10 @@ export class MakerWorkspace {
     const requestToken = launch.requestToken;
     this.setExpansionPackPublishState({ busy: true, error: null });
     try {
+      const persistedHead = await this.assertExpansionPackPublicationDraftHead(launch);
       const nextState = await callback(normalized, {
         publication: clone(this.expansionPackPublishState),
-        project: clone(this.expansionPackWorkspace?.getState?.().project || null),
+        project: clone(persistedHead.project),
         parentRelease: clone(this.expansionPackPublishedParent()?.release || null),
         walletAddress: this.expansionPackChainWalletAddress(),
         draftRevision: launch.draftRevision,
@@ -4291,7 +4388,8 @@ export class MakerWorkspace {
     const sameMaker = Boolean(requestedMakerKey && previousMakerKey === requestedMakerKey);
     if (!sameMaker) {
       if (this.expansionPackWorkspace) {
-        await this.closeExpansionPackWorkspace({ save: true, render: false });
+        const closed = await this.closeExpansionPackWorkspace({ save: true, render: false });
+        if (!closed) return;
         if (contextRequestId !== this.contextRequestId) return;
       }
       this.expansionPackProjectRequestId += 1;
@@ -6991,7 +7089,9 @@ export class MakerWorkspace {
 
   openCreatorTab(tab = 'structure') {
     const allowed = new Set(['structure', 'info', 'layers', 'colors', 'rules', 'expansions', 'composable', 'commerce', 'soul', 'validate']);
-    this.creatorTab = allowed.has(tab) ? tab : 'structure';
+    const nextTab = allowed.has(tab) ? tab : 'structure';
+    if (nextTab !== 'expansions' && this.blockExpansionPackPublicationNavigation()) return false;
+    this.creatorTab = nextTab;
     this.resetCreatorToolScroll = this.creatorTab !== 'structure';
     if (this.creatorTab !== 'rules') {
       this.ruleBuilderError = '';
@@ -7012,6 +7112,7 @@ export class MakerWorkspace {
         : '.v4-tool-modal-backdrop [data-action="close-tool"]';
       this.creatorRoot?.querySelector(selector)?.focus?.({ preventScroll: true });
     });
+    return true;
   }
 
   focusPlayerInfoDialog(selector = '#makerPlayerInfoDialog') {
@@ -9458,6 +9559,7 @@ export class MakerWorkspace {
         const policy = summary.project?.pack?.commerce || {};
         const paid = policy.accessMode === 'PAID_ONCE';
         const saveState = this.expansionPackCommerceState(summary.key);
+        const publicationLocked = this.expansionPackPublicationLocksIdentity(summary.identity);
         const status = saveState.phase === 'saving'
           ? this.tr('saving')
           : saveState.phase === 'saved'
@@ -9471,12 +9573,13 @@ export class MakerWorkspace {
               revision: summary.revision,
             }))}</p>
             <div class="v4-commerce-fields">
-              <label>${escapeHtml(this.tr('packAccess'))}<select data-action="independent-pack-commerce" data-independent-pack-commerce-field="accessMode" data-independent-pack-key="${escapeHtml(summary.key)}" ${saveState.phase === 'saving' ? 'disabled' : ''}>
+              <label>${escapeHtml(this.tr('packAccess'))}<select data-action="independent-pack-commerce" data-independent-pack-commerce-field="accessMode" data-independent-pack-key="${escapeHtml(summary.key)}" ${saveState.phase === 'saving' || publicationLocked ? 'disabled' : ''}>
                 <option value="FREE" ${selected(policy.accessMode, 'FREE')}>${escapeHtml(this.tr('accessFree'))}</option>
                 <option value="PAID_ONCE" ${selected(policy.accessMode, 'PAID_ONCE')}>${escapeHtml(this.tr('accessPaidOnce'))}</option>
               </select></label>
-              <label>${escapeHtml(this.tr('packPriceUsdc'))}<input type="number" inputmode="decimal" min="0.000001" step="0.000001" value="${paid ? escapeHtml(policy.priceDecimal || '') : ''}" data-action="independent-pack-commerce" data-independent-pack-commerce-field="priceDecimal" data-independent-pack-key="${escapeHtml(summary.key)}" ${paid && saveState.phase !== 'saving' ? '' : 'disabled'} /></label>
+              <label>${escapeHtml(this.tr('packPriceUsdc'))}<input type="number" inputmode="decimal" min="0.000001" step="0.000001" value="${paid ? escapeHtml(policy.priceDecimal || '') : ''}" data-action="independent-pack-commerce" data-independent-pack-commerce-field="priceDecimal" data-independent-pack-key="${escapeHtml(summary.key)}" ${paid && saveState.phase !== 'saving' && !publicationLocked ? '' : 'disabled'} /></label>
             </div>
+            ${publicationLocked ? `<div class="v4-rule-warning" role="status"><span>${escapeHtml(this.tr('independentPackCommercePublicationLocked'))}</span></div>` : ''}
             ${status ? `<small class="v4-commerce-pack-save-status" role="status">${escapeHtml(status)}</small>` : ''}
             ${saveState.error ? `<div class="v4-rule-warning" role="alert"><strong>${escapeHtml(this.tr('independentPackCommerceNeedsAttention'))}</strong><span>${escapeHtml(saveState.error)}</span></div>` : ''}
           </article>
@@ -11760,7 +11863,9 @@ export class MakerWorkspace {
     if (action === 'close-tool' || (action === 'close-tool-backdrop' && event.target === button)) {
       if (this.creatorTab === 'expansions' && this.expansionPackWorkspace) {
         void this.closeExpansionPackWorkspace({ save: true, render: false })
-          .then(() => this.openCreatorTab('structure'))
+          .then((closed) => {
+            if (closed) this.openCreatorTab('structure');
+          })
           .catch((error) => this.callbacks.onCreatorError?.(error));
       } else {
         this.openCreatorTab('structure');
@@ -11768,6 +11873,7 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'back-library') {
+      if (this.blockExpansionPackPublicationNavigation()) return;
       if (this.creatorPublishState.busy) {
         this.creatorPublishOpen = true;
         this.creatorPublishCloseConfirm = false;

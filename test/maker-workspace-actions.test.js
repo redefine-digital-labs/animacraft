@@ -3005,33 +3005,32 @@ test('Expansion Pack publication never pairs a saved candidate with edits made a
   });
 });
 
-test('closing and reopening the same Pack invalidates a late publication prepare callback', async () => {
+test('an in-flight Expansion Pack prepare cannot be closed or replaced', async () => {
   const expansionPackDraftStore = memoryExpansionPackStore();
   let callbackEntered;
   const entered = new Promise((resolve) => { callbackEntered = resolve; });
   let finishCallback;
   const finish = new Promise((resolve) => { finishCallback = resolve; });
-  let resetCount = 0;
   await withWorkspace(async (workspace) => {
     const { packId } = await openPublishableExpansionPackFixture(workspace);
+    const activeWorkspace = workspace.expansionPackWorkspace;
+    const requestToken = workspace.expansionPackPublicationRequestToken;
     const preparing = workspace.prepareActiveExpansionPackPublicationCandidate();
     await entered;
-    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
-    await workspace.openExpansionPackWorkspace(packId);
+    assert.equal(await workspace.closeExpansionPackWorkspace({ save: true, render: false }), false);
+    assert.equal(await workspace.openExpansionPackWorkspace(packId), activeWorkspace);
+    assert.equal(workspace.expansionPackWorkspace, activeWorkspace);
+    assert.equal(workspace.expansionPackPublicationRequestToken, requestToken + 1);
     finishCallback({
       stage: 'walrus-prepared',
       started: true,
       locked: true,
-      status: 'stale callback must not render',
+      status: 'ready to continue',
     });
 
-    await assert.rejects(
-      preparing,
-      (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED',
-    );
-    assert.equal(workspace.expansionPackPublishState.stage, 'idle');
-    assert.equal(workspace.expansionPackPublishState.status, '');
-    assert.ok(resetCount >= 2, 'closing and activating both invalidate the previous controller lane');
+    await preparing;
+    assert.equal(workspace.expansionPackPublishState.stage, 'walrus-prepared');
+    assert.equal(workspace.expansionPackPublishState.status, 'ready to continue');
   }, {
     playable: true,
     expansionPackDraftStore,
@@ -3040,9 +3039,6 @@ test('closing and reopening the same Pack invalidates a late publication prepare
         callbackEntered();
         return finish;
       },
-      onResetExpansionPackPublication() {
-        resetCount += 1;
-      },
     },
     prepareDocument(document) {
       document.metadata.creator = '0xcreator';
@@ -3050,7 +3046,7 @@ test('closing and reopening the same Pack invalidates a late publication prepare
   });
 });
 
-test('an in-flight Expansion Pack release action cannot update a reopened workspace', async () => {
+test('an in-flight Expansion Pack release action keeps its workspace mounted', async () => {
   const expansionPackDraftStore = memoryExpansionPackStore();
   let actionEntered;
   const entered = new Promise((resolve) => { actionEntered = resolve; });
@@ -3059,23 +3055,24 @@ test('an in-flight Expansion Pack release action cannot update a reopened worksp
   await withWorkspace(async (workspace) => {
     const { packId } = await openPublishableExpansionPackFixture(workspace);
     await workspace.prepareActiveExpansionPackPublicationCandidate();
+    const activeWorkspace = workspace.expansionPackWorkspace;
+    const requestToken = workspace.expansionPackPublicationRequestToken;
     const action = workspace.requestExpansionPackPublicationAction('register');
     await entered;
-    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
-    await workspace.openExpansionPackWorkspace(packId);
+    assert.equal(await workspace.closeExpansionPackWorkspace({ save: true, render: false }), false);
+    assert.equal(await workspace.openExpansionPackWorkspace(packId), activeWorkspace);
+    assert.equal(workspace.expansionPackWorkspace, activeWorkspace);
+    assert.equal(workspace.expansionPackPublicationRequestToken, requestToken);
     finishAction({
       stage: 'walrus-uploaded',
       started: true,
       locked: true,
-      status: 'stale action must not render',
+      status: 'upload complete',
     });
 
-    await assert.rejects(
-      action,
-      (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED',
-    );
-    assert.equal(workspace.expansionPackPublishState.stage, 'idle');
-    assert.equal(workspace.expansionPackPublishState.status, '');
+    await action;
+    assert.equal(workspace.expansionPackPublishState.stage, 'walrus-uploaded');
+    assert.equal(workspace.expansionPackPublishState.status, 'upload complete');
   }, {
     playable: true,
     expansionPackDraftStore,
@@ -3097,6 +3094,186 @@ test('an in-flight Expansion Pack release action cannot update a reopened worksp
       document.metadata.creator = '0xcreator';
     },
   });
+});
+
+test('live Expansion Pack publication blocks Escape, Pack Back, library Back, tool close, backdrop, and direct close without invalidation', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const creatorRoot = new FakeRoot();
+  let backCalls = 0;
+  await withWorkspace(async (workspace) => {
+    await openPublishableExpansionPackFixture(workspace);
+    workspace.creatorTab = 'expansions';
+    await workspace.prepareActiveExpansionPackPublicationCandidate();
+    const activeWorkspace = workspace.expansionPackWorkspace;
+    const token = workspace.expansionPackPublicationRequestToken;
+    const launch = workspace.expansionPackPublicationLaunch;
+
+    const assertPreserved = () => {
+      assert.equal(workspace.creatorTab, 'expansions');
+      assert.equal(workspace.expansionPackWorkspace, activeWorkspace);
+      assert.equal(workspace.expansionPackPublicationRequestToken, token);
+      assert.equal(workspace.expansionPackPublicationLaunch, launch);
+      assert.equal(workspace.expansionPackPublishState.started, true);
+      assert.match(workspace.expansionPackProjectNotice, /release|publish|发布/i);
+      assert.match(creatorRoot.innerHTML, /role="status"/);
+    };
+
+    let prevented = 0;
+    workspace.boundCreatorKeydown({
+      key: 'Escape',
+      preventDefault() { prevented += 1; },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(prevented, 1);
+    assertPreserved();
+
+    creatorClick(workspace, 'back-library');
+    assert.equal(backCalls, 0);
+    assertPreserved();
+
+    creatorClick(workspace, 'close-expansion-pack-studio');
+    await new Promise((resolve) => setImmediate(resolve));
+    assertPreserved();
+
+    creatorClick(workspace, 'close-tool');
+    await new Promise((resolve) => setImmediate(resolve));
+    assertPreserved();
+
+    creatorClick(workspace, 'close-tool-backdrop');
+    await new Promise((resolve) => setImmediate(resolve));
+    assertPreserved();
+
+    assert.equal(await workspace.closeExpansionPackWorkspace({ save: false, render: false }), false);
+    assertPreserved();
+  }, {
+    creatorRoot,
+    playable: true,
+    expansionPackDraftStore,
+    callbacks: {
+      onBackToLibrary() { backCalls += 1; },
+      onPrepareExpansionPackPublication() {
+        return {
+          stage: 'walrus-prepared',
+          started: true,
+          recoverable: true,
+          locked: true,
+          actions: { register: true },
+        };
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('each live publication signal fails closed while an idle Pack still closes normally', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await openPublishableExpansionPackFixture(workspace);
+    for (const state of [
+      { busy: true },
+      { started: true },
+      { recoverable: true },
+      { receipt: { packObjectId: '0xpack' } },
+      { locked: true },
+    ]) {
+      workspace.expansionPackPublishState = { stage: 'idle', ...state };
+      assert.equal(await workspace.closeExpansionPackWorkspace({ save: false, render: false }), false);
+      assert.ok(workspace.expansionPackWorkspace);
+    }
+    workspace.expansionPackPublishState = { stage: 'idle' };
+    assert.equal(await workspace.closeExpansionPackWorkspace({ save: true, render: false }), true);
+    assert.equal(workspace.expansionPackWorkspace, null);
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('active Pack publication blocks tab navigation and centralized Commerce edits', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    await openPublishableExpansionPackFixture(workspace, { packId: 'commerce-locked-pack' });
+    workspace.creatorTab = 'expansions';
+    await workspace.prepareActiveExpansionPackPublicationCandidate();
+    await workspace.refreshExpansionPackProjects({ render: false });
+    const summary = workspace.expansionPackProjectSummaries[0];
+    const record = [...expansionPackDraftStore.records.values()][0];
+    const beforeRevision = record.revision;
+    const beforeCommerce = structuredClone(record.project.pack.commerce);
+
+    assert.equal(workspace.openCreatorTab('commerce'), false);
+    assert.equal(workspace.creatorTab, 'expansions');
+    assert.equal(await workspace.openCommerceFromExpansionPackStudio(), false);
+    assert.equal(workspace.creatorTab, 'expansions');
+    assert.ok(workspace.expansionPackWorkspace);
+
+    const saved = await workspace.saveIndependentExpansionPackCommerce({
+      value: 'PAID_ONCE',
+      dataset: {
+        independentPackKey: summary.key,
+        independentPackCommerceField: 'accessMode',
+      },
+    });
+    assert.equal(saved, false);
+    assert.equal(record.revision, beforeRevision);
+    assert.deepEqual(record.project.pack.commerce, beforeCommerce);
+    assert.match(workspace.expansionPackCommerceState(summary.key).error, /release|publish|发布/i);
+  }, {
+    creatorRoot,
+    playable: true,
+    expansionPackDraftStore,
+    callbacks: {
+      onPrepareExpansionPackPublication() {
+        return { stage: 'walrus-prepared', started: true, locked: true };
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('release actions reject a persisted Pack head revision or identity drift before calling the app shell', async () => {
+  for (const drift of ['revision', 'identity']) {
+    const expansionPackDraftStore = memoryExpansionPackStore();
+    let actionCalls = 0;
+    await withWorkspace(async (workspace) => {
+      await openPublishableExpansionPackFixture(workspace, { packId: `head-drift-${drift}` });
+      await workspace.prepareActiveExpansionPackPublicationCandidate();
+      const record = [...expansionPackDraftStore.records.values()][0];
+      if (drift === 'revision') record.revision += 1;
+      else record.packId = `${record.packId}-other`;
+
+      await assert.rejects(
+        workspace.requestExpansionPackPublicationAction('register'),
+        (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_DRAFT_CHANGED',
+      );
+      assert.equal(actionCalls, 0, `${drift} drift must fail before the release callback`);
+      assert.ok(workspace.expansionPackWorkspace, 'the publication workspace remains recoverable');
+      assert.match(workspace.expansionPackPublishState.error.message, /changed|变化/i);
+    }, {
+      playable: true,
+      expansionPackDraftStore,
+      callbacks: {
+        onPrepareExpansionPackPublication() {
+          return { stage: 'walrus-prepared', started: true, locked: true };
+        },
+        onExpansionPackPublishAction() {
+          actionCalls += 1;
+          return {};
+        },
+      },
+      prepareDocument(document) {
+        document.metadata.creator = '0xcreator';
+      },
+    });
+  }
 });
 
 test('a local Pack rebinds non-destructively after the identical parent version is published', async () => {
