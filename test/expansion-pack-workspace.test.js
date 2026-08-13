@@ -846,7 +846,18 @@ test('Pack Studio commerce summary is read-only and delegates navigation to its 
 });
 
 test('authors Pack-owned tracks, Smart Color, rules and wardrobe without mutating parent definitions', async () => {
-  const workspace = await emptyWorkspace();
+  const composableParent = baseMaker();
+  composableParent.extensions = {
+    composableV6: {
+      profile: { mode: 'COMPOSABLE' },
+      compatibility: {
+        canvas: { width: 1024, height: 1024 },
+        layerTrackIds: ['body-track'],
+        slots: [],
+      },
+    },
+  };
+  const workspace = await emptyWorkspace({ parentMaker: composableParent });
   workspace.addOptionalPart({ part: { id: 'hat', name: 'Hat', items: [] } });
   workspace.addItem({
     partId: 'hat',
