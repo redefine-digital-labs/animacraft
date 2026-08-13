@@ -75,7 +75,8 @@ import {
   createDefaultMakerCommerceV5,
   createPackCommercePolicyV5,
   expansionPackIds,
-  makerCommerceV5RequiresRelease,
+  makerCommerceV5AllowsLegacyDefaultRoyaltyFallback,
+  makerCommerceV5ReleaseIssues,
   normalizeMakerCommerceV5,
   quoteCompleteV5,
   quoteMakerPurchaseV5,
@@ -4356,7 +4357,18 @@ export class MakerWorkspace {
     );
     const legacyMakerRoyaltyBps = Number(document.publication?.royaltyBps);
     const commerceSource = hasExplicitCommerce
-      ? document.commerce
+      ? (
+          !Object.hasOwn(document.commerce, 'makerSourceRoyaltyBps')
+          && Number.isInteger(legacyMakerRoyaltyBps)
+          && legacyMakerRoyaltyBps >= 0
+          && legacyMakerRoyaltyBps <= 500
+          && legacyMakerRoyaltyBps % 50 === 0
+            ? {
+                ...document.commerce,
+                makerSourceRoyaltyBps: legacyMakerRoyaltyBps,
+              }
+            : document.commerce
+        )
       : createDefaultMakerCommerceV5({
           ...(Number.isInteger(legacyMakerRoyaltyBps)
             && legacyMakerRoyaltyBps >= 0
@@ -6470,15 +6482,13 @@ export class MakerWorkspace {
           publish: true,
         },
       ).map(compactIssue));
-    } else if (makerCommerceV5RequiresRelease(document.commerce, {
-      packIds: commercePackIds,
-      legacyPublicationRoyaltyBps: document.publication?.royaltyBps,
-    })) {
-      issues.push({
-        code: 'commerce_v5_release_disabled',
-        path: 'commerce',
-        message: 'Commerce v5 publication is not enabled. Paid access, Expansion Packs, Complete limits, confirmed rights and custom royalties remain draft-only until the reviewed release gate opens.',
-      });
+    } else {
+      issues.push(...makerCommerceV5ReleaseIssues(document.commerce, {
+        packIds: commercePackIds,
+        legacyPublicationRoyaltyBps: document.publication?.royaltyBps,
+        allowLegacyDefaultRoyaltyFallback:
+          makerCommerceV5AllowsLegacyDefaultRoyaltyFallback(document, this.context),
+      }).map(compactIssue));
     }
     const externalIssues = Array.isArray(this.context?.externalPublicationIssues)
       ? this.context.externalPublicationIssues
@@ -7666,6 +7676,21 @@ export class MakerWorkspace {
     if (issue.code === 'rights_origin_confirmation_required') {
       return this.tr('rightsOriginConfirmationRequired');
     }
+    const commerceV5IssueKey = {
+      commerce_v5_invalid_commerce: 'commerceV5IssueInvalidCommerce',
+      commerce_v5_invalid_legacy_royalty: 'commerceV5IssueInvalidLegacyRoyalty',
+      commerce_v5_rights_onchain_native: 'commerceV5IssueRightsOnchainNative',
+      commerce_v5_rights_origin_confirmed: 'commerceV5IssueRightsOriginConfirmed',
+      commerce_v5_embedded_expansion_pack: 'commerceV5IssueEmbeddedExpansionPack',
+      commerce_v5_pack_paid_access: 'commerceV5IssuePackPaidAccess',
+      commerce_v5_pack_completion_policy: 'commerceV5IssuePackCompletionPolicy',
+      commerce_v5_maker_paid_access: 'commerceV5IssueMakerPaidAccess',
+      commerce_v5_base_completion_policy: 'commerceV5IssueBaseCompletionPolicy',
+      commerce_v5_maker_source_royalty_mismatch: 'commerceV5IssueMakerSourceRoyaltyMismatch',
+      commerce_v5_soul_creator_royalty: 'commerceV5IssueSoulCreatorRoyalty',
+      commerce_v5_maker_resale_royalty: 'commerceV5IssueMakerResaleRoyalty',
+    }[issue.code];
+    if (commerceV5IssueKey) return this.tr(commerceV5IssueKey);
     if (
       issue.path === 'metadata.coverAssetId'
       && ['missing_reference', 'maker_cover_source_missing'].includes(issue.code)
@@ -7867,8 +7892,10 @@ export class MakerWorkspace {
         === String(publishedDocument.version?.versionId || ''),
     );
     const rightsOriginLocked = Boolean(
-      this.context?.chainBinding?.commerceV5RootObjectId
+      this.context?.commerceV5ReleaseEnabled !== true
+      || this.context?.chainBinding?.commerceV5RootObjectId
     );
+    if (action === 'commerce-rights-origin' && rightsOriginLocked) return false;
     // MakerRootV5 freezes the original-author resale royalty when the exact
     // Style registry is sealed. Do not let a control visually attached to the
     // released version silently fork a successor. A version draft receives
@@ -9735,10 +9762,18 @@ export class MakerWorkspace {
         ...DEFAULT_PROTOCOL_COMMERCE_V5,
         ...(this.context?.commerceState?.protocol || {}),
       };
+      const commerceV5ReleaseEnabled = this.context?.commerceV5ReleaseEnabled === true;
       const rightsLocked = Boolean(
-        this.context?.chainBinding?.commerceV5RootObjectId
+        !commerceV5ReleaseEnabled
+        || this.context?.chainBinding?.commerceV5RootObjectId
       );
       const rightsConfirmed = commerce.rightsOriginConfirmed === true;
+      const canWithdrawLegacyRightsConfirmation = Boolean(
+        !commerceV5ReleaseEnabled
+        && !this.context?.chainBinding?.commerceV5RootObjectId
+        && commerce.rightsOrigin === RIGHTS_ORIGINS.LICENSE_WRAPPED
+        && rightsConfirmed
+      );
       const policyModeOptions = (mode) => [
         [COMPLETION_MODES.UNLIMITED_FREE, this.tr('completeUnlimitedFree')],
         [COMPLETION_MODES.FREE_QUOTA_THEN_PAID, this.tr('completeQuotaThenPaid')],
@@ -9823,7 +9858,7 @@ export class MakerWorkspace {
           : independentPackCards || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noIndependentExpansionPacks'))}</strong><span>${escapeHtml(this.tr('independentPackCommerceEmpty'))}</span></div>`;
       const commerceIssues = collectMakerCommerceV5Issues(commerce, {
         packIds,
-        publish: true,
+        publish: commerceV5ReleaseEnabled,
       });
       return `
         <div class="v4-advanced-head">
@@ -9831,11 +9866,12 @@ export class MakerWorkspace {
         </div>
         <div class="v4-commerce-workspace">
           <section class="v4-commerce-section">
-            <header><div><span>01</span><h4>${escapeHtml(this.tr('rightsOrigin'))}</h4></div><em>${escapeHtml(rightsLocked ? this.tr('immutableAfterFirstPublish') : rightsConfirmed ? this.tr('rightsOriginConfirmed') : this.tr('rightsOriginConfirmationRequired'))}</em></header>
+            <header><div><span>01</span><h4>${escapeHtml(this.tr('rightsOrigin'))}</h4></div><em>${escapeHtml(!commerceV5ReleaseEnabled ? this.tr('playerCommerceReleaseDisabled') : rightsLocked ? this.tr('immutableAfterFirstPublish') : rightsConfirmed ? this.tr('rightsOriginConfirmed') : this.tr('rightsOriginConfirmationRequired'))}</em></header>
             <div class="v4-commerce-choice-grid">
               <label class="${rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.ONCHAIN_NATIVE ? 'active' : ''}"><input type="radio" name="commerce-rights-origin" value="${RIGHTS_ORIGINS.ONCHAIN_NATIVE}" data-action="commerce-rights-origin" ${checked(rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.ONCHAIN_NATIVE)} ${rightsLocked ? 'disabled' : ''} /><span><strong>${escapeHtml(this.tr('rightsOnchainNative'))}</strong><small>${escapeHtml(this.tr('rightsOnchainNativeCopy'))}</small></span></label>
               <label class="${rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.LICENSE_WRAPPED ? 'active' : ''}"><input type="radio" name="commerce-rights-origin" value="${RIGHTS_ORIGINS.LICENSE_WRAPPED}" data-action="commerce-rights-origin" ${checked(rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.LICENSE_WRAPPED)} ${rightsLocked ? 'disabled' : ''} /><span><strong>${escapeHtml(this.tr('rightsLicenseWrapped'))}</strong><small>${escapeHtml(this.tr('rightsLicenseWrappedCopy'))}</small></span></label>
             </div>
+            ${canWithdrawLegacyRightsConfirmation ? `<div class="v4-rule-warning" role="status"><span>${escapeHtml(this.tr('withdrawLegacyRightsConfirmationCopy'))}</span><button type="button" data-action="withdraw-legacy-rights-confirmation">${escapeHtml(this.tr('withdrawLegacyRightsConfirmation'))}</button></div>` : ''}
           </section>
           <section class="v4-commerce-section">
             <header><div><span>02</span><h4>${escapeHtml(this.tr('makerAccessAndComplete'))}</h4></div><em>${escapeHtml(this.tr('defaultFreeUnlimited'))}</em></header>
@@ -9925,9 +9961,16 @@ export class MakerWorkspace {
       const severity = issue.severity === 'warning' ? 'warning' : 'error';
       const issuePath = String(issue.path || '');
       const makerInfoField = makerInfoFieldByPath(issuePath);
+      const commerceIssue = issuePath === 'commerce'
+        || issuePath.startsWith('commerce.')
+        || String(issue.code || '').startsWith('commerce_v5_');
       const styleRecord = workspaceStyleRecords(document)
         .find((record) => record.path === issuePath);
-      const focusable = Boolean(makerInfoField || (styleRecord && !styleRecord.packName));
+      const focusable = Boolean(
+        commerceIssue
+        || makerInfoField
+        || (styleRecord && !styleRecord.packName)
+      );
       const [partId, itemId, styleId] = issuePath.split('/');
       const issuePart = styleRecord?.part || findPart(document, partId);
       const issueItem = styleRecord?.item || (issuePart && findItem(document, partId, itemId));
@@ -9950,7 +9993,7 @@ export class MakerWorkspace {
         item: issueItem?.name || itemId,
         style: issueStyle?.name || styleId,
       });
-      return `<li class="${severity}">${focusable ? `<button type="button" data-action="focus-issue" data-issue-path="${escapeHtml(issue.path)}" title="${escapeHtml(issue.path)}"><span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong><em>${escapeHtml(this.tr('open'))}</em></button>` : `<span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong>`}</li>`;
+      return `<li class="${severity}">${focusable ? `<button type="button" data-action="focus-issue" data-issue-path="${escapeHtml(issue.path)}" data-issue-code="${escapeHtml(issue.code)}" title="${escapeHtml(issue.path)}"><span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong><em>${escapeHtml(this.tr('open'))}</em></button>` : `<span>${escapeHtml(displayPath)}</span><strong>${escapeHtml(displayMessage)}</strong>`}</li>`;
     }).join('');
     return `
       <div class="v4-advanced-head"><div><span>${escapeHtml(this.tr('publishPreflight'))}</span><h3>${escapeHtml(blockingIssues.length ? this.tr(blockingIssues.length === 1 ? 'issueBlocks' : 'issuesBlock', { count: blockingIssues.length }) : warningIssues.length ? this.tr('readyWithWarnings', { count: warningIssues.length }) : this.tr('readyPublish'))}</h3><p>${escapeHtml(this.tr('preflightCopy'))}</p></div><button type="button" data-action="run-preflight">${escapeHtml(this.tr('runAgain'))}</button></div>
@@ -11868,6 +11911,7 @@ export class MakerWorkspace {
       'remove-physical-style-product',
       'set-default-recipe',
       'set-version-compatibility',
+      'withdraw-legacy-rights-confirmation',
       'confirm-import',
     ]);
     if (action === 'open-part-slot-settings') {
@@ -11916,6 +11960,21 @@ export class MakerWorkspace {
     }
     if (this.documentMutationBlocked() && mutationActions.has(action)) {
       this.callbacks.onMutationBlocked?.(this.documentMutationBlockedMessage());
+      return;
+    }
+    if (action === 'withdraw-legacy-rights-confirmation') {
+      if (
+        this.context?.commerceV5ReleaseEnabled === true
+        || this.context?.chainBinding?.commerceV5RootObjectId
+        || document.commerce?.rightsOrigin !== RIGHTS_ORIGINS.LICENSE_WRAPPED
+        || document.commerce?.rightsOriginConfirmed !== true
+      ) return;
+      this.executeDocument('Withdraw early Commerce rights confirmation', ({ document: next }) => {
+        next.commerce = normalizeMakerCommerceV5(next.commerce, {
+          packIds: expansionPackIds(next),
+        });
+        next.commerce.rightsOriginConfirmed = false;
+      });
       return;
     }
     if (action === 'open-version-history' || action === 'retry-version-history') {
@@ -12573,6 +12632,15 @@ export class MakerWorkspace {
     }
     if (action === 'focus-issue') {
       const issuePath = String(button.dataset.issuePath || '');
+      const issueCode = String(button.dataset.issueCode || '');
+      if (
+        issuePath === 'commerce'
+        || issuePath.startsWith('commerce.')
+        || issueCode.startsWith('commerce_v5_')
+      ) {
+        this.openCreatorTab('commerce');
+        return;
+      }
       const makerInfoField = makerInfoFieldByPath(issuePath);
       if (makerInfoField) {
         this.creatorTab = 'info';

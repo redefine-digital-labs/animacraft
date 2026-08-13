@@ -5,6 +5,7 @@ import {
   COMPLETION_MODES,
   DEFAULT_PROTOCOL_COMMERCE_V5,
   MAKER_ACCESS_MODES,
+  MAKER_COMMERCE_V5_RELEASE_REASONS,
   ONCHAIN_MAKER_STATES,
   PACK_ACCESS_MODES,
   RIGHTS_ORIGINS,
@@ -12,6 +13,9 @@ import {
   collectMakerCommerceV5Issues,
   createDefaultMakerCommerceV5,
   createPackCommercePolicyV5,
+  makerCommerceV5AllowsLegacyDefaultRoyaltyFallback,
+  makerCommerceV5ReleaseIssues,
+  makerCommerceV5ReleaseReasons,
   makerCommerceV5RequiresRelease,
   normalizeMakerCommerceV5,
   quoteCompleteV5,
@@ -129,6 +133,103 @@ test('release requirement accepts only an exact canonical mirror of the legacy r
     makerSourceRoyaltyBps: 0,
   }), {
     legacyPublicationRoyaltyBps: 0,
+  }), false);
+});
+
+test('legacy release reasons are deterministic, concrete and fail closed', () => {
+  const commerce = createDefaultMakerCommerceV5({
+    rightsOrigin: RIGHTS_ORIGINS.ONCHAIN_NATIVE,
+    rightsOriginConfirmed: true,
+    makerAccess: {
+      mode: MAKER_ACCESS_MODES.ONE_TIME_PAID,
+      purchasePriceAtomic: 1_000_000,
+    },
+    baseCompletion: {
+      mode: COMPLETION_MODES.FREE_QUOTA_THEN_BLOCK,
+      freeQuotaPerWallet: 2,
+    },
+    makerSourceRoyaltyBps: 350,
+    soulCreatorRoyaltyBps: 300,
+    makerResaleRoyaltyBps: 450,
+  });
+  commerce.packPolicies = [createPackCommercePolicyV5('paid-hair', {
+    accessMode: PACK_ACCESS_MODES.ONE_TIME_PAID,
+    purchasePriceAtomic: 1_000_000,
+    completion: {
+      mode: COMPLETION_MODES.PAID_EVERY_TIME,
+      priceAtomic: 1_000_000,
+    },
+  })];
+  const options = {
+    packIds: ['paid-hair'],
+    legacyPublicationRoyaltyBps: 300,
+  };
+  assert.deepEqual(makerCommerceV5ReleaseReasons(commerce, options), [
+    MAKER_COMMERCE_V5_RELEASE_REASONS.RIGHTS_ONCHAIN_NATIVE,
+    MAKER_COMMERCE_V5_RELEASE_REASONS.EMBEDDED_EXPANSION_PACK,
+    MAKER_COMMERCE_V5_RELEASE_REASONS.PACK_PAID_ACCESS,
+    MAKER_COMMERCE_V5_RELEASE_REASONS.PACK_COMPLETION_POLICY,
+    MAKER_COMMERCE_V5_RELEASE_REASONS.MAKER_PAID_ACCESS,
+    MAKER_COMMERCE_V5_RELEASE_REASONS.BASE_COMPLETION_POLICY,
+    MAKER_COMMERCE_V5_RELEASE_REASONS.MAKER_SOURCE_ROYALTY_MISMATCH,
+    MAKER_COMMERCE_V5_RELEASE_REASONS.SOUL_CREATOR_ROYALTY,
+    MAKER_COMMERCE_V5_RELEASE_REASONS.MAKER_RESALE_ROYALTY,
+  ]);
+  assert.deepEqual(
+    makerCommerceV5ReleaseIssues(commerce, options).map(({ reason, code, path }) => ({
+      reason,
+      code,
+      path,
+    })),
+    [
+      ['rights_onchain_native', 'commerce_v5_rights_onchain_native', 'commerce.rightsOrigin'],
+      ['embedded_expansion_pack', 'commerce_v5_embedded_expansion_pack', 'commerce.packPolicies'],
+      ['pack_paid_access', 'commerce_v5_pack_paid_access', 'commerce.packPolicies'],
+      ['pack_completion_policy', 'commerce_v5_pack_completion_policy', 'commerce.packPolicies'],
+      ['maker_paid_access', 'commerce_v5_maker_paid_access', 'commerce.makerAccess'],
+      ['base_completion_policy', 'commerce_v5_base_completion_policy', 'commerce.baseCompletion'],
+      ['maker_source_royalty_mismatch', 'commerce_v5_maker_source_royalty_mismatch', 'commerce.makerSourceRoyaltyBps'],
+      ['soul_creator_royalty', 'commerce_v5_soul_creator_royalty', 'commerce.soulCreatorRoyaltyBps'],
+      ['maker_resale_royalty', 'commerce_v5_maker_resale_royalty', 'commerce.makerResaleRoyaltyBps'],
+    ].map(([reason, code, path]) => ({ reason, code, path })),
+  );
+  assert.deepEqual(
+    makerCommerceV5ReleaseReasons({ ...commerce, makerAccess: null }, options),
+    [MAKER_COMMERCE_V5_RELEASE_REASONS.INVALID_COMMERCE],
+  );
+});
+
+test('known 250-to-300 legacy default mismatch requires explicit initial-unpublished context', () => {
+  const commerce = createDefaultMakerCommerceV5();
+  const legacy = { legacyPublicationRoyaltyBps: 300 };
+  assert.deepEqual(makerCommerceV5ReleaseReasons(commerce, legacy), [
+    MAKER_COMMERCE_V5_RELEASE_REASONS.MAKER_SOURCE_ROYALTY_MISMATCH,
+  ]);
+  assert.deepEqual(makerCommerceV5ReleaseReasons(commerce, {
+    ...legacy,
+    allowLegacyDefaultRoyaltyFallback: true,
+  }), []);
+  assert.deepEqual(makerCommerceV5ReleaseReasons(commerce, {
+    legacyPublicationRoyaltyBps: 350,
+    allowLegacyDefaultRoyaltyFallback: true,
+  }), [MAKER_COMMERCE_V5_RELEASE_REASONS.MAKER_SOURCE_ROYALTY_MISMATCH]);
+
+  const initial = {
+    version: {
+      number: 1,
+      parentVersionId: null,
+      createdAt: null,
+    },
+  };
+  assert.equal(makerCommerceV5AllowsLegacyDefaultRoyaltyFallback(initial, {
+    isPublished: false,
+    publishedDocument: null,
+  }), true);
+  assert.equal(makerCommerceV5AllowsLegacyDefaultRoyaltyFallback(initial, {
+    isPublished: true,
+  }), false);
+  assert.equal(makerCommerceV5AllowsLegacyDefaultRoyaltyFallback({
+    version: { ...initial.version, number: 2 },
   }), false);
 });
 

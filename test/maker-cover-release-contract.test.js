@@ -6,6 +6,7 @@ import {
   MAKER_ACCESS_MODES,
   createDefaultMakerCommerceV5,
   expansionPackIds,
+  makerCommerceV5AllowsLegacyDefaultRoyaltyFallback,
   makerCommerceV5RequiresRelease,
 } from '../maker-commerce-v5.js';
 
@@ -57,10 +58,11 @@ function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (
     'makerV4DocumentForRelease',
     'makerV4RuntimeAssetsForRelease',
   ].map(functionSource).join('\n');
-  return new Function('runtimeRecords', 'template', 'decodeBitmap', 'commerceV5ReleaseEnabled', 'creatorRoyaltyBps', 'makerCommerceV5RequiresRelease', 'expansionPackIds', `
+  return new Function('runtimeRecords', 'template', 'decodeBitmap', 'commerceV5ReleaseEnabled', 'creatorRoyaltyBps', 'makerCommerceV5RequiresRelease', 'makerCommerceV5AllowsLegacyDefaultRoyaltyFallback', 'expansionPackIds', `
     const currentV4RuntimeAssets = () => runtimeRecords;
     const activeTemplate = () => template;
-    const state = { makerDocumentV4: null };
+    const state = { makerDocumentV4: null, publishedMakerDocumentV4: null };
+    const makerIsPublished = () => template.published === true;
     const $ = (id) => id === 'creatorRoyalty' ? { value: String(creatorRoyaltyBps) } : null;
     const isMakerV4Document = (document) => Boolean(document?.metadata && document?.canvas);
     const normalizeLivingContent = (livingContent) => livingContent;
@@ -98,6 +100,7 @@ function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (
     commerceV5ReleaseEnabled,
     creatorRoyaltyBps,
     makerCommerceV5RequiresRelease,
+    makerCommerceV5AllowsLegacyDefaultRoyaltyFallback,
     expansionPackIds,
   );
 }
@@ -135,6 +138,11 @@ function chainCoverHarness() {
 
 function minimalDocument() {
   return {
+    version: {
+      number: 1,
+      parentVersionId: null,
+      createdAt: null,
+    },
     metadata: {
       name: 'Maker',
       summary: 'Summary',
@@ -481,6 +489,33 @@ test('legacy release strips only a Commerce royalty that exactly mirrors publica
   });
   const blockedRelease = coverHarness([], {}, undefined, false, 300)
     .makerV4DocumentForRelease({ sourceDocument: mismatched });
+  assert.equal(blockedRelease.commerce.makerSourceRoyaltyBps, 350);
+});
+
+test('legacy release strips the known initial 250-to-300 default mismatch but not a custom mismatch', () => {
+  const affectedInitialDraft = minimalDocument();
+  affectedInitialDraft.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 250,
+  });
+  const compatibleRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: affectedInitialDraft });
+  assert.equal(compatibleRelease.publication.royaltyBps, 300);
+  assert.equal(Object.hasOwn(compatibleRelease, 'commerce'), false);
+
+  const publishedInitialDraft = minimalDocument();
+  publishedInitialDraft.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 250,
+  });
+  const publishedRelease = coverHarness([], { published: true }, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: publishedInitialDraft });
+  assert.equal(publishedRelease.commerce.makerSourceRoyaltyBps, 250);
+
+  const customMismatch = minimalDocument();
+  customMismatch.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 350,
+  });
+  const blockedRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: customMismatch });
   assert.equal(blockedRelease.commerce.makerSourceRoyaltyBps, 350);
 });
 

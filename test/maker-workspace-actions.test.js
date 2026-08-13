@@ -1857,6 +1857,21 @@ test('legacy documents without commerce migrate their valid publication royalty 
   });
 });
 
+test('partial legacy Commerce fills its missing Maker-source royalty from publication', async () => {
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    assert.equal(document.commerce.makerSourceRoyaltyBps, 350);
+    assert.equal(workspace.blockingPublicationIssues().some(
+      (issue) => issue.code === 'commerce_v5_maker_source_royalty_mismatch',
+    ), false);
+  }, {
+    prepareDocument(document) {
+      document.publication.royaltyBps = 350;
+      delete document.commerce.makerSourceRoyaltyBps;
+    },
+  });
+});
+
 test('Creator must click a rights origin before first v5 publish and v4 publication does not lock it', async () => {
   const creatorRoot = new FakeRoot();
   await withWorkspace(async (workspace) => {
@@ -1908,7 +1923,7 @@ test('initial legacy v4 publication accepts its mirrored Maker royalty while the
     const issueCodes = workspace.blockingPublicationIssues()
       .map((issue) => issue.code);
     assert.equal(
-      issueCodes.includes('commerce_v5_release_disabled'),
+      issueCodes.some((code) => code.startsWith('commerce_v5_')),
       false,
     );
     assert.equal(
@@ -1925,11 +1940,65 @@ test('initial legacy v4 publication accepts its mirrored Maker royalty while the
   });
 });
 
+test('initial legacy 250-to-300 Maker bug and an independent free Pack draft do not block v4 publication', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('independent-free-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+
+    assert.equal(workspace.expansionPackProjectSummaries.length, 1);
+    assert.equal(
+      workspace.expansionPackProjectSummaries[0].project.pack.commerce.accessMode,
+      'FREE',
+    );
+    assert.deepEqual(workspace.getDocument().extensions.expansionDrafts, []);
+    assert.equal(
+      workspace.blockingPublicationIssues()
+        .some((issue) => issue.code.startsWith('commerce_v5_')),
+      false,
+    );
+  }, {
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+      document.publication.royaltyBps = 300;
+      document.commerce = normalizeMakerCommerceV5({
+        makerSourceRoyaltyBps: 250,
+      });
+    },
+  });
+});
+
+test('published Makers cannot use the initial legacy default royalty fallback', async () => {
+  await withWorkspace(async (workspace) => {
+    const publishedDocument = workspace.getDocument();
+    await workspace.setContext({
+      makerKey: workspace.makerKey,
+      walletAddress: '',
+      document: publishedDocument,
+      publishedDocument,
+      isPublished: true,
+      assets: [],
+    });
+    assert.ok(workspace.blockingPublicationIssues().some(
+      (issue) => issue.code === 'commerce_v5_maker_source_royalty_mismatch',
+    ));
+  }, {
+    prepareDocument(document) {
+      document.publication.royaltyBps = 300;
+      document.commerce = normalizeMakerCommerceV5({
+        makerSourceRoyaltyBps: 250,
+      });
+    },
+  });
+});
+
 test('legacy v4 publication blocks a mismatched custom Commerce royalty', async () => {
   await withWorkspace(async (workspace) => {
     assert.ok(
       workspace.blockingPublicationIssues().some(
-        (issue) => issue.code === 'commerce_v5_release_disabled',
+        (issue) => issue.code === 'commerce_v5_maker_source_royalty_mismatch',
       ),
     );
   }, {
@@ -1946,7 +2015,7 @@ test('v5 commerce cannot downgrade into a v4 publication while its release gate 
   await withWorkspace(async (workspace) => {
     assert.ok(
       workspace.blockingPublicationIssues().some(
-        (issue) => issue.code === 'commerce_v5_release_disabled',
+        (issue) => issue.code === 'commerce_v5_maker_paid_access',
       ),
     );
   }, {
@@ -1961,38 +2030,42 @@ test('v5 commerce cannot downgrade into a v4 publication while its release gate 
   });
 });
 
-test('mirrored legacy royalty does not hide other v5 commerce from Preflight', async () => {
+test('mirrored legacy royalty reports each concrete v5 commerce reason in Preflight', async () => {
   const cases = [
     {
       label: 'confirmed rights',
+      code: 'commerce_v5_rights_origin_confirmed',
       configure(commerce) {
         commerce.rightsOriginConfirmed = true;
       },
     },
     {
       label: 'Complete cap',
+      code: 'commerce_v5_base_completion_policy',
       configure(commerce) {
         commerce.baseCompletion.totalCap = 10;
       },
     },
     {
       label: 'Soul creator royalty',
+      code: 'commerce_v5_soul_creator_royalty',
       configure(commerce) {
         commerce.soulCreatorRoyaltyBps = 300;
       },
     },
     {
       label: 'Maker resale royalty',
+      code: 'commerce_v5_maker_resale_royalty',
       configure(commerce) {
         commerce.makerResaleRoyaltyBps = 450;
       },
     },
   ];
-  for (const { label, configure } of cases) {
+  for (const { label, code, configure } of cases) {
     await withWorkspace(async (workspace) => {
       assert.ok(
         workspace.blockingPublicationIssues().some(
-          (issue) => issue.code === 'commerce_v5_release_disabled',
+          (issue) => issue.code === code,
         ),
         `${label} must remain Commerce-v5 release gated`,
       );
@@ -2006,6 +2079,49 @@ test('mirrored legacy royalty does not hide other v5 commerce from Preflight', a
       },
     });
   }
+});
+
+test('gate-off Commerce rights cannot dirty a draft and early license confirmation can be withdrawn', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    workspace.creatorTab = 'validate';
+    workspace.render();
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="focus-issue" data-issue-path="commerce\.rightsOriginConfirmed" data-issue-code="commerce_v5_rights_origin_confirmed"/,
+    );
+    creatorClick(workspace, 'focus-issue', {
+      issueCode: 'commerce_v5_rights_origin_confirmed',
+      issuePath: 'commerce.rightsOriginConfirmed',
+    });
+    assert.equal(workspace.creatorTab, 'commerce');
+
+    const before = workspace.getDocument();
+    const beforeRevision = workspace.store.getState().revision;
+    assert.equal(workspace.updateCommerceFromInput({
+      dataset: { action: 'commerce-rights-origin' },
+      value: RIGHTS_ORIGINS.ONCHAIN_NATIVE,
+    }), false);
+    assert.deepEqual(workspace.getDocument(), before);
+    assert.equal(workspace.store.getState().revision, beforeRevision);
+
+    workspace.creatorTab = 'commerce';
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /data-action="withdraw-legacy-rights-confirmation"/);
+    creatorClick(workspace, 'withdraw-legacy-rights-confirmation');
+    assert.equal(workspace.getDocument().commerce.rightsOriginConfirmed, false);
+    assert.equal(workspace.store.getState().canUndo, true);
+    workspace.store.undo();
+    assert.equal(workspace.getDocument().commerce.rightsOriginConfirmed, true);
+  }, {
+    creatorRoot,
+    prepareDocument(document) {
+      document.commerce = normalizeMakerCommerceV5({
+        rightsOrigin: RIGHTS_ORIGINS.LICENSE_WRAPPED,
+        rightsOriginConfirmed: true,
+      });
+    },
+  });
 });
 
 test('explicit commerce royalty zero survives normalization and Creator offers 50 bps steps', async () => {

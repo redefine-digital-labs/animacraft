@@ -123,6 +123,7 @@ import {
 import { createMakerWorkspace } from './maker-workspace.js';
 import {
   expansionPackIds,
+  makerCommerceV5AllowsLegacyDefaultRoyaltyFallback,
   makerCommerceV5RequiresRelease,
 } from './maker-commerce-v5.js';
 import { findMakerVersionDraftConflict } from './maker-version-lineage.js';
@@ -10782,6 +10783,11 @@ function makerV4DocumentForRelease({ sourceDocument = state.makerDocumentV4 } = 
     && !makerCommerceV5RequiresRelease(documentV4.commerce, {
       packIds: expansionPackIds(documentV4),
       legacyPublicationRoyaltyBps: documentV4.publication.royaltyBps,
+      allowLegacyDefaultRoyaltyFallback:
+        makerCommerceV5AllowsLegacyDefaultRoyaltyFallback(documentV4, {
+          isPublished: makerIsPublished(),
+          publishedDocument: state.publishedMakerDocumentV4,
+        }),
     })
   ) {
     // Keep untouched free legacy Makers publishable while Commerce v5 is

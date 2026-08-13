@@ -321,6 +321,11 @@ test('an untouched free Maker remains a legacy v4 release while the v5 gate is c
     releaseDocument,
     /legacyPublicationRoyaltyBps:\s*documentV4\.publication\.royaltyBps/,
   );
+  assert.match(
+    releaseDocument,
+    /allowLegacyDefaultRoyaltyFallback:[\s\S]*makerCommerceV5AllowsLegacyDefaultRoyaltyFallback\(documentV4/,
+  );
+  assert.match(releaseDocument, /isPublished:\s*makerIsPublished\(\)/);
   assert.match(releaseDocument, /delete documentV4\.commerce/);
 });
 
