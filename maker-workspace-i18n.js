@@ -3366,6 +3366,65 @@ Object.entries(independentPackCommerceDictionaries).forEach(
   ([locale, details]) => Object.assign(dictionaries[locale], details),
 );
 
+const expansionPackDefinitionEditorDictionaries = {
+  en: {
+    packDefinitionTabsLabel: 'Expansion Pack content editors',
+    packParentDefinitionsReadonly: 'Inherited from the parent Maker · read-only',
+    packDefinitionsEditable: 'Expansion Pack additions · editable',
+    packNoTracks: 'No Pack-owned Layer Tracks yet.',
+    packAddLayerTrack: 'Add Layer Track',
+    packTrackName: 'Layer Track name',
+    packMoveUp: 'Move back',
+    packMoveDown: 'Move forward',
+    packNoColors: 'No Pack-owned Smart Color channels yet.',
+    packAddColorChannel: 'Add Smart Color channel',
+    packColorChannelName: 'Channel name',
+    packDefaultSwatch: 'Default preset',
+    packAddSwatch: 'Add color preset',
+    packSwatchName: 'Preset name',
+    packHintColor: 'Preview color',
+    packStartColor: 'Shadow color',
+    packEndColor: 'Light color',
+    packDeleteSwatch: 'Delete preset',
+    packDeleteColorChannel: 'Delete channel',
+    packNoRules: 'No Pack-owned combination rules yet.',
+    packAddRule: 'Add combination rule',
+    packRuleType: 'Rule type',
+    packRuleRequires: 'Requires',
+    packRuleExcludes: 'Excludes',
+    packTriggerScope: 'When this Pack selection is used',
+    packRuleTrigger: 'Trigger selection',
+    packRuleTarget: 'Target selection',
+    packDeleteRule: 'Delete rule',
+    packDefinitionRules: 'Selection and visibility rules',
+    packVisibleWhen: 'Visible when',
+    packRequiresTargets: 'Requires selections',
+    packExcludesTargets: 'Excludes selections',
+    packWardrobeMode: 'Wardrobe behavior',
+    packWardrobeFixed: 'Fixed in base appearance',
+    packWardrobeSlot: 'Wardrobe Slot',
+    packInherited: 'Inherited',
+    packOwned: 'Pack-owned',
+    packNone: 'None',
+  },
+  zh: {
+    packDefinitionTabsLabel: '扩展包内容编辑器', packParentDefinitionsReadonly: '继承自母 Maker · 只读', packDefinitionsEditable: '扩展包新增内容 · 可编辑', packNoTracks: '还没有扩展包自有图层轨道。', packAddLayerTrack: '添加图层轨道', packTrackName: '图层轨道名称', packMoveUp: '移到后层', packMoveDown: '移到前层', packNoColors: '还没有扩展包自有联动配色。', packAddColorChannel: '添加联动配色', packColorChannelName: '配色通道名称', packDefaultSwatch: '默认配色方案', packAddSwatch: '添加配色方案', packSwatchName: '方案名称', packHintColor: '预览颜色', packStartColor: '暗部颜色', packEndColor: '亮部颜色', packDeleteSwatch: '删除方案', packDeleteColorChannel: '删除配色通道', packNoRules: '还没有扩展包自有组合规则。', packAddRule: '添加组合规则', packRuleType: '规则类型', packRuleRequires: '必须同时选择', packRuleExcludes: '不能同时选择', packTriggerScope: '当使用此扩展包选择时', packRuleTrigger: '触发选择', packRuleTarget: '目标选择', packDeleteRule: '删除规则', packDefinitionRules: '选择与显示规则', packVisibleWhen: '显示条件', packRequiresTargets: '必须搭配', packExcludesTargets: '不能搭配', packWardrobeMode: '衣柜行为', packWardrobeFixed: '固定在基础外观', packWardrobeSlot: '衣柜卡槽', packInherited: '母 Maker 继承', packOwned: '扩展包自有', packNone: '无',
+  },
+  ja: {
+    packDefinitionTabsLabel: '拡張 Pack コンテンツエディター', packParentDefinitionsReadonly: '親 Maker から継承・読み取り専用', packDefinitionsEditable: 'Pack 追加内容・編集可能', packNoTracks: 'Pack 所有の Layer Track はありません。', packAddLayerTrack: 'Layer Track を追加', packTrackName: 'Layer Track 名', packMoveUp: '後ろへ移動', packMoveDown: '前へ移動', packNoColors: 'Pack 所有の Smart Color はありません。', packAddColorChannel: 'Smart Color を追加', packColorChannelName: 'チャンネル名', packDefaultSwatch: '既定プリセット', packAddSwatch: '色プリセットを追加', packSwatchName: 'プリセット名', packHintColor: 'プレビュー色', packStartColor: '影色', packEndColor: '明色', packDeleteSwatch: 'プリセットを削除', packDeleteColorChannel: 'チャンネルを削除', packNoRules: 'Pack 所有の組み合わせルールはありません。', packAddRule: '組み合わせルールを追加', packRuleType: 'ルール種別', packRuleRequires: '必須', packRuleExcludes: '排他', packTriggerScope: 'この Pack 選択を使うとき', packRuleTrigger: '起点の選択', packRuleTarget: '対象の選択', packDeleteRule: 'ルールを削除', packDefinitionRules: '選択と表示ルール', packVisibleWhen: '表示条件', packRequiresTargets: '必須選択', packExcludesTargets: '排他選択', packWardrobeMode: 'Wardrobe の動作', packWardrobeFixed: '基本外観に固定', packWardrobeSlot: 'Wardrobe Slot', packInherited: '継承', packOwned: 'Pack 所有', packNone: 'なし',
+  },
+  ko: {
+    packDefinitionTabsLabel: '확장 Pack 콘텐츠 편집기', packParentDefinitionsReadonly: '상위 Maker에서 상속 · 읽기 전용', packDefinitionsEditable: 'Pack 추가 콘텐츠 · 편집 가능', packNoTracks: 'Pack 소유 Layer Track이 없습니다.', packAddLayerTrack: 'Layer Track 추가', packTrackName: 'Layer Track 이름', packMoveUp: '뒤로 이동', packMoveDown: '앞으로 이동', packNoColors: 'Pack 소유 Smart Color가 없습니다.', packAddColorChannel: 'Smart Color 추가', packColorChannelName: '채널 이름', packDefaultSwatch: '기본 프리셋', packAddSwatch: '색상 프리셋 추가', packSwatchName: '프리셋 이름', packHintColor: '미리보기 색상', packStartColor: '그림자 색상', packEndColor: '밝은 색상', packDeleteSwatch: '프리셋 삭제', packDeleteColorChannel: '채널 삭제', packNoRules: 'Pack 소유 조합 규칙이 없습니다.', packAddRule: '조합 규칙 추가', packRuleType: '규칙 유형', packRuleRequires: '필수', packRuleExcludes: '동시 사용 불가', packTriggerScope: '이 Pack 선택을 사용할 때', packRuleTrigger: '트리거 선택', packRuleTarget: '대상 선택', packDeleteRule: '규칙 삭제', packDefinitionRules: '선택 및 표시 규칙', packVisibleWhen: '표시 조건', packRequiresTargets: '필수 선택', packExcludesTargets: '제외 선택', packWardrobeMode: '옷장 동작', packWardrobeFixed: '기본 외형에 고정', packWardrobeSlot: '옷장 슬롯', packInherited: '상속됨', packOwned: 'Pack 소유', packNone: '없음',
+  },
+  vi: {
+    packDefinitionTabsLabel: 'Trình sửa nội dung Pack mở rộng', packParentDefinitionsReadonly: 'Kế thừa từ Maker mẹ · chỉ đọc', packDefinitionsEditable: 'Nội dung Pack bổ sung · có thể sửa', packNoTracks: 'Chưa có Đường lớp thuộc Pack.', packAddLayerTrack: 'Thêm Đường lớp', packTrackName: 'Tên Đường lớp', packMoveUp: 'Đưa ra sau', packMoveDown: 'Đưa ra trước', packNoColors: 'Chưa có Màu thông minh thuộc Pack.', packAddColorChannel: 'Thêm Màu thông minh', packColorChannelName: 'Tên kênh', packDefaultSwatch: 'Mẫu màu mặc định', packAddSwatch: 'Thêm mẫu màu', packSwatchName: 'Tên mẫu màu', packHintColor: 'Màu xem trước', packStartColor: 'Màu tối', packEndColor: 'Màu sáng', packDeleteSwatch: 'Xóa mẫu màu', packDeleteColorChannel: 'Xóa kênh', packNoRules: 'Chưa có quy tắc kết hợp thuộc Pack.', packAddRule: 'Thêm quy tắc kết hợp', packRuleType: 'Loại quy tắc', packRuleRequires: 'Yêu cầu', packRuleExcludes: 'Loại trừ', packTriggerScope: 'Khi dùng lựa chọn của Pack này', packRuleTrigger: 'Lựa chọn kích hoạt', packRuleTarget: 'Lựa chọn đích', packDeleteRule: 'Xóa quy tắc', packDefinitionRules: 'Quy tắc chọn và hiển thị', packVisibleWhen: 'Hiển thị khi', packRequiresTargets: 'Lựa chọn bắt buộc', packExcludesTargets: 'Lựa chọn loại trừ', packWardrobeMode: 'Hành vi tủ đồ', packWardrobeFixed: 'Cố định trong diện mạo gốc', packWardrobeSlot: 'Khe tủ đồ', packInherited: 'Kế thừa', packOwned: 'Thuộc Pack', packNone: 'Không có',
+  },
+};
+
+Object.entries(expansionPackDefinitionEditorDictionaries).forEach(
+  ([locale, details]) => Object.assign(dictionaries[locale], details),
+);
+
 export const MAKER_WORKSPACE_LOCALES = Object.freeze(Object.keys(dictionaries));
 export const MAKER_WORKSPACE_KEYS = Object.freeze(Object.keys(en));
 
