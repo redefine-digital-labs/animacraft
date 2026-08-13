@@ -92,10 +92,15 @@ test('shared Part list renders one selected action bar and keeps full labels in 
   assert.equal(model.selectedRow.id, 'back-hair');
   assert.equal((html.match(/data-part-row/g) || []).length, 2);
   assert.equal((html.match(/data-part-actions/g) || []).length, 1);
+  assert.equal((html.match(/class="maker-part-list-meta v4-part-track-status"/g) || []).length, 2);
   assert.match(html, new RegExp(`<strong>${fullLabel}<\\/strong>`));
   assert.match(html, /7 items · Required · Custom stacking · 2 Tracks/);
+  assert.match(html, /data-part-list role="list" aria-label="Parts"/);
+  assert.match(html, /role="listitem" data-part-row/);
+  assert.match(html, /aria-describedby="makerPartMeta-2-back-hair" aria-current="true"/);
+  assert.match(html, /aria-pressed="true"/);
   assert.match(html, /data-part-actions data-part-id="back-hair" role="toolbar"/);
-  assert.match(html, /data-action="move-part" data-part-id="back-hair"[^>]*data-direction="down"[^>]*disabled/);
+  assert.match(html, /data-action="move-part" data-part-id="back-hair" data-direction="down"[^>]*disabled/);
   assert.doesNotMatch(html, /data-part-actions data-part-id="background"/);
   assert.doesNotMatch(html, /title="Back Hair With Ceremonial Ribbons"/);
 });
@@ -161,8 +166,9 @@ test('shared Part list adapter isolates inherited readonly and Pack-owned action
   assert.match(html, /data-action="move-pack-part" data-part-id="hat"/);
   assert.match(html, /data-action="duplicate-pack-part" data-part-id="hat"/);
   assert.match(html, /data-action="delete-pack-part" data-part-id="hat"/);
-  assert.match(html, /data-action="set-pack-part-mode" data-part-id="hat"[^>]*data-mode="SLOT" aria-pressed="false"/);
+  assert.match(html, /data-action="set-pack-part-mode" data-part-id="hat" data-mode="SLOT" aria-pressed="false"/);
   assert.doesNotMatch(html, /data-part-id="body" draggable=/);
+  assert.match(html, /data-part-id="body" aria-label="Select Inherited Body"/);
 });
 
 test('shared Part list escapes content and rejects rows without stable ids', () => {
@@ -177,5 +183,6 @@ test('shared Part list escapes content and rejects rows without stable ids', () 
     trackLabel: '<script>bad</script>',
   }], { selectedId: 'safe-id' }));
   assert.doesNotMatch(html, /<script>|<img src=x/);
+  assert.doesNotMatch(html, /javascript:alert/);
   assert.match(html, /&lt;script&gt;bad&lt;\/script&gt;/);
 });

@@ -600,10 +600,11 @@ test('production gallery is chain-derived and creator packs are local test fixtu
 });
 
 test('Maker v5 exposes the four-level P0 creator workflow without legacy visual sublayers', async () => {
-  const [html, app, workspace, workspaceI18n, styles, docsContent] = await Promise.all([
+  const [html, app, workspace, definitionEditor, workspaceI18n, styles, docsContent] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),
     readFile(new URL('../app.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-definition-editor.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace-i18n.js', import.meta.url), 'utf8'),
     readFile(new URL('../styles.css', import.meta.url), 'utf8'),
     readFile(new URL('../docs-center-content.js', import.meta.url), 'utf8'),
@@ -634,8 +635,8 @@ test('Maker v5 exposes the four-level P0 creator workflow without legacy visual 
   assert.match(workspace, /data-action="style-channel"/);
   assert.match(workspace, /data-action="style-position-locked"/);
   assert.match(workspace, /data-action="style-locked"/);
-  assert.match(workspace, /data-action="toggle-part-preview"/);
-  assert.match(workspace, /class="v4-part-state-actions"/);
+  assert.match(definitionEditor, /preview: 'toggle-part-preview'/);
+  assert.match(definitionEditor, /maker-part-list-state v4-part-state-actions/);
   assert.match(workspace, /'open-part-slot-settings'/);
   assert.match(workspace, /class="v7-wardrobe-choice" role="group"/);
   assert.match(styles, /\.v4-part-state-actions\s*\{[^}]*display:\s*grid;/s);
@@ -663,6 +664,30 @@ test('Maker v5 keeps the mobile player preview visible and blocks incomplete OC 
   assert.match(workspace, /data-action="player-complete" \$\{completionIssues\.length \? 'disabled' : ''\}/);
   assert.match(styles, /@media \(max-width: 820px\)[\s\S]*?\.v4-player-preview\s*\{[^}]*position:\s*sticky;[^}]*max-height:\s*58vh;/s);
   assert.match(styles, /@media \(max-width: 560px\)[\s\S]*?\.v4-player-preview\s*\{[^}]*grid-template-rows:\s*minmax\(220px,\s*38vh\) auto;[^}]*max-height:\s*52vh;/s);
+});
+
+test('shared Part list stays readable at the 1180, 820, and 560 responsive boundaries', async () => {
+  const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
+  const selectedRule = styles.match(/\.maker-part-list-row\.active,[\s\S]*?\n\}/)?.[0] || '';
+  const labelRule = styles.match(/\.maker-part-list-select strong,[\s\S]*?\n\}/)?.[0] || '';
+  const metadataRule = styles.match(/\.maker-part-list-meta\s*\{[\s\S]*?\n\}/)?.[0] || '';
+  const narrowRule = styles.match(/@media \(max-width: 1180px\) \{[\s\S]*?\n\}/)?.[0] || '';
+
+  assert.match(styles, /@media \(max-width: 1180px\)[\s\S]*?grid-template-columns: 190px minmax\(410px, 1fr\);/);
+  assert.match(styles, /@media \(max-width: 820px\)[\s\S]*?\.v4-parts-list\s*\{[^}]*repeat\(auto-fill, minmax\(230px, 1fr\)\);/s);
+  assert.match(styles, /@media \(max-width: 560px\)[\s\S]*?\.v4-parts-list\s*\{[^}]*grid-template-columns: 1fr;/s);
+  assert.match(labelRule, /overflow-wrap: anywhere;/);
+  assert.match(labelRule, /text-overflow: clip;/);
+  assert.match(labelRule, /white-space: normal;/);
+  assert.doesNotMatch(labelRule, /ellipsis|overflow: hidden/);
+  assert.match(metadataRule, /grid-area: meta;/);
+  assert.match(metadataRule, /white-space: normal;/);
+  assert.doesNotMatch(narrowRule, /v4-part-(?:track-status|select|icon)/);
+  assert.doesNotMatch(styles, /\.v4-part-track-status\s*\{[^}]*display:\s*none/s);
+  assert.match(selectedRule, /var\(--ui-brand\) 5%/);
+  assert.match(selectedRule, /inset 2px 0 0/);
+  assert.doesNotMatch(selectedRule, /ui-surface-selected|ui-value|ui-warning|#fff3cf|#f0a23a/i);
+  assert.doesNotMatch(styles, /\.v4-part-entry\s*>\s*\.v4-record-actions/);
 });
 
 test('Creator Library exposes a non-destructive current and legacy Draft Recovery Center', async () => {

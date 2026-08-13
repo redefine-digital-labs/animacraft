@@ -53,7 +53,11 @@ import {
   createExpansionPackWorkspace,
   mountExpansionPackWorkspace,
 } from './expansion-pack-workspace.js';
-import { makerDefinitionEditorSections } from './maker-definition-editor.js';
+import {
+  createMakerPartListModel,
+  makerDefinitionEditorSections,
+  renderMakerPartList,
+} from './maker-definition-editor.js';
 import {
   COMPLETION_MODES,
   DEFAULT_PROTOCOL_COMMERCE_V5,
@@ -1745,6 +1749,7 @@ export class MakerWorkspace {
     this.boundCreatorKeydown = (event) => {
       if (this.handlePublishDialogKeydown('creator', event)) return;
       if (this.handleCreatorTabKeydown(event)) return;
+      if (this.handleCreatorPartListKeydown(event)) return;
       if (this.creatorTab !== 'structure') {
         if (event.key === 'Tab') {
           this.trapModalFocus(
@@ -7159,6 +7164,26 @@ export class MakerWorkspace {
     return true;
   }
 
+  handleCreatorPartListKeydown(event) {
+    const keys = new Set(['ArrowUp', 'ArrowDown', 'Home', 'End']);
+    if (!keys.has(event?.key)) return false;
+    const current = event.target?.closest?.('[data-part-list] [data-action="select-part"]');
+    const list = current?.closest?.('[data-part-list]');
+    if (!current || !list?.querySelectorAll) return false;
+    const buttons = [...list.querySelectorAll('[data-action="select-part"]')]
+      .filter((button) => !button.disabled);
+    const currentIndex = buttons.indexOf(current);
+    if (currentIndex < 0 || buttons.length === 0) return false;
+    let nextIndex = currentIndex;
+    if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = buttons.length - 1;
+    else if (event.key === 'ArrowUp') nextIndex = Math.max(0, currentIndex - 1);
+    else nextIndex = Math.min(buttons.length - 1, currentIndex + 1);
+    event.preventDefault?.();
+    buttons[nextIndex].focus?.({ preventScroll: true });
+    return true;
+  }
+
   handlePlayerTabKeydown(event) {
     const keys = new Set(['ArrowLeft', 'ArrowRight', 'Home', 'End']);
     if (!keys.has(event?.key)) return false;
@@ -8182,7 +8207,8 @@ export class MakerWorkspace {
     const lifecycleLabel = String(lifecycle.label || this.tr('publishMainnet'));
     const lifecycleManageLabel = String(lifecycle.manageLabel || lifecycleLabel);
     const lifecycleBadgeClass = String(lifecycle.badgeClass || '');
-    const partRows = document.parts.map((candidate, index) => {
+    const mutationBlocked = this.documentMutationBlocked();
+    const partListRecords = document.parts.map((candidate, index) => {
       const linkage = partTrackLinkage(document, candidate.id);
       const linkedTrack = linkage.mode === 'linked'
         ? document.layerTracks.find((track) => track.id === linkage.trackId)
@@ -8205,10 +8231,10 @@ export class MakerWorkspace {
       const wardrobeSlot = wardrobeEnabled
         && storedWardrobeMode === MAKER_WARDROBE_V7_PART_MODES.SLOT;
       const wardrobeSealed = getMakerComposableV6Draft(document)?.compatibilitySealed === true;
-      const wardrobeBlocked = wardrobeSealed || this.documentMutationBlocked();
+      const wardrobeBlocked = wardrobeSealed || mutationBlocked;
       const wardrobeActionLabel = wardrobeSealed
         ? this.tr('partSlotLocked', { part: candidate.name })
-        : this.documentMutationBlocked()
+        : mutationBlocked
           ? this.documentMutationBlockedMessage()
         : wardrobeSlot
           ? this.tr('partSlotKeepFixed', { part: candidate.name })
@@ -8221,31 +8247,54 @@ export class MakerWorkspace {
       const wardrobeShortcutMode = wardrobeSlot
         ? MAKER_WARDROBE_V7_PART_MODES.FIXED
         : MAKER_WARDROBE_V7_PART_MODES.SLOT;
-      return `
-        <article class="v4-record-entry v4-part-entry">
-        <div class="v4-part-row ${candidate.id === part?.id ? 'active' : ''} ${this.creatorHiddenPartIds.has(candidate.id) ? 'preview-hidden' : ''} ${linkage.mode === 'linked' ? 'linked-track' : 'custom-track'}" draggable="true" data-drag-kind="part" data-drag-id="${escapeHtml(candidate.id)}">
-          <span class="v4-part-drag" aria-hidden="true">⋮⋮<b>${String(index + 1).padStart(2, '0')}</b></span>
-          <button class="v4-part-select" type="button" data-action="select-part" data-part-id="${escapeHtml(candidate.id)}">
-            <span class="v4-part-icon">${candidate.iconAssetId && this.runtimeAsset(candidate.iconAssetId)?.url ? `<img src="${escapeHtml(this.runtimeAsset(candidate.iconAssetId).url)}" alt="" />` : escapeHtml(candidate.name.slice(0, 2).toUpperCase())}</span>
-            <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(this.tr('partStatus', { items: candidate.items.length, styles: candidate.items.reduce((count, candidateItem) => count + candidateItem.styles.length, 0) }))}</small><small class="v4-part-track-status">${escapeHtml(linkLabel)}</small></span>
-            <em>${candidate.required ? this.tr('required') : this.tr('optional')}</em>
-          </button>
-          <div class="v4-part-utilities">
-            <div class="v4-part-state-actions" role="group" aria-label="${escapeHtml(this.tr('partStateActions'))}">
-              <button class="v4-part-eye ${this.creatorHiddenPartIds.has(candidate.id) ? '' : 'active'}" type="button" data-action="toggle-part-preview" data-part-id="${escapeHtml(candidate.id)}" aria-pressed="${!this.creatorHiddenPartIds.has(candidate.id)}" aria-label="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}" title="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}">${this.creatorHiddenPartIds.has(candidate.id) ? '◎' : '◉'}</button>
-              <button id="v4PartSlot-${escapeHtml(candidate.id)}" class="v4-part-slot ${wardrobeSlot ? 'active' : ''}" type="button" data-action="${wardrobeShortcutAction}" data-part-id="${escapeHtml(candidate.id)}" ${wardrobeEnabled ? `data-mode="${wardrobeShortcutMode}"` : ''} aria-pressed="${wardrobeSlot}" aria-label="${escapeHtml(wardrobeActionLabel)}" title="${escapeHtml(wardrobeActionLabel)}" ${wardrobeBlocked ? 'disabled' : ''}><span aria-hidden="true">▦</span></button>
-            </div>
-          </div>
-        </div>
-        <div class="v4-record-actions">
-          <button class="v4-part-order" type="button" data-action="move-part" data-part-id="${escapeHtml(candidate.id)}" data-direction="up" aria-label="${escapeHtml(this.tr('movePartUp'))}" title="${escapeHtml(this.tr('movePartUp'))}" ${previousBlocked ? 'disabled' : ''}>↑</button>
-          <button class="v4-part-order" type="button" data-action="move-part" data-part-id="${escapeHtml(candidate.id)}" data-direction="down" aria-label="${escapeHtml(this.tr('movePartDown'))}" title="${escapeHtml(this.tr('movePartDown'))}" ${nextBlocked ? 'disabled' : ''}>↓</button>
-          <button type="button" data-action="copy-part" data-part-id="${escapeHtml(candidate.id)}">${escapeHtml(this.tr('duplicate'))}</button>
-          <button type="button" data-action="delete-part" data-part-id="${escapeHtml(candidate.id)}" class="danger" ${partContainsLockedStyle(candidate) ? 'disabled' : ''}>${escapeHtml(this.tr('delete'))}</button>
-        </div>
-        </article>
-      `;
-    }).join('');
+      const iconRuntime = candidate.iconAssetId ? this.runtimeAsset(candidate.iconAssetId) : null;
+      return {
+        id: candidate.id,
+        name: candidate.name,
+        thumbnailUrl: safeDisplayImageUrl(iconRuntime?.thumbnailUrl || iconRuntime?.url || ''),
+        itemCount: candidate.items.length,
+        required: candidate.required,
+        trackLabel: linkLabel,
+        trackMode: linkage.mode,
+        hidden: this.creatorHiddenPartIds.has(candidate.id),
+        draggable: !mutationBlocked,
+        slot: {
+          active: wardrobeSlot,
+          action: wardrobeShortcutAction,
+          mode: wardrobeEnabled ? wardrobeShortcutMode : '',
+          disabled: wardrobeBlocked,
+          label: wardrobeActionLabel,
+        },
+        capabilities: {
+          select: true,
+          preview: true,
+          slot: true,
+          moveUp: !mutationBlocked && !previousBlocked,
+          moveDown: !mutationBlocked && !nextBlocked,
+          duplicate: !mutationBlocked,
+          delete: !mutationBlocked && !partContainsLockedStyle(candidate),
+        },
+      };
+    });
+    const partList = renderMakerPartList(createMakerPartListModel(partListRecords, {
+      selectedId: part?.id,
+      listLabel: this.tr('parts'),
+      actionBarLabel: this.tr('selectedPartActions', { part: part?.name || '' }),
+      emptyLabel: this.tr('createFirstPart'),
+    }), {
+      itemCount: this.tr('partItemCount', { count: '{count}' }),
+      required: this.tr('required'),
+      optional: this.tr('optional'),
+      selectPart: this.tr('selectNamedPart', { part: '{part}' }),
+      selectedPart: this.tr('selectedNamedPart', { part: '{part}' }),
+      stateActions: this.tr('partStateActions'),
+      showPreview: this.tr('showPartPreview'),
+      hidePreview: this.tr('hidePartPreview'),
+      moveUp: this.tr('movePartUp'),
+      moveDown: this.tr('movePartDown'),
+      duplicate: this.tr('duplicate'),
+      delete: this.tr('delete'),
+    });
     const itemRows = part?.items.map((candidate) => {
       const thumbnail = this.itemThumbnailUrl(candidate);
       return `
@@ -8322,7 +8371,7 @@ export class MakerWorkspace {
         <div id="makerV4ToolPanel" class="v4-studio-workspace">
           <aside class="v4-parts-browser">
             <div class="v4-panel-head"><div><span>${escapeHtml(this.tr('parts'))}</span><strong>${escapeHtml(this.tr('playerMenuLinkedOrder'))}</strong><small>${escapeHtml(this.tr('playerMenuLinkedOrderCopy'))}</small></div><button type="button" data-action="add-part" aria-label="${escapeHtml(this.tr('addPartAria'))}">＋</button></div>
-            <div class="v4-parts-list">${partRows || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('createFirstPart'))}</span></div>`}</div>
+            ${partList}
           </aside>
 
           <main class="v4-canvas-column">

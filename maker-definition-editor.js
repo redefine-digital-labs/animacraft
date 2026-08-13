@@ -110,6 +110,18 @@ function partListEscape(value) {
     .replaceAll("'", '&#39;');
 }
 
+function normalizePartListImageUrl(value) {
+  const source = partListText(value);
+  if (!source) return '';
+  if (source.startsWith('blob:')) return source;
+  try {
+    const url = new URL(source, 'https://animacraft.soulidity.ai');
+    return ['http:', 'https:'].includes(url.protocol) ? source : '';
+  } catch {
+    return '';
+  }
+}
+
 function normalizePartListAction(value, fallback = '') {
   const action = partListText(value || fallback);
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(action) ? action : '';
@@ -146,7 +158,7 @@ function normalizePartListRow(record, index, selectedId, defaultActions) {
   return Object.freeze({
     id,
     name,
-    thumbnailUrl: partListText(record?.thumbnailUrl),
+    thumbnailUrl: normalizePartListImageUrl(record?.thumbnailUrl),
     thumbnailText: partListText(record?.thumbnailText) || name.slice(0, 2).toUpperCase(),
     itemCount: Math.max(0, Number(record?.itemCount) || 0),
     required: record?.required === true,
@@ -199,7 +211,7 @@ function partListButton({
   attributes = '',
 }) {
   if (!action) return '';
-  return `<button class="${partListEscape(className)}" type="button" data-action="${partListEscape(action)}" data-part-id="${partListEscape(partId)}" aria-label="${partListEscape(label)}" title="${partListEscape(label)}"${attributes}${disabled ? ' disabled' : ''}>${content}</button>`;
+  return `<button class="${partListEscape(className)}" type="button" data-action="${partListEscape(action)}" data-part-id="${partListEscape(partId)}"${attributes} aria-label="${partListEscape(label)}" title="${partListEscape(label)}"${disabled ? ' disabled' : ''}>${content}</button>`;
 }
 
 export function renderMakerPartList(modelValue, copy = {}) {
@@ -212,6 +224,7 @@ export function renderMakerPartList(modelValue, copy = {}) {
   const selectLabel = (name) => (partListText(copy.selectPart)?.replaceAll('{part}', name) || `Select ${name}`);
   const selectedLabel = (name) => (partListText(copy.selectedPart)?.replaceAll('{part}', name) || `${name}, selected`);
   const rows = model.rows.map((row, index) => {
+    const metadataId = `makerPartMeta-${index + 1}-${row.id.replace(/[^a-z0-9_-]+/gi, '-')}`;
     const mainDisabled = row.disabled || !row.capabilities.select || !row.actions.select;
     const selectAction = row.actions.select || model.actions.select;
     const previewLabel = row.hidden
@@ -230,7 +243,7 @@ export function renderMakerPartList(modelValue, copy = {}) {
       ? partListButton({
         action: row.actions.preview || model.actions.preview,
         partId: row.id,
-        className: `maker-part-list-eye v4-part-eye ${row.hidden ? '' : 'active'}`,
+        className: `v4-part-eye ${row.hidden ? '' : 'active '}maker-part-list-eye`,
         label: previewLabel,
         content: `<span aria-hidden="true">${row.hidden ? '◎' : '◉'}</span>`,
         disabled: row.disabled,
@@ -240,19 +253,19 @@ export function renderMakerPartList(modelValue, copy = {}) {
     const slot = row.slot && row.capabilities.slot ? partListButton({
       action: row.slot.action || row.actions.slot || model.actions.slot,
       partId: row.id,
-      className: `maker-part-list-slot v4-part-slot ${row.slot.active ? 'active' : ''}`,
+      className: `v4-part-slot ${row.slot.active ? 'active ' : ''}maker-part-list-slot`,
       label: row.slot.label || `${row.name} slot`,
       content: '<span aria-hidden="true">▦</span>',
       disabled: row.disabled || row.slot.disabled,
       attributes: `${row.slot.mode ? ` data-mode="${partListEscape(row.slot.mode)}"` : ''} aria-pressed="${row.slot.active}"`,
     }) : '';
-    return `<article class="maker-part-list-entry v4-record-entry v4-part-entry ${row.selected ? 'active' : ''} ${row.hidden ? 'preview-hidden' : ''} ${row.trackMode === 'linked' ? 'linked-track' : 'custom-track'} ${row.readonly ? 'readonly' : ''}" data-part-row data-part-id="${partListEscape(row.id)}"${row.draggable ? ' draggable="true" data-drag-kind="part"' : ''} data-drag-id="${partListEscape(row.id)}">
+    return `<article class="maker-part-list-entry v4-record-entry v4-part-entry ${row.selected ? 'active' : ''} ${row.hidden ? 'preview-hidden' : ''} ${row.trackMode === 'linked' ? 'linked-track' : 'custom-track'} ${row.readonly ? 'readonly' : ''}" role="listitem" data-part-row data-part-id="${partListEscape(row.id)}"${row.draggable ? ' draggable="true" data-drag-kind="part"' : ''} data-drag-id="${partListEscape(row.id)}">
       <div class="maker-part-list-row v4-part-row ${row.selected ? 'active' : ''}">
         <span class="maker-part-list-drag v4-part-drag" aria-hidden="true">${row.draggable ? '⋮⋮' : '—'}<b>${String(index + 1).padStart(2, '0')}</b></span>
         <span class="maker-part-list-thumb v4-part-icon">${thumbnail}</span>
-        <button class="maker-part-list-select v4-part-select" type="button" data-action="${partListEscape(selectAction)}" data-part-id="${partListEscape(row.id)}" aria-label="${partListEscape(row.selected ? selectedLabel(row.name) : selectLabel(row.name))}" aria-current="${row.selected ? 'true' : 'false'}"${mainDisabled ? ' disabled' : ''}><strong>${partListEscape(row.name)}</strong></button>
+        <button class="maker-part-list-select v4-part-select" type="button" data-action="${partListEscape(selectAction)}" data-part-id="${partListEscape(row.id)}" aria-label="${partListEscape(row.selected ? selectedLabel(row.name) : selectLabel(row.name))}" aria-describedby="${partListEscape(metadataId)}" aria-current="${row.selected ? 'true' : 'false'}"${mainDisabled ? ' disabled' : ''}><strong>${partListEscape(row.name)}</strong></button>
         <div class="maker-part-list-state v4-part-state-actions" role="group" aria-label="${partListEscape(partListText(copy.stateActions)?.replaceAll('{part}', row.name) || `${row.name} visibility and slot`)}">${preview}${slot}</div>
-        <small class="maker-part-list-meta v4-part-track-status">${partListEscape(metadata)}</small>
+        <small id="${partListEscape(metadataId)}" class="maker-part-list-meta v4-part-track-status">${partListEscape(metadata)}</small>
       </div>
     </article>`;
   }).join('');
@@ -264,5 +277,5 @@ export function renderMakerPartList(modelValue, copy = {}) {
     partListButton({ action: row.actions.delete, partId: row.id, className: 'maker-part-list-delete danger', label: partListText(copy.delete) || 'Delete', content: partListEscape(partListText(copy.delete) || 'Delete'), disabled: row.disabled || !row.capabilities.delete }),
   ].filter(Boolean).join('') : '';
   const actionBar = row && actionBarButtons ? `<div class="maker-part-list-actions" data-part-actions data-part-id="${partListEscape(row.id)}" role="toolbar" aria-label="${partListEscape(model.actionBarLabel)}">${actionBarButtons}</div>` : '';
-  return `<div class="maker-part-list v4-parts-list" data-part-list aria-label="${partListEscape(model.listLabel)}">${rows || `<div class="v4-inline-empty"><span>${partListEscape(model.emptyLabel)}</span></div>`}</div>${actionBar}`;
+  return `<div class="maker-part-list v4-parts-list" data-part-list role="list" aria-label="${partListEscape(model.listLabel)}">${rows || `<div class="v4-inline-empty"><span>${partListEscape(model.emptyLabel)}</span></div>`}</div>${actionBar}`;
 }

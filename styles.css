@@ -8287,6 +8287,7 @@ pre {
   line-height: 1.35;
 }
 
+.maker-part-list,
 .v4-parts-list {
   display: grid;
   gap: 7px;
@@ -8297,6 +8298,7 @@ pre {
   min-width: 0;
 }
 
+.maker-part-list-entry,
 .v4-part-entry {
   display: grid;
   gap: 4px;
@@ -8308,10 +8310,6 @@ pre {
   gap: 4px;
 }
 
-.v4-part-entry > .v4-record-actions {
-  grid-template-columns: 30px 30px minmax(0, 1fr) minmax(0, 1fr);
-}
-
 .v4-record-actions button {
   min-height: 27px !important;
   padding: 4px 7px !important;
@@ -8319,95 +8317,80 @@ pre {
   font-size: 9px;
 }
 
+.maker-part-list-row,
 .v4-part-row {
   position: relative;
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
-  gap: 6px;
+  grid-template-areas:
+    "drag thumb name state"
+    "meta meta meta meta";
+  grid-template-columns: 18px 28px minmax(0, 1fr) auto;
+  gap: 4px 5px;
   align-items: center;
   width: 100%;
-  min-height: 62px !important;
-  padding: 4px 5px 4px 2px;
+  min-width: 0;
+  min-height: 58px !important;
+  padding: 5px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--ui-surface);
   text-align: left;
 }
 
+.maker-part-list-drag,
 .v4-part-drag {
+  grid-area: drag;
   display: grid;
   place-items: center;
   align-self: stretch;
+  min-width: 0;
   color: var(--muted);
   cursor: grab;
-  font-size: 10px;
+  font-size: 8px;
   user-select: none;
 }
 
+.maker-part-list-drag b,
 .v4-part-drag b {
   color: var(--violet);
-  font-size: 8px;
+  font-size: 7px;
 }
 
+.maker-part-list-select,
 .v4-part-select {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
-  gap: 9px;
-  align-items: center;
+  grid-area: name;
+  display: block;
   width: 100%;
   min-width: 0;
-  min-height: 58px !important;
+  min-height: 30px !important;
+  padding: 2px 0 !important;
   border: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
   text-align: left;
 }
 
-.v4-part-select > span:nth-child(2) {
-  min-width: 0;
-}
-
-.v4-part-select strong,
-.v4-part-select small {
+.maker-part-list-select strong,
+.v4-part-select strong {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  color: var(--ui-text);
+  font-size: 11px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
-.v4-part-select small {
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 650;
-}
-
-.v4-part-select .v4-part-track-status {
-  color: var(--mint-dark);
-  font-size: 9px;
-}
-
-.v4-part-row.custom-track .v4-part-track-status {
-  color: var(--orange);
-}
-
-.v4-part-select em {
-  grid-column: 2;
-  width: max-content;
-  margin-top: -6px;
-  color: var(--mint);
-  font-size: 9px;
-  font-style: normal;
-  text-transform: uppercase;
-}
-
+.maker-part-list-row.active,
 .v4-part-row.active {
-  border-color: var(--ui-border-strong);
-  background: var(--ui-surface-selected);
-  box-shadow: inset 3px 0 0 var(--ui-value);
+  border-color: color-mix(in srgb, var(--ui-brand) 36%, var(--line));
+  background: color-mix(in srgb, var(--ui-brand) 5%, var(--ui-surface));
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ui-brand) 68%, var(--line));
 }
 
-.v4-part-row.preview-hidden .v4-part-select {
+.maker-part-list-entry.preview-hidden .maker-part-list-select,
+.v4-part-entry.preview-hidden .v4-part-select {
   opacity: 0.5;
 }
 
@@ -8418,24 +8401,26 @@ pre {
   font-size: 11px;
 }
 
-.v4-part-utilities {
-  display: block;
-}
-
+.maker-part-list-state,
 .v4-part-state-actions {
+  grid-area: state;
   display: grid;
-  grid-template-columns: repeat(2, 30px);
-  gap: 4px;
+  grid-auto-flow: column;
+  grid-auto-columns: 24px;
+  gap: 3px;
+  align-items: center;
 }
 
+.maker-part-list-eye,
+.maker-part-list-slot,
 .v4-part-eye,
 .v4-part-slot {
   display: grid;
   place-items: center;
-  width: 30px;
-  min-height: 32px !important;
+  width: 24px;
+  min-height: 28px !important;
   padding: 0 !important;
-  border-radius: 8px !important;
+  border-radius: 7px !important;
 }
 
 .v4-part-slot {
@@ -8455,17 +8440,63 @@ pre {
   opacity: 0.42;
 }
 
+.maker-part-list-thumb,
 .v4-part-icon {
+  grid-area: thumb;
   display: grid;
   place-items: center;
   overflow: hidden;
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
   background: var(--ui-surface-success);
   color: var(--ui-success);
-  font-size: 11px;
+  font-size: 9px;
   font-weight: 900;
+}
+
+.maker-part-list-meta {
+  grid-area: meta;
+  display: block;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.maker-part-list-entry.linked-track .maker-part-list-meta {
+  color: var(--mint-dark);
+}
+
+.maker-part-list-entry.custom-track .maker-part-list-meta {
+  color: var(--orange);
+}
+
+.maker-part-list-entry.readonly .maker-part-list-drag {
+  cursor: default;
+}
+
+.maker-part-list-actions {
+  display: grid;
+  grid-template-columns: 28px 28px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 4px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--ui-surface-muted);
+}
+
+.maker-part-list-actions button {
+  min-width: 0;
+  min-height: 28px !important;
+  padding: 4px !important;
+  border-radius: 6px !important;
+  font-size: 9px;
+  overflow-wrap: anywhere;
 }
 
 .v4-part-icon img,
@@ -14034,21 +14065,6 @@ pre {
 @media (max-width: 1180px) {
   .v4-studio-workspace {
     grid-template-columns: 190px minmax(410px, 1fr);
-  }
-
-  .v4-part-select {
-    grid-template-columns: 30px minmax(0, 1fr);
-    gap: 6px;
-  }
-
-  .v4-part-icon {
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
-  }
-
-  .v4-part-track-status {
-    display: none !important;
   }
 
   .v4-inspector {

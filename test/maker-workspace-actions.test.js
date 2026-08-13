@@ -596,7 +596,7 @@ test('Part-row wardrobe shortcut opens settings while off and becomes an undoabl
     assert.equal(workspace.getDocument().extensions.wardrobeV7.partModes.background, 'SLOT');
     assert.match(
       creatorRoot.innerHTML,
-      /class="v4-part-slot active"[^>]*data-part-id="background"[^>]*data-mode="FIXED"[^>]*aria-pressed="true"/,
+      /class="v4-part-slot active maker-part-list-slot"[^>]*data-part-id="background"[^>]*data-mode="FIXED"[^>]*aria-pressed="true"/,
     );
 
     creatorClick(workspace, 'undo');
@@ -654,6 +654,130 @@ test('interactive Part controls do not start canvas pan or row drag', async () =
       dataTransfer: { setData() {}, effectAllowed: '' },
     });
     assert.equal(dragPrevented, true);
+    assert.equal(workspace.dragSort, null);
+  }, { playable: true });
+});
+
+test('Creator Part list uses one selected action bar with full labels and compact metadata', async () => {
+  const creatorRoot = new FakeRoot();
+  const longLabel = 'Back Hair With Ceremonial Ribbons And Beads';
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    workspace.executeDocument('Use long Part label fixture', ({ document: next }) => {
+      next.parts[1].name = longLabel;
+    });
+
+    const html = creatorRoot.innerHTML;
+    assert.equal((html.match(/data-part-row/g) || []).length, document.parts.length);
+    assert.equal((html.match(/data-part-actions/g) || []).length, 1);
+    assert.equal((html.match(/class="maker-part-list-meta v4-part-track-status"/g) || []).length, document.parts.length);
+    assert.equal((html.match(/data-action="copy-part"/g) || []).length, 1);
+    assert.equal((html.match(/data-action="delete-part"/g) || []).length, 1);
+    assert.match(html, new RegExp(`<strong>${longLabel}<\\/strong>`));
+    assert.match(html, /1 Items · Required · Linked Track/);
+    assert.match(html, /data-part-list role="list"/);
+    assert.match(html, /role="toolbar" aria-label="Actions for selected Part/);
+    const partRailStart = html.indexOf('<div class="maker-part-list');
+    const partRail = html.slice(partRailStart, html.indexOf('</aside>', partRailStart));
+    assert.doesNotMatch(partRail, /v4-record-actions/);
+
+    creatorClick(workspace, 'select-part', { partId: document.parts[1].id });
+    assert.match(
+      creatorRoot.innerHTML,
+      new RegExp(`data-part-actions data-part-id="${document.parts[1].id}" role="toolbar"`),
+    );
+    assert.match(
+      creatorRoot.innerHTML,
+      new RegExp(`data-part-id="${document.parts[1].id}"[^>]*aria-current="true"`),
+    );
+  }, { creatorRoot, playable: true });
+});
+
+test('Creator Part list arrow, Home, and End keys move focus without mutating selection', async () => {
+  await withWorkspace(async (workspace) => {
+    let focusedIndex = -1;
+    const list = { querySelectorAll: () => buttons };
+    const buttons = workspace.getDocument().parts.map((part, index) => ({
+      dataset: { action: 'select-part', partId: part.id },
+      disabled: false,
+      closest(selector) {
+        if (selector === '[data-part-list] [data-action="select-part"]') return this;
+        if (selector === '[data-part-list]') return list;
+        return null;
+      },
+      focus(options) {
+        assert.equal(options.preventScroll, true);
+        focusedIndex = index;
+      },
+    }));
+    const selectedPartId = workspace.selectedPartId;
+    let prevented = false;
+
+    assert.equal(workspace.handleCreatorPartListKeydown({
+      key: 'ArrowDown',
+      target: buttons[0],
+      preventDefault() { prevented = true; },
+    }), true);
+    assert.equal(prevented, true);
+    assert.equal(focusedIndex, 1);
+    assert.equal(workspace.selectedPartId, selectedPartId);
+
+    workspace.handleCreatorPartListKeydown({ key: 'End', target: buttons[1], preventDefault() {} });
+    assert.equal(focusedIndex, buttons.length - 1);
+    workspace.handleCreatorPartListKeydown({ key: 'Home', target: buttons.at(-1), preventDefault() {} });
+    assert.equal(focusedIndex, 0);
+    assert.equal(workspace.handleCreatorPartListKeydown({
+      key: 'ArrowRight',
+      target: buttons[0],
+      preventDefault() { assert.fail('horizontal keys must keep their native behavior'); },
+    }), false);
+  }, { playable: true });
+});
+
+test('Creator Part rows preserve drag reordering and ignore drag from eye or slot controls', async () => {
+  await withWorkspace(async (workspace) => {
+    const originalIds = workspace.getDocument().parts.map((part) => part.id);
+    const sourceRow = {
+      dataset: { dragKind: 'part', dragId: originalIds[1] },
+      closest(selector) {
+        if (selector.includes('button')) return null;
+        if (selector === '[data-drag-kind]') return this;
+        return null;
+      },
+    };
+    let payload = '';
+    workspace.handleDragStart({
+      target: sourceRow,
+      preventDefault() {},
+      dataTransfer: {
+        effectAllowed: '',
+        setData(type, value) {
+          assert.equal(type, 'text/plain');
+          payload = value;
+        },
+      },
+    });
+    assert.deepEqual(JSON.parse(payload), { kind: 'part', id: originalIds[1], parentId: '' });
+
+    const targetRow = {
+      dataset: { dragKind: 'part', dragId: originalIds[0] },
+      closest: () => targetRow,
+    };
+    workspace.handleDrop({ target: targetRow, preventDefault() {} });
+    assert.equal(workspace.getDocument().parts[0].id, originalIds[1]);
+
+    let prevented = false;
+    const stateControl = {
+      closest(selector) {
+        return selector.includes('button') ? this : sourceRow;
+      },
+    };
+    workspace.handleDragStart({
+      target: stateControl,
+      preventDefault() { prevented = true; },
+      dataTransfer: { effectAllowed: '', setData() {} },
+    });
+    assert.equal(prevented, true);
     assert.equal(workspace.dragSort, null);
   }, { playable: true });
 });
