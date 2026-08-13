@@ -569,6 +569,95 @@ test('switching a Composable Maker to Fixed preserves its Item catalog for a rev
   }, { playable: true });
 });
 
+test('Part-row wardrobe shortcut opens settings while off and becomes an undoable Slot toggle while on', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const initialRevision = workspace.store.getState().revision;
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="open-part-slot-settings" data-part-id="background"/,
+    );
+
+    creatorClick(workspace, 'open-part-slot-settings', { partId: 'background' });
+    assert.equal(workspace.creatorTab, 'composable');
+    assert.equal(workspace.selectedPartId, 'background');
+    assert.equal(workspace.store.getState().revision, initialRevision);
+
+    creatorClick(workspace, 'composable-mode', { mode: 'COMPOSABLE' });
+    creatorClick(workspace, 'creator-tab', { tab: 'structure' });
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="wardrobe-part-mode" data-part-id="background" data-mode="SLOT"/,
+    );
+
+    const beforeToggle = workspace.store.getState().revision;
+    creatorClick(workspace, 'wardrobe-part-mode', { partId: 'background', mode: 'SLOT' });
+    assert.equal(workspace.store.getState().revision, beforeToggle + 1);
+    assert.equal(workspace.getDocument().extensions.wardrobeV7.partModes.background, 'SLOT');
+    assert.match(
+      creatorRoot.innerHTML,
+      /class="v4-part-slot active"[^>]*data-part-id="background"[^>]*data-mode="FIXED"[^>]*aria-pressed="true"/,
+    );
+
+    creatorClick(workspace, 'undo');
+    assert.equal(workspace.getDocument().extensions.wardrobeV7.partModes.background, 'FIXED');
+    creatorClick(workspace, 'redo');
+    assert.equal(workspace.getDocument().extensions.wardrobeV7.partModes.background, 'SLOT');
+  }, { creatorRoot, playable: true });
+});
+
+test('wardrobe choices state their target, ignore the selected choice, and lock after sealing', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'creator-tab', { tab: 'composable' });
+    creatorClick(workspace, 'composable-mode', { mode: 'COMPOSABLE' });
+    assert.match(creatorRoot.innerHTML, /class="v7-wardrobe-choice" role="group"/);
+    assert.match(
+      creatorRoot.innerHTML,
+      /class="active"[^>]*aria-pressed="true"[^>]*data-mode="FIXED"[^>]*><i aria-hidden="true">✓<\/i><span>Fixed in base appearance<\/span>/,
+    );
+    assert.match(
+      creatorRoot.innerHTML,
+      /class=""[^>]*aria-pressed="false"[^>]*data-mode="SLOT"[^>]*><i aria-hidden="true"><\/i><span>Wardrobe Slot<\/span>/,
+    );
+
+    const beforeNoop = workspace.store.getState().revision;
+    creatorClick(workspace, 'wardrobe-part-mode', { partId: 'background', mode: 'FIXED' });
+    assert.equal(workspace.store.getState().revision, beforeNoop);
+
+    creatorClick(workspace, 'composable-seal');
+    const sealed = structuredClone(workspace.getDocument().extensions.wardrobeV7);
+    creatorClick(workspace, 'wardrobe-part-mode', { partId: 'background', mode: 'SLOT' });
+    assert.deepEqual(workspace.getDocument().extensions.wardrobeV7, sealed);
+    assert.match(creatorRoot.innerHTML, /aria-pressed="false"[^>]*data-mode="SLOT"[^>]*disabled/);
+  }, { creatorRoot, playable: true });
+});
+
+test('interactive Part controls do not start canvas pan or row drag', async () => {
+  await withWorkspace(async (workspace) => {
+    let prevented = false;
+    workspace.boundCreatorKeydown({
+      code: 'Space',
+      key: ' ',
+      target: { matches: (selector) => selector.includes('button') },
+      preventDefault: () => { prevented = true; },
+    });
+    assert.equal(prevented, false);
+    assert.equal(workspace.creatorSpacePressed, false);
+
+    let dragPrevented = false;
+    const row = { dataset: { dragKind: 'part', dragId: 'background' } };
+    const control = { closest: (selector) => (selector.includes('button') ? control : row) };
+    workspace.handleDragStart({
+      target: control,
+      preventDefault: () => { dragPrevented = true; },
+      dataTransfer: { setData() {}, effectAllowed: '' },
+    });
+    assert.equal(dragPrevented, true);
+    assert.equal(workspace.dragSort, null);
+  }, { playable: true });
+});
+
 test('Composable Creator controls and Player Wardrobe expose the same Maker-local Item catalog', async () => {
   const creatorRoot = new FakeRoot();
   const playerRoot = new FakeRoot();
@@ -3377,12 +3466,18 @@ test('publication requires the configured creator cover and validates its publis
     workspace.executeDocument('Remove configured Maker cover', ({ document }) => {
       document.metadata.coverAssetId = null;
     });
+    const publicationIssues = workspace.publicationIssues();
     assert.ok(
-      workspace.publicationIssues().some((issue) => (
+      publicationIssues.some((issue) => (
         issue.code === 'missing_reference'
         && issue.path === 'metadata.coverAssetId'
       )),
       'the Maker schema cover requirement must remain visible in publication issues',
+    );
+    assert.equal(
+      publicationIssues.some((issue) => issue.path === 'publication.release'),
+      false,
+      'schema validation must not be repeated as a generic release compilation failure',
     );
   }, { playable: true });
 
@@ -3390,14 +3485,66 @@ test('publication requires the configured creator cover and validates its publis
     workspace.executeDocument('Reference a missing Maker cover descriptor', ({ document }) => {
       document.metadata.coverAssetId = 'missing-cover-descriptor';
     });
+    const publicationIssues = workspace.publicationIssues();
     assert.ok(
-      workspace.publicationIssues().some((issue) => (
+      publicationIssues.some((issue) => (
         issue.code === 'missing_reference'
         && issue.path === 'metadata.coverAssetId'
       )),
       'a dangling cover Asset reference must block publication',
     );
+    assert.equal(
+      publicationIssues.filter((issue) => (
+        issue.code === 'missing_reference'
+        && issue.path === 'metadata.coverAssetId'
+      )).length,
+      1,
+      'a dangling cover Asset reference must be reported exactly once',
+    );
+    assert.equal(
+      publicationIssues.some((issue) => (
+        issue.code === 'release_compilation_failed'
+        || issue.path === 'publication.release'
+      )),
+      false,
+      'the final release compiler must preserve the precise cover issue instead of adding a cascade',
+    );
   }, { playable: true });
+});
+
+test('cover publication issues explain the repair and focus the Maker cover upload', async () => {
+  let focused = 0;
+  const creatorRoot = new FakeRoot({
+    '[data-action="maker-cover"]': {
+      focus() { focused += 1; },
+    },
+  });
+  await withWorkspace(async (workspace) => {
+    workspace.executeDocument('Reference a missing Maker cover descriptor', ({ document }) => {
+      document.metadata.coverAssetId = 'missing-cover-descriptor';
+    });
+    workspace.setLocale('zh', { render: false });
+    creatorClick(workspace, 'creator-tab', { tab: 'validate' });
+
+    const coverIssue = workspace.publicationIssues().find((issue) => (
+      issue.code === 'missing_reference'
+      && issue.path === 'metadata.coverAssetId'
+    ));
+    assert.ok(coverIssue);
+    assert.equal(
+      workspace.issueText(coverIssue),
+      '请在 Maker 信息中上传或替换 Maker 封面，并等到“已保存并完成读回验证”后再重新检查。',
+    );
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="focus-issue" data-issue-path="metadata\.coverAssetId"/,
+      'the cover issue must provide a direct route to Maker Info',
+    );
+
+    creatorClick(workspace, 'focus-issue', { issuePath: 'metadata.coverAssetId' });
+    assert.equal(workspace.creatorTab, 'info');
+    assert.equal(focused, 1, 'the Maker cover file input must receive focus');
+  }, { creatorRoot, playable: true });
 });
 
 test('release Preflight compiles the configured cover without replacing it', async () => {

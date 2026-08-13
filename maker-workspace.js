@@ -3,6 +3,7 @@ import {
   createMakerV5Document,
   isMakerV5Document,
   MAKER_V5_LIMITS,
+  MakerV5ValidationError,
 } from './maker-v4.js';
 import {
   composeRuleTargets,
@@ -112,6 +113,8 @@ import { physicalStyleV7Text } from './maker-physical-v7-i18n.js';
 import {
   MAKER_WARDROBE_V7_EXTENSION_KEY,
   MAKER_WARDROBE_V7_PART_MODES,
+  makerWardrobeV7Enabled,
+  makerWardrobeV7PartMode,
   makerWardrobeV7PartModes,
   makerWardrobeV7Summary,
   setMakerWardrobeV7Enabled,
@@ -631,6 +634,14 @@ const MAKER_INFO_FIELD_SPECS = Object.freeze({
 });
 
 function makerInfoFieldByPath(path) {
+  if (String(path || '') === 'metadata.coverAssetId') {
+    return {
+      action: 'maker-cover',
+      path: 'metadata.coverAssetId',
+      labelKey: 'makerCover',
+      limit: null,
+    };
+  }
   const entry = Object.entries(MAKER_INFO_FIELD_SPECS)
     .find(([, spec]) => spec.path === String(path || ''));
   return entry ? { action: entry[0], ...entry[1] } : null;
@@ -1748,8 +1759,10 @@ export class MakerWorkspace {
           return;
         }
       }
-      const editingText = event.target?.matches?.('input, textarea, select, [contenteditable="true"]');
-      if (event.code === 'Space' && !editingText) {
+      const interactiveTarget = event.target?.matches?.(
+        'input, textarea, select, button, a[href], [role="button"], [role="switch"], [contenteditable="true"]',
+      );
+      if (event.code === 'Space' && !interactiveTarget) {
         this.creatorSpacePressed = true;
         this.creatorRoot?.querySelector('.v4-canvas-viewport')?.classList.add('pan-ready');
         event.preventDefault?.();
@@ -5969,8 +5982,8 @@ export class MakerWorkspace {
 
   publicationIssues(document = this.store?.getState().document) {
     if (!document) return [];
-    const issues = collectMakerV5ValidationIssues(document, { mode: 'publish' })
-      .map(compactIssue);
+    const documentValidationIssues = collectMakerV5ValidationIssues(document, { mode: 'publish' });
+    const issues = documentValidationIssues.map(compactIssue);
     const commercePackIds = expansionPackIds(document);
     const normalizedCommerce = normalizeMakerCommerceV5(document.commerce, {
       packIds: commercePackIds,
@@ -6134,11 +6147,32 @@ export class MakerWorkspace {
           projectionAuxiliaryBlob: publicationPreflightPngBlob(),
         });
       } catch (error) {
-        releaseIssues.push({
-          code: `release_${String(error?.code || 'compilation_failed')}`,
-          path: 'publication.release',
-          message: error?.message || 'The final Walrus manifest and Sui projection could not be compiled.',
-        });
+        if (error instanceof MakerV5ValidationError) {
+          releaseIssues.push(...error.issues.map(compactIssue));
+        } else if (
+          error?.code === 'missing-asset-metadata'
+          && String(document.metadata?.coverAssetId || '')
+          && Array.isArray(error?.details?.assetIds)
+          && error.details.assetIds.length === 1
+          && error.details.assetIds[0] === document.metadata.coverAssetId
+          && documentValidationIssues.some((issue) => (
+            issue.code === 'missing_reference'
+            && issue.path === 'metadata.coverAssetId'
+          ))
+        ) {
+          releaseIssues.push(...documentValidationIssues
+            .filter((issue) => (
+              issue.code === 'missing_reference'
+              && issue.path === 'metadata.coverAssetId'
+            ))
+            .map(compactIssue));
+        } else {
+          releaseIssues.push({
+            code: `release_${String(error?.code || 'compilation_failed')}`,
+            path: 'publication.release',
+            message: error?.message || 'The final Walrus manifest and Sui projection could not be compiled.',
+          });
+        }
       }
       this.releasePreflightCache.set(document, releaseIssues);
     }
@@ -7133,6 +7167,12 @@ export class MakerWorkspace {
     if (issue.code === 'rights_origin_confirmation_required') {
       return this.tr('rightsOriginConfirmationRequired');
     }
+    if (
+      issue.path === 'metadata.coverAssetId'
+      && ['missing_reference', 'maker_cover_source_missing'].includes(issue.code)
+    ) {
+      return this.tr('issueMakerCoverRequired');
+    }
     const makerInfoField = makerInfoFieldByPath(issue.path);
     if (issue.code === 'invalid_text' && makerInfoField) {
       return this.tr('makerInfoProtocolTextInvalid', {
@@ -7858,6 +7898,29 @@ export class MakerWorkspace {
         || partMoveCrossesLockedLinkedTrack(document, index, previousIndex);
       const nextBlocked = nextIndex >= document.parts.length
         || partMoveCrossesLockedLinkedTrack(document, index, nextIndex);
+      const wardrobeEnabled = makerWardrobeV7Enabled(document);
+      const storedWardrobeMode = makerWardrobeV7PartMode(document, candidate.id, {
+        effective: false,
+      });
+      const wardrobeSlot = wardrobeEnabled
+        && storedWardrobeMode === MAKER_WARDROBE_V7_PART_MODES.SLOT;
+      const wardrobeSealed = getMakerComposableV6Draft(document)?.compatibilitySealed === true;
+      const wardrobeBlocked = wardrobeSealed || this.documentMutationBlocked();
+      const wardrobeActionLabel = wardrobeSealed
+        ? this.tr('partSlotLocked', { part: candidate.name })
+        : this.documentMutationBlocked()
+          ? this.documentMutationBlockedMessage()
+        : wardrobeSlot
+          ? this.tr('partSlotKeepFixed', { part: candidate.name })
+          : wardrobeEnabled
+            ? this.tr('partSlotMakeSlot', { part: candidate.name })
+            : this.tr('partSlotOpenSettings', { part: candidate.name });
+      const wardrobeShortcutAction = wardrobeEnabled
+        ? 'wardrobe-part-mode'
+        : 'open-part-slot-settings';
+      const wardrobeShortcutMode = wardrobeSlot
+        ? MAKER_WARDROBE_V7_PART_MODES.FIXED
+        : MAKER_WARDROBE_V7_PART_MODES.SLOT;
       return `
         <article class="v4-record-entry v4-part-entry">
         <div class="v4-part-row ${candidate.id === part?.id ? 'active' : ''} ${this.creatorHiddenPartIds.has(candidate.id) ? 'preview-hidden' : ''} ${linkage.mode === 'linked' ? 'linked-track' : 'custom-track'}" draggable="true" data-drag-kind="part" data-drag-id="${escapeHtml(candidate.id)}">
@@ -7867,13 +7930,16 @@ export class MakerWorkspace {
             <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(this.tr('partStatus', { items: candidate.items.length, styles: candidate.items.reduce((count, candidateItem) => count + candidateItem.styles.length, 0) }))}</small><small class="v4-part-track-status">${escapeHtml(linkLabel)}</small></span>
             <em>${candidate.required ? this.tr('required') : this.tr('optional')}</em>
           </button>
-          <div class="v4-part-order-actions">
-            <button type="button" data-action="move-part" data-part-id="${escapeHtml(candidate.id)}" data-direction="up" aria-label="${escapeHtml(this.tr('movePartUp'))}" title="${escapeHtml(this.tr('movePartUp'))}" ${previousBlocked ? 'disabled' : ''}>↑</button>
-            <button type="button" data-action="move-part" data-part-id="${escapeHtml(candidate.id)}" data-direction="down" aria-label="${escapeHtml(this.tr('movePartDown'))}" title="${escapeHtml(this.tr('movePartDown'))}" ${nextBlocked ? 'disabled' : ''}>↓</button>
+          <div class="v4-part-utilities">
+            <div class="v4-part-state-actions" role="group" aria-label="${escapeHtml(this.tr('partStateActions'))}">
+              <button class="v4-part-eye ${this.creatorHiddenPartIds.has(candidate.id) ? '' : 'active'}" type="button" data-action="toggle-part-preview" data-part-id="${escapeHtml(candidate.id)}" aria-pressed="${!this.creatorHiddenPartIds.has(candidate.id)}" aria-label="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}" title="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}">${this.creatorHiddenPartIds.has(candidate.id) ? '◎' : '◉'}</button>
+              <button id="v4PartSlot-${escapeHtml(candidate.id)}" class="v4-part-slot ${wardrobeSlot ? 'active' : ''}" type="button" data-action="${wardrobeShortcutAction}" data-part-id="${escapeHtml(candidate.id)}" ${wardrobeEnabled ? `data-mode="${wardrobeShortcutMode}"` : ''} aria-pressed="${wardrobeSlot}" aria-label="${escapeHtml(wardrobeActionLabel)}" title="${escapeHtml(wardrobeActionLabel)}" ${wardrobeBlocked ? 'disabled' : ''}><span aria-hidden="true">▦</span></button>
+            </div>
           </div>
-          <button class="v4-part-eye ${this.creatorHiddenPartIds.has(candidate.id) ? '' : 'active'}" type="button" data-action="toggle-part-preview" data-part-id="${escapeHtml(candidate.id)}" aria-pressed="${!this.creatorHiddenPartIds.has(candidate.id)}" aria-label="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}" title="${escapeHtml(this.tr(this.creatorHiddenPartIds.has(candidate.id) ? 'showPartPreview' : 'hidePartPreview'))}">${this.creatorHiddenPartIds.has(candidate.id) ? '◎' : '◉'}</button>
         </div>
         <div class="v4-record-actions">
+          <button class="v4-part-order" type="button" data-action="move-part" data-part-id="${escapeHtml(candidate.id)}" data-direction="up" aria-label="${escapeHtml(this.tr('movePartUp'))}" title="${escapeHtml(this.tr('movePartUp'))}" ${previousBlocked ? 'disabled' : ''}>↑</button>
+          <button class="v4-part-order" type="button" data-action="move-part" data-part-id="${escapeHtml(candidate.id)}" data-direction="down" aria-label="${escapeHtml(this.tr('movePartDown'))}" title="${escapeHtml(this.tr('movePartDown'))}" ${nextBlocked ? 'disabled' : ''}>↓</button>
           <button type="button" data-action="copy-part" data-part-id="${escapeHtml(candidate.id)}">${escapeHtml(this.tr('duplicate'))}</button>
           <button type="button" data-action="delete-part" data-part-id="${escapeHtml(candidate.id)}" class="danger" ${partContainsLockedStyle(candidate) ? 'disabled' : ''}>${escapeHtml(this.tr('delete'))}</button>
         </div>
@@ -9076,6 +9142,8 @@ export class MakerWorkspace {
       const draftIssues = composable ? this.composableCreatorIssues(document) : [];
       const physicalDraft = getPhysicalStyleCatalogV7Draft(document);
       const physicalIssues = physicalDraft ? this.physicalStyleCreatorIssues(document) : [];
+      const wardrobePolicyLocked = draft?.compatibilitySealed === true
+        || this.documentMutationBlocked();
       return `
         <div class="v4-advanced-head">
           <div><span>${escapeHtml(this.tr('wardrobeSetup'))}</span><h3>${escapeHtml(this.tr('wardrobeSetupTitle'))}</h3><p>${escapeHtml(this.tr('wardrobeSetupCopy'))}</p></div>
@@ -9083,7 +9151,7 @@ export class MakerWorkspace {
         <div class="v4-composable-workspace">
           <section class="v7-wardrobe-toggle ${composable ? 'enabled' : 'disabled'}">
             <div><span>${escapeHtml(this.tr(composable ? 'wardrobeEnabled' : 'wardrobeDisabled'))}</span><strong>${escapeHtml(this.tr('wardrobeToggleLabel'))}</strong><small>${escapeHtml(this.tr(composable ? 'wardrobeEnabledCopy' : 'wardrobeDisabledCopy'))}</small></div>
-            <button type="button" role="switch" aria-checked="${composable}" data-action="composable-mode" data-mode="${composable ? COMPOSABLE_PROFILE_MODES.FIXED : COMPOSABLE_PROFILE_MODES.COMPOSABLE}"><i></i><span>${escapeHtml(this.tr(composable ? 'turnWardrobeOff' : 'turnWardrobeOn'))}</span></button>
+            <button type="button" role="switch" aria-checked="${composable}" aria-label="${escapeHtml(this.tr(composable ? 'turnWardrobeOff' : 'turnWardrobeOn'))}" title="${escapeHtml(this.tr(composable ? 'turnWardrobeOff' : 'turnWardrobeOn'))}" data-action="composable-mode" data-mode="${composable ? COMPOSABLE_PROFILE_MODES.FIXED : COMPOSABLE_PROFILE_MODES.COMPOSABLE}" ${wardrobePolicyLocked ? 'disabled' : ''}><i></i><span>${escapeHtml(this.tr(composable ? 'wardrobeToggleOnState' : 'wardrobeToggleOffState'))}</span></button>
           </section>
           ${composable ? `
             <section class="v7-wardrobe-parts">
@@ -9094,10 +9162,13 @@ export class MakerWorkspace {
                     || MAKER_WARDROBE_V7_PART_MODES.FIXED;
                   const isSlot = mode === MAKER_WARDROBE_V7_PART_MODES.SLOT;
                   return `
-                    <article class="v7-wardrobe-part ${isSlot ? 'slot' : 'fixed'}">
+                    <article class="v7-wardrobe-part ${isSlot ? 'slot' : 'fixed'}" data-wardrobe-part-id="${escapeHtml(candidate.id)}">
                       <div><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(this.tr(candidate.required ? 'wardrobePartRequired' : 'wardrobePartOptional'))}</small></div>
-                      <div><span>${escapeHtml(this.tr(isSlot ? 'wardrobePartSlot' : 'wardrobePartFixed'))}</span><small>${escapeHtml(this.tr(isSlot ? 'wardrobePartSlotCopy' : 'wardrobePartFixedCopy'))}</small></div>
-                      <button type="button" role="switch" aria-checked="${isSlot}" data-action="wardrobe-part-mode" data-part-id="${escapeHtml(candidate.id)}" data-mode="${isSlot ? MAKER_WARDROBE_V7_PART_MODES.FIXED : MAKER_WARDROBE_V7_PART_MODES.SLOT}"><i></i><span>${escapeHtml(this.tr(isSlot ? 'wardrobeSetFixed' : 'wardrobeSetSlot'))}</span></button>
+                      <div class="v7-wardrobe-choice" role="group" aria-label="${escapeHtml(this.tr('wardrobePartChoiceLabel', { part: candidate.name }))}">
+                        <button type="button" class="${isSlot ? '' : 'active'}" aria-pressed="${!isSlot}" data-action="wardrobe-part-mode" data-part-id="${escapeHtml(candidate.id)}" data-mode="${MAKER_WARDROBE_V7_PART_MODES.FIXED}" ${wardrobePolicyLocked ? 'disabled' : ''}><i aria-hidden="true">${isSlot ? '' : '✓'}</i><span>${escapeHtml(this.tr('wardrobePartFixed'))}</span></button>
+                        <button type="button" class="${isSlot ? 'active' : ''}" aria-pressed="${isSlot}" data-action="wardrobe-part-mode" data-part-id="${escapeHtml(candidate.id)}" data-mode="${MAKER_WARDROBE_V7_PART_MODES.SLOT}" ${wardrobePolicyLocked ? 'disabled' : ''}><i aria-hidden="true">${isSlot ? '✓' : ''}</i><span>${escapeHtml(this.tr('wardrobePartSlot'))}</span></button>
+                      </div>
+                      <small class="v7-wardrobe-part-copy">${escapeHtml(this.tr(isSlot ? 'wardrobePartSlotCopy' : 'wardrobePartFixedCopy'))}</small>
                     </article>
                   `;
                 }).join('')}
@@ -11224,6 +11295,19 @@ export class MakerWorkspace {
       'set-version-compatibility',
       'confirm-import',
     ]);
+    if (action === 'open-part-slot-settings') {
+      const partId = String(button.dataset.partId || '');
+      if (document.parts.some((candidate) => candidate.id === partId)) {
+        this.selectedPartId = partId;
+        const selectedPart = document.parts.find((candidate) => candidate.id === partId);
+        this.selectedItemId = selectedPart?.items?.[0]?.id || '';
+        this.selectedStyleId = selectedPart?.items?.[0]?.styles?.[0]?.id || '';
+        this.ensureCreatorSelection(document);
+        this.syncCreatorRecipeSelection();
+      }
+      this.openCreatorTab('composable');
+      return;
+    }
     if (action === 'add-expansion') {
       const packId = this.expansionPackLocalId('pack');
       void this.openExpansionPackWorkspace(packId, { create: true })
@@ -11574,13 +11658,17 @@ export class MakerWorkspace {
     }
     if (action === 'wardrobe-part-mode') {
       const mode = button.dataset.mode;
+      const partId = String(button.dataset.partId || '');
       if (!Object.values(MAKER_WARDROBE_V7_PART_MODES).includes(mode)) return;
+      if (!document.parts.some((candidate) => candidate.id === partId)) return;
+      if (getMakerComposableV6Draft(document)?.compatibilitySealed === true) return;
+      if (makerWardrobeV7PartMode(document, partId) === mode) return;
       this.composableImportError = '';
       let result = null;
       this.executeDocument('Change wardrobe Part policy', ({ document: next }) => {
         result = setMakerWardrobeV7PartMode(
           next,
-          button.dataset.partId,
+          partId,
           mode,
           {
             makerRootId: this.context?.chainBinding?.commerceV5RootObjectId
@@ -13837,6 +13925,11 @@ export class MakerWorkspace {
 
   handleDragStart(event) {
     if (this.documentMutationBlocked()) {
+      event.preventDefault();
+      this.dragSort = null;
+      return;
+    }
+    if (event.target?.closest?.('button, input, select, textarea, a[href], [role="switch"]')) {
       event.preventDefault();
       this.dragSort = null;
       return;

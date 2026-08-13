@@ -635,6 +635,12 @@ test('Maker v5 exposes the four-level P0 creator workflow without legacy visual 
   assert.match(workspace, /data-action="style-position-locked"/);
   assert.match(workspace, /data-action="style-locked"/);
   assert.match(workspace, /data-action="toggle-part-preview"/);
+  assert.match(workspace, /class="v4-part-state-actions"/);
+  assert.match(workspace, /'open-part-slot-settings'/);
+  assert.match(workspace, /class="v7-wardrobe-choice" role="group"/);
+  assert.match(styles, /\.v4-part-state-actions\s*\{[^}]*display:\s*grid;/s);
+  assert.match(styles, /\.v4-part-slot\.active\s*\{/);
+  assert.match(styles, /\.v7-wardrobe-choice > button\.active\s*\{/);
   assert.match(workspace, /data-action="player-style"/);
   assert.match(workspace, /selection\.styleId/);
   assert.doesNotMatch(workspace, /\b(?:LayerBinding|bindingId|variantId|defaultVariantId)\b/);
