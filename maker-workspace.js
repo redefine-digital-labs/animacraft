@@ -59,7 +59,11 @@ import {
   renderMakerPartList,
 } from './maker-definition-editor.js';
 import { renderMakerEditorShell } from './maker-editor-shell.js';
-import { renderDefinitionCombinationRuleControl } from './maker-definition-rule-control.js';
+import {
+  renderDefinitionCombinationRuleControl,
+  renderSharedRuleListEditor,
+  renderSharedRuleTargetTree,
+} from './maker-definition-rule-control.js';
 import {
   COMPLETION_MODES,
   DEFAULT_PROTOCOL_COMMERCE_V5,
@@ -9412,37 +9416,37 @@ export class MakerWorkspace {
         .filter((part) => part.id !== draftOwnerPartId)
         .map((part) => {
           const partRecords = records.filter((record) => record.partId === part.id);
-          const partHasSelectedTarget = partRecords.some((record) => draftTargets.has(record.value));
-          return `
-        <details class="v4-rule-target-group" data-rule-target-group ${partHasSelectedTarget ? 'open' : ''}>
-          <summary><strong>${escapeHtml(part.name)}</strong><span>${escapeHtml(this.tr('part'))}</span></summary>
-          ${partRecords.map((record) => `
-            ${(() => {
-              const sameOwnerPart = record.partId === draftOwnerPartId;
+          return {
+            label: part.name,
+            meta: this.tr('part'),
+            open: partRecords.some((record) => draftTargets.has(record.value)),
+            records: partRecords.map((record) => {
               const alwaysSelectedPart = record.kind === 'part' && partIsAlwaysSelected(part);
               const unpublishedTarget = draftOwnerIsPublic
                 && record.kind !== 'part'
                 && record.status !== 'public';
-              const disabledReason = sameOwnerPart
-                ? this.tr('ruleSamePartTargetHint')
-                : alwaysSelectedPart
-                  ? this.tr('ruleRequiredPartTargetHint', { part: part.name })
-                  : unpublishedTarget
-                    ? this.tr('ruleUnpublishedTargetHint', { target: record.path })
-                    : '';
-              return `<label class="${record.kind} ${disabledReason ? 'disabled' : ''}" data-rule-search-record="${escapeHtml(`${record.path} ${record.kind}`)}" ${disabledReason ? `title="${escapeHtml(disabledReason)}"` : ''}>
-              <input type="checkbox" data-action="rule-target-choice" data-rule-target value="${escapeHtml(record.value)}" ${checked(draftTargets.has(record.value))} ${disabledReason ? 'disabled' : ''} />
-              <span><strong>${escapeHtml(
-                record.kind === 'part'
+              const disabledReason = alwaysSelectedPart
+                ? this.tr('ruleRequiredPartTargetHint', { part: part.name })
+                : unpublishedTarget
+                  ? this.tr('ruleUnpublishedTargetHint', { target: record.path })
+                  : '';
+              return {
+                kind: record.kind,
+                searchText: `${record.path} ${record.kind}`,
+                value: record.value,
+                checked: draftTargets.has(record.value),
+                disabled: Boolean(disabledReason),
+                disabledReason,
+                label: record.kind === 'part'
                   ? this.tr('anyItemInPart', { part: part.name })
                   : ruleRecordDisplayLabel(record),
-              )}</strong><small>${escapeHtml(disabledReason || this.tr(`ruleTarget${record.kind[0].toUpperCase()}${record.kind.slice(1)}`))}</small></span>
-            </label>`;
-            })()}
-          `).join('')}
-        </details>
-      `;
-        }).join('');
+                detail: this.tr(`ruleTarget${record.kind[0].toUpperCase()}${record.kind.slice(1)}`),
+                action: 'rule-target-choice',
+                data: { ruleTarget: 'true' },
+              };
+            }),
+          };
+        });
       const visibilityModel = visibilityEditorModel(selectedStyle?.visibleWhen);
       const visibilityStyleKey = selectedStyle
         ? styleSceneKey(selectedPart.id, selectedItem.id, selectedStyle.id)
@@ -9495,34 +9499,37 @@ export class MakerWorkspace {
         .filter((part) => part.id !== selectedPart?.id)
         .map((part) => {
           const partRecords = visibilityRecords.filter((record) => record.partId === part.id);
-          const partHasSelectedTarget = partRecords.some((record) => visibilityDraftDefinitions.has(record.value));
-          return `
-          <details class="v4-rule-target-group" data-rule-target-group ${partHasSelectedTarget ? 'open' : ''}>
-            <summary><strong>${escapeHtml(part.name)}</strong><span>${escapeHtml(this.tr('visibilityDependency'))}</span></summary>
-            ${partRecords.map((record) => `
-              ${(() => {
-                const alwaysSelectedPart = record.kind === 'part' && partIsAlwaysSelected(part);
-                const unpublishedTarget = visibilityOwnerIsPublic
-                  && record.kind !== 'part'
-                  && record.status !== 'public';
-                const disabledReason = alwaysSelectedPart
-                  ? this.tr('visibilityRequiredPartTargetHint', { part: part.name })
-                  : unpublishedTarget
-                    ? this.tr('visibilityUnpublishedTargetHint', { target: record.path })
-                    : '';
-                return `<label class="${record.kind} ${disabledReason ? 'disabled' : ''}" data-rule-search-record="${escapeHtml(`${record.path} ${record.kind}`)}" ${disabledReason ? `title="${escapeHtml(disabledReason)}"` : ''}>
-                <input type="checkbox" data-action="visibility-target-choice" data-visibility-target value="${escapeHtml(record.value)}" ${checked(visibilityDraft.definitions.includes(record.value))} ${disabledReason ? 'disabled' : ''} />
-                <span><strong>${escapeHtml(
-                  record.kind === 'part'
-                    ? this.tr('anyItemInPart', { part: part.name })
-                    : ruleRecordDisplayLabel(record),
-                )}</strong><small>${escapeHtml(disabledReason || this.tr(`ruleTarget${record.kind[0].toUpperCase()}${record.kind.slice(1)}`))}</small></span>
-              </label>`;
-              })()}
-            `).join('')}
-          </details>
-        `;
-        }).join('');
+          return {
+            label: part.name,
+            meta: this.tr('visibilityDependency'),
+            open: partRecords.some((record) => visibilityDraftDefinitions.has(record.value)),
+            records: partRecords.map((record) => {
+              const alwaysSelectedPart = record.kind === 'part' && partIsAlwaysSelected(part);
+              const unpublishedTarget = visibilityOwnerIsPublic
+                && record.kind !== 'part'
+                && record.status !== 'public';
+              const disabledReason = alwaysSelectedPart
+                ? this.tr('visibilityRequiredPartTargetHint', { part: part.name })
+                : unpublishedTarget
+                  ? this.tr('visibilityUnpublishedTargetHint', { target: record.path })
+                  : '';
+              return {
+                kind: record.kind,
+                searchText: `${record.path} ${record.kind}`,
+                value: record.value,
+                checked: visibilityDraft.definitions.includes(record.value),
+                disabled: Boolean(disabledReason),
+                disabledReason,
+                label: record.kind === 'part'
+                  ? this.tr('anyItemInPart', { part: part.name })
+                  : ruleRecordDisplayLabel(record),
+                detail: this.tr(`ruleTarget${record.kind[0].toUpperCase()}${record.kind.slice(1)}`),
+                action: 'visibility-target-choice',
+                data: { visibilityTarget: 'true' },
+              };
+            }),
+          };
+        });
       const availabilityPanel = `
         <section id="v4RuleAvailabilityPanel" class="v4-rule-editor-panel" role="tabpanel" aria-labelledby="v4RuleAvailabilityTab" ${this.rulesEditorIntent === 'availability' ? '' : 'hidden'}>
           <div class="v4-rule-builder">
@@ -9543,28 +9550,38 @@ export class MakerWorkspace {
               <small>${escapeHtml(this.tr('ruleTreeHint'))}</small>
               <label class="v4-rule-search">${escapeHtml(this.tr('ruleSearchTargets'))}<input type="search" data-action="rule-target-search" value="${escapeHtml(this.ruleTargetQuery)}" placeholder="${escapeHtml(this.tr('ruleSearchPlaceholder'))}" /></label>
               <small data-rule-search-count>${escapeHtml(this.tr('ruleSearchResultCount', { count: availabilityTargetRecords.length }))}</small>
-              <div class="v4-rule-target-tree" data-rule-target-tree="availability">${targetGroups}<div class="v4-inline-empty" data-rule-search-empty hidden><span>${escapeHtml(this.tr('ruleSearchEmpty'))}</span></div></div>
+              ${renderSharedRuleTargetTree({
+                groups: targetGroups,
+                kind: 'availability',
+                tailHtml: `<div class="v4-inline-empty" data-rule-search-empty hidden><span>${escapeHtml(this.tr('ruleSearchEmpty'))}</span></div>`,
+              })}
             </div>
             <button class="primary" type="button" data-action="add-rule">${escapeHtml(this.tr('addRule'))}</button>
           </div>
           ${this.ruleBuilderError ? `<div class="v4-rule-error" role="alert">${escapeHtml(this.ruleBuilderError)}</div>` : ''}
-          <div class="v4-rule-list">${groups.map((group) => {
+          ${renderSharedRuleListEditor({ groups: groups.map((group) => {
             const ownerStyle = group.ownerStyleId ? findStyle(document, group.ownerPartId, group.ownerItemId, group.ownerStyleId) : null;
             const logic = group.type === 'excludes'
               ? this.tr('ruleNotBadge')
               : group.rows.length > 1 ? this.tr('ruleAllBadge') : this.tr('requiresLabel');
-            return `
-              <article class="v4-rule-group">
-                <header><div><span>${escapeHtml(this.tr('ruleWhenSelection'))}</span><strong>${escapeHtml(group.ownerName)}${ownerStyle?.styleLocked ? ' 🔒' : ''}</strong></div><b>${escapeHtml(logic)}</b></header>
-                <div class="v4-rule-targets">
-                  ${group.rows.map((row) => {
-                    const summary = ruleTargetSummary(document, row.target);
-                    return `<span>${summary.any ? `<em>${escapeHtml(this.tr('ruleAnyBadge'))}</em>` : ''}<strong>${escapeHtml(summary.label)}</strong><button type="button" data-action="delete-rule" data-rule-id="${escapeHtml(row.id)}" aria-label="${escapeHtml(this.tr('deleteRuleAria'))}" ${ownerStyle?.styleLocked ? 'disabled' : ''}>×</button></span>`;
-                  }).join('')}
-                </div>
-              </article>
-            `;
-          }).join('') || `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noConstraints'))}</strong><span>${escapeHtml(this.tr('noConstraintsHelp'))}</span></div>`}</div>
+            return {
+              eyebrow: this.tr('ruleWhenSelection'),
+              ownerLabel: `${group.ownerName}${ownerStyle?.styleLocked ? ' 🔒' : ''}`,
+              badge: logic,
+              rows: group.rows.map((row) => {
+                const summary = ruleTargetSummary(document, row.target);
+                return {
+                  any: summary.any,
+                  anyLabel: this.tr('ruleAnyBadge'),
+                  targetLabel: summary.label,
+                  deleteAction: 'delete-rule',
+                  data: { ruleId: row.id },
+                  deleteLabel: this.tr('deleteRuleAria'),
+                  deleteDisabled: Boolean(ownerStyle?.styleLocked),
+                };
+              }),
+            };
+          }), emptyHtml: `<div class="v4-inline-empty"><strong>${escapeHtml(this.tr('noConstraints'))}</strong><span>${escapeHtml(this.tr('noConstraintsHelp'))}</span></div>` })}
         </section>
       `;
       const visibilityPanel = `
@@ -9584,7 +9601,12 @@ export class MakerWorkspace {
                 <small>${escapeHtml(this.tr('visibilityTreeHint'))}</small>
                 <label class="v4-rule-search">${escapeHtml(this.tr('ruleSearchTargets'))}<input type="search" data-action="visibility-target-search" value="${escapeHtml(this.visibilityTargetQuery)}" placeholder="${escapeHtml(this.tr('ruleSearchPlaceholder'))}" /></label>
                 <small data-rule-search-count>${escapeHtml(this.tr('ruleSearchResultCount', { count: visibilityRecords.length }))}</small>
-                <div class="v4-rule-target-tree" data-rule-target-tree="visibility">${visibilityTargets || `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('visibilityNoOtherParts'))}</span></div>`}<div class="v4-inline-empty" data-rule-search-empty hidden><span>${escapeHtml(this.tr('ruleSearchEmpty'))}</span></div></div>
+                ${renderSharedRuleTargetTree({
+                  groups: visibilityTargets,
+                  kind: 'visibility',
+                  emptyHtml: `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('visibilityNoOtherParts'))}</span></div>`,
+                  tailHtml: `<div class="v4-inline-empty" data-rule-search-empty hidden><span>${escapeHtml(this.tr('ruleSearchEmpty'))}</span></div>`,
+                })}
               </div>
               <div class="v4-visibility-footer">
                 <p class="v4-visibility-preview" aria-live="polite"><span>${escapeHtml(this.tr('visibilityPreview'))}</span><strong>${escapeHtml(visibilityDraftText)}</strong></p>

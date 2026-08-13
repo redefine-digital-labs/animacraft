@@ -212,12 +212,12 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   );
   assert.match(
     workspace,
-    /const partHasSelectedTarget = partRecords\.some\(\(record\) => draftTargets\.has\(record\.value\)\);[\s\S]*?partHasSelectedTarget \? 'open' : ''/,
+    /open: partRecords\.some\(\(record\) => draftTargets\.has\(record\.value\)\)/,
     'combination Rule Part groups should stay collapsed unless they contain a selected target',
   );
   assert.match(
     workspace,
-    /const partHasSelectedTarget = partRecords\.some\(\(record\) => visibilityDraftDefinitions\.has\(record\.value\)\);[\s\S]*?partHasSelectedTarget \? 'open' : ''/,
+    /open: partRecords\.some\(\(record\) => visibilityDraftDefinitions\.has\(record\.value\)\)/,
     'Style visibility Part groups should stay collapsed unless they contain a selected target',
   );
   assert.match(workspace, /else if \(style\.positionConfirmed === false\)/);
@@ -752,7 +752,7 @@ test('Draft Recovery and current Maker workspace do not leak English-only operat
   assert.match(workspace, /data-action="add-part" aria-label="\$\{escapeHtml\(this\.tr\('addPartAria'\)\)\}"/);
   assert.match(workspace, /data-action="delete-track"[\s\S]*?aria-label="\$\{escapeHtml\(this\.tr\('deleteTrackAria'\)\)\}"/);
   assert.match(workspace, /data-action="delete-swatch"[\s\S]*?aria-label="\$\{escapeHtml\(this\.tr\('deleteColorPresetAria'\)\)\}"/);
-  assert.match(workspace, /data-action="delete-rule"[\s\S]*?aria-label="\$\{escapeHtml\(this\.tr\('deleteRuleAria'\)\)\}"/);
+  assert.match(workspace, /deleteAction: 'delete-rule',[\s\S]*?deleteLabel: this\.tr\('deleteRuleAria'\)/);
 });
 
 test('pending publication review and explicit clear confirmation have complete five-language copy', async () => {

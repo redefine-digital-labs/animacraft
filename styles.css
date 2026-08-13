@@ -9815,46 +9815,57 @@ pre {
   font-weight: 800;
 }
 
-.v4-rule-list > .v4-rule-group {
+.v4-rule-list {
   display: grid;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--soft);
-  border-radius: 11px;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
   background: var(--ui-surface);
+  overflow: hidden;
 }
 
-.v4-rule-group > header {
-  display: flex;
+.v4-shared-rule-editor {
+  display: grid;
   gap: 10px;
-  align-items: center;
-  justify-content: space-between;
 }
 
-.v4-rule-group > header > div {
+.v4-rule-summary-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) auto minmax(180px, 1.4fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+}
+
+.v4-rule-summary-row + .v4-rule-summary-row {
+  border-top: 1px solid var(--line);
+}
+
+.v4-rule-summary-owner {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
-.v4-rule-group > header span {
+.v4-rule-summary-owner > span {
   color: var(--muted);
   font-size: 9px;
   font-weight: 850;
   text-transform: uppercase;
 }
 
-.v4-rule-list {
-  display: grid;
-  gap: 9px;
+.v4-rule-summary-owner > strong,
+.v4-rule-summary-targets strong {
+  overflow-wrap: anywhere;
 }
 
-.v4-rule-targets {
+.v4-rule-summary-targets {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.v4-rule-targets > span {
+.v4-rule-summary-targets > span {
   display: inline-flex;
   gap: 6px;
   align-items: center;
@@ -9864,23 +9875,28 @@ pre {
   background: var(--ui-surface);
 }
 
-.v4-rule-targets em {
+.v4-rule-summary-targets em,
+.v4-rule-summary-targets i {
   color: var(--violet);
   font-size: 9px;
   font-style: normal;
   font-weight: 900;
 }
 
-.v4-rule-targets button {
+.v4-rule-summary-targets button {
   min-width: 24px;
   min-height: 24px;
   padding: 0;
 }
 
-.v4-rule-list b {
+.v4-rule-summary-row > b {
   color: var(--rose);
   font-size: 10px;
   text-transform: uppercase;
+}
+
+.v4-rule-summary-edit {
+  white-space: nowrap;
 }
 
 .v4-visibility-summary {
@@ -14934,8 +14950,7 @@ pre {
 
 .expansion-pack-track-row label,
 .expansion-pack-color-channel label,
-.expansion-pack-swatch-row label,
-.v4-pack-rule-fields label {
+.expansion-pack-swatch-row label {
   display: grid;
   gap: 4px;
   color: var(--muted);
@@ -14977,17 +14992,6 @@ pre {
   border: 1px solid var(--line);
   border-radius: 50%;
   background: var(--swatch-color);
-}
-
-.v4-pack-rule-fields {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(130px, 1fr)) auto;
-  gap: 8px;
-  align-items: end;
-}
-
-.v4-pack-rule-fields select[multiple] {
-  min-height: 5.5rem;
 }
 
 .expansion-pack-capability-note {
@@ -15209,9 +15213,16 @@ pre {
 @media (max-width: 820px) {
   .expansion-pack-track-row,
   .expansion-pack-color-channel > header,
-  .expansion-pack-swatch-row,
-  .v4-pack-rule-fields {
+  .expansion-pack-swatch-row {
     grid-template-columns: 1fr;
+  }
+
+  .v4-rule-summary-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .v4-rule-summary-targets {
+    grid-column: 1 / -1;
   }
 
   .expansion-pack-release-steps {

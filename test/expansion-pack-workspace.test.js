@@ -657,16 +657,24 @@ test('Part, Item and Style inspectors reuse one compact Combination Rules contro
     {},
     { activeSection: 'rules' },
   );
-  assert.match(populatedRulesHtml, /class="v4-rule-list"><article class="v4-rule-group"/);
-  assert.doesNotMatch(populatedRulesHtml, /expansion-pack-rule-row/);
+  assert.match(populatedRulesHtml, /data-shared-rule-list/);
+  assert.match(populatedRulesHtml, /data-rule-summary-row/);
+  assert.doesNotMatch(populatedRulesHtml, /v4-rule-group|expansion-pack-rule-row|<select[^>]*multiple/);
 
-  const [makerSource, packSource] = await Promise.all([
+  const [makerSource, packSource, sharedSource, stylesSource] = await Promise.all([
     readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
     readFile(new URL('../expansion-pack-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-definition-rule-control.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
   ]);
   for (const source of [makerSource, packSource]) {
     assert.match(source, /renderDefinitionCombinationRuleControl\(/);
+    assert.match(source, /renderSharedRuleListEditor\(/);
+    assert.match(source, /renderSharedRuleTargetTree\(/);
   }
+  assert.match(sharedSource, /export function renderSharedRuleListEditor/);
+  assert.doesNotMatch(packSource, /selectorMultiSelect|v4-rule-group|v4-pack-rule-fields/);
+  assert.doesNotMatch(stylesSource, /\.v4-rule-group|\.v4-pack-rule-fields|select\[multiple\]/);
 });
 
 test('nested Pack control clicks stay inside the Pack adapter boundary', async () => {
@@ -1109,7 +1117,7 @@ test('authors Pack-owned tracks, Smart Color, rules and wardrobe without mutatin
   assert.deepEqual(state.tree.rules, []);
 });
 
-test('rule multi-select edits retain every global and embedded target', async () => {
+test('shared checkbox edits retain every global and embedded target', async () => {
   const workspace = await emptyWorkspace();
   workspace.addOptionalPart({
     part: {
@@ -1137,18 +1145,56 @@ test('rule multi-select edits retain every global and embedded target', async ()
     addEventListener(type, listener) { events.set(type, listener); },
     removeEventListener(type) { events.delete(type); },
   };
-  const mounted = mountExpansionPackWorkspace(root, workspace, { activeSection: 'rules' });
-  assert.match(root.innerHTML, /data-rule-field="targets"[^>]*multiple|multiple[^>]*data-rule-field="targets"/);
+  const mounted = mountExpansionPackWorkspace(root, workspace, {
+    activeSection: 'rules',
+    selectedPackRuleId: 'two-targets',
+  });
+  assert.match(root.innerHTML, /data-pack-rule-editor/);
+  assert.doesNotMatch(root.innerHTML, /v4-rule-group|<select[^>]*multiple|data-rule-field=/);
   events.get('change')({
     target: {
-      selectedOptions: [{ value: 'base|body||' }, { value: 'base|body|body-default|' }],
-      dataset: { ruleField: 'targets', ruleId: 'two-targets' },
+      checked: false,
+      value: 'base|body||',
+      dataset: { action: 'pack-rule-target-choice', ruleId: 'two-targets' },
     },
   });
   events.get('change')({
     target: {
-      selectedOptions: [{ value: 'base|body||' }, { value: 'base|body|body-default|' }],
+      checked: true,
+      value: 'base|body||',
+      dataset: { action: 'pack-rule-target-choice', ruleId: 'two-targets' },
+    },
+  });
+  events.get('click')({
+    target: {
       dataset: {
+        action: 'edit-pack-selection-rules',
+        ruleOwner: 'hat::cap::default',
+        ruleOwnerType: 'style',
+      },
+    },
+    stopPropagation() {},
+  });
+  events.get('change')({
+    target: {
+      checked: false,
+      value: 'base|body||',
+      dataset: {
+        action: 'pack-definition-rule-target-choice',
+        definitionRuleField: 'excludes',
+        definitionKind: 'style',
+        partId: 'hat',
+        itemId: 'cap',
+        styleId: 'default',
+      },
+    },
+  });
+  events.get('change')({
+    target: {
+      checked: true,
+      value: 'base|body||',
+      dataset: {
+        action: 'pack-definition-rule-target-choice',
         definitionRuleField: 'excludes',
         definitionKind: 'style',
         partId: 'hat',
@@ -1158,8 +1204,8 @@ test('rule multi-select edits retain every global and embedded target', async ()
     },
   });
   const state = workspace.getState();
-  assert.deepEqual(state.tree.rules[0].targets, [bodyPart, bodyItem]);
-  assert.deepEqual(state.tree.parts[0].items[0].styles[0].rules.excludes, [bodyPart, bodyItem]);
+  assert.deepEqual(new Set(state.tree.rules[0].targets.map(JSON.stringify)), new Set([bodyPart, bodyItem].map(JSON.stringify)));
+  assert.deepEqual(new Set(state.tree.parts[0].items[0].styles[0].rules.excludes.map(JSON.stringify)), new Set([bodyPart, bodyItem].map(JSON.stringify)));
   mounted.unmount();
 });
 
@@ -1196,13 +1242,20 @@ test('other rule edits preserve all/any/not visibility logic and advanced condit
     addEventListener(type, listener) { events.set(type, listener); },
     removeEventListener(type) { events.delete(type); },
   };
-  const mounted = mountExpansionPackWorkspace(root, workspace, { activeSection: 'rules' });
+  const mounted = mountExpansionPackWorkspace(root, workspace, {
+    activeSection: 'rules',
+    ruleOwner: 'hat::cap::default',
+    ruleOwnerType: 'style',
+  });
   assert.match(root.innerHTML, /Advanced condition · read only/);
-  assert.doesNotMatch(root.innerHTML, /data-definition-rule-field=|data-definition-rules/);
+  assert.match(root.innerHTML, /data-pack-definition-rule-editor[^>]*data-rule-advanced="true"/);
+  assert.doesNotMatch(root.innerHTML, /data-definition-rules|v4-rule-group|<select[^>]*multiple/);
   events.get('change')({
     target: {
-      selectedOptions: [{ value: 'base|body||' }],
+      checked: true,
+      value: 'base|body||',
       dataset: {
+        action: 'pack-definition-rule-target-choice',
         definitionRuleField: 'requires',
         definitionKind: 'style',
         partId: 'hat',
@@ -1213,9 +1266,11 @@ test('other rule edits preserve all/any/not visibility logic and advanced condit
   });
   events.get('change')({
     target: {
+      checked: true,
       value: 'selected',
       dataset: {
-        definitionRuleField: 'visibleWhenOp',
+        action: 'pack-visibility-target-choice',
+        visibilityOp: 'selected',
         definitionKind: 'style',
         partId: 'hat',
         itemId: 'cap',
@@ -1226,6 +1281,94 @@ test('other rule edits preserve all/any/not visibility logic and advanced condit
   const styleRules = workspace.getState().tree.parts[0].items[0].styles[0].rules;
   assert.deepEqual(styleRules.visibleWhen, advanced);
   assert.deepEqual(styleRules.requires, [{ scope: 'base', partId: 'body' }]);
+  mounted.unmount();
+});
+
+test('simple Pack rule edits preserve hidden multi-target selectors and nested visibility siblings', async () => {
+  const workspace = await emptyWorkspace();
+  workspace.addOptionalPart({
+    part: {
+      id: 'hat',
+      name: 'Hat',
+      items: [{
+        id: 'cap',
+        name: 'Cap',
+        styles: [{ id: 'default', name: 'Default', assetId: 'body-art', layerTrackId: 'body-track' }],
+      }],
+    },
+  });
+  const multiTarget = {
+    scope: 'base',
+    partId: 'body',
+    itemIds: ['body-default'],
+  };
+  const nestedVisibility = {
+    op: 'all',
+    conditions: [
+      { op: 'selected', scope: 'base', partId: 'body' },
+      { op: 'not', condition: { op: 'selected', scope: 'base', partId: 'body', itemIds: ['body-default'] } },
+    ],
+  };
+  workspace.updateStyleRules('hat', 'cap', 'default', {
+    requires: [multiTarget],
+    visibleWhen: nestedVisibility,
+  });
+  workspace.addRule({
+    id: 'complex-global',
+    type: 'excludes',
+    trigger: { scope: 'pack', partId: 'hat', itemId: 'cap' },
+    targets: [multiTarget],
+  });
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+  };
+  const mounted = mountExpansionPackWorkspace(root, workspace, {
+    activeSection: 'rules',
+    selectedPackRuleId: 'complex-global',
+  });
+  assert.match(root.innerHTML, /data-rule-advanced="true"/);
+  events.get('change')({
+    target: {
+      checked: true,
+      value: 'base|body||',
+      dataset: { action: 'pack-rule-target-choice', ruleId: 'complex-global' },
+    },
+  });
+  events.get('click')({
+    target: {
+      dataset: {
+        action: 'edit-pack-selection-rules',
+        ruleOwner: 'hat::cap::default',
+        ruleOwnerType: 'style',
+      },
+    },
+    stopPropagation() {},
+  });
+  assert.doesNotMatch(root.innerHTML, /value="base\|body\|\|" checked[^>]*data-definition-rule-field="requires"/);
+  events.get('change')({
+    target: {
+      checked: true,
+      value: 'base|body||',
+      dataset: {
+        action: 'pack-definition-rule-target-choice',
+        definitionRuleField: 'requires',
+        definitionKind: 'style',
+        partId: 'hat',
+        itemId: 'cap',
+        styleId: 'default',
+      },
+    },
+  });
+  const rules = workspace.getState().tree.parts[0].items[0].styles[0].rules;
+  assert.deepEqual(workspace.getState().tree.rules[0].targets, [
+    multiTarget,
+    { scope: 'base', partId: 'body' },
+  ]);
+  assert.deepEqual(rules.requires, [multiTarget, { scope: 'base', partId: 'body' }]);
+  assert.deepEqual(rules.visibleWhen, nestedVisibility);
   mounted.unmount();
 });
 
@@ -1377,7 +1520,19 @@ test('new Pack rule starts with distinct Pack trigger and inherited target', asy
 
 test('publication locking blocks both rendered controls and synthetic mutation events', async () => {
   const workspace = await emptyWorkspace();
-  workspace.addOptionalPart({ part: { id: 'hat', name: 'Hat', items: [] } });
+  workspace.addOptionalPart({
+    part: {
+      id: 'hat',
+      name: 'Hat',
+      items: [{ id: 'cap', name: 'Cap', styles: [] }],
+    },
+  });
+  workspace.addRule({
+    id: 'locked-rule',
+    type: 'excludes',
+    trigger: { scope: 'pack', partId: 'hat', itemId: 'cap' },
+    targets: [{ scope: 'base', partId: 'body' }],
+  });
   const events = new Map();
   const root = {
     innerHTML: '',
@@ -1388,6 +1543,7 @@ test('publication locking blocks both rendered controls and synthetic mutation e
   let commerceRequests = 0;
   const mounted = mountExpansionPackWorkspace(root, workspace, {
     activeSection: 'rules',
+    selectedPackRuleId: 'locked-rule',
     copy: { publicationState: { locked: true } },
     onRequestBackToMaker: () => { backRequests += 1; },
     onRequestCommerceRights: () => { commerceRequests += 1; },
@@ -1398,6 +1554,7 @@ test('publication locking blocks both rendered controls and synthetic mutation e
   assert.match(root.innerHTML, /data-action="request-commerce-rights"[^>]*disabled/);
   assert.match(root.innerHTML, /data-action="save-pack"[^>]*disabled/);
   assert.match(root.innerHTML, /data-rename-kind="pack"[^>]*disabled/);
+  assert.match(root.innerHTML, /data-pack-rule-editor/);
   events.get('click')({ target: { dataset: { action: 'add-layer-track' } }, stopPropagation() {} });
   events.get('click')({ target: { dataset: { action: 'request-back-to-maker' } }, stopPropagation() {} });
   events.get('click')({ target: { dataset: { action: 'request-commerce-rights' } }, stopPropagation() {} });
@@ -1406,8 +1563,16 @@ test('publication locking blocks both rendered controls and synthetic mutation e
     stopPropagation() {},
   });
   events.get('change')({ target: { value: 'Blocked rename', dataset: { renameKind: 'pack' } } });
+  events.get('change')({
+    target: {
+      checked: true,
+      value: 'base|body|body-default|',
+      dataset: { action: 'pack-rule-target-choice', ruleId: 'locked-rule' },
+    },
+  });
   assert.equal(workspace.getState().tree.layerTracks.length, 0);
   assert.equal(workspace.getState().project.name, 'Moon Pack');
+  assert.deepEqual(workspace.getState().tree.rules[0].targets, [{ scope: 'base', partId: 'body' }]);
   assert.equal(backRequests, 0);
   assert.equal(commerceRequests, 0);
   assert.match(root.innerHTML, /data-active-section="rules"/);

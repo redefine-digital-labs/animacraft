@@ -55,7 +55,11 @@ import {
   renderMakerPartList,
 } from './maker-definition-editor.js';
 import { renderMakerEditorShell } from './maker-editor-shell.js';
-import { renderDefinitionCombinationRuleControl } from './maker-definition-rule-control.js';
+import {
+  renderDefinitionCombinationRuleControl,
+  renderSharedRuleListEditor,
+  renderSharedRuleTargetTree,
+} from './maker-definition-rule-control.js';
 
 export const EXPANSION_PACK_WORKSPACE_SAVE_PHASES = Object.freeze({
   NEW: 'new',
@@ -1041,31 +1045,110 @@ function selectorValue(selector) {
   return `${selector.scope === 'base' ? 'base' : 'pack'}|${text(selector.partId)}|${text(selector.itemId)}|${text(selector.styleId)}`;
 }
 
-function selectorSelect(entries, selected, attributes, copy, packOnly = false) {
-  return `<select ${attributes}><option value="">${escapeHtml(copyValue(copy, 'none', 'None'))}</option>${entries.filter((entry) => !packOnly || entry.value.startsWith('pack|')).map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === selected ? 'selected' : ''}>${escapeHtml(entry.label)}</option>`).join('')}</select>`;
-}
-
-function selectorMultiSelect(entries, selectedValues, attributes, packOnly = false) {
-  const selected = new Set(list(selectedValues));
-  return `<select multiple ${attributes}>${entries.filter((entry) => !packOnly || entry.value.startsWith('pack|')).map((entry) => `<option value="${escapeHtml(entry.value)}" ${selected.has(entry.value) ? 'selected' : ''}>${escapeHtml(entry.label)}</option>`).join('')}</select>`;
+function simpleSelectorValue(selector) {
+  if (
+    !selector
+    || typeof selector !== 'object'
+    || selector.op && selector.op !== 'selected'
+    || list(selector.itemIds).length
+    || list(selector.styleIds).length
+  ) return '';
+  return selectorValue(selector);
 }
 
 function editableVisibilityModel(condition) {
   if (condition == null) return { editable: true, op: 'always', selectors: [] };
-  if (condition?.op === 'selected') {
+  if (condition?.op === 'selected' && simpleSelectorValue(condition)) {
     return { editable: true, op: 'selected', selectors: [condition] };
   }
-  if (condition?.op === 'not' && condition.condition?.op === 'selected') {
+  if (
+    condition?.op === 'not'
+    && condition.condition?.op === 'selected'
+    && simpleSelectorValue(condition.condition)
+  ) {
     return { editable: true, op: 'not', selectors: [condition.condition] };
   }
   if (
     (condition?.op === 'all' || condition?.op === 'any')
     && list(condition.conditions).length > 0
-    && list(condition.conditions).every((entry) => entry?.op === 'selected')
+    && list(condition.conditions).every((entry) => entry?.op === 'selected' && simpleSelectorValue(entry))
   ) {
     return { editable: true, op: condition.op, selectors: condition.conditions };
   }
   return { editable: false, op: 'advanced', selectors: [] };
+}
+
+function selectorKey(selector) {
+  if (!selector || typeof selector !== 'object') return '';
+  return JSON.stringify({
+    scope: selector.scope === 'base' ? 'base' : 'pack',
+    partId: text(selector.partId),
+    itemId: text(selector.itemId),
+    itemIds: list(selector.itemIds).map(text),
+    styleId: text(selector.styleId),
+    styleIds: list(selector.styleIds).map(text),
+  });
+}
+
+function selectorLabel(selector, entries, copy) {
+  if (!selector || typeof selector !== 'object') return copyValue(copy, 'advancedCondition', 'Advanced condition');
+  if (selector.op && selector.op !== 'selected') {
+    return copyValue(copy, 'advancedCondition', 'Advanced condition · read only');
+  }
+  const exact = entries.find((entry) => entry.value === selectorValue(selector));
+  if (exact && !list(selector.itemIds).length && !list(selector.styleIds).length) return exact.label;
+  const part = entries.find((entry) => entry.value === `${selector.scope === 'base' ? 'base' : 'pack'}|${text(selector.partId)}||`)?.label
+    || text(selector.partId);
+  const alternatives = list(selector.styleIds).length
+    ? list(selector.styleIds)
+    : list(selector.itemIds).length
+      ? list(selector.itemIds)
+      : [];
+  return alternatives.length
+    ? `${part} · ${copyValue(copy, 'anySelected', 'Any selected')}: ${alternatives.join(' / ')}`
+    : selectorValue(selector) || copyValue(copy, 'advancedCondition', 'Advanced condition');
+}
+
+function selectorEntryGroups(parent, tree, entries, selectedValues, options = {}) {
+  const selected = new Set(list(selectedValues));
+  const groupedEntries = new Map();
+  entries.filter((entry) => options.packOnly !== true || entry.value.startsWith('pack|')).forEach((entry) => {
+    const [scope, partId] = entry.value.split('|');
+    const key = `${scope}|${partId}`;
+    const group = groupedEntries.get(key) || { scope, partId, records: [] };
+    group.records.push(entry);
+    groupedEntries.set(key, group);
+  });
+  return [...groupedEntries.values()].map(({ scope, partId, records }) => {
+    const parentPart = list(parent.parts).find((part) => part.id === partId);
+    const packPart = list(tree.parts).find((part) => part.id === partId);
+    const partName = parentPart?.name || packPart?.name || partId;
+    return {
+      label: partName,
+      meta: scope === 'base'
+        ? copyValue(options.copy, 'inherited', 'Inherited')
+        : copyValue(options.copy, 'packOwned', 'Pack owned'),
+      open: records.some((entry) => selected.has(entry.value)),
+      records: records.map((entry) => {
+        const [, , itemId, styleId] = entry.value.split('|');
+        return {
+          kind: styleId ? 'style' : itemId ? 'item' : 'part',
+          searchText: entry.label,
+          label: entry.label.replace(/^[^·]+·\s*/, ''),
+          detail: styleId
+            ? copyValue(options.copy, 'style', 'Style')
+            : itemId
+              ? copyValue(options.copy, 'items', 'Item')
+              : copyValue(options.copy, 'parts', 'Part'),
+          value: entry.value,
+          checked: selected.has(entry.value),
+          disabled: options.disabled === true,
+          action: options.action,
+          data: { ...options.data },
+        };
+      }),
+    };
+  });
 }
 
 function definitionRuleCount(owner) {
@@ -1101,6 +1184,7 @@ function compactDefinitionRuleControl(ownerKind, part, item, style, copy, option
 }
 
 function packDefinitionRuleGroups(parent, tree, copy) {
+  const entries = selectorEntries(parent, tree, copy);
   const groups = [];
   const addOwner = (ownerType, part, item, style) => {
     const owner = style || item || part;
@@ -1127,47 +1211,157 @@ function packDefinitionRuleGroups(parent, tree, copy) {
       list(item.styles).forEach((style) => addOwner('style', part, item, style));
     });
   });
-  const selectorLabel = (selector) => {
-    if (selector?.op && selector.op !== 'selected') {
-      return copyValue(copy, 'advancedCondition', 'Advanced condition · read only');
-    }
-    const entries = selectorEntries(parent, tree, copy);
-    return entries.find((entry) => entry.value === selectorValue(selector))?.label
-      || selectorValue(selector)
-      || copyValue(copy, 'advancedCondition', 'Advanced condition');
-  };
-  return groups.map((group) => `
-    <article class="v4-rule-group" data-pack-rule-owner="${escapeHtml([
-      group.part?.id,
-      group.item?.id,
-      group.style?.id,
-    ].filter(Boolean).join('::'))}">
-      <header><div><span>${escapeHtml(copyValue(copy, 'packOwned', 'Pack owned'))}</span><strong>${escapeHtml(group.ownerName)}</strong></div><b>${escapeHtml(copyValue(copy, 'combinationRules', 'Combination Rules'))}</b></header>
-      <div class="v4-rule-targets">
-        ${group.rows.map((row) => `<span><em>${escapeHtml(copyValue(copy, row.type, row.type))}</em><strong>${escapeHtml(selectorLabel(row.target))}</strong></span>`).join('')}
-      </div>
-    </article>`).join('');
+  return groups.map((group) => ({
+    eyebrow: copyValue(copy, 'packOwned', 'Pack owned'),
+    ownerLabel: group.ownerName,
+    badge: copyValue(copy, 'combinationRules', 'Combination Rules'),
+    data: {
+      packRuleOwner: [group.part?.id, group.item?.id, group.style?.id].filter(Boolean).join('::'),
+    },
+    rows: group.rows.map((row) => ({
+      typeLabel: copyValue(copy, row.type, row.type),
+      targetLabel: selectorLabel(row.target, entries, copy),
+      advanced: row.target?.op && row.target.op !== 'selected',
+    })),
+    editAction: 'edit-pack-selection-rules',
+    editLabel: copyValue(copy, 'editCombinationRules', 'Edit rules'),
+    editData: {
+      ruleOwner: [group.part?.id, group.item?.id, group.style?.id].filter(Boolean).join('::'),
+      ruleOwnerType: group.ownerType,
+    },
+  }));
 }
 
-function renderRulesEditor(parent, tree, copy) {
+function renderRulesEditor(parent, tree, copy, ui = {}) {
   const entries = selectorEntries(parent, tree, copy);
   const firstPack = entries.find((entry) => entry.value.startsWith('pack|'))?.value || '';
   const firstTarget = entries.find((entry) => entry.value.startsWith('base|') && entry.value !== firstPack)?.value
     || entries.find((entry) => entry.value !== firstPack)?.value
     || '';
   const ownerGroups = packDefinitionRuleGroups(parent, tree, copy);
+  const selectedRuleId = text(ui.selectedPackRuleId);
+  const selectedRule = list(tree.rules).find((rule) => idOf(rule) === selectedRuleId) || null;
+  const selectedOwner = text(ui.ruleOwner);
+  const selectedOwnerType = text(ui.ruleOwnerType);
+  const [ownerPartId = '', ownerItemId = '', ownerStyleId = ''] = selectedOwner.split('::');
+  const ownerDataset = {
+    definitionKind: selectedOwnerType,
+    partId: ownerPartId,
+    itemId: ownerItemId,
+    styleId: ownerStyleId,
+  };
+  const selectedDefinitionOwner = selectedOwner
+    ? definitionRuleOwner({ tree }, ownerDataset)
+    : null;
+  const selectedOwnerRules = selectedDefinitionOwner?.rules || {};
+  const renderTargetPicker = ({
+    title,
+    values,
+    action,
+    data,
+    disabled = false,
+    packOnly = false,
+  }) => `<div class="v4-rule-target-picker"><span>${escapeHtml(title)}</span>${renderSharedRuleTargetTree({
+    groups: selectorEntryGroups(parent, tree, entries, values, {
+      copy,
+      action,
+      data,
+      disabled,
+      packOnly,
+    }),
+  })}</div>`;
+  let builderHtml = '';
+  if (selectedRule) {
+    const trigger = simpleSelectorValue(selectedRule.trigger);
+    const advancedTrigger = !trigger;
+    const advancedRuleSelectors = [selectedRule.trigger, ...selectedRule.targets]
+      .filter((selector) => !simpleSelectorValue(selector));
+    builderHtml = `
+      <div class="v4-rule-builder" data-pack-rule-editor data-rule-id="${escapeHtml(selectedRule.id)}">
+        ${advancedRuleSelectors.length ? `<div class="v4-rule-warning"><strong>${escapeHtml(copyValue(copy, 'advancedCondition', 'Advanced condition · read only'))}</strong><span>${escapeHtml(copyValue(copy, 'advancedConditionReadonly', 'Complex selectors are preserved; the simple choices below never replace them.'))}</span></div>` : ''}
+        <fieldset class="v4-rule-type-picker"><legend>${escapeHtml(copyValue(copy, 'ruleType', 'Rule type'))}</legend><label><input type="radio" name="pack-rule-type-${escapeHtml(selectedRule.id)}" value="excludes" data-action="pack-rule-type-choice" data-rule-id="${escapeHtml(selectedRule.id)}" ${selectedRule.type === 'excludes' ? 'checked' : ''}><span><strong>${escapeHtml(copyValue(copy, 'excludes', 'Excludes'))}</strong></span></label><label><input type="radio" name="pack-rule-type-${escapeHtml(selectedRule.id)}" value="requires" data-action="pack-rule-type-choice" data-rule-id="${escapeHtml(selectedRule.id)}" ${selectedRule.type === 'requires' ? 'checked' : ''}><span><strong>${escapeHtml(copyValue(copy, 'requires', 'Requires'))}</strong></span></label></fieldset>
+        ${renderTargetPicker({
+          title: copyValue(copy, 'ruleTrigger', 'Trigger selection'),
+          values: [trigger],
+          action: 'pack-rule-trigger-choice',
+          data: { ruleId: selectedRule.id },
+          packOnly: selectedRule.type === 'requires',
+          disabled: advancedTrigger,
+        })}
+        ${renderTargetPicker({
+          title: copyValue(copy, 'targetPart', 'Target'),
+          values: selectedRule.targets.map(simpleSelectorValue).filter(Boolean),
+          action: 'pack-rule-target-choice',
+          data: { ruleId: selectedRule.id, ruleTrigger: trigger },
+        })}
+        <button type="button" class="danger" data-action="delete-pack-rule" data-rule-id="${escapeHtml(selectedRule.id)}">${escapeHtml(copyValue(copy, 'deleteRule', 'Delete rule'))}</button>
+      </div>`;
+  } else if (selectedDefinitionOwner) {
+    const visibility = editableVisibilityModel(selectedOwnerRules.visibleWhen);
+    const ownerAttributes = Object.entries(ownerDataset)
+      .filter(([, value]) => value)
+      .map(([key, value]) => ` data-${key.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`)}="${escapeHtml(value)}"`)
+      .join('');
+    const visibilityEditor = visibility.editable ? `
+      <label class="v4-rule-match-mode">${escapeHtml(copyValue(copy, 'visibleWhen', 'Visible when'))}
+        <select data-action="pack-visibility-op-choice"${ownerAttributes}>
+          <option value="always" ${visibility.op === 'always' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'alwaysVisible', 'Always'))}</option>
+          <option value="selected" ${visibility.op === 'selected' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'selected', 'Selected'))}</option>
+          <option value="not" ${visibility.op === 'not' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'notSelected', 'Not selected'))}</option>
+          <option value="all" ${visibility.op === 'all' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'allSelected', 'All selected'))}</option>
+          <option value="any" ${visibility.op === 'any' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'anySelected', 'Any selected'))}</option>
+        </select>
+      </label>
+      ${renderTargetPicker({
+        title: copyValue(copy, 'visibleWhen', 'Visible when'),
+        values: visibility.selectors.map(simpleSelectorValue).filter(Boolean),
+        action: 'pack-visibility-target-choice',
+        data: { ...ownerDataset, visibilityOp: visibility.op === 'always' ? 'selected' : visibility.op },
+      })}` : `<div class="v4-rule-warning"><strong>${escapeHtml(copyValue(copy, 'advancedCondition', 'Advanced condition · read only'))}</strong><span>${escapeHtml(copyValue(copy, 'advancedConditionReadonly', 'This condition cannot be changed here without losing logic.'))}</span></div>`;
+    const advancedOwnerSelectors = [
+      ...list(selectedOwnerRules.requires),
+      ...list(selectedOwnerRules.excludes),
+    ].filter((selector) => !simpleSelectorValue(selector));
+    builderHtml = `
+      <div class="v4-rule-builder" data-pack-definition-rule-editor${visibility.editable ? '' : ' data-rule-advanced="true"'}>
+        <div class="v4-rule-owner-picker"><span>${escapeHtml(copyValue(copy, 'definitionRules', 'Part / Item / Style rules'))}</span><strong>${escapeHtml(selectedOwner)}</strong></div>
+        ${advancedOwnerSelectors.length ? `<div class="v4-rule-warning"><strong>${escapeHtml(copyValue(copy, 'advancedCondition', 'Advanced condition · read only'))}</strong><span>${escapeHtml(copyValue(copy, 'advancedConditionReadonly', 'Complex selectors are preserved; the simple choices below never replace them.'))}</span></div>` : ''}
+        ${renderTargetPicker({
+          title: copyValue(copy, 'requiresTargets', 'Requires'),
+          values: list(selectedOwnerRules.requires).map(simpleSelectorValue).filter(Boolean),
+          action: 'pack-definition-rule-target-choice',
+          data: { ...ownerDataset, definitionRuleField: 'requires' },
+        })}
+        ${renderTargetPicker({
+          title: copyValue(copy, 'excludesTargets', 'Excludes'),
+          values: list(selectedOwnerRules.excludes).map(simpleSelectorValue).filter(Boolean),
+          action: 'pack-definition-rule-target-choice',
+          data: { ...ownerDataset, definitionRuleField: 'excludes' },
+        })}
+        ${visibilityEditor}
+      </div>`;
+  }
+  const globalGroups = list(tree.rules).map((rule) => ({
+    eyebrow: copyValue(copy, 'packOwned', 'Pack owned'),
+    ownerLabel: selectorLabel(rule.trigger, entries, copy),
+    badge: copyValue(copy, rule.type, rule.type),
+    data: { ruleId: idOf(rule) },
+    rows: list(rule.targets).map((target) => ({ targetLabel: selectorLabel(target, entries, copy) })),
+    editAction: 'edit-pack-rule',
+    editLabel: copyValue(copy, 'editCombinationRules', 'Edit rules'),
+    editData: { ruleId: idOf(rule) },
+  }));
   return `${readonlyDefinitionList(parent.rules, 'rule', copy)}
-    <section class="v4-pack-rule-section" data-shared-rule-editor>
+    <section class="v4-pack-rule-section">
       <header class="v4-panel-head"><div><span>${escapeHtml(copyValue(copy, 'packOwned', 'Pack owned'))}</span><strong>${escapeHtml(copyValue(copy, 'rules', 'Rules'))}</strong></div>${tree.rules.length ? `<button type="button" data-action="add-pack-rule" data-default-selector="${escapeHtml(firstPack)}" data-default-target="${escapeHtml(firstTarget)}" ${firstPack && firstTarget ? '' : 'disabled'}>${escapeHtml(copyValue(copy, 'addRule', 'Add Rule'))}</button>` : ''}</header>
-      <div class="v4-rule-list">${list(tree.rules).map((rule) => `<article class="v4-rule-group" data-rule-id="${escapeHtml(idOf(rule))}"><header><div><span>${escapeHtml(copyValue(copy, 'packOwned', 'Pack owned'))}</span><strong>${escapeHtml(idOf(rule))}</strong></div><b>${escapeHtml(copyValue(copy, rule.type, rule.type))}</b></header><div class="v4-pack-rule-fields">
-        <label><span>${escapeHtml(copyValue(copy, 'ruleType', 'Rule type'))}</span><select data-rule-field="type" data-rule-id="${escapeHtml(idOf(rule))}"><option value="requires" ${rule.type === 'requires' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'requires', 'Requires'))}</option><option value="excludes" ${rule.type === 'excludes' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'excludes', 'Excludes'))}</option></select></label>
-        <label><span>${escapeHtml(copyValue(copy, 'triggerPart', 'Trigger'))}</span>${selectorSelect(entries, selectorValue(rule.trigger), `data-rule-field="trigger" data-rule-id="${escapeHtml(idOf(rule))}"`, copy, rule.type === 'requires')}</label>
-        <label><span>${escapeHtml(copyValue(copy, 'targetPart', 'Target'))}</span>${selectorMultiSelect(entries, list(rule.targets).map(selectorValue), `data-rule-field="targets" data-rule-id="${escapeHtml(idOf(rule))}"`)}</label>
-        <button type="button" data-action="delete-pack-rule" data-rule-id="${escapeHtml(idOf(rule))}">${escapeHtml(copyValue(copy, 'deleteRule', 'Delete rule'))}</button>
-      </div></article>`).join('') || `<div class="v4-inline-empty v4-pack-rule-empty"><span>${escapeHtml(copyValue(copy, 'noPackRules', 'No Pack rules yet.'))}</span><button type="button" data-action="add-pack-rule" data-default-selector="${escapeHtml(firstPack)}" data-default-target="${escapeHtml(firstTarget)}" ${firstPack && firstTarget ? '' : 'disabled'}>${escapeHtml(copyValue(copy, 'addRule', 'Add Rule'))}</button></div>`}</div>
+      ${renderSharedRuleListEditor({
+        builderHtml,
+        groups: globalGroups,
+        emptyHtml: `<div class="v4-inline-empty v4-pack-rule-empty"><span>${escapeHtml(copyValue(copy, 'noPackRules', 'No Pack rules yet.'))}</span><button type="button" data-action="add-pack-rule" data-default-selector="${escapeHtml(firstPack)}" data-default-target="${escapeHtml(firstTarget)}" ${firstPack && firstTarget ? '' : 'disabled'}>${escapeHtml(copyValue(copy, 'addRule', 'Add Rule'))}</button></div>`,
+      })}
     </section>
     <section class="v4-pack-rule-section"><header class="v4-panel-head"><div><span>${escapeHtml(copyValue(copy, 'definitionRules', 'Part / Item / Style rules'))}</span><strong>${escapeHtml(copyValue(copy, 'combinationRules', 'Combination Rules'))}</strong></div></header>
-      <div class="v4-rule-list">${ownerGroups || `<div class="v4-inline-empty v4-pack-rule-empty"><span>${escapeHtml(copyValue(copy, 'noPackContent', 'No Pack definition rules yet.'))}</span></div>`}</div>
+      ${renderSharedRuleListEditor({ groups: ownerGroups, emptyHtml: `<div class="v4-inline-empty v4-pack-rule-empty"><span>${escapeHtml(copyValue(copy, 'noPackContent', 'No Pack definition rules yet.'))}</span></div>` })}
     </section>`;
 }
 
@@ -1277,10 +1471,10 @@ function renderPackStyleInspector(selection, parent, tree, copy, publicationLock
     </div>` : ''}`;
 }
 
-function renderEditorPanel(section, parent, tree, copy) {
+function renderEditorPanel(section, parent, tree, copy, ui = {}) {
   if (section === 'layers') return renderLayersEditor(parent, tree, copy);
   if (section === 'colors') return renderColorsEditor(parent, tree, copy);
-  if (section === 'rules') return renderRulesEditor(parent, tree, copy);
+  if (section === 'rules') return renderRulesEditor(parent, tree, copy, ui);
   if (section === 'wardrobe') return renderWardrobeEditor(parent, tree, copy);
   return '';
 }
@@ -1425,7 +1619,7 @@ export function renderExpansionPackWorkspaceHtml(model, copy = {}, ui = {}) {
     <div class="v4-tool-modal-backdrop" data-pack-tool-overlay>
       <section id="expansionPackToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true" aria-labelledby="expansionPackToolTitle" tabindex="-1">
         <header class="v4-tool-context"><div><span>${escapeHtml(editorSections(copy).find((section) => section.id === activeSection)?.label || activeSection)}</span><strong id="expansionPackToolTitle">${escapeHtml(tree.name || '')}</strong></div><button type="button" data-action="select-pack-section" data-section="structure" aria-label="${escapeHtml(copyValue(copy, 'close', 'Close'))}">×</button></header>
-        <div class="v4-tool-body"><section class="v4-pack-definition-workspace" role="tabpanel" id="expansionPackPanel-${escapeHtml(activeSection)}" data-active-section="${escapeHtml(activeSection)}" ${publicationLocked ? 'inert aria-disabled="true"' : ''}>${renderEditorPanel(activeSection, parent, tree, copy)}</section></div>
+        <div class="v4-tool-body"><section class="v4-pack-definition-workspace" role="tabpanel" id="expansionPackPanel-${escapeHtml(activeSection)}" data-active-section="${escapeHtml(activeSection)}" ${publicationLocked ? 'inert aria-disabled="true"' : ''}>${renderEditorPanel(activeSection, parent, tree, copy, ui)}</section></div>
       </section>
     </div>`;
   return renderMakerEditorShell({
@@ -1484,6 +1678,9 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
   let selectedPartId = initialSelection.partId;
   let selectedItemId = initialSelection.item?.id || '';
   let selectedStyleId = initialSelection.style?.id || '';
+  let selectedPackRuleId = text(options.selectedPackRuleId);
+  let ruleOwner = text(options.ruleOwner);
+  let ruleOwnerType = text(options.ruleOwnerType);
   let mounted = true;
   const currentCopy = () => (typeof options.copy === 'function' ? options.copy() : options.copy || {});
   const publicationLocked = () => {
@@ -1502,6 +1699,9 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
       selectedPartId,
       selectedItemId,
       selectedStyleId,
+      selectedPackRuleId,
+      ruleOwner,
+      ruleOwnerType,
     });
     selectedPartId = selection.partId;
     selectedItemId = selection.item?.id || '';
@@ -1511,6 +1711,9 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
       selectedPartId,
       selectedItemId,
       selectedStyleId,
+      selectedPackRuleId,
+      ruleOwner,
+      ruleOwnerType,
     });
     options.onRendered?.(workspace.getPreviewModel());
   };
@@ -1531,6 +1734,10 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
       || target?.dataset?.swatchField
       || target?.dataset?.ruleField
       || target?.dataset?.definitionRuleField
+      || target?.dataset?.action?.startsWith('pack-rule-')
+      || target?.dataset?.action?.startsWith('pack-definition-rule-')
+      || target?.dataset?.action === 'pack-visibility-target-choice'
+      || target?.dataset?.action === 'pack-visibility-op-choice'
       || target?.dataset?.assetRequest === 'true'
     )) return;
     if (target?.dataset?.assetRequest === 'true') {
@@ -1627,42 +1834,66 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
         } else {
           workspace.updateColorSwatch(channelId, swatchId, { [swatchField]: target.value });
         }
-      } else if (target?.dataset?.ruleField) {
+      } else if (target?.dataset?.action === 'pack-rule-type-choice') {
+        workspace.updateRule(target.dataset.ruleId, { type: target.value });
+      } else if (target?.dataset?.action === 'pack-rule-trigger-choice') {
+        if (!target.checked) return;
+        workspace.updateRule(target.dataset.ruleId, { trigger: selectorFromControl(target.value) });
+      } else if (target?.dataset?.action === 'pack-rule-target-choice') {
         const rule = list(workspace.getState().tree.rules).find((candidate) => idOf(candidate) === target.dataset.ruleId);
         if (!rule) return;
-        const field = target.dataset.ruleField;
-        const patch = field === 'type'
-          ? { type: target.value }
-          : field === 'targets'
-            ? { targets: selectedControlValues(target).map(selectorFromControl) }
-            : { trigger: selectorFromControl(target.value) };
-        if (field === 'targets' && patch.targets.length === 0) return;
-        workspace.updateRule(target.dataset.ruleId, patch);
-      } else if (target?.dataset?.definitionRuleField) {
+        const selector = selectorFromControl(target.value);
+        const key = selectorKey(selector);
+        const targets = target.checked
+          ? rule.targets.some((candidate) => selectorKey(candidate) === key)
+            ? rule.targets
+            : [...rule.targets, selector]
+          : rule.targets.filter((candidate) => selectorKey(candidate) !== key);
+        if (!targets.length) return;
+        workspace.updateRule(target.dataset.ruleId, { targets });
+      } else if (target?.dataset?.action === 'pack-definition-rule-target-choice') {
         const field = target.dataset.definitionRuleField;
         const owner = definitionRuleOwner(workspace.getState(), target.dataset);
         if (!owner) return;
-        let patch;
-        if (field === 'visibleWhenOp' || field === 'visibleWhenTargets') {
-          const current = editableVisibilityModel(owner.rules?.visibleWhen);
-          if (!current.editable) return;
-          const editor = target.closest?.('[data-visible-when-editor]');
-          const opControl = editor?.querySelector?.('[data-definition-rule-field="visibleWhenOp"]');
-          const targetsControl = editor?.querySelector?.('[data-definition-rule-field="visibleWhenTargets"]');
-          const op = field === 'visibleWhenOp'
-            ? target.value
-            : opControl?.value || target.dataset.visibleWhenOp;
-          const selectors = field === 'visibleWhenTargets'
-            ? selectedControlValues(target).map(selectorFromControl)
-            : targetsControl
-              ? selectedControlValues(targetsControl).map(selectorFromControl)
-              : current.selectors;
-          const visibleWhen = visibilityConditionFromControls(op, selectors);
-          if (visibleWhen === undefined) return;
-          patch = { visibleWhen };
-        } else {
-          patch = { [field]: selectedControlValues(target).map(selectorFromControl) };
-        }
+        const selector = selectorFromControl(target.value);
+        const key = selectorKey(selector);
+        const current = list(owner.rules?.[field]);
+        const next = target.checked
+          ? current.some((candidate) => selectorKey(candidate) === key)
+            ? current
+            : [...current, selector]
+          : current.filter((candidate) => selectorKey(candidate) !== key);
+        const patch = { [field]: next };
+        if (target.dataset.definitionKind === 'part') workspace.updatePartRules(target.dataset.partId, patch);
+        else if (target.dataset.definitionKind === 'item') workspace.updateItemRules(target.dataset.partId, target.dataset.itemId, patch);
+        else workspace.updateStyleRules(target.dataset.partId, target.dataset.itemId, target.dataset.styleId, patch);
+      } else if (target?.dataset?.action === 'pack-visibility-target-choice') {
+        const owner = definitionRuleOwner(workspace.getState(), target.dataset);
+        const current = editableVisibilityModel(owner?.rules?.visibleWhen);
+        if (!owner || !current.editable) return;
+        const selector = selectorFromControl(target.value);
+        const key = selectorKey(selector);
+        const selectors = target.checked
+          ? current.selectors.some((candidate) => selectorKey(candidate) === key)
+            ? current.selectors
+            : [...current.selectors, selector]
+          : current.selectors.filter((candidate) => selectorKey(candidate) !== key);
+        const visibleWhen = visibilityConditionFromControls(target.dataset.visibilityOp || current.op, selectors);
+        if (visibleWhen === undefined) return;
+        const patch = { visibleWhen };
+        if (target.dataset.definitionKind === 'part') workspace.updatePartRules(target.dataset.partId, patch);
+        else if (target.dataset.definitionKind === 'item') workspace.updateItemRules(target.dataset.partId, target.dataset.itemId, patch);
+        else workspace.updateStyleRules(target.dataset.partId, target.dataset.itemId, target.dataset.styleId, patch);
+      } else if (target?.dataset?.action === 'pack-visibility-op-choice') {
+        const owner = definitionRuleOwner(workspace.getState(), target.dataset);
+        const current = editableVisibilityModel(owner?.rules?.visibleWhen);
+        if (!owner || !current.editable) return;
+        const nextOp = target.value;
+        const visibleWhen = nextOp === 'always'
+          ? null
+          : visibilityConditionFromControls(nextOp, current.selectors);
+        if (visibleWhen === undefined) return;
+        const patch = { visibleWhen };
         if (target.dataset.definitionKind === 'part') workspace.updatePartRules(target.dataset.partId, patch);
         else if (target.dataset.definitionKind === 'item') workspace.updateItemRules(target.dataset.partId, target.dataset.itemId, patch);
         else workspace.updateStyleRules(target.dataset.partId, target.dataset.itemId, target.dataset.styleId, patch);
@@ -1724,11 +1955,23 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
     }
     if (action === 'edit-pack-selection-rules') {
       activeSection = MAKER_DEFINITION_EDITOR_SECTION_IDS.RULES;
+      selectedPackRuleId = '';
+      ruleOwner = text(target.dataset.ruleOwner);
+      ruleOwnerType = text(target.dataset.ruleOwnerType);
       render();
       options.onSectionChange?.(activeSection, {
-        owner: text(target.dataset.ruleOwner),
-        ownerType: text(target.dataset.ruleOwnerType),
+        owner: ruleOwner,
+        ownerType: ruleOwnerType,
       });
+      return;
+    }
+    if (action === 'edit-pack-rule') {
+      activeSection = MAKER_DEFINITION_EDITOR_SECTION_IDS.RULES;
+      selectedPackRuleId = text(target.dataset.ruleId);
+      ruleOwner = '';
+      ruleOwnerType = '';
+      render();
+      options.onSectionChange?.(activeSection, { ruleId: selectedPackRuleId });
       return;
     }
     if (action === 'save-pack') {
@@ -1856,19 +2099,6 @@ function selectorFromControl(value) {
     ...(itemId ? { itemId } : {}),
     ...(styleId ? { styleId } : {}),
   };
-}
-
-function selectedControlValues(control) {
-  if (control?.selectedOptions) {
-    return Array.from(control.selectedOptions, (option) => String(option.value || '')).filter(Boolean);
-  }
-  if (control?.options) {
-    return Array.from(control.options)
-      .filter((option) => option.selected)
-      .map((option) => String(option.value || ''))
-      .filter(Boolean);
-  }
-  return control?.value ? [String(control.value)] : [];
 }
 
 function visibilityConditionFromControls(op, selectors) {
