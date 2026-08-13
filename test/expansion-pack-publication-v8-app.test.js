@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { bcs } from '@mysten/sui/bcs';
+import { normalizeStructTag } from '@mysten/sui/utils';
 import { deriveExpansionPackSealReleaseCommitmentV8 } from '../maker-seal-v5.js';
 import {
   EXPANSION_PACK_V8_LIFECYCLE,
@@ -17,6 +18,7 @@ import {
   parseExpansionPackReleaseV8,
   queryIndependentExtensionLockV5,
   queryMakerReleaseEvidenceV5,
+  queryManagedExpansionPackReleasesV8,
   queryExpansionPackReleasesV8,
   queryExpansionPackStyleRecordsV8,
   queryOwnedExpansionPackPassesV8,
@@ -111,6 +113,33 @@ function capObject(overrides = {}) {
     json: { fields: { version: '8', release_id: id(3), creator: id(9) } },
     ...overrides,
   };
+}
+
+function managedCap({ capId, releaseId, owner = id(9), creator = id(9), type } = {}) {
+  return capObject({
+    objectId: capId,
+    type: type || `${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackAdminCapV8`,
+    owner: { AddressOwner: owner },
+    json: { fields: { version: '8', release_id: releaseId, creator } },
+  });
+}
+
+function managedRelease({
+  releaseId,
+  capId,
+  lifecycle = EXPANSION_PACK_V8_LIFECYCLE.DRAFT,
+  parentRootId = id(1),
+  creator = id(9),
+} = {}) {
+  return releaseObject({
+    parent_root_id: parentRootId,
+    creator,
+    lifecycle,
+    admin_cap_id: capId,
+    style_registry_commitment: lifecycle === EXPANSION_PACK_V8_LIFECYCLE.DRAFT
+      ? []
+      : BYTES('44'),
+  }, { objectId: releaseId });
 }
 
 function treasuryObject(overrides = {}) {
@@ -1211,6 +1240,153 @@ test('FREE claim readback binds the created Pass and entitlement event to the ac
     }),
     { code: 'EXPANSION_PACK_V8_CHAIN_READBACK_MISMATCH' },
   );
+});
+
+test('managed release discovery exhausts wallet AdminCap pages and includes every lifecycle', async () => {
+  const lifecycles = Object.values(EXPANSION_PACK_V8_LIFECYCLE);
+  const caps = lifecycles.map((lifecycle, index) => managedCap({
+    capId: id(`4${index}`),
+    releaseId: id(`3${index}`),
+  }));
+  const releases = lifecycles.map((lifecycle, index) => managedRelease({
+    releaseId: id(`3${index}`),
+    capId: id(`4${index}`),
+    lifecycle,
+  }));
+  const objectClient = getObjectsClient(releases);
+  const cursors = [];
+  const requestedReleaseIds = [];
+  const client = {
+    async listOwnedObjects(request) {
+      cursors.push(request.cursor);
+      assert.equal(request.owner, id(9));
+      assert.equal(
+        request.type,
+        normalizeStructTag(`${TYPE_ORIGIN}::expansion_pack_v8::ExpansionPackAdminCapV8`),
+      );
+      assert.deepEqual(request.include, { json: true, type: true, owner: true });
+      if (request.cursor === null) {
+        return { objects: caps.slice(0, 2), hasNextPage: true, nextCursor: 'caps-2' };
+      }
+      assert.equal(request.cursor, 'caps-2');
+      return { objects: caps.slice(2), hasNextPage: false };
+    },
+    async getObjects(request) {
+      requestedReleaseIds.push(...request.objectIds);
+      return objectClient.getObjects(request);
+    },
+  };
+
+  const managed = await queryManagedExpansionPackReleasesV8(client, {
+    runtime,
+    owner: id(9),
+    parentRootId: id(1),
+  });
+
+  assert.deepEqual(cursors, [null, 'caps-2']);
+  assert.deepEqual(requestedReleaseIds, releases.map((release) => release.objectId));
+  assert.deepEqual(managed.map((release) => release.lifecycle), lifecycles);
+  assert.equal(Object.isFrozen(managed), true);
+});
+
+test('managed release discovery applies parent filtering only after exact linkage verification', async () => {
+  const caps = [
+    managedCap({ capId: id(40), releaseId: id(30) }),
+    managedCap({ capId: id(41), releaseId: id(31) }),
+  ];
+  const releases = [
+    managedRelease({ releaseId: id(30), capId: id(40), parentRootId: id(1) }),
+    managedRelease({ releaseId: id(31), capId: id(41), parentRootId: id(2) }),
+  ];
+  const objectClient = getObjectsClient(releases);
+  const requestedReleaseIds = [];
+  const managed = await queryManagedExpansionPackReleasesV8({
+    async listOwnedObjects() {
+      return { objects: caps, hasNextPage: false };
+    },
+    async getObjects(request) {
+      requestedReleaseIds.push(...request.objectIds);
+      return objectClient.getObjects(request);
+    },
+  }, { runtime, owner: id(9), parentRootId: id(1) });
+
+  assert.deepEqual(requestedReleaseIds, [id(30), id(31)]);
+  assert.deepEqual(managed.map((release) => release.objectId), [id(30)]);
+});
+
+test('managed release discovery rejects cap substitutions, duplicate authority and incomplete pages', async () => {
+  const validCap = managedCap({ capId: id(40), releaseId: id(30) });
+  const cases = [
+    ['wrong TypeOrigin', [managedCap({
+      capId: id(40), releaseId: id(30), type: `${CALLABLE}::expansion_pack_v8::ExpansionPackAdminCapV8`,
+    })], 'EXPANSION_PACK_V8_TYPE_ORIGIN_MISMATCH'],
+    ['wrong owner', [managedCap({ capId: id(40), releaseId: id(30), owner: id(8) })],
+      'EXPANSION_PACK_V8_MANAGED_DISCOVERY_MISMATCH'],
+    ['wrong embedded creator', [managedCap({ capId: id(40), releaseId: id(30), creator: id(8) })],
+      'EXPANSION_PACK_V8_MANAGED_DISCOVERY_MISMATCH'],
+    ['duplicate release authority', [
+      validCap,
+      managedCap({ capId: id(41), releaseId: id(30) }),
+    ], 'EXPANSION_PACK_V8_MANAGED_DISCOVERY_MISMATCH'],
+  ];
+  for (const [label, objects, code] of cases) {
+    await assert.rejects(
+      queryManagedExpansionPackReleasesV8({
+        async listOwnedObjects() { return { objects, hasNextPage: false }; },
+        async getObjects() { return { objects: [] }; },
+      }, { runtime, owner: id(9) }),
+      (error) => {
+        assert.equal(error.code, code, label);
+        return true;
+      },
+    );
+  }
+
+  await assert.rejects(
+    queryManagedExpansionPackReleasesV8({
+      async listOwnedObjects() {
+        return { objects: [validCap], hasNextPage: true, nextCursor: null };
+      },
+      async getObjects() { throw new Error('must not read a partial cap inventory'); },
+    }, { runtime, owner: id(9) }),
+    { code: 'EXPANSION_PACK_V8_MANAGED_DISCOVERY_CURSOR_INVALID' },
+  );
+});
+
+test('managed release discovery fails as one result on missing or mismatched linked Releases', async () => {
+  const cap = managedCap({ capId: id(40), releaseId: id(30) });
+  const cases = [
+    ['missing Release', [], 'EXPANSION_PACK_V8_CHAIN_READBACK_MISMATCH'],
+    ['wrong stable TypeOrigin', [managedRelease({
+      releaseId: id(30), capId: id(40),
+    })].map((release) => ({
+      ...release,
+      type: `${CALLABLE}::expansion_pack_v8::ExpansionPackReleaseV8`,
+    })), 'EXPANSION_PACK_V8_TYPE_ORIGIN_MISMATCH'],
+    ['wrong AdminCap link', [managedRelease({
+      releaseId: id(30), capId: id(41),
+    })], 'EXPANSION_PACK_V8_MANAGED_DISCOVERY_MISMATCH'],
+    ['wrong Release creator', [managedRelease({
+      releaseId: id(30), capId: id(40), creator: id(8),
+    })], 'EXPANSION_PACK_V8_MANAGED_DISCOVERY_MISMATCH'],
+    ['non-shared Release', [{
+      ...managedRelease({ releaseId: id(30), capId: id(40) }),
+      owner: { AddressOwner: id(9) },
+    }], 'EXPANSION_PACK_V8_MANAGED_DISCOVERY_MISMATCH'],
+  ];
+  for (const [label, releases, code] of cases) {
+    const objectClient = getObjectsClient(releases);
+    await assert.rejects(
+      queryManagedExpansionPackReleasesV8({
+        async listOwnedObjects() { return { objects: [cap], hasNextPage: false }; },
+        getObjects: objectClient.getObjects,
+      }, { runtime, owner: id(9) }),
+      (error) => {
+        assert.equal(error.code, code, label);
+        return true;
+      },
+    );
+  }
 });
 
 test('stable-origin release discovery and wallet Pass query reject event/object substitutions', async () => {

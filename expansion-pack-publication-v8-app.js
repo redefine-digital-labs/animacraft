@@ -1997,6 +1997,49 @@ async function listOwnedByType(client, owner, type) {
   return results;
 }
 
+async function listAllOwnedByType(client, owner, type, label) {
+  if (!client?.listOwnedObjects) {
+    fail('EXPANSION_PACK_V8_CLIENT_MISSING', 'A Sui client with listOwnedObjects is required.');
+  }
+  const wallet = exactId(owner, 'Wallet address');
+  const results = [];
+  const seenCursors = new Set();
+  let cursor = null;
+  do {
+    const page = await client.listOwnedObjects({
+      owner: wallet,
+      type,
+      cursor,
+      limit: 50,
+      include: { json: true, type: true, owner: true },
+    });
+    results.push(...array(page?.objects || page?.data));
+    if (!page?.hasNextPage) break;
+    const nextCursor = page.nextCursor ?? page.cursor;
+    if (nextCursor == null || nextCursor === '') {
+      fail(
+        'EXPANSION_PACK_V8_MANAGED_DISCOVERY_CURSOR_INVALID',
+        `${label} discovery returned an incomplete pagination cursor. No partial inventory was accepted.`,
+      );
+    }
+    let cursorKey;
+    try {
+      cursorKey = JSON.stringify(nextCursor);
+    } catch {
+      cursorKey = String(nextCursor);
+    }
+    if (seenCursors.has(cursorKey)) {
+      fail(
+        'EXPANSION_PACK_V8_MANAGED_DISCOVERY_CURSOR_INVALID',
+        `${label} discovery repeated a pagination cursor. No partial inventory was accepted.`,
+      );
+    }
+    seenCursors.add(cursorKey);
+    cursor = nextCursor;
+  } while (true);
+  return results;
+}
+
 export async function queryOwnedExpansionPackPassesV8(client, {
   runtime, owner, releaseId = '', parentRootId = '',
 } = {}) {
@@ -2008,6 +2051,83 @@ export async function queryOwnedExpansionPackPassesV8(client, {
     .filter((entry) => !releaseId || sameId(entry.releaseId, releaseId))
     .filter((entry) => !parentRootId || sameId(entry.parentRootId, parentRootId));
   return Object.freeze(passes);
+}
+
+/**
+ * Discover every Expansion Pack Release the wallet can administer, including
+ * pre-admission lifecycle states that intentionally have no admission event.
+ * The wallet-owned stable-TypeOrigin AdminCap is the discovery authority; all
+ * caps and Releases must verify as one exact bidirectional ownership tuple or
+ * the whole query fails without returning a partial inventory.
+ */
+export async function queryManagedExpansionPackReleasesV8(client, {
+  runtime,
+  owner,
+  parentRootId = '',
+} = {}) {
+  if (!client?.listOwnedObjects || !client?.getObjects) {
+    fail(
+      'EXPANSION_PACK_V8_CLIENT_MISSING',
+      'A Sui client with listOwnedObjects and getObjects is required.',
+    );
+  }
+  const wallet = exactId(owner, 'Wallet address');
+  const expectedParent = parentRootId ? exactId(parentRootId, 'Parent MakerRootV5 ID') : '';
+  const capType = expectedType(runtime, 'ExpansionPackAdminCapV8');
+  const capObjects = await listAllOwnedByType(
+    client,
+    wallet,
+    capType,
+    'ExpansionPackAdminCapV8',
+  );
+  const caps = capObjects.map((entry) => parseExpansionPackAdminCapV8(entry, { runtime }));
+  const capIds = new Set();
+  const releaseIds = new Set();
+  caps.forEach((cap) => {
+    const capId = comparableId(cap.objectId);
+    const releaseId = comparableId(cap.releaseId);
+    if (
+      !sameId(cap.owner, wallet)
+      || !sameId(cap.creator, wallet)
+      || capIds.has(capId)
+      || releaseIds.has(releaseId)
+    ) {
+      fail(
+        'EXPANSION_PACK_V8_MANAGED_DISCOVERY_MISMATCH',
+        'Owned ExpansionPackAdminCapV8 authority is duplicated or does not match its wallet and creator.',
+      );
+    }
+    capIds.add(capId);
+    releaseIds.add(releaseId);
+  });
+
+  const releaseObjects = [];
+  for (let offset = 0; offset < caps.length; offset += 50) {
+    releaseObjects.push(...await getExactObjects(
+      client,
+      caps.slice(offset, offset + 50).map((cap) => cap.releaseId),
+      'Managed Expansion Pack release',
+    ));
+  }
+  const releases = releaseObjects.map((entry) => parseExpansionPackReleaseV8(entry, { runtime }));
+  releases.forEach((release, index) => {
+    const cap = caps[index];
+    if (
+      !isShared(releaseObjects[index])
+      || !sameId(cap.releaseId, release.objectId)
+      || !sameId(release.adminCapId, cap.objectId)
+      || !sameId(cap.creator, release.creator)
+      || !sameId(release.creator, wallet)
+    ) {
+      fail(
+        'EXPANSION_PACK_V8_MANAGED_DISCOVERY_MISMATCH',
+        'ExpansionPackAdminCapV8 and shared ExpansionPackReleaseV8 authority linkage is not exact.',
+      );
+    }
+  });
+  return Object.freeze(releases.filter((release) => (
+    !expectedParent || sameId(release.parentRootId, expectedParent)
+  )));
 }
 
 function parseAdmittedEvent(value, runtime) {
