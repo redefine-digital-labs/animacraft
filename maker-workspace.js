@@ -1521,6 +1521,60 @@ function selectorReferencesUnpublishedItem(document, selector) {
   ));
 }
 
+function expansionPackLifecycleState(lifecycle, fallback = 'unknown') {
+  const raw = lifecycle && typeof lifecycle === 'object'
+    ? lifecycle.state
+      ?? lifecycle.lifecycleState
+      ?? lifecycle.status
+      ?? lifecycle.lifecycle
+      ?? fallback
+    : lifecycle ?? fallback;
+  const numeric = Number(raw);
+  if (Number.isInteger(numeric) && String(raw).trim() !== '') {
+    return ['draft', 'sealed', 'admitted', 'active', 'paused', 'archived'][numeric] || 'unknown';
+  }
+  const state = String(raw || fallback).trim().toLowerCase().replaceAll('_', '-');
+  return [
+    'local-draft',
+    'draft',
+    'sealed',
+    'admitted',
+    'active',
+    'paused',
+    'archived',
+    'publishing',
+    'recoverable',
+    'unknown',
+  ].includes(state) ? state : 'unknown';
+}
+
+const EXPANSION_PACK_LIFECYCLE_LABEL_KEYS = Object.freeze({
+  'local-draft': 'expansionPackLifecycleLocalDraft',
+  draft: 'expansionPackLifecycleDraft',
+  sealed: 'expansionPackLifecycleSealed',
+  admitted: 'expansionPackLifecycleAdmitted',
+  active: 'expansionPackLifecycleActive',
+  paused: 'expansionPackLifecyclePaused',
+  archived: 'expansionPackLifecycleArchived',
+  publishing: 'expansionPackLifecyclePublishing',
+  recoverable: 'expansionPackLifecycleRecoverable',
+  unknown: 'expansionPackLifecycleUnknown',
+});
+
+function expansionPackLifecycleError(error) {
+  return String(error?.message || error || '').trim();
+}
+
+function expansionPackDescriptorKey(descriptor) {
+  const explicit = String(descriptor?.key || '').trim();
+  if (explicit) return explicit;
+  try {
+    return descriptor?.identity ? expansionPackDraftKey(descriptor.identity) : '';
+  } catch {
+    return '';
+  }
+}
+
 export function ruleOwnerFromDefinition(document, definition) {
   const [partId = '', itemId = '', styleId = ''] = String(definition || '').split('::');
   const part = findPart(document, partId);
@@ -3034,6 +3088,21 @@ export class MakerWorkspace {
 
   expansionPackCopy() {
     const publicationState = this.currentExpansionPackPublishState();
+    const workspaceState = this.expansionPackWorkspace?.getState?.();
+    let lifecycleProjectKey = '';
+    try {
+      lifecycleProjectKey = workspaceState?.identity
+        ? expansionPackDraftKey(workspaceState.identity)
+        : '';
+    } catch {
+      lifecycleProjectKey = '';
+    }
+    const lifecycleSummary = this.expansionPackProjectSummaries.find(
+      (entry) => entry.key === lifecycleProjectKey,
+    );
+    const lifecycleDescriptor = this.expansionPackLifecycleDescriptor(
+      lifecycleSummary || { lifecycle: { state: 'local-draft' } },
+    );
     return {
       studio: this.tr('packStudio'),
       parentReadonly: this.tr('packParentReadonly'),
@@ -3199,6 +3268,14 @@ export class MakerWorkspace {
       inherited: this.tr('packInherited'),
       packOwned: this.tr('packOwned'),
       none: this.tr('packNone'),
+      lifecycleState: lifecycleDescriptor.state,
+      lifecycleLabel: lifecycleDescriptor.label,
+      lifecycleBadgeClass: lifecycleDescriptor.badgeClass,
+      lifecycleProjectKey,
+      lifecycleManage: this.tr('expansionPackLifecycleManage'),
+      lifecycleManageAria: this.tr('expansionPackLifecycleManageAria', {
+        name: workspaceState?.project?.name || this.tr('packStudio'),
+      }),
       publicationState,
     };
   }
@@ -3460,7 +3537,7 @@ export class MakerWorkspace {
         || rootMakerId !== String(currentVersion?.rootMakerId || '')
         || parentVersion !== String(currentVersion?.number ?? currentVersion?.versionId ?? '')
       ) return [];
-      this.expansionPackProjectSummaries = records.map((record) => ({
+      const localSummaries = records.map((record) => ({
         key: record.key || expansionPackDraftKey(record),
         identity: {
           walletAddress: record.walletAddress,
@@ -3485,7 +3562,20 @@ export class MakerWorkspace {
         revision: record.revision,
         savedAt: record.savedAt,
         project: record.project,
+        lifecycle: { state: 'local-draft' },
+        chainOnly: false,
       }));
+      const summaries = await this.loadExpansionPackLifecycles(
+        localSummaries,
+        { parentDocument: parent, walletAddress },
+      );
+      const latestVersion = this.store?.getState().document?.version;
+      if (
+        requestId !== this.expansionPackProjectRequestId
+        || rootMakerId !== String(latestVersion?.rootMakerId || '')
+        || parentVersion !== String(latestVersion?.number ?? latestVersion?.versionId ?? '')
+      ) return [];
+      this.expansionPackProjectSummaries = summaries;
       this.expansionPackProjectsStatus = 'ready';
       if (render) this.render();
       return this.expansionPackProjectSummaries;
@@ -3497,6 +3587,113 @@ export class MakerWorkspace {
       if (render) this.render();
       return [];
     }
+  }
+
+  async loadExpansionPackLifecycles(summaries, { parentDocument, walletAddress } = {}) {
+    const callback = this.callbacks.onLoadExpansionPackLifecycles;
+    if (typeof callback !== 'function') return summaries;
+    const source = 'maker-workspace';
+    let descriptors;
+    try {
+      descriptors = await callback({
+        summaries: clone(summaries),
+        parentDocument: clone(parentDocument),
+        walletAddress,
+        source,
+      });
+    } catch (error) {
+      const lifecycleError = expansionPackLifecycleError(error);
+      return summaries.map((summary) => ({
+        ...summary,
+        lifecycle: { state: 'unknown', error: lifecycleError },
+      }));
+    }
+    const normalized = descriptors instanceof Map
+      ? [...descriptors.entries()].map(([key, value]) => (
+          value && typeof value === 'object' && Object.hasOwn(value, 'lifecycle')
+            ? { key, ...value }
+            : { key, lifecycle: value }
+        ))
+      : Array.isArray(descriptors) ? descriptors : [];
+    const byKey = new Map(normalized.map((descriptor) => [
+      expansionPackDescriptorKey(descriptor),
+      descriptor,
+    ]).filter(([key]) => key));
+    const merged = summaries.map((summary) => {
+      const descriptor = byKey.get(summary.key);
+      if (!descriptor) return summary;
+      byKey.delete(summary.key);
+      return {
+        ...summary,
+        lifecycle: clone(descriptor.lifecycle || { state: 'unknown' }),
+      };
+    });
+    normalized.forEach((descriptor) => {
+      const key = expansionPackDescriptorKey(descriptor);
+      if (!key || !byKey.has(key)) return;
+      byKey.delete(key);
+      merged.push({
+        key,
+        identity: clone(descriptor.identity || null),
+        packId: String(descriptor.packId || descriptor.identity?.packId || ''),
+        name: String(descriptor.name || descriptor.packId || descriptor.identity?.packId || key),
+        version: String(descriptor.version || ''),
+        namespace: String(descriptor.namespace || ''),
+        parentVersion: String(descriptor.identity?.parentVersion || ''),
+        parentBindingKind: String(descriptor.identity?.parentBindingKind || ''),
+        parentBindingIdentity: '',
+        parentReleaseId: String(descriptor.identity?.parentReleaseId || ''),
+        publishable: true,
+        revision: null,
+        savedAt: '',
+        project: null,
+        lifecycle: clone(descriptor.lifecycle || { state: 'unknown' }),
+        chainOnly: true,
+      });
+    });
+    return merged;
+  }
+
+  expansionPackLifecycleDescriptor(summary) {
+    const lifecycle = summary?.lifecycle || { state: summary?.chainOnly ? 'unknown' : 'local-draft' };
+    const state = expansionPackLifecycleState(lifecycle, summary?.chainOnly ? 'unknown' : 'local-draft');
+    return {
+      state,
+      label: this.tr(EXPANSION_PACK_LIFECYCLE_LABEL_KEYS[state]),
+      badgeClass: state,
+      lifecycle,
+    };
+  }
+
+  manageExpansionPackLifecycle(summary, source = 'expansion-pack-list') {
+    if (!summary) return false;
+    const payload = {
+      key: summary.key,
+      identity: clone(summary.identity || null),
+      project: clone(summary.project || null),
+      source,
+      lifecycle: clone(summary.lifecycle || null),
+      chainOnly: summary.chainOnly === true,
+      summary: clone(summary),
+    };
+    const applyResult = (result) => {
+      const lifecycle = result?.lifecycle
+        || (result && typeof result === 'object' && (
+          Object.hasOwn(result, 'state')
+          || Object.hasOwn(result, 'lifecycleState')
+          || Object.hasOwn(result, 'status')
+        ) ? result : null);
+      if (!lifecycle) return;
+      const current = this.expansionPackProjectSummaries.find((entry) => entry.key === summary.key);
+      if (current) current.lifecycle = clone(lifecycle);
+      this.render();
+    };
+    const result = this.callbacks.onManageExpansionPackLifecycle?.(payload);
+    if (result?.then) Promise.resolve(result).then(applyResult).catch(
+      (error) => this.callbacks.onCreatorError?.(error),
+    );
+    else applyResult(result);
+    return true;
   }
 
   expansionPackCommerceState(key) {
@@ -3888,6 +4085,7 @@ export class MakerWorkspace {
   async openExpansionPackWorkspace(packId, {
     create = false,
     parentBindingIdentity = '',
+    projectKey = '',
   } = {}) {
     const requestId = ++this.expansionPackWorkspaceRequestId;
     const parent = this.expansionPackParentDocument();
@@ -3912,8 +4110,10 @@ export class MakerWorkspace {
     const nextIndex = this.expansionPackProjectSummaries.length + 1;
     const stored = !create
       ? this.expansionPackProjectSummaries.find((entry) => (
-        String(entry.packId) === id
+        (!projectKey || entry.key === projectKey)
+        && String(entry.packId) === id
         && (!parentBindingIdentity || entry.parentBindingIdentity === parentBindingIdentity)
+        && entry.project
       ))
       : null;
     let project = stored?.project ? clone(stored.project) : null;
@@ -4332,6 +4532,20 @@ export class MakerWorkspace {
         onAssetDiscarded: (asset) => this.discardExpansionPackStyleAsset(asset),
         onRequestBackToMaker: () => this.closeExpansionPackWorkspace({ save: true, render: true }),
         onRequestCommerceRights: () => this.openCommerceFromExpansionPackStudio(),
+        onManageLifecycle: (state, projectKey) => {
+          let key = projectKey;
+          if (!key) {
+            try { key = expansionPackDraftKey(state?.identity); } catch { key = ''; }
+          }
+          const summary = this.expansionPackProjectSummaries.find((entry) => entry.key === key) || {
+            key,
+            identity: state?.identity || null,
+            project: state?.project || null,
+            lifecycle: { state: 'local-draft' },
+            chainOnly: false,
+          };
+          return this.manageExpansionPackLifecycle(summary, 'expansion-pack-studio');
+        },
         onPublicationAction: (action) => this.requestExpansionPackPublicationAction(action),
         onRendered: () => requestAnimationFrame(() => {
           void this.renderExpansionPackPreview()
@@ -9673,11 +9887,21 @@ export class MakerWorkspace {
           <div data-expansion-pack-studio-host></div>
         `;
       }
-      const storedRows = this.expansionPackProjectSummaries.map((entry) => `
-        <button type="button" class="v4-pack-project-row" data-action="open-expansion-pack-studio" data-pack-id="${escapeHtml(entry.packId)}" data-parent-binding-identity="${escapeHtml(entry.parentBindingIdentity)}">
-          <span><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.namespace)} · ${escapeHtml(entry.version)} · ${escapeHtml(this.tr('packSavedRevision', { revision: entry.revision }))}</small></span>
-          <em>${escapeHtml(this.tr(entry.publishable ? 'packExactParentStatus' : 'packLocalParentStatus'))}</em>
-        </button>`).join('');
+      const storedRows = this.expansionPackProjectSummaries.map((entry) => {
+        const lifecycle = this.expansionPackLifecycleDescriptor(entry);
+        const details = entry.chainOnly
+          ? this.tr('expansionPackLifecycleChainOnly')
+          : `${entry.namespace} · ${entry.version} · ${this.tr('packSavedRevision', { revision: entry.revision })}`;
+        return `
+        <article class="v4-pack-project-row" data-pack-project-key="${escapeHtml(entry.key)}" data-pack-chain-only="${entry.chainOnly === true}">
+          <span class="v4-pack-project-summary"><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(details)}</small><em>${escapeHtml(this.tr(entry.publishable ? 'packExactParentStatus' : 'packLocalParentStatus'))}</em></span>
+          <span class="v4-pack-project-actions">
+            <span class="maker-lifecycle-badge ${escapeHtml(lifecycle.badgeClass)}" data-pack-lifecycle-badge>${escapeHtml(lifecycle.label)}</span>
+            <button type="button" data-action="open-expansion-pack-studio" data-pack-project-key="${escapeHtml(entry.key)}" data-pack-id="${escapeHtml(entry.packId)}" data-parent-binding-identity="${escapeHtml(entry.parentBindingIdentity)}" ${entry.chainOnly ? 'disabled' : ''}>${escapeHtml(this.tr(entry.chainOnly ? 'expansionPackLifecycleInspect' : 'expansionPackLifecycleOpen'))}</button>
+            <button type="button" data-action="manage-expansion-pack-lifecycle" data-pack-project-key="${escapeHtml(entry.key)}" aria-label="${escapeHtml(this.tr('expansionPackLifecycleManageAria', { name: entry.name }))}">${escapeHtml(this.tr('expansionPackLifecycleManage'))}</button>
+          </span>
+        </article>`;
+      }).join('');
       const status = this.expansionPackProjectsStatus === 'loading'
         ? `<div class="v4-inline-empty"><span>${escapeHtml(this.tr('packLoading'))}</span></div>`
         : this.expansionPackProjectsStatus === 'wallet-required'
@@ -11941,8 +12165,13 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'open-expansion-pack-studio') {
+      const summary = this.expansionPackProjectSummaries.find(
+        (entry) => entry.key === button.dataset.packProjectKey,
+      );
+      if (summary?.chainOnly || !summary?.project) return;
       void this.openExpansionPackWorkspace(button.dataset.packId, {
         parentBindingIdentity: button.dataset.parentBindingIdentity || '',
+        projectKey: button.dataset.packProjectKey || '',
       })
         .catch((error) => {
           this.expansionPackProjectsStatus = 'error';
@@ -11950,6 +12179,13 @@ export class MakerWorkspace {
           this.callbacks.onCreatorError?.(error);
           this.render();
         });
+      return;
+    }
+    if (action === 'manage-expansion-pack-lifecycle') {
+      const summary = this.expansionPackProjectSummaries.find(
+        (entry) => entry.key === button.dataset.packProjectKey,
+      );
+      this.manageExpansionPackLifecycle(summary, 'expansion-pack-list');
       return;
     }
     if (action === 'close-expansion-pack-studio') {

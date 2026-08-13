@@ -2467,6 +2467,7 @@ input[type="color"] {
 }
 
 .maker-lifecycle-badge.draft,
+.maker-lifecycle-badge.local-draft,
 .maker-lifecycle-badge.active {
   border-color: color-mix(in srgb, var(--ui-success) 48%, var(--ui-border));
   background: var(--ui-surface-success);
@@ -2474,6 +2475,8 @@ input[type="color"] {
 }
 
 .maker-lifecycle-badge.published,
+.maker-lifecycle-badge.sealed,
+.maker-lifecycle-badge.admitted,
 .maker-lifecycle-badge.version-draft {
   border-color: color-mix(in srgb, var(--ui-brand) 48%, var(--ui-border));
   background: var(--ui-surface-selected);
@@ -2493,6 +2496,12 @@ input[type="color"] {
   border-color: color-mix(in srgb, var(--ui-danger) 48%, var(--ui-border));
   background: var(--ui-surface-danger);
   color: var(--ui-danger);
+}
+
+.maker-lifecycle-badge.unknown {
+  border-color: var(--ui-border);
+  background: var(--ui-surface-muted);
+  color: var(--ui-muted);
 }
 
 .editor-section-label {
@@ -10068,17 +10077,43 @@ pre {
 }
 
 .v4-pack-project-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--ui-surface);
   text-align: left;
 }
 
-.v4-pack-project-row > span {
+.v4-pack-project-summary {
   display: grid;
   gap: 3px;
+  min-width: 0;
+}
+
+.v4-pack-project-summary strong,
+.v4-pack-project-summary small,
+.v4-pack-project-summary em {
+  overflow-wrap: anywhere;
+}
+
+.v4-pack-project-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.v4-pack-project-actions .maker-lifecycle-badge,
+.v4-top-actions .maker-lifecycle-badge {
+  min-height: 0;
+  padding: 3px 7px;
+  font-size: 10px;
+  line-height: 1.2;
 }
 
 .v4-pack-project-row small,
@@ -10086,6 +10121,31 @@ pre {
   color: var(--muted);
   font-size: 10px;
   font-style: normal;
+}
+
+@media (max-width: 760px) {
+  .v4-pack-project-row {
+    grid-template-columns: 1fr;
+  }
+
+  .v4-pack-project-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  .v4-pack-project-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .v4-pack-project-actions .maker-lifecycle-badge {
+    grid-column: 1 / -1;
+  }
+
+  .v4-pack-project-actions button {
+    width: 100%;
+  }
 }
 
 .v4-soul-workspace {

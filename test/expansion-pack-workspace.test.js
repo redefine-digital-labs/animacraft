@@ -584,6 +584,37 @@ test('renders and mounts in a host-owned scroll surface without a nested viewpor
   assert.equal(events.size, 0);
 });
 
+test('Pack Studio shared shell renders and delegates its lifecycle action', async () => {
+  const workspace = await emptyWorkspace();
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+  };
+  const calls = [];
+  const mounted = mountExpansionPackWorkspace(root, workspace, {
+    copy: {
+      lifecycleState: 'ACTIVE',
+      lifecycleLabel: 'Active',
+      lifecycleBadgeClass: 'active',
+      lifecycleProjectKey: 'full:lane:key',
+      lifecycleManageAria: 'Manage Moon Pack lifecycle',
+    },
+    onManageLifecycle: (state, key) => calls.push({ state, key }),
+  });
+  assert.match(root.innerHTML, /class="maker-lifecycle-badge active"/);
+  assert.match(root.innerHTML, /data-action="manage-pack-lifecycle" data-pack-project-key="full:lane:key"/);
+  events.get('click')({
+    target: { dataset: { action: 'manage-pack-lifecycle', packProjectKey: 'full:lane:key' } },
+    stopPropagation() {},
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].key, 'full:lane:key');
+  assert.equal(calls[0].state.project.name, 'Moon Pack');
+  mounted.unmount();
+});
+
 test('Maker and Pack call the same host-neutral shell renderer', async () => {
   const [makerSource, packSource, stylesSource] = await Promise.all([
     readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
@@ -598,6 +629,9 @@ test('Maker and Pack call the same host-neutral shell renderer', async () => {
   assert.doesNotMatch(stylesSource, /expansion-pack-workspace-layout/);
   assert.doesNotMatch(stylesSource, /expansion-pack-(?:parent|preview|authoring)-panel/);
   assert.doesNotMatch(stylesSource, /expansion-pack-embedded-rules/);
+  assert.match(stylesSource, /\.v4-pack-project-row\s*\{[^}]*grid-template-columns:\s*minmax\(190px,\s*1fr\)\s+auto;/s);
+  assert.match(stylesSource, /@media \(max-width:\s*760px\)\s*\{[\s\S]*?\.v4-pack-project-row\s*\{[^}]*grid-template-columns:\s*1fr;/);
+  assert.match(stylesSource, /@media \(max-width:\s*480px\)\s*\{[\s\S]*?\.v4-pack-project-actions\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
 });
 
 test('shared Part list keeps inherited rows read only and Pack delta actions editable', async () => {

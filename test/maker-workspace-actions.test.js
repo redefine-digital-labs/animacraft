@@ -3142,6 +3142,98 @@ test('Expansion Pack Studio creates an isolated version-bound child without muta
   });
 });
 
+test('Expansion Pack lifecycle loader merges exact lane keys, appends chain-only Packs and delegates list management', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const creatorRoot = new FakeRoot();
+  const manageCalls = [];
+  const loadCalls = [];
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('local-lifecycle-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    const [record] = expansionPackDraftStore.records.values();
+    await workspace.refreshExpansionPackProjects({ render: false });
+    const local = workspace.expansionPackProjectSummaries.find((summary) => !summary.chainOnly);
+    const chainOnly = workspace.expansionPackProjectSummaries.find((summary) => summary.chainOnly);
+    assert.equal(loadCalls.length >= 1, true);
+    assert.equal(loadCalls.at(-1).summaries[0].key, local.key);
+    assert.equal(local.lifecycle.state, 'PAUSED');
+    assert.equal(chainOnly.key, 'chain:full:lane:key');
+    assert.equal(chainOnly.project, null);
+
+    workspace.creatorTab = 'expansions';
+    workspace.render();
+    const advanced = workspace.renderCreatorAdvanced(workspace.getDocument(), [], null);
+    assert.match(advanced, /<article class="v4-pack-project-row"/);
+    assert.doesNotMatch(advanced, /<button[^>]*class="v4-pack-project-row"/);
+    assert.match(advanced, new RegExp(`data-pack-project-key="${local.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+    assert.match(advanced, /data-pack-chain-only="true"[\s\S]*data-action="open-expansion-pack-studio"[^>]*disabled/);
+    assert.match(advanced, /maker-lifecycle-badge paused/);
+
+    creatorClick(workspace, 'manage-expansion-pack-lifecycle', { packProjectKey: chainOnly.key });
+    assert.equal(manageCalls.length, 1);
+    assert.equal(manageCalls[0].key, chainOnly.key);
+    assert.equal(manageCalls[0].chainOnly, true);
+    assert.equal(manageCalls[0].project, null);
+    assert.equal(manageCalls[0].lifecycle.state, 'ARCHIVED');
+
+    creatorClick(workspace, 'open-expansion-pack-studio', {
+      packProjectKey: chainOnly.key,
+      packId: chainOnly.packId,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(workspace.expansionPackWorkspace, null, 'chain-only Packs cannot open a local Studio');
+    assert.equal(record.project.packId, local.packId);
+  }, {
+    creatorRoot,
+    expansionPackDraftStore,
+    callbacks: {
+      onLoadExpansionPackLifecycles: (payload) => {
+        loadCalls.push(payload);
+        const local = payload.summaries[0];
+        return [
+          { key: local.key, lifecycle: { state: 'PAUSED' } },
+          {
+            key: 'chain:full:lane:key',
+            packId: 'chain-only-pack',
+            name: 'Chain-only Pack',
+            version: '1.0.0',
+            namespace: 'chain-only',
+            identity: { packId: 'chain-only-pack', parentVersion: '1' },
+            lifecycle: { state: 'ARCHIVED' },
+          },
+        ];
+      },
+      onManageExpansionPackLifecycle: (payload) => manageCalls.push(payload),
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('Expansion Pack lifecycle load failures stay unknown and never masquerade as draft', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('unknown-lifecycle-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+    const [summary] = workspace.expansionPackProjectSummaries;
+    assert.equal(summary.lifecycle.state, 'unknown');
+    assert.match(summary.lifecycle.error, /lifecycle unavailable/);
+    assert.notEqual(summary.lifecycle.state, 'draft');
+  }, {
+    expansionPackDraftStore,
+    callbacks: {
+      onLoadExpansionPackLifecycles: async () => {
+        throw new Error('lifecycle unavailable');
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
 test('Commerce & Rights CAS-saves only independent Packs in the current wallet and parent version', async () => {
   const expansionPackDraftStore = memoryExpansionPackStore();
   const creatorRoot = new FakeRoot();

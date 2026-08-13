@@ -7,6 +7,7 @@ import {
   makerWorkspaceDictionary,
   makerWorkspaceText,
 } from '../maker-workspace-i18n.js';
+import { EXPANSION_PACK_LIFECYCLE_I18N } from '../expansion-pack-lifecycle-i18n.js';
 import { createCharacterMakerV5Starter } from '../maker-v4.js';
 import { createMakerWorkspace } from '../maker-workspace.js';
 
@@ -47,6 +48,42 @@ test('Expansion Pack inherited-definition actions are explicit in all five local
   });
   assert.equal(makerWorkspaceText('zh', 'packExtendWithItem'), '在扩展包中新增部件');
   assert.equal(makerWorkspaceText('zh', 'packExtendWithStyle'), '在扩展包中新增样式');
+});
+
+test('Expansion Pack lifecycle copy is shared and has exact five-locale token parity', () => {
+  const keys = [
+    'expansionPackLifecycleManage',
+    'expansionPackLifecycleManageAria',
+    'expansionPackLifecycleOpen',
+    'expansionPackLifecycleInspect',
+    'expansionPackLifecycleLocalDraft',
+    'expansionPackLifecycleDraft',
+    'expansionPackLifecycleSealed',
+    'expansionPackLifecycleAdmitted',
+    'expansionPackLifecycleActive',
+    'expansionPackLifecyclePaused',
+    'expansionPackLifecycleArchived',
+    'expansionPackLifecyclePublishing',
+    'expansionPackLifecycleRecoverable',
+    'expansionPackLifecycleUnknown',
+    'expansionPackLifecycleChainOnly',
+  ];
+  assert.deepEqual(Object.keys(EXPANSION_PACK_LIFECYCLE_I18N), MAKER_WORKSPACE_LOCALES);
+  MAKER_WORKSPACE_LOCALES.forEach((locale) => {
+    assert.deepEqual(Object.keys(EXPANSION_PACK_LIFECYCLE_I18N[locale]), keys);
+    keys.forEach((key) => {
+      assert.equal(makerWorkspaceDictionary(locale)[key], EXPANSION_PACK_LIFECYCLE_I18N[locale][key]);
+      assert.deepEqual(
+        [...EXPANSION_PACK_LIFECYCLE_I18N[locale][key].matchAll(/\{([^}]+)\}/g)].map((match) => match[1]),
+        [...EXPANSION_PACK_LIFECYCLE_I18N.en[key].matchAll(/\{([^}]+)\}/g)].map((match) => match[1]),
+        `${locale}.${key} interpolation tokens must match English`,
+      );
+    });
+    assert.doesNotMatch(
+      makerWorkspaceText(locale, 'expansionPackLifecycleManageAria', { name: 'Moon Pack' }),
+      /\{name\}/,
+    );
+  });
 });
 
 test('unknown Maker Studio locales and keys fall back safely', () => {

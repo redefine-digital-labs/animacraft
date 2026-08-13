@@ -1594,6 +1594,8 @@ export function renderExpansionPackWorkspaceHtml(model, copy = {}, ui = {}) {
       parent.manifestBlobId,
       parent.manifestHash,
     ].filter(Boolean).join(' · '))}">${escapeHtml(parentBindingLabel)}</span>`;
+  const lifecycleState = text(copy.lifecycleState || 'unknown').toLowerCase().replaceAll('_', '-');
+  const lifecycleAction = `<button type="button" class="maker-lifecycle-badge ${escapeHtml(copy.lifecycleBadgeClass || lifecycleState)}" data-action="manage-pack-lifecycle" data-pack-project-key="${escapeHtml(copy.lifecycleProjectKey || '')}" aria-label="${escapeHtml(copyValue(copy, 'lifecycleManageAria', 'Manage Expansion Pack lifecycle'))}">${escapeHtml(copy.lifecycleLabel || copyValue(copy, 'lifecycleManage', 'Manage'))}</button>`;
   const previewSummary = `${previewLabel} · ${additions} · ${copyValue(copy, 'preflightIssues', '{count} preflight issue(s)').replace('{count}', String(list(preview.issues).length))}`;
   const leftHtml = renderPackPartBrowser(parent, tree, selection.partId, copy, publicationLocked);
   const centerHtml = `
@@ -1648,7 +1650,7 @@ export function renderExpansionPackWorkspaceHtml(model, copy = {}, ui = {}) {
       dataPhase: save.phase,
       label: localizedSaveLabel(save, copy),
     },
-    actionsHtml: `<button type="button" data-action="request-back-to-maker" ${publicationLocked ? 'disabled' : ''}>← ${escapeHtml(copyValue(copy, 'backToMaker', 'Back to Maker'))}</button><button type="button" data-action="request-commerce-rights" ${publicationLocked ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'openCommerceRights', 'Commerce & Rights'))}</button><button type="button" data-action="save-pack" ${publicationLocked || save.phase === EXPANSION_PACK_WORKSPACE_SAVE_PHASES.SAVING ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'save', 'Save'))}</button>`,
+    actionsHtml: `${lifecycleAction}<button type="button" data-action="request-back-to-maker" ${publicationLocked ? 'disabled' : ''}>← ${escapeHtml(copyValue(copy, 'backToMaker', 'Back to Maker'))}</button><button type="button" data-action="request-commerce-rights" ${publicationLocked ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'openCommerceRights', 'Commerce & Rights'))}</button><button type="button" data-action="save-pack" ${publicationLocked || save.phase === EXPANSION_PACK_WORKSPACE_SAVE_PHASES.SAVING ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'save', 'Save'))}</button>`,
     noticesHtml: `${publicationLocked ? `<div class="v4-version-history-notice" role="status" aria-live="polite">${escapeHtml(publication.status || copyValue(copy, 'publicationLocked', 'Publication in progress. Editing and navigation are locked.'))}</div>` : ''}${previewBoundary ? `<div class="v4-pack-boundary-note" role="status">${escapeHtml(previewBoundary)}</div>` : ''}`,
     leftLabel: copyValue(copy, 'parts', 'Parts'),
     leftHtml,
@@ -1922,6 +1924,13 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
         workspace.getState(),
       ))
         .catch(reportError);
+      return;
+    }
+    if (action === 'manage-pack-lifecycle') {
+      Promise.resolve(options.onManageLifecycle?.(
+        workspace.getState(),
+        text(target.dataset.packProjectKey),
+      )).catch(reportError);
       return;
     }
     if (publicationLocked()) return;

@@ -1,3 +1,5 @@
+import { EXPANSION_PACK_LIFECYCLE_I18N } from './expansion-pack-lifecycle-i18n.js';
+
 const en = {
   studio: 'Maker Studio',
   undo: 'Undo',
@@ -3555,6 +3557,10 @@ const expansionPackDefinitionEditorDictionaries = {
 };
 
 Object.entries(expansionPackDefinitionEditorDictionaries).forEach(
+  ([locale, details]) => Object.assign(dictionaries[locale], details),
+);
+
+Object.entries(EXPANSION_PACK_LIFECYCLE_I18N).forEach(
   ([locale, details]) => Object.assign(dictionaries[locale], details),
 );
 
