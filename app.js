@@ -10781,6 +10781,7 @@ function makerV4DocumentForRelease({ sourceDocument = state.makerDocumentV4 } = 
     !commerceV5ReleaseEnabled
     && !makerCommerceV5RequiresRelease(documentV4.commerce, {
       packIds: expansionPackIds(documentV4),
+      legacyPublicationRoyaltyBps: documentV4.publication.royaltyBps,
     })
   ) {
     // Keep untouched free legacy Makers publishable while Commerce v5 is
@@ -22158,6 +22159,7 @@ $('registerMaker').addEventListener('click', async () => {
   documentV4.metadata.style = canvas;
   documentV4.metadata.license.note = 'Personal use only. Credit the creator when the OC is shared publicly.';
   documentV4.publication.royaltyBps = 300;
+  documentV4.commerce.makerSourceRoyaltyBps = documentV4.publication.royaltyBps;
   documentV4.livingContent = createDefaultLivingContent();
   validateMakerV4Document(documentV4, { mode: 'draft' });
   const model = makerModelFromV4Manifest(documentV4, () => '');

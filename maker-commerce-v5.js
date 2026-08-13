@@ -165,8 +165,10 @@ function completionPolicyRequiresV5(policy) {
 
 export function makerCommerceV5RequiresRelease(
   value,
-  { packIds = [] } = {},
+  options = {},
 ) {
+  const { packIds = [] } = options;
+  const legacyPublicationRoyaltyBps = options.legacyPublicationRoyaltyBps;
   const declaredPackIds = [...new Set(packIds.map(String).filter(Boolean))];
   const normalized = normalizeMakerCommerceV5(value, {
     packIds: declaredPackIds,
@@ -175,6 +177,32 @@ export function makerCommerceV5RequiresRelease(
   const sourcePackPolicies = Array.isArray(value?.packPolicies)
     ? value.packPolicies
     : [];
+  const makerSourceRoyaltyIsCanonical = Boolean(
+    Number.isSafeInteger(value?.makerSourceRoyaltyBps)
+    && value.makerSourceRoyaltyBps >= 0
+    && value.makerSourceRoyaltyBps <= MAX_ROYALTY_BPS
+    && value.makerSourceRoyaltyBps % 50 === 0
+  );
+  const hasLegacyPublicationRoyaltyContext = Object.hasOwn(
+    options,
+    'legacyPublicationRoyaltyBps',
+  );
+  const makerSourceRoyaltyMirrorsLegacyPublication = Boolean(
+    makerSourceRoyaltyIsCanonical
+    && Number.isSafeInteger(legacyPublicationRoyaltyBps)
+    && value.makerSourceRoyaltyBps === legacyPublicationRoyaltyBps
+  );
+  // A v4 release can enforce the legacy publication royalty, but no other
+  // Commerce-v5 royalty state. Once the caller supplies legacy context, even
+  // the Commerce default must match it exactly instead of acting as a wildcard.
+  const makerSourceRoyaltyRequiresV5 = Boolean(
+    !makerSourceRoyaltyIsCanonical
+    || (
+      hasLegacyPublicationRoyaltyContext
+        ? !makerSourceRoyaltyMirrorsLegacyPublication
+        : normalized.makerSourceRoyaltyBps !== defaults.makerSourceRoyaltyBps
+    )
+  );
   return Boolean(
     normalized.rightsOriginConfirmed === true
     || normalized.rightsOrigin !== defaults.rightsOrigin
@@ -185,7 +213,7 @@ export function makerCommerceV5RequiresRelease(
     || sourcePackPolicies.length > 0
     || normalized.packPolicies.length > 0
     || normalized.soulCreatorRoyaltyBps !== defaults.soulCreatorRoyaltyBps
-    || normalized.makerSourceRoyaltyBps !== defaults.makerSourceRoyaltyBps
+    || makerSourceRoyaltyRequiresV5
     || normalized.makerResaleRoyaltyBps !== defaults.makerResaleRoyaltyBps
   );
 }

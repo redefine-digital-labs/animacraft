@@ -85,6 +85,82 @@ test('release requirement distinguishes untouched legacy defaults from v5 commer
   })), true);
 });
 
+test('release requirement accepts only an exact canonical mirror of the legacy royalty', () => {
+  const mirrored = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 300,
+  });
+  assert.equal(makerCommerceV5RequiresRelease(mirrored, {
+    legacyPublicationRoyaltyBps: 300,
+  }), false);
+  assert.equal(makerCommerceV5RequiresRelease(mirrored, {
+    legacyPublicationRoyaltyBps: 350,
+  }), true);
+  assert.equal(makerCommerceV5RequiresRelease(createDefaultMakerCommerceV5(), {
+    legacyPublicationRoyaltyBps: 300,
+  }), true);
+  const missingMakerSourceRoyalty = { ...mirrored };
+  delete missingMakerSourceRoyalty.makerSourceRoyaltyBps;
+  assert.equal(makerCommerceV5RequiresRelease(missingMakerSourceRoyalty, {
+    legacyPublicationRoyaltyBps: 300,
+  }), true);
+  assert.equal(makerCommerceV5RequiresRelease({
+    ...mirrored,
+    makerSourceRoyaltyBps: undefined,
+  }, {
+    legacyPublicationRoyaltyBps: 300,
+  }), true);
+  assert.equal(makerCommerceV5RequiresRelease(mirrored), true);
+  assert.equal(makerCommerceV5RequiresRelease({
+    ...mirrored,
+    makerSourceRoyaltyBps: '300',
+  }, {
+    legacyPublicationRoyaltyBps: 300,
+  }), true);
+  assert.equal(makerCommerceV5RequiresRelease(mirrored, {
+    legacyPublicationRoyaltyBps: '300',
+  }), true);
+  assert.equal(makerCommerceV5RequiresRelease(createDefaultMakerCommerceV5(), {
+    legacyPublicationRoyaltyBps: undefined,
+  }), true);
+  assert.equal(makerCommerceV5RequiresRelease(createDefaultMakerCommerceV5(), {
+    legacyPublicationRoyaltyBps: null,
+  }), true);
+  assert.equal(makerCommerceV5RequiresRelease(createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 0,
+  }), {
+    legacyPublicationRoyaltyBps: 0,
+  }), false);
+});
+
+test('a mirrored legacy royalty does not hide other Commerce v5 features', () => {
+  const legacyContext = { legacyPublicationRoyaltyBps: 300 };
+  assert.equal(makerCommerceV5RequiresRelease(createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 300,
+    rightsOriginConfirmed: true,
+  }), legacyContext), true);
+  assert.equal(makerCommerceV5RequiresRelease(createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 300,
+    soulCreatorRoyaltyBps: 300,
+  }), legacyContext), true);
+  assert.equal(makerCommerceV5RequiresRelease(createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 300,
+    makerResaleRoyaltyBps: 450,
+  }), legacyContext), true);
+  assert.equal(makerCommerceV5RequiresRelease(createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 300,
+    baseCompletion: {
+      mode: COMPLETION_MODES.FREE_QUOTA_THEN_BLOCK,
+      freeQuotaPerWallet: 2,
+    },
+  }), legacyContext), true);
+  assert.equal(makerCommerceV5RequiresRelease(createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 300,
+  }), {
+    ...legacyContext,
+    packIds: ['paid-hair'],
+  }), true);
+});
+
 test('first Commerce v5 publication requires an explicit rights-origin confirmation', () => {
   const commerce = normalizeMakerCommerceV5({});
   assert.equal(

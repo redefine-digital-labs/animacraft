@@ -6472,6 +6472,7 @@ export class MakerWorkspace {
       ).map(compactIssue));
     } else if (makerCommerceV5RequiresRelease(document.commerce, {
       packIds: commercePackIds,
+      legacyPublicationRoyaltyBps: document.publication?.royaltyBps,
     })) {
       issues.push({
         code: 'commerce_v5_release_disabled',

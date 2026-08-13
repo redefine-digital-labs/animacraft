@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
+  MAKER_ACCESS_MODES,
+  createDefaultMakerCommerceV5,
   expansionPackIds,
   makerCommerceV5RequiresRelease,
 } from '../maker-commerce-v5.js';
@@ -43,7 +45,7 @@ function functionSource(name) {
 function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (blob) => {
   if ((await blob.text()).includes('broken-image')) throw new Error('decode failed');
   return { width: 1200, height: 630, close() {} };
-}, commerceV5ReleaseEnabled = false) {
+}, commerceV5ReleaseEnabled = false, creatorRoyaltyBps = 0) {
   const functions = [
     'makerV4AssetDescriptor',
     'makerV4RuntimeAssetRecord',
@@ -55,11 +57,11 @@ function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (
     'makerV4DocumentForRelease',
     'makerV4RuntimeAssetsForRelease',
   ].map(functionSource).join('\n');
-  return new Function('runtimeRecords', 'template', 'decodeBitmap', 'commerceV5ReleaseEnabled', 'makerCommerceV5RequiresRelease', 'expansionPackIds', `
+  return new Function('runtimeRecords', 'template', 'decodeBitmap', 'commerceV5ReleaseEnabled', 'creatorRoyaltyBps', 'makerCommerceV5RequiresRelease', 'expansionPackIds', `
     const currentV4RuntimeAssets = () => runtimeRecords;
     const activeTemplate = () => template;
     const state = { makerDocumentV4: null };
-    const $ = () => null;
+    const $ = (id) => id === 'creatorRoyalty' ? { value: String(creatorRoyaltyBps) } : null;
     const isMakerV4Document = (document) => Boolean(document?.metadata && document?.canvas);
     const normalizeLivingContent = (livingContent) => livingContent;
     const decimalCoinToAtomic = () => 0;
@@ -94,6 +96,7 @@ function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (
     template,
     decodeBitmap,
     commerceV5ReleaseEnabled,
+    creatorRoyaltyBps,
     makerCommerceV5RequiresRelease,
     expansionPackIds,
   );
@@ -460,6 +463,39 @@ test('Commerce v5 release disables every legacy v4 mint surface in the immutable
   assert.equal(release.publication.mintingEnabled, false);
   assert.equal(release.publication.mintFeeEnabled, false);
   assert.equal(release.publication.mintPriceAtomic, 0);
+});
+
+test('legacy release strips only a Commerce royalty that exactly mirrors publication', () => {
+  const mirrored = minimalDocument();
+  mirrored.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 300,
+  });
+  const legacyRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: mirrored });
+  assert.equal(legacyRelease.publication.royaltyBps, 300);
+  assert.equal(Object.hasOwn(legacyRelease, 'commerce'), false);
+
+  const mismatched = minimalDocument();
+  mismatched.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 350,
+  });
+  const blockedRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: mismatched });
+  assert.equal(blockedRelease.commerce.makerSourceRoyaltyBps, 350);
+});
+
+test('legacy release never strips another Commerce v5 feature with a mirrored royalty', () => {
+  const source = minimalDocument();
+  source.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 300,
+    makerAccess: {
+      mode: MAKER_ACCESS_MODES.ONE_TIME_PAID,
+      purchasePriceAtomic: 1_000_000,
+    },
+  });
+  const release = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: source });
+  assert.equal(release.commerce.makerAccess.mode, MAKER_ACCESS_MODES.ONE_TIME_PAID);
 });
 
 test('publication never renders an internal OC composite as a Maker cover', () => {

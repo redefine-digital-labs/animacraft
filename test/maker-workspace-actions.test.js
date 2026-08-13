@@ -1903,17 +1903,41 @@ test('Creator must click a rights origin before first v5 publish and v4 publicat
   });
 });
 
-test('legacy v4 Preflight does not require the Commerce v5 acknowledgement while its release gate is off', async () => {
+test('initial legacy v4 publication accepts its mirrored Maker royalty while the v5 gate is off', async () => {
   await withWorkspace(async (workspace) => {
+    const issueCodes = workspace.blockingPublicationIssues()
+      .map((issue) => issue.code);
     assert.equal(
-      workspace.blockingPublicationIssues().some(
-        (issue) => issue.code === 'rights_origin_confirmation_required',
-      ),
+      issueCodes.includes('commerce_v5_release_disabled'),
+      false,
+    );
+    assert.equal(
+      issueCodes.includes('rights_origin_confirmation_required'),
       false,
     );
   }, {
     prepareDocument(document) {
-      document.commerce = normalizeMakerCommerceV5({});
+      document.publication.royaltyBps = 300;
+      document.commerce = normalizeMakerCommerceV5({
+        makerSourceRoyaltyBps: 300,
+      });
+    },
+  });
+});
+
+test('legacy v4 publication blocks a mismatched custom Commerce royalty', async () => {
+  await withWorkspace(async (workspace) => {
+    assert.ok(
+      workspace.blockingPublicationIssues().some(
+        (issue) => issue.code === 'commerce_v5_release_disabled',
+      ),
+    );
+  }, {
+    prepareDocument(document) {
+      document.publication.royaltyBps = 300;
+      document.commerce = normalizeMakerCommerceV5({
+        makerSourceRoyaltyBps: 350,
+      });
     },
   });
 });
@@ -1935,6 +1959,53 @@ test('v5 commerce cannot downgrade into a v4 publication while its release gate 
       });
     },
   });
+});
+
+test('mirrored legacy royalty does not hide other v5 commerce from Preflight', async () => {
+  const cases = [
+    {
+      label: 'confirmed rights',
+      configure(commerce) {
+        commerce.rightsOriginConfirmed = true;
+      },
+    },
+    {
+      label: 'Complete cap',
+      configure(commerce) {
+        commerce.baseCompletion.totalCap = 10;
+      },
+    },
+    {
+      label: 'Soul creator royalty',
+      configure(commerce) {
+        commerce.soulCreatorRoyaltyBps = 300;
+      },
+    },
+    {
+      label: 'Maker resale royalty',
+      configure(commerce) {
+        commerce.makerResaleRoyaltyBps = 450;
+      },
+    },
+  ];
+  for (const { label, configure } of cases) {
+    await withWorkspace(async (workspace) => {
+      assert.ok(
+        workspace.blockingPublicationIssues().some(
+          (issue) => issue.code === 'commerce_v5_release_disabled',
+        ),
+        `${label} must remain Commerce-v5 release gated`,
+      );
+    }, {
+      prepareDocument(document) {
+        document.publication.royaltyBps = 300;
+        document.commerce = normalizeMakerCommerceV5({
+          makerSourceRoyaltyBps: 300,
+        });
+        configure(document.commerce);
+      },
+    });
+  }
 });
 
 test('explicit commerce royalty zero survives normalization and Creator offers 50 bps steps', async () => {
