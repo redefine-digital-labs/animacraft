@@ -2081,18 +2081,18 @@ test('mirrored legacy royalty reports each concrete v5 commerce reason in Prefli
   }
 });
 
-test('gate-off Commerce rights cannot dirty a draft and early license confirmation can be withdrawn', async () => {
+test('gate-off Commerce rights cannot dirty a draft and an old on-chain choice can be restored', async () => {
   const creatorRoot = new FakeRoot();
   await withWorkspace(async (workspace) => {
     workspace.creatorTab = 'validate';
     workspace.render();
     assert.match(
       creatorRoot.innerHTML,
-      /data-action="focus-issue" data-issue-path="commerce\.rightsOriginConfirmed" data-issue-code="commerce_v5_rights_origin_confirmed"/,
+      /data-action="focus-issue" data-issue-path="commerce\.rightsOrigin" data-issue-code="commerce_v5_rights_onchain_native"/,
     );
     creatorClick(workspace, 'focus-issue', {
-      issueCode: 'commerce_v5_rights_origin_confirmed',
-      issuePath: 'commerce.rightsOriginConfirmed',
+      issueCode: 'commerce_v5_rights_onchain_native',
+      issuePath: 'commerce.rightsOrigin',
     });
     assert.equal(workspace.creatorTab, 'commerce');
 
@@ -2109,15 +2109,17 @@ test('gate-off Commerce rights cannot dirty a draft and early license confirmati
     workspace.render();
     assert.match(creatorRoot.innerHTML, /data-action="withdraw-legacy-rights-confirmation"/);
     creatorClick(workspace, 'withdraw-legacy-rights-confirmation');
+    assert.equal(workspace.getDocument().commerce.rightsOrigin, RIGHTS_ORIGINS.LICENSE_WRAPPED);
     assert.equal(workspace.getDocument().commerce.rightsOriginConfirmed, false);
     assert.equal(workspace.store.getState().canUndo, true);
     workspace.store.undo();
+    assert.equal(workspace.getDocument().commerce.rightsOrigin, RIGHTS_ORIGINS.ONCHAIN_NATIVE);
     assert.equal(workspace.getDocument().commerce.rightsOriginConfirmed, true);
   }, {
     creatorRoot,
     prepareDocument(document) {
       document.commerce = normalizeMakerCommerceV5({
-        rightsOrigin: RIGHTS_ORIGINS.LICENSE_WRAPPED,
+        rightsOrigin: RIGHTS_ORIGINS.ONCHAIN_NATIVE,
         rightsOriginConfirmed: true,
       });
     },

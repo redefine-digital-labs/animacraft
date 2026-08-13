@@ -475,6 +475,7 @@ test('Commerce v5 release disables every legacy v4 mint surface in the immutable
 
 test('legacy release strips only a Commerce royalty that exactly mirrors publication', () => {
   const mirrored = minimalDocument();
+  mirrored.publication.royaltyBps = 300;
   mirrored.commerce = createDefaultMakerCommerceV5({
     makerSourceRoyaltyBps: 300,
   });
@@ -484,6 +485,7 @@ test('legacy release strips only a Commerce royalty that exactly mirrors publica
   assert.equal(Object.hasOwn(legacyRelease, 'commerce'), false);
 
   const mismatched = minimalDocument();
+  mismatched.publication.royaltyBps = 300;
   mismatched.commerce = createDefaultMakerCommerceV5({
     makerSourceRoyaltyBps: 350,
   });
@@ -492,8 +494,61 @@ test('legacy release strips only a Commerce royalty that exactly mirrors publica
   assert.equal(blockedRelease.commerce.makerSourceRoyaltyBps, 350);
 });
 
+test('Maker release royalty stays canonical when the legacy shell projection is stale', () => {
+  const source = minimalDocument();
+  source.publication.royaltyBps = 350;
+  source.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 350,
+  });
+  const release = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: source });
+
+  assert.equal(release.publication.royaltyBps, 350);
+  assert.equal(Object.hasOwn(release, 'commerce'), false);
+});
+
+test('stale shell royalty cannot activate the initial-default compatibility fallback', () => {
+  const source = minimalDocument();
+  source.publication.royaltyBps = 350;
+  source.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 250,
+  });
+  const release = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: source });
+
+  assert.equal(release.publication.royaltyBps, 350);
+  assert.equal(release.commerce.makerSourceRoyaltyBps, 250);
+});
+
+test('gate-off release keeps canonical mint policy instead of a stale shell projection', () => {
+  const disabled = minimalDocument();
+  disabled.publication = {
+    royaltyBps: 300,
+    mintingEnabled: false,
+    mintFeeEnabled: false,
+    mintPriceAtomic: 0,
+  };
+  const disabledRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: disabled });
+  assert.equal(disabledRelease.publication.mintingEnabled, false);
+
+  const paid = minimalDocument();
+  paid.publication = {
+    royaltyBps: 300,
+    mintingEnabled: true,
+    mintFeeEnabled: true,
+    mintPriceAtomic: 99_000_000,
+  };
+  const paidRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: paid });
+  assert.equal(paidRelease.publication.mintingEnabled, true);
+  assert.equal(paidRelease.publication.mintFeeEnabled, true);
+  assert.equal(paidRelease.publication.mintPriceAtomic, 99_000_000);
+});
+
 test('legacy release strips the known initial 250-to-300 default mismatch but not a custom mismatch', () => {
   const affectedInitialDraft = minimalDocument();
+  affectedInitialDraft.publication.royaltyBps = 300;
   affectedInitialDraft.commerce = createDefaultMakerCommerceV5({
     makerSourceRoyaltyBps: 250,
   });
@@ -503,6 +558,7 @@ test('legacy release strips the known initial 250-to-300 default mismatch but no
   assert.equal(Object.hasOwn(compatibleRelease, 'commerce'), false);
 
   const publishedInitialDraft = minimalDocument();
+  publishedInitialDraft.publication.royaltyBps = 300;
   publishedInitialDraft.commerce = createDefaultMakerCommerceV5({
     makerSourceRoyaltyBps: 250,
   });
@@ -511,6 +567,7 @@ test('legacy release strips the known initial 250-to-300 default mismatch but no
   assert.equal(publishedRelease.commerce.makerSourceRoyaltyBps, 250);
 
   const customMismatch = minimalDocument();
+  customMismatch.publication.royaltyBps = 300;
   customMismatch.commerce = createDefaultMakerCommerceV5({
     makerSourceRoyaltyBps: 350,
   });

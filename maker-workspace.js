@@ -9768,11 +9768,13 @@ export class MakerWorkspace {
         || this.context?.chainBinding?.commerceV5RootObjectId
       );
       const rightsConfirmed = commerce.rightsOriginConfirmed === true;
-      const canWithdrawLegacyRightsConfirmation = Boolean(
+      const canRestoreLegacyRightsForPublication = Boolean(
         !commerceV5ReleaseEnabled
         && !this.context?.chainBinding?.commerceV5RootObjectId
-        && commerce.rightsOrigin === RIGHTS_ORIGINS.LICENSE_WRAPPED
-        && rightsConfirmed
+        && (
+          commerce.rightsOrigin !== RIGHTS_ORIGINS.LICENSE_WRAPPED
+          || rightsConfirmed
+        )
       );
       const policyModeOptions = (mode) => [
         [COMPLETION_MODES.UNLIMITED_FREE, this.tr('completeUnlimitedFree')],
@@ -9871,7 +9873,7 @@ export class MakerWorkspace {
               <label class="${rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.ONCHAIN_NATIVE ? 'active' : ''}"><input type="radio" name="commerce-rights-origin" value="${RIGHTS_ORIGINS.ONCHAIN_NATIVE}" data-action="commerce-rights-origin" ${checked(rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.ONCHAIN_NATIVE)} ${rightsLocked ? 'disabled' : ''} /><span><strong>${escapeHtml(this.tr('rightsOnchainNative'))}</strong><small>${escapeHtml(this.tr('rightsOnchainNativeCopy'))}</small></span></label>
               <label class="${rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.LICENSE_WRAPPED ? 'active' : ''}"><input type="radio" name="commerce-rights-origin" value="${RIGHTS_ORIGINS.LICENSE_WRAPPED}" data-action="commerce-rights-origin" ${checked(rightsConfirmed && commerce.rightsOrigin === RIGHTS_ORIGINS.LICENSE_WRAPPED)} ${rightsLocked ? 'disabled' : ''} /><span><strong>${escapeHtml(this.tr('rightsLicenseWrapped'))}</strong><small>${escapeHtml(this.tr('rightsLicenseWrappedCopy'))}</small></span></label>
             </div>
-            ${canWithdrawLegacyRightsConfirmation ? `<div class="v4-rule-warning" role="status"><span>${escapeHtml(this.tr('withdrawLegacyRightsConfirmationCopy'))}</span><button type="button" data-action="withdraw-legacy-rights-confirmation">${escapeHtml(this.tr('withdrawLegacyRightsConfirmation'))}</button></div>` : ''}
+            ${canRestoreLegacyRightsForPublication ? `<div class="v4-rule-warning" role="status"><span>${escapeHtml(this.tr('withdrawLegacyRightsConfirmationCopy'))}</span><button type="button" data-action="withdraw-legacy-rights-confirmation">${escapeHtml(this.tr('withdrawLegacyRightsConfirmation'))}</button></div>` : ''}
           </section>
           <section class="v4-commerce-section">
             <header><div><span>02</span><h4>${escapeHtml(this.tr('makerAccessAndComplete'))}</h4></div><em>${escapeHtml(this.tr('defaultFreeUnlimited'))}</em></header>
@@ -11963,16 +11965,22 @@ export class MakerWorkspace {
       return;
     }
     if (action === 'withdraw-legacy-rights-confirmation') {
+      const currentCommerce = normalizeMakerCommerceV5(document.commerce, {
+        packIds: expansionPackIds(document),
+      });
       if (
         this.context?.commerceV5ReleaseEnabled === true
         || this.context?.chainBinding?.commerceV5RootObjectId
-        || document.commerce?.rightsOrigin !== RIGHTS_ORIGINS.LICENSE_WRAPPED
-        || document.commerce?.rightsOriginConfirmed !== true
+        || (
+          currentCommerce.rightsOrigin === RIGHTS_ORIGINS.LICENSE_WRAPPED
+          && currentCommerce.rightsOriginConfirmed !== true
+        )
       ) return;
-      this.executeDocument('Withdraw early Commerce rights confirmation', ({ document: next }) => {
+      this.executeDocument('Restore traditional-license publication', ({ document: next }) => {
         next.commerce = normalizeMakerCommerceV5(next.commerce, {
           packIds: expansionPackIds(next),
         });
+        next.commerce.rightsOrigin = RIGHTS_ORIGINS.LICENSE_WRAPPED;
         next.commerce.rightsOriginConfirmed = false;
       });
       return;

@@ -10753,18 +10753,11 @@ function makerV4DocumentForRelease({ sourceDocument = state.makerDocumentV4 } = 
   // Creator Workspace after a restore or an autosaved Maker Info edit.
   documentV4.publication = {
     ...documentV4.publication,
-    royaltyBps: Number($('creatorRoyalty')?.value || 0),
-    mintingEnabled: commerceV5ReleaseEnabled
-      ? false
-      : $('creatorMintingEnabled')?.checked !== false,
-    mintFeeEnabled: commerceV5ReleaseEnabled
-      ? false
-      : Boolean($('creatorMintFeeEnabled')?.checked),
-    mintPriceAtomic: commerceV5ReleaseEnabled
-      ? 0
-      : $('creatorMintFeeEnabled')?.checked
-        ? decimalCoinToAtomic($('creatorMintPrice')?.value) || 0
-        : 0,
+    ...(commerceV5ReleaseEnabled ? {
+      mintingEnabled: false,
+      mintFeeEnabled: false,
+      mintPriceAtomic: 0,
+    } : {}),
     paymentCoinType: runtimeConfig.paymentCoinType,
     paymentCoinSymbol: runtimeConfig.paymentCoinSymbol,
     storage: 'walrus',
