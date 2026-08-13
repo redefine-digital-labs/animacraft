@@ -138,6 +138,10 @@ test('builds one deterministic canonical child manifest without claiming chain p
   assert.equal(first.manifest.overlay.assets[0].sha256, ASSET_HASH);
   assert.deepEqual(first.manifest.assetReferences.pack, ['moon-armor-art']);
   assert.deepEqual(first.manifest.assetReferences.parent, []);
+  assert.deepEqual(first.manifest.overlay.wardrobe, {
+    schemaVersion: 'animacraft.expansion-pack-wardrobe.v1',
+    partModes: {},
+  });
   assert.equal(first.manifest.commerce.projectionState, 'not-built');
   assert.equal(first.manifest.rights.projectionState, 'not-built');
   assert.match(first.manifest.rights.parentLicenseCommitment, /^[0-9a-f]{64}$/);

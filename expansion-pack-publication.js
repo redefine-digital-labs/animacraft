@@ -254,6 +254,10 @@ function packOverlay(pack, descriptors) {
     assets: structuredClone(descriptors),
     parts: structuredClone(list(pack?.parts)),
     rules: structuredClone(list(pack?.rules)),
+    wardrobe: structuredClone(pack?.wardrobe || {
+      schemaVersion: 'animacraft.expansion-pack-wardrobe.v1',
+      partModes: {},
+    }),
   };
 }
 
