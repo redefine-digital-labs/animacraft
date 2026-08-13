@@ -687,6 +687,10 @@ test('shared Part list stays readable at the 1180, 820, and 560 responsive bound
   assert.match(metadataRule, /white-space: normal;/);
   assert.doesNotMatch(narrowRule, /v4-part-(?:track-status|select|icon)/);
   assert.doesNotMatch(styles, /\.v4-part-track-status\s*\{[^}]*display:\s*none/s);
+  assert.match(styles, /@media \(min-width: 821px\) and \(max-width: 1180px\)[\s\S]*?"drag thumb name"[\s\S]*?"drag thumb state"[\s\S]*?"meta meta meta"/);
+  assert.match(styles, /\.v4-inspector-section\s*\{[^}]*align-content:\s*start;/s);
+  assert.match(styles, /@media \(max-width: 1180px\)[\s\S]*?\.v4-inspector\s*\{[^}]*align-items:\s*start;/s);
+  assert.match(styles, /@media \(max-width: 1180px\)[\s\S]*?\.v4-object-rule-entry\s*\{[^}]*align-self:\s*start;/s);
   assert.match(selectedRule, /var\(--ui-brand\) 5%/);
   assert.match(selectedRule, /inset 2px 0 0/);
   assert.doesNotMatch(selectedRule, /ui-surface-selected|ui-value|ui-warning|#fff3cf|#f0a23a/i);

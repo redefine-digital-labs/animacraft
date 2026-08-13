@@ -8901,6 +8901,7 @@ pre {
 
 .v4-inspector-section {
   display: grid;
+  align-content: start;
   gap: 9px;
   margin-top: 12px;
   padding: 12px;
@@ -10018,6 +10019,11 @@ pre {
 .v4-object-rule-entry > span {
   display: grid;
   min-width: 0;
+}
+
+.v4-object-rule-entry > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .v4-object-rule-entry small {
@@ -14056,6 +14062,7 @@ pre {
     grid-column: 1 / -1;
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    align-items: start;
     gap: 10px;
     max-height: none;
     border-top: 1px solid var(--line);
@@ -14064,6 +14071,10 @@ pre {
 
   .v4-inspector > .v4-panel-head {
     grid-column: 1 / -1;
+  }
+
+  .v4-object-rule-entry {
+    align-self: start;
   }
 
   .v4-player-main {
@@ -14078,6 +14089,22 @@ pre {
 
   .v4-commerce-protocol {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 821px) and (max-width: 1180px) {
+  .maker-part-list-row,
+  .v4-part-row {
+    grid-template-areas:
+      "drag thumb name"
+      "drag thumb state"
+      "meta meta meta";
+    grid-template-columns: 18px 28px minmax(0, 1fr);
+  }
+
+  .maker-part-list-state,
+  .v4-part-state-actions {
+    justify-self: start;
   }
 }
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { renderMakerEditorShell } from '../maker-editor-shell.js';
+import { renderDefinitionCombinationRuleControl } from '../maker-definition-rule-control.js';
 
 test('host-neutral Maker shell owns one toolbar, tabs and three-column slot contract', () => {
   const html = renderMakerEditorShell({
@@ -48,4 +49,20 @@ test('shared shell escapes labels and rejects unsafe delegated action tokens', (
   assert.match(html, />&lt;Rules&gt;<\/button>/);
   assert.doesNotMatch(html, /data-action=/);
   assert.doesNotMatch(html, /onclick=/);
+});
+
+test('shared compact rule control labels inherited definitions without offering a new rule', () => {
+  const html = renderDefinitionCombinationRuleControl({
+    definition: 'body',
+    ownerType: 'part',
+    title: '组合规则',
+    countLabel: '关联 0 条规则',
+    actionLabel: '添加规则',
+    readonly: true,
+    disabledLabel: '母 Maker 继承',
+  });
+  assert.match(html, /data-shared-definition-rule-control/);
+  assert.match(html, /data-rule-readonly="true"/);
+  assert.match(html, /<button[^>]*disabled[^>]*>母 Maker 继承<\/button>/);
+  assert.doesNotMatch(html, />添加规则<\/button>/);
 });

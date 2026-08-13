@@ -23,11 +23,15 @@ export function renderDefinitionCombinationRuleControl({
   action = 'edit-selection-rules',
   disabled = false,
   readonly = false,
+  disabledLabel = '',
 } = {}) {
+  const renderedActionLabel = (disabled || readonly) && String(disabledLabel || '').trim()
+    ? String(disabledLabel).trim()
+    : actionLabel;
   return `
     <div class="v4-object-rule-entry" data-shared-definition-rule-control data-rule-owner-type="${escapeHtml(ownerType)}"${readonly ? ' data-rule-readonly="true"' : ''}>
       <span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(countLabel)}</small></span>
-      <button type="button" data-action="${escapeHtml(action)}" data-rule-owner="${escapeHtml(definition)}" data-rule-owner-type="${escapeHtml(ownerType)}" ${disabled || readonly ? 'disabled' : ''}>${escapeHtml(actionLabel)}</button>
+      <button type="button" data-action="${escapeHtml(action)}" data-rule-owner="${escapeHtml(definition)}" data-rule-owner-type="${escapeHtml(ownerType)}" ${disabled || readonly ? 'disabled' : ''}>${escapeHtml(renderedActionLabel)}</button>
     </div>
   `;
 }

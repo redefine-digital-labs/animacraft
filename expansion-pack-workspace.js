@@ -1094,6 +1094,9 @@ function compactDefinitionRuleControl(ownerKind, part, item, style, copy, option
     action: 'edit-pack-selection-rules',
     disabled: options.disabled === true,
     readonly: options.readonly === true,
+    disabledLabel: options.readonly === true
+      ? copyValue(copy, 'inherited', 'Inherited')
+      : '',
   });
 }
 
