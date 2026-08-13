@@ -3554,11 +3554,6 @@ export class MakerWorkspace {
     const workspace = this.expansionPackWorkspace;
     this.resetExpansionPackPublication({ reason: 'workspace-close', render: false });
     this.expansionPackAutosave.cancel();
-    const packAssetIds = new Set(
-      (workspace?.getState?.().project?.pack?.assets || [])
-        .map((asset) => String(asset?.id || asset?.assetId || ''))
-        .filter(Boolean),
-    );
     if (save && workspace) {
       const result = await this.flushExpansionPackWorkspace(workspace);
       if (!result.saved) {
@@ -3568,6 +3563,14 @@ export class MakerWorkspace {
       }
     }
     if (workspace !== this.expansionPackWorkspace) return;
+    // Capture after the last await: a prepared upload may have committed while
+    // the save queue drained. Anything resolving later sees the unmounted view
+    // and is discarded instead of entering this.assets.
+    const packAssetIds = new Set(
+      (workspace?.getState?.().project?.pack?.assets || [])
+        .map((asset) => String(asset?.id || asset?.assetId || ''))
+        .filter(Boolean),
+    );
     this.expansionPackWorkspaceMount?.unmount?.();
     this.expansionPackWorkspaceMount = null;
     this.expansionPackWorkspaceUnsubscribe?.();
@@ -4003,10 +4006,18 @@ export class MakerWorkspace {
     record.byteLength = file.size;
     record.sha256 = sha256;
     record.contentHash = sha256;
-    this.assets.set(assetId, record);
+    return { assetId, asset: record };
+  }
+
+  commitExpansionPackStyleAsset({ assetId, asset }) {
+    if (!assetId || !asset) return;
+    this.assets.set(assetId, asset);
     this.assetResolver.clear();
     this.assetResolver = createCachedAssetResolver(this.assets);
-    return { assetId, asset: record };
+  }
+
+  discardExpansionPackStyleAsset({ asset }) {
+    if (asset) revokeRuntimeAsset(asset);
   }
 
   async renderExpansionPackPreview() {
@@ -4040,6 +4051,8 @@ export class MakerWorkspace {
         copy: () => this.expansionPackCopy(),
         onRequestAdd: (request) => this.requestExpansionPackAdd(request),
         onRequestAsset: (request) => this.importExpansionPackStyleAsset(request),
+        onAssetCommitted: (asset) => this.commitExpansionPackStyleAsset(asset),
+        onAssetDiscarded: (asset) => this.discardExpansionPackStyleAsset(asset),
         onRequestRebindParent: () => this.rebindActiveExpansionPackToPublishedParent(),
         onRequestCommerceRights: () => this.openCommerceFromExpansionPackStudio(),
         onPublicationAction: (action) => this.requestExpansionPackPublicationAction(action),

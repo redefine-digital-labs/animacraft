@@ -223,6 +223,16 @@ export function createExpansionPackParentInfo(projectValue) {
 
 export function createExpansionPackWorkspaceTree(projectValue) {
   const project = rehydrateExpansionPackProject(projectValue);
+  const parentComposable = project.parentSnapshot?.extensions?.composableV6;
+  const supportsComposableV6 = Boolean(
+    parentComposable
+    && typeof parentComposable === 'object'
+    && !Array.isArray(parentComposable)
+    && text(parentComposable.profile?.mode).toUpperCase() === 'COMPOSABLE'
+    && parentComposable.compatibility
+    && typeof parentComposable.compatibility === 'object'
+    && !Array.isArray(parentComposable.compatibility)
+  );
   const parentPartMap = new Map(list(project.parentSnapshot?.parts).map((part) => [idOf(part), part]));
   const parts = list(project.pack?.parts).map((part) => {
     const targetPartId = partTargetId(part);
@@ -294,6 +304,7 @@ export function createExpansionPackWorkspaceTree(projectValue) {
     layerTracks: clone(list(project.pack?.layerTracks)),
     colorChannels: clone(list(project.pack?.colorChannels ?? project.pack?.palettes)),
     rules: clone(list(project.pack?.rules)),
+    supportsComposableV6,
     parts,
   });
 }
@@ -444,6 +455,7 @@ export async function createExpansionPackWorkspace(options = {}) {
 
   const snapshot = () => deepFreeze({
     identity: clone(identity),
+    mutationRevision,
     project: publicProject(project),
     parent: parentInfo,
     tree,
@@ -969,15 +981,56 @@ function selectorSelect(entries, selected, attributes, copy, packOnly = false) {
   return `<select ${attributes}><option value="">${escapeHtml(copyValue(copy, 'none', 'None'))}</option>${entries.filter((entry) => !packOnly || entry.value.startsWith('pack|')).map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === selected ? 'selected' : ''}>${escapeHtml(entry.label)}</option>`).join('')}</select>`;
 }
 
+function selectorMultiSelect(entries, selectedValues, attributes, packOnly = false) {
+  const selected = new Set(list(selectedValues));
+  return `<select multiple ${attributes}>${entries.filter((entry) => !packOnly || entry.value.startsWith('pack|')).map((entry) => `<option value="${escapeHtml(entry.value)}" ${selected.has(entry.value) ? 'selected' : ''}>${escapeHtml(entry.label)}</option>`).join('')}</select>`;
+}
+
+function editableVisibilityModel(condition) {
+  if (condition == null) return { editable: true, op: 'always', selectors: [] };
+  if (condition?.op === 'selected') {
+    return { editable: true, op: 'selected', selectors: [condition] };
+  }
+  if (condition?.op === 'not' && condition.condition?.op === 'selected') {
+    return { editable: true, op: 'not', selectors: [condition.condition] };
+  }
+  if (
+    (condition?.op === 'all' || condition?.op === 'any')
+    && list(condition.conditions).length > 0
+    && list(condition.conditions).every((entry) => entry?.op === 'selected')
+  ) {
+    return { editable: true, op: condition.op, selectors: condition.conditions };
+  }
+  return { editable: false, op: 'advanced', selectors: [] };
+}
+
+function visibilityEditor(entries, condition, attrs, copy) {
+  const model = editableVisibilityModel(condition);
+  const disabled = model.editable ? '' : 'disabled';
+  const values = model.selectors.map(selectorValue);
+  return `<div class="expansion-pack-visible-when-editor" data-visible-when-editor>
+    <select ${attrs} data-definition-rule-field="visibleWhenOp" ${disabled}>
+      <option value="always" ${model.op === 'always' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'alwaysVisible', 'Always'))}</option>
+      <option value="selected" ${model.op === 'selected' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'selected', 'Selected'))}</option>
+      <option value="not" ${model.op === 'not' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'notSelected', 'Not selected'))}</option>
+      <option value="all" ${model.op === 'all' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'allSelected', 'All selected'))}</option>
+      <option value="any" ${model.op === 'any' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'anySelected', 'Any selected'))}</option>
+      ${model.editable ? '' : `<option value="advanced" selected>${escapeHtml(copyValue(copy, 'advancedCondition', 'Advanced condition · read only'))}</option>`}
+    </select>
+    ${selectorMultiSelect(entries, values, `${attrs} data-definition-rule-field="visibleWhenTargets" data-visible-when-op="${escapeHtml(model.op)}" ${disabled}`)}
+    ${model.editable ? '' : `<small>${escapeHtml(copyValue(copy, 'advancedConditionReadonly', 'This condition cannot be changed here without losing logic.'))}</small>`}
+  </div>`;
+}
+
 function embeddedRules(ownerKind, part, item, style, entries, copy) {
   const owner = style || item || part;
   const rules = owner.rules || {};
   const attrs = `data-definition-kind="${ownerKind}" data-part-id="${escapeHtml(part.id)}"${item ? ` data-item-id="${escapeHtml(item.id)}"` : ''}${style ? ` data-style-id="${escapeHtml(style.id)}"` : ''}`;
   return `<div class="expansion-pack-embedded-rules" data-definition-rules>
     <strong>${escapeHtml(copyValue(copy, 'definitionRules', 'Definition rules'))}</strong>
-    <label><span>${escapeHtml(copyValue(copy, 'requiresTargets', 'Requires'))}</span>${selectorSelect(entries, selectorValue(rules.requires?.[0]), `${attrs} data-definition-rule-field="requires"`, copy)}</label>
-    <label><span>${escapeHtml(copyValue(copy, 'excludesTargets', 'Excludes'))}</span>${selectorSelect(entries, selectorValue(rules.excludes?.[0]), `${attrs} data-definition-rule-field="excludes"`, copy)}</label>
-    <label><span>${escapeHtml(copyValue(copy, 'visibleWhen', 'Visible when selected'))}</span>${selectorSelect(entries, selectorValue(rules.visibleWhen), `${attrs} data-definition-rule-field="visibleWhen"`, copy)}</label>
+    <label><span>${escapeHtml(copyValue(copy, 'requiresTargets', 'Requires'))}</span>${selectorMultiSelect(entries, list(rules.requires).map(selectorValue), `${attrs} data-definition-rule-field="requires"`)}</label>
+    <label><span>${escapeHtml(copyValue(copy, 'excludesTargets', 'Excludes'))}</span>${selectorMultiSelect(entries, list(rules.excludes).map(selectorValue), `${attrs} data-definition-rule-field="excludes"`)}</label>
+    <label><span>${escapeHtml(copyValue(copy, 'visibleWhen', 'Visible when'))}</span>${visibilityEditor(entries, rules.visibleWhen, attrs, copy)}</label>
   </div>`;
 }
 
@@ -993,7 +1046,7 @@ function renderRulesEditor(parent, tree, copy) {
       <div class="expansion-pack-definition-list">${list(tree.rules).map((rule) => `<article class="expansion-pack-rule-row" data-rule-id="${escapeHtml(idOf(rule))}"><code>${escapeHtml(idOf(rule))}</code>
         <label><span>${escapeHtml(copyValue(copy, 'ruleType', 'Rule type'))}</span><select data-rule-field="type" data-rule-id="${escapeHtml(idOf(rule))}"><option value="requires" ${rule.type === 'requires' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'requires', 'Requires'))}</option><option value="excludes" ${rule.type === 'excludes' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'excludes', 'Excludes'))}</option></select></label>
         <label><span>${escapeHtml(copyValue(copy, 'triggerPart', 'Trigger'))}</span>${selectorSelect(entries, selectorValue(rule.trigger), `data-rule-field="trigger" data-rule-id="${escapeHtml(idOf(rule))}"`, copy, rule.type === 'requires')}</label>
-        <label><span>${escapeHtml(copyValue(copy, 'targetPart', 'Target'))}</span>${selectorSelect(entries, selectorValue(rule.targets?.[0]), `data-rule-field="targets" data-rule-id="${escapeHtml(idOf(rule))}"`, copy)}</label>
+        <label><span>${escapeHtml(copyValue(copy, 'targetPart', 'Target'))}</span>${selectorMultiSelect(entries, list(rule.targets).map(selectorValue), `data-rule-field="targets" data-rule-id="${escapeHtml(idOf(rule))}"`)}</label>
         <button type="button" data-action="delete-pack-rule" data-rule-id="${escapeHtml(idOf(rule))}">${escapeHtml(copyValue(copy, 'deleteRule', 'Delete rule'))}</button>
       </article>`).join('') || `<p class="expansion-pack-empty">${escapeHtml(copyValue(copy, 'noPackRules', 'No Pack rules yet.'))}</p>`}</div>
     </section>
@@ -1003,9 +1056,11 @@ function renderRulesEditor(parent, tree, copy) {
 }
 
 function renderWardrobeEditor(parent, tree, copy) {
+  const slotDisabled = !tree.supportsComposableV6;
   return `${readonlyDefinitionList(parent.parts, 'wardrobe-part', copy)}
     <section class="expansion-pack-definition-group"><header><div><span>${escapeHtml(copyValue(copy, 'packOwned', 'Pack owned'))}</span><h4>${escapeHtml(copyValue(copy, 'composableItems', 'Wardrobe'))}</h4></div></header>
-      <div class="expansion-pack-definition-list">${list(tree.parts).filter((part) => part.kind === 'optional-part').map((part) => `<article class="expansion-pack-wardrobe-row" data-part-id="${escapeHtml(part.id)}"><div><strong>${escapeHtml(part.name)}</strong><code>${escapeHtml(part.id)}</code></div><div role="group" aria-label="${escapeHtml(`${copyValue(copy, 'wardrobeMode', 'Wardrobe mode')}: ${part.name}`)}"><button type="button" data-action="set-pack-part-mode" data-part-id="${escapeHtml(part.id)}" data-mode="FIXED" aria-pressed="${part.wardrobeMode !== 'SLOT'}">${escapeHtml(copyValue(copy, 'wardrobeFixed', 'Fixed'))}</button><button type="button" data-action="set-pack-part-mode" data-part-id="${escapeHtml(part.id)}" data-mode="SLOT" aria-pressed="${part.wardrobeMode === 'SLOT'}">${escapeHtml(copyValue(copy, 'wardrobeSlot', 'Slot'))}</button></div></article>`).join('') || `<p class="expansion-pack-empty">${escapeHtml(copyValue(copy, 'noPackContent', 'Add an optional Pack Part to configure wardrobe behavior.'))}</p>`}</div>
+      ${slotDisabled ? `<p class="expansion-pack-capability-note" role="status">${escapeHtml(copyValue(copy, 'wardrobeSlotRequiresComposable', 'Wardrobe Slot requires a parent Maker with Composable v6 compatibility.'))}</p>` : ''}
+      <div class="expansion-pack-definition-list">${list(tree.parts).filter((part) => part.kind === 'optional-part').map((part) => `<article class="expansion-pack-wardrobe-row" data-part-id="${escapeHtml(part.id)}"><div><strong>${escapeHtml(part.name)}</strong><code>${escapeHtml(part.id)}</code></div><div role="group" aria-label="${escapeHtml(`${copyValue(copy, 'wardrobeMode', 'Wardrobe mode')}: ${part.name}`)}"><button type="button" data-action="set-pack-part-mode" data-part-id="${escapeHtml(part.id)}" data-mode="FIXED" aria-pressed="${part.wardrobeMode !== 'SLOT'}">${escapeHtml(copyValue(copy, 'wardrobeFixed', 'Fixed'))}</button><button type="button" data-action="set-pack-part-mode" data-part-id="${escapeHtml(part.id)}" data-mode="SLOT" aria-pressed="${part.wardrobeMode === 'SLOT'}" ${slotDisabled ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'wardrobeSlot', 'Slot'))}</button></div></article>`).join('') || `<p class="expansion-pack-empty">${escapeHtml(copyValue(copy, 'noPackContent', 'Add an optional Pack Part to configure wardrobe behavior.'))}</p>`}</div>
     </section>`;
 }
 
@@ -1235,6 +1290,7 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
     throw new ExpansionPackWorkspaceError('Expansion Pack workspace controller is required.', 'missing-workspace');
   }
   let activeSection = normalizeMakerDefinitionEditorSection(options.activeSection);
+  let mounted = true;
   const currentCopy = () => (typeof options.copy === 'function' ? options.copy() : options.copy || {});
   const publicationLocked = () => {
     const publication = currentCopy().publicationState || {};
@@ -1269,24 +1325,52 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
     if (target?.dataset?.assetRequest === 'true') {
       const file = target.files?.[0];
       if (!file || typeof options.onRequestAsset !== 'function') return;
-      Promise.resolve(options.onRequestAsset({
+      const partId = text(target.dataset.partId);
+      const itemId = text(target.dataset.itemId);
+      const styleId = text(target.dataset.styleId);
+      const requestedState = workspace.getState();
+      const requestedIdentity = JSON.stringify(requestedState.identity);
+      const requestedMutationRevision = requestedState.mutationRevision;
+      const request = {
         file,
-        partId: text(target.dataset.partId),
-        itemId: text(target.dataset.itemId),
-        styleId: text(target.dataset.styleId),
+        partId,
+        itemId,
+        styleId,
         workspace,
-      })).then((result) => {
+      };
+      Promise.resolve(options.onRequestAsset(request)).then((result) => {
         if (!result) return;
         const asset = result.asset || result.descriptor || (result.id ? result : null);
         const assetId = text(result.assetId ?? asset?.id);
-        if (!assetId) return;
-        workspace.updateStyle(
-          target.dataset.partId,
-          target.dataset.itemId,
-          target.dataset.styleId,
-          { assetId },
-          asset ? { assets: [asset] } : {},
+        const currentState = workspace.getState();
+        const styleExists = list(currentState.tree.parts).some((part) => (
+          idOf(part) === partId
+          && list(part.items).some((item) => (
+            idOf(item) === itemId
+            && list(item.styles).some((style) => idOf(style) === styleId)
+          ))
+        ));
+        const canCommit = Boolean(
+          assetId
+          && result.cancelled !== true
+          && result.canceled !== true
+          && mounted
+          && !publicationLocked()
+          && JSON.stringify(currentState.identity) === requestedIdentity
+          && currentState.mutationRevision === requestedMutationRevision
+          && styleExists
         );
+        if (!canCommit) {
+          options.onAssetDiscarded?.({ ...request, result, asset, assetId });
+          return;
+        }
+        try {
+          workspace.updateStyle(partId, itemId, styleId, { assetId }, asset ? { assets: [asset] } : {});
+        } catch (error) {
+          options.onAssetDiscarded?.({ ...request, result, asset, assetId, error });
+          throw error;
+        }
+        options.onAssetCommitted?.({ ...request, result, asset, assetId });
       }).catch(reportError).finally(() => {
         try { target.value = ''; } catch { /* A synthetic test target may be read-only. */ }
       });
@@ -1339,15 +1423,35 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
         const patch = field === 'type'
           ? { type: target.value }
           : field === 'targets'
-            ? { targets: [selectorFromControl(target.value)] }
+            ? { targets: selectedControlValues(target).map(selectorFromControl) }
             : { trigger: selectorFromControl(target.value) };
+        if (field === 'targets' && patch.targets.length === 0) return;
         workspace.updateRule(target.dataset.ruleId, patch);
       } else if (target?.dataset?.definitionRuleField) {
         const field = target.dataset.definitionRuleField;
-        const selector = target.value ? selectorFromControl(target.value) : null;
-        const patch = field === 'visibleWhen'
-          ? { visibleWhen: selector ? { ...selector, op: 'selected' } : null }
-          : { [field]: selector ? [selector] : [] };
+        const owner = definitionRuleOwner(workspace.getState(), target.dataset);
+        if (!owner) return;
+        let patch;
+        if (field === 'visibleWhenOp' || field === 'visibleWhenTargets') {
+          const current = editableVisibilityModel(owner.rules?.visibleWhen);
+          if (!current.editable) return;
+          const editor = target.closest?.('[data-visible-when-editor]');
+          const opControl = editor?.querySelector?.('[data-definition-rule-field="visibleWhenOp"]');
+          const targetsControl = editor?.querySelector?.('[data-definition-rule-field="visibleWhenTargets"]');
+          const op = field === 'visibleWhenOp'
+            ? target.value
+            : opControl?.value || target.dataset.visibleWhenOp;
+          const selectors = field === 'visibleWhenTargets'
+            ? selectedControlValues(target).map(selectorFromControl)
+            : targetsControl
+              ? selectedControlValues(targetsControl).map(selectorFromControl)
+              : current.selectors;
+          const visibleWhen = visibilityConditionFromControls(op, selectors);
+          if (visibleWhen === undefined) return;
+          patch = { visibleWhen };
+        } else {
+          patch = { [field]: selectedControlValues(target).map(selectorFromControl) };
+        }
         if (target.dataset.definitionKind === 'part') workspace.updatePartRules(target.dataset.partId, patch);
         else if (target.dataset.definitionKind === 'item') workspace.updateItemRules(target.dataset.partId, target.dataset.itemId, patch);
         else workspace.updateStyleRules(target.dataset.partId, target.dataset.itemId, target.dataset.styleId, patch);
@@ -1438,7 +1542,11 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
         return;
       }
       if (action === 'delete-pack-rule') { workspace.removeRule(target.dataset.ruleId); return; }
-      if (action === 'set-pack-part-mode') { workspace.setPartMode(target.dataset.partId, target.dataset.mode); return; }
+      if (action === 'set-pack-part-mode') {
+        if (target.dataset.mode === 'SLOT' && state.tree.supportsComposableV6 !== true) return;
+        workspace.setPartMode(target.dataset.partId, target.dataset.mode);
+        return;
+      }
     } catch (error) {
       reportError(error);
       return;
@@ -1471,6 +1579,7 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
   return {
     render,
     unmount() {
+      mounted = false;
       unsubscribe();
       root.removeEventListener?.('change', onChange);
       root.removeEventListener?.('click', onClick);
@@ -1495,4 +1604,38 @@ function selectorFromControl(value) {
     ...(itemId ? { itemId } : {}),
     ...(styleId ? { styleId } : {}),
   };
+}
+
+function selectedControlValues(control) {
+  if (control?.selectedOptions) {
+    return Array.from(control.selectedOptions, (option) => String(option.value || '')).filter(Boolean);
+  }
+  if (control?.options) {
+    return Array.from(control.options)
+      .filter((option) => option.selected)
+      .map((option) => String(option.value || ''))
+      .filter(Boolean);
+  }
+  return control?.value ? [String(control.value)] : [];
+}
+
+function visibilityConditionFromControls(op, selectors) {
+  const selected = list(selectors).filter((selector) => selector?.partId);
+  if (op === 'always') return null;
+  if (op === 'selected') return selected.length === 1 ? { ...selected[0], op: 'selected' } : undefined;
+  if (op === 'not') return selected.length === 1
+    ? { op: 'not', condition: { ...selected[0], op: 'selected' } }
+    : undefined;
+  if ((op === 'all' || op === 'any') && selected.length) {
+    return { op, conditions: selected.map((selector) => ({ ...selector, op: 'selected' })) };
+  }
+  return undefined;
+}
+
+function definitionRuleOwner(state, dataset) {
+  const part = list(state?.tree?.parts).find((candidate) => idOf(candidate) === dataset.partId);
+  if (dataset.definitionKind === 'part') return part;
+  const item = list(part?.items).find((candidate) => idOf(candidate) === dataset.itemId);
+  if (dataset.definitionKind === 'item') return item;
+  return list(item?.styles).find((candidate) => idOf(candidate) === dataset.styleId);
 }

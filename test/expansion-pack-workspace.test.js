@@ -100,6 +100,16 @@ function memoryWorkspaceStore() {
   };
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolveValue, rejectValue) => {
+    resolve = resolveValue;
+    reject = rejectValue;
+  });
+  return { promise, resolve, reject };
+}
+
 async function emptyWorkspace(overrides = {}) {
   return createExpansionPackWorkspace({
     parentMaker: baseMaker(),
@@ -689,6 +699,130 @@ test('renders per-Style PNG and render controls, delegating PNG parsing to the h
   mounted.unmount();
 });
 
+test('commits a deferred Style asset only while the exact unlocked workspace snapshot is still mounted', async () => {
+  const scenarios = [
+    { name: 'normal', invalidate() {}, committed: true },
+    {
+      name: 'stale mutation',
+      invalidate({ workspace }) { workspace.renamePack('Changed while parsing'); },
+      committed: false,
+    },
+    {
+      name: 'removed style',
+      invalidate({ workspace }) { workspace.removeStyle('body', 'armor', 'default'); },
+      committed: false,
+      styleRemoved: true,
+    },
+    {
+      name: 'publication lock',
+      invalidate({ publication }) { publication.locked = true; },
+      committed: false,
+    },
+    {
+      name: 'unmounted',
+      invalidate({ mounted }) { mounted.unmount(); },
+      committed: false,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const workspace = await emptyWorkspace();
+    workspace.addItem({
+      partId: 'body',
+      item: {
+        id: 'armor',
+        name: 'Armor',
+        styles: [{ id: 'default', name: 'Default', assetId: 'body-art', layerTrackId: 'body-track' }],
+      },
+    });
+    const events = new Map();
+    const root = {
+      innerHTML: '',
+      addEventListener(type, listener) { events.set(type, listener); },
+      removeEventListener(type) { events.delete(type); },
+    };
+    const publication = { locked: false };
+    const upload = deferred();
+    const committed = [];
+    const discarded = [];
+    const mounted = mountExpansionPackWorkspace(root, workspace, {
+      copy: () => ({ publicationState: publication }),
+      onRequestAsset: () => upload.promise,
+      onAssetCommitted: (value) => committed.push(value.assetId),
+      onAssetDiscarded: (value) => discarded.push(value.assetId),
+    });
+    events.get('change')({
+      target: {
+        files: [{ name: `${scenario.name}.png`, type: 'image/png' }],
+        value: '/fake/upload.png',
+        dataset: { assetRequest: 'true', partId: 'body', itemId: 'armor', styleId: 'default' },
+      },
+    });
+    scenario.invalidate({ workspace, publication, mounted });
+    upload.resolve({
+      assetId: `asset-${scenario.name}`,
+      asset: {
+        id: `asset-${scenario.name}`,
+        identifier: `${scenario.name}.png`,
+        contentHash: `hash-${scenario.name}`,
+        mediaType: 'image/png',
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const state = workspace.getState();
+    const style = state.tree.parts[0].items[0].styles[0];
+    assert.equal(Boolean(style?.assetId === `asset-${scenario.name}`), scenario.committed, scenario.name);
+    assert.equal(state.project.pack.assets.some((asset) => asset.id === `asset-${scenario.name}`), scenario.committed, scenario.name);
+    assert.deepEqual(committed, scenario.committed ? [`asset-${scenario.name}`] : [], scenario.name);
+    assert.deepEqual(discarded, scenario.committed ? [] : [`asset-${scenario.name}`], scenario.name);
+    mounted.unmount();
+  }
+});
+
+test('discards a canceled deferred Style asset without attaching its descriptor', async () => {
+  const workspace = await emptyWorkspace();
+  workspace.addItem({
+    partId: 'body',
+    item: {
+      id: 'armor',
+      name: 'Armor',
+      styles: [{ id: 'default', name: 'Default', assetId: 'body-art', layerTrackId: 'body-track' }],
+    },
+  });
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+  };
+  const upload = deferred();
+  const discarded = [];
+  const mounted = mountExpansionPackWorkspace(root, workspace, {
+    onRequestAsset: () => upload.promise,
+    onAssetDiscarded: (value) => discarded.push(value.assetId),
+  });
+  events.get('change')({
+    target: {
+      files: [{ name: 'cancel.png', type: 'image/png' }],
+      value: '/fake/cancel.png',
+      dataset: { assetRequest: 'true', partId: 'body', itemId: 'armor', styleId: 'default' },
+    },
+  });
+  upload.resolve({
+    canceled: true,
+    assetId: 'canceled-asset',
+    asset: { id: 'canceled-asset', identifier: 'cancel.png', mediaType: 'image/png' },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const state = workspace.getState();
+  assert.equal(state.tree.parts[0].items[0].styles[0].assetId, 'body-art');
+  assert.equal(state.project.pack.assets.some((asset) => asset.id === 'canceled-asset'), false);
+  assert.deepEqual(discarded, ['canceled-asset']);
+  mounted.unmount();
+});
+
 test('Pack Studio commerce summary is read-only and delegates navigation to its host', async () => {
   const workspace = await emptyWorkspace();
   const events = new Map();
@@ -789,6 +923,126 @@ test('authors Pack-owned tracks, Smart Color, rules and wardrobe without mutatin
   assert.deepEqual(state.tree.rules, []);
 });
 
+test('rule multi-select edits retain every global and embedded target', async () => {
+  const workspace = await emptyWorkspace();
+  workspace.addOptionalPart({
+    part: {
+      id: 'hat',
+      name: 'Hat',
+      items: [{
+        id: 'cap',
+        name: 'Cap',
+        styles: [{ id: 'default', name: 'Default', assetId: 'body-art', layerTrackId: 'body-track' }],
+      }],
+    },
+  });
+  const bodyPart = { scope: 'base', partId: 'body' };
+  const bodyItem = { scope: 'base', partId: 'body', itemId: 'body-default' };
+  workspace.addRule({
+    id: 'two-targets',
+    type: 'excludes',
+    trigger: { scope: 'pack', partId: 'hat', itemId: 'cap' },
+    targets: [bodyPart, bodyItem],
+  });
+  workspace.updateStyleRules('hat', 'cap', 'default', { excludes: [bodyPart, bodyItem] });
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+  };
+  const mounted = mountExpansionPackWorkspace(root, workspace, { activeSection: 'rules' });
+  assert.match(root.innerHTML, /data-rule-field="targets"[^>]*multiple|multiple[^>]*data-rule-field="targets"/);
+  events.get('change')({
+    target: {
+      selectedOptions: [{ value: 'base|body||' }, { value: 'base|body|body-default|' }],
+      dataset: { ruleField: 'targets', ruleId: 'two-targets' },
+    },
+  });
+  events.get('change')({
+    target: {
+      selectedOptions: [{ value: 'base|body||' }, { value: 'base|body|body-default|' }],
+      dataset: {
+        definitionRuleField: 'excludes',
+        definitionKind: 'style',
+        partId: 'hat',
+        itemId: 'cap',
+        styleId: 'default',
+      },
+    },
+  });
+  const state = workspace.getState();
+  assert.deepEqual(state.tree.rules[0].targets, [bodyPart, bodyItem]);
+  assert.deepEqual(state.tree.parts[0].items[0].styles[0].rules.excludes, [bodyPart, bodyItem]);
+  mounted.unmount();
+});
+
+test('other rule edits preserve all/any/not visibility logic and advanced conditions stay read-only', async () => {
+  const workspace = await emptyWorkspace();
+  workspace.addOptionalPart({
+    part: {
+      id: 'hat',
+      name: 'Hat',
+      items: [{
+        id: 'cap',
+        name: 'Cap',
+        styles: [{ id: 'default', name: 'Default', assetId: 'body-art', layerTrackId: 'body-track' }],
+      }],
+    },
+  });
+  const advanced = {
+    op: 'all',
+    conditions: [
+      { op: 'selected', scope: 'base', partId: 'body' },
+      {
+        op: 'any',
+        conditions: [
+          { op: 'selected', scope: 'base', partId: 'body', itemId: 'body-default' },
+          { op: 'not', condition: { op: 'selected', scope: 'pack', partId: 'hat', itemId: 'cap' } },
+        ],
+      },
+    ],
+  };
+  workspace.updateStyleRules('hat', 'cap', 'default', { visibleWhen: advanced });
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+  };
+  const mounted = mountExpansionPackWorkspace(root, workspace, { activeSection: 'rules' });
+  assert.match(root.innerHTML, /Advanced condition · read only/);
+  assert.match(root.innerHTML, /data-definition-rule-field="visibleWhenOp" disabled/);
+  events.get('change')({
+    target: {
+      selectedOptions: [{ value: 'base|body||' }],
+      dataset: {
+        definitionRuleField: 'requires',
+        definitionKind: 'style',
+        partId: 'hat',
+        itemId: 'cap',
+        styleId: 'default',
+      },
+    },
+  });
+  events.get('change')({
+    target: {
+      value: 'selected',
+      dataset: {
+        definitionRuleField: 'visibleWhenOp',
+        definitionKind: 'style',
+        partId: 'hat',
+        itemId: 'cap',
+        styleId: 'default',
+      },
+    },
+  });
+  const styleRules = workspace.getState().tree.parts[0].items[0].styles[0].rules;
+  assert.deepEqual(styleRules.visibleWhen, advanced);
+  assert.deepEqual(styleRules.requires, [{ scope: 'base', partId: 'body' }]);
+  mounted.unmount();
+});
+
 test('definition tabs expose structured editors, retain local active state and support keyboard navigation', async () => {
   const workspace = await emptyWorkspace();
   workspace.addOptionalPart({ part: { id: 'hat', name: 'Hat', items: [] } });
@@ -856,6 +1110,27 @@ test('definition tabs expose structured editors, retain local active state and s
   assert.match(root.innerHTML, /data-action="set-pack-part-mode"/);
   mounted.unmount();
   assert.equal(events.size, 0);
+});
+
+test('Wardrobe Slot stays disabled when the exact parent lacks Composable v6 compatibility', async () => {
+  const workspace = await emptyWorkspace();
+  workspace.addOptionalPart({ part: { id: 'hat', name: 'Hat', items: [] } });
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+  };
+  const mounted = mountExpansionPackWorkspace(root, workspace, { activeSection: 'wardrobe' });
+  assert.equal(workspace.getState().tree.supportsComposableV6, false);
+  assert.match(root.innerHTML, /Wardrobe Slot requires a parent Maker with Composable v6 compatibility/);
+  assert.match(root.innerHTML, /data-mode="SLOT"[^>]*disabled/);
+  events.get('click')({
+    target: { dataset: { action: 'set-pack-part-mode', partId: 'hat', mode: 'SLOT' } },
+    stopPropagation() {},
+  });
+  assert.equal(workspace.getState().tree.parts[0].wardrobeMode, 'FIXED');
+  mounted.unmount();
 });
 
 test('deterministic Color add uses localized default swatch copy', async () => {
