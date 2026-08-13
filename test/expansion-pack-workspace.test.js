@@ -710,3 +710,186 @@ test('Pack Studio commerce summary is read-only and delegates navigation to its 
   assert.equal(workspace.getState().dirty, true, 'navigation cannot mutate commerce or persistence state');
   mounted.unmount();
 });
+
+test('authors Pack-owned tracks, Smart Color, rules and wardrobe without mutating parent definitions', async () => {
+  const workspace = await emptyWorkspace();
+  workspace.addOptionalPart({ part: { id: 'hat', name: 'Hat', items: [] } });
+  workspace.addItem({
+    partId: 'hat',
+    item: {
+      id: 'cap',
+      name: 'Cap',
+      styles: [{ id: 'default', name: 'Default', assetId: 'body-art', layerTrackId: 'body-track' }],
+    },
+  });
+
+  workspace.addLayerTrack({ id: 'back', name: 'Back' });
+  workspace.addLayerTrack({ id: 'front', name: 'Front' });
+  workspace.renameLayerTrack('front', 'Foreground');
+  workspace.moveLayerTrack('front', 0);
+  workspace.setLayerTrackLocked('front', true);
+  workspace.updateStyle('hat', 'cap', 'default', { layerTrackId: 'back' });
+  workspace.addColorChannel({
+    id: 'cloth',
+    name: 'Cloth',
+    swatches: [{
+      id: 'blue',
+      name: 'Blue',
+      hintColor: '#3366ff',
+      stops: [{ offset: 0, color: '#112244' }, { offset: 1, color: '#88aaff' }],
+    }],
+  });
+  workspace.addColorSwatch('cloth', {
+    id: 'red',
+    name: 'Red',
+    hintColor: '#ff3355',
+    stops: [{ offset: 0, color: '#441122' }, { offset: 1, color: '#ff8899' }],
+  });
+  workspace.updateColorChannel('cloth', { defaultSwatchId: 'red' });
+  workspace.updateColorSwatch('cloth', 'red', { name: 'Rose' });
+  workspace.updateStyle('hat', 'cap', 'default', { colorChannelId: 'cloth' });
+  workspace.addRule({
+    id: 'cap-rule',
+    type: 'excludes',
+    trigger: { scope: 'pack', partId: 'hat', itemId: 'cap' },
+    targets: [{ scope: 'base', partId: 'body', itemId: 'body-default' }],
+  });
+  workspace.updateRule('cap-rule', { type: 'requires' });
+  workspace.updatePartRules('hat', { visibleWhen: { scope: 'base', partId: 'body', op: 'selected' } });
+  workspace.updateItemRules('hat', 'cap', { requires: [{ scope: 'base', partId: 'body' }] });
+  workspace.updateStyleRules('hat', 'cap', 'default', { excludes: [{ scope: 'base', partId: 'body', itemId: 'body-default' }] });
+  workspace.setPartMode('hat', 'SLOT');
+
+  let state = workspace.getState();
+  assert.deepEqual(state.tree.layerTracks.map((track) => [track.id, track.name, track.locked]), [
+    ['front', 'Foreground', true],
+    ['back', 'Back', false],
+  ]);
+  assert.equal(state.tree.colorChannels[0].defaultSwatchId, 'red');
+  assert.equal(state.tree.colorChannels[0].swatches[1].name, 'Rose');
+  assert.equal(state.tree.parts[0].items[0].styles[0].layerTrackId, 'back');
+  assert.equal(state.tree.parts[0].items[0].styles[0].colorChannelId, 'cloth');
+  assert.equal(state.tree.rules[0].type, 'requires');
+  assert.equal(state.tree.parts[0].wardrobeMode, 'SLOT');
+  assert.equal(state.parent.layerTracks[0].name, 'Body');
+  assert.deepEqual(state.parent.colorChannels, []);
+  assert.deepEqual(state.parent.rules, []);
+
+  workspace.removeRule('cap-rule');
+  workspace.updateStyle('hat', 'cap', 'default', { colorChannelId: null });
+  workspace.removeColorSwatch('cloth', 'blue');
+  workspace.removeColorChannel('cloth');
+  workspace.updateStyle('hat', 'cap', 'default', { layerTrackId: 'body-track' });
+  workspace.setLayerTrackLocked('front', false);
+  workspace.removeLayerTrack('front');
+  workspace.removeLayerTrack('back');
+  state = workspace.getState();
+  assert.deepEqual(state.tree.layerTracks, []);
+  assert.deepEqual(state.tree.colorChannels, []);
+  assert.deepEqual(state.tree.rules, []);
+});
+
+test('definition tabs expose structured editors, retain local active state and support keyboard navigation', async () => {
+  const workspace = await emptyWorkspace();
+  workspace.addOptionalPart({ part: { id: 'hat', name: 'Hat', items: [] } });
+  workspace.addItem({
+    partId: 'hat',
+    item: { id: 'cap', name: 'Cap', styles: [{ id: 'default', name: 'Default', assetId: 'body-art', layerTrackId: 'body-track' }] },
+  });
+  workspace.addLayerTrack({ id: 'hat-track', name: 'Hat Track' });
+  const events = new Map();
+  const focused = [];
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+    querySelector(selector) { return { focus() { focused.push(selector); } }; },
+  };
+  const sections = [];
+  const mounted = mountExpansionPackWorkspace(root, workspace, {
+    onSectionChange: (section) => sections.push(section),
+  });
+
+  assert.match(root.innerHTML, /role="tablist"/);
+  assert.match(root.innerHTML, /data-section="structure"/);
+  assert.match(root.innerHTML, /data-section="layers"/);
+  assert.match(root.innerHTML, /data-section="colors"/);
+  assert.match(root.innerHTML, /data-section="rules"/);
+  assert.match(root.innerHTML, /data-section="wardrobe"/);
+  assert.match(root.innerHTML, /Extend in Pack with Item/);
+  assert.match(root.innerHTML, /data-style-field="layerTrackId"/);
+  assert.match(root.innerHTML, /option value="body-track" selected/);
+  assert.match(root.innerHTML, /option value="hat-track"/);
+  assert.doesNotMatch(root.innerHTML, /<textarea/);
+
+  events.get('click')({
+    target: { dataset: { action: 'select-pack-section', section: 'layers' } },
+    stopPropagation() {},
+  });
+  assert.match(root.innerHTML, /data-active-section="layers"/);
+  assert.match(root.innerHTML, /Parent definitions · read only/);
+  assert.match(root.innerHTML, /data-action="add-layer-track"/);
+
+  events.get('click')({ target: { dataset: { action: 'add-layer-track' } }, stopPropagation() {} });
+  assert.equal(workspace.getState().tree.layerTracks[1].id, 'track-2');
+  assert.match(root.innerHTML, /data-track-id="track-2"/);
+
+  events.get('keydown')({
+    key: 'ArrowRight',
+    target: { dataset: { section: 'layers' } },
+    preventDefault() {},
+  });
+  assert.match(root.innerHTML, /data-active-section="colors"/);
+  assert.deepEqual(sections, ['layers', 'colors']);
+  assert.equal(focused.length, 2);
+
+  events.get('click')({ target: { dataset: { action: 'select-pack-section', section: 'structure' } }, stopPropagation() {} });
+  events.get('change')({
+    target: {
+      value: 'hat-track',
+      dataset: { styleField: 'layerTrackId', partId: 'hat', itemId: 'cap', styleId: 'default' },
+    },
+  });
+  assert.equal(workspace.getState().tree.parts[0].items[0].styles[0].layerTrackId, 'hat-track');
+
+  events.get('click')({ target: { dataset: { action: 'select-pack-section', section: 'wardrobe' } }, stopPropagation() {} });
+  assert.match(root.innerHTML, /data-action="set-pack-part-mode"/);
+  mounted.unmount();
+  assert.equal(events.size, 0);
+});
+
+test('deterministic Color add uses localized default swatch copy', async () => {
+  const workspace = await emptyWorkspace();
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+  };
+  const mounted = mountExpansionPackWorkspace(root, workspace, {
+    copy: { defaultSwatch: '默认色板' },
+  });
+  events.get('click')({ target: { dataset: { action: 'add-color-channel' } }, stopPropagation() {} });
+  assert.equal(workspace.getState().tree.colorChannels[0].swatches[0].name, '默认色板');
+  mounted.unmount();
+});
+
+test('publication locking blocks both rendered controls and synthetic mutation events', async () => {
+  const workspace = await emptyWorkspace();
+  const events = new Map();
+  const root = {
+    innerHTML: '',
+    addEventListener(type, listener) { events.set(type, listener); },
+    removeEventListener(type) { events.delete(type); },
+  };
+  const mounted = mountExpansionPackWorkspace(root, workspace, {
+    copy: { publicationState: { locked: true } },
+  });
+  assert.match(root.innerHTML, /data-publication-locked="true"/);
+  assert.match(root.innerHTML, /data-action="request-add-item"[^>]*disabled/);
+  events.get('click')({ target: { dataset: { action: 'add-layer-track' } }, stopPropagation() {} });
+  events.get('change')({ target: { value: 'Blocked rename', dataset: { renameKind: 'pack' } } });
+  assert.equal(workspace.getState().tree.layerTracks.length, 0);
+  assert.equal(workspace.getState().project.name, 'Moon Pack');
+  mounted.unmount();
+});
