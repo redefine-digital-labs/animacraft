@@ -19,11 +19,8 @@ export const MAKER_V8_LEGACY_GATES = Object.freeze([
   'canonicalSoulMintEnabled',
   'commerceV5ReleaseEnabled',
   'compositionV6ReleaseEnabled',
-  'physicalStyleAssetsV7ReleaseEnabled',
+  'physicalStyleV7ReleaseEnabled',
   'expansionPackV8ReleaseEnabled',
-  'expansionPackV8CompleteBridgeEnabled',
-  'physicalStyleAssetsV7BridgeEnabled',
-  'compositionV6CompanionProofEnabled',
 ]);
 
 function issue(code, field, message) {
@@ -52,7 +49,10 @@ function hasOwn(record, field) {
  * as a safe default because it could be supplied by another configuration
  * layer after validation.
  */
-export function inspectMakerV8Runtime(config, { requireEnabled = false } = {}) {
+export function inspectMakerV8Runtime(
+  config,
+  { requireEnabled = false, requireFreshTypeOrigin = false } = {},
+) {
   const source = config && typeof config === 'object' && !Array.isArray(config)
     ? config
     : {};
@@ -101,7 +101,8 @@ export function inspectMakerV8Runtime(config, { requireEnabled = false } = {}) {
       }
     }
     if (
-      runtime.makerV8CallablePackageId
+      requireFreshTypeOrigin
+      && runtime.makerV8CallablePackageId
       && runtime.makerV8TypeOriginPackageId
       && runtime.makerV8CallablePackageId !== runtime.makerV8TypeOriginPackageId
     ) {
@@ -112,7 +113,8 @@ export function inspectMakerV8Runtime(config, { requireEnabled = false } = {}) {
       ));
     }
     if (
-      runtime.makerV8PhysicalCallablePackageId
+      requireFreshTypeOrigin
+      && runtime.makerV8PhysicalCallablePackageId
       && runtime.makerV8PhysicalTypeOriginPackageId
       && runtime.makerV8PhysicalCallablePackageId !== runtime.makerV8PhysicalTypeOriginPackageId
     ) {
@@ -120,6 +122,17 @@ export function inspectMakerV8Runtime(config, { requireEnabled = false } = {}) {
         'MAKER_V8_PHYSICAL_FRESH_TYPE_ORIGIN_REQUIRED',
         'makerV8PhysicalTypeOriginPackageId',
         'The initial Physical v8 callable and TypeOrigin package must be identical.',
+      ));
+    }
+    if (
+      runtime.makerV8SealPackageId
+      && runtime.makerV8TypeOriginPackageId
+      && runtime.makerV8SealPackageId !== runtime.makerV8TypeOriginPackageId
+    ) {
+      issues.push(issue(
+        'MAKER_V8_SEAL_TYPE_ORIGIN_MISMATCH',
+        'makerV8SealPackageId',
+        'Maker v8 Seal must use the unified v8 stable TypeOrigin package.',
       ));
     }
   }
@@ -173,4 +186,3 @@ export function makerV8StableType(runtime, moduleName, typeName) {
   }
   return `${checked.makerV8TypeOriginPackageId}::${moduleValue}::${typeValue}`;
 }
-

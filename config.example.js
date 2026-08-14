@@ -32,6 +32,19 @@ window.ANIMACRAFT_CONFIG = {
   protocolFeeAdminCapOwner: '0xEXPECTED_ADMIN_WALLET',
   primaryProtocolFeeBps: 5000,
   canonicalSoulMintEnabled: false,
+  // Unified Maker v8 is one fresh product surface. Fill every identity only
+  // after deployment/readback, then enable it while all older product gates
+  // remain explicitly false.
+  makerV8ReleaseEnabled: false,
+  makerV8CallablePackageId: '',
+  makerV8TypeOriginPackageId: '',
+  makerV8ProtocolConfigId: '',
+  makerV8ProtocolTreasuryId: '',
+  makerV8PaymentCoinType: '',
+  makerV8SealPackageId: '',
+  makerV8SoulProofType: '',
+  makerV8PhysicalCallablePackageId: '',
+  makerV8PhysicalTypeOriginPackageId: '',
   commerceV5CallablePackageId: '0xCURRENT_V5_COMMERCE_CALLABLE_PACKAGE',
   commerceV5TypeOriginPackageId: '0xV5_COMMERCE_TYPE_ORIGIN_PACKAGE',
   commerceProtocolConfigV5Id: '0xYOUR_DISABLED_V5_COMMERCE_PROTOCOL_CONFIG',

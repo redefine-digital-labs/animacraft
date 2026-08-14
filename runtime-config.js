@@ -1,4 +1,5 @@
 import { normalizeStructTag } from '@mysten/sui/utils';
+import { inspectMakerV8Runtime } from './maker-v8-runtime.js';
 
 export const SUI_MAINNET_USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
 export const ANIMACRAFT_MAX_WALRUS_UPLOAD_BYTES = 500 * 1024 * 1024;
@@ -46,6 +47,22 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   protocolFeeAdminCapOwner: '',
   primaryProtocolFeeBps: 5_000,
   canonicalSoulMintEnabled: false,
+  // Unified Maker v8 is a fresh product TypeOrigin, not an upgrade or
+  // compatibility layer over OCMaker/Commerce v5/Composition v6/Physical v7.
+  // Keep this tuple empty and the gate false until the complete v8 package,
+  // protocol objects, Soul proof, Seal and Physical bindings are published
+  // and independently read back. Enabling it requires every prior product
+  // gate below to be explicitly false.
+  makerV8ReleaseEnabled: false,
+  makerV8CallablePackageId: '',
+  makerV8TypeOriginPackageId: '',
+  makerV8ProtocolConfigId: '',
+  makerV8ProtocolTreasuryId: '',
+  makerV8PaymentCoinType: '',
+  makerV8SealPackageId: '',
+  makerV8SoulProofType: '',
+  makerV8PhysicalCallablePackageId: '',
+  makerV8PhysicalTypeOriginPackageId: '',
   // Commerce v5 is an additive protocol. Its type origin is the package that
   // first introduces `commerce_v5`; it remains stable across later upgrades.
   // The release gate stays false until the package upgrade, disabled protocol
@@ -263,6 +280,20 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
   checkUrl('soulidityAppUrl', { allowLocalhost: !strict });
   if (!/^\/[a-z0-9/_-]+$/i.test(String(config.soulidityIntegrationPath || ''))) {
     errors.push('soulidityIntegrationPath must be an absolute application path.');
+  }
+  const makerV8 = inspectMakerV8Runtime(config);
+  makerV8.issues.forEach((entry) => {
+    errors.push(`${entry.field}: ${entry.message}`);
+  });
+  if (makerV8.enabled) {
+    try {
+      if (normalizeStructTag(makerV8.runtime.makerV8PaymentCoinType)
+        !== normalizeStructTag(String(config.paymentCoinType || ''))) {
+        errors.push('makerV8PaymentCoinType must match the configured Mainnet Maker payment coin.');
+      }
+    } catch {
+      errors.push('makerV8PaymentCoinType must match the configured Mainnet Maker payment coin.');
+    }
   }
 
   const callablePackageId = resolveCallablePackageId(config);
@@ -884,6 +915,7 @@ export function validateRuntimeConfig(config, { strict = false, requireSoulidity
     independentExtensionAuthorityV5Ready,
     independentExtensionV5Ready,
     expansionPackV8CoreReady,
+    makerV8RuntimeReady: makerV8.valid && makerV8.enabled,
     // Retain the old result name for downstream status UI while exposing the
     // two independently verified identities.
     sealV5PackageReady: sealV5CallablePackageReady,

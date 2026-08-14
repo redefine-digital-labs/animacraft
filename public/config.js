@@ -28,6 +28,18 @@ window.ANIMACRAFT_CONFIG = {
   protocolFeeAdminCapOwner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
   primaryProtocolFeeBps: 5000,
   canonicalSoulMintEnabled: false,
+  // Fresh unified Maker v8 remains off until its one-package protocol tuple,
+  // Soul proof, Seal/Physical bindings and v8-only web cutover are verified.
+  makerV8ReleaseEnabled: false,
+  makerV8CallablePackageId: '',
+  makerV8TypeOriginPackageId: '',
+  makerV8ProtocolConfigId: '',
+  makerV8ProtocolTreasuryId: '',
+  makerV8PaymentCoinType: '',
+  makerV8SealPackageId: '',
+  makerV8SoulProofType: '',
+  makerV8PhysicalCallablePackageId: '',
+  makerV8PhysicalTypeOriginPackageId: '',
   // The reviewed v5 core is initialized on Mainnet with its release gate off.
   // The callable advances with the v8 package so recovery can reach the
   // additive Maker release-evidence entrypoint while TypeOrigin stays frozen.

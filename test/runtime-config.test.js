@@ -734,3 +734,66 @@ test('caps the configured primary protocol share at fifty percent', () => {
   assert.equal(result.valid, false);
   assert.match(result.errors.join(' '), /0 to 5000/);
 });
+
+test('unified Maker v8 stays inert while empty and requires one complete exclusive tuple', () => {
+  const disabled = productionConfig();
+  let result = validateRuntimeConfig(disabled, { strict: true });
+  assert.equal(disabled.makerV8ReleaseEnabled, false);
+  assert.equal(disabled.makerV8CallablePackageId, '');
+  assert.equal(result.errors.some((message) => message.includes('makerV8')), false);
+  assert.equal(result.makerV8RuntimeReady, false);
+
+  const core = `0x${'1'.repeat(64)}`;
+  const physical = `0x${'2'.repeat(64)}`;
+  const ready = productionConfig();
+  Object.assign(ready, {
+    makerV8ReleaseEnabled: true,
+    makerV8CallablePackageId: core,
+    makerV8TypeOriginPackageId: core,
+    makerV8ProtocolConfigId: `0x${'3'.repeat(64)}`,
+    makerV8ProtocolTreasuryId: `0x${'4'.repeat(64)}`,
+    makerV8PaymentCoinType: SUI_MAINNET_USDC_TYPE,
+    makerV8SealPackageId: core,
+    makerV8SoulProofType: `0x${'5'.repeat(64)}::soul_v8::MakerOwnerProofV8`,
+    makerV8PhysicalCallablePackageId: physical,
+    makerV8PhysicalTypeOriginPackageId: physical,
+    canonicalSoulMintEnabled: false,
+    commerceV5ReleaseEnabled: false,
+    compositionV6ReleaseEnabled: false,
+    physicalStyleV7ReleaseEnabled: false,
+    expansionPackV8ReleaseEnabled: false,
+  });
+  result = validateRuntimeConfig(ready, { strict: true });
+  assert.equal(result.valid, true);
+  assert.equal(result.makerV8RuntimeReady, true);
+
+  ready.expansionPackV8ReleaseEnabled = true;
+  result = validateRuntimeConfig(ready, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /expansionPackV8ReleaseEnabled.*explicitly false/);
+});
+
+test('unified Maker v8 rejects partial identities and a different payment coin', () => {
+  const partial = productionConfig();
+  partial.makerV8TypeOriginPackageId = `0x${'1'.repeat(64)}`;
+  let result = validateRuntimeConfig(partial, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /makerV8CallablePackageId/);
+
+  const core = `0x${'1'.repeat(64)}`;
+  Object.assign(partial, {
+    makerV8ReleaseEnabled: true,
+    makerV8CallablePackageId: core,
+    makerV8TypeOriginPackageId: core,
+    makerV8ProtocolConfigId: `0x${'3'.repeat(64)}`,
+    makerV8ProtocolTreasuryId: `0x${'4'.repeat(64)}`,
+    makerV8PaymentCoinType: `0x${'6'.repeat(64)}::coin::COIN`,
+    makerV8SealPackageId: core,
+    makerV8SoulProofType: `0x${'5'.repeat(64)}::soul_v8::MakerOwnerProofV8`,
+    makerV8PhysicalCallablePackageId: `0x${'2'.repeat(64)}`,
+    makerV8PhysicalTypeOriginPackageId: `0x${'2'.repeat(64)}`,
+  });
+  result = validateRuntimeConfig(partial, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /makerV8PaymentCoinType must match/);
+});
