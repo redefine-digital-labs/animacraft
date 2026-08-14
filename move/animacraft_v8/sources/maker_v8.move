@@ -255,6 +255,7 @@ public struct MakerRootV8<phantom PaymentCoin> has key {
     next_sequence: u64,
     expected_sequence_count: u64,
     protected_style_count: u64,
+    protected_style_keys: vector<StyleKeyV8>,
     entitlement_count: u64,
     created_at_ms: u64,
     activated_at_ms: u64,
@@ -291,7 +292,7 @@ public struct MakerPassV8 has key {
 
 /// Non-store activation tuple. publication_v8 constructs it only after every
 /// concrete registry has independently verified its sealed state.
-public struct ActivationBindingsV8 {
+public struct ActivationBindingsV8 has drop {
     composition_registry_id: ID,
     composition_commitment: vector<u8>,
     composition_slot_count: u64,
@@ -309,6 +310,8 @@ public struct ActivationBindingsV8 {
 
 public struct RollingCommitmentInputV8 has drop {
     domain: vector<u8>,
+    version: u64,
+    root_content_commitment: vector<u8>,
     category: u8,
     previous: vector<u8>,
     sequence: u64,
@@ -397,6 +400,13 @@ public struct MakerPassV8Issued has copy, drop {
     paid_atomic: u64,
     ownership_epoch: u64,
     content_commitment: vector<u8>,
+}
+
+public struct MakerPassV8Readmitted has copy, drop {
+    root_id: ID,
+    pass_id: ID,
+    holder: address,
+    ownership_epoch: u64,
 }
 
 public struct MakerRevenueV8Withdrawn has copy, drop {
@@ -546,10 +556,16 @@ public fun new_rights_v8(
     }
 }
 
-public fun empty_category_commitment_v8(category: u8): vector<u8> {
+public fun empty_category_commitment_v8(
+    root_content_commitment: vector<u8>,
+    category: u8,
+): vector<u8> {
     assert_valid_category(category);
+    assert_digest(&root_content_commitment);
     hash::sha2_256(bcs::to_bytes(&RollingCommitmentInputV8 {
         domain: b"animacraft-v8/empty-registry",
+        version: VERSION,
+        root_content_commitment,
         category,
         previous: vector[],
         sequence: 0,
@@ -558,16 +574,20 @@ public fun empty_category_commitment_v8(category: u8): vector<u8> {
 }
 
 public fun advance_commitment_v8(
+    root_content_commitment: vector<u8>,
     category: u8,
     previous: vector<u8>,
     sequence: u64,
     row_bytes: vector<u8>,
 ): vector<u8> {
     assert_valid_category(category);
+    assert_digest(&root_content_commitment);
     assert_digest(&previous);
     assert!(row_bytes.length() > 0, EInvalidDigest);
     hash::sha2_256(bcs::to_bytes(&RollingCommitmentInputV8 {
         domain: b"animacraft-v8/append-row",
+        version: VERSION,
+        root_content_commitment,
         category,
         previous,
         sequence,
@@ -680,12 +700,13 @@ public(package) fun new_maker_v8<PaymentCoin>(
         expected_counts,
         observed_counts: zero_counts(),
         expected_registry_commitments,
-        rolling_registry_commitments: empty_registry_commitments(),
+        rolling_registry_commitments: empty_registry_commitments(content_commitment),
         expected_capability_commitments,
         capability_bindings: empty_capability_bindings(),
         next_sequence: 0,
         expected_sequence_count: core_sequence_count(&expected_counts),
         protected_style_count: 0,
+        protected_style_keys: vector[],
         entitlement_count: 0,
         created_at_ms: clock.timestamp_ms(),
         activated_at_ms: 0,
@@ -847,7 +868,10 @@ public fun append_style_v8<PaymentCoin>(
     let row_bytes = bcs::to_bytes(&row);
     df::add(&mut root.id, field_key, row);
     root.observed_counts.styles = root.observed_counts.styles + 1;
-    if (protected) root.protected_style_count = root.protected_style_count + 1;
+    if (protected) {
+        root.protected_style_count = root.protected_style_count + 1;
+        root.protected_style_keys.push_back(field_key);
+    };
     advance_root_commitments(root, CATEGORY_STYLE, sequence, row_bytes);
 }
 
@@ -977,44 +1001,23 @@ public(package) fun activate_checked_v8<PaymentCoin>(
         root.economics.protocol_fee_bps,
     );
     assert_core_rows_complete(root);
+    assert_activation_binding_values(root, &bindings);
 
     let ActivationBindingsV8 {
         composition_registry_id,
-        composition_commitment,
+        composition_commitment: _composition_commitment,
         composition_slot_count,
         pack_registry_id,
-        pack_commitment,
+        pack_commitment: _pack_commitment,
         pack_release_count,
         complete_registry_id,
-        complete_commitment,
+        complete_commitment: _complete_commitment,
         seal_registry_id,
-        seal_commitment,
+        seal_commitment: _seal_commitment,
         protected_asset_count,
         physical_registry_id,
-        physical_commitment,
+        physical_commitment: _physical_commitment,
     } = bindings;
-    assert_distinct_binding_ids(
-        root,
-        composition_registry_id,
-        pack_registry_id,
-        complete_registry_id,
-        seal_registry_id,
-        &physical_registry_id,
-    );
-    assert!(composition_slot_count == root.expected_counts.slots, ECountMismatch);
-    assert!(pack_release_count == root.expected_counts.pack_releases, ECountMismatch);
-    assert!(protected_asset_count == root.expected_counts.protected_assets, ECountMismatch);
-    assert!(root.protected_style_count <= protected_asset_count, ECountMismatch);
-    assert!(composition_commitment == root.expected_capability_commitments.composition, ECapabilityBindingMismatch);
-    assert!(pack_commitment == root.expected_capability_commitments.pack, ECapabilityBindingMismatch);
-    assert!(complete_commitment == root.expected_capability_commitments.complete, ECapabilityBindingMismatch);
-    assert!(seal_commitment == root.expected_capability_commitments.seal, ECapabilityBindingMismatch);
-    assert_physical_binding(
-        root,
-        &physical_registry_id,
-        &physical_commitment,
-    );
-
     root.observed_counts.slots = composition_slot_count;
     root.observed_counts.pack_releases = pack_release_count;
     root.observed_counts.protected_assets = protected_asset_count;
@@ -1088,6 +1091,42 @@ public(package) fun resume_checked_v8<PaymentCoin>(
     set_lifecycle(root, ACTIVE);
 }
 
+/// Resume callers must present the concrete registries already frozen into
+/// the Root. Readiness alone is insufficient: a second sealed registry with
+/// the same content commitment is not the registry activated by this Root.
+public(package) fun assert_bound_activation_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    bindings: &ActivationBindingsV8,
+) {
+    assert_activation_binding_values(root, bindings);
+    assert!(root.capability_bindings.composition_registry_id.is_some(), ECapabilityBindingMismatch);
+    assert!(
+        *root.capability_bindings.composition_registry_id.borrow()
+            == bindings.composition_registry_id,
+        ECapabilityBindingMismatch,
+    );
+    assert!(root.capability_bindings.pack_registry_id.is_some(), ECapabilityBindingMismatch);
+    assert!(
+        *root.capability_bindings.pack_registry_id.borrow() == bindings.pack_registry_id,
+        ECapabilityBindingMismatch,
+    );
+    assert!(root.capability_bindings.complete_registry_id.is_some(), ECapabilityBindingMismatch);
+    assert!(
+        *root.capability_bindings.complete_registry_id.borrow()
+            == bindings.complete_registry_id,
+        ECapabilityBindingMismatch,
+    );
+    assert!(root.capability_bindings.seal_registry_id.is_some(), ECapabilityBindingMismatch);
+    assert!(
+        *root.capability_bindings.seal_registry_id.borrow() == bindings.seal_registry_id,
+        ECapabilityBindingMismatch,
+    );
+    assert!(
+        &root.capability_bindings.physical_registry_id == &bindings.physical_registry_id,
+        ECapabilityBindingMismatch,
+    );
+}
+
 public fun archive_maker_v8<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
@@ -1095,7 +1134,7 @@ public fun archive_maker_v8<PaymentCoin>(
 ) {
     assert_admin_v8(root, admin);
     assert!(root.owner == ctx.sender(), ENotCurrentOwner);
-    assert!(root.lifecycle == ACTIVE || root.lifecycle == PAUSED, EInvalidLifecycle);
+    assert!(root.lifecycle != ARCHIVED, EInvalidLifecycle);
     set_lifecycle(root, ARCHIVED);
 }
 
@@ -1211,6 +1250,42 @@ public(package) fun assert_complete_free_v8<PaymentCoin>(root: &MakerRootV8<Paym
     assert!(root.economics.complete_access == ACCESS_FREE, EInvalidEconomics);
 }
 
+/// Companion commerce must be pinned to the same live protocol snapshot as
+/// its parent Maker. This prevents Pack payments from accepting an unrelated
+/// enabled config/treasury pair of the same coin type.
+public(package) fun assert_root_protocol_operational_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    config: &ProtocolConfigV8,
+    protocol_treasury: &ProtocolTreasuryV8<PaymentCoin>,
+) {
+    assert_active(root);
+    protocol::assert_operational_snapshot_v8<PaymentCoin>(
+        config,
+        root.protocol_config_id,
+        root.protocol_treasury_id,
+        root.declared_capabilities,
+        root.economics.protocol_fee_bps,
+    );
+    protocol::assert_protocol_treasury_v8(config, protocol_treasury);
+}
+
+/// publication_v8 uses this bounded index to prove every protected base Style
+/// against the concrete Seal registry. Dynamic fields are intentionally not
+/// treated as enumerable discovery state.
+public(package) fun protected_style_coverage_row_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    index: u64,
+): (String, String, String, vector<u8>) {
+    assert!(index < root.protected_style_keys.length(), ECountMismatch);
+    let key = root.protected_style_keys[index];
+    let row: &StyleRowV8 = df::borrow(&root.id, key);
+    (row.part_key, row.item_key, row.style_key, row.asset_sha256)
+}
+
+public(package) fun protected_style_count_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): u64 { root.protected_style_count }
+
 public fun withdraw_maker_revenue_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
@@ -1245,10 +1320,41 @@ public fun verify_maker_pass_v8<PaymentCoin>(
     assert!(pass.version == VERSION, EEntitlementMissing);
     assert!(pass.root_id == object::id(root), EEntitlementMissing);
     assert!(pass.holder == wallet, EEntitlementMissing);
+    assert!(pass.ownership_epoch == root.ownership_epoch, EOwnershipEpochMismatch);
     assert!(&pass.content_commitment == &root.content_commitment, EEntitlementMissing);
     assert!(df::exists(&root.id, EntitlementKeyV8 { wallet }), EEntitlementMissing);
     let record: &EntitlementRecordV8 = df::borrow(&root.id, EntitlementKeyV8 { wallet });
     assert!(record.pass_id == object::id(pass), EEntitlementMissing);
+    assert!(record.ownership_epoch == root.ownership_epoch, EOwnershipEpochMismatch);
+}
+
+/// Existing entitlements survive a Maker ownership transfer, but the old Pass
+/// is not a current-epoch proof until its holder explicitly readmits it.
+public fun readmit_maker_pass_epoch_v8<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    pass: &mut MakerPassV8,
+    ctx: &TxContext,
+) {
+    assert_active(root);
+    let holder = ctx.sender();
+    assert!(pass.version == VERSION, EEntitlementMissing);
+    assert!(pass.root_id == object::id(root), EEntitlementMissing);
+    assert!(pass.holder == holder, EEntitlementMissing);
+    assert!(&pass.content_commitment == &root.content_commitment, EEntitlementMissing);
+    assert!(pass.ownership_epoch != root.ownership_epoch, EOwnershipEpochMismatch);
+    assert!(df::exists(&root.id, EntitlementKeyV8 { wallet: holder }), EEntitlementMissing);
+    let record: &mut EntitlementRecordV8 =
+        df::borrow_mut(&mut root.id, EntitlementKeyV8 { wallet: holder });
+    assert!(record.pass_id == object::id(pass), EEntitlementMissing);
+    assert!(&record.content_commitment == &root.content_commitment, EEntitlementMissing);
+    pass.ownership_epoch = root.ownership_epoch;
+    record.ownership_epoch = root.ownership_epoch;
+    event::emit(MakerPassV8Readmitted {
+        root_id: object::id(root),
+        pass_id: object::id(pass),
+        holder,
+        ownership_epoch: root.ownership_epoch,
+    });
 }
 
 fun issue_pass<PaymentCoin>(
@@ -1365,6 +1471,46 @@ fun assert_core_rows_complete<PaymentCoin>(root: &MakerRootV8<PaymentCoin>) {
     );
 }
 
+fun assert_activation_binding_values<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    bindings: &ActivationBindingsV8,
+) {
+    assert_distinct_binding_ids(
+        root,
+        bindings.composition_registry_id,
+        bindings.pack_registry_id,
+        bindings.complete_registry_id,
+        bindings.seal_registry_id,
+        &bindings.physical_registry_id,
+    );
+    assert!(bindings.composition_slot_count == root.expected_counts.slots, ECountMismatch);
+    assert!(bindings.pack_release_count == root.expected_counts.pack_releases, ECountMismatch);
+    assert!(bindings.protected_asset_count == root.expected_counts.protected_assets, ECountMismatch);
+    assert!(root.protected_style_count <= bindings.protected_asset_count, ECountMismatch);
+    assert!(
+        &bindings.composition_commitment
+            == &root.expected_capability_commitments.composition,
+        ECapabilityBindingMismatch,
+    );
+    assert!(
+        &bindings.pack_commitment == &root.expected_capability_commitments.pack,
+        ECapabilityBindingMismatch,
+    );
+    assert!(
+        &bindings.complete_commitment == &root.expected_capability_commitments.complete,
+        ECapabilityBindingMismatch,
+    );
+    assert!(
+        &bindings.seal_commitment == &root.expected_capability_commitments.seal,
+        ECapabilityBindingMismatch,
+    );
+    assert_physical_binding(
+        root,
+        &bindings.physical_registry_id,
+        &bindings.physical_commitment,
+    );
+}
+
 fun assert_distinct_binding_ids<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     composition: ID,
@@ -1475,6 +1621,7 @@ fun advance_root_commitments<PaymentCoin>(
 ) {
     if (category == CATEGORY_TRACK) {
         root.rolling_registry_commitments.tracks = advance_commitment_v8(
+            root.content_commitment,
             category,
             root.rolling_registry_commitments.tracks,
             sequence,
@@ -1482,6 +1629,7 @@ fun advance_root_commitments<PaymentCoin>(
         );
     } else if (category == CATEGORY_PART) {
         root.rolling_registry_commitments.parts = advance_commitment_v8(
+            root.content_commitment,
             category,
             root.rolling_registry_commitments.parts,
             sequence,
@@ -1489,6 +1637,7 @@ fun advance_root_commitments<PaymentCoin>(
         );
     } else if (category == CATEGORY_ITEM) {
         root.rolling_registry_commitments.items = advance_commitment_v8(
+            root.content_commitment,
             category,
             root.rolling_registry_commitments.items,
             sequence,
@@ -1496,6 +1645,7 @@ fun advance_root_commitments<PaymentCoin>(
         );
     } else if (category == CATEGORY_STYLE) {
         root.rolling_registry_commitments.styles = advance_commitment_v8(
+            root.content_commitment,
             category,
             root.rolling_registry_commitments.styles,
             sequence,
@@ -1503,6 +1653,7 @@ fun advance_root_commitments<PaymentCoin>(
         );
     } else if (category == CATEGORY_COLOR) {
         root.rolling_registry_commitments.colors = advance_commitment_v8(
+            root.content_commitment,
             category,
             root.rolling_registry_commitments.colors,
             sequence,
@@ -1510,6 +1661,7 @@ fun advance_root_commitments<PaymentCoin>(
         );
     } else if (category == CATEGORY_RULE) {
         root.rolling_registry_commitments.rules = advance_commitment_v8(
+            root.content_commitment,
             category,
             root.rolling_registry_commitments.rules,
             sequence,
@@ -1519,6 +1671,7 @@ fun advance_root_commitments<PaymentCoin>(
         abort EInvalidCategory
     };
     root.rolling_registry_commitments.aggregate = advance_commitment_v8(
+        root.content_commitment,
         CATEGORY_AGGREGATE,
         root.rolling_registry_commitments.aggregate,
         sequence,
@@ -1638,15 +1791,15 @@ fun zero_counts(): RowCountsV8 {
     }
 }
 
-fun empty_registry_commitments(): RegistryCommitmentsV8 {
+fun empty_registry_commitments(root_content_commitment: vector<u8>): RegistryCommitmentsV8 {
     RegistryCommitmentsV8 {
-        tracks: empty_category_commitment_v8(CATEGORY_TRACK),
-        parts: empty_category_commitment_v8(CATEGORY_PART),
-        items: empty_category_commitment_v8(CATEGORY_ITEM),
-        styles: empty_category_commitment_v8(CATEGORY_STYLE),
-        colors: empty_category_commitment_v8(CATEGORY_COLOR),
-        rules: empty_category_commitment_v8(CATEGORY_RULE),
-        aggregate: empty_category_commitment_v8(CATEGORY_AGGREGATE),
+        tracks: empty_category_commitment_v8(root_content_commitment, CATEGORY_TRACK),
+        parts: empty_category_commitment_v8(root_content_commitment, CATEGORY_PART),
+        items: empty_category_commitment_v8(root_content_commitment, CATEGORY_ITEM),
+        styles: empty_category_commitment_v8(root_content_commitment, CATEGORY_STYLE),
+        colors: empty_category_commitment_v8(root_content_commitment, CATEGORY_COLOR),
+        rules: empty_category_commitment_v8(root_content_commitment, CATEGORY_RULE),
+        aggregate: empty_category_commitment_v8(root_content_commitment, CATEGORY_AGGREGATE),
     }
 }
 
@@ -1671,9 +1824,7 @@ public fun ownership_epoch_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): u64
 public fun content_commitment_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): &vector<u8> {
     &root.content_commitment
 }
-public fun admin_cap_id_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): ID {
-    root.admin_cap_id
-}
+public fun admin_cap_id_v8(admin: &MakerAdminCapV8): ID { object::id(admin) }
 public fun root_version_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): u64 { root.version }
 public fun root_package_id_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): ID { root.package_id }
 public fun root_protocol_config_id_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): ID {
@@ -1767,6 +1918,22 @@ public fun row_counts_slots_v8(counts: &RowCountsV8): u64 { counts.slots }
 public fun row_counts_pack_releases_v8(counts: &RowCountsV8): u64 { counts.pack_releases }
 public fun row_counts_protected_assets_v8(counts: &RowCountsV8): u64 { counts.protected_assets }
 
+public fun capability_composition_commitment_v8(
+    commitments: &CapabilityCommitmentsV8,
+): &vector<u8> { &commitments.composition }
+public fun capability_pack_commitment_v8(
+    commitments: &CapabilityCommitmentsV8,
+): &vector<u8> { &commitments.pack }
+public fun capability_complete_commitment_v8(
+    commitments: &CapabilityCommitmentsV8,
+): &vector<u8> { &commitments.complete }
+public fun capability_seal_commitment_v8(
+    commitments: &CapabilityCommitmentsV8,
+): &vector<u8> { &commitments.seal }
+public fun capability_physical_commitment_v8(
+    commitments: &CapabilityCommitmentsV8,
+): Option<vector<u8>> { commitments.physical }
+
 public fun economics_maker_access_v8(economics: &EconomicsV8): u8 { economics.maker_access }
 public fun economics_maker_price_v8(economics: &EconomicsV8): u64 {
     economics.maker_price_atomic
@@ -1798,7 +1965,10 @@ fun test_digest(byte: u8): vector<u8> {
 }
 
 #[test_only]
-fun test_registry_commitments(protected: bool): RegistryCommitmentsV8 {
+fun test_registry_commitments(
+    protected: bool,
+    root_content_commitment: vector<u8>,
+): RegistryCommitmentsV8 {
     let track = TrackRowV8 {
         sequence: 0,
         key: b"body".to_string(),
@@ -1842,41 +2012,69 @@ fun test_registry_commitments(protected: bool): RegistryCommitmentsV8 {
     let item_bytes = bcs::to_bytes(&item);
     let style_bytes = bcs::to_bytes(&style);
     let tracks = advance_commitment_v8(
+        root_content_commitment,
         CATEGORY_TRACK,
-        empty_category_commitment_v8(CATEGORY_TRACK),
+        empty_category_commitment_v8(root_content_commitment, CATEGORY_TRACK),
         0,
         track_bytes,
     );
     let parts = advance_commitment_v8(
+        root_content_commitment,
         CATEGORY_PART,
-        empty_category_commitment_v8(CATEGORY_PART),
+        empty_category_commitment_v8(root_content_commitment, CATEGORY_PART),
         1,
         part_bytes,
     );
     let items = advance_commitment_v8(
+        root_content_commitment,
         CATEGORY_ITEM,
-        empty_category_commitment_v8(CATEGORY_ITEM),
+        empty_category_commitment_v8(root_content_commitment, CATEGORY_ITEM),
         2,
         item_bytes,
     );
     let styles = advance_commitment_v8(
+        root_content_commitment,
         CATEGORY_STYLE,
-        empty_category_commitment_v8(CATEGORY_STYLE),
+        empty_category_commitment_v8(root_content_commitment, CATEGORY_STYLE),
         3,
         style_bytes,
     );
-    let mut aggregate = empty_category_commitment_v8(CATEGORY_AGGREGATE);
-    aggregate = advance_commitment_v8(CATEGORY_AGGREGATE, aggregate, 0, track_bytes);
-    aggregate = advance_commitment_v8(CATEGORY_AGGREGATE, aggregate, 1, part_bytes);
-    aggregate = advance_commitment_v8(CATEGORY_AGGREGATE, aggregate, 2, item_bytes);
-    aggregate = advance_commitment_v8(CATEGORY_AGGREGATE, aggregate, 3, style_bytes);
+    let mut aggregate = empty_category_commitment_v8(root_content_commitment, CATEGORY_AGGREGATE);
+    aggregate = advance_commitment_v8(
+        root_content_commitment,
+        CATEGORY_AGGREGATE,
+        aggregate,
+        0,
+        track_bytes,
+    );
+    aggregate = advance_commitment_v8(
+        root_content_commitment,
+        CATEGORY_AGGREGATE,
+        aggregate,
+        1,
+        part_bytes,
+    );
+    aggregate = advance_commitment_v8(
+        root_content_commitment,
+        CATEGORY_AGGREGATE,
+        aggregate,
+        2,
+        item_bytes,
+    );
+    aggregate = advance_commitment_v8(
+        root_content_commitment,
+        CATEGORY_AGGREGATE,
+        aggregate,
+        3,
+        style_bytes,
+    );
     RegistryCommitmentsV8 {
         tracks,
         parts,
         items,
         styles,
-        colors: empty_category_commitment_v8(CATEGORY_COLOR),
-        rules: empty_category_commitment_v8(CATEGORY_RULE),
+        colors: empty_category_commitment_v8(root_content_commitment, CATEGORY_COLOR),
+        rules: empty_category_commitment_v8(root_content_commitment, CATEGORY_RULE),
         aggregate,
     }
 }
@@ -1941,7 +2139,7 @@ fun new_test_maker(
         test_digest(2),
         test_digest(3),
         expected_counts,
-        test_registry_commitments(protected),
+        test_registry_commitments(protected, test_digest(3)),
         test_capability_commitments(),
         protocol::required_capabilities_v8(),
         economics,
