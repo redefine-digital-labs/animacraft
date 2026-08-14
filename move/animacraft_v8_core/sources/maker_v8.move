@@ -1073,6 +1073,7 @@ fun rotate_maker_control_v8<PaymentCoin>(
     assert_admin_v8(root, &admin);
     assert!(root.owner == ctx.sender(), ENotCurrentOwner);
     assert!(root.control_epoch == expected_control_epoch, EControlEpochMismatch);
+    assert!(root.successor_authority_id.is_none(), ESuccessorAuthorityAlreadyIssued);
     assert!(root.control_epoch < 0xffffffffffffffff, EControlEpochMismatch);
     assert!(new_owner != @0x0 && new_owner != root.owner, ENotCurrentOwner);
     let previous_owner = root.owner;
@@ -2217,6 +2218,12 @@ fun typed_successor_derives_exact_predecessor_and_version() {
         0,
         &mut ctx,
     );
+    assert!(authority.previous_root_id == object::id(&previous), EInvalidSuccessorAuthority);
+    assert!(authority.maker_key == previous.maker_key, EInvalidSuccessorAuthority);
+    assert!(authority.maker_version == previous.maker_version, EInvalidSuccessorAuthority);
+    assert!(authority.version_commitment == previous.version_commitment, EInvalidSuccessorAuthority);
+    assert!(authority.control_epoch == previous.control_epoch, EInvalidSuccessorAuthority);
+    assert!(authority.owner == previous.owner, EInvalidSuccessorAuthority);
     let economics = previous.economics;
     let rights = previous.rights;
     let (successor, successor_admin) = new_successor_maker_draft_v8(
@@ -2425,6 +2432,89 @@ fun successor_control_epoch_is_cas_guarded() {
     destroy_maker_for_testing(previous, previous_admin);
     protocol::destroy_protocol_for_testing(config, protocol_cap);
     clock.destroy_for_testing();
+}
+
+#[test]
+fun archived_predecessor_without_successor_authority_can_transfer_control() {
+    let sender = @0xA11;
+    let new_owner = @0xBEEF;
+    let mut scenario = sui::test_scenario::begin(sender);
+    {
+        let ctx = scenario.ctx();
+        let (config, protocol_cap, mut previous, previous_admin) =
+            new_test_maker(ctx);
+        set_lifecycle_for_testing(&mut previous, ARCHIVED);
+        protocol::share_protocol_for_testing(config, protocol_cap, ctx);
+        transfer::share_object(previous);
+        transfer::transfer(previous_admin, sender);
+    };
+    scenario.next_tx(sender);
+    {
+        let mut previous = scenario.take_shared<MakerRootV8<sui::sui::SUI>>();
+        let previous_admin = scenario.take_from_sender<MakerAdminCapV8>();
+        transfer_maker_control_v8(
+            &mut previous,
+            previous_admin,
+            0,
+            new_owner,
+            scenario.ctx(),
+        );
+        assert!(previous.owner == new_owner, ENotCurrentOwner);
+        assert!(previous.control_epoch == 1, EControlEpochMismatch);
+        sui::test_scenario::return_shared(previous);
+    };
+    scenario.next_tx(new_owner);
+    {
+        let previous = scenario.take_shared<MakerRootV8<sui::sui::SUI>>();
+        let next_admin = scenario.take_from_sender<MakerAdminCapV8>();
+        assert!(admin_owner_v8(&next_admin) == new_owner, EInvalidAdminCap);
+        assert!(admin_control_epoch_v8(&next_admin) == 1, EInvalidAdminCap);
+        sui::test_scenario::return_shared(previous);
+        scenario.return_to_sender(next_admin);
+    };
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = ESuccessorAuthorityAlreadyIssued)]
+fun archived_predecessor_with_outstanding_successor_authority_cannot_transfer_control() {
+    let sender = @0xA11;
+    let mut scenario = sui::test_scenario::begin(sender);
+    {
+        let ctx = scenario.ctx();
+        let (config, protocol_cap, mut previous, previous_admin) =
+            new_test_maker(ctx);
+        set_lifecycle_for_testing(&mut previous, ARCHIVED);
+        protocol::share_protocol_for_testing(config, protocol_cap, ctx);
+        transfer::share_object(previous);
+        transfer::transfer(previous_admin, sender);
+    };
+    scenario.next_tx(sender);
+    {
+        let mut previous = scenario.take_shared<MakerRootV8<sui::sui::SUI>>();
+        let previous_admin = scenario.take_from_sender<MakerAdminCapV8>();
+        issue_successor_authority_v8(
+            &mut previous,
+            &previous_admin,
+            0,
+            scenario.ctx(),
+        );
+        sui::test_scenario::return_shared(previous);
+        scenario.return_to_sender(previous_admin);
+    };
+    scenario.next_tx(sender);
+    {
+        let mut previous = scenario.take_shared<MakerRootV8<sui::sui::SUI>>();
+        let previous_admin = scenario.take_from_sender<MakerAdminCapV8>();
+        transfer_maker_control_v8(
+            &mut previous,
+            previous_admin,
+            0,
+            @0xBEEF,
+            scenario.ctx(),
+        );
+        sui::test_scenario::return_shared(previous);
+    };
+    scenario.end();
 }
 
 #[test]

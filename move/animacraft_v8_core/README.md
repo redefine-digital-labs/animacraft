@@ -122,7 +122,10 @@ Root content commitment, and admission-policy commitment.
 Base and Pack compatibility is the Root ID + Maker version + content
 commitment tuple; it deliberately excludes control epoch. Rotating Maker
 control consumes the old cap, applies epoch CAS, and issues a new cap without
-invalidating sealed Base content or a Pack binding.
+invalidating sealed Base content or a Pack binding. A predecessor with an
+outstanding `SuccessorAuthorityV8` cannot rotate control: owner, AdminCap, and
+control epoch remain frozen until that exact authority atomically creates the
+successor. Core exposes no authority revoke, discard, or transfer escape hatch.
 
 ## Deliberate non-functionality
 
