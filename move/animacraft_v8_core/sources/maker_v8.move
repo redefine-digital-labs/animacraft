@@ -68,11 +68,15 @@ const EInvalidSuccessor: u64 = 19;
 const ECatalogMismatch: u64 = 20;
 const ESuccessorAuthorityAlreadyIssued: u64 = 21;
 const EInvalidSuccessorAuthority: u64 = 22;
+const EMakerTreasuryAlreadyFinalized: u64 = 23;
+const EMakerTreasuryMissing: u64 = 24;
+const EMakerTreasuryMismatch: u64 = 25;
 
 public struct EconomicsSnapshotV8 has copy, drop, store {
     protocol_config_id: ID,
     protocol_config_revision: u64,
     protocol_config_commitment: vector<u8>,
+    protocol_treasury_id: ID,
     payment_coin_type: String,
     maker_access: u8,
     maker_price_atomic: u64,
@@ -151,6 +155,7 @@ public struct MakerRootV8<phantom PaymentCoin> has key {
     manifest_sha256: vector<u8>,
     content_commitment: vector<u8>,
     base_registry_id: Option<ID>,
+    maker_treasury_id: Option<ID>,
     expected_base_definition_count: u64,
     expected_base_registry_commitment: vector<u8>,
     expected_pack_admission_policy_commitment: vector<u8>,
@@ -191,6 +196,7 @@ public struct EconomicsCommitmentInputV8 has drop {
     protocol_config_id: ID,
     protocol_config_revision: u64,
     protocol_config_commitment: vector<u8>,
+    protocol_treasury_id: ID,
     payment_coin_type: String,
     maker_access: u8,
     maker_price_atomic: u64,
@@ -315,6 +321,7 @@ public fun new_economics_snapshot_v8<PaymentCoin>(
     let protocol_config_id = protocol::config_id_v8(config);
     let protocol_config_revision = protocol::config_revision_v8(config);
     let protocol_config_commitment = *protocol::config_commitment_v8(config);
+    let protocol_treasury_id = *protocol::config_treasury_id_v8(config).borrow();
     let payment_coin_type = protocol::payment_coin_type_name_v8<PaymentCoin>();
     let primary_content_fee_bps = protocol::config_primary_content_fee_bps_v8(config);
     let fixed_complete_fee_atomic = protocol::config_fixed_complete_fee_atomic_v8(config);
@@ -326,6 +333,7 @@ public fun new_economics_snapshot_v8<PaymentCoin>(
         protocol_config_id,
         protocol_config_revision,
         protocol_config_commitment,
+        protocol_treasury_id,
         payment_coin_type,
         maker_access,
         maker_price_atomic,
@@ -342,6 +350,7 @@ public fun new_economics_snapshot_v8<PaymentCoin>(
         protocol_config_id,
         protocol_config_revision,
         protocol_config_commitment,
+        protocol_treasury_id,
         payment_coin_type,
         maker_access,
         maker_price_atomic,
@@ -768,6 +777,7 @@ fun new_maker_draft_internal_v8<PaymentCoin>(
         manifest_sha256,
         content_commitment,
         base_registry_id: option::none(),
+        maker_treasury_id: option::none(),
         expected_base_definition_count,
         expected_base_registry_commitment,
         expected_pack_admission_policy_commitment,
@@ -792,6 +802,40 @@ public(package) fun finalize_base_registry_binding_v8<PaymentCoin>(
     assert!(base_registry_id != object::id(root), EBindingIdCollision);
     assert!(base_registry_id != root.admin_cap_id, EBindingIdCollision);
     root.base_registry_id = option::some(base_registry_id);
+}
+
+/// Resolves the same-transaction Root/MakerTreasury ID cycle. The Treasury
+/// module creates the typed treasury and calls this once before sharing.
+public(package) fun finalize_maker_treasury_binding_v8<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    maker_treasury_id: ID,
+) {
+    assert_draft_admin_v8(root, admin);
+    assert!(
+        root.maker_treasury_id.is_none(),
+        EMakerTreasuryAlreadyFinalized,
+    );
+    assert!(maker_treasury_id != object::id(root), EBindingIdCollision);
+    assert!(maker_treasury_id != root.admin_cap_id, EBindingIdCollision);
+    if (root.base_registry_id.is_some()) {
+        assert!(
+            maker_treasury_id != *root.base_registry_id.borrow(),
+            EBindingIdCollision,
+        );
+    };
+    root.maker_treasury_id = option::some(maker_treasury_id);
+}
+
+public fun assert_maker_treasury_identity_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    maker_treasury_id: ID,
+) {
+    assert!(root.maker_treasury_id.is_some(), EMakerTreasuryMissing);
+    assert!(
+        *root.maker_treasury_id.borrow() == maker_treasury_id,
+        EMakerTreasuryMismatch,
+    );
 }
 
 /// One-time DRAFT finalization. The proof is non-store/non-copy and can only
@@ -967,6 +1011,7 @@ public fun assert_activation_scaffold_ready_v8<PaymentCoin>(
         EPackAdmissionBindingMissing,
     );
     assert!(root.base_registry_id.is_some(), EBaseRegistryMissing);
+    assert!(root.maker_treasury_id.is_some(), EMakerTreasuryMissing);
     package_binding::assert_product_release_binding_well_formed_v8(
         package_binding::certified_binding_v8(root.product_release_binding.borrow()),
     );
@@ -1032,6 +1077,15 @@ public fun assert_current_protocol_config_v8<PaymentCoin>(
         root.protocol_config_id,
         root.protocol_config_revision,
         &root.protocol_config_commitment,
+    );
+    assert!(
+        protocol::config_treasury_id_v8(config).is_some(),
+        EProtocolSnapshotMismatch,
+    );
+    assert!(
+        *protocol::config_treasury_id_v8(config).borrow()
+            == root.economics.protocol_treasury_id,
+        EProtocolSnapshotMismatch,
     );
     assert_economics_snapshot_v8<PaymentCoin>(config, &root.economics);
 }
@@ -1189,6 +1243,12 @@ public fun assert_economics_snapshot_v8<PaymentCoin>(
         economics.payment_coin_type == protocol::payment_coin_type_name_v8<PaymentCoin>(),
         EProtocolSnapshotMismatch,
     );
+    assert!(protocol::config_treasury_id_v8(config).is_some(), EProtocolSnapshotMismatch);
+    assert!(
+        *protocol::config_treasury_id_v8(config).borrow()
+            == economics.protocol_treasury_id,
+        EProtocolSnapshotMismatch,
+    );
     assert!(
         economics.primary_content_fee_bps
             == protocol::config_primary_content_fee_bps_v8(config),
@@ -1222,6 +1282,7 @@ public fun assert_economics_snapshot_v8<PaymentCoin>(
         protocol_config_id: economics.protocol_config_id,
         protocol_config_revision: economics.protocol_config_revision,
         protocol_config_commitment: economics.protocol_config_commitment,
+        protocol_treasury_id: economics.protocol_treasury_id,
         payment_coin_type: economics.payment_coin_type,
         maker_access: economics.maker_access,
         maker_price_atomic: economics.maker_price_atomic,
@@ -1425,6 +1486,9 @@ public fun root_protocol_config_revision_v8<PaymentCoin>(
 public fun root_protocol_config_commitment_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): &vector<u8> { &root.protocol_config_commitment }
+public fun root_protocol_treasury_id_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): ID { root.economics.protocol_treasury_id }
 public fun root_version_commitment_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): &vector<u8> { &root.version_commitment }
@@ -1436,6 +1500,12 @@ public fun root_base_registry_id_v8<PaymentCoin>(
 ): ID {
     assert!(root.base_registry_id.is_some(), EBaseRegistryMissing);
     *root.base_registry_id.borrow()
+}
+public fun root_maker_treasury_id_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): ID {
+    assert!(root.maker_treasury_id.is_some(), EMakerTreasuryMissing);
+    *root.maker_treasury_id.borrow()
 }
 public fun root_expected_base_definition_count_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
@@ -1667,6 +1737,7 @@ public fun destroy_maker_for_testing<PaymentCoin>(
         manifest_sha256: _,
         content_commitment: _,
         base_registry_id: _,
+        maker_treasury_id: _,
         expected_base_definition_count: _,
         expected_base_registry_commitment: _,
         expected_pack_admission_policy_commitment: _,
@@ -1725,7 +1796,7 @@ fun new_test_maker(
         500,
     );
     let clock = sui::clock::create_for_testing(ctx);
-    let (root, admin) = new_initial_maker_draft_v8<sui::sui::SUI>(
+    let (mut root, admin) = new_initial_maker_draft_v8<sui::sui::SUI>(
         &config,
         4,
         test_hash(1),
@@ -1739,6 +1810,11 @@ fun new_test_maker(
         rights,
         &clock,
         ctx,
+    );
+    finalize_maker_treasury_binding_v8(
+        &mut root,
+        &admin,
+        object::id_from_address(@0xB1),
     );
     clock.destroy_for_testing();
     (config, protocol_cap, root, admin)

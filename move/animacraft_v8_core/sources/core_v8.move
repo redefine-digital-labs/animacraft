@@ -17,6 +17,10 @@ use animacraft_v8_core::maker_v8::{
     SuccessorAuthorityV8,
 };
 use animacraft_v8_core::protocol_config_v8::ProtocolConfigV8;
+use animacraft_v8_core::treasury_v8::{
+    Self as treasury,
+    MakerTreasuryV8,
+};
 use std::string::String;
 use sui::clock::Clock;
 
@@ -44,6 +48,7 @@ public fun new_initial_maker_draft_v8<PaymentCoin>(
 ): (
     MakerRootV8<PaymentCoin>,
     BaseDefinitionRegistryV8,
+    MakerTreasuryV8<PaymentCoin>,
     MakerAdminCapV8,
 ) {
     let expected_base_definition_count = base::total_count_v8(&expected_base_counts);
@@ -76,7 +81,12 @@ public fun new_initial_maker_draft_v8<PaymentCoin>(
         &admin,
         base::registry_id_v8(&registry),
     );
-    (root, registry, admin)
+    let maker_treasury = treasury::new_maker_treasury_v8(
+        &mut root,
+        &admin,
+        ctx,
+    );
+    (root, registry, maker_treasury, admin)
 }
 
 /// Creates version N+1 from an exact typed predecessor. Maker key, next
@@ -101,6 +111,7 @@ public fun new_successor_maker_draft_v8<PaymentCoin>(
 ): (
     MakerRootV8<PaymentCoin>,
     BaseDefinitionRegistryV8,
+    MakerTreasuryV8<PaymentCoin>,
     MakerAdminCapV8,
 ) {
     let expected_base_definition_count = base::total_count_v8(&expected_base_counts);
@@ -136,17 +147,25 @@ public fun new_successor_maker_draft_v8<PaymentCoin>(
         &admin,
         base::registry_id_v8(&registry),
     );
-    (root, registry, admin)
+    let maker_treasury = treasury::new_maker_treasury_v8(
+        &mut root,
+        &admin,
+        ctx,
+    );
+    (root, registry, maker_treasury, admin)
 }
 
 public fun share_maker_draft_v8<PaymentCoin>(
     root: MakerRootV8<PaymentCoin>,
     registry: BaseDefinitionRegistryV8,
+    maker_treasury: MakerTreasuryV8<PaymentCoin>,
     admin: MakerAdminCapV8,
     ctx: &TxContext,
 ) {
     base::assert_draft_registry_identity_v8(&registry, &root, &admin);
+    treasury::assert_maker_treasury_v8(&root, &maker_treasury);
     base::share_base_definition_registry_v8(registry);
+    treasury::share_maker_treasury_v8(maker_treasury);
     maker::share_maker_root_and_admin_v8(root, admin, ctx);
 }
 

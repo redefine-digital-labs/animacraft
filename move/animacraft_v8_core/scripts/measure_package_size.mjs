@@ -9,7 +9,11 @@ const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 const buildDir = path.join(packageDir, 'build', 'animacraft_v8_core');
 const bytecodeDir = path.join(buildDir, 'bytecode_modules');
 const disassemblyDir = path.join(buildDir, 'disassembly');
-const targetBytes = 45_000;
+// Core owns the canonical Root, exact treasuries and Maker access entitlement.
+// Keep it far below Mainnet's hard maximum while leaving room for the final
+// typed capability-binding hook; do not use the former pre-commerce 45 KB
+// prototype budget as a reason to move enforcement into an opaque payload.
+const targetBytes = 60_000;
 const hardMaxBytes = 102_400;
 
 if (!fs.existsSync(bytecodeDir) || !fs.existsSync(disassemblyDir)) {

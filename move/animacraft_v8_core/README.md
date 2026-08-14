@@ -72,16 +72,30 @@ Each constructor creates:
 
 - one `MakerRootV8<PaymentCoin>` in `DRAFT`;
 - its exact non-store `MakerAdminCapV8`;
+- one exact shared `MakerTreasuryV8<PaymentCoin>`;
 - one `BaseDefinitionRegistryV8` for Track, Part, Item, Style, Smart Color,
   and Rule rows.
 
-Root content freezes lineage, renderer/manifest/content identity, the exact
+Protocol initialization creates one exact shared
+`ProtocolTreasuryV8<PaymentCoin>` before the protocol may be enabled. Root
+economics snapshots include that Treasury ID as well as the exact
+ProtocolConfig ID/revision/commitment. Root content freezes lineage,
+renderer/manifest/content identity, the exact
 base-definition count and aggregate commitment, the Pack admission policy,
 and immutable rights/economics snapshots. Economics includes the exact
-ProtocolConfig ID/revision/commitment, payment type, access and Complete
-policy, and all four protocol fee terms. `assert_current_protocol_config_v8`
-requires that the config is still enabled and that its ID, revision,
-commitment, payment type, and fee terms exactly equal the Root snapshot.
+Protocol Treasury ID, payment type, access and Complete policy, and all four
+protocol fee terms. `assert_current_protocol_config_v8` requires that the
+config is still enabled and that its ID, revision, commitment, Treasury,
+payment type, and fee terms exactly equal the Root snapshot.
+
+FREE Maker access issues an exact `MakerAccessPassV8`; PAID access atomically
+checks the immutable Root price, deposits the primary protocol share into the
+exact Protocol Treasury, deposits the residual into the exact Maker Treasury,
+and only then issues the Pass. A non-zero protocol BPS share that rounds to
+zero aborts. Passes bind immutable Root ID, numeric Maker version, content and
+holder rather than control epoch, so a later Maker ownership transfer cannot
+revoke already-issued access. Runtime consumes the typed Pass assertion; it
+never trusts an off-chain `hasMakerAccess` flag.
 
 Rights enforce 0–1,000 BPS royalties in 50-BPS steps with a 1,000-BPS combined
 Soul-creator plus Maker-source cap. The public native constructor derives the
@@ -129,11 +143,13 @@ successor. Core exposes no authority revoke, discard, or transfer escape hatch.
 
 ## Deliberate non-functionality
 
-This bounded split does not implement activation, pause/resume/archive, Pack
-admission/runtime mutation, Complete/Soul, Seal, Physical, Market, payment,
-or public discovery. `ACTIVE`, `PAUSED`, and `ARCHIVED` values are reserved
-for the later checked Release/lifecycle implementation; no production
-function here can transition a Root out of `DRAFT`.
+This bounded split does not yet implement activation, pause/resume/archive,
+Pack admission/runtime mutation, Complete/Soul, Seal, Physical, Market, or
+public discovery. Core does implement exact Maker/Protocol revenue custody and
+Maker access settlement, but those public access paths remain unreachable
+until the checked Release package activates a Root. `ACTIVE`, `PAUSED`, and
+`ARCHIVED` values are reserved for that Release/lifecycle implementation; no
+production function here can transition a Root out of `DRAFT`.
 
 ## Verification
 
@@ -151,4 +167,7 @@ git diff --check
 The adversarial runner requires the external ability/API attack packages to
 fail compilation for the expected reasons and the wrong-authority runtime
 attack to abort as expected. The size script implements Sui's exact
-`MovePackage::size` formula and fails above the Core target of 45,000 bytes.
+`MovePackage::size` formula and fails above the Core target of 60,000 bytes.
+That target includes native Treasury custody and Maker access enforcement yet
+still reserves more than 42 KB beneath Mainnet's 102,400-byte hard maximum;
+the hard limit is never treated as the working budget.

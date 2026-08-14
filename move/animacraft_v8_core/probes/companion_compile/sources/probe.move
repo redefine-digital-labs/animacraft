@@ -5,6 +5,10 @@ module animacraft_v8_core_companion_probe::probe;
 
 use std::string::String;
 
+use animacraft_v8_core::base_registry_v8::{
+    Self as base,
+    BaseDefinitionRegistryV8,
+};
 use animacraft_v8_core::maker_v8::{
     Self as maker,
     MakerAdminCapV8,
@@ -20,7 +24,15 @@ use animacraft_v8_core::protocol_config_v8::{
     CorePackageMarkerV8,
     ProtocolAdminCapV8,
     ProtocolConfigV8,
+    ProtocolTreasuryV8,
 };
+use animacraft_v8_core::treasury_v8::{
+    Self as treasury,
+    MakerAccessPassV8,
+    MakerTreasuryV8,
+};
+use sui::clock::Clock;
+use sui::coin::Coin;
 
 public struct SealMarkerV8 has drop {}
 public struct RuntimeMarkerV8 has drop {}
@@ -51,6 +63,96 @@ public struct WrappedRightsEvidenceWitnessV8 {
 /// Only the defining companion package can create or transfer these objects.
 public struct ReleaseCertificationAuthorityV8 has key { id: UID }
 public struct RuntimePackCertificationAuthorityV8 has key { id: UID }
+
+/// A real companion must be able to bind its immutable runtime rows to the
+/// exact sealed Base definitions without package-private field access.
+public fun compile_base_definition_readback(
+    registry: &BaseDefinitionRegistryV8,
+    track_key: String,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    channel_key: String,
+    swatch_key: String,
+) {
+    let _ = base::registry_track_count_v8(registry);
+    let _ = base::registry_part_count_v8(registry);
+    let track = base::borrow_track_v8(registry, track_key);
+    let _ = base::track_key_v8(track);
+    let _ = base::track_render_order_v8(track);
+    let _ = base::track_payload_commitment_v8(track);
+
+    let part = base::borrow_part_v8(registry, part_key);
+    let _ = base::part_key_v8(part);
+    let _ = base::part_sequence_v8(part);
+    let _ = base::part_kind_v8(part);
+    let _ = base::part_render_order_v8(part);
+    let _ = base::part_required_v8(part);
+    let _ = base::part_visible_v8(part);
+    let _ = base::part_payload_commitment_v8(part);
+
+    let item = base::borrow_item_v8(registry, *base::part_key_v8(part), item_key);
+    let _ = base::item_part_key_v8(item);
+    let _ = base::item_key_v8(item);
+    let _ = base::item_gate_kind_v8(item);
+    let _ = base::item_payload_commitment_v8(item);
+
+    let style = base::borrow_style_v8(
+        registry,
+        *base::part_key_v8(part),
+        *base::item_key_v8(item),
+        style_key,
+    );
+    let _ = base::style_part_key_v8(style);
+    let _ = base::style_item_key_v8(style);
+    let _ = base::style_key_v8(style);
+    let _ = base::style_layer_track_key_v8(style);
+    let _ = base::style_color_channel_key_v8(style);
+    let _ = base::style_default_swatch_key_v8(style);
+    let _ = base::style_asset_blob_id_v8(style);
+    let _ = base::style_asset_sha256_v8(style);
+    let _ = base::style_protected_v8(style);
+    let _ = base::style_payload_commitment_v8(style);
+
+    let color = base::borrow_color_v8(registry, channel_key, swatch_key);
+    let _ = base::color_channel_key_v8(color);
+    let _ = base::color_swatch_key_v8(color);
+    let _ = base::color_rgba_v8(color);
+    let _ = base::color_payload_commitment_v8(color);
+}
+
+public fun compile_maker_access_readback<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    pass: &MakerAccessPassV8,
+    holder: address,
+) {
+    treasury::assert_maker_access_pass_v8(root, pass, holder);
+    let _ = treasury::maker_access_pass_root_id_v8(pass);
+    let _ = treasury::maker_access_pass_maker_version_v8(pass);
+    let _ = treasury::maker_access_pass_root_content_commitment_v8(pass);
+    let _ = treasury::maker_access_pass_holder_v8(pass);
+    let _ = treasury::maker_access_pass_paid_atomic_v8(pass);
+}
+
+public fun compile_maker_access_purchase<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    maker_treasury: &mut MakerTreasuryV8<PaymentCoin>,
+    config: &ProtocolConfigV8,
+    protocol_treasury: &mut ProtocolTreasuryV8<PaymentCoin>,
+    payment: Coin<PaymentCoin>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    treasury::purchase_maker_access_v8(
+        root,
+        maker_treasury,
+        config,
+        protocol_treasury,
+        payment,
+        clock,
+        ctx,
+    );
+}
 
 public fun compile_protocol_catalog_certification(
     config: &ProtocolConfigV8,

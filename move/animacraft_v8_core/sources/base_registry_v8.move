@@ -900,6 +900,12 @@ public fun registry_root_content_commitment_v8(
 public fun registry_next_sequence_v8(registry: &BaseDefinitionRegistryV8): u64 {
     registry.next_sequence
 }
+public fun registry_track_count_v8(registry: &BaseDefinitionRegistryV8): u64 {
+    registry.observed_counts.tracks
+}
+public fun registry_part_count_v8(registry: &BaseDefinitionRegistryV8): u64 {
+    registry.observed_counts.parts
+}
 public fun registry_sealed_v8(registry: &BaseDefinitionRegistryV8): bool {
     registry.sealed
 }
@@ -949,6 +955,63 @@ public fun borrow_rule_v8(
     registry: &BaseDefinitionRegistryV8,
     key: String,
 ): &RuleRowV8 { df::borrow(&registry.id, RuleKeyV8 { key }) }
+
+// Cross-package runtime and protection registries must bind their own rows to
+// the sealed Base definitions, not to caller-supplied copies of those fields.
+// These read-only accessors expose only immutable row data; they grant no
+// authority to append, replace, or unseal a Base registry.
+public fun track_key_v8(row: &TrackRowV8): &String { &row.key }
+public fun track_render_order_v8(row: &TrackRowV8): u64 { row.render_order }
+public fun track_payload_commitment_v8(row: &TrackRowV8): &vector<u8> {
+    &row.payload_commitment
+}
+
+public fun part_key_v8(row: &PartRowV8): &String { &row.key }
+public fun part_sequence_v8(row: &PartRowV8): u64 { row.sequence }
+public fun part_kind_v8(row: &PartRowV8): u8 { row.kind }
+public fun part_render_order_v8(row: &PartRowV8): u64 { row.render_order }
+public fun part_required_v8(row: &PartRowV8): bool { row.required }
+public fun part_visible_v8(row: &PartRowV8): bool { row.visible }
+public fun part_payload_commitment_v8(row: &PartRowV8): &vector<u8> {
+    &row.payload_commitment
+}
+
+public fun item_part_key_v8(row: &ItemRowV8): &String { &row.part_key }
+public fun item_key_v8(row: &ItemRowV8): &String { &row.item_key }
+public fun item_gate_kind_v8(row: &ItemRowV8): u8 { row.gate_kind }
+public fun item_payload_commitment_v8(row: &ItemRowV8): &vector<u8> {
+    &row.payload_commitment
+}
+
+public fun style_part_key_v8(row: &StyleRowV8): &String { &row.part_key }
+public fun style_item_key_v8(row: &StyleRowV8): &String { &row.item_key }
+public fun style_key_v8(row: &StyleRowV8): &String { &row.style_key }
+public fun style_layer_track_key_v8(row: &StyleRowV8): &String {
+    &row.layer_track_key
+}
+public fun style_color_channel_key_v8(row: &StyleRowV8): &Option<String> {
+    &row.color_channel_key
+}
+public fun style_default_swatch_key_v8(row: &StyleRowV8): &Option<String> {
+    &row.default_swatch_key
+}
+public fun style_asset_blob_id_v8(row: &StyleRowV8): &String {
+    &row.asset_blob_id
+}
+public fun style_asset_sha256_v8(row: &StyleRowV8): &vector<u8> {
+    &row.asset_sha256
+}
+public fun style_protected_v8(row: &StyleRowV8): bool { row.protected }
+public fun style_payload_commitment_v8(row: &StyleRowV8): &vector<u8> {
+    &row.payload_commitment
+}
+
+public fun color_channel_key_v8(row: &ColorRowV8): &String { &row.channel_key }
+public fun color_swatch_key_v8(row: &ColorRowV8): &String { &row.swatch_key }
+public fun color_rgba_v8(row: &ColorRowV8): u32 { row.rgba }
+public fun color_payload_commitment_v8(row: &ColorRowV8): &vector<u8> {
+    &row.payload_commitment
+}
 
 #[test]
 fun empty_commitments_are_root_and_category_separated() {
