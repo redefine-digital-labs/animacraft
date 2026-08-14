@@ -30,13 +30,46 @@ const SUI_ID = /^0x[0-9a-f]{64}$/;
 const HEX_32 = /^(?:0x)?[0-9a-f]{64}$/;
 const PIXEL_MODES = new Set(['smooth', 'pixelated']);
 const WARDROBE_MODES = new Set(['FIXED', 'SLOT']);
-const ASSET_KINDS = new Set(['image', 'json', 'font', 'audio']);
+const ASSET_KINDS = new Set([
+  'maker-cover',
+  'layer',
+  'reference',
+  'image',
+  'json',
+  'font',
+  'audio',
+]);
+const ITEM_STATUSES = new Set(['draft', 'private', 'public']);
+const BLEND_MODES = new Set([
+  'normal',
+  'multiply',
+  'screen',
+  'overlay',
+  'darken',
+  'lighten',
+  'color-dodge',
+  'color-burn',
+  'hard-light',
+  'soft-light',
+  'difference',
+  'exclusion',
+  'hue',
+  'saturation',
+  'color',
+  'luminosity',
+  'linear-dodge',
+]);
+const HEX_COLOR = /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i;
 const MAX_CANVAS = 8_192;
 const MAX_NAME_BYTES = 128;
 const MAX_DESCRIPTION_BYTES = 2_000;
 
 function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOwn(value, key) {
+  return isRecord(value) && Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function clone(value) {
@@ -140,6 +173,90 @@ export function createMakerV8Document({
   });
 }
 
+/**
+ * The v8 protocol reuses the established Creator editor document semantics;
+ * it does not introduce a second Pack-only or chain-version-specific editor.
+ */
+export function createCharacterMakerV8Starter(options = {}) {
+  const document = structuredClone(createMakerV8Document(options));
+  const definitions = [
+    ['background', 'Background', false],
+    ['back-hair', 'Back Hair', false],
+    ['skin-base', 'Skin & Base', true],
+    ['outfit', 'Outfit', false],
+    ['eyes', 'Eyes', true],
+    ['mouth', 'Mouth', false],
+    ['front-hair', 'Front Hair', false],
+    ['accessory', 'Accessory', false],
+  ];
+  definitions.forEach(([id, name, required], order) => {
+    const itemId = `${id}-default`;
+    const styleId = 'default-style';
+    const trackId = `${id}-track`;
+    document.layerTracks.push({
+      id: trackId,
+      name,
+      order,
+      locked: false,
+      referenceAssetId: null,
+    });
+    document.parts.push({
+      id,
+      name,
+      menuOrder: order,
+      menuVisible: true,
+      required,
+      wardrobeMode: 'FIXED',
+      defaultItemId: itemId,
+      parentPartId: null,
+      iconAssetId: null,
+      visibleWhen: null,
+      requires: [],
+      excludes: [],
+      items: [{
+        id: itemId,
+        name: 'Default',
+        displayOrder: 0,
+        importKey: itemId,
+        status: 'public',
+        thumbnailAssetId: null,
+        visibleWhen: null,
+        requires: [],
+        excludes: [],
+        defaultStyleId: styleId,
+        styles: [{
+          id: styleId,
+          name: 'Default Style',
+          displayOrder: 0,
+          assetId: null,
+          layerTrackId: trackId,
+          colorChannelId: null,
+          transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+          positionConfirmed: false,
+          positionLocked: false,
+          styleLocked: false,
+          opacity: 1,
+          blendMode: 'normal',
+          visibleWhen: null,
+          requires: [],
+          excludes: [],
+          seal: { protected: false, scopeId: '' },
+          physical: { enabled: false },
+        }],
+      }],
+    });
+  });
+  document.defaultRecipe = {
+    selections: document.parts.map((part) => ({
+      partId: part.id,
+      itemId: part.defaultItemId,
+      styleId: part.items[0].defaultStyleId,
+    })),
+    colors: [],
+  };
+  return deepFreeze(document);
+}
+
 export function isMakerV8Document(value) {
   return isRecord(value)
     && value.schemaVersion === MAKER_V8_DOCUMENT_SCHEMA
@@ -183,36 +300,201 @@ function validateUniqueIds(records, path, issues) {
   return seen;
 }
 
+function validateSelectionTarget(target, path, known, issues) {
+  if (!isRecord(target)) {
+    issue(issues, path, 'MAKER_V8_RULE_TARGET_INVALID', 'Rule target must be an object.');
+    return;
+  }
+  const partId = String(target.partId || '');
+  if (!known.parts.has(partId)) {
+    issue(issues, `${path}.partId`, 'MAKER_V8_RULE_PART_UNKNOWN', 'Rule references an unknown Part.');
+    return;
+  }
+  const itemIds = exactIds([
+    ...(target.itemId ? [target.itemId] : []),
+    ...(Array.isArray(target.itemIds) ? target.itemIds : []),
+  ]);
+  itemIds.forEach((itemId) => {
+    if (!known.items.get(partId)?.has(itemId)) {
+      issue(issues, `${path}.itemId`, 'MAKER_V8_RULE_ITEM_UNKNOWN', 'Rule references an unknown Item.');
+    }
+  });
+  const styleIds = exactIds([
+    ...(target.styleId ? [target.styleId] : []),
+    ...(Array.isArray(target.styleIds) ? target.styleIds : []),
+  ]);
+  if (styleIds.length && itemIds.length !== 1) {
+    issue(issues, `${path}.styleId`, 'MAKER_V8_RULE_STYLE_SCOPE_INVALID', 'Style targets require exactly one Item.');
+  } else {
+    styleIds.forEach((styleId) => {
+      if (!known.styles.get(`${partId}:${itemIds[0] || ''}`)?.has(styleId)) {
+        issue(issues, `${path}.styleId`, 'MAKER_V8_RULE_STYLE_UNKNOWN', 'Rule references an unknown Style.');
+      }
+    });
+  }
+}
+
+function selectionTargetKey(target) {
+  return JSON.stringify([
+    String(target?.partId || ''),
+    exactIds([
+      ...(target?.itemId ? [target.itemId] : []),
+      ...(Array.isArray(target?.itemIds) ? target.itemIds : []),
+    ]),
+    exactIds([
+      ...(target?.styleId ? [target.styleId] : []),
+      ...(Array.isArray(target?.styleIds) ? target.styleIds : []),
+    ]),
+  ]);
+}
+
+function validateCondition(condition, path, known, issues, depth = 0) {
+  if (condition === null || condition === undefined) return;
+  if (depth > 12 || !isRecord(condition)) {
+    issue(issues, path, 'MAKER_V8_CONDITION_INVALID', 'Visibility condition is malformed or too deeply nested.');
+    return;
+  }
+  if (condition.op === 'selected') {
+    validateSelectionTarget(condition, path, known, issues);
+    return;
+  }
+  if (condition.op === 'not') {
+    validateCondition(condition.condition, `${path}.condition`, known, issues, depth + 1);
+    return;
+  }
+  if (condition.op === 'all' || condition.op === 'any') {
+    if (!Array.isArray(condition.conditions) || condition.conditions.length === 0) {
+      issue(issues, `${path}.conditions`, 'MAKER_V8_CONDITION_CHILDREN_REQUIRED', 'Grouped condition needs at least one child.');
+      return;
+    }
+    condition.conditions.forEach((child, index) => (
+      validateCondition(child, `${path}.conditions[${index}]`, known, issues, depth + 1)
+    ));
+    return;
+  }
+  issue(issues, `${path}.op`, 'MAKER_V8_CONDITION_OPERATOR_INVALID', 'Condition operator must be selected, not, all, or any.');
+}
+
+function validateEmbeddedRules(owner, path, known, issues) {
+  for (const field of ['requires', 'excludes']) {
+    if (!Array.isArray(owner?.[field])) {
+      issue(issues, `${path}.${field}`, 'MAKER_V8_RULE_LIST_INVALID', 'Embedded rule targets must be an array.');
+      continue;
+    }
+    const seen = new Set();
+    owner[field].forEach((target, index) => {
+      validateSelectionTarget(target, `${path}.${field}[${index}]`, known, issues);
+      const key = selectionTargetKey(target);
+      if (seen.has(key)) {
+        issue(issues, `${path}.${field}[${index}]`, 'MAKER_V8_RULE_TARGET_DUPLICATE', 'Embedded rule target is duplicated.');
+      }
+      seen.add(key);
+    });
+  }
+  const required = new Set((Array.isArray(owner?.requires) ? owner.requires : []).map(selectionTargetKey));
+  (Array.isArray(owner?.excludes) ? owner.excludes : []).forEach((target, index) => {
+    if (required.has(selectionTargetKey(target))) {
+      issue(issues, `${path}.excludes[${index}]`, 'MAKER_V8_RULE_TARGET_CONTRADICTORY', 'The same target cannot be both required and excluded.');
+    }
+  });
+  validateCondition(owner?.visibleWhen, `${path}.visibleWhen`, known, issues);
+}
+
 function validateRules(records, known, path, issues) {
+  if (!Array.isArray(records)) {
+    issue(issues, path, 'MAKER_V8_RULES_INVALID', 'Global rules must be an array.');
+    return new Set();
+  }
   const ids = validateUniqueIds(records, path, issues);
-  (Array.isArray(records) ? records : []).forEach((rule, index) => {
+  records.forEach((rule, index) => {
     const rulePath = `${path}[${index}]`;
     if (rule?.type !== 'requires' && rule?.type !== 'excludes') {
       issue(issues, `${rulePath}.type`, 'MAKER_V8_RULE_TYPE_INVALID', 'Rule type must be requires or excludes.');
     }
-    const validateTarget = (target, targetPath) => {
-      const partId = String(target?.partId || '');
-      if (!known.parts.has(partId)) {
-        issue(issues, `${targetPath}.partId`, 'MAKER_V8_RULE_PART_UNKNOWN', 'Rule references an unknown Part.');
-        return;
-      }
-      if (target?.itemId && !known.items.get(partId)?.has(String(target.itemId))) {
-        issue(issues, `${targetPath}.itemId`, 'MAKER_V8_RULE_ITEM_UNKNOWN', 'Rule references an unknown Item.');
-      }
-      if (target?.styleId && !known.styles.get(`${partId}:${target.itemId || ''}`)?.has(String(target.styleId))) {
-        issue(issues, `${targetPath}.styleId`, 'MAKER_V8_RULE_STYLE_UNKNOWN', 'Rule references an unknown Style.');
-      }
-    };
-    validateTarget(rule?.trigger, `${rulePath}.trigger`);
+    validateSelectionTarget(rule?.trigger, `${rulePath}.trigger`, known, issues);
     if (!Array.isArray(rule?.targets) || rule.targets.length === 0) {
       issue(issues, `${rulePath}.targets`, 'MAKER_V8_RULE_TARGET_REQUIRED', 'Rule needs at least one target.');
     } else {
       rule.targets.forEach((target, targetIndex) => (
-        validateTarget(target, `${rulePath}.targets[${targetIndex}]`)
+        validateSelectionTarget(target, `${rulePath}.targets[${targetIndex}]`, known, issues)
       ));
     }
   });
   return ids;
+}
+
+function validateDefaultRecipe(document, known, channels, compile, issues) {
+  const recipe = document?.defaultRecipe;
+  if (!isRecord(recipe)
+    || !Array.isArray(recipe.selections)
+    || !Array.isArray(recipe.colors)) {
+    issue(issues, 'defaultRecipe', 'MAKER_V8_DEFAULT_RECIPE_INVALID', 'Default Recipe needs selection and color arrays.');
+    return;
+  }
+
+  const selectedParts = new Set();
+  recipe.selections.forEach((selection, index) => {
+    const path = `defaultRecipe.selections[${index}]`;
+    validateSelectionTarget(selection, path, known, issues);
+    const partId = String(selection?.partId || '');
+    const itemId = String(selection?.itemId || '');
+    const styleId = String(selection?.styleId || '');
+    if (selectedParts.has(partId)) {
+      issue(issues, `${path}.partId`, 'MAKER_V8_DEFAULT_PART_DUPLICATE', 'Default Recipe can select each Part only once.');
+    }
+    selectedParts.add(partId);
+    if (!itemId || !styleId || hasOwn(selection, 'itemIds') || hasOwn(selection, 'styleIds')) {
+      issue(issues, path, 'MAKER_V8_DEFAULT_SELECTION_INVALID', 'Default selection needs exactly one Item and one Style.');
+      return;
+    }
+    const part = known.partRecords.get(partId);
+    const item = known.itemRecords.get(`${partId}:${itemId}`);
+    if (part?.defaultItemId && itemId !== part.defaultItemId) {
+      issue(issues, `${path}.itemId`, 'MAKER_V8_DEFAULT_ITEM_MISMATCH', 'Default Recipe Item must match Part.defaultItemId.');
+    }
+    if (item?.defaultStyleId && styleId !== item.defaultStyleId) {
+      issue(issues, `${path}.styleId`, 'MAKER_V8_DEFAULT_STYLE_MISMATCH', 'Default Recipe Style must match Item.defaultStyleId.');
+    }
+  });
+  if (compile) {
+    known.partRecords.forEach((part, partId) => {
+      if ((part.required || part.defaultItemId) && !selectedParts.has(partId)) {
+        issue(issues, 'defaultRecipe.selections', 'MAKER_V8_DEFAULT_SELECTION_MISSING', `Default Recipe is missing Part ${partId}.`);
+      }
+    });
+  }
+
+  const selectedChannels = new Set();
+  recipe.colors.forEach((selection, index) => {
+    const path = `defaultRecipe.colors[${index}]`;
+    if (!isRecord(selection)) {
+      issue(issues, path, 'MAKER_V8_DEFAULT_COLOR_INVALID', 'Default color selection must be an object.');
+      return;
+    }
+    const channelId = String(selection.channelId || '');
+    const swatchId = String(selection.swatchId || '');
+    const channel = channels.get(channelId);
+    if (!channel) {
+      issue(issues, `${path}.channelId`, 'MAKER_V8_DEFAULT_COLOR_CHANNEL_UNKNOWN', 'Default color references an unknown channel.');
+    }
+    if (selectedChannels.has(channelId)) {
+      issue(issues, `${path}.channelId`, 'MAKER_V8_DEFAULT_COLOR_DUPLICATE', 'Default Recipe can select each color channel only once.');
+    }
+    selectedChannels.add(channelId);
+    if (channel && !(channel.swatches || []).some((swatch) => swatch?.id === swatchId)) {
+      issue(issues, `${path}.swatchId`, 'MAKER_V8_DEFAULT_SWATCH_UNKNOWN', 'Default color references an unknown swatch.');
+    }
+    if (channel?.defaultSwatchId && swatchId !== channel.defaultSwatchId) {
+      issue(issues, `${path}.swatchId`, 'MAKER_V8_DEFAULT_SWATCH_MISMATCH', 'Default Recipe swatch must match ColorChannel.defaultSwatchId.');
+    }
+  });
+  if (compile) {
+    channels.forEach((channel, channelId) => {
+      if (channel.defaultSwatchId && !selectedChannels.has(channelId)) {
+        issue(issues, 'defaultRecipe.colors', 'MAKER_V8_DEFAULT_COLOR_MISSING', `Default Recipe is missing color channel ${channelId}.`);
+      }
+    });
+  }
 }
 
 export function makerV8Inventory(document) {
@@ -224,6 +506,11 @@ export function makerV8Inventory(document) {
   let slotCount = 0;
   let protectedStyleCount = 0;
   let physicalStyleCount = 0;
+  let colorCount = 0;
+  (Array.isArray(document?.colorChannels) ? document.colorChannels : [])
+    .forEach((channel) => {
+      colorCount += Array.isArray(channel?.swatches) ? channel.swatches.length : 0;
+    });
   parts.forEach((part) => {
     if (part?.wardrobeMode === 'SLOT') slotCount += 1;
     (Array.isArray(part?.items) ? part.items : []).forEach((item) => {
@@ -241,6 +528,7 @@ export function makerV8Inventory(document) {
     items: itemCount,
     styles: styleCount,
     colorChannels: Array.isArray(document?.colorChannels) ? document.colorChannels.length : 0,
+    colors: colorCount,
     rules: Array.isArray(document?.rules) ? document.rules.length : 0,
     packs: packs.length,
     assets: assets.length,
@@ -329,11 +617,17 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
     if (compile && (!Number.isSafeInteger(asset?.byteLength) || asset.byteLength <= 0)) {
       issue(issues, `assets[${index}].byteLength`, 'MAKER_V8_ASSET_LENGTH_INVALID', 'Compiled assets need a positive byte length.');
     }
+    if (compile && (typeof asset?.mediaType !== 'string' || !asset.mediaType)) {
+      issue(issues, `assets[${index}].mediaType`, 'MAKER_V8_ASSET_MEDIA_TYPE_INVALID', 'Compiled assets need an exact media type.');
+    }
   });
   if (compile) {
     const coverId = String(document.metadata?.coverAssetId || '');
-    if (!assetIds.has(coverId) || assets.get(coverId)?.kind !== 'image') {
-      issue(issues, 'metadata.coverAssetId', 'MAKER_V8_COVER_REQUIRED', 'Cover must reference an existing image asset.');
+    const cover = assets.get(coverId);
+    if (!assetIds.has(coverId)
+      || cover?.kind !== 'maker-cover'
+      || !String(cover?.mediaType || '').toLowerCase().startsWith('image/')) {
+      issue(issues, 'metadata.coverAssetId', 'MAKER_V8_COVER_REQUIRED', 'Cover must reference an existing dedicated maker-cover image asset.');
     }
   }
 
@@ -343,22 +637,71 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
   const trackIds = validateUniqueIds(document.layerTracks, 'layerTracks', issues);
   validateContiguousOrder(document.layerTracks, 'layerTracks', issues);
   (Array.isArray(document.layerTracks) ? document.layerTracks : []).forEach((track, index) => {
-    validateName(track?.name, `layerTracks[${index}].name`, issues);
+    const trackPath = `layerTracks[${index}]`;
+    validateName(track?.name, `${trackPath}.name`, issues);
+    if (track?.locked !== undefined && typeof track.locked !== 'boolean') {
+      issue(issues, `${trackPath}.locked`, 'MAKER_V8_TRACK_LOCK_INVALID', 'Layer Track locked state must be boolean.');
+    }
+    if (track?.referenceAssetId !== null
+      && track?.referenceAssetId !== undefined
+      && !assetIds.has(String(track.referenceAssetId))) {
+      issue(issues, `${trackPath}.referenceAssetId`, 'MAKER_V8_TRACK_REFERENCE_UNKNOWN', 'Layer Track references an unknown Asset.');
+    }
   });
 
   if (!Array.isArray(document.colorChannels)) {
     issue(issues, 'colorChannels', 'MAKER_V8_COLORS_INVALID', 'Color channels must be an array.');
   }
   const colorIds = validateUniqueIds(document.colorChannels, 'colorChannels', issues);
+  validateContiguousOrder(document.colorChannels, 'colorChannels', issues);
   (Array.isArray(document.colorChannels) ? document.colorChannels : []).forEach((channel, index) => {
     validateName(channel?.name, `colorChannels[${index}].name`, issues);
-    if (!Array.isArray(channel?.swatches) || channel.swatches.length === 0) {
-      issue(issues, `colorChannels[${index}].swatches`, 'MAKER_V8_SWATCH_REQUIRED', 'Color channel needs at least one swatch.');
+    if (channel?.mode !== 'gradient-map') {
+      issue(issues, `colorChannels[${index}].mode`, 'MAKER_V8_COLOR_MODE_INVALID', 'Color channel mode must be gradient-map.');
+    }
+    if (!Array.isArray(channel?.swatches)) {
+      issue(issues, `colorChannels[${index}].swatches`, 'MAKER_V8_SWATCHES_INVALID', 'Color channel swatches must be an array.');
+    } else if (compile && channel.swatches.length === 0) {
+      issue(issues, `colorChannels[${index}].swatches`, 'MAKER_V8_SWATCH_REQUIRED', 'Published color channel needs at least one swatch.');
     } else {
       const swatches = validateUniqueIds(channel.swatches, `colorChannels[${index}].swatches`, issues);
-      if (!swatches.has(String(channel.defaultSwatchId || ''))) {
+      if (channel.defaultSwatchId !== null
+        && channel.defaultSwatchId !== undefined
+        && !swatches.has(String(channel.defaultSwatchId))) {
         issue(issues, `colorChannels[${index}].defaultSwatchId`, 'MAKER_V8_DEFAULT_SWATCH_INVALID', 'Default swatch must exist in its channel.');
       }
+      if (compile && !channel.defaultSwatchId) {
+        issue(issues, `colorChannels[${index}].defaultSwatchId`, 'MAKER_V8_DEFAULT_SWATCH_REQUIRED', 'Published color channel needs a default swatch.');
+      }
+      channel.swatches.forEach((swatch, swatchIndex) => {
+        const swatchPath = `colorChannels[${index}].swatches[${swatchIndex}]`;
+        validateName(swatch?.name, `${swatchPath}.name`, issues);
+        if (!HEX_COLOR.test(String(swatch?.hintColor || ''))) {
+          issue(issues, `${swatchPath}.hintColor`, 'MAKER_V8_SWATCH_COLOR_INVALID', 'Swatch hint color must be six- or eight-digit hex.');
+        }
+        const stops = Array.isArray(swatch?.stops) ? swatch.stops : [];
+        if (stops.length < 2) {
+          issue(issues, `${swatchPath}.stops`, 'MAKER_V8_SWATCH_STOPS_INVALID', 'Gradient swatch needs at least two stops.');
+        }
+        stops.forEach((stop, stopIndex) => {
+          if (!isRecord(stop)
+            || typeof stop.offset !== 'number'
+            || stop.offset < 0
+            || stop.offset > 1
+            || !HEX_COLOR.test(String(stop.color || ''))) {
+            issue(issues, `${swatchPath}.stops[${stopIndex}]`, 'MAKER_V8_SWATCH_STOP_INVALID', 'Gradient stop needs an offset from 0 to 1 and a hex color.');
+          }
+        });
+        if (stops.length >= 2 && (
+          stops[0]?.offset !== 0
+          || stops.at(-1)?.offset !== 1
+          || stops.some((stop, stopIndex) => (
+            stopIndex > 0 && stop?.offset <= stops[stopIndex - 1]?.offset
+          ))
+        )) {
+          issue(issues, `${swatchPath}.stops`, 'MAKER_V8_SWATCH_ORDER_INVALID', 'Gradient stops must be strictly ordered from 0 through 1.');
+        }
+      });
     }
   });
 
@@ -366,16 +709,42 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
     issue(issues, 'parts', 'MAKER_V8_PARTS_INVALID', 'Parts must be an array.');
   }
   const partIds = validateUniqueIds(document.parts, 'parts', issues);
-  validateContiguousOrder(document.parts, 'parts', issues);
-  const known = { parts: partIds, items: new Map(), styles: new Map() };
+  validateContiguousOrder(
+    (Array.isArray(document.parts) ? document.parts : [])
+      .map((part) => ({ ...part, order: part?.menuOrder })),
+    'parts',
+    issues,
+  );
+  if (compile && partIds.size === 0) {
+    issue(issues, 'parts', 'MAKER_V8_PART_REQUIRED', 'Published Maker v8 needs at least one Part.');
+  }
+  const known = {
+    parts: partIds,
+    items: new Map(),
+    styles: new Map(),
+    partRecords: new Map(),
+    itemRecords: new Map(),
+    styleRecords: new Map(),
+  };
   (Array.isArray(document.parts) ? document.parts : []).forEach((part, partIndex) => {
     const partPath = `parts[${partIndex}]`;
+    known.partRecords.set(String(part?.id || ''), part);
     validateName(part?.name, `${partPath}.name`, issues);
-    if (!trackIds.has(String(part?.layerTrackId || ''))) {
-      issue(issues, `${partPath}.layerTrackId`, 'MAKER_V8_PART_TRACK_UNKNOWN', 'Part must reference a known Layer Track.');
+    if (typeof part?.required !== 'boolean' || typeof part?.menuVisible !== 'boolean') {
+      issue(issues, partPath, 'MAKER_V8_PART_STATE_INVALID', 'Part required and menuVisible states must be explicit booleans.');
     }
     if (!WARDROBE_MODES.has(part?.wardrobeMode)) {
       issue(issues, `${partPath}.wardrobeMode`, 'MAKER_V8_WARDROBE_MODE_INVALID', 'Part wardrobe mode must be FIXED or SLOT.');
+    }
+    if (part?.parentPartId !== null
+      && part?.parentPartId !== undefined
+      && typeof part.parentPartId !== 'string') {
+      issue(issues, `${partPath}.parentPartId`, 'MAKER_V8_PARENT_PART_INVALID', 'Parent Part must be null or a Part ID.');
+    }
+    if (part?.iconAssetId !== null
+      && part?.iconAssetId !== undefined
+      && !assetIds.has(String(part.iconAssetId))) {
+      issue(issues, `${partPath}.iconAssetId`, 'MAKER_V8_PART_ICON_UNKNOWN', 'Part icon references an unknown Asset.');
     }
     if (!Array.isArray(part?.items) || (compile && part.items.length === 0)) {
       issue(issues, `${partPath}.items`, 'MAKER_V8_PART_ITEMS_INVALID', 'Published Parts need at least one Item.');
@@ -383,27 +752,75 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
     }
     const itemIds = validateUniqueIds(part.items, `${partPath}.items`, issues);
     known.items.set(String(part.id || ''), itemIds);
+    validateContiguousOrder(
+      part.items.map((item) => ({ ...item, order: item?.displayOrder })),
+      `${partPath}.items`,
+      issues,
+    );
     part.items.forEach((item, itemIndex) => {
       const itemPath = `${partPath}.items[${itemIndex}]`;
+      known.itemRecords.set(`${part.id}:${item.id}`, item);
       validateName(item?.name, `${itemPath}.name`, issues);
+      if (item?.importKey !== undefined) validateId(item.importKey, `${itemPath}.importKey`, issues);
+      if (item?.thumbnailAssetId !== null
+        && item?.thumbnailAssetId !== undefined
+        && !assetIds.has(String(item.thumbnailAssetId))) {
+        issue(issues, `${itemPath}.thumbnailAssetId`, 'MAKER_V8_ITEM_THUMBNAIL_UNKNOWN', 'Item thumbnail references an unknown Asset.');
+      }
+      if (!ITEM_STATUSES.has(item?.status)) {
+        issue(issues, `${itemPath}.status`, 'MAKER_V8_ITEM_STATUS_INVALID', 'Item status must be draft, private, or public.');
+      } else if (compile && item.status !== 'public') {
+        issue(issues, `${itemPath}.status`, 'MAKER_V8_ITEM_NOT_PUBLIC', 'Compiled Maker v8 can contain only public Items.');
+      }
       if (!Array.isArray(item?.styles) || (compile && item.styles.length === 0)) {
         issue(issues, `${itemPath}.styles`, 'MAKER_V8_ITEM_STYLES_INVALID', 'Published Items need at least one Style.');
         return;
       }
       const styleIds = validateUniqueIds(item.styles, `${itemPath}.styles`, issues);
       known.styles.set(`${part.id}:${item.id}`, styleIds);
+      validateContiguousOrder(
+        item.styles.map((style) => ({ ...style, order: style?.displayOrder })),
+        `${itemPath}.styles`,
+        issues,
+      );
       item.styles.forEach((style, styleIndex) => {
         const stylePath = `${itemPath}.styles[${styleIndex}]`;
+        known.styleRecords.set(`${part.id}:${item.id}:${style.id}`, style);
         validateName(style?.name, `${stylePath}.name`, issues);
-        if (!trackIds.has(String(style?.layerTrackId || part.layerTrackId || ''))) {
+        if (!trackIds.has(String(style?.layerTrackId || ''))) {
           issue(issues, `${stylePath}.layerTrackId`, 'MAKER_V8_STYLE_TRACK_UNKNOWN', 'Style must reference a known Layer Track.');
         }
         if (style?.colorChannelId && !colorIds.has(String(style.colorChannelId))) {
           issue(issues, `${stylePath}.colorChannelId`, 'MAKER_V8_STYLE_COLOR_UNKNOWN', 'Style references an unknown color channel.');
         }
-        if (compile && (!assetIds.has(String(style?.assetId || ''))
-          || assets.get(String(style.assetId))?.kind !== 'image')) {
-          issue(issues, `${stylePath}.assetId`, 'MAKER_V8_STYLE_ASSET_INVALID', 'Published Style must reference an image asset.');
+        const styleAssetId = String(style?.assetId || '');
+        if (style?.assetId !== null
+          && style?.assetId !== undefined
+          && style?.assetId !== ''
+          && !assetIds.has(styleAssetId)) {
+          issue(issues, `${stylePath}.assetId`, 'MAKER_V8_STYLE_ASSET_UNKNOWN', 'Style references an unknown Asset.');
+        }
+        if (compile && (!assetIds.has(styleAssetId)
+          || String(assets.get(styleAssetId)?.mediaType || '').toLowerCase() !== 'image/png')) {
+          issue(issues, `${stylePath}.assetId`, 'MAKER_V8_STYLE_ASSET_INVALID', 'Published Style must reference exactly one PNG Asset.');
+        }
+        const transform = style?.transform;
+        if (!isRecord(transform)
+          || !['x', 'y', 'scale', 'rotation'].every((field) => Number.isFinite(transform[field]))
+          || transform.scale <= 0
+          || transform.scale > 100) {
+          issue(issues, `${stylePath}.transform`, 'MAKER_V8_STYLE_TRANSFORM_INVALID', 'Style transform needs finite x/y/rotation and a scale from 0 through 100.');
+        }
+        for (const field of ['positionConfirmed', 'positionLocked', 'styleLocked']) {
+          if (typeof style?.[field] !== 'boolean') {
+            issue(issues, `${stylePath}.${field}`, 'MAKER_V8_STYLE_STATE_INVALID', 'Style editing states must be explicit booleans.');
+          }
+        }
+        if (typeof style?.opacity !== 'number' || style.opacity < 0 || style.opacity > 1) {
+          issue(issues, `${stylePath}.opacity`, 'MAKER_V8_STYLE_OPACITY_INVALID', 'Style opacity must be from 0 through 1.');
+        }
+        if (!BLEND_MODES.has(style?.blendMode)) {
+          issue(issues, `${stylePath}.blendMode`, 'MAKER_V8_STYLE_BLEND_INVALID', 'Style blend mode is unsupported.');
         }
         if (style?.seal?.protected === true && document.capabilities?.seal !== true) {
           issue(issues, `${stylePath}.seal`, 'MAKER_V8_SEAL_CAPABILITY_REQUIRED', 'Protected Style requires the v8 Seal capability.');
@@ -411,6 +828,55 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
         if (style?.physical?.enabled === true && document.capabilities?.physical !== true) {
           issue(issues, `${stylePath}.physical`, 'MAKER_V8_PHYSICAL_CAPABILITY_REQUIRED', 'Physical Style requires the v8 Physical capability.');
         }
+      });
+      if (!styleIds.has(String(item?.defaultStyleId || ''))) {
+        issue(issues, `${itemPath}.defaultStyleId`, 'MAKER_V8_DEFAULT_STYLE_INVALID', 'Item defaultStyleId must reference one of its Styles.');
+      }
+    });
+    if (part?.defaultItemId !== null
+      && part?.defaultItemId !== undefined
+      && !itemIds.has(String(part.defaultItemId))) {
+      issue(issues, `${partPath}.defaultItemId`, 'MAKER_V8_DEFAULT_ITEM_INVALID', 'Part defaultItemId must reference one of its Items.');
+    }
+    if (compile && part?.required && !part?.defaultItemId) {
+      issue(issues, `${partPath}.defaultItemId`, 'MAKER_V8_DEFAULT_ITEM_REQUIRED', 'Required published Part needs a default Item.');
+    }
+  });
+  if (compile && !(Array.isArray(document.parts) ? document.parts : []).some((part) => part?.menuVisible === true)) {
+    issue(issues, 'parts', 'MAKER_V8_PLAYER_PART_REQUIRED', 'Published Maker v8 needs at least one Player-visible Part.');
+  }
+
+  const parts = Array.isArray(document.parts) ? document.parts : [];
+  parts.forEach((part, index) => {
+    const parentId = part?.parentPartId;
+    if (!parentId) return;
+    if (!known.partRecords.has(parentId)) {
+      issue(issues, `parts[${index}].parentPartId`, 'MAKER_V8_PARENT_PART_UNKNOWN', 'Parent Part does not exist.');
+    } else if (parentId === part.id) {
+      issue(issues, `parts[${index}].parentPartId`, 'MAKER_V8_PARENT_PART_SELF', 'Part cannot be its own parent.');
+    }
+  });
+  parts.forEach((part, index) => {
+    const visited = new Set();
+    let cursor = part;
+    while (cursor?.parentPartId && known.partRecords.has(cursor.parentPartId)) {
+      if (visited.has(cursor.id)) {
+        issue(issues, `parts[${index}].parentPartId`, 'MAKER_V8_PARENT_PART_CYCLE', 'Part hierarchy contains a cycle.');
+        break;
+      }
+      visited.add(cursor.id);
+      cursor = known.partRecords.get(cursor.parentPartId);
+    }
+  });
+
+  parts.forEach((part, partIndex) => {
+    const partPath = `parts[${partIndex}]`;
+    validateEmbeddedRules(part, partPath, known, issues);
+    (Array.isArray(part?.items) ? part.items : []).forEach((item, itemIndex) => {
+      const itemPath = `${partPath}.items[${itemIndex}]`;
+      validateEmbeddedRules(item, itemPath, known, issues);
+      (Array.isArray(item?.styles) ? item.styles : []).forEach((style, styleIndex) => {
+        validateEmbeddedRules(style, `${itemPath}.styles[${styleIndex}]`, known, issues);
       });
     });
   });
@@ -438,11 +904,9 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
     publish: compile,
   }).forEach((entry) => issues.push(entry));
 
-  if (!isRecord(document.defaultRecipe)
-    || !Array.isArray(document.defaultRecipe.selections)
-    || !Array.isArray(document.defaultRecipe.colors)) {
-    issue(issues, 'defaultRecipe', 'MAKER_V8_DEFAULT_RECIPE_INVALID', 'Default Recipe needs selection and color arrays.');
-  }
+  const channels = new Map((Array.isArray(document.colorChannels) ? document.colorChannels : [])
+    .map((channel) => [String(channel?.id || ''), channel]));
+  validateDefaultRecipe(document, known, channels, compile, issues);
   return Object.freeze(issues);
 }
 
@@ -505,7 +969,7 @@ export function createMakerV8ActivationIntent(document, {
       + inventory.parts
       + inventory.items
       + inventory.styles
-      + inventory.colorChannels
+      + inventory.colors
       + inventory.rules,
     composition: inventory.compositionSlots,
     packs: inventory.packs,

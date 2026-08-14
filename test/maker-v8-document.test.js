@@ -6,6 +6,7 @@ import {
   MakerV8DocumentValidationError,
   assertMakerV8Document,
   collectMakerV8DocumentIssues,
+  createCharacterMakerV8Starter,
   createMakerV8ActivationIntent,
   createMakerV8Document,
   isMakerV8Document,
@@ -22,32 +23,80 @@ function compiledDocument() {
   document.metadata.summary = 'A unified v8 Maker.';
   document.metadata.coverAssetId = 'cover';
   document.assets = [
-    { id: 'cover', kind: 'image', sha256: '1'.repeat(64), byteLength: 1_024 },
-    { id: 'base-png', kind: 'image', sha256: '2'.repeat(64), byteLength: 2_048 },
+    {
+      id: 'cover',
+      kind: 'maker-cover',
+      mediaType: 'image/png',
+      sha256: '1'.repeat(64),
+      byteLength: 1_024,
+    },
+    {
+      id: 'base-png',
+      kind: 'layer',
+      mediaType: 'image/png',
+      sha256: '2'.repeat(64),
+      byteLength: 2_048,
+    },
   ];
-  document.layerTracks = [{ id: 'base-track', name: 'Base', order: 0 }];
+  document.layerTracks = [{
+    id: 'base-track', name: 'Base', order: 0, locked: false, referenceAssetId: null,
+  }];
   document.colorChannels = [{
     id: 'skin-tone',
     name: 'Skin tone',
+    order: 0,
+    mode: 'gradient-map',
     defaultSwatchId: 'default-skin',
-    swatches: [{ id: 'default-skin', name: 'Default', stops: [] }],
+    swatches: [{
+      id: 'default-skin',
+      name: 'Default',
+      hintColor: '#f1c5a8',
+      stops: [
+        { offset: 0, color: '#5a321f' },
+        { offset: 1, color: '#f1c5a8' },
+      ],
+    }],
   }];
   document.parts = [{
     id: 'base',
     name: 'Base',
-    order: 0,
+    menuOrder: 0,
+    menuVisible: true,
     required: true,
-    layerTrackId: 'base-track',
     wardrobeMode: 'FIXED',
+    defaultItemId: 'body',
+    parentPartId: null,
+    iconAssetId: null,
+    visibleWhen: null,
+    requires: [],
+    excludes: [],
     items: [{
       id: 'body',
       name: 'Body',
+      displayOrder: 0,
+      importKey: 'body',
+      status: 'public',
+      thumbnailAssetId: null,
+      visibleWhen: null,
+      requires: [],
+      excludes: [],
+      defaultStyleId: 'default',
       styles: [{
         id: 'default',
         name: 'Default',
+        displayOrder: 0,
         layerTrackId: 'base-track',
         colorChannelId: 'skin-tone',
         assetId: 'base-png',
+        transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+        positionConfirmed: true,
+        positionLocked: false,
+        styleLocked: false,
+        opacity: 1,
+        blendMode: 'normal',
+        visibleWhen: null,
+        requires: [],
+        excludes: [],
         seal: { protected: false, scopeId: '' },
         physical: { enabled: false },
       }],
@@ -94,6 +143,30 @@ test('new Maker documents are exact v8 drafts and reject every older schema', ()
   }
 });
 
+test('the v8 starter keeps the established Creator Track, Part, Item, Style, and Recipe vocabulary', () => {
+  const document = createCharacterMakerV8Starter({ makerId: 'shared-editor' });
+  assert.deepEqual(collectMakerV8DocumentIssues(document, { mode: 'draft' }), []);
+  assert.equal(document.parts.length, 8);
+  assert.equal(document.layerTracks.length, 8);
+  const part = document.parts[0];
+  const item = part.items[0];
+  const style = item.styles[0];
+  assert.equal(part.menuOrder, 0);
+  assert.equal(part.menuVisible, true);
+  assert.equal(part.wardrobeMode, 'FIXED');
+  assert.equal(Object.hasOwn(part, 'layerTrackId'), false);
+  assert.equal(Object.hasOwn(part, 'order'), false);
+  assert.equal(item.displayOrder, 0);
+  assert.equal(item.status, 'public');
+  assert.equal(style.displayOrder, 0);
+  assert.equal(style.layerTrackId, document.layerTracks[0].id);
+  assert.deepEqual(document.defaultRecipe.selections[0], {
+    partId: part.id,
+    itemId: item.id,
+    styleId: style.id,
+  });
+});
+
 test('compile validation binds cover, assets, shared definitions, rules, and native commerce', () => {
   const document = compiledDocument();
   assert.deepEqual(collectMakerV8DocumentIssues(document, { mode: 'compile' }), []);
@@ -103,6 +176,7 @@ test('compile validation binds cover, assets, shared definitions, rules, and nat
     items: 1,
     styles: 1,
     colorChannels: 1,
+    colors: 1,
     rules: 0,
     packs: 0,
     assets: 2,
@@ -160,4 +234,22 @@ test('disabled capabilities cannot silently carry v8 feature declarations', () =
     .map((entry) => entry.code);
   assert.equal(codes.includes('MAKER_V8_SEAL_CAPABILITY_REQUIRED'), true);
   assert.equal(codes.includes('MAKER_V8_PHYSICAL_CAPABILITY_REQUIRED'), true);
+});
+
+test('shared references, hierarchy, embedded rules, and default Recipe fail closed', () => {
+  const document = compiledDocument();
+  document.layerTracks[0].referenceAssetId = 'missing-reference';
+  document.parts[0].parentPartId = 'base';
+  document.parts[0].items[0].requires = [{ partId: 'missing-part' }];
+  document.defaultRecipe.selections[0].styleId = 'missing-style';
+  document.defaultRecipe.colors[0].swatchId = 'missing-swatch';
+  const codes = new Set(collectMakerV8DocumentIssues(document, { mode: 'compile' })
+    .map((entry) => entry.code));
+  assert.equal(codes.has('MAKER_V8_TRACK_REFERENCE_UNKNOWN'), true);
+  assert.equal(codes.has('MAKER_V8_PARENT_PART_SELF'), true);
+  assert.equal(codes.has('MAKER_V8_RULE_PART_UNKNOWN'), true);
+  assert.equal(codes.has('MAKER_V8_RULE_STYLE_UNKNOWN'), true);
+  assert.equal(codes.has('MAKER_V8_DEFAULT_STYLE_MISMATCH'), true);
+  assert.equal(codes.has('MAKER_V8_DEFAULT_SWATCH_UNKNOWN'), true);
+  assert.equal(codes.has('MAKER_V8_DEFAULT_SWATCH_MISMATCH'), true);
 });
