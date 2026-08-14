@@ -1768,6 +1768,9 @@ public fun root_protocol_treasury_id_v8<PaymentCoin>(
 public fun root_version_commitment_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): &vector<u8> { &root.version_commitment }
+public fun root_renderer_commitment_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &vector<u8> { &root.renderer_commitment }
 public fun root_content_commitment_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): &vector<u8> { &root.content_commitment }
@@ -2287,6 +2290,7 @@ fun new_root_is_draft_and_snapshots_native_policy() {
     assert!(root.pack_admission_binding.is_none(), EPackAdmissionAlreadyFinalized);
     assert!(root.capability_registry_binding.is_none(), ECapabilityRegistryAlreadyFinalized);
     assert!(root.expected_base_definition_count == 4, EBaseRegistryMismatch);
+    assert!(root_renderer_commitment_v8(&root) == &test_hash(3), EInvalidCommitment);
     destroy_test_maker(config, protocol_cap, root, admin);
 }
 

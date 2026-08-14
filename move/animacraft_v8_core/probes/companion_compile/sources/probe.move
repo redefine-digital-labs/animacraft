@@ -319,6 +319,12 @@ public fun compile_base_definition_readback(
     let _ = base::color_payload_commitment_v8(color);
 }
 
+public fun compile_root_renderer_readback<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &vector<u8> {
+    maker::root_renderer_commitment_v8(root)
+}
+
 public fun compile_maker_access_readback<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     pass: &MakerAccessPassV8,
