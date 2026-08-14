@@ -131,16 +131,12 @@ public struct OwnedLoadoutV8 has key {
 public struct CompositionEmptyHashInputV8 has copy, drop, store {
     domain: vector<u8>,
     version: u64,
-    maker_root_id: ID,
-    ownership_epoch: u64,
     root_content_commitment: vector<u8>,
 }
 
 public struct CompositionSlotHashInputV8 has copy, drop, store {
     domain: vector<u8>,
     version: u64,
-    maker_root_id: ID,
-    ownership_epoch: u64,
     root_content_commitment: vector<u8>,
     sequence: u64,
     prior_commitment: vector<u8>,
@@ -154,8 +150,6 @@ public struct CompositionSlotHashInputV8 has copy, drop, store {
 public struct CompositionItemHashInputV8 has copy, drop, store {
     domain: vector<u8>,
     version: u64,
-    maker_root_id: ID,
-    ownership_epoch: u64,
     root_content_commitment: vector<u8>,
     sequence: u64,
     prior_commitment: vector<u8>,
@@ -170,8 +164,6 @@ public struct CompositionItemHashInputV8 has copy, drop, store {
 public struct CompositionRuleHashInputV8 has copy, drop, store {
     domain: vector<u8>,
     version: u64,
-    maker_root_id: ID,
-    ownership_epoch: u64,
     root_content_commitment: vector<u8>,
     sequence: u64,
     prior_commitment: vector<u8>,
@@ -244,6 +236,116 @@ public fun source_open_v8(): u8 { SOURCE_OPEN }
 public fun rule_require_v8(): u8 { RULE_REQUIRE }
 public fun rule_exclude_v8(): u8 { RULE_EXCLUDE }
 
+/// Pure pre-publication helper. Object IDs and ownership epochs are excluded
+/// deliberately: they are checked independently by registry binding.
+public fun empty_registry_commitment_v8(
+    root_content_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    hash::sha2_256(bcs::to_bytes(&CompositionEmptyHashInputV8 {
+        domain: b"animacraft.v8/composition/empty",
+        version: VERSION,
+        root_content_commitment,
+    }))
+}
+
+public fun advance_slot_commitment_v8(
+    root_content_commitment: vector<u8>,
+    sequence: u64,
+    prior_commitment: vector<u8>,
+    slot_key: String,
+    behavior: u8,
+    capacity: u64,
+    required: bool,
+    slot_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    assert_digest(&prior_commitment);
+    assert_identifier(&slot_key);
+    assert!(behavior <= SLOT_HYBRID, EInvalidSlot);
+    assert!(capacity > 0 && capacity <= MAX_SLOT_CAPACITY, EInvalidSlot);
+    assert_digest(&slot_commitment);
+    hash::sha2_256(bcs::to_bytes(&CompositionSlotHashInputV8 {
+        domain: b"animacraft.v8/composition/slot",
+        version: VERSION,
+        root_content_commitment,
+        sequence,
+        prior_commitment,
+        slot_key,
+        behavior,
+        capacity,
+        required,
+        slot_commitment,
+    }))
+}
+
+public fun advance_item_commitment_v8(
+    root_content_commitment: vector<u8>,
+    sequence: u64,
+    prior_commitment: vector<u8>,
+    slot_key: String,
+    item_key: String,
+    source_kind: u8,
+    transferable: bool,
+    definition_commitment: vector<u8>,
+    asset_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    assert_digest(&prior_commitment);
+    assert_identifier(&slot_key);
+    assert_identifier(&item_key);
+    assert!(source_kind <= SOURCE_OPEN, EInvalidItem);
+    assert_digest(&definition_commitment);
+    assert_digest(&asset_commitment);
+    hash::sha2_256(bcs::to_bytes(&CompositionItemHashInputV8 {
+        domain: b"animacraft.v8/composition/item",
+        version: VERSION,
+        root_content_commitment,
+        sequence,
+        prior_commitment,
+        slot_key,
+        item_key,
+        source_kind,
+        transferable,
+        definition_commitment,
+        asset_commitment,
+    }))
+}
+
+public fun advance_rule_commitment_v8(
+    root_content_commitment: vector<u8>,
+    sequence: u64,
+    prior_commitment: vector<u8>,
+    rule_kind: u8,
+    left_slot_key: String,
+    left_item_key: String,
+    right_slot_key: String,
+    right_item_key: String,
+    rule_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    assert_digest(&prior_commitment);
+    assert!(rule_kind == RULE_REQUIRE || rule_kind == RULE_EXCLUDE, EInvalidRule);
+    assert_identifier(&left_slot_key);
+    assert_identifier(&left_item_key);
+    assert_identifier(&right_slot_key);
+    assert_identifier(&right_item_key);
+    assert_digest(&rule_commitment);
+    hash::sha2_256(bcs::to_bytes(&CompositionRuleHashInputV8 {
+        domain: b"animacraft.v8/composition/rule",
+        version: VERSION,
+        root_content_commitment,
+        sequence,
+        prior_commitment,
+        rule_kind,
+        left_slot_key,
+        left_item_key,
+        right_slot_key,
+        right_item_key,
+        rule_commitment,
+    }))
+}
+
 public(package) fun new_composition_registry_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
@@ -259,11 +361,7 @@ public(package) fun new_composition_registry_v8<PaymentCoin>(
     let maker_root_id = maker::root_id_v8(root);
     let ownership_epoch = maker::ownership_epoch_v8(root);
     let root_content_commitment = *maker::content_commitment_v8(root);
-    let rolling_commitment = empty_commitment(
-        maker_root_id,
-        ownership_epoch,
-        root_content_commitment,
-    );
+    let rolling_commitment = empty_registry_commitment_v8(root_content_commitment);
     if (expected_count == 0) {
         assert!(expected_commitment == rolling_commitment, EInvalidCommitment);
     };
@@ -315,20 +413,16 @@ public fun append_wardrobe_slot_v8<PaymentCoin>(
     assert_digest(&slot_commitment);
     let key = SlotKeyV8 { slot_key };
     assert!(!registry.slots.contains(key), EDuplicate);
-    registry.rolling_commitment = hash::sha2_256(bcs::to_bytes(&CompositionSlotHashInputV8 {
-        domain: b"animacraft.v8/composition/slot",
-        version: VERSION,
-        maker_root_id: registry.maker_root_id,
-        ownership_epoch: registry.ownership_epoch,
-        root_content_commitment: registry.root_content_commitment,
+    registry.rolling_commitment = advance_slot_commitment_v8(
+        registry.root_content_commitment,
         sequence,
-        prior_commitment: registry.rolling_commitment,
+        registry.rolling_commitment,
         slot_key,
         behavior,
         capacity,
         required,
         slot_commitment,
-    }));
+    );
     registry.slots.add(key, WardrobeSlotV8 {
         slot_key,
         behavior,
@@ -371,21 +465,17 @@ public fun append_composition_item_v8<PaymentCoin>(
     assert!(registry.slots.contains(SlotKeyV8 { slot_key }), EInvalidSlot);
     let key = ItemKeyV8 { slot_key, item_key };
     assert!(!registry.items.contains(key), EDuplicate);
-    registry.rolling_commitment = hash::sha2_256(bcs::to_bytes(&CompositionItemHashInputV8 {
-        domain: b"animacraft.v8/composition/item",
-        version: VERSION,
-        maker_root_id: registry.maker_root_id,
-        ownership_epoch: registry.ownership_epoch,
-        root_content_commitment: registry.root_content_commitment,
+    registry.rolling_commitment = advance_item_commitment_v8(
+        registry.root_content_commitment,
         sequence,
-        prior_commitment: registry.rolling_commitment,
+        registry.rolling_commitment,
         slot_key,
         item_key,
         source_kind,
         transferable,
         definition_commitment,
         asset_commitment,
-    }));
+    );
     registry.items.add(key, CompositionItemV8 {
         slot_key,
         item_key,
@@ -436,21 +526,17 @@ public fun append_loadout_rule_v8<PaymentCoin>(
         item_key: right_item_key,
     }), EInvalidItem);
     let rule_sequence = registry.observed_rule_count;
-    registry.rolling_commitment = hash::sha2_256(bcs::to_bytes(&CompositionRuleHashInputV8 {
-        domain: b"animacraft.v8/composition/rule",
-        version: VERSION,
-        maker_root_id: registry.maker_root_id,
-        ownership_epoch: registry.ownership_epoch,
-        root_content_commitment: registry.root_content_commitment,
+    registry.rolling_commitment = advance_rule_commitment_v8(
+        registry.root_content_commitment,
         sequence,
-        prior_commitment: registry.rolling_commitment,
+        registry.rolling_commitment,
         rule_kind,
         left_slot_key,
         left_item_key,
         right_slot_key,
         right_item_key,
         rule_commitment,
-    }));
+    );
     registry.rules.add(RuleKeyV8 { sequence: rule_sequence }, LoadoutRuleV8 {
         sequence: rule_sequence,
         rule_kind,
@@ -802,20 +888,6 @@ fun assert_root_identity_without_epoch<PaymentCoin>(
 ) {
     assert!(loadout.maker_root_id == maker::root_id_v8(root), EInvalidBinding);
     assert!(loadout.root_content_commitment == *maker::content_commitment_v8(root), EInvalidBinding);
-}
-
-fun empty_commitment(
-    maker_root_id: ID,
-    ownership_epoch: u64,
-    root_content_commitment: vector<u8>,
-): vector<u8> {
-    hash::sha2_256(bcs::to_bytes(&CompositionEmptyHashInputV8 {
-        domain: b"animacraft.v8/composition/empty",
-        version: VERSION,
-        maker_root_id,
-        ownership_epoch,
-        root_content_commitment,
-    }))
 }
 
 fun empty_loadout_commitment(

@@ -9,7 +9,7 @@ use animacraft_v8::protocol_config_v8::{
 use animacraft_v8::seal_v8::{Self as seal, SealRegistryV8};
 use std::bcs;
 use std::hash;
-use std::string::String;
+use std::string::{Self as string, String};
 use sui::balance::{Self as balance, Balance};
 use sui::clock::Clock;
 use sui::coin::{Self as coin, Coin};
@@ -56,6 +56,11 @@ public struct StyleKeyV8 has copy, drop, store {
     style_key: String,
 }
 
+public struct PackReleaseKeyV8 has copy, drop, store {
+    namespace: String,
+    pack_key: String,
+}
+
 public struct PackStyleV8 has copy, drop, store {
     part_key: String,
     item_key: String,
@@ -68,6 +73,9 @@ public struct PackStyleV8 has copy, drop, store {
 
 public struct PackReleaseRecordV8 has copy, drop, store {
     release_id: ID,
+    namespace: String,
+    pack_key: String,
+    manifest_commitment: vector<u8>,
     content_commitment: vector<u8>,
     style_registry_commitment: vector<u8>,
     access_kind: u8,
@@ -95,7 +103,9 @@ public struct ExpansionPackRegistryV8 has key {
     expected_commitment: vector<u8>,
     rolling_commitment: vector<u8>,
     sealed: bool,
+    protected_style_count: u64,
     releases: Table<ID, PackReleaseRecordV8>,
+    release_keys: Table<PackReleaseKeyV8, bool>,
 }
 
 public struct ExpansionPackReleaseV8<phantom PaymentCoin> has key {
@@ -105,6 +115,7 @@ public struct ExpansionPackReleaseV8<phantom PaymentCoin> has key {
     ownership_epoch: u64,
     root_content_commitment: vector<u8>,
     creator: address,
+    current_owner: address,
     admin_cap_id: ID,
     treasury_id: ID,
     namespace: String,
@@ -133,6 +144,7 @@ public struct ExpansionPackAdminCapV8 has key {
     version: u64,
     release_id: ID,
     creator: address,
+    owner: address,
     ownership_epoch: u64,
 }
 
@@ -161,6 +173,7 @@ public struct ExpansionPackPassV8 has key {
 /// Transaction-local access proof. It cannot be stored, copied, or dropped.
 public struct PackStyleAccessProofV8 {
     release_id: ID,
+    pack_scope_key: String,
     maker_root_id: ID,
     ownership_epoch: u64,
     root_content_commitment: vector<u8>,
@@ -174,22 +187,30 @@ public struct PackStyleAccessProofV8 {
     seal_id: vector<u8>,
 }
 
-public struct PackEmptyHashInputV8 has copy, drop, store {
+public struct PackRegistryEmptyHashInputV8 has copy, drop, store {
     domain: vector<u8>,
     version: u64,
-    maker_root_id: ID,
-    ownership_epoch: u64,
     root_content_commitment: vector<u8>,
-    scope_id: ID,
+}
+
+public struct PackStyleEmptyHashInputV8 has copy, drop, store {
+    domain: vector<u8>,
+    version: u64,
+    root_content_commitment: vector<u8>,
+    namespace: String,
+    pack_key: String,
+    manifest_commitment: vector<u8>,
+    release_content_commitment: vector<u8>,
 }
 
 public struct PackStyleHashInputV8 has copy, drop, store {
     domain: vector<u8>,
     version: u64,
-    release_id: ID,
-    maker_root_id: ID,
-    ownership_epoch: u64,
     root_content_commitment: vector<u8>,
+    namespace: String,
+    pack_key: String,
+    manifest_commitment: vector<u8>,
+    release_content_commitment: vector<u8>,
     sequence: u64,
     prior_commitment: vector<u8>,
     part_key: String,
@@ -204,18 +225,17 @@ public struct PackStyleHashInputV8 has copy, drop, store {
 public struct PackRegistryRowHashInputV8 has copy, drop, store {
     domain: vector<u8>,
     version: u64,
-    maker_root_id: ID,
-    ownership_epoch: u64,
     root_content_commitment: vector<u8>,
     sequence: u64,
     prior_commitment: vector<u8>,
-    release_id: ID,
+    namespace: String,
+    pack_key: String,
+    manifest_commitment: vector<u8>,
     release_content_commitment: vector<u8>,
     style_registry_commitment: vector<u8>,
     access_kind: u8,
     purchase_price_atomic: u64,
     protected_style_count: u64,
-    seal_registry_id: ID,
     seal_registry_commitment: vector<u8>,
 }
 
@@ -275,6 +295,13 @@ public struct ExpansionPackRevenueWithdrawnV8 has copy, drop {
     amount: u64,
 }
 
+public struct ExpansionPackControlTransferredV8 has copy, drop {
+    release_id: ID,
+    previous_owner: address,
+    owner: address,
+    ownership_epoch: u64,
+}
+
 public fun version_v8(): u64 { VERSION }
 public fun access_free_v8(): u8 { ACCESS_FREE }
 public fun access_paid_v8(): u8 { ACCESS_PAID }
@@ -283,6 +310,162 @@ public fun lifecycle_sealed_v8(): u8 { LIFECYCLE_SEALED }
 public fun lifecycle_active_v8(): u8 { LIFECYCLE_ACTIVE }
 public fun lifecycle_paused_v8(): u8 { LIFECYCLE_PAUSED }
 public fun lifecycle_archived_v8(): u8 { LIFECYCLE_ARCHIVED }
+
+/// Pure pre-publication helper for the per-Maker release registry.
+public fun empty_registry_commitment_v8(
+    root_content_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    hash::sha2_256(bcs::to_bytes(&PackRegistryEmptyHashInputV8 {
+        domain: b"animacraft.v8/pack/registry/empty",
+        version: VERSION,
+        root_content_commitment,
+    }))
+}
+
+/// Pure pre-publication helper for one release's Style registry. The stable
+/// release key and immutable content replace the not-yet-created release ID.
+public fun empty_style_registry_commitment_v8(
+    root_content_commitment: vector<u8>,
+    namespace: String,
+    pack_key: String,
+    manifest_commitment: vector<u8>,
+    release_content_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    assert_canonical_component(&namespace);
+    assert_canonical_component(&pack_key);
+    assert_digest(&manifest_commitment);
+    assert_digest(&release_content_commitment);
+    hash::sha2_256(bcs::to_bytes(&PackStyleEmptyHashInputV8 {
+        domain: b"animacraft.v8/pack/style/empty",
+        version: VERSION,
+        root_content_commitment,
+        namespace,
+        pack_key,
+        manifest_commitment,
+        release_content_commitment,
+    }))
+}
+
+public fun advance_style_commitment_v8(
+    root_content_commitment: vector<u8>,
+    namespace: String,
+    pack_key: String,
+    manifest_commitment: vector<u8>,
+    release_content_commitment: vector<u8>,
+    sequence: u64,
+    prior_commitment: vector<u8>,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    asset_blob_id: String,
+    asset_commitment: vector<u8>,
+    protected: bool,
+    seal_id: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    assert_canonical_component(&namespace);
+    assert_canonical_component(&pack_key);
+    assert_digest(&manifest_commitment);
+    assert_digest(&release_content_commitment);
+    assert_digest(&prior_commitment);
+    assert_canonical_component(&part_key);
+    assert_canonical_component(&item_key);
+    assert_canonical_component(&style_key);
+    assert_locator(&asset_blob_id);
+    assert_digest(&asset_commitment);
+    if (protected) {
+        assert_digest(&seal_id);
+    } else {
+        assert!(seal_id.is_empty(), ESealCoverageMissing);
+    };
+    hash::sha2_256(bcs::to_bytes(&PackStyleHashInputV8 {
+        domain: b"animacraft.v8/pack/style",
+        version: VERSION,
+        root_content_commitment,
+        namespace,
+        pack_key,
+        manifest_commitment,
+        release_content_commitment,
+        sequence,
+        prior_commitment,
+        part_key,
+        item_key,
+        style_key,
+        asset_blob_id,
+        asset_commitment,
+        protected,
+        seal_id,
+    }))
+}
+
+public fun advance_release_commitment_v8(
+    root_content_commitment: vector<u8>,
+    sequence: u64,
+    prior_commitment: vector<u8>,
+    namespace: String,
+    pack_key: String,
+    manifest_commitment: vector<u8>,
+    release_content_commitment: vector<u8>,
+    style_registry_commitment: vector<u8>,
+    access_kind: u8,
+    purchase_price_atomic: u64,
+    protected_style_count: u64,
+    seal_registry_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    assert_digest(&prior_commitment);
+    assert_canonical_component(&namespace);
+    assert_canonical_component(&pack_key);
+    assert_digest(&manifest_commitment);
+    assert_digest(&release_content_commitment);
+    assert_digest(&style_registry_commitment);
+    assert_access(access_kind, purchase_price_atomic);
+    assert_digest(&seal_registry_commitment);
+    hash::sha2_256(bcs::to_bytes(&PackRegistryRowHashInputV8 {
+        domain: b"animacraft.v8/pack/release",
+        version: VERSION,
+        root_content_commitment,
+        sequence,
+        prior_commitment,
+        namespace,
+        pack_key,
+        manifest_commitment,
+        release_content_commitment,
+        style_registry_commitment,
+        access_kind,
+        purchase_price_atomic,
+        protected_style_count,
+        seal_registry_commitment,
+    }))
+}
+
+/// Canonical stable Seal scope for a release. Zero bytes are rejected in each
+/// component, so the separator cannot produce ambiguous pairs.
+public fun pack_seal_scope_key_v8(namespace: String, pack_key: String): String {
+    assert_canonical_component(&namespace);
+    assert_canonical_component(&pack_key);
+    let mut bytes = namespace.into_bytes();
+    bytes.push_back(0);
+    bytes.append(pack_key.into_bytes());
+    bytes.to_string()
+}
+
+public fun pack_seal_scope_commitment_v8(
+    release_content_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&release_content_commitment);
+    release_content_commitment
+}
+
+public fun style_seal_asset_key_v8(
+    part_key: String,
+    item_key: String,
+    style_key: String,
+): String {
+    seal::style_asset_key_v8(part_key, item_key, style_key)
+}
 
 public(package) fun new_expansion_pack_registry_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
@@ -296,12 +479,7 @@ public(package) fun new_expansion_pack_registry_v8<PaymentCoin>(
     let maker_root_id = maker::root_id_v8(root);
     let ownership_epoch = maker::ownership_epoch_v8(root);
     let root_content_commitment = *maker::content_commitment_v8(root);
-    let rolling_commitment = empty_commitment(
-        maker_root_id,
-        ownership_epoch,
-        root_content_commitment,
-        maker_root_id,
-    );
+    let rolling_commitment = empty_registry_commitment_v8(root_content_commitment);
     if (expected_count == 0) {
         assert!(expected_commitment == rolling_commitment, EInvalidCommitment);
     };
@@ -316,7 +494,9 @@ public(package) fun new_expansion_pack_registry_v8<PaymentCoin>(
         expected_commitment,
         rolling_commitment,
         sealed: false,
+        protected_style_count: 0,
         releases: table::new(ctx),
+        release_keys: table::new(ctx),
     }
 }
 
@@ -350,7 +530,7 @@ public fun create_expansion_pack_release_v8<PaymentCoin>(
     assert_digest(&expected_style_registry_commitment);
     assert_access(access_kind, purchase_price_atomic);
     assert!(expected_protected_style_count <= expected_style_count, EInvalidCount);
-    let (_, _, _) = seal::assert_activation_ready_v8(seal_registry, root);
+    seal::assert_draft_binding_v8(seal_registry, root);
     let release_uid = object::new(ctx);
     let release_id = release_uid.to_inner();
     let admin_uid = object::new(ctx);
@@ -360,11 +540,12 @@ public fun create_expansion_pack_release_v8<PaymentCoin>(
     let maker_root_id = maker::root_id_v8(root);
     let ownership_epoch = maker::ownership_epoch_v8(root);
     let root_content_commitment = *maker::content_commitment_v8(root);
-    let rolling_style_registry_commitment = empty_commitment(
-        maker_root_id,
-        ownership_epoch,
+    let rolling_style_registry_commitment = empty_style_registry_commitment_v8(
         root_content_commitment,
-        release_id,
+        namespace,
+        pack_key,
+        manifest_commitment,
+        content_commitment,
     );
     if (expected_style_count == 0) {
         assert!(
@@ -379,6 +560,7 @@ public fun create_expansion_pack_release_v8<PaymentCoin>(
         ownership_epoch,
         root_content_commitment,
         creator: ctx.sender(),
+        current_owner: ctx.sender(),
         admin_cap_id,
         treasury_id,
         namespace,
@@ -396,7 +578,7 @@ public fun create_expansion_pack_release_v8<PaymentCoin>(
         expected_style_registry_commitment,
         rolling_style_registry_commitment,
         seal_registry_id: seal::registry_id_v8(seal_registry),
-        seal_registry_commitment: *seal::registry_commitment_v8(seal_registry),
+        seal_registry_commitment: *seal::registry_expected_commitment_v8(seal_registry),
         entitlement_count: 0,
         styles: table::new(ctx),
         entitlements: table::new(ctx),
@@ -406,6 +588,7 @@ public fun create_expansion_pack_release_v8<PaymentCoin>(
         version: VERSION,
         release_id,
         creator: ctx.sender(),
+        owner: ctx.sender(),
         ownership_epoch,
     };
     let treasury = ExpansionPackTreasuryV8<PaymentCoin> {
@@ -462,12 +645,15 @@ public fun append_expansion_pack_style_v8<PaymentCoin>(
     assert!(!release.styles.contains(key), EDuplicate);
     if (protected) {
         assert_digest(&seal_id);
+        let scope_key = pack_seal_scope_key_v8(release.namespace, release.pack_key);
+        let scope_commitment = pack_seal_scope_commitment_v8(release.content_commitment);
         seal::assert_asset_covered_v8(
             seal_registry,
             root,
-            seal::scope_style_v8(),
-            object::id(release),
-            style_asset_key(part_key, item_key, style_key),
+            seal::scope_pack_style_v8(),
+            scope_key,
+            &scope_commitment,
+            style_seal_asset_key_v8(part_key, item_key, style_key),
             &asset_commitment,
             &seal_id,
         );
@@ -475,15 +661,14 @@ public fun append_expansion_pack_style_v8<PaymentCoin>(
     } else {
         assert!(seal_id.is_empty(), ESealCoverageMissing);
     };
-    release.rolling_style_registry_commitment = hash::sha2_256(bcs::to_bytes(&PackStyleHashInputV8 {
-        domain: b"animacraft.v8/pack/style",
-        version: VERSION,
-        release_id: object::id(release),
-        maker_root_id: release.maker_root_id,
-        ownership_epoch: release.ownership_epoch,
-        root_content_commitment: release.root_content_commitment,
+    release.rolling_style_registry_commitment = advance_style_commitment_v8(
+        release.root_content_commitment,
+        release.namespace,
+        release.pack_key,
+        release.manifest_commitment,
+        release.content_commitment,
         sequence,
-        prior_commitment: release.rolling_style_registry_commitment,
+        release.rolling_style_registry_commitment,
         part_key,
         item_key,
         style_key,
@@ -491,7 +676,7 @@ public fun append_expansion_pack_style_v8<PaymentCoin>(
         asset_commitment,
         protected,
         seal_id,
-    }));
+    );
     release.styles.add(key, PackStyleV8 {
         part_key,
         item_key,
@@ -562,25 +747,30 @@ public fun append_release_to_registry_v8<PaymentCoin>(
     assert!(registry.observed_count < registry.expected_count, EInvalidCount);
     let release_id = object::id(release);
     assert!(!registry.releases.contains(release_id), EDuplicate);
-    registry.rolling_commitment = hash::sha2_256(bcs::to_bytes(&PackRegistryRowHashInputV8 {
-        domain: b"animacraft.v8/pack/release",
-        version: VERSION,
-        maker_root_id: registry.maker_root_id,
-        ownership_epoch: registry.ownership_epoch,
-        root_content_commitment: registry.root_content_commitment,
+    let release_key = PackReleaseKeyV8 {
+        namespace: release.namespace,
+        pack_key: release.pack_key,
+    };
+    assert!(!registry.release_keys.contains(release_key), EDuplicate);
+    registry.rolling_commitment = advance_release_commitment_v8(
+        registry.root_content_commitment,
         sequence,
-        prior_commitment: registry.rolling_commitment,
-        release_id,
-        release_content_commitment: release.content_commitment,
-        style_registry_commitment: release.rolling_style_registry_commitment,
-        access_kind: release.access_kind,
-        purchase_price_atomic: release.purchase_price_atomic,
-        protected_style_count: release.observed_protected_style_count,
-        seal_registry_id: release.seal_registry_id,
-        seal_registry_commitment: release.seal_registry_commitment,
-    }));
+        registry.rolling_commitment,
+        release.namespace,
+        release.pack_key,
+        release.manifest_commitment,
+        release.content_commitment,
+        release.rolling_style_registry_commitment,
+        release.access_kind,
+        release.purchase_price_atomic,
+        release.observed_protected_style_count,
+        release.seal_registry_commitment,
+    );
     registry.releases.add(release_id, PackReleaseRecordV8 {
         release_id,
+        namespace: release.namespace,
+        pack_key: release.pack_key,
+        manifest_commitment: release.manifest_commitment,
         content_commitment: release.content_commitment,
         style_registry_commitment: release.rolling_style_registry_commitment,
         access_kind: release.access_kind,
@@ -589,6 +779,9 @@ public fun append_release_to_registry_v8<PaymentCoin>(
         seal_registry_id: release.seal_registry_id,
         seal_registry_commitment: release.seal_registry_commitment,
     });
+    registry.release_keys.add(release_key, true);
+    registry.protected_style_count =
+        registry.protected_style_count + release.observed_protected_style_count;
     registry.observed_count = registry.observed_count + 1;
 }
 
@@ -613,12 +806,17 @@ public fun seal_expansion_pack_registry_v8<PaymentCoin>(
 public(package) fun assert_activation_ready_v8<PaymentCoin>(
     registry: &ExpansionPackRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
-): (ID, vector<u8>, u64) {
+): (ID, vector<u8>, u64, u64) {
     assert_registry_binding(registry, root);
     assert!(registry.sealed, ERegistryNotSealed);
     assert!(registry.observed_count == registry.expected_count, EInvalidCount);
     assert!(registry.rolling_commitment == registry.expected_commitment, EInvalidCommitment);
-    (object::id(registry), registry.rolling_commitment, registry.observed_count)
+    (
+        object::id(registry),
+        registry.rolling_commitment,
+        registry.observed_count,
+        registry.protected_style_count,
+    )
 }
 
 public(package) fun rebind_ownership_epoch_v8<PaymentCoin>(
@@ -636,6 +834,7 @@ public(package) fun rebind_ownership_epoch_v8<PaymentCoin>(
 
 public fun activate_expansion_pack_v8<PaymentCoin>(
     release: &mut ExpansionPackReleaseV8<PaymentCoin>,
+    registry: &ExpansionPackRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
     maker_admin: &MakerAdminCapV8,
     pack_admin: &ExpansionPackAdminCapV8,
@@ -643,7 +842,10 @@ public fun activate_expansion_pack_v8<PaymentCoin>(
 ) {
     maker::assert_current_admin_v8(root, maker_admin);
     maker::assert_active_root_v8(root);
+    assert_registry_binding(registry, root);
+    assert!(registry.sealed, ERegistryNotSealed);
     assert_release_binding(release, root);
+    assert_release_registered(registry, release);
     assert_pack_admin(release, pack_admin, ctx);
     assert!(release.lifecycle == LIFECYCLE_SEALED || release.lifecycle == LIFECYCLE_PAUSED, EInvalidLifecycle);
     set_lifecycle(release, LIFECYCLE_ACTIVE);
@@ -680,6 +882,30 @@ public fun archive_expansion_pack_v8<PaymentCoin>(
         EInvalidLifecycle,
     );
     set_lifecycle(release, LIFECYCLE_ARCHIVED);
+}
+
+/// Transfers the independent Pack authority without requiring a Maker cap.
+/// This remains callable while the release is epoch-stale, so the old Pack
+/// owner can hand control to the new Root owner before readmission.
+public fun transfer_expansion_pack_control_v8<PaymentCoin>(
+    release: &mut ExpansionPackReleaseV8<PaymentCoin>,
+    mut pack_admin: ExpansionPackAdminCapV8,
+    recipient: address,
+    ctx: &TxContext,
+) {
+    assert_pack_admin(release, &pack_admin, ctx);
+    assert!(release.lifecycle != LIFECYCLE_ARCHIVED, EInvalidLifecycle);
+    assert!(recipient != @0x0 && recipient != release.current_owner, EInvalidRecipient);
+    let previous_owner = release.current_owner;
+    release.current_owner = recipient;
+    pack_admin.owner = recipient;
+    event::emit(ExpansionPackControlTransferredV8 {
+        release_id: object::id(release),
+        previous_owner,
+        owner: recipient,
+        ownership_epoch: release.ownership_epoch,
+    });
+    transfer::transfer(pack_admin, recipient);
 }
 
 /// Existing wallet entitlements survive, but remain unusable until both Maker
@@ -730,6 +956,7 @@ public fun purchase_expansion_pack_v8<PaymentCoin>(
     assert!(release.lifecycle == LIFECYCLE_ACTIVE, EInvalidLifecycle);
     assert!(release.access_kind == ACCESS_PAID && release.purchase_price_atomic > 0, EInvalidAccess);
     assert!(payment.value() == release.purchase_price_atomic, EWrongPayment);
+    maker::assert_root_protocol_operational_v8(root, protocol_config, protocol_treasury);
     let gross = payment.value();
     let creator_coin = protocol::collect_protocol_primary_fee_v8(
         protocol_config,
@@ -780,6 +1007,7 @@ public fun authorize_pack_style_v8<PaymentCoin>(
     let style = release.styles.borrow(StyleKeyV8 { part_key, item_key, style_key });
     PackStyleAccessProofV8 {
         release_id: object::id(release),
+        pack_scope_key: pack_seal_scope_key_v8(release.namespace, release.pack_key),
         maker_root_id: release.maker_root_id,
         ownership_epoch: release.ownership_epoch,
         root_content_commitment: release.root_content_commitment,
@@ -796,9 +1024,10 @@ public fun authorize_pack_style_v8<PaymentCoin>(
 
 public(package) fun consume_style_access_proof_v8(
     proof: PackStyleAccessProofV8,
-): (ID, ID, u64, vector<u8>, vector<u8>, address, String, String, String, vector<u8>, bool, vector<u8>) {
+): (ID, String, ID, u64, vector<u8>, vector<u8>, address, String, String, String, vector<u8>, bool, vector<u8>) {
     let PackStyleAccessProofV8 {
         release_id,
+        pack_scope_key,
         maker_root_id,
         ownership_epoch,
         root_content_commitment,
@@ -813,6 +1042,7 @@ public(package) fun consume_style_access_proof_v8(
     } = proof;
     (
         release_id,
+        pack_scope_key,
         maker_root_id,
         ownership_epoch,
         root_content_commitment,
@@ -832,6 +1062,9 @@ public fun registry_commitment_v8(self: &ExpansionPackRegistryV8): &vector<u8> {
     &self.rolling_commitment
 }
 public fun registry_release_count_v8(self: &ExpansionPackRegistryV8): u64 { self.observed_count }
+public fun registry_protected_style_count_v8(self: &ExpansionPackRegistryV8): u64 {
+    self.protected_style_count
+}
 public fun registry_sealed_v8(self: &ExpansionPackRegistryV8): bool { self.sealed }
 public fun release_id_v8<PaymentCoin>(self: &ExpansionPackReleaseV8<PaymentCoin>): ID {
     object::id(self)
@@ -857,6 +1090,12 @@ public fun release_price_v8<PaymentCoin>(self: &ExpansionPackReleaseV8<PaymentCo
 public fun release_lifecycle_v8<PaymentCoin>(self: &ExpansionPackReleaseV8<PaymentCoin>): u8 {
     self.lifecycle
 }
+public fun release_creator_v8<PaymentCoin>(self: &ExpansionPackReleaseV8<PaymentCoin>): address {
+    self.creator
+}
+public fun release_current_owner_v8<PaymentCoin>(
+    self: &ExpansionPackReleaseV8<PaymentCoin>,
+): address { self.current_owner }
 public fun release_entitlement_count_v8<PaymentCoin>(self: &ExpansionPackReleaseV8<PaymentCoin>): u64 {
     self.entitlement_count
 }
@@ -944,7 +1183,8 @@ fun assert_pack_admin<PaymentCoin>(
     assert!(admin.version == VERSION, EInvalidAdmin);
     assert!(admin.release_id == object::id(release), EInvalidAdmin);
     assert!(object::id(admin) == release.admin_cap_id, EInvalidAdmin);
-    assert!(admin.creator == release.creator && ctx.sender() == release.creator, EInvalidAdmin);
+    assert!(admin.creator == release.creator, EInvalidAdmin);
+    assert!(admin.owner == release.current_owner && ctx.sender() == release.current_owner, EInvalidAdmin);
     assert!(admin.ownership_epoch == release.ownership_epoch, EInvalidAdmin);
 }
 
@@ -955,6 +1195,29 @@ fun assert_treasury<PaymentCoin>(
     assert!(treasury.version == VERSION, EInvalidTreasury);
     assert!(treasury.release_id == object::id(release), EInvalidTreasury);
     assert!(object::id(treasury) == release.treasury_id, EInvalidTreasury);
+}
+
+fun assert_release_registered<PaymentCoin>(
+    registry: &ExpansionPackRegistryV8,
+    release: &ExpansionPackReleaseV8<PaymentCoin>,
+) {
+    let release_id = object::id(release);
+    assert!(registry.releases.contains(release_id), EInvalidBinding);
+    let record = registry.releases.borrow(release_id);
+    assert!(record.release_id == release_id, EInvalidBinding);
+    assert!(record.namespace == release.namespace, EInvalidBinding);
+    assert!(record.pack_key == release.pack_key, EInvalidBinding);
+    assert!(record.manifest_commitment == release.manifest_commitment, EInvalidCommitment);
+    assert!(record.content_commitment == release.content_commitment, EInvalidCommitment);
+    assert!(
+        record.style_registry_commitment == release.rolling_style_registry_commitment,
+        EInvalidCommitment,
+    );
+    assert!(record.access_kind == release.access_kind, EInvalidAccess);
+    assert!(record.purchase_price_atomic == release.purchase_price_atomic, EInvalidAccess);
+    assert!(record.protected_style_count == release.observed_protected_style_count, EInvalidCount);
+    assert!(record.seal_registry_id == release.seal_registry_id, EInvalidBinding);
+    assert!(record.seal_registry_commitment == release.seal_registry_commitment, EInvalidCommitment);
 }
 
 fun assert_access(access_kind: u8, purchase_price_atomic: u64) {
@@ -976,33 +1239,18 @@ fun set_lifecycle<PaymentCoin>(release: &mut ExpansionPackReleaseV8<PaymentCoin>
     });
 }
 
-fun empty_commitment(
-    maker_root_id: ID,
-    ownership_epoch: u64,
-    root_content_commitment: vector<u8>,
-    scope_id: ID,
-): vector<u8> {
-    hash::sha2_256(bcs::to_bytes(&PackEmptyHashInputV8 {
-        domain: b"animacraft.v8/pack/empty",
-        version: VERSION,
-        maker_root_id,
-        ownership_epoch,
-        root_content_commitment,
-        scope_id,
-    }))
-}
-
-fun style_asset_key(part_key: String, item_key: String, style_key: String): String {
-    let mut bytes = part_key.into_bytes();
-    bytes.push_back(0);
-    bytes.append(item_key.into_bytes());
-    bytes.push_back(0);
-    bytes.append(style_key.into_bytes());
-    bytes.to_string()
-}
-
 fun assert_identifier(value: &String) {
     assert!(value.length() > 0 && value.length() <= MAX_IDENTIFIER_BYTES, EInvalidIdentifier);
+}
+
+fun assert_canonical_component(value: &String) {
+    assert_identifier(value);
+    let bytes = string::as_bytes(value);
+    let mut index = 0;
+    while (index < bytes.length()) {
+        assert!(*bytes.borrow(index) != 0, EInvalidIdentifier);
+        index = index + 1;
+    };
 }
 
 fun assert_locator(value: &String) {

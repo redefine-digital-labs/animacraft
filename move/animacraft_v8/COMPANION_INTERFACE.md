@@ -90,12 +90,24 @@ An append must:
 4. reject duplicate canonical keys and out-of-order row kinds;
 5. enforce bounded strings and vectors before storage;
 6. calculate the next commitment on-chain as SHA-256 over a domain-separated
-   BCS row containing version, Root tuple, sequence, prior commitment, and all
-   semantic row fields;
+   BCS row containing version, the immutable nonrecursive Root content
+   commitment, sequence, prior commitment, and all semantic row fields;
 7. increment exactly one category count and the aggregate count.
 
 The empty rolling commitment is itself domain-separated and 32 bytes. An
 empty registry is never represented by an empty vector or a missing object.
+Neither an expected empty commitment nor any row commitment may include a
+newly generated Root, registry, release, treasury, or cap object ID, nor an
+ownership epoch. Those values are independently and strictly checked by the
+registry's state-binding assertions. This separation makes every expected
+commitment computable before the publication transaction and avoids an
+object-ID derivation cycle. The Root content commitment must itself be a
+nonrecursive immutable manifest commitment; it must not include a derived
+registry commitment or Seal ID that already uses it as a domain separator.
+
+Each registry module exposes public pure `empty_*_commitment_v8` and
+`advance_*_commitment_v8` helpers. Append functions call those exact helpers,
+so client precomputation and on-chain chaining cannot silently diverge.
 
 Sealing checks every category count, aggregate count, and the expected final
 commitment. It is irreversible. Each registry exposes only this package-level
@@ -153,20 +165,43 @@ tuple, release content commitment, holder, payment amount, and issue time.
 Root epoch drift suspends access. Re-admission at a new epoch requires both the
 current Maker authority and the exact Pack authority; existing entitlements
 may survive but cannot authorize access until re-admission completes.
+Pack creator provenance is immutable, while current Pack control is
+explicitly transferable by consuming and reissuing the exact Pack AdminCap.
+The transfer path does not require a Maker cap, so after a Root transfer the
+old Pack owner can hand the cap to the new Root owner, who can then satisfy
+the two-authority epoch readmission without a cross-sender deadlock.
 
 ## Seal and Complete semantics
 
-The Seal registry maps a domain (`STYLE` or `COMPLETE`), scope ID, asset key,
-and asset commitment to a derived 32-byte Seal ID. A protected Pack or
-Complete row must prove exact registry coverage before it can seal. Free,
-unprotected content records `protected = false` and an empty Seal ID; this is
-an explicit policy, not a missing policy.
+The Seal registry maps a domain (`MAKER_STYLE`, `PACK_STYLE`, or `COMPLETE`),
+stable scope key, 32-byte scope commitment, asset key, and asset commitment to
+a derived 32-byte Seal ID. The Seal ID and Seal row commitment contain no
+object ID or ownership epoch. Pack scope keys are the canonical
+`namespace + 0x00 + pack_key` encoding and use the release content commitment;
+Complete uses the output key and Recipe commitment; base Maker Style uses the
+constant `maker` scope and Root content commitment. Components containing the
+separator byte are rejected. A protected Pack or Complete row must prove exact
+registry coverage when appended. Free, unprotected content records
+`protected = false` and an empty Seal ID; this is an explicit policy, not a
+missing policy.
+
+Pack and Complete registries independently accumulate their protected row
+counts. Activation requires exact equality between Seal rows and the sum of
+protected base Maker Styles, protected Pack Styles, and protected Complete
+outputs. The publication orchestrator also enumerates every bounded protected
+base Style and verifies its precise Seal row, preventing an unrelated extra
+Seal row from substituting for missing coverage.
 
 Complete policy rows are immutable publication data. A runtime Complete
 authorization has no `store`, `copy`, or `drop` ability. It binds the Root
 tuple, loadout object/revision/commitment, exact Recipe and render commitment,
-required Pack-access proofs, and Seal coverage. Only consuming that one-use
-authorization may create an immutable `CompleteReceiptV8`.
+the exact ordered count and stable commitment of required Pack selections,
+and Seal coverage. Stable Pack-selection rows bind Pack scope, release content,
+Style keys/content, protection policy, and Seal ID, but not a release object
+ID. Runtime proofs additionally bind and validate the real release ID and
+Root epoch. Authorization sealing rejects missing, extra, reordered, or
+duplicate stable Style identities. Only consuming that one-use authorization
+may create an immutable `CompleteReceiptV8`.
 
 ## Physical split binding
 
@@ -249,3 +284,11 @@ apply these targets:
 
 No source-count estimate or uncompressed source size may substitute for the
 production bytecode and serialized-object measurements.
+
+The 2026-08-14 warnings-as-errors production build of the seven implemented
+non-Physical modules measured 69,273 compiled bytes: `protocol_config_v8`
+6,096; `maker_v8` 25,415; `publication_v8` 2,888; `composition_v8` 9,748;
+`expansion_pack_v8` 12,149; `complete_v8` 8,149; and `seal_v8` 4,828. This
+leaves only 20,727 bytes before the 90,000-byte package-object target even
+before metadata, so Physical must be measured as a split candidate rather
+than assumed to fit in the core package.

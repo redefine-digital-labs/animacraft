@@ -25,6 +25,8 @@ use sui::table::{Self as table, Table};
 const VERSION: u64 = 8;
 const HASH_LENGTH: u64 = 32;
 const MAX_KEY_BYTES: u64 = 256;
+const MAX_SCOPE_KEY_BYTES: u64 = 512;
+const MAX_REQUIRED_PACK_SELECTIONS: u64 = 64;
 
 const EInvalidBinding: u64 = 0;
 const EInvalidCommitment: u64 = 1;
@@ -53,6 +55,8 @@ public struct CompleteOutputPolicyV8 has copy, drop, store {
     output_commitment: vector<u8>,
     protected: bool,
     seal_id: vector<u8>,
+    required_pack_selection_count: u64,
+    required_pack_selection_commitment: vector<u8>,
 }
 
 public struct CompleteRegistryV8 has key {
@@ -66,6 +70,7 @@ public struct CompleteRegistryV8 has key {
     expected_commitment: vector<u8>,
     rolling_commitment: vector<u8>,
     sealed: bool,
+    protected_output_count: u64,
     total_completes: u64,
     outputs: Table<CompleteOutputKeyV8, CompleteOutputPolicyV8>,
     wallet_complete_counts: Table<address, u64>,
@@ -73,6 +78,7 @@ public struct CompleteRegistryV8 has key {
 
 public struct PackSelectionCommitmentV8 has copy, drop, store {
     release_id: ID,
+    pack_scope_key: String,
     release_content_commitment: vector<u8>,
     part_key: String,
     item_key: String,
@@ -80,6 +86,28 @@ public struct PackSelectionCommitmentV8 has copy, drop, store {
     asset_commitment: vector<u8>,
     protected: bool,
     seal_id: vector<u8>,
+}
+
+public struct StablePackSelectionHashInputV8 has copy, drop, store {
+    domain: vector<u8>,
+    version: u64,
+    root_content_commitment: vector<u8>,
+    sequence: u64,
+    prior_commitment: vector<u8>,
+    pack_scope_key: String,
+    release_content_commitment: vector<u8>,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    asset_commitment: vector<u8>,
+    protected: bool,
+    seal_id: vector<u8>,
+}
+
+public struct StablePackSelectionEmptyHashInputV8 has copy, drop, store {
+    domain: vector<u8>,
+    version: u64,
+    root_content_commitment: vector<u8>,
 }
 
 /// One-transaction authorization. No ability is intentional.
@@ -99,7 +127,10 @@ public struct CompleteAuthorizationV8 {
     output_commitment: vector<u8>,
     protected: bool,
     seal_id: vector<u8>,
+    required_pack_selection_count: u64,
+    required_pack_selection_commitment: vector<u8>,
     pack_selections: vector<PackSelectionCommitmentV8>,
+    pack_selection_commitment: vector<u8>,
     authorization_commitment: vector<u8>,
     sealed: bool,
 }
@@ -128,16 +159,12 @@ public struct CompleteReceiptV8 has key {
 public struct CompleteEmptyHashInputV8 has copy, drop, store {
     domain: vector<u8>,
     version: u64,
-    maker_root_id: ID,
-    ownership_epoch: u64,
     root_content_commitment: vector<u8>,
 }
 
 public struct CompleteOutputHashInputV8 has copy, drop, store {
     domain: vector<u8>,
     version: u64,
-    maker_root_id: ID,
-    ownership_epoch: u64,
     root_content_commitment: vector<u8>,
     sequence: u64,
     prior_commitment: vector<u8>,
@@ -146,6 +173,8 @@ public struct CompleteOutputHashInputV8 has copy, drop, store {
     output_commitment: vector<u8>,
     protected: bool,
     seal_id: vector<u8>,
+    required_pack_selection_count: u64,
+    required_pack_selection_commitment: vector<u8>,
 }
 
 public struct CompleteAuthorizationHashInputV8 has copy, drop, store {
@@ -165,7 +194,10 @@ public struct CompleteAuthorizationHashInputV8 has copy, drop, store {
     output_commitment: vector<u8>,
     protected: bool,
     seal_id: vector<u8>,
+    required_pack_selection_count: u64,
+    required_pack_selection_commitment: vector<u8>,
     pack_selections: vector<PackSelectionCommitmentV8>,
+    pack_selection_commitment: vector<u8>,
 }
 
 public struct CompleteOutputAppendedV8 has copy, drop {
@@ -195,6 +227,129 @@ public struct CompleteCreatedV8 has copy, drop {
 
 public fun version_v8(): u64 { VERSION }
 
+/// Pure pre-publication helper. Object IDs and ownership epochs are checked
+/// by the registry but intentionally excluded from semantic commitments.
+public fun empty_registry_commitment_v8(
+    root_content_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    hash::sha2_256(bcs::to_bytes(&CompleteEmptyHashInputV8 {
+        domain: b"animacraft.v8/complete/empty",
+        version: VERSION,
+        root_content_commitment,
+    }))
+}
+
+public fun advance_output_commitment_v8(
+    root_content_commitment: vector<u8>,
+    sequence: u64,
+    prior_commitment: vector<u8>,
+    output_key: String,
+    recipe_commitment: vector<u8>,
+    output_commitment: vector<u8>,
+    protected: bool,
+    seal_id: vector<u8>,
+    required_pack_selection_count: u64,
+    required_pack_selection_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    assert_digest(&prior_commitment);
+    assert_key(&output_key);
+    assert_digest(&recipe_commitment);
+    assert_digest(&output_commitment);
+    if (protected) {
+        assert_digest(&seal_id);
+    } else {
+        assert!(seal_id.is_empty(), EOutputMismatch);
+    };
+    assert!(required_pack_selection_count <= MAX_REQUIRED_PACK_SELECTIONS, EInvalidCount);
+    assert_digest(&required_pack_selection_commitment);
+    hash::sha2_256(bcs::to_bytes(&CompleteOutputHashInputV8 {
+        domain: b"animacraft.v8/complete/output",
+        version: VERSION,
+        root_content_commitment,
+        sequence,
+        prior_commitment,
+        output_key,
+        recipe_commitment,
+        output_commitment,
+        protected,
+        seal_id,
+        required_pack_selection_count,
+        required_pack_selection_commitment,
+    }))
+}
+
+/// The stable Seal scope key for one Complete output. The recipe commitment
+/// is the matching scope commitment passed to Seal coverage APIs.
+public fun output_seal_scope_key_v8(output_key: String): String {
+    assert_key(&output_key);
+    output_key
+}
+
+public fun output_seal_scope_commitment_v8(
+    recipe_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&recipe_commitment);
+    recipe_commitment
+}
+
+public fun empty_required_pack_selection_commitment_v8(
+    root_content_commitment: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    hash::sha2_256(bcs::to_bytes(&StablePackSelectionEmptyHashInputV8 {
+        domain: b"animacraft.v8/complete/pack-selection/empty",
+        version: VERSION,
+        root_content_commitment,
+    }))
+}
+
+/// Pure ordered transition for the stable portion of a Pack selection.
+/// Release object identity remains in the transaction-local proof only.
+public fun advance_required_pack_selection_commitment_v8(
+    root_content_commitment: vector<u8>,
+    sequence: u64,
+    prior_commitment: vector<u8>,
+    pack_scope_key: String,
+    release_content_commitment: vector<u8>,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    asset_commitment: vector<u8>,
+    protected: bool,
+    seal_id: vector<u8>,
+): vector<u8> {
+    assert_digest(&root_content_commitment);
+    assert_digest(&prior_commitment);
+    assert_scope_key(&pack_scope_key);
+    assert_digest(&release_content_commitment);
+    assert_key(&part_key);
+    assert_key(&item_key);
+    assert_key(&style_key);
+    assert_digest(&asset_commitment);
+    if (protected) {
+        assert_digest(&seal_id);
+    } else {
+        assert!(seal_id.is_empty(), EOutputMismatch);
+    };
+    hash::sha2_256(bcs::to_bytes(&StablePackSelectionHashInputV8 {
+        domain: b"animacraft.v8/complete/pack-selection",
+        version: VERSION,
+        root_content_commitment,
+        sequence,
+        prior_commitment,
+        pack_scope_key,
+        release_content_commitment,
+        part_key,
+        item_key,
+        style_key,
+        asset_commitment,
+        protected,
+        seal_id,
+    }))
+}
+
 public(package) fun new_complete_registry_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
@@ -207,11 +362,7 @@ public(package) fun new_complete_registry_v8<PaymentCoin>(
     let maker_root_id = maker::root_id_v8(root);
     let ownership_epoch = maker::ownership_epoch_v8(root);
     let root_content_commitment = *maker::content_commitment_v8(root);
-    let rolling_commitment = empty_commitment(
-        maker_root_id,
-        ownership_epoch,
-        root_content_commitment,
-    );
+    let rolling_commitment = empty_registry_commitment_v8(root_content_commitment);
     if (expected_count == 0) {
         assert!(expected_commitment == rolling_commitment, EInvalidCommitment);
     };
@@ -226,6 +377,7 @@ public(package) fun new_complete_registry_v8<PaymentCoin>(
         expected_commitment,
         rolling_commitment,
         sealed: false,
+        protected_output_count: 0,
         total_completes: 0,
         outputs: table::new(ctx),
         wallet_complete_counts: table::new(ctx),
@@ -247,6 +399,8 @@ public fun append_complete_output_v8<PaymentCoin>(
     output_commitment: vector<u8>,
     protected: bool,
     seal_id: vector<u8>,
+    required_pack_selection_count: u64,
+    required_pack_selection_commitment: vector<u8>,
 ) {
     maker::assert_draft_admin_v8(root, admin);
     assert_registry_binding(registry, root);
@@ -256,42 +410,54 @@ public fun append_complete_output_v8<PaymentCoin>(
     assert_key(&output_key);
     assert_digest(&recipe_commitment);
     assert_digest(&output_commitment);
+    assert!(required_pack_selection_count <= MAX_REQUIRED_PACK_SELECTIONS, EInvalidCount);
+    assert_digest(&required_pack_selection_commitment);
+    if (required_pack_selection_count == 0) {
+        assert!(
+            required_pack_selection_commitment
+                == empty_required_pack_selection_commitment_v8(registry.root_content_commitment),
+            EInvalidCommitment,
+        );
+    };
     let key = CompleteOutputKeyV8 { output_key };
     assert!(!registry.outputs.contains(key), EDuplicate);
     if (protected) {
         assert_digest(&seal_id);
+        let scope_commitment = output_seal_scope_commitment_v8(recipe_commitment);
         seal::assert_asset_covered_v8(
             seal_registry,
             root,
             seal::scope_complete_v8(),
-            object::id(registry),
+            output_seal_scope_key_v8(output_key),
+            &scope_commitment,
             output_key,
             &output_commitment,
             &seal_id,
         );
+        registry.protected_output_count = registry.protected_output_count + 1;
     } else {
         assert!(seal_id.is_empty(), EOutputMismatch);
     };
-    registry.rolling_commitment = hash::sha2_256(bcs::to_bytes(&CompleteOutputHashInputV8 {
-        domain: b"animacraft.v8/complete/output",
-        version: VERSION,
-        maker_root_id: registry.maker_root_id,
-        ownership_epoch: registry.ownership_epoch,
-        root_content_commitment: registry.root_content_commitment,
+    registry.rolling_commitment = advance_output_commitment_v8(
+        registry.root_content_commitment,
         sequence,
-        prior_commitment: registry.rolling_commitment,
+        registry.rolling_commitment,
         output_key,
         recipe_commitment,
         output_commitment,
         protected,
         seal_id,
-    }));
+        required_pack_selection_count,
+        required_pack_selection_commitment,
+    );
     registry.outputs.add(key, CompleteOutputPolicyV8 {
         output_key,
         recipe_commitment,
         output_commitment,
         protected,
         seal_id,
+        required_pack_selection_count,
+        required_pack_selection_commitment,
     });
     registry.observed_count = registry.observed_count + 1;
     event::emit(CompleteOutputAppendedV8 {
@@ -324,12 +490,17 @@ public fun seal_complete_registry_v8<PaymentCoin>(
 public(package) fun assert_activation_ready_v8<PaymentCoin>(
     registry: &CompleteRegistryV8,
     root: &MakerRootV8<PaymentCoin>,
-): (ID, vector<u8>, u64) {
+): (ID, vector<u8>, u64, u64) {
     assert_registry_binding(registry, root);
     assert!(registry.sealed, ERegistryNotSealed);
     assert!(registry.observed_count == registry.expected_count, EInvalidCount);
     assert!(registry.rolling_commitment == registry.expected_commitment, EInvalidCommitment);
-    (object::id(registry), registry.rolling_commitment, registry.observed_count)
+    (
+        object::id(registry),
+        registry.rolling_commitment,
+        registry.observed_count,
+        registry.protected_output_count,
+    )
 }
 
 public(package) fun rebind_ownership_epoch_v8<PaymentCoin>(
@@ -404,6 +575,7 @@ public fun append_pack_style_to_complete_v8(
     assert!(!authorization.sealed, EAuthorizationSealed);
     let (
         release_id,
+        pack_scope_key,
         maker_root_id,
         ownership_epoch,
         root_content_commitment,
@@ -420,8 +592,20 @@ public fun append_pack_style_to_complete_v8(
     assert!(ownership_epoch == authorization.ownership_epoch, EAuthorizationMismatch);
     assert!(root_content_commitment == authorization.root_content_commitment, EAuthorizationMismatch);
     assert!(holder == authorization.payer, EWrongPayer);
+    assert!(
+        authorization.pack_selections.length() < authorization.required_pack_selection_count,
+        EInvalidCount,
+    );
+    assert_unique_pack_selection(
+        &authorization.pack_selections,
+        &pack_scope_key,
+        &part_key,
+        &item_key,
+        &style_key,
+    );
     authorization.pack_selections.push_back(PackSelectionCommitmentV8 {
         release_id,
+        pack_scope_key,
         release_content_commitment,
         part_key,
         item_key,
@@ -436,6 +620,36 @@ public fun seal_complete_authorization_v8(
     authorization: &mut CompleteAuthorizationV8,
 ): vector<u8> {
     assert!(!authorization.sealed, EAuthorizationSealed);
+    assert!(
+        authorization.pack_selections.length() == authorization.required_pack_selection_count,
+        EInvalidCount,
+    );
+    let mut selection_commitment = empty_required_pack_selection_commitment_v8(
+        authorization.root_content_commitment,
+    );
+    let mut selection_index = 0;
+    while (selection_index < authorization.pack_selections.length()) {
+        let selection = authorization.pack_selections.borrow(selection_index);
+        selection_commitment = advance_required_pack_selection_commitment_v8(
+            authorization.root_content_commitment,
+            selection_index,
+            selection_commitment,
+            selection.pack_scope_key,
+            selection.release_content_commitment,
+            selection.part_key,
+            selection.item_key,
+            selection.style_key,
+            selection.asset_commitment,
+            selection.protected,
+            selection.seal_id,
+        );
+        selection_index = selection_index + 1;
+    };
+    assert!(
+        selection_commitment == authorization.required_pack_selection_commitment,
+        EInvalidCommitment,
+    );
+    authorization.pack_selection_commitment = selection_commitment;
     authorization.authorization_commitment = hash::sha2_256(bcs::to_bytes(
         &CompleteAuthorizationHashInputV8 {
             domain: b"animacraft.v8/complete/authorization",
@@ -454,7 +668,11 @@ public fun seal_complete_authorization_v8(
             output_commitment: authorization.output_commitment,
             protected: authorization.protected,
             seal_id: authorization.seal_id,
+            required_pack_selection_count: authorization.required_pack_selection_count,
+            required_pack_selection_commitment:
+                authorization.required_pack_selection_commitment,
             pack_selections: authorization.pack_selections,
+            pack_selection_commitment: authorization.pack_selection_commitment,
         },
     ));
     authorization.sealed = true;
@@ -487,7 +705,10 @@ public fun complete_v8<PaymentCoin>(
         output_commitment,
         protected: _,
         seal_id,
-        pack_selections,
+        required_pack_selection_count,
+        required_pack_selection_commitment,
+        pack_selections: _,
+        pack_selection_commitment,
         authorization_commitment,
         sealed,
     } = authorization;
@@ -498,6 +719,8 @@ public fun complete_v8<PaymentCoin>(
     assert!(root_content_commitment == *maker::content_commitment_v8(root), EAuthorizationMismatch);
     assert!(payer == ctx.sender(), EWrongPayer);
     assert_digest(&authorization_commitment);
+    assert!(required_pack_selection_count <= MAX_REQUIRED_PACK_SELECTIONS, EInvalidCount);
+    assert!(pack_selection_commitment == required_pack_selection_commitment, EAuthorizationMismatch);
     let economics = maker::root_economics_v8(root);
     let per_wallet_quota = maker::economics_complete_per_wallet_quota_v8(&economics);
     let total_cap = maker::economics_complete_total_cap_v8(&economics);
@@ -518,7 +741,6 @@ public fun complete_v8<PaymentCoin>(
         registry.wallet_complete_counts.add(payer, 1);
     };
     registry.total_completes = registry.total_completes + 1;
-    let pack_selection_commitment = hash::sha2_256(bcs::to_bytes(&pack_selections));
     let completed_at_ms = clock.timestamp_ms();
     let receipt = CompleteReceiptV8 {
         id: object::new(ctx),
@@ -559,6 +781,9 @@ public fun registry_commitment_v8(self: &CompleteRegistryV8): &vector<u8> {
     &self.rolling_commitment
 }
 public fun registry_output_count_v8(self: &CompleteRegistryV8): u64 { self.observed_count }
+public fun registry_protected_output_count_v8(self: &CompleteRegistryV8): u64 {
+    self.protected_output_count
+}
 public fun registry_total_completes_v8(self: &CompleteRegistryV8): u64 { self.total_completes }
 public fun registry_sealed_v8(self: &CompleteRegistryV8): bool { self.sealed }
 public fun wallet_complete_count_v8(self: &CompleteRegistryV8, wallet: address): u64 {
@@ -609,7 +834,10 @@ fun new_authorization<PaymentCoin>(
         output_commitment: output.output_commitment,
         protected: output.protected,
         seal_id: output.seal_id,
+        required_pack_selection_count: output.required_pack_selection_count,
+        required_pack_selection_commitment: output.required_pack_selection_commitment,
         pack_selections: vector[],
+        pack_selection_commitment: vector[],
         authorization_commitment: vector[],
         sealed: false,
     }
@@ -625,22 +853,33 @@ fun assert_registry_binding<PaymentCoin>(
     assert!(registry.root_content_commitment == *maker::content_commitment_v8(root), EInvalidBinding);
 }
 
-fun empty_commitment(
-    maker_root_id: ID,
-    ownership_epoch: u64,
-    root_content_commitment: vector<u8>,
-): vector<u8> {
-    hash::sha2_256(bcs::to_bytes(&CompleteEmptyHashInputV8 {
-        domain: b"animacraft.v8/complete/empty",
-        version: VERSION,
-        maker_root_id,
-        ownership_epoch,
-        root_content_commitment,
-    }))
+fun assert_unique_pack_selection(
+    selections: &vector<PackSelectionCommitmentV8>,
+    pack_scope_key: &String,
+    part_key: &String,
+    item_key: &String,
+    style_key: &String,
+) {
+    let mut index = 0;
+    while (index < selections.length()) {
+        let selection = selections.borrow(index);
+        assert!(
+            &selection.pack_scope_key != pack_scope_key
+                || &selection.part_key != part_key
+                || &selection.item_key != item_key
+                || &selection.style_key != style_key,
+            EDuplicate,
+        );
+        index = index + 1;
+    };
 }
 
 fun assert_key(value: &String) {
     assert!(value.length() > 0 && value.length() <= MAX_KEY_BYTES, EInvalidKey);
+}
+
+fun assert_scope_key(value: &String) {
+    assert!(value.length() > 0 && value.length() <= MAX_SCOPE_KEY_BYTES, EInvalidKey);
 }
 
 fun assert_digest(value: &vector<u8>) {
