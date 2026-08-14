@@ -12,7 +12,9 @@ use animacraft_v8_runtime::runtime_v8::{
     PackPassV8,
     PackRegistryV8,
     PackReleaseV8,
+    RuntimePhysicalSelectionWitnessV8,
     RuntimeLoadoutAuthorizationV8,
+    SelectionAccessProofV8,
 };
 
 public fun authorize_pack_complete<PaymentCoin, OutputRegistry: key>(
@@ -54,4 +56,25 @@ public fun consume_for_output(
         _selection_commitments, _pricing_commitments,
         _used_packs,
     ) = runtime::consume_loadout_authorization_v8(authorization, loadout);
+}
+
+
+public fun certify_physical_selection(
+    proof: SelectionAccessProofV8,
+    loadout: &MakerLoadoutV8,
+    ctx: &TxContext,
+): RuntimePhysicalSelectionWitnessV8 {
+    runtime::certify_physical_selection_v8(proof, loadout, ctx)
+}
+
+public fun consume_physical_selection(
+    witness: RuntimePhysicalSelectionWitnessV8,
+    loadout: &MakerLoadoutV8,
+    ctx: &TxContext,
+) {
+    let (_loadout_id, _root_id, _root_version, _root_content, _holder,
+        _revision, _loadout_commitment, _index, _selection_commitment,
+        _source_class, _source_definition_id, _source_semantic_id,
+        _source_content, _source_epoch, _pricing_commitment, _asset_content) =
+        runtime::consume_physical_selection_witness_v8(witness, loadout, ctx);
 }

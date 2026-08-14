@@ -418,6 +418,28 @@ public struct SelectionAccessProofV8 {
     pricing_commitment: vector<u8>,
 }
 
+/// One-use bridge from an entitlement-checked selection proof to Output's
+/// Physical materialization boundary. It binds the exact current selection;
+/// no caller-provided identity or commitment is authoritative.
+public struct RuntimePhysicalSelectionWitnessV8 {
+    loadout_id: ID,
+    root_id: ID,
+    root_version: u64,
+    root_content_commitment: vector<u8>,
+    holder: address,
+    loadout_revision: u64,
+    loadout_commitment: vector<u8>,
+    selection_index: u64,
+    selection_commitment: vector<u8>,
+    source_class: u8,
+    source_definition_id: ID,
+    source_semantic_id: String,
+    source_content_commitment: vector<u8>,
+    source_epoch: u64,
+    pricing_commitment: vector<u8>,
+    asset_content_commitment: vector<u8>,
+}
+
 public struct UsedPackV8 has copy, drop, store {
     release_id: ID,
     semantic_pack_id: String,
@@ -2483,6 +2505,85 @@ public fun prove_external_selection_v8<PaymentCoin>(
     new_selection_proof(loadout, selection, product.content_commitment)
 }
 
+/// Converts an already entitlement-checked proof into the exact current
+/// selection witness used by Output. The index, identities, revisions, and
+/// commitments all come from the consumed proof and live loadout.
+public fun certify_physical_selection_v8(
+    proof: SelectionAccessProofV8,
+    loadout: &MakerLoadoutV8,
+    ctx: &TxContext,
+): RuntimePhysicalSelectionWitnessV8 {
+    assert!(loadout.holder == ctx.sender(), EWrongHolder);
+    let SelectionAccessProofV8 {
+        loadout_id, loadout_revision, loadout_commitment, selection_index,
+        selection_commitment, source_class, source_definition_id,
+        source_semantic_id, source_content_commitment, source_epoch,
+        pricing_commitment,
+    } = proof;
+    assert!(loadout_id == object::id(loadout), EInvalidProof);
+    assert!(loadout_revision == loadout.revision, EInvalidProof);
+    assert!(loadout_commitment == loadout.commitment, EInvalidProof);
+    let selection = loadout.selections.borrow(selection_index).borrow();
+    assert!(selection.selection_index == selection_index, EInvalidProof);
+    assert!(selection_commitment == selection_commitment_v8(*selection), EInvalidProof);
+    assert!(source_class == selection.source_class, EInvalidProof);
+    assert!(source_definition_id == selection.source_definition_id, EInvalidProof);
+    assert!(source_semantic_id == selection.source_semantic_id, EInvalidProof);
+    assert!(source_epoch == selection.source_epoch, EInvalidProof);
+    assert!(pricing_commitment == selection.pricing_commitment, EInvalidProof);
+    assert_hash(&source_content_commitment);
+    RuntimePhysicalSelectionWitnessV8 {
+        loadout_id, root_id: loadout.root_id,
+        root_version: loadout.root_version,
+        root_content_commitment: loadout.root_content_commitment,
+        holder: loadout.holder, loadout_revision, loadout_commitment,
+        selection_index, selection_commitment, source_class,
+        source_definition_id, source_semantic_id, source_content_commitment,
+        source_epoch, pricing_commitment,
+        asset_content_commitment: selection.asset_content_commitment,
+    }
+}
+
+/// Output consumes the witness against the same live loadout. Any intervening
+/// mutation or holder drift aborts before materialization authorization exists.
+public fun consume_physical_selection_witness_v8(
+    witness: RuntimePhysicalSelectionWitnessV8,
+    loadout: &MakerLoadoutV8,
+    ctx: &TxContext,
+): (ID, ID, u64, vector<u8>, address, u64, vector<u8>, u64, vector<u8>, u8, ID, String, vector<u8>, u64, vector<u8>, vector<u8>) {
+    let RuntimePhysicalSelectionWitnessV8 {
+        loadout_id, root_id, root_version, root_content_commitment, holder,
+        loadout_revision, loadout_commitment, selection_index,
+        selection_commitment, source_class, source_definition_id,
+        source_semantic_id, source_content_commitment, source_epoch,
+        pricing_commitment, asset_content_commitment,
+    } = witness;
+    assert!(holder == ctx.sender() && holder == loadout.holder, EWrongHolder);
+    assert!(loadout_id == object::id(loadout), EInvalidProof);
+    assert!(root_id == loadout.root_id, EInvalidProof);
+    assert!(root_version == loadout.root_version, EInvalidProof);
+    assert!(root_content_commitment == loadout.root_content_commitment, EInvalidProof);
+    assert!(loadout_revision == loadout.revision, EInvalidProof);
+    assert!(loadout_commitment == loadout.commitment, EInvalidProof);
+    let selection = loadout.selections.borrow(selection_index).borrow();
+    assert!(selection.selection_index == selection_index, EInvalidProof);
+    assert!(selection_commitment == selection_commitment_v8(*selection), EInvalidProof);
+    assert!(source_class == selection.source_class, EInvalidProof);
+    assert!(source_definition_id == selection.source_definition_id, EInvalidProof);
+    assert!(source_semantic_id == selection.source_semantic_id, EInvalidProof);
+    assert!(source_epoch == selection.source_epoch, EInvalidProof);
+    assert!(pricing_commitment == selection.pricing_commitment, EInvalidProof);
+    assert!(asset_content_commitment == selection.asset_content_commitment,
+        EInvalidProof);
+    (
+        loadout_id, root_id, root_version, root_content_commitment, holder,
+        loadout_revision, loadout_commitment, selection_index,
+        selection_commitment, source_class, source_definition_id,
+        source_semantic_id, source_content_commitment, source_epoch,
+        pricing_commitment, asset_content_commitment,
+    )
+}
+
 /// Consumes exactly one proof per present selection, in increasing immutable
 /// Part order. No duplicate/missing/unrelated proof can survive this seal.
 public fun seal_ordered_selection_proofs_v8(
@@ -3431,6 +3532,76 @@ fun loadout_revision_is_exact_cas() {
     destroy_test_loadout(loadout);
 }
 
+#[test]
+fun physical_selection_witness_round_trips_exact_current_source() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 60, 0, 0, 0);
+    let mut loadout = test_loadout(&mut ctx);
+    let selection = test_selection(0, b"style".to_string(), SOURCE_PACK,
+        object::id_from_address(@0x21));
+    install_selection(&mut loadout, 0, selection);
+    let proof = new_selection_proof(&loadout,
+        loadout.selections.borrow(0).borrow(), test_hash(6));
+    let witness = certify_physical_selection_v8(proof, &loadout, &ctx);
+    let (loadout_id, root_id, root_version, root_content, holder,
+        revision, loadout_commitment, index, selection_commitment,
+        source_class, source_definition_id, source_semantic_id,
+        source_content, source_epoch, pricing_commitment, asset_content) =
+        consume_physical_selection_witness_v8(witness, &loadout, &ctx);
+    assert!(loadout_id == object::id(&loadout), EInvalidProof);
+    assert!(root_id == loadout.root_id && root_version == loadout.root_version,
+        EInvalidProof);
+    assert!(root_content == loadout.root_content_commitment, EInvalidProof);
+    assert!(holder == @0xA11 && revision == loadout.revision, EInvalidProof);
+    assert!(loadout_commitment == loadout.commitment, EInvalidProof);
+    assert!(index == 0 && selection_commitment == selection_commitment_v8(selection),
+        EInvalidProof);
+    assert!(source_class == SOURCE_PACK, EInvalidProof);
+    assert!(source_definition_id == selection.source_definition_id,
+        EInvalidProof);
+    assert!(source_semantic_id == selection.source_semantic_id,
+        EInvalidProof);
+    assert!(source_content == test_hash(6) && source_epoch == 0,
+        EInvalidProof);
+    assert!(pricing_commitment == selection.pricing_commitment,
+        EInvalidProof);
+    assert!(asset_content == selection.asset_content_commitment,
+        EInvalidProof);
+    destroy_test_loadout(loadout)
+}
+
+#[test, expected_failure(abort_code = EInvalidProof)]
+fun physical_selection_witness_rejects_loadout_mutation() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 61, 0, 0, 0);
+    let mut loadout = test_loadout(&mut ctx);
+    let selection = test_selection(0, b"first".to_string(), SOURCE_BASE,
+        object::id_from_address(@0x21));
+    install_selection(&mut loadout, 0, selection);
+    let proof = new_selection_proof(&loadout,
+        loadout.selections.borrow(0).borrow(), test_hash(6));
+    let witness = certify_physical_selection_v8(proof, &loadout, &ctx);
+    clear_selection(&mut loadout, 0);
+    install_selection(&mut loadout, 0, test_selection(
+        0, b"second".to_string(), SOURCE_BASE,
+        object::id_from_address(@0x21)));
+    consume_test_physical_witness(witness, &loadout, &ctx);
+    abort EInvalidProof
+}
+
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun physical_selection_witness_rejects_wrong_holder() {
+    let mut owner_ctx = sui::tx_context::new_from_hint(@0xA11, 62, 0, 0, 0);
+    let wrong_ctx = sui::tx_context::new_from_hint(@0xB0B, 63, 0, 0, 0);
+    let mut loadout = test_loadout(&mut owner_ctx);
+    let selection = test_selection(0, b"style".to_string(), SOURCE_BASE,
+        object::id_from_address(@0x21));
+    install_selection(&mut loadout, 0, selection);
+    let proof = new_selection_proof(&loadout,
+        loadout.selections.borrow(0).borrow(), test_hash(6));
+    let witness = certify_physical_selection_v8(proof, &loadout, &wrong_ctx);
+    consume_test_physical_witness(witness, &loadout, &wrong_ctx);
+    abort EWrongHolder
+}
+
 #[test, expected_failure(abort_code = EEquipLocked)]
 fun equipped_owned_item_cannot_transfer() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 4, 0, 0, 0);
@@ -3541,6 +3712,19 @@ fun semantic_key_components_cannot_smuggle_path_delimiters() {
     let _ = style_seal_asset_key_v8(
         b"body/other".to_string(), b"item".to_string(), b"style".to_string());
     abort EInvalidKey
+}
+
+#[test_only]
+fun consume_test_physical_witness(
+    witness: RuntimePhysicalSelectionWitnessV8,
+    loadout: &MakerLoadoutV8,
+    ctx: &TxContext,
+) {
+    let (_loadout_id, _root_id, _root_version, _root_content, _holder,
+        _revision, _loadout_commitment, _index, _selection_commitment,
+        _source_class, _source_definition_id, _source_semantic_id,
+        _source_content, _source_epoch, _pricing_commitment, _asset_content) =
+        consume_physical_selection_witness_v8(witness, loadout, ctx);
 }
 
 #[test_only]

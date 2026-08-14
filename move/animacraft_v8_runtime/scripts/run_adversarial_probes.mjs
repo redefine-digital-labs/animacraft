@@ -13,6 +13,7 @@ for (const [name, expected] of [
   ['adversarial_abilities', 'does not have the ability'],
   ['adversarial_api', 'restricted visibility'],
   ['adversarial_complete_api', 'restricted visibility'],
+  ['adversarial_physical_replay', 'previously moved'],
 ]) {
   try {
     execFileSync('sui', ['move', 'build', '--force', '--warnings-are-errors', '--path',
