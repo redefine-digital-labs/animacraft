@@ -1065,7 +1065,7 @@ fun exact_minimal_base_registry_seals() {
     );
     let root_content_commitment = test_hash(5);
     let expected_counts = new_base_definition_counts_v8(1, 1, 1, 1, 0, 0);
-    let expected_commitments = minimal_expected_commitments(
+    let expected_commitments = minimal_expected_commitments_for_testing(
         root_content_commitment,
     );
     let (mut root, admin) = maker::new_initial_maker_draft_v8<sui::sui::SUI>(
@@ -1169,7 +1169,7 @@ fun exact_minimal_base_registry_seals() {
 }
 
 #[test_only]
-fun minimal_expected_commitments(
+public fun minimal_expected_commitments_for_testing(
     root_content_commitment: vector<u8>,
 ): BaseDefinitionCommitmentsV8 {
     let mut commitments = empty_commitments(root_content_commitment);
@@ -1273,6 +1273,25 @@ fun minimal_expected_commitments(
         style_bytes,
     );
     commitments
+}
+
+#[test_only]
+public fun populate_and_seal_minimal_for_testing<PaymentCoin>(
+    registry: &mut BaseDefinitionRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+) {
+    append_track_v8(registry, root, admin, 0, b"track".to_string(),
+        b"Track".to_string(), 0, test_hash(10));
+    append_part_v8(registry, root, admin, 1, b"part".to_string(),
+        b"Part".to_string(), 0, 0, true, true, test_hash(11));
+    append_item_v8(registry, root, admin, 2, b"part".to_string(),
+        b"item".to_string(), b"Item".to_string(), 0, test_hash(12));
+    append_style_v8(registry, root, admin, 3, b"part".to_string(),
+        b"item".to_string(), b"style".to_string(), b"track".to_string(),
+        option::none(), option::none(), b"Style".to_string(),
+        b"style-blob".to_string(), test_hash(13), false, test_hash(14));
+    seal_base_definition_registry_v8(registry, root, admin);
 }
 
 #[test_only]

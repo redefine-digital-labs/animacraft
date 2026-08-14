@@ -48,14 +48,26 @@ package bytes off chain, recompute the digests, compare all IDs/digests, and
 only then certify and lock the catalog.
 
 The Root starts without this binding because the Release package necessarily
-depends on Core. `ReleaseCatalogWitnessV8` and `RuntimePackReadinessV8` have no
-abilities. The exact companion privately borrows its concrete role-typed call
-capability only after validating live state; generic type instantiation is
-never treated as authority. Core-issued proofs are destructured only inside
-package-internal finalization paths. Product binding finalization is a
-DRAFT-only AdminCap/current-owner operation, consumes the exact current
-enabled catalog proof, and rejects replacement. Core exposes only a readiness
-assertion in this phase; it does not expose an activation transition.
+depends on Core. Product binding finalization is a DRAFT-only
+AdminCap/current-owner operation, consumes the exact current enabled catalog
+proof, and rejects replacement. `activation_v8` then defines the five
+production no-ability proofs: Seal, Runtime activation, Output, Physical, and
+Market readiness. Each public certifier borrows the concrete role-typed call
+capability, checks the role's exact original/callable type origins, checks that
+the Root already carries the same catalog and complete call-cap set, derives
+every object ID from a live key reference, and commits an exact 32-byte
+companion-owned readiness digest. Generic type instantiation is never treated
+as authority.
+
+`activation_v8::activate_maker_v8` is the terminal Release-capability entry.
+It consumes all five readiness values, rechecks the enabled current protocol
+snapshot, current Maker owner/AdminCap, exact catalog, sealed Base registry,
+and exact Maker and Protocol treasuries, creates the Pack-admission binding
+from Runtime readiness internally, and invokes the package-only DRAFT to
+ACTIVE transition. It accepts no registry ID and emits no Core discovery
+event. The Root's BCS/SHA-256 `CapabilityRegistryBindingV8` records mask 127,
+the complete call-cap set, protocol/Base/treasury IDs, every companion object
+ID, and all five readiness commitments; zero or pairwise-colliding IDs abort.
 
 ## Core objects and immutable snapshots
 
@@ -130,10 +142,20 @@ admission-policy commitment. That binding is DRAFT-only and cannot be
 replaced.
 
 The Runtime package validates its private registry state and borrows its
-catalog-issued Runtime call capability to obtain a no-ability
-`RuntimePackReadinessV8`. Core checks the
-registry/authority IDs plus exact immutable Root ID, numeric Maker version,
-Root content commitment, and admission-policy commitment.
+catalog-issued Runtime call capability to obtain the no-ability
+`RuntimeActivationReadinessV8`. Its public Core certifier takes live Runtime
+definition-registry, Pack-registry, and admission-authority references and
+binds the exact admission policy already frozen by the Root. The former pure
+`RuntimePackReadinessV8` tuple path remains package-only/test-only and is not a
+production companion API.
+
+After activation, Output may create a no-ability `OutputRuntimeRequestV8` only
+while borrowing its Output capability and passing the exact live Root,
+catalog, and Output registry. Runtime must consume that request while
+borrowing its Runtime capability and passing the same live objects and
+requester context before mutating a counter. Requests cannot be stored,
+copied, or discarded and reject cross-Root, cross-catalog, cross-registry,
+cross-capability, and cross-requester substitution.
 
 `control_epoch` exists only for the AdminCap and controlled writes. Immutable
 Base and Pack compatibility is the Root ID + Maker version + content
@@ -146,13 +168,12 @@ successor. Core exposes no authority revoke, discard, or transfer escape hatch.
 
 ## Deliberate non-functionality
 
-This bounded split does not yet implement activation, pause/resume/archive,
-Pack admission/runtime mutation, Complete/Soul, Seal, Physical, Market, or
-public discovery. Core does implement exact Maker/Protocol revenue custody and
-Maker access settlement, but those public access paths remain unreachable
-until the checked Release package activates a Root. `ACTIVE`, `PAUSED`, and
-`ARCHIVED` values are reserved for that Release/lifecycle implementation; no
-production function here can transition a Root out of `DRAFT`.
+Core implements terminal DRAFT-to-ACTIVE activation but not Release discovery,
+pause/resume/archive orchestration, Pack admission/runtime mutation,
+Complete/Soul, Seal behavior, Physical behavior, or Market behavior. Those
+remain exact companion responsibilities. No companion package is imported by
+Core, and no public Core function exposes raw registry IDs as activation
+inputs.
 
 ## Verification
 
@@ -170,7 +191,8 @@ git diff --check
 The adversarial runner requires the external ability/API attack packages to
 fail compilation for the expected reasons and the cross-catalog call-cap runtime
 attack to abort as expected. The size script implements Sui's exact
-`MovePackage::size` formula and fails above the Core target of 60,000 bytes.
-That target includes native Treasury custody and Maker access enforcement yet
-still reserves more than 42 KB beneath Mainnet's 102,400-byte hard maximum;
+`MovePackage::size` formula and fails above the Core target of 64,000 bytes.
+That target includes native Treasury custody, Maker access enforcement,
+terminal typed activation, and the Output-to-Runtime request boundary while
+still preserving more than 38 KB beneath Mainnet's 102,400-byte hard maximum;
 the hard limit is never treated as the working budget.

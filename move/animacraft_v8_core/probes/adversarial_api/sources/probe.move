@@ -2,11 +2,39 @@
 /// and witness-plus-free-Runtime-tuple paths are intentionally absent.
 module animacraft_v8_core_adversarial_api::probe;
 
+use animacraft_v8_core::activation_v8::{
+    OutputRuntimeRequestV8,
+    SealReadinessV8,
+};
+
 use animacraft_v8_core::maker_v8 as maker;
 use animacraft_v8_core::package_binding_v8::{Self as binding, ProductReleaseCatalogV8};
 use std::string::String;
 
 public struct FakeRuntimeWitnessV8 {}
+
+public fun forge_seal_readiness(): SealReadinessV8 {
+    SealReadinessV8 {
+        root_id: object::id_from_address(@0x1),
+        catalog_id: object::id_from_address(@0x2),
+        call_cap_set_commitment: vector[],
+        registry_id: object::id_from_address(@0x3),
+        companion_commitment: vector[],
+        commitment: vector[],
+    }
+}
+
+public fun forge_output_request(): OutputRuntimeRequestV8 {
+    OutputRuntimeRequestV8 {
+        request_id: object::id_from_address(@0x1),
+        root_id: object::id_from_address(@0x2),
+        catalog_id: object::id_from_address(@0x3),
+        call_cap_set_commitment: vector[],
+        output_registry_id: object::id_from_address(@0x4),
+        requester: @0xA11,
+        commitment: vector[],
+    }
+}
 
 public fun forge_wrapped_certification(): maker::WrappedRightsCertificationV8 {
     maker::WrappedRightsCertificationV8 {

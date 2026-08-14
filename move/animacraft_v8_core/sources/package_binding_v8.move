@@ -562,6 +562,38 @@ public fun assert_certified_binding_v8(
     );
 }
 
+/// Proves that two snapshots name the complete same call-capability set, not
+/// merely the same catalog or product binding. Core activation uses this when
+/// it copies the catalog-governed set into one Maker Root.
+public fun assert_same_call_cap_set_v8(
+    left: &PackageCallCapSetBindingV8,
+    right: &PackageCallCapSetBindingV8,
+) {
+    assert_call_cap_set_well_formed(
+        left,
+        left.catalog_id,
+        left.product_binding_commitment,
+    );
+    assert_call_cap_set_well_formed(
+        right,
+        right.catalog_id,
+        right.product_binding_commitment,
+    );
+    assert!(left.version == right.version, ECallCapMismatch);
+    assert!(left.catalog_id == right.catalog_id, ECallCapMismatch);
+    assert!(
+        &left.product_binding_commitment == &right.product_binding_commitment,
+        ECallCapMismatch,
+    );
+    assert!(left.seal_authority_id == right.seal_authority_id, ECallCapMismatch);
+    assert!(left.runtime_authority_id == right.runtime_authority_id, ECallCapMismatch);
+    assert!(left.output_authority_id == right.output_authority_id, ECallCapMismatch);
+    assert!(left.physical_authority_id == right.physical_authority_id, ECallCapMismatch);
+    assert!(left.market_authority_id == right.market_authority_id, ECallCapMismatch);
+    assert!(left.release_authority_id == right.release_authority_id, ECallCapMismatch);
+    assert!(&left.commitment == &right.commitment, ECallCapMismatch);
+}
+
 public(package) fun consume_release_catalog_witness_v8(
     witness: ReleaseCatalogWitnessV8,
 ): CertifiedProductReleaseBindingV8 {

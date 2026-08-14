@@ -42,6 +42,12 @@ function expectRuntimePass(relativePath) {
 expectCompileFailure('probes/adversarial_abilities', [
   'ReleaseCatalogWitnessV8',
   'RuntimePackReadinessV8',
+  'SealReadinessV8',
+  'RuntimeActivationReadinessV8',
+  'OutputReadinessV8',
+  'PhysicalReadinessV8',
+  'MarketReadinessV8',
+  'OutputRuntimeRequestV8',
   'PackageCallCapV8',
   'WrappedRightsCertificationV8',
   'SuccessorAuthorityV8',
@@ -55,6 +61,8 @@ expectCompileFailure('probes/adversarial_api', [
   'new_rights_snapshot_v8',
   'certify_runtime_pack_readiness_v8',
   'WrappedRightsCertificationV8',
+  'SealReadinessV8',
+  'OutputRuntimeRequestV8',
 ]);
 
 expectRuntimePass('probes/adversarial_runtime');

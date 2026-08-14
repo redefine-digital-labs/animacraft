@@ -5,6 +5,7 @@ module animacraft_v8_core::maker_v8;
 use animacraft_v8_core::package_binding_v8::{
     Self as package_binding,
     CertifiedProductReleaseBindingV8,
+    PackageCallCapSetBindingV8,
     ProductReleaseCatalogV8,
     ProductReleaseBindingV8,
     ReleaseCatalogWitnessV8,
@@ -30,8 +31,7 @@ const MAX_BLOB_ID_BYTES: u64 = 512;
 const MAX_EVIDENCE_LOCATOR_BYTES: u64 = 1_024;
 
 const DRAFT: u8 = 0;
-/// Reserved for the future Release orchestrator. This bounded Core phase does
-/// not expose a transition that can reach it.
+/// Reached only by activation_v8 after every terminal readiness check passes.
 const ACTIVE: u8 = 1;
 const PAUSED: u8 = 2;
 const ARCHIVED: u8 = 3;
@@ -71,6 +71,9 @@ const EInvalidSuccessorAuthority: u64 = 22;
 const EMakerTreasuryAlreadyFinalized: u64 = 23;
 const EMakerTreasuryMissing: u64 = 24;
 const EMakerTreasuryMismatch: u64 = 25;
+const ECapabilityRegistryAlreadyFinalized: u64 = 26;
+const ECapabilityRegistryMissing: u64 = 27;
+const ECapabilityRegistryMismatch: u64 = 28;
 
 public struct EconomicsSnapshotV8 has copy, drop, store {
     protocol_config_id: ID,
@@ -130,6 +133,32 @@ public struct PackAdmissionBindingV8 has copy, drop, store {
     commitment: vector<u8>,
 }
 
+/// Exact terminal capability graph copied into one Root during Core
+/// activation. The complete call-cap set remains visible for deterministic
+/// readback while every companion object ID is bound to the same Root.
+public struct CapabilityRegistryBindingV8 has copy, drop, store {
+    native_capability_mask: u64,
+    catalog_id: ID,
+    call_cap_set: PackageCallCapSetBindingV8,
+    protocol_config_id: ID,
+    base_registry_id: ID,
+    maker_treasury_id: ID,
+    protocol_treasury_id: ID,
+    seal_registry_id: ID,
+    runtime_definition_registry_id: ID,
+    pack_registry_id: ID,
+    admission_authority_id: ID,
+    output_registry_id: ID,
+    physical_registry_id: ID,
+    market_registry_id: ID,
+    seal_readiness_commitment: vector<u8>,
+    runtime_readiness_commitment: vector<u8>,
+    output_readiness_commitment: vector<u8>,
+    physical_readiness_commitment: vector<u8>,
+    market_readiness_commitment: vector<u8>,
+    commitment: vector<u8>,
+}
+
 public struct MakerRootV8<phantom PaymentCoin> has key {
     id: UID,
     version: u64,
@@ -163,6 +192,7 @@ public struct MakerRootV8<phantom PaymentCoin> has key {
     rights: RightsSnapshotV8,
     product_release_binding: Option<CertifiedProductReleaseBindingV8>,
     pack_admission_binding: Option<PackAdmissionBindingV8>,
+    capability_registry_binding: Option<CapabilityRegistryBindingV8>,
     created_at_ms: u64,
 }
 
@@ -258,6 +288,32 @@ public struct PackAdmissionCommitmentInputV8 has drop {
     pack_registry_id: ID,
     admission_authority_id: ID,
     policy_commitment: vector<u8>,
+}
+
+public struct CapabilityRegistryCommitmentInputV8 has drop {
+    domain: vector<u8>,
+    version: u64,
+    root_id: ID,
+    root_version_commitment: vector<u8>,
+    native_capability_mask: u64,
+    catalog_id: ID,
+    call_cap_set: PackageCallCapSetBindingV8,
+    protocol_config_id: ID,
+    base_registry_id: ID,
+    maker_treasury_id: ID,
+    protocol_treasury_id: ID,
+    seal_registry_id: ID,
+    runtime_definition_registry_id: ID,
+    pack_registry_id: ID,
+    admission_authority_id: ID,
+    output_registry_id: ID,
+    physical_registry_id: ID,
+    market_registry_id: ID,
+    seal_readiness_commitment: vector<u8>,
+    runtime_readiness_commitment: vector<u8>,
+    output_readiness_commitment: vector<u8>,
+    physical_readiness_commitment: vector<u8>,
+    market_readiness_commitment: vector<u8>,
 }
 
 public struct ProductReleaseBindingFinalizedV8 has copy, drop {
@@ -785,6 +841,7 @@ fun new_maker_draft_internal_v8<PaymentCoin>(
         rights,
         product_release_binding: option::none(),
         pack_admission_binding: option::none(),
+        capability_registry_binding: option::none(),
         created_at_ms: clock.timestamp_ms(),
     };
     (root, admin)
@@ -955,6 +1012,34 @@ public(package) fun finalize_pack_admission_binding_v8<PaymentCoin>(
         &policy_commitment == &root.expected_pack_admission_policy_commitment,
         EInvalidCommitment,
     );
+    finalize_pack_admission_binding_from_core_v8(
+        root,
+        admin,
+        pack_registry_id,
+        admission_authority_id,
+        policy_commitment,
+    );
+}
+
+/// Core terminal activation uses IDs extracted from RuntimeActivationReadinessV8.
+/// This remains package-only so no external caller can substitute raw IDs.
+public(package) fun finalize_pack_admission_binding_from_core_v8<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    pack_registry_id: ID,
+    admission_authority_id: ID,
+    policy_commitment: vector<u8>,
+) {
+    assert_draft_admin_v8(root, admin);
+    assert!(
+        root.pack_admission_binding.is_none(),
+        EPackAdmissionAlreadyFinalized,
+    );
+    assert!(root.product_release_binding.is_some(), EProductBindingMissing);
+    assert!(
+        &policy_commitment == &root.expected_pack_admission_policy_commitment,
+        EInvalidCommitment,
+    );
     assert!(pack_registry_id != admission_authority_id, EBindingIdCollision);
     assert!(pack_registry_id != object::id(root), EBindingIdCollision);
     if (root.base_registry_id.is_some()) {
@@ -999,8 +1084,82 @@ public(package) fun finalize_pack_admission_binding_v8<PaymentCoin>(
     });
 }
 
-/// Read-only Core half of activation readiness. It cannot activate a Maker;
-/// the future Release package must also prove concrete companion readiness.
+/// Copies the complete Core-verified capability graph into the DRAFT Root.
+/// All raw IDs originate in live references consumed by activation_v8; this
+/// package-only boundary additionally rejects zero and pairwise collisions.
+public(package) fun finalize_capability_registry_binding_v8<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    native_capability_mask: u64,
+    catalog_id: ID,
+    call_cap_set: PackageCallCapSetBindingV8,
+    protocol_config_id: ID,
+    base_registry_id: ID,
+    maker_treasury_id: ID,
+    protocol_treasury_id: ID,
+    seal_registry_id: ID,
+    runtime_definition_registry_id: ID,
+    pack_registry_id: ID,
+    admission_authority_id: ID,
+    output_registry_id: ID,
+    physical_registry_id: ID,
+    market_registry_id: ID,
+    seal_readiness_commitment: vector<u8>,
+    runtime_readiness_commitment: vector<u8>,
+    output_readiness_commitment: vector<u8>,
+    physical_readiness_commitment: vector<u8>,
+    market_readiness_commitment: vector<u8>,
+) {
+    assert_draft_admin_v8(root, admin);
+    assert!(
+        root.capability_registry_binding.is_none(),
+        ECapabilityRegistryAlreadyFinalized,
+    );
+    let mut capability = CapabilityRegistryBindingV8 {
+        native_capability_mask,
+        catalog_id,
+        call_cap_set,
+        protocol_config_id,
+        base_registry_id,
+        maker_treasury_id,
+        protocol_treasury_id,
+        seal_registry_id,
+        runtime_definition_registry_id,
+        pack_registry_id,
+        admission_authority_id,
+        output_registry_id,
+        physical_registry_id,
+        market_registry_id,
+        seal_readiness_commitment,
+        runtime_readiness_commitment,
+        output_readiness_commitment,
+        physical_readiness_commitment,
+        market_readiness_commitment,
+        commitment: vector[],
+    };
+    capability.commitment = capability_registry_commitment(root, &capability);
+    assert_capability_registry_binding(root, &capability);
+    root.capability_registry_binding = option::some(capability);
+}
+
+/// The only production DRAFT -> ACTIVE transition. It is callable solely by
+/// another Core module after every exact binding has been finalized.
+public(package) fun activate_from_core_v8<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+) {
+    assert_draft_admin_v8(root, admin);
+    assert_activation_scaffold_ready_v8(root);
+    assert!(
+        root.capability_registry_binding.is_some(),
+        ECapabilityRegistryMissing,
+    );
+    assert_capability_registry_binding(root, root.capability_registry_binding.borrow());
+    root.lifecycle = ACTIVE;
+}
+
+/// Read-only scaffold check used by terminal activation after the Release
+/// package has supplied all five concrete companion readiness proofs.
 public fun assert_activation_scaffold_ready_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ) {
@@ -1018,8 +1177,8 @@ public fun assert_activation_scaffold_ready_v8<PaymentCoin>(
     assert_pack_admission_binding(root, root.pack_admission_binding.borrow());
 }
 
-/// Lets the future Release orchestrator check that its marker types match the
-/// exact original/callable IDs frozen into this Root. This is not activation.
+/// Lets Release check that its marker types match the exact
+/// original/callable IDs frozen into this Root. This alone is not activation.
 public fun assert_release_type_origins_v8<
     PaymentCoin,
     ReleaseOriginalMarker,
@@ -1227,6 +1386,105 @@ fun assert_pack_admission_binding<PaymentCoin>(
         },
     ));
     assert!(&expected == &binding.commitment, EInvalidCommitment);
+}
+
+fun assert_capability_registry_binding<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    binding: &CapabilityRegistryBindingV8,
+) {
+    assert!(
+        binding.native_capability_mask == package_binding::native_capability_mask_v8(),
+        ECapabilityRegistryMismatch,
+    );
+    assert!(root.product_release_binding.is_some(), EProductBindingMissing);
+    let certified = root.product_release_binding.borrow();
+    assert!(binding.catalog_id == package_binding::certified_catalog_id_v8(certified), ECatalogMismatch);
+    package_binding::assert_same_call_cap_set_v8(
+        &binding.call_cap_set,
+        package_binding::certified_call_cap_set_v8(certified),
+    );
+    assert!(binding.protocol_config_id == root.protocol_config_id, EProtocolSnapshotMismatch);
+    assert!(root.base_registry_id.is_some(), EBaseRegistryMissing);
+    assert!(binding.base_registry_id == *root.base_registry_id.borrow(), EBaseRegistryMismatch);
+    assert!(root.maker_treasury_id.is_some(), EMakerTreasuryMissing);
+    assert!(binding.maker_treasury_id == *root.maker_treasury_id.borrow(), EMakerTreasuryMismatch);
+    assert!(binding.protocol_treasury_id == root.economics.protocol_treasury_id, EProtocolSnapshotMismatch);
+    assert_hash(&binding.seal_readiness_commitment);
+    assert_hash(&binding.runtime_readiness_commitment);
+    assert_hash(&binding.output_readiness_commitment);
+    assert_hash(&binding.physical_readiness_commitment);
+    assert_hash(&binding.market_readiness_commitment);
+    assert_distinct_nonzero_ids(vector[
+        object::id(root),
+        root.admin_cap_id,
+        binding.catalog_id,
+        binding.protocol_config_id,
+        binding.base_registry_id,
+        binding.maker_treasury_id,
+        binding.protocol_treasury_id,
+        binding.seal_registry_id,
+        binding.runtime_definition_registry_id,
+        binding.pack_registry_id,
+        binding.admission_authority_id,
+        binding.output_registry_id,
+        binding.physical_registry_id,
+        binding.market_registry_id,
+        package_binding::seal_authority_id_v8(&binding.call_cap_set),
+        package_binding::runtime_authority_id_v8(&binding.call_cap_set),
+        package_binding::output_authority_id_v8(&binding.call_cap_set),
+        package_binding::physical_authority_id_v8(&binding.call_cap_set),
+        package_binding::market_authority_id_v8(&binding.call_cap_set),
+        package_binding::release_authority_id_v8(&binding.call_cap_set),
+    ]);
+    let expected = capability_registry_commitment(root, binding);
+    assert!(&expected == &binding.commitment, ECapabilityRegistryMismatch);
+}
+
+fun capability_registry_commitment<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    binding: &CapabilityRegistryBindingV8,
+): vector<u8> {
+    hash::sha2_256(bcs::to_bytes(
+        &CapabilityRegistryCommitmentInputV8 {
+            domain: b"animacraft-v8/capability-registry-binding",
+            version: VERSION,
+            root_id: object::id(root),
+            root_version_commitment: root.version_commitment,
+            native_capability_mask: binding.native_capability_mask,
+            catalog_id: binding.catalog_id,
+            call_cap_set: binding.call_cap_set,
+            protocol_config_id: binding.protocol_config_id,
+            base_registry_id: binding.base_registry_id,
+            maker_treasury_id: binding.maker_treasury_id,
+            protocol_treasury_id: binding.protocol_treasury_id,
+            seal_registry_id: binding.seal_registry_id,
+            runtime_definition_registry_id: binding.runtime_definition_registry_id,
+            pack_registry_id: binding.pack_registry_id,
+            admission_authority_id: binding.admission_authority_id,
+            output_registry_id: binding.output_registry_id,
+            physical_registry_id: binding.physical_registry_id,
+            market_registry_id: binding.market_registry_id,
+            seal_readiness_commitment: binding.seal_readiness_commitment,
+            runtime_readiness_commitment: binding.runtime_readiness_commitment,
+            output_readiness_commitment: binding.output_readiness_commitment,
+            physical_readiness_commitment: binding.physical_readiness_commitment,
+            market_readiness_commitment: binding.market_readiness_commitment,
+        },
+    ))
+}
+
+fun assert_distinct_nonzero_ids(ids: vector<ID>) {
+    let zero = object::id_from_address(@0x0);
+    let mut left = 0;
+    while (left < ids.length()) {
+        assert!(ids[left] != zero, EBindingIdCollision);
+        let mut right = left + 1;
+        while (right < ids.length()) {
+            assert!(ids[left] != ids[right], EBindingIdCollision);
+            right = right + 1;
+        };
+        left = left + 1;
+    };
 }
 
 public fun assert_economics_snapshot_v8<PaymentCoin>(
@@ -1534,6 +1792,12 @@ public fun root_product_release_catalog_id_v8<PaymentCoin>(
     assert!(root.product_release_binding.is_some(), EProductBindingMissing);
     package_binding::certified_catalog_id_v8(root.product_release_binding.borrow())
 }
+public fun root_product_release_call_cap_set_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &PackageCallCapSetBindingV8 {
+    assert!(root.product_release_binding.is_some(), EProductBindingMissing);
+    package_binding::certified_call_cap_set_v8(root.product_release_binding.borrow())
+}
 public fun root_native_capability_mask_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): u64 {
@@ -1554,6 +1818,85 @@ public fun root_pack_admission_binding_v8<PaymentCoin>(
     assert!(root.pack_admission_binding.is_some(), EPackAdmissionBindingMissing);
     root.pack_admission_binding.borrow()
 }
+public fun root_capability_registry_binding_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &CapabilityRegistryBindingV8 {
+    assert!(
+        root.capability_registry_binding.is_some(),
+        ECapabilityRegistryMissing,
+    );
+    let binding = root.capability_registry_binding.borrow();
+    assert_capability_registry_binding(root, binding);
+    binding
+}
+
+public fun assert_active_capability_registry_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+) {
+    assert!(root.lifecycle == ACTIVE, EInvalidLifecycle);
+    let _ = root_capability_registry_binding_v8(root);
+}
+
+public fun capability_catalog_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.catalog_id
+}
+public fun capability_native_capability_mask_v8(
+    binding: &CapabilityRegistryBindingV8,
+): u64 { binding.native_capability_mask }
+public fun capability_call_cap_set_v8(
+    binding: &CapabilityRegistryBindingV8,
+): &PackageCallCapSetBindingV8 { &binding.call_cap_set }
+public fun capability_protocol_config_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.protocol_config_id
+}
+public fun capability_base_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.base_registry_id
+}
+public fun capability_maker_treasury_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.maker_treasury_id
+}
+public fun capability_protocol_treasury_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.protocol_treasury_id
+}
+public fun capability_seal_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.seal_registry_id
+}
+public fun capability_runtime_definition_registry_id_v8(
+    binding: &CapabilityRegistryBindingV8,
+): ID { binding.runtime_definition_registry_id }
+public fun capability_pack_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.pack_registry_id
+}
+public fun capability_admission_authority_id_v8(
+    binding: &CapabilityRegistryBindingV8,
+): ID { binding.admission_authority_id }
+public fun capability_output_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.output_registry_id
+}
+public fun capability_physical_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.physical_registry_id
+}
+public fun capability_market_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.market_registry_id
+}
+public fun capability_seal_readiness_commitment_v8(
+    binding: &CapabilityRegistryBindingV8,
+): &vector<u8> { &binding.seal_readiness_commitment }
+public fun capability_runtime_readiness_commitment_v8(
+    binding: &CapabilityRegistryBindingV8,
+): &vector<u8> { &binding.runtime_readiness_commitment }
+public fun capability_output_readiness_commitment_v8(
+    binding: &CapabilityRegistryBindingV8,
+): &vector<u8> { &binding.output_readiness_commitment }
+public fun capability_physical_readiness_commitment_v8(
+    binding: &CapabilityRegistryBindingV8,
+): &vector<u8> { &binding.physical_readiness_commitment }
+public fun capability_market_readiness_commitment_v8(
+    binding: &CapabilityRegistryBindingV8,
+): &vector<u8> { &binding.market_readiness_commitment }
+public fun capability_binding_commitment_v8(
+    binding: &CapabilityRegistryBindingV8,
+): &vector<u8> { &binding.commitment }
 public fun pack_registry_id_v8(binding: &PackAdmissionBindingV8): ID {
     binding.pack_registry_id
 }
@@ -1745,6 +2088,7 @@ public fun destroy_maker_for_testing<PaymentCoin>(
         rights: _,
         product_release_binding: _,
         pack_admission_binding: _,
+        capability_registry_binding: _,
         created_at_ms: _,
     } = root;
     let MakerAdminCapV8 {
@@ -1914,6 +2258,7 @@ fun new_root_is_draft_and_snapshots_native_policy() {
     assert!(root.lifecycle == DRAFT, EInvalidLifecycle);
     assert!(root.product_release_binding.is_none(), EProductBindingAlreadyFinalized);
     assert!(root.pack_admission_binding.is_none(), EPackAdmissionAlreadyFinalized);
+    assert!(root.capability_registry_binding.is_none(), ECapabilityRegistryAlreadyFinalized);
     assert!(root.expected_base_definition_count == 4, EBaseRegistryMismatch);
     destroy_test_maker(config, protocol_cap, root, admin);
 }

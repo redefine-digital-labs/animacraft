@@ -345,6 +345,16 @@ fun assert_protocol_treasury<PaymentCoin>(
     );
 }
 
+/// Core-only exact treasury assertion used by terminal activation. Companion
+/// packages retain only the public deposit surface and cannot turn this into
+/// a treasury-discovery API.
+public(package) fun assert_exact_protocol_treasury_v8<PaymentCoin>(
+    config: &ProtocolConfigV8,
+    treasury: &ProtocolTreasuryV8<PaymentCoin>,
+) {
+    assert_protocol_treasury(config, treasury);
+}
+
 fun current_core_original_package_id(): ID {
     object::id_from_address(type_name::original_id<CorePackageMarkerV8>())
 }
