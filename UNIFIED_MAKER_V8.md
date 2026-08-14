@@ -15,48 +15,76 @@ second product version or compatibility layer.
 
 ## Package boundary
 
-The preferred layout is one fresh `animacraft_v8` package containing:
+Animacraft v8 is one product release assembled from several fresh, immutable
+v8 packages. The split is mandatory: the first semantic prototype measured
+89,205 bytes before the missing runtime, decrypt and market behavior was added,
+leaving only 795 bytes below the internal safety ceiling. Increasing the size
+ceiling or leaving those behaviors as manifest promises is not acceptable.
 
-- `protocol_config_v8`: the enabled Mainnet protocol tuple and fee policy;
-- `maker_v8`: Root, AdminCap, Treasury, staged publication and lifecycle;
-- `publication_v8`: the only final activation orchestrator; it imports the
-  Root and every required registry module, preventing circular dependencies;
-- `composition_v8`: wardrobe slots, owned selections and loadout rules;
-- `expansion_pack_v8`: Pack releases, style rows, Passes and lifecycle;
-- `complete_v8`: exact final Recipe authorization and completion receipts;
-- `seal_v8`: protected Style/Complete coverage and policy commitments.
-- `soul_v8`: the canonical Soul registry and same-transaction Soul mint;
-- `physical_v8`: physical policies and materialization bound to v8 Styles.
+The dependency graph is acyclic and frozen as follows:
 
-`physical_v8` remains in the same package while the measured package object
-stays within the safety budget. It MAY be split into a separate fresh package
-only when the production build
-would otherwise exceed the package-object safety budget. If split, it remains
-version 8, binds the exact Root ID/ownership epoch/content commitment, and is a
-required activation dependency for Makers that declare physical capability.
+1. `animacraft_v8_core`: ProtocolConfig, MakerRoot, AdminCap, Treasury, base
+   definition registries, immutable rights/economics and DRAFT lifecycle;
+2. `animacraft_v8_seal` -> Core: ciphertext identity, key-server policy and
+   entitlement-bound decrypt approvals;
+3. `animacraft_v8_runtime` -> Core + Seal: canonical loadouts, external Item
+   admission/ownership and Expansion Pack releases/access;
+4. `animacraft_v8_output` -> Core + Seal + Runtime: Complete policies,
+   instance Recipe/render authorization, receipts and Canonical Soul;
+5. `animacraft_v8_physical` -> Core + Runtime + Output: proof-bound physical
+   materialization and holder-safe custody/transfer/consume;
+6. `animacraft_v8_market` -> the asset-defining packages: fixed-price USDC
+   escrow and native protocol/creator/source/resale settlement;
+7. `animacraft_v8_release` -> all required packages: the only final activation
+   orchestrator and the only emitter of `MakerV8Activated`.
 
-For a split Physical package, dependency is one-way (`physical_v8` imports
-Core). The Core binding hook consumes a non-forgeable, non-copy witness whose
-original TypeOrigin is pinned in ProtocolConfig and checks Root ID, ownership
-epoch, content commitment, registry commitment and one-time binding. The
-Physical module can construct that witness only after its typed registry is
-activation-ready. Runtime and preflight additionally pin the Physical callable
-package, TypeOrigin, source and package digest.
+Core imports no companion. Each asset-defining package owns its private state
+and exposes only capability-gated hooks; Market and Release cannot edit fields
+through generic object access. Every dependency is bound by an immutable
+`ProductReleaseBindingV8` containing original TypeOrigin, callable package,
+config/treasury object IDs where applicable, source/package digest and ABI
+commitment. A binding is set at most once while the Root is DRAFT. Final
+activation consumes non-forgeable readiness witnesses from every required
+package and verifies the complete binding tuple again.
 
-No new v8 package imports the old Animacraft package for protocol semantics.
-The package-object target is at most 90,000 bytes and MUST retain at least
-10,000 bytes of measured Mainnet object-size headroom.
+All packages still expose public protocol version `8`. They are not separate
+product versions, fallbacks or compatibility layers. No v8 package imports an
+old Animacraft package for protocol semantics. Every package has its own exact
+`MovePackage::size()` CI gate and must retain at least 10,000 bytes below the
+102,400-byte Mainnet limit; Core and Release should remain substantially
+smaller so a security fix never depends on the final few hundred bytes.
+
+### Release-blocking implementation status
+
+The current prototype package is **not** a releasable unified v8 merely
+because its publication commitments and Move tests pass. A semantic audit of
+the first 89,205-byte build found that Composition behavior/source values,
+exact Style/Smart Color loadouts, equipped Pack selections, decrypt approval,
+and parts of Physical/market execution were not enforced at runtime. Those
+fields are release blockers, not optional follow-ups.
+
+At 89,205 bytes the prototype also has no honest room to add the missing
+runtime semantics while preserving the 90,000-byte safety budget. The next
+implementation MUST either free material space first or split fresh v8
+modules behind immutable TypeOrigin/config/callable bindings. It MUST NOT
+compress required behavior into opaque manifest promises or raise the safety
+budget merely to keep a one-package diagram. Multiple fresh v8 packages may
+form one product; compatibility reads or replaceable package bindings may not.
 
 ## Canonical objects
 
-Every publication has exactly these authoritative objects:
+Every publication has exactly these authoritative objects across the bound v8
+packages:
 
 - shared `MakerRootV8<PaymentCoin>`;
 - creator-owned `MakerAdminCapV8`;
 - shared `MakerTreasuryV8<PaymentCoin>`;
-- shared per-Maker composition, Pack, Complete, Seal and canonical Soul
-  registries, even when their row count is zero;
-- optional physical registry only when physical capability is declared.
+- shared per-Maker Runtime/Pack, Complete/Soul and Seal registries, even when
+  their row count is zero;
+- shared Physical and Market bindings/registries even when a Maker has no
+  Physical policy rows or active market listings;
+- immutable `ProductReleaseBindingV8` and per-package readiness records which
+  bind the precise package/config/callable tuple used for this Root.
 
 The Root commits to:
 
@@ -66,12 +94,16 @@ The Root commits to:
 - immutable Maker/version lineage and renderer identity;
 - Walrus manifest Blob/Quilt identity and SHA-256;
 - content and final registry commitments;
-- expected and observed counts for Tracks, Parts, Items, Styles, Smart Color
-  channels/swatches, rules, slots, Pack releases and protected assets;
+- expected and observed counts for immutable Tracks, Parts, Items, Styles,
+  Smart Color channels/swatches, rules, initial slots and protected base
+  assets; mutable post-activation Pack/admission/listing state is bound by its
+  own registry ID, revision CAS and event/readback history rather than frozen
+  into the base content commitment;
 - Maker access, Complete policy, rights origin, creator/source/resale royalty,
   payment type and protocol fee policy;
-- Composition, Pack, Complete, Seal, canonical Soul and Physical capability
-  bindings.
+- Composition, Pack, Complete, Seal, canonical Soul, Physical and Market
+  capability bindings. These are one required product tuple for every v8
+  Root; an empty policy/listing registry does not disable the capability.
 
 Published rows use canonical v8 keys and are never updated in place. A new
 published version creates a new Root whose immutable lineage points to the
@@ -96,6 +128,31 @@ not invent a second editor schema:
   swatch are either both absent or both present;
 - final activation enumerates every Style and verifies its Track and optional
   channel/default-swatch dynamic fields against the sealed registries.
+
+The author document is a chain-free semantic source, not a partially compiled
+transaction manifest:
+
+- every object is exact-shape allow-listed and unknown fields fail closed;
+- authors never enter Root/object/package IDs, transaction or Blob IDs,
+  ciphertext/Seal IDs, SHA/registry/payload commitments, predecessor Root
+  evidence, entitlement proofs or concrete future Player Pack selections;
+- all native v8 capabilities (Composition, Pack, Complete, Seal, Soul,
+  Physical and Market) are derived as enabled. A Maker may declare zero
+  Physical policies or protected assets, but the product capability cannot be
+  switched back to an older protocol surface;
+- Maker-wide composition reuses the established Creator vocabulary
+  `mode: FIXED|COMPOSABLE`, `thirdPartyAdmission:
+  DISABLED|CERTIFIED|OPEN`, `itemAssetization: boolean`, plus each Part's
+  `wardrobeMode: FIXED|SLOT`. Runtime source/behavior enums and INCLUDED base
+  Item gates are compiler-derived, never duplicate author controls;
+- Expansion Packs are independent v8 author documents and are admitted after
+  Maker activation. They are not embedded in the base Maker document. A
+  Complete output may allow all currently admitted Packs or a canonical
+  sorted list of semantic Pack namespaces/scopes, but never one player's
+  concrete selection;
+- the compiler accepts certified transport bytes, live predecessor readback
+  and package/config bindings through a separate trusted context, derives all
+  commitments itself, and proves that none were authored.
 
 The canonical compiler binds the richer Creator payload (gradient stops,
 nested visibility/combination rules, transforms, wardrobe semantics and
@@ -190,11 +247,38 @@ steps, with Soul-creator plus Maker-source royalties capped at 1,000 BPS.
 
 - Composition stores the exact v8 wardrobe slots, capacity, admitted Item
   identities, owned selections and recovery-safe unlock/transfer paths.
+  A current loadout is a canonical ordered state, not a mutation-history hash.
+  Every selection identifies the exact slot, Part, Item, Style, optional Smart
+  Color channel/swatch, asset/content commitment, source/product identity and
+  access subject. Equal final selections reached through different edit
+  histories MUST have the same commitment.
+- A Part's established Creator `wardrobeMode` remains `FIXED` or `SLOT`.
+  `FIXED` means the Part cannot accept independent third-party gear; it does
+  **not** mean the Player is stuck on one Style. The Player may still choose
+  among the Maker's base Items/Styles and officially admitted Maker Pack
+  Styles for that Part. `SLOT` additionally admits external Item products
+  according to the Maker-wide `thirdPartyAdmission` ceiling. The runtime may
+  encode internal source classes such as Soul-local/certified/open, but those
+  are compiler-derived enforcement values, not a second set of Creator UI
+  controls. Certified/open labels without an attestation, admission state,
+  ownership/access proof and exact asset binding are invalid.
+  Post-activation Item products and their admission/revocation state are
+  separate from the sealed Maker definition registry.
 - Pack releases bind the exact Root/version/epoch, manifest and Style rows.
   FREE and PAID Pack Passes, pause/resume/archive and revenue are native v8.
-  The Maker's initial Pack registry is immutable after Root activation; adding
-  a new Pack requires a new MakerRootV8 version. Each Pack has its own exact
-  AdminCap/Treasury and its Pass binds Root, ownership epoch and content.
+  A Pack is a real post-activation extension: the Maker's bound Pack registry
+  remains mutable under revision CAS and exact admission authority, so an
+  independent Pack can be published later without rewriting immutable base
+  content or creating a new Maker version. Each Release has its own immutable
+  content commitment, exact AdminCap/Treasury and lifecycle; admission binds
+  the current Root/version/ownership epoch and the registry records every
+  revision. Removing or archiving a Pack never rewrites old receipts.
+- A Pack Style becomes part of the canonical loadout before Complete. Its
+  transaction-local access proof binds the exact loadout ID, revision and slot
+  in addition to the Release/Style/holder tuple. Complete accepts exactly one
+  current proof for each equipped Pack selection and rejects proofs for
+  unequipped Styles. Used-Pack fees are derived from that loadout, never from
+  an unrelated caller-supplied list.
 - Complete authorizes one exact rendered Recipe/content commitment and returns
   a non-store, non-copy, non-drop `SoulMintAuthorizationV8`. In the same PTB,
   `soul_v8` alone consumes that proof, records its one-time receipt and creates
@@ -204,11 +288,29 @@ steps, with Soul-creator plus Maker-source royalties capped at 1,000 BPS.
   used while the Root is paused or archived. The final PNG is available
   according to the Root's Complete policy, not according to a v5 receipt or
   legacy bypass.
-- Seal coverage is required for every protected paid Style/Complete payload.
-  Unprotected free assets use an explicit empty policy, never an ambiguous
-  missing field.
-- Physical records bind exact Style content and support materialize, consume,
-  transfer and recovery without referencing v7 objects.
+- A Complete output commits an allowed Recipe policy and allowed Pack scopes;
+  it does not freeze one future player's concrete Pack selection. The runtime
+  derives the exact base/Pack/Smart Color selection vector and charges from the
+  current canonical loadout.
+- Seal coverage is required for every protected paid Style/Complete payload
+  and binds certified ciphertext/blob identity plus an immutable key-server
+  policy. Approval verifies the exact Maker/Pack entitlement or Complete/Soul
+  ownership. A protected Complete must bind its dynamic Recipe/render instance
+  (or a family policy that verifies that exact receipt); a static renderer
+  schema hash is not decrypt authorization. Unprotected free assets use an
+  explicit empty policy, never an ambiguous missing field.
+- Physical records bind exact Style content and support proof-bound claim or
+  materialization, consume, transfer and recovery without referencing v7
+  objects. Pack-backed materialization revalidates the current Release and
+  access. `ACTIVE` may gate new mint/equip, but PAUSED/ARCHIVED cannot trap a
+  holder: policy-authorized withdraw, transfer or consume remains available.
+
+Root Item gates, rights and market fee fields are executable protocol rules,
+not display metadata. Until native Item entitlement exists, only INCLUDED is
+valid. Maker/Soul/eligible product resale must route through a pinned fresh-v8
+market executor that enforces the exact protocol and creator/source/resale
+splits; if that executor is split, its TypeOrigin, config, treasury and
+callables are immutable activation dependencies.
 
 Canonical Soul is a required native v8 capability, not an old-package proof or
 optional compatibility bridge. Its registry is rebound and revalidated on
@@ -227,9 +329,10 @@ will later be rejected by a hidden old-version gate.
 ## Web cutover
 
 Production runtime has one `makerV8ReleaseEnabled` gate and one complete tuple:
-callable package, TypeOrigin package, ProtocolConfig, protocol Treasury,
-payment coin, required module identities, Seal identity and canonical Soul
-TypeOrigin/registry identity.
+the immutable `ProductReleaseBindingV8`, Core/Seal/Runtime/Output/Physical/
+Market/Release original and callable package identities, ProtocolConfig,
+protocol and market treasuries, payment coin, ABI/source/package commitments,
+key-server policy and canonical Soul TypeOrigin/registry identity.
 
 When the v8 gate is enabled:
 
