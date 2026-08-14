@@ -2,9 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  MAKER_V8_CAPABILITIES,
+  MAKER_V8_COMPLETE_PACK_POLICY_MODES,
+  MAKER_V8_COMPOSITION_MODES,
   MAKER_V8_DOCUMENT_SCHEMA,
+  MAKER_V8_THIRD_PARTY_ADMISSION_MODES,
   MakerV8DocumentValidationError,
   assertMakerV8Document,
+  collectMakerV8AuthorShapeIssues,
   collectMakerV8DocumentIssues,
   createCharacterMakerV8Starter,
   createMakerV8Document,
@@ -26,14 +31,12 @@ function compiledDocument() {
       id: 'cover',
       kind: 'maker-cover',
       mediaType: 'image/png',
-      sha256: '1'.repeat(64),
       byteLength: 1_024,
     },
     {
       id: 'base-png',
       kind: 'layer',
       mediaType: 'image/png',
-      sha256: '2'.repeat(64),
       byteLength: 2_048,
     },
   ];
@@ -96,7 +99,7 @@ function compiledDocument() {
         visibleWhen: null,
         requires: [],
         excludes: [],
-        seal: { protected: false, scopeId: '' },
+        seal: { protected: false },
         physical: { enabled: false },
       }],
     }],
@@ -116,7 +119,46 @@ test('new Maker documents are exact v8 drafts and reject every older schema', ()
   assert.equal(collectMakerV8DocumentIssues(document, { mode: 'draft' }).length, 0);
   assert.equal(isMakerV8Document(document), true);
   assert.equal(Object.hasOwn(document.capabilities, 'commerce'), false);
-  assert.equal(document.lineage.previousVersionCommitment, null);
+  assert.deepEqual(
+    Object.fromEntries(MAKER_V8_CAPABILITIES.map((name) => [name, document.capabilities[name]])),
+    Object.fromEntries(MAKER_V8_CAPABILITIES.map((name) => [name, true])),
+  );
+  assert.equal(document.capabilities.physical, true);
+  assert.equal(document.capabilities.market, true);
+  assert.equal(Object.hasOwn(document.lineage, 'previousRootId'), false);
+  assert.equal(Object.hasOwn(document.lineage, 'previousVersionCommitment'), false);
+  assert.equal(Object.hasOwn(document, 'packs'), false);
+  assert.equal(Object.hasOwn(document.commerce, 'packPolicies'), false);
+  assert.deepEqual(document.composition, {
+    mode: MAKER_V8_COMPOSITION_MODES.FIXED,
+    thirdPartyAdmission: MAKER_V8_THIRD_PARTY_ADMISSION_MODES.DISABLED,
+    itemAssetization: false,
+  });
+  assert.deepEqual(document.complete.outputs[0].allowedPackPolicy, {
+    mode: MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALL_ADMITTED,
+    packIds: [],
+    scopes: [],
+  });
+  assert.equal(createMakerV8Document({
+    capabilities: Object.fromEntries(MAKER_V8_CAPABILITIES.map((name) => [name, false])),
+  }).capabilities.market, true);
+
+  const canonicalPolicy = createMakerV8Document({
+    complete: {
+      outputs: [{
+        id: 'png',
+        name: 'PNG',
+        protected: false,
+        allowedPackPolicy: {
+          mode: MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST,
+          packIds: ['z-pack', 'a-pack', 'a-pack'],
+          scopes: ['z/scope', 'a/scope', 'a/scope'],
+        },
+      }],
+    },
+  }).complete.outputs[0].allowedPackPolicy;
+  assert.deepEqual(canonicalPolicy.packIds, ['a-pack', 'z-pack']);
+  assert.deepEqual(canonicalPolicy.scopes, ['a/scope', 'z/scope']);
 
   for (const schemaVersion of [
     'animacraft.maker.v5',
@@ -146,15 +188,28 @@ test('the v8 starter keeps the established Creator Track, Part, Item, Style, and
   assert.equal(part.wardrobeMode, 'FIXED');
   assert.equal(Object.hasOwn(part, 'layerTrackId'), false);
   assert.equal(Object.hasOwn(part, 'order'), false);
+  assert.equal(Object.hasOwn(part, 'kind'), false);
   assert.equal(item.displayOrder, 0);
   assert.equal(item.status, 'public');
+  assert.equal(Object.hasOwn(item, 'gate'), false);
   assert.equal(style.displayOrder, 0);
   assert.equal(style.layerTrackId, document.layerTracks[0].id);
+  assert.equal(Object.hasOwn(style, 'sourceKind'), false);
+  assert.equal(Object.hasOwn(style, 'composition'), false);
+  assert.deepEqual(style.seal, { protected: false });
   assert.deepEqual(document.defaultRecipe.selections[0], {
     partId: part.id,
     itemId: item.id,
     styleId: style.id,
   });
+
+  const fixedWithOfficialChoice = structuredClone(document);
+  fixedWithOfficialChoice.parts[0].wardrobeMode = 'SLOT';
+  assert.deepEqual(
+    collectMakerV8DocumentIssues(fixedWithOfficialChoice, { mode: 'draft' }),
+    [],
+    'Maker-wide FIXED blocks third-party gear; it does not force every Part to FIXED',
+  );
 });
 
 test('compile validation binds cover, assets, shared definitions, rules, and native commerce', () => {
@@ -173,6 +228,7 @@ test('compile validation binds cover, assets, shared definitions, rules, and nat
     compositionSlots: 0,
     protectedStyles: 0,
     physicalStyles: 0,
+    completeOutputs: 1,
   });
 
   document.metadata.coverAssetId = 'missing';
@@ -184,26 +240,19 @@ test('compile validation binds cover, assets, shared definitions, rules, and nat
   );
 });
 
-test('disabled capabilities cannot silently carry v8 feature declarations', () => {
-  const document = compiledDocument();
-  document.capabilities.seal = false;
-  document.capabilities.physical = false;
-  document.parts[0].items[0].styles[0].seal = { protected: true, scopeId: 'base-style' };
-  document.parts[0].items[0].styles[0].physical = { enabled: true };
-  const codes = collectMakerV8DocumentIssues(document, { mode: 'compile' })
-    .map((entry) => entry.code);
-  assert.equal(codes.includes('MAKER_V8_SEAL_CAPABILITY_REQUIRED'), true);
-  assert.equal(codes.includes('MAKER_V8_PHYSICAL_CAPABILITY_REQUIRED'), true);
-});
-
-test('only Physical is optional and successor lineage binds the previous version commitment', () => {
-  const initial = compiledDocument();
-  initial.capabilities.complete = false;
-  initial.capabilities.commerce = true;
-  const initialCodes = new Set(collectMakerV8DocumentIssues(initial, { mode: 'compile' })
-    .map((entry) => entry.code));
-  assert.equal(initialCodes.has('MAKER_V8_REQUIRED_CAPABILITY_DISABLED'), true);
-  assert.equal(initialCodes.has('MAKER_V8_CAPABILITY_UNKNOWN'), true);
+test('all native capabilities are derived true and predecessor evidence is compiler context', () => {
+  MAKER_V8_CAPABILITIES.forEach((capability) => {
+    const document = structuredClone(createMakerV8Document());
+    document.capabilities[capability] = false;
+    assert.equal(
+      collectMakerV8DocumentIssues(document, { mode: 'draft' }).some((entry) => (
+        entry.path === `capabilities.${capability}`
+        && entry.code === 'MAKER_V8_REQUIRED_CAPABILITY_DISABLED'
+      )),
+      true,
+      capability,
+    );
+  });
 
   const successor = structuredClone(createMakerV8Document({
     lineage: {
@@ -212,13 +261,175 @@ test('only Physical is optional and successor lineage binds the previous version
       previousVersionCommitment: 'b'.repeat(64),
     },
   }));
-  assert.equal(successor.lineage.previousVersionCommitment, 'b'.repeat(64));
-  assert.equal(collectMakerV8DocumentIssues(successor, { mode: 'draft' })
-    .some((entry) => entry.code === 'MAKER_V8_PREVIOUS_COMMITMENT_INVALID'), false);
+  assert.equal(Object.hasOwn(successor.lineage, 'previousRootId'), false);
+  assert.equal(Object.hasOwn(successor.lineage, 'previousVersionCommitment'), false);
+  successor.lineage.previousRootId = `0x${'a'.repeat(64)}`;
+  successor.lineage.previousVersionCommitment = 'b'.repeat(64);
+  assert.deepEqual(
+    collectMakerV8AuthorShapeIssues(successor).map(({ path, code }) => ({ path, code })),
+    [
+      { path: 'lineage.previousRootId', code: 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN' },
+      { path: 'lineage.previousVersionCommitment', code: 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN' },
+    ],
+  );
+});
 
-  successor.lineage.previousVersionCommitment = null;
-  assert.equal(collectMakerV8DocumentIssues(successor, { mode: 'draft' })
-    .some((entry) => entry.code === 'MAKER_V8_PREVIOUS_COMMITMENT_INVALID'), true);
+test('Maker-wide composition reuses FIXED/COMPOSABLE admission vocabulary without per-Style sources', () => {
+  const composable = compiledDocument();
+  composable.composition = {
+    mode: MAKER_V8_COMPOSITION_MODES.COMPOSABLE,
+    thirdPartyAdmission: MAKER_V8_THIRD_PARTY_ADMISSION_MODES.CERTIFIED,
+    itemAssetization: true,
+  };
+  composable.parts[0].wardrobeMode = 'SLOT';
+  assert.deepEqual(collectMakerV8DocumentIssues(composable, { mode: 'compile' }), []);
+
+  const fixed = compiledDocument();
+  fixed.parts[0].wardrobeMode = 'SLOT';
+  assert.deepEqual(collectMakerV8DocumentIssues(fixed, { mode: 'compile' }), []);
+
+  fixed.composition.thirdPartyAdmission = MAKER_V8_THIRD_PARTY_ADMISSION_MODES.OPEN;
+  fixed.composition.itemAssetization = true;
+  const codes = new Set(collectMakerV8DocumentIssues(fixed, { mode: 'compile' })
+    .map((entry) => entry.code));
+  assert.equal(codes.has('MAKER_V8_FIXED_THIRD_PARTY_INVALID'), true);
+  assert.equal(codes.has('MAKER_V8_FIXED_ASSETIZATION_INVALID'), true);
+});
+
+test('Complete authoring permits all admitted Packs or sorted semantic ID/scope allowlists', () => {
+  const document = compiledDocument();
+  document.complete.outputs[0].allowedPackPolicy = {
+    mode: MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST,
+    packIds: ['official-hair', 'season-one'],
+    scopes: ['creator/official', 'studio:seasonal'],
+  };
+  assert.deepEqual(collectMakerV8DocumentIssues(document, { mode: 'compile' }), []);
+  assert.equal(Object.hasOwn(document, 'packs'), false);
+  assert.equal(Object.hasOwn(document.complete.outputs[0], 'requiredPackSelections'), false);
+
+  const unsorted = structuredClone(document);
+  unsorted.complete.outputs[0].allowedPackPolicy.packIds.reverse();
+  assert.equal(collectMakerV8DocumentIssues(unsorted, { mode: 'compile' })
+    .some((entry) => entry.code === 'MAKER_V8_CANONICAL_LIST_ORDER_INVALID'), true);
+
+  const frozenSet = structuredClone(document);
+  frozenSet.packs = [{ id: 'season-one' }];
+  frozenSet.commerce.packPolicies = [{
+    packId: 'season-one',
+    accessMode: 'FREE',
+    purchasePriceAtomic: 0,
+    completion: {
+      mode: 'UNLIMITED_FREE', freeQuotaPerWallet: 0, priceAtomic: 0, totalCap: null,
+    },
+  }];
+  const frozenCodes = new Set(collectMakerV8DocumentIssues(frozenSet, { mode: 'compile' })
+    .map((entry) => entry.code));
+  assert.equal(frozenCodes.has('MAKER_V8_EMBEDDED_PACKS_FORBIDDEN'), true);
+  assert.equal(frozenCodes.has('MAKER_V8_EMBEDDED_PACK_POLICY_FORBIDDEN'), true);
+});
+
+test('the exact author contract rejects recursive field injection at every object boundary', () => {
+  function shapeDocument() {
+    const document = compiledDocument();
+    const target = { partId: 'base', itemId: 'body', styleId: 'default' };
+    document.parts[0].visibleWhen = { op: 'selected', ...target };
+    document.parts[0].items[0].requires = [{ partId: 'base', itemId: 'body' }];
+    document.rules = [{
+      id: 'base-rule',
+      type: 'requires',
+      trigger: target,
+      targets: [{ partId: 'base', itemId: 'body' }],
+    }];
+    return document;
+  }
+
+  const cases = [
+    ['document', 'packs', 'MAKER_V8_EMBEDDED_PACKS_FORBIDDEN', (value) => { value.packs = []; }],
+    ['document unknown', 'extensions', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.extensions = {}; }],
+    ['chain identity', 'chainId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.chainId = 'sui:mainnet'; }],
+    ['lineage', 'lineage.previousRootId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.lineage.previousRootId = 'chain'; }],
+    ['metadata', 'metadata.payloadCommitment', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.metadata.payloadCommitment = 'x'; }],
+    ['license', 'metadata.license.sealId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.metadata.license.sealId = 'x'; }],
+    ['canvas', 'canvas.rootId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.canvas.rootId = 'x'; }],
+    ['capabilities', 'capabilities.commerce', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.capabilities.commerce = true; }],
+    ['composition', 'composition.loadoutMutable', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.composition.loadoutMutable = true; }],
+    ['track', 'layerTracks[0].payloadCommitment', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.layerTracks[0].payloadCommitment = 'x'; }],
+    ['channel', 'colorChannels[0].sourceKind', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.colorChannels[0].sourceKind = 'OFFICIAL'; }],
+    ['swatch', 'colorChannels[0].swatches[0].contentHash', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.colorChannels[0].swatches[0].contentHash = 'x'; }],
+    ['stop', 'colorChannels[0].swatches[0].stops[0].commitment', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.colorChannels[0].swatches[0].stops[0].commitment = 'x'; }],
+    ['part', 'parts[0].kind', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.parts[0].kind = 'standard'; }],
+    ['condition', 'parts[0].visibleWhen.sourceKind', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.parts[0].visibleWhen.sourceKind = 'OFFICIAL'; }],
+    ['not condition', 'parts[0].visibleWhen.sealId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => {
+      value.parts[0].visibleWhen = {
+        op: 'not', sealId: 'x', condition: { op: 'selected', partId: 'base' },
+      };
+    }],
+    ['group condition', 'parts[0].visibleWhen.sourceKind', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => {
+      value.parts[0].visibleWhen = {
+        op: 'all', sourceKind: 'OFFICIAL', conditions: [{ op: 'selected', partId: 'base' }],
+      };
+    }],
+    ['item', 'parts[0].items[0].gate', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.parts[0].items[0].gate = 'INCLUDED'; }],
+    ['embedded target', 'parts[0].items[0].requires[0].objectId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.parts[0].items[0].requires[0].objectId = 'x'; }],
+    ['style', 'parts[0].items[0].styles[0].sourceKind', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.parts[0].items[0].styles[0].sourceKind = 'OFFICIAL'; }],
+    ['transform', 'parts[0].items[0].styles[0].transform.contentHash', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.parts[0].items[0].styles[0].transform.contentHash = 'x'; }],
+    ['seal', 'parts[0].items[0].styles[0].seal.sealId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.parts[0].items[0].styles[0].seal.sealId = 'x'; }],
+    ['physical', 'parts[0].items[0].styles[0].physical.registryId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.parts[0].items[0].styles[0].physical.registryId = 'x'; }],
+    ['rule', 'rules[0].ruleCommitment', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.rules[0].ruleCommitment = 'x'; }],
+    ['rule trigger', 'rules[0].trigger.gate', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.rules[0].trigger.gate = 'x'; }],
+    ['rule target', 'rules[0].targets[0].sealId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.rules[0].targets[0].sealId = 'x'; }],
+    ['recipe', 'defaultRecipe.packSelections', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.defaultRecipe.packSelections = []; }],
+    ['recipe selection', 'defaultRecipe.selections[0].rootId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.defaultRecipe.selections[0].rootId = 'x'; }],
+    ['recipe color', 'defaultRecipe.colors[0].colorHash', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.defaultRecipe.colors[0].colorHash = 'x'; }],
+    ['complete', 'complete.registryCommitment', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.complete.registryCommitment = 'x'; }],
+    ['complete output', 'complete.outputs[0].sealId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.complete.outputs[0].sealId = 'x'; }],
+    ['allowed Pack policy', 'complete.outputs[0].allowedPackPolicy.requiredPackSelections', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.complete.outputs[0].allowedPackPolicy.requiredPackSelections = []; }],
+    ['commerce', 'commerce.economicsCommitment', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.commerce.economicsCommitment = 'x'; }],
+    ['Maker access', 'commerce.makerAccess.objectId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.commerce.makerAccess.objectId = 'x'; }],
+    ['Complete commerce', 'commerce.baseCompletion.policyHash', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.commerce.baseCompletion.policyHash = 'x'; }],
+    ['asset hash', 'assets[0].sha256', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.assets[0].sha256 = 'a'.repeat(64); }],
+    ['asset commitment', 'assets[0].assetCommitment', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.assets[0].assetCommitment = 'x'; }],
+  ];
+
+  assert.deepEqual(collectMakerV8AuthorShapeIssues(shapeDocument()), []);
+  cases.forEach(([label, path, code, mutate]) => {
+    const value = shapeDocument();
+    mutate(value);
+    const matches = collectMakerV8AuthorShapeIssues(value)
+      .filter((entry) => entry.path === path && entry.code === code);
+    assert.equal(matches.length, 1, label);
+  });
+});
+
+test('nested collections and concrete Rule/Complete expansion are bounded', () => {
+  const document = compiledDocument();
+  const ids = Array.from({ length: 32 }, (_, index) => `item-${String(index).padStart(2, '0')}`);
+  document.rules = [{
+    id: 'wide-edge',
+    type: 'requires',
+    trigger: { partId: 'base', itemIds: ids },
+    targets: [{ partId: 'base', itemIds: ids }],
+  }];
+  document.parts[0].visibleWhen = {
+    op: 'all',
+    conditions: Array.from({ length: 1_001 }, () => ({ op: 'selected', partId: 'base' })),
+  };
+  document.colorChannels[0].swatches[0].stops = Array.from({ length: 65 }, (_, index) => ({
+    offset: index / 64,
+    color: '#112233',
+  }));
+  document.complete.outputs[0].allowedPackPolicy = {
+    mode: MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST,
+    packIds: Array.from({ length: 1_000 }, (_, index) => `pack-${String(index).padStart(4, '0')}`),
+    scopes: ['scope/overflow'],
+  };
+  const codes = new Set(collectMakerV8DocumentIssues(document, { mode: 'compile' })
+    .map((entry) => entry.code));
+  assert.equal(codes.has('MAKER_V8_RULE_EXPANDED_EDGE_LIMIT'), true);
+  assert.equal(codes.has('MAKER_V8_CONDITION_CHILD_LIMIT'), true);
+  assert.equal(codes.has('MAKER_V8_CONDITION_NODE_LIMIT'), true);
+  assert.equal(codes.has('MAKER_V8_SWATCH_STOP_LIMIT'), true);
+  assert.equal(codes.has('MAKER_V8_COMPLETE_PACK_EDGE_LIMIT'), true);
 });
 
 test('shared references, hierarchy, embedded rules, and default Recipe fail closed', () => {

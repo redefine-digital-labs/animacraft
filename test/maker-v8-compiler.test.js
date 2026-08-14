@@ -154,10 +154,10 @@ function validCurrentDocument() {
   document.metadata.coverAssetId = 'cover';
   document.assets = [
     {
-      id: 'cover', kind: 'maker-cover', mediaType: 'image/png', sha256: digest('1'), byteLength: 12,
+      id: 'cover', kind: 'maker-cover', mediaType: 'image/png', byteLength: 12,
     },
     {
-      id: 'body-asset', kind: 'layer', mediaType: 'image/png', sha256: digest('2'), byteLength: 24,
+      id: 'body-asset', kind: 'layer', mediaType: 'image/png', byteLength: 24,
     },
   ];
   document.layerTracks = [{
@@ -204,7 +204,7 @@ function validCurrentDocument() {
         visibleWhen: null,
         requires: [],
         excludes: [],
-        seal: { protected: false, scopeId: '' },
+        seal: { protected: false },
         physical: { enabled: false },
       }],
     }],
