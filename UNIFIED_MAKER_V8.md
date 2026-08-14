@@ -31,6 +31,14 @@ would otherwise exceed the package-object safety budget. If split, it remains
 version 8, binds the exact Root ID/ownership epoch/content commitment, and is a
 required activation dependency for Makers that declare physical capability.
 
+For a split Physical package, dependency is one-way (`physical_v8` imports
+Core). The Core binding hook consumes a non-forgeable, non-copy witness whose
+original TypeOrigin is pinned in ProtocolConfig and checks Root ID, ownership
+epoch, content commitment, registry commitment and one-time binding. The
+Physical module can construct that witness only after its typed registry is
+activation-ready. Runtime and preflight additionally pin the Physical callable
+package, TypeOrigin, source and package digest.
+
 No new v8 package imports the old Animacraft package for protocol semantics.
 The package-object target is at most 90,000 bytes and MUST retain at least
 10,000 bytes of measured Mainnet object-size headroom.
@@ -64,6 +72,11 @@ Published rows use canonical v8 keys and are never updated in place. A new
 published version creates a new Root whose immutable lineage points to the
 previous v8 Root/version commitment.
 
+Every registry stores version, Root ID, ownership epoch, Root content
+commitment, expected and observed counts, expected and rolling commitments,
+and a sealed bit. Empty registries use a domain-separated empty commitment;
+an empty byte vector is never treated as proof of completeness.
+
 ## Staged publication and atomic visibility
 
 Walrus upload and certification finish before any v8 Root is created.
@@ -73,8 +86,9 @@ Walrus upload and certification finish before any v8 Root is created.
    counts, final commitments, economics and capability declarations.
 2. Ordered chunk transactions append canonical rows. Each append requires the
    exact AdminCap, Root in `DRAFT`, the expected next sequence, unique keys and
-   bounded vector sizes. Category and aggregate commitments advance
-   deterministically.
+   bounded vector sizes. Move computes the next category and aggregate SHA-256
+   commitments from the prior commitment and canonical BCS row; it never
+   trusts a caller-provided next hash.
 3. Required capability bindings are created against the exact Root and current
    ownership epoch. A zero-row registry is still explicitly bound.
 4. One final `publication_v8::seal_and_activate_maker_v8` transaction checks protocol enabled,
@@ -92,6 +106,10 @@ cross-module check, then invokes the package-private checked activation path.
 `DRAFT` objects are intentionally visible to their creator for recovery but
 are never public catalog entries. Partial publication, a failed finalizer, or
 a stale transaction cannot produce an activated Maker.
+
+Recovery is forward-only and query-first. A source change may explicitly mark
+a DRAFT abandoned, but cannot roll back its append chain or delete shared
+registries. Abandoned DRAFTs never emit discovery events.
 
 ## Lifecycle and authority
 
@@ -126,6 +144,9 @@ read these policies from the Root and never infer them from a disabled gate.
   identities, owned selections and recovery-safe unlock/transfer paths.
 - Pack releases bind the exact Root/version/epoch, manifest and Style rows.
   FREE and PAID Pack Passes, pause/resume/archive and revenue are native v8.
+  The Maker's initial Pack registry is immutable after Root activation; adding
+  a new Pack requires a new MakerRootV8 version. Each Pack has its own exact
+  AdminCap/Treasury and its Pass binds Root, ownership epoch and content.
 - Complete authorizes one exact rendered Recipe/content commitment and creates
   a v8 completion receipt. The final PNG is available according to the Root's
   Complete policy, not according to a v5 receipt or legacy bypass.
@@ -134,6 +155,12 @@ read these policies from the Root and never infer them from a disabled gate.
   missing field.
 - Physical records bind exact Style content and support materialize, consume,
   transfer and recovery without referencing v7 objects.
+
+Composition loadout updates use revision CAS. An ownership-epoch change cannot
+silently reuse an old loadout; stale selections are explicitly cleared and
+then rebound. Complete authorizations are non-store, non-copy and non-drop,
+and bind the exact Root triple, loadout revision, Pack access, Recipe and render
+commitment.
 
 If an implementation is not ready to enforce one of these capabilities, the
 v8 authoring UI MUST remove that capability. It may not expose a control that
