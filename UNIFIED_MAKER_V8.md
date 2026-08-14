@@ -89,6 +89,13 @@ Walrus upload and certification finish before any v8 Root is created.
    bounded vector sizes. Move computes the next category and aggregate SHA-256
    commitments from the prior commitment and canonical BCS row; it never
    trusts a caller-provided next hash.
+   Commitment preimages contain the protocol version, immutable Root content
+   commitment and stable semantic row/scope keys. They MUST NOT contain an
+   object ID first created by the same transaction that records the expected
+   commitment, because that would create an uncomputable fixed-point. Actual
+   Root, registry, Release and scope object IDs plus ownership epoch remain
+   mandatory object fields and are checked on every append, seal, resume and
+   final activation; they are not replaced by semantic keys.
 3. Required capability bindings are created against the exact Root and current
    ownership epoch. A zero-row registry is still explicitly bound.
 4. One final `publication_v8::seal_and_activate_maker_v8` transaction checks protocol enabled,
