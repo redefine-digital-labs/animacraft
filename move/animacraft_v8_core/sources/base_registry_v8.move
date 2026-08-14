@@ -994,14 +994,8 @@ fun exact_minimal_base_registry_seals() {
         0,
         0,
     );
-    let rights = maker::new_rights_snapshot_v8(
-        maker::rights_onchain_native_v8(),
-        true,
-        false,
-        b"".to_string(),
-        b"".to_string(),
-        vector[],
-        vector[],
+    let rights = maker::new_onchain_native_rights_snapshot_v8(
+        &ctx,
         250,
         250,
         500,

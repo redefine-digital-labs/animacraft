@@ -298,6 +298,16 @@ public fun destroy_protocol_for_testing(
     cap_uid.delete();
 }
 
+#[test_only]
+public fun share_protocol_for_testing(
+    config: ProtocolConfigV8,
+    cap: ProtocolAdminCapV8,
+    ctx: &TxContext,
+) {
+    transfer::share_object(config);
+    transfer::transfer(cap, ctx.sender());
+}
+
 #[test]
 fun enabled_config_exposes_exact_terms() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 1, 0, 0, 0);

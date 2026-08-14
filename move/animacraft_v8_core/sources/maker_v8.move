@@ -66,6 +66,8 @@ const EBaseRegistryMissing: u64 = 17;
 const EControlEpochMismatch: u64 = 18;
 const EInvalidSuccessor: u64 = 19;
 const ECatalogMismatch: u64 = 20;
+const ESuccessorAuthorityAlreadyIssued: u64 = 21;
+const EInvalidSuccessorAuthority: u64 = 22;
 
 public struct EconomicsSnapshotV8 has copy, drop, store {
     protocol_config_id: ID,
@@ -87,8 +89,11 @@ public struct EconomicsSnapshotV8 has copy, drop, store {
 
 public struct RightsSnapshotV8 has copy, drop, store {
     origin: u8,
+    creator: address,
     creator_confirmed: bool,
     evidence_certified: bool,
+    certification_catalog_id: Option<ID>,
+    certification_binding_commitment: Option<vector<u8>>,
     evidence_locator: String,
     evidence_blob_id: String,
     evidence_sha256: vector<u8>,
@@ -97,6 +102,18 @@ public struct RightsSnapshotV8 has copy, drop, store {
     maker_source_royalty_bps: u16,
     maker_resale_royalty_bps: u16,
     commitment: vector<u8>,
+}
+
+/// Exact evidence attestation minted only through the catalog-frozen Release
+/// authority. It has no abilities and must be consumed into one snapshot.
+public struct WrappedRightsCertificationV8 {
+    creator: address,
+    catalog_id: ID,
+    product_binding_commitment: vector<u8>,
+    evidence_locator: String,
+    evidence_blob_id: String,
+    evidence_sha256: vector<u8>,
+    terms_commitment: vector<u8>,
 }
 
 /// Immutable identity/policy binding only. Pack membership and Pack registry
@@ -127,6 +144,8 @@ public struct MakerRootV8<phantom PaymentCoin> has key {
     version_commitment: vector<u8>,
     previous_root_id: Option<ID>,
     previous_version_commitment: Option<vector<u8>>,
+    successor_authority_id: Option<ID>,
+    successor_root_id: Option<ID>,
     renderer_commitment: vector<u8>,
     manifest_blob_id: String,
     manifest_sha256: vector<u8>,
@@ -149,6 +168,21 @@ public struct MakerAdminCapV8 has key {
     root_id: ID,
     owner: address,
     control_epoch: u64,
+}
+
+/// Persistable but module-controlled, one-use authority for exactly one N+1
+/// fork. Every predecessor CAS field is copied here and checked again when
+/// the predecessor is mutably consumed by successor creation.
+public struct SuccessorAuthorityV8<phantom PaymentCoin> has key {
+    id: UID,
+    version: u64,
+    previous_root_id: ID,
+    maker_key: String,
+    maker_version: u64,
+    version_commitment: vector<u8>,
+    control_epoch: u64,
+    owner: address,
+    allowed_lifecycle: u8,
 }
 
 public struct EconomicsCommitmentInputV8 has drop {
@@ -174,8 +208,11 @@ public struct RightsCommitmentInputV8 has drop {
     domain: vector<u8>,
     version: u64,
     origin: u8,
+    creator: address,
     creator_confirmed: bool,
     evidence_certified: bool,
+    certification_catalog_id: Option<ID>,
+    certification_binding_commitment: Option<vector<u8>>,
     evidence_locator: String,
     evidence_blob_id: String,
     evidence_sha256: vector<u8>,
@@ -320,10 +357,94 @@ public fun new_economics_snapshot_v8<PaymentCoin>(
     }
 }
 
-public fun new_rights_snapshot_v8(
+public fun new_onchain_native_rights_snapshot_v8(
+    ctx: &TxContext,
+    soul_creator_royalty_bps: u16,
+    maker_source_royalty_bps: u16,
+    maker_resale_royalty_bps: u16,
+): RightsSnapshotV8 {
+    new_rights_snapshot_internal_v8(
+        RIGHTS_ONCHAIN_NATIVE,
+        ctx.sender(),
+        option::none(),
+        option::none(),
+        b"".to_string(),
+        b"".to_string(),
+        vector[],
+        vector[],
+        soul_creator_royalty_bps,
+        maker_source_royalty_bps,
+        maker_resale_royalty_bps,
+    )
+}
+
+/// Release/transport certifies exact wrapped evidence for the transaction
+/// signer. No author-controlled confirmation booleans enter this boundary.
+public fun certify_wrapped_rights_v8<ReleaseAuthority: key>(
+    config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    authority: &ReleaseAuthority,
+    evidence_locator: String,
+    evidence_blob_id: String,
+    evidence_sha256: vector<u8>,
+    terms_commitment: vector<u8>,
+    ctx: &TxContext,
+): WrappedRightsCertificationV8 {
+    package_binding::assert_catalog_current_v8(config, catalog);
+    package_binding::assert_release_authority_v8(catalog, authority);
+    assert_non_empty_bounded(&evidence_locator, MAX_EVIDENCE_LOCATOR_BYTES);
+    assert_non_empty_bounded(&evidence_blob_id, MAX_BLOB_ID_BYTES);
+    assert_hash(&evidence_sha256);
+    assert_hash(&terms_commitment);
+    WrappedRightsCertificationV8 {
+        creator: ctx.sender(),
+        catalog_id: package_binding::catalog_id_v8(catalog),
+        product_binding_commitment:
+            *package_binding::product_binding_commitment_v8(
+                package_binding::catalog_binding_v8(catalog),
+            ),
+        evidence_locator,
+        evidence_blob_id,
+        evidence_sha256,
+        terms_commitment,
+    }
+}
+
+public fun new_license_wrapped_rights_snapshot_v8(
+    certification: WrappedRightsCertificationV8,
+    soul_creator_royalty_bps: u16,
+    maker_source_royalty_bps: u16,
+    maker_resale_royalty_bps: u16,
+): RightsSnapshotV8 {
+    let WrappedRightsCertificationV8 {
+        creator,
+        catalog_id,
+        product_binding_commitment,
+        evidence_locator,
+        evidence_blob_id,
+        evidence_sha256,
+        terms_commitment,
+    } = certification;
+    new_rights_snapshot_internal_v8(
+        RIGHTS_LICENSE_WRAPPED,
+        creator,
+        option::some(catalog_id),
+        option::some(product_binding_commitment),
+        evidence_locator,
+        evidence_blob_id,
+        evidence_sha256,
+        terms_commitment,
+        soul_creator_royalty_bps,
+        maker_source_royalty_bps,
+        maker_resale_royalty_bps,
+    )
+}
+
+fun new_rights_snapshot_internal_v8(
     origin: u8,
-    creator_confirmed: bool,
-    evidence_certified: bool,
+    creator: address,
+    certification_catalog_id: Option<ID>,
+    certification_binding_commitment: Option<vector<u8>>,
     evidence_locator: String,
     evidence_blob_id: String,
     evidence_sha256: vector<u8>,
@@ -332,14 +453,12 @@ public fun new_rights_snapshot_v8(
     maker_source_royalty_bps: u16,
     maker_resale_royalty_bps: u16,
 ): RightsSnapshotV8 {
-    assert!(
-        origin == RIGHTS_ONCHAIN_NATIVE || origin == RIGHTS_LICENSE_WRAPPED,
-        EInvalidRights,
-    );
-    assert!(creator_confirmed, EInvalidRights);
+    assert!(origin == RIGHTS_ONCHAIN_NATIVE || origin == RIGHTS_LICENSE_WRAPPED, EInvalidRights);
+    assert!(creator != @0x0, EInvalidRights);
     assert_rights_evidence(
         origin,
-        evidence_certified,
+        &certification_catalog_id,
+        &certification_binding_commitment,
         &evidence_locator,
         &evidence_blob_id,
         &evidence_sha256,
@@ -357,8 +476,11 @@ public fun new_rights_snapshot_v8(
         domain: b"animacraft-v8/rights-snapshot",
         version: VERSION,
         origin,
-        creator_confirmed,
-        evidence_certified,
+        creator,
+        creator_confirmed: true,
+        evidence_certified: origin == RIGHTS_LICENSE_WRAPPED,
+        certification_catalog_id,
+        certification_binding_commitment,
         evidence_locator,
         evidence_blob_id,
         evidence_sha256,
@@ -369,8 +491,11 @@ public fun new_rights_snapshot_v8(
     }));
     RightsSnapshotV8 {
         origin,
-        creator_confirmed,
-        evidence_certified,
+        creator,
+        creator_confirmed: true,
+        evidence_certified: origin == RIGHTS_LICENSE_WRAPPED,
+        certification_catalog_id,
+        certification_binding_commitment,
         evidence_locator,
         evidence_blob_id,
         evidence_sha256,
@@ -421,8 +546,9 @@ public(package) fun new_initial_maker_draft_v8<PaymentCoin>(
 /// caller supplies neither maker identity/version nor predecessor fields.
 public(package) fun new_successor_maker_draft_v8<PaymentCoin>(
     config: &ProtocolConfigV8,
-    previous: &MakerRootV8<PaymentCoin>,
+    previous: &mut MakerRootV8<PaymentCoin>,
     previous_admin: &MakerAdminCapV8,
+    authority: SuccessorAuthorityV8<PaymentCoin>,
     expected_previous_control_epoch: u64,
     expected_base_definition_count: u64,
     expected_base_registry_commitment: vector<u8>,
@@ -444,7 +570,9 @@ public(package) fun new_successor_maker_draft_v8<PaymentCoin>(
     );
     assert!(previous.lifecycle == ARCHIVED, EInvalidSuccessor);
     assert!(previous.maker_version < 0xffffffffffffffff, EInvalidSuccessor);
-    new_maker_draft_internal_v8(
+    assert!(previous.successor_root_id.is_none(), EInvalidSuccessor);
+    assert_successor_authority(previous, &authority);
+    let (successor, successor_admin) = new_maker_draft_internal_v8(
         config,
         expected_base_definition_count,
         expected_base_registry_commitment,
@@ -461,7 +589,86 @@ public(package) fun new_successor_maker_draft_v8<PaymentCoin>(
         rights,
         clock,
         ctx,
-    )
+    );
+    let successor_id = object::id(&successor);
+    let SuccessorAuthorityV8 {
+        id: authority_uid,
+        version: _,
+        previous_root_id: _,
+        maker_key: _,
+        maker_version: _,
+        version_commitment: _,
+        control_epoch: _,
+        owner: _,
+        allowed_lifecycle: _,
+    } = authority;
+    authority_uid.delete();
+    previous.successor_authority_id = option::none();
+    previous.successor_root_id = option::some(successor_id);
+    (successor, successor_admin)
+}
+
+/// Issues exactly one persistable successor authority for an archived Root.
+/// Core performs the transfer so this non-store capability cannot be routed
+/// through an arbitrary public transfer path.
+public fun issue_successor_authority_v8<PaymentCoin>(
+    previous: &mut MakerRootV8<PaymentCoin>,
+    previous_admin: &MakerAdminCapV8,
+    expected_previous_control_epoch: u64,
+    ctx: &mut TxContext,
+) {
+    let authority = new_successor_authority(
+        previous,
+        previous_admin,
+        expected_previous_control_epoch,
+        ctx,
+    );
+    transfer::transfer(authority, ctx.sender());
+}
+
+fun new_successor_authority<PaymentCoin>(
+    previous: &mut MakerRootV8<PaymentCoin>,
+    previous_admin: &MakerAdminCapV8,
+    expected_previous_control_epoch: u64,
+    ctx: &mut TxContext,
+): SuccessorAuthorityV8<PaymentCoin> {
+    assert_admin_v8(previous, previous_admin);
+    assert!(previous.owner == ctx.sender(), ENotCurrentOwner);
+    assert!(previous.control_epoch == expected_previous_control_epoch, EControlEpochMismatch);
+    assert!(previous.lifecycle == ARCHIVED, EInvalidSuccessor);
+    assert!(previous.maker_version < 0xffffffffffffffff, EInvalidSuccessor);
+    assert!(previous.successor_root_id.is_none(), EInvalidSuccessor);
+    assert!(previous.successor_authority_id.is_none(), ESuccessorAuthorityAlreadyIssued);
+    let authority = SuccessorAuthorityV8<PaymentCoin> {
+        id: object::new(ctx),
+        version: VERSION,
+        previous_root_id: object::id(previous),
+        maker_key: previous.maker_key,
+        maker_version: previous.maker_version,
+        version_commitment: previous.version_commitment,
+        control_epoch: previous.control_epoch,
+        owner: previous.owner,
+        allowed_lifecycle: ARCHIVED,
+    };
+    previous.successor_authority_id = option::some(object::id(&authority));
+    authority
+}
+
+fun assert_successor_authority<PaymentCoin>(
+    previous: &MakerRootV8<PaymentCoin>,
+    authority: &SuccessorAuthorityV8<PaymentCoin>,
+) {
+    assert!(authority.version == VERSION, EInvalidSuccessorAuthority);
+    assert!(previous.successor_authority_id.is_some(), EInvalidSuccessorAuthority);
+    assert!(object::id(authority) == *previous.successor_authority_id.borrow(), EInvalidSuccessorAuthority);
+    assert!(authority.previous_root_id == object::id(previous), EInvalidSuccessorAuthority);
+    assert!(authority.maker_key == previous.maker_key, EInvalidSuccessorAuthority);
+    assert!(authority.maker_version == previous.maker_version, EInvalidSuccessorAuthority);
+    assert!(&authority.version_commitment == &previous.version_commitment, EInvalidSuccessorAuthority);
+    assert!(authority.control_epoch == previous.control_epoch, EInvalidSuccessorAuthority);
+    assert!(authority.owner == previous.owner, EInvalidSuccessorAuthority);
+    assert!(authority.allowed_lifecycle == ARCHIVED, EInvalidSuccessorAuthority);
+    assert!(previous.lifecycle == authority.allowed_lifecycle, EInvalidSuccessorAuthority);
 }
 
 /// Same-transaction IDs are fields, not inputs to precomputable commitments.
@@ -495,6 +702,7 @@ fun new_maker_draft_internal_v8<PaymentCoin>(
     assert_lineage(&previous_root_id, &previous_version_commitment);
     assert_economics_snapshot_v8<PaymentCoin>(config, &economics);
     assert_rights_snapshot_v8(&rights);
+    assert!(rights.creator == ctx.sender(), ENotCurrentOwner);
 
     let root_uid = object::new(ctx);
     let root_id = root_uid.to_inner();
@@ -553,6 +761,8 @@ fun new_maker_draft_internal_v8<PaymentCoin>(
         version_commitment,
         previous_root_id,
         previous_version_commitment,
+        successor_authority_id: option::none(),
+        successor_root_id: option::none(),
         renderer_commitment,
         manifest_blob_id,
         manifest_sha256,
@@ -631,6 +841,19 @@ public fun finalize_product_release_binding_v8<PaymentCoin>(
     );
     let binding_commitment = *package_binding::product_binding_commitment_v8(binding);
     let catalog_id = package_binding::certified_catalog_id_v8(&certified);
+    if (root.rights.origin == RIGHTS_LICENSE_WRAPPED) {
+        assert!(root.rights.certification_catalog_id.is_some(), ECatalogMismatch);
+        assert!(root.rights.certification_binding_commitment.is_some(), ECatalogMismatch);
+        assert!(
+            *root.rights.certification_catalog_id.borrow() == catalog_id,
+            ECatalogMismatch,
+        );
+        assert!(
+            root.rights.certification_binding_commitment.borrow()
+                == &binding_commitment,
+            ECatalogMismatch,
+        );
+    };
     root.product_release_binding = option::some(certified);
     event::emit(ProductReleaseBindingFinalizedV8 {
         root_id: object::id(root),
@@ -1019,10 +1242,13 @@ public fun assert_rights_snapshot_v8(rights: &RightsSnapshotV8) {
             || rights.origin == RIGHTS_LICENSE_WRAPPED,
         EInvalidRights,
     );
+    assert!(rights.creator != @0x0, EInvalidRights);
     assert!(rights.creator_confirmed, EInvalidRights);
+    assert!(rights.evidence_certified == (rights.origin == RIGHTS_LICENSE_WRAPPED), EInvalidRights);
     assert_rights_evidence(
         rights.origin,
-        rights.evidence_certified,
+        &rights.certification_catalog_id,
+        &rights.certification_binding_commitment,
         &rights.evidence_locator,
         &rights.evidence_blob_id,
         &rights.evidence_sha256,
@@ -1040,8 +1266,11 @@ public fun assert_rights_snapshot_v8(rights: &RightsSnapshotV8) {
         domain: b"animacraft-v8/rights-snapshot",
         version: VERSION,
         origin: rights.origin,
+        creator: rights.creator,
         creator_confirmed: rights.creator_confirmed,
         evidence_certified: rights.evidence_certified,
+        certification_catalog_id: rights.certification_catalog_id,
+        certification_binding_commitment: rights.certification_binding_commitment,
         evidence_locator: rights.evidence_locator,
         evidence_blob_id: rights.evidence_blob_id,
         evidence_sha256: rights.evidence_sha256,
@@ -1055,21 +1284,25 @@ public fun assert_rights_snapshot_v8(rights: &RightsSnapshotV8) {
 
 fun assert_rights_evidence(
     origin: u8,
-    evidence_certified: bool,
+    certification_catalog_id: &Option<ID>,
+    certification_binding_commitment: &Option<vector<u8>>,
     evidence_locator: &String,
     evidence_blob_id: &String,
     evidence_sha256: &vector<u8>,
     terms_commitment: &vector<u8>,
 ) {
     if (origin == RIGHTS_ONCHAIN_NATIVE) {
-        assert!(!evidence_certified, EInvalidRights);
+        assert!(certification_catalog_id.is_none(), EInvalidRights);
+        assert!(certification_binding_commitment.is_none(), EInvalidRights);
         assert!(string::as_bytes(evidence_locator).is_empty(), EInvalidRights);
         assert!(string::as_bytes(evidence_blob_id).is_empty(), EInvalidRights);
         assert!(evidence_sha256.is_empty(), EInvalidRights);
         assert!(terms_commitment.is_empty(), EInvalidRights);
     } else {
         assert!(origin == RIGHTS_LICENSE_WRAPPED, EInvalidRights);
-        assert!(evidence_certified, EInvalidRights);
+        assert!(certification_catalog_id.is_some(), EInvalidRights);
+        assert!(certification_binding_commitment.is_some(), EInvalidRights);
+        assert_hash(certification_binding_commitment.borrow());
         assert_non_empty_bounded(evidence_locator, MAX_EVIDENCE_LOCATOR_BYTES);
         assert_non_empty_bounded(evidence_blob_id, MAX_BLOB_ID_BYTES);
         assert_hash(evidence_sha256);
@@ -1170,6 +1403,12 @@ public fun root_previous_root_id_v8<PaymentCoin>(
 public fun root_previous_version_commitment_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): &Option<vector<u8>> { &root.previous_version_commitment }
+public fun root_successor_authority_id_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &Option<ID> { &root.successor_authority_id }
+public fun root_successor_root_id_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): &Option<ID> { &root.successor_root_id }
 public fun root_control_epoch_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): u64 {
     root.control_epoch
 }
@@ -1312,12 +1551,19 @@ public fun rights_commitment_v8(rights: &RightsSnapshotV8): &vector<u8> {
     &rights.commitment
 }
 public fun rights_origin_v8(rights: &RightsSnapshotV8): u8 { rights.origin }
+public fun rights_creator_v8(rights: &RightsSnapshotV8): address { rights.creator }
 public fun rights_creator_confirmed_v8(rights: &RightsSnapshotV8): bool {
     rights.creator_confirmed
 }
 public fun rights_evidence_certified_v8(rights: &RightsSnapshotV8): bool {
     rights.evidence_certified
 }
+public fun rights_certification_catalog_id_v8(
+    rights: &RightsSnapshotV8,
+): &Option<ID> { &rights.certification_catalog_id }
+public fun rights_certification_binding_commitment_v8(
+    rights: &RightsSnapshotV8,
+): &Option<vector<u8>> { &rights.certification_binding_commitment }
 public fun rights_evidence_locator_v8(rights: &RightsSnapshotV8): &String {
     &rights.evidence_locator
 }
@@ -1340,6 +1586,19 @@ public fun rights_maker_resale_royalty_bps_v8(rights: &RightsSnapshotV8): u16 {
     rights.maker_resale_royalty_bps
 }
 
+public fun successor_authority_previous_root_id_v8<PaymentCoin>(
+    authority: &SuccessorAuthorityV8<PaymentCoin>,
+): ID { authority.previous_root_id }
+public fun successor_authority_maker_version_v8<PaymentCoin>(
+    authority: &SuccessorAuthorityV8<PaymentCoin>,
+): u64 { authority.maker_version }
+public fun successor_authority_control_epoch_v8<PaymentCoin>(
+    authority: &SuccessorAuthorityV8<PaymentCoin>,
+): u64 { authority.control_epoch }
+public fun successor_authority_owner_v8<PaymentCoin>(
+    authority: &SuccessorAuthorityV8<PaymentCoin>,
+): address { authority.owner }
+
 #[test_only]
 public fun set_lifecycle_for_testing<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
@@ -1357,6 +1616,24 @@ public fun rotate_maker_control_for_testing<PaymentCoin>(
     ctx: &mut TxContext,
 ): MakerAdminCapV8 {
     rotate_maker_control_v8(root, admin, expected_control_epoch, new_owner, ctx)
+}
+
+#[test_only]
+public fun destroy_successor_authority_for_testing<PaymentCoin>(
+    authority: SuccessorAuthorityV8<PaymentCoin>,
+) {
+    let SuccessorAuthorityV8 {
+        id,
+        version: _,
+        previous_root_id: _,
+        maker_key: _,
+        maker_version: _,
+        version_commitment: _,
+        control_epoch: _,
+        owner: _,
+        allowed_lifecycle: _,
+    } = authority;
+    id.delete();
 }
 
 #[test_only]
@@ -1382,6 +1659,8 @@ public fun destroy_maker_for_testing<PaymentCoin>(
         version_commitment: _,
         previous_root_id: _,
         previous_version_commitment: _,
+        successor_authority_id: _,
+        successor_root_id: _,
         renderer_commitment: _,
         manifest_blob_id: _,
         manifest_sha256: _,
@@ -1438,14 +1717,8 @@ fun new_test_maker(
         0,
         0,
     );
-    let rights = new_rights_snapshot_v8(
-        RIGHTS_ONCHAIN_NATIVE,
-        true,
-        false,
-        b"".to_string(),
-        b"".to_string(),
-        vector[],
-        vector[],
+    let rights = new_onchain_native_rights_snapshot_v8(
+        ctx,
         250,
         250,
         500,
@@ -1468,6 +1741,25 @@ fun new_test_maker(
     );
     clock.destroy_for_testing();
     (config, protocol_cap, root, admin)
+}
+
+#[test_only]
+fun wrapped_rights_certification_for_testing(
+    creator: address,
+    evidence_locator: String,
+    evidence_blob_id: String,
+    evidence_sha256: vector<u8>,
+    terms_commitment: vector<u8>,
+): WrappedRightsCertificationV8 {
+    WrappedRightsCertificationV8 {
+        creator,
+        catalog_id: object::id_from_address(@0xCA),
+        product_binding_commitment: test_hash(99),
+        evidence_locator,
+        evidence_blob_id,
+        evidence_sha256,
+        terms_commitment,
+    }
 }
 
 #[test_only]
@@ -1654,22 +1946,6 @@ fun binding_is_draft_only() {
     destroy_test_maker(config, protocol_cap, root, admin);
 }
 
-#[test, expected_failure(abort_code = EInvalidRights)]
-fun unconfirmed_rights_are_rejected() {
-    new_rights_snapshot_v8(
-        RIGHTS_LICENSE_WRAPPED,
-        false,
-        true,
-        b"https://license.example/terms".to_string(),
-        b"license-blob".to_string(),
-        test_hash(1),
-        test_hash(2),
-        250,
-        250,
-        500,
-    );
-}
-
 #[test, expected_failure(abort_code = EInvalidEconomics)]
 fun free_maker_cannot_have_a_price() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 17, 0, 0, 0);
@@ -1735,14 +2011,15 @@ fun complete_total_cap_below_wallet_quota_is_rejected() {
 
 #[test]
 fun wrapped_rights_commit_exact_certified_evidence() {
-    let rights = new_rights_snapshot_v8(
-        RIGHTS_LICENSE_WRAPPED,
-        true,
-        true,
+    let certification = wrapped_rights_certification_for_testing(
+        @0xA11,
         b"https://license.example/terms".to_string(),
         b"license-blob".to_string(),
         test_hash(20),
         test_hash(21),
+    );
+    let rights = new_license_wrapped_rights_snapshot_v8(
+        certification,
         250,
         250,
         500,
@@ -1753,12 +2030,101 @@ fun wrapped_rights_commit_exact_certified_evidence() {
     assert!(rights_terms_commitment_v8(&rights) == &test_hash(21), EInvalidRights);
 }
 
+#[test]
+fun wrapped_rights_require_exact_catalog_release_authority() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 192, 0, 0, 0);
+    let (config, protocol_cap) =
+        protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
+    let catalog = package_binding::authority_catalog_for_testing(&config, &mut ctx);
+    let authority = package_binding::new_release_authority_for_testing(&mut ctx);
+    let certification = certify_wrapped_rights_v8(
+        &config,
+        &catalog,
+        &authority,
+        b"https://license.example/exact".to_string(),
+        b"license-blob".to_string(),
+        test_hash(40),
+        test_hash(41),
+        &ctx,
+    );
+    let rights = new_license_wrapped_rights_snapshot_v8(
+        certification,
+        250,
+        250,
+        500,
+    );
+    assert!(rights.creator == @0xA11, EInvalidRights);
+    assert!(*rights.certification_catalog_id.borrow() == object::id(&catalog), EInvalidRights);
+    assert!(
+        rights.certification_binding_commitment.borrow()
+            == package_binding::product_binding_commitment_v8(
+                package_binding::catalog_binding_v8(&catalog),
+            ),
+        EInvalidRights,
+    );
+    package_binding::destroy_release_authority_for_testing(authority);
+    package_binding::destroy_catalog_for_testing(catalog);
+    protocol::destroy_protocol_for_testing(config, protocol_cap);
+}
+
+#[test, expected_failure(abort_code = 7)]
+fun wrapped_rights_reject_wrong_package_authority() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 193, 0, 0, 0);
+    let (config, protocol_cap) =
+        protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
+    let catalog = package_binding::authority_catalog_for_testing(&config, &mut ctx);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let certification = certify_wrapped_rights_v8(
+        &config,
+        &catalog,
+        &clock,
+        b"https://license.example/forged".to_string(),
+        b"license-blob".to_string(),
+        test_hash(40),
+        test_hash(41),
+        &ctx,
+    );
+    let rights = new_license_wrapped_rights_snapshot_v8(certification, 250, 250, 500);
+    let _ = rights;
+    clock.destroy_for_testing();
+    package_binding::destroy_catalog_for_testing(catalog);
+    protocol::destroy_protocol_for_testing(config, protocol_cap);
+}
+
+#[test, expected_failure(abort_code = 7)]
+fun runtime_tuple_rejects_non_runtime_authority() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 194, 0, 0, 0);
+    let (config, protocol_cap) =
+        protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
+    let catalog = package_binding::authority_catalog_for_testing(&config, &mut ctx);
+    let wrong_authority = package_binding::new_release_authority_for_testing(&mut ctx);
+    let readiness = package_binding::certify_runtime_pack_readiness_v8<
+        sui::clock::Clock,
+        package_binding::TestReleaseAuthorityV8,
+    >(
+        &catalog,
+        &wrong_authority,
+        object::id_from_address(@0xAA),
+        1,
+        test_hash(50),
+        object::id_from_address(@0xBB),
+        object::id_from_address(@0xCC),
+        test_hash(51),
+    );
+    let (_, _, _, _, _, _, _, _) =
+        package_binding::consume_runtime_pack_readiness_v8(readiness);
+    package_binding::destroy_release_authority_for_testing(wrong_authority);
+    package_binding::destroy_catalog_for_testing(catalog);
+    protocol::destroy_protocol_for_testing(config, protocol_cap);
+}
+
 #[test, expected_failure(abort_code = EInvalidRights)]
 fun native_rights_reject_nonempty_wrapped_evidence() {
-    new_rights_snapshot_v8(
+    new_rights_snapshot_internal_v8(
         RIGHTS_ONCHAIN_NATIVE,
-        true,
-        false,
+        @0xA11,
+        option::none(),
+        option::none(),
         b"should-be-empty".to_string(),
         b"".to_string(),
         vector[],
@@ -1770,11 +2136,12 @@ fun native_rights_reject_nonempty_wrapped_evidence() {
 }
 
 #[test, expected_failure(abort_code = EInvalidRights)]
-fun wrapped_rights_reject_missing_certification() {
-    new_rights_snapshot_v8(
+fun wrapped_rights_reject_missing_typed_certification() {
+    new_rights_snapshot_internal_v8(
         RIGHTS_LICENSE_WRAPPED,
-        true,
-        false,
+        @0xA11,
+        option::none(),
+        option::none(),
         b"https://license.example/terms".to_string(),
         b"license-blob".to_string(),
         test_hash(20),
@@ -1787,18 +2154,34 @@ fun wrapped_rights_reject_missing_certification() {
 
 #[test, expected_failure(abort_code = EInvalidString)]
 fun wrapped_rights_reject_empty_certified_evidence() {
-    new_rights_snapshot_v8(
-        RIGHTS_LICENSE_WRAPPED,
-        true,
-        true,
+    let certification = wrapped_rights_certification_for_testing(
+        @0xA11,
         b"".to_string(),
         b"".to_string(),
         test_hash(20),
         test_hash(21),
+    );
+    new_license_wrapped_rights_snapshot_v8(
+        certification,
         250,
         250,
         500,
     );
+}
+
+#[test]
+fun native_rights_derive_creator_and_exact_empty_evidence() {
+    let ctx = sui::tx_context::new_from_hint(@0xA11, 191, 0, 0, 0);
+    let rights = new_onchain_native_rights_snapshot_v8(&ctx, 250, 250, 500);
+    assert!(rights.creator == @0xA11, EInvalidRights);
+    assert!(rights.creator_confirmed, EInvalidRights);
+    assert!(!rights.evidence_certified, EInvalidRights);
+    assert!(rights.certification_catalog_id.is_none(), EInvalidRights);
+    assert!(rights.certification_binding_commitment.is_none(), EInvalidRights);
+    assert!(string::as_bytes(&rights.evidence_locator).is_empty(), EInvalidRights);
+    assert!(string::as_bytes(&rights.evidence_blob_id).is_empty(), EInvalidRights);
+    assert!(rights.evidence_sha256.is_empty(), EInvalidRights);
+    assert!(rights.terms_commitment.is_empty(), EInvalidRights);
 }
 
 #[test, expected_failure(abort_code = EBaseRegistryMismatch)]
@@ -1828,10 +2211,19 @@ fun typed_successor_derives_exact_predecessor_and_version() {
         new_test_maker(&mut ctx);
     set_lifecycle_for_testing(&mut previous, ARCHIVED);
     let clock = sui::clock::create_for_testing(&mut ctx);
+    let authority = new_successor_authority(
+        &mut previous,
+        &previous_admin,
+        0,
+        &mut ctx,
+    );
+    let economics = previous.economics;
+    let rights = previous.rights;
     let (successor, successor_admin) = new_successor_maker_draft_v8(
         &config,
-        &previous,
+        &mut previous,
         &previous_admin,
+        authority,
         0,
         4,
         test_hash(31),
@@ -1840,13 +2232,15 @@ fun typed_successor_derives_exact_predecessor_and_version() {
         b"successor-blob".to_string(),
         test_hash(34),
         test_hash(35),
-        previous.economics,
-        previous.rights,
+        economics,
+        rights,
         &clock,
         &mut ctx,
     );
     assert!(successor.maker_key == previous.maker_key, EInvalidSuccessor);
     assert!(successor.maker_version == previous.maker_version + 1, EInvalidSuccessor);
+    assert!(*previous.successor_root_id.borrow() == object::id(&successor), EInvalidSuccessor);
+    assert!(previous.successor_authority_id.is_none(), EInvalidSuccessor);
     assert!(*successor.previous_root_id.borrow() == object::id(&previous), EInvalidSuccessor);
     assert!(
         successor.previous_version_commitment.borrow() == &previous.version_commitment,
@@ -1859,14 +2253,25 @@ fun typed_successor_derives_exact_predecessor_and_version() {
 }
 
 #[test, expected_failure(abort_code = EInvalidSuccessor)]
-fun draft_predecessor_cannot_be_forged_into_successor() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 22, 0, 0, 0);
-    let (config, protocol_cap, previous, previous_admin) = new_test_maker(&mut ctx);
+fun same_transaction_cannot_issue_second_successor_after_consumption() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 211, 0, 0, 0);
+    let (config, protocol_cap, mut previous, previous_admin) =
+        new_test_maker(&mut ctx);
+    set_lifecycle_for_testing(&mut previous, ARCHIVED);
     let clock = sui::clock::create_for_testing(&mut ctx);
+    let authority = new_successor_authority(
+        &mut previous,
+        &previous_admin,
+        0,
+        &mut ctx,
+    );
+    let economics = previous.economics;
+    let rights = previous.rights;
     let (successor, successor_admin) = new_successor_maker_draft_v8(
         &config,
-        &previous,
+        &mut previous,
         &previous_admin,
+        authority,
         0,
         4,
         test_hash(31),
@@ -1875,15 +2280,112 @@ fun draft_predecessor_cannot_be_forged_into_successor() {
         b"successor-blob".to_string(),
         test_hash(34),
         test_hash(35),
-        previous.economics,
-        previous.rights,
+        economics,
+        rights,
         &clock,
         &mut ctx,
     );
     destroy_maker_for_testing(successor, successor_admin);
+    let replay = new_successor_authority(
+        &mut previous,
+        &previous_admin,
+        0,
+        &mut ctx,
+    );
+    destroy_successor_authority_for_testing(replay);
     destroy_maker_for_testing(previous, previous_admin);
     protocol::destroy_protocol_for_testing(config, protocol_cap);
     clock.destroy_for_testing();
+}
+
+#[test, expected_failure(abort_code = EInvalidSuccessor)]
+fun cross_transaction_successor_replay_is_rejected_by_predecessor_cas() {
+    let sender = @0xA11;
+    let mut scenario = sui::test_scenario::begin(sender);
+    {
+        let ctx = scenario.ctx();
+        let (config, protocol_cap, mut previous, previous_admin) =
+            new_test_maker(ctx);
+        set_lifecycle_for_testing(&mut previous, ARCHIVED);
+        protocol::share_protocol_for_testing(config, protocol_cap, ctx);
+        transfer::share_object(previous);
+        transfer::transfer(previous_admin, sender);
+    };
+    scenario.next_tx(sender);
+    {
+        let mut previous = scenario.take_shared<MakerRootV8<sui::sui::SUI>>();
+        let previous_admin = scenario.take_from_sender<MakerAdminCapV8>();
+        issue_successor_authority_v8(
+            &mut previous,
+            &previous_admin,
+            0,
+            scenario.ctx(),
+        );
+        sui::test_scenario::return_shared(previous);
+        scenario.return_to_sender(previous_admin);
+    };
+    scenario.next_tx(sender);
+    {
+        let config = scenario.take_shared<ProtocolConfigV8>();
+        let mut previous = scenario.take_shared<MakerRootV8<sui::sui::SUI>>();
+        let previous_admin = scenario.take_from_sender<MakerAdminCapV8>();
+        let authority = scenario.take_from_sender<SuccessorAuthorityV8<sui::sui::SUI>>();
+        let clock = sui::clock::create_for_testing(scenario.ctx());
+        let economics = previous.economics;
+        let rights = previous.rights;
+        let (successor, successor_admin) = new_successor_maker_draft_v8(
+            &config,
+            &mut previous,
+            &previous_admin,
+            authority,
+            0,
+            4,
+            test_hash(31),
+            test_hash(32),
+            test_hash(33),
+            b"successor-blob".to_string(),
+            test_hash(34),
+            test_hash(35),
+            economics,
+            rights,
+            &clock,
+            scenario.ctx(),
+        );
+        destroy_maker_for_testing(successor, successor_admin);
+        clock.destroy_for_testing();
+        sui::test_scenario::return_shared(config);
+        sui::test_scenario::return_shared(previous);
+        scenario.return_to_sender(previous_admin);
+    };
+    scenario.next_tx(sender);
+    {
+        let mut previous = scenario.take_shared<MakerRootV8<sui::sui::SUI>>();
+        let previous_admin = scenario.take_from_sender<MakerAdminCapV8>();
+        issue_successor_authority_v8(
+            &mut previous,
+            &previous_admin,
+            0,
+            scenario.ctx(),
+        );
+        sui::test_scenario::return_shared(previous);
+        scenario.return_to_sender(previous_admin);
+    };
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = EInvalidSuccessor)]
+fun draft_predecessor_cannot_issue_successor_authority() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 22, 0, 0, 0);
+    let (config, protocol_cap, mut previous, previous_admin) = new_test_maker(&mut ctx);
+    let authority = new_successor_authority(
+        &mut previous,
+        &previous_admin,
+        0,
+        &mut ctx,
+    );
+    destroy_successor_authority_for_testing(authority);
+    destroy_maker_for_testing(previous, previous_admin);
+    protocol::destroy_protocol_for_testing(config, protocol_cap);
 }
 
 #[test, expected_failure(abort_code = EControlEpochMismatch)]
@@ -1893,10 +2395,19 @@ fun successor_control_epoch_is_cas_guarded() {
         new_test_maker(&mut ctx);
     set_lifecycle_for_testing(&mut previous, ARCHIVED);
     let clock = sui::clock::create_for_testing(&mut ctx);
+    let authority = new_successor_authority(
+        &mut previous,
+        &previous_admin,
+        0,
+        &mut ctx,
+    );
+    let economics = previous.economics;
+    let rights = previous.rights;
     let (successor, successor_admin) = new_successor_maker_draft_v8(
         &config,
-        &previous,
+        &mut previous,
         &previous_admin,
+        authority,
         1,
         4,
         test_hash(31),
@@ -1905,8 +2416,8 @@ fun successor_control_epoch_is_cas_guarded() {
         b"successor-blob".to_string(),
         test_hash(34),
         test_hash(35),
-        previous.economics,
-        previous.rights,
+        economics,
+        rights,
         &clock,
         &mut ctx,
     );

@@ -59,7 +59,9 @@ public struct ProductReleaseBindingV8 has copy, drop, store {
     market: ExactPackageBindingV8,
     release: ExactPackageBindingV8,
     release_witness_type: String,
+    release_authority_type: String,
     runtime_pack_readiness_witness_type: String,
+    runtime_pack_authority_type: String,
     commitment: vector<u8>,
 }
 
@@ -84,14 +86,14 @@ public struct CertifiedProductReleaseBindingV8 has copy, drop, store {
     binding: ProductReleaseBindingV8,
 }
 
-/// Ephemeral Release-side proof. It intentionally has neither copy nor store.
-public struct ReleaseCatalogWitnessV8 has drop {
+/// Ephemeral Release-side proof. It intentionally has no abilities.
+public struct ReleaseCatalogWitnessV8 {
     certified: CertifiedProductReleaseBindingV8,
 }
 
-/// Ephemeral Runtime-side Pack readiness proof. It intentionally has neither
-/// copy nor store and binds the immutable Root tuple plus concrete object IDs.
-public struct RuntimePackReadinessV8 has drop {
+/// Ephemeral Runtime-side Pack readiness proof. It intentionally has no
+/// abilities and binds the immutable Root tuple plus concrete object IDs.
+public struct RuntimePackReadinessV8 {
     catalog_id: ID,
     product_binding_commitment: vector<u8>,
     root_id: ID,
@@ -101,6 +103,12 @@ public struct RuntimePackReadinessV8 has drop {
     admission_authority_id: ID,
     policy_commitment: vector<u8>,
 }
+
+#[test_only]
+public struct TestReleaseWitnessV8 {}
+
+#[test_only]
+public struct TestReleaseAuthorityV8 has key { id: UID }
 
 public struct ExactPackageBindingCommitmentInputV8 has drop {
     domain: vector<u8>,
@@ -124,7 +132,9 @@ public struct ProductReleaseBindingCommitmentInputV8 has drop {
     market: ExactPackageBindingV8,
     release: ExactPackageBindingV8,
     release_witness_type: String,
+    release_authority_type: String,
     runtime_pack_readiness_witness_type: String,
+    runtime_pack_authority_type: String,
 }
 
 public fun version_v8(): u64 { VERSION }
@@ -147,7 +157,7 @@ public fun new_package_commitments_v8(
 
 /// Creates the only production ProductRelease catalog path. Every role uses
 /// an original marker and an exact-version callable marker from one lineage.
-/// The two readiness witness types are also frozen exactly.
+/// Readiness witness and certification-authority types are frozen exactly.
 public fun certify_product_release_catalog_v8<
     CoreOriginalMarker,
     CoreCallableMarker,
@@ -163,8 +173,10 @@ public fun certify_product_release_catalog_v8<
     MarketCallableMarker,
     ReleaseOriginalMarker,
     ReleaseCallableMarker,
-    ReleaseWitness: drop,
-    RuntimePackWitness: drop,
+    ReleaseWitness,
+    ReleaseAuthority: key,
+    RuntimePackWitness,
+    RuntimePackAuthority: key,
 >(
     config: &ProtocolConfigV8,
     protocol_admin: &ProtocolAdminCapV8,
@@ -214,7 +226,9 @@ public fun certify_product_release_catalog_v8<
         EProtocolCatalogMismatch,
     );
     assert_witness_type<ReleaseWitness>(&release);
+    assert_witness_type<ReleaseAuthority>(&release);
     assert_witness_type<RuntimePackWitness>(&runtime);
+    assert_witness_type<RuntimePackAuthority>(&runtime);
     let binding = new_product_release_binding(
         core,
         seal,
@@ -224,7 +238,9 @@ public fun certify_product_release_catalog_v8<
         market,
         release,
         type_name_string<ReleaseWitness>(),
+        type_name_string<ReleaseAuthority>(),
         type_name_string<RuntimePackWitness>(),
+        type_name_string<RuntimePackAuthority>(),
     );
     ProductReleaseCatalogV8 {
         id: object::new(ctx),
@@ -240,29 +256,37 @@ public fun share_product_release_catalog_v8(catalog: ProductReleaseCatalogV8) {
     transfer::share_object(catalog);
 }
 
-/// Converts the exact Release-owned witness type into a Core-issued,
-/// non-store/non-copy proof carrying the catalog tuple to MakerRootV8.
-public fun certify_release_catalog_witness_v8<ReleaseWitness: drop>(
+/// The exact Release package must consume its private no-ability readiness
+/// witness before calling this function. The separately frozen key authority
+/// prevents an author from invoking the Core boundary directly.
+public fun certify_release_catalog_witness_v8<
+    ReleaseWitness,
+    ReleaseAuthority: key,
+>(
     config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    _release_witness: ReleaseWitness,
+    authority: &ReleaseAuthority,
 ): ReleaseCatalogWitnessV8 {
     assert_catalog_current_v8(config, catalog);
     assert_witness_type_name<ReleaseWitness>(
         &catalog.binding.release,
         &catalog.binding.release_witness_type,
     );
+    assert_release_authority_v8(catalog, authority);
     ReleaseCatalogWitnessV8 {
         certified: certified_snapshot(catalog),
     }
 }
 
-/// Converts the exact Runtime-owned readiness witness type into a Core-issued
-/// Pack proof. Runtime remains responsible for constructing its witness only
-/// after its concrete registry is ready.
-public fun certify_runtime_pack_readiness_v8<RuntimePackWitness: drop>(
+/// The exact Runtime package must consume its private no-ability readiness
+/// witness into this tuple before calling Core. Its separately frozen key
+/// authority prevents witness/tuple substitution by an author.
+public fun certify_runtime_pack_readiness_v8<
+    RuntimePackWitness,
+    RuntimePackAuthority: key,
+>(
     catalog: &ProductReleaseCatalogV8,
-    _runtime_witness: RuntimePackWitness,
+    authority: &RuntimePackAuthority,
     root_id: ID,
     root_version: u64,
     root_content_commitment: vector<u8>,
@@ -275,6 +299,7 @@ public fun certify_runtime_pack_readiness_v8<RuntimePackWitness: drop>(
         &catalog.binding.runtime,
         &catalog.binding.runtime_pack_readiness_witness_type,
     );
+    assert_runtime_pack_authority_v8(catalog, authority);
     assert_hash(&root_content_commitment);
     assert_hash(&policy_commitment);
     RuntimePackReadinessV8 {
@@ -287,6 +312,32 @@ public fun certify_runtime_pack_readiness_v8<RuntimePackWitness: drop>(
         admission_authority_id,
         policy_commitment,
     }
+}
+
+/// Shared Release/transport trust boundary used by wrapped-rights
+/// certification. It proves the caller holds the exact authority type frozen
+/// into the protocol-admin catalog; it does not accept an author-created
+/// boolean or witness token.
+public fun assert_release_authority_v8<ReleaseAuthority: key>(
+    catalog: &ProductReleaseCatalogV8,
+    _authority: &ReleaseAuthority,
+) {
+    assert_catalog_well_formed(catalog);
+    assert_witness_type_name<ReleaseAuthority>(
+        &catalog.binding.release,
+        &catalog.binding.release_authority_type,
+    );
+}
+
+public fun assert_runtime_pack_authority_v8<RuntimePackAuthority: key>(
+    catalog: &ProductReleaseCatalogV8,
+    _authority: &RuntimePackAuthority,
+) {
+    assert_catalog_well_formed(catalog);
+    assert_witness_type_name<RuntimePackAuthority>(
+        &catalog.binding.runtime,
+        &catalog.binding.runtime_pack_authority_type,
+    );
 }
 
 public fun assert_catalog_current_v8(
@@ -417,8 +468,10 @@ public fun assert_product_release_binding_well_formed_v8(
             market: binding.market,
             release: binding.release,
             release_witness_type: binding.release_witness_type,
+            release_authority_type: binding.release_authority_type,
             runtime_pack_readiness_witness_type:
                 binding.runtime_pack_readiness_witness_type,
+            runtime_pack_authority_type: binding.runtime_pack_authority_type,
         },
     ));
     assert!(&expected == &binding.commitment, EBindingCommitmentMismatch);
@@ -446,7 +499,9 @@ fun new_product_release_binding(
     market: ExactPackageBindingV8,
     release: ExactPackageBindingV8,
     release_witness_type: String,
+    release_authority_type: String,
     runtime_pack_readiness_witness_type: String,
+    runtime_pack_authority_type: String,
 ): ProductReleaseBindingV8 {
     assert_binding_well_formed(&core);
     assert_binding_well_formed(&seal);
@@ -477,7 +532,9 @@ fun new_product_release_binding(
             market,
             release,
             release_witness_type,
+            release_authority_type,
             runtime_pack_readiness_witness_type,
+            runtime_pack_authority_type,
         },
     ));
     ProductReleaseBindingV8 {
@@ -491,7 +548,9 @@ fun new_product_release_binding(
         market,
         release,
         release_witness_type,
+        release_authority_type,
         runtime_pack_readiness_witness_type,
+        runtime_pack_authority_type,
         commitment,
     }
 }
@@ -727,6 +786,18 @@ public fun market_binding_v8(binding: &ProductReleaseBindingV8): &ExactPackageBi
 public fun release_binding_v8(binding: &ProductReleaseBindingV8): &ExactPackageBindingV8 {
     &binding.release
 }
+public fun release_witness_type_v8(binding: &ProductReleaseBindingV8): &String {
+    &binding.release_witness_type
+}
+public fun release_authority_type_v8(binding: &ProductReleaseBindingV8): &String {
+    &binding.release_authority_type
+}
+public fun runtime_pack_readiness_witness_type_v8(
+    binding: &ProductReleaseBindingV8,
+): &String { &binding.runtime_pack_readiness_witness_type }
+public fun runtime_pack_authority_type_v8(
+    binding: &ProductReleaseBindingV8,
+): &String { &binding.runtime_pack_authority_type }
 
 #[test_only]
 public fun new_exact_package_binding_for_testing(
@@ -759,7 +830,9 @@ public fun product_release_catalog_for_testing(
         new_exact_package_binding_for_testing(@0x15, @0x25, 16),
         new_exact_package_binding_for_testing(@0x16, @0x26, 19),
         b"test-release-witness".to_string(),
+        b"test-release-authority".to_string(),
         b"test-runtime-witness".to_string(),
+        b"test-runtime-authority".to_string(),
     );
     ProductReleaseCatalogV8 {
         id: object::new(ctx),
@@ -769,6 +842,65 @@ public fun product_release_catalog_for_testing(
         protocol_config_commitment: *protocol::config_commitment_v8(config),
         binding,
     }
+}
+
+#[test_only]
+public fun authority_catalog_for_testing(
+    config: &ProtocolConfigV8,
+    ctx: &mut TxContext,
+): ProductReleaseCatalogV8 {
+    let release_original = type_name::original_id<TestReleaseAuthorityV8>();
+    let release_callable = type_name::defining_id<TestReleaseAuthorityV8>();
+    let runtime_original = type_name::original_id<sui::clock::Clock>();
+    let runtime_callable = type_name::defining_id<sui::clock::Clock>();
+    let binding = new_product_release_binding(
+        new_exact_package_binding_for_testing(@0x10, @0x20, 1),
+        new_exact_package_binding_for_testing(@0x11, @0x21, 4),
+        new_binding(
+            object::id_from_address(runtime_original),
+            object::id_from_address(runtime_callable),
+            test_hash(7),
+            test_hash(8),
+            test_hash(9),
+        ),
+        new_exact_package_binding_for_testing(@0x13, @0x23, 10),
+        new_exact_package_binding_for_testing(@0x14, @0x24, 13),
+        new_exact_package_binding_for_testing(@0x15, @0x25, 16),
+        new_binding(
+            object::id_from_address(release_original),
+            object::id_from_address(release_callable),
+            test_hash(19),
+            test_hash(20),
+            test_hash(21),
+        ),
+        type_name_string<TestReleaseWitnessV8>(),
+        type_name_string<TestReleaseAuthorityV8>(),
+        type_name_string<sui::clock::Clock>(),
+        type_name_string<sui::clock::Clock>(),
+    );
+    ProductReleaseCatalogV8 {
+        id: object::new(ctx),
+        version: VERSION,
+        protocol_config_id: protocol::config_id_v8(config),
+        protocol_config_revision: protocol::config_revision_v8(config),
+        protocol_config_commitment: *protocol::config_commitment_v8(config),
+        binding,
+    }
+}
+
+#[test_only]
+public fun new_release_authority_for_testing(
+    ctx: &mut TxContext,
+): TestReleaseAuthorityV8 {
+    TestReleaseAuthorityV8 { id: object::new(ctx) }
+}
+
+#[test_only]
+public fun destroy_release_authority_for_testing(
+    authority: TestReleaseAuthorityV8,
+) {
+    let TestReleaseAuthorityV8 { id } = authority;
+    id.delete();
 }
 
 #[test_only]
@@ -855,7 +987,9 @@ fun cross_column_role_collision_is_rejected() {
         new_exact_package_binding_for_testing(@0x15, @0x25, 16),
         new_exact_package_binding_for_testing(@0x16, @0x26, 19),
         b"release".to_string(),
+        b"release-authority".to_string(),
         b"runtime".to_string(),
+        b"runtime-authority".to_string(),
     );
 }
 
@@ -871,7 +1005,9 @@ fun same_column_role_collision_is_rejected() {
         new_exact_package_binding_for_testing(@0x15, @0x25, 13),
         new_exact_package_binding_for_testing(@0x16, @0x26, 16),
         b"release".to_string(),
+        b"release-authority".to_string(),
         b"runtime".to_string(),
+        b"runtime-authority".to_string(),
     );
 }
 
@@ -913,7 +1049,9 @@ fun maker_author_cannot_certify_roles_without_exact_protocol_admin() {
         ProductReleaseBindingV8,
         ProductReleaseCatalogV8,
         ProductReleaseBindingV8,
+        ProductReleaseCatalogV8,
         ProductReleaseBindingV8,
+        ProductReleaseCatalogV8,
     >(
         &config_a,
         &cap_b,

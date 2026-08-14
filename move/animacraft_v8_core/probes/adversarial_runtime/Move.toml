@@ -1,0 +1,9 @@
+[package]
+name = "animacraft_v8_core_adversarial_runtime"
+edition = "2024.beta"
+
+[dependencies]
+animacraft_v8_core = { local = "../.." }
+
+[addresses]
+animacraft_v8_core_adversarial_runtime = "0x0"

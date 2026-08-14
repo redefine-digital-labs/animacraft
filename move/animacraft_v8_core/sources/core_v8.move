@@ -14,6 +14,7 @@ use animacraft_v8_core::maker_v8::{
     MakerAdminCapV8,
     MakerRootV8,
     RightsSnapshotV8,
+    SuccessorAuthorityV8,
 };
 use animacraft_v8_core::protocol_config_v8::ProtocolConfigV8;
 use std::string::String;
@@ -82,8 +83,9 @@ public fun new_initial_maker_draft_v8<PaymentCoin>(
 /// version, predecessor ID, and predecessor commitment are not caller input.
 public fun new_successor_maker_draft_v8<PaymentCoin>(
     config: &ProtocolConfigV8,
-    previous: &MakerRootV8<PaymentCoin>,
+    previous: &mut MakerRootV8<PaymentCoin>,
     previous_admin: &MakerAdminCapV8,
+    authority: SuccessorAuthorityV8<PaymentCoin>,
     expected_previous_control_epoch: u64,
     renderer_commitment: vector<u8>,
     manifest_blob_id: String,
@@ -108,6 +110,7 @@ public fun new_successor_maker_draft_v8<PaymentCoin>(
         config,
         previous,
         previous_admin,
+        authority,
         expected_previous_control_epoch,
         expected_base_definition_count,
         expected_base_registry_commitment,
