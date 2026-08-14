@@ -195,7 +195,7 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(workspace, /this\.tr\(blockingIssues\.length === 1 \? 'reviewIssue' : 'reviewIssues'/);
   assert.match(workspaceI18n, /reviewIssues: 'Review \{count\} issues'/);
   assert.match(workspace, /class="v4-tool-modal-backdrop" data-action="close-tool-backdrop"/);
-  assert.match(workspace, /id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true"/);
+  assert.match(workspace, /id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="\$\{sourceSuspended \? 'false' : 'true'\}"/);
   assert.match(workspace, /renderPublicationFlow\(kind\)/);
   assert.match(workspace, /const dialogId = creator \? 'makerCreatorPublishDialog' : 'makerPlayerPublishDialog'/);
   assert.match(workspace, /data-action="copy-\$\{prefix\}-publish-error"/);
@@ -1041,6 +1041,78 @@ test('nested lifecycle confirmations suspend the background dialog and restore i
       < escapeHandler.indexOf("makerLifecycleManagerModal')?.classList.contains('active')"),
     'Escape must close the top confirmation before the lifecycle dialog underneath',
   );
+});
+
+test('Expansion Pack lifecycle manager suspends its list or Studio surface below confirmations', async () => {
+  const [app, workspace, styles] = await Promise.all([
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  ]);
+  const lifecycleLayer = Number(styles.match(/#makerLifecycleManagerModal\s*\{[^}]*z-index:\s*(\d+)/)?.[1]);
+  const confirmationLayer = Number(styles.match(/#confirmActionModal\s*\{[^}]*z-index:\s*(\d+)/)?.[1]);
+  const toolLayer = Number(styles.match(/\.v4-tool-modal-backdrop\s*\{[^}]*z-index:\s*(\d+)/)?.[1]);
+  assert.ok(toolLayer < lifecycleLayer && lifecycleLayer < confirmationLayer);
+
+  const suspendStart = app.indexOf('function suspendExpansionPackLifecycleSource(source)');
+  const suspendEnd = app.indexOf('\nfunction restoreExpansionPackLifecycleSource', suspendStart);
+  const suspend = app.slice(suspendStart, suspendEnd);
+  assert.match(suspend, /\['expansion-pack-list', 'expansion-pack-studio'\]/);
+  assert.match(suspend, /surface\.hidden = true/);
+  assert.match(suspend, /surface\.inert = true/);
+  assert.match(suspend, /surface\.setAttribute\('aria-hidden', 'true'\)/);
+  assert.match(suspend, /sourceDialog\?\.setAttribute\('aria-modal', 'false'\)/);
+  assert.match(app, /function restoreExpansionPackLifecycleSource\([\s\S]*?surface\.hidden = suspended\.hidden[\s\S]*?surface\.inert = suspended\.inert/);
+  assert.match(app, /source === 'expansion-pack-studio'[\s\S]*?manage-pack-lifecycle[\s\S]*?manage-expansion-pack-lifecycle/);
+  assert.match(workspace, /makerLifecycleSuspendedSource[\s\S]*?aria-modal="\$\{sourceSuspended \? 'false' : 'true'\}"/);
+  assert.match(app, /closingPack && expansionPackLifecycleManagerView\.busy === true && !force\) return false/);
+  assert.match(app, /querySelectorAll\('\[data-close-maker-lifecycle\]'\)[\s\S]*?button\.disabled = busy/);
+  const packRendererStart = app.indexOf('function renderExpansionPackLifecycleManager()');
+  const packRendererEnd = app.indexOf('\nfunction openMakerLifecycleManager', packRendererStart);
+  const packRenderer = app.slice(packRendererStart, packRendererEnd);
+  assert.match(
+    packRenderer,
+    /const focusedLifecycleAction = focusedInsideModal[\s\S]*?focusedLifecycleAction[\s\S]*?makerLifecycleManagerStatus[\s\S]*?focus\(\{ preventScroll: true \}\)/,
+    'Pack lifecycle redraws must restore the replaced action or move focus to the live status',
+  );
+});
+
+test('pure local Expansion Pack deletion stays fail-closed and uses an exact revision CAS', async () => {
+  const [app, workspace] = await Promise.all([
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+  ]);
+  const inventoryStart = app.indexOf('async function loadExpansionPackLifecycleInventory');
+  const inventoryEnd = app.indexOf('\nfunction expansionPackLifecycleSummaryFromView', inventoryStart);
+  const inventory = app.slice(inventoryStart, inventoryEnd);
+  assert.match(
+    inventory,
+    /summary\.project\?\.parentBinding\?\.kind === 'local-draft'[\s\S]*?summary\.identity\?\.parentBindingKind === 'local-draft'[\s\S]*?\? 'local-draft'/,
+    'a connected wallet must not turn a proven local-parent draft into unknown',
+  );
+
+  const eligibilityStart = workspace.indexOf('export function isPureLocalExpansionPackDraft');
+  const eligibilityEnd = workspace.indexOf('\nfunction expansionPackDescriptorKey', eligibilityStart);
+  const eligibility = workspace.slice(eligibilityStart, eligibilityEnd);
+  assert.match(eligibility, /parent\?\.kind !== 'local-draft'/);
+  assert.match(eligibility, /identity\.parentBindingKind !== 'local-draft'/);
+  assert.match(eligibility, /publication\?\.state !== 'draft'/);
+  assert.match(eligibility, /expansionPackLifecycleStateValue\(lifecycle\) !== 'local-draft'/);
+  assert.match(eligibility, /lifecycle\.release\?\.objectId/);
+  assert.match(eligibility, /lifecycle\.adminCap\?\.objectId/);
+  assert.match(eligibility, /recovery\.pending/);
+  assert.match(eligibility, /recovery\.finalizedFailures/);
+
+  const deletionStart = workspace.indexOf('async deleteExpansionPackDraft(candidate)');
+  const deletionEnd = workspace.indexOf('\n  expansionPackCommerceState', deletionStart);
+  const deletion = workspace.slice(deletionStart, deletionEnd);
+  assert.match(deletion, /await this\.expansionPackDraftStore\.load\(identity\)/);
+  assert.match(deletion, /record\.revision !== expectedRevision/);
+  assert.match(deletion, /this\.expansionPackDraftStore\.delete\(identity, \{ expectedRevision \}\)/);
+  assert.match(deletion, /await this\.expansionPackDraftStore\.load\(identity\)/);
+  assert.match(app, /data-lifecycle-action="pack-delete-local-draft"/);
+  assert.match(app, /requestExpansionPackDraftDeletion\(\)/);
+  assert.match(app, /expansionPackLifecycleDeleteDraftConfirmCopy/);
 });
 
 test('historical lifecycle controls identify and confirm their exact immutable version', async () => {

@@ -3468,6 +3468,7 @@ let pendingConfirmation = null;
 let confirmationReturnFocus = null;
 let confirmationSuspendedLifecycle = false;
 let makerLifecycleManagerReturnFocus = null;
+let makerLifecycleManagerSourceSurface = null;
 let makerLifecycleManagerSyncRequestId = 0;
 let makerWorkspaceLifecycleOperationId = 0;
 let makerCommerceV5LifecycleOperationId = 0;
@@ -3497,6 +3498,56 @@ let expansionPackLifecycleManagerView = Object.freeze({
   busy: false,
   recovery: null,
 });
+
+function expansionPackLifecycleSourceFocus(source, key) {
+  const actions = source === 'expansion-pack-studio'
+    ? document.querySelectorAll('[data-action="manage-pack-lifecycle"]')
+    : document.querySelectorAll('[data-action="manage-expansion-pack-lifecycle"]');
+  return Array.from(actions).find((button) => (
+    (!key || button.dataset.packProjectKey === key)
+    && button.offsetParent !== null
+  )) || null;
+}
+
+function suspendExpansionPackLifecycleSource(source) {
+  if (!['expansion-pack-list', 'expansion-pack-studio'].includes(source)) return null;
+  const surface = $('makerV4CreatorMount');
+  if (!surface) return null;
+  const sourceDialog = surface.querySelector('#makerV4ToolDialog');
+  const suspended = {
+    source,
+    surface,
+    hidden: surface.hidden,
+    inert: surface.inert,
+    ariaHidden: surface.getAttribute('aria-hidden'),
+    dialogAriaModal: sourceDialog?.getAttribute('aria-modal') ?? null,
+  };
+  surface.dataset.makerLifecycleSuspendedSource = source;
+  surface.hidden = true;
+  surface.inert = true;
+  surface.setAttribute('aria-hidden', 'true');
+  sourceDialog?.setAttribute('aria-modal', 'false');
+  return suspended;
+}
+
+function restoreExpansionPackLifecycleSource() {
+  const suspended = makerLifecycleManagerSourceSurface;
+  makerLifecycleManagerSourceSurface = null;
+  if (!suspended?.surface?.isConnected) return;
+  const { surface } = suspended;
+  const sourceDialog = surface.querySelector('#makerV4ToolDialog');
+  delete surface.dataset.makerLifecycleSuspendedSource;
+  surface.hidden = suspended.hidden;
+  surface.inert = suspended.inert;
+  if (suspended.inert) surface.setAttribute('inert', '');
+  else surface.removeAttribute('inert');
+  if (suspended.ariaHidden == null) surface.removeAttribute('aria-hidden');
+  else surface.setAttribute('aria-hidden', suspended.ariaHidden);
+  if (sourceDialog) {
+    if (suspended.dialogAriaModal == null) sourceDialog.removeAttribute('aria-modal');
+    else sourceDialog.setAttribute('aria-modal', suspended.dialogAriaModal);
+  }
+}
 
 function expansionPackPlayerAcquisitionSessionId() {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -13541,6 +13592,12 @@ function expansionPackLifecycleLabel(stateValue) {
 function renderExpansionPackLifecycleManager() {
   const modal = $('makerLifecycleManagerModal');
   if (!modal) return;
+  const focusedElement = document.activeElement;
+  const modalWasActive = modal.classList.contains('active');
+  const focusedInsideModal = modalWasActive && modal.contains(focusedElement);
+  const focusedLifecycleAction = focusedInsideModal
+    ? focusedElement?.closest?.('[data-lifecycle-action]')?.dataset?.lifecycleAction || ''
+    : '';
   const view = expansionPackLifecycleManagerView;
   const summary = expansionPackLifecycleSummaryFromView() || {};
   const descriptor = expansionPackLifecycleDescriptorFromView() || {};
@@ -13650,6 +13707,19 @@ function renderExpansionPackLifecycleManager() {
     'pack-archive', t('expansionPackLifecycleArchive'), t('expansionPackLifecycleArchiveCopy'),
     { tone: 'danger', disabled: busy || loading },
   ));
+  const localDraftDeletionAvailable = view.status !== 'error'
+    && !loading
+    && !actionLocked
+    && makerWorkspace?.canDeleteExpansionPackDraft?.({
+      ...summary,
+      lifecycle: descriptor,
+    }, descriptor) === true;
+  if (localDraftDeletionAvailable) actions.push(lifecycleActionButton(
+    'pack-delete-local-draft',
+    t('expansionPackLifecycleDeleteDraft'),
+    t('expansionPackLifecycleDeleteDraftCopy'),
+    { tone: 'danger', disabled: busy },
+  ));
   actions.push(lifecycleActionButton(
     'pack-refresh', t('expansionPackLifecycleRefresh'), t('expansionPackLifecycleRefreshCopy'),
     { disabled: busy || loading },
@@ -13678,12 +13748,32 @@ function renderExpansionPackLifecycleManager() {
     $('makerLifecycleManagerStatus').textContent = loading
       ? t('expansionPackLifecycleLoading')
       : busy
-        ? t('expansionPackLifecycleWorking')
+        ? view.status === 'deleting'
+          ? t('expansionPackLifecycleDeleteWorking')
+          : t('expansionPackLifecycleWorking')
         : terminalFailure
           ? t('expansionPackLifecycleFinalizedFailureCopy')
         : stateName === 'archived'
           ? t('expansionPackLifecycleArchivedTerminal')
           : t('expansionPackLifecycleStatusReady');
+  }
+  modal.querySelectorAll('[data-close-maker-lifecycle]').forEach((button) => {
+    button.disabled = busy;
+    button.setAttribute('aria-disabled', String(busy));
+  });
+  if (
+    focusedInsideModal
+    && !$('confirmActionModal')?.classList.contains('active')
+    && !modal.contains(document.activeElement)
+  ) {
+    const replacement = focusedLifecycleAction
+      ? Array.from(modal.querySelectorAll('[data-lifecycle-action]')).find((button) => (
+          button.dataset.lifecycleAction === focusedLifecycleAction
+          && !button.disabled
+        ))
+      : null;
+    (replacement || $('makerLifecycleManagerStatus') || modal.querySelector('[data-close-maker-lifecycle]'))
+      ?.focus({ preventScroll: true });
   }
 }
 
@@ -13734,6 +13824,8 @@ function openMakerLifecycleManager(templateId = state.templateId) {
 function closeMakerLifecycleManager({ restoreFocus = true, force = false } = {}) {
   const closingPack = $('makerLifecycleManagerModal')?.dataset.lifecycleKind === 'pack';
   if (closingPack && expansionPackLifecycleManagerView.busy === true && !force) return false;
+  const closingPackSource = closingPack ? expansionPackLifecycleManagerView.source : '';
+  const closingPackKey = closingPack ? expansionPackLifecycleManagerView.key : '';
   makerLifecycleManagerSyncRequestId += 1;
   if (closingPack) {
     expansionPackLifecycleManagerView = Object.freeze({
@@ -13750,15 +13842,21 @@ function closeMakerLifecycleManager({ restoreFocus = true, force = false } = {})
   }
   $('makerLifecycleManagerModal')?.setAttribute('aria-hidden', 'true');
   $('makerLifecycleManagerDialog')?.setAttribute('aria-modal', 'true');
-  if (restoreFocus && makerLifecycleManagerReturnFocus?.isConnected) {
+  if (closingPack) {
+    makerWorkspace?.render?.();
+    restoreExpansionPackLifecycleSource();
+  }
+  if (
+    restoreFocus
+    && makerLifecycleManagerReturnFocus?.isConnected
+    && !makerLifecycleManagerReturnFocus.closest?.('[inert]')
+    && !makerLifecycleManagerReturnFocus.disabled
+  ) {
     makerLifecycleManagerReturnFocus.focus();
   } else if (restoreFocus) {
     const replacement = closingPack
-      ? Array.from(document.querySelectorAll('[data-action="manage-expansion-pack-lifecycle"]'))
-        .find((button) => (
-          button.dataset.packProjectKey === expansionPackLifecycleManagerView.key
-          && button.offsetParent !== null
-        ))
+      ? expansionPackLifecycleSourceFocus(closingPackSource, closingPackKey)
+        || document.querySelector('[data-action="add-expansion"]')
       : Array.from(document.querySelectorAll('[data-manage-lifecycle]'))
       .find((button) => (
         button.dataset.manageLifecycle === state.templateId
@@ -13971,6 +14069,10 @@ async function handleMakerLifecycleAction(action) {
   if (!action) return;
   if (action.startsWith('pack-')) {
     if ($('makerLifecycleManagerModal')?.dataset.lifecycleKind !== 'pack') return;
+    if (action === 'pack-delete-local-draft') {
+      await requestExpansionPackDraftDeletion();
+      return;
+    }
     if (action === 'pack-refresh') {
       await refreshExpansionPackLifecycleManager();
       return;
@@ -21236,7 +21338,13 @@ async function loadExpansionPackLifecycleInventory({ summaries = [], walletAddre
   if (!wallet || !parentRelease?.baseMakerRootId || !expansionPackV8RuntimeConfigured()) {
     return summaries.map((summary) => ({
       key: summary.key,
-      lifecycle: { state: wallet ? 'unknown' : 'local-draft' },
+      lifecycle: {
+        state: !summary.chainOnly
+          && summary.project?.parentBinding?.kind === 'local-draft'
+          && summary.identity?.parentBindingKind === 'local-draft'
+          ? 'local-draft'
+          : wallet ? 'unknown' : 'local-draft',
+      },
     }));
   }
   const client = getSuiClient();
@@ -21589,18 +21697,115 @@ async function recoverExpansionPackLifecycleManagement() {
   }));
 }
 
+async function deleteExpansionPackDraftFromLifecycle(candidate) {
+  const current = expansionPackLifecycleManagerView;
+  const scope = Object.freeze({
+    requestId: current.requestId,
+    key: current.key,
+    wallet: suiJsonId(state.walletAddress),
+  });
+  if (!expansionPackLifecycleViewIsActive(scope) || current.busy) return false;
+  expansionPackLifecycleManagerView = Object.freeze({
+    ...current,
+    status: 'deleting',
+    busy: true,
+    error: null,
+  });
+  renderMakerLifecycleManager();
+  try {
+    await makerWorkspace?.deleteExpansionPackDraft?.(candidate);
+    if (!expansionPackLifecycleViewIsActive(scope)) return false;
+    closeMakerLifecycleManager({ force: true });
+    return true;
+  } catch (error) {
+    if (!expansionPackLifecycleViewIsActive(scope)) return false;
+    expansionPackLifecycleManagerView = Object.freeze({
+      ...expansionPackLifecycleManagerView,
+      status: 'error',
+      busy: false,
+      error,
+    });
+    renderMakerLifecycleManager();
+    return false;
+  }
+}
+
+async function requestExpansionPackDraftDeletion() {
+  const current = expansionPackLifecycleManagerView;
+  const summary = expansionPackLifecycleSummaryFromView();
+  const descriptor = expansionPackLifecycleDescriptorFromView();
+  const scope = Object.freeze({
+    requestId: current.requestId,
+    key: current.key,
+    wallet: suiJsonId(state.walletAddress),
+  });
+  if (
+    !expansionPackLifecycleViewIsActive(scope)
+    || current.busy
+    || makerWorkspace?.canDeleteExpansionPackDraft?.({
+      ...summary,
+      lifecycle: descriptor,
+    }, descriptor) !== true
+  ) return false;
+  expansionPackLifecycleManagerView = Object.freeze({
+    ...current,
+    status: 'deleting',
+    busy: true,
+    error: null,
+  });
+  renderMakerLifecycleManager();
+  try {
+    const candidate = await makerWorkspace.prepareExpansionPackDraftDeletion({
+      ...summary,
+      lifecycle: descriptor,
+    }, descriptor);
+    if (!expansionPackLifecycleViewIsActive(scope)) return false;
+    expansionPackLifecycleManagerView = Object.freeze({
+      ...expansionPackLifecycleManagerView,
+      status: 'ready',
+      busy: false,
+      error: null,
+    });
+    renderMakerLifecycleManager();
+    const trigger = $('makerLifecycleManagerModal')?.querySelector(
+      '[data-lifecycle-action="pack-delete-local-draft"]',
+    );
+    trigger?.focus();
+    openConfirmation({
+      title: t('expansionPackLifecycleDeleteDraftTitle'),
+      message: t('expansionPackLifecycleDeleteDraftConfirmCopy', { name: candidate.name }),
+      confirmLabel: t('expansionPackLifecycleDeleteDraft'),
+      action: () => deleteExpansionPackDraftFromLifecycle(candidate),
+    });
+    return true;
+  } catch (error) {
+    if (!expansionPackLifecycleViewIsActive(scope)) return false;
+    expansionPackLifecycleManagerView = Object.freeze({
+      ...expansionPackLifecycleManagerView,
+      status: 'error',
+      busy: false,
+      error,
+    });
+    renderMakerLifecycleManager();
+    return false;
+  }
+}
+
 async function openExpansionPackLifecycleManager(payload) {
   const summary = structuredClone(payload?.summary || payload || {});
   const key = String(payload?.key || summary.key || '');
+  const source = String(payload?.source || '');
   const requestId = expansionPackLifecycleManagerView.requestId + 1;
   makerLifecycleManagerReturnFocus = document.activeElement instanceof HTMLElement
     ? document.activeElement
     : null;
+  restoreExpansionPackLifecycleSource();
+  makerLifecycleManagerSourceSurface = suspendExpansionPackLifecycleSource(source);
   expansionPackLifecycleManagerView = Object.freeze({
     status: 'loading',
     requestId,
     key,
-    source: String(payload?.source || ''),
+    source,
     summary,
     descriptor: summary.lifecycle || null,
     error: null,
@@ -21636,7 +21841,10 @@ async function openExpansionPackLifecycleManager(payload) {
       error: null,
     });
     renderMakerLifecycleManager();
-    return { lifecycle: expansionPackLifecycleManagerView.descriptor };
+    return {
+      lifecycle: expansionPackLifecycleManagerView.descriptor,
+      deferSourceRender: Boolean(makerLifecycleManagerSourceSurface),
+    };
   } catch (error) {
     if (requestId !== expansionPackLifecycleManagerView.requestId) return null;
     expansionPackLifecycleManagerView = Object.freeze({
@@ -21650,7 +21858,10 @@ async function openExpansionPackLifecycleManager(payload) {
       error,
     });
     renderMakerLifecycleManager();
-    return { lifecycle: expansionPackLifecycleManagerView.descriptor };
+    return {
+      lifecycle: expansionPackLifecycleManagerView.descriptor,
+      deferSourceRender: Boolean(makerLifecycleManagerSourceSurface),
+    };
   }
 }
 

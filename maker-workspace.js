@@ -1567,6 +1567,83 @@ function expansionPackLifecycleError(error) {
   return String(error?.message || error || '').trim();
 }
 
+function expansionPackLifecycleStateValue(lifecycle) {
+  return String(
+    lifecycle?.state
+    ?? lifecycle?.lifecycleState
+    ?? lifecycle?.lifecycle
+    ?? '',
+  ).trim().toLowerCase().replaceAll('_', '-');
+}
+
+/**
+ * Deletion is intentionally narrower than "has a local record". A Pack must
+ * prove that both its immutable persistence identity and project bind to a
+ * local parent, and that no publication or lifecycle evidence exists.
+ */
+export function isPureLocalExpansionPackDraft(summary, lifecycleValue = summary?.lifecycle) {
+  const project = summary?.project;
+  const identity = summary?.identity;
+  const parent = project?.parentBinding;
+  const publication = project?.publication;
+  const lifecycle = lifecycleValue && typeof lifecycleValue === 'object'
+    ? lifecycleValue
+    : {};
+  const recovery = lifecycle.lifecycleRecovery || {};
+  if (
+    !project
+    || !identity
+    || summary?.chainOnly === true
+    || !Number.isSafeInteger(summary?.revision)
+    || summary.revision < 1
+    || parent?.kind !== 'local-draft'
+    || identity.parentBindingKind !== 'local-draft'
+    || String(project.ownerWalletAddress || '').toLowerCase()
+      !== String(identity.walletAddress || '').toLowerCase()
+    || String(parent.rootMakerId || '') !== String(identity.parentRootId || '')
+    || String(parent.versionNumber || '') !== String(identity.parentVersion || '')
+    || String(parent.versionId || '') !== String(identity.parentVersionId || '')
+    || String(project.packId || '') !== String(identity.packId || '')
+    || String(project.pack?.packId || '') !== String(identity.packId || '')
+    || parent.publishable !== false
+    || publication?.state !== 'draft'
+    || publication?.publishable !== false
+    || publication?.chainState !== 'unpublished'
+    || expansionPackLifecycleStateValue(lifecycle) !== 'local-draft'
+    || lifecycle.error
+    || lifecycle.publication
+    || lifecycle.recoverable === true
+    || lifecycle.pending === true
+    || lifecycle.failure
+    || lifecycle.finalizedFailure
+    || (Array.isArray(recovery.pending) && recovery.pending.length)
+    || (Array.isArray(recovery.finalizedFailures) && recovery.finalizedFailures.length)
+  ) return false;
+  const chainEvidence = [
+    summary.releaseId,
+    summary.adminCapId,
+    parent.releaseId,
+    parent.manifestBlobId,
+    parent.manifestHash,
+    project.releaseId,
+    project.adminCapId,
+    publication.releaseId,
+    publication.adminCapId,
+    publication.transactionDigest,
+    publication.receipt,
+    lifecycle.release?.objectId,
+    lifecycle.releaseId,
+    lifecycle.adminCap?.objectId,
+    lifecycle.adminCapId,
+  ];
+  if (chainEvidence.some(Boolean)) return false;
+  try {
+    return expansionPackDraftKey(identity) === String(summary.key || '');
+  } catch {
+    return false;
+  }
+}
+
 function expansionPackDescriptorKey(descriptor) {
   const explicit = String(descriptor?.key || '').trim();
   if (explicit) return explicit;
@@ -3688,7 +3765,7 @@ export class MakerWorkspace {
       if (!lifecycle) return;
       const current = this.expansionPackProjectSummaries.find((entry) => entry.key === summary.key);
       if (current) current.lifecycle = clone(lifecycle);
-      this.render();
+      if (result?.deferSourceRender !== true) this.render();
     };
     const result = this.callbacks.onManageExpansionPackLifecycle?.(payload);
     if (result?.then) Promise.resolve(result).then(applyResult).catch(
@@ -3696,6 +3773,154 @@ export class MakerWorkspace {
     );
     else applyResult(result);
     return true;
+  }
+
+  canDeleteExpansionPackDraft(summary, lifecycle = summary?.lifecycle) {
+    const parent = this.expansionPackParentDocument();
+    const walletAddress = this.expansionPackWalletAddress().toLowerCase();
+    const parentRootId = String(parent?.version?.rootMakerId || parent?.metadata?.id || '');
+    const parentVersion = String(parent?.version?.number ?? parent?.version?.versionId ?? '');
+    const parentVersionId = String(parent?.version?.versionId || '');
+    return Boolean(
+      isPureLocalExpansionPackDraft(summary, lifecycle)
+      && walletAddress
+      && String(summary.identity?.walletAddress || '').toLowerCase() === walletAddress
+      && String(summary.project?.ownerWalletAddress || '').toLowerCase() === walletAddress
+      && parentRootId
+      && String(summary.identity?.parentRootId || '') === parentRootId
+      && String(summary.identity?.parentVersion || '') === parentVersion
+      && String(summary.identity?.parentVersionId || '') === parentVersionId
+      && !this.expansionPackPublicationLocksIdentity(summary.identity)
+    );
+  }
+
+  expansionPackDraftDeletionError(messageKey, code) {
+    const error = new Error(this.tr(messageKey));
+    error.code = code;
+    return error;
+  }
+
+  async prepareExpansionPackDraftDeletion(summary, lifecycle = summary?.lifecycle) {
+    if (!this.canDeleteExpansionPackDraft(summary, lifecycle)) {
+      throw this.expansionPackDraftDeletionError(
+        'expansionPackLifecycleDeleteUnavailable',
+        'EXPANSION_PACK_DRAFT_DELETE_FORBIDDEN',
+      );
+    }
+    const identity = clone(summary.identity);
+    const key = expansionPackDraftKey(identity);
+    const activeState = this.expansionPackWorkspace?.getState?.();
+    const activeKey = activeState?.identity
+      ? expansionPackDraftKey(activeState.identity)
+      : '';
+    if (activeKey === key) {
+      const flushed = await this.flushExpansionPackWorkspace(this.expansionPackWorkspace);
+      if (!flushed.saved) {
+        throw flushed.error || this.expansionPackDraftDeletionError(
+          'expansionPackLifecycleDeleteConflict',
+          'EXPANSION_PACK_DRAFT_DELETE_CONFLICT',
+        );
+      }
+    }
+    const record = await this.expansionPackDraftStore.load(identity);
+    const exact = record ? {
+      ...summary,
+      key,
+      identity,
+      project: record.project,
+      revision: record.revision,
+      lifecycle: clone(lifecycle),
+    } : null;
+    if (!record || !this.canDeleteExpansionPackDraft(exact, lifecycle)) {
+      throw this.expansionPackDraftDeletionError(
+        'expansionPackLifecycleDeleteConflict',
+        'EXPANSION_PACK_DRAFT_DELETE_CONFLICT',
+      );
+    }
+    return Object.freeze({
+      key,
+      identity: Object.freeze(clone(identity)),
+      expectedRevision: record.revision,
+      name: String(record.project?.name || summary.name || record.project?.packId || ''),
+      summary: Object.freeze(exact),
+    });
+  }
+
+  async deleteExpansionPackDraft(candidate) {
+    const identity = clone(candidate?.identity || null);
+    const expectedRevision = candidate?.expectedRevision;
+    let key = '';
+    try { key = expansionPackDraftKey(identity); } catch { key = ''; }
+    if (
+      !key
+      || key !== candidate?.key
+      || !Number.isSafeInteger(expectedRevision)
+      || expectedRevision < 1
+      || !this.canDeleteExpansionPackDraft(candidate?.summary, candidate?.summary?.lifecycle)
+    ) {
+      throw this.expansionPackDraftDeletionError(
+        'expansionPackLifecycleDeleteUnavailable',
+        'EXPANSION_PACK_DRAFT_DELETE_FORBIDDEN',
+      );
+    }
+    this.expansionPackAutosave.cancel();
+    const record = await this.expansionPackDraftStore.load(identity);
+    const exact = record ? {
+      ...candidate.summary,
+      key,
+      identity,
+      project: record.project,
+      revision: record.revision,
+    } : null;
+    if (
+      !record
+      || record.revision !== expectedRevision
+      || !this.canDeleteExpansionPackDraft(exact, exact?.lifecycle)
+    ) {
+      throw this.expansionPackDraftDeletionError(
+        'expansionPackLifecycleDeleteConflict',
+        'EXPANSION_PACK_DRAFT_DELETE_CONFLICT',
+      );
+    }
+    const activeState = this.expansionPackWorkspace?.getState?.();
+    const activeKey = activeState?.identity
+      ? expansionPackDraftKey(activeState.identity)
+      : '';
+    if (activeKey === key) {
+      if (activeState.dirty || activeState.revision !== expectedRevision) {
+        throw this.expansionPackDraftDeletionError(
+          'expansionPackLifecycleDeleteConflict',
+          'EXPANSION_PACK_DRAFT_DELETE_CONFLICT',
+        );
+      }
+      const closed = await this.closeExpansionPackWorkspace({ save: false, render: false });
+      if (!closed) {
+        throw this.expansionPackDraftDeletionError(
+          'expansionPackLifecycleDeleteUnavailable',
+          'EXPANSION_PACK_DRAFT_DELETE_FORBIDDEN',
+        );
+      }
+    }
+    const result = await this.expansionPackDraftStore.delete(identity, { expectedRevision });
+    if (!result?.deleted || result.conflict) {
+      throw this.expansionPackDraftDeletionError(
+        'expansionPackLifecycleDeleteConflict',
+        'EXPANSION_PACK_DRAFT_DELETE_CONFLICT',
+      );
+    }
+    const readback = await this.expansionPackDraftStore.load(identity);
+    if (readback) {
+      throw this.expansionPackDraftDeletionError(
+        'expansionPackLifecycleDeleteFailed',
+        'EXPANSION_PACK_DRAFT_DELETE_READBACK_FAILED',
+      );
+    }
+    await this.refreshExpansionPackProjects({ render: false });
+    this.expansionPackProjectNotice = this.tr('expansionPackLifecycleDeleteSuccess', {
+      name: candidate.name,
+    });
+    this.render();
+    return result;
   }
 
   expansionPackCommerceState(key) {
@@ -8812,8 +9037,9 @@ export class MakerWorkspace {
     const creatorRight = `
             <div class="v4-panel-head v4-inspector-context"><div><span>${escapeHtml(this.tr('currentStyle'))}</span><strong>${escapeHtml([part?.name || '—', item?.name || '—', style?.name || '—'].join(' › '))}</strong></div></div>
             ${this.renderCreatorInspector(document, part, item, style)}`;
+    const sourceSuspended = Boolean(this.creatorRoot?.dataset?.makerLifecycleSuspendedSource);
     const creatorOverlay = this.creatorTab !== 'structure' ? `<div class="v4-tool-modal-backdrop" data-action="close-tool-backdrop">
-          <section id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true" aria-labelledby="makerV4ToolTitle" tabindex="-1">
+          <section id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="${sourceSuspended ? 'false' : 'true'}" aria-labelledby="makerV4ToolTitle" tabindex="-1">
             <header class="v4-tool-context"><div><span>${escapeHtml(this.creatorTabLabel(this.creatorTab, issues.length))}</span><strong id="makerV4ToolTitle">${escapeHtml(document.metadata.name)}</strong></div><button type="button" data-action="close-tool" aria-label="${escapeHtml(this.tr('close'))}">×</button></header>
             <div class="v4-tool-body">${this.renderCreatorAdvanced(document, issues, compatibility)}</div>
           </section>

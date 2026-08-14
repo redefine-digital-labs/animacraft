@@ -204,6 +204,23 @@ function memoryExpansionPackStore() {
         savedAt: record.savedAt,
       };
     },
+    async delete(identity, options) {
+      const recordKey = key(identity);
+      const existing = records.get(recordKey) || null;
+      if (!existing || existing.revision !== options.expectedRevision) {
+        return {
+          deleted: false,
+          conflict: true,
+          persistedRevision: existing?.revision ?? null,
+        };
+      }
+      records.delete(recordKey);
+      return {
+        deleted: true,
+        conflict: false,
+        persistedRevision: options.expectedRevision,
+      };
+    },
   };
 }
 
@@ -3228,6 +3245,82 @@ test('Expansion Pack lifecycle load failures stay unknown and never masquerade a
         throw new Error('lifecycle unavailable');
       },
     },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('only a proven pure local-parent Pack draft can enter revision-checked deletion', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('delete-local-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+    const summary = workspace.expansionPackProjectSummaries[0];
+    assert.equal(workspace.canDeleteExpansionPackDraft(summary), true);
+
+    for (const blocked of [
+      { ...summary, chainOnly: true },
+      { ...summary, lifecycle: { state: 'unknown' } },
+      { ...summary, lifecycle: { state: 'recoverable', publication: { started: true } } },
+      { ...summary, lifecycle: { state: 'finalized-failure', failure: { digest: 'deadbeef' } } },
+      { ...summary, lifecycle: { state: 'local-draft', release: { objectId: '0xrelease' } } },
+      { ...summary, lifecycle: { state: 'local-draft', adminCap: { objectId: '0xcap' } } },
+      {
+        ...summary,
+        project: {
+          ...summary.project,
+          parentBinding: { ...summary.project.parentBinding, kind: 'published-release' },
+        },
+      },
+      {
+        ...summary,
+        project: { ...summary.project, packId: 'different-local-pack' },
+      },
+      {
+        ...summary,
+        project: {
+          ...summary.project,
+          publication: { ...summary.project.publication, state: 'publishing' },
+        },
+      },
+    ]) assert.equal(workspace.canDeleteExpansionPackDraft(blocked), false);
+
+    const record = [...expansionPackDraftStore.records.values()][0];
+    record.revision = 2;
+    const candidate = await workspace.prepareExpansionPackDraftDeletion(summary);
+    assert.equal(candidate.expectedRevision, 2, 'confirmation pins the exact revision loaded from storage');
+    const deleted = await workspace.deleteExpansionPackDraft(candidate);
+    assert.equal(deleted.deleted, true);
+    assert.equal(expansionPackDraftStore.records.size, 0);
+    assert.equal(workspace.expansionPackProjectSummaries.length, 0);
+  }, {
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('local Pack deletion fails closed when the exact saved revision changes after confirmation', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('delete-conflict-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+    const summary = workspace.expansionPackProjectSummaries[0];
+    const candidate = await workspace.prepareExpansionPackDraftDeletion(summary);
+    const record = [...expansionPackDraftStore.records.values()][0];
+    record.revision += 1;
+
+    await assert.rejects(
+      workspace.deleteExpansionPackDraft(candidate),
+      (error) => error?.code === 'EXPANSION_PACK_DRAFT_DELETE_CONFLICT',
+    );
+    assert.equal(expansionPackDraftStore.records.size, 1);
+  }, {
+    expansionPackDraftStore,
     prepareDocument(document) {
       document.metadata.creator = '0xcreator';
     },

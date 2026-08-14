@@ -2753,6 +2753,10 @@ input[type="color"] {
   z-index: 1600;
 }
 
+#makerLifecycleManagerModal {
+  z-index: 1550;
+}
+
 .modal-card {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
