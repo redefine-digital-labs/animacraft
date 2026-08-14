@@ -4,7 +4,6 @@ use animacraft_v8::maker_v8::{Self as maker, MakerAdminCapV8, MakerRootV8};
 use std::bcs;
 use std::hash;
 use std::string::String;
-use sui::event;
 use sui::table::{Self as table, Table};
 
 const VERSION: u64 = 8;
@@ -186,43 +185,6 @@ public struct LoadoutMutationHashInputV8 has copy, drop, store {
     operation: u8,
     slot_key: String,
     item_key: String,
-}
-
-public struct CompositionSlotAppendedV8 has copy, drop {
-    registry_id: ID,
-    sequence: u64,
-    slot_key: String,
-    rolling_commitment: vector<u8>,
-}
-
-public struct CompositionItemAppendedV8 has copy, drop {
-    registry_id: ID,
-    sequence: u64,
-    slot_key: String,
-    item_key: String,
-    rolling_commitment: vector<u8>,
-}
-
-public struct CompositionRuleAppendedV8 has copy, drop {
-    registry_id: ID,
-    sequence: u64,
-    rule_kind: u8,
-    rolling_commitment: vector<u8>,
-}
-
-public struct CompositionRegistrySealedV8 has copy, drop {
-    registry_id: ID,
-    row_count: u64,
-    commitment: vector<u8>,
-}
-
-public struct LoadoutMutatedV8 has copy, drop {
-    loadout_id: ID,
-    holder: address,
-    operation: u8,
-    revision: u64,
-    selection_count: u64,
-    commitment: vector<u8>,
 }
 
 public fun version_v8(): u64 { VERSION }
@@ -433,12 +395,6 @@ public fun append_wardrobe_slot_v8<PaymentCoin>(
     registry.slot_keys.push_back(slot_key);
     registry.observed_slot_count = registry.observed_slot_count + 1;
     registry.observed_count = registry.observed_count + 1;
-    event::emit(CompositionSlotAppendedV8 {
-        registry_id: object::id(registry),
-        sequence,
-        slot_key,
-        rolling_commitment: registry.rolling_commitment,
-    });
 }
 
 public fun append_composition_item_v8<PaymentCoin>(
@@ -486,13 +442,6 @@ public fun append_composition_item_v8<PaymentCoin>(
     });
     registry.observed_item_count = registry.observed_item_count + 1;
     registry.observed_count = registry.observed_count + 1;
-    event::emit(CompositionItemAppendedV8 {
-        registry_id: object::id(registry),
-        sequence,
-        slot_key,
-        item_key,
-        rolling_commitment: registry.rolling_commitment,
-    });
 }
 
 public fun append_loadout_rule_v8<PaymentCoin>(
@@ -548,12 +497,6 @@ public fun append_loadout_rule_v8<PaymentCoin>(
     });
     registry.observed_rule_count = registry.observed_rule_count + 1;
     registry.observed_count = registry.observed_count + 1;
-    event::emit(CompositionRuleAppendedV8 {
-        registry_id: object::id(registry),
-        sequence,
-        rule_kind,
-        rolling_commitment: registry.rolling_commitment,
-    });
 }
 
 public fun seal_composition_registry_v8<PaymentCoin>(
@@ -570,11 +513,6 @@ public fun seal_composition_registry_v8<PaymentCoin>(
     assert!(registry.observed_count == registry.expected_count, EInvalidCount);
     assert!(registry.rolling_commitment == registry.expected_commitment, EInvalidCommitment);
     registry.sealed = true;
-    event::emit(CompositionRegistrySealedV8 {
-        registry_id: object::id(registry),
-        row_count: registry.observed_count,
-        commitment: registry.rolling_commitment,
-    });
 }
 
 public(package) fun assert_activation_ready_v8<PaymentCoin>(
@@ -611,6 +549,7 @@ public fun create_owned_loadout_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     ctx: &mut TxContext,
 ) {
+    maker::assert_active_root_v8(root);
     assert_registry_binding(registry, root);
     assert!(registry.sealed, ERegistryNotSealed);
     let loadout_uid = object::new(ctx);
@@ -661,7 +600,6 @@ public fun select_loadout_item_v8<PaymentCoin>(
     mutate_loadout_commitment(loadout, 0, slot_key, item_key);
     loadout.selection_count = loadout.selection_count + 1;
     loadout.revision = loadout.revision + 1;
-    emit_loadout(loadout, 0);
 }
 
 public fun remove_loadout_item_v8<PaymentCoin>(
@@ -686,7 +624,6 @@ public fun remove_loadout_item_v8<PaymentCoin>(
     mutate_loadout_commitment(loadout, 1, slot_key, item_key);
     loadout.selection_count = loadout.selection_count - 1;
     loadout.revision = loadout.revision + 1;
-    emit_loadout(loadout, 1);
 }
 
 public fun assert_loadout_rules_v8(
@@ -760,7 +697,6 @@ public fun begin_stale_loadout_recovery_v8<PaymentCoin>(
     assert!(loadout.ownership_epoch != maker::ownership_epoch_v8(root), ECurrentEpoch);
     loadout.recovering = true;
     loadout.revision = loadout.revision + 1;
-    emit_loadout(loadout, 2);
 }
 
 /// Removes the last selected slot atomically. Recovery never preserves stale
@@ -780,7 +716,6 @@ public fun recover_last_loadout_slot_v8(
     loadout.selection_count = loadout.selection_count - removed;
     mutate_loadout_commitment(loadout, 2, slot_key, b"*".to_string());
     loadout.revision = loadout.revision + 1;
-    emit_loadout(loadout, 2);
 }
 
 public fun finish_stale_loadout_recovery_v8<PaymentCoin>(
@@ -803,7 +738,6 @@ public fun finish_stale_loadout_recovery_v8<PaymentCoin>(
         loadout.maker_root_id,
         loadout.ownership_epoch,
     );
-    emit_loadout(loadout, 3);
 }
 
 public fun registry_id_v8(self: &CompositionRegistryV8): ID { object::id(self) }
@@ -867,6 +801,7 @@ fun assert_loadout_mutable<PaymentCoin>(
     expected_revision: u64,
     ctx: &TxContext,
 ) {
+    maker::assert_active_root_v8(root);
     assert_holder(loadout, ctx);
     assert!(loadout.revision == expected_revision, EStaleRevision);
     assert!(!loadout.recovering, ERecoveryActive);
@@ -964,15 +899,4 @@ fun assert_identifier(value: &String) {
 
 fun assert_digest(value: &vector<u8>) {
     assert!(value.length() == HASH_LENGTH, EInvalidCommitment);
-}
-
-fun emit_loadout(loadout: &OwnedLoadoutV8, operation: u8) {
-    event::emit(LoadoutMutatedV8 {
-        loadout_id: object::id(loadout),
-        holder: loadout.holder,
-        operation,
-        revision: loadout.revision,
-        selection_count: loadout.selection_count,
-        commitment: loadout.loadout_commitment,
-    });
 }

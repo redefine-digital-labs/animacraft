@@ -20,6 +20,9 @@ use sui::event;
 const VERSION: u64 = 8;
 const HASH_LENGTH: u64 = 32;
 const BPS_DENOMINATOR: u64 = 10_000;
+const MAX_ROYALTY_BPS: u16 = 1_000;
+const ROYALTY_STEP_BPS: u16 = 50;
+const MAX_COMBINED_SOURCE_ROYALTY_BPS: u16 = 1_000;
 
 const DRAFT: u8 = 0;
 const ACTIVE: u8 = 1;
@@ -28,8 +31,14 @@ const ARCHIVED: u8 = 3;
 
 const ACCESS_FREE: u8 = 0;
 const ACCESS_PAID: u8 = 1;
+const COMPLETE_UNLIMITED_FREE: u8 = 0;
+const COMPLETE_FREE_QUOTA_THEN_PAID: u8 = 1;
+const COMPLETE_PAID_EVERY_TIME: u8 = 2;
+const COMPLETE_FREE_QUOTA_THEN_BLOCK: u8 = 3;
 const RIGHTS_ONCHAIN_NATIVE: u8 = 0;
 const RIGHTS_LICENSE_WRAPPED: u8 = 1;
+const MAX_PRICE_ATOMIC: u64 = 1_000_000_000_000;
+const MAX_QUOTA: u64 = 1_000_000_000;
 
 const CATEGORY_TRACK: u8 = 0;
 const CATEGORY_PART: u8 = 1;
@@ -107,13 +116,14 @@ public struct CapabilityCommitmentsV8 has copy, drop, store {
     pack: vector<u8>,
     complete: vector<u8>,
     seal: vector<u8>,
+    soul: vector<u8>,
     physical: Option<vector<u8>>,
 }
 
 public struct EconomicsV8 has copy, drop, store {
     maker_access: u8,
     maker_price_atomic: u64,
-    complete_access: u8,
+    complete_mode: u8,
     complete_price_atomic: u64,
     complete_per_wallet_quota: u64,
     complete_total_cap: u64,
@@ -135,6 +145,7 @@ public struct CapabilityBindingsV8 has copy, drop, store {
     pack_registry_id: Option<ID>,
     complete_registry_id: Option<ID>,
     seal_registry_id: Option<ID>,
+    soul_registry_id: Option<ID>,
     physical_registry_id: Option<ID>,
 }
 
@@ -146,6 +157,8 @@ public struct StyleKeyV8 has copy, drop, store {
     item_key: String,
     style_key: String,
 }
+public struct StyleIndexKeyV8 has copy, drop, store { index: u64 }
+public struct ProtectedStyleIndexKeyV8 has copy, drop, store { index: u64 }
 public struct ColorKeyV8 has copy, drop, store { channel_key: String, swatch_key: String }
 public struct RuleKeyV8 has copy, drop, store { key: String }
 public struct EntitlementKeyV8 has copy, drop, store { wallet: address }
@@ -155,14 +168,12 @@ public struct TrackRowV8 has copy, drop, store {
     key: String,
     label: String,
     render_order: u64,
-    required: bool,
     payload_commitment: vector<u8>,
 }
 
 public struct PartRowV8 has copy, drop, store {
     sequence: u64,
     key: String,
-    track_key: String,
     label: String,
     kind: u8,
     render_order: u64,
@@ -185,6 +196,9 @@ public struct StyleRowV8 has copy, drop, store {
     part_key: String,
     item_key: String,
     style_key: String,
+    layer_track_key: String,
+    color_channel_key: Option<String>,
+    default_swatch_key: Option<String>,
     label: String,
     asset_blob_id: String,
     asset_sha256: vector<u8>,
@@ -251,11 +265,13 @@ public struct MakerRootV8<phantom PaymentCoin> has key {
     expected_registry_commitments: RegistryCommitmentsV8,
     rolling_registry_commitments: RegistryCommitmentsV8,
     expected_capability_commitments: CapabilityCommitmentsV8,
+    expected_physical_policy_count: u64,
     capability_bindings: CapabilityBindingsV8,
     next_sequence: u64,
     expected_sequence_count: u64,
     protected_style_count: u64,
-    protected_style_keys: vector<StyleKeyV8>,
+    pack_protected_style_count: u64,
+    complete_protected_output_count: u64,
     entitlement_count: u64,
     created_at_ms: u64,
     activated_at_ms: u64,
@@ -299,13 +315,18 @@ public struct ActivationBindingsV8 has drop {
     pack_registry_id: ID,
     pack_commitment: vector<u8>,
     pack_release_count: u64,
+    pack_protected_style_count: u64,
     complete_registry_id: ID,
     complete_commitment: vector<u8>,
+    complete_protected_output_count: u64,
     seal_registry_id: ID,
     seal_commitment: vector<u8>,
     protected_asset_count: u64,
+    soul_registry_id: ID,
+    soul_commitment: vector<u8>,
     physical_registry_id: Option<ID>,
     physical_commitment: Option<vector<u8>>,
+    physical_policy_count: u64,
 }
 
 public struct RollingCommitmentInputV8 has drop {
@@ -334,7 +355,7 @@ public struct VersionCommitmentInputV8 has drop {
 public struct EconomicsCommitmentInputV8 has drop {
     maker_access: u8,
     maker_price_atomic: u64,
-    complete_access: u8,
+    complete_mode: u8,
     complete_price_atomic: u64,
     complete_per_wallet_quota: u64,
     complete_total_cap: u64,
@@ -372,6 +393,7 @@ public struct MakerV8Activated has copy, drop {
     pack_registry_id: ID,
     complete_registry_id: ID,
     seal_registry_id: ID,
+    soul_registry_id: ID,
     physical_registry_id: Option<ID>,
     maker_access: u8,
     maker_price_atomic: u64,
@@ -424,6 +446,10 @@ public fun lifecycle_paused_v8(): u8 { PAUSED }
 public fun lifecycle_archived_v8(): u8 { ARCHIVED }
 public fun access_free_v8(): u8 { ACCESS_FREE }
 public fun access_paid_v8(): u8 { ACCESS_PAID }
+public fun complete_unlimited_free_v8(): u8 { COMPLETE_UNLIMITED_FREE }
+public fun complete_free_quota_then_paid_v8(): u8 { COMPLETE_FREE_QUOTA_THEN_PAID }
+public fun complete_paid_every_time_v8(): u8 { COMPLETE_PAID_EVERY_TIME }
+public fun complete_free_quota_then_block_v8(): u8 { COMPLETE_FREE_QUOTA_THEN_BLOCK }
 public fun rights_onchain_native_v8(): u8 { RIGHTS_ONCHAIN_NATIVE }
 public fun rights_license_wrapped_v8(): u8 { RIGHTS_LICENSE_WRAPPED }
 public fun category_track_v8(): u8 { CATEGORY_TRACK }
@@ -432,6 +458,16 @@ public fun category_item_v8(): u8 { CATEGORY_ITEM }
 public fun category_style_v8(): u8 { CATEGORY_STYLE }
 public fun category_color_v8(): u8 { CATEGORY_COLOR }
 public fun category_rule_v8(): u8 { CATEGORY_RULE }
+public fun max_key_bytes_v8(): u64 { MAX_KEY_BYTES }
+public fun max_label_bytes_v8(): u64 { MAX_LABEL_BYTES }
+public fun max_blob_id_bytes_v8(): u64 { MAX_BLOB_ID_BYTES }
+public fun max_royalty_bps_v8(): u16 { MAX_ROYALTY_BPS }
+public fun royalty_step_bps_v8(): u16 { ROYALTY_STEP_BPS }
+public fun max_combined_source_royalty_bps_v8(): u16 {
+    MAX_COMBINED_SOURCE_ROYALTY_BPS
+}
+public fun max_price_atomic_v8(): u64 { MAX_PRICE_ATOMIC }
+public fun max_quota_v8(): u64 { MAX_QUOTA }
 
 public fun new_row_counts_v8(
     tracks: u64,
@@ -483,33 +519,39 @@ public fun new_capability_commitments_v8(
     pack: vector<u8>,
     complete: vector<u8>,
     seal: vector<u8>,
+    soul: vector<u8>,
     physical: Option<vector<u8>>,
 ): CapabilityCommitmentsV8 {
     assert_digest(&composition);
     assert_digest(&pack);
     assert_digest(&complete);
     assert_digest(&seal);
+    assert_digest(&soul);
     if (physical.is_some()) assert_digest(physical.borrow());
-    CapabilityCommitmentsV8 { composition, pack, complete, seal, physical }
+    CapabilityCommitmentsV8 { composition, pack, complete, seal, soul, physical }
 }
 
 public fun new_economics_v8(
     maker_access: u8,
     maker_price_atomic: u64,
-    complete_access: u8,
+    complete_mode: u8,
     complete_price_atomic: u64,
     complete_per_wallet_quota: u64,
     complete_total_cap: u64,
     protocol_fee_bps: u16,
 ): EconomicsV8 {
     assert_valid_access(maker_access, maker_price_atomic);
-    assert_valid_access(complete_access, complete_price_atomic);
-    assert!(complete_total_cap == 0 || complete_per_wallet_quota <= complete_total_cap, EInvalidEconomics);
+    assert_valid_complete_policy_v8(
+        complete_mode,
+        complete_price_atomic,
+        complete_per_wallet_quota,
+        complete_total_cap,
+    );
     assert!((protocol_fee_bps as u64) <= BPS_DENOMINATOR, EInvalidEconomics);
     let commitment = hash::sha2_256(bcs::to_bytes(&EconomicsCommitmentInputV8 {
         maker_access,
         maker_price_atomic,
-        complete_access,
+        complete_mode,
         complete_price_atomic,
         complete_per_wallet_quota,
         complete_total_cap,
@@ -518,7 +560,7 @@ public fun new_economics_v8(
     EconomicsV8 {
         maker_access,
         maker_price_atomic,
-        complete_access,
+        complete_mode,
         complete_price_atomic,
         complete_per_wallet_quota,
         complete_total_cap,
@@ -536,9 +578,17 @@ public fun new_rights_v8(
 ): RightsV8 {
     assert!(origin == RIGHTS_ONCHAIN_NATIVE || origin == RIGHTS_LICENSE_WRAPPED, EInvalidRights);
     assert!(creator_confirmed, EInvalidRights);
-    assert!((soul_creator_royalty_bps as u64) <= BPS_DENOMINATOR, EInvalidRights);
-    assert!((maker_source_royalty_bps as u64) <= BPS_DENOMINATOR, EInvalidRights);
-    assert!((maker_resale_royalty_bps as u64) <= BPS_DENOMINATOR, EInvalidRights);
+    assert!(soul_creator_royalty_bps <= MAX_ROYALTY_BPS, EInvalidRights);
+    assert!(maker_source_royalty_bps <= MAX_ROYALTY_BPS, EInvalidRights);
+    assert!(maker_resale_royalty_bps <= MAX_ROYALTY_BPS, EInvalidRights);
+    assert!(soul_creator_royalty_bps % ROYALTY_STEP_BPS == 0, EInvalidRights);
+    assert!(maker_source_royalty_bps % ROYALTY_STEP_BPS == 0, EInvalidRights);
+    assert!(maker_resale_royalty_bps % ROYALTY_STEP_BPS == 0, EInvalidRights);
+    assert!(
+        soul_creator_royalty_bps + maker_source_royalty_bps
+            <= MAX_COMBINED_SOURCE_ROYALTY_BPS,
+        EInvalidRights,
+    );
     let commitment = hash::sha2_256(bcs::to_bytes(&RightsCommitmentInputV8 {
         origin,
         creator_confirmed,
@@ -596,7 +646,7 @@ public fun advance_commitment_v8(
 }
 
 /// Package orchestrators call this once after Walrus certification and before
-/// constructing the four required empty registries. No v4-v7 object is an
+/// constructing the required fresh registries. No v4-v7 object is an
 /// input, so this TypeOrigin cannot become a migration path accidentally.
 public(package) fun new_maker_v8<PaymentCoin>(
     config: &ProtocolConfigV8,
@@ -611,6 +661,7 @@ public(package) fun new_maker_v8<PaymentCoin>(
     expected_counts: RowCountsV8,
     expected_registry_commitments: RegistryCommitmentsV8,
     expected_capability_commitments: CapabilityCommitmentsV8,
+    expected_physical_policy_count: u64,
     declared_capabilities: u64,
     economics: EconomicsV8,
     rights: RightsV8,
@@ -630,6 +681,9 @@ public(package) fun new_maker_v8<PaymentCoin>(
         declared_capabilities,
         &expected_capability_commitments,
     );
+    if (expected_capability_commitments.physical.is_none()) {
+        assert!(expected_physical_policy_count == 0, ECountMismatch);
+    };
     assert!(economics.protocol_fee_bps == protocol::config_primary_protocol_fee_bps_v8(config), EInvalidProtocol);
     assert_lineage(&previous_root_id, &previous_version_commitment);
 
@@ -702,11 +756,13 @@ public(package) fun new_maker_v8<PaymentCoin>(
         expected_registry_commitments,
         rolling_registry_commitments: empty_registry_commitments(content_commitment),
         expected_capability_commitments,
+        expected_physical_policy_count,
         capability_bindings: empty_capability_bindings(),
         next_sequence: 0,
         expected_sequence_count: core_sequence_count(&expected_counts),
         protected_style_count: 0,
-        protected_style_keys: vector[],
+        pack_protected_style_count: 0,
+        complete_protected_output_count: 0,
         entitlement_count: 0,
         created_at_ms: clock.timestamp_ms(),
         activated_at_ms: 0,
@@ -726,6 +782,15 @@ public(package) fun share_maker_objects_v8<PaymentCoin>(
     transfer::transfer(admin, ctx.sender());
 }
 
+#[test_only]
+public(package) fun share_maker_without_admin_for_testing<PaymentCoin>(
+    root: MakerRootV8<PaymentCoin>,
+    treasury: MakerTreasuryV8<PaymentCoin>,
+) {
+    transfer::share_object(root);
+    transfer::share_object(treasury);
+}
+
 public fun append_track_v8<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
@@ -733,7 +798,6 @@ public fun append_track_v8<PaymentCoin>(
     key: String,
     label: String,
     render_order: u64,
-    required: bool,
     payload_commitment: vector<u8>,
 ) {
     assert_draft_admin_v8(root, admin);
@@ -748,7 +812,6 @@ public fun append_track_v8<PaymentCoin>(
         key,
         label,
         render_order,
-        required,
         payload_commitment,
     };
     let row_bytes = bcs::to_bytes(&row);
@@ -762,7 +825,6 @@ public fun append_part_v8<PaymentCoin>(
     admin: &MakerAdminCapV8,
     sequence: u64,
     key: String,
-    track_key: String,
     label: String,
     kind: u8,
     render_order: u64,
@@ -773,16 +835,13 @@ public fun append_part_v8<PaymentCoin>(
     assert_draft_admin_v8(root, admin);
     assert_category_sequence(root, CATEGORY_PART, sequence);
     assert_non_empty_bounded(&key, MAX_KEY_BYTES);
-    assert_non_empty_bounded(&track_key, MAX_KEY_BYTES);
     assert_non_empty_bounded(&label, MAX_LABEL_BYTES);
     assert_digest(&payload_commitment);
-    assert!(df::exists(&root.id, TrackKeyV8 { key: track_key }), EMissingParentRow);
     let field_key = PartKeyV8 { key };
     assert!(!df::exists(&root.id, field_key), EDuplicateRow);
     let row = PartRowV8 {
         sequence,
         key,
-        track_key,
         label,
         kind,
         render_order,
@@ -836,6 +895,9 @@ public fun append_style_v8<PaymentCoin>(
     part_key: String,
     item_key: String,
     style_key: String,
+    layer_track_key: String,
+    color_channel_key: Option<String>,
+    default_swatch_key: Option<String>,
     label: String,
     asset_blob_id: String,
     asset_sha256: vector<u8>,
@@ -847,11 +909,18 @@ public fun append_style_v8<PaymentCoin>(
     assert_non_empty_bounded(&part_key, MAX_KEY_BYTES);
     assert_non_empty_bounded(&item_key, MAX_KEY_BYTES);
     assert_non_empty_bounded(&style_key, MAX_KEY_BYTES);
+    assert_non_empty_bounded(&layer_track_key, MAX_KEY_BYTES);
+    assert!(color_channel_key.is_some() == default_swatch_key.is_some(), EMissingParentRow);
+    if (color_channel_key.is_some()) {
+        assert_non_empty_bounded(color_channel_key.borrow(), MAX_KEY_BYTES);
+        assert_non_empty_bounded(default_swatch_key.borrow(), MAX_KEY_BYTES);
+    };
     assert_non_empty_bounded(&label, MAX_LABEL_BYTES);
     assert_non_empty_bounded(&asset_blob_id, MAX_BLOB_ID_BYTES);
     assert_digest(&asset_sha256);
     assert_digest(&payload_commitment);
     assert!(df::exists(&root.id, ItemKeyV8 { part_key, item_key }), EMissingParentRow);
+    assert!(df::exists(&root.id, TrackKeyV8 { key: layer_track_key }), EMissingParentRow);
     let field_key = StyleKeyV8 { part_key, item_key, style_key };
     assert!(!df::exists(&root.id, field_key), EDuplicateRow);
     let row = StyleRowV8 {
@@ -859,6 +928,9 @@ public fun append_style_v8<PaymentCoin>(
         part_key,
         item_key,
         style_key,
+        layer_track_key,
+        color_channel_key,
+        default_swatch_key,
         label,
         asset_blob_id,
         asset_sha256,
@@ -867,10 +939,21 @@ public fun append_style_v8<PaymentCoin>(
     };
     let row_bytes = bcs::to_bytes(&row);
     df::add(&mut root.id, field_key, row);
+    let style_index = root.observed_counts.styles;
+    df::add(
+        &mut root.id,
+        StyleIndexKeyV8 { index: style_index },
+        field_key,
+    );
     root.observed_counts.styles = root.observed_counts.styles + 1;
     if (protected) {
+        let protected_style_index = root.protected_style_count;
+        df::add(
+            &mut root.id,
+            ProtectedStyleIndexKeyV8 { index: protected_style_index },
+            field_key,
+        );
         root.protected_style_count = root.protected_style_count + 1;
-        root.protected_style_keys.push_back(field_key);
     };
     advance_root_commitments(root, CATEGORY_STYLE, sequence, row_bytes);
 }
@@ -946,18 +1029,24 @@ public(package) fun new_activation_bindings_v8(
     pack_registry_id: ID,
     pack_commitment: vector<u8>,
     pack_release_count: u64,
+    pack_protected_style_count: u64,
     complete_registry_id: ID,
     complete_commitment: vector<u8>,
+    complete_protected_output_count: u64,
     seal_registry_id: ID,
     seal_commitment: vector<u8>,
     protected_asset_count: u64,
+    soul_registry_id: ID,
+    soul_commitment: vector<u8>,
     physical_registry_id: Option<ID>,
     physical_commitment: Option<vector<u8>>,
+    physical_policy_count: u64,
 ): ActivationBindingsV8 {
     assert_digest(&composition_commitment);
     assert_digest(&pack_commitment);
     assert_digest(&complete_commitment);
     assert_digest(&seal_commitment);
+    assert_digest(&soul_commitment);
     if (physical_commitment.is_some()) assert_digest(physical_commitment.borrow());
     ActivationBindingsV8 {
         composition_registry_id,
@@ -966,13 +1055,18 @@ public(package) fun new_activation_bindings_v8(
         pack_registry_id,
         pack_commitment,
         pack_release_count,
+        pack_protected_style_count,
         complete_registry_id,
         complete_commitment,
+        complete_protected_output_count,
         seal_registry_id,
         seal_commitment,
         protected_asset_count,
+        soul_registry_id,
+        soul_commitment,
         physical_registry_id,
         physical_commitment,
+        physical_policy_count,
     }
 }
 
@@ -1010,22 +1104,30 @@ public(package) fun activate_checked_v8<PaymentCoin>(
         pack_registry_id,
         pack_commitment: _pack_commitment,
         pack_release_count,
+        pack_protected_style_count,
         complete_registry_id,
         complete_commitment: _complete_commitment,
+        complete_protected_output_count,
         seal_registry_id,
         seal_commitment: _seal_commitment,
         protected_asset_count,
+        soul_registry_id,
+        soul_commitment: _soul_commitment,
         physical_registry_id,
         physical_commitment: _physical_commitment,
+        physical_policy_count: _physical_policy_count,
     } = bindings;
     root.observed_counts.slots = composition_slot_count;
     root.observed_counts.pack_releases = pack_release_count;
     root.observed_counts.protected_assets = protected_asset_count;
+    root.pack_protected_style_count = pack_protected_style_count;
+    root.complete_protected_output_count = complete_protected_output_count;
     root.capability_bindings = CapabilityBindingsV8 {
         composition_registry_id: option::some(composition_registry_id),
         pack_registry_id: option::some(pack_registry_id),
         complete_registry_id: option::some(complete_registry_id),
         seal_registry_id: option::some(seal_registry_id),
+        soul_registry_id: option::some(soul_registry_id),
         physical_registry_id,
     };
     root.lifecycle = ACTIVE;
@@ -1053,6 +1155,7 @@ public(package) fun activate_checked_v8<PaymentCoin>(
         pack_registry_id,
         complete_registry_id,
         seal_registry_id,
+        soul_registry_id,
         physical_registry_id,
         maker_access: root.economics.maker_access,
         maker_price_atomic: root.economics.maker_price_atomic,
@@ -1121,8 +1224,46 @@ public(package) fun assert_bound_activation_v8<PaymentCoin>(
         *root.capability_bindings.seal_registry_id.borrow() == bindings.seal_registry_id,
         ECapabilityBindingMismatch,
     );
+    assert!(root.capability_bindings.soul_registry_id.is_some(), ECapabilityBindingMismatch);
+    assert!(
+        *root.capability_bindings.soul_registry_id.borrow() == bindings.soul_registry_id,
+        ECapabilityBindingMismatch,
+    );
     assert!(
         &root.capability_bindings.physical_registry_id == &bindings.physical_registry_id,
+        ECapabilityBindingMismatch,
+    );
+}
+
+public(package) fun assert_complete_registry_bound_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    complete_registry_id: ID,
+) {
+    assert!(root.capability_bindings.complete_registry_id.is_some(), ECapabilityBindingMismatch);
+    assert!(
+        *root.capability_bindings.complete_registry_id.borrow() == complete_registry_id,
+        ECapabilityBindingMismatch,
+    );
+}
+
+public(package) fun assert_soul_registry_bound_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    soul_registry_id: ID,
+) {
+    assert!(root.capability_bindings.soul_registry_id.is_some(), ECapabilityBindingMismatch);
+    assert!(
+        *root.capability_bindings.soul_registry_id.borrow() == soul_registry_id,
+        ECapabilityBindingMismatch,
+    );
+}
+
+public(package) fun assert_physical_registry_bound_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    physical_registry_id: ID,
+) {
+    assert!(root.capability_bindings.physical_registry_id.is_some(), ECapabilityBindingMismatch);
+    assert!(
+        *root.capability_bindings.physical_registry_id.borrow() == physical_registry_id,
         ECapabilityBindingMismatch,
     );
 }
@@ -1143,10 +1284,30 @@ public fun archive_maker_v8<PaymentCoin>(
 /// calls this package function and transfers the returned cap.
 public(package) fun transfer_control_checked_v8<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
-    mut admin: MakerAdminCapV8,
+    admin: MakerAdminCapV8,
     recipient: address,
     ctx: &TxContext,
 ) {
+    let admin = update_control_checked_v8(root, admin, recipient, ctx);
+    transfer::transfer(admin, recipient);
+}
+
+#[test_only]
+public(package) fun transfer_control_for_testing<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    admin: MakerAdminCapV8,
+    recipient: address,
+    ctx: &TxContext,
+): MakerAdminCapV8 {
+    update_control_checked_v8(root, admin, recipient, ctx)
+}
+
+fun update_control_checked_v8<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    mut admin: MakerAdminCapV8,
+    recipient: address,
+    ctx: &TxContext,
+): MakerAdminCapV8 {
     assert_admin_v8(root, &admin);
     assert!(root.owner == ctx.sender(), ENotCurrentOwner);
     assert!(root.lifecycle != DRAFT && root.lifecycle != ARCHIVED, EInvalidLifecycle);
@@ -1162,7 +1323,7 @@ public(package) fun transfer_control_checked_v8<PaymentCoin>(
         to: recipient,
         ownership_epoch: root.ownership_epoch,
     });
-    transfer::transfer(admin, recipient);
+    admin
 }
 
 public fun claim_free_maker_pass_v8<PaymentCoin>(
@@ -1218,10 +1379,10 @@ public(package) fun collect_complete_payment_v8<PaymentCoin>(
     config: &ProtocolConfigV8,
     protocol_treasury: &mut ProtocolTreasuryV8<PaymentCoin>,
     payment: Coin<PaymentCoin>,
+    content_atomic: u64,
     ctx: &mut TxContext,
 ): u64 {
     assert_active(root);
-    assert!(root.economics.complete_access == ACCESS_PAID, EInvalidEconomics);
     assert_maker_treasury(root, maker_treasury);
     protocol::assert_operational_snapshot_v8<PaymentCoin>(
         config,
@@ -1231,12 +1392,13 @@ public(package) fun collect_complete_payment_v8<PaymentCoin>(
         root.economics.protocol_fee_bps,
     );
     protocol::assert_protocol_treasury_v8(config, protocol_treasury);
-    let gross = root.economics.complete_price_atomic;
+    let gross = content_atomic + protocol::config_fixed_complete_fee_atomic_v8(config);
     assert!(payment.value() == gross, EWrongPayment);
-    let creator_payment = protocol::collect_protocol_primary_fee_v8(
+    let creator_payment = protocol::collect_protocol_complete_fee_v8(
         config,
         protocol_treasury,
         payment,
+        content_atomic,
         ctx,
     );
     let creator_amount = creator_payment.value();
@@ -1245,9 +1407,38 @@ public(package) fun collect_complete_payment_v8<PaymentCoin>(
     gross
 }
 
-public(package) fun assert_complete_free_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>) {
+public(package) fun assert_complete_no_payment_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    config: &ProtocolConfigV8,
+    content_atomic: u64,
+) {
     assert_active(root);
-    assert!(root.economics.complete_access == ACCESS_FREE, EInvalidEconomics);
+    protocol::assert_operational_snapshot_v8<PaymentCoin>(
+        config,
+        root.protocol_config_id,
+        root.protocol_treasury_id,
+        root.declared_capabilities,
+        root.economics.protocol_fee_bps,
+    );
+    assert!(content_atomic == 0, EWrongPayment);
+    assert!(protocol::config_fixed_complete_fee_atomic_v8(config) == 0, EWrongPayment);
+}
+
+/// FREE Maker access is implicit. A paid Maker requires the exact current
+/// wallet entitlement record minted by the canonical Maker Pass route.
+public(package) fun assert_maker_access_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    wallet: address,
+) {
+    assert_active(root);
+    if (root.economics.maker_access == ACCESS_FREE) return;
+    assert!(root.economics.maker_access == ACCESS_PAID, EInvalidEconomics);
+    let key = EntitlementKeyV8 { wallet };
+    assert!(df::exists(&root.id, key), EEntitlementMissing);
+    let record: &EntitlementRecordV8 = df::borrow(&root.id, key);
+    assert!(record.wallet == wallet, EEntitlementMissing);
+    assert!(record.ownership_epoch == root.ownership_epoch, EOwnershipEpochMismatch);
+    assert!(&record.content_commitment == &root.content_commitment, EEntitlementMissing);
 }
 
 /// Companion commerce must be pinned to the same live protocol snapshot as
@@ -1276,8 +1467,11 @@ public(package) fun protected_style_coverage_row_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     index: u64,
 ): (String, String, String, vector<u8>) {
-    assert!(index < root.protected_style_keys.length(), ECountMismatch);
-    let key = root.protected_style_keys[index];
+    assert!(index < root.protected_style_count, ECountMismatch);
+    let key = *df::borrow<ProtectedStyleIndexKeyV8, StyleKeyV8>(
+        &root.id,
+        ProtectedStyleIndexKeyV8 { index },
+    );
     let row: &StyleRowV8 = df::borrow(&root.id, key);
     (row.part_key, row.item_key, row.style_key, row.asset_sha256)
 }
@@ -1285,6 +1479,22 @@ public(package) fun protected_style_coverage_row_v8<PaymentCoin>(
 public(package) fun protected_style_count_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): u64 { root.protected_style_count }
+
+/// Physical policy rows may bind only an existing canonical base Style and
+/// its exact immutable asset digest.
+public(package) fun assert_style_content_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    style_content_commitment: &vector<u8>,
+) {
+    let row: &StyleRowV8 = df::borrow(
+        &root.id,
+        StyleKeyV8 { part_key, item_key, style_key },
+    );
+    assert!(&row.asset_sha256 == style_content_commitment, ECommitmentMismatch);
+}
 
 public fun withdraw_maker_revenue_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
@@ -1406,6 +1616,10 @@ public(package) fun assert_draft_admin_v8<PaymentCoin>(
     assert!(root.lifecycle == DRAFT, EInvalidLifecycle);
 }
 
+public(package) fun assert_draft_root_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>) {
+    assert!(root.lifecycle == DRAFT, EInvalidLifecycle);
+}
+
 public(package) fun assert_admin_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
@@ -1469,6 +1683,42 @@ fun assert_core_rows_complete<PaymentCoin>(root: &MakerRootV8<PaymentCoin>) {
         &root.rolling_registry_commitments,
         &root.expected_registry_commitments,
     );
+    assert_style_references_complete(root);
+}
+
+fun assert_style_references_complete<PaymentCoin>(root: &MakerRootV8<PaymentCoin>) {
+    let mut index = 0;
+    while (index < root.observed_counts.styles) {
+        let style_key = *df::borrow<StyleIndexKeyV8, StyleKeyV8>(
+            &root.id,
+            StyleIndexKeyV8 { index },
+        );
+        let style = df::borrow<StyleKeyV8, StyleRowV8>(
+            &root.id,
+            style_key,
+        );
+        assert!(
+            df::exists(&root.id, TrackKeyV8 { key: style.layer_track_key }),
+            EMissingParentRow,
+        );
+        assert!(
+            style.color_channel_key.is_some() == style.default_swatch_key.is_some(),
+            EMissingParentRow,
+        );
+        if (style.color_channel_key.is_some()) {
+            assert!(
+                df::exists(
+                    &root.id,
+                    ColorKeyV8 {
+                        channel_key: *style.color_channel_key.borrow(),
+                        swatch_key: *style.default_swatch_key.borrow(),
+                    },
+                ),
+                EMissingParentRow,
+            );
+        };
+        index = index + 1;
+    };
 }
 
 fun assert_activation_binding_values<PaymentCoin>(
@@ -1481,12 +1731,19 @@ fun assert_activation_binding_values<PaymentCoin>(
         bindings.pack_registry_id,
         bindings.complete_registry_id,
         bindings.seal_registry_id,
+        bindings.soul_registry_id,
         &bindings.physical_registry_id,
     );
     assert!(bindings.composition_slot_count == root.expected_counts.slots, ECountMismatch);
     assert!(bindings.pack_release_count == root.expected_counts.pack_releases, ECountMismatch);
     assert!(bindings.protected_asset_count == root.expected_counts.protected_assets, ECountMismatch);
-    assert!(root.protected_style_count <= bindings.protected_asset_count, ECountMismatch);
+    assert!(
+        root.protected_style_count
+            + bindings.pack_protected_style_count
+            + bindings.complete_protected_output_count
+            == bindings.protected_asset_count,
+        ECountMismatch,
+    );
     assert!(
         &bindings.composition_commitment
             == &root.expected_capability_commitments.composition,
@@ -1504,10 +1761,15 @@ fun assert_activation_binding_values<PaymentCoin>(
         &bindings.seal_commitment == &root.expected_capability_commitments.seal,
         ECapabilityBindingMismatch,
     );
+    assert!(
+        &bindings.soul_commitment == &root.expected_capability_commitments.soul,
+        ECapabilityBindingMismatch,
+    );
     assert_physical_binding(
         root,
         &bindings.physical_registry_id,
         &bindings.physical_commitment,
+        bindings.physical_policy_count,
     );
 }
 
@@ -1517,22 +1779,29 @@ fun assert_distinct_binding_ids<PaymentCoin>(
     pack: ID,
     complete: ID,
     seal: ID,
+    soul: ID,
     physical: &Option<ID>,
 ) {
     let root_id = object::id(root);
     assert!(composition != pack && composition != complete && composition != seal, ECapabilityIdCollision);
     assert!(pack != complete && pack != seal && complete != seal, ECapabilityIdCollision);
+    assert!(soul != composition && soul != pack, ECapabilityIdCollision);
+    assert!(soul != complete && soul != seal, ECapabilityIdCollision);
     assert!(composition != root_id && pack != root_id && complete != root_id && seal != root_id, ECapabilityIdCollision);
+    assert!(soul != root_id, ECapabilityIdCollision);
     assert!(composition != root.treasury_id && pack != root.treasury_id, ECapabilityIdCollision);
     assert!(complete != root.treasury_id && seal != root.treasury_id, ECapabilityIdCollision);
+    assert!(soul != root.treasury_id, ECapabilityIdCollision);
     assert!(composition != root.admin_cap_id && pack != root.admin_cap_id, ECapabilityIdCollision);
     assert!(complete != root.admin_cap_id && seal != root.admin_cap_id, ECapabilityIdCollision);
+    assert!(soul != root.admin_cap_id, ECapabilityIdCollision);
     if (physical.is_some()) {
         let physical_id = *physical.borrow();
         assert!(physical_id != root_id && physical_id != root.treasury_id, ECapabilityIdCollision);
         assert!(physical_id != root.admin_cap_id, ECapabilityIdCollision);
         assert!(physical_id != composition && physical_id != pack, ECapabilityIdCollision);
         assert!(physical_id != complete && physical_id != seal, ECapabilityIdCollision);
+        assert!(physical_id != soul, ECapabilityIdCollision);
     };
 }
 
@@ -1540,6 +1809,7 @@ fun assert_physical_binding<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     physical_id: &Option<ID>,
     physical_commitment: &Option<vector<u8>>,
+    physical_policy_count: u64,
 ) {
     let physical_capability = protocol::capability_physical_v8();
     let declared = (root.declared_capabilities & physical_capability) == physical_capability;
@@ -1547,6 +1817,7 @@ fun assert_physical_binding<PaymentCoin>(
         assert!(physical_id.is_some(), ECapabilityBindingMismatch);
         assert!(physical_commitment.is_some(), ECapabilityBindingMismatch);
         assert!(root.expected_capability_commitments.physical.is_some(), ECapabilityBindingMismatch);
+        assert!(physical_policy_count == root.expected_physical_policy_count, ECountMismatch);
         assert!(
             physical_commitment.borrow() == root.expected_capability_commitments.physical.borrow(),
             ECapabilityBindingMismatch,
@@ -1555,6 +1826,7 @@ fun assert_physical_binding<PaymentCoin>(
         assert!(physical_id.is_none(), ECapabilityBindingMismatch);
         assert!(physical_commitment.is_none(), ECapabilityBindingMismatch);
         assert!(root.expected_capability_commitments.physical.is_none(), ECapabilityBindingMismatch);
+        assert!(physical_policy_count == 0, ECountMismatch);
     };
 }
 
@@ -1563,6 +1835,7 @@ fun assert_bindings_present<PaymentCoin>(root: &MakerRootV8<PaymentCoin>) {
     assert!(root.capability_bindings.pack_registry_id.is_some(), ECapabilityBindingMismatch);
     assert!(root.capability_bindings.complete_registry_id.is_some(), ECapabilityBindingMismatch);
     assert!(root.capability_bindings.seal_registry_id.is_some(), ECapabilityBindingMismatch);
+    assert!(root.capability_bindings.soul_registry_id.is_some(), ECapabilityBindingMismatch);
     let physical = protocol::capability_physical_v8();
     if ((root.declared_capabilities & physical) == physical) {
         assert!(root.capability_bindings.physical_registry_id.is_some(), ECapabilityBindingMismatch);
@@ -1713,9 +1986,6 @@ fun assert_valid_expected_counts(counts: &RowCountsV8) {
     assert!(counts.slots <= MAX_SLOTS, EInvalidCounts);
     assert!(counts.pack_releases <= MAX_PACK_RELEASES, EInvalidCounts);
     assert!(counts.protected_assets <= MAX_PROTECTED_ASSETS, EInvalidCounts);
-    assert!(counts.parts >= counts.tracks, EInvalidCounts);
-    assert!(counts.items >= counts.parts, EInvalidCounts);
-    assert!(counts.styles >= counts.items, EInvalidCounts);
 }
 
 fun assert_capability_declaration(
@@ -1730,6 +2000,7 @@ fun assert_capability_declaration(
     assert_digest(&expected.pack);
     assert_digest(&expected.complete);
     assert_digest(&expected.seal);
+    assert_digest(&expected.soul);
     let physical = protocol::capability_physical_v8();
     if ((declared & physical) == physical) {
         assert!(expected.physical.is_some(), EInvalidCapabilities);
@@ -1750,7 +2021,32 @@ fun assert_lineage(
 fun assert_valid_access(access: u8, price: u64) {
     assert!(
         (access == ACCESS_FREE && price == 0)
-            || (access == ACCESS_PAID && price > 0),
+            || (access == ACCESS_PAID && price > 0 && price <= MAX_PRICE_ATOMIC),
+        EInvalidEconomics,
+    );
+}
+
+public(package) fun assert_valid_complete_policy_v8(
+    mode: u8,
+    price: u64,
+    quota: u64,
+    total_cap: u64,
+) {
+    assert!(price <= MAX_PRICE_ATOMIC, EInvalidEconomics);
+    assert!(quota <= MAX_QUOTA && total_cap <= MAX_QUOTA, EInvalidEconomics);
+    assert!(
+        (mode == COMPLETE_UNLIMITED_FREE && price == 0 && quota == 0)
+            || (
+                mode == COMPLETE_FREE_QUOTA_THEN_PAID
+                    && price > 0
+                    && quota > 0
+            )
+            || (mode == COMPLETE_PAID_EVERY_TIME && price > 0 && quota == 0)
+            || (
+                mode == COMPLETE_FREE_QUOTA_THEN_BLOCK
+                    && price == 0
+                    && quota > 0
+            ),
         EInvalidEconomics,
     );
 }
@@ -1809,6 +2105,7 @@ fun empty_capability_bindings(): CapabilityBindingsV8 {
         pack_registry_id: option::none(),
         complete_registry_id: option::none(),
         seal_registry_id: option::none(),
+        soul_registry_id: option::none(),
         physical_registry_id: option::none(),
     }
 }
@@ -1878,6 +2175,12 @@ public fun root_observed_counts_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>)
 public fun root_expected_capability_commitments_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): CapabilityCommitmentsV8 { root.expected_capability_commitments }
+public fun root_expected_physical_policy_count_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): u64 { root.expected_physical_policy_count }
+public fun root_soul_registry_id_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+): Option<ID> { root.capability_bindings.soul_registry_id }
 public fun root_economics_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): EconomicsV8 {
     root.economics
 }
@@ -1930,6 +2233,9 @@ public fun capability_complete_commitment_v8(
 public fun capability_seal_commitment_v8(
     commitments: &CapabilityCommitmentsV8,
 ): &vector<u8> { &commitments.seal }
+public fun capability_soul_commitment_v8(
+    commitments: &CapabilityCommitmentsV8,
+): &vector<u8> { &commitments.soul }
 public fun capability_physical_commitment_v8(
     commitments: &CapabilityCommitmentsV8,
 ): Option<vector<u8>> { commitments.physical }
@@ -1938,7 +2244,7 @@ public fun economics_maker_access_v8(economics: &EconomicsV8): u8 { economics.ma
 public fun economics_maker_price_v8(economics: &EconomicsV8): u64 {
     economics.maker_price_atomic
 }
-public fun economics_complete_access_v8(economics: &EconomicsV8): u8 { economics.complete_access }
+public fun economics_complete_mode_v8(economics: &EconomicsV8): u8 { economics.complete_mode }
 public fun economics_complete_price_v8(economics: &EconomicsV8): u64 {
     economics.complete_price_atomic
 }
@@ -1948,13 +2254,27 @@ public fun economics_complete_per_wallet_quota_v8(economics: &EconomicsV8): u64 
 public fun economics_complete_total_cap_v8(economics: &EconomicsV8): u64 {
     economics.complete_total_cap
 }
+public fun economics_protocol_fee_bps_v8(economics: &EconomicsV8): u16 {
+    economics.protocol_fee_bps
+}
 public fun economics_commitment_v8(economics: &EconomicsV8): &vector<u8> {
     &economics.commitment
+}
+public fun rights_origin_v8(rights: &RightsV8): u8 { rights.origin }
+public fun rights_creator_confirmed_v8(rights: &RightsV8): bool { rights.creator_confirmed }
+public fun rights_soul_creator_royalty_bps_v8(rights: &RightsV8): u16 {
+    rights.soul_creator_royalty_bps
+}
+public fun rights_maker_source_royalty_bps_v8(rights: &RightsV8): u16 {
+    rights.maker_source_royalty_bps
+}
+public fun rights_maker_resale_royalty_bps_v8(rights: &RightsV8): u16 {
+    rights.maker_resale_royalty_bps
 }
 public fun rights_commitment_v8(rights: &RightsV8): &vector<u8> { &rights.commitment }
 
 #[test_only]
-fun test_digest(byte: u8): vector<u8> {
+public(package) fun test_digest(byte: u8): vector<u8> {
     let mut digest = vector[];
     let mut index = 0;
     while (index < HASH_LENGTH) {
@@ -1965,7 +2285,42 @@ fun test_digest(byte: u8): vector<u8> {
 }
 
 #[test_only]
-fun test_registry_commitments(
+public(package) fun set_paid_maker_access_for_testing<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    price_atomic: u64,
+) {
+    root.economics = new_economics_v8(
+        ACCESS_PAID,
+        price_atomic,
+        root.economics.complete_mode,
+        root.economics.complete_price_atomic,
+        root.economics.complete_per_wallet_quota,
+        root.economics.complete_total_cap,
+        root.economics.protocol_fee_bps,
+    );
+}
+
+#[test_only]
+public(package) fun set_complete_policy_for_testing<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    mode: u8,
+    price_atomic: u64,
+    free_quota_per_wallet: u64,
+    total_cap: u64,
+) {
+    root.economics = new_economics_v8(
+        root.economics.maker_access,
+        root.economics.maker_price_atomic,
+        mode,
+        price_atomic,
+        free_quota_per_wallet,
+        total_cap,
+        root.economics.protocol_fee_bps,
+    );
+}
+
+#[test_only]
+public(package) fun test_registry_commitments(
     protected: bool,
     root_content_commitment: vector<u8>,
 ): RegistryCommitmentsV8 {
@@ -1974,13 +2329,11 @@ fun test_registry_commitments(
         key: b"body".to_string(),
         label: b"Body".to_string(),
         render_order: 0,
-        required: true,
         payload_commitment: test_digest(21),
     };
     let part = PartRowV8 {
         sequence: 1,
         key: b"face".to_string(),
-        track_key: b"body".to_string(),
         label: b"Face".to_string(),
         kind: 0,
         render_order: 0,
@@ -2001,6 +2354,9 @@ fun test_registry_commitments(
         part_key: b"face".to_string(),
         item_key: b"base".to_string(),
         style_key: b"default".to_string(),
+        layer_track_key: b"body".to_string(),
+        color_channel_key: option::none(),
+        default_swatch_key: option::none(),
         label: b"Default".to_string(),
         asset_blob_id: b"walrus-style".to_string(),
         asset_sha256: test_digest(24),
@@ -2086,14 +2442,19 @@ fun test_capability_commitments(): CapabilityCommitmentsV8 {
         test_digest(32),
         test_digest(33),
         test_digest(34),
+        test_digest(35),
         option::none(),
     )
 }
 
 #[test_only]
-fun new_test_maker(
+fun new_test_maker_with_complete(
     access: u8,
     price: u64,
+    complete_mode: u8,
+    complete_price_atomic: u64,
+    complete_free_quota_per_wallet: u64,
+    complete_total_cap: u64,
     protected: bool,
     clock: &Clock,
     ctx: &mut TxContext,
@@ -2121,10 +2482,10 @@ fun new_test_maker(
     let economics = new_economics_v8(
         access,
         price,
-        ACCESS_FREE,
-        0,
-        0,
-        0,
+        complete_mode,
+        complete_price_atomic,
+        complete_free_quota_per_wallet,
+        complete_total_cap,
         protocol::default_primary_protocol_fee_bps_v8(),
     );
     let rights = new_rights_v8(RIGHTS_ONCHAIN_NATIVE, true, 250, 250, 500);
@@ -2141,6 +2502,7 @@ fun new_test_maker(
         expected_counts,
         test_registry_commitments(protected, test_digest(3)),
         test_capability_commitments(),
+        0,
         protocol::required_capabilities_v8(),
         economics,
         rights,
@@ -2151,10 +2513,37 @@ fun new_test_maker(
 }
 
 #[test_only]
-fun append_test_rows(
+fun new_test_maker(
+    access: u8,
+    price: u64,
+    protected: bool,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): (
+    ProtocolConfigV8,
+    ProtocolTreasuryV8<sui::sui::SUI>,
+    ProtocolAdminCapV8,
+    MakerRootV8<sui::sui::SUI>,
+    MakerTreasuryV8<sui::sui::SUI>,
+    MakerAdminCapV8,
+) {
+    new_test_maker_with_complete(
+        access,
+        price,
+        COMPLETE_UNLIMITED_FREE,
+        0,
+        0,
+        0,
+        protected,
+        clock,
+        ctx,
+    )
+}
+
+#[test_only]
+fun append_test_prefix(
     root: &mut MakerRootV8<sui::sui::SUI>,
     admin: &MakerAdminCapV8,
-    protected: bool,
 ) {
     append_track_v8(
         root,
@@ -2163,7 +2552,6 @@ fun append_test_rows(
         b"body".to_string(),
         b"Body".to_string(),
         0,
-        true,
         test_digest(21),
     );
     append_part_v8(
@@ -2171,7 +2559,6 @@ fun append_test_rows(
         admin,
         1,
         b"face".to_string(),
-        b"body".to_string(),
         b"Face".to_string(),
         0,
         0,
@@ -2189,6 +2576,15 @@ fun append_test_rows(
         0,
         test_digest(23),
     );
+}
+
+#[test_only]
+public(package) fun append_test_rows(
+    root: &mut MakerRootV8<sui::sui::SUI>,
+    admin: &MakerAdminCapV8,
+    protected: bool,
+) {
+    append_test_prefix(root, admin);
     append_style_v8(
         root,
         admin,
@@ -2196,6 +2592,9 @@ fun append_test_rows(
         b"face".to_string(),
         b"base".to_string(),
         b"default".to_string(),
+        b"body".to_string(),
+        option::none(),
+        option::none(),
         b"Default".to_string(),
         b"walrus-style".to_string(),
         test_digest(24),
@@ -2213,13 +2612,18 @@ fun test_activation_bindings(protected: bool): ActivationBindingsV8 {
         object::id_from_address(@0xC2),
         test_digest(32),
         0,
+        0,
         object::id_from_address(@0xC3),
         test_digest(33),
+        0,
         object::id_from_address(@0xC4),
         test_digest(34),
         if (protected) 1 else 0,
+        object::id_from_address(@0xC5),
+        test_digest(35),
         option::none(),
         option::none(),
+        0,
     )
 }
 
@@ -2265,6 +2669,133 @@ fun exact_rows_activate_once_and_lifecycle_is_terminal() {
 }
 
 #[test]
+fun draft_can_be_archived_without_discovery() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 101, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (config, protocol_treasury, protocol_cap, mut root, treasury, admin) =
+        new_test_maker(ACCESS_FREE, 0, false, &clock, &mut ctx);
+    archive_maker_v8(&mut root, &admin, &ctx);
+    assert!(root.lifecycle == ARCHIVED, EInvalidLifecycle);
+    assert!(root.activated_at_ms == 0, EInvalidLifecycle);
+    share_maker_objects_v8(root, treasury, admin, &ctx);
+    protocol::destroy_protocol_for_testing(config, protocol_treasury, protocol_cap);
+    clock.destroy_for_testing();
+}
+
+#[test]
+fun core_commitments_are_bound_to_root_content() {
+    let content_a = test_digest(3);
+    let content_b = test_digest(4);
+    let empty_a = empty_category_commitment_v8(content_a, CATEGORY_STYLE);
+    let empty_b = empty_category_commitment_v8(content_b, CATEGORY_STYLE);
+    assert!(empty_a != empty_b, ECommitmentMismatch);
+    let row = b"canonical-style-row";
+    let next_a = advance_commitment_v8(content_a, CATEGORY_STYLE, empty_a, 0, row);
+    let next_b = advance_commitment_v8(content_b, CATEGORY_STYLE, empty_b, 0, row);
+    assert!(next_a != next_b, ECommitmentMismatch);
+}
+
+#[test]
+fun style_layer_and_default_color_reference_exact_rows() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 102, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (config, protocol_treasury, protocol_cap, mut root, treasury, admin) =
+        new_test_maker(ACCESS_FREE, 0, false, &clock, &mut ctx);
+    root.expected_counts.colors = 1;
+    root.expected_sequence_count = root.expected_sequence_count + 1;
+    append_test_prefix(&mut root, &admin);
+    append_style_v8(
+        &mut root,
+        &admin,
+        3,
+        b"face".to_string(),
+        b"base".to_string(),
+        b"default".to_string(),
+        b"body".to_string(),
+        option::some(b"skin".to_string()),
+        option::some(b"warm".to_string()),
+        b"Default".to_string(),
+        b"walrus-style".to_string(),
+        test_digest(24),
+        false,
+        test_digest(25),
+    );
+    append_color_v8(
+        &mut root,
+        &admin,
+        4,
+        b"skin".to_string(),
+        b"warm".to_string(),
+        b"Warm".to_string(),
+        0xFFAA88FF,
+        test_digest(26),
+    );
+    root.expected_registry_commitments = root.rolling_registry_commitments;
+    activate_test_maker(&mut root, &admin, &treasury, &config, false, &clock, &ctx);
+    share_maker_objects_v8(root, treasury, admin, &ctx);
+    protocol::destroy_protocol_for_testing(config, protocol_treasury, protocol_cap);
+    clock.destroy_for_testing();
+}
+
+#[test, expected_failure(abort_code = EMissingParentRow)]
+fun missing_style_default_swatch_cannot_activate() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 103, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (config, protocol_treasury, protocol_cap, mut root, treasury, admin) =
+        new_test_maker(ACCESS_FREE, 0, false, &clock, &mut ctx);
+    append_test_prefix(&mut root, &admin);
+    append_style_v8(
+        &mut root,
+        &admin,
+        3,
+        b"face".to_string(),
+        b"base".to_string(),
+        b"default".to_string(),
+        b"body".to_string(),
+        option::some(b"skin".to_string()),
+        option::some(b"missing".to_string()),
+        b"Default".to_string(),
+        b"walrus-style".to_string(),
+        test_digest(24),
+        false,
+        test_digest(25),
+    );
+    root.expected_registry_commitments = root.rolling_registry_commitments;
+    activate_test_maker(&mut root, &admin, &treasury, &config, false, &clock, &ctx);
+    share_maker_objects_v8(root, treasury, admin, &ctx);
+    protocol::destroy_protocol_for_testing(config, protocol_treasury, protocol_cap);
+    clock.destroy_for_testing();
+}
+
+#[test, expected_failure(abort_code = EMissingParentRow)]
+fun style_requires_existing_layer_track() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 104, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (config, protocol_treasury, protocol_cap, mut root, treasury, admin) =
+        new_test_maker(ACCESS_FREE, 0, false, &clock, &mut ctx);
+    append_test_prefix(&mut root, &admin);
+    append_style_v8(
+        &mut root,
+        &admin,
+        3,
+        b"face".to_string(),
+        b"base".to_string(),
+        b"default".to_string(),
+        b"missing".to_string(),
+        option::none(),
+        option::none(),
+        b"Default".to_string(),
+        b"walrus-style".to_string(),
+        test_digest(24),
+        false,
+        test_digest(25),
+    );
+    share_maker_objects_v8(root, treasury, admin, &ctx);
+    protocol::destroy_protocol_for_testing(config, protocol_treasury, protocol_cap);
+    clock.destroy_for_testing();
+}
+
+#[test]
 fun free_pass_is_real_zero_payment_entitlement() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 11, 0, 0, 0);
     let clock = sui::clock::create_for_testing(&mut ctx);
@@ -2302,13 +2833,13 @@ fun paid_pass_splits_protocol_and_maker_revenue() {
         &clock,
         &mut ctx,
     );
-    assert!(treasury.revenue.value() == 500, EWrongPayment);
-    assert!(protocol::protocol_treasury_balance_v8(&protocol_treasury) == 500, EWrongPayment);
+    assert!(treasury.revenue.value() == 900, EWrongPayment);
+    assert!(protocol::protocol_treasury_balance_v8(&protocol_treasury) == 100, EWrongPayment);
     withdraw_maker_revenue_v8(
         &root,
         &admin,
         &mut treasury,
-        500,
+        900,
         @0xB11,
         &mut ctx,
     );
@@ -2316,7 +2847,55 @@ fun paid_pass_splits_protocol_and_maker_revenue() {
         &config,
         &protocol_cap,
         &mut protocol_treasury,
-        500,
+        100,
+        @0xB12,
+        &mut ctx,
+    );
+    share_maker_objects_v8(root, treasury, admin, &ctx);
+    protocol::destroy_protocol_for_testing(config, protocol_treasury, protocol_cap);
+    clock.destroy_for_testing();
+}
+
+#[test]
+fun paid_complete_splits_exact_base_and_pack_subtotal() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 121, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (config, mut protocol_treasury, protocol_cap, mut root, mut treasury, admin) =
+        new_test_maker_with_complete(
+            ACCESS_FREE,
+            0,
+            COMPLETE_PAID_EVERY_TIME,
+            1_000,
+            0,
+            0,
+            false,
+            &clock,
+            &mut ctx,
+        );
+    append_test_rows(&mut root, &admin, false);
+    activate_test_maker(&mut root, &admin, &treasury, &config, false, &clock, &ctx);
+    let payment = coin::from_balance(
+        balance::create_for_testing<sui::sui::SUI>(1_600),
+        &mut ctx,
+    );
+    let paid = collect_complete_payment_v8(
+        &root,
+        &mut treasury,
+        &config,
+        &mut protocol_treasury,
+        payment,
+        1_600,
+        &mut ctx,
+    );
+    assert!(paid == 1_600, EWrongPayment);
+    assert!(treasury.revenue.value() == 1_440, EWrongPayment);
+    assert!(protocol::protocol_treasury_balance_v8(&protocol_treasury) == 160, EWrongPayment);
+    withdraw_maker_revenue_v8(&root, &admin, &mut treasury, 1_440, @0xB11, &mut ctx);
+    protocol::withdraw_protocol_revenue_v8(
+        &config,
+        &protocol_cap,
+        &mut protocol_treasury,
+        160,
         @0xB12,
         &mut ctx,
     );
@@ -2350,7 +2929,6 @@ fun out_of_order_row_is_rejected() {
         b"body".to_string(),
         b"Body".to_string(),
         0,
-        true,
         test_digest(21),
     );
     share_maker_objects_v8(root, treasury, admin, &ctx);
@@ -2373,7 +2951,6 @@ fun duplicate_dynamic_row_key_is_rejected() {
         b"body".to_string(),
         b"Body".to_string(),
         0,
-        true,
         test_digest(21),
     );
     append_track_v8(
@@ -2383,7 +2960,6 @@ fun duplicate_dynamic_row_key_is_rejected() {
         b"body".to_string(),
         b"Body duplicate".to_string(),
         1,
-        true,
         test_digest(26),
     );
     share_maker_objects_v8(root, treasury, admin, &ctx);
@@ -2405,6 +2981,29 @@ fun category_hash_mismatch_cannot_activate() {
     clock.destroy_for_testing();
 }
 
+#[test, expected_failure(abort_code = ECountMismatch)]
+fun protected_source_breakdown_must_equal_seal_count() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 151, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (config, protocol_treasury, protocol_cap, mut root, treasury, admin) =
+        new_test_maker(ACCESS_FREE, 0, false, &clock, &mut ctx);
+    append_test_rows(&mut root, &admin, false);
+    let mut bindings = test_activation_bindings(false);
+    bindings.pack_protected_style_count = 1;
+    activate_checked_v8(
+        &mut root,
+        &admin,
+        &treasury,
+        &config,
+        bindings,
+        &clock,
+        &ctx,
+    );
+    share_maker_objects_v8(root, treasury, admin, &ctx);
+    protocol::destroy_protocol_for_testing(config, protocol_treasury, protocol_cap);
+    clock.destroy_for_testing();
+}
+
 #[test, expected_failure(abort_code = 8, location = animacraft_v8::protocol_config_v8)]
 fun config_revision_drift_cannot_activate() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 16, 0, 0, 0);
@@ -2417,6 +3016,23 @@ fun config_revision_drift_cannot_activate() {
     activate_test_maker(&mut root, &admin, &treasury, &config, false, &clock, &ctx);
     share_maker_objects_v8(root, treasury, admin, &ctx);
     protocol::destroy_protocol_for_testing(config, protocol_treasury, protocol_cap);
+    clock.destroy_for_testing();
+}
+
+#[test, expected_failure(abort_code = 8, location = animacraft_v8::protocol_config_v8)]
+fun runtime_rejects_foreign_protocol_snapshot() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 105, 0, 0, 0);
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (config, protocol_treasury, protocol_cap, mut root, treasury, admin) =
+        new_test_maker(ACCESS_FREE, 0, false, &clock, &mut ctx);
+    append_test_rows(&mut root, &admin, false);
+    activate_test_maker(&mut root, &admin, &treasury, &config, false, &clock, &ctx);
+    let (foreign_config, foreign_treasury, foreign_cap) =
+        protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
+    assert_root_protocol_operational_v8(&root, &foreign_config, &foreign_treasury);
+    share_maker_objects_v8(root, treasury, admin, &ctx);
+    protocol::destroy_protocol_for_testing(config, protocol_treasury, protocol_cap);
+    protocol::destroy_protocol_for_testing(foreign_config, foreign_treasury, foreign_cap);
     clock.destroy_for_testing();
 }
 
@@ -2475,7 +3091,6 @@ fun foreign_admin_cap_cannot_write() {
         b"body".to_string(),
         b"Body".to_string(),
         0,
-        true,
         test_digest(21),
     );
     share_maker_objects_v8(root_a, treasury_a, admin_a, &ctx);
@@ -2493,4 +3108,32 @@ fun free_access_rejects_nonzero_price() {
 #[test, expected_failure(abort_code = EInvalidRights)]
 fun unconfirmed_rights_are_rejected() {
     new_rights_v8(RIGHTS_LICENSE_WRAPPED, false, 250, 250, 500);
+}
+
+#[test, expected_failure(abort_code = EInvalidRights)]
+fun royalty_above_ten_percent_is_rejected() {
+    new_rights_v8(RIGHTS_ONCHAIN_NATIVE, true, 1_050, 0, 0);
+}
+
+#[test, expected_failure(abort_code = EInvalidRights)]
+fun royalty_not_on_fifty_bps_step_is_rejected() {
+    new_rights_v8(RIGHTS_ONCHAIN_NATIVE, true, 251, 250, 500);
+}
+
+#[test, expected_failure(abort_code = EInvalidRights)]
+fun soul_and_source_royalty_above_ten_percent_is_rejected() {
+    new_rights_v8(RIGHTS_ONCHAIN_NATIVE, true, 550, 500, 500);
+}
+
+#[test, expected_failure(abort_code = EInvalidEconomics)]
+fun quota_then_paid_requires_positive_quota() {
+    new_economics_v8(
+        ACCESS_FREE,
+        0,
+        COMPLETE_FREE_QUOTA_THEN_PAID,
+        1_000,
+        0,
+        0,
+        protocol::default_primary_protocol_fee_bps_v8(),
+    );
 }

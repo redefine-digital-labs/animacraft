@@ -4,7 +4,6 @@ use animacraft_v8::maker_v8::{Self as maker, MakerAdminCapV8, MakerRootV8};
 use std::bcs;
 use std::hash;
 use std::string::{Self as string, String};
-use sui::event;
 use sui::table::{Self as table, Table};
 
 const VERSION: u64 = 8;
@@ -85,23 +84,6 @@ public struct SealEmptyHashInputV8 has copy, drop, store {
     domain: vector<u8>,
     version: u64,
     root_content_commitment: vector<u8>,
-}
-
-public struct ProtectedAssetRegisteredV8 has copy, drop {
-    registry_id: ID,
-    sequence: u64,
-    scope_kind: u8,
-    scope_key: String,
-    scope_commitment: vector<u8>,
-    asset_key: String,
-    seal_id: vector<u8>,
-    rolling_commitment: vector<u8>,
-}
-
-public struct SealRegistrySealedV8 has copy, drop {
-    registry_id: ID,
-    protected_asset_count: u64,
-    commitment: vector<u8>,
 }
 
 public fun version_v8(): u64 { VERSION }
@@ -288,16 +270,6 @@ public fun append_protected_asset_v8<PaymentCoin>(
         seal_id,
     });
     registry.observed_count = registry.observed_count + 1;
-    event::emit(ProtectedAssetRegisteredV8 {
-        registry_id: object::id(registry),
-        sequence,
-        scope_kind,
-        scope_key,
-        scope_commitment,
-        asset_key,
-        seal_id,
-        rolling_commitment: registry.rolling_commitment,
-    });
     seal_id
 }
 
@@ -312,11 +284,6 @@ public fun seal_registry_v8<PaymentCoin>(
     assert!(registry.observed_count == registry.expected_count, EInvalidCount);
     assert!(registry.rolling_commitment == registry.expected_commitment, EInvalidCommitment);
     registry.sealed = true;
-    event::emit(SealRegistrySealedV8 {
-        registry_id: object::id(registry),
-        protected_asset_count: registry.observed_count,
-        commitment: registry.rolling_commitment,
-    });
 }
 
 public(package) fun assert_asset_covered_v8<PaymentCoin>(

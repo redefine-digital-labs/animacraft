@@ -12,8 +12,11 @@ use sui::package;
 
 const VERSION: u64 = 8;
 const BPS_DENOMINATOR: u64 = 10_000;
-const MAX_PRIMARY_PROTOCOL_FEE_BPS: u16 = 5_000;
-const DEFAULT_PRIMARY_PROTOCOL_FEE_BPS: u16 = 5_000;
+const MAX_PRIMARY_PROTOCOL_FEE_BPS: u16 = 10_000;
+const DEFAULT_PRIMARY_PROTOCOL_FEE_BPS: u16 = 1_000;
+const DEFAULT_FIXED_COMPLETE_FEE_ATOMIC: u64 = 0;
+const DEFAULT_MAKER_MARKET_FEE_BPS: u16 = 250;
+const DEFAULT_SOUL_MARKET_FEE_BPS: u16 = 250;
 #[test_only]
 const HASH_LENGTH: u64 = 32;
 
@@ -22,8 +25,9 @@ const CAPABILITY_PACK: u64 = 2;
 const CAPABILITY_COMPLETE: u64 = 4;
 const CAPABILITY_SEAL: u64 = 8;
 const CAPABILITY_PHYSICAL: u64 = 16;
-const REQUIRED_CAPABILITIES: u64 = 15;
-const SUPPORTED_CAPABILITIES: u64 = 31;
+const CAPABILITY_CANONICAL_SOUL: u64 = 32;
+const REQUIRED_CAPABILITIES: u64 = 47;
+const SUPPORTED_CAPABILITIES: u64 = 63;
 
 const EInvalidAdminCap: u64 = 0;
 const EProtocolDisabled: u64 = 2;
@@ -37,8 +41,9 @@ const EInvalidCapabilities: u64 = 9;
 const EPublisherMismatch: u64 = 10;
 const EInsufficientRevenue: u64 = 11;
 const EInvalidRecipient: u64 = 12;
+const EWrongPayment: u64 = 13;
 #[test_only]
-const EInvalidCommitment: u64 = 13;
+const EInvalidCommitment: u64 = 14;
 
 /// Fresh v8 one-time witness. It is intentionally unrelated to ANIMACRAFT.
 public struct PROTOCOL_CONFIG_V8 has drop {}
@@ -51,6 +56,9 @@ public struct ProtocolConfigV8 has key {
     treasury_id: Option<ID>,
     payment_coin_type: String,
     primary_protocol_fee_bps: u16,
+    fixed_complete_fee_atomic: u64,
+    maker_market_fee_bps: u16,
+    soul_market_fee_bps: u16,
     required_capabilities: u64,
     supported_capabilities: u64,
     enabled: bool,
@@ -81,24 +89,12 @@ public struct ProtocolCommitmentInputV8 has drop {
     treasury_id: Option<ID>,
     payment_coin_type: String,
     primary_protocol_fee_bps: u16,
+    fixed_complete_fee_atomic: u64,
+    maker_market_fee_bps: u16,
+    soul_market_fee_bps: u16,
     required_capabilities: u64,
     supported_capabilities: u64,
     enabled: bool,
-}
-
-public struct ProtocolV8Initialized has copy, drop {
-    config_id: ID,
-    admin_cap_id: ID,
-    package_id: ID,
-    payment_coin_type: String,
-    primary_protocol_fee_bps: u16,
-    required_capabilities: u64,
-}
-
-public struct ProtocolTreasuryV8Initialized has copy, drop {
-    config_id: ID,
-    treasury_id: ID,
-    payment_coin_type: String,
 }
 
 public struct ProtocolV8EnabledChanged has copy, drop {
@@ -129,6 +125,9 @@ fun init(otw: PROTOCOL_CONFIG_V8, ctx: &mut TxContext) {
         treasury_id: option::none(),
         payment_coin_type: native_usdc_type_v8(),
         primary_protocol_fee_bps: DEFAULT_PRIMARY_PROTOCOL_FEE_BPS,
+        fixed_complete_fee_atomic: DEFAULT_FIXED_COMPLETE_FEE_ATOMIC,
+        maker_market_fee_bps: DEFAULT_MAKER_MARKET_FEE_BPS,
+        soul_market_fee_bps: DEFAULT_SOUL_MARKET_FEE_BPS,
         required_capabilities: REQUIRED_CAPABILITIES,
         supported_capabilities: SUPPORTED_CAPABILITIES,
         enabled: false,
@@ -141,14 +140,6 @@ fun init(otw: PROTOCOL_CONFIG_V8, ctx: &mut TxContext) {
         config_id,
         publisher: option::some(publisher),
     };
-    event::emit(ProtocolV8Initialized {
-        config_id,
-        admin_cap_id: object::id(&cap),
-        package_id,
-        payment_coin_type: config.payment_coin_type,
-        primary_protocol_fee_bps: config.primary_protocol_fee_bps,
-        required_capabilities: config.required_capabilities,
-    });
     transfer::share_object(config);
     transfer::transfer(cap, ctx.sender());
 }
@@ -159,12 +150,18 @@ public fun capability_pack_v8(): u64 { CAPABILITY_PACK }
 public fun capability_complete_v8(): u64 { CAPABILITY_COMPLETE }
 public fun capability_seal_v8(): u64 { CAPABILITY_SEAL }
 public fun capability_physical_v8(): u64 { CAPABILITY_PHYSICAL }
+public fun capability_canonical_soul_v8(): u64 { CAPABILITY_CANONICAL_SOUL }
 public fun required_capabilities_v8(): u64 { REQUIRED_CAPABILITIES }
 public fun supported_capabilities_v8(): u64 { SUPPORTED_CAPABILITIES }
 public fun default_primary_protocol_fee_bps_v8(): u16 {
     DEFAULT_PRIMARY_PROTOCOL_FEE_BPS
 }
 public fun max_primary_protocol_fee_bps_v8(): u16 { MAX_PRIMARY_PROTOCOL_FEE_BPS }
+public fun default_fixed_complete_fee_atomic_v8(): u64 {
+    DEFAULT_FIXED_COMPLETE_FEE_ATOMIC
+}
+public fun default_maker_market_fee_bps_v8(): u16 { DEFAULT_MAKER_MARKET_FEE_BPS }
+public fun default_soul_market_fee_bps_v8(): u16 { DEFAULT_SOUL_MARKET_FEE_BPS }
 
 public fun native_usdc_type_v8(): String {
     b"0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC".to_string()
@@ -191,11 +188,6 @@ public fun initialize_protocol_treasury_v8<PaymentCoin>(
     config.treasury_id = option::some(treasury_id);
     config.revision = config.revision + 1;
     refresh_commitment(config);
-    event::emit(ProtocolTreasuryV8Initialized {
-        config_id: object::id(config),
-        treasury_id,
-        payment_coin_type: config.payment_coin_type,
-    });
     transfer::share_object(treasury);
 }
 
@@ -262,6 +254,31 @@ public(package) fun collect_protocol_primary_fee_v8<PaymentCoin>(
         let protocol_coin = coin::split(&mut payment, fee, ctx);
         coin::put(&mut treasury.revenue, protocol_coin);
         treasury.total_collected = treasury.total_collected + fee;
+    };
+    payment
+}
+
+/// Complete charges add the fixed protocol amount to the content subtotal,
+/// then apply the primary content percentage only to that subtotal.
+public(package) fun collect_protocol_complete_fee_v8<PaymentCoin>(
+    config: &ProtocolConfigV8,
+    treasury: &mut ProtocolTreasuryV8<PaymentCoin>,
+    mut payment: Coin<PaymentCoin>,
+    content_atomic: u64,
+    ctx: &mut TxContext,
+): Coin<PaymentCoin> {
+    assert_enabled(config);
+    assert_protocol_treasury(config, treasury);
+    assert!(payment_coin_type_name_v8<PaymentCoin>() == config.payment_coin_type, EPaymentCoinMismatch);
+    let gross = content_atomic + config.fixed_complete_fee_atomic;
+    assert!(payment.value() == gross, EWrongPayment);
+    let content_fee = (((content_atomic as u128) * (config.primary_protocol_fee_bps as u128))
+        / (BPS_DENOMINATOR as u128)) as u64;
+    let protocol_amount = config.fixed_complete_fee_atomic + content_fee;
+    if (protocol_amount > 0) {
+        let protocol_coin = coin::split(&mut payment, protocol_amount, ctx);
+        coin::put(&mut treasury.revenue, protocol_coin);
+        treasury.total_collected = treasury.total_collected + protocol_amount;
     };
     payment
 }
@@ -365,6 +382,9 @@ fun refresh_commitment(config: &mut ProtocolConfigV8) {
         treasury_id: config.treasury_id,
         payment_coin_type: config.payment_coin_type,
         primary_protocol_fee_bps: config.primary_protocol_fee_bps,
+        fixed_complete_fee_atomic: config.fixed_complete_fee_atomic,
+        maker_market_fee_bps: config.maker_market_fee_bps,
+        soul_market_fee_bps: config.soul_market_fee_bps,
         required_capabilities: config.required_capabilities,
         supported_capabilities: config.supported_capabilities,
         enabled: config.enabled,
@@ -383,6 +403,15 @@ public fun config_treasury_id_v8(config: &ProtocolConfigV8): Option<ID> { config
 public fun config_payment_coin_type_v8(config: &ProtocolConfigV8): &String { &config.payment_coin_type }
 public fun config_primary_protocol_fee_bps_v8(config: &ProtocolConfigV8): u16 {
     config.primary_protocol_fee_bps
+}
+public fun config_fixed_complete_fee_atomic_v8(config: &ProtocolConfigV8): u64 {
+    config.fixed_complete_fee_atomic
+}
+public fun config_maker_market_fee_bps_v8(config: &ProtocolConfigV8): u16 {
+    config.maker_market_fee_bps
+}
+public fun config_soul_market_fee_bps_v8(config: &ProtocolConfigV8): u16 {
+    config.soul_market_fee_bps
 }
 public fun config_required_capabilities_v8(config: &ProtocolConfigV8): u64 {
     config.required_capabilities
@@ -420,6 +449,9 @@ public fun new_protocol_for_testing<PaymentCoin>(
         treasury_id: option::some(treasury_id),
         payment_coin_type: payment_coin_type_name_v8<PaymentCoin>(),
         primary_protocol_fee_bps: DEFAULT_PRIMARY_PROTOCOL_FEE_BPS,
+        fixed_complete_fee_atomic: DEFAULT_FIXED_COMPLETE_FEE_ATOMIC,
+        maker_market_fee_bps: DEFAULT_MAKER_MARKET_FEE_BPS,
+        soul_market_fee_bps: DEFAULT_SOUL_MARKET_FEE_BPS,
         required_capabilities: REQUIRED_CAPABILITIES,
         supported_capabilities: SUPPORTED_CAPABILITIES,
         enabled,
@@ -449,6 +481,9 @@ public fun destroy_protocol_for_testing<PaymentCoin>(
         treasury_id: _,
         payment_coin_type: _,
         primary_protocol_fee_bps: _,
+        fixed_complete_fee_atomic: _,
+        maker_market_fee_bps: _,
+        soul_market_fee_bps: _,
         required_capabilities: _,
         supported_capabilities: _,
         enabled: _,
@@ -489,6 +524,10 @@ fun enabled_test_config_has_exact_snapshot() {
         REQUIRED_CAPABILITIES,
         DEFAULT_PRIMARY_PROTOCOL_FEE_BPS,
     );
+    assert!(config_primary_protocol_fee_bps_v8(&config) == 1_000, EConfigDrift);
+    assert!(config_fixed_complete_fee_atomic_v8(&config) == 0, EConfigDrift);
+    assert!(config_maker_market_fee_bps_v8(&config) == 250, EConfigDrift);
+    assert!(config_soul_market_fee_bps_v8(&config) == 250, EConfigDrift);
     assert!(config.commitment.length() == HASH_LENGTH, EInvalidCommitment);
     destroy_protocol_for_testing(config, treasury, cap);
 }

@@ -5,7 +5,7 @@ This document describes v8 only. It does not define a migration, bridge, or
 read path for `OCMaker`, `MakerRootV5`, Composition v6, Physical v7, or the old
 Expansion Pack v8 TypeOrigin.
 
-## Package split
+## Package layout
 
 The default publication unit is one package and one public protocol version:
 
@@ -17,8 +17,9 @@ animacraft_v8
   expansion_pack_v8
   complete_v8
   seal_v8
+  soul_v8
   publication_v8
-  physical_v8                 # only while the measured package stays safe
+  physical_v8
 ```
 
 `publication_v8` is the dependency-top orchestrator. `maker_v8` must not
@@ -27,10 +28,11 @@ import a companion module. Each companion imports `maker_v8`, and
 package-only `maker_v8::activate_checked_v8`. This direction prevents a Move
 module dependency cycle while keeping activation in one transaction.
 
-Physical is the only permitted package split. It becomes
-`animacraft_v8_physical::physical_v8`, still reports version 8, and imports the
-fresh core package only. The split is an implementation boundary, not another
-public version.
+The final measured package keeps Physical and Canonical Soul in the same
+TypeOrigin. There is no split-package witness ABI in this build. Public
+Physical activation requires the concrete
+`animacraft_v8::physical_v8::PhysicalRegistryV8`, and Soul minting requires the
+private-field, no-ability proof created by this package's `complete_v8`.
 
 ## Required core ABI
 
@@ -55,7 +57,7 @@ maker_v8::assert_draft_admin_v8<PaymentCoin>(
 
 The final core API must additionally do all of the following:
 
-- compare each companion registry ID, count, and final commitment with the
+- compare each companion registry ID, count where applicable, and final commitment with the
   values committed by the Root;
 - accept registry readiness only from `publication_v8`, while the Root is
   `DRAFT` and at the same ownership epoch;
@@ -70,7 +72,7 @@ ID is insufficient.
 
 ## Registry contract
 
-Composition, Pack, Complete, and Seal each expose one shared per-Maker
+Composition, Pack, Complete, Seal, Canonical Soul, and optionally Physical expose one shared per-Maker
 registry, including for a zero-row category. Every registry stores:
 
 - `version = 8`;
@@ -110,18 +112,32 @@ Each registry module exposes public pure `empty_*_commitment_v8` and
 so client precomputation and on-chain chaining cannot silently diverge.
 
 Sealing checks every category count, aggregate count, and the expected final
-commitment. It is irreversible. Each registry exposes only this package-level
-activation ABI:
+commitment. It is irreversible. Registry readiness is package-only and returns
+the exact typed registry ID, commitment, and its category counts. Pack and
+Complete additionally return the protected-source count used in the exact
+Seal equality. Soul returns its typed registry ID and stable commitment.
 
 ```move
-public(package) fun assert_activation_ready_v8<PaymentCoin>(
-    registry: &RegistryV8,
-    root: &MakerRootV8<PaymentCoin>,
-): (ID, vector<u8>, u64)
+public(package) fun assert_activation_ready_v8<PaymentCoin>(...)
 ```
 
-It checks version, Root tuple, counts, commitment, and `sealed`, then returns
-the registry ID, final commitment, and observed count for the orchestrator.
+Every form checks version, Root tuple, counts, commitment, and sealed/readiness
+state before returning values to the orchestrator.
+
+## Core row shape
+
+The Root dynamic fields match the external Creator compiler:
+
+- Track has no inferred `required` property.
+- Part has no inferred Track parent.
+- Style binds the exact `layer_track_key` and an optional paired
+  `color_channel_key`/`default_swatch_key`. The Track is checked on append and
+  activation enumerates every Style to prove any default swatch exists.
+- `payload_commitment` and the immutable Root content commitment cover rich
+  gradients, rules, and the remaining canonical manifest payload.
+
+Public limit getters return 128 key bytes, 256 label bytes, and 512 Blob ID
+bytes so the off-chain compiler enforces the same bounds before signing.
 
 ## Composition semantics
 
@@ -154,8 +170,11 @@ Each `ExpansionPackReleaseV8<PaymentCoin>` is independently scoped and owns:
 - the exact Root ID/epoch/content tuple;
 - immutable manifest and release commitments;
 - ordered Style rows and a final Style-registry commitment;
-- access `FREE` with price exactly zero, or `PAID` with price greater than
-  zero;
+- access `FREE` with price exactly zero, `PAID` with price greater than zero,
+  or `INCLUDED_WITH_MAKER` with zero Pack purchase price and a runtime check
+  of the Root's current Maker entitlement;
+- an independent Complete policy using one of the four Root Complete modes,
+  with its own price, per-wallet free quota, and total cap;
 - lifecycle `DRAFT -> SEALED -> ACTIVE <-> PAUSED -> ARCHIVED`;
 - exact entitlement records and immutable wallet Passes;
 - explicit Seal policy commitment and protected-asset count.
@@ -192,43 +211,80 @@ outputs. The publication orchestrator also enumerates every bounded protected
 base Style and verifies its precise Seal row, preventing an unrelated extra
 Seal row from substituting for missing coverage.
 
-Complete policy rows are immutable publication data. A runtime Complete
-authorization has no `store`, `copy`, or `drop` ability. It binds the Root
-tuple, loadout object/revision/commitment, exact Recipe and render commitment,
-the exact ordered count and stable commitment of required Pack selections,
-and Seal coverage. Stable Pack-selection rows bind Pack scope, release content,
-Style keys/content, protection policy, and Seal ID, but not a release object
-ID. Runtime proofs additionally bind and validate the real release ID and
-Root epoch. Authorization sealing rejects missing, extra, reordered, or
-duplicate stable Style identities. Only consuming that one-use authorization
-may create an immutable `CompleteReceiptV8`.
+Complete output policy rows are immutable publication data. Their
+`recipe_policy_commitment` and `renderer_schema_commitment` are authoring
+policy/schema commitments, not a frozen player Recipe or render. After the
+exact loadout and ordered Pack selections are present, sealing derives:
 
-## Physical split binding
+- canonical Recipe = SHA-256 over the v8 Recipe domain, Root content,
+  authoring Recipe policy, exact loadout commitment, exact ordered Pack
+  selection commitment, and output key;
+- canonical render = SHA-256 over the v8 render domain, Root content, renderer
+  schema, the derived canonical Recipe, and output key.
 
-When Physical remains in the core package, it follows the same registry ABI
-and `publication_v8` validates it directly.
+A runtime Complete authorization has no `store`, `copy`, or `drop` ability.
+It binds the Root tuple, loadout object/revision/commitment, those derived
+instance commitments, the exact ordered count and stable commitment of
+required Pack selections, and Seal coverage. Stable Pack-selection rows bind
+Pack scope, release content, Style keys/content, protection policy, and Seal
+ID, but not a release object ID. Runtime proofs additionally bind and validate
+the real release ID and Root epoch. Authorization sealing rejects missing,
+extra, reordered, or duplicate stable Style identities. Only consuming that
+one-use authorization may create an immutable `CompleteReceiptV8`.
 
-When Physical is split, dependency direction is only:
+Base Maker Complete and every registered Pack policy natively use exactly one
+mode: `UNLIMITED_FREE`, `FREE_QUOTA_THEN_PAID`, `PAID_EVERY_TIME`, or
+`FREE_QUOTA_THEN_BLOCK`. `CompleteRegistryV8` stores the base wallet/total and
+per-Pack wallet/total counters. Authorization records the exact pre-state and
+consumption rechecks every counter before incrementing all of them atomically.
+The paid route requires the exact base-plus-unique-Pack content subtotal. The
+protocol receives its fixed Complete fee plus the primary content BPS share;
+the remainder goes to `MakerTreasuryV8`. `ExpansionPackTreasuryV8` receives
+only Pack access-purchase revenue.
 
-```text
-animacraft_v8_physical -> animacraft_v8
-```
+The immutable protocol snapshot commits and exposes all four commercial
+terms: primary content fee 1,000 BPS, fixed Complete fee 0 atomic units, Maker
+market fee 250 BPS, and Soul market fee 250 BPS. Market execution is outside
+this package, but its Maker/Soul fee tuple is not omitted from v8 state.
+Rights validation enforces each royalty at 0..1,000 BPS in 50-BPS steps and
+Soul-creator plus Maker-source at no more than 1,000 BPS.
 
-The Root stores, before publication, the expected Physical commitment and the
-exact original type name of
-`animacraft_v8_physical::physical_v8::PhysicalBindingWitnessV8`. The core
-provides a one-time DRAFT-only generic binding hook. It checks AdminCap, Root
-tuple, expected commitment, and
-`type_name::with_defining_ids<Witness>()` against that stored name. The
-Physical module can construct its witness only after its registry is sealed
-and ready; the witness fields and constructor remain private. The core records
-the Physical registry ID and observed commitment, and activation requires that
-record for a Root that declares Physical capability.
+## Canonical Soul semantics
 
-This avoids a cyclic package dependency and prevents a caller from claiming a
-Physical binding with an arbitrary object. Runtime and deployment preflight
-must separately pin the reviewed callable package and digest; TypeOrigin is
-the on-chain identity check, not the entire release lock.
+Canonical Soul is a required native v8 capability (`32`). Protocol required
+capabilities are `47`; Physical remains the only optional bit. Every Root
+precommits `soul_v8::registry_commitment_v8(root_content_commitment)` and
+`begin_maker_v8` creates the concrete `SoulRegistryV8` in the same transaction.
+Activation, resume, and ownership transfer validate or rebind its exact Root
+ID, epoch, content commitment, registry ID, and stable commitment.
+
+Successful `complete_v8` transfers its immutable receipt and returns a
+`SoulMintAuthorizationV8` with no `store`, `copy`, or `drop` ability. Its
+private fields are copied from the exact receipt: Complete registry/receipt
+IDs, Root ID/epoch/content, holder, output key, Recipe, render, Complete
+authorization commitment, and completion time. It therefore must be consumed
+in the same PTB by `soul_v8::mint_canonical_soul_v8`.
+
+Soul minting requires the Root to remain ACTIVE, checks that the Complete
+registry is the one frozen into the Root, checks every proof field and sender,
+and records the receipt ID before transferring a non-generically-transferable
+`CanonicalSoulV8` to the holder. Pause, archive, epoch drift, content drift,
+wrong holder, forged TypeOrigin, and receipt replay fail closed.
+
+## Physical typed binding
+
+Physical fits in the final core package. A declared Physical Root precommits
+the exact policy count and commitment. The typed activation overload accepts
+only this package's concrete `PhysicalRegistryV8`; a compile-fail probe proves
+that an identically named foreign type cannot satisfy the call. No generic or
+caller-supplied binding witness exists.
+
+Maker policies bind an existing base Style. Pack policies additionally take
+the exact `ExpansionPackRegistryV8` and prove the sealed release has already
+been registered, preventing orphan Pack releases from entering Physical.
+Runtime assets bind registry ID, Root ID, epoch, content, Style and material
+commitments, supply serial, holder, and transfer policy. Materialize, transfer,
+consume, and explicit epoch recovery are module-mediated.
 
 ## Recovery boundary
 
@@ -238,7 +294,7 @@ cannot be rolled back without storing every predecessor, so v8 does not offer
 an unsafe hash reset.
 
 If the source snapshot changes or a signed stage becomes terminal, the creator
-may mark the DRAFT Root `ABANDONED`. No activation/discovery event is emitted,
+may archive the DRAFT Root. No activation/discovery event is emitted,
 and a fresh Root/version must be created. Runtime loadout and Physical custody
 have explicit unwind paths so external assets are never trapped by protocol
 pause or epoch drift.
@@ -255,40 +311,25 @@ package has 151 type origins and an object size of approximately 100,856 bytes
 as derived from its storage rebate. Its separate Physical v7 module is 32,987
 bytes.
 
-Initial compiled-module budgets for the fresh all-in-one package are:
+The 2026-08-14 clean `--disassemble --warnings-are-errors` production build
+measured:
 
-| Module | Budget (bytes) |
-| --- | ---: |
-| `protocol_config_v8` | 4,000 |
-| `maker_v8` | 16,000 |
-| `publication_v8` | 4,000 |
-| `composition_v8` | 12,000 |
-| `expansion_pack_v8` | 14,000 |
-| `complete_v8` | 5,000 |
-| `seal_v8` | 5,000 |
-| `physical_v8` | 22,000 |
-| Total module bytes | 82,000 |
-| Metadata/type-origin reserve | 8,000 |
-| Exact package-object target | 90,000 |
+| Module | Bytecode bytes | Type origins |
+| --- | ---: | ---: |
+| `protocol_config_v8` | 5,699 | 7 |
+| `maker_v8` | 23,000 | 37 |
+| `publication_v8` | 4,759 | 0 |
+| `composition_v8` | 9,244 | 13 |
+| `expansion_pack_v8` | 13,073 | 19 |
+| `complete_v8` | 12,265 | 18 |
+| `seal_v8` | 4,561 | 6 |
+| `soul_v8` | 3,043 | 4 |
+| `physical_v8` | 6,153 | 10 |
+| Total module bytecode | 81,797 | 114 |
 
-The production build records both module totals and the exact serialized
-package-object size. Physical stays in `animacraft_v8` only when the exact
-object is at most 90,000 bytes. If it exceeds that target, split Physical and
-apply these targets:
-
-- core package object at most 68,000 bytes;
-- Physical package object at most 40,000 bytes;
-- each package independently below the 102,400-byte hard maximum;
-- the binding witness and exact dependency/callable package IDs covered by
-  negative tests and deployment preflight.
-
-No source-count estimate or uncompressed source size may substitute for the
-production bytecode and serialized-object measurements.
-
-The 2026-08-14 warnings-as-errors production build of the seven implemented
-non-Physical modules measured 69,273 compiled bytes: `protocol_config_v8`
-6,096; `maker_v8` 25,415; `publication_v8` 2,888; `composition_v8` 9,748;
-`expansion_pack_v8` 12,149; `complete_v8` 8,149; and `seal_v8` 4,828. This
-leaves only 20,727 bytes before the 90,000-byte package-object target even
-before metadata, so Physical must be measured as a split candidate rather
-than assumed to fit in the core package.
+Using Sui's pinned `MovePackage::size` formula (module-map names and bytecode,
+type-origin metadata, linkage metadata, and sequence number), the exact package
+object is **89,205 bytes**. This is 795 bytes below the 90,000-byte release
+target and 13,195 bytes below the 102,400-byte hard maximum, so Physical stays
+in the single package. No source-count estimate or uncompressed source size
+substitutes for this clean production measurement.
