@@ -1,0 +1,137 @@
+{
+  "schemaVersion": "animacraft.maker-v8-commitment-fixture.v1",
+  "description": "Cross-language golden UTF-8, Sui BCS, Option, u64, and SHA-256 vectors for Animacraft Maker v8.",
+  "inputs": {
+    "semanticProjection": {
+      "schemaVersion": "animacraft.maker-v8-semantic.v1",
+      "maker": {
+        "title": "灵魂✨",
+        "revision": "18446744073709551615"
+      },
+      "unicode": ["é", "é"],
+      "flags": {
+        "z": false,
+        "a": null
+      }
+    },
+    "track": {
+      "sequence": "0",
+      "key": "track-β",
+      "label": "背景",
+      "renderOrder": "18446744073709551615",
+      "payloadProjection": {
+        "schemaVersion": "animacraft.maker-v8-track-payload.v1",
+        "locked": false,
+        "metadata": {
+          "z": 2,
+          "a": 1
+        }
+      }
+    },
+    "style": {
+      "sequence": "3",
+      "partKey": "body",
+      "itemKey": "base",
+      "styleKey": "默认",
+      "layerTrackKey": "track-β",
+      "colorChannelKey": "肤色",
+      "defaultSwatchKey": "暖",
+      "label": "默认样式",
+      "assetBlobId": "walrus-root-asset",
+      "assetSha256": "e4277f71e69465e716440061a633a85a49734da555bbfb460a71eb4aa9e10c45",
+      "protected": true,
+      "payloadProjection": {
+        "schemaVersion": "animacraft.maker-v8-style-payload.v1",
+        "transform": {
+          "x": 0,
+          "y": 0,
+          "scale": 1,
+          "rotation": 0
+        },
+        "blendMode": "normal",
+        "opacity": 1
+      }
+    },
+    "previousRootId": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "previousVersionCommitment": "4444444444444444444444444444444444444444444444444444444444444444",
+    "packAssetBytesHex": "01020304ff00e6b189",
+    "packAssetSha256": "26d0c1b83b446cfd0220a49ca72d2ec20041e07f249d658d9014de2ce1d9d9b8",
+    "physicalCommitment": "c2ff1d8979255e32407db297065dbe3c1b1b3d15c861b95f2e6f584341da385e"
+  },
+  "expected": {
+    "semantic": {
+      "json": "{\"flags\":{\"a\":null,\"z\":false},\"maker\":{\"revision\":\"18446744073709551615\",\"title\":\"灵魂✨\"},\"schemaVersion\":\"animacraft.maker-v8-semantic.v1\",\"unicode\":[\"é\",\"é\"]}",
+      "utf8Hex": "7b22666c616773223a7b2261223a6e756c6c2c227a223a66616c73657d2c226d616b6572223a7b227265766973696f6e223a223138343436373434303733373039353531363135222c227469746c65223a22e781b5e9ad82e29ca8227d2c22736368656d6156657273696f6e223a22616e696d6163726166742e6d616b65722d76382d73656d616e7469632e7631222c22756e69636f6465223a5b2265cc81222c22c3a9225d7d",
+      "commitment": "8dcc7902cc5181b7c72477b7f3e024076da94ba98133cf052fc32b7ffa3f4e70"
+    },
+    "track": {
+      "payloadJson": "{\"locked\":false,\"metadata\":{\"a\":1,\"z\":2},\"schemaVersion\":\"animacraft.maker-v8-track-payload.v1\"}",
+      "payloadUtf8Hex": "7b226c6f636b6564223a66616c73652c226d65746164617461223a7b2261223a312c227a223a327d2c22736368656d6156657273696f6e223a22616e696d6163726166742e6d616b65722d76382d747261636b2d7061796c6f61642e7631227d",
+      "payloadCommitment": "fda6445a8e059914e94047aec0627743f8a39999dc90ce9f461e00707037084e",
+      "rowBcsHex": "000000000000000008747261636b2dceb206e8838ce699afffffffffffffffff20fda6445a8e059914e94047aec0627743f8a39999dc90ce9f461e00707037084e"
+    },
+    "style": {
+      "payloadJson": "{\"blendMode\":\"normal\",\"opacity\":1,\"schemaVersion\":\"animacraft.maker-v8-style-payload.v1\",\"transform\":{\"rotation\":0,\"scale\":1,\"x\":0,\"y\":0}}",
+      "payloadUtf8Hex": "7b22626c656e644d6f6465223a226e6f726d616c222c226f706163697479223a312c22736368656d6156657273696f6e223a22616e696d6163726166742e6d616b65722d76382d7374796c652d7061796c6f61642e7631222c227472616e73666f726d223a7b22726f746174696f6e223a302c227363616c65223a312c2278223a302c2279223a307d7d",
+      "payloadCommitment": "852e9c7a6f21844827cc5b2fdd0e72ea42769014d89d44a2d12dfcad63bb890e",
+      "rowBcsHex": "030000000000000004626f6479046261736506e9bb98e8aea408747261636b2dceb20106e882a4e889b20103e69a960ce9bb98e8aea4e6a0b7e5bc8f1177616c7275732d726f6f742d617373657420e4277f71e69465e716440061a633a85a49734da555bbfb460a71eb4aa9e10c450120852e9c7a6f21844827cc5b2fdd0e72ea42769014d89d44a2d12dfcad63bb890e",
+      "noneOptionsRowBcsHex": "030000000000000004626f6479046261736506e9bb98e8aea408747261636b2dceb200000ce9bb98e8aea4e6a0b7e5bc8f1177616c7275732d726f6f742d617373657420e4277f71e69465e716440061a633a85a49734da555bbfb460a71eb4aa9e10c450120852e9c7a6f21844827cc5b2fdd0e72ea42769014d89d44a2d12dfcad63bb890e"
+    },
+    "rootRolling": {
+      "trackEmpty": {
+        "bcsHex": "1c616e696d6163726166742d76382f656d7074792d72656769737472790800000000000000208dcc7902cc5181b7c72477b7f3e024076da94ba98133cf052fc32b7ffa3f4e700000000000000000000000",
+        "commitment": "86897b64244689fdbd855e04c681daa61baee62abb823557437545f98d5890f5"
+      },
+      "trackAdvance": {
+        "bcsHex": "18616e696d6163726166742d76382f617070656e642d726f770800000000000000208dcc7902cc5181b7c72477b7f3e024076da94ba98133cf052fc32b7ffa3f4e70002086897b64244689fdbd855e04c681daa61baee62abb823557437545f98d5890f5000000000000000041000000000000000008747261636b2dceb206e8838ce699afffffffffffffffff20fda6445a8e059914e94047aec0627743f8a39999dc90ce9f461e00707037084e",
+        "commitment": "6ff76ccddb5021dfc93772e69c8d984f051b7c7592c8ee85e8401cbdd8781917"
+      },
+      "styleEmpty": {
+        "bcsHex": "1c616e696d6163726166742d76382f656d7074792d72656769737472790800000000000000208dcc7902cc5181b7c72477b7f3e024076da94ba98133cf052fc32b7ffa3f4e700300000000000000000000",
+        "commitment": "285677190c0aecbb7746221b44e014b7298f28a1907047d15eeecaa0f8d68252"
+      },
+      "styleAdvance": {
+        "bcsHex": "18616e696d6163726166742d76382f617070656e642d726f770800000000000000208dcc7902cc5181b7c72477b7f3e024076da94ba98133cf052fc32b7ffa3f4e700320285677190c0aecbb7746221b44e014b7298f28a1907047d15eeecaa0f8d6825203000000000000009101030000000000000004626f6479046261736506e9bb98e8aea408747261636b2dceb20106e882a4e889b20103e69a960ce9bb98e8aea4e6a0b7e5bc8f1177616c7275732d726f6f742d617373657420e4277f71e69465e716440061a633a85a49734da555bbfb460a71eb4aa9e10c450120852e9c7a6f21844827cc5b2fdd0e72ea42769014d89d44a2d12dfcad63bb890e",
+        "commitment": "a6b2dfdae738725cb7a000b87172ccc7ce2f35eb5e7355bc4eb9ef07a3a6445f"
+      },
+      "aggregateEmpty": {
+        "bcsHex": "1c616e696d6163726166742d76382f656d7074792d72656769737472790800000000000000208dcc7902cc5181b7c72477b7f3e024076da94ba98133cf052fc32b7ffa3f4e70ff00000000000000000000",
+        "commitment": "724eca5aec10699e1277a505843de89cc4b67e625708e8d289df9b02fa74b3b0"
+      },
+      "aggregateTrackAdvance": {
+        "bcsHex": "18616e696d6163726166742d76382f617070656e642d726f770800000000000000208dcc7902cc5181b7c72477b7f3e024076da94ba98133cf052fc32b7ffa3f4e70ff20724eca5aec10699e1277a505843de89cc4b67e625708e8d289df9b02fa74b3b0000000000000000041000000000000000008747261636b2dceb206e8838ce699afffffffffffffffff20fda6445a8e059914e94047aec0627743f8a39999dc90ce9f461e00707037084e",
+        "commitment": "b1fa5b22342df36709086bf8187850f293bef22d659b431c156bbf190c6b6b7a"
+      },
+      "aggregateStyleAdvance": {
+        "priorCommitment": "8beac4fa4c76be6fcfb90f72b24f30e8ba2aef99c00d3f32ac271dbe52456bf4",
+        "bcsHex": "18616e696d6163726166742d76382f617070656e642d726f770800000000000000208dcc7902cc5181b7c72477b7f3e024076da94ba98133cf052fc32b7ffa3f4e70ff208beac4fa4c76be6fcfb90f72b24f30e8ba2aef99c00d3f32ac271dbe52456bf403000000000000009101030000000000000004626f6479046261736506e9bb98e8aea408747261636b2dceb20106e882a4e889b20103e69a960ce9bb98e8aea4e6a0b7e5bc8f1177616c7275732d726f6f742d617373657420e4277f71e69465e716440061a633a85a49734da555bbfb460a71eb4aa9e10c450120852e9c7a6f21844827cc5b2fdd0e72ea42769014d89d44a2d12dfcad63bb890e",
+        "commitment": "05892bdf1aa97f133119959e0fb94cb3f93813066cccee9dcd36b9b20cbf2f39"
+      }
+    },
+    "fullRoot": {
+      "totalRows": "6",
+      "commitments": {
+        "tracks": "6ff76ccddb5021dfc93772e69c8d984f051b7c7592c8ee85e8401cbdd8781917",
+        "parts": "1668133a43e3bd488a3b074a9dffd7c914991ab5a32cb0e1c351645845a12a1e",
+        "items": "2905dcb403b82e83c8e3d084ca48c3442663f36cd8ea7472353277dc4b5f3dda",
+        "styles": "a6b2dfdae738725cb7a000b87172ccc7ce2f35eb5e7355bc4eb9ef07a3a6445f",
+        "colors": "3fcfeb1f966ccfb9cfe5c7ac60808a0c8ec8963bbe4cab7de3e789c9ad72e47d",
+        "rules": "7075a2dfccda9d533a9d817d826f6aac98b51d3bbc05bb2b6578fad42528a85e",
+        "aggregate": "44179872197eb10c06f5bec8e9ee7850839047efe720fb84c6c091d77a8d703b"
+      },
+      "registryCommitmentsBcsHex": "206ff76ccddb5021dfc93772e69c8d984f051b7c7592c8ee85e8401cbdd8781917201668133a43e3bd488a3b074a9dffd7c914991ab5a32cb0e1c351645845a12a1e202905dcb403b82e83c8e3d084ca48c3442663f36cd8ea7472353277dc4b5f3dda20a6b2dfdae738725cb7a000b87172ccc7ce2f35eb5e7355bc4eb9ef07a3a6445f203fcfeb1f966ccfb9cfe5c7ac60808a0c8ec8963bbe4cab7de3e789c9ad72e47d207075a2dfccda9d533a9d817d826f6aac98b51d3bbc05bb2b6578fad42528a85e2044179872197eb10c06f5bec8e9ee7850839047efe720fb84c6c091d77a8d703b"
+    },
+    "options": {
+      "none": {
+        "previousRootIdBcsHex": "00",
+        "previousVersionCommitmentBcsHex": "00",
+        "physicalCommitmentBcsHex": "00"
+      },
+      "some": {
+        "previousRootIdBcsHex": "01cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "previousVersionCommitmentBcsHex": "01204444444444444444444444444444444444444444444444444444444444444444",
+        "physicalCommitmentBcsHex": "0120c2ff1d8979255e32407db297065dbe3c1b1b3d15c861b95f2e6f584341da385e"
+      }
+    }
+  }
+}
