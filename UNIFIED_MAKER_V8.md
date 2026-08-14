@@ -25,8 +25,12 @@ The preferred layout is one fresh `animacraft_v8` package containing:
 - `expansion_pack_v8`: Pack releases, style rows, Passes and lifecycle;
 - `complete_v8`: exact final Recipe authorization and completion receipts;
 - `seal_v8`: protected Style/Complete coverage and policy commitments.
+- `soul_v8`: the canonical Soul registry and same-transaction Soul mint;
+- `physical_v8`: physical policies and materialization bound to v8 Styles.
 
-`physical_v8` MAY be a separate fresh package only when the production build
+`physical_v8` remains in the same package while the measured package object
+stays within the safety budget. It MAY be split into a separate fresh package
+only when the production build
 would otherwise exceed the package-object safety budget. If split, it remains
 version 8, binds the exact Root ID/ownership epoch/content commitment, and is a
 required activation dependency for Makers that declare physical capability.
@@ -50,8 +54,8 @@ Every publication has exactly these authoritative objects:
 - shared `MakerRootV8<PaymentCoin>`;
 - creator-owned `MakerAdminCapV8`;
 - shared `MakerTreasuryV8<PaymentCoin>`;
-- shared per-Maker composition, Pack, Complete and Seal registries, even when
-  their row count is zero;
+- shared per-Maker composition, Pack, Complete, Seal and canonical Soul
+  registries, even when their row count is zero;
 - optional physical registry only when physical capability is declared.
 
 The Root commits to:
@@ -66,7 +70,8 @@ The Root commits to:
   channels/swatches, rules, slots, Pack releases and protected assets;
 - Maker access, Complete policy, rights origin, creator/source/resale royalty,
   payment type and protocol fee policy;
-- Composition, Pack, Complete, Seal and Physical capability bindings.
+- Composition, Pack, Complete, Seal, canonical Soul and Physical capability
+  bindings.
 
 Published rows use canonical v8 keys and are never updated in place. A new
 published version creates a new Root whose immutable lineage points to the
@@ -76,6 +81,27 @@ Every registry stores version, Root ID, ownership epoch, Root content
 commitment, expected and observed counts, expected and rolling commitments,
 and a sealed bit. Empty registries use a domain-separated empty commitment;
 an empty byte vector is never treated as proof of completeness.
+
+### Creator row contract
+
+The chain rows preserve the established outer Creator ownership model; v8 does
+not invent a second editor schema:
+
+- a Track owns draw order and has no inferred `required` flag;
+- a Part owns Player menu order, required/optional state and Item membership,
+  but does not own or invent a Track reference;
+- an Item owns its Style membership;
+- each Style binds its exact Layer Track and may bind one Smart Color channel
+  together with that channel's exact default swatch. Channel and default
+  swatch are either both absent or both present;
+- final activation enumerates every Style and verifies its Track and optional
+  channel/default-swatch dynamic fields against the sealed registries.
+
+The canonical compiler binds the richer Creator payload (gradient stops,
+nested visibility/combination rules, transforms, wardrobe semantics and
+render metadata) in deterministic payload commitments and the immutable
+manifest. On-chain index rows may not silently drop or reinterpret those
+semantics.
 
 ## Staged publication and atomic visibility
 
@@ -96,8 +122,9 @@ Walrus upload and certification finish before any v8 Root is created.
    Root, registry, Release and scope object IDs plus ownership epoch remain
    mandatory object fields and are checked on every append, seal, resume and
    final activation; they are not replaced by semantic keys.
-3. Required capability bindings are created against the exact Root and current
-   ownership epoch. A zero-row registry is still explicitly bound.
+3. Required capability bindings, including the canonical Soul registry, are
+   created against the exact Root and current ownership epoch. A zero-row
+   registry is still explicitly bound.
 4. One final `publication_v8::seal_and_activate_maker_v8` transaction checks protocol enabled,
    package/config/payment identities, manifest and renderer commitments,
    every expected/observed count, exact sequence, category and aggregate
@@ -145,7 +172,7 @@ Free access issues or recognizes an exact v8 Pass without a fake paid receipt.
 Paid access requires a verified payment and v8 entitlement. Player and export
 read these policies from the Root and never infer them from a disabled gate.
 
-## Composition, Pack, Complete, Seal and Physical
+## Composition, Pack, Complete, Seal, Soul and Physical
 
 - Composition stores the exact v8 wardrobe slots, capacity, admitted Item
   identities, owned selections and recovery-safe unlock/transfer paths.
@@ -154,14 +181,24 @@ read these policies from the Root and never infer them from a disabled gate.
   The Maker's initial Pack registry is immutable after Root activation; adding
   a new Pack requires a new MakerRootV8 version. Each Pack has its own exact
   AdminCap/Treasury and its Pass binds Root, ownership epoch and content.
-- Complete authorizes one exact rendered Recipe/content commitment and creates
-  a v8 completion receipt. The final PNG is available according to the Root's
-  Complete policy, not according to a v5 receipt or legacy bypass.
+- Complete authorizes one exact rendered Recipe/content commitment and returns
+  a non-store, non-copy, non-drop `SoulMintAuthorizationV8`. In the same PTB,
+  `soul_v8` alone consumes that proof, records its one-time receipt and creates
+  the canonical `CanonicalSoulV8`. The proof binds the exact Root, ownership
+  epoch, content commitment, holder, Complete output, Recipe, render and
+  authorization commitment. It cannot be replayed, persisted, substituted or
+  used while the Root is paused or archived. The final PNG is available
+  according to the Root's Complete policy, not according to a v5 receipt or
+  legacy bypass.
 - Seal coverage is required for every protected paid Style/Complete payload.
   Unprotected free assets use an explicit empty policy, never an ambiguous
   missing field.
 - Physical records bind exact Style content and support materialize, consume,
   transfer and recovery without referencing v7 objects.
+
+Canonical Soul is a required native v8 capability, not an old-package proof or
+optional compatibility bridge. Its registry is rebound and revalidated on
+ownership-epoch changes alongside every other required registry.
 
 Composition loadout updates use revision CAS. An ownership-epoch change cannot
 silently reuse an old loadout; stale selections are explicitly cleared and
@@ -177,7 +214,8 @@ will later be rejected by a hidden old-version gate.
 
 Production runtime has one `makerV8ReleaseEnabled` gate and one complete tuple:
 callable package, TypeOrigin package, ProtocolConfig, protocol Treasury,
-payment coin, required module identities, Seal identity and Soul proof.
+payment coin, required module identities, Seal identity and canonical Soul
+TypeOrigin/registry identity.
 
 When the v8 gate is enabled:
 
