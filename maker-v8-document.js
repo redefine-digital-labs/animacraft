@@ -2,6 +2,11 @@ import {
   collectMakerV8CommerceIssues,
   createMakerV8Commerce,
 } from './maker-commerce-v8.js';
+import {
+  createMakerRuleIndex,
+  evaluateRecipe,
+  normalizeRecipe,
+} from './maker-rules.js';
 
 export const MAKER_V8_DOCUMENT_SCHEMA = 'animacraft.maker.v8';
 export const MAKER_V8_DOCUMENT_VERSION = 8;
@@ -14,15 +19,6 @@ export const MAKER_V8_CAPABILITIES = Object.freeze([
   'seal',
   'physical',
   'canonicalSoul',
-]);
-
-export const MAKER_V8_REGISTRIES = Object.freeze([
-  'core',
-  'composition',
-  'packs',
-  'complete',
-  'seal',
-  'physical',
 ]);
 
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
@@ -63,6 +59,20 @@ const HEX_COLOR = /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i;
 const MAX_CANVAS = 8_192;
 const MAX_NAME_BYTES = 128;
 const MAX_DESCRIPTION_BYTES = 2_000;
+const VALIDATION_MODES = new Set(['draft', 'compile', 'activate']);
+const LIMITS = Object.freeze({
+  assets: 4_999,
+  tracks: 2_048,
+  colorChannels: 750,
+  swatchesPerChannel: 32,
+  parts: 750,
+  items: 5_000,
+  itemsPerPart: 100,
+  styles: 10_000,
+  stylesPerItem: 64,
+  packs: 256,
+  ruleTargets: 1_000,
+});
 
 function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -108,45 +118,50 @@ function exactIds(values) {
 }
 
 function defaultCapabilities(overrides = {}) {
+  const source = isRecord(overrides) ? overrides : {};
   return Object.fromEntries(MAKER_V8_CAPABILITIES.map((name) => [
     name,
-    Object.hasOwn(overrides, name) ? overrides[name] === true : true,
+    Object.hasOwn(source, name) ? source[name] === true : true,
   ]));
 }
 
 function defaultLineage(rootMakerKey, overrides = {}) {
-  const number = Number.isSafeInteger(overrides.number) && overrides.number > 0
-    ? overrides.number
+  const source = isRecord(overrides) ? overrides : {};
+  const number = Number.isSafeInteger(source.number) && source.number > 0
+    ? source.number
     : 1;
   return {
     rootMakerKey,
-    versionKey: safeId(overrides.versionKey, `${rootMakerKey}-v${number}`),
+    versionKey: safeId(source.versionKey, `${rootMakerKey}-v${number}`),
     number,
-    previousRootId: number === 1 ? null : String(overrides.previousRootId || '').toLowerCase(),
+    previousRootId: number === 1 ? null : String(source.previousRootId || '').toLowerCase(),
     previousContentCommitment: number === 1
       ? null
-      : String(overrides.previousContentCommitment || '').toLowerCase(),
-    createdAt: overrides.createdAt || null,
-    changelog: String(overrides.changelog || ''),
+      : String(source.previousContentCommitment || '').toLowerCase(),
+    createdAt: source.createdAt || null,
+    changelog: String(source.changelog || ''),
   };
 }
 
-export function createMakerV8Document({
-  makerId = 'untitled-maker',
-  name = 'Untitled Maker',
-  creator = '',
-  width = 1024,
-  height = 1024,
-  pixelMode = 'smooth',
-  lineage = {},
-  capabilities = {},
-  commerce = {},
-} = {}) {
-  const rootMakerKey = safeId(lineage.rootMakerKey || makerId, 'untitled-maker');
+export function createMakerV8Document(options = {}) {
+  const source = isRecord(options) ? options : {};
+  const {
+    makerId = 'untitled-maker',
+    name = 'Untitled Maker',
+    creator = '',
+    width = 1024,
+    height = 1024,
+    pixelMode = 'smooth',
+    lineage = {},
+    capabilities = {},
+    commerce = {},
+  } = source;
+  const lineageSource = isRecord(lineage) ? lineage : {};
+  const rootMakerKey = safeId(lineageSource.rootMakerKey || makerId, 'untitled-maker');
   return deepFreeze({
     schemaVersion: MAKER_V8_DOCUMENT_SCHEMA,
     protocolVersion: MAKER_V8_DOCUMENT_VERSION,
-    lineage: defaultLineage(rootMakerKey, lineage),
+    lineage: defaultLineage(rootMakerKey, lineageSource),
     metadata: {
       id: safeId(makerId, rootMakerKey),
       name: String(name || 'Untitled Maker'),
@@ -168,7 +183,7 @@ export function createMakerV8Document({
     rules: [],
     defaultRecipe: { selections: [], colors: [] },
     packs: [],
-    commerce: createMakerV8Commerce(commerce),
+    commerce: createMakerV8Commerce(isRecord(commerce) ? commerce : {}),
     assets: [],
   });
 }
@@ -264,8 +279,9 @@ export function isMakerV8Document(value) {
 }
 
 function validateId(value, path, issues) {
-  if (!SAFE_ID.test(String(value || ''))) {
-    issue(issues, path, 'MAKER_V8_ID_INVALID', 'Identifier must contain only letters, numbers, underscore, or hyphen.');
+  const text = String(value || '');
+  if (!SAFE_ID.test(text) || utf8Length(text) > MAX_NAME_BYTES) {
+    issue(issues, path, 'MAKER_V8_ID_INVALID', 'Identifier must be a safe ID no longer than 128 UTF-8 bytes.');
     return false;
   }
   return true;
@@ -406,6 +422,9 @@ function validateRules(records, known, path, issues) {
     return new Set();
   }
   const ids = validateUniqueIds(records, path, issues);
+  if (records.length > LIMITS.ruleTargets) {
+    issue(issues, path, 'MAKER_V8_RULE_LIMIT', `Global rules cannot exceed ${LIMITS.ruleTargets} entries.`);
+  }
   records.forEach((rule, index) => {
     const rulePath = `${path}[${index}]`;
     if (rule?.type !== 'requires' && rule?.type !== 'excludes') {
@@ -415,12 +434,95 @@ function validateRules(records, known, path, issues) {
     if (!Array.isArray(rule?.targets) || rule.targets.length === 0) {
       issue(issues, `${rulePath}.targets`, 'MAKER_V8_RULE_TARGET_REQUIRED', 'Rule needs at least one target.');
     } else {
+      if (rule.targets.length > LIMITS.ruleTargets) {
+        issue(issues, `${rulePath}.targets`, 'MAKER_V8_RULE_TARGET_LIMIT', `Rule targets cannot exceed ${LIMITS.ruleTargets} entries.`);
+      }
       rule.targets.forEach((target, targetIndex) => (
         validateSelectionTarget(target, `${rulePath}.targets[${targetIndex}]`, known, issues)
       ));
     }
   });
   return ids;
+}
+
+function recipeContainsSelection(recipe, expected) {
+  return (recipe?.selections || []).some((entry) => (
+    entry.partId === expected.partId
+    && entry.itemId === expected.itemId
+    && entry.styleId === expected.styleId
+  ));
+}
+
+function ruleViolationCodes(result) {
+  return [...new Set((result?.violations || [])
+    .map((entry) => String(entry?.code || ''))
+    .filter(Boolean))];
+}
+
+/**
+ * Executes the same rule engine used by the established Creator and Player.
+ * Structural similarity is insufficient: v8 activation must prove that the
+ * default Recipe and every public Style are actually playable.
+ */
+function validateExecutableRuleGraph(document, issues) {
+  try {
+    const index = createMakerRuleIndex(document);
+    const defaultResult = evaluateRecipe(document, document.defaultRecipe, { index });
+    if (!defaultResult.valid) {
+      issue(
+        issues,
+        'defaultRecipe',
+        'MAKER_V8_DEFAULT_RECIPE_RULE_VIOLATION',
+        `Default Recipe violates shared Maker rules${ruleViolationCodes(defaultResult).length ? ` (${ruleViolationCodes(defaultResult).join(', ')})` : ''}.`,
+      );
+    }
+    const graph = normalizeRecipe(
+      document,
+      { selections: [], colors: document.defaultRecipe?.colors || [] },
+      { index },
+    );
+    if (!graph.valid) {
+      issue(
+        issues,
+        'rules',
+        ruleViolationCodes(graph).includes('constraint-search-limit')
+          ? 'MAKER_V8_RULE_SEARCH_LIMIT'
+          : 'MAKER_V8_RULE_GRAPH_UNSATISFIABLE',
+        'No playable public Recipe satisfies the shared Maker rule graph.',
+      );
+      return;
+    }
+    let reachable = 0;
+    document.parts.forEach((part) => {
+      (part.items || []).filter((item) => item?.status === 'public').forEach((item) => {
+        (item.styles || []).forEach((style) => {
+          const expected = { partId: part.id, itemId: item.id, styleId: style.id };
+          const candidate = normalizeRecipe(
+            document,
+            { selections: [expected], colors: document.defaultRecipe?.colors || [] },
+            { index, lockedPartIds: [part.id] },
+          );
+          if (candidate.valid && recipeContainsSelection(candidate.documentRecipe, expected)) {
+            reachable += 1;
+          } else {
+            issue(
+              issues,
+              `parts.${part.id}.items.${item.id}.styles.${style.id}`,
+              ruleViolationCodes(candidate).includes('constraint-search-limit')
+                ? 'MAKER_V8_RULE_SEARCH_LIMIT'
+                : 'MAKER_V8_PUBLIC_STYLE_UNREACHABLE',
+              'Public Style cannot appear in any valid Player Recipe.',
+            );
+          }
+        });
+      });
+    });
+    if (reachable === 0) {
+      issue(issues, 'rules', 'MAKER_V8_RULE_GRAPH_UNSATISFIABLE', 'No public Style can appear in a playable Recipe.');
+    }
+  } catch (error) {
+    issue(issues, 'rules', 'MAKER_V8_RULE_EVALUATION_FAILED', error?.message || 'Shared Maker rules could not be evaluated.');
+  }
 }
 
 function validateDefaultRecipe(document, known, channels, compile, issues) {
@@ -540,6 +642,9 @@ export function makerV8Inventory(document) {
 
 export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) {
   const issues = [];
+  if (!VALIDATION_MODES.has(mode)) {
+    issue(issues, 'mode', 'MAKER_V8_VALIDATION_MODE_INVALID', 'Validation mode must be draft, compile, or activate.');
+  }
   const compile = mode === 'compile' || mode === 'activate';
   if (!isRecord(document)) {
     issue(issues, '', 'MAKER_V8_DOCUMENT_REQUIRED', 'Maker v8 document is required.');
@@ -604,6 +709,9 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
   if (!Array.isArray(document.assets)) {
     issue(issues, 'assets', 'MAKER_V8_ASSETS_INVALID', 'Assets must be an array.');
   }
+  if (Array.isArray(document.assets) && document.assets.length > LIMITS.assets) {
+    issue(issues, 'assets', 'MAKER_V8_ASSET_LIMIT', `Assets cannot exceed ${LIMITS.assets} entries.`);
+  }
   const assetIds = validateUniqueIds(document.assets, 'assets', issues);
   const assets = new Map((Array.isArray(document.assets) ? document.assets : [])
     .map((asset) => [String(asset?.id || ''), asset]));
@@ -634,6 +742,9 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
   if (!Array.isArray(document.layerTracks)) {
     issue(issues, 'layerTracks', 'MAKER_V8_TRACKS_INVALID', 'Layer Tracks must be an array.');
   }
+  if (Array.isArray(document.layerTracks) && document.layerTracks.length > LIMITS.tracks) {
+    issue(issues, 'layerTracks', 'MAKER_V8_TRACK_LIMIT', `Layer Tracks cannot exceed ${LIMITS.tracks} entries.`);
+  }
   const trackIds = validateUniqueIds(document.layerTracks, 'layerTracks', issues);
   validateContiguousOrder(document.layerTracks, 'layerTracks', issues);
   (Array.isArray(document.layerTracks) ? document.layerTracks : []).forEach((track, index) => {
@@ -652,6 +763,9 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
   if (!Array.isArray(document.colorChannels)) {
     issue(issues, 'colorChannels', 'MAKER_V8_COLORS_INVALID', 'Color channels must be an array.');
   }
+  if (Array.isArray(document.colorChannels) && document.colorChannels.length > LIMITS.colorChannels) {
+    issue(issues, 'colorChannels', 'MAKER_V8_COLOR_CHANNEL_LIMIT', `Color channels cannot exceed ${LIMITS.colorChannels} entries.`);
+  }
   const colorIds = validateUniqueIds(document.colorChannels, 'colorChannels', issues);
   validateContiguousOrder(document.colorChannels, 'colorChannels', issues);
   (Array.isArray(document.colorChannels) ? document.colorChannels : []).forEach((channel, index) => {
@@ -664,6 +778,9 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
     } else if (compile && channel.swatches.length === 0) {
       issue(issues, `colorChannels[${index}].swatches`, 'MAKER_V8_SWATCH_REQUIRED', 'Published color channel needs at least one swatch.');
     } else {
+      if (channel.swatches.length > LIMITS.swatchesPerChannel) {
+        issue(issues, `colorChannels[${index}].swatches`, 'MAKER_V8_SWATCH_LIMIT', `Color channel cannot exceed ${LIMITS.swatchesPerChannel} swatches.`);
+      }
       const swatches = validateUniqueIds(channel.swatches, `colorChannels[${index}].swatches`, issues);
       if (channel.defaultSwatchId !== null
         && channel.defaultSwatchId !== undefined
@@ -708,6 +825,9 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
   if (!Array.isArray(document.parts)) {
     issue(issues, 'parts', 'MAKER_V8_PARTS_INVALID', 'Parts must be an array.');
   }
+  if (Array.isArray(document.parts) && document.parts.length > LIMITS.parts) {
+    issue(issues, 'parts', 'MAKER_V8_PART_LIMIT', `Parts cannot exceed ${LIMITS.parts} entries.`);
+  }
   const partIds = validateUniqueIds(document.parts, 'parts', issues);
   validateContiguousOrder(
     (Array.isArray(document.parts) ? document.parts : [])
@@ -726,6 +846,8 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
     itemRecords: new Map(),
     styleRecords: new Map(),
   };
+  let totalItems = 0;
+  let totalStyles = 0;
   (Array.isArray(document.parts) ? document.parts : []).forEach((part, partIndex) => {
     const partPath = `parts[${partIndex}]`;
     known.partRecords.set(String(part?.id || ''), part);
@@ -749,6 +871,10 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
     if (!Array.isArray(part?.items) || (compile && part.items.length === 0)) {
       issue(issues, `${partPath}.items`, 'MAKER_V8_PART_ITEMS_INVALID', 'Published Parts need at least one Item.');
       return;
+    }
+    totalItems += part.items.length;
+    if (part.items.length > LIMITS.itemsPerPart) {
+      issue(issues, `${partPath}.items`, 'MAKER_V8_ITEMS_PER_PART_LIMIT', `Part cannot exceed ${LIMITS.itemsPerPart} Items.`);
     }
     const itemIds = validateUniqueIds(part.items, `${partPath}.items`, issues);
     known.items.set(String(part.id || ''), itemIds);
@@ -775,6 +901,10 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
       if (!Array.isArray(item?.styles) || (compile && item.styles.length === 0)) {
         issue(issues, `${itemPath}.styles`, 'MAKER_V8_ITEM_STYLES_INVALID', 'Published Items need at least one Style.');
         return;
+      }
+      totalStyles += item.styles.length;
+      if (item.styles.length > LIMITS.stylesPerItem) {
+        issue(issues, `${itemPath}.styles`, 'MAKER_V8_STYLES_PER_ITEM_LIMIT', `Item cannot exceed ${LIMITS.stylesPerItem} Styles.`);
       }
       const styleIds = validateUniqueIds(item.styles, `${itemPath}.styles`, issues);
       known.styles.set(`${part.id}:${item.id}`, styleIds);
@@ -842,6 +972,12 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
       issue(issues, `${partPath}.defaultItemId`, 'MAKER_V8_DEFAULT_ITEM_REQUIRED', 'Required published Part needs a default Item.');
     }
   });
+  if (totalItems > LIMITS.items) {
+    issue(issues, 'parts', 'MAKER_V8_ITEM_LIMIT', `Maker v8 cannot exceed ${LIMITS.items} Items.`);
+  }
+  if (totalStyles > LIMITS.styles) {
+    issue(issues, 'parts', 'MAKER_V8_STYLE_LIMIT', `Maker v8 cannot exceed ${LIMITS.styles} Styles.`);
+  }
   if (compile && !(Array.isArray(document.parts) ? document.parts : []).some((part) => part?.menuVisible === true)) {
     issue(issues, 'parts', 'MAKER_V8_PLAYER_PART_REQUIRED', 'Published Maker v8 needs at least one Player-visible Part.');
   }
@@ -888,6 +1024,9 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
   if (!Array.isArray(document.packs)) {
     issue(issues, 'packs', 'MAKER_V8_PACKS_INVALID', 'Packs must be an array.');
   }
+  if (Array.isArray(document.packs) && document.packs.length > LIMITS.packs) {
+    issue(issues, 'packs', 'MAKER_V8_PACK_LIMIT', `Packs cannot exceed ${LIMITS.packs} entries.`);
+  }
   const packIds = validateUniqueIds(document.packs, 'packs', issues);
   if (packIds.size && document.capabilities?.expansionPacks !== true) {
     issue(issues, 'capabilities.expansionPacks', 'MAKER_V8_PACK_CAPABILITY_REQUIRED', 'Declared Packs require the v8 Expansion Pack capability.');
@@ -907,6 +1046,7 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
   const channels = new Map((Array.isArray(document.colorChannels) ? document.colorChannels : [])
     .map((channel) => [String(channel?.id || ''), channel]));
   validateDefaultRecipe(document, known, channels, compile, issues);
+  if (compile && issues.length === 0) validateExecutableRuleGraph(document, issues);
   return Object.freeze(issues);
 }
 
@@ -923,80 +1063,4 @@ export function assertMakerV8Document(document, options) {
   const issues = collectMakerV8DocumentIssues(document, options);
   if (issues.length) throw new MakerV8DocumentValidationError(issues);
   return document;
-}
-
-function exactCommitment(value, field) {
-  const normalized = String(value || '').toLowerCase().replace(/^0x/, '');
-  if (!/^[0-9a-f]{64}$/.test(normalized)) {
-    throw new TypeError(`${field} must be an exact 32-byte hex commitment.`);
-  }
-  return normalized;
-}
-
-/**
- * Binds compiler/Walrus output to the exact v8 authoring document. It accepts
- * no old Maker object, migration ID, compatibility gate, or inferred registry.
- */
-export function createMakerV8ActivationIntent(document, {
-  manifestBlobId,
-  manifestSha256,
-  contentCommitment,
-  registryCommitments,
-  physicalWitnessType = '',
-} = {}) {
-  assertMakerV8Document(document, { mode: 'compile' });
-  const blobId = String(manifestBlobId || '');
-  if (!blobId) throw new TypeError('Maker v8 manifest Blob ID is required.');
-  if (!isRecord(registryCommitments)) {
-    throw new TypeError('Maker v8 registry commitments are required.');
-  }
-  const inventory = makerV8Inventory(document);
-  const commitments = {};
-  MAKER_V8_REGISTRIES.forEach((registry) => {
-    const record = registryCommitments[registry];
-    if (!isRecord(record)) throw new TypeError(`${registry} registry commitment is required.`);
-    const expectedCount = Number(record.expectedCount);
-    if (!Number.isSafeInteger(expectedCount) || expectedCount < 0) {
-      throw new TypeError(`${registry} registry count is invalid.`);
-    }
-    commitments[registry] = {
-      expectedCount,
-      expectedCommitment: exactCommitment(record.expectedCommitment, `${registry}.expectedCommitment`),
-    };
-  });
-  const expected = {
-    core: inventory.tracks
-      + inventory.parts
-      + inventory.items
-      + inventory.styles
-      + inventory.colors
-      + inventory.rules,
-    composition: inventory.compositionSlots,
-    packs: inventory.packs,
-    complete: document.capabilities.complete ? 1 : 0,
-    seal: inventory.protectedStyles,
-    physical: inventory.physicalStyles,
-  };
-  MAKER_V8_REGISTRIES.forEach((registry) => {
-    if (commitments[registry].expectedCount !== expected[registry]) {
-      throw new TypeError(`${registry} registry count does not match the v8 document.`);
-    }
-  });
-  if (document.capabilities.physical && !String(physicalWitnessType || '')) {
-    throw new TypeError('Physical-enabled Maker v8 needs an exact Physical witness type.');
-  }
-  return deepFreeze({
-    schemaVersion: 'animacraft.maker-v8-activation-intent.v1',
-    makerDocumentSchema: MAKER_V8_DOCUMENT_SCHEMA,
-    makerKey: document.metadata.id,
-    versionKey: document.lineage.versionKey,
-    versionNumber: document.lineage.number,
-    manifestBlobId: blobId,
-    manifestSha256: exactCommitment(manifestSha256, 'manifestSha256'),
-    contentCommitment: exactCommitment(contentCommitment, 'contentCommitment'),
-    capabilities: clone(document.capabilities),
-    inventory,
-    registries: commitments,
-    physicalWitnessType: String(physicalWitnessType || ''),
-  });
 }

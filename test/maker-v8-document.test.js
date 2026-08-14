@@ -7,7 +7,6 @@ import {
   assertMakerV8Document,
   collectMakerV8DocumentIssues,
   createCharacterMakerV8Starter,
-  createMakerV8ActivationIntent,
   createMakerV8Document,
   isMakerV8Document,
   makerV8Inventory,
@@ -109,17 +108,6 @@ function compiledDocument() {
   return document;
 }
 
-function commitments() {
-  return {
-    core: { expectedCount: 5, expectedCommitment: '3'.repeat(64) },
-    composition: { expectedCount: 0, expectedCommitment: '4'.repeat(64) },
-    packs: { expectedCount: 0, expectedCommitment: '5'.repeat(64) },
-    complete: { expectedCount: 1, expectedCommitment: '6'.repeat(64) },
-    seal: { expectedCount: 0, expectedCommitment: '7'.repeat(64) },
-    physical: { expectedCount: 0, expectedCommitment: '8'.repeat(64) },
-  };
-}
-
 test('new Maker documents are exact v8 drafts and reject every older schema', () => {
   const document = createMakerV8Document();
   assert.equal(document.schemaVersion, MAKER_V8_DOCUMENT_SCHEMA);
@@ -194,36 +182,6 @@ test('compile validation binds cover, assets, shared definitions, rules, and nat
   );
 });
 
-test('activation intent binds exact document inventory and every explicit registry', () => {
-  const document = compiledDocument();
-  const intent = createMakerV8ActivationIntent(document, {
-    manifestBlobId: 'walrus-quilt-id',
-    manifestSha256: '9'.repeat(64),
-    contentCommitment: 'a'.repeat(64),
-    registryCommitments: commitments(),
-    physicalWitnessType: `0x${'b'.repeat(64)}::physical_v8::PhysicalBindingWitnessV8`,
-  });
-  assert.equal(intent.schemaVersion, 'animacraft.maker-v8-activation-intent.v1');
-  assert.equal(intent.registries.core.expectedCount, 5);
-  assert.equal(intent.registries.complete.expectedCount, 1);
-  assert.equal(Object.isFrozen(intent), true);
-  assert.equal('legacyMakerId' in intent, false);
-  assert.equal('commerceV5RootId' in intent, false);
-
-  const wrong = commitments();
-  wrong.core.expectedCount = 4;
-  assert.throws(
-    () => createMakerV8ActivationIntent(document, {
-      manifestBlobId: 'walrus-quilt-id',
-      manifestSha256: '9'.repeat(64),
-      contentCommitment: 'a'.repeat(64),
-      registryCommitments: wrong,
-      physicalWitnessType: `0x${'b'.repeat(64)}::physical_v8::PhysicalBindingWitnessV8`,
-    }),
-    /core registry count does not match/,
-  );
-});
-
 test('disabled capabilities cannot silently carry v8 feature declarations', () => {
   const document = compiledDocument();
   document.capabilities.seal = false;
@@ -252,4 +210,42 @@ test('shared references, hierarchy, embedded rules, and default Recipe fail clos
   assert.equal(codes.has('MAKER_V8_DEFAULT_STYLE_MISMATCH'), true);
   assert.equal(codes.has('MAKER_V8_DEFAULT_SWATCH_UNKNOWN'), true);
   assert.equal(codes.has('MAKER_V8_DEFAULT_SWATCH_MISMATCH'), true);
+});
+
+test('constructors, validation modes, and Creator limits fail closed without raw crashes', () => {
+  assert.doesNotThrow(() => createMakerV8Document(null));
+  assert.doesNotThrow(() => createMakerV8Document({
+    lineage: null,
+    capabilities: null,
+    commerce: null,
+  }));
+  const document = structuredClone(createMakerV8Document());
+  document.metadata.id = 'x'.repeat(129);
+  document.layerTracks = Array.from({ length: 2_049 }, (_, order) => ({
+    id: `track-${order}`,
+    name: `Track ${order}`,
+    order,
+    locked: false,
+    referenceAssetId: null,
+  }));
+  const codes = new Set(collectMakerV8DocumentIssues(document, { mode: 'unsupported' })
+    .map((entry) => entry.code));
+  assert.equal(codes.has('MAKER_V8_VALIDATION_MODE_INVALID'), true);
+  assert.equal(codes.has('MAKER_V8_ID_INVALID'), true);
+  assert.equal(codes.has('MAKER_V8_TRACK_LIMIT'), true);
+});
+
+test('compile validation executes the shared Creator rule engine', () => {
+  const document = compiledDocument();
+  const selection = { partId: 'base', itemId: 'body', styleId: 'default' };
+  document.rules.push({
+    id: 'self-exclude',
+    type: 'excludes',
+    trigger: selection,
+    targets: [selection],
+  });
+  const codes = new Set(collectMakerV8DocumentIssues(document, { mode: 'compile' })
+    .map((entry) => entry.code));
+  assert.equal(codes.has('MAKER_V8_DEFAULT_RECIPE_RULE_VIOLATION'), true);
+  assert.equal(codes.has('MAKER_V8_RULE_GRAPH_UNSATISFIABLE'), true);
 });
