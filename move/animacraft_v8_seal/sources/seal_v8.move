@@ -852,6 +852,46 @@ public fun certify_complete_receipt_v8<
     })
 }
 
+/// Consumes the exact Complete proof only after re-running Seal's live
+/// registry/policy/root/holder access check. All instance fields come back
+/// from the proof itself so Output can compare them with its private pending
+/// objects; caller-supplied expected fields never become Seal authority.
+public fun consume_complete_decrypt_proof_v8<PaymentCoin>(
+    id: vector<u8>,
+    registry: &SealRegistryV8,
+    policy: &SealPolicyConfigV8,
+    root: &MakerRootV8<PaymentCoin>,
+    proof: CompleteDecryptProofV8,
+    ctx: &TxContext,
+): (ID, ID, vector<u8>, vector<u8>, vector<u8>, vector<u8>, String, String, vector<u8>) {
+    assert!(check_complete_access(
+        registry,
+        policy,
+        root,
+        &proof,
+        ctx.sender(),
+        &id,
+    ), ENoAccess);
+    let CompleteDecryptProofV8 {
+        root_id: _,
+        maker_version: _,
+        root_content_commitment: _,
+        holder: _,
+        receipt_id,
+        output_id,
+        recipe_commitment,
+        render_commitment,
+        output_commitment,
+        receipt_commitment,
+        scope_key,
+        asset_key,
+        seal_id,
+    } = proof;
+    assert!(seal_id == id, EInvalidProof);
+    (receipt_id, output_id, recipe_commitment, render_commitment,
+        output_commitment, receipt_commitment, scope_key, asset_key, seal_id)
+}
+
 /// Sui Seal key servers dry-run this entry. The proof must be minted in the
 /// same PTB from a live Runtime entitlement and cannot be persisted/replayed.
 entry fun seal_approve_base_v8<PaymentCoin>(
@@ -882,11 +922,8 @@ entry fun seal_approve_complete_v8<PaymentCoin>(
     policy: &SealPolicyConfigV8, root: &MakerRootV8<PaymentCoin>,
     proof: CompleteDecryptProofV8, ctx: &TxContext,
 ) {
-    assert!(check_complete_access(registry, policy, root, &proof, ctx.sender(), &id), ENoAccess);
-    let CompleteDecryptProofV8 { root_id: _, maker_version: _, root_content_commitment: _,
-        holder: _, receipt_id: _, output_id: _, recipe_commitment: _,
-        render_commitment: _, output_commitment: _, receipt_commitment: _,
-        scope_key: _, asset_key: _, seal_id: _ } = proof;
+    let (_, _, _, _, _, _, _, _, _) = consume_complete_decrypt_proof_v8(
+        id, registry, policy, root, proof, ctx);
 }
 
 public fun issue_seal_readiness_v8<PaymentCoin>(
@@ -1653,13 +1690,81 @@ public fun complete_proof_for_testing<PaymentCoin>(
     output_commitment: vector<u8>, scope_key: String, asset_key: String,
     seal_id: vector<u8>,
 ): CompleteDecryptProofV8 {
+    complete_proof_exact_for_testing(
+        root,
+        holder,
+        object::id_from_address(@0xE3),
+        object::id_from_address(@0xE4),
+        test_hash(83),
+        test_hash(84),
+        output_commitment,
+        test_hash(85),
+        scope_key,
+        asset_key,
+        seal_id,
+    )
+}
+
+#[test_only]
+fun complete_proof_exact_for_testing<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>, holder: address,
+    receipt_id: ID, output_id: ID, recipe_commitment: vector<u8>,
+    render_commitment: vector<u8>, output_commitment: vector<u8>,
+    receipt_commitment: vector<u8>, scope_key: String, asset_key: String,
+    seal_id: vector<u8>,
+): CompleteDecryptProofV8 {
     CompleteDecryptProofV8 { root_id: maker::root_id_v8(root),
         maker_version: maker::root_maker_version_v8(root),
         root_content_commitment: *maker::root_content_commitment_v8(root), holder,
-        receipt_id: object::id_from_address(@0xE3),
-        output_id: object::id_from_address(@0xE4), recipe_commitment: test_hash(83),
-        render_commitment: test_hash(84), output_commitment,
-        receipt_commitment: test_hash(85), scope_key, asset_key, seal_id }
+        receipt_id, output_id, recipe_commitment, render_commitment,
+        output_commitment, receipt_commitment, scope_key, asset_key, seal_id }
+}
+
+#[test_only]
+fun complete_binding_fixture(ctx: &mut TxContext): (
+    ProtocolConfigV8,
+    ProtocolAdminCapV8,
+    MakerRootV8<sui::sui::SUI>,
+    animacraft_v8_core::base_registry_v8::BaseDefinitionRegistryV8,
+    animacraft_v8_core::treasury_v8::MakerTreasuryV8<sui::sui::SUI>,
+    MakerAdminCapV8,
+    ProductReleaseCatalogV8,
+    SealPolicyConfigV8,
+    SealRegistryV8,
+    vector<u8>,
+) {
+    let (config, protocol_admin, mut root, base_registry, maker_treasury,
+        admin, catalog, policy) = new_test_fixture(ctx);
+    let empty = empty_registry_commitment_v8(
+        policy.product_binding_commitment,
+        policy.commitment,
+        *maker::root_content_commitment_v8(&root),
+        maker::root_maker_version_v8(&root),
+    );
+    let mut registry = new_registry_for_testing(
+        &root, &admin, &policy, 0, 0, 0, empty, ctx);
+    seal_registry_v8(&mut registry, &root, &admin, &policy);
+    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_active_v8());
+    let instance = complete_instance_commitment_v8(
+        test_hash(83), test_hash(84), test_hash(33), test_hash(85));
+    let certification = certification_for_testing(
+        &policy,
+        &root,
+        SCOPE_COMPLETE,
+        b"complete/runtime".to_string(),
+        instance,
+        b"receipt/runtime/one".to_string(),
+        test_hash(33),
+        b"runtime-blob".to_string(),
+        test_hash(43),
+        test_hash(53),
+    );
+    let seal_id = certification.seal_id;
+    assert!(register_runtime_asset_for_testing(
+        &mut registry, &root, &policy, 0, certification, SCOPE_COMPLETE,
+    ) == seal_id, EInvalidCommitment);
+    (config, protocol_admin, root, base_registry, maker_treasury, admin,
+        catalog, policy, registry, seal_id)
 }
 
 #[test_only]
@@ -1973,6 +2078,164 @@ fun active_complete_registration_uses_revision_cas_and_exact_receipt() {
     destroy_registry_for_testing(registry);
     finish_test_fixture(config, protocol_admin, root, base_registry, maker_treasury, admin,
         catalog, policy, &ctx);
+}
+
+#[test]
+fun complete_output_proof_consumption_binds_registered_live_instance() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 35, 0, 0, 0);
+    let (config, protocol_admin, root, base_registry, maker_treasury, admin,
+        catalog, policy, registry, seal_id) = complete_binding_fixture(&mut ctx);
+    let proof = complete_proof_for_testing(
+        &root, @0xA11, test_hash(33), b"complete/runtime".to_string(),
+        b"receipt/runtime/one".to_string(), seal_id);
+    let (receipt_id, output_id, recipe_commitment, render_commitment,
+        output_commitment, receipt_commitment, scope_key, asset_key,
+        consumed_id) = consume_complete_decrypt_proof_v8(
+        seal_id, &registry, &policy, &root, proof, &ctx);
+    assert!(receipt_id == object::id_from_address(@0xE3), EInvalidProof);
+    assert!(output_id == object::id_from_address(@0xE4), EInvalidProof);
+    assert!(recipe_commitment == test_hash(83), EInvalidProof);
+    assert!(render_commitment == test_hash(84), EInvalidProof);
+    assert!(output_commitment == test_hash(33), EInvalidProof);
+    assert!(receipt_commitment == test_hash(85), EInvalidProof);
+    assert!(scope_key == b"complete/runtime".to_string(), EInvalidProof);
+    assert!(asset_key == b"receipt/runtime/one".to_string(), EInvalidProof);
+    assert!(consumed_id == seal_id, EInvalidProof);
+    destroy_registry_for_testing(registry);
+    finish_test_fixture(config, protocol_admin, root, base_registry,
+        maker_treasury, admin, catalog, policy, &ctx);
+}
+
+#[test, expected_failure(abort_code = ENoAccess)]
+fun complete_output_proof_rejects_cross_holder() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 36, 0, 0, 0);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury,
+        _admin, _catalog, policy, registry, seal_id) =
+        complete_binding_fixture(&mut ctx);
+    let proof = complete_proof_for_testing(
+        &root, @0xB0B, test_hash(33), b"complete/runtime".to_string(),
+        b"receipt/runtime/one".to_string(), seal_id);
+    consume_complete_decrypt_proof_v8(
+        seal_id, &registry, &policy, &root, proof, &ctx);
+    abort ENoAccess
+}
+
+#[test, expected_failure(abort_code = ENoAccess)]
+fun complete_output_proof_rejects_recipe_drift() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 39, 0, 0, 0);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury,
+        _admin, _catalog, policy, registry, seal_id) =
+        complete_binding_fixture(&mut ctx);
+    let proof = complete_proof_exact_for_testing(
+        &root, @0xA11, object::id_from_address(@0xE3),
+        object::id_from_address(@0xE4), test_hash(99), test_hash(84),
+        test_hash(33), test_hash(85), b"complete/runtime".to_string(),
+        b"receipt/runtime/one".to_string(), seal_id);
+    consume_complete_decrypt_proof_v8(
+        seal_id, &registry, &policy, &root, proof, &ctx);
+    abort ENoAccess
+}
+
+#[test, expected_failure(abort_code = ENoAccess)]
+fun complete_output_proof_rejects_render_drift() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 40, 0, 0, 0);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury,
+        _admin, _catalog, policy, registry, seal_id) =
+        complete_binding_fixture(&mut ctx);
+    let proof = complete_proof_exact_for_testing(
+        &root, @0xA11, object::id_from_address(@0xE3),
+        object::id_from_address(@0xE4), test_hash(83), test_hash(99),
+        test_hash(33), test_hash(85), b"complete/runtime".to_string(),
+        b"receipt/runtime/one".to_string(), seal_id);
+    consume_complete_decrypt_proof_v8(
+        seal_id, &registry, &policy, &root, proof, &ctx);
+    abort ENoAccess
+}
+
+#[test, expected_failure(abort_code = ENoAccess)]
+fun complete_output_proof_rejects_output_commitment_drift() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 41, 0, 0, 0);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury,
+        _admin, _catalog, policy, registry, seal_id) =
+        complete_binding_fixture(&mut ctx);
+    let proof = complete_proof_exact_for_testing(
+        &root, @0xA11, object::id_from_address(@0xE3),
+        object::id_from_address(@0xE4), test_hash(83), test_hash(84),
+        test_hash(99), test_hash(85), b"complete/runtime".to_string(),
+        b"receipt/runtime/one".to_string(), seal_id);
+    consume_complete_decrypt_proof_v8(
+        seal_id, &registry, &policy, &root, proof, &ctx);
+    abort ENoAccess
+}
+
+#[test, expected_failure(abort_code = ENoAccess)]
+fun complete_output_proof_rejects_receipt_commitment_drift() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 42, 0, 0, 0);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury,
+        _admin, _catalog, policy, registry, seal_id) =
+        complete_binding_fixture(&mut ctx);
+    let proof = complete_proof_exact_for_testing(
+        &root, @0xA11, object::id_from_address(@0xE3),
+        object::id_from_address(@0xE4), test_hash(83), test_hash(84),
+        test_hash(33), test_hash(99), b"complete/runtime".to_string(),
+        b"receipt/runtime/one".to_string(), seal_id);
+    consume_complete_decrypt_proof_v8(
+        seal_id, &registry, &policy, &root, proof, &ctx);
+    abort ENoAccess
+}
+
+#[test, expected_failure(abort_code = ENoAccess)]
+fun complete_output_proof_rejects_unregistered_instance() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 43, 0, 0, 0);
+    let (_config, _protocol_admin, mut root, _base_registry, _maker_treasury,
+        admin, _catalog, policy) = new_test_fixture(&mut ctx);
+    let empty = empty_registry_commitment_v8(
+        policy.product_binding_commitment, policy.commitment,
+        *maker::root_content_commitment_v8(&root), 1);
+    let mut registry = new_registry_for_testing(
+        &root, &admin, &policy, 0, 0, 0, empty, &mut ctx);
+    seal_registry_v8(&mut registry, &root, &admin, &policy);
+    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_active_v8());
+    let proof = complete_proof_for_testing(
+        &root, @0xA11, test_hash(33), b"complete/runtime".to_string(),
+        b"receipt/runtime/one".to_string(), test_hash(44));
+    consume_complete_decrypt_proof_v8(
+        test_hash(44), &registry, &policy, &root, proof, &ctx);
+    abort ENoAccess
+}
+
+#[test, expected_failure(abort_code = ENoAccess)]
+fun complete_output_proof_rejects_wrong_policy() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 44, 0, 0, 0);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury,
+        _admin, _catalog, _policy, registry, seal_id) =
+        complete_binding_fixture(&mut ctx);
+    let (_wrong_config, _wrong_protocol_admin, _wrong_root,
+        _wrong_base_registry, _wrong_maker_treasury, _wrong_admin,
+        _wrong_catalog, wrong_policy) = new_test_fixture(&mut ctx);
+    let proof = complete_proof_for_testing(
+        &root, @0xA11, test_hash(33), b"complete/runtime".to_string(),
+        b"receipt/runtime/one".to_string(), seal_id);
+    consume_complete_decrypt_proof_v8(
+        seal_id, &registry, &wrong_policy, &root, proof, &ctx);
+    abort ENoAccess
+}
+
+#[test, expected_failure(abort_code = ENoAccess)]
+fun complete_output_proof_rejects_wrong_root() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 45, 0, 0, 0);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury,
+        _admin, _catalog, policy, registry, seal_id) =
+        complete_binding_fixture(&mut ctx);
+    let (_wrong_config, _wrong_protocol_admin, wrong_root,
+        _wrong_base_registry, _wrong_maker_treasury, _wrong_admin,
+        _wrong_catalog, _wrong_policy) = new_test_fixture(&mut ctx);
+    let proof = complete_proof_for_testing(
+        &root, @0xA11, test_hash(33), b"complete/runtime".to_string(),
+        b"receipt/runtime/one".to_string(), seal_id);
+    consume_complete_decrypt_proof_v8(
+        seal_id, &registry, &policy, &wrong_root, proof, &ctx);
+    abort ENoAccess
 }
 
 #[test, expected_failure(abort_code = ERegistryNotSealed)]

@@ -6,6 +6,7 @@ use animacraft_v8_core::package_binding_v8::ProductReleaseCatalogV8;
 use animacraft_v8_seal::seal_v8::{
     Self as seal,
     BaseDecryptProofV8,
+    CompleteDecryptProofV8,
     SealPolicyConfigV8,
     SealReadinessV8,
     SealRegistryV8,
@@ -45,4 +46,16 @@ public fun certify_activation_readiness<PaymentCoin>(
 ): animacraft_v8_core::activation_v8::SealReadinessV8 {
     seal::certify_activation_readiness_v8(
         readiness, registry, policy, root, catalog)
+}
+
+public fun consume_complete<PaymentCoin>(
+    id: vector<u8>,
+    registry: &SealRegistryV8,
+    policy: &SealPolicyConfigV8,
+    root: &MakerRootV8<PaymentCoin>,
+    proof: CompleteDecryptProofV8,
+    ctx: &TxContext,
+): (ID, ID, vector<u8>, vector<u8>, vector<u8>, vector<u8>, String, String, vector<u8>) {
+    seal::consume_complete_decrypt_proof_v8(
+        id, registry, policy, root, proof, ctx)
 }

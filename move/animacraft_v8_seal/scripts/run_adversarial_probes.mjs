@@ -51,3 +51,7 @@ expectFailure('probes/adversarial_api', [
   'PrivateSealReadinessWitnessV8',
   'SealReadinessV8',
 ]);
+expectFailure('probes/adversarial_replay', [
+  "The value of 'proof' was previously moved here.",
+  "Invalid usage of previously moved variable 'proof'.",
+]);
