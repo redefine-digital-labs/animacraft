@@ -16,7 +16,6 @@ use animacraft_v8_core::maker_v8::{
     RightsSnapshotV8,
 };
 use animacraft_v8_core::protocol_config_v8::ProtocolConfigV8;
-use std::option::Option;
 use std::string::String;
 use sui::clock::Clock;
 
@@ -27,12 +26,9 @@ public fun version_v8(): u64 { VERSION }
 /// Allocates one DRAFT Root, its exact AdminCap, and the immutable base
 /// definition registry. The caller may create companion objects in the same
 /// transaction before sharing the Core objects.
-public fun new_maker_draft_v8<PaymentCoin>(
+public fun new_initial_maker_draft_v8<PaymentCoin>(
     config: &ProtocolConfigV8,
     maker_key: String,
-    maker_version: String,
-    previous_root_id: Option<ID>,
-    previous_version_commitment: Option<vector<u8>>,
     renderer_commitment: vector<u8>,
     manifest_blob_id: String,
     manifest_sha256: vector<u8>,
@@ -52,15 +48,70 @@ public fun new_maker_draft_v8<PaymentCoin>(
     let expected_base_definition_count = base::total_count_v8(&expected_base_counts);
     let expected_base_registry_commitment =
         *base::aggregate_commitment_v8(&expected_base_commitments);
-    let (mut root, admin) = maker::new_maker_draft_v8<PaymentCoin>(
+    let (mut root, admin) = maker::new_initial_maker_draft_v8<PaymentCoin>(
         config,
         expected_base_definition_count,
         expected_base_registry_commitment,
         expected_pack_admission_policy_commitment,
         maker_key,
-        maker_version,
-        previous_root_id,
-        previous_version_commitment,
+        renderer_commitment,
+        manifest_blob_id,
+        manifest_sha256,
+        content_commitment,
+        economics,
+        rights,
+        clock,
+        ctx,
+    );
+    let registry = base::new_base_definition_registry_v8(
+        &root,
+        &admin,
+        expected_base_counts,
+        expected_base_commitments,
+        ctx,
+    );
+    maker::finalize_base_registry_binding_v8(
+        &mut root,
+        &admin,
+        base::registry_id_v8(&registry),
+    );
+    (root, registry, admin)
+}
+
+/// Creates version N+1 from an exact typed predecessor. Maker key, next
+/// version, predecessor ID, and predecessor commitment are not caller input.
+public fun new_successor_maker_draft_v8<PaymentCoin>(
+    config: &ProtocolConfigV8,
+    previous: &MakerRootV8<PaymentCoin>,
+    previous_admin: &MakerAdminCapV8,
+    expected_previous_control_epoch: u64,
+    renderer_commitment: vector<u8>,
+    manifest_blob_id: String,
+    manifest_sha256: vector<u8>,
+    content_commitment: vector<u8>,
+    expected_base_counts: BaseDefinitionCountsV8,
+    expected_base_commitments: BaseDefinitionCommitmentsV8,
+    expected_pack_admission_policy_commitment: vector<u8>,
+    economics: EconomicsSnapshotV8,
+    rights: RightsSnapshotV8,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): (
+    MakerRootV8<PaymentCoin>,
+    BaseDefinitionRegistryV8,
+    MakerAdminCapV8,
+) {
+    let expected_base_definition_count = base::total_count_v8(&expected_base_counts);
+    let expected_base_registry_commitment =
+        *base::aggregate_commitment_v8(&expected_base_commitments);
+    let (mut root, admin) = maker::new_successor_maker_draft_v8<PaymentCoin>(
+        config,
+        previous,
+        previous_admin,
+        expected_previous_control_epoch,
+        expected_base_definition_count,
+        expected_base_registry_commitment,
+        expected_pack_admission_policy_commitment,
         renderer_commitment,
         manifest_blob_id,
         manifest_sha256,

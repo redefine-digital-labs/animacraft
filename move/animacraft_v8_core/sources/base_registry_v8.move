@@ -72,7 +72,7 @@ public struct BaseDefinitionRegistryV8 has key {
     id: UID,
     version: u64,
     root_id: ID,
-    ownership_epoch: u64,
+    maker_version: u64,
     root_content_commitment: vector<u8>,
     expected_counts: BaseDefinitionCountsV8,
     observed_counts: BaseDefinitionCountsV8,
@@ -281,13 +281,13 @@ public(package) fun new_base_definition_registry_v8<PaymentCoin>(
     assert_valid_counts(&expected_counts);
     assert_commitments(&expected_commitments);
     let root_id = maker::root_id_v8(root);
-    let ownership_epoch = maker::root_ownership_epoch_v8(root);
+    let maker_version = maker::root_maker_version_v8(root);
     let root_content_commitment = *maker::root_content_commitment_v8(root);
     let expected_sequence_count = total_count_v8(&expected_counts);
     maker::assert_root_identity_v8(
         root,
         root_id,
-        ownership_epoch,
+        maker_version,
         &root_content_commitment,
     );
     assert!(
@@ -305,7 +305,7 @@ public(package) fun new_base_definition_registry_v8<PaymentCoin>(
         id: registry_uid,
         version: VERSION,
         root_id,
-        ownership_epoch,
+        maker_version,
         root_content_commitment,
         expected_counts,
         observed_counts: zero_counts(),
@@ -650,7 +650,7 @@ fun assert_registry_identity<PaymentCoin>(
         root,
         object::id(registry),
         registry.root_id,
-        registry.ownership_epoch,
+        registry.maker_version,
         &registry.root_content_commitment,
     );
     assert!(
@@ -891,6 +891,12 @@ public fun registry_id_v8(registry: &BaseDefinitionRegistryV8): ID {
 public fun registry_root_id_v8(registry: &BaseDefinitionRegistryV8): ID {
     registry.root_id
 }
+public fun registry_maker_version_v8(registry: &BaseDefinitionRegistryV8): u64 {
+    registry.maker_version
+}
+public fun registry_root_content_commitment_v8(
+    registry: &BaseDefinitionRegistryV8,
+): &vector<u8> { &registry.root_content_commitment }
 public fun registry_next_sequence_v8(registry: &BaseDefinitionRegistryV8): u64 {
     registry.next_sequence
 }
@@ -991,6 +997,11 @@ fun exact_minimal_base_registry_seals() {
     let rights = maker::new_rights_snapshot_v8(
         maker::rights_onchain_native_v8(),
         true,
+        false,
+        b"".to_string(),
+        b"".to_string(),
+        vector[],
+        vector[],
         250,
         250,
         500,
@@ -1000,15 +1011,12 @@ fun exact_minimal_base_registry_seals() {
     let expected_commitments = minimal_expected_commitments(
         root_content_commitment,
     );
-    let (mut root, admin) = maker::new_maker_draft_v8<sui::sui::SUI>(
+    let (mut root, admin) = maker::new_initial_maker_draft_v8<sui::sui::SUI>(
         &config,
         total_count_v8(&expected_counts),
         *aggregate_commitment_v8(&expected_commitments),
         test_hash(6),
         b"maker".to_string(),
-        b"1.0.0".to_string(),
-        option::none(),
-        option::none(),
         test_hash(7),
         b"walrus-blob".to_string(),
         test_hash(8),
@@ -1082,6 +1090,13 @@ fun exact_minimal_base_registry_seals() {
         test_hash(14),
     );
     seal_base_definition_registry_v8(&mut registry, &root, &admin);
+    let next_admin = maker::rotate_maker_control_for_testing(
+        &mut root,
+        admin,
+        0,
+        @0xBEEF,
+        &mut ctx,
+    );
     let (registry_id, aggregate, protected_count) =
         assert_activation_ready_v8(&registry, &root);
     assert!(registry_id == object::id(&registry), ERegistryMismatch);
@@ -1091,7 +1106,7 @@ fun exact_minimal_base_registry_seals() {
     );
     assert!(protected_count == 0, ECountMismatch);
     share_base_definition_registry_v8(registry);
-    maker::share_maker_root_and_admin_v8(root, admin, &ctx);
+    maker::destroy_maker_for_testing(root, next_admin);
     protocol::destroy_protocol_for_testing(config, protocol_cap);
     clock.destroy_for_testing();
 }

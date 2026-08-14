@@ -142,6 +142,15 @@ public fun set_protocol_enabled_v8(
 }
 
 public fun assert_enabled_for_coin_v8<PaymentCoin>(config: &ProtocolConfigV8) {
+    assert_enabled_v8(config);
+    assert!(
+        config.payment_coin_type == payment_coin_type_name_v8<PaymentCoin>(),
+        EPaymentCoinMismatch,
+    );
+}
+
+/// Generic-free half used by protocol-admin release catalog governance.
+public fun assert_enabled_v8(config: &ProtocolConfigV8) {
     assert!(config.version == VERSION, EConfigDrift);
     assert!(config.enabled, EProtocolDisabled);
     assert!(
@@ -151,10 +160,6 @@ public fun assert_enabled_for_coin_v8<PaymentCoin>(config: &ProtocolConfigV8) {
     assert!(
         config.core_callable_package_id == current_core_callable_package_id(),
         ECorePackageMismatch,
-    );
-    assert!(
-        config.payment_coin_type == payment_coin_type_name_v8<PaymentCoin>(),
-        EPaymentCoinMismatch,
     );
 }
 
@@ -170,9 +175,18 @@ public fun assert_exact_snapshot_v8<PaymentCoin>(
     assert!(&config.commitment == expected_commitment, EConfigDrift);
 }
 
-fun assert_admin(config: &ProtocolConfigV8, cap: &ProtocolAdminCapV8) {
+/// Public protocol-governance assertion used by Core catalog certification.
+/// Possessing a Maker AdminCap is deliberately insufficient.
+public fun assert_protocol_admin_v8(
+    config: &ProtocolConfigV8,
+    cap: &ProtocolAdminCapV8,
+) {
     assert!(cap.version == VERSION, EInvalidAdminCap);
     assert!(cap.config_id == object::id(config), EInvalidAdminCap);
+}
+
+fun assert_admin(config: &ProtocolConfigV8, cap: &ProtocolAdminCapV8) {
+    assert_protocol_admin_v8(config, cap);
 }
 
 fun refresh_commitment(config: &mut ProtocolConfigV8) {
