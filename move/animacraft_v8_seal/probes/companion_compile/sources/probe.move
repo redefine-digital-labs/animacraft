@@ -36,14 +36,13 @@ public fun certify_base<PaymentCoin>(
     proof
 }
 
-public fun consume_readiness<PaymentCoin, ReleaseAuthority: key>(
+public fun certify_activation_readiness<PaymentCoin>(
     readiness: SealReadinessV8,
     registry: &SealRegistryV8,
     policy: &SealPolicyConfigV8,
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
-    authority: &ReleaseAuthority,
-): (ID, ID, vector<ID>, vector<u8>, vector<u8>, ID, u64, vector<u8>, vector<u8>, u64) {
-    seal::consume_seal_readiness_v8(
-        readiness, registry, policy, root, catalog, authority)
+): animacraft_v8_core::activation_v8::SealReadinessV8 {
+    seal::certify_activation_readiness_v8(
+        readiness, registry, policy, root, catalog)
 }

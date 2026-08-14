@@ -3,11 +3,14 @@
 /// the policy calls dry-run by Sui Seal key servers before releasing shares.
 module animacraft_v8_seal::seal_v8;
 
+use animacraft_v8_core::activation_v8 as activation;
 use animacraft_v8_core::maker_v8::{Self as maker, MakerAdminCapV8, MakerRootV8};
 use animacraft_v8_core::package_binding_v8::{
     Self as package_binding,
     ExactPackageBindingV8,
+    PackageCallCapV8,
     ProductReleaseCatalogV8,
+    SealRoleV8,
 };
 use animacraft_v8_core::protocol_config_v8::{
     Self as protocol,
@@ -73,6 +76,9 @@ public struct SealPolicyConfigV8 has key {
     seal_original_package_id: ID,
     seal_callable_package_id: ID,
     seal_binding_commitment: vector<u8>,
+    seal_authority_id: ID,
+    call_cap_set_commitment: vector<u8>,
+    seal_call_cap: PackageCallCapV8<SealRoleV8>,
     key_servers: vector<KeyServerBindingV8>,
     threshold: u16,
     key_server_set_commitment: vector<u8>,
@@ -239,6 +245,8 @@ public struct PrivateSealReadinessWitnessV8 {
     root_content_commitment: vector<u8>,
     catalog_id: ID,
     product_binding_commitment: vector<u8>,
+    seal_authority_id: ID,
+    call_cap_set_commitment: vector<u8>,
     registry_commitment: vector<u8>,
     base_count: u64,
     pack_count: u64,
@@ -259,6 +267,8 @@ public struct SealReadinessV8 {
     root_content_commitment: vector<u8>,
     catalog_id: ID,
     product_binding_commitment: vector<u8>,
+    seal_authority_id: ID,
+    call_cap_set_commitment: vector<u8>,
     registry_commitment: vector<u8>,
     base_count: u64,
     pack_count: u64,
@@ -271,6 +281,7 @@ public struct SealPolicyCommitmentInputV8 has drop {
     protocol_config_revision: u64, catalog_id: ID,
     product_binding_commitment: vector<u8>, seal_original_package_id: ID,
     seal_callable_package_id: ID, seal_binding_commitment: vector<u8>,
+    seal_authority_id: ID, call_cap_set_commitment: vector<u8>,
     key_servers: vector<KeyServerBindingV8>, threshold: u16,
     key_server_set_commitment: vector<u8>, encryption_policy_commitment: vector<u8>,
 }
@@ -342,6 +353,7 @@ public fun new_seal_policy_config_v8(
     protocol_config: &ProtocolConfigV8,
     protocol_admin: &ProtocolAdminCapV8,
     catalog: &ProductReleaseCatalogV8,
+    seal_call_cap: PackageCallCapV8<SealRoleV8>,
     key_server_ids: vector<ID>,
     weights: vector<u16>,
     threshold: u16,
@@ -351,6 +363,7 @@ public fun new_seal_policy_config_v8(
 ): SealPolicyConfigV8 {
     protocol::assert_protocol_admin_v8(protocol_config, protocol_admin);
     package_binding::assert_catalog_current_v8(protocol_config, catalog);
+    package_binding::assert_seal_call_cap_v8(catalog, &seal_call_cap);
     let product = package_binding::catalog_binding_v8(catalog);
     let seal = package_binding::seal_binding_v8(product);
     package_binding::assert_type_origins_v8<SealOriginalMarkerV8, SealCallableMarkerV8>(seal);
@@ -364,17 +377,22 @@ public fun new_seal_policy_config_v8(
     let seal_original_package_id = package_binding::original_package_id_v8(seal);
     let seal_callable_package_id = package_binding::callable_package_id_v8(seal);
     let seal_binding_commitment = *package_binding::exact_binding_commitment_v8(seal);
+    let seal_authority_id = package_binding::call_cap_authority_id_v8(&seal_call_cap);
+    let call_cap_set_commitment = *package_binding::call_cap_set_commitment_v8(
+        package_binding::catalog_call_cap_set_v8(catalog));
     let commitment = derive_policy_commitment(
         protocol_config_id, protocol_config_revision, catalog_id,
         product_binding_commitment, seal_original_package_id,
-        seal_callable_package_id, seal_binding_commitment, key_servers,
+        seal_callable_package_id, seal_binding_commitment, seal_authority_id,
+        call_cap_set_commitment, key_servers,
         threshold, key_server_set_commitment, encryption_policy_commitment,
     );
     let result = SealPolicyConfigV8 {
         id: object::new(ctx), version: VERSION, protocol_config_id,
         protocol_config_revision, catalog_id, product_binding_commitment,
         seal_original_package_id, seal_callable_package_id,
-        seal_binding_commitment, key_servers, threshold,
+        seal_binding_commitment, seal_authority_id, call_cap_set_commitment,
+        seal_call_cap, key_servers, threshold,
         key_server_set_commitment, encryption_policy_commitment, commitment,
     };
     event::emit(SealPolicyCreatedV8 {
@@ -881,14 +899,16 @@ public fun issue_seal_readiness_v8<PaymentCoin>(
         registry_id, policy_config_id, key_server_ids,
         key_server_set_commitment, encryption_policy_commitment, root_id,
         maker_version, root_content_commitment, catalog_id,
-        product_binding_commitment, registry_commitment, base_count,
+        product_binding_commitment, seal_authority_id,
+        call_cap_set_commitment, registry_commitment, base_count,
         pack_count, complete_count, total_count,
     } = private;
     SealReadinessV8 {
         registry_id, policy_config_id, key_server_ids,
         key_server_set_commitment, encryption_policy_commitment, root_id,
         maker_version, root_content_commitment, catalog_id,
-        product_binding_commitment, registry_commitment, base_count,
+        product_binding_commitment, seal_authority_id,
+        call_cap_set_commitment, registry_commitment, base_count,
         pack_count, complete_count, total_count,
     }
 }
@@ -951,19 +971,35 @@ public fun protected_asset_snapshot_v8<PaymentCoin>(
     }
 }
 
-/// Future Release calls this inside its private certified callable boundary.
-/// Seal destructures its own no-ability witness and returns the exact tuple
-/// only after rechecking registry/config/Root and the frozen Release authority.
-public fun consume_seal_readiness_v8<PaymentCoin, ReleaseAuthority: key>(
+/// The only production terminal-readiness path. Seal consumes and revalidates
+/// its local no-ability witness, then uses the capability privately nested in
+/// the immutable policy to ask Core to certify both live Seal objects.
+public fun certify_activation_readiness_v8<PaymentCoin>(
     readiness: SealReadinessV8,
     registry: &SealRegistryV8,
     policy: &SealPolicyConfigV8,
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
-    release_authority: &ReleaseAuthority,
-): (ID, ID, vector<ID>, vector<u8>, vector<u8>, ID, u64, vector<u8>, vector<u8>, u64) {
-    package_binding::assert_release_authority_v8(catalog, release_authority);
+): activation::SealReadinessV8 {
+    package_binding::assert_seal_call_cap_v8(catalog, &policy.seal_call_cap);
     assert_catalog_root(catalog, root);
+    let companion_commitment = consume_local_readiness(readiness, registry, policy, root);
+    activation::certify_seal_readiness_v8<
+        PaymentCoin,
+        SealOriginalMarkerV8,
+        SealCallableMarkerV8,
+        SealPolicyConfigV8,
+        SealRegistryV8,
+    >(root, catalog, &policy.seal_call_cap, policy, registry, companion_commitment)
+}
+
+fun consume_local_readiness<PaymentCoin>(
+    readiness: SealReadinessV8,
+    registry: &SealRegistryV8,
+    policy: &SealPolicyConfigV8,
+    root: &MakerRootV8<PaymentCoin>,
+): vector<u8> {
+    let companion_commitment = local_readiness_commitment(&readiness);
     let current = new_private_readiness(registry, policy, root);
     let PrivateSealReadinessWitnessV8 {
         registry_id: current_registry_id, policy_config_id: current_policy_config_id,
@@ -974,6 +1010,8 @@ public fun consume_seal_readiness_v8<PaymentCoin, ReleaseAuthority: key>(
         root_content_commitment: current_root_content_commitment,
         catalog_id: current_catalog_id,
         product_binding_commitment: current_product_binding_commitment,
+        seal_authority_id: current_seal_authority_id,
+        call_cap_set_commitment: current_call_cap_set_commitment,
         registry_commitment: current_registry_commitment,
         base_count: current_base_count, pack_count: current_pack_count,
         complete_count: current_complete_count, total_count: current_total_count,
@@ -982,7 +1020,8 @@ public fun consume_seal_readiness_v8<PaymentCoin, ReleaseAuthority: key>(
         registry_id, policy_config_id, key_server_ids,
         key_server_set_commitment, encryption_policy_commitment, root_id,
         maker_version, root_content_commitment, catalog_id,
-        product_binding_commitment, registry_commitment, base_count,
+        product_binding_commitment, seal_authority_id,
+        call_cap_set_commitment, registry_commitment, base_count,
         pack_count, complete_count, total_count,
     } = readiness;
     assert!(registry_id == current_registry_id && policy_config_id == current_policy_config_id, EInvalidProof);
@@ -993,12 +1032,20 @@ public fun consume_seal_readiness_v8<PaymentCoin, ReleaseAuthority: key>(
     assert!(root_content_commitment == current_root_content_commitment, EInvalidProof);
     assert!(catalog_id == current_catalog_id, EInvalidProof);
     assert!(product_binding_commitment == current_product_binding_commitment, EInvalidProof);
+    assert!(seal_authority_id == current_seal_authority_id, EInvalidProof);
+    assert!(call_cap_set_commitment == current_call_cap_set_commitment, EInvalidProof);
     assert!(registry_commitment == current_registry_commitment, EInvalidProof);
     assert!(base_count == current_base_count && pack_count == current_pack_count, EInvalidProof);
     assert!(complete_count == current_complete_count && total_count == current_total_count, EInvalidProof);
-    (registry_id, policy_config_id, key_server_ids, key_server_set_commitment,
-        encryption_policy_commitment, root_id, maker_version,
-        root_content_commitment, registry_commitment, total_count)
+    companion_commitment
+}
+
+fun local_readiness_commitment(readiness: &SealReadinessV8): vector<u8> {
+    let mut encoded = b"animacraft-v8/seal/activation-readiness";
+    let version = VERSION;
+    encoded.append(bcs::to_bytes(&version));
+    encoded.append(bcs::to_bytes(readiness));
+    hash::sha2_256(encoded)
 }
 
 fun new_private_readiness<PaymentCoin>(
@@ -1019,6 +1066,8 @@ fun new_private_readiness<PaymentCoin>(
         root_content_commitment: registry.root_content_commitment,
         catalog_id: registry.catalog_id,
         product_binding_commitment: registry.product_binding_commitment,
+        seal_authority_id: policy.seal_authority_id,
+        call_cap_set_commitment: policy.call_cap_set_commitment,
         registry_commitment: registry.rolling_commitment,
         base_count: registry.observed_base_count,
         pack_count: registry.observed_pack_count,
@@ -1213,6 +1262,10 @@ fun assert_policy_root<PaymentCoin>(
     assert!(policy.seal_original_package_id == package_binding::original_package_id_v8(seal), EInvalidBinding);
     assert!(policy.seal_callable_package_id == package_binding::callable_package_id_v8(seal), EInvalidBinding);
     assert!(&policy.seal_binding_commitment == package_binding::exact_binding_commitment_v8(seal), EInvalidBinding);
+    let call_cap_set = maker::root_product_release_call_cap_set_v8(root);
+    assert!(policy.seal_authority_id == package_binding::seal_authority_id_v8(call_cap_set), EInvalidBinding);
+    assert!(&policy.call_cap_set_commitment == package_binding::call_cap_set_commitment_v8(call_cap_set), EInvalidBinding);
+    assert!(policy.seal_authority_id == package_binding::call_cap_authority_id_v8(&policy.seal_call_cap), EInvalidBinding);
 }
 
 fun assert_role_witness<PaymentCoin, OriginalMarker, CallableWitness>(
@@ -1291,6 +1344,7 @@ fun derive_policy_commitment(
     protocol_config_id: ID, protocol_config_revision: u64, catalog_id: ID,
     product_binding_commitment: vector<u8>, seal_original_package_id: ID,
     seal_callable_package_id: ID, seal_binding_commitment: vector<u8>,
+    seal_authority_id: ID, call_cap_set_commitment: vector<u8>,
     key_servers: vector<KeyServerBindingV8>, threshold: u16,
     key_server_set_commitment: vector<u8>, encryption_policy_commitment: vector<u8>,
 ): vector<u8> {
@@ -1298,7 +1352,8 @@ fun derive_policy_commitment(
         domain: b"animacraft-v8/seal/policy", version: VERSION,
         protocol_config_id, protocol_config_revision, catalog_id,
         product_binding_commitment, seal_original_package_id,
-        seal_callable_package_id, seal_binding_commitment, key_servers,
+        seal_callable_package_id, seal_binding_commitment, seal_authority_id,
+        call_cap_set_commitment, key_servers,
         threshold, key_server_set_commitment, encryption_policy_commitment,
     }))
 }
@@ -1391,6 +1446,8 @@ fun assert_hash(value: &vector<u8>) {
 
 public fun policy_id_v8(policy: &SealPolicyConfigV8): ID { object::id(policy) }
 public fun policy_catalog_id_v8(policy: &SealPolicyConfigV8): ID { policy.catalog_id }
+public fun policy_seal_authority_id_v8(policy: &SealPolicyConfigV8): ID { policy.seal_authority_id }
+public fun policy_call_cap_set_commitment_v8(policy: &SealPolicyConfigV8): &vector<u8> { &policy.call_cap_set_commitment }
 public fun policy_threshold_v8(policy: &SealPolicyConfigV8): u16 { policy.threshold }
 public fun policy_key_server_count_v8(policy: &SealPolicyConfigV8): u64 { policy.key_servers.length() }
 public fun policy_key_server_id_v8(policy: &SealPolicyConfigV8, index: u64): ID { policy.key_servers[index].key_server_id }
@@ -1437,6 +1494,7 @@ public fun snapshot_seal_id_v8(snapshot: &ProtectedAssetSnapshotV8): &vector<u8>
 public fun new_policy_for_testing(
     protocol_config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
+    seal_call_cap: PackageCallCapV8<SealRoleV8>,
     key_server_ids: vector<ID>, weights: vector<u16>, threshold: u16,
     key_server_set_commitment: vector<u8>, encryption_policy_commitment: vector<u8>,
     ctx: &mut TxContext,
@@ -1451,15 +1509,21 @@ public fun new_policy_for_testing(
     let seal_original_package_id = package_binding::original_package_id_v8(seal);
     let seal_callable_package_id = package_binding::callable_package_id_v8(seal);
     let seal_binding_commitment = *package_binding::exact_binding_commitment_v8(seal);
+    package_binding::assert_seal_call_cap_v8(catalog, &seal_call_cap);
+    let seal_authority_id = package_binding::call_cap_authority_id_v8(&seal_call_cap);
+    let call_cap_set_commitment = *package_binding::call_cap_set_commitment_v8(
+        package_binding::catalog_call_cap_set_v8(catalog));
     let commitment = derive_policy_commitment(protocol_config_id,
         protocol_config_revision, catalog_id, product_binding_commitment,
         seal_original_package_id, seal_callable_package_id,
-        seal_binding_commitment, key_servers, threshold,
+        seal_binding_commitment, seal_authority_id, call_cap_set_commitment,
+        key_servers, threshold,
         key_server_set_commitment, encryption_policy_commitment);
     SealPolicyConfigV8 { id: object::new(ctx), version: VERSION,
         protocol_config_id, protocol_config_revision, catalog_id,
         product_binding_commitment, seal_original_package_id,
         seal_callable_package_id, seal_binding_commitment, key_servers,
+        seal_authority_id, call_cap_set_commitment, seal_call_cap,
         threshold, key_server_set_commitment, encryption_policy_commitment,
         commitment }
 }
@@ -1613,8 +1677,10 @@ public fun destroy_policy_for_testing(policy: SealPolicyConfigV8) {
     let SealPolicyConfigV8 { id, version: _, protocol_config_id: _,
         protocol_config_revision: _, catalog_id: _, product_binding_commitment: _,
         seal_original_package_id: _, seal_callable_package_id: _,
-        seal_binding_commitment: _, key_servers: _, threshold: _,
+        seal_binding_commitment: _, seal_authority_id: _,
+        call_cap_set_commitment: _, seal_call_cap, key_servers: _, threshold: _,
         key_server_set_commitment: _, encryption_policy_commitment: _, commitment: _ } = policy;
+    package_binding::destroy_call_cap_for_testing(seal_call_cap);
     id.delete();
 }
 
@@ -1653,6 +1719,7 @@ fun new_test_fixture(ctx: &mut TxContext): (
     ProtocolAdminCapV8,
     MakerRootV8<sui::sui::SUI>,
     animacraft_v8_core::base_registry_v8::BaseDefinitionRegistryV8,
+    animacraft_v8_core::treasury_v8::MakerTreasuryV8<sui::sui::SUI>,
     MakerAdminCapV8,
     ProductReleaseCatalogV8,
     SealPolicyConfigV8,
@@ -1676,12 +1743,13 @@ fun new_test_fixture(ctx: &mut TxContext): (
         maker::complete_unlimited_free_v8(), 0, 0, 0);
     let rights = maker::new_onchain_native_rights_snapshot_v8(ctx, 250, 250, 500);
     let clock = sui::clock::create_for_testing(ctx);
-    let (mut root, base_registry, admin) = core::new_initial_maker_draft_v8<sui::sui::SUI>(
+    let (mut root, base_registry, maker_treasury, admin) =
+        core::new_initial_maker_draft_v8<sui::sui::SUI>(
         &config, b"maker-semantic-key".to_string(), test_hash(11),
         b"walrus-manifest".to_string(), test_hash(12), content,
         counts, commitments, test_hash(13), economics, rights, &clock, ctx);
     clock.destroy_for_testing();
-    let catalog = package_binding::product_release_catalog_for_testing(
+    let mut catalog = package_binding::product_release_catalog_for_testing(
         &config,
         maker::root_core_original_package_id_v8(&root).to_address(),
         maker::root_core_callable_package_id_v8(&root).to_address(),
@@ -1689,11 +1757,13 @@ fun new_test_fixture(ctx: &mut TxContext): (
     let witness = package_binding::release_catalog_witness_for_testing(&catalog);
     maker::finalize_product_release_binding_v8(
         &mut root, &admin, &config, witness, ctx);
+    let seal_call_cap = package_binding::take_seal_call_cap_v8(
+        &config, &protocol_admin, &mut catalog);
     let policy = new_policy_for_testing(
-        &config, &catalog,
+        &config, &catalog, seal_call_cap,
         vector[object::id_from_address(@0x100), object::id_from_address(@0x200)],
         vector[2, 3], 4, test_hash(14), test_hash(15), ctx);
-    (config, protocol_admin, root, base_registry, admin, catalog, policy)
+    (config, protocol_admin, root, base_registry, maker_treasury, admin, catalog, policy)
 }
 
 #[test_only]
@@ -1702,6 +1772,7 @@ fun finish_test_fixture(
     protocol_admin: ProtocolAdminCapV8,
     mut root: MakerRootV8<sui::sui::SUI>,
     base_registry: animacraft_v8_core::base_registry_v8::BaseDefinitionRegistryV8,
+    maker_treasury: animacraft_v8_core::treasury_v8::MakerTreasuryV8<sui::sui::SUI>,
     admin: MakerAdminCapV8,
     catalog: ProductReleaseCatalogV8,
     policy: SealPolicyConfigV8,
@@ -1711,7 +1782,8 @@ fun finish_test_fixture(
     destroy_policy_for_testing(policy);
     package_binding::destroy_catalog_for_testing(catalog);
     protocol::destroy_protocol_for_testing(config, protocol_admin);
-    animacraft_v8_core::core_v8::share_maker_draft_v8(root, base_registry, admin, ctx);
+    animacraft_v8_core::core_v8::share_maker_draft_v8(
+        root, base_registry, maker_treasury, admin, ctx);
 }
 
 #[test_only]
@@ -1719,7 +1791,8 @@ fun destroy_readiness_for_testing(readiness: SealReadinessV8) {
     let SealReadinessV8 { registry_id: _, policy_config_id: _, key_server_ids: _,
         key_server_set_commitment: _, encryption_policy_commitment: _, root_id: _,
         maker_version: _, root_content_commitment: _, catalog_id: _,
-        product_binding_commitment: _, registry_commitment: _, base_count: _,
+        product_binding_commitment: _, seal_authority_id: _,
+        call_cap_set_commitment: _, registry_commitment: _, base_count: _,
         pack_count: _, complete_count: _, total_count: _ } = readiness;
 }
 
@@ -1753,7 +1826,7 @@ fun seal_identity_commits_to_every_certified_field() {
 #[test]
 fun explicit_zero_row_registry_seals_and_issues_exact_readiness() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 1, 0, 0, 0);
-    let (config, protocol_admin, root, base_registry, admin, catalog, policy) =
+    let (config, protocol_admin, root, base_registry, maker_treasury, admin, catalog, policy) =
         new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(
         policy.product_binding_commitment, policy.commitment,
@@ -1769,16 +1842,18 @@ fun explicit_zero_row_registry_seals_and_issues_exact_readiness() {
     assert!(readiness.key_server_ids == vector[
         object::id_from_address(@0x100), object::id_from_address(@0x200)], EInvalidProof);
     assert!(readiness.total_count == 0, EInvalidCount);
+    assert!(readiness.seal_authority_id == policy.seal_authority_id, EInvalidProof);
+    assert!(readiness.call_cap_set_commitment == policy.call_cap_set_commitment, EInvalidProof);
     destroy_readiness_for_testing(readiness);
     destroy_registry_for_testing(registry);
-    finish_test_fixture(config, protocol_admin, root, base_registry, admin,
+    finish_test_fixture(config, protocol_admin, root, base_registry, maker_treasury, admin,
         catalog, policy, &ctx);
 }
 
 #[test]
 fun base_pack_complete_rows_append_in_exact_sequence_and_approve() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 2, 0, 0, 0);
-    let (config, protocol_admin, mut root, base_registry, admin, catalog, policy) =
+    let (config, protocol_admin, mut root, base_registry, maker_treasury, admin, catalog, policy) =
         new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root),
@@ -1834,14 +1909,14 @@ fun base_pack_complete_rows_append_in_exact_sequence_and_approve() {
         b"complete/default".to_string(), b"recipe/render/001".to_string(), complete_id);
     seal_approve_complete_v8(complete_id, &registry, &policy, &root, complete_proof, &ctx);
     destroy_registry_for_testing(registry);
-    finish_test_fixture(config, protocol_admin, root, base_registry, admin,
+    finish_test_fixture(config, protocol_admin, root, base_registry, maker_treasury, admin,
         catalog, policy, &ctx);
 }
 
 #[test]
 fun paused_and_archived_do_not_trap_exact_holder() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 3, 0, 0, 0);
-    let (config, protocol_admin, mut root, base_registry, admin, catalog, policy) =
+    let (config, protocol_admin, mut root, base_registry, maker_treasury, admin, catalog, policy) =
         new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
@@ -1862,14 +1937,14 @@ fun paused_and_archived_do_not_trap_exact_holder() {
         b"body/base/style".to_string(), id);
     seal_approve_base_v8(id, &registry, &policy, &root, proof, &ctx);
     destroy_registry_for_testing(registry);
-    finish_test_fixture(config, protocol_admin, root, base_registry, admin,
+    finish_test_fixture(config, protocol_admin, root, base_registry, maker_treasury, admin,
         catalog, policy, &ctx);
 }
 
 #[test]
 fun active_complete_registration_uses_revision_cas_and_exact_receipt() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 30, 0, 0, 0);
-    let (config, protocol_admin, mut root, base_registry, admin, catalog, policy) =
+    let (config, protocol_admin, mut root, base_registry, maker_treasury, admin, catalog, policy) =
         new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
@@ -1896,14 +1971,14 @@ fun active_complete_registration_uses_revision_cas_and_exact_receipt() {
         b"complete/runtime".to_string(), b"receipt/runtime/one".to_string(), id);
     seal_approve_complete_v8(id, &registry, &policy, &root, proof, &ctx);
     destroy_registry_for_testing(registry);
-    finish_test_fixture(config, protocol_admin, root, base_registry, admin,
+    finish_test_fixture(config, protocol_admin, root, base_registry, maker_treasury, admin,
         catalog, policy, &ctx);
 }
 
 #[test, expected_failure(abort_code = ERegistryNotSealed)]
 fun readiness_rejects_unsealed_registry() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 31, 0, 0, 0);
-    let (_config, _protocol_admin, root, _base_registry, admin, _catalog, policy) =
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury, admin, _catalog, policy) =
         new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
@@ -1916,7 +1991,7 @@ fun readiness_rejects_unsealed_registry() {
 #[test, expected_failure(abort_code = EInvalidSequence)]
 fun runtime_registration_rejects_stale_revision() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 32, 0, 0, 0);
-    let (_config, _protocol_admin, mut root, _base_registry, admin, _catalog, policy) =
+    let (_config, _protocol_admin, mut root, _base_registry, _maker_treasury, admin, _catalog, policy) =
         new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
@@ -1937,7 +2012,7 @@ fun runtime_registration_rejects_stale_revision() {
 #[test, expected_failure(abort_code = EInvalidLifecycle)]
 fun paused_root_cannot_register_new_ciphertext() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 33, 0, 0, 0);
-    let (_config, _protocol_admin, mut root, _base_registry, admin, _catalog, policy) =
+    let (_config, _protocol_admin, mut root, _base_registry, _maker_treasury, admin, _catalog, policy) =
         new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
@@ -1956,7 +2031,7 @@ fun paused_root_cannot_register_new_ciphertext() {
 #[test, expected_failure(abort_code = EInvalidCommitment)]
 fun protected_snapshot_rejects_any_ciphertext_drift() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 34, 0, 0, 0);
-    let (_config, _protocol_admin, root, _base_registry, admin, _catalog, policy) =
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury, admin, _catalog, policy) =
         new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
@@ -1979,7 +2054,7 @@ fun protected_snapshot_rejects_any_ciphertext_drift() {
 #[test, expected_failure(abort_code = EInvalidSequence)]
 fun rejects_out_of_order_append() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 4, 0, 0, 0);
-    let (_config, _protocol_admin, root, _base_registry, admin, _catalog, policy) = new_test_fixture(&mut ctx);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury, admin, _catalog, policy) = new_test_fixture(&mut ctx);
     let (cert, _, _) = certification_and_next_for_testing(&policy, &root, 0,
         test_hash(1), SCOPE_BASE, b"maker/base".to_string(), test_hash(2),
         b"asset".to_string(), test_hash(3), b"blob".to_string(),
@@ -1993,7 +2068,7 @@ fun rejects_out_of_order_append() {
 #[test, expected_failure(abort_code = EDuplicateAsset)]
 fun rejects_duplicate_semantic_scope_asset_key() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 5, 0, 0, 0);
-    let (_config, _protocol_admin, root, _base_registry, admin, _catalog, policy) = new_test_fixture(&mut ctx);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury, admin, _catalog, policy) = new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
     let (first, after, _) = certification_and_next_for_testing(&policy, &root, 0,
@@ -2014,7 +2089,7 @@ fun rejects_duplicate_semantic_scope_asset_key() {
 #[test, expected_failure(abort_code = EInvalidCount)]
 fun rejects_seal_before_expected_counts() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 6, 0, 0, 0);
-    let (_config, _protocol_admin, root, _base_registry, admin, _catalog, policy) = new_test_fixture(&mut ctx);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury, admin, _catalog, policy) = new_test_fixture(&mut ctx);
     let mut registry = new_registry_for_testing(&root, &admin, &policy, 1, 0, 0,
         test_hash(9), &mut ctx);
     seal_registry_v8(&mut registry, &root, &admin, &policy);
@@ -2024,7 +2099,7 @@ fun rejects_seal_before_expected_counts() {
 #[test, expected_failure(abort_code = EInvalidCommitment)]
 fun rejects_seal_with_wrong_final_commitment() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 7, 0, 0, 0);
-    let (_config, _protocol_admin, root, _base_registry, admin, _catalog, policy) = new_test_fixture(&mut ctx);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury, admin, _catalog, policy) = new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
     let (cert, _, _) = certification_and_next_for_testing(&policy, &root, 0,
@@ -2041,7 +2116,7 @@ fun rejects_seal_with_wrong_final_commitment() {
 #[test, expected_failure(abort_code = ERegistrySealed)]
 fun rejects_append_after_explicit_empty_seal() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 8, 0, 0, 0);
-    let (_config, _protocol_admin, root, _base_registry, admin, _catalog, policy) = new_test_fixture(&mut ctx);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury, admin, _catalog, policy) = new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
     let mut registry = new_registry_for_testing(&root, &admin, &policy, 0, 0, 0,
@@ -2057,7 +2132,7 @@ fun rejects_append_after_explicit_empty_seal() {
 #[test, expected_failure(abort_code = ENoAccess)]
 fun draft_root_never_approves_decrypt() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 9, 0, 0, 0);
-    let (_config, _protocol_admin, root, _base_registry, admin, _catalog, policy) = new_test_fixture(&mut ctx);
+    let (_config, _protocol_admin, root, _base_registry, _maker_treasury, admin, _catalog, policy) = new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
     let (cert, final_commitment, id) = certification_and_next_for_testing(&policy,
@@ -2076,7 +2151,7 @@ fun draft_root_never_approves_decrypt() {
 #[test, expected_failure(abort_code = ENoAccess)]
 fun wrong_holder_never_approves_decrypt() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 10, 0, 0, 0);
-    let (_config, _protocol_admin, mut root, _base_registry, admin, _catalog, policy) = new_test_fixture(&mut ctx);
+    let (_config, _protocol_admin, mut root, _base_registry, _maker_treasury, admin, _catalog, policy) = new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
     let (cert, final_commitment, id) = certification_and_next_for_testing(&policy,
@@ -2096,7 +2171,7 @@ fun wrong_holder_never_approves_decrypt() {
 #[test, expected_failure(abort_code = ENoAccess)]
 fun pack_proof_must_bind_exact_release_content() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 11, 0, 0, 0);
-    let (_config, _protocol_admin, mut root, _base_registry, admin, _catalog, policy) = new_test_fixture(&mut ctx);
+    let (_config, _protocol_admin, mut root, _base_registry, _maker_treasury, admin, _catalog, policy) = new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
     let (cert, final_commitment, id) = certification_and_next_for_testing(&policy,
@@ -2116,7 +2191,7 @@ fun pack_proof_must_bind_exact_release_content() {
 #[test, expected_failure(abort_code = ENoAccess)]
 fun complete_proof_must_bind_exact_output_commitment() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 12, 0, 0, 0);
-    let (_config, _protocol_admin, mut root, _base_registry, admin, _catalog, policy) = new_test_fixture(&mut ctx);
+    let (_config, _protocol_admin, mut root, _base_registry, _maker_treasury, admin, _catalog, policy) = new_test_fixture(&mut ctx);
     let empty = empty_registry_commitment_v8(policy.product_binding_commitment,
         policy.commitment, *maker::root_content_commitment_v8(&root), 1);
     let complete_instance = complete_instance_commitment_v8(

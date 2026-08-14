@@ -29,8 +29,11 @@ manifest-only “encrypted” claim grants access.
 ## Immutable key-server policy
 
 `new_seal_policy_config_v8` requires the exact Core `ProtocolAdminCapV8`, a
-current `ProductReleaseCatalogV8`, and the Seal original/callable type origins
-certified in that catalog. It stores a strictly sorted, duplicate-free vector
+current `ProductReleaseCatalogV8`, and the one concrete
+`PackageCallCapV8<SealRoleV8>` taken from that catalog. It validates and stores
+that non-copyable capability inside the immutable config, and commits its exact
+authority ID and the catalog's complete call-cap-set commitment alongside the
+Seal original/callable type origins. It also stores a strictly sorted, duplicate-free vector
 of exact key-server object IDs and weights, a valid weighted threshold, a
 key-server-set commitment, and an encryption-policy commitment. The shared
 `SealPolicyConfigV8` has no mutator.
@@ -88,15 +91,16 @@ holders retain decrypt approval while `PAUSED` or `ARCHIVED`.
 `issue_seal_readiness_v8` creates a module-private intermediate witness,
 destructures it inside Seal, and returns `SealReadinessV8`. The public witness
 has no abilities and carries the exact Root ID/version/content, catalog/product
-binding, registry/config IDs, all key-server IDs and policy commitments,
-sealed registry commitment, and per-scope/total counts. Future Release must
-pass its exact catalog-frozen authority to `consume_seal_readiness_v8`; Seal
-then rechecks every live object before destructuring the witness.
-
-Core commit `1400750` does not yet contain a Seal capability-registry slot in
-`MakerRootV8`. This package therefore does not invent a generic Root-ID bridge.
-The future reviewed Core/Release integration must consume this exact readiness
-into Core's typed one-time capability binding.
+binding and call-cap set, registry/config IDs, the Seal authority ID, all
+key-server IDs and policy commitments, sealed registry commitment, and
+per-scope/total counts. Future Release must
+receive readiness only through `certify_activation_readiness_v8`. That sole
+production terminal path consumes and rechecks the local witness, then borrows
+the policy's private `PackageCallCapV8<SealRoleV8>` to call Core's certifier
+with live `SealPolicyConfigV8` and `SealRegistryV8` references. Core verifies
+both object types have the exact Seal original package lineage while the
+callable marker and Root call-cap set bind the current callable release. No
+generic Root-ID bridge or parallel Release-authority readiness path is used.
 
 ## Entitlement and receipt adapters
 
