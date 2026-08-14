@@ -50,7 +50,7 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   // Unified Maker v8 is a fresh product TypeOrigin, not an upgrade or
   // compatibility layer over OCMaker/Commerce v5/Composition v6/Physical v7.
   // Keep this tuple empty and the gate false until the complete v8 package,
-  // protocol objects, Soul proof, Seal and Physical bindings are published
+  // protocol objects and native Soul, Seal and Physical modules are published
   // and independently read back. Enabling it requires every prior product
   // gate below to be explicitly false.
   makerV8ReleaseEnabled: false,
@@ -59,10 +59,6 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   makerV8ProtocolConfigId: '',
   makerV8ProtocolTreasuryId: '',
   makerV8PaymentCoinType: '',
-  makerV8SealPackageId: '',
-  makerV8SoulProofType: '',
-  makerV8PhysicalCallablePackageId: '',
-  makerV8PhysicalTypeOriginPackageId: '',
   // Commerce v5 is an additive protocol. Its type origin is the package that
   // first introduces `commerce_v5`; it remains stable across later upgrades.
   // The release gate stays false until the package upgrade, disabled protocol

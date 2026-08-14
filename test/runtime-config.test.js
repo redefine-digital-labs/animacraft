@@ -744,7 +744,6 @@ test('unified Maker v8 stays inert while empty and requires one complete exclusi
   assert.equal(result.makerV8RuntimeReady, false);
 
   const core = `0x${'1'.repeat(64)}`;
-  const physical = `0x${'2'.repeat(64)}`;
   const ready = productionConfig();
   Object.assign(ready, {
     makerV8ReleaseEnabled: true,
@@ -753,10 +752,6 @@ test('unified Maker v8 stays inert while empty and requires one complete exclusi
     makerV8ProtocolConfigId: `0x${'3'.repeat(64)}`,
     makerV8ProtocolTreasuryId: `0x${'4'.repeat(64)}`,
     makerV8PaymentCoinType: SUI_MAINNET_USDC_TYPE,
-    makerV8SealPackageId: core,
-    makerV8SoulProofType: `0x${'5'.repeat(64)}::soul_v8::MakerOwnerProofV8`,
-    makerV8PhysicalCallablePackageId: physical,
-    makerV8PhysicalTypeOriginPackageId: physical,
     canonicalSoulMintEnabled: false,
     commerceV5ReleaseEnabled: false,
     compositionV6ReleaseEnabled: false,
@@ -788,10 +783,6 @@ test('unified Maker v8 rejects partial identities and a different payment coin',
     makerV8ProtocolConfigId: `0x${'3'.repeat(64)}`,
     makerV8ProtocolTreasuryId: `0x${'4'.repeat(64)}`,
     makerV8PaymentCoinType: `0x${'6'.repeat(64)}::coin::COIN`,
-    makerV8SealPackageId: core,
-    makerV8SoulProofType: `0x${'5'.repeat(64)}::soul_v8::MakerOwnerProofV8`,
-    makerV8PhysicalCallablePackageId: `0x${'2'.repeat(64)}`,
-    makerV8PhysicalTypeOriginPackageId: `0x${'2'.repeat(64)}`,
   });
   result = validateRuntimeConfig(partial, { strict: true });
   assert.equal(result.valid, false);

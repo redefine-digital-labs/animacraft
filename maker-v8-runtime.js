@@ -9,6 +9,9 @@ export const MAKER_V8_RUNTIME_FIELDS = Object.freeze([
   'makerV8ProtocolConfigId',
   'makerV8ProtocolTreasuryId',
   'makerV8PaymentCoinType',
+]);
+
+export const MAKER_V8_RETIRED_SPLIT_FIELDS = Object.freeze([
   'makerV8SealPackageId',
   'makerV8SoulProofType',
   'makerV8PhysicalCallablePackageId',
@@ -84,10 +87,6 @@ export function inspectMakerV8Runtime(
     makerV8ProtocolConfigId: exactSuiId(source.makerV8ProtocolConfigId),
     makerV8ProtocolTreasuryId: exactSuiId(source.makerV8ProtocolTreasuryId),
     makerV8PaymentCoinType: exactSuiType(source.makerV8PaymentCoinType),
-    makerV8SealPackageId: exactSuiId(source.makerV8SealPackageId),
-    makerV8SoulProofType: exactSuiType(source.makerV8SoulProofType),
-    makerV8PhysicalCallablePackageId: exactSuiId(source.makerV8PhysicalCallablePackageId),
-    makerV8PhysicalTypeOriginPackageId: exactSuiId(source.makerV8PhysicalTypeOriginPackageId),
   };
 
   if (shouldValidateTuple) {
@@ -112,32 +111,18 @@ export function inspectMakerV8Runtime(
         'The initial unified v8 callable and TypeOrigin package must be identical.',
       ));
     }
-    if (
-      requireFreshTypeOrigin
-      && runtime.makerV8PhysicalCallablePackageId
-      && runtime.makerV8PhysicalTypeOriginPackageId
-      && runtime.makerV8PhysicalCallablePackageId !== runtime.makerV8PhysicalTypeOriginPackageId
-    ) {
-      issues.push(issue(
-        'MAKER_V8_PHYSICAL_FRESH_TYPE_ORIGIN_REQUIRED',
-        'makerV8PhysicalTypeOriginPackageId',
-        'The initial Physical v8 callable and TypeOrigin package must be identical.',
-      ));
-    }
-    if (
-      runtime.makerV8SealPackageId
-      && runtime.makerV8TypeOriginPackageId
-      && runtime.makerV8SealPackageId !== runtime.makerV8TypeOriginPackageId
-    ) {
-      issues.push(issue(
-        'MAKER_V8_SEAL_TYPE_ORIGIN_MISMATCH',
-        'makerV8SealPackageId',
-        'Maker v8 Seal must use the unified v8 stable TypeOrigin package.',
-      ));
-    }
   }
 
   if (enabled || requireEnabled) {
+    for (const field of MAKER_V8_RETIRED_SPLIT_FIELDS) {
+      if (String(source[field] || '').trim()) {
+        issues.push(issue(
+          'MAKER_V8_SPLIT_RUNTIME_FIELD_RETIRED',
+          field,
+          `${field} must be absent or empty because Seal, Soul and Physical are native modules in the unified v8 package.`,
+        ));
+      }
+    }
     for (const field of MAKER_V8_LEGACY_GATES) {
       if (!hasOwn(source, field) || source[field] !== false) {
         issues.push(issue(

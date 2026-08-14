@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   MAKER_V8_LEGACY_GATES,
+  MAKER_V8_RETIRED_SPLIT_FIELDS,
   MakerV8RuntimeError,
   assertMakerV8Runtime,
   inspectMakerV8Runtime,
@@ -12,7 +13,6 @@ import {
 const CORE = `0x${'1'.repeat(64)}`;
 const CONFIG = `0x${'2'.repeat(64)}`;
 const TREASURY = `0x${'3'.repeat(64)}`;
-const PHYSICAL = `0x${'5'.repeat(64)}`;
 
 function runtime(overrides = {}) {
   return {
@@ -22,10 +22,6 @@ function runtime(overrides = {}) {
     makerV8ProtocolConfigId: CONFIG,
     makerV8ProtocolTreasuryId: TREASURY,
     makerV8PaymentCoinType: `0x${'6'.repeat(64)}::usdc::USDC`,
-    makerV8SealPackageId: CORE,
-    makerV8SoulProofType: `0x${'7'.repeat(64)}::soul::OwnerProof`,
-    makerV8PhysicalCallablePackageId: PHYSICAL,
-    makerV8PhysicalTypeOriginPackageId: PHYSICAL,
     ...Object.fromEntries(MAKER_V8_LEGACY_GATES.map((field) => [field, false])),
     ...overrides,
   };
@@ -56,7 +52,6 @@ test('a missing, true, or non-boolean old gate fails the one-way cutover', () =>
 test('fresh v8 rejects zero, malformed, or upgraded TypeOrigin identities', () => {
   for (const [field, value] of [
     ['makerV8ProtocolConfigId', `0x${'0'.repeat(64)}`],
-    ['makerV8SealPackageId', '0x1234'],
     ['makerV8PaymentCoinType', 'USDC'],
   ]) {
     assert.equal(inspectMakerV8Runtime(runtime({ [field]: value })).valid, false, field);
@@ -67,20 +62,18 @@ test('fresh v8 rejects zero, malformed, or upgraded TypeOrigin identities', () =
   assert.equal(drift.issues.some((entry) => entry.code === 'MAKER_V8_FRESH_TYPE_ORIGIN_REQUIRED'), true);
 });
 
-test('later v8 callables may upgrade while stable TypeOrigins and Seal remain pinned', () => {
+test('later v8 callables may upgrade while one stable TypeOrigin remains pinned', () => {
   const upgraded = inspectMakerV8Runtime(runtime({
     makerV8CallablePackageId: `0x${'8'.repeat(64)}`,
-    makerV8PhysicalCallablePackageId: `0x${'9'.repeat(64)}`,
   }), { requireEnabled: true });
   assert.equal(upgraded.valid, true);
 
-  const sealDrift = inspectMakerV8Runtime(runtime({
-    makerV8SealPackageId: `0x${'8'.repeat(64)}`,
-  }));
-  assert.equal(
-    sealDrift.issues.some((entry) => entry.code === 'MAKER_V8_SEAL_TYPE_ORIGIN_MISMATCH'),
-    true,
-  );
+  for (const field of MAKER_V8_RETIRED_SPLIT_FIELDS) {
+    const split = inspectMakerV8Runtime(runtime({ [field]: CORE }));
+    assert.equal(split.issues.some((entry) => (
+      entry.code === 'MAKER_V8_SPLIT_RUNTIME_FIELD_RETIRED' && entry.field === field
+    )), true, field);
+  }
 });
 
 test('a disabled pre-deployment config may stay empty but strict v8 cannot', () => {
