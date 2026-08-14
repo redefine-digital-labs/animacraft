@@ -12,12 +12,18 @@ export const MAKER_V8_DOCUMENT_SCHEMA = 'animacraft.maker.v8';
 export const MAKER_V8_DOCUMENT_VERSION = 8;
 
 export const MAKER_V8_CAPABILITIES = Object.freeze([
-  'commerce',
   'composition',
   'expansionPacks',
   'complete',
   'seal',
   'physical',
+  'canonicalSoul',
+]);
+export const MAKER_V8_REQUIRED_CAPABILITIES = Object.freeze([
+  'composition',
+  'expansionPacks',
+  'complete',
+  'seal',
   'canonicalSoul',
 ]);
 
@@ -62,15 +68,16 @@ const MAX_DESCRIPTION_BYTES = 2_000;
 const VALIDATION_MODES = new Set(['draft', 'compile', 'activate']);
 const LIMITS = Object.freeze({
   assets: 4_999,
-  tracks: 2_048,
+  tracks: 256,
   colorChannels: 750,
+  colors: 5_000,
   swatchesPerChannel: 32,
   parts: 750,
   items: 5_000,
   itemsPerPart: 100,
   styles: 10_000,
   stylesPerItem: 64,
-  packs: 256,
+  packs: 1_000,
   ruleTargets: 1_000,
 });
 
@@ -135,9 +142,9 @@ function defaultLineage(rootMakerKey, overrides = {}) {
     versionKey: safeId(source.versionKey, `${rootMakerKey}-v${number}`),
     number,
     previousRootId: number === 1 ? null : String(source.previousRootId || '').toLowerCase(),
-    previousContentCommitment: number === 1
+    previousVersionCommitment: number === 1
       ? null
-      : String(source.previousContentCommitment || '').toLowerCase(),
+      : String(source.previousVersionCommitment || '').toLowerCase(),
     createdAt: source.createdAt || null,
     changelog: String(source.changelog || ''),
   };
@@ -665,15 +672,15 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
       issue(issues, 'lineage.number', 'MAKER_V8_LINEAGE_NUMBER_INVALID', 'Version number must be positive.');
     }
     if (document.lineage.number === 1) {
-      if (document.lineage.previousRootId !== null || document.lineage.previousContentCommitment !== null) {
+      if (document.lineage.previousRootId !== null || document.lineage.previousVersionCommitment !== null) {
         issue(issues, 'lineage', 'MAKER_V8_INITIAL_LINEAGE_INVALID', 'Initial v8 has no previous Root or commitment.');
       }
     } else {
       if (!SUI_ID.test(String(document.lineage.previousRootId || '').toLowerCase())) {
         issue(issues, 'lineage.previousRootId', 'MAKER_V8_PREVIOUS_ROOT_INVALID', 'Successor v8 requires an exact previous Root ID.');
       }
-      if (!HEX_32.test(String(document.lineage.previousContentCommitment || '').toLowerCase())) {
-        issue(issues, 'lineage.previousContentCommitment', 'MAKER_V8_PREVIOUS_COMMITMENT_INVALID', 'Successor v8 requires the previous content commitment.');
+      if (!HEX_32.test(String(document.lineage.previousVersionCommitment || '').toLowerCase())) {
+        issue(issues, 'lineage.previousVersionCommitment', 'MAKER_V8_PREVIOUS_COMMITMENT_INVALID', 'Successor v8 requires the previous version commitment.');
       }
     }
   }
@@ -704,6 +711,18 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
         issue(issues, `capabilities.${name}`, 'MAKER_V8_CAPABILITY_INVALID', 'Capability must be an explicit boolean.');
       }
     });
+    Object.keys(document.capabilities).forEach((name) => {
+      if (!MAKER_V8_CAPABILITIES.includes(name)) {
+        issue(issues, `capabilities.${name}`, 'MAKER_V8_CAPABILITY_UNKNOWN', 'Unknown or legacy capability flags are not part of unified Maker v8.');
+      }
+    });
+    if (compile) {
+      MAKER_V8_REQUIRED_CAPABILITIES.forEach((name) => {
+        if (document.capabilities[name] !== true) {
+          issue(issues, `capabilities.${name}`, 'MAKER_V8_REQUIRED_CAPABILITY_DISABLED', 'Unified Maker v8 requires this native capability, even when its registry is empty.');
+        }
+      });
+    }
   }
 
   if (!Array.isArray(document.assets)) {
@@ -768,6 +787,7 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
   }
   const colorIds = validateUniqueIds(document.colorChannels, 'colorChannels', issues);
   validateContiguousOrder(document.colorChannels, 'colorChannels', issues);
+  let totalColors = 0;
   (Array.isArray(document.colorChannels) ? document.colorChannels : []).forEach((channel, index) => {
     validateName(channel?.name, `colorChannels[${index}].name`, issues);
     if (channel?.mode !== 'gradient-map') {
@@ -778,6 +798,7 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
     } else if (compile && channel.swatches.length === 0) {
       issue(issues, `colorChannels[${index}].swatches`, 'MAKER_V8_SWATCH_REQUIRED', 'Published color channel needs at least one swatch.');
     } else {
+      totalColors += channel.swatches.length;
       if (channel.swatches.length > LIMITS.swatchesPerChannel) {
         issue(issues, `colorChannels[${index}].swatches`, 'MAKER_V8_SWATCH_LIMIT', `Color channel cannot exceed ${LIMITS.swatchesPerChannel} swatches.`);
       }
@@ -821,6 +842,9 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
       });
     }
   });
+  if (totalColors > LIMITS.colors) {
+    issue(issues, 'colorChannels', 'MAKER_V8_COLOR_LIMIT', `Maker v8 cannot exceed ${LIMITS.colors} Color swatches.`);
+  }
 
   if (!Array.isArray(document.parts)) {
     issue(issues, 'parts', 'MAKER_V8_PARTS_INVALID', 'Parts must be an array.');

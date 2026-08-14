@@ -115,6 +115,8 @@ test('new Maker documents are exact v8 drafts and reject every older schema', ()
   assert.equal(Object.isFrozen(document), true);
   assert.equal(collectMakerV8DocumentIssues(document, { mode: 'draft' }).length, 0);
   assert.equal(isMakerV8Document(document), true);
+  assert.equal(Object.hasOwn(document.capabilities, 'commerce'), false);
+  assert.equal(document.lineage.previousVersionCommitment, null);
 
   for (const schemaVersion of [
     'animacraft.maker.v5',
@@ -192,6 +194,31 @@ test('disabled capabilities cannot silently carry v8 feature declarations', () =
     .map((entry) => entry.code);
   assert.equal(codes.includes('MAKER_V8_SEAL_CAPABILITY_REQUIRED'), true);
   assert.equal(codes.includes('MAKER_V8_PHYSICAL_CAPABILITY_REQUIRED'), true);
+});
+
+test('only Physical is optional and successor lineage binds the previous version commitment', () => {
+  const initial = compiledDocument();
+  initial.capabilities.complete = false;
+  initial.capabilities.commerce = true;
+  const initialCodes = new Set(collectMakerV8DocumentIssues(initial, { mode: 'compile' })
+    .map((entry) => entry.code));
+  assert.equal(initialCodes.has('MAKER_V8_REQUIRED_CAPABILITY_DISABLED'), true);
+  assert.equal(initialCodes.has('MAKER_V8_CAPABILITY_UNKNOWN'), true);
+
+  const successor = structuredClone(createMakerV8Document({
+    lineage: {
+      number: 2,
+      previousRootId: `0x${'a'.repeat(64)}`,
+      previousVersionCommitment: 'b'.repeat(64),
+    },
+  }));
+  assert.equal(successor.lineage.previousVersionCommitment, 'b'.repeat(64));
+  assert.equal(collectMakerV8DocumentIssues(successor, { mode: 'draft' })
+    .some((entry) => entry.code === 'MAKER_V8_PREVIOUS_COMMITMENT_INVALID'), false);
+
+  successor.lineage.previousVersionCommitment = null;
+  assert.equal(collectMakerV8DocumentIssues(successor, { mode: 'draft' })
+    .some((entry) => entry.code === 'MAKER_V8_PREVIOUS_COMMITMENT_INVALID'), true);
 });
 
 test('shared references, hierarchy, embedded rules, and default Recipe fail closed', () => {
