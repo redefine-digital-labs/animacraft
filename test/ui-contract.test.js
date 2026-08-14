@@ -55,6 +55,31 @@ test('the player workbench constrains the canvas and scrolls its side panels', a
   assert.match(styles, /\.parts-panel\s*\{[^}]*overflow-y:\s*auto;/s);
 });
 
+test('the Player info dialog keeps its action visible while tall content scrolls', async () => {
+  const [workspace, styles] = await Promise.all([
+    readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(
+    workspace,
+    /class="v4-player-info-body"[\s\S]*?<footer class="v4-player-info-actions">/,
+    'Player info content and its persistent action must be separate layout regions',
+  );
+  assert.match(
+    styles,
+    /\.v4-player-info-dialog\s*\{[^}]*display:\s*grid;[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\) auto;[^}]*max-height:\s*min\(760px,\s*calc\(100dvh - 44px\)\);/s,
+  );
+  assert.match(
+    styles,
+    /\.v4-player-info-body\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior:\s*contain;/s,
+  );
+  assert.match(
+    styles,
+    /\.v4-player-info-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*border-top:\s*1px solid var\(--line\);/s,
+  );
+});
+
 test('the certified OC handoff uses the dedicated Soulidity adapter for free and paid Makers', async () => {
   const [html, app, runtime, docsContent] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),
@@ -101,12 +126,13 @@ test('Player completion, Walrus profile and final Soulidity handoff share one im
 });
 
 test('Maker v5 mounts separate Creator and Player workspaces on one renderer', async () => {
-  const [html, app, workspace, workspaceI18n, styles] = await Promise.all([
+  const [html, app, workspace, workspaceI18n, styles, editorShell] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),
     readFile(new URL('../app.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace-i18n.js', import.meta.url), 'utf8'),
     readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-editor-shell.js', import.meta.url), 'utf8'),
   ]);
 
   assert.match(html, /id="makerV4CreatorMount"/);
@@ -169,7 +195,7 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(workspace, /this\.tr\(blockingIssues\.length === 1 \? 'reviewIssue' : 'reviewIssues'/);
   assert.match(workspaceI18n, /reviewIssues: 'Review \{count\} issues'/);
   assert.match(workspace, /class="v4-tool-modal-backdrop" data-action="close-tool-backdrop"/);
-  assert.match(workspace, /id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true"/);
+  assert.match(workspace, /id="makerV4ToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="\$\{sourceSuspended \? 'false' : 'true'\}"/);
   assert.match(workspace, /renderPublicationFlow\(kind\)/);
   assert.match(workspace, /const dialogId = creator \? 'makerCreatorPublishDialog' : 'makerPlayerPublishDialog'/);
   assert.match(workspace, /data-action="copy-\$\{prefix\}-publish-error"/);
@@ -184,7 +210,9 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   assert.match(styles, /\.v4-player-part\.active\s*\{[^}]*box-shadow:/s);
   assert.match(styles, /\.v4-chain-flow button\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px;/s);
   assert.match(styles, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.v4-chain-status > i\s*\{[^}]*animation:\s*none;/);
-  assert.match(workspace, /id="makerV4Tab-\$\{id\}"[\s\S]*?aria-pressed="\$\{this\.creatorTab === id\}"/);
+  assert.match(workspace, /import \{ renderMakerEditorShell \} from '\.\/maker-editor-shell\.js';/);
+  assert.match(workspace, /renderMakerEditorShell\(\{/);
+  assert.match(editorShell, /id="\$\{escapeHtml\(idPrefix\)\}Tab-\$\{escapeHtml\(id\)\}"[\s\S]*?aria-pressed="\$\{selected\}"/);
   assert.match(workspace, /id="v4RuleAvailabilityTab"[\s\S]*?role="tab"[\s\S]*?aria-selected=/);
   assert.match(workspace, /id="v4RuleVisibilityPanel"[\s\S]*?role="tabpanel"/);
   assert.match(
@@ -209,12 +237,12 @@ test('Maker v5 mounts separate Creator and Player workspaces on one renderer', a
   );
   assert.match(
     workspace,
-    /const partHasSelectedTarget = partRecords\.some\(\(record\) => draftTargets\.has\(record\.value\)\);[\s\S]*?partHasSelectedTarget \? 'open' : ''/,
+    /open: partRecords\.some\(\(record\) => draftTargets\.has\(record\.value\)\)/,
     'combination Rule Part groups should stay collapsed unless they contain a selected target',
   );
   assert.match(
     workspace,
-    /const partHasSelectedTarget = partRecords\.some\(\(record\) => visibilityDraftDefinitions\.has\(record\.value\)\);[\s\S]*?partHasSelectedTarget \? 'open' : ''/,
+    /open: partRecords\.some\(\(record\) => visibilityDraftDefinitions\.has\(record\.value\)\)/,
     'Style visibility Part groups should stay collapsed unless they contain a selected target',
   );
   assert.match(workspace, /else if \(style\.positionConfirmed === false\)/);
@@ -583,7 +611,7 @@ test('production gallery is chain-derived and creator packs are local test fixtu
   );
   assert.match(
     app,
-    /playable:\s*releaseEnabled\s*&&\s*protocolEnabled\s*&&\s*verified\s*&&\s*lifecycle === COMMERCE_V5_LIFECYCLE\.ACTIVE/,
+    /const commercePlayerAvailable = \([\s\S]*releaseEnabled[\s\S]*lifecycle === COMMERCE_V5_LIFECYCLE\.ACTIVE/,
   );
   assert.match(app, /visible:\s*!legacyArchived/);
   assert.match(app, /data-create-first-maker/);
@@ -600,10 +628,11 @@ test('production gallery is chain-derived and creator packs are local test fixtu
 });
 
 test('Maker v5 exposes the four-level P0 creator workflow without legacy visual sublayers', async () => {
-  const [html, app, workspace, workspaceI18n, styles, docsContent] = await Promise.all([
+  const [html, app, workspace, definitionEditor, workspaceI18n, styles, docsContent] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),
     readFile(new URL('../app.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-definition-editor.js', import.meta.url), 'utf8'),
     readFile(new URL('../maker-workspace-i18n.js', import.meta.url), 'utf8'),
     readFile(new URL('../styles.css', import.meta.url), 'utf8'),
     readFile(new URL('../docs-center-content.js', import.meta.url), 'utf8'),
@@ -634,7 +663,13 @@ test('Maker v5 exposes the four-level P0 creator workflow without legacy visual 
   assert.match(workspace, /data-action="style-channel"/);
   assert.match(workspace, /data-action="style-position-locked"/);
   assert.match(workspace, /data-action="style-locked"/);
-  assert.match(workspace, /data-action="toggle-part-preview"/);
+  assert.match(definitionEditor, /preview: 'toggle-part-preview'/);
+  assert.match(definitionEditor, /maker-part-list-state v4-part-state-actions/);
+  assert.match(workspace, /'open-part-slot-settings'/);
+  assert.match(workspace, /class="v7-wardrobe-choice" role="group"/);
+  assert.match(styles, /\.v4-part-state-actions\s*\{[^}]*display:\s*grid;/s);
+  assert.match(styles, /\.v4-part-slot\.active\s*\{/);
+  assert.match(styles, /\.v7-wardrobe-choice > button\.active\s*\{/);
   assert.match(workspace, /data-action="player-style"/);
   assert.match(workspace, /selection\.styleId/);
   assert.doesNotMatch(workspace, /\b(?:LayerBinding|bindingId|variantId|defaultVariantId)\b/);
@@ -657,6 +692,34 @@ test('Maker v5 keeps the mobile player preview visible and blocks incomplete OC 
   assert.match(workspace, /data-action="player-complete" \$\{completionIssues\.length \? 'disabled' : ''\}/);
   assert.match(styles, /@media \(max-width: 820px\)[\s\S]*?\.v4-player-preview\s*\{[^}]*position:\s*sticky;[^}]*max-height:\s*58vh;/s);
   assert.match(styles, /@media \(max-width: 560px\)[\s\S]*?\.v4-player-preview\s*\{[^}]*grid-template-rows:\s*minmax\(220px,\s*38vh\) auto;[^}]*max-height:\s*52vh;/s);
+});
+
+test('shared Part list stays readable at the 1180, 820, and 560 responsive boundaries', async () => {
+  const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
+  const selectedRule = styles.match(/\.maker-part-list-row\.active,[\s\S]*?\n\}/)?.[0] || '';
+  const labelRule = styles.match(/\.maker-part-list-select strong,[\s\S]*?\n\}/)?.[0] || '';
+  const metadataRule = styles.match(/\.maker-part-list-meta\s*\{[\s\S]*?\n\}/)?.[0] || '';
+  const narrowRule = styles.match(/@media \(max-width: 1180px\) \{[\s\S]*?\n\}/)?.[0] || '';
+
+  assert.match(styles, /@media \(max-width: 1180px\)[\s\S]*?grid-template-columns: 190px minmax\(410px, 1fr\);/);
+  assert.match(styles, /@media \(max-width: 820px\)[\s\S]*?\.v4-parts-list\s*\{[^}]*repeat\(auto-fill, minmax\(230px, 1fr\)\);/s);
+  assert.match(styles, /@media \(max-width: 560px\)[\s\S]*?\.v4-parts-list\s*\{[^}]*grid-template-columns: 1fr;/s);
+  assert.match(labelRule, /overflow-wrap: anywhere;/);
+  assert.match(labelRule, /text-overflow: clip;/);
+  assert.match(labelRule, /white-space: normal;/);
+  assert.doesNotMatch(labelRule, /ellipsis|overflow: hidden/);
+  assert.match(metadataRule, /grid-area: meta;/);
+  assert.match(metadataRule, /white-space: normal;/);
+  assert.doesNotMatch(narrowRule, /v4-part-(?:track-status|select|icon)/);
+  assert.doesNotMatch(styles, /\.v4-part-track-status\s*\{[^}]*display:\s*none/s);
+  assert.match(styles, /@media \(min-width: 821px\) and \(max-width: 1180px\)[\s\S]*?"drag thumb name"[\s\S]*?"drag thumb state"[\s\S]*?"meta meta meta"/);
+  assert.match(styles, /\.v4-inspector-section\s*\{[^}]*align-content:\s*start;/s);
+  assert.match(styles, /@media \(max-width: 1180px\)[\s\S]*?\.v4-inspector\s*\{[^}]*align-items:\s*start;/s);
+  assert.match(styles, /@media \(max-width: 1180px\)[\s\S]*?\.v4-object-rule-entry\s*\{[^}]*align-self:\s*start;/s);
+  assert.match(selectedRule, /var\(--ui-brand\) 5%/);
+  assert.match(selectedRule, /inset 2px 0 0/);
+  assert.doesNotMatch(selectedRule, /ui-surface-selected|ui-value|ui-warning|#fff3cf|#f0a23a/i);
+  assert.doesNotMatch(styles, /\.v4-part-entry\s*>\s*\.v4-record-actions/);
 });
 
 test('Creator Library exposes a non-destructive current and legacy Draft Recovery Center', async () => {
@@ -714,7 +777,7 @@ test('Draft Recovery and current Maker workspace do not leak English-only operat
   assert.match(workspace, /data-action="add-part" aria-label="\$\{escapeHtml\(this\.tr\('addPartAria'\)\)\}"/);
   assert.match(workspace, /data-action="delete-track"[\s\S]*?aria-label="\$\{escapeHtml\(this\.tr\('deleteTrackAria'\)\)\}"/);
   assert.match(workspace, /data-action="delete-swatch"[\s\S]*?aria-label="\$\{escapeHtml\(this\.tr\('deleteColorPresetAria'\)\)\}"/);
-  assert.match(workspace, /data-action="delete-rule"[\s\S]*?aria-label="\$\{escapeHtml\(this\.tr\('deleteRuleAria'\)\)\}"/);
+  assert.match(workspace, /deleteAction: 'delete-rule',[\s\S]*?deleteLabel: this\.tr\('deleteRuleAria'\)/);
 });
 
 test('pending publication review and explicit clear confirmation have complete five-language copy', async () => {
@@ -978,6 +1041,78 @@ test('nested lifecycle confirmations suspend the background dialog and restore i
       < escapeHandler.indexOf("makerLifecycleManagerModal')?.classList.contains('active')"),
     'Escape must close the top confirmation before the lifecycle dialog underneath',
   );
+});
+
+test('Expansion Pack lifecycle manager suspends its list or Studio surface below confirmations', async () => {
+  const [app, workspace, styles] = await Promise.all([
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  ]);
+  const lifecycleLayer = Number(styles.match(/#makerLifecycleManagerModal\s*\{[^}]*z-index:\s*(\d+)/)?.[1]);
+  const confirmationLayer = Number(styles.match(/#confirmActionModal\s*\{[^}]*z-index:\s*(\d+)/)?.[1]);
+  const toolLayer = Number(styles.match(/\.v4-tool-modal-backdrop\s*\{[^}]*z-index:\s*(\d+)/)?.[1]);
+  assert.ok(toolLayer < lifecycleLayer && lifecycleLayer < confirmationLayer);
+
+  const suspendStart = app.indexOf('function suspendExpansionPackLifecycleSource(source)');
+  const suspendEnd = app.indexOf('\nfunction restoreExpansionPackLifecycleSource', suspendStart);
+  const suspend = app.slice(suspendStart, suspendEnd);
+  assert.match(suspend, /\['expansion-pack-list', 'expansion-pack-studio'\]/);
+  assert.match(suspend, /surface\.hidden = true/);
+  assert.match(suspend, /surface\.inert = true/);
+  assert.match(suspend, /surface\.setAttribute\('aria-hidden', 'true'\)/);
+  assert.match(suspend, /sourceDialog\?\.setAttribute\('aria-modal', 'false'\)/);
+  assert.match(app, /function restoreExpansionPackLifecycleSource\([\s\S]*?surface\.hidden = suspended\.hidden[\s\S]*?surface\.inert = suspended\.inert/);
+  assert.match(app, /source === 'expansion-pack-studio'[\s\S]*?manage-pack-lifecycle[\s\S]*?manage-expansion-pack-lifecycle/);
+  assert.match(workspace, /makerLifecycleSuspendedSource[\s\S]*?aria-modal="\$\{sourceSuspended \? 'false' : 'true'\}"/);
+  assert.match(app, /closingPack && expansionPackLifecycleManagerView\.busy === true && !force\) return false/);
+  assert.match(app, /querySelectorAll\('\[data-close-maker-lifecycle\]'\)[\s\S]*?button\.disabled = busy/);
+  const packRendererStart = app.indexOf('function renderExpansionPackLifecycleManager()');
+  const packRendererEnd = app.indexOf('\nfunction openMakerLifecycleManager', packRendererStart);
+  const packRenderer = app.slice(packRendererStart, packRendererEnd);
+  assert.match(
+    packRenderer,
+    /const focusedLifecycleAction = focusedInsideModal[\s\S]*?focusedLifecycleAction[\s\S]*?makerLifecycleManagerStatus[\s\S]*?focus\(\{ preventScroll: true \}\)/,
+    'Pack lifecycle redraws must restore the replaced action or move focus to the live status',
+  );
+});
+
+test('pure local Expansion Pack deletion stays fail-closed and uses an exact revision CAS', async () => {
+  const [app, workspace] = await Promise.all([
+    readFile(new URL('../app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../maker-workspace.js', import.meta.url), 'utf8'),
+  ]);
+  const inventoryStart = app.indexOf('async function loadExpansionPackLifecycleInventory');
+  const inventoryEnd = app.indexOf('\nfunction expansionPackLifecycleSummaryFromView', inventoryStart);
+  const inventory = app.slice(inventoryStart, inventoryEnd);
+  assert.match(
+    inventory,
+    /summary\.project\?\.parentBinding\?\.kind === 'local-draft'[\s\S]*?summary\.identity\?\.parentBindingKind === 'local-draft'[\s\S]*?\? 'local-draft'/,
+    'a connected wallet must not turn a proven local-parent draft into unknown',
+  );
+
+  const eligibilityStart = workspace.indexOf('export function isPureLocalExpansionPackDraft');
+  const eligibilityEnd = workspace.indexOf('\nfunction expansionPackDescriptorKey', eligibilityStart);
+  const eligibility = workspace.slice(eligibilityStart, eligibilityEnd);
+  assert.match(eligibility, /parent\?\.kind !== 'local-draft'/);
+  assert.match(eligibility, /identity\.parentBindingKind !== 'local-draft'/);
+  assert.match(eligibility, /publication\?\.state !== 'draft'/);
+  assert.match(eligibility, /expansionPackLifecycleStateValue\(lifecycle\) !== 'local-draft'/);
+  assert.match(eligibility, /lifecycle\.release\?\.objectId/);
+  assert.match(eligibility, /lifecycle\.adminCap\?\.objectId/);
+  assert.match(eligibility, /recovery\.pending/);
+  assert.match(eligibility, /recovery\.finalizedFailures/);
+
+  const deletionStart = workspace.indexOf('async deleteExpansionPackDraft(candidate)');
+  const deletionEnd = workspace.indexOf('\n  expansionPackCommerceState', deletionStart);
+  const deletion = workspace.slice(deletionStart, deletionEnd);
+  assert.match(deletion, /await this\.expansionPackDraftStore\.load\(identity\)/);
+  assert.match(deletion, /record\.revision !== expectedRevision/);
+  assert.match(deletion, /this\.expansionPackDraftStore\.delete\(identity, \{ expectedRevision \}\)/);
+  assert.match(deletion, /await this\.expansionPackDraftStore\.load\(identity\)/);
+  assert.match(app, /data-lifecycle-action="pack-delete-local-draft"/);
+  assert.match(app, /requestExpansionPackDraftDeletion\(\)/);
+  assert.match(app, /expansionPackLifecycleDeleteDraftConfirmCopy/);
 });
 
 test('historical lifecycle controls identify and confirm their exact immutable version', async () => {

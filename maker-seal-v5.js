@@ -42,6 +42,14 @@ const SealIdentityV5Bcs = bcs.struct('SealIdentityV5', {
   asset_digest: bcs.byteVector(),
 });
 
+const ExpansionPackSealReleaseScopeV8Bcs = bcs.struct(
+  'ExpansionPackSealReleaseScopeV8',
+  {
+    release_id: bcs.Address,
+    content_commitment: bcs.byteVector(),
+  },
+);
+
 const PaidStyleAssetV5Bcs = bcs.struct('PaidStyleAssetV5', {
   seal_id: bcs.byteVector(),
   product_kind: bcs.u8(),
@@ -374,6 +382,41 @@ export async function deriveMakerSealIdV5({
       packKey: identity.pack_key,
       assetDigest: normalizedHex(identity.asset_digest),
     }),
+  });
+}
+
+/**
+ * Scope an Expansion Pack semantic commitment to one exact Sui Release
+ * object. This mirrors `ExpansionPackSealReleaseScopeV8` in Move and is used
+ * as the existing Seal v5 `release_commitment` input.
+ */
+export async function deriveExpansionPackSealReleaseCommitmentV8({
+  releaseId,
+  contentCommitment,
+} = {}) {
+  let normalizedReleaseId;
+  try {
+    normalizedReleaseId = normalizeSuiAddress(requiredString(releaseId, 'Expansion Pack release ID'));
+  } catch (cause) {
+    fail(
+      'MAKER_SEAL_V5_RELEASE_ID',
+      'Expansion Pack Seal scope requires an exact Sui Release object ID.',
+      { cause },
+    );
+  }
+  const bytes = ExpansionPackSealReleaseScopeV8Bcs.serialize({
+    release_id: normalizedReleaseId,
+    content_commitment: exactBytes(
+      contentCommitment,
+      SHA2_256_BYTES,
+      'Expansion Pack content commitment',
+    ),
+  }).toBytes();
+  const commitmentBytes = await sha256(bytes);
+  return Object.freeze({
+    id: normalizedHex(commitmentBytes),
+    bytes: commitmentBytes,
+    releaseId: normalizedReleaseId,
   });
 }
 

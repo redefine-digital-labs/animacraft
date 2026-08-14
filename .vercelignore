@@ -1,0 +1,10 @@
+node_modules/
+dist/
+move/
+test/
+scripts/
+creator-packs/
+deployments/
+.git/
+.github/
+*.md

@@ -1,0 +1,221 @@
+{
+  "schemaVersion": "animacraft.expansion-pack-v8-free-wallet-test-intent.v1",
+  "phase": "animacraft-expansion-pack-v8-wallet-test-activation",
+  "status": "parent-finalized-pack-publication-readiness",
+  "network": {
+    "name": "mainnet",
+    "chainIdentifier": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
+    "grpcUrl": "https://fullnode.mainnet.sui.io:443",
+    "graphqlUrl": "https://graphql.mainnet.sui.io/graphql"
+  },
+  "signer": {
+    "alias": "hardcore-beryl",
+    "address": "0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f"
+  },
+  "protocol": {
+    "callablePackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
+    "typeOriginPackageId": "0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a",
+    "protocolFeePackageId": "0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc",
+    "protocolFeeConfigId": "0x60d141c7b9c5726a85a3b53dd08879d86af313cf3fe96d5e6440a8d5cb60ee32",
+    "protocolFeeAdminCapId": "0x28a99dfbfc37b474b4bdb3330eeb1a2ef3bb1139e0268112d91bd11a4e3fdcbd",
+    "protocolFeeAdminCapOwner": "0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f",
+    "commerceV5CallablePackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
+    "independentExtensionV5TypeOriginPackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
+    "legacyLogicalV5TypeOriginPackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
+    "independentExtensionAuthorityV5Id": "0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19",
+    "correctiveUpgradeEvidence": {
+      "resultPath": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/v8-mainnet-corrective-upgrade-result.json",
+      "abiReadbackPath": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/v8-mainnet-corrective-upgrade-abi-readback.json",
+      "resultSha256": "0f82c18b1d4244974d638d9d83086be6b9de773aa87033d2b52482416f019cc5",
+      "abiSha256": "ece3e657b9b348f0f2a1108ba639105bfea492eea969679222bfe94a8f04f473",
+      "transactionDigest": "GFJYxZ6hc83ma5itvJ5CN2ZAtTAqjizrgi9o2jKuTwZt",
+      "callablePackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
+      "sourceCommit": "3c2ffeeb86be6df2cd1f278454a72f5d02c796ea",
+      "sourceTree": "0872c4142ee5e811594efbadba032b7b21e5b57c",
+      "stableV8TypeOriginPackageId": "0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a",
+      "independentExtensionV5TypeOriginPackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
+      "legacyLogicalV5TypeOriginPackageId": "0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee",
+      "packageVersion": "7"
+    },
+    "commerceV5TypeOriginPackageId": "0xcf369b8b02ac1e997146fc3be3f03870db14eaccf3d2cb7a9b93724be463108e",
+    "commerceProtocolConfigV5Id": "0xf63dc43bb3787fff47fec7f8c3ff2e777dd0966500570fa7deab2bef9b6da0d5",
+    "commerceProtocolTreasuryV5Id": "0x97ba8042011d6c2d4857a33789a8250c16f6effeda622cb312fe481e0b907d44",
+    "paymentCoinType": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+    "logicalAuxiliaryBlobId": "2W6FuNVQhJXdWonFSEf1e-1MuecbA1Cd3H8a4_Yrkm4",
+    "soulBindingProofType": "0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5"
+  },
+  "parent": {
+    "rootMakerId": "hi-ms2scamz",
+    "legacyMakerId": "0x1329648b7ead8bc16dc7e209416922b2af25c68884def660534d6be541379390",
+    "legacyTreasuryId": "0x7121f2dbfe75aeed8c2587592653051078e1a95f1a16550530f20d26a43def35",
+    "legacyAdminCapId": "0x1250b6572c7aa08930579e27eae53bd875eb4998ea4e1bdd3efedaf3e2dc205f",
+    "versionId": "hi-ms2scamz-v2",
+    "versionNumber": "2",
+    "manifestQuiltId": "AztORH3dRHLDMHYS-8ia2R-6lrJLgOq16mJTuCLtPLw",
+    "manifestIdentifier": "animacraft-manifest.json",
+    "manifestSha256": "0303e015fa8842965edd22b6931aaf100cb7cbee2b067ef76eb0e7f880071453",
+    "rightsOrigin": "LICENSE_WRAPPED",
+    "rightsRationale": "The immutable parent declares a personal-use license with attribution required; the v5 migration wraps that existing traditional license and does not broaden it.",
+    "baseAccess": {
+      "kind": "FREE",
+      "purchasePriceAtomic": "0"
+    },
+    "baseCompletion": {
+      "mode": "UNLIMITED_FREE",
+      "freeQuotaPerWallet": "0",
+      "priceAtomic": "0",
+      "totalCap": "0"
+    },
+    "soulCreatorRoyaltyBps": 300,
+    "makerResaleRoyaltyBps": 300,
+    "styleSource": "moveProjectionV2.items",
+    "expectedLifecycle": "PAUSED",
+    "expectedLifecycleCode": 1,
+    "expectedStyleCount": 26,
+    "expectedStyleCounts": {
+      "visual": 19,
+      "logicalNone": 3,
+      "logicalColor": 4,
+      "compatibilityLogical": 7,
+      "total": 26
+    },
+    "currentV5": {
+      "rootId": "0xb97ca9552c01557530f04b6302fb4b58c43f209c8371129e3400810f1576e08c",
+      "treasuryId": "0xd15c5d46862f9f7e0f2c0f133bc0659ad017696e77bf6bd7b7327851d11912d0",
+      "controlVaultId": "0xfbdb00635113aea90281baf329516512d41cc0020d9221bcadbcd2670583d1ed",
+      "controlCapId": "0x0b65aeb7cf70ff54fa8242275468b905e9b2643280330d04645131b6b7b61b93",
+      "retiredControlCapId": "0x0b65aeb7cf70ff54fa8242275468b905e9b2643280330d04645131b6b7b61b93",
+      "authorityId": "0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19",
+      "lockedOwnershipEpoch": "1",
+      "migrationTransactionDigest": "7ZBCscHFvD4ZEvEGa3wgnMjBz6Q2FiUaSc8Env3z5Jfk",
+      "migrationEvidencePath": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/parent-migration-result.json"
+    },
+    "finalization": {
+      "status": "success",
+      "transactionDigest": "9k3Zz7vyApXSCLWxFoJxqoMVxVN6vtwoBYp1BsHU5WCb",
+      "checkpoint": "309767464",
+      "checkpointDigest": "2uwJMcMG2nwsAaGkHHz1ZRCteLd9yki24J5xLGNnBmAD",
+      "finalizedAtMs": "1786522284537",
+      "authorityId": "0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19",
+      "auditHash": "7c2079974e4f59f4accec446124c0ed7f394d9114b8c99393be1265cca3cf658",
+      "lockFingerprintSha256": "a46cbf589aad792ecc7c2bd1ede42e52dc4522e0fc6180c631356ef30a5d9c8a",
+      "lockEvidencePath": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/parent-finalize-lock.json",
+      "lockEvidenceSha256": "77cccfe40673bc465b23b476c2f9905746e33a612e7f5011d7d1a150a4f045b9",
+      "resultEvidencePath": "../../docs/codex/assets/animacraft-expansion-pack-v8-wallet-test-activation/parent-finalize-result.json",
+      "resultEvidenceSha256": "c3833a3d10b93f1b4ea7e3dc447ec19ac5f4d17e5cfe1af8ea0dfd4ea3e5cb3e"
+    }
+  },
+  "pack": {
+    "id": "astral-courier-quiet-orbit-v8-test",
+    "namespace": "quiet-orbit-v8",
+    "name": "Astral Courier · Quiet Orbit v8 Test Pack",
+    "version": "1.0.0",
+    "accessKind": "FREE",
+    "purchasePriceAtomic": "0",
+    "target": {
+      "partId": "background",
+      "itemId": "background-default",
+      "styleId": "quiet-orbit-style",
+      "layerTrackId": "background-track"
+    },
+    "asset": {
+      "id": "quiet-orbit-asset",
+      "sourcePath": "public/makers/astral-courier/layers/background/quiet-orbit.png",
+      "identifier": "assets/quiet-orbit.png",
+      "mediaType": "image/png",
+      "sha256": "11bd408b5f96a4a32c48d86fefa1e98204f72df8bcc03c8ec9566369e29cc28e",
+      "byteLength": 406546,
+      "width": 1024,
+      "height": 1024
+    }
+  },
+  "walrus": {
+    "aggregatorUrl": "https://aggregator.walrus-mainnet.walrus.space",
+    "uploadRelayUrl": "https://upload-relay.mainnet.walrus.space",
+    "epochs": 53,
+    "deletable": false,
+    "expectedFileCount": 2,
+    "relayTipCapMist": "100000000"
+  },
+  "productGates": {
+    "expansionPackV8ReleaseEnabledBeforePublication": false,
+    "expansionPackV8ReleaseEnabledAfterVerifiedActivation": true,
+    "commerceV5ReleaseEnabled": false,
+    "canonicalSoulMintEnabled": false,
+    "compositionV6ReleaseEnabled": false,
+    "physicalStyleV7ReleaseEnabled": false,
+    "completeBridgeEnabled": false,
+    "physicalBridgeEnabled": false
+  },
+  "writeBoundary": {
+    "currentMode": "read-only-readiness-only",
+    "signingAllowed": false,
+    "broadcastAllowed": false,
+    "stopOnAnyInputDrift": true,
+    "paidSealPathIncluded": false,
+    "productionDeploymentAllowedBeforeReadback": false
+  },
+  "transactions": {
+    "parentMigration": {
+      "gasPriceMist": "100",
+      "gasBudgetMist": "50000000",
+      "gasMode": "address-balance",
+      "payment": [],
+      "expiration": {
+        "minEpoch": "1217",
+        "maxEpoch": "1218",
+        "minTimestamp": null,
+        "maxTimestamp": null,
+        "chain": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
+        "nonce": 1347245638
+      }
+    },
+    "parentPolicy": {
+      "gasPriceMist": "100",
+      "gasBudgetMist": "20000000",
+      "gasMode": "address-balance",
+      "payment": [],
+      "expiration": {
+        "minEpoch": "1217",
+        "maxEpoch": "1218",
+        "minTimestamp": null,
+        "maxTimestamp": null,
+        "chain": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
+        "nonce": 377620648
+      }
+    },
+    "parentEvidence": {
+      "gasPriceMist": "100",
+      "gasBudgetMist": "20000000",
+      "gasMode": "address-balance",
+      "payment": [],
+      "expiration": {
+        "minEpoch": "1217",
+        "maxEpoch": "1218",
+        "minTimestamp": null,
+        "maxTimestamp": null,
+        "chain": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
+        "nonce": 711087665
+      }
+    },
+    "parentFinalize": {
+      "status": "finalized",
+      "gasPriceMist": "100",
+      "gasBudgetMist": "300000000",
+      "gasMode": "address-balance",
+      "payment": [],
+      "expiration": {
+        "minEpoch": "1217",
+        "maxEpoch": "1218",
+        "minTimestamp": null,
+        "maxTimestamp": null,
+        "chain": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
+        "nonce": 4014638497
+      },
+      "transactionDigest": "9k3Zz7vyApXSCLWxFoJxqoMVxVN6vtwoBYp1BsHU5WCb",
+      "checkpoint": "309767464",
+      "lockFingerprintSha256": "a46cbf589aad792ecc7c2bd1ede42e52dc4522e0fc6180c631356ef30a5d9c8a",
+      "note": "Regenerated after the corrective package upgrade and exact evidence binding readback. The final lock must re-anchor zero-history and simulate the single atomic finalizer; never reuse the retired parentStyles/parentSeal inputs."
+    }
+  }
+}

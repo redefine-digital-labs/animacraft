@@ -2,14 +2,53 @@
 
 ## Release State
 
-Commerce & Rights v5 is the current production contract. Composable Assets v6
-is an additive preview, and every v6 Mainnet Walrus/Sui write gate remains off.
+As of 2026-08-12, Expansion Pack v8 is live on Mainnet as a bounded, one-Pack,
+FREE production pilot. This supersedes older statements that every later-version
+gate was off or that v8 was not live.
 
-Animacraft product version `0.8.4` is a pre-v1 production candidate. Product v1 is reserved for a proven ecosystem at roughly 1,000 active creators. Move protocol numbers are tracked separately: the stable original package/legacy TypeOrigin is `0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`, while the source-verified **protocol v4 callable package** is `0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc`. The v4 upgrade is live on Mainnet and its canonical native-USDC Protocol Fee objects have been initialized. Their integration gate remains disabled, so canonical Soul minting is still blocked until the separate Soulidity v2 adapter and market migration are deployed and verified.
+- Release `0x8c2af3a0c7eb4bfe88bf5ed9e7b56cb407edae12f672a3331a09e41d046e071b`
+  is `ACTIVE`, has FREE access, and is backed by certified Walrus Quilt
+  `We3YHgglZfOpzffEyrxCB0dVNUS8ox5v8oSjJlb1QWE`.
+- Activation transaction `8mw6HfPX1YHcfDwvgZbCNwawfUZHLHBMtYPQdSLcjdvv`
+  succeeded at checkpoint `309818089`.
+- The parent Root `0xb97ca9552c01557530f04b6302fb4b58c43f209c8371129e3400810f1576e08c`
+  remains `PAUSED` at ownership epoch `1`. Claims are bound to that epoch and
+  the shared Authority
+  `0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19`;
+  the general ControlCap was retired.
+- `expansionPackV8ReleaseEnabled` is the only production product gate set to
+  `true`. `canonicalSoulMintEnabled`, `commerceV5ReleaseEnabled`,
+  `compositionV6ReleaseEnabled`, and `physicalStyleV7ReleaseEnabled` remain
+  `false`; the Complete-to-Soulidity, Complete, and physical bridge checks also
+  remain `false`.
+- Vercel deployment `dpl_GDrUED8AwUfFsRRsSJ9Wzdi6zfW3` is promoted at
+  `https://animacraft.soulidity.ai`. The known web rollback deployment is
+  `dpl_7NwkGiWLh75AbZoaWH2FvjRqbqTY`.
+
+Animacraft product version `0.8.5` remains pre-v1. Move protocol generations are
+tracked separately: the stable original package/legacy TypeOrigin is
+`0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea`;
+the v8 callable package is
+`0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee`
+and its stable v8 TypeOrigin is
+`0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a`.
+The initialized native-USDC protocol-fee objects remain part of the legacy core,
+but canonical Soul integration stays disabled.
 
 The Template Plaza and Docs are public without a wallet. Make OC, Creator Studio, local draft ownership, Walrus writes, publication, archive, and Soulidity handoff require a connected wallet.
 
-Current Mainnet truth: the published package is configured, but discovery currently returns zero verified public Makers. Production therefore renders a creator-first empty state and does not expose bundled starter cards. A player session may open only from a Sui-discovered Maker restored from certified Walrus data; local creator packs remain explicit UI-test fixtures.
+Do not summarize the current production state as "zero Makers." That older
+statement described the legacy `OCMakerPublished` gallery only; the certified,
+on-chain v8 Release above is now independently discoverable. Legacy Maker
+discovery remains a separate signal, and local creator packs remain explicit
+UI-test fixtures rather than production fallbacks.
+
+Chain activation, Walrus certification, the v8-only runtime gate, and web
+promotion are complete. Browser wallet claim/render acceptance is still
+pending because no controlled browser currently has both the ChatGPT control
+extension and a Sui wallet. The pilot must not be described as fully
+end-to-end accepted until that signed browser flow and its render evidence are
+recorded in [MAINNET_SMOKE_TEST.md](./MAINNET_SMOKE_TEST.md).
 
 ## Implemented
 
@@ -62,24 +101,35 @@ enhancement, game attributes and Bundle Sale are not implemented and have no
 placeholder protocol enum. Only an opaque `extensionsHash` reserves a future
 versioned upgrade point.
 
-Every v6 Mainnet Walrus and Sui write gate is off. The v6 authoring and
+The `compositionV6ReleaseEnabled` product gate is off. The v6 authoring and
 validation model may be tested locally, but production must not publish a v6
 companion, admit or sell Item Products, create appearance companions, update a
-Soul appearance or transfer an owned Item. The exact boundary and promotion
-evidence are documented in
+Soul appearance or transfer an owned Item. This does not disable the independent
+FREE v8 pilot described above. The exact v6 boundary and promotion evidence are
+documented in
 [COMPOSABLE_ASSETS_V6.md](./COMPOSABLE_ASSETS_V6.md).
 
-## Remaining Mainnet Activation
+## Remaining Legacy Full-Product Activation
+
+This retained checklist concerns the broader Maker, canonical Soul, Commerce,
+Composition, and Physical product surfaces. It does not describe or gate the
+already-active v8 one-Pack pilot. The older v4 runtime-deployment step is
+complete and is retained here only as release history.
 
 1. Keep the live `UpgradeCap`, `ProtocolFeeAdminCap`, and `Display<OCMaker>` under the documented protocol custody arrangement. The one-time Publisher is now sealed inside the AdminCap.
-2. Merge and deploy the evidence-bearing v4 runtime configuration after CI and Vercel Preview pass.
+2. Preserve the deployed evidence-bearing core runtime configuration and do not conflate it with the independently enabled v8 gate.
 3. Publish one small real Maker through all four Walrus/Sui stages.
 4. Publish the reviewed Soulidity adapter pinned to the v4 release record and verify Soulidity's secondary platform fee remains 250 bps.
 5. Open the Maker from a disconnected browser, connect a second wallet, complete free and paid canonical Soul mints, then withdraw both Maker and protocol shares with their respective Caps.
 6. Verify Maker/Treasury/Cap discovery, Living Content, Soulidity profile/collection, 2.5% resale settlement, archive rejection, restore, and transaction links.
 7. Record the evidence in the release PR before enabling canonical mint.
 
-Until the real Maker smoke and Soulidity migration are evidenced, this is a creator production candidate rather than a completed end-to-end Soul mint release. `canonicalSoulMintEnabled` and the on-chain ProtocolFeeConfig gate both remain `false`, paid mint controls remain fail-closed, and no UI copy should imply that an OC has already been minted.
+Until the real Maker smoke and Soulidity migration are evidenced, the broader
+product remains a creator production candidate rather than a completed
+end-to-end Soul mint release. `canonicalSoulMintEnabled` remains `false`, paid
+mint controls remain fail-closed, and no UI copy should imply that an OC has
+already been minted. Separately, the v8 pilot is chain/storage/web live but is
+not fully end-to-end accepted until its pending wallet claim/render test passes.
 
 ## Invited Pilot Boundary
 

@@ -3,7 +3,10 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
+  MAKER_ACCESS_MODES,
+  createDefaultMakerCommerceV5,
   expansionPackIds,
+  makerCommerceV5AllowsLegacyDefaultRoyaltyFallback,
   makerCommerceV5RequiresRelease,
 } from '../maker-commerce-v5.js';
 
@@ -43,7 +46,7 @@ function functionSource(name) {
 function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (blob) => {
   if ((await blob.text()).includes('broken-image')) throw new Error('decode failed');
   return { width: 1200, height: 630, close() {} };
-}, commerceV5ReleaseEnabled = false) {
+}, commerceV5ReleaseEnabled = false, creatorRoyaltyBps = 0) {
   const functions = [
     'makerV4AssetDescriptor',
     'makerV4RuntimeAssetRecord',
@@ -55,11 +58,12 @@ function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (
     'makerV4DocumentForRelease',
     'makerV4RuntimeAssetsForRelease',
   ].map(functionSource).join('\n');
-  return new Function('runtimeRecords', 'template', 'decodeBitmap', 'commerceV5ReleaseEnabled', 'makerCommerceV5RequiresRelease', 'expansionPackIds', `
+  return new Function('runtimeRecords', 'template', 'decodeBitmap', 'commerceV5ReleaseEnabled', 'creatorRoyaltyBps', 'makerCommerceV5RequiresRelease', 'makerCommerceV5AllowsLegacyDefaultRoyaltyFallback', 'expansionPackIds', `
     const currentV4RuntimeAssets = () => runtimeRecords;
     const activeTemplate = () => template;
-    const state = { makerDocumentV4: null };
-    const $ = () => null;
+    const state = { makerDocumentV4: null, publishedMakerDocumentV4: null };
+    const makerIsPublished = () => template.published === true;
+    const $ = (id) => id === 'creatorRoyalty' ? { value: String(creatorRoyaltyBps) } : null;
     const isMakerV4Document = (document) => Boolean(document?.metadata && document?.canvas);
     const normalizeLivingContent = (livingContent) => livingContent;
     const decimalCoinToAtomic = () => 0;
@@ -94,7 +98,9 @@ function coverHarness(runtimeRecords = [], template = {}, decodeBitmap = async (
     template,
     decodeBitmap,
     commerceV5ReleaseEnabled,
+    creatorRoyaltyBps,
     makerCommerceV5RequiresRelease,
+    makerCommerceV5AllowsLegacyDefaultRoyaltyFallback,
     expansionPackIds,
   );
 }
@@ -132,6 +138,11 @@ function chainCoverHarness() {
 
 function minimalDocument() {
   return {
+    version: {
+      number: 1,
+      parentVersionId: null,
+      createdAt: null,
+    },
     metadata: {
       name: 'Maker',
       summary: 'Summary',
@@ -460,6 +471,123 @@ test('Commerce v5 release disables every legacy v4 mint surface in the immutable
   assert.equal(release.publication.mintingEnabled, false);
   assert.equal(release.publication.mintFeeEnabled, false);
   assert.equal(release.publication.mintPriceAtomic, 0);
+});
+
+test('legacy release strips only a Commerce royalty that exactly mirrors publication', () => {
+  const mirrored = minimalDocument();
+  mirrored.publication.royaltyBps = 300;
+  mirrored.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 300,
+  });
+  const legacyRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: mirrored });
+  assert.equal(legacyRelease.publication.royaltyBps, 300);
+  assert.equal(Object.hasOwn(legacyRelease, 'commerce'), false);
+
+  const mismatched = minimalDocument();
+  mismatched.publication.royaltyBps = 300;
+  mismatched.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 350,
+  });
+  const blockedRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: mismatched });
+  assert.equal(blockedRelease.commerce.makerSourceRoyaltyBps, 350);
+});
+
+test('Maker release royalty stays canonical when the legacy shell projection is stale', () => {
+  const source = minimalDocument();
+  source.publication.royaltyBps = 350;
+  source.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 350,
+  });
+  const release = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: source });
+
+  assert.equal(release.publication.royaltyBps, 350);
+  assert.equal(Object.hasOwn(release, 'commerce'), false);
+});
+
+test('stale shell royalty cannot activate the initial-default compatibility fallback', () => {
+  const source = minimalDocument();
+  source.publication.royaltyBps = 350;
+  source.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 250,
+  });
+  const release = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: source });
+
+  assert.equal(release.publication.royaltyBps, 350);
+  assert.equal(release.commerce.makerSourceRoyaltyBps, 250);
+});
+
+test('gate-off release keeps canonical mint policy instead of a stale shell projection', () => {
+  const disabled = minimalDocument();
+  disabled.publication = {
+    royaltyBps: 300,
+    mintingEnabled: false,
+    mintFeeEnabled: false,
+    mintPriceAtomic: 0,
+  };
+  const disabledRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: disabled });
+  assert.equal(disabledRelease.publication.mintingEnabled, false);
+
+  const paid = minimalDocument();
+  paid.publication = {
+    royaltyBps: 300,
+    mintingEnabled: true,
+    mintFeeEnabled: true,
+    mintPriceAtomic: 99_000_000,
+  };
+  const paidRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: paid });
+  assert.equal(paidRelease.publication.mintingEnabled, true);
+  assert.equal(paidRelease.publication.mintFeeEnabled, true);
+  assert.equal(paidRelease.publication.mintPriceAtomic, 99_000_000);
+});
+
+test('legacy release strips the known initial 250-to-300 default mismatch but not a custom mismatch', () => {
+  const affectedInitialDraft = minimalDocument();
+  affectedInitialDraft.publication.royaltyBps = 300;
+  affectedInitialDraft.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 250,
+  });
+  const compatibleRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: affectedInitialDraft });
+  assert.equal(compatibleRelease.publication.royaltyBps, 300);
+  assert.equal(Object.hasOwn(compatibleRelease, 'commerce'), false);
+
+  const publishedInitialDraft = minimalDocument();
+  publishedInitialDraft.publication.royaltyBps = 300;
+  publishedInitialDraft.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 250,
+  });
+  const publishedRelease = coverHarness([], { published: true }, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: publishedInitialDraft });
+  assert.equal(publishedRelease.commerce.makerSourceRoyaltyBps, 250);
+
+  const customMismatch = minimalDocument();
+  customMismatch.publication.royaltyBps = 300;
+  customMismatch.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 350,
+  });
+  const blockedRelease = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: customMismatch });
+  assert.equal(blockedRelease.commerce.makerSourceRoyaltyBps, 350);
+});
+
+test('legacy release never strips another Commerce v5 feature with a mirrored royalty', () => {
+  const source = minimalDocument();
+  source.commerce = createDefaultMakerCommerceV5({
+    makerSourceRoyaltyBps: 300,
+    makerAccess: {
+      mode: MAKER_ACCESS_MODES.ONE_TIME_PAID,
+      purchasePriceAtomic: 1_000_000,
+    },
+  });
+  const release = coverHarness([], {}, undefined, false, 300)
+    .makerV4DocumentForRelease({ sourceDocument: source });
+  assert.equal(release.commerce.makerAccess.mode, MAKER_ACCESS_MODES.ONE_TIME_PAID);
 });
 
 test('publication never renders an internal OC composite as a Maker cover', () => {

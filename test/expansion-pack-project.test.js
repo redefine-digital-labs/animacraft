@@ -2,11 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  EXPANSION_PACK_ACCESS_MODES,
   EXPANSION_PACK_PARENT_INHERITANCE,
   EXPANSION_PACK_PARENT_BINDING_KINDS,
+  EXPANSION_PACK_PART_MODES,
   EXPANSION_PACK_PROJECT_SCHEMA,
+  addExpansionPackColorChannel,
+  addExpansionPackColorSwatch,
   addExpansionPackItem,
+  addExpansionPackLayerTrack,
   addExpansionPackOptionalPart,
+  addExpansionPackRule,
   addExpansionPackStyle,
   createExpansionPackProjectPreviewRecipe,
   createExpansionPackProject,
@@ -15,12 +21,28 @@ import {
   preflightExpansionPackProject,
   readExpansionPackParentSnapshot,
   rebindExpansionPackProjectToPublishedRelease,
+  moveExpansionPackLayerTrack,
+  removeExpansionPackColorChannel,
+  removeExpansionPackColorSwatch,
   removeExpansionPackItem,
+  removeExpansionPackLayerTrack,
   removeExpansionPackPart,
+  removeExpansionPackRule,
   removeExpansionPackStyle,
+  renameExpansionPackLayerTrack,
   rehydrateExpansionPackProject,
+  setExpansionPackLayerTrackLocked,
+  setExpansionPackPartMode,
+  updateExpansionPackColorChannel,
+  updateExpansionPackColorSwatch,
+  updateExpansionPackItemRules,
+  updateExpansionPackPartRules,
+  updateExpansionPackRule,
   updateExpansionPackStyle,
+  updateExpansionPackStyleRules,
+  updateExpansionPackCommerce,
 } from '../expansion-pack-project.js';
+import { evaluateRecipe } from '../maker-rules.js';
 
 function baseMaker() {
   return {
@@ -349,7 +371,14 @@ test('migrates a matching embedded overlay into an independent deeply copied pro
   assert.equal(project.parentBinding.rootMakerId, 'maker-root');
   assert.equal(project.parentBinding.versionNumber, '3');
   assert.equal(project.parentBinding.manifestHash, 'parent-manifest-hash');
-  assert.deepEqual(project.pack, embedded);
+  assert.deepEqual(project.pack, {
+    ...embedded,
+    wardrobe: {
+      schemaVersion: 'animacraft.expansion-pack-wardrobe.v1',
+      partModes: {},
+    },
+    commerce: project.pack.commerce,
+  });
   assert.notEqual(project.pack, embedded);
   assert.notEqual(project.pack.parts, embedded.parts);
   assert.ok(Object.isFrozen(project.parentSnapshot));
@@ -575,6 +604,42 @@ test('merged preview Recipe selects Pack-owned Items, Styles and optional Parts 
   );
 });
 
+test('preflight rejects a Pack rule that makes its merged preview choice unreachable', () => {
+  let project = addExpansionPackItem(createProject(), {
+    partId: 'body',
+    item: {
+      id: 'armor',
+      name: 'Armor',
+      defaultStyleId: 'default',
+      styles: [{
+        id: 'default',
+        assetId: 'body-art',
+        layerTrackId: 'body-track',
+      }],
+    },
+  });
+  project = addExpansionPackRule(project, {
+    id: 'armor-excludes-body',
+    type: 'excludes',
+    trigger: { scope: 'pack', partId: 'body', itemId: 'armor' },
+    targets: [{ scope: 'base', partId: 'body' }],
+  });
+
+  const merged = mergeExpansionPackProjectPreview(project);
+  const previewRecipe = createExpansionPackProjectPreviewRecipe(project, merged);
+  assert.equal(evaluateRecipe(merged, previewRecipe).valid, false);
+
+  const result = preflightExpansionPackProject(project);
+  assert.equal(result.valid, false);
+  assert.equal(result.publishable, false);
+  assert.equal(result.preview, null);
+  assert.ok(result.errors.some((issue) => issue.code === 'pack-preview-recipe-rule-violation'));
+  assert.ok(result.errors.some((issue) => (
+    issue.code === 'unreachable-public-item-rules'
+    && issue.path === 'body/moon__armor'
+  )));
+});
+
 test('updates and removes only Pack-owned content while pruning empty parent extensions', () => {
   const parent = baseMaker();
   const parentBefore = structuredClone(parent);
@@ -716,4 +781,345 @@ test('Style updates reject unsupported fields and invalid render parameters', ()
   assert.throws(() => update({ blendMode: 'unknown-mode' }), (error) => (
     error?.code === 'invalid-pack-style-blend-mode'
   ));
+});
+
+test('Pack commerce is independently configurable as Free or one-time permanent USDC access', () => {
+  const source = createProject();
+  assert.deepEqual(
+    {
+      accessMode: source.pack.commerce.accessMode,
+      price: source.pack.commerce.purchasePriceAtomic,
+      currency: source.pack.commerce.currency,
+      fee: source.pack.commerce.protocolFeeBps,
+    },
+    { accessMode: EXPANSION_PACK_ACCESS_MODES.FREE, price: '0', currency: 'USDC', fee: 1000 },
+  );
+
+  const paid = updateExpansionPackCommerce(source, {
+    accessMode: EXPANSION_PACK_ACCESS_MODES.PAID_ONCE,
+    priceDecimal: '6.25',
+  }, { now: 900 });
+  assert.equal(paid.pack.commerce.purchasePriceAtomic, '6250000');
+  assert.equal(paid.pack.commerce.priceDecimal, '6.25');
+  assert.equal(paid.pack.commerce.entitlement, 'PERMANENT_WALLET_BOUND_PASS');
+  assert.equal(paid.pack.commerce.completeMode, 'INHERIT_BASE_AND_UNLIMITED_AFTER_ACCESS');
+  assert.equal(source.pack.commerce.accessMode, EXPANSION_PACK_ACCESS_MODES.FREE);
+
+  const freeAgain = updateExpansionPackCommerce(paid, {
+    accessMode: EXPANSION_PACK_ACCESS_MODES.FREE,
+  });
+  assert.equal(freeAgain.pack.commerce.purchasePriceAtomic, '0');
+  assert.equal(freeAgain.pack.commerce.priceDecimal, '0');
+  assert.throws(
+    () => updateExpansionPackCommerce(source, {
+      accessMode: EXPANSION_PACK_ACCESS_MODES.PAID_ONCE,
+      priceDecimal: '1.0000001',
+    }),
+    { code: 'invalid-pack-purchase-price' },
+  );
+});
+
+function moonSwatch(id, color) {
+  return {
+    id,
+    name: id,
+    hintColor: color,
+    stops: [
+      { offset: 0, color: '#000000' },
+      { offset: 1, color },
+    ],
+  };
+}
+
+test('Pack-owned Layer Tracks support immutable CRUD, suffix ordering and lock safety', () => {
+  const parent = baseMaker();
+  const parentJson = JSON.stringify(parent);
+  const source = createProject(parent);
+  const one = addExpansionPackLayerTrack(source, {
+    id: 'behind',
+    name: 'Behind',
+    locked: false,
+  }, { now: 200 });
+  const two = addExpansionPackLayerTrack(one, {
+    id: 'front',
+    name: 'Front',
+    locked: false,
+  }, { now: 300 });
+  const reordered = moveExpansionPackLayerTrack(two, 'front', 0, { now: 400 });
+  const renamed = renameExpansionPackLayerTrack(reordered, 'front', 'Moon Front', { now: 500 });
+  const locked = setExpansionPackLayerTrackLocked(renamed, 'front', true, { now: 600 });
+
+  assert.deepEqual(source.pack.layerTracks, []);
+  assert.deepEqual(two.pack.layerTracks.map((track) => track.id), ['behind', 'front']);
+  assert.deepEqual(reordered.pack.layerTracks.map((track) => [track.id, track.order]), [
+    ['front', 0],
+    ['behind', 1],
+  ]);
+  assert.equal(renamed.pack.layerTracks[0].name, 'Moon Front');
+  assert.equal(locked.pack.layerTracks[0].locked, true);
+  assert.equal(locked.updatedAt, 600);
+  assert.throws(() => removeExpansionPackLayerTrack(locked, 'front'), { code: 'pack-layer-track-locked' });
+  assert.throws(() => moveExpansionPackLayerTrack(locked, 'behind', 0), { code: 'pack-layer-track-locked' });
+  assert.throws(() => renameExpansionPackLayerTrack(source, 'body-track', 'Nope'), { code: 'parent-definition-readonly' });
+  assert.throws(() => setExpansionPackLayerTrackLocked(source, 'body-track', true), { code: 'parent-definition-readonly' });
+
+  const unlocked = setExpansionPackLayerTrackLocked(locked, 'front', false);
+  const removed = removeExpansionPackLayerTrack(unlocked, 'front', { now: 700 });
+  assert.deepEqual(removed.pack.layerTracks.map((track) => [track.id, track.order]), [['behind', 0]]);
+  const merged = mergeExpansionPackProjectPreview(removed);
+  assert.deepEqual(merged.layerTracks.map((track) => track.id), ['body-track', 'moon__behind']);
+  assert.deepEqual(merged.layerTracks.map((track) => track.order), [0, 1]);
+  assert.equal(JSON.stringify(parent), parentJson);
+  assert.equal(JSON.stringify(source.parentSnapshot), parentJson);
+});
+
+test('Smart Color CRUD, Style linkage and preview colors remain Pack-owned and fail closed', () => {
+  const parent = baseMaker();
+  const parentJson = JSON.stringify(parent);
+  let project = addExpansionPackColorChannel(createProject(parent), {
+    id: 'moon-tone',
+    name: 'Moon Tone',
+    mode: 'gradient-map',
+    defaultSwatchId: 'silver',
+    swatches: [moonSwatch('silver', '#c0c0c0')],
+  }, { now: 200 });
+  project = addExpansionPackColorSwatch(project, 'moon-tone', moonSwatch('gold', '#ffd700'), { now: 300 });
+  project = updateExpansionPackColorSwatch(project, 'moon-tone', 'gold', {
+    name: 'Solar Gold',
+    hintColor: '#ffcc00',
+    stops: [{ offset: 0, color: '#000000' }, { offset: 1, color: '#ffcc00' }],
+  }, { now: 400 });
+  project = updateExpansionPackColorChannel(project, 'moon-tone', {
+    name: 'Celestial Tone',
+    defaultSwatchId: 'gold',
+  }, { now: 500 });
+  project = addExpansionPackItem(project, {
+    partId: 'body',
+    item: {
+      id: 'lunar-body',
+      styles: [{ id: 'default', assetId: 'body-art', layerTrackId: 'body-track' }],
+    },
+  });
+  project = updateExpansionPackStyle(project, 'body', 'lunar-body', 'default', {
+    colorChannelId: 'moon-tone',
+  }, { now: 600 });
+
+  assert.equal(project.pack.colorChannels[0].name, 'Celestial Tone');
+  assert.equal(project.pack.colorChannels[0].swatches[1].name, 'Solar Gold');
+  assert.equal(project.pack.parts[0].items[0].styles[0].colorChannelId, 'moon-tone');
+  assert.throws(() => removeExpansionPackColorChannel(project, 'moon-tone'), { code: 'pack-color-channel-in-use' });
+  const merged = mergeExpansionPackProjectPreview(project);
+  const style = merged.parts[0].items.find((item) => item.id === 'moon__lunar-body').styles[0];
+  assert.equal(style.colorChannelId, 'moon__moon-tone');
+  assert.equal(merged.colorChannels.at(-1).id, 'moon__moon-tone');
+  assert.deepEqual(createExpansionPackProjectPreviewRecipe(project, merged).colors.at(-1), {
+    channelId: 'moon__moon-tone',
+    swatchId: 'gold',
+  });
+
+  const detached = updateExpansionPackStyle(project, 'body', 'lunar-body', 'default', { colorChannelId: null });
+  const oneSwatch = removeExpansionPackColorSwatch(detached, 'moon-tone', 'silver');
+  assert.throws(() => removeExpansionPackColorSwatch(oneSwatch, 'moon-tone', 'gold'), { code: 'last-pack-color-swatch' });
+  const removed = removeExpansionPackColorChannel(oneSwatch, 'moon-tone');
+  assert.deepEqual(removed.pack.colorChannels, []);
+  assert.throws(() => updateExpansionPackColorChannel(createProject(parent), 'parent-tone', { name: 'Nope' }), {
+    code: 'parent-definition-readonly',
+  });
+
+  const invalidRef = updateExpansionPackStyle(detached, 'body', 'lunar-body', 'default', { colorChannelId: 'missing' });
+  const invalidResult = preflightExpansionPackProject(invalidRef);
+  assert.equal(invalidResult.valid, false);
+  assert.ok(invalidResult.errors.some((issue) => issue.code === 'missing-pack-style-color-channel'));
+  assert.equal(JSON.stringify(parent), parentJson);
+});
+
+test('Pack rules and embedded requires/excludes/visibleWhen preserve base/local scope restrictions', () => {
+  let project = addExpansionPackOptionalPart(createProject(), {
+    part: {
+      id: 'hat',
+      name: 'Hat',
+      items: [{
+        id: 'halo',
+        name: 'Halo',
+        styles: [{ id: 'default', assetId: 'body-art', layerTrackId: 'body-track' }],
+      }],
+    },
+  });
+  project = addExpansionPackRule(project, {
+    id: 'hat-needs-body',
+    type: 'requires',
+    trigger: { scope: 'pack', partId: 'hat', itemId: 'halo' },
+    targets: [{ scope: 'base', partId: 'body', itemId: 'body-default' }],
+  }, { now: 200 });
+  project = updateExpansionPackRule(project, 'hat-needs-body', {
+    type: 'excludes',
+    targets: [{ scope: 'base', partId: 'body', itemId: 'body-default', styleId: 'default' }],
+  }, { now: 300 });
+  project = updateExpansionPackPartRules(project, 'hat', {
+    requires: [{ scope: 'base', partId: 'body' }],
+    visibleWhen: { op: 'selected', scope: 'base', partId: 'body' },
+  });
+  project = updateExpansionPackItemRules(project, 'hat', 'halo', {
+    excludes: [{ scope: 'base', partId: 'body', itemId: 'body-default' }],
+  });
+  project = updateExpansionPackStyleRules(project, 'hat', 'halo', 'default', {
+    visibleWhen: { op: 'selected', scope: 'base', partId: 'body', itemId: 'body-default' },
+  }, { now: 400 });
+
+  assert.equal(project.updatedAt, 400);
+  const merged = mergeExpansionPackProjectPreview(project);
+  const hat = merged.parts.find((part) => part.id === 'moon__hat');
+  assert.deepEqual(hat.requires, [{ scope: 'base', partId: 'body' }]);
+  assert.equal(hat.items[0].styles[0].visibleWhen.partId, 'body');
+  assert.equal(merged.rules[0].id, 'moon__hat-needs-body');
+
+  assert.throws(() => addExpansionPackRule(project, {
+    id: 'base-needs-hat',
+    type: 'requires',
+    trigger: { scope: 'base', partId: 'body' },
+    targets: [{ scope: 'pack', partId: 'hat' }],
+  }), (error) => (
+    error?.code === 'invalid-pack-rule-model'
+    && error.details.errors.some((issue) => issue.code === 'pack-rule-breaks-base-recipe')
+  ));
+  assert.throws(() => addExpansionPackRule(project, {
+    id: 'base-excludes-base',
+    type: 'excludes',
+    trigger: { scope: 'base', partId: 'body' },
+    targets: [{ scope: 'base', partId: 'body', itemId: 'body-default' }],
+  }), { code: 'invalid-pack-rule-model' });
+  assert.throws(() => updateExpansionPackPartRules(project, 'body', { requires: [] }), {
+    code: 'parent-definition-readonly',
+  });
+  const removed = removeExpansionPackRule(project, 'hat-needs-body', { now: 500 });
+  assert.deepEqual(removed.pack.rules, []);
+});
+
+test('Pack wardrobe modes namespace only optional Pack Parts and append compatible extension deltas', () => {
+  const parent = baseMaker();
+  parent.extensions.wardrobeV7 = {
+    schemaVersion: 'animacraft.maker-wardrobe.v7',
+    marker: 'keep-parent-wardrobe',
+    partModes: { body: 'FIXED' },
+  };
+  parent.extensions.composableV6 = {
+    schemaVersion: 'animacraft.maker-composable-draft.v6',
+    marker: 'keep-parent-composable',
+    profile: { mode: 'COMPOSABLE' },
+    compatibility: {
+      makerRootId: 'maker-root',
+      marker: 'keep-compatibility',
+      layerTrackIds: ['body-track'],
+      slots: [{ id: 'body', capacity: 1, required: true, layerTrackIds: ['body-track'] }],
+    },
+  };
+  const parentJson = JSON.stringify(parent);
+  let project = addExpansionPackLayerTrack(createProject(parent), { id: 'hat-track', name: 'Hat' });
+  project = addExpansionPackOptionalPart(project, {
+    part: {
+      id: 'hat',
+      name: 'Hat',
+      items: [{
+        id: 'halo',
+        styles: [{ id: 'default', assetId: 'body-art', layerTrackId: 'hat-track' }],
+      }],
+    },
+  });
+  project = setExpansionPackPartMode(project, 'hat', EXPANSION_PACK_PART_MODES.SLOT, { now: 300 });
+  const merged = mergeExpansionPackProjectPreview(project);
+
+  assert.equal(project.pack.wardrobe.partModes.hat, 'SLOT');
+  assert.deepEqual(merged.extensions.wardrobeV7, {
+    schemaVersion: 'animacraft.maker-wardrobe.v7',
+    marker: 'keep-parent-wardrobe',
+    partModes: { body: 'FIXED', moon__hat: 'SLOT' },
+  });
+  assert.equal(merged.extensions.composableV6.marker, 'keep-parent-composable');
+  assert.equal(merged.extensions.composableV6.compatibility.marker, 'keep-compatibility');
+  assert.deepEqual(merged.extensions.composableV6.compatibility.layerTrackIds, ['body-track', 'moon__hat-track']);
+  assert.deepEqual(merged.extensions.composableV6.compatibility.slots.at(-1), {
+    id: 'moon__hat',
+    capacity: 1,
+    required: false,
+    layerTrackIds: ['moon__hat-track'],
+  });
+  assert.equal(JSON.stringify(parent), parentJson);
+  assert.equal(JSON.stringify(project.parentSnapshot), parentJson);
+  assert.throws(() => setExpansionPackPartMode(project, 'body', 'SLOT'), { code: 'parent-definition-readonly' });
+  const withoutPart = removeExpansionPackPart(project, 'hat');
+  assert.deepEqual(withoutPart.pack.wardrobe.partModes, {});
+
+  const noComposableParent = baseMaker();
+  delete noComposableParent.extensions.composableV6;
+  let noComposable = addExpansionPackOptionalPart(createProject(noComposableParent), {
+    part: { id: 'cape', name: 'Cape', items: [] },
+  });
+  assert.throws(
+    () => setExpansionPackPartMode(noComposable, 'cape', 'SLOT'),
+    { code: 'pack-slot-requires-composable-v6-parent' },
+  );
+  noComposable = setExpansionPackPartMode(noComposable, 'cape', 'FIXED');
+  const noComposableMerged = mergeExpansionPackProjectPreview(noComposable);
+  assert.equal(Object.hasOwn(noComposableMerged.extensions, 'composableV6'), false);
+  assert.equal(noComposableMerged.extensions.wardrobeV7.partModes.moon__cape, 'FIXED');
+});
+
+test('SLOT requires both COMPOSABLE profile mode and compatibility, including for loaded legacy projects', () => {
+  const missingCompatibilityParent = baseMaker();
+  missingCompatibilityParent.extensions.composableV6 = {
+    schemaVersion: 'animacraft.maker-composable-draft.v6',
+    profile: { mode: 'COMPOSABLE' },
+  };
+  let missingCompatibility = addExpansionPackOptionalPart(createProject(missingCompatibilityParent), {
+    part: { id: 'cape', name: 'Cape', items: [] },
+  });
+  assert.throws(
+    () => setExpansionPackPartMode(missingCompatibility, 'cape', 'SLOT'),
+    { code: 'pack-slot-requires-composable-v6-parent' },
+  );
+
+  const fixedProfileParent = baseMaker();
+  fixedProfileParent.extensions.composableV6 = {
+    schemaVersion: 'animacraft.maker-composable-draft.v6',
+    profile: { mode: 'FIXED' },
+    compatibility: { makerRootId: 'maker-root', layerTrackIds: ['body-track'], slots: [] },
+  };
+  let fixedProfile = addExpansionPackOptionalPart(createProject(fixedProfileParent), {
+    part: { id: 'cape', name: 'Cape', items: [] },
+  });
+  assert.throws(
+    () => setExpansionPackPartMode(fixedProfile, 'cape', 'SLOT'),
+    { code: 'pack-slot-requires-composable-v6-parent' },
+  );
+
+  const legacyLoaded = rehydrateExpansionPackProject(fixedProfile);
+  legacyLoaded.pack.wardrobe.partModes.cape = 'SLOT';
+  const result = preflightExpansionPackProject(legacyLoaded);
+  assert.equal(result.valid, false);
+  assert.equal(result.publishable, false);
+  assert.ok(result.errors.some((issue) => (
+    issue.code === 'pack-slot-requires-composable-v6-parent'
+    && issue.partIds.includes('cape')
+  )));
+});
+
+test('legacy project rehydration backfills additive arrays and wardrobe without mutating input', () => {
+  const legacy = structuredClone(createProject());
+  delete legacy.pack.layerTracks;
+  delete legacy.pack.colorChannels;
+  delete legacy.pack.rules;
+  delete legacy.pack.wardrobe;
+  const before = structuredClone(legacy);
+  const rehydrated = rehydrateExpansionPackProject(legacy);
+
+  assert.deepEqual(legacy, before);
+  assert.deepEqual(rehydrated.pack.layerTracks, []);
+  assert.deepEqual(rehydrated.pack.colorChannels, []);
+  assert.deepEqual(rehydrated.pack.rules, []);
+  assert.deepEqual(rehydrated.pack.wardrobe, {
+    schemaVersion: 'animacraft.expansion-pack-wardrobe.v1',
+    partModes: {},
+  });
+  assert.ok(Object.isFrozen(rehydrated.parentSnapshot));
+  assert.throws(() => { rehydrated.parentSnapshot.parts[0].name = 'mutated'; }, TypeError);
 });

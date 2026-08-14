@@ -23,6 +23,21 @@ export const MAKER_ACCESS_MODES = Object.freeze({
   ONE_TIME_PAID: 'ONE_TIME_PAID',
 });
 
+export const MAKER_COMMERCE_V5_RELEASE_REASONS = Object.freeze({
+  INVALID_COMMERCE: 'invalid_commerce',
+  INVALID_LEGACY_ROYALTY: 'invalid_legacy_royalty',
+  RIGHTS_ONCHAIN_NATIVE: 'rights_onchain_native',
+  RIGHTS_ORIGIN_CONFIRMED: 'rights_origin_confirmed',
+  EMBEDDED_EXPANSION_PACK: 'embedded_expansion_pack',
+  PACK_PAID_ACCESS: 'pack_paid_access',
+  PACK_COMPLETION_POLICY: 'pack_completion_policy',
+  MAKER_PAID_ACCESS: 'maker_paid_access',
+  BASE_COMPLETION_POLICY: 'base_completion_policy',
+  MAKER_SOURCE_ROYALTY_MISMATCH: 'maker_source_royalty_mismatch',
+  SOUL_CREATOR_ROYALTY: 'soul_creator_royalty',
+  MAKER_RESALE_ROYALTY: 'maker_resale_royalty',
+});
+
 export const ONCHAIN_MAKER_STATES = Object.freeze({
   ACTIVE: 'ACTIVE',
   PAUSED: 'PAUSED',
@@ -163,30 +178,196 @@ function completionPolicyRequiresV5(policy) {
   );
 }
 
-export function makerCommerceV5RequiresRelease(
-  value,
-  { packIds = [] } = {},
-) {
+const MAKER_COMMERCE_V5_RELEASE_ISSUES = Object.freeze({
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.INVALID_COMMERCE]: Object.freeze({
+    code: 'commerce_v5_invalid_commerce',
+    path: 'commerce',
+    message: 'Commerce settings are malformed and cannot be safely represented by a legacy v4 release.',
+  }),
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.INVALID_LEGACY_ROYALTY]: Object.freeze({
+    code: 'commerce_v5_invalid_legacy_royalty',
+    path: 'publication.royaltyBps',
+    message: 'The legacy publication royalty is invalid, so Commerce royalty compatibility cannot be proven.',
+  }),
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.RIGHTS_ONCHAIN_NATIVE]: Object.freeze({
+    code: 'commerce_v5_rights_onchain_native',
+    path: 'commerce.rightsOrigin',
+    message: 'On-chain-native rights require the Commerce v5 release gate.',
+  }),
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.RIGHTS_ORIGIN_CONFIRMED]: Object.freeze({
+    code: 'commerce_v5_rights_origin_confirmed',
+    path: 'commerce.rightsOriginConfirmed',
+    message: 'Traditional-license rights were confirmed early. Withdraw the early confirmation in Commerce & Rights, or wait for Commerce v5.',
+  }),
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.EMBEDDED_EXPANSION_PACK]: Object.freeze({
+    code: 'commerce_v5_embedded_expansion_pack',
+    path: 'commerce.packPolicies',
+    message: 'Embedded Expansion Packs require the Commerce v5 release gate; independent Pack drafts do not block the parent Maker.',
+  }),
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.PACK_PAID_ACCESS]: Object.freeze({
+    code: 'commerce_v5_pack_paid_access',
+    path: 'commerce.packPolicies',
+    message: 'Paid Expansion Pack access requires the Commerce v5 release gate.',
+  }),
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.PACK_COMPLETION_POLICY]: Object.freeze({
+    code: 'commerce_v5_pack_completion_policy',
+    path: 'commerce.packPolicies',
+    message: 'Expansion Pack Complete quotas, prices or caps require the Commerce v5 release gate.',
+  }),
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.MAKER_PAID_ACCESS]: Object.freeze({
+    code: 'commerce_v5_maker_paid_access',
+    path: 'commerce.makerAccess',
+    message: 'Paid Maker access requires the Commerce v5 release gate.',
+  }),
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.BASE_COMPLETION_POLICY]: Object.freeze({
+    code: 'commerce_v5_base_completion_policy',
+    path: 'commerce.baseCompletion',
+    message: 'Maker Complete quotas, prices or caps require the Commerce v5 release gate.',
+  }),
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.MAKER_SOURCE_ROYALTY_MISMATCH]: Object.freeze({
+    code: 'commerce_v5_maker_source_royalty_mismatch',
+    path: 'commerce.makerSourceRoyaltyBps',
+    message: 'The Maker source royalty must exactly match the legacy publication royalty while the Commerce v5 gate is closed.',
+  }),
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.SOUL_CREATOR_ROYALTY]: Object.freeze({
+    code: 'commerce_v5_soul_creator_royalty',
+    path: 'commerce.soulCreatorRoyaltyBps',
+    message: 'A custom Soul creator royalty requires the Commerce v5 release gate.',
+  }),
+  [MAKER_COMMERCE_V5_RELEASE_REASONS.MAKER_RESALE_ROYALTY]: Object.freeze({
+    code: 'commerce_v5_maker_resale_royalty',
+    path: 'commerce.makerResaleRoyaltyBps',
+    message: 'A custom Maker resale royalty requires the Commerce v5 release gate.',
+  }),
+});
+
+function canonicalRoyaltyBps(value) {
+  return Boolean(
+    Number.isSafeInteger(value)
+    && value >= 0
+    && value <= MAX_ROYALTY_BPS
+    && value % 50 === 0
+  );
+}
+
+/**
+ * Returns every stable reason that prevents a Commerce-v5 draft from being
+ * projected into a legacy v4 release. Reasons are emitted in a fixed order so
+ * Preflight, tests and other callers can render the same diagnosis.
+ */
+export function makerCommerceV5ReleaseReasons(value, options = {}) {
+  const { packIds = [] } = options;
   const declaredPackIds = [...new Set(packIds.map(String).filter(Boolean))];
-  const normalized = normalizeMakerCommerceV5(value, {
+  const legacyPublicationRoyaltyBps = options.legacyPublicationRoyaltyBps;
+  const source = value;
+  if (collectMakerCommerceV5Issues(source, {
+    packIds: declaredPackIds,
+    publish: false,
+  }).length) {
+    return [MAKER_COMMERCE_V5_RELEASE_REASONS.INVALID_COMMERCE];
+  }
+
+  const reasons = [];
+  const normalized = normalizeMakerCommerceV5(source, {
     packIds: declaredPackIds,
   });
   const defaults = createDefaultMakerCommerceV5();
-  const sourcePackPolicies = Array.isArray(value?.packPolicies)
-    ? value.packPolicies
-    : [];
+  const hasLegacyPublicationRoyaltyContext = Object.hasOwn(
+    options,
+    'legacyPublicationRoyaltyBps',
+  );
+  if (
+    hasLegacyPublicationRoyaltyContext
+    && !canonicalRoyaltyBps(legacyPublicationRoyaltyBps)
+  ) {
+    reasons.push(MAKER_COMMERCE_V5_RELEASE_REASONS.INVALID_LEGACY_ROYALTY);
+  }
+
+  if (normalized.rightsOrigin === RIGHTS_ORIGINS.ONCHAIN_NATIVE) {
+    reasons.push(MAKER_COMMERCE_V5_RELEASE_REASONS.RIGHTS_ONCHAIN_NATIVE);
+  }
+  if (
+    normalized.rightsOrigin === RIGHTS_ORIGINS.LICENSE_WRAPPED
+    && normalized.rightsOriginConfirmed === true
+  ) {
+    reasons.push(MAKER_COMMERCE_V5_RELEASE_REASONS.RIGHTS_ORIGIN_CONFIRMED);
+  }
+
+  if (declaredPackIds.length > 0 || source.packPolicies.length > 0) {
+    reasons.push(MAKER_COMMERCE_V5_RELEASE_REASONS.EMBEDDED_EXPANSION_PACK);
+  }
+  if (normalized.packPolicies.some((policy) => (
+    policy.accessMode === PACK_ACCESS_MODES.ONE_TIME_PAID
+  ))) {
+    reasons.push(MAKER_COMMERCE_V5_RELEASE_REASONS.PACK_PAID_ACCESS);
+  }
+  if (normalized.packPolicies.some((policy) => (
+    completionPolicyRequiresV5(policy.completion)
+  ))) {
+    reasons.push(MAKER_COMMERCE_V5_RELEASE_REASONS.PACK_COMPLETION_POLICY);
+  }
+
+  if (normalized.makerAccess.mode === MAKER_ACCESS_MODES.ONE_TIME_PAID) {
+    reasons.push(MAKER_COMMERCE_V5_RELEASE_REASONS.MAKER_PAID_ACCESS);
+  }
+  if (completionPolicyRequiresV5(normalized.baseCompletion)) {
+    reasons.push(MAKER_COMMERCE_V5_RELEASE_REASONS.BASE_COMPLETION_POLICY);
+  }
+
+  const makerSourceRoyaltyMirrorsLegacyPublication = Boolean(
+    hasLegacyPublicationRoyaltyContext
+    && canonicalRoyaltyBps(legacyPublicationRoyaltyBps)
+    && source.makerSourceRoyaltyBps === legacyPublicationRoyaltyBps
+  );
+  // v1 Makers created by the affected legacy UI wrote publication=300 while
+  // leaving Commerce at its synthetic default 250. This narrow, explicit
+  // compatibility option is never inferred by the model helper itself.
+  const knownLegacyDefaultRoyaltyMismatch = Boolean(
+    options.allowLegacyDefaultRoyaltyFallback === true
+    && source.makerSourceRoyaltyBps === defaults.makerSourceRoyaltyBps
+    && legacyPublicationRoyaltyBps === 300
+  );
+  if (
+    hasLegacyPublicationRoyaltyContext
+      ? !makerSourceRoyaltyMirrorsLegacyPublication && !knownLegacyDefaultRoyaltyMismatch
+      : source.makerSourceRoyaltyBps !== defaults.makerSourceRoyaltyBps
+  ) {
+    reasons.push(MAKER_COMMERCE_V5_RELEASE_REASONS.MAKER_SOURCE_ROYALTY_MISMATCH);
+  }
+  if (normalized.soulCreatorRoyaltyBps !== defaults.soulCreatorRoyaltyBps) {
+    reasons.push(MAKER_COMMERCE_V5_RELEASE_REASONS.SOUL_CREATOR_ROYALTY);
+  }
+  if (normalized.makerResaleRoyaltyBps !== defaults.makerResaleRoyaltyBps) {
+    reasons.push(MAKER_COMMERCE_V5_RELEASE_REASONS.MAKER_RESALE_ROYALTY);
+  }
+  return reasons;
+}
+
+export function makerCommerceV5ReleaseIssues(value, options = {}) {
+  return makerCommerceV5ReleaseReasons(value, options)
+    .map((reason) => ({
+      reason,
+      ...MAKER_COMMERCE_V5_RELEASE_ISSUES[reason],
+    }));
+}
+
+export function makerCommerceV5RequiresRelease(
+  value,
+  options = {},
+) {
+  return makerCommerceV5ReleaseReasons(value, options).length > 0;
+}
+
+export function makerCommerceV5AllowsLegacyDefaultRoyaltyFallback(
+  document,
+  context = {},
+) {
   return Boolean(
-    normalized.rightsOriginConfirmed === true
-    || normalized.rightsOrigin !== defaults.rightsOrigin
-    || normalized.makerAccess.mode !== defaults.makerAccess.mode
-    || normalized.makerAccess.purchasePriceAtomic !== 0
-    || completionPolicyRequiresV5(normalized.baseCompletion)
-    || declaredPackIds.length > 0
-    || sourcePackPolicies.length > 0
-    || normalized.packPolicies.length > 0
-    || normalized.soulCreatorRoyaltyBps !== defaults.soulCreatorRoyaltyBps
-    || normalized.makerSourceRoyaltyBps !== defaults.makerSourceRoyaltyBps
-    || normalized.makerResaleRoyaltyBps !== defaults.makerResaleRoyaltyBps
+    document?.version?.number === 1
+    && document.version.parentVersionId === null
+    && document.version.createdAt === null
+    && context.isPublished !== true
+    && !context.publishedDocument
   );
 }
 

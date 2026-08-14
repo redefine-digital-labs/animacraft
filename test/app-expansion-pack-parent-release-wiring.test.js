@@ -46,5 +46,6 @@ test('only the matching published document receives publishable Pack release evi
   assert.match(evidence, /published: true/);
 
   const context = section('async function syncMakerWorkspaceContext', '\nfunction renderAll');
-  assert.match(context, /expansionPackParentRelease: expansionPackParentReleaseForDocument\(document\)/);
+  assert.match(context, /const expansionPackParentRelease = expansionPackParentReleaseForDocument\(document\)/);
+  assert.match(context, /\n    expansionPackParentRelease,/);
 });

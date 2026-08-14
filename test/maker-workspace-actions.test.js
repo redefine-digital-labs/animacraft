@@ -204,7 +204,88 @@ function memoryExpansionPackStore() {
         savedAt: record.savedAt,
       };
     },
+    async delete(identity, options) {
+      const recordKey = key(identity);
+      const existing = records.get(recordKey) || null;
+      if (!existing || existing.revision !== options.expectedRevision) {
+        return {
+          deleted: false,
+          conflict: true,
+          persistedRevision: existing?.revision ?? null,
+        };
+      }
+      records.delete(recordKey);
+      return {
+        deleted: true,
+        conflict: false,
+        persistedRevision: options.expectedRevision,
+      };
+    },
   };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolveValue, rejectValue) => {
+    resolve = resolveValue;
+    reject = rejectValue;
+  });
+  return { promise, resolve, reject };
+}
+
+async function openPublishableExpansionPackFixture(workspace, {
+  packId = `pack-race-${Math.random().toString(36).slice(2)}`,
+} = {}) {
+  const parent = workspace.getDocument();
+  const release = {
+    identityVerified: true,
+    published: true,
+    state: 'published',
+    rootMakerId: parent.version.rootMakerId,
+    versionNumber: String(parent.version.number),
+    versionId: parent.version.versionId,
+    releaseId: `0x${'7'.repeat(64)}`,
+    manifestBlobId: 'race-parent-quilt',
+    manifestHash: '8'.repeat(64),
+    baseMakerRootId: `0x${'9'.repeat(64)}`,
+    parentLegacyMakerId: `0x${'7'.repeat(64)}`,
+    makerControlCapId: `0x${'6'.repeat(64)}`,
+  };
+  await workspace.setContext({
+    makerKey: workspace.makerKey,
+    walletAddress: '0xcreator',
+    document: parent,
+    publishedDocument: parent,
+    expansionPackParentRelease: release,
+    expansionPackV8ReleaseEnabled: true,
+    assets: [],
+  });
+  await workspace.openExpansionPackWorkspace(packId, { create: true });
+  workspace.requestExpansionPackAdd({ kind: 'part', partId: '', itemId: '' });
+  const part = workspace.expansionPackWorkspace.getState().project.pack.parts[0];
+  const item = part.items[0];
+  const style = item.styles[0];
+  workspace.expansionPackWorkspace.updateStyle(
+    part.id,
+    item.id,
+    style.id,
+    { assetId: 'pack-race-art' },
+    {
+      assets: [{
+        id: 'pack-race-art',
+        identifier: 'pack-race-art.png',
+        kind: 'style',
+        mediaType: 'image/png',
+        sha256: 'b'.repeat(64),
+        contentHash: 'b'.repeat(64),
+        byteLength: 128,
+        width: 1024,
+        height: 1024,
+      }],
+    },
+  );
+  return { packId, parent, release };
 }
 
 async function completePlayerThroughFinalPreview(workspace) {
@@ -512,6 +593,219 @@ test('switching a Composable Maker to Fixed preserves its Item catalog for a rev
       workspace.getDocument().extensions.composableV6.items.map((product) => product.id),
       productIds,
     );
+  }, { playable: true });
+});
+
+test('Part-row wardrobe shortcut opens settings while off and becomes an undoable Slot toggle while on', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const initialRevision = workspace.store.getState().revision;
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="open-part-slot-settings" data-part-id="background"/,
+    );
+
+    creatorClick(workspace, 'open-part-slot-settings', { partId: 'background' });
+    assert.equal(workspace.creatorTab, 'composable');
+    assert.equal(workspace.selectedPartId, 'background');
+    assert.equal(workspace.store.getState().revision, initialRevision);
+
+    creatorClick(workspace, 'composable-mode', { mode: 'COMPOSABLE' });
+    creatorClick(workspace, 'creator-tab', { tab: 'structure' });
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="wardrobe-part-mode" data-part-id="background" data-mode="SLOT"/,
+    );
+
+    const beforeToggle = workspace.store.getState().revision;
+    creatorClick(workspace, 'wardrobe-part-mode', { partId: 'background', mode: 'SLOT' });
+    assert.equal(workspace.store.getState().revision, beforeToggle + 1);
+    assert.equal(workspace.getDocument().extensions.wardrobeV7.partModes.background, 'SLOT');
+    assert.match(
+      creatorRoot.innerHTML,
+      /class="v4-part-slot active maker-part-list-slot"[^>]*data-part-id="background"[^>]*data-mode="FIXED"[^>]*aria-pressed="true"/,
+    );
+
+    creatorClick(workspace, 'undo');
+    assert.equal(workspace.getDocument().extensions.wardrobeV7.partModes.background, 'FIXED');
+    creatorClick(workspace, 'redo');
+    assert.equal(workspace.getDocument().extensions.wardrobeV7.partModes.background, 'SLOT');
+  }, { creatorRoot, playable: true });
+});
+
+test('wardrobe choices state their target, ignore the selected choice, and lock after sealing', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    creatorClick(workspace, 'creator-tab', { tab: 'composable' });
+    creatorClick(workspace, 'composable-mode', { mode: 'COMPOSABLE' });
+    assert.match(creatorRoot.innerHTML, /class="v7-wardrobe-choice" role="group"/);
+    assert.match(
+      creatorRoot.innerHTML,
+      /class="active"[^>]*aria-pressed="true"[^>]*data-mode="FIXED"[^>]*><i aria-hidden="true">✓<\/i><span>Fixed in base appearance<\/span>/,
+    );
+    assert.match(
+      creatorRoot.innerHTML,
+      /class=""[^>]*aria-pressed="false"[^>]*data-mode="SLOT"[^>]*><i aria-hidden="true"><\/i><span>Wardrobe Slot<\/span>/,
+    );
+
+    const beforeNoop = workspace.store.getState().revision;
+    creatorClick(workspace, 'wardrobe-part-mode', { partId: 'background', mode: 'FIXED' });
+    assert.equal(workspace.store.getState().revision, beforeNoop);
+
+    creatorClick(workspace, 'composable-seal');
+    const sealed = structuredClone(workspace.getDocument().extensions.wardrobeV7);
+    creatorClick(workspace, 'wardrobe-part-mode', { partId: 'background', mode: 'SLOT' });
+    assert.deepEqual(workspace.getDocument().extensions.wardrobeV7, sealed);
+    assert.match(creatorRoot.innerHTML, /aria-pressed="false"[^>]*data-mode="SLOT"[^>]*disabled/);
+  }, { creatorRoot, playable: true });
+});
+
+test('interactive Part controls do not start canvas pan or row drag', async () => {
+  await withWorkspace(async (workspace) => {
+    let prevented = false;
+    workspace.boundCreatorKeydown({
+      code: 'Space',
+      key: ' ',
+      target: { matches: (selector) => selector.includes('button') },
+      preventDefault: () => { prevented = true; },
+    });
+    assert.equal(prevented, false);
+    assert.equal(workspace.creatorSpacePressed, false);
+
+    let dragPrevented = false;
+    const row = { dataset: { dragKind: 'part', dragId: 'background' } };
+    const control = { closest: (selector) => (selector.includes('button') ? control : row) };
+    workspace.handleDragStart({
+      target: control,
+      preventDefault: () => { dragPrevented = true; },
+      dataTransfer: { setData() {}, effectAllowed: '' },
+    });
+    assert.equal(dragPrevented, true);
+    assert.equal(workspace.dragSort, null);
+  }, { playable: true });
+});
+
+test('Creator Part list uses one selected action bar with full labels and compact metadata', async () => {
+  const creatorRoot = new FakeRoot();
+  const longLabel = 'Back Hair With Ceremonial Ribbons And Beads';
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    workspace.executeDocument('Use long Part label fixture', ({ document: next }) => {
+      next.parts[1].name = longLabel;
+    });
+
+    const html = creatorRoot.innerHTML;
+    assert.equal((html.match(/data-part-row/g) || []).length, document.parts.length);
+    assert.equal((html.match(/data-part-actions/g) || []).length, 1);
+    assert.equal((html.match(/class="maker-part-list-meta v4-part-track-status"/g) || []).length, document.parts.length);
+    assert.equal((html.match(/data-action="copy-part"/g) || []).length, 1);
+    assert.equal((html.match(/data-action="delete-part"/g) || []).length, 1);
+    assert.match(html, new RegExp(`<strong>${longLabel}<\\/strong>`));
+    assert.match(html, /1 Items · Required · Linked Track/);
+    assert.match(html, /data-part-list role="list"/);
+    assert.match(html, /role="toolbar" aria-label="Actions for selected Part/);
+    const partRailStart = html.indexOf('<div class="maker-part-list');
+    const partRail = html.slice(partRailStart, html.indexOf('</aside>', partRailStart));
+    assert.doesNotMatch(partRail, /v4-record-actions/);
+
+    creatorClick(workspace, 'select-part', { partId: document.parts[1].id });
+    assert.match(
+      creatorRoot.innerHTML,
+      new RegExp(`data-part-actions data-part-id="${document.parts[1].id}" role="toolbar"`),
+    );
+    assert.match(
+      creatorRoot.innerHTML,
+      new RegExp(`data-part-id="${document.parts[1].id}"[^>]*aria-current="true"`),
+    );
+  }, { creatorRoot, playable: true });
+});
+
+test('Creator Part list arrow, Home, and End keys move focus without mutating selection', async () => {
+  await withWorkspace(async (workspace) => {
+    let focusedIndex = -1;
+    const list = { querySelectorAll: () => buttons };
+    const buttons = workspace.getDocument().parts.map((part, index) => ({
+      dataset: { action: 'select-part', partId: part.id },
+      disabled: false,
+      closest(selector) {
+        if (selector === '[data-part-list] [data-action="select-part"]') return this;
+        if (selector === '[data-part-list]') return list;
+        return null;
+      },
+      focus(options) {
+        assert.equal(options.preventScroll, true);
+        focusedIndex = index;
+      },
+    }));
+    const selectedPartId = workspace.selectedPartId;
+    let prevented = false;
+
+    assert.equal(workspace.handleCreatorPartListKeydown({
+      key: 'ArrowDown',
+      target: buttons[0],
+      preventDefault() { prevented = true; },
+    }), true);
+    assert.equal(prevented, true);
+    assert.equal(focusedIndex, 1);
+    assert.equal(workspace.selectedPartId, selectedPartId);
+
+    workspace.handleCreatorPartListKeydown({ key: 'End', target: buttons[1], preventDefault() {} });
+    assert.equal(focusedIndex, buttons.length - 1);
+    workspace.handleCreatorPartListKeydown({ key: 'Home', target: buttons.at(-1), preventDefault() {} });
+    assert.equal(focusedIndex, 0);
+    assert.equal(workspace.handleCreatorPartListKeydown({
+      key: 'ArrowRight',
+      target: buttons[0],
+      preventDefault() { assert.fail('horizontal keys must keep their native behavior'); },
+    }), false);
+  }, { playable: true });
+});
+
+test('Creator Part rows preserve drag reordering and ignore drag from eye or slot controls', async () => {
+  await withWorkspace(async (workspace) => {
+    const originalIds = workspace.getDocument().parts.map((part) => part.id);
+    const sourceRow = {
+      dataset: { dragKind: 'part', dragId: originalIds[1] },
+      closest(selector) {
+        if (selector.includes('button')) return null;
+        if (selector === '[data-drag-kind]') return this;
+        return null;
+      },
+    };
+    let payload = '';
+    workspace.handleDragStart({
+      target: sourceRow,
+      preventDefault() {},
+      dataTransfer: {
+        effectAllowed: '',
+        setData(type, value) {
+          assert.equal(type, 'text/plain');
+          payload = value;
+        },
+      },
+    });
+    assert.deepEqual(JSON.parse(payload), { kind: 'part', id: originalIds[1], parentId: '' });
+
+    const targetRow = {
+      dataset: { dragKind: 'part', dragId: originalIds[0] },
+      closest: () => targetRow,
+    };
+    workspace.handleDrop({ target: targetRow, preventDefault() {} });
+    assert.equal(workspace.getDocument().parts[0].id, originalIds[1]);
+
+    let prevented = false;
+    const stateControl = {
+      closest(selector) {
+        return selector.includes('button') ? this : sourceRow;
+      },
+    };
+    workspace.handleDragStart({
+      target: stateControl,
+      preventDefault() { prevented = true; },
+      dataTransfer: { effectAllowed: '', setData() {} },
+    });
+    assert.equal(prevented, true);
+    assert.equal(workspace.dragSort, null);
   }, { playable: true });
 });
 
@@ -1580,6 +1874,21 @@ test('legacy documents without commerce migrate their valid publication royalty 
   });
 });
 
+test('partial legacy Commerce fills its missing Maker-source royalty from publication', async () => {
+  await withWorkspace(async (workspace) => {
+    const document = workspace.getDocument();
+    assert.equal(document.commerce.makerSourceRoyaltyBps, 350);
+    assert.equal(workspace.blockingPublicationIssues().some(
+      (issue) => issue.code === 'commerce_v5_maker_source_royalty_mismatch',
+    ), false);
+  }, {
+    prepareDocument(document) {
+      document.publication.royaltyBps = 350;
+      delete document.commerce.makerSourceRoyaltyBps;
+    },
+  });
+});
+
 test('Creator must click a rights origin before first v5 publish and v4 publication does not lock it', async () => {
   const creatorRoot = new FakeRoot();
   await withWorkspace(async (workspace) => {
@@ -1626,17 +1935,95 @@ test('Creator must click a rights origin before first v5 publish and v4 publicat
   });
 });
 
-test('legacy v4 Preflight does not require the Commerce v5 acknowledgement while its release gate is off', async () => {
+test('initial legacy v4 publication accepts its mirrored Maker royalty while the v5 gate is off', async () => {
   await withWorkspace(async (workspace) => {
+    const issueCodes = workspace.blockingPublicationIssues()
+      .map((issue) => issue.code);
     assert.equal(
-      workspace.blockingPublicationIssues().some(
-        (issue) => issue.code === 'rights_origin_confirmation_required',
-      ),
+      issueCodes.some((code) => code.startsWith('commerce_v5_')),
+      false,
+    );
+    assert.equal(
+      issueCodes.includes('rights_origin_confirmation_required'),
       false,
     );
   }, {
     prepareDocument(document) {
-      document.commerce = normalizeMakerCommerceV5({});
+      document.publication.royaltyBps = 300;
+      document.commerce = normalizeMakerCommerceV5({
+        makerSourceRoyaltyBps: 300,
+      });
+    },
+  });
+});
+
+test('initial legacy 250-to-300 Maker bug and an independent free Pack draft do not block v4 publication', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('independent-free-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+
+    assert.equal(workspace.expansionPackProjectSummaries.length, 1);
+    assert.equal(
+      workspace.expansionPackProjectSummaries[0].project.pack.commerce.accessMode,
+      'FREE',
+    );
+    assert.deepEqual(workspace.getDocument().extensions.expansionDrafts, []);
+    assert.equal(
+      workspace.blockingPublicationIssues()
+        .some((issue) => issue.code.startsWith('commerce_v5_')),
+      false,
+    );
+  }, {
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+      document.publication.royaltyBps = 300;
+      document.commerce = normalizeMakerCommerceV5({
+        makerSourceRoyaltyBps: 250,
+      });
+    },
+  });
+});
+
+test('published Makers cannot use the initial legacy default royalty fallback', async () => {
+  await withWorkspace(async (workspace) => {
+    const publishedDocument = workspace.getDocument();
+    await workspace.setContext({
+      makerKey: workspace.makerKey,
+      walletAddress: '',
+      document: publishedDocument,
+      publishedDocument,
+      isPublished: true,
+      assets: [],
+    });
+    assert.ok(workspace.blockingPublicationIssues().some(
+      (issue) => issue.code === 'commerce_v5_maker_source_royalty_mismatch',
+    ));
+  }, {
+    prepareDocument(document) {
+      document.publication.royaltyBps = 300;
+      document.commerce = normalizeMakerCommerceV5({
+        makerSourceRoyaltyBps: 250,
+      });
+    },
+  });
+});
+
+test('legacy v4 publication blocks a mismatched custom Commerce royalty', async () => {
+  await withWorkspace(async (workspace) => {
+    assert.ok(
+      workspace.blockingPublicationIssues().some(
+        (issue) => issue.code === 'commerce_v5_maker_source_royalty_mismatch',
+      ),
+    );
+  }, {
+    prepareDocument(document) {
+      document.publication.royaltyBps = 300;
+      document.commerce = normalizeMakerCommerceV5({
+        makerSourceRoyaltyBps: 350,
+      });
     },
   });
 });
@@ -1645,7 +2032,7 @@ test('v5 commerce cannot downgrade into a v4 publication while its release gate 
   await withWorkspace(async (workspace) => {
     assert.ok(
       workspace.blockingPublicationIssues().some(
-        (issue) => issue.code === 'commerce_v5_release_disabled',
+        (issue) => issue.code === 'commerce_v5_maker_paid_access',
       ),
     );
   }, {
@@ -1655,6 +2042,102 @@ test('v5 commerce cannot downgrade into a v4 publication while its release gate 
           mode: MAKER_ACCESS_MODES.ONE_TIME_PAID,
           purchasePriceAtomic: 1_000_000,
         },
+      });
+    },
+  });
+});
+
+test('mirrored legacy royalty reports each concrete v5 commerce reason in Preflight', async () => {
+  const cases = [
+    {
+      label: 'confirmed rights',
+      code: 'commerce_v5_rights_origin_confirmed',
+      configure(commerce) {
+        commerce.rightsOriginConfirmed = true;
+      },
+    },
+    {
+      label: 'Complete cap',
+      code: 'commerce_v5_base_completion_policy',
+      configure(commerce) {
+        commerce.baseCompletion.totalCap = 10;
+      },
+    },
+    {
+      label: 'Soul creator royalty',
+      code: 'commerce_v5_soul_creator_royalty',
+      configure(commerce) {
+        commerce.soulCreatorRoyaltyBps = 300;
+      },
+    },
+    {
+      label: 'Maker resale royalty',
+      code: 'commerce_v5_maker_resale_royalty',
+      configure(commerce) {
+        commerce.makerResaleRoyaltyBps = 450;
+      },
+    },
+  ];
+  for (const { label, code, configure } of cases) {
+    await withWorkspace(async (workspace) => {
+      assert.ok(
+        workspace.blockingPublicationIssues().some(
+          (issue) => issue.code === code,
+        ),
+        `${label} must remain Commerce-v5 release gated`,
+      );
+    }, {
+      prepareDocument(document) {
+        document.publication.royaltyBps = 300;
+        document.commerce = normalizeMakerCommerceV5({
+          makerSourceRoyaltyBps: 300,
+        });
+        configure(document.commerce);
+      },
+    });
+  }
+});
+
+test('gate-off Commerce rights cannot dirty a draft and an old on-chain choice can be restored', async () => {
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    workspace.creatorTab = 'validate';
+    workspace.render();
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="focus-issue" data-issue-path="commerce\.rightsOrigin" data-issue-code="commerce_v5_rights_onchain_native"/,
+    );
+    creatorClick(workspace, 'focus-issue', {
+      issueCode: 'commerce_v5_rights_onchain_native',
+      issuePath: 'commerce.rightsOrigin',
+    });
+    assert.equal(workspace.creatorTab, 'commerce');
+
+    const before = workspace.getDocument();
+    const beforeRevision = workspace.store.getState().revision;
+    assert.equal(workspace.updateCommerceFromInput({
+      dataset: { action: 'commerce-rights-origin' },
+      value: RIGHTS_ORIGINS.ONCHAIN_NATIVE,
+    }), false);
+    assert.deepEqual(workspace.getDocument(), before);
+    assert.equal(workspace.store.getState().revision, beforeRevision);
+
+    workspace.creatorTab = 'commerce';
+    workspace.render();
+    assert.match(creatorRoot.innerHTML, /data-action="withdraw-legacy-rights-confirmation"/);
+    creatorClick(workspace, 'withdraw-legacy-rights-confirmation');
+    assert.equal(workspace.getDocument().commerce.rightsOrigin, RIGHTS_ORIGINS.LICENSE_WRAPPED);
+    assert.equal(workspace.getDocument().commerce.rightsOriginConfirmed, false);
+    assert.equal(workspace.store.getState().canUndo, true);
+    workspace.store.undo();
+    assert.equal(workspace.getDocument().commerce.rightsOrigin, RIGHTS_ORIGINS.ONCHAIN_NATIVE);
+    assert.equal(workspace.getDocument().commerce.rightsOriginConfirmed, true);
+  }, {
+    creatorRoot,
+    prepareDocument(document) {
+      document.commerce = normalizeMakerCommerceV5({
+        rightsOrigin: RIGHTS_ORIGINS.ONCHAIN_NATIVE,
+        rightsOriginConfirmed: true,
       });
     },
   });
@@ -1789,7 +2272,7 @@ test('Maker Info reports UTF-8 byte overflow inline and Preflight opens the inva
   }, { creatorRoot });
 });
 
-test('Creator and Player Maker Info dialogs expose labels, trap focus, close on Escape, and restore focus', async () => {
+test('Creator and Player Maker Info dialogs expose labels, trap focus, close safely, and restore focus', async () => {
   class FocusNode {
     constructor(name, active, children = []) {
       this.name = name;
@@ -1887,9 +2370,11 @@ test('Creator and Player Maker Info dialogs expose labels, trap focus, close on 
       assert.equal(workspace.playerIntroOpen, true);
       assert.match(
         playerRoot.innerHTML,
-        /id="makerPlayerInfoDialog"[^>]*role="dialog" aria-modal="true" aria-labelledby="makerPlayerInfoTitle" tabindex="-1"/,
+        /id="makerPlayerInfoDialog"[^>]*role="dialog" aria-modal="true" aria-labelledby="makerPlayerInfoTitle" aria-describedby="makerPlayerInfoSummary" tabindex="-1"/,
       );
       assert.match(playerRoot.innerHTML, /<h2 id="makerPlayerInfoTitle">QA Maker<\/h2>/);
+      assert.match(playerRoot.innerHTML, /class="v4-player-info-body"/);
+      assert.match(playerRoot.innerHTML, /<footer class="v4-player-info-actions">/);
       assert.equal(active.current, playerDialog, 'opening Player Maker Info must focus the dialog');
 
       active.current = playerDialog;
@@ -1915,6 +2400,25 @@ test('Creator and Player Maker Info dialogs expose labels, trap focus, close on 
       });
       assert.equal(prevented, true);
       assert.equal(active.current, playerStart, 'the single Player dialog action must retain focus');
+
+      const backdrop = actionTarget('close-player-info-backdrop');
+      workspace.handlePlayerClick({ target: { closest: () => backdrop } });
+      assert.equal(
+        workspace.playerIntroOpen,
+        true,
+        'clicks from inside the dialog must not bubble into backdrop dismissal',
+      );
+
+      workspace.handlePlayerClick({ target: backdrop });
+      assert.equal(workspace.playerIntroOpen, false, 'a direct backdrop click must close the dialog');
+      assert.equal(
+        active.current,
+        playerReturnButton,
+        'backdrop dismissal must return focus to the Player Maker Info trigger',
+      );
+
+      playerClick(workspace, 'player-info');
+      assert.equal(workspace.playerIntroOpen, true);
 
       workspace.boundPlayerKeydown({
         key: 'Escape',
@@ -2655,7 +3159,255 @@ test('Expansion Pack Studio creates an isolated version-bound child without muta
   });
 });
 
-test('a new Expansion Pack inherits one exact published parent and exports a deterministic candidate', async () => {
+test('Expansion Pack lifecycle loader merges exact lane keys, appends chain-only Packs and delegates list management', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const creatorRoot = new FakeRoot();
+  const manageCalls = [];
+  const loadCalls = [];
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('local-lifecycle-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    const [record] = expansionPackDraftStore.records.values();
+    await workspace.refreshExpansionPackProjects({ render: false });
+    const local = workspace.expansionPackProjectSummaries.find((summary) => !summary.chainOnly);
+    const chainOnly = workspace.expansionPackProjectSummaries.find((summary) => summary.chainOnly);
+    assert.equal(loadCalls.length >= 1, true);
+    assert.equal(loadCalls.at(-1).summaries[0].key, local.key);
+    assert.equal(local.lifecycle.state, 'PAUSED');
+    assert.equal(chainOnly.key, 'chain:full:lane:key');
+    assert.equal(chainOnly.project, null);
+
+    workspace.creatorTab = 'expansions';
+    workspace.render();
+    const advanced = workspace.renderCreatorAdvanced(workspace.getDocument(), [], null);
+    assert.match(advanced, /<article class="v4-pack-project-row"/);
+    assert.doesNotMatch(advanced, /<button[^>]*class="v4-pack-project-row"/);
+    assert.match(advanced, new RegExp(`data-pack-project-key="${local.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+    assert.match(advanced, /data-pack-chain-only="true"[\s\S]*data-action="open-expansion-pack-studio"[^>]*disabled/);
+    assert.match(advanced, /maker-lifecycle-badge paused/);
+
+    creatorClick(workspace, 'manage-expansion-pack-lifecycle', { packProjectKey: chainOnly.key });
+    assert.equal(manageCalls.length, 1);
+    assert.equal(manageCalls[0].key, chainOnly.key);
+    assert.equal(manageCalls[0].chainOnly, true);
+    assert.equal(manageCalls[0].project, null);
+    assert.equal(manageCalls[0].lifecycle.state, 'ARCHIVED');
+
+    creatorClick(workspace, 'open-expansion-pack-studio', {
+      packProjectKey: chainOnly.key,
+      packId: chainOnly.packId,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(workspace.expansionPackWorkspace, null, 'chain-only Packs cannot open a local Studio');
+    assert.equal(record.project.packId, local.packId);
+  }, {
+    creatorRoot,
+    expansionPackDraftStore,
+    callbacks: {
+      onLoadExpansionPackLifecycles: (payload) => {
+        loadCalls.push(payload);
+        const local = payload.summaries[0];
+        return [
+          { key: local.key, lifecycle: { state: 'PAUSED' } },
+          {
+            key: 'chain:full:lane:key',
+            packId: 'chain-only-pack',
+            name: 'Chain-only Pack',
+            version: '1.0.0',
+            namespace: 'chain-only',
+            identity: { packId: 'chain-only-pack', parentVersion: '1' },
+            lifecycle: { state: 'ARCHIVED' },
+          },
+        ];
+      },
+      onManageExpansionPackLifecycle: (payload) => manageCalls.push(payload),
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('Expansion Pack lifecycle load failures stay unknown and never masquerade as draft', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('unknown-lifecycle-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+    const [summary] = workspace.expansionPackProjectSummaries;
+    assert.equal(summary.lifecycle.state, 'unknown');
+    assert.match(summary.lifecycle.error, /lifecycle unavailable/);
+    assert.notEqual(summary.lifecycle.state, 'draft');
+  }, {
+    expansionPackDraftStore,
+    callbacks: {
+      onLoadExpansionPackLifecycles: async () => {
+        throw new Error('lifecycle unavailable');
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('only a proven pure local-parent Pack draft can enter revision-checked deletion', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('delete-local-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+    const summary = workspace.expansionPackProjectSummaries[0];
+    assert.equal(workspace.canDeleteExpansionPackDraft(summary), true);
+
+    for (const blocked of [
+      { ...summary, chainOnly: true },
+      { ...summary, lifecycle: { state: 'unknown' } },
+      { ...summary, lifecycle: { state: 'recoverable', publication: { started: true } } },
+      { ...summary, lifecycle: { state: 'finalized-failure', failure: { digest: 'deadbeef' } } },
+      { ...summary, lifecycle: { state: 'local-draft', release: { objectId: '0xrelease' } } },
+      { ...summary, lifecycle: { state: 'local-draft', adminCap: { objectId: '0xcap' } } },
+      {
+        ...summary,
+        project: {
+          ...summary.project,
+          parentBinding: { ...summary.project.parentBinding, kind: 'published-release' },
+        },
+      },
+      {
+        ...summary,
+        project: { ...summary.project, packId: 'different-local-pack' },
+      },
+      {
+        ...summary,
+        project: {
+          ...summary.project,
+          publication: { ...summary.project.publication, state: 'publishing' },
+        },
+      },
+    ]) assert.equal(workspace.canDeleteExpansionPackDraft(blocked), false);
+
+    const record = [...expansionPackDraftStore.records.values()][0];
+    record.revision = 2;
+    const candidate = await workspace.prepareExpansionPackDraftDeletion(summary);
+    assert.equal(candidate.expectedRevision, 2, 'confirmation pins the exact revision loaded from storage');
+    const deleted = await workspace.deleteExpansionPackDraft(candidate);
+    assert.equal(deleted.deleted, true);
+    assert.equal(expansionPackDraftStore.records.size, 0);
+    assert.equal(workspace.expansionPackProjectSummaries.length, 0);
+  }, {
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('local Pack deletion fails closed when the exact saved revision changes after confirmation', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('delete-conflict-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+    const summary = workspace.expansionPackProjectSummaries[0];
+    const candidate = await workspace.prepareExpansionPackDraftDeletion(summary);
+    const record = [...expansionPackDraftStore.records.values()][0];
+    record.revision += 1;
+
+    await assert.rejects(
+      workspace.deleteExpansionPackDraft(candidate),
+      (error) => error?.code === 'EXPANSION_PACK_DRAFT_DELETE_CONFLICT',
+    );
+    assert.equal(expansionPackDraftStore.records.size, 1);
+  }, {
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('Commerce & Rights CAS-saves only independent Packs in the current wallet and parent version', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    const embeddedPackId = installLegacyEmbeddedExpansion(workspace, { copySelected: false });
+    const embeddedBefore = structuredClone(workspace.getDocument().extensions.expansionDrafts);
+    await workspace.openExpansionPackWorkspace('independent-commerce-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+
+    assert.equal(workspace.expansionPackProjectSummaries.length, 1);
+    const summary = workspace.expansionPackProjectSummaries[0];
+    assert.equal(summary.identity.walletAddress, '0xcreator');
+    assert.equal(summary.identity.parentRootId, workspace.getDocument().version.rootMakerId);
+    assert.equal(summary.identity.parentVersion, String(workspace.getDocument().version.number));
+
+    workspace.openCreatorTab('commerce');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.match(creatorRoot.innerHTML, /data-action="independent-pack-commerce"/);
+    assert.match(creatorRoot.innerHTML, /independent-commerce-pack/);
+    assert.match(creatorRoot.innerHTML, new RegExp(`data-pack-id="${embeddedPackId}"`));
+
+    const saved = await workspace.saveIndependentExpansionPackCommerce({
+      value: 'PAID_ONCE',
+      dataset: {
+        independentPackKey: summary.key,
+        independentPackCommerceField: 'accessMode',
+      },
+    });
+    assert.equal(saved, true);
+    const record = [...expansionPackDraftStore.records.values()][0];
+    assert.equal(record.revision, 2);
+    assert.equal(record.project.pack.commerce.accessMode, 'PAID_ONCE');
+    assert.equal(record.project.pack.commerce.purchasePriceAtomic, '1000000');
+    assert.deepEqual(workspace.getDocument().extensions.expansionDrafts, embeddedBefore);
+
+    record.revision = 3;
+    const conflicted = await workspace.saveIndependentExpansionPackCommerce({
+      value: '2.5',
+      dataset: {
+        independentPackKey: summary.key,
+        independentPackCommerceField: 'priceDecimal',
+      },
+    });
+    assert.equal(conflicted, false);
+    assert.equal(workspace.expansionPackCommerceState(summary.key).phase, 'error');
+    assert.match(workspace.expansionPackCommerceState(summary.key).error, /newer|更新|最新/i);
+    assert.equal(record.project.pack.commerce.purchasePriceAtomic, '1000000');
+    assert.deepEqual(workspace.getDocument().extensions.expansionDrafts, embeddedBefore);
+  }, {
+    creatorRoot,
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('Pack Studio saves before routing commerce editing to the outer Maker tab', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('commerce-route-pack', { create: true });
+    workspace.expansionPackWorkspace.renamePack('Commerce route Pack');
+    assert.equal(workspace.expansionPackWorkspace.getState().dirty, true);
+
+    const opened = await workspace.openCommerceFromExpansionPackStudio();
+    assert.equal(opened, true);
+    assert.equal(workspace.expansionPackWorkspace, null);
+    assert.equal(workspace.creatorTab, 'commerce');
+    assert.equal([...expansionPackDraftStore.records.values()][0].project.name, 'Commerce route Pack');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('a new Expansion Pack inherits one exact published parent and exports a diagnostic candidate', async () => {
   const expansionPackDraftStore = memoryExpansionPackStore();
   const candidates = [];
   await withWorkspace(async (workspace) => {
@@ -2715,7 +3467,7 @@ test('a new Expansion Pack inherits one exact published parent and exports a det
         }],
       },
     );
-    const candidate = await workspace.prepareActiveExpansionPackPublicationCandidate();
+    const candidate = await workspace.exportActiveExpansionPackPublicationCandidate();
     assert.equal(candidate.state, 'CANDIDATE');
     assert.equal(candidate.published, false);
     assert.equal(candidate.manifest.parent.releaseId, release.releaseId);
@@ -2737,6 +3489,460 @@ test('a new Expansion Pack inherits one exact published parent and exports a det
       document.livingContent = { soulMd: '# Parent Soul' };
     },
   });
+});
+
+test('Expansion Pack publication never pairs a saved candidate with edits made after that revision', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  let prepareCalls = 0;
+  await withWorkspace(async (workspace) => {
+    await openPublishableExpansionPackFixture(workspace);
+    const originalFlush = workspace.flushExpansionPackWorkspace.bind(workspace);
+    let reportFlushed;
+    const flushed = new Promise((resolve) => { reportFlushed = resolve; });
+    let releaseFlush;
+    const continueFlush = new Promise((resolve) => { releaseFlush = resolve; });
+    workspace.flushExpansionPackWorkspace = async (...args) => {
+      const result = await originalFlush(...args);
+      reportFlushed(result);
+      await continueFlush;
+      return result;
+    };
+
+    const preparing = workspace.prepareActiveExpansionPackPublicationCandidate();
+    await flushed;
+    workspace.expansionPackWorkspace.renamePack('Edited after the saved revision');
+    releaseFlush();
+
+    await assert.rejects(
+      preparing,
+      (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_CONTEXT_CHANGED',
+    );
+    assert.equal(prepareCalls, 0, 'a mixed project/candidate snapshot must never reach the app shell');
+    assert.equal(workspace.expansionPackWorkspace.getState().dirty, true);
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    callbacks: {
+      onPrepareExpansionPackPublication() {
+        prepareCalls += 1;
+        return {};
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('a saved Pack restores a recoverable publication checkpoint before editing is enabled', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  let loadCalls = 0;
+  await withWorkspace(async (workspace) => {
+    const { packId } = await openPublishableExpansionPackFixture(workspace);
+    await workspace.saveExpansionPackWorkspace();
+    await workspace.closeExpansionPackWorkspace({ save: false, render: false });
+    const pending = deferred();
+    workspace.callbacks.onLoadExpansionPackPublication = async () => {
+      loadCalls += 1;
+      return pending.promise;
+    };
+
+    const opening = workspace.openExpansionPackWorkspace(packId);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(workspace.expansionPackPublishState.locked, true);
+    assert.equal(workspace.expansionPackPublishState.busy, true);
+    assert.equal(workspace.expansionPackPublicationIsLive(), true);
+    const partCount = workspace.expansionPackWorkspace.getState().project.pack.parts.length;
+    workspace.requestExpansionPackAdd({ kind: 'part', partId: '', itemId: '' });
+    assert.equal(
+      workspace.expansionPackWorkspace.getState().project.pack.parts.length,
+      partCount,
+      'programmatic mutation entry points stay locked while recovery is unknown',
+    );
+    pending.resolve({
+      stage: 'walrus-prepared',
+      started: true,
+      recoverable: true,
+      locked: true,
+      busy: false,
+      actions: { register: true },
+    });
+
+    await opening;
+    assert.equal(loadCalls, 1);
+    assert.equal(workspace.expansionPackPublishState.recoverable, true);
+    assert.equal(workspace.expansionPackPublishState.locked, true);
+    assert.equal(workspace.expansionPackPublishState.stage, 'walrus-prepared');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('a Pack checkpoint load rejection remains fail-closed after busy clears', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    const { packId } = await openPublishableExpansionPackFixture(workspace);
+    await workspace.saveExpansionPackWorkspace();
+    await workspace.closeExpansionPackWorkspace({ save: false, render: false });
+    workspace.callbacks.onLoadExpansionPackPublication = async () => {
+      throw new Error('publication storage unavailable');
+    };
+
+    await assert.rejects(
+      workspace.openExpansionPackWorkspace(packId),
+      /publication storage unavailable/,
+    );
+    assert.equal(workspace.expansionPackPublishState.busy, false);
+    assert.equal(workspace.expansionPackPublishState.locked, true);
+    assert.equal(workspace.expansionPackPublishState.recoverable, true);
+    assert.equal(workspace.expansionPackPublishState.stage, 'checkpoint-unknown');
+    assert.equal(workspace.blockExpansionPackPublicationNavigation({ render: false }), true);
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('a deferred Pack A load cannot replace a newer Pack B workspace', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const firstLoad = deferred();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('pack-a', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.openExpansionPackWorkspace('pack-b', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+    let loadCount = 0;
+    const originalLoad = expansionPackDraftStore.load;
+    expansionPackDraftStore.load = async (identity) => {
+      if (identity.packId === 'pack-a' && loadCount++ === 0) return firstLoad.promise;
+      return originalLoad(identity);
+    };
+
+    const openingA = workspace.openExpansionPackWorkspace('pack-a');
+    await new Promise((resolve) => setImmediate(resolve));
+    const openingB = workspace.openExpansionPackWorkspace('pack-b');
+    await openingB;
+    firstLoad.resolve([...expansionPackDraftStore.records.values()].find(
+      (record) => record.packId === 'pack-a',
+    ));
+    assert.equal(await openingA, null);
+    assert.equal(workspace.expansionPackWorkspace.getState().project.packId, 'pack-b');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('a deferred Pack load cannot install after wallet or parent context changes', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const delayedLoad = deferred();
+  await withWorkspace(async (workspace) => {
+    await workspace.openExpansionPackWorkspace('scope-pack', { create: true });
+    await workspace.closeExpansionPackWorkspace({ save: true, render: false });
+    await workspace.refreshExpansionPackProjects({ render: false });
+    expansionPackDraftStore.load = () => delayedLoad.promise;
+    const opening = workspace.openExpansionPackWorkspace('scope-pack');
+    await new Promise((resolve) => setImmediate(resolve));
+    const parent = workspace.getDocument();
+    await workspace.setContext({
+      makerKey: workspace.makerKey,
+      walletAddress: '0xother',
+      document: parent,
+      assets: [],
+    });
+    delayedLoad.resolve([...expansionPackDraftStore.records.values()][0]);
+
+    assert.equal(await opening, null);
+    assert.equal(workspace.expansionPackWorkspace, null);
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('an in-flight Expansion Pack prepare cannot be closed or replaced', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  let callbackEntered;
+  const entered = new Promise((resolve) => { callbackEntered = resolve; });
+  let finishCallback;
+  const finish = new Promise((resolve) => { finishCallback = resolve; });
+  await withWorkspace(async (workspace) => {
+    const { packId } = await openPublishableExpansionPackFixture(workspace);
+    const activeWorkspace = workspace.expansionPackWorkspace;
+    const requestToken = workspace.expansionPackPublicationRequestToken;
+    const preparing = workspace.prepareActiveExpansionPackPublicationCandidate();
+    await entered;
+    assert.equal(await workspace.closeExpansionPackWorkspace({ save: true, render: false }), false);
+    assert.equal(await workspace.openExpansionPackWorkspace(packId), activeWorkspace);
+    assert.equal(workspace.expansionPackWorkspace, activeWorkspace);
+    assert.equal(workspace.expansionPackPublicationRequestToken, requestToken + 1);
+    finishCallback({
+      stage: 'walrus-prepared',
+      started: true,
+      locked: true,
+      status: 'ready to continue',
+    });
+
+    await preparing;
+    assert.equal(workspace.expansionPackPublishState.stage, 'walrus-prepared');
+    assert.equal(workspace.expansionPackPublishState.status, 'ready to continue');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    callbacks: {
+      onPrepareExpansionPackPublication() {
+        callbackEntered();
+        return finish;
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('an in-flight Expansion Pack release action keeps its workspace mounted', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  let actionEntered;
+  const entered = new Promise((resolve) => { actionEntered = resolve; });
+  let finishAction;
+  const finish = new Promise((resolve) => { finishAction = resolve; });
+  await withWorkspace(async (workspace) => {
+    const { packId } = await openPublishableExpansionPackFixture(workspace);
+    await workspace.prepareActiveExpansionPackPublicationCandidate();
+    const activeWorkspace = workspace.expansionPackWorkspace;
+    const requestToken = workspace.expansionPackPublicationRequestToken;
+    const action = workspace.requestExpansionPackPublicationAction('register');
+    await entered;
+    assert.equal(await workspace.closeExpansionPackWorkspace({ save: true, render: false }), false);
+    assert.equal(await workspace.openExpansionPackWorkspace(packId), activeWorkspace);
+    assert.equal(workspace.expansionPackWorkspace, activeWorkspace);
+    assert.equal(workspace.expansionPackPublicationRequestToken, requestToken);
+    finishAction({
+      stage: 'walrus-uploaded',
+      started: true,
+      locked: true,
+      status: 'upload complete',
+    });
+
+    await action;
+    assert.equal(workspace.expansionPackPublishState.stage, 'walrus-uploaded');
+    assert.equal(workspace.expansionPackPublishState.status, 'upload complete');
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    callbacks: {
+      onPrepareExpansionPackPublication() {
+        return {
+          stage: 'walrus-prepared',
+          started: true,
+          locked: true,
+          actions: { register: true },
+        };
+      },
+      onExpansionPackPublishAction() {
+        actionEntered();
+        return finish;
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('live Expansion Pack publication blocks Escape, Pack Back, library Back, tool close, backdrop, and direct close without invalidation', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const creatorRoot = new FakeRoot();
+  let backCalls = 0;
+  await withWorkspace(async (workspace) => {
+    await openPublishableExpansionPackFixture(workspace);
+    workspace.creatorTab = 'expansions';
+    await workspace.prepareActiveExpansionPackPublicationCandidate();
+    const activeWorkspace = workspace.expansionPackWorkspace;
+    const token = workspace.expansionPackPublicationRequestToken;
+    const launch = workspace.expansionPackPublicationLaunch;
+
+    const assertPreserved = () => {
+      assert.equal(workspace.creatorTab, 'expansions');
+      assert.equal(workspace.expansionPackWorkspace, activeWorkspace);
+      assert.equal(workspace.expansionPackPublicationRequestToken, token);
+      assert.equal(workspace.expansionPackPublicationLaunch, launch);
+      assert.equal(workspace.expansionPackPublishState.started, true);
+      assert.match(workspace.expansionPackProjectNotice, /release|publish|发布/i);
+      assert.match(creatorRoot.innerHTML, /role="status"/);
+    };
+
+    let prevented = 0;
+    workspace.boundCreatorKeydown({
+      key: 'Escape',
+      preventDefault() { prevented += 1; },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(prevented, 1);
+    assertPreserved();
+
+    creatorClick(workspace, 'back-library');
+    assert.equal(backCalls, 0);
+    assertPreserved();
+
+    creatorClick(workspace, 'close-expansion-pack-studio');
+    await new Promise((resolve) => setImmediate(resolve));
+    assertPreserved();
+
+    creatorClick(workspace, 'close-tool');
+    await new Promise((resolve) => setImmediate(resolve));
+    assertPreserved();
+
+    creatorClick(workspace, 'close-tool-backdrop');
+    await new Promise((resolve) => setImmediate(resolve));
+    assertPreserved();
+
+    assert.equal(await workspace.closeExpansionPackWorkspace({ save: false, render: false }), false);
+    assertPreserved();
+  }, {
+    creatorRoot,
+    playable: true,
+    expansionPackDraftStore,
+    callbacks: {
+      onBackToLibrary() { backCalls += 1; },
+      onPrepareExpansionPackPublication() {
+        return {
+          stage: 'walrus-prepared',
+          started: true,
+          recoverable: true,
+          locked: true,
+          actions: { register: true },
+        };
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('each live publication signal fails closed while an idle Pack still closes normally', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  await withWorkspace(async (workspace) => {
+    await openPublishableExpansionPackFixture(workspace);
+    for (const state of [
+      { busy: true },
+      { started: true },
+      { recoverable: true },
+      { receipt: { packObjectId: '0xpack' } },
+      { locked: true },
+    ]) {
+      workspace.expansionPackPublishState = { stage: 'idle', ...state };
+      assert.equal(await workspace.closeExpansionPackWorkspace({ save: false, render: false }), false);
+      assert.ok(workspace.expansionPackWorkspace);
+    }
+    workspace.expansionPackPublishState = { stage: 'idle' };
+    assert.equal(await workspace.closeExpansionPackWorkspace({ save: true, render: false }), true);
+    assert.equal(workspace.expansionPackWorkspace, null);
+  }, {
+    playable: true,
+    expansionPackDraftStore,
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('active Pack publication blocks tab navigation and centralized Commerce edits', async () => {
+  const expansionPackDraftStore = memoryExpansionPackStore();
+  const creatorRoot = new FakeRoot();
+  await withWorkspace(async (workspace) => {
+    await openPublishableExpansionPackFixture(workspace, { packId: 'commerce-locked-pack' });
+    workspace.creatorTab = 'expansions';
+    await workspace.prepareActiveExpansionPackPublicationCandidate();
+    await workspace.refreshExpansionPackProjects({ render: false });
+    const summary = workspace.expansionPackProjectSummaries[0];
+    const record = [...expansionPackDraftStore.records.values()][0];
+    const beforeRevision = record.revision;
+    const beforeCommerce = structuredClone(record.project.pack.commerce);
+
+    assert.equal(workspace.openCreatorTab('commerce'), false);
+    assert.equal(workspace.creatorTab, 'expansions');
+    assert.equal(await workspace.openCommerceFromExpansionPackStudio(), false);
+    assert.equal(workspace.creatorTab, 'expansions');
+    assert.ok(workspace.expansionPackWorkspace);
+
+    const saved = await workspace.saveIndependentExpansionPackCommerce({
+      value: 'PAID_ONCE',
+      dataset: {
+        independentPackKey: summary.key,
+        independentPackCommerceField: 'accessMode',
+      },
+    });
+    assert.equal(saved, false);
+    assert.equal(record.revision, beforeRevision);
+    assert.deepEqual(record.project.pack.commerce, beforeCommerce);
+    assert.match(workspace.expansionPackCommerceState(summary.key).error, /release|publish|发布/i);
+  }, {
+    creatorRoot,
+    playable: true,
+    expansionPackDraftStore,
+    callbacks: {
+      onPrepareExpansionPackPublication() {
+        return { stage: 'walrus-prepared', started: true, locked: true };
+      },
+    },
+    prepareDocument(document) {
+      document.metadata.creator = '0xcreator';
+    },
+  });
+});
+
+test('release actions reject a persisted Pack head revision or identity drift before calling the app shell', async () => {
+  for (const drift of ['revision', 'identity']) {
+    const expansionPackDraftStore = memoryExpansionPackStore();
+    let actionCalls = 0;
+    await withWorkspace(async (workspace) => {
+      await openPublishableExpansionPackFixture(workspace, { packId: `head-drift-${drift}` });
+      await workspace.prepareActiveExpansionPackPublicationCandidate();
+      const record = [...expansionPackDraftStore.records.values()][0];
+      if (drift === 'revision') record.revision += 1;
+      else record.packId = `${record.packId}-other`;
+
+      await assert.rejects(
+        workspace.requestExpansionPackPublicationAction('register'),
+        (error) => error?.code === 'EXPANSION_PACK_PUBLICATION_DRAFT_CHANGED',
+      );
+      assert.equal(actionCalls, 0, `${drift} drift must fail before the release callback`);
+      assert.ok(workspace.expansionPackWorkspace, 'the publication workspace remains recoverable');
+      assert.match(workspace.expansionPackPublishState.error.message, /changed|变化/i);
+    }, {
+      playable: true,
+      expansionPackDraftStore,
+      callbacks: {
+        onPrepareExpansionPackPublication() {
+          return { stage: 'walrus-prepared', started: true, locked: true };
+        },
+        onExpansionPackPublishAction() {
+          actionCalls += 1;
+          return {};
+        },
+      },
+      prepareDocument(document) {
+        document.metadata.creator = '0xcreator';
+      },
+    });
+  }
 });
 
 test('a local Pack rebinds non-destructively after the identical parent version is published', async () => {
@@ -3186,12 +4392,18 @@ test('publication requires the configured creator cover and validates its publis
     workspace.executeDocument('Remove configured Maker cover', ({ document }) => {
       document.metadata.coverAssetId = null;
     });
+    const publicationIssues = workspace.publicationIssues();
     assert.ok(
-      workspace.publicationIssues().some((issue) => (
+      publicationIssues.some((issue) => (
         issue.code === 'missing_reference'
         && issue.path === 'metadata.coverAssetId'
       )),
       'the Maker schema cover requirement must remain visible in publication issues',
+    );
+    assert.equal(
+      publicationIssues.some((issue) => issue.path === 'publication.release'),
+      false,
+      'schema validation must not be repeated as a generic release compilation failure',
     );
   }, { playable: true });
 
@@ -3199,14 +4411,66 @@ test('publication requires the configured creator cover and validates its publis
     workspace.executeDocument('Reference a missing Maker cover descriptor', ({ document }) => {
       document.metadata.coverAssetId = 'missing-cover-descriptor';
     });
+    const publicationIssues = workspace.publicationIssues();
     assert.ok(
-      workspace.publicationIssues().some((issue) => (
+      publicationIssues.some((issue) => (
         issue.code === 'missing_reference'
         && issue.path === 'metadata.coverAssetId'
       )),
       'a dangling cover Asset reference must block publication',
     );
+    assert.equal(
+      publicationIssues.filter((issue) => (
+        issue.code === 'missing_reference'
+        && issue.path === 'metadata.coverAssetId'
+      )).length,
+      1,
+      'a dangling cover Asset reference must be reported exactly once',
+    );
+    assert.equal(
+      publicationIssues.some((issue) => (
+        issue.code === 'release_compilation_failed'
+        || issue.path === 'publication.release'
+      )),
+      false,
+      'the final release compiler must preserve the precise cover issue instead of adding a cascade',
+    );
   }, { playable: true });
+});
+
+test('cover publication issues explain the repair and focus the Maker cover upload', async () => {
+  let focused = 0;
+  const creatorRoot = new FakeRoot({
+    '[data-action="maker-cover"]': {
+      focus() { focused += 1; },
+    },
+  });
+  await withWorkspace(async (workspace) => {
+    workspace.executeDocument('Reference a missing Maker cover descriptor', ({ document }) => {
+      document.metadata.coverAssetId = 'missing-cover-descriptor';
+    });
+    workspace.setLocale('zh', { render: false });
+    creatorClick(workspace, 'creator-tab', { tab: 'validate' });
+
+    const coverIssue = workspace.publicationIssues().find((issue) => (
+      issue.code === 'missing_reference'
+      && issue.path === 'metadata.coverAssetId'
+    ));
+    assert.ok(coverIssue);
+    assert.equal(
+      workspace.issueText(coverIssue),
+      '请在 Maker 信息中上传或替换 Maker 封面，并等到“已保存并完成读回验证”后再重新检查。',
+    );
+    assert.match(
+      creatorRoot.innerHTML,
+      /data-action="focus-issue" data-issue-path="metadata\.coverAssetId"/,
+      'the cover issue must provide a direct route to Maker Info',
+    );
+
+    creatorClick(workspace, 'focus-issue', { issuePath: 'metadata.coverAssetId' });
+    assert.equal(workspace.creatorTab, 'info');
+    assert.equal(focused, 1, 'the Maker cover file input must receive focus');
+  }, { creatorRoot, playable: true });
 });
 
 test('release Preflight compiles the configured cover without replacing it', async () => {
@@ -3407,6 +4671,50 @@ test('paid whole-Maker access blocks play until the wallet-bound purchase confir
     assert.equal(purchases[0].quote.grossAtomic, 10_000_000);
     assert.equal(workspace.playerOwnsMakerAccess, true);
     assert.doesNotMatch(playerRoot.innerHTML, /v4-player-access-gate/);
+  }, {
+    playable: true,
+    playerRoot,
+    callbacks: {
+      async onPurchaseMakerAccess(payload) {
+        purchases.push(payload);
+        return { confirmed: true, ownsMakerAccess: true };
+      },
+    },
+  });
+});
+
+test('Player info dismissal cannot bypass paid whole-Maker access', async () => {
+  const playerRoot = new FakeRoot();
+  const purchases = [];
+  await withWorkspace(async (workspace) => {
+    const recipeBefore = structuredClone(workspace.playerRecipe);
+    workspace.executeDocument('Configure paid Maker access', ({ document }) => {
+      document.commerce = normalizeMakerCommerceV5(document.commerce, {
+        packIds: [],
+      });
+      document.commerce.makerAccess = {
+        mode: MAKER_ACCESS_MODES.ONE_TIME_PAID,
+        purchasePriceAtomic: 10_000_000,
+      };
+    });
+    workspace.playerIntroOpen = true;
+    workspace.renderPlayer();
+
+    const backdrop = actionTarget('close-player-info-backdrop');
+    workspace.handlePlayerClick({ target: backdrop });
+
+    assert.equal(workspace.playerIntroOpen, false);
+    assert.equal(workspace.playerOwnsMakerAccess, false);
+    assert.equal(purchases.length, 0, 'dismissing information must never synthesize a purchase');
+    assert.match(playerRoot.innerHTML, /class="v4-player-shell access-locked"/);
+    assert.match(playerRoot.innerHTML, /data-action="player-unlock-maker"/);
+
+    playerClick(workspace, 'player-random');
+    assert.deepEqual(
+      workspace.playerRecipe,
+      recipeBefore,
+      'Player controls must remain inert behind the existing access guard',
+    );
   }, {
     playable: true,
     playerRoot,

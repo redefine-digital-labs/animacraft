@@ -1,3 +1,10 @@
+#[allow(
+    unused_const,
+    unused_field,
+    unused_function,
+    unused_let_mut,
+    unused_variable,
+)]
 module animacraft::composition_v6;
 
 use animacraft::animacraft::{Self as legacy, ProtocolFeeAdminCap};
@@ -847,6 +854,7 @@ public fun withdraw_protocol_revenue_v6<PaymentCoin>(
     transfer::public_transfer(payment, recipient);
 }
 
+#[test_only]
 fun new_profile(
     root: &MakerRootV5,
     cap: &MakerControlCapV5,
@@ -932,23 +940,7 @@ public fun create_maker_profile_v6(
     extensions_hash: vector<u8>,
     ctx: &mut TxContext,
 ) {
-    assert_v6_publication_gate(config, v5_config);
-    let profile = new_profile(
-        root,
-        cap,
-        config,
-        registry,
-        mode,
-        item_assetization,
-        third_party_policy,
-        slot_schema_commitment,
-        renderer_commitment,
-        companion_manifest_blob_id,
-        companion_manifest_hash,
-        extensions_hash,
-        ctx,
-    );
-    transfer::share_object(profile);
+    abort EProtocolDisabled
 }
 
 #[test_only]
@@ -992,15 +984,7 @@ public fun seal_maker_profile_v6(
     v5_config: &CommerceProtocolConfigV5,
     ctx: &TxContext,
 ) {
-    assert_v6_publication_gate(config, v5_config);
-    commerce::assert_extension_control_v5(root, cap, ctx);
-    assert_profile_link(config, profile, root);
-    assert!(!profile.sealed, EProfileAlreadySealed);
-    profile.sealed = true;
-    event::emit(MakerProfileSealedV6 {
-        profile_id: object::id(profile),
-        root_id: profile.root_id,
-    });
+    abort EProtocolDisabled
 }
 
 /// Cancel an incomplete profile and release its root reservation. This is
@@ -1098,6 +1082,7 @@ public fun profile_admission_count_v6(self: &MakerProfileV6): u64 {
     self.admission_count
 }
 
+#[test_only]
 fun new_item_product(
     config: &CompositionProtocolConfigV6,
     profile: &MakerProfileV6,
@@ -1181,6 +1166,7 @@ fun new_item_product(
     product
 }
 
+#[test_only]
 fun new_official_item_product(
     profile: &MakerProfileV6,
     root: &MakerRootV5,
@@ -1251,27 +1237,7 @@ public fun publish_official_item_product_v6(
     extensions_hash: vector<u8>,
     ctx: &mut TxContext,
 ) {
-    assert_v6_publication_gate(config, v5_config);
-    let product = new_official_item_product(
-        profile,
-        root,
-        cap,
-        config,
-        family_commitment,
-        definition_commitment,
-        asset_commitment,
-        slot_key,
-        access_kind,
-        binding_kind,
-        price_atomic,
-        maker_ecosystem_fee_bps,
-        transferable,
-        required_product_ids,
-        excluded_product_ids,
-        extensions_hash,
-        ctx,
-    );
-    transfer::freeze_object(product);
+    abort EProtocolDisabled
 }
 
 #[test_only]
@@ -1315,6 +1281,7 @@ public fun new_official_item_product_v6_for_testing(
     )
 }
 
+#[test_only]
 fun new_external_item_product(
     profile: &MakerProfileV6,
     config: &CompositionProtocolConfigV6,
@@ -1384,27 +1351,7 @@ public fun publish_external_item_product_v6(
     extensions_hash: vector<u8>,
     ctx: &mut TxContext,
 ) {
-    assert_v6_publication_gate(config, v5_config);
-    let product = new_external_item_product(
-        profile,
-        config,
-        origin_kind,
-        family_commitment,
-        definition_commitment,
-        asset_commitment,
-        slot_key,
-        rights_origin,
-        access_kind,
-        binding_kind,
-        price_atomic,
-        maker_ecosystem_fee_bps,
-        transferable,
-        required_product_ids,
-        excluded_product_ids,
-        extensions_hash,
-        ctx,
-    );
-    transfer::freeze_object(product);
+    abort EProtocolDisabled
 }
 
 #[test_only]
@@ -1545,6 +1492,7 @@ public fun product_excluded_product_ids_v6(
     &self.excluded_product_ids
 }
 
+#[test_only]
 fun new_validator_attestation(
     config: &CompositionProtocolConfigV6,
     validator: &ValidatorCapV6,
@@ -1589,16 +1537,7 @@ public fun publish_validator_attestation_v6(
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert_v6_publication_gate(config, v5_config);
-    let attestation = new_validator_attestation(
-        config,
-        validator,
-        profile,
-        product,
-        clock,
-        ctx,
-    );
-    transfer::freeze_object(attestation);
+    abort EProtocolDisabled
 }
 
 #[test_only]
@@ -1613,6 +1552,7 @@ public fun new_validator_attestation_v6_for_testing(
     new_validator_attestation(config, validator, profile, product, clock, ctx)
 }
 
+#[test_only]
 fun admission_record(
     product: &ItemProductV6,
     source_kind: u8,
@@ -1641,6 +1581,7 @@ fun admission_record(
     }
 }
 
+#[test_only]
 fun add_admission(
     config: &CompositionProtocolConfigV6,
     profile: &mut MakerProfileV6,
@@ -1691,25 +1632,7 @@ public fun admit_official_item_v6(
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_v6_publication_gate(config, v5_config);
-    commerce::assert_extension_control_v5(root, cap, ctx);
-    assert_profile_link(config, profile, root);
-    assert!(product.origin_kind == ORIGIN_OFFICIAL, EProductOriginMismatch);
-    assert!(product.source_root_id.is_some(), EOfficialSourceMismatch);
-    assert!(
-        *product.source_root_id.borrow() == profile.root_id,
-        EOfficialSourceMismatch,
-    );
-    assert_attestation(config, profile, product, attestation);
-    add_admission(
-        config,
-        profile,
-        product,
-        ADMISSION_OFFICIAL,
-        option::some(object::id(attestation)),
-        clock,
-        ctx,
-    );
+    abort EProtocolDisabled
 }
 
 public fun admit_certified_item_v6(
@@ -1723,25 +1646,7 @@ public fun admit_certified_item_v6(
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_v6_publication_gate(config, v5_config);
-    commerce::assert_extension_control_v5(root, cap, ctx);
-    assert_profile_link(config, profile, root);
-    assert!(product.origin_kind == ORIGIN_CERTIFIED, EProductOriginMismatch);
-    assert!(
-        profile.third_party_policy >= THIRD_PARTY_CERTIFIED,
-        EAdmissionPolicyMismatch,
-    );
-    assert!(product.source_root_id.is_none(), EExternalSourceRequired);
-    assert_attestation(config, profile, product, attestation);
-    add_admission(
-        config,
-        profile,
-        product,
-        ADMISSION_CERTIFIED,
-        option::some(object::id(attestation)),
-        clock,
-        ctx,
-    );
+    abort EProtocolDisabled
 }
 
 /// Permissionless at the Maker endorsement layer, but never unvalidated.
@@ -1754,21 +1659,7 @@ public fun admit_open_item_v6(
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_v6_publication_gate(config, v5_config);
-    assert!(profile.config_id == object::id(config), EProtocolMismatch);
-    assert!(product.origin_kind == ORIGIN_OPEN, EProductOriginMismatch);
-    assert!(profile.third_party_policy == THIRD_PARTY_OPEN, EAdmissionPolicyMismatch);
-    assert!(product.source_root_id.is_none(), EExternalSourceRequired);
-    assert_attestation(config, profile, product, attestation);
-    add_admission(
-        config,
-        profile,
-        product,
-        ADMISSION_OPEN,
-        option::some(object::id(attestation)),
-        clock,
-        ctx,
-    );
+    abort EProtocolDisabled
 }
 
 public fun item_is_admitted_v6(
@@ -1826,24 +1717,7 @@ public fun reactivate_item_admission_v6(
     admin: &CompositionAdminCapV6,
     ctx: &TxContext,
 ) {
-    assert_v6_publication_gate(config, v5_config);
-    commerce::assert_extension_protocol_admin_v5(v5_config, v5_admin);
-    assert_admin(config, admin);
-    assert!(profile.config_id == object::id(config), EProtocolMismatch);
-    let product_id = object::id(product);
-    assert!(profile.admissions.contains(product_id), EAdmissionMissing);
-    assert_attestation(config, profile, product, attestation);
-    let admission = profile.admissions.borrow_mut(product_id);
-    assert!(!admission.active, EAdmissionExists);
-    assert_admission_matches_product(admission, product);
-    admission.attestation_id = option::some(object::id(attestation));
-    admission.active = true;
-    event::emit(ItemAdmissionStatusChangedV6 {
-        profile_id: object::id(profile),
-        product_id,
-        active: true,
-        changed_by: ctx.sender(),
-    });
+    abort EProtocolDisabled
 }
 
 public fun admission_source_kind_v6(
@@ -1854,6 +1728,7 @@ public fun admission_source_kind_v6(
     profile.admissions.borrow(product_id).source_kind
 }
 
+#[test_only]
 fun create_owned_item(
     config: &CompositionProtocolConfigV6,
     profile: &MakerProfileV6,
@@ -1874,6 +1749,7 @@ fun create_owned_item(
     }
 }
 
+#[test_only]
 fun grant_wallet_entitlement_internal(
     registry: &mut CompositionRegistryV6,
     config: &CompositionProtocolConfigV6,
@@ -1919,6 +1795,7 @@ fun grant_wallet_entitlement_internal(
     owned
 }
 
+#[test_only]
 fun grant_soul_entitlement_internal<Proof: drop>(
     registry: &mut CompositionRegistryV6,
     config: &CompositionProtocolConfigV6,
@@ -1965,27 +1842,7 @@ public fun claim_free_wallet_item_v6(
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert_player_action(registry, config, profile, product, root, v5_config);
-    assert!(product.access_kind == ACCESS_FREE, EInvalidAccessKind);
-    assert!(
-        product.binding_kind == BINDING_ACCOUNT
-            || product.binding_kind == BINDING_OWNED,
-        EInvalidBinding,
-    );
-    let owned = grant_wallet_entitlement_internal(
-        registry,
-        config,
-        profile,
-        product,
-        0,
-        clock,
-        ctx,
-    );
-    if (owned.is_some()) {
-        transfer::transfer(owned.destroy_some(), ctx.sender());
-    } else {
-        owned.destroy_none();
-    };
+    abort EProtocolDisabled
 }
 
 #[test_only]
@@ -2029,22 +1886,10 @@ public fun claim_free_soul_item_v6<Proof: drop>(
     clock: &Clock,
     ctx: &TxContext,
 ) {
-    assert_player_action(registry, config, profile, product, root, v5_config);
-    assert!(product.access_kind == ACCESS_FREE, EInvalidAccessKind);
-    assert!(product.binding_kind == BINDING_SOUL, EInvalidBinding);
-    grant_soul_entitlement_internal(
-        registry,
-        config,
-        profile,
-        product,
-        soul_id,
-        0,
-        proof,
-        clock,
-        ctx,
-    );
+    abort EProtocolDisabled
 }
 
+#[test_only]
 fun split_item_payment<PaymentCoin>(
     config: &CompositionProtocolConfigV6,
     treasury: &mut CompositionProtocolTreasuryV6<PaymentCoin>,
@@ -2104,29 +1949,7 @@ public fun purchase_wallet_item_v6<PaymentCoin>(
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert_player_action(registry, config, profile, product, root, v5_config);
-    assert!(product.access_kind == ACCESS_PAID, EInvalidAccessKind);
-    assert!(
-        product.binding_kind == BINDING_ACCOUNT
-            || product.binding_kind == BINDING_OWNED,
-        EInvalidBinding,
-    );
-    let paid_atomic = coin::value(&payment);
-    split_item_payment(config, treasury, profile, product, root, payment, ctx);
-    let owned = grant_wallet_entitlement_internal(
-        registry,
-        config,
-        profile,
-        product,
-        paid_atomic,
-        clock,
-        ctx,
-    );
-    if (owned.is_some()) {
-        transfer::transfer(owned.destroy_some(), ctx.sender());
-    } else {
-        owned.destroy_none();
-    };
+    abort EProtocolDisabled
 }
 
 /// Atomic bridge used by the physical v7 companion package. It preserves
@@ -2145,18 +1968,7 @@ public fun claim_free_owned_item_for_physical_v7(
     clock: &Clock,
     ctx: &mut TxContext,
 ): OwnedItemV6 {
-    assert_player_action(registry, config, profile, product, root, v5_config);
-    assert!(product.access_kind == ACCESS_FREE, EInvalidAccessKind);
-    assert!(product.binding_kind == BINDING_OWNED, EInvalidBinding);
-    grant_wallet_entitlement_internal(
-        registry,
-        config,
-        profile,
-        product,
-        0,
-        clock,
-        ctx,
-    ).destroy_some()
+    abort EProtocolDisabled
 }
 
 public fun purchase_owned_item_for_physical_v7<PaymentCoin>(
@@ -2171,20 +1983,7 @@ public fun purchase_owned_item_for_physical_v7<PaymentCoin>(
     clock: &Clock,
     ctx: &mut TxContext,
 ): OwnedItemV6 {
-    assert_player_action(registry, config, profile, product, root, v5_config);
-    assert!(product.access_kind == ACCESS_PAID, EInvalidAccessKind);
-    assert!(product.binding_kind == BINDING_OWNED, EInvalidBinding);
-    let paid_atomic = coin::value(&payment);
-    split_item_payment(config, treasury, profile, product, root, payment, ctx);
-    grant_wallet_entitlement_internal(
-        registry,
-        config,
-        profile,
-        product,
-        paid_atomic,
-        clock,
-        ctx,
-    ).destroy_some()
+    abort EProtocolDisabled
 }
 
 /// Retire one legacy v6 OwnedItem after transferring its economic entitlement
@@ -2245,22 +2044,7 @@ public fun purchase_soul_item_v6<PaymentCoin, Proof: drop>(
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert_player_action(registry, config, profile, product, root, v5_config);
-    assert!(product.access_kind == ACCESS_PAID, EInvalidAccessKind);
-    assert!(product.binding_kind == BINDING_SOUL, EInvalidBinding);
-    let paid_atomic = coin::value(&payment);
-    split_item_payment(config, treasury, profile, product, root, payment, ctx);
-    grant_soul_entitlement_internal(
-        registry,
-        config,
-        profile,
-        product,
-        soul_id,
-        paid_atomic,
-        proof,
-        clock,
-        ctx,
-    );
+    abort EProtocolDisabled
 }
 
 public fun wallet_entitlement_exists_v6(
@@ -2314,38 +2098,7 @@ public fun transfer_owned_item_v6(
     recipient: address,
     ctx: &TxContext,
 ) {
-    assert_v6_operational(config, profile, root, v5_config);
-    assert_registry(config, registry);
-    assert!(recipient != @0x0 && recipient != ctx.sender(), EInvalidRecipient);
-    assert!(item.config_id == object::id(config), EOwnedItemMismatch);
-    assert!(item.profile_id == object::id(profile), EOwnedItemMismatch);
-    assert!(item.holder == ctx.sender(), ENotOwnedItemHolder);
-    assert!(item.transferable, EItemNotTransferable);
-    assert!(item.locked_soul.is_none(), EOwnedItemAlreadyLocked);
-    let instance_id = object::id(&item);
-    assert!(!registry.owned_locks.contains(instance_id), EOwnedItemAlreadyLocked);
-    let old_key = WalletEntitlementKeyV6 {
-        profile_id: item.profile_id,
-        product_id: item.product_id,
-        wallet: item.holder,
-    };
-    assert!(registry.wallet_entitlements.contains(old_key), EEntitlementMissing);
-    let new_key = WalletEntitlementKeyV6 {
-        profile_id: item.profile_id,
-        product_id: item.product_id,
-        wallet: recipient,
-    };
-    assert!(
-        !registry.wallet_entitlements.contains(new_key),
-        ERecipientAlreadyEntitled,
-    );
-    let record = registry.wallet_entitlements.remove(old_key);
-    assert!(record.owned_instance_id.is_some(), EOwnedInstanceRequired);
-    assert!(*record.owned_instance_id.borrow() == instance_id, EOwnedItemMismatch);
-    registry.wallet_entitlements.add(new_key, record);
-    item.holder = recipient;
-    item.ownership_epoch = item.ownership_epoch + 1;
-    transfer::transfer(item, recipient);
+    abort EProtocolDisabled
 }
 
 public fun lock_owned_item_to_soul_v6<Proof: drop>(
@@ -2359,33 +2112,7 @@ public fun lock_owned_item_to_soul_v6<Proof: drop>(
     _proof: Proof,
     ctx: &TxContext,
 ) {
-    assert_v6_operational(config, profile, root, v5_config);
-    assert_registry(config, registry);
-    assert_soul_owner_proof_type<Proof>(config);
-    assert!(soul_id.to_address() != @0x0, EInvalidSoulId);
-    assert!(item.config_id == object::id(config), EOwnedItemMismatch);
-    assert!(item.profile_id == object::id(profile), EOwnedItemMismatch);
-    assert!(item.holder == ctx.sender(), ENotOwnedItemHolder);
-    assert!(item.locked_soul.is_none(), EOwnedItemAlreadyLocked);
-    let instance_id = object::id(item);
-    assert!(!registry.owned_locks.contains(instance_id), EOwnedItemAlreadyLocked);
-    item.locked_soul = option::some(soul_id);
-    registry.owned_locks.add(instance_id, OwnedLockRecordV6 {
-        profile_id: item.profile_id,
-        product_id: item.product_id,
-        holder: item.holder,
-        soul_id,
-        ownership_epoch: item.ownership_epoch,
-    });
-    increment_soul_owned_lock_count(registry, soul_id);
-    event::emit(OwnedItemLockChangedV6 {
-        instance_id,
-        profile_id: item.profile_id,
-        product_id: item.product_id,
-        holder: item.holder,
-        soul_id,
-        locked: true,
-    });
+    abort EProtocolDisabled
 }
 
 public fun unlock_owned_item_from_soul_v6<Proof: drop>(
@@ -2570,68 +2297,7 @@ public fun authorize_loadout_v6<Proof: drop>(
     _proof: Proof,
     ctx: &TxContext,
 ): LoadoutAuthorizationV6 {
-    assert_v6_operational(config, profile, root, v5_config);
-    assert_registry(config, registry);
-    assert_soul_owner_proof_type<Proof>(config);
-    assert!(profile.sealed, EProfileNotSealed);
-    assert!(profile.mode == PROFILE_COMPOSABLE, EProfileNotComposable);
-    assert!(profile.loadout_mutable, ELoadoutMutationDisabled);
-    assert!(soul_id.to_address() != @0x0, EInvalidSoulId);
-    assert!(client_nonce.length() == HASH_LENGTH, EInvalidNonce);
-    assert!(selections.length() > 0, EEmptyLoadout);
-    assert!(loadout_hash.length() == HASH_LENGTH, EInvalidLoadoutHash);
-    assert!(
-        loadout_hash == hash_loadout_selections_v6(&selections),
-        EInvalidLoadoutHash,
-    );
-    let nonce_key = LoadoutNonceKeyV6 {
-        profile_id: object::id(profile),
-        soul_id,
-        client_nonce: copy client_nonce,
-    };
-    assert!(!registry.used_nonces.contains(nonce_key), ENonceAlreadyUsed);
-
-    let mut wallet_bound_count = 0;
-    let mut index = 0;
-    while (index < selections.length()) {
-        let selection = &selections[index];
-        assert_unique_slot(&selections, index);
-        assert_selection(
-            registry,
-            profile,
-            soul_id,
-            ctx.sender(),
-            selection,
-        );
-        if (selection.subject_kind == SUBJECT_WALLET) {
-            wallet_bound_count = wallet_bound_count + 1;
-        };
-        index = index + 1;
-    };
-    assert_loadout_rules(profile, &selections);
-    registry.used_nonces.add(nonce_key, true);
-    event::emit(LoadoutAuthorizedV6 {
-        profile_id: object::id(profile),
-        root_id: profile.root_id,
-        soul_id,
-        authorizer: ctx.sender(),
-        client_nonce: copy client_nonce,
-        loadout_hash: copy loadout_hash,
-        wallet_bound_count,
-        authorization_kind: AUTH_UPDATE,
-    });
-    LoadoutAuthorizationV6 {
-        profile_id: object::id(profile),
-        root_id: profile.root_id,
-        soul_id,
-        authorizer: ctx.sender(),
-        client_nonce,
-        loadout_hash,
-        slot_schema_commitment: *&profile.slot_schema_commitment,
-        selections,
-        wallet_bound_count,
-        version: VERSION,
-    }
+    abort EProtocolDisabled
 }
 
 public fun loadout_authorization_wallet_bound_count_v6(
@@ -2699,66 +2365,7 @@ public fun authorize_initial_loadout_v6<Proof: drop>(
     _proof: Proof,
     ctx: &TxContext,
 ): InitialLoadoutAuthorizationV6 {
-    assert_v6_operational(config, profile, root, v5_config);
-    assert_registry(config, registry);
-    assert_soul_owner_proof_type<Proof>(config);
-    assert!(profile.sealed, EProfileNotSealed);
-    assert!(soul_id.to_address() != @0x0, EInvalidSoulId);
-    assert!(client_nonce.length() == HASH_LENGTH, EInvalidNonce);
-    assert!(selections.length() > 0, EEmptyLoadout);
-    assert!(loadout_hash.length() == HASH_LENGTH, EInvalidLoadoutHash);
-    assert!(
-        loadout_hash == hash_loadout_selections_v6(&selections),
-        EInvalidLoadoutHash,
-    );
-    let nonce_key = LoadoutNonceKeyV6 {
-        profile_id: object::id(profile),
-        soul_id,
-        client_nonce: copy client_nonce,
-    };
-    assert!(!registry.used_nonces.contains(nonce_key), ENonceAlreadyUsed);
-
-    let mut wallet_bound_count = 0;
-    let mut index = 0;
-    while (index < selections.length()) {
-        let selection = &selections[index];
-        assert_unique_slot(&selections, index);
-        assert_selection(
-            registry,
-            profile,
-            soul_id,
-            ctx.sender(),
-            selection,
-        );
-        if (selection.subject_kind == SUBJECT_WALLET) {
-            wallet_bound_count = wallet_bound_count + 1;
-        };
-        index = index + 1;
-    };
-    assert_loadout_rules(profile, &selections);
-    registry.used_nonces.add(nonce_key, true);
-    event::emit(LoadoutAuthorizedV6 {
-        profile_id: object::id(profile),
-        root_id: profile.root_id,
-        soul_id,
-        authorizer: ctx.sender(),
-        client_nonce: copy client_nonce,
-        loadout_hash: copy loadout_hash,
-        wallet_bound_count,
-        authorization_kind: AUTH_INITIAL,
-    });
-    InitialLoadoutAuthorizationV6 {
-        profile_id: object::id(profile),
-        root_id: profile.root_id,
-        soul_id,
-        authorizer: ctx.sender(),
-        client_nonce,
-        loadout_hash,
-        slot_schema_commitment: *&profile.slot_schema_commitment,
-        selections,
-        wallet_bound_count,
-        version: VERSION,
-    }
+    abort EProtocolDisabled
 }
 
 public fun initial_loadout_authorization_wallet_bound_count_v6(
@@ -2931,6 +2538,7 @@ fun assert_unique_slot(selections: &vector<LoadoutSelectionV6>, index: u64) {
     };
 }
 
+#[test_only]
 fun assert_player_action(
     registry: &CompositionRegistryV6,
     config: &CompositionProtocolConfigV6,
@@ -2973,6 +2581,7 @@ fun assert_admission_matches_product(
     );
 }
 
+#[test_only]
 fun assert_v6_operational(
     config: &CompositionProtocolConfigV6,
     profile: &MakerProfileV6,
@@ -2985,6 +2594,7 @@ fun assert_v6_operational(
     commerce::assert_extension_operational_v5(root, v5_config);
 }
 
+#[test_only]
 fun assert_v6_publication_gate(
     config: &CompositionProtocolConfigV6,
     v5_config: &CommerceProtocolConfigV5,
@@ -3059,6 +2669,7 @@ fun assert_admin(
     assert!(admin.config_id == object::id(config), EInvalidProtocolAdmin);
 }
 
+#[test_only]
 fun assert_attestation(
     config: &CompositionProtocolConfigV6,
     profile: &MakerProfileV6,
@@ -3088,14 +2699,17 @@ fun assert_soul_owner_proof_type<Proof: drop>(
     );
 }
 
+#[test_only]
 fun assert_valid_profile_mode(mode: u8) {
     assert!(mode == PROFILE_FIXED || mode == PROFILE_COMPOSABLE, EInvalidProfileMode);
 }
 
+#[test_only]
 fun assert_valid_third_party_policy(policy: u8) {
     assert!(policy <= THIRD_PARTY_OPEN, EInvalidThirdPartyPolicy);
 }
 
+#[test_only]
 fun assert_valid_rights_origin(rights_origin: u8) {
     assert!(
         rights_origin == RIGHTS_ONCHAIN_NATIVE
@@ -3104,6 +2718,7 @@ fun assert_valid_rights_origin(rights_origin: u8) {
     );
 }
 
+#[test_only]
 fun assert_valid_origin_kind(origin_kind: u8) {
     assert!(
         origin_kind == ORIGIN_OFFICIAL
@@ -3113,6 +2728,7 @@ fun assert_valid_origin_kind(origin_kind: u8) {
     );
 }
 
+#[test_only]
 fun assert_valid_access(
     profile: &MakerProfileV6,
     access_kind: u8,
@@ -3149,6 +2765,7 @@ fun assert_valid_access(
     };
 }
 
+#[test_only]
 fun assert_product_rules(product: &ItemProductV6) {
     let product_id = object::id(product);
     let mut index = 0;
@@ -3185,6 +2802,7 @@ fun assert_product_rules(product: &ItemProductV6) {
     };
 }
 
+#[test_only]
 fun assert_rule_targets_admitted(
     profile: &MakerProfileV6,
     product: &ItemProductV6,
@@ -3438,19 +3056,6 @@ fun test_commitment(value: u8): vector<u8> {
     result
 }
 
-#[test, expected_failure(abort_code = 53, location = animacraft::composition_v6)]
-fun companion_manifest_rejects_empty_blob_id() {
-    assert_companion_manifest(&b"".to_string(), &test_commitment(1));
-}
-
-#[test, expected_failure(abort_code = 6, location = animacraft::composition_v6)]
-fun companion_manifest_rejects_non_sha256_hash() {
-    assert_companion_manifest(
-        &b"walrus-companion-v6".to_string(),
-        &vector[1, 2, 3],
-    );
-}
-
 #[test, expected_failure(abort_code = 50, location = animacraft::animacraft)]
 fun canonical_v6_protocol_can_only_initialize_once() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 589, 0, 0, 0);
@@ -3647,6 +3252,454 @@ fun composition_control_cap_rejects_zero_recipient() {
     abort 99
 }
 
+/// Calls each permanently closed product entry with otherwise-valid historical
+/// v6 state. Every branch must stop at the entry's unconditional
+/// `EProtocolDisabled`, before any legacy validation or state transition.
+#[test_only]
+fun exercise_disabled_product_entry(entry: u8) {
+    let mut ctx = sui::tx_context::new_from_hint(
+        @0xA11,
+        6_100 + (entry as u64),
+        0,
+        0,
+        0,
+    );
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let (
+        _legacy_profile,
+        maker,
+        _legacy_treasury,
+        _legacy_config,
+        _legacy_protocol_treasury,
+        protocol_admin,
+        mut v5_config,
+        _v5_protocol_treasury,
+        mut root,
+        _v5_maker_treasury,
+        _vault,
+        cap,
+    ) = commerce::v5_world_for_testing(
+        commerce::new_completion_policy(
+            commerce::policy_unlimited_free(),
+            0,
+            0,
+        ),
+        &mut ctx,
+        &clock,
+    );
+    activate_v5_for_composition_testing(
+        &mut root,
+        &cap,
+        &maker,
+        &mut v5_config,
+        &protocol_admin,
+        &ctx,
+    );
+    let (
+        mut config,
+        mut protocol_treasury,
+        mut registry,
+        admin,
+        validator,
+    ) = new_composition_protocol_v6_for_testing<sui::sui::SUI>(
+        &v5_config,
+        &protocol_admin,
+        test_commitment(90),
+        &mut ctx,
+    );
+    bind_soul_owner_proof_type_v6<TrustedSoulOwnerProofV6>(
+        &mut config,
+        &v5_config,
+        &protocol_admin,
+    );
+    update_protocol_enabled_v6(
+        &mut config,
+        &v5_config,
+        &protocol_admin,
+        true,
+    );
+    let mut profile = new_maker_profile_v6_for_testing(
+        &root,
+        &cap,
+        &config,
+        &mut registry,
+        PROFILE_COMPOSABLE,
+        true,
+        THIRD_PARTY_OPEN,
+        test_commitment(1),
+        test_commitment(2),
+        b"walrus-disabled-product-entry".to_string(),
+        test_commitment(3),
+        test_commitment(4),
+        &mut ctx,
+    );
+    // Published Mainnet v6 profiles may already be sealed even though all new
+    // product entries are now closed. Construct that historical state only in
+    // test bytecode so later branches reach the exact production entry under
+    // test rather than the now-disabled seal entry.
+    profile.sealed = true;
+    let product = new_official_item_product_v6_for_testing(
+        &profile,
+        &root,
+        &cap,
+        &config,
+        test_commitment(10),
+        test_commitment(11),
+        test_commitment(12),
+        b"body".to_string(),
+        ACCESS_FREE,
+        BINDING_OWNED,
+        0,
+        0,
+        true,
+        vector[],
+        vector[],
+        test_commitment(13),
+        &mut ctx,
+    );
+    let attestation = new_validator_attestation_v6_for_testing(
+        &config,
+        &validator,
+        &profile,
+        &product,
+        &clock,
+        &mut ctx,
+    );
+    add_admission(
+        &config,
+        &mut profile,
+        &product,
+        ADMISSION_OFFICIAL,
+        option::some(object::id(&attestation)),
+        &clock,
+        &ctx,
+    );
+
+    if (entry == 0) {
+        create_maker_profile_v6(
+            &root,
+            &cap,
+            &config,
+            &v5_config,
+            &mut registry,
+            PROFILE_COMPOSABLE,
+            true,
+            THIRD_PARTY_OPEN,
+            test_commitment(20),
+            test_commitment(21),
+            b"walrus-disabled-create".to_string(),
+            test_commitment(22),
+            test_commitment(23),
+            &mut ctx,
+        );
+        abort 99
+    };
+    if (entry == 1) {
+        seal_maker_profile_v6(
+            &mut profile,
+            &root,
+            &cap,
+            &config,
+            &v5_config,
+            &ctx,
+        );
+        abort 99
+    };
+    if (entry == 2) {
+        publish_official_item_product_v6(
+            &profile,
+            &root,
+            &cap,
+            &config,
+            &v5_config,
+            test_commitment(20),
+            test_commitment(21),
+            test_commitment(22),
+            b"hat".to_string(),
+            ACCESS_FREE,
+            BINDING_ACCOUNT,
+            0,
+            0,
+            false,
+            vector[],
+            vector[],
+            test_commitment(23),
+            &mut ctx,
+        );
+        abort 99
+    };
+    if (entry == 3) {
+        publish_external_item_product_v6(
+            &profile,
+            &config,
+            &v5_config,
+            ORIGIN_OPEN,
+            test_commitment(20),
+            test_commitment(21),
+            test_commitment(22),
+            b"hat".to_string(),
+            RIGHTS_ONCHAIN_NATIVE,
+            ACCESS_FREE,
+            BINDING_ACCOUNT,
+            0,
+            0,
+            false,
+            vector[],
+            vector[],
+            test_commitment(23),
+            &mut ctx,
+        );
+        abort 99
+    };
+    if (entry == 4) {
+        publish_validator_attestation_v6(
+            &config,
+            &v5_config,
+            &validator,
+            &profile,
+            &product,
+            &clock,
+            &mut ctx,
+        );
+        abort 99
+    };
+    if (entry == 5) {
+        admit_official_item_v6(
+            &mut profile,
+            &product,
+            &attestation,
+            &root,
+            &cap,
+            &config,
+            &v5_config,
+            &clock,
+            &ctx,
+        );
+        abort 99
+    };
+    if (entry == 6) {
+        admit_certified_item_v6(
+            &mut profile,
+            &product,
+            &attestation,
+            &root,
+            &cap,
+            &config,
+            &v5_config,
+            &clock,
+            &ctx,
+        );
+        abort 99
+    };
+    if (entry == 7) {
+        admit_open_item_v6(
+            &mut profile,
+            &product,
+            &attestation,
+            &config,
+            &v5_config,
+            &clock,
+            &ctx,
+        );
+        abort 99
+    };
+    if (entry == 8) {
+        reactivate_item_admission_v6(
+            &mut profile,
+            &product,
+            &attestation,
+            &config,
+            &v5_config,
+            &protocol_admin,
+            &admin,
+            &ctx,
+        );
+        abort 99
+    };
+    if (entry == 9) {
+        claim_free_wallet_item_v6(
+            &mut registry,
+            &config,
+            &profile,
+            &product,
+            &root,
+            &v5_config,
+            &clock,
+            &mut ctx,
+        );
+        abort 99
+    };
+    if (entry == 10) {
+        claim_free_soul_item_v6(
+            &mut registry,
+            &config,
+            &profile,
+            &product,
+            &root,
+            &v5_config,
+            object::id_from_address(@0x5001),
+            trusted_soul_owner_proof_v6(),
+            &clock,
+            &ctx,
+        );
+        abort 99
+    };
+    if (entry == 11) {
+        let payment = coin::from_balance(
+            balance::create_for_testing<sui::sui::SUI>(1),
+            &mut ctx,
+        );
+        purchase_wallet_item_v6(
+            &mut registry,
+            &config,
+            &mut protocol_treasury,
+            &profile,
+            &product,
+            &root,
+            &v5_config,
+            payment,
+            &clock,
+            &mut ctx,
+        );
+        abort 99
+    };
+    if (entry == 12) {
+        let unexpected = claim_free_owned_item_for_physical_v7(
+            &mut registry,
+            &config,
+            &profile,
+            &product,
+            &root,
+            &v5_config,
+            &clock,
+            &mut ctx,
+        );
+        destroy_owned_item_v6_for_testing(unexpected);
+        abort 99
+    };
+    if (entry == 13) {
+        let payment = coin::from_balance(
+            balance::create_for_testing<sui::sui::SUI>(1),
+            &mut ctx,
+        );
+        let unexpected = purchase_owned_item_for_physical_v7(
+            &mut registry,
+            &config,
+            &mut protocol_treasury,
+            &profile,
+            &product,
+            &root,
+            &v5_config,
+            payment,
+            &clock,
+            &mut ctx,
+        );
+        destroy_owned_item_v6_for_testing(unexpected);
+        abort 99
+    };
+    if (entry == 14) {
+        let payment = coin::from_balance(
+            balance::create_for_testing<sui::sui::SUI>(1),
+            &mut ctx,
+        );
+        purchase_soul_item_v6(
+            &mut registry,
+            &config,
+            &mut protocol_treasury,
+            &profile,
+            &product,
+            &root,
+            &v5_config,
+            object::id_from_address(@0x5001),
+            trusted_soul_owner_proof_v6(),
+            payment,
+            &clock,
+            &mut ctx,
+        );
+        abort 99
+    };
+    if (entry == 15) {
+        let owned = claim_free_wallet_item_v6_for_testing(
+            &mut registry,
+            &config,
+            &profile,
+            &product,
+            &root,
+            &v5_config,
+            &clock,
+            &mut ctx,
+        ).destroy_some();
+        transfer_owned_item_v6(
+            &mut registry,
+            &config,
+            &profile,
+            &root,
+            &v5_config,
+            owned,
+            @0xB11,
+            &ctx,
+        );
+        abort 99
+    };
+    if (entry == 16) {
+        let mut owned = claim_free_wallet_item_v6_for_testing(
+            &mut registry,
+            &config,
+            &profile,
+            &product,
+            &root,
+            &v5_config,
+            &clock,
+            &mut ctx,
+        ).destroy_some();
+        lock_owned_item_to_soul_v6(
+            &mut registry,
+            &config,
+            &profile,
+            &root,
+            &v5_config,
+            &mut owned,
+            object::id_from_address(@0x5001),
+            trusted_soul_owner_proof_v6(),
+            &ctx,
+        );
+        destroy_owned_item_v6_for_testing(owned);
+        abort 99
+    };
+    if (entry == 17) {
+        let authorization = authorize_loadout_v6(
+            &mut registry,
+            &config,
+            &profile,
+            &root,
+            &v5_config,
+            object::id_from_address(@0x5001),
+            test_commitment(70),
+            test_commitment(71),
+            vector[],
+            trusted_soul_owner_proof_v6(),
+            &ctx,
+        );
+        consume_loadout_authorization_v6(authorization);
+        abort 99
+    };
+    let authorization = authorize_initial_loadout_v6(
+        &mut registry,
+        &config,
+        &profile,
+        &root,
+        &v5_config,
+        object::id_from_address(@0x5001),
+        test_commitment(70),
+        test_commitment(71),
+        vector[],
+        trusted_soul_owner_proof_v6(),
+        &ctx,
+    );
+    consume_initial_loadout_authorization_v6(authorization);
+    abort 99
+}
+
 #[test_only]
 fun exercise_disabled_publication_stage(stage: u8) {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 590 + (stage as u64), 0, 0, 0);
@@ -3740,7 +3793,7 @@ fun exercise_disabled_publication_stage(stage: u8) {
         seal_maker_profile_v6(&mut profile, &root, &cap, &config, &v5_config, &ctx);
         abort 99
     };
-    seal_maker_profile_v6(&mut profile, &root, &cap, &config, &v5_config, &ctx);
+    profile.sealed = true;
 
     if (stage == 2) {
         update_protocol_enabled_v6(
@@ -3860,33 +3913,33 @@ fun exercise_disabled_publication_stage(stage: u8) {
 }
 
 #[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
-fun disabled_gate_rejects_profile_creation() {
-    exercise_disabled_publication_stage(0)
+fun permanently_disabled_profile_creation_aborts() {
+    exercise_disabled_product_entry(0)
 }
 
 #[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
-fun disabled_gate_rejects_profile_seal() {
-    exercise_disabled_publication_stage(1)
+fun permanently_disabled_profile_seal_aborts() {
+    exercise_disabled_product_entry(1)
 }
 
 #[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
-fun disabled_gate_rejects_product_publication() {
-    exercise_disabled_publication_stage(2)
+fun permanently_disabled_official_product_publication_aborts() {
+    exercise_disabled_product_entry(2)
 }
 
 #[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
-fun disabled_gate_rejects_validator_attestation() {
-    exercise_disabled_publication_stage(3)
+fun permanently_disabled_external_product_publication_aborts() {
+    exercise_disabled_product_entry(3)
 }
 
 #[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
-fun disabled_gate_rejects_item_admission() {
-    exercise_disabled_publication_stage(4)
+fun permanently_disabled_validator_attestation_aborts() {
+    exercise_disabled_product_entry(4)
 }
 
-#[test, expected_failure(abort_code = 58, location = animacraft::composition_v6)]
-fun external_product_rejects_official_origin_kind() {
-    exercise_disabled_publication_stage(5)
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_official_admission_aborts() {
+    exercise_disabled_product_entry(5)
 }
 
 #[test_only]
@@ -4071,7 +4124,7 @@ fun exercise_v5_kill_switch_publication_stage(stage: u8) {
         abort 99
     };
 
-    seal_maker_profile_v6(&mut profile, &root, &cap, &config, &v5_config, &ctx);
+    profile.sealed = true;
     commerce::update_protocol_enabled_v5(&mut v5_config, &protocol_admin, false);
     if (stage == 5) {
         admit_official_item_v6(
@@ -4099,29 +4152,29 @@ fun exercise_v5_kill_switch_publication_stage(stage: u8) {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 6, location = animacraft::commerce_v5)]
-fun v5_kill_switch_rejects_v6_profile_creation() { exercise_v5_kill_switch_publication_stage(0) }
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_certified_admission_aborts() { exercise_disabled_product_entry(6) }
 
-#[test, expected_failure(abort_code = 6, location = animacraft::commerce_v5)]
-fun v5_kill_switch_rejects_v6_profile_seal() { exercise_v5_kill_switch_publication_stage(1) }
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_open_admission_aborts() { exercise_disabled_product_entry(7) }
 
-#[test, expected_failure(abort_code = 6, location = animacraft::commerce_v5)]
-fun v5_kill_switch_rejects_v6_official_product_publish() { exercise_v5_kill_switch_publication_stage(2) }
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_admission_reactivation_aborts() { exercise_disabled_product_entry(8) }
 
-#[test, expected_failure(abort_code = 6, location = animacraft::commerce_v5)]
-fun v5_kill_switch_rejects_v6_external_product_publish() { exercise_v5_kill_switch_publication_stage(3) }
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_free_wallet_claim_aborts() { exercise_disabled_product_entry(9) }
 
-#[test, expected_failure(abort_code = 6, location = animacraft::commerce_v5)]
-fun v5_kill_switch_rejects_v6_validator_attestation() { exercise_v5_kill_switch_publication_stage(4) }
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_free_soul_claim_aborts() { exercise_disabled_product_entry(10) }
 
-#[test, expected_failure(abort_code = 6, location = animacraft::commerce_v5)]
-fun v5_kill_switch_rejects_v6_official_admission() { exercise_v5_kill_switch_publication_stage(5) }
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_wallet_purchase_aborts() { exercise_disabled_product_entry(11) }
 
-#[test, expected_failure(abort_code = 6, location = animacraft::commerce_v5)]
-fun v5_kill_switch_rejects_v6_certified_admission() { exercise_v5_kill_switch_publication_stage(6) }
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_physical_free_claim_aborts() { exercise_disabled_product_entry(12) }
 
-#[test, expected_failure(abort_code = 6, location = animacraft::commerce_v5)]
-fun v5_kill_switch_rejects_v6_open_admission() { exercise_v5_kill_switch_publication_stage(7) }
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_physical_purchase_aborts() { exercise_disabled_product_entry(13) }
 
 #[test_only]
 fun activate_v5_for_composition_testing(
@@ -4299,7 +4352,7 @@ fun incomplete_profile_can_be_cancelled_and_root_reused_with_gates_off() {
 }
 
 #[test]
-fun composable_profile_enforces_admission_entitlement_lock_and_one_shot_auth() {
+fun historical_profile_preserves_deactivate_unlock_and_consume_recovery() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 601, 0, 0, 0);
     let clock = sui::clock::create_for_testing(&mut ctx);
     let (
@@ -4376,7 +4429,7 @@ fun composable_profile_enforces_admission_entitlement_lock_and_one_shot_auth() {
         *profile_companion_manifest_hash_v6(&profile) == test_commitment(3),
         99,
     );
-    seal_maker_profile_v6(&mut profile, &root, &cap, &config, &v5_config, &ctx);
+    profile.sealed = true;
 
     let official = new_official_item_product_v6_for_testing(
         &profile,
@@ -4459,34 +4512,30 @@ fun composable_profile_enforces_admission_entitlement_lock_and_one_shot_auth() {
         &clock,
         &mut ctx,
     );
-    admit_official_item_v6(
+    add_admission(
+        &config,
         &mut profile,
         &official,
-        &official_attestation,
-        &root,
-        &cap,
-        &config,
-        &v5_config,
+        ADMISSION_OFFICIAL,
+        option::some(object::id(&official_attestation)),
         &clock,
         &ctx,
     );
-    admit_certified_item_v6(
+    add_admission(
+        &config,
         &mut profile,
         &certified,
-        &certified_attestation,
-        &root,
-        &cap,
-        &config,
-        &v5_config,
+        ADMISSION_CERTIFIED,
+        option::some(object::id(&certified_attestation)),
         &clock,
         &ctx,
     );
-    admit_open_item_v6(
+    add_admission(
+        &config,
         &mut profile,
         &open,
-        &open_attestation,
-        &config,
-        &v5_config,
+        ADMISSION_OPEN,
+        option::some(object::id(&open_attestation)),
         &clock,
         &ctx,
     );
@@ -4498,28 +4547,6 @@ fun composable_profile_enforces_admission_entitlement_lock_and_one_shot_auth() {
     assert!(product_origin_kind_v6(&open) == ORIGIN_OPEN, 99);
     assert!(product_original_creator_v6(&official) == commerce::root_current_owner_v5(&root));
     assert!(admission_active_v6(&profile, object::id(&official)));
-    deactivate_item_admission_v6(
-        &mut profile,
-        object::id(&official),
-        &config,
-        &v5_config,
-        &protocol_admin,
-        &admin,
-        &ctx,
-    );
-    assert!(!admission_active_v6(&profile, object::id(&official)));
-    reactivate_item_admission_v6(
-        &mut profile,
-        &official,
-        &official_attestation,
-        &config,
-        &v5_config,
-        &protocol_admin,
-        &admin,
-        &ctx,
-    );
-    assert!(admission_active_v6(&profile, object::id(&official)));
-
     let mut owned = claim_free_wallet_item_v6_for_testing(
         &mut registry,
         &config,
@@ -4530,18 +4557,33 @@ fun composable_profile_enforces_admission_entitlement_lock_and_one_shot_auth() {
         &clock,
         &mut ctx,
     ).destroy_some();
+    deactivate_item_admission_v6(
+        &mut profile,
+        object::id(&official),
+        &config,
+        &v5_config,
+        &protocol_admin,
+        &admin,
+        &ctx,
+    );
+    assert!(!admission_active_v6(&profile, object::id(&official)));
+    // Reactivation is one of the permanently disabled product writes. The
+    // emergency deactivation above remains live and is the invariant this
+    // historical-state recovery test preserves.
+
     let soul_id = object::id_from_address(@0x5001);
-    lock_owned_item_to_soul_v6(
-        &mut registry,
-        &config,
-        &profile,
-        &root,
-        &v5_config,
-        &mut owned,
+    // Reconstruct one pre-disable lock so the live unlock recovery path is
+    // exercised while both v5 and v6 gates are off.
+    let owned_id = object::id(&owned);
+    owned.locked_soul = option::some(soul_id);
+    registry.owned_locks.add(owned_id, OwnedLockRecordV6 {
+        profile_id: object::id(&profile),
+        product_id: object::id(&official),
+        holder: ctx.sender(),
         soul_id,
-        trusted_soul_owner_proof_v6(),
-        &ctx,
-    );
+        ownership_epoch: owned.ownership_epoch,
+    });
+    increment_soul_owned_lock_count(&mut registry, soul_id);
     assert!(soul_owned_lock_count_v6(&registry, soul_id) == 1, 99);
     update_protocol_enabled_v6(
         &mut config,
@@ -4566,175 +4608,21 @@ fun composable_profile_enforces_admission_entitlement_lock_and_one_shot_auth() {
         &ctx,
     );
     assert!(soul_owned_lock_count_v6(&registry, soul_id) == 0, 99);
-    commerce::update_protocol_enabled_v5(
-        &mut v5_config,
-        &protocol_admin,
-        true,
-    );
-    update_protocol_enabled_v6(
-        &mut config,
-        &v5_config,
-        &protocol_admin,
-        true,
-    );
-    lock_owned_item_to_soul_v6(
-        &mut registry,
-        &config,
-        &profile,
-        &root,
-        &v5_config,
-        &mut owned,
-        soul_id,
-        trusted_soul_owner_proof_v6(),
-        &ctx,
-    );
-    assert!(soul_owned_lock_count_v6(&registry, soul_id) == 1, 99);
-    let payment = coin::from_balance(
-        balance::create_for_testing<sui::sui::SUI>(1_000),
-        &mut ctx,
-    );
-    purchase_soul_item_v6(
-        &mut registry,
-        &config,
-        &mut protocol_treasury,
-        &profile,
-        &certified,
-        &root,
-        &v5_config,
-        soul_id,
-        trusted_soul_owner_proof_v6(),
-        payment,
-        &clock,
-        &mut ctx,
-    );
-    claim_free_soul_item_v6(
-        &mut registry,
-        &config,
-        &profile,
-        &open,
-        &root,
-        &v5_config,
-        soul_id,
-        trusted_soul_owner_proof_v6(),
-        &clock,
-        &ctx,
-    );
-    assert!(protocol_treasury_balance_v6(&protocol_treasury) == 100);
-    assert!(soul_entitlement_exists_v6(
-        &registry,
-        object::id(&profile),
-        object::id(&certified),
-        soul_id,
-    ));
-
-    let selections = vector[
-        new_loadout_selection_v6(
-            object::id(&official),
-            b"hair".to_string(),
-            SUBJECT_WALLET,
-            option::some(object::id(&owned)),
-        ),
-        new_loadout_selection_v6(
-            object::id(&certified),
-            b"outfit".to_string(),
-            SUBJECT_SOUL,
-            option::none(),
-        ),
-        new_loadout_selection_v6(
-            object::id(&open),
-            b"accessory".to_string(),
-            SUBJECT_SOUL,
-            option::none(),
-        ),
-    ];
-    let loadout_hash = hash_loadout_selections_v6(&selections);
-    let authorization = authorize_loadout_v6(
-        &mut registry,
-        &config,
-        &profile,
-        &root,
-        &v5_config,
-        soul_id,
-        test_commitment(70),
-        loadout_hash,
-        selections,
-        trusted_soul_owner_proof_v6(),
-        &ctx,
-    );
-    assert!(loadout_authorization_wallet_bound_count_v6(&authorization) == 1);
-    let (
-        authorized_profile_id,
-        authorized_root_id,
-        authorized_soul_id,
-        authorizer,
-        nonce,
-        authorized_hash,
-        slot_commitment,
-        authorized_selections,
-        wallet_bound_count,
-        version,
-    ) = consume_loadout_authorization_v6(authorization);
-    assert!(authorized_profile_id == object::id(&profile));
-    assert!(authorized_root_id == object::id(&root));
-    assert!(authorized_soul_id == soul_id);
-    assert!(authorizer == @0xA11);
-    assert!(nonce.length() == 32 && authorized_hash.length() == 32);
-    assert!(slot_commitment == test_commitment(1));
-    assert!(authorized_selections.length() == 3);
-    assert!(wallet_bound_count == 1 && version == VERSION);
-
-    unlock_owned_item_from_soul_v6(
-        &mut registry,
-        &config,
-        &profile,
-        &root,
-        &v5_config,
-        &mut owned,
-        soul_id,
-        trusted_soul_owner_proof_v6(),
-        &ctx,
-    );
-    assert!(soul_owned_lock_count_v6(&registry, soul_id) == 0, 99);
-    let transferable_selections = vector[new_loadout_selection_v6(
-        object::id(&certified),
-        b"outfit".to_string(),
-        SUBJECT_SOUL,
-        option::none(),
-    )];
-    let transferable_hash = hash_loadout_selections_v6(
-        &transferable_selections,
-    );
-    assert_secondary_market_loadout_v6(
-        &registry,
-        &config,
-        &profile,
-        &root,
-        &v5_config,
-        soul_id,
-        &transferable_hash,
-        &transferable_selections,
-    );
-    transfer_owned_item_v6(
-        &mut registry,
-        &config,
-        &profile,
-        &root,
-        &v5_config,
-        owned,
-        @0xB11,
-        &ctx,
-    );
+    let (consumed_product_id, holder, transferable, ownership_epoch) =
+        consume_owned_item_for_physical_v7(
+            &mut registry,
+            &config,
+            &profile,
+            owned,
+            &ctx,
+        );
+    assert!(consumed_product_id == object::id(&official));
+    assert!(holder == @0xA11 && transferable && ownership_epoch == 0);
     assert!(!wallet_entitlement_exists_v6(
         &registry,
         object::id(&profile),
         object::id(&official),
         @0xA11,
-    ));
-    assert!(wallet_entitlement_exists_v6(
-        &registry,
-        object::id(&profile),
-        object::id(&official),
-        @0xB11,
     ));
     destroy_validator_attestation_v6_for_testing(official_attestation);
     destroy_validator_attestation_v6_for_testing(certified_attestation);
@@ -4839,14 +4727,10 @@ fun exercise_secondary_market_guard(stage: u8) {
         test_commitment(4),
         &mut ctx,
     );
-    seal_maker_profile_v6(
-        &mut profile,
-        &root,
-        &cap,
-        &config,
-        &v5_config,
-        &ctx,
-    );
+    // Reconstruct a profile/admission published before the permanent product
+    // shutdown; only the production secondary-market guard below is under
+    // test.
+    profile.sealed = true;
     let embedded = new_official_item_product_v6_for_testing(
         &profile,
         &root,
@@ -4874,14 +4758,12 @@ fun exercise_secondary_market_guard(stage: u8) {
         &clock,
         &mut ctx,
     );
-    admit_official_item_v6(
+    add_admission(
+        &config,
         &mut profile,
         &embedded,
-        &attestation,
-        &root,
-        &cap,
-        &config,
-        &v5_config,
+        ADMISSION_OFFICIAL,
+        option::some(object::id(&attestation)),
         &clock,
         &ctx,
     );
@@ -5177,7 +5059,7 @@ fun v6_player_paths_fail_while_protocol_gate_is_disabled() {
         test_commitment(4),
         &mut ctx,
     );
-    seal_maker_profile_v6(&mut profile, &root, &cap, &config, &v5_config, &ctx);
+    profile.sealed = true;
     let product = new_official_item_product_v6_for_testing(
         &profile,
         &root,
@@ -5205,14 +5087,12 @@ fun v6_player_paths_fail_while_protocol_gate_is_disabled() {
         &clock,
         &mut ctx,
     );
-    admit_official_item_v6(
+    add_admission(
+        &config,
         &mut profile,
         &product,
-        &attestation,
-        &root,
-        &cap,
-        &config,
-        &v5_config,
+        ADMISSION_OFFICIAL,
+        option::some(object::id(&attestation)),
         &clock,
         &ctx,
     );
@@ -5357,160 +5237,27 @@ fun exercise_open_admission_rejection(origin_mismatch: bool) {
     abort 99
 }
 
-#[test, expected_failure(abort_code = 23, location = animacraft::composition_v6)]
-fun open_admission_rejects_an_attestation_for_another_product() {
-    exercise_open_admission_rejection(false)
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_soul_purchase_aborts() {
+    exercise_disabled_product_entry(14)
 }
 
-#[test, expected_failure(abort_code = 59, location = animacraft::composition_v6)]
-fun open_admission_rejects_certified_origin_product() {
-    exercise_open_admission_rejection(true)
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_owned_item_transfer_aborts() {
+    exercise_disabled_product_entry(15)
 }
 
-#[test, expected_failure(abort_code = 12, location = animacraft::composition_v6)]
-fun fixed_profile_accepts_initial_binding_but_rejects_updates() {
-    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 604, 0, 0, 0);
-    let clock = sui::clock::create_for_testing(&mut ctx);
-    let (
-        _legacy_profile,
-        maker,
-        _legacy_treasury,
-        _legacy_config,
-        _legacy_protocol_treasury,
-        protocol_admin,
-        mut v5_config,
-        _v5_protocol_treasury,
-        mut root,
-        _v5_maker_treasury,
-        _vault,
-        cap,
-    ) = commerce::v5_world_for_testing(
-        commerce::new_completion_policy(commerce::policy_unlimited_free(), 0, 0),
-        &mut ctx,
-        &clock,
-    );
-    activate_v5_for_composition_testing(
-        &mut root,
-        &cap,
-        &maker,
-        &mut v5_config,
-        &protocol_admin,
-        &ctx,
-    );
-    let (mut config, _treasury, mut registry, _admin, validator) =
-        new_composition_protocol_v6_for_testing<sui::sui::SUI>(
-            &v5_config,
-            &protocol_admin,
-            test_commitment(90),
-            &mut ctx,
-        );
-    bind_soul_owner_proof_type_v6<TrustedSoulOwnerProofV6>(
-        &mut config,
-        &v5_config,
-        &protocol_admin,
-    );
-    update_protocol_enabled_v6(
-        &mut config,
-        &v5_config,
-        &protocol_admin,
-        true,
-    );
-    let mut profile = new_maker_profile_v6_for_testing(
-        &root,
-        &cap,
-        &config,
-        &mut registry,
-        PROFILE_FIXED,
-        false,
-        THIRD_PARTY_OFFICIAL_ONLY,
-        test_commitment(1),
-        test_commitment(2),
-        b"walrus-companion-fixed-test".to_string(),
-        test_commitment(3),
-        test_commitment(4),
-        &mut ctx,
-    );
-    seal_maker_profile_v6(&mut profile, &root, &cap, &config, &v5_config, &ctx);
-    let product = new_official_item_product_v6_for_testing(
-        &profile,
-        &root,
-        &cap,
-        &config,
-        test_commitment(10),
-        test_commitment(11),
-        test_commitment(12),
-        b"portrait".to_string(),
-        ACCESS_EMBEDDED,
-        BINDING_EMBEDDED,
-        0,
-        0,
-        false,
-        vector[],
-        vector[],
-        test_commitment(13),
-        &mut ctx,
-    );
-    let attestation = new_validator_attestation_v6_for_testing(
-        &config,
-        &validator,
-        &profile,
-        &product,
-        &clock,
-        &mut ctx,
-    );
-    admit_official_item_v6(
-        &mut profile,
-        &product,
-        &attestation,
-        &root,
-        &cap,
-        &config,
-        &v5_config,
-        &clock,
-        &ctx,
-    );
-    let initial_selections = vector[new_loadout_selection_v6(
-        object::id(&product),
-        b"portrait".to_string(),
-        SUBJECT_EMBEDDED,
-        option::none(),
-    )];
-    let initial_hash = hash_loadout_selections_v6(&initial_selections);
-    let initial_authorization = authorize_initial_loadout_v6(
-        &mut registry,
-        &config,
-        &profile,
-        &root,
-        &v5_config,
-        object::id_from_address(@0x5002),
-        test_commitment(70),
-        initial_hash,
-        initial_selections,
-        trusted_soul_owner_proof_v6(),
-        &ctx,
-    );
-    consume_initial_loadout_authorization_v6(initial_authorization);
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_owned_item_lock_aborts() {
+    exercise_disabled_product_entry(16)
+}
 
-    let update_selections = vector[new_loadout_selection_v6(
-        object::id(&product),
-        b"portrait".to_string(),
-        SUBJECT_EMBEDDED,
-        option::none(),
-    )];
-    let update_hash = hash_loadout_selections_v6(&update_selections);
-    let authorization = authorize_loadout_v6(
-        &mut registry,
-        &config,
-        &profile,
-        &root,
-        &v5_config,
-        object::id_from_address(@0x5002),
-        test_commitment(71),
-        update_hash,
-        update_selections,
-        trusted_soul_owner_proof_v6(),
-        &ctx,
-    );
-    consume_loadout_authorization_v6(authorization);
-    abort 99
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_loadout_authorization_aborts() {
+    exercise_disabled_product_entry(17)
+}
+
+#[test, expected_failure(abort_code = 1, location = animacraft::composition_v6)]
+fun permanently_disabled_initial_loadout_authorization_aborts() {
+    exercise_disabled_product_entry(18)
 }

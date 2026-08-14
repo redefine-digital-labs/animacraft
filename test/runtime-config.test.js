@@ -40,6 +40,7 @@ function productionV6Config() {
     protocolFeeAdminCapId: '0xcafe',
     protocolFeeAdminCapOwner: '0xadea',
     soulidityTypeOriginPackageId: '0xabcd',
+    commerceV5CallablePackageId: '0x6666',
     commerceV5TypeOriginPackageId: '0x5555',
     commerceProtocolConfigV5Id: '0xc055',
     commerceProtocolTreasuryV5Id: '0x7ea5',
@@ -306,6 +307,7 @@ test('accepts initialized disabled v5 and v6 cores before bind-once Soul depende
     callablePackageId: '0x2221610b5513ef3f926433229b7f0b565e850d56020e344266737cdca078af3b',
     originalPackageId: '0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea',
     protocolFeePackageId: '0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc',
+    commerceV5CallablePackageId: '0x2221610b5513ef3f926433229b7f0b565e850d56020e344266737cdca078af3b',
     commerceV5TypeOriginPackageId: '0xcf369b8b02ac1e997146fc3be3f03870db14eaccf3d2cb7a9b93724be463108e',
     commerceProtocolConfigV5Id: '0xf63dc43bb3787fff47fec7f8c3ff2e777dd0966500570fa7deab2bef9b6da0d5',
     commerceProtocolTreasuryV5Id: '0x97ba8042011d6c2d4857a33789a8250c16f6effeda622cb312fe481e0b907d44',
@@ -352,6 +354,7 @@ test('Commerce v5 release gate requires one complete stable object tuple', () =>
 
   const ready = productionConfig();
   Object.assign(ready, {
+    commerceV5CallablePackageId: '0x1234',
     commerceV5TypeOriginPackageId: '0x5555',
     commerceProtocolConfigV5Id: '0xc055',
     commerceProtocolTreasuryV5Id: '0x7ea5',
@@ -496,6 +499,107 @@ test('Physical v7 requires an independently callable companion package', () => {
   result = validateRuntimeConfig(missing, { strict: true });
   assert.equal(result.valid, true, result.errors.join('\n'));
   assert.equal(result.physicalV7CoreReady, true);
+});
+
+test('Expansion Pack v8 package identities are paired and release stays fail-closed', () => {
+  const defaults = productionConfig();
+  let result = validateRuntimeConfig(defaults, { strict: true });
+  assert.equal(result.valid, true, result.errors.join('\n'));
+  assert.equal(defaults.expansionPackV8ReleaseEnabled, false);
+  assert.equal(
+    defaults.expansionPackV8CallablePackageId,
+    '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
+  );
+  assert.equal(
+    defaults.expansionPackV8TypeOriginPackageId,
+    '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
+  );
+  assert.equal(
+    defaults.independentExtensionV5TypeOriginPackageId,
+    defaults.expansionPackV8CallablePackageId,
+  );
+  assert.equal(
+    defaults.independentExtensionAuthorityV5Id,
+    '0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19',
+  );
+  assert.equal(result.expansionPackV8CoreReady, true);
+  assert.equal(result.independentExtensionV5TypeOriginPackageReady, true);
+  assert.equal(result.independentExtensionAuthorityV5Ready, true);
+
+  const partial = productionConfig();
+  partial.expansionPackV8TypeOriginPackageId = '';
+  result = validateRuntimeConfig(partial, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(
+    result.errors.join(' '),
+    /callable package and stable TypeOrigin/,
+  );
+
+  const packageOnly = productionConfig();
+  packageOnly.independentExtensionAuthorityV5Id = '';
+  result = validateRuntimeConfig(packageOnly, { strict: true });
+  assert.equal(result.valid, true, result.errors.join('\n'));
+  assert.equal(result.independentExtensionV5Ready, false);
+
+  const gated = productionConfig();
+  Object.assign(gated, {
+    expansionPackV8CallablePackageId: '0x8888',
+    expansionPackV8TypeOriginPackageId: '0x8888',
+    independentExtensionV5TypeOriginPackageId: '0x8888',
+    independentExtensionAuthorityV5Id: '0xa888',
+    expansionPackV8ReleaseEnabled: true,
+  });
+  result = validateRuntimeConfig(gated, { strict: true });
+  assert.equal(result.valid, false);
+  assert.equal(result.expansionPackV8CoreReady, true);
+  assert.match(result.errors.join(' '), /Commerce v5 core identities/);
+
+  const freeOnly = productionV6Config();
+  Object.assign(freeOnly, {
+    canonicalSoulMintEnabled: false,
+    commerceV5ReleaseEnabled: false,
+    commerceV5LogicalAuxiliaryBlobId: '',
+    commerceV5SoulBindingProofType: '',
+    sealV5CallablePackageId: '',
+    sealV5TypeOriginPackageId: '',
+    sealKeyServers: [],
+    sealThreshold: 0,
+    expansionPackV8CallablePackageId: '0x8888',
+    expansionPackV8TypeOriginPackageId: '0x8888',
+    independentExtensionV5TypeOriginPackageId: '0x8888',
+    independentExtensionAuthorityV5Id: '0xa888',
+    expansionPackV8ReleaseEnabled: true,
+  });
+  result = validateRuntimeConfig(freeOnly, { strict: true });
+  assert.equal(result.valid, true, result.errors.join('\n'));
+  assert.equal(freeOnly.commerceV5ReleaseEnabled, false);
+  assert.equal(freeOnly.canonicalSoulMintEnabled, false);
+  assert.equal(freeOnly.compositionV6ReleaseEnabled, false);
+  assert.equal(freeOnly.physicalStyleV7ReleaseEnabled, false);
+
+  for (const missingCoreField of [
+    'commerceV5CallablePackageId',
+    'commerceV5TypeOriginPackageId',
+    'commerceProtocolConfigV5Id',
+    'commerceProtocolTreasuryV5Id',
+  ]) {
+    const missingCore = { ...freeOnly, [missingCoreField]: '' };
+    result = validateRuntimeConfig(missingCore, { strict: true });
+    assert.equal(result.valid, false, missingCoreField);
+    assert.match(result.errors.join(' '), /Commerce v5 core identities|Commerce v5 core configuration/);
+  }
+
+  const otherProductsOpen = productionV6Config();
+  Object.assign(otherProductsOpen, {
+    expansionPackV8CallablePackageId: '0x8888',
+    expansionPackV8TypeOriginPackageId: '0x8888',
+    expansionPackV8ReleaseEnabled: true,
+  });
+  result = validateRuntimeConfig(otherProductsOpen, { strict: true });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /product gates remain false/);
+  assert.equal(result.expansionPackV8CallablePackageReady, true);
+  assert.equal(result.expansionPackV8TypeOriginPackageReady, true);
 });
 
 test('Composable Assets v6 rejects incomplete cap custody and validator policy evidence', () => {

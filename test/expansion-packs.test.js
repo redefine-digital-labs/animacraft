@@ -453,6 +453,72 @@ test('rejects a Pack requires-rule that would make an old base recipe depend on 
   assert.ok(result.errors.some((issue) => issue.code === 'pack-rule-breaks-base-recipe'));
 });
 
+test('fails closed for missing Pack Style Track/Color references and malformed Smart Color channels', () => {
+  const missingTrack = moonPack();
+  missingTrack.parts[0].items[0].styles[0].layerTrackId = 'missing-track';
+  const trackResult = checkExpansionPackCompatibility(baseMaker(), missingTrack);
+  assert.equal(trackResult.compatible, false);
+  assert.ok(trackResult.errors.some((issue) => issue.code === 'missing-pack-style-layer-track'));
+
+  const missingColor = moonPack();
+  missingColor.parts[0].items[0].styles[0].colorChannelId = 'missing-color';
+  const colorResult = checkExpansionPackCompatibility(baseMaker(), missingColor);
+  assert.equal(colorResult.compatible, false);
+  assert.ok(colorResult.errors.some((issue) => issue.code === 'missing-pack-style-color-channel'));
+
+  const malformed = moonPack();
+  malformed.colorChannels.push({
+    id: 'bad-tone',
+    name: 'Bad Tone',
+    mode: 'unknown',
+    defaultSwatchId: 'bad',
+    swatches: [{ id: 'bad', name: 'Bad', hintColor: 'red', stops: [] }],
+  });
+  const malformedResult = checkExpansionPackCompatibility(baseMaker(), malformed);
+  assert.equal(malformedResult.compatible, false);
+  assert.ok(malformedResult.errors.some((issue) => issue.code === 'invalid-pack-color-channel-mode'));
+  assert.ok(malformedResult.errors.some((issue) => issue.code === 'invalid-pack-color-stops'));
+});
+
+test('wardrobe partModes reject parent/unknown Parts and preserve base extensions byte-for-byte', () => {
+  const base = baseMaker();
+  base.extensions = {
+    untouched: { nested: ['parent'] },
+    wardrobeV7: {
+      schemaVersion: 'animacraft.maker-wardrobe.v7',
+      marker: 'parent',
+      partModes: { body: 'FIXED' },
+    },
+  };
+  const snapshot = structuredClone(base);
+  const pack = moonPack();
+  pack.wardrobe = {
+    schemaVersion: 'animacraft.expansion-pack-wardrobe.v1',
+    partModes: { hat: 'SLOT' },
+  };
+  const result = checkExpansionPackCompatibility(base, pack);
+  assert.equal(result.compatible, true, JSON.stringify(result.errors));
+  assert.deepEqual(base, snapshot);
+  assert.deepEqual(result.merged.extensions.untouched, snapshot.extensions.untouched);
+  assert.deepEqual(result.merged.extensions.wardrobeV7, {
+    schemaVersion: 'animacraft.maker-wardrobe.v7',
+    marker: 'parent',
+    partModes: { body: 'FIXED', moon__hat: 'SLOT' },
+  });
+  assert.equal(Object.hasOwn(result.merged.extensions, 'composableV6'), false);
+
+  for (const partId of ['body', 'missing']) {
+    const invalid = moonPack();
+    invalid.wardrobe = {
+      schemaVersion: 'animacraft.expansion-pack-wardrobe.v1',
+      partModes: { [partId]: 'SLOT' },
+    };
+    const invalidResult = checkExpansionPackCompatibility(baseMaker(), invalid);
+    assert.equal(invalidResult.compatible, false);
+    assert.ok(invalidResult.errors.some((issue) => issue.code === 'pack-wardrobe-part-not-owned'));
+  }
+});
+
 test('reports an additive Maker update as compatible', () => {
   const previous = baseMaker();
   const next = structuredClone(previous);

@@ -13,6 +13,11 @@ import {
   namespaceId,
 } from './expansion-packs.js';
 import { BLEND_MODES } from './maker-renderer.js';
+import {
+  createMakerRuleIndex,
+  evaluateRecipe,
+  normalizeRecipe,
+} from './maker-rules.js';
 
 export const EXPANSION_PACK_PROJECT_SCHEMA = 'animacraft.expansion-pack-project.v2';
 export const EXPANSION_PACK_INHERITANCE_SCHEMA = 'animacraft.expansion-pack-inheritance.v2';
@@ -20,6 +25,18 @@ export const EXPANSION_PACK_PARENT_BINDING_SCHEMA = 'animacraft.expansion-pack-p
 export const EXPANSION_PACK_PARENT_BINDING_KINDS = Object.freeze({
   LOCAL_DRAFT: 'local-draft',
   PUBLISHED_RELEASE: 'published-release',
+});
+export const EXPANSION_PACK_ACCESS_MODES = Object.freeze({
+  FREE: 'FREE',
+  PAID_ONCE: 'PAID_ONCE',
+});
+export const EXPANSION_PACK_PAYMENT_CURRENCY = 'USDC';
+export const EXPANSION_PACK_PAYMENT_DECIMALS = 6;
+export const EXPANSION_PACK_PROTOCOL_FEE_BPS = 1000;
+export const EXPANSION_PACK_WARDROBE_SCHEMA = 'animacraft.expansion-pack-wardrobe.v1';
+export const EXPANSION_PACK_PART_MODES = Object.freeze({
+  FIXED: 'FIXED',
+  SLOT: 'SLOT',
 });
 export const EXPANSION_PACK_PARENT_INHERITANCE = Object.freeze({
   schemaVersion: EXPANSION_PACK_INHERITANCE_SCHEMA,
@@ -178,6 +195,70 @@ function safeNamespace(value, packId) {
   return generated;
 }
 
+function atomicToDecimal(value, decimals = EXPANSION_PACK_PAYMENT_DECIMALS) {
+  let amount;
+  try {
+    amount = BigInt(String(value ?? 0));
+  } catch {
+    amount = 0n;
+  }
+  const scale = 10n ** BigInt(decimals);
+  const whole = amount / scale;
+  const fraction = (amount % scale).toString().padStart(decimals, '0').replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : whole.toString();
+}
+
+function decimalToAtomic(value, decimals = EXPANSION_PACK_PAYMENT_DECIMALS) {
+  const normalized = String(value ?? '').trim();
+  const match = /^(0|[1-9][0-9]*)(?:\.([0-9]+))?$/.exec(normalized);
+  if (!match || (match[2] || '').length > decimals) {
+    throw new ExpansionPackProjectError(
+      `Pack price must be a non-negative ${EXPANSION_PACK_PAYMENT_CURRENCY} amount with at most ${decimals} decimal places.`,
+      'invalid-pack-purchase-price',
+      { value: normalized, decimals },
+    );
+  }
+  const fraction = (match[2] || '').padEnd(decimals, '0');
+  return (BigInt(match[1]) * (10n ** BigInt(decimals)) + BigInt(fraction || '0')).toString();
+}
+
+export function normalizeExpansionPackCommerce(value = {}) {
+  const requestedAccessMode = String(value?.accessMode || EXPANSION_PACK_ACCESS_MODES.FREE)
+    .trim()
+    .toUpperCase();
+  const accessMode = requestedAccessMode === 'PAID'
+    ? EXPANSION_PACK_ACCESS_MODES.PAID_ONCE
+    : requestedAccessMode;
+  if (!Object.values(EXPANSION_PACK_ACCESS_MODES).includes(accessMode)) {
+    throw new ExpansionPackProjectError(
+      'Expansion Pack access must be Free or Paid Once.',
+      'invalid-pack-access-mode',
+      { accessMode },
+    );
+  }
+  const requestedDecimal = Object.hasOwn(value || {}, 'priceDecimal')
+    ? String(value.priceDecimal ?? '').trim()
+    : atomicToDecimal(value?.purchasePriceAtomic ?? value?.price ?? '0');
+  const purchasePriceAtomic = accessMode === EXPANSION_PACK_ACCESS_MODES.FREE
+    ? '0'
+    : decimalToAtomic(requestedDecimal || '0');
+  return {
+    schemaVersion: 'animacraft.expansion-pack-commerce.v8',
+    accessMode,
+    purchasePriceAtomic,
+    priceDecimal: accessMode === EXPANSION_PACK_ACCESS_MODES.FREE
+      ? '0'
+      : atomicToDecimal(purchasePriceAtomic),
+    currency: EXPANSION_PACK_PAYMENT_CURRENCY,
+    decimals: EXPANSION_PACK_PAYMENT_DECIMALS,
+    protocolFeeBps: EXPANSION_PACK_PROTOCOL_FEE_BPS,
+    entitlement: accessMode === EXPANSION_PACK_ACCESS_MODES.FREE
+      ? 'ACTIVE_RELEASE_FREE_ACCESS'
+      : 'PERMANENT_WALLET_BOUND_PASS',
+    completeMode: 'INHERIT_BASE_AND_UNLIMITED_AFTER_ACCESS',
+  };
+}
+
 function deepFreeze(value, seen = new WeakSet()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
   if (ArrayBuffer.isView(value)) return value;
@@ -312,6 +393,11 @@ function emptyPack(binding, options) {
     assets: [],
     parts: [],
     rules: [],
+    wardrobe: {
+      schemaVersion: EXPANSION_PACK_WARDROBE_SCHEMA,
+      partModes: {},
+    },
+    commerce: normalizeExpansionPackCommerce(),
   };
 }
 
@@ -394,6 +480,7 @@ function inheritedParentContract(maker) {
     livingContent: clone(maker?.livingContent ?? null),
     parentCommerce: clone(maker?.commerce ?? null),
     wardrobeCompatibility: {
+      wardrobeV7: clone(extensions?.wardrobeV7 ?? null),
       composableV6: clone(extensions?.composableV6 ?? null),
       physicalStyleCatalogV7: clone(extensions?.physicalStyleCatalogV7 ?? null),
     },
@@ -416,6 +503,26 @@ function rebasePackParentFields(packValue, binding) {
   pack.baseBindingKind = binding.kind;
   pack.baseManifestHash = binding.manifestHash;
   return pack;
+}
+
+function normalizedMigratedPack(overlay, binding) {
+  const pack = clone(overlay);
+  pack.layerTracks = Array.isArray(pack.layerTracks) ? pack.layerTracks : [];
+  if (!Array.isArray(pack.colorChannels)) {
+    pack.colorChannels = Array.isArray(pack.palettes) ? pack.palettes : [];
+  }
+  delete pack.palettes;
+  pack.assets = Array.isArray(pack.assets) ? pack.assets : [];
+  pack.parts = Array.isArray(pack.parts) ? pack.parts : [];
+  pack.rules = Array.isArray(pack.rules) ? pack.rules : [];
+  if (!Object.hasOwn(pack, 'wardrobe')) {
+    pack.wardrobe = {
+      schemaVersion: EXPANSION_PACK_WARDROBE_SCHEMA,
+      partModes: {},
+    };
+  }
+  pack.commerce = normalizeExpansionPackCommerce(pack.commerce || {});
+  return rebasePackParentFields(pack, binding);
 }
 
 /** Create a wallet-bound Pack project with an immutable parent snapshot. */
@@ -567,7 +674,7 @@ export function createExpansionPackProjectFromOverlay(parentMaker, overlayValue,
     ...(Object.hasOwn(options, 'parentRelease') ? { parentRelease: options.parentRelease } : {}),
     now: Number.isFinite(options.now) ? Number(options.now) : Date.now(),
   });
-  project.pack = overlay;
+  project.pack = normalizedMigratedPack(overlay, binding);
   project.name = name;
   project.namespace = namespace;
   project.version = version;
@@ -581,6 +688,37 @@ export function rehydrateExpansionPackProject(input) {
   }
   const project = clone(input);
   project.inheritance ||= clone(EXPANSION_PACK_PARENT_INHERITANCE);
+  if (project.pack && typeof project.pack === 'object' && !Array.isArray(project.pack)) {
+    project.pack.layerTracks = Array.isArray(project.pack.layerTracks) ? project.pack.layerTracks : [];
+    if (!Array.isArray(project.pack.colorChannels)) {
+      project.pack.colorChannels = Array.isArray(project.pack.palettes)
+        ? project.pack.palettes
+        : [];
+    }
+    delete project.pack.palettes;
+    project.pack.assets = Array.isArray(project.pack.assets) ? project.pack.assets : [];
+    project.pack.parts = Array.isArray(project.pack.parts) ? project.pack.parts : [];
+    project.pack.rules = Array.isArray(project.pack.rules) ? project.pack.rules : [];
+    if (!Object.hasOwn(project.pack, 'wardrobe')) {
+      project.pack.wardrobe = {
+        schemaVersion: EXPANSION_PACK_WARDROBE_SCHEMA,
+        partModes: {},
+      };
+    } else if (
+      project.pack.wardrobe
+      && typeof project.pack.wardrobe === 'object'
+      && !Array.isArray(project.pack.wardrobe)
+    ) {
+      project.pack.wardrobe = {
+        ...project.pack.wardrobe,
+        schemaVersion: project.pack.wardrobe.schemaVersion ?? EXPANSION_PACK_WARDROBE_SCHEMA,
+        partModes: Object.hasOwn(project.pack.wardrobe, 'partModes')
+          ? project.pack.wardrobe.partModes
+          : {},
+      };
+    }
+    project.pack.commerce = normalizeExpansionPackCommerce(project.pack.commerce || {});
+  }
   if (!project.parentSnapshot || typeof project.parentSnapshot !== 'object') {
     throw new ExpansionPackProjectError(
       'Expansion Pack project is missing its parent snapshot.',
@@ -736,6 +874,30 @@ function finishMutation(project, now = Date.now()) {
   return project;
 }
 
+export function updateExpansionPackCommerce(projectValue, patchValue = {}, options = {}) {
+  const project = mutableProject(projectValue);
+  if (!patchValue || typeof patchValue !== 'object' || Array.isArray(patchValue)) {
+    throw new ExpansionPackProjectError(
+      'Expansion Pack commerce update must be an object.',
+      'invalid-pack-commerce-update',
+    );
+  }
+  const allowed = new Set(['accessMode', 'priceDecimal']);
+  const unsupported = Object.keys(patchValue).filter((field) => !allowed.has(field));
+  if (unsupported.length) {
+    throw new ExpansionPackProjectError(
+      'Expansion Pack commerce update contains unsupported fields.',
+      'unsupported-pack-commerce-update',
+      { fields: unsupported },
+    );
+  }
+  project.pack.commerce = normalizeExpansionPackCommerce({
+    ...(project.pack.commerce || {}),
+    ...patchValue,
+  });
+  return finishMutation(project, options.now);
+}
+
 function partsOf(maker) {
   return Array.isArray(maker?.parts) ? maker.parts : [];
 }
@@ -750,6 +912,139 @@ function stylesOf(item) {
 
 function idOf(value) {
   return String(value?.id ?? value?.key ?? '').trim();
+}
+
+function parentSupportsComposableV6(parentSnapshot) {
+  const composable = parentSnapshot?.extensions?.composableV6;
+  return Boolean(
+    composable
+    && typeof composable === 'object'
+    && !Array.isArray(composable)
+    && String(composable.profile?.mode || '').toUpperCase() === 'COMPOSABLE'
+    && composable.compatibility
+    && typeof composable.compatibility === 'object'
+    && !Array.isArray(composable.compatibility),
+  );
+}
+
+function recipeContainsSelection(recipe, expected) {
+  return (recipe?.selections || []).some((selection) => (
+    String(selection?.partId || '') === String(expected.partId)
+    && String(selection?.itemId || '') === String(expected.itemId)
+    && String(selection?.styleId || '') === String(expected.styleId)
+  ));
+}
+
+function makerRuleViolationCodes(result) {
+  return [...new Set((result?.violations || [])
+    .map((issue) => String(issue?.code || ''))
+    .filter(Boolean))];
+}
+
+function mergedRuleGraphIssues(project, merged) {
+  const issues = [];
+  try {
+    const index = createMakerRuleIndex(merged);
+    const previewRecipe = createExpansionPackProjectPreviewRecipe(project, merged);
+    const previewEvaluation = evaluateRecipe(merged, previewRecipe, { index });
+    if (!previewEvaluation.valid) {
+      issues.push({
+        severity: 'error',
+        code: 'pack-preview-recipe-rule-violation',
+        path: 'previewRecipe',
+        violations: makerRuleViolationCodes(previewEvaluation),
+        message: 'The merged Expansion Pack preview Recipe violates Maker rules or visibility conditions.',
+      });
+    }
+
+    const graphResult = normalizeRecipe(
+      merged,
+      { selections: [], colors: merged.defaultRecipe?.colors || [] },
+      { index },
+    );
+    if (!graphResult.valid) {
+      const exhausted = makerRuleViolationCodes(graphResult).includes('constraint-search-limit');
+      issues.push({
+        severity: 'error',
+        code: exhausted ? 'pack-rule-search-limit' : 'unsatisfiable-pack-rule-graph',
+        path: 'rules',
+        message: exhausted
+          ? 'Expansion Pack rule validation reached its safety limit.'
+          : 'No playable public Recipe satisfies the merged Expansion Pack rule graph.',
+      });
+      return issues;
+    }
+
+    let reachableStyleCount = 0;
+    let inconclusiveStyleCount = 0;
+    partsOf(merged).forEach((part) => {
+      itemsOf(part)
+        .filter((item) => item?.enabled !== false && String(item?.status || 'public').toLowerCase() === 'public')
+        .forEach((item) => {
+          let itemHasReachableStyle = false;
+          let itemReachabilityConclusive = true;
+          stylesOf(item).forEach((style) => {
+            const expected = { partId: idOf(part), itemId: idOf(item), styleId: idOf(style) };
+            const candidateResult = normalizeRecipe(
+              merged,
+              {
+                selections: [expected],
+                colors: merged.defaultRecipe?.colors || [],
+              },
+              { index, lockedPartIds: [expected.partId] },
+            );
+            const reachable = candidateResult.valid
+              && recipeContainsSelection(candidateResult.documentRecipe, expected);
+            if (reachable) {
+              itemHasReachableStyle = true;
+              reachableStyleCount += 1;
+              return;
+            }
+            if (makerRuleViolationCodes(candidateResult).includes('constraint-search-limit')) {
+              itemReachabilityConclusive = false;
+              inconclusiveStyleCount += 1;
+              issues.push({
+                severity: 'error',
+                code: 'pack-rule-search-limit',
+                path: `${expected.partId}/${expected.itemId}/${expected.styleId}`,
+                message: 'A public Style could not be proven reachable before the rule-search safety limit.',
+              });
+              return;
+            }
+            issues.push({
+              severity: 'error',
+              code: 'unreachable-public-style-rules',
+              path: `${expected.partId}/${expected.itemId}/${expected.styleId}`,
+              message: 'A public Style cannot appear in any valid merged player Recipe.',
+            });
+          });
+          if (!itemHasReachableStyle && itemReachabilityConclusive) {
+            issues.push({
+              severity: 'error',
+              code: 'unreachable-public-item-rules',
+              path: `${idOf(part)}/${idOf(item)}`,
+              message: 'A public Item cannot appear in any valid merged player Recipe.',
+            });
+          }
+        });
+    });
+    if (reachableStyleCount === 0 && inconclusiveStyleCount === 0) {
+      issues.push({
+        severity: 'error',
+        code: 'unsatisfiable-pack-rule-graph',
+        path: 'rules',
+        message: 'No public Style can appear in a playable merged Recipe.',
+      });
+    }
+  } catch (error) {
+    issues.push({
+      severity: 'error',
+      code: 'pack-rule-evaluation-failed',
+      path: 'rules',
+      message: error?.message || 'Merged Expansion Pack rules could not be evaluated.',
+    });
+  }
+  return issues;
 }
 
 function findParentPart(project, partId) {
@@ -803,6 +1098,338 @@ function appendDefinitions(project, definitions = {}) {
   });
 }
 
+function packDefinitions(project, field) {
+  project.pack[field] = Array.isArray(project.pack[field]) ? project.pack[field] : [];
+  return project.pack[field];
+}
+
+function parentDefinition(project, field, id) {
+  const source = field === 'colorChannels'
+    ? project.parentSnapshot?.colorChannels ?? project.parentSnapshot?.palettes
+    : project.parentSnapshot?.[field];
+  return (Array.isArray(source) ? source : []).find((value) => idOf(value) === id) || null;
+}
+
+function readonlyParentDefinition(kind, id) {
+  throw new ExpansionPackProjectError(
+    `${kind} ${id} belongs to the read-only parent Maker.`,
+    'parent-definition-readonly',
+    { kind, id },
+  );
+}
+
+function editablePackDefinition(project, field, id, kind) {
+  if (parentDefinition(project, field, id)) readonlyParentDefinition(kind, id);
+  const value = packDefinitions(project, field).find((candidate) => idOf(candidate) === id) || null;
+  if (!value) readonlyParentDefinition(kind, id);
+  return value;
+}
+
+function reusableDefinition(value, ignoredFields = []) {
+  const ignored = new Set([
+    'id',
+    'key',
+    'order',
+    'renderOrder',
+    'expansionPackId',
+    'expansionNamespace',
+    ...ignoredFields,
+  ]);
+  return stableComparableValue(Object.fromEntries(
+    Object.entries(value || {}).filter(([field]) => !ignored.has(field)),
+  ));
+}
+
+function exactReusableDefinition(parent, candidate, ignoredFields = []) {
+  return comparableJson(reusableDefinition(parent, ignoredFields))
+    === comparableJson(reusableDefinition(candidate, ignoredFields));
+}
+
+function normalizePackTrackOrder(project) {
+  packDefinitions(project, 'layerTracks').forEach((track, index) => {
+    track.order = index;
+    delete track.renderOrder;
+    delete track.transform;
+    if (typeof track.locked !== 'boolean') track.locked = false;
+    track.referenceAssetId ??= null;
+  });
+}
+
+function normalizedLayerTrack(value, namespace, index) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ExpansionPackProjectError('Layer Track must be an object.', 'invalid-pack-layer-track');
+  }
+  const track = clone(value);
+  track.id = requireLocalId(idOf(track), 'Layer Track id', namespace);
+  delete track.key;
+  delete track.renderOrder;
+  delete track.transform;
+  track.name = requireText(track.name ?? track.id, 'Layer Track name', 'missing-layer-track-name');
+  track.order = index;
+  track.locked = track.locked === true;
+  track.referenceAssetId = track.referenceAssetId == null
+    ? null
+    : requireText(track.referenceAssetId, 'Layer Track reference Asset id', 'missing-layer-track-reference-asset');
+  return track;
+}
+
+/** Add a Pack-owned Layer Track. Parent Tracks remain reusable but immutable. */
+export function addExpansionPackLayerTrack(projectValue, trackValue = {}, options = {}) {
+  const project = mutableProject(projectValue);
+  const tracks = packDefinitions(project, 'layerTracks');
+  const track = normalizedLayerTrack(trackValue, project.namespace, tracks.length);
+  const inherited = parentDefinition(project, 'layerTracks', track.id);
+  if ((inherited && !exactReusableDefinition(inherited, track, ['transform']))
+    || tracks.some((candidate) => idOf(candidate) === track.id)) {
+    throw new ExpansionPackProjectError(
+      `Layer Track ${track.id} already exists in the parent Maker or this Pack.`,
+      'duplicate-pack-layer-track',
+      { id: track.id },
+    );
+  }
+  tracks.push(track);
+  normalizePackTrackOrder(project);
+  return finishMutation(project, options.now);
+}
+
+export function renameExpansionPackLayerTrack(projectValue, trackIdValue, nameValue, options = {}) {
+  const project = mutableProject(projectValue);
+  const trackId = requireText(trackIdValue, 'Layer Track id', 'missing-layer-track-id');
+  const track = editablePackDefinition(project, 'layerTracks', trackId, 'layerTrack');
+  if (track.locked) {
+    throw new ExpansionPackProjectError('Unlock the Layer Track before renaming it.', 'pack-layer-track-locked', { trackId });
+  }
+  track.name = requireText(nameValue, 'Layer Track name', 'missing-layer-track-name');
+  return finishMutation(project, options.now);
+}
+
+export function setExpansionPackLayerTrackLocked(projectValue, trackIdValue, lockedValue, options = {}) {
+  const project = mutableProject(projectValue);
+  const trackId = requireText(trackIdValue, 'Layer Track id', 'missing-layer-track-id');
+  editablePackDefinition(project, 'layerTracks', trackId, 'layerTrack').locked = lockedValue === true;
+  return finishMutation(project, options.now);
+}
+
+export function moveExpansionPackLayerTrack(projectValue, trackIdValue, targetIndexValue, options = {}) {
+  const project = mutableProject(projectValue);
+  const trackId = requireText(trackIdValue, 'Layer Track id', 'missing-layer-track-id');
+  const tracks = packDefinitions(project, 'layerTracks');
+  const fromIndex = tracks.findIndex((track) => idOf(track) === trackId);
+  if (fromIndex < 0) readonlyParentDefinition('layerTrack', trackId);
+  const targetIndex = Number(targetIndexValue);
+  if (!Number.isSafeInteger(targetIndex) || targetIndex < 0 || targetIndex >= tracks.length) {
+    throw new ExpansionPackProjectError('Layer Track target position is out of range.', 'invalid-pack-layer-track-position', {
+      trackId,
+      targetIndex: targetIndexValue,
+    });
+  }
+  if (tracks[fromIndex].locked || tracks[targetIndex].locked) {
+    throw new ExpansionPackProjectError('Locked Layer Tracks cannot be reordered.', 'pack-layer-track-locked', { trackId });
+  }
+  const [track] = tracks.splice(fromIndex, 1);
+  tracks.splice(targetIndex, 0, track);
+  normalizePackTrackOrder(project);
+  return finishMutation(project, options.now);
+}
+
+export function removeExpansionPackLayerTrack(projectValue, trackIdValue, options = {}) {
+  const project = mutableProject(projectValue);
+  const trackId = requireText(trackIdValue, 'Layer Track id', 'missing-layer-track-id');
+  const track = editablePackDefinition(project, 'layerTracks', trackId, 'layerTrack');
+  if (track.locked) {
+    throw new ExpansionPackProjectError('Unlock the Layer Track before removing it.', 'pack-layer-track-locked', { trackId });
+  }
+  const referenced = partsOf(project.pack).some((part) => itemsOf(part).some((item) => (
+    stylesOf(item).some((style) => String(style.layerTrackId || '') === trackId)
+  )));
+  if (referenced) {
+    throw new ExpansionPackProjectError('Layer Track is still referenced by a Pack Style.', 'pack-layer-track-in-use', { trackId });
+  }
+  project.pack.layerTracks = packDefinitions(project, 'layerTracks').filter((candidate) => candidate !== track);
+  normalizePackTrackOrder(project);
+  return finishMutation(project, options.now);
+}
+
+function normalizedHexColor(value, label) {
+  const color = String(value ?? '').trim().toLowerCase();
+  if (!/^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/.test(color)) {
+    throw new ExpansionPackProjectError(`${label} must be a six- or eight-digit hex color.`, 'invalid-pack-color', { value });
+  }
+  return color;
+}
+
+function normalizedSwatch(value, namespace) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ExpansionPackProjectError('Smart Color swatch must be an object.', 'invalid-pack-color-swatch');
+  }
+  const swatch = clone(value);
+  swatch.id = requireLocalId(idOf(swatch), 'Smart Color swatch id', namespace);
+  delete swatch.key;
+  swatch.name = requireText(swatch.name ?? swatch.id, 'Smart Color swatch name', 'missing-color-swatch-name');
+  swatch.hintColor = normalizedHexColor(swatch.hintColor, 'Smart Color hint');
+  if (!Array.isArray(swatch.stops) || swatch.stops.length < 2) {
+    throw new ExpansionPackProjectError('Smart Color swatch needs at least two stops.', 'invalid-pack-color-stops');
+  }
+  swatch.stops = swatch.stops.map((stop) => {
+    const offset = Number(stop?.offset);
+    if (!Number.isFinite(offset) || offset < 0 || offset > 1) {
+      throw new ExpansionPackProjectError('Smart Color stop offsets must be between zero and one.', 'invalid-pack-color-stop-offset', { offset });
+    }
+    return { offset, color: normalizedHexColor(stop?.color, 'Smart Color stop') };
+  });
+  if (swatch.stops[0].offset !== 0 || swatch.stops.at(-1).offset !== 1
+    || swatch.stops.some((stop, index) => index > 0 && stop.offset <= swatch.stops[index - 1].offset)) {
+    throw new ExpansionPackProjectError('Smart Color stops must be strictly ordered from zero through one.', 'invalid-pack-color-stops');
+  }
+  return swatch;
+}
+
+function normalizedColorChannel(value, namespace, index) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ExpansionPackProjectError('Smart Color channel must be an object.', 'invalid-pack-color-channel');
+  }
+  const channel = clone(value);
+  channel.id = requireLocalId(idOf(channel), 'Smart Color channel id', namespace);
+  delete channel.key;
+  channel.name = requireText(channel.name ?? channel.id, 'Smart Color channel name', 'missing-color-channel-name');
+  channel.order = index;
+  channel.mode = String(channel.mode || 'gradient-map');
+  if (channel.mode !== 'gradient-map') {
+    throw new ExpansionPackProjectError('Smart Color channel mode must be gradient-map.', 'invalid-pack-color-channel-mode');
+  }
+  channel.swatches = (Array.isArray(channel.swatches) ? channel.swatches : [])
+    .map((swatch) => normalizedSwatch(swatch, namespace));
+  const ids = new Set();
+  channel.swatches.forEach((swatch) => {
+    if (ids.has(swatch.id)) {
+      throw new ExpansionPackProjectError(`Smart Color swatch ${swatch.id} is duplicated.`, 'duplicate-pack-color-swatch', { id: swatch.id });
+    }
+    ids.add(swatch.id);
+  });
+  if (!channel.swatches.length) {
+    throw new ExpansionPackProjectError('Smart Color channel needs at least one swatch.', 'empty-pack-color-channel');
+  }
+  channel.defaultSwatchId = String(channel.defaultSwatchId || channel.swatches[0].id);
+  if (!ids.has(channel.defaultSwatchId)) {
+    throw new ExpansionPackProjectError('Smart Color default swatch does not exist.', 'missing-pack-default-color-swatch', {
+      channelId: channel.id,
+      swatchId: channel.defaultSwatchId,
+    });
+  }
+  return channel;
+}
+
+function normalizePackColorOrder(project) {
+  packDefinitions(project, 'colorChannels').forEach((channel, index) => { channel.order = index; });
+}
+
+export function addExpansionPackColorChannel(projectValue, channelValue = {}, options = {}) {
+  const project = mutableProject(projectValue);
+  const channels = packDefinitions(project, 'colorChannels');
+  const channel = normalizedColorChannel(channelValue, project.namespace, channels.length);
+  const inherited = parentDefinition(project, 'colorChannels', channel.id);
+  if ((inherited && !exactReusableDefinition(inherited, channel))
+    || channels.some((candidate) => idOf(candidate) === channel.id)) {
+    throw new ExpansionPackProjectError(
+      `Smart Color channel ${channel.id} already exists in the parent Maker or this Pack.`,
+      'duplicate-pack-color-channel',
+      { id: channel.id },
+    );
+  }
+  channels.push(channel);
+  normalizePackColorOrder(project);
+  return finishMutation(project, options.now);
+}
+
+export function updateExpansionPackColorChannel(projectValue, channelIdValue, patchValue = {}, options = {}) {
+  const project = mutableProject(projectValue);
+  const channelId = requireText(channelIdValue, 'Smart Color channel id', 'missing-color-channel-id');
+  const channel = editablePackDefinition(project, 'colorChannels', channelId, 'colorChannel');
+  if (!patchValue || typeof patchValue !== 'object' || Array.isArray(patchValue)) {
+    throw new ExpansionPackProjectError('Smart Color channel update must be an object.', 'invalid-pack-color-channel-update');
+  }
+  const allowed = new Set(['name', 'defaultSwatchId']);
+  const unsupported = Object.keys(patchValue).filter((field) => !allowed.has(field));
+  if (unsupported.length) {
+    throw new ExpansionPackProjectError('Smart Color channel update contains unsupported fields.', 'unsupported-pack-color-channel-update', { fields: unsupported });
+  }
+  if (Object.hasOwn(patchValue, 'name')) {
+    channel.name = requireText(patchValue.name, 'Smart Color channel name', 'missing-color-channel-name');
+  }
+  if (Object.hasOwn(patchValue, 'defaultSwatchId')) {
+    const swatchId = requireText(patchValue.defaultSwatchId, 'Default swatch id', 'missing-color-swatch-id');
+    if (!channel.swatches.some((swatch) => idOf(swatch) === swatchId)) {
+      throw new ExpansionPackProjectError('Smart Color default swatch does not exist.', 'missing-pack-default-color-swatch', { channelId, swatchId });
+    }
+    channel.defaultSwatchId = swatchId;
+  }
+  return finishMutation(project, options.now);
+}
+
+export function addExpansionPackColorSwatch(projectValue, channelIdValue, swatchValue = {}, options = {}) {
+  const project = mutableProject(projectValue);
+  const channelId = requireText(channelIdValue, 'Smart Color channel id', 'missing-color-channel-id');
+  const channel = editablePackDefinition(project, 'colorChannels', channelId, 'colorChannel');
+  const swatch = normalizedSwatch(swatchValue, project.namespace);
+  if (channel.swatches.some((candidate) => idOf(candidate) === swatch.id)) {
+    throw new ExpansionPackProjectError(`Smart Color swatch ${swatch.id} already exists.`, 'duplicate-pack-color-swatch', { id: swatch.id });
+  }
+  channel.swatches.push(swatch);
+  return finishMutation(project, options.now);
+}
+
+export function updateExpansionPackColorSwatch(projectValue, channelIdValue, swatchIdValue, patchValue = {}, options = {}) {
+  const project = mutableProject(projectValue);
+  const channelId = requireText(channelIdValue, 'Smart Color channel id', 'missing-color-channel-id');
+  const swatchId = requireText(swatchIdValue, 'Smart Color swatch id', 'missing-color-swatch-id');
+  const channel = editablePackDefinition(project, 'colorChannels', channelId, 'colorChannel');
+  const index = channel.swatches.findIndex((swatch) => idOf(swatch) === swatchId);
+  if (index < 0) {
+    throw new ExpansionPackProjectError(`Smart Color swatch ${swatchId} does not exist.`, 'missing-pack-color-swatch', { channelId, swatchId });
+  }
+  if (!patchValue || typeof patchValue !== 'object' || Array.isArray(patchValue)) {
+    throw new ExpansionPackProjectError('Smart Color swatch update must be an object.', 'invalid-pack-color-swatch-update');
+  }
+  const allowed = new Set(['name', 'hintColor', 'stops']);
+  const unsupported = Object.keys(patchValue).filter((field) => !allowed.has(field));
+  if (unsupported.length) {
+    throw new ExpansionPackProjectError('Smart Color swatch update contains unsupported fields.', 'unsupported-pack-color-swatch-update', { fields: unsupported });
+  }
+  channel.swatches[index] = normalizedSwatch({ ...channel.swatches[index], ...patchValue, id: swatchId }, project.namespace);
+  return finishMutation(project, options.now);
+}
+
+export function removeExpansionPackColorSwatch(projectValue, channelIdValue, swatchIdValue, options = {}) {
+  const project = mutableProject(projectValue);
+  const channelId = requireText(channelIdValue, 'Smart Color channel id', 'missing-color-channel-id');
+  const swatchId = requireText(swatchIdValue, 'Smart Color swatch id', 'missing-color-swatch-id');
+  const channel = editablePackDefinition(project, 'colorChannels', channelId, 'colorChannel');
+  if (!channel.swatches.some((swatch) => idOf(swatch) === swatchId)) {
+    throw new ExpansionPackProjectError(`Smart Color swatch ${swatchId} does not exist.`, 'missing-pack-color-swatch', { channelId, swatchId });
+  }
+  if (channel.swatches.length <= 1) {
+    throw new ExpansionPackProjectError('A Smart Color channel must keep at least one swatch.', 'last-pack-color-swatch', { channelId });
+  }
+  channel.swatches = channel.swatches.filter((swatch) => idOf(swatch) !== swatchId);
+  if (channel.defaultSwatchId === swatchId) channel.defaultSwatchId = channel.swatches[0].id;
+  return finishMutation(project, options.now);
+}
+
+export function removeExpansionPackColorChannel(projectValue, channelIdValue, options = {}) {
+  const project = mutableProject(projectValue);
+  const channelId = requireText(channelIdValue, 'Smart Color channel id', 'missing-color-channel-id');
+  const channel = editablePackDefinition(project, 'colorChannels', channelId, 'colorChannel');
+  const referenced = partsOf(project.pack).some((part) => itemsOf(part).some((item) => (
+    stylesOf(item).some((style) => String(style.colorChannelId || style.paletteId || '') === channelId)
+  )));
+  if (referenced) {
+    throw new ExpansionPackProjectError('Smart Color channel is still referenced by a Pack Style.', 'pack-color-channel-in-use', { channelId });
+  }
+  project.pack.colorChannels = packDefinitions(project, 'colorChannels').filter((candidate) => candidate !== channel);
+  normalizePackColorOrder(project);
+  return finishMutation(project, options.now);
+}
+
 function normalizedStyle(style, namespace) {
   if (!style || typeof style !== 'object' || Array.isArray(style)) {
     throw new ExpansionPackProjectError('Style must be an object.', 'invalid-pack-style');
@@ -819,6 +1446,9 @@ function normalizedStyle(style, namespace) {
   };
   copy.opacity = Number.isFinite(copy.opacity) ? Number(copy.opacity) : 1;
   copy.blendMode = String(copy.blendMode || 'normal');
+  copy.colorChannelId = copy.colorChannelId == null || copy.colorChannelId === ''
+    ? null
+    : String(copy.colorChannelId);
   copy.visibleWhen = copy.visibleWhen ?? null;
   copy.requires = Array.isArray(copy.requires) ? copy.requires : [];
   copy.excludes = Array.isArray(copy.excludes) ? copy.excludes : [];
@@ -855,6 +1485,266 @@ function normalizedItem(item, namespace) {
   copy.requires = Array.isArray(copy.requires) ? copy.requires : [];
   copy.excludes = Array.isArray(copy.excludes) ? copy.excludes : [];
   return copy;
+}
+
+function normalizedRuleSelector(value) {
+  if (typeof value === 'string') {
+    const [partId, itemId, styleId] = value.split(value.includes('/') ? '/' : ':');
+    return {
+      partId: requireText(partId, 'Rule selector Part id', 'invalid-pack-rule-selector'),
+      ...(itemId ? { itemId: String(itemId) } : {}),
+      ...(styleId ? { styleId: String(styleId) } : {}),
+    };
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ExpansionPackProjectError('Rule selector must be an object.', 'invalid-pack-rule-selector');
+  }
+  const selector = {
+    ...(value.scope === 'base' || value.scope === 'pack' ? { scope: value.scope } : {}),
+    partId: requireText(
+      value.partId ?? value.partKey ?? value.part,
+      'Rule selector Part id',
+      'invalid-pack-rule-selector',
+    ),
+  };
+  const itemId = String(value.itemId ?? value.itemKey ?? value.item ?? '').trim();
+  const itemIds = Array.isArray(value.itemIds ?? value.itemKeys)
+    ? [...new Set((value.itemIds ?? value.itemKeys).map((id) => String(id).trim()).filter(Boolean))].sort()
+    : [];
+  const styleId = String(value.styleId ?? value.styleKey ?? '').trim();
+  const styleIds = Array.isArray(value.styleIds ?? value.styleKeys)
+    ? [...new Set((value.styleIds ?? value.styleKeys).map((id) => String(id).trim()).filter(Boolean))].sort()
+    : [];
+  if (itemId) selector.itemId = itemId;
+  if (itemIds.length) selector.itemIds = itemIds;
+  if (styleId) selector.styleId = styleId;
+  if (styleIds.length) selector.styleIds = styleIds;
+  return selector;
+}
+
+function normalizedRuleTargets(value) {
+  const targets = (Array.isArray(value) ? value : value == null ? [] : [value])
+    .map(normalizedRuleSelector);
+  if (!targets.length) {
+    throw new ExpansionPackProjectError('Rule needs at least one target.', 'empty-pack-rule-targets');
+  }
+  return targets;
+}
+
+function normalizedExpansionPackRule(value, namespace) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ExpansionPackProjectError('Expansion Pack rule must be an object.', 'invalid-pack-rule');
+  }
+  const type = String(value.type ?? value.kind ?? '').trim();
+  if (!['requires', 'excludes'].includes(type)) {
+    throw new ExpansionPackProjectError('Expansion Pack rule type must be requires or excludes.', 'invalid-pack-rule-type', { type });
+  }
+  const rule = {
+    id: requireLocalId(idOf(value), 'Expansion Pack rule id', namespace),
+    type,
+    trigger: normalizedRuleSelector(value.trigger ?? value.when ?? value.if ?? value.source ?? value.left),
+    targets: normalizedRuleTargets(value.targets ?? value[type] ?? value.target ?? value.right),
+  };
+  return rule;
+}
+
+/** Add a Pack rule. Compatibility preflight remains the authority for additive base/local scope. */
+export function addExpansionPackRule(projectValue, ruleValue = {}, options = {}) {
+  const project = mutableProject(projectValue);
+  const rules = packDefinitions(project, 'rules');
+  const rule = normalizedExpansionPackRule(ruleValue, project.namespace);
+  if (rules.some((candidate) => idOf(candidate) === rule.id)) {
+    throw new ExpansionPackProjectError(`Expansion Pack rule ${rule.id} already exists.`, 'duplicate-pack-rule', { id: rule.id });
+  }
+  rules.push(rule);
+  const compatibility = checkExpansionPackCompatibility(project.parentSnapshot, project.pack);
+  if (!compatibility.compatible) {
+    throw new ExpansionPackProjectError('Expansion Pack rule is not compatible with the parent Maker.', 'invalid-pack-rule-model', {
+      errors: clone(compatibility.errors),
+    });
+  }
+  return finishMutation(project, options.now);
+}
+
+export function updateExpansionPackRule(projectValue, ruleIdValue, patchValue = {}, options = {}) {
+  const project = mutableProject(projectValue);
+  const ruleId = requireText(ruleIdValue, 'Expansion Pack rule id', 'missing-pack-rule-id');
+  const index = packDefinitions(project, 'rules').findIndex((rule) => idOf(rule) === ruleId);
+  if (index < 0) readonlyParentDefinition('rule', ruleId);
+  if (!patchValue || typeof patchValue !== 'object' || Array.isArray(patchValue)) {
+    throw new ExpansionPackProjectError('Expansion Pack rule update must be an object.', 'invalid-pack-rule-update');
+  }
+  const allowed = new Set(['type', 'trigger', 'targets']);
+  const unsupported = Object.keys(patchValue).filter((field) => !allowed.has(field));
+  if (unsupported.length) {
+    throw new ExpansionPackProjectError('Expansion Pack rule update contains unsupported fields.', 'unsupported-pack-rule-update', { fields: unsupported });
+  }
+  const current = project.pack.rules[index];
+  project.pack.rules[index] = normalizedExpansionPackRule({ ...current, ...patchValue, id: ruleId }, project.namespace);
+  const compatibility = checkExpansionPackCompatibility(project.parentSnapshot, project.pack);
+  if (!compatibility.compatible) {
+    throw new ExpansionPackProjectError('Expansion Pack rule is not compatible with the parent Maker.', 'invalid-pack-rule-model', {
+      errors: clone(compatibility.errors),
+    });
+  }
+  return finishMutation(project, options.now);
+}
+
+export function removeExpansionPackRule(projectValue, ruleIdValue, options = {}) {
+  const project = mutableProject(projectValue);
+  const ruleId = requireText(ruleIdValue, 'Expansion Pack rule id', 'missing-pack-rule-id');
+  if (!packDefinitions(project, 'rules').some((rule) => idOf(rule) === ruleId)) {
+    readonlyParentDefinition('rule', ruleId);
+  }
+  project.pack.rules = project.pack.rules.filter((rule) => idOf(rule) !== ruleId);
+  return finishMutation(project, options.now);
+}
+
+function normalizedVisibilityCondition(value) {
+  if (value == null) return null;
+  if (typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return value.map(normalizedVisibilityCondition);
+  if (!value || typeof value !== 'object') {
+    throw new ExpansionPackProjectError('Visibility condition must be an object.', 'invalid-pack-visibility-condition');
+  }
+  if (value.op === 'selected' || value.partId || value.partKey || value.part) {
+    return { ...normalizedRuleSelector(value), op: 'selected' };
+  }
+  if (value.op === 'not') {
+    return { op: 'not', condition: normalizedVisibilityCondition(value.condition) };
+  }
+  if (value.op === 'all' || value.op === 'any') {
+    if (!Array.isArray(value.conditions) || !value.conditions.length) {
+      throw new ExpansionPackProjectError('Grouped visibility conditions cannot be empty.', 'invalid-pack-visibility-condition');
+    }
+    return { op: value.op, conditions: value.conditions.map(normalizedVisibilityCondition) };
+  }
+  throw new ExpansionPackProjectError('Unsupported visibility condition.', 'invalid-pack-visibility-condition');
+}
+
+function selectorBelongsToPack(selector, namespace) {
+  if (selector?.scope === 'base') return false;
+  const prefix = `${namespace}__`;
+  return String(selector?.partId || '').startsWith(prefix)
+    || String(selector?.itemId || '').startsWith(prefix)
+    || (selector?.itemIds || []).some((id) => String(id).startsWith(prefix))
+    || String(selector?.styleId || '').startsWith(prefix)
+    || (selector?.styleIds || []).some((id) => String(id).startsWith(prefix));
+}
+
+function validatePackRuleSafety(merged, project) {
+  const namespace = project.namespace;
+  const rules = Array.isArray(merged?.rules) ? merged.rules : [];
+  rules
+    .filter((rule) => String(rule?.expansionPackId || '') === String(project.packId || ''))
+    .forEach((rule) => {
+      const triggerIsPack = selectorBelongsToPack(rule.trigger, namespace);
+      const targetHasPack = (Array.isArray(rule.targets) ? rule.targets : [])
+        .some((target) => selectorBelongsToPack(target, namespace));
+      if (rule.type === 'requires' && !triggerIsPack) {
+        throw new ExpansionPackProjectError(
+          'A Pack requires-rule may only trigger from Pack-owned content.',
+          'pack-rule-breaks-base-recipe',
+          { ruleId: rule.id },
+        );
+      }
+      if (rule.type === 'excludes' && !triggerIsPack && !targetHasPack) {
+        throw new ExpansionPackProjectError(
+          'A Pack excludes-rule must involve Pack-owned content.',
+          'pack-rule-breaks-base-recipe',
+          { ruleId: rule.id },
+        );
+      }
+    });
+}
+
+function applyEmbeddedRulePatch(owner, patchValue) {
+  if (!patchValue || typeof patchValue !== 'object' || Array.isArray(patchValue)) {
+    throw new ExpansionPackProjectError('Definition rule update must be an object.', 'invalid-pack-definition-rule-update');
+  }
+  const allowed = new Set(['requires', 'excludes', 'visibleWhen']);
+  const unsupported = Object.keys(patchValue).filter((field) => !allowed.has(field));
+  if (unsupported.length) {
+    throw new ExpansionPackProjectError('Definition rule update contains unsupported fields.', 'unsupported-pack-definition-rule-update', { fields: unsupported });
+  }
+  if (Object.hasOwn(patchValue, 'requires')) {
+    owner.requires = patchValue.requires == null
+      || (Array.isArray(patchValue.requires) && patchValue.requires.length === 0)
+      ? []
+      : normalizedRuleTargets(patchValue.requires);
+  }
+  if (Object.hasOwn(patchValue, 'excludes')) {
+    owner.excludes = patchValue.excludes == null
+      || (Array.isArray(patchValue.excludes) && patchValue.excludes.length === 0)
+      ? []
+      : normalizedRuleTargets(patchValue.excludes);
+  }
+  if (Object.hasOwn(patchValue, 'visibleWhen')) {
+    owner.visibleWhen = normalizedVisibilityCondition(patchValue.visibleWhen);
+  }
+}
+
+function validateEmbeddedRuleMutation(project) {
+  const compatibility = checkExpansionPackCompatibility(project.parentSnapshot, project.pack);
+  if (!compatibility.compatible) {
+    throw new ExpansionPackProjectError('Definition rules are not compatible with the parent Maker.', 'invalid-pack-rule-model', {
+      errors: clone(compatibility.errors),
+    });
+  }
+  validatePackRuleSafety(compatibility.merged, project);
+}
+
+export function updateExpansionPackPartRules(projectValue, partIdValue, patchValue = {}, options = {}) {
+  const project = mutableProject(projectValue);
+  const partId = requireText(partIdValue, 'Part id', 'missing-target-part');
+  applyEmbeddedRulePatch(editablePackPart(project, partId), patchValue);
+  validateEmbeddedRuleMutation(project);
+  return finishMutation(project, options.now);
+}
+
+export function updateExpansionPackItemRules(projectValue, partIdValue, itemIdValue, patchValue = {}, options = {}) {
+  const project = mutableProject(projectValue);
+  const partId = requireText(partIdValue, 'Part id', 'missing-target-part');
+  const itemId = requireText(itemIdValue, 'Item id', 'missing-target-item');
+  applyEmbeddedRulePatch(editablePackItem(project, partId, itemId), patchValue);
+  validateEmbeddedRuleMutation(project);
+  return finishMutation(project, options.now);
+}
+
+export function updateExpansionPackStyleRules(
+  projectValue,
+  partIdValue,
+  itemIdValue,
+  styleIdValue,
+  patchValue = {},
+  options = {},
+) {
+  const project = mutableProject(projectValue);
+  const partId = requireText(partIdValue, 'Part id', 'missing-target-part');
+  const itemId = requireText(itemIdValue, 'Item id', 'missing-target-item');
+  const styleId = requireText(styleIdValue, 'Style id', 'missing-target-style');
+  applyEmbeddedRulePatch(editablePackStyle(project, partId, itemId, styleId), patchValue);
+  validateEmbeddedRuleMutation(project);
+  return finishMutation(project, options.now);
+}
+
+export function setExpansionPackPartMode(projectValue, partIdValue, modeValue, options = {}) {
+  const project = mutableProject(projectValue);
+  const partId = requireText(partIdValue, 'Part id', 'missing-target-part');
+  editablePackPart(project, partId);
+  const mode = String(modeValue || '').toUpperCase();
+  if (!Object.values(EXPANSION_PACK_PART_MODES).includes(mode)) {
+    throw new ExpansionPackProjectError('Part mode must be FIXED or SLOT.', 'invalid-pack-part-mode', { mode: modeValue });
+  }
+  if (mode === EXPANSION_PACK_PART_MODES.SLOT && !parentSupportsComposableV6(project.parentSnapshot)) {
+    throw new ExpansionPackProjectError(
+      'SLOT mode requires an exact parent snapshot with composable v6 compatibility.',
+      'pack-slot-requires-composable-v6-parent',
+      { partId },
+    );
+  }
+  project.pack.wardrobe.partModes[partId] = mode;
+  return finishMutation(project, options.now);
 }
 
 /** Add a Pack-owned Item to either a parent Part or a Pack-owned Part. */
@@ -1039,6 +1929,7 @@ export function removeExpansionPackPart(projectValue, partIdValue, options = {})
   const partId = requireText(partIdValue, 'Part id', 'missing-target-part');
   const part = editablePackPart(project, partId);
   project.pack.parts = partsOf(project.pack).filter((candidate) => candidate !== part);
+  delete project.pack.wardrobe.partModes[partId];
   return finishMutation(project, options.now);
 }
 
@@ -1092,6 +1983,7 @@ export function removeExpansionPackStyle(
 const STYLE_UPDATE_FIELDS = new Set([
   'assetId',
   'layerTrackId',
+  'colorChannelId',
   'transform',
   'opacity',
   'blendMode',
@@ -1144,6 +2036,15 @@ export function updateExpansionPackStyle(
       'Style Layer Track id',
       'missing-pack-style-layer-track',
     );
+  }
+  if (Object.hasOwn(patchValue, 'colorChannelId')) {
+    style.colorChannelId = patchValue.colorChannelId == null || patchValue.colorChannelId === ''
+      ? null
+      : requireText(
+        patchValue.colorChannelId,
+        'Style Smart Color channel id',
+        'missing-pack-style-color-channel',
+      );
   }
   if (Object.hasOwn(patchValue, 'transform')) {
     if (!patchValue.transform || typeof patchValue.transform !== 'object' || Array.isArray(patchValue.transform)) {
@@ -1277,6 +2178,24 @@ export function createExpansionPackProjectPreviewRecipe(projectValue, makerValue
   recipe.selections = Array.isArray(recipe.selections) ? recipe.selections : [];
   recipe.colors = Array.isArray(recipe.colors) ? recipe.colors : [];
   const selections = new Map(recipe.selections.map((selection) => [String(selection?.partId || ''), selection]));
+
+  const colors = new Map(recipe.colors.map((color) => [String(color?.channelId || ''), color]));
+  const channels = Array.isArray(maker?.colorChannels)
+    ? maker.colorChannels
+    : Array.isArray(maker?.palettes)
+      ? maker.palettes
+      : [];
+  channels.forEach((channel) => {
+    const channelId = idOf(channel);
+    if (!channelId || colors.has(channelId)) return;
+    const swatches = Array.isArray(channel?.swatches) ? channel.swatches : [];
+    const swatchId = String(channel?.defaultSwatchId || idOf(swatches[0]) || '');
+    if (swatchId) colors.set(channelId, { channelId, swatchId });
+  });
+  recipe.colors = channels.flatMap((channel) => {
+    const color = colors.get(idOf(channel));
+    return color?.swatchId ? [clone(color)] : [];
+  });
 
   partsOf(maker).forEach((part) => {
     const partId = idOf(part);
@@ -1443,6 +2362,38 @@ function projectOverlayIssues(project) {
       message: 'The project display name and publishable Pack name differ.',
     });
   }
+  let commerce;
+  try {
+    commerce = normalizeExpansionPackCommerce(project.pack?.commerce || {});
+  } catch (error) {
+    issues.push({
+      severity: 'error',
+      code: error.code || 'invalid-pack-commerce',
+      message: error.message,
+    });
+    return issues;
+  }
+  if (
+    commerce.accessMode === EXPANSION_PACK_ACCESS_MODES.PAID_ONCE
+    && BigInt(commerce.purchasePriceAtomic) <= 0n
+  ) {
+    issues.push({
+      severity: 'error',
+      code: 'paid-pack-price-required',
+      message: `Paid Once access requires a positive ${EXPANSION_PACK_PAYMENT_CURRENCY} price.`,
+    });
+  }
+  const slotPartIds = Object.entries(project.pack?.wardrobe?.partModes || {})
+    .filter(([, mode]) => mode === EXPANSION_PACK_PART_MODES.SLOT)
+    .map(([partId]) => partId);
+  if (slotPartIds.length && !parentSupportsComposableV6(project.parentSnapshot)) {
+    issues.push({
+      severity: 'error',
+      code: 'pack-slot-requires-composable-v6-parent',
+      partIds: slotPartIds,
+      message: 'SLOT mode requires an exact parent snapshot with composable v6 compatibility.',
+    });
+  }
   return issues;
 }
 
@@ -1494,6 +2445,7 @@ export function preflightExpansionPackProject(projectValue) {
   const compatibility = checkExpansionPackCompatibility(project.parentSnapshot, project.pack);
   compatibility.errors.forEach((entry) => issues.push({ severity: 'error', ...entry }));
   compatibility.warnings.forEach((entry) => issues.push({ severity: 'warning', ...entry }));
+  if (compatibility.merged) issues.push(...mergedRuleGraphIssues(project, compatibility.merged));
   const errors = issues.filter((issue) => issue.severity === 'error');
   const warnings = issues.filter((issue) => issue.severity !== 'error');
   const publishable = errors.length === 0

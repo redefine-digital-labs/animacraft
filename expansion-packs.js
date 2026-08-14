@@ -11,6 +11,9 @@
 import { collectMakerRules, createMakerRuleIndex, normalizeRuleSelector } from './maker-rules.js';
 
 const PACK_SCHEMA = 'animacraft.expansion-pack.v1';
+const PACK_WARDROBE_SCHEMA = 'animacraft.expansion-pack-wardrobe.v1';
+const MAKER_WARDROBE_SCHEMA = 'animacraft.maker-wardrobe.v7';
+const PACK_PART_MODES = new Set(['FIXED', 'SLOT']);
 const SAFE_NAMESPACE = /^[A-Za-z][A-Za-z0-9_-]{1,63}$/;
 const SAFE_LOCAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const OBSOLETE_ITEM_STYLE_FIELDS = Object.freeze([
@@ -129,11 +132,144 @@ function colorsOf(part) {
   return Array.isArray(part?.colors) ? part.colors : [];
 }
 
+function wardrobePartModes(pack) {
+  const modes = pack?.wardrobe?.partModes;
+  return modes && typeof modes === 'object' && !Array.isArray(modes) ? modes : {};
+}
+
+function validatePackLayerTracks(base, pack, errors) {
+  const baseAssets = new Set(asArray(base?.assets).map((asset) => String(asset?.id || '')).filter(Boolean));
+  const packAssets = new Set(asArray(pack?.assets).map((asset) => String(asset?.id || '')).filter(Boolean));
+  asArray(pack?.layerTracks).forEach((track, index) => {
+    const id = trackIdOf(track);
+    const path = `layerTracks.${id || index}`;
+    if (!track || typeof track !== 'object' || Array.isArray(track)) {
+      errors.push({ code: 'invalid-pack-layer-track', path });
+      return;
+    }
+    if (!id) errors.push({ code: 'missing-pack-layer-track-id', path });
+    if (typeof track.name !== 'string' || !track.name.trim()) {
+      errors.push({ code: 'missing-pack-layer-track-name', path: `${path}.name`, id });
+    }
+    if (Object.hasOwn(track, 'transform')) {
+      errors.push({ code: 'obsolete-pack-layer-track-transform', path: `${path}.transform`, id });
+    }
+    if (track.locked !== undefined && typeof track.locked !== 'boolean') {
+      errors.push({ code: 'invalid-pack-layer-track-lock', path: `${path}.locked`, id });
+    }
+    const referenceAssetId = String(track.referenceAssetId || '');
+    if (referenceAssetId && !baseAssets.has(referenceAssetId) && !packAssets.has(referenceAssetId)) {
+      errors.push({ code: 'missing-pack-layer-track-reference-asset', path: `${path}.referenceAssetId`, id, assetId: referenceAssetId });
+    }
+  });
+}
+
+function validHexColor(value) {
+  return /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(String(value || ''));
+}
+
+function validatePackColorChannels(pack, errors) {
+  asArray(pack?.colorChannels ?? pack?.palettes).forEach((channel, channelIndex) => {
+    const id = paletteIdOf(channel);
+    const path = `colorChannels.${id || channelIndex}`;
+    if (!channel || typeof channel !== 'object' || Array.isArray(channel)) {
+      errors.push({ code: 'invalid-pack-color-channel', path });
+      return;
+    }
+    if (!id) errors.push({ code: 'missing-pack-color-channel-id', path });
+    if (typeof channel.name !== 'string' || !channel.name.trim()) {
+      errors.push({ code: 'missing-pack-color-channel-name', path: `${path}.name`, id });
+    }
+    if (channel.mode !== 'gradient-map') {
+      errors.push({ code: 'invalid-pack-color-channel-mode', path: `${path}.mode`, id });
+    }
+    const swatches = asArray(channel.swatches);
+    if (!swatches.length) errors.push({ code: 'empty-pack-color-channel', path: `${path}.swatches`, id });
+    duplicateIds(swatches, swatchIdOf).forEach((swatchId) => errors.push({
+      code: 'duplicate-pack-color-swatch',
+      path: `${path}.swatches`,
+      id: swatchId,
+    }));
+    swatches.forEach((swatch, swatchIndex) => {
+      const swatchId = swatchIdOf(swatch);
+      const swatchPath = `${path}.swatches.${swatchId || swatchIndex}`;
+      if (!swatch || typeof swatch !== 'object' || Array.isArray(swatch)) {
+        errors.push({ code: 'invalid-pack-color-swatch', path: swatchPath });
+        return;
+      }
+      if (!swatchId) errors.push({ code: 'missing-pack-color-swatch-id', path: swatchPath });
+      if (typeof swatch.name !== 'string' || !swatch.name.trim()) {
+        errors.push({ code: 'missing-pack-color-swatch-name', path: `${swatchPath}.name`, id: swatchId });
+      }
+      if (!validHexColor(swatch.hintColor)) {
+        errors.push({ code: 'invalid-pack-color', path: `${swatchPath}.hintColor`, id: swatchId });
+      }
+      const stops = asArray(swatch.stops);
+      if (stops.length < 2
+        || Number(stops[0]?.offset) !== 0
+        || Number(stops.at(-1)?.offset) !== 1
+        || stops.some((stop, index) => (
+          !Number.isFinite(Number(stop?.offset))
+          || Number(stop.offset) < 0
+          || Number(stop.offset) > 1
+          || !validHexColor(stop?.color)
+          || (index > 0 && Number(stop.offset) <= Number(stops[index - 1]?.offset))
+        ))) {
+        errors.push({ code: 'invalid-pack-color-stops', path: `${swatchPath}.stops`, id: swatchId });
+      }
+    });
+    if (!swatches.some((swatch) => swatchIdOf(swatch) === String(channel.defaultSwatchId || ''))) {
+      errors.push({ code: 'missing-pack-default-color-swatch', path: `${path}.defaultSwatchId`, id });
+    }
+  });
+}
+
+function validatePackWardrobe(base, pack, errors) {
+  const wardrobe = pack?.wardrobe;
+  if (wardrobe == null) return;
+  if (!wardrobe || typeof wardrobe !== 'object' || Array.isArray(wardrobe)) {
+    errors.push({ code: 'invalid-pack-wardrobe', path: 'wardrobe' });
+    return;
+  }
+  if (wardrobe.schemaVersion !== PACK_WARDROBE_SCHEMA) {
+    errors.push({
+      code: 'unsupported-pack-wardrobe-schema',
+      path: 'wardrobe.schemaVersion',
+      expected: PACK_WARDROBE_SCHEMA,
+      actual: wardrobe.schemaVersion,
+    });
+  }
+  if (!wardrobe.partModes || typeof wardrobe.partModes !== 'object' || Array.isArray(wardrobe.partModes)) {
+    errors.push({ code: 'invalid-pack-part-modes', path: 'wardrobe.partModes' });
+    return;
+  }
+  const basePartIds = new Set(partsOf(base).map(partIdOf));
+  const packPartIds = new Set(packParts(pack)
+    .filter((part) => !(part.extendsPartId || part.extendsPartKey || part.targetPartId))
+    .map(partIdOf));
+  Object.entries(wardrobe.partModes).forEach(([partId, mode]) => {
+    if (basePartIds.has(partId) || !packPartIds.has(partId)) {
+      errors.push({ code: 'pack-wardrobe-part-not-owned', path: `wardrobe.partModes.${partId}`, partId });
+    }
+    if (!PACK_PART_MODES.has(mode)) {
+      errors.push({ code: 'invalid-pack-part-mode', path: `wardrobe.partModes.${partId}`, partId, mode });
+    }
+  });
+}
+
 function validatePackStyleModel(base, pack, errors) {
   const knownAssets = new Map([
     ...asArray(base?.assets),
     ...asArray(pack?.assets),
   ].map((asset) => [String(asset?.id ?? ''), asset]).filter(([id]) => Boolean(id)));
+  const knownTracks = new Set([
+    ...asArray(base?.layerTracks).map(trackIdOf),
+    ...asArray(pack?.layerTracks).map(trackIdOf),
+  ].filter(Boolean));
+  const knownChannels = new Set([
+    ...asArray(base?.colorChannels ?? base?.palettes).map(paletteIdOf),
+    ...asArray(pack?.colorChannels ?? pack?.palettes).map(paletteIdOf),
+  ].filter(Boolean));
 
   packParts(pack).forEach((part, partIndex) => {
     const partId = partIdOf(part) || `#${partIndex + 1}`;
@@ -236,6 +372,28 @@ function validatePackStyleModel(base, pack, errors) {
             styleId,
             assetId: style.assetId,
             message: `Expansion Pack Style assetId ${style.assetId} must resolve to one image/png Asset.`,
+          });
+        }
+        const trackId = String(style.layerTrackId ?? style.trackId ?? '');
+        if (!trackId || !knownTracks.has(trackId)) {
+          errors.push({
+            code: 'missing-pack-style-layer-track',
+            path: `${stylePath}.layerTrackId`,
+            partId,
+            itemId,
+            styleId,
+            layerTrackId: trackId,
+          });
+        }
+        const channelId = String(style.colorChannelId ?? style.paletteId ?? '');
+        if (channelId && !knownChannels.has(channelId)) {
+          errors.push({
+            code: 'missing-pack-style-color-channel',
+            path: `${stylePath}.colorChannelId`,
+            partId,
+            itemId,
+            styleId,
+            colorChannelId: channelId,
           });
         }
       });
@@ -395,6 +553,7 @@ function rewriteSelectorValue(value, maps) {
   const styleId = selector.styleId && value.scope !== 'base' ? styleMap?.get(selector.styleId) || selector.styleId : selector.styleId;
   const styleIds = (selector.styleIds || []).map((id) => value.scope === 'base' ? id : styleMap?.get(id) || id);
   return {
+    ...(value.scope === 'base' ? { scope: 'base' } : {}),
     partId,
     ...(itemId ? { itemId } : {}),
     ...(itemIds.length ? { itemIds } : {}),
@@ -690,8 +849,12 @@ function preparePack(base, pack, errors, warnings) {
       };
     });
   const rules = asArray(pack.rules).map((rule, index) => normalizePackRule(rule, index, maps, pack));
+  const partModes = Object.fromEntries(Object.entries(wardrobePartModes(pack)).map(([partId, mode]) => [
+    maps.part.get(partId) || namespaceId(packNamespaceOf(pack), partId),
+    mode,
+  ]));
   if (pack.defaultRecipe) warnings.push({ code: 'pack-default-recipe-ignored', message: 'Expansion Packs cannot replace the base default recipe.' });
-  return { maps, tracks, palettes, assets, newParts, extensions, rules };
+  return { maps, tracks, palettes, assets, newParts, extensions, rules, partModes };
 }
 
 function selectorUsesNamespace(selector, namespace) {
@@ -770,6 +933,62 @@ function mergePrepared(base, pack, prepared) {
     merged.parts.push(part);
   });
   merged.rules.push(...prepared.rules);
+  const packPartModes = prepared.partModes || {};
+  if (Object.keys(packPartModes).length) {
+    merged.extensions = merged.extensions && typeof merged.extensions === 'object'
+      && !Array.isArray(merged.extensions)
+      ? merged.extensions
+      : {};
+    const parentWardrobe = merged.extensions.wardrobeV7;
+    merged.extensions.wardrobeV7 = {
+      ...(parentWardrobe && typeof parentWardrobe === 'object' && !Array.isArray(parentWardrobe)
+        ? parentWardrobe
+        : { schemaVersion: MAKER_WARDROBE_SCHEMA }),
+      partModes: {
+        ...(
+          parentWardrobe?.partModes
+          && typeof parentWardrobe.partModes === 'object'
+          && !Array.isArray(parentWardrobe.partModes)
+            ? parentWardrobe.partModes
+            : {}
+        ),
+        ...packPartModes,
+      },
+    };
+
+    // A Pack may add Slot compatibility only to a parent that already owns
+    // the v6 companion contract. It never turns a fixed parent into a
+    // composable Maker or invents the rest of that protocol on its behalf.
+    const composable = merged.extensions.composableV6;
+    if (composable && typeof composable === 'object' && !Array.isArray(composable)) {
+      const compatibility = composable.compatibility;
+      if (compatibility && typeof compatibility === 'object' && !Array.isArray(compatibility)) {
+        const slotPartIds = new Set(Object.entries(packPartModes)
+          .filter(([, mode]) => mode === 'SLOT')
+          .map(([partId]) => partId));
+        const slots = prepared.newParts
+          .filter((part) => slotPartIds.has(partIdOf(part)))
+          .map((part) => {
+            const used = [];
+            itemsOf(part).forEach((item) => stylesOf(item).forEach((style) => {
+              const trackId = String(style.layerTrackId || '');
+              if (trackId && !used.includes(trackId)) used.push(trackId);
+            }));
+            return { id: partIdOf(part), capacity: 1, required: false, layerTrackIds: used };
+          });
+        const slotTrackIds = slots.flatMap((slot) => slot.layerTrackIds);
+        const existingLayerTrackIds = asArray(compatibility.layerTrackIds).map(String);
+        merged.extensions.composableV6 = {
+          ...composable,
+          compatibility: {
+            ...compatibility,
+            layerTrackIds: [...new Set([...existingLayerTrackIds, ...slotTrackIds])],
+            slots: [...asArray(compatibility.slots), ...slots],
+          },
+        };
+      }
+    }
+  }
   merged.installedExpansionPacks = asArray(merged.installedExpansionPacks);
   merged.installedExpansionPacks.push({
     packId: packIdOf(pack),
@@ -815,6 +1034,9 @@ export function checkExpansionPackCompatibility(base, pack) {
     if (installed.some((entry) => String(entry.packId) === String(blockedPackId))) errors.push({ code: 'incompatible-installed-pack', packId: blockedPackId });
   });
 
+  validatePackLayerTracks(base, pack, errors);
+  validatePackColorChannels(pack, errors);
+  validatePackWardrobe(base, pack, errors);
   const basePartIds = new Set(partsOf(base).map(partIdOf));
   packParts(pack).forEach((part) => {
     const extensionTarget = String(part.extendsPartId ?? part.extendsPartKey ?? part.targetPartId ?? '');

@@ -41,6 +41,10 @@ const U16_MAX = (1 << 16) - 1;
 const MAKER_RESALE_ROYALTY_MAX_BPS = 500;
 const MAKER_MARKET_FEE_MAX_BPS = 1_000;
 const PRIMARY_PROTOCOL_FEE_BPS = 1_000;
+const INDEPENDENT_EXTENSION_VISUAL_COUNT = 19;
+const INDEPENDENT_EXTENSION_LOGICAL_NONE_COUNT = 3;
+const INDEPENDENT_EXTENSION_LOGICAL_COLOR_COUNT = 4;
+const INDEPENDENT_EXTENSION_STYLE_COUNT = 26;
 
 const CompletionPolicyV5Bcs = bcs.struct('CompletionPolicyV5', {
   mode: bcs.u8(),
@@ -131,7 +135,14 @@ function normalizedSuiId(value, label) {
 }
 
 function normalizedMoveType(value, label) {
-  const candidate = String(required(value, label)).trim();
+  const serialized = String(required(value, label)).trim();
+  // Sui gRPC JSON serializes Move struct tags with the leading `0x` removed,
+  // while local builders and JSON-RPC fixtures generally retain it. Accept
+  // only the exact 64-hex-address gRPC form before normalizing so malformed or
+  // shortened caller input cannot cross this chain-readback boundary.
+  const candidate = /^[0-9a-f]{64}::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*$/i.test(serialized)
+    ? `0x${serialized}`
+    : serialized;
   if (!/^0x[0-9a-f]{1,64}::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*$/i.test(candidate)) {
     throw commerceError('COMMERCE_V5_INVALID_MOVE_TYPE', `${label} must be a valid concrete Move type.`);
   }
@@ -190,7 +201,7 @@ function sameId(left, right) {
 
 function runtimeV5(runtime, { requireTypeOrigin = false } = {}) {
   const callablePackageId = normalizedSuiId(
-    runtime?.callablePackageId || runtime?.packageId,
+    runtime?.commerceV5CallablePackageId || runtime?.callablePackageId || runtime?.packageId,
     'commerce v5 callablePackageId',
   );
   const paymentCoinType = normalizedMoveType(runtime?.paymentCoinType, 'commerce v5 paymentCoinType');
@@ -398,6 +409,24 @@ function byteVector(value, label) {
         Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16)
       )),
     );
+  } else if (typeof candidate === 'string'
+    && candidate.length > 0
+    && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(candidate)) {
+    try {
+      const binary = atob(candidate);
+      if (btoa(binary) !== candidate) throw new Error('non-canonical base64');
+      bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    } catch {
+      throw commerceError(
+        'COMMERCE_V5_OBJECT_FIELD_INVALID',
+        `${label} is not canonical base64.`,
+      );
+    }
+  } else if (candidate === '') {
+    // Sui gRPC renders an empty `vector<u8>` JSON field as an empty string,
+    // while non-empty vectors keep their byte-array/hex representation. This
+    // exact empty case is valid for FREE, unbound Seal state only.
+    bytes = new Uint8Array();
   } else {
     throw commerceError('COMMERCE_V5_OBJECT_FIELD_INVALID', `${label} is missing or invalid.`);
   }
@@ -414,6 +443,17 @@ function exactByteVector(value, length, label) {
     );
   }
   return bytes;
+}
+
+function exactHexBytes(value, length, label) {
+  const candidate = String(required(value, label)).trim();
+  if (!new RegExp(`^0x[0-9a-f]{${length * 2}}$`, 'i').test(candidate)) {
+    throw commerceError(
+      'COMMERCE_V5_INVALID_HASH',
+      `${label} must be a 0x-prefixed ${length}-byte hex value.`,
+    );
+  }
+  return exactByteVector(candidate, length, label);
 }
 
 function parseObjectEnvelope(object, structName) {
@@ -745,10 +785,21 @@ export function parseMakerRootV5(object) {
 export function parseMakerTreasuryV5(object) {
   const envelope = parseObjectEnvelope(object, 'MakerTreasuryV5');
   const { fields } = envelope;
+  const paymentCoinMatch = envelope.type.match(/::commerce_v5::MakerTreasuryV5<(.+)>$/);
+  if (!paymentCoinMatch) {
+    throw commerceError(
+      'COMMERCE_V5_OBJECT_TYPE_MISMATCH',
+      'MakerTreasuryV5 must declare its PaymentCoin type argument.',
+    );
+  }
   return Object.freeze({
     objectId: envelope.objectId,
     type: envelope.type,
     version: parseVersion(fields, 'MakerTreasuryV5'),
+    paymentCoinType: normalizedMoveType(
+      paymentCoinMatch[1],
+      'MakerTreasuryV5 payment coin type',
+    ),
     rootId: normalizedSuiId(jsonId(field(fields, 'root_id', 'rootId')), 'MakerRootV5 ID'),
     balanceAtomic: balanceValue(field(fields, 'revenue'), 'Maker treasury balance'),
     totalPackCollectedAtomic: u64(
@@ -775,6 +826,50 @@ export function parseMakerControlCapV5(object) {
     version: parseVersion(fields, 'MakerControlCapV5'),
     rootId: normalizedSuiId(jsonId(field(fields, 'root_id', 'rootId')), 'MakerRootV5 ID'),
     ownershipEpoch: u64(field(fields, 'ownership_epoch', 'ownershipEpoch'), 'ControlCap ownership epoch'),
+  });
+}
+
+export function parseIndependentExtensionAuthorityV5(object) {
+  const envelope = parseObjectEnvelope(object, 'IndependentExtensionAuthorityV5');
+  const { fields } = envelope;
+  return Object.freeze({
+    objectId: envelope.objectId,
+    type: envelope.type,
+    version: parseVersion(fields, 'IndependentExtensionAuthorityV5'),
+    rootId: normalizedSuiId(
+      jsonId(field(fields, 'root_id', 'rootId')),
+      'MakerRootV5 ID',
+    ),
+    legacyMakerId: normalizedSuiId(
+      jsonId(field(fields, 'legacy_maker_id', 'legacyMakerId')),
+      'Legacy OCMaker ID',
+    ),
+    protocolConfigId: normalizedSuiId(
+      jsonId(field(fields, 'protocol_config_id', 'protocolConfigId')),
+      'CommerceProtocolConfigV5 ID',
+    ),
+    protocolAdminCapId: normalizedSuiId(
+      jsonId(field(fields, 'protocol_admin_cap_id', 'protocolAdminCapId')),
+      'ProtocolFeeAdminCap ID',
+    ),
+    owner: normalizedSuiId(field(fields, 'owner'), 'Independent extension owner'),
+    retiredControlCapId: normalizedSuiId(
+      jsonId(field(fields, 'retired_control_cap_id', 'retiredControlCapId')),
+      'Retired MakerControlCapV5 ID',
+    ),
+    retiredControlCapEpoch: u64(
+      field(fields, 'retired_control_cap_epoch', 'retiredControlCapEpoch'),
+      'Retired MakerControlCapV5 epoch',
+    ),
+    lockedOwnershipEpoch: u64(
+      field(fields, 'locked_ownership_epoch', 'lockedOwnershipEpoch'),
+      'Locked Maker ownership epoch',
+    ),
+    auditHash: `0x${hexBytes(exactByteVector(
+      field(fields, 'audit_hash', 'auditHash'),
+      32,
+      'Independent extension audit hash',
+    ))}`,
   });
 }
 
@@ -1245,6 +1340,7 @@ export function buildConfigureMakerV5({
   makerResaleRoyaltyBps,
   packs = [],
   styleBindings = [],
+  legacyLogicalCompatibility = null,
   sealStyleRegistry = false,
   activate = false,
   configurePolicy = true,
@@ -1252,6 +1348,12 @@ export function buildConfigureMakerV5({
   assertRootState(root, runtime);
   assertControl(root, controlCap, sender);
   assertConfigurable(root);
+  if (legacyLogicalCompatibility !== null && legacyLogicalCompatibility !== undefined) {
+    throw commerceError(
+      'COMMERCE_V5_LEGACY_LOGICAL_ROUTE_PRIVATE',
+      'Legacy logical compatibility registration is private; use the atomic independent-extension finalizer.',
+    );
+  }
   if (root.styleRegistrySealed && (styleBindings.length || sealStyleRegistry)) {
     throw commerceError('COMMERCE_V5_STYLE_REGISTRY_SEALED', 'The Style registry is already sealed and immutable.');
   }
@@ -1405,6 +1507,141 @@ export function buildConfigureMakerV5({
       arguments: [rootArg, capArg],
     });
   }
+  return transaction;
+}
+
+export function buildFinalizeIndependentExtensionRootV5({
+  runtime,
+  root,
+  makerTreasury,
+  controlCap,
+  protocol,
+  protocolFeeAdminCapId,
+  styleBindings,
+  auditHash,
+  sender,
+}) {
+  assertLinkage(root, protocol, runtime);
+  assertProtocolState(protocol, runtime, { enabled: true });
+  assertControl(root, controlCap, sender);
+  assertTreasury(root, makerTreasury, { requireZero: true });
+  if (normalizeStructTag(makerTreasury.paymentCoinType)
+    !== runtimeV5(runtime).paymentCoinType) {
+    throw commerceError(
+      'COMMERCE_V5_PAYMENT_COIN_MISMATCH',
+      'Maker treasury payment coin does not match the atomic finalizer type argument.',
+    );
+  }
+  if (root.lifecycle !== COMMERCE_V5_LIFECYCLE.PAUSED
+    || root.activeListingId
+    || root.styleRegistrySealed
+    || root.styleCount !== 0n
+    || root.packCount !== 0n
+    || root.paidPackCount !== 0n
+    || root.packKeys.length !== 0
+    || root.protectedStyleCount !== 0n
+    || root.completeOutputCount !== 0n
+    || root.totalCompletes !== 0n
+    || root.baseAccess.kind !== COMMERCE_V5_ACCESS.FREE
+    || root.baseAccess.purchasePriceAtomic !== 0n) {
+    throw commerceError(
+      'COMMERCE_V5_INDEPENDENT_EXTENSION_ROOT_NOT_PRISTINE',
+      'Atomic independent-extension finalization requires the exact PAUSED, unsealed, free, zero-Style, zero-Pack Root.',
+    );
+  }
+  const adminCapId = normalizedSuiId(
+    protocolFeeAdminCapId,
+    'Independent extension ProtocolFeeAdminCap ID',
+  );
+  if (!sameId(adminCapId, protocol.legacyAdminCapId)) {
+    throw commerceError(
+      'COMMERCE_V5_PROTOCOL_ADMIN_MISMATCH',
+      'Independent extension finalization requires the exact ProtocolFeeAdminCap linked to this v5 config.',
+    );
+  }
+  if (!Array.isArray(styleBindings) || styleBindings.length !== INDEPENDENT_EXTENSION_STYLE_COUNT) {
+    throw commerceError(
+      'COMMERCE_V5_INDEPENDENT_EXTENSION_STYLE_MISMATCH',
+      `Independent extension finalization requires exactly ${INDEPENDENT_EXTENSION_STYLE_COUNT} ordered Style rows.`,
+    );
+  }
+  const expectedKinds = [
+    ...Array(INDEPENDENT_EXTENSION_VISUAL_COUNT).fill(COMMERCE_V5_STYLE_ROW.VISUAL),
+    ...Array(INDEPENDENT_EXTENSION_LOGICAL_NONE_COUNT).fill(COMMERCE_V5_STYLE_ROW.LOGICAL_NONE),
+    ...Array(INDEPENDENT_EXTENSION_LOGICAL_COLOR_COUNT).fill(COMMERCE_V5_STYLE_ROW.LOGICAL_COLOR),
+  ];
+  const identities = new Set();
+  const rows = styleBindings.map((binding, index) => {
+    const row = {
+      partKey: nonEmptyString(binding?.partKey, `Independent extension Style ${index + 1} Part key`),
+      itemKey: nonEmptyString(binding?.itemKey, `Independent extension Style ${index + 1} Item key`),
+      styleKey: nonEmptyString(binding?.styleKey, `Independent extension Style ${index + 1} Style key`),
+      rowKind: Number(binding?.rowKind),
+    };
+    if (String(binding?.packKey || '').trim() || row.rowKind !== expectedKinds[index]) {
+      throw commerceError(
+        'COMMERCE_V5_INDEPENDENT_EXTENSION_STYLE_MISMATCH',
+        'Independent extension rows must be Base rows ordered as 19 VISUAL, 3 LOGICAL_NONE, then 4 LOGICAL_COLOR.',
+      );
+    }
+    const identity = `${row.partKey}\u0000${row.itemKey}\u0000${row.styleKey}`;
+    if (identities.has(identity)) {
+      throw commerceError(
+        'COMMERCE_V5_DUPLICATE_STYLE',
+        `Style ${row.partKey}/${row.itemKey}/${row.styleKey} is registered twice.`,
+      );
+    }
+    identities.add(identity);
+    return row;
+  });
+  const exactAuditHash = exactHexBytes(auditHash, 32, 'Independent extension audit hash');
+  const transaction = newTransaction(sender);
+  transaction.moveCall({
+    target: target(runtime, 'finalize_independent_extension_root_v5'),
+    typeArguments: [runtimeV5(runtime).paymentCoinType],
+    arguments: [
+      objectArg(transaction, root.objectId, 'MakerRootV5 ID'),
+      objectArg(transaction, makerTreasury.objectId, 'MakerTreasuryV5 ID'),
+      objectArg(transaction, controlCap.objectId, 'MakerControlCapV5 ID'),
+      objectArg(transaction, root.legacyMakerId, 'Legacy OCMaker ID'),
+      objectArg(transaction, protocol.objectId, 'CommerceProtocolConfigV5 ID'),
+      objectArg(transaction, adminCapId, 'ProtocolFeeAdminCap ID'),
+      transaction.pure.vector('string', rows.map((row) => row.partKey)),
+      transaction.pure.vector('string', rows.map((row) => row.itemKey)),
+      transaction.pure.vector('string', rows.map((row) => row.styleKey)),
+      transaction.pure.vector('u8', rows.map((row) => row.rowKind)),
+      transaction.pure.vector('u8', [...exactAuditHash]),
+    ],
+  });
+  return transaction;
+}
+
+export function buildBindMakerReleaseEvidenceV5({
+  runtime,
+  root,
+  controlCap,
+  legacyMakerId,
+  parentVersion,
+  manifestBlobId,
+  manifestSha256,
+  sender,
+}) {
+  assertRootState(root, runtime);
+  assertControl(root, controlCap, sender);
+  const transaction = newTransaction(sender);
+  transaction.moveCall({
+    target: target(runtime, 'bind_maker_release_evidence_v5'),
+    arguments: [
+      objectArg(transaction, root.objectId, 'MakerRootV5 ID'),
+      objectArg(transaction, controlCap.objectId, 'MakerControlCapV5 ID'),
+      objectArg(transaction, legacyMakerId, 'Legacy OCMaker ID'),
+      transaction.pure.string(nonEmptyString(parentVersion, 'Parent version')),
+      transaction.pure.string(nonEmptyString(manifestBlobId, 'Parent manifest Blob ID')),
+      transaction.pure.vector('u8', [
+        ...exactHexBytes(manifestSha256, 32, 'Parent manifest SHA-256'),
+      ]),
+    ],
+  });
   return transaction;
 }
 
@@ -2329,7 +2566,7 @@ function eventAmount(json, snake, camel) {
 }
 
 export function parseCommerceV5Event(event) {
-  const type = String(event?.type || event?.contents?.type?.repr || '');
+  const type = String(event?.eventType || event?.type || event?.contents?.type?.repr || '');
   const match = type.match(/::commerce_v5::([A-Za-z0-9_]+)$/);
   if (!match) return null;
   const name = match[1];
@@ -2356,13 +2593,17 @@ export function parseCommerceV5Event(event) {
     name,
     transactionDigest: event?.transaction?.digest || event?.transactionDigest || '',
     configId: id('config_id', 'configId'),
+    protocolConfigId: id('protocol_config_id', 'protocolConfigId'),
     legacyConfigId: id('legacy_config_id', 'legacyConfigId'),
     rootId: id('root_id', 'rootId'),
+    authorityId: id('authority_id', 'authorityId'),
     legacyMakerId: id('legacy_maker_id', 'legacyMakerId'),
     legacyTreasuryId: id('legacy_treasury_id', 'legacyTreasuryId'),
     treasuryId: id('treasury_id', 'treasuryId'),
     vaultId: id('vault_id', 'vaultId'),
     controlCapId: id('control_cap_id', 'controlCapId'),
+    protocolAdminCapId: id('protocol_admin_cap_id', 'protocolAdminCapId'),
+    retiredControlCapId: id('retired_control_cap_id', 'retiredControlCapId'),
     listingId: id('listing_id', 'listingId'),
     accessPassId: id('access_pass_id', 'accessPassId'),
     packPassId: id('pack_pass_id', 'packPassId'),
@@ -2396,6 +2637,17 @@ export function parseCommerceV5Event(event) {
     previousLifecycle: field(json, 'previous', 'previousLifecycle'),
     currentLifecycle: field(json, 'current', 'currentLifecycle'),
     ownershipEpoch: eventAmount(json, 'ownership_epoch', 'ownershipEpoch'),
+    retiredControlCapEpoch: eventAmount(
+      json,
+      'retired_control_cap_epoch',
+      'retiredControlCapEpoch',
+    ),
+    lockedOwnershipEpoch: eventAmount(
+      json,
+      'locked_ownership_epoch',
+      'lockedOwnershipEpoch',
+    ),
+    auditHash: bytes32('audit_hash', 'auditHash'),
     paidAtomic: eventAmount(json, 'paid_atomic', 'paidAtomic'),
     priceAtomic: eventAmount(json, 'price_atomic', 'priceAtomic'),
     creatorChargeAtomic: eventAmount(json, 'creator_charge_atomic', 'creatorChargeAtomic'),

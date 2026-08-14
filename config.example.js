@@ -32,6 +32,7 @@ window.ANIMACRAFT_CONFIG = {
   protocolFeeAdminCapOwner: '0xEXPECTED_ADMIN_WALLET',
   primaryProtocolFeeBps: 5000,
   canonicalSoulMintEnabled: false,
+  commerceV5CallablePackageId: '0xCURRENT_V5_COMMERCE_CALLABLE_PACKAGE',
   commerceV5TypeOriginPackageId: '0xV5_COMMERCE_TYPE_ORIGIN_PACKAGE',
   commerceProtocolConfigV5Id: '0xYOUR_DISABLED_V5_COMMERCE_PROTOCOL_CONFIG',
   commerceProtocolTreasuryV5Id: '0xYOUR_V5_COMMERCE_PROTOCOL_TREASURY',
@@ -67,6 +68,16 @@ window.ANIMACRAFT_CONFIG = {
   physicalV7SoulOwnerProofTypeOriginPackageId: '0xV7_SOUL_OWNER_PROOF_TYPE_ORIGIN',
   physicalV7SoulOwnerProofType: '',
   physicalStyleV7ReleaseEnabled: false,
+  // Independent child Pack release companion. Both package identities are
+  // required together; keep the gate false through deployment/read-back QA.
+  expansionPackV8CallablePackageId: '0xV8_EXPANSION_PACK_CALLABLE_PACKAGE',
+  expansionPackV8TypeOriginPackageId: '0xV8_EXPANSION_PACK_TYPE_ORIGIN_PACKAGE',
+  // New types introduced by the corrective independent-extension upgrade and
+  // the exact shared Authority created by atomic parent finalization.
+  independentExtensionV5TypeOriginPackageId: '0xINDEPENDENT_EXTENSION_V5_TYPE_ORIGIN',
+  legacyLogicalV5TypeOriginPackageId: '0xLEGACY_LOGICAL_V5_TYPE_ORIGIN',
+  independentExtensionAuthorityV5Id: '0xSHARED_INDEPENDENT_EXTENSION_AUTHORITY',
+  expansionPackV8ReleaseEnabled: false,
   // Frozen v5 package used for every Seal approval call. Never advance this
   // to the latest Animacraft callable package after a later upgrade.
   sealV5CallablePackageId: '0xV5_SEAL_CALLABLE_PACKAGE',

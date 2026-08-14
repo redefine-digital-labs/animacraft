@@ -8,26 +8,58 @@
  */
 
 import {
+  EXPANSION_PACK_PART_MODES,
+  addExpansionPackColorChannel,
+  addExpansionPackColorSwatch,
   addExpansionPackItem,
+  addExpansionPackLayerTrack,
   addExpansionPackOptionalPart,
+  addExpansionPackRule,
   addExpansionPackStyle,
   createExpansionPackProject,
   preflightExpansionPackProject,
   rehydrateExpansionPackProject,
+  moveExpansionPackLayerTrack,
+  removeExpansionPackColorChannel,
+  removeExpansionPackColorSwatch,
   removeExpansionPackItem,
+  removeExpansionPackLayerTrack,
   removeExpansionPackPart,
+  removeExpansionPackRule,
   removeExpansionPackStyle,
   renameExpansionPack,
   renameExpansionPackItem,
   renameExpansionPackPart,
   renameExpansionPackStyle,
+  renameExpansionPackLayerTrack,
+  setExpansionPackLayerTrackLocked,
+  setExpansionPackPartMode,
+  updateExpansionPackColorChannel,
+  updateExpansionPackColorSwatch,
+  updateExpansionPackItemRules,
+  updateExpansionPackPartRules,
+  updateExpansionPackRule,
   updateExpansionPackStyle,
+  updateExpansionPackStyleRules,
 } from './expansion-pack-project.js';
 import {
   createExpansionPackDraftStore,
   expansionPackDraftKey,
 } from './expansion-pack-draft-store.js';
 import { BLEND_MODES } from './maker-renderer.js';
+import {
+  MAKER_DEFINITION_EDITOR_SECTION_IDS,
+  MAKER_DEFINITION_EDITOR_SECTIONS,
+  createMakerPartListModel,
+  normalizeMakerDefinitionEditorSection,
+  renderMakerPartList,
+} from './maker-definition-editor.js';
+import { renderMakerEditorShell } from './maker-editor-shell.js';
+import {
+  renderDefinitionCombinationRuleControl,
+  renderSharedRuleListEditor,
+  renderSharedRuleTargetTree,
+} from './maker-definition-rule-control.js';
 
 export const EXPANSION_PACK_WORKSPACE_SAVE_PHASES = Object.freeze({
   NEW: 'new',
@@ -190,12 +222,25 @@ export function createExpansionPackParentInfo(projectValue) {
       height: Number(maker?.canvas?.height || 0),
     },
     counts: countMaker(maker),
+    layerTracks: clone(list(maker.layerTracks)),
+    colorChannels: clone(list(maker.colorChannels ?? maker.palettes)),
+    rules: clone(list(maker.rules)),
     parts,
   });
 }
 
 export function createExpansionPackWorkspaceTree(projectValue) {
   const project = rehydrateExpansionPackProject(projectValue);
+  const parentComposable = project.parentSnapshot?.extensions?.composableV6;
+  const supportsComposableV6 = Boolean(
+    parentComposable
+    && typeof parentComposable === 'object'
+    && !Array.isArray(parentComposable)
+    && text(parentComposable.profile?.mode).toUpperCase() === 'COMPOSABLE'
+    && parentComposable.compatibility
+    && typeof parentComposable.compatibility === 'object'
+    && !Array.isArray(parentComposable.compatibility)
+  );
   const parentPartMap = new Map(list(project.parentSnapshot?.parts).map((part) => [idOf(part), part]));
   const parts = list(project.pack?.parts).map((part) => {
     const targetPartId = partTargetId(part);
@@ -210,6 +255,12 @@ export function createExpansionPackWorkspaceTree(projectValue) {
         : text(part?.name) || localPartId,
       required: false,
       allowRemove: true,
+      rules: {
+        requires: clone(list(part.requires)),
+        excludes: clone(list(part.excludes)),
+        visibleWhen: clone(part.visibleWhen ?? null),
+      },
+      wardrobeMode: text(project.pack?.wardrobe?.partModes?.[localPartId]) || EXPANSION_PACK_PART_MODES.FIXED,
       items: list(part?.items).map((item) => {
         const targetItemId = itemTargetId(item);
         const localItemId = idOf(item);
@@ -223,6 +274,11 @@ export function createExpansionPackWorkspaceTree(projectValue) {
           name: targetItemId
             ? text(parentItem?.name) || targetItemId
             : text(item?.name) || localItemId,
+          rules: {
+            requires: clone(list(item.requires)),
+            excludes: clone(list(item.excludes)),
+            visibleWhen: clone(item.visibleWhen ?? null),
+          },
           styles: list(item?.styles).map((style) => ({
             id: idOf(style),
             name: text(style?.name) || idOf(style),
@@ -236,6 +292,12 @@ export function createExpansionPackWorkspaceTree(projectValue) {
             },
             opacity: Number(style?.opacity ?? 1),
             blendMode: text(style?.blendMode) || 'normal',
+            colorChannelId: text(style?.colorChannelId ?? style?.paletteId),
+            rules: {
+              requires: clone(list(style.requires)),
+              excludes: clone(list(style.excludes)),
+              visibleWhen: clone(style.visibleWhen ?? null),
+            },
           })),
         };
       }),
@@ -246,6 +308,11 @@ export function createExpansionPackWorkspaceTree(projectValue) {
     namespace: text(project.namespace),
     name: text(project.name),
     version: text(project.version),
+    commerce: clone(project.pack?.commerce || {}),
+    layerTracks: clone(list(project.pack?.layerTracks)),
+    colorChannels: clone(list(project.pack?.colorChannels ?? project.pack?.palettes)),
+    rules: clone(list(project.pack?.rules)),
+    supportsComposableV6,
     parts,
   });
 }
@@ -396,6 +463,7 @@ export async function createExpansionPackWorkspace(options = {}) {
 
   const snapshot = () => deepFreeze({
     identity: clone(identity),
+    mutationRevision,
     project: publicProject(project),
     parent: parentInfo,
     tree,
@@ -459,6 +527,60 @@ export async function createExpansionPackWorkspace(options = {}) {
     },
     addStyle(input) {
       return change(addExpansionPackStyle(project, input, { now: Number(clock()) }), 'add-style');
+    },
+    addLayerTrack(track) {
+      return change(addExpansionPackLayerTrack(project, track, { now: Number(clock()) }), 'add-layer-track');
+    },
+    renameLayerTrack(trackId, name) {
+      return change(renameExpansionPackLayerTrack(project, trackId, name, { now: Number(clock()) }), 'rename-layer-track');
+    },
+    setLayerTrackLocked(trackId, locked) {
+      return change(setExpansionPackLayerTrackLocked(project, trackId, locked, { now: Number(clock()) }), 'lock-layer-track');
+    },
+    moveLayerTrack(trackId, targetIndex) {
+      return change(moveExpansionPackLayerTrack(project, trackId, targetIndex, { now: Number(clock()) }), 'move-layer-track');
+    },
+    removeLayerTrack(trackId) {
+      return change(removeExpansionPackLayerTrack(project, trackId, { now: Number(clock()) }), 'remove-layer-track');
+    },
+    addColorChannel(channel) {
+      return change(addExpansionPackColorChannel(project, channel, { now: Number(clock()) }), 'add-color-channel');
+    },
+    updateColorChannel(channelId, patch) {
+      return change(updateExpansionPackColorChannel(project, channelId, patch, { now: Number(clock()) }), 'update-color-channel');
+    },
+    removeColorChannel(channelId) {
+      return change(removeExpansionPackColorChannel(project, channelId, { now: Number(clock()) }), 'remove-color-channel');
+    },
+    addColorSwatch(channelId, swatch) {
+      return change(addExpansionPackColorSwatch(project, channelId, swatch, { now: Number(clock()) }), 'add-color-swatch');
+    },
+    updateColorSwatch(channelId, swatchId, patch) {
+      return change(updateExpansionPackColorSwatch(project, channelId, swatchId, patch, { now: Number(clock()) }), 'update-color-swatch');
+    },
+    removeColorSwatch(channelId, swatchId) {
+      return change(removeExpansionPackColorSwatch(project, channelId, swatchId, { now: Number(clock()) }), 'remove-color-swatch');
+    },
+    addRule(rule) {
+      return change(addExpansionPackRule(project, rule, { now: Number(clock()) }), 'add-rule');
+    },
+    updateRule(ruleId, patch) {
+      return change(updateExpansionPackRule(project, ruleId, patch, { now: Number(clock()) }), 'update-rule');
+    },
+    removeRule(ruleId) {
+      return change(removeExpansionPackRule(project, ruleId, { now: Number(clock()) }), 'remove-rule');
+    },
+    updatePartRules(partId, patch) {
+      return change(updateExpansionPackPartRules(project, partId, patch, { now: Number(clock()) }), 'update-part-rules');
+    },
+    updateItemRules(partId, itemId, patch) {
+      return change(updateExpansionPackItemRules(project, partId, itemId, patch, { now: Number(clock()) }), 'update-item-rules');
+    },
+    updateStyleRules(partId, itemId, styleId, patch) {
+      return change(updateExpansionPackStyleRules(project, partId, itemId, styleId, patch, { now: Number(clock()) }), 'update-style-rules');
+    },
+    setPartMode(partId, mode) {
+      return change(setExpansionPackPartMode(project, partId, mode, { now: Number(clock()) }), 'set-part-mode');
     },
     renamePack(name) {
       return change(renameExpansionPack(project, name, { now: Number(clock()) }), 'rename-pack');
@@ -580,6 +702,46 @@ export async function createExpansionPackWorkspace(options = {}) {
       saveTail = operation.catch(() => undefined);
       return operation;
     },
+    async flush() {
+      if (destroyed) throw new ExpansionPackWorkspaceError('Expansion Pack workspace is destroyed.');
+      const flushIdentity = clone(identity);
+      let attempts = 0;
+
+      // A save may already be running when pagehide/visibilitychange fires.
+      // Wait for it first, then persist any mutation that landed while that
+      // snapshot was in flight. The controller identity is immutable, so this
+      // queue can never drift to a Pack opened later by the host workspace.
+      await saveTail;
+      while (dirty) {
+        attempts += 1;
+        if (attempts > 10) {
+          throw new ExpansionPackWorkspaceError(
+            'Expansion Pack kept changing while the save queue was being flushed.',
+            'expansion-pack-flush-did-not-quiesce',
+            { identity: flushIdentity },
+          );
+        }
+        const result = await api.save();
+        if (result?.conflict) {
+          return {
+            saved: false,
+            conflict: true,
+            identity: flushIdentity,
+            persistedRevision,
+            remoteRevision: saveState.remoteRevision,
+          };
+        }
+        await saveTail;
+      }
+
+      return {
+        saved: true,
+        conflict: false,
+        identity: flushIdentity,
+        persistedRevision,
+        savedAt,
+      };
+    },
     async reload({ force = false } = {}) {
       await saveTail;
       if (dirty && !force) {
@@ -650,114 +812,682 @@ function localizedSaveLabel(save, copy) {
   return save.label || '';
 }
 
-function renderParentPart(part, copy) {
-  return `
-    <details class="expansion-pack-parent-part">
-      <summary><strong>${escapeHtml(part.name)}</strong><span>${escapeHtml(copyValue(copy, 'itemCount', `${part.items.length} Item(s)`).replace('{count}', String(part.items.length)))}</span></summary>
-      <div class="expansion-pack-parent-items">
-        ${part.items.map((item) => `
-          <div class="expansion-pack-parent-item">
-            <span>${escapeHtml(item.name)} · ${escapeHtml(copyValue(copy, 'styleCount', `${item.styles.length} Style(s)`).replace('{count}', String(item.styles.length)))}</span>
-            <button type="button" data-action="request-add-style" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(item.id)}">${escapeHtml(copyValue(copy, 'addStyle', '＋ Style'))}</button>
-          </div>`).join('')}
-        <button type="button" data-action="request-add-item" data-part-id="${escapeHtml(part.id)}">${escapeHtml(copyValue(copy, 'addItem', '＋ Item'))}</button>
-      </div>
-    </details>`;
-}
-
-function renderPackItem(part, item, copy) {
-  const nameControl = item.readonlyName
-    ? `<strong>${escapeHtml(item.name)}</strong><span class="expansion-pack-readonly-badge">${escapeHtml(copyValue(copy, 'parentItem', 'Parent Item'))}</span>`
-    : `<input type="text" value="${escapeHtml(item.name)}" data-rename-kind="item" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(item.id)}" aria-label="${escapeHtml(copyValue(copy, 'itemName', 'Item name'))}" />`;
-  return `
-    <article class="expansion-pack-item" data-item-id="${escapeHtml(item.id)}">
-      <header>
-        ${nameControl}<code>${escapeHtml(item.id)}</code>
-        ${item.readonlyName ? '' : `<button type="button" data-action="delete-item" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(item.id)}" aria-label="${escapeHtml(copyValue(copy, 'deleteItem', 'Delete Item'))}">${escapeHtml(copyValue(copy, 'deleteItem', 'Delete Item'))}</button>`}
-      </header>
-      <div class="expansion-pack-styles">
-        ${item.styles.map((style) => renderPackStyle(part, item, style, copy)).join('') || `<p class="expansion-pack-empty">${escapeHtml(copyValue(copy, 'noPackStyle', 'No Pack Style yet.'))}</p>`}
-      </div>
-      <button type="button" data-action="request-add-style" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(item.id)}">${escapeHtml(copyValue(copy, 'addStyle', '＋ Style'))}</button>
-    </article>`;
-}
-
 function styleControlAttributes(part, item, style, field) {
   return `data-style-field="${escapeHtml(field)}" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(item.id)}" data-style-id="${escapeHtml(style.id)}"`;
 }
 
-function renderPackStyle(part, item, style, copy) {
-  const transform = style.transform || {};
-  return `
-    <article class="expansion-pack-style" data-style-id="${escapeHtml(style.id)}">
-      <header>
-        <label><span>${escapeHtml(copyValue(copy, 'styleName', 'Style name'))}</span><input type="text" value="${escapeHtml(style.name)}" data-rename-kind="style" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(item.id)}" data-style-id="${escapeHtml(style.id)}" aria-label="${escapeHtml(copyValue(copy, 'styleName', 'Style name'))}" /></label>
-        <code>${escapeHtml(style.id)}</code>
-        <button type="button" data-action="delete-style" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(item.id)}" data-style-id="${escapeHtml(style.id)}" aria-label="${escapeHtml(copyValue(copy, 'deleteStyle', 'Delete Style'))}">${escapeHtml(copyValue(copy, 'deleteStyle', 'Delete Style'))}</button>
-      </header>
-      <div class="expansion-pack-style-asset">
-        <strong>${escapeHtml(style.assetId || copyValue(copy, 'pngRequired', 'PNG required'))}</strong>
-        <label class="expansion-pack-file-button">${escapeHtml(copyValue(copy, 'uploadPng', 'Upload PNG'))}
-          <input type="file" accept="image/png,.png" data-asset-request="true" data-part-id="${escapeHtml(part.id)}" data-item-id="${escapeHtml(item.id)}" data-style-id="${escapeHtml(style.id)}" />
-        </label>
-      </div>
-      <div class="expansion-pack-style-controls">
-        <label><span>X</span><input type="number" step="1" value="${escapeHtml(transform.x ?? 0)}" ${styleControlAttributes(part, item, style, 'transform.x')} /></label>
-        <label><span>Y</span><input type="number" step="1" value="${escapeHtml(transform.y ?? 0)}" ${styleControlAttributes(part, item, style, 'transform.y')} /></label>
-        <label><span>${escapeHtml(copyValue(copy, 'scale', 'Scale'))}</span><input type="number" min="0.01" step="0.01" value="${escapeHtml(transform.scale ?? 1)}" ${styleControlAttributes(part, item, style, 'transform.scale')} /></label>
-        <label><span>${escapeHtml(copyValue(copy, 'rotation', 'Rotation'))}</span><input type="number" step="1" value="${escapeHtml(transform.rotation ?? 0)}" ${styleControlAttributes(part, item, style, 'transform.rotation')} /></label>
-        <label><span>${escapeHtml(copyValue(copy, 'opacity', 'Opacity'))}</span><input type="number" min="0" max="1" step="0.01" value="${escapeHtml(style.opacity ?? 1)}" ${styleControlAttributes(part, item, style, 'opacity')} /></label>
-        <label><span>${escapeHtml(copyValue(copy, 'blend', 'Blend'))}</span><select ${styleControlAttributes(part, item, style, 'blendMode')}>
-          ${Object.keys(BLEND_MODES).map((mode) => `<option value="${escapeHtml(mode)}" ${mode === style.blendMode ? 'selected' : ''}>${escapeHtml(mode)}</option>`).join('')}
-        </select></label>
-      </div>
-    </article>`;
+function parentPartDelta(tree, partId) {
+  return list(tree.parts).find((part) => part.kind === 'parent-extension' && part.id === partId) || null;
 }
 
-function renderPackPart(part, copy) {
-  const nameControl = part.readonlyName
-    ? `<strong>${escapeHtml(part.name)}</strong><span class="expansion-pack-readonly-badge">${escapeHtml(copyValue(copy, 'parentPart', 'Parent Part'))}</span>`
-    : `<input type="text" value="${escapeHtml(part.name)}" data-rename-kind="part" data-part-id="${escapeHtml(part.id)}" aria-label="${escapeHtml(copyValue(copy, 'partName', 'Part name'))}" />`;
+function combinedPartRows(parent, tree) {
+  const inherited = list(parent.parts).map((part) => {
+    const delta = parentPartDelta(tree, part.id);
+    const packItems = list(delta?.items);
+    return {
+      id: part.id,
+      name: part.name,
+      kind: 'inherited',
+      inherited: true,
+      readonly: true,
+      required: part.required === true,
+      parentItemCount: list(part.items).length,
+      packItemCount: packItems.filter((item) => item.kind === 'pack-item').length,
+      packStyleCount: packItems.reduce((total, item) => total + list(item.styles).length, 0),
+    };
+  });
+  const owned = list(tree.parts)
+    .filter((part) => part.kind === 'optional-part')
+    .map((part) => ({
+      id: part.id,
+      name: part.name,
+      kind: 'pack',
+      inherited: false,
+      readonly: false,
+      required: false,
+      parentItemCount: 0,
+      packItemCount: list(part.items).length,
+      packStyleCount: list(part.items).reduce((total, item) => total + list(item.styles).length, 0),
+    }));
+  return [...inherited, ...owned];
+}
+
+function findSelectedPart(parent, tree, partId) {
+  const id = text(partId);
+  const parentPart = list(parent.parts).find((part) => part.id === id) || null;
+  const delta = list(tree.parts).find((part) => part.id === id) || null;
+  if (parentPart) return { parent: parentPart, delta, owned: false };
+  if (delta?.kind === 'optional-part') return { parent: null, delta, owned: true };
+  const firstOwned = list(tree.parts).find((part) => part.kind === 'optional-part') || null;
+  if (firstOwned) return { parent: null, delta: firstOwned, owned: true };
+  const firstParent = list(parent.parts)[0] || null;
+  if (firstParent) return {
+    parent: firstParent,
+    delta: parentPartDelta(tree, firstParent.id),
+    owned: false,
+  };
+  return { parent: null, delta: null, owned: false };
+}
+
+function combinedItems(selection) {
+  const inherited = list(selection.parent?.items).map((item) => {
+    const delta = list(selection.delta?.items).find((entry) => entry.kind === 'parent-item-extension' && entry.id === item.id);
+    return {
+      ...item,
+      kind: 'inherited',
+      inherited: true,
+      readonly: true,
+      packStyles: list(delta?.styles),
+    };
+  });
+  const owned = list(selection.delta?.items)
+    .filter((item) => item.kind === 'pack-item')
+    .map((item) => ({ ...item, inherited: false, readonly: false, packStyles: list(item.styles) }));
+  return [...inherited, ...owned];
+}
+
+function findSelectedItem(selection, itemId) {
+  const items = combinedItems(selection);
+  return items.find((item) => item.id === text(itemId))
+    || items.find((item) => !item.inherited)
+    || items[0]
+    || null;
+}
+
+function combinedStyles(item) {
+  const inherited = item?.inherited
+    ? list(item.styles).map((style) => ({ ...style, inherited: true, readonly: true }))
+    : [];
+  return [
+    ...inherited,
+    ...list(item?.packStyles).map((style) => ({ ...style, inherited: false, readonly: false })),
+  ];
+}
+
+function findSelectedStyle(item, styleId) {
+  const styles = combinedStyles(item);
+  return styles.find((style) => style.id === text(styleId))
+    || styles.find((style) => !style.inherited)
+    || styles[0]
+    || null;
+}
+
+function renderPackPartBrowser(parent, tree, selectedPartId, copy, publicationLocked) {
+  const selected = findSelectedPart(parent, tree, selectedPartId);
+  const selectedId = selected.parent?.id || selected.delta?.id || '';
+  const records = combinedPartRows(parent, tree).map((part) => ({
+    id: part.id,
+    name: part.name,
+    thumbnailText: part.name.slice(0, 2).toUpperCase(),
+    itemCount: part.parentItemCount + part.packItemCount,
+    required: part.required,
+    trackLabel: part.inherited
+      ? copyValue(copy, 'inherited', 'Inherited · read only')
+      : copyValue(copy, 'packOwned', 'Pack owned · editable'),
+    trackMode: part.inherited ? 'linked' : 'custom',
+    selected: part.id === selectedId,
+    readonly: part.inherited,
+    draggable: false,
+    capabilities: {
+      select: true,
+      preview: false,
+      moveUp: false,
+      moveDown: false,
+      duplicate: false,
+      delete: !part.inherited && !publicationLocked,
+    },
+    actions: {
+      select: 'select-pack-part',
+      preview: '',
+      slot: '',
+      move: '',
+      duplicate: '',
+      delete: part.inherited ? '' : 'delete-pack-part',
+    },
+  }));
+  const model = createMakerPartListModel(records, {
+    selectedId,
+    listLabel: copyValue(copy, 'parts', 'Parts'),
+    actionBarLabel: copyValue(copy, 'packPartActions', 'Pack Part actions'),
+    emptyLabel: copyValue(copy, 'emptyPack', 'No Parts yet.'),
+  });
   return `
-    <section class="expansion-pack-part" data-part-id="${escapeHtml(part.id)}">
-      <header>
-        ${nameControl}<code>${escapeHtml(part.id)}</code>
-        ${part.readonlyName ? '' : `<button type="button" data-action="delete-part" data-part-id="${escapeHtml(part.id)}" aria-label="${escapeHtml(copyValue(copy, 'deletePart', 'Delete Part'))}">${escapeHtml(copyValue(copy, 'deletePart', 'Delete Part'))}</button>`}
-      </header>
-      <div class="expansion-pack-items">
-        ${part.items.map((item) => renderPackItem(part, item, copy)).join('') || `<p class="expansion-pack-empty">${escapeHtml(copyValue(copy, 'noPackContent', 'No Pack content in this Part yet.'))}</p>`}
-      </div>
-      <button type="button" data-action="request-add-item" data-part-id="${escapeHtml(part.id)}">${escapeHtml(copyValue(copy, 'addItem', '＋ Item'))}</button>
+      <div class="v4-panel-head" data-shared-maker-part-browser><div><span>${escapeHtml(copyValue(copy, 'parts', 'Parts'))}</span><strong>${escapeHtml(copyValue(copy, 'parentAndPackParts', 'Parent + Pack'))}</strong><small>${escapeHtml(copyValue(copy, 'packPartBrowserCopy', 'Inherited definitions stay read only; Pack definitions are additive.'))}</small></div><button type="button" data-action="request-add-part" aria-label="${escapeHtml(copyValue(copy, 'addPart', 'Add optional Part'))}" ${publicationLocked ? 'disabled' : ''}>＋</button></div>
+      ${renderMakerPartList(model, {
+        itemCount: copyValue(copy, 'itemCount', '{count} Item(s)'),
+        required: copyValue(copy, 'required', 'Required'),
+        optional: copyValue(copy, 'optional', 'Optional'),
+        inherited: copyValue(copy, 'inherited', 'Inherited'),
+        readonly: copyValue(copy, 'readonly', 'Read only'),
+        moveUp: copyValue(copy, 'moveUp', 'Move up'),
+        moveDown: copyValue(copy, 'moveDown', 'Move down'),
+        duplicate: copyValue(copy, 'duplicate', 'Duplicate'),
+        delete: copyValue(copy, 'deletePart', 'Delete'),
+      })}`;
+}
+
+function editorSections(copy) {
+  const fallbackLabels = {
+    partsItems: 'Structure',
+    layerTracks: 'Layers',
+    smartColor: 'Smart Color',
+    rules: 'Rules',
+    composableItems: 'Wardrobe',
+  };
+  return MAKER_DEFINITION_EDITOR_SECTIONS.map((section) => ({
+    ...section,
+    label: copyValue(copy, section.labelKey, fallbackLabels[section.labelKey] || section.labelKey),
+  }));
+}
+
+function readonlyDefinitionList(values, kind, copy) {
+  return `<section class="expansion-pack-definition-group expansion-pack-definition-readonly">
+    <header><div><span>${escapeHtml(copyValue(copy, 'inherited', 'Inherited'))}</span><h4>${escapeHtml(copyValue(copy, 'parentDefinitionsReadonly', 'Parent definitions · read only'))}</h4></div></header>
+    <div class="expansion-pack-definition-list">${list(values).map((value) => `<div class="expansion-pack-readonly-row" data-parent-${escapeHtml(kind)}-id="${escapeHtml(idOf(value))}"><strong>${escapeHtml(text(value.name) || idOf(value))}</strong><code>${escapeHtml(idOf(value))}</code><span class="expansion-pack-readonly-badge">${escapeHtml(copyValue(copy, 'inherited', 'Inherited'))}</span></div>`).join('') || `<p class="expansion-pack-empty">—</p>`}</div>
+  </section>`;
+}
+
+function renderLayersEditor(parent, tree, copy) {
+  return `${readonlyDefinitionList(parent.layerTracks, 'track', copy)}
+    <section class="expansion-pack-definition-group">
+      <header><div><span>${escapeHtml(copyValue(copy, 'packOwned', 'Pack owned'))}</span><h4>${escapeHtml(copyValue(copy, 'layerTracks', 'Layer Tracks'))}</h4></div><button type="button" data-action="add-layer-track">${escapeHtml(copyValue(copy, 'addLayerTrack', '＋ Layer Track'))}</button></header>
+      <div class="expansion-pack-definition-list">${list(tree.layerTracks).map((track, index, tracks) => `<article class="expansion-pack-track-row" data-track-id="${escapeHtml(idOf(track))}">
+        <label><span>${escapeHtml(copyValue(copy, 'trackName', 'Track name'))}</span><input type="text" value="${escapeHtml(text(track.name))}" data-track-field="name" data-track-id="${escapeHtml(idOf(track))}" ${track.locked ? 'disabled' : ''}></label>
+        <code>${escapeHtml(idOf(track))}</code>
+        <div class="expansion-pack-row-actions">
+          <button type="button" data-action="move-layer-track" data-track-id="${escapeHtml(idOf(track))}" data-target-index="${index - 1}" aria-label="${escapeHtml(copyValue(copy, 'moveUp', 'Move up'))}" ${index === 0 || track.locked || tracks[index - 1]?.locked ? 'disabled' : ''}>↑</button>
+          <button type="button" data-action="move-layer-track" data-track-id="${escapeHtml(idOf(track))}" data-target-index="${index + 1}" aria-label="${escapeHtml(copyValue(copy, 'moveDown', 'Move down'))}" ${index === tracks.length - 1 || track.locked || tracks[index + 1]?.locked ? 'disabled' : ''}>↓</button>
+          <button type="button" data-action="toggle-layer-track" data-track-id="${escapeHtml(idOf(track))}" data-locked="${track.locked === true}" aria-pressed="${track.locked === true}">${escapeHtml(copyValue(copy, track.locked ? 'unlockTrack' : 'lockTrack', track.locked ? 'Unlock' : 'Lock'))}</button>
+          <button type="button" data-action="delete-layer-track" data-track-id="${escapeHtml(idOf(track))}" ${track.locked ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'deleteTrack', 'Delete'))}</button>
+        </div>
+      </article>`).join('') || `<p class="expansion-pack-empty">${escapeHtml(copyValue(copy, 'noPackTracks', 'No Pack Layer Tracks yet.'))}</p>`}</div>
     </section>`;
 }
 
-function inheritanceContractLabel(id, copy) {
-  const labels = {
-    documentSchema: copyValue(copy, 'inheritDocumentSchema', 'Document schema'),
-    parentMetadata: copyValue(copy, 'inheritMetadata', 'Maker metadata'),
-    canvas: copyValue(copy, 'inheritCanvas', 'Canvas'),
-    renderer: copyValue(copy, 'inheritRenderer', 'Renderer'),
-    layerTracks: copyValue(copy, 'inheritLayerTracks', 'Layer Tracks'),
-    baseDefinitions: copyValue(copy, 'inheritBaseDefinitions', 'Base definitions'),
-    baseAssets: copyValue(copy, 'inheritBaseAssets', 'Base assets'),
-    selectionRules: copyValue(copy, 'inheritRules', 'Rules'),
-    smartColorChannels: copyValue(copy, 'inheritColors', 'Smart Color'),
-    defaultRecipe: copyValue(copy, 'inheritDefaultRecipe', 'Default Recipe'),
-    livingContent: copyValue(copy, 'inheritSoul', 'Soul / Living Content'),
-    wardrobeCompatibility: copyValue(copy, 'inheritWardrobe', 'Wardrobe compatibility'),
-    parentCommerce: copyValue(copy, 'inheritParentCommerce', 'Parent commerce prerequisite'),
-    license: copyValue(copy, 'inheritLicense', 'License'),
+function renderColorsEditor(parent, tree, copy) {
+  return `${readonlyDefinitionList(parent.colorChannels, 'color-channel', copy)}
+    <section class="expansion-pack-definition-group">
+      <header><div><span>${escapeHtml(copyValue(copy, 'packOwned', 'Pack owned'))}</span><h4>${escapeHtml(copyValue(copy, 'smartColor', 'Smart Color'))}</h4></div><button type="button" data-action="add-color-channel">${escapeHtml(copyValue(copy, 'addColorChannel', '＋ Color Channel'))}</button></header>
+      <div class="expansion-pack-definition-list">${list(tree.colorChannels).map((channel) => `<article class="expansion-pack-color-channel" data-channel-id="${escapeHtml(idOf(channel))}">
+        <header><label><span>${escapeHtml(copyValue(copy, 'colorChannelName', 'Channel name'))}</span><input value="${escapeHtml(text(channel.name))}" data-channel-field="name" data-channel-id="${escapeHtml(idOf(channel))}"></label><code>${escapeHtml(idOf(channel))}</code><button type="button" data-action="delete-color-channel" data-channel-id="${escapeHtml(idOf(channel))}">${escapeHtml(copyValue(copy, 'deleteColorChannel', 'Delete channel'))}</button></header>
+        <label><span>${escapeHtml(copyValue(copy, 'defaultSwatch', 'Default swatch'))}</span><select data-channel-field="defaultSwatchId" data-channel-id="${escapeHtml(idOf(channel))}">${list(channel.swatches).map((swatch) => `<option value="${escapeHtml(idOf(swatch))}" ${idOf(swatch) === channel.defaultSwatchId ? 'selected' : ''}>${escapeHtml(text(swatch.name) || idOf(swatch))}</option>`).join('')}</select></label>
+        <div class="expansion-pack-swatch-list">${list(channel.swatches).map((swatch) => `<div class="expansion-pack-swatch-row" data-swatch-id="${escapeHtml(idOf(swatch))}">
+          <span class="expansion-pack-swatch-chip" style="--swatch-color:${escapeHtml(swatch.hintColor)}" aria-hidden="true"></span>
+          <label><span>${escapeHtml(copyValue(copy, 'swatchName', 'Swatch name'))}</span><input value="${escapeHtml(text(swatch.name))}" data-swatch-field="name" data-channel-id="${escapeHtml(idOf(channel))}" data-swatch-id="${escapeHtml(idOf(swatch))}"></label>
+          <label><span>${escapeHtml(copyValue(copy, 'hintColor', 'Hint'))}</span><input type="color" value="${escapeHtml(swatch.hintColor)}" data-swatch-field="hintColor" data-channel-id="${escapeHtml(idOf(channel))}" data-swatch-id="${escapeHtml(idOf(swatch))}"></label>
+          <label><span>${escapeHtml(copyValue(copy, 'startColor', 'Start'))}</span><input type="color" value="${escapeHtml(swatch.stops?.[0]?.color || '#000000')}" data-swatch-field="startColor" data-channel-id="${escapeHtml(idOf(channel))}" data-swatch-id="${escapeHtml(idOf(swatch))}"></label>
+          <label><span>${escapeHtml(copyValue(copy, 'endColor', 'End'))}</span><input type="color" value="${escapeHtml(swatch.stops?.at(-1)?.color || '#ffffff')}" data-swatch-field="endColor" data-channel-id="${escapeHtml(idOf(channel))}" data-swatch-id="${escapeHtml(idOf(swatch))}"></label>
+          <button type="button" data-action="delete-color-swatch" data-channel-id="${escapeHtml(idOf(channel))}" data-swatch-id="${escapeHtml(idOf(swatch))}" ${channel.swatches.length <= 1 ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'deleteSwatch', 'Delete'))}</button>
+        </div>`).join('')}</div>
+        <button type="button" data-action="add-color-swatch" data-channel-id="${escapeHtml(idOf(channel))}">${escapeHtml(copyValue(copy, 'addSwatch', '＋ Swatch'))}</button>
+      </article>`).join('') || `<p class="expansion-pack-empty">${escapeHtml(copyValue(copy, 'noPackColors', 'No Pack Smart Color channels yet.'))}</p>`}</div>
+    </section>`;
+}
+
+function selectorEntries(parent, tree, copy) {
+  const entries = [];
+  list(parent.parts).forEach((part) => {
+    entries.push({ value: `base|${part.id}||`, label: `${copyValue(copy, 'inherited', 'Inherited')} · ${part.name}` });
+    list(part.items).forEach((item) => {
+      entries.push({ value: `base|${part.id}|${item.id}|`, label: `${copyValue(copy, 'inherited', 'Inherited')} · ${part.name} / ${item.name}` });
+      list(item.styles).forEach((style) => entries.push({ value: `base|${part.id}|${item.id}|${style.id}`, label: `${copyValue(copy, 'inherited', 'Inherited')} · ${part.name} / ${item.name} / ${style.name}` }));
+    });
+  });
+  list(tree.parts).forEach((part) => list(part.items).forEach((item) => {
+    if (item.kind === 'pack-item') entries.push({ value: `pack|${part.id}|${item.id}|`, label: `${copyValue(copy, 'packOwned', 'Pack owned')} · ${part.name} / ${item.name}` });
+    list(item.styles).forEach((style) => entries.push({ value: `pack|${part.id}|${item.id}|${style.id}`, label: `${copyValue(copy, 'packOwned', 'Pack owned')} · ${part.name} / ${item.name} / ${style.name}` }));
+  }));
+  return entries;
+}
+
+function selectorValue(selector) {
+  if (!selector) return '';
+  return `${selector.scope === 'base' ? 'base' : 'pack'}|${text(selector.partId)}|${text(selector.itemId)}|${text(selector.styleId)}`;
+}
+
+function simpleSelectorValue(selector) {
+  if (
+    !selector
+    || typeof selector !== 'object'
+    || selector.op && selector.op !== 'selected'
+    || list(selector.itemIds).length
+    || list(selector.styleIds).length
+  ) return '';
+  return selectorValue(selector);
+}
+
+function editableVisibilityModel(condition) {
+  if (condition == null) return { editable: true, op: 'always', selectors: [] };
+  if (condition?.op === 'selected' && simpleSelectorValue(condition)) {
+    return { editable: true, op: 'selected', selectors: [condition] };
+  }
+  if (
+    condition?.op === 'not'
+    && condition.condition?.op === 'selected'
+    && simpleSelectorValue(condition.condition)
+  ) {
+    return { editable: true, op: 'not', selectors: [condition.condition] };
+  }
+  if (
+    (condition?.op === 'all' || condition?.op === 'any')
+    && list(condition.conditions).length > 0
+    && list(condition.conditions).every((entry) => entry?.op === 'selected' && simpleSelectorValue(entry))
+  ) {
+    return { editable: true, op: condition.op, selectors: condition.conditions };
+  }
+  return { editable: false, op: 'advanced', selectors: [] };
+}
+
+function selectorKey(selector) {
+  if (!selector || typeof selector !== 'object') return '';
+  return JSON.stringify({
+    scope: selector.scope === 'base' ? 'base' : 'pack',
+    partId: text(selector.partId),
+    itemId: text(selector.itemId),
+    itemIds: list(selector.itemIds).map(text),
+    styleId: text(selector.styleId),
+    styleIds: list(selector.styleIds).map(text),
+  });
+}
+
+function selectorLabel(selector, entries, copy) {
+  if (!selector || typeof selector !== 'object') return copyValue(copy, 'advancedCondition', 'Advanced condition');
+  if (selector.op && selector.op !== 'selected') {
+    return copyValue(copy, 'advancedCondition', 'Advanced condition · read only');
+  }
+  const exact = entries.find((entry) => entry.value === selectorValue(selector));
+  if (exact && !list(selector.itemIds).length && !list(selector.styleIds).length) return exact.label;
+  const part = entries.find((entry) => entry.value === `${selector.scope === 'base' ? 'base' : 'pack'}|${text(selector.partId)}||`)?.label
+    || text(selector.partId);
+  const alternatives = list(selector.styleIds).length
+    ? list(selector.styleIds)
+    : list(selector.itemIds).length
+      ? list(selector.itemIds)
+      : [];
+  return alternatives.length
+    ? `${part} · ${copyValue(copy, 'anySelected', 'Any selected')}: ${alternatives.join(' / ')}`
+    : selectorValue(selector) || copyValue(copy, 'advancedCondition', 'Advanced condition');
+}
+
+function selectorEntryGroups(parent, tree, entries, selectedValues, options = {}) {
+  const selected = new Set(list(selectedValues));
+  const groupedEntries = new Map();
+  entries.filter((entry) => options.packOnly !== true || entry.value.startsWith('pack|')).forEach((entry) => {
+    const [scope, partId] = entry.value.split('|');
+    const key = `${scope}|${partId}`;
+    const group = groupedEntries.get(key) || { scope, partId, records: [] };
+    group.records.push(entry);
+    groupedEntries.set(key, group);
+  });
+  return [...groupedEntries.values()].map(({ scope, partId, records }) => {
+    const parentPart = list(parent.parts).find((part) => part.id === partId);
+    const packPart = list(tree.parts).find((part) => part.id === partId);
+    const partName = parentPart?.name || packPart?.name || partId;
+    return {
+      label: partName,
+      meta: scope === 'base'
+        ? copyValue(options.copy, 'inherited', 'Inherited')
+        : copyValue(options.copy, 'packOwned', 'Pack owned'),
+      open: records.some((entry) => selected.has(entry.value)),
+      records: records.map((entry) => {
+        const [, , itemId, styleId] = entry.value.split('|');
+        return {
+          kind: styleId ? 'style' : itemId ? 'item' : 'part',
+          searchText: entry.label,
+          label: entry.label.replace(/^[^·]+·\s*/, ''),
+          detail: styleId
+            ? copyValue(options.copy, 'style', 'Style')
+            : itemId
+              ? copyValue(options.copy, 'items', 'Item')
+              : copyValue(options.copy, 'parts', 'Part'),
+          value: entry.value,
+          checked: selected.has(entry.value),
+          disabled: options.disabled === true,
+          action: options.action,
+          data: { ...options.data },
+        };
+      }),
+    };
+  });
+}
+
+function definitionRuleCount(owner) {
+  const rules = owner?.rules || {};
+  return list(rules.requires).length
+    + list(rules.excludes).length
+    + (rules.visibleWhen ? 1 : 0);
+}
+
+function compactDefinitionRuleControl(ownerKind, part, item, style, copy, options = {}) {
+  const owner = style || item || part;
+  const definition = [part?.id, item?.id, style?.id].filter(Boolean).join('::');
+  const count = definitionRuleCount(owner);
+  return renderDefinitionCombinationRuleControl({
+    definition,
+    ownerType: ownerKind,
+    count,
+    title: copyValue(copy, 'combinationRules', 'Combination Rules'),
+    countLabel: copyValue(copy, 'combinationRuleCount', '{count} rule(s)')
+      .replace('{count}', String(count)),
+    actionLabel: copyValue(
+      copy,
+      count ? 'editCombinationRules' : 'addCombinationRule',
+      count ? 'Edit Rules' : 'Add Rule',
+    ),
+    action: 'edit-pack-selection-rules',
+    disabled: options.disabled === true,
+    readonly: options.readonly === true,
+    disabledLabel: options.readonly === true
+      ? copyValue(copy, 'inherited', 'Inherited')
+      : '',
+  });
+}
+
+function packDefinitionRuleGroups(parent, tree, copy) {
+  const entries = selectorEntries(parent, tree, copy);
+  const groups = [];
+  const addOwner = (ownerType, part, item, style) => {
+    const owner = style || item || part;
+    const rules = owner?.rules || {};
+    const rows = [
+      ...list(rules.requires).map((target) => ({ type: 'requires', target })),
+      ...list(rules.excludes).map((target) => ({ type: 'excludes', target })),
+      ...(rules.visibleWhen ? [{ type: 'visible', target: rules.visibleWhen }] : []),
+    ];
+    if (!rows.length) return;
+    groups.push({
+      ownerType,
+      part,
+      item,
+      style,
+      ownerName: [part?.name, item?.name, style?.name].filter(Boolean).join(' / '),
+      rows,
+    });
   };
-  return labels[id] || id;
+  list(tree.parts).forEach((part) => {
+    if (part.kind === 'optional-part') addOwner('part', part);
+    list(part.items).forEach((item) => {
+      if (item.kind === 'pack-item') addOwner('item', part, item);
+      list(item.styles).forEach((style) => addOwner('style', part, item, style));
+    });
+  });
+  return groups.map((group) => ({
+    eyebrow: copyValue(copy, 'packOwned', 'Pack owned'),
+    ownerLabel: group.ownerName,
+    badge: copyValue(copy, 'combinationRules', 'Combination Rules'),
+    data: {
+      packRuleOwner: [group.part?.id, group.item?.id, group.style?.id].filter(Boolean).join('::'),
+    },
+    rows: group.rows.map((row) => ({
+      typeLabel: copyValue(copy, row.type, row.type),
+      targetLabel: selectorLabel(row.target, entries, copy),
+      advanced: row.target?.op && row.target.op !== 'selected',
+    })),
+    editAction: 'edit-pack-selection-rules',
+    editLabel: copyValue(copy, 'editCombinationRules', 'Edit rules'),
+    editData: {
+      ruleOwner: [group.part?.id, group.item?.id, group.style?.id].filter(Boolean).join('::'),
+      ruleOwnerType: group.ownerType,
+    },
+  }));
+}
+
+function renderRulesEditor(parent, tree, copy, ui = {}) {
+  const entries = selectorEntries(parent, tree, copy);
+  const firstPack = entries.find((entry) => entry.value.startsWith('pack|'))?.value || '';
+  const firstTarget = entries.find((entry) => entry.value.startsWith('base|') && entry.value !== firstPack)?.value
+    || entries.find((entry) => entry.value !== firstPack)?.value
+    || '';
+  const ownerGroups = packDefinitionRuleGroups(parent, tree, copy);
+  const selectedRuleId = text(ui.selectedPackRuleId);
+  const selectedRule = list(tree.rules).find((rule) => idOf(rule) === selectedRuleId) || null;
+  const selectedOwner = text(ui.ruleOwner);
+  const selectedOwnerType = text(ui.ruleOwnerType);
+  const [ownerPartId = '', ownerItemId = '', ownerStyleId = ''] = selectedOwner.split('::');
+  const ownerDataset = {
+    definitionKind: selectedOwnerType,
+    partId: ownerPartId,
+    itemId: ownerItemId,
+    styleId: ownerStyleId,
+  };
+  const selectedDefinitionOwner = selectedOwner
+    ? definitionRuleOwner({ tree }, ownerDataset)
+    : null;
+  const selectedOwnerRules = selectedDefinitionOwner?.rules || {};
+  const renderTargetPicker = ({
+    title,
+    values,
+    action,
+    data,
+    disabled = false,
+    packOnly = false,
+  }) => `<div class="v4-rule-target-picker"><span>${escapeHtml(title)}</span>${renderSharedRuleTargetTree({
+    groups: selectorEntryGroups(parent, tree, entries, values, {
+      copy,
+      action,
+      data,
+      disabled,
+      packOnly,
+    }),
+  })}</div>`;
+  let builderHtml = '';
+  if (selectedRule) {
+    const trigger = simpleSelectorValue(selectedRule.trigger);
+    const advancedTrigger = !trigger;
+    const advancedRuleSelectors = [selectedRule.trigger, ...selectedRule.targets]
+      .filter((selector) => !simpleSelectorValue(selector));
+    builderHtml = `
+      <div class="v4-rule-builder" data-pack-rule-editor data-rule-id="${escapeHtml(selectedRule.id)}">
+        ${advancedRuleSelectors.length ? `<div class="v4-rule-warning"><strong>${escapeHtml(copyValue(copy, 'advancedCondition', 'Advanced condition · read only'))}</strong><span>${escapeHtml(copyValue(copy, 'advancedConditionReadonly', 'Complex selectors are preserved; the simple choices below never replace them.'))}</span></div>` : ''}
+        <fieldset class="v4-rule-type-picker"><legend>${escapeHtml(copyValue(copy, 'ruleType', 'Rule type'))}</legend><label><input type="radio" name="pack-rule-type-${escapeHtml(selectedRule.id)}" value="excludes" data-action="pack-rule-type-choice" data-rule-id="${escapeHtml(selectedRule.id)}" ${selectedRule.type === 'excludes' ? 'checked' : ''}><span><strong>${escapeHtml(copyValue(copy, 'excludes', 'Excludes'))}</strong></span></label><label><input type="radio" name="pack-rule-type-${escapeHtml(selectedRule.id)}" value="requires" data-action="pack-rule-type-choice" data-rule-id="${escapeHtml(selectedRule.id)}" ${selectedRule.type === 'requires' ? 'checked' : ''}><span><strong>${escapeHtml(copyValue(copy, 'requires', 'Requires'))}</strong></span></label></fieldset>
+        ${renderTargetPicker({
+          title: copyValue(copy, 'ruleTrigger', 'Trigger selection'),
+          values: [trigger],
+          action: 'pack-rule-trigger-choice',
+          data: { ruleId: selectedRule.id },
+          packOnly: selectedRule.type === 'requires',
+          disabled: advancedTrigger,
+        })}
+        ${renderTargetPicker({
+          title: copyValue(copy, 'targetPart', 'Target'),
+          values: selectedRule.targets.map(simpleSelectorValue).filter(Boolean),
+          action: 'pack-rule-target-choice',
+          data: { ruleId: selectedRule.id, ruleTrigger: trigger },
+        })}
+        <button type="button" class="danger" data-action="delete-pack-rule" data-rule-id="${escapeHtml(selectedRule.id)}">${escapeHtml(copyValue(copy, 'deleteRule', 'Delete rule'))}</button>
+      </div>`;
+  } else if (selectedDefinitionOwner) {
+    const visibility = editableVisibilityModel(selectedOwnerRules.visibleWhen);
+    const ownerAttributes = Object.entries(ownerDataset)
+      .filter(([, value]) => value)
+      .map(([key, value]) => ` data-${key.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`)}="${escapeHtml(value)}"`)
+      .join('');
+    const visibilityEditor = visibility.editable ? `
+      <label class="v4-rule-match-mode">${escapeHtml(copyValue(copy, 'visibleWhen', 'Visible when'))}
+        <select data-action="pack-visibility-op-choice"${ownerAttributes}>
+          <option value="always" ${visibility.op === 'always' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'alwaysVisible', 'Always'))}</option>
+          <option value="selected" ${visibility.op === 'selected' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'selected', 'Selected'))}</option>
+          <option value="not" ${visibility.op === 'not' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'notSelected', 'Not selected'))}</option>
+          <option value="all" ${visibility.op === 'all' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'allSelected', 'All selected'))}</option>
+          <option value="any" ${visibility.op === 'any' ? 'selected' : ''}>${escapeHtml(copyValue(copy, 'anySelected', 'Any selected'))}</option>
+        </select>
+      </label>
+      ${renderTargetPicker({
+        title: copyValue(copy, 'visibleWhen', 'Visible when'),
+        values: visibility.selectors.map(simpleSelectorValue).filter(Boolean),
+        action: 'pack-visibility-target-choice',
+        data: { ...ownerDataset, visibilityOp: visibility.op === 'always' ? 'selected' : visibility.op },
+      })}` : `<div class="v4-rule-warning"><strong>${escapeHtml(copyValue(copy, 'advancedCondition', 'Advanced condition · read only'))}</strong><span>${escapeHtml(copyValue(copy, 'advancedConditionReadonly', 'This condition cannot be changed here without losing logic.'))}</span></div>`;
+    const advancedOwnerSelectors = [
+      ...list(selectedOwnerRules.requires),
+      ...list(selectedOwnerRules.excludes),
+    ].filter((selector) => !simpleSelectorValue(selector));
+    builderHtml = `
+      <div class="v4-rule-builder" data-pack-definition-rule-editor${visibility.editable ? '' : ' data-rule-advanced="true"'}>
+        <div class="v4-rule-owner-picker"><span>${escapeHtml(copyValue(copy, 'definitionRules', 'Part / Item / Style rules'))}</span><strong>${escapeHtml(selectedOwner)}</strong></div>
+        ${advancedOwnerSelectors.length ? `<div class="v4-rule-warning"><strong>${escapeHtml(copyValue(copy, 'advancedCondition', 'Advanced condition · read only'))}</strong><span>${escapeHtml(copyValue(copy, 'advancedConditionReadonly', 'Complex selectors are preserved; the simple choices below never replace them.'))}</span></div>` : ''}
+        ${renderTargetPicker({
+          title: copyValue(copy, 'requiresTargets', 'Requires'),
+          values: list(selectedOwnerRules.requires).map(simpleSelectorValue).filter(Boolean),
+          action: 'pack-definition-rule-target-choice',
+          data: { ...ownerDataset, definitionRuleField: 'requires' },
+        })}
+        ${renderTargetPicker({
+          title: copyValue(copy, 'excludesTargets', 'Excludes'),
+          values: list(selectedOwnerRules.excludes).map(simpleSelectorValue).filter(Boolean),
+          action: 'pack-definition-rule-target-choice',
+          data: { ...ownerDataset, definitionRuleField: 'excludes' },
+        })}
+        ${visibilityEditor}
+      </div>`;
+  }
+  const globalGroups = list(tree.rules).map((rule) => ({
+    eyebrow: copyValue(copy, 'packOwned', 'Pack owned'),
+    ownerLabel: selectorLabel(rule.trigger, entries, copy),
+    badge: copyValue(copy, rule.type, rule.type),
+    data: { ruleId: idOf(rule) },
+    rows: list(rule.targets).map((target) => ({ targetLabel: selectorLabel(target, entries, copy) })),
+    editAction: 'edit-pack-rule',
+    editLabel: copyValue(copy, 'editCombinationRules', 'Edit rules'),
+    editData: { ruleId: idOf(rule) },
+  }));
+  return `${readonlyDefinitionList(parent.rules, 'rule', copy)}
+    <section class="v4-pack-rule-section">
+      <header class="v4-panel-head"><div><span>${escapeHtml(copyValue(copy, 'packOwned', 'Pack owned'))}</span><strong>${escapeHtml(copyValue(copy, 'rules', 'Rules'))}</strong></div>${tree.rules.length ? `<button type="button" data-action="add-pack-rule" data-default-selector="${escapeHtml(firstPack)}" data-default-target="${escapeHtml(firstTarget)}" ${firstPack && firstTarget ? '' : 'disabled'}>${escapeHtml(copyValue(copy, 'addRule', 'Add Rule'))}</button>` : ''}</header>
+      ${renderSharedRuleListEditor({
+        builderHtml,
+        groups: globalGroups,
+        emptyHtml: `<div class="v4-inline-empty v4-pack-rule-empty"><span>${escapeHtml(copyValue(copy, 'noPackRules', 'No Pack rules yet.'))}</span><button type="button" data-action="add-pack-rule" data-default-selector="${escapeHtml(firstPack)}" data-default-target="${escapeHtml(firstTarget)}" ${firstPack && firstTarget ? '' : 'disabled'}>${escapeHtml(copyValue(copy, 'addRule', 'Add Rule'))}</button></div>`,
+      })}
+    </section>
+    <section class="v4-pack-rule-section"><header class="v4-panel-head"><div><span>${escapeHtml(copyValue(copy, 'definitionRules', 'Part / Item / Style rules'))}</span><strong>${escapeHtml(copyValue(copy, 'combinationRules', 'Combination Rules'))}</strong></div></header>
+      ${renderSharedRuleListEditor({ groups: ownerGroups, emptyHtml: `<div class="v4-inline-empty v4-pack-rule-empty"><span>${escapeHtml(copyValue(copy, 'noPackContent', 'No Pack definition rules yet.'))}</span></div>` })}
+    </section>`;
+}
+
+function renderWardrobeEditor(parent, tree, copy) {
+  const slotDisabled = !tree.supportsComposableV6;
+  return `${readonlyDefinitionList(parent.parts, 'wardrobe-part', copy)}
+    <section class="expansion-pack-definition-group"><header><div><span>${escapeHtml(copyValue(copy, 'packOwned', 'Pack owned'))}</span><h4>${escapeHtml(copyValue(copy, 'composableItems', 'Wardrobe'))}</h4></div></header>
+      ${slotDisabled ? `<p class="expansion-pack-capability-note" role="status">${escapeHtml(copyValue(copy, 'wardrobeSlotRequiresComposable', 'Wardrobe Slot requires a parent Maker with Composable v6 compatibility.'))}</p>` : ''}
+      <div class="expansion-pack-definition-list">${list(tree.parts).filter((part) => part.kind === 'optional-part').map((part) => `<article class="expansion-pack-wardrobe-row" data-part-id="${escapeHtml(part.id)}"><div><strong>${escapeHtml(part.name)}</strong><code>${escapeHtml(part.id)}</code></div><div role="group" aria-label="${escapeHtml(`${copyValue(copy, 'wardrobeMode', 'Wardrobe mode')}: ${part.name}`)}"><button type="button" data-action="set-pack-part-mode" data-part-id="${escapeHtml(part.id)}" data-mode="FIXED" aria-pressed="${part.wardrobeMode !== 'SLOT'}">${escapeHtml(copyValue(copy, 'wardrobeFixed', 'Fixed'))}</button><button type="button" data-action="set-pack-part-mode" data-part-id="${escapeHtml(part.id)}" data-mode="SLOT" aria-pressed="${part.wardrobeMode === 'SLOT'}" ${slotDisabled ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'wardrobeSlot', 'Slot'))}</button></div></article>`).join('') || `<p class="expansion-pack-empty">${escapeHtml(copyValue(copy, 'noPackContent', 'Add an optional Pack Part to configure wardrobe behavior.'))}</p>`}</div>
+    </section>`;
+}
+
+function packSelectionModel(parent, tree, ui = {}) {
+  const part = findSelectedPart(parent, tree, ui.selectedPartId);
+  const item = findSelectedItem(part, ui.selectedItemId);
+  const style = findSelectedStyle(item, ui.selectedStyleId);
+  return {
+    part,
+    partId: part.parent?.id || part.delta?.id || '',
+    item,
+    style,
+  };
+}
+
+function renderPackItemDock(selection, copy, publicationLocked) {
+  const { part, partId, item } = selection;
+  const items = combinedItems(part);
+  const itemRows = items.map((candidate) => `
+    <article class="v4-record-entry v4-item-entry" data-pack-definition-origin="${candidate.inherited ? 'inherited' : 'pack'}">
+      <button class="v4-item-card ${candidate.id === item?.id ? 'active' : ''}" type="button" data-action="select-pack-item" data-item-id="${escapeHtml(candidate.id)}">
+        <span class="v4-item-thumb"><i>${candidate.inherited ? '↳' : 'PNG'}</i></span>
+        <strong>${escapeHtml(candidate.name)}</strong>
+        <small>${escapeHtml(copyValue(copy, candidate.inherited ? 'inherited' : 'packOwned', candidate.inherited ? 'Inherited · read only' : 'Pack owned'))}</small>
+      </button>
+      ${candidate.inherited ? '' : `<div class="v4-record-actions"><button type="button" class="danger" data-action="delete-pack-item" data-part-id="${escapeHtml(partId)}" data-item-id="${escapeHtml(candidate.id)}" ${publicationLocked ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'deleteItem', 'Delete Item'))}</button></div>`}
+    </article>`).join('');
+  const styles = combinedStyles(item);
+  const styleRows = styles.map((candidate) => `
+    <article class="v4-record-entry v4-style-entry" data-pack-definition-origin="${candidate.inherited ? 'inherited' : 'pack'}">
+      <button class="v4-style-chip ${candidate.id === selection.style?.id ? 'active' : ''}" type="button" data-action="select-pack-style" data-style-id="${escapeHtml(candidate.id)}">
+        <span class="v4-style-chip-thumb"><i>${candidate.assetId ? 'PNG' : '—'}</i></span>
+        <span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(copyValue(copy, candidate.inherited ? 'inherited' : 'packOwned', candidate.inherited ? 'Inherited' : 'Pack owned'))}</small></span>
+      </button>
+      ${candidate.inherited ? '' : `<div class="v4-record-actions"><button type="button" class="danger" data-action="delete-pack-style" data-part-id="${escapeHtml(partId)}" data-item-id="${escapeHtml(item.id)}" data-style-id="${escapeHtml(candidate.id)}" ${publicationLocked ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'deleteStyle', 'Delete Style'))}</button></div>`}
+    </article>`).join('');
+  return `
+    <div class="v4-items-dock" data-shared-maker-item-dock>
+      <div class="v4-panel-head"><div><span>${escapeHtml(copyValue(copy, 'items', 'Items'))}</span><strong>${escapeHtml(part.parent?.name || part.delta?.name || copyValue(copy, 'selectPart', 'Select a Part'))}</strong></div><div><button type="button" data-action="request-add-item" data-part-id="${escapeHtml(partId)}" ${partId && !publicationLocked ? '' : 'disabled'}>${escapeHtml(copyValue(copy, 'addItem', 'Add Item'))}</button></div></div>
+      <div class="v4-item-grid">${itemRows || `<div class="v4-inline-empty"><span>${escapeHtml(copyValue(copy, 'noPackContent', 'No Items yet.'))}</span></div>`}</div>
+      ${item ? `<div class="v4-style-row"><span>${escapeHtml(copyValue(copy, 'styles', 'Styles'))}</span>${styleRows}<button type="button" data-action="request-add-style" data-part-id="${escapeHtml(partId)}" data-item-id="${escapeHtml(item.id)}" ${publicationLocked ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'addStyle', 'Add Style'))}</button></div>` : ''}
+    </div>`;
+}
+
+function renderPackStyleInspector(selection, parent, tree, copy, publicationLocked) {
+  const { part, partId, item, style } = selection;
+  if (!partId) return `<div class="v4-inline-empty"><span>${escapeHtml(copyValue(copy, 'selectPart', 'Select a Part'))}</span></div>`;
+  const inheritedPart = Boolean(part.parent);
+  const inheritedItem = Boolean(item?.inherited);
+  const inheritedStyle = Boolean(style?.inherited);
+  const ownerPart = part.delta || part.parent;
+  const stylePart = { id: partId, name: part.parent?.name || part.delta?.name || partId };
+  const disabled = publicationLocked;
+  const ruleControl = (ownerKind, owner, ownerItem = null, ownerStyle = null, readonly = false) => (
+    owner ? compactDefinitionRuleControl(
+      ownerKind,
+      stylePart,
+      ownerItem,
+      ownerStyle,
+      copy,
+      { readonly, disabled },
+    ) : ''
+  );
+  const styleTracks = [...list(parent.layerTracks), ...list(tree.layerTracks)];
+  const colorChannels = [...list(parent.colorChannels), ...list(tree.colorChannels)];
+  return `
+    <div class="v4-inspector-section" data-pack-inspector-owner="part">
+      <span class="v4-inspector-label">${escapeHtml(copyValue(copy, 'part', 'Part'))} · ${escapeHtml(copyValue(copy, inheritedPart ? 'inherited' : 'packOwned', inheritedPart ? 'Inherited' : 'Pack owned'))}</span>
+      ${inheritedPart
+        ? `<label>${escapeHtml(copyValue(copy, 'name', 'Name'))}<input value="${escapeHtml(part.parent.name)}" readonly aria-readonly="true"></label>`
+        : `<label>${escapeHtml(copyValue(copy, 'name', 'Name'))}<input value="${escapeHtml(part.delta?.name || '')}" data-rename-kind="part" data-part-id="${escapeHtml(partId)}" ${disabled ? 'disabled' : ''}></label>`}
+      ${ruleControl('part', ownerPart, null, null, inheritedPart)}
+    </div>
+    ${item ? `<div class="v4-inspector-section" data-pack-inspector-owner="item">
+      <span class="v4-inspector-label">${escapeHtml(copyValue(copy, 'item', 'Item'))} · ${escapeHtml(copyValue(copy, inheritedItem ? 'inherited' : 'packOwned', inheritedItem ? 'Inherited' : 'Pack owned'))}</span>
+      ${inheritedItem
+        ? `<label>${escapeHtml(copyValue(copy, 'name', 'Name'))}<input value="${escapeHtml(item.name)}" readonly aria-readonly="true"></label>`
+        : `<label>${escapeHtml(copyValue(copy, 'name', 'Name'))}<input value="${escapeHtml(item.name)}" data-rename-kind="item" data-part-id="${escapeHtml(partId)}" data-item-id="${escapeHtml(item.id)}" ${disabled ? 'disabled' : ''}></label>`}
+      ${ruleControl('item', item, item, null, inheritedItem)}
+    </div>` : ''}
+    ${style ? `<div class="v4-inspector-section" data-pack-inspector-owner="style">
+      <span class="v4-inspector-label">${escapeHtml(copyValue(copy, 'style', 'Style'))} · ${escapeHtml(copyValue(copy, inheritedStyle ? 'inherited' : 'packOwned', inheritedStyle ? 'Inherited' : 'Pack owned'))}</span>
+      ${inheritedStyle
+        ? `<label>${escapeHtml(copyValue(copy, 'name', 'Name'))}<input value="${escapeHtml(style.name)}" readonly aria-readonly="true"></label>`
+        : `<label>${escapeHtml(copyValue(copy, 'name', 'Name'))}<input value="${escapeHtml(style.name)}" data-rename-kind="style" data-part-id="${escapeHtml(partId)}" data-item-id="${escapeHtml(item.id)}" data-style-id="${escapeHtml(style.id)}" ${disabled ? 'disabled' : ''}></label>
+          <label class="v4-file-button wide ${disabled ? 'disabled' : ''}">${escapeHtml(copyValue(copy, style.assetId ? 'replaceStylePng' : 'uploadPng', style.assetId ? 'Replace Style PNG' : 'Upload PNG'))}<input type="file" accept="image/png,.png" data-asset-request="true" data-part-id="${escapeHtml(partId)}" data-item-id="${escapeHtml(item.id)}" data-style-id="${escapeHtml(style.id)}" ${disabled ? 'disabled' : ''}></label>
+          <div class="v4-number-grid">
+            <label>X<input type="number" step="1" value="${escapeHtml(style.transform?.x ?? 0)}" ${styleControlAttributes(stylePart, item, style, 'transform.x')} ${disabled ? 'disabled' : ''}></label>
+            <label>Y<input type="number" step="1" value="${escapeHtml(style.transform?.y ?? 0)}" ${styleControlAttributes(stylePart, item, style, 'transform.y')} ${disabled ? 'disabled' : ''}></label>
+            <label>${escapeHtml(copyValue(copy, 'scale', 'Scale'))}<input type="number" min="0.01" step="0.01" value="${escapeHtml(style.transform?.scale ?? 1)}" ${styleControlAttributes(stylePart, item, style, 'transform.scale')} ${disabled ? 'disabled' : ''}></label>
+            <label>${escapeHtml(copyValue(copy, 'rotation', 'Rotation'))}<input type="number" step="1" value="${escapeHtml(style.transform?.rotation ?? 0)}" ${styleControlAttributes(stylePart, item, style, 'transform.rotation')} ${disabled ? 'disabled' : ''}></label>
+          </div>
+          <label>${escapeHtml(copyValue(copy, 'opacity', 'Opacity'))}<input type="range" min="0" max="1" step="0.01" value="${escapeHtml(style.opacity ?? 1)}" ${styleControlAttributes(stylePart, item, style, 'opacity')} ${disabled ? 'disabled' : ''}></label>
+          <label>${escapeHtml(copyValue(copy, 'blend', 'Blend'))}<select ${styleControlAttributes(stylePart, item, style, 'blendMode')} ${disabled ? 'disabled' : ''}>${Object.keys(BLEND_MODES).map((mode) => `<option value="${escapeHtml(mode)}" ${mode === style.blendMode ? 'selected' : ''}>${escapeHtml(mode)}</option>`).join('')}</select></label>
+          <label>${escapeHtml(copyValue(copy, 'layerTracks', 'Layer Track'))}<select ${styleControlAttributes(stylePart, item, style, 'layerTrackId')} ${disabled ? 'disabled' : ''}>${styleTracks.map((track) => `<option value="${escapeHtml(idOf(track))}" ${idOf(track) === style.layerTrackId ? 'selected' : ''}>${escapeHtml(text(track.name) || idOf(track))}</option>`).join('')}</select></label>
+          <label>${escapeHtml(copyValue(copy, 'smartColor', 'Smart Color'))}<select ${styleControlAttributes(stylePart, item, style, 'colorChannelId')} ${disabled ? 'disabled' : ''}><option value="">${escapeHtml(copyValue(copy, 'none', 'None'))}</option>${colorChannels.map((channel) => `<option value="${escapeHtml(idOf(channel))}" ${idOf(channel) === style.colorChannelId ? 'selected' : ''}>${escapeHtml(text(channel.name) || idOf(channel))}</option>`).join('')}</select></label>`}
+      ${ruleControl('style', style, item, style, inheritedStyle)}
+    </div>` : ''}`;
+}
+
+function renderEditorPanel(section, parent, tree, copy, ui = {}) {
+  if (section === 'layers') return renderLayersEditor(parent, tree, copy);
+  if (section === 'colors') return renderColorsEditor(parent, tree, copy);
+  if (section === 'rules') return renderRulesEditor(parent, tree, copy, ui);
+  if (section === 'wardrobe') return renderWardrobeEditor(parent, tree, copy);
+  return '';
 }
 
 /** Pure markup renderer. It intentionally contains no overflow container. */
-export function renderExpansionPackWorkspaceHtml(model, copy = {}) {
+export function renderExpansionPackWorkspaceHtml(model, copy = {}, ui = {}) {
   const state = model || {};
   const parent = state.parent || {};
   const tree = state.tree || { parts: [] };
   const preview = state.preview || {};
   const save = state.save || {};
+  const activeSection = normalizeMakerDefinitionEditorSection(ui.activeSection);
+  const selection = packSelectionModel(parent, tree, ui);
   const previewLabel = preview.status === 'publishable'
     ? copyValue(copy, 'previewPublishable', 'Content ready · exact parent release bound')
     : preview.status === 'content-ready-local-parent'
@@ -785,73 +1515,151 @@ export function renderExpansionPackWorkspaceHtml(model, copy = {}) {
     .replace('{parts}', String(preview.additions?.optionalParts || 0))
     .replace('{items}', String(preview.additions?.items || 0))
     .replace('{styles}', String(preview.additions?.styles || 0));
-  return `
-    <section class="expansion-pack-workspace" data-expansion-pack-workspace data-scroll-owner="host" data-nested-scroll="false">
-      <header class="expansion-pack-workspace-header">
-        <div>
-          <span>${escapeHtml(copyValue(copy, 'studio', 'Expansion Pack Studio'))}</span>
-          <input type="text" value="${escapeHtml(tree.name || '')}" data-rename-kind="pack" aria-label="${escapeHtml(copyValue(copy, 'packName', 'Expansion Pack name'))}" />
-          <small>${escapeHtml(tree.namespace || '')} · ${escapeHtml(tree.version || '')}</small>
-        </div>
-        <div class="expansion-pack-save-state" data-save-phase="${escapeHtml(save.phase || '')}" aria-live="polite">${escapeHtml(localizedSaveLabel(save, copy))}</div>
-        <button type="button" data-action="save-pack" ${save.phase === EXPANSION_PACK_WORKSPACE_SAVE_PHASES.SAVING ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'save', 'Save Pack'))}</button>
+  const publication = copy?.publicationState && typeof copy.publicationState === 'object'
+    ? copy.publicationState
+    : {};
+  const publicationActions = publication.actions && typeof publication.actions === 'object'
+    ? publication.actions
+    : {};
+  const publicationStep = Math.max(1, Math.min(4, Number(publication.step || 1)));
+  const publicationStarted = Boolean(
+    publication.started
+    || publication.busy
+    || publication.receipt
+    || publication.stage && !['', 'idle'].includes(publication.stage),
+  );
+  const publicationLocked = publication.locked === true || publicationStarted;
+  const publicationSteps = [
+    copyValue(copy, 'packReleasePrepareStep', 'Prepare Pack Quilt'),
+    copyValue(copy, 'packReleaseUploadStep', 'Register & upload'),
+    copyValue(copy, 'packReleaseCertifyStep', 'Certify Walrus'),
+    copyValue(copy, 'packReleasePublishStep', 'Publish on Sui'),
+  ];
+  const publicationStepCards = publicationSteps.map((label, index) => {
+    const step = index + 1;
+    const completed = Array.isArray(publication.completedSteps)
+      ? publication.completedSteps.includes(step)
+      : step < publicationStep;
+    const current = !publication.receipt && step === publicationStep;
+    const stateLabel = completed
+      ? copyValue(copy, 'packReleaseCompleted', 'Completed')
+      : current
+        ? copyValue(copy, 'packReleaseCurrentStep', 'Current step')
+        : copyValue(copy, 'packReleaseNotStarted', 'Not started');
+    return `<li class="expansion-pack-release-step${completed ? ' completed' : ''}${current ? ' current' : ''}">
+      <span>${step}</span><div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(stateLabel)}</small></div>
+    </li>`;
+  }).join('');
+  const actionButton = (action, label, primary = false) => publicationActions[action]
+    ? `<button type="button" ${primary ? 'class="primary"' : ''} data-action="pack-publication-action" data-pack-publication-action="${escapeHtml(action)}" ${publication.busy ? 'disabled' : ''}>${escapeHtml(label)}</button>`
+    : '';
+  const releasePanel = preview.publishable ? `
+    <details class="v4-pack-publication-preflight" data-publication-preflight-only data-pack-release-stage="${escapeHtml(publication.stage || 'idle')}" ${publicationStarted ? 'open' : ''}>
+      <summary><strong>${escapeHtml(copyValue(copy, 'publishExpansionPack', 'Publication preflight'))}</strong><span>${escapeHtml(parentBindingLabel)}</span></summary>
+      <section class="expansion-pack-release-panel" aria-live="polite">
+      <header>
+        <div><span>${escapeHtml(copyValue(copy, 'packReleaseEyebrow', 'WALRUS + SUI RELEASE'))}</span><h3>${escapeHtml(copyValue(copy, 'publishExpansionPack', 'Publish Expansion Pack'))}</h3></div>
+        ${publication.recoverable ? `<strong>${escapeHtml(copyValue(copy, 'packReleaseRecoverable', 'Recoverable checkpoint'))}</strong>` : ''}
       </header>
-
-      <div class="expansion-pack-workspace-layout">
-        <aside class="expansion-pack-parent-panel" aria-label="${escapeHtml(copyValue(copy, 'parentReadonly', 'Read-only parent Maker'))}">
-          <span>${escapeHtml(copyValue(copy, 'parentReadonly', 'Read-only parent Maker'))}</span>
-          <h3>${escapeHtml(parent.name || '')}</h3>
-          <p class="expansion-pack-inheritance-summary">${escapeHtml(copyValue(copy, 'inheritanceSummary', 'Canvas, Renderer, Layer Tracks, rules and compatibility are inherited read-only.'))}</p>
-          <p><strong>${escapeHtml(parentBindingLabel)}</strong></p>
-          <dl>
-            <div><dt>${escapeHtml(copyValue(copy, 'root', 'Root Maker'))}</dt><dd>${escapeHtml(parent.rootMakerId || '')}</dd></div>
-            <div><dt>${escapeHtml(copyValue(copy, 'versionLabel', 'Version'))}</dt><dd>${escapeHtml(parent.versionNumber || '')}</dd></div>
-            <div><dt>${escapeHtml(copyValue(copy, 'canvas', 'Canvas'))}</dt><dd>${escapeHtml(parent.canvas?.width || 0)} × ${escapeHtml(parent.canvas?.height || 0)}</dd></div>
-            <div><dt>${escapeHtml(copyValue(copy, 'bindingKind', 'Binding'))}</dt><dd>${escapeHtml(parent.bindingKind || '')}</dd></div>
-            <div><dt>${escapeHtml(copyValue(copy, 'releaseId', 'Release id'))}</dt><dd><code>${escapeHtml(parent.releaseId || '—')}</code></dd></div>
-            <div><dt>${escapeHtml(copyValue(copy, 'manifestBlobId', 'Manifest Blob / Quilt'))}</dt><dd><code>${escapeHtml(parent.manifestBlobId || '—')}</code></dd></div>
-            <div><dt>${escapeHtml(copyValue(copy, 'manifestHash', 'Manifest SHA-256'))}</dt><dd><code>${escapeHtml(parent.manifestHash || '—')}</code></dd></div>
-          </dl>
-          <div class="expansion-pack-inheritance-contracts">
-            <strong>${escapeHtml(copyValue(copy, 'inheritanceContract', 'Inherited contract'))}</strong>
-            <ul>
-              ${list(parent.inheritance?.contracts).map((contract) => `<li><span>${escapeHtml(inheritanceContractLabel(contract.id, copy))}</span> · <code>${escapeHtml(contract.mode || '')}</code></li>`).join('')}
-            </ul>
-          </div>
-          <div class="expansion-pack-parent-parts">
-            ${list(parent.parts).map((part) => renderParentPart(part, copy)).join('')}
-          </div>
-        </aside>
-
-        <main class="expansion-pack-authoring-panel">
-          <header>
-            <div><span>${escapeHtml(copyValue(copy, 'overlay', 'Pack overlay'))}</span><h3>${escapeHtml(copyValue(copy, 'additiveOnly', 'Additive content only'))}</h3></div>
-            <button type="button" data-action="request-add-part">${escapeHtml(copyValue(copy, 'addPart', '＋ Optional Part'))}</button>
-          </header>
-          <div class="expansion-pack-tree">
-            ${list(tree.parts).map((part) => renderPackPart(part, copy)).join('') || `
-              <div class="expansion-pack-empty-state">
-                <strong>${escapeHtml(copyValue(copy, 'emptyPack', 'This Pack is empty.'))}</strong>
-                <p>${escapeHtml(copyValue(copy, 'emptyPackCopy', 'Add an Item or Style to a parent definition, or create an optional Part.'))}</p>
-              </div>`}
-          </div>
-        </main>
-
-        <aside class="expansion-pack-preview-panel" aria-label="${escapeHtml(copyValue(copy, 'preview', 'Merged preview'))}">
-          <span>${escapeHtml(copyValue(copy, 'preview', 'Merged preview'))}</span>
-          <h3>${escapeHtml(previewLabel)}</h3>
-          ${previewBoundary ? `<p>${escapeHtml(previewBoundary)}</p>` : ''}
-          <p>${escapeHtml(additions)}</p>
-          <p>${escapeHtml(copyValue(copy, 'preflightIssues', '{count} preflight issue(s)').replace('{count}', String(list(preview.issues).length)))}</p>
-          <canvas data-expansion-pack-preview-canvas aria-label="${escapeHtml(copyValue(copy, 'preview', 'Merged preview'))}"></canvas>
-          <div class="expansion-pack-preview-actions">
-            <button type="button" data-action="open-preview" ${preview.maker ? '' : 'disabled'}>${escapeHtml(copyValue(copy, 'openPreview', 'Refresh merged preview'))}</button>
-            ${preview.parentBinding?.localParent ? `<button type="button" data-action="request-rebind-parent" ${copy?.canRebindParent === true ? '' : `disabled title="${escapeHtml(copyValue(copy, 'rebindUnavailable', 'Publish and verify this parent version before binding the Pack.'))}"`}>${escapeHtml(copyValue(copy, 'rebindParent', 'Bind published parent release'))}</button>${copy?.canRebindParent === true ? '' : `<small role="status">${escapeHtml(copyValue(copy, 'rebindUnavailable', 'Publish and verify this parent version before binding the Pack.'))}</small>`}` : ''}
-            ${preview.publishable ? `<button type="button" data-action="request-publication-candidate">${escapeHtml(copyValue(copy, 'preparePublicationCandidate', 'Prepare publication candidate'))}</button><small>${escapeHtml(copyValue(copy, 'publicationCandidateOnly', 'Candidate only · Walrus upload and Sui registration have not started.'))}</small>` : ''}
-          </div>
-        </aside>
+      <ol class="expansion-pack-release-steps">${publicationStepCards}</ol>
+      ${publication.status ? `<p class="expansion-pack-release-status">${escapeHtml(publication.status)}</p>` : ''}
+      ${publication.error ? `<div class="expansion-pack-release-error" role="alert"><strong>${escapeHtml(publication.error.title || copyValue(copy, 'packReleaseFailed', 'Expansion Pack release failed'))}</strong><p>${escapeHtml(publication.error.message || publication.error)}</p></div>` : ''}
+      ${publication.receipt ? `<div class="expansion-pack-release-receipt">
+        <strong>${escapeHtml(copyValue(copy, 'packReleaseSuccess', 'Expansion Pack published'))}</strong>
+        ${publication.receipt.packObjectId ? `<small>${escapeHtml(copyValue(copy, 'packReleaseObjectId', 'Pack object'))}: <code>${escapeHtml(publication.receipt.packObjectId)}</code></small>` : ''}
+        ${publication.receipt.digest ? `<small>${escapeHtml(copyValue(copy, 'packReleaseTransaction', 'Transaction'))}: <code>${escapeHtml(publication.receipt.digest)}</code></small>` : ''}
+      </div>` : ''}
+      <div class="expansion-pack-release-actions">
+        ${actionButton('prepare', copyValue(copy, 'packReleasePrepareAction', '1. Prepare Pack Quilt'), true)}
+        ${actionButton('register', copyValue(copy, 'packReleaseUploadAction', '2. Register & upload'), true)}
+        ${actionButton('certify', copyValue(copy, 'packReleaseCertifyAction', '3. Certify Walrus'), true)}
+        ${actionButton('publish', copyValue(copy, 'packReleasePublishAction', '4. Publish Pack'), true)}
+        ${actionButton('resume', copyValue(copy, 'packReleaseResumeAction', 'Resume release'))}
+        ${actionButton('review', copyValue(copy, 'packReleaseReviewAction', 'Check chain status'))}
+        ${actionButton('export', copyValue(copy, 'packExportPublicationCandidate', 'Export diagnostic candidate'))}
       </div>
-    </section>`;
+      ${publication.available === false && !publicationStarted ? `<small role="status">${escapeHtml(publication.unavailableReason || copyValue(copy, 'packReleaseUnavailable', 'Expansion Pack v8 publication is not enabled in this deployment.'))}</small>` : ''}
+      </section>
+    </details>` : '';
+  const savePhase = save.phase === EXPANSION_PACK_WORKSPACE_SAVE_PHASES.FAILED
+    || save.phase === EXPANSION_PACK_WORKSPACE_SAVE_PHASES.CONFLICT
+    ? 'error'
+    : save.phase;
+  const packBadges = `
+    <span class="v4-version-badge" data-pack-identity-badge>${escapeHtml(tree.namespace || '')}</span>
+    <span class="v4-version-badge" data-pack-version-badge>${escapeHtml(tree.version || '')}</span>
+    <span class="v4-version-badge" data-pack-inheritance-badge>${escapeHtml(copyValue(copy, 'inherited', 'Inherited'))} + ${escapeHtml(copyValue(copy, 'packOwned', 'Pack owned'))}</span>
+    <span class="v4-version-badge" data-pack-parent-binding-badge title="${escapeHtml([
+      parent.releaseId,
+      parent.manifestBlobId,
+      parent.manifestHash,
+    ].filter(Boolean).join(' · '))}">${escapeHtml(parentBindingLabel)}</span>`;
+  const lifecycleState = text(copy.lifecycleState || 'unknown').toLowerCase().replaceAll('_', '-');
+  const lifecycleAction = `<button type="button" class="maker-lifecycle-badge ${escapeHtml(copy.lifecycleBadgeClass || lifecycleState)}" data-action="manage-pack-lifecycle" data-pack-project-key="${escapeHtml(copy.lifecycleProjectKey || '')}" aria-label="${escapeHtml(copyValue(copy, 'lifecycleManageAria', 'Manage Expansion Pack lifecycle'))}">${escapeHtml(copy.lifecycleLabel || copyValue(copy, 'lifecycleManage', 'Manage'))}</button>`;
+  const previewSummary = `${previewLabel} · ${additions} · ${copyValue(copy, 'preflightIssues', '{count} preflight issue(s)').replace('{count}', String(list(preview.issues).length))}`;
+  const leftHtml = renderPackPartBrowser(parent, tree, selection.partId, copy, publicationLocked);
+  const centerHtml = `
+        <div class="v4-canvas-toolbar">
+          <div><strong>${escapeHtml(copyValue(copy, 'preview', 'Merged preview'))}</strong><span id="expansionPackRenderStatus">${escapeHtml(previewSummary)}</span></div>
+          <div class="v4-canvas-tools"><span class="v4-version-badge">${escapeHtml(parent.canvas?.width || 0)}×${escapeHtml(parent.canvas?.height || 0)}</span></div>
+        </div>
+        <div class="v4-canvas-viewport ${state.project?.parentSnapshot?.canvas?.pixelMode === 'pixelated' ? 'pixelated' : ''}">
+          <div class="v4-canvas-ruler"><span>0,0</span><span>${escapeHtml(parent.canvas?.width || 0)},${escapeHtml(parent.canvas?.height || 0)}</span></div>
+          <canvas class="v4-runtime-canvas" data-expansion-pack-preview-canvas aria-label="${escapeHtml(copyValue(copy, 'preview', 'Merged preview'))}"></canvas>
+          ${preview.maker ? '' : `<div class="v4-canvas-empty"><strong>${escapeHtml(previewLabel)}</strong><span>${escapeHtml(previewBoundary)}</span></div>`}
+        </div>
+        ${renderPackItemDock(selection, copy, publicationLocked)}`;
+  const rightHtml = `
+        <div class="v4-panel-head v4-inspector-context"><div><span>${escapeHtml(copyValue(copy, 'currentStyle', 'Current Style'))}</span><strong>${escapeHtml([
+          selection.part.parent?.name || selection.part.delta?.name || '—',
+          selection.item?.name || '—',
+          selection.style?.name || '—',
+        ].join(' › '))}</strong></div></div>
+        ${renderPackStyleInspector(selection, parent, tree, copy, publicationLocked)}`;
+  const activeStructure = activeSection === MAKER_DEFINITION_EDITOR_SECTION_IDS.STRUCTURE;
+  const advancedPanel = activeStructure ? '' : `
+    <div class="v4-tool-modal-backdrop" data-pack-tool-overlay>
+      <section id="expansionPackToolDialog" class="v4-advanced-panel primary-tool" role="dialog" aria-modal="true" aria-labelledby="expansionPackToolTitle" tabindex="-1">
+        <header class="v4-tool-context"><div><span>${escapeHtml(editorSections(copy).find((section) => section.id === activeSection)?.label || activeSection)}</span><strong id="expansionPackToolTitle">${escapeHtml(tree.name || '')}</strong></div><button type="button" data-action="select-pack-section" data-section="structure" aria-label="${escapeHtml(copyValue(copy, 'close', 'Close'))}">×</button></header>
+        <div class="v4-tool-body"><section class="v4-pack-definition-workspace" role="tabpanel" id="expansionPackPanel-${escapeHtml(activeSection)}" data-active-section="${escapeHtml(activeSection)}" ${publicationLocked ? 'inert aria-disabled="true"' : ''}>${renderEditorPanel(activeSection, parent, tree, copy, ui)}</section></div>
+      </section>
+    </div>`;
+  return renderMakerEditorShell({
+    instanceId: 'expansion-pack',
+    idPrefix: 'expansionPack',
+    workspaceId: 'expansionPackToolPanel',
+    className: 'expansion-pack-workspace',
+    shellAttributes: `data-expansion-pack-workspace data-scroll-owner="host" data-nested-scroll="false" data-publication-locked="${publicationLocked}"`,
+    workspaceAttributes: 'data-shared-maker-editor-shell',
+    activeTab: activeSection,
+    tabDataKey: 'section',
+    tabsLabel: copyValue(copy, 'definitionTabsLabel', 'Pack definition editor'),
+    tabs: editorSections(copy).map((section) => ({
+      id: section.id,
+      label: section.label,
+      action: 'select-pack-section',
+      value: section.id,
+      controls: activeStructure && section.id === activeSection ? 'expansionPackToolPanel' : `expansionPackPanel-${section.id}`,
+    })),
+    title: {
+      eyebrow: copyValue(copy, 'studio', 'Expansion Pack Studio'),
+      contentHtml: `<input class="v4-pack-title-input" type="text" value="${escapeHtml(tree.name || '')}" data-rename-kind="pack" aria-label="${escapeHtml(copyValue(copy, 'packName', 'Expansion Pack name'))}" ${publicationLocked ? 'disabled' : ''}>${packBadges}`,
+    },
+    save: {
+      phase: savePhase,
+      dataPhase: save.phase,
+      label: localizedSaveLabel(save, copy),
+    },
+    actionsHtml: `${lifecycleAction}<button type="button" data-action="request-back-to-maker" ${publicationLocked ? 'disabled' : ''}>← ${escapeHtml(copyValue(copy, 'backToMaker', 'Back to Maker'))}</button><button type="button" data-action="request-commerce-rights" ${publicationLocked ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'openCommerceRights', 'Commerce & Rights'))}</button><button type="button" data-action="save-pack" ${publicationLocked || save.phase === EXPANSION_PACK_WORKSPACE_SAVE_PHASES.SAVING ? 'disabled' : ''}>${escapeHtml(copyValue(copy, 'save', 'Save'))}</button>`,
+    noticesHtml: `${publicationLocked ? `<div class="v4-version-history-notice" role="status" aria-live="polite">${escapeHtml(publication.status || copyValue(copy, 'publicationLocked', 'Publication in progress. Editing and navigation are locked.'))}</div>` : ''}${previewBoundary ? `<div class="v4-pack-boundary-note" role="status">${escapeHtml(previewBoundary)}</div>` : ''}`,
+    leftLabel: copyValue(copy, 'parts', 'Parts'),
+    leftHtml,
+    centerHtml,
+    rightLabel: copyValue(copy, 'currentStyle', 'Current Style'),
+    rightHtml,
+    overlayHtml: advancedPanel,
+    footerHtml: releasePanel,
+  });
 }
 
 /**
@@ -866,8 +1674,49 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
   if (!workspace || typeof workspace.getState !== 'function' || typeof workspace.subscribe !== 'function') {
     throw new ExpansionPackWorkspaceError('Expansion Pack workspace controller is required.', 'missing-workspace');
   }
+  let activeSection = normalizeMakerDefinitionEditorSection(options.activeSection);
+  const initialState = workspace.getState();
+  let initialSelection = packSelectionModel(initialState.parent, initialState.tree, options);
+  let selectedPartId = initialSelection.partId;
+  let selectedItemId = initialSelection.item?.id || '';
+  let selectedStyleId = initialSelection.style?.id || '';
+  let selectedPackRuleId = text(options.selectedPackRuleId);
+  let ruleOwner = text(options.ruleOwner);
+  let ruleOwnerType = text(options.ruleOwnerType);
+  let mounted = true;
+  const currentCopy = () => (typeof options.copy === 'function' ? options.copy() : options.copy || {});
+  const publicationLocked = () => {
+    const publication = currentCopy().publicationState || {};
+    return publication.locked === true || Boolean(
+      publication.started
+      || publication.busy
+      || publication.receipt
+      || publication.stage && !['', 'idle'].includes(publication.stage),
+    );
+  };
   const render = () => {
-    root.innerHTML = renderExpansionPackWorkspaceHtml(workspace.getState(), options.copy || {});
+    const copy = typeof options.copy === 'function' ? options.copy() : options.copy || {};
+    const state = workspace.getState();
+    const selection = packSelectionModel(state.parent, state.tree, {
+      selectedPartId,
+      selectedItemId,
+      selectedStyleId,
+      selectedPackRuleId,
+      ruleOwner,
+      ruleOwnerType,
+    });
+    selectedPartId = selection.partId;
+    selectedItemId = selection.item?.id || '';
+    selectedStyleId = selection.style?.id || '';
+    root.innerHTML = renderExpansionPackWorkspaceHtml(state, copy, {
+      activeSection,
+      selectedPartId,
+      selectedItemId,
+      selectedStyleId,
+      selectedPackRuleId,
+      ruleOwner,
+      ruleOwnerType,
+    });
     options.onRendered?.(workspace.getPreviewModel());
   };
   const reportError = (error) => {
@@ -875,28 +1724,73 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
   };
   const onChange = (event) => {
     const target = event?.target;
-    if (target?.closest?.('[data-expansion-pack-workspace]')) event.stopPropagation?.();
+    if (typeof target?.closest === 'function') {
+      if (!target.closest('[data-expansion-pack-workspace]')) return;
+      event.stopPropagation?.();
+    }
+    if (publicationLocked() && (
+      target?.dataset?.renameKind
+      || target?.dataset?.styleField
+      || target?.dataset?.trackField
+      || target?.dataset?.channelField
+      || target?.dataset?.swatchField
+      || target?.dataset?.ruleField
+      || target?.dataset?.definitionRuleField
+      || target?.dataset?.action?.startsWith('pack-rule-')
+      || target?.dataset?.action?.startsWith('pack-definition-rule-')
+      || target?.dataset?.action === 'pack-visibility-target-choice'
+      || target?.dataset?.action === 'pack-visibility-op-choice'
+      || target?.dataset?.assetRequest === 'true'
+    )) return;
     if (target?.dataset?.assetRequest === 'true') {
       const file = target.files?.[0];
       if (!file || typeof options.onRequestAsset !== 'function') return;
-      Promise.resolve(options.onRequestAsset({
+      const partId = text(target.dataset.partId);
+      const itemId = text(target.dataset.itemId);
+      const styleId = text(target.dataset.styleId);
+      const requestedState = workspace.getState();
+      const requestedIdentity = JSON.stringify(requestedState.identity);
+      const requestedMutationRevision = requestedState.mutationRevision;
+      const request = {
         file,
-        partId: text(target.dataset.partId),
-        itemId: text(target.dataset.itemId),
-        styleId: text(target.dataset.styleId),
+        partId,
+        itemId,
+        styleId,
         workspace,
-      })).then((result) => {
+      };
+      Promise.resolve(options.onRequestAsset(request)).then((result) => {
         if (!result) return;
         const asset = result.asset || result.descriptor || (result.id ? result : null);
         const assetId = text(result.assetId ?? asset?.id);
-        if (!assetId) return;
-        workspace.updateStyle(
-          target.dataset.partId,
-          target.dataset.itemId,
-          target.dataset.styleId,
-          { assetId },
-          asset ? { assets: [asset] } : {},
+        const currentState = workspace.getState();
+        const styleExists = list(currentState.tree.parts).some((part) => (
+          idOf(part) === partId
+          && list(part.items).some((item) => (
+            idOf(item) === itemId
+            && list(item.styles).some((style) => idOf(style) === styleId)
+          ))
+        ));
+        const canCommit = Boolean(
+          assetId
+          && result.cancelled !== true
+          && result.canceled !== true
+          && mounted
+          && !publicationLocked()
+          && JSON.stringify(currentState.identity) === requestedIdentity
+          && currentState.mutationRevision === requestedMutationRevision
+          && styleExists
         );
+        if (!canCommit) {
+          options.onAssetDiscarded?.({ ...request, result, asset, assetId });
+          return;
+        }
+        try {
+          workspace.updateStyle(partId, itemId, styleId, { assetId }, asset ? { assets: [asset] } : {});
+        } catch (error) {
+          options.onAssetDiscarded?.({ ...request, result, asset, assetId, error });
+          throw error;
+        }
+        options.onAssetCommitted?.({ ...request, result, asset, assetId });
       }).catch(reportError).finally(() => {
         try { target.value = ''; } catch { /* A synthetic test target may be read-only. */ }
       });
@@ -916,7 +1810,7 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
         );
       } else if (target?.dataset?.styleField) {
         const field = target.dataset.styleField;
-        const value = field === 'blendMode' ? target.value : Number(target.value);
+        const value = ['blendMode', 'colorChannelId', 'layerTrackId'].includes(field) ? target.value : Number(target.value);
         const patch = field.startsWith('transform.')
           ? { transform: { [field.slice('transform.'.length)]: value } }
           : { [field]: value };
@@ -926,45 +1820,229 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
           target.dataset.styleId,
           patch,
         );
+      } else if (target?.dataset?.trackField === 'name') {
+        workspace.renameLayerTrack(target.dataset.trackId, target.value);
+      } else if (target?.dataset?.channelField) {
+        workspace.updateColorChannel(target.dataset.channelId, { [target.dataset.channelField]: target.value });
+      } else if (target?.dataset?.swatchField) {
+        const { channelId, swatchId, swatchField } = target.dataset;
+        if (swatchField === 'startColor' || swatchField === 'endColor') {
+          const channel = list(workspace.getState().tree.colorChannels).find((candidate) => idOf(candidate) === channelId);
+          const swatch = list(channel?.swatches).find((candidate) => idOf(candidate) === swatchId);
+          const stops = clone(list(swatch?.stops));
+          if (swatchField === 'startColor') stops[0] = { ...(stops[0] || { offset: 0 }), offset: 0, color: target.value };
+          else stops[stops.length - 1] = { ...(stops.at(-1) || { offset: 1 }), offset: 1, color: target.value };
+          workspace.updateColorSwatch(channelId, swatchId, { stops });
+        } else {
+          workspace.updateColorSwatch(channelId, swatchId, { [swatchField]: target.value });
+        }
+      } else if (target?.dataset?.action === 'pack-rule-type-choice') {
+        workspace.updateRule(target.dataset.ruleId, { type: target.value });
+      } else if (target?.dataset?.action === 'pack-rule-trigger-choice') {
+        if (!target.checked) return;
+        workspace.updateRule(target.dataset.ruleId, { trigger: selectorFromControl(target.value) });
+      } else if (target?.dataset?.action === 'pack-rule-target-choice') {
+        const rule = list(workspace.getState().tree.rules).find((candidate) => idOf(candidate) === target.dataset.ruleId);
+        if (!rule) return;
+        const selector = selectorFromControl(target.value);
+        const key = selectorKey(selector);
+        const targets = target.checked
+          ? rule.targets.some((candidate) => selectorKey(candidate) === key)
+            ? rule.targets
+            : [...rule.targets, selector]
+          : rule.targets.filter((candidate) => selectorKey(candidate) !== key);
+        if (!targets.length) return;
+        workspace.updateRule(target.dataset.ruleId, { targets });
+      } else if (target?.dataset?.action === 'pack-definition-rule-target-choice') {
+        const field = target.dataset.definitionRuleField;
+        const owner = definitionRuleOwner(workspace.getState(), target.dataset);
+        if (!owner) return;
+        const selector = selectorFromControl(target.value);
+        const key = selectorKey(selector);
+        const current = list(owner.rules?.[field]);
+        const next = target.checked
+          ? current.some((candidate) => selectorKey(candidate) === key)
+            ? current
+            : [...current, selector]
+          : current.filter((candidate) => selectorKey(candidate) !== key);
+        const patch = { [field]: next };
+        if (target.dataset.definitionKind === 'part') workspace.updatePartRules(target.dataset.partId, patch);
+        else if (target.dataset.definitionKind === 'item') workspace.updateItemRules(target.dataset.partId, target.dataset.itemId, patch);
+        else workspace.updateStyleRules(target.dataset.partId, target.dataset.itemId, target.dataset.styleId, patch);
+      } else if (target?.dataset?.action === 'pack-visibility-target-choice') {
+        const owner = definitionRuleOwner(workspace.getState(), target.dataset);
+        const current = editableVisibilityModel(owner?.rules?.visibleWhen);
+        if (!owner || !current.editable) return;
+        const selector = selectorFromControl(target.value);
+        const key = selectorKey(selector);
+        const selectors = target.checked
+          ? current.selectors.some((candidate) => selectorKey(candidate) === key)
+            ? current.selectors
+            : [...current.selectors, selector]
+          : current.selectors.filter((candidate) => selectorKey(candidate) !== key);
+        const visibleWhen = visibilityConditionFromControls(target.dataset.visibilityOp || current.op, selectors);
+        if (visibleWhen === undefined) return;
+        const patch = { visibleWhen };
+        if (target.dataset.definitionKind === 'part') workspace.updatePartRules(target.dataset.partId, patch);
+        else if (target.dataset.definitionKind === 'item') workspace.updateItemRules(target.dataset.partId, target.dataset.itemId, patch);
+        else workspace.updateStyleRules(target.dataset.partId, target.dataset.itemId, target.dataset.styleId, patch);
+      } else if (target?.dataset?.action === 'pack-visibility-op-choice') {
+        const owner = definitionRuleOwner(workspace.getState(), target.dataset);
+        const current = editableVisibilityModel(owner?.rules?.visibleWhen);
+        if (!owner || !current.editable) return;
+        const nextOp = target.value;
+        const visibleWhen = nextOp === 'always'
+          ? null
+          : visibilityConditionFromControls(nextOp, current.selectors);
+        if (visibleWhen === undefined) return;
+        const patch = { visibleWhen };
+        if (target.dataset.definitionKind === 'part') workspace.updatePartRules(target.dataset.partId, patch);
+        else if (target.dataset.definitionKind === 'item') workspace.updateItemRules(target.dataset.partId, target.dataset.itemId, patch);
+        else workspace.updateStyleRules(target.dataset.partId, target.dataset.itemId, target.dataset.styleId, patch);
       }
     } catch (error) {
       reportError(error);
     }
   };
   const onClick = (event) => {
-    const target = event?.target;
+    const eventTarget = event?.target;
+    const syntheticTarget = typeof eventTarget?.closest !== 'function';
+    const workspaceBoundary = syntheticTarget
+      ? eventTarget
+      : eventTarget?.closest?.('[data-expansion-pack-workspace]');
+    if (!workspaceBoundary) return;
+    event.stopPropagation?.();
+    const target = eventTarget?.dataset?.action
+      ? eventTarget
+      : eventTarget?.closest?.('[data-action]');
     const action = target?.dataset?.action;
     if (!action) return;
-    event.stopPropagation?.();
+    if (!syntheticTarget && target.closest?.('[data-expansion-pack-workspace]') !== workspaceBoundary) return;
+    if (action === 'pack-publication-action') {
+      Promise.resolve(options.onPublicationAction?.(
+        text(target.dataset.packPublicationAction),
+        workspace.getState(),
+      ))
+        .catch(reportError);
+      return;
+    }
+    if (action === 'manage-pack-lifecycle') {
+      Promise.resolve(options.onManageLifecycle?.(
+        workspace.getState(),
+        text(target.dataset.packProjectKey),
+      )).catch(reportError);
+      return;
+    }
+    if (publicationLocked()) return;
+    if (action === 'select-pack-section') {
+      activeSection = normalizeMakerDefinitionEditorSection(target.dataset.section, activeSection);
+      render();
+      root.querySelector?.(`[data-action="select-pack-section"][data-section="${activeSection}"]`)?.focus?.();
+      options.onSectionChange?.(activeSection);
+      return;
+    }
+    if (action === 'select-pack-part') {
+      selectedPartId = text(target.dataset.partId);
+      selectedItemId = '';
+      selectedStyleId = '';
+      render();
+      options.onSelectionChange?.({ selectedPartId, selectedItemId, selectedStyleId });
+      return;
+    }
+    if (action === 'select-pack-item') {
+      selectedItemId = text(target.dataset.itemId);
+      selectedStyleId = '';
+      render();
+      options.onSelectionChange?.({ selectedPartId, selectedItemId, selectedStyleId });
+      return;
+    }
+    if (action === 'select-pack-style') {
+      selectedStyleId = text(target.dataset.styleId);
+      render();
+      options.onSelectionChange?.({ selectedPartId, selectedItemId, selectedStyleId });
+      return;
+    }
+    if (action === 'edit-pack-selection-rules') {
+      activeSection = MAKER_DEFINITION_EDITOR_SECTION_IDS.RULES;
+      selectedPackRuleId = '';
+      ruleOwner = text(target.dataset.ruleOwner);
+      ruleOwnerType = text(target.dataset.ruleOwnerType);
+      render();
+      options.onSectionChange?.(activeSection, {
+        owner: ruleOwner,
+        ownerType: ruleOwnerType,
+      });
+      return;
+    }
+    if (action === 'edit-pack-rule') {
+      activeSection = MAKER_DEFINITION_EDITOR_SECTION_IDS.RULES;
+      selectedPackRuleId = text(target.dataset.ruleId);
+      ruleOwner = '';
+      ruleOwnerType = '';
+      render();
+      options.onSectionChange?.(activeSection, { ruleId: selectedPackRuleId });
+      return;
+    }
     if (action === 'save-pack') {
       workspace.save().catch(reportError);
       return;
     }
-    if (action === 'open-preview') {
-      options.onPreview?.(workspace.getPreviewModel());
-      return;
-    }
-    if (action === 'request-rebind-parent') {
-      Promise.resolve(options.onRequestRebindParent?.(workspace.getState()))
+    if (action === 'request-back-to-maker') {
+      Promise.resolve(options.onRequestBackToMaker?.(workspace.getState()))
         .catch(reportError);
       return;
     }
-    if (action === 'request-publication-candidate') {
-      Promise.resolve(options.onRequestPublicationCandidate?.(workspace.getState()))
+    if (action === 'request-commerce-rights') {
+      Promise.resolve(options.onRequestCommerceRights?.(workspace.getState()))
         .catch(reportError);
       return;
     }
     try {
-      if (action === 'delete-part') {
+      if (action === 'delete-pack-part') {
         workspace.removePart(target.dataset.partId);
         return;
       }
-      if (action === 'delete-item') {
+      if (action === 'delete-pack-item') {
         workspace.removeItem(target.dataset.partId, target.dataset.itemId);
         return;
       }
-      if (action === 'delete-style') {
+      if (action === 'delete-pack-style') {
         workspace.removeStyle(target.dataset.partId, target.dataset.itemId, target.dataset.styleId);
+        return;
+      }
+      const state = workspace.getState();
+      if (action === 'add-layer-track') {
+        const id = nextLocalId(state.tree.layerTracks, 'track');
+        workspace.addLayerTrack({ id, name: `${copyValue(currentCopy(), 'layerTracks', 'Layer Track')} ${state.tree.layerTracks.length + 1}` });
+        return;
+      }
+      if (action === 'delete-layer-track') { workspace.removeLayerTrack(target.dataset.trackId); return; }
+      if (action === 'toggle-layer-track') { workspace.setLayerTrackLocked(target.dataset.trackId, target.dataset.locked !== 'true'); return; }
+      if (action === 'move-layer-track') { workspace.moveLayerTrack(target.dataset.trackId, Number(target.dataset.targetIndex)); return; }
+      if (action === 'add-color-channel') {
+        const id = nextLocalId(state.tree.colorChannels, 'color');
+        workspace.addColorChannel({ id, name: `${copyValue(currentCopy(), 'smartColor', 'Smart Color')} ${state.tree.colorChannels.length + 1}`, swatches: [{ id: 'default', name: copyValue(currentCopy(), 'defaultSwatch', 'Default swatch'), hintColor: '#808080', stops: [{ offset: 0, color: '#000000' }, { offset: 1, color: '#ffffff' }] }] });
+        return;
+      }
+      if (action === 'delete-color-channel') { workspace.removeColorChannel(target.dataset.channelId); return; }
+      if (action === 'add-color-swatch') {
+        const channel = list(state.tree.colorChannels).find((candidate) => idOf(candidate) === target.dataset.channelId);
+        const id = nextLocalId(channel?.swatches, 'swatch');
+        workspace.addColorSwatch(target.dataset.channelId, { id, name: `${copyValue(currentCopy(), 'swatchName', 'Swatch')} ${list(channel?.swatches).length + 1}`, hintColor: '#808080', stops: [{ offset: 0, color: '#000000' }, { offset: 1, color: '#ffffff' }] });
+        return;
+      }
+      if (action === 'delete-color-swatch') { workspace.removeColorSwatch(target.dataset.channelId, target.dataset.swatchId); return; }
+      if (action === 'add-pack-rule') {
+        const selector = selectorFromControl(target.dataset.defaultSelector);
+        const defaultTarget = selectorFromControl(target.dataset.defaultTarget);
+        const id = nextLocalId(state.tree.rules, 'rule');
+        workspace.addRule({ id, type: 'excludes', trigger: selector, targets: [defaultTarget] });
+        return;
+      }
+      if (action === 'delete-pack-rule') { workspace.removeRule(target.dataset.ruleId); return; }
+      if (action === 'set-pack-part-mode') {
+        if (target.dataset.mode === 'SLOT' && state.tree.supportsComposableV6 !== true) return;
+        workspace.setPartMode(target.dataset.partId, target.dataset.mode);
         return;
       }
     } catch (error) {
@@ -980,17 +2058,75 @@ export function mountExpansionPackWorkspace(root, workspace, options = {}) {
       });
     }
   };
+  const onKeydown = (event) => {
+    const target = event?.target;
+    if (typeof target?.closest === 'function') {
+      if (!target.closest('[data-expansion-pack-workspace]')) return;
+      event.stopPropagation?.();
+    }
+    if (publicationLocked()) return;
+    if (!event?.target?.dataset?.section || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const sections = editorSections(currentCopy());
+    const index = sections.findIndex((section) => section.id === activeSection);
+    const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? sections.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + sections.length) % sections.length;
+    activeSection = sections[nextIndex].id;
+    event.preventDefault?.();
+    render();
+    root.querySelector?.(`[data-action="select-pack-section"][data-section="${activeSection}"]`)?.focus?.();
+    options.onSectionChange?.(activeSection);
+  };
   root.addEventListener?.('change', onChange);
   root.addEventListener?.('click', onClick);
+  root.addEventListener?.('keydown', onKeydown);
   const unsubscribe = workspace.subscribe(render);
   render();
   return {
     render,
     unmount() {
+      mounted = false;
       unsubscribe();
       root.removeEventListener?.('change', onChange);
       root.removeEventListener?.('click', onClick);
+      root.removeEventListener?.('keydown', onKeydown);
       root.innerHTML = '';
     },
   };
+}
+
+function nextLocalId(values, prefix) {
+  const used = new Set(list(values).map(idOf));
+  let index = used.size + 1;
+  while (used.has(`${prefix}-${index}`)) index += 1;
+  return `${prefix}-${index}`;
+}
+
+function selectorFromControl(value) {
+  const [scope, partId, itemId, styleId] = String(value || '').split('|');
+  return {
+    ...(scope === 'base' ? { scope: 'base' } : { scope: 'pack' }),
+    partId,
+    ...(itemId ? { itemId } : {}),
+    ...(styleId ? { styleId } : {}),
+  };
+}
+
+function visibilityConditionFromControls(op, selectors) {
+  const selected = list(selectors).filter((selector) => selector?.partId);
+  if (op === 'always') return null;
+  if (op === 'selected') return selected.length === 1 ? { ...selected[0], op: 'selected' } : undefined;
+  if (op === 'not') return selected.length === 1
+    ? { op: 'not', condition: { ...selected[0], op: 'selected' } }
+    : undefined;
+  if ((op === 'all' || op === 'any') && selected.length) {
+    return { op, conditions: selected.map((selector) => ({ ...selector, op: 'selected' })) };
+  }
+  return undefined;
+}
+
+function definitionRuleOwner(state, dataset) {
+  const part = list(state?.tree?.parts).find((candidate) => idOf(candidate) === dataset.partId);
+  if (dataset.definitionKind === 'part') return part;
+  const item = list(part?.items).find((candidate) => idOf(candidate) === dataset.itemId);
+  if (dataset.definitionKind === 'item') return item;
+  return list(item?.styles).find((candidate) => idOf(candidate) === dataset.styleId);
 }

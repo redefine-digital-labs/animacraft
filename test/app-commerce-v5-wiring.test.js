@@ -15,6 +15,10 @@ test('Player workspace exposes verified v5 state and real purchase callbacks', (
   assert.match(appSource, /queryOwnedCommerceV5State\(client,/);
   assert.match(appSource, /queryPackRecordsV5\(client, chain\.root\)/);
   assert.match(appSource, /assertCommerceV5TypeOrigins\(chain\)/);
+  assert.match(
+    appSource,
+    /function commerceV5RuntimeContext\(\)[\s\S]*commerceV5CallablePackageId:\s*runtimeConfig\.commerceV5CallablePackageId/,
+  );
 });
 
 test('FREE Packs use verified root policy without creating a claim transaction', () => {
@@ -313,5 +317,21 @@ test('an untouched free Maker remains a legacy v4 release while the v5 gate is c
   );
   assert.match(releaseDocument, /!commerceV5ReleaseEnabled/);
   assert.match(releaseDocument, /!makerCommerceV5RequiresRelease\(/);
+  assert.match(
+    releaseDocument,
+    /legacyPublicationRoyaltyBps:\s*documentV4\.publication\.royaltyBps/,
+  );
+  assert.match(
+    releaseDocument,
+    /allowLegacyDefaultRoyaltyFallback:[\s\S]*makerCommerceV5AllowsLegacyDefaultRoyaltyFallback\(documentV4/,
+  );
+  assert.match(releaseDocument, /isPublished:\s*makerIsPublished\(\)/);
   assert.match(releaseDocument, /delete documentV4\.commerce/);
+});
+
+test('new Maker setup keeps its Commerce projection equal to the legacy royalty', () => {
+  assert.match(
+    appSource,
+    /documentV4\.publication\.royaltyBps\s*=\s*300;\s*documentV4\.commerce\.makerSourceRoyaltyBps\s*=\s*documentV4\.publication\.royaltyBps;/,
+  );
 });

@@ -7,6 +7,7 @@ import {
   makerWorkspaceDictionary,
   makerWorkspaceText,
 } from '../maker-workspace-i18n.js';
+import { EXPANSION_PACK_LIFECYCLE_I18N } from '../expansion-pack-lifecycle-i18n.js';
 import { createCharacterMakerV5Starter } from '../maker-v4.js';
 import { createMakerWorkspace } from '../maker-workspace.js';
 
@@ -20,6 +21,52 @@ test('Maker Studio core controls have English, Chinese, Japanese, Korean and Vie
       assert.ok(value && value !== key, `${locale}.${key} must be translated`);
       assert.doesNotMatch(value, /\{count\}/);
     });
+  });
+});
+
+test('independent Pack commerce centralization is translated in all five locales', () => {
+  const keys = [
+    'independentExpansionPacks',
+    'independentPackCommerceCopy',
+    'independentPackCommerceConflict',
+    'embeddedLegacyPacksCopy',
+    'packCommerceManagedElsewhere',
+    'packOpenCommerceRights',
+  ];
+  MAKER_WORKSPACE_LOCALES.forEach((locale) => {
+    keys.forEach((key) => {
+      const value = makerWorkspaceText(locale, key);
+      assert.ok(value && value !== key, `${locale}.${key} must be translated`);
+    });
+  });
+});
+
+test('Expansion Pack inherited-definition actions are explicit in all five locales', () => {
+  MAKER_WORKSPACE_LOCALES.forEach((locale) => {
+    assert.notEqual(makerWorkspaceText(locale, 'packExtendWithItem'), 'packExtendWithItem');
+    assert.notEqual(makerWorkspaceText(locale, 'packExtendWithStyle'), 'packExtendWithStyle');
+  });
+  assert.equal(makerWorkspaceText('zh', 'packExtendWithItem'), '在扩展包中新增部件');
+  assert.equal(makerWorkspaceText('zh', 'packExtendWithStyle'), '在扩展包中新增样式');
+});
+
+test('Expansion Pack lifecycle copy is shared and has exact five-locale token parity', () => {
+  const keys = Object.keys(EXPANSION_PACK_LIFECYCLE_I18N.en);
+  assert.deepEqual(Object.keys(EXPANSION_PACK_LIFECYCLE_I18N), MAKER_WORKSPACE_LOCALES);
+  MAKER_WORKSPACE_LOCALES.forEach((locale) => {
+    assert.deepEqual(Object.keys(EXPANSION_PACK_LIFECYCLE_I18N[locale]), keys);
+    keys.forEach((key) => {
+      assert.equal(makerWorkspaceDictionary(locale)[key], EXPANSION_PACK_LIFECYCLE_I18N[locale][key]);
+      assert.deepEqual(
+        [...EXPANSION_PACK_LIFECYCLE_I18N[locale][key].matchAll(/\{([^}]+)\}/g)].map((match) => match[1]),
+        [...EXPANSION_PACK_LIFECYCLE_I18N.en[key].matchAll(/\{([^}]+)\}/g)].map((match) => match[1]),
+        `${locale}.${key} interpolation tokens must match English`,
+      );
+    });
+    assert.doesNotMatch(
+      makerWorkspaceText(locale, 'expansionPackLifecycleManageAria', { name: 'Moon Pack' }),
+      /\{name\}/,
+    );
   });
 });
 
@@ -166,6 +213,19 @@ test('critical nested editor details do not fall back to English outside English
     'partCustomStacking',
     'movePartUp',
     'movePartDown',
+    'partOrderActions',
+    'partStateActions',
+    'selectedPartActions',
+    'partItemCount',
+    'selectNamedPart',
+    'selectedNamedPart',
+    'partSlotLocked',
+    'partSlotKeepFixed',
+    'partSlotMakeSlot',
+    'partSlotOpenSettings',
+    'wardrobeToggleOnState',
+    'wardrobeToggleOffState',
+    'wardrobePartChoiceLabel',
     'playerMenuLinkedOrder',
     'playerMenuLinkedOrderCopy',
     'trackFollowsPart',
@@ -513,6 +573,7 @@ test('Maker Info has complete five-language labels for its public metadata field
     'replaceMakerCover',
     'removeMakerCover',
     'removeMakerCoverConfirm',
+    'issueMakerCoverRequired',
     'makerCoverRequirements',
     'makerName',
     'makerCreator',
