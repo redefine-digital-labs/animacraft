@@ -123,16 +123,22 @@ public struct MarketPackageConfigV8 has key {
     call_cap: PackageCallCapV8<MarketRoleV8>,
 }
 
-public fun compile_seal_readiness<PaymentCoin, SealRegistry: key>(
+public fun compile_seal_readiness<
+    PaymentCoin,
+    SealPolicyConfig: key,
+    SealRegistry: key,
+>(
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
     config: &SealPackageConfigV8,
-    registry: &SealRegistry,
+    policy_config: &SealPolicyConfig,
+    seal_registry: &SealRegistry,
     companion_commitment: vector<u8>,
 ): SealReadinessV8 {
     activation::certify_seal_readiness_v8<
-        PaymentCoin, SealMarkerV8, SealMarkerV8, SealRegistry,
-    >(root, catalog, &config.call_cap, registry, companion_commitment)
+        PaymentCoin, SealMarkerV8, SealMarkerV8, SealPolicyConfig, SealRegistry,
+    >(root, catalog, &config.call_cap, policy_config, seal_registry,
+        companion_commitment)
 }
 
 public fun compile_runtime_readiness<
@@ -160,16 +166,22 @@ public fun compile_runtime_readiness<
         admission_authority, companion_commitment)
 }
 
-public fun compile_output_readiness<PaymentCoin, OutputRegistry: key>(
+public fun compile_output_readiness<
+    PaymentCoin,
+    OutputRegistry: key,
+    SoulRegistry: key,
+>(
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
     config: &OutputPackageConfigV8,
-    registry: &OutputRegistry,
+    output_registry: &OutputRegistry,
+    soul_registry: &SoulRegistry,
     companion_commitment: vector<u8>,
 ): OutputReadinessV8 {
     activation::certify_output_readiness_v8<
-        PaymentCoin, OutputMarkerV8, OutputMarkerV8, OutputRegistry,
-    >(root, catalog, &config.call_cap, registry, companion_commitment)
+        PaymentCoin, OutputMarkerV8, OutputMarkerV8, OutputRegistry, SoulRegistry,
+    >(root, catalog, &config.call_cap, output_registry, soul_registry,
+        companion_commitment)
 }
 
 public fun compile_physical_readiness<PaymentCoin, PhysicalRegistry: key>(
@@ -184,16 +196,22 @@ public fun compile_physical_readiness<PaymentCoin, PhysicalRegistry: key>(
     >(root, catalog, &config.call_cap, registry, companion_commitment)
 }
 
-public fun compile_market_readiness<PaymentCoin, MarketRegistry: key>(
+public fun compile_market_readiness<
+    PaymentCoin,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
     config: &MarketPackageConfigV8,
-    registry: &MarketRegistry,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
     companion_commitment: vector<u8>,
 ): MarketReadinessV8 {
     activation::certify_market_readiness_v8<
-        PaymentCoin, MarketMarkerV8, MarketMarkerV8, MarketRegistry,
-    >(root, catalog, &config.call_cap, registry, companion_commitment)
+        PaymentCoin, MarketMarkerV8, MarketMarkerV8, MarketRegistry, MarketTreasury,
+    >(root, catalog, &config.call_cap, market_registry, market_treasury,
+        companion_commitment)
 }
 
 public fun compile_terminal_activation<PaymentCoin>(
@@ -325,13 +343,16 @@ public fun compile_capability_binding_readback<PaymentCoin>(
     let _ = maker::capability_base_registry_id_v8(capability);
     let _ = maker::capability_maker_treasury_id_v8(capability);
     let _ = maker::capability_protocol_treasury_id_v8(capability);
+    let _ = maker::capability_seal_policy_config_id_v8(capability);
     let _ = maker::capability_seal_registry_id_v8(capability);
     let _ = maker::capability_runtime_definition_registry_id_v8(capability);
     let _ = maker::capability_pack_registry_id_v8(capability);
     let _ = maker::capability_admission_authority_id_v8(capability);
     let _ = maker::capability_output_registry_id_v8(capability);
+    let _ = maker::capability_soul_registry_id_v8(capability);
     let _ = maker::capability_physical_registry_id_v8(capability);
     let _ = maker::capability_market_registry_id_v8(capability);
+    let _ = maker::capability_market_treasury_id_v8(capability);
     let _ = maker::capability_seal_readiness_commitment_v8(capability);
     let _ = maker::capability_runtime_readiness_commitment_v8(capability);
     let _ = maker::capability_output_readiness_commitment_v8(capability);

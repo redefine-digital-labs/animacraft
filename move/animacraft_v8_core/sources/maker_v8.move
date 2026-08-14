@@ -144,13 +144,16 @@ public struct CapabilityRegistryBindingV8 has copy, drop, store {
     base_registry_id: ID,
     maker_treasury_id: ID,
     protocol_treasury_id: ID,
+    seal_policy_config_id: ID,
     seal_registry_id: ID,
     runtime_definition_registry_id: ID,
     pack_registry_id: ID,
     admission_authority_id: ID,
     output_registry_id: ID,
+    soul_registry_id: ID,
     physical_registry_id: ID,
     market_registry_id: ID,
+    market_treasury_id: ID,
     seal_readiness_commitment: vector<u8>,
     runtime_readiness_commitment: vector<u8>,
     output_readiness_commitment: vector<u8>,
@@ -302,13 +305,16 @@ public struct CapabilityRegistryCommitmentInputV8 has drop {
     base_registry_id: ID,
     maker_treasury_id: ID,
     protocol_treasury_id: ID,
+    seal_policy_config_id: ID,
     seal_registry_id: ID,
     runtime_definition_registry_id: ID,
     pack_registry_id: ID,
     admission_authority_id: ID,
     output_registry_id: ID,
+    soul_registry_id: ID,
     physical_registry_id: ID,
     market_registry_id: ID,
+    market_treasury_id: ID,
     seal_readiness_commitment: vector<u8>,
     runtime_readiness_commitment: vector<u8>,
     output_readiness_commitment: vector<u8>,
@@ -1097,13 +1103,16 @@ public(package) fun finalize_capability_registry_binding_v8<PaymentCoin>(
     base_registry_id: ID,
     maker_treasury_id: ID,
     protocol_treasury_id: ID,
+    seal_policy_config_id: ID,
     seal_registry_id: ID,
     runtime_definition_registry_id: ID,
     pack_registry_id: ID,
     admission_authority_id: ID,
     output_registry_id: ID,
+    soul_registry_id: ID,
     physical_registry_id: ID,
     market_registry_id: ID,
+    market_treasury_id: ID,
     seal_readiness_commitment: vector<u8>,
     runtime_readiness_commitment: vector<u8>,
     output_readiness_commitment: vector<u8>,
@@ -1123,13 +1132,16 @@ public(package) fun finalize_capability_registry_binding_v8<PaymentCoin>(
         base_registry_id,
         maker_treasury_id,
         protocol_treasury_id,
+        seal_policy_config_id,
         seal_registry_id,
         runtime_definition_registry_id,
         pack_registry_id,
         admission_authority_id,
         output_registry_id,
+        soul_registry_id,
         physical_registry_id,
         market_registry_id,
+        market_treasury_id,
         seal_readiness_commitment,
         runtime_readiness_commitment,
         output_readiness_commitment,
@@ -1422,13 +1434,16 @@ fun assert_capability_registry_binding<PaymentCoin>(
         binding.base_registry_id,
         binding.maker_treasury_id,
         binding.protocol_treasury_id,
+        binding.seal_policy_config_id,
         binding.seal_registry_id,
         binding.runtime_definition_registry_id,
         binding.pack_registry_id,
         binding.admission_authority_id,
         binding.output_registry_id,
+        binding.soul_registry_id,
         binding.physical_registry_id,
         binding.market_registry_id,
+        binding.market_treasury_id,
         package_binding::seal_authority_id_v8(&binding.call_cap_set),
         package_binding::runtime_authority_id_v8(&binding.call_cap_set),
         package_binding::output_authority_id_v8(&binding.call_cap_set),
@@ -1457,13 +1472,16 @@ fun capability_registry_commitment<PaymentCoin>(
             base_registry_id: binding.base_registry_id,
             maker_treasury_id: binding.maker_treasury_id,
             protocol_treasury_id: binding.protocol_treasury_id,
+            seal_policy_config_id: binding.seal_policy_config_id,
             seal_registry_id: binding.seal_registry_id,
             runtime_definition_registry_id: binding.runtime_definition_registry_id,
             pack_registry_id: binding.pack_registry_id,
             admission_authority_id: binding.admission_authority_id,
             output_registry_id: binding.output_registry_id,
+            soul_registry_id: binding.soul_registry_id,
             physical_registry_id: binding.physical_registry_id,
             market_registry_id: binding.market_registry_id,
+            market_treasury_id: binding.market_treasury_id,
             seal_readiness_commitment: binding.seal_readiness_commitment,
             runtime_readiness_commitment: binding.runtime_readiness_commitment,
             output_readiness_commitment: binding.output_readiness_commitment,
@@ -1858,6 +1876,9 @@ public fun capability_maker_treasury_id_v8(binding: &CapabilityRegistryBindingV8
 public fun capability_protocol_treasury_id_v8(binding: &CapabilityRegistryBindingV8): ID {
     binding.protocol_treasury_id
 }
+public fun capability_seal_policy_config_id_v8(
+    binding: &CapabilityRegistryBindingV8,
+): ID { binding.seal_policy_config_id }
 public fun capability_seal_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
     binding.seal_registry_id
 }
@@ -1873,11 +1894,17 @@ public fun capability_admission_authority_id_v8(
 public fun capability_output_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
     binding.output_registry_id
 }
+public fun capability_soul_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.soul_registry_id
+}
 public fun capability_physical_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
     binding.physical_registry_id
 }
 public fun capability_market_registry_id_v8(binding: &CapabilityRegistryBindingV8): ID {
     binding.market_registry_id
+}
+public fun capability_market_treasury_id_v8(binding: &CapabilityRegistryBindingV8): ID {
+    binding.market_treasury_id
 }
 public fun capability_seal_readiness_commitment_v8(
     binding: &CapabilityRegistryBindingV8,

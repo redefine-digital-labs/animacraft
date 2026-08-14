@@ -644,6 +644,19 @@ public fun assert_type_origins_v8<OriginalMarker, CallableMarker>(
     );
 }
 
+/// Proves that a live generic object type belongs to the exact original
+/// package lineage frozen for one product role. Persistent object types keep
+/// their original TypeOrigin across compatible package upgrades, while the
+/// separate callable marker above proves the currently callable package.
+public fun assert_type_original_v8<T>(binding: &ExactPackageBindingV8) {
+    assert_binding_well_formed(binding);
+    assert!(
+        binding.original_package_id
+            == object::id_from_address(type_name::original_id<T>()),
+        ETypeOriginMismatch,
+    );
+}
+
 public fun assert_product_release_binding_well_formed_v8(
     binding: &ProductReleaseBindingV8,
 ) {
@@ -1285,6 +1298,17 @@ fun exact_binding_records_defining_id_and_same_lineage() {
     >(new_package_commitments_v8(test_hash(1), test_hash(2), test_hash(3)));
     assert_type_origins_v8<
         animacraft_v8_core::package_binding_v8::ProductReleaseBindingV8,
+        animacraft_v8_core::package_binding_v8::ProductReleaseCatalogV8,
+    >(&binding);
+    assert_type_original_v8<
+        animacraft_v8_core::package_binding_v8::ProductReleaseCatalogV8,
+    >(&binding);
+}
+
+#[test, expected_failure(abort_code = ETypeOriginMismatch)]
+fun live_object_type_origin_must_match_the_frozen_role() {
+    let binding = new_exact_package_binding_for_testing(@0x77, @0x78, 30);
+    assert_type_original_v8<
         animacraft_v8_core::package_binding_v8::ProductReleaseCatalogV8,
     >(&binding);
 }

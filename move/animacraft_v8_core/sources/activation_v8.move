@@ -49,7 +49,8 @@ public struct SealReadinessV8 {
     root_id: ID,
     catalog_id: ID,
     call_cap_set_commitment: vector<u8>,
-    registry_id: ID,
+    policy_config_id: ID,
+    seal_registry_id: ID,
     companion_commitment: vector<u8>,
     commitment: vector<u8>,
 }
@@ -70,7 +71,8 @@ public struct OutputReadinessV8 {
     root_id: ID,
     catalog_id: ID,
     call_cap_set_commitment: vector<u8>,
-    registry_id: ID,
+    output_registry_id: ID,
+    soul_registry_id: ID,
     companion_commitment: vector<u8>,
     commitment: vector<u8>,
 }
@@ -88,7 +90,8 @@ public struct MarketReadinessV8 {
     root_id: ID,
     catalog_id: ID,
     call_cap_set_commitment: vector<u8>,
-    registry_id: ID,
+    market_registry_id: ID,
+    market_treasury_id: ID,
     companion_commitment: vector<u8>,
     commitment: vector<u8>,
 }
@@ -136,26 +139,31 @@ public fun certify_seal_readiness_v8<
     PaymentCoin,
     SealOriginalMarker,
     SealCallableMarker,
+    SealPolicyConfig: key,
     SealRegistry: key,
 >(
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
     cap: &PackageCallCapV8<SealRoleV8>,
-    registry: &SealRegistry,
+    policy_config: &SealPolicyConfig,
+    seal_registry: &SealRegistry,
     companion_commitment: vector<u8>,
 ): SealReadinessV8 {
     binding::assert_seal_call_cap_v8(catalog, cap);
     let role_binding = binding::seal_binding_v8(binding::catalog_binding_v8(catalog));
     binding::assert_type_origins_v8<SealOriginalMarker, SealCallableMarker>(role_binding);
+    binding::assert_type_original_v8<SealPolicyConfig>(role_binding);
+    binding::assert_type_original_v8<SealRegistry>(role_binding);
     let (root_id, catalog_id, call_cap_set_commitment) = assert_draft_root_catalog(root, catalog);
-    let registry_id = object::id(registry);
+    let policy_config_id = object::id(policy_config);
+    let seal_registry_id = object::id(seal_registry);
     let commitment = readiness_commitment(
         ROLE_SEAL,
         root_id,
         catalog_id,
         call_cap_set_commitment,
         role_binding,
-        vector[registry_id],
+        vector[policy_config_id, seal_registry_id],
         vector[],
         companion_commitment,
     );
@@ -163,7 +171,8 @@ public fun certify_seal_readiness_v8<
         root_id,
         catalog_id,
         call_cap_set_commitment,
-        registry_id,
+        policy_config_id,
+        seal_registry_id,
         companion_commitment,
         commitment,
     }
@@ -188,6 +197,9 @@ public fun certify_runtime_activation_readiness_v8<
     binding::assert_runtime_call_cap_v8(catalog, cap);
     let role_binding = binding::runtime_binding_v8(binding::catalog_binding_v8(catalog));
     binding::assert_type_origins_v8<RuntimeOriginalMarker, RuntimeCallableMarker>(role_binding);
+    binding::assert_type_original_v8<RuntimeDefinitionRegistry>(role_binding);
+    binding::assert_type_original_v8<PackRegistry>(role_binding);
+    binding::assert_type_original_v8<AdmissionAuthority>(role_binding);
     let (root_id, catalog_id, call_cap_set_commitment) = assert_draft_root_catalog(root, catalog);
     let runtime_definition_registry_id = object::id(runtime_definition_registry);
     let pack_registry_id = object::id(pack_registry);
@@ -228,25 +240,30 @@ public fun certify_output_readiness_v8<
     OutputOriginalMarker,
     OutputCallableMarker,
     OutputRegistry: key,
+    SoulRegistry: key,
 >(
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
     cap: &PackageCallCapV8<OutputRoleV8>,
-    registry: &OutputRegistry,
+    output_registry: &OutputRegistry,
+    soul_registry: &SoulRegistry,
     companion_commitment: vector<u8>,
 ): OutputReadinessV8 {
     binding::assert_output_call_cap_v8(catalog, cap);
     let role_binding = binding::output_binding_v8(binding::catalog_binding_v8(catalog));
     binding::assert_type_origins_v8<OutputOriginalMarker, OutputCallableMarker>(role_binding);
+    binding::assert_type_original_v8<OutputRegistry>(role_binding);
+    binding::assert_type_original_v8<SoulRegistry>(role_binding);
     let (root_id, catalog_id, call_cap_set_commitment) = assert_draft_root_catalog(root, catalog);
-    let registry_id = object::id(registry);
+    let output_registry_id = object::id(output_registry);
+    let soul_registry_id = object::id(soul_registry);
     let commitment = readiness_commitment(
         ROLE_OUTPUT,
         root_id,
         catalog_id,
         call_cap_set_commitment,
         role_binding,
-        vector[registry_id],
+        vector[output_registry_id, soul_registry_id],
         vector[],
         companion_commitment,
     );
@@ -254,7 +271,8 @@ public fun certify_output_readiness_v8<
         root_id,
         catalog_id,
         call_cap_set_commitment,
-        registry_id,
+        output_registry_id,
+        soul_registry_id,
         companion_commitment,
         commitment,
     }
@@ -275,6 +293,7 @@ public fun certify_physical_readiness_v8<
     binding::assert_physical_call_cap_v8(catalog, cap);
     let role_binding = binding::physical_binding_v8(binding::catalog_binding_v8(catalog));
     binding::assert_type_origins_v8<PhysicalOriginalMarker, PhysicalCallableMarker>(role_binding);
+    binding::assert_type_original_v8<PhysicalRegistry>(role_binding);
     let (root_id, catalog_id, call_cap_set_commitment) = assert_draft_root_catalog(root, catalog);
     let registry_id = object::id(registry);
     let commitment = readiness_commitment(
@@ -302,25 +321,30 @@ public fun certify_market_readiness_v8<
     MarketOriginalMarker,
     MarketCallableMarker,
     MarketRegistry: key,
+    MarketTreasury: key,
 >(
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
     cap: &PackageCallCapV8<MarketRoleV8>,
-    registry: &MarketRegistry,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
     companion_commitment: vector<u8>,
 ): MarketReadinessV8 {
     binding::assert_market_call_cap_v8(catalog, cap);
     let role_binding = binding::market_binding_v8(binding::catalog_binding_v8(catalog));
     binding::assert_type_origins_v8<MarketOriginalMarker, MarketCallableMarker>(role_binding);
+    binding::assert_type_original_v8<MarketRegistry>(role_binding);
+    binding::assert_type_original_v8<MarketTreasury>(role_binding);
     let (root_id, catalog_id, call_cap_set_commitment) = assert_draft_root_catalog(root, catalog);
-    let registry_id = object::id(registry);
+    let market_registry_id = object::id(market_registry);
+    let market_treasury_id = object::id(market_treasury);
     let commitment = readiness_commitment(
         ROLE_MARKET,
         root_id,
         catalog_id,
         call_cap_set_commitment,
         role_binding,
-        vector[registry_id],
+        vector[market_registry_id, market_treasury_id],
         vector[],
         companion_commitment,
     );
@@ -328,7 +352,8 @@ public fun certify_market_readiness_v8<
         root_id,
         catalog_id,
         call_cap_set_commitment,
-        registry_id,
+        market_registry_id,
+        market_treasury_id,
         companion_commitment,
         commitment,
     }
@@ -398,7 +423,7 @@ fun activate_with_verified_release<PaymentCoin>(
     let (root_id, catalog_id, call_cap_set_commitment) = assert_draft_root_catalog(root, catalog);
     let (base_registry_id, _, _) = base::assert_activation_ready_v8(base_registry, root);
 
-    let (seal_registry_id, seal_readiness_commitment) = consume_seal_readiness(
+    let (seal_policy_config_id, seal_registry_id, seal_readiness_commitment) = consume_seal_readiness(
         seal_readiness,
         root_id,
         catalog_id,
@@ -423,7 +448,7 @@ fun activate_with_verified_release<PaymentCoin>(
             == maker::root_expected_pack_admission_policy_commitment_v8(root),
         EReadinessMismatch,
     );
-    let (output_registry_id, output_readiness_commitment) = consume_output_readiness(
+    let (output_registry_id, soul_registry_id, output_readiness_commitment) = consume_output_readiness(
         output_readiness,
         root_id,
         catalog_id,
@@ -437,7 +462,7 @@ fun activate_with_verified_release<PaymentCoin>(
         &call_cap_set_commitment,
         binding::physical_binding_v8(binding::catalog_binding_v8(catalog)),
     );
-    let (market_registry_id, market_readiness_commitment) = consume_market_readiness(
+    let (market_registry_id, market_treasury_id, market_readiness_commitment) = consume_market_readiness(
         market_readiness,
         root_id,
         catalog_id,
@@ -462,13 +487,16 @@ fun activate_with_verified_release<PaymentCoin>(
         base_registry_id,
         object::id(maker_treasury),
         object::id(protocol_treasury),
+        seal_policy_config_id,
         seal_registry_id,
         runtime_definition_registry_id,
         pack_registry_id,
         admission_authority_id,
         output_registry_id,
+        soul_registry_id,
         physical_registry_id,
         market_registry_id,
+        market_treasury_id,
         seal_readiness_commitment,
         runtime_readiness_commitment,
         output_readiness_commitment,
@@ -492,6 +520,9 @@ public fun new_output_runtime_request_v8<
 ): OutputRuntimeRequestV8 {
     binding::assert_output_call_cap_v8(catalog, output_cap);
     binding::assert_type_origins_v8<OutputOriginalMarker, OutputCallableMarker>(
+        binding::output_binding_v8(binding::catalog_binding_v8(catalog)),
+    );
+    binding::assert_type_original_v8<OutputRegistry>(
         binding::output_binding_v8(binding::catalog_binding_v8(catalog)),
     );
     new_verified_output_request(root, catalog, output_registry, ctx)
@@ -548,6 +579,9 @@ public fun consume_output_runtime_request_v8<
     binding::assert_runtime_call_cap_v8(catalog, runtime_cap);
     binding::assert_type_origins_v8<RuntimeOriginalMarker, RuntimeCallableMarker>(
         binding::runtime_binding_v8(binding::catalog_binding_v8(catalog)),
+    );
+    binding::assert_type_original_v8<OutputRegistry>(
+        binding::output_binding_v8(binding::catalog_binding_v8(catalog)),
     );
     consume_verified_output_request(request, root, catalog, output_registry, ctx)
 }
@@ -722,20 +756,21 @@ fun consume_seal_readiness(
     catalog_id: ID,
     call_cap_set_commitment: &vector<u8>,
     role_binding: &ExactPackageBindingV8,
-): (ID, vector<u8>) {
+): (ID, ID, vector<u8>) {
     let SealReadinessV8 {
         root_id: value_root_id,
         catalog_id: value_catalog_id,
         call_cap_set_commitment: value_call_cap_set_commitment,
-        registry_id,
+        policy_config_id,
+        seal_registry_id,
         companion_commitment,
         commitment,
     } = readiness;
     assert_common_readiness(ROLE_SEAL, value_root_id, value_catalog_id,
-        value_call_cap_set_commitment, vector[registry_id], vector[],
+        value_call_cap_set_commitment, vector[policy_config_id, seal_registry_id], vector[],
         companion_commitment, commitment, root_id, catalog_id,
         call_cap_set_commitment, role_binding);
-    (registry_id, commitment)
+    (policy_config_id, seal_registry_id, commitment)
 }
 
 fun consume_runtime_readiness(
@@ -771,15 +806,16 @@ fun consume_output_readiness(
     catalog_id: ID,
     call_cap_set_commitment: &vector<u8>,
     role_binding: &ExactPackageBindingV8,
-): (ID, vector<u8>) {
+): (ID, ID, vector<u8>) {
     let OutputReadinessV8 { root_id: value_root_id, catalog_id: value_catalog_id,
-        call_cap_set_commitment: value_call_cap_set_commitment, registry_id,
+        call_cap_set_commitment: value_call_cap_set_commitment, output_registry_id,
+        soul_registry_id,
         companion_commitment, commitment } = readiness;
     assert_common_readiness(ROLE_OUTPUT, value_root_id, value_catalog_id,
-        value_call_cap_set_commitment, vector[registry_id], vector[],
+        value_call_cap_set_commitment, vector[output_registry_id, soul_registry_id], vector[],
         companion_commitment, commitment, root_id, catalog_id,
         call_cap_set_commitment, role_binding);
-    (registry_id, commitment)
+    (output_registry_id, soul_registry_id, commitment)
 }
 
 fun consume_physical_readiness(
@@ -805,15 +841,16 @@ fun consume_market_readiness(
     catalog_id: ID,
     call_cap_set_commitment: &vector<u8>,
     role_binding: &ExactPackageBindingV8,
-): (ID, vector<u8>) {
+): (ID, ID, vector<u8>) {
     let MarketReadinessV8 { root_id: value_root_id, catalog_id: value_catalog_id,
-        call_cap_set_commitment: value_call_cap_set_commitment, registry_id,
+        call_cap_set_commitment: value_call_cap_set_commitment, market_registry_id,
+        market_treasury_id,
         companion_commitment, commitment } = readiness;
     assert_common_readiness(ROLE_MARKET, value_root_id, value_catalog_id,
-        value_call_cap_set_commitment, vector[registry_id], vector[],
+        value_call_cap_set_commitment, vector[market_registry_id, market_treasury_id], vector[],
         companion_commitment, commitment, root_id, catalog_id,
         call_cap_set_commitment, role_binding);
-    (registry_id, commitment)
+    (market_registry_id, market_treasury_id, commitment)
 }
 
 fun output_request_commitment(
@@ -872,23 +909,29 @@ fun fresh_id(ctx: &mut TxContext): ID {
 #[test_only]
 public fun readiness_set_for_testing<
     PaymentCoin,
+    SealPolicyConfig: key,
     SealRegistry: key,
     RuntimeDefinitionRegistry: key,
     PackRegistry: key,
     AdmissionAuthority: key,
     OutputRegistry: key,
+    SoulRegistry: key,
     PhysicalRegistry: key,
     MarketRegistry: key,
+    MarketTreasury: key,
 >(
     root: &MakerRootV8<PaymentCoin>,
     catalog: &ProductReleaseCatalogV8,
+    seal_policy_config: &SealPolicyConfig,
     seal_registry: &SealRegistry,
     runtime_definition_registry: &RuntimeDefinitionRegistry,
     pack_registry: &PackRegistry,
     admission_authority: &AdmissionAuthority,
     output_registry: &OutputRegistry,
+    soul_registry: &SoulRegistry,
     physical_registry: &PhysicalRegistry,
     market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
 ): (
     SealReadinessV8,
     RuntimeActivationReadinessV8,
@@ -898,13 +941,16 @@ public fun readiness_set_for_testing<
 ) {
     let (root_id, catalog_id, call_cap_set_commitment) =
         assert_draft_root_catalog(root, catalog);
+    let seal_policy_config_id = object::id(seal_policy_config);
     let seal_registry_id = object::id(seal_registry);
     let runtime_definition_registry_id = object::id(runtime_definition_registry);
     let pack_registry_id = object::id(pack_registry);
     let admission_authority_id = object::id(admission_authority);
     let output_registry_id = object::id(output_registry);
+    let soul_registry_id = object::id(soul_registry);
     let physical_registry_id = object::id(physical_registry);
     let market_registry_id = object::id(market_registry);
+    let market_treasury_id = object::id(market_treasury);
     let expected_pack_policy_commitment =
         *maker::root_expected_pack_admission_policy_commitment_v8(root);
     let seal_companion = test_hash(21);
@@ -914,36 +960,39 @@ public fun readiness_set_for_testing<
     let market_companion = test_hash(25);
     let seal_commitment = readiness_commitment(ROLE_SEAL, root_id, catalog_id,
         call_cap_set_commitment, binding::seal_binding_v8(binding::catalog_binding_v8(catalog)),
-        vector[seal_registry_id], vector[], seal_companion);
+        vector[seal_policy_config_id, seal_registry_id], vector[], seal_companion);
     let runtime_commitment = readiness_commitment(ROLE_RUNTIME, root_id, catalog_id,
         call_cap_set_commitment, binding::runtime_binding_v8(binding::catalog_binding_v8(catalog)),
         vector[runtime_definition_registry_id, pack_registry_id, admission_authority_id],
         expected_pack_policy_commitment, runtime_companion);
     let output_commitment = readiness_commitment(ROLE_OUTPUT, root_id, catalog_id,
         call_cap_set_commitment, binding::output_binding_v8(binding::catalog_binding_v8(catalog)),
-        vector[output_registry_id], vector[], output_companion);
+        vector[output_registry_id, soul_registry_id], vector[], output_companion);
     let physical_commitment = readiness_commitment(ROLE_PHYSICAL, root_id, catalog_id,
         call_cap_set_commitment, binding::physical_binding_v8(binding::catalog_binding_v8(catalog)),
         vector[physical_registry_id], vector[], physical_companion);
     let market_commitment = readiness_commitment(ROLE_MARKET, root_id, catalog_id,
         call_cap_set_commitment, binding::market_binding_v8(binding::catalog_binding_v8(catalog)),
-        vector[market_registry_id], vector[], market_companion);
+        vector[market_registry_id, market_treasury_id], vector[], market_companion);
     (
         SealReadinessV8 { root_id, catalog_id, call_cap_set_commitment,
-            registry_id: seal_registry_id, companion_commitment: seal_companion,
+            policy_config_id: seal_policy_config_id, seal_registry_id,
+            companion_commitment: seal_companion,
             commitment: seal_commitment },
         RuntimeActivationReadinessV8 { root_id, catalog_id, call_cap_set_commitment,
             runtime_definition_registry_id, pack_registry_id, admission_authority_id,
             expected_pack_policy_commitment, companion_commitment: runtime_companion,
             commitment: runtime_commitment },
         OutputReadinessV8 { root_id, catalog_id, call_cap_set_commitment,
-            registry_id: output_registry_id, companion_commitment: output_companion,
+            output_registry_id, soul_registry_id,
+            companion_commitment: output_companion,
             commitment: output_commitment },
         PhysicalReadinessV8 { root_id, catalog_id, call_cap_set_commitment,
             registry_id: physical_registry_id, companion_commitment: physical_companion,
             commitment: physical_commitment },
         MarketReadinessV8 { root_id, catalog_id, call_cap_set_commitment,
-            registry_id: market_registry_id, companion_commitment: market_companion,
+            market_registry_id, market_treasury_id,
+            companion_commitment: market_companion,
             commitment: market_commitment },
     )
 }
@@ -1004,7 +1053,7 @@ public fun set_seal_catalog_for_testing(readiness: &mut SealReadinessV8, catalog
 
 #[test_only]
 public fun set_seal_registry_for_testing(readiness: &mut SealReadinessV8, registry_id: ID) {
-    readiness.registry_id = registry_id;
+    readiness.seal_registry_id = registry_id;
 }
 
 #[test_only]
@@ -1034,7 +1083,8 @@ public fun set_output_request_root_for_testing(
 #[test_only]
 public fun destroy_output_readiness_for_testing(readiness: OutputReadinessV8) {
     let OutputReadinessV8 { root_id: _, catalog_id: _, call_cap_set_commitment: _,
-        registry_id: _, companion_commitment: _, commitment: _ } = readiness;
+        output_registry_id: _, soul_registry_id: _, companion_commitment: _,
+        commitment: _ } = readiness;
 }
 
 #[test_only]
@@ -1071,13 +1121,16 @@ public struct TestFixture {
     release_cap: PackageCallCapV8<ReleaseRoleV8>,
     runtime_cap: PackageCallCapV8<RuntimeRoleV8>,
     output_cap: PackageCallCapV8<OutputRoleV8>,
+    seal_policy_config: TestRegistry,
     seal_registry: TestRegistry,
     runtime_definitions: TestRegistry,
     pack_registry: TestRegistry,
     admission_authority: TestRegistry,
     output_registry: TestRegistry,
+    soul_registry: TestRegistry,
     physical_registry: TestRegistry,
     market_registry: TestRegistry,
+    market_treasury: TestRegistry,
 }
 
 #[test_only]
@@ -1158,13 +1211,16 @@ fun new_test_fixture(ctx: &mut TxContext): TestFixture {
         release_cap,
         runtime_cap,
         output_cap,
+        seal_policy_config: TestRegistry { id: object::new(ctx) },
         seal_registry: TestRegistry { id: object::new(ctx) },
         runtime_definitions: TestRegistry { id: object::new(ctx) },
         pack_registry: TestRegistry { id: object::new(ctx) },
         admission_authority: TestRegistry { id: object::new(ctx) },
         output_registry: TestRegistry { id: object::new(ctx) },
+        soul_registry: TestRegistry { id: object::new(ctx) },
         physical_registry: TestRegistry { id: object::new(ctx) },
         market_registry: TestRegistry { id: object::new(ctx) },
+        market_treasury: TestRegistry { id: object::new(ctx) },
     }
 }
 
@@ -1179,13 +1235,16 @@ fun readiness_for_fixture(fixture: &TestFixture): (
     readiness_set_for_testing(
         &fixture.root,
         &fixture.catalog,
+        &fixture.seal_policy_config,
         &fixture.seal_registry,
         &fixture.runtime_definitions,
         &fixture.pack_registry,
         &fixture.admission_authority,
         &fixture.output_registry,
+        &fixture.soul_registry,
         &fixture.physical_registry,
         &fixture.market_registry,
+        &fixture.market_treasury,
     )
 }
 
@@ -1285,28 +1344,37 @@ fun destroy_test_fixture(fixture: TestFixture) {
         release_cap,
         runtime_cap,
         output_cap,
+        seal_policy_config,
         seal_registry,
         runtime_definitions,
         pack_registry,
         admission_authority,
         output_registry,
+        soul_registry,
         physical_registry,
         market_registry,
+        market_treasury,
     } = fixture;
+    let TestRegistry { id: seal_policy_config_id } = seal_policy_config;
     let TestRegistry { id: seal_id } = seal_registry;
     let TestRegistry { id: runtime_definitions_id } = runtime_definitions;
     let TestRegistry { id: pack_id } = pack_registry;
     let TestRegistry { id: admission_id } = admission_authority;
     let TestRegistry { id: output_id } = output_registry;
+    let TestRegistry { id: soul_id } = soul_registry;
     let TestRegistry { id: physical_id } = physical_registry;
     let TestRegistry { id: market_id } = market_registry;
+    let TestRegistry { id: market_treasury_id } = market_treasury;
+    seal_policy_config_id.delete();
     seal_id.delete();
     runtime_definitions_id.delete();
     pack_id.delete();
     admission_id.delete();
     output_id.delete();
+    soul_id.delete();
     physical_id.delete();
     market_id.delete();
+    market_treasury_id.delete();
     base::share_base_definition_registry_v8(base_registry);
     treasury::destroy_maker_treasury_for_testing(maker_treasury);
     maker::destroy_maker_for_testing(root, admin);
@@ -1330,8 +1398,16 @@ fun exact_terminal_activation_binds_all_capabilities() {
     let capability = maker::root_capability_registry_binding_v8(&fixture.root);
     assert!(maker::capability_output_registry_id_v8(capability)
         == object::id(&fixture.output_registry), 99);
+    assert!(maker::capability_soul_registry_id_v8(capability)
+        == object::id(&fixture.soul_registry), 99);
+    assert!(maker::capability_seal_policy_config_id_v8(capability)
+        == object::id(&fixture.seal_policy_config), 99);
+    assert!(maker::capability_seal_registry_id_v8(capability)
+        == object::id(&fixture.seal_registry), 99);
     assert!(maker::capability_pack_registry_id_v8(capability)
         == object::id(&fixture.pack_registry), 99);
+    assert!(maker::capability_market_treasury_id_v8(capability)
+        == object::id(&fixture.market_treasury), 99);
     destroy_test_fixture(fixture);
 }
 
@@ -1354,6 +1430,36 @@ fun zero_companion_id_is_rejected() {
     set_seal_registry_for_testing(&mut seal, object::id_from_address(@0x0));
     activate_fixture_with_readiness(
         &mut fixture, seal, runtime, output, physical, market, &ctx,
+    );
+    destroy_test_fixture(fixture);
+}
+
+#[test, expected_failure(abort_code = ERegistryCollision)]
+fun output_and_soul_registries_must_be_distinct() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 817, 0, 0, 0);
+    let mut fixture = new_test_fixture(&mut ctx);
+    let (seal, runtime, output, physical, market) = readiness_set_for_testing(
+        &fixture.root,
+        &fixture.catalog,
+        &fixture.seal_policy_config,
+        &fixture.seal_registry,
+        &fixture.runtime_definitions,
+        &fixture.pack_registry,
+        &fixture.admission_authority,
+        &fixture.output_registry,
+        &fixture.output_registry,
+        &fixture.physical_registry,
+        &fixture.market_registry,
+        &fixture.market_treasury,
+    );
+    activate_fixture_with_readiness(
+        &mut fixture,
+        seal,
+        runtime,
+        output,
+        physical,
+        market,
+        &ctx,
     );
     destroy_test_fixture(fixture);
 }
@@ -1422,8 +1528,9 @@ fun readiness_cap_cannot_cross_catalogs() {
         TestRegistry,
         TestRegistry,
         TestRegistry,
+        TestRegistry,
     >(&fixture.root, &catalog_b, &fixture.output_cap, &fixture.output_registry,
-        test_hash(31));
+        &fixture.soul_registry, test_hash(31));
     destroy_output_readiness_for_testing(readiness);
     binding::destroy_catalog_for_testing(catalog_b);
     destroy_test_fixture(fixture);
@@ -1438,8 +1545,9 @@ fun readiness_requires_exact_role_type_origin() {
         TestRegistry,
         TestRegistry,
         TestRegistry,
+        TestRegistry,
     >(&fixture.root, &fixture.catalog, &fixture.output_cap,
-        &fixture.output_registry, test_hash(31));
+        &fixture.output_registry, &fixture.soul_registry, test_hash(31));
     destroy_output_readiness_for_testing(readiness);
     destroy_test_fixture(fixture);
 }

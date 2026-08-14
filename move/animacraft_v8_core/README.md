@@ -53,9 +53,10 @@ AdminCap/current-owner operation, consumes the exact current enabled catalog
 proof, and rejects replacement. `activation_v8` then defines the five
 production no-ability proofs: Seal, Runtime activation, Output, Physical, and
 Market readiness. Each public certifier borrows the concrete role-typed call
-capability, checks the role's exact original/callable type origins, checks that
-the Root already carries the same catalog and complete call-cap set, derives
-every object ID from a live key reference, and commits an exact 32-byte
+capability, checks the role's exact original/callable marker lineage, checks
+the original TypeOrigin of every live generic object, checks that the Root
+already carries the same catalog and complete call-cap set, derives every
+object ID from a live key reference, and commits an exact 32-byte
 companion-owned readiness digest. Generic type instantiation is never treated
 as authority.
 
@@ -66,8 +67,10 @@ and exact Maker and Protocol treasuries, creates the Pack-admission binding
 from Runtime readiness internally, and invokes the package-only DRAFT to
 ACTIVE transition. It accepts no registry ID and emits no Core discovery
 event. The Root's BCS/SHA-256 `CapabilityRegistryBindingV8` records mask 127,
-the complete call-cap set, protocol/Base/treasury IDs, every companion object
-ID, and all five readiness commitments; zero or pairwise-colliding IDs abort.
+the complete call-cap set, protocol/Base/Maker/Protocol treasury IDs, Seal
+policy-config plus registry IDs, Runtime definition/Pack/admission IDs, Output
+plus Soul registry IDs, the Physical registry ID, Market registry plus treasury
+IDs, and all five readiness commitments; zero or pairwise-colliding IDs abort.
 
 ## Core objects and immutable snapshots
 
