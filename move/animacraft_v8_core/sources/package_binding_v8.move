@@ -11,6 +11,7 @@ use animacraft_v8_core::protocol_config_v8::{
 };
 use std::bcs;
 use std::hash;
+use std::option::{Self as option, Option};
 use std::string::String;
 use std::type_name;
 
@@ -25,7 +26,9 @@ const EBindingCommitmentMismatch: u64 = 3;
 const EPackageLineageMismatch: u64 = 4;
 const EProtocolCatalogMismatch: u64 = 5;
 const ECapabilityMismatch: u64 = 6;
-const EWitnessTypeMismatch: u64 = 7;
+const ECallCapUnavailable: u64 = 8;
+const ECallCapMismatch: u64 = 9;
+const ECallCapsNotInstalled: u64 = 10;
 
 /// Off-chain evidence committed by the protocol administrator after reading
 /// back the published package. Core cannot calculate these bytes on chain.
@@ -58,10 +61,6 @@ public struct ProductReleaseBindingV8 has copy, drop, store {
     physical: ExactPackageBindingV8,
     market: ExactPackageBindingV8,
     release: ExactPackageBindingV8,
-    release_witness_type: String,
-    release_authority_type: String,
-    runtime_pack_readiness_witness_type: String,
-    runtime_pack_authority_type: String,
     commitment: vector<u8>,
 }
 
@@ -74,6 +73,13 @@ public struct ProductReleaseCatalogV8 has key {
     protocol_config_revision: u64,
     protocol_config_commitment: vector<u8>,
     binding: ProductReleaseBindingV8,
+    call_cap_set: PackageCallCapSetBindingV8,
+    seal_call_cap: Option<PackageCallCapV8<SealRoleV8>>,
+    runtime_call_cap: Option<PackageCallCapV8<RuntimeRoleV8>>,
+    output_call_cap: Option<PackageCallCapV8<OutputRoleV8>>,
+    physical_call_cap: Option<PackageCallCapV8<PhysicalRoleV8>>,
+    market_call_cap: Option<PackageCallCapV8<MarketRoleV8>>,
+    release_call_cap: Option<PackageCallCapV8<ReleaseRoleV8>>,
 }
 
 /// Exact certified tuple copied into a Root. Fields are module-private, so a
@@ -84,12 +90,46 @@ public struct CertifiedProductReleaseBindingV8 has copy, drop, store {
     protocol_config_revision: u64,
     protocol_config_commitment: vector<u8>,
     binding: ProductReleaseBindingV8,
+    call_cap_set: PackageCallCapSetBindingV8,
 }
 
 /// Ephemeral Release-side proof. It intentionally has no abilities.
 public struct ReleaseCatalogWitnessV8 {
     certified: CertifiedProductReleaseBindingV8,
 }
+
+/// Concrete Core-defined call capabilities. Each has `store` but deliberately
+/// lacks copy/drop/key: protocol setup must move it into the corresponding
+/// exact companion's private config field. A transaction caller can neither
+/// synthesize nor extract a borrowed substitute from that config.
+public struct PackageCallCapV8<phantom Role> has store {
+    version: u64,
+    authority_id: ID,
+    catalog_id: ID,
+    product_binding_commitment: vector<u8>,
+    role_binding_commitment: vector<u8>,
+    call_cap_set_commitment: vector<u8>,
+}
+
+public struct PackageCallCapSetBindingV8 has copy, drop, store {
+    version: u64,
+    catalog_id: ID,
+    product_binding_commitment: vector<u8>,
+    seal_authority_id: ID,
+    runtime_authority_id: ID,
+    output_authority_id: ID,
+    physical_authority_id: ID,
+    market_authority_id: ID,
+    release_authority_id: ID,
+    commitment: vector<u8>,
+}
+
+public struct SealRoleV8 has drop {}
+public struct RuntimeRoleV8 has drop {}
+public struct OutputRoleV8 has drop {}
+public struct PhysicalRoleV8 has drop {}
+public struct MarketRoleV8 has drop {}
+public struct ReleaseRoleV8 has drop {}
 
 /// Ephemeral Runtime-side Pack readiness proof. It intentionally has no
 /// abilities and binds the immutable Root tuple plus concrete object IDs.
@@ -103,12 +143,6 @@ public struct RuntimePackReadinessV8 {
     admission_authority_id: ID,
     policy_commitment: vector<u8>,
 }
-
-#[test_only]
-public struct TestReleaseWitnessV8 {}
-
-#[test_only]
-public struct TestReleaseAuthorityV8 has key { id: UID }
 
 public struct ExactPackageBindingCommitmentInputV8 has drop {
     domain: vector<u8>,
@@ -131,10 +165,19 @@ public struct ProductReleaseBindingCommitmentInputV8 has drop {
     physical: ExactPackageBindingV8,
     market: ExactPackageBindingV8,
     release: ExactPackageBindingV8,
-    release_witness_type: String,
-    release_authority_type: String,
-    runtime_pack_readiness_witness_type: String,
-    runtime_pack_authority_type: String,
+}
+
+public struct PackageCallCapSetCommitmentInputV8 has drop {
+    domain: vector<u8>,
+    version: u64,
+    catalog_id: ID,
+    product_binding_commitment: vector<u8>,
+    seal_authority_id: ID,
+    runtime_authority_id: ID,
+    output_authority_id: ID,
+    physical_authority_id: ID,
+    market_authority_id: ID,
+    release_authority_id: ID,
 }
 
 public fun version_v8(): u64 { VERSION }
@@ -157,7 +200,7 @@ public fun new_package_commitments_v8(
 
 /// Creates the only production ProductRelease catalog path. Every role uses
 /// an original marker and an exact-version callable marker from one lineage.
-/// Readiness witness and certification-authority types are frozen exactly.
+/// It also creates one non-copy/non-drop call capability per companion role.
 public fun certify_product_release_catalog_v8<
     CoreOriginalMarker,
     CoreCallableMarker,
@@ -173,10 +216,6 @@ public fun certify_product_release_catalog_v8<
     MarketCallableMarker,
     ReleaseOriginalMarker,
     ReleaseCallableMarker,
-    ReleaseWitness,
-    ReleaseAuthority: key,
-    RuntimePackWitness,
-    RuntimePackAuthority: key,
 >(
     config: &ProtocolConfigV8,
     protocol_admin: &ProtocolAdminCapV8,
@@ -225,10 +264,6 @@ public fun certify_product_release_catalog_v8<
             == protocol::config_core_callable_package_id_v8(config),
         EProtocolCatalogMismatch,
     );
-    assert_witness_type<ReleaseWitness>(&release);
-    assert_witness_type<ReleaseAuthority>(&release);
-    assert_witness_type<RuntimePackWitness>(&runtime);
-    assert_witness_type<RuntimePackAuthority>(&runtime);
     let binding = new_product_release_binding(
         core,
         seal,
@@ -237,56 +272,167 @@ public fun certify_product_release_catalog_v8<
         physical,
         market,
         release,
-        type_name_string<ReleaseWitness>(),
-        type_name_string<ReleaseAuthority>(),
-        type_name_string<RuntimePackWitness>(),
-        type_name_string<RuntimePackAuthority>(),
     );
+    let catalog_uid = object::new(ctx);
+    let catalog_id = catalog_uid.to_inner();
+    let product_binding_commitment = binding.commitment;
+    let seal_authority_id = fresh_authority_id(ctx);
+    let runtime_authority_id = fresh_authority_id(ctx);
+    let output_authority_id = fresh_authority_id(ctx);
+    let physical_authority_id = fresh_authority_id(ctx);
+    let market_authority_id = fresh_authority_id(ctx);
+    let release_authority_id = fresh_authority_id(ctx);
+    let call_cap_set = new_call_cap_set_binding(
+        catalog_id,
+        product_binding_commitment,
+        seal_authority_id,
+        runtime_authority_id,
+        output_authority_id,
+        physical_authority_id,
+        market_authority_id,
+        release_authority_id,
+    );
+    let call_cap_set_commitment = call_cap_set.commitment;
     ProductReleaseCatalogV8 {
-        id: object::new(ctx),
+        id: catalog_uid,
         version: VERSION,
         protocol_config_id: protocol::config_id_v8(config),
         protocol_config_revision: protocol::config_revision_v8(config),
         protocol_config_commitment: *protocol::config_commitment_v8(config),
         binding,
+        call_cap_set,
+        seal_call_cap: option::some(PackageCallCapV8<SealRoleV8> {
+            version: VERSION,
+            authority_id: seal_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.seal.commitment,
+            call_cap_set_commitment,
+        }),
+        runtime_call_cap: option::some(PackageCallCapV8<RuntimeRoleV8> {
+            version: VERSION,
+            authority_id: runtime_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.runtime.commitment,
+            call_cap_set_commitment,
+        }),
+        output_call_cap: option::some(PackageCallCapV8<OutputRoleV8> {
+            version: VERSION,
+            authority_id: output_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.output.commitment,
+            call_cap_set_commitment,
+        }),
+        physical_call_cap: option::some(PackageCallCapV8<PhysicalRoleV8> {
+            version: VERSION,
+            authority_id: physical_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.physical.commitment,
+            call_cap_set_commitment,
+        }),
+        market_call_cap: option::some(PackageCallCapV8<MarketRoleV8> {
+            version: VERSION,
+            authority_id: market_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.market.commitment,
+            call_cap_set_commitment,
+        }),
+        release_call_cap: option::some(PackageCallCapV8<ReleaseRoleV8> {
+            version: VERSION,
+            authority_id: release_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.release.commitment,
+            call_cap_set_commitment,
+        }),
     }
 }
 
 public fun share_product_release_catalog_v8(catalog: ProductReleaseCatalogV8) {
+    assert!(catalog.seal_call_cap.is_none(), ECallCapsNotInstalled);
+    assert!(catalog.runtime_call_cap.is_none(), ECallCapsNotInstalled);
+    assert!(catalog.output_call_cap.is_none(), ECallCapsNotInstalled);
+    assert!(catalog.physical_call_cap.is_none(), ECallCapsNotInstalled);
+    assert!(catalog.market_call_cap.is_none(), ECallCapsNotInstalled);
+    assert!(catalog.release_call_cap.is_none(), ECallCapsNotInstalled);
     transfer::share_object(catalog);
 }
 
-/// The exact Release package must consume its private no-ability readiness
-/// witness before calling this function. The separately frozen key authority
-/// prevents an author from invoking the Core boundary directly.
-public fun certify_release_catalog_witness_v8<
-    ReleaseWitness,
-    ReleaseAuthority: key,
->(
+public fun take_seal_call_cap_v8(
     config: &ProtocolConfigV8,
-    catalog: &ProductReleaseCatalogV8,
-    authority: &ReleaseAuthority,
-): ReleaseCatalogWitnessV8 {
-    assert_catalog_current_v8(config, catalog);
-    assert_witness_type_name<ReleaseWitness>(
-        &catalog.binding.release,
-        &catalog.binding.release_witness_type,
-    );
-    assert_release_authority_v8(catalog, authority);
-    ReleaseCatalogWitnessV8 {
-        certified: certified_snapshot(catalog),
-    }
+    admin: &ProtocolAdminCapV8,
+    catalog: &mut ProductReleaseCatalogV8,
+): PackageCallCapV8<SealRoleV8> {
+    assert_catalog_setup_admin(config, admin, catalog);
+    assert!(catalog.seal_call_cap.is_some(), ECallCapUnavailable);
+    catalog.seal_call_cap.extract()
+}
+public fun take_runtime_call_cap_v8(
+    config: &ProtocolConfigV8,
+    admin: &ProtocolAdminCapV8,
+    catalog: &mut ProductReleaseCatalogV8,
+): PackageCallCapV8<RuntimeRoleV8> {
+    assert_catalog_setup_admin(config, admin, catalog);
+    assert!(catalog.runtime_call_cap.is_some(), ECallCapUnavailable);
+    catalog.runtime_call_cap.extract()
+}
+public fun take_output_call_cap_v8(
+    config: &ProtocolConfigV8,
+    admin: &ProtocolAdminCapV8,
+    catalog: &mut ProductReleaseCatalogV8,
+): PackageCallCapV8<OutputRoleV8> {
+    assert_catalog_setup_admin(config, admin, catalog);
+    assert!(catalog.output_call_cap.is_some(), ECallCapUnavailable);
+    catalog.output_call_cap.extract()
+}
+public fun take_physical_call_cap_v8(
+    config: &ProtocolConfigV8,
+    admin: &ProtocolAdminCapV8,
+    catalog: &mut ProductReleaseCatalogV8,
+): PackageCallCapV8<PhysicalRoleV8> {
+    assert_catalog_setup_admin(config, admin, catalog);
+    assert!(catalog.physical_call_cap.is_some(), ECallCapUnavailable);
+    catalog.physical_call_cap.extract()
+}
+public fun take_market_call_cap_v8(
+    config: &ProtocolConfigV8,
+    admin: &ProtocolAdminCapV8,
+    catalog: &mut ProductReleaseCatalogV8,
+): PackageCallCapV8<MarketRoleV8> {
+    assert_catalog_setup_admin(config, admin, catalog);
+    assert!(catalog.market_call_cap.is_some(), ECallCapUnavailable);
+    catalog.market_call_cap.extract()
+}
+public fun take_release_call_cap_v8(
+    config: &ProtocolConfigV8,
+    admin: &ProtocolAdminCapV8,
+    catalog: &mut ProductReleaseCatalogV8,
+): PackageCallCapV8<ReleaseRoleV8> {
+    assert_catalog_setup_admin(config, admin, catalog);
+    assert!(catalog.release_call_cap.is_some(), ECallCapUnavailable);
+    catalog.release_call_cap.extract()
 }
 
-/// The exact Runtime package must consume its private no-ability readiness
-/// witness into this tuple before calling Core. Its separately frozen key
-/// authority prevents witness/tuple substitution by an author.
-public fun certify_runtime_pack_readiness_v8<
-    RuntimePackWitness,
-    RuntimePackAuthority: key,
->(
+/// Exact Release borrows this capability only from its private configuration.
+public fun certify_release_catalog_witness_v8(
+    config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    authority: &RuntimePackAuthority,
+    cap: &PackageCallCapV8<ReleaseRoleV8>,
+): ReleaseCatalogWitnessV8 {
+    assert_catalog_current_v8(config, catalog);
+    assert_release_call_cap_v8(catalog, cap);
+    ReleaseCatalogWitnessV8 { certified: certified_snapshot(catalog) }
+}
+
+/// Exact Runtime calls this only after deriving every field from its live
+/// private registry state while borrowing its embedded Runtime capability.
+public(package) fun certify_runtime_pack_readiness_v8(
+    catalog: &ProductReleaseCatalogV8,
+    cap: &PackageCallCapV8<RuntimeRoleV8>,
     root_id: ID,
     root_version: u64,
     root_content_commitment: vector<u8>,
@@ -294,12 +440,7 @@ public fun certify_runtime_pack_readiness_v8<
     admission_authority_id: ID,
     policy_commitment: vector<u8>,
 ): RuntimePackReadinessV8 {
-    assert_catalog_well_formed(catalog);
-    assert_witness_type_name<RuntimePackWitness>(
-        &catalog.binding.runtime,
-        &catalog.binding.runtime_pack_readiness_witness_type,
-    );
-    assert_runtime_pack_authority_v8(catalog, authority);
+    assert_runtime_call_cap_v8(catalog, cap);
     assert_hash(&root_content_commitment);
     assert_hash(&policy_commitment);
     RuntimePackReadinessV8 {
@@ -314,29 +455,61 @@ public fun certify_runtime_pack_readiness_v8<
     }
 }
 
-/// Shared Release/transport trust boundary used by wrapped-rights
-/// certification. It proves the caller holds the exact authority type frozen
-/// into the protocol-admin catalog; it does not accept an author-created
-/// boolean or witness token.
-public fun assert_release_authority_v8<ReleaseAuthority: key>(
+public fun assert_seal_call_cap_v8(
     catalog: &ProductReleaseCatalogV8,
-    _authority: &ReleaseAuthority,
+    cap: &PackageCallCapV8<SealRoleV8>,
+) { assert_call_cap(catalog, cap, &catalog.binding.seal, catalog.call_cap_set.seal_authority_id) }
+public fun assert_runtime_call_cap_v8(
+    catalog: &ProductReleaseCatalogV8,
+    cap: &PackageCallCapV8<RuntimeRoleV8>,
+) { assert_call_cap(catalog, cap, &catalog.binding.runtime, catalog.call_cap_set.runtime_authority_id) }
+public fun assert_output_call_cap_v8(
+    catalog: &ProductReleaseCatalogV8,
+    cap: &PackageCallCapV8<OutputRoleV8>,
+) { assert_call_cap(catalog, cap, &catalog.binding.output, catalog.call_cap_set.output_authority_id) }
+public fun assert_physical_call_cap_v8(
+    catalog: &ProductReleaseCatalogV8,
+    cap: &PackageCallCapV8<PhysicalRoleV8>,
+) { assert_call_cap(catalog, cap, &catalog.binding.physical, catalog.call_cap_set.physical_authority_id) }
+public fun assert_market_call_cap_v8(
+    catalog: &ProductReleaseCatalogV8,
+    cap: &PackageCallCapV8<MarketRoleV8>,
+) { assert_call_cap(catalog, cap, &catalog.binding.market, catalog.call_cap_set.market_authority_id) }
+public fun assert_release_call_cap_v8(
+    catalog: &ProductReleaseCatalogV8,
+    cap: &PackageCallCapV8<ReleaseRoleV8>,
+) { assert_call_cap(catalog, cap, &catalog.binding.release, catalog.call_cap_set.release_authority_id) }
+
+fun assert_catalog_setup_admin(
+    config: &ProtocolConfigV8,
+    admin: &ProtocolAdminCapV8,
+    catalog: &ProductReleaseCatalogV8,
 ) {
-    assert_catalog_well_formed(catalog);
-    assert_witness_type_name<ReleaseAuthority>(
-        &catalog.binding.release,
-        &catalog.binding.release_authority_type,
-    );
+    protocol::assert_protocol_admin_v8(config, admin);
+    assert_catalog_current_v8(config, catalog);
 }
 
-public fun assert_runtime_pack_authority_v8<RuntimePackAuthority: key>(
+fun assert_call_cap<Role>(
     catalog: &ProductReleaseCatalogV8,
-    _authority: &RuntimePackAuthority,
+    cap: &PackageCallCapV8<Role>,
+    role: &ExactPackageBindingV8,
+    authority_id: ID,
 ) {
     assert_catalog_well_formed(catalog);
-    assert_witness_type_name<RuntimePackAuthority>(
-        &catalog.binding.runtime,
-        &catalog.binding.runtime_pack_authority_type,
+    assert!(cap.version == VERSION, ECallCapMismatch);
+    assert!(cap.authority_id == authority_id, ECallCapMismatch);
+    assert!(cap.catalog_id == object::id(catalog), ECallCapMismatch);
+    assert!(
+        &cap.product_binding_commitment == &catalog.binding.commitment,
+        ECallCapMismatch,
+    );
+    assert!(
+        &cap.role_binding_commitment == &role.commitment,
+        ECallCapMismatch,
+    );
+    assert!(
+        &cap.call_cap_set_commitment == &catalog.call_cap_set.commitment,
+        ECallCapMismatch,
     );
 }
 
@@ -382,6 +555,11 @@ public fun assert_certified_binding_v8(
 ) {
     assert_product_release_binding_well_formed_v8(&certified.binding);
     assert_hash(&certified.protocol_config_commitment);
+    assert_call_cap_set_well_formed(
+        &certified.call_cap_set,
+        certified.catalog_id,
+        certified.binding.commitment,
+    );
 }
 
 public(package) fun consume_release_catalog_witness_v8(
@@ -467,11 +645,6 @@ public fun assert_product_release_binding_well_formed_v8(
             physical: binding.physical,
             market: binding.market,
             release: binding.release,
-            release_witness_type: binding.release_witness_type,
-            release_authority_type: binding.release_authority_type,
-            runtime_pack_readiness_witness_type:
-                binding.runtime_pack_readiness_witness_type,
-            runtime_pack_authority_type: binding.runtime_pack_authority_type,
         },
     ));
     assert!(&expected == &binding.commitment, EBindingCommitmentMismatch);
@@ -498,10 +671,6 @@ fun new_product_release_binding(
     physical: ExactPackageBindingV8,
     market: ExactPackageBindingV8,
     release: ExactPackageBindingV8,
-    release_witness_type: String,
-    release_authority_type: String,
-    runtime_pack_readiness_witness_type: String,
-    runtime_pack_authority_type: String,
 ): ProductReleaseBindingV8 {
     assert_binding_well_formed(&core);
     assert_binding_well_formed(&seal);
@@ -531,10 +700,6 @@ fun new_product_release_binding(
             physical,
             market,
             release,
-            release_witness_type,
-            release_authority_type,
-            runtime_pack_readiness_witness_type,
-            runtime_pack_authority_type,
         },
     ));
     ProductReleaseBindingV8 {
@@ -547,12 +712,53 @@ fun new_product_release_binding(
         physical,
         market,
         release,
-        release_witness_type,
-        release_authority_type,
-        runtime_pack_readiness_witness_type,
-        runtime_pack_authority_type,
         commitment,
     }
+}
+
+fun new_call_cap_set_binding(
+    catalog_id: ID,
+    product_binding_commitment: vector<u8>,
+    seal_authority_id: ID,
+    runtime_authority_id: ID,
+    output_authority_id: ID,
+    physical_authority_id: ID,
+    market_authority_id: ID,
+    release_authority_id: ID,
+): PackageCallCapSetBindingV8 {
+    let commitment = hash::sha2_256(bcs::to_bytes(
+        &PackageCallCapSetCommitmentInputV8 {
+            domain: b"animacraft-v8/package-call-cap-set",
+            version: VERSION,
+            catalog_id,
+            product_binding_commitment,
+            seal_authority_id,
+            runtime_authority_id,
+            output_authority_id,
+            physical_authority_id,
+            market_authority_id,
+            release_authority_id,
+        },
+    ));
+    PackageCallCapSetBindingV8 {
+        version: VERSION,
+        catalog_id,
+        product_binding_commitment,
+        seal_authority_id,
+        runtime_authority_id,
+        output_authority_id,
+        physical_authority_id,
+        market_authority_id,
+        release_authority_id,
+        commitment,
+    }
+}
+
+fun fresh_authority_id(ctx: &mut TxContext): ID {
+    let nonce = object::new(ctx);
+    let id = nonce.to_inner();
+    nonce.delete();
+    id
 }
 
 fun new_binding(
@@ -595,6 +801,7 @@ fun certified_snapshot(
         protocol_config_revision: catalog.protocol_config_revision,
         protocol_config_commitment: catalog.protocol_config_commitment,
         binding: catalog.binding,
+        call_cap_set: catalog.call_cap_set,
     }
 }
 
@@ -602,6 +809,39 @@ fun assert_catalog_well_formed(catalog: &ProductReleaseCatalogV8) {
     assert!(catalog.version == VERSION, EProtocolCatalogMismatch);
     assert_hash(&catalog.protocol_config_commitment);
     assert_product_release_binding_well_formed_v8(&catalog.binding);
+    assert_call_cap_set_well_formed(
+        &catalog.call_cap_set,
+        object::id(catalog),
+        catalog.binding.commitment,
+    );
+}
+
+fun assert_call_cap_set_well_formed(
+    call_cap_set: &PackageCallCapSetBindingV8,
+    catalog_id: ID,
+    product_binding_commitment: vector<u8>,
+) {
+    assert!(call_cap_set.version == VERSION, ECallCapMismatch);
+    assert!(call_cap_set.catalog_id == catalog_id, ECallCapMismatch);
+    assert!(
+        &call_cap_set.product_binding_commitment == &product_binding_commitment,
+        ECallCapMismatch,
+    );
+    let expected = hash::sha2_256(bcs::to_bytes(
+        &PackageCallCapSetCommitmentInputV8 {
+            domain: b"animacraft-v8/package-call-cap-set",
+            version: call_cap_set.version,
+            catalog_id: call_cap_set.catalog_id,
+            product_binding_commitment: call_cap_set.product_binding_commitment,
+            seal_authority_id: call_cap_set.seal_authority_id,
+            runtime_authority_id: call_cap_set.runtime_authority_id,
+            output_authority_id: call_cap_set.output_authority_id,
+            physical_authority_id: call_cap_set.physical_authority_id,
+            market_authority_id: call_cap_set.market_authority_id,
+            release_authority_id: call_cap_set.release_authority_id,
+        },
+    ));
+    assert!(&expected == &call_cap_set.commitment, ECallCapMismatch);
 }
 
 fun assert_binding_well_formed(binding: &ExactPackageBindingV8) {
@@ -628,31 +868,6 @@ fun assert_same_lineage<OriginalMarker, CallableMarker>() {
             == type_name::original_id<CallableMarker>(),
         EPackageLineageMismatch,
     );
-}
-
-fun assert_witness_type<Witness>(binding: &ExactPackageBindingV8) {
-    assert!(
-        binding.original_package_id
-            == object::id_from_address(type_name::original_id<Witness>()),
-        EWitnessTypeMismatch,
-    );
-    assert!(
-        binding.callable_package_id
-            == object::id_from_address(type_name::defining_id<Witness>()),
-        EWitnessTypeMismatch,
-    );
-}
-
-fun assert_witness_type_name<Witness>(
-    binding: &ExactPackageBindingV8,
-    expected_type: &String,
-) {
-    assert_witness_type<Witness>(binding);
-    assert!(&type_name_string<Witness>() == expected_type, EWitnessTypeMismatch);
-}
-
-fun type_name_string<T>(): String {
-    std::string::from_ascii(type_name::with_defining_ids<T>().into_string())
 }
 
 /// Rejects collisions across roles in either column, including cross-column
@@ -786,18 +1001,36 @@ public fun market_binding_v8(binding: &ProductReleaseBindingV8): &ExactPackageBi
 public fun release_binding_v8(binding: &ProductReleaseBindingV8): &ExactPackageBindingV8 {
     &binding.release
 }
-public fun release_witness_type_v8(binding: &ProductReleaseBindingV8): &String {
-    &binding.release_witness_type
+public fun catalog_call_cap_set_v8(
+    catalog: &ProductReleaseCatalogV8,
+): &PackageCallCapSetBindingV8 { &catalog.call_cap_set }
+public fun certified_call_cap_set_v8(
+    certified: &CertifiedProductReleaseBindingV8,
+): &PackageCallCapSetBindingV8 { &certified.call_cap_set }
+public fun call_cap_set_commitment_v8(
+    binding: &PackageCallCapSetBindingV8,
+): &vector<u8> { &binding.commitment }
+public fun call_cap_authority_id_v8<Role>(cap: &PackageCallCapV8<Role>): ID {
+    cap.authority_id
 }
-public fun release_authority_type_v8(binding: &ProductReleaseBindingV8): &String {
-    &binding.release_authority_type
+public fun seal_authority_id_v8(binding: &PackageCallCapSetBindingV8): ID {
+    binding.seal_authority_id
 }
-public fun runtime_pack_readiness_witness_type_v8(
-    binding: &ProductReleaseBindingV8,
-): &String { &binding.runtime_pack_readiness_witness_type }
-public fun runtime_pack_authority_type_v8(
-    binding: &ProductReleaseBindingV8,
-): &String { &binding.runtime_pack_authority_type }
+public fun runtime_authority_id_v8(binding: &PackageCallCapSetBindingV8): ID {
+    binding.runtime_authority_id
+}
+public fun output_authority_id_v8(binding: &PackageCallCapSetBindingV8): ID {
+    binding.output_authority_id
+}
+public fun physical_authority_id_v8(binding: &PackageCallCapSetBindingV8): ID {
+    binding.physical_authority_id
+}
+public fun market_authority_id_v8(binding: &PackageCallCapSetBindingV8): ID {
+    binding.market_authority_id
+}
+public fun release_authority_id_v8(binding: &PackageCallCapSetBindingV8): ID {
+    binding.release_authority_id
+}
 
 #[test_only]
 public fun new_exact_package_binding_for_testing(
@@ -829,78 +1062,93 @@ public fun product_release_catalog_for_testing(
         new_exact_package_binding_for_testing(@0x14, @0x24, 13),
         new_exact_package_binding_for_testing(@0x15, @0x25, 16),
         new_exact_package_binding_for_testing(@0x16, @0x26, 19),
-        b"test-release-witness".to_string(),
-        b"test-release-authority".to_string(),
-        b"test-runtime-witness".to_string(),
-        b"test-runtime-authority".to_string(),
     );
-    ProductReleaseCatalogV8 {
-        id: object::new(ctx),
-        version: VERSION,
-        protocol_config_id: protocol::config_id_v8(config),
-        protocol_config_revision: protocol::config_revision_v8(config),
-        protocol_config_commitment: *protocol::config_commitment_v8(config),
-        binding,
-    }
+    catalog_from_binding_for_testing(config, binding, ctx)
 }
 
 #[test_only]
-public fun authority_catalog_for_testing(
+fun catalog_from_binding_for_testing(
     config: &ProtocolConfigV8,
+    binding: ProductReleaseBindingV8,
     ctx: &mut TxContext,
 ): ProductReleaseCatalogV8 {
-    let release_original = type_name::original_id<TestReleaseAuthorityV8>();
-    let release_callable = type_name::defining_id<TestReleaseAuthorityV8>();
-    let runtime_original = type_name::original_id<sui::clock::Clock>();
-    let runtime_callable = type_name::defining_id<sui::clock::Clock>();
-    let binding = new_product_release_binding(
-        new_exact_package_binding_for_testing(@0x10, @0x20, 1),
-        new_exact_package_binding_for_testing(@0x11, @0x21, 4),
-        new_binding(
-            object::id_from_address(runtime_original),
-            object::id_from_address(runtime_callable),
-            test_hash(7),
-            test_hash(8),
-            test_hash(9),
-        ),
-        new_exact_package_binding_for_testing(@0x13, @0x23, 10),
-        new_exact_package_binding_for_testing(@0x14, @0x24, 13),
-        new_exact_package_binding_for_testing(@0x15, @0x25, 16),
-        new_binding(
-            object::id_from_address(release_original),
-            object::id_from_address(release_callable),
-            test_hash(19),
-            test_hash(20),
-            test_hash(21),
-        ),
-        type_name_string<TestReleaseWitnessV8>(),
-        type_name_string<TestReleaseAuthorityV8>(),
-        type_name_string<sui::clock::Clock>(),
-        type_name_string<sui::clock::Clock>(),
+    let catalog_uid = object::new(ctx);
+    let catalog_id = catalog_uid.to_inner();
+    let product_binding_commitment = binding.commitment;
+    let seal_authority_id = fresh_authority_id(ctx);
+    let runtime_authority_id = fresh_authority_id(ctx);
+    let output_authority_id = fresh_authority_id(ctx);
+    let physical_authority_id = fresh_authority_id(ctx);
+    let market_authority_id = fresh_authority_id(ctx);
+    let release_authority_id = fresh_authority_id(ctx);
+    let call_cap_set = new_call_cap_set_binding(
+        catalog_id,
+        product_binding_commitment,
+        seal_authority_id,
+        runtime_authority_id,
+        output_authority_id,
+        physical_authority_id,
+        market_authority_id,
+        release_authority_id,
     );
+    let call_cap_set_commitment = call_cap_set.commitment;
     ProductReleaseCatalogV8 {
-        id: object::new(ctx),
+        id: catalog_uid,
         version: VERSION,
         protocol_config_id: protocol::config_id_v8(config),
         protocol_config_revision: protocol::config_revision_v8(config),
         protocol_config_commitment: *protocol::config_commitment_v8(config),
         binding,
+        call_cap_set,
+        seal_call_cap: option::some(PackageCallCapV8<SealRoleV8> {
+            version: VERSION,
+            authority_id: seal_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.seal.commitment,
+            call_cap_set_commitment,
+        }),
+        runtime_call_cap: option::some(PackageCallCapV8<RuntimeRoleV8> {
+            version: VERSION,
+            authority_id: runtime_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.runtime.commitment,
+            call_cap_set_commitment,
+        }),
+        output_call_cap: option::some(PackageCallCapV8<OutputRoleV8> {
+            version: VERSION,
+            authority_id: output_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.output.commitment,
+            call_cap_set_commitment,
+        }),
+        physical_call_cap: option::some(PackageCallCapV8<PhysicalRoleV8> {
+            version: VERSION,
+            authority_id: physical_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.physical.commitment,
+            call_cap_set_commitment,
+        }),
+        market_call_cap: option::some(PackageCallCapV8<MarketRoleV8> {
+            version: VERSION,
+            authority_id: market_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.market.commitment,
+            call_cap_set_commitment,
+        }),
+        release_call_cap: option::some(PackageCallCapV8<ReleaseRoleV8> {
+            version: VERSION,
+            authority_id: release_authority_id,
+            catalog_id,
+            product_binding_commitment,
+            role_binding_commitment: binding.release.commitment,
+            call_cap_set_commitment,
+        }),
     }
-}
-
-#[test_only]
-public fun new_release_authority_for_testing(
-    ctx: &mut TxContext,
-): TestReleaseAuthorityV8 {
-    TestReleaseAuthorityV8 { id: object::new(ctx) }
-}
-
-#[test_only]
-public fun destroy_release_authority_for_testing(
-    authority: TestReleaseAuthorityV8,
-) {
-    let TestReleaseAuthorityV8 { id } = authority;
-    id.delete();
 }
 
 #[test_only]
@@ -941,8 +1189,49 @@ public fun destroy_catalog_for_testing(catalog: ProductReleaseCatalogV8) {
         protocol_config_revision: _,
         protocol_config_commitment: _,
         binding: _,
+        call_cap_set: _,
+        seal_call_cap,
+        runtime_call_cap,
+        output_call_cap,
+        physical_call_cap,
+        market_call_cap,
+        release_call_cap,
     } = catalog;
+    destroy_optional_call_cap_for_testing(seal_call_cap);
+    destroy_optional_call_cap_for_testing(runtime_call_cap);
+    destroy_optional_call_cap_for_testing(output_call_cap);
+    destroy_optional_call_cap_for_testing(physical_call_cap);
+    destroy_optional_call_cap_for_testing(market_call_cap);
+    destroy_optional_call_cap_for_testing(release_call_cap);
     id.delete();
+}
+
+#[test_only]
+fun destroy_optional_call_cap_for_testing<Role>(cap: Option<PackageCallCapV8<Role>>) {
+    if (cap.is_some()) {
+        let PackageCallCapV8 {
+            version: _,
+            authority_id: _,
+            catalog_id: _,
+            product_binding_commitment: _,
+            role_binding_commitment: _,
+            call_cap_set_commitment: _,
+        } = cap.destroy_some();
+    } else {
+        cap.destroy_none();
+    }
+}
+
+#[test_only]
+public fun destroy_call_cap_for_testing<Role>(cap: PackageCallCapV8<Role>) {
+    let PackageCallCapV8 {
+        version: _,
+        authority_id: _,
+        catalog_id: _,
+        product_binding_commitment: _,
+        role_binding_commitment: _,
+        call_cap_set_commitment: _,
+    } = cap;
 }
 
 #[test_only]
@@ -986,10 +1275,6 @@ fun cross_column_role_collision_is_rejected() {
         new_exact_package_binding_for_testing(@0x14, @0x24, 13),
         new_exact_package_binding_for_testing(@0x15, @0x25, 16),
         new_exact_package_binding_for_testing(@0x16, @0x26, 19),
-        b"release".to_string(),
-        b"release-authority".to_string(),
-        b"runtime".to_string(),
-        b"runtime-authority".to_string(),
     );
 }
 
@@ -1004,10 +1289,6 @@ fun same_column_role_collision_is_rejected() {
         new_exact_package_binding_for_testing(@0x14, @0x24, 10),
         new_exact_package_binding_for_testing(@0x15, @0x25, 13),
         new_exact_package_binding_for_testing(@0x16, @0x26, 16),
-        b"release".to_string(),
-        b"release-authority".to_string(),
-        b"runtime".to_string(),
-        b"runtime-authority".to_string(),
     );
 }
 
@@ -1048,10 +1329,6 @@ fun maker_author_cannot_certify_roles_without_exact_protocol_admin() {
         ProductReleaseCatalogV8,
         ProductReleaseBindingV8,
         ProductReleaseCatalogV8,
-        ProductReleaseBindingV8,
-        ProductReleaseCatalogV8,
-        ProductReleaseBindingV8,
-        ProductReleaseCatalogV8,
     >(
         &config_a,
         &cap_b,
@@ -1067,4 +1344,71 @@ fun maker_author_cannot_certify_roles_without_exact_protocol_admin() {
     destroy_catalog_for_testing(catalog);
     protocol::destroy_protocol_for_testing(config_a, cap_a);
     protocol::destroy_protocol_for_testing(config_b, cap_b);
+}
+
+#[test]
+fun exact_call_caps_are_taken_once_before_catalog_share() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 702, 0, 0, 0);
+    let (config, protocol_cap) =
+        protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
+    let mut catalog = product_release_catalog_for_testing(
+        &config,
+        @0x10,
+        @0x20,
+        &mut ctx,
+    );
+    let seal = take_seal_call_cap_v8(&config, &protocol_cap, &mut catalog);
+    let runtime = take_runtime_call_cap_v8(&config, &protocol_cap, &mut catalog);
+    let output = take_output_call_cap_v8(&config, &protocol_cap, &mut catalog);
+    let physical = take_physical_call_cap_v8(&config, &protocol_cap, &mut catalog);
+    let market = take_market_call_cap_v8(&config, &protocol_cap, &mut catalog);
+    let release = take_release_call_cap_v8(&config, &protocol_cap, &mut catalog);
+    assert_seal_call_cap_v8(&catalog, &seal);
+    assert_runtime_call_cap_v8(&catalog, &runtime);
+    assert_output_call_cap_v8(&catalog, &output);
+    assert_physical_call_cap_v8(&catalog, &physical);
+    assert_market_call_cap_v8(&catalog, &market);
+    assert_release_call_cap_v8(&catalog, &release);
+    destroy_call_cap_for_testing(seal);
+    destroy_call_cap_for_testing(runtime);
+    destroy_call_cap_for_testing(output);
+    destroy_call_cap_for_testing(physical);
+    destroy_call_cap_for_testing(market);
+    destroy_call_cap_for_testing(release);
+    share_product_release_catalog_v8(catalog);
+    protocol::destroy_protocol_for_testing(config, protocol_cap);
+}
+
+#[test, expected_failure(abort_code = ECallCapsNotInstalled)]
+fun catalog_cannot_share_before_all_caps_are_installed() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 703, 0, 0, 0);
+    let (config, protocol_cap) =
+        protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
+    let catalog = product_release_catalog_for_testing(
+        &config,
+        @0x10,
+        @0x20,
+        &mut ctx,
+    );
+    share_product_release_catalog_v8(catalog);
+    protocol::destroy_protocol_for_testing(config, protocol_cap);
+}
+
+#[test, expected_failure(abort_code = ECallCapUnavailable)]
+fun call_cap_cannot_be_taken_twice() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 704, 0, 0, 0);
+    let (config, protocol_cap) =
+        protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
+    let mut catalog = product_release_catalog_for_testing(
+        &config,
+        @0x10,
+        @0x20,
+        &mut ctx,
+    );
+    let first = take_runtime_call_cap_v8(&config, &protocol_cap, &mut catalog);
+    let second = take_runtime_call_cap_v8(&config, &protocol_cap, &mut catalog);
+    destroy_call_cap_for_testing(first);
+    destroy_call_cap_for_testing(second);
+    destroy_catalog_for_testing(catalog);
+    protocol::destroy_protocol_for_testing(config, protocol_cap);
 }

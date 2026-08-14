@@ -17,8 +17,11 @@ use animacraft_v8_core::maker_v8::{
 };
 use animacraft_v8_core::package_binding_v8::{
     Self as binding,
+    PackageCallCapV8,
     PackageCommitmentsV8,
     ProductReleaseCatalogV8,
+    ReleaseRoleV8,
+    RuntimeRoleV8,
 };
 use animacraft_v8_core::protocol_config_v8::{
     CorePackageMarkerV8,
@@ -59,10 +62,36 @@ public struct WrappedRightsEvidenceWitnessV8 {
     terms_commitment: vector<u8>,
 }
 
-/// Persistent authorities are distinct from ephemeral no-ability witnesses.
-/// Only the defining companion package can create or transfer these objects.
-public struct ReleaseCertificationAuthorityV8 has key { id: UID }
-public struct RuntimePackCertificationAuthorityV8 has key { id: UID }
+public fun consume_runtime_witness_for_compile_probe(
+    witness: RuntimePackReadinessWitnessV8,
+): (ID, u64, vector<u8>, ID, ID, vector<u8>) {
+    let RuntimePackReadinessWitnessV8 {
+        root_id,
+        root_version,
+        root_content_commitment,
+        pack_registry_id,
+        admission_authority_id,
+        policy_commitment,
+    } = witness;
+    (
+        root_id,
+        root_version,
+        root_content_commitment,
+        pack_registry_id,
+        admission_authority_id,
+        policy_commitment,
+    )
+}
+
+/// Exact companion configs privately wrap the one-use Core call capability.
+public struct ReleasePackageConfigV8 has key {
+    id: UID,
+    call_cap: PackageCallCapV8<ReleaseRoleV8>,
+}
+public struct RuntimePackageConfigV8 has key {
+    id: UID,
+    call_cap: PackageCallCapV8<RuntimeRoleV8>,
+}
 
 /// A real companion must be able to bind its immutable runtime rows to the
 /// exact sealed Base definitions without package-private field access.
@@ -181,10 +210,6 @@ public fun compile_protocol_catalog_certification(
         MarketMarkerV8,
         ReleaseMarkerV8,
         ReleaseMarkerV8,
-        ReleaseReadinessWitnessV8,
-        ReleaseCertificationAuthorityV8,
-        RuntimePackReadinessWitnessV8,
-        RuntimePackCertificationAuthorityV8,
     >(
         config,
         protocol_admin,
@@ -199,20 +224,43 @@ public fun compile_protocol_catalog_certification(
     )
 }
 
+public fun compile_install_release_and_runtime_caps(
+    config: &ProtocolConfigV8,
+    protocol_admin: &ProtocolAdminCapV8,
+    catalog: &mut ProductReleaseCatalogV8,
+    ctx: &mut TxContext,
+) {
+    let release_call_cap = binding::take_release_call_cap_v8(
+        config,
+        protocol_admin,
+        catalog,
+    );
+    let runtime_call_cap = binding::take_runtime_call_cap_v8(
+        config,
+        protocol_admin,
+        catalog,
+    );
+    transfer::share_object(ReleasePackageConfigV8 {
+        id: object::new(ctx),
+        call_cap: release_call_cap,
+    });
+    transfer::share_object(RuntimePackageConfigV8 {
+        id: object::new(ctx),
+        call_cap: runtime_call_cap,
+    });
+}
+
 public fun compile_release_enforcement<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
     config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
     witness: ReleaseReadinessWitnessV8,
-    authority: &ReleaseCertificationAuthorityV8,
+    release_config: &ReleasePackageConfigV8,
     ctx: &TxContext,
 ) {
     let ReleaseReadinessWitnessV8 { ready } = witness;
     assert!(ready, 0);
-    let product = binding::catalog_binding_v8(catalog);
-    let _ = binding::release_witness_type_v8(product);
-    let _ = binding::release_authority_type_v8(product);
     maker::assert_creator_v8(root, maker::root_creator_v8(root));
     maker::assert_current_protocol_config_v8(root, config);
     let economics = maker::root_economics_v8(root);
@@ -238,59 +286,20 @@ public fun compile_release_enforcement<PaymentCoin>(
     let _ = maker::rights_soul_creator_royalty_bps_v8(&rights);
     let _ = maker::rights_maker_source_royalty_bps_v8(&rights);
     let _ = maker::rights_maker_resale_royalty_bps_v8(&rights);
-    let certified = binding::certify_release_catalog_witness_v8<
-        ReleaseReadinessWitnessV8,
-        ReleaseCertificationAuthorityV8,
-    >(
+    let certified = binding::certify_release_catalog_witness_v8(
         config,
         catalog,
-        authority,
+        &release_config.call_cap,
     );
     maker::finalize_product_release_binding_v8(root, admin, config, certified, ctx);
     let _ = maker::root_product_release_catalog_id_v8(root);
     assert!(maker::root_native_capability_mask_v8(root) == 127, 0);
 }
 
-public fun compile_runtime_pack_readiness<PaymentCoin>(
-    root: &mut MakerRootV8<PaymentCoin>,
-    admin: &MakerAdminCapV8,
-    config: &ProtocolConfigV8,
-    catalog: &ProductReleaseCatalogV8,
-    witness: RuntimePackReadinessWitnessV8,
-    authority: &RuntimePackCertificationAuthorityV8,
-    ctx: &TxContext,
-) {
-    let RuntimePackReadinessWitnessV8 {
-        root_id,
-        root_version,
-        root_content_commitment,
-        pack_registry_id,
-        admission_authority_id,
-        policy_commitment,
-    } = witness;
-    let product = binding::catalog_binding_v8(catalog);
-    let _ = binding::runtime_pack_readiness_witness_type_v8(product);
-    let _ = binding::runtime_pack_authority_type_v8(product);
-    let readiness = binding::certify_runtime_pack_readiness_v8<
-        RuntimePackReadinessWitnessV8,
-        RuntimePackCertificationAuthorityV8,
-    >(
-        catalog,
-        authority,
-        root_id,
-        root_version,
-        root_content_commitment,
-        pack_registry_id,
-        admission_authority_id,
-        policy_commitment,
-    );
-    maker::finalize_pack_admission_binding_v8(root, admin, config, readiness, ctx);
-}
-
 public fun compile_wrapped_rights_certification(
     config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    authority: &ReleaseCertificationAuthorityV8,
+    release_config: &ReleasePackageConfigV8,
     witness: WrappedRightsEvidenceWitnessV8,
     ctx: &TxContext,
 ): RightsSnapshotV8 {
@@ -303,7 +312,7 @@ public fun compile_wrapped_rights_certification(
     let certification = maker::certify_wrapped_rights_v8(
         config,
         catalog,
-        authority,
+        &release_config.call_cap,
         evidence_locator,
         evidence_blob_id,
         evidence_sha256,

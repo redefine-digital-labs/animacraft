@@ -389,10 +389,10 @@ public fun new_onchain_native_rights_snapshot_v8(
 
 /// Release/transport certifies exact wrapped evidence for the transaction
 /// signer. No author-controlled confirmation booleans enter this boundary.
-public fun certify_wrapped_rights_v8<ReleaseAuthority: key>(
+public fun certify_wrapped_rights_v8(
     config: &ProtocolConfigV8,
     catalog: &ProductReleaseCatalogV8,
-    authority: &ReleaseAuthority,
+    release_cap: &package_binding::PackageCallCapV8<package_binding::ReleaseRoleV8>,
     evidence_locator: String,
     evidence_blob_id: String,
     evidence_sha256: vector<u8>,
@@ -400,7 +400,7 @@ public fun certify_wrapped_rights_v8<ReleaseAuthority: key>(
     ctx: &TxContext,
 ): WrappedRightsCertificationV8 {
     package_binding::assert_catalog_current_v8(config, catalog);
-    package_binding::assert_release_authority_v8(catalog, authority);
+    package_binding::assert_release_call_cap_v8(catalog, release_cap);
     assert_non_empty_bounded(&evidence_locator, MAX_EVIDENCE_LOCATOR_BYTES);
     assert_non_empty_bounded(&evidence_blob_id, MAX_BLOB_ID_BYTES);
     assert_hash(&evidence_sha256);
@@ -909,7 +909,7 @@ public fun finalize_product_release_binding_v8<PaymentCoin>(
 /// Binds only the stable Pack registry/admission authority and immutable
 /// policy. It intentionally records no Pack count, release set, or registry
 /// revision; those remain Runtime-owned CAS state after activation.
-public fun finalize_pack_admission_binding_v8<PaymentCoin>(
+public(package) fun finalize_pack_admission_binding_v8<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
     config: &ProtocolConfigV8,
@@ -1840,6 +1840,19 @@ fun wrapped_rights_certification_for_testing(
 }
 
 #[test_only]
+fun new_test_catalog_for_config(
+    config: &ProtocolConfigV8,
+    ctx: &mut TxContext,
+): ProductReleaseCatalogV8 {
+    package_binding::product_release_catalog_for_testing(
+        config,
+        @0x10,
+        @0x20,
+        ctx,
+    )
+}
+
+#[test_only]
 fun new_test_catalog(
     config: &ProtocolConfigV8,
     root: &MakerRootV8<sui::sui::SUI>,
@@ -2112,12 +2125,16 @@ fun wrapped_rights_require_exact_catalog_release_authority() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 192, 0, 0, 0);
     let (config, protocol_cap) =
         protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
-    let catalog = package_binding::authority_catalog_for_testing(&config, &mut ctx);
-    let authority = package_binding::new_release_authority_for_testing(&mut ctx);
+    let mut catalog = new_test_catalog_for_config(&config, &mut ctx);
+    let release_cap = package_binding::take_release_call_cap_v8(
+        &config,
+        &protocol_cap,
+        &mut catalog,
+    );
     let certification = certify_wrapped_rights_v8(
         &config,
         &catalog,
-        &authority,
+        &release_cap,
         b"https://license.example/exact".to_string(),
         b"license-blob".to_string(),
         test_hash(40),
@@ -2139,22 +2156,27 @@ fun wrapped_rights_require_exact_catalog_release_authority() {
             ),
         EInvalidRights,
     );
-    package_binding::destroy_release_authority_for_testing(authority);
+    package_binding::destroy_call_cap_for_testing(release_cap);
     package_binding::destroy_catalog_for_testing(catalog);
     protocol::destroy_protocol_for_testing(config, protocol_cap);
 }
 
-#[test, expected_failure(abort_code = 7)]
-fun wrapped_rights_reject_wrong_package_authority() {
+#[test, expected_failure(abort_code = 9)]
+fun wrapped_rights_reject_wrong_catalog_cap() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 193, 0, 0, 0);
     let (config, protocol_cap) =
         protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
-    let catalog = package_binding::authority_catalog_for_testing(&config, &mut ctx);
-    let clock = sui::clock::create_for_testing(&mut ctx);
+    let mut catalog_a = new_test_catalog_for_config(&config, &mut ctx);
+    let catalog_b = new_test_catalog_for_config(&config, &mut ctx);
+    let release_cap = package_binding::take_release_call_cap_v8(
+        &config,
+        &protocol_cap,
+        &mut catalog_a,
+    );
     let certification = certify_wrapped_rights_v8(
         &config,
-        &catalog,
-        &clock,
+        &catalog_b,
+        &release_cap,
         b"https://license.example/forged".to_string(),
         b"license-blob".to_string(),
         test_hash(40),
@@ -2163,24 +2185,27 @@ fun wrapped_rights_reject_wrong_package_authority() {
     );
     let rights = new_license_wrapped_rights_snapshot_v8(certification, 250, 250, 500);
     let _ = rights;
-    clock.destroy_for_testing();
-    package_binding::destroy_catalog_for_testing(catalog);
+    package_binding::destroy_call_cap_for_testing(release_cap);
+    package_binding::destroy_catalog_for_testing(catalog_a);
+    package_binding::destroy_catalog_for_testing(catalog_b);
     protocol::destroy_protocol_for_testing(config, protocol_cap);
 }
 
-#[test, expected_failure(abort_code = 7)]
-fun runtime_tuple_rejects_non_runtime_authority() {
+#[test, expected_failure(abort_code = 9)]
+fun runtime_tuple_rejects_wrong_catalog_cap() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 194, 0, 0, 0);
     let (config, protocol_cap) =
         protocol::new_protocol_for_testing<sui::sui::SUI>(true, &mut ctx);
-    let catalog = package_binding::authority_catalog_for_testing(&config, &mut ctx);
-    let wrong_authority = package_binding::new_release_authority_for_testing(&mut ctx);
-    let readiness = package_binding::certify_runtime_pack_readiness_v8<
-        sui::clock::Clock,
-        package_binding::TestReleaseAuthorityV8,
-    >(
-        &catalog,
-        &wrong_authority,
+    let mut catalog_a = new_test_catalog_for_config(&config, &mut ctx);
+    let catalog_b = new_test_catalog_for_config(&config, &mut ctx);
+    let runtime_cap = package_binding::take_runtime_call_cap_v8(
+        &config,
+        &protocol_cap,
+        &mut catalog_a,
+    );
+    let readiness = package_binding::certify_runtime_pack_readiness_v8(
+        &catalog_b,
+        &runtime_cap,
         object::id_from_address(@0xAA),
         1,
         test_hash(50),
@@ -2190,8 +2215,9 @@ fun runtime_tuple_rejects_non_runtime_authority() {
     );
     let (_, _, _, _, _, _, _, _) =
         package_binding::consume_runtime_pack_readiness_v8(readiness);
-    package_binding::destroy_release_authority_for_testing(wrong_authority);
-    package_binding::destroy_catalog_for_testing(catalog);
+    package_binding::destroy_call_cap_for_testing(runtime_cap);
+    package_binding::destroy_catalog_for_testing(catalog_a);
+    package_binding::destroy_catalog_for_testing(catalog_b);
     protocol::destroy_protocol_for_testing(config, protocol_cap);
 }
 

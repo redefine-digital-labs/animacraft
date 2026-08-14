@@ -25,9 +25,14 @@ binding.
 `ProtocolAdminCapV8`. It freezes, for every role, the original package ID, the
 exact callable package ID, and 32-byte source, package, and ABI commitments.
 A Maker author can reference this catalog but cannot construct or certify a
-production binding. The catalog also freezes the exact Release/Runtime
-no-ability witness types and their distinct key-only certification authority
-types. The Root copies an exact certified catalog snapshot.
+production binding. Catalog certification creates six Core-defined,
+non-copy/non-drop call capabilities for Seal, Runtime, Output, Physical,
+Market, and Release. Each capability carries a fresh authority nonce, the
+exact catalog/product/role commitments, and one committed call-cap-set tuple.
+ProtocolAdmin may take each capability exactly once into the corresponding
+companion's private config. The catalog cannot become shared until all six
+have been installed. The Root copies the exact product and call-cap-set
+snapshots.
 
 The original and callable markers must share one package lineage, and the
 callable ID is the callable marker's defining package ID. Distinct-role
@@ -44,15 +49,13 @@ only then certify and lock the catalog.
 
 The Root starts without this binding because the Release package necessarily
 depends on Core. `ReleaseCatalogWitnessV8` and `RuntimePackReadinessV8` have no
-abilities. Companion readiness witnesses likewise have no abilities: the
-exact companion package must destructure its private witness fields, then call
-Core with the separately frozen companion authority. Core never exposes a path
-that accepts a generic witness beside caller-selected Runtime IDs. Core-issued
-proofs are destructured only inside their package-internal Maker finalization
-paths. Product binding finalization is a DRAFT-only AdminCap/current-owner
-operation, consumes the exact current enabled catalog proof, and rejects
-replacement. Core exposes only a readiness assertion in this phase; it does
-not expose an activation transition.
+abilities. The exact companion privately borrows its concrete role-typed call
+capability only after validating live state; generic type instantiation is
+never treated as authority. Core-issued proofs are destructured only inside
+package-internal finalization paths. Product binding finalization is a
+DRAFT-only AdminCap/current-owner operation, consumes the exact current
+enabled catalog proof, and rejects replacement. Core exposes only a readiness
+assertion in this phase; it does not expose an activation transition.
 
 ## Core objects and immutable snapshots
 
@@ -101,8 +104,8 @@ Rights enforce 0–1,000 BPS royalties in 50-BPS steps with a 1,000-BPS combined
 Soul-creator plus Maker-source cap. The public native constructor derives the
 creator and confirmation from `TxContext`; it accepts no confirmation flags
 and commits exact empty evidence/certification fields. `LICENSE_WRAPPED`
-requires a no-ability `WrappedRightsCertificationV8` minted through the exact
-catalog-frozen Release authority. That certificate binds the transaction
+requires a no-ability `WrappedRightsCertificationV8` minted while the exact
+Release config borrows its catalog-issued call capability. That certificate binds the transaction
 signer, catalog and product binding, bounded evidence locator/blob IDs,
 evidence SHA-256, and terms commitment. The public snapshot constructor only
 consumes this certificate; it accepts no creator-confirmed or
@@ -126,9 +129,9 @@ Runtime-owned Pack registry ID, one admission-authority ID, and the immutable
 admission-policy commitment. That binding is DRAFT-only and cannot be
 replaced.
 
-The Runtime package consumes its exact private readiness witness to derive the
-concrete registry/authority IDs and immutable Root tuple, then uses its frozen
-key authority to obtain a no-ability `RuntimePackReadinessV8`. Core checks the
+The Runtime package validates its private registry state and borrows its
+catalog-issued Runtime call capability to obtain a no-ability
+`RuntimePackReadinessV8`. Core checks the
 registry/authority IDs plus exact immutable Root ID, numeric Maker version,
 Root content commitment, and admission-policy commitment.
 
@@ -165,7 +168,7 @@ git diff --check
 ```
 
 The adversarial runner requires the external ability/API attack packages to
-fail compilation for the expected reasons and the wrong-authority runtime
+fail compilation for the expected reasons and the cross-catalog call-cap runtime
 attack to abort as expected. The size script implements Sui's exact
 `MovePackage::size` formula and fails above the Core target of 60,000 bytes.
 That target includes native Treasury custody and Maker access enforcement yet
