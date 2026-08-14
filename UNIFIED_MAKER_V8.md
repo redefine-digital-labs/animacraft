@@ -162,15 +162,29 @@ There is no optional Commerce migration layer. These fields are part of every
 Root, including a free Maker:
 
 - Maker access: `FREE` or `PAID` with exact atomic price;
-- Complete policy: free/paid, optional per-wallet quota and total cap;
+- Complete policy is one exact native mode: unlimited free, free quota then
+  paid, paid every time, or free quota then blocked, with per-wallet and total
+  counters enforced atomically;
 - rights origin and explicit creator confirmation;
 - Soul creator, Maker source and Maker resale royalties;
 - payment coin, protocol fee split, collected/withdrawn balances;
-- Pack access policies and entitlement counts.
+- Pack access is free, one-time paid, or included with Maker access. Every Pack
+  also has its own native four-mode Complete policy and exact wallet/total
+  counters; these are not manifest-only annotations;
+- protocol terms include primary-content fee BPS, fixed Complete fee, Maker
+  market fee BPS and Soul market fee BPS, all committed in ProtocolConfig.
 
 Free access issues or recognizes an exact v8 Pass without a fake paid receipt.
 Paid access requires a verified payment and v8 entitlement. Player and export
 read these policies from the Root and never infer them from a disabled gate.
+For one Complete, the base policy and every used Pack policy produce line
+items. Their content fees are summed, the primary protocol share plus fixed
+Complete fee go to ProtocolTreasury, and the remaining content amount goes to
+MakerTreasury. PackTreasury receives Pack access purchases, not Complete line
+items. The chain quote, wallet UI and readback must compute the same tuple.
+
+All three royalty fields are native v8 values from 0–1,000 BPS in 50-BPS
+steps, with Soul-creator plus Maker-source royalties capped at 1,000 BPS.
 
 ## Composition, Pack, Complete, Seal, Soul and Physical
 
