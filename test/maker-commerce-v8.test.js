@@ -72,6 +72,18 @@ function packLine(policy, treasuryIdentity, overrides = {}) {
   };
 }
 
+function completeInput(overrides = {}) {
+  return {
+    ownsMakerAccess: false,
+    makerLifecycle: MAKER_V8_LIFECYCLES.ACTIVE,
+    makerTreasuryIdentity: 'maker-treasury',
+    walletBaseCount: 0,
+    totalBaseCount: 0,
+    usedPackLines: [],
+    ...overrides,
+  };
+}
+
 function issueCodes(issues) {
   return issues.map((entry) => entry.code);
 }
@@ -188,6 +200,17 @@ test('malformed records, accessors, unknown keys, and throwing proxies fail with
     (error) => error instanceof MakerV8CommerceValidationError
       && error.code === 'MAKER_V8_QUOTE_RECORD_INVALID',
   );
+
+  const dynamicPublish = new Proxy({ publish: true }, {
+    get(target, property, receiver) {
+      if (property === 'publish') return false;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  assert.equal(
+    collectMakerV8CommerceIssues(commerce, dynamicPublish)[0].code,
+    'MAKER_V8_OPTIONS_UNREADABLE',
+  );
 });
 
 test('independent Pack commerce has its own exact schema and all three access modes', () => {
@@ -214,7 +237,7 @@ test('independent Pack commerce has its own exact schema and all three access mo
     'MAKER_V8_PACK_POLICY_FIELD_UNKNOWN',
   ));
 
-  assert.deepEqual(quoteMakerV8Pack(free), {
+  assert.deepEqual(quoteMakerV8Pack(free, { lifecycle: MAKER_V8_LIFECYCLES.ACTIVE }), {
     valid: true,
     reason: 'FREE_CLAIM',
     packId: 'free-pack',
@@ -223,8 +246,19 @@ test('independent Pack commerce has its own exact schema and all three access mo
     packTreasuryAtomic: '0',
     allocations: [],
   });
-  assert.equal(quoteMakerV8Pack(included).reason, 'MAKER_ACCESS_REQUIRED');
-  assert.equal(quoteMakerV8Pack(included, { hasMakerAccess: true }).valid, true);
+  assert.equal(quoteMakerV8Pack(included, {
+    lifecycle: MAKER_V8_LIFECYCLES.ACTIVE,
+  }).reason, 'MAKER_ACCESS_REQUIRED');
+  assert.equal(quoteMakerV8Pack(included, {
+    hasMakerAccess: true,
+    lifecycle: MAKER_V8_LIFECYCLES.ACTIVE,
+  }).valid, true);
+
+  assert.throws(
+    () => createMakerV8PackPolicy(`0x${'a'.repeat(64)}`),
+    (error) => error instanceof MakerV8CommerceValidationError
+      && error.code === 'MAKER_V8_PACK_ID_INVALID',
+  );
 });
 
 test('independent Pack Complete policy supports all four exact modes', () => {
@@ -291,15 +325,15 @@ test('atomic, BPS, and counter inputs require supported safe integers and exact 
   ));
 
   assert.throws(
-    () => quoteMakerV8Complete(commerce, {
-      makerTreasuryIdentity: 'maker-treasury',
+    () => quoteMakerV8Complete(commerce, completeInput({
       walletBaseCount: 1.5,
-    }),
+    })),
     (error) => error instanceof MakerV8CommerceValidationError
       && error.issues.some((entry) => entry.code === 'MAKER_V8_COMPLETE_COUNT_INVALID'),
   );
   assert.throws(
     () => quoteMakerV8Access(commerce, {
+      lifecycle: MAKER_V8_LIFECYCLES.ACTIVE,
       protocol: {
         primaryContentFeeBps: 1_000,
         fixedCompleteFeeAtomic: 0,
@@ -342,10 +376,9 @@ test('completion cap is null or positive and cannot be lower than its free quota
       totalCap: 1,
     },
   });
-  const quote = quoteMakerV8Complete(capped, {
-    makerTreasuryIdentity: 'maker-treasury',
+  const quote = quoteMakerV8Complete(capped, completeInput({
     totalBaseCount: 1,
-  });
+  }));
   assert.equal(quote.valid, false);
   assert.equal(quote.reason, 'TOTAL_CAP_REACHED');
   assert.equal(quote.grossAtomic, '0');
@@ -359,6 +392,7 @@ test('Maker access uses BigInt fee multiplication beyond MAX_SAFE and decimal-st
     },
   });
   const quote = quoteMakerV8Access(commerce, {
+    lifecycle: MAKER_V8_LIFECYCLES.ACTIVE,
     makerTreasuryIdentity: 'maker-treasury',
     protocol: {
       primaryContentFeeBps: 9_999,
@@ -390,6 +424,7 @@ test('Pack purchase routes only its residual to the proven Pack Treasury', () =>
     purchasePriceAtomic: 20_000,
   });
   const quote = quoteMakerV8Pack(policy, {
+    lifecycle: MAKER_V8_LIFECYCLES.ACTIVE,
     packTreasuryIdentity: 'pack-treasury-paid',
     protocol: PROTOCOL_10_PERCENT,
   });
@@ -420,6 +455,7 @@ test('non-zero BPS that rounds a positive line share to zero fails closed', () =
     },
   });
   const accessQuote = quoteMakerV8Access(access, {
+    lifecycle: MAKER_V8_LIFECYCLES.ACTIVE,
     makerTreasuryIdentity: 'maker-treasury',
     protocol: { primaryContentFeeBps: 1, fixedCompleteFeeAtomic: 0 },
   });
@@ -429,11 +465,10 @@ test('non-zero BPS that rounds a positive line share to zero fails closed', () =
   assert.deepEqual(accessQuote.allocations, []);
 
   const tinyPack = packPolicy('tiny-pack', 1);
-  const completeQuote = quoteMakerV8Complete(makerCommerce(), {
-    makerTreasuryIdentity: 'maker-treasury',
+  const completeQuote = quoteMakerV8Complete(makerCommerce(), completeInput({
     usedPackLines: [packLine(tinyPack, 'tiny-pack-treasury')],
     protocol: { primaryContentFeeBps: 1, fixedCompleteFeeAtomic: 0 },
-  });
+  }));
   assert.equal(completeQuote.valid, false);
   assert.equal(completeQuote.reason, 'PROTOCOL_SHARE_ROUNDS_TO_ZERO');
   assert.equal(completeQuote.contentAtomic, '0');
@@ -444,14 +479,13 @@ test('Complete preserves used Pack order and settles each line to its own Treasu
   const commerce = makerCommerce({ baseCompletion: paidComplete(10_000) });
   const orbit = packPolicy('quiet-orbit', 20_000);
   const sky = packPolicy('neon-sky', 30_000);
-  const quote = quoteMakerV8Complete(commerce, {
-    makerTreasuryIdentity: 'maker-treasury',
+  const quote = quoteMakerV8Complete(commerce, completeInput({
     usedPackLines: [
       packLine(sky, 'sky-treasury'),
       packLine(orbit, 'orbit-treasury'),
     ],
     protocol: PROTOCOL_10_PERCENT,
-  });
+  }));
 
   assert.equal(quote.valid, true);
   assert.deepEqual(quote.usedPackIds, ['neon-sky', 'quiet-orbit']);
@@ -501,7 +535,7 @@ test('Complete rejects duplicate, mismatched, inactive, unknown, or incomplete P
   const commerce = makerCommerce();
   const orbit = packPolicy('quiet-orbit', 20_000);
   const line = packLine(orbit, 'orbit-treasury');
-  const baseInput = { makerTreasuryIdentity: 'maker-treasury' };
+  const baseInput = completeInput();
 
   assert.throws(
     () => quoteMakerV8Complete(commerce, {
@@ -554,6 +588,83 @@ test('Complete rejects duplicate, mismatched, inactive, unknown, or incomplete P
   );
 });
 
+test('live quote state and dense ordered Pack lines are mandatory and cannot be hidden', () => {
+  const commerce = makerCommerce({
+    baseCompletion: {
+      mode: MAKER_V8_COMPLETE_MODES.FREE_QUOTA_THEN_PAID,
+      freeQuotaPerWallet: 1,
+      priceAtomic: 500,
+      totalCap: 1,
+    },
+  });
+  assert.throws(
+    () => quoteMakerV8Complete(commerce, {
+      makerTreasuryIdentity: 'maker-treasury',
+      usedPackLines: [],
+    }),
+    (error) => error instanceof MakerV8CommerceValidationError
+      && error.issues.some((entry) => entry.code === 'MAKER_V8_LIFECYCLE_INVALID')
+      && error.issues.filter((entry) => entry.code === 'MAKER_V8_COMPLETE_COUNT_INVALID').length === 2,
+  );
+  assert.throws(
+    () => quoteMakerV8Complete(commerce, {
+      ...completeInput(),
+      usedPackLines: undefined,
+    }),
+    (error) => error instanceof MakerV8CommerceValidationError
+      && error.issues.some((entry) => entry.code === 'MAKER_V8_COMPLETE_PACK_LINES_INVALID'),
+  );
+  assert.throws(
+    () => quoteMakerV8Complete(commerce, completeInput({ usedPackLines: new Array(1) })),
+    (error) => error instanceof MakerV8CommerceValidationError
+      && error.issues.some((entry) => entry.code === 'MAKER_V8_QUOTE_ARRAY_INVALID'),
+  );
+
+  const paidPack = packPolicy('visible-pack', 10_000);
+  const realLines = [packLine(paidPack, 'visible-pack-treasury')];
+  const lengthHidingProxy = new Proxy(realLines, {
+    get(target, property, receiver) {
+      if (property === 'length') return 0;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  assert.throws(
+    () => quoteMakerV8Complete(makerCommerce(), completeInput({
+      usedPackLines: lengthHidingProxy,
+      protocol: PROTOCOL_10_PERCENT,
+    })),
+    (error) => error instanceof MakerV8CommerceValidationError
+      && error.code === 'MAKER_V8_QUOTE_UNREADABLE',
+  );
+
+  const treasuryTarget = packLine(paidPack, 'proven-treasury');
+  const redirectingLine = new Proxy(treasuryTarget, {
+    get(target, property, receiver) {
+      if (property === 'packTreasuryIdentity') return 'attacker-treasury';
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  assert.throws(
+    () => quoteMakerV8Complete(makerCommerce(), completeInput({
+      usedPackLines: [redirectingLine],
+      protocol: PROTOCOL_10_PERCENT,
+    })),
+    (error) => error instanceof MakerV8CommerceValidationError
+      && error.code === 'MAKER_V8_QUOTE_UNREADABLE',
+  );
+
+  assert.throws(
+    () => quoteMakerV8Access(makerCommerce()),
+    (error) => error instanceof MakerV8CommerceValidationError
+      && error.code === 'MAKER_V8_LIFECYCLE_INVALID',
+  );
+  assert.throws(
+    () => quoteMakerV8Pack(createMakerV8PackPolicy('fresh-pack')),
+    (error) => error instanceof MakerV8CommerceValidationError
+      && error.code === 'MAKER_V8_LIFECYCLE_INVALID',
+  );
+});
+
 test('Complete validates entitlement proof semantics and fails closed without access', () => {
   const included = createMakerV8PackPolicy('included-pack', {
     accessMode: MAKER_V8_PACK_ACCESS_MODES.INCLUDED_WITH_MAKER,
@@ -565,11 +676,10 @@ test('Complete validates entitlement proof semantics and fails closed without ac
       verified: true,
     },
   });
-  const ready = quoteMakerV8Complete(makerCommerce(), {
-    makerTreasuryIdentity: 'maker-treasury',
+  const ready = quoteMakerV8Complete(makerCommerce(), completeInput({
     usedPackLines: [includedLine],
     protocol: PROTOCOL_10_PERCENT,
-  });
+  }));
   assert.equal(ready.valid, true);
   assert.equal(ready.packTreasuryAtomic, '4500');
 
@@ -579,10 +689,9 @@ test('Complete validates entitlement proof semantics and fails closed without ac
       verified: false,
     },
   });
-  const missing = quoteMakerV8Complete(makerCommerce(), {
-    makerTreasuryIdentity: 'maker-treasury',
+  const missing = quoteMakerV8Complete(makerCommerce(), completeInput({
     usedPackLines: [missingLine],
-  });
+  }));
   assert.equal(missing.valid, false);
   assert.equal(missing.reason, 'PACK_ACCESS_REQUIRED');
   assert.deepEqual(missing.missingEntitlements, ['included-pack']);

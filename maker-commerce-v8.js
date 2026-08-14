@@ -42,12 +42,15 @@ export const DEFAULT_MAKER_V8_PROTOCOL_COMMERCE = Object.freeze({
   fixedCompleteFeeAtomic: 0,
 });
 
-const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/;
+const SAFE_ID = /^(?!0x[0-9a-fA-F]{64}$)[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/;
 const MAX_PRICE_ATOMIC = 1_000_000_000_000;
 const MAX_QUOTA = 1_000_000_000;
+const MAX_COMPLETE_PACK_LINES = 1_000;
 const MAX_ROYALTY_BPS = 1_000;
 const ROYALTY_STEP_BPS = 50;
 const MAX_PROTOCOL_FEE_BPS = 10_000;
+const MAX_JSON_BOUNDARY_DEPTH = 64;
+const MAX_JSON_BOUNDARY_NODES = 100_000;
 const BPS_DENOMINATOR = 10_000n;
 const U128_MAX = (1n << 128n) - 1n;
 
@@ -128,6 +131,126 @@ function issue(issues, path, code, message) {
   issues.push(Object.freeze({ path, code, message }));
 }
 
+function inspectPlainJsonBoundary(root, path, issues, codePrefix) {
+  const stack = [{ value: root, path, depth: 0 }];
+  const seen = new WeakSet();
+  let nodes = 0;
+  while (stack.length) {
+    const current = stack.pop();
+    nodes += 1;
+    if (nodes > MAX_JSON_BOUNDARY_NODES || current.depth > MAX_JSON_BOUNDARY_DEPTH) {
+      issue(
+        issues,
+        current.path,
+        `${codePrefix}_LIMIT`,
+        `${path} exceeds the bounded plain JSON input limit.`,
+      );
+      return false;
+    }
+    const value = current.value;
+    if (value === undefined
+      || value === null
+      || typeof value === 'string'
+      || typeof value === 'boolean') continue;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        issue(issues, current.path, `${codePrefix}_SCALAR_INVALID`, `${current.path} must be finite JSON data.`);
+        return false;
+      }
+      continue;
+    }
+    if (!value || typeof value !== 'object') {
+      issue(issues, current.path, `${codePrefix}_SCALAR_INVALID`, `${current.path} must be plain JSON data.`);
+      return false;
+    }
+    if (seen.has(value)) {
+      issue(issues, current.path, `${codePrefix}_GRAPH_INVALID`, `${path} must be a JSON tree without cycles or shared references.`);
+      return false;
+    }
+    seen.add(value);
+
+    let prototype;
+    let keys;
+    try {
+      prototype = Object.getPrototypeOf(value);
+      keys = Reflect.ownKeys(value);
+    } catch {
+      issue(issues, current.path, `${codePrefix}_RECORD_INVALID`, `${path} could not be inspected as plain JSON data.`);
+      return false;
+    }
+    const array = Array.isArray(value);
+    if ((array && prototype !== Array.prototype)
+      || (!array && prototype !== Object.prototype && prototype !== null)) {
+      issue(issues, current.path, `${codePrefix}_RECORD_INVALID`, `${current.path} must use a standard JSON object or array prototype.`);
+      return false;
+    }
+    if (keys.some((key) => typeof key !== 'string')) {
+      issue(issues, current.path, `${codePrefix}_SYMBOL_INVALID`, `${path} cannot contain symbol keys.`);
+      return false;
+    }
+
+    if (array) {
+      let lengthDescriptor;
+      try {
+        lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+      } catch {
+        issue(issues, current.path, `${codePrefix}_ARRAY_INVALID`, `${path} array length could not be inspected safely.`);
+        return false;
+      }
+      const length = lengthDescriptor?.value;
+      if (!Number.isSafeInteger(length) || length < 0) {
+        issue(issues, current.path, `${codePrefix}_ARRAY_INVALID`, `${current.path} needs an exact JSON array length.`);
+        return false;
+      }
+      const allowed = new Set(['length']);
+      for (let index = 0; index < length; index += 1) allowed.add(String(index));
+      if (keys.length !== allowed.size || keys.some((key) => !allowed.has(key))) {
+        issue(issues, current.path, `${codePrefix}_ARRAY_INVALID`, `${current.path} must be dense and cannot contain extra properties.`);
+        return false;
+      }
+    }
+
+    for (const key of keys) {
+      if (array && key === 'length') continue;
+      let descriptor;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(value, key);
+      } catch {
+        issue(issues, current.path, `${codePrefix}_RECORD_INVALID`, `${path} property descriptors could not be inspected safely.`);
+        return false;
+      }
+      const childPath = array
+        ? `${current.path}[${key}]`
+        : `${current.path}.${key}`;
+      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+        issue(issues, childPath, `${codePrefix}_RECORD_INVALID`, `${path} accepts only enumerable JSON data properties.`);
+        return false;
+      }
+      stack.push({ value: descriptor.value, path: childPath, depth: current.depth + 1 });
+    }
+  }
+  return true;
+}
+
+/**
+ * Snapshot a public Commerce/quote boundary before semantic reads. The first
+ * descriptor walk rejects accessors/hidden fields; native structured cloning
+ * then rejects Proxy objects which could otherwise report different keys or
+ * values to successive reads. All calculations consume only the clone.
+ */
+function snapshotPlainJsonBoundary(value, path, issues, codePrefix) {
+  if (!inspectPlainJsonBoundary(value, path, issues, codePrefix)) return value;
+  let snapshot;
+  try {
+    snapshot = structuredClone(value);
+  } catch {
+    issue(issues, path, `${codePrefix}_UNREADABLE`, `${path} could not be snapshotted safely; Proxy and non-cloneable values are forbidden.`);
+    return value;
+  }
+  if (!inspectPlainJsonBoundary(snapshot, path, issues, codePrefix)) return value;
+  return snapshot;
+}
+
 function exactRecord(value, fields, path, issues, codePrefix, { partial = false } = {}) {
   if (!isPlainJsonRecord(value)) {
     issue(
@@ -174,13 +297,65 @@ function exactRecord(value, fields, path, issues, codePrefix, { partial = false 
   return true;
 }
 
+/**
+ * Takes one descriptor-based snapshot of a canonical JSON array. Iteration
+ * never reads `length` or elements through user-controlled getters, so sparse
+ * arrays and Proxies cannot hide Pack lines after validation.
+ */
+function exactDenseJsonArray(value, path, issues, codePrefix, { maximum } = {}) {
+  if (!Array.isArray(value)) {
+    issue(issues, path, `${codePrefix}_INVALID`, `${path} must be a dense JSON array.`);
+    return null;
+  }
+  try {
+    if (Object.getPrototypeOf(value) !== Array.prototype) {
+      issue(issues, path, `${codePrefix}_INVALID`, `${path} must use the standard JSON array prototype.`);
+      return null;
+    }
+    const keys = Reflect.ownKeys(value);
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+    const length = lengthDescriptor?.value;
+    if (!Number.isSafeInteger(length) || length < 0) {
+      issue(issues, path, `${codePrefix}_INVALID`, `${path} must have an exact JSON array length.`);
+      return null;
+    }
+    if (Number.isSafeInteger(maximum) && length > maximum) {
+      issue(issues, path, `${codePrefix}_LIMIT`, `${path} cannot exceed ${maximum} entries.`);
+      return null;
+    }
+    const allowed = new Set(['length']);
+    for (let index = 0; index < length; index += 1) allowed.add(String(index));
+    if (keys.length !== allowed.size
+      || keys.some((key) => typeof key !== 'string' || !allowed.has(key))) {
+      issue(issues, path, `${codePrefix}_INVALID`, `${path} cannot be sparse or contain extra properties.`);
+      return null;
+    }
+    const snapshot = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor
+        || descriptor.enumerable !== true
+        || !Object.hasOwn(descriptor, 'value')) {
+        issue(issues, `${path}[${index}]`, `${codePrefix}_INVALID`, `${path} accepts only enumerable JSON data elements.`);
+        return null;
+      }
+      snapshot.push(descriptor.value);
+    }
+    return snapshot;
+  } catch {
+    issue(issues, path, `${codePrefix}_UNREADABLE`, `${path} could not be read as a stable dense JSON array.`);
+    return null;
+  }
+}
+
 function throwIfIssues(issues) {
   if (issues.length) throw new MakerV8CommerceValidationError(issues);
 }
 
 function assertPartialRecord(value, fields, path) {
-  const input = value === undefined ? {} : value;
+  const candidate = value === undefined ? {} : value;
   const issues = [];
+  const input = snapshotPlainJsonBoundary(candidate, path, issues, 'MAKER_V8_INPUT');
   exactRecord(input, fields, path, issues, 'MAKER_V8_INPUT', { partial: true });
   throwIfIssues(issues);
   try {
@@ -501,7 +676,21 @@ function collectMakerV8CommerceIssuesUnsafe(value, options = {}) {
 
 export function collectMakerV8CommerceIssues(value, options = {}) {
   try {
-    return collectMakerV8CommerceIssuesUnsafe(value, options);
+    const boundaryIssues = [];
+    const snapshot = snapshotPlainJsonBoundary(
+      value,
+      'commerce',
+      boundaryIssues,
+      'MAKER_V8_COMMERCE',
+    );
+    const optionSnapshot = snapshotPlainJsonBoundary(
+      options,
+      'options',
+      boundaryIssues,
+      'MAKER_V8_OPTIONS',
+    );
+    if (boundaryIssues.length) return Object.freeze(boundaryIssues);
+    return collectMakerV8CommerceIssuesUnsafe(snapshot, optionSnapshot);
   } catch {
     return Object.freeze([Object.freeze({
       path: 'commerce',
@@ -558,7 +747,15 @@ function collectMakerV8PackPolicyIssuesUnsafe(value) {
 
 export function collectMakerV8PackPolicyIssues(value) {
   try {
-    return collectMakerV8PackPolicyIssuesUnsafe(value);
+    const boundaryIssues = [];
+    const snapshot = snapshotPlainJsonBoundary(
+      value,
+      'packPolicy',
+      boundaryIssues,
+      'MAKER_V8_PACK_POLICY',
+    );
+    if (boundaryIssues.length) return Object.freeze(boundaryIssues);
+    return collectMakerV8PackPolicyIssuesUnsafe(snapshot);
   } catch {
     return Object.freeze([Object.freeze({
       path: 'packPolicy',
@@ -766,7 +963,7 @@ function quoteMakerV8AccessUnsafe(commerce, inputs = {}) {
   );
   const lifecycle = normalizeLifecycle(
     input.lifecycle,
-    MAKER_V8_LIFECYCLES.ACTIVE,
+    undefined,
     'quote.lifecycle',
     issues,
   );
@@ -812,7 +1009,21 @@ function quoteMakerV8AccessUnsafe(commerce, inputs = {}) {
 
 export function quoteMakerV8Access(commerce, inputs = {}) {
   try {
-    return quoteMakerV8AccessUnsafe(commerce, inputs);
+    const boundaryIssues = [];
+    const commerceSnapshot = snapshotPlainJsonBoundary(
+      commerce,
+      'commerce',
+      boundaryIssues,
+      'MAKER_V8_COMMERCE',
+    );
+    const inputSnapshot = snapshotPlainJsonBoundary(
+      inputs,
+      'quote',
+      boundaryIssues,
+      'MAKER_V8_QUOTE',
+    );
+    throwIfIssues(boundaryIssues);
+    return quoteMakerV8AccessUnsafe(commerceSnapshot, inputSnapshot);
   } catch (error) {
     if (error instanceof MakerV8CommerceValidationError || error instanceof RangeError) throw error;
     throw new MakerV8CommerceValidationError([Object.freeze({
@@ -847,7 +1058,7 @@ function quoteMakerV8PackUnsafe(policy, inputs = {}) {
   );
   const lifecycle = normalizeLifecycle(
     input.lifecycle,
-    MAKER_V8_LIFECYCLES.ACTIVE,
+    undefined,
     'quote.lifecycle',
     issues,
   );
@@ -904,7 +1115,21 @@ function quoteMakerV8PackUnsafe(policy, inputs = {}) {
 
 export function quoteMakerV8Pack(policy, inputs = {}) {
   try {
-    return quoteMakerV8PackUnsafe(policy, inputs);
+    const boundaryIssues = [];
+    const policySnapshot = snapshotPlainJsonBoundary(
+      policy,
+      'packPolicy',
+      boundaryIssues,
+      'MAKER_V8_PACK_POLICY',
+    );
+    const inputSnapshot = snapshotPlainJsonBoundary(
+      inputs,
+      'quote',
+      boundaryIssues,
+      'MAKER_V8_QUOTE',
+    );
+    throwIfIssues(boundaryIssues);
+    return quoteMakerV8PackUnsafe(policySnapshot, inputSnapshot);
   } catch (error) {
     if (error instanceof MakerV8CommerceValidationError || error instanceof RangeError) throw error;
     throw new MakerV8CommerceValidationError([Object.freeze({
@@ -945,7 +1170,7 @@ function validateCompleteInputs(inputs) {
   );
   const makerLifecycle = normalizeLifecycle(
     input.makerLifecycle,
-    MAKER_V8_LIFECYCLES.ACTIVE,
+    undefined,
     'quote.makerLifecycle',
     issues,
   );
@@ -956,30 +1181,28 @@ function validateCompleteInputs(inputs) {
   );
   const walletBaseCount = normalizeCount(
     input.walletBaseCount,
-    0,
+    undefined,
     'quote.walletBaseCount',
     issues,
   );
   const totalBaseCount = normalizeCount(
     input.totalBaseCount,
-    0,
+    undefined,
     'quote.totalBaseCount',
     issues,
   );
   const protocol = quoteProtocol(input.protocol, issues);
-  const usedPackLines = input.usedPackLines ?? [];
-  if (!Array.isArray(usedPackLines)) {
-    issue(
-      issues,
-      'quote.usedPackLines',
-      'MAKER_V8_COMPLETE_PACK_LINES_INVALID',
-      'Used Pack lines must be an ordered array.',
-    );
-  }
+  const usedPackLines = exactDenseJsonArray(
+    input.usedPackLines,
+    'quote.usedPackLines',
+    issues,
+    'MAKER_V8_COMPLETE_PACK_LINES',
+    { maximum: MAX_COMPLETE_PACK_LINES },
+  );
 
   const normalizedLines = [];
   const seenPackIds = new Set();
-  if (Array.isArray(usedPackLines)) {
+  if (usedPackLines) {
     usedPackLines.forEach((line, index) => {
       const path = `quote.usedPackLines[${index}]`;
       const exact = exactRecord(
@@ -1298,7 +1521,21 @@ function quoteMakerV8CompleteUnsafe(commerce, inputs = {}) {
 
 export function quoteMakerV8Complete(commerce, inputs = {}) {
   try {
-    return quoteMakerV8CompleteUnsafe(commerce, inputs);
+    const boundaryIssues = [];
+    const commerceSnapshot = snapshotPlainJsonBoundary(
+      commerce,
+      'commerce',
+      boundaryIssues,
+      'MAKER_V8_COMMERCE',
+    );
+    const inputSnapshot = snapshotPlainJsonBoundary(
+      inputs,
+      'quote',
+      boundaryIssues,
+      'MAKER_V8_QUOTE',
+    );
+    throwIfIssues(boundaryIssues);
+    return quoteMakerV8CompleteUnsafe(commerceSnapshot, inputSnapshot);
   } catch (error) {
     if (error instanceof MakerV8CommerceValidationError || error instanceof RangeError) throw error;
     throw new MakerV8CommerceValidationError([Object.freeze({

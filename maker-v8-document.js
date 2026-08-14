@@ -1,4 +1,5 @@
 import {
+  MAKER_V8_RIGHTS_ORIGINS,
   collectMakerV8CommerceIssues,
   createMakerV8Commerce,
 } from './maker-commerce-v8.js';
@@ -34,7 +35,7 @@ export const MAKER_V8_COMPLETE_PACK_POLICY_MODES = Object.freeze({
 });
 
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
-const SAFE_SCOPE = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$/;
+const SAFE_SEMANTIC_PACK_ID = /^(?!0x[0-9a-fA-F]{64}$)[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 const PIXEL_MODES = new Set(['smooth', 'pixelated']);
 const WARDROBE_MODES = new Set(['FIXED', 'SLOT']);
 const COMPOSITION_MODES = new Set(Object.values(COMPOSABLE_PROFILE_MODES));
@@ -44,6 +45,7 @@ const COMPLETE_PACK_POLICY_MODES = new Set(
 );
 const ASSET_KINDS = new Set([
   'maker-cover',
+  'rights-evidence',
   'layer',
   'reference',
   'image',
@@ -79,8 +81,11 @@ const LICENSE_KINDS = new Set([
   'exclusive-commission',
 ]);
 const MAX_CANVAS = 8_192;
+const MAX_ASSET_DIMENSION = 32_768;
 const MAX_NAME_BYTES = 128;
 const MAX_DESCRIPTION_BYTES = 2_000;
+const MAX_AUTHOR_JSON_DEPTH = 64;
+const MAX_AUTHOR_JSON_NODES = 1_500_000;
 const VALIDATION_MODES = new Set(['draft', 'compile', 'activate']);
 const LIMITS = Object.freeze({
   assets: 4_999,
@@ -97,7 +102,6 @@ const LIMITS = Object.freeze({
   gradientStops: 160_000,
   completeOutputs: 256,
   completePackIds: 1_000,
-  completePackScopes: 1_000,
   completePackEdges: 1_000,
   ruleTargets: 1_000,
   conditionNodes: 1_000,
@@ -111,7 +115,7 @@ const AUTHOR_FIELDS = Object.freeze({
     'rules', 'defaultRecipe', 'complete', 'commerce', 'assets',
   ]),
   lineage: new Set(['rootMakerKey', 'versionKey', 'number', 'createdAt', 'changelog']),
-  metadata: new Set(['id', 'name', 'summary', 'creator', 'style', 'license', 'coverAssetId']),
+  metadata: new Set(['id', 'name', 'summary', 'style', 'license', 'coverAssetId']),
   license: new Set(['kind', 'note']),
   canvas: new Set(['width', 'height', 'pixelMode']),
   capabilities: new Set(MAKER_V8_CAPABILITIES),
@@ -147,12 +151,13 @@ const AUTHOR_FIELDS = Object.freeze({
   defaultColor: new Set(['channelId', 'swatchId']),
   complete: new Set(['outputs']),
   completeOutput: new Set(['id', 'name', 'protected', 'allowedPackPolicy']),
-  allowedPackPolicy: new Set(['mode', 'packIds', 'scopes']),
+  allowedPackPolicy: new Set(['mode', 'packIds']),
   commerce: new Set([
-    'schemaVersion', 'rightsOrigin', 'rightsOriginConfirmed', 'makerAccess',
+    'schemaVersion', 'rightsOrigin', 'rightsOriginConfirmed', 'rightsEvidence', 'makerAccess',
     'baseCompletion', 'soulCreatorRoyaltyBps', 'makerSourceRoyaltyBps',
     'makerResaleRoyaltyBps',
   ]),
+  rightsEvidence: new Set(['licensor', 'evidenceAssetId']),
   makerAccess: new Set(['mode', 'purchasePriceAtomic']),
   completionPolicy: new Set(['mode', 'freeQuotaPerWallet', 'priceAtomic', 'totalCap']),
   asset: new Set([
@@ -162,6 +167,11 @@ const AUTHOR_FIELDS = Object.freeze({
 
 const COMPILER_OWNED_AUTHOR_FIELDS = new Set([
   'chainid',
+  'creator',
+  'owner',
+  'sender',
+  'signer',
+  'walletaddress',
   'previousrootid',
   'previousversioncommitment',
   'rootid',
@@ -187,7 +197,179 @@ const COMPILER_OWNED_AUTHOR_FIELDS = new Set([
 ]);
 
 function isRecord(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
+function jsonChildPath(path, key, array = false) {
+  return array ? `${path}[${key}]` : path ? `${path}.${key}` : String(key);
+}
+
+/**
+ * Rejects values which JSON text cannot faithfully represent before any
+ * semantic walker reads a property. This is iterative so cyclic or adversarial
+ * depth cannot overflow the validation stack. Shared object references are
+ * rejected as well: the author contract is a tree, not an in-memory graph.
+ */
+function validateAuthorJsonTree(root, issues) {
+  const stack = [{ value: root, path: '', depth: 0 }];
+  const seen = new WeakSet();
+  let nodes = 0;
+
+  while (stack.length) {
+    const { value, path, depth } = stack.pop();
+    nodes += 1;
+    if (nodes > MAX_AUTHOR_JSON_NODES) {
+      issue(
+        issues,
+        path,
+        'MAKER_V8_AUTHOR_JSON_NODE_LIMIT',
+        `Maker v8 author JSON cannot exceed ${MAX_AUTHOR_JSON_NODES} nodes.`,
+      );
+      return false;
+    }
+    if (depth > MAX_AUTHOR_JSON_DEPTH) {
+      issue(
+        issues,
+        path,
+        'MAKER_V8_AUTHOR_JSON_DEPTH_LIMIT',
+        `Maker v8 author JSON cannot exceed ${MAX_AUTHOR_JSON_DEPTH} levels.`,
+      );
+      return false;
+    }
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') continue;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        issue(issues, path, 'MAKER_V8_AUTHOR_JSON_SCALAR_INVALID', 'JSON numbers must be finite.');
+        return false;
+      }
+      continue;
+    }
+    if (!value || typeof value !== 'object') {
+      issue(
+        issues,
+        path,
+        'MAKER_V8_AUTHOR_JSON_SCALAR_INVALID',
+        'Maker v8 author values must be JSON null, strings, booleans, finite numbers, arrays, or plain objects.',
+      );
+      return false;
+    }
+    if (seen.has(value)) {
+      issue(
+        issues,
+        path,
+        'MAKER_V8_AUTHOR_JSON_GRAPH_INVALID',
+        'Maker v8 author JSON cannot contain cycles or shared object references.',
+      );
+      return false;
+    }
+    seen.add(value);
+
+    let prototype;
+    let keys;
+    try {
+      prototype = Object.getPrototypeOf(value);
+      keys = Reflect.ownKeys(value);
+    } catch {
+      issue(issues, path, 'MAKER_V8_AUTHOR_JSON_REFLECTION_FAILED', 'Maker v8 author JSON could not be inspected safely.');
+      return false;
+    }
+
+    const array = Array.isArray(value);
+    if ((array && prototype !== Array.prototype)
+      || (!array && prototype !== Object.prototype && prototype !== null)) {
+      issue(
+        issues,
+        path,
+        'MAKER_V8_AUTHOR_OBJECT_INVALID',
+        'Maker v8 author object boundaries accept only standard JSON arrays and plain objects.',
+      );
+      return false;
+    }
+    if (keys.some((key) => typeof key === 'symbol')) {
+      issue(issues, path, 'MAKER_V8_AUTHOR_JSON_SYMBOL_INVALID', 'Maker v8 author JSON cannot contain symbol keys.');
+      return false;
+    }
+
+    if (array) {
+      let lengthDescriptor;
+      try {
+        lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+      } catch {
+        issue(issues, path, 'MAKER_V8_AUTHOR_JSON_REFLECTION_FAILED', 'Maker v8 author array length could not be inspected safely.');
+        return false;
+      }
+      if (!lengthDescriptor
+        || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value')
+        || !Number.isSafeInteger(lengthDescriptor.value)
+        || lengthDescriptor.value < 0) {
+        issue(issues, path, 'MAKER_V8_AUTHOR_JSON_ARRAY_INVALID', 'Maker v8 author arrays need an exact JSON length.');
+        return false;
+      }
+      const allowed = new Set(['length']);
+      for (let index = 0; index < lengthDescriptor.value; index += 1) allowed.add(String(index));
+      if (keys.some((key) => !allowed.has(key)) || keys.length !== allowed.size) {
+        issue(issues, path, 'MAKER_V8_AUTHOR_JSON_ARRAY_INVALID', 'Maker v8 author arrays must be dense and cannot contain extra properties.');
+        return false;
+      }
+    }
+
+    for (const key of keys) {
+      if (array && key === 'length') continue;
+      let descriptor;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(value, key);
+      } catch {
+        issue(issues, path, 'MAKER_V8_AUTHOR_JSON_REFLECTION_FAILED', 'Maker v8 author JSON descriptor could not be inspected safely.');
+        return false;
+      }
+      const childPath = jsonChildPath(path, key, array);
+      if (!descriptor
+        || !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        || descriptor.enumerable !== true) {
+        issue(
+          issues,
+          childPath,
+          'MAKER_V8_AUTHOR_JSON_DESCRIPTOR_INVALID',
+          'Maker v8 author JSON accepts only enumerable data properties; accessors and hidden fields are forbidden.',
+        );
+        return false;
+      }
+      stack.push({ value: descriptor.value, path: childPath, depth: depth + 1 });
+    }
+  }
+  return true;
+}
+
+/**
+ * Converts an already descriptor-validated author tree into a trusted plain
+ * snapshot before any semantic read. Native structured cloning deliberately
+ * rejects Proxy objects; that closes the gap where a Proxy could present one
+ * key/descriptor set to the shape walk and a different set to later readers.
+ * The clone is validated again so the semantic validator only ever consumes
+ * the same dense, enumerable data tree that passed the JSON boundary.
+ */
+function snapshotAuthorJsonTree(root, issues) {
+  if (!validateAuthorJsonTree(root, issues)) return null;
+  let snapshot;
+  try {
+    snapshot = structuredClone(root);
+  } catch {
+    issue(
+      issues,
+      '',
+      'MAKER_V8_AUTHOR_JSON_INSPECTION_FAILED',
+      'Maker v8 author JSON could not be snapshotted safely; Proxy and other non-cloneable values are forbidden.',
+    );
+    return null;
+  }
+  if (!validateAuthorJsonTree(snapshot, issues)) return null;
+  return snapshot;
 }
 
 function hasOwn(value, key) {
@@ -275,9 +457,6 @@ function defaultAllowedPackPolicy(overrides = {}) {
     packIds: mode === MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST
       ? sortedStrings(source.packIds)
       : [],
-    scopes: mode === MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST
-      ? sortedStrings(source.scopes)
-      : [],
   };
 }
 
@@ -304,9 +483,7 @@ function defaultComplete(overrides = {}) {
 }
 
 function defaultMakerCommerce(overrides = {}) {
-  const commerce = structuredClone(createMakerV8Commerce(overrides));
-  delete commerce.packPolicies;
-  return commerce;
+  return structuredClone(createMakerV8Commerce(overrides));
 }
 
 export function createMakerV8Document(options = {}) {
@@ -314,7 +491,6 @@ export function createMakerV8Document(options = {}) {
   const {
     makerId = 'untitled-maker',
     name = 'Untitled Maker',
-    creator = '',
     width = 1024,
     height = 1024,
     pixelMode = 'smooth',
@@ -333,7 +509,6 @@ export function createMakerV8Document(options = {}) {
       id: safeId(makerId, rootMakerKey),
       name: String(name || 'Untitled Maker'),
       summary: '',
-      creator: String(creator || ''),
       style: '',
       license: { kind: 'personal-use', note: '' },
       coverAssetId: null,
@@ -441,9 +616,16 @@ export function createCharacterMakerV8Starter(options = {}) {
 }
 
 export function isMakerV8Document(value) {
-  return isRecord(value)
-    && value.schemaVersion === MAKER_V8_DOCUMENT_SCHEMA
-    && value.protocolVersion === MAKER_V8_DOCUMENT_VERSION;
+  try {
+    const issues = [];
+    const snapshot = snapshotAuthorJsonTree(value, issues);
+    return issues.length === 0
+      && isRecord(snapshot)
+      && snapshot.schemaVersion === MAKER_V8_DOCUMENT_SCHEMA
+      && snapshot.protocolVersion === MAKER_V8_DOCUMENT_VERSION;
+  } catch {
+    return false;
+  }
 }
 
 function validateId(value, path, issues) {
@@ -456,7 +638,12 @@ function validateId(value, path, issues) {
 }
 
 function validateName(value, path, issues, { required = true, max = MAX_NAME_BYTES } = {}) {
-  const text = String(value ?? '');
+  if (value === undefined && !required) return;
+  if (typeof value !== 'string') {
+    issue(issues, path, 'MAKER_V8_TEXT_INVALID', 'Text fields must contain JSON strings.');
+    return;
+  }
+  const text = value;
   if ((required && !text.trim()) || utf8Length(text) > max) {
     issue(issues, path, 'MAKER_V8_TEXT_INVALID', `Text must be ${required ? 'non-empty and ' : ''}at most ${max} UTF-8 bytes.`);
   }
@@ -471,7 +658,17 @@ function isCompilerOwnedAuthorField(key) {
 }
 
 function allowAuthorFields(value, allowed, path, issues) {
-  if (!isRecord(value)) return;
+  if (!isRecord(value)) {
+    if (value !== null && value !== undefined) {
+      issue(
+        issues,
+        path,
+        'MAKER_V8_AUTHOR_OBJECT_INVALID',
+        'Maker v8 author object boundaries accept only plain JSON objects.',
+      );
+    }
+    return;
+  }
   Object.keys(value).forEach((key) => {
     if (allowed.has(key)) return;
     const fieldPath = path ? `${path}.${key}` : key;
@@ -512,7 +709,11 @@ function walkSelectionTargetShape(value, path, issues, allowed = AUTHOR_FIELDS.s
 }
 
 function walkConditionShape(value, path, issues) {
-  if (!isRecord(value)) return;
+  if (value === null || value === undefined) return;
+  if (!isRecord(value)) {
+    allowAuthorFields(value, new Set(), path, issues);
+    return;
+  }
   if (value.op === 'selected') {
     walkSelectionTargetShape(value, path, issues, AUTHOR_FIELDS.selectedCondition);
     return;
@@ -544,7 +745,15 @@ function walkRuleOwnerShape(value, path, issues) {
 }
 
 function collectMakerV8AuthorShapeIssuesInto(document, issues) {
-  if (!isRecord(document)) return;
+  if (!isRecord(document)) {
+    issue(
+      issues,
+      '',
+      'MAKER_V8_AUTHOR_OBJECT_INVALID',
+      'Maker v8 author documents must be plain JSON objects.',
+    );
+    return;
+  }
   allowAuthorFields(document, AUTHOR_FIELDS.document, '', issues);
   allowAuthorFields(document.lineage, AUTHOR_FIELDS.lineage, 'lineage', issues);
   allowAuthorFields(document.metadata, AUTHOR_FIELDS.metadata, 'metadata', issues);
@@ -630,6 +839,12 @@ function collectMakerV8AuthorShapeIssuesInto(document, issues) {
 
   allowAuthorFields(document.commerce, AUTHOR_FIELDS.commerce, 'commerce', issues);
   allowAuthorFields(
+    document.commerce?.rightsEvidence,
+    AUTHOR_FIELDS.rightsEvidence,
+    'commerce.rightsEvidence',
+    issues,
+  );
+  allowAuthorFields(
     document.commerce?.makerAccess,
     AUTHOR_FIELDS.makerAccess,
     'commerce.makerAccess',
@@ -648,7 +863,18 @@ function collectMakerV8AuthorShapeIssuesInto(document, issues) {
 
 export function collectMakerV8AuthorShapeIssues(document) {
   const issues = [];
-  collectMakerV8AuthorShapeIssuesInto(document, issues);
+  try {
+    const snapshot = snapshotAuthorJsonTree(document, issues);
+    if (!snapshot) return Object.freeze(issues);
+    collectMakerV8AuthorShapeIssuesInto(snapshot, issues);
+  } catch {
+    issue(
+      issues,
+      '',
+      'MAKER_V8_AUTHOR_JSON_INSPECTION_FAILED',
+      'Maker v8 author JSON could not be inspected safely.',
+    );
+  }
   return Object.freeze(issues);
 }
 
@@ -1165,24 +1391,13 @@ function validateCompleteDefinitions(document, compile, issues) {
       issues,
       {
         limit: LIMITS.completePackIds,
+        pattern: SAFE_SEMANTIC_PACK_ID,
         invalidCode: 'MAKER_V8_COMPLETE_PACK_ID_INVALID',
         limitCode: 'MAKER_V8_COMPLETE_PACK_ID_LIMIT',
       },
     );
-    const scopes = validateSortedUniqueStrings(
-      policy.scopes,
-      `${path}.allowedPackPolicy.scopes`,
-      issues,
-      {
-        limit: LIMITS.completePackScopes,
-        pattern: SAFE_SCOPE,
-        maxBytes: 256,
-        invalidCode: 'MAKER_V8_COMPLETE_PACK_SCOPE_INVALID',
-        limitCode: 'MAKER_V8_COMPLETE_PACK_SCOPE_LIMIT',
-      },
-    );
     if (policy.mode === MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALL_ADMITTED
-      && (packIds.length || scopes.length)) {
+      && packIds.length) {
       issue(
         issues,
         `${path}.allowedPackPolicy`,
@@ -1191,23 +1406,22 @@ function validateCompleteDefinitions(document, compile, issues) {
       );
     }
     if (policy.mode === MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST
-      && packIds.length === 0
-      && scopes.length === 0) {
+      && packIds.length === 0) {
       issue(
         issues,
         `${path}.allowedPackPolicy`,
         'MAKER_V8_COMPLETE_PACK_ALLOWLIST_EMPTY',
-        'ALLOWLIST needs at least one semantic Pack ID or admitted scope.',
+        'ALLOWLIST needs at least one semantic Pack ID.',
       );
     }
-    expandedPackEdges += packIds.length + scopes.length;
+    expandedPackEdges += packIds.length;
     if (expandedPackEdges > LIMITS.completePackEdges && !edgeLimitReported) {
       edgeLimitReported = true;
       issue(
         issues,
         `${path}.allowedPackPolicy`,
         'MAKER_V8_COMPLETE_PACK_EDGE_LIMIT',
-        `Complete Pack policies cannot expand beyond ${LIMITS.completePackEdges} ID/scope edges across all outputs.`,
+        `Complete Pack policies cannot expand beyond ${LIMITS.completePackEdges} Pack-ID edges across all outputs.`,
       );
     }
   });
@@ -1256,7 +1470,7 @@ export function makerV8Inventory(document) {
   });
 }
 
-export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) {
+function collectMakerV8DocumentIssuesUnsafe(document, { mode = 'draft' } = {}) {
   const issues = [];
   if (!VALIDATION_MODES.has(mode)) {
     issue(issues, 'mode', 'MAKER_V8_VALIDATION_MODE_INVALID', 'Validation mode must be draft, compile, or activate.');
@@ -1266,6 +1480,8 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
     issue(issues, '', 'MAKER_V8_DOCUMENT_REQUIRED', 'Maker v8 document is required.');
     return Object.freeze(issues);
   }
+  document = snapshotAuthorJsonTree(document, issues);
+  if (!document) return Object.freeze(issues);
   collectMakerV8AuthorShapeIssuesInto(document, issues);
   if (document.schemaVersion !== MAKER_V8_DOCUMENT_SCHEMA) {
     issue(issues, 'schemaVersion', 'MAKER_V8_DOCUMENT_SCHEMA_INVALID', 'Document schema must be animacraft.maker.v8.');
@@ -1293,8 +1509,14 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
     validateId(document.metadata.id, 'metadata.id', issues);
     validateName(document.metadata.name, 'metadata.name', issues);
     validateName(document.metadata.summary, 'metadata.summary', issues, { required: false, max: MAX_DESCRIPTION_BYTES });
-    if (compile) validateName(document.metadata.creator, 'metadata.creator', issues);
     validateName(document.metadata.style, 'metadata.style', issues, { required: false });
+    if (document.metadata.coverAssetId !== null
+      && document.metadata.coverAssetId !== undefined
+      && (typeof document.metadata.coverAssetId !== 'string'
+        || !SAFE_ID.test(document.metadata.coverAssetId)
+        || utf8Length(document.metadata.coverAssetId) > MAX_NAME_BYTES)) {
+      issue(issues, 'metadata.coverAssetId', 'MAKER_V8_COVER_ID_INVALID', 'Cover Asset ID must be null or a safe semantic Asset ID.');
+    }
     if (!isRecord(document.metadata.license)
       || !LICENSE_KINDS.has(document.metadata.license.kind)) {
       issue(issues, 'metadata.license', 'MAKER_V8_LICENSE_INVALID', 'Metadata needs an exact supported Creator license kind.');
@@ -1362,16 +1584,56 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
   const assets = new Map((Array.isArray(document.assets) ? document.assets : [])
     .map((asset) => [String(asset?.id || ''), asset]));
   (Array.isArray(document.assets) ? document.assets : []).forEach((asset, index) => {
+    const assetPath = `assets[${index}]`;
     if (!ASSET_KINDS.has(asset?.kind)) {
-      issue(issues, `assets[${index}].kind`, 'MAKER_V8_ASSET_KIND_INVALID', 'Asset kind is unsupported.');
+      issue(issues, `${assetPath}.kind`, 'MAKER_V8_ASSET_KIND_INVALID', 'Asset kind is unsupported.');
     }
-    if (compile && (!Number.isSafeInteger(asset?.byteLength) || asset.byteLength <= 0)) {
-      issue(issues, `assets[${index}].byteLength`, 'MAKER_V8_ASSET_LENGTH_INVALID', 'Compiled assets need a positive byte length.');
+    if (asset?.identifier !== undefined
+      && (typeof asset.identifier !== 'string'
+        || !asset.identifier
+        || utf8Length(asset.identifier) > 512)) {
+      issue(issues, `${assetPath}.identifier`, 'MAKER_V8_ASSET_IDENTIFIER_INVALID', 'Asset identifier must be a non-empty string no longer than 512 UTF-8 bytes.');
     }
-    if (compile && (typeof asset?.mediaType !== 'string' || !asset.mediaType)) {
-      issue(issues, `assets[${index}].mediaType`, 'MAKER_V8_ASSET_MEDIA_TYPE_INVALID', 'Compiled assets need an exact media type.');
+    for (const field of ['width', 'height']) {
+      if (asset?.[field] !== undefined && (
+        !Number.isSafeInteger(asset[field])
+        || asset[field] <= 0
+        || asset[field] > MAX_ASSET_DIMENSION
+      )) {
+        issue(issues, `${assetPath}.${field}`, 'MAKER_V8_ASSET_DIMENSION_INVALID', `Asset dimensions must be positive integers no greater than ${MAX_ASSET_DIMENSION}.`);
+      }
+    }
+    if (asset?.byteLength !== undefined && (
+      !Number.isSafeInteger(asset.byteLength)
+      || asset.byteLength <= 0
+    )) {
+      issue(issues, `${assetPath}.byteLength`, 'MAKER_V8_ASSET_LENGTH_INVALID', 'Asset byte length must be a positive integer when present.');
+    }
+    if (asset?.mediaType !== undefined
+      && (typeof asset.mediaType !== 'string' || !asset.mediaType)) {
+      issue(issues, `${assetPath}.mediaType`, 'MAKER_V8_ASSET_MEDIA_TYPE_INVALID', 'Asset media type must be a non-empty string when present.');
+    }
+    if (compile && asset?.byteLength === undefined) {
+      issue(issues, `${assetPath}.byteLength`, 'MAKER_V8_ASSET_LENGTH_INVALID', 'Compiled assets need a positive byte length.');
+    }
+    if (compile && asset?.mediaType === undefined) {
+      issue(issues, `${assetPath}.mediaType`, 'MAKER_V8_ASSET_MEDIA_TYPE_INVALID', 'Compiled assets need an exact media type.');
     }
   });
+  if (document.commerce?.rightsOrigin === MAKER_V8_RIGHTS_ORIGINS.LICENSE_WRAPPED) {
+    const evidenceAssetId = document.commerce?.rightsEvidence?.evidenceAssetId;
+    const evidenceAsset = typeof evidenceAssetId === 'string'
+      ? assets.get(evidenceAssetId)
+      : null;
+    if (!evidenceAsset || evidenceAsset.kind !== 'rights-evidence') {
+      issue(
+        issues,
+        'commerce.rightsEvidence.evidenceAssetId',
+        'MAKER_V8_RIGHTS_EVIDENCE_ASSET_INVALID',
+        'Wrapped-license evidence must reference an existing dedicated rights-evidence Asset.',
+      );
+    }
+  }
   if (compile) {
     const coverId = String(document.metadata?.coverAssetId || '');
     const cover = assets.get(coverId);
@@ -1551,8 +1813,6 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
       }
       if (!ITEM_STATUSES.has(item?.status)) {
         issue(issues, `${itemPath}.status`, 'MAKER_V8_ITEM_STATUS_INVALID', 'Item status must be draft, private, or public.');
-      } else if (compile && item.status !== 'public') {
-        issue(issues, `${itemPath}.status`, 'MAKER_V8_ITEM_NOT_PUBLIC', 'Compiled Maker v8 can contain only public Items.');
       }
       if (!Array.isArray(item?.styles) || (compile && item.styles.length === 0)) {
         issue(issues, `${itemPath}.styles`, 'MAKER_V8_ITEM_STYLES_INVALID', 'Published Items need at least one Style.');
@@ -1684,11 +1944,7 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
   }
   validateRules(document.rules, known, 'rules', issues, ruleBudget);
 
-  const baseCommerce = isRecord(document.commerce)
-    ? { ...document.commerce, packPolicies: [] }
-    : document.commerce;
-  collectMakerV8CommerceIssues(baseCommerce, {
-    packIds: [],
+  collectMakerV8CommerceIssues(document.commerce, {
     publish: compile,
   }).forEach((entry) => issues.push(entry));
 
@@ -1698,6 +1954,41 @@ export function collectMakerV8DocumentIssues(document, { mode = 'draft' } = {}) 
   validateCompleteDefinitions(document, compile, issues);
   if (compile && issues.length === 0) validateExecutableRuleGraph(document, issues);
   return Object.freeze(issues);
+}
+
+export function collectMakerV8DocumentIssues(document, options = {}) {
+  try {
+    const optionIssues = [];
+    const optionSnapshot = snapshotAuthorJsonTree(options, optionIssues);
+    if (!isRecord(optionSnapshot)) {
+      if (optionIssues.length === 0) {
+        issue(
+          optionIssues,
+          'options',
+          'MAKER_V8_VALIDATION_OPTIONS_INVALID',
+          'Maker v8 validation options must be a plain JSON object.',
+        );
+      }
+      return Object.freeze(optionIssues);
+    }
+    const unknownOptions = Object.keys(optionSnapshot).filter((key) => key !== 'mode');
+    unknownOptions.forEach((key) => issue(
+      optionIssues,
+      `options.${key}`,
+      'MAKER_V8_VALIDATION_OPTION_UNKNOWN',
+      'Unknown Maker v8 validation options are forbidden.',
+    ));
+    if (optionIssues.length) return Object.freeze(optionIssues);
+    return collectMakerV8DocumentIssuesUnsafe(document, optionSnapshot);
+  } catch {
+    return Object.freeze([
+      Object.freeze({
+        path: '',
+        code: 'MAKER_V8_AUTHOR_JSON_INSPECTION_FAILED',
+        message: 'Maker v8 author JSON could not be inspected safely.',
+      }),
+    ]);
+  }
 }
 
 export class MakerV8DocumentValidationError extends Error {

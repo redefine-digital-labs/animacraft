@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { MAKER_V8_RIGHTS_ORIGINS } from '../maker-commerce-v8.js';
+
 import {
   MAKER_V8_CAPABILITIES,
   MAKER_V8_COMPLETE_PACK_POLICY_MODES,
@@ -21,7 +23,6 @@ function compiledDocument() {
   const document = structuredClone(createMakerV8Document({
     makerId: 'astral-courier',
     name: 'Astral Courier',
-    creator: '0xcreator',
     commerce: { rightsOriginConfirmed: true },
   }));
   document.metadata.summary = 'A unified v8 Maker.';
@@ -116,6 +117,7 @@ test('new Maker documents are exact v8 drafts and reject every older schema', ()
   assert.equal(document.schemaVersion, MAKER_V8_DOCUMENT_SCHEMA);
   assert.equal(document.protocolVersion, 8);
   assert.equal(Object.isFrozen(document), true);
+  assert.equal(Object.hasOwn(document.metadata, 'creator'), false);
   assert.equal(collectMakerV8DocumentIssues(document, { mode: 'draft' }).length, 0);
   assert.equal(isMakerV8Document(document), true);
   assert.equal(Object.hasOwn(document.capabilities, 'commerce'), false);
@@ -137,7 +139,6 @@ test('new Maker documents are exact v8 drafts and reject every older schema', ()
   assert.deepEqual(document.complete.outputs[0].allowedPackPolicy, {
     mode: MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALL_ADMITTED,
     packIds: [],
-    scopes: [],
   });
   assert.equal(createMakerV8Document({
     capabilities: Object.fromEntries(MAKER_V8_CAPABILITIES.map((name) => [name, false])),
@@ -152,13 +153,11 @@ test('new Maker documents are exact v8 drafts and reject every older schema', ()
         allowedPackPolicy: {
           mode: MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST,
           packIds: ['z-pack', 'a-pack', 'a-pack'],
-          scopes: ['z/scope', 'a/scope', 'a/scope'],
         },
       }],
     },
   }).complete.outputs[0].allowedPackPolicy;
   assert.deepEqual(canonicalPolicy.packIds, ['a-pack', 'z-pack']);
-  assert.deepEqual(canonicalPolicy.scopes, ['a/scope', 'z/scope']);
 
   for (const schemaVersion of [
     'animacraft.maker.v5',
@@ -240,6 +239,32 @@ test('compile validation binds cover, assets, shared definitions, rules, and nat
   );
 });
 
+test('wrapped rights reference one dedicated local evidence Asset and no compiler evidence', () => {
+  const document = compiledDocument();
+  document.commerce.rightsOrigin = MAKER_V8_RIGHTS_ORIGINS.LICENSE_WRAPPED;
+  document.commerce.rightsEvidence = {
+    licensor: 'Example Licensor Ltd.',
+    evidenceAssetId: 'rights-license',
+  };
+  assert.equal(collectMakerV8DocumentIssues(document, { mode: 'compile' }).some((entry) => (
+    entry.code === 'MAKER_V8_RIGHTS_EVIDENCE_ASSET_INVALID'
+  )), true);
+
+  document.assets.push({
+    id: 'rights-license',
+    kind: 'rights-evidence',
+    mediaType: 'application/pdf',
+    byteLength: 4_096,
+  });
+  assert.deepEqual(collectMakerV8DocumentIssues(document, { mode: 'compile' }), []);
+
+  document.commerce.rightsEvidence.sha256 = 'author-owned-hash';
+  assert.equal(collectMakerV8DocumentIssues(document, { mode: 'compile' }).some((entry) => (
+    entry.path === 'commerce.rightsEvidence.sha256'
+    && entry.code === 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN'
+  )), true);
+});
+
 test('all native capabilities are derived true and predecessor evidence is compiler context', () => {
   MAKER_V8_CAPABILITIES.forEach((capability) => {
     const document = structuredClone(createMakerV8Document());
@@ -296,12 +321,11 @@ test('Maker-wide composition reuses FIXED/COMPOSABLE admission vocabulary withou
   assert.equal(codes.has('MAKER_V8_FIXED_ASSETIZATION_INVALID'), true);
 });
 
-test('Complete authoring permits all admitted Packs or sorted semantic ID/scope allowlists', () => {
+test('Complete authoring permits all admitted Packs or sorted semantic Pack-ID allowlists', () => {
   const document = compiledDocument();
   document.complete.outputs[0].allowedPackPolicy = {
     mode: MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST,
     packIds: ['official-hair', 'season-one'],
-    scopes: ['creator/official', 'studio:seasonal'],
   };
   assert.deepEqual(collectMakerV8DocumentIssues(document, { mode: 'compile' }), []);
   assert.equal(Object.hasOwn(document, 'packs'), false);
@@ -326,6 +350,118 @@ test('Complete authoring permits all admitted Packs or sorted semantic ID/scope 
     .map((entry) => entry.code));
   assert.equal(frozenCodes.has('MAKER_V8_EMBEDDED_PACKS_FORBIDDEN'), true);
   assert.equal(frozenCodes.has('MAKER_V8_EMBEDDED_PACK_POLICY_FORBIDDEN'), true);
+
+  const objectId = structuredClone(document);
+  objectId.complete.outputs[0].allowedPackPolicy.packIds = [`0x${'a'.repeat(64)}`];
+  assert.equal(collectMakerV8DocumentIssues(objectId, { mode: 'draft' }).some((entry) => (
+    entry.path === 'complete.outputs[0].allowedPackPolicy.packIds[0]'
+    && entry.code === 'MAKER_V8_COMPLETE_PACK_ID_INVALID'
+  )), true);
+});
+
+test('the author boundary rejects non-JSON descriptors, graphs, depth, and scalar objects', () => {
+  const hidden = compiledDocument();
+  Object.defineProperty(hidden.metadata, 'creator', {
+    value: '0xdeadbeef',
+    enumerable: false,
+  });
+  assert.equal(collectMakerV8AuthorShapeIssues(hidden).some((entry) => (
+    entry.code === 'MAKER_V8_AUTHOR_JSON_DESCRIPTOR_INVALID'
+  )), true);
+
+  const symbol = compiledDocument();
+  symbol.metadata[Symbol('owner')] = '0xowner';
+  assert.equal(collectMakerV8DocumentIssues(symbol, { mode: 'draft' }).some((entry) => (
+    entry.code === 'MAKER_V8_AUTHOR_JSON_SYMBOL_INVALID'
+  )), true);
+
+  const customArray = compiledDocument();
+  Object.setPrototypeOf(customArray.rules, Object.create(Array.prototype));
+  assert.doesNotThrow(() => collectMakerV8DocumentIssues(customArray, { mode: 'draft' }));
+  assert.equal(collectMakerV8DocumentIssues(customArray, { mode: 'draft' }).some((entry) => (
+    entry.code === 'MAKER_V8_AUTHOR_OBJECT_INVALID'
+  )), true);
+
+  const cycle = compiledDocument();
+  cycle.metadata.summary = cycle.metadata;
+  assert.doesNotThrow(() => collectMakerV8DocumentIssues(cycle, { mode: 'draft' }));
+  assert.equal(collectMakerV8DocumentIssues(cycle, { mode: 'draft' }).some((entry) => (
+    entry.code === 'MAKER_V8_AUTHOR_JSON_GRAPH_INVALID'
+  )), true);
+
+  const deep = compiledDocument();
+  let condition = { op: 'selected', partId: 'base' };
+  for (let depth = 0; depth < 20_000; depth += 1) condition = { op: 'not', condition };
+  deep.parts[0].visibleWhen = condition;
+  assert.doesNotThrow(() => collectMakerV8DocumentIssues(deep, { mode: 'draft' }));
+  assert.equal(collectMakerV8DocumentIssues(deep, { mode: 'draft' }).some((entry) => (
+    entry.code === 'MAKER_V8_AUTHOR_JSON_DEPTH_LIMIT'
+  )), true);
+
+  const scalarObject = compiledDocument();
+  scalarObject.metadata.summary = { creator: '0xdeadbeef', sealId: 'seal', contentHash: 'hash' };
+  scalarObject.assets[0].identifier = { blobId: 'blob', sha256: 'hash' };
+  const scalarCodes = new Set(collectMakerV8DocumentIssues(scalarObject, { mode: 'draft' })
+    .map((entry) => entry.code));
+  assert.equal(scalarCodes.has('MAKER_V8_TEXT_INVALID'), true);
+  assert.equal(scalarCodes.has('MAKER_V8_ASSET_IDENTIFIER_INVALID'), true);
+
+  const proxy = new Proxy(compiledDocument(), {
+    get(target, property, receiver) {
+      if (property === 'schemaVersion') throw new Error('hostile property read');
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  assert.doesNotThrow(() => collectMakerV8DocumentIssues(proxy, { mode: 'draft' }));
+  assert.equal(collectMakerV8DocumentIssues(proxy, { mode: 'draft' }).some((entry) => (
+    entry.code === 'MAKER_V8_AUTHOR_JSON_INSPECTION_FAILED'
+  )), true);
+  assert.equal(isMakerV8Document(proxy), false);
+
+  const hiddenTarget = compiledDocument().metadata;
+  hiddenTarget.creator = '0xdeadbeef';
+  const hiddenByProxy = compiledDocument();
+  hiddenByProxy.metadata = new Proxy(hiddenTarget, {
+    ownKeys(target) {
+      return Reflect.ownKeys(target).filter((key) => key !== 'creator');
+    },
+    getOwnPropertyDescriptor(target, key) {
+      if (key === 'creator') return undefined;
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  const proxyIssues = collectMakerV8DocumentIssues(hiddenByProxy, { mode: 'draft' });
+  assert.equal(proxyIssues.some((entry) => (
+    entry.code === 'MAKER_V8_AUTHOR_JSON_INSPECTION_FAILED'
+  )), true);
+  assert.equal(collectMakerV8AuthorShapeIssues(hiddenByProxy).some((entry) => (
+    entry.code === 'MAKER_V8_AUTHOR_JSON_INSPECTION_FAILED'
+  )), true);
+
+  const dynamicMode = new Proxy({ mode: 'activate' }, {
+    get(target, property, receiver) {
+      if (property === 'mode') return 'draft';
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  assert.equal(collectMakerV8DocumentIssues(compiledDocument(), dynamicMode).some((entry) => (
+    entry.code === 'MAKER_V8_AUTHOR_JSON_INSPECTION_FAILED'
+  )), true);
+});
+
+test('private and draft Items remain in the author document without blocking public-row validation', () => {
+  const document = compiledDocument();
+  const privateItem = structuredClone(document.parts[0].items[0]);
+  privateItem.id = 'private-body';
+  privateItem.name = 'Private body';
+  privateItem.displayOrder = 1;
+  privateItem.importKey = 'private-body';
+  privateItem.status = 'private';
+  document.parts[0].items.push(privateItem);
+
+  const issues = collectMakerV8DocumentIssues(document, { mode: 'compile' });
+  assert.equal(issues.some((entry) => entry.code === 'MAKER_V8_ITEM_NOT_PUBLIC'), false);
+  assert.deepEqual(issues, []);
 });
 
 test('the exact author contract rejects recursive field injection at every object boundary', () => {
@@ -348,11 +484,14 @@ test('the exact author contract rejects recursive field injection at every objec
     ['document unknown', 'extensions', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.extensions = {}; }],
     ['chain identity', 'chainId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.chainId = 'sui:mainnet'; }],
     ['lineage', 'lineage.previousRootId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.lineage.previousRootId = 'chain'; }],
+    ['creator address', 'metadata.creator', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.metadata.creator = '0xcreator'; }],
+    ['wallet address', 'metadata.walletAddress', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.metadata.walletAddress = '0xwallet'; }],
     ['metadata', 'metadata.payloadCommitment', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.metadata.payloadCommitment = 'x'; }],
     ['license', 'metadata.license.sealId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.metadata.license.sealId = 'x'; }],
     ['canvas', 'canvas.rootId', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.canvas.rootId = 'x'; }],
     ['capabilities', 'capabilities.commerce', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.capabilities.commerce = true; }],
     ['composition', 'composition.loadoutMutable', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.composition.loadoutMutable = true; }],
+    ['non-plain track', 'layerTracks[0]', 'MAKER_V8_AUTHOR_OBJECT_INVALID', (value) => { Object.setPrototypeOf(value.layerTracks[0], { injected: true }); }],
     ['track', 'layerTracks[0].payloadCommitment', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.layerTracks[0].payloadCommitment = 'x'; }],
     ['channel', 'colorChannels[0].sourceKind', 'MAKER_V8_AUTHOR_FIELD_UNKNOWN', (value) => { value.colorChannels[0].sourceKind = 'OFFICIAL'; }],
     ['swatch', 'colorChannels[0].swatches[0].contentHash', 'MAKER_V8_COMPILER_OWNED_FIELD_FORBIDDEN', (value) => { value.colorChannels[0].swatches[0].contentHash = 'x'; }],
@@ -408,7 +547,7 @@ test('nested collections and concrete Rule/Complete expansion are bounded', () =
     id: 'wide-edge',
     type: 'requires',
     trigger: { partId: 'base', itemIds: ids },
-    targets: [{ partId: 'base', itemIds: ids }],
+    targets: [{ partId: 'base', itemIds: [...ids] }],
   }];
   document.parts[0].visibleWhen = {
     op: 'all',
@@ -420,8 +559,7 @@ test('nested collections and concrete Rule/Complete expansion are bounded', () =
   }));
   document.complete.outputs[0].allowedPackPolicy = {
     mode: MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST,
-    packIds: Array.from({ length: 1_000 }, (_, index) => `pack-${String(index).padStart(4, '0')}`),
-    scopes: ['scope/overflow'],
+    packIds: Array.from({ length: 1_001 }, (_, index) => `pack-${String(index).padStart(4, '0')}`),
   };
   const codes = new Set(collectMakerV8DocumentIssues(document, { mode: 'compile' })
     .map((entry) => entry.code));
@@ -471,6 +609,21 @@ test('constructors, validation modes, and Creator limits fail closed without raw
   assert.equal(codes.has('MAKER_V8_VALIDATION_MODE_INVALID'), true);
   assert.equal(codes.has('MAKER_V8_ID_INVALID'), true);
   assert.equal(codes.has('MAKER_V8_TRACK_LIMIT'), true);
+
+  const exoticMetadata = structuredClone(createMakerV8Document());
+  Object.setPrototypeOf(exoticMetadata.metadata, { injected: true });
+  assert.equal(
+    collectMakerV8DocumentIssues(exoticMetadata, { mode: 'draft' }).some((entry) => (
+      entry.path === 'metadata' && entry.code === 'MAKER_V8_AUTHOR_OBJECT_INVALID'
+    )),
+    true,
+  );
+
+  const nullPrototypeDocument = Object.assign(
+    Object.create(null),
+    structuredClone(createMakerV8Document()),
+  );
+  assert.deepEqual(collectMakerV8DocumentIssues(nullPrototypeDocument, { mode: 'draft' }), []);
 });
 
 test('compile validation executes the shared Creator rule engine', () => {
@@ -480,7 +633,7 @@ test('compile validation executes the shared Creator rule engine', () => {
     id: 'self-exclude',
     type: 'excludes',
     trigger: selection,
-    targets: [selection],
+    targets: [structuredClone(selection)],
   });
   const codes = new Set(collectMakerV8DocumentIssues(document, { mode: 'compile' })
     .map((entry) => entry.code));

@@ -37,7 +37,10 @@ export const MAKER_V8_CAPABILITY_BITS = Object.freeze({
   seal: 8n,
   physical: 16n,
   canonicalSoul: 32n,
+  market: 64n,
 });
+
+export const MAKER_V8_REQUIRED_CAPABILITIES = 127n;
 
 export const MAKER_V8_COMPOSITION_BEHAVIORS = Object.freeze({
   FIXED: 0,
@@ -81,6 +84,8 @@ const U16_MAX = (1n << 16n) - 1n;
 const TEXT_ENCODER = new TextEncoder();
 const HEX_32 = /^(?:0x)?[0-9a-fA-F]{64}$/;
 const SUI_ID = /^0x[0-9a-fA-F]{64}$/;
+const MAX_COMPILER_INPUT_DEPTH = 64;
+const MAX_COMPILER_INPUT_NODES = 100_000;
 
 const ByteVector = bcs.byteVector();
 const OptionByteVector = bcs.option(ByteVector);
@@ -523,8 +528,12 @@ function fail(code, message, details) {
 
 function isPlainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
 }
 
 function deepFreeze(value) {
@@ -532,6 +541,164 @@ function deepFreeze(value) {
   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
   Object.values(value).forEach(deepFreeze);
   return Object.freeze(value);
+}
+
+function inspectCompilerDataTree(root, rootPath) {
+  const stack = [{ value: root, path: rootPath, depth: 0 }];
+  const seen = new WeakSet();
+  let nodes = 0;
+  while (stack.length) {
+    const current = stack.pop();
+    nodes += 1;
+    if (nodes > MAX_COMPILER_INPUT_NODES || current.depth > MAX_COMPILER_INPUT_DEPTH) {
+      fail(
+        'MAKER_V8_COMPILER_INPUT_LIMIT',
+        `${rootPath} exceeds the bounded compiler input limit.`,
+        { path: current.path },
+      );
+    }
+    const value = current.value;
+    if (value === null
+      || typeof value === 'string'
+      || typeof value === 'boolean'
+      || typeof value === 'bigint') continue;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        fail(
+          'MAKER_V8_COMPILER_INPUT_SCALAR_INVALID',
+          `${current.path} must be finite compiler data.`,
+          { path: current.path },
+        );
+      }
+      continue;
+    }
+    if (!value || typeof value !== 'object') {
+      fail(
+        'MAKER_V8_COMPILER_INPUT_SCALAR_INVALID',
+        `${current.path} must be plain compiler data.`,
+        { path: current.path },
+      );
+    }
+    let binary;
+    try {
+      binary = ArrayBuffer.isView(value) || value instanceof ArrayBuffer;
+    } catch {
+      fail(
+        'MAKER_V8_COMPILER_INPUT_UNREADABLE',
+        `${rootPath} could not be inspected safely.`,
+        { path: current.path },
+      );
+    }
+    if (binary) {
+      fail(
+        'MAKER_V8_CANONICAL_BINARY_UNSUPPORTED',
+        `${current.path} must project binary data explicitly.`,
+        { path: current.path },
+      );
+    }
+    if (seen.has(value)) {
+      fail(
+        'MAKER_V8_COMPILER_INPUT_GRAPH_INVALID',
+        `${rootPath} must be a tree without cycles or shared references.`,
+        { path: current.path },
+      );
+    }
+    seen.add(value);
+
+    let prototype;
+    let keys;
+    try {
+      prototype = Object.getPrototypeOf(value);
+      keys = Reflect.ownKeys(value);
+    } catch {
+      fail(
+        'MAKER_V8_COMPILER_INPUT_UNREADABLE',
+        `${rootPath} could not be inspected safely.`,
+        { path: current.path },
+      );
+    }
+    const array = Array.isArray(value);
+    if ((array && prototype !== Array.prototype)
+      || (!array && prototype !== Object.prototype && prototype !== null)) {
+      fail(
+        'MAKER_V8_CANONICAL_OBJECT_UNSUPPORTED',
+        `${current.path} must use a standard JSON object or array prototype.`,
+        { path: current.path },
+      );
+    }
+    if (keys.some((key) => typeof key !== 'string')) {
+      fail(
+        'MAKER_V8_COMPILER_INPUT_SYMBOL_INVALID',
+        `${rootPath} cannot contain symbol keys.`,
+        { path: current.path },
+      );
+    }
+    if (array) {
+      let lengthDescriptor;
+      try {
+        lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+      } catch {
+        fail(
+          'MAKER_V8_COMPILER_INPUT_UNREADABLE',
+          `${current.path} array length could not be inspected safely.`,
+          { path: current.path },
+        );
+      }
+      const length = lengthDescriptor?.value;
+      const allowed = new Set(['length']);
+      if (Number.isSafeInteger(length) && length >= 0) {
+        for (let index = 0; index < length; index += 1) allowed.add(String(index));
+      }
+      if (!Number.isSafeInteger(length)
+        || length < 0
+        || keys.length !== allowed.size
+        || keys.some((key) => !allowed.has(key))) {
+        fail(
+          'MAKER_V8_COMPILER_INPUT_ARRAY_INVALID',
+          `${current.path} must be a dense ordered array without extra properties.`,
+          { path: current.path },
+        );
+      }
+    }
+    for (const key of keys) {
+      if (array && key === 'length') continue;
+      let descriptor;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(value, key);
+      } catch {
+        fail(
+          'MAKER_V8_COMPILER_INPUT_UNREADABLE',
+          `${rootPath} property descriptors could not be inspected safely.`,
+          { path: current.path },
+        );
+      }
+      const childPath = array ? `${current.path}[${key}]` : `${current.path}.${key}`;
+      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+        fail(
+          'MAKER_V8_COMPILER_INPUT_DESCRIPTOR_INVALID',
+          `${rootPath} accepts only enumerable data properties.`,
+          { path: childPath },
+        );
+      }
+      stack.push({ value: descriptor.value, path: childPath, depth: current.depth + 1 });
+    }
+  }
+}
+
+function snapshotCompilerData(root, path) {
+  inspectCompilerDataTree(root, path);
+  let snapshot;
+  try {
+    snapshot = structuredClone(root);
+  } catch {
+    fail(
+      'MAKER_V8_COMPILER_INPUT_UNREADABLE',
+      `${path} could not be snapshotted safely; Proxy and non-cloneable values are forbidden.`,
+      { path },
+    );
+  }
+  inspectCompilerDataTree(snapshot, path);
+  return snapshot;
 }
 
 function canonicalValue(value, path = '$', seen = new Set()) {
@@ -579,7 +746,7 @@ function canonicalValue(value, path = '$', seen = new Set()) {
  * normalized, and BigInt values are emitted as base-10 strings.
  */
 export function canonicalMakerV8Json(value) {
-  return JSON.stringify(canonicalValue(value));
+  return JSON.stringify(canonicalValue(snapshotCompilerData(value, '$')));
 }
 
 export function canonicalMakerV8Utf8(value) {
@@ -1668,14 +1835,16 @@ function rowProtected(value, label) {
  * snapshots. Entries are logical calls, not an assertion that every entry can
  * share a PTB; newly shared Pack objects are intentionally consumed later.
  */
-export function planMakerV8PublicationCalls({
-  root = {},
-  composition = {},
-  packs = [],
-  completeOutputs = [],
-  physicalPolicies = null,
-  ...unknown
-} = {}) {
+export function planMakerV8PublicationCalls(input = {}) {
+  const snapshot = snapshotCompilerData(input, 'callPlan');
+  const {
+    root = {},
+    composition = {},
+    packs = [],
+    completeOutputs = [],
+    physicalPolicies = null,
+    ...unknown
+  } = snapshot;
   if (Object.keys(unknown).length) {
     fail('MAKER_V8_CALL_PLAN_UNKNOWN', 'The call-plan shape contains unknown fields.', {
       fields: Object.keys(unknown),
@@ -1695,10 +1864,11 @@ export function planMakerV8PublicationCalls({
   };
   const exactPacks = orderedRows(packs, 'Pack Releases');
   const outputs = orderedRows(completeOutputs, 'Complete outputs');
-  const physicalDeclared = physicalPolicies !== null;
-  const policies = physicalDeclared
-    ? orderedRows(physicalPolicies, 'Physical policies')
-    : [];
+  // Unified v8 always binds every native capability. An author with no
+  // Physical rows still publishes and seals an explicit empty Physical
+  // registry; absence is never represented by a partial capability mask.
+  const physicalDeclared = true;
+  const policies = orderedRows(physicalPolicies ?? [], 'Physical policies');
   if (policies.length > 10_000) {
     fail('MAKER_V8_PHYSICAL_POLICY_LIMIT', 'Physical cannot exceed 10,000 policy rows.', {
       actual: policies.length,
@@ -1861,23 +2031,13 @@ export function planMakerV8PublicationCalls({
   push('registry-seals', 'composition_v8::seal_composition_registry_v8');
   push('registry-seals', 'expansion_pack_v8::seal_expansion_pack_registry_v8');
   push('registry-seals', 'complete_v8::seal_complete_registry_v8');
-  if (physicalDeclared) push('registry-seals', 'physical_v8::seal_physical_registry_v8');
-  push(
-    'activation',
-    physicalDeclared
-      ? 'publication_v8::seal_and_activate_physical_maker_v8'
-      : 'publication_v8::seal_and_activate_maker_v8',
-  );
+  push('registry-seals', 'physical_v8::seal_physical_registry_v8');
+  push('activation', 'publication_v8::seal_and_activate_physical_maker_v8');
 
   return deepFreeze({
     rowCounts: rowCounts.fields,
     rowCountsBcsHex: rowCounts.bcsHex,
-    declaredCapabilities: MAKER_V8_CAPABILITY_BITS.composition
-      | MAKER_V8_CAPABILITY_BITS.expansionPacks
-      | MAKER_V8_CAPABILITY_BITS.complete
-      | MAKER_V8_CAPABILITY_BITS.seal
-      | MAKER_V8_CAPABILITY_BITS.canonicalSoul
-      | (physicalDeclared ? MAKER_V8_CAPABILITY_BITS.physical : 0n),
+    declaredCapabilities: MAKER_V8_REQUIRED_CAPABILITIES,
     expectedCompositionItemCount: BigInt(compositionRows.items.length),
     expectedCompositionRuleCount: BigInt(compositionRows.rules.length),
     expectedCompleteOutputCount: BigInt(outputs.length),

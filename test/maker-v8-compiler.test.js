@@ -147,7 +147,6 @@ function validCurrentDocument() {
   const document = structuredClone(createMakerV8Document({
     makerId: 'compiler-gap',
     name: 'Compiler Gap',
-    creator: '0xcreator',
     commerce: { rightsOriginConfirmed: true },
   }));
   document.metadata.summary = 'Valid authoring document with intentionally incomplete publication semantics.';
@@ -385,6 +384,32 @@ test('canonical JSON preserves array and Unicode semantics while sorting keys de
   assert.throws(
     () => canonicalMakerV8Json({ bytes: new Uint8Array([1]) }),
     (error) => error.code === 'MAKER_V8_CANONICAL_BINARY_UNSUPPORTED',
+  );
+  const accessor = {};
+  Object.defineProperty(accessor, 'secret', {
+    enumerable: true,
+    get() { throw new Error('raw-accessor-sentinel'); },
+  });
+  assert.throws(
+    () => canonicalMakerV8Json(accessor),
+    (error) => error instanceof MakerV8CompilerError
+      && error.code === 'MAKER_V8_COMPILER_INPUT_DESCRIPTOR_INVALID'
+      && !String(error.message).includes('raw-accessor-sentinel'),
+  );
+  const unreadable = new Proxy({}, {
+    getPrototypeOf() { throw new Error('raw-proxy-sentinel'); },
+  });
+  assert.throws(
+    () => canonicalMakerV8Json(unreadable),
+    (error) => error instanceof MakerV8CompilerError
+      && error.code === 'MAKER_V8_COMPILER_INPUT_UNREADABLE'
+      && !String(error.message).includes('raw-proxy-sentinel'),
+  );
+  assert.throws(
+    () => planMakerV8PublicationCalls(unreadable),
+    (error) => error instanceof MakerV8CompilerError
+      && error.code === 'MAKER_V8_COMPILER_INPUT_UNREADABLE'
+      && !String(error.message).includes('raw-proxy-sentinel'),
   );
 });
 
@@ -712,10 +737,11 @@ test('companion commitment chains match exact golden finals across every v8 regi
 
 test('call planner computes exact counts and preserves dependency ordering', async () => {
   const root = fullRootInput();
+  const packRows = [{ namespace: 'studio', packKey: '夜色', styles: [{ protected: true }] }];
   const plan = planMakerV8PublicationCalls({
     root,
     composition: { slots: [{}], items: [{}], rules: [{}] },
-    packs: [{ namespace: 'studio', packKey: '夜色', styles: [{ protected: true }] }],
+    packs: packRows,
     completeOutputs: [{ protected: true }],
     physicalPolicies: [{ sourceKind: 0 }, { sourceKind: 1 }],
   });
@@ -738,7 +764,7 @@ test('call planner computes exact counts and preserves dependency ordering', asy
   );
   assert.equal(plan.expectedCompletePackPolicyCount, 1n);
   assert.equal(plan.expectedPhysicalPolicyCount, 2n);
-  assert.equal(plan.declaredCapabilities, 63n);
+  assert.equal(plan.declaredCapabilities, 127n);
   assert.deepEqual(plan.packReleaseCounts, [{
     namespace: 'studio',
     packKey: '夜色',
@@ -794,10 +820,30 @@ test('call planner computes exact counts and preserves dependency ordering', asy
     packs: [],
     completeOutputs: [],
   });
-  assert.equal(withoutPhysical.declaredCapabilities, 47n);
+  assert.equal(withoutPhysical.declaredCapabilities, 127n);
   assert.equal(withoutPhysical.expectedPhysicalPolicyCount, 0n);
   assert.equal(withoutPhysical.calls.at(-1).target,
-    'publication_v8::seal_and_activate_maker_v8');
+    'publication_v8::seal_and_activate_physical_maker_v8');
+  assert.equal(withoutPhysical.calls.some((call) => (
+    call.target === 'physical_v8::seal_physical_registry_v8'
+  )), true);
+
+  const hiddenPack = new Proxy(packRows, {
+    get(target, property, receiver) {
+      if (property === 'length') return 0;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  assert.throws(
+    () => planMakerV8PublicationCalls({
+      root,
+      composition: { slots: [], items: [], rules: [] },
+      packs: hiddenPack,
+      completeOutputs: [],
+    }),
+    (error) => error instanceof MakerV8CompilerError
+      && error.code === 'MAKER_V8_COMPILER_INPUT_UNREADABLE',
+  );
 });
 
 test('u64 and row-count bounds fail closed instead of rounding or overflowing', () => {
