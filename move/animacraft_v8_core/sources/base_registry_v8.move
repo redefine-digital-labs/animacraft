@@ -631,6 +631,13 @@ public(package) fun share_base_definition_registry_v8(
     transfer::share_object(registry);
 }
 
+#[test_only]
+public fun share_base_definition_registry_for_testing(
+    registry: BaseDefinitionRegistryV8,
+) {
+    share_base_definition_registry_v8(registry)
+}
+
 fun assert_writable<PaymentCoin>(
     registry: &BaseDefinitionRegistryV8,
     root: &MakerRootV8<PaymentCoin>,

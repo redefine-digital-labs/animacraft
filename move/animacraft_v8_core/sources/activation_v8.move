@@ -399,6 +399,63 @@ public fun activate_maker_v8<PaymentCoin, ReleaseOriginalMarker, ReleaseCallable
     );
 }
 
+/// Exact Release lifecycle boundary. Core mutates the Root but deliberately
+/// emits no public lifecycle event; Release must read the resulting Root back
+/// before emitting its package-stable event.
+public fun pause_maker_v8<PaymentCoin, ReleaseOriginalMarker, ReleaseCallableMarker>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    catalog: &ProductReleaseCatalogV8,
+    release_cap: &PackageCallCapV8<ReleaseRoleV8>,
+    ctx: &TxContext,
+): (u8, u8) {
+    assert_release_lifecycle_boundary<
+        PaymentCoin,
+        ReleaseOriginalMarker,
+        ReleaseCallableMarker,
+    >(root, admin, catalog, release_cap, ctx);
+    maker::transition_lifecycle_from_core_v8(
+        root, admin, maker::lifecycle_paused_v8(), ctx)
+}
+
+/// Resume is the only post-activation lifecycle transition that requires the
+/// exact enabled ProtocolConfig snapshot. Pause and archive remain available
+/// as safety controls while protocol execution is disabled.
+public fun resume_maker_v8<PaymentCoin, ReleaseOriginalMarker, ReleaseCallableMarker>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    release_cap: &PackageCallCapV8<ReleaseRoleV8>,
+    ctx: &TxContext,
+): (u8, u8) {
+    assert_release_lifecycle_boundary<
+        PaymentCoin,
+        ReleaseOriginalMarker,
+        ReleaseCallableMarker,
+    >(root, admin, catalog, release_cap, ctx);
+    maker::assert_current_protocol_config_v8(root, config);
+    binding::assert_catalog_current_v8(config, catalog);
+    maker::transition_lifecycle_from_core_v8(
+        root, admin, maker::lifecycle_active_v8(), ctx)
+}
+
+public fun archive_maker_v8<PaymentCoin, ReleaseOriginalMarker, ReleaseCallableMarker>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    catalog: &ProductReleaseCatalogV8,
+    release_cap: &PackageCallCapV8<ReleaseRoleV8>,
+    ctx: &TxContext,
+): (u8, u8) {
+    assert_release_lifecycle_boundary<
+        PaymentCoin,
+        ReleaseOriginalMarker,
+        ReleaseCallableMarker,
+    >(root, admin, catalog, release_cap, ctx);
+    maker::transition_lifecycle_from_core_v8(
+        root, admin, maker::lifecycle_archived_v8(), ctx)
+}
+
 fun activate_with_verified_release<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
     admin: &MakerAdminCapV8,
@@ -651,6 +708,32 @@ fun assert_active_root_catalog<PaymentCoin>(
         binding::catalog_call_cap_set_v8(catalog),
     );
     (root_id, catalog_id, call_cap_set_commitment)
+}
+
+fun assert_release_lifecycle_boundary<
+    PaymentCoin,
+    ReleaseOriginalMarker,
+    ReleaseCallableMarker,
+>(
+    root: &MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    catalog: &ProductReleaseCatalogV8,
+    release_cap: &PackageCallCapV8<ReleaseRoleV8>,
+    ctx: &TxContext,
+) {
+    binding::assert_release_call_cap_v8(catalog, release_cap);
+    binding::assert_type_origins_v8<ReleaseOriginalMarker, ReleaseCallableMarker>(
+        binding::release_binding_v8(binding::catalog_binding_v8(catalog)),
+    );
+    maker::assert_admin_v8(root, admin);
+    assert!(maker::root_owner_v8(root) == ctx.sender(), EReadinessMismatch);
+    let (_, catalog_id, _) = assert_root_catalog(root, catalog);
+    let capability = maker::root_capability_registry_binding_v8(root);
+    assert!(maker::capability_catalog_id_v8(capability) == catalog_id, EReadinessMismatch);
+    binding::assert_same_call_cap_set_v8(
+        maker::capability_call_cap_set_v8(capability),
+        binding::catalog_call_cap_set_v8(catalog),
+    );
 }
 
 fun assert_root_catalog<PaymentCoin>(

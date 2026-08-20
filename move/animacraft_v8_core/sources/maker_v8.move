@@ -1170,6 +1170,27 @@ public(package) fun activate_from_core_v8<PaymentCoin>(
     root.lifecycle = ACTIVE;
 }
 
+/// Core owns the exact transition matrix while Release owns public
+/// orchestration and events. Keeping this mutation package-only makes a
+/// borrowed MakerAdminCap insufficient to bypass Release's catalog gate.
+public(package) fun transition_lifecycle_from_core_v8<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    next: u8,
+    ctx: &TxContext,
+): (u8, u8) {
+    assert_admin_v8(root, admin);
+    assert!(root.owner == ctx.sender(), ENotCurrentOwner);
+    let previous = root.lifecycle;
+    assert!(
+        (previous == ACTIVE && (next == PAUSED || next == ARCHIVED))
+            || (previous == PAUSED && (next == ACTIVE || next == ARCHIVED)),
+        EInvalidLifecycle,
+    );
+    root.lifecycle = next;
+    (previous, next)
+}
+
 /// Read-only scaffold check used by terminal activation after the Release
 /// package has supplied all five concrete companion readiness proofs.
 public fun assert_activation_scaffold_ready_v8<PaymentCoin>(
