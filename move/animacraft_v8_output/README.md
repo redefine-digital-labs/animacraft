@@ -40,8 +40,11 @@ The later Market package may add the sole Output-owned transfer path, guarded
 by the concrete Market call cap and expected ownership-epoch CAS.
 
 Physical materialization consumes Runtime's no-ability exact current-selection
-witness against the live loadout, then exact-matches a live Complete receipt,
+witness against the live loadout, including its exact Part, Item, Style, and
+Layer Track semantic keys, then exact-matches a live Complete receipt,
 Canonical Soul, Root, holder, output policy row, registry records, and a unique
-Soul-scoped materialization key. Its `PhysicalMaterializationWitnessV8` has no
-abilities and can only be consumed by a caller borrowing Core's concrete
-Physical call cap with the catalog-frozen Physical TypeOrigin.
+Soul-scoped materialization key. Those keys are included in the Output witness
+commitment and exposed only through the typed `PhysicalSelectionBindingV8`.
+The `PhysicalMaterializationWitnessV8` has no abilities and can only be consumed
+by a caller borrowing Core's concrete Physical call cap with the catalog-frozen
+Physical TypeOrigin.

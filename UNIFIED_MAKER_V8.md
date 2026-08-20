@@ -183,7 +183,8 @@ transaction manifest:
   Maker activation. They are not embedded in the base Maker document. A
   Complete output uses exactly one `allowedPackPolicy`: `ALL_ADMITTED`, or
   `ALLOWLIST` with a strictly sorted, duplicate-free list of semantic Pack
-  IDs. It never contains Release object IDs, Style IDs or one Player's
+  IDs, capped at 64 IDs per output and 64 Pack-ID edges across the entire
+  document. It never contains Release object IDs, Style IDs or one Player's
   concrete selection;
 - the compiler accepts the connected signer identity, certified transport
   bytes, live predecessor readback and package/config bindings through a
@@ -359,15 +360,16 @@ instance with an equip lock and ownership epoch may enter escrow.
   an unrelated caller-supplied list.
 - Complete authorizes one exact rendered Recipe/content commitment and returns
   a non-store, non-copy, non-drop `SoulMintAuthorizationV8`. In the same PTB,
-  `soul_v8` alone consumes that proof, records its one-time receipt and creates
-  the canonical `CanonicalSoulV8`. The proof binds the exact Root, ownership
+  Output consumes that proof, records its one-time receipt and creates the
+  canonical `CanonicalSoulV8`. The proof binds the exact Root, ownership
   epoch, content commitment, holder, Complete output, Recipe, render and
   authorization commitment. It cannot be replayed, persisted, substituted or
   used while the Root is paused or archived. The final PNG is available
   according to the Root's Complete policy, not according to a v5 receipt or
   legacy bypass.
 - A Complete output commits an allowed Recipe policy and either all admitted
-  Packs or a sorted semantic Pack-ID allowlist;
+  Packs or a sorted semantic Pack-ID allowlist capped at 64 IDs for that output;
+  all output allowlists together are capped at 64 Pack-ID edges;
   it does not freeze one future player's concrete Pack selection. The runtime
   derives the exact base/Pack/Smart Color selection vector and charges from the
   current canonical loadout.
@@ -378,11 +380,14 @@ instance with an equip lock and ownership epoch may enter escrow.
   (or a family policy that verifies that exact receipt); a static renderer
   schema hash is not decrypt authorization. Unprotected free assets use an
   explicit empty policy, never an ambiguous missing field.
-- Physical records bind exact Style content and support proof-bound claim or
-  materialization, consume, transfer and recovery without referencing v7
-  objects. Pack-backed materialization revalidates the current Release and
-  access. `ACTIVE` may gate new mint/equip, but PAUSED/ARCHIVED cannot trap a
-  holder: policy-authorized withdraw, transfer or consume remains available.
+- Physical records bind exact Style content. Its only proof modes are `NONE`
+  and `CANONICAL_SOUL`: a Complete receipt is never standalone Physical proof
+  because Output creates the Canonical Soul in the same PTB. Physical supports
+  proof-bound claim or materialization, consume, transfer and recovery without
+  referencing v7 objects. Pack-backed materialization revalidates the current
+  Release and access. `ACTIVE` may gate new mint/equip, but PAUSED/ARCHIVED
+  cannot trap a holder: policy-authorized withdraw, transfer or consume remains
+  available.
 
 Root Item gates, rights and market fee fields are executable protocol rules,
 not display metadata. Until native Item entitlement exists, only INCLUDED is

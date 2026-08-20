@@ -332,6 +332,10 @@ public struct PhysicalMaterializationWitnessV8 {
     loadout_commitment: vector<u8>,
     selection_index: u64,
     selection_commitment: vector<u8>,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    layer_track_key: String,
     source_class: u8,
     source_definition_id: ID,
     source_semantic_id: String,
@@ -356,6 +360,8 @@ public struct PhysicalCompleteBindingV8 has copy, drop, store {
 public struct PhysicalSelectionBindingV8 has copy, drop, store {
     loadout_id: ID, loadout_revision: u64, loadout_commitment: vector<u8>,
     selection_index: u64, selection_commitment: vector<u8>, source_class: u8,
+    part_key: String, item_key: String, style_key: String,
+    layer_track_key: String,
     source_definition_id: ID, source_semantic_id: String,
     source_content_commitment: vector<u8>, source_epoch: u64,
     pricing_commitment: vector<u8>, asset_content_commitment: vector<u8>,
@@ -1043,6 +1049,7 @@ public fun new_physical_materialization_witness_v8<PaymentCoin>(
     let (loadout_id, selection_root_id, selection_root_version,
         selection_root_content, selection_holder, loadout_revision,
         loadout_commitment, selection_index, selection_commitment,
+        part_key, item_key, style_key, layer_track_key,
         source_class, source_definition_id, source_semantic_id,
         source_content_commitment, source_epoch, pricing_commitment,
         asset_content_commitment) = runtime::consume_physical_selection_witness_v8(
@@ -1072,7 +1079,8 @@ public fun new_physical_materialization_witness_v8<PaymentCoin>(
     };
     let selection = PhysicalSelectionBindingV8 {
         loadout_id, loadout_revision, loadout_commitment, selection_index,
-        selection_commitment, source_class, source_definition_id,
+        selection_commitment, part_key, item_key, style_key, layer_track_key,
+        source_class, source_definition_id,
         source_semantic_id, source_content_commitment, source_epoch,
         pricing_commitment, asset_content_commitment,
     };
@@ -1094,7 +1102,8 @@ public fun new_physical_materialization_witness_v8<PaymentCoin>(
         receipt_commitment: complete.receipt_commitment,
         soul_commitment: complete.soul_commitment,
         loadout_id, loadout_revision, loadout_commitment, selection_index,
-        selection_commitment, source_class, source_definition_id,
+        selection_commitment, part_key, item_key, style_key, layer_track_key,
+        source_class, source_definition_id,
         source_semantic_id: selection.source_semantic_id,
         source_content_commitment, source_epoch, pricing_commitment,
         asset_content_commitment, materialization_key,
@@ -1121,7 +1130,8 @@ public fun consume_physical_materialization_witness_v8<
         soul_id, soul_ownership_epoch, recipe_commitment, render_commitment,
         output_commitment, receipt_commitment, soul_commitment, loadout_id,
         loadout_revision, loadout_commitment, selection_index,
-        selection_commitment, source_class, source_definition_id,
+        selection_commitment, part_key, item_key, style_key, layer_track_key,
+        source_class, source_definition_id,
         source_semantic_id, source_content_commitment, source_epoch,
         pricing_commitment, asset_content_commitment, materialization_key,
         witness_commitment,
@@ -1134,7 +1144,8 @@ public fun consume_physical_materialization_witness_v8<
     };
     let selection = PhysicalSelectionBindingV8 {
         loadout_id, loadout_revision, loadout_commitment, selection_index,
-        selection_commitment, source_class, source_definition_id,
+        selection_commitment, part_key, item_key, style_key, layer_track_key,
+        source_class, source_definition_id,
         source_semantic_id, source_content_commitment, source_epoch,
         pricing_commitment, asset_content_commitment,
     };
@@ -1952,6 +1963,18 @@ public fun physical_selection_index_v8(binding: &PhysicalSelectionBindingV8): u6
 public fun physical_selection_commitment_v8(
     binding: &PhysicalSelectionBindingV8,
 ): &vector<u8> { &binding.selection_commitment }
+public fun physical_selection_part_key_v8(binding: &PhysicalSelectionBindingV8): &String {
+    &binding.part_key
+}
+public fun physical_selection_item_key_v8(binding: &PhysicalSelectionBindingV8): &String {
+    &binding.item_key
+}
+public fun physical_selection_style_key_v8(binding: &PhysicalSelectionBindingV8): &String {
+    &binding.style_key
+}
+public fun physical_selection_layer_track_key_v8(
+    binding: &PhysicalSelectionBindingV8,
+): &String { &binding.layer_track_key }
 public fun physical_selection_source_class_v8(binding: &PhysicalSelectionBindingV8): u8 {
     binding.source_class
 }
@@ -1973,6 +1996,27 @@ public fun physical_selection_pricing_commitment_v8(
 public fun physical_selection_asset_content_commitment_v8(
     binding: &PhysicalSelectionBindingV8,
 ): &vector<u8> { &binding.asset_content_commitment }
+
+#[test_only]
+public fun physical_base_selection_binding_for_testing_v8(
+    root_id: ID,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    layer_track_key: String,
+    root_content_commitment: vector<u8>,
+    asset_content_commitment: vector<u8>,
+): PhysicalSelectionBindingV8 {
+    PhysicalSelectionBindingV8 {
+        loadout_id: root_id, loadout_revision: 0, loadout_commitment: vector[],
+        selection_index: 0, selection_commitment: vector[],
+        source_class: runtime::source_base_v8(),
+        part_key, item_key, style_key, layer_track_key,
+        source_definition_id: root_id, source_semantic_id: b"".to_string(),
+        source_content_commitment: root_content_commitment, source_epoch: 0,
+        pricing_commitment: vector[], asset_content_commitment,
+    }
+}
 
 #[test_only]
 public fun destroy_output_package_config_for_testing(config: OutputPackageConfigV8) {
@@ -2180,7 +2224,10 @@ fun test_physical_bindings(): (PhysicalCompleteBindingV8, PhysicalSelectionBindi
         PhysicalSelectionBindingV8 {
             loadout_id: object::id_from_address(@0x15), loadout_revision: 2,
             loadout_commitment: test_hash(8), selection_index: 0,
-            selection_commitment: test_hash(9), source_class: runtime::source_pack_v8(),
+            selection_commitment: test_hash(9),
+            part_key: b"part".to_string(), item_key: b"item".to_string(),
+            style_key: b"style".to_string(), layer_track_key: b"track".to_string(),
+            source_class: runtime::source_pack_v8(),
             source_definition_id: object::id_from_address(@0x16),
             source_semantic_id: b"pack".to_string(),
             source_content_commitment: test_hash(10), source_epoch: 0,
@@ -2396,7 +2443,24 @@ fun physical_witness_commitment_binds_output_policy_and_current_selection() {
     other_selection.selection_commitment = test_hash(99);
     let three = derive_physical_witness_commitment(
         complete.output_registry_id, complete, other_selection, b"print-1".to_string());
-    assert!(one != two && one != three && two != three, EInvalidCommitment)
+    let mut other_keys = selection;
+    other_keys.part_key = b"other-part".to_string();
+    let four = derive_physical_witness_commitment(
+        complete.output_registry_id, complete, other_keys, b"print-1".to_string());
+    let mut other_item = selection;
+    other_item.item_key = b"other-item".to_string();
+    let five = derive_physical_witness_commitment(
+        complete.output_registry_id, complete, other_item, b"print-1".to_string());
+    let mut other_style = selection;
+    other_style.style_key = b"other-style".to_string();
+    let six = derive_physical_witness_commitment(
+        complete.output_registry_id, complete, other_style, b"print-1".to_string());
+    let mut other_track = selection;
+    other_track.layer_track_key = b"other-track".to_string();
+    let seven = derive_physical_witness_commitment(
+        complete.output_registry_id, complete, other_track, b"print-1".to_string());
+    assert!(one != two && one != three && one != four && one != five
+        && one != six && one != seven, EInvalidCommitment)
 }
 
 #[test, expected_failure(abort_code = EDuplicate)]

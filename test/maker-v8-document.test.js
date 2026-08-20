@@ -357,6 +357,60 @@ test('Complete authoring permits all admitted Packs or sorted semantic Pack-ID a
     entry.path === 'complete.outputs[0].allowedPackPolicy.packIds[0]'
     && entry.code === 'MAKER_V8_COMPLETE_PACK_ID_INVALID'
   )), true);
+
+  const semanticPackIds = (count, offset = 0) => Array.from(
+    { length: count },
+    (_, index) => `pack-${String(index + offset).padStart(3, '0')}`,
+  );
+  const perOutputBoundary = structuredClone(document);
+  perOutputBoundary.complete.outputs[0].allowedPackPolicy.packIds = semanticPackIds(64);
+  assert.deepEqual(
+    collectMakerV8DocumentIssues(perOutputBoundary, { mode: 'compile' }),
+    [],
+  );
+
+  const perOutputOverflow = structuredClone(perOutputBoundary);
+  perOutputOverflow.complete.outputs[0].allowedPackPolicy.packIds = semanticPackIds(65);
+  const overflowCodes = new Set(
+    collectMakerV8DocumentIssues(perOutputOverflow, { mode: 'compile' })
+      .map((entry) => entry.code),
+  );
+  assert.equal(overflowCodes.has('MAKER_V8_COMPLETE_PACK_ID_LIMIT'), true);
+  assert.equal(overflowCodes.has('MAKER_V8_COMPLETE_PACK_EDGE_LIMIT'), true);
+
+  const globalBoundary = structuredClone(document);
+  globalBoundary.complete.outputs = [
+    {
+      ...globalBoundary.complete.outputs[0],
+      id: 'png-one',
+      name: 'PNG One',
+      allowedPackPolicy: {
+        mode: MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST,
+        packIds: semanticPackIds(32),
+      },
+    },
+    {
+      ...globalBoundary.complete.outputs[0],
+      id: 'png-two',
+      name: 'PNG Two',
+      allowedPackPolicy: {
+        mode: MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST,
+        packIds: semanticPackIds(32, 32),
+      },
+    },
+  ];
+  assert.deepEqual(collectMakerV8DocumentIssues(globalBoundary, { mode: 'compile' }), []);
+
+  const globalOverflow = structuredClone(globalBoundary);
+  globalOverflow.complete.outputs[1].allowedPackPolicy.packIds = semanticPackIds(33, 32);
+  const globalOverflowIssues = collectMakerV8DocumentIssues(
+    globalOverflow,
+    { mode: 'compile' },
+  ).filter((entry) => entry.code.startsWith('MAKER_V8_COMPLETE_PACK_'));
+  assert.deepEqual(globalOverflowIssues.map((entry) => [entry.path, entry.code]), [[
+    'complete.outputs[1].allowedPackPolicy',
+    'MAKER_V8_COMPLETE_PACK_EDGE_LIMIT',
+  ]]);
 });
 
 test('the author boundary rejects non-JSON descriptors, graphs, depth, and scalar objects', () => {
@@ -559,7 +613,7 @@ test('nested collections and concrete Rule/Complete expansion are bounded', () =
   }));
   document.complete.outputs[0].allowedPackPolicy = {
     mode: MAKER_V8_COMPLETE_PACK_POLICY_MODES.ALLOWLIST,
-    packIds: Array.from({ length: 1_001 }, (_, index) => `pack-${String(index).padStart(4, '0')}`),
+    packIds: Array.from({ length: 65 }, (_, index) => `pack-${String(index).padStart(2, '0')}`),
   };
   const codes = new Set(collectMakerV8DocumentIssues(document, { mode: 'compile' })
     .map((entry) => entry.code));

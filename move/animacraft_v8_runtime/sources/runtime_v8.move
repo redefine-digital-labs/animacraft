@@ -431,6 +431,10 @@ public struct RuntimePhysicalSelectionWitnessV8 {
     loadout_commitment: vector<u8>,
     selection_index: u64,
     selection_commitment: vector<u8>,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    layer_track_key: String,
     source_class: u8,
     source_definition_id: ID,
     source_semantic_id: String,
@@ -2537,7 +2541,10 @@ public fun certify_physical_selection_v8(
         root_version: loadout.root_version,
         root_content_commitment: loadout.root_content_commitment,
         holder: loadout.holder, loadout_revision, loadout_commitment,
-        selection_index, selection_commitment, source_class,
+        selection_index, selection_commitment,
+        part_key: selection.part_key, item_key: selection.item_key,
+        style_key: selection.style_key, layer_track_key: selection.layer_track_key,
+        source_class,
         source_definition_id, source_semantic_id, source_content_commitment,
         source_epoch, pricing_commitment,
         asset_content_commitment: selection.asset_content_commitment,
@@ -2550,11 +2557,12 @@ public fun consume_physical_selection_witness_v8(
     witness: RuntimePhysicalSelectionWitnessV8,
     loadout: &MakerLoadoutV8,
     ctx: &TxContext,
-): (ID, ID, u64, vector<u8>, address, u64, vector<u8>, u64, vector<u8>, u8, ID, String, vector<u8>, u64, vector<u8>, vector<u8>) {
+): (ID, ID, u64, vector<u8>, address, u64, vector<u8>, u64, vector<u8>, String, String, String, String, u8, ID, String, vector<u8>, u64, vector<u8>, vector<u8>) {
     let RuntimePhysicalSelectionWitnessV8 {
         loadout_id, root_id, root_version, root_content_commitment, holder,
         loadout_revision, loadout_commitment, selection_index,
-        selection_commitment, source_class, source_definition_id,
+        selection_commitment, part_key, item_key, style_key, layer_track_key,
+        source_class, source_definition_id,
         source_semantic_id, source_content_commitment, source_epoch,
         pricing_commitment, asset_content_commitment,
     } = witness;
@@ -2568,6 +2576,10 @@ public fun consume_physical_selection_witness_v8(
     let selection = loadout.selections.borrow(selection_index).borrow();
     assert!(selection.selection_index == selection_index, EInvalidProof);
     assert!(selection_commitment == selection_commitment_v8(*selection), EInvalidProof);
+    assert!(part_key == selection.part_key, EInvalidProof);
+    assert!(item_key == selection.item_key, EInvalidProof);
+    assert!(style_key == selection.style_key, EInvalidProof);
+    assert!(layer_track_key == selection.layer_track_key, EInvalidProof);
     assert!(source_class == selection.source_class, EInvalidProof);
     assert!(source_definition_id == selection.source_definition_id, EInvalidProof);
     assert!(source_semantic_id == selection.source_semantic_id, EInvalidProof);
@@ -2578,7 +2590,8 @@ public fun consume_physical_selection_witness_v8(
     (
         loadout_id, root_id, root_version, root_content_commitment, holder,
         loadout_revision, loadout_commitment, selection_index,
-        selection_commitment, source_class, source_definition_id,
+        selection_commitment, part_key, item_key, style_key, layer_track_key,
+        source_class, source_definition_id,
         source_semantic_id, source_content_commitment, source_epoch,
         pricing_commitment, asset_content_commitment,
     )
@@ -3544,6 +3557,7 @@ fun physical_selection_witness_round_trips_exact_current_source() {
     let witness = certify_physical_selection_v8(proof, &loadout, &ctx);
     let (loadout_id, root_id, root_version, root_content, holder,
         revision, loadout_commitment, index, selection_commitment,
+        part_key, item_key, style_key, layer_track_key,
         source_class, source_definition_id, source_semantic_id,
         source_content, source_epoch, pricing_commitment, asset_content) =
         consume_physical_selection_witness_v8(witness, &loadout, &ctx);
@@ -3555,6 +3569,10 @@ fun physical_selection_witness_round_trips_exact_current_source() {
     assert!(loadout_commitment == loadout.commitment, EInvalidProof);
     assert!(index == 0 && selection_commitment == selection_commitment_v8(selection),
         EInvalidProof);
+    assert!(part_key == selection.part_key && item_key == selection.item_key,
+        EInvalidProof);
+    assert!(style_key == selection.style_key
+        && layer_track_key == selection.layer_track_key, EInvalidProof);
     assert!(source_class == SOURCE_PACK, EInvalidProof);
     assert!(source_definition_id == selection.source_definition_id,
         EInvalidProof);
@@ -3722,6 +3740,7 @@ fun consume_test_physical_witness(
 ) {
     let (_loadout_id, _root_id, _root_version, _root_content, _holder,
         _revision, _loadout_commitment, _index, _selection_commitment,
+        _part_key, _item_key, _style_key, _layer_track_key,
         _source_class, _source_definition_id, _source_semantic_id,
         _source_content, _source_epoch, _pricing_commitment, _asset_content) =
         consume_physical_selection_witness_v8(witness, loadout, ctx);

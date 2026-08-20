@@ -7,6 +7,7 @@ use animacraft_v8_core::package_binding_v8::{PackageCallCapV8,
     PhysicalRoleV8, ProductReleaseCatalogV8};
 use animacraft_v8_physical::physical_v8::{Self as physical,
     PhysicalPackageConfigV8, PhysicalRegistryV8};
+use animacraft_v8_output::output_v8::{Self as output, PhysicalSelectionBindingV8};
 use std::string::String;
 
 public fun new_config(
@@ -105,13 +106,17 @@ public fun certify<PaymentCoin>(
 
 public fun read_policy(
     registry: &PhysicalRegistryV8,
-    part_key: String,
-    item_key: String,
-    style_key: String,
+    selection: &PhysicalSelectionBindingV8,
 ): (u64, u8, u8, u64, u64, bool, vector<u8>) {
-    let row = physical::borrow_base_policy_v8(
-        registry, part_key, item_key, style_key,
-    );
+    let row = physical::borrow_base_policy_v8(registry, selection);
+    assert!(physical::policy_part_key_v8(row)
+        == output::physical_selection_part_key_v8(selection), 0);
+    assert!(physical::policy_item_key_v8(row)
+        == output::physical_selection_item_key_v8(selection), 0);
+    assert!(physical::policy_style_key_v8(row)
+        == output::physical_selection_style_key_v8(selection), 0);
+    assert!(physical::policy_layer_track_key_v8(row)
+        == output::physical_selection_layer_track_key_v8(selection), 0);
     (
         physical::policy_sequence_v8(row),
         physical::policy_issuance_kind_v8(row),

@@ -129,6 +129,10 @@ public fun inspect_physical(
     let _loadout = output::physical_selection_loadout_id_v8(selection);
     let _index = output::physical_selection_index_v8(selection);
     let _selection = output::physical_selection_commitment_v8(selection);
+    let _part = output::physical_selection_part_key_v8(selection);
+    let _item = output::physical_selection_item_key_v8(selection);
+    let _style = output::physical_selection_style_key_v8(selection);
+    let _track = output::physical_selection_layer_track_key_v8(selection);
     let _source = output::physical_selection_source_definition_id_v8(selection);
     let _asset = output::physical_selection_asset_content_commitment_v8(selection);
 }

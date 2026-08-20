@@ -16,6 +16,7 @@ use animacraft_v8_core::package_binding_v8::{
     PhysicalRoleV8,
     ProductReleaseCatalogV8,
 };
+use animacraft_v8_output::output_v8::{Self as output, PhysicalSelectionBindingV8};
 use std::bcs;
 use std::hash;
 use std::option::Option;
@@ -47,7 +48,6 @@ const ISSUE_PAID_PURCHASE: u8 = 1;
 const ISSUE_PROOF_MATERIALIZE: u8 = 2;
 
 const PROOF_NONE: u8 = 0;
-const PROOF_COMPLETE_RECEIPT: u8 = 1;
 const PROOF_CANONICAL_SOUL: u8 = 2;
 
 const EInvalidConfig: u64 = 0;
@@ -248,7 +248,6 @@ public fun issue_free_claim_v8(): u8 { ISSUE_FREE_CLAIM }
 public fun issue_paid_purchase_v8(): u8 { ISSUE_PAID_PURCHASE }
 public fun issue_proof_materialize_v8(): u8 { ISSUE_PROOF_MATERIALIZE }
 public fun proof_none_v8(): u8 { PROOF_NONE }
-public fun proof_complete_receipt_v8(): u8 { PROOF_COMPLETE_RECEIPT }
 public fun proof_canonical_soul_v8(): u8 { PROOF_CANONICAL_SOUL }
 
 public fun new_physical_package_config_v8(
@@ -776,10 +775,7 @@ fun assert_policy_terms(
     };
     assert!(issuance_kind == ISSUE_PROOF_MATERIALIZE, EInvalidPolicy);
     assert!(price_atomic == 0, EInvalidPolicy);
-    assert!(
-        proof_kind == PROOF_COMPLETE_RECEIPT || proof_kind == PROOF_CANONICAL_SOUL,
-        EInvalidPolicy,
-    );
+    assert!(proof_kind == PROOF_CANONICAL_SOUL, EInvalidPolicy);
 }
 
 fun assert_activation_ready(registry: &PhysicalRegistryV8) {
@@ -852,6 +848,42 @@ public fun registry_pack_policy_count_v8(registry: &PhysicalRegistryV8): u64 {
 }
 public fun borrow_base_policy_v8(
     registry: &PhysicalRegistryV8,
+    selection: &PhysicalSelectionBindingV8,
+): &PhysicalStylePolicyV8 {
+    assert!(
+        output::physical_selection_source_class_v8(selection) == SOURCE_BASE_STYLE,
+        EInvalidBinding,
+    );
+    assert!(
+        output::physical_selection_source_definition_id_v8(selection) == registry.root_id,
+        EInvalidBinding,
+    );
+    assert!(
+        output::physical_selection_source_content_commitment_v8(selection)
+            == &registry.root_content_commitment,
+        EInvalidBinding,
+    );
+    let policy = borrow_base_policy_by_keys(
+        registry,
+        *output::physical_selection_part_key_v8(selection),
+        *output::physical_selection_item_key_v8(selection),
+        *output::physical_selection_style_key_v8(selection),
+    );
+    assert!(
+        &policy.layer_track_key
+            == output::physical_selection_layer_track_key_v8(selection),
+        EInvalidBinding,
+    );
+    assert!(
+        &policy.style_payload_commitment
+            == output::physical_selection_asset_content_commitment_v8(selection),
+        EInvalidBinding,
+    );
+    policy
+}
+
+fun borrow_base_policy_by_keys(
+    registry: &PhysicalRegistryV8,
     part_key: String,
     item_key: String,
     style_key: String,
@@ -868,6 +900,9 @@ public fun policy_sequence_v8(policy: &PhysicalStylePolicyV8): u64 { policy.sequ
 public fun policy_part_key_v8(policy: &PhysicalStylePolicyV8): &String { &policy.part_key }
 public fun policy_item_key_v8(policy: &PhysicalStylePolicyV8): &String { &policy.item_key }
 public fun policy_style_key_v8(policy: &PhysicalStylePolicyV8): &String { &policy.style_key }
+public fun policy_layer_track_key_v8(policy: &PhysicalStylePolicyV8): &String {
+    &policy.layer_track_key
+}
 public fun policy_style_identity_commitment_v8(
     policy: &PhysicalStylePolicyV8,
 ): &vector<u8> { &policy.style_identity_commitment }
@@ -1181,8 +1216,13 @@ fun finish_test_fixture(
 fun exact_policy_term_matrix_is_fail_closed() {
     assert_policy_terms(ISSUE_FREE_CLAIM, PROOF_NONE, 0, 1);
     assert_policy_terms(ISSUE_PAID_PURCHASE, PROOF_NONE, 1, 1);
-    assert_policy_terms(ISSUE_PROOF_MATERIALIZE, PROOF_COMPLETE_RECEIPT, 0, 1);
     assert_policy_terms(ISSUE_PROOF_MATERIALIZE, PROOF_CANONICAL_SOUL, 0, 1);
+}
+
+#[test, expected_failure(abort_code = EInvalidPolicy)]
+fun proof_policy_rejects_removed_receipt_only_mode() {
+    assert_policy_terms(ISSUE_PROOF_MATERIALIZE, 1, 0, 1);
+    abort EInvalidPolicy
 }
 
 #[test, expected_failure(abort_code = EInvalidPolicy)]
@@ -1348,12 +1388,13 @@ fun base_policy_is_derived_from_exact_live_style() {
         true,
         row,
     );
-    let policy = borrow_base_policy_v8(
-        &registry,
-        b"part".to_string(),
-        b"item".to_string(),
-        b"style".to_string(),
+    let selection = output::physical_base_selection_binding_for_testing_v8(
+        maker::root_id_v8(&root),
+        b"part".to_string(), b"item".to_string(), b"style".to_string(),
+        b"track".to_string(), *maker::root_content_commitment_v8(&root),
+        test_hash(14),
     );
+    let policy = borrow_base_policy_v8(&registry, &selection);
     assert!(policy.sequence == 0, EInvalidSequence);
     assert!(
         &policy.style_identity_commitment == &derive_base_style_identity_v8(
