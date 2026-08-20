@@ -31,8 +31,8 @@ deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_r
 [pinned.mainnet.animacraft_v8_physical]
 source = { local = "../.." }
 use_environment = "mainnet"
-manifest_digest = "9AE930A6BFD49C33BFBBF5E1C1105893CF881ABBF6761AFABEA0490B6A11E398"
-deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_output = "animacraft_v8_output" }
+manifest_digest = "3DE92EF3F0F2052BBE6BAC125899B208AD9D16994502DD7740B8582DE2E56A84"
+deps = { Sui = "Sui", animacraft_v8_core = "animacraft_v8_core", animacraft_v8_output = "animacraft_v8_output", animacraft_v8_runtime = "animacraft_v8_runtime" }
 
 [pinned.mainnet.animacraft_v8_runtime]
 source = { local = "../../../animacraft_v8_runtime" }

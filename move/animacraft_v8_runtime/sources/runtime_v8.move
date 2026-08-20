@@ -4,6 +4,12 @@ module animacraft_v8_runtime::runtime_v8;
 
 use animacraft_v8_core::base_registry_v8::{Self as base, BaseDefinitionRegistryV8};
 use animacraft_v8_core::maker_v8::{Self as maker, MakerAdminCapV8, MakerRootV8};
+use animacraft_v8_core::package_binding_v8::{
+    Self as binding,
+    PackageCallCapV8,
+    PhysicalRoleV8,
+    ProductReleaseCatalogV8,
+};
 use animacraft_v8_core::protocol_config_v8::{Self as protocol, ProtocolConfigV8,
     ProtocolTreasuryV8};
 use animacraft_v8_core::treasury_v8::{Self as core_treasury, MakerAccessPassV8};
@@ -444,6 +450,71 @@ public struct RuntimePhysicalSelectionWitnessV8 {
     asset_content_commitment: vector<u8>,
 }
 
+/// Physical-only, same-transaction proof for registering one immutable Pack
+/// Style policy after Maker activation. Every identity is read from the live
+/// admitted Release, its exact current Pack control objects, and the exact
+/// Style row. The value has no abilities and cannot become an ID-only policy
+/// authority.
+public struct RuntimePhysicalPackPolicyWitnessV8 {
+    root_id: ID,
+    root_version: u64,
+    root_content_commitment: vector<u8>,
+    pack_registry_id: ID,
+    pack_registry_revision: u64,
+    release_id: ID,
+    semantic_pack_id: String,
+    release_content_commitment: vector<u8>,
+    pack_owner: address,
+    pack_control_epoch: u64,
+    pack_admin_cap_id: ID,
+    pack_treasury_id: ID,
+    style_index: u64,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    layer_track_key: String,
+    color_channel_key: Option<String>,
+    default_swatch_key: Option<String>,
+    asset_blob_id: String,
+    asset_sha256: vector<u8>,
+    asset_content_commitment: vector<u8>,
+    protected: bool,
+    seal_binding_commitment: vector<u8>,
+    style_commitment: vector<u8>,
+    style_identity_commitment: vector<u8>,
+}
+
+/// Physical-only live Pack access proof. It re-reads the current loadout,
+/// active admission, active Release, exact holder Pass, and exact Style row.
+/// Physical compares this no-ability value with its independently consumed
+/// Runtime/Output selection witness before issuing an asset.
+public struct RuntimePhysicalPackAccessWitnessV8 {
+    root_id: ID,
+    root_version: u64,
+    root_content_commitment: vector<u8>,
+    holder: address,
+    pack_registry_id: ID,
+    pack_registry_revision: u64,
+    release_id: ID,
+    semantic_pack_id: String,
+    release_content_commitment: vector<u8>,
+    pack_treasury_id: ID,
+    pack_pass_id: ID,
+    pack_pass_commitment: vector<u8>,
+    loadout_id: ID,
+    loadout_revision: u64,
+    loadout_commitment: vector<u8>,
+    selection_index: u64,
+    selection_commitment: vector<u8>,
+    pricing_commitment: vector<u8>,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    layer_track_key: String,
+    asset_content_commitment: vector<u8>,
+    style_identity_commitment: vector<u8>,
+}
+
 public struct UsedPackV8 has copy, drop, store {
     release_id: ID,
     semantic_pack_id: String,
@@ -569,6 +640,14 @@ public struct PackPassCommitmentInputV8 has drop {
     root_version: u64, root_content_commitment: vector<u8>,
     release_content_commitment: vector<u8>, holder: address,
     paid_atomic: u64, issued_at_ms: u64,
+}
+public struct PhysicalPackStyleIdentityInputV8 has drop {
+    domain: vector<u8>, version: u64,
+    root_id: ID, root_version: u64,
+    root_content_commitment: vector<u8>,
+    pack_registry_id: ID, release_id: ID,
+    semantic_pack_id: String, release_content_commitment: vector<u8>,
+    pack_treasury_id: ID, style: PackStyleV8,
 }
 public struct SealBindingCommitmentInputV8 has drop {
     domain: vector<u8>, version: u64, registry_id: ID,
@@ -1486,6 +1565,243 @@ public fun issue_included_pack_pass_v8<PaymentCoin>(
         &release.root_content_commitment, root);
     core_treasury::assert_maker_access_pass_v8(root, maker_access, ctx.sender());
     new_pack_pass(release, 0, clock.timestamp_ms(), ctx)
+}
+
+/// Builds the only Runtime authority accepted when Physical installs a
+/// post-activation Pack policy. The exact Physical call capability and marker
+/// origins prevent another package from turning Pack IDs into policy rows.
+public fun new_physical_pack_policy_witness_v8<
+    PaymentCoin,
+    PhysicalOriginalMarker,
+    PhysicalCallableMarker,
+>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    physical_call_cap: &PackageCallCapV8<PhysicalRoleV8>,
+    packs: &PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>,
+    pack_admin: &PackAdminCapV8,
+    pack_treasury: &PackTreasuryV8<PaymentCoin>,
+    part_key: String,
+    item_key: String,
+    style_key: String,
+    ctx: &TxContext,
+): RuntimePhysicalPackPolicyWitnessV8 {
+    assert_physical_caller<
+        PaymentCoin,
+        PhysicalOriginalMarker,
+        PhysicalCallableMarker,
+    >(root, catalog, physical_call_cap, packs);
+    assert_active_pack_admission(packs, release);
+    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert_pack_control(release, pack_admin, ctx);
+    assert_treasury(release, pack_treasury);
+    let style = release.styles.borrow(PackStyleKeyV8 {
+        part_key,
+        item_key,
+        style_key,
+    });
+    let style_identity_commitment = physical_pack_style_identity(
+        packs,
+        release,
+        pack_treasury,
+        style,
+    );
+    RuntimePhysicalPackPolicyWitnessV8 {
+        root_id: release.root_id,
+        root_version: release.root_version,
+        root_content_commitment: release.root_content_commitment,
+        pack_registry_id: object::id(packs),
+        pack_registry_revision: packs.revision,
+        release_id: object::id(release),
+        semantic_pack_id: release.semantic_pack_id,
+        release_content_commitment: release.content_commitment,
+        pack_owner: release.owner,
+        pack_control_epoch: release.control_epoch,
+        pack_admin_cap_id: object::id(pack_admin),
+        pack_treasury_id: object::id(pack_treasury),
+        style_index: style.index,
+        part_key: style.part_key,
+        item_key: style.item_key,
+        style_key: style.style_key,
+        layer_track_key: style.layer_track_key,
+        color_channel_key: style.color_channel_key,
+        default_swatch_key: style.default_swatch_key,
+        asset_blob_id: style.asset_blob_id,
+        asset_sha256: style.asset_sha256,
+        asset_content_commitment: style.asset_content_commitment,
+        protected: style.protected,
+        seal_binding_commitment: style.seal_binding_commitment,
+        style_commitment: style.style_commitment,
+        style_identity_commitment,
+    }
+}
+
+/// Re-reads one current Pack selection and its holder entitlement. This is
+/// deliberately separate from Output's Soul witness: NONE policies can issue
+/// without a Soul, while Soul materialization compares both independent
+/// witnesses before minting.
+public fun new_physical_pack_access_witness_v8<
+    PaymentCoin,
+    PhysicalOriginalMarker,
+    PhysicalCallableMarker,
+>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    physical_call_cap: &PackageCallCapV8<PhysicalRoleV8>,
+    packs: &PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>,
+    pack_treasury: &PackTreasuryV8<PaymentCoin>,
+    pass: &PackPassV8,
+    loadout: &MakerLoadoutV8,
+    selection_index: u64,
+    ctx: &TxContext,
+): RuntimePhysicalPackAccessWitnessV8 {
+    assert_physical_caller<
+        PaymentCoin,
+        PhysicalOriginalMarker,
+        PhysicalCallableMarker,
+    >(root, catalog, physical_call_cap, packs);
+    assert_active_pack_admission(packs, release);
+    assert!(release.lifecycle == PACK_ACTIVE, EInvalidLifecycle);
+    assert_treasury(release, pack_treasury);
+    assert_pack_pass(release, pass, ctx.sender());
+    assert!(loadout.version == VERSION, EInvalidBinding);
+    assert!(loadout.holder == ctx.sender(), EWrongHolder);
+    assert_root_compatibility(
+        loadout.root_id,
+        loadout.root_version,
+        &loadout.root_content_commitment,
+        root,
+    );
+    assert!(loadout.pack_registry_id == object::id(packs), EInvalidBinding);
+    let selection = loadout.selections.borrow(selection_index).borrow();
+    assert!(selection.selection_index == selection_index, EInvalidProof);
+    assert!(selection.source_class == SOURCE_PACK, EInvalidProof);
+    assert!(selection.source_definition_id == object::id(release), EInvalidProof);
+    assert!(&selection.source_semantic_id == &release.semantic_pack_id, EInvalidProof);
+    assert!(selection.access_subject == object::id(pass), EInvalidProof);
+    assert!(selection.source_epoch == 0, EInvalidProof);
+    let pricing_commitment = pack_pricing_commitment(release);
+    assert!(selection.pricing_commitment == pricing_commitment, EInvalidProof);
+    let style = release.styles.borrow(PackStyleKeyV8 {
+        part_key: selection.part_key,
+        item_key: selection.item_key,
+        style_key: selection.style_key,
+    });
+    assert!(style.layer_track_key == selection.layer_track_key, EInvalidProof);
+    assert!(style.asset_content_commitment == selection.asset_content_commitment, EInvalidProof);
+    let style_identity_commitment = physical_pack_style_identity(
+        packs,
+        release,
+        pack_treasury,
+        style,
+    );
+    RuntimePhysicalPackAccessWitnessV8 {
+        root_id: release.root_id,
+        root_version: release.root_version,
+        root_content_commitment: release.root_content_commitment,
+        holder: ctx.sender(),
+        pack_registry_id: object::id(packs),
+        pack_registry_revision: packs.revision,
+        release_id: object::id(release),
+        semantic_pack_id: release.semantic_pack_id,
+        release_content_commitment: release.content_commitment,
+        pack_treasury_id: object::id(pack_treasury),
+        pack_pass_id: object::id(pass),
+        pack_pass_commitment: pass.commitment,
+        loadout_id: object::id(loadout),
+        loadout_revision: loadout.revision,
+        loadout_commitment: loadout.commitment,
+        selection_index,
+        selection_commitment: selection_commitment_v8(*selection),
+        pricing_commitment,
+        part_key: selection.part_key,
+        item_key: selection.item_key,
+        style_key: selection.style_key,
+        layer_track_key: selection.layer_track_key,
+        asset_content_commitment: selection.asset_content_commitment,
+        style_identity_commitment,
+    }
+}
+
+/// Physical consumes the policy witness under the same exact call capability.
+public fun consume_physical_pack_policy_witness_v8<
+    PhysicalOriginalMarker,
+    PhysicalCallableMarker,
+>(
+    witness: RuntimePhysicalPackPolicyWitnessV8,
+    catalog: &ProductReleaseCatalogV8,
+    physical_call_cap: &PackageCallCapV8<PhysicalRoleV8>,
+): (
+    ID, u64, vector<u8>, ID, u64, ID, String, vector<u8>, address, u64,
+    ID, ID, u64, String, String, String, String, Option<String>,
+    Option<String>, String, vector<u8>, vector<u8>, bool, vector<u8>,
+    vector<u8>, vector<u8>,
+) {
+    binding::assert_physical_call_cap_v8(catalog, physical_call_cap);
+    binding::assert_type_origins_v8<PhysicalOriginalMarker, PhysicalCallableMarker>(
+        binding::physical_binding_v8(binding::catalog_binding_v8(catalog)),
+    );
+    let RuntimePhysicalPackPolicyWitnessV8 {
+        root_id, root_version, root_content_commitment,
+        pack_registry_id, pack_registry_revision, release_id,
+        semantic_pack_id, release_content_commitment, pack_owner,
+        pack_control_epoch, pack_admin_cap_id, pack_treasury_id,
+        style_index, part_key, item_key, style_key, layer_track_key,
+        color_channel_key, default_swatch_key, asset_blob_id,
+        asset_sha256, asset_content_commitment, protected,
+        seal_binding_commitment, style_commitment,
+        style_identity_commitment,
+    } = witness;
+    (
+        root_id, root_version, root_content_commitment,
+        pack_registry_id, pack_registry_revision, release_id,
+        semantic_pack_id, release_content_commitment, pack_owner,
+        pack_control_epoch, pack_admin_cap_id, pack_treasury_id,
+        style_index, part_key, item_key, style_key, layer_track_key,
+        color_channel_key, default_swatch_key, asset_blob_id,
+        asset_sha256, asset_content_commitment, protected,
+        seal_binding_commitment, style_commitment,
+        style_identity_commitment,
+    )
+}
+
+/// Physical consumes the live Pack access witness under the same exact cap.
+public fun consume_physical_pack_access_witness_v8<
+    PhysicalOriginalMarker,
+    PhysicalCallableMarker,
+>(
+    witness: RuntimePhysicalPackAccessWitnessV8,
+    catalog: &ProductReleaseCatalogV8,
+    physical_call_cap: &PackageCallCapV8<PhysicalRoleV8>,
+): (
+    ID, u64, vector<u8>, address, ID, u64, ID, String, vector<u8>, ID,
+    ID, vector<u8>, ID, u64, vector<u8>, u64, vector<u8>, vector<u8>,
+    String, String, String, String, vector<u8>, vector<u8>,
+) {
+    binding::assert_physical_call_cap_v8(catalog, physical_call_cap);
+    binding::assert_type_origins_v8<PhysicalOriginalMarker, PhysicalCallableMarker>(
+        binding::physical_binding_v8(binding::catalog_binding_v8(catalog)),
+    );
+    let RuntimePhysicalPackAccessWitnessV8 {
+        root_id, root_version, root_content_commitment, holder,
+        pack_registry_id, pack_registry_revision, release_id,
+        semantic_pack_id, release_content_commitment, pack_treasury_id,
+        pack_pass_id, pack_pass_commitment, loadout_id, loadout_revision,
+        loadout_commitment, selection_index, selection_commitment,
+        pricing_commitment, part_key, item_key, style_key, layer_track_key,
+        asset_content_commitment, style_identity_commitment,
+    } = witness;
+    (
+        root_id, root_version, root_content_commitment, holder,
+        pack_registry_id, pack_registry_revision, release_id,
+        semantic_pack_id, release_content_commitment, pack_treasury_id,
+        pack_pass_id, pack_pass_commitment, loadout_id, loadout_revision,
+        loadout_commitment, selection_index, selection_commitment,
+        pricing_commitment, part_key, item_key, style_key, layer_track_key,
+        asset_content_commitment, style_identity_commitment,
+    )
 }
 
 /// Package-private mutation reached only after runtime_binding_v8 consumes
@@ -3049,6 +3365,70 @@ fun pack_pricing_commitment<PaymentCoin>(release: &PackReleaseV8<PaymentCoin>): 
     }))
 }
 
+fun assert_physical_caller<
+    PaymentCoin,
+    PhysicalOriginalMarker,
+    PhysicalCallableMarker,
+>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    physical_call_cap: &PackageCallCapV8<PhysicalRoleV8>,
+    packs: &PackRegistryV8,
+) {
+    binding::assert_physical_call_cap_v8(catalog, physical_call_cap);
+    binding::assert_type_origins_v8<PhysicalOriginalMarker, PhysicalCallableMarker>(
+        binding::physical_binding_v8(binding::catalog_binding_v8(catalog)),
+    );
+    maker::assert_active_capability_registry_v8(root);
+    let capability = maker::root_capability_registry_binding_v8(root);
+    assert!(
+        maker::capability_catalog_id_v8(capability) == binding::catalog_id_v8(catalog),
+        EInvalidBinding,
+    );
+    assert!(
+        maker::capability_pack_registry_id_v8(capability) == object::id(packs),
+        EInvalidBinding,
+    );
+    assert!(packs.version == VERSION, EInvalidBinding);
+    maker::assert_root_identity_v8(
+        root,
+        packs.root_id,
+        packs.root_version,
+        &packs.root_content_commitment,
+    );
+    let admission = maker::root_pack_admission_binding_v8(root);
+    assert!(
+        maker::pack_registry_id_v8(admission) == object::id(packs),
+        EInvalidBinding,
+    );
+    assert!(
+        &packs.admission_policy_commitment
+            == maker::pack_admission_policy_commitment_v8(admission),
+        EInvalidBinding,
+    );
+}
+
+fun physical_pack_style_identity<PaymentCoin>(
+    packs: &PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>,
+    treasury: &PackTreasuryV8<PaymentCoin>,
+    style: &PackStyleV8,
+): vector<u8> {
+    hash::sha2_256(bcs::to_bytes(&PhysicalPackStyleIdentityInputV8 {
+        domain: b"animacraft-v8/runtime/physical-pack-style",
+        version: VERSION,
+        root_id: release.root_id,
+        root_version: release.root_version,
+        root_content_commitment: release.root_content_commitment,
+        pack_registry_id: object::id(packs),
+        release_id: object::id(release),
+        semantic_pack_id: release.semantic_pack_id,
+        release_content_commitment: release.content_commitment,
+        pack_treasury_id: object::id(treasury),
+        style: *style,
+    }))
+}
+
 fun protocol_share(gross: u64, fee_bps: u16): u64 {
     assert!(fee_bps <= 10_000, EInvalidPolicy);
     let share_u128 = ((gross as u128) * (fee_bps as u128)) / BPS_DENOMINATOR;
@@ -3602,7 +3982,7 @@ fun physical_selection_witness_rejects_loadout_mutation() {
         0, b"second".to_string(), SOURCE_BASE,
         object::id_from_address(@0x21)));
     consume_test_physical_witness(witness, &loadout, &ctx);
-    abort EInvalidProof
+    destroy_test_loadout(loadout)
 }
 
 #[test, expected_failure(abort_code = EWrongHolder)]
@@ -3617,7 +3997,7 @@ fun physical_selection_witness_rejects_wrong_holder() {
         loadout.selections.borrow(0).borrow(), test_hash(6));
     let witness = certify_physical_selection_v8(proof, &loadout, &wrong_ctx);
     consume_test_physical_witness(witness, &loadout, &wrong_ctx);
-    abort EWrongHolder
+    destroy_test_loadout(loadout)
 }
 
 #[test, expected_failure(abort_code = EEquipLocked)]
@@ -3744,6 +4124,402 @@ fun consume_test_physical_witness(
         _source_class, _source_definition_id, _source_semantic_id,
         _source_content, _source_epoch, _pricing_commitment, _asset_content) =
         consume_physical_selection_witness_v8(witness, loadout, ctx);
+}
+
+/// Cross-package Physical tests use real Runtime object layouts and exact
+/// immutable Root tuples without publishing shared objects.
+#[test_only]
+public fun new_physical_runtime_fixture_for_testing<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    ctx: &mut TxContext,
+): (
+    RuntimeDefinitionRegistryV8,
+    PackRegistryV8,
+    PackAdmissionAuthorityV8,
+) {
+    let definition_uid = object::new(ctx);
+    let definition_id = definition_uid.to_inner();
+    let pack_uid = object::new(ctx);
+    let authority_uid = object::new(ctx);
+    let authority_id = authority_uid.to_inner();
+    let root_id = maker::root_id_v8(root);
+    let root_version = maker::root_maker_version_v8(root);
+    let root_content_commitment = *maker::root_content_commitment_v8(root);
+    let definitions = RuntimeDefinitionRegistryV8 {
+        id: definition_uid,
+        version: VERSION,
+        root_id,
+        root_version,
+        root_content_commitment,
+        base_registry_id: maker::root_base_registry_id_v8(root),
+        expected_profile_count: 0,
+        observed_profile_count: 0,
+        expected_profile_commitment: test_hash(70),
+        rolling_profile_commitment: test_hash(70),
+        admission_ceiling: ADMISSION_DISABLED,
+        sealed: true,
+        profile_keys: vector[],
+        profiles: table::new(ctx),
+    };
+    let packs = PackRegistryV8 {
+        id: pack_uid,
+        version: VERSION,
+        root_id,
+        root_version,
+        root_content_commitment,
+        definition_registry_id: definition_id,
+        admission_authority_id: authority_id,
+        admission_policy_commitment:
+            *maker::root_expected_pack_admission_policy_commitment_v8(root),
+        revision: 0,
+        release_count: 0,
+        external_admission_count: 0,
+        releases: table::new(ctx),
+        semantic_releases: table::new(ctx),
+        external_admissions: table::new(ctx),
+    };
+    let authority = PackAdmissionAuthorityV8 {
+        id: authority_uid,
+        version: VERSION,
+        root_id,
+        root_version,
+        root_content_commitment,
+    };
+    (definitions, packs, authority)
+}
+
+#[test_only]
+public fun add_physical_pack_fixture_for_testing<PaymentCoin>(
+    packs: &mut PackRegistryV8,
+    definitions: &RuntimeDefinitionRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    ctx: &mut TxContext,
+): (
+    PackReleaseV8<PaymentCoin>,
+    PackAdminCapV8,
+    PackTreasuryV8<PaymentCoin>,
+    PackPassV8,
+    MakerLoadoutV8,
+) {
+    assert!(packs.definition_registry_id == object::id(definitions), EInvalidBinding);
+    maker::assert_root_identity_v8(
+        root,
+        packs.root_id,
+        packs.root_version,
+        &packs.root_content_commitment,
+    );
+    let release_uid = object::new(ctx);
+    let release_id = release_uid.to_inner();
+    let admin_uid = object::new(ctx);
+    let admin_id = admin_uid.to_inner();
+    let treasury_uid = object::new(ctx);
+    let treasury_id = treasury_uid.to_inner();
+    let pass_uid = object::new(ctx);
+    let pass_id = pass_uid.to_inner();
+    let semantic_pack_id = b"physical-pack".to_string();
+    let release_content_commitment = test_hash(71);
+    let style = PackStyleV8 {
+        index: 0,
+        part_key: b"part".to_string(),
+        item_key: b"pack-item".to_string(),
+        style_key: b"pack-style".to_string(),
+        layer_track_key: b"track".to_string(),
+        color_channel_key: option::none(),
+        default_swatch_key: option::none(),
+        asset_blob_id: b"pack-style-blob".to_string(),
+        asset_sha256: test_hash(72),
+        asset_content_commitment: test_hash(73),
+        protected: false,
+        seal_binding_commitment: vector[],
+        style_commitment: test_hash(74),
+    };
+    let mut styles = table::new(ctx);
+    styles.add(PackStyleKeyV8 {
+        part_key: style.part_key,
+        item_key: style.item_key,
+        style_key: style.style_key,
+    }, style);
+    let release = PackReleaseV8<PaymentCoin> {
+        id: release_uid,
+        version: VERSION,
+        root_id: packs.root_id,
+        root_version: packs.root_version,
+        root_content_commitment: packs.root_content_commitment,
+        creator: ctx.sender(),
+        owner: ctx.sender(),
+        control_epoch: 0,
+        admin_cap_id: admin_id,
+        treasury_id,
+        semantic_pack_id,
+        manifest_blob_id: b"physical-pack-manifest".to_string(),
+        manifest_sha256: test_hash(75),
+        content_commitment: release_content_commitment,
+        lifecycle: PACK_ACTIVE,
+        access_kind: ACCESS_FREE,
+        access_price_atomic: 0,
+        complete_mode: COMPLETE_UNLIMITED_FREE,
+        complete_price_atomic: 0,
+        complete_free_quota_per_wallet: 0,
+        complete_total_cap: 0,
+        expected_style_count: 1,
+        observed_style_count: 1,
+        expected_style_commitment: test_hash(76),
+        rolling_style_commitment: test_hash(76),
+        protected_style_count: 0,
+        pass_count: 1,
+        total_complete_count: 0,
+        styles,
+        complete_by_wallet: table::new(ctx),
+    };
+    packs.revision = packs.revision + 1;
+    packs.release_count = packs.release_count + 1;
+    packs.releases.add(release_id, PackAdmissionRecordV8 {
+        release_id,
+        semantic_pack_id,
+        release_content_commitment,
+        admitted_revision: packs.revision,
+        admission_state: ADMISSION_ACTIVE,
+    });
+    packs.semantic_releases.add(semantic_pack_id, release_id);
+    let admin = PackAdminCapV8 {
+        id: admin_uid,
+        version: VERSION,
+        release_id,
+        owner: ctx.sender(),
+        control_epoch: 0,
+    };
+    let treasury = PackTreasuryV8<PaymentCoin> {
+        id: treasury_uid,
+        version: VERSION,
+        release_id,
+        revenue: balance::zero(),
+        total_collected: 0,
+        total_withdrawn: 0,
+    };
+    let pass_commitment = hash::sha2_256(bcs::to_bytes(&PackPassCommitmentInputV8 {
+        domain: b"animacraft-v8/runtime/pack-pass",
+        version: VERSION,
+        release_id,
+        root_id: packs.root_id,
+        root_version: packs.root_version,
+        root_content_commitment: packs.root_content_commitment,
+        release_content_commitment,
+        holder: ctx.sender(),
+        paid_atomic: 0,
+        issued_at_ms: 1,
+    }));
+    let pass = PackPassV8 {
+        id: pass_uid,
+        version: VERSION,
+        release_id,
+        root_id: packs.root_id,
+        root_version: packs.root_version,
+        root_content_commitment: packs.root_content_commitment,
+        release_content_commitment,
+        holder: ctx.sender(),
+        paid_atomic: 0,
+        issued_at_ms: 1,
+        commitment: pass_commitment,
+    };
+    let selection = LoadoutSelectionV8 {
+        selection_index: 0,
+        part_key: style.part_key,
+        item_key: style.item_key,
+        style_key: style.style_key,
+        color_channel_key: option::none(),
+        swatch_key: option::none(),
+        layer_track_key: style.layer_track_key,
+        asset_blob_id: style.asset_blob_id,
+        asset_sha256: style.asset_sha256,
+        asset_content_commitment: style.asset_content_commitment,
+        source_class: SOURCE_PACK,
+        source_definition_id: release_id,
+        source_semantic_id: semantic_pack_id,
+        access_subject: pass_id,
+        source_epoch: 0,
+        pricing_commitment: pack_pricing_commitment(&release),
+        protected: false,
+        seal_binding_commitment: vector[],
+    };
+    let selections = vector[option::some(selection)];
+    let loadout_commitment = canonical_loadout_commitment(
+        packs.root_id,
+        packs.root_version,
+        packs.root_content_commitment,
+        &selections,
+    );
+    let loadout = MakerLoadoutV8 {
+        id: object::new(ctx),
+        version: VERSION,
+        root_id: packs.root_id,
+        root_version: packs.root_version,
+        root_content_commitment: packs.root_content_commitment,
+        definition_registry_id: object::id(definitions),
+        pack_registry_id: object::id(packs),
+        maker_access_pass_id: object::id_from_address(@0xA0),
+        maker_access_commitment: test_hash(77),
+        holder: ctx.sender(),
+        revision: 0,
+        selections,
+        selection_count: 1,
+        commitment: loadout_commitment,
+    };
+    (release, admin, treasury, pass, loadout)
+}
+
+#[test_only]
+public fun physical_selection_witness_for_testing(
+    loadout: &MakerLoadoutV8,
+    source_content_commitment: vector<u8>,
+    selection_index: u64,
+    ctx: &TxContext,
+): RuntimePhysicalSelectionWitnessV8 {
+    let selection = loadout.selections.borrow(selection_index).borrow();
+    let proof = new_selection_proof(loadout, selection, source_content_commitment);
+    certify_physical_selection_v8(proof, loadout, ctx)
+}
+
+#[test_only]
+public fun set_physical_base_selection_for_testing<PaymentCoin>(
+    loadout: &mut MakerLoadoutV8,
+    root: &MakerRootV8<PaymentCoin>,
+) {
+    assert_root_compatibility(
+        loadout.root_id,
+        loadout.root_version,
+        &loadout.root_content_commitment,
+        root,
+    );
+    let selection = LoadoutSelectionV8 {
+        selection_index: 0,
+        part_key: b"part".to_string(),
+        item_key: b"item".to_string(),
+        style_key: b"style".to_string(),
+        color_channel_key: option::none(),
+        swatch_key: option::none(),
+        layer_track_key: b"track".to_string(),
+        asset_blob_id: b"style-blob".to_string(),
+        asset_sha256: test_hash(13),
+        asset_content_commitment: test_hash(14),
+        source_class: SOURCE_BASE,
+        source_definition_id: loadout.root_id,
+        source_semantic_id: b"".to_string(),
+        access_subject: loadout.maker_access_pass_id,
+        source_epoch: 0,
+        pricing_commitment: loadout.maker_access_commitment,
+        protected: false,
+        seal_binding_commitment: vector[],
+    };
+    *loadout.selections.borrow_mut(0) = option::some(selection);
+    loadout.revision = loadout.revision + 1;
+    recompute_loadout(loadout);
+}
+
+#[test_only]
+public fun mutate_physical_loadout_for_testing(loadout: &mut MakerLoadoutV8) {
+    loadout.revision = loadout.revision + 1;
+    recompute_loadout(loadout);
+}
+
+#[test_only]
+public fun set_physical_pack_lifecycle_for_testing<PaymentCoin>(
+    release: &mut PackReleaseV8<PaymentCoin>,
+    lifecycle: u8,
+) {
+    release.lifecycle = lifecycle;
+}
+
+#[test_only]
+public fun set_physical_pack_admission_for_testing<PaymentCoin>(
+    packs: &mut PackRegistryV8,
+    release: &PackReleaseV8<PaymentCoin>,
+    active: bool,
+) {
+    let record = packs.releases.borrow_mut(object::id(release));
+    record.admission_state = if (active) ADMISSION_ACTIVE else ADMISSION_REVOKED;
+    packs.revision = packs.revision + 1;
+}
+
+#[test_only]
+public fun advance_physical_pack_control_for_testing<PaymentCoin>(
+    release: &mut PackReleaseV8<PaymentCoin>,
+    admin: &mut PackAdminCapV8,
+) {
+    release.control_epoch = release.control_epoch + 1;
+    admin.control_epoch = release.control_epoch;
+}
+
+#[test_only]
+public fun destroy_physical_pack_fixture_for_testing<PaymentCoin>(
+    release: PackReleaseV8<PaymentCoin>,
+    admin: PackAdminCapV8,
+    treasury: PackTreasuryV8<PaymentCoin>,
+    pass: PackPassV8,
+    loadout: MakerLoadoutV8,
+) {
+    let PackReleaseV8 {
+        id: release_uid, version: _, root_id: _, root_version: _,
+        root_content_commitment: _, creator: _, owner: _, control_epoch: _,
+        admin_cap_id: _, treasury_id: _, semantic_pack_id: _,
+        manifest_blob_id: _, manifest_sha256: _, content_commitment: _,
+        lifecycle: _, access_kind: _, access_price_atomic: _, complete_mode: _,
+        complete_price_atomic: _, complete_free_quota_per_wallet: _,
+        complete_total_cap: _, expected_style_count: _, observed_style_count: _,
+        expected_style_commitment: _, rolling_style_commitment: _,
+        protected_style_count: _, pass_count: _, total_complete_count: _,
+        mut styles, complete_by_wallet,
+    } = release;
+    let _ = styles.remove(PackStyleKeyV8 {
+        part_key: b"part".to_string(),
+        item_key: b"pack-item".to_string(),
+        style_key: b"pack-style".to_string(),
+    });
+    styles.destroy_empty();
+    complete_by_wallet.destroy_empty();
+    release_uid.delete();
+    let PackAdminCapV8 { id: admin_uid, version: _, release_id: _, owner: _,
+        control_epoch: _ } = admin;
+    admin_uid.delete();
+    let PackTreasuryV8 { id: treasury_uid, version: _, release_id: _, revenue,
+        total_collected: _, total_withdrawn: _ } = treasury;
+    let _ = revenue.destroy_for_testing();
+    treasury_uid.delete();
+    let PackPassV8 { id: pass_uid, version: _, release_id: _, root_id: _,
+        root_version: _, root_content_commitment: _, release_content_commitment: _,
+        holder: _, paid_atomic: _, issued_at_ms: _, commitment: _ } = pass;
+    pass_uid.delete();
+    destroy_test_loadout(loadout);
+}
+
+#[test_only]
+public fun destroy_physical_runtime_fixture_for_testing(
+    definitions: RuntimeDefinitionRegistryV8,
+    mut packs: PackRegistryV8,
+    authority: PackAdmissionAuthorityV8,
+    release_id: ID,
+) {
+    let semantic_pack_id = b"physical-pack".to_string();
+    let _ = packs.releases.remove(release_id);
+    let _ = packs.semantic_releases.remove(semantic_pack_id);
+    let PackRegistryV8 { id: pack_uid, version: _, root_id: _, root_version: _,
+        root_content_commitment: _, definition_registry_id: _,
+        admission_authority_id: _, admission_policy_commitment: _, revision: _,
+        release_count: _, external_admission_count: _, releases,
+        semantic_releases, external_admissions } = packs;
+    releases.destroy_empty();
+    semantic_releases.destroy_empty();
+    external_admissions.destroy_empty();
+    pack_uid.delete();
+    let RuntimeDefinitionRegistryV8 { id: definition_uid, version: _, root_id: _,
+        root_version: _, root_content_commitment: _, base_registry_id: _,
+        expected_profile_count: _, observed_profile_count: _,
+        expected_profile_commitment: _, rolling_profile_commitment: _,
+        admission_ceiling: _, sealed: _, profile_keys: _, profiles } = definitions;
+    profiles.destroy_empty();
+    definition_uid.delete();
+    let PackAdmissionAuthorityV8 { id: authority_uid, version: _, root_id: _,
+        root_version: _, root_content_commitment: _ } = authority;
+    authority_uid.delete();
 }
 
 #[test_only]

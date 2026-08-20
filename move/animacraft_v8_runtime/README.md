@@ -96,6 +96,24 @@ its deduplicated used-Pack rows include exact semantic Pack ID, Release ID,
 content, and pricing commitments for Output's ALL_ADMITTED/ALLOWLIST check. It
 never receives a caller-authored Pack list.
 
+## Physical proof boundary
+
+Runtime exposes two additive Physical-only witnesses. Both values have no
+abilities and both are created and consumed under Core's exact Physical call
+cap plus the catalog's real Physical TypeOrigin.
+
+- The policy witness is derived only from the live ACTIVE admitted Release,
+  exact current Pack owner/Admin/control epoch, exact PackTreasury, and exact
+  Style row. Physical consumes it immediately when installing a post-activation
+  Pack policy.
+- The access witness re-reads ACTIVE admission and Release, PackTreasury,
+  holder PackPass, current loadout selection, pricing, and live Style. Physical
+  compares it with an independently consumed Runtime selection or Output Soul
+  materialization witness before issuing.
+
+Neither API accepts an authoritative Pack ID, Style identity hash, treasury
+ID, holder boolean, or semantic key in place of those live objects.
+
 ## Independent Pack releases
 
 Each post-activation `PackReleaseV8` has independent content, manifest, Style

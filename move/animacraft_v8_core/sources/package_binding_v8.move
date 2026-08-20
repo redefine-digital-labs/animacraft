@@ -1142,6 +1142,39 @@ public fun product_release_catalog_with_release_for_testing<
     catalog_from_binding_for_testing(config, binding, ctx)
 }
 
+/// Test catalog variant for exercising a real Physical companion's TypeOrigin
+/// boundary while the not-yet-materialized Market and Release roles retain
+/// isolated fixture package IDs.
+#[test_only]
+public fun product_release_catalog_for_physical_testing<
+    PhysicalOriginalMarker,
+    PhysicalCallableMarker,
+>(
+    config: &ProtocolConfigV8,
+    core_original_package_id: address,
+    core_callable_package_id: address,
+    ctx: &mut TxContext,
+): ProductReleaseCatalogV8 {
+    let physical = new_exact_package_binding<
+        PhysicalOriginalMarker,
+        PhysicalCallableMarker,
+    >(new_package_commitments_v8(test_hash(13), test_hash(14), test_hash(15)));
+    let binding = new_product_release_binding(
+        new_exact_package_binding_for_testing(
+            core_original_package_id,
+            core_callable_package_id,
+            1,
+        ),
+        new_exact_package_binding_for_testing(@0x11, @0x21, 4),
+        new_exact_package_binding_for_testing(@0x12, @0x22, 7),
+        new_exact_package_binding_for_testing(@0x13, @0x23, 10),
+        physical,
+        new_exact_package_binding_for_testing(@0x15, @0x25, 16),
+        new_exact_package_binding_for_testing(@0x16, @0x26, 19),
+    );
+    catalog_from_binding_for_testing(config, binding, ctx)
+}
+
 #[test_only]
 fun catalog_from_binding_for_testing(
     config: &ProtocolConfigV8,

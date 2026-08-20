@@ -13,7 +13,12 @@ execFileSync('sui', [
 
 for (const [name, expected] of [
   ['adversarial_abilities', 'does not have the ability'],
+  ['adversarial_asset_store', 'does not have the ability'],
+  ['adversarial_witness_abilities', 'does not have the ability'],
   ['adversarial_api', 'restricted visibility'],
+  ['adversarial_registry_api', 'restricted visibility'],
+  ['adversarial_asset_api', 'restricted visibility'],
+  ['adversarial_cap_extraction', 'restricted visibility'],
   ['adversarial_receipt_proof', 'Unbound function'],
 ]) {
   try {
