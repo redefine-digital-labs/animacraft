@@ -1143,8 +1143,7 @@ public fun product_release_catalog_with_release_for_testing<
 }
 
 /// Test catalog variant for exercising a real Physical companion's TypeOrigin
-/// boundary while the not-yet-materialized Market and Release roles retain
-/// isolated fixture package IDs.
+/// boundary while roles not under test retain isolated fixture package IDs.
 #[test_only]
 public fun product_release_catalog_for_physical_testing<
     PhysicalOriginalMarker,
@@ -1170,6 +1169,35 @@ public fun product_release_catalog_for_physical_testing<
         new_exact_package_binding_for_testing(@0x13, @0x23, 10),
         physical,
         new_exact_package_binding_for_testing(@0x15, @0x25, 16),
+        new_exact_package_binding_for_testing(@0x16, @0x26, 19),
+    );
+    catalog_from_binding_for_testing(config, binding, ctx)
+}
+
+/// Builds the same complete seven-role catalog as the default fixture while
+/// binding Market to the concrete marker lineage supplied by a companion
+/// package test. This keeps companion tests on the production TypeOrigin
+/// checks instead of manufacturing a package-local config.
+#[test_only]
+public fun product_release_catalog_with_market_for_testing(
+    config: &ProtocolConfigV8,
+    core_original_package_id: address,
+    core_callable_package_id: address,
+    market_original_package_id: address,
+    market_callable_package_id: address,
+    ctx: &mut TxContext,
+): ProductReleaseCatalogV8 {
+    let binding = new_product_release_binding(
+        new_exact_package_binding_for_testing(core_original_package_id, core_callable_package_id, 1),
+        new_exact_package_binding_for_testing(@0x11, @0x21, 4),
+        new_exact_package_binding_for_testing(@0x12, @0x22, 7),
+        new_exact_package_binding_for_testing(@0x13, @0x23, 10),
+        new_exact_package_binding_for_testing(@0x14, @0x24, 13),
+        new_exact_package_binding_for_testing(
+            market_original_package_id,
+            market_callable_package_id,
+            16,
+        ),
         new_exact_package_binding_for_testing(@0x16, @0x26, 19),
     );
     catalog_from_binding_for_testing(config, binding, ctx)
