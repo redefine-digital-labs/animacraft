@@ -89,6 +89,14 @@ ambiguous outcome never permits replacement signing. Success needs exact
 effects, event, terminal listing fields, custody ownership, and epoch readback;
 RPC success alone is insufficient.
 
+`FINALIZED_SUCCESS` and `FINALIZED_FAILURE` mean **effects-certified
+finality**: the pinned Core V2 response must return a successful or failed
+transaction-effects certificate bound to the exact transaction digest, exact
+TransactionData bytes, raw effects BCS SHA-256 fingerprint, epoch, and events
+digest. This phase does not claim checkpoint-inclusion evidence; a receipt
+that independently proves checkpoint inclusion is a later auditability
+enhancement and must not be inferred from the effects certificate.
+
 On-chain escape routes mirror Move exactly:
 
 - a healthy PAUSED Maker listing may be purchased or seller-canceled, but not

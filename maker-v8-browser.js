@@ -2,6 +2,7 @@ import {
   SuiJsonRpcClient,
   getJsonRpcFullnodeUrl,
 } from '@mysten/sui/jsonRpc';
+import { bcs } from '@mysten/sui/bcs';
 import {
   Transaction,
   TransactionDataBuilder,
@@ -431,21 +432,243 @@ function finalizedMarketCall(transactionData) {
   });
 }
 
-function coreEvent(event, index, transactionDigest, eventsDigest) {
-  if (!event || typeof event.eventType !== 'string' || !plain(event.json)
+const MARKET_LISTING_OPENED_EVENT_BCS = bcs.struct('MarketListingOpenedV8', {
+  listing_id: bcs.Address,
+  registry_id: bcs.Address,
+  lane: bcs.u8(),
+  root_id: bcs.Address,
+  asset_id: bcs.Address,
+  seller: bcs.Address,
+  ownership_epoch: bcs.u64(),
+  gross_atomic: bcs.u64(),
+  quote_commitment: bcs.vector(bcs.u8()),
+});
+const MARKET_LISTING_SETTLED_EVENT_BCS = bcs.struct('MarketListingSettledV8', {
+  listing_id: bcs.Address,
+  registry_id: bcs.Address,
+  lane: bcs.u8(),
+  asset_id: bcs.Address,
+  seller: bcs.Address,
+  buyer: bcs.Address,
+  gross_atomic: bcs.u64(),
+  protocol_atomic: bcs.u64(),
+  creator_atomic: bcs.u64(),
+  source_atomic: bcs.u64(),
+  seller_atomic: bcs.u64(),
+});
+const MARKET_LISTING_CLOSED_EVENT_BCS = bcs.struct('MarketListingClosedV8', {
+  listing_id: bcs.Address,
+  registry_id: bcs.Address,
+  lane: bcs.u8(),
+  asset_id: bcs.Address,
+  seller: bcs.Address,
+  recovered: bcs.bool(),
+});
+const MAKER_CONTROL_TRANSFERRED_EVENT_BCS = bcs.struct('MakerControlTransferredV8', {
+  root_id: bcs.Address,
+  previous_owner: bcs.Address,
+  new_owner: bcs.Address,
+  previous_control_epoch: bcs.u64(),
+  new_control_epoch: bcs.u64(),
+  new_admin_cap_id: bcs.Address,
+});
+const PHYSICAL_CUSTODY_TRANSITION_EVENT_BCS = bcs.struct('PhysicalMarketCustodyTransitionV8', {
+  action: bcs.u8(),
+  listing_id: bcs.Address,
+  asset_id: bcs.Address,
+  source_kind: bcs.u8(),
+  source_treasury_id: bcs.Address,
+  previous_holder: bcs.Address,
+  holder: bcs.Address,
+  previous_ownership_epoch: bcs.u64(),
+  ownership_epoch: bcs.u64(),
+  provenance_commitment: bcs.vector(bcs.u8()),
+});
+
+const EVENT_FIELD_KIND = Object.freeze({
+  MarketListingOpenedV8: Object.freeze({
+    listing_id: 'id', registry_id: 'id', lane: 'u8', root_id: 'id', asset_id: 'id',
+    seller: 'id', ownership_epoch: 'u64', gross_atomic: 'u64', quote_commitment: 'commitment',
+  }),
+  MarketListingSettledV8: Object.freeze({
+    listing_id: 'id', registry_id: 'id', lane: 'u8', asset_id: 'id', seller: 'id', buyer: 'id',
+    gross_atomic: 'u64', protocol_atomic: 'u64', creator_atomic: 'u64',
+    source_atomic: 'u64', seller_atomic: 'u64',
+  }),
+  MarketListingClosedV8: Object.freeze({
+    listing_id: 'id', registry_id: 'id', lane: 'u8', asset_id: 'id', seller: 'id', recovered: 'bool',
+  }),
+  MakerControlTransferredV8: Object.freeze({
+    root_id: 'id', previous_owner: 'id', new_owner: 'id', previous_control_epoch: 'u64',
+    new_control_epoch: 'u64', new_admin_cap_id: 'id',
+  }),
+  PhysicalMarketCustodyTransitionV8: Object.freeze({
+    action: 'u8', listing_id: 'id', asset_id: 'id', source_kind: 'u8', source_treasury_id: 'id',
+    previous_holder: 'id', holder: 'id', previous_ownership_epoch: 'u64',
+    ownership_epoch: 'u64', provenance_commitment: 'commitment',
+  }),
+});
+
+function knownEventLayout(market, eventType) {
+  const origins = market?.runtime?.typeOrigins;
+  if (!origins) return null;
+  const layouts = [
+    ['market', 'marketPackageId', 'market_v8', 'MarketListingOpenedV8', MARKET_LISTING_OPENED_EVENT_BCS, 210],
+    ['market', 'marketPackageId', 'market_v8', 'MarketListingSettledV8', MARKET_LISTING_SETTLED_EVENT_BCS, 201],
+    ['market', 'marketPackageId', 'market_v8', 'MarketListingClosedV8', MARKET_LISTING_CLOSED_EVENT_BCS, 130],
+    ['core', 'corePackageId', 'maker_v8', 'MakerControlTransferredV8', MAKER_CONTROL_TRANSFERRED_EVENT_BCS, 144],
+    ['physical', 'physicalPackageId', 'physical_v8', 'PhysicalMarketCustodyTransitionV8', PHYSICAL_CUSTODY_TRANSITION_EVENT_BCS, 211],
+  ];
+  const normalized = normalizeStructTag(eventType);
+  for (const [role, origin, moduleName, name, layout, expectedLength] of layouts) {
+    const packageValue = origins[origin];
+    if (packageValue && normalized === normalizeStructTag(`${packageValue}::${moduleName}::${name}`)) {
+      const callablePackageId = market.runtime.sourceRuntime?.roles?.[role]?.callablePackageId
+        ?? (role === 'market' ? market.runtime.callablePackageId : null);
+      if (!callablePackageId) {
+        fail('MAKER_V8_BROWSER_EVENT_ORIGIN_DRIFT', `${name} lacks its attested callable package identity.`, 'READBACK');
+      }
+      return freeze({
+        name,
+        moduleName,
+        typeOriginPackageId: id(packageValue, `${name}.typeOriginPackageId`),
+        callablePackageId: id(callablePackageId, `${name}.callablePackageId`),
+        layout,
+        expectedLength,
+      });
+    }
+  }
+  return null;
+}
+
+function canonicalEventField(value, kind, label) {
+  if (kind === 'id') return id(value, label);
+  if (kind === 'u64') return decimal(value, label);
+  if (kind === 'u8') {
+    const normalized = decimal(value, label);
+    if (BigInt(normalized) > 255n) fail('MAKER_V8_BROWSER_EVENT_BCS_INVALID', `${label} exceeds u8.`, 'READBACK');
+    return Number(normalized);
+  }
+  if (kind === 'bool') {
+    if (typeof value !== 'boolean') fail('MAKER_V8_BROWSER_EVENT_BCS_INVALID', `${label} must be bool.`, 'READBACK');
+    return value;
+  }
+  if (kind === 'commitment') return commitmentHex(value, label);
+  fail('MAKER_V8_BROWSER_EVENT_BCS_INVALID', `${label} has an unknown pinned field kind.`, 'READBACK');
+}
+
+function decodeKnownEventBcs(event, layout, index) {
+  if (event.bcs.length !== layout.expectedLength) {
+    fail(
+      'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+      `Core V2 event ${index} ${layout.name} BCS has the wrong exact length.`,
+      'READBACK',
+      { expectedLength: layout.expectedLength, actualLength: event.bcs.length },
+    );
+  }
+  let decoded;
+  try {
+    decoded = layout.layout.parse(event.bcs);
+  } catch (cause) {
+    fail(
+      'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+      `Core V2 event ${index} ${layout.name} BCS could not be decoded.`,
+      'READBACK',
+      { cause: String(cause?.message || cause) },
+    );
+  }
+  let canonicalBytes;
+  try {
+    canonicalBytes = layout.layout.serialize(decoded).toBytes();
+  } catch (cause) {
+    fail(
+      'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+      `Core V2 event ${index} ${layout.name} BCS could not be canonically re-encoded.`,
+      'READBACK',
+      { cause: String(cause?.message || cause) },
+    );
+  }
+  if (canonicalBytes.length !== event.bcs.length
+    || canonicalBytes.some((byte, position) => byte !== event.bcs[position])) {
+    fail(
+      'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+      `Core V2 event ${index} ${layout.name} BCS is noncanonical or has trailing bytes.`,
+      'READBACK',
+    );
+  }
+  const kinds = EVENT_FIELD_KIND[layout.name];
+  const decodedKeys = Object.keys(decoded).sort();
+  const expectedKeys = Object.keys(kinds).sort();
+  if (decodedKeys.length !== expectedKeys.length
+    || decodedKeys.some((field, position) => field !== expectedKeys[position])) {
+    fail('MAKER_V8_BROWSER_EVENT_BCS_INVALID', `${layout.name} BCS fields are not exact.`, 'READBACK');
+  }
+  const authority = Object.freeze(Object.fromEntries(Object.entries(kinds).map(([field, kind]) => [
+    field,
+    canonicalEventField(decoded[field], kind, `${layout.name}.${field}`),
+  ])));
+  if (event.json !== null && event.json !== undefined) {
+    if (!plain(event.json)) {
+      fail('MAKER_V8_BROWSER_EVENT_JSON_BCS_DRIFT', `${layout.name} JSON display value is invalid.`, 'READBACK');
+    }
+    const jsonKeys = Object.keys(event.json).sort();
+    if (jsonKeys.length !== expectedKeys.length
+      || jsonKeys.some((field, position) => field !== expectedKeys[position])) {
+      fail('MAKER_V8_BROWSER_EVENT_JSON_BCS_DRIFT', `${layout.name} JSON fields differ from its BCS event.`, 'READBACK');
+    }
+    const display = Object.fromEntries(Object.entries(kinds).map(([field, kind]) => [
+      field,
+      canonicalEventField(event.json[field], kind, `${layout.name}.json.${field}`),
+    ]));
+    if (JSON.stringify(display) !== JSON.stringify(authority)) {
+      fail('MAKER_V8_BROWSER_EVENT_JSON_BCS_DRIFT', `${layout.name} JSON values differ from its BCS event.`, 'READBACK');
+    }
+  }
+  return authority;
+}
+
+function coreEvent(event, index, transactionDigest, eventsDigest, market) {
+  if (!event || typeof event.eventType !== 'string'
     || !(event.bcs instanceof Uint8Array) || event.bcs.length === 0) {
     fail('MAKER_V8_BROWSER_CORE_EVENT_INVALID', `Core V2 event ${index} is not parsed.`, 'READBACK');
   }
+  const eventType = normalizeStructTag(event.eventType);
+  const layout = knownEventLayout(market, eventType);
+  const parsedJson = layout ? decodeKnownEventBcs(event, layout, index) : freeze({ ...event.json });
+  const packageValue = id(event.packageId, `events[${index}].packageId`);
+  if (layout && (packageValue !== layout.callablePackageId || event.module !== layout.moduleName)) {
+    fail('MAKER_V8_BROWSER_EVENT_ORIGIN_DRIFT', `${layout.name} metadata differs from its stable TypeOrigin.`, 'READBACK');
+  }
   return freeze({
     id: freeze({ txDigest: transactionDigest, eventSeq: String(index) }),
-    packageId: id(event.packageId, `events[${index}].packageId`),
+    packageId: packageValue,
     transactionModule: event.module,
     sender: id(event.sender, `events[${index}].sender`),
-    type: normalizeStructTag(event.eventType),
-    parsedJson: event.json,
+    type: eventType,
+    parsedJson,
     bcs: toBase64(event.bcs),
     eventsDigest,
   });
+}
+
+/** Decode the five security-relevant fresh-v8 events from their Core V2 BCS. */
+export function decodeMakerV8CoreEventV8({
+  event,
+  index = 0,
+  transactionDigest,
+  eventsDigest,
+  market,
+}) {
+  if (!Number.isSafeInteger(index) || index < 0) {
+    fail('MAKER_V8_BROWSER_CORE_EVENT_INVALID', 'Core V2 event index must be a non-negative safe integer.', 'READBACK');
+  }
+  return coreEvent(
+    event,
+    index,
+    digest(transactionDigest, 'event.transactionDigest'),
+    digest(eventsDigest, 'event.eventsDigest'),
+    market,
+  );
 }
 
 const ARGUMENT_ROLES = Object.freeze({
@@ -710,9 +933,9 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
   if (!eventsDigest || !Array.isArray(finalized.events)) {
     fail('MAKER_V8_BROWSER_FINALIZED_EVENT_MISSING', 'Finalized effects do not bind an event digest and events.', 'READBACK');
   }
-  const events = freeze(finalized.events.map((event, index) => coreEvent(
-    event, index, transactionDigest, eventsDigest,
-  )));
+  const events = freeze(finalized.events.map((event, index) => decodeMakerV8CoreEventV8({
+    event, index, transactionDigest, eventsDigest, market,
+  })));
   const action = makerV8ActionV8(request.identity.action);
   if (!action) fail('MAKER_V8_BROWSER_ACTION_INVALID', 'Unknown durable Market action.', 'READBACK');
   if (descriptor?.action !== action.id
@@ -735,8 +958,9 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
   if (terminal.length !== 1) {
     fail('MAKER_V8_BROWSER_FINALIZED_EVENT_MISSING', 'Expected exact terminal Market event is not unique.', 'READBACK');
   }
-  if (terminal[0].parsed.fields.lane !== descriptor?.lane) {
-    fail('MAKER_V8_BROWSER_FINALIZED_EVENT_DRIFT', 'Terminal Market event lane differs from the durable descriptor.', 'READBACK');
+  if (terminal[0].event.sender !== descriptor.sender
+    || terminal[0].parsed.fields.lane !== descriptor?.lane) {
+    fail('MAKER_V8_BROWSER_FINALIZED_EVENT_DRIFT', 'Terminal Market event sender or lane differs from the durable descriptor.', 'READBACK');
   }
   if ([MARKET_V8_LANES.PHYSICAL_BASE, MARKET_V8_LANES.PHYSICAL_PACK].includes(descriptor.lane)
     && !events.some((event) => event.type.endsWith('::physical_v8::PhysicalMarketCustodyTransitionV8'))) {

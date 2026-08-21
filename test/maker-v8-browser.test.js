@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { bcs } from '@mysten/sui/bcs';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
@@ -17,6 +18,7 @@ import {
   MAKER_V8_OFFICIAL_MAINNET_RPC_URL,
   createProductionMakerV8BrowserAdapters,
   createWalletStandardConnectorV8,
+  decodeMakerV8CoreEventV8,
   readFinalizedMakerV8EnvelopeV8,
 } from '../maker-v8-browser.js';
 import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
@@ -27,6 +29,58 @@ const finalizedTransactionBytes = toBase64(new Uint8Array([4, 5]));
 const objectId = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const packageId = objectId;
 const suiDigest = '11111111111111111111111111111111';
+const listingOpenedEventBcs = bcs.struct('MarketListingOpenedV8Test', {
+  listing_id: bcs.Address,
+  registry_id: bcs.Address,
+  lane: bcs.u8(),
+  root_id: bcs.Address,
+  asset_id: bcs.Address,
+  seller: bcs.Address,
+  ownership_epoch: bcs.u64(),
+  gross_atomic: bcs.u64(),
+  quote_commitment: bcs.vector(bcs.u8()),
+});
+const listingSettledEventBcs = bcs.struct('MarketListingSettledV8Test', {
+  listing_id: bcs.Address,
+  registry_id: bcs.Address,
+  lane: bcs.u8(),
+  asset_id: bcs.Address,
+  seller: bcs.Address,
+  buyer: bcs.Address,
+  gross_atomic: bcs.u64(),
+  protocol_atomic: bcs.u64(),
+  creator_atomic: bcs.u64(),
+  source_atomic: bcs.u64(),
+  seller_atomic: bcs.u64(),
+});
+const listingClosedEventBcs = bcs.struct('MarketListingClosedV8Test', {
+  listing_id: bcs.Address,
+  registry_id: bcs.Address,
+  lane: bcs.u8(),
+  asset_id: bcs.Address,
+  seller: bcs.Address,
+  recovered: bcs.bool(),
+});
+const makerTransferredEventBcs = bcs.struct('MakerControlTransferredV8Test', {
+  root_id: bcs.Address,
+  previous_owner: bcs.Address,
+  new_owner: bcs.Address,
+  previous_control_epoch: bcs.u64(),
+  new_control_epoch: bcs.u64(),
+  new_admin_cap_id: bcs.Address,
+});
+const physicalTransitionEventBcs = bcs.struct('PhysicalMarketCustodyTransitionV8Test', {
+  action: bcs.u8(),
+  listing_id: bcs.Address,
+  asset_id: bcs.Address,
+  source_kind: bcs.u8(),
+  source_treasury_id: bcs.Address,
+  previous_holder: bcs.Address,
+  holder: bcs.Address,
+  previous_ownership_epoch: bcs.u64(),
+  ownership_epoch: bcs.u64(),
+  provenance_commitment: bcs.vector(bcs.u8()),
+});
 const mainnetExecution = (overrides = {}) => ({
   network: 'mainnet',
   chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
@@ -287,6 +341,155 @@ test('Wallet Standard returns the exact bytes and fails closed on account or RPC
   );
 });
 
+test('five pinned fresh-v8 event layouts decode BCS as authority and reject JSON or byte drift', async () => {
+  const origins = {
+    marketPackageId: packageId(9),
+    corePackageId: packageId(1),
+    physicalPackageId: packageId(3),
+  };
+  const callables = {
+    market: packageId(19),
+    core: packageId(11),
+    physical: packageId(13),
+  };
+  const market = {
+    runtime: {
+      typeOrigins: origins,
+      callablePackageId: callables.market,
+      sourceRuntime: {
+        roles: Object.fromEntries(Object.entries(callables).map(([role, callablePackageId]) => [
+          role, { callablePackageId },
+        ])),
+      },
+    },
+  };
+  const commitment = Array(32).fill(7);
+  const cases = [
+    {
+      name: 'MarketListingOpenedV8', module: 'market_v8', role: 'market', origin: 'marketPackageId',
+      schema: listingOpenedEventBcs, expectedLength: 210, tamperField: 'seller',
+      sha256: '347743d9998044a0fcacd76742de1ec86a3936ef26fa17314aeca66a7103aa55',
+      fields: {
+        listing_id: objectId(11), registry_id: objectId(12), lane: 0, root_id: objectId(13),
+        asset_id: objectId(14), seller: objectId(15), ownership_epoch: '72623859790382856',
+        gross_atomic: '10', quote_commitment: commitment,
+      },
+    },
+    {
+      name: 'MarketListingSettledV8', module: 'market_v8', role: 'market', origin: 'marketPackageId',
+      schema: listingSettledEventBcs, expectedLength: 201, tamperField: 'buyer',
+      sha256: '54680762d15a3369d6aefa6ca5e85d504953359b0ef481ef893468c1cd0f5806',
+      fields: {
+        listing_id: objectId(21), registry_id: objectId(22), lane: 1, asset_id: objectId(23),
+        seller: objectId(24), buyer: objectId(25), gross_atomic: '10', protocol_atomic: '1',
+        creator_atomic: '2', source_atomic: '3', seller_atomic: '4',
+      },
+    },
+    {
+      name: 'MarketListingClosedV8', module: 'market_v8', role: 'market', origin: 'marketPackageId',
+      schema: listingClosedEventBcs, expectedLength: 130, tamperField: 'seller',
+      sha256: '4a7e82ee7aa110c28e955873d532696a6cba00b3c659dcad644c04943a384cb8',
+      fields: {
+        listing_id: objectId(31), registry_id: objectId(32), lane: 2, asset_id: objectId(33),
+        seller: objectId(34), recovered: true,
+      },
+    },
+    {
+      name: 'MakerControlTransferredV8', module: 'maker_v8', role: 'core', origin: 'corePackageId',
+      schema: makerTransferredEventBcs, expectedLength: 144, tamperField: 'new_owner',
+      sha256: '085ea109860a61756fc4deffec953dbe5a6fb0c3285e429e94c8b78afda2cb4e',
+      fields: {
+        root_id: objectId(41), previous_owner: objectId(42), new_owner: objectId(43),
+        previous_control_epoch: '72623859790382856', new_control_epoch: '72623859790382857',
+        new_admin_cap_id: objectId(44),
+      },
+    },
+    {
+      name: 'PhysicalMarketCustodyTransitionV8', module: 'physical_v8', role: 'physical', origin: 'physicalPackageId',
+      schema: physicalTransitionEventBcs, expectedLength: 211, tamperField: 'holder',
+      sha256: 'c8e7605d19b7d142f5445f8a5fdcd6838c9ba1056a7b4e93a0bb3606ef62d459',
+      fields: {
+        action: 2, listing_id: objectId(51), asset_id: objectId(52), source_kind: 1,
+        source_treasury_id: objectId(53), previous_holder: objectId(54), holder: objectId(55),
+        previous_ownership_epoch: '72623859790382856', ownership_epoch: '72623859790382857',
+        provenance_commitment: commitment,
+      },
+    },
+  ];
+  const decode = (entry, bytes, json) => decodeMakerV8CoreEventV8({
+    event: {
+      packageId: callables[entry.role],
+      module: entry.module,
+      sender: objectId(99),
+      eventType: `${origins[entry.origin]}::${entry.module}::${entry.name}`,
+      bcs: bytes,
+      json,
+    },
+    transactionDigest: suiDigest,
+    eventsDigest: suiDigest,
+    market,
+  });
+  for (const entry of cases) {
+    const bytes = entry.schema.serialize(entry.fields).toBytes();
+    assert.equal(bytes.length, entry.expectedLength, entry.name);
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.sha256, `${entry.name} fixture`);
+    const withoutJson = decode(entry, bytes, null);
+    assert.equal(withoutJson.type, `${origins[entry.origin]}::${entry.module}::${entry.name}`);
+    assert.equal(withoutJson.parsedJson[entry.tamperField], entry.fields[entry.tamperField]);
+    assert.doesNotThrow(() => decode(entry, bytes, entry.fields));
+    await assert.rejects(
+      async () => decode(entry, bytes, {
+        ...entry.fields,
+        [entry.tamperField]: objectId(999),
+      }),
+      (error) => error.code === 'MAKER_V8_BROWSER_EVENT_JSON_BCS_DRIFT',
+    );
+    await assert.rejects(
+      async () => decode(entry, Uint8Array.from([...bytes, 0]), null),
+      (error) => error.code === 'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+    );
+    await assert.rejects(
+      async () => decode(entry, bytes.slice(0, -1), null),
+      (error) => error.code === 'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+    );
+  }
+
+  const closed = listingClosedEventBcs.serialize(cases[2].fields).toBytes();
+  closed[closed.length - 1] = 2;
+  assert.throws(
+    () => decode(cases[2], closed, null),
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+  );
+
+  const opened = listingOpenedEventBcs.serialize(cases[0].fields).toBytes();
+  assert.throws(
+    () => decodeMakerV8CoreEventV8({
+      event: {
+        packageId: origins.marketPackageId,
+        module: 'market_v8',
+        sender: objectId(99),
+        eventType: `${origins.marketPackageId}::market_v8::MarketListingOpenedV8`,
+        bcs: opened,
+        json: null,
+      },
+      transactionDigest: suiDigest,
+      eventsDigest: suiDigest,
+      market,
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENT_ORIGIN_DRIFT',
+  );
+  const commitmentLengthOffset = opened.length - 33;
+  assert.equal(opened[commitmentLengthOffset], 32);
+  const noncanonicalLength = Uint8Array.from([
+    ...opened.slice(0, commitmentLengthOffset), 0xa0, 0x00, ...opened.slice(commitmentLengthOffset + 1, -1),
+  ]);
+  assert.equal(noncanonicalLength.length, opened.length);
+  assert.throws(
+    () => decode(cases[0], noncanonicalLength, null),
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+  );
+});
+
 test('Core V2 readback binds exact effects refs, historical snapshots, input call, and events digest', async () => {
   const effectsBytes = new Uint8Array([1, 2, 3]);
   const effectsFingerprint = `0x${createHash('sha256').update(effectsBytes).digest('hex')}`;
@@ -330,6 +533,20 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
   remember(ids.listing, '8', { status: '0' }, suiDigest);
   past.get(`${ids.listing}:8`).details.owner = outputOwner;
   let registryInputVersion = '5';
+  let tamperEventJson = false;
+  let tamperEventSender = false;
+  const eventJson = {
+    listing_id: ids.listing,
+    registry_id: ids.registry,
+    lane: 0,
+    root_id: ids.root,
+    asset_id: objectId(15),
+    seller: objectId(99),
+    ownership_epoch: '4',
+    gross_atomic: '1000',
+    quote_commitment: Array(32).fill(7),
+  };
+  const eventBcs = listingOpenedEventBcs.serialize(eventJson).toBytes();
   const client = {
     core: {
       async getTransaction() {
@@ -364,9 +581,11 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
               }],
             },
             events: [{
-              packageId: packageId(9), module: 'market_v8', sender: objectId(99),
+              packageId: packageId(9), module: 'market_v8',
+              sender: tamperEventSender ? objectId(98) : objectId(99),
               eventType: `${packageId(9)}::market_v8::MarketListingOpenedV8`,
-              bcs: new Uint8Array([9, 8]), json: { listing_id: ids.listing },
+              bcs: eventBcs,
+              json: tamperEventJson ? { ...eventJson, seller: objectId(98) } : eventJson,
             }],
             objectTypes: types,
             bcs: new Uint8Array([4, 5]),
@@ -384,8 +603,17 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
     runtime: {
       typeOrigins: {
         corePackageId: packageId(1),
+        marketPackageId: packageId(9),
         physicalPackageId: packageId(3),
         outputPackageId: packageId(2),
+      },
+      callablePackageId: packageId(9),
+      sourceRuntime: {
+        roles: {
+          core: { callablePackageId: packageId(1) },
+          market: { callablePackageId: packageId(9) },
+          physical: { callablePackageId: packageId(3) },
+        },
       },
     },
     parseEvent(event) {
@@ -436,6 +664,44 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
   ]);
   assert.equal(receipt.effects.objects.find(({ role }) => role === 'REGISTRY').after.ref.version, '8');
   assert.equal(receipt.effects.objects.find(({ role }) => role === 'LISTING').change, 'CREATED');
+
+  tamperEventJson = true;
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client,
+      market,
+      request: {
+        digest: suiDigest,
+        planHash,
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+        },
+        identity: recoveryIdentity(),
+        plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENT_JSON_BCS_DRIFT',
+  );
+  tamperEventJson = false;
+
+  tamperEventSender = true;
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client,
+      market,
+      request: {
+        digest: suiDigest,
+        planHash,
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+        },
+        identity: recoveryIdentity(),
+        plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_FINALIZED_EVENT_DRIFT',
+  );
+  tamperEventSender = false;
 
   await assert.rejects(
     readFinalizedMakerV8EnvelopeV8({
