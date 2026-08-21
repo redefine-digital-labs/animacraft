@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -223,7 +223,10 @@ test('the UI exposes exactly fourteen static Market actions and accessible seman
 });
 
 test('production entry files have no retired imports, aliases, routes, or pending pseudo-state', async () => {
-  const files = ['../app.js', '../index.html', '../chain-error-ui.js', '../public/config.js', '../config.example.js'];
+  const files = [
+    '../app.js', '../index.html', '../chain-error-ui.js', '../public-v8/config.js',
+    '../config.example.js', '../README.md', '../vite.config.js',
+  ];
   const source = (await Promise.all(files.map((file) => readFile(new URL(file, import.meta.url), 'utf8')))).join('\n');
   const importLines = source.split('\n').filter((line) => /^\s*import\b/.test(line)).join('\n');
   assert.doesNotMatch(importLines, /maker-(?:commerce|composable|physical|publication|legacy)|expansion-pack|oc-handoff/i);
@@ -231,6 +234,9 @@ test('production entry files have no retired imports, aliases, routes, or pendin
   assert.doesNotMatch(source, /data-page=|#templates|#creator|#make(?:\b|["'])/i);
   assert.doesNotMatch(source, /ANIMACRAFT_CONFIG|makerV8ReleaseEnabled|commerceV\d|compositionV\d|physicalV\d/i);
   assert.doesNotMatch(source, /SoulidityV8Adapters/);
+  assert.doesNotMatch(source, /OCMaker|MakerRootV5|Commerce v5|Composable Assets v6|v5 migration/i);
   assert.match(source, /createProductionMakerV8BrowserAdapters/);
   assert.match(source, /UNSUPPORTED_LEGACY_PRODUCT/);
+  assert.match(source, /publicDir:\s*['"]public-v8['"]/);
+  assert.deepEqual(await readdir(new URL('../public-v8/', import.meta.url)), ['config.js']);
 });

@@ -3,8 +3,8 @@
 ## Product boundary
 
 Animacraft v8 is one public protocol generation. New publications MUST NOT
-create an `OCMaker`, migrate a `MakerRootV5`, or join v4/v5/v6/v7 objects at
-read time. The old Mainnet objects are test history only: they remain on-chain,
+create, migrate, or join retired product objects at read time. Prior Mainnet
+objects are historical chain state only: they remain on-chain,
 but v8 authoring, public discovery, Player, export, lifecycle, and commerce do
 not read or mutate them.
 
@@ -365,7 +365,7 @@ instance with an equip lock and ownership epoch may enter escrow.
   epoch, content commitment, holder, Complete output, Recipe, render and
   authorization commitment. It cannot be replayed, persisted, substituted or
   used while the Root is paused or archived. The final PNG is available
-  according to the Root's Complete policy, not according to a v5 receipt or
+  according to the Root's Complete policy, not according to a retired receipt or
   legacy bypass.
 - A Complete output commits an allowed Recipe policy and either all admitted
   Packs or a sorted semantic Pack-ID allowlist capped at 64 IDs for that output;
@@ -384,7 +384,7 @@ instance with an equip lock and ownership epoch may enter escrow.
   and `CANONICAL_SOUL`: a Complete receipt is never standalone Physical proof
   because Output creates the Canonical Soul in the same PTB. Physical supports
   proof-bound claim or materialization, consume, transfer and recovery without
-  referencing v7 objects. Pack-backed materialization revalidates the current
+  referencing retired objects. Pack-backed materialization revalidates the current
   Release and access. `ACTIVE` may gate new mint/equip, but PAUSED/ARCHIVED
   cannot trap a holder: policy-authorized withdraw, transfer or consume remains
   available.
@@ -462,11 +462,11 @@ When the v8 gate is enabled:
 - new publication uses only the v8 recovery controller;
 - public discovery scans only the exact stable-TypeOrigin
   `MakerV8Activated` event and re-reads the exact `ACTIVE` Root;
-- old `OCMakerPublished`, migration, v5/v6/v7 and old Pack events are ignored;
+- retired publication, migration, and Pack events are ignored;
 - old local cache entries and deep links return an explicit unsupported state;
 - Creator, Player, cover, export and lifecycle resolve the same immutable v8
   manifest and Root;
-- Player never displays internal “Commerce v5” or compatibility messages.
+- Player never displays retired internal commerce or compatibility messages.
 
 ## Durable recovery
 

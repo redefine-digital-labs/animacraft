@@ -39,9 +39,6 @@ jobs:
       - name: Check production build
         run: npm run check
 
-      - name: Verify bundled Creator Packs
-        run: npm run makers:verify
-
   hygiene:
     name: Repository hygiene
     runs-on: ubuntu-24.04
@@ -61,26 +58,23 @@ jobs:
           test -f CONTRIBUTING.md
           test -f index.html
           test -f app.js
-          test -f draft-store.js
-          test -f living-content.js
-          test -f manifest-validation.js
-          test -f recipe-hash.js
-          test -f remote-read.js
-          test -f runtime-config.js
-          test -f scripts/mainnet-preflight.mjs
-          test -f scripts/build-builtin-makers.py
-          test -f scripts/chroma_key.py
-          test -f test/bundled-makers.test.js
-          test -f test/manifest-validation.test.js
-          test -f test/living-content.test.js
-          test -f test/recipe-hash.test.js
-          test -f test/remote-read.test.js
-          test -f test/runtime-config.test.js
+          test -f maker-v8-runtime.js
+          test -f maker-v8-compiler.js
+          test -f maker-v8-market.js
+          test -f maker-v8-recovery.js
+          test -f maker-v8-browser.js
+          test -f test/maker-v8-runtime.test.js
+          test -f test/maker-v8-compiler.test.js
+          test -f test/maker-v8-market.test.js
+          test -f test/maker-v8-recovery.test.js
+          test -f test/maker-v8-browser.test.js
           test -f styles.css
-          test -f move/animacraft/Move.toml
-          test -f move/animacraft/sources/animacraft.move
-          test -f move/animacraft_physical_v7/Move.toml
-          test -f move/animacraft_physical_v7/sources/physical_composition_v7.move
+          for package in core seal runtime output physical market release; do
+            test -f "move/animacraft_v8_${package}/Move.toml"
+          done
+
+      - name: Verify fresh-only delivery surface
+        run: npm run scan:fresh
 
       - name: Prevent generated build artifacts
         run: |

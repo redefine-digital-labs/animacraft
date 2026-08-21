@@ -26,7 +26,7 @@ ID, digest, or local boolean.
 ## Single product path
 
 - The browser bundle, runtime config, routes, scripts, docs, and tests contain
-  no v4-v7 compatibility, migration, fallback, or dual-read product path.
+  no retired-product compatibility, migration, fallback, or dual-read product path.
 - A legacy object, cache record, deep link, or document is reported as
   `UNSUPPORTED_LEGACY_PRODUCT`; it is never migrated into v8.
 - Initial Maker publication starts with no embedded Pack Release. Packs and

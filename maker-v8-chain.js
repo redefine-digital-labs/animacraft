@@ -33,7 +33,6 @@ const SUI_ID = /^0x[0-9a-fA-F]{64}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const DIGEST = /^[1-9A-HJ-NP-Za-km-z]{20,64}$/;
 const HASH_HEX = /^(?:0x)?[0-9a-fA-F]{64}$/;
-const LEGACY_TYPE = /(?:::OCMaker|::maker_v[4-7]|::commerce_v5|::composition_v6|::physical_v7|::publication_v[4-7])/;
 const VERIFIED_MAINNET_RPCS = new WeakSet();
 const ATTESTED_MAKER_V8_RUNTIMES = new WeakSet();
 const ATTESTED_MAKER_V8_PACKAGE_TUPLES = new WeakMap();
@@ -157,11 +156,8 @@ function typeEquals(observed, expected) {
 }
 
 function assertType(observed, expected, label) {
-  if (LEGACY_TYPE.test(String(observed || ''))) {
-    fail('schema', 'UNSUPPORTED_LEGACY_PRODUCT', `${label} belongs to an unsupported pre-v8 product.`, { observed });
-  }
   if (!typeEquals(observed, expected)) {
-    fail('schema', 'MAKER_V8_CHAIN_TYPE_MISMATCH', `${label} has the wrong stable TypeOrigin.`, { expected, observed });
+    fail('schema', 'UNSUPPORTED_LEGACY_PRODUCT', `${label} is not the exact fresh-v8 stable TypeOrigin.`, { expected, observed });
   }
 }
 

@@ -375,7 +375,7 @@ test('rejects unknown fields at the root and every nested allowlist boundary', (
   }
 });
 
-test('detects and rejects every retired flat, gate, single-package, and v4-v7 field', () => {
+test('detects and rejects every retired flat, gate, and single-package field', () => {
   for (const field of MAKER_V8_LEGACY_FIELDS) {
     const candidate = runtime();
     candidate[field] = field.toLowerCase().includes('enabled') ? false : '';
@@ -387,21 +387,22 @@ test('detects and rejects every retired flat, gate, single-package, and v4-v7 fi
     ), true, field);
   }
 
-  for (const field of ['makerV7Runtime', 'legacyRuntime', 'compatibilityGate']) {
+  for (const field of ['retiredRuntimeAlias', 'legacyRuntime', 'compatibilityGate']) {
     const candidate = runtime();
     candidate[field] = false;
-    assert.equal(hasIssue(
-      inspectMakerV8Runtime(candidate),
-      'MAKER_V8_LEGACY_FIELD_FORBIDDEN',
-      field,
-    ), true, field);
+    const inspected = inspectMakerV8Runtime(candidate);
+    assert.equal(inspected.valid, false, field);
+    assert.equal(inspected.issues.some((issue) => (
+      issue.field === field
+      && ['MAKER_V8_LEGACY_FIELD_FORBIDDEN', 'MAKER_V8_UNKNOWN_FIELD'].includes(issue.code)
+    )), true, field);
   }
 });
 
 test('requires the exact schema, public protocol version, and boolean fresh-only gate', () => {
   const candidate = runtime();
-  candidate.schemaVersion = 'animacraft.maker-v8-runtime.v7';
-  candidate.protocolVersion = 7;
+  candidate.schemaVersion = 'animacraft.maker-runtime.invalid';
+  candidate.protocolVersion = 9;
   candidate.enabled = 'true';
   const inspected = inspectMakerV8Runtime(candidate);
   assert.equal(hasIssue(inspected, 'MAKER_V8_SCHEMA_INVALID'), true);

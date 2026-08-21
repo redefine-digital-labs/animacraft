@@ -2,9 +2,7 @@ node_modules/
 dist/
 move/
 test/
-scripts/
-creator-packs/
-deployments/
+public/
 .git/
 .github/
 *.md

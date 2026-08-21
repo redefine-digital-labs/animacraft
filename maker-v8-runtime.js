@@ -65,10 +65,6 @@ export const MAKER_V8_LEGACY_FIELDS = Object.freeze([
   'originalPackageId',
   'releaseEnabled',
   'canonicalSoulMintEnabled',
-  'commerceV5ReleaseEnabled',
-  'compositionV6ReleaseEnabled',
-  'physicalStyleV7ReleaseEnabled',
-  'expansionPackV8ReleaseEnabled',
 ]);
 
 export const MAKER_V8_ISSUE_LAYERS = Object.freeze([
@@ -141,7 +137,6 @@ function isLegacyField(field) {
   return LEGACY_FIELD_SET.has(field)
     || /^makerV8/i.test(field)
     || /releaseenabled$/i.test(field)
-    || /v[4-7]/i.test(field)
     || /legacy/i.test(field)
     || /gate/i.test(field)
     || /packageid$/i.test(field);
@@ -173,7 +168,7 @@ function inspectRecordShape(
       legacy ? 'MAKER_V8_LEGACY_FIELD_FORBIDDEN' : 'MAKER_V8_UNKNOWN_FIELD',
       path ? `${path}.${field}` : field,
       legacy
-        ? `${field} is a retired v4-v7, gate, alias, or single-package field and must not appear in the fresh v8 contract.`
+        ? `${field} is a retired gate, alias, or single-package field and must not appear in the fresh v8 contract.`
         : `${field} is not allowed by the fresh v8 runtime schema.`,
     ));
   }
