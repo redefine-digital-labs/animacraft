@@ -19,6 +19,7 @@ import {
   createProductionMakerV8BrowserAdapters,
   createWalletStandardConnectorV8,
   decodeMakerV8CoreEventV8,
+  makerV8TransactionEventsDigestV8,
   readFinalizedMakerV8EnvelopeV8,
 } from '../maker-v8-browser.js';
 import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
@@ -490,6 +491,25 @@ test('five pinned fresh-v8 event layouts decode BCS as authority and reject JSON
   );
 });
 
+test('official Sui RPC TransactionEvents vector pins BCS, typed Blake2b, and base58 digest', () => {
+  // Public Sui response captured in MystenLabs/sui#20877.  This independently
+  // pins the Rust TransactionEvents digest, rather than comparing two copies
+  // of this repository's implementation.
+  const event = {
+    packageId: '0x9a84b6a7914aedd6741e73cc2ca23cbc77e22ed3c5f884c072a51868fedde45b',
+    module: 'hyperspace',
+    sender: '0x36a05394e882fb4160790c9214c7f00438e6a11ef07c5ace2ad818d34cda575e',
+    eventType: '0x9a84b6a7914aedd6741e73cc2ca23cbc77e22ed3c5f884c072a51868fedde45b::hyperspace::ItemListed<0xee496a0cc04d06a345982ba6697c90c619020de9e274408c7819f787ff66e1a1::suifrens::SuiFren<0x8894fa02fc6f36cbc485ae9145d05f247a78e220814fb8419ab261bd81f08f32::bullshark::Bullshark>, 0x9a84b6a7914aedd6741e73cc2ca23cbc77e22ed3c5f884c072a51868fedde45b::hyperspace_mp::Hyperspace_mp>',
+    bcs: fromBase64('n77AZQCfwqscBWLT5mazPSWlhikwVBLlav2S18M9vqZ50mowsdBPvsX3K13DdqzRQbJD1KGDz2GN9dZiDaWrsYD5iCgCAAAA'),
+  };
+  const observed = makerV8TransactionEventsDigestV8([event]);
+  assert.equal(observed.digest, '8fpiGNxDRJm7WP3v7cEYRQRKANLvGzMCiQeoEpbMV8WZ');
+  assert.equal(
+    observed.bcs,
+    'AZqEtqeRSu3WdB5zzCyiPLx34i7TxfiEwHKlGGj+3eRbCmh5cGVyc3BhY2U2oFOU6IL7QWB5DJIUx/AEOOahHvB8Ws4q2BjTTNpXXpqEtqeRSu3WdB5zzCyiPLx34i7TxfiEwHKlGGj+3eRbCmh5cGVyc3BhY2UKSXRlbUxpc3RlZAIH7klqDMBNBqNFmCumaXyQxhkCDenidECMeBn3h/9m4aEIc3VpZnJlbnMHU3VpRnJlbgEHiJT6AvxvNsvEha6RRdBfJHp44iCBT7hBmrJhvYHwjzIJYnVsbHNoYXJrCUJ1bGxzaGFyawAHmoS2p5FK7dZ0HnPMLKI8vHfiLtPF+ITAcqUYaP7d5FsNaHlwZXJzcGFjZV9tcA1IeXBlcnNwYWNlX21wAEifvsBlAJ/CqxwFYtPmZrM9JaWGKTBUEuVq/ZLXwz2+pnnSajCx0E++xfcrXcN2rNFBskPUoYPPYY311mINpauxgPmIKAIAAAA=',
+  );
+});
+
 test('Core V2 readback binds exact effects refs, historical snapshots, input call, and events digest', async () => {
   const effectsBytes = new Uint8Array([1, 2, 3]);
   const effectsFingerprint = `0x${createHash('sha256').update(effectsBytes).digest('hex')}`;
@@ -535,6 +555,7 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
   let registryInputVersion = '5';
   let tamperEventJson = false;
   let tamperEventSender = false;
+  let replaceEvent = false;
   const eventJson = {
     listing_id: ids.listing,
     registry_id: ids.registry,
@@ -547,6 +568,19 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
     quote_commitment: Array(32).fill(7),
   };
   const eventBcs = listingOpenedEventBcs.serialize(eventJson).toBytes();
+  const replacementEventJson = { ...eventJson, seller: objectId(98) };
+  const replacementEventBcs = listingOpenedEventBcs.serialize(replacementEventJson).toBytes();
+  const eventForRpc = () => ({
+    packageId: packageId(9),
+    module: 'market_v8',
+    sender: tamperEventSender ? objectId(98) : objectId(99),
+    eventType: `${packageId(9)}::market_v8::MarketListingOpenedV8`,
+    bcs: replaceEvent ? replacementEventBcs : eventBcs,
+    json: replaceEvent
+      ? replacementEventJson
+      : tamperEventJson ? { ...eventJson, seller: objectId(98) } : eventJson,
+  });
+  const transactionEventsDigest = makerV8TransactionEventsDigestV8([eventForRpc()]).digest;
   const client = {
     core: {
       async getTransaction() {
@@ -570,7 +604,7 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
             effects: {
               status: { success: true, error: null },
               transactionDigest: suiDigest,
-              eventsDigest: suiDigest,
+              eventsDigest: transactionEventsDigest,
               bcs: effectsBytes,
               changedObjects: [
                 changed(ids.registry, registryInputVersion, '8'), changed(ids.treasury, '5', '8'),
@@ -580,13 +614,7 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
                 kind: 'ReadOnlyRoot', objectId: ids.root, version: '7', digest: suiDigest,
               }],
             },
-            events: [{
-              packageId: packageId(9), module: 'market_v8',
-              sender: tamperEventSender ? objectId(98) : objectId(99),
-              eventType: `${packageId(9)}::market_v8::MarketListingOpenedV8`,
-              bcs: eventBcs,
-              json: tamperEventJson ? { ...eventJson, seller: objectId(98) } : eventJson,
-            }],
+            events: [eventForRpc()],
             objectTypes: types,
             bcs: new Uint8Array([4, 5]),
           },
@@ -645,7 +673,8 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
       digest: suiDigest,
       planHash,
       outcome: {
-        status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+        status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+        eventsDigest: transactionEventsDigest,
       },
       identity: recoveryIdentity(),
       plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
@@ -658,7 +687,7 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
   assert.equal(receipt.transaction.sender, objectId(99));
   assert.equal(receipt.transaction.target, descriptor.target);
   assert.equal(receipt.effects.transactionDigest, suiDigest);
-  assert.equal(receipt.effects.eventsDigest, suiDigest);
+  assert.equal(receipt.effects.eventsDigest, transactionEventsDigest);
   assert.deepEqual(receipt.effects.objects.map(({ role }) => role), [
     'ROOT', 'REGISTRY', 'TREASURY', 'LISTING',
   ]);
@@ -674,7 +703,8 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
         digest: suiDigest,
         planHash,
         outcome: {
-          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
         },
         identity: recoveryIdentity(),
         plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
@@ -683,6 +713,26 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
     (error) => error.code === 'MAKER_V8_BROWSER_EVENT_JSON_BCS_DRIFT',
   );
   tamperEventJson = false;
+
+  replaceEvent = true;
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client,
+      market,
+      request: {
+        digest: suiDigest,
+        planHash,
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
+        },
+        identity: recoveryIdentity(),
+        plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENTS_DIGEST_DRIFT',
+  );
+  replaceEvent = false;
 
   tamperEventSender = true;
   await assert.rejects(
@@ -693,13 +743,14 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
         digest: suiDigest,
         planHash,
         outcome: {
-          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
         },
         identity: recoveryIdentity(),
         plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
       },
     }),
-    (error) => error.code === 'MAKER_V8_BROWSER_FINALIZED_EVENT_DRIFT',
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENTS_DIGEST_DRIFT',
   );
   tamperEventSender = false;
 
@@ -711,7 +762,8 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
         digest: suiDigest,
         planHash: 'ab'.repeat(32),
         outcome: {
-          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
         },
         identity: recoveryIdentity(),
         plan: { fingerprint: 'ab'.repeat(32), transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
@@ -728,7 +780,8 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
         digest: suiDigest,
         planHash,
         outcome: {
-          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
         },
         identity: recoveryIdentity('CANCELPHYSICALLISTING'),
         plan: {
@@ -750,7 +803,8 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
         digest: suiDigest,
         planHash,
         outcome: {
-          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
         },
         identity: recoveryIdentity(),
         plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
@@ -768,7 +822,8 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
       request: {
         digest: suiDigest, planHash,
         outcome: {
-          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
         },
         identity: recoveryIdentity('listMakerControl'),
         plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },

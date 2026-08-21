@@ -2,7 +2,7 @@ import {
   SuiJsonRpcClient,
   getJsonRpcFullnodeUrl,
 } from '@mysten/sui/jsonRpc';
-import { bcs } from '@mysten/sui/bcs';
+import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
 import {
   Transaction,
   TransactionDataBuilder,
@@ -11,7 +11,9 @@ import {
   fromBase64,
   normalizeStructTag,
   toBase64,
+  toBase58,
 } from '@mysten/sui/utils';
+import { blake2b } from '@noble/hashes/blake2.js';
 import { isValidTransactionSignature } from '@mysten/sui/verify';
 import {
   SUI_MAINNET_CHAIN,
@@ -484,6 +486,17 @@ const PHYSICAL_CUSTODY_TRANSITION_EVENT_BCS = bcs.struct('PhysicalMarketCustodyT
   ownership_epoch: bcs.u64(),
   provenance_commitment: bcs.vector(bcs.u8()),
 });
+const SUI_EVENT_BCS = bcs.struct('SuiEventV8Pinned', {
+  package_id: bcs.Address,
+  transaction_module: bcs.string(),
+  sender: bcs.Address,
+  event_type: bcs.StructTag,
+  contents: bcs.vector(bcs.u8()),
+});
+const SUI_TRANSACTION_EVENTS_BCS = bcs.struct('SuiTransactionEventsV8Pinned', {
+  data: bcs.vector(SUI_EVENT_BCS),
+});
+const TRANSACTION_EVENTS_DIGEST_DOMAIN = new TextEncoder().encode('TransactionEvents::');
 
 const EVENT_FIELD_KIND = Object.freeze({
   MarketListingOpenedV8: Object.freeze({
@@ -539,6 +552,57 @@ function knownEventLayout(market, eventType) {
     }
   }
   return null;
+}
+
+function eventStructTag(eventType, label) {
+  let parsed;
+  try {
+    parsed = TypeTagSerializer.parseFromStr(normalizeStructTag(eventType), true);
+  } catch (cause) {
+    fail('MAKER_V8_BROWSER_CORE_EVENT_INVALID', `${label} has an invalid event StructTag.`, 'READBACK', {
+      cause: String(cause?.message || cause),
+    });
+  }
+  if (!parsed?.struct) {
+    fail('MAKER_V8_BROWSER_CORE_EVENT_INVALID', `${label} must be a concrete event StructTag.`, 'READBACK');
+  }
+  return parsed.struct;
+}
+
+/** Rebuild Sui's exact TransactionEvents BCS and typed digest from Core events. */
+export function makerV8TransactionEventsDigestV8(events) {
+  if (!Array.isArray(events) || events.length === 0) {
+    fail('MAKER_V8_BROWSER_FINALIZED_EVENT_MISSING', 'TransactionEvents must contain at least one event.', 'READBACK');
+  }
+  const data = events.map((event, index) => {
+    if (!event || typeof event.module !== 'string' || event.module.length === 0
+      || typeof event.eventType !== 'string'
+      || !(event.bcs instanceof Uint8Array) || event.bcs.length === 0) {
+      fail('MAKER_V8_BROWSER_CORE_EVENT_INVALID', `Core V2 event ${index} cannot form TransactionEvents BCS.`, 'READBACK');
+    }
+    return {
+      package_id: id(event.packageId, `events[${index}].packageId`),
+      transaction_module: event.module,
+      sender: id(event.sender, `events[${index}].sender`),
+      event_type: eventStructTag(event.eventType, `events[${index}].eventType`),
+      contents: event.bcs,
+    };
+  });
+  let bytes;
+  try {
+    bytes = SUI_TRANSACTION_EVENTS_BCS.serialize({ data }).toBytes();
+  } catch (cause) {
+    fail('MAKER_V8_BROWSER_CORE_EVENT_INVALID', 'TransactionEvents BCS reconstruction failed.', 'READBACK', {
+      cause: String(cause?.message || cause),
+    });
+  }
+  const typed = new Uint8Array(TRANSACTION_EVENTS_DIGEST_DOMAIN.length + bytes.length);
+  typed.set(TRANSACTION_EVENTS_DIGEST_DOMAIN);
+  typed.set(bytes, TRANSACTION_EVENTS_DIGEST_DOMAIN.length);
+  return freeze({
+    bcs: toBase64(bytes),
+    digest: toBase58(blake2b(typed, { dkLen: 32 })),
+  });
 }
 
 function canonicalEventField(value, kind, label) {
@@ -933,6 +997,15 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
   if (!eventsDigest || !Array.isArray(finalized.events)) {
     fail('MAKER_V8_BROWSER_FINALIZED_EVENT_MISSING', 'Finalized effects do not bind an event digest and events.', 'READBACK');
   }
+  const transactionEvents = makerV8TransactionEventsDigestV8(finalized.events);
+  if (transactionEvents.digest !== eventsDigest) {
+    fail(
+      'MAKER_V8_BROWSER_EVENTS_DIGEST_DRIFT',
+      'Reconstructed TransactionEvents BCS digest differs from finalized effects.',
+      'READBACK',
+      { expected: eventsDigest, observed: transactionEvents.digest },
+    );
+  }
   const events = freeze(finalized.events.map((event, index) => decodeMakerV8CoreEventV8({
     event, index, transactionDigest, eventsDigest, market,
   })));
@@ -1178,6 +1251,7 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
       transactionDigest,
       epoch,
       eventsDigest,
+      eventsBcs: transactionEvents.bcs,
       transactionBcs: finalized.bcs instanceof Uint8Array ? toBase64(finalized.bcs) : null,
       bcs: effects.bcs instanceof Uint8Array ? toBase64(effects.bcs) : null,
       changedObjects,
