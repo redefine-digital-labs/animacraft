@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const allowedDependencies = new Map([
   ['@mysten/sui', '2.20.2'],
+  ['@mysten/wallet-standard', '0.21.4'],
   ['@noble/hashes', '2.2.0'],
 ]);
 const allowedDevDependencies = new Map([
