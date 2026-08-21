@@ -1,99 +1,479 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { bcs } from '@mysten/sui/bcs';
+import { Inputs, TransactionDataBuilder } from '@mysten/sui/transactions';
+import { fromBase64, toBase64 } from '@mysten/sui/utils';
 
+import {
+  MARKET_V8_LIFECYCLES,
+  MARKET_V8_QUOTE_KINDS,
+  createMarketV8Client,
+  createMarketV8RecoveryEvidenceV8,
+  inspectMarketActionOnChainV8,
+} from '../maker-v8-market.js';
+import {
+  MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+  attestMakerV8Runtime,
+} from '../maker-v8-chain.js';
+import {
+  MAKER_V8_CLOCK_OBJECT_ID,
+  MAKER_V8_PAYMENT_COIN_TYPE,
+  MAKER_V8_RUNTIME_SCHEMA,
+} from '../maker-v8-runtime.js';
 import {
   MAKER_V8_RECOVERY_ERROR,
   MAKER_V8_RECOVERY_ERROR_LAYER,
   MAKER_V8_RECOVERY_STATE,
+  MAKER_V8_SIGNATURE_DISPOSITION,
   MakerV8RecoveryError,
   canonicalMakerV8RecoveryIdentity,
+  canonicalMakerV8RecoveryScope,
   createMakerV8RecoveryController,
   createMakerV8RecoveryMemoryAdapter,
+  createMakerV8RecoverySessionId,
   makerV8RecoveryIdentityKey,
   makerV8RecoveryScopeKey,
+  makerV8RecoveryScopeLookupKey,
 } from '../maker-v8-recovery.js';
 
-function id(value) {
-  return `0x${BigInt(value).toString(16)}`;
-}
+const packageId = (digit) => `0x${digit.repeat(64)}`;
+const id = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
+const bytes32 = (value) => Array(32).fill(value);
+const digest = '11111111111111111111111111111111';
+const NETWORK = 'mainnet';
 
-function objectRef(value, version = 1, digest = `obj-${value}`) {
-  return { id: id(value), version, digest };
-}
+const runtimeInput = Object.freeze({
+  schemaVersion: MAKER_V8_RUNTIME_SCHEMA,
+  protocolVersion: 8,
+  enabled: true,
+  catalogId: id(800),
+  protocolConfigId: id(801),
+  protocolTreasuryId: id(802),
+  paymentCoinType: MAKER_V8_PAYMENT_COIN_TYPE,
+  clockObjectId: MAKER_V8_CLOCK_OBJECT_ID,
+  roles: Object.freeze({
+    core: { typeOriginPackageId: packageId('1'), callablePackageId: packageId('1') },
+    seal: { typeOriginPackageId: packageId('6'), callablePackageId: packageId('6') },
+    runtime: { typeOriginPackageId: packageId('4'), callablePackageId: packageId('4') },
+    output: { typeOriginPackageId: packageId('2'), callablePackageId: packageId('2') },
+    physical: { typeOriginPackageId: packageId('3'), callablePackageId: packageId('3') },
+    market: { typeOriginPackageId: packageId('9'), callablePackageId: packageId('9') },
+    release: { typeOriginPackageId: packageId('7'), callablePackageId: packageId('7') },
+  }),
+  roleConfigIds: Object.freeze({
+    seal: id(803),
+    runtime: id(804),
+    output: id(805),
+    physical: id(806),
+    market: id(807),
+    release: id(808),
+  }),
+  makerBindings: Object.freeze([]),
+});
 
-function identity(overrides = {}) {
-  return {
-    chain: 'SUI:MAINNET',
-    wallet: id(1),
-    lane: 'market-maker',
-    action: 'purchase',
-    packageTuple: [
-      {
-        role: 'MARKET',
-        originalPackageId: id(102),
-        callablePackageId: id(202),
-        packageDigest: 'market-package-digest',
-        abiCommitment: 'market-abi',
+function runtimeAttestationRpc(runtime) {
+  const roles = ['seal', 'runtime', 'output', 'physical', 'market', 'release'];
+  const authority = Object.fromEntries(roles.map((role, index) => [role, id(900 + index)]));
+  const roleCommitment = Object.fromEntries(
+    Object.keys(runtime.roles).map((role, index) => [role, bytes32(40 + index)]),
+  );
+  const productCommitment = bytes32(60);
+  const callSetCommitment = bytes32(61);
+  const objectResponse = (type, objectId, fields) => ({
+    data: {
+      objectId,
+      version: '1',
+      digest,
+      type,
+      owner: { Shared: { initial_shared_version: '1' } },
+      content: {
+        dataType: 'moveObject',
+        type,
+        fields: { id: { id: objectId }, ...fields },
       },
-      {
-        role: 'CORE',
-        originalPackageId: id(101),
-        callablePackageId: id(201),
-        packageDigest: 'core-package-digest',
-        abiCommitment: 'core-abi',
-      },
-    ],
-    paymentCoin: `${id(300)}::usdc::USDC`,
-    listing: objectRef(10),
-    root: objectRef(11),
-    registry: objectRef(12),
-    treasury: objectRef(13),
-    rootContentCommitment: 'root-content-1',
-    protocolRevision: 7,
-    listingRevision: 4,
-    quoteCommitment: 'quote-1',
-    authority: {
-      kind: 'seller-cap',
-      ref: objectRef(14),
-      seller: id(1),
     },
-    ...overrides,
+  });
+  const binding = Object.fromEntries(
+    Object.entries(runtime.roles).map(([role, identity], index) => [role, { fields: {
+      original_package_id: identity.typeOriginPackageId,
+      callable_package_id: identity.callablePackageId,
+      source_commitment: bytes32(10 + index),
+      package_commitment: bytes32(20 + index),
+      abi_commitment: bytes32(30 + index),
+      commitment: roleCommitment[role],
+    } }]),
+  );
+  const catalog = objectResponse(
+    `${runtime.roles.core.typeOriginPackageId}::package_binding_v8::ProductReleaseCatalogV8`,
+    runtime.catalogId,
+    {
+      version: '8',
+      protocol_config_id: runtime.protocolConfigId,
+      protocol_config_revision: '7',
+      protocol_config_commitment: bytes32(4),
+      binding: { fields: {
+        version: '8',
+        native_capability_mask: '127',
+        ...binding,
+        commitment: productCommitment,
+      } },
+      call_cap_set: { fields: {
+        version: '8',
+        catalog_id: runtime.catalogId,
+        product_binding_commitment: productCommitment,
+        ...Object.fromEntries(roles.map((role) => [`${role}_authority_id`, authority[role]])),
+        commitment: callSetCommitment,
+      } },
+      ...Object.fromEntries(roles.map((role) => [`${role}_call_cap`, []])),
+    },
+  );
+  const typeNames = {
+    seal: ['seal_v8', 'SealPolicyConfigV8'],
+    runtime: ['runtime_binding_v8', 'RuntimePackageConfigV8'],
+    output: ['output_v8', 'OutputPackageConfigV8'],
+    physical: ['physical_v8', 'PhysicalPackageConfigV8'],
+    market: ['market_v8', 'MarketPackageConfigV8'],
+    release: ['release_v8', 'ReleasePackageConfigV8'],
+  };
+  const configs = Object.fromEntries(roles.map((role) => {
+    const [moduleName, typeName] = typeNames[role];
+    return [role, objectResponse(
+      `${runtime.roles[role].typeOriginPackageId}::${moduleName}::${typeName}`,
+      runtime.roleConfigIds[role],
+      {
+        version: '8',
+        catalog_id: runtime.catalogId,
+        product_binding_commitment: productCommitment,
+        call_cap_set_commitment: callSetCommitment,
+        [`${role}_call_cap`]: { fields: {
+          version: '8',
+          authority_id: authority[role],
+          catalog_id: runtime.catalogId,
+          product_binding_commitment: productCommitment,
+          role_binding_commitment: roleCommitment[role],
+          call_cap_set_commitment: callSetCommitment,
+        } },
+      },
+    )];
+  }));
+  return {
+    async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+    async getObject({ id: objectId }) {
+      if (objectId === runtime.catalogId) return catalog;
+      const role = roles.find((candidate) => runtime.roleConfigIds[candidate] === objectId);
+      return configs[role];
+    },
   };
 }
 
-function digestFor(bytes) {
-  return `digest:${bytes}`;
+const attestedRuntime = (await attestMakerV8Runtime(
+  runtimeAttestationRpc(runtimeInput),
+  runtimeInput,
+)).runtime;
+const marketClient = createMarketV8Client(attestedRuntime, { network: NETWORK });
+const { types } = marketClient;
+
+function moveObject(type, objectId, fields) {
+  return {
+    data: {
+      objectId,
+      version: '7',
+      digest,
+      content: {
+        dataType: 'moveObject',
+        type,
+        hasPublicTransfer: false,
+        fields: { id: { id: objectId }, ...fields },
+      },
+    },
+  };
 }
 
-function plan(identityValue, bytes = 'base64-transaction-A', overrides = {}) {
-  return {
-    transactionBytes: bytes,
-    transactionDigest: digestFor(bytes),
-    stage: 'MARKET_PURCHASE',
-    sequence: 9,
-    signer: identityValue.wallet,
-    epochWindow: { start: 100, end: 105 },
-    gas: {
-      budget: '50000000',
-      price: '1000',
-      payment: [objectRef(90)],
+const quoteBcs = bcs.struct('MarketQuoteV8RecoveryTest', {
+  quote_kind: bcs.u8(),
+  root_id: bcs.Address,
+  maker_version: bcs.u64(),
+  root_content_commitment: bcs.vector(bcs.u8()),
+  economics_commitment: bcs.vector(bcs.u8()),
+  rights_commitment: bcs.vector(bcs.u8()),
+  gross_atomic: bcs.u64(),
+  protocol_atomic: bcs.u64(),
+  creator_atomic: bcs.u64(),
+  source_atomic: bcs.u64(),
+  seller_atomic: bcs.u64(),
+  commitment: bcs.vector(bcs.u8()),
+});
+
+const hexVector = (value) => Uint8Array.from(
+  value.slice(2).match(/.{2}/g).map((pair) => Number.parseInt(pair, 16)),
+);
+
+function quoteBytes(quote) {
+  return quoteBcs.serialize({
+    quote_kind: quote.quoteKind,
+    root_id: quote.rootId,
+    maker_version: quote.makerVersion,
+    root_content_commitment: hexVector(quote.rootContentCommitment),
+    economics_commitment: hexVector(quote.economicsCommitment),
+    rights_commitment: hexVector(quote.rightsCommitment),
+    gross_atomic: quote.grossAtomic,
+    protocol_atomic: quote.protocolAtomic,
+    creator_atomic: quote.creatorAtomic,
+    source_atomic: quote.sourceAtomic,
+    seller_atomic: quote.sellerAtomic,
+    commitment: hexVector(quote.commitment),
+  }).toBytes();
+}
+
+const object = (objectId, type, extra = {}) => ({
+  objectId,
+  network: NETWORK,
+  type,
+  ...extra,
+});
+const wallet = (address) => ({ address, network: NETWORK });
+const objectRef = (objectId, version = '7', objectDigest = digest) => ({
+  id: objectId,
+  version,
+  digest: objectDigest,
+});
+
+async function makeFixture({ offset = 0, grossAtomic = 1_000_000n, currentEpoch = '100' } = {}) {
+  const IDs = {
+    registry: id(100 + offset),
+    treasury: id(101 + offset),
+    root: id(104 + offset),
+    admin: id(107 + offset),
+    makerTreasury: id(108 + offset),
+    seller: id(200 + offset),
+  };
+  const registryFields = {
+    version: '8',
+    catalog_id: runtimeInput.catalogId,
+    package_config_id: runtimeInput.roleConfigIds.market,
+    product_binding_commitment: bytes32(1),
+    call_cap_set_commitment: bytes32(2),
+    root_id: IDs.root,
+    maker_version: '42',
+    root_content_commitment: bytes32(0xaa),
+    protocol_config_id: runtimeInput.protocolConfigId,
+    protocol_config_revision: '7',
+    protocol_config_commitment: bytes32(0xdd),
+    economics_commitment: bytes32(0xbb),
+    rights_commitment: bytes32(0xcc),
+    maker_market_fee_bps: '250',
+    soul_market_fee_bps: '300',
+    soul_creator_royalty_bps: '500',
+    maker_source_royalty_bps: '200',
+    maker_resale_royalty_bps: '400',
+    treasury_id: IDs.treasury,
+    sealed: true,
+    revision: '4',
+    listing_count: '4',
+    escrow_count: '4',
+    completed_sale_count: '0',
+    canceled_sale_count: '0',
+    recovered_sale_count: '0',
+    gross_volume_atomic: '0',
+    protocol_paid_atomic: '0',
+    creator_paid_atomic: '0',
+    source_paid_atomic: '0',
+    seller_paid_atomic: '0',
+    zero_state_commitment: bytes32(3),
+  };
+  const treasuryFields = {
+    version: '8',
+    catalog_id: runtimeInput.catalogId,
+    package_config_id: runtimeInput.roleConfigIds.market,
+    root_id: IDs.root,
+    maker_version: '42',
+    root_content_commitment: bytes32(0xaa),
+    escrow: { value: '0' },
+    gross_escrowed_atomic: '0',
+    gross_released_atomic: '0',
+  };
+  const registry = marketClient.parseRegistry(
+    moveObject(types.marketRegistry, IDs.registry, registryFields),
+  );
+  const treasury = marketClient.parseTreasury(
+    moveObject(types.marketTreasury, IDs.treasury, treasuryFields),
+  );
+  const root = object(IDs.root, types.makerRoot, {
+    adminCapId: IDs.admin,
+    ownerAddress: IDs.seller,
+    creatorAddress: IDs.seller,
+    controlEpoch: '9',
+    binding: Object.freeze({
+      makerTreasuryId: IDs.makerTreasury,
+      marketRegistryId: IDs.registry,
+      marketTreasuryId: IDs.treasury,
+    }),
+    lifecycleCode: MARKET_V8_LIFECYCLES.PAUSED,
+  });
+  const localQuote = marketClient.quoteMakerResale(registry, grossAtomic);
+  const chainQuote = await marketClient.inspectQuoteOnChain({
+    async simulateTransaction() {
+      return {
+        $kind: 'Transaction',
+        commandResults: [{ returnValues: [{ bcs: quoteBytes(localQuote) }] }],
+      };
     },
+  }, {
+    registry,
+    treasury,
+    root,
+    wallet: wallet(IDs.seller),
+    quoteKind: MARKET_V8_QUOTE_KINDS.MAKER_RESALE,
+    grossAtomic,
+  });
+  const builtAction = marketClient.buildListMakerControl({
+    registry,
+    treasury,
+    root,
+    catalog: object(runtimeInput.catalogId, types.catalog),
+    config: object(runtimeInput.roleConfigIds.market, types.marketConfig),
+    protocolConfig: object(runtimeInput.protocolConfigId, types.protocolConfig, {
+      enabled: true,
+      revision: registry.fields.protocolConfigRevision,
+      commitment: registry.fields.protocolConfigCommitment,
+    }),
+    wallet: wallet(IDs.seller),
+    admin: object(IDs.admin, types.makerAdmin),
+    makerTreasury: object(IDs.makerTreasury, types.makerTreasury, { balanceAtomic: 0n }),
+    chainQuote,
+    grossAtomic,
+    expectedRegistryRevision: registry.fields.revision,
+  });
+  const descriptor = builtAction.descriptor;
+  const identity = {
+    chain: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+    wallet: descriptor.sender,
+    lane: 'MAKER',
+    action: descriptor.action,
+    packageTuple: descriptor.packageTuple.map((entry) => ({
+      role: entry.role.toUpperCase(),
+      originalPackageId: entry.originalPackageId,
+      callablePackageId: entry.callablePackageId,
+    })),
+    paymentCoin: descriptor.typeArguments[0],
+    listing: objectRef(IDs.admin),
+    root: objectRef(IDs.root),
+    registry: objectRef(IDs.registry),
+    treasury: objectRef(IDs.treasury),
+    rootContentCommitment: descriptor.rootContentCommitment,
+    protocolRevision: descriptor.protocolRevision,
+    listingRevision: descriptor.expectation.listingRevision,
+    quoteCommitment: descriptor.expectation.quoteCommitment,
+    authority: { kind: 'MAKER_ADMIN', refs: [objectRef(IDs.admin)] },
+  };
+  const simulationClient = {
+    async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+    async dryRunTransactionBlock() {
+      return { effects: { status: { status: 'success' } } };
+    },
+    core: {
+      async getCurrentSystemState() { return { systemState: { epoch: currentEpoch } }; },
+      async getBalance({ coinType }) {
+        return {
+          balance: {
+            balance: '1000000',
+            coinBalance: '800000',
+            addressBalance: '20000000',
+            coinType,
+          },
+        };
+      },
+      async listCoins({ coinType }) {
+        return {
+          objects: [{
+            objectId: id(998), version: '1', digest, balance: '1000000', coinType,
+          }],
+          hasNextPage: false,
+          cursor: null,
+        };
+      },
+      resolveTransactionPlugin() {
+        return async (transactionData, _options, next) => {
+          transactionData.inputs = transactionData.inputs.map((input) => {
+            if (!input.UnresolvedObject) return input;
+            return Inputs.SharedObjectRef({
+              objectId: input.UnresolvedObject.objectId,
+              initialSharedVersion: '1',
+              mutable: true,
+            });
+          });
+          transactionData.gasData = {
+            budget: '10000000',
+            price: '1000',
+            owner: transactionData.sender,
+            payment: Array.from({ length: 20 }, (_, index) => ({
+              objectId: id(999 + index), version: '1', digest,
+            })),
+          };
+          await next();
+        };
+      },
+    },
+  };
+  async function issueEvidence() {
+    const proof = await inspectMarketActionOnChainV8(simulationClient, builtAction);
+    return createMarketV8RecoveryEvidenceV8(builtAction, proof);
+  }
+  const seedEvidence = await issueEvidence();
+  const transactionBytes = seedEvidence.transactionBytes;
+  const transactionDigest = seedEvidence.transactionDigest;
+  const plan = {
+    transactionBytes,
+    transactionDigest,
+    stage: 'MARKET_LIST',
+    sequence: descriptor.expectation.listingRevision,
+    signer: descriptor.sender,
+    epochWindow: seedEvidence.epochWindow,
+    gas: seedEvidence.gasData,
+    expiration: seedEvidence.expiration,
     sourceSnapshot: {
-      sourceCommit: 'source-commit-1',
-      sourceTree: 'source-tree-1',
-      quote: 'quote-1',
+      schema: 'animacraft.market-source-snapshot.v8',
+      fingerprint: seedEvidence.sourceFingerprint,
+      descriptor: seedEvidence.descriptor,
     },
-    ...overrides,
+  };
+  return {
+    builtAction,
+    identity,
+    plan,
+    transactionBytes,
+    transactionDigest,
+    IDs,
+    async freshEvidence() {
+      const evidence = await issueEvidence();
+      assert.equal(evidence.transactionBytes, transactionBytes);
+      return evidence;
+    },
   };
 }
 
-function signatureFor({ bytes, digest, signer }) {
-  return `signature:${bytes}:${digest}:${signer}`;
+const primary = await makeFixture();
+const changedQuote = await makeFixture({ grossAtomic: 2_000_000n });
+const otherScope = await makeFixture({ offset: 2_000 });
+const epochDrift = await makeFixture({ currentEpoch: '101' });
+
+function transactionDigest(bytes) {
+  return TransactionDataBuilder.getDigestFromBytes(fromBase64(bytes));
 }
 
-function forwardingAdapter(base, compareAndSwap) {
+function mutateTransactionBytes(bytes, mutate) {
+  const snapshot = TransactionDataBuilder.fromBytes(fromBase64(bytes)).snapshot();
+  mutate(snapshot);
+  return toBase64(TransactionDataBuilder.restore(snapshot).build());
+}
+
+function signatureFor({ digest: transactionDigestValue, signer }) {
+  return `signature:${transactionDigestValue}:${signer}`;
+}
+
+function forwardingAdapter(base, compareAndSwap, load = undefined) {
   return {
-    load: (...args) => base.load(...args),
+    load: load || ((...args) => base.load(...args)),
     compareAndSwap: compareAndSwap || ((...args) => base.compareAndSwap(...args)),
     loadReceipt: (...args) => base.loadReceipt(...args),
     loadFinalizedFailure: (...args) => base.loadFinalizedFailure(...args),
@@ -102,10 +482,14 @@ function forwardingAdapter(base, compareAndSwap) {
 }
 
 function harness({
-  identityValue = identity(),
+  fixture = primary,
   persist = createMakerV8RecoveryMemoryAdapter(),
-  sessionId = 'session-alpha-0001',
-  clockState = { value: 1_000 },
+  sessionId = createMakerV8RecoverySessionId(),
+  clock = Date.now,
+  evidenceMaxAgeMs,
+  signatureLeaseMs,
+  confirmNoSignedArtifact,
+  currentEpoch = fixture.plan.epochWindow.start,
   sign,
   query,
   broadcast,
@@ -113,21 +497,26 @@ function harness({
   verifySignature,
 } = {}) {
   const calls = [];
-  let currentIdentity = identityValue;
+  let currentIdentity = fixture.identity;
   const controller = createMakerV8RecoveryController({
     persist,
     sessionId,
-    clock: () => clockState.value++,
-    deriveTransactionDigest: async (bytes) => digestFor(bytes),
-    verifySignature: verifySignature || (async ({ bytes, signature, digest, signer }) => ({
-      verified: signature === signatureFor({ bytes, digest, signer }),
-      bytes,
-      digest,
+    clock,
+    ...(evidenceMaxAgeMs === undefined ? {} : { evidenceMaxAgeMs }),
+    ...(signatureLeaseMs === undefined ? {} : { signatureLeaseMs }),
+    ...(confirmNoSignedArtifact === undefined ? {} : { confirmNoSignedArtifact }),
+    deriveTransactionDigest: async (bytes) => transactionDigest(bytes),
+    verifySignature: verifySignature || (async ({ signature, digest: signedDigest, signer }) => ({
+      verified: signature === signatureFor({ digest: signedDigest, signer }),
+      digest: signedDigest,
       signer,
     })),
     getContext: async () => {
       calls.push({ kind: 'context' });
-      return currentIdentity;
+      return {
+        identity: currentIdentity,
+        currentEpoch: typeof currentEpoch === 'function' ? currentEpoch() : currentEpoch,
+      };
     },
     sign: sign || (async (request) => {
       calls.push({ kind: 'sign', request });
@@ -152,6 +541,7 @@ function harness({
         verified: true,
         digest: request.digest,
         identity: request.identity,
+        planHash: request.planHash,
         checkpoint: request.outcome.checkpoint,
         evidence: { event: 'exact-event', objectReadback: true },
       };
@@ -161,14 +551,50 @@ function harness({
     controller,
     persist,
     calls,
-    clockState,
     setContext(next) { currentIdentity = next; },
   };
 }
 
-async function prepareAndSign(setup, identityValue = identity(), bytes = 'base64-transaction-A') {
-  await setup.controller.prepare(identityValue, plan(identityValue, bytes));
-  return setup.controller.requestSignature(identityValue);
+async function prepare(setup, fixture = primary, prepareOptions = undefined) {
+  return setup.controller.prepare({
+    identity: fixture.identity,
+    plan: fixture.plan,
+    evidence: await fixture.freshEvidence(),
+    options: { afterFinalizedFailure: prepareOptions?.afterFinalizedFailure === true },
+  });
+}
+
+async function prepareAndSign(setup, fixture = primary) {
+  await prepare(setup, fixture);
+  return requestSignatureWithFreshBinding(setup, fixture);
+}
+
+async function freshSigningBinding(setup, fixture = primary, evidence = undefined) {
+  const record = await setup.controller.load(fixture.identity);
+  return {
+    identity: fixture.identity,
+    liveIdentity: fixture.identity,
+    plan: fixture.plan,
+    expectedRevision: record.revision,
+    expectedPlanHash: record.plan.fingerprint,
+    evidence: evidence ?? await fixture.freshEvidence(),
+  };
+}
+
+async function requestSignatureWithFreshBinding(
+  setup,
+  fixture = primary,
+  evidence = undefined,
+) {
+  return setup.controller.requestSignature(
+    await freshSigningBinding(setup, fixture, evidence),
+  );
+}
+
+async function reclaimWithFreshBinding(setup, fixture = primary, evidence = undefined) {
+  return setup.controller.reclaimAwaitingSignature(
+    await freshSigningBinding(setup, fixture, evidence),
+  );
 }
 
 function errorIs(code, layer) {
@@ -177,46 +603,131 @@ function errorIs(code, layer) {
     && (layer === undefined || error.layer === layer);
 }
 
-test('canonical identity binds every immutable v8 transaction authority input', () => {
-  const raw = identity();
+test('canonical identity and public scope bind Mainnet plus the exact seven-role tuple', () => {
+  const raw = primary.identity;
   const canonical = canonicalMakerV8RecoveryIdentity(raw);
-  const reordered = identity({ packageTuple: [...raw.packageTuple].reverse() });
-
-  assert.equal(canonical.chain, 'sui:mainnet');
-  assert.equal(canonical.wallet, `0x${'0'.repeat(63)}1`);
-  assert.deepEqual(canonical.packageTuple.map((entry) => entry.role), ['CORE', 'MARKET']);
-  assert.equal(canonical.paymentCoin, `${id(300).replace('0x', `0x${'0'.repeat(61)}`)}::usdc::USDC`);
-  assert.equal(canonical.listing.version, '1');
-  assert.equal(canonical.protocolRevision, '7');
-  assert.equal(canonical.authority.kind, 'SELLER-CAP');
-  assert.equal(Object.isFrozen(canonical), true);
-  assert.equal(Object.isFrozen(canonical.root), true);
-  assert.equal(Object.isFrozen(canonical.authority.ref), true);
+  const reordered = { ...raw, packageTuple: [...raw.packageTuple].reverse() };
+  assert.equal(canonical.chain, MAKER_V8_MAINNET_CHAIN_IDENTIFIER);
+  assert.deepEqual(canonical.packageTuple.map((entry) => entry.role), [
+    'CORE', 'MARKET', 'OUTPUT', 'PHYSICAL', 'RELEASE', 'RUNTIME', 'SEAL',
+  ]);
+  assert.equal(canonical.authority.kind, 'MAKER_ADMIN');
+  assert.equal(Object.isFrozen(canonical.authority.refs[0]), true);
   assert.equal(makerV8RecoveryIdentityKey(raw), makerV8RecoveryIdentityKey(reordered));
-
-  const changedQuote = identity({ quoteCommitment: 'quote-2' });
-  assert.notEqual(makerV8RecoveryIdentityKey(raw), makerV8RecoveryIdentityKey(changedQuote));
-  assert.equal(makerV8RecoveryScopeKey(raw), makerV8RecoveryScopeKey(changedQuote));
+  assert.notEqual(
+    makerV8RecoveryIdentityKey(raw),
+    makerV8RecoveryIdentityKey(changedQuote.identity),
+  );
+  assert.equal(makerV8RecoveryScopeKey(raw), makerV8RecoveryScopeKey(changedQuote.identity));
+  const scope = canonicalMakerV8RecoveryScope({
+    chain: raw.chain,
+    rootId: raw.root.id,
+  });
+  assert.equal(makerV8RecoveryScopeLookupKey(scope), makerV8RecoveryScopeKey(raw));
+  assert.throws(
+    () => canonicalMakerV8RecoveryIdentity({ ...raw, chain: 'sui:mainnet' }),
+    errorIs(MAKER_V8_RECOVERY_ERROR.IDENTITY_INVALID),
+  );
   assert.throws(
     () => canonicalMakerV8RecoveryIdentity({
       ...raw,
-      listing: { ...raw.listing, mutableOwnerHint: id(99) },
+      packageTuple: raw.packageTuple.map((entry, index) => (
+        index === 0 ? { ...entry, packageDigest: 'caller-hash' } : entry
+      )),
     }),
     errorIs(MAKER_V8_RECOVERY_ERROR.IDENTITY_INVALID),
   );
 });
 
-test('signed bytes are durably persisted before query/broadcast and replay is byte-identical', async () => {
+test('prepare and requestSignature consume separate fresh branded Mainnet evidence', async () => {
+  const setup = harness();
+  const prepareEvidence = await primary.freshEvidence();
+  const ready = await setup.controller.prepare({
+    identity: primary.identity,
+    plan: primary.plan,
+    evidence: prepareEvidence,
+    options: { afterFinalizedFailure: false },
+  });
+  assert.equal(ready.state, MAKER_V8_RECOVERY_STATE.READY);
+  assert.equal(ready.plan.transactionBytes, primary.transactionBytes);
+  assert.ok(ready.plan.transactionBytes.length > 2_048);
+  assert.equal(ready.plan.market.descriptor.target, primary.builtAction.descriptor.target);
+  await assert.rejects(
+    requestSignatureWithFreshBinding(setup, primary, prepareEvidence),
+    errorIs(MAKER_V8_RECOVERY_ERROR.PLAN_EVIDENCE_REPLAY),
+  );
+  const cloned = { ...await primary.freshEvidence() };
+  await assert.rejects(
+    requestSignatureWithFreshBinding(setup, primary, cloned),
+    errorIs(MAKER_V8_RECOVERY_ERROR.PLAN_EVIDENCE_REQUIRED),
+  );
+  const signed = await requestSignatureWithFreshBinding(setup);
+  assert.equal(signed.state, MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE);
+});
+
+test('requestSignature atomically binds live identity, full plan hash, revision, and one proof', async () => {
+  const persist = createMakerV8RecoveryMemoryAdapter();
+  const prepared = harness({ persist });
+  await prepare(prepared);
+  const evidence = await primary.freshEvidence();
+  const binding = await freshSigningBinding(prepared, primary, evidence);
+  binding.expectedRevision += 1;
+  await assert.rejects(
+    prepared.controller.requestSignature(binding),
+    errorIs(MAKER_V8_RECOVERY_ERROR.CAS_CONFLICT, MAKER_V8_RECOVERY_ERROR_LAYER.CONCURRENCY),
+  );
+  binding.expectedRevision -= 1;
+  const expectedHash = binding.expectedPlanHash;
+  binding.expectedPlanHash = `0x${'77'.repeat(32)}`;
+  await assert.rejects(
+    prepared.controller.requestSignature(binding),
+    errorIs(MAKER_V8_RECOVERY_ERROR.CAS_CONFLICT, MAKER_V8_RECOVERY_ERROR_LAYER.CONCURRENCY),
+  );
+  binding.expectedPlanHash = expectedHash;
+  assert.equal((await prepared.controller.requestSignature(binding)).state,
+    MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE);
+
+  const racePersist = createMakerV8RecoveryMemoryAdapter();
+  let walletEntries = 0;
+  const left = harness({
+    persist: racePersist,
+    sessionId: createMakerV8RecoverySessionId(),
+    sign: async (request) => {
+      walletEntries += 1;
+      return { ...request, signature: signatureFor(request) };
+    },
+  });
+  const right = harness({
+    persist: racePersist,
+    sessionId: createMakerV8RecoverySessionId(),
+    sign: async (request) => {
+      walletEntries += 1;
+      return { ...request, signature: signatureFor(request) };
+    },
+  });
+  await prepare(left);
+  const [leftBinding, rightBinding] = await Promise.all([
+    freshSigningBinding(left),
+    freshSigningBinding(right),
+  ]);
+  const outcomes = await Promise.allSettled([
+    left.controller.requestSignature(leftBinding),
+    right.controller.requestSignature(rightBinding),
+  ]);
+  assert.equal(outcomes.filter((entry) => entry.status === 'fulfilled').length, 1);
+  const rejected = outcomes.find((entry) => entry.status === 'rejected');
+  assert.equal(errorIs(MAKER_V8_RECOVERY_ERROR.CAS_CONFLICT)(rejected.reason), true);
+  assert.equal(walletEntries, 1);
+});
+
+test('signed bytes become durable before query and byte-identical query-first replay', async () => {
   const base = createMakerV8RecoveryMemoryAdapter();
   const order = [];
   const persist = forwardingAdapter(base, async (...args) => {
-    const next = args[2];
-    order.push(`persist:${next?.state || 'CLEANUP'}`);
+    order.push(`persist:${args[2].state}`);
     return base.compareAndSwap(...args);
   });
-  const idValue = identity();
   const setup = harness({
-    identityValue: idValue,
     persist,
     query: async (request) => {
       order.push('query');
@@ -229,431 +740,595 @@ test('signed bytes are durably persisted before query/broadcast and replay is by
       return { digest: request.digest };
     },
   });
-
-  const signed = await prepareAndSign(setup, idValue);
-  assert.equal(signed.state, MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE);
-  assert.deepEqual(signed.signed, {
-    bytes: 'base64-transaction-A',
-    signature: signatureFor({
-      bytes: 'base64-transaction-A',
-      digest: digestFor('base64-transaction-A'),
-      signer: canonicalMakerV8RecoveryIdentity(idValue).wallet,
-    }),
-    digest: digestFor('base64-transaction-A'),
-    signer: canonicalMakerV8RecoveryIdentity(idValue).wallet,
-    signedAt: signed.signed.signedAt,
-  });
-  const pending = await setup.controller.broadcastSigned(idValue);
+  const signed = await prepareAndSign(setup);
+  const walletRequest = setup.calls.find((entry) => entry.kind === 'sign').request;
+  assert.equal(walletRequest.recovery.planHash, signed.plan.fingerprint);
+  assert.equal(walletRequest.recovery.revision, signed.revision - 1);
+  assert.equal(walletRequest.recovery.scopeKey, signed.scopeKey);
+  const pending = await setup.controller.broadcastSigned(primary.identity);
   assert.equal(pending.state, MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING);
   const sent = setup.calls.find((entry) => entry.kind === 'broadcast').request;
   assert.equal(sent.bytes, signed.signed.bytes);
   assert.equal(sent.signature, signed.signed.signature);
-  assert.equal(sent.digest, signed.signed.digest);
+  assert.equal(sent.digest, primary.transactionDigest);
   assert.ok(order.indexOf('persist:SIGNED_DURABLE') < order.indexOf('query'));
   assert.ok(order.indexOf('query') < order.indexOf('persist:BROADCASTING'));
   assert.ok(order.indexOf('persist:BROADCASTING') < order.indexOf('broadcast'));
 });
 
-test('wallet-returned byte, digest, signer, and signature alterations fail before broadcast', async (t) => {
+test('wallet byte, digest, signer, and signature alterations never become durable', async (t) => {
   const cases = [
-    {
-      name: 'bytes',
-      mutate: (request) => ({ ...request, bytes: 'different-bytes', signature: signatureFor(request) }),
-      code: MAKER_V8_RECOVERY_ERROR.SIGNED_BYTES_MISMATCH,
-    },
-    {
-      name: 'digest',
-      mutate: (request) => ({ ...request, digest: 'different-digest', signature: signatureFor(request) }),
-      code: MAKER_V8_RECOVERY_ERROR.DIGEST_MISMATCH,
-    },
-    {
-      name: 'signer',
-      mutate: (request) => ({ ...request, signer: id(999), signature: signatureFor(request) }),
-      code: MAKER_V8_RECOVERY_ERROR.CONTEXT_DRIFT,
-    },
-    {
-      name: 'signature',
-      mutate: (request) => ({ ...request, signature: 'forged-signature' }),
-      code: MAKER_V8_RECOVERY_ERROR.SIGNATURE_INVALID,
-    },
+    ['bytes', (request) => ({ ...request, bytes: changedQuote.transactionBytes,
+      signature: signatureFor(request) }), MAKER_V8_RECOVERY_ERROR.SIGNED_BYTES_MISMATCH],
+    ['digest', (request) => ({ ...request, digest: changedQuote.transactionDigest,
+      signature: signatureFor(request) }), MAKER_V8_RECOVERY_ERROR.DIGEST_MISMATCH],
+    ['signer', (request) => ({ ...request, signer: id(9999),
+      signature: signatureFor(request) }), MAKER_V8_RECOVERY_ERROR.CONTEXT_DRIFT],
+    ['signature', (request) => ({ ...request, signature: 'forged' }),
+      MAKER_V8_RECOVERY_ERROR.SIGNATURE_INVALID],
   ];
-
-  for (const entry of cases) {
-    await t.test(entry.name, async () => {
-      let broadcasts = 0;
-      const idValue = identity();
-      const setup = harness({
-        identityValue: idValue,
-        sign: async (request) => entry.mutate(request),
-        broadcast: async () => { broadcasts += 1; return { digest: 'never' }; },
-      });
-      await setup.controller.prepare(idValue, plan(idValue));
-      await assert.rejects(setup.controller.requestSignature(idValue), errorIs(entry.code));
-      assert.equal((await setup.controller.load(idValue)).state,
-        MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE);
-      assert.equal(broadcasts, 0);
+  for (const [name, mutate, code] of cases) {
+    await t.test(name, async () => {
+      const setup = harness({ sign: async (request) => mutate(request) });
+      await prepare(setup);
+      await assert.rejects(
+        requestSignatureWithFreshBinding(setup),
+        errorIs(code),
+      );
+      const record = await setup.controller.load(primary.identity);
+      assert.equal(record.state, MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE);
+      assert.equal(record.signed, null);
+      assert.equal(setup.calls.some((entry) => entry.kind === 'broadcast'), false);
     });
   }
 });
 
-test('CAS isolates signing sessions and stale writers never invoke a second wallet signature', async () => {
+test('wallet rejection survives reload; explicit reclaim CAS permits only a new proof', async () => {
   const persist = createMakerV8RecoveryMemoryAdapter();
-  const idValue = identity();
-  let releaseSignature;
-  const signatureGate = new Promise((resolve) => { releaseSignature = resolve; });
-  let aSignCalls = 0;
-  let bSignCalls = 0;
-  let aEntered;
-  const aEnteredSignature = new Promise((resolve) => { aEntered = resolve; });
-  const first = harness({
-    identityValue: idValue,
+  const rejected = harness({
     persist,
-    sessionId: 'session-first-0001',
-    sign: async (request) => {
-      aSignCalls += 1;
-      aEntered();
-      await signatureGate;
-      return { ...request, signature: signatureFor(request) };
+    sessionId: 'session-rejected-0001',
+    sign: async () => {
+      const error = new Error('wallet user rejected');
+      error.definitiveRejection = true;
+      error.signedArtifactCreated = false;
+      throw error;
     },
   });
-  const second = harness({
-    identityValue: idValue,
-    persist,
-    sessionId: 'session-second-0002',
-    sign: async (request) => {
-      bSignCalls += 1;
-      return { ...request, signature: signatureFor(request) };
-    },
-  });
-
-  await first.controller.prepare(idValue, plan(idValue));
-  const signing = first.controller.requestSignature(idValue);
-  await aEnteredSignature;
+  await prepare(rejected);
   await assert.rejects(
-    second.controller.requestSignature(idValue),
-    errorIs(MAKER_V8_RECOVERY_ERROR.SESSION_CONFLICT,
-      MAKER_V8_RECOVERY_ERROR_LAYER.CONCURRENCY),
+    requestSignatureWithFreshBinding(rejected),
+    errorIs(MAKER_V8_RECOVERY_ERROR.SIGNING_FAILED, MAKER_V8_RECOVERY_ERROR_LAYER.SIGNING),
   );
-  releaseSignature();
-  assert.equal((await signing).state, MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE);
-  assert.equal(aSignCalls, 1);
-  assert.equal(bSignCalls, 0);
-
-  const stale = await persist.load(makerV8RecoveryScopeKey(idValue));
-  const winner = { ...stale, revision: stale.revision + 1 };
-  await persist.compareAndSwap(stale.scopeKey, stale.revision, winner);
+  const reloaded = harness({ persist, sessionId: 'session-reloaded-0002' });
+  const stranded = await reloaded.controller.loadByScope({
+    chain: primary.identity.chain,
+    rootId: primary.identity.root.id,
+  });
+  assert.equal(stranded.state, MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE);
+  assert.equal(stranded.signed, null);
+  const premature = await primary.freshEvidence();
   await assert.rejects(
-    persist.compareAndSwap(stale.scopeKey, stale.revision, winner),
-    errorIs(MAKER_V8_RECOVERY_ERROR.CAS_CONFLICT,
-      MAKER_V8_RECOVERY_ERROR_LAYER.CONCURRENCY),
+    requestSignatureWithFreshBinding(reloaded, primary, premature),
+    errorIs(MAKER_V8_RECOVERY_ERROR.SIGNATURE_REPLACEMENT_FORBIDDEN),
+  );
+  const ready = await reclaimWithFreshBinding(reloaded, primary, premature);
+  assert.equal(ready.state, MAKER_V8_RECOVERY_STATE.READY);
+  assert.equal(ready.revision, stranded.revision + 1);
+  await assert.rejects(
+    requestSignatureWithFreshBinding(reloaded, primary, premature),
+    errorIs(MAKER_V8_RECOVERY_ERROR.PLAN_EVIDENCE_REPLAY),
+  );
+  assert.equal((await requestSignatureWithFreshBinding(reloaded)).state,
+    MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE);
+});
+
+test('unknown wallet outcome survives reload and requires an exact expired-lease confirmation', async () => {
+  const persist = createMakerV8RecoveryMemoryAdapter();
+  const prepareEvidence = await primary.freshEvidence();
+  let now = prepareEvidence.dryRunAtMs;
+  const oldSessionId = createMakerV8RecoverySessionId();
+  const newSessionId = createMakerV8RecoverySessionId();
+  assert.notEqual(oldSessionId, newSessionId);
+  const crashed = harness({
+    persist,
+    sessionId: oldSessionId,
+    signatureLeaseMs: 1_000,
+    clock: () => now,
+    sign: async () => { throw new Error('wallet transport vanished after request'); },
+  });
+  await crashed.controller.prepare({
+    identity: primary.identity,
+    plan: primary.plan,
+    evidence: prepareEvidence,
+    options: { afterFinalizedFailure: false },
+  });
+  const requestEvidence = await primary.freshEvidence();
+  now = requestEvidence.dryRunAtMs;
+  await assert.rejects(
+    requestSignatureWithFreshBinding(crashed, primary, requestEvidence),
+    errorIs(MAKER_V8_RECOVERY_ERROR.SIGNING_FAILED),
+  );
+  const stranded = await crashed.controller.load(primary.identity);
+  assert.equal(stranded.signatureDisposition, MAKER_V8_SIGNATURE_DISPOSITION.OUTCOME_UNKNOWN);
+  assert.equal(stranded.signatureLease.sessionId, oldSessionId);
+  assert.equal(stranded.signatureLease.planHash, stranded.plan.fingerprint);
+
+  const proof = await primary.freshEvidence();
+  now = proof.dryRunAtMs;
+  const reloaded = harness({
+    persist,
+    sessionId: newSessionId,
+    signatureLeaseMs: 1_000,
+    clock: () => now,
+  });
+  await assert.rejects(
+    reloaded.controller.discardUnsigned(primary.identity),
+    errorIs(MAKER_V8_RECOVERY_ERROR.UNSIGNED_DISCARD_FORBIDDEN),
+  );
+  await assert.rejects(
+    reclaimWithFreshBinding(reloaded, primary, proof),
+    errorIs(MAKER_V8_RECOVERY_ERROR.SIGNATURE_LEASE_ACTIVE),
+  );
+  now = stranded.signatureLease.expiresAtMs;
+  await assert.rejects(
+    reclaimWithFreshBinding(reloaded, primary, proof),
+    errorIs(MAKER_V8_RECOVERY_ERROR.UNSIGNED_CONFIRMATION_REQUIRED),
+  );
+
+  const malformed = harness({
+    persist,
+    sessionId: newSessionId,
+    signatureLeaseMs: 1_000,
+    clock: () => now,
+    confirmNoSignedArtifact: async (request) => ({
+      confirmedUnsigned: true,
+      scopeKey: request.scopeKey,
+      identityKey: request.identityKey,
+      planHash: request.planHash,
+      sessionId: newSessionId,
+      leaseExpiresAtMs: request.leaseExpiresAtMs,
+      checkedAtMs: now,
+    }),
+  });
+  await assert.rejects(
+    reclaimWithFreshBinding(malformed, primary, proof),
+    errorIs(MAKER_V8_RECOVERY_ERROR.UNSIGNED_CONFIRMATION_INVALID),
+  );
+
+  const confirmed = harness({
+    persist,
+    sessionId: newSessionId,
+    signatureLeaseMs: 1_000,
+    clock: () => now,
+    confirmNoSignedArtifact: async (request) => ({
+      confirmedUnsigned: true,
+      scopeKey: request.scopeKey,
+      identityKey: request.identityKey,
+      planHash: request.planHash,
+      sessionId: request.sessionId,
+      leaseExpiresAtMs: request.leaseExpiresAtMs,
+      checkedAtMs: now,
+    }),
+  });
+  const ready = await reclaimWithFreshBinding(confirmed, primary, proof);
+  assert.equal(ready.state, MAKER_V8_RECOVERY_STATE.READY);
+  assert.equal(ready.revision, stranded.revision + 1);
+  assert.equal(ready.signatureSessionId, null);
+  assert.equal(ready.signatureLease, null);
+});
+
+test('unsigned READY/AWAITING can be discarded into monotonic tombstones and rebuilt', async () => {
+  const persist = createMakerV8RecoveryMemoryAdapter();
+  const setup = harness({ persist });
+  const ready = await prepare(setup);
+  assert.equal(await setup.controller.discardUnsigned(primary.identity), null);
+  assert.equal(await setup.controller.loadByScope({
+    chain: primary.identity.chain,
+    rootId: primary.identity.root.id,
+  }), null);
+  const discarded = await persist.load(makerV8RecoveryScopeKey(primary.identity));
+  assert.equal(discarded.state, MAKER_V8_RECOVERY_STATE.DISCARDED);
+  assert.equal(discarded.revision, ready.revision + 1);
+  setup.setContext(changedQuote.identity);
+  const rebuilt = await prepare(setup, changedQuote);
+  assert.equal(rebuilt.state, MAKER_V8_RECOVERY_STATE.READY);
+  assert.equal(rebuilt.revision, discarded.revision + 1);
+
+  const pending = harness({
+    fixture: changedQuote,
+    persist,
+    sessionId: createMakerV8RecoverySessionId(),
+    sign: async () => {
+      const error = new Error('wallet canceled without signing');
+      error.definitiveRejection = true;
+      error.signedArtifactCreated = false;
+      throw error;
+    },
+  });
+  await assert.rejects(
+    requestSignatureWithFreshBinding(pending, changedQuote),
+    errorIs(MAKER_V8_RECOVERY_ERROR.SIGNING_FAILED),
+  );
+  assert.equal((await pending.controller.load(changedQuote.identity)).signatureDisposition,
+    MAKER_V8_SIGNATURE_DISPOSITION.DEFINITIVE_REJECTION);
+  const disposer = harness({
+    fixture: changedQuote,
+    persist,
+    sessionId: createMakerV8RecoverySessionId(),
+  });
+  assert.equal(await disposer.controller.discardUnsigned(changedQuote.identity), null);
+  assert.equal(await disposer.controller.load(changedQuote.identity), null);
+});
+
+test('tombstone revisions prevent late-wallet ABA overwrite after same-scope replacement', async () => {
+  const persist = createMakerV8RecoveryMemoryAdapter();
+  const oldSessionId = createMakerV8RecoverySessionId();
+  const newSessionId = createMakerV8RecoverySessionId();
+  assert.notEqual(oldSessionId, newSessionId);
+  let enteredA;
+  let releaseA;
+  const aEntered = new Promise((resolve) => { enteredA = resolve; });
+  const aGate = new Promise((resolve) => { releaseA = resolve; });
+  const first = harness({
+    persist,
+    sessionId: oldSessionId,
+    signatureLeaseMs: 1_000,
+    sign: async (request) => {
+      enteredA();
+      await aGate;
+      return { ...request, signature: signatureFor(request) };
+    },
+  });
+  await prepare(first);
+  const staleSigning = requestSignatureWithFreshBinding(first);
+  await aEntered;
+  const winner = harness({
+    fixture: changedQuote,
+    persist,
+    sessionId: newSessionId,
+    signatureLeaseMs: 1_000,
+    confirmNoSignedArtifact: async (request) => ({
+      confirmedUnsigned: true,
+      scopeKey: request.scopeKey,
+      identityKey: request.identityKey,
+      planHash: request.planHash,
+      sessionId: request.sessionId,
+      leaseExpiresAtMs: request.leaseExpiresAtMs,
+      checkedAtMs: Date.now(),
+    }),
+  });
+  const stranded = await first.controller.load(primary.identity);
+  const remainingLeaseMs = Math.max(0, stranded.signatureLease.expiresAtMs - Date.now());
+  await new Promise((resolve) => setTimeout(resolve, remainingLeaseMs + 5));
+  const reclaimed = await reclaimWithFreshBinding(winner);
+  assert.equal(reclaimed.revision, stranded.revision + 1);
+  await winner.controller.discardUnsigned(primary.identity);
+  await prepare(winner, changedQuote);
+  const signedNew = await requestSignatureWithFreshBinding(winner, changedQuote);
+  releaseA();
+  await assert.rejects(staleSigning, errorIs(MAKER_V8_RECOVERY_ERROR.CAS_CONFLICT));
+  const durable = await winner.controller.load(changedQuote.identity);
+  assert.equal(durable.state, MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE);
+  assert.equal(durable.signed.digest, signedNew.signed.digest);
+  assert.equal(durable.identityKey, makerV8RecoveryIdentityKey(changedQuote.identity));
+});
+
+test('signed records cannot be discarded through controller or persistence adapter', async () => {
+  const persist = createMakerV8RecoveryMemoryAdapter();
+  const setup = harness({ persist });
+  const signed = await prepareAndSign(setup);
+  await assert.rejects(
+    setup.controller.discardUnsigned(primary.identity),
+    errorIs(MAKER_V8_RECOVERY_ERROR.UNSIGNED_DISCARD_FORBIDDEN),
+  );
+  const forbidden = {
+    ...signed,
+    revision: signed.revision + 1,
+    state: MAKER_V8_RECOVERY_STATE.DISCARDED,
+    plan: null,
+    signed: null,
+    signatureSessionId: null,
+    queryOutcome: null,
+    lastError: null,
+    receipt: null,
+    failure: null,
+  };
+  await assert.rejects(
+    persist.compareAndSwap(signed.scopeKey, signed.revision, forbidden, {
+      discardUnsigned: true,
+    }),
+    errorIs(MAKER_V8_RECOVERY_ERROR.UNSIGNED_DISCARD_FORBIDDEN),
+  );
+  await assert.rejects(
+    persist.compareAndSwap(signed.scopeKey, signed.revision, null),
+    errorIs(MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID),
   );
 });
 
-test('recovery survives signing/broadcast crash points and delayed indexing after reload', async () => {
-  const base = createMakerV8RecoveryMemoryAdapter();
-  const idValue = identity();
-  let failSignedPersist = true;
-  let broadcastCalls = 0;
-  const signedCrashPersist = forwardingAdapter(base, async (...args) => {
-    if (failSignedPersist && args[2]?.state === MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE) {
-      failSignedPersist = false;
-      throw new Error('simulated crash before signed commit');
-    }
-    return base.compareAndSwap(...args);
-  });
-  const beforeDurable = harness({
-    identityValue: idValue,
-    persist: signedCrashPersist,
-    broadcast: async () => { broadcastCalls += 1; return { digest: 'never' }; },
-  });
-  await beforeDurable.controller.prepare(idValue, plan(idValue));
-  await assert.rejects(
-    beforeDurable.controller.requestSignature(idValue),
-    errorIs(MAKER_V8_RECOVERY_ERROR.STORAGE_FAILED,
-      MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE),
+test('loadByScope rejects cross-scope persistence substitution', async () => {
+  const firstPersist = createMakerV8RecoveryMemoryAdapter();
+  const secondPersist = createMakerV8RecoveryMemoryAdapter();
+  await prepare(harness({ persist: firstPersist }));
+  await prepare(harness({ fixture: otherScope, persist: secondPersist }), otherScope);
+  const foreignRecord = await secondPersist.load(makerV8RecoveryScopeKey(otherScope.identity));
+  const substituted = forwardingAdapter(
+    firstPersist,
+    undefined,
+    async () => foreignRecord,
   );
-  assert.equal((await base.load(makerV8RecoveryScopeKey(idValue))).state,
-    MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE);
-  assert.equal(broadcastCalls, 0);
+  const setup = harness({ persist: substituted });
+  await assert.rejects(
+    setup.controller.loadByScope({
+      chain: primary.identity.chain,
+      rootId: primary.identity.root.id,
+    }),
+    errorIs(MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID),
+  );
+});
 
-  const resumeSigning = harness({
-    identityValue: idValue,
-    persist: base,
-    sessionId: 'session-alpha-0001',
-  });
-  await resumeSigning.controller.requestSignature(idValue);
-
-  let failPostBroadcastPersist = true;
-  const broadcastCrashPersist = forwardingAdapter(base, async (...args) => {
-    if (failPostBroadcastPersist && args[2]?.state === MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING) {
-      failPostBroadcastPersist = false;
-      throw new Error('simulated crash after broadcast');
-    }
-    return base.compareAndSwap(...args);
-  });
-  const beforeOutcomePersist = harness({
-    identityValue: idValue,
-    persist: broadcastCrashPersist,
-    sessionId: 'session-reload-0002',
-    query: async () => ({ status: 'NOT_FOUND' }),
-    broadcast: async (request) => {
-      broadcastCalls += 1;
-      return { digest: request.digest };
+test('real SDK bytes and durable fields fail closed under adversarial tampering', async (t) => {
+  const persist = createMakerV8RecoveryMemoryAdapter();
+  await prepare(harness({ persist }));
+  const snapshot = persist.snapshot();
+  const scopeKey = makerV8RecoveryScopeKey(primary.identity);
+  const unrelatedCommand = {
+    MoveCall: {
+      package: id(7000),
+      module: 'evil',
+      function: 'steal',
+      typeArguments: [],
+      arguments: [],
     },
+    $kind: 'MoveCall',
+  };
+  const extraBytes = mutateTransactionBytes(primary.transactionBytes, (snapshot) => {
+    snapshot.commands.push(unrelatedCommand);
+  });
+  const gasBytes = mutateTransactionBytes(primary.transactionBytes, (snapshot) => {
+    snapshot.gasData.budget = '10000001';
+  });
+  const cases = [
+    ['record revision', (record) => { record.revision = 0; }],
+    ['transaction bytes', (record) => { record.plan.transactionBytes = changedQuote.transactionBytes; }],
+    ['descriptor action', (record) => { record.plan.market.descriptor.action = 'cancelMakerControl'; }],
+    ['descriptor lane', (record) => { record.plan.market.descriptor.lane = 3; }],
+    ['descriptor target', (record) => { record.plan.market.descriptor.target = `${id(7001)}::market_v8::list_maker_control_v8`; }],
+    ['descriptor package tuple', (record) => { record.plan.market.descriptor.packageTuple[0].callablePackageId = id(7002); }],
+    ['descriptor object ref', (record) => { record.plan.market.descriptor.arguments[0].objectId = id(7003); }],
+    ['descriptor quote', (record) => { record.plan.market.descriptor.expectation.quoteCommitment = `0x${'ab'.repeat(32)}`; }],
+    ['runtime package tuple', (record) => { record.plan.market.runtime.roles.core.callablePackageId = id(7004); }],
+    ['gas snapshot', (record) => { record.plan.gas.budget = '10000001'; }],
+    ['gas payment ref', (record) => { record.plan.gas.payment[0].objectId = id(7005); }],
+    ['gas funding intent', (record) => {
+      record.plan.gas.funding = {
+        kind: 'ADDRESS_BALANCE', addressBalance: '10000000', coinType: '0x2::sui::SUI',
+      };
+    }],
+    ['expiration epoch', (record) => { record.plan.expiration.epoch = '102'; }],
+    ['epoch window', (record) => { record.plan.epochWindow.start = '99'; }],
+    ['source fingerprint', (record) => { record.plan.sourceSnapshot.fingerprint = `0x${'ef'.repeat(32)}`; }],
+    ['source prestate', (record) => {
+      record.plan.sourceSnapshot.descriptor.preState.root.owner = id(7006);
+    }],
+    ['stage', (record) => { record.plan.stage = 'MARKET_CANCEL'; }],
+    ['sequence', (record) => { record.plan.sequence = '999'; }],
+    ['full plan fingerprint', (record) => { record.plan.fingerprint = `0x${'ba'.repeat(32)}`; }],
+    ['gas bytes', (record) => {
+      record.plan.transactionBytes = gasBytes;
+      record.plan.transactionDigest = transactionDigest(gasBytes);
+    }],
+    ['extra command', (record) => {
+      record.plan.transactionBytes = extraBytes;
+      record.plan.transactionDigest = transactionDigest(extraBytes);
+    }],
+    ['identity quote', (record) => { record.identity.quoteCommitment = `0x${'cd'.repeat(32)}`; }],
+    ['scope field', (record) => { record.scopeKey = makerV8RecoveryScopeKey(otherScope.identity); }],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, async () => {
+      const seeded = structuredClone(snapshot);
+      mutate(seeded.active[scopeKey]);
+      const setup = harness({ persist: createMakerV8RecoveryMemoryAdapter(seeded) });
+      await assert.rejects(
+        setup.controller.loadByScope({
+          chain: primary.identity.chain,
+          rootId: primary.identity.root.id,
+        }),
+        errorIs(MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID),
+      );
+    });
+  }
+  await assert.rejects(
+    inspectMarketActionOnChainV8(
+      {
+        async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+        async dryRunTransactionBlock() { return { effects: { status: { status: 'success' } } }; },
+      },
+      primary.builtAction,
+      extraBytes,
+    ),
+    (error) => error.code === 'MARKET_V8_CALLER_TRANSACTION_BYTES_FORBIDDEN',
+  );
+});
+
+test('unrelated fresh evidence, altered identity fields, and stale proof are rejected', async () => {
+  const setup = harness();
+  await prepare(setup);
+  await assert.rejects(
+    requestSignatureWithFreshBinding(setup, primary, await changedQuote.freshEvidence()),
+    errorIs(MAKER_V8_RECOVERY_ERROR.PLAN_EVIDENCE_MISMATCH),
+  );
+
+  const liveDriftEvidence = await primary.freshEvidence();
+  const liveDriftRequest = await freshSigningBinding(setup, primary, liveDriftEvidence);
+  liveDriftRequest.liveIdentity = changedQuote.identity;
+  await assert.rejects(
+    setup.controller.requestSignature(liveDriftRequest),
+    errorIs(MAKER_V8_RECOVERY_ERROR.CONTEXT_DRIFT, MAKER_V8_RECOVERY_ERROR_LAYER.CONTEXT),
+  );
+
+  const altered = {
+    ...primary.identity,
+    quoteCommitment: changedQuote.identity.quoteCommitment,
+  };
+  const alteredSetup = harness();
+  await assert.rejects(
+    alteredSetup.controller.prepare({
+      identity: altered,
+      plan: primary.plan,
+      evidence: await primary.freshEvidence(),
+      options: { afterFinalizedFailure: false },
+    }),
+    errorIs(MAKER_V8_RECOVERY_ERROR.PLAN_EVIDENCE_MISMATCH),
+  );
+
+  const stale = await primary.freshEvidence();
+  const staleSetup = harness({
+    clock: () => stale.dryRunAtMs + 60_001,
+    evidenceMaxAgeMs: 60_000,
   });
   await assert.rejects(
-    beforeOutcomePersist.controller.broadcastSigned(idValue),
-    errorIs(MAKER_V8_RECOVERY_ERROR.STORAGE_FAILED,
-      MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE),
+    staleSetup.controller.prepare({
+      identity: primary.identity,
+      plan: primary.plan,
+      evidence: stale,
+      options: { afterFinalizedFailure: false },
+    }),
+    errorIs(MAKER_V8_RECOVERY_ERROR.PLAN_EVIDENCE_MISMATCH,
+      MAKER_V8_RECOVERY_ERROR_LAYER.CONTEXT),
   );
-  assert.equal((await base.load(makerV8RecoveryScopeKey(idValue))).state,
-    MAKER_V8_RECOVERY_STATE.BROADCASTING);
-  assert.equal(broadcastCalls, 1);
+});
 
-  let indexed = false;
-  const afterReload = harness({
-    identityValue: idValue,
-    persist: base,
-    sessionId: 'session-reload-0003',
+test('fresh evidence epoch drift blocks signing and replay still rechecks live epoch query-first', async () => {
+  const preSign = harness();
+  await prepare(preSign);
+  await assert.rejects(
+    requestSignatureWithFreshBinding(preSign, epochDrift),
+    errorIs(MAKER_V8_RECOVERY_ERROR.PLAN_EVIDENCE_MISMATCH),
+  );
+  const stillReady = await preSign.controller.load(primary.identity);
+  assert.equal(stillReady.state, MAKER_V8_RECOVERY_STATE.READY);
+  assert.equal(preSign.calls.some((entry) => entry.kind === 'sign'), false);
+  assert.equal(preSign.calls.some((entry) => entry.kind === 'context'), false);
+
+  let currentEpoch = primary.plan.epochWindow.start;
+  const replay = harness({ currentEpoch: () => currentEpoch });
+  await prepareAndSign(replay);
+  currentEpoch = String(BigInt(primary.plan.epochWindow.start) + 1n);
+  await assert.rejects(
+    replay.controller.recover(primary.identity, { replayIfNotFound: true }),
+    errorIs(MAKER_V8_RECOVERY_ERROR.CONTEXT_DRIFT, MAKER_V8_RECOVERY_ERROR_LAYER.CONTEXT),
+  );
+  assert.equal(replay.calls.some((entry) => entry.kind === 'query'), true);
+  assert.equal(replay.calls.some((entry) => entry.kind === 'broadcast'), false);
+});
+
+test('query-first finalized success avoids rebroadcast and cleanup retains a receipt tombstone', async () => {
+  const persist = createMakerV8RecoveryMemoryAdapter();
+  let broadcasts = 0;
+  const setup = harness({
+    persist,
     query: async (request) => ({
       status: 'FINALIZED_SUCCESS',
       digest: request.digest,
-      checkpoint: 808,
+      checkpoint: '42',
     }),
-    readback: async (request) => {
-      if (!indexed) {
-        const error = Object.assign(new Error('index lag'), {
-          code: 'TRANSACTION_OUTCOME_PENDING',
-        });
-        throw error;
-      }
-      return {
-        verified: true,
-        digest: request.digest,
-        identity: request.identity,
-        checkpoint: 808,
-        evidence: { indexed: true, event: 'purchase' },
-      };
+    broadcast: async () => {
+      broadcasts += 1;
+      throw new Error('must not broadcast');
     },
   });
-  await assert.rejects(
-    afterReload.controller.recover(idValue, { replayIfNotFound: true }),
-    errorIs(MAKER_V8_RECOVERY_ERROR.READBACK_PENDING,
-      MAKER_V8_RECOVERY_ERROR_LAYER.READBACK),
-  );
-  assert.equal((await afterReload.controller.load(idValue)).state,
-    MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING);
-  assert.equal(broadcastCalls, 1, 'a finalized digest is never replayed during indexing lag');
-
-  indexed = true;
-  const verified = await afterReload.controller.recover(idValue, { replayIfNotFound: true });
+  await prepareAndSign(setup);
+  const verified = await setup.controller.recover(primary.identity, { replayIfNotFound: true });
   assert.equal(verified.state, MAKER_V8_RECOVERY_STATE.VERIFIED);
-  assert.equal(verified.receipt.digest, digestFor('base64-transaction-A'));
-});
-
-test('digest query runs through wallet drift but replay is stopped before network broadcast', async () => {
-  const idValue = identity();
-  let queries = 0;
-  let broadcasts = 0;
-  const setup = harness({
-    identityValue: idValue,
-    query: async () => { queries += 1; return { status: 'NOT_FOUND' }; },
-    broadcast: async () => { broadcasts += 1; return { digest: 'never' }; },
-  });
-  await prepareAndSign(setup, idValue);
-  setup.setContext(identity({ wallet: id(77) }));
-
-  await assert.rejects(
-    setup.controller.recover(idValue, { replayIfNotFound: true }),
-    errorIs(MAKER_V8_RECOVERY_ERROR.CONTEXT_DRIFT,
-      MAKER_V8_RECOVERY_ERROR_LAYER.CONTEXT),
-  );
-  assert.equal(queries, 1);
   assert.equal(broadcasts, 0);
-  assert.equal((await setup.controller.load(idValue)).state,
-    MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE);
-
-  const another = identity({ root: objectRef(111), listing: objectRef(110) });
-  let signCalls = 0;
-  const preSignDrift = harness({
-    identityValue: another,
-    sign: async () => { signCalls += 1; throw new Error('must not run'); },
-  });
-  await preSignDrift.controller.prepare(another, plan(another, 'context-drift-bytes'));
-  preSignDrift.setContext(identity({
-    root: objectRef(111),
-    listing: objectRef(110),
-    protocolRevision: 8,
-  }));
-  await assert.rejects(
-    preSignDrift.controller.requestSignature(another),
-    errorIs(MAKER_V8_RECOVERY_ERROR.CONTEXT_DRIFT),
-  );
-  assert.equal(signCalls, 0);
+  const readbackRequest = setup.calls.find((entry) => entry.kind === 'readback').request;
+  assert.equal(readbackRequest.planHash, verified.plan.fingerprint);
+  assert.deepEqual(readbackRequest.plan.sourceSnapshot.descriptor.preState,
+    verified.plan.sourceSnapshot.descriptor.preState);
+  assert.equal(verified.receipt.planHash, verified.plan.fingerprint);
+  const receipt = await setup.controller.cleanupVerified(primary.identity);
+  assert.equal(receipt.digest, primary.transactionDigest);
+  assert.equal(await setup.controller.load(primary.identity), null);
+  assert.deepEqual(await setup.controller.loadReceipt(primary.identity), receipt);
+  const tombstone = await persist.load(makerV8RecoveryScopeKey(primary.identity));
+  assert.equal(tombstone.state, MAKER_V8_RECOVERY_STATE.CLEANED);
+  assert.equal(tombstone.plan, null);
+  assert.equal(tombstone.signed, null);
 });
 
-test('definitive failure is atomically archived before a changed identity can start', async () => {
-  const idValue = identity();
-  const persist = createMakerV8RecoveryMemoryAdapter();
-  let queries = 0;
+test('finalized readback must echo the exact full durable plan hash', async () => {
   const setup = harness({
-    identityValue: idValue,
-    persist,
-    query: async (request) => {
-      queries += 1;
-      return {
-        status: 'FINALIZED_FAILURE',
-        digest: request.digest,
-        checkpoint: 909,
-        error: { code: 'MoveAbort', message: 'listing revision changed' },
-      };
-    },
-  });
-  await prepareAndSign(setup, idValue);
-  const failed = await setup.controller.recover(idValue);
-  assert.equal(failed.state, MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE);
-  assert.equal(failed.failure.finalized, true);
-  const archived = await setup.controller.listFinalizedFailures(idValue);
-  assert.equal(archived.length, 1);
-  assert.equal(archived[0].digest, failed.signed.digest);
-
-  await assert.rejects(
-    setup.controller.recover(idValue, { replayIfNotFound: true }),
-    errorIs(MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_REPLAY,
-      MAKER_V8_RECOVERY_ERROR_LAYER.TERMINAL),
-  );
-  assert.equal(queries, 1, 'terminal replay rejects before querying');
-  await assert.rejects(
-    setup.controller.prepare(idValue, plan(idValue, 'replacement-same-identity'), {
-      afterFinalizedFailure: true,
+    query: async (request) => ({
+      status: 'FINALIZED_SUCCESS',
+      digest: request.digest,
+      checkpoint: '43',
     }),
-    errorIs(MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_REPLAY),
-  );
-
-  const changed = identity({
-    listing: objectRef(10, 2, 'listing-v2'),
-    listingRevision: 5,
-    quoteCommitment: 'quote-2',
-  });
-  const next = harness({
-    identityValue: changed,
-    persist,
-    sessionId: 'session-next-0004',
-  });
-  const ready = await next.controller.prepare(
-    changed,
-    plan(changed, 'fresh-transaction-B', {
-      sourceSnapshot: {
-        sourceCommit: 'source-commit-1',
-        sourceTree: 'source-tree-1',
-        quote: 'quote-2',
-      },
-    }),
-    { afterFinalizedFailure: true },
-  );
-  assert.equal(ready.state, MAKER_V8_RECOVERY_STATE.READY);
-  assert.equal(ready.attempt, 2);
-  assert.equal((await next.controller.listFinalizedFailures(changed)).length, 1);
-  await assert.rejects(
-    next.controller.prepare(idValue, plan(idValue), { afterFinalizedFailure: true }),
-    errorIs(MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_REPLAY),
-  );
-});
-
-test('forged readback cannot verify, and a terminal receipt precedes cleanup forever', async () => {
-  const idValue = identity();
-  const persist = createMakerV8RecoveryMemoryAdapter();
-  let forged = true;
-  let queryCalls = 0;
-  const setup = harness({
-    identityValue: idValue,
-    persist,
-    query: async (request) => {
-      queryCalls += 1;
-      return { status: 'FINALIZED_SUCCESS', digest: request.digest, checkpoint: 1_010 };
-    },
     readback: async (request) => ({
       verified: true,
       digest: request.digest,
-      identity: forged ? {
-        ...request.identity,
-        root: { ...request.identity.root, digest: 'forged-root-digest' },
-      } : request.identity,
-      checkpoint: 1_010,
-      evidence: { event: 'purchase', exactObjects: true },
+      identity: request.identity,
+      planHash: `0x${'55'.repeat(32)}`,
+      checkpoint: request.outcome.checkpoint,
+      evidence: { event: 'wrong-plan' },
     }),
   });
-  await prepareAndSign(setup, idValue);
+  await prepareAndSign(setup);
   await assert.rejects(
-    setup.controller.recover(idValue),
+    setup.controller.recover(primary.identity),
     errorIs(MAKER_V8_RECOVERY_ERROR.READBACK_MISMATCH,
       MAKER_V8_RECOVERY_ERROR_LAYER.READBACK),
   );
-  assert.equal((await setup.controller.load(idValue)).state,
-    MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING);
-  assert.equal(await setup.controller.loadReceipt(idValue), null);
-
-  forged = false;
-  const verified = await setup.controller.recover(idValue);
-  assert.equal(verified.state, MAKER_V8_RECOVERY_STATE.VERIFIED);
-  assert.ok(verified.receipt);
-  const queriesAtTerminal = queryCalls;
-  await assert.rejects(
-    setup.controller.recover(idValue, { replayIfNotFound: true }),
-    errorIs(MAKER_V8_RECOVERY_ERROR.ALREADY_COMPLETED),
-  );
-  assert.equal(queryCalls, queriesAtTerminal);
-
-  const receipt = await setup.controller.cleanupVerified(idValue);
-  assert.equal(receipt.digest, digestFor('base64-transaction-A'));
-  assert.equal(await setup.controller.load(idValue), null);
-  assert.deepEqual(await setup.controller.loadReceipt(idValue), receipt);
-  await assert.rejects(
-    setup.controller.recover(idValue, { replayIfNotFound: true }),
-    errorIs(MAKER_V8_RECOVERY_ERROR.ALREADY_COMPLETED),
-  );
-  await assert.rejects(
-    setup.controller.prepare(idValue, plan(idValue)),
-    errorIs(MAKER_V8_RECOVERY_ERROR.ALREADY_COMPLETED),
-  );
-  assert.equal(queryCalls, queriesAtTerminal);
+  const pending = await setup.controller.load(primary.identity);
+  assert.equal(pending.state, MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING);
+  assert.equal(pending.receipt, null);
 });
 
-test('cleanup failure leaves VERIFIED state and receipt intact for a later reload', async () => {
-  const base = createMakerV8RecoveryMemoryAdapter();
-  const idValue = identity({ root: objectRef(211), listing: objectRef(210) });
-  let failCleanup = true;
-  const flaky = forwardingAdapter(base, async (...args) => {
-    if (failCleanup && args[2] === null) {
-      failCleanup = false;
-      throw new Error('simulated browser close during cleanup');
-    }
-    return base.compareAndSwap(...args);
-  });
+test('finalized failure is archived and blocks the exact signed identity and digest', async () => {
+  const persist = createMakerV8RecoveryMemoryAdapter();
+  const failedSessionId = createMakerV8RecoverySessionId();
+  const replacementSessionId = createMakerV8RecoverySessionId();
+  assert.notEqual(failedSessionId, replacementSessionId);
   const setup = harness({
-    identityValue: idValue,
-    persist: flaky,
+    persist,
+    sessionId: failedSessionId,
     query: async (request) => ({
-      status: 'FINALIZED_SUCCESS', digest: request.digest, checkpoint: 1_111,
+      status: 'FINALIZED_FAILURE',
+      digest: request.digest,
+      checkpoint: '44',
+      error: { code: 'MOVE_ABORT', message: 'MoveAbort(8)' },
     }),
   });
-  await prepareAndSign(setup, idValue, 'cleanup-crash-bytes');
-  await setup.controller.recover(idValue);
+  await prepareAndSign(setup);
+  const failed = await setup.controller.recover(primary.identity);
+  assert.equal(failed.state, MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE);
+  assert.equal(failed.failure.planHash, failed.plan.fingerprint);
+  assert.equal((await setup.controller.listFinalizedFailures(primary.identity)).length, 1);
   await assert.rejects(
-    setup.controller.cleanupVerified(idValue),
-    errorIs(MAKER_V8_RECOVERY_ERROR.STORAGE_FAILED),
+    setup.controller.discardUnsigned(primary.identity),
+    errorIs(MAKER_V8_RECOVERY_ERROR.UNSIGNED_DISCARD_FORBIDDEN),
   );
-  assert.equal((await base.load(makerV8RecoveryScopeKey(idValue))).state,
-    MAKER_V8_RECOVERY_STATE.VERIFIED);
-  assert.equal(await base.loadReceipt(makerV8RecoveryIdentityKey(idValue)), null);
-
+  await assert.rejects(
+    setup.controller.prepare({
+      identity: primary.identity,
+      plan: primary.plan,
+      evidence: await primary.freshEvidence(),
+      options: { afterFinalizedFailure: false },
+    }),
+    errorIs(MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_REPLAY),
+  );
   const reloaded = harness({
-    identityValue: idValue,
-    persist: base,
-    sessionId: 'session-cleanup-0005',
+    fixture: changedQuote,
+    persist,
+    sessionId: replacementSessionId,
   });
-  const receipt = await reloaded.controller.cleanupVerified(idValue);
-  assert.equal(receipt.verified, true);
-  assert.equal(await base.load(makerV8RecoveryScopeKey(idValue)), null);
-  assert.ok(await base.loadReceipt(makerV8RecoveryIdentityKey(idValue)));
+  const replacement = await reloaded.controller.prepare({
+    identity: changedQuote.identity,
+    plan: changedQuote.plan,
+    evidence: await changedQuote.freshEvidence(),
+    options: { afterFinalizedFailure: true },
+  });
+  assert.equal(replacement.state, MAKER_V8_RECOVERY_STATE.READY);
+  assert.equal(replacement.revision, failed.revision + 1);
 });
