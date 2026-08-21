@@ -74,7 +74,7 @@ jobs:
           done
 
       - name: Verify fresh-only delivery surface
-        run: npm run scan:fresh
+        run: npm run scan:fresh:source
 
       - name: Prevent generated build artifacts
         run: |
