@@ -446,8 +446,8 @@ test('five pinned fresh-v8 event layouts decode BCS as authority and reject JSON
   ];
   const decode = (entry, bytes, json) => decodeMakerV8CoreEventV8({
     event: {
-      packageId: callables[entry.role],
-      module: entry.module,
+      packageId: callables.market,
+      module: 'market_v8',
       sender: objectId(99),
       eventType: `${origins[entry.origin]}::${entry.module}::${entry.name}`,
       bcs: bytes,
@@ -456,6 +456,7 @@ test('five pinned fresh-v8 event layouts decode BCS as authority and reject JSON
     transactionDigest: suiDigest,
     eventsDigest: suiDigest,
     market,
+    emitter: { packageId: callables.market, module: 'market_v8' },
   });
   for (const entry of cases) {
     const bytes = entry.schema.serialize(entry.fields).toBytes();
@@ -503,9 +504,31 @@ test('five pinned fresh-v8 event layouts decode BCS as authority and reject JSON
       transactionDigest: suiDigest,
       eventsDigest: suiDigest,
       market,
+      emitter: { packageId: callables.market, module: 'market_v8' },
     }),
     (error) => error.code === 'MAKER_V8_BROWSER_EVENT_ORIGIN_DRIFT',
   );
+  for (const entry of cases.filter(({ role }) => role !== 'market')) {
+    const bytes = entry.schema.serialize(entry.fields).toBytes();
+    assert.throws(
+      () => decodeMakerV8CoreEventV8({
+        event: {
+          packageId: callables[entry.role],
+          module: entry.module,
+          sender: objectId(99),
+          eventType: `${origins[entry.origin]}::${entry.module}::${entry.name}`,
+          bcs: bytes,
+          json: null,
+        },
+        transactionDigest: suiDigest,
+        eventsDigest: suiDigest,
+        market,
+        emitter: { packageId: callables.market, module: 'market_v8' },
+      }),
+      (error) => error.code === 'MAKER_V8_BROWSER_EVENT_ORIGIN_DRIFT',
+      `${entry.name} must reject inner-module metadata`,
+    );
+  }
   const commitmentLengthOffset = opened.length - 33;
   assert.equal(opened[commitmentLengthOffset], 32);
   const noncanonicalLength = Uint8Array.from([

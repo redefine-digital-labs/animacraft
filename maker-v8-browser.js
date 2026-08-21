@@ -425,10 +425,14 @@ function finalizedMarketCall(transactionData) {
     fail('MAKER_V8_BROWSER_FINALIZED_CALL_INVALID', 'Finalized input must contain exactly one Market v8 Move call.', 'READBACK');
   }
   const call = calls[0];
-  const target = `${id(call.package, 'transaction.target.package')}::${call.module}::${call.function}`;
+  const packageId = id(call.package, 'transaction.target.package');
+  const target = `${packageId}::${call.module}::${call.function}`;
   return freeze({
     sender: id(transactionData.sender, 'transaction.sender'),
     status: 'SUCCESS',
+    packageId,
+    module: call.module,
+    function: call.function,
     target,
     typeArguments: freeze((call.typeArguments || []).map((type) => normalizeStructTag(type))),
   });
@@ -526,26 +530,20 @@ function knownEventLayout(market, eventType) {
   const origins = market?.runtime?.typeOrigins;
   if (!origins) return null;
   const layouts = [
-    ['market', 'marketPackageId', 'market_v8', 'MarketListingOpenedV8', MARKET_LISTING_OPENED_EVENT_BCS, 210],
-    ['market', 'marketPackageId', 'market_v8', 'MarketListingSettledV8', MARKET_LISTING_SETTLED_EVENT_BCS, 201],
-    ['market', 'marketPackageId', 'market_v8', 'MarketListingClosedV8', MARKET_LISTING_CLOSED_EVENT_BCS, 130],
-    ['core', 'corePackageId', 'maker_v8', 'MakerControlTransferredV8', MAKER_CONTROL_TRANSFERRED_EVENT_BCS, 144],
-    ['physical', 'physicalPackageId', 'physical_v8', 'PhysicalMarketCustodyTransitionV8', PHYSICAL_CUSTODY_TRANSITION_EVENT_BCS, 211],
+    ['marketPackageId', 'market_v8', 'MarketListingOpenedV8', MARKET_LISTING_OPENED_EVENT_BCS, 210],
+    ['marketPackageId', 'market_v8', 'MarketListingSettledV8', MARKET_LISTING_SETTLED_EVENT_BCS, 201],
+    ['marketPackageId', 'market_v8', 'MarketListingClosedV8', MARKET_LISTING_CLOSED_EVENT_BCS, 130],
+    ['corePackageId', 'maker_v8', 'MakerControlTransferredV8', MAKER_CONTROL_TRANSFERRED_EVENT_BCS, 144],
+    ['physicalPackageId', 'physical_v8', 'PhysicalMarketCustodyTransitionV8', PHYSICAL_CUSTODY_TRANSITION_EVENT_BCS, 211],
   ];
   const normalized = normalizeStructTag(eventType);
-  for (const [role, origin, moduleName, name, layout, expectedLength] of layouts) {
+  for (const [origin, moduleName, name, layout, expectedLength] of layouts) {
     const packageValue = origins[origin];
     if (packageValue && normalized === normalizeStructTag(`${packageValue}::${moduleName}::${name}`)) {
-      const callablePackageId = market.runtime.sourceRuntime?.roles?.[role]?.callablePackageId
-        ?? (role === 'market' ? market.runtime.callablePackageId : null);
-      if (!callablePackageId) {
-        fail('MAKER_V8_BROWSER_EVENT_ORIGIN_DRIFT', `${name} lacks its attested callable package identity.`, 'READBACK');
-      }
       return freeze({
         name,
         moduleName,
         typeOriginPackageId: id(packageValue, `${name}.typeOriginPackageId`),
-        callablePackageId: id(callablePackageId, `${name}.callablePackageId`),
         layout,
         expectedLength,
       });
@@ -691,7 +689,7 @@ function decodeKnownEventBcs(event, layout, index) {
   return authority;
 }
 
-function coreEvent(event, index, transactionDigest, eventsDigest, market) {
+function coreEvent(event, index, transactionDigest, eventsDigest, market, emitter) {
   if (!event || typeof event.eventType !== 'string'
     || !(event.bcs instanceof Uint8Array) || event.bcs.length === 0) {
     fail('MAKER_V8_BROWSER_CORE_EVENT_INVALID', `Core V2 event ${index} is not parsed.`, 'READBACK');
@@ -700,8 +698,12 @@ function coreEvent(event, index, transactionDigest, eventsDigest, market) {
   const layout = knownEventLayout(market, eventType);
   const parsedJson = layout ? decodeKnownEventBcs(event, layout, index) : freeze({ ...event.json });
   const packageValue = id(event.packageId, `events[${index}].packageId`);
-  if (layout && (packageValue !== layout.callablePackageId || event.module !== layout.moduleName)) {
-    fail('MAKER_V8_BROWSER_EVENT_ORIGIN_DRIFT', `${layout.name} metadata differs from its stable TypeOrigin.`, 'READBACK');
+  if (layout && (packageValue !== emitter?.packageId || event.module !== emitter?.module)) {
+    fail(
+      'MAKER_V8_BROWSER_EVENT_ORIGIN_DRIFT',
+      `${layout.name} metadata differs from the exact finalized top-level Market call.`,
+      'READBACK',
+    );
   }
   return freeze({
     id: freeze({ txDigest: transactionDigest, eventSeq: String(index) }),
@@ -722,6 +724,7 @@ export function decodeMakerV8CoreEventV8({
   transactionDigest,
   eventsDigest,
   market,
+  emitter,
 }) {
   if (!Number.isSafeInteger(index) || index < 0) {
     fail('MAKER_V8_BROWSER_CORE_EVENT_INVALID', 'Core V2 event index must be a non-negative safe integer.', 'READBACK');
@@ -732,6 +735,10 @@ export function decodeMakerV8CoreEventV8({
     digest(transactionDigest, 'event.transactionDigest'),
     digest(eventsDigest, 'event.eventsDigest'),
     market,
+    freeze({
+      packageId: id(emitter?.packageId, 'event.emitter.packageId'),
+      module: emitter?.module === 'market_v8' ? emitter.module : null,
+    }),
   );
 }
 
@@ -1008,6 +1015,22 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
     fail('MAKER_V8_BROWSER_FINALIZED_DRIFT', 'Readback Core V2 evidence differs from the finalized query evidence.', 'READBACK');
   }
   const transaction = finalizedMarketCall(finalized.transaction);
+  const marketCallablePackageId = id(
+    market?.runtime?.sourceRuntime?.roles?.market?.callablePackageId
+      ?? market?.runtime?.callablePackageId,
+    'runtime.market.callablePackageId',
+  );
+  if (transaction.packageId !== marketCallablePackageId
+    || transaction.module !== 'market_v8'
+    || transaction.sender !== descriptor?.sender
+    || transaction.target !== descriptor?.target
+    || JSON.stringify(transaction.typeArguments) !== JSON.stringify(descriptor?.typeArguments)) {
+    fail(
+      'MAKER_V8_BROWSER_FINALIZED_CALL_INVALID',
+      'Finalized top-level Market call differs from the attested callable and durable descriptor.',
+      'READBACK',
+    );
+  }
   const eventsDigest = effects.eventsDigest ? digest(effects.eventsDigest, 'effects.eventsDigest') : null;
   if (!eventsDigest || !Array.isArray(finalized.events)) {
     fail('MAKER_V8_BROWSER_FINALIZED_EVENT_MISSING', 'Finalized effects do not bind an event digest and events.', 'READBACK');
@@ -1022,7 +1045,12 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
     );
   }
   const events = freeze(finalized.events.map((event, index) => decodeMakerV8CoreEventV8({
-    event, index, transactionDigest, eventsDigest, market,
+    event,
+    index,
+    transactionDigest,
+    eventsDigest,
+    market,
+    emitter: freeze({ packageId: transaction.packageId, module: transaction.module }),
   })));
   const action = makerV8ActionV8(request.identity.action);
   if (!action) fail('MAKER_V8_BROWSER_ACTION_INVALID', 'Unknown durable Market action.', 'READBACK');
