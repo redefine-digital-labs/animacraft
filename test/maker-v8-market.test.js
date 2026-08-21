@@ -675,6 +675,51 @@ function fullListTransactionBytes(result, { functionName, firstObjectId, extraCo
   return toBase64(data.build());
 }
 
+function canonicalSigningClient({ onDryRun, gasBudget = '10000000', mutateResolved } = {}) {
+  return {
+    async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+    async dryRunTransactionBlock({ transactionBlock }) {
+      onDryRun?.(transactionBlock);
+      return { effects: { status: { status: 'success' } } };
+    },
+    core: {
+      async getCurrentSystemState() { return { systemState: { epoch: '100' } }; },
+      async getBalance({ coinType }) {
+        return { balance: { balance: '1000000', coinBalance: '800000', addressBalance: '200000', coinType } };
+      },
+      async listCoins({ coinType }) {
+        return {
+          objects: Array.from({ length: 20 }, (_, index) => ({
+            objectId: id(900 + index), version: '1', digest, balance: '40000', coinType,
+          })),
+          hasNextPage: false,
+          cursor: null,
+        };
+      },
+      resolveTransactionPlugin() {
+        return async (transactionData, _options, next) => {
+          transactionData.inputs = transactionData.inputs.map((input) => {
+            if (!input.UnresolvedObject) return input;
+            return Inputs.SharedObjectRef({
+              objectId: input.UnresolvedObject.objectId,
+              initialSharedVersion: '1',
+              mutable: true,
+            });
+          });
+          transactionData.gasData = {
+            budget: gasBudget,
+            price: '1000',
+            owner: transactionData.sender,
+            payment: [{ objectId: id(999), version: '1', digest }],
+          };
+          mutateResolved?.(transactionData);
+          await next();
+        };
+      },
+    },
+  };
+}
+
 test('checked ABI fixture and client action table match all 14 exact Move signatures', () => {
   assert.equal(Object.keys(fixture.actions).length, 14);
   assert.deepEqual(Object.keys(MARKET_V8_ACTION_ABI), Object.keys(fixture.actions));
@@ -924,49 +969,116 @@ test('all 14 builders snapshot real Transaction data with exact targets, types, 
 
 test('signing evidence binds branded builder output, Mainnet dry run, and decoded full TransactionData bytes', async () => {
   const built = allActions().listMakerControl;
-  const transactionBytes = fullListTransactionBytes(built);
-  const dryRunProof = await inspectMarketActionOnChainV8({
-    async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
-    async dryRunTransactionBlock({ transactionBlock }) {
-      assert.equal(transactionBlock, transactionBytes);
-      return { effects: { status: { status: 'success' } } };
-    },
-  }, built, transactionBytes);
-  const evidence = createMarketV8RecoveryEvidenceV8(built, transactionBytes, dryRunProof);
+  built.transaction.moveCall({ target: `${packageId('e')}::evil::steal`, arguments: [] });
+  let simulatedBytes;
+  const dryRunProof = await inspectMarketActionOnChainV8(canonicalSigningClient({
+    onDryRun(bytes) { simulatedBytes = bytes; },
+  }), built);
+  const evidence = createMarketV8RecoveryEvidenceV8(built, dryRunProof);
+  assert.equal(simulatedBytes, evidence.transactionBytes);
+  const signedSnapshot = TransactionDataBuilder.fromBytes(Buffer.from(evidence.transactionBytes, 'base64')).snapshot();
+  assert.equal(signedSnapshot.commands.some((command) => command.MoveCall?.module === 'evil'), false);
   assert.equal(assertMarketV8RecoveryEvidenceV8(evidence), evidence);
   assert.equal(evidence.descriptor.action, 'listMakerControl');
   assert.equal(evidence.runtime, attestedRuntime);
-  assert.equal(evidence.transactionDigest, TransactionDataBuilder.getDigestFromBytes(Buffer.from(transactionBytes, 'base64')));
+  assert.equal(evidence.transactionDigest, TransactionDataBuilder.getDigestFromBytes(Buffer.from(evidence.transactionBytes, 'base64')));
   assert.equal(Number.isSafeInteger(evidence.dryRunAtMs), true);
+  assert.deepEqual(evidence.epochWindow, { start: '100', end: '101' });
+  assert.deepEqual(evidence.expiration, { kind: 'Epoch', epoch: '101' });
+  assert.deepEqual(evidence.gasData, {
+    owner: IDs.seller,
+    budget: '10000000',
+    price: '1000',
+    payment: [{ objectId: id(999), version: '1', digest }],
+  });
+  assert.match(evidence.sourceFingerprint, /^0x[0-9a-f]{64}$/);
   assert.throws(
-    () => createMarketV8RecoveryEvidenceV8(built, transactionBytes, dryRunProof),
+    () => createMarketV8RecoveryEvidenceV8(built, dryRunProof),
     (error) => error.code === 'MARKET_V8_ACTION_DRY_RUN_PROOF_REQUIRED',
   );
 
   assert.throws(
-    () => createMarketV8RecoveryEvidenceV8({ ...built }, transactionBytes, dryRunProof),
+    () => createMarketV8RecoveryEvidenceV8({ ...built }, dryRunProof),
     (error) => error.code === 'MARKET_V8_BUILT_ACTION_REQUIRED',
   );
   assert.throws(
-    () => createMarketV8RecoveryEvidenceV8(built, fullListTransactionBytes(built, { functionName: 'recover_maker_control_listing_v8' }), dryRunProof),
-    (error) => error.code === 'MARKET_V8_TRANSACTION_TARGET_MISMATCH',
-  );
-  assert.throws(
-    () => createMarketV8RecoveryEvidenceV8(built, fullListTransactionBytes(built, { firstObjectId: id(998) }), dryRunProof),
-    (error) => error.code === 'MARKET_V8_TRANSACTION_OBJECT_MISMATCH',
+    () => createMarketV8RecoveryEvidenceV8(built, evidence.transactionBytes, dryRunProof),
+    (error) => error.code === 'MARKET_V8_CALLER_TRANSACTION_BYTES_FORBIDDEN',
   );
   assert.throws(
     () => assertMarketV8RecoveryEvidenceV8({ ...evidence }),
     (error) => error.code === 'MARKET_V8_RECOVERY_EVIDENCE_REQUIRED',
   );
   assert.throws(
-    () => createMarketV8RecoveryEvidenceV8(built, transactionBytes, { ...dryRunProof }),
+    () => createMarketV8RecoveryEvidenceV8(built, { ...dryRunProof }),
     (error) => error.code === 'MARKET_V8_ACTION_DRY_RUN_PROOF_REQUIRED',
   );
   assert.equal(consumeMarketV8RecoveryEvidenceV8(evidence), evidence);
   assert.throws(
     () => consumeMarketV8RecoveryEvidenceV8(evidence),
     (error) => error.code === 'MARKET_V8_RECOVERY_EVIDENCE_REQUIRED',
+  );
+});
+
+test('all 14 actions build final pinned-SDK bytes internally; purchase CoinWithBalance uses exact private dataflow', async () => {
+  for (const [action, built] of Object.entries(allActions())) {
+    const proof = await inspectMarketActionOnChainV8(canonicalSigningClient(), built);
+    const evidence = createMarketV8RecoveryEvidenceV8(built, proof);
+    const snapshot = TransactionDataBuilder.fromBytes(Buffer.from(evidence.transactionBytes, 'base64')).snapshot();
+    const marketCalls = snapshot.commands.filter((command) => command.MoveCall?.package === runtimeInput.roles.market.callablePackageId);
+    assert.equal(marketCalls.length, 1, action);
+    assert.equal(marketCalls[0].MoveCall.function, fixture.actions[action].function, action);
+    assert.deepEqual(snapshot.expiration, { Epoch: 101, '$kind': 'Epoch' }, action);
+    assert.equal(snapshot.sender, built.descriptor.sender, action);
+    assert.equal(snapshot.gasData.owner, built.descriptor.sender, action);
+    if (action.startsWith('purchase')) {
+      assert.equal(snapshot.commands.some((command) => command.MergeCoins), true, action);
+      assert.equal(snapshot.commands.some((command) => command.SplitCoins), true, action);
+      const sendFunds = snapshot.commands.find((command) => command.MoveCall?.module === 'coin'
+        && command.MoveCall?.function === 'send_funds');
+      assert.ok(sendFunds, action);
+      const recipient = snapshot.inputs[sendFunds.MoveCall.arguments[1].Input]?.Pure?.bytes;
+      assert.equal(recipient, toBase64(bcs.Address.serialize(built.descriptor.sender).toBytes()), action);
+      assert.ok(evidence.transactionBytes.length > 2_048, `${action} should exercise a recovery payload above the legacy text bound`);
+    } else {
+      assert.equal(snapshot.commands.length, 1, action);
+    }
+  }
+});
+
+test('caller-authored final bytes have no signing-evidence ingress, including formerly allowed command shapes', async () => {
+  const built = allActions().listMakerControl;
+  const variants = [
+    fullListTransactionBytes(built, { functionName: 'recover_maker_control_listing_v8' }),
+    fullListTransactionBytes(built, { firstObjectId: id(998) }),
+    fullListTransactionBytes(built, { extraCommand: { SplitCoins: { coin: { GasCoin: true, '$kind': 'GasCoin' }, amounts: [{ Input: 8, '$kind': 'Input' }] }, '$kind': 'SplitCoins' } }),
+    fullListTransactionBytes(built, { extraCommand: { TransferObjects: { objects: [{ GasCoin: true, '$kind': 'GasCoin' }], address: { Input: 8, '$kind': 'Input' } }, '$kind': 'TransferObjects' } }),
+  ];
+  for (const bytes of variants) {
+    await assert.rejects(
+      () => inspectMarketActionOnChainV8(canonicalSigningClient(), built, bytes),
+      (error) => error.code === 'MARKET_V8_CALLER_TRANSACTION_BYTES_FORBIDDEN',
+    );
+  }
+});
+
+test('canonical signing rejects excessive gas, wrong gas owner, and resolver expiration drift before dry-run', async () => {
+  const built = allActions().listMakerControl;
+  await assert.rejects(
+    () => inspectMarketActionOnChainV8(canonicalSigningClient({ gasBudget: '500000001' }), built),
+    (error) => error.code === 'MARKET_V8_TRANSACTION_GAS_INVALID',
+  );
+  await assert.rejects(
+    () => inspectMarketActionOnChainV8(canonicalSigningClient({
+      mutateResolved(transactionData) { transactionData.gasData.owner = IDs.buyer; },
+    }), built),
+    (error) => error.code === 'MARKET_V8_TRANSACTION_SENDER_MISMATCH',
+  );
+  await assert.rejects(
+    () => inspectMarketActionOnChainV8(canonicalSigningClient({
+      mutateResolved(transactionData) { transactionData.expiration = { Epoch: '102', '$kind': 'Epoch' }; },
+    }), built),
+    (error) => error.code === 'MARKET_V8_TRANSACTION_EXPIRATION_MISMATCH',
   );
 });
 

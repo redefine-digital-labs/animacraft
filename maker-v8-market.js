@@ -19,6 +19,8 @@ import {
 export const MARKET_V8_VERSION = 8n;
 export const MARKET_V8_ACTION_SCHEMA = 'animacraft.market-action.v8';
 export const MARKET_V8_QUOTE_DOMAIN = 'animacraft-v8/market/quote';
+export const MARKET_V8_MAX_TRANSACTION_BYTES = 128 * 1024;
+export const MARKET_V8_MAX_GAS_BUDGET = 500_000_000n;
 
 export const MARKET_V8_QUOTE_KINDS = Object.freeze({
   MAKER_RESALE: 0,
@@ -1460,6 +1462,32 @@ export function assertMarketV8BuiltActionV8(value) {
   return value;
 }
 
+function canonicalTransactionFromDescriptor(builtAction) {
+  const descriptor = builtAction.descriptor;
+  const transaction = new Transaction();
+  transaction.setSender(descriptor.sender);
+  const args = descriptor.arguments.map((argument) => {
+    if (argument.kind === 'u64') return transaction.pure.u64(BigInt(argument.value));
+    if (argument.kind === 'receiving') {
+      return transaction.receivingRef({
+        objectId: argument.objectId,
+        version: argument.version,
+        digest: argument.digest,
+      });
+    }
+    if (argument.kind === 'payment') {
+      return transaction.coin({ type: argument.type, balance: BigInt(argument.balanceAtomic) });
+    }
+    return transaction.object(argument.objectId);
+  });
+  transaction.moveCall({
+    target: descriptor.target,
+    typeArguments: [...descriptor.typeArguments],
+    arguments: args,
+  });
+  return transaction;
+}
+
 function transactionObjectIdentity(input, field) {
   const object = input?.Object;
   const value = object?.ImmOrOwnedObject ?? object?.SharedObject ?? object?.Receiving;
@@ -1532,25 +1560,83 @@ function assertEncodedMarketArgument(snapshot, command, descriptor, index) {
   }
 }
 
-function allowedCoinPlumbing(command, paymentCoinType) {
-  if (command?.MergeCoins || command?.SplitCoins) return true;
-  const call = command?.MoveCall;
-  if (!call) return false;
-  const system = normalizeSuiAddress('0x2');
-  const allowed = new Set([
-    'coin::redeem_funds',
-    'coin::destroy_zero',
-    'coin::into_balance',
-    'coin::send_funds',
-    'balance::redeem_funds',
-  ]);
-  return call.package === system
-    && allowed.has(`${call.module}::${call.function}`)
-    && call.typeArguments.length === 1
-    && call.typeArguments[0] === paymentCoinType;
+function canonicalJson(value) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new TypeError('canonical JSON contains a non-integer number');
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'bigint') return JSON.stringify(value.toString());
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (plainRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  throw new TypeError('canonical JSON contains an unsupported value');
 }
 
-function validateMarketV8TransactionBytes(builtActionInput, transactionBytesInput) {
+function fingerprint(value) {
+  return bytesToHex(sha256(UTF8.encode(canonicalJson(value))));
+}
+
+async function currentMainnetEpoch(client) {
+  let response;
+  if (typeof client?.core?.getCurrentSystemState === 'function') {
+    response = await client.core.getCurrentSystemState();
+    response = response?.systemState?.epoch;
+  } else if (typeof client?.getLatestSuiSystemState === 'function') {
+    response = (await client.getLatestSuiSystemState())?.epoch;
+  } else if (typeof client?.getCurrentEpoch === 'function') {
+    response = (await client.getCurrentEpoch())?.epoch;
+  } else {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_CURRENT_EPOCH_UNAVAILABLE',
+      'client',
+      'A Mainnet current-epoch read is required to bind Transaction expiration immediately before signing.',
+    );
+  }
+  const epoch = uint(String(response ?? ''), 64, 'currentEpoch', MarketV8BuildError);
+  if (epoch === ((1n << 64n) - 1n)) {
+    fail(MarketV8BuildError, 'MARKET_V8_CURRENT_EPOCH_INVALID', 'currentEpoch', 'Current epoch cannot produce a bounded signing expiration.');
+  }
+  return epoch;
+}
+
+function canonicalGasData(snapshot, descriptor) {
+  const budget = uint(String(snapshot.gasData?.budget ?? ''), 64, 'transaction.gasData.budget', MarketV8BuildError);
+  const price = uint(String(snapshot.gasData?.price ?? ''), 64, 'transaction.gasData.price', MarketV8BuildError);
+  if (budget === 0n || budget > MARKET_V8_MAX_GAS_BUDGET || price === 0n) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_TRANSACTION_GAS_INVALID',
+      'transaction.gasData',
+      `Gas budget must be positive and no greater than ${MARKET_V8_MAX_GAS_BUDGET}; gas price must be positive.`,
+    );
+  }
+  const owner = buildAddress(snapshot.gasData?.owner, 'transaction.gasData.owner');
+  if (owner !== descriptor.sender) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_SENDER_MISMATCH', 'transaction.gasData.owner', 'Gas owner differs from the verified wallet account.');
+  }
+  if (!Array.isArray(snapshot.gasData?.payment) || snapshot.gasData.payment.length === 0) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_GAS_INVALID', 'transaction.gasData.payment', 'At least one resolved gas object ref is required.');
+  }
+  const seen = new Set();
+  const payment = Object.freeze(snapshot.gasData.payment.map((entry, index) => {
+    const objectIdValue = buildId(entry?.objectId, `transaction.gasData.payment[${index}].objectId`);
+    if (seen.has(objectIdValue)) {
+      fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_GAS_INVALID', `transaction.gasData.payment[${index}]`, 'Gas payment refs must be unique.');
+    }
+    seen.add(objectIdValue);
+    return freezeRecord({
+      objectId: objectIdValue,
+      version: uint(String(entry?.version ?? ''), 64, `transaction.gasData.payment[${index}].version`, MarketV8BuildError).toString(),
+      digest: digestValue(entry?.digest, `transaction.gasData.payment[${index}].digest`, MarketV8BuildError),
+    });
+  }));
+  return freezeRecord({ owner, budget: budget.toString(), price: price.toString(), payment });
+}
+
+function validateCanonicalMarketV8TransactionBytes(builtActionInput, transactionBytesInput, expectedEpoch) {
   const builtAction = assertMarketV8BuiltActionV8(builtActionInput);
   if (!isMakerV8RuntimeAttested(builtAction.runtime)) {
     fail(
@@ -1568,6 +1654,7 @@ function validateMarketV8TransactionBytes(builtActionInput, transactionBytesInpu
   try {
     bytes = fromBase64(transactionBytesInput);
     if (toBase64(bytes) !== transactionBytesInput) throw new TypeError('non-canonical base64');
+    if (bytes.length > MARKET_V8_MAX_TRANSACTION_BYTES) throw new TypeError('transaction exceeds the bounded signing payload size');
     snapshot = TransactionDataBuilder.fromBytes(bytes).snapshot();
   } catch (error) {
     fail(
@@ -1579,15 +1666,14 @@ function validateMarketV8TransactionBytes(builtActionInput, transactionBytesInpu
     );
   }
   const descriptor = builtAction.descriptor;
-  if (snapshot.sender !== descriptor.sender || snapshot.gasData?.owner !== descriptor.sender) {
-    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_SENDER_MISMATCH', 'transaction.sender', 'Transaction sender/gas owner differs from the verified wallet account.');
+  if (snapshot.sender !== descriptor.sender) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_SENDER_MISMATCH', 'transaction.sender', 'Transaction sender differs from the verified wallet account.');
   }
-  if (!/^[1-9][0-9]*$/.test(String(snapshot.gasData?.budget ?? ''))
-    || !/^[1-9][0-9]*$/.test(String(snapshot.gasData?.price ?? ''))
-    || !Array.isArray(snapshot.gasData?.payment)
-    || snapshot.gasData.payment.length === 0) {
-    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_GAS_INVALID', 'transaction.gasData', 'Signing evidence requires fully resolved positive gas data and at least one exact gas object ref.');
+  const expirationEpoch = uint(String(snapshot.expiration?.Epoch ?? ''), 64, 'transaction.expiration.Epoch', MarketV8BuildError);
+  if (expirationEpoch !== expectedEpoch + 1n) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_EXPIRATION_MISMATCH', 'transaction.expiration', 'Transaction must expire exactly one epoch after the freshly read Mainnet epoch.');
   }
+  const gasData = canonicalGasData(snapshot, descriptor);
   const [expectedPackage, expectedModule, expectedFunction] = descriptor.target.split('::');
   const marketCalls = snapshot.commands.filter((entry) => entry?.MoveCall
     && entry.MoveCall.package === expectedPackage
@@ -1603,25 +1689,50 @@ function validateMarketV8TransactionBytes(builtActionInput, transactionBytesInpu
     fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_ABI_MISMATCH', 'transaction.moveCall', 'Transaction type arguments or argument count differ from the checked Market ABI.');
   }
   marketCall.arguments.forEach((_, index) => assertEncodedMarketArgument(snapshot, marketCall, descriptor, index));
-  for (const command of snapshot.commands) {
-    if (command.MoveCall === marketCall) continue;
-    if (!allowedCoinPlumbing(command, descriptor.typeArguments[0])) {
-      fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_EXTRA_COMMAND', 'transaction.commands', 'Transaction contains a non-Market command outside the exact CoinWithBalance plumbing.');
-    }
-  }
+  // There is intentionally no caller-facing command whitelist here. These
+  // bytes come only from the private copy of the typed Transaction and the
+  // pinned SDK's CoinWithBalance resolver. A caller can no longer submit an
+  // alternative Merge/Split/helper graph for shape-based approval.
+  const expiration = freezeRecord({ kind: 'Epoch', epoch: expirationEpoch.toString() });
+  const sourceFingerprint = fingerprint({ descriptor, inputs: snapshot.inputs });
   const evidence = freezeRecord({
     schema: 'animacraft.market-recovery-evidence.v8',
     transactionBytes: transactionBytesInput,
     transactionDigest: TransactionDataBuilder.getDigestFromBytes(bytes),
     descriptor,
     runtime: builtAction.runtime,
+    gasData,
+    expiration,
+    epochWindow: freezeRecord({ start: expectedEpoch.toString(), end: expirationEpoch.toString() }),
+    sourceFingerprint,
   });
   return evidence;
 }
 
-export async function inspectMarketActionOnChainV8(client, builtActionInput, transactionBytesInput) {
+export async function inspectMarketActionOnChainV8(client, builtActionInput) {
+  if (arguments.length !== 2) {
+    fail(MarketV8BuildError, 'MARKET_V8_CALLER_TRANSACTION_BYTES_FORBIDDEN', 'transactionBytes', 'Final signing bytes are built only from the private typed Market Transaction with the pinned SDK resolver.');
+  }
   await assertMakerV8MainnetRpc(client);
-  const checked = validateMarketV8TransactionBytes(builtActionInput, transactionBytesInput);
+  const builtAction = assertMarketV8BuiltActionV8(builtActionInput);
+  const currentEpoch = await currentMainnetEpoch(client);
+  // Reconstruct from the privately branded, deeply frozen descriptor. Never
+  // clone the public Transaction instance, which callers may have mutated.
+  const canonical = canonicalTransactionFromDescriptor(builtAction);
+  canonical.setExpiration({ Epoch: (currentEpoch + 1n).toString() });
+  let transactionBytes;
+  try {
+    transactionBytes = toBase64(await canonical.build({ client }));
+  } catch (error) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_CANONICAL_TRANSACTION_BUILD_FAILED',
+      'transaction',
+      'The pinned SDK could not resolve the private typed Market Transaction against live Mainnet inputs.',
+      { cause: String(error?.message || error) },
+    );
+  }
+  const checked = validateCanonicalMarketV8TransactionBytes(builtAction, transactionBytes, currentEpoch);
   let result;
   if (typeof client?.dryRunTransactionBlock === 'function') {
     result = await client.dryRunTransactionBlock({ transactionBlock: checked.transactionBytes });
@@ -1658,18 +1769,25 @@ export async function inspectMarketActionOnChainV8(client, builtActionInput, tra
     transactionDigest: checked.transactionDigest,
     descriptor: checked.descriptor,
     runtime: checked.runtime,
+    transactionBytes: checked.transactionBytes,
+    gasData: checked.gasData,
+    expiration: checked.expiration,
+    epochWindow: checked.epochWindow,
+    sourceFingerprint: checked.sourceFingerprint,
     dryRunAtMs: Date.now(),
   });
   MARKET_ACTION_DRY_RUN_PROOFS.add(proof);
   return proof;
 }
 
-export function createMarketV8RecoveryEvidenceV8(builtActionInput, transactionBytesInput, dryRunProof) {
-  const checked = validateMarketV8TransactionBytes(builtActionInput, transactionBytesInput);
+export function createMarketV8RecoveryEvidenceV8(builtActionInput, dryRunProof) {
+  if (arguments.length !== 2) {
+    fail(MarketV8BuildError, 'MARKET_V8_CALLER_TRANSACTION_BYTES_FORBIDDEN', 'transactionBytes', 'Recovery evidence accepts only the private result of a fresh Mainnet simulation.');
+  }
+  const builtAction = assertMarketV8BuiltActionV8(builtActionInput);
   if (!dryRunProof || !MARKET_ACTION_DRY_RUN_PROOFS.has(dryRunProof)
-    || dryRunProof.transactionDigest !== checked.transactionDigest
-    || dryRunProof.descriptor !== checked.descriptor
-    || dryRunProof.runtime !== checked.runtime) {
+    || dryRunProof.descriptor !== builtAction.descriptor
+    || dryRunProof.runtime !== builtAction.runtime) {
     fail(
       MarketV8BuildError,
       'MARKET_V8_ACTION_DRY_RUN_PROOF_REQUIRED',
@@ -1678,7 +1796,18 @@ export function createMarketV8RecoveryEvidenceV8(builtActionInput, transactionBy
     );
   }
   MARKET_ACTION_DRY_RUN_PROOFS.delete(dryRunProof);
-  const evidence = freezeRecord({ ...checked, dryRunAtMs: dryRunProof.dryRunAtMs });
+  const evidence = freezeRecord({
+    schema: 'animacraft.market-recovery-evidence.v8',
+    transactionBytes: dryRunProof.transactionBytes,
+    transactionDigest: dryRunProof.transactionDigest,
+    descriptor: dryRunProof.descriptor,
+    runtime: dryRunProof.runtime,
+    gasData: dryRunProof.gasData,
+    expiration: dryRunProof.expiration,
+    epochWindow: dryRunProof.epochWindow,
+    sourceFingerprint: dryRunProof.sourceFingerprint,
+    dryRunAtMs: dryRunProof.dryRunAtMs,
+  });
   MARKET_RECOVERY_EVIDENCE.add(evidence);
   return evidence;
 }
