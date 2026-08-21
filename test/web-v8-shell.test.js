@@ -15,6 +15,7 @@ import {
   parseFreshV8Route,
 } from '../app.js';
 import { assertMakerV8Runtime, makerV8StableType } from '../maker-v8-runtime.js';
+import { runtimeAttestationRpc } from './fixtures/maker-v8-runtime-attestation.js';
 
 const id = (byte) => `0x${byte.repeat(32)}`;
 const digest = (byte) => byte.repeat(32);
@@ -45,11 +46,13 @@ function runtimeInput(enabled = true) {
 const execution = assertWebV8ExecutionConfig({
   schemaVersion: 'animacraft.web-execution.v8',
   network: 'mainnet',
-  chainIdentifier: 'mainnet',
+  chainIdentifier: '35834a8a',
   allowWalletSignature: false,
   allowBroadcast: false,
 });
-const runtime = assertMakerV8Runtime(runtimeInput());
+const runtime = await assertLiveMakerV8Runtime(runtimeInput(), {
+  async getSuiClient() { return runtimeAttestationRpc(runtimeInput()); },
+});
 
 test('only three canonical fresh-v8 routes are accepted', () => {
   const listingId = id('20');
@@ -89,7 +92,10 @@ test('unsupported cache entries are rejected without conversion or deletion', ()
 });
 
 test('the runtime bridge consumes the strict seven-role tuple', async () => {
-  const checked = await assertLiveMakerV8Runtime(runtimeInput(), {});
+  const initial = runtimeInput();
+  const checked = await assertLiveMakerV8Runtime(initial, {
+    async getSuiClient() { return runtimeAttestationRpc(initial); },
+  });
   const market = marketRuntimeFromMakerRuntime(checked, 'mainnet');
   assert.equal(Object.keys(checked.roles).length, 7);
   assert.equal(market, checked);
@@ -97,15 +103,10 @@ test('the runtime bridge consumes the strict seven-role tuple', async () => {
 
   const upgraded = runtimeInput();
   upgraded.roles.market.callablePackageId = id('19');
-  const calls = [];
   const upgradedRuntime = await assertLiveMakerV8Runtime(upgraded, {
-    async resolveRoleLineages(requests) {
-      calls.push(requests);
-      return { market: id('15') };
-    },
+    async getSuiClient() { return runtimeAttestationRpc(upgraded); },
   });
   assert.equal(upgradedRuntime.roles.market.callablePackageId, id('19'));
-  assert.equal(calls[0][0].role, 'market');
 });
 
 test('live action context binds route, wallet, activation, seven packages, refs, and authority refs', () => {
@@ -117,7 +118,7 @@ test('live action context binds route, wallet, activation, seven packages, refs,
     schemaVersion: WEB_V8_CONTEXT_SCHEMA,
     source: 'LIVE_RPC',
     requestId: request.requestId,
-    chainIdentifier: 'mainnet',
+    chainIdentifier: '35834a8a',
     route: `listing:${route.id}`,
     action: request.action,
     activation: {
@@ -129,7 +130,7 @@ test('live action context binds route, wallet, activation, seven packages, refs,
       role,
       originalPackageId: runtime.roles[role].typeOriginPackageId,
       callablePackageId: runtime.roles[role].callablePackageId,
-      packageDigest: digest(String(index + 1).padStart(2, '0')),
+      packageDigest: String(index + 2).repeat(32),
     })),
     builderInput: { wallet: account },
     refs: {
@@ -167,6 +168,15 @@ test('live action context binds route, wallet, activation, seven packages, refs,
   assert.throws(
     () => assertFreshV8ActionContext({ ...context, chainIdentifier: 'testnet' }, request, runtime, execution, account),
     { code: 'WEB_V8_CONTEXT_DRIFT' },
+  );
+  assert.throws(
+    () => assertFreshV8ActionContext({
+      ...context,
+      packageTuple: context.packageTuple.map((entry, index) => (
+        index === 5 ? { ...entry, packageDigest: 'Z'.repeat(32) } : entry
+      )),
+    }, request, runtime, execution, account),
+    { code: 'WEB_V8_PACKAGE_TUPLE_DRIFT' },
   );
   assert.throws(
     () => assertFreshV8ActionContext({ ...context, authority: { kind: 'MAKER', refs: [], authorized: true } }, request, runtime, execution, account),
@@ -220,5 +230,7 @@ test('production entry files have no retired imports, aliases, routes, or pendin
   assert.doesNotMatch(source, /SALE_PENDING|dual[-_ ]path/i);
   assert.doesNotMatch(source, /data-page=|#templates|#creator|#make(?:\b|["'])/i);
   assert.doesNotMatch(source, /ANIMACRAFT_CONFIG|makerV8ReleaseEnabled|commerceV\d|compositionV\d|physicalV\d/i);
+  assert.doesNotMatch(source, /SoulidityV8Adapters/);
+  assert.match(source, /createProductionMakerV8BrowserAdapters/);
   assert.match(source, /UNSUPPORTED_LEGACY_PRODUCT/);
 });

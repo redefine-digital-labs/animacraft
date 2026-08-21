@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { access } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
+import { bcs } from '@mysten/sui/bcs';
+import { Inputs, TransactionDataBuilder } from '@mysten/sui/transactions';
+import { toBase64 } from '@mysten/sui/utils';
 
 import {
   WEB_V8_CONTEXT_SCHEMA,
@@ -10,7 +13,12 @@ import {
   createFreshV8Controller,
   parseFreshV8Route,
 } from '../app.js';
-import { assertMakerV8Runtime, makerV8StableType } from '../maker-v8-runtime.js';
+import { makerV8StableType } from '../maker-v8-runtime.js';
+import {
+  MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+  attestMakerV8Runtime,
+} from '../maker-v8-chain.js';
+import { runtimeAttestationRpc } from './fixtures/maker-v8-runtime-attestation.js';
 
 async function optionalModule(environmentName, localName) {
   const localPath = new URL(`../${localName}`, import.meta.url).pathname;
@@ -68,11 +76,42 @@ function quoteBytes(quote) {
   ]);
 }
 
+function exactListTransaction(descriptor) {
+  const [packageIdValue, moduleName, functionName] = descriptor.target.split('::');
+  const inputs = descriptor.arguments.map((argument) => {
+    if (argument.kind === 'u64') return Inputs.Pure(bcs.u64().serialize(BigInt(argument.value)));
+    return Inputs.SharedObjectRef({ objectId: argument.objectId, initialSharedVersion: '1', mutable: true });
+  });
+  const data = TransactionDataBuilder.restore({
+    version: 2,
+    sender: descriptor.sender,
+    expiration: null,
+    gasData: {
+      budget: '10000000', price: '1000', owner: descriptor.sender,
+      payment: [{ objectId: id(999), version: '1', digest }],
+    },
+    inputs,
+    commands: [{
+      MoveCall: {
+        package: packageIdValue, module: moduleName, function: functionName,
+        typeArguments: [...descriptor.typeArguments],
+        arguments: inputs.map((_, Input) => ({ Input, $kind: 'Input' })),
+      },
+      $kind: 'MoveCall',
+    }],
+  });
+  const bytes = data.build();
+  return {
+    transactionBytes: toBase64(bytes),
+    transactionDigest: TransactionDataBuilder.getDigestFromBytes(bytes),
+  };
+}
+
 function runtimeFixture() {
   const rolePackages = {
     core: packageId('1'), seal: packageId('6'), runtime: packageId('4'), output: packageId('2'), physical: packageId('3'), market: packageId('5'), release: packageId('7'),
   };
-  return assertMakerV8Runtime({
+  return {
     schemaVersion: 'animacraft.maker-v8-runtime.v8',
     protocolVersion: 8,
     enabled: true,
@@ -89,7 +128,7 @@ function runtimeFixture() {
       seal: id(910), runtime: id(911), output: id(912), physical: id(913), market: id(914), release: id(915),
     },
     makerBindings: [],
-  });
+  };
 }
 
 function moveObject(type, objectId, fields) {
@@ -111,7 +150,7 @@ function moveObject(type, objectId, fields) {
 function fixture(runtime) {
   const market = marketModule.createMarketV8Client(runtime, { network: 'mainnet' });
   const IDs = {
-    registry: id(100), treasury: id(101), catalog: runtime.catalogId, config: id(103), root: id(104),
+    registry: id(100), treasury: id(101), catalog: runtime.catalogId, config: runtime.roleConfigIds.market, root: id(104),
     protocolConfig: runtime.protocolConfigId, admin: id(107), makerTreasury: id(108), seller: id(200),
   };
   const registryResponse = moveObject(market.types.marketRegistry, IDs.registry, {
@@ -148,7 +187,15 @@ function fixture(runtime) {
     registry,
     treasury,
     root: object(IDs.root, market.types.makerRoot, {
-      binding: Object.freeze({ makerTreasuryId: IDs.makerTreasury }),
+      adminCapId: IDs.admin,
+      ownerAddress: IDs.seller,
+      creatorAddress: id(201),
+      controlEpoch: '5',
+      binding: Object.freeze({
+        makerTreasuryId: IDs.makerTreasury,
+        marketRegistryId: IDs.registry,
+        marketTreasuryId: IDs.treasury,
+      }),
       lifecycleCode: marketModule.MARKET_V8_LIFECYCLES.PAUSED,
     }),
     catalog: object(IDs.catalog, market.types.catalog),
@@ -170,13 +217,14 @@ function fixture(runtime) {
 test('controller uses real builder, forces re-review on ref drift, and stays unsigned', {
   skip: available ? false : 'Run with the integrated Maker v8 Market and Recovery modules.',
 }, async () => {
-  const runtime = runtimeFixture();
+  const rawRuntime = runtimeFixture();
+  const runtime = (await attestMakerV8Runtime(runtimeAttestationRpc(rawRuntime), rawRuntime)).runtime;
   const data = fixture(runtime);
   const route = parseFreshV8Route(`/maker/${data.IDs.root}`);
   const execution = {
     schemaVersion: WEB_V8_EXECUTION_SCHEMA,
     network: 'mainnet',
-    chainIdentifier: 'mainnet',
+    chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
     allowWalletSignature: false,
     allowBroadcast: false,
   };
@@ -186,7 +234,7 @@ test('controller uses real builder, forces re-review on ref drift, and stays uns
     role,
     originalPackageId: entry.typeOriginPackageId,
     callablePackageId: entry.callablePackageId,
-    packageDigest: `${index + 1}`.repeat(32),
+    packageDigest: `${index + 2}`.repeat(32),
   }));
   const eventType = makerV8StableType(runtime, 'release', 'release_v8', 'MakerV8Activated');
   const persistence = recoveryModule.createMakerV8RecoveryMemoryAdapter();
@@ -196,25 +244,51 @@ test('controller uses real builder, forces re-review on ref drift, and stays uns
   const inspectedQuote = data.market.quoteMakerResale(data.registry, '1000000');
   const driftedQuote = data.market.quoteMakerResale(data.registry, '1000001');
   let injectQuoteDrift = false;
-  const suiClient = {
+  const suiClient = runtimeAttestationRpc(runtime, {
     async simulateTransaction() {
       const quote = injectQuoteDrift ? driftedQuote : inspectedQuote;
       return { $kind: 'Transaction', commandResults: [{ returnValues: [{ bcs: quoteBytes(quote) }] }] };
     },
-  };
+    async dryRunTransactionBlock() {
+      dryRunCalls += 1;
+      return { effects: { status: { status: 'success' } } };
+    },
+    core: {
+      async getCurrentSystemState() { return { systemState: { epoch: '100' } }; },
+      resolveTransactionPlugin() {
+        return async (transactionData, _options, next) => {
+          transactionData.inputs = transactionData.inputs.map((input) => (
+            input.UnresolvedObject
+              ? Inputs.SharedObjectRef({
+                  objectId: input.UnresolvedObject.objectId,
+                  initialSharedVersion: '1',
+                  mutable: true,
+                })
+              : input
+          ));
+          transactionData.gasData = {
+            budget: '10000000',
+            price: '1000',
+            owner: transactionData.sender,
+            payment: [{ objectId: id(999), version: '1', digest }],
+          };
+          await next();
+        };
+      },
+    },
+  });
   const adapters = {
     persistence,
     rpc: {
-      async getChainIdentifier() { return 'mainnet'; },
+      async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
       async getSuiClient() { return suiClient; },
-      async resolveRoleLineages() { return {}; },
       async browseMarket() { throw new Error('not used'); },
       async loadRoute(request) {
         return {
           schemaVersion: WEB_V8_ROUTE_SCHEMA,
           source: 'LIVE_RPC',
           requestId: request.requestId,
-          chainIdentifier: 'mainnet',
+          chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
           route: `maker:${data.IDs.root}`,
           activation: { eventType, rootId: data.IDs.root, lifecycle: 'ACTIVE' },
           view: { title: 'Fixture Maker', subtitle: 'Live checked-in v8 fixture', lifecycle: 'PAUSED', listingKind: null, listingStatus: null },
@@ -226,7 +300,7 @@ test('controller uses real builder, forces re-review on ref drift, and stays uns
           schemaVersion: WEB_V8_CONTEXT_SCHEMA,
           source: 'LIVE_RPC',
           requestId: request.requestId,
-          chainIdentifier: 'mainnet',
+          chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
           route: `maker:${data.IDs.root}`,
           action: 'listMakerControl',
           activation: { eventType, rootId: data.IDs.root, lifecycle: 'ACTIVE' },
@@ -255,18 +329,57 @@ test('controller uses real builder, forces re-review on ref drift, and stays uns
         assert.equal(descriptor.target, `${runtime.roles.market.callablePackageId}::market_v8::list_maker_control_v8`);
         assert.equal(typeof transaction.getData, 'function');
         return {
-          transactionBytes: 'fixture-exact-transaction-bytes',
-          transactionDigest: 'fixture-exact-transaction-digest',
+          ...exactListTransaction(descriptor),
           epochWindow: { start: '100', end: '101' },
           gas: { budget: '10000000', price: '1000' },
           sourceSnapshot: { tree: 'fixture-tree', action: descriptor.action },
         };
       },
-      async deriveTransactionDigest() { return 'fixture-exact-transaction-digest'; },
-      async dryRunExactTransaction({ descriptor }) { dryRunCalls += 1; return { status: 'SUCCESS', action: descriptor.action }; },
+      async deriveTransactionDigest(bytes) {
+        return TransactionDataBuilder.getDigestFromBytes(Buffer.from(bytes, 'base64'));
+      },
+      async dryRunExactTransaction() { throw new Error('private Market simulation is the only dry-run authority'); },
       async broadcastExactTransaction() { throw new Error('must stay disabled'); },
     },
   };
+  let disconnectedWalletReads = 0;
+  const marketAdapters = {
+    ...adapters,
+    rpc: {
+      ...adapters.rpc,
+      async browseMarket(request) {
+        return {
+          schemaVersion: 'animacraft.web-market-browse.v8',
+          source: 'LIVE_RPC',
+          requestId: request.requestId,
+          chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+          makers: [],
+          listings: [],
+        };
+      },
+    },
+    wallet: {
+      ...adapters.wallet,
+      async getCurrentAccount() {
+        disconnectedWalletReads += 1;
+        throw new Error('no Wallet Standard provider or connected account');
+      },
+    },
+  };
+  const publicController = createFreshV8Controller({
+    route: parseFreshV8Route('/market'),
+    runtime,
+    execution,
+    adapters: marketAdapters,
+    marketModule,
+    recoveryModule,
+  });
+  await publicController.refresh();
+  assert.equal(disconnectedWalletReads, 0, 'public market browse must not require a wallet provider');
+  assert.equal(publicController.snapshot().account, null);
+  await publicController.reconnect();
+  assert.equal(publicController.snapshot().account.address, data.wallet.address);
+
   const controller = createFreshV8Controller({ route, runtime, execution, adapters, marketModule, recoveryModule });
   await controller.refresh();
   assert.equal(controller.snapshot().status, 'QUOTING');
@@ -281,7 +394,7 @@ test('controller uses real builder, forces re-review on ref drift, and stays uns
   const prepared = await controller.prepare();
   assert.equal(prepared.descriptor.action, 'listMakerControl');
   assert.equal(controller.snapshot().status, 'READY');
-  assert.equal(buildCalls, 1);
+  assert.equal(buildCalls, 0, 'caller transaction adapter is not a signing authority');
   assert.equal(dryRunCalls, 1);
   assert.equal(signCalls, 0);
   await assert.rejects(() => controller.requestSignature('SIGN EXACT TRANSACTION'));

@@ -17,6 +17,7 @@ use animacraft_v8_core::maker_v8::{
     CapabilityRegistryBindingV8,
     MakerAdminCapV8,
     MakerRootV8,
+    RightsSnapshotV8,
 };
 use animacraft_v8_core::package_binding_v8::{
     Self as binding,
@@ -33,6 +34,11 @@ use animacraft_v8_output::output_v8::{
     SoulMintAuthorizationV8,
 };
 use animacraft_v8_runtime::runtime_v8::MakerLoadoutV8;
+use animacraft_v8_seal::seal_v8::{
+    Self as seal,
+    CiphertextCertificationV8,
+    SealPolicyConfigV8,
+};
 use std::string::String;
 use sui::event;
 
@@ -44,6 +50,8 @@ use animacraft_v8_core::core_v8 as core;
 use animacraft_v8_core::protocol_config_v8::{Self as protocol, ProtocolAdminCapV8};
 #[test_only]
 use animacraft_v8_core::treasury_v8 as core_treasury;
+#[test_only]
+use animacraft_v8_seal::seal_v8::{SealCallableMarkerV8, SealOriginalMarkerV8};
 #[test_only]
 use sui::sui::SUI;
 
@@ -75,6 +83,16 @@ public struct ReleaseRenderWitnessV8 {
     catalog_id: ID,
     output_registry_id: ID,
     control_epoch: u64,
+    caller: address,
+}
+
+/// Private-constructor, no-ability authority for one initial Base ciphertext
+/// certification. Seal checks this type's defining package against the frozen
+/// Release callable binding and returns it for immediate destruction here.
+public struct ReleaseTransportWitnessV8 {
+    root_id: ID,
+    catalog_id: ID,
+    policy_config_id: ID,
     caller: address,
 }
 
@@ -148,6 +166,129 @@ public fun new_release_package_config_v8(
 
 public fun share_release_package_config_v8(config: ReleasePackageConfigV8) {
     transfer::share_object(config)
+}
+
+/// Sole production bridge from Release's private call capability to Core's
+/// one-time DRAFT product-catalog finalizer. Callers supply live objects, never
+/// a capability or a caller-authored binding witness.
+public fun finalize_product_release_binding_v8<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    release_config: &ReleasePackageConfigV8,
+    ctx: &TxContext,
+) {
+    assert_config(catalog, release_config);
+    let witness = binding::certify_release_catalog_witness_v8(
+        protocol_config,
+        catalog,
+        &release_config.release_call_cap,
+    );
+    maker::finalize_product_release_binding_v8(
+        root,
+        admin,
+        protocol_config,
+        witness,
+        ctx,
+    );
+    assert_root_product_binding(root, catalog, release_config);
+}
+
+/// Exact Release wrapper for license-wrapped author evidence. The embedded
+/// Release capability certifies the connected signer; no confirmation flag or
+/// creator address is accepted from the author document.
+public fun new_license_wrapped_rights_snapshot_v8(
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    release_config: &ReleasePackageConfigV8,
+    evidence_locator: String,
+    evidence_blob_id: String,
+    evidence_sha256: vector<u8>,
+    terms_commitment: vector<u8>,
+    soul_creator_royalty_bps: u16,
+    maker_source_royalty_bps: u16,
+    maker_resale_royalty_bps: u16,
+    ctx: &TxContext,
+): RightsSnapshotV8 {
+    assert_config(catalog, release_config);
+    let certification = maker::certify_wrapped_rights_v8(
+        protocol_config,
+        catalog,
+        &release_config.release_call_cap,
+        evidence_locator,
+        evidence_blob_id,
+        evidence_sha256,
+        terms_commitment,
+        ctx,
+    );
+    maker::new_license_wrapped_rights_snapshot_v8(
+        certification,
+        soul_creator_royalty_bps,
+        maker_source_royalty_bps,
+        maker_resale_royalty_bps,
+    )
+}
+
+/// Certifies one immutable protected Base asset through Release's private
+/// transport witness. Scope is fixed on chain; callers cannot relabel a Pack
+/// or Complete ciphertext as a Base publication row.
+public fun certify_base_ciphertext_v8<PaymentCoin>(
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    release_config: &ReleasePackageConfigV8,
+    policy: &SealPolicyConfigV8,
+    root: &MakerRootV8<PaymentCoin>,
+    scope_key: String,
+    scope_commitment: vector<u8>,
+    asset_key: String,
+    asset_content_commitment: vector<u8>,
+    ciphertext_blob_id: String,
+    ciphertext_sha256: vector<u8>,
+    ciphertext_blob_commitment: vector<u8>,
+    ctx: &TxContext,
+): CiphertextCertificationV8 {
+    assert_config(catalog, release_config);
+    let root_id = maker::root_id_v8(root);
+    let catalog_id = binding::catalog_id_v8(catalog);
+    let policy_config_id = seal::policy_id_v8(policy);
+    let caller = ctx.sender();
+    let witness = ReleaseTransportWitnessV8 {
+        root_id,
+        catalog_id,
+        policy_config_id,
+        caller,
+    };
+    let (witness, certification) = seal::certify_ciphertext_v8<
+        PaymentCoin,
+        ReleaseOriginalMarkerV8,
+        ReleaseTransportWitnessV8,
+    >(
+        witness,
+        protocol_config,
+        catalog,
+        policy,
+        root,
+        seal::scope_base_v8(),
+        scope_key,
+        scope_commitment,
+        asset_key,
+        asset_content_commitment,
+        ciphertext_blob_id,
+        ciphertext_sha256,
+        ciphertext_blob_commitment,
+    );
+    let ReleaseTransportWitnessV8 {
+        root_id: returned_root_id,
+        catalog_id: returned_catalog_id,
+        policy_config_id: returned_policy_config_id,
+        caller: returned_caller,
+    } = witness;
+    assert!(returned_root_id == root_id, ERenderWitnessMismatch);
+    assert!(returned_catalog_id == catalog_id, ERenderWitnessMismatch);
+    assert!(returned_policy_config_id == policy_config_id, ERenderWitnessMismatch);
+    assert!(returned_caller == caller, ERenderWitnessMismatch);
+    certification
 }
 
 /// Consumes all five Core-owned, no-ability readiness values. Core performs the
@@ -381,6 +522,32 @@ fun assert_bound_root_catalog<PaymentCoin>(
     catalog: &ProductReleaseCatalogV8,
     release_config: &ReleasePackageConfigV8,
 ): &CapabilityRegistryBindingV8 {
+    assert_root_product_binding(root, catalog, release_config);
+    let catalog_id = binding::catalog_id_v8(catalog);
+    let capability = maker::root_capability_registry_binding_v8(root);
+    assert!(maker::capability_catalog_id_v8(capability) == catalog_id, EReadbackMismatch);
+    assert!(maker::capability_protocol_config_id_v8(capability)
+        == maker::root_protocol_config_id_v8(root), EReadbackMismatch);
+    assert!(maker::capability_base_registry_id_v8(capability)
+        == maker::root_base_registry_id_v8(root), EReadbackMismatch);
+    assert!(maker::capability_maker_treasury_id_v8(capability)
+        == maker::root_maker_treasury_id_v8(root), EReadbackMismatch);
+    assert!(maker::capability_protocol_treasury_id_v8(capability)
+        == maker::root_protocol_treasury_id_v8(root), EReadbackMismatch);
+    assert!(maker::capability_native_capability_mask_v8(capability)
+        == binding::native_capability_mask_v8(), EReadbackMismatch);
+    binding::assert_same_call_cap_set_v8(
+        maker::capability_call_cap_set_v8(capability),
+        binding::catalog_call_cap_set_v8(catalog),
+    );
+    capability
+}
+
+fun assert_root_product_binding<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    release_config: &ReleasePackageConfigV8,
+) {
     assert_config(catalog, release_config);
     binding::assert_catalog_snapshot_v8(
         catalog,
@@ -401,23 +568,6 @@ fun assert_bound_root_catalog<PaymentCoin>(
         maker::root_product_release_call_cap_set_v8(root),
         binding::catalog_call_cap_set_v8(catalog),
     );
-    let capability = maker::root_capability_registry_binding_v8(root);
-    assert!(maker::capability_catalog_id_v8(capability) == catalog_id, EReadbackMismatch);
-    assert!(maker::capability_protocol_config_id_v8(capability)
-        == maker::root_protocol_config_id_v8(root), EReadbackMismatch);
-    assert!(maker::capability_base_registry_id_v8(capability)
-        == maker::root_base_registry_id_v8(root), EReadbackMismatch);
-    assert!(maker::capability_maker_treasury_id_v8(capability)
-        == maker::root_maker_treasury_id_v8(root), EReadbackMismatch);
-    assert!(maker::capability_protocol_treasury_id_v8(capability)
-        == maker::root_protocol_treasury_id_v8(root), EReadbackMismatch);
-    assert!(maker::capability_native_capability_mask_v8(capability)
-        == binding::native_capability_mask_v8(), EReadbackMismatch);
-    binding::assert_same_call_cap_set_v8(
-        maker::capability_call_cap_set_v8(capability),
-        binding::catalog_call_cap_set_v8(catalog),
-    );
-    capability
 }
 
 fun assert_config(
@@ -528,7 +678,7 @@ public struct TestFixture {
     admin: MakerAdminCapV8,
     catalog: ProductReleaseCatalogV8,
     release_config: ReleasePackageConfigV8,
-    seal_policy_config: TestRegistry,
+    seal_policy_config: SealPolicyConfigV8,
     seal_registry: TestRegistry,
     runtime_definitions: TestRegistry,
     pack_registry: TestRegistry,
@@ -588,7 +738,9 @@ fun new_test_fixture(ctx: &mut TxContext): TestFixture {
             ctx,
         );
     base::populate_and_seal_minimal_for_testing(&mut base_registry, &root, &admin);
-    let mut catalog = binding::product_release_catalog_with_release_for_testing<
+    let mut catalog = binding::product_release_catalog_for_release_seal_testing<
+        SealOriginalMarkerV8,
+        SealCallableMarkerV8,
         ReleaseOriginalMarkerV8,
         ReleaseCallableMarkerV8,
     >(
@@ -602,21 +754,33 @@ fun new_test_fixture(ctx: &mut TxContext): TestFixture {
         &protocol_admin,
         &mut catalog,
     );
-    let catalog_witness = binding::certify_release_catalog_witness_v8(
+    let seal_call_cap = binding::take_seal_call_cap_v8(
         &config,
-        &catalog,
-        &release_call_cap,
-    );
-    maker::finalize_product_release_binding_v8(
-        &mut root,
-        &admin,
-        &config,
-        catalog_witness,
-        ctx,
+        &protocol_admin,
+        &mut catalog,
     );
     let release_config = new_release_package_config_v8(
         &catalog,
         release_call_cap,
+        ctx,
+    );
+    finalize_product_release_binding_v8(
+        &mut root,
+        &admin,
+        &config,
+        &catalog,
+        &release_config,
+        ctx,
+    );
+    let seal_policy_config = seal::new_policy_for_testing(
+        &config,
+        &catalog,
+        seal_call_cap,
+        vector[object::id_from_address(@0x100), object::id_from_address(@0x200)],
+        vector[2, 3],
+        4,
+        test_hash(14),
+        test_hash(15),
         ctx,
     );
     clock.destroy_for_testing();
@@ -630,7 +794,7 @@ fun new_test_fixture(ctx: &mut TxContext): TestFixture {
         admin,
         catalog,
         release_config,
-        seal_policy_config: TestRegistry { id: object::new(ctx) },
+        seal_policy_config,
         seal_registry: TestRegistry { id: object::new(ctx) },
         runtime_definitions: TestRegistry { id: object::new(ctx) },
         pack_registry: TestRegistry { id: object::new(ctx) },
@@ -810,7 +974,7 @@ fun destroy_test_fixture(fixture: TestFixture) {
         market_registry,
         market_treasury,
     } = fixture;
-    delete_test_registry(seal_policy_config);
+    seal::destroy_policy_for_testing(seal_policy_config);
     delete_test_registry(seal_registry);
     delete_test_registry(runtime_definitions);
     delete_test_registry(pack_registry);
@@ -1062,6 +1226,69 @@ fun disabled_protocol_rejects_resume() {
     pause_fixture(&mut fixture, &ctx);
     disable_fixture_protocol(&mut fixture);
     resume_fixture(&mut fixture, &ctx);
+    destroy_test_fixture(fixture);
+}
+
+#[test]
+fun wrapped_rights_and_base_transport_use_private_release_authority() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 916, 0, 0, 0);
+    let fixture = new_test_fixture(&mut ctx);
+    let rights = new_license_wrapped_rights_snapshot_v8(
+        &fixture.config,
+        &fixture.catalog,
+        &fixture.release_config,
+        b"walrus://rights-evidence".to_string(),
+        b"rights-blob".to_string(),
+        test_hash(31),
+        test_hash(32),
+        250,
+        250,
+        500,
+        &ctx,
+    );
+    assert!(maker::rights_origin_v8(&rights) == maker::rights_license_wrapped_v8(), 99);
+    assert!(maker::rights_creator_v8(&rights) == ctx.sender(), 99);
+    assert!(maker::rights_creator_confirmed_v8(&rights), 99);
+    assert!(maker::rights_evidence_certified_v8(&rights), 99);
+    assert!(*option::borrow(maker::rights_certification_catalog_id_v8(&rights))
+        == binding::catalog_id_v8(&fixture.catalog), 99);
+
+    let certification = certify_base_ciphertext_v8(
+        &fixture.config,
+        &fixture.catalog,
+        &fixture.release_config,
+        &fixture.seal_policy_config,
+        &fixture.root,
+        b"style/body".to_string(),
+        test_hash(33),
+        b"asset/body".to_string(),
+        test_hash(34),
+        b"ciphertext-blob".to_string(),
+        test_hash(35),
+        test_hash(36),
+        &ctx,
+    );
+    seal::destroy_ciphertext_certification_for_testing(certification);
+    destroy_test_fixture(fixture);
+}
+
+#[test, expected_failure(abort_code = 10, location = animacraft_v8_core::maker_v8)]
+fun product_release_binding_cannot_be_finalized_twice() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 917, 0, 0, 0);
+    let mut fixture = new_test_fixture(&mut ctx);
+    let admin = &fixture.admin;
+    let config = &fixture.config;
+    let catalog = &fixture.catalog;
+    let release_config = &fixture.release_config;
+    let root = &mut fixture.root;
+    finalize_product_release_binding_v8(
+        root,
+        admin,
+        config,
+        catalog,
+        release_config,
+        &ctx,
+    );
     destroy_test_fixture(fixture);
 }
 

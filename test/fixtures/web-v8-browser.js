@@ -6,6 +6,10 @@ import {
   parseFreshV8Route,
 } from '../../app.js';
 import { makerV8StableType } from '../../maker-v8-runtime.js';
+import { bcs } from '@mysten/sui/bcs';
+import { Inputs, TransactionDataBuilder } from '@mysten/sui/transactions';
+import { fromBase64, toBase64 } from '@mysten/sui/utils';
+import { runtimeAttestationRpc } from './maker-v8-runtime-attestation.js';
 
 const query = new URLSearchParams(location.search);
 const marketOrigin = query.get('marketOrigin');
@@ -62,13 +66,13 @@ const rawRuntime = {
 const execution = {
   schemaVersion: WEB_V8_EXECUTION_SCHEMA,
   network: 'mainnet',
-  chainIdentifier: 'mainnet',
+  chainIdentifier: '35834a8a',
   allowWalletSignature: false,
   allowBroadcast: false,
 };
 const market = marketModule.createMarketV8Client(rawRuntime, { network: 'mainnet' });
 const IDs = {
-  registry: id(100), treasury: id(101), catalog: rawRuntime.catalogId, config: id(103), root: id(104),
+  registry: id(100), treasury: id(101), catalog: rawRuntime.catalogId, config: rawRuntime.roleConfigIds.market, root: id(104),
   protocolConfig: rawRuntime.protocolConfigId, admin: id(107), makerTreasury: id(108), seller: id(200),
 };
 function moveObject(type, objectId, fields) {
@@ -111,7 +115,12 @@ const account = { address: IDs.seller, network: 'mainnet' };
 const builderInput = {
   registry, treasury,
   root: object(IDs.root, market.types.makerRoot, {
-    binding: Object.freeze({ makerTreasuryId: IDs.makerTreasury }),
+    adminCapId: IDs.admin,
+    binding: Object.freeze({
+      makerTreasuryId: IDs.makerTreasury,
+      marketRegistryId: IDs.registry,
+      marketTreasuryId: IDs.treasury,
+    }),
     lifecycleCode: marketModule.MARKET_V8_LIFECYCLES.PAUSED,
   }), catalog: object(IDs.catalog, market.types.catalog),
   config: object(IDs.config, market.types.marketConfig), protocolConfig: object(IDs.protocolConfig, market.types.protocolConfig, {
@@ -128,25 +137,52 @@ const inspectedQuote = market.quoteMakerResale(registry, '1000000');
 const ref = (objectId) => ({ id: objectId, version: '7', digest });
 const packageTuple = Object.entries(rawRuntime.roles).map(([role, entry], index) => ({
   role, originalPackageId: entry.typeOriginPackageId, callablePackageId: entry.callablePackageId,
-  packageDigest: `${index + 1}`.repeat(32),
+  packageDigest: `${index + 2}`.repeat(32),
 }));
 let buildCount = 0;
 let signCount = 0;
-const suiClient = {
+const suiClient = runtimeAttestationRpc(rawRuntime, {
   async simulateTransaction() {
     return { $kind: 'Transaction', commandResults: [{ returnValues: [{ bcs: quoteBytes(inspectedQuote) }] }] };
   },
-};
+  async dryRunTransactionBlock() { return { effects: { status: { status: 'success' } } }; },
+});
+
+function exactListTransaction(descriptor) {
+  const [packageIdValue, moduleName, functionName] = descriptor.target.split('::');
+  const inputs = descriptor.arguments.map((argument) => (
+    argument.kind === 'u64'
+      ? Inputs.Pure(bcs.u64().serialize(BigInt(argument.value)))
+      : Inputs.SharedObjectRef({ objectId: argument.objectId, initialSharedVersion: '1', mutable: true })
+  ));
+  const data = TransactionDataBuilder.restore({
+    version: 2, sender: descriptor.sender, expiration: null,
+    gasData: {
+      budget: '10000000', price: '1000', owner: descriptor.sender,
+      payment: [{ objectId: id(999), version: '1', digest }],
+    },
+    inputs,
+    commands: [{
+      MoveCall: {
+        package: packageIdValue, module: moduleName, function: functionName,
+        typeArguments: [...descriptor.typeArguments],
+        arguments: inputs.map((_, Input) => ({ Input, $kind: 'Input' })),
+      },
+      $kind: 'MoveCall',
+    }],
+  });
+  const bytes = data.build();
+  return { transactionBytes: toBase64(bytes), transactionDigest: TransactionDataBuilder.getDigestFromBytes(bytes) };
+}
 const adapters = {
   rpc: {
-    async getChainIdentifier() { return 'mainnet'; },
+    async getChainIdentifier() { return '35834a8a'; },
     async getSuiClient() { return suiClient; },
-    async resolveRoleLineages() { return {}; },
     async browseMarket() { throw new Error('not used'); },
     async loadRoute(request) {
       return {
         schemaVersion: WEB_V8_ROUTE_SCHEMA, source: 'LIVE_RPC', requestId: request.requestId,
-        chainIdentifier: 'mainnet', route: `maker:${IDs.root}`,
+        chainIdentifier: '35834a8a', route: `maker:${IDs.root}`,
         activation: { eventType, rootId: IDs.root, lifecycle: 'ACTIVE' },
         view: { title: 'Browser Evidence Maker', subtitle: 'Checked-in fresh v8 Move object fixture', lifecycle: 'PAUSED', listingKind: null, listingStatus: null },
         availableActions: ['listMakerControl'],
@@ -155,7 +191,7 @@ const adapters = {
     async loadActionContext(request) {
       return {
         schemaVersion: WEB_V8_CONTEXT_SCHEMA, source: 'LIVE_RPC', requestId: request.requestId,
-        chainIdentifier: 'mainnet', route: `maker:${IDs.root}`, action: 'listMakerControl',
+        chainIdentifier: '35834a8a', route: `maker:${IDs.root}`, action: 'listMakerControl',
         activation: { eventType, rootId: IDs.root, lifecycle: 'ACTIVE' }, packageTuple, builderInput,
         refs: { primary: ref(IDs.admin), root: ref(IDs.root), registry: ref(IDs.registry), treasury: ref(IDs.treasury) },
         authority: { kind: 'MAKER_ADMIN', refs: [ref(IDs.admin)] },
@@ -175,13 +211,13 @@ const adapters = {
       if (client !== suiClient || typeof transaction.getData !== 'function' || descriptor.action !== 'listMakerControl') throw new Error('real builder evidence missing');
       buildCount += 1;
       return {
-        transactionBytes: 'browser-evidence-exact-bytes', transactionDigest: 'browser-evidence-exact-digest',
+        ...exactListTransaction(descriptor),
         epochWindow: { start: '100', end: '101' }, gas: { budget: '10000000' },
         sourceSnapshot: { fixture: 'web-v8-chain.json', target: descriptor.target },
       };
     },
-    async deriveTransactionDigest() { return 'browser-evidence-exact-digest'; },
-    async dryRunExactTransaction() { return { status: 'SUCCESS' }; },
+    async deriveTransactionDigest(bytes) { return TransactionDataBuilder.getDigestFromBytes(fromBase64(bytes)); },
+    async dryRunExactTransaction() { throw new Error('private Market simulation is required'); },
     async broadcastExactTransaction() { throw new Error('disabled'); },
   },
 };
@@ -191,7 +227,14 @@ const controller = await bootstrapFreshV8Browser({
   route: parseFreshV8Route(`/maker/${IDs.root}`),
   rawRuntime,
   rawExecution: execution,
-  adapters,
+  browserModule: {
+    createProductionMakerV8BrowserAdapters({ runtime, execution: checkedExecution }) {
+      if (runtime !== rawRuntime || checkedExecution.chainIdentifier !== execution.chainIdentifier) {
+        throw new Error('production bootstrap factory inputs drifted');
+      }
+      return adapters;
+    },
+  },
   marketModule,
   recoveryModule,
 });

@@ -80,6 +80,7 @@ const runtimeInput = Object.freeze({
 });
 
 function runtimeAttestationRpc(runtime) {
+  const runtimeRoles = Object.keys(runtime.roles);
   const roles = ['seal', 'runtime', 'output', 'physical', 'market', 'release'];
   const authority = Object.fromEntries(roles.map((role, index) => [role, id(900 + index)]));
   const roleCommitment = Object.fromEntries(Object.keys(runtime.roles).map((role, index) => [role, bytes32(40 + index)]));
@@ -139,6 +140,16 @@ function runtimeAttestationRpc(runtime) {
     async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
     async getObject({ id: objectId }) {
       if (objectId === runtime.catalogId) return catalog;
+      const packageIndex = runtimeRoles.findIndex((role) => runtime.roles[role].callablePackageId === objectId);
+      if (packageIndex >= 0) return {
+        data: {
+          objectId,
+          version: '1',
+          digest: String(packageIndex + 2).repeat(32),
+          owner: { Immutable: true },
+          bcs: { dataType: 'package', id: objectId, version: '1', moduleMap: {} },
+        },
+      };
       const role = roles.find((candidate) => runtime.roleConfigIds[candidate] === objectId);
       return configs[role];
     },
@@ -485,9 +496,9 @@ function allActions() {
       wallet: wallet(IDs.seller),
       outputRegistry,
       soulRegistry,
-      outputAsset: object(IDs.output, types.completeOutput),
-      receipt: object(IDs.receipt, types.completeReceipt),
-      soul: object(IDs.soul, types.canonicalSoul, { ownershipEpoch: 5n }),
+      outputAsset: object(IDs.output, types.completeOutput, { outputCommitment: bytes32(10) }),
+      receipt: object(IDs.receipt, types.completeReceipt, { receiptCommitment: bytes32(11) }),
+      soul: object(IDs.soul, types.canonicalSoul, { ownershipEpoch: 5n, soulCommitment: bytes32(12) }),
       chainQuote: soulChainQuote,
       grossAtomic: 1_000_000n,
       expectedRegistryRevision: registry.fields.revision,
@@ -511,6 +522,12 @@ function allActions() {
       asset: object(IDs.baseAsset, types.physicalAsset, {
         sourceKind: '0',
         sourceTreasuryId: null,
+        sourceId: IDs.baseSource,
+        sourceSemanticId: 'base-style',
+        assetContentCommitment: bytes32(20),
+        sourceContentCommitment: bytes32(22),
+        provenanceCommitment: bytes32(24),
+        transferable: true,
         ownershipEpoch: 5n,
       }),
       chainQuote: physicalChainQuote,
@@ -526,6 +543,12 @@ function allActions() {
       asset: object(IDs.packAsset, types.physicalAsset, {
         sourceKind: '1',
         sourceTreasuryId: IDs.packTreasury,
+        sourceId: IDs.packRelease,
+        sourceSemanticId: 'pack-style',
+        assetContentCommitment: bytes32(21),
+        sourceContentCommitment: bytes32(23),
+        provenanceCommitment: bytes32(24),
+        transferable: true,
         ownershipEpoch: 5n,
       }),
       chainQuote: physicalChainQuote,
@@ -1382,9 +1405,9 @@ test('purchase derives one exact-value CoinWithBalance and forbids caller-author
     wallet: wallet(IDs.seller),
     outputRegistry,
     soulRegistry,
-    outputAsset: object(IDs.output, types.completeOutput),
-    receipt: object(IDs.receipt, types.completeReceipt),
-    soul: object(IDs.soul, types.canonicalSoul),
+    outputAsset: object(IDs.output, types.completeOutput, { outputCommitment: bytes32(10) }),
+    receipt: object(IDs.receipt, types.completeReceipt, { receiptCommitment: bytes32(11) }),
+    soul: object(IDs.soul, types.canonicalSoul, { soulCommitment: bytes32(12) }),
     grossAtomic: 1_000_000,
     expectedRegistryRevision: 4n,
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_INTEGER_INVALID');

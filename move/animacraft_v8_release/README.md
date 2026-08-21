@@ -16,6 +16,15 @@ The unprotected render wrapper constructs its private no-ability
 render material, not a witness or a pure authority tuple. Market remains only
 Core's consumed `MarketReadinessV8`; this package contains no Market logic.
 
+Publication uses three additional capability-contained wrappers. The Release
+config certifies and immediately consumes Core's one-time catalog witness,
+constructs license-wrapped rights for the transaction sender, and constructs a
+private `ReleaseTransportWitnessV8` for each protected Base ciphertext. None of
+these paths accepts a call capability, creator address, authority boolean,
+package ID, Root ID, or certification commitment as caller-authored authority;
+all identities are reread from the exact live config, catalog, Root, and Seal
+policy objects.
+
 ## Verification
 
 From this directory:

@@ -1,9 +1,18 @@
 import {
   MAKER_V8_ROLES,
-  assertMakerV8Runtime,
   makerV8StableType,
 } from './maker-v8-runtime.js';
+import {
+  MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+  attestMakerV8Runtime,
+  isMakerV8RuntimeAttested,
+  makerV8AttestedPackageTuple,
+} from './maker-v8-chain.js';
 import { classifyFreshV8Error } from './chain-error-ui.js';
+import {
+  MAKER_V8_ACTIONS as SHARED_MAKER_V8_ACTIONS,
+  makerV8ActionV8,
+} from './maker-v8-actions.js';
 
 export const WEB_V8_CONTEXT_SCHEMA = 'animacraft.web-market-context.v8';
 export const WEB_V8_ROUTE_SCHEMA = 'animacraft.web-route-view.v8';
@@ -13,6 +22,7 @@ export const WEB_V8_CACHE_SCHEMA = 'animacraft.web-cache.v8';
 export const WEB_V8_READBACK_SCHEMA = 'animacraft.web-market-finalized-readback.v8';
 export const UNSUPPORTED_PRODUCT_CODE = 'UNSUPPORTED_LEGACY_PRODUCT';
 const MAKER_V8_CHAIN_SCHEMA = 'animacraft.maker-v8-chain.v8';
+const ZERO_SUI_ADDRESS = `0x${'0'.repeat(64)}`;
 
 const EXACT_SUI_ID = /^0x[0-9a-f]{64}$/;
 const CANONICAL_U64 = /^(?:0|[1-9][0-9]*)$/;
@@ -44,24 +54,7 @@ const MAKER_TREASURY_ACTIONS = new Set([
   'purchaseBasePhysical',
 ]);
 
-export const MARKET_V8_ACTIONS = Object.freeze([
-  Object.freeze({ id: 'listMakerControl', label: 'List Maker control', lane: 'MAKER', kind: 'LIST', builder: 'buildListMakerControl', quote: 'quoteMakerResale' }),
-  Object.freeze({ id: 'purchaseMakerControl', label: 'Purchase Maker control', lane: 'MAKER', kind: 'PURCHASE', builder: 'buildPurchaseMakerControl', quote: 'quoteMakerResale' }),
-  Object.freeze({ id: 'cancelMakerControl', label: 'Cancel Maker listing', lane: 'MAKER', kind: 'CANCEL', builder: 'buildCancelMakerControl', quote: 'quoteMakerResale' }),
-  Object.freeze({ id: 'recoverMakerControl', label: 'Recover Maker control', lane: 'MAKER', kind: 'RECOVER', builder: 'buildRecoverMakerControl', quote: 'quoteMakerResale' }),
-  Object.freeze({ id: 'listSoulBundle', label: 'List Soul bundle', lane: 'SOUL', kind: 'LIST', builder: 'buildListSoulBundle', quote: 'quoteSoulResale' }),
-  Object.freeze({ id: 'purchaseSoulBundle', label: 'Purchase Soul bundle', lane: 'SOUL', kind: 'PURCHASE', builder: 'buildPurchaseSoulBundle', quote: 'quoteSoulResale' }),
-  Object.freeze({ id: 'cancelSoulListing', label: 'Cancel Soul listing', lane: 'SOUL', kind: 'CANCEL', builder: 'buildCancelSoulListing', quote: 'quoteSoulResale' }),
-  Object.freeze({ id: 'recoverSoulListing', label: 'Recover Soul bundle', lane: 'SOUL', kind: 'RECOVER', builder: 'buildRecoverSoulListing', quote: 'quoteSoulResale' }),
-  Object.freeze({ id: 'listBasePhysical', label: 'List Base Physical', lane: 'PHYSICAL_BASE', kind: 'LIST', builder: 'buildListBasePhysical', quote: 'quotePhysicalResale' }),
-  Object.freeze({ id: 'listPackPhysical', label: 'List Pack Physical', lane: 'PHYSICAL_PACK', kind: 'LIST', builder: 'buildListPackPhysical', quote: 'quotePhysicalResale' }),
-  Object.freeze({ id: 'purchaseBasePhysical', label: 'Purchase Base Physical', lane: 'PHYSICAL_BASE', kind: 'PURCHASE', builder: 'buildPurchaseBasePhysical', quote: 'quotePhysicalResale' }),
-  Object.freeze({ id: 'purchasePackPhysical', label: 'Purchase Pack Physical', lane: 'PHYSICAL_PACK', kind: 'PURCHASE', builder: 'buildPurchasePackPhysical', quote: 'quotePhysicalResale' }),
-  Object.freeze({ id: 'cancelPhysicalListing', label: 'Cancel typed Physical listing', lane: 'PHYSICAL', kind: 'CANCEL', builder: 'buildCancelPhysicalListing', quote: 'quotePhysicalResale' }),
-  Object.freeze({ id: 'recoverPhysicalListing', label: 'Recover typed Physical listing', lane: 'PHYSICAL', kind: 'RECOVER', builder: 'buildRecoverPhysicalListing', quote: 'quotePhysicalResale' }),
-]);
-
-const ACTION_BY_ID = new Map(MARKET_V8_ACTIONS.map((action) => [action.id, action]));
+export const MARKET_V8_ACTIONS = SHARED_MAKER_V8_ACTIONS;
 
 function appError(code, message, layer = 'VALIDATION', details = undefined) {
   const error = new Error(message);
@@ -105,6 +98,18 @@ function exactId(value, label) {
   return value;
 }
 
+function exactAddress(value, label, { allowZero = false } = {}) {
+  if (typeof value !== 'string' || !EXACT_SUI_ID.test(value)
+    || (!allowZero && /^0x0+$/.test(value))) {
+    throw appError(
+      'WEB_V8_ADDRESS_INVALID',
+      `${label} must be an exact lowercase${allowZero ? '' : ' non-zero'} Sui address.`,
+      'READBACK',
+    );
+  }
+  return value;
+}
+
 function exactText(value, label, maximum = 512) {
   if (typeof value !== 'string' || !value || value !== value.trim()
     || value.length > maximum || /[\u0000-\u001f\u007f]/.test(value)) {
@@ -129,6 +134,20 @@ function exactU8(value, label) {
   return Number(normalized);
 }
 
+async function readCurrentMainnetEpoch(client) {
+  let value;
+  if (typeof client?.core?.getCurrentSystemState === 'function') {
+    value = (await client.core.getCurrentSystemState())?.systemState?.epoch;
+  } else if (typeof client?.getLatestSuiSystemState === 'function') {
+    value = (await client.getLatestSuiSystemState())?.epoch;
+  } else if (typeof client?.getCurrentEpoch === 'function') {
+    value = (await client.getCurrentEpoch())?.epoch;
+  } else {
+    throw appError('WEB_V8_CURRENT_EPOCH_UNAVAILABLE', 'Current Mainnet epoch is unavailable.', 'CONTEXT');
+  }
+  return exactU64(String(value ?? ''), 'currentEpoch');
+}
+
 function stableJson(value) {
   if (typeof value === 'bigint') return JSON.stringify(value.toString());
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -143,7 +162,7 @@ function clonePublic(value) {
 }
 
 function actionById(value) {
-  const action = ACTION_BY_ID.get(value);
+  const action = makerV8ActionV8(value);
   if (!action) throw appError('WEB_V8_ACTION_UNKNOWN', 'The selected Market action is not one of the fourteen v8 actions.');
   return action;
 }
@@ -224,6 +243,9 @@ export function assertWebV8ExecutionConfig(value) {
     throw appError('WEB_V8_NETWORK_INVALID', 'network must name one supported Sui network.');
   }
   const chainIdentifier = exactText(value.chainIdentifier, 'chainIdentifier');
+  if (chainIdentifier !== MAKER_V8_MAINNET_CHAIN_IDENTIFIER) {
+    throw appError('WEB_V8_CHAIN_ID_INVALID', 'Execution must pin the exact Sui Mainnet chain identifier.', 'CONFIGURATION');
+  }
   if (typeof value.allowWalletSignature !== 'boolean' || typeof value.allowBroadcast !== 'boolean') {
     throw appError('WEB_V8_EXECUTION_FLAG_INVALID', 'Execution flags must be explicit booleans.');
   }
@@ -250,25 +272,12 @@ export function marketRuntimeFromMakerRuntime(runtime, network) {
 }
 
 export async function assertLiveMakerV8Runtime(rawRuntime, rpc) {
-  const changedRoles = MAKER_V8_ROLES.filter((role) => (
-    rawRuntime?.roles?.[role]?.typeOriginPackageId
-      !== rawRuntime?.roles?.[role]?.callablePackageId
-  ));
-  if (!changedRoles.length) return assertMakerV8Runtime(rawRuntime, { requireEnabled: true });
-  if (!rpc || typeof rpc.resolveRoleLineages !== 'function') {
-    throw appError('WEB_V8_LINEAGE_ADAPTER_REQUIRED', 'Live package lineage resolution is required for upgraded callable packages.', 'LINEAGE');
+  if (!rpc || typeof rpc.getSuiClient !== 'function') {
+    throw appError('WEB_V8_RUNTIME_ATTESTATION_REQUIRED', 'A live Sui client is required to attest ProductReleaseCatalog and companion configs.', 'LINEAGE');
   }
-  const resolved = await rpc.resolveRoleLineages(Object.freeze(changedRoles.map((role) => Object.freeze({
-    role,
-    callablePackageId: rawRuntime.roles[role].callablePackageId,
-  }))));
-  if (!isPlainRecord(resolved)) {
-    throw appError('WEB_V8_LINEAGE_RESULT_INVALID', 'Package lineage resolver returned an invalid result.', 'LINEAGE');
-  }
-  return assertMakerV8Runtime(rawRuntime, {
-    requireEnabled: true,
-    resolveTypeOriginPackageId: (role) => resolved[role],
-  });
+  const suiClient = await rpc.getSuiClient();
+  const attested = await attestMakerV8Runtime(suiClient, rawRuntime, { network: 'mainnet' });
+  return attested.runtime;
 }
 
 function assertMethod(record, name, label) {
@@ -339,6 +348,7 @@ function assertPackageTuple(value, runtime) {
     throw appError('WEB_V8_PACKAGE_TUPLE_INVALID', 'Live context must bind all seven package roles.', 'BINDING');
   }
   const seen = new Set();
+  const attestedByRole = new Map(makerV8AttestedPackageTuple(runtime).map((entry) => [entry.role, entry]));
   const tuple = value.map((entry, index) => {
     exactKeys(entry, ['role', 'originalPackageId', 'callablePackageId', 'packageDigest'], `packageTuple[${index}]`);
     const role = exactText(entry.role, `packageTuple[${index}].role`).toLowerCase();
@@ -348,15 +358,17 @@ function assertPackageTuple(value, runtime) {
     seen.add(role);
     const originalPackageId = exactId(entry.originalPackageId, `${role}.originalPackageId`);
     const callablePackageId = exactId(entry.callablePackageId, `${role}.callablePackageId`);
+    const packageDigest = exactText(entry.packageDigest, `${role}.packageDigest`);
     if (originalPackageId !== runtime.roles[role].typeOriginPackageId
-      || callablePackageId !== runtime.roles[role].callablePackageId) {
+      || callablePackageId !== runtime.roles[role].callablePackageId
+      || packageDigest !== attestedByRole.get(role)?.packageDigest) {
       throw appError('WEB_V8_PACKAGE_TUPLE_DRIFT', `${role} package identity drifted from the runtime gate.`, 'CONTEXT');
     }
     return Object.freeze({
       role: role.toUpperCase(),
       originalPackageId,
       callablePackageId,
-      packageDigest: exactText(entry.packageDigest, `${role}.packageDigest`),
+      packageDigest,
     });
   });
   return Object.freeze(tuple.sort((left, right) => left.role.localeCompare(right.role)));
@@ -650,6 +662,9 @@ function contextFingerprint(context, quote, account) {
 function builderInputFor(state) {
   const input = { ...state.context.builderInput };
   if (LIST_ACTIONS.has(state.action.id)) input.grossAtomic = state.grossAtomic;
+  if (LIST_ACTIONS.has(state.action.id) || PURCHASE_ACTIONS.has(state.action.id)) {
+    input.chainQuote = state.chainQuoteProof;
+  }
   return input;
 }
 
@@ -699,27 +714,102 @@ function recoveryIdentity(state, execution) {
   });
 }
 
-function transactionPlan(built, state) {
-  exactKeys(built, [
-    'transactionBytes',
-    'transactionDigest',
-    'epochWindow',
-    'gas',
-    'sourceSnapshot',
-  ], 'Built transaction plan');
+function transactionPlan(evidence, state) {
+  if (!isPlainRecord(evidence)
+    || evidence.schema !== 'animacraft.market-recovery-evidence.v8'
+    || evidence.descriptor?.action !== state.action.id) {
+    throw appError('WEB_V8_SIGNING_EVIDENCE_INVALID', 'Transaction plan must come from the exact branded Market action evidence.', 'VALIDATION');
+  }
   return Object.freeze({
-    transactionBytes: exactText(built.transactionBytes, 'transactionBytes', 2_000_000),
-    transactionDigest: exactText(built.transactionDigest, 'transactionDigest'),
+    transactionBytes: exactText(evidence.transactionBytes, 'transactionBytes', 180_000),
+    transactionDigest: exactText(evidence.transactionDigest, 'transactionDigest'),
     stage: `MARKET_${state.action.kind}`,
     sequence: exactU64(state.context.builderInput.expectation?.listingRevision ?? '0', 'sequence'),
     signer: state.account.address,
     epochWindow: Object.freeze({
-      start: exactU64(built.epochWindow.start, 'epochWindow.start'),
-      end: exactU64(built.epochWindow.end, 'epochWindow.end'),
+      start: exactU64(evidence.epochWindow?.start, 'epochWindow.start'),
+      end: exactU64(evidence.epochWindow?.end, 'epochWindow.end'),
     }),
-    gas: built.gas,
-    sourceSnapshot: built.sourceSnapshot,
+    gas: clonePublic(evidence.gasData),
+    expiration: clonePublic(evidence.expiration),
+    sourceSnapshot: Object.freeze({
+      schema: 'animacraft.market-source-snapshot.v8',
+      fingerprint: exactText(evidence.sourceFingerprint, 'sourceFingerprint'),
+      descriptor: clonePublic(evidence.descriptor),
+    }),
   });
+}
+
+function exactDecimal(value, label) {
+  const raw = typeof value === 'bigint' ? value.toString() : value;
+  if (typeof raw !== 'string' || !CANONICAL_U64.test(raw)) {
+    throw appError('WEB_V8_DECIMAL_INVALID', `${label} must be a canonical unsigned decimal string.`, 'READBACK');
+  }
+  return raw;
+}
+
+function plusDecimal(value, delta) {
+  return (BigInt(value) + BigInt(delta)).toString();
+}
+
+function minusDecimal(value, delta, label) {
+  if (BigInt(value) < BigInt(delta)) {
+    throw appError('WEB_V8_FINALIZED_COUNTER_INVALID', `${label} would underflow.`, 'READBACK');
+  }
+  return (BigInt(value) - BigInt(delta)).toString();
+}
+
+const REGISTRY_POST_FIELDS = Object.freeze([
+  'revision', 'listingCount', 'escrowCount', 'completedSaleCount',
+  'canceledSaleCount', 'recoveredSaleCount', 'grossVolumeAtomic',
+  'protocolPaidAtomic', 'creatorPaidAtomic', 'sourcePaidAtomic', 'sellerPaidAtomic',
+]);
+const TREASURY_POST_FIELDS = Object.freeze(['escrowAtomic', 'grossEscrowedAtomic', 'grossReleasedAtomic']);
+
+function exactCounterSnapshot(value, fields, label) {
+  exactKeys(value, fields, label);
+  return Object.freeze(Object.fromEntries(fields.map((field) => [
+    field,
+    exactDecimal(value[field], `${label}.${field}`),
+  ])));
+}
+
+function expectedRegistryAfter(action, preState) {
+  const before = preState.registry;
+  const quote = preState.quote;
+  const expected = { ...before, revision: plusDecimal(before.revision, '1') };
+  if (action.kind === 'LIST') {
+    expected.listingCount = plusDecimal(before.listingCount, '1');
+    expected.escrowCount = plusDecimal(before.escrowCount, '1');
+  } else if (action.kind === 'PURCHASE') {
+    expected.escrowCount = minusDecimal(before.escrowCount, '1', 'registry.escrowCount');
+    expected.completedSaleCount = plusDecimal(before.completedSaleCount, '1');
+    expected.grossVolumeAtomic = plusDecimal(before.grossVolumeAtomic, quote.grossAtomic);
+    expected.protocolPaidAtomic = plusDecimal(before.protocolPaidAtomic, quote.protocolAtomic);
+    expected.creatorPaidAtomic = plusDecimal(before.creatorPaidAtomic, quote.creatorAtomic);
+    expected.sourcePaidAtomic = plusDecimal(before.sourcePaidAtomic, quote.sourceAtomic);
+    expected.sellerPaidAtomic = plusDecimal(before.sellerPaidAtomic, quote.sellerAtomic);
+  } else {
+    expected.escrowCount = minusDecimal(before.escrowCount, '1', 'registry.escrowCount');
+    const field = action.kind === 'CANCEL' ? 'canceledSaleCount' : 'recoveredSaleCount';
+    expected[field] = plusDecimal(before[field], '1');
+  }
+  return expected;
+}
+
+function expectedTreasuryAfter(action, preState) {
+  const expected = { ...preState.treasury };
+  if (action.kind === 'PURCHASE') {
+    expected.grossEscrowedAtomic = plusDecimal(expected.grossEscrowedAtomic, preState.quote.grossAtomic);
+    expected.grossReleasedAtomic = plusDecimal(expected.grossReleasedAtomic, preState.quote.grossAtomic);
+  }
+  return expected;
+}
+
+function assertExactSnapshot(actual, expected, label) {
+  if (stableJson(actual) !== stableJson(expected)) {
+    throw appError('WEB_V8_FINALIZED_POSTSTATE_MISMATCH', `${label} differs from the exact Move state transition.`, 'READBACK', { actual, expected });
+  }
 }
 
 export function assertFinalizedMarketReadbackV8(value, request, marketClient, marketModule) {
@@ -729,9 +819,14 @@ export function assertFinalizedMarketReadbackV8(value, request, marketClient, ma
     'digest',
     'checkpoint',
     'identity',
+    'transaction',
     'event',
-    'objectReadback',
+    'postState',
   ], 'Finalized Market readback');
+  if (!/^0x[0-9a-f]{64}$/.test(request.planHash ?? '')
+    || request.plan?.fingerprint !== request.planHash) {
+    throw appError('WEB_V8_FINALIZED_PLAN_HASH_MISMATCH', 'Finalized readback requires the exact durable recovery plan hash.', 'READBACK');
+  }
   if (value.schemaVersion !== WEB_V8_READBACK_SCHEMA || value.source !== 'FINALIZED_RPC'
     || exactText(value.digest, 'readback.digest') !== request.digest
     || exactU64(value.checkpoint, 'readback.checkpoint') !== exactU64(request.outcome?.checkpoint, 'outcome.checkpoint')
@@ -742,6 +837,23 @@ export function assertFinalizedMarketReadbackV8(value, request, marketClient, ma
     throw appError('WEB_V8_FINALIZED_EVENT_MISMATCH', 'Market event does not belong to the finalized digest.', 'READBACK');
   }
   const action = actionById(request.identity.action);
+  const descriptor = request.plan?.sourceSnapshot?.descriptor;
+  if (!isPlainRecord(descriptor) || descriptor.action !== action.id
+    || descriptor.sender !== request.identity.wallet
+    || descriptor.rootId !== request.identity.root.id
+    || descriptor.registryId !== request.identity.registry.id
+    || descriptor.treasuryId !== request.identity.treasury.id
+    || !isPlainRecord(descriptor.preState)) {
+    throw appError('WEB_V8_FINALIZED_PLAN_MISMATCH', 'Finalized verification requires the exact durable branded action descriptor and pre-state.', 'READBACK');
+  }
+  const preState = descriptor.preState;
+  exactKeys(value.transaction, ['sender', 'status', 'target', 'typeArguments'], 'Finalized transaction effects');
+  if (exactId(value.transaction.sender, 'transaction.sender') !== descriptor.sender
+    || value.transaction.status !== 'SUCCESS'
+    || value.transaction.target !== descriptor.target
+    || stableJson(value.transaction.typeArguments) !== stableJson(descriptor.typeArguments)) {
+    throw appError('WEB_V8_FINALIZED_TRANSACTION_MISMATCH', 'Finalized sender, status, Move target, or type arguments differ from the signed action.', 'READBACK');
+  }
   const event = marketClient.parseEvent(value.event);
   const expectedEvent = action.kind === 'LIST'
     ? 'MarketListingOpenedV8'
@@ -749,10 +861,10 @@ export function assertFinalizedMarketReadbackV8(value, request, marketClient, ma
   if (event.kind !== expectedEvent || event.fields.registryId !== request.identity.registry.id) {
     throw appError('WEB_V8_FINALIZED_EVENT_MISMATCH', 'Finalized Market event is not the operation-specific event.', 'READBACK');
   }
-  const expectedLanes = action.lane === 'PHYSICAL'
+  const allowedDescriptorLanes = action.lane === 'PHYSICAL'
     ? [marketModule.MARKET_V8_LANES.PHYSICAL_BASE, marketModule.MARKET_V8_LANES.PHYSICAL_PACK]
     : [marketModule.MARKET_V8_LANES[action.lane]];
-  if (!expectedLanes.includes(event.fields.lane)) {
+  if (!allowedDescriptorLanes.includes(descriptor.lane) || event.fields.lane !== descriptor.lane) {
     throw appError('WEB_V8_FINALIZED_EVENT_MISMATCH', 'Finalized Market event lane differs from the signed action.', 'READBACK');
   }
   if (action.kind === 'LIST' && event.fields.rootId !== request.identity.root.id) {
@@ -761,6 +873,9 @@ export function assertFinalizedMarketReadbackV8(value, request, marketClient, ma
   if (action.kind !== 'LIST' && event.fields.listingId !== request.identity.listing.id) {
     throw appError('WEB_V8_FINALIZED_EVENT_MISMATCH', 'Terminal listing event binds another listing.', 'READBACK');
   }
+  if (event.fields.assetId !== preState.assetIds.at(-1)) {
+    throw appError('WEB_V8_FINALIZED_EVENT_MISMATCH', 'Finalized Market event asset differs from the exact signed custody object.', 'READBACK');
+  }
   if (action.kind === 'CANCEL' && event.fields.recovered !== false) {
     throw appError('WEB_V8_FINALIZED_EVENT_MISMATCH', 'Cancel requires a non-recovery close event.', 'READBACK');
   }
@@ -768,39 +883,211 @@ export function assertFinalizedMarketReadbackV8(value, request, marketClient, ma
     throw appError('WEB_V8_FINALIZED_EVENT_MISMATCH', 'Recovery requires a recovery close event.', 'READBACK');
   }
 
-  exactKeys(value.objectReadback, ['operation', 'objects'], 'Operation object readback');
-  if (value.objectReadback.operation !== action.id || !Array.isArray(value.objectReadback.objects)) {
-    throw appError('WEB_V8_FINALIZED_OBJECT_READBACK_INVALID', 'Object readback must name the exact action.', 'READBACK');
-  }
-  const objects = value.objectReadback.objects.map((object, index) => {
-    exactKeys(object, ['role', 'objectId', 'version', 'digest', 'type', 'change'], `objectReadback.objects[${index}]`);
-    const role = exactText(object.role, `objectReadback.objects[${index}].role`).toUpperCase();
-    const change = exactText(object.change, `objectReadback.objects[${index}].change`).toUpperCase();
-    if (!['READBACK', 'CREATED', 'MUTATED', 'DELETED', 'RECEIVED'].includes(change)) {
-      throw appError('WEB_V8_FINALIZED_OBJECT_READBACK_INVALID', 'Object change is unsupported.', 'READBACK');
+  const quote = preState.quote;
+  if (action.kind === 'LIST') {
+    const expectedAsset = action.lane === 'SOUL'
+      ? preState.assetIds[2] : preState.assetIds[0];
+    if (event.fields.assetId !== expectedAsset
+      || event.fields.seller !== preState.seller
+      || event.fields.ownershipEpoch.toString() !== preState.ownershipEpoch
+      || event.fields.grossAtomic.toString() !== quote.grossAtomic
+      || event.fields.quoteCommitment !== quote.commitment) {
+      throw appError('WEB_V8_FINALIZED_EVENT_MISMATCH', 'Opened event fields differ from the exact custody and quote pre-state.', 'READBACK');
     }
+  } else if (action.kind === 'PURCHASE') {
+    for (const field of ['grossAtomic', 'protocolAtomic', 'creatorAtomic', 'sourceAtomic', 'sellerAtomic']) {
+      if (event.fields[field].toString() !== quote[field]) {
+        throw appError('WEB_V8_FINALIZED_EVENT_MISMATCH', `Settled event ${field} differs from the exact quote.`, 'READBACK');
+      }
+    }
+    if (event.fields.seller !== preState.seller || event.fields.buyer !== descriptor.sender) {
+      throw appError('WEB_V8_FINALIZED_EVENT_MISMATCH', 'Settled event seller/buyer differs from the signed custody transition.', 'READBACK');
+    }
+  } else if (event.fields.seller !== preState.seller) {
+    throw appError('WEB_V8_FINALIZED_EVENT_MISMATCH', 'Closed event seller differs from stored custody.', 'READBACK');
+  }
+
+  exactKeys(value.postState, ['registry', 'treasury', 'listing', 'root', 'assets', 'revenue'], 'Finalized post-state');
+  const registry = exactCounterSnapshot(value.postState.registry, REGISTRY_POST_FIELDS, 'postState.registry');
+  const treasury = exactCounterSnapshot(value.postState.treasury, TREASURY_POST_FIELDS, 'postState.treasury');
+  if (preState.treasury.escrowAtomic !== '0' || treasury.escrowAtomic !== '0') {
+    throw appError('WEB_V8_FINALIZED_ESCROW_NOT_ZERO', 'Market payment escrow must be zero both before and after the atomic action.', 'READBACK');
+  }
+  assertExactSnapshot(registry, expectedRegistryAfter(action, preState), 'Registry counters');
+  assertExactSnapshot(treasury, expectedTreasuryAfter(action, preState), 'Market treasury balances');
+
+  exactKeys(value.postState.listing, [
+    'objectId', 'type', 'change', 'status', 'revision', 'terminalRecipient',
+    'seller', 'ownershipEpoch', 'assetIds', 'grossAtomic', 'quoteCommitment',
+  ], 'postState.listing');
+  const listing = value.postState.listing;
+  const listingId = exactId(listing.objectId, 'postState.listing.objectId');
+  if (listingId !== event.fields.listingId
+    || listing.type !== (action.lane === 'MAKER' ? marketClient.types.makerListing
+      : action.lane === 'SOUL' ? marketClient.types.soulListing : marketClient.types.physicalListing)
+    || listing.change !== (action.kind === 'LIST' ? 'CREATED' : 'MUTATED')
+    || exactDecimal(listing.status, 'listing.status') !== String(action.kind === 'LIST' ? 0 : action.kind === 'PURCHASE' ? 1 : action.kind === 'CANCEL' ? 2 : 3)
+    || exactDecimal(listing.revision, 'listing.revision') !== (action.kind === 'LIST' ? '0' : plusDecimal(preState.listing.revision, '1'))
+    || exactId(listing.seller, 'listing.seller') !== preState.seller
+    || exactDecimal(listing.ownershipEpoch, 'listing.ownershipEpoch') !== preState.ownershipEpoch
+    || stableJson(listing.assetIds) !== stableJson(preState.assetIds)
+    || exactDecimal(listing.grossAtomic, 'listing.grossAtomic') !== quote.grossAtomic
+    || listing.quoteCommitment !== quote.commitment) {
+    throw appError('WEB_V8_FINALIZED_LISTING_MISMATCH', 'Listing status, revision, custody, quote, or change kind is not the exact action post-state.', 'READBACK');
+  }
+  const expectedRecipient = action.kind === 'LIST'
+    ? ZERO_SUI_ADDRESS : action.kind === 'PURCHASE' ? descriptor.sender : preState.seller;
+  if (exactAddress(listing.terminalRecipient, 'listing.terminalRecipient', { allowZero: true }) !== expectedRecipient) {
+    throw appError('WEB_V8_FINALIZED_LISTING_MISMATCH', 'Listing terminal recipient differs from the exact action recipient.', 'READBACK');
+  }
+
+  exactKeys(value.postState.root, ['objectId', 'owner', 'adminCapId', 'controlEpoch', 'change'], 'postState.root');
+  const rootAfter = value.postState.root;
+  const makerPurchase = action.id === 'purchaseMakerControl';
+  const makerTerminal = action.id === 'cancelMakerControl' || action.id === 'recoverMakerControl';
+  if (exactId(rootAfter.objectId, 'root.objectId') !== preState.root.objectId
+    || exactId(rootAfter.owner, 'root.owner') !== (makerPurchase ? descriptor.sender : preState.root.owner)
+    || exactDecimal(rootAfter.controlEpoch, 'root.controlEpoch') !== (makerPurchase
+      ? plusDecimal(preState.root.controlEpoch, '1') : preState.root.controlEpoch)
+    || rootAfter.change !== (makerPurchase || makerTerminal ? 'MUTATED' : 'READBACK')) {
+    throw appError('WEB_V8_FINALIZED_ROOT_MISMATCH', 'Root owner, control epoch, or change kind differs from the exact action.', 'READBACK');
+  }
+  const rootAdminId = exactId(rootAfter.adminCapId, 'root.adminCapId');
+  if ((makerPurchase && rootAdminId === preState.root.adminCapId)
+    || (!makerPurchase && rootAdminId !== preState.root.adminCapId)) {
+    throw appError('WEB_V8_FINALIZED_ROOT_MISMATCH', 'Root AdminCap identity did not follow the Maker control transition.', 'READBACK');
+  }
+
+  if (!Array.isArray(value.postState.assets) || !value.postState.assets.length) {
+    throw appError('WEB_V8_FINALIZED_ASSET_MISMATCH', 'Finalized custody assets are required.', 'READBACK');
+  }
+  const assets = value.postState.assets.map((asset, index) => {
+    exactKeys(asset, ['role', 'objectId', 'type', 'change', 'owner', 'holder', 'ownershipEpoch'], `postState.assets[${index}]`);
     return Object.freeze({
-      role,
-      objectId: exactId(object.objectId, `objectReadback.objects[${index}].objectId`),
-      version: exactU64(object.version, `objectReadback.objects[${index}].version`),
-      digest: exactText(object.digest, `objectReadback.objects[${index}].digest`),
-      type: exactText(object.type, `objectReadback.objects[${index}].type`),
-      change,
+      role: exactText(asset.role, `assets[${index}].role`).toUpperCase(),
+      objectId: exactId(asset.objectId, `assets[${index}].objectId`),
+      type: exactText(asset.type, `assets[${index}].type`),
+      change: exactText(asset.change, `assets[${index}].change`).toUpperCase(),
+      owner: asset.owner === null ? null : exactId(asset.owner, `assets[${index}].owner`),
+      holder: asset.holder === null ? null : exactId(asset.holder, `assets[${index}].holder`),
+      ownershipEpoch: asset.ownershipEpoch === null ? null : exactDecimal(asset.ownershipEpoch, `assets[${index}].ownershipEpoch`),
     });
   });
-  if (new Set(objects.map((object) => object.role)).size !== objects.length) {
-    throw appError('WEB_V8_FINALIZED_OBJECT_READBACK_INVALID', 'Object evidence roles must be unique.', 'READBACK');
+  const byRole = new Map(assets.map((asset) => [asset.role, asset]));
+  if (byRole.size !== assets.length) throw appError('WEB_V8_FINALIZED_ASSET_MISMATCH', 'Finalized asset roles must be unique.', 'READBACK');
+  const descriptorArgs = new Map(descriptor.arguments.map((argument) => [argument.name, argument]));
+  const targetOwner = action.kind === 'LIST' ? listingId : action.kind === 'PURCHASE' ? descriptor.sender : preState.seller;
+  if (action.lane === 'MAKER') {
+    const adminType = (descriptorArgs.get('admin') || descriptorArgs.get('adminReceiving')).type;
+    if (makerPurchase) {
+      const oldAdmin = byRole.get('ADMIN_PREVIOUS');
+      const newAdmin = byRole.get('ADMIN');
+      if (!oldAdmin || oldAdmin.objectId !== preState.assetIds[0] || oldAdmin.type !== adminType
+        || oldAdmin.change !== 'DELETED' || oldAdmin.owner !== null
+        || !newAdmin || newAdmin.objectId !== rootAdminId || newAdmin.type !== adminType
+        || newAdmin.change !== 'CREATED' || newAdmin.owner !== descriptor.sender
+        || newAdmin.holder !== descriptor.sender
+        || newAdmin.ownershipEpoch !== plusDecimal(preState.ownershipEpoch, '1')) {
+        throw appError('WEB_V8_FINALIZED_ASSET_MISMATCH', 'Maker purchase must delete the old AdminCap and create the exact buyer cap at epoch N+1.', 'READBACK');
+      }
+    } else {
+      const admin = byRole.get('ADMIN');
+      if (assets.length !== 1 || !admin || admin.objectId !== preState.assetIds[0]
+        || admin.type !== adminType || admin.change !== 'MUTATED'
+        || admin.owner !== targetOwner || admin.holder !== preState.seller
+        || admin.ownershipEpoch !== preState.ownershipEpoch) {
+        throw appError('WEB_V8_FINALIZED_ASSET_MISMATCH', 'Maker custody AdminCap post-state is invalid.', 'READBACK');
+      }
+    }
+  } else if (action.lane === 'SOUL') {
+    const roles = [
+      ['OUTPUT', 'outputAsset', 'outputReceiving', preState.assetIds[0], null],
+      ['RECEIPT', 'receipt', 'receiptReceiving', preState.assetIds[1], null],
+      ['SOUL', 'soul', 'soulReceiving', preState.assetIds[2], action.kind === 'PURCHASE'
+        ? plusDecimal(preState.ownershipEpoch, '1') : preState.ownershipEpoch],
+    ];
+    if (assets.length !== 3 || roles.some(([role, listName, receiveName, objectIdValue, epoch]) => {
+      const asset = byRole.get(role);
+      const type = (descriptorArgs.get(listName) || descriptorArgs.get(receiveName)).type;
+      return !asset || asset.objectId !== objectIdValue || asset.type !== type
+        || asset.change !== 'MUTATED' || asset.owner !== targetOwner
+        || asset.holder !== (action.kind === 'LIST' ? preState.seller : targetOwner)
+        || asset.ownershipEpoch !== epoch;
+    })) {
+      throw appError('WEB_V8_FINALIZED_ASSET_MISMATCH', 'Soul Output/Receipt/Soul ownership or epoch post-state is invalid.', 'READBACK');
+    }
+  } else {
+    const asset = byRole.get('ASSET');
+    const type = (descriptorArgs.get('asset') || descriptorArgs.get('receiving')).type;
+    const epoch = action.kind === 'PURCHASE' ? plusDecimal(preState.ownershipEpoch, '1') : preState.ownershipEpoch;
+    if (assets.length !== 1 || !asset || asset.objectId !== preState.assetIds[0]
+      || asset.type !== type || asset.change !== 'MUTATED' || asset.owner !== targetOwner
+      || asset.holder !== (action.kind === 'LIST' ? preState.seller : targetOwner)
+      || asset.ownershipEpoch !== epoch) {
+      throw appError('WEB_V8_FINALIZED_ASSET_MISMATCH', 'Physical asset holder, owner, source lane, or epoch post-state is invalid.', 'READBACK');
+    }
   }
-  const byRole = new Map(objects.map((object) => [object.role, object]));
-  const listingId = event.fields.listingId;
-  for (const [role, expectedId] of [
-    ['ROOT', request.identity.root.id],
-    ['REGISTRY', request.identity.registry.id],
-    ['TREASURY', request.identity.treasury.id],
-    ['LISTING', listingId],
-  ]) {
-    if (byRole.get(role)?.objectId !== expectedId) {
-      throw appError('WEB_V8_FINALIZED_OBJECT_READBACK_MISMATCH', `${role} readback does not match finalized operation evidence.`, 'READBACK');
+
+  exactKeys(value.postState.revenue, ['balances', 'coinOutputs'], 'postState.revenue');
+  if (action.kind !== 'PURCHASE') {
+    if (!Array.isArray(value.postState.revenue.balances) || value.postState.revenue.balances.length
+      || !Array.isArray(value.postState.revenue.coinOutputs) || value.postState.revenue.coinOutputs.length) {
+      throw appError('WEB_V8_FINALIZED_REVENUE_MISMATCH', 'Non-purchase actions must not mutate payment balances.', 'READBACK');
+    }
+  } else {
+    const expectedBalances = [];
+    for (const [role, object] of [
+      ['PROTOCOL', preState.revenueObjects.protocolTreasury],
+      ['SOURCE_MAKER', preState.revenueObjects.makerTreasury],
+      ['SOURCE_PACK', preState.revenueObjects.packTreasury],
+    ]) {
+      if (!object || object.balanceAtomic === null) continue;
+      const delta = role === 'PROTOCOL' ? quote.protocolAtomic : quote.sourceAtomic;
+      if (delta === '0') continue;
+      expectedBalances.push({
+        role,
+        objectId: object.objectId,
+        beforeAtomic: object.balanceAtomic,
+        afterAtomic: plusDecimal(object.balanceAtomic, delta),
+        deltaAtomic: delta,
+      });
+    }
+    if (!Array.isArray(value.postState.revenue.balances)) throw appError('WEB_V8_FINALIZED_REVENUE_MISMATCH', 'Revenue balance deltas are required.', 'READBACK');
+    const balances = value.postState.revenue.balances.map((entry, index) => {
+      exactKeys(entry, ['role', 'objectId', 'beforeAtomic', 'afterAtomic', 'deltaAtomic'], `revenue.balances[${index}]`);
+      return {
+        role: exactText(entry.role, 'revenue role').toUpperCase(),
+        objectId: exactId(entry.objectId, 'revenue objectId'),
+        beforeAtomic: exactDecimal(entry.beforeAtomic, 'revenue before'),
+        afterAtomic: exactDecimal(entry.afterAtomic, 'revenue after'),
+        deltaAtomic: exactDecimal(entry.deltaAtomic, 'revenue delta'),
+      };
+    });
+    assertExactSnapshot(balances.sort((a, b) => a.role.localeCompare(b.role)), expectedBalances.sort((a, b) => a.role.localeCompare(b.role)), 'Revenue treasury deltas');
+    const expectedCoins = [
+      ['CREATOR', preState.root.creator, quote.creatorAtomic],
+      ['SELLER', preState.seller, quote.sellerAtomic],
+    ].filter(([, , amount]) => amount !== '0');
+    if (!Array.isArray(value.postState.revenue.coinOutputs) || value.postState.revenue.coinOutputs.length !== expectedCoins.length) {
+      throw appError('WEB_V8_FINALIZED_REVENUE_MISMATCH', 'Creator/seller exact Coin outputs are missing.', 'READBACK');
+    }
+    const outputs = value.postState.revenue.coinOutputs.map((entry, index) => {
+      exactKeys(entry, ['role', 'objectId', 'owner', 'type', 'amountAtomic', 'change'], `revenue.coinOutputs[${index}]`);
+      return {
+        role: exactText(entry.role, 'coin output role').toUpperCase(),
+        objectId: exactId(entry.objectId, 'coin output objectId'),
+        owner: exactId(entry.owner, 'coin output owner'),
+        type: exactText(entry.type, 'coin output type'),
+        amountAtomic: exactDecimal(entry.amountAtomic, 'coin output amount'),
+        change: exactText(entry.change, 'coin output change').toUpperCase(),
+      };
+    });
+    for (const [role, owner, amount] of expectedCoins) {
+      const output = outputs.find((entry) => entry.role === role);
+      if (!output || output.owner !== owner || output.type !== marketClient.types.paymentCoin
+        || output.amountAtomic !== amount || output.change !== 'CREATED') {
+        throw appError('WEB_V8_FINALIZED_REVENUE_MISMATCH', `${role} exact Coin output is invalid.`, 'READBACK');
+      }
     }
   }
   return Object.freeze({
@@ -808,10 +1095,12 @@ export function assertFinalizedMarketReadbackV8(value, request, marketClient, ma
     digest: request.digest,
     checkpoint: exactU64(value.checkpoint, 'readback.checkpoint'),
     identity: clonePublic(request.identity),
+    planHash: request.planHash,
     evidence: Object.freeze({
       schemaVersion: WEB_V8_READBACK_SCHEMA,
       event: clonePublic(event),
-      objects: Object.freeze(objects),
+      transaction: clonePublic(value.transaction),
+      postState: clonePublic(value.postState),
     }),
   });
 }
@@ -935,7 +1224,8 @@ function normalizeView(result, request, runtime, execution) {
     throw appError('WEB_V8_ROUTE_VIEW_INVALID', 'Route view does not bind the live request.', 'CONTEXT');
   }
   if (!isPlainRecord(result.view)) throw appError('WEB_V8_ROUTE_VIEW_INVALID', 'Route view is invalid.', 'VALIDATION');
-  if (!Array.isArray(result.availableActions) || result.availableActions.some((id) => !ACTION_BY_ID.has(id))) {
+  if (!Array.isArray(result.availableActions)
+    || result.availableActions.some((id) => makerV8ActionV8(id)?.id !== id)) {
     throw appError('WEB_V8_ROUTE_ACTIONS_INVALID', 'Route view exposed an unknown action.', 'VALIDATION');
   }
   const rootId = exactId(result.activation.rootId, 'activation.rootId');
@@ -995,28 +1285,36 @@ export function createFreshV8Controller({
 }) {
   if (!route?.valid) throw appError(UNSUPPORTED_PRODUCT_CODE, 'This link is not a fresh Maker v8 route.');
   const adapters = assertFreshV8Adapters(adapterInput);
+  if (!isMakerV8RuntimeAttested(runtime)) {
+    throw appError('WEB_V8_RUNTIME_ATTESTATION_REQUIRED', 'Controller runtime must come from a live Mainnet ProductReleaseCatalog readback.', 'LINEAGE');
+  }
   const marketRuntime = marketRuntimeFromMakerRuntime(runtime, execution.network);
   const marketClient = marketModule.createMarketV8Client(marketRuntime, { network: execution.network });
   if (!marketClient
     || MARKET_V8_ACTIONS.some((action) => typeof marketClient[action.builder] !== 'function')
     || typeof marketClient.buildQuoteInspection !== 'function'
-    || typeof marketClient.inspectQuoteOnChain !== 'function') {
+    || typeof marketClient.inspectQuoteOnChain !== 'function'
+    || typeof marketModule.inspectMarketActionOnChainV8 !== 'function'
+    || typeof marketModule.createMarketV8RecoveryEvidenceV8 !== 'function') {
     throw appError('WEB_V8_MARKET_MODULE_INVALID', 'Market module must expose fourteen Transaction builders and chain quote inspection.', 'CONFIGURATION');
   }
   if (typeof recoveryModule?.createMakerV8RecoveryController !== 'function'
-    || typeof recoveryModule?.makerV8RecoveryScopeKey !== 'function') {
+    || typeof recoveryModule?.makerV8RecoveryScopeKey !== 'function'
+    || typeof recoveryModule?.canonicalMakerV8RecoveryIdentity !== 'function') {
     throw appError('WEB_V8_RECOVERY_MODULE_INVALID', 'Recovery module must expose its controller and stable Root scope key.', 'CONFIGURATION');
   }
   const persistence = adapters.persistence || createIndexedDbRecoveryAdapter(indexedDb);
   let currentIdentity = null;
-  let latestLiveIdentity = null;
   const recovery = recoveryModule.createMakerV8RecoveryController({
     persist: persistence,
     deriveTransactionDigest: (bytes) => adapters.transactions.deriveTransactionDigest(bytes),
     verifySignature: (request) => adapters.wallet.verifyExactSignature(request),
-    getContext: async () => {
-      if (!latestLiveIdentity) throw appError('WEB_V8_CONTEXT_UNAVAILABLE', 'Refresh live context before signing or replay.', 'CONTEXT');
-      return latestLiveIdentity;
+    getContext: async ({ identity }) => {
+      const fresh = await refetchExactSigningSnapshot({ identity });
+      return Object.freeze({
+        identity: fresh.identity,
+        currentEpoch: await readCurrentMainnetEpoch(fresh.suiClient),
+      });
     },
     sign: async (request) => {
       if (!execution.allowWalletSignature) {
@@ -1055,6 +1353,7 @@ export function createFreshV8Controller({
     context: null,
     quote: null,
     quoteEvidence: null,
+    chainQuoteProof: null,
     fingerprint: null,
     reviewedFingerprint: null,
     paymentFingerprint: null,
@@ -1081,9 +1380,9 @@ export function createFreshV8Controller({
     state.reviewedFingerprint = null;
     state.paymentFingerprint = null;
     state.quoteEvidence = null;
+    state.chainQuoteProof = null;
     state.prepared = null;
     state.recoveryRecord = null;
-    latestLiveIdentity = null;
     const requested = {
       requestId: requestId(),
       route,
@@ -1111,6 +1410,7 @@ export function createFreshV8Controller({
       state.reviewedFingerprint = null;
       state.paymentFingerprint = null;
       state.quoteEvidence = null;
+      state.chainQuoteProof = null;
       state.prepared = null;
       state.recoveryRecord = null;
     }
@@ -1118,7 +1418,6 @@ export function createFreshV8Controller({
     state.quote = quote;
     state.fingerprint = fingerprint;
     const liveIdentity = recoveryIdentity(state, execution);
-    latestLiveIdentity = liveIdentity;
     const scopeKey = recoveryModule.makerV8RecoveryScopeKey(liveIdentity);
     const pendingAtRoot = await persistence.load(scopeKey);
     if (pendingAtRoot?.identity) {
@@ -1141,7 +1440,6 @@ export function createFreshV8Controller({
       if (observedChain !== execution.chainIdentifier) {
         throw appError('WEB_V8_NETWORK_MISMATCH', 'RPC chain identifier does not match the pinned deployment.', 'CONTEXT');
       }
-      state.account = assertAccount(await adapters.wallet.getCurrentAccount(), execution);
       if (route.kind === 'market') {
         const request = {
           requestId: requestId(),
@@ -1155,6 +1453,7 @@ export function createFreshV8Controller({
         state.browse = normalizeBrowse(await adapters.rpc.browseMarket(request), request, runtime, execution);
         state.status = 'READY';
       } else {
+        state.account = assertAccount(await adapters.wallet.getCurrentAccount(), execution);
         const request = { requestId: requestId(), route };
         const result = normalizeView(await adapters.rpc.loadRoute({
           ...request,
@@ -1227,6 +1526,7 @@ export function createFreshV8Controller({
       }
       state.quote = chainQuote;
       state.quoteEvidence = chainQuote.evidence;
+      state.chainQuoteProof = inspected;
       state.reviewedFingerprint = state.fingerprint;
       if (!PURCHASE_ACTIONS.has(state.action.id)) state.status = 'READY';
       state.busy = false;
@@ -1248,6 +1548,114 @@ export function createFreshV8Controller({
     emit();
   }
 
+  async function rebuildAndSimulateExactAction(
+    expectedPlan = null,
+    candidate = state,
+    suppliedClient = null,
+    suppliedMarketClient = null,
+  ) {
+    const suiClient = suppliedClient || await adapters.rpc.getSuiClient();
+    const freshRuntime = suppliedMarketClient
+      ? candidate.runtime
+      : (await attestMakerV8Runtime(suiClient, candidate.runtime, { network: execution.network })).runtime;
+    const freshMarketClient = suppliedMarketClient
+      || marketModule.createMarketV8Client(freshRuntime, { network: execution.network });
+    const compiled = freshMarketClient[candidate.action.builder](builderInputFor(candidate));
+    if (!compiled?.transaction || !compiled?.descriptor || compiled.descriptor.action !== candidate.action.id) {
+      throw appError('WEB_V8_TRANSACTION_BUILDER_INVALID', 'Market builder did not return the exact typed action Transaction.', 'VALIDATION');
+    }
+    const dryRunProof = await marketModule.inspectMarketActionOnChainV8(
+      suiClient,
+      compiled,
+    );
+    const evidence = marketModule.createMarketV8RecoveryEvidenceV8(
+      compiled,
+      dryRunProof,
+    );
+    const plan = transactionPlan(evidence, candidate);
+    if (expectedPlan && stableJson(expectedPlan) !== stableJson(plan)) {
+      throw appError(
+        'WEB_V8_DURABLE_TRANSACTION_DRIFT',
+        'Fresh wallet, object, quote, epoch, gas, or TransactionData state differs from the complete durable plan; discard and review a new plan instead of signing replacement bytes.',
+        'CONTEXT',
+      );
+    }
+    return Object.freeze({ compiled, evidence, plan });
+  }
+
+  async function refetchExactSigningSnapshot(durable) {
+    // Every pre-sign authority is reacquired. Clearing the UI approvals first
+    // prevents a failed refetch from leaving a stale quote/payment affordance.
+    state.reviewedFingerprint = null;
+    state.paymentFingerprint = null;
+    state.quoteEvidence = null;
+    state.chainQuoteProof = null;
+    state.prepared = null;
+    emit();
+
+    const observedChain = await adapters.rpc.getChainIdentifier();
+    if (observedChain !== execution.chainIdentifier) {
+      throw appError('WEB_V8_NETWORK_MISMATCH', 'RPC chain changed before wallet signature.', 'CONTEXT');
+    }
+    const account = assertAccount(await adapters.wallet.getCurrentAccount(), execution);
+    if (!state.account || stableJson(account) !== stableJson(state.account)) {
+      throw appError('WEB_V8_WALLET_CONTEXT_DRIFT', 'Connected wallet changed after the durable plan was prepared.', 'CONTEXT');
+    }
+    const suiClient = await adapters.rpc.getSuiClient();
+    const freshRuntime = (await attestMakerV8Runtime(suiClient, runtime, { network: execution.network })).runtime;
+    const freshMarketClient = marketModule.createMarketV8Client(freshRuntime, { network: execution.network });
+    const durableAction = actionById(durable.identity.action);
+    const request = {
+      requestId: requestId(),
+      route,
+      action: durableAction.id,
+      eventType: makerV8StableType(freshRuntime, 'release', 'release_v8', 'MakerV8Activated'),
+      marketTypes: freshMarketClient.types,
+      account,
+      runtime: freshRuntime,
+    };
+    const context = assertFreshV8ActionContext(
+      await adapters.rpc.loadActionContext(request),
+      request,
+      freshRuntime,
+      execution,
+      account,
+    );
+    const localQuote = quoteForAction(freshMarketClient, durableAction, context.builderInput, state.grossAtomic);
+    let candidate = {
+      ...state,
+      action: durableAction,
+      runtime: freshRuntime,
+      account,
+      context,
+      quote: localQuote,
+      quoteEvidence: null,
+      chainQuoteProof: null,
+    };
+    const inspected = await freshMarketClient.inspectQuoteOnChain(
+      suiClient,
+      quoteInspectionInput(marketModule, candidate),
+    );
+    const chainQuote = normalizedInspectedQuote(inspected);
+    for (const field of [...QUOTE_FIELDS, 'commitment']) {
+      if (chainQuote[field] !== localQuote[field]) {
+        throw appError('MARKET_V8_QUOTE_DRIFT', 'Fresh pre-sign chain quote differs from the complete live context.', 'CONTEXT');
+      }
+    }
+    candidate = Object.freeze({
+      ...candidate,
+      quote: chainQuote,
+      quoteEvidence: chainQuote.evidence,
+      chainQuoteProof: inspected,
+    });
+    const liveIdentity = recoveryModule.canonicalMakerV8RecoveryIdentity(recoveryIdentity(candidate, execution));
+    const durableIdentity = recoveryModule.canonicalMakerV8RecoveryIdentity(durable.identity);
+    if (stableJson(liveIdentity) !== stableJson(durableIdentity)) {
+      throw appError('WEB_V8_SIGNING_CONTEXT_DRIFT', 'Wallet, objects, revisions, commitments, or lane authority changed before signing.', 'CONTEXT');
+    }
+    return Object.freeze({ candidate, suiClient, marketClient: freshMarketClient, identity: durableIdentity });
+  }
+
   async function prepare() {
     try {
       if (state.reviewedFingerprint !== state.fingerprint) {
@@ -1260,34 +1668,17 @@ export function createFreshV8Controller({
         throw appError('WEB_V8_EXACT_PAYMENT_CONFIRMATION_REQUIRED', 'Exact payment has not been confirmed.', 'VALIDATION');
       }
       setBusy(true, 'READY');
-      const compiled = marketClient[state.action.builder](builderInputFor(state));
-      if (!compiled?.transaction || !compiled?.descriptor || compiled.descriptor.action !== state.action.id) {
-        throw appError('WEB_V8_TRANSACTION_BUILDER_INVALID', 'Market builder did not return the exact action Transaction.', 'VALIDATION');
-      }
-      const suiClient = await adapters.rpc.getSuiClient();
-      const built = await adapters.transactions.buildExactTransaction({
-        client: suiClient,
-        transaction: compiled.transaction,
-        descriptor: compiled.descriptor,
-        account: state.account,
-        context: state.context,
-      });
-      const dryRun = await adapters.transactions.dryRunExactTransaction({
-        client: suiClient,
-        transaction: compiled.transaction,
-        transactionBytes: built.transactionBytes,
-        descriptor: compiled.descriptor,
-        context: state.context,
-      });
-      if (!isPlainRecord(dryRun) || dryRun.status !== 'SUCCESS') {
-        const error = appError('WEB_V8_MOVE_ABORT', 'The exact Transaction failed its Move dry run.', 'DRY_RUN');
-        error.details = dryRun;
-        throw error;
-      }
+      const { compiled, evidence, plan } = await rebuildAndSimulateExactAction();
       const identity = recoveryIdentity(state, execution);
-      const plan = transactionPlan(built, state);
       currentIdentity = identity;
-      const record = await recovery.prepare(identity, plan);
+      const record = await recovery.prepare({
+        identity,
+        plan,
+        evidence,
+        options: {
+          afterFinalizedFailure: state.recoveryRecord?.state === 'FINALIZED_FAILURE',
+        },
+      });
       state.prepared = Object.freeze({
         descriptor: clonePublic(compiled.descriptor),
         digest: plan.transactionDigest,
@@ -1310,7 +1701,23 @@ export function createFreshV8Controller({
       }
       if (!currentIdentity) throw appError('WEB_V8_CONTEXT_UNAVAILABLE', 'Prepare the exact Transaction first.', 'CONTEXT');
       setBusy(true, 'AWAITING_SIGNATURE');
-      const record = await recovery.requestSignature(currentIdentity);
+      const durable = await recovery.load(currentIdentity);
+      if (!durable?.plan) throw appError('WEB_V8_DURABLE_PLAN_REQUIRED', 'No durable unsigned plan exists for this Root.', 'RECOVERY');
+      const fresh = await refetchExactSigningSnapshot(durable);
+      const { evidence, plan } = await rebuildAndSimulateExactAction(
+        durable.plan,
+        fresh.candidate,
+        fresh.suiClient,
+        fresh.marketClient,
+      );
+      const record = await recovery.requestSignature({
+        identity: durable.identity,
+        liveIdentity: fresh.identity,
+        plan,
+        expectedRevision: durable.revision,
+        expectedPlanHash: durable.plan.fingerprint,
+        evidence,
+      });
       state.recoveryRecord = record;
       state.status = record.state;
       state.busy = false;
@@ -1358,7 +1765,10 @@ export function createFreshV8Controller({
     snapshot,
     subscribe(listener) { listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener); },
     refresh,
-    async reconnect() { await adapters.wallet.reconnect(); return refresh(); },
+    async reconnect() {
+      state.account = assertAccount(await adapters.wallet.reconnect(), execution);
+      return refresh();
+    },
     selectAction,
     setGrossAtomic,
     reviewQuote,
@@ -1516,7 +1926,8 @@ export async function bootstrapFreshV8Browser({
   route = parseFreshV8Route(win.location.href),
   rawRuntime = win.SoulidityMakerV8,
   rawExecution = win.SoulidityV8Execution,
-  adapters = win.SoulidityV8Adapters,
+  adapters,
+  browserModule,
   marketModule,
   recoveryModule,
 } = {}) {
@@ -1525,8 +1936,19 @@ export async function bootstrapFreshV8Browser({
     if (!route.valid) throw appError(UNSUPPORTED_PRODUCT_CODE, 'This link or cached product is not supported by the fresh Maker v8 client.');
     const cache = inspectFreshV8Cache(win.localStorage);
     if (!cache.valid) throw appError(UNSUPPORTED_PRODUCT_CODE, 'Unsupported product cache entries were detected and were not converted.');
-    const checkedAdapters = assertFreshV8Adapters(adapters);
     const execution = assertWebV8ExecutionConfig(rawExecution);
+    let concreteAdapters = adapters;
+    if (concreteAdapters === undefined) {
+      const browser = browserModule || await defaultModule('./maker-v8-browser.js');
+      if (typeof browser?.createProductionMakerV8BrowserAdapters !== 'function') {
+        throw appError('WEB_V8_ADAPTER_INVALID', 'The production fresh-v8 browser adapter factory is unavailable.', 'CONFIGURATION');
+      }
+      concreteAdapters = browser.createProductionMakerV8BrowserAdapters({
+        runtime: rawRuntime,
+        execution,
+      });
+    }
+    const checkedAdapters = assertFreshV8Adapters(concreteAdapters);
     const observedChain = await checkedAdapters.rpc.getChainIdentifier();
     if (observedChain !== execution.chainIdentifier) {
       throw appError('WEB_V8_NETWORK_MISMATCH', 'RPC is connected to a different chain.', 'CONTEXT');

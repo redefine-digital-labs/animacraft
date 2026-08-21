@@ -24,6 +24,7 @@ import {
   parseSoulBundleV8,
   readFinalizedMakerV8Transaction,
   isMakerV8RuntimeAttested,
+  makerV8AttestedPackageTuple,
 } from '../maker-v8-chain.js';
 
 const sid = (number) => `0x${number.toString(16).padStart(64, '0')}`;
@@ -279,7 +280,16 @@ function catalogAndConfigResponses(rt, overrides = {}) {
       [`${role}_call_cap`]: callCap,
     }, { Shared: { initial_shared_version: '1' } })];
   }));
-  return { catalog, configs };
+  const packages = Object.fromEntries(Object.keys(rt.roles).map((role, index) => [role, {
+    data: {
+      objectId: rt.roles[role].callablePackageId,
+      version: '1',
+      digest: String(index + 2).repeat(32),
+      owner: { Immutable: true },
+      bcs: { dataType: 'package', id: rt.roles[role].callablePackageId, version: '1', moduleMap: {} },
+    },
+  }]));
+  return { catalog, configs, packages };
 }
 
 test('Mainnet ProductReleaseCatalog and all six installed call caps attest the only signing runtime', async () => {
@@ -288,6 +298,8 @@ test('Mainnet ProductReleaseCatalog and all six installed call caps attest the o
   const rpc = mainnetRpc({
     async getObject({ id: objectId }) {
       if (objectId === rt.catalogId) return evidence.catalog;
+      const packageRole = Object.keys(rt.roles).find((candidate) => rt.roles[candidate].callablePackageId === objectId);
+      if (packageRole) return evidence.packages[packageRole];
       const role = Object.keys(rt.roleConfigIds).find((candidate) => rt.roleConfigIds[candidate] === objectId);
       return evidence.configs[role];
     },
@@ -297,16 +309,53 @@ test('Mainnet ProductReleaseCatalog and all six installed call caps attest the o
   assert.deepEqual(Object.keys(attested.configs), ['seal', 'runtime', 'output', 'physical', 'market', 'release']);
   assert.equal(isMakerV8RuntimeAttested(attested.runtime), true);
   assert.equal(isMakerV8RuntimeAttested(rt), false, 'caller config is not the normalized attested capability');
+  assert.deepEqual(makerV8AttestedPackageTuple(attested.runtime), attested.packageTuple);
+  assert.deepEqual(attested.packageTuple.map(({ role, packageDigest }) => ({ role, packageDigest })), [
+    { role: 'core', packageDigest: '2'.repeat(32) },
+    { role: 'seal', packageDigest: '3'.repeat(32) },
+    { role: 'runtime', packageDigest: '4'.repeat(32) },
+    { role: 'output', packageDigest: '5'.repeat(32) },
+    { role: 'physical', packageDigest: '6'.repeat(32) },
+    { role: 'market', packageDigest: '7'.repeat(32) },
+    { role: 'release', packageDigest: '8'.repeat(32) },
+  ]);
+  assert.throws(
+    () => makerV8AttestedPackageTuple(rt),
+    (error) => error.code === 'MAKER_V8_RUNTIME_ATTESTATION_REQUIRED',
+  );
 
   const stale = catalogAndConfigResponses(rt);
   stale.configs.market.data.content.fields.market_call_cap.fields.authority_id = sid(999);
   await assert.rejects(() => attestMakerV8Runtime(mainnetRpc({
     async getObject({ id: objectId }) {
       if (objectId === rt.catalogId) return stale.catalog;
+      const packageRole = Object.keys(rt.roles).find((candidate) => rt.roles[candidate].callablePackageId === objectId);
+      if (packageRole) return stale.packages[packageRole];
       const role = Object.keys(rt.roleConfigIds).find((candidate) => rt.roleConfigIds[candidate] === objectId);
       return stale.configs[role];
     },
   }), rt), (error) => error.code === 'MAKER_V8_COMPANION_CALL_CAP_MISMATCH');
+
+  for (const [name, expectedCode, mutate] of [
+    ['digest', 'MAKER_V8_CHAIN_DIGEST_INVALID', (response) => { response.data.digest = 'caller-hash'; }],
+    ['owner', 'MAKER_V8_PACKAGE_IDENTITY_MISMATCH', (response) => { response.data.owner = { AddressOwner: wallet }; }],
+    ['object id', 'MAKER_V8_PACKAGE_IDENTITY_MISMATCH', (response) => { response.data.objectId = sid(998); }],
+    ['BCS data type', 'MAKER_V8_PACKAGE_IDENTITY_MISMATCH', (response) => { response.data.bcs.dataType = 'moveObject'; }],
+  ]) {
+    const corrupt = catalogAndConfigResponses(rt);
+    mutate(corrupt.packages.market);
+    await assert.rejects(() => attestMakerV8Runtime(mainnetRpc({
+      async getObject({ id: objectId }) {
+        if (objectId === rt.catalogId) return corrupt.catalog;
+        const packageRole = Object.keys(rt.roles)
+          .find((candidate) => rt.roles[candidate].callablePackageId === objectId);
+        if (packageRole) return corrupt.packages[packageRole];
+        const role = Object.keys(rt.roleConfigIds)
+          .find((candidate) => rt.roleConfigIds[candidate] === objectId);
+        return corrupt.configs[role];
+      },
+    }), rt), (error) => error.code === expectedCode, name);
+  }
 });
 
 test('stable chain types use TypeOrigin identities and exact native payment generic', () => {

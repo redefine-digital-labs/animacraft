@@ -33,6 +33,10 @@ import {
   createMarketV8Client,
 } from './maker-v8-market.js';
 import { MAKER_V8_ROLES } from './maker-v8-runtime.js';
+import {
+  MAKER_V8_ACTIONS,
+  makerV8ActionV8,
+} from './maker-v8-actions.js';
 
 export const MAKER_V8_BROWSER_SCHEMA = 'animacraft.maker-v8-browser.v8';
 export const MAKER_V8_OFFICIAL_MAINNET_RPC_URL = getJsonRpcFullnodeUrl('mainnet');
@@ -44,22 +48,9 @@ const WEB_V8_BROWSE_SCHEMA = 'animacraft.web-market-browse.v8';
 const WEB_V8_READBACK_SCHEMA = 'animacraft.web-market-finalized-readback.v8';
 const EXACT_ID = /^0x[0-9a-f]{64}$/;
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{20,64}$/;
-const ACTIONS = Object.freeze({
-  listMakerControl: Object.freeze({ lane: 'MAKER', kind: 'LIST' }),
-  purchaseMakerControl: Object.freeze({ lane: 'MAKER', kind: 'PURCHASE' }),
-  cancelMakerControl: Object.freeze({ lane: 'MAKER', kind: 'CANCEL' }),
-  recoverMakerControl: Object.freeze({ lane: 'MAKER', kind: 'RECOVER' }),
-  listSoulBundle: Object.freeze({ lane: 'SOUL', kind: 'LIST' }),
-  purchaseSoulBundle: Object.freeze({ lane: 'SOUL', kind: 'PURCHASE' }),
-  cancelSoulListing: Object.freeze({ lane: 'SOUL', kind: 'CANCEL' }),
-  recoverSoulListing: Object.freeze({ lane: 'SOUL', kind: 'RECOVER' }),
-  listBasePhysical: Object.freeze({ lane: 'PHYSICAL_BASE', kind: 'LIST' }),
-  listPackPhysical: Object.freeze({ lane: 'PHYSICAL_PACK', kind: 'LIST' }),
-  purchaseBasePhysical: Object.freeze({ lane: 'PHYSICAL_BASE', kind: 'PURCHASE' }),
-  purchasePackPhysical: Object.freeze({ lane: 'PHYSICAL_PACK', kind: 'PURCHASE' }),
-  cancelPhysicalListing: Object.freeze({ lane: 'PHYSICAL', kind: 'CANCEL' }),
-  recoverPhysicalListing: Object.freeze({ lane: 'PHYSICAL', kind: 'RECOVER' }),
-});
+const ACTIONS = Object.freeze(Object.fromEntries(
+  MAKER_V8_ACTIONS.map((action) => [action.id, action]),
+));
 const LIST_ACTIONS = new Set(Object.entries(ACTIONS)
   .filter(([, value]) => value.kind === 'LIST').map(([name]) => name));
 const PURCHASE_ACTIONS = new Set(Object.entries(ACTIONS)
@@ -114,7 +105,7 @@ function digest(value, label) {
 }
 
 function exactPlanHash(value) {
-  if (typeof value !== 'string' || value.length < 16 || value.length > 256) {
+  if (typeof value !== 'string' || !/^0x[0-9a-f]{64}$/.test(value)) {
     fail('MAKER_V8_BROWSER_PLAN_HASH_INVALID', 'Finalized readback requires the exact durable planHash.', 'READBACK');
   }
   return value;
@@ -347,13 +338,19 @@ async function exactPastObject(client, ref, expectedType, role, outputDigest = n
   if (typeof client?.tryGetPastObject !== 'function') {
     historicalUnavailable(ref, role, 'METHOD_UNAVAILABLE');
   }
+  // SDK 2.20.2's JSON-RPC method serializes `version` as a JSON number.  Only
+  // convert when the u64 round-trips exactly; larger versions require an
+  // archival Core/gRPC reader rather than silent IEEE-754 precision loss.
+  const numericVersion = Number(ref.version);
+  if (!Number.isSafeInteger(numericVersion)
+    || BigInt(numericVersion).toString() !== ref.version) {
+    historicalUnavailable(ref, role, 'VERSION_OUTSIDE_JSON_RPC_SAFE_RANGE');
+  }
   let response;
   try {
-    // Keep the u64 as a canonical decimal string. The JSON-RPC implementation
-    // passes it through and converting to Number would lose precision.
     response = await client.tryGetPastObject({
       id: ref.objectId,
-      version: ref.version,
+      version: numericVersion,
       options: {
         showType: true,
         showContent: true,
@@ -435,7 +432,8 @@ function finalizedMarketCall(transactionData) {
 }
 
 function coreEvent(event, index, transactionDigest, eventsDigest) {
-  if (!event || typeof event.eventType !== 'string' || !plain(event.json)) {
+  if (!event || typeof event.eventType !== 'string' || !plain(event.json)
+    || !(event.bcs instanceof Uint8Array) || event.bcs.length === 0) {
     fail('MAKER_V8_BROWSER_CORE_EVENT_INVALID', `Core V2 event ${index} is not parsed.`, 'READBACK');
   }
   return freeze({
@@ -445,13 +443,15 @@ function coreEvent(event, index, transactionDigest, eventsDigest) {
     sender: id(event.sender, `events[${index}].sender`),
     type: normalizeStructTag(event.eventType),
     parsedJson: event.json,
-    bcs: event.bcs instanceof Uint8Array ? toBase64(event.bcs) : null,
+    bcs: toBase64(event.bcs),
     eventsDigest,
   });
 }
 
 const ARGUMENT_ROLES = Object.freeze({
   registry: 'REGISTRY', treasury: 'TREASURY', listing: 'LISTING', root: 'ROOT',
+  outputRegistry: 'OUTPUT_REGISTRY', soulRegistry: 'SOUL_REGISTRY',
+  physicalRegistry: 'PHYSICAL_REGISTRY',
   admin: 'ADMIN', adminReceiving: 'ADMIN',
   outputAsset: 'OUTPUT', outputReceiving: 'OUTPUT',
   receipt: 'RECEIPT', receiptReceiving: 'RECEIPT',
@@ -508,24 +508,72 @@ function optionId(value) {
   return Array.isArray(vec) && vec.length === 1 ? id(vec[0], 'physical.sourceTreasuryId') : null;
 }
 
+function commitmentHex(value, label) {
+  if (Array.isArray(value) && value.length === 32
+    && value.every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 255)) {
+    return `0x${value.map((entry) => entry.toString(16).padStart(2, '0')).join('')}`;
+  }
+  if (typeof value === 'string' && /^0x[0-9a-fA-F]{64}$/.test(value)) return value.toLowerCase();
+  fail('MAKER_V8_BROWSER_COMMITMENT_INVALID', `${label} is not an exact 32-byte commitment.`, 'READBACK');
+}
+
 function validatePhysicalCustody(descriptor, objects) {
   if (![MARKET_V8_LANES.PHYSICAL_BASE, MARKET_V8_LANES.PHYSICAL_PACK].includes(descriptor.lane)) return;
   if (descriptor.lane !== descriptor.preState.lane) {
     fail('MAKER_V8_BROWSER_PHYSICAL_LANE_DRIFT', 'Physical descriptor lane differs from its exact pre-state.', 'READBACK');
   }
-  const custodyObject = objects.find((entry) => entry.role === 'ASSET')
-    ?? objects.find((entry) => entry.role === 'LISTING');
-  const fields = custodyObject?.before?.parsed;
+  const listingObject = objects.find((entry) => entry.role === 'LISTING');
+  const fields = listingObject?.after?.parsed ?? listingObject?.before?.parsed;
   const custodyValue = scalarField(fields, 'custody');
-  const custody = custodyValue?.fields ?? custodyValue ?? fields;
+  const custody = custodyValue?.fields ?? custodyValue;
+  if (!plain(custody)) {
+    fail('MAKER_V8_BROWSER_PHYSICAL_CUSTODY_DRIFT', 'Physical listing custody binding is missing.', 'READBACK');
+  }
   const sourceKind = Number(scalarField(custody, 'source_kind', 'sourceKind'));
   const expectedSourceKind = descriptor.lane === MARKET_V8_LANES.PHYSICAL_BASE ? 0 : 1;
   const sourceRole = expectedSourceKind === 0 ? 'MAKER_TREASURY' : 'PACK_TREASURY';
   const sourceTreasury = objects.find((entry) => entry.role === sourceRole);
   const custodyTreasuryId = optionId(scalarField(custody, 'source_treasury_id', 'sourceTreasuryId'));
-  if (sourceKind !== expectedSourceKind || !sourceTreasury
-    || custodyTreasuryId !== sourceTreasury.objectId) {
+  const expected = descriptor.preState.physical;
+  const exactCommitment = (camel, snake) => commitmentHex(
+    scalarField(custody, snake, camel), `physical.${camel}`,
+  );
+  if (!plain(expected)
+    || sourceKind !== expectedSourceKind
+    || custodyTreasuryId !== expected.sourceTreasuryId
+    || (sourceTreasury && custodyTreasuryId !== sourceTreasury.objectId)
+    || id(scalarField(custody, 'source_id', 'sourceId'), 'physical.sourceId') !== expected.sourceId
+    || String(scalarField(custody, 'source_semantic_id', 'sourceSemanticId')) !== expected.sourceSemanticId
+    || exactCommitment('assetContentCommitment', 'asset_content_commitment') !== expected.assetContentCommitment
+    || exactCommitment('sourceContentCommitment', 'source_content_commitment') !== expected.sourceContentCommitment
+    || exactCommitment('provenanceCommitment', 'provenance_commitment') !== expected.provenanceCommitment
+    || scalarField(custody, 'transferable') !== expected.transferable) {
     fail('MAKER_V8_BROWSER_PHYSICAL_CUSTODY_DRIFT', 'Physical lane does not match exact custody source kind and treasury.', 'READBACK');
+  }
+  const assetObject = objects.find((entry) => entry.role === 'ASSET');
+  const asset = assetObject?.before?.parsed ?? assetObject?.after?.parsed;
+  if (asset) {
+    const assetTreasuryId = optionId(scalarField(asset, 'source_treasury_id', 'sourceTreasuryId'));
+    const expectedAssetTreasuryId = expectedSourceKind === 0 ? null : expected.sourceTreasuryId;
+    if (Number(scalarField(asset, 'source_kind', 'sourceKind')) !== expectedSourceKind
+      || assetTreasuryId !== expectedAssetTreasuryId
+      || id(scalarField(asset, 'source_id', 'sourceId'), 'physical.asset.sourceId') !== expected.sourceId
+      || String(scalarField(asset, 'source_semantic_id', 'sourceSemanticId')) !== expected.sourceSemanticId
+      || commitmentHex(
+        scalarField(asset, 'asset_content_commitment', 'assetContentCommitment'),
+        'physical.asset.assetContentCommitment',
+      ) !== expected.assetContentCommitment
+      || commitmentHex(
+        scalarField(asset, 'source_content_commitment', 'sourceContentCommitment'),
+        'physical.asset.sourceContentCommitment',
+      ) !== expected.sourceContentCommitment
+      || commitmentHex(
+        scalarField(asset, 'provenance_commitment', 'provenanceCommitment'),
+        'physical.asset.provenanceCommitment',
+      ) !== expected.provenanceCommitment
+      || scalarField(asset, 'transferable') !== expected.transferable) {
+      fail('MAKER_V8_BROWSER_PHYSICAL_ASSET_DRIFT', 'Physical asset provenance differs from its exact listing custody binding.', 'READBACK');
+    }
   }
 }
 
@@ -551,6 +599,77 @@ function addressOwner(ref) {
     ? id(ref.owner.value, 'effects.outputOwner.AddressOwner') : null;
 }
 
+function parentOwner(ref) {
+  return ref?.owner?.kind === 'ObjectOwner'
+    ? id(ref.owner.value, 'effects.owner.ObjectOwner') : null;
+}
+
+function tableId(snapshot, field, label) {
+  const table = snapshot?.parsed?.[field];
+  const value = table?.fields?.id?.id ?? table?.fields?.id ?? table?.id?.id ?? table?.id;
+  return id(value, label);
+}
+
+function assertCompanionEvents({ events, market, descriptor, action, terminal, objects }) {
+  const eventByType = (type) => events.filter((event) => event.type === normalizeStructTag(type));
+  const coreTransferType = `${market.runtime.typeOrigins.corePackageId}::maker_v8::MakerControlTransferredV8`;
+  const makerTransfers = eventByType(coreTransferType);
+  if (descriptor.action === 'purchaseMakerControl') {
+    if (makerTransfers.length !== 1) {
+      fail('MAKER_V8_BROWSER_MAKER_EVENT_MISSING', 'Maker purchase requires one exact control-transfer companion event.', 'READBACK');
+    }
+    const event = makerTransfers[0];
+    const fields = event.parsedJson;
+    const newAdmin = objects.find((entry) => entry.role === 'ADMIN_NEW');
+    if (event.sender !== descriptor.sender
+      || id(scalarField(fields, 'root_id', 'rootId'), 'makerTransfer.rootId') !== descriptor.rootId
+      || id(scalarField(fields, 'previous_owner', 'previousOwner'), 'makerTransfer.previousOwner') !== descriptor.preState.root.owner
+      || id(scalarField(fields, 'new_owner', 'newOwner'), 'makerTransfer.newOwner') !== descriptor.sender
+      || decimal(scalarField(fields, 'previous_control_epoch', 'previousControlEpoch'), 'makerTransfer.previousEpoch') !== descriptor.preState.root.controlEpoch
+      || decimal(scalarField(fields, 'new_control_epoch', 'newControlEpoch'), 'makerTransfer.newEpoch')
+        !== (BigInt(descriptor.preState.root.controlEpoch) + 1n).toString()
+      || id(scalarField(fields, 'new_admin_cap_id', 'newAdminCapId'), 'makerTransfer.newAdminCapId') !== newAdmin?.objectId) {
+      fail('MAKER_V8_BROWSER_MAKER_EVENT_DRIFT', 'Maker control-transfer companion event differs from exact effects.', 'READBACK');
+    }
+  } else if (makerTransfers.length !== 0) {
+    fail('MAKER_V8_BROWSER_MAKER_EVENT_DRIFT', 'Non-Maker-purchase action emitted an unexpected control-transfer event.', 'READBACK');
+  }
+
+  const physicalType = `${market.runtime.typeOrigins.physicalPackageId}::physical_v8::PhysicalMarketCustodyTransitionV8`;
+  const physicalEvents = eventByType(physicalType);
+  const physical = action.lanes.some((lane) => lane.startsWith('PHYSICAL_'));
+  if (!physical) {
+    if (physicalEvents.length !== 0) {
+      fail('MAKER_V8_BROWSER_PHYSICAL_EVENT_DRIFT', 'Non-Physical action emitted a custody companion event.', 'READBACK');
+    }
+    return;
+  }
+  if (physicalEvents.length !== 1) {
+    fail('MAKER_V8_BROWSER_PHYSICAL_EVENT_MISSING', 'Physical action requires one exact custody companion event.', 'READBACK');
+  }
+  const event = physicalEvents[0];
+  const fields = event.parsedJson;
+  const purchase = action.kind === 'PURCHASE';
+  const expectedAction = action.kind === 'LIST' ? '0' : purchase ? '2' : '1';
+  const expectedEpoch = purchase
+    ? (BigInt(descriptor.preState.ownershipEpoch) + 1n).toString()
+    : descriptor.preState.ownershipEpoch;
+  const expectedHolder = purchase ? descriptor.sender : descriptor.preState.seller;
+  if (event.sender !== descriptor.sender
+    || decimal(scalarField(fields, 'action'), 'physicalEvent.action') !== expectedAction
+    || id(scalarField(fields, 'listing_id', 'listingId'), 'physicalEvent.listingId') !== terminal.fields.listingId
+    || id(scalarField(fields, 'asset_id', 'assetId'), 'physicalEvent.assetId') !== descriptor.preState.assetIds[0]
+    || decimal(scalarField(fields, 'source_kind', 'sourceKind'), 'physicalEvent.sourceKind') !== descriptor.preState.physical.sourceKind
+    || id(scalarField(fields, 'source_treasury_id', 'sourceTreasuryId'), 'physicalEvent.sourceTreasuryId') !== descriptor.preState.physical.sourceTreasuryId
+    || id(scalarField(fields, 'previous_holder', 'previousHolder'), 'physicalEvent.previousHolder') !== descriptor.preState.seller
+    || id(scalarField(fields, 'holder'), 'physicalEvent.holder') !== expectedHolder
+    || decimal(scalarField(fields, 'previous_ownership_epoch', 'previousOwnershipEpoch'), 'physicalEvent.previousEpoch') !== descriptor.preState.ownershipEpoch
+    || decimal(scalarField(fields, 'ownership_epoch', 'ownershipEpoch'), 'physicalEvent.epoch') !== expectedEpoch
+    || commitmentHex(scalarField(fields, 'provenance_commitment', 'provenanceCommitment'), 'physicalEvent.provenance') !== descriptor.preState.physical.provenanceCommitment) {
+    fail('MAKER_V8_BROWSER_PHYSICAL_EVENT_DRIFT', 'Physical custody companion event differs from exact effects and provenance.', 'READBACK');
+  }
+}
+
 /** Effects-bound receipt envelope using only exact Core V2 execution refs. */
 export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }) {
   if (typeof client?.core?.getTransaction !== 'function') {
@@ -558,6 +677,9 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
   }
   const transactionDigest = digest(request?.digest, 'request.digest');
   const planHash = exactPlanHash(request?.planHash ?? request?.plan?.planHash);
+  if (request?.plan?.fingerprint !== planHash) {
+    fail('MAKER_V8_BROWSER_PLAN_HASH_INVALID', 'Readback planHash differs from the exact durable plan fingerprint.', 'READBACK');
+  }
   const descriptor = request?.plan?.sourceSnapshot?.descriptor;
   const coreResult = await client.core.getTransaction({
     digest: transactionDigest,
@@ -570,6 +692,10 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
     || finalized.status?.success !== true
     || effects.status?.success !== true) {
     fail('MAKER_V8_BROWSER_FINALIZED_DRIFT', 'Core V2 transaction/effects do not bind the finalized successful digest.', 'READBACK');
+  }
+  if (!(finalized.bcs instanceof Uint8Array)
+    || toBase64(finalized.bcs) !== request?.plan?.transactionBytes) {
+    fail('MAKER_V8_BROWSER_FINALIZED_BYTES_DRIFT', 'Core V2 TransactionData bytes differ from the exact durable signed plan.', 'READBACK');
   }
   const epoch = decimal(finalized.epoch, 'transaction.epoch');
   const effectsFingerprint = await coreEffectsFingerprint(effects);
@@ -587,8 +713,19 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
   const events = freeze(finalized.events.map((event, index) => coreEvent(
     event, index, transactionDigest, eventsDigest,
   )));
-  const action = ACTIONS[request.identity.action];
+  const action = makerV8ActionV8(request.identity.action);
   if (!action) fail('MAKER_V8_BROWSER_ACTION_INVALID', 'Unknown durable Market action.', 'READBACK');
+  if (descriptor?.action !== action.id
+    || descriptor.sender !== request.identity.wallet
+    || descriptor.rootId !== request.identity.root?.id
+    || descriptor.registryId !== request.identity.registry?.id
+    || descriptor.treasuryId !== request.identity.treasury?.id) {
+    fail('MAKER_V8_BROWSER_DURABLE_DESCRIPTOR_INVALID', 'Durable action descriptor differs from the exact recovery identity.', 'READBACK');
+  }
+  const allowedLanes = action.lanes.map((lane) => MARKET_V8_LANES[lane]);
+  if (!allowedLanes.includes(descriptor?.lane)) {
+    fail('MAKER_V8_BROWSER_PHYSICAL_LANE_DRIFT', 'Durable descriptor lane differs from the exact action contract.', 'READBACK');
+  }
   const expectedKind = action.kind === 'LIST' ? 'MarketListingOpenedV8'
     : action.kind === 'PURCHASE' ? 'MarketListingSettledV8' : 'MarketListingClosedV8';
   const parsedEvents = events.map((event) => {
@@ -666,13 +803,22 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
     }));
   }
   if (descriptor.action === 'purchaseSoulBundle') {
-    for (const [role, marker] of [
-      ['OUTPUT_RECORD', '::output_v8::OutputRecordV8'],
-      ['SOUL_RECORD', '::output_v8::SoulRecordV8'],
+    const outputOrigin = market.runtime.typeOrigins.outputPackageId;
+    const registryRows = new Map(objects.map((entry) => [entry.role, entry]));
+    for (const [role, recordName, registryRole, tableField] of [
+      ['OUTPUT_RECORD', 'OutputRecordV8', 'OUTPUT_REGISTRY', 'outputs'],
+      ['SOUL_RECORD', 'SoulRecordV8', 'SOUL_REGISTRY', 'souls'],
     ]) {
+      const recordType = normalizeStructTag(`${outputOrigin}::output_v8::${recordName}`);
+      const expectedType = normalizeStructTag(`0x2::dynamic_field::Field<0x2::object::ID,${recordType}>`);
+      const registry = registryRows.get(registryRole);
+      const expectedParent = tableId(registry?.before ?? registry?.after, tableField, `${role}.tableId`);
       const candidates = [...changes.values()].filter(({ normalized }) => {
         const type = finalized.objectTypes?.[normalized.objectId];
-        return typeof type === 'string' && normalizeStructTag(type).includes(marker);
+        return typeof type === 'string'
+          && normalizeStructTag(type) === expectedType
+          && parentOwner(normalized.input) === expectedParent
+          && parentOwner(normalized.output) === expectedParent;
       });
       if (candidates.length !== 1) {
         fail('MAKER_V8_BROWSER_DYNAMIC_RECORD_AMBIGUOUS', `${role} is not unique in Core V2 effects.`, 'READBACK');
@@ -685,7 +831,7 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
       objects.push(freeze({
         role,
         objectId: candidate.normalized.objectId,
-        type: normalizeStructTag(finalized.objectTypes[candidate.normalized.objectId]),
+        type: expectedType,
         ownerKind: (after ?? before)?.ownerKind,
         change: objectChangeName(candidate.raw),
         idOperation: candidate.raw.idOperation,
@@ -695,48 +841,102 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
       }));
     }
   }
+  if (descriptor.action === 'purchaseMakerControl') {
+    const adminArgument = descriptor.arguments.find((argument) => argument.name === 'adminReceiving');
+    const adminType = normalizeStructTag(adminArgument?.type);
+    const candidates = [...changes.values()].filter(({ raw, normalized }) => (
+      raw.idOperation === 'Created'
+      && typeof finalized.objectTypes?.[normalized.objectId] === 'string'
+      && normalizeStructTag(finalized.objectTypes[normalized.objectId]) === adminType
+      && addressOwner(normalized.output) === descriptor.sender
+    ));
+    if (candidates.length !== 1) {
+      fail('MAKER_V8_BROWSER_ADMIN_OUTPUT_AMBIGUOUS', 'Maker purchase new AdminCap is not unique in Core V2 effects.', 'READBACK');
+    }
+    const candidate = candidates[0];
+    const after = await exactPastObject(
+      client, candidate.normalized.output, adminType, 'ADMIN_NEW.after', transactionDigest,
+    );
+    objects.push(freeze({
+      role: 'ADMIN_NEW',
+      objectId: candidate.normalized.objectId,
+      type: adminType,
+      ownerKind: after.ownerKind,
+      change: 'CREATED',
+      idOperation: 'Created',
+      before: null,
+      after,
+      revenue: freeze({ before: null, after: null }),
+    }));
+  }
   if (action.kind === 'PURCHASE') {
     const paymentCoin = normalizeStructTag(`0x2::coin::Coin<${descriptor.typeArguments?.[0]}>`);
-    const assigned = new Set();
-    for (const [role, ownerAddress, amount] of [
-      ['CREATOR_COIN', descriptor.preState.root?.creator, descriptor.preState.quote?.creatorAtomic],
-      ['SELLER_COIN', descriptor.preState.seller, descriptor.preState.quote?.sellerAtomic],
-    ]) {
-      const expectedOwner = id(ownerAddress, `${role}.owner`);
-      const expectedAmount = decimal(amount, `${role}.balance`);
-      const matches = [];
-      for (const candidate of changes.values()) {
-        const candidateType = finalized.objectTypes?.[candidate.normalized.objectId];
-        if (assigned.has(candidate.normalized.objectId)
-          || candidate.raw.idOperation !== 'Created'
-          || typeof candidateType !== 'string'
-          || normalizeStructTag(candidateType) !== paymentCoin
-          || addressOwner(candidate.normalized.output) !== expectedOwner) continue;
-        const after = await exactPastObject(
-          client, candidate.normalized.output, paymentCoin, `${role}.after`, transactionDigest,
-        );
-        if (decimal(scalarField(after.parsed, 'balance'), `${role}.observedBalance`) === expectedAmount) {
-          matches.push({ candidate, after });
-        }
-      }
-      if (matches.length !== 1) {
-        fail('MAKER_V8_BROWSER_COIN_OUTPUT_AMBIGUOUS', `${role} exact created Coin output is not unique.`, 'READBACK');
-      }
-      const { candidate, after } = matches[0];
-      assigned.add(candidate.normalized.objectId);
-      objects.push(freeze({
-        role,
-        objectId: candidate.normalized.objectId,
-        type: paymentCoin,
-        ownerKind: after.ownerKind,
-        change: 'CREATED',
-        idOperation: 'Created',
-        before: null,
+    const expectedLines = [
+      { role: 'CREATOR_COIN', owner: id(descriptor.preState.root?.creator, 'CREATOR_COIN.owner'), amount: decimal(descriptor.preState.quote?.creatorAtomic, 'CREATOR_COIN.balance') },
+      { role: 'SELLER_COIN', owner: id(descriptor.preState.seller, 'SELLER_COIN.owner'), amount: decimal(descriptor.preState.quote?.sellerAtomic, 'SELLER_COIN.balance') },
+    ];
+    const candidates = [];
+    for (const candidate of changes.values()) {
+      const candidateType = finalized.objectTypes?.[candidate.normalized.objectId];
+      if (candidate.raw.idOperation !== 'Created'
+        || typeof candidateType !== 'string'
+        || normalizeStructTag(candidateType) !== paymentCoin
+        || !candidate.normalized.output) continue;
+      const after = await exactPastObject(
+        client, candidate.normalized.output, paymentCoin, 'PAYOUT_COIN.after', transactionDigest,
+      );
+      candidates.push({
+        candidate,
         after,
-        revenue: freeze({ before: null, after: null }),
-      }));
+        owner: addressOwner(candidate.normalized.output),
+        amount: decimal(scalarField(after.parsed, 'balance'), 'PAYOUT_COIN.balance'),
+      });
+    }
+    const groupedExpected = new Map();
+    for (const line of expectedLines.filter((entry) => entry.amount !== '0')) {
+      const key = `${line.owner}:${line.amount}`;
+      groupedExpected.set(key, [...(groupedExpected.get(key) || []), line]);
+    }
+    for (const [key, lines] of groupedExpected) {
+      const matches = candidates
+        .filter((entry) => `${entry.owner}:${entry.amount}` === key)
+        .sort((left, right) => left.candidate.normalized.objectId.localeCompare(right.candidate.normalized.objectId));
+      if (matches.length !== lines.length) {
+        fail('MAKER_V8_BROWSER_COIN_OUTPUT_AMBIGUOUS', 'Exact creator/seller Coin output multiset does not match the quote.', 'READBACK', {
+          key,
+          expectedCount: lines.length,
+          observedCount: matches.length,
+        });
+      }
+      [...lines].sort((left, right) => left.role.localeCompare(right.role))
+        .forEach((line, index) => {
+          const { candidate, after } = matches[index];
+          objects.push(freeze({
+            role: line.role,
+            objectId: candidate.normalized.objectId,
+            type: paymentCoin,
+            ownerKind: after.ownerKind,
+            change: 'CREATED',
+            idOperation: 'Created',
+            before: null,
+            after,
+            revenue: freeze({ before: null, after: null }),
+          }));
+        });
+    }
+    const zeroCreator = expectedLines.find((entry) => entry.role === 'CREATOR_COIN' && entry.amount === '0');
+    if (zeroCreator && candidates.some((entry) => entry.owner === zeroCreator.owner && entry.amount === '0')) {
+      fail('MAKER_V8_BROWSER_COIN_OUTPUT_AMBIGUOUS', 'Zero creator payout must not create a surviving Coin.', 'READBACK');
     }
   }
+  assertCompanionEvents({
+    events,
+    market,
+    descriptor,
+    action,
+    terminal: terminal[0].parsed,
+    objects,
+  });
   validatePhysicalCustody(descriptor, objects);
   return freeze({
     schemaVersion: WEB_V8_READBACK_SCHEMA,
@@ -1120,8 +1320,9 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
 
     async loadActionContext(request) {
       await assertPinnedMainnet(client);
-      const action = ACTIONS[request.action];
+      const action = makerV8ActionV8(request.action);
       if (!action) fail('MAKER_V8_BROWSER_ACTION_INVALID', 'Unknown fresh-v8 Market action.', 'VALIDATION');
+      const actionId = action.id;
       const wallet = freeze({
         address: id(request.account?.address, 'account.address'),
         network: MAKER_V8_CHAIN_NETWORK,
@@ -1135,8 +1336,8 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
         common = await commonContext(request.route.id);
       }
       const selected = listing
-        ? await listingContext(common, listing, request.action, wallet)
-        : await listContext(common, request.action, wallet, request);
+        ? await listingContext(common, listing, actionId, wallet)
+        : await listContext(common, actionId, wallet, request);
       const primary = listing ?? selected.authorityRefs[0];
       return freeze({
         schemaVersion: WEB_V8_CONTEXT_SCHEMA,
@@ -1144,7 +1345,7 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
         requestId: request.requestId,
         chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
         route: routeIdentity(request.route),
-        action: request.action,
+        action: actionId,
         activation: freeze({
           eventType: common.activation.type,
           rootId: common.root.objectId,
@@ -1424,7 +1625,8 @@ function canonicalTransactionBytes(value) {
 
 function transactionFromDescriptor(descriptor) {
   if (!plain(descriptor) || descriptor.schema !== 'animacraft.market-action.v8'
-    || !ACTIONS[descriptor.action] || descriptor.network !== MAKER_V8_CHAIN_NETWORK
+    || makerV8ActionV8(descriptor.action)?.id !== descriptor.action
+    || descriptor.network !== MAKER_V8_CHAIN_NETWORK
     || typeof descriptor.target !== 'string' || !Array.isArray(descriptor.arguments)
     || !Array.isArray(descriptor.typeArguments)) {
     fail('MAKER_V8_BROWSER_DESCRIPTOR_INVALID', 'Transaction descriptor is not an exact fresh-v8 Market action.', 'VALIDATION');

@@ -606,9 +606,24 @@ export class MakerV8RuntimeError extends Error {
   }
 }
 
-export function assertMakerV8Runtime(config, options = {}) {
+export function assertMakerV8Runtime(config, options = undefined) {
+  if (VALIDATED_RUNTIMES.has(config)) {
+    const noOptions = options === undefined
+      || (isPlainRecord(options) && Object.keys(options).length === 0);
+    const enabledRequest = isPlainRecord(options)
+      && Object.keys(options).every((field) => field === 'requireEnabled')
+      && typeof options.requireEnabled === 'boolean';
+    if (noOptions || enabledRequest) {
+      if (options?.requireEnabled === false || config.enabled === true) return config;
+      throw new MakerV8RuntimeError([
+        issue('activation', 'MAKER_V8_DISABLED', 'enabled', 'Fresh Maker v8 is required for this use path, but enabled is false.'),
+      ]);
+    }
+  }
   let strictOptions = options;
-  if (isPlainRecord(options) && !hasOwn(options, 'requireEnabled')) {
+  if (options === undefined) {
+    strictOptions = { requireEnabled: true };
+  } else if (isPlainRecord(options) && !hasOwn(options, 'requireEnabled')) {
     strictOptions = { ...options, requireEnabled: true };
   }
   const inspected = inspectMakerV8Runtime(config, strictOptions);

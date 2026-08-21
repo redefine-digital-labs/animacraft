@@ -14,6 +14,7 @@ import { assertMakerV8Runtime } from './maker-v8-runtime.js';
 import {
   assertMakerV8MainnetRpc,
   isMakerV8RuntimeAttested,
+  makerV8AttestedPackageTuple,
 } from './maker-v8-chain.js';
 
 export const MARKET_V8_VERSION = 8n;
@@ -1380,6 +1381,32 @@ function decimalSnapshot(value, field) {
   return uint(value, 128, field, MarketV8BuildError).toString();
 }
 
+function snapshotField(value, camelName, snakeName) {
+  if (value?.[camelName] !== undefined) return value[camelName];
+  return value?.fields?.[snakeName];
+}
+
+function commitmentSnapshot(value, field) {
+  try {
+    return commitment(value, field);
+  } catch (cause) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_PRESTATE_REQUIRED',
+      field,
+      `${field} is required for the exact finalized-state fingerprint.`,
+      { cause: String(cause?.message || cause || 'invalid commitment') },
+    );
+  }
+}
+
+function semanticSnapshot(value, field) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 1_024) {
+    fail(MarketV8BuildError, 'MARKET_V8_PRESTATE_REQUIRED', field, `${field} must be exact bounded text.`);
+  }
+  return value;
+}
+
 function actionPreState(action, lane, sender, args) {
   const byName = new Map(args.map((argument) => [argument.name, argument]));
   const registry = byName.get('registry')?.source;
@@ -1455,6 +1482,74 @@ function actionPreState(action, lane, sender, args) {
     controlEpoch: decimalSnapshot(root.controlEpoch ?? root.fields?.control_epoch, 'root.controlEpoch'),
     lifecycleCode: String(observedRootLifecycle(root)),
   });
+  let soulSnapshot = null;
+  if (soulLane) {
+    const output = byName.get('outputAsset')?.source ?? byName.get('outputReceiving')?.source;
+    const receipt = byName.get('receipt')?.source ?? byName.get('receiptReceiving')?.source;
+    const soul = byName.get('soul')?.source ?? byName.get('soulReceiving')?.source;
+    soulSnapshot = freezeRecord({
+      outputRegistryId: byName.get('outputRegistry')?.objectId,
+      soulRegistryId: byName.get('soulRegistry')?.objectId,
+      outputCommitment: commitmentSnapshot(
+        custody?.outputCommitment ?? snapshotField(output, 'outputCommitment', 'output_commitment'),
+        'soul.outputCommitment',
+      ),
+      receiptCommitment: commitmentSnapshot(
+        custody?.receiptCommitment ?? snapshotField(receipt, 'receiptCommitment', 'receipt_commitment'),
+        'soul.receiptCommitment',
+      ),
+      soulCommitment: commitmentSnapshot(
+        custody?.soulCommitment ?? snapshotField(soul, 'soulCommitment', 'soul_commitment'),
+        'soul.soulCommitment',
+      ),
+    });
+  }
+  let physicalSnapshot = null;
+  if (!makerLane && !soulLane) {
+    const asset = byName.get('asset')?.source ?? byName.get('receiving')?.source;
+    const physical = custody ?? asset;
+    const sourceTreasuryArgument = lane === MARKET_V8_LANES.PHYSICAL_BASE
+      ? byName.get('makerTreasury') : byName.get('packTreasury');
+    const selectedSourceTreasuryId = sourceTreasuryArgument?.objectId
+      ?? custody?.sourceTreasuryId;
+    physicalSnapshot = freezeRecord({
+      sourceKind: decimalSnapshot(
+        String(custody?.sourceKind ?? snapshotField(physical, 'sourceKind', 'source_kind')),
+        'physical.sourceKind',
+      ),
+      sourceTreasuryId: buildId(selectedSourceTreasuryId, 'physical.sourceTreasuryId'),
+      sourceId: buildId(
+        custody?.sourceId ?? snapshotField(physical, 'sourceId', 'source_id'),
+        'physical.sourceId',
+      ),
+      sourceSemanticId: semanticSnapshot(
+        custody?.sourceSemanticId ?? snapshotField(physical, 'sourceSemanticId', 'source_semantic_id'),
+        'physical.sourceSemanticId',
+      ),
+      assetContentCommitment: commitmentSnapshot(
+        custody?.assetContentCommitment
+          ?? snapshotField(physical, 'assetContentCommitment', 'asset_content_commitment'),
+        'physical.assetContentCommitment',
+      ),
+      sourceContentCommitment: commitmentSnapshot(
+        custody?.sourceContentCommitment
+          ?? snapshotField(physical, 'sourceContentCommitment', 'source_content_commitment'),
+        'physical.sourceContentCommitment',
+      ),
+      provenanceCommitment: commitmentSnapshot(
+        custody?.provenanceCommitment
+          ?? snapshotField(physical, 'provenanceCommitment', 'provenance_commitment'),
+        'physical.provenanceCommitment',
+      ),
+      transferable: (() => {
+        const observed = custody?.transferable ?? snapshotField(physical, 'transferable', 'transferable');
+        if (typeof observed !== 'boolean') {
+          fail(MarketV8BuildError, 'MARKET_V8_PRESTATE_REQUIRED', 'physical.transferable', 'Physical transferable state is required.');
+        }
+        return observed;
+      })(),
+    });
+  }
   const revenueObjects = {};
   for (const [field, argumentName] of [
     ['protocolTreasury', 'protocolTreasury'],
@@ -1487,6 +1582,8 @@ function actionPreState(action, lane, sender, args) {
     treasury: treasurySnapshot,
     listing: listingSnapshot,
     root: rootSnapshot,
+    soul: soulSnapshot,
+    physical: physicalSnapshot,
     quote: quoteSnapshot,
     revenueObjects: freezeRecord(revenueObjects),
   });
@@ -1553,10 +1650,11 @@ function compileAction(runtimeInput, action, lane, walletInput, args, expectatio
     rootContentCommitment: registryArgument?.source?.fields?.rootContentCommitment,
     protocolRevision: registryArgument?.source?.fields?.protocolConfigRevision?.toString(),
     roleConfigIds: freezeRecord({ ...runtime.sourceRuntime.roleConfigIds }),
-    packageTuple: Object.freeze(Object.entries(runtime.sourceRuntime.roles).map(([role, identity]) => freezeRecord({
-      role,
-      originalPackageId: identity.typeOriginPackageId,
-      callablePackageId: identity.callablePackageId,
+    packageTuple: Object.freeze(makerV8AttestedPackageTuple(runtime.sourceRuntime).map((entry) => freezeRecord({
+      role: entry.role,
+      originalPackageId: entry.originalPackageId,
+      callablePackageId: entry.callablePackageId,
+      packageDigest: entry.packageDigest,
     }))),
     preState: actionPreState(action, lane, sender, args),
     arguments: descriptorArgs,

@@ -1566,6 +1566,31 @@ public fun new_policy_for_testing(
 }
 
 #[test_only]
+public fun destroy_ciphertext_certification_for_testing(
+    certification: CiphertextCertificationV8,
+) {
+    let CiphertextCertificationV8 {
+        catalog_id: _,
+        product_binding_commitment: _,
+        policy_config_id: _,
+        policy_commitment: _,
+        root_id: _,
+        maker_version: _,
+        root_content_commitment: _,
+        scope_kind: _,
+        scope_key: _,
+        scope_commitment: _,
+        asset_key: _,
+        asset_content_commitment: _,
+        ciphertext_blob_id: _,
+        ciphertext_sha256: _,
+        ciphertext_blob_commitment: _,
+        certification_commitment: _,
+        seal_id: _,
+    } = certification;
+}
+
+#[test_only]
 public fun certification_for_testing<PaymentCoin>(
     policy: &SealPolicyConfigV8, root: &MakerRootV8<PaymentCoin>,
     scope_kind: u8, scope_key: String, scope_commitment: vector<u8>,

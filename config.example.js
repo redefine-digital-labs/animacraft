@@ -35,7 +35,7 @@
   window.SoulidityV8Execution = Object.freeze({
     schemaVersion: 'animacraft.web-execution.v8',
     network: 'mainnet',
-    chainIdentifier: 'mainnet',
+    chainIdentifier: '35834a8a',
     allowWalletSignature: false,
     allowBroadcast: false,
   });

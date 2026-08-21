@@ -1142,6 +1142,41 @@ public fun product_release_catalog_with_release_for_testing<
     catalog_from_binding_for_testing(config, binding, ctx)
 }
 
+/// Release integration fixture with both Seal and Release bound to their real
+/// marker TypeOrigins. This exists only so the dependency-top package can test
+/// its private transport-witness bridge end to end.
+#[test_only]
+public fun product_release_catalog_for_release_seal_testing<
+    SealOriginalMarker,
+    SealCallableMarker,
+    ReleaseOriginalMarker,
+    ReleaseCallableMarker,
+>(
+    config: &ProtocolConfigV8,
+    core_original_package_id: address,
+    core_callable_package_id: address,
+    ctx: &mut TxContext,
+): ProductReleaseCatalogV8 {
+    let binding = new_product_release_binding(
+        new_exact_package_binding_for_testing(
+            core_original_package_id,
+            core_callable_package_id,
+            1,
+        ),
+        new_exact_package_binding<SealOriginalMarker, SealCallableMarker>(
+            new_package_commitments_v8(test_hash(4), test_hash(5), test_hash(6)),
+        ),
+        new_exact_package_binding_for_testing(@0x12, @0x22, 7),
+        new_exact_package_binding_for_testing(@0x13, @0x23, 10),
+        new_exact_package_binding_for_testing(@0x14, @0x24, 13),
+        new_exact_package_binding_for_testing(@0x15, @0x25, 16),
+        new_exact_package_binding<ReleaseOriginalMarker, ReleaseCallableMarker>(
+            new_package_commitments_v8(test_hash(19), test_hash(20), test_hash(21)),
+        ),
+    );
+    catalog_from_binding_for_testing(config, binding, ctx)
+}
+
 /// Test catalog variant for exercising a real Physical companion's TypeOrigin
 /// boundary while roles not under test retain isolated fixture package IDs.
 #[test_only]

@@ -36,6 +36,7 @@ const HASH_HEX = /^(?:0x)?[0-9a-fA-F]{64}$/;
 const LEGACY_TYPE = /(?:::OCMaker|::maker_v[4-7]|::commerce_v5|::composition_v6|::physical_v7|::publication_v[4-7])/;
 const VERIFIED_MAINNET_RPCS = new WeakSet();
 const ATTESTED_MAKER_V8_RUNTIMES = new WeakSet();
+const ATTESTED_MAKER_V8_PACKAGE_TUPLES = new WeakMap();
 
 function freeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -376,6 +377,41 @@ export function isMakerV8RuntimeAttested(runtime) {
   return Boolean(runtime) && ATTESTED_MAKER_V8_RUNTIMES.has(runtime);
 }
 
+export function makerV8AttestedPackageTuple(runtime) {
+  if (!isMakerV8RuntimeAttested(runtime) || !ATTESTED_MAKER_V8_PACKAGE_TUPLES.has(runtime)) {
+    fail('config', 'MAKER_V8_RUNTIME_ATTESTATION_REQUIRED', 'Package digests require the exact Mainnet-attested Maker v8 runtime.');
+  }
+  return ATTESTED_MAKER_V8_PACKAGE_TUPLES.get(runtime);
+}
+
+function parseCallablePackageIdentity(response, runtime, role) {
+  if (!record(response) || response.error || !record(response.data)) {
+    fail('readback', 'MAKER_V8_PACKAGE_READ_FAILED', `${role} callable package could not be read from Mainnet.`);
+  }
+  const data = response.data;
+  const expectedId = runtime.roles[role].callablePackageId;
+  const packageId = id(data.objectId, `${role}.callablePackageId`);
+  const packageDigest = digest(data.digest, `${role}.packageDigest`);
+  const packageVersion = decimal(data.version, `${role}.packageVersion`, { positive: true });
+  const packageDataType = data.bcs?.dataType ?? data.content?.dataType;
+  const packageOwner = ownerOf(data.owner);
+  if (packageId !== expectedId || packageDataType !== 'package' || packageOwner.kind !== 'immutable') {
+    fail('readback', 'MAKER_V8_PACKAGE_IDENTITY_MISMATCH', `${role} callable package object does not match the attested runtime.`, {
+      expectedId,
+      packageId,
+      packageDataType,
+      ownerKind: packageOwner.kind,
+    });
+  }
+  return freeze({
+    role,
+    originalPackageId: runtime.roles[role].typeOriginPackageId,
+    callablePackageId: packageId,
+    packageVersion: packageVersion.toString(),
+    packageDigest,
+  });
+}
+
 export async function attestMakerV8Runtime(rpc, config, { network: observedNetwork = MAKER_V8_CHAIN_NETWORK } = {}) {
   network(observedNetwork);
   await assertMakerV8MainnetRpc(rpc);
@@ -405,8 +441,16 @@ export async function attestMakerV8Runtime(rpc, config, { network: observedNetwo
     role,
     parseCompanionConfig(responses[index], runtime, catalog, role, observedNetwork),
   ]));
+  const packageResponses = await Promise.all(Object.keys(runtime.roles).map((role) => rpc.getObject({
+    id: runtime.roles[role].callablePackageId,
+    options: { showBcs: true, showOwner: true },
+  })));
+  const packageTuple = freeze(Object.keys(runtime.roles).map((role, index) => (
+    parseCallablePackageIdentity(packageResponses[index], runtime, role)
+  )));
   ATTESTED_MAKER_V8_RUNTIMES.add(runtime);
-  return freeze({ runtime, catalog, configs: freeze(configs), network: observedNetwork });
+  ATTESTED_MAKER_V8_PACKAGE_TUPLES.set(runtime, packageTuple);
+  return freeze({ runtime, catalog, configs: freeze(configs), packageTuple, network: observedNetwork });
 }
 
 const ACTIVATION_FIELDS = Object.freeze([

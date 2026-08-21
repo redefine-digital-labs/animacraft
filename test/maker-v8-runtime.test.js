@@ -156,6 +156,7 @@ test('allows upgraded callables only after live TypeOrigin lineage verification'
     checked.roles.runtime.typeOriginPackageId,
     checked.roles.runtime.callablePackageId,
   );
+  assert.equal(assertMakerV8Runtime(checked), checked);
   assert.equal(
     makerV8StableType(checked, 'runtime', 'runtime_v8', 'MakerLoadoutV8'),
     `${id(102)}::runtime_v8::MakerLoadoutV8`,

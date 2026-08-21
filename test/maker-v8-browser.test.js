@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import {
@@ -19,6 +20,9 @@ import {
   readFinalizedMakerV8EnvelopeV8,
 } from '../maker-v8-browser.js';
 import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
+
+const planHash = `0x${'ab'.repeat(32)}`;
+const finalizedTransactionBytes = toBase64(new Uint8Array([4, 5]));
 
 const objectId = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const packageId = objectId;
@@ -325,6 +329,7 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
   remember(ids.treasury, '8', { escrow_atomic: '0' }, suiDigest);
   remember(ids.listing, '8', { status: '0' }, suiDigest);
   past.get(`${ids.listing}:8`).details.owner = outputOwner;
+  let registryInputVersion = '5';
   const client = {
     core: {
       async getTransaction() {
@@ -351,7 +356,7 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
               eventsDigest: suiDigest,
               bcs: effectsBytes,
               changedObjects: [
-                changed(ids.registry, '5', '8'), changed(ids.treasury, '5', '8'),
+                changed(ids.registry, registryInputVersion, '8'), changed(ids.treasury, '5', '8'),
                 changed(ids.listing, null, '8', 'Created', outputOwner),
               ],
               unchangedConsensusObjects: [{
@@ -370,12 +375,19 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
       },
     },
     async tryGetPastObject({ id, version, options }) {
-      assert.equal(typeof version, 'string');
+      assert.equal(typeof version, 'number');
       assert.equal(options.showPreviousTransaction, true);
       return past.get(`${id}:${version}`) ?? { status: 'VersionNotFound', details: [id, version] };
     },
   };
   const market = {
+    runtime: {
+      typeOrigins: {
+        corePackageId: packageId(1),
+        physicalPackageId: packageId(3),
+        outputPackageId: packageId(2),
+      },
+    },
     parseEvent(event) {
       assert.equal(event.id.txDigest, suiDigest);
       return {
@@ -391,22 +403,29 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
     rootId: ids.root, registryId: ids.registry, treasuryId: ids.treasury,
     preState: { action: 'listMakerControl', lane: 0 },
   };
+  const recoveryIdentity = (action = 'LISTMAKERCONTROL') => ({
+    action,
+    wallet: descriptor.sender,
+    root: { id: ids.root },
+    registry: { id: ids.registry },
+    treasury: { id: ids.treasury },
+  });
   const receipt = await readFinalizedMakerV8EnvelopeV8({
     client,
     market,
     request: {
       digest: suiDigest,
-      planHash: 'plan-hash-core-v2-0001',
+      planHash,
       outcome: {
         status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
       },
-      identity: { action: 'listMakerControl' },
-      plan: { sourceSnapshot: { descriptor } },
+      identity: recoveryIdentity(),
+      plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
     },
   });
   assert.equal(receipt.source, 'FINALIZED_CORE_V2');
   assert.equal(receipt.epoch, '77');
-  assert.equal(receipt.planHash, 'plan-hash-core-v2-0001');
+  assert.equal(receipt.planHash, planHash);
   assert.equal(receipt.effectsFingerprint, effectsFingerprint);
   assert.equal(receipt.transaction.sender, objectId(99));
   assert.equal(receipt.transaction.target, descriptor.target);
@@ -418,20 +437,96 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
   assert.equal(receipt.effects.objects.find(({ role }) => role === 'REGISTRY').after.ref.version, '8');
   assert.equal(receipt.effects.objects.find(({ role }) => role === 'LISTING').change, 'CREATED');
 
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client,
+      market,
+      request: {
+        digest: suiDigest,
+        planHash: 'ab'.repeat(32),
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+        },
+        identity: recoveryIdentity(),
+        plan: { fingerprint: 'ab'.repeat(32), transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_PLAN_HASH_INVALID',
+  );
+
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client,
+      market,
+      request: {
+        digest: suiDigest,
+        planHash,
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+        },
+        identity: recoveryIdentity('CANCELPHYSICALLISTING'),
+        plan: {
+          fingerprint: planHash,
+          transactionBytes: finalizedTransactionBytes,
+          sourceSnapshot: { descriptor: { ...descriptor, action: 'cancelPhysicalListing' } },
+        },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_PHYSICAL_LANE_DRIFT',
+  );
+
+  registryInputVersion = '9007199254740992';
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client,
+      market,
+      request: {
+        digest: suiDigest,
+        planHash,
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
+        },
+        identity: recoveryIdentity(),
+        plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_READBACK_UNAVAILABLE'
+      && error.details.status === 'VERSION_OUTSIDE_JSON_RPC_SAFE_RANGE',
+  );
+  registryInputVersion = '5';
+
   past.delete(`${ids.registry}:5`);
   await assert.rejects(
     readFinalizedMakerV8EnvelopeV8({
       client, market,
       request: {
-        digest: suiDigest, planHash: 'plan-hash-core-v2-0001',
+        digest: suiDigest, planHash,
         outcome: {
           status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint, eventsDigest: suiDigest,
         },
-        identity: { action: 'listMakerControl' },
-        plan: { sourceSnapshot: { descriptor } },
+        identity: recoveryIdentity('listMakerControl'),
+        plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
       },
     }),
     (error) => error.code === 'MAKER_V8_BROWSER_READBACK_UNAVAILABLE'
       && error.details.archivalRpcRequired === true,
   );
+});
+
+test('pinned SDK JSON-RPC past-object transport receives an exact safe integer version', async () => {
+  const calls = [];
+  const client = new SuiJsonRpcClient({
+    network: 'mainnet',
+    transport: {
+      async request(request) {
+        calls.push(request);
+        return { status: 'VersionNotFound', details: [objectId(1), 7] };
+      },
+    },
+  });
+  await client.tryGetPastObject({ id: objectId(1), version: 7, options: { showContent: true } });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, 'sui_tryGetPastObject');
+  assert.equal(calls[0].params[1], 7);
+  assert.equal(typeof calls[0].params[1], 'number');
 });

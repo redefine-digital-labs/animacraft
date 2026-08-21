@@ -26,6 +26,7 @@ process.stdout.write('probes/companion_compile: public API compile PASS\n');
 for (const [relativePath, diagnostics] of [
   ['probes/adversarial_abilities', [
     'ReleaseRenderWitnessV8',
+    'ReleaseTransportWitnessV8',
     'ReleasePackageConfigV8',
     'does not have the ability',
     'copy',
@@ -34,6 +35,7 @@ for (const [relativePath, diagnostics] of [
   ['probes/adversarial_api', [
     'release_call_cap',
     'ReleaseRenderWitnessV8',
+    'ReleaseTransportWitnessV8',
     'restricted visibility',
   ]],
 ]) {

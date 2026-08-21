@@ -2,6 +2,7 @@ import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { consumeMarketV8RecoveryEvidenceV8 } from './maker-v8-market.js';
+import { makerV8ActionV8 } from './maker-v8-actions.js';
 
 /**
  * Fresh-v8 transaction recovery.
@@ -354,10 +355,11 @@ function canonicalPackageTuple(value) {
   const roles = new Set();
   const originals = new Set();
   const callables = new Set();
+  const packageDigests = new Set();
   const tuple = value.map((raw, index) => {
     exactKeys(
       raw,
-      ['role', 'originalPackageId', 'callablePackageId'],
+      ['role', 'originalPackageId', 'callablePackageId', 'packageDigest'],
       `packageTuple[${index}]`,
     );
     const entry = clonePlainData(raw, `packageTuple[${index}]`, { allowScalar: false });
@@ -376,13 +378,21 @@ function canonicalPackageTuple(value) {
       entry.callablePackageId,
       `packageTuple[${index}] callable package id`,
     );
+    entry.packageDigest = opaque(entry.packageDigest, `packageTuple[${index}] package digest`);
+    if (!/^[1-9A-HJ-NP-Za-km-z]{20,64}$/.test(entry.packageDigest)) fail(
+      MAKER_V8_RECOVERY_ERROR.IDENTITY_INVALID,
+      MAKER_V8_RECOVERY_ERROR_LAYER.VALIDATION,
+      'packageTuple package digests must be exact Sui object digests.',
+      { role: entry.role },
+    );
     if (roles.has(entry.role)) fail(
       MAKER_V8_RECOVERY_ERROR.IDENTITY_INVALID,
       MAKER_V8_RECOVERY_ERROR_LAYER.VALIDATION,
       'packageTuple roles must be unique.',
       { role: entry.role },
     );
-    if (originals.has(entry.originalPackageId) || callables.has(entry.callablePackageId)) fail(
+    if (originals.has(entry.originalPackageId) || callables.has(entry.callablePackageId)
+      || packageDigests.has(entry.packageDigest)) fail(
       MAKER_V8_RECOVERY_ERROR.IDENTITY_INVALID,
       MAKER_V8_RECOVERY_ERROR_LAYER.VALIDATION,
       'Package roles must not collide in original or callable identity.',
@@ -391,6 +401,7 @@ function canonicalPackageTuple(value) {
     roles.add(entry.role);
     originals.add(entry.originalPackageId);
     callables.add(entry.callablePackageId);
+    packageDigests.add(entry.packageDigest);
     return entry;
   });
   tuple.sort((left, right) => left.role.localeCompare(right.role));
@@ -473,7 +484,8 @@ export function canonicalMakerV8RecoveryIdentity(value) {
     MAKER_V8_RECOVERY_ERROR_LAYER.VALIDATION,
     'Maker v8 recovery is pinned to the attested Sui Mainnet chain identifier.',
   );
-  const action = text(value.action, 'Recovery action');
+  const suppliedAction = text(value.action, 'Recovery action');
+  const action = makerV8ActionV8(suppliedAction)?.id;
   const actionContract = MARKET_ACTIONS[action];
   if (!actionContract) fail(
     MAKER_V8_RECOVERY_ERROR.IDENTITY_INVALID,
@@ -661,6 +673,25 @@ function normalizeDigest(value, label, code = MAKER_V8_RECOVERY_ERROR.DIGEST_MIS
   }
 }
 
+function canonicalEffectsFingerprint(value, label, code) {
+  if (typeof value !== 'string' || !/^0x[0-9a-f]{64}$/.test(value)) fail(
+    code,
+    MAKER_V8_RECOVERY_ERROR_LAYER.VALIDATION,
+    `${label} must be the exact SHA-256 fingerprint of Core V2 effects BCS.`,
+  );
+  return value;
+}
+
+function canonicalEventsDigest(value, label, code) {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !/^[1-9A-HJ-NP-Za-km-z]{20,64}$/.test(value)) fail(
+    code,
+    MAKER_V8_RECOVERY_ERROR_LAYER.VALIDATION,
+    `${label} must be an exact Sui events digest or null.`,
+  );
+  return value;
+}
+
 function canonicalMarketRuntime(value) {
   exactKeys(value, [
     'schemaVersion',
@@ -843,7 +874,7 @@ function canonicalMarketDescriptor(value, runtime, identity) {
     'Market descriptor must bind the exact seven-role package tuple.',
   );
   const descriptorTupleInput = value.packageTuple.map((entry, index) => {
-    exactKeys(entry, ['role', 'originalPackageId', 'callablePackageId'],
+    exactKeys(entry, ['role', 'originalPackageId', 'callablePackageId', 'packageDigest'],
       `Market descriptor packageTuple[${index}]`, MAKER_V8_RECOVERY_ERROR.PLAN_INVALID);
     const role = text(entry.role, `Market descriptor packageTuple[${index}] role`).toLowerCase();
     if (!MARKET_RUNTIME_ROLES.includes(role)) fail(
@@ -862,6 +893,16 @@ function canonicalMarketDescriptor(value, runtime, identity) {
         entry.callablePackageId,
         `Market descriptor ${role} callable package`,
       ),
+      packageDigest: (() => {
+        const value = opaque(entry.packageDigest, `Market descriptor ${role} package digest`);
+        if (!/^[1-9A-HJ-NP-Za-km-z]{20,64}$/.test(value)) fail(
+          MAKER_V8_RECOVERY_ERROR.PLAN_INVALID,
+          MAKER_V8_RECOVERY_ERROR_LAYER.VALIDATION,
+          'Market descriptor package digest is not an exact Sui object digest.',
+          { role },
+        );
+        return value;
+      })(),
     };
   });
   if (new Set(descriptorTupleInput.map(({ role }) => role)).size
@@ -881,9 +922,13 @@ function canonicalMarketDescriptor(value, runtime, identity) {
     role: entry.role.toLowerCase(),
     originalPackageId: entry.originalPackageId,
     callablePackageId: entry.callablePackageId,
+    packageDigest: entry.packageDigest,
   })).sort((left, right) => left.role.localeCompare(right.role));
-  if (stableJson(descriptorTuple) !== stableJson(expectedTuple)
-    || stableJson([...descriptorTuple].sort((left, right) => left.role.localeCompare(right.role)))
+  const descriptorIdentityTuple = [...descriptorTuple]
+    .sort((left, right) => left.role.localeCompare(right.role));
+  const descriptorRuntimeTuple = descriptorTuple.map(({ packageDigest: _packageDigest, ...entry }) => entry);
+  if (stableJson(descriptorRuntimeTuple) !== stableJson(expectedTuple)
+    || stableJson(descriptorIdentityTuple)
       !== stableJson(identityTuple)) fail(
     MAKER_V8_RECOVERY_ERROR.PLAN_EVIDENCE_MISMATCH,
     MAKER_V8_RECOVERY_ERROR_LAYER.VALIDATION,
@@ -1861,7 +1906,8 @@ function initialRecord(identity, plan, sessionId, now, { revision = 1, attempt =
 
 function normalizeQueryResult(value, digest) {
   if (value === null || value === undefined) return deepFreeze({
-    status: 'NOT_FOUND', digest: null, checkpoint: null, error: null,
+    status: 'NOT_FOUND', digest: null, epoch: null, effectsFingerprint: null,
+    eventsDigest: null, error: null,
   });
   const result = clonePlainData(value, 'Digest query result', { allowScalar: false });
   const aliases = {
@@ -1895,18 +1941,32 @@ function normalizeQueryResult(value, digest) {
       'Not-found query evidence named a different transaction.',
     );
   }
-  const checkpoint = result.checkpoint === undefined || result.checkpoint === null
-    ? null
-    : canonicalU64(result.checkpoint, 'Transaction checkpoint');
-  if (status.startsWith('FINALIZED_') && checkpoint === null) fail(
-    MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
-    MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
-    'A finalized digest query must include its exact checkpoint.',
-  );
+  const finalized = status.startsWith('FINALIZED_');
+  const epoch = finalized
+    ? canonicalU64(result.epoch, 'Finalized transaction epoch') : null;
+  const effectsFingerprint = finalized
+    ? canonicalEffectsFingerprint(
+      result.effectsFingerprint,
+      'Finalized effects fingerprint',
+      MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
+    ) : null;
+  const eventsDigest = finalized
+    ? canonicalEventsDigest(
+      result.eventsDigest ?? null,
+      'Finalized events digest',
+      MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
+    ) : null;
   const error = status === 'FINALIZED_FAILURE'
     ? clonePlainData(result.error || {}, 'Finalized execution error', { allowScalar: false })
     : null;
-  return deepFreeze({ status, digest: status === 'NOT_FOUND' ? null : digest, checkpoint, error });
+  return deepFreeze({
+    status,
+    digest: status === 'NOT_FOUND' ? null : digest,
+    epoch,
+    effectsFingerprint,
+    eventsDigest,
+    error,
+  });
 }
 
 function validateReceipt(receipt, record) {
@@ -1972,12 +2032,31 @@ function receiptFromReadback(value, record, outcome, now) {
     MAKER_V8_RECOVERY_ERROR_LAYER.READBACK,
     'Readback object refs or commitments differ from the signed identity.',
   );
-  const checkpoint = canonicalU64(readback.checkpoint, 'Readback checkpoint');
-  if (checkpoint !== outcome.checkpoint) fail(
+  const epoch = canonicalU64(readback.epoch, 'Readback finalized epoch');
+  const effectsFingerprint = canonicalEffectsFingerprint(
+    readback.effectsFingerprint,
+    'Readback effects fingerprint',
+    MAKER_V8_RECOVERY_ERROR.READBACK_MISMATCH,
+  );
+  const eventsDigest = canonicalEventsDigest(
+    readback.eventsDigest ?? null,
+    'Readback events digest',
+    MAKER_V8_RECOVERY_ERROR.READBACK_MISMATCH,
+  );
+  if (epoch !== outcome.epoch
+    || effectsFingerprint !== outcome.effectsFingerprint
+    || eventsDigest !== outcome.eventsDigest) fail(
     MAKER_V8_RECOVERY_ERROR.READBACK_MISMATCH,
     MAKER_V8_RECOVERY_ERROR_LAYER.READBACK,
-    'Readback checkpoint differs from finalized query evidence.',
-    { queried: outcome.checkpoint, readback: checkpoint },
+    'Readback Core V2 finality evidence differs from the query result.',
+    {
+      queried: {
+        epoch: outcome.epoch,
+        effectsFingerprint: outcome.effectsFingerprint,
+        eventsDigest: outcome.eventsDigest,
+      },
+      readback: { epoch, effectsFingerprint, eventsDigest },
+    },
   );
   const evidence = clonePlainData(readback.evidence, 'Readback evidence', { allowScalar: false });
   if (!Object.keys(evidence).length) fail(
@@ -1991,7 +2070,9 @@ function receiptFromReadback(value, record, outcome, now) {
     identityKey: record.identityKey,
     identity: clonePlainData(record.identity, 'Receipt identity'),
     digest,
-    checkpoint,
+    epoch,
+    effectsFingerprint,
+    eventsDigest,
     stage: record.plan.stage,
     sequence: record.plan.sequence,
     planHash: record.plan.fingerprint,
@@ -2002,7 +2083,9 @@ function receiptFromReadback(value, record, outcome, now) {
 }
 
 function failureFromQuery(outcome, record, now) {
-  if (outcome.status !== 'FINALIZED_FAILURE' || !outcome.checkpoint) fail(
+  if (outcome.status !== 'FINALIZED_FAILURE'
+    || outcome.epoch === null
+    || outcome.effectsFingerprint === null) fail(
     MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_INVALID,
     MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
     'Only query-confirmed finalized failure evidence can retire signed bytes.',
@@ -2013,7 +2096,9 @@ function failureFromQuery(outcome, record, now) {
     identityKey: record.identityKey,
     identity: clonePlainData(record.identity, 'Failure identity'),
     digest: record.signed.digest,
-    checkpoint: outcome.checkpoint,
+    epoch: outcome.epoch,
+    effectsFingerprint: outcome.effectsFingerprint,
+    eventsDigest: outcome.eventsDigest,
     stage: record.plan.stage,
     sequence: record.plan.sequence,
     planHash: record.plan.fingerprint,
@@ -3129,7 +3214,9 @@ export function createMakerV8RecoveryController(options = {}) {
         queryOutcome: deepFreeze({
           status: 'PENDING',
           digest: broadcastResult.digest,
-          checkpoint: null,
+          epoch: null,
+          effectsFingerprint: null,
+          eventsDigest: null,
           error: null,
         }),
         lastError: null,

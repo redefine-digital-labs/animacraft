@@ -528,7 +528,10 @@ public fun quote_maker_resale_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     gross_atomic: u64,
 ): MarketQuoteV8 {
-    assert_active_market(registry, treasury, root);
+    assert_live_market(registry, treasury, root);
+    let lifecycle = maker::root_lifecycle_v8(root);
+    assert!(lifecycle == maker::lifecycle_active_v8()
+        || lifecycle == maker::lifecycle_paused_v8(), EInvalidState);
     derive_quote(root, QUOTE_MAKER_RESALE, gross_atomic)
 }
 
@@ -2174,6 +2177,14 @@ fun assert_active_market<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ) {
     maker::assert_active_capability_registry_v8(root);
+    assert_live_market(registry, treasury, root)
+}
+
+fun assert_live_market<PaymentCoin>(
+    registry: &MarketRegistryV8<PaymentCoin>,
+    treasury: &MarketTreasuryV8<PaymentCoin>,
+    root: &MakerRootV8<PaymentCoin>,
+) {
     maker::assert_root_identity_v8(root, registry.root_id, registry.maker_version,
         &registry.root_content_commitment);
     maker::assert_root_identity_v8(root, treasury.root_id, treasury.maker_version,
@@ -3466,6 +3477,15 @@ fun maker_child_custody_purchase_cancel_and_disabled_recovery_are_exact() {
             ids.market_config_id,
         );
         let admin = scenario.take_from_sender_by_id<MakerAdminCapV8>(ids.admin_id);
+        let paused_quote = quote_maker_resale_v8(
+            &registry,
+            &treasury,
+            &root,
+            10_000,
+        );
+        assert!(paused_quote.protocol_atomic == 250
+            && paused_quote.creator_atomic == 500
+            && paused_quote.seller_atomic == 9_250, 99);
         first_listing_id = list_maker_control_v8(
             &mut registry,
             &treasury,

@@ -41,6 +41,9 @@ const id = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const bytes32 = (value) => Array(32).fill(value);
 const digest = '11111111111111111111111111111111';
 const NETWORK = 'mainnet';
+const FINALIZED_EPOCH = '77';
+const EFFECTS_FINGERPRINT = `0x${'ab'.repeat(32)}`;
+const EVENTS_DIGEST = '22222222222222222222222222222222';
 
 const runtimeInput = Object.freeze({
   schemaVersion: MAKER_V8_RUNTIME_SCHEMA,
@@ -72,6 +75,7 @@ const runtimeInput = Object.freeze({
 });
 
 function runtimeAttestationRpc(runtime) {
+  const runtimeRoles = Object.keys(runtime.roles);
   const roles = ['seal', 'runtime', 'output', 'physical', 'market', 'release'];
   const authority = Object.fromEntries(roles.map((role, index) => [role, id(900 + index)]));
   const roleCommitment = Object.fromEntries(
@@ -160,6 +164,16 @@ function runtimeAttestationRpc(runtime) {
     async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
     async getObject({ id: objectId }) {
       if (objectId === runtime.catalogId) return catalog;
+      const packageIndex = runtimeRoles.findIndex((role) => runtime.roles[role].callablePackageId === objectId);
+      if (packageIndex >= 0) return {
+        data: {
+          objectId,
+          version: '1',
+          digest: String(packageIndex + 2).repeat(32),
+          owner: { Immutable: true },
+          bcs: { dataType: 'package', id: objectId, version: '1', moduleMap: {} },
+        },
+      };
       const role = roles.find((candidate) => runtime.roleConfigIds[candidate] === objectId);
       return configs[role];
     },
@@ -354,6 +368,7 @@ async function makeFixture({ offset = 0, grossAtomic = 1_000_000n, currentEpoch 
       role: entry.role.toUpperCase(),
       originalPackageId: entry.originalPackageId,
       callablePackageId: entry.callablePackageId,
+      packageDigest: entry.packageDigest,
     })),
     paymentCoin: descriptor.typeArguments[0],
     listing: objectRef(IDs.admin),
@@ -542,7 +557,9 @@ function harness({
         digest: request.digest,
         identity: request.identity,
         planHash: request.planHash,
-        checkpoint: request.outcome.checkpoint,
+        epoch: request.outcome.epoch,
+        effectsFingerprint: request.outcome.effectsFingerprint,
+        eventsDigest: request.outcome.eventsDigest,
         evidence: { event: 'exact-event', objectReadback: true },
       };
     }),
@@ -1095,6 +1112,7 @@ test('real SDK bytes and durable fields fail closed under adversarial tampering'
     ['descriptor lane', (record) => { record.plan.market.descriptor.lane = 3; }],
     ['descriptor target', (record) => { record.plan.market.descriptor.target = `${id(7001)}::market_v8::list_maker_control_v8`; }],
     ['descriptor package tuple', (record) => { record.plan.market.descriptor.packageTuple[0].callablePackageId = id(7002); }],
+    ['descriptor package digest', (record) => { record.plan.market.descriptor.packageTuple[0].packageDigest = 'Z'.repeat(32); }],
     ['descriptor object ref', (record) => { record.plan.market.descriptor.arguments[0].objectId = id(7003); }],
     ['descriptor quote', (record) => { record.plan.market.descriptor.expectation.quoteCommitment = `0x${'ab'.repeat(32)}`; }],
     ['runtime package tuple', (record) => { record.plan.market.runtime.roles.core.callablePackageId = id(7004); }],
@@ -1232,7 +1250,9 @@ test('query-first finalized success avoids rebroadcast and cleanup retains a rec
     query: async (request) => ({
       status: 'FINALIZED_SUCCESS',
       digest: request.digest,
-      checkpoint: '42',
+      epoch: FINALIZED_EPOCH,
+      effectsFingerprint: EFFECTS_FINGERPRINT,
+      eventsDigest: EVENTS_DIGEST,
     }),
     broadcast: async () => {
       broadcasts += 1;
@@ -1263,14 +1283,18 @@ test('finalized readback must echo the exact full durable plan hash', async () =
     query: async (request) => ({
       status: 'FINALIZED_SUCCESS',
       digest: request.digest,
-      checkpoint: '43',
+      epoch: FINALIZED_EPOCH,
+      effectsFingerprint: EFFECTS_FINGERPRINT,
+      eventsDigest: EVENTS_DIGEST,
     }),
     readback: async (request) => ({
       verified: true,
       digest: request.digest,
       identity: request.identity,
       planHash: `0x${'55'.repeat(32)}`,
-      checkpoint: request.outcome.checkpoint,
+      epoch: request.outcome.epoch,
+      effectsFingerprint: request.outcome.effectsFingerprint,
+      eventsDigest: request.outcome.eventsDigest,
       evidence: { event: 'wrong-plan' },
     }),
   });
@@ -1296,7 +1320,9 @@ test('finalized failure is archived and blocks the exact signed identity and dig
     query: async (request) => ({
       status: 'FINALIZED_FAILURE',
       digest: request.digest,
-      checkpoint: '44',
+      epoch: FINALIZED_EPOCH,
+      effectsFingerprint: EFFECTS_FINGERPRINT,
+      eventsDigest: EVENTS_DIGEST,
       error: { code: 'MOVE_ABORT', message: 'MoveAbort(8)' },
     }),
   });

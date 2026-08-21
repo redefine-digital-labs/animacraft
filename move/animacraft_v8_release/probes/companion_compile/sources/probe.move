@@ -8,7 +8,7 @@ use animacraft_v8_core::activation_v8::{
     SealReadinessV8,
 };
 use animacraft_v8_core::base_registry_v8::BaseDefinitionRegistryV8;
-use animacraft_v8_core::maker_v8::{MakerAdminCapV8, MakerRootV8};
+use animacraft_v8_core::maker_v8::{MakerAdminCapV8, MakerRootV8, RightsSnapshotV8};
 use animacraft_v8_core::package_binding_v8::{
     PackageCallCapV8,
     ProductReleaseCatalogV8,
@@ -23,6 +23,7 @@ use animacraft_v8_output::output_v8::{
 };
 use animacraft_v8_release::release_v8::{Self as release, ReleasePackageConfigV8};
 use animacraft_v8_runtime::runtime_v8::MakerLoadoutV8;
+use animacraft_v8_seal::seal_v8::{CiphertextCertificationV8, SealPolicyConfigV8};
 use std::string::String;
 
 public fun new_config(
@@ -31,6 +32,75 @@ public fun new_config(
     ctx: &mut TxContext,
 ): ReleasePackageConfigV8 {
     release::new_release_package_config_v8(catalog, cap, ctx)
+}
+
+public fun finalize_product_binding<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    admin: &MakerAdminCapV8,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    release_config: &ReleasePackageConfigV8,
+    ctx: &TxContext,
+) {
+    release::finalize_product_release_binding_v8(
+        root, admin, protocol_config, catalog, release_config, ctx)
+}
+
+public fun wrapped_rights(
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    release_config: &ReleasePackageConfigV8,
+    evidence_locator: String,
+    evidence_blob_id: String,
+    evidence_sha256: vector<u8>,
+    terms_commitment: vector<u8>,
+    ctx: &TxContext,
+): RightsSnapshotV8 {
+    release::new_license_wrapped_rights_snapshot_v8(
+        protocol_config,
+        catalog,
+        release_config,
+        evidence_locator,
+        evidence_blob_id,
+        evidence_sha256,
+        terms_commitment,
+        250,
+        250,
+        500,
+        ctx,
+    )
+}
+
+public fun certify_base_transport<PaymentCoin>(
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    release_config: &ReleasePackageConfigV8,
+    policy: &SealPolicyConfigV8,
+    root: &MakerRootV8<PaymentCoin>,
+    scope_key: String,
+    scope_commitment: vector<u8>,
+    asset_key: String,
+    asset_content_commitment: vector<u8>,
+    ciphertext_blob_id: String,
+    ciphertext_sha256: vector<u8>,
+    ciphertext_blob_commitment: vector<u8>,
+    ctx: &TxContext,
+): CiphertextCertificationV8 {
+    release::certify_base_ciphertext_v8(
+        protocol_config,
+        catalog,
+        release_config,
+        policy,
+        root,
+        scope_key,
+        scope_commitment,
+        asset_key,
+        asset_content_commitment,
+        ciphertext_blob_id,
+        ciphertext_sha256,
+        ciphertext_blob_commitment,
+        ctx,
+    )
 }
 
 public fun activate<PaymentCoin>(
