@@ -1400,6 +1400,9 @@ function compileAction(runtimeInput, action, lane, walletInput, args, expectatio
   });
   const target = `${runtime.callablePackageId}::market_v8::${abi.function}`;
   transaction.moveCall({ target, typeArguments: [runtime.paymentCoinType], arguments: transactionArguments });
+  const registryArgument = args.find((argument) => argument.name === 'registry');
+  const treasuryArgument = args.find((argument) => argument.name === 'treasury');
+  const rootArgument = args.find((argument) => argument.name === 'root');
   const descriptorArgs = Object.freeze(args.map((arg) => freezeRecord({
     kind: arg.kind,
     name: arg.name,
@@ -1420,6 +1423,11 @@ function compileAction(runtimeInput, action, lane, walletInput, args, expectatio
     catalogId: runtime.sourceRuntime.catalogId,
     protocolConfigId: runtime.sourceRuntime.protocolConfigId,
     protocolTreasuryId: runtime.sourceRuntime.protocolTreasuryId,
+    rootId: rootArgument?.objectId,
+    registryId: registryArgument?.objectId,
+    treasuryId: treasuryArgument?.objectId,
+    rootContentCommitment: registryArgument?.source?.fields?.rootContentCommitment,
+    protocolRevision: registryArgument?.source?.fields?.protocolConfigRevision?.toString(),
     roleConfigIds: freezeRecord({ ...runtime.sourceRuntime.roleConfigIds }),
     packageTuple: Object.freeze(Object.entries(runtime.sourceRuntime.roles).map(([role, identity]) => freezeRecord({
       role,
@@ -1648,6 +1656,7 @@ export async function inspectMarketActionOnChainV8(client, builtActionInput, tra
     transactionDigest: checked.transactionDigest,
     descriptor: checked.descriptor,
     runtime: checked.runtime,
+    dryRunAtMs: Date.now(),
   });
   MARKET_ACTION_DRY_RUN_PROOFS.add(proof);
   return proof;
@@ -1666,8 +1675,10 @@ export function createMarketV8RecoveryEvidenceV8(builtActionInput, transactionBy
       'Signing recovery requires a fresh private proof that these exact TransactionData bytes succeeded in Mainnet simulation.',
     );
   }
-  MARKET_RECOVERY_EVIDENCE.add(checked);
-  return checked;
+  MARKET_ACTION_DRY_RUN_PROOFS.delete(dryRunProof);
+  const evidence = freezeRecord({ ...checked, dryRunAtMs: dryRunProof.dryRunAtMs });
+  MARKET_RECOVERY_EVIDENCE.add(evidence);
+  return evidence;
 }
 
 export function assertMarketV8RecoveryEvidenceV8(value) {
@@ -1680,6 +1691,12 @@ export function assertMarketV8RecoveryEvidenceV8(value) {
     );
   }
   return value;
+}
+
+export function consumeMarketV8RecoveryEvidenceV8(value) {
+  const checked = assertMarketV8RecoveryEvidenceV8(value);
+  MARKET_RECOVERY_EVIDENCE.delete(checked);
+  return checked;
 }
 
 function marketArgs(types, registry, treasury) {
@@ -1724,6 +1741,14 @@ function commonBoundObjects(runtime, types, registry, input) {
 
 function protocolObject(types, registry, value) {
   return typedObject(value, types.protocolConfig, 'protocolConfig', { expectedId: registry.fields.protocolConfigId });
+}
+
+function listExpectation(eligible) {
+  return freezeRecord({
+    listingRevision: 0n,
+    registryRevision: eligible.registry.fields.revision,
+    quoteCommitment: eligible.quote.commitment,
+  });
 }
 
 const MARKET_QUOTE_FUNCTIONS = Object.freeze({
@@ -2053,7 +2078,7 @@ export function buildListMakerControlV8(runtimeInput, input) {
     argObject('catalog', common.catalog),
     argObject('config', common.config),
     argU64('grossAtomic', eligible.quote.grossAtomic),
-  ]);
+  ], listExpectation(eligible));
 }
 
 export function buildPurchaseMakerControlV8(runtimeInput, input) {
@@ -2147,7 +2172,7 @@ export function buildListSoulBundleV8(runtimeInput, input) {
     argObject('receipt', typedObject(input.receipt, types.completeReceipt, 'receipt')),
     argObject('soul', typedObject(input.soul, types.canonicalSoul, 'soul')),
     argU64('grossAtomic', eligible.quote.grossAtomic),
-  ]);
+  ], listExpectation(eligible));
 }
 
 function soulObjects(setup, input) {
@@ -2279,7 +2304,7 @@ function listPhysical(runtimeInput, input, lane) {
     argObject('config', common.config),
     argObject('asset', asset),
     argU64('grossAtomic', eligible.quote.grossAtomic),
-  ]);
+  ], listExpectation(eligible));
 }
 
 export function buildListBasePhysicalV8(runtime, input) {

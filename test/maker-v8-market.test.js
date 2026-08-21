@@ -19,6 +19,7 @@ import {
   assertMarketV8Runtime,
   buildMarketQuoteInspectionV8,
   createMarketV8RecoveryEvidenceV8,
+  consumeMarketV8RecoveryEvidenceV8,
   createMarketV8Client,
   deriveMarketQuoteCommitmentV8,
   inspectMarketQuoteOnChainV8,
@@ -935,6 +936,11 @@ test('signing evidence binds branded builder output, Mainnet dry run, and decode
   assert.equal(evidence.descriptor.action, 'listMakerControl');
   assert.equal(evidence.runtime, attestedRuntime);
   assert.equal(evidence.transactionDigest, TransactionDataBuilder.getDigestFromBytes(Buffer.from(transactionBytes, 'base64')));
+  assert.equal(Number.isSafeInteger(evidence.dryRunAtMs), true);
+  assert.throws(
+    () => createMarketV8RecoveryEvidenceV8(built, transactionBytes, dryRunProof),
+    (error) => error.code === 'MARKET_V8_ACTION_DRY_RUN_PROOF_REQUIRED',
+  );
 
   assert.throws(
     () => createMarketV8RecoveryEvidenceV8({ ...built }, transactionBytes, dryRunProof),
@@ -955,6 +961,11 @@ test('signing evidence binds branded builder output, Mainnet dry run, and decode
   assert.throws(
     () => createMarketV8RecoveryEvidenceV8(built, transactionBytes, { ...dryRunProof }),
     (error) => error.code === 'MARKET_V8_ACTION_DRY_RUN_PROOF_REQUIRED',
+  );
+  assert.equal(consumeMarketV8RecoveryEvidenceV8(evidence), evidence);
+  assert.throws(
+    () => consumeMarketV8RecoveryEvidenceV8(evidence),
+    (error) => error.code === 'MARKET_V8_RECOVERY_EVIDENCE_REQUIRED',
   );
 });
 
