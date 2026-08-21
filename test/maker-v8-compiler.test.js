@@ -1,891 +1,335 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { Transaction } from '@mysten/sui/transactions';
 
 import {
+  MAKER_V8_BASE_READBACK_SCHEMA,
   MAKER_V8_COMMITMENT_FIXTURE_SCHEMA,
-  MAKER_V8_COMPOSITION_BEHAVIORS,
-  MAKER_V8_COMPOSITION_RULE_KINDS,
-  MAKER_V8_COMPOSITION_SOURCES,
-  MAKER_V8_PACK_ACCESS_KINDS,
-  MAKER_V8_PHYSICAL_SOURCE_KINDS,
-  MAKER_V8_ROOT_CATEGORIES,
-  MakerV8CompilerError,
-  advanceMakerV8CategoryCommitment,
-  advanceMakerV8CompleteOutputCommitment,
-  advanceMakerV8CompletePackPolicyCommitment,
-  advanceMakerV8CompositionItemCommitment,
-  advanceMakerV8CompositionRuleCommitment,
-  advanceMakerV8CompositionSlotCommitment,
-  advanceMakerV8PackReleaseCommitment,
-  advanceMakerV8PackStyleCommitment,
-  advanceMakerV8PhysicalCommitment,
-  advanceMakerV8RequiredPackSelectionCommitment,
-  advanceMakerV8SealCommitment,
+  MAKER_V8_COMPANION_READBACK_SCHEMA,
+  MAKER_V8_ROLE_ORDER,
+  MAKER_V8_SCAFFOLD_READBACK_SCHEMA,
+  MAKER_V8_TRUSTED_CONTEXT_SCHEMA,
+  buildMakerV8ActivationTransaction,
+  buildMakerV8BaseTransaction,
+  buildMakerV8CompanionObjectsTransaction,
+  buildMakerV8ScaffoldTransaction,
   canonicalMakerV8Json,
-  collectMakerV8CompilerIssues,
+  certifyMakerV8BaseReadback,
+  certifyMakerV8CompanionReadback,
+  certifyMakerV8ScaffoldReadback,
+  certifyMakerV8TrustedContext,
   compileMakerV8Publication,
-  compileMakerV8RootCommitments,
-  emptyMakerV8CategoryCommitment,
-  emptyMakerV8CompleteCommitment,
-  emptyMakerV8CompositionCommitment,
-  emptyMakerV8PackRegistryCommitment,
-  emptyMakerV8PackStyleCommitment,
-  emptyMakerV8PhysicalCommitment,
-  emptyMakerV8RequiredPackSelectionCommitment,
-  emptyMakerV8SealCommitment,
-  makerV8EconomicsCommitment,
-  makerV8CompleteSealScope,
-  makerV8MakerStyleSealScope,
-  makerV8PackScopeKey,
-  makerV8PackStyleSealScope,
-  makerV8PayloadCommitment,
-  makerV8RightsCommitment,
-  makerV8SemanticCommitment,
-  makerV8SoulCommitment,
-  makerV8StyleAssetKey,
-  makerV8VersionCommitment,
-  planMakerV8PublicationCalls,
-  serializeMakerV8CapabilityCommitments,
-  serializeMakerV8Options,
-  serializeMakerV8RootRow,
-  serializeMakerV8RowCounts,
-  verifyMakerV8Certification,
+  deriveMakerV8ReleaseCommitments,
+  exactMakerV8TransactionTargets,
 } from '../maker-v8-compiler.js';
-import {
-  collectMakerV8DocumentIssues,
-  createMakerV8Document,
-} from '../maker-v8-document.js';
 
-const fixture = JSON.parse(await readFile(
-  new URL('./fixtures/maker-v8-compiler-v1.json', import.meta.url),
-  'utf8',
-));
-const digest = (nibble) => nibble.repeat(64);
+const fixture = JSON.parse(await readFile(new URL('./fixtures/maker-v8-compiler-v1.json', import.meta.url), 'utf8'));
+const ZERO = '00'.repeat(32);
+const COIN = '0x2::sui::SUI';
+const DIGEST = '11111111111111111111111111111111';
+const MARKERS = {
+  core: ['protocol_config_v8', 'CorePackageMarkerV8', 'CorePackageMarkerV8'],
+  seal: ['seal_v8', 'SealOriginalMarkerV8', 'SealCallableMarkerV8'],
+  runtime: ['runtime_v8', 'RuntimeOriginalMarkerV8', 'RuntimeCallableMarkerV8'],
+  output: ['output_v8', 'OutputOriginalMarkerV8', 'OutputCallableMarkerV8'],
+  physical: ['physical_v8', 'PhysicalOriginalMarkerV8', 'PhysicalCallableMarkerV8'],
+  market: ['market_v8', 'MarketOriginalMarkerV8', 'MarketCallableMarkerV8'],
+  release: ['release_v8', 'ReleaseOriginalMarkerV8', 'ReleaseCallableMarkerV8'],
+};
+const nid = (value) => `0x${value.slice(2).toLowerCase().padStart(64, '0')}`;
+const ntype = (value) => value.replace(/0x[0-9a-fA-F]{1,64}/g, nid);
+const clone = (value) => structuredClone(value);
+const hashBytes = async (bytes) => Buffer.from(await crypto.subtle.digest('SHA-256', bytes)).toString('hex');
+const shared = (objectId, type, fields) => ({ type: ntype(type), reference: { kind: 'shared', objectId, initialSharedVersion: '1' }, fields });
+const owned = (objectId, type, fields) => ({ type: ntype(type), reference: { kind: 'owned', objectId, version: '1', digest: DIGEST }, fields });
+const immutable = (objectId, type, fields) => ({ type: ntype(type), reference: { kind: 'immutable', objectId, version: '1', digest: DIGEST }, fields });
 
-function certification(bytes, sha256, blobId = 'walrus-asset') {
-  return {
-    certified: true,
-    certificationVisible: true,
-    blobId,
-    bytes,
-    sha256,
-    byteLength: String(bytes.length / 2),
-    mediaType: 'image/png',
-  };
+function publicProjection(document) {
+  const projection = clone(document);
+  projection.parts = projection.parts.map((part) => ({ ...part, items: part.items.filter((item) => item.status === 'PUBLIC') }));
+  return projection;
 }
 
-function fullRootInput() {
-  const track = structuredClone(fixture.inputs.track);
-  delete track.sequence;
-  const style = structuredClone(fixture.inputs.style);
-  delete style.sequence;
-  const assetBlobId = style.assetBlobId;
-  const assetSha256 = style.assetSha256;
-  delete style.assetBlobId;
-  delete style.assetSha256;
-  style.assetCertification = certification(
-    '89504e470d0a1a0a00ffe6b189',
-    assetSha256,
-    assetBlobId,
-  );
-  return {
-    semanticProjection: structuredClone(fixture.inputs.semanticProjection),
-    tracks: [track],
-    parts: [{
-      key: 'body',
-      label: '身体',
-      kind: 2,
-      renderOrder: 7,
-      required: true,
-      visible: true,
-      payloadProjection: {
-        schemaVersion: 'animacraft.maker-v8-part-payload.v1',
-        parentPartId: null,
-        wardrobeMode: 'FIXED',
-      },
-    }],
-    items: [{
-      partKey: 'body',
-      itemKey: 'base',
-      label: '基础',
-      gateKind: 1,
-      payloadProjection: {
-        schemaVersion: 'animacraft.maker-v8-item-payload.v1',
-        requires: [],
-        status: 'public',
-      },
-    }],
-    styles: [style],
-    colors: [{
-      channelKey: '肤色',
-      swatchKey: '暖',
-      label: '暖色',
-      rgba: 0x11223344,
-      payloadProjection: {
-        schemaVersion: 'animacraft.maker-v8-color-payload.v1',
-        stops: [
-          { offset: 0, color: '#000000' },
-          { offset: 1, color: '#ffffff' },
-        ],
-      },
-    }],
-    rules: [{
-      key: 'rule-一',
-      kind: 1,
-      leftRef: 'body/base/默认',
-      rightRef: 'body/base/alt',
-      payloadProjection: {
-        schemaVersion: 'animacraft.maker-v8-rule-payload.v1',
-        nested: { any: ['甲', '乙'] },
-      },
-    }],
-  };
-}
-
-function validCurrentDocument() {
-  const document = structuredClone(createMakerV8Document({
-    makerId: 'compiler-gap',
-    name: 'Compiler Gap',
-    commerce: { rightsOriginConfirmed: true },
-  }));
-  document.metadata.summary = 'Valid authoring document with intentionally incomplete publication semantics.';
-  document.metadata.coverAssetId = 'cover';
-  document.assets = [
-    {
-      id: 'cover', kind: 'maker-cover', mediaType: 'image/png', byteLength: 12,
-    },
-    {
-      id: 'body-asset', kind: 'layer', mediaType: 'image/png', byteLength: 24,
-    },
-  ];
-  document.layerTracks = [{
-    id: 'base-track', name: 'Base', order: 0, locked: false, referenceAssetId: null,
-  }];
-  document.colorChannels = [];
-  document.parts = [{
-    id: 'body',
-    name: 'Body',
-    menuOrder: 0,
-    menuVisible: true,
-    required: true,
-    wardrobeMode: 'FIXED',
-    defaultItemId: 'base',
-    parentPartId: null,
-    iconAssetId: null,
-    visibleWhen: null,
-    requires: [],
-    excludes: [],
-    items: [{
-      id: 'base',
-      name: 'Base',
-      displayOrder: 0,
-      importKey: 'base',
-      status: 'public',
-      thumbnailAssetId: null,
-      visibleWhen: null,
-      requires: [],
-      excludes: [],
-      defaultStyleId: 'default',
-      styles: [{
-        id: 'default',
-        name: 'Default',
-        displayOrder: 0,
-        layerTrackId: 'base-track',
-        colorChannelId: null,
-        assetId: 'body-asset',
-        transform: { x: 0, y: 0, scale: 1, rotation: 0 },
-        positionConfirmed: true,
-        positionLocked: false,
-        styleLocked: false,
-        opacity: 1,
-        blendMode: 'normal',
-        visibleWhen: null,
-        requires: [],
-        excludes: [],
-        seal: { protected: false },
-        physical: { enabled: false },
-      }],
-    }],
-  }];
-  document.defaultRecipe = {
-    selections: [{ partId: 'body', itemId: 'base', styleId: 'default' }],
-    colors: [],
-  };
-  return document;
-}
-
-test('checked-in fixture fixes canonical UTF-8, BCS field order, u64, Options, and Root rolling bytes', async () => {
-  assert.equal(fixture.schemaVersion, MAKER_V8_COMMITMENT_FIXTURE_SCHEMA);
-  const semanticProjection = structuredClone(fixture.inputs.semanticProjection);
-  semanticProjection.maker.revision = 18_446_744_073_709_551_615n;
-  const semantic = await makerV8SemanticCommitment(semanticProjection);
-  assert.deepEqual(
-    { json: semantic.json, utf8Hex: semantic.utf8Hex, commitment: semantic.commitment },
-    fixture.expected.semantic,
-  );
-
-  for (const kind of ['track', 'style']) {
-    const input = structuredClone(fixture.inputs[kind]);
-    const payload = await makerV8PayloadCommitment(input.payloadProjection);
-    delete input.payloadProjection;
-    input.payloadCommitment = payload.commitment;
-    assert.deepEqual(
-      { payloadJson: payload.json, payloadUtf8Hex: payload.utf8Hex, payloadCommitment: payload.commitment },
-      {
-        payloadJson: fixture.expected[kind].payloadJson,
-        payloadUtf8Hex: fixture.expected[kind].payloadUtf8Hex,
-        payloadCommitment: fixture.expected[kind].payloadCommitment,
-      },
-    );
-    assert.equal(serializeMakerV8RootRow(kind, input).bcsHex, fixture.expected[kind].rowBcsHex);
-    if (kind === 'style') {
-      assert.equal(serializeMakerV8RootRow(kind, {
-        ...input,
-        colorChannelKey: null,
-        defaultSwatchKey: null,
-      }).bcsHex, fixture.expected.style.noneOptionsRowBcsHex);
-      assert.throws(
-        () => serializeMakerV8RootRow(kind, { ...input, defaultSwatchKey: null }),
-        (error) => error.code === 'MAKER_V8_STYLE_COLOR_PAIR_INVALID',
-      );
-    }
+async function certifiedTransport(document, assets) {
+  const rows = [];
+  for (const asset of assets) {
+    const bytes = Buffer.from(asset.bytesBase64, 'base64');
+    rows.push({ assetId: asset.assetId, blobId: asset.blobId, mediaType: asset.mediaType, byteLength: bytes.length, sha256: await hashBytes(bytes) });
   }
+  rows.sort((a, b) => a.assetId.localeCompare(b.assetId));
+  const manifest = canonicalMakerV8Json({ schemaVersion: 'animacraft.maker-v8-manifest.v2', protocolVersion: 8, document: publicProjection(document), certifiedAssets: rows });
+  return { manifest: { blobId: 'walrus-manifest-small-v8', bytesBase64: Buffer.from(manifest).toString('base64') }, assets: clone(assets) };
+}
 
-  const rootContentCommitment = semantic.commitment;
-  const trackEmpty = await emptyMakerV8CategoryCommitment(
-    rootContentCommitment,
-    MAKER_V8_ROOT_CATEGORIES.TRACK,
-  );
-  assert.deepEqual(trackEmpty, fixture.expected.rootRolling.trackEmpty);
-  assert.deepEqual(await advanceMakerV8CategoryCommitment({
-    rootContentCommitment,
-    category: MAKER_V8_ROOT_CATEGORIES.TRACK,
-    previousCommitment: trackEmpty.commitment,
-    sequence: 0,
-    rowBytes: fixture.expected.track.rowBcsHex,
-  }), fixture.expected.rootRolling.trackAdvance);
+async function releaseTuple() {
+  const roles = {};
+  for (const [index, role] of MAKER_V8_ROLE_ORDER.entries()) {
+    const [originalPackageId, callablePackageId] = fixture.packageRoles[role];
+    const [module, originalMarker, callableMarker] = MARKERS[role];
+    roles[role] = {
+      originalPackageId, callablePackageId,
+      sourceCommitment: (index + 1).toString(16).padStart(64, '0'),
+      packageCommitment: (index + 17).toString(16).padStart(64, '0'),
+      abiCommitment: (index + 33).toString(16).padStart(64, '0'),
+      bindingCommitment: ZERO,
+      originalMarkerType: `${originalPackageId}::${module}::${originalMarker}`,
+      callableMarkerType: `${callablePackageId}::${module}::${callableMarker}`,
+    };
+  }
+  const authorities = Object.fromEntries(['seal', 'runtime', 'output', 'physical', 'market', 'release'].map((role, index) => [role, `0x${(0x501 + index).toString(16)}`]));
+  for (const role of MAKER_V8_ROLE_ORDER) {
+    await assert.rejects(deriveMakerV8ReleaseCommitments({ catalogId: fixture.ids.catalog, roles, authorities }), (error) => {
+      assert.equal(error.code, 'MAKER_V8_PACKAGE_BINDING_COMMITMENT_MISMATCH');
+      roles[role].bindingCommitment = error.details.expected;
+      return true;
+    });
+  }
+  return deriveMakerV8ReleaseCommitments({ catalogId: fixture.ids.catalog, roles, authorities });
+}
 
-  const styleEmpty = await emptyMakerV8CategoryCommitment(
-    rootContentCommitment,
-    MAKER_V8_ROOT_CATEGORIES.STYLE,
-  );
-  assert.deepEqual(styleEmpty, fixture.expected.rootRolling.styleEmpty);
-  assert.deepEqual(await advanceMakerV8CategoryCommitment({
-    rootContentCommitment,
-    category: MAKER_V8_ROOT_CATEGORIES.STYLE,
-    previousCommitment: styleEmpty.commitment,
-    sequence: 3,
-    rowBytes: fixture.expected.style.rowBcsHex,
-  }), fixture.expected.rootRolling.styleAdvance);
-
-  const aggregateEmpty = await emptyMakerV8CategoryCommitment(
-    rootContentCommitment,
-    MAKER_V8_ROOT_CATEGORIES.AGGREGATE,
-  );
-  assert.deepEqual(aggregateEmpty, fixture.expected.rootRolling.aggregateEmpty);
-  assert.deepEqual(await advanceMakerV8CategoryCommitment({
-    rootContentCommitment,
-    category: MAKER_V8_ROOT_CATEGORIES.AGGREGATE,
-    previousCommitment: aggregateEmpty.commitment,
-    sequence: 0,
-    rowBytes: fixture.expected.track.rowBcsHex,
-  }), fixture.expected.rootRolling.aggregateTrackAdvance);
-  assert.deepEqual(await advanceMakerV8CategoryCommitment({
-    rootContentCommitment,
-    category: MAKER_V8_ROOT_CATEGORIES.AGGREGATE,
-    previousCommitment: fixture.expected.rootRolling.aggregateStyleAdvance.priorCommitment,
-    sequence: 3,
-    rowBytes: fixture.expected.style.rowBcsHex,
-  }), {
-    bcsHex: fixture.expected.rootRolling.aggregateStyleAdvance.bcsHex,
-    commitment: fixture.expected.rootRolling.aggregateStyleAdvance.commitment,
-  });
-
-  assert.deepEqual(serializeMakerV8Options(), fixture.expected.options.none);
-  assert.deepEqual(serializeMakerV8Options({
-    previousRootId: fixture.inputs.previousRootId,
-    previousVersionCommitment: fixture.inputs.previousVersionCommitment,
-    physicalCommitment: fixture.inputs.physicalCommitment,
-  }), fixture.expected.options.some);
-});
-
-test('Root compiler derives six category chains and aggregate and rejects caller-owned hashes', async () => {
-  const input = fullRootInput();
-  const compiled = await compileMakerV8RootCommitments(input);
-  assert.equal(compiled.totalRows, 6n);
-  assert.deepEqual(compiled.commitments, fixture.expected.fullRoot.commitments);
-  assert.equal(compiled.registryCommitmentsBcsHex, fixture.expected.fullRoot.registryCommitmentsBcsHex);
-  assert.deepEqual(compiled.rows.map((row) => row.sequence), [0n, 1n, 2n, 3n, 4n, 5n]);
-  assert.equal(compiled.rows.find((row) => row.kind === 'style').call.assetSha256,
-    fixture.inputs.style.assetSha256);
-
-  const mutated = fullRootInput();
-  mutated.tracks[0].payloadProjection.locked = true;
-  assert.notEqual(
-    (await compileMakerV8RootCommitments(mutated)).commitments.aggregate,
-    compiled.commitments.aggregate,
-  );
-
-  const reordered = fullRootInput();
-  reordered.tracks.push({
-    ...structuredClone(reordered.tracks[0]),
-    key: 'track-second',
-    label: 'Second',
-  });
-  const forward = await compileMakerV8RootCommitments(reordered);
-  reordered.tracks.reverse();
-  const reverse = await compileMakerV8RootCommitments(reordered);
-  assert.notEqual(forward.commitments.tracks, reverse.commitments.tracks);
-  assert.notEqual(forward.commitments.aggregate, reverse.commitments.aggregate);
-
-  const injected = fullRootInput();
-  injected.tracks[0].payloadCommitment = digest('f');
-  await assert.rejects(
-    compileMakerV8RootCommitments(injected),
-    (error) => error instanceof MakerV8CompilerError
-      && error.code === 'MAKER_V8_CALLER_COMMITMENT_FORBIDDEN',
-  );
-  const injectedAsset = fullRootInput();
-  injectedAsset.styles[0].assetSha256 = digest('f');
-  await assert.rejects(
-    compileMakerV8RootCommitments(injectedAsset),
-    (error) => error.code === 'MAKER_V8_CALLER_COMMITMENT_FORBIDDEN',
-  );
-  const ignored = fullRootInput();
-  ignored.tracks[0].unprojectedMeaning = 'must not be silently dropped';
-  await assert.rejects(
-    compileMakerV8RootCommitments(ignored),
-    (error) => error.code === 'MAKER_V8_ROOT_ROW_FIELDS_UNKNOWN',
-  );
-  const uncertified = fullRootInput();
-  delete uncertified.styles[0].assetCertification;
-  await assert.rejects(
-    compileMakerV8RootCommitments(uncertified),
-    (error) => error.code === 'MAKER_V8_ASSET_CERTIFICATION_REQUIRED',
-  );
-});
-
-test('canonical JSON preserves array and Unicode semantics while sorting keys deterministically', async () => {
-  assert.equal(canonicalMakerV8Json({ z: 1, a: { d: 4, b: 2 } }), '{"a":{"b":2,"d":4},"z":1}');
-  assert.equal(canonicalMakerV8Json({ zero: -0, value: 1n }), '{"value":"1","zero":0}');
-  assert.notEqual(
-    (await makerV8PayloadCommitment({ ordered: ['first', 'second'] })).commitment,
-    (await makerV8PayloadCommitment({ ordered: ['second', 'first'] })).commitment,
-  );
-  assert.notEqual(
-    (await makerV8PayloadCommitment({ value: 'é' })).commitment,
-    (await makerV8PayloadCommitment({ value: 'é' })).commitment,
-  );
-  assert.throws(
-    () => canonicalMakerV8Json({ amount: Number.MAX_SAFE_INTEGER + 1 }),
-    (error) => error.code === 'MAKER_V8_CANONICAL_NUMBER_INVALID',
-  );
-  assert.throws(
-    () => canonicalMakerV8Json({ bytes: new Uint8Array([1]) }),
-    (error) => error.code === 'MAKER_V8_CANONICAL_BINARY_UNSUPPORTED',
-  );
-  const accessor = {};
-  Object.defineProperty(accessor, 'secret', {
-    enumerable: true,
-    get() { throw new Error('raw-accessor-sentinel'); },
-  });
-  assert.throws(
-    () => canonicalMakerV8Json(accessor),
-    (error) => error instanceof MakerV8CompilerError
-      && error.code === 'MAKER_V8_COMPILER_INPUT_DESCRIPTOR_INVALID'
-      && !String(error.message).includes('raw-accessor-sentinel'),
-  );
-  const unreadable = new Proxy({}, {
-    getPrototypeOf() { throw new Error('raw-proxy-sentinel'); },
-  });
-  assert.throws(
-    () => canonicalMakerV8Json(unreadable),
-    (error) => error instanceof MakerV8CompilerError
-      && error.code === 'MAKER_V8_COMPILER_INPUT_UNREADABLE'
-      && !String(error.message).includes('raw-proxy-sentinel'),
-  );
-  assert.throws(
-    () => planMakerV8PublicationCalls(unreadable),
-    (error) => error instanceof MakerV8CompilerError
-      && error.code === 'MAKER_V8_COMPILER_INPUT_UNREADABLE'
-      && !String(error.message).includes('raw-proxy-sentinel'),
-  );
-});
-
-test('certification always hashes exact bytes and rejects missing, mutated, or mismatched evidence', async () => {
-  const exact = certification(
-    '89504e470d0a1a0a00ffe6b189',
-    fixture.inputs.style.assetSha256,
-    'walrus-root-asset',
-  );
-  assert.deepEqual(await verifyMakerV8Certification(exact, {
-    expectedSha256: fixture.inputs.style.assetSha256,
-    expectedByteLength: 13,
-    expectedMediaType: 'image/png',
-  }), {
-    blobId: 'walrus-root-asset',
-    sha256: fixture.inputs.style.assetSha256,
-    byteLength: 13n,
-    mediaType: 'image/png',
-    bytesHex: exact.bytes,
-  });
-  await assert.rejects(
-    verifyMakerV8Certification({ ...exact, bytes: `${exact.bytes.slice(0, -2)}00` }),
-    (error) => error.code === 'MAKER_V8_CERTIFICATION_HASH_MISMATCH',
-  );
-  await assert.rejects(
-    verifyMakerV8Certification({ ...exact, certificationVisible: false }),
-    (error) => error.code === 'MAKER_V8_CERTIFICATION_REQUIRED',
-  );
-  await assert.rejects(
-    verifyMakerV8Certification({ ...exact, byteLength: 12 }),
-    (error) => error.code === 'MAKER_V8_CERTIFICATION_LENGTH_MISMATCH',
-  );
-  await assert.rejects(
-    verifyMakerV8Certification({ ...exact, callerCommitment: digest('f') }),
-    (error) => error.code === 'MAKER_V8_CERTIFICATION_FIELDS_UNKNOWN',
-  );
-});
-
-test('companion commitment chains match exact golden finals across every v8 registry', async () => {
-  const root = await compileMakerV8RootCommitments(fullRootInput());
-  const rootContentCommitment = root.rootContentCommitment;
-  const rootAsset = fixture.inputs.style.assetSha256;
-  const certifiedPackAsset = await verifyMakerV8Certification({
-    certified: true,
-    certificationVisible: true,
-    blobId: 'walrus-pack-asset',
-    bytes: fixture.inputs.packAssetBytesHex,
-    sha256: fixture.inputs.packAssetSha256,
-    byteLength: String(fixture.inputs.packAssetBytesHex.length / 2),
-    mediaType: 'image/png',
-  });
-  const packAsset = certifiedPackAsset.sha256;
-
-  const compositionEmpty = await emptyMakerV8CompositionCommitment(rootContentCommitment);
-  const compositionSlot = await advanceMakerV8CompositionSlotCommitment({
-    rootContentCommitment,
-    sequence: 0,
-    priorCommitment: compositionEmpty.commitment,
-    slotKey: 'body',
-    behavior: MAKER_V8_COMPOSITION_BEHAVIORS.FIXED,
-    capacity: 1,
-    required: true,
-    slotCommitment: digest('1'),
-  });
-  const compositionItem = await advanceMakerV8CompositionItemCommitment({
-    rootContentCommitment,
-    sequence: 1,
-    priorCommitment: compositionSlot.commitment,
-    slotKey: 'body',
-    itemKey: 'base',
-    sourceKind: MAKER_V8_COMPOSITION_SOURCES.OFFICIAL,
-    transferable: false,
-    definitionCommitment: digest('2'),
-    assetCommitment: rootAsset,
-  });
-  const compositionRule = await advanceMakerV8CompositionRuleCommitment({
-    rootContentCommitment,
-    sequence: 2,
-    priorCommitment: compositionItem.commitment,
-    ruleKind: MAKER_V8_COMPOSITION_RULE_KINDS.REQUIRE,
-    leftSlotKey: 'body',
-    leftItemKey: 'base',
-    rightSlotKey: 'body',
-    rightItemKey: 'base',
-    ruleCommitment: digest('3'),
-  });
-  assert.equal(compositionRule.commitment, 'aea12a65554cca9b145c6970f43a504772ee78207240322b5e92c2e637ddce8e');
-
-  const manifest = await makerV8SemanticCommitment({
-    schemaVersion: 'animacraft.pack-manifest.v1',
-    title: '扩展包',
-    assets: [{ sha256: packAsset }],
-  });
-  const certifiedManifest = await verifyMakerV8Certification({
-    certified: true,
-    certificationVisible: true,
-    blobId: 'walrus-manifest',
-    bytes: manifest.utf8Hex,
-    sha256: manifest.commitment,
-    byteLength: String(manifest.utf8Hex.length / 2),
-    mediaType: 'application/json',
-  });
-  const release = await makerV8SemanticCommitment({
-    schemaVersion: 'animacraft.pack-release.v1', namespace: 'studio', packKey: '夜色',
-  });
-  const recipe = await makerV8SemanticCommitment({
-    schemaVersion: 'animacraft.complete-recipe-policy.v1', required: ['body'],
-  });
-  const renderer = await makerV8SemanticCommitment({
-    schemaVersion: 'animacraft.renderer-schema.v1', output: 'image/png',
-  });
-  const materialMaker = await makerV8SemanticCommitment({
-    schemaVersion: 'animacraft.material.v1', sku: 'maker-shirt',
-  });
-  const materialPack = await makerV8SemanticCommitment({
-    schemaVersion: 'animacraft.material.v1', sku: 'pack-shirt',
-  });
-  const assetKey = makerV8StyleAssetKey('body', 'base', '默认');
-  const packScope = makerV8PackScopeKey('studio', '夜色');
-  const makerScope = makerV8MakerStyleSealScope(rootContentCommitment);
-  const exactPackScope = makerV8PackStyleSealScope('studio', '夜色', release.commitment);
-  const completeScope = makerV8CompleteSealScope('portrait', recipe.commitment);
-  assert.equal(assetKey, 'body\u0000base\u0000默认');
-  assert.equal(packScope, 'studio\u0000夜色');
-  assert.equal(exactPackScope.scopeKey, packScope);
-
-  const sealEmpty = await emptyMakerV8SealCommitment(rootContentCommitment);
-  const makerSeal = await advanceMakerV8SealCommitment({
-    rootContentCommitment,
-    sequence: 0,
-    priorCommitment: sealEmpty.commitment,
-    ...makerScope,
-    assetKey,
-    assetCommitment: rootAsset,
-  });
-  const packSeal = await advanceMakerV8SealCommitment({
-    rootContentCommitment,
-    sequence: 1,
-    priorCommitment: makerSeal.commitment,
-    ...exactPackScope,
-    assetKey,
-    assetCommitment: packAsset,
-  });
-  const completeSeal = await advanceMakerV8SealCommitment({
-    rootContentCommitment,
-    sequence: 2,
-    priorCommitment: packSeal.commitment,
-    ...completeScope,
-    assetKey: 'portrait',
-    assetCommitment: renderer.commitment,
-  });
-  assert.equal(completeSeal.commitment, '66a7f7b1f4f637b9dea1944f35e86200b759aa9d229650e81fd80ce9134f5112');
-
-  const packRegistryEmpty = await emptyMakerV8PackRegistryCommitment(rootContentCommitment);
-  const packStyleEmpty = await emptyMakerV8PackStyleCommitment({
-    rootContentCommitment,
-    namespace: 'studio',
-    packKey: '夜色',
-    manifestCommitment: manifest.commitment,
-    releaseContentCommitment: release.commitment,
-  });
-  const packStyle = await advanceMakerV8PackStyleCommitment({
-    rootContentCommitment,
-    namespace: 'studio',
-    packKey: '夜色',
-    manifestCommitment: manifest.commitment,
-    releaseContentCommitment: release.commitment,
-    sequence: 0,
-    priorCommitment: packStyleEmpty.commitment,
-    partKey: 'body',
-    itemKey: 'base',
-    styleKey: '默认',
-    assetBlobId: certifiedPackAsset.blobId,
-    assetCommitment: packAsset,
-    protected: true,
-    sealId: packSeal.sealId,
-  });
-  const packRelease = await advanceMakerV8PackReleaseCommitment({
-    rootContentCommitment,
-    sequence: 0,
-    priorCommitment: packRegistryEmpty.commitment,
-    namespace: 'studio',
-    packKey: '夜色',
-    manifestCommitment: manifest.commitment,
-    releaseContentCommitment: release.commitment,
-    styleRegistryCommitment: packStyle.commitment,
-    accessKind: MAKER_V8_PACK_ACCESS_KINDS.PAID,
-    purchasePriceAtomic: '999999999999',
-    completeMode: 1,
-    completePriceAtomic: 1_000,
-    completeFreeQuotaPerWallet: 2,
-    completeTotalCap: 99,
-    protectedStyleCount: 1,
-    sealRegistryCommitment: completeSeal.commitment,
-  });
-  assert.equal(packRelease.commitment, 'f3eb573387cd146b4f21812161757158f0b5a836f43d950914a1024f75d56c2c');
-
-  const selectionEmpty = await emptyMakerV8RequiredPackSelectionCommitment(rootContentCommitment);
-  const selection = await advanceMakerV8RequiredPackSelectionCommitment({
-    rootContentCommitment,
-    sequence: 0,
-    priorCommitment: selectionEmpty.commitment,
-    packScopeKey: packScope,
-    releaseContentCommitment: release.commitment,
-    partKey: 'body',
-    itemKey: 'base',
-    styleKey: '默认',
-    assetCommitment: packAsset,
-    protected: true,
-    sealId: packSeal.sealId,
-  });
-  const completeEmpty = await emptyMakerV8CompleteCommitment(rootContentCommitment);
-  const completeOutput = await advanceMakerV8CompleteOutputCommitment({
-    rootContentCommitment,
-    sequence: 0,
-    priorCommitment: completeEmpty.commitment,
-    outputKey: 'portrait',
-    recipePolicyCommitment: recipe.commitment,
-    rendererSchemaCommitment: renderer.commitment,
-    protected: true,
-    sealId: completeSeal.sealId,
-    requiredPackSelectionCount: 1,
-    requiredPackSelectionCommitment: selection.commitment,
-  });
-  const completePolicy = await advanceMakerV8CompletePackPolicyCommitment({
-    rootContentCommitment,
-    sequence: 1,
-    priorCommitment: completeOutput.commitment,
-    packScopeKey: packScope,
-    releaseContentCommitment: release.commitment,
-    mode: 1,
-    priceAtomic: 1_000,
-    freeQuotaPerWallet: 2,
-    totalCap: 99,
-  });
-  assert.equal(completePolicy.commitment, 'da0556532f30f0a983090bab62c2656301b40032cbe445cdaae97f62da07d137');
-
-  const physicalEmpty = await emptyMakerV8PhysicalCommitment(rootContentCommitment);
-  const physicalMaker = await advanceMakerV8PhysicalCommitment({
-    rootContentCommitment,
-    sequence: 0,
-    priorCommitment: physicalEmpty.commitment,
-    sourceKind: MAKER_V8_PHYSICAL_SOURCE_KINDS.MAKER_STYLE,
-    scopeKey: 'maker',
-    scopeCommitment: rootContentCommitment,
-    partKey: 'body',
-    itemKey: 'base',
-    styleKey: '默认',
-    styleContentCommitment: rootAsset,
-    materialCommitment: materialMaker.commitment,
-    maxSupply: 900_000_000,
-    transferable: true,
-  });
-  const physicalPack = await advanceMakerV8PhysicalCommitment({
-    rootContentCommitment,
-    sequence: 1,
-    priorCommitment: physicalMaker.commitment,
-    sourceKind: MAKER_V8_PHYSICAL_SOURCE_KINDS.PACK_STYLE,
-    scopeKey: packScope,
-    scopeCommitment: release.commitment,
-    partKey: 'body',
-    itemKey: 'base',
-    styleKey: '默认',
-    styleContentCommitment: packAsset,
-    materialCommitment: materialPack.commitment,
-    maxSupply: 500,
-    transferable: false,
-  });
-  assert.equal(physicalPack.commitment, fixture.inputs.physicalCommitment);
-  assert.equal((await makerV8SoulCommitment(rootContentCommitment)).commitment,
-    '02339030c9a2c0f74224a899cac8d236df08c90bfb9ab85052c36622ec2758b5');
-
-  const economics = await makerV8EconomicsCommitment({
-    makerAccess: 1,
-    makerPriceAtomic: '999999999999',
-    completeMode: 1,
-    completePriceAtomic: 1_000,
-    completePerWalletQuota: 2,
-    completeTotalCap: 99,
-    protocolFeeBps: 250,
-  });
-  assert.equal(economics.commitment, 'a387aed60f85c9a902256a54911cf898dccc85e333b287f7f2c886620c514a40');
-  assert.equal(economics.inputBcsHex,
-    '01ff0fa5d4e800000001e80300000000000002000000000000006300000000000000fa00');
-  assert.equal(economics.structBcsHex,
-    `01ff0fa5d4e800000001e80300000000000002000000000000006300000000000000fa0020${economics.commitment}`);
-  const rights = await makerV8RightsCommitment({
-    origin: 1,
-    creatorConfirmed: true,
-    soulCreatorRoyaltyBps: 500,
-    makerSourceRoyaltyBps: 500,
-    makerResaleRoyaltyBps: 250,
-  });
-  assert.equal(rights.commitment, '559bd6e742b9b0379b5d96ef53930ca28a2d64d9f9aec47818ec37f0f854c3c4');
-  assert.equal(rights.inputBcsHex, '0101f401f401fa00');
-  assert.equal(rights.structBcsHex, `0101f401f401fa0020${rights.commitment}`);
-  assert.equal((await makerV8VersionCommitment({
-    packageId: `0x${'ab'.repeat(32)}`,
-    makerKey: '灵魂-maker',
-    makerVersion: 'v8.一',
-    previousRootId: fixture.inputs.previousRootId,
-    previousVersionCommitment: fixture.inputs.previousVersionCommitment,
-    rendererCommitment: renderer.commitment,
-    manifestBlobId: certifiedManifest.blobId,
-    manifestSha256: certifiedManifest.sha256,
-    contentCommitment: rootContentCommitment,
-  })).commitment, '01cf660b51a2ec54462465329ea59a3e1c81f13d22686841385b52e6084f943d');
-
-  const capabilityBcs = serializeMakerV8CapabilityCommitments({
-    composition: compositionRule.commitment,
-    pack: packRelease.commitment,
-    complete: completePolicy.commitment,
-    seal: completeSeal.commitment,
-    soul: (await makerV8SoulCommitment(rootContentCommitment)).commitment,
-    physical: physicalPack.commitment,
-  }).bcsHex;
-  assert.equal(capabilityBcs, [
-    compositionRule.commitment,
-    packRelease.commitment,
-    completePolicy.commitment,
-    completeSeal.commitment,
-    (await makerV8SoulCommitment(rootContentCommitment)).commitment,
-  ].map((commitment) => `20${commitment}`).join('') + `0120${physicalPack.commitment}`);
-});
-
-test('call planner computes exact counts and preserves dependency ordering', async () => {
-  const root = fullRootInput();
-  const packRows = [{ namespace: 'studio', packKey: '夜色', styles: [{ protected: true }] }];
-  const plan = planMakerV8PublicationCalls({
-    root,
-    composition: { slots: [{}], items: [{}], rules: [{}] },
-    packs: packRows,
-    completeOutputs: [{ protected: true }],
-    physicalPolicies: [{ sourceKind: 0 }, { sourceKind: 1 }],
-  });
-  assert.deepEqual(plan.rowCounts, {
-    tracks: 1n,
-    parts: 1n,
-    items: 1n,
-    styles: 1n,
-    colors: 1n,
-    rules: 1n,
-    slots: 1n,
-    pack_releases: 1n,
-    protected_assets: 3n,
-  });
-  assert.equal(plan.rowCountsBcsHex,
-    '010000000000000001000000000000000100000000000000010000000000000001000000000000000100000000000000010000000000000001000000000000000300000000000000');
-  assert.deepEqual(
-    [plan.rootSequence, plan.compositionSequence, plan.sealSequence, plan.completeSequence],
-    [6n, 3n, 3n, 2n],
-  );
-  assert.equal(plan.expectedCompletePackPolicyCount, 1n);
-  assert.equal(plan.expectedPhysicalPolicyCount, 2n);
-  assert.equal(plan.declaredCapabilities, 127n);
-  assert.deepEqual(plan.packReleaseCounts, [{
-    namespace: 'studio',
-    packKey: '夜色',
-    expectedStyleCount: 1n,
-    expectedProtectedStyleCount: 1n,
-  }]);
-  assert.deepEqual(plan.calls.map((call) => call.target), [
-    'maker_v8::new_row_counts_v8',
-    'maker_v8::new_registry_commitments_v8',
-    'maker_v8::new_capability_commitments_v8',
-    'maker_v8::new_economics_v8',
-    'maker_v8::new_rights_v8',
-    'publication_v8::begin_maker_v8',
-    'maker_v8::append_track_v8',
-    'maker_v8::append_part_v8',
-    'maker_v8::append_item_v8',
-    'maker_v8::append_style_v8',
-    'maker_v8::append_color_v8',
-    'maker_v8::append_rule_v8',
-    'composition_v8::append_wardrobe_slot_v8',
-    'composition_v8::append_composition_item_v8',
-    'composition_v8::append_loadout_rule_v8',
-    'expansion_pack_v8::create_expansion_pack_release_v8',
-    'seal_v8::append_protected_asset_v8',
-    'seal_v8::append_protected_asset_v8',
-    'seal_v8::append_protected_asset_v8',
-    'seal_v8::seal_registry_v8',
-    'expansion_pack_v8::append_expansion_pack_style_v8',
-    'expansion_pack_v8::seal_expansion_pack_release_v8',
-    'expansion_pack_v8::append_release_to_registry_v8',
-    'complete_v8::append_complete_output_v8',
-    'complete_v8::append_complete_pack_policy_v8',
-    'physical_v8::append_maker_style_policy_v8',
-    'physical_v8::append_pack_style_policy_v8',
-    'composition_v8::seal_composition_registry_v8',
-    'expansion_pack_v8::seal_expansion_pack_registry_v8',
-    'complete_v8::seal_complete_registry_v8',
-    'physical_v8::seal_physical_registry_v8',
-    'publication_v8::seal_and_activate_physical_maker_v8',
-  ]);
-  assert.deepEqual(
-    plan.calls.filter((call) => call.phase === 'root').map((call) => call.sequence),
-    [0n, 1n, 2n, 3n, 4n, 5n],
-  );
-  assert.deepEqual(
-    plan.calls.filter((call) => call.phase === 'seal-rows').map((call) => call.scopeKind),
-    [0, 1, 2],
-  );
-
-  const withoutPhysical = planMakerV8PublicationCalls({
-    root,
-    composition: { slots: [], items: [], rules: [] },
-    packs: [],
-    completeOutputs: [],
-  });
-  assert.equal(withoutPhysical.declaredCapabilities, 127n);
-  assert.equal(withoutPhysical.expectedPhysicalPolicyCount, 0n);
-  assert.equal(withoutPhysical.calls.at(-1).target,
-    'publication_v8::seal_and_activate_physical_maker_v8');
-  assert.equal(withoutPhysical.calls.some((call) => (
-    call.target === 'physical_v8::seal_physical_registry_v8'
-  )), true);
-
-  const hiddenPack = new Proxy(packRows, {
-    get(target, property, receiver) {
-      if (property === 'length') return 0;
-      return Reflect.get(target, property, receiver);
+async function trustedContext(document = clone(fixture.document), assets = clone(fixture.transportAssets)) {
+  const release = await releaseTuple();
+  const core = release.roles.core.originalPackageId;
+  const catalogFields = {
+    version: 8, protocolConfigId: fixture.ids.protocolConfig, protocolConfigRevision: '3', protocolConfigCommitment: ZERO,
+    nativeCapabilityMask: '127', productBindingCommitment: release.productBindingCommitment, callCapSetCommitment: release.callCapSetCommitment,
+    roles: release.roles, authorities: release.authorities,
+  };
+  const protocolFields = {
+    version: 8, revision: '3', enabled: true, coreOriginalPackageId: release.roles.core.originalPackageId, coreCallablePackageId: release.roles.core.callablePackageId,
+    treasuryId: fixture.ids.protocolTreasury, paymentCoinType: COIN, primaryContentFeeBps: 125, fixedCompleteFeeAtomic: '7', makerMarketFeeBps: 80, soulMarketFeeBps: 90, commitment: ZERO,
+  };
+  const configFields = (role) => ({ version: 8, catalogId: fixture.ids.catalog, productBindingCommitment: release.productBindingCommitment, callCapSetCommitment: release.callCapSetCommitment, authorityId: release.authorities[role] });
+  const context = {
+    schemaVersion: MAKER_V8_TRUSTED_CONTEXT_SCHEMA,
+    chainIdentifier: 'fixture-chain-v8', signerAddress: fixture.ids.signer, paymentCoinType: COIN,
+    clock: immutable('0x6', '0x2::clock::Clock', {}),
+    protocolConfig: shared(fixture.ids.protocolConfig, `${core}::protocol_config_v8::ProtocolConfigV8`, protocolFields),
+    protocolTreasury: shared(fixture.ids.protocolTreasury, `${core}::protocol_config_v8::ProtocolTreasuryV8<${COIN}>`, { version: 8, configId: fixture.ids.protocolConfig }),
+    catalog: shared(fixture.ids.catalog, `${core}::package_binding_v8::ProductReleaseCatalogV8`, catalogFields),
+    configs: {
+      seal: shared(fixture.ids.sealConfig, `${release.roles.seal.originalPackageId}::seal_v8::SealPolicyConfigV8`, { ...configFields('seal'), commitment: ZERO, keyServerIds: ['0x601'], weights: [1], threshold: 1, keyServerSetCommitment: 'aa'.repeat(32), encryptionPolicyCommitment: 'bb'.repeat(32) }),
+      runtime: shared(fixture.ids.runtimeConfig, `${release.roles.runtime.originalPackageId}::runtime_binding_v8::RuntimePackageConfigV8`, configFields('runtime')),
+      output: shared(fixture.ids.outputConfig, `${release.roles.output.originalPackageId}::output_v8::OutputPackageConfigV8`, configFields('output')),
+      physical: shared(fixture.ids.physicalConfig, `${release.roles.physical.originalPackageId}::physical_v8::PhysicalPackageConfigV8`, configFields('physical')),
+      market: shared(fixture.ids.marketConfig, `${release.roles.market.originalPackageId}::market_v8::MarketPackageConfigV8`, configFields('market')),
+      release: shared(fixture.ids.releaseConfig, `${release.roles.release.originalPackageId}::release_v8::ReleasePackageConfigV8`, configFields('release')),
     },
+    transport: await certifiedTransport(document, assets),
+  };
+  await assert.rejects(certifyMakerV8TrustedContext(context), (error) => {
+    assert.equal(error.code, 'MAKER_V8_PROTOCOL_COMMITMENT_MISMATCH');
+    context.protocolConfig.fields.commitment = error.details.expected;
+    context.catalog.fields.protocolConfigCommitment = error.details.expected;
+    return true;
   });
-  assert.throws(
-    () => planMakerV8PublicationCalls({
-      root,
-      composition: { slots: [], items: [], rules: [] },
-      packs: hiddenPack,
-      completeOutputs: [],
-    }),
-    (error) => error instanceof MakerV8CompilerError
-      && error.code === 'MAKER_V8_COMPILER_INPUT_UNREADABLE',
-  );
-});
+  await assert.rejects(certifyMakerV8TrustedContext(context), (error) => {
+    assert.equal(error.code, 'MAKER_V8_SEAL_POLICY_COMMITMENT_MISMATCH');
+    context.configs.seal.fields.commitment = error.details.expected;
+    return true;
+  });
+  return certifyMakerV8TrustedContext(context);
+}
 
-test('u64 and row-count bounds fail closed instead of rounding or overflowing', () => {
-  const track = structuredClone(fixture.inputs.track);
-  delete track.payloadProjection;
-  track.payloadCommitment = fixture.expected.track.payloadCommitment;
-  assert.equal(serializeMakerV8RootRow('track', track).bcsHex, fixture.expected.track.rowBcsHex);
-  assert.throws(
-    () => serializeMakerV8RootRow('track', { ...track, renderOrder: Number.MAX_SAFE_INTEGER + 1 }),
-    (error) => error.code === 'MAKER_V8_INTEGER_INVALID',
-  );
-  assert.throws(
-    () => serializeMakerV8RootRow('track', { ...track, renderOrder: '18446744073709551616' }),
-    (error) => error.code === 'MAKER_V8_INTEGER_RANGE',
-  );
-  assert.throws(
-    () => serializeMakerV8RowCounts({
-      tracks: 0, parts: 1, items: 1, styles: 1, colors: 0, rules: 0,
-      slots: 0, packReleases: 0, protectedAssets: 0,
-    }),
-    (error) => error.code === 'MAKER_V8_ROW_COUNT_INVALID',
-  );
-});
+function rootObjects(publication) {
+  const c = publication.context; const core = c.catalog.fields.roles.core.originalPackageId; const total = Object.values(publication.counts).reduce((sum, value) => sum + value, 0n);
+  const root = shared(fixture.ids.root, `${core}::maker_v8::MakerRootV8<${COIN}>`, {
+    version: 8, creator: c.signerAddress, owner: c.signerAddress, adminCapId: fixture.ids.adminCap, controlEpoch: '0', lifecycle: 0,
+    makerKey: publication.document.lineage.makerKey, makerVersion: 1, versionCommitment: publication.commitments.version, rendererCommitment: publication.commitments.renderer,
+    manifestBlobId: publication.manifest.blobId, manifestSha256: publication.manifest.sha256, contentCommitment: publication.commitments.content,
+    protocolConfigId: fixture.ids.protocolConfig, protocolConfigRevision: '3', protocolConfigCommitment: c.protocolConfig.fields.commitment,
+    baseRegistryId: fixture.ids.baseRegistry, makerTreasuryId: fixture.ids.makerTreasury, expectedBaseDefinitionCount: String(total), expectedBaseRegistryCommitment: publication.commitments.base.aggregate,
+    expectedPackAdmissionPolicyCommitment: publication.commitments.packAdmissionPolicy, economicsCommitment: publication.commitments.economics, rightsCommitment: publication.commitments.rights,
+    catalogId: fixture.ids.catalog, productBindingCommitment: c._derived.productBindingCommitment, callCapSetCommitment: c._derived.callCapSetCommitment,
+  });
+  const baseRegistry = shared(fixture.ids.baseRegistry, `${core}::base_registry_v8::BaseDefinitionRegistryV8`, {
+    version: 8, rootId: nid(fixture.ids.root), makerVersion: 1, rootContentCommitment: publication.commitments.content,
+    expectedCounts: Object.fromEntries(Object.entries(publication.counts).map(([key, value]) => [key, String(value)])),
+    observedCounts: Object.fromEntries(Object.keys(publication.counts).map((key) => [key, '0'])),
+    expectedCommitments: clone(publication.commitments.base), rollingCommitments: Object.fromEntries(Object.keys(publication.commitments.base).map((key) => [key, ZERO])),
+    nextSequence: '0', expectedSequenceCount: String(total), protectedStyleCount: '0', sealed: false,
+  });
+  return {
+    root, baseRegistry,
+    makerTreasury: shared(fixture.ids.makerTreasury, `${core}::treasury_v8::MakerTreasuryV8<${COIN}>`, { version: 8, rootId: nid(fixture.ids.root), makerVersion: 1, rootContentCommitment: publication.commitments.content }),
+    adminCap: owned(fixture.ids.adminCap, `${core}::maker_v8::MakerAdminCapV8`, { version: 8, rootId: nid(fixture.ids.root), owner: c.signerAddress, controlEpoch: '0' }),
+  };
+}
 
-test('document entry point reports the schema expansion it needs and never invents publication semantics', async () => {
-  const document = validCurrentDocument();
-  assert.deepEqual(collectMakerV8DocumentIssues(document, { mode: 'compile' }), []);
-  const issues = collectMakerV8CompilerIssues(document);
-  const codes = new Set(issues.map((issue) => issue.code));
-  for (const code of [
-    'MAKER_V8_COMPILER_PART_KIND_UNSPECIFIED',
-    'MAKER_V8_COMPILER_ITEM_GATE_UNSPECIFIED',
-    'MAKER_V8_COMPILER_RENDERER_PROJECTION_UNSPECIFIED',
-    'MAKER_V8_COMPILER_MANIFEST_CERTIFICATION_REQUIRED',
-    'MAKER_V8_COMPILER_COMPLETE_OUTPUTS_UNSPECIFIED',
+async function scaffoldReadback(publication) {
+  const raw = { schemaVersion: MAKER_V8_SCAFFOLD_READBACK_SCHEMA, ...rootObjects(publication) };
+  for (const key of ['tracks', 'parts', 'items', 'styles', 'colors', 'rules', 'aggregate']) {
+    await assert.rejects(certifyMakerV8ScaffoldReadback(publication, raw), (error) => {
+      assert.equal(error.code, 'MAKER_V8_BASE_ROLLING_MISMATCH');
+      raw.baseRegistry.fields.rollingCommitments[key] = error.details.expected;
+      return true;
+    });
+  }
+  return certifyMakerV8ScaffoldReadback(publication, raw);
+}
+
+function baseReadbackRaw(publication, scaffold) {
+  const total = Object.values(publication.counts).reduce((sum, value) => sum + value, 0n);
+  return {
+    schemaVersion: MAKER_V8_BASE_READBACK_SCHEMA,
+    baseRegistry: shared(fixture.ids.baseRegistry, scaffold.baseRegistry.type, {
+      version: 8, rootId: nid(fixture.ids.root), makerVersion: 1, rootContentCommitment: publication.commitments.content,
+      observedCounts: Object.fromEntries(Object.entries(publication.counts).map(([key, value]) => [key, String(value)])), rollingCommitments: clone(publication.commitments.base),
+      nextSequence: String(total), protectedStyleCount: String(publication.rows.style.filter((row) => row.protected).length), sealed: true,
+    }),
+  };
+}
+
+function companionRaw(publication, base, expected) {
+  const c = publication.context; const type = (role, module, struct, generic = '') => `${c.catalog.fields.roles[role].originalPackageId}::${module}::${struct}${generic}`; const rootId = nid(fixture.ids.root); const content = publication.commitments.content;
+  const sealRegistry = shared(fixture.ids.sealRegistry, type('seal', 'seal_v8', 'SealRegistryV8'), {
+    version: 8, rootId, makerVersion: 1, rootContentCommitment: content, catalogId: nid(fixture.ids.catalog), productBindingCommitment: c._derived.productBindingCommitment,
+    policyConfigId: nid(fixture.ids.sealConfig), policyCommitment: c._derived.sealPolicyCommitment, expectedBaseCount: String(expected.seal.rows.length), expectedPackCount: '0', expectedCompleteCount: '0', expectedCount: String(expected.seal.rows.length), observedBaseCount: '0', observedPackCount: '0', observedCompleteCount: '0', observedCount: '0', expectedCommitment: expected.seal.commitment, rollingCommitment: ZERO, sealed: false, runtimeRevision: '0', runtimeCommitment: ZERO,
+  });
+  const runtimeDefinitions = shared(fixture.ids.runtimeDefinitions, type('runtime', 'runtime_v8', 'RuntimeDefinitionRegistryV8'), { version: 8, rootId, rootVersion: '1', rootContentCommitment: content, baseRegistryId: nid(fixture.ids.baseRegistry), expectedProfileCount: String(publication.runtime.profiles.length), observedProfileCount: '0', expectedProfileCommitment: publication.runtime.profileCommitment, rollingProfileCommitment: ZERO, admissionCeiling: publication.runtime.admission, sealed: false });
+  const admissionAuthority = owned(fixture.ids.admissionAuthority, type('runtime', 'runtime_v8', 'PackAdmissionAuthorityV8'), { version: 8, rootId, rootVersion: '1', rootContentCommitment: content });
+  const packRegistry = shared(fixture.ids.packRegistry, type('runtime', 'runtime_v8', 'PackRegistryV8'), { version: 8, rootId, rootVersion: '1', rootContentCommitment: content, definitionRegistryId: nid(fixture.ids.runtimeDefinitions), admissionAuthorityId: nid(fixture.ids.admissionAuthority), admissionPolicyCommitment: publication.commitments.packAdmissionPolicy, revision: '0', releaseCount: '0', externalAdmissionCount: '0' });
+  const soulRegistry = shared(fixture.ids.soulRegistry, type('output', 'output_v8', 'SoulRegistryV8'), { version: 8, rootId, makerVersion: 1, rootContentCommitment: content, outputRegistryId: nid(fixture.ids.outputRegistry), soulCount: '0' });
+  const outputRegistry = shared(fixture.ids.outputRegistry, type('output', 'output_v8', 'OutputRegistryV8'), { version: 8, rootId, makerVersion: 1, rootContentCommitment: content, rendererCommitment: publication.commitments.renderer, soulRegistryId: nid(fixture.ids.soulRegistry), expectedOutputCount: String(expected.output.rows.length), observedOutputCount: '0', expectedPolicyCommitment: expected.output.commitment, rollingPolicyCommitment: ZERO, sealed: false });
+  const physicalRegistry = shared(fixture.ids.physicalRegistry, type('physical', 'physical_v8', 'PhysicalRegistryV8'), { version: 8, catalogId: nid(fixture.ids.catalog), packageConfigId: nid(fixture.ids.physicalConfig), productBindingCommitment: c._derived.productBindingCommitment, callCapSetCommitment: c._derived.callCapSetCommitment, rootId, makerVersion: 1, rootContentCommitment: content, baseRegistryId: nid(fixture.ids.baseRegistry), expectedBasePolicyCount: String(expected.physical.rows.length), observedBasePolicyCount: '0', expectedBasePolicyCommitment: expected.physical.commitment, rollingBasePolicyCommitment: ZERO, baseSealed: false, revision: '0', packPolicyCount: '0' });
+  const marketTreasury = shared(fixture.ids.marketTreasury, type('market', 'market_v8', 'MarketTreasuryV8', `<${COIN}>`), { version: 8, catalogId: nid(fixture.ids.catalog), packageConfigId: nid(fixture.ids.marketConfig), rootId, makerVersion: 1, rootContentCommitment: content, balanceAtomic: '0', grossEscrowedAtomic: '0', grossReleasedAtomic: '0' });
+  const marketRegistry = shared(fixture.ids.marketRegistry, type('market', 'market_v8', 'MarketRegistryV8', `<${COIN}>`), { version: 8, catalogId: nid(fixture.ids.catalog), packageConfigId: nid(fixture.ids.marketConfig), productBindingCommitment: c._derived.productBindingCommitment, callCapSetCommitment: c._derived.callCapSetCommitment, rootId, makerVersion: 1, rootContentCommitment: content, protocolConfigId: nid(fixture.ids.protocolConfig), protocolConfigRevision: '3', protocolConfigCommitment: c.protocolConfig.fields.commitment, economicsCommitment: publication.commitments.economics, rightsCommitment: publication.commitments.rights, makerMarketFeeBps: 80, soulMarketFeeBps: 90, soulCreatorRoyaltyBps: publication.document.commerce.soulCreatorRoyaltyBps, makerSourceRoyaltyBps: publication.document.commerce.makerSourceRoyaltyBps, makerResaleRoyaltyBps: publication.document.commerce.makerResaleRoyaltyBps, treasuryId: nid(fixture.ids.marketTreasury), sealed: false, revision: '0', listingCount: '0', escrowCount: '0', completedSaleCount: '0', canceledSaleCount: '0', recoveredSaleCount: '0', grossVolumeAtomic: '0', protocolPaidAtomic: '0', creatorPaidAtomic: '0', sourcePaidAtomic: '0', sellerPaidAtomic: '0', zeroStateCommitment: ZERO });
+  return { schemaVersion: MAKER_V8_COMPANION_READBACK_SCHEMA, sealRegistry, runtimeDefinitions, packRegistry, admissionAuthority, outputRegistry, soulRegistry, physicalRegistry, marketRegistry, marketTreasury };
+}
+
+async function companionReadback(publication, base, expected) {
+  const raw = companionRaw(publication, base, expected);
+  for (const [code, object, field] of [
+    ['MAKER_V8_SEAL_READBACK_MISMATCH', raw.sealRegistry, 'rollingCommitment'],
+    ['MAKER_V8_SEAL_READBACK_MISMATCH', raw.sealRegistry, 'runtimeCommitment'],
+    ['MAKER_V8_RUNTIME_READBACK_MISMATCH', raw.runtimeDefinitions, 'rollingProfileCommitment'],
+    ['MAKER_V8_OUTPUT_READBACK_MISMATCH', raw.outputRegistry, 'rollingPolicyCommitment'],
+    ['MAKER_V8_PHYSICAL_READBACK_MISMATCH', raw.physicalRegistry, 'rollingBasePolicyCommitment'],
+    ['MAKER_V8_MARKET_ZERO_COMMITMENT_MISMATCH', raw.marketRegistry, 'zeroStateCommitment'],
   ]) {
-    assert.equal(codes.has(code), true, code);
+    await assert.rejects(certifyMakerV8CompanionReadback(publication, base, raw), (error) => { assert.equal(error.code, code, `${error.message} ${JSON.stringify(error.details)}`); object.fields[field] = error.details.expected; return true; });
   }
-  await assert.rejects(
-    compileMakerV8Publication(document),
-    (error) => error instanceof MakerV8CompilerError
-      && error.code === 'MAKER_V8_DOCUMENT_SCHEMA_INCOMPLETE'
-      && error.details.issues.length === issues.length,
-  );
+  return certifyMakerV8CompanionReadback(publication, base, raw);
+}
+
+async function compilePath(document = clone(fixture.document), assets = clone(fixture.transportAssets)) {
+  const context = await trustedContext(document, assets); const publication = await compileMakerV8Publication(document, context); const scaffold = await scaffoldReadback(publication); const base = certifyMakerV8BaseReadback(publication, scaffold, baseReadbackRaw(publication, scaffold)); const companionBuild = await buildMakerV8CompanionObjectsTransaction(publication, base); const companion = await companionReadback(publication, base, companionBuild.expected); return { context, publication, scaffold, base, companionBuild, companion };
+}
+
+const moves = (transaction) => transaction.getData().commands.filter((command) => command.$kind === 'MoveCall').map((command) => command.MoveCall);
+const suffixes = (transaction) => exactMakerV8TransactionTargets(transaction).map((target) => target.split('::').slice(-2).join('::'));
+const argKinds = (move) => move.arguments.map((argument) => argument.$kind);
+function argumentObjectId(transaction, argument) {
+  const input = transaction.getData().inputs[argument.Input].Object;
+  return input.SharedObject?.objectId ?? input.ImmOrOwnedObject?.objectId ?? input.Receiving?.objectId;
+}
+
+test('fresh fixture compiles canonical certified bytes and four executable seven-role PTBs', async () => {
+  assert.equal(fixture.schemaVersion, MAKER_V8_COMMITMENT_FIXTURE_SCHEMA);
+  const path = await compilePath();
+  assert.deepEqual({ manifestSha256: path.publication.manifest.sha256, contentCommitment: path.publication.commitments.content, baseAggregateCommitment: path.publication.commitments.base.aggregate, runtimePolicyCommitment: path.publication.commitments.packAdmissionPolicy }, fixture.expected);
+  assert.equal(path.publication.manifest.sha256, path.publication.commitments.content);
+  assert.equal(path.publication.counts.styles, 1n);
+  assert.equal(path.companionBuild.expected.physical.rows.length, 1);
+  const scaffoldTx = buildMakerV8ScaffoldTransaction(path.publication); const baseTx = buildMakerV8BaseTransaction(path.publication, path.scaffold); const activationTx = await buildMakerV8ActivationTransaction(path.publication, path.base, path.companion);
+  for (const tx of [scaffoldTx, baseTx, path.companionBuild.transaction, activationTx]) { assert.ok(tx instanceof Transaction); assert.ok((await tx.build({ onlyTransactionKind: true })).length > 0); }
+  assert.deepEqual(suffixes(scaffoldTx), ['maker_v8::new_economics_snapshot_v8', 'maker_v8::new_onchain_native_rights_snapshot_v8', 'base_registry_v8::new_base_definition_counts_v8', 'base_registry_v8::new_base_definition_commitments_v8', 'core_v8::new_initial_maker_draft_v8', 'release_v8::finalize_product_release_binding_v8', 'core_v8::share_maker_draft_v8']);
+  assert.deepEqual(moves(scaffoldTx).map((move) => move.typeArguments), [[ntype(COIN)], [], [], [], [ntype(COIN)], [ntype(COIN)], [ntype(COIN)]]);
+  assert.deepEqual(suffixes(baseTx), ['base_registry_v8::append_track_v8', 'base_registry_v8::append_part_v8', 'base_registry_v8::append_item_v8', 'base_registry_v8::append_style_v8', 'base_registry_v8::seal_base_definition_registry_v8']);
+  assert.ok(moves(baseTx).every((move) => JSON.stringify(move.typeArguments) === JSON.stringify([ntype(COIN)])));
+  assert.deepEqual(suffixes(path.companionBuild.transaction), ['seal_v8::new_seal_registry_v8', 'seal_v8::share_seal_registry_v8', 'runtime_v8::new_runtime_registries_v8', 'runtime_v8::share_runtime_definition_registry_v8', 'runtime_v8::share_pack_registry_v8', 'runtime_v8::transfer_pack_admission_authority_v8', 'output_v8::new_output_registries_v8', 'output_v8::share_output_registries_v8', 'physical_v8::new_physical_registry_v8', 'physical_v8::share_physical_registry_v8', 'market_v8::new_market_objects_v8', 'market_v8::share_market_registry_v8', 'market_v8::share_market_treasury_v8']);
+  assert.deepEqual(moves(path.companionBuild.transaction).map((move) => move.typeArguments.length), [1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1]);
+  assert.deepEqual(suffixes(activationTx), ['seal_v8::seal_registry_v8', 'runtime_v8::append_part_profile_v8', 'runtime_v8::seal_runtime_definitions_v8', 'output_v8::append_output_policy_v8', 'output_v8::seal_output_registry_v8', 'physical_v8::append_base_style_policy_v8', 'physical_v8::seal_physical_registry_v8', 'market_v8::seal_market_registry_v8', 'seal_v8::issue_seal_readiness_v8', 'seal_v8::certify_activation_readiness_v8', 'runtime_v8::runtime_activation_readiness_v8', 'runtime_binding_v8::certify_runtime_activation_readiness_v8', 'output_v8::certify_output_activation_readiness_v8', 'physical_v8::certify_physical_activation_readiness_v8', 'market_v8::certify_market_activation_readiness_v8', 'release_v8::seal_and_activate_maker_v8']);
+  const allTargets = [scaffoldTx, baseTx, path.companionBuild.transaction, activationTx].flatMap(exactMakerV8TransactionTargets);
+  assert.deepEqual(new Set(allTargets.map((target) => MAKER_V8_ROLE_ORDER.find((role) => target.startsWith(nid(fixture.packageRoles[role][1]))))), new Set(MAKER_V8_ROLE_ORDER));
+  assert.equal(allTargets.some((target) => ['publication', 'composition', 'expansion_pack', 'complete'].some((name) => target.includes(`${name}_v8`)) || /animacraft_v[4-7]/.test(target) || target.includes(`${'physical'}_v7`)), false);
+});
+
+test('targets use callable packages, stable origins remain readback-only, and ABI order/type arguments are exact', async () => {
+  const path = await compilePath(); const activation = await buildMakerV8ActivationTransaction(path.publication, path.base, path.companion); const commands = moves(activation);
+  for (const move of commands) {
+    const role = MAKER_V8_ROLE_ORDER.find((candidate) => nid(fixture.packageRoles[candidate][1]) === move.package);
+    assert.ok(role, `unknown callable package ${move.package}`);
+    assert.equal(move.package, path.context.catalog.fields.roles[role].callablePackageId);
+    assert.deepEqual(move.typeArguments, [ntype(COIN)]);
+  }
+  const physical = commands.find((move) => move.function === 'append_base_style_policy_v8');
+  assert.equal(physical.arguments.length, 17);
+  assert.deepEqual(argKinds(physical), Array(17).fill('Input'));
+  assert.deepEqual(physical.arguments.slice(0, 6).map((argument) => argumentObjectId(activation, argument)), [fixture.ids.physicalRegistry, fixture.ids.root, fixture.ids.adminCap, fixture.ids.baseRegistry, fixture.ids.catalog, fixture.ids.physicalConfig].map(nid));
+  const final = commands.at(-1);
+  assert.equal(final.function, 'seal_and_activate_maker_v8');
+  assert.equal(final.arguments.length, 13);
+  assert.deepEqual(argKinds(final), ['Input', 'Input', 'Input', 'Input', 'Input', 'Input', 'Input', 'Input', 'Result', 'Result', 'Result', 'Result', 'Result']);
+  assert.deepEqual(final.arguments.slice(0, 8).map((argument) => argumentObjectId(activation, argument)), [fixture.ids.root, fixture.ids.adminCap, fixture.ids.protocolConfig, fixture.ids.catalog, fixture.ids.baseRegistry, fixture.ids.makerTreasury, fixture.ids.protocolTreasury, fixture.ids.releaseConfig].map(nid));
+  assert.equal(path.companion.physicalRegistry.type.startsWith(path.context.catalog.fields.roles.physical.originalPackageId), true);
+  assert.notEqual(path.context.catalog.fields.roles.physical.originalPackageId, path.context.catalog.fields.roles.physical.callablePackageId);
+});
+
+test('license-wrapped protected Base uses only Release certification wrappers and exact consumed result order', async () => {
+  const document = clone(fixture.document); const assets = clone(fixture.transportAssets);
+  document.parts[0].items[0].styles[0].protected = true;
+  document.commerce.rightsOrigin = 'LICENSE_WRAPPED'; document.commerce.rightsEvidence = { licensor: 'Fixture Licensor', evidenceAssetId: 'rights-proof' };
+  document.assets.push({ id: 'rights-proof', kind: 'rights-evidence', mediaType: 'application/pdf', byteLength: '5' });
+  assets.push({ assetId: 'rights-proof', blobId: 'walrus-rights-proof-v8', mediaType: 'application/pdf', bytesBase64: 'JVBERi0=' });
+  const path = await compilePath(document, assets); const scaffoldTx = buildMakerV8ScaffoldTransaction(path.publication); const activationTx = await buildMakerV8ActivationTransaction(path.publication, path.base, path.companion);
+  assert.ok(suffixes(scaffoldTx).includes('release_v8::new_license_wrapped_rights_snapshot_v8'));
+  assert.equal(suffixes(scaffoldTx).includes('maker_v8::new_onchain_native_rights_snapshot_v8'), false);
+  assert.deepEqual(suffixes(activationTx).slice(0, 3), ['release_v8::certify_base_ciphertext_v8', 'seal_v8::append_protected_asset_v8', 'seal_v8::seal_registry_v8']);
+  const [certify, append] = moves(activationTx);
+  assert.equal(certify.arguments.length, 12);
+  assert.deepEqual(argKinds(certify), Array(12).fill('Input'));
+  assert.deepEqual(argKinds(append), ['Input', 'Input', 'Input', 'Input', 'Input', 'Result']);
+  assert.deepEqual(certify.arguments.slice(0, 5).map((argument) => argumentObjectId(activationTx, argument)), [fixture.ids.protocolConfig, fixture.ids.catalog, fixture.ids.releaseConfig, fixture.ids.sealConfig, fixture.ids.root].map(nid));
+  assert.deepEqual(append.arguments.slice(0, 4).map((argument) => argumentObjectId(activationTx, argument)), [fixture.ids.sealRegistry, fixture.ids.root, fixture.ids.adminCap, fixture.ids.sealConfig].map(nid));
+  assert.equal(certify.package, path.context.catalog.fields.roles.release.callablePackageId);
+  assert.equal(append.package, path.context.catalog.fields.roles.seal.callablePackageId);
+  const forged = clone(document); forged.parts[0].items[0].styles[0].payload.ciphertextSha256 = 'ff'.repeat(32);
+  await assert.rejects(compileMakerV8Publication(forged, path.context), (error) => error.code === 'MAKER_V8_AUTHOR_AUTHORITY_FORBIDDEN');
+});
+
+test('caller-authored authority and unverified lookalikes cannot reach a transaction', async () => {
+  const document = clone(fixture.document); document.rootId = fixture.ids.root;
+  const context = await trustedContext();
+  const disabled = clone(context); delete disabled._derived; disabled.protocolConfig.fields.enabled = false;
+  await assert.rejects(certifyMakerV8TrustedContext(disabled), (error) => error.code === 'MAKER_V8_PROTOCOL_DISABLED');
+  const inventedCommitment = clone(context); delete inventedCommitment._derived; inventedCommitment.protocolConfig.fields.commitment = 'ff'.repeat(32); inventedCommitment.catalog.fields.protocolConfigCommitment = 'ff'.repeat(32);
+  await assert.rejects(certifyMakerV8TrustedContext(inventedCommitment), (error) => error.code === 'MAKER_V8_PROTOCOL_COMMITMENT_MISMATCH');
+  await assert.rejects(compileMakerV8Publication(document, context), (error) => error.code === 'MAKER_V8_FIELDS_INVALID' || error.code === 'MAKER_V8_AUTHOR_AUTHORITY_FORBIDDEN');
+  await assert.rejects(compileMakerV8Publication(fixture.document, clone(context)), (error) => error.code === 'MAKER_V8_TRUSTED_CONTEXT_REQUIRED');
+  const publication = await compileMakerV8Publication(fixture.document, context);
+  assert.throws(() => buildMakerV8BaseTransaction(publication, rootObjects(publication)), (error) => error.code === 'MAKER_V8_SCAFFOLD_CONTEXT_REQUIRED');
+  const scaffold = await scaffoldReadback(publication); const base = certifyMakerV8BaseReadback(publication, scaffold, baseReadbackRaw(publication, scaffold)); const built = await buildMakerV8CompanionObjectsTransaction(publication, base); const lookalike = companionRaw(publication, base, built.expected);
+  await assert.rejects(buildMakerV8ActivationTransaction(publication, base, lookalike), (error) => error.code === 'MAKER_V8_COMPANION_CONTEXT_REQUIRED');
+});
+
+test('manifest, asset bytes, package tuple, stable TypeOrigin, and zero-state tampering fail closed', async () => {
+  const manifestContext = await trustedContext();
+  const differentDocument = clone(fixture.document); differentDocument.metadata.summary = 'tampered after certification';
+  await assert.rejects(compileMakerV8Publication(differentDocument, manifestContext), (error) => error.code === 'MAKER_V8_MANIFEST_BYTES_MISMATCH');
+  const badLength = clone(fixture.document); badLength.assets[0].byteLength = '9'; const badLengthContext = await trustedContext(badLength);
+  await assert.rejects(compileMakerV8Publication(badLength, badLengthContext), (error) => error.code === 'MAKER_V8_CERTIFIED_ASSET_METADATA_MISMATCH');
+  const tuple = await releaseTuple(); const collision = clone(tuple.roles); collision.runtime.originalPackageId = collision.seal.callablePackageId; collision.runtime.originalMarkerType = `${collision.runtime.originalPackageId}::runtime_v8::RuntimeOriginalMarkerV8`;
+  await assert.rejects(deriveMakerV8ReleaseCommitments({ catalogId: fixture.ids.catalog, roles: collision, authorities: tuple.authorities }), (error) => { assert.equal(error.code, 'MAKER_V8_PACKAGE_BINDING_COMMITMENT_MISMATCH'); collision.runtime.bindingCommitment = error.details.expected; return true; });
+  await assert.rejects(deriveMakerV8ReleaseCommitments({ catalogId: fixture.ids.catalog, roles: collision, authorities: tuple.authorities }), (error) => error.code === 'MAKER_V8_PACKAGE_ROLE_COLLISION');
+  const path = await compilePath(); const wrongType = companionRaw(path.publication, path.base, path.companionBuild.expected); wrongType.physicalRegistry.type = wrongType.physicalRegistry.type.replace(path.context.catalog.fields.roles.physical.originalPackageId, path.context.catalog.fields.roles.physical.callablePackageId);
+  await assert.rejects(certifyMakerV8CompanionReadback(path.publication, path.base, wrongType), (error) => error.code === 'MAKER_V8_TYPE_ORIGIN_MISMATCH');
+  const zero = clone(path.companion); delete zero.expected; zero.marketRegistry.fields.zeroStateCommitment = 'ff'.repeat(32);
+  await assert.rejects(certifyMakerV8CompanionReadback(path.publication, path.base, zero), (error) => error.code === 'MAKER_V8_MARKET_ZERO_COMMITMENT_MISMATCH');
+});
+
+test('known ABI gaps are reported precisely instead of downgraded to call plans', async () => {
+  const context = await trustedContext();
+  const itemAssetized = clone(fixture.document); itemAssetized.composition.itemAssetization = true;
+  await assert.rejects(compileMakerV8Publication(itemAssetized, context), (error) => error.code === 'MAKER_V8_ABI_ITEM_ASSETIZATION_UNSUPPORTED');
+  const capacity = clone(fixture.document); capacity.parts[0].capacity = 2;
+  await assert.rejects(compileMakerV8Publication(capacity, context), (error) => error.code === 'MAKER_V8_ABI_CAPACITY_UNSUPPORTED');
+  const economics = clone(fixture.document); economics.commerce.makerAccess.purchasePriceAtomic = '1'; const economicsContext = await trustedContext(economics);
+  await assert.rejects(compileMakerV8Publication(economics, economicsContext), (error) => error.code === 'MAKER_V8_ECONOMICS_ABI_INVALID');
+  const output = clone(fixture.document); output.outputs[0].allowedPackPolicy = { kind: 'ALLOWLIST', packIds: ['z-pack', 'a-pack'] }; const outputContext = await trustedContext(output);
+  await assert.rejects(compileMakerV8Publication(output, outputContext), (error) => error.code === 'MAKER_V8_OUTPUT_PACK_POLICY_INVALID');
+  const physical = clone(fixture.document); physical.parts[0].items[0].styles[0].physical.proof = 'CANONICAL_SOUL';
+  await assert.rejects(compilePath(physical), (error) => error.code === 'MAKER_V8_PHYSICAL_POLICY_ABI_INVALID');
+  assert.equal(Object.keys(await import('../maker-v8-compiler.js')).some((name) => /plan.*call/i.test(name)), false);
 });

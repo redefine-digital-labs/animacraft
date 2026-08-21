@@ -1,2279 +1,408 @@
 import { bcs } from '@mysten/sui/bcs';
+import { Transaction } from '@mysten/sui/transactions';
 
-import {
-  assertMakerV8Document,
-} from './maker-v8-document.js';
-
-/**
- * Exact off-chain parity for the immutable Maker v8 publication ABI.
- *
- * The exported empty/advance/serialize functions intentionally mirror Move's
- * pure helpers and accept already-resolved preimage fields; they are useful
- * for fixtures and parity checks, but are not a certification boundary. The
- * publication entry point below only consumes a validated Maker document and
- * currently fails closed. The bounded Root compiler is the one implemented
- * compiler stage: it derives every content/payload hash and certified Style
- * asset field instead of accepting caller-provided commitment values.
- */
-
-export const MAKER_V8_COMPILER_SCHEMA = 'animacraft.maker-v8-compiler.v1';
-export const MAKER_V8_COMMITMENT_FIXTURE_SCHEMA =
-  'animacraft.maker-v8-commitment-fixture.v1';
-
-export const MAKER_V8_ROOT_CATEGORIES = Object.freeze({
-  TRACK: 0,
-  PART: 1,
-  ITEM: 2,
-  STYLE: 3,
-  COLOR: 4,
-  RULE: 5,
-  AGGREGATE: 255,
-});
-
-export const MAKER_V8_CAPABILITY_BITS = Object.freeze({
-  composition: 1n,
-  expansionPacks: 2n,
-  complete: 4n,
-  seal: 8n,
-  physical: 16n,
-  canonicalSoul: 32n,
-  market: 64n,
-});
-
+export const MAKER_V8_COMPILER_SCHEMA = 'animacraft.maker-v8-compiler.v2';
+export const MAKER_V8_TRUSTED_CONTEXT_SCHEMA = 'animacraft.maker-v8-trusted-context.v1';
+export const MAKER_V8_SCAFFOLD_READBACK_SCHEMA = 'animacraft.maker-v8-scaffold-readback.v1';
+export const MAKER_V8_BASE_READBACK_SCHEMA = 'animacraft.maker-v8-base-readback.v1';
+export const MAKER_V8_COMPANION_READBACK_SCHEMA = 'animacraft.maker-v8-companion-readback.v1';
+export const MAKER_V8_COMMITMENT_FIXTURE_SCHEMA = 'animacraft.maker-v8-compiler-fixture.v2';
+export const MAKER_V8_ROLE_ORDER = Object.freeze(['core', 'seal', 'runtime', 'output', 'physical', 'market', 'release']);
 export const MAKER_V8_REQUIRED_CAPABILITIES = 127n;
-
-export const MAKER_V8_COMPOSITION_BEHAVIORS = Object.freeze({
-  FIXED: 0,
-  SOUL_LOCAL: 1,
-  OPEN: 2,
-  HYBRID: 3,
-});
-
-export const MAKER_V8_COMPOSITION_SOURCES = Object.freeze({
-  OFFICIAL: 0,
-  CERTIFIED: 1,
-  OPEN: 2,
-});
-
-export const MAKER_V8_COMPOSITION_RULE_KINDS = Object.freeze({
-  REQUIRE: 0,
-  EXCLUDE: 1,
-});
-
-export const MAKER_V8_PACK_ACCESS_KINDS = Object.freeze({
-  FREE: 0,
-  PAID: 1,
-  INCLUDED_WITH_MAKER: 2,
-});
-
-export const MAKER_V8_SEAL_SCOPE_KINDS = Object.freeze({
-  MAKER_STYLE: 0,
-  PACK_STYLE: 1,
-  COMPLETE: 2,
-});
-
-export const MAKER_V8_PHYSICAL_SOURCE_KINDS = Object.freeze({
-  MAKER_STYLE: 0,
-  PACK_STYLE: 1,
-});
+export const MAKER_V8_ROOT_CATEGORIES = Object.freeze({ TRACK: 0, PART: 1, ITEM: 2, STYLE: 3, COLOR: 4, RULE: 5, AGGREGATE: 255 });
 
 const VERSION = 8n;
 const U64_MAX = (1n << 64n) - 1n;
-const U32_MAX = (1n << 32n) - 1n;
-const U16_MAX = (1n << 16n) - 1n;
-const TEXT_ENCODER = new TextEncoder();
-const HEX_32 = /^(?:0x)?[0-9a-fA-F]{64}$/;
-const SUI_ID = /^0x[0-9a-fA-F]{64}$/;
-const MAX_COMPILER_INPUT_DEPTH = 64;
-const MAX_COMPILER_INPUT_NODES = 100_000;
+const HASH = /^[0-9a-f]{64}$/;
+const ID = /^0x[0-9a-fA-F]{1,64}$/;
+const KEY = /^(?!0x[0-9a-fA-F]{64}$)[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const LEGACY_TARGET = new RegExp(`(?:${['publication', 'composition', 'expansion_pack', 'complete'].map((name) => `${name}_v8`).join('|')}|animacraft_v[4-7]|${'physical'}_v7)`);
+const encoder = new TextEncoder();
+const trustedSet = new WeakSet();
+const compiledSet = new WeakSet();
+const scaffoldSet = new WeakSet();
+const baseSet = new WeakSet();
+const companionSet = new WeakSet();
 
-const ByteVector = bcs.byteVector();
-const OptionByteVector = bcs.option(ByteVector);
-const OptionString = bcs.option(bcs.string());
-const OptionId = bcs.option(bcs.Address);
-
-const RollingCommitmentInputV8Bcs = bcs.struct('RollingCommitmentInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  category: bcs.u8(),
-  previous: ByteVector,
-  sequence: bcs.u64(),
-  row_bytes: ByteVector,
+const MARKERS = Object.freeze({
+  core: ['protocol_config_v8', 'CorePackageMarkerV8', 'CorePackageMarkerV8'],
+  seal: ['seal_v8', 'SealOriginalMarkerV8', 'SealCallableMarkerV8'],
+  runtime: ['runtime_v8', 'RuntimeOriginalMarkerV8', 'RuntimeCallableMarkerV8'],
+  output: ['output_v8', 'OutputOriginalMarkerV8', 'OutputCallableMarkerV8'],
+  physical: ['physical_v8', 'PhysicalOriginalMarkerV8', 'PhysicalCallableMarkerV8'],
+  market: ['market_v8', 'MarketOriginalMarkerV8', 'MarketCallableMarkerV8'],
+  release: ['release_v8', 'ReleaseOriginalMarkerV8', 'ReleaseCallableMarkerV8'],
+});
+const FIELDS = Object.freeze({
+  document: ['schemaVersion', 'protocolVersion', 'lineage', 'metadata', 'canvas', 'composition', 'tracks', 'colors', 'parts', 'rules', 'defaultRecipe', 'outputs', 'commerce', 'assets'],
+  lineage: ['makerKey', 'version', 'changelog'], metadata: ['name', 'summary', 'license', 'coverAssetId'], license: ['kind', 'note'], canvas: ['width', 'height', 'pixelMode'], composition: ['mode', 'thirdPartyAdmission', 'itemAssetization'],
+  track: ['key', 'label', 'renderOrder', 'locked'], color: ['key', 'label', 'defaultSwatchKey', 'swatches'], swatch: ['key', 'label', 'rgba', 'stops'], stop: ['offset', 'rgba'],
+  part: ['key', 'label', 'kind', 'renderOrder', 'menuOrder', 'visible', 'required', 'wardrobeMode', 'capacity', 'items', 'payload'], item: ['key', 'label', 'status', 'displayOrder', 'defaultStyleKey', 'styles', 'payload'],
+  style: ['key', 'label', 'displayOrder', 'trackKey', 'colorChannelKey', 'defaultSwatchKey', 'assetId', 'protected', 'transform', 'opacity', 'blendMode', 'physical', 'payload'], transform: ['x', 'y', 'scale', 'rotation'], physical: ['material', 'issuance', 'proof', 'priceAtomic', 'maxSupply', 'transferable'],
+  rule: ['key', 'kind', 'left', 'right', 'payload'], ruleRef: ['partKey', 'itemKey'], recipe: ['selections', 'colors'], selection: ['partKey', 'itemKey', 'styleKey'], recipeColor: ['channelKey', 'swatchKey'],
+  output: ['key', 'label', 'protected', 'allowedPackPolicy', 'payload'], packPolicy: ['kind', 'packIds'], asset: ['id', 'kind', 'mediaType', 'byteLength'],
+  commerce: ['schemaVersion', 'rightsOrigin', 'rightsOriginConfirmed', 'rightsEvidence', 'makerAccess', 'baseCompletion', 'soulCreatorRoyaltyBps', 'makerSourceRoyaltyBps', 'makerResaleRoyaltyBps'], rightsEvidence: ['licensor', 'evidenceAssetId'], makerAccess: ['mode', 'purchasePriceAtomic'], completion: ['mode', 'freeQuotaPerWallet', 'priceAtomic', 'totalCap'],
 });
 
-const VersionCommitmentInputV8Bcs = bcs.struct('VersionCommitmentInputV8', {
-  version: bcs.u64(),
-  package_id: bcs.Address,
-  maker_key: bcs.string(),
-  maker_version: bcs.string(),
-  previous_root_id: OptionId,
-  previous_version_commitment: OptionByteVector,
-  renderer_commitment: ByteVector,
-  manifest_blob_id: bcs.string(),
-  manifest_sha256: ByteVector,
-  content_commitment: ByteVector,
+const BV = bcs.byteVector();
+const OBytes = bcs.option(BV);
+const OId = bcs.option(bcs.Address);
+const OString = bcs.option(bcs.string());
+const Rows = Object.freeze({
+  track: bcs.struct('TrackRowV8', { sequence: bcs.u64(), key: bcs.string(), label: bcs.string(), render_order: bcs.u64(), payload_commitment: BV }),
+  part: bcs.struct('PartRowV8', { sequence: bcs.u64(), key: bcs.string(), label: bcs.string(), kind: bcs.u8(), render_order: bcs.u64(), required: bcs.bool(), visible: bcs.bool(), payload_commitment: BV }),
+  item: bcs.struct('ItemRowV8', { sequence: bcs.u64(), part_key: bcs.string(), item_key: bcs.string(), label: bcs.string(), gate_kind: bcs.u8(), payload_commitment: BV }),
+  style: bcs.struct('StyleRowV8', { sequence: bcs.u64(), part_key: bcs.string(), item_key: bcs.string(), style_key: bcs.string(), layer_track_key: bcs.string(), color_channel_key: OString, default_swatch_key: OString, label: bcs.string(), asset_blob_id: bcs.string(), asset_sha256: BV, protected: bcs.bool(), payload_commitment: BV }),
+  color: bcs.struct('ColorRowV8', { sequence: bcs.u64(), channel_key: bcs.string(), swatch_key: bcs.string(), label: bcs.string(), rgba: bcs.u32(), payload_commitment: BV }),
+  rule: bcs.struct('RuleRowV8', { sequence: bcs.u64(), key: bcs.string(), kind: bcs.u8(), left_ref: bcs.string(), right_ref: bcs.string(), payload_commitment: BV }),
 });
-
-const EconomicsCommitmentInputV8Bcs = bcs.struct('EconomicsCommitmentInputV8', {
-  maker_access: bcs.u8(),
-  maker_price_atomic: bcs.u64(),
-  complete_mode: bcs.u8(),
-  complete_price_atomic: bcs.u64(),
-  complete_per_wallet_quota: bcs.u64(),
-  complete_total_cap: bcs.u64(),
-  protocol_fee_bps: bcs.u16(),
-});
-
-const RightsCommitmentInputV8Bcs = bcs.struct('RightsCommitmentInputV8', {
-  origin: bcs.u8(),
-  creator_confirmed: bcs.bool(),
-  soul_creator_royalty_bps: bcs.u16(),
-  maker_source_royalty_bps: bcs.u16(),
-  maker_resale_royalty_bps: bcs.u16(),
-});
-
-const RowCountsV8Bcs = bcs.struct('RowCountsV8', {
-  tracks: bcs.u64(),
-  parts: bcs.u64(),
-  items: bcs.u64(),
-  styles: bcs.u64(),
-  colors: bcs.u64(),
-  rules: bcs.u64(),
-  slots: bcs.u64(),
-  pack_releases: bcs.u64(),
-  protected_assets: bcs.u64(),
-});
-
-const RegistryCommitmentsV8Bcs = bcs.struct('RegistryCommitmentsV8', {
-  tracks: ByteVector,
-  parts: ByteVector,
-  items: ByteVector,
-  styles: ByteVector,
-  colors: ByteVector,
-  rules: ByteVector,
-  aggregate: ByteVector,
-});
-
-const CapabilityCommitmentsV8Bcs = bcs.struct('CapabilityCommitmentsV8', {
-  composition: ByteVector,
-  pack: ByteVector,
-  complete: ByteVector,
-  seal: ByteVector,
-  soul: ByteVector,
-  physical: OptionByteVector,
-});
-
-const EconomicsV8Bcs = bcs.struct('EconomicsV8', {
-  maker_access: bcs.u8(),
-  maker_price_atomic: bcs.u64(),
-  complete_mode: bcs.u8(),
-  complete_price_atomic: bcs.u64(),
-  complete_per_wallet_quota: bcs.u64(),
-  complete_total_cap: bcs.u64(),
-  protocol_fee_bps: bcs.u16(),
-  commitment: ByteVector,
-});
-
-const RightsV8Bcs = bcs.struct('RightsV8', {
-  origin: bcs.u8(),
-  creator_confirmed: bcs.bool(),
-  soul_creator_royalty_bps: bcs.u16(),
-  maker_source_royalty_bps: bcs.u16(),
-  maker_resale_royalty_bps: bcs.u16(),
-  commitment: ByteVector,
-});
-
-const TrackRowV8Bcs = bcs.struct('TrackRowV8', {
-  sequence: bcs.u64(),
-  key: bcs.string(),
-  label: bcs.string(),
-  render_order: bcs.u64(),
-  payload_commitment: ByteVector,
-});
-
-const PartRowV8Bcs = bcs.struct('PartRowV8', {
-  sequence: bcs.u64(),
-  key: bcs.string(),
-  label: bcs.string(),
-  kind: bcs.u8(),
-  render_order: bcs.u64(),
-  required: bcs.bool(),
-  visible: bcs.bool(),
-  payload_commitment: ByteVector,
-});
-
-const ItemRowV8Bcs = bcs.struct('ItemRowV8', {
-  sequence: bcs.u64(),
-  part_key: bcs.string(),
-  item_key: bcs.string(),
-  label: bcs.string(),
-  gate_kind: bcs.u8(),
-  payload_commitment: ByteVector,
-});
-
-const StyleRowV8Bcs = bcs.struct('StyleRowV8', {
-  sequence: bcs.u64(),
-  part_key: bcs.string(),
-  item_key: bcs.string(),
-  style_key: bcs.string(),
-  layer_track_key: bcs.string(),
-  color_channel_key: OptionString,
-  default_swatch_key: OptionString,
-  label: bcs.string(),
-  asset_blob_id: bcs.string(),
-  asset_sha256: ByteVector,
-  protected: bcs.bool(),
-  payload_commitment: ByteVector,
-});
-
-const ColorRowV8Bcs = bcs.struct('ColorRowV8', {
-  sequence: bcs.u64(),
-  channel_key: bcs.string(),
-  swatch_key: bcs.string(),
-  label: bcs.string(),
-  rgba: bcs.u32(),
-  payload_commitment: ByteVector,
-});
-
-const RuleRowV8Bcs = bcs.struct('RuleRowV8', {
-  sequence: bcs.u64(),
-  key: bcs.string(),
-  kind: bcs.u8(),
-  left_ref: bcs.string(),
-  right_ref: bcs.string(),
-  payload_commitment: ByteVector,
-});
-
-const CompositionEmptyHashInputV8Bcs = bcs.struct('CompositionEmptyHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-});
-
-const CompositionSlotHashInputV8Bcs = bcs.struct('CompositionSlotHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  sequence: bcs.u64(),
-  prior_commitment: ByteVector,
-  slot_key: bcs.string(),
-  behavior: bcs.u8(),
-  capacity: bcs.u64(),
-  required: bcs.bool(),
-  slot_commitment: ByteVector,
-});
-
-const CompositionItemHashInputV8Bcs = bcs.struct('CompositionItemHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  sequence: bcs.u64(),
-  prior_commitment: ByteVector,
-  slot_key: bcs.string(),
-  item_key: bcs.string(),
-  source_kind: bcs.u8(),
-  transferable: bcs.bool(),
-  definition_commitment: ByteVector,
-  asset_commitment: ByteVector,
-});
-
-const CompositionRuleHashInputV8Bcs = bcs.struct('CompositionRuleHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  sequence: bcs.u64(),
-  prior_commitment: ByteVector,
-  rule_kind: bcs.u8(),
-  left_slot_key: bcs.string(),
-  left_item_key: bcs.string(),
-  right_slot_key: bcs.string(),
-  right_item_key: bcs.string(),
-  rule_commitment: ByteVector,
-});
-
-const SealEmptyHashInputV8Bcs = bcs.struct('SealEmptyHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-});
-
-const SealIdInputV8Bcs = bcs.struct('SealIdInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  scope_kind: bcs.u8(),
-  scope_key: bcs.string(),
-  scope_commitment: ByteVector,
-  asset_key: bcs.string(),
-  asset_commitment: ByteVector,
-});
-
-const SealRowHashInputV8Bcs = bcs.struct('SealRowHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  sequence: bcs.u64(),
-  prior_commitment: ByteVector,
-  scope_kind: bcs.u8(),
-  scope_key: bcs.string(),
-  scope_commitment: ByteVector,
-  asset_key: bcs.string(),
-  asset_commitment: ByteVector,
-  seal_id: ByteVector,
-});
-
-const PackRegistryEmptyHashInputV8Bcs = bcs.struct('PackRegistryEmptyHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-});
-
-const PackStyleEmptyHashInputV8Bcs = bcs.struct('PackStyleEmptyHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  namespace: bcs.string(),
-  pack_key: bcs.string(),
-  manifest_commitment: ByteVector,
-  release_content_commitment: ByteVector,
-});
-
-const PackStyleHashInputV8Bcs = bcs.struct('PackStyleHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  namespace: bcs.string(),
-  pack_key: bcs.string(),
-  manifest_commitment: ByteVector,
-  release_content_commitment: ByteVector,
-  sequence: bcs.u64(),
-  prior_commitment: ByteVector,
-  part_key: bcs.string(),
-  item_key: bcs.string(),
-  style_key: bcs.string(),
-  asset_blob_id: bcs.string(),
-  asset_commitment: ByteVector,
-  protected: bcs.bool(),
-  seal_id: ByteVector,
-});
-
-const PackRegistryRowHashInputV8Bcs = bcs.struct('PackRegistryRowHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  sequence: bcs.u64(),
-  prior_commitment: ByteVector,
-  namespace: bcs.string(),
-  pack_key: bcs.string(),
-  manifest_commitment: ByteVector,
-  release_content_commitment: ByteVector,
-  style_registry_commitment: ByteVector,
-  access_kind: bcs.u8(),
-  purchase_price_atomic: bcs.u64(),
-  complete_mode: bcs.u8(),
-  complete_price_atomic: bcs.u64(),
-  complete_free_quota_per_wallet: bcs.u64(),
-  complete_total_cap: bcs.u64(),
-  protected_style_count: bcs.u64(),
-  seal_registry_commitment: ByteVector,
-});
-
-const CompleteEmptyHashInputV8Bcs = bcs.struct('CompleteEmptyHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-});
-
-const CompleteOutputHashInputV8Bcs = bcs.struct('CompleteOutputHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  sequence: bcs.u64(),
-  prior_commitment: ByteVector,
-  output_key: bcs.string(),
-  recipe_policy_commitment: ByteVector,
-  renderer_schema_commitment: ByteVector,
-  protected: bcs.bool(),
-  seal_id: ByteVector,
-  required_pack_selection_count: bcs.u64(),
-  required_pack_selection_commitment: ByteVector,
-});
-
-const CompletePackPolicyHashInputV8Bcs = bcs.struct('CompletePackPolicyHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  sequence: bcs.u64(),
-  prior_commitment: ByteVector,
-  pack_scope_key: bcs.string(),
-  release_content_commitment: ByteVector,
-  mode: bcs.u8(),
-  price_atomic: bcs.u64(),
-  free_quota_per_wallet: bcs.u64(),
-  total_cap: bcs.u64(),
-});
-
-const StablePackSelectionEmptyHashInputV8Bcs = bcs.struct(
-  'StablePackSelectionEmptyHashInputV8',
-  {
-    domain: ByteVector,
-    version: bcs.u64(),
-    root_content_commitment: ByteVector,
-  },
-);
-
-const StablePackSelectionHashInputV8Bcs = bcs.struct('StablePackSelectionHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  sequence: bcs.u64(),
-  prior_commitment: ByteVector,
-  pack_scope_key: bcs.string(),
-  release_content_commitment: ByteVector,
-  part_key: bcs.string(),
-  item_key: bcs.string(),
-  style_key: bcs.string(),
-  asset_commitment: ByteVector,
-  protected: bcs.bool(),
-  seal_id: ByteVector,
-});
-
-const PhysicalEmptyHashInputV8Bcs = bcs.struct('PhysicalEmptyHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-});
-
-const PhysicalPolicyHashInputV8Bcs = bcs.struct('PhysicalPolicyHashInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-  sequence: bcs.u64(),
-  prior_commitment: ByteVector,
-  source_kind: bcs.u8(),
-  scope_key: bcs.string(),
-  scope_commitment: ByteVector,
-  part_key: bcs.string(),
-  item_key: bcs.string(),
-  style_key: bcs.string(),
-  style_content_commitment: ByteVector,
-  material_commitment: ByteVector,
-  max_supply: bcs.u64(),
-  transferable: bcs.bool(),
-});
-
-const SoulRegistryCommitmentInputV8Bcs = bcs.struct('SoulRegistryCommitmentInputV8', {
-  domain: ByteVector,
-  version: bcs.u64(),
-  root_content_commitment: ByteVector,
-});
-
-const ROOT_ROW_BCS = Object.freeze({
-  track: TrackRowV8Bcs,
-  part: PartRowV8Bcs,
-  item: ItemRowV8Bcs,
-  style: StyleRowV8Bcs,
-  color: ColorRowV8Bcs,
-  rule: RuleRowV8Bcs,
-});
-
-const ROOT_CATEGORY_SPECS = Object.freeze([
-  Object.freeze({ plural: 'tracks', kind: 'track', category: MAKER_V8_ROOT_CATEGORIES.TRACK }),
-  Object.freeze({ plural: 'parts', kind: 'part', category: MAKER_V8_ROOT_CATEGORIES.PART }),
-  Object.freeze({ plural: 'items', kind: 'item', category: MAKER_V8_ROOT_CATEGORIES.ITEM }),
-  Object.freeze({ plural: 'styles', kind: 'style', category: MAKER_V8_ROOT_CATEGORIES.STYLE }),
-  Object.freeze({ plural: 'colors', kind: 'color', category: MAKER_V8_ROOT_CATEGORIES.COLOR }),
-  Object.freeze({ plural: 'rules', kind: 'rule', category: MAKER_V8_ROOT_CATEGORIES.RULE }),
-]);
-
-const ROOT_ROW_SOURCE_FIELDS = Object.freeze({
-  track: Object.freeze(['key', 'label', 'renderOrder', 'payloadProjection']),
-  part: Object.freeze([
-    'key', 'label', 'kind', 'renderOrder', 'required', 'visible', 'payloadProjection',
-  ]),
-  item: Object.freeze(['partKey', 'itemKey', 'label', 'gateKind', 'payloadProjection']),
-  style: Object.freeze([
-    'partKey', 'itemKey', 'styleKey', 'layerTrackKey', 'colorChannelKey',
-    'defaultSwatchKey', 'label', 'protected', 'assetCertification', 'payloadProjection',
-  ]),
-  color: Object.freeze(['channelKey', 'swatchKey', 'label', 'rgba', 'payloadProjection']),
-  rule: Object.freeze(['key', 'kind', 'leftRef', 'rightRef', 'payloadProjection']),
-});
-
-const ROW_COUNT_LIMITS = Object.freeze({
-  tracks: Object.freeze({ minimum: 1n, maximum: 256n }),
-  parts: Object.freeze({ minimum: 1n, maximum: 750n }),
-  items: Object.freeze({ minimum: 1n, maximum: 5_000n }),
-  styles: Object.freeze({ minimum: 1n, maximum: 10_000n }),
-  colors: Object.freeze({ minimum: 0n, maximum: 5_000n }),
-  rules: Object.freeze({ minimum: 0n, maximum: 1_000n }),
-  slots: Object.freeze({ minimum: 0n, maximum: 1_000n }),
-  packReleases: Object.freeze({ minimum: 0n, maximum: 1_000n }),
-  protectedAssets: Object.freeze({ minimum: 0n, maximum: 10_000n }),
-});
+const Rolling = bcs.struct('RollingCommitmentInputV8', { domain: BV, version: bcs.u64(), root_content_commitment: BV, category: bcs.u8(), previous: BV, sequence: bcs.u64(), row_bytes: BV });
+const ProtocolInput = bcs.struct('ProtocolConfigCommitmentInputV8', { domain: BV, version: bcs.u64(), config_id: bcs.Address, core_original_package_id: bcs.Address, core_callable_package_id: bcs.Address, revision: bcs.u64(), treasury_id: OId, payment_coin_type: bcs.string(), primary_content_fee_bps: bcs.u16(), fixed_complete_fee_atomic: bcs.u64(), maker_market_fee_bps: bcs.u16(), soul_market_fee_bps: bcs.u16(), enabled: bcs.bool() });
+const EconomicsInput = bcs.struct('EconomicsCommitmentInputV8', { domain: BV, version: bcs.u64(), protocol_config_id: bcs.Address, protocol_config_revision: bcs.u64(), protocol_config_commitment: BV, protocol_treasury_id: bcs.Address, payment_coin_type: bcs.string(), maker_access: bcs.u8(), maker_price_atomic: bcs.u64(), complete_mode: bcs.u8(), complete_price_atomic: bcs.u64(), complete_per_wallet_quota: bcs.u64(), complete_total_cap: bcs.u64(), primary_content_fee_bps: bcs.u16(), fixed_complete_fee_atomic: bcs.u64(), maker_market_fee_bps: bcs.u16(), soul_market_fee_bps: bcs.u16() });
+const RightsInput = bcs.struct('RightsCommitmentInputV8', { domain: BV, version: bcs.u64(), origin: bcs.u8(), creator: bcs.Address, creator_confirmed: bcs.bool(), evidence_certified: bcs.bool(), certification_catalog_id: OId, certification_binding_commitment: OBytes, evidence_locator: bcs.string(), evidence_blob_id: bcs.string(), evidence_sha256: BV, terms_commitment: BV, soul_creator_royalty_bps: bcs.u16(), maker_source_royalty_bps: bcs.u16(), maker_resale_royalty_bps: bcs.u16() });
+const VersionInput = bcs.struct('VersionCommitmentInputV8', { domain: BV, version: bcs.u64(), core_original_package_id: bcs.Address, protocol_config_id: bcs.Address, protocol_config_revision: bcs.u64(), protocol_config_commitment: BV, maker_key: bcs.string(), maker_version: bcs.u64(), previous_root_id: OId, previous_version_commitment: OBytes, renderer_commitment: BV, manifest_blob_id: bcs.string(), manifest_sha256: BV, content_commitment: BV, expected_base_definition_count: bcs.u64(), expected_base_registry_commitment: BV, expected_pack_admission_policy_commitment: BV, economics_commitment: BV, rights_commitment: BV });
+const ExactInput = bcs.struct('ExactPackageBindingCommitmentInputV8', { domain: BV, version: bcs.u64(), original_package_id: bcs.Address, callable_package_id: bcs.Address, source_commitment: BV, package_commitment: BV, abi_commitment: BV });
+const ExactBinding = bcs.struct('ExactPackageBindingV8', { original_package_id: bcs.Address, callable_package_id: bcs.Address, source_commitment: BV, package_commitment: BV, abi_commitment: BV, commitment: BV });
+const ProductInput = bcs.struct('ProductReleaseBindingCommitmentInputV8', { domain: BV, version: bcs.u64(), native_capability_mask: bcs.u64(), core: ExactBinding, seal: ExactBinding, runtime: ExactBinding, output: ExactBinding, physical: ExactBinding, market: ExactBinding, release: ExactBinding });
+const CapInput = bcs.struct('PackageCallCapSetCommitmentInputV8', { domain: BV, version: bcs.u64(), catalog_id: bcs.Address, product_binding_commitment: BV, seal_authority_id: bcs.Address, runtime_authority_id: bcs.Address, output_authority_id: bcs.Address, physical_authority_id: bcs.Address, market_authority_id: bcs.Address, release_authority_id: bcs.Address });
+const RuntimeEmpty = bcs.struct('EmptyCommitmentInputV8', { domain: BV, version: bcs.u64(), root_content_commitment: BV });
+const RuntimeProfile = bcs.struct('PartProfileCommitmentInputV8', { domain: BV, version: bcs.u64(), root_content_commitment: BV, sequence: bcs.u64(), previous: BV, part_key: bcs.string(), core_part_payload_commitment: BV, required: bcs.bool(), wardrobe_mode: bcs.u8(), behavior: bcs.u8(), capacity: bcs.u64(), admission_ceiling: bcs.u8() });
+const RuntimePolicy = bcs.struct('RuntimePolicyCommitmentInputV8', { domain: BV, version: bcs.u64(), root_content_commitment: BV, profile_count: bcs.u64(), profile_commitment: BV, admission_ceiling: bcs.u8() });
+const KeyServer = bcs.struct('KeyServerBindingV8', { key_server_id: bcs.Address, weight: bcs.u16() });
+const SealPolicyInput = bcs.struct('SealPolicyCommitmentInputV8', { domain: BV, version: bcs.u64(), protocol_config_id: bcs.Address, protocol_config_revision: bcs.u64(), catalog_id: bcs.Address, product_binding_commitment: BV, seal_original_package_id: bcs.Address, seal_callable_package_id: bcs.Address, seal_binding_commitment: BV, seal_authority_id: bcs.Address, call_cap_set_commitment: BV, key_servers: bcs.vector(KeyServer), threshold: bcs.u16(), key_server_set_commitment: BV, encryption_policy_commitment: BV });
+const SealEmpty = bcs.struct('EmptyRegistryCommitmentInputV8', { domain: BV, version: bcs.u64(), product_binding_commitment: BV, policy_commitment: BV, root_content_commitment: BV, maker_version: bcs.u64() });
+const CipherInput = bcs.struct('CiphertextCommitmentInputV8', { domain: BV, version: bcs.u64(), catalog_id: bcs.Address, product_binding_commitment: BV, policy_commitment: BV, root_content_commitment: BV, maker_version: bcs.u64(), scope_kind: bcs.u8(), scope_key: bcs.string(), scope_commitment: BV, asset_key: bcs.string(), asset_content_commitment: BV, ciphertext_blob_id: bcs.string(), ciphertext_sha256: BV, ciphertext_blob_commitment: BV });
+const SealIdInput = bcs.struct('SealIdInputV8', { domain: BV, version: bcs.u64(), product_binding_commitment: BV, policy_commitment: BV, root_content_commitment: BV, maker_version: bcs.u64(), scope_kind: bcs.u8(), scope_key: bcs.string(), scope_commitment: BV, asset_key: bcs.string(), asset_content_commitment: BV, ciphertext_blob_id: bcs.string(), ciphertext_sha256: BV, ciphertext_blob_commitment: BV, certification_commitment: BV });
+const ProtectedRow = bcs.struct('ProtectedAssetV8', { scope_kind: bcs.u8(), scope_key: bcs.string(), scope_commitment: BV, asset_key: bcs.string(), asset_content_commitment: BV, ciphertext_blob_id: bcs.string(), ciphertext_sha256: BV, ciphertext_blob_commitment: BV, certification_commitment: BV, seal_id: BV });
+const SealAdvance = bcs.struct('RegistryRowCommitmentInputV8', { domain: BV, version: bcs.u64(), root_content_commitment: BV, maker_version: bcs.u64(), sequence: bcs.u64(), prior_commitment: BV, row: ProtectedRow });
+const OutputEmpty = bcs.struct('OutputRegistryEmptyCommitmentInputV8', { domain: BV, version: bcs.u64(), root_id: bcs.Address, maker_version: bcs.u64(), root_content_commitment: BV, renderer_commitment: BV });
+const OutputRowInput = bcs.struct('OutputPolicyRowCommitmentInputV8', { domain: BV, version: bcs.u64(), root_id: bcs.Address, maker_version: bcs.u64(), root_content_commitment: BV, renderer_commitment: BV, economics_commitment: BV, sequence: bcs.u64(), output_key: bcs.string(), protected_output: bcs.bool(), complete_scope_key: bcs.string(), allowed_pack_policy: bcs.u8(), allowed_semantic_pack_ids: bcs.vector(bcs.string()), renderer_schema_commitment: BV });
+const OutputAdvance = bcs.struct('OutputRegistryAdvanceCommitmentInputV8', { domain: BV, version: bcs.u64(), root_id: bcs.Address, maker_version: bcs.u64(), root_content_commitment: BV, sequence: bcs.u64(), prior_commitment: BV, row_commitment: BV });
+const StyleIdentity = bcs.struct('BaseStyleIdentityInputV8', { domain: BV, version: bcs.u64(), root_id: bcs.Address, maker_version: bcs.u64(), root_content_commitment: BV, base_registry_id: bcs.Address, part_key: bcs.string(), item_key: bcs.string(), style_key: bcs.string(), layer_track_key: bcs.string(), color_channel_key: OString, default_swatch_key: OString, asset_blob_id: bcs.string(), asset_sha256: BV, protected: bcs.bool(), payload_commitment: BV });
+const PhysicalEmpty = bcs.struct('EmptyBasePolicyCommitmentInputV8', { domain: BV, version: bcs.u64(), product_binding_commitment: BV, root_id: bcs.Address, maker_version: bcs.u64(), root_content_commitment: BV, base_registry_id: bcs.Address });
+const PhysicalRowInput = bcs.struct('BasePolicyRowCommitmentInputV8', { domain: BV, version: bcs.u64(), product_binding_commitment: BV, root_id: bcs.Address, maker_version: bcs.u64(), root_content_commitment: BV, base_registry_id: bcs.Address, sequence: bcs.u64(), style_identity_commitment: BV, material_policy_commitment: BV, issuance_kind: bcs.u8(), proof_kind: bcs.u8(), price_atomic: bcs.u64(), max_supply: bcs.u64(), transferable: bcs.bool() });
+const PhysicalAdvance = bcs.struct('BasePolicyAdvanceCommitmentInputV8', { domain: BV, version: bcs.u64(), root_id: bcs.Address, maker_version: bcs.u64(), root_content_commitment: BV, sequence: bcs.u64(), prior_commitment: BV, row_commitment: BV });
+const MarketZero = bcs.struct('MarketZeroStateCommitmentInputV8', { domain: BV, version: bcs.u64(), catalog_id: bcs.Address, package_config_id: bcs.Address, product_binding_commitment: BV, call_cap_set_commitment: BV, root_id: bcs.Address, maker_version: bcs.u64(), root_content_commitment: BV, protocol_config_id: bcs.Address, protocol_config_revision: bcs.u64(), protocol_config_commitment: BV, economics_commitment: BV, rights_commitment: BV, maker_market_fee_bps: bcs.u16(), soul_market_fee_bps: bcs.u16(), soul_creator_royalty_bps: bcs.u16(), maker_source_royalty_bps: bcs.u16(), maker_resale_royalty_bps: bcs.u16(), treasury_id: bcs.Address });
 
 export class MakerV8CompilerError extends Error {
-  constructor(message, code = 'MAKER_V8_COMPILER_INVALID', details = {}) {
-    super(message);
-    this.name = 'MakerV8CompilerError';
-    this.code = code;
-    this.details = Object.freeze({ ...details });
+  constructor(code, message, details = {}) { super(message); this.name = 'MakerV8CompilerError'; this.code = code; this.details = Object.freeze({ ...details }); }
+}
+function fail(code, message, details) { throw new MakerV8CompilerError(code, message, details); }
+function plain(value) { if (!value || typeof value !== 'object' || Array.isArray(value)) return false; const p = Object.getPrototypeOf(value); return p === Object.prototype || p === null; }
+function exact(value, fields, path) { if (!plain(value)) fail('MAKER_V8_RECORD_INVALID', `${path} must be a plain record.`); const allowed = new Set(fields); const unknown = Object.keys(value).filter((key) => !allowed.has(key)); const missing = fields.filter((key) => !Object.hasOwn(value, key)); if (unknown.length || missing.length) fail('MAKER_V8_FIELDS_INVALID', `${path} has an invalid exact shape.`, { path, unknown, missing }); }
+function snapshot(value, label) { const seen = new WeakSet(); const stack = [{ value, path: label, depth: 0 }]; let nodes = 0; while (stack.length) { const current = stack.pop(); nodes += 1; if (nodes > 100000 || current.depth > 64) fail('MAKER_V8_INPUT_LIMIT', `${label} exceeds the JSON limit.`); const item = current.value; if (item === null || typeof item === 'string' || typeof item === 'boolean') continue; if (typeof item === 'number') { if (!Number.isFinite(item)) fail('MAKER_V8_NUMBER_INVALID', `${current.path} must be finite.`); continue; } if (!item || typeof item !== 'object' || typeof item === 'bigint') fail('MAKER_V8_JSON_INVALID', `${current.path} is not JSON.`); if (seen.has(item)) fail('MAKER_V8_JSON_GRAPH_INVALID', `${label} must be a tree.`); seen.add(item); const array = Array.isArray(item); const proto = Object.getPrototypeOf(item); if ((array && proto !== Array.prototype) || (!array && proto !== Object.prototype && proto !== null)) fail('MAKER_V8_JSON_PROTOTYPE_INVALID', `${current.path} has a non-JSON prototype.`); const keys = Reflect.ownKeys(item); if (keys.some((key) => typeof key !== 'string')) fail('MAKER_V8_JSON_SYMBOL_INVALID', `${current.path} has symbol keys.`); if (array) { const allowed = new Set(['length']); for (let i = 0; i < item.length; i += 1) allowed.add(String(i)); if (keys.length !== allowed.size || keys.some((key) => !allowed.has(key))) fail('MAKER_V8_ARRAY_INVALID', `${current.path} must be dense.`); } for (const key of keys) { if (array && key === 'length') continue; const d = Object.getOwnPropertyDescriptor(item, key); if (!d?.enumerable || !Object.hasOwn(d, 'value')) fail('MAKER_V8_PROPERTY_INVALID', `${current.path}.${key} is not a data property.`); stack.push({ value: d.value, path: array ? `${current.path}[${key}]` : `${current.path}.${key}`, depth: current.depth + 1 }); } } try { return structuredClone(value); } catch { fail('MAKER_V8_INPUT_UNREADABLE', `${label} could not be snapshotted.`); } }
+function freeze(value) { if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value; Object.values(value).forEach(freeze); return Object.freeze(value); }
+function normId(value, label = 'ID') { if (typeof value !== 'string' || !ID.test(value)) fail('MAKER_V8_SUI_ID_INVALID', `${label} is not a Sui ID.`); return `0x${value.slice(2).toLowerCase().padStart(64, '0')}`; }
+function normType(value, label = 'type') { if (typeof value !== 'string' || !value.includes('::')) fail('MAKER_V8_MOVE_TYPE_INVALID', `${label} is invalid.`); return value.replace(/0x[0-9a-fA-F]{1,64}/g, (id) => normId(id)); }
+function hashHex(value, label = 'hash') { const result = typeof value === 'string' ? value.replace(/^0x/, '').toLowerCase() : ''; if (!HASH.test(result)) fail('MAKER_V8_HASH_INVALID', `${label} must be 32 bytes.`); return result; }
+function fromHex(value, label) { const text = hashHex(value, label); return Object.freeze(Array.from({ length: 32 }, (_, i) => Number.parseInt(text.slice(i * 2, i * 2 + 2), 16))); }
+function toHex(bytes) { return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join(''); }
+function u64(value, label = 'u64') { const text = typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : String(value ?? ''); if (!/^(?:0|[1-9][0-9]*)$/.test(text)) fail('MAKER_V8_U64_INVALID', `${label} is not canonical u64.`); const n = BigInt(text); if (n > U64_MAX) fail('MAKER_V8_U64_INVALID', `${label} exceeds u64.`); return n; }
+function u16(value, label = 'u16') { const n = u64(value, label); if (n > 65535n) fail('MAKER_V8_U16_INVALID', `${label} exceeds u16.`); return Number(n); }
+function domain(value) { return encoder.encode(value); }
+async function sha(bytes) { return new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes)); }
+async function hashBcs(type, value) { return toHex(await sha(type.serialize(value).toBytes())); }
+function canonical(value) { if (value === null || typeof value === 'string' || typeof value === 'boolean') return value; if (typeof value === 'number') return Object.is(value, -0) ? 0 : value; if (Array.isArray(value)) return value.map(canonical); if (!plain(value)) fail('MAKER_V8_CANONICAL_INVALID', 'Canonical JSON accepts plain records.'); return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])); }
+export function canonicalMakerV8Json(value) { return JSON.stringify(canonical(snapshot(value, 'canonicalValue'))); }
+async function hashJson(value) { return toHex(await sha(encoder.encode(canonicalMakerV8Json(value)))); }
+function bytes64(value, label) { if (typeof value !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4) fail('MAKER_V8_BASE64_INVALID', `${label} is invalid.`); let raw; try { raw = atob(value); } catch { fail('MAKER_V8_BASE64_INVALID', `${label} is invalid.`); } const result = Uint8Array.from(raw, (char) => char.charCodeAt(0)); if (btoa(String.fromCharCode(...result)) !== value) fail('MAKER_V8_BASE64_INVALID', `${label} is not canonical.`); return result; }
+function same(actual, expected, code, label) { if (actual !== expected) fail(code, `${label} does not match verified readback.`, { actual, expected }); }
+
+const AUTHORITY_KEYS = new Set(['chainid', 'network', 'creator', 'owner', 'sender', 'signer', 'wallet', 'walletaddress', 'package', 'packageid', 'callablepackageid', 'typeorigin', 'objectid', 'rootid', 'makerrootid', 'catalogid', 'configid', 'registryid', 'treasuryid', 'admincapid', 'releaseid', 'listingid', 'soulid', 'outputid', 'receiptid', 'physicalassetid', 'blobid', 'manifestblobid', 'sha256', 'commitment', 'digest', 'signature', 'signedbytes', 'transactiondigest', 'receiving', 'receivingref', 'predecessorid']);
+function inspectAuthorAuthority(value, path = '') {
+  if (Array.isArray(value)) return value.forEach((entry, index) => inspectAuthorAuthority(entry, `${path}[${index}]`));
+  if (!plain(value)) return;
+  for (const [key, entry] of Object.entries(value)) {
+    const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    if (AUTHORITY_KEYS.has(normalized) || normalized.endsWith('commitment') || normalized.endsWith('sha256') || normalized.endsWith('digest') || normalized.endsWith('blobid') || normalized.includes('transactionbytes') || normalized.includes('packageid') || normalized.includes('typeorigin') || normalized.includes('receivingref')) fail('MAKER_V8_AUTHOR_AUTHORITY_FORBIDDEN', `${path ? `${path}.` : ''}${key} is compiler-owned authority.`);
+    inspectAuthorAuthority(entry, path ? `${path}.${key}` : key);
   }
 }
-
-function fail(code, message, details) {
-  throw new MakerV8CompilerError(message, code, details);
+function exactDocumentShape(d) {
+  exact(d, FIELDS.document, 'document'); exact(d.lineage, FIELDS.lineage, 'lineage'); exact(d.metadata, FIELDS.metadata, 'metadata'); exact(d.metadata.license, FIELDS.license, 'metadata.license'); exact(d.canvas, FIELDS.canvas, 'canvas'); exact(d.composition, FIELDS.composition, 'composition');
+  d.tracks.forEach((row, i) => exact(row, FIELDS.track, `tracks[${i}]`));
+  d.colors.forEach((row, i) => { exact(row, FIELDS.color, `colors[${i}]`); row.swatches.forEach((swatch, j) => { exact(swatch, FIELDS.swatch, `colors[${i}].swatches[${j}]`); swatch.stops.forEach((stop, k) => exact(stop, FIELDS.stop, `colors[${i}].swatches[${j}].stops[${k}]`)); }); });
+  d.parts.forEach((part, i) => { exact(part, FIELDS.part, `parts[${i}]`); part.items.forEach((item, j) => { exact(item, FIELDS.item, `parts[${i}].items[${j}]`); item.styles.forEach((style, k) => { exact(style, FIELDS.style, `parts[${i}].items[${j}].styles[${k}]`); exact(style.transform, FIELDS.transform, 'style.transform'); if (style.physical !== null) exact(style.physical, FIELDS.physical, 'style.physical'); }); }); });
+  d.rules.forEach((row, i) => { exact(row, FIELDS.rule, `rules[${i}]`); exact(row.left, FIELDS.ruleRef, `rules[${i}].left`); exact(row.right, FIELDS.ruleRef, `rules[${i}].right`); }); exact(d.defaultRecipe, FIELDS.recipe, 'defaultRecipe'); d.defaultRecipe.selections.forEach((row) => exact(row, FIELDS.selection, 'selection')); d.defaultRecipe.colors.forEach((row) => exact(row, FIELDS.recipeColor, 'recipeColor'));
+  d.outputs.forEach((row, i) => { exact(row, FIELDS.output, `outputs[${i}]`); exact(row.allowedPackPolicy, FIELDS.packPolicy, `outputs[${i}].allowedPackPolicy`); }); exact(d.commerce, FIELDS.commerce, 'commerce'); if (d.commerce.rightsEvidence !== null) exact(d.commerce.rightsEvidence, FIELDS.rightsEvidence, 'commerce.rightsEvidence'); exact(d.commerce.makerAccess, FIELDS.makerAccess, 'commerce.makerAccess'); exact(d.commerce.baseCompletion, FIELDS.completion, 'commerce.baseCompletion'); d.assets.forEach((row, i) => exact(row, FIELDS.asset, `assets[${i}]`));
 }
-
-function isPlainObject(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  try {
-    const prototype = Object.getPrototypeOf(value);
-    return prototype === Object.prototype || prototype === null;
-  } catch {
-    return false;
-  }
-}
-
-function deepFreeze(value) {
-  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
-  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
-  Object.values(value).forEach(deepFreeze);
-  return Object.freeze(value);
-}
-
-function inspectCompilerDataTree(root, rootPath) {
-  const stack = [{ value: root, path: rootPath, depth: 0 }];
-  const seen = new WeakSet();
-  let nodes = 0;
-  while (stack.length) {
-    const current = stack.pop();
-    nodes += 1;
-    if (nodes > MAX_COMPILER_INPUT_NODES || current.depth > MAX_COMPILER_INPUT_DEPTH) {
-      fail(
-        'MAKER_V8_COMPILER_INPUT_LIMIT',
-        `${rootPath} exceeds the bounded compiler input limit.`,
-        { path: current.path },
-      );
+function validateDocument(d) {
+  exactDocumentShape(d); inspectAuthorAuthority(d);
+  if (d.schemaVersion !== 'animacraft.maker.v8' || d.protocolVersion !== 8 || d.lineage.version !== 1) fail('MAKER_V8_DOCUMENT_VERSION_INVALID', 'Only initial fresh-v8 documents are executable.');
+  if (!KEY.test(d.lineage.makerKey)) fail('MAKER_V8_MAKER_KEY_INVALID', 'Maker key is invalid.');
+  if (d.composition.itemAssetization !== false) fail('MAKER_V8_ABI_ITEM_ASSETIZATION_UNSUPPORTED', 'The current runtime ABI admits only INCLUDED base Items; itemAssetization must be false.');
+  if (!['FIXED', 'COMPOSABLE'].includes(d.composition.mode) || !['DISABLED', 'CERTIFIED', 'OPEN'].includes(d.composition.thirdPartyAdmission)) fail('MAKER_V8_COMPOSITION_INVALID', 'Composition policy is invalid.');
+  if (!d.tracks.length || !d.parts.length || !d.outputs.length) fail('MAKER_V8_DOCUMENT_EMPTY', 'Tracks, Parts, and Outputs are required.');
+  const unique = (rows, label, field = 'key') => { const set = new Set(); for (const row of rows) { if (!KEY.test(row[field]) || set.has(row[field])) fail('MAKER_V8_KEY_INVALID', `${label} contains an invalid or duplicate key.`); set.add(row[field]); } return set; };
+  const boundedLabel = (value, label) => { if (typeof value !== 'string' || !value || encoder.encode(value).length > 256) fail('MAKER_V8_ABI_LABEL_INVALID', `${label} is empty or exceeds the Core v8 label bound.`); }; const tracks = unique(d.tracks, 'tracks'); const assets = unique(d.assets, 'assets', 'id'); const colors = unique(d.colors, 'colors'); unique(d.parts, 'parts'); unique(d.outputs, 'outputs'); unique(d.rules, 'rules'); const publicItemCount = d.parts.reduce((sum, part) => sum + part.items.filter((item) => item.status === 'PUBLIC').length, 0); const publicStyleCount = d.parts.reduce((sum, part) => sum + part.items.filter((item) => item.status === 'PUBLIC').reduce((inner, item) => inner + item.styles.length, 0), 0); const swatchCount = d.colors.reduce((sum, color) => sum + color.swatches.length, 0); if (d.tracks.length > 256 || d.parts.length > 750 || publicItemCount > 5_000 || publicStyleCount > 10_000 || swatchCount > 5_000 || d.rules.length > 1_000 || d.outputs.length > 256) fail('MAKER_V8_ABI_COUNT_UNSUPPORTED', 'Document counts exceed a v8 registry bound.'); if (d.metadata.coverAssetId !== null && !assets.has(d.metadata.coverAssetId)) fail('MAKER_V8_COVER_REFERENCE_INVALID', 'Cover asset is unknown.'); d.tracks.forEach((track) => boundedLabel(track.label, `Track ${track.key}`));
+  for (const color of d.colors) { boundedLabel(color.label, `Color ${color.key}`); const swatches = unique(color.swatches, `${color.key}.swatches`); if (!swatches.has(color.defaultSwatchKey)) fail('MAKER_V8_COLOR_DEFAULT_INVALID', `Color ${color.key} has an unknown default swatch.`); for (const swatch of color.swatches) { boundedLabel(swatch.label, `Swatch ${color.key}/${swatch.key}`); rgba(swatch.rgba); for (const stop of swatch.stops) { if (typeof stop.offset !== 'number' || !Number.isFinite(stop.offset) || stop.offset < 0 || stop.offset > 1) fail('MAKER_V8_COLOR_STOP_INVALID', `Color ${color.key}/${swatch.key} has an invalid stop.`); rgba(stop.rgba); } } }
+  const publicItems = new Set(); const publicStyles = new Set();
+  for (const part of d.parts) {
+    boundedLabel(part.label, `Part ${part.key}`);
+    if (!['STANDARD', 'LEFT_RIGHT_PAIR', 'LAST_BASTION'].includes(part.kind) || !['FIXED', 'SLOT'].includes(part.wardrobeMode)) fail('MAKER_V8_PART_POLICY_INVALID', `Part ${part.key} policy is invalid.`);
+    if (part.capacity !== 1) fail('MAKER_V8_ABI_CAPACITY_UNSUPPORTED', `Part ${part.key} cannot execute: runtime_v8::assert_profile_policy requires capacity == 1.`);
+    if (part.wardrobeMode === 'SLOT' && d.composition.mode !== 'COMPOSABLE') fail('MAKER_V8_SLOT_REQUIRES_COMPOSABLE', `Part ${part.key} SLOT requires COMPOSABLE.`);
+    unique(part.items, `${part.key}.items`); if (!part.items.length) fail('MAKER_V8_PART_EMPTY', `Part ${part.key} is empty.`);
+    for (const item of part.items) {
+      boundedLabel(item.label, `Item ${part.key}/${item.key}`); const styles = unique(item.styles, `${part.key}/${item.key}.styles`); if (!['PUBLIC', 'PRIVATE'].includes(item.status)) fail('MAKER_V8_ITEM_STATUS_INVALID', 'Item status must be PUBLIC or PRIVATE.'); if (!styles.has(item.defaultStyleKey)) fail('MAKER_V8_ITEM_DEFAULT_STYLE_INVALID', `Item ${part.key}/${item.key} has an unknown default Style.`);
+      if (item.status === 'PUBLIC') { publicItems.add(`${part.key}/${item.key}`); item.styles.forEach((style) => publicStyles.add(`${part.key}/${item.key}/${style.key}`)); }
+      for (const style of item.styles) { boundedLabel(style.label, `Style ${part.key}/${item.key}/${style.key}`); if (!tracks.has(style.trackKey) || !assets.has(style.assetId)) fail('MAKER_V8_STYLE_REFERENCE_INVALID', `Style ${part.key}/${item.key}/${style.key} has an unknown Track or asset.`); if ((style.colorChannelKey === null) !== (style.defaultSwatchKey === null)) fail('MAKER_V8_STYLE_COLOR_PAIR_INVALID', 'Color channel/default swatch are an exact pair.'); if (style.colorChannelKey !== null) { const channel = d.colors.find((entry) => entry.key === style.colorChannelKey); if (!channel || !channel.swatches.some((swatch) => swatch.key === style.defaultSwatchKey)) fail('MAKER_V8_STYLE_COLOR_INVALID', 'Style Color channel/default swatch is unknown.'); } if (typeof style.protected !== 'boolean') fail('MAKER_V8_STYLE_PROTECTION_INVALID', 'Style protection must be boolean content, never an authority claim.'); }
     }
-    const value = current.value;
-    if (value === null
-      || typeof value === 'string'
-      || typeof value === 'boolean'
-      || typeof value === 'bigint') continue;
-    if (typeof value === 'number') {
-      if (!Number.isFinite(value)) {
-        fail(
-          'MAKER_V8_COMPILER_INPUT_SCALAR_INVALID',
-          `${current.path} must be finite compiler data.`,
-          { path: current.path },
-        );
-      }
-      continue;
-    }
-    if (!value || typeof value !== 'object') {
-      fail(
-        'MAKER_V8_COMPILER_INPUT_SCALAR_INVALID',
-        `${current.path} must be plain compiler data.`,
-        { path: current.path },
-      );
-    }
-    let binary;
-    try {
-      binary = ArrayBuffer.isView(value) || value instanceof ArrayBuffer;
-    } catch {
-      fail(
-        'MAKER_V8_COMPILER_INPUT_UNREADABLE',
-        `${rootPath} could not be inspected safely.`,
-        { path: current.path },
-      );
-    }
-    if (binary) {
-      fail(
-        'MAKER_V8_CANONICAL_BINARY_UNSUPPORTED',
-        `${current.path} must project binary data explicitly.`,
-        { path: current.path },
-      );
-    }
-    if (seen.has(value)) {
-      fail(
-        'MAKER_V8_COMPILER_INPUT_GRAPH_INVALID',
-        `${rootPath} must be a tree without cycles or shared references.`,
-        { path: current.path },
-      );
-    }
-    seen.add(value);
-
-    let prototype;
-    let keys;
-    try {
-      prototype = Object.getPrototypeOf(value);
-      keys = Reflect.ownKeys(value);
-    } catch {
-      fail(
-        'MAKER_V8_COMPILER_INPUT_UNREADABLE',
-        `${rootPath} could not be inspected safely.`,
-        { path: current.path },
-      );
-    }
-    const array = Array.isArray(value);
-    if ((array && prototype !== Array.prototype)
-      || (!array && prototype !== Object.prototype && prototype !== null)) {
-      fail(
-        'MAKER_V8_CANONICAL_OBJECT_UNSUPPORTED',
-        `${current.path} must use a standard JSON object or array prototype.`,
-        { path: current.path },
-      );
-    }
-    if (keys.some((key) => typeof key !== 'string')) {
-      fail(
-        'MAKER_V8_COMPILER_INPUT_SYMBOL_INVALID',
-        `${rootPath} cannot contain symbol keys.`,
-        { path: current.path },
-      );
-    }
-    if (array) {
-      let lengthDescriptor;
-      try {
-        lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
-      } catch {
-        fail(
-          'MAKER_V8_COMPILER_INPUT_UNREADABLE',
-          `${current.path} array length could not be inspected safely.`,
-          { path: current.path },
-        );
-      }
-      const length = lengthDescriptor?.value;
-      const allowed = new Set(['length']);
-      if (Number.isSafeInteger(length) && length >= 0) {
-        for (let index = 0; index < length; index += 1) allowed.add(String(index));
-      }
-      if (!Number.isSafeInteger(length)
-        || length < 0
-        || keys.length !== allowed.size
-        || keys.some((key) => !allowed.has(key))) {
-        fail(
-          'MAKER_V8_COMPILER_INPUT_ARRAY_INVALID',
-          `${current.path} must be a dense ordered array without extra properties.`,
-          { path: current.path },
-        );
-      }
-    }
-    for (const key of keys) {
-      if (array && key === 'length') continue;
-      let descriptor;
-      try {
-        descriptor = Object.getOwnPropertyDescriptor(value, key);
-      } catch {
-        fail(
-          'MAKER_V8_COMPILER_INPUT_UNREADABLE',
-          `${rootPath} property descriptors could not be inspected safely.`,
-          { path: current.path },
-        );
-      }
-      const childPath = array ? `${current.path}[${key}]` : `${current.path}.${key}`;
-      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
-        fail(
-          'MAKER_V8_COMPILER_INPUT_DESCRIPTOR_INVALID',
-          `${rootPath} accepts only enumerable data properties.`,
-          { path: childPath },
-        );
-      }
-      stack.push({ value: descriptor.value, path: childPath, depth: current.depth + 1 });
-    }
+    if (!part.items.some((item) => item.status === 'PUBLIC')) fail('MAKER_V8_PUBLIC_PART_EMPTY', `Part ${part.key} has no public Item.`);
   }
+  for (const selected of d.defaultRecipe.selections) if (!publicStyles.has(`${selected.partKey}/${selected.itemKey}/${selected.styleKey}`)) fail('MAKER_V8_RECIPE_PRIVATE_REFERENCE', 'Default Recipe does not survive public projection.');
+  for (const rule of d.rules) if (!['REQUIRE', 'EXCLUDE'].includes(rule.kind) || !publicItems.has(`${rule.left.partKey}/${rule.left.itemKey}`) || !publicItems.has(`${rule.right.partKey}/${rule.right.itemKey}`)) fail('MAKER_V8_RULE_REFERENCE_INVALID', `Rule ${rule.key} does not survive public projection.`);
+  for (const output of d.outputs) { const policy = output.allowedPackPolicy; if (!['ALL_ADMITTED', 'ALLOWLIST'].includes(policy.kind) || policy.packIds.length > 64 || (policy.kind === 'ALL_ADMITTED' && policy.packIds.length) || (policy.kind === 'ALLOWLIST' && !policy.packIds.length) || (output.protected && encoder.encode(`complete/${output.key}`).length > 128)) fail('MAKER_V8_OUTPUT_PACK_POLICY_INVALID', `Output ${output.key} has an ABI-invalid Pack or protected-scope policy.`); const sortedIds = [...policy.packIds].sort(); if (policy.packIds.some((id, index) => !KEY.test(id) || id !== sortedIds[index] || (index && id === policy.packIds[index - 1]))) fail('MAKER_V8_OUTPUT_PACK_POLICY_INVALID', `Output ${output.key} Pack IDs must be unique and lexicographically sorted.`); }
+  if (d.commerce.rightsOrigin === 'ONCHAIN_NATIVE' ? d.commerce.rightsEvidence !== null : d.commerce.rightsOrigin !== 'LICENSE_WRAPPED' || d.commerce.rightsEvidence === null || !assets.has(d.commerce.rightsEvidence.evidenceAssetId)) fail('MAKER_V8_RIGHTS_EVIDENCE_INVALID', 'Rights evidence does not match its origin.');
+  if (d.commerce.rightsOriginConfirmed !== true) fail('MAKER_V8_RIGHTS_CONFIRMATION_REQUIRED', 'Rights origin must be confirmed.');
 }
 
-function snapshotCompilerData(root, path) {
-  inspectCompilerDataTree(root, path);
-  let snapshot;
-  try {
-    snapshot = structuredClone(root);
-  } catch {
-    fail(
-      'MAKER_V8_COMPILER_INPUT_UNREADABLE',
-      `${path} could not be snapshotted safely; Proxy and non-cloneable values are forbidden.`,
-      { path },
-    );
+function validateRef(object, label) {
+  exact(object, ['type', 'reference', 'fields'], label); const ref = object.reference;
+  if (!plain(ref) || !['shared', 'owned', 'immutable'].includes(ref.kind)) fail('MAKER_V8_OBJECT_REFERENCE_INVALID', `${label}.reference is invalid.`);
+  if (ref.kind === 'shared') { exact(ref, ['kind', 'objectId', 'initialSharedVersion'], `${label}.reference`); u64(ref.initialSharedVersion); }
+  else { exact(ref, ['kind', 'objectId', 'version', 'digest'], `${label}.reference`); u64(ref.version); if (typeof ref.digest !== 'string' || !ref.digest) fail('MAKER_V8_OBJECT_DIGEST_INVALID', `${label}.digest is invalid.`); }
+  ref.objectId = normId(ref.objectId); object.type = normType(object.type); return object;
+}
+const oid = (object) => object.reference.objectId;
+function stableType(context, role, module, struct, generic = '') { return normType(`${context.catalog.fields.roles[role].originalPackageId}::${module}::${struct}${generic}`); }
+function requireType(object, expected, label) { same(object.type, expected, 'MAKER_V8_TYPE_ORIGIN_MISMATCH', `${label} stable TypeOrigin`); }
+function target(publication, role, module, fn) { const value = `${publication.context.catalog.fields.roles[role].callablePackageId}::${module}::${fn}`; if (LEGACY_TARGET.test(value)) fail('MAKER_V8_FORBIDDEN_TARGET', `Forbidden legacy target ${value}.`); return value; }
+
+export async function deriveMakerV8ReleaseCommitments(value) {
+  const input = snapshot(value, 'releaseReadback');
+  exact(input, ['catalogId', 'roles', 'authorities'], 'releaseReadback'); input.catalogId = normId(input.catalogId); exact(input.roles, MAKER_V8_ROLE_ORDER, 'roles'); exact(input.authorities, ['seal', 'runtime', 'output', 'physical', 'market', 'release'], 'authorities');
+  const bindings = {}; const identities = [];
+  for (const role of MAKER_V8_ROLE_ORDER) {
+    const row = input.roles[role]; exact(row, ['originalPackageId', 'callablePackageId', 'sourceCommitment', 'packageCommitment', 'abiCommitment', 'bindingCommitment', 'originalMarkerType', 'callableMarkerType'], `roles.${role}`);
+    row.originalPackageId = normId(row.originalPackageId); row.callablePackageId = normId(row.callablePackageId); identities.push([role, row.originalPackageId, row.callablePackageId]);
+    row.sourceCommitment = hashHex(row.sourceCommitment); row.packageCommitment = hashHex(row.packageCommitment); row.abiCommitment = hashHex(row.abiCommitment);
+    const [module, originalMarker, callableMarker] = MARKERS[role]; same(normType(row.originalMarkerType), normType(`${row.originalPackageId}::${module}::${originalMarker}`), 'MAKER_V8_TYPE_ORIGIN_MISMATCH', `${role} original marker`); same(normType(row.callableMarkerType), normType(`${row.callablePackageId}::${module}::${callableMarker}`), 'MAKER_V8_CALLABLE_MARKER_MISMATCH', `${role} callable marker`);
+    const commitment = await hashBcs(ExactInput, { domain: domain('animacraft-v8/exact-package-binding'), version: VERSION, original_package_id: row.originalPackageId, callable_package_id: row.callablePackageId, source_commitment: fromHex(row.sourceCommitment), package_commitment: fromHex(row.packageCommitment), abi_commitment: fromHex(row.abiCommitment) }); same(hashHex(row.bindingCommitment), commitment, 'MAKER_V8_PACKAGE_BINDING_COMMITMENT_MISMATCH', `${role} binding`); row.bindingCommitment = commitment;
+    bindings[role] = { original_package_id: row.originalPackageId, callable_package_id: row.callablePackageId, source_commitment: fromHex(row.sourceCommitment), package_commitment: fromHex(row.packageCommitment), abi_commitment: fromHex(row.abiCommitment), commitment: fromHex(commitment) };
   }
-  inspectCompilerDataTree(snapshot, path);
-  return snapshot;
+  for (let i = 0; i < identities.length; i += 1) for (let j = i + 1; j < identities.length; j += 1) if (identities[i].slice(1).some((id) => identities[j].slice(1).includes(id))) fail('MAKER_V8_PACKAGE_ROLE_COLLISION', `${identities[i][0]} and ${identities[j][0]} collide.`);
+  const productBindingCommitment = await hashBcs(ProductInput, { domain: domain('animacraft-v8/product-release-binding'), version: VERSION, native_capability_mask: 127n, ...bindings });
+  Object.keys(input.authorities).forEach((role) => { input.authorities[role] = normId(input.authorities[role]); });
+  const callCapSetCommitment = await hashBcs(CapInput, { domain: domain('animacraft-v8/package-call-cap-set'), version: VERSION, catalog_id: input.catalogId, product_binding_commitment: fromHex(productBindingCommitment), ...Object.fromEntries(Object.entries(input.authorities).map(([role, id]) => [`${role}_authority_id`, id])) });
+  return deepFreezeResult({ roles: input.roles, authorities: input.authorities, productBindingCommitment, callCapSetCommitment });
 }
+function deepFreezeResult(value) { return freeze(value); }
 
-function canonicalValue(value, path = '$', seen = new Set()) {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-      fail(
-        'MAKER_V8_CANONICAL_NUMBER_INVALID',
-        `${path} must be a finite JSON number without integer precision loss.`,
-        { path },
-      );
-    }
-    return Object.is(value, -0) ? 0 : value;
+export async function certifyMakerV8TrustedContext(value) {
+  const c = snapshot(value, 'trustedContext'); exact(c, ['schemaVersion', 'chainIdentifier', 'signerAddress', 'paymentCoinType', 'clock', 'protocolConfig', 'protocolTreasury', 'catalog', 'configs', 'transport'], 'trustedContext');
+  if (c.schemaVersion !== MAKER_V8_TRUSTED_CONTEXT_SCHEMA) fail('MAKER_V8_TRUSTED_SCHEMA_INVALID', 'Trusted context schema is invalid.'); c.signerAddress = normId(c.signerAddress); c.paymentCoinType = normType(c.paymentCoinType);
+  for (const key of ['clock', 'protocolConfig', 'protocolTreasury', 'catalog']) validateRef(c[key], key);
+  const cf = c.catalog.fields; exact(cf, ['version', 'protocolConfigId', 'protocolConfigRevision', 'protocolConfigCommitment', 'nativeCapabilityMask', 'productBindingCommitment', 'callCapSetCommitment', 'roles', 'authorities'], 'catalog.fields'); if (cf.version !== 8 || u64(cf.nativeCapabilityMask) !== 127n) fail('MAKER_V8_CATALOG_VERSION_INVALID', 'Catalog is not the complete v8 tuple.');
+  const release = await deriveMakerV8ReleaseCommitments({ catalogId: oid(c.catalog), roles: cf.roles, authorities: cf.authorities }); cf.roles = release.roles; cf.authorities = release.authorities; cf.protocolConfigId = normId(cf.protocolConfigId); cf.protocolConfigCommitment = hashHex(cf.protocolConfigCommitment); cf.productBindingCommitment = hashHex(cf.productBindingCommitment); cf.callCapSetCommitment = hashHex(cf.callCapSetCommitment); same(cf.productBindingCommitment, release.productBindingCommitment, 'MAKER_V8_PRODUCT_BINDING_COMMITMENT_MISMATCH', 'Product binding'); same(cf.callCapSetCommitment, release.callCapSetCommitment, 'MAKER_V8_CALL_CAP_SET_MISMATCH', 'Call-cap set');
+  const pf = c.protocolConfig.fields; exact(pf, ['version', 'revision', 'enabled', 'coreOriginalPackageId', 'coreCallablePackageId', 'treasuryId', 'paymentCoinType', 'primaryContentFeeBps', 'fixedCompleteFeeAtomic', 'makerMarketFeeBps', 'soulMarketFeeBps', 'commitment'], 'protocolConfig.fields'); if (pf.version !== 8 || pf.enabled !== true) fail('MAKER_V8_PROTOCOL_DISABLED', 'ProtocolConfig must be enabled v8.'); pf.coreOriginalPackageId = normId(pf.coreOriginalPackageId); pf.coreCallablePackageId = normId(pf.coreCallablePackageId); pf.treasuryId = normId(pf.treasuryId); pf.paymentCoinType = normType(pf.paymentCoinType); pf.commitment = hashHex(pf.commitment);
+  same(pf.coreOriginalPackageId, cf.roles.core.originalPackageId, 'MAKER_V8_CORE_BINDING_MISMATCH', 'Core original'); same(pf.coreCallablePackageId, cf.roles.core.callablePackageId, 'MAKER_V8_CORE_BINDING_MISMATCH', 'Core callable'); same(pf.treasuryId, oid(c.protocolTreasury), 'MAKER_V8_TREASURY_MISMATCH', 'Protocol treasury'); same(pf.paymentCoinType, c.paymentCoinType, 'MAKER_V8_PAYMENT_TYPE_MISMATCH', 'Payment coin'); same(cf.protocolConfigId, oid(c.protocolConfig), 'MAKER_V8_CATALOG_PROTOCOL_MISMATCH', 'Catalog config'); same(String(cf.protocolConfigRevision), String(pf.revision), 'MAKER_V8_CATALOG_PROTOCOL_MISMATCH', 'Catalog revision'); same(cf.protocolConfigCommitment, pf.commitment, 'MAKER_V8_CATALOG_PROTOCOL_MISMATCH', 'Catalog config commitment');
+  const protocolCommitment = await hashBcs(ProtocolInput, { domain: domain('animacraft-v8/protocol-config'), version: VERSION, config_id: oid(c.protocolConfig), core_original_package_id: pf.coreOriginalPackageId, core_callable_package_id: pf.coreCallablePackageId, revision: u64(pf.revision), treasury_id: pf.treasuryId, payment_coin_type: pf.paymentCoinType, primary_content_fee_bps: u16(pf.primaryContentFeeBps), fixed_complete_fee_atomic: u64(pf.fixedCompleteFeeAtomic), maker_market_fee_bps: u16(pf.makerMarketFeeBps), soul_market_fee_bps: u16(pf.soulMarketFeeBps), enabled: true }); same(pf.commitment, protocolCommitment, 'MAKER_V8_PROTOCOL_COMMITMENT_MISMATCH', 'ProtocolConfig commitment');
+  requireType(c.protocolConfig, stableType(c, 'core', 'protocol_config_v8', 'ProtocolConfigV8'), 'ProtocolConfig'); requireType(c.protocolTreasury, stableType(c, 'core', 'protocol_config_v8', 'ProtocolTreasuryV8', `<${c.paymentCoinType}>`), 'ProtocolTreasury'); requireType(c.catalog, stableType(c, 'core', 'package_binding_v8', 'ProductReleaseCatalogV8'), 'Catalog'); requireType(c.clock, normType('0x2::clock::Clock'), 'Clock'); same(oid(c.clock), normId('0x6'), 'MAKER_V8_CLOCK_MISMATCH', 'Clock ID');
+  exact(c.protocolTreasury.fields, ['version', 'configId'], 'protocolTreasury.fields'); if (c.protocolTreasury.fields.version !== 8) fail('MAKER_V8_TREASURY_VERSION_INVALID', 'Treasury is not v8.'); same(normId(c.protocolTreasury.fields.configId), oid(c.protocolConfig), 'MAKER_V8_TREASURY_MISMATCH', 'Treasury config');
+  exact(c.configs, ['seal', 'runtime', 'output', 'physical', 'market', 'release'], 'configs');
+  const configTypes = { seal: ['seal', 'seal_v8', 'SealPolicyConfigV8'], runtime: ['runtime', 'runtime_binding_v8', 'RuntimePackageConfigV8'], output: ['output', 'output_v8', 'OutputPackageConfigV8'], physical: ['physical', 'physical_v8', 'PhysicalPackageConfigV8'], market: ['market', 'market_v8', 'MarketPackageConfigV8'], release: ['release', 'release_v8', 'ReleasePackageConfigV8'] };
+  for (const [name, [role, module, struct]] of Object.entries(configTypes)) {
+    validateRef(c.configs[name], `configs.${name}`); requireType(c.configs[name], stableType(c, role, module, struct), `configs.${name}`); const f = c.configs[name].fields; exact(f, name === 'seal' ? ['version', 'catalogId', 'productBindingCommitment', 'callCapSetCommitment', 'authorityId', 'commitment', 'keyServerIds', 'weights', 'threshold', 'keyServerSetCommitment', 'encryptionPolicyCommitment'] : ['version', 'catalogId', 'productBindingCommitment', 'callCapSetCommitment', 'authorityId'], `configs.${name}.fields`); if (f.version !== 8) fail('MAKER_V8_CONFIG_VERSION_INVALID', `${name} config is not v8.`); f.catalogId = normId(f.catalogId); f.productBindingCommitment = hashHex(f.productBindingCommitment); f.callCapSetCommitment = hashHex(f.callCapSetCommitment); f.authorityId = normId(f.authorityId); same(f.catalogId, oid(c.catalog), 'MAKER_V8_CONFIG_CATALOG_MISMATCH', `${name} catalog`); same(f.productBindingCommitment, release.productBindingCommitment, 'MAKER_V8_CONFIG_BINDING_MISMATCH', `${name} product`); same(f.callCapSetCommitment, release.callCapSetCommitment, 'MAKER_V8_CONFIG_CALL_CAP_MISMATCH', `${name} call caps`); same(f.authorityId, cf.authorities[name], 'MAKER_V8_CONFIG_AUTHORITY_MISMATCH', `${name} authority`);
   }
-  if (typeof value === 'bigint') return value.toString(10);
-  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') {
-    fail('MAKER_V8_CANONICAL_VALUE_UNSUPPORTED', `${path} is not canonical JSON data.`, { path });
+  const sf = c.configs.seal.fields; sf.commitment = hashHex(sf.commitment); sf.keyServerSetCommitment = hashHex(sf.keyServerSetCommitment); sf.encryptionPolicyCommitment = hashHex(sf.encryptionPolicyCommitment); if (!Array.isArray(sf.keyServerIds) || !sf.keyServerIds.length || sf.keyServerIds.length !== sf.weights.length) fail('MAKER_V8_SEAL_SERVERS_INVALID', 'Seal key-server readback is invalid.'); sf.keyServerIds = sf.keyServerIds.map(normId); sf.weights = sf.weights.map((weight) => u16(weight)); sf.threshold = u16(sf.threshold);
+  const sealPolicyCommitment = await hashBcs(SealPolicyInput, { domain: domain('animacraft-v8/seal/policy'), version: VERSION, protocol_config_id: oid(c.protocolConfig), protocol_config_revision: u64(pf.revision), catalog_id: oid(c.catalog), product_binding_commitment: fromHex(release.productBindingCommitment), seal_original_package_id: cf.roles.seal.originalPackageId, seal_callable_package_id: cf.roles.seal.callablePackageId, seal_binding_commitment: fromHex(cf.roles.seal.bindingCommitment), seal_authority_id: sf.authorityId, call_cap_set_commitment: fromHex(release.callCapSetCommitment), key_servers: sf.keyServerIds.map((id, i) => ({ key_server_id: id, weight: sf.weights[i] })), threshold: sf.threshold, key_server_set_commitment: fromHex(sf.keyServerSetCommitment), encryption_policy_commitment: fromHex(sf.encryptionPolicyCommitment) }); same(sf.commitment, sealPolicyCommitment, 'MAKER_V8_SEAL_POLICY_COMMITMENT_MISMATCH', 'Seal policy');
+  exact(c.transport, ['manifest', 'assets'], 'transport'); exact(c.transport.manifest, ['blobId', 'bytesBase64'], 'transport.manifest'); if (typeof c.transport.manifest.blobId !== 'string' || !c.transport.manifest.blobId || encoder.encode(c.transport.manifest.blobId).length > 512) fail('MAKER_V8_MANIFEST_BLOB_INVALID', 'Manifest Blob ID is required and bounded by the Core ABI.'); const manifestBytes = bytes64(c.transport.manifest.bytesBase64, 'manifest bytes'); if (!Array.isArray(c.transport.assets)) fail('MAKER_V8_TRANSPORT_ASSETS_INVALID', 'Transport assets must be an array.'); const assetMap = new Map();
+  for (const [i, asset] of c.transport.assets.entries()) { exact(asset, ['assetId', 'blobId', 'mediaType', 'bytesBase64'], `transport.assets[${i}]`); if (!KEY.test(asset.assetId) || assetMap.has(asset.assetId) || typeof asset.blobId !== 'string' || !asset.blobId || encoder.encode(asset.blobId).length > 512 || typeof asset.mediaType !== 'string' || !asset.mediaType) fail('MAKER_V8_TRANSPORT_ASSET_INVALID', `Transport asset ${i} is invalid.`); const bytes = bytes64(asset.bytesBase64, `asset ${asset.assetId}`); assetMap.set(asset.assetId, Object.freeze({ ...asset, byteLength: bytes.length, sha256: toHex(await sha(bytes)) })); }
+  c._derived = { productBindingCommitment: release.productBindingCommitment, callCapSetCommitment: release.callCapSetCommitment, sealPolicyCommitment, manifestBytesHex: toHex(manifestBytes), assets: Object.fromEntries(assetMap) }; freeze(c); trustedSet.add(c); return c;
+}
+
+const byOrder = (field) => (a, b) => Number(a[field]) - Number(b[field]) || a.key.localeCompare(b.key);
+const sorted = (rows, compare) => [...rows].sort(compare);
+const mapAccess = (mode) => ({ FREE: 0, ONE_TIME_PAID: 1 })[mode] ?? fail('MAKER_V8_ACCESS_MODE_INVALID', `Unsupported access ${mode}.`);
+const mapComplete = (mode) => ({ UNLIMITED_FREE: 0, FREE_QUOTA_THEN_PAID: 1, PAID_EVERY_TIME: 2, FREE_QUOTA_THEN_BLOCK: 3 })[mode] ?? fail('MAKER_V8_COMPLETE_MODE_INVALID', `Unsupported Complete ${mode}.`);
+const mapPart = (kind) => ({ STANDARD: 0, LEFT_RIGHT_PAIR: 1, LAST_BASTION: 2 })[kind];
+const mapAdmission = (mode) => ({ DISABLED: 0, CERTIFIED: 1, OPEN: 2 })[mode];
+const mapIssuance = (mode) => ({ FREE_CLAIM: 0, PAID_PURCHASE: 1, PROOF_MATERIALIZE: 2 })[mode] ?? fail('MAKER_V8_PHYSICAL_ISSUANCE_INVALID', `Unsupported issuance ${mode}.`);
+const mapProof = (mode) => ({ NONE: 0, CANONICAL_SOUL: 2 })[mode] ?? fail('MAKER_V8_PHYSICAL_PROOF_INVALID', `Unsupported proof ${mode}.`);
+function rgba(value) { if (typeof value !== 'string' || !/^#[0-9a-fA-F]{8}$/.test(value)) fail('MAKER_V8_RGBA_INVALID', `Invalid RGBA ${value}.`); return Number.parseInt(value.slice(1), 16); }
+
+async function compileRows(document, context) {
+  const parts = sorted(document.parts, byOrder('menuOrder')).map((part) => ({ ...part, items: sorted(part.items.filter((item) => item.status === 'PUBLIC'), byOrder('displayOrder')).map((item) => ({ ...item, styles: sorted(item.styles, byOrder('displayOrder')) })) }));
+  const tracks = sorted(document.tracks, byOrder('renderOrder')); const colors = sorted(document.colors, (a, b) => a.key.localeCompare(b.key)); const rules = sorted(document.rules, (a, b) => a.key.localeCompare(b.key));
+  const rows = { track: [], part: [], item: [], style: [], color: [], rule: [] }; let sequence = 0n;
+  for (const track of tracks) rows.track.push({ sequence: sequence++, key: track.key, label: track.label, render_order: u64(track.renderOrder), payload_commitment: fromHex(await hashJson({ schemaVersion: 'animacraft.maker-v8-track-payload.v2', locked: track.locked })) });
+  for (const part of parts) rows.part.push({ sequence: sequence++, key: part.key, label: part.label, kind: mapPart(part.kind), render_order: u64(part.renderOrder), required: part.required, visible: part.visible, payload_commitment: fromHex(await hashJson({ schemaVersion: 'animacraft.maker-v8-part-payload.v2', menuOrder: part.menuOrder, wardrobeMode: part.wardrobeMode, capacity: part.capacity, payload: part.payload })) });
+  for (const part of parts) for (const item of part.items) rows.item.push({ sequence: sequence++, part_key: part.key, item_key: item.key, label: item.label, gate_kind: 0, payload_commitment: fromHex(await hashJson({ schemaVersion: 'animacraft.maker-v8-item-payload.v2', displayOrder: item.displayOrder, defaultStyleKey: item.defaultStyleKey, payload: item.payload })) });
+  for (const part of parts) for (const item of part.items) for (const style of item.styles) {
+    const transport = context._derived.assets[style.assetId]; const asset = document.assets.find((entry) => entry.id === style.assetId); if (!transport) fail('MAKER_V8_CERTIFIED_ASSET_MISSING', `Certified bytes are missing for ${style.assetId}.`); if (String(asset.byteLength) !== String(transport.byteLength) || asset.mediaType !== transport.mediaType) fail('MAKER_V8_CERTIFIED_ASSET_METADATA_MISMATCH', `Certified bytes for ${style.assetId} do not match document metadata.`);
+    const payload = await hashJson({ schemaVersion: 'animacraft.maker-v8-style-payload.v2', assetId: style.assetId, assetKind: asset.kind, transform: style.transform, opacity: style.opacity, blendMode: style.blendMode, physical: style.physical, payload: style.payload });
+    rows.style.push({ sequence: sequence++, part_key: part.key, item_key: item.key, style_key: style.key, layer_track_key: style.trackKey, color_channel_key: style.colorChannelKey, default_swatch_key: style.defaultSwatchKey, label: style.label, asset_blob_id: transport.blobId, asset_sha256: fromHex(transport.sha256), protected: style.protected, payload_commitment: fromHex(payload), source: { style, transport, payload } });
   }
-  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
-    fail('MAKER_V8_CANONICAL_BINARY_UNSUPPORTED', `${path} must project binary data explicitly.`, { path });
+  for (const channel of colors) for (const swatch of sorted(channel.swatches, (a, b) => a.key.localeCompare(b.key))) rows.color.push({ sequence: sequence++, channel_key: channel.key, swatch_key: swatch.key, label: swatch.label, rgba: rgba(swatch.rgba), payload_commitment: fromHex(await hashJson({ schemaVersion: 'animacraft.maker-v8-color-payload.v2', channelLabel: channel.label, defaultSwatchKey: channel.defaultSwatchKey, stops: swatch.stops })) });
+  for (const rule of rules) rows.rule.push({ sequence: sequence++, key: rule.key, kind: rule.kind === 'REQUIRE' ? 0 : 1, left_ref: `${rule.left.partKey}/${rule.left.itemKey}`, right_ref: `${rule.right.partKey}/${rule.right.itemKey}`, payload_commitment: fromHex(await hashJson({ schemaVersion: 'animacraft.maker-v8-rule-payload.v2', payload: rule.payload })) });
+  return { parts, rows, total: sequence };
+}
+async function baseCommitments(content, rows) {
+  const empty = async (category) => hashBcs(Rolling, { domain: domain('animacraft-v8/base-empty'), version: VERSION, root_content_commitment: fromHex(content), category, previous: new Uint8Array(), sequence: 0n, row_bytes: new Uint8Array() });
+  const result = {}; let aggregate = await empty(255);
+  for (const [kind, category, plural] of [['track', 0, 'tracks'], ['part', 1, 'parts'], ['item', 2, 'items'], ['style', 3, 'styles'], ['color', 4, 'colors'], ['rule', 5, 'rules']]) {
+    let rolling = await empty(category);
+    for (const row of rows[kind]) { const rowValue = Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'source')); const encoded = Rows[kind].serialize(rowValue).toBytes(); rolling = await hashBcs(Rolling, { domain: domain('animacraft-v8/base-append'), version: VERSION, root_content_commitment: fromHex(content), category, previous: fromHex(rolling), sequence: row.sequence, row_bytes: encoded }); aggregate = await hashBcs(Rolling, { domain: domain('animacraft-v8/base-append'), version: VERSION, root_content_commitment: fromHex(content), category: 255, previous: fromHex(aggregate), sequence: row.sequence, row_bytes: encoded }); }
+    result[plural] = rolling;
   }
-  if (!Array.isArray(value) && !isPlainObject(value)) {
-    fail('MAKER_V8_CANONICAL_OBJECT_UNSUPPORTED', `${path} must be a plain JSON object.`, { path });
+  result.aggregate = aggregate; return result;
+}
+async function runtimeCommitments(document, parts, content, partRows) {
+  const admission = mapAdmission(document.composition.thirdPartyAdmission); let rolling = await hashBcs(RuntimeEmpty, { domain: domain('animacraft-v8/runtime/part-profiles-empty'), version: VERSION, root_content_commitment: fromHex(content) }); const profiles = [];
+  for (let i = 0; i < parts.length; i += 1) { const part = parts[i]; const profile = { sequence: BigInt(i), partKey: part.key, wardrobeMode: part.wardrobeMode === 'FIXED' ? 0 : 1, behavior: part.wardrobeMode === 'FIXED' ? 0 : admission === 0 ? 1 : 3, capacity: 1n, required: part.required, corePartPayloadCommitment: toHex(partRows[i].payload_commitment) }; rolling = await hashBcs(RuntimeProfile, { domain: domain('animacraft-v8/runtime/part-profile'), version: VERSION, root_content_commitment: fromHex(content), sequence: profile.sequence, previous: fromHex(rolling), part_key: profile.partKey, core_part_payload_commitment: fromHex(profile.corePartPayloadCommitment), required: profile.required, wardrobe_mode: profile.wardrobeMode, behavior: profile.behavior, capacity: profile.capacity, admission_ceiling: admission }); profiles.push(profile); }
+  const policyCommitment = await hashBcs(RuntimePolicy, { domain: domain('animacraft-v8/runtime/admission-policy'), version: VERSION, root_content_commitment: fromHex(content), profile_count: BigInt(profiles.length), profile_commitment: fromHex(rolling), admission_ceiling: admission }); return { admission, profiles, profileCommitment: rolling, policyCommitment };
+}
+async function policyCommitments(document, context) {
+  const commerce = document.commerce; const pf = context.protocolConfig.fields; const access = mapAccess(commerce.makerAccess.mode); const complete = mapComplete(commerce.baseCompletion.mode); const makerPrice = u64(commerce.makerAccess.purchasePriceAtomic); const completePrice = u64(commerce.baseCompletion.priceAtomic); const quota = u64(commerce.baseCompletion.freeQuotaPerWallet); const totalCap = commerce.baseCompletion.totalCap === null ? 0n : u64(commerce.baseCompletion.totalCap); const validAccess = (access === 0 && makerPrice === 0n) || (access === 1 && makerPrice > 0n && makerPrice <= 1_000_000_000_000n); const validComplete = completePrice <= 1_000_000_000_000n && quota <= 1_000_000_000n && totalCap <= 1_000_000_000n && (totalCap === 0n || quota <= totalCap) && ((complete === 0 && completePrice === 0n && quota === 0n) || (complete === 1 && completePrice > 0n && quota > 0n) || (complete === 2 && completePrice > 0n && quota === 0n) || (complete === 3 && completePrice === 0n && quota > 0n)); if (!validAccess || !validComplete) fail('MAKER_V8_ECONOMICS_ABI_INVALID', 'Commerce policy would abort the Core v8 constructor.'); const royalties = [commerce.soulCreatorRoyaltyBps, commerce.makerSourceRoyaltyBps, commerce.makerResaleRoyaltyBps].map((value) => u16(value)); if (royalties.some((value) => value > 1000 || value % 50) || royalties[0] + royalties[1] > 1000) fail('MAKER_V8_RIGHTS_ROYALTY_INVALID', 'Royalty policy would abort the Core v8 constructor.');
+  const economics = await hashBcs(EconomicsInput, { domain: domain('animacraft-v8/economics-snapshot'), version: VERSION, protocol_config_id: oid(context.protocolConfig), protocol_config_revision: u64(pf.revision), protocol_config_commitment: fromHex(pf.commitment), protocol_treasury_id: oid(context.protocolTreasury), payment_coin_type: context.paymentCoinType, maker_access: access, maker_price_atomic: makerPrice, complete_mode: complete, complete_price_atomic: completePrice, complete_per_wallet_quota: quota, complete_total_cap: totalCap, primary_content_fee_bps: u16(pf.primaryContentFeeBps), fixed_complete_fee_atomic: u64(pf.fixedCompleteFeeAtomic), maker_market_fee_bps: u16(pf.makerMarketFeeBps), soul_market_fee_bps: u16(pf.soulMarketFeeBps) });
+  let rights;
+  if (commerce.rightsOrigin === 'ONCHAIN_NATIVE') { if (commerce.rightsEvidence !== null) fail('MAKER_V8_NATIVE_RIGHTS_EVIDENCE_FORBIDDEN', 'Native rights cannot include evidence.'); rights = { origin: 0, certified: false, catalogId: null, binding: null, locator: '', blobId: '', sha256: Object.freeze([]), terms: Object.freeze([]) }; }
+  else if (commerce.rightsOrigin === 'LICENSE_WRAPPED') { const evidence = context._derived.assets[commerce.rightsEvidence?.evidenceAssetId]; if (!evidence) fail('MAKER_V8_RIGHTS_EVIDENCE_MISSING', 'License evidence lacks certified bytes.'); const terms = await hashJson({ schemaVersion: 'animacraft.maker-v8-license-terms.v1', licensor: commerce.rightsEvidence.licensor, evidenceAssetId: commerce.rightsEvidence.evidenceAssetId, evidenceSha256: evidence.sha256, license: document.metadata.license }); rights = { origin: 1, certified: true, catalogId: oid(context.catalog), binding: fromHex(context._derived.productBindingCommitment), locator: `walrus://${evidence.blobId}`, blobId: evidence.blobId, sha256: fromHex(evidence.sha256), terms: fromHex(terms) }; }
+  else fail('MAKER_V8_RIGHTS_ORIGIN_INVALID', 'Rights origin is invalid.');
+  const rightsCommitment = await hashBcs(RightsInput, { domain: domain('animacraft-v8/rights-snapshot'), version: VERSION, origin: rights.origin, creator: context.signerAddress, creator_confirmed: true, evidence_certified: rights.certified, certification_catalog_id: rights.catalogId, certification_binding_commitment: rights.binding, evidence_locator: rights.locator, evidence_blob_id: rights.blobId, evidence_sha256: rights.sha256, terms_commitment: rights.terms, soul_creator_royalty_bps: u16(commerce.soulCreatorRoyaltyBps), maker_source_royalty_bps: u16(commerce.makerSourceRoyaltyBps), maker_resale_royalty_bps: u16(commerce.makerResaleRoyaltyBps) });
+  return { economics: { commitment: economics, access, complete, totalCap }, rights: { commitment: rightsCommitment, ...rights } };
+}
+
+export async function compileMakerV8Publication(documentValue, trustedContext) {
+  if (!trustedSet.has(trustedContext)) fail('MAKER_V8_TRUSTED_CONTEXT_REQUIRED', 'Use certifyMakerV8TrustedContext() first.'); const document = snapshot(documentValue, 'document'); validateDocument(document);
+  const projection = structuredClone(document); projection.parts = projection.parts.map((part) => ({ ...part, items: part.items.filter((item) => item.status === 'PUBLIC') }));
+  if (document.assets.length !== trustedContext.transport.assets.length) fail('MAKER_V8_CERTIFIED_ASSET_SET_MISMATCH', 'Every document asset must have exactly one certified byte transport.'); for (const asset of document.assets) { const certified = trustedContext._derived.assets[asset.id]; if (!certified || String(asset.byteLength) !== String(certified.byteLength) || asset.mediaType !== certified.mediaType) fail('MAKER_V8_CERTIFIED_ASSET_METADATA_MISMATCH', `Certified bytes for ${asset.id} do not match document metadata.`); }
+  const certifiedAssets = trustedContext.transport.assets.map((asset) => { const item = trustedContext._derived.assets[asset.assetId]; return { assetId: asset.assetId, blobId: asset.blobId, mediaType: asset.mediaType, byteLength: item.byteLength, sha256: item.sha256 }; }).sort((a, b) => a.assetId.localeCompare(b.assetId));
+  const manifestJson = canonicalMakerV8Json({ schemaVersion: 'animacraft.maker-v8-manifest.v2', protocolVersion: 8, document: projection, certifiedAssets }); const manifestBytes = encoder.encode(manifestJson); if (toHex(manifestBytes) !== trustedContext._derived.manifestBytesHex) fail('MAKER_V8_MANIFEST_BYTES_MISMATCH', 'Certified manifest bytes are not canonical.', { expectedBase64: btoa(String.fromCharCode(...manifestBytes)) });
+  const manifestSha256 = toHex(await sha(manifestBytes)); const content = manifestSha256; const renderer = await hashJson({ schemaVersion: 'animacraft.maker-v8-renderer.v2', canvas: document.canvas, tracks: document.tracks.map(({ key, renderOrder }) => ({ key, renderOrder })), outputs: document.outputs.map(({ key, payload }) => ({ key, payload })) });
+  const compiled = await compileRows(document, trustedContext); const base = await baseCommitments(content, compiled.rows); const runtime = await runtimeCommitments(document, compiled.parts, content, compiled.rows.part); const policy = await policyCommitments(document, trustedContext);
+  const counts = { tracks: BigInt(compiled.rows.track.length), parts: BigInt(compiled.rows.part.length), items: BigInt(compiled.rows.item.length), styles: BigInt(compiled.rows.style.length), colors: BigInt(compiled.rows.color.length), rules: BigInt(compiled.rows.rule.length) };
+  const version = await hashBcs(VersionInput, { domain: domain('animacraft-v8/maker-version'), version: VERSION, core_original_package_id: trustedContext.catalog.fields.roles.core.originalPackageId, protocol_config_id: oid(trustedContext.protocolConfig), protocol_config_revision: u64(trustedContext.protocolConfig.fields.revision), protocol_config_commitment: fromHex(trustedContext.protocolConfig.fields.commitment), maker_key: document.lineage.makerKey, maker_version: 1n, previous_root_id: null, previous_version_commitment: null, renderer_commitment: fromHex(renderer), manifest_blob_id: trustedContext.transport.manifest.blobId, manifest_sha256: fromHex(manifestSha256), content_commitment: fromHex(content), expected_base_definition_count: compiled.total, expected_base_registry_commitment: fromHex(base.aggregate), expected_pack_admission_policy_commitment: fromHex(runtime.policyCommitment), economics_commitment: fromHex(policy.economics.commitment), rights_commitment: fromHex(policy.rights.commitment) });
+  const result = { schemaVersion: MAKER_V8_COMPILER_SCHEMA, context: trustedContext, document, manifest: { json: manifestJson, blobId: trustedContext.transport.manifest.blobId, sha256: manifestSha256 }, commitments: { content, renderer, version, economics: policy.economics.commitment, rights: policy.rights.commitment, base, packAdmissionPolicy: runtime.policyCommitment }, counts, rows: compiled.rows, parts: compiled.parts, runtime, policy };
+  freeze(result); compiledSet.add(result); return result;
+}
+
+function requireCompiled(value) { if (!compiledSet.has(value)) fail('MAKER_V8_COMPILED_PUBLICATION_REQUIRED', 'A compiler-produced publication is required.'); }
+function objectArg(tx, object, mutable) { const ref = object.reference; return ref.kind === 'shared' ? tx.sharedObjectRef({ objectId: ref.objectId, initialSharedVersion: ref.initialSharedVersion, mutable }) : tx.objectRef({ objectId: ref.objectId, version: ref.version, digest: ref.digest }); }
+function pureBytes(tx, value) { return tx.pure.vector('u8', [...(typeof value === 'string' ? fromHex(value) : value)]); }
+function call(tx, publication, role, module, fn, args, typeArguments = []) { return tx.moveCall({ target: target(publication, role, module, fn), typeArguments, arguments: args }); }
+const coinType = (publication) => [publication.context.paymentCoinType];
+
+export function buildMakerV8ScaffoldTransaction(publication) {
+  requireCompiled(publication); const tx = new Transaction(); const c = publication.context; tx.setSender(c.signerAddress); const coin = coinType(publication); const protocol = objectArg(tx, c.protocolConfig, false); const catalog = objectArg(tx, c.catalog, false); const releaseConfig = objectArg(tx, c.configs.release, false); const commerce = publication.document.commerce;
+  const economics = call(tx, publication, 'core', 'maker_v8', 'new_economics_snapshot_v8', [protocol, tx.pure.u8(publication.policy.economics.access), tx.pure.u64(String(commerce.makerAccess.purchasePriceAtomic)), tx.pure.u8(publication.policy.economics.complete), tx.pure.u64(String(commerce.baseCompletion.priceAtomic)), tx.pure.u64(String(commerce.baseCompletion.freeQuotaPerWallet)), tx.pure.u64(publication.policy.economics.totalCap)], coin);
+  let rights;
+  if (commerce.rightsOrigin === 'ONCHAIN_NATIVE') rights = call(tx, publication, 'core', 'maker_v8', 'new_onchain_native_rights_snapshot_v8', [tx.pure.u16(commerce.soulCreatorRoyaltyBps), tx.pure.u16(commerce.makerSourceRoyaltyBps), tx.pure.u16(commerce.makerResaleRoyaltyBps)]);
+  else rights = call(tx, publication, 'release', 'release_v8', 'new_license_wrapped_rights_snapshot_v8', [protocol, catalog, releaseConfig, tx.pure.string(publication.policy.rights.locator), tx.pure.string(publication.policy.rights.blobId), pureBytes(tx, publication.policy.rights.sha256), pureBytes(tx, publication.policy.rights.terms), tx.pure.u16(commerce.soulCreatorRoyaltyBps), tx.pure.u16(commerce.makerSourceRoyaltyBps), tx.pure.u16(commerce.makerResaleRoyaltyBps)]);
+  const counts = call(tx, publication, 'core', 'base_registry_v8', 'new_base_definition_counts_v8', ['tracks', 'parts', 'items', 'styles', 'colors', 'rules'].map((key) => tx.pure.u64(publication.counts[key])));
+  const commitments = call(tx, publication, 'core', 'base_registry_v8', 'new_base_definition_commitments_v8', ['tracks', 'parts', 'items', 'styles', 'colors', 'rules', 'aggregate'].map((key) => pureBytes(tx, publication.commitments.base[key])));
+  const [root, base, treasury, admin] = call(tx, publication, 'core', 'core_v8', 'new_initial_maker_draft_v8', [protocol, tx.pure.string(publication.document.lineage.makerKey), pureBytes(tx, publication.commitments.renderer), tx.pure.string(publication.manifest.blobId), pureBytes(tx, publication.manifest.sha256), pureBytes(tx, publication.commitments.content), counts, commitments, pureBytes(tx, publication.commitments.packAdmissionPolicy), economics, rights, objectArg(tx, c.clock, false)], coin);
+  call(tx, publication, 'release', 'release_v8', 'finalize_product_release_binding_v8', [root, admin, protocol, catalog, releaseConfig], coin);
+  call(tx, publication, 'core', 'core_v8', 'share_maker_draft_v8', [root, base, treasury, admin], coin); return tx;
+}
+
+function countsRecord(value, label) { exact(value, ['tracks', 'parts', 'items', 'styles', 'colors', 'rules'], label); return Object.fromEntries(Object.entries(value).map(([key, amount]) => [key, String(u64(amount))])); }
+function commitmentsRecord(value, label) { exact(value, ['tracks', 'parts', 'items', 'styles', 'colors', 'rules', 'aggregate'], label); return Object.fromEntries(Object.entries(value).map(([key, digest]) => [key, hashHex(digest)])); }
+function verifyRootReadback(publication, value) {
+  exact(value, ['schemaVersion', 'root', 'baseRegistry', 'makerTreasury', 'adminCap'], 'scaffoldReadback'); for (const key of ['root', 'baseRegistry', 'makerTreasury', 'adminCap']) validateRef(value[key], key); const c = publication.context;
+  requireType(value.root, stableType(c, 'core', 'maker_v8', 'MakerRootV8', `<${c.paymentCoinType}>`), 'Root'); requireType(value.baseRegistry, stableType(c, 'core', 'base_registry_v8', 'BaseDefinitionRegistryV8'), 'Base registry'); requireType(value.makerTreasury, stableType(c, 'core', 'treasury_v8', 'MakerTreasuryV8', `<${c.paymentCoinType}>`), 'Maker treasury'); requireType(value.adminCap, stableType(c, 'core', 'maker_v8', 'MakerAdminCapV8'), 'AdminCap');
+  const f = value.root.fields; exact(f, ['version', 'creator', 'owner', 'adminCapId', 'controlEpoch', 'lifecycle', 'makerKey', 'makerVersion', 'versionCommitment', 'rendererCommitment', 'manifestBlobId', 'manifestSha256', 'contentCommitment', 'protocolConfigId', 'protocolConfigRevision', 'protocolConfigCommitment', 'baseRegistryId', 'makerTreasuryId', 'expectedBaseDefinitionCount', 'expectedBaseRegistryCommitment', 'expectedPackAdmissionPolicyCommitment', 'economicsCommitment', 'rightsCommitment', 'catalogId', 'productBindingCommitment', 'callCapSetCommitment'], 'root.fields');
+  if (f.version !== 8 || f.lifecycle !== 0 || String(f.controlEpoch) !== '0' || f.makerVersion !== 1) fail('MAKER_V8_ROOT_READBACK_INVALID', 'Root is not exact DRAFT v8.');
+  const expected = { creator: c.signerAddress, owner: c.signerAddress, adminCapId: oid(value.adminCap), makerKey: publication.document.lineage.makerKey, versionCommitment: publication.commitments.version, rendererCommitment: publication.commitments.renderer, manifestBlobId: publication.manifest.blobId, manifestSha256: publication.manifest.sha256, contentCommitment: publication.commitments.content, protocolConfigId: oid(c.protocolConfig), protocolConfigRevision: String(c.protocolConfig.fields.revision), protocolConfigCommitment: c.protocolConfig.fields.commitment, baseRegistryId: oid(value.baseRegistry), makerTreasuryId: oid(value.makerTreasury), expectedBaseDefinitionCount: String(Object.values(publication.counts).reduce((a, b) => a + b, 0n)), expectedBaseRegistryCommitment: publication.commitments.base.aggregate, expectedPackAdmissionPolicyCommitment: publication.commitments.packAdmissionPolicy, economicsCommitment: publication.commitments.economics, rightsCommitment: publication.commitments.rights, catalogId: oid(c.catalog), productBindingCommitment: c._derived.productBindingCommitment, callCapSetCommitment: c._derived.callCapSetCommitment };
+  const ids = new Set(['creator', 'owner', 'adminCapId', 'protocolConfigId', 'baseRegistryId', 'makerTreasuryId', 'catalogId']); for (const [key, expectedValue] of Object.entries(expected)) same(ids.has(key) ? normId(f[key]) : String(f[key]), String(expectedValue), 'MAKER_V8_ROOT_READBACK_MISMATCH', `Root ${key}`);
+  const admin = value.adminCap.fields; exact(admin, ['version', 'rootId', 'owner', 'controlEpoch'], 'adminCap.fields'); if (admin.version !== 8 || String(admin.controlEpoch) !== '0') fail('MAKER_V8_ADMIN_READBACK_INVALID', 'AdminCap state is invalid.'); same(normId(admin.rootId), oid(value.root), 'MAKER_V8_ADMIN_READBACK_INVALID', 'Admin root'); same(normId(admin.owner), c.signerAddress, 'MAKER_V8_ADMIN_READBACK_INVALID', 'Admin owner');
+  const treasury = value.makerTreasury.fields; exact(treasury, ['version', 'rootId', 'makerVersion', 'rootContentCommitment'], 'makerTreasury.fields'); if (treasury.version !== 8 || treasury.makerVersion !== 1) fail('MAKER_V8_MAKER_TREASURY_READBACK_INVALID', 'Maker treasury is invalid.'); same(normId(treasury.rootId), oid(value.root), 'MAKER_V8_MAKER_TREASURY_READBACK_INVALID', 'Treasury root'); same(hashHex(treasury.rootContentCommitment), publication.commitments.content, 'MAKER_V8_MAKER_TREASURY_READBACK_INVALID', 'Treasury content');
+}
+
+export async function certifyMakerV8ScaffoldReadback(publication, readback) {
+  requireCompiled(publication); const value = snapshot(readback, 'scaffoldReadback'); if (value.schemaVersion !== MAKER_V8_SCAFFOLD_READBACK_SCHEMA) fail('MAKER_V8_SCAFFOLD_SCHEMA_INVALID', 'Scaffold schema is invalid.'); verifyRootReadback(publication, value); const f = value.baseRegistry.fields; exact(f, ['version', 'rootId', 'makerVersion', 'rootContentCommitment', 'expectedCounts', 'observedCounts', 'expectedCommitments', 'rollingCommitments', 'nextSequence', 'expectedSequenceCount', 'protectedStyleCount', 'sealed'], 'baseRegistry.fields'); if (f.version !== 8 || f.makerVersion !== 1 || f.sealed !== false || String(f.nextSequence) !== '0' || String(f.protectedStyleCount) !== '0') fail('MAKER_V8_SCAFFOLD_BASE_STATE_INVALID', 'Base registry is not fresh.'); same(normId(f.rootId), oid(value.root), 'MAKER_V8_BASE_ROOT_MISMATCH', 'Base root'); same(hashHex(f.rootContentCommitment), publication.commitments.content, 'MAKER_V8_BASE_CONTENT_MISMATCH', 'Base content'); const expectedCounts = countsRecord(f.expectedCounts, 'expectedCounts'); const observed = countsRecord(f.observedCounts, 'observedCounts'); Object.entries(publication.counts).forEach(([key, amount]) => { same(expectedCounts[key], String(amount), 'MAKER_V8_BASE_COUNT_MISMATCH', `expected ${key}`); same(observed[key], '0', 'MAKER_V8_BASE_COUNT_MISMATCH', `observed ${key}`); }); const commitments = commitmentsRecord(f.expectedCommitments, 'expectedCommitments'); Object.keys(commitments).forEach((key) => same(commitments[key], publication.commitments.base[key], 'MAKER_V8_BASE_COMMITMENT_MISMATCH', key)); const rolling = commitmentsRecord(f.rollingCommitments, 'rollingCommitments'); for (const [kind, category] of [['tracks', 0], ['parts', 1], ['items', 2], ['styles', 3], ['colors', 4], ['rules', 5], ['aggregate', 255]]) { const empty = await hashBcs(Rolling, { domain: domain('animacraft-v8/base-empty'), version: VERSION, root_content_commitment: fromHex(publication.commitments.content), category, previous: [], sequence: 0n, row_bytes: [] }); same(rolling[kind], empty, 'MAKER_V8_BASE_ROLLING_MISMATCH', `fresh ${kind}`); } same(String(f.expectedSequenceCount), String(Object.values(publication.counts).reduce((a, b) => a + b, 0n)), 'MAKER_V8_BASE_SEQUENCE_MISMATCH', 'Expected sequence'); freeze(value); scaffoldSet.add(value); return value;
+}
+
+export function buildMakerV8BaseTransaction(publication, scaffold) {
+  requireCompiled(publication); if (!scaffoldSet.has(scaffold)) fail('MAKER_V8_SCAFFOLD_CONTEXT_REQUIRED', 'Verified scaffold readback is required.'); const tx = new Transaction(); tx.setSender(publication.context.signerAddress); const coin = coinType(publication); const registry = objectArg(tx, scaffold.baseRegistry, true); const root = objectArg(tx, scaffold.root, false); const admin = objectArg(tx, scaffold.adminCap, false);
+  for (const [kind, fn] of [['track', 'append_track_v8'], ['part', 'append_part_v8'], ['item', 'append_item_v8'], ['style', 'append_style_v8'], ['color', 'append_color_v8'], ['rule', 'append_rule_v8']]) for (const row of publication.rows[kind]) {
+    let args; if (kind === 'track') args = [tx.pure.string(row.key), tx.pure.string(row.label), tx.pure.u64(row.render_order), pureBytes(tx, row.payload_commitment)]; if (kind === 'part') args = [tx.pure.string(row.key), tx.pure.string(row.label), tx.pure.u8(row.kind), tx.pure.u64(row.render_order), tx.pure.bool(row.required), tx.pure.bool(row.visible), pureBytes(tx, row.payload_commitment)]; if (kind === 'item') args = [tx.pure.string(row.part_key), tx.pure.string(row.item_key), tx.pure.string(row.label), tx.pure.u8(row.gate_kind), pureBytes(tx, row.payload_commitment)]; if (kind === 'style') args = [tx.pure.string(row.part_key), tx.pure.string(row.item_key), tx.pure.string(row.style_key), tx.pure.string(row.layer_track_key), tx.pure.option('string', row.color_channel_key), tx.pure.option('string', row.default_swatch_key), tx.pure.string(row.label), tx.pure.string(row.asset_blob_id), pureBytes(tx, row.asset_sha256), tx.pure.bool(row.protected), pureBytes(tx, row.payload_commitment)]; if (kind === 'color') args = [tx.pure.string(row.channel_key), tx.pure.string(row.swatch_key), tx.pure.string(row.label), tx.pure.u32(row.rgba), pureBytes(tx, row.payload_commitment)]; if (kind === 'rule') args = [tx.pure.string(row.key), tx.pure.u8(row.kind), tx.pure.string(row.left_ref), tx.pure.string(row.right_ref), pureBytes(tx, row.payload_commitment)]; call(tx, publication, 'core', 'base_registry_v8', fn, [registry, root, admin, tx.pure.u64(row.sequence), ...args], coin);
   }
-  if (seen.has(value)) {
-    fail('MAKER_V8_CANONICAL_CYCLE', `${path} contains a cyclic value.`, { path });
+  call(tx, publication, 'core', 'base_registry_v8', 'seal_base_definition_registry_v8', [registry, root, admin], coin); return tx;
+}
+
+export function certifyMakerV8BaseReadback(publication, scaffold, readback) {
+  requireCompiled(publication); if (!scaffoldSet.has(scaffold)) fail('MAKER_V8_SCAFFOLD_CONTEXT_REQUIRED', 'Verified scaffold readback is required.'); const value = snapshot(readback, 'baseReadback'); exact(value, ['schemaVersion', 'baseRegistry'], 'baseReadback'); if (value.schemaVersion !== MAKER_V8_BASE_READBACK_SCHEMA) fail('MAKER_V8_BASE_SCHEMA_INVALID', 'Base schema is invalid.'); validateRef(value.baseRegistry, 'baseRegistry'); same(oid(value.baseRegistry), oid(scaffold.baseRegistry), 'MAKER_V8_BASE_OBJECT_MISMATCH', 'Base ID'); requireType(value.baseRegistry, scaffold.baseRegistry.type, 'Base registry'); const f = value.baseRegistry.fields; exact(f, ['version', 'rootId', 'makerVersion', 'rootContentCommitment', 'observedCounts', 'rollingCommitments', 'nextSequence', 'protectedStyleCount', 'sealed'], 'baseRegistry.fields'); if (f.version !== 8 || f.makerVersion !== 1 || f.sealed !== true) fail('MAKER_V8_BASE_NOT_SEALED', 'Base registry is not sealed.'); same(normId(f.rootId), oid(scaffold.root), 'MAKER_V8_BASE_ROOT_MISMATCH', 'Base root'); same(hashHex(f.rootContentCommitment), publication.commitments.content, 'MAKER_V8_BASE_CONTENT_MISMATCH', 'Base content'); const observed = countsRecord(f.observedCounts, 'observedCounts'); Object.entries(publication.counts).forEach(([key, amount]) => same(observed[key], String(amount), 'MAKER_V8_BASE_COUNT_MISMATCH', key)); const rolling = commitmentsRecord(f.rollingCommitments, 'rollingCommitments'); Object.keys(rolling).forEach((key) => same(rolling[key], publication.commitments.base[key], 'MAKER_V8_BASE_COMMITMENT_MISMATCH', key)); same(String(f.nextSequence), String(Object.values(publication.counts).reduce((a, b) => a + b, 0n)), 'MAKER_V8_BASE_SEQUENCE_MISMATCH', 'Base sequence'); same(String(f.protectedStyleCount), String(publication.rows.style.filter((row) => row.protected).length), 'MAKER_V8_BASE_PROTECTED_COUNT_MISMATCH', 'Protected count'); const result = { schemaVersion: MAKER_V8_BASE_READBACK_SCHEMA, root: scaffold.root, baseRegistry: value.baseRegistry, makerTreasury: scaffold.makerTreasury, adminCap: scaffold.adminCap }; freeze(result); baseSet.add(result); return result;
+}
+
+async function companionCommitments(publication, base) {
+  const c = publication.context; const rootId = oid(base.root); const baseId = oid(base.baseRegistry); const content = publication.commitments.content;
+  let sealCommitment = await hashBcs(SealEmpty, { domain: domain('animacraft-v8/seal/registry-empty'), version: VERSION, product_binding_commitment: fromHex(c._derived.productBindingCommitment), policy_commitment: fromHex(c._derived.sealPolicyCommitment), root_content_commitment: fromHex(content), maker_version: 1n }); const sealRows = [];
+  for (const style of publication.rows.style.filter((row) => row.protected)) {
+    const sequence = BigInt(sealRows.length); const scopeKey = 'maker/base'; const assetKey = `${style.part_key}/${style.item_key}/${style.style_key}`; const ciphertextBlobCommitment = await hashJson({ schemaVersion: 'animacraft.maker-v8-ciphertext-transport.v1', blobId: style.asset_blob_id, sha256: toHex(style.asset_sha256), byteLength: style.source.transport.byteLength, mediaType: style.source.transport.mediaType });
+    const certificationCommitment = await hashBcs(CipherInput, { domain: domain('animacraft-v8/seal/ciphertext-certification'), version: VERSION, catalog_id: oid(c.catalog), product_binding_commitment: fromHex(c._derived.productBindingCommitment), policy_commitment: fromHex(c._derived.sealPolicyCommitment), root_content_commitment: fromHex(content), maker_version: 1n, scope_kind: 0, scope_key: scopeKey, scope_commitment: fromHex(content), asset_key: assetKey, asset_content_commitment: style.payload_commitment, ciphertext_blob_id: style.asset_blob_id, ciphertext_sha256: style.asset_sha256, ciphertext_blob_commitment: fromHex(ciphertextBlobCommitment) });
+    const sealId = await hashBcs(SealIdInput, { domain: domain('animacraft-v8/seal/ciphertext-id'), version: VERSION, product_binding_commitment: fromHex(c._derived.productBindingCommitment), policy_commitment: fromHex(c._derived.sealPolicyCommitment), root_content_commitment: fromHex(content), maker_version: 1n, scope_kind: 0, scope_key: scopeKey, scope_commitment: fromHex(content), asset_key: assetKey, asset_content_commitment: style.payload_commitment, ciphertext_blob_id: style.asset_blob_id, ciphertext_sha256: style.asset_sha256, ciphertext_blob_commitment: fromHex(ciphertextBlobCommitment), certification_commitment: fromHex(certificationCommitment) });
+    const row = { scope_kind: 0, scope_key: scopeKey, scope_commitment: fromHex(content), asset_key: assetKey, asset_content_commitment: style.payload_commitment, ciphertext_blob_id: style.asset_blob_id, ciphertext_sha256: style.asset_sha256, ciphertext_blob_commitment: fromHex(ciphertextBlobCommitment), certification_commitment: fromHex(certificationCommitment), seal_id: fromHex(sealId) };
+    sealCommitment = await hashBcs(SealAdvance, { domain: domain('animacraft-v8/seal/registry-row'), version: VERSION, root_content_commitment: fromHex(content), maker_version: 1n, sequence, prior_commitment: fromHex(sealCommitment), row }); sealRows.push({ sequence, ...row, certificationCommitment, sealId, ciphertextBlobCommitment });
   }
-  seen.add(value);
-  let result;
-  if (Array.isArray(value)) {
-    result = value.map((entry, index) => canonicalValue(entry, `${path}[${index}]`, seen));
-  } else {
-    result = Object.fromEntries(Object.keys(value).sort().map((key) => [
-      key,
-      canonicalValue(value[key], `${path}.${key}`, seen),
-    ]));
+  let outputCommitment = await hashBcs(OutputEmpty, { domain: domain('animacraft-v8/output/registry-empty'), version: VERSION, root_id: rootId, maker_version: 1n, root_content_commitment: fromHex(content), renderer_commitment: fromHex(publication.commitments.renderer) }); const outputRows = [];
+  for (const [index, output] of sorted(publication.document.outputs, (a, b) => a.key.localeCompare(b.key)).entries()) {
+    const sequence = BigInt(index); const scopeKey = output.protected ? `complete/${output.key}` : ''; const rendererSchemaCommitment = await hashJson({ schemaVersion: 'animacraft.maker-v8-output-renderer.v1', key: output.key, label: output.label, payload: output.payload, canvas: publication.document.canvas }); const policyKind = output.allowedPackPolicy.kind === 'ALL_ADMITTED' ? 0 : 1;
+    const rowCommitment = await hashBcs(OutputRowInput, { domain: domain('animacraft-v8/output/policy-row'), version: VERSION, root_id: rootId, maker_version: 1n, root_content_commitment: fromHex(content), renderer_commitment: fromHex(publication.commitments.renderer), economics_commitment: fromHex(publication.commitments.economics), sequence, output_key: output.key, protected_output: output.protected, complete_scope_key: scopeKey, allowed_pack_policy: policyKind, allowed_semantic_pack_ids: output.allowedPackPolicy.packIds, renderer_schema_commitment: fromHex(rendererSchemaCommitment) }); outputCommitment = await hashBcs(OutputAdvance, { domain: domain('animacraft-v8/output/registry-row'), version: VERSION, root_id: rootId, maker_version: 1n, root_content_commitment: fromHex(content), sequence, prior_commitment: fromHex(outputCommitment), row_commitment: fromHex(rowCommitment) }); outputRows.push({ sequence, outputKey: output.key, protected: output.protected, scopeKey, rendererSchemaCommitment, policyKind, packIds: output.allowedPackPolicy.packIds, rowCommitment });
   }
-  seen.delete(value);
-  return result;
-}
-
-/**
- * Canonical JSON for compiler-owned semantic and payload projections.
- * Object keys are sorted, array order is preserved, strings are not Unicode
- * normalized, and BigInt values are emitted as base-10 strings.
- */
-export function canonicalMakerV8Json(value) {
-  return JSON.stringify(canonicalValue(snapshotCompilerData(value, '$')));
-}
-
-export function canonicalMakerV8Utf8(value) {
-  return TEXT_ENCODER.encode(canonicalMakerV8Json(value));
-}
-
-function bytesFrom(value, label, expectedLength = null) {
-  let bytes = null;
-  if (value instanceof Uint8Array) {
-    bytes = new Uint8Array(value);
-  } else if (ArrayBuffer.isView(value)) {
-    bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  } else if (value instanceof ArrayBuffer) {
-    bytes = new Uint8Array(value);
-  } else if (Array.isArray(value)
-    && value.every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 255)) {
-    bytes = Uint8Array.from(value);
-  } else if (typeof value === 'string' && /^(?:0x)?(?:[0-9a-fA-F]{2})*$/.test(value)) {
-    const hex = value.replace(/^0x/i, '');
-    bytes = Uint8Array.from({ length: hex.length / 2 }, (_, index) => (
-      Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16)
-    ));
+  let physicalCommitment = await hashBcs(PhysicalEmpty, { domain: domain('animacraft-v8/physical/base-empty'), version: VERSION, product_binding_commitment: fromHex(c._derived.productBindingCommitment), root_id: rootId, maker_version: 1n, root_content_commitment: fromHex(content), base_registry_id: baseId }); const physicalRows = [];
+  for (const style of publication.rows.style.filter((row) => row.source.style.physical !== null)) {
+    const policy = style.source.style.physical; const sequence = BigInt(physicalRows.length); const materialCommitment = await hashJson({ schemaVersion: 'animacraft.maker-v8-physical-material.v1', material: policy.material }); const styleIdentityCommitment = await hashBcs(StyleIdentity, { domain: domain('animacraft-v8/physical/base-style'), version: VERSION, root_id: rootId, maker_version: 1n, root_content_commitment: fromHex(content), base_registry_id: baseId, part_key: style.part_key, item_key: style.item_key, style_key: style.style_key, layer_track_key: style.layer_track_key, color_channel_key: style.color_channel_key, default_swatch_key: style.default_swatch_key, asset_blob_id: style.asset_blob_id, asset_sha256: style.asset_sha256, protected: style.protected, payload_commitment: style.payload_commitment }); const issuance = mapIssuance(policy.issuance); const proof = mapProof(policy.proof); const price = u64(policy.priceAtomic); const maxSupply = u64(policy.maxSupply); if (maxSupply === 0n || maxSupply > 1_000_000_000n || (issuance === 0 && (price !== 0n || proof !== 0)) || (issuance === 1 && (price === 0n || proof !== 0)) || (issuance === 2 && (price !== 0n || proof !== 2))) fail('MAKER_V8_PHYSICAL_POLICY_ABI_INVALID', `Physical policy ${style.part_key}/${style.item_key}/${style.style_key} would abort the v8 constructor.`);
+    const rowCommitment = await hashBcs(PhysicalRowInput, { domain: domain('animacraft-v8/physical/base-policy'), version: VERSION, product_binding_commitment: fromHex(c._derived.productBindingCommitment), root_id: rootId, maker_version: 1n, root_content_commitment: fromHex(content), base_registry_id: baseId, sequence, style_identity_commitment: fromHex(styleIdentityCommitment), material_policy_commitment: fromHex(materialCommitment), issuance_kind: issuance, proof_kind: proof, price_atomic: price, max_supply: maxSupply, transferable: policy.transferable }); physicalCommitment = await hashBcs(PhysicalAdvance, { domain: domain('animacraft-v8/physical/base-row'), version: VERSION, root_id: rootId, maker_version: 1n, root_content_commitment: fromHex(content), sequence, prior_commitment: fromHex(physicalCommitment), row_commitment: fromHex(rowCommitment) }); physicalRows.push({ sequence, partKey: style.part_key, itemKey: style.item_key, styleKey: style.style_key, materialCommitment, issuance, proof, price, maxSupply, transferable: policy.transferable, rowCommitment });
   }
-  if (!bytes || (expectedLength !== null && bytes.length !== expectedLength)) {
-    fail(
-      'MAKER_V8_BYTES_INVALID',
-      `${label} must contain${expectedLength === null ? '' : ` exactly ${expectedLength}`} bytes.`,
-      { label, expectedLength, actualLength: bytes?.length ?? null },
-    );
-  }
-  return new Uint8Array(bytes);
+  return freeze({ seal: { rows: sealRows, commitment: sealCommitment }, output: { rows: outputRows, commitment: outputCommitment }, physical: { rows: physicalRows, commitment: physicalCommitment } });
+}
+
+export async function buildMakerV8CompanionObjectsTransaction(publication, base) {
+  requireCompiled(publication); if (!baseSet.has(base)) fail('MAKER_V8_BASE_CONTEXT_REQUIRED', 'Verified Base readback is required.'); const expected = await companionCommitments(publication, base); const tx = new Transaction(); const c = publication.context; tx.setSender(c.signerAddress); const coin = coinType(publication); const root = objectArg(tx, base.root, false); const admin = objectArg(tx, base.adminCap, false); const baseRegistry = objectArg(tx, base.baseRegistry, false); const catalog = objectArg(tx, c.catalog, false);
+  const sealRegistry = call(tx, publication, 'seal', 'seal_v8', 'new_seal_registry_v8', [root, admin, objectArg(tx, c.configs.seal, false), tx.pure.u64(BigInt(expected.seal.rows.length)), tx.pure.u64(0n), tx.pure.u64(0n), pureBytes(tx, expected.seal.commitment)], coin); call(tx, publication, 'seal', 'seal_v8', 'share_seal_registry_v8', [sealRegistry]);
+  const [definitions, packs, authority] = call(tx, publication, 'runtime', 'runtime_v8', 'new_runtime_registries_v8', [root, admin, baseRegistry, tx.pure.u64(BigInt(publication.runtime.profiles.length)), pureBytes(tx, publication.runtime.profileCommitment), tx.pure.u8(publication.runtime.admission)], coin); call(tx, publication, 'runtime', 'runtime_v8', 'share_runtime_definition_registry_v8', [definitions]); call(tx, publication, 'runtime', 'runtime_v8', 'share_pack_registry_v8', [packs]); call(tx, publication, 'runtime', 'runtime_v8', 'transfer_pack_admission_authority_v8', [authority, tx.pure.address(c.signerAddress)]);
+  const [output, souls] = call(tx, publication, 'output', 'output_v8', 'new_output_registries_v8', [root, admin, tx.pure.u64(BigInt(expected.output.rows.length)), pureBytes(tx, expected.output.commitment)], coin); call(tx, publication, 'output', 'output_v8', 'share_output_registries_v8', [output, souls]);
+  const physical = call(tx, publication, 'physical', 'physical_v8', 'new_physical_registry_v8', [root, admin, baseRegistry, catalog, objectArg(tx, c.configs.physical, false), tx.pure.u64(BigInt(expected.physical.rows.length)), pureBytes(tx, expected.physical.commitment)], coin); call(tx, publication, 'physical', 'physical_v8', 'share_physical_registry_v8', [physical]);
+  const [market, marketTreasury] = call(tx, publication, 'market', 'market_v8', 'new_market_objects_v8', [root, admin, catalog, objectArg(tx, c.configs.market, false)], coin); call(tx, publication, 'market', 'market_v8', 'share_market_registry_v8', [market], coin); call(tx, publication, 'market', 'market_v8', 'share_market_treasury_v8', [marketTreasury], coin);
+  return Object.freeze({ transaction: tx, expected });
+}
+
+function exactFreshObject(value, keys, label) {
+  validateRef(value, label); exact(value.fields, keys, `${label}.fields`); if (value.fields.version !== 8) fail('MAKER_V8_COMPANION_VERSION_INVALID', `${label} is not v8.`); return value.fields;
+}
+
+export async function certifyMakerV8CompanionReadback(publication, base, readback) {
+  requireCompiled(publication); if (!baseSet.has(base)) fail('MAKER_V8_BASE_CONTEXT_REQUIRED', 'Verified Base readback is required.'); const value = snapshot(readback, 'companionReadback');
+  exact(value, ['schemaVersion', 'sealRegistry', 'runtimeDefinitions', 'packRegistry', 'admissionAuthority', 'outputRegistry', 'soulRegistry', 'physicalRegistry', 'marketRegistry', 'marketTreasury'], 'companionReadback'); if (value.schemaVersion !== MAKER_V8_COMPANION_READBACK_SCHEMA) fail('MAKER_V8_COMPANION_SCHEMA_INVALID', 'Companion schema is invalid.');
+  const c = publication.context; const rootId = oid(base.root); const content = publication.commitments.content; const expected = await companionCommitments(publication, base);
+  const types = {
+    sealRegistry: stableType(c, 'seal', 'seal_v8', 'SealRegistryV8'), runtimeDefinitions: stableType(c, 'runtime', 'runtime_v8', 'RuntimeDefinitionRegistryV8'), packRegistry: stableType(c, 'runtime', 'runtime_v8', 'PackRegistryV8'), admissionAuthority: stableType(c, 'runtime', 'runtime_v8', 'PackAdmissionAuthorityV8'), outputRegistry: stableType(c, 'output', 'output_v8', 'OutputRegistryV8'), soulRegistry: stableType(c, 'output', 'output_v8', 'SoulRegistryV8'), physicalRegistry: stableType(c, 'physical', 'physical_v8', 'PhysicalRegistryV8'), marketRegistry: stableType(c, 'market', 'market_v8', 'MarketRegistryV8', `<${c.paymentCoinType}>`), marketTreasury: stableType(c, 'market', 'market_v8', 'MarketTreasuryV8', `<${c.paymentCoinType}>`),
+  }; Object.entries(types).forEach(([key, type]) => { validateRef(value[key], key); requireType(value[key], type, key); });
+  const sf = exactFreshObject(value.sealRegistry, ['version', 'rootId', 'makerVersion', 'rootContentCommitment', 'catalogId', 'productBindingCommitment', 'policyConfigId', 'policyCommitment', 'expectedBaseCount', 'expectedPackCount', 'expectedCompleteCount', 'expectedCount', 'observedBaseCount', 'observedPackCount', 'observedCompleteCount', 'observedCount', 'expectedCommitment', 'rollingCommitment', 'sealed', 'runtimeRevision', 'runtimeCommitment'], 'sealRegistry');
+  const protectedCount = BigInt(expected.seal.rows.length); const sealPairs = { rootId, makerVersion: 1, rootContentCommitment: content, catalogId: oid(c.catalog), productBindingCommitment: c._derived.productBindingCommitment, policyConfigId: oid(c.configs.seal), policyCommitment: c._derived.sealPolicyCommitment, expectedBaseCount: protectedCount, expectedPackCount: 0n, expectedCompleteCount: 0n, expectedCount: protectedCount, observedBaseCount: 0n, observedPackCount: 0n, observedCompleteCount: 0n, observedCount: 0n, expectedCommitment: expected.seal.commitment, rollingCommitment: await hashBcs(SealEmpty, { domain: domain('animacraft-v8/seal/registry-empty'), version: VERSION, product_binding_commitment: fromHex(c._derived.productBindingCommitment), policy_commitment: fromHex(c._derived.sealPolicyCommitment), root_content_commitment: fromHex(content), maker_version: 1n }), sealed: false, runtimeRevision: 0n, runtimeCommitment: await hashBcs(SealEmpty, { domain: domain('animacraft-v8/seal/runtime-empty'), version: VERSION, product_binding_commitment: fromHex(c._derived.productBindingCommitment), policy_commitment: fromHex(c._derived.sealPolicyCommitment), root_content_commitment: fromHex(content), maker_version: 1n }) };
+  for (const [key, want] of Object.entries(sealPairs)) same(String(sf[key]), String(want), 'MAKER_V8_SEAL_READBACK_MISMATCH', `Seal ${key}`);
+  const rf = exactFreshObject(value.runtimeDefinitions, ['version', 'rootId', 'rootVersion', 'rootContentCommitment', 'baseRegistryId', 'expectedProfileCount', 'observedProfileCount', 'expectedProfileCommitment', 'rollingProfileCommitment', 'admissionCeiling', 'sealed'], 'runtimeDefinitions'); const runtimeEmpty = await hashBcs(RuntimeEmpty, { domain: domain('animacraft-v8/runtime/part-profiles-empty'), version: VERSION, root_content_commitment: fromHex(content) }); const runtimePairs = { rootId, rootVersion: 1n, rootContentCommitment: content, baseRegistryId: oid(base.baseRegistry), expectedProfileCount: BigInt(publication.runtime.profiles.length), observedProfileCount: 0n, expectedProfileCommitment: publication.runtime.profileCommitment, rollingProfileCommitment: runtimeEmpty, admissionCeiling: publication.runtime.admission, sealed: false }; for (const [key, want] of Object.entries(runtimePairs)) same(String(rf[key]), String(want), 'MAKER_V8_RUNTIME_READBACK_MISMATCH', `Runtime ${key}`);
+  const pf = exactFreshObject(value.packRegistry, ['version', 'rootId', 'rootVersion', 'rootContentCommitment', 'definitionRegistryId', 'admissionAuthorityId', 'admissionPolicyCommitment', 'revision', 'releaseCount', 'externalAdmissionCount'], 'packRegistry'); const af = exactFreshObject(value.admissionAuthority, ['version', 'rootId', 'rootVersion', 'rootContentCommitment'], 'admissionAuthority');
+  const packPairs = { rootId, rootVersion: 1n, rootContentCommitment: content, definitionRegistryId: oid(value.runtimeDefinitions), admissionAuthorityId: oid(value.admissionAuthority), admissionPolicyCommitment: publication.commitments.packAdmissionPolicy, revision: 0n, releaseCount: 0n, externalAdmissionCount: 0n }; for (const [key, want] of Object.entries(packPairs)) same(String(pf[key]), String(want), 'MAKER_V8_PACK_READBACK_MISMATCH', `Pack ${key}`); for (const [key, want] of Object.entries({ rootId, rootVersion: 1n, rootContentCommitment: content })) same(String(af[key]), String(want), 'MAKER_V8_AUTHORITY_READBACK_MISMATCH', `Authority ${key}`);
+  const of = exactFreshObject(value.outputRegistry, ['version', 'rootId', 'makerVersion', 'rootContentCommitment', 'rendererCommitment', 'soulRegistryId', 'expectedOutputCount', 'observedOutputCount', 'expectedPolicyCommitment', 'rollingPolicyCommitment', 'sealed'], 'outputRegistry'); const outputEmpty = await hashBcs(OutputEmpty, { domain: domain('animacraft-v8/output/registry-empty'), version: VERSION, root_id: rootId, maker_version: 1n, root_content_commitment: fromHex(content), renderer_commitment: fromHex(publication.commitments.renderer) }); const outputPairs = { rootId, makerVersion: 1n, rootContentCommitment: content, rendererCommitment: publication.commitments.renderer, soulRegistryId: oid(value.soulRegistry), expectedOutputCount: BigInt(expected.output.rows.length), observedOutputCount: 0n, expectedPolicyCommitment: expected.output.commitment, rollingPolicyCommitment: outputEmpty, sealed: false }; for (const [key, want] of Object.entries(outputPairs)) same(String(of[key]), String(want), 'MAKER_V8_OUTPUT_READBACK_MISMATCH', `Output ${key}`);
+  const sof = exactFreshObject(value.soulRegistry, ['version', 'rootId', 'makerVersion', 'rootContentCommitment', 'outputRegistryId', 'soulCount'], 'soulRegistry'); for (const [key, want] of Object.entries({ rootId, makerVersion: 1n, rootContentCommitment: content, outputRegistryId: oid(value.outputRegistry), soulCount: 0n })) same(String(sof[key]), String(want), 'MAKER_V8_SOUL_READBACK_MISMATCH', `Soul ${key}`);
+  const phf = exactFreshObject(value.physicalRegistry, ['version', 'catalogId', 'packageConfigId', 'productBindingCommitment', 'callCapSetCommitment', 'rootId', 'makerVersion', 'rootContentCommitment', 'baseRegistryId', 'expectedBasePolicyCount', 'observedBasePolicyCount', 'expectedBasePolicyCommitment', 'rollingBasePolicyCommitment', 'baseSealed', 'revision', 'packPolicyCount'], 'physicalRegistry'); const physicalEmpty = await hashBcs(PhysicalEmpty, { domain: domain('animacraft-v8/physical/base-empty'), version: VERSION, product_binding_commitment: fromHex(c._derived.productBindingCommitment), root_id: rootId, maker_version: 1n, root_content_commitment: fromHex(content), base_registry_id: oid(base.baseRegistry) }); const physicalPairs = { catalogId: oid(c.catalog), packageConfigId: oid(c.configs.physical), productBindingCommitment: c._derived.productBindingCommitment, callCapSetCommitment: c._derived.callCapSetCommitment, rootId, makerVersion: 1n, rootContentCommitment: content, baseRegistryId: oid(base.baseRegistry), expectedBasePolicyCount: BigInt(expected.physical.rows.length), observedBasePolicyCount: 0n, expectedBasePolicyCommitment: expected.physical.commitment, rollingBasePolicyCommitment: physicalEmpty, baseSealed: false, revision: 0n, packPolicyCount: 0n }; for (const [key, want] of Object.entries(physicalPairs)) same(String(phf[key]), String(want), 'MAKER_V8_PHYSICAL_READBACK_MISMATCH', `Physical ${key}`);
+  const mtf = exactFreshObject(value.marketTreasury, ['version', 'catalogId', 'packageConfigId', 'rootId', 'makerVersion', 'rootContentCommitment', 'balanceAtomic', 'grossEscrowedAtomic', 'grossReleasedAtomic'], 'marketTreasury'); for (const [key, want] of Object.entries({ catalogId: oid(c.catalog), packageConfigId: oid(c.configs.market), rootId, makerVersion: 1n, rootContentCommitment: content, balanceAtomic: 0n, grossEscrowedAtomic: 0n, grossReleasedAtomic: 0n })) same(String(mtf[key]), String(want), 'MAKER_V8_MARKET_TREASURY_READBACK_MISMATCH', `Market treasury ${key}`);
+  const mf = exactFreshObject(value.marketRegistry, ['version', 'catalogId', 'packageConfigId', 'productBindingCommitment', 'callCapSetCommitment', 'rootId', 'makerVersion', 'rootContentCommitment', 'protocolConfigId', 'protocolConfigRevision', 'protocolConfigCommitment', 'economicsCommitment', 'rightsCommitment', 'makerMarketFeeBps', 'soulMarketFeeBps', 'soulCreatorRoyaltyBps', 'makerSourceRoyaltyBps', 'makerResaleRoyaltyBps', 'treasuryId', 'sealed', 'revision', 'listingCount', 'escrowCount', 'completedSaleCount', 'canceledSaleCount', 'recoveredSaleCount', 'grossVolumeAtomic', 'protocolPaidAtomic', 'creatorPaidAtomic', 'sourcePaidAtomic', 'sellerPaidAtomic', 'zeroStateCommitment'], 'marketRegistry');
+  const marketPairs = { catalogId: oid(c.catalog), packageConfigId: oid(c.configs.market), productBindingCommitment: c._derived.productBindingCommitment, callCapSetCommitment: c._derived.callCapSetCommitment, rootId, makerVersion: 1n, rootContentCommitment: content, protocolConfigId: oid(c.protocolConfig), protocolConfigRevision: c.protocolConfig.fields.revision, protocolConfigCommitment: c.protocolConfig.fields.commitment, economicsCommitment: publication.commitments.economics, rightsCommitment: publication.commitments.rights, makerMarketFeeBps: c.protocolConfig.fields.makerMarketFeeBps, soulMarketFeeBps: c.protocolConfig.fields.soulMarketFeeBps, soulCreatorRoyaltyBps: publication.document.commerce.soulCreatorRoyaltyBps, makerSourceRoyaltyBps: publication.document.commerce.makerSourceRoyaltyBps, makerResaleRoyaltyBps: publication.document.commerce.makerResaleRoyaltyBps, treasuryId: oid(value.marketTreasury), sealed: false, revision: 0n, listingCount: 0n, escrowCount: 0n, completedSaleCount: 0n, canceledSaleCount: 0n, recoveredSaleCount: 0n, grossVolumeAtomic: 0n, protocolPaidAtomic: 0n, creatorPaidAtomic: 0n, sourcePaidAtomic: 0n, sellerPaidAtomic: 0n };
+  for (const [key, want] of Object.entries(marketPairs)) same(String(mf[key]), String(want), 'MAKER_V8_MARKET_READBACK_MISMATCH', `Market ${key}`); const zeroStateCommitment = await hashBcs(MarketZero, { domain: domain('animacraft-v8/market/zero-state'), version: VERSION, catalog_id: oid(c.catalog), package_config_id: oid(c.configs.market), product_binding_commitment: fromHex(c._derived.productBindingCommitment), call_cap_set_commitment: fromHex(c._derived.callCapSetCommitment), root_id: rootId, maker_version: 1n, root_content_commitment: fromHex(content), protocol_config_id: oid(c.protocolConfig), protocol_config_revision: u64(c.protocolConfig.fields.revision), protocol_config_commitment: fromHex(c.protocolConfig.fields.commitment), economics_commitment: fromHex(publication.commitments.economics), rights_commitment: fromHex(publication.commitments.rights), maker_market_fee_bps: u16(c.protocolConfig.fields.makerMarketFeeBps), soul_market_fee_bps: u16(c.protocolConfig.fields.soulMarketFeeBps), soul_creator_royalty_bps: u16(publication.document.commerce.soulCreatorRoyaltyBps), maker_source_royalty_bps: u16(publication.document.commerce.makerSourceRoyaltyBps), maker_resale_royalty_bps: u16(publication.document.commerce.makerResaleRoyaltyBps), treasury_id: oid(value.marketTreasury) }); same(hashHex(mf.zeroStateCommitment), zeroStateCommitment, 'MAKER_V8_MARKET_ZERO_COMMITMENT_MISMATCH', 'Market zero state');
+  value.expected = expected; freeze(value); companionSet.add(value); return value;
+}
+
+export async function buildMakerV8ActivationTransaction(publication, base, companion) {
+  requireCompiled(publication); if (!baseSet.has(base)) fail('MAKER_V8_BASE_CONTEXT_REQUIRED', 'Verified Base readback is required.'); if (!companionSet.has(companion)) fail('MAKER_V8_COMPANION_CONTEXT_REQUIRED', 'Verified companion readback is required.'); const tx = new Transaction(); const c = publication.context; tx.setSender(c.signerAddress); const coin = coinType(publication);
+  const root = objectArg(tx, base.root, true); const admin = objectArg(tx, base.adminCap, false); const baseRegistry = objectArg(tx, base.baseRegistry, false); const makerTreasury = objectArg(tx, base.makerTreasury, false); const protocol = objectArg(tx, c.protocolConfig, false); const protocolTreasury = objectArg(tx, c.protocolTreasury, false); const catalog = objectArg(tx, c.catalog, false); const releaseConfig = objectArg(tx, c.configs.release, false); const runtimeConfig = objectArg(tx, c.configs.runtime, false); const outputConfig = objectArg(tx, c.configs.output, false); const physicalConfig = objectArg(tx, c.configs.physical, false); const marketConfig = objectArg(tx, c.configs.market, false);
+  const sealRegistry = objectArg(tx, companion.sealRegistry, true); const sealPolicy = objectArg(tx, c.configs.seal, false); for (const row of companion.expected.seal.rows) {
+    const certification = call(tx, publication, 'release', 'release_v8', 'certify_base_ciphertext_v8', [protocol, catalog, releaseConfig, sealPolicy, root, tx.pure.string(row.scope_key), pureBytes(tx, row.scope_commitment), tx.pure.string(row.asset_key), pureBytes(tx, row.asset_content_commitment), tx.pure.string(row.ciphertext_blob_id), pureBytes(tx, row.ciphertext_sha256), pureBytes(tx, row.ciphertext_blob_commitment)], coin);
+    call(tx, publication, 'seal', 'seal_v8', 'append_protected_asset_v8', [sealRegistry, root, admin, sealPolicy, tx.pure.u64(row.sequence), certification], coin);
+  } call(tx, publication, 'seal', 'seal_v8', 'seal_registry_v8', [sealRegistry, root, admin, sealPolicy], coin);
+  const definitions = objectArg(tx, companion.runtimeDefinitions, true); const packs = objectArg(tx, companion.packRegistry, false); const authority = objectArg(tx, companion.admissionAuthority, false); for (const profile of publication.runtime.profiles) call(tx, publication, 'runtime', 'runtime_v8', 'append_part_profile_v8', [definitions, root, admin, baseRegistry, tx.pure.u64(profile.sequence), tx.pure.string(profile.partKey), tx.pure.u8(profile.wardrobeMode), tx.pure.u8(profile.behavior), tx.pure.u64(profile.capacity)], coin); call(tx, publication, 'runtime', 'runtime_v8', 'seal_runtime_definitions_v8', [definitions, root, admin, baseRegistry], coin);
+  const output = objectArg(tx, companion.outputRegistry, true); const souls = objectArg(tx, companion.soulRegistry, false); for (const row of companion.expected.output.rows) call(tx, publication, 'output', 'output_v8', 'append_output_policy_v8', [output, root, admin, tx.pure.u64(row.sequence), tx.pure.string(row.outputKey), tx.pure.bool(row.protected), tx.pure.string(row.scopeKey), pureBytes(tx, row.rendererSchemaCommitment), tx.pure.u8(row.policyKind), tx.pure.vector('string', row.packIds), pureBytes(tx, row.rowCommitment)], coin); call(tx, publication, 'output', 'output_v8', 'seal_output_registry_v8', [output, root, admin], coin);
+  const physical = objectArg(tx, companion.physicalRegistry, true); for (const row of companion.expected.physical.rows) call(tx, publication, 'physical', 'physical_v8', 'append_base_style_policy_v8', [physical, root, admin, baseRegistry, catalog, physicalConfig, tx.pure.u64(row.sequence), tx.pure.string(row.partKey), tx.pure.string(row.itemKey), tx.pure.string(row.styleKey), pureBytes(tx, row.materialCommitment), tx.pure.u8(row.issuance), tx.pure.u8(row.proof), tx.pure.u64(row.price), tx.pure.u64(row.maxSupply), tx.pure.bool(row.transferable), pureBytes(tx, row.rowCommitment)], coin); call(tx, publication, 'physical', 'physical_v8', 'seal_physical_registry_v8', [physical, root, admin, baseRegistry, catalog, physicalConfig], coin);
+  const market = objectArg(tx, companion.marketRegistry, true); const marketTreasury = objectArg(tx, companion.marketTreasury, false); call(tx, publication, 'market', 'market_v8', 'seal_market_registry_v8', [market, marketTreasury, root, admin, catalog, marketConfig], coin);
+  const localSeal = call(tx, publication, 'seal', 'seal_v8', 'issue_seal_readiness_v8', [sealRegistry, sealPolicy, root], coin); const sealReady = call(tx, publication, 'seal', 'seal_v8', 'certify_activation_readiness_v8', [localSeal, sealRegistry, sealPolicy, root, catalog], coin);
+  const localRuntime = call(tx, publication, 'runtime', 'runtime_v8', 'runtime_activation_readiness_v8', [definitions, packs, authority, root], coin); const runtimeReady = call(tx, publication, 'runtime', 'runtime_binding_v8', 'certify_runtime_activation_readiness_v8', [root, catalog, runtimeConfig, definitions, packs, authority, localRuntime], coin);
+  const outputReady = call(tx, publication, 'output', 'output_v8', 'certify_output_activation_readiness_v8', [root, catalog, outputConfig, output, souls], coin); const physicalReady = call(tx, publication, 'physical', 'physical_v8', 'certify_physical_activation_readiness_v8', [root, baseRegistry, catalog, physicalConfig, physical], coin); const marketReady = call(tx, publication, 'market', 'market_v8', 'certify_market_activation_readiness_v8', [market, marketTreasury, root, catalog, marketConfig], coin);
+  call(tx, publication, 'release', 'release_v8', 'seal_and_activate_maker_v8', [root, admin, protocol, catalog, baseRegistry, makerTreasury, protocolTreasury, releaseConfig, sealReady, runtimeReady, outputReady, physicalReady, marketReady], coin); return tx;
+}
+
+export function exactMakerV8TransactionTargets(transaction) {
+  if (!(transaction instanceof Transaction)) fail('MAKER_V8_TRANSACTION_REQUIRED', 'A Sui Transaction is required.'); return Object.freeze(transaction.getData().commands.filter((command) => command.$kind === 'MoveCall').map((command) => `${command.MoveCall.package}::${command.MoveCall.module}::${command.MoveCall.function}`));
 }
-
-function digestBytes(value, label) {
-  return bytesFrom(value, label, 32);
-}
-
-function hexFromBytes(value) {
-  return [...value].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function normalizedDigest(value, label) {
-  if (!HEX_32.test(String(value || ''))) {
-    fail('MAKER_V8_DIGEST_INVALID', `${label} must be an exact 32-byte hexadecimal digest.`, { label });
-  }
-  return String(value).replace(/^0x/i, '').toLowerCase();
-}
-
-function normalizedId(value, label) {
-  const text = String(value || '').toLowerCase();
-  if (!SUI_ID.test(text)) {
-    fail('MAKER_V8_ID_INVALID', `${label} must be a 32-byte 0x-prefixed Sui ID.`, { label });
-  }
-  return text;
-}
-
-function integer(value, label, maximum) {
-  let result;
-  if (typeof value === 'bigint') {
-    result = value;
-  } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
-    result = BigInt(value);
-  } else if (typeof value === 'string' && /^(?:0|[1-9][0-9]*)$/.test(value)) {
-    result = BigInt(value);
-  } else {
-    fail('MAKER_V8_INTEGER_INVALID', `${label} must be a safe integer, bigint, or canonical decimal string.`, { label });
-  }
-  if (result < 0n || result > maximum) {
-    fail('MAKER_V8_INTEGER_RANGE', `${label} is outside its unsigned integer range.`, {
-      label,
-      maximum: maximum.toString(),
-      actual: result.toString(),
-    });
-  }
-  return result;
-}
-
-function u64(value, label) {
-  return integer(value, label, U64_MAX);
-}
-
-function u32(value, label) {
-  return Number(integer(value, label, U32_MAX));
-}
-
-function u16(value, label) {
-  return Number(integer(value, label, U16_MAX));
-}
-
-function u8(value, label) {
-  return Number(integer(value, label, 255n));
-}
-
-function boolean(value, label) {
-  if (typeof value !== 'boolean') {
-    fail('MAKER_V8_BOOLEAN_INVALID', `${label} must be a boolean.`, { label });
-  }
-  return value;
-}
-
-function textValue(value, label, maximumBytes, { allowEmpty = false, rejectNul = false } = {}) {
-  if (typeof value !== 'string') {
-    fail('MAKER_V8_STRING_INVALID', `${label} must be a string.`, { label });
-  }
-  const length = TEXT_ENCODER.encode(value).length;
-  if ((!allowEmpty && length === 0) || length > maximumBytes || (rejectNul && value.includes('\u0000'))) {
-    fail('MAKER_V8_STRING_INVALID', `${label} has an invalid UTF-8 length or separator byte.`, {
-      label,
-      length,
-      maximumBytes,
-    });
-  }
-  return value;
-}
-
-function identifier(value, label) {
-  return textValue(value, label, 128, { rejectNul: true });
-}
-
-function scopeKey(value, label) {
-  // Stable Pack scope keys intentionally contain one NUL separator. Move's
-  // assert_scope_key helpers bound the UTF-8 byte length but do not reject it.
-  return textValue(value, label, 512);
-}
-
-function locator(value, label) {
-  return textValue(value, label, 512);
-}
-
-function domain(value) {
-  return TEXT_ENCODER.encode(value);
-}
-
-async function sha256(value) {
-  const subtle = globalThis.crypto?.subtle;
-  if (!subtle) {
-    fail('MAKER_V8_SHA256_UNAVAILABLE', 'SHA-256 is unavailable in this runtime.');
-  }
-  return new Uint8Array(await subtle.digest('SHA-256', value));
-}
-
-export async function sha256MakerV8Bytes(value) {
-  const bytes = bytesFrom(value, 'SHA-256 input');
-  return hexFromBytes(await sha256(bytes));
-}
-
-async function serializeAndHash(type, value) {
-  const bcsBytes = type.serialize(value).toBytes();
-  const commitmentBytes = await sha256(bcsBytes);
-  return {
-    bcsBytes,
-    bcsHex: hexFromBytes(bcsBytes),
-    commitmentBytes,
-    commitment: hexFromBytes(commitmentBytes),
-  };
-}
-
-function serialized(type, value) {
-  const bytes = type.serialize(value).toBytes();
-  return Object.freeze({ bytes, hex: hexFromBytes(bytes) });
-}
-
-function hashResult(result) {
-  return deepFreeze({
-    bcsHex: result.bcsHex,
-    commitment: result.commitment,
-  });
-}
-
-function emptyCommitmentInput(rootContentCommitment, domainValue, type) {
-  return serializeAndHash(type, {
-    domain: domain(domainValue),
-    version: VERSION,
-    root_content_commitment: digestBytes(rootContentCommitment, 'Root content commitment'),
-  });
-}
-
-function assertCompletePolicy(modeValue, priceValue, quotaValue, capValue) {
-  const mode = u8(modeValue, 'Complete mode');
-  const price = u64(priceValue, 'Complete price');
-  const quota = u64(quotaValue, 'Complete free quota');
-  const totalCap = u64(capValue, 'Complete total cap');
-  const valid = (mode === 0 && price === 0n && quota === 0n)
-    || (mode === 1 && price > 0n && quota > 0n)
-    || (mode === 2 && price > 0n && quota === 0n)
-    || (mode === 3 && price === 0n && quota > 0n);
-  if (!valid || price > 1_000_000_000_000n || quota > 1_000_000_000n || totalCap > 1_000_000_000n) {
-    fail('MAKER_V8_COMPLETE_POLICY_INVALID', 'Complete policy fields do not form a valid v8 policy.');
-  }
-  return { mode, price, quota, totalCap };
-}
-
-export function serializeMakerV8RootRow(kind, value) {
-  const type = ROOT_ROW_BCS[kind];
-  if (!type) {
-    fail('MAKER_V8_ROOT_ROW_KIND_INVALID', `Unknown Maker v8 Root row kind "${kind}".`, { kind });
-  }
-  const normalized = normalizeRootRow(kind, value);
-  const result = serialized(type, normalized);
-  return deepFreeze({ kind, bcsHex: result.hex });
-}
-
-function normalizeRootRow(kind, value = {}) {
-  const sequence = u64(value.sequence, `${kind}.sequence`);
-  const payload = digestBytes(value.payloadCommitment, `${kind}.payloadCommitment`);
-  if (kind === 'track') {
-    return {
-      sequence,
-      key: identifier(value.key, 'Track key'),
-      label: textValue(value.label, 'Track label', 256),
-      render_order: u64(value.renderOrder, 'Track render order'),
-      payload_commitment: payload,
-    };
-  }
-  if (kind === 'part') {
-    return {
-      sequence,
-      key: identifier(value.key, 'Part key'),
-      label: textValue(value.label, 'Part label', 256),
-      kind: u8(value.kind, 'Part kind'),
-      render_order: u64(value.renderOrder, 'Part render order'),
-      required: boolean(value.required, 'Part required'),
-      visible: boolean(value.visible, 'Part visible'),
-      payload_commitment: payload,
-    };
-  }
-  if (kind === 'item') {
-    return {
-      sequence,
-      part_key: identifier(value.partKey, 'Item Part key'),
-      item_key: identifier(value.itemKey, 'Item key'),
-      label: textValue(value.label, 'Item label', 256),
-      gate_kind: u8(value.gateKind, 'Item gate kind'),
-      payload_commitment: payload,
-    };
-  }
-  if (kind === 'style') {
-    const colorChannelKey = value.colorChannelKey === null ? null : identifier(
-      value.colorChannelKey,
-      'Style Color channel key',
-    );
-    const defaultSwatchKey = value.defaultSwatchKey === null ? null : identifier(
-      value.defaultSwatchKey,
-      'Style default swatch key',
-    );
-    if ((colorChannelKey === null) !== (defaultSwatchKey === null)) {
-      fail('MAKER_V8_STYLE_COLOR_PAIR_INVALID', 'Style Color channel and default swatch must both be present or absent.');
-    }
-    return {
-      sequence,
-      part_key: identifier(value.partKey, 'Style Part key'),
-      item_key: identifier(value.itemKey, 'Style Item key'),
-      style_key: identifier(value.styleKey, 'Style key'),
-      layer_track_key: identifier(value.layerTrackKey, 'Style Layer Track key'),
-      color_channel_key: colorChannelKey,
-      default_swatch_key: defaultSwatchKey,
-      label: textValue(value.label, 'Style label', 256),
-      asset_blob_id: locator(value.assetBlobId, 'Style asset Blob ID'),
-      asset_sha256: digestBytes(value.assetSha256, 'Style asset SHA-256'),
-      protected: boolean(value.protected, 'Style protected'),
-      payload_commitment: payload,
-    };
-  }
-  if (kind === 'color') {
-    return {
-      sequence,
-      channel_key: identifier(value.channelKey, 'Color channel key'),
-      swatch_key: identifier(value.swatchKey, 'Color swatch key'),
-      label: textValue(value.label, 'Color label', 256),
-      rgba: u32(value.rgba, 'Color RGBA'),
-      payload_commitment: payload,
-    };
-  }
-  return {
-    sequence,
-    key: identifier(value.key, 'Rule key'),
-    kind: u8(value.kind, 'Rule kind'),
-    left_ref: textValue(value.leftRef, 'Rule left reference', 512),
-    right_ref: textValue(value.rightRef, 'Rule right reference', 512),
-    payload_commitment: payload,
-  };
-}
-
-async function canonicalProjectionCommitment(projection) {
-  const json = canonicalMakerV8Json(projection);
-  const bytes = TEXT_ENCODER.encode(json);
-  const commitment = hexFromBytes(await sha256(bytes));
-  return deepFreeze({ projection: canonicalValue(projection), json, utf8Hex: hexFromBytes(bytes), commitment });
-}
-
-export async function makerV8SemanticCommitment(projection) {
-  return canonicalProjectionCommitment(projection);
-}
-
-export async function makerV8PayloadCommitment(projection) {
-  return canonicalProjectionCommitment(projection);
-}
-
-export async function emptyMakerV8CategoryCommitment(rootContentCommitment, category) {
-  const exactCategory = u8(category, 'Root category');
-  if (!Object.values(MAKER_V8_ROOT_CATEGORIES).includes(exactCategory)) {
-    fail('MAKER_V8_ROOT_CATEGORY_INVALID', 'Root category is not defined by Maker v8.', { category });
-  }
-  return hashResult(await serializeAndHash(RollingCommitmentInputV8Bcs, {
-    domain: domain('animacraft-v8/empty-registry'),
-    version: VERSION,
-    root_content_commitment: digestBytes(rootContentCommitment, 'Root content commitment'),
-    category: exactCategory,
-    previous: new Uint8Array(),
-    sequence: 0n,
-    row_bytes: new Uint8Array(),
-  }));
-}
-
-export async function advanceMakerV8CategoryCommitment({
-  rootContentCommitment,
-  category,
-  previousCommitment,
-  sequence,
-  rowBytes,
-} = {}) {
-  const exactCategory = u8(category, 'Root category');
-  if (!Object.values(MAKER_V8_ROOT_CATEGORIES).includes(exactCategory)) {
-    fail('MAKER_V8_ROOT_CATEGORY_INVALID', 'Root category is not defined by Maker v8.', { category });
-  }
-  const exactRowBytes = bytesFrom(rowBytes, 'Root row BCS bytes');
-  if (exactRowBytes.length === 0) {
-    fail('MAKER_V8_ROOT_ROW_EMPTY', 'Root row BCS bytes cannot be empty.');
-  }
-  return hashResult(await serializeAndHash(RollingCommitmentInputV8Bcs, {
-    domain: domain('animacraft-v8/append-row'),
-    version: VERSION,
-    root_content_commitment: digestBytes(rootContentCommitment, 'Root content commitment'),
-    category: exactCategory,
-    previous: digestBytes(previousCommitment, 'Previous Root category commitment'),
-    sequence: u64(sequence, 'Root sequence'),
-    row_bytes: exactRowBytes,
-  }));
-}
-
-/**
- * Compiles the six ordered Root registries and the aggregate registry from
- * compiler-owned JSON projections. The content and payload commitments,
- * global sequences, Style asset Blob IDs, and Style asset SHA-256 values are
- * all derived here; supplying any of those computed row fields is rejected.
- */
-export async function compileMakerV8RootCommitments({
-  semanticProjection,
-  tracks = [],
-  parts = [],
-  items = [],
-  styles = [],
-  colors = [],
-  rules = [],
-  ...unknown
-} = {}) {
-  if (Object.keys(unknown).length) {
-    fail(
-      'MAKER_V8_ROOT_INPUT_UNKNOWN',
-      `Unknown Root compiler field${Object.keys(unknown).length === 1 ? '' : 's'}: ${Object.keys(unknown).join(', ')}.`,
-      { fields: Object.keys(unknown) },
-    );
-  }
-
-  const sourceByPlural = { tracks, parts, items, styles, colors, rules };
-  for (const spec of ROOT_CATEGORY_SPECS) {
-    if (!Array.isArray(sourceByPlural[spec.plural])) {
-      fail('MAKER_V8_ROOT_ROWS_INVALID', `${spec.plural} must be an ordered array.`, {
-        category: spec.plural,
-      });
-    }
-  }
-  normalizeMakerV8RowCounts({
-    tracks: tracks.length,
-    parts: parts.length,
-    items: items.length,
-    styles: styles.length,
-    colors: colors.length,
-    rules: rules.length,
-    slots: 0,
-    packReleases: 0,
-    protectedAssets: styles.filter((style) => style?.protected === true).length,
-  });
-
-  const semantic = await makerV8SemanticCommitment(semanticProjection);
-  const rootContentCommitment = semantic.commitment;
-  const categoryCommitments = {};
-  const initialCategoryCommitments = {};
-  for (const spec of ROOT_CATEGORY_SPECS) {
-    const initial = await emptyMakerV8CategoryCommitment(rootContentCommitment, spec.category);
-    categoryCommitments[spec.plural] = initial.commitment;
-    initialCategoryCommitments[spec.plural] = initial.commitment;
-  }
-  const initialAggregate = await emptyMakerV8CategoryCommitment(
-    rootContentCommitment,
-    MAKER_V8_ROOT_CATEGORIES.AGGREGATE,
-  );
-  let aggregateCommitment = initialAggregate.commitment;
-  let sequence = 0n;
-  const compiledRows = [];
-
-  for (const spec of ROOT_CATEGORY_SPECS) {
-    for (const [index, source] of sourceByPlural[spec.plural].entries()) {
-      if (!isPlainObject(source)) {
-        fail('MAKER_V8_ROOT_ROW_INVALID', `${spec.kind} row ${index} must be a plain object.`, {
-          kind: spec.kind,
-          index,
-        });
-      }
-      if (!Object.hasOwn(source, 'payloadProjection')) {
-        fail(
-          'MAKER_V8_PAYLOAD_PROJECTION_REQUIRED',
-          `${spec.kind} row ${index} needs its exact payload projection.`,
-          { kind: spec.kind, index },
-        );
-      }
-      const forbidden = ['sequence', 'payloadCommitment', 'rootContentCommitment']
-        .filter((field) => Object.hasOwn(source, field));
-      if (spec.kind === 'style') {
-        for (const field of ['assetBlobId', 'assetSha256']) {
-          if (Object.hasOwn(source, field)) forbidden.push(field);
-        }
-      }
-      if (forbidden.length) {
-        fail(
-          'MAKER_V8_CALLER_COMMITMENT_FORBIDDEN',
-          `${spec.kind} row ${index} supplies compiler-owned fields.`,
-          { kind: spec.kind, index, fields: forbidden },
-        );
-      }
-      const supported = new Set(ROOT_ROW_SOURCE_FIELDS[spec.kind]);
-      const unsupported = Object.keys(source).filter((field) => !supported.has(field));
-      if (unsupported.length) {
-        fail(
-          'MAKER_V8_ROOT_ROW_FIELDS_UNKNOWN',
-          `${spec.kind} row ${index} has fields the compiler does not project.`,
-          { kind: spec.kind, index, fields: unsupported },
-        );
-      }
-
-      const payload = await makerV8PayloadCommitment(source.payloadProjection);
-      const call = { ...source, sequence, payloadCommitment: payload.commitment };
-      delete call.payloadProjection;
-      if (spec.kind === 'style') {
-        if (!Object.hasOwn(source, 'assetCertification')) {
-          fail(
-            'MAKER_V8_ASSET_CERTIFICATION_REQUIRED',
-            `style row ${index} needs exact certified asset bytes.`,
-            { kind: spec.kind, index },
-          );
-        }
-        const certification = await verifyMakerV8Certification(source.assetCertification, {
-          label: `Style asset ${source.partKey || '?'}\u0000${source.itemKey || '?'}\u0000${source.styleKey || '?'}`,
-        });
-        call.assetBlobId = certification.blobId;
-        call.assetSha256 = certification.sha256;
-        delete call.assetCertification;
-      }
-
-      const row = serializeMakerV8RootRow(spec.kind, call);
-      const category = await advanceMakerV8CategoryCommitment({
-        rootContentCommitment,
-        category: spec.category,
-        previousCommitment: categoryCommitments[spec.plural],
-        sequence,
-        rowBytes: row.bcsHex,
-      });
-      const aggregate = await advanceMakerV8CategoryCommitment({
-        rootContentCommitment,
-        category: MAKER_V8_ROOT_CATEGORIES.AGGREGATE,
-        previousCommitment: aggregateCommitment,
-        sequence,
-        rowBytes: row.bcsHex,
-      });
-      categoryCommitments[spec.plural] = category.commitment;
-      aggregateCommitment = aggregate.commitment;
-      compiledRows.push(deepFreeze({
-        kind: spec.kind,
-        category: spec.category,
-        sequence,
-        call: deepFreeze(call),
-        payload,
-        rowBcsHex: row.bcsHex,
-        categoryCommitment: category.commitment,
-        aggregateCommitment,
-      }));
-      sequence += 1n;
-    }
-  }
-
-  const commitments = deepFreeze({
-    ...categoryCommitments,
-    aggregate: aggregateCommitment,
-  });
-  return deepFreeze({
-    schemaVersion: MAKER_V8_COMPILER_SCHEMA,
-    semantic,
-    rootContentCommitment,
-    counts: Object.freeze(Object.fromEntries(ROOT_CATEGORY_SPECS.map((spec) => [
-      spec.plural,
-      BigInt(sourceByPlural[spec.plural].length),
-    ]))),
-    totalRows: sequence,
-    initialCommitments: deepFreeze({
-      ...initialCategoryCommitments,
-      aggregate: initialAggregate.commitment,
-    }),
-    commitments,
-    registryCommitmentsBcsHex: serializeMakerV8RegistryCommitments(commitments).bcsHex,
-    rows: Object.freeze(compiledRows),
-  });
-}
-
-export async function makerV8EconomicsCommitment(value = {}) {
-  const policy = assertCompletePolicy(
-    value.completeMode,
-    value.completePriceAtomic,
-    value.completePerWalletQuota,
-    value.completeTotalCap,
-  );
-  const makerAccess = u8(value.makerAccess, 'Maker access');
-  const makerPrice = u64(value.makerPriceAtomic, 'Maker price');
-  if (!((makerAccess === 0 && makerPrice === 0n)
-    || (makerAccess === 1 && makerPrice > 0n && makerPrice <= 1_000_000_000_000n))) {
-    fail('MAKER_V8_MAKER_ACCESS_INVALID', 'Maker access and price do not form a valid v8 policy.');
-  }
-  const input = {
-    maker_access: makerAccess,
-    maker_price_atomic: makerPrice,
-    complete_mode: policy.mode,
-    complete_price_atomic: policy.price,
-    complete_per_wallet_quota: policy.quota,
-    complete_total_cap: policy.totalCap,
-    protocol_fee_bps: u16(value.protocolFeeBps, 'Protocol fee BPS'),
-  };
-  if (input.protocol_fee_bps > 10_000) {
-    fail('MAKER_V8_PROTOCOL_FEE_INVALID', 'Protocol fee BPS cannot exceed 10,000.');
-  }
-  const result = await serializeAndHash(EconomicsCommitmentInputV8Bcs, input);
-  const struct = serialized(EconomicsV8Bcs, { ...input, commitment: result.commitmentBytes });
-  return deepFreeze({
-    fields: {
-      makerAccess,
-      makerPriceAtomic: makerPrice,
-      completeMode: policy.mode,
-      completePriceAtomic: policy.price,
-      completePerWalletQuota: policy.quota,
-      completeTotalCap: policy.totalCap,
-      protocolFeeBps: input.protocol_fee_bps,
-    },
-    inputBcsHex: result.bcsHex,
-    commitment: result.commitment,
-    structBcsHex: struct.hex,
-  });
-}
-
-export async function makerV8RightsCommitment(value = {}) {
-  const input = {
-    origin: u8(value.origin, 'Rights origin'),
-    creator_confirmed: boolean(value.creatorConfirmed, 'Rights creator confirmation'),
-    soul_creator_royalty_bps: u16(value.soulCreatorRoyaltyBps, 'Soul creator royalty BPS'),
-    maker_source_royalty_bps: u16(value.makerSourceRoyaltyBps, 'Maker source royalty BPS'),
-    maker_resale_royalty_bps: u16(value.makerResaleRoyaltyBps, 'Maker resale royalty BPS'),
-  };
-  if (![0, 1].includes(input.origin) || input.creator_confirmed !== true) {
-    fail('MAKER_V8_RIGHTS_INVALID', 'Rights origin must be supported and explicitly confirmed.');
-  }
-  for (const amount of [
-    input.soul_creator_royalty_bps,
-    input.maker_source_royalty_bps,
-    input.maker_resale_royalty_bps,
-  ]) {
-    if (amount > 1_000 || amount % 50 !== 0) {
-      fail('MAKER_V8_RIGHTS_INVALID', 'Royalties must be 0..1,000 BPS in 50-BPS steps.');
-    }
-  }
-  if (input.soul_creator_royalty_bps + input.maker_source_royalty_bps > 1_000) {
-    fail('MAKER_V8_RIGHTS_INVALID', 'Soul creator plus Maker source royalty cannot exceed 1,000 BPS.');
-  }
-  const result = await serializeAndHash(RightsCommitmentInputV8Bcs, input);
-  const struct = serialized(RightsV8Bcs, { ...input, commitment: result.commitmentBytes });
-  return deepFreeze({
-    fields: {
-      origin: input.origin,
-      creatorConfirmed: input.creator_confirmed,
-      soulCreatorRoyaltyBps: input.soul_creator_royalty_bps,
-      makerSourceRoyaltyBps: input.maker_source_royalty_bps,
-      makerResaleRoyaltyBps: input.maker_resale_royalty_bps,
-    },
-    inputBcsHex: result.bcsHex,
-    commitment: result.commitment,
-    structBcsHex: struct.hex,
-  });
-}
-
-export async function makerV8VersionCommitment(value = {}) {
-  const previousRootId = value.previousRootId === null
-    ? null
-    : normalizedId(value.previousRootId, 'Previous Root ID');
-  const previousVersionCommitment = value.previousVersionCommitment === null
-    ? null
-    : digestBytes(value.previousVersionCommitment, 'Previous version commitment');
-  if ((previousRootId === null) !== (previousVersionCommitment === null)) {
-    fail('MAKER_V8_LINEAGE_PAIR_INVALID', 'Previous Root ID and version commitment must both be present or absent.');
-  }
-  const result = await serializeAndHash(VersionCommitmentInputV8Bcs, {
-    version: VERSION,
-    package_id: normalizedId(value.packageId, 'Maker v8 package ID'),
-    maker_key: identifier(value.makerKey, 'Maker key'),
-    maker_version: identifier(value.makerVersion, 'Maker version'),
-    previous_root_id: previousRootId,
-    previous_version_commitment: previousVersionCommitment,
-    renderer_commitment: digestBytes(value.rendererCommitment, 'Renderer commitment'),
-    manifest_blob_id: locator(value.manifestBlobId, 'Manifest Blob ID'),
-    manifest_sha256: digestBytes(value.manifestSha256, 'Manifest SHA-256'),
-    content_commitment: digestBytes(value.contentCommitment, 'Root content commitment'),
-  });
-  return hashResult(result);
-}
-
-function normalizeMakerV8RowCounts(value = {}) {
-  const normalized = {
-    tracks: u64(value.tracks, 'Track count'),
-    parts: u64(value.parts, 'Part count'),
-    items: u64(value.items, 'Item count'),
-    styles: u64(value.styles, 'Style count'),
-    colors: u64(value.colors, 'Color count'),
-    rules: u64(value.rules, 'Rule count'),
-    slots: u64(value.slots, 'Composition Slot count'),
-    pack_releases: u64(value.packReleases, 'Pack Release count'),
-    protected_assets: u64(value.protectedAssets, 'Protected Asset count'),
-  };
-  const keyed = {
-    tracks: normalized.tracks,
-    parts: normalized.parts,
-    items: normalized.items,
-    styles: normalized.styles,
-    colors: normalized.colors,
-    rules: normalized.rules,
-    slots: normalized.slots,
-    packReleases: normalized.pack_releases,
-    protectedAssets: normalized.protected_assets,
-  };
-  for (const [field, limits] of Object.entries(ROW_COUNT_LIMITS)) {
-    if (keyed[field] < limits.minimum || keyed[field] > limits.maximum) {
-      fail('MAKER_V8_ROW_COUNT_INVALID', `${field} is outside the Maker v8 bounds.`, {
-        field,
-        minimum: limits.minimum.toString(),
-        maximum: limits.maximum.toString(),
-        actual: keyed[field].toString(),
-      });
-    }
-  }
-  return normalized;
-}
-
-export function serializeMakerV8RowCounts(value = {}) {
-  const normalized = normalizeMakerV8RowCounts(value);
-  const result = serialized(RowCountsV8Bcs, normalized);
-  return deepFreeze({ fields: normalized, bcsHex: result.hex });
-}
-
-export function serializeMakerV8RegistryCommitments(value = {}) {
-  const normalized = {
-    tracks: digestBytes(value.tracks, 'Track registry commitment'),
-    parts: digestBytes(value.parts, 'Part registry commitment'),
-    items: digestBytes(value.items, 'Item registry commitment'),
-    styles: digestBytes(value.styles, 'Style registry commitment'),
-    colors: digestBytes(value.colors, 'Color registry commitment'),
-    rules: digestBytes(value.rules, 'Rule registry commitment'),
-    aggregate: digestBytes(value.aggregate, 'Aggregate registry commitment'),
-  };
-  const result = serialized(RegistryCommitmentsV8Bcs, normalized);
-  return deepFreeze({ bcsHex: result.hex });
-}
-
-export function serializeMakerV8CapabilityCommitments(value = {}) {
-  const normalized = {
-    composition: digestBytes(value.composition, 'Composition commitment'),
-    pack: digestBytes(value.pack, 'Pack commitment'),
-    complete: digestBytes(value.complete, 'Complete commitment'),
-    seal: digestBytes(value.seal, 'Seal commitment'),
-    soul: digestBytes(value.soul, 'Soul commitment'),
-    physical: value.physical === null
-      ? null
-      : digestBytes(value.physical, 'Physical commitment'),
-  };
-  const result = serialized(CapabilityCommitmentsV8Bcs, normalized);
-  return deepFreeze({ bcsHex: result.hex });
-}
-
-export function serializeMakerV8Options({
-  previousRootId = null,
-  previousVersionCommitment = null,
-  physicalCommitment = null,
-} = {}) {
-  const root = serialized(OptionId, previousRootId === null
-    ? null
-    : normalizedId(previousRootId, 'Previous Root ID'));
-  const previous = serialized(OptionByteVector, previousVersionCommitment === null
-    ? null
-    : digestBytes(previousVersionCommitment, 'Previous version commitment'));
-  const physical = serialized(OptionByteVector, physicalCommitment === null
-    ? null
-    : digestBytes(physicalCommitment, 'Physical commitment'));
-  return deepFreeze({
-    previousRootIdBcsHex: root.hex,
-    previousVersionCommitmentBcsHex: previous.hex,
-    physicalCommitmentBcsHex: physical.hex,
-  });
-}
-
-export async function emptyMakerV8CompositionCommitment(rootContentCommitment) {
-  return hashResult(await emptyCommitmentInput(
-    rootContentCommitment,
-    'animacraft.v8/composition/empty',
-    CompositionEmptyHashInputV8Bcs,
-  ));
-}
-
-export async function advanceMakerV8CompositionSlotCommitment(value = {}) {
-  const behavior = u8(value.behavior, 'Composition Slot behavior');
-  const capacity = u64(value.capacity, 'Composition Slot capacity');
-  if (behavior > 3 || capacity === 0n || capacity > 16n) {
-    fail('MAKER_V8_COMPOSITION_SLOT_INVALID', 'Composition Slot behavior or capacity is invalid.');
-  }
-  return hashResult(await serializeAndHash(CompositionSlotHashInputV8Bcs, {
-    domain: domain('animacraft.v8/composition/slot'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    sequence: u64(value.sequence, 'Composition sequence'),
-    prior_commitment: digestBytes(value.priorCommitment, 'Prior Composition commitment'),
-    slot_key: identifier(value.slotKey, 'Composition Slot key'),
-    behavior,
-    capacity,
-    required: boolean(value.required, 'Composition Slot required'),
-    slot_commitment: digestBytes(value.slotCommitment, 'Composition Slot commitment'),
-  }));
-}
-
-export async function advanceMakerV8CompositionItemCommitment(value = {}) {
-  const sourceKind = u8(value.sourceKind, 'Composition Item source kind');
-  if (sourceKind > 2) {
-    fail('MAKER_V8_COMPOSITION_ITEM_INVALID', 'Composition Item source kind is invalid.');
-  }
-  return hashResult(await serializeAndHash(CompositionItemHashInputV8Bcs, {
-    domain: domain('animacraft.v8/composition/item'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    sequence: u64(value.sequence, 'Composition sequence'),
-    prior_commitment: digestBytes(value.priorCommitment, 'Prior Composition commitment'),
-    slot_key: identifier(value.slotKey, 'Composition Slot key'),
-    item_key: identifier(value.itemKey, 'Composition Item key'),
-    source_kind: sourceKind,
-    transferable: boolean(value.transferable, 'Composition Item transferable'),
-    definition_commitment: digestBytes(value.definitionCommitment, 'Composition definition commitment'),
-    asset_commitment: digestBytes(value.assetCommitment, 'Composition asset commitment'),
-  }));
-}
-
-export async function advanceMakerV8CompositionRuleCommitment(value = {}) {
-  const ruleKind = u8(value.ruleKind, 'Composition Rule kind');
-  if (![0, 1].includes(ruleKind)) {
-    fail('MAKER_V8_COMPOSITION_RULE_INVALID', 'Composition Rule kind is invalid.');
-  }
-  return hashResult(await serializeAndHash(CompositionRuleHashInputV8Bcs, {
-    domain: domain('animacraft.v8/composition/rule'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    sequence: u64(value.sequence, 'Composition sequence'),
-    prior_commitment: digestBytes(value.priorCommitment, 'Prior Composition commitment'),
-    rule_kind: ruleKind,
-    left_slot_key: identifier(value.leftSlotKey, 'Composition left Slot key'),
-    left_item_key: identifier(value.leftItemKey, 'Composition left Item key'),
-    right_slot_key: identifier(value.rightSlotKey, 'Composition right Slot key'),
-    right_item_key: identifier(value.rightItemKey, 'Composition right Item key'),
-    rule_commitment: digestBytes(value.ruleCommitment, 'Composition Rule commitment'),
-  }));
-}
-
-export function makerV8StyleAssetKey(partKey, itemKey, styleKey) {
-  const parts = [
-    identifier(partKey, 'Style asset Part key'),
-    identifier(itemKey, 'Style asset Item key'),
-    identifier(styleKey, 'Style asset Style key'),
-  ];
-  return parts.join('\u0000');
-}
-
-export function makerV8PackScopeKey(namespace, packKey) {
-  return `${identifier(namespace, 'Pack namespace')}\u0000${identifier(packKey, 'Pack key')}`;
-}
-
-export function makerV8MakerStyleSealScope(rootContentCommitment) {
-  return deepFreeze({
-    scopeKind: MAKER_V8_SEAL_SCOPE_KINDS.MAKER_STYLE,
-    scopeKey: 'maker',
-    scopeCommitment: normalizedDigest(rootContentCommitment, 'Root content commitment'),
-  });
-}
-
-export function makerV8PackStyleSealScope(namespace, packKey, releaseContentCommitment) {
-  return deepFreeze({
-    scopeKind: MAKER_V8_SEAL_SCOPE_KINDS.PACK_STYLE,
-    scopeKey: makerV8PackScopeKey(namespace, packKey),
-    scopeCommitment: normalizedDigest(releaseContentCommitment, 'Pack content commitment'),
-  });
-}
-
-export function makerV8CompleteSealScope(outputKey, recipePolicyCommitment) {
-  return deepFreeze({
-    scopeKind: MAKER_V8_SEAL_SCOPE_KINDS.COMPLETE,
-    scopeKey: textValue(outputKey, 'Complete output key', 256),
-    scopeCommitment: normalizedDigest(recipePolicyCommitment, 'Recipe policy commitment'),
-  });
-}
-
-export async function emptyMakerV8SealCommitment(rootContentCommitment) {
-  return hashResult(await emptyCommitmentInput(
-    rootContentCommitment,
-    'animacraft.v8/seal/empty',
-    SealEmptyHashInputV8Bcs,
-  ));
-}
-
-export async function deriveMakerV8SealId(value = {}) {
-  const scopeKind = u8(value.scopeKind, 'Seal scope kind');
-  if (scopeKind > 2) fail('MAKER_V8_SEAL_SCOPE_INVALID', 'Seal scope kind is invalid.');
-  return hashResult(await serializeAndHash(SealIdInputV8Bcs, {
-    domain: domain('animacraft.v8/seal/id'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    scope_kind: scopeKind,
-    scope_key: scopeKey(value.scopeKey, 'Seal scope key'),
-    scope_commitment: digestBytes(value.scopeCommitment, 'Seal scope commitment'),
-    asset_key: textValue(value.assetKey, 'Seal asset key', 512, { rejectNul: false }),
-    asset_commitment: digestBytes(value.assetCommitment, 'Seal asset commitment'),
-  }));
-}
-
-export async function advanceMakerV8SealCommitment(value = {}) {
-  const seal = await deriveMakerV8SealId(value);
-  const scopeKind = u8(value.scopeKind, 'Seal scope kind');
-  const result = await serializeAndHash(SealRowHashInputV8Bcs, {
-    domain: domain('animacraft.v8/seal/row'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    sequence: u64(value.sequence, 'Seal sequence'),
-    prior_commitment: digestBytes(value.priorCommitment, 'Prior Seal commitment'),
-    scope_kind: scopeKind,
-    scope_key: scopeKey(value.scopeKey, 'Seal scope key'),
-    scope_commitment: digestBytes(value.scopeCommitment, 'Seal scope commitment'),
-    asset_key: textValue(value.assetKey, 'Seal asset key', 512, { rejectNul: false }),
-    asset_commitment: digestBytes(value.assetCommitment, 'Seal asset commitment'),
-    seal_id: digestBytes(seal.commitment, 'Derived Seal ID'),
-  });
-  return deepFreeze({ bcsHex: result.bcsHex, sealId: seal.commitment, commitment: result.commitment });
-}
-
-export async function emptyMakerV8PackRegistryCommitment(rootContentCommitment) {
-  return hashResult(await emptyCommitmentInput(
-    rootContentCommitment,
-    'animacraft.v8/pack/registry/empty',
-    PackRegistryEmptyHashInputV8Bcs,
-  ));
-}
-
-export async function emptyMakerV8PackStyleCommitment(value = {}) {
-  return hashResult(await serializeAndHash(PackStyleEmptyHashInputV8Bcs, {
-    domain: domain('animacraft.v8/pack/style/empty'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    namespace: identifier(value.namespace, 'Pack namespace'),
-    pack_key: identifier(value.packKey, 'Pack key'),
-    manifest_commitment: digestBytes(value.manifestCommitment, 'Pack manifest commitment'),
-    release_content_commitment: digestBytes(value.releaseContentCommitment, 'Pack content commitment'),
-  }));
-}
-
-function exactSealId(protectedValue, sealId, label) {
-  const protectedFlag = boolean(protectedValue, `${label} protected`);
-  const bytes = protectedFlag
-    ? digestBytes(sealId, `${label} Seal ID`)
-    : bytesFrom(sealId ?? new Uint8Array(), `${label} empty Seal ID`, 0);
-  return { protectedFlag, sealId: bytes };
-}
-
-export async function advanceMakerV8PackStyleCommitment(value = {}) {
-  const seal = exactSealId(value.protected, value.sealId, 'Pack Style');
-  return hashResult(await serializeAndHash(PackStyleHashInputV8Bcs, {
-    domain: domain('animacraft.v8/pack/style'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    namespace: identifier(value.namespace, 'Pack namespace'),
-    pack_key: identifier(value.packKey, 'Pack key'),
-    manifest_commitment: digestBytes(value.manifestCommitment, 'Pack manifest commitment'),
-    release_content_commitment: digestBytes(value.releaseContentCommitment, 'Pack content commitment'),
-    sequence: u64(value.sequence, 'Pack Style sequence'),
-    prior_commitment: digestBytes(value.priorCommitment, 'Prior Pack Style commitment'),
-    part_key: identifier(value.partKey, 'Pack Style Part key'),
-    item_key: identifier(value.itemKey, 'Pack Style Item key'),
-    style_key: identifier(value.styleKey, 'Pack Style key'),
-    asset_blob_id: locator(value.assetBlobId, 'Pack Style asset Blob ID'),
-    asset_commitment: digestBytes(value.assetCommitment, 'Pack Style asset commitment'),
-    protected: seal.protectedFlag,
-    seal_id: seal.sealId,
-  }));
-}
-
-export async function advanceMakerV8PackReleaseCommitment(value = {}) {
-  const accessKind = u8(value.accessKind, 'Pack access kind');
-  const purchasePrice = u64(value.purchasePriceAtomic, 'Pack purchase price');
-  if (!((accessKind === 0 && purchasePrice === 0n)
-    || (accessKind === 1 && purchasePrice > 0n && purchasePrice <= 1_000_000_000_000n)
-    || (accessKind === 2 && purchasePrice === 0n))) {
-    fail('MAKER_V8_PACK_ACCESS_INVALID', 'Pack access kind and price are invalid.');
-  }
-  const policy = assertCompletePolicy(
-    value.completeMode,
-    value.completePriceAtomic,
-    value.completeFreeQuotaPerWallet,
-    value.completeTotalCap,
-  );
-  return hashResult(await serializeAndHash(PackRegistryRowHashInputV8Bcs, {
-    domain: domain('animacraft.v8/pack/release'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    sequence: u64(value.sequence, 'Pack Release sequence'),
-    prior_commitment: digestBytes(value.priorCommitment, 'Prior Pack registry commitment'),
-    namespace: identifier(value.namespace, 'Pack namespace'),
-    pack_key: identifier(value.packKey, 'Pack key'),
-    manifest_commitment: digestBytes(value.manifestCommitment, 'Pack manifest commitment'),
-    release_content_commitment: digestBytes(value.releaseContentCommitment, 'Pack content commitment'),
-    style_registry_commitment: digestBytes(value.styleRegistryCommitment, 'Pack Style registry commitment'),
-    access_kind: accessKind,
-    purchase_price_atomic: purchasePrice,
-    complete_mode: policy.mode,
-    complete_price_atomic: policy.price,
-    complete_free_quota_per_wallet: policy.quota,
-    complete_total_cap: policy.totalCap,
-    protected_style_count: u64(value.protectedStyleCount, 'Pack protected Style count'),
-    seal_registry_commitment: digestBytes(value.sealRegistryCommitment, 'Seal registry commitment'),
-  }));
-}
-
-export async function emptyMakerV8CompleteCommitment(rootContentCommitment) {
-  return hashResult(await emptyCommitmentInput(
-    rootContentCommitment,
-    'animacraft.v8/complete/empty',
-    CompleteEmptyHashInputV8Bcs,
-  ));
-}
-
-export async function advanceMakerV8CompleteOutputCommitment(value = {}) {
-  const seal = exactSealId(value.protected, value.sealId, 'Complete output');
-  const requiredCount = u64(value.requiredPackSelectionCount, 'Required Pack selection count');
-  if (requiredCount > 64n) {
-    fail('MAKER_V8_COMPLETE_SELECTION_LIMIT', 'Complete output cannot require more than 64 Pack selections.');
-  }
-  return hashResult(await serializeAndHash(CompleteOutputHashInputV8Bcs, {
-    domain: domain('animacraft.v8/complete/output'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    sequence: u64(value.sequence, 'Complete sequence'),
-    prior_commitment: digestBytes(value.priorCommitment, 'Prior Complete commitment'),
-    output_key: textValue(value.outputKey, 'Complete output key', 256),
-    recipe_policy_commitment: digestBytes(value.recipePolicyCommitment, 'Recipe policy commitment'),
-    renderer_schema_commitment: digestBytes(value.rendererSchemaCommitment, 'Renderer schema commitment'),
-    protected: seal.protectedFlag,
-    seal_id: seal.sealId,
-    required_pack_selection_count: requiredCount,
-    required_pack_selection_commitment: digestBytes(
-      value.requiredPackSelectionCommitment,
-      'Required Pack selection commitment',
-    ),
-  }));
-}
-
-export async function advanceMakerV8CompletePackPolicyCommitment(value = {}) {
-  const policy = assertCompletePolicy(
-    value.mode,
-    value.priceAtomic,
-    value.freeQuotaPerWallet,
-    value.totalCap,
-  );
-  return hashResult(await serializeAndHash(CompletePackPolicyHashInputV8Bcs, {
-    domain: domain('animacraft.v8/complete/pack-policy'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    sequence: u64(value.sequence, 'Complete sequence'),
-    prior_commitment: digestBytes(value.priorCommitment, 'Prior Complete commitment'),
-    pack_scope_key: scopeKey(value.packScopeKey, 'Pack scope key'),
-    release_content_commitment: digestBytes(value.releaseContentCommitment, 'Pack content commitment'),
-    mode: policy.mode,
-    price_atomic: policy.price,
-    free_quota_per_wallet: policy.quota,
-    total_cap: policy.totalCap,
-  }));
-}
-
-export async function emptyMakerV8RequiredPackSelectionCommitment(rootContentCommitment) {
-  return hashResult(await emptyCommitmentInput(
-    rootContentCommitment,
-    'animacraft.v8/complete/pack-selection/empty',
-    StablePackSelectionEmptyHashInputV8Bcs,
-  ));
-}
-
-export async function advanceMakerV8RequiredPackSelectionCommitment(value = {}) {
-  const seal = exactSealId(value.protected, value.sealId, 'Required Pack selection');
-  return hashResult(await serializeAndHash(StablePackSelectionHashInputV8Bcs, {
-    domain: domain('animacraft.v8/complete/pack-selection'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    sequence: u64(value.sequence, 'Required Pack selection sequence'),
-    prior_commitment: digestBytes(value.priorCommitment, 'Prior required Pack selection commitment'),
-    pack_scope_key: scopeKey(value.packScopeKey, 'Pack scope key'),
-    release_content_commitment: digestBytes(value.releaseContentCommitment, 'Pack content commitment'),
-    part_key: textValue(value.partKey, 'Pack selection Part key', 256),
-    item_key: textValue(value.itemKey, 'Pack selection Item key', 256),
-    style_key: textValue(value.styleKey, 'Pack selection Style key', 256),
-    asset_commitment: digestBytes(value.assetCommitment, 'Pack selection asset commitment'),
-    protected: seal.protectedFlag,
-    seal_id: seal.sealId,
-  }));
-}
-
-export async function emptyMakerV8PhysicalCommitment(rootContentCommitment) {
-  return hashResult(await emptyCommitmentInput(
-    rootContentCommitment,
-    'animacraft.v8/physical/empty',
-    PhysicalEmptyHashInputV8Bcs,
-  ));
-}
-
-export async function advanceMakerV8PhysicalCommitment(value = {}) {
-  const sourceKind = u8(value.sourceKind, 'Physical source kind');
-  const maxSupply = u64(value.maxSupply, 'Physical maximum supply');
-  if (sourceKind > 1 || maxSupply === 0n || maxSupply > 1_000_000_000n) {
-    fail('MAKER_V8_PHYSICAL_POLICY_INVALID', 'Physical source kind or maximum supply is invalid.');
-  }
-  return hashResult(await serializeAndHash(PhysicalPolicyHashInputV8Bcs, {
-    domain: domain('animacraft.v8/physical/policy'),
-    version: VERSION,
-    root_content_commitment: digestBytes(value.rootContentCommitment, 'Root content commitment'),
-    sequence: u64(value.sequence, 'Physical sequence'),
-    prior_commitment: digestBytes(value.priorCommitment, 'Prior Physical commitment'),
-    source_kind: sourceKind,
-    scope_key: scopeKey(value.scopeKey, 'Physical scope key'),
-    scope_commitment: digestBytes(value.scopeCommitment, 'Physical scope commitment'),
-    part_key: identifier(value.partKey, 'Physical Part key'),
-    item_key: identifier(value.itemKey, 'Physical Item key'),
-    style_key: identifier(value.styleKey, 'Physical Style key'),
-    style_content_commitment: digestBytes(value.styleContentCommitment, 'Physical Style content commitment'),
-    material_commitment: digestBytes(value.materialCommitment, 'Physical material commitment'),
-    max_supply: maxSupply,
-    transferable: boolean(value.transferable, 'Physical transferable'),
-  }));
-}
-
-export async function makerV8SoulCommitment(rootContentCommitment) {
-  return hashResult(await emptyCommitmentInput(
-    rootContentCommitment,
-    'animacraft.v8/soul/registry',
-    SoulRegistryCommitmentInputV8Bcs,
-  ));
-}
-
-function orderedRows(value, label) {
-  if (!Array.isArray(value)) {
-    fail('MAKER_V8_CALL_PLAN_ROWS_INVALID', `${label} must be an ordered array.`, { label });
-  }
-  return value;
-}
-
-function rowProtected(value, label) {
-  if (!isPlainObject(value)) {
-    fail('MAKER_V8_CALL_PLAN_ROW_INVALID', `${label} must be a plain object.`, { label });
-  }
-  const protectedValue = value.call?.protected ?? value.protected;
-  return boolean(protectedValue, `${label} protected`);
-}
-
-/**
- * Produces the one canonical topological call order and all exact counter
- * snapshots. Entries are logical calls, not an assertion that every entry can
- * share a PTB; newly shared Pack objects are intentionally consumed later.
- */
-export function planMakerV8PublicationCalls(input = {}) {
-  const snapshot = snapshotCompilerData(input, 'callPlan');
-  const {
-    root = {},
-    composition = {},
-    packs = [],
-    completeOutputs = [],
-    physicalPolicies = null,
-    ...unknown
-  } = snapshot;
-  if (Object.keys(unknown).length) {
-    fail('MAKER_V8_CALL_PLAN_UNKNOWN', 'The call-plan shape contains unknown fields.', {
-      fields: Object.keys(unknown),
-    });
-  }
-  if (!isPlainObject(root) || !isPlainObject(composition)) {
-    fail('MAKER_V8_CALL_PLAN_INVALID', 'Root and Composition call-plan groups must be objects.');
-  }
-  const rootRows = Object.fromEntries(ROOT_CATEGORY_SPECS.map((spec) => [
-    spec.plural,
-    orderedRows(root[spec.plural] ?? [], `Root ${spec.plural}`),
-  ]));
-  const compositionRows = {
-    slots: orderedRows(composition.slots ?? [], 'Composition Slots'),
-    items: orderedRows(composition.items ?? [], 'Composition Items'),
-    rules: orderedRows(composition.rules ?? [], 'Composition Rules'),
-  };
-  const exactPacks = orderedRows(packs, 'Pack Releases');
-  const outputs = orderedRows(completeOutputs, 'Complete outputs');
-  // Unified v8 always binds every native capability. An author with no
-  // Physical rows still publishes and seals an explicit empty Physical
-  // registry; absence is never represented by a partial capability mask.
-  const physicalDeclared = true;
-  const policies = orderedRows(physicalPolicies ?? [], 'Physical policies');
-  if (policies.length > 10_000) {
-    fail('MAKER_V8_PHYSICAL_POLICY_LIMIT', 'Physical cannot exceed 10,000 policy rows.', {
-      actual: policies.length,
-    });
-  }
-
-  const protectedMakerStyles = rootRows.styles
-    .map((row, index) => ({ row, index }))
-    .filter(({ row, index }) => rowProtected(row, `Root Style ${index}`));
-  const protectedPackStyles = [];
-  exactPacks.forEach((pack, packIndex) => {
-    if (!isPlainObject(pack)) {
-      fail('MAKER_V8_CALL_PLAN_PACK_INVALID', `Pack Release ${packIndex} must be an object.`);
-    }
-    identifier(pack.namespace, `Pack Release ${packIndex} namespace`);
-    identifier(pack.packKey, `Pack Release ${packIndex} key`);
-    orderedRows(pack.styles, `Pack Release ${packIndex} Styles`).forEach((style, styleIndex) => {
-      if (rowProtected(style, `Pack Release ${packIndex} Style ${styleIndex}`)) {
-        protectedPackStyles.push({ pack, packIndex, style, styleIndex });
-      }
-    });
-  });
-  const protectedOutputs = outputs
-    .map((row, index) => ({ row, index }))
-    .filter(({ row, index }) => rowProtected(row, `Complete output ${index}`));
-
-  const expectedCounts = {
-    tracks: rootRows.tracks.length,
-    parts: rootRows.parts.length,
-    items: rootRows.items.length,
-    styles: rootRows.styles.length,
-    colors: rootRows.colors.length,
-    rules: rootRows.rules.length,
-    slots: compositionRows.slots.length,
-    packReleases: exactPacks.length,
-    protectedAssets: protectedMakerStyles.length
-      + protectedPackStyles.length
-      + protectedOutputs.length,
-  };
-  const rowCounts = serializeMakerV8RowCounts(expectedCounts);
-
-  const calls = [];
-  const push = (phase, target, details = {}) => {
-    calls.push(deepFreeze({ index: BigInt(calls.length), phase, target, ...details }));
-  };
-  push('begin', 'maker_v8::new_row_counts_v8');
-  push('begin', 'maker_v8::new_registry_commitments_v8');
-  push('begin', 'maker_v8::new_capability_commitments_v8');
-  push('begin', 'maker_v8::new_economics_v8');
-  push('begin', 'maker_v8::new_rights_v8');
-  push('begin', 'publication_v8::begin_maker_v8');
-
-  let rootSequence = 0n;
-  for (const spec of ROOT_CATEGORY_SPECS) {
-    rootRows[spec.plural].forEach((_row, index) => {
-      push('root', `maker_v8::append_${spec.kind}_v8`, {
-        category: spec.category,
-        rowIndex: BigInt(index),
-        sequence: rootSequence,
-      });
-      rootSequence += 1n;
-    });
-  }
-
-  let compositionSequence = 0n;
-  const compositionTargets = [
-    ['slots', 'composition_v8::append_wardrobe_slot_v8'],
-    ['items', 'composition_v8::append_composition_item_v8'],
-    ['rules', 'composition_v8::append_loadout_rule_v8'],
-  ];
-  for (const [group, target] of compositionTargets) {
-    compositionRows[group].forEach((_row, index) => {
-      push('composition', target, { rowIndex: BigInt(index), sequence: compositionSequence });
-      compositionSequence += 1n;
-    });
-  }
-
-  exactPacks.forEach((pack, packIndex) => push(
-    'pack-create',
-    'expansion_pack_v8::create_expansion_pack_release_v8',
-    { packIndex: BigInt(packIndex), namespace: pack.namespace, packKey: pack.packKey },
-  ));
-
-  let sealSequence = 0n;
-  const pushSeal = (scopeKind, details) => {
-    push('seal-rows', 'seal_v8::append_protected_asset_v8', {
-      scopeKind,
-      sequence: sealSequence,
-      ...details,
-    });
-    sealSequence += 1n;
-  };
-  protectedMakerStyles.forEach(({ index }) => pushSeal(
-    MAKER_V8_SEAL_SCOPE_KINDS.MAKER_STYLE,
-    { rowIndex: BigInt(index) },
-  ));
-  protectedPackStyles.forEach(({ packIndex, styleIndex }) => pushSeal(
-    MAKER_V8_SEAL_SCOPE_KINDS.PACK_STYLE,
-    { packIndex: BigInt(packIndex), rowIndex: BigInt(styleIndex) },
-  ));
-  protectedOutputs.forEach(({ index }) => pushSeal(
-    MAKER_V8_SEAL_SCOPE_KINDS.COMPLETE,
-    { rowIndex: BigInt(index) },
-  ));
-  push('seal-registry', 'seal_v8::seal_registry_v8');
-
-  exactPacks.forEach((pack, packIndex) => {
-    pack.styles.forEach((_style, styleIndex) => push(
-      'pack-styles',
-      'expansion_pack_v8::append_expansion_pack_style_v8',
-      {
-        packIndex: BigInt(packIndex),
-        rowIndex: BigInt(styleIndex),
-        sequence: BigInt(styleIndex),
-      },
-    ));
-    push('pack-release-seal', 'expansion_pack_v8::seal_expansion_pack_release_v8', {
-      packIndex: BigInt(packIndex),
-    });
-    push('pack-register', 'expansion_pack_v8::append_release_to_registry_v8', {
-      packIndex: BigInt(packIndex),
-      sequence: BigInt(packIndex),
-    });
-  });
-
-  let completeSequence = 0n;
-  outputs.forEach((_output, index) => {
-    push('complete-outputs', 'complete_v8::append_complete_output_v8', {
-      rowIndex: BigInt(index),
-      sequence: completeSequence,
-    });
-    completeSequence += 1n;
-  });
-  exactPacks.forEach((_pack, packIndex) => {
-    push('complete-pack-policies', 'complete_v8::append_complete_pack_policy_v8', {
-      packIndex: BigInt(packIndex),
-      sequence: completeSequence,
-    });
-    completeSequence += 1n;
-  });
-
-  policies.forEach((policy, index) => {
-    if (!isPlainObject(policy)) {
-      fail('MAKER_V8_CALL_PLAN_PHYSICAL_INVALID', `Physical policy ${index} must be an object.`);
-    }
-    const sourceKind = u8(policy.sourceKind, `Physical policy ${index} source kind`);
-    if (![MAKER_V8_PHYSICAL_SOURCE_KINDS.MAKER_STYLE, MAKER_V8_PHYSICAL_SOURCE_KINDS.PACK_STYLE]
-      .includes(sourceKind)) {
-      fail('MAKER_V8_PHYSICAL_POLICY_INVALID', `Physical policy ${index} has an invalid source kind.`);
-    }
-    push(
-      'physical',
-      sourceKind === MAKER_V8_PHYSICAL_SOURCE_KINDS.MAKER_STYLE
-        ? 'physical_v8::append_maker_style_policy_v8'
-        : 'physical_v8::append_pack_style_policy_v8',
-      { rowIndex: BigInt(index), sequence: BigInt(index), sourceKind },
-    );
-  });
-
-  push('registry-seals', 'composition_v8::seal_composition_registry_v8');
-  push('registry-seals', 'expansion_pack_v8::seal_expansion_pack_registry_v8');
-  push('registry-seals', 'complete_v8::seal_complete_registry_v8');
-  push('registry-seals', 'physical_v8::seal_physical_registry_v8');
-  push('activation', 'publication_v8::seal_and_activate_physical_maker_v8');
-
-  return deepFreeze({
-    rowCounts: rowCounts.fields,
-    rowCountsBcsHex: rowCounts.bcsHex,
-    declaredCapabilities: MAKER_V8_REQUIRED_CAPABILITIES,
-    expectedCompositionItemCount: BigInt(compositionRows.items.length),
-    expectedCompositionRuleCount: BigInt(compositionRows.rules.length),
-    expectedCompleteOutputCount: BigInt(outputs.length),
-    expectedCompletePackPolicyCount: BigInt(exactPacks.length),
-    expectedPhysicalPolicyCount: BigInt(policies.length),
-    packReleaseCounts: Object.freeze(exactPacks.map((pack) => Object.freeze({
-      namespace: pack.namespace,
-      packKey: pack.packKey,
-      expectedStyleCount: BigInt(pack.styles.length),
-      expectedProtectedStyleCount: BigInt(pack.styles.filter((style) => (
-        style.call?.protected ?? style.protected
-      ) === true).length),
-    }))),
-    physicalDeclared,
-    rootSequence,
-    compositionSequence,
-    sealSequence,
-    completeSequence,
-    calls: Object.freeze(calls),
-  });
-}
-
-function documentCompilerGaps(document) {
-  const gaps = [];
-  const add = (path, code, message) => gaps.push(Object.freeze({ path, code, message }));
-
-  (document.parts || []).forEach((part, partIndex) => {
-    add(
-      `parts[${partIndex}].kind`,
-      'MAKER_V8_COMPILER_PART_KIND_UNSPECIFIED',
-      'The Maker v8 document schema does not define the Root Part.kind u8.',
-    );
-    if (part.wardrobeMode === 'SLOT') {
-      add(
-        `parts[${partIndex}]`,
-        'MAKER_V8_COMPILER_COMPOSITION_SLOT_UNSPECIFIED',
-        'SLOT Parts need explicit behavior, capacity, admitted Item source, transfer, and commitment projections.',
-      );
-    }
-    (part.items || []).forEach((item, itemIndex) => {
-      add(
-        `parts[${partIndex}].items[${itemIndex}].gateKind`,
-        'MAKER_V8_COMPILER_ITEM_GATE_UNSPECIFIED',
-        'The Maker v8 document schema does not define the Root Item.gate_kind u8.',
-      );
-      (item.styles || []).forEach((style, styleIndex) => {
-        if (style.seal?.protected === true) {
-          add(
-            `parts[${partIndex}].items[${itemIndex}].styles[${styleIndex}].seal`,
-            'MAKER_V8_COMPILER_PROTECTED_TRANSPORT_UNSPECIFIED',
-            'Protected Style plaintext/ciphertext certification semantics are not defined by the document.',
-          );
-        }
-        if (style.physical?.enabled === true) {
-          add(
-            `parts[${partIndex}].items[${itemIndex}].styles[${styleIndex}].physical`,
-            'MAKER_V8_COMPILER_PHYSICAL_POLICY_UNSPECIFIED',
-            'Physical Style material, supply, and transfer policy fields are missing.',
-          );
-        }
-      });
-    });
-  });
-
-  (document.colorChannels || []).forEach((channel, channelIndex) => {
-    (channel.swatches || []).forEach((_swatch, swatchIndex) => add(
-      `colorChannels[${channelIndex}].swatches[${swatchIndex}].rgba`,
-      'MAKER_V8_COMPILER_RGBA_UNSPECIFIED',
-      'The document has hintColor but does not specify the canonical on-chain rgba u32 mapping.',
-    ));
-  });
-
-  (document.rules || []).forEach((_rule, index) => add(
-    `rules[${index}]`,
-    'MAKER_V8_COMPILER_ROOT_RULE_ENCODING_UNSPECIFIED',
-    'Root Rule.kind and left_ref/right_ref encodings are not defined by the document schema.',
-  ));
-
-  add(
-    'publication.composition',
-    'MAKER_V8_COMPILER_COMPOSITION_ROWS_UNSPECIFIED',
-    'The document does not explicitly define ordered Composition Slot, admitted Item, and binary REQUIRE/EXCLUDE rows; richer Creator rules cannot be reinterpreted as them.',
-  );
-
-  (document.assets || []).forEach((asset, index) => add(
-    `assets[${index}].certification`,
-    'MAKER_V8_COMPILER_ASSET_CERTIFICATION_REQUIRED',
-    `Asset "${asset.id}" needs exact bytes, certified Blob ID, recomputed SHA-256, byte length, media type, and visible certification evidence.`,
-  ));
-
-  (document.packs || []).forEach((pack, index) => {
-    add(
-      `packs[${index}]`,
-      'MAKER_V8_COMPILER_PACK_RELEASE_UNSPECIFIED',
-      `Pack "${pack.id}" lacks its namespace, certified manifest bytes, ordered Styles, and raw semantic inputs; contentCommitment is not accepted as authority.`,
-    );
-  });
-
-  add(
-    'publication.renderer',
-    'MAKER_V8_COMPILER_RENDERER_PROJECTION_UNSPECIFIED',
-    'The document schema does not define the exact renderer commitment projection.',
-  );
-  add(
-    'publication.manifest',
-    'MAKER_V8_COMPILER_MANIFEST_CERTIFICATION_REQUIRED',
-    'Exact certified manifest bytes, Blob ID, SHA-256, and per-asset certified Blob mappings are required.',
-  );
-  add(
-    'publication.completeOutputs',
-    'MAKER_V8_COMPILER_COMPLETE_OUTPUTS_UNSPECIFIED',
-    'The document schema does not define Complete output policy rows.',
-  );
-  add(
-    'publication.completeOutputs[].requiredPackSelections',
-    'MAKER_V8_COMPILER_COMPLETE_SELECTIONS_UNSPECIFIED',
-    'Complete requires ordered concrete Pack Style selections with release, asset, protection, and Seal inputs; Pack IDs or min/max summaries are insufficient.',
-  );
-
-  return Object.freeze(gaps);
-}
-
-export function collectMakerV8CompilerIssues(document) {
-  assertMakerV8Document(document, { mode: 'compile' });
-  return documentCompilerGaps(document);
-}
-
-/**
- * Document-level entry point. It deliberately refuses to emit a transaction
- * plan until the authoring schema owns every semantic input required by Move.
- * The exact low-level serializers and commitment helpers above are usable for
- * cross-language parity and for the future expanded document adapter.
- */
-export async function compileMakerV8Publication(document) {
-  const issues = collectMakerV8CompilerIssues(document);
-  if (issues.length) {
-    fail(
-      'MAKER_V8_DOCUMENT_SCHEMA_INCOMPLETE',
-      `Maker v8 publication is blocked by ${issues.length} compiler schema gap${issues.length === 1 ? '' : 's'}.`,
-      { issues },
-    );
-  }
-  fail(
-    'MAKER_V8_DOCUMENT_SCHEMA_INCOMPLETE',
-    'Maker v8 publication cannot proceed without the canonical publication fields.',
-  );
-}
-
-/**
- * Validates a caller-supplied certified byte record without accepting its
- * digest as authority. The SHA-256 is always recomputed from the exact bytes.
- */
-export async function verifyMakerV8Certification(value = {}, {
-  label = 'Certified file',
-  expectedSha256 = null,
-  expectedByteLength = null,
-  expectedMediaType = null,
-} = {}) {
-  if (!isPlainObject(value)) {
-    fail('MAKER_V8_CERTIFICATION_INVALID', `${label} certification must be a plain object.`, { label });
-  }
-  const certificationFields = new Set([
-    'certified',
-    'certificationVisible',
-    'blobId',
-    'bytes',
-    'sha256',
-    'byteLength',
-    'mediaType',
-  ]);
-  const unknownFields = Object.keys(value).filter((field) => !certificationFields.has(field));
-  if (unknownFields.length) {
-    fail('MAKER_V8_CERTIFICATION_FIELDS_UNKNOWN', `${label} certification contains unknown fields.`, {
-      label,
-      fields: unknownFields,
-    });
-  }
-  if (value.certified !== true || value.certificationVisible !== true) {
-    fail('MAKER_V8_CERTIFICATION_REQUIRED', `${label} must be visibly certified.`, { label });
-  }
-  const blobId = locator(value.blobId, `${label} Blob ID`);
-  const bytes = bytesFrom(value.bytes, `${label} bytes`);
-  if (bytes.length === 0) {
-    fail('MAKER_V8_CERTIFICATION_BYTES_EMPTY', `${label} bytes cannot be empty.`, { label });
-  }
-  const observedSha256 = hexFromBytes(await sha256(bytes));
-  const declaredSha256 = normalizedDigest(value.sha256, `${label} declared SHA-256`);
-  if (observedSha256 !== declaredSha256) {
-    fail('MAKER_V8_CERTIFICATION_HASH_MISMATCH', `${label} bytes do not match the declared SHA-256.`, {
-      label,
-      expected: declaredSha256,
-      actual: observedSha256,
-    });
-  }
-  if (expectedSha256 !== null
-    && observedSha256 !== normalizedDigest(expectedSha256, `${label} expected SHA-256`)) {
-    fail('MAKER_V8_CERTIFICATION_HASH_MISMATCH', `${label} does not match its document SHA-256.`, { label });
-  }
-  const byteLength = u64(value.byteLength, `${label} byte length`);
-  if (byteLength !== BigInt(bytes.length)
-    || (expectedByteLength !== null && byteLength !== u64(expectedByteLength, `${label} expected byte length`))) {
-    fail('MAKER_V8_CERTIFICATION_LENGTH_MISMATCH', `${label} byte length does not match its bytes.`, { label });
-  }
-  const mediaType = textValue(value.mediaType, `${label} media type`, 256);
-  if (expectedMediaType !== null && mediaType !== expectedMediaType) {
-    fail('MAKER_V8_CERTIFICATION_MEDIA_TYPE_MISMATCH', `${label} media type does not match the document.`, { label });
-  }
-  return deepFreeze({
-    blobId,
-    sha256: observedSha256,
-    byteLength,
-    mediaType,
-    bytesHex: hexFromBytes(bytes),
-  });
-}
-
-export const MAKER_V8_BCS_LAYOUTS = Object.freeze({
-  rootRows: Object.freeze([
-    'TrackRowV8(sequence,key,label,render_order,payload_commitment)',
-    'PartRowV8(sequence,key,label,kind,render_order,required,visible,payload_commitment)',
-    'ItemRowV8(sequence,part_key,item_key,label,gate_kind,payload_commitment)',
-    'StyleRowV8(sequence,part_key,item_key,style_key,layer_track_key,color_channel_key,default_swatch_key,label,asset_blob_id,asset_sha256,protected,payload_commitment)',
-    'ColorRowV8(sequence,channel_key,swatch_key,label,rgba,payload_commitment)',
-    'RuleRowV8(sequence,key,kind,left_ref,right_ref,payload_commitment)',
-  ]),
-  callOrder: Object.freeze([
-    'maker_v8 constructors',
-    'publication_v8::begin_maker_v8',
-    'Root Track -> Part -> Item -> Style -> Color -> Rule rows',
-    'Composition Slot -> Item -> Rule rows',
-    'create Pack Releases while Seal is unsealed',
-    'Seal rows -> seal Seal registry',
-    'Pack Styles -> seal Releases -> register Releases',
-    'Complete Outputs -> Pack policies',
-    'Physical policies after referenced Pack Releases are registered',
-    'seal Composition -> Pack -> Complete -> optional Physical registries',
-    'publication_v8 activation overload',
-  ]),
-});
