@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { bcs } from '@mysten/sui/bcs';
+import { Inputs, TransactionDataBuilder } from '@mysten/sui/transactions';
+import { toBase64 } from '@mysten/sui/utils';
 
 import {
   MARKET_V8_ACTION_ABI,
@@ -8,15 +11,30 @@ import {
   MARKET_V8_LIFECYCLES,
   MARKET_V8_LISTING_STATUS,
   MARKET_V8_PHYSICAL_SOURCES,
+  MARKET_V8_QUOTE_KINDS,
   MarketV8BuildError,
   MarketV8EligibilityError,
   MarketV8ParseError,
   MarketV8RuntimeError,
   assertMarketV8Runtime,
+  buildMarketQuoteInspectionV8,
+  createMarketV8RecoveryEvidenceV8,
   createMarketV8Client,
   deriveMarketQuoteCommitmentV8,
+  inspectMarketQuoteOnChainV8,
+  assertMarketV8RecoveryEvidenceV8,
   marketQuoteCommitmentBcsV8,
+  parseMarketQuoteV8Bcs,
 } from '../maker-v8-market.js';
+import {
+  MAKER_V8_CLOCK_OBJECT_ID,
+  MAKER_V8_PAYMENT_COIN_TYPE,
+  MAKER_V8_RUNTIME_SCHEMA,
+} from '../maker-v8-runtime.js';
+import {
+  MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+  attestMakerV8Runtime,
+} from '../maker-v8-chain.js';
 
 const fixture = JSON.parse(await readFile(
   new URL('./fixtures/market-v8-abi.json', import.meta.url),
@@ -35,27 +53,108 @@ const digest = '11111111111111111111111111111111';
 const NETWORK = 'mainnet';
 
 const runtimeInput = Object.freeze({
-  callablePackageId: packageId('9'),
-  paymentCoinType: '0x2::sui::SUI',
-  typeOrigins: Object.freeze({
-    corePackageId: packageId('1'),
-    outputPackageId: packageId('2'),
-    physicalPackageId: packageId('3'),
-    runtimePackageId: packageId('4'),
-    marketPackageId: packageId('5'),
+  schemaVersion: MAKER_V8_RUNTIME_SCHEMA,
+  protocolVersion: 8,
+  enabled: true,
+  catalogId: id(800),
+  protocolConfigId: id(801),
+  protocolTreasuryId: id(802),
+  paymentCoinType: MAKER_V8_PAYMENT_COIN_TYPE,
+  clockObjectId: MAKER_V8_CLOCK_OBJECT_ID,
+  roles: Object.freeze({
+    core: { typeOriginPackageId: packageId('1'), callablePackageId: packageId('1') },
+    seal: { typeOriginPackageId: packageId('6'), callablePackageId: packageId('6') },
+    runtime: { typeOriginPackageId: packageId('4'), callablePackageId: packageId('4') },
+    output: { typeOriginPackageId: packageId('2'), callablePackageId: packageId('2') },
+    physical: { typeOriginPackageId: packageId('3'), callablePackageId: packageId('3') },
+    market: { typeOriginPackageId: packageId('9'), callablePackageId: packageId('9') },
+    release: { typeOriginPackageId: packageId('7'), callablePackageId: packageId('7') },
   }),
+  roleConfigIds: Object.freeze({
+    seal: id(803), runtime: id(804), output: id(805), physical: id(806),
+    market: id(807), release: id(808),
+  }),
+  makerBindings: Object.freeze([]),
 });
-const client = createMarketV8Client(runtimeInput, { network: NETWORK });
+
+function runtimeAttestationRpc(runtime) {
+  const roles = ['seal', 'runtime', 'output', 'physical', 'market', 'release'];
+  const authority = Object.fromEntries(roles.map((role, index) => [role, id(900 + index)]));
+  const roleCommitment = Object.fromEntries(Object.keys(runtime.roles).map((role, index) => [role, bytes32(40 + index)]));
+  const productCommitment = bytes32(60);
+  const callSetCommitment = bytes32(61);
+  const objectResponse = (type, objectId, fields) => ({
+    data: {
+      objectId,
+      version: '1',
+      digest,
+      type,
+      owner: { Shared: { initial_shared_version: '1' } },
+      content: { dataType: 'moveObject', type, fields: { id: { id: objectId }, ...fields } },
+    },
+  });
+  const binding = Object.fromEntries(Object.entries(runtime.roles).map(([role, identity], index) => [role, { fields: {
+    original_package_id: identity.typeOriginPackageId,
+    callable_package_id: identity.callablePackageId,
+    source_commitment: bytes32(10 + index),
+    package_commitment: bytes32(20 + index),
+    abi_commitment: bytes32(30 + index),
+    commitment: roleCommitment[role],
+  } }]));
+  const catalog = objectResponse(
+    `${runtime.roles.core.typeOriginPackageId}::package_binding_v8::ProductReleaseCatalogV8`,
+    runtime.catalogId,
+    {
+      version: '8', protocol_config_id: runtime.protocolConfigId,
+      protocol_config_revision: '7', protocol_config_commitment: bytes32(4),
+      binding: { fields: { version: '8', native_capability_mask: '127', ...binding, commitment: productCommitment } },
+      call_cap_set: { fields: {
+        version: '8', catalog_id: runtime.catalogId, product_binding_commitment: productCommitment,
+        ...Object.fromEntries(roles.map((role) => [`${role}_authority_id`, authority[role]])),
+        commitment: callSetCommitment,
+      } },
+      ...Object.fromEntries(roles.map((role) => [`${role}_call_cap`, []])),
+    },
+  );
+  const typeNames = {
+    seal: ['seal_v8', 'SealPolicyConfigV8'], runtime: ['runtime_binding_v8', 'RuntimePackageConfigV8'],
+    output: ['output_v8', 'OutputPackageConfigV8'], physical: ['physical_v8', 'PhysicalPackageConfigV8'],
+    market: ['market_v8', 'MarketPackageConfigV8'], release: ['release_v8', 'ReleasePackageConfigV8'],
+  };
+  const configs = Object.fromEntries(roles.map((role) => {
+    const [moduleName, typeName] = typeNames[role];
+    return [role, objectResponse(`${runtime.roles[role].typeOriginPackageId}::${moduleName}::${typeName}`, runtime.roleConfigIds[role], {
+      version: '8', catalog_id: runtime.catalogId, product_binding_commitment: productCommitment,
+      call_cap_set_commitment: callSetCommitment,
+      [`${role}_call_cap`]: { fields: {
+        version: '8', authority_id: authority[role], catalog_id: runtime.catalogId,
+        product_binding_commitment: productCommitment, role_binding_commitment: roleCommitment[role],
+        call_cap_set_commitment: callSetCommitment,
+      } },
+    })];
+  }));
+  return {
+    async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+    async getObject({ id: objectId }) {
+      if (objectId === runtime.catalogId) return catalog;
+      const role = roles.find((candidate) => runtime.roleConfigIds[candidate] === objectId);
+      return configs[role];
+    },
+  };
+}
+
+const attestedRuntime = (await attestMakerV8Runtime(runtimeAttestationRpc(runtimeInput), runtimeInput)).runtime;
+const client = createMarketV8Client(attestedRuntime, { network: NETWORK });
 const { types } = client;
 
 const IDs = Object.freeze({
   registry: id(100),
   treasury: id(101),
-  catalog: id(102),
-  config: id(103),
+  catalog: id(800),
+  config: id(807),
   root: id(104),
-  protocolConfig: id(105),
-  protocolTreasury: id(106),
+  protocolConfig: id(801),
+  protocolTreasury: id(802),
   admin: id(107),
   makerTreasury: id(108),
   outputRegistry: id(109),
@@ -64,7 +163,7 @@ const IDs = Object.freeze({
   receipt: id(112),
   soul: id(113),
   physicalRegistry: id(114),
-  physicalConfig: id(115),
+  physicalConfig: id(806),
   baseAsset: id(116),
   packAsset: id(117),
   packTreasury: id(118),
@@ -278,15 +377,35 @@ const expectation = (listing) => ({
   quoteCommitment: listing.fields.quoteCommitment,
 });
 
+const rootAt = (lifecycleCode) => object(IDs.root, types.makerRoot, {
+  adminCapId: IDs.admin,
+  binding: Object.freeze({
+    makerTreasuryId: IDs.makerTreasury,
+    marketRegistryId: IDs.registry,
+    marketTreasuryId: IDs.treasury,
+    outputRegistryId: IDs.outputRegistry,
+    soulRegistryId: IDs.soulRegistry,
+    physicalRegistryId: IDs.physicalRegistry,
+  }),
+  lifecycleCode,
+});
+const protocolAt = (enabled) => object(IDs.protocolConfig, types.protocolConfig, {
+  enabled,
+  revision: registry.fields.protocolConfigRevision,
+  commitment: registry.fields.protocolConfigCommitment,
+});
+const currentProtocol = protocolAt(true);
+const degraded = protocolAt(false);
+
 const common = Object.freeze({
   registry,
   treasury,
-  root: object(IDs.root, types.makerRoot),
+  root: rootAt(MARKET_V8_LIFECYCLES.ACTIVE),
   catalog: object(IDs.catalog, types.catalog),
   config: object(IDs.config, types.marketConfig),
-  protocolConfig: object(IDs.protocolConfig, types.protocolConfig),
+  protocolConfig: currentProtocol,
 });
-const makerTreasury = object(IDs.makerTreasury, types.makerTreasury);
+const makerTreasury = object(IDs.makerTreasury, types.makerTreasury, { balanceAtomic: 0n });
 const protocolTreasury = object(IDs.protocolTreasury, types.protocolTreasury);
 const outputRegistry = object(IDs.outputRegistry, types.outputRegistry);
 const soulRegistry = object(IDs.soulRegistry, types.soulRegistry);
@@ -294,11 +413,6 @@ const physicalRegistry = object(IDs.physicalRegistry, types.physicalRegistry);
 const physicalConfig = object(IDs.physicalConfig, types.physicalConfig);
 const packTreasury = object(IDs.packTreasury, types.packTreasury);
 const packRelease = object(IDs.packRelease, types.packRelease);
-const degraded = Object.freeze({
-  enabled: false,
-  revision: registry.fields.protocolConfigRevision,
-  commitment: registry.fields.protocolConfigCommitment,
-});
 
 function makerExisting(listing = makerListing, sender = IDs.buyer) {
   return {
@@ -306,6 +420,7 @@ function makerExisting(listing = makerListing, sender = IDs.buyer) {
     listing,
     wallet: wallet(sender),
     expectation: expectation(listing),
+    chainQuote: makerChainQuote,
     adminReceiving: receiving(IDs.admin, types.makerAdmin),
   };
 }
@@ -316,6 +431,7 @@ function soulExisting(listing = soulListing, sender = IDs.buyer) {
     listing,
     wallet: wallet(sender),
     expectation: expectation(listing),
+    chainQuote: soulChainQuote,
     outputRegistry,
     soulRegistry,
     outputReceiving: receiving(IDs.output, types.completeOutput),
@@ -330,6 +446,7 @@ function physicalExisting(listing = baseListing, sender = IDs.buyer) {
     listing,
     wallet: wallet(sender),
     expectation: expectation(listing),
+    chainQuote: physicalChainQuote,
     physicalRegistry,
     physicalConfig,
     receiving: receiving(listing.fields.custody.assetId, types.physicalAsset),
@@ -341,23 +458,21 @@ function allActions() {
     listMakerControl: client.buildListMakerControl({
       ...common,
       wallet: wallet(IDs.seller),
+      root: rootAt(MARKET_V8_LIFECYCLES.PAUSED),
       admin: object(IDs.admin, types.makerAdmin),
       makerTreasury,
-      makerTreasuryBalanceAtomic: 0n,
-      lifecycle: BigInt(MARKET_V8_LIFECYCLES.PAUSED),
+      chainQuote: makerChainQuote,
       grossAtomic: 1_000_000n,
       expectedRegistryRevision: registry.fields.revision,
     }),
     purchaseMakerControl: client.buildPurchaseMakerControl({
       ...makerExisting(),
       protocolTreasury,
-      payment: payment(IDs.paymentMaker),
     }),
     cancelMakerControl: client.buildCancelMakerControl(makerExisting(makerListing, IDs.seller)),
     recoverMakerControl: client.buildRecoverMakerControl({
       ...makerExisting(makerListing, IDs.recoveryCaller),
-      lifecycle: BigInt(MARKET_V8_LIFECYCLES.ACTIVE),
-      protocolState: degraded,
+      protocolConfig: degraded,
     }),
     listSoulBundle: client.buildListSoulBundle({
       ...common,
@@ -367,7 +482,7 @@ function allActions() {
       outputAsset: object(IDs.output, types.completeOutput),
       receipt: object(IDs.receipt, types.completeReceipt),
       soul: object(IDs.soul, types.canonicalSoul),
-      lifecycle: BigInt(MARKET_V8_LIFECYCLES.ACTIVE),
+      chainQuote: soulChainQuote,
       grossAtomic: 1_000_000n,
       expectedRegistryRevision: registry.fields.revision,
     }),
@@ -375,13 +490,11 @@ function allActions() {
       ...soulExisting(),
       makerTreasury,
       protocolTreasury,
-      payment: payment(IDs.paymentSoul),
     }),
     cancelSoulListing: client.buildCancelSoulListing(soulExisting(soulListing, IDs.seller)),
     recoverSoulListing: client.buildRecoverSoulListing({
       ...soulExisting(soulListing, IDs.recoveryCaller),
-      lifecycle: BigInt(MARKET_V8_LIFECYCLES.ACTIVE),
-      protocolState: degraded,
+      protocolConfig: degraded,
     }),
     listBasePhysical: client.buildListBasePhysical({
       ...common,
@@ -391,9 +504,9 @@ function allActions() {
       makerTreasury,
       asset: object(IDs.baseAsset, types.physicalAsset, {
         sourceKind: '0',
-        sourceTreasuryId: IDs.makerTreasury,
+        sourceTreasuryId: null,
       }),
-      lifecycle: BigInt(MARKET_V8_LIFECYCLES.ACTIVE),
+      chainQuote: physicalChainQuote,
       grossAtomic: 1_000_000n,
       expectedRegistryRevision: registry.fields.revision,
     }),
@@ -407,7 +520,7 @@ function allActions() {
         sourceKind: '1',
         sourceTreasuryId: IDs.packTreasury,
       }),
-      lifecycle: BigInt(MARKET_V8_LIFECYCLES.ACTIVE),
+      chainQuote: physicalChainQuote,
       grossAtomic: 1_000_000n,
       expectedRegistryRevision: registry.fields.revision,
     }),
@@ -415,20 +528,17 @@ function allActions() {
       ...physicalExisting(baseListing),
       makerTreasury,
       protocolTreasury,
-      payment: payment(IDs.paymentBase),
     }),
     purchasePackPhysical: client.buildPurchasePackPhysical({
       ...physicalExisting(packListing),
       packRelease,
       packTreasury,
       protocolTreasury,
-      payment: payment(IDs.paymentPack),
     }),
     cancelPhysicalListing: client.buildCancelPhysicalListing(physicalExisting(baseListing, IDs.seller)),
     recoverPhysicalListing: client.buildRecoverPhysicalListing({
       ...physicalExisting(packListing, IDs.recoveryCaller),
-      lifecycle: BigInt(MARKET_V8_LIFECYCLES.ACTIVE),
-      protocolState: degraded,
+      protocolConfig: degraded,
     }),
   };
 }
@@ -465,7 +575,8 @@ function inputKind(input) {
 
 function transactionSnapshot(result) {
   const data = result.transaction.getData();
-  const call = data.commands[0]?.MoveCall;
+  const call = data.commands.find((command) => command.MoveCall)?.MoveCall;
+  const paymentIntent = data.commands.find((command) => command.$Intent?.name === 'CoinWithBalance')?.$Intent?.data ?? null;
   return {
     version: data.version,
     sender: data.sender,
@@ -483,6 +594,7 @@ function transactionSnapshot(result) {
       return { kind: inputKind(input) };
     }),
     arguments: call.arguments,
+    paymentIntent,
     commandCount: data.commands.length,
   };
 }
@@ -506,7 +618,7 @@ function u64Base64(value) {
 
 function expectedInput(argument) {
   if (argument.kind === 'object') return { kind: 'object', objectId: argument.objectId };
-  if (argument.kind === 'receiving' || argument.kind === 'payment') {
+  if (argument.kind === 'receiving') {
     return {
       kind: argument.kind,
       objectId: argument.objectId,
@@ -515,6 +627,49 @@ function expectedInput(argument) {
     };
   }
   return { kind: 'pure', bytes: u64Base64(argument.value) };
+}
+
+function fullListTransactionBytes(result, { functionName, firstObjectId, extraCommand = null } = {}) {
+  const descriptor = result.descriptor;
+  const [packageIdValue, moduleName, defaultFunction] = descriptor.target.split('::');
+  const inputs = descriptor.arguments.map((argument, index) => {
+    if (argument.kind === 'u64') return Inputs.Pure(bcs.u64().serialize(BigInt(argument.value)));
+    if (argument.kind === 'receiving') return Inputs.ReceivingRef({
+      objectId: argument.objectId,
+      version: argument.version,
+      digest: argument.digest,
+    });
+    return Inputs.SharedObjectRef({
+      objectId: index === 0 && firstObjectId ? firstObjectId : argument.objectId,
+      initialSharedVersion: '1',
+      mutable: true,
+    });
+  });
+  const commands = [{
+    MoveCall: {
+      package: packageIdValue,
+      module: moduleName,
+      function: functionName || defaultFunction,
+      typeArguments: [...descriptor.typeArguments],
+      arguments: inputs.map((_, Input) => ({ Input, $kind: 'Input' })),
+    },
+    $kind: 'MoveCall',
+  }];
+  if (extraCommand) commands.push(extraCommand);
+  const data = TransactionDataBuilder.restore({
+    version: 2,
+    sender: descriptor.sender,
+    expiration: null,
+    gasData: {
+      budget: '10000000',
+      price: '1000',
+      owner: descriptor.sender,
+      payment: [{ objectId: id(999), version: '1', digest }],
+    },
+    inputs,
+    commands,
+  });
+  return toBase64(data.build());
 }
 
 test('checked ABI fixture and client action table match all 14 exact Move signatures', () => {
@@ -535,7 +690,7 @@ test('checked ABI fixture and client action table match all 14 exact Move signat
 
 test('runtime and parsers pin every stable TypeOrigin and preserve u64/u128 as bigint', () => {
   assert.equal(client.runtime.callablePackageId, packageId('9'));
-  assert.equal(client.types.marketRegistry.startsWith(`${packageId('5')}::market_v8::`), true);
+  assert.equal(client.types.marketRegistry.startsWith(`${packageId('9')}::market_v8::`), true);
   assert.equal(client.types.makerRoot.startsWith(`${packageId('1')}::maker_v8::`), true);
   assert.equal(client.types.completeOutput.startsWith(`${packageId('2')}::output_v8::`), true);
   assert.equal(client.types.physicalAsset.startsWith(`${packageId('3')}::physical_v8::`), true);
@@ -609,28 +764,129 @@ test('quote mirror uses exact bigint shares and exact Move BCS commitment bytes'
   assert.doesNotThrow(() => client.quotePhysicalResale(registry, (1n << 64n) - 1n));
 });
 
+const quoteBcs = bcs.struct('MarketQuoteV8', {
+  quote_kind: bcs.u8(),
+  root_id: bcs.Address,
+  maker_version: bcs.u64(),
+  root_content_commitment: bcs.vector(bcs.u8()),
+  economics_commitment: bcs.vector(bcs.u8()),
+  rights_commitment: bcs.vector(bcs.u8()),
+  gross_atomic: bcs.u64(),
+  protocol_atomic: bcs.u64(),
+  creator_atomic: bcs.u64(),
+  source_atomic: bcs.u64(),
+  seller_atomic: bcs.u64(),
+  commitment: bcs.vector(bcs.u8()),
+});
+
+const hexVector = (value) => Uint8Array.from(value.slice(2).match(/.{2}/g).map((pair) => Number.parseInt(pair, 16)));
+function quoteBytes(quote) {
+  return quoteBcs.serialize({
+    quote_kind: quote.quoteKind,
+    root_id: quote.rootId,
+    maker_version: quote.makerVersion,
+    root_content_commitment: hexVector(quote.rootContentCommitment),
+    economics_commitment: hexVector(quote.economicsCommitment),
+    rights_commitment: hexVector(quote.rightsCommitment),
+    gross_atomic: quote.grossAtomic,
+    protocol_atomic: quote.protocolAtomic,
+    creator_atomic: quote.creatorAtomic,
+    source_atomic: quote.sourceAtomic,
+    seller_atomic: quote.sellerAtomic,
+    commitment: hexVector(quote.commitment),
+  }).toBytes();
+}
+
+async function inspectedProof(quoteKind, quote, sender = IDs.buyer) {
+  return client.inspectQuoteOnChain({
+    async simulateTransaction() {
+      return { $kind: 'Transaction', commandResults: [{ returnValues: [{ bcs: quoteBytes(quote) }] }] };
+    },
+  }, {
+    registry,
+    treasury,
+    root: common.root,
+    wallet: wallet(sender),
+    quoteKind,
+    grossAtomic: 1_000_000n,
+  });
+}
+
+const makerChainQuote = await inspectedProof(MARKET_V8_QUOTE_KINDS.MAKER_RESALE, makerQuote);
+const soulChainQuote = await inspectedProof(MARKET_V8_QUOTE_KINDS.SOUL_RESALE, soulQuote);
+const physicalChainQuote = await inspectedProof(MARKET_V8_QUOTE_KINDS.PHYSICAL_RESALE, assetQuote);
+
+test('quote review runs a real Market PTB dry-run, decodes BCS, and rejects drift', async () => {
+  const input = {
+    registry,
+    treasury,
+    root: common.root,
+    wallet: wallet(IDs.buyer),
+    quoteKind: MARKET_V8_QUOTE_KINDS.MAKER_RESALE,
+    grossAtomic: 1_000_000n,
+  };
+  const built = buildMarketQuoteInspectionV8(runtimeInput, input);
+  const data = built.transaction.getData();
+  assert.equal(data.sender, IDs.buyer);
+  assert.equal(data.commands[0].MoveCall.function, 'quote_maker_resale_v8');
+  assert.equal(data.commands[0].MoveCall.package, runtimeInput.roles.market.callablePackageId);
+  assert.equal(data.commands[0].MoveCall.typeArguments[0], runtimeInput.paymentCoinType);
+  assert.deepEqual(parseMarketQuoteV8Bcs(quoteBytes(makerQuote)), makerQuote);
+
+  const inspected = await inspectMarketQuoteOnChainV8({
+    async simulateTransaction({ transaction, include }) {
+      assert.equal(transaction.getData().commands[0].MoveCall.function, 'quote_maker_resale_v8');
+      assert.deepEqual(include, { commandResults: true });
+      return { $kind: 'Transaction', commandResults: [{ returnValues: [{ bcs: quoteBytes(makerQuote) }] }] };
+    },
+  }, runtimeInput, input);
+  assert.equal(inspected.commitment, makerQuote.commitment);
+  assert.equal(inspected.evidence.source, 'chain-dry-run');
+
+  const driftFields = {
+    ...makerQuote,
+    creatorAtomic: makerQuote.creatorAtomic + 1n,
+    sellerAtomic: makerQuote.sellerAtomic - 1n,
+  };
+  const drift = { ...driftFields, commitment: deriveMarketQuoteCommitmentV8(driftFields) };
+  await assert.rejects(() => client.inspectQuoteOnChain({
+    async devInspectTransactionBlock() {
+      return { effects: { status: { status: 'success' } }, results: [{ returnValues: [[[...quoteBytes(drift)], '0x0::market::MarketQuoteV8']] }] };
+    },
+  }, input), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_QUOTE_DRIFT');
+});
+
 test('all 14 builders snapshot real Transaction data with exact targets, types, argument order, and Receiving lanes', () => {
   const actions = allActions();
   assert.deepEqual(Object.keys(actions), Object.keys(fixture.actions));
   for (const [action, result] of Object.entries(actions)) {
     const expected = fixture.actions[action];
     const snapshot = transactionSnapshot(result);
+    let inputIndex = 0;
+    const expectedArguments = result.descriptor.arguments.map((argument) => {
+      if (argument.kind === 'payment') return { Result: 0, '$kind': 'Result' };
+      const current = inputIndex;
+      inputIndex += 1;
+      return { Input: current, type: argument.kind === 'u64' ? 'pure' : 'object', '$kind': 'Input' };
+    });
+    const paymentArgument = result.descriptor.arguments.find((argument) => argument.kind === 'payment');
     assert.deepEqual(snapshot, {
       version: 2,
       sender: result.descriptor.sender,
       expiration: null,
       gasData: { budget: null, price: null, owner: null, payment: null },
-      package: runtimeInput.callablePackageId,
+      package: runtimeInput.roles.market.callablePackageId,
       module: 'market_v8',
       function: expected.function,
       typeArguments: [client.runtime.paymentCoinType],
-      inputs: result.descriptor.arguments.map(expectedInput),
-      arguments: expected.clientArguments.map((name, index) => ({
-        Input: index,
-        type: expectedInputKind(name) === 'pure' ? 'pure' : 'object',
-        '$kind': 'Input',
-      })),
-      commandCount: 1,
+      inputs: result.descriptor.arguments.filter((argument) => argument.kind !== 'payment').map(expectedInput),
+      arguments: expectedArguments,
+      paymentIntent: paymentArgument ? {
+        type: client.runtime.paymentCoinType,
+        balance: 1_000_000n,
+        outputKind: 'coin',
+      } : null,
+      commandCount: paymentArgument ? 2 : 1,
     }, action);
     assert.deepEqual(result.descriptor.arguments.map(({ name, kind }) => ({ name, kind })),
       expected.clientArguments.map((name) => ({ name, kind: expectedInputKind(name) === 'payment' ? 'payment' : expectedInputKind(name) === 'pure' ? 'u64' : expectedInputKind(name) })));
@@ -656,27 +912,73 @@ test('all 14 builders snapshot real Transaction data with exact targets, types, 
     recoverPhysicalListing: 1,
   });
   for (const result of Object.values(actions).filter(({ descriptor }) => descriptor.action.startsWith('purchase'))) {
-    assert.equal(result.transaction.getData().inputs.filter((input) => input.Object?.ImmOrOwnedObject).length, 1);
+    assert.equal(result.transaction.getData().inputs.filter((input) => input.Object?.ImmOrOwnedObject).length, 0);
+    assert.equal(result.transaction.getData().commands.filter((command) => command.$Intent?.name === 'CoinWithBalance').length, 1);
     assert.equal(result.descriptor.arguments.filter((argument) => argument.kind === 'payment').length, 1);
     assert.equal(result.descriptor.arguments.find((argument) => argument.kind === 'payment').balanceAtomic, '1000000');
   }
+});
+
+test('signing evidence binds branded builder output to decoded full TransactionData bytes', () => {
+  const built = allActions().listMakerControl;
+  const transactionBytes = fullListTransactionBytes(built);
+  const evidence = createMarketV8RecoveryEvidenceV8(built, transactionBytes);
+  assert.equal(assertMarketV8RecoveryEvidenceV8(evidence), evidence);
+  assert.equal(evidence.descriptor.action, 'listMakerControl');
+  assert.equal(evidence.runtime, attestedRuntime);
+  assert.equal(evidence.transactionDigest, TransactionDataBuilder.getDigestFromBytes(Buffer.from(transactionBytes, 'base64')));
+
+  assert.throws(
+    () => createMarketV8RecoveryEvidenceV8({ ...built }, transactionBytes),
+    (error) => error.code === 'MARKET_V8_BUILT_ACTION_REQUIRED',
+  );
+  assert.throws(
+    () => createMarketV8RecoveryEvidenceV8(built, fullListTransactionBytes(built, { functionName: 'recover_maker_control_listing_v8' })),
+    (error) => error.code === 'MARKET_V8_TRANSACTION_TARGET_MISMATCH',
+  );
+  assert.throws(
+    () => createMarketV8RecoveryEvidenceV8(built, fullListTransactionBytes(built, { firstObjectId: id(998) })),
+    (error) => error.code === 'MARKET_V8_TRANSACTION_OBJECT_MISMATCH',
+  );
+  assert.throws(
+    () => assertMarketV8RecoveryEvidenceV8({ ...evidence }),
+    (error) => error.code === 'MARKET_V8_RECOVERY_EVIDENCE_REQUIRED',
+  );
+});
+
+test('parsed Market values and chain quote proofs cannot be forged by object spread', () => {
+  const registryClone = { ...registry, fields: { ...registry.fields, revision: 999n } };
+  assert.throws(() => client.quoteMakerResale(registryClone, 1_000_000n), (error) => (
+    error.code === 'MARKET_V8_PARSED_REGISTRY_REQUIRED'
+  ));
+  const quoteClone = { ...makerChainQuote, grossAtomic: 2_000_000n };
+  assert.throws(() => client.buildListMakerControl({
+    ...common,
+    wallet: wallet(IDs.seller),
+    root: rootAt(MARKET_V8_LIFECYCLES.PAUSED),
+    admin: object(IDs.admin, types.makerAdmin),
+    makerTreasury,
+    grossAtomic: 1_000_000n,
+    expectedRegistryRevision: registry.fields.revision,
+    chainQuote: quoteClone,
+  }), (error) => error.code === 'MARKET_V8_CHAIN_QUOTE_REQUIRED');
 });
 
 test('runtime, object, listing, and event parsers reject wrong types, origins, fields, and bindings', () => {
   assert.throws(() => assertMarketV8Runtime({
     ...runtimeInput,
     unexpected: true,
-  }), (error) => error instanceof MarketV8RuntimeError && error.code === 'MARKET_V8_FIELDS_INVALID');
+  }), (error) => error instanceof MarketV8RuntimeError && error.code === 'MAKER_V8_UNKNOWN_FIELD');
   assert.throws(() => assertMarketV8Runtime({
     ...runtimeInput,
-    callablePackageId: packageId('A'),
-  }), (error) => error instanceof MarketV8RuntimeError && error.code === 'MARKET_V8_PACKAGE_ID_INVALID');
+    roles: { ...runtimeInput.roles, market: { ...runtimeInput.roles.market, callablePackageId: packageId('A') } },
+  }), (error) => error instanceof MarketV8RuntimeError);
   assert.throws(() => createMarketV8Client(runtimeInput, { network: 'testnet' }), (error) => (
     error instanceof MarketV8RuntimeError && error.code === 'MARKET_V8_NETWORK_INVALID'
   ));
 
   const upgradedCallableOrigin = structuredClone(registryResponse);
-  upgradedCallableOrigin.data.content.type = upgradedCallableOrigin.data.content.type.replace(packageId('5'), packageId('9'));
+  upgradedCallableOrigin.data.content.type = upgradedCallableOrigin.data.content.type.replace(packageId('9'), packageId('5'));
   assert.throws(() => client.parseRegistry(upgradedCallableOrigin), (error) => (
     error instanceof MarketV8ParseError && error.code === 'MARKET_V8_TYPE_ORIGIN_MISMATCH'
   ));
@@ -697,7 +999,7 @@ test('runtime, object, listing, and event parsers reject wrong types, origins, f
   ));
 
   const opened = {
-    type: `${runtimeInput.typeOrigins.marketPackageId}::market_v8::MarketListingOpenedV8`,
+    type: `${runtimeInput.roles.market.typeOriginPackageId}::market_v8::MarketListingOpenedV8`,
     parsedJson: {
       listing_id: IDs.soulListing,
       registry_id: IDs.registry,
@@ -712,7 +1014,7 @@ test('runtime, object, listing, and event parsers reject wrong types, origins, f
   };
   assert.equal(client.parseEvent(opened).fields.lane, MARKET_V8_LANES.SOUL);
   assert.equal(client.parseEvent({
-    type: `${runtimeInput.typeOrigins.marketPackageId}::market_v8::MarketRegistrySealedV8`,
+    type: `${runtimeInput.roles.market.typeOriginPackageId}::market_v8::MarketRegistrySealedV8`,
     parsedJson: {
       root_id: IDs.root,
       registry_id: IDs.registry,
@@ -721,7 +1023,7 @@ test('runtime, object, listing, and event parsers reject wrong types, origins, f
     },
   }).fields.zeroStateCommitment, bytesHex(3));
   assert.equal(client.parseEvent({
-    type: `${runtimeInput.typeOrigins.marketPackageId}::market_v8::MarketListingSettledV8`,
+    type: `${runtimeInput.roles.market.typeOriginPackageId}::market_v8::MarketListingSettledV8`,
     parsedJson: {
       listing_id: IDs.baseListing,
       registry_id: IDs.registry,
@@ -737,7 +1039,7 @@ test('runtime, object, listing, and event parsers reject wrong types, origins, f
     },
   }).fields.buyer, IDs.buyer);
   assert.equal(client.parseEvent({
-    type: `${runtimeInput.typeOrigins.marketPackageId}::market_v8::MarketListingClosedV8`,
+    type: `${runtimeInput.roles.market.typeOriginPackageId}::market_v8::MarketListingClosedV8`,
     parsedJson: {
       listing_id: IDs.packListing,
       registry_id: IDs.registry,
@@ -749,7 +1051,7 @@ test('runtime, object, listing, and event parsers reject wrong types, origins, f
   }).fields.recovered, true);
   assert.throws(() => client.parseEvent({
     ...opened,
-    type: opened.type.replace(packageId('5'), packageId('9')),
+    type: opened.type.replace(packageId('9'), packageId('5')),
   }), (error) => error instanceof MarketV8ParseError && error.code === 'MARKET_V8_EVENT_TYPE_ORIGIN_MISMATCH');
 });
 
@@ -758,39 +1060,33 @@ test('builders reject wrong imported types and exact Receiving refs for 1/3/1 cu
     ...makerExisting(),
     wallet: { address: IDs.buyer, network: 'testnet' },
     protocolTreasury,
-    payment: payment(IDs.paymentMaker),
   }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_NETWORK_INVALID');
   assert.throws(() => client.buildPurchaseMakerControl({
     ...makerExisting(),
     root: { ...common.root, network: 'testnet' },
     protocolTreasury,
-    payment: payment(IDs.paymentMaker),
   }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_NETWORK_INVALID');
   assert.throws(() => client.buildPurchaseMakerControl({
     ...makerExisting(),
     root: object(IDs.root, types.completeOutput),
     protocolTreasury,
-    payment: payment(IDs.paymentMaker),
   }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_OBJECT_TYPE_MISMATCH');
   assert.throws(() => client.buildPurchaseMakerControl({
     ...makerExisting(),
     adminReceiving: receiving(IDs.receipt, types.makerAdmin),
     protocolTreasury,
-    payment: payment(IDs.paymentMaker),
   }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_OBJECT_REF_MISMATCH');
   assert.throws(() => client.buildPurchaseSoulBundle({
     ...soulExisting(),
     makerTreasury,
     protocolTreasury,
     receiptReceiving: receiving(IDs.output, types.completeReceipt),
-    payment: payment(IDs.paymentSoul),
   }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_OBJECT_REF_MISMATCH');
   assert.throws(() => client.buildPurchaseBasePhysical({
     ...physicalExisting(baseListing),
     makerTreasury,
     protocolTreasury,
     receiving: receiving(IDs.packAsset, types.physicalAsset),
-    payment: payment(IDs.paymentBase),
   }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_OBJECT_REF_MISMATCH');
 });
 
@@ -799,30 +1095,25 @@ test('eligibility rejects terminal status, stale revisions and quote commitment,
   assert.throws(() => client.buildPurchaseMakerControl({
     ...makerExisting(settled),
     protocolTreasury,
-    payment: payment(IDs.paymentMaker),
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_LISTING_NOT_OPEN');
   assert.throws(() => client.buildPurchaseMakerControl({
     ...makerExisting(),
     expectation: { ...expectation(makerListing), listingRevision: 1n },
     protocolTreasury,
-    payment: payment(IDs.paymentMaker),
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_STALE_LISTING_REVISION');
   assert.throws(() => client.buildPurchaseMakerControl({
     ...makerExisting(),
     expectation: { ...expectation(makerListing), registryRevision: 3n },
     protocolTreasury,
-    payment: payment(IDs.paymentMaker),
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_STALE_REGISTRY_REVISION');
   const staleQuote = client.parseMakerListing(makerListingResponse({ quote_commitment: bytes32(9) }));
   assert.throws(() => client.buildPurchaseMakerControl({
     ...makerExisting(staleQuote),
     protocolTreasury,
-    payment: payment(IDs.paymentMaker),
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_STALE_QUOTE');
   assert.throws(() => client.buildPurchaseMakerControl({
     ...makerExisting(makerListing, IDs.seller),
     protocolTreasury,
-    payment: payment(IDs.paymentMaker),
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_SELLER_SELF_BUY');
 });
 
@@ -831,14 +1122,12 @@ test('Base and Pack builders are statically distinct and reject cross-lane/sourc
     ...physicalExisting(packListing),
     makerTreasury,
     protocolTreasury,
-    payment: payment(IDs.paymentBase),
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_CROSS_SOURCE');
   assert.throws(() => client.buildPurchasePackPhysical({
     ...physicalExisting(baseListing),
     packRelease,
     packTreasury,
     protocolTreasury,
-    payment: payment(IDs.paymentPack),
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_CROSS_SOURCE');
   assert.throws(() => client.buildListBasePhysical({
     ...common,
@@ -846,11 +1135,22 @@ test('Base and Pack builders are statically distinct and reject cross-lane/sourc
     physicalRegistry,
     physicalConfig,
     makerTreasury,
+    chainQuote: physicalChainQuote,
     asset: object(IDs.packAsset, types.physicalAsset, { sourceKind: '1', sourceTreasuryId: IDs.makerTreasury }),
-    lifecycle: 1n,
     grossAtomic: 1_000_000n,
     expectedRegistryRevision: 4n,
   }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_CROSS_SOURCE');
+  assert.throws(() => client.buildListBasePhysical({
+    ...common,
+    wallet: wallet(IDs.seller),
+    physicalRegistry,
+    physicalConfig,
+    makerTreasury,
+    chainQuote: physicalChainQuote,
+    asset: object(IDs.baseAsset, types.physicalAsset, { sourceKind: '0', sourceTreasuryId: IDs.makerTreasury }),
+    grossAtomic: 1_000_000n,
+    expectedRegistryRevision: 4n,
+  }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_SOURCE_TREASURY_MISMATCH');
   const actions = allActions();
   assert.equal(actions.listBasePhysical.descriptor.target.endsWith('::list_base_physical_v8'), true);
   assert.equal(actions.listPackPhysical.descriptor.target.endsWith('::list_pack_physical_v8'), true);
@@ -859,22 +1159,26 @@ test('Base and Pack builders are statically distinct and reject cross-lane/sourc
   assert.equal(actions.purchasePackPhysical.descriptor.arguments[6].type, types.packTreasury);
 });
 
-test('purchase takes exactly one exact-value coin and rejects Number coercion, underpayment, and overpayment', () => {
+test('purchase derives one exact-value CoinWithBalance and forbids caller-authored payment objects', () => {
   const base = { ...makerExisting(), protocolTreasury };
-  for (const balance of ['999999', '1000001']) {
+  const built = client.buildPurchaseMakerControl(base);
+  const intent = built.transaction.getData().commands.find((command) => command.$Intent?.name === 'CoinWithBalance');
+  assert.deepEqual(intent.$Intent.data, {
+    type: runtimeInput.paymentCoinType,
+    balance: 1_000_000n,
+    outputKind: 'coin',
+  });
+  for (const supplied of [
+    payment(IDs.paymentMaker, '999999'),
+    payment(IDs.paymentMaker, '1000000'),
+    payment(IDs.paymentMaker, '1000001'),
+    [payment(IDs.paymentMaker)],
+  ]) {
     assert.throws(() => client.buildPurchaseMakerControl({
       ...base,
-      payment: payment(IDs.paymentMaker, balance),
-    }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_PAYMENT_AMOUNT_MISMATCH');
+      payment: supplied,
+    }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_CALLER_PAYMENT_FORBIDDEN');
   }
-  assert.throws(() => client.buildPurchaseMakerControl({
-    ...base,
-    payment: payment(IDs.paymentMaker, 1_000_000),
-  }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_INTEGER_INVALID');
-  assert.throws(() => client.buildPurchaseMakerControl({
-    ...base,
-    payment: [payment(IDs.paymentMaker)],
-  }), (error) => error instanceof MarketV8BuildError && error.code === 'MARKET_V8_OBJECT_INPUT_INVALID');
   assert.throws(() => client.buildListSoulBundle({
     ...common,
     wallet: wallet(IDs.seller),
@@ -883,7 +1187,6 @@ test('purchase takes exactly one exact-value coin and rejects Number coercion, u
     outputAsset: object(IDs.output, types.completeOutput),
     receipt: object(IDs.receipt, types.completeReceipt),
     soul: object(IDs.soul, types.canonicalSoul),
-    lifecycle: 1n,
     grossAtomic: 1_000_000,
     expectedRegistryRevision: 4n,
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_INTEGER_INVALID');
@@ -903,19 +1206,14 @@ test('cancel remains available across quote drift while recovery mirrors Maker v
     },
   });
   assert.equal(canceled.descriptor.action, 'cancelMakerControl');
-  const currentProtocol = {
-    enabled: true,
-    revision: registry.fields.protocolConfigRevision,
-    commitment: registry.fields.protocolConfigCommitment,
-  };
   assert.throws(() => client.buildRecoverMakerControl({
     ...makerExisting(makerListing, IDs.recoveryCaller),
-    lifecycle: 2n,
-    protocolState: currentProtocol,
+    root: rootAt(MARKET_V8_LIFECYCLES.PAUSED),
+    protocolConfig: currentProtocol,
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_NOT_RECOVERABLE');
   assert.doesNotThrow(() => client.buildRecoverSoulListing({
     ...soulExisting(soulListing, IDs.recoveryCaller),
-    lifecycle: 2n,
-    protocolState: currentProtocol,
+    root: rootAt(MARKET_V8_LIFECYCLES.PAUSED),
+    protocolConfig: currentProtocol,
   }));
 });

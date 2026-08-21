@@ -1,13 +1,17 @@
 import { bcs } from '@mysten/sui/bcs';
-import { Transaction } from '@mysten/sui/transactions';
+import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 import {
   fromBase58,
+  fromBase64,
   isValidStructTag,
   normalizeStructTag,
   normalizeSuiAddress,
   normalizeSuiObjectId,
+  toBase64,
 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { assertMakerV8Runtime } from './maker-v8-runtime.js';
+import { isMakerV8RuntimeAttested } from './maker-v8-chain.js';
 
 export const MARKET_V8_VERSION = 8n;
 export const MARKET_V8_ACTION_SCHEMA = 'animacraft.market-action.v8';
@@ -52,13 +56,8 @@ const EXACT_PACKAGE_ID = /^0x[0-9a-f]{64}$/;
 const HEX_BYTES = /^0x(?:[0-9a-f]{2})*$/;
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]+$/;
 const UTF8 = new TextEncoder();
-const PARSED = Symbol('market-v8-parsed');
+const PARSED_MARKET_VALUES = new WeakSet();
 
-const RUNTIME_KEYS = Object.freeze([
-  'callablePackageId',
-  'paymentCoinType',
-  'typeOrigins',
-]);
 const ORIGIN_KEYS = Object.freeze([
   'corePackageId',
   'marketPackageId',
@@ -67,6 +66,10 @@ const ORIGIN_KEYS = Object.freeze([
   'runtimePackageId',
 ]);
 const MARKET_V8_NETWORK = 'mainnet';
+const CHECKED_MARKET_RUNTIMES = new WeakSet();
+const CHAIN_QUOTE_PROOFS = new WeakSet();
+const BUILT_MARKET_ACTIONS = new WeakSet();
+const MARKET_RECOVERY_EVIDENCE = new WeakSet();
 
 function freezeRecord(value) {
   return Object.freeze(value);
@@ -166,17 +169,34 @@ function canonicalStructType(value, field, ErrorType = MarketV8RuntimeError) {
 }
 
 export function assertMarketV8Runtime(runtime) {
-  assertExactKeys(runtime, RUNTIME_KEYS, 'runtime', MarketV8RuntimeError);
-  assertExactKeys(runtime.typeOrigins, ORIGIN_KEYS, 'runtime.typeOrigins', MarketV8RuntimeError);
-  const origins = freezeRecord(Object.fromEntries(ORIGIN_KEYS.map((key) => [
-    key,
-    exactPackageId(runtime.typeOrigins[key], `runtime.typeOrigins.${key}`),
-  ])));
-  return freezeRecord({
-    callablePackageId: exactPackageId(runtime.callablePackageId, 'runtime.callablePackageId'),
-    paymentCoinType: canonicalStructType(runtime.paymentCoinType, 'runtime.paymentCoinType'),
-    typeOrigins: origins,
+  if (CHECKED_MARKET_RUNTIMES.has(runtime)) return runtime;
+  let checked;
+  try {
+    checked = assertMakerV8Runtime(runtime);
+  } catch (error) {
+    fail(
+      MarketV8RuntimeError,
+      error?.code || 'MARKET_V8_RUNTIME_INVALID',
+      error?.issues?.[0]?.field || 'runtime',
+      error?.message || 'The strict seven-role Maker v8 runtime is invalid.',
+      { cause: error },
+    );
+  }
+  const origins = freezeRecord({
+    corePackageId: exactPackageId(checked.roles.core.typeOriginPackageId, 'runtime.roles.core.typeOriginPackageId'),
+    marketPackageId: exactPackageId(checked.roles.market.typeOriginPackageId, 'runtime.roles.market.typeOriginPackageId'),
+    outputPackageId: exactPackageId(checked.roles.output.typeOriginPackageId, 'runtime.roles.output.typeOriginPackageId'),
+    physicalPackageId: exactPackageId(checked.roles.physical.typeOriginPackageId, 'runtime.roles.physical.typeOriginPackageId'),
+    runtimePackageId: exactPackageId(checked.roles.runtime.typeOriginPackageId, 'runtime.roles.runtime.typeOriginPackageId'),
   });
+  const normalized = freezeRecord({
+    callablePackageId: exactPackageId(checked.roles.market.callablePackageId, 'runtime.roles.market.callablePackageId'),
+    paymentCoinType: canonicalStructType(checked.paymentCoinType, 'runtime.paymentCoinType'),
+    typeOrigins: origins,
+    sourceRuntime: checked,
+  });
+  CHECKED_MARKET_RUNTIMES.add(normalized);
+  return normalized;
 }
 
 function networkName(value, field, ErrorType = MarketV8BuildError) {
@@ -364,8 +384,7 @@ function unwrapMoveObject(input, expectedType, kind) {
 }
 
 function parsedObject(kind, base, fields, network) {
-  return Object.freeze({
-    [PARSED]: true,
+  const parsed = Object.freeze({
     kind,
     network,
     objectId: base.objectId,
@@ -374,6 +393,8 @@ function parsedObject(kind, base, fields, network) {
     digest: base.digest,
     fields: freezeRecord(fields),
   });
+  PARSED_MARKET_VALUES.add(parsed);
+  return parsed;
 }
 
 function digestValue(value, field, ErrorType = MarketV8BuildError) {
@@ -402,7 +423,7 @@ const REGISTRY_FIELDS = Object.freeze([
 
 export function parseMarketRegistryV8(input, runtime, networkInput) {
   const network = networkName(networkInput, 'network', MarketV8ParseError);
-  assertMarketV8Runtime(runtime);
+  const checkedRuntime = assertMarketV8Runtime(runtime);
   const base = unwrapMoveObject(input, marketV8Types(runtime).marketRegistry, 'MarketRegistryV8');
   const f = expectFields(base.fields, REGISTRY_FIELDS, 'MarketRegistryV8.fields');
   const fields = {
@@ -442,6 +463,22 @@ export function parseMarketRegistryV8(input, runtime, networkInput) {
   if (fields.version !== MARKET_V8_VERSION) {
     fail(MarketV8ParseError, 'MARKET_V8_VERSION_MISMATCH', 'MarketRegistryV8.version', 'Market registry version must be 8.');
   }
+  const pinned = checkedRuntime.sourceRuntime;
+  for (const [field, observed, expected] of [
+    ['catalog_id', fields.catalogId, pinned.catalogId],
+    ['package_config_id', fields.packageConfigId, pinned.roleConfigIds.market],
+    ['protocol_config_id', fields.protocolConfigId, pinned.protocolConfigId],
+  ]) {
+    if (observed !== expected) {
+      fail(
+        MarketV8ParseError,
+        'MARKET_V8_RUNTIME_BINDING_MISMATCH',
+        `MarketRegistryV8.${field}`,
+        `${field} does not match the catalog/config identity pinned by the attested seven-role runtime.`,
+        { observed, expected },
+      );
+    }
+  }
   for (const [name, value] of Object.entries(fields).filter(([name]) => name.endsWith('Bps'))) {
     if (value > BPS_DENOMINATOR) {
       fail(MarketV8ParseError, 'MARKET_V8_BPS_INVALID', `MarketRegistryV8.${name}`, 'Basis points cannot exceed 10,000.');
@@ -457,7 +494,7 @@ const TREASURY_FIELDS = Object.freeze([
 
 export function parseMarketTreasuryV8(input, runtime, networkInput) {
   const network = networkName(networkInput, 'network', MarketV8ParseError);
-  assertMarketV8Runtime(runtime);
+  const checkedRuntime = assertMarketV8Runtime(runtime);
   const base = unwrapMoveObject(input, marketV8Types(runtime).marketTreasury, 'MarketTreasuryV8');
   const f = expectFields(base.fields, TREASURY_FIELDS, 'MarketTreasuryV8.fields');
   if (!plainRecord(f.escrow) || !hasOwn(f.escrow, 'value')) {
@@ -476,6 +513,15 @@ export function parseMarketTreasuryV8(input, runtime, networkInput) {
   };
   if (fields.version !== MARKET_V8_VERSION) {
     fail(MarketV8ParseError, 'MARKET_V8_VERSION_MISMATCH', 'MarketTreasuryV8.version', 'Market treasury version must be 8.');
+  }
+  if (fields.catalogId !== checkedRuntime.sourceRuntime.catalogId
+    || fields.packageConfigId !== checkedRuntime.sourceRuntime.roleConfigIds.market) {
+    fail(
+      MarketV8ParseError,
+      'MARKET_V8_RUNTIME_BINDING_MISMATCH',
+      'MarketTreasuryV8',
+      'Market treasury does not match the catalog and Market config pinned by the attested runtime.',
+    );
   }
   return parsedObject('MarketTreasuryV8', base, fields, network);
 }
@@ -675,22 +721,37 @@ const MARKET_QUOTE_COMMITMENT_BCS = bcs.struct('MarketQuoteCommitmentInputV8', {
   seller_atomic: bcs.u64(),
 });
 
+const MARKET_QUOTE_BCS = bcs.struct('MarketQuoteV8', {
+  quote_kind: bcs.u8(),
+  root_id: bcs.Address,
+  maker_version: bcs.u64(),
+  root_content_commitment: bcs.vector(bcs.u8()),
+  economics_commitment: bcs.vector(bcs.u8()),
+  rights_commitment: bcs.vector(bcs.u8()),
+  gross_atomic: bcs.u64(),
+  protocol_atomic: bcs.u64(),
+  creator_atomic: bcs.u64(),
+  source_atomic: bcs.u64(),
+  seller_atomic: bcs.u64(),
+  commitment: bcs.vector(bcs.u8()),
+});
+
 function assertRegistry(value) {
-  if (!value || value[PARSED] !== true || value.kind !== 'MarketRegistryV8') {
+  if (!value || !PARSED_MARKET_VALUES.has(value) || value.kind !== 'MarketRegistryV8') {
     fail(MarketV8ParseError, 'MARKET_V8_PARSED_REGISTRY_REQUIRED', 'registry', 'A parsed MarketRegistryV8 is required.');
   }
   return value;
 }
 
 function assertTreasury(value) {
-  if (!value || value[PARSED] !== true || value.kind !== 'MarketTreasuryV8') {
+  if (!value || !PARSED_MARKET_VALUES.has(value) || value.kind !== 'MarketTreasuryV8') {
     fail(MarketV8ParseError, 'MARKET_V8_PARSED_TREASURY_REQUIRED', 'treasury', 'A parsed MarketTreasuryV8 is required.');
   }
   return value;
 }
 
 function assertListing(value, kinds) {
-  if (!value || value[PARSED] !== true || !kinds.includes(value.kind)) {
+  if (!value || !PARSED_MARKET_VALUES.has(value) || !kinds.includes(value.kind)) {
     fail(
       MarketV8ParseError,
       'MARKET_V8_PARSED_LISTING_REQUIRED',
@@ -799,6 +860,50 @@ export function quoteSoulResaleV8(registry, grossAtomic) {
 
 export function quotePhysicalResaleV8(registry, grossAtomic) {
   return quoteMarketResaleV8(registry, MARKET_V8_QUOTE_KINDS.PHYSICAL_RESALE, grossAtomic);
+}
+
+export function parseMarketQuoteV8Bcs(input) {
+  let raw;
+  if (input instanceof Uint8Array) raw = input;
+  else if (Array.isArray(input) && input.every((item) => Number.isInteger(item) && item >= 0 && item <= 255)) {
+    raw = Uint8Array.from(input);
+  } else if (typeof input === 'string') {
+    try {
+      raw = fromBase64(input);
+    } catch {
+      fail(MarketV8ParseError, 'MARKET_V8_QUOTE_BCS_INVALID', 'quoteBcs', 'Market quote BCS must be bytes or canonical base64.');
+    }
+  } else {
+    fail(MarketV8ParseError, 'MARKET_V8_QUOTE_BCS_INVALID', 'quoteBcs', 'Market quote BCS must be bytes or canonical base64.');
+  }
+  let parsed;
+  try {
+    parsed = MARKET_QUOTE_BCS.parse(raw);
+  } catch (cause) {
+    fail(MarketV8ParseError, 'MARKET_V8_QUOTE_BCS_INVALID', 'quoteBcs', 'MarketQuoteV8 BCS could not be decoded.', { cause });
+  }
+  const quote = freezeRecord({
+    version: MARKET_V8_VERSION,
+    quoteKind: Number(enumUint(parsed.quote_kind, 8, 'quote.quoteKind')),
+    rootId: objectId(parsed.root_id, 'quote.rootId'),
+    makerVersion: uint(parsed.maker_version, 64, 'quote.makerVersion'),
+    rootContentCommitment: commitment(bytesToHex(parsed.root_content_commitment), 'quote.rootContentCommitment'),
+    economicsCommitment: commitment(bytesToHex(parsed.economics_commitment), 'quote.economicsCommitment'),
+    rightsCommitment: commitment(bytesToHex(parsed.rights_commitment), 'quote.rightsCommitment'),
+    grossAtomic: uint(parsed.gross_atomic, 64, 'quote.grossAtomic'),
+    protocolAtomic: uint(parsed.protocol_atomic, 64, 'quote.protocolAtomic'),
+    creatorAtomic: uint(parsed.creator_atomic, 64, 'quote.creatorAtomic'),
+    sourceAtomic: uint(parsed.source_atomic, 64, 'quote.sourceAtomic'),
+    sellerAtomic: uint(parsed.seller_atomic, 64, 'quote.sellerAtomic'),
+    commitment: commitment(bytesToHex(parsed.commitment), 'quote.commitment'),
+  });
+  if (!Object.values(MARKET_V8_QUOTE_KINDS).includes(quote.quoteKind)) {
+    fail(MarketV8ParseError, 'MARKET_V8_QUOTE_KIND_INVALID', 'quote.quoteKind', 'Quote kind is unknown.');
+  }
+  if (deriveMarketQuoteCommitmentV8(quote) !== quote.commitment) {
+    fail(MarketV8ParseError, 'MARKET_V8_QUOTE_COMMITMENT_MISMATCH', 'quote.commitment', 'On-chain quote commitment does not match its exact BCS fields.');
+  }
+  return quote;
 }
 
 const EVENT_FIELDS = Object.freeze({
@@ -1067,14 +1172,28 @@ export function inspectMarketCancelEligibilityV8(input) {
   return inspect(() => assertMarketCancelEligibilityV8(input));
 }
 
-function protocolDegraded(registry, protocolState) {
-  assertExactKeys(protocolState, ['commitment', 'enabled', 'revision'], 'protocolState', MarketV8EligibilityError);
-  if (typeof protocolState.enabled !== 'boolean') {
-    fail(MarketV8EligibilityError, 'MARKET_V8_PROTOCOL_STATE_INVALID', 'protocolState.enabled', 'Protocol enabled must be boolean.');
+function observedRootLifecycle(root) {
+  if (!root || typeof root !== 'object' || !hasOwn(root, 'lifecycleCode')) {
+    fail(MarketV8EligibilityError, 'MARKET_V8_VERIFIED_ROOT_REQUIRED', 'root.lifecycleCode', 'A lifecycle from verified Root readback is required.');
   }
-  const revision = uint(protocolState.revision, 64, 'protocolState.revision', MarketV8EligibilityError);
-  const commitmentValue = exactExpectedCommitment(protocolState.commitment, 'protocolState.commitment');
-  return !protocolState.enabled
+  if (Number.isInteger(root.lifecycleCode) && root.lifecycleCode >= 0 && root.lifecycleCode <= 255) {
+    return root.lifecycleCode;
+  }
+  return Number(uint(root.lifecycleCode, 8, 'root.lifecycleCode', MarketV8EligibilityError));
+}
+
+function protocolDegraded(registry, protocolConfig) {
+  if (!protocolConfig || typeof protocolConfig !== 'object'
+    || !hasOwn(protocolConfig, 'enabled') || !hasOwn(protocolConfig, 'revision')
+    || !hasOwn(protocolConfig, 'commitment')) {
+    fail(MarketV8EligibilityError, 'MARKET_V8_VERIFIED_PROTOCOL_REQUIRED', 'protocolConfig', 'Verified ProtocolConfig readback state is required.');
+  }
+  if (typeof protocolConfig.enabled !== 'boolean') {
+    fail(MarketV8EligibilityError, 'MARKET_V8_PROTOCOL_STATE_INVALID', 'protocolConfig.enabled', 'Protocol enabled must be boolean.');
+  }
+  const revision = uint(protocolConfig.revision, 64, 'protocolConfig.revision', MarketV8EligibilityError);
+  const commitmentValue = exactExpectedCommitment(protocolConfig.commitment, 'protocolConfig.commitment');
+  return !protocolConfig.enabled
     || revision !== registry.fields.protocolConfigRevision
     || commitmentValue !== registry.fields.protocolConfigCommitment;
 }
@@ -1084,8 +1203,8 @@ export function assertMarketRecoveryEligibilityV8({
   registry: registryInput,
   treasury: treasuryInput,
   lane,
-  lifecycle,
-  protocolState,
+  root,
+  protocolConfig,
   expectation,
 }) {
   const listing = assertListing(listingInput, ['MakerListingV8', 'SoulListingV8', 'PhysicalListingV8']);
@@ -1094,8 +1213,8 @@ export function assertMarketRecoveryEligibilityV8({
   assertLane(listing, lane);
   assertListingBinding(listing, registry, treasury);
   assertSnapshot(listing, registry, expectation);
-  const lifecycleValue = Number(uint(lifecycle, 8, 'lifecycle', MarketV8EligibilityError));
-  const degraded = protocolDegraded(registry, protocolState);
+  const lifecycleValue = observedRootLifecycle(root);
+  const degraded = protocolDegraded(registry, protocolConfig);
   const recoverable = lane === MARKET_V8_LANES.MAKER
     ? lifecycleValue === MARKET_V8_LIFECYCLES.ARCHIVED || degraded
     : [MARKET_V8_LIFECYCLES.PAUSED, MARKET_V8_LIFECYCLES.ARCHIVED].includes(lifecycleValue) || degraded;
@@ -1176,27 +1295,11 @@ function typedObject(value, expectedType, field, { expectedId } = {}) {
   return freezeRecord({ objectId: id, network, type: actualType, source: value });
 }
 
-function exactRef(value, expectedType, field, expectedId, { paymentAtomic } = {}) {
+function exactRef(value, expectedType, field, expectedId) {
   const checked = typedObject(value, expectedType, field, { expectedId });
   const version = uint(value.version, 64, `${field}.version`, MarketV8BuildError);
   const digest = digestValue(value.digest, `${field}.digest`);
-  let balanceAtomic;
-  if (paymentAtomic !== undefined) {
-    if (Array.isArray(value) || !hasOwn(value, 'balanceAtomic')) {
-      fail(MarketV8BuildError, 'MARKET_V8_EXACT_PAYMENT_REQUIRED', field, 'Exactly one payment coin with an observed balance is required.');
-    }
-    balanceAtomic = uint(value.balanceAtomic, 64, `${field}.balanceAtomic`, MarketV8BuildError);
-    if (balanceAtomic !== paymentAtomic) {
-      fail(
-        MarketV8BuildError,
-        'MARKET_V8_PAYMENT_AMOUNT_MISMATCH',
-        `${field}.balanceAtomic`,
-        'Payment coin balance must equal the listing gross exactly; underpayment and overpayment are forbidden.',
-        { actual: balanceAtomic.toString(), expected: paymentAtomic.toString() },
-      );
-    }
-  }
-  return freezeRecord({ ...checked, version, digest, balanceAtomic });
+  return freezeRecord({ ...checked, version, digest });
 }
 
 function sourceKind(value, field) {
@@ -1211,16 +1314,36 @@ function expectedSourceTreasury(value, field) {
   if (source === undefined) {
     fail(MarketV8BuildError, 'MARKET_V8_SOURCE_TREASURY_REQUIRED', `${field}.sourceTreasuryId`, 'Physical asset source treasury identity is required.');
   }
+  if (source === null || (Array.isArray(source) && source.length === 0)
+    || (plainRecord(source) && Array.isArray(source.vec) && source.vec.length === 0)) return null;
+  if (Array.isArray(source)) {
+    if (source.length !== 1) fail(MarketV8BuildError, 'MARKET_V8_SOURCE_TREASURY_INVALID', `${field}.sourceTreasuryId`, 'Physical source treasury Option is malformed.');
+    [source] = source;
+  } else if (plainRecord(source) && Array.isArray(source.vec)) {
+    if (source.vec.length !== 1) fail(MarketV8BuildError, 'MARKET_V8_SOURCE_TREASURY_INVALID', `${field}.sourceTreasuryId`, 'Physical source treasury Option is malformed.');
+    [source] = source.vec;
+  }
   return buildId(source, `${field}.sourceTreasuryId`);
 }
 
-function requireSource(value, expectedKind, treasuryId, field) {
+function requireSource(value, expectedKind, treasuryId, rootInput, field) {
   const actualKind = sourceKind(value, field);
   if (actualKind !== expectedKind) {
     fail(MarketV8BuildError, 'MARKET_V8_CROSS_SOURCE', `${field}.sourceKind`, 'Physical asset belongs to the other static source lane.');
   }
   const actualTreasury = expectedSourceTreasury(value, field);
-  if (actualTreasury !== treasuryId) {
+  if (expectedKind === MARKET_V8_PHYSICAL_SOURCES.BASE) {
+    if (actualTreasury !== null) {
+      fail(MarketV8BuildError, 'MARKET_V8_SOURCE_TREASURY_MISMATCH', `${field}.sourceTreasuryId`, 'Base Physical provenance must have no source treasury.');
+    }
+    const boundMakerTreasury = rootInput?.binding?.makerTreasuryId;
+    if (typeof boundMakerTreasury !== 'string') {
+      fail(MarketV8BuildError, 'MARKET_V8_VERIFIED_ROOT_BINDING_REQUIRED', 'root.binding.makerTreasuryId', 'Base Physical listing requires the MakerTreasury ID from a verified Root readback.');
+    }
+    if (buildId(boundMakerTreasury, 'root.binding.makerTreasuryId') !== treasuryId) {
+      fail(MarketV8BuildError, 'MARKET_V8_SOURCE_TREASURY_MISMATCH', 'makerTreasury.objectId', 'Selected MakerTreasury does not match the verified Root binding.');
+    }
+  } else if (actualTreasury !== treasuryId) {
     fail(MarketV8BuildError, 'MARKET_V8_SOURCE_TREASURY_MISMATCH', `${field}.sourceTreasuryId`, 'Physical source treasury does not match the selected lane treasury.');
   }
 }
@@ -1233,8 +1356,8 @@ function argReceiving(name, checked) {
   return freezeRecord({ kind: 'receiving', name, ...checked });
 }
 
-function argPayment(name, checked) {
-  return freezeRecord({ kind: 'payment', name, ...checked });
+function argPayment(name, type, network, balanceAtomic) {
+  return freezeRecord({ kind: 'payment', name, type, network, balanceAtomic });
 }
 
 function argU64(name, value) {
@@ -1268,9 +1391,7 @@ function compileAction(runtimeInput, action, lane, walletInput, args, expectatio
     if (arg.kind === 'receiving') {
       return transaction.receivingRef({ objectId: arg.objectId, version: arg.version.toString(), digest: arg.digest });
     }
-    if (arg.kind === 'payment') {
-      return transaction.objectRef({ objectId: arg.objectId, version: arg.version.toString(), digest: arg.digest });
-    }
+    if (arg.kind === 'payment') return transaction.coin({ type: arg.type, balance: arg.balanceAtomic });
     return transaction.object(arg.objectId);
   });
   const target = `${runtime.callablePackageId}::market_v8::${abi.function}`;
@@ -1279,6 +1400,7 @@ function compileAction(runtimeInput, action, lane, walletInput, args, expectatio
     kind: arg.kind,
     name: arg.name,
     ...(arg.objectId ? { objectId: arg.objectId, type: arg.type } : {}),
+    ...(!arg.objectId && arg.type ? { type: arg.type } : {}),
     ...(arg.version !== undefined ? { version: arg.version.toString(), digest: arg.digest } : {}),
     ...(arg.balanceAtomic !== undefined ? { balanceAtomic: arg.balanceAtomic.toString() } : {}),
     ...(arg.value !== undefined ? { value: arg.value.toString() } : {}),
@@ -1291,6 +1413,15 @@ function compileAction(runtimeInput, action, lane, walletInput, args, expectatio
     typeArguments: Object.freeze([runtime.paymentCoinType]),
     sender,
     network: wallet.network,
+    catalogId: runtime.sourceRuntime.catalogId,
+    protocolConfigId: runtime.sourceRuntime.protocolConfigId,
+    protocolTreasuryId: runtime.sourceRuntime.protocolTreasuryId,
+    roleConfigIds: freezeRecord({ ...runtime.sourceRuntime.roleConfigIds }),
+    packageTuple: Object.freeze(Object.entries(runtime.sourceRuntime.roles).map(([role, identity]) => freezeRecord({
+      role,
+      originalPackageId: identity.typeOriginPackageId,
+      callablePackageId: identity.callablePackageId,
+    }))),
     arguments: descriptorArgs,
     ...(expectation ? { expectation: freezeRecord({
       listingRevision: String(expectation.listingRevision),
@@ -1298,7 +1429,193 @@ function compileAction(runtimeInput, action, lane, walletInput, args, expectatio
       quoteCommitment: expectation.quoteCommitment,
     }) } : {}),
   });
-  return freezeRecord({ descriptor, transaction });
+  const built = freezeRecord({ descriptor, transaction, runtime: runtime.sourceRuntime });
+  BUILT_MARKET_ACTIONS.add(built);
+  return built;
+}
+
+export function assertMarketV8BuiltActionV8(value) {
+  if (!value || !BUILT_MARKET_ACTIONS.has(value)) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_BUILT_ACTION_REQUIRED',
+      'builtAction',
+      'Only an action produced by the strict Market v8 Transaction builder may enter signing recovery.',
+    );
+  }
+  return value;
+}
+
+function transactionObjectIdentity(input, field) {
+  const object = input?.Object;
+  const value = object?.ImmOrOwnedObject ?? object?.SharedObject ?? object?.Receiving;
+  if (!value || typeof value.objectId !== 'string') {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_OBJECT_INVALID', field, `${field} is not an exact TransactionData object input.`);
+  }
+  return {
+    objectId: buildId(value.objectId, `${field}.objectId`),
+    kind: object?.$kind,
+    version: value.version === undefined ? null : String(value.version),
+    digest: value.digest ?? null,
+  };
+}
+
+function u64PureBytes(value) {
+  let remaining = uint(value, 64, 'transaction.u64', MarketV8BuildError);
+  const raw = new Uint8Array(8);
+  for (let index = 0; index < raw.length; index += 1) {
+    raw[index] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+  return toBase64(raw);
+}
+
+function inputArgumentIndex(argument, field) {
+  if (argument?.$kind !== 'Input' || !Number.isInteger(argument.Input) || argument.Input < 0) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_ARGUMENT_INVALID', field, `${field} must reference the exact declared TransactionData input.`);
+  }
+  return argument.Input;
+}
+
+function assertEncodedMarketArgument(snapshot, command, descriptor, index) {
+  const expected = descriptor.arguments[index];
+  const argument = command.arguments[index];
+  const field = `transaction.arguments.${expected.name}`;
+  if (expected.kind === 'payment') {
+    if (argument?.$kind !== 'NestedResult' || !Array.isArray(argument.NestedResult)) {
+      fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_PAYMENT_INVALID', field, 'Exact payment must be the result of the SDK CoinWithBalance split.');
+    }
+    const [commandIndex, resultIndex] = argument.NestedResult;
+    const split = snapshot.commands[commandIndex]?.SplitCoins;
+    if (!split || !Number.isInteger(resultIndex) || resultIndex < 0 || resultIndex >= split.amounts.length) {
+      fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_PAYMENT_INVALID', field, 'Exact payment does not reference a valid CoinWithBalance split result.');
+    }
+    const amountInput = snapshot.inputs[inputArgumentIndex(split.amounts[resultIndex], `${field}.amount`)];
+    if (amountInput?.Pure?.bytes !== u64PureBytes(expected.balanceAtomic)) {
+      fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_PAYMENT_AMOUNT_MISMATCH', field, 'Encoded payment split is not the reviewed exact gross amount.');
+    }
+    return;
+  }
+  const input = snapshot.inputs[inputArgumentIndex(argument, field)];
+  if (expected.kind === 'u64') {
+    if (input?.Pure?.bytes !== u64PureBytes(expected.value)) {
+      fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_PURE_MISMATCH', field, 'Encoded u64 differs from the verified builder descriptor.');
+    }
+    return;
+  }
+  const observed = transactionObjectIdentity(input, field);
+  if (observed.objectId !== expected.objectId) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_OBJECT_MISMATCH', field, 'Encoded object ID differs from the verified builder descriptor.');
+  }
+  if (expected.kind === 'receiving') {
+    if (observed.kind !== 'Receiving'
+      || observed.version !== expected.version
+      || observed.digest !== expected.digest) {
+      fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_RECEIVING_MISMATCH', field, 'Encoded Receiving reference differs from the verified child object ref.');
+    }
+  } else if (observed.kind === 'Receiving') {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_OBJECT_KIND_MISMATCH', field, 'A normal object argument was replaced with Receiving.');
+  }
+}
+
+function allowedCoinPlumbing(command, paymentCoinType) {
+  if (command?.MergeCoins || command?.SplitCoins) return true;
+  const call = command?.MoveCall;
+  if (!call) return false;
+  const system = normalizeSuiAddress('0x2');
+  const allowed = new Set([
+    'coin::redeem_funds',
+    'coin::destroy_zero',
+    'coin::into_balance',
+    'coin::send_funds',
+    'balance::redeem_funds',
+  ]);
+  return call.package === system
+    && allowed.has(`${call.module}::${call.function}`)
+    && call.typeArguments.length === 1
+    && call.typeArguments[0] === paymentCoinType;
+}
+
+export function createMarketV8RecoveryEvidenceV8(builtActionInput, transactionBytesInput) {
+  const builtAction = assertMarketV8BuiltActionV8(builtActionInput);
+  if (!isMakerV8RuntimeAttested(builtAction.runtime)) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_RUNTIME_ATTESTATION_REQUIRED',
+      'runtime',
+      'Signing recovery requires the Mainnet ProductReleaseCatalog and all six companion configs to be read back and attested.',
+    );
+  }
+  if (typeof transactionBytesInput !== 'string' || transactionBytesInput.length < 8) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_BYTES_INVALID', 'transactionBytes', 'Built TransactionData bytes must be canonical base64.');
+  }
+  let bytes;
+  let snapshot;
+  try {
+    bytes = fromBase64(transactionBytesInput);
+    if (toBase64(bytes) !== transactionBytesInput) throw new TypeError('non-canonical base64');
+    snapshot = TransactionDataBuilder.fromBytes(bytes).snapshot();
+  } catch (error) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_TRANSACTION_BYTES_INVALID',
+      'transactionBytes',
+      'Built TransactionData bytes are not a canonical programmable Sui transaction.',
+      { cause: String(error?.message || error) },
+    );
+  }
+  const descriptor = builtAction.descriptor;
+  if (snapshot.sender !== descriptor.sender || snapshot.gasData?.owner !== descriptor.sender) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_SENDER_MISMATCH', 'transaction.sender', 'Transaction sender/gas owner differs from the verified wallet account.');
+  }
+  if (!/^[1-9][0-9]*$/.test(String(snapshot.gasData?.budget ?? ''))
+    || !/^[1-9][0-9]*$/.test(String(snapshot.gasData?.price ?? ''))
+    || !Array.isArray(snapshot.gasData?.payment)
+    || snapshot.gasData.payment.length === 0) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_GAS_INVALID', 'transaction.gasData', 'Signing evidence requires fully resolved positive gas data and at least one exact gas object ref.');
+  }
+  const [expectedPackage, expectedModule, expectedFunction] = descriptor.target.split('::');
+  const marketCalls = snapshot.commands.filter((entry) => entry?.MoveCall
+    && entry.MoveCall.package === expectedPackage
+    && entry.MoveCall.module === expectedModule
+    && entry.MoveCall.function === expectedFunction);
+  if (marketCalls.length !== 1) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_TARGET_MISMATCH', 'transaction.commands', 'Transaction must contain exactly one verified Market action call.');
+  }
+  const marketCall = marketCalls[0].MoveCall;
+  if (marketCall.typeArguments.length !== descriptor.typeArguments.length
+    || marketCall.typeArguments.some((type, index) => type !== descriptor.typeArguments[index])
+    || marketCall.arguments.length !== descriptor.arguments.length) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_ABI_MISMATCH', 'transaction.moveCall', 'Transaction type arguments or argument count differ from the checked Market ABI.');
+  }
+  marketCall.arguments.forEach((_, index) => assertEncodedMarketArgument(snapshot, marketCall, descriptor, index));
+  for (const command of snapshot.commands) {
+    if (command.MoveCall === marketCall) continue;
+    if (!allowedCoinPlumbing(command, descriptor.typeArguments[0])) {
+      fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_EXTRA_COMMAND', 'transaction.commands', 'Transaction contains a non-Market command outside the exact CoinWithBalance plumbing.');
+    }
+  }
+  const evidence = freezeRecord({
+    schema: 'animacraft.market-recovery-evidence.v8',
+    transactionBytes: transactionBytesInput,
+    transactionDigest: TransactionDataBuilder.getDigestFromBytes(bytes),
+    descriptor,
+    runtime: builtAction.runtime,
+  });
+  MARKET_RECOVERY_EVIDENCE.add(evidence);
+  return evidence;
+}
+
+export function assertMarketV8RecoveryEvidenceV8(value) {
+  if (!value || !MARKET_RECOVERY_EVIDENCE.has(value)) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_RECOVERY_EVIDENCE_REQUIRED',
+      'recoveryEvidence',
+      'Signing requires freshly revalidated Market builder evidence for the exact TransactionData bytes.',
+    );
+  }
+  return value;
 }
 
 function marketArgs(types, registry, treasury) {
@@ -1308,11 +1625,36 @@ function marketArgs(types, registry, treasury) {
   };
 }
 
-function commonBoundObjects(types, registry, input) {
+function verifiedBindingId(root, field) {
+  const value = root?.binding?.[field];
+  if (typeof value !== 'string') {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_VERIFIED_ROOT_BINDING_REQUIRED',
+      `root.binding.${field}`,
+      `A verified Root readback must provide ${field}.`,
+    );
+  }
+  return buildId(value, `root.binding.${field}`);
+}
+
+function commonBoundObjects(runtime, types, registry, input) {
+  const root = typedObject(input.root, types.makerRoot, 'root', { expectedId: registry.fields.rootId });
+  const pinned = runtime.sourceRuntime;
+  const registryId = verifiedBindingId(input.root, 'marketRegistryId');
+  const treasuryId = verifiedBindingId(input.root, 'marketTreasuryId');
+  if (registryId !== registry.objectId || treasuryId !== registry.fields.treasuryId) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_ROOT_MARKET_BINDING_MISMATCH',
+      'root.binding',
+      'Market Registry/Treasury do not match the verified Root capability binding.',
+    );
+  }
   return {
-    root: typedObject(input.root, types.makerRoot, 'root', { expectedId: registry.fields.rootId }),
-    catalog: typedObject(input.catalog, types.catalog, 'catalog', { expectedId: registry.fields.catalogId }),
-    config: typedObject(input.config, types.marketConfig, 'config', { expectedId: registry.fields.packageConfigId }),
+    root,
+    catalog: typedObject(input.catalog, types.catalog, 'catalog', { expectedId: pinned.catalogId }),
+    config: typedObject(input.config, types.marketConfig, 'config', { expectedId: pinned.roleConfigIds.market }),
   };
 }
 
@@ -1320,15 +1662,201 @@ function protocolObject(types, registry, value) {
   return typedObject(value, types.protocolConfig, 'protocolConfig', { expectedId: registry.fields.protocolConfigId });
 }
 
+const MARKET_QUOTE_FUNCTIONS = Object.freeze({
+  [MARKET_V8_QUOTE_KINDS.MAKER_RESALE]: 'quote_maker_resale_v8',
+  [MARKET_V8_QUOTE_KINDS.SOUL_RESALE]: 'quote_soul_resale_v8',
+  [MARKET_V8_QUOTE_KINDS.PHYSICAL_RESALE]: 'quote_physical_resale_v8',
+});
+
+export function buildMarketQuoteInspectionV8(runtimeInput, input) {
+  const runtime = assertMarketV8Runtime(runtimeInput);
+  const types = marketV8Types(runtime);
+  const wallet = assertMarketV8WalletContext(runtime, input.wallet);
+  const { registry, treasury } = assertMarketPairV8(input.registry, input.treasury);
+  if (registry.network !== wallet.network) {
+    fail(MarketV8BuildError, 'MARKET_V8_OBJECT_NETWORK_MISMATCH', 'registry.network', 'Market quote objects came from a different network than the connected wallet.');
+  }
+  const quoteKind = Number(enumUint(input.quoteKind, 8, 'quoteKind', MarketV8BuildError));
+  const functionName = MARKET_QUOTE_FUNCTIONS[quoteKind];
+  if (!functionName) fail(MarketV8BuildError, 'MARKET_V8_QUOTE_KIND_INVALID', 'quoteKind', 'Quote kind is unknown.');
+  const grossAtomic = uint(input.grossAtomic, 64, 'grossAtomic', MarketV8BuildError);
+  const market = marketArgs(types, registry, treasury);
+  const root = typedObject(input.root, types.makerRoot, 'root', { expectedId: registry.fields.rootId });
+  if (verifiedBindingId(input.root, 'marketRegistryId') !== registry.objectId
+    || verifiedBindingId(input.root, 'marketTreasuryId') !== treasury.objectId) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_ROOT_MARKET_BINDING_MISMATCH',
+      'root.binding',
+      'Quote inspection objects do not match the verified Root Market binding.',
+    );
+  }
+  for (const object of [market.registry, market.treasury, root]) {
+    if (object.network !== wallet.network) {
+      fail(MarketV8BuildError, 'MARKET_V8_OBJECT_NETWORK_MISMATCH', 'quote.network', 'Market quote objects came from a different network than the connected wallet.');
+    }
+  }
+  const localQuote = quoteMarketResaleV8(registry, quoteKind, grossAtomic);
+  const transaction = new Transaction();
+  transaction.setSender(wallet.address);
+  const target = `${runtime.callablePackageId}::market_v8::${functionName}`;
+  transaction.moveCall({
+    target,
+    typeArguments: [runtime.paymentCoinType],
+    arguments: [
+      transaction.object(market.registry.objectId),
+      transaction.object(market.treasury.objectId),
+      transaction.object(root.objectId),
+      transaction.pure.u64(grossAtomic),
+    ],
+  });
+  return freezeRecord({
+    transaction,
+    commandIndex: 0,
+    descriptor: freezeRecord({
+      schema: MARKET_V8_ACTION_SCHEMA,
+      action: 'inspectQuote',
+      quoteKind,
+      target,
+      typeArguments: Object.freeze([runtime.paymentCoinType]),
+      sender: wallet.address,
+      network: wallet.network,
+      registryId: registry.objectId,
+      treasuryId: treasury.objectId,
+      rootId: root.objectId,
+      grossAtomic: grossAtomic.toString(),
+    }),
+    localQuote,
+  });
+}
+
+function marketQuoteReturnBytes(result, commandIndex) {
+  const simulated = result?.commandResults?.[commandIndex]?.returnValues?.[0]?.bcs;
+  if (simulated instanceof Uint8Array || Array.isArray(simulated) || typeof simulated === 'string') return simulated;
+  const inspected = result?.results?.[commandIndex]?.returnValues?.[0]?.[0];
+  if (inspected instanceof Uint8Array || Array.isArray(inspected) || typeof inspected === 'string') return inspected;
+  fail(MarketV8ParseError, 'MARKET_V8_QUOTE_RETURN_MISSING', 'quoteReturn', 'Dry-run did not return a readable MarketQuoteV8.');
+}
+
+function assertChainQuoteMatches(localQuote, chainQuote) {
+  for (const field of [
+    'quoteKind', 'rootId', 'makerVersion', 'rootContentCommitment', 'economicsCommitment',
+    'rightsCommitment', 'grossAtomic', 'protocolAtomic', 'creatorAtomic', 'sourceAtomic',
+    'sellerAtomic', 'commitment',
+  ]) {
+    if (chainQuote[field] !== localQuote[field]) {
+      fail(
+        MarketV8EligibilityError,
+        'MARKET_V8_QUOTE_DRIFT',
+        `quote.${field}`,
+        'The chain-authoritative quote changed; refresh and review the exact split again before signing.',
+        { actual: String(chainQuote[field]), expected: String(localQuote[field]) },
+      );
+    }
+  }
+}
+
+export async function inspectMarketQuoteOnChainV8(client, runtimeInput, input) {
+  const built = buildMarketQuoteInspectionV8(runtimeInput, input);
+  let result;
+  if (typeof client?.simulateTransaction === 'function') {
+    result = await client.simulateTransaction({
+      transaction: built.transaction,
+      include: { commandResults: true },
+    });
+  } else if (typeof client?.core?.simulateTransaction === 'function') {
+    result = await client.core.simulateTransaction({
+      transaction: built.transaction,
+      include: { commandResults: true },
+    });
+  } else if (typeof client?.devInspectTransactionBlock === 'function') {
+    result = await client.devInspectTransactionBlock({
+      sender: built.descriptor.sender,
+      transactionBlock: built.transaction,
+    });
+  } else {
+    fail(MarketV8BuildError, 'MARKET_V8_QUOTE_CLIENT_MISSING', 'client', 'A Sui client with simulateTransaction or devInspectTransactionBlock is required.');
+  }
+  const failed = result?.$kind === 'FailedTransaction'
+    || Boolean(result?.FailedTransaction)
+    || result?.effects?.status?.status === 'failure'
+    || result?.error !== undefined;
+  if (failed) {
+    fail(
+      MarketV8EligibilityError,
+      'MARKET_V8_QUOTE_DRY_RUN_FAILED',
+      'quote',
+      result?.FailedTransaction?.status?.error?.message
+        || result?.effects?.status?.error
+        || result?.error
+        || 'Chain-authoritative Market quote dry-run failed.',
+    );
+  }
+  const quote = parseMarketQuoteV8Bcs(marketQuoteReturnBytes(result, built.commandIndex));
+  assertChainQuoteMatches(built.localQuote, quote);
+  const proof = freezeRecord({
+    ...quote,
+    evidence: freezeRecord({
+      source: 'chain-dry-run',
+      network: built.descriptor.network,
+      target: built.descriptor.target,
+      rootId: built.descriptor.rootId,
+      registryId: built.descriptor.registryId,
+      treasuryId: built.descriptor.treasuryId,
+      registryRevision: built.localQuote.registryRevision ?? input.registry.fields.revision,
+      quoteKind: built.descriptor.quoteKind,
+      grossAtomic: built.descriptor.grossAtomic,
+    }),
+  });
+  CHAIN_QUOTE_PROOFS.add(proof);
+  return proof;
+}
+
+function requireChainQuoteProof(runtime, registry, treasury, quoteKind, grossAtomic, proof) {
+  if (!proof || !CHAIN_QUOTE_PROOFS.has(proof)) {
+    fail(
+      MarketV8EligibilityError,
+      'MARKET_V8_CHAIN_QUOTE_REQUIRED',
+      'chainQuote',
+      'Inspect and review a fresh chain-authoritative quote before constructing this signing action.',
+    );
+  }
+  const local = quoteMarketResaleV8(registry, quoteKind, grossAtomic);
+  assertChainQuoteMatches(local, proof);
+  const expectedTarget = `${runtime.callablePackageId}::market_v8::${MARKET_QUOTE_FUNCTIONS[quoteKind]}`;
+  const checks = [
+    ['network', proof.evidence.network, registry.network],
+    ['target', proof.evidence.target, expectedTarget],
+    ['rootId', proof.evidence.rootId, registry.fields.rootId],
+    ['registryId', proof.evidence.registryId, registry.objectId],
+    ['treasuryId', proof.evidence.treasuryId, treasury.objectId],
+    ['registryRevision', proof.evidence.registryRevision, registry.fields.revision],
+    ['quoteKind', proof.evidence.quoteKind, quoteKind],
+    ['grossAtomic', proof.evidence.grossAtomic, local.grossAtomic.toString()],
+  ];
+  for (const [field, observed, expected] of checks) {
+    if (observed !== expected) {
+      fail(
+        MarketV8EligibilityError,
+        'MARKET_V8_CHAIN_QUOTE_CONTEXT_DRIFT',
+        `chainQuote.evidence.${field}`,
+        'The verified quote belongs to a different or stale Market context; re-read and review again.',
+        { observed: String(observed), expected: String(expected) },
+      );
+    }
+  }
+  return proof;
+}
+
 function assertRegistryExpectation(registry, expected) {
   const checked = uint(expected, 64, 'expectedRegistryRevision', MarketV8EligibilityError);
   same(registry.fields.revision, checked, 'MARKET_V8_STALE_REGISTRY_REVISION', 'expectedRegistryRevision', 'Market registry revision is stale.');
 }
 
-export function assertMarketListEligibilityV8({ registry: registryInput, treasury: treasuryInput, lane, lifecycle, grossAtomic, expectedRegistryRevision }) {
+export function assertMarketListEligibilityV8({ registry: registryInput, treasury: treasuryInput, lane, root, grossAtomic, expectedRegistryRevision }) {
   const { registry, treasury } = assertMarketPairV8(registryInput, treasuryInput);
   assertRegistryExpectation(registry, expectedRegistryRevision);
-  const lifecycleValue = Number(uint(lifecycle, 8, 'lifecycle', MarketV8EligibilityError));
+  const lifecycleValue = observedRootLifecycle(root);
   const expectedLifecycle = lane === MARKET_V8_LANES.MAKER ? MARKET_V8_LIFECYCLES.PAUSED : MARKET_V8_LIFECYCLES.ACTIVE;
   if (lifecycleValue !== expectedLifecycle) {
     fail(MarketV8EligibilityError, 'MARKET_V8_LIFECYCLE_INELIGIBLE', 'lifecycle', `This listing lane requires lifecycle ${expectedLifecycle}.`);
@@ -1366,8 +1894,19 @@ function purchaseSetup(runtimeInput, input, lane) {
     buyer: wallet.address,
     expectation: input.expectation,
   });
+  requireChainQuoteProof(
+    runtime,
+    eligible.registry,
+    eligible.treasury,
+    quoteKindForListing(eligible.listing),
+    eligible.listing.fields.grossAtomic,
+    input.chainQuote,
+  );
   const market = marketArgs(types, eligible.registry, eligible.treasury);
-  const common = commonBoundObjects(types, eligible.registry, input);
+  const common = commonBoundObjects(runtime, types, eligible.registry, input);
+  if (hasOwn(input, 'payment')) {
+    fail(MarketV8BuildError, 'MARKET_V8_CALLER_PAYMENT_FORBIDDEN', 'payment', 'Payment Coin IDs and amounts are derived by the exact-balance transaction intent, not supplied by the caller.');
+  }
   return { runtime, types, wallet, eligible, market, common, listing: parsedListingObject(types, eligible.listing) };
 }
 
@@ -1384,7 +1923,7 @@ function cancelSetup(runtimeInput, input, lane) {
     expectation: input.expectation,
   });
   const market = marketArgs(types, eligible.registry, eligible.treasury);
-  const common = commonBoundObjects(types, eligible.registry, input);
+  const common = commonBoundObjects(runtime, types, eligible.registry, input);
   return { runtime, types, wallet, eligible, market, common, listing: parsedListingObject(types, eligible.listing) };
 }
 
@@ -1397,12 +1936,12 @@ function recoverySetup(runtimeInput, input, lane) {
     registry: input.registry,
     treasury: input.treasury,
     lane,
-    lifecycle: input.lifecycle,
-    protocolState: input.protocolState,
+    root: input.root,
+    protocolConfig: input.protocolConfig,
     expectation: input.expectation,
   });
   const market = marketArgs(types, eligible.registry, eligible.treasury);
-  const common = commonBoundObjects(types, eligible.registry, input);
+  const common = commonBoundObjects(runtime, types, eligible.registry, input);
   return { runtime, types, wallet, eligible, market, common, listing: parsedListingObject(types, eligible.listing) };
 }
 
@@ -1414,18 +1953,31 @@ export function buildListMakerControlV8(runtimeInput, input) {
     registry: input.registry,
     treasury: input.treasury,
     lane: MARKET_V8_LANES.MAKER,
-    lifecycle: input.lifecycle,
+    root: input.root,
     grossAtomic: input.grossAtomic,
     expectedRegistryRevision: input.expectedRegistryRevision,
   });
-  const makerTreasuryBalance = uint(input.makerTreasuryBalanceAtomic, 64, 'makerTreasuryBalanceAtomic', MarketV8EligibilityError);
+  requireChainQuoteProof(
+    runtime,
+    eligible.registry,
+    eligible.treasury,
+    MARKET_V8_QUOTE_KINDS.MAKER_RESALE,
+    eligible.quote.grossAtomic,
+    input.chainQuote,
+  );
+  if (!input.makerTreasury || !hasOwn(input.makerTreasury, 'balanceAtomic')) {
+    fail(MarketV8EligibilityError, 'MARKET_V8_VERIFIED_MAKER_TREASURY_REQUIRED', 'makerTreasury.balanceAtomic', 'Maker control listing requires a verified MakerTreasury readback.');
+  }
+  const makerTreasuryBalance = uint(input.makerTreasury.balanceAtomic, 64, 'makerTreasury.balanceAtomic', MarketV8EligibilityError);
   if (makerTreasuryBalance !== 0n) {
-    fail(MarketV8EligibilityError, 'MARKET_V8_MAKER_TREASURY_NOT_EMPTY', 'makerTreasuryBalanceAtomic', 'Maker control listing requires an empty Maker treasury.');
+    fail(MarketV8EligibilityError, 'MARKET_V8_MAKER_TREASURY_NOT_EMPTY', 'makerTreasury.balanceAtomic', 'Maker control listing requires an empty Maker treasury.');
   }
   const market = marketArgs(types, eligible.registry, eligible.treasury);
-  const common = commonBoundObjects(types, eligible.registry, input);
-  const admin = typedObject(input.admin, types.makerAdmin, 'admin');
-  const makerTreasury = typedObject(input.makerTreasury, types.makerTreasury, 'makerTreasury');
+  const common = commonBoundObjects(runtime, types, eligible.registry, input);
+  const admin = typedObject(input.admin, types.makerAdmin, 'admin', { expectedId: buildId(input.root.adminCapId, 'root.adminCapId') });
+  const makerTreasury = typedObject(input.makerTreasury, types.makerTreasury, 'makerTreasury', {
+    expectedId: verifiedBindingId(input.root, 'makerTreasuryId'),
+  });
   const protocolConfig = protocolObject(types, eligible.registry, input.protocolConfig);
   return compileAction(runtime, 'listMakerControl', MARKET_V8_LANES.MAKER, wallet, [
     argObject('registry', market.registry),
@@ -1443,9 +1995,10 @@ export function buildListMakerControlV8(runtimeInput, input) {
 export function buildPurchaseMakerControlV8(runtimeInput, input) {
   const setup = purchaseSetup(runtimeInput, input, MARKET_V8_LANES.MAKER);
   const protocolConfig = protocolObject(setup.types, setup.eligible.registry, input.protocolConfig);
-  const protocolTreasury = typedObject(input.protocolTreasury, setup.types.protocolTreasury, 'protocolTreasury');
+  const protocolTreasury = typedObject(input.protocolTreasury, setup.types.protocolTreasury, 'protocolTreasury', {
+    expectedId: setup.runtime.sourceRuntime.protocolTreasuryId,
+  });
   const receiving = exactRef(input.adminReceiving, setup.types.makerAdmin, 'adminReceiving', setup.eligible.listing.fields.adminCapId);
-  const payment = exactRef(input.payment, setup.types.paymentCoin, 'payment', undefined, { paymentAtomic: setup.eligible.quote.grossAtomic });
   return compileAction(setup.runtime, 'purchaseMakerControl', MARKET_V8_LANES.MAKER, setup.wallet, [
     argObject('listing', setup.listing),
     argObject('registry', setup.market.registry),
@@ -1456,7 +2009,7 @@ export function buildPurchaseMakerControlV8(runtimeInput, input) {
     argObject('catalog', setup.common.catalog),
     argObject('config', setup.common.config),
     argReceiving('adminReceiving', receiving),
-    argPayment('payment', payment),
+    argPayment('payment', setup.runtime.paymentCoinType, setup.wallet.network, setup.eligible.quote.grossAtomic),
   ], input.expectation);
 }
 
@@ -1498,18 +2051,30 @@ export function buildListSoulBundleV8(runtimeInput, input) {
     registry: input.registry,
     treasury: input.treasury,
     lane: MARKET_V8_LANES.SOUL,
-    lifecycle: input.lifecycle,
+    root: input.root,
     grossAtomic: input.grossAtomic,
     expectedRegistryRevision: input.expectedRegistryRevision,
   });
+  requireChainQuoteProof(
+    runtime,
+    eligible.registry,
+    eligible.treasury,
+    MARKET_V8_QUOTE_KINDS.SOUL_RESALE,
+    eligible.quote.grossAtomic,
+    input.chainQuote,
+  );
   const market = marketArgs(types, eligible.registry, eligible.treasury);
-  const common = commonBoundObjects(types, eligible.registry, input);
+  const common = commonBoundObjects(runtime, types, eligible.registry, input);
   const protocolConfig = protocolObject(types, eligible.registry, input.protocolConfig);
   return compileAction(runtime, 'listSoulBundle', MARKET_V8_LANES.SOUL, wallet, [
     argObject('registry', market.registry),
     argObject('treasury', market.treasury),
-    argObject('outputRegistry', typedObject(input.outputRegistry, types.outputRegistry, 'outputRegistry')),
-    argObject('soulRegistry', typedObject(input.soulRegistry, types.soulRegistry, 'soulRegistry')),
+    argObject('outputRegistry', typedObject(input.outputRegistry, types.outputRegistry, 'outputRegistry', {
+      expectedId: verifiedBindingId(input.root, 'outputRegistryId'),
+    })),
+    argObject('soulRegistry', typedObject(input.soulRegistry, types.soulRegistry, 'soulRegistry', {
+      expectedId: verifiedBindingId(input.root, 'soulRegistryId'),
+    })),
     argObject('root', common.root),
     argObject('protocolConfig', protocolConfig),
     argObject('catalog', common.catalog),
@@ -1523,6 +2088,15 @@ export function buildListSoulBundleV8(runtimeInput, input) {
 
 function soulObjects(setup, input) {
   const custody = setup.eligible.listing.fields.custody;
+  if (custody.outputRegistryId !== verifiedBindingId(input.root, 'outputRegistryId')
+    || custody.soulRegistryId !== verifiedBindingId(input.root, 'soulRegistryId')) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_SOUL_ROOT_BINDING_MISMATCH',
+      'listing.custody',
+      'Soul custody registries do not match the verified Root capability binding.',
+    );
+  }
   return {
     outputRegistry: typedObject(input.outputRegistry, setup.types.outputRegistry, 'outputRegistry', { expectedId: custody.outputRegistryId }),
     soulRegistry: typedObject(input.soulRegistry, setup.types.soulRegistry, 'soulRegistry', { expectedId: custody.soulRegistryId }),
@@ -1536,7 +2110,6 @@ export function buildPurchaseSoulBundleV8(runtimeInput, input) {
   const setup = purchaseSetup(runtimeInput, input, MARKET_V8_LANES.SOUL);
   const soul = soulObjects(setup, input);
   const protocolConfig = protocolObject(setup.types, setup.eligible.registry, input.protocolConfig);
-  const payment = exactRef(input.payment, setup.types.paymentCoin, 'payment', undefined, { paymentAtomic: setup.eligible.quote.grossAtomic });
   return compileAction(setup.runtime, 'purchaseSoulBundle', MARKET_V8_LANES.SOUL, setup.wallet, [
     argObject('listing', setup.listing),
     argObject('registry', setup.market.registry),
@@ -1544,15 +2117,19 @@ export function buildPurchaseSoulBundleV8(runtimeInput, input) {
     argObject('outputRegistry', soul.outputRegistry),
     argObject('soulRegistry', soul.soulRegistry),
     argObject('root', setup.common.root),
-    argObject('makerTreasury', typedObject(input.makerTreasury, setup.types.makerTreasury, 'makerTreasury')),
+    argObject('makerTreasury', typedObject(input.makerTreasury, setup.types.makerTreasury, 'makerTreasury', {
+      expectedId: verifiedBindingId(input.root, 'makerTreasuryId'),
+    })),
     argObject('protocolConfig', protocolConfig),
-    argObject('protocolTreasury', typedObject(input.protocolTreasury, setup.types.protocolTreasury, 'protocolTreasury')),
+    argObject('protocolTreasury', typedObject(input.protocolTreasury, setup.types.protocolTreasury, 'protocolTreasury', {
+      expectedId: setup.runtime.sourceRuntime.protocolTreasuryId,
+    })),
     argObject('catalog', setup.common.catalog),
     argObject('config', setup.common.config),
     argReceiving('outputReceiving', soul.outputReceiving),
     argReceiving('receiptReceiving', soul.receiptReceiving),
     argReceiving('soulReceiving', soul.soulReceiving),
-    argPayment('payment', payment),
+    argPayment('payment', setup.runtime.paymentCoinType, setup.wallet.network, setup.eligible.quote.grossAtomic),
   ], input.expectation);
 }
 
@@ -1602,27 +2179,39 @@ function listPhysical(runtimeInput, input, lane) {
     registry: input.registry,
     treasury: input.treasury,
     lane,
-    lifecycle: input.lifecycle,
+    root: input.root,
     grossAtomic: input.grossAtomic,
     expectedRegistryRevision: input.expectedRegistryRevision,
   });
+  requireChainQuoteProof(
+    runtime,
+    eligible.registry,
+    eligible.treasury,
+    MARKET_V8_QUOTE_KINDS.PHYSICAL_RESALE,
+    eligible.quote.grossAtomic,
+    input.chainQuote,
+  );
   const market = marketArgs(types, eligible.registry, eligible.treasury);
-  const common = commonBoundObjects(types, eligible.registry, input);
+  const common = commonBoundObjects(runtime, types, eligible.registry, input);
   const sourceTreasuryType = lane === MARKET_V8_LANES.PHYSICAL_BASE ? types.makerTreasury : types.packTreasury;
   const sourceTreasuryName = lane === MARKET_V8_LANES.PHYSICAL_BASE ? 'makerTreasury' : 'packTreasury';
   const sourceTreasury = typedObject(input[sourceTreasuryName], sourceTreasuryType, sourceTreasuryName);
   const asset = typedObject(input.asset, types.physicalAsset, 'asset');
-  requireSource(input.asset, lane === MARKET_V8_LANES.PHYSICAL_BASE ? MARKET_V8_PHYSICAL_SOURCES.BASE : MARKET_V8_PHYSICAL_SOURCES.PACK, sourceTreasury.objectId, 'asset');
+  requireSource(input.asset, lane === MARKET_V8_LANES.PHYSICAL_BASE ? MARKET_V8_PHYSICAL_SOURCES.BASE : MARKET_V8_PHYSICAL_SOURCES.PACK, sourceTreasury.objectId, input.root, 'asset');
   const action = lane === MARKET_V8_LANES.PHYSICAL_BASE ? 'listBasePhysical' : 'listPackPhysical';
   return compileAction(runtime, action, lane, wallet, [
     argObject('registry', market.registry),
     argObject('treasury', market.treasury),
-    argObject('physicalRegistry', typedObject(input.physicalRegistry, types.physicalRegistry, 'physicalRegistry')),
+    argObject('physicalRegistry', typedObject(input.physicalRegistry, types.physicalRegistry, 'physicalRegistry', {
+      expectedId: verifiedBindingId(input.root, 'physicalRegistryId'),
+    })),
     argObject('root', common.root),
     argObject(sourceTreasuryName, sourceTreasury),
     argObject('protocolConfig', protocolObject(types, eligible.registry, input.protocolConfig)),
     argObject('catalog', common.catalog),
-    argObject('physicalConfig', typedObject(input.physicalConfig, types.physicalConfig, 'physicalConfig')),
+    argObject('physicalConfig', typedObject(input.physicalConfig, types.physicalConfig, 'physicalConfig', {
+      expectedId: runtime.sourceRuntime.roleConfigIds.physical,
+    })),
     argObject('config', common.config),
     argObject('asset', asset),
     argU64('grossAtomic', eligible.quote.grossAtomic),
@@ -1639,9 +2228,19 @@ export function buildListPackPhysicalV8(runtime, input) {
 
 function physicalObjects(setup, input) {
   const custody = setup.eligible.listing.fields.custody;
+  const boundRegistry = verifiedBindingId(input.root, 'physicalRegistryId');
+  if (custody.physicalRegistryId !== boundRegistry
+    || custody.physicalPackageConfigId !== setup.runtime.sourceRuntime.roleConfigIds.physical) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_PHYSICAL_ROOT_BINDING_MISMATCH',
+      'listing.custody',
+      'Physical custody does not match the verified Root registry and pinned Physical config.',
+    );
+  }
   return {
-    physicalRegistry: typedObject(input.physicalRegistry, setup.types.physicalRegistry, 'physicalRegistry', { expectedId: custody.physicalRegistryId }),
-    physicalConfig: typedObject(input.physicalConfig, setup.types.physicalConfig, 'physicalConfig', { expectedId: custody.physicalPackageConfigId }),
+    physicalRegistry: typedObject(input.physicalRegistry, setup.types.physicalRegistry, 'physicalRegistry', { expectedId: boundRegistry }),
+    physicalConfig: typedObject(input.physicalConfig, setup.types.physicalConfig, 'physicalConfig', { expectedId: setup.runtime.sourceRuntime.roleConfigIds.physical }),
     receiving: exactRef(input.receiving, setup.types.physicalAsset, 'receiving', custody.assetId),
   };
 }
@@ -1650,7 +2249,6 @@ function purchasePhysical(runtimeInput, input, lane) {
   const setup = purchaseSetup(runtimeInput, input, lane);
   const physical = physicalObjects(setup, input);
   const custody = setup.eligible.listing.fields.custody;
-  const payment = exactRef(input.payment, setup.types.paymentCoin, 'payment', undefined, { paymentAtomic: setup.eligible.quote.grossAtomic });
   const protocolConfig = protocolObject(setup.types, setup.eligible.registry, input.protocolConfig);
   const prefix = [
     argObject('listing', setup.listing),
@@ -1663,17 +2261,23 @@ function purchasePhysical(runtimeInput, input, lane) {
   let action;
   if (lane === MARKET_V8_LANES.PHYSICAL_BASE) {
     action = 'purchaseBasePhysical';
-    const makerTreasury = typedObject(input.makerTreasury, setup.types.makerTreasury, 'makerTreasury', { expectedId: custody.sourceTreasuryId });
+    const boundMakerTreasury = verifiedBindingId(input.root, 'makerTreasuryId');
+    if (custody.sourceTreasuryId !== boundMakerTreasury) {
+      fail(MarketV8BuildError, 'MARKET_V8_SOURCE_TREASURY_MISMATCH', 'listing.custody.sourceTreasuryId', 'Base Physical custody does not bind the verified MakerTreasury.');
+    }
+    const makerTreasury = typedObject(input.makerTreasury, setup.types.makerTreasury, 'makerTreasury', { expectedId: boundMakerTreasury });
     args = [
       ...prefix,
       argObject('makerTreasury', makerTreasury),
       argObject('protocolConfig', protocolConfig),
-      argObject('protocolTreasury', typedObject(input.protocolTreasury, setup.types.protocolTreasury, 'protocolTreasury')),
+      argObject('protocolTreasury', typedObject(input.protocolTreasury, setup.types.protocolTreasury, 'protocolTreasury', {
+        expectedId: setup.runtime.sourceRuntime.protocolTreasuryId,
+      })),
       argObject('catalog', setup.common.catalog),
       argObject('physicalConfig', physical.physicalConfig),
       argObject('config', setup.common.config),
       argReceiving('receiving', physical.receiving),
-      argPayment('payment', payment),
+      argPayment('payment', setup.runtime.paymentCoinType, setup.wallet.network, setup.eligible.quote.grossAtomic),
     ];
   } else {
     action = 'purchasePackPhysical';
@@ -1683,12 +2287,14 @@ function purchasePhysical(runtimeInput, input, lane) {
       argObject('packRelease', typedObject(input.packRelease, setup.types.packRelease, 'packRelease', { expectedId: custody.sourceId })),
       argObject('packTreasury', packTreasury),
       argObject('protocolConfig', protocolConfig),
-      argObject('protocolTreasury', typedObject(input.protocolTreasury, setup.types.protocolTreasury, 'protocolTreasury')),
+      argObject('protocolTreasury', typedObject(input.protocolTreasury, setup.types.protocolTreasury, 'protocolTreasury', {
+        expectedId: setup.runtime.sourceRuntime.protocolTreasuryId,
+      })),
       argObject('catalog', setup.common.catalog),
       argObject('physicalConfig', physical.physicalConfig),
       argObject('config', setup.common.config),
       argReceiving('receiving', physical.receiving),
-      argPayment('payment', payment),
+      argPayment('payment', setup.runtime.paymentCoinType, setup.wallet.network, setup.eligible.quote.grossAtomic),
     ];
   }
   return compileAction(setup.runtime, action, lane, setup.wallet, args, input.expectation);
@@ -1759,6 +2365,8 @@ export function createMarketV8Client(runtimeInput, options) {
     quoteMakerResale: (registry, grossAtomic) => quoteMakerResaleV8(registry, grossAtomic),
     quoteSoulResale: (registry, grossAtomic) => quoteSoulResaleV8(registry, grossAtomic),
     quotePhysicalResale: (registry, grossAtomic) => quotePhysicalResaleV8(registry, grossAtomic),
+    buildQuoteInspection: (input) => buildMarketQuoteInspectionV8(runtime, input),
+    inspectQuoteOnChain: (suiClient, input) => inspectMarketQuoteOnChainV8(suiClient, runtime, input),
     buildListMakerControl: (input) => buildListMakerControlV8(runtime, input),
     buildPurchaseMakerControl: (input) => buildPurchaseMakerControlV8(runtime, input),
     buildCancelMakerControl: (input) => buildCancelMakerControlV8(runtime, input),
