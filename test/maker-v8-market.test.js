@@ -382,6 +382,8 @@ const expectation = (listing) => ({
 
 const rootAt = (lifecycleCode) => object(IDs.root, types.makerRoot, {
   adminCapId: IDs.admin,
+  ownerAddress: IDs.seller,
+  controlEpoch: 5n,
   binding: Object.freeze({
     makerTreasuryId: IDs.makerTreasury,
     marketRegistryId: IDs.registry,
@@ -484,7 +486,7 @@ function allActions() {
       soulRegistry,
       outputAsset: object(IDs.output, types.completeOutput),
       receipt: object(IDs.receipt, types.completeReceipt),
-      soul: object(IDs.soul, types.canonicalSoul),
+      soul: object(IDs.soul, types.canonicalSoul, { ownershipEpoch: 5n }),
       chainQuote: soulChainQuote,
       grossAtomic: 1_000_000n,
       expectedRegistryRevision: registry.fields.revision,
@@ -508,6 +510,7 @@ function allActions() {
       asset: object(IDs.baseAsset, types.physicalAsset, {
         sourceKind: '0',
         sourceTreasuryId: null,
+        ownershipEpoch: 5n,
       }),
       chainQuote: physicalChainQuote,
       grossAtomic: 1_000_000n,
@@ -522,6 +525,7 @@ function allActions() {
       asset: object(IDs.packAsset, types.physicalAsset, {
         sourceKind: '1',
         sourceTreasuryId: IDs.packTreasury,
+        ownershipEpoch: 5n,
       }),
       chainQuote: physicalChainQuote,
       grossAtomic: 1_000_000n,

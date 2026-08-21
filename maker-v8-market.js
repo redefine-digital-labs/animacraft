@@ -1372,6 +1372,105 @@ function argU64(name, value) {
   return freezeRecord({ kind: 'u64', name, value });
 }
 
+function decimalSnapshot(value, field) {
+  return uint(value, 128, field, MarketV8BuildError).toString();
+}
+
+function actionPreState(action, lane, sender, args) {
+  const byName = new Map(args.map((argument) => [argument.name, argument]));
+  const registry = byName.get('registry')?.source;
+  const treasury = byName.get('treasury')?.source;
+  const listing = byName.get('listing')?.source ?? null;
+  const root = byName.get('root')?.source;
+  if (!registry?.fields || !treasury?.fields || !root) {
+    fail(MarketV8BuildError, 'MARKET_V8_PRESTATE_REQUIRED', 'arguments', 'Signing requires verified Registry, Treasury, and Root pre-state.');
+  }
+  const registryFields = registry.fields;
+  const treasuryFields = treasury.fields;
+  const registrySnapshot = freezeRecord(Object.fromEntries([
+    'revision', 'listingCount', 'escrowCount', 'completedSaleCount',
+    'canceledSaleCount', 'recoveredSaleCount', 'grossVolumeAtomic',
+    'protocolPaidAtomic', 'creatorPaidAtomic', 'sourcePaidAtomic', 'sellerPaidAtomic',
+  ].map((field) => [field, decimalSnapshot(registryFields[field], `registry.fields.${field}`)])));
+  const treasurySnapshot = freezeRecord(Object.fromEntries([
+    'escrowAtomic', 'grossEscrowedAtomic', 'grossReleasedAtomic',
+  ].map((field) => [field, decimalSnapshot(treasuryFields[field], `treasury.fields.${field}`)])));
+  const listingFields = listing?.fields ?? null;
+  const custody = listingFields?.custody ?? null;
+  const grossArg = byName.get('grossAtomic')?.value;
+  const grossAtomic = listingFields?.grossAtomic ?? grossArg;
+  const quoteKind = lane === MARKET_V8_LANES.MAKER
+    ? MARKET_V8_QUOTE_KINDS.MAKER_RESALE
+    : lane === MARKET_V8_LANES.SOUL
+      ? MARKET_V8_QUOTE_KINDS.SOUL_RESALE
+      : MARKET_V8_QUOTE_KINDS.PHYSICAL_RESALE;
+  const quote = quoteMarketResaleV8(registry, quoteKind, grossAtomic);
+  const quoteSnapshot = freezeRecord(Object.fromEntries([
+    'grossAtomic', 'protocolAtomic', 'creatorAtomic', 'sourceAtomic', 'sellerAtomic',
+  ].map((field) => [field, quote[field].toString()]).concat([['commitment', quote.commitment]])));
+  const makerLane = lane === MARKET_V8_LANES.MAKER;
+  const soulLane = lane === MARKET_V8_LANES.SOUL;
+  const assetIds = makerLane
+    ? [listingFields?.adminCapId ?? byName.get('admin')?.objectId]
+    : soulLane
+      ? [
+          custody?.outputId ?? byName.get('outputAsset')?.objectId,
+          custody?.receiptId ?? byName.get('receipt')?.objectId,
+          custody?.soulId ?? byName.get('soul')?.objectId,
+        ]
+      : [custody?.assetId ?? byName.get('asset')?.objectId];
+  if (assetIds.some((value) => typeof value !== 'string')) {
+    fail(MarketV8BuildError, 'MARKET_V8_PRESTATE_REQUIRED', 'assetIds', 'Signing pre-state is missing the exact custody asset IDs.');
+  }
+  const seller = makerLane
+    ? (listingFields?.seller ?? root.ownerAddress ?? sender)
+    : (custody?.seller ?? custody?.holder ?? sender);
+  const ownershipEpoch = makerLane
+    ? (listingFields?.expectedControlEpoch ?? root.controlEpoch)
+    : (custody?.expectedOwnershipEpoch ?? custody?.ownershipEpoch
+      ?? byName.get('soul')?.source?.ownershipEpoch
+      ?? byName.get('asset')?.source?.ownershipEpoch);
+  if (ownershipEpoch === undefined) {
+    fail(MarketV8BuildError, 'MARKET_V8_PRESTATE_REQUIRED', 'ownershipEpoch', 'Signing pre-state is missing the custody ownership epoch.');
+  }
+  const listingSnapshot = listingFields ? freezeRecord({
+    objectId: listing.objectId,
+    kind: listing.kind,
+    status: String(listingFields.status),
+    revision: decimalSnapshot(listingFields.revision, 'listing.fields.revision'),
+    terminalRecipient: listingFields.terminalRecipient,
+    seller,
+    ownershipEpoch: decimalSnapshot(ownershipEpoch, 'listing.ownershipEpoch'),
+    assetIds: Object.freeze(assetIds),
+  }) : null;
+  const rootSnapshot = freezeRecord({
+    objectId: root.objectId,
+    owner: buildAddress(root.ownerAddress ?? root.fields?.owner, 'root.owner'),
+    adminCapId: buildId(root.adminCapId ?? root.fields?.admin_cap_id, 'root.adminCapId'),
+    controlEpoch: decimalSnapshot(root.controlEpoch ?? root.fields?.control_epoch, 'root.controlEpoch'),
+    lifecycleCode: String(observedRootLifecycle(root)),
+  });
+  return freezeRecord({
+    schema: 'animacraft.market-action-prestate.v8',
+    action,
+    lane,
+    sender,
+    seller: buildAddress(seller, 'preState.seller'),
+    ownershipEpoch: decimalSnapshot(ownershipEpoch, 'preState.ownershipEpoch'),
+    assetIds: Object.freeze(assetIds),
+    registry: registrySnapshot,
+    treasury: treasurySnapshot,
+    listing: listingSnapshot,
+    root: rootSnapshot,
+    quote: quoteSnapshot,
+    revenueObjectIds: freezeRecord({
+      protocolTreasuryId: byName.get('protocolTreasury')?.objectId ?? null,
+      makerTreasuryId: byName.get('makerTreasury')?.objectId ?? null,
+      packTreasuryId: byName.get('packTreasury')?.objectId ?? null,
+    }),
+  });
+}
+
 function compileAction(runtimeInput, action, lane, walletInput, args, expectation = undefined) {
   const runtime = assertMarketV8Runtime(runtimeInput);
   const abi = MARKET_V8_ACTION_ABI[action];
@@ -1438,6 +1537,7 @@ function compileAction(runtimeInput, action, lane, walletInput, args, expectatio
       originalPackageId: identity.typeOriginPackageId,
       callablePackageId: identity.callablePackageId,
     }))),
+    preState: actionPreState(action, lane, sender, args),
     arguments: descriptorArgs,
     ...(expectation ? { expectation: freezeRecord({
       listingRevision: String(expectation.listingRevision),
