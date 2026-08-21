@@ -20,6 +20,7 @@ import {
   createWalletStandardConnectorV8,
   decodeMakerV8CoreEventV8,
   makerV8TransactionEventsDigestV8,
+  parseMakerV8MoveOptionIdV8,
   readFinalizedMakerV8EnvelopeV8,
 } from '../maker-v8-browser.js';
 import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
@@ -165,6 +166,32 @@ function dataSourceStub() {
     readbackMarketAction: async () => ({ receipt: true }),
   };
 }
+
+test('Physical Base and every Pack action parse canonical Move Option<ID> arrays exactly', () => {
+  const packTreasuryId = objectId(401);
+  assert.equal(parseMakerV8MoveOptionIdV8([]), null);
+  for (const action of [
+    'listPackPhysical',
+    'purchasePackPhysical',
+    'cancelPhysicalListing',
+    'recoverPhysicalListing',
+  ]) {
+    assert.equal(
+      parseMakerV8MoveOptionIdV8([packTreasuryId], `${action}.sourceTreasuryId`),
+      packTreasuryId,
+    );
+  }
+  assert.equal(parseMakerV8MoveOptionIdV8({ vec: [] }), null);
+  assert.equal(parseMakerV8MoveOptionIdV8({ fields: { vec: [packTreasuryId] } }), packTreasuryId);
+  assert.throws(
+    () => parseMakerV8MoveOptionIdV8([packTreasuryId, objectId(402)]),
+    (error) => error.code === 'MAKER_V8_BROWSER_OPTION_INVALID',
+  );
+  assert.throws(
+    () => parseMakerV8MoveOptionIdV8({ vec: 'not-an-option' }),
+    (error) => error.code === 'MAKER_V8_BROWSER_OPTION_INVALID',
+  );
+});
 
 function buildClient({ chainIds = [MAKER_V8_MAINNET_CHAIN_IDENTIFIER] } = {}) {
   let chainIndex = 0;

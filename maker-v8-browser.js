@@ -789,10 +789,19 @@ function scalarField(fields, ...names) {
   return undefined;
 }
 
-function optionId(value) {
-  if (typeof value === 'string') return id(value, 'physical.sourceTreasuryId');
-  const vec = value?.vec ?? value?.fields?.vec;
-  return Array.isArray(vec) && vec.length === 1 ? id(vec[0], 'physical.sourceTreasuryId') : null;
+export function parseMakerV8MoveOptionIdV8(value, label = 'physical.sourceTreasuryId') {
+  if (typeof value === 'string') return id(value, label);
+  const vec = Array.isArray(value)
+    ? value
+    : value?.vec ?? value?.fields?.vec;
+  if (!Array.isArray(vec) || vec.length > 1) {
+    fail(
+      'MAKER_V8_BROWSER_OPTION_INVALID',
+      `${label} must be an exact zero-or-one-element Move Option<ID>.`,
+      'READBACK',
+    );
+  }
+  return vec.length === 0 ? null : id(vec[0], label);
 }
 
 function commitmentHex(value, label) {
@@ -820,7 +829,10 @@ function validatePhysicalCustody(descriptor, objects) {
   const expectedSourceKind = descriptor.lane === MARKET_V8_LANES.PHYSICAL_BASE ? 0 : 1;
   const sourceRole = expectedSourceKind === 0 ? 'MAKER_TREASURY' : 'PACK_TREASURY';
   const sourceTreasury = objects.find((entry) => entry.role === sourceRole);
-  const custodyTreasuryId = optionId(scalarField(custody, 'source_treasury_id', 'sourceTreasuryId'));
+  const custodyTreasuryId = parseMakerV8MoveOptionIdV8(
+    scalarField(custody, 'source_treasury_id', 'sourceTreasuryId'),
+    'physical.custody.sourceTreasuryId',
+  );
   const expected = descriptor.preState.physical;
   const exactCommitment = (camel, snake) => commitmentHex(
     scalarField(custody, snake, camel), `physical.${camel}`,
@@ -840,7 +852,10 @@ function validatePhysicalCustody(descriptor, objects) {
   const assetObject = objects.find((entry) => entry.role === 'ASSET');
   const asset = assetObject?.before?.parsed ?? assetObject?.after?.parsed;
   if (asset) {
-    const assetTreasuryId = optionId(scalarField(asset, 'source_treasury_id', 'sourceTreasuryId'));
+    const assetTreasuryId = parseMakerV8MoveOptionIdV8(
+      scalarField(asset, 'source_treasury_id', 'sourceTreasuryId'),
+      'physical.asset.sourceTreasuryId',
+    );
     const expectedAssetTreasuryId = expectedSourceKind === 0 ? null : expected.sourceTreasuryId;
     if (Number(scalarField(asset, 'source_kind', 'sourceKind')) !== expectedSourceKind
       || assetTreasuryId !== expectedAssetTreasuryId
