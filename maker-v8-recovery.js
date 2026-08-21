@@ -2136,7 +2136,7 @@ function normalizeBroadcastResult(value, digest) {
  * - getContext({ identity }) -> current full identity and epoch (used only for replay)
  * - sign({ bytes, digest, signer, identity, plan }) -> signed envelope
  * - broadcast({ bytes, signature, digest, signer, identity }) -> { digest }
- * - query({ digest, identity }) -> strict digest status
+ * - query({ digest, identity, plan, planHash }) -> strict digest status
  * - readback({ digest, identity, outcome }) -> strict verified readback
  */
 export function createMakerV8RecoveryController(options = {}) {
@@ -3080,6 +3080,8 @@ export function createMakerV8RecoveryController(options = {}) {
         queried = normalizeQueryResult(await queryBoundary({
           digest: record.signed.digest,
           identity: publicData(identity),
+          plan: publicData(record.plan),
+          planHash: record.plan.fingerprint,
         }), record.signed.digest);
       } catch (cause) {
         const error = cause instanceof MakerV8RecoveryError ? cause

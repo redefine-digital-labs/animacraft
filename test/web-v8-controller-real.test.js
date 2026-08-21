@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { access } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { bcs } from '@mysten/sui/bcs';
 import { Inputs, TransactionDataBuilder } from '@mysten/sui/transactions';
 import { toBase64 } from '@mysten/sui/utils';
@@ -10,6 +11,7 @@ import {
   WEB_V8_CONTEXT_SCHEMA,
   WEB_V8_EXECUTION_SCHEMA,
   WEB_V8_ROUTE_SCHEMA,
+  createIndexedDbRecoveryAdapter,
   createFreshV8Controller,
   parseFreshV8Route,
 } from '../app.js';
@@ -38,6 +40,119 @@ const id = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const packageId = (digit) => `0x${digit.repeat(64)}`;
 const bytes32 = (value) => Array(32).fill(value);
 const digest = '11111111111111111111111111111111';
+
+function clone(value) {
+  return value === undefined ? undefined : structuredClone(value);
+}
+
+class IndexedDbRequest {
+  constructor(run) {
+    queueMicrotask(() => {
+      try {
+        this.result = run();
+        this.onsuccess?.();
+      } catch (error) {
+        this.error = error;
+        this.onerror?.();
+      }
+    });
+  }
+}
+
+class IndexedDbStore {
+  constructor(transaction, records) {
+    this.transaction = transaction;
+    this.records = records;
+  }
+
+  get(key) {
+    const request = new IndexedDbRequest(() => clone(this.records.get(key)));
+    this.transaction.touch();
+    return request;
+  }
+
+  getAll() {
+    const request = new IndexedDbRequest(() => clone([...this.records.values()]));
+    this.transaction.touch();
+    return request;
+  }
+
+  put(value, key) {
+    this.records.set(key, clone(value));
+    this.transaction.touch();
+  }
+
+  delete(key) {
+    this.records.delete(key);
+    this.transaction.touch();
+  }
+}
+
+class IndexedDbTransaction {
+  constructor(database) {
+    this.database = database;
+    this.scheduled = false;
+    this.aborted = false;
+    this.error = null;
+  }
+
+  objectStore(name) {
+    return new IndexedDbStore(this, this.database.records.get(name));
+  }
+
+  touch() {
+    if (this.scheduled) return;
+    this.scheduled = true;
+    setTimeout(() => {
+      if (!this.aborted) this.oncomplete?.();
+    }, 0);
+  }
+
+  abort() {
+    this.aborted = true;
+    queueMicrotask(() => this.onabort?.());
+  }
+}
+
+class IndexedDbDatabase {
+  constructor() {
+    this.records = new Map();
+    this.objectStoreNames = { contains: (name) => this.records.has(name) };
+  }
+
+  createObjectStore(name) {
+    this.records.set(name, new Map());
+  }
+
+  transaction() {
+    return new IndexedDbTransaction(this);
+  }
+}
+
+function memoryIndexedDb() {
+  const database = new IndexedDbDatabase();
+  const openCalls = [];
+  let initialized = false;
+  return {
+    database,
+    openCalls,
+    factory: {
+      open(name, version) {
+        openCalls.push({ name, version });
+        const request = {};
+        queueMicrotask(() => {
+          request.result = database;
+          if (!initialized) {
+            initialized = true;
+            request.onupgradeneeded?.();
+          }
+          queueMicrotask(() => request.onsuccess?.());
+        });
+        return request;
+      },
+    },
+  };
+}
 
 function u64Bytes(value) {
   const bytes = [];
@@ -131,11 +246,11 @@ function runtimeFixture() {
   };
 }
 
-function moveObject(type, objectId, fields) {
+function moveObject(type, objectId, fields, version = '7') {
   return {
     data: {
       objectId,
-      version: '7',
+      version,
       digest,
       content: {
         dataType: 'moveObject',
@@ -147,7 +262,7 @@ function moveObject(type, objectId, fields) {
   };
 }
 
-function fixture(runtime) {
+function fixture(runtime, { registryVersion = '7', adminVersion = '7' } = {}) {
   const market = marketModule.createMarketV8Client(runtime, { network: 'mainnet' });
   const IDs = {
     registry: id(100), treasury: id(101), catalog: runtime.catalogId, config: runtime.roleConfigIds.market, root: id(104),
@@ -165,7 +280,7 @@ function fixture(runtime) {
     completed_sale_count: '0', canceled_sale_count: '0', recovered_sale_count: '0', gross_volume_atomic: '0',
     protocol_paid_atomic: '0', creator_paid_atomic: '0', source_paid_atomic: '0', seller_paid_atomic: '0',
     zero_state_commitment: bytes32(3),
-  });
+  }, registryVersion);
   const treasuryResponse = moveObject(market.types.marketTreasury, IDs.treasury, {
     version: '8', catalog_id: IDs.catalog, package_config_id: IDs.config, root_id: IDs.root,
     maker_version: '42', root_content_commitment: bytes32(0xaa), escrow: { value: '0' },
@@ -176,7 +291,7 @@ function fixture(runtime) {
   const object = (objectId, type, fields = {}) => ({
     schemaVersion: 'animacraft.maker-v8-chain.v8',
     objectId,
-    version: '7',
+    version: objectId === IDs.admin ? adminVersion : '7',
     digest,
     network: 'mainnet',
     type,
@@ -212,6 +327,212 @@ function fixture(runtime) {
     expectedRegistryRevision: registry.fields.revision,
   };
   return { market, IDs, registry, treasury, builderInput, wallet };
+}
+
+const sharedOwner = Object.freeze({ kind: 'Shared', value: { initialSharedVersion: '1' } });
+const addressOwner = (value) => ({ kind: 'AddressOwner', value });
+
+function coreRef(objectId, version, owner) {
+  return { objectId, version, digest, owner };
+}
+
+function history(objectId, type, ref, parsed, previousTransaction) {
+  return {
+    objectId,
+    type,
+    ownerKind: ref.owner.kind,
+    ref,
+    owner: ref.owner,
+    previousTransaction,
+    parsed,
+  };
+}
+
+function snakeCounters(snapshot) {
+  return Object.fromEntries(Object.entries(snapshot).map(([field, value]) => [
+    field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`), value,
+  ]));
+}
+
+function finalizedListMakerEnvelope(data, request) {
+  const { IDs, market } = data;
+  const descriptor = request.plan.sourceSnapshot.descriptor;
+  const pre = descriptor.preState;
+  const listingId = id(109);
+  const registryBefore = {
+    ...snakeCounters(pre.registry),
+    version: '8',
+    catalog_id: descriptor.catalogId,
+    package_config_id: descriptor.roleConfigIds.market,
+    root_id: descriptor.rootId,
+    maker_version: '42',
+    root_content_commitment: descriptor.rootContentCommitment,
+    protocol_config_id: descriptor.protocolConfigId,
+    protocol_config_revision: descriptor.protocolRevision,
+    treasury_id: descriptor.treasuryId,
+    sealed: true,
+  };
+  const registryAfter = {
+    ...registryBefore,
+    revision: String(BigInt(registryBefore.revision) + 1n),
+    listing_count: String(BigInt(registryBefore.listing_count) + 1n),
+    escrow_count: String(BigInt(registryBefore.escrow_count) + 1n),
+  };
+  const treasuryParsed = {
+    version: '8',
+    catalog_id: descriptor.catalogId,
+    package_config_id: descriptor.roleConfigIds.market,
+    root_id: descriptor.rootId,
+    maker_version: '42',
+    root_content_commitment: descriptor.rootContentCommitment,
+    escrow: { value: '0' },
+    gross_escrowed_atomic: pre.treasury.grossEscrowedAtomic,
+    gross_released_atomic: pre.treasury.grossReleasedAtomic,
+  };
+  const rootParsed = {
+    owner: IDs.seller,
+    creator: pre.root.creator,
+    admin_cap_id: IDs.admin,
+    control_epoch: pre.root.controlEpoch,
+    content_commitment: descriptor.rootContentCommitment,
+  };
+  const adminParsed = {
+    root_id: IDs.root,
+    owner: IDs.seller,
+    control_epoch: pre.root.controlEpoch,
+  };
+  const listingParsed = {
+    version: '8',
+    registry_id: IDs.registry,
+    treasury_id: IDs.treasury,
+    package_config_id: descriptor.roleConfigIds.market,
+    root_id: IDs.root,
+    maker_version: '42',
+    root_content_commitment: descriptor.rootContentCommitment,
+    admin_cap_id: IDs.admin,
+    seller: IDs.seller,
+    expected_control_epoch: pre.ownershipEpoch,
+    gross_atomic: pre.quote.grossAtomic,
+    protocol_atomic: pre.quote.protocolAtomic,
+    creator_atomic: pre.quote.creatorAtomic,
+    seller_atomic: pre.quote.sellerAtomic,
+    quote_commitment: pre.quote.commitment,
+    status: '0',
+    revision: '0',
+    terminal_recipient: id(0),
+  };
+  const makerRevenue = { revenue: { value: '0' }, total_collected: '0', total_withdrawn: '0' };
+  const unchangedRef = (objectId) => ({ ...coreRef(objectId, '7', sharedOwner), kind: 'ReadOnlyRoot' });
+  const rootRef = unchangedRef(IDs.root);
+  const treasuryRef = unchangedRef(IDs.treasury);
+  const makerTreasuryRef = unchangedRef(IDs.makerTreasury);
+  const registryInput = coreRef(IDs.registry, '7', sharedOwner);
+  const registryOutput = coreRef(IDs.registry, '8', sharedOwner);
+  const adminInput = coreRef(IDs.admin, '7', addressOwner(IDs.seller));
+  const adminOutput = coreRef(IDs.admin, '8', addressOwner(listingId));
+  const listingOutput = coreRef(listingId, '8', sharedOwner);
+  const objectEvidence = (
+    role,
+    objectId,
+    type,
+    change,
+    idOperation,
+    before,
+    after,
+    revenue = { before: null, after: null },
+  ) => ({
+    role,
+    objectId,
+    type,
+    ownerKind: (after ?? before).ownerKind,
+    change,
+    idOperation,
+    before,
+    after,
+    revenue,
+  });
+  const effectsBytes = new Uint8Array([1, 2, 3]);
+  const effectsFingerprint = `0x${[...sha256(effectsBytes)]
+    .map((entry) => entry.toString(16).padStart(2, '0')).join('')}`;
+  const event = {
+    id: { txDigest: request.digest, eventSeq: '0' },
+    packageId: descriptor.target.split('::')[0],
+    transactionModule: 'market_v8',
+    sender: IDs.seller,
+    type: `${market.runtime.typeOrigins.marketPackageId}::market_v8::MarketListingOpenedV8`,
+    parsedJson: {
+      listing_id: listingId,
+      registry_id: IDs.registry,
+      lane: String(marketModule.MARKET_V8_LANES.MAKER),
+      root_id: IDs.root,
+      asset_id: IDs.admin,
+      seller: IDs.seller,
+      ownership_epoch: pre.ownershipEpoch,
+      gross_atomic: pre.quote.grossAtomic,
+      quote_commitment: pre.quote.commitment,
+    },
+    bcs: toBase64(new Uint8Array([9])),
+    eventsDigest: digest,
+  };
+  return {
+    schemaVersion: 'animacraft.web-market-finalized-readback.v8',
+    source: 'FINALIZED_CORE_V2',
+    digest: request.digest,
+    epoch: request.outcome.epoch,
+    effectsFingerprint,
+    eventsDigest: digest,
+    planHash: request.planHash,
+    identity: request.identity,
+    transaction: {
+      sender: IDs.seller,
+      status: 'SUCCESS',
+      target: descriptor.target,
+      typeArguments: descriptor.typeArguments,
+    },
+    event,
+    events: [event],
+    effects: {
+      transactionDigest: request.digest,
+      epoch: request.outcome.epoch,
+      eventsDigest: digest,
+      transactionBcs: request.plan.transactionBytes,
+      eventsBcs: toBase64(new Uint8Array([8, 9])),
+      bcs: toBase64(effectsBytes),
+      changedObjects: [
+        { objectId: IDs.registry, inputState: 'Exists', input: registryInput, outputState: 'ObjectWrite', output: registryOutput, idOperation: 'None' },
+        { objectId: IDs.admin, inputState: 'Exists', input: adminInput, outputState: 'ObjectWrite', output: adminOutput, idOperation: 'None' },
+        { objectId: listingId, inputState: 'DoesNotExist', input: null, outputState: 'ObjectWrite', output: listingOutput, idOperation: 'Created' },
+      ],
+      unchangedConsensusObjects: [
+        { objectId: IDs.root, version: '7', digest, owner: sharedOwner, kind: 'ReadOnlyRoot' },
+        { objectId: IDs.treasury, version: '7', digest, owner: sharedOwner, kind: 'ReadOnlyRoot' },
+        { objectId: IDs.makerTreasury, version: '7', digest, owner: sharedOwner, kind: 'ReadOnlyRoot' },
+      ],
+      objects: [
+        objectEvidence('ROOT', IDs.root, market.types.makerRoot, 'READBACK', 'None',
+          history(IDs.root, market.types.makerRoot, rootRef, rootParsed, 'prior'),
+          history(IDs.root, market.types.makerRoot, rootRef, rootParsed, 'prior')),
+        objectEvidence('REGISTRY', IDs.registry, market.types.marketRegistry, 'CHANGED', 'None',
+          history(IDs.registry, market.types.marketRegistry, registryInput, registryBefore, 'prior'),
+          history(IDs.registry, market.types.marketRegistry, registryOutput, registryAfter, request.digest)),
+        objectEvidence('TREASURY', IDs.treasury, market.types.marketTreasury, 'READBACK', 'None',
+          history(IDs.treasury, market.types.marketTreasury, treasuryRef, treasuryParsed, 'prior'),
+          history(IDs.treasury, market.types.marketTreasury, treasuryRef, treasuryParsed, 'prior')),
+        objectEvidence('LISTING', listingId, market.types.makerListing, 'CREATED', 'Created', null,
+          history(listingId, market.types.makerListing, listingOutput, listingParsed, request.digest)),
+        objectEvidence('ADMIN', IDs.admin, market.types.makerAdmin, 'CHANGED', 'None',
+          history(IDs.admin, market.types.makerAdmin, adminInput, adminParsed, 'prior'),
+          history(IDs.admin, market.types.makerAdmin, adminOutput, adminParsed, request.digest)),
+        objectEvidence('MAKER_TREASURY', IDs.makerTreasury, market.types.makerTreasury, 'READBACK', 'None',
+          history(IDs.makerTreasury, market.types.makerTreasury, makerTreasuryRef, makerRevenue, 'prior'),
+          history(IDs.makerTreasury, market.types.makerTreasury, makerTreasuryRef, makerRevenue, 'prior'),
+          {
+            before: { balance: '0', totalCollected: '0', totalWithdrawn: '0', integerWidth: 128 },
+            after: { balance: '0', totalCollected: '0', totalWithdrawn: '0', integerWidth: 128 },
+          }),
+      ],
+    },
+  };
 }
 
 test('controller uses real builder, forces re-review on ref drift, and stays unsigned', {
@@ -405,4 +726,275 @@ test('controller uses real builder, forces re-review on ref drift, and stays uns
   assert.equal(controller.snapshot().reviewedFingerprint, null);
   assert.equal(controller.snapshot().prepared, null);
   assert.equal(controller.snapshot().issue.layer, 'STALE_CONTEXT');
+});
+
+test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads its receipt tombstone', {
+  skip: available ? false : 'Run with the integrated Maker v8 Market and Recovery modules.',
+}, async () => {
+  const rawRuntime = runtimeFixture();
+  const runtime = (await attestMakerV8Runtime(runtimeAttestationRpc(rawRuntime), rawRuntime)).runtime;
+  const firstData = fixture(runtime);
+  const route = parseFreshV8Route(`/maker/${firstData.IDs.root}`);
+  const execution = {
+    schemaVersion: WEB_V8_EXECUTION_SCHEMA,
+    network: 'mainnet',
+    chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+    allowWalletSignature: true,
+    allowBroadcast: false,
+  };
+  const ref = (objectId, version = '7') => ({ id: objectId, version, digest });
+  const packageTuple = Object.entries(runtime.roles).map(([role, entry], index) => ({
+    role,
+    originalPackageId: entry.typeOriginPackageId,
+    callablePackageId: entry.callablePackageId,
+    packageDigest: `${index + 2}`.repeat(32),
+  }));
+  const eventType = makerV8StableType(runtime, 'release', 'release_v8', 'MakerV8Activated');
+  const memory = memoryIndexedDb();
+  const databaseName = `animacraft-fresh-maker-v8-test:${globalThis.crypto.randomUUID()}`;
+  const persistence = createIndexedDbRecoveryAdapter(memory.factory, { databaseName });
+  const actionContextRequestIds = [];
+  const actionContextRefs = [];
+  const queryRequests = [];
+  const readbackRequests = [];
+  const signRequests = [];
+  let dryRunCalls = 0;
+  let finalized = null;
+
+  const suiClient = runtimeAttestationRpc(runtime, {
+    async simulateTransaction() {
+      const live = fixture(runtime);
+      const quote = live.market.quoteMakerResale(live.registry, '1000000');
+      return { $kind: 'Transaction', commandResults: [{ returnValues: [{ bcs: quoteBytes(quote) }] }] };
+    },
+    async dryRunTransactionBlock() {
+      dryRunCalls += 1;
+      return { effects: { status: { status: 'success' } } };
+    },
+    core: {
+      async getCurrentSystemState() { return { systemState: { epoch: '100' } }; },
+      resolveTransactionPlugin() {
+        return async (transactionData, _options, next) => {
+          transactionData.inputs = transactionData.inputs.map((input) => (
+            input.UnresolvedObject
+              ? Inputs.SharedObjectRef({
+                  objectId: input.UnresolvedObject.objectId,
+                  initialSharedVersion: '1',
+                  mutable: true,
+                })
+              : input
+          ));
+          transactionData.gasData = {
+            budget: '10000000',
+            price: '1000',
+            owner: firstData.IDs.seller,
+            payment: [{ objectId: id(999), version: '1', digest }],
+          };
+          await next();
+        };
+      },
+    },
+  });
+
+  const adapters = {
+    persistence,
+    rpc: {
+      async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+      async getSuiClient() { return suiClient; },
+      async browseMarket() { throw new Error('not used'); },
+      async loadRoute(request) {
+        return {
+          schemaVersion: WEB_V8_ROUTE_SCHEMA,
+          source: 'LIVE_RPC',
+          requestId: request.requestId,
+          chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+          route: `maker:${firstData.IDs.root}`,
+          activation: { eventType, rootId: firstData.IDs.root, lifecycle: 'ACTIVE' },
+          view: {
+            title: 'Fixture Maker',
+            subtitle: 'Fresh controller Recovery fixture',
+            lifecycle: 'PAUSED',
+            listingKind: null,
+            listingStatus: null,
+          },
+          availableActions: ['listMakerControl'],
+        };
+      },
+      async loadActionContext(request) {
+        actionContextRequestIds.push(request.requestId);
+        const live = finalized
+          ? fixture(runtime, { registryVersion: '8', adminVersion: '8' })
+          : firstData;
+        const finalizedVersion = finalized ? '8' : '7';
+        const primary = ref(live.IDs.admin, finalizedVersion);
+        const registry = ref(live.IDs.registry, finalizedVersion);
+        const builderInput = { ...live.builderInput };
+        actionContextRefs.push({ primary, registry });
+        return {
+          schemaVersion: WEB_V8_CONTEXT_SCHEMA,
+          source: 'LIVE_RPC',
+          requestId: request.requestId,
+          chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+          route: `maker:${live.IDs.root}`,
+          action: 'listMakerControl',
+          activation: { eventType, rootId: live.IDs.root, lifecycle: 'ACTIVE' },
+          packageTuple: packageTuple.map((entry) => ({ ...entry })),
+          builderInput,
+          refs: {
+            primary,
+            root: ref(live.IDs.root),
+            registry,
+            treasury: ref(live.IDs.treasury),
+          },
+          authority: { kind: 'MAKER_ADMIN', refs: [{ ...primary }] },
+        };
+      },
+      async queryTransaction(request) {
+        queryRequests.push(clone(request));
+        assert.ok(request.plan, 'query must receive the complete durable plan');
+        assert.equal(request.planHash, request.plan.fingerprint);
+        if (!finalized) finalized = finalizedListMakerEnvelope(firstData, {
+          ...request,
+          outcome: {
+            status: 'FINALIZED_SUCCESS',
+            epoch: '100',
+            effectsFingerprint: `0x${[...sha256(new Uint8Array([1, 2, 3]))]
+              .map((entry) => entry.toString(16).padStart(2, '0')).join('')}`,
+            eventsDigest: digest,
+          },
+        });
+        return {
+          status: 'FINALIZED_SUCCESS',
+          digest: request.digest,
+          epoch: finalized.epoch,
+          effectsFingerprint: finalized.effectsFingerprint,
+          eventsDigest: finalized.eventsDigest,
+          error: null,
+        };
+      },
+      async readbackMarketAction(request) {
+        readbackRequests.push(clone(request));
+        assert.ok(request.plan, 'readback must receive the complete durable plan');
+        assert.equal(request.planHash, request.plan.fingerprint);
+        assert.equal(Object.hasOwn(request, 'checkpoint'), false);
+        assert.equal(Object.hasOwn(request, 'postState'), false);
+        finalized = finalizedListMakerEnvelope(firstData, request);
+        assert.equal(Object.hasOwn(finalized, 'verified'), false,
+          'the RPC callback must return raw Core V2 evidence, not caller authority');
+        return finalized;
+      },
+    },
+    wallet: {
+      async getCurrentAccount() { return { ...firstData.wallet }; },
+      async reconnect() { return { ...firstData.wallet }; },
+      async signExactTransaction(request) {
+        signRequests.push(clone(request));
+        return {
+          bytes: request.bytes,
+          signature: `sig:${request.digest}:${request.signer}`,
+          digest: request.digest,
+          signer: request.signer,
+        };
+      },
+      async verifyExactSignature({ bytes, signature, digest: signedDigest, signer }) {
+        return {
+          verified: signature === `sig:${signedDigest}:${signer}`,
+          bytes,
+          digest: signedDigest,
+          signer,
+        };
+      },
+    },
+    transactions: {
+      async buildExactTransaction() { throw new Error('private Market builder is required'); },
+      async deriveTransactionDigest(bytes) {
+        return TransactionDataBuilder.getDigestFromBytes(Buffer.from(bytes, 'base64'));
+      },
+      async dryRunExactTransaction() { throw new Error('private Market simulation is required'); },
+      async broadcastExactTransaction() { throw new Error('broadcast must stay disabled'); },
+    },
+  };
+
+  const controller = createFreshV8Controller({
+    route,
+    runtime,
+    execution,
+    adapters,
+    marketModule,
+    recoveryModule,
+  });
+  await controller.refresh();
+  await controller.reviewQuote();
+  await controller.prepare();
+  const signed = await controller.requestSignature('SIGN EXACT TRANSACTION');
+  assert.equal(signed.state, 'SIGNED_DURABLE');
+  assert.equal(signRequests.length, 1);
+  assert.match(signRequests[0].recovery.sessionId,
+    /^web-v8-session:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(signRequests[0].recovery.planHash, signed.plan.fingerprint);
+  assert.equal(actionContextRequestIds.length, 2,
+    'signature must perform a second live identity refetch');
+  assert.equal(new Set(actionContextRequestIds).size, actionContextRequestIds.length);
+  assert.equal(dryRunCalls, 2,
+    'prepare and requestSignature must consume separate one-shot simulations');
+
+  const scopeKey = recoveryModule.makerV8RecoveryScopeKey(signed.identity);
+  const durableSigned = await persistence.load(scopeKey);
+  assert.equal(durableSigned.state, 'SIGNED_DURABLE');
+  assert.deepEqual(durableSigned.plan, signed.plan);
+  assert.deepEqual(durableSigned.signed, signed.signed);
+  await assert.rejects(
+    persistence.compareAndSwap(scopeKey, durableSigned.revision, durableSigned, {
+      completionReceipt: null,
+      discardUnsigned: true,
+    }),
+    { code: 'MAKER_V8_RECOVERY_RECORD_INVALID' },
+  );
+  await assert.rejects(
+    persistence.compareAndSwap(scopeKey, durableSigned.revision, null),
+    { code: 'MAKER_V8_RECOVERY_RECORD_INVALID' },
+  );
+  assert.deepEqual(await persistence.load(scopeKey), durableSigned,
+    'invalid commit options and physical deletion cannot reset the durable revision');
+
+  const verified = await controller.recoverOutcome();
+  assert.equal(verified.state, 'VERIFIED');
+  assert.equal(queryRequests.length, 1);
+  assert.equal(readbackRequests.length, 1);
+  assert.deepEqual(queryRequests[0].plan, signed.plan);
+  assert.deepEqual(readbackRequests[0].plan, signed.plan);
+  assert.equal(verified.receipt.planHash, signed.plan.fingerprint);
+  assert.equal(verified.receipt.evidence.source, 'FINALIZED_CORE_V2');
+
+  const receipt = await controller.cleanupVerified();
+  assert.deepEqual(receipt, verified.receipt);
+  const tombstone = await persistence.load(scopeKey);
+  assert.equal(tombstone.state, 'CLEANED');
+  assert.equal(tombstone.plan, null);
+  assert.equal(tombstone.signed, null);
+  assert.equal(memory.database.records.get('receipts').size, 1);
+
+  const reloadedPersistence = createIndexedDbRecoveryAdapter(memory.factory, { databaseName });
+  const reloaded = createFreshV8Controller({
+    route,
+    runtime,
+    execution,
+    adapters: { ...adapters, persistence: reloadedPersistence },
+    marketModule,
+    recoveryModule,
+  });
+  await reloaded.refresh();
+  assert.equal(actionContextRequestIds.length, 3,
+    'a new page/controller must refetch live identity instead of caching authority');
+  assert.equal(new Set(actionContextRequestIds).size, actionContextRequestIds.length);
+  assert.deepEqual(actionContextRefs.map((entry) => entry.registry.version), ['7', '7', '8']);
+  assert.deepEqual(actionContextRefs.map((entry) => entry.primary.version), ['7', '7', '8']);
+  assert.equal(reloaded.snapshot().status, 'CLEANED');
+  assert.equal(reloaded.snapshot().recoveryRecord, null);
+  assert.deepEqual(reloaded.snapshot().completionReceipt, receipt);
+  assert.deepEqual(await reloadedPersistence.loadReceipt(tombstone.identityKey), receipt);
+  assert.deepEqual(memory.openCalls, [
+    { name: databaseName, version: 1 },
+    { name: databaseName, version: 1 },
+  ]);
 });

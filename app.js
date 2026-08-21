@@ -303,7 +303,7 @@ export function createSuiV8BrowserAdapters({ client, wallet, dataSource, transac
       loadRoute: (request) => dataSource.loadRoute(request),
       browseMarket: (request) => dataSource.browseMarket(request),
       loadActionContext: (request) => dataSource.loadActionContext(request),
-      queryTransaction: ({ digest, identity }) => dataSource.queryTransaction({ client, digest, identity }),
+      queryTransaction: (request) => dataSource.queryTransaction({ client, ...request }),
       readbackMarketAction: (request) => dataSource.readbackMarketAction({ client, ...request }),
     },
     wallet: {
@@ -799,6 +799,24 @@ export function createIndexedDbRecoveryAdapter(indexedDb, {
   return Object.freeze({
     load: (scopeKey) => read('active', scopeKey),
     async compareAndSwap(scopeKey, expectedRevision, nextRecord, options = {}) {
+      if (!isPlainRecord(options)) {
+        throw appError('MAKER_V8_RECOVERY_RECORD_INVALID', 'Recovery commit options must be an exact record.', 'STORAGE');
+      }
+      const optionKeys = Object.keys(options);
+      const validOptions = optionKeys.length === 0
+        || (optionKeys.length === 1 && options.archiveFinalizedFailure === true)
+        || (optionKeys.length === 1 && options.discardUnsigned === true)
+        || (optionKeys.length === 1 && Object.hasOwn(options, 'completionReceipt'))
+        || (optionKeys.length === 1 && options.replaceTombstone === true)
+        || (optionKeys.length === 1 && options.replaceFinalizedFailure === true)
+        || (optionKeys.length === 1 && Object.hasOwn(options, 'resetUnsigned'));
+      if (!validOptions) {
+        throw appError(
+          'MAKER_V8_RECOVERY_RECORD_INVALID',
+          'Recovery commit options are unsupported or ambiguous.',
+          'STORAGE',
+        );
+      }
       const database = await open();
       const transaction = database.transaction(['active', 'receipts', 'failures'], 'readwrite');
       const done = transactionDone(transaction);
@@ -810,23 +828,45 @@ export function createIndexedDbRecoveryAdapter(indexedDb, {
         await done.catch(() => {});
         throw appError('MAKER_V8_RECOVERY_CAS_CONFLICT', 'Recovery state changed in another tab.', 'CONCURRENCY');
       }
-      if (nextRecord) {
-        if (options.archiveFinalizedFailure === true && nextRecord.failure) {
-          transaction.objectStore('failures').put(
-            nextRecord.failure,
-            `${nextRecord.identityKey}:digest:${nextRecord.failure.digest}`,
-          );
-        }
-        active.put(nextRecord, scopeKey);
-      } else {
-        if (!options.completionReceipt) {
+      if (!nextRecord) {
+        transaction.abort();
+        await done.catch(() => {});
+        throw appError(
+          'MAKER_V8_RECOVERY_RECORD_INVALID',
+          'Physical recovery deletion is forbidden because it resets the durable CAS revision.',
+          'STORAGE',
+        );
+      }
+      if (options.archiveFinalizedFailure === true && nextRecord.failure) {
+        transaction.objectStore('failures').put(
+          nextRecord.failure,
+          `${nextRecord.identityKey}:digest:${nextRecord.failure.digest}`,
+        );
+      }
+      if (Object.hasOwn(options, 'completionReceipt')) {
+        const receipt = options.completionReceipt;
+        const receipts = transaction.objectStore('receipts');
+        const prior = receipt?.identityKey
+          ? await requestWhileTransactionActive(receipts.get(receipt.identityKey), done)
+          : null;
+        if (!receipt || current?.state !== 'VERIFIED' || nextRecord.state !== 'CLEANED'
+          || current.identityKey !== receipt.identityKey
+          || nextRecord.identityKey !== receipt.identityKey
+          || nextRecord.plan !== null || nextRecord.signed !== null
+          || stableJson(current.receipt) !== stableJson(receipt)
+          || stableJson(nextRecord.receipt) !== stableJson(receipt)
+          || (prior && stableJson(prior) !== stableJson(receipt))) {
           transaction.abort();
           await done.catch(() => {});
-          throw appError('MAKER_V8_RECOVERY_RECEIPT_INVALID', 'Verified cleanup requires its exact receipt.', 'STORAGE');
+          throw appError(
+            'MAKER_V8_RECOVERY_RECEIPT_INVALID',
+            'Verified cleanup requires an atomic CLEANED tombstone and its exact receipt.',
+            'STORAGE',
+          );
         }
-        transaction.objectStore('receipts').put(options.completionReceipt, options.completionReceipt.identityKey);
-        active.delete(scopeKey);
+        receipts.put(receipt, receipt.identityKey);
       }
+      active.put(nextRecord, scopeKey);
       await done;
       return nextRecord ?? null;
     },
@@ -955,7 +995,7 @@ export function createFreshV8Controller({
       }
       return adapters.transactions.broadcastExactTransaction(request);
     },
-    query: ({ digest, identity }) => adapters.rpc.queryTransaction({ digest, identity }),
+    query: (request) => adapters.rpc.queryTransaction(request),
     readback: async (request) => assertFinalizedMarketReadbackV8(
       await adapters.rpc.readbackMarketAction(request),
       request,
@@ -986,6 +1026,7 @@ export function createFreshV8Controller({
     paymentFingerprint: null,
     prepared: null,
     recoveryRecord: null,
+    completionReceipt: null,
     issue: null,
   };
   const listeners = new Set();
@@ -1010,6 +1051,7 @@ export function createFreshV8Controller({
     state.chainQuoteProof = null;
     state.prepared = null;
     state.recoveryRecord = null;
+    state.completionReceipt = null;
     const requested = {
       requestId: requestId(),
       route,
@@ -1051,12 +1093,17 @@ export function createFreshV8Controller({
       // Re-enter through Recovery validation using the immutable identity saved
       // with the plan. Never reconstruct an old signed action from fresh refs.
       state.recoveryRecord = await recovery.load(pendingAtRoot.identity);
-      currentIdentity = state.recoveryRecord.identity;
+      currentIdentity = pendingAtRoot.identity;
+      if (!state.recoveryRecord) {
+        state.completionReceipt = await recovery.loadReceipt(pendingAtRoot.identity);
+      }
     } else {
       currentIdentity = liveIdentity;
       state.recoveryRecord = await recovery.load(liveIdentity);
+      if (!state.recoveryRecord) state.completionReceipt = await recovery.loadReceipt(liveIdentity);
     }
-    state.status = state.recoveryRecord?.state || 'QUOTING';
+    state.status = state.recoveryRecord?.state
+      || (state.completionReceipt ? 'CLEANED' : 'QUOTING');
   }
 
   async function refresh() {
@@ -1200,11 +1247,26 @@ export function createFreshV8Controller({
       dryRunProof,
     );
     const plan = transactionPlan(evidence, candidate);
-    if (expectedPlan && stableJson(expectedPlan) !== stableJson(plan)) {
+    const comparablePlan = expectedPlan
+      ? Object.freeze({
+          ...plan,
+          fingerprint: expectedPlan.fingerprint,
+          market: Object.freeze({
+            schema: evidence.schema,
+            descriptor: clonePublic(evidence.descriptor),
+            runtime: clonePublic(evidence.runtime),
+          }),
+        })
+      : plan;
+    if (expectedPlan && stableJson(expectedPlan) !== stableJson(comparablePlan)) {
       throw appError(
         'WEB_V8_DURABLE_TRANSACTION_DRIFT',
         'Fresh wallet, object, quote, epoch, gas, or TransactionData state differs from the complete durable plan; discard and review a new plan instead of signing replacement bytes.',
         'CONTEXT',
+        {
+          changedFields: [...new Set([...Object.keys(expectedPlan), ...Object.keys(comparablePlan)])]
+            .filter((field) => stableJson(expectedPlan[field]) !== stableJson(comparablePlan[field])),
+        },
       );
     }
     return Object.freeze({ compiled, evidence, plan });
@@ -1312,6 +1374,7 @@ export function createFreshV8Controller({
         identity,
       });
       state.recoveryRecord = record;
+      state.completionReceipt = null;
       state.status = record.state;
       state.busy = false;
       emit();
@@ -1388,6 +1451,23 @@ export function createFreshV8Controller({
     }
   }
 
+  async function cleanupVerified() {
+    try {
+      if (!currentIdentity) throw appError('WEB_V8_CONTEXT_UNAVAILABLE', 'Refresh the exact action context first.', 'CONTEXT');
+      setBusy(true, 'CLEANING');
+      const receipt = await recovery.cleanupVerified(currentIdentity);
+      state.recoveryRecord = null;
+      state.completionReceipt = receipt;
+      state.prepared = null;
+      state.status = 'CLEANED';
+      state.busy = false;
+      emit();
+      return receipt;
+    } catch (error) {
+      return rememberError(error);
+    }
+  }
+
   return Object.freeze({
     snapshot,
     subscribe(listener) { listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener); },
@@ -1404,6 +1484,7 @@ export function createFreshV8Controller({
     requestSignature,
     recoverOutcome,
     replayExact,
+    cleanupVerified,
   });
 }
 
