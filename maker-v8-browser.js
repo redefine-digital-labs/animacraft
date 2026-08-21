@@ -1233,6 +1233,7 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
       });
     }
     const groupedExpected = new Map();
+    const matchedCandidateIds = new Set();
     for (const line of expectedLines.filter((entry) => entry.amount !== '0')) {
       const key = `${line.owner}:${line.amount}`;
       groupedExpected.set(key, [...(groupedExpected.get(key) || []), line]);
@@ -1251,6 +1252,7 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
       [...lines].sort((left, right) => left.role.localeCompare(right.role))
         .forEach((line, index) => {
           const { candidate, after } = matches[index];
+          matchedCandidateIds.add(candidate.normalized.objectId);
           objects.push(freeze({
             role: line.role,
             objectId: candidate.normalized.objectId,
@@ -1263,6 +1265,13 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
             revenue: freeze({ before: null, after: null }),
           }));
         });
+    }
+    if (candidates.some(({ candidate }) => !matchedCandidateIds.has(candidate.normalized.objectId))) {
+      fail(
+        'MAKER_V8_BROWSER_COIN_OUTPUT_AMBIGUOUS',
+        'Finalized effects contain an unexpected surviving payment Coin output.',
+        'READBACK',
+      );
     }
     const zeroCreator = expectedLines.find((entry) => entry.role === 'CREATOR_COIN' && entry.amount === '0');
     if (zeroCreator && candidates.some((entry) => entry.owner === zeroCreator.owner && entry.amount === '0')) {

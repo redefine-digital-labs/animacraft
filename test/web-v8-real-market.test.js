@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { access, readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { bcs } from '@mysten/sui/bcs';
+import { TransactionDataBuilder } from '@mysten/sui/transactions';
+import { toBase64 } from '@mysten/sui/utils';
 
 import {
   MARKET_V8_ACTIONS,
@@ -28,6 +31,41 @@ const id = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const packageId = (digit) => `0x${digit.repeat(64)}`;
 const bytes32 = (value) => Array(32).fill(value);
 const digest = '11111111111111111111111111111111';
+
+function stableJson(value) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') return JSON.stringify(value);
+  if (typeof value === 'bigint') return JSON.stringify(value.toString());
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+}
+
+const hexHash = (value) => `0x${[...sha256(new TextEncoder().encode(stableJson(value)))]
+  .map((entry) => entry.toString(16).padStart(2, '0')).join('')}`;
+const addressOwner = (value) => ({ kind: 'AddressOwner', value });
+const sharedOwner = Object.freeze({ kind: 'Shared', value: { initialSharedVersion: '1' } });
+
+function coreRef(objectId, version, owner) {
+  return { objectId, version, digest, owner };
+}
+
+function history(objectId, type, ref, parsed, previousTransaction) {
+  return {
+    objectId,
+    type,
+    ownerKind: ref.owner.kind,
+    ref,
+    owner: ref.owner,
+    previousTransaction,
+    parsed,
+  };
+}
+
+function snakeCounters(snapshot) {
+  return Object.fromEntries(Object.entries(snapshot).map(([field, value]) => [
+    field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`), value,
+  ]));
+}
 
 function quoteBytes(quote) {
   const schema = bcs.struct('MarketQuoteV8', {
@@ -294,26 +332,9 @@ test('web runtime bridge invokes the real Market Transaction builder', {
       revenue: { balances: [], coinOutputs: [] },
     },
   };
-  const verified = assertFinalizedMarketReadbackV8(
-    readback,
-    {
-      digest: finalizedDigest,
-      outcome: { checkpoint: '9' },
-      identity,
-      planHash: `0x${'f1'.repeat(32)}`,
-      plan: {
-        fingerprint: `0x${'f1'.repeat(32)}`,
-        sourceSnapshot: { descriptor: compiled.descriptor },
-      },
-    },
-    client,
-    marketModule,
-  );
-  assert.equal(verified.verified, true);
-  assert.equal(verified.evidence.event.kind, 'MarketListingOpenedV8');
   assert.throws(
     () => assertFinalizedMarketReadbackV8(
-      { ...readback, verified: true },
+      readback,
       {
         digest: finalizedDigest,
         outcome: { checkpoint: '9' },
@@ -327,8 +348,229 @@ test('web runtime bridge invokes the real Market Transaction builder', {
       client,
       marketModule,
     ),
-    { code: 'WEB_V8_FIELDS_INVALID' },
+    { code: 'WEB_V8_FINALIZED_FIELDS_INVALID' },
   );
+
+  const [targetPackage, targetModule, targetFunction] = compiled.descriptor.target.split('::');
+  const transactionRaw = TransactionDataBuilder.restore({
+    version: 2,
+    sender: IDs.seller,
+    expiration: { Epoch: '8' },
+    gasData: { budget: '1000', price: '1', owner: IDs.seller, payment: [] },
+    inputs: [],
+    commands: [{
+      $kind: 'MoveCall',
+      MoveCall: {
+        package: targetPackage,
+        module: targetModule,
+        function: targetFunction,
+        typeArguments: compiled.descriptor.typeArguments,
+        arguments: [],
+      },
+    }],
+  }).build();
+  const transactionBytes = toBase64(transactionRaw);
+  const transactionDigest = TransactionDataBuilder.getDigestFromBytes(transactionRaw);
+  const planBase = {
+    transactionBytes,
+    transactionDigest,
+    stage: 'MARKET_LIST',
+    sequence: '0',
+    signer: IDs.seller,
+    epochWindow: { start: '7', end: '8' },
+    gas: { owner: IDs.seller, budget: '1000', price: '1', payment: [] },
+    expiration: { kind: 'Epoch', epoch: '8' },
+    sourceSnapshot: {
+      schema: 'animacraft.market-source-snapshot.v8',
+      fingerprint: `0x${'12'.repeat(32)}`,
+      descriptor: compiled.descriptor,
+    },
+    market: { schema: 'animacraft.market-recovery-evidence.v8', descriptor: compiled.descriptor, runtime: {} },
+  };
+  const finalizedPlanHash = hexHash(planBase);
+  const plan = { ...planBase, fingerprint: finalizedPlanHash };
+  const pre = compiled.descriptor.preState;
+  const registryBefore = snakeCounters(pre.registry);
+  const registryAfter = {
+    ...registryBefore,
+    revision: String(BigInt(registryBefore.revision) + 1n),
+    listing_count: String(BigInt(registryBefore.listing_count) + 1n),
+    escrow_count: String(BigInt(registryBefore.escrow_count) + 1n),
+  };
+  const treasuryParsed = {
+    escrow: { value: '0' },
+    gross_escrowed_atomic: pre.treasury.grossEscrowedAtomic,
+    gross_released_atomic: pre.treasury.grossReleasedAtomic,
+  };
+  const rootParsed = {
+    owner: IDs.seller,
+    creator: pre.root.creator,
+    admin_cap_id: IDs.admin,
+    control_epoch: pre.root.controlEpoch,
+  };
+  const adminParsed = {
+    root_id: IDs.root,
+    owner: IDs.seller,
+    control_epoch: pre.root.controlEpoch,
+  };
+  const listingParsed = {
+    registry_id: IDs.registry,
+    treasury_id: IDs.treasury,
+    root_id: IDs.root,
+    admin_cap_id: IDs.admin,
+    seller: IDs.seller,
+    expected_control_epoch: pre.ownershipEpoch,
+    gross_atomic: pre.quote.grossAtomic,
+    quote_commitment: pre.quote.commitment,
+    status: '0',
+    revision: '0',
+    terminal_recipient: id(0),
+  };
+  const makerRevenue = { revenue: { value: '0' }, total_collected: '0', total_withdrawn: '0' };
+  const unchangedRef = (objectId) => ({ ...coreRef(objectId, '7', sharedOwner), kind: 'ReadOnlyRoot' });
+  const rootRef = unchangedRef(IDs.root);
+  const treasuryRef = unchangedRef(IDs.treasury);
+  const makerTreasuryRef = unchangedRef(IDs.makerTreasury);
+  const registryInput = coreRef(IDs.registry, '7', sharedOwner);
+  const registryOutput = coreRef(IDs.registry, '8', sharedOwner);
+  const adminInput = coreRef(IDs.admin, '7', addressOwner(IDs.seller));
+  const adminOutput = coreRef(IDs.admin, '8', addressOwner(listingId));
+  const listingOutput = coreRef(listingId, '8', sharedOwner);
+  const objectEvidence = (role, objectId, type, change, idOperation, before, after, revenue = { before: null, after: null }) => ({
+    role, objectId, type, ownerKind: (after ?? before).ownerKind,
+    change, idOperation, before, after, revenue,
+  });
+  const effectsBytes = new Uint8Array([1, 2, 3]);
+  const effectsFingerprint = `0x${[...sha256(effectsBytes)].map((entry) => entry.toString(16).padStart(2, '0')).join('')}`;
+  const coreEvent = {
+    id: { txDigest: transactionDigest, eventSeq: '0' },
+    packageId: runtime.roles.market.typeOriginPackageId,
+    transactionModule: 'market_v8',
+    sender: IDs.seller,
+    type: `${runtime.roles.market.typeOriginPackageId}::market_v8::MarketListingOpenedV8`,
+    parsedJson: {
+      listing_id: listingId,
+      registry_id: IDs.registry,
+      lane: String(marketModule.MARKET_V8_LANES.MAKER),
+      root_id: IDs.root,
+      asset_id: IDs.admin,
+      seller: IDs.seller,
+      ownership_epoch: pre.ownershipEpoch,
+      gross_atomic: pre.quote.grossAtomic,
+      quote_commitment: pre.quote.commitment,
+    },
+    bcs: toBase64(new Uint8Array([9])),
+    eventsDigest: digest,
+  };
+  const coreV2 = {
+    schemaVersion: WEB_V8_READBACK_SCHEMA,
+    source: 'FINALIZED_CORE_V2',
+    digest: transactionDigest,
+    epoch: '7',
+    effectsFingerprint,
+    eventsDigest: digest,
+    planHash: finalizedPlanHash,
+    identity,
+    transaction: {
+      sender: IDs.seller,
+      status: 'SUCCESS',
+      target: compiled.descriptor.target,
+      typeArguments: compiled.descriptor.typeArguments,
+    },
+    event: coreEvent,
+    events: [coreEvent],
+    effects: {
+      transactionDigest,
+      epoch: '7',
+      eventsDigest: digest,
+      transactionBcs: transactionBytes,
+      eventsBcs: toBase64(new Uint8Array([8, 9])),
+      bcs: toBase64(effectsBytes),
+      changedObjects: [
+        { objectId: IDs.registry, inputState: 'Exists', input: registryInput, outputState: 'ObjectWrite', output: registryOutput, idOperation: 'None' },
+        { objectId: IDs.admin, inputState: 'Exists', input: adminInput, outputState: 'ObjectWrite', output: adminOutput, idOperation: 'None' },
+        { objectId: listingId, inputState: 'DoesNotExist', input: null, outputState: 'ObjectWrite', output: listingOutput, idOperation: 'Created' },
+      ],
+      unchangedConsensusObjects: [
+        { objectId: IDs.root, version: '7', digest, owner: sharedOwner, kind: 'ReadOnlyRoot' },
+        { objectId: IDs.treasury, version: '7', digest, owner: sharedOwner, kind: 'ReadOnlyRoot' },
+        { objectId: IDs.makerTreasury, version: '7', digest, owner: sharedOwner, kind: 'ReadOnlyRoot' },
+      ],
+      objects: [
+        objectEvidence('ROOT', IDs.root, client.types.makerRoot, 'READBACK', 'None',
+          history(IDs.root, client.types.makerRoot, rootRef, rootParsed, 'prior'),
+          history(IDs.root, client.types.makerRoot, rootRef, rootParsed, 'prior')),
+        objectEvidence('REGISTRY', IDs.registry, client.types.marketRegistry, 'CHANGED', 'None',
+          history(IDs.registry, client.types.marketRegistry, registryInput, registryBefore, 'prior'),
+          history(IDs.registry, client.types.marketRegistry, registryOutput, registryAfter, transactionDigest)),
+        objectEvidence('TREASURY', IDs.treasury, client.types.marketTreasury, 'READBACK', 'None',
+          history(IDs.treasury, client.types.marketTreasury, treasuryRef, treasuryParsed, 'prior'),
+          history(IDs.treasury, client.types.marketTreasury, treasuryRef, treasuryParsed, 'prior')),
+        objectEvidence('LISTING', listingId, client.types.makerListing, 'CREATED', 'Created', null,
+          history(listingId, client.types.makerListing, listingOutput, listingParsed, transactionDigest)),
+        objectEvidence('ADMIN', IDs.admin, client.types.makerAdmin, 'CHANGED', 'None',
+          history(IDs.admin, client.types.makerAdmin, adminInput, adminParsed, 'prior'),
+          history(IDs.admin, client.types.makerAdmin, adminOutput, adminParsed, transactionDigest)),
+        objectEvidence('MAKER_TREASURY', IDs.makerTreasury, client.types.makerTreasury, 'READBACK', 'None',
+          history(IDs.makerTreasury, client.types.makerTreasury, makerTreasuryRef, makerRevenue, 'prior'),
+          history(IDs.makerTreasury, client.types.makerTreasury, makerTreasuryRef, makerRevenue, 'prior'),
+          {
+            before: { balance: '0', totalCollected: '0', totalWithdrawn: '0', integerWidth: 128 },
+            after: { balance: '0', totalCollected: '0', totalWithdrawn: '0', integerWidth: 128 },
+          }),
+      ],
+    },
+  };
+  const verified = assertFinalizedMarketReadbackV8(coreV2, {
+    digest: transactionDigest,
+    identity,
+    plan,
+    planHash: finalizedPlanHash,
+    outcome: { epoch: '7', effectsFingerprint, eventsDigest: digest },
+  }, client, marketModule);
+  assert.equal(verified.verified, true);
+  assert.equal(verified.epoch, '7');
+  assert.equal(Object.hasOwn(verified, 'checkpoint'), false);
+  assert.equal(verified.evidence.source, 'FINALIZED_CORE_V2');
+  const finalizedRequest = {
+    digest: transactionDigest,
+    identity,
+    plan,
+    planHash: finalizedPlanHash,
+    outcome: { epoch: '7', effectsFingerprint, eventsDigest: digest },
+  };
+  const tamperMatrix = [
+    ['source', (value) => { value.source = 'FINALIZED_RPC'; }],
+    ['plan hash', (value) => { value.planHash = `0x${'ff'.repeat(32)}`; }],
+    ['epoch', (value) => { value.epoch = '8'; }],
+    ['effects fingerprint', (value) => { value.effectsFingerprint = `0x${'ee'.repeat(32)}`; }],
+    ['events digest', (value) => { value.eventsDigest = '22222222222222222222222222222222'; }],
+    ['sender', (value) => { value.transaction.sender = id(999); }],
+    ['target', (value) => { value.transaction.target = `${id(999)}::market_v8::list_maker_control_v8`; }],
+    ['transaction BCS', (value) => { value.effects.transactionBcs = toBase64(new Uint8Array([1, 2])); }],
+    ['effects BCS', (value) => { value.effects.bcs = toBase64(new Uint8Array([4, 5])); }],
+    ['event BCS', (value) => { value.events[0].bcs = ''; value.event.bcs = ''; }],
+    ['events BCS', (value) => { value.effects.eventsBcs = ''; }],
+    ['terminal event', (value) => { value.events[0].parsedJson.asset_id = id(999); value.event.parsedJson.asset_id = id(999); }],
+    ['changed ref', (value) => { value.effects.changedObjects[0].output = { ...value.effects.changedObjects[0].output, version: '9' }; }],
+    ['historical owner', (value) => { value.effects.objects[4].after.owner = addressOwner(id(999)); }],
+    ['registry delta', (value) => { value.effects.objects[1].after.parsed.listing_count = '9'; }],
+    ['treasury escrow', (value) => { value.effects.objects[2].after.parsed.escrow.value = '1'; }],
+    ['listing status', (value) => { value.effects.objects[3].after.parsed.status = '1'; }],
+    ['Root owner', (value) => { value.effects.objects[0].after.parsed.owner = id(999); }],
+    ['Admin holder', (value) => { value.effects.objects[4].after.parsed.owner = id(999); }],
+    ['role omission', (value) => { value.effects.objects.pop(); }],
+    ['legacy postState injection', (value) => { value.postState = {}; }],
+  ];
+  for (const [label, mutate] of tamperMatrix) {
+    const changedEnvelope = structuredClone(coreV2);
+    mutate(changedEnvelope);
+    assert.throws(
+      () => assertFinalizedMarketReadbackV8(changedEnvelope, finalizedRequest, client, marketModule),
+      (failure) => failure?.code?.startsWith('WEB_V8_FINALIZED_'),
+      label,
+    );
+  }
 });
 
 test('real Market quote rejects an unparsed caller record before creating a Transaction', {
@@ -597,29 +839,17 @@ function finalizedFixture(action, client, runtime, index) {
   return { value, request };
 }
 
-test('finalized RPC readback proves the exact post-state for all fourteen typed actions', {
+test('legacy FINALIZED_RPC/postState readback is rejected for all fourteen typed actions', {
   skip: marketModule ? false : 'Market module is integrated in the parent worktree.',
 }, () => {
   const runtime = marketRuntimeFromMakerRuntime(makerRuntime(), 'mainnet');
   const client = marketModule.createMarketV8Client(runtime, { network: 'mainnet' });
   for (const [index, action] of MARKET_V8_ACTIONS.entries()) {
     const fixture = finalizedFixture(action, client, runtime, index);
-    const result = assertFinalizedMarketReadbackV8(fixture.value, fixture.request, client, marketModule);
-    assert.equal(result.verified, true, action.id);
-    const wrongStatus = structuredClone(fixture.value);
-    wrongStatus.postState.listing.status = wrongStatus.postState.listing.status === '0' ? '1' : '0';
     assert.throws(
-      () => assertFinalizedMarketReadbackV8(wrongStatus, fixture.request, client, marketModule),
-      (error) => typeof error.code === 'string' && error.code.startsWith('WEB_V8_FINALIZED_'),
-      `${action.id} wrong terminal status`,
-    );
-    const wrongEventAsset = structuredClone(fixture.value);
-    wrongEventAsset.event.parsedJson.asset_id = id(9999);
-    assert.throws(
-      () => assertFinalizedMarketReadbackV8(wrongEventAsset, fixture.request, client, marketModule),
-      (error) => typeof error.code === 'string'
-        && (error.code.startsWith('WEB_V8_') || error.code.startsWith('MARKET_V8_')),
-      `${action.id} wrong event asset`,
+      () => assertFinalizedMarketReadbackV8(fixture.value, fixture.request, client, marketModule),
+      { code: 'WEB_V8_FINALIZED_FIELDS_INVALID' },
+      `${action.id} legacy schema`,
     );
   }
 });
