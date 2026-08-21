@@ -297,12 +297,36 @@ function quoteKind(action) {
 function ownerEvidence(owner) {
   if (!owner) return freeze({ kind: 'NONE', value: null });
   const kind = owner.$kind
+    ?? owner.kind
     ?? (owner.AddressOwner ? 'AddressOwner'
       : owner.ObjectOwner ? 'ObjectOwner'
         : owner.Shared ? 'Shared'
           : owner.Immutable ? 'Immutable'
             : owner.ConsensusAddressOwner ? 'ConsensusAddressOwner' : 'Unknown');
-  return freeze({ kind, value: owner[kind] ?? owner });
+  const raw = owner[kind] ?? owner.value ?? owner;
+  if (kind === 'AddressOwner' || kind === 'ObjectOwner') {
+    return freeze({ kind, value: id(raw, `owner.${kind}`) });
+  }
+  if (kind === 'Shared') {
+    const initialSharedVersion = raw?.initialSharedVersion ?? raw?.initial_shared_version;
+    return freeze({
+      kind,
+      value: {
+        initialSharedVersion: decimal(initialSharedVersion, 'owner.Shared.initialSharedVersion'),
+      },
+    });
+  }
+  if (kind === 'ConsensusAddressOwner') {
+    return freeze({
+      kind,
+      value: {
+        startVersion: decimal(raw?.startVersion ?? raw?.start_version, 'owner.ConsensusAddressOwner.startVersion'),
+        owner: id(raw?.owner, 'owner.ConsensusAddressOwner.owner'),
+      },
+    });
+  }
+  if (kind === 'Immutable') return freeze({ kind, value: true });
+  return freeze({ kind: 'Unknown', value: null });
 }
 
 function changedRef(change, side, label) {

@@ -596,6 +596,7 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
     });
   };
   remember(ids.root, '7', { control_epoch: '4' });
+  past.get(`${ids.root}:7`).details.owner = { Shared: { initial_shared_version: '1' } };
   remember(ids.registry, '5', { revision: '9' });
   remember(ids.registry, '8', { revision: '10' }, suiDigest);
   remember(ids.treasury, '5', { escrow_atomic: '0' });
@@ -743,6 +744,10 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
   ]);
   assert.equal(receipt.effects.objects.find(({ role }) => role === 'REGISTRY').after.ref.version, '8');
   assert.equal(receipt.effects.objects.find(({ role }) => role === 'LISTING').change, 'CREATED');
+  assert.deepEqual(
+    receipt.effects.objects.find(({ role }) => role === 'ROOT').before.owner,
+    { kind: 'Shared', value: { initialSharedVersion: '1' } },
+  );
 
   tamperEventJson = true;
   await assert.rejects(

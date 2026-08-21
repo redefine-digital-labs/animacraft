@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bcs } from '@mysten/sui/bcs';
-import { TransactionDataBuilder } from '@mysten/sui/transactions';
+import { Inputs, TransactionDataBuilder } from '@mysten/sui/transactions';
 import { toBase64 } from '@mysten/sui/utils';
 
 import {
@@ -352,12 +352,17 @@ test('web runtime bridge invokes the real Market Transaction builder', {
   );
 
   const [targetPackage, targetModule, targetFunction] = compiled.descriptor.target.split('::');
+  const sharedInput = (objectId) => Inputs.SharedObjectRef({
+    objectId,
+    initialSharedVersion: '1',
+    mutable: false,
+  });
   const transactionRaw = TransactionDataBuilder.restore({
     version: 2,
     sender: IDs.seller,
     expiration: { Epoch: '8' },
     gasData: { budget: '1000', price: '1', owner: IDs.seller, payment: [] },
-    inputs: [],
+    inputs: [sharedInput(IDs.root), sharedInput(IDs.treasury), sharedInput(IDs.makerTreasury)],
     commands: [{
       $kind: 'MoveCall',
       MoveCall: {
@@ -407,6 +412,7 @@ test('web runtime bridge invokes the real Market Transaction builder', {
     creator: pre.root.creator,
     admin_cap_id: IDs.admin,
     control_epoch: pre.root.controlEpoch,
+    content_commitment: compiled.descriptor.rootContentCommitment,
   };
   const adminParsed = {
     root_id: IDs.root,

@@ -1,4 +1,5 @@
 import { sha256 } from '@noble/hashes/sha2.js';
+import { bcs } from '@mysten/sui/bcs';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, normalizeStructTag, toBase64 } from '@mysten/sui/utils';
 
@@ -17,6 +18,27 @@ const REGISTRY_FIELDS = Object.freeze([
   'protocol_paid_atomic', 'creator_paid_atomic', 'source_paid_atomic',
   'seller_paid_atomic',
 ]);
+const SOUL_COMMITMENT_INPUT_BCS = bcs.struct('SoulCommitmentInputV8', {
+  domain: bcs.vector(bcs.u8()),
+  version: bcs.u64(),
+  soul_registry_id: bcs.Address,
+  root_id: bcs.Address,
+  maker_version: bcs.u64(),
+  root_content_commitment: bcs.vector(bcs.u8()),
+  output_key: bcs.string(),
+  output_policy_commitment: bcs.vector(bcs.u8()),
+  holder: bcs.Address,
+  ownership_epoch: bcs.u64(),
+  output_id: bcs.Address,
+  receipt_id: bcs.Address,
+  recipe_commitment: bcs.vector(bcs.u8()),
+  render_commitment: bcs.vector(bcs.u8()),
+  output_commitment: bcs.vector(bcs.u8()),
+  receipt_commitment: bcs.vector(bcs.u8()),
+  soul_creator_royalty_bps: bcs.u16(),
+  maker_source_royalty_bps: bcs.u16(),
+});
+const SOUL_COMMITMENT_DOMAIN = new TextEncoder().encode('animacraft-v8/output/canonical-soul');
 const ARGUMENT_ROLES = Object.freeze({
   registry: 'REGISTRY', treasury: 'TREASURY', listing: 'LISTING', root: 'ROOT',
   outputRegistry: 'OUTPUT_REGISTRY', soulRegistry: 'SOUL_REGISTRY',
@@ -146,9 +168,8 @@ function scalar(fields, ...names) {
 function struct(value) { return plain(value?.fields) ? value.fields : value; }
 
 function option(value, label) {
-  if (value === null || value === undefined) return null;
   if (typeof value === 'string') return id(value, label);
-  const vec = value?.vec ?? value?.fields?.vec;
+  const vec = Array.isArray(value) ? value : value?.vec ?? value?.fields?.vec;
   if (!Array.isArray(vec) || vec.length > 1) fail('WEB_V8_FINALIZED_OPTION_INVALID', `${label} is not a canonical Move option.`);
   return vec.length ? id(vec[0], label) : null;
 }
@@ -160,6 +181,89 @@ function commitment(value, label) {
     return hex(value);
   }
   fail('WEB_V8_FINALIZED_COMMITMENT_INVALID', `${label} must be an exact 32-byte commitment.`);
+}
+
+function commitmentBytes(value, label) {
+  const normalized = commitment(value, label);
+  return Uint8Array.from(normalized.slice(2).match(/.{2}/g).map((pair) => Number.parseInt(pair, 16)));
+}
+
+function u16(value, label) {
+  const normalized = decimal(value, label);
+  if (BigInt(normalized) > 65_535n) {
+    fail('WEB_V8_FINALIZED_DECIMAL_INVALID', `${label} exceeds u16.`);
+  }
+  return Number(normalized);
+}
+
+function text(value, label) {
+  if (typeof value !== 'string') fail('WEB_V8_FINALIZED_VALUE_INVALID', `${label} must be an exact UTF-8 string.`);
+  return value;
+}
+
+function deriveSoulCommitment(fields) {
+  let encoded;
+  try {
+    encoded = SOUL_COMMITMENT_INPUT_BCS.serialize({
+      domain: SOUL_COMMITMENT_DOMAIN,
+      version: decimal(scalar(fields, 'version'), 'SOUL.version'),
+      soul_registry_id: id(scalar(fields, 'soul_registry_id', 'soulRegistryId'), 'SOUL.soulRegistryId'),
+      root_id: id(scalar(fields, 'root_id', 'rootId'), 'SOUL.rootId'),
+      maker_version: decimal(scalar(fields, 'maker_version', 'makerVersion'), 'SOUL.makerVersion'),
+      root_content_commitment: commitmentBytes(
+        scalar(fields, 'root_content_commitment', 'rootContentCommitment'),
+        'SOUL.rootContentCommitment',
+      ),
+      output_key: text(scalar(fields, 'output_key', 'outputKey'), 'SOUL.outputKey'),
+      output_policy_commitment: commitmentBytes(
+        scalar(fields, 'output_policy_commitment', 'outputPolicyCommitment'),
+        'SOUL.outputPolicyCommitment',
+      ),
+      holder: id(scalar(fields, 'holder'), 'SOUL.holder'),
+      ownership_epoch: decimal(scalar(fields, 'ownership_epoch', 'ownershipEpoch'), 'SOUL.ownershipEpoch'),
+      output_id: id(scalar(fields, 'output_id', 'outputId'), 'SOUL.outputId'),
+      receipt_id: id(scalar(fields, 'receipt_id', 'receiptId'), 'SOUL.receiptId'),
+      recipe_commitment: commitmentBytes(
+        scalar(fields, 'recipe_commitment', 'recipeCommitment'),
+        'SOUL.recipeCommitment',
+      ),
+      render_commitment: commitmentBytes(
+        scalar(fields, 'render_commitment', 'renderCommitment'),
+        'SOUL.renderCommitment',
+      ),
+      output_commitment: commitmentBytes(
+        scalar(fields, 'output_commitment', 'outputCommitment'),
+        'SOUL.outputCommitment',
+      ),
+      receipt_commitment: commitmentBytes(
+        scalar(fields, 'receipt_commitment', 'receiptCommitment'),
+        'SOUL.receiptCommitment',
+      ),
+      soul_creator_royalty_bps: u16(
+        scalar(fields, 'soul_creator_royalty_bps', 'soulCreatorRoyaltyBps'),
+        'SOUL.soulCreatorRoyaltyBps',
+      ),
+      maker_source_royalty_bps: u16(
+        scalar(fields, 'maker_source_royalty_bps', 'makerSourceRoyaltyBps'),
+        'SOUL.makerSourceRoyaltyBps',
+      ),
+    }).toBytes();
+  } catch (cause) {
+    if (cause?.code?.startsWith?.('WEB_V8_')) throw cause;
+    fail('WEB_V8_FINALIZED_SOUL_COMMITMENT_MISMATCH', 'Canonical Soul commitment input cannot be encoded.', {
+      cause: String(cause?.message || cause),
+    });
+  }
+  return hex(sha256(encoded));
+}
+
+function withoutFields(value, fields) {
+  const result = clone(struct(value));
+  for (const field of fields) {
+    delete result[field];
+    delete result[camel(field)];
+  }
+  return result;
 }
 
 function ownerId(owner, kind, label) {
@@ -223,6 +327,7 @@ function assertTransactionBytes(value, request, descriptor) {
     || snapshot.sender !== descriptor.sender) {
     fail('WEB_V8_FINALIZED_TRANSACTION_INPUT_MISMATCH', 'Decoded sender, Market target, or type arguments differ from the durable descriptor.');
   }
+  return snapshot;
 }
 
 function ref(value, label, withOwner = true) {
@@ -264,7 +369,7 @@ function snapshot(value, role, side, expectedRef, transactionDigest) {
   return value;
 }
 
-function assertEffects(value, transactionDigest) {
+function assertEffects(value, transactionDigest, transactionSnapshot) {
   exactKeys(value.effects, [
     'transactionDigest', 'epoch', 'eventsDigest', 'transactionBcs', 'eventsBcs', 'bcs',
     'changedObjects', 'unchangedConsensusObjects', 'objects',
@@ -287,10 +392,43 @@ function assertEffects(value, transactionDigest) {
     }
     changed.set(objectId, { ...entry, input, output });
   }
+  const sharedInputs = new Map();
+  for (const input of transactionSnapshot.inputs) {
+    const shared = input?.Object?.SharedObject;
+    if (!shared) continue;
+    const objectId = id(shared.objectId, 'transaction.sharedInput.objectId');
+    if (sharedInputs.has(objectId)) {
+      fail('WEB_V8_FINALIZED_TRANSACTION_INPUT_MISMATCH', 'TransactionData repeats a shared object input.');
+    }
+    sharedInputs.set(objectId, {
+      initialSharedVersion: decimal(
+        shared.initialSharedVersion,
+        `transaction.sharedInput.${objectId}.initialSharedVersion`,
+      ),
+      mutable: shared.mutable === true,
+    });
+  }
   const unchanged = new Map();
   for (const [index, entry] of value.effects.unchangedConsensusObjects.entries()) {
     exactKeys(entry, ['objectId', 'version', 'digest', 'owner', 'kind'], `effects.unchangedConsensusObjects[${index}]`);
-    const normalized = ref({ objectId: entry.objectId, version: entry.version, digest: entry.digest, owner: entry.owner }, `effects.unchangedConsensusObjects[${index}]`);
+    const objectId = id(entry.objectId, `effects.unchangedConsensusObjects[${index}].objectId`);
+    const shared = sharedInputs.get(objectId);
+    const derivedOwner = shared
+      ? { kind: 'Shared', value: { initialSharedVersion: shared.initialSharedVersion } }
+      : null;
+    if (!shared || entry.owner?.kind !== 'Shared'
+      || (entry.owner.value !== null && stableJson(entry.owner) !== stableJson(derivedOwner))) {
+      fail(
+        'WEB_V8_FINALIZED_HISTORY_OWNER_MISMATCH',
+        'Unchanged consensus evidence must derive Shared ownership from the exact TransactionData input.',
+      );
+    }
+    const normalized = ref({
+      objectId,
+      version: entry.version,
+      digest: entry.digest,
+      owner: derivedOwner,
+    }, `effects.unchangedConsensusObjects[${index}]`);
     if (changed.has(normalized.objectId) || unchanged.has(normalized.objectId)) {
       fail('WEB_V8_FINALIZED_EFFECTS_DUPLICATE', 'Changed and unchanged Core V2 refs must be disjoint and unique.');
     }
@@ -452,13 +590,27 @@ function assertRootAndAdmin(roles, action, descriptor) {
   const beforeOwner = id(scalar(rootBefore, 'owner'), 'ROOT.before.owner');
   const beforeAdmin = id(scalar(rootBefore, 'admin_cap_id', 'adminCapId'), 'ROOT.before.adminCapId');
   const beforeEpoch = decimal(scalar(rootBefore, 'control_epoch', 'controlEpoch'), 'ROOT.before.controlEpoch');
+  const beforeContentCommitment = commitment(
+    scalar(rootBefore, 'content_commitment', 'contentCommitment'),
+    'ROOT.before.contentCommitment',
+  );
   const purchase = action.id === 'purchaseMakerControl';
+  const makerLane = action.lane === 'MAKER';
   const expectedOwner = purchase ? descriptor.sender : beforeOwner;
   const afterOwner = id(scalar(rootAfter, 'owner'), 'ROOT.after.owner');
   const afterAdmin = id(scalar(rootAfter, 'admin_cap_id', 'adminCapId'), 'ROOT.after.adminCapId');
   const afterEpoch = decimal(scalar(rootAfter, 'control_epoch', 'controlEpoch'), 'ROOT.after.controlEpoch');
-  if (beforeOwner !== descriptor.preState.root.owner || beforeAdmin !== descriptor.preState.root.adminCapId
-    || beforeEpoch !== descriptor.preState.root.controlEpoch || afterOwner !== expectedOwner
+  const afterContentCommitment = commitment(
+    scalar(rootAfter, 'content_commitment', 'contentCommitment'),
+    'ROOT.after.contentCommitment',
+  );
+  if ((makerLane && (beforeOwner !== descriptor.preState.root.owner
+      || beforeAdmin !== descriptor.preState.root.adminCapId
+      || beforeEpoch !== descriptor.preState.root.controlEpoch))
+    || (!makerLane && stableJson(rootBefore) !== stableJson(rootAfter))
+    || beforeContentCommitment !== descriptor.rootContentCommitment
+    || afterContentCommitment !== descriptor.rootContentCommitment
+    || afterOwner !== expectedOwner
     || afterEpoch !== (purchase ? plus(beforeEpoch, '1') : beforeEpoch)
     || (purchase ? afterAdmin === beforeAdmin : afterAdmin !== beforeAdmin)) {
     fail('WEB_V8_FINALIZED_ROOT_ROTATION_MISMATCH', 'Root owner/AdminCap/control epoch transition is invalid.');
@@ -526,19 +678,47 @@ function assertSoul(roles, action, descriptor, custody) {
       || id(scalar(after, 'holder'), `${role}.holder`) !== (action.kind === 'LIST' ? descriptor.preState.seller : terminalOwner)) {
       fail('WEB_V8_FINALIZED_SOUL_BUNDLE_MISMATCH', `${role} custody/holder transition is invalid.`);
     }
+    const mutableFields = role === 'SOUL'
+      ? ['holder', 'ownership_epoch', 'soul_commitment']
+      : ['holder'];
+    same(
+      withoutFields(before, mutableFields),
+      withoutFields(after, mutableFields),
+      'WEB_V8_FINALIZED_SOUL_BUNDLE_MISMATCH',
+      `${role} immutable content changed during Market custody.`,
+    );
   }
+  const outputBefore = parsed(roles, 'OUTPUT', 'before');
   const output = parsed(roles, 'OUTPUT', 'after');
+  const receiptBefore = parsed(roles, 'RECEIPT', 'before');
   const receipt = parsed(roles, 'RECEIPT', 'after');
   const soul = parsed(roles, 'SOUL', 'after');
   const soulBefore = parsed(roles, 'SOUL', 'before');
+  const oldSoulCommitment = descriptor.preState.soul.soulCommitment;
+  const observedSoulBefore = commitment(
+    scalar(soulBefore, 'soul_commitment', 'soulCommitment'),
+    'SOUL.before.commitment',
+  );
+  const observedSoulAfter = commitment(
+    scalar(soul, 'soul_commitment', 'soulCommitment'),
+    'SOUL.commitment',
+  );
+  const expectedSoulAfter = action.kind === 'PURCHASE'
+    ? deriveSoulCommitment(soul)
+    : oldSoulCommitment;
   if (id(scalar(receipt, 'output_id', 'outputId'), 'RECEIPT.outputId') !== descriptor.preState.assetIds[0]
     || id(scalar(soul, 'output_id', 'outputId'), 'SOUL.outputId') !== descriptor.preState.assetIds[0]
     || id(scalar(soul, 'receipt_id', 'receiptId'), 'SOUL.receiptId') !== descriptor.preState.assetIds[1]
     || decimal(scalar(soulBefore, 'ownership_epoch', 'ownershipEpoch'), 'SOUL.before.ownershipEpoch') !== descriptor.preState.ownershipEpoch
     || decimal(scalar(soul, 'ownership_epoch', 'ownershipEpoch'), 'SOUL.ownershipEpoch') !== terminalEpoch
+    || observedSoulBefore !== oldSoulCommitment
+    || observedSoulAfter !== expectedSoulAfter
+    || (action.kind === 'PURCHASE' && observedSoulAfter === oldSoulCommitment)
+    || commitment(scalar(outputBefore, 'output_commitment', 'outputCommitment'), 'OUTPUT.before.commitment') !== descriptor.preState.soul.outputCommitment
     || commitment(scalar(output, 'output_commitment', 'outputCommitment'), 'OUTPUT.commitment') !== descriptor.preState.soul.outputCommitment
+    || commitment(scalar(receiptBefore, 'receipt_commitment', 'receiptCommitment'), 'RECEIPT.before.commitment') !== descriptor.preState.soul.receiptCommitment
     || commitment(scalar(receipt, 'receipt_commitment', 'receiptCommitment'), 'RECEIPT.commitment') !== descriptor.preState.soul.receiptCommitment
-    || commitment(scalar(soul, 'soul_commitment', 'soulCommitment'), 'SOUL.commitment') !== descriptor.preState.soul.soulCommitment) {
+  ) {
     fail('WEB_V8_FINALIZED_SOUL_BUNDLE_MISMATCH', 'Output/Receipt/Soul IDs, commitments, or epoch are inconsistent.');
   }
   const custodyFields = struct(custody);
@@ -547,24 +727,55 @@ function assertSoul(roles, action, descriptor, custody) {
   ]) if (id(scalar(custodyFields, field, camel(field)), `LISTING.custody.${field}`) !== expectedValue) {
     fail('WEB_V8_FINALIZED_SOUL_BUNDLE_MISMATCH', 'Soul listing custody IDs are inconsistent.');
   }
+  for (const [field, expectedValue] of [
+    ['output_commitment', descriptor.preState.soul.outputCommitment],
+    ['receipt_commitment', descriptor.preState.soul.receiptCommitment],
+    ['soul_commitment', oldSoulCommitment],
+  ]) if (commitment(scalar(custodyFields, field, camel(field)), `LISTING.custody.${field}`) !== expectedValue) {
+    fail('WEB_V8_FINALIZED_SOUL_BUNDLE_MISMATCH', 'Soul listing custody commitment snapshot changed after listing.');
+  }
   if (action.id === 'purchaseSoulBundle') {
-    for (const [role, epoch] of [['OUTPUT_RECORD', null], ['SOUL_RECORD', terminalEpoch]]) {
-      const beforeRecord = struct(scalar(parsed(roles, role, 'before'), 'value'));
-      const record = struct(scalar(parsed(roles, role, 'after'), 'value'));
-      const exactRecord = (candidate, holder, ownershipEpoch, side) => plain(candidate)
-        && id(scalar(candidate, 'holder'), `${role}.${side}.holder`) === holder
-        && id(scalar(candidate, 'output_id', 'outputId'), `${role}.${side}.outputId`) === descriptor.preState.assetIds[0]
-        && id(scalar(candidate, 'receipt_id', 'receiptId'), `${role}.${side}.receiptId`) === descriptor.preState.assetIds[1]
-        && id(scalar(candidate, 'soul_id', 'soulId'), `${role}.${side}.soulId`) === descriptor.preState.assetIds[2]
-        && (role !== 'OUTPUT_RECORD'
-          || (commitment(scalar(candidate, 'output_commitment', 'outputCommitment'), `${role}.${side}.outputCommitment`) === descriptor.preState.soul.outputCommitment
-            && commitment(scalar(candidate, 'receipt_commitment', 'receiptCommitment'), `${role}.${side}.receiptCommitment`) === descriptor.preState.soul.receiptCommitment))
-        && (role !== 'SOUL_RECORD'
-          || (decimal(scalar(candidate, 'ownership_epoch', 'ownershipEpoch'), `${role}.${side}.ownershipEpoch`) === ownershipEpoch
-            && commitment(scalar(candidate, 'soul_commitment', 'soulCommitment'), `${role}.${side}.soulCommitment`) === descriptor.preState.soul.soulCommitment));
-      if (!exactRecord(beforeRecord, descriptor.preState.seller, descriptor.preState.ownershipEpoch, 'before')
-        || !exactRecord(record, descriptor.sender, epoch, 'after')) {
-        fail('WEB_V8_FINALIZED_SOUL_RECORD_MISMATCH', `${role} historical dynamic-field transition is invalid.`);
+    for (const [role, keyId] of [
+      ['OUTPUT_RECORD', descriptor.preState.assetIds[0]],
+      ['SOUL_RECORD', descriptor.preState.assetIds[2]],
+    ]) {
+      const beforeField = parsed(roles, role, 'before');
+      const afterField = parsed(roles, role, 'after');
+      const beforeRecord = struct(scalar(beforeField, 'value'));
+      const record = struct(scalar(afterField, 'value'));
+      if (id(scalar(beforeField, 'name'), `${role}.before.name`) !== keyId
+        || id(scalar(afterField, 'name'), `${role}.after.name`) !== keyId
+        || id(scalar(beforeRecord, 'holder'), `${role}.before.holder`) !== descriptor.preState.seller
+        || id(scalar(record, 'holder'), `${role}.after.holder`) !== descriptor.sender
+        || id(scalar(beforeRecord, 'output_id', 'outputId'), `${role}.before.outputId`) !== descriptor.preState.assetIds[0]
+        || id(scalar(record, 'output_id', 'outputId'), `${role}.after.outputId`) !== descriptor.preState.assetIds[0]
+        || id(scalar(beforeRecord, 'receipt_id', 'receiptId'), `${role}.before.receiptId`) !== descriptor.preState.assetIds[1]
+        || id(scalar(record, 'receipt_id', 'receiptId'), `${role}.after.receiptId`) !== descriptor.preState.assetIds[1]
+        || id(scalar(beforeRecord, 'soul_id', 'soulId'), `${role}.before.soulId`) !== descriptor.preState.assetIds[2]
+        || id(scalar(record, 'soul_id', 'soulId'), `${role}.after.soulId`) !== descriptor.preState.assetIds[2]) {
+        fail('WEB_V8_FINALIZED_SOUL_RECORD_MISMATCH', `${role} key, bundle IDs, or holder transition is invalid.`);
+      }
+      const mutableFields = role === 'OUTPUT_RECORD'
+        ? ['holder']
+        : ['holder', 'ownership_epoch', 'soul_commitment'];
+      same(
+        withoutFields(beforeRecord, mutableFields),
+        withoutFields(record, mutableFields),
+        'WEB_V8_FINALIZED_SOUL_RECORD_MISMATCH',
+        `${role} immutable record content changed.`,
+      );
+      if (role === 'OUTPUT_RECORD') {
+        if (commitment(scalar(beforeRecord, 'output_commitment', 'outputCommitment'), `${role}.before.outputCommitment`) !== descriptor.preState.soul.outputCommitment
+          || commitment(scalar(record, 'output_commitment', 'outputCommitment'), `${role}.after.outputCommitment`) !== descriptor.preState.soul.outputCommitment
+          || commitment(scalar(beforeRecord, 'receipt_commitment', 'receiptCommitment'), `${role}.before.receiptCommitment`) !== descriptor.preState.soul.receiptCommitment
+          || commitment(scalar(record, 'receipt_commitment', 'receiptCommitment'), `${role}.after.receiptCommitment`) !== descriptor.preState.soul.receiptCommitment) {
+          fail('WEB_V8_FINALIZED_SOUL_RECORD_MISMATCH', 'OutputRecord commitments changed during Soul purchase.');
+        }
+      } else if (decimal(scalar(beforeRecord, 'ownership_epoch', 'ownershipEpoch'), `${role}.before.ownershipEpoch`) !== descriptor.preState.ownershipEpoch
+        || decimal(scalar(record, 'ownership_epoch', 'ownershipEpoch'), `${role}.after.ownershipEpoch`) !== terminalEpoch
+        || commitment(scalar(beforeRecord, 'soul_commitment', 'soulCommitment'), `${role}.before.soulCommitment`) !== oldSoulCommitment
+        || commitment(scalar(record, 'soul_commitment', 'soulCommitment'), `${role}.after.soulCommitment`) !== observedSoulAfter) {
+        fail('WEB_V8_FINALIZED_SOUL_RECORD_MISMATCH', 'SoulRecord does not match the exact recomputed Soul transition.');
       }
     }
   }
@@ -675,12 +886,14 @@ function assertRevenueAndPayouts(roles, action, descriptor, marketClient) {
 
 function assertEvents(value, action, descriptor, marketClient, marketModule, roles, rootState) {
   if (!Array.isArray(value.events) || !value.events.length) fail('WEB_V8_FINALIZED_EVENT_MISSING', 'Complete Core V2 events are required.');
+  const marketEmitterPackageId = id(descriptor.target.split('::')[0], 'descriptor.target.packageId');
   const normalized = value.events.map((event, index) => {
     exactKeys(event, ['id', 'packageId', 'transactionModule', 'sender', 'type', 'parsedJson', 'bcs', 'eventsDigest'], `events[${index}]`);
     exactKeys(event.id, ['txDigest', 'eventSeq'], `events[${index}].id`);
     if (event.id.txDigest !== value.digest || decimal(event.id.eventSeq, `events[${index}].eventSeq`) !== String(index)
-      || event.eventsDigest !== value.eventsDigest || id(event.packageId, `events[${index}].packageId`) !== event.type.split('::')[0]
-      || event.transactionModule !== event.type.split('::')[1]
+      || event.eventsDigest !== value.eventsDigest
+      || id(event.packageId, `events[${index}].packageId`) !== marketEmitterPackageId
+      || event.transactionModule !== 'market_v8'
       || !plain(event.parsedJson)) {
       fail('WEB_V8_FINALIZED_EVENT_EVIDENCE_MISMATCH', `events[${index}] is not exact contiguous Core V2 evidence.`);
     }
@@ -794,8 +1007,8 @@ export function assertFinalizedMarketReadbackV8(value, request, marketClient, ma
     || stableJson(value.transaction.typeArguments) !== stableJson(descriptor.typeArguments)) {
     fail('WEB_V8_FINALIZED_TRANSACTION_INPUT_MISMATCH', 'Normalized transaction sender/target/type arguments are invalid.');
   }
-  assertTransactionBytes(value, request, descriptor);
-  const evidence = assertEffects(value, value.digest);
+  const transactionSnapshot = assertTransactionBytes(value, request, descriptor);
+  const evidence = assertEffects(value, value.digest, transactionSnapshot);
   const quote = descriptor.preState.quote;
   assertRoleSet(evidence.roles, descriptor, action, quote);
   const rootState = assertRootAndAdmin(evidence.roles, action, descriptor);
