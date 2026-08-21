@@ -3,17 +3,33 @@ module output_companion_compile::probe;
 use animacraft_v8_core::maker_v8::{MakerAdminCapV8, MakerRootV8};
 use animacraft_v8_core::activation_v8::OutputReadinessV8;
 use animacraft_v8_core::package_binding_v8::{PackageCallCapV8,
-    OutputRoleV8, PhysicalRoleV8, ProductReleaseCatalogV8};
+    MarketRoleV8, OutputRoleV8, PhysicalRoleV8, ProductReleaseCatalogV8};
+use animacraft_v8_core::protocol_config_v8::ProtocolConfigV8;
 use animacraft_v8_runtime::runtime_v8::{MakerLoadoutV8,
     RuntimePhysicalSelectionWitnessV8};
 use animacraft_v8_output::output_v8::{Self as output,
-    CanonicalSoulV8, CompleteReceiptV8, OutputPackageConfigV8,
+    CanonicalSoulV8, CompleteOutputV8, CompleteReceiptV8, OutputPackageConfigV8,
     OutputPolicyRowV8, OutputRegistryV8,
     PhysicalCompleteBindingV8, PhysicalMaterializationWitnessV8,
-    PhysicalSelectionBindingV8, SoulRegistryV8};
+    PhysicalSelectionBindingV8, SoulMarketCustodyBindingV8,
+    SoulMarketCustodyTicketV8, SoulRegistryV8};
+use sui::transfer::Receiving;
 
 public struct PhysicalOriginalMarker has drop {}
 public struct PhysicalCallableMarker has drop {}
+public struct MarketOriginalMarker has drop {}
+public struct MarketCallableMarker has drop {}
+public struct MarketRegistry has key { id: UID }
+public struct MarketTreasury has key { id: UID }
+public struct MarketListing has key { id: UID }
+
+public fun market_registry_id(registry: &MarketRegistry): ID {
+    registry.id.to_inner()
+}
+
+public fun market_treasury_id(treasury: &MarketTreasury): ID {
+    treasury.id.to_inner()
+}
 
 public fun new_output_config(
     catalog: &ProductReleaseCatalogV8,
@@ -85,6 +101,124 @@ public fun inspect_receipt(receipt: &CompleteReceiptV8) {
     let _loadout = output::receipt_loadout_id_v8(receipt);
     let _revision = output::receipt_loadout_revision_v8(receipt);
     let _commitment = output::receipt_loadout_commitment_v8(receipt);
+}
+
+public fun inspect_market_custody(binding: &SoulMarketCustodyBindingV8) {
+    let _listing = output::soul_market_listing_id_v8(binding);
+    let _output_registry = output::soul_market_output_registry_id_v8(binding);
+    let _soul_registry = output::soul_market_soul_registry_id_v8(binding);
+    let _market_registry = output::soul_market_market_registry_id_v8(binding);
+    let _market_treasury = output::soul_market_market_treasury_id_v8(binding);
+    let _root = output::soul_market_root_id_v8(binding);
+    let _maker_version = output::soul_market_maker_version_v8(binding);
+    let _root_content = output::soul_market_root_content_commitment_v8(binding);
+    let _output = output::soul_market_output_id_v8(binding);
+    let _receipt = output::soul_market_receipt_id_v8(binding);
+    let _soul = output::soul_market_soul_id_v8(binding);
+    let _output_commitment = output::soul_market_output_commitment_v8(binding);
+    let _receipt_commitment = output::soul_market_receipt_commitment_v8(binding);
+    let _soul_commitment = output::soul_market_soul_commitment_v8(binding);
+    let _seller = output::soul_market_seller_v8(binding);
+    let _epoch = output::soul_market_expected_epoch_v8(binding);
+}
+
+public fun custody_for_market<PaymentCoin>(
+    complete: CompleteOutputV8,
+    receipt: CompleteReceiptV8,
+    soul: CanonicalSoulV8,
+    listing: &mut MarketListing,
+    output_registry: &OutputRegistryV8,
+    soul_registry: &SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    cap: &PackageCallCapV8<MarketRoleV8>,
+    ctx: &TxContext,
+): SoulMarketCustodyTicketV8 {
+    output::custody_soul_bundle_for_market_v8<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(complete, receipt, soul, &mut listing.id, output_registry, soul_registry,
+        root, protocol_config, catalog, market_registry, market_treasury, cap,
+        ctx)
+}
+
+public fun consume_market_ticket<PaymentCoin>(
+    ticket: SoulMarketCustodyTicketV8,
+    listing: &MarketListing,
+    output_registry: &OutputRegistryV8,
+    soul_registry: &SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    cap: &PackageCallCapV8<MarketRoleV8>,
+): SoulMarketCustodyBindingV8 {
+    output::consume_soul_market_custody_ticket_v8<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(ticket, &listing.id, output_registry, soul_registry, root, catalog,
+        market_registry, market_treasury, cap)
+}
+
+public fun return_market_custody<PaymentCoin>(
+    output_receiving: Receiving<CompleteOutputV8>,
+    receipt_receiving: Receiving<CompleteReceiptV8>,
+    soul_receiving: Receiving<CanonicalSoulV8>,
+    listing: &mut MarketListing,
+    custody: &SoulMarketCustodyBindingV8,
+    output_registry: &OutputRegistryV8,
+    soul_registry: &SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    cap: &PackageCallCapV8<MarketRoleV8>,
+) {
+    output::return_soul_bundle_from_market_v8<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(output_receiving, receipt_receiving, soul_receiving, &mut listing.id,
+        custody, output_registry, soul_registry, root, catalog, market_registry,
+        market_treasury, cap)
+}
+
+public fun purchase_market_custody<PaymentCoin>(
+    output_receiving: Receiving<CompleteOutputV8>,
+    receipt_receiving: Receiving<CompleteReceiptV8>,
+    soul_receiving: Receiving<CanonicalSoulV8>,
+    listing: &mut MarketListing,
+    custody: &SoulMarketCustodyBindingV8,
+    output_registry: &mut OutputRegistryV8,
+    soul_registry: &mut SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    cap: &PackageCallCapV8<MarketRoleV8>,
+    buyer: address,
+) {
+    output::purchase_soul_bundle_from_market_v8<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(output_receiving, receipt_receiving, soul_receiving, &mut listing.id,
+        custody, output_registry, soul_registry, root, protocol_config, catalog,
+        market_registry, market_treasury, cap, buyer)
 }
 
 public fun consume_for_physical(

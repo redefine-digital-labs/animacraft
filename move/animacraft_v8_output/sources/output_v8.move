@@ -5,6 +5,7 @@ use animacraft_v8_core::activation_v8::{Self as activation, OutputReadinessV8};
 use animacraft_v8_core::maker_v8::{Self as maker, MakerAdminCapV8, MakerRootV8};
 use animacraft_v8_core::package_binding_v8::{
     Self as binding,
+    MarketRoleV8,
     OutputRoleV8,
     PhysicalRoleV8,
     PackageCallCapV8,
@@ -47,6 +48,20 @@ use std::string::{Self as string, String};
 use sui::coin::{Self as coin, Coin};
 use sui::event;
 use sui::table::{Self as table, Table};
+use sui::transfer::{Self as transfer, Receiving};
+
+#[test_only]
+use animacraft_v8_core::base_registry_v8::{
+    Self as base,
+};
+#[test_only]
+use animacraft_v8_core::core_v8 as core;
+#[test_only]
+use std::type_name;
+#[test_only]
+use sui::sui::SUI;
+#[test_only]
+use sui::test_scenario::{Self as test_scenario, Scenario};
 
 const VERSION: u64 = 8;
 const HASH_LENGTH: u64 = 32;
@@ -74,6 +89,9 @@ const EDuplicate: u64 = 11;
 const EInvalidSequence: u64 = 12;
 const ERegistrySealed: u64 = 13;
 const ERegistryNotSealed: u64 = 14;
+const EWrongReceiving: u64 = 15;
+const ESelfPurchase: u64 = 16;
+const EOwnershipEpochMismatch: u64 = 17;
 
 public struct OutputOriginalMarkerV8 has drop {}
 public struct OutputCallableMarkerV8 has drop {}
@@ -227,6 +245,7 @@ public struct CompleteOutputV8 has key {
     root_content_commitment: vector<u8>,
     output_registry_id: ID,
     output_key: String,
+    original_holder: address,
     holder: address,
     loadout_id: ID,
     loadout_revision: u64,
@@ -254,6 +273,7 @@ public struct CompleteReceiptV8 has key {
     maker_version: u64,
     root_content_commitment: vector<u8>,
     output_key: String,
+    original_holder: address,
     holder: address,
     loadout_id: ID,
     loadout_revision: u64,
@@ -306,6 +326,36 @@ public struct CanonicalSoulV8 has key {
     soul_creator_royalty_bps: u16,
     maker_source_royalty_bps: u16,
     soul_commitment: vector<u8>,
+}
+
+/// Persisted listing data derived only from the three live bundle objects.
+/// It is deliberately copyable data, never authority: every release hook also
+/// requires the private Market call cap, the exact Listing UID, three live
+/// `Receiving<T>` values, and the current registry records.
+public struct SoulMarketCustodyBindingV8 has copy, drop, store {
+    listing_id: ID,
+    output_registry_id: ID,
+    soul_registry_id: ID,
+    market_registry_id: ID,
+    market_treasury_id: ID,
+    root_id: ID,
+    maker_version: u64,
+    root_content_commitment: vector<u8>,
+    output_id: ID,
+    receipt_id: ID,
+    soul_id: ID,
+    output_commitment: vector<u8>,
+    receipt_commitment: vector<u8>,
+    soul_commitment: vector<u8>,
+    seller: address,
+    expected_soul_ownership_epoch: u64,
+}
+
+/// Same-PTB custody receipt. No copy/drop/store/key means Market must consume
+/// it immediately into its listing after Output has transferred all three
+/// key-without-store objects to that exact Listing UID address.
+public struct SoulMarketCustodyTicketV8 {
+    binding: SoulMarketCustodyBindingV8,
 }
 
 /// Same-PTB authorization for one exact current selection and one live
@@ -415,7 +465,8 @@ public struct RenderCommitmentInputV8 has drop {
 public struct CompleteOutputCommitmentInputV8 has drop {
     domain: vector<u8>, version: u64, root_id: ID, maker_version: u64,
     root_content_commitment: vector<u8>, output_registry_id: ID,
-    output_key: String, holder: address, loadout_id: ID, loadout_revision: u64,
+    output_key: String, original_holder: address, loadout_id: ID,
+    loadout_revision: u64,
     loadout_commitment: vector<u8>, output_policy_commitment: vector<u8>,
     recipe_commitment: vector<u8>, render_commitment: vector<u8>,
     protected: bool, scope_key: String, asset_key: String,
@@ -423,7 +474,7 @@ public struct CompleteOutputCommitmentInputV8 has drop {
 
 public struct CompleteReceiptCommitmentInputV8 has drop {
     domain: vector<u8>, version: u64, root_id: ID, maker_version: u64,
-    root_content_commitment: vector<u8>, holder: address,
+    root_content_commitment: vector<u8>, original_holder: address,
     output_key: String,
     loadout_id: ID, loadout_revision: u64, loadout_commitment: vector<u8>,
     output_policy_commitment: vector<u8>, renderer_schema_commitment: vector<u8>,
@@ -984,6 +1035,241 @@ public fun mint_canonical_soul_v8<PaymentCoin>(
     transfer::transfer(soul, holder);
 }
 
+/// Atomically moves the exact Complete Output/Receipt/Canonical Soul bundle
+/// under one Market Listing UID. Logical holder, Soul epoch, and every
+/// commitment remain unchanged while the objects are in custody.
+public fun custody_soul_bundle_for_market_v8<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    output: CompleteOutputV8,
+    receipt: CompleteReceiptV8,
+    soul: CanonicalSoulV8,
+    listing: &mut UID,
+    output_registry: &OutputRegistryV8,
+    soul_registry: &SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    ctx: &TxContext,
+): SoulMarketCustodyTicketV8 {
+    assert_active_soul_market_boundary<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(
+        output_registry, soul_registry, root, protocol_config, catalog,
+        market_registry, market_treasury, market_call_cap,
+    );
+    let seller = ctx.sender();
+    assert_live_soul_bundle(
+        &output, &receipt, &soul, output_registry, soul_registry, root,
+        seller, soul.ownership_epoch,
+    );
+    let custody = SoulMarketCustodyBindingV8 {
+        listing_id: listing.to_inner(),
+        output_registry_id: object::id(output_registry),
+        soul_registry_id: object::id(soul_registry),
+        market_registry_id: object::id(market_registry),
+        market_treasury_id: object::id(market_treasury),
+        root_id: maker::root_id_v8(root),
+        maker_version: maker::root_maker_version_v8(root),
+        root_content_commitment: *maker::root_content_commitment_v8(root),
+        output_id: object::id(&output),
+        receipt_id: object::id(&receipt),
+        soul_id: object::id(&soul),
+        output_commitment: output.output_commitment,
+        receipt_commitment: receipt.receipt_commitment,
+        soul_commitment: soul.soul_commitment,
+        seller,
+        expected_soul_ownership_epoch: soul.ownership_epoch,
+    };
+    let listing_address = listing.to_address();
+    transfer::transfer(output, listing_address);
+    transfer::transfer(receipt, listing_address);
+    transfer::transfer(soul, listing_address);
+    SoulMarketCustodyTicketV8 { binding: custody }
+}
+
+/// Market consumes the same-PTB ticket into persistable listing data. The
+/// returned binding is not authority and is safe to retain as a tombstone.
+public fun consume_soul_market_custody_ticket_v8<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    ticket: SoulMarketCustodyTicketV8,
+    listing: &UID,
+    output_registry: &OutputRegistryV8,
+    soul_registry: &SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+): SoulMarketCustodyBindingV8 {
+    assert_soul_market_boundary<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(
+        output_registry, soul_registry, root, catalog, market_registry,
+        market_treasury, market_call_cap,
+    );
+    assert_soul_market_custody_header(
+        &ticket.binding, listing, output_registry, soul_registry, root,
+        market_registry, market_treasury,
+    );
+    let SoulMarketCustodyTicketV8 { binding } = ticket;
+    binding
+}
+
+/// Cancel/recover escape hatch. It deliberately performs no ACTIVE or current
+/// protocol-config assertion, so a PAUSED/ARCHIVED Root or disabled/drifted
+/// protocol cannot strand custody. The stored seller comes from Output-minted
+/// custody data and must still equal all three logical holders.
+public fun return_soul_bundle_from_market_v8<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    output_receiving: Receiving<CompleteOutputV8>,
+    receipt_receiving: Receiving<CompleteReceiptV8>,
+    soul_receiving: Receiving<CanonicalSoulV8>,
+    listing: &mut UID,
+    custody: &SoulMarketCustodyBindingV8,
+    output_registry: &OutputRegistryV8,
+    soul_registry: &SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+) {
+    assert_soul_market_boundary<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(
+        output_registry, soul_registry, root, catalog, market_registry,
+        market_treasury, market_call_cap,
+    );
+    assert_soul_market_custody_header(
+        custody, listing, output_registry, soul_registry, root,
+        market_registry, market_treasury,
+    );
+    let (output, receipt, soul) = receive_soul_market_bundle(
+        listing, custody, output_receiving, receipt_receiving, soul_receiving,
+    );
+    assert_live_soul_bundle(
+        &output, &receipt, &soul, output_registry, soul_registry, root,
+        custody.seller, custody.expected_soul_ownership_epoch,
+    );
+    assert_soul_market_custody_bundle(custody, &output, &receipt, &soul);
+    transfer::transfer(output, custody.seller);
+    transfer::transfer(receipt, custody.seller);
+    transfer::transfer(soul, custody.seller);
+}
+
+/// Successful sale is the sole ownership mutation path. All three objects are
+/// received and checked before one atomic holder/registry update. Output and
+/// Receipt content commitments and the protection binding remain immutable;
+/// only Soul's ownership commitment changes at epoch N+1.
+public fun purchase_soul_bundle_from_market_v8<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    output_receiving: Receiving<CompleteOutputV8>,
+    receipt_receiving: Receiving<CompleteReceiptV8>,
+    soul_receiving: Receiving<CanonicalSoulV8>,
+    listing: &mut UID,
+    custody: &SoulMarketCustodyBindingV8,
+    output_registry: &mut OutputRegistryV8,
+    soul_registry: &mut SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    buyer: address,
+) {
+    assert_active_soul_market_boundary<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(
+        output_registry, soul_registry, root, protocol_config, catalog,
+        market_registry, market_treasury, market_call_cap,
+    );
+    assert_soul_market_custody_header(
+        custody, listing, output_registry, soul_registry, root,
+        market_registry, market_treasury,
+    );
+    purchase_received_soul_bundle(
+        output_receiving, receipt_receiving, soul_receiving, listing, custody,
+        output_registry, soul_registry, root, buyer,
+    );
+}
+
+fun purchase_received_soul_bundle<PaymentCoin>(
+    output_receiving: Receiving<CompleteOutputV8>,
+    receipt_receiving: Receiving<CompleteReceiptV8>,
+    soul_receiving: Receiving<CanonicalSoulV8>,
+    listing: &mut UID,
+    custody: &SoulMarketCustodyBindingV8,
+    output_registry: &mut OutputRegistryV8,
+    soul_registry: &mut SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    buyer: address,
+) {
+    assert!(buyer != @0x0 && buyer != custody.seller, ESelfPurchase);
+    let (mut output, mut receipt, mut soul) = receive_soul_market_bundle(
+        listing, custody, output_receiving, receipt_receiving, soul_receiving,
+    );
+    assert_live_soul_bundle(
+        &output, &receipt, &soul, output_registry, soul_registry, root,
+        custody.seller, custody.expected_soul_ownership_epoch,
+    );
+    assert_soul_market_custody_bundle(custody, &output, &receipt, &soul);
+    let next_epoch = custody.expected_soul_ownership_epoch + 1;
+    output.holder = buyer;
+    receipt.holder = buyer;
+    soul.holder = buyer;
+    soul.ownership_epoch = next_epoch;
+    soul.soul_commitment = derive_current_soul_commitment(&soul);
+    let output_record = output_registry.outputs.borrow_mut(custody.output_id);
+    output_record.holder = buyer;
+    let soul_record = soul_registry.souls.borrow_mut(custody.soul_id);
+    soul_record.holder = buyer;
+    soul_record.ownership_epoch = next_epoch;
+    soul_record.soul_commitment = soul.soul_commitment;
+    transfer::transfer(output, buyer);
+    transfer::transfer(receipt, buyer);
+    transfer::transfer(soul, buyer);
+}
+
 /// Reserves a unique Soul-scoped materialization key and consumes Runtime's
 /// exact current-selection witness. The no-ability result must be consumed in
 /// this PTB by the exact Physical package.
@@ -1244,7 +1530,8 @@ fun finish_complete<PaymentCoin>(
         &CompleteOutputCommitmentInputV8 {
             domain: b"animacraft-v8/output/complete", version: VERSION,
             root_id, maker_version, root_content_commitment,
-            output_registry_id, output_key, holder, loadout_id, loadout_revision,
+            output_registry_id, output_key, original_holder: holder,
+            loadout_id, loadout_revision,
             loadout_commitment, output_policy_commitment:
                 policy.row_commitment,
             recipe_commitment, render_commitment, protected, scope_key, asset_key,
@@ -1253,7 +1540,8 @@ fun finish_complete<PaymentCoin>(
     let receipt_commitment = hash::sha2_256(bcs::to_bytes(
         &CompleteReceiptCommitmentInputV8 {
             domain: b"animacraft-v8/output/receipt", version: VERSION,
-            root_id, maker_version, root_content_commitment, holder, output_key,
+            root_id, maker_version, root_content_commitment,
+            original_holder: holder, output_key,
             loadout_id, loadout_revision, loadout_commitment,
             output_policy_commitment: policy.row_commitment,
             renderer_schema_commitment: policy.renderer_schema_commitment,
@@ -1266,7 +1554,8 @@ fun finish_complete<PaymentCoin>(
     let receipt_uid = object::new(ctx);
     let complete_output = CompleteOutputV8 {
         id: output_uid, version: VERSION, root_id, maker_version,
-        root_content_commitment, output_registry_id, output_key, holder, loadout_id,
+        root_content_commitment, output_registry_id, output_key,
+        original_holder: holder, holder, loadout_id,
         loadout_revision, loadout_commitment,
         output_policy_commitment: policy.row_commitment,
         renderer_schema_commitment: policy.renderer_schema_commitment,
@@ -1277,7 +1566,7 @@ fun finish_complete<PaymentCoin>(
     };
     let receipt = CompleteReceiptV8 {
         id: receipt_uid, version: VERSION, output_id, root_id, maker_version,
-        root_content_commitment, output_key, holder,
+        root_content_commitment, output_key, original_holder: holder, holder,
         loadout_id, loadout_revision, loadout_commitment,
         output_policy_commitment: policy.row_commitment,
         renderer_schema_commitment: policy.renderer_schema_commitment,
@@ -1557,6 +1846,364 @@ fun assert_hash(value: &vector<u8>) {
     assert!(any, EInvalidCommitment)
 }
 
+fun derive_current_output_commitment(output: &CompleteOutputV8): vector<u8> {
+    hash::sha2_256(bcs::to_bytes(&CompleteOutputCommitmentInputV8 {
+        domain: b"animacraft-v8/output/complete", version: VERSION,
+        root_id: output.root_id, maker_version: output.maker_version,
+        root_content_commitment: output.root_content_commitment,
+        output_registry_id: output.output_registry_id,
+        output_key: output.output_key,
+        original_holder: output.original_holder,
+        loadout_id: output.loadout_id,
+        loadout_revision: output.loadout_revision,
+        loadout_commitment: output.loadout_commitment,
+        output_policy_commitment: output.output_policy_commitment,
+        recipe_commitment: output.recipe_commitment,
+        render_commitment: output.render_commitment,
+        protected: output.protected,
+        scope_key: output.scope_key,
+        asset_key: output.asset_key,
+    }))
+}
+
+fun derive_current_receipt_commitment(receipt: &CompleteReceiptV8): vector<u8> {
+    hash::sha2_256(bcs::to_bytes(&CompleteReceiptCommitmentInputV8 {
+        domain: b"animacraft-v8/output/receipt", version: VERSION,
+        root_id: receipt.root_id, maker_version: receipt.maker_version,
+        root_content_commitment: receipt.root_content_commitment,
+        original_holder: receipt.original_holder,
+        output_key: receipt.output_key,
+        loadout_id: receipt.loadout_id,
+        loadout_revision: receipt.loadout_revision,
+        loadout_commitment: receipt.loadout_commitment,
+        output_policy_commitment: receipt.output_policy_commitment,
+        renderer_schema_commitment: receipt.renderer_schema_commitment,
+        economics_commitment: receipt.economics_commitment,
+        recipe_commitment: receipt.recipe_commitment,
+        render_commitment: receipt.render_commitment,
+        output_commitment: receipt.output_commitment,
+        base_line: receipt.base_line,
+        pack_lines: receipt.pack_lines,
+        total_paid_atomic: receipt.total_paid_atomic,
+        protected: receipt.protected,
+    }))
+}
+
+fun derive_current_soul_commitment(soul: &CanonicalSoulV8): vector<u8> {
+    hash::sha2_256(bcs::to_bytes(&SoulCommitmentInputV8 {
+        domain: b"animacraft-v8/output/canonical-soul", version: VERSION,
+        soul_registry_id: soul.soul_registry_id,
+        root_id: soul.root_id,
+        maker_version: soul.maker_version,
+        root_content_commitment: soul.root_content_commitment,
+        output_key: soul.output_key,
+        output_policy_commitment: soul.output_policy_commitment,
+        holder: soul.holder,
+        ownership_epoch: soul.ownership_epoch,
+        output_id: soul.output_id,
+        receipt_id: soul.receipt_id,
+        recipe_commitment: soul.recipe_commitment,
+        render_commitment: soul.render_commitment,
+        output_commitment: soul.output_commitment,
+        receipt_commitment: soul.receipt_commitment,
+        soul_creator_royalty_bps: soul.soul_creator_royalty_bps,
+        maker_source_royalty_bps: soul.maker_source_royalty_bps,
+    }))
+}
+
+fun assert_protection_binding(
+    output: &CompleteOutputV8,
+    receipt: &CompleteReceiptV8,
+) {
+    assert!(output.protected == receipt.protected, EInvalidBinding);
+    if (output.protected) {
+        assert!(output.seal_id.is_some() && receipt.seal_id.is_some(),
+            EInvalidBinding);
+        assert!(output.seal_id == receipt.seal_id, EInvalidBinding);
+        let seal_id = *output.seal_id.borrow();
+        let expected = hash::sha2_256(bcs::to_bytes(
+            &ProtectionBindingCommitmentInputV8 {
+                domain: b"animacraft-v8/output/protection", version: VERSION,
+                output_id: object::id(output),
+                receipt_id: object::id(receipt),
+                output_commitment: output.output_commitment,
+                receipt_commitment: receipt.receipt_commitment,
+                scope_key: output.scope_key,
+                asset_key: output.asset_key,
+                seal_id,
+            },
+        ));
+        assert!(output.protection_binding_commitment == expected,
+            EInvalidCommitment);
+    } else {
+        assert!(output.seal_id.is_none() && receipt.seal_id.is_none(),
+            EInvalidBinding);
+        assert!(output.protection_binding_commitment.is_empty(),
+            EInvalidCommitment);
+    }
+}
+
+fun assert_live_soul_bundle<PaymentCoin>(
+    output: &CompleteOutputV8,
+    receipt: &CompleteReceiptV8,
+    soul: &CanonicalSoulV8,
+    output_registry: &OutputRegistryV8,
+    soul_registry: &SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    expected_holder: address,
+    expected_epoch: u64,
+) {
+    assert_registry_pair(root, output_registry, soul_registry);
+    assert!(output.version == VERSION && receipt.version == VERSION
+        && soul.version == VERSION, EInvalidBinding);
+    assert_exact_holder(output.holder, expected_holder);
+    assert_exact_holder(receipt.holder, expected_holder);
+    assert_exact_holder(soul.holder, expected_holder);
+    assert!(output.original_holder != @0x0
+        && output.original_holder == receipt.original_holder, EInvalidBinding);
+    assert!(soul.ownership_epoch == expected_epoch, EOwnershipEpochMismatch);
+    maker::assert_root_identity_v8(
+        root, output.root_id, output.maker_version,
+        &output.root_content_commitment,
+    );
+    assert!(receipt.root_id == output.root_id && soul.root_id == output.root_id,
+        EInvalidBinding);
+    assert!(receipt.maker_version == output.maker_version
+        && soul.maker_version == output.maker_version, EInvalidBinding);
+    assert!(receipt.root_content_commitment == output.root_content_commitment
+        && soul.root_content_commitment == output.root_content_commitment,
+        EInvalidBinding);
+    assert!(output.output_registry_id == object::id(output_registry),
+        EInvalidBinding);
+    assert!(soul.soul_registry_id == object::id(soul_registry),
+        EInvalidBinding);
+    let output_id = object::id(output);
+    let receipt_id = object::id(receipt);
+    let soul_id = object::id(soul);
+    assert!(receipt.output_id == output_id, EInvalidBinding);
+    assert!(soul.output_id == output_id && soul.receipt_id == receipt_id,
+        EInvalidBinding);
+    assert!(receipt.output_key == output.output_key
+        && soul.output_key == output.output_key, EInvalidBinding);
+    assert!(receipt.loadout_id == output.loadout_id
+        && receipt.loadout_revision == output.loadout_revision
+        && receipt.loadout_commitment == output.loadout_commitment,
+        EInvalidBinding);
+    assert!(receipt.output_policy_commitment == output.output_policy_commitment
+        && soul.output_policy_commitment == output.output_policy_commitment,
+        EInvalidBinding);
+    assert!(receipt.renderer_schema_commitment
+        == output.renderer_schema_commitment, EInvalidBinding);
+    assert!(receipt.recipe_commitment == output.recipe_commitment
+        && soul.recipe_commitment == output.recipe_commitment,
+        EInvalidBinding);
+    assert!(receipt.render_commitment == output.render_commitment
+        && soul.render_commitment == output.render_commitment,
+        EInvalidBinding);
+    assert!(receipt.output_commitment == output.output_commitment
+        && soul.output_commitment == output.output_commitment,
+        EInvalidBinding);
+    assert!(soul.receipt_commitment == receipt.receipt_commitment,
+        EInvalidBinding);
+    assert!(receipt.protected == output.protected, EInvalidBinding);
+    let economics = maker::root_economics_v8(root);
+    assert!(receipt.economics_commitment
+        == *maker::economics_commitment_v8(&economics), EInvalidBinding);
+    let rights = maker::root_rights_v8(root);
+    assert!(soul.soul_creator_royalty_bps
+        == maker::rights_soul_creator_royalty_bps_v8(&rights), EInvalidBinding);
+    assert!(soul.maker_source_royalty_bps
+        == maker::rights_maker_source_royalty_bps_v8(&rights), EInvalidBinding);
+    let policy = borrow_policy(output_registry, output.output_key);
+    assert!(policy.row_commitment == output.output_policy_commitment,
+        EInvalidBinding);
+    assert!(derive_current_output_commitment(output) == output.output_commitment,
+        EInvalidCommitment);
+    assert!(derive_current_receipt_commitment(receipt)
+        == receipt.receipt_commitment, EInvalidCommitment);
+    assert_protection_binding(output, receipt);
+    assert!(derive_current_soul_commitment(soul) == soul.soul_commitment,
+        EInvalidCommitment);
+    let output_record = output_registry.outputs.borrow(output_id);
+    assert!(output_record.output_id == output_id
+        && output_record.receipt_id == receipt_id
+        && output_record.soul_id == soul_id
+        && output_record.output_key == output.output_key
+        && output_record.output_policy_commitment
+            == output.output_policy_commitment
+        && output_record.holder == expected_holder
+        && output_record.recipe_commitment == output.recipe_commitment
+        && output_record.render_commitment == output.render_commitment
+        && output_record.output_commitment == output.output_commitment
+        && output_record.receipt_commitment == receipt.receipt_commitment
+        && output_record.protected == output.protected
+        && output_record.seal_id == output.seal_id, EInvalidBinding);
+    let soul_record = soul_registry.souls.borrow(soul_id);
+    assert!(soul_record.soul_id == soul_id
+        && soul_record.output_id == output_id
+        && soul_record.receipt_id == receipt_id
+        && soul_record.holder == expected_holder
+        && soul_record.ownership_epoch == expected_epoch
+        && soul_record.soul_commitment == soul.soul_commitment,
+        EInvalidBinding);
+}
+
+fun assert_soul_market_boundary<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    output_registry: &OutputRegistryV8,
+    soul_registry: &SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+) {
+    binding::assert_market_call_cap_v8(catalog, market_call_cap);
+    binding::assert_catalog_snapshot_v8(
+        catalog,
+        maker::root_protocol_config_id_v8(root),
+        maker::root_protocol_config_revision_v8(root),
+        maker::root_protocol_config_commitment_v8(root),
+    );
+    let catalog_product = binding::catalog_binding_v8(catalog);
+    let market_binding = binding::market_binding_v8(catalog_product);
+    binding::assert_type_origins_v8<
+        MarketOriginalMarker,
+        MarketCallableMarker,
+    >(market_binding);
+    binding::assert_type_original_v8<MarketRegistry>(market_binding);
+    binding::assert_type_original_v8<MarketTreasury>(market_binding);
+    assert!(maker::root_product_release_catalog_id_v8(root)
+        == binding::catalog_id_v8(catalog), EInvalidBinding);
+    assert!(binding::product_binding_commitment_v8(
+        maker::root_product_release_binding_v8(root),
+    ) == binding::product_binding_commitment_v8(catalog_product),
+        EInvalidBinding);
+    binding::assert_same_call_cap_set_v8(
+        maker::root_product_release_call_cap_set_v8(root),
+        binding::catalog_call_cap_set_v8(catalog),
+    );
+    assert_registry_pair(root, output_registry, soul_registry);
+    let capability = maker::root_capability_registry_binding_v8(root);
+    assert!(maker::capability_catalog_id_v8(capability)
+        == binding::catalog_id_v8(catalog), EInvalidBinding);
+    binding::assert_same_call_cap_set_v8(
+        maker::capability_call_cap_set_v8(capability),
+        binding::catalog_call_cap_set_v8(catalog),
+    );
+    assert!(maker::capability_output_registry_id_v8(capability)
+        == object::id(output_registry), EInvalidBinding);
+    assert!(maker::capability_soul_registry_id_v8(capability)
+        == object::id(soul_registry), EInvalidBinding);
+    assert!(maker::capability_market_registry_id_v8(capability)
+        == object::id(market_registry), EInvalidBinding);
+    assert!(maker::capability_market_treasury_id_v8(capability)
+        == object::id(market_treasury), EInvalidBinding);
+}
+
+fun assert_active_soul_market_boundary<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    output_registry: &OutputRegistryV8,
+    soul_registry: &SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+) {
+    maker::assert_current_protocol_config_v8(root, protocol_config);
+    binding::assert_catalog_current_v8(protocol_config, catalog);
+    assert_soul_market_boundary<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(
+        output_registry, soul_registry, root, catalog, market_registry,
+        market_treasury, market_call_cap,
+    );
+    assert_active_registry_pair(output_registry, soul_registry, root);
+}
+
+fun assert_soul_market_custody_header<
+    PaymentCoin,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    custody: &SoulMarketCustodyBindingV8,
+    listing: &UID,
+    output_registry: &OutputRegistryV8,
+    soul_registry: &SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+) {
+    assert!(custody.listing_id == listing.to_inner(), EInvalidBinding);
+    assert!(custody.output_registry_id == object::id(output_registry),
+        EInvalidBinding);
+    assert!(custody.soul_registry_id == object::id(soul_registry),
+        EInvalidBinding);
+    assert!(custody.market_registry_id == object::id(market_registry),
+        EInvalidBinding);
+    assert!(custody.market_treasury_id == object::id(market_treasury),
+        EInvalidBinding);
+    maker::assert_root_identity_v8(
+        root, custody.root_id, custody.maker_version,
+        &custody.root_content_commitment,
+    );
+    assert!(custody.seller != @0x0, EWrongHolder);
+    assert_hash(&custody.output_commitment);
+    assert_hash(&custody.receipt_commitment);
+    assert_hash(&custody.soul_commitment);
+}
+
+fun assert_soul_market_custody_bundle(
+    custody: &SoulMarketCustodyBindingV8,
+    output: &CompleteOutputV8,
+    receipt: &CompleteReceiptV8,
+    soul: &CanonicalSoulV8,
+) {
+    assert!(custody.output_id == object::id(output)
+        && custody.receipt_id == object::id(receipt)
+        && custody.soul_id == object::id(soul), EWrongReceiving);
+    assert!(custody.output_commitment == output.output_commitment
+        && custody.receipt_commitment == receipt.receipt_commitment
+        && custody.soul_commitment == soul.soul_commitment,
+        EInvalidCommitment);
+}
+
+fun receive_soul_market_bundle(
+    listing: &mut UID,
+    custody: &SoulMarketCustodyBindingV8,
+    output_receiving: Receiving<CompleteOutputV8>,
+    receipt_receiving: Receiving<CompleteReceiptV8>,
+    soul_receiving: Receiving<CanonicalSoulV8>,
+): (CompleteOutputV8, CompleteReceiptV8, CanonicalSoulV8) {
+    assert!(transfer::receiving_object_id(&output_receiving)
+        == custody.output_id, EWrongReceiving);
+    assert!(transfer::receiving_object_id(&receipt_receiving)
+        == custody.receipt_id, EWrongReceiving);
+    assert!(transfer::receiving_object_id(&soul_receiving)
+        == custody.soul_id, EWrongReceiving);
+    let output = transfer::receive(listing, output_receiving);
+    let receipt = transfer::receive(listing, receipt_receiving);
+    let soul = transfer::receive(listing, soul_receiving);
+    assert_soul_market_custody_bundle(custody, &output, &receipt, &soul);
+    (output, receipt, soul)
+}
+
 fun assert_config(catalog: &ProductReleaseCatalogV8, config: &OutputPackageConfigV8) {
     assert!(config.version == VERSION, EInvalidConfig);
     assert!(config.catalog_id == binding::catalog_id_v8(catalog), EInvalidConfig);
@@ -1816,6 +2463,9 @@ public fun output_record_output_key_v8(record: &OutputRecordV8): &String {
 public fun output_record_policy_commitment_v8(record: &OutputRecordV8): &vector<u8> {
     &record.output_policy_commitment
 }
+public fun output_record_holder_v8(record: &OutputRecordV8): address {
+    record.holder
+}
 public fun output_registry_materialization_count_v8(registry: &OutputRegistryV8): u64 {
     registry.materialization_count
 }
@@ -1827,6 +2477,16 @@ public fun output_registry_materialization_commitment_v8(
 }
 public fun soul_registry_id_v8(registry: &SoulRegistryV8): ID { object::id(registry) }
 public fun soul_registry_soul_count_v8(registry: &SoulRegistryV8): u64 { registry.soul_count }
+public fun soul_record_v8(registry: &SoulRegistryV8, soul_id: ID): &SoulRecordV8 {
+    registry.souls.borrow(soul_id)
+}
+public fun soul_record_holder_v8(record: &SoulRecordV8): address { record.holder }
+public fun soul_record_ownership_epoch_v8(record: &SoulRecordV8): u64 {
+    record.ownership_epoch
+}
+public fun soul_record_commitment_v8(record: &SoulRecordV8): &vector<u8> {
+    &record.soul_commitment
+}
 
 public fun pending_output_id_v8(pending: &ProtectedCompletePendingV8): ID {
     object::id(&pending.output)
@@ -1860,6 +2520,58 @@ public fun pending_complete_instance_commitment_v8(
         pending.output.output_commitment, pending.receipt.receipt_commitment)
 }
 
+public fun soul_market_custody_ticket_binding_v8(
+    ticket: &SoulMarketCustodyTicketV8,
+): &SoulMarketCustodyBindingV8 { &ticket.binding }
+public fun soul_market_listing_id_v8(binding: &SoulMarketCustodyBindingV8): ID {
+    binding.listing_id
+}
+public fun soul_market_output_registry_id_v8(
+    binding: &SoulMarketCustodyBindingV8,
+): ID { binding.output_registry_id }
+public fun soul_market_soul_registry_id_v8(
+    binding: &SoulMarketCustodyBindingV8,
+): ID { binding.soul_registry_id }
+public fun soul_market_market_registry_id_v8(
+    binding: &SoulMarketCustodyBindingV8,
+): ID { binding.market_registry_id }
+public fun soul_market_market_treasury_id_v8(
+    binding: &SoulMarketCustodyBindingV8,
+): ID { binding.market_treasury_id }
+public fun soul_market_root_id_v8(binding: &SoulMarketCustodyBindingV8): ID {
+    binding.root_id
+}
+public fun soul_market_maker_version_v8(
+    binding: &SoulMarketCustodyBindingV8,
+): u64 { binding.maker_version }
+public fun soul_market_root_content_commitment_v8(
+    binding: &SoulMarketCustodyBindingV8,
+): &vector<u8> { &binding.root_content_commitment }
+public fun soul_market_output_id_v8(binding: &SoulMarketCustodyBindingV8): ID {
+    binding.output_id
+}
+public fun soul_market_receipt_id_v8(binding: &SoulMarketCustodyBindingV8): ID {
+    binding.receipt_id
+}
+public fun soul_market_soul_id_v8(binding: &SoulMarketCustodyBindingV8): ID {
+    binding.soul_id
+}
+public fun soul_market_output_commitment_v8(
+    binding: &SoulMarketCustodyBindingV8,
+): &vector<u8> { &binding.output_commitment }
+public fun soul_market_receipt_commitment_v8(
+    binding: &SoulMarketCustodyBindingV8,
+): &vector<u8> { &binding.receipt_commitment }
+public fun soul_market_soul_commitment_v8(
+    binding: &SoulMarketCustodyBindingV8,
+): &vector<u8> { &binding.soul_commitment }
+public fun soul_market_seller_v8(binding: &SoulMarketCustodyBindingV8): address {
+    binding.seller
+}
+public fun soul_market_expected_epoch_v8(
+    binding: &SoulMarketCustodyBindingV8,
+): u64 { binding.expected_soul_ownership_epoch }
+
 public fun soul_holder_v8(soul: &CanonicalSoulV8): address { soul.holder }
 public fun soul_ownership_epoch_v8(soul: &CanonicalSoulV8): u64 { soul.ownership_epoch }
 public fun soul_root_id_v8(soul: &CanonicalSoulV8): ID { soul.root_id }
@@ -1875,6 +2587,20 @@ public fun soul_output_id_v8(soul: &CanonicalSoulV8): ID { soul.output_id }
 public fun soul_receipt_id_v8(soul: &CanonicalSoulV8): ID { soul.receipt_id }
 public fun soul_commitment_v8(soul: &CanonicalSoulV8): &vector<u8> { &soul.soul_commitment }
 
+public fun complete_output_id_v8(output: &CompleteOutputV8): ID { object::id(output) }
+public fun complete_output_original_holder_v8(output: &CompleteOutputV8): address {
+    output.original_holder
+}
+public fun complete_output_holder_v8(output: &CompleteOutputV8): address {
+    output.holder
+}
+public fun complete_output_commitment_v8(
+    output: &CompleteOutputV8,
+): &vector<u8> { &output.output_commitment }
+public fun receipt_id_v8(receipt: &CompleteReceiptV8): ID { object::id(receipt) }
+public fun receipt_original_holder_v8(receipt: &CompleteReceiptV8): address {
+    receipt.original_holder
+}
 public fun receipt_holder_v8(receipt: &CompleteReceiptV8): address { receipt.holder }
 public fun receipt_output_key_v8(receipt: &CompleteReceiptV8): &String {
     &receipt.output_key
@@ -1997,6 +2723,161 @@ public fun physical_selection_asset_content_commitment_v8(
     binding: &PhysicalSelectionBindingV8,
 ): &vector<u8> { &binding.asset_content_commitment }
 
+/// Downstream Market tests cannot manufacture the private fields of the
+/// key-only bundle. This helper creates one exact unprotected bundle and the
+/// matching Output/Soul registry records without adding production bytecode.
+#[test_only]
+public fun new_soul_market_bundle_for_testing_v8<PaymentCoin>(
+    output_registry: &mut OutputRegistryV8,
+    soul_registry: &mut SoulRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    holder: address,
+    ctx: &mut TxContext,
+): (CompleteOutputV8, CompleteReceiptV8, CanonicalSoulV8) {
+    assert_registry_pair(root, output_registry, soul_registry);
+    assert!(output_registry.sealed && !output_registry.policy_keys.is_empty(),
+        ERegistryNotSealed);
+    assert_exact_holder(holder, holder);
+    let policy_key = output_registry.policy_keys[0];
+    let policy = output_registry.policy_rows.borrow(policy_key);
+    assert!(!policy.protected_output, EInvalidPolicy);
+    let output_uid = object::new(ctx);
+    let output_id = output_uid.to_inner();
+    let receipt_uid = object::new(ctx);
+    let receipt_id = receipt_uid.to_inner();
+    let base_line = BaseCompleteLineV8 {
+        ordinal: 0, base_gross_atomic: 0, base_protocol_atomic: 0,
+        maker_atomic: 0, fixed_protocol_atomic: 0, total_atomic: 0,
+    };
+    let mut output = CompleteOutputV8 {
+        id: output_uid, version: VERSION,
+        root_id: maker::root_id_v8(root),
+        maker_version: maker::root_maker_version_v8(root),
+        root_content_commitment: *maker::root_content_commitment_v8(root),
+        output_registry_id: object::id(output_registry),
+        output_key: policy.output_key,
+        original_holder: holder, holder,
+        loadout_id: maker::root_id_v8(root), loadout_revision: 0,
+        loadout_commitment: test_hash(41),
+        output_policy_commitment: policy.row_commitment,
+        renderer_schema_commitment: policy.renderer_schema_commitment,
+        recipe_commitment: test_hash(42),
+        render_commitment: test_hash(43),
+        render_blob_id: b"market-fixture-render".to_string(),
+        render_sha256: test_hash(44),
+        render_blob_commitment: test_hash(45),
+        output_commitment: vector[],
+        protected: false,
+        scope_key: b"".to_string(), asset_key: b"".to_string(),
+        seal_id: option::none(), protection_binding_commitment: vector[],
+    };
+    output.output_commitment = derive_current_output_commitment(&output);
+    let economics = maker::root_economics_v8(root);
+    let mut receipt = CompleteReceiptV8 {
+        id: receipt_uid, version: VERSION, output_id,
+        root_id: output.root_id, maker_version: output.maker_version,
+        root_content_commitment: output.root_content_commitment,
+        output_key: output.output_key,
+        original_holder: holder, holder,
+        loadout_id: output.loadout_id, loadout_revision: output.loadout_revision,
+        loadout_commitment: output.loadout_commitment,
+        output_policy_commitment: output.output_policy_commitment,
+        renderer_schema_commitment: output.renderer_schema_commitment,
+        economics_commitment: *maker::economics_commitment_v8(&economics),
+        recipe_commitment: output.recipe_commitment,
+        render_commitment: output.render_commitment,
+        output_commitment: output.output_commitment,
+        base_line, pack_lines: vector[], total_paid_atomic: 0,
+        receipt_commitment: vector[], protected: false,
+        seal_id: option::none(),
+    };
+    receipt.receipt_commitment = derive_current_receipt_commitment(&receipt);
+    let rights = maker::root_rights_v8(root);
+    let mut soul = CanonicalSoulV8 {
+        id: object::new(ctx), version: VERSION,
+        soul_registry_id: object::id(soul_registry),
+        root_id: output.root_id, maker_version: output.maker_version,
+        root_content_commitment: output.root_content_commitment,
+        output_key: output.output_key,
+        output_policy_commitment: output.output_policy_commitment,
+        holder, ownership_epoch: 0, output_id, receipt_id,
+        recipe_commitment: output.recipe_commitment,
+        render_commitment: output.render_commitment,
+        output_commitment: output.output_commitment,
+        receipt_commitment: receipt.receipt_commitment,
+        soul_creator_royalty_bps:
+            maker::rights_soul_creator_royalty_bps_v8(&rights),
+        maker_source_royalty_bps:
+            maker::rights_maker_source_royalty_bps_v8(&rights),
+        soul_commitment: vector[],
+    };
+    soul.soul_commitment = derive_current_soul_commitment(&soul);
+    record_finished_output(output_registry, &output, &receipt, object::id(&soul));
+    record_soul(soul_registry, &soul);
+    assert_live_soul_bundle(
+        &output, &receipt, &soul, output_registry, soul_registry, root,
+        holder, 0,
+    );
+    (output, receipt, soul)
+}
+
+/// Defining-module transfer bridge for downstream cross-transaction tests.
+/// Production exposes no equivalent transfer path.
+#[test_only]
+public fun transfer_soul_market_bundle_for_testing_v8(
+    output: CompleteOutputV8,
+    receipt: CompleteReceiptV8,
+    soul: CanonicalSoulV8,
+) {
+    let holder = output.holder;
+    assert_exact_holder(holder, holder);
+    assert_exact_holder(receipt.holder, holder);
+    assert_exact_holder(soul.holder, holder);
+    transfer::transfer(output, holder);
+    transfer::transfer(receipt, holder);
+    transfer::transfer(soul, holder);
+}
+
+#[test_only]
+public fun destroy_soul_market_bundle_for_testing_v8(
+    output: CompleteOutputV8,
+    receipt: CompleteReceiptV8,
+    soul: CanonicalSoulV8,
+) {
+    let CompleteOutputV8 {
+        id: output_uid, version: _, root_id: _, maker_version: _,
+        root_content_commitment: _, output_registry_id: _, output_key: _,
+        original_holder: _, holder: _, loadout_id: _, loadout_revision: _,
+        loadout_commitment: _, output_policy_commitment: _,
+        renderer_schema_commitment: _, recipe_commitment: _,
+        render_commitment: _, render_blob_id: _, render_sha256: _,
+        render_blob_commitment: _, output_commitment: _, protected: _,
+        scope_key: _, asset_key: _, seal_id: _,
+        protection_binding_commitment: _,
+    } = output;
+    let CompleteReceiptV8 {
+        id: receipt_uid, version: _, output_id: _, root_id: _, maker_version: _,
+        root_content_commitment: _, output_key: _, original_holder: _, holder: _,
+        loadout_id: _, loadout_revision: _, loadout_commitment: _,
+        output_policy_commitment: _, renderer_schema_commitment: _,
+        economics_commitment: _, recipe_commitment: _, render_commitment: _,
+        output_commitment: _, base_line: _, pack_lines: _, total_paid_atomic: _,
+        receipt_commitment: _, protected: _, seal_id: _,
+    } = receipt;
+    let CanonicalSoulV8 {
+        id: soul_uid, version: _, soul_registry_id: _, root_id: _,
+        maker_version: _, root_content_commitment: _, output_key: _,
+        output_policy_commitment: _, holder: _, ownership_epoch: _, output_id: _,
+        receipt_id: _, recipe_commitment: _, render_commitment: _,
+        output_commitment: _, receipt_commitment: _,
+        soul_creator_royalty_bps: _, maker_source_royalty_bps: _,
+        soul_commitment: _,
+    } = soul;
+    output_uid.delete();
+    receipt_uid.delete();
+    soul_uid.delete();
+}
+
 #[test_only]
 public fun physical_base_selection_binding_for_testing_v8(
     root_id: ID,
@@ -2074,6 +2955,230 @@ public fun destroy_registries_for_testing(
     soul_keys.destroy_empty();
     souls.destroy_empty();
     soul_uid.delete();
+}
+
+#[test_only]
+public struct TestMarketOriginalMarkerV8 has drop {}
+#[test_only]
+public struct TestMarketCallableMarkerV8 has drop {}
+#[test_only]
+public struct TestMarketRegistryV8 has key { id: UID }
+#[test_only]
+public struct TestMarketTreasuryV8 has key { id: UID }
+#[test_only]
+public struct TestDependencyRegistryV8 has key { id: UID }
+#[test_only]
+public struct TestMarketConfigV8 has key {
+    id: UID,
+    market_call_cap: PackageCallCapV8<MarketRoleV8>,
+}
+#[test_only]
+public struct TestMarketListingV8 has key {
+    id: UID,
+    custody: Option<SoulMarketCustodyBindingV8>,
+}
+#[test_only]
+public struct SoulMarketScenarioIdsV8 has copy, drop {
+    root_id: ID,
+    catalog_id: ID,
+    output_registry_id: ID,
+    soul_registry_id: ID,
+    market_registry_id: ID,
+    market_treasury_id: ID,
+    market_config_id: ID,
+    listing_id: ID,
+    output_id: ID,
+    receipt_id: ID,
+    soul_id: ID,
+}
+
+#[test_only]
+fun setup_soul_market_scenario(
+    scenario: &mut Scenario,
+): SoulMarketScenarioIdsV8 {
+    let ctx = scenario.ctx();
+    let seller = ctx.sender();
+    let (mut protocol_config, protocol_treasury, protocol_admin) =
+        protocol::new_protocol_with_treasury_for_testing<SUI>(true, ctx);
+    let economics = maker::new_economics_snapshot_v8<SUI>(
+        &protocol_config, maker::access_free_v8(), 0,
+        maker::complete_unlimited_free_v8(), 0, 0, 0,
+    );
+    let rights = maker::new_onchain_native_rights_snapshot_v8(
+        ctx, 250, 250, 500,
+    );
+    let root_content_commitment = test_hash(51);
+    let counts = base::new_base_definition_counts_v8(1, 1, 1, 1, 0, 0);
+    let commitments = base::minimal_expected_commitments_for_testing(
+        root_content_commitment,
+    );
+    let clock = sui::clock::create_for_testing(ctx);
+    let (mut root, mut base_registry, maker_treasury, admin) =
+        core::new_initial_maker_draft_v8<SUI>(
+            &protocol_config,
+            b"output-market-fixture".to_string(),
+            test_hash(52),
+            b"output-market-fixture-blob".to_string(),
+            test_hash(53),
+            root_content_commitment,
+            counts,
+            commitments,
+            test_hash(54),
+            economics,
+            rights,
+            &clock,
+            ctx,
+        );
+    base::populate_and_seal_minimal_for_testing(
+        &mut base_registry, &root, &admin,
+    );
+    let mut catalog = binding::product_release_catalog_with_market_for_testing(
+        &protocol_config,
+        maker::root_core_original_package_id_v8(&root).to_address(),
+        maker::root_core_callable_package_id_v8(&root).to_address(),
+        type_name::original_id<TestMarketOriginalMarkerV8>(),
+        type_name::defining_id<TestMarketCallableMarkerV8>(),
+        ctx,
+    );
+    let catalog_witness = binding::release_catalog_witness_for_testing(&catalog);
+    maker::finalize_product_release_binding_v8(
+        &mut root, &admin, &protocol_config, catalog_witness, ctx,
+    );
+    let release_cap = binding::take_release_call_cap_v8(
+        &protocol_config, &protocol_admin, &mut catalog,
+    );
+    let seal_cap = binding::take_seal_call_cap_v8(
+        &protocol_config, &protocol_admin, &mut catalog,
+    );
+    let runtime_cap = binding::take_runtime_call_cap_v8(
+        &protocol_config, &protocol_admin, &mut catalog,
+    );
+    let output_cap = binding::take_output_call_cap_v8(
+        &protocol_config, &protocol_admin, &mut catalog,
+    );
+    let physical_cap = binding::take_physical_call_cap_v8(
+        &protocol_config, &protocol_admin, &mut catalog,
+    );
+    let market_call_cap = binding::take_market_call_cap_v8(
+        &protocol_config, &protocol_admin, &mut catalog,
+    );
+    let output_key = b"market-png".to_string();
+    let schema_commitment = test_hash(55);
+    let row_commitment = derive_output_policy_row_commitment_v8(
+        &root, 0, output_key, false, b"".to_string(), schema_commitment,
+        POLICY_ALL_ADMITTED, vector[],
+    );
+    let expected_policy_commitment = advance_output_registry_commitment_v8(
+        &root, 0, empty_output_registry_commitment_v8(&root), row_commitment,
+    );
+    let (mut output_registry, soul_registry) = new_output_registries_v8(
+        &root, &admin, 1, expected_policy_commitment, ctx,
+    );
+    append_output_policy_v8(
+        &mut output_registry, &root, &admin, 0, output_key, false,
+        b"".to_string(), schema_commitment, POLICY_ALL_ADMITTED, vector[],
+        row_commitment,
+    );
+    seal_output_registry_v8(&mut output_registry, &root, &admin);
+    let seal_policy = TestDependencyRegistryV8 { id: object::new(ctx) };
+    let seal_registry = TestDependencyRegistryV8 { id: object::new(ctx) };
+    let runtime_definitions = TestDependencyRegistryV8 { id: object::new(ctx) };
+    let pack_registry = TestDependencyRegistryV8 { id: object::new(ctx) };
+    let admission_authority = TestDependencyRegistryV8 { id: object::new(ctx) };
+    let physical_registry = TestDependencyRegistryV8 { id: object::new(ctx) };
+    let market_registry = TestMarketRegistryV8 { id: object::new(ctx) };
+    let market_treasury = TestMarketTreasuryV8 { id: object::new(ctx) };
+    let (seal_ready, runtime_ready, output_ready, physical_ready, market_ready) =
+        activation::readiness_set_for_testing(
+            &root, &catalog, &seal_policy, &seal_registry,
+            &runtime_definitions, &pack_registry, &admission_authority,
+            &output_registry, &soul_registry, &physical_registry,
+            &market_registry, &market_treasury,
+        );
+    activation::activate_maker_for_testing(
+        &mut root, &admin, &protocol_config, &catalog, &base_registry,
+        &maker_treasury, &protocol_treasury, &release_cap,
+        seal_ready, runtime_ready, output_ready, physical_ready, market_ready,
+        ctx,
+    );
+    binding::destroy_call_cap_for_testing(release_cap);
+    binding::destroy_call_cap_for_testing(seal_cap);
+    binding::destroy_call_cap_for_testing(runtime_cap);
+    binding::destroy_call_cap_for_testing(output_cap);
+    binding::destroy_call_cap_for_testing(physical_cap);
+    let mut soul_registry = soul_registry;
+    let (output, receipt, soul) = new_soul_market_bundle_for_testing_v8(
+        &mut output_registry, &mut soul_registry, &root, seller, ctx,
+    );
+    let market_config = TestMarketConfigV8 {
+        id: object::new(ctx), market_call_cap,
+    };
+    let mut listing = TestMarketListingV8 {
+        id: object::new(ctx), custody: option::none(),
+    };
+    let output_id = object::id(&output);
+    let receipt_id = object::id(&receipt);
+    let soul_id = object::id(&soul);
+    let ticket = custody_soul_bundle_for_market_v8<
+        SUI,
+        TestMarketOriginalMarkerV8,
+        TestMarketCallableMarkerV8,
+        TestMarketRegistryV8,
+        TestMarketTreasuryV8,
+    >(
+        output, receipt, soul, &mut listing.id, &output_registry,
+        &soul_registry, &root, &protocol_config, &catalog, &market_registry,
+        &market_treasury, &market_config.market_call_cap, ctx,
+    );
+    let custody = consume_soul_market_custody_ticket_v8<
+        SUI,
+        TestMarketOriginalMarkerV8,
+        TestMarketCallableMarkerV8,
+        TestMarketRegistryV8,
+        TestMarketTreasuryV8,
+    >(
+        ticket, &listing.id, &output_registry, &soul_registry, &root,
+        &catalog, &market_registry, &market_treasury,
+        &market_config.market_call_cap,
+    );
+    listing.custody.fill(custody);
+    let ids = SoulMarketScenarioIdsV8 {
+        root_id: object::id(&root),
+        catalog_id: object::id(&catalog),
+        output_registry_id: object::id(&output_registry),
+        soul_registry_id: object::id(&soul_registry),
+        market_registry_id: object::id(&market_registry),
+        market_treasury_id: object::id(&market_treasury),
+        market_config_id: object::id(&market_config),
+        listing_id: object::id(&listing),
+        output_id,
+        receipt_id,
+        soul_id,
+    };
+    clock.destroy_for_testing();
+    protocol::set_protocol_enabled_v8(
+        &mut protocol_config, &protocol_admin, false,
+    );
+    protocol::destroy_protocol_with_treasury_for_testing(
+        protocol_config, protocol_treasury, protocol_admin,
+    );
+    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_draft_v8());
+    core::share_maker_draft_v8(
+        root, base_registry, maker_treasury, admin, ctx,
+    );
+    binding::share_product_release_catalog_v8(catalog);
+    share_output_registries_v8(output_registry, soul_registry);
+    transfer::share_object(seal_policy);
+    transfer::share_object(seal_registry);
+    transfer::share_object(runtime_definitions);
+    transfer::share_object(pack_registry);
+    transfer::share_object(admission_authority);
+    transfer::share_object(physical_registry);
+    transfer::share_object(market_registry);
+    transfer::share_object(market_treasury);
+    transfer::share_object(market_config);
+    transfer::share_object(listing);
+    ids
 }
 
 #[test_only]
@@ -2249,7 +3354,8 @@ fun test_protected_artifacts(ctx: &mut TxContext): (CompleteOutputV8, CompleteRe
         id: output_uid, version: VERSION, root_id: object::id_from_address(@0x10),
         maker_version: 1, root_content_commitment: test_hash(1),
         output_registry_id: object::id_from_address(@0x11),
-        output_key: b"png".to_string(), holder: @0xA11,
+        output_key: b"png".to_string(), original_holder: @0xA11,
+        holder: @0xA11,
         loadout_id: object::id_from_address(@0x12), loadout_revision: 3,
         loadout_commitment: test_hash(2), output_policy_commitment: test_hash(3),
         renderer_schema_commitment: test_hash(12),
@@ -2264,7 +3370,7 @@ fun test_protected_artifacts(ctx: &mut TxContext): (CompleteOutputV8, CompleteRe
         id: receipt_uid, version: VERSION, output_id,
         root_id: object::id_from_address(@0x10), maker_version: 1,
         root_content_commitment: test_hash(1), output_key: b"png".to_string(),
-        holder: @0xA11,
+        original_holder: @0xA11, holder: @0xA11,
         loadout_id: object::id_from_address(@0x12), loadout_revision: 3,
         loadout_commitment: test_hash(2), output_policy_commitment: test_hash(3),
         renderer_schema_commitment: test_hash(12),
@@ -2514,6 +3620,282 @@ fun output_paths_reject_cross_holder() {
     abort EWrongHolder
 }
 
+#[test]
+fun market_return_cross_transaction_survives_archived_root_and_config_drift() {
+    let seller = @0xA11;
+    let mut scenario = test_scenario::begin(seller);
+    let ids = setup_soul_market_scenario(&mut scenario);
+    scenario.next_tx(seller);
+    {
+        let mut root = scenario.take_shared_by_id<MakerRootV8<SUI>>(ids.root_id);
+        let catalog = scenario.take_shared_by_id<ProductReleaseCatalogV8>(ids.catalog_id);
+        let output_registry = scenario.take_shared_by_id<OutputRegistryV8>(
+            ids.output_registry_id,
+        );
+        let soul_registry = scenario.take_shared_by_id<SoulRegistryV8>(
+            ids.soul_registry_id,
+        );
+        let market_registry = scenario.take_shared_by_id<TestMarketRegistryV8>(
+            ids.market_registry_id,
+        );
+        let market_treasury = scenario.take_shared_by_id<TestMarketTreasuryV8>(
+            ids.market_treasury_id,
+        );
+        let market_config = scenario.take_shared_by_id<TestMarketConfigV8>(
+            ids.market_config_id,
+        );
+        let mut listing = scenario.take_shared_by_id<TestMarketListingV8>(
+            ids.listing_id,
+        );
+        maker::set_lifecycle_for_testing(
+            &mut root, maker::lifecycle_archived_v8(),
+        );
+        let output_receiving = test_scenario::receiving_ticket_by_id<
+            CompleteOutputV8,
+        >(ids.output_id);
+        let receipt_receiving = test_scenario::receiving_ticket_by_id<
+            CompleteReceiptV8,
+        >(ids.receipt_id);
+        let soul_receiving = test_scenario::receiving_ticket_by_id<
+            CanonicalSoulV8,
+        >(ids.soul_id);
+        let custody = *listing.custody.borrow();
+        return_soul_bundle_from_market_v8<
+            SUI,
+            TestMarketOriginalMarkerV8,
+            TestMarketCallableMarkerV8,
+            TestMarketRegistryV8,
+            TestMarketTreasuryV8,
+        >(
+            output_receiving, receipt_receiving, soul_receiving,
+            &mut listing.id, &custody, &output_registry,
+            &soul_registry, &root, &catalog, &market_registry,
+            &market_treasury, &market_config.market_call_cap,
+        );
+        test_scenario::return_shared(root);
+        test_scenario::return_shared(catalog);
+        test_scenario::return_shared(output_registry);
+        test_scenario::return_shared(soul_registry);
+        test_scenario::return_shared(market_registry);
+        test_scenario::return_shared(market_treasury);
+        test_scenario::return_shared(market_config);
+        test_scenario::return_shared(listing);
+    };
+    scenario.next_tx(seller);
+    {
+        let output = scenario.take_from_sender_by_id<CompleteOutputV8>(ids.output_id);
+        let receipt = scenario.take_from_sender_by_id<CompleteReceiptV8>(
+            ids.receipt_id,
+        );
+        let soul = scenario.take_from_sender_by_id<CanonicalSoulV8>(ids.soul_id);
+        assert!(output.holder == seller && receipt.holder == seller
+            && soul.holder == seller, EWrongHolder);
+        assert!(output.original_holder == seller
+            && receipt.original_holder == seller, EWrongHolder);
+        assert!(soul.ownership_epoch == 0, EOwnershipEpochMismatch);
+        assert!(derive_current_output_commitment(&output)
+            == output.output_commitment, EInvalidCommitment);
+        assert!(derive_current_receipt_commitment(&receipt)
+            == receipt.receipt_commitment, EInvalidCommitment);
+        assert!(derive_current_soul_commitment(&soul)
+            == soul.soul_commitment, EInvalidCommitment);
+        transfer_soul_market_bundle_for_testing_v8(output, receipt, soul);
+    };
+    scenario.next_tx(seller);
+    {
+        let output = scenario.take_from_sender_by_id<CompleteOutputV8>(ids.output_id);
+        let receipt = scenario.take_from_sender_by_id<CompleteReceiptV8>(
+            ids.receipt_id,
+        );
+        let soul = scenario.take_from_sender_by_id<CanonicalSoulV8>(ids.soul_id);
+        destroy_soul_market_bundle_for_testing_v8(output, receipt, soul);
+    };
+    scenario.end();
+}
+
+#[test]
+fun market_purchase_cross_transaction_updates_only_ownership_state() {
+    let seller = @0xA11;
+    let buyer = @0xB0B;
+    let mut scenario = test_scenario::begin(seller);
+    let ids = setup_soul_market_scenario(&mut scenario);
+    let original_output_commitment;
+    let original_receipt_commitment;
+    let original_soul_commitment;
+    scenario.next_tx(buyer);
+    {
+        let mut root = scenario.take_shared_by_id<MakerRootV8<SUI>>(ids.root_id);
+        let mut output_registry = scenario.take_shared_by_id<OutputRegistryV8>(
+            ids.output_registry_id,
+        );
+        let mut soul_registry = scenario.take_shared_by_id<SoulRegistryV8>(
+            ids.soul_registry_id,
+        );
+        let mut listing = scenario.take_shared_by_id<TestMarketListingV8>(
+            ids.listing_id,
+        );
+        maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_active_v8());
+        let custody = *listing.custody.borrow();
+        original_output_commitment = custody.output_commitment;
+        original_receipt_commitment = custody.receipt_commitment;
+        original_soul_commitment = custody.soul_commitment;
+        purchase_received_soul_bundle(
+            test_scenario::receiving_ticket_by_id<CompleteOutputV8>(ids.output_id),
+            test_scenario::receiving_ticket_by_id<CompleteReceiptV8>(ids.receipt_id),
+            test_scenario::receiving_ticket_by_id<CanonicalSoulV8>(ids.soul_id),
+            &mut listing.id, &custody, &mut output_registry,
+            &mut soul_registry, &root, buyer,
+        );
+        let output_record = output_registry.outputs.borrow(ids.output_id);
+        let soul_record = soul_registry.souls.borrow(ids.soul_id);
+        assert!(output_record.holder == buyer, EWrongHolder);
+        assert!(soul_record.holder == buyer && soul_record.ownership_epoch == 1,
+            EOwnershipEpochMismatch);
+        assert!(soul_record.soul_commitment != original_soul_commitment,
+            EInvalidCommitment);
+        test_scenario::return_shared(root);
+        test_scenario::return_shared(output_registry);
+        test_scenario::return_shared(soul_registry);
+        test_scenario::return_shared(listing);
+    };
+    scenario.next_tx(buyer);
+    {
+        let output = scenario.take_from_sender_by_id<CompleteOutputV8>(ids.output_id);
+        let receipt = scenario.take_from_sender_by_id<CompleteReceiptV8>(
+            ids.receipt_id,
+        );
+        let soul = scenario.take_from_sender_by_id<CanonicalSoulV8>(ids.soul_id);
+        assert!(output.original_holder == seller
+            && receipt.original_holder == seller, EWrongHolder);
+        assert!(output.holder == buyer && receipt.holder == buyer
+            && soul.holder == buyer, EWrongHolder);
+        assert!(output.output_commitment == original_output_commitment
+            && receipt.receipt_commitment == original_receipt_commitment,
+            EInvalidCommitment);
+        assert!(soul.ownership_epoch == 1
+            && soul.soul_commitment != original_soul_commitment,
+            EOwnershipEpochMismatch);
+        assert!(derive_current_output_commitment(&output)
+            == output.output_commitment, EInvalidCommitment);
+        assert!(derive_current_receipt_commitment(&receipt)
+            == receipt.receipt_commitment, EInvalidCommitment);
+        assert!(derive_current_soul_commitment(&soul)
+            == soul.soul_commitment, EInvalidCommitment);
+        destroy_soul_market_bundle_for_testing_v8(output, receipt, soul);
+    };
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = ESelfPurchase)]
+fun market_purchase_rejects_seller_as_buyer_before_receiving() {
+    let seller = @0xA11;
+    let mut scenario = test_scenario::begin(seller);
+    let ids = setup_soul_market_scenario(&mut scenario);
+    scenario.next_tx(seller);
+    let mut root = scenario.take_shared_by_id<MakerRootV8<SUI>>(ids.root_id);
+    let mut output_registry = scenario.take_shared_by_id<OutputRegistryV8>(
+        ids.output_registry_id,
+    );
+    let mut soul_registry = scenario.take_shared_by_id<SoulRegistryV8>(
+        ids.soul_registry_id,
+    );
+    let mut listing = scenario.take_shared_by_id<TestMarketListingV8>(ids.listing_id);
+    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_active_v8());
+    let custody = *listing.custody.borrow();
+    purchase_received_soul_bundle(
+        test_scenario::receiving_ticket_by_id<CompleteOutputV8>(ids.output_id),
+        test_scenario::receiving_ticket_by_id<CompleteReceiptV8>(ids.receipt_id),
+        test_scenario::receiving_ticket_by_id<CanonicalSoulV8>(ids.soul_id),
+        &mut listing.id, &custody, &mut output_registry,
+        &mut soul_registry, &root, seller,
+    );
+    abort ESelfPurchase
+}
+
+#[test, expected_failure(abort_code = EOwnershipEpochMismatch)]
+fun market_purchase_rejects_stale_expected_epoch_atomically() {
+    let seller = @0xA11;
+    let buyer = @0xB0B;
+    let mut scenario = test_scenario::begin(seller);
+    let ids = setup_soul_market_scenario(&mut scenario);
+    scenario.next_tx(buyer);
+    let mut root = scenario.take_shared_by_id<MakerRootV8<SUI>>(ids.root_id);
+    let mut output_registry = scenario.take_shared_by_id<OutputRegistryV8>(
+        ids.output_registry_id,
+    );
+    let mut soul_registry = scenario.take_shared_by_id<SoulRegistryV8>(
+        ids.soul_registry_id,
+    );
+    let mut listing = scenario.take_shared_by_id<TestMarketListingV8>(ids.listing_id);
+    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_active_v8());
+    let mut stale = *listing.custody.borrow();
+    stale.expected_soul_ownership_epoch = 1;
+    purchase_received_soul_bundle(
+        test_scenario::receiving_ticket_by_id<CompleteOutputV8>(ids.output_id),
+        test_scenario::receiving_ticket_by_id<CompleteReceiptV8>(ids.receipt_id),
+        test_scenario::receiving_ticket_by_id<CanonicalSoulV8>(ids.soul_id),
+        &mut listing.id, &stale, &mut output_registry,
+        &mut soul_registry, &root, buyer,
+    );
+    abort EOwnershipEpochMismatch
+}
+
+#[test, expected_failure(abort_code = EWrongReceiving)]
+fun market_purchase_rejects_wrong_expected_receiving_id_atomically() {
+    let seller = @0xA11;
+    let buyer = @0xB0B;
+    let mut scenario = test_scenario::begin(seller);
+    let ids = setup_soul_market_scenario(&mut scenario);
+    scenario.next_tx(buyer);
+    let mut root = scenario.take_shared_by_id<MakerRootV8<SUI>>(ids.root_id);
+    let mut output_registry = scenario.take_shared_by_id<OutputRegistryV8>(
+        ids.output_registry_id,
+    );
+    let mut soul_registry = scenario.take_shared_by_id<SoulRegistryV8>(
+        ids.soul_registry_id,
+    );
+    let mut listing = scenario.take_shared_by_id<TestMarketListingV8>(ids.listing_id);
+    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_active_v8());
+    let mut wrong = *listing.custody.borrow();
+    wrong.output_id = object::id_from_address(@0xBAD);
+    purchase_received_soul_bundle(
+        test_scenario::receiving_ticket_by_id<CompleteOutputV8>(ids.output_id),
+        test_scenario::receiving_ticket_by_id<CompleteReceiptV8>(ids.receipt_id),
+        test_scenario::receiving_ticket_by_id<CanonicalSoulV8>(ids.soul_id),
+        &mut listing.id, &wrong, &mut output_registry,
+        &mut soul_registry, &root, buyer,
+    );
+    abort EWrongReceiving
+}
+
+#[test, expected_failure(abort_code = EInvalidCommitment)]
+fun market_purchase_rejects_stale_commitment_atomically() {
+    let seller = @0xA11;
+    let buyer = @0xB0B;
+    let mut scenario = test_scenario::begin(seller);
+    let ids = setup_soul_market_scenario(&mut scenario);
+    scenario.next_tx(buyer);
+    let mut root = scenario.take_shared_by_id<MakerRootV8<SUI>>(ids.root_id);
+    let mut output_registry = scenario.take_shared_by_id<OutputRegistryV8>(
+        ids.output_registry_id,
+    );
+    let mut soul_registry = scenario.take_shared_by_id<SoulRegistryV8>(
+        ids.soul_registry_id,
+    );
+    let mut listing = scenario.take_shared_by_id<TestMarketListingV8>(ids.listing_id);
+    maker::set_lifecycle_for_testing(&mut root, maker::lifecycle_active_v8());
+    let mut stale = *listing.custody.borrow();
+    stale.output_commitment = test_hash(99);
+    purchase_received_soul_bundle(
+        test_scenario::receiving_ticket_by_id<CompleteOutputV8>(ids.output_id),
+        test_scenario::receiving_ticket_by_id<CompleteReceiptV8>(ids.receipt_id),
+        test_scenario::receiving_ticket_by_id<CanonicalSoulV8>(ids.soul_id),
+        &mut listing.id, &stale, &mut output_registry,
+        &mut soul_registry, &root, buyer,
+    );
+    abort EInvalidCommitment
+}
+
 #[test, expected_failure(abort_code = EInvalidLifecycle)]
 fun readiness_rejects_nonzero_complete_counter() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 128, 0, 0, 0);
@@ -2654,4 +4036,40 @@ fun protected_binding_rejects_any_instance_commitment_drift() {
         &test_hash(99), &test_hash(5), &test_hash(8), &test_hash(10),
         &b"complete/png".to_string(), &b"receipt/one".to_string(), &test_hash(11));
     abort EInvalidProof
+}
+
+#[test, expected_failure(abort_code = EInvalidCommitment)]
+fun content_and_protection_commitments_ignore_current_holder_after_mint() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 112, 0, 0, 0);
+    let (mut output, mut receipt) = test_protected_artifacts(&mut ctx);
+    output.output_commitment = derive_current_output_commitment(&output);
+    receipt.output_commitment = output.output_commitment;
+    receipt.receipt_commitment = derive_current_receipt_commitment(&receipt);
+    let seal_id = test_hash(11);
+    output.seal_id = option::some(seal_id);
+    receipt.seal_id = option::some(seal_id);
+    output.protection_binding_commitment = hash::sha2_256(bcs::to_bytes(
+        &ProtectionBindingCommitmentInputV8 {
+            domain: b"animacraft-v8/output/protection", version: VERSION,
+            output_id: object::id(&output), receipt_id: object::id(&receipt),
+            output_commitment: output.output_commitment,
+            receipt_commitment: receipt.receipt_commitment,
+            scope_key: output.scope_key, asset_key: output.asset_key, seal_id,
+        },
+    ));
+    let output_commitment = output.output_commitment;
+    let receipt_commitment = receipt.receipt_commitment;
+    let protection_commitment = output.protection_binding_commitment;
+    output.holder = @0xB0B;
+    receipt.holder = @0xB0B;
+    assert!(output.original_holder == @0xA11
+        && receipt.original_holder == @0xA11, EWrongHolder);
+    assert!(derive_current_output_commitment(&output) == output_commitment,
+        EInvalidCommitment);
+    assert!(derive_current_receipt_commitment(&receipt) == receipt_commitment,
+        EInvalidCommitment);
+    assert!(output.protection_binding_commitment == protection_commitment,
+        EInvalidCommitment);
+    assert_protection_binding(&output, &receipt);
+    abort EInvalidCommitment
 }

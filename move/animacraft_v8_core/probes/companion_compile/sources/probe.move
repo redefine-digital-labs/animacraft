@@ -50,6 +50,7 @@ use animacraft_v8_core::treasury_v8::{
 };
 use sui::clock::Clock;
 use sui::coin::Coin;
+use sui::transfer::Receiving;
 
 public struct SealMarkerV8 has drop {}
 public struct RuntimeMarkerV8 has drop {}
@@ -235,6 +236,42 @@ public fun compile_terminal_activation<PaymentCoin>(
         protocol_treasury, &release_config.call_cap, seal, runtime, output,
         physical, market, ctx,
     );
+}
+
+public fun compile_maker_market_custody<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    admin: MakerAdminCapV8,
+    catalog: &ProductReleaseCatalogV8,
+    market_config: &MarketPackageConfigV8,
+    listing_parent: &mut UID,
+) {
+    maker::custody_maker_admin_for_market_v8(
+        root,
+        admin,
+        catalog,
+        &market_config.call_cap,
+        listing_parent,
+    )
+}
+
+public fun compile_maker_market_resolution<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_config: &MarketPackageConfigV8,
+    listing_parent: &mut UID,
+    receiving: Receiving<MakerAdminCapV8>,
+    recipient: address,
+    ctx: &mut TxContext,
+) {
+    maker::resolve_maker_admin_from_market_v8(
+        root,
+        catalog,
+        &market_config.call_cap,
+        listing_parent,
+        receiving,
+        recipient,
+        ctx,
+    )
 }
 
 public fun compile_new_output_request<PaymentCoin, OutputRegistry: key>(

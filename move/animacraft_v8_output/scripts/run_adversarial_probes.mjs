@@ -25,6 +25,30 @@ for (const [name, expected] of [
   ]],
   ['adversarial_bypass', ['mutate_base_counter', 'restricted visibility']],
   ['adversarial_replay', ['witness', 'authorization', 'previously moved']],
+  ['adversarial_market_ticket_abilities', [
+    'SoulMarketCustodyTicketV8',
+    "does not have the ability 'store'",
+    "does not have the ability 'copy'",
+    "does not have the ability 'drop'",
+  ]],
+  ['adversarial_market_ticket_forge', [
+    'restricted visibility',
+    'SoulMarketCustodyBindingV8',
+    'SoulMarketCustodyTicketV8',
+    'can only be instantiated within its defining module',
+  ]],
+  ['adversarial_market_external_receive', [
+    'invalid private transfer call',
+    'sui::transfer::receive',
+    'CompleteOutputV8',
+    'CompleteReceiptV8',
+    'CanonicalSoulV8',
+  ]],
+  ['adversarial_market_ticket_replay', [
+    'ticket',
+    'previously moved',
+    'Invalid usage of previously moved variable',
+  ]],
 ]) {
   try {
     execFileSync('sui', ['move', 'build', '--force', '--warnings-are-errors', '--path',

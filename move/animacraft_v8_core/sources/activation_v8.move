@@ -1171,6 +1171,12 @@ public fun destroy_output_readiness_for_testing(readiness: OutputReadinessV8) {
 }
 
 #[test_only]
+public fun destroy_physical_readiness_for_testing(readiness: PhysicalReadinessV8) {
+    let PhysicalReadinessV8 { root_id: _, catalog_id: _, call_cap_set_commitment: _,
+        registry_id: _, companion_commitment: _, commitment: _ } = readiness;
+}
+
+#[test_only]
 public fun destroy_market_readiness_for_testing(readiness: MarketReadinessV8) {
     let MarketReadinessV8 { root_id: _, catalog_id: _, call_cap_set_commitment: _,
         market_registry_id: _, market_treasury_id: _, companion_commitment: _,

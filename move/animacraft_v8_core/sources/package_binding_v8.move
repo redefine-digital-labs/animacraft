@@ -1203,6 +1203,49 @@ public fun product_release_catalog_with_market_for_testing(
     catalog_from_binding_for_testing(config, binding, ctx)
 }
 
+/// Full integration fixture with real Output, Physical, Market, and Release
+/// TypeOrigins. Seal/Runtime remain isolated synthetic roles because Market
+/// custody does not call their package ABIs.
+#[test_only]
+public fun product_release_catalog_for_market_integration_testing<
+    OutputOriginalMarker,
+    OutputCallableMarker,
+    PhysicalOriginalMarker,
+    PhysicalCallableMarker,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    ReleaseOriginalMarker,
+    ReleaseCallableMarker,
+>(
+    config: &ProtocolConfigV8,
+    core_original_package_id: address,
+    core_callable_package_id: address,
+    ctx: &mut TxContext,
+): ProductReleaseCatalogV8 {
+    let binding = new_product_release_binding(
+        new_exact_package_binding_for_testing(
+            core_original_package_id,
+            core_callable_package_id,
+            1,
+        ),
+        new_exact_package_binding_for_testing(@0x11, @0x21, 4),
+        new_exact_package_binding_for_testing(@0x12, @0x22, 7),
+        new_exact_package_binding<OutputOriginalMarker, OutputCallableMarker>(
+            new_package_commitments_v8(test_hash(10), test_hash(11), test_hash(12)),
+        ),
+        new_exact_package_binding<PhysicalOriginalMarker, PhysicalCallableMarker>(
+            new_package_commitments_v8(test_hash(13), test_hash(14), test_hash(15)),
+        ),
+        new_exact_package_binding<MarketOriginalMarker, MarketCallableMarker>(
+            new_package_commitments_v8(test_hash(16), test_hash(17), test_hash(18)),
+        ),
+        new_exact_package_binding<ReleaseOriginalMarker, ReleaseCallableMarker>(
+            new_package_commitments_v8(test_hash(19), test_hash(20), test_hash(21)),
+        ),
+    );
+    catalog_from_binding_for_testing(config, binding, ctx)
+}
+
 #[test_only]
 fun catalog_from_binding_for_testing(
     config: &ProtocolConfigV8,

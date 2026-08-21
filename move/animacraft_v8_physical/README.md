@@ -48,21 +48,32 @@ so PAUSED or ARCHIVED source lifecycle cannot trap an issued asset; every new
 issuance path still requires an ACTIVE Root and, for Pack assets, an ACTIVE
 admitted Release.
 
-## Typed Market dependency
+## Typed Market custody
 
-Core already defines the Market role and concrete Market call-cap slot, but
-this repository does not yet contain the exact production Market package
-marker lineage or a typed Market-to-Physical escrow handshake. Physical
-therefore exposes no escrow hook and does not pretend that a recipient address
-is a Market authorization.
+Physical exposes Market custody and settlement without importing the Market
+package. Every hook is gated by Core's exact `MarketRoleV8` call cap, the
+catalog-certified Market original/callable type origins, the Root's exact
+Market registry and treasury IDs, and the current product/call-cap bindings.
+The caller supplies the concrete Market marker and object types, but their
+certified origins and object IDs are re-derived and checked on chain.
 
-The minimal additive dependency is a published Market package with its real
-original/callable markers and a transaction-local, no-ability escrow
-request/return proof gated by Core's concrete Market call cap. The proof must
-bind the exact Market registry, listing/order, asset ID and ownership epoch,
-seller, escrow state transition, and intended custody transition. Once that
-ABI exists, Physical can add cap-gated deposit/return/sale hooks that consume
-the key-only asset. No placeholder marker or pure-ID hook is included here.
+Custody transfers the exact key-only asset directly under the listing UID and
+returns a no-copy/no-drop/no-store ticket. Its readback binding records the
+listing, both registry IDs, Market treasury, Root/version/content, asset,
+holder/epoch, transferable flag, provenance, and the complete typed source and
+source-treasury identity. Base and Pack enter through separate typed hooks:
+Base binds the exact Root MakerTreasury, while Pack binds the exact
+PackTreasury from the registry policy. No caller-provided ID, hash, source-kind
+flag, or transferability flag is authority.
+
+Return receives the exact listed child and restores the stored seller without
+changing logical holder, epoch, source, or provenance. It remains available
+while the Root is PAUSED/ARCHIVED or the protocol is disabled or drifted, so
+custody cannot trap an asset. Purchase instead requires the complete
+ACTIVE/current chain, rejects self-purchase, advances ownership epoch exactly
+once, changes only the holder, and transfers the asset to the transaction
+sender. The one-use `Receiving`, exact listing parent, bound asset tuple, and
+linear ticket prevent substitution and replay.
 
 ## Validation
 

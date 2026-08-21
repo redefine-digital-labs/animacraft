@@ -12,6 +12,7 @@ use animacraft_v8_core::base_registry_v8::{
 use animacraft_v8_core::maker_v8::{Self as maker, MakerAdminCapV8, MakerRootV8};
 use animacraft_v8_core::package_binding_v8::{
     Self as binding,
+    MarketRoleV8,
     PackageCallCapV8,
     PhysicalRoleV8,
     ProductReleaseCatalogV8,
@@ -53,13 +54,20 @@ use std::string::String;
 use sui::coin::{Self as coin, Coin};
 use sui::event;
 use sui::table::{Self as table, Table};
+use sui::transfer::Receiving;
 
 #[test_only]
 use animacraft_v8_core::core_v8 as core;
 #[test_only]
 use animacraft_v8_core::activation_v8;
 #[test_only]
-use animacraft_v8_core::protocol_config_v8::ProtocolAdminCapV8;
+use animacraft_v8_core::protocol_config_v8::{CorePackageMarkerV8, ProtocolAdminCapV8};
+#[test_only]
+use animacraft_v8_output::output_v8::{OutputCallableMarkerV8, OutputOriginalMarkerV8};
+#[test_only]
+use animacraft_v8_runtime::runtime_v8::{RuntimeCallableMarkerV8, RuntimeOriginalMarkerV8};
+#[test_only]
+use animacraft_v8_seal::seal_v8::{SealCallableMarkerV8, SealOriginalMarkerV8};
 
 const VERSION: u64 = 8;
 const HASH_LENGTH: u64 = 32;
@@ -76,6 +84,10 @@ const ISSUE_PROOF_MATERIALIZE: u8 = 2;
 
 const PROOF_NONE: u8 = 0;
 const PROOF_CANONICAL_SOUL: u8 = 2;
+
+const MARKET_CUSTODY: u8 = 0;
+const MARKET_RETURN: u8 = 1;
+const MARKET_PURCHASE: u8 = 2;
 
 const EInvalidConfig: u64 = 0;
 const EInvalidBinding: u64 = 1;
@@ -96,6 +108,9 @@ const ENotTransferable: u64 = 16;
 const EInvalidTreasury: u64 = 17;
 const EWrongIssuance: u64 = 18;
 const EInvalidRecipient: u64 = 19;
+const EInvalidMarketAuthority: u64 = 20;
+const EInvalidMarketCustody: u64 = 21;
+const EOwnershipEpochOverflow: u64 = 22;
 
 public struct PhysicalOriginalMarkerV8 has drop {}
 public struct PhysicalCallableMarkerV8 has drop {}
@@ -219,6 +234,43 @@ public struct PhysicalAssetV8 has key {
     authorization_key: vector<u8>,
     proof: Option<PhysicalProofProvenanceV8>,
     provenance_commitment: vector<u8>,
+}
+
+/// Persistent readback derived only from the live custody inputs. Market may
+/// store this value in its listing, but it is data rather than authority: each
+/// release hook also requires Market's exact private call cap, the exact live
+/// Market objects, the listing UID, and the real `Receiving<PhysicalAssetV8>`.
+public struct PhysicalMarketCustodyBindingV8 has copy, drop, store {
+    version: u64,
+    catalog_id: ID,
+    product_binding_commitment: vector<u8>,
+    call_cap_set_commitment: vector<u8>,
+    market_authority_id: ID,
+    market_registry_id: ID,
+    market_treasury_id: ID,
+    listing_id: ID,
+    physical_package_config_id: ID,
+    physical_registry_id: ID,
+    root_id: ID,
+    maker_version: u64,
+    root_content_commitment: vector<u8>,
+    asset_id: ID,
+    asset_content_commitment: vector<u8>,
+    source_kind: u8,
+    source_id: ID,
+    source_semantic_id: String,
+    source_content_commitment: vector<u8>,
+    source_treasury_id: ID,
+    holder: address,
+    ownership_epoch: u64,
+    transferable: bool,
+    provenance_commitment: vector<u8>,
+}
+
+/// Ephemeral custody acknowledgement. Deliberately has no copy/drop/store/key
+/// ability, so Market must consume it in the listing-open transaction.
+public struct PhysicalMarketCustodyTicketV8 {
+    binding: PhysicalMarketCustodyBindingV8,
 }
 
 public struct PhysicalSelectionEvidenceV8 has copy, drop {
@@ -521,6 +573,19 @@ public struct PhysicalAssetConsumedV8 has copy, drop {
     source_id: ID,
     serial: u64,
     holder: address,
+    provenance_commitment: vector<u8>,
+}
+
+public struct PhysicalMarketCustodyTransitionV8 has copy, drop {
+    action: u8,
+    listing_id: ID,
+    asset_id: ID,
+    source_kind: u8,
+    source_treasury_id: ID,
+    previous_holder: address,
+    holder: address,
+    previous_ownership_epoch: u64,
+    ownership_epoch: u64,
     provenance_commitment: vector<u8>,
 }
 
@@ -1498,6 +1563,442 @@ public fun materialize_pack_style_v8<PaymentCoin>(
     )
 }
 
+/// Custodies one exact Base-sourced asset under the listing UID. All binding
+/// fields are derived from live objects and the asset; no caller-provided ID,
+/// hash, source discriminator, holder, epoch, or transferable flag is accepted.
+public fun custody_base_physical_for_market_v8<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    physical_registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    maker_treasury: &MakerTreasuryV8<PaymentCoin>,
+    asset: PhysicalAssetV8,
+    ctx: &TxContext,
+): PhysicalMarketCustodyTicketV8 {
+    assert_market_custody_current<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(
+        physical_registry,
+        root,
+        protocol_config,
+        catalog,
+        physical_config,
+        market_call_cap,
+        market_registry,
+        market_treasury,
+    );
+    core_treasury::assert_maker_treasury_v8(root, maker_treasury);
+    assert_asset_holder(&asset, ctx);
+    assert!(asset.transferable, ENotTransferable);
+    assert_market_asset_registry_binding(physical_registry, root, &asset);
+    let source_treasury_id = core_treasury::maker_treasury_id_v8(maker_treasury);
+    assert_base_market_source(physical_registry, root, &asset, source_treasury_id);
+    custody_physical_for_market(
+        physical_registry,
+        catalog,
+        physical_config,
+        market_call_cap,
+        market_registry,
+        market_treasury,
+        listing_parent,
+        asset,
+        source_treasury_id,
+    )
+}
+
+/// Typed Pack branch. The treasury ID is read from the exact
+/// `PackTreasuryV8<PaymentCoin>` object and must equal the immutable ID carried
+/// by the registry policy and asset.
+public fun custody_pack_physical_for_market_v8<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    physical_registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    pack_treasury: &PackTreasuryV8<PaymentCoin>,
+    asset: PhysicalAssetV8,
+    ctx: &TxContext,
+): PhysicalMarketCustodyTicketV8 {
+    assert_market_custody_current<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(
+        physical_registry,
+        root,
+        protocol_config,
+        catalog,
+        physical_config,
+        market_call_cap,
+        market_registry,
+        market_treasury,
+    );
+    assert_asset_holder(&asset, ctx);
+    assert!(asset.transferable, ENotTransferable);
+    assert_market_asset_registry_binding(physical_registry, root, &asset);
+    let source_treasury_id = object::id(pack_treasury);
+    assert_pack_market_source(&asset, source_treasury_id);
+    custody_physical_for_market(
+        physical_registry,
+        catalog,
+        physical_config,
+        market_call_cap,
+        market_registry,
+        market_treasury,
+        listing_parent,
+        asset,
+        source_treasury_id,
+    )
+}
+
+/// Consumes the no-ability ticket in the listing-open transaction. The
+/// returned binding is intentionally storable readback and is revalidated
+/// against live authority, parent, Receiving, registry, and asset on release.
+public fun consume_physical_market_custody_ticket_v8(
+    ticket: PhysicalMarketCustodyTicketV8,
+): PhysicalMarketCustodyBindingV8 {
+    let PhysicalMarketCustodyTicketV8 { binding } = ticket;
+    binding
+}
+
+public fun borrow_physical_market_custody_ticket_binding_v8(
+    ticket: &PhysicalMarketCustodyTicketV8,
+): &PhysicalMarketCustodyBindingV8 { &ticket.binding }
+
+/// Cancel/recover hook. Deliberately omits protocol/current/lifecycle checks:
+/// PAUSED/ARCHIVED Root state, protocol disablement, or catalog snapshot drift
+/// cannot trap the seller's object. Logical holder/epoch/provenance are not
+/// mutated; the exact stored holder is the only return address.
+public fun return_physical_from_market_v8<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    physical_registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    receiving: Receiving<PhysicalAssetV8>,
+    custody: &PhysicalMarketCustodyBindingV8,
+) {
+    assert_market_authority<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(
+        root,
+        catalog,
+        market_call_cap,
+        market_registry,
+        market_treasury,
+    );
+    assert_market_custody_live_binding(
+        physical_registry,
+        root,
+        catalog,
+        market_call_cap,
+        market_registry,
+        market_treasury,
+        listing_parent,
+        custody,
+    );
+    let asset = receive_and_assert_market_asset(
+        physical_registry,
+        root,
+        listing_parent,
+        receiving,
+        custody,
+    );
+    let asset_id = object::id(&asset);
+    let holder = asset.holder;
+    let ownership_epoch = asset.ownership_epoch;
+    let source_kind = asset.source_kind;
+    let source_treasury_id = custody.source_treasury_id;
+    let provenance_commitment = asset.provenance_commitment;
+    event::emit(PhysicalMarketCustodyTransitionV8 {
+        action: MARKET_RETURN,
+        listing_id: custody.listing_id,
+        asset_id,
+        source_kind,
+        source_treasury_id,
+        previous_holder: holder,
+        holder,
+        previous_ownership_epoch: ownership_epoch,
+        ownership_epoch,
+        provenance_commitment,
+    });
+    transfer::transfer(asset, holder)
+}
+
+/// ACTIVE/current Base purchase hook. Buyer identity is the transaction
+/// sender, not a caller-selected address. Only holder and epoch change.
+public fun purchase_base_physical_from_market_v8<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    physical_registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    maker_treasury: &MakerTreasuryV8<PaymentCoin>,
+    receiving: Receiving<PhysicalAssetV8>,
+    custody: &PhysicalMarketCustodyBindingV8,
+    ctx: &TxContext,
+) {
+    assert_market_custody_current<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(
+        physical_registry,
+        root,
+        protocol_config,
+        catalog,
+        physical_config,
+        market_call_cap,
+        market_registry,
+        market_treasury,
+    );
+    core_treasury::assert_maker_treasury_v8(root, maker_treasury);
+    assert_market_custody_live_binding(
+        physical_registry,
+        root,
+        catalog,
+        market_call_cap,
+        market_registry,
+        market_treasury,
+        listing_parent,
+        custody,
+    );
+    let source_treasury_id = core_treasury::maker_treasury_id_v8(maker_treasury);
+    assert!(custody.source_kind == SOURCE_BASE_STYLE, EInvalidMarketCustody);
+    assert!(custody.source_treasury_id == source_treasury_id, EInvalidTreasury);
+    let asset = receive_and_assert_market_asset(
+        physical_registry,
+        root,
+        listing_parent,
+        receiving,
+        custody,
+    );
+    assert_base_market_source(physical_registry, root, &asset, source_treasury_id);
+    purchase_received_market_asset(asset, custody, ctx)
+}
+
+/// ACTIVE/current Pack purchase hook, statically distinct from the Base path.
+public fun purchase_pack_physical_from_market_v8<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    physical_registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    pack_treasury: &PackTreasuryV8<PaymentCoin>,
+    receiving: Receiving<PhysicalAssetV8>,
+    custody: &PhysicalMarketCustodyBindingV8,
+    ctx: &TxContext,
+) {
+    assert_market_custody_current<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(
+        physical_registry,
+        root,
+        protocol_config,
+        catalog,
+        physical_config,
+        market_call_cap,
+        market_registry,
+        market_treasury,
+    );
+    assert_market_custody_live_binding(
+        physical_registry,
+        root,
+        catalog,
+        market_call_cap,
+        market_registry,
+        market_treasury,
+        listing_parent,
+        custody,
+    );
+    let source_treasury_id = object::id(pack_treasury);
+    assert!(custody.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
+    assert!(custody.source_treasury_id == source_treasury_id, EInvalidTreasury);
+    let asset = receive_and_assert_market_asset(
+        physical_registry,
+        root,
+        listing_parent,
+        receiving,
+        custody,
+    );
+    assert_pack_market_source(&asset, source_treasury_id);
+    purchase_received_market_asset(asset, custody, ctx)
+}
+
+#[allow(unused_mut_parameter)]
+fun custody_physical_for_market<MarketRegistry: key, MarketTreasury: key>(
+    physical_registry: &PhysicalRegistryV8,
+    catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &mut UID,
+    asset: PhysicalAssetV8,
+    source_treasury_id: ID,
+): PhysicalMarketCustodyTicketV8 {
+    let custody = new_physical_market_custody_binding(
+        physical_registry,
+        catalog,
+        physical_config,
+        market_call_cap,
+        market_registry,
+        market_treasury,
+        listing_parent,
+        &asset,
+        source_treasury_id,
+    );
+    let listing_id = custody.listing_id;
+    event::emit(PhysicalMarketCustodyTransitionV8 {
+        action: MARKET_CUSTODY,
+        listing_id,
+        asset_id: custody.asset_id,
+        source_kind: custody.source_kind,
+        source_treasury_id,
+        previous_holder: custody.holder,
+        holder: custody.holder,
+        previous_ownership_epoch: custody.ownership_epoch,
+        ownership_epoch: custody.ownership_epoch,
+        provenance_commitment: custody.provenance_commitment,
+    });
+    transfer::transfer(asset, listing_id.to_address());
+    PhysicalMarketCustodyTicketV8 { binding: custody }
+}
+
+fun new_physical_market_custody_binding<MarketRegistry: key, MarketTreasury: key>(
+    physical_registry: &PhysicalRegistryV8,
+    catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &UID,
+    asset: &PhysicalAssetV8,
+    source_treasury_id: ID,
+): PhysicalMarketCustodyBindingV8 {
+    let product = binding::catalog_binding_v8(catalog);
+    PhysicalMarketCustodyBindingV8 {
+        version: VERSION,
+        catalog_id: binding::catalog_id_v8(catalog),
+        product_binding_commitment: *binding::product_binding_commitment_v8(product),
+        call_cap_set_commitment: *binding::call_cap_set_commitment_v8(
+            binding::catalog_call_cap_set_v8(catalog),
+        ),
+        market_authority_id: binding::call_cap_authority_id_v8(market_call_cap),
+        market_registry_id: object::id(market_registry),
+        market_treasury_id: object::id(market_treasury),
+        listing_id: object::uid_to_inner(listing_parent),
+        physical_package_config_id: object::id(physical_config),
+        physical_registry_id: object::id(physical_registry),
+        root_id: asset.root_id,
+        maker_version: asset.maker_version,
+        root_content_commitment: asset.root_content_commitment,
+        asset_id: object::id(asset),
+        asset_content_commitment: asset.asset_content_commitment,
+        source_kind: asset.source_kind,
+        source_id: asset.source_id,
+        source_semantic_id: asset.source_semantic_id,
+        source_content_commitment: asset.source_content_commitment,
+        source_treasury_id,
+        holder: asset.holder,
+        ownership_epoch: asset.ownership_epoch,
+        transferable: asset.transferable,
+        provenance_commitment: asset.provenance_commitment,
+    }
+}
+
+fun purchase_received_market_asset(
+    mut asset: PhysicalAssetV8,
+    custody: &PhysicalMarketCustodyBindingV8,
+    ctx: &TxContext,
+) {
+    let buyer = ctx.sender();
+    assert!(buyer != @0x0 && buyer != asset.holder, EInvalidRecipient);
+    assert!(asset.ownership_epoch < 0xffffffffffffffff, EOwnershipEpochOverflow);
+    let previous_holder = asset.holder;
+    let previous_ownership_epoch = asset.ownership_epoch;
+    asset.holder = buyer;
+    asset.ownership_epoch = previous_ownership_epoch + 1;
+    event::emit(PhysicalMarketCustodyTransitionV8 {
+        action: MARKET_PURCHASE,
+        listing_id: custody.listing_id,
+        asset_id: object::id(&asset),
+        source_kind: asset.source_kind,
+        source_treasury_id: custody.source_treasury_id,
+        previous_holder,
+        holder: buyer,
+        previous_ownership_epoch,
+        ownership_epoch: asset.ownership_epoch,
+        provenance_commitment: asset.provenance_commitment,
+    });
+    transfer::transfer(asset, buyer)
+}
+
 public fun transfer_new_physical_asset_to_holder_v8(asset: PhysicalAssetV8) {
     let holder = asset.holder;
     transfer::transfer(asset, holder)
@@ -1629,6 +2130,316 @@ fun assert_active_registry<PaymentCoin>(
         maker::capability_physical_registry_id_v8(capability) == object::id(registry),
         EInvalidBinding,
     );
+}
+
+fun assert_market_custody_current<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    physical_registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    physical_config: &PhysicalPackageConfigV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+) {
+    binding::assert_catalog_current_v8(protocol_config, catalog);
+    maker::assert_current_protocol_config_v8(root, protocol_config);
+    assert_active_registry(physical_registry, root, catalog, physical_config);
+    assert_market_authority<
+        PaymentCoin,
+        MarketOriginalMarker,
+        MarketCallableMarker,
+        MarketRegistry,
+        MarketTreasury,
+    >(root, catalog, market_call_cap, market_registry, market_treasury);
+    assert!(
+        physical_registry.product_binding_commitment
+            == *binding::product_binding_commitment_v8(
+                maker::root_product_release_binding_v8(root),
+            ),
+        EInvalidMarketAuthority,
+    );
+    assert!(
+        physical_registry.call_cap_set_commitment
+            == *binding::call_cap_set_commitment_v8(
+                maker::root_product_release_call_cap_set_v8(root),
+            ),
+        EInvalidMarketAuthority,
+    );
+}
+
+fun assert_market_authority<
+    PaymentCoin,
+    MarketOriginalMarker,
+    MarketCallableMarker,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+) {
+    binding::assert_market_call_cap_v8(catalog, market_call_cap);
+    let catalog_product = binding::catalog_binding_v8(catalog);
+    let market_binding = binding::market_binding_v8(catalog_product);
+    binding::assert_type_origins_v8<MarketOriginalMarker, MarketCallableMarker>(
+        market_binding,
+    );
+    binding::assert_type_original_v8<MarketRegistry>(market_binding);
+    binding::assert_type_original_v8<MarketTreasury>(market_binding);
+    assert!(
+        maker::root_product_release_catalog_id_v8(root) == binding::catalog_id_v8(catalog),
+        EInvalidMarketAuthority,
+    );
+    assert!(
+        binding::product_binding_commitment_v8(
+            maker::root_product_release_binding_v8(root),
+        ) == binding::product_binding_commitment_v8(catalog_product),
+        EInvalidMarketAuthority,
+    );
+    binding::assert_same_call_cap_set_v8(
+        maker::root_product_release_call_cap_set_v8(root),
+        binding::catalog_call_cap_set_v8(catalog),
+    );
+    let capability = maker::root_capability_registry_binding_v8(root);
+    assert!(
+        maker::capability_catalog_id_v8(capability) == binding::catalog_id_v8(catalog),
+        EInvalidMarketAuthority,
+    );
+    binding::assert_same_call_cap_set_v8(
+        maker::capability_call_cap_set_v8(capability),
+        binding::catalog_call_cap_set_v8(catalog),
+    );
+    assert!(
+        maker::capability_market_registry_id_v8(capability) == object::id(market_registry),
+        EInvalidMarketAuthority,
+    );
+    assert!(
+        maker::capability_market_treasury_id_v8(capability) == object::id(market_treasury),
+        EInvalidMarketAuthority,
+    );
+}
+
+fun assert_market_custody_live_binding<
+    PaymentCoin,
+    MarketRegistry: key,
+    MarketTreasury: key,
+>(
+    physical_registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistry,
+    market_treasury: &MarketTreasury,
+    listing_parent: &UID,
+    custody: &PhysicalMarketCustodyBindingV8,
+) {
+    let product = binding::catalog_binding_v8(catalog);
+    let call_cap_set = binding::catalog_call_cap_set_v8(catalog);
+    let capability = maker::root_capability_registry_binding_v8(root);
+    assert!(custody.version == VERSION, EInvalidMarketCustody);
+    assert!(custody.catalog_id == binding::catalog_id_v8(catalog), EInvalidMarketCustody);
+    assert!(
+        &custody.product_binding_commitment
+            == binding::product_binding_commitment_v8(product),
+        EInvalidMarketCustody,
+    );
+    assert!(
+        &custody.call_cap_set_commitment
+            == binding::call_cap_set_commitment_v8(call_cap_set),
+        EInvalidMarketCustody,
+    );
+    assert!(
+        custody.market_authority_id == binding::call_cap_authority_id_v8(market_call_cap),
+        EInvalidMarketCustody,
+    );
+    assert!(custody.market_registry_id == object::id(market_registry), EInvalidMarketCustody);
+    assert!(custody.market_treasury_id == object::id(market_treasury), EInvalidMarketCustody);
+    assert!(custody.listing_id == object::uid_to_inner(listing_parent), EInvalidMarketCustody);
+    assert!(
+        custody.physical_package_config_id == physical_registry.package_config_id,
+        EInvalidMarketCustody,
+    );
+    assert!(
+        custody.physical_registry_id == object::id(physical_registry),
+        EInvalidMarketCustody,
+    );
+    assert!(
+        maker::capability_physical_registry_id_v8(capability) == object::id(physical_registry),
+        EInvalidMarketAuthority,
+    );
+    assert!(custody.root_id == maker::root_id_v8(root), EInvalidMarketCustody);
+    assert!(
+        custody.maker_version == maker::root_maker_version_v8(root),
+        EInvalidMarketCustody,
+    );
+    assert!(
+        &custody.root_content_commitment == maker::root_content_commitment_v8(root),
+        EInvalidMarketCustody,
+    );
+    assert!(custody.transferable, ENotTransferable);
+    assert_hash(&custody.asset_content_commitment);
+    assert_hash(&custody.source_content_commitment);
+    assert_hash(&custody.provenance_commitment);
+}
+
+fun receive_and_assert_market_asset<PaymentCoin>(
+    physical_registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    listing_parent: &mut UID,
+    receiving: Receiving<PhysicalAssetV8>,
+    custody: &PhysicalMarketCustodyBindingV8,
+): PhysicalAssetV8 {
+    assert!(
+        transfer::receiving_object_id(&receiving) == custody.asset_id,
+        EInvalidMarketCustody,
+    );
+    let asset = transfer::receive(listing_parent, receiving);
+    assert_market_asset_registry_binding(physical_registry, root, &asset);
+    assert_market_custody_asset(custody, root, &asset);
+    asset
+}
+
+fun assert_market_custody_asset<PaymentCoin>(
+    custody: &PhysicalMarketCustodyBindingV8,
+    root: &MakerRootV8<PaymentCoin>,
+    asset: &PhysicalAssetV8,
+) {
+    assert!(custody.asset_id == object::id(asset), EInvalidMarketCustody);
+    assert!(custody.physical_registry_id == asset.registry_id, EInvalidMarketCustody);
+    assert!(custody.root_id == asset.root_id, EInvalidMarketCustody);
+    assert!(custody.maker_version == asset.maker_version, EInvalidMarketCustody);
+    assert!(
+        custody.root_content_commitment == asset.root_content_commitment,
+        EInvalidMarketCustody,
+    );
+    assert!(
+        custody.asset_content_commitment == asset.asset_content_commitment,
+        EInvalidMarketCustody,
+    );
+    assert!(custody.source_kind == asset.source_kind, EInvalidMarketCustody);
+    assert!(custody.source_id == asset.source_id, EInvalidMarketCustody);
+    assert!(
+        custody.source_semantic_id == asset.source_semantic_id,
+        EInvalidMarketCustody,
+    );
+    assert!(
+        custody.source_content_commitment == asset.source_content_commitment,
+        EInvalidMarketCustody,
+    );
+    assert!(custody.holder == asset.holder, EWrongHolder);
+    assert!(custody.ownership_epoch == asset.ownership_epoch, EStaleRevision);
+    assert!(custody.transferable == asset.transferable, ENotTransferable);
+    assert!(custody.transferable, ENotTransferable);
+    assert!(
+        custody.provenance_commitment == asset.provenance_commitment,
+        EInvalidCommitment,
+    );
+    if (asset.source_kind == SOURCE_BASE_STYLE) {
+        assert!(asset.source_treasury_id.is_none(), EInvalidTreasury);
+        assert!(
+            custody.source_treasury_id == maker::root_maker_treasury_id_v8(root),
+            EInvalidTreasury,
+        );
+    } else {
+        assert!(asset.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
+        assert!(asset.source_treasury_id.is_some(), EInvalidTreasury);
+        assert!(
+            custody.source_treasury_id == *asset.source_treasury_id.borrow(),
+            EInvalidTreasury,
+        );
+    };
+}
+
+fun assert_market_asset_registry_binding<PaymentCoin>(
+    physical_registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    asset: &PhysicalAssetV8,
+) {
+    assert!(asset.version == VERSION, EInvalidBinding);
+    assert!(asset.registry_id == object::id(physical_registry), EInvalidBinding);
+    maker::assert_root_identity_v8(
+        root,
+        asset.root_id,
+        asset.maker_version,
+        &asset.root_content_commitment,
+    );
+    assert!(physical_registry.root_id == asset.root_id, EInvalidBinding);
+    assert!(physical_registry.maker_version == asset.maker_version, EInvalidBinding);
+    assert!(
+        physical_registry.root_content_commitment == asset.root_content_commitment,
+        EInvalidBinding,
+    );
+    let key = PhysicalPolicyKeyV8 {
+        source_kind: asset.source_kind,
+        source_id: asset.source_id,
+        part_key: asset.part_key,
+        item_key: asset.item_key,
+        style_key: asset.style_key,
+    };
+    let policy = if (asset.source_kind == SOURCE_BASE_STYLE) {
+        physical_registry.base_policies.borrow(key)
+    } else {
+        assert!(asset.source_kind == SOURCE_PACK_STYLE, EInvalidBinding);
+        physical_registry.pack_policies.borrow(key)
+    };
+    assert!(policy.source_kind == asset.source_kind, EInvalidBinding);
+    assert!(policy.source_id == asset.source_id, EInvalidBinding);
+    assert!(policy.source_semantic_id == asset.source_semantic_id, EInvalidBinding);
+    assert!(
+        policy.source_content_commitment == asset.source_content_commitment,
+        EInvalidBinding,
+    );
+    assert!(policy.source_treasury_id == asset.source_treasury_id, EInvalidTreasury);
+    assert!(policy.pack_registry_id == asset.pack_registry_id, EInvalidBinding);
+    assert!(policy.pack_registry_revision == asset.pack_registry_revision, EInvalidBinding);
+    assert!(policy.row_commitment == asset.policy_row_commitment, EInvalidBinding);
+    assert!(
+        policy.style_payload_commitment == asset.asset_content_commitment,
+        EInvalidBinding,
+    );
+    assert!(policy.transferable == asset.transferable, EInvalidBinding);
+    assert_hash(&asset.provenance_commitment);
+}
+
+fun assert_base_market_source<PaymentCoin>(
+    physical_registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    asset: &PhysicalAssetV8,
+    source_treasury_id: ID,
+) {
+    assert!(asset.source_kind == SOURCE_BASE_STYLE, EInvalidMarketCustody);
+    assert!(asset.source_id == physical_registry.base_registry_id, EInvalidBinding);
+    assert!(asset.source_semantic_id == b"".to_string(), EInvalidBinding);
+    assert!(
+        &asset.source_content_commitment == maker::root_content_commitment_v8(root),
+        EInvalidCommitment,
+    );
+    assert!(asset.source_treasury_id.is_none(), EInvalidTreasury);
+    assert!(source_treasury_id == maker::root_maker_treasury_id_v8(root), EInvalidTreasury);
+    assert!(asset.pack_registry_id.is_none(), EInvalidBinding);
+    assert!(asset.registered_pack_owner.is_none(), EInvalidBinding);
+    assert!(asset.registered_pack_admin_cap_id.is_none(), EInvalidBinding);
+}
+
+fun assert_pack_market_source(
+    asset: &PhysicalAssetV8,
+    source_treasury_id: ID,
+) {
+    assert!(asset.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
+    assert!(asset.source_treasury_id.is_some(), EInvalidTreasury);
+    assert!(*asset.source_treasury_id.borrow() == source_treasury_id, EInvalidTreasury);
+    assert!(asset.pack_registry_id.is_some(), EInvalidBinding);
+    assert!(asset.registered_pack_owner.is_some(), EInvalidBinding);
+    assert!(asset.registered_pack_admin_cap_id.is_some(), EInvalidBinding);
 }
 
 fun consume_runtime_selection(
@@ -2743,8 +3554,198 @@ public fun asset_proof_v8(asset: &PhysicalAssetV8): &Option<PhysicalProofProvena
     &asset.proof
 }
 
+public fun physical_market_custody_version_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): u64 { custody.version }
+public fun physical_market_custody_catalog_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): ID { custody.catalog_id }
+public fun physical_market_custody_product_binding_commitment_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): &vector<u8> { &custody.product_binding_commitment }
+public fun physical_market_custody_call_cap_set_commitment_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): &vector<u8> { &custody.call_cap_set_commitment }
+public fun physical_market_custody_market_authority_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): ID { custody.market_authority_id }
+public fun physical_market_custody_market_registry_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): ID { custody.market_registry_id }
+public fun physical_market_custody_market_treasury_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): ID { custody.market_treasury_id }
+public fun physical_market_custody_listing_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): ID { custody.listing_id }
+public fun physical_market_custody_physical_package_config_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): ID { custody.physical_package_config_id }
+public fun physical_market_custody_physical_registry_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): ID { custody.physical_registry_id }
+public fun physical_market_custody_root_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): ID { custody.root_id }
+public fun physical_market_custody_maker_version_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): u64 { custody.maker_version }
+public fun physical_market_custody_root_content_commitment_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): &vector<u8> { &custody.root_content_commitment }
+public fun physical_market_custody_asset_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): ID { custody.asset_id }
+public fun physical_market_custody_asset_content_commitment_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): &vector<u8> { &custody.asset_content_commitment }
+public fun physical_market_custody_source_kind_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): u8 { custody.source_kind }
+public fun physical_market_custody_source_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): ID { custody.source_id }
+public fun physical_market_custody_source_semantic_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): &String { &custody.source_semantic_id }
+public fun physical_market_custody_source_content_commitment_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): &vector<u8> { &custody.source_content_commitment }
+public fun physical_market_custody_source_treasury_id_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): ID { custody.source_treasury_id }
+public fun physical_market_custody_holder_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): address { custody.holder }
+public fun physical_market_custody_ownership_epoch_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): u64 { custody.ownership_epoch }
+public fun physical_market_custody_transferable_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): bool { custody.transferable }
+public fun physical_market_custody_provenance_commitment_v8(
+    custody: &PhysicalMarketCustodyBindingV8,
+): &vector<u8> { &custody.provenance_commitment }
+
 #[test_only]
 public struct PhysicalTestRegistryV8 has key { id: UID }
+
+#[test_only]
+public struct PhysicalMarketTestListingV8 has key {
+    id: UID,
+    custody: Option<PhysicalMarketCustodyBindingV8>,
+}
+
+#[test_only]
+fun receive_test_market_asset(
+    listing: &mut PhysicalMarketTestListingV8,
+    receiving: Receiving<PhysicalAssetV8>,
+): (PhysicalAssetV8, PhysicalMarketCustodyBindingV8) {
+    assert!(listing.custody.is_some(), EInvalidMarketCustody);
+    let custody = listing.custody.extract();
+    assert!(custody.listing_id == object::id(listing), EInvalidMarketCustody);
+    assert!(
+        transfer::receiving_object_id(&receiving) == custody.asset_id,
+        EInvalidMarketCustody,
+    );
+    let asset = transfer::receive(&mut listing.id, receiving);
+    assert!(object::id(&asset) == custody.asset_id, EInvalidMarketCustody);
+    assert!(asset.registry_id == custody.physical_registry_id, EInvalidMarketCustody);
+    assert!(asset.root_id == custody.root_id, EInvalidMarketCustody);
+    assert!(asset.maker_version == custody.maker_version, EInvalidMarketCustody);
+    assert!(asset.root_content_commitment == custody.root_content_commitment,
+        EInvalidMarketCustody);
+    assert!(asset.asset_content_commitment == custody.asset_content_commitment,
+        EInvalidMarketCustody);
+    assert!(asset.source_kind == custody.source_kind, EInvalidMarketCustody);
+    assert!(asset.source_id == custody.source_id, EInvalidMarketCustody);
+    assert!(asset.source_semantic_id == custody.source_semantic_id,
+        EInvalidMarketCustody);
+    assert!(asset.source_content_commitment == custody.source_content_commitment,
+        EInvalidMarketCustody);
+    assert!(asset.holder == custody.holder, EWrongHolder);
+    assert!(asset.ownership_epoch == custody.ownership_epoch, EStaleRevision);
+    assert!(asset.transferable == custody.transferable && asset.transferable,
+        ENotTransferable);
+    assert!(asset.provenance_commitment == custody.provenance_commitment,
+        EInvalidCommitment);
+    if (asset.source_kind == SOURCE_BASE_STYLE) {
+        assert!(asset.source_treasury_id.is_none(), EInvalidTreasury);
+    } else {
+        assert!(asset.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
+        assert!(asset.source_treasury_id.is_some(), EInvalidTreasury);
+        assert!(*asset.source_treasury_id.borrow() == custody.source_treasury_id,
+            EInvalidTreasury);
+    };
+    (asset, custody)
+}
+
+#[test_only]
+fun return_test_market_asset(
+    mut listing: PhysicalMarketTestListingV8,
+    receiving: Receiving<PhysicalAssetV8>,
+) {
+    let (asset, _custody) = receive_test_market_asset(&mut listing, receiving);
+    let PhysicalMarketTestListingV8 { id: listing_id, custody: empty } = listing;
+    assert!(empty.is_none(), EInvalidMarketCustody);
+    listing_id.delete();
+    let holder = asset.holder;
+    transfer::transfer(asset, holder)
+}
+
+#[test_only]
+fun purchase_test_market_asset(
+    mut listing: PhysicalMarketTestListingV8,
+    receiving: Receiving<PhysicalAssetV8>,
+    ctx: &TxContext,
+) {
+    let (asset, custody) = receive_test_market_asset(&mut listing, receiving);
+    let PhysicalMarketTestListingV8 { id: listing_id, custody: empty } = listing;
+    assert!(empty.is_none(), EInvalidMarketCustody);
+    listing_id.delete();
+    purchase_received_market_asset(asset, &custody, ctx)
+}
+
+#[test_only]
+fun destroy_empty_test_market_listing(listing: PhysicalMarketTestListingV8) {
+    let PhysicalMarketTestListingV8 { id, custody } = listing;
+    assert!(custody.is_none(), EInvalidMarketCustody);
+    id.delete()
+}
+
+#[test_only]
+fun new_base_market_binding_fixture(
+    ctx: &mut TxContext,
+): (
+    ActivePhysicalFixtureV8,
+    PhysicalMarketTestListingV8,
+    PhysicalAssetV8,
+    PhysicalMarketCustodyBindingV8,
+) {
+    let mut fixture = new_active_physical_fixture(
+        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 4, true, ctx,
+    );
+    let asset = issue_transferable_base_physical_for_market_testing(
+        &mut fixture.physical_registry,
+        ctx,
+    );
+    let listing = PhysicalMarketTestListingV8 {
+        id: object::new(ctx),
+        custody: option::none(),
+    };
+    let custody = new_physical_market_custody_binding(
+        &fixture.physical_registry,
+        &fixture.catalog,
+        &fixture.physical_config,
+        &fixture.market_call_cap,
+        &fixture.market_registry,
+        &fixture.market_treasury,
+        &listing.id,
+        &asset,
+        core_treasury::maker_treasury_id_v8(&fixture.maker_treasury),
+    );
+    (fixture, listing, asset, custody)
+}
 
 #[test_only]
 public struct ActivePhysicalFixtureV8 {
@@ -2758,6 +3759,7 @@ public struct ActivePhysicalFixtureV8 {
     catalog: ProductReleaseCatalogV8,
     physical_config: PhysicalPackageConfigV8,
     release_call_cap: PackageCallCapV8<ReleaseRoleV8>,
+    market_call_cap: PackageCallCapV8<MarketRoleV8>,
     physical_registry: PhysicalRegistryV8,
     runtime_definitions: RuntimeDefinitionRegistryV8,
     pack_registry: PackRegistryV8,
@@ -2771,8 +3773,8 @@ public struct ActivePhysicalFixtureV8 {
     seal_registry: PhysicalTestRegistryV8,
     output_registry: PhysicalTestRegistryV8,
     soul_registry: PhysicalTestRegistryV8,
-    market_registry: PhysicalTestRegistryV8,
-    market_treasury: PhysicalTestRegistryV8,
+    market_registry: Coin<sui::sui::SUI>,
+    market_treasury: Coin<sui::sui::SUI>,
 }
 
 #[test_only]
@@ -2822,13 +3824,36 @@ fun new_active_physical_fixture(
         &root,
         &maker_admin,
     );
-    let mut catalog = binding::product_release_catalog_for_physical_testing<
+    let package_commitments = binding::new_package_commitments_v8(
+        test_hash(13),
+        test_hash(14),
+        test_hash(15),
+    );
+    let mut catalog = binding::certify_product_release_catalog_v8<
+        CorePackageMarkerV8,
+        CorePackageMarkerV8,
+        SealOriginalMarkerV8,
+        SealCallableMarkerV8,
+        RuntimeOriginalMarkerV8,
+        RuntimeCallableMarkerV8,
+        OutputOriginalMarkerV8,
+        OutputCallableMarkerV8,
         PhysicalOriginalMarkerV8,
         PhysicalCallableMarkerV8,
+        sui::sui::SUI,
+        sui::sui::SUI,
+        std::ascii::String,
+        std::ascii::String,
     >(
         &protocol_config,
-        maker::root_core_original_package_id_v8(&root).to_address(),
-        maker::root_core_callable_package_id_v8(&root).to_address(),
+        &protocol_admin,
+        package_commitments,
+        binding::new_package_commitments_v8(test_hash(16), test_hash(17), test_hash(18)),
+        binding::new_package_commitments_v8(test_hash(19), test_hash(20), test_hash(21)),
+        binding::new_package_commitments_v8(test_hash(22), test_hash(23), test_hash(24)),
+        binding::new_package_commitments_v8(test_hash(25), test_hash(26), test_hash(27)),
+        binding::new_package_commitments_v8(test_hash(28), test_hash(29), test_hash(30)),
+        binding::new_package_commitments_v8(test_hash(31), test_hash(32), test_hash(33)),
         ctx,
     );
     let release_catalog_witness = binding::release_catalog_witness_for_testing(&catalog);
@@ -2849,7 +3874,16 @@ fun new_active_physical_fixture(
         &protocol_admin,
         &mut catalog,
     );
-    let physical_config = new_config_for_testing(&catalog, physical_call_cap, ctx);
+    let market_call_cap = binding::take_market_call_cap_v8(
+        &protocol_config,
+        &protocol_admin,
+        &mut catalog,
+    );
+    let physical_config = new_physical_package_config_v8(
+        &catalog,
+        physical_call_cap,
+        ctx,
+    );
     let material = test_hash(94);
     let row = derive_base_policy_row_commitment_v8(
         &root,
@@ -2912,8 +3946,8 @@ fun new_active_physical_fixture(
     let seal_registry = PhysicalTestRegistryV8 { id: object::new(ctx) };
     let output_registry = PhysicalTestRegistryV8 { id: object::new(ctx) };
     let soul_registry = PhysicalTestRegistryV8 { id: object::new(ctx) };
-    let market_registry = PhysicalTestRegistryV8 { id: object::new(ctx) };
-    let market_treasury = PhysicalTestRegistryV8 { id: object::new(ctx) };
+    let market_registry = coin::mint_for_testing<sui::sui::SUI>(0, ctx);
+    let market_treasury = coin::mint_for_testing<sui::sui::SUI>(0, ctx);
     let (seal_ready, runtime_ready, output_ready, physical_ready, market_ready) =
         activation_v8::readiness_set_for_testing(
             &root,
@@ -2963,6 +3997,7 @@ fun new_active_physical_fixture(
         catalog,
         physical_config,
         release_call_cap,
+        market_call_cap,
         physical_registry,
         runtime_definitions,
         pack_registry,
@@ -3003,6 +4038,7 @@ fun finish_active_physical_fixture(
         catalog,
         physical_config,
         release_call_cap,
+        market_call_cap,
         physical_registry,
         runtime_definitions,
         pack_registry,
@@ -3038,10 +4074,11 @@ fun finish_active_physical_fixture(
     delete_test_registry(seal_registry);
     delete_test_registry(output_registry);
     delete_test_registry(soul_registry);
-    delete_test_registry(market_registry);
-    delete_test_registry(market_treasury);
+    assert!(coin::burn_for_testing(market_registry) == 0, EInvalidCount);
+    assert!(coin::burn_for_testing(market_treasury) == 0, EInvalidCount);
     destroy_config_for_testing(physical_config);
     binding::destroy_call_cap_for_testing(release_call_cap);
+    binding::destroy_call_cap_for_testing(market_call_cap);
     binding::destroy_catalog_for_testing(catalog);
     let protocol_balance = protocol::protocol_treasury_balance_v8(&protocol_treasury);
     if (protocol_balance > 0) {
@@ -3298,6 +4335,63 @@ fun advance_fixture_pack_control(fixture: &mut ActivePhysicalFixtureV8) {
         &mut fixture.pack_release,
         &mut fixture.pack_admin,
     )
+}
+
+#[test_only]
+public fun issue_transferable_base_physical_for_market_testing(
+    registry: &mut PhysicalRegistryV8,
+    ctx: &mut TxContext,
+): PhysicalAssetV8 {
+    assert!(!registry.base_policy_keys.is_empty(), EInvalidPolicy);
+    let key = *registry.base_policy_keys.borrow(0);
+    let policy = *registry.base_policies.borrow(key);
+    assert!(policy.source_kind == SOURCE_BASE_STYLE, EInvalidPolicy);
+    assert!(policy.transferable, ENotTransferable);
+    assert!(policy.proof_kind == PROOF_NONE, EWrongIssuance);
+    let nonce = object::new(ctx);
+    let nonce_id = nonce.to_inner();
+    nonce.delete();
+    let authorization_key = hash::sha2_256(bcs::to_bytes(&nonce_id));
+    issue_asset(
+        registry,
+        policy,
+        ctx.sender(),
+        policy.issued_count,
+        authorization_key,
+        option::none(),
+        ctx,
+    )
+}
+
+#[test_only]
+public fun issue_transferable_pack_physical_for_market_testing(
+    registry: &mut PhysicalRegistryV8,
+    ctx: &mut TxContext,
+): PhysicalAssetV8 {
+    assert!(!registry.pack_policy_keys.is_empty(), EInvalidPolicy);
+    let key = *registry.pack_policy_keys.borrow(0);
+    let policy = *registry.pack_policies.borrow(key);
+    assert!(policy.source_kind == SOURCE_PACK_STYLE, EInvalidPolicy);
+    assert!(policy.transferable, ENotTransferable);
+    assert!(policy.proof_kind == PROOF_NONE, EWrongIssuance);
+    let nonce = object::new(ctx);
+    let nonce_id = nonce.to_inner();
+    nonce.delete();
+    let authorization_key = hash::sha2_256(bcs::to_bytes(&nonce_id));
+    issue_asset(
+        registry,
+        policy,
+        ctx.sender(),
+        policy.issued_count,
+        authorization_key,
+        option::none(),
+        ctx,
+    )
+}
+
+#[test_only]
+public fun destroy_physical_market_asset_for_testing(asset: PhysicalAssetV8) {
+    destroy_asset_for_testing(asset)
 }
 
 #[test_only]
@@ -4453,5 +5547,672 @@ fun direct_transfer_requires_exact_asset_ownership_epoch() {
     let witness = base_selection_witness(&mut fixture, &ctx);
     let asset = claim_fixture_base_free(&mut fixture, witness, 0, &mut ctx);
     transfer_physical_asset_v8(asset, @0xB11, 1, &ctx);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test]
+fun cross_transaction_base_market_return_preserves_exact_state() {
+    let seller = @0xA11;
+    let recoverer = @0xCAFE;
+    let mut scenario = sui::test_scenario::begin(seller);
+    let (asset_id, provenance_commitment, asset_content_commitment, source_content_commitment) = {
+        let ctx = scenario.ctx();
+        let mut fixture = new_active_physical_fixture(
+            ISSUE_FREE_CLAIM, PROOF_NONE, 0, 3, true, ctx,
+        );
+        let asset = issue_transferable_base_physical_for_market_testing(
+            &mut fixture.physical_registry,
+            ctx,
+        );
+        let asset_id = object::id(&asset);
+        let provenance_commitment = asset.provenance_commitment;
+        let asset_content_commitment = asset.asset_content_commitment;
+        let source_content_commitment = asset.source_content_commitment;
+        let mut listing = PhysicalMarketTestListingV8 {
+            id: object::new(ctx),
+            custody: option::none(),
+        };
+        let listing_id = object::id(&listing);
+        let ticket = custody_base_physical_for_market_v8<
+            sui::sui::SUI,
+            sui::sui::SUI,
+            sui::sui::SUI,
+            Coin<sui::sui::SUI>,
+            Coin<sui::sui::SUI>,
+        >(
+            &fixture.physical_registry,
+            &fixture.root,
+            &fixture.protocol_config,
+            &fixture.catalog,
+            &fixture.physical_config,
+            &fixture.market_call_cap,
+            &fixture.market_registry,
+            &fixture.market_treasury,
+            &mut listing.id,
+            &fixture.maker_treasury,
+            asset,
+            ctx,
+        );
+        let custody = consume_physical_market_custody_ticket_v8(ticket);
+        assert!(custody.listing_id == listing_id, EInvalidMarketCustody);
+        assert!(custody.asset_id == asset_id, EInvalidMarketCustody);
+        assert!(custody.source_kind == SOURCE_BASE_STYLE, EInvalidMarketCustody);
+        assert!(
+            custody.source_treasury_id
+                == core_treasury::maker_treasury_id_v8(&fixture.maker_treasury),
+            EInvalidTreasury,
+        );
+        assert!(custody.holder == seller, EWrongHolder);
+        assert!(custody.ownership_epoch == 0, EStaleRevision);
+        assert!(custody.transferable, ENotTransferable);
+        listing.custody = option::some(custody);
+        transfer::share_object(listing);
+        finish_active_physical_fixture(fixture, ctx);
+        (
+            asset_id,
+            provenance_commitment,
+            asset_content_commitment,
+            source_content_commitment,
+        )
+    };
+    scenario.next_tx(recoverer);
+    {
+        let listing = scenario.take_shared<PhysicalMarketTestListingV8>();
+        let receiving = sui::test_scenario::receiving_ticket_by_id<PhysicalAssetV8>(asset_id);
+        return_test_market_asset(listing, receiving);
+    };
+    scenario.next_tx(seller);
+    {
+        let asset = scenario.take_from_sender<PhysicalAssetV8>();
+        assert!(object::id(&asset) == asset_id, EInvalidMarketCustody);
+        assert!(asset.holder == seller, EWrongHolder);
+        assert!(asset.ownership_epoch == 0, EStaleRevision);
+        assert!(asset.provenance_commitment == provenance_commitment, EInvalidCommitment);
+        assert!(asset.asset_content_commitment == asset_content_commitment, EInvalidCommitment);
+        assert!(asset.source_content_commitment == source_content_commitment, EInvalidCommitment);
+        destroy_asset_for_testing(asset);
+    };
+    scenario.end();
+}
+
+#[test]
+fun cross_transaction_pack_market_purchase_changes_only_owner_state() {
+    let seller = @0xA11;
+    let buyer = @0xB22;
+    let mut scenario = sui::test_scenario::begin(seller);
+    let (asset_id, provenance_commitment, source_id, source_content_commitment) = {
+        let ctx = scenario.ctx();
+        let mut fixture = new_active_physical_fixture(
+            ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, ctx,
+        );
+        register_test_pack_policy(
+            &mut fixture, 0, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, ctx,
+        );
+        let asset = issue_transferable_pack_physical_for_market_testing(
+            &mut fixture.physical_registry,
+            ctx,
+        );
+        let asset_id = object::id(&asset);
+        let provenance_commitment = asset.provenance_commitment;
+        let source_id = asset.source_id;
+        let source_content_commitment = asset.source_content_commitment;
+        let mut listing = PhysicalMarketTestListingV8 {
+            id: object::new(ctx),
+            custody: option::none(),
+        };
+        let ticket = custody_pack_physical_for_market_v8<
+            sui::sui::SUI,
+            sui::sui::SUI,
+            sui::sui::SUI,
+            Coin<sui::sui::SUI>,
+            Coin<sui::sui::SUI>,
+        >(
+            &fixture.physical_registry,
+            &fixture.root,
+            &fixture.protocol_config,
+            &fixture.catalog,
+            &fixture.physical_config,
+            &fixture.market_call_cap,
+            &fixture.market_registry,
+            &fixture.market_treasury,
+            &mut listing.id,
+            &fixture.pack_treasury,
+            asset,
+            ctx,
+        );
+        let custody = consume_physical_market_custody_ticket_v8(ticket);
+        assert!(custody.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
+        assert!(custody.source_treasury_id == object::id(&fixture.pack_treasury),
+            EInvalidTreasury);
+        listing.custody = option::some(custody);
+        transfer::share_object(listing);
+        finish_active_physical_fixture(fixture, ctx);
+        (asset_id, provenance_commitment, source_id, source_content_commitment)
+    };
+    scenario.next_tx(buyer);
+    {
+        let listing = scenario.take_shared<PhysicalMarketTestListingV8>();
+        let receiving = sui::test_scenario::receiving_ticket_by_id<PhysicalAssetV8>(asset_id);
+        purchase_test_market_asset(listing, receiving, scenario.ctx());
+    };
+    scenario.next_tx(buyer);
+    {
+        let asset = scenario.take_from_sender<PhysicalAssetV8>();
+        assert!(object::id(&asset) == asset_id, EInvalidMarketCustody);
+        assert!(asset.holder == buyer, EWrongHolder);
+        assert!(asset.ownership_epoch == 1, EStaleRevision);
+        assert!(asset.provenance_commitment == provenance_commitment, EInvalidCommitment);
+        assert!(asset.source_id == source_id, EInvalidBinding);
+        assert!(asset.source_content_commitment == source_content_commitment,
+            EInvalidCommitment);
+        destroy_asset_for_testing(asset);
+    };
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = 3, location = sui::transfer)]
+fun cross_transaction_wrong_listing_parent_cannot_receive_custodied_asset() {
+    let seller = @0xA11;
+    let mut scenario = sui::test_scenario::begin(seller);
+    let (asset_id, wrong_listing_id) = {
+        let ctx = scenario.ctx();
+        let mut fixture = new_active_physical_fixture(
+            ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, ctx,
+        );
+        let asset = issue_transferable_base_physical_for_market_testing(
+            &mut fixture.physical_registry,
+            ctx,
+        );
+        let asset_id = object::id(&asset);
+        let mut correct_listing = PhysicalMarketTestListingV8 {
+            id: object::new(ctx),
+            custody: option::none(),
+        };
+        let mut wrong_listing = PhysicalMarketTestListingV8 {
+            id: object::new(ctx),
+            custody: option::none(),
+        };
+        let wrong_listing_id = object::id(&wrong_listing);
+        let ticket = custody_base_physical_for_market_v8<
+            sui::sui::SUI,
+            sui::sui::SUI,
+            sui::sui::SUI,
+            Coin<sui::sui::SUI>,
+            Coin<sui::sui::SUI>,
+        >(
+            &fixture.physical_registry,
+            &fixture.root,
+            &fixture.protocol_config,
+            &fixture.catalog,
+            &fixture.physical_config,
+            &fixture.market_call_cap,
+            &fixture.market_registry,
+            &fixture.market_treasury,
+            &mut correct_listing.id,
+            &fixture.maker_treasury,
+            asset,
+            ctx,
+        );
+        let mut custody = consume_physical_market_custody_ticket_v8(ticket);
+        // Test-only mutation gets past the early listing readback check; the
+        // Sui receive primitive must still reject the wrong real parent.
+        custody.listing_id = wrong_listing_id;
+        wrong_listing.custody = option::some(custody);
+        transfer::share_object(correct_listing);
+        transfer::share_object(wrong_listing);
+        finish_active_physical_fixture(fixture, ctx);
+        (asset_id, wrong_listing_id)
+    };
+    scenario.next_tx(seller);
+    {
+        let wrong_listing = scenario.take_shared_by_id<PhysicalMarketTestListingV8>(
+            wrong_listing_id,
+        );
+        let receiving = sui::test_scenario::receiving_ticket_by_id<PhysicalAssetV8>(asset_id);
+        return_test_market_asset(wrong_listing, receiving);
+    };
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = EInvalidMarketCustody)]
+fun cross_transaction_wrong_receiving_asset_is_rejected() {
+    let seller = @0xA11;
+    let mut scenario = sui::test_scenario::begin(seller);
+    let wrong_asset_id = {
+        let ctx = scenario.ctx();
+        let mut fixture = new_active_physical_fixture(
+            ISSUE_FREE_CLAIM, PROOF_NONE, 0, 3, true, ctx,
+        );
+        let asset = issue_transferable_base_physical_for_market_testing(
+            &mut fixture.physical_registry,
+            ctx,
+        );
+        let wrong_asset = issue_transferable_base_physical_for_market_testing(
+            &mut fixture.physical_registry,
+            ctx,
+        );
+        let wrong_asset_id = object::id(&wrong_asset);
+        let mut listing = PhysicalMarketTestListingV8 {
+            id: object::new(ctx),
+            custody: option::none(),
+        };
+        let listing_id = object::id(&listing);
+        let ticket = custody_base_physical_for_market_v8<
+            sui::sui::SUI,
+            sui::sui::SUI,
+            sui::sui::SUI,
+            Coin<sui::sui::SUI>,
+            Coin<sui::sui::SUI>,
+        >(
+            &fixture.physical_registry,
+            &fixture.root,
+            &fixture.protocol_config,
+            &fixture.catalog,
+            &fixture.physical_config,
+            &fixture.market_call_cap,
+            &fixture.market_registry,
+            &fixture.market_treasury,
+            &mut listing.id,
+            &fixture.maker_treasury,
+            asset,
+            ctx,
+        );
+        listing.custody = option::some(
+            consume_physical_market_custody_ticket_v8(ticket),
+        );
+        transfer::transfer(wrong_asset, listing_id.to_address());
+        transfer::share_object(listing);
+        finish_active_physical_fixture(fixture, ctx);
+        wrong_asset_id
+    };
+    scenario.next_tx(seller);
+    {
+        let listing = scenario.take_shared<PhysicalMarketTestListingV8>();
+        let wrong_receiving =
+            sui::test_scenario::receiving_ticket_by_id<PhysicalAssetV8>(wrong_asset_id);
+        return_test_market_asset(listing, wrong_receiving);
+    };
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = EInvalidRecipient)]
+fun cross_transaction_seller_cannot_purchase_own_custodied_asset() {
+    let seller = @0xA11;
+    let mut scenario = sui::test_scenario::begin(seller);
+    let asset_id = {
+        let ctx = scenario.ctx();
+        let mut fixture = new_active_physical_fixture(
+            ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, ctx,
+        );
+        let asset = issue_transferable_base_physical_for_market_testing(
+            &mut fixture.physical_registry,
+            ctx,
+        );
+        let asset_id = object::id(&asset);
+        let mut listing = PhysicalMarketTestListingV8 {
+            id: object::new(ctx),
+            custody: option::none(),
+        };
+        let ticket = custody_base_physical_for_market_v8<
+            sui::sui::SUI,
+            sui::sui::SUI,
+            sui::sui::SUI,
+            Coin<sui::sui::SUI>,
+            Coin<sui::sui::SUI>,
+        >(
+            &fixture.physical_registry,
+            &fixture.root,
+            &fixture.protocol_config,
+            &fixture.catalog,
+            &fixture.physical_config,
+            &fixture.market_call_cap,
+            &fixture.market_registry,
+            &fixture.market_treasury,
+            &mut listing.id,
+            &fixture.maker_treasury,
+            asset,
+            ctx,
+        );
+        listing.custody = option::some(
+            consume_physical_market_custody_ticket_v8(ticket),
+        );
+        transfer::share_object(listing);
+        finish_active_physical_fixture(fixture, ctx);
+        asset_id
+    };
+    scenario.next_tx(seller);
+    {
+        let listing = scenario.take_shared<PhysicalMarketTestListingV8>();
+        let receiving = sui::test_scenario::receiving_ticket_by_id<PhysicalAssetV8>(asset_id);
+        purchase_test_market_asset(listing, receiving, scenario.ctx());
+    };
+    scenario.end();
+}
+
+#[test]
+fun market_return_authority_survives_pause_archive_and_protocol_drift() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 160, 0, 0, 0);
+    let (mut fixture, listing, asset, custody) =
+        new_base_market_binding_fixture(&mut ctx);
+    maker::set_lifecycle_for_testing(&mut fixture.root, maker::lifecycle_paused_v8());
+    let protocol_admin = &fixture.protocol_admin;
+    protocol::set_protocol_enabled_v8(
+        &mut fixture.protocol_config,
+        protocol_admin,
+        false,
+    );
+    assert_market_authority<
+        sui::sui::SUI,
+        sui::sui::SUI,
+        sui::sui::SUI,
+        Coin<sui::sui::SUI>,
+        Coin<sui::sui::SUI>,
+    >(
+        &fixture.root,
+        &fixture.catalog,
+        &fixture.market_call_cap,
+        &fixture.market_registry,
+        &fixture.market_treasury,
+    );
+    assert_market_custody_live_binding(
+        &fixture.physical_registry,
+        &fixture.root,
+        &fixture.catalog,
+        &fixture.market_call_cap,
+        &fixture.market_registry,
+        &fixture.market_treasury,
+        &listing.id,
+        &custody,
+    );
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    maker::set_lifecycle_for_testing(&mut fixture.root, maker::lifecycle_archived_v8());
+    assert_market_authority<
+        sui::sui::SUI,
+        sui::sui::SUI,
+        sui::sui::SUI,
+        Coin<sui::sui::SUI>,
+        Coin<sui::sui::SUI>,
+    >(
+        &fixture.root,
+        &fixture.catalog,
+        &fixture.market_call_cap,
+        &fixture.market_registry,
+        &fixture.market_treasury,
+    );
+    assert_market_custody_live_binding(
+        &fixture.physical_registry,
+        &fixture.root,
+        &fixture.catalog,
+        &fixture.market_call_cap,
+        &fixture.market_registry,
+        &fixture.market_treasury,
+        &listing.id,
+        &custody,
+    );
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = ENotTransferable)]
+fun market_custody_rejects_nontransferable_asset() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 161, 0, 0, 0);
+    let mut fixture = new_active_physical_fixture(
+        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, false, &mut ctx,
+    );
+    let witness = base_selection_witness(&mut fixture, &ctx);
+    let asset = claim_fixture_base_free(&mut fixture, witness, 0, &mut ctx);
+    let mut listing = PhysicalMarketTestListingV8 {
+        id: object::new(&mut ctx),
+        custody: option::none(),
+    };
+    let ticket = custody_base_physical_for_market_v8<
+        sui::sui::SUI,
+        sui::sui::SUI,
+        sui::sui::SUI,
+        Coin<sui::sui::SUI>,
+        Coin<sui::sui::SUI>,
+    >(
+        &fixture.physical_registry,
+        &fixture.root,
+        &fixture.protocol_config,
+        &fixture.catalog,
+        &fixture.physical_config,
+        &fixture.market_call_cap,
+        &fixture.market_registry,
+        &fixture.market_treasury,
+        &mut listing.id,
+        &fixture.maker_treasury,
+        asset,
+        &ctx,
+    );
+    let _binding = consume_physical_market_custody_ticket_v8(ticket);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidMarketCustody)]
+fun typed_base_custody_rejects_pack_source_substitution() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 162, 0, 0, 0);
+    let mut fixture = new_active_physical_fixture(
+        ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &mut ctx,
+    );
+    register_test_pack_policy(
+        &mut fixture, 0, ISSUE_FREE_CLAIM, PROOF_NONE, 0, 2, true, &ctx,
+    );
+    let asset = issue_transferable_pack_physical_for_market_testing(
+        &mut fixture.physical_registry,
+        &mut ctx,
+    );
+    let mut listing = PhysicalMarketTestListingV8 {
+        id: object::new(&mut ctx),
+        custody: option::none(),
+    };
+    let ticket = custody_base_physical_for_market_v8<
+        sui::sui::SUI,
+        sui::sui::SUI,
+        sui::sui::SUI,
+        Coin<sui::sui::SUI>,
+        Coin<sui::sui::SUI>,
+    >(
+        &fixture.physical_registry,
+        &fixture.root,
+        &fixture.protocol_config,
+        &fixture.catalog,
+        &fixture.physical_config,
+        &fixture.market_call_cap,
+        &fixture.market_registry,
+        &fixture.market_treasury,
+        &mut listing.id,
+        &fixture.maker_treasury,
+        asset,
+        &ctx,
+    );
+    let _binding = consume_physical_market_custody_ticket_v8(ticket);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test]
+fun market_custody_binding_exact_matrix_accepts_live_asset() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 170, 0, 0, 0);
+    let (fixture, listing, asset, custody) = new_base_market_binding_fixture(&mut ctx);
+    assert_market_custody_live_binding(
+        &fixture.physical_registry,
+        &fixture.root,
+        &fixture.catalog,
+        &fixture.market_call_cap,
+        &fixture.market_registry,
+        &fixture.market_treasury,
+        &listing.id,
+        &custody,
+    );
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidMarketCustody)]
+fun market_custody_rejects_wrong_binding_version() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 171, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.version = 7;
+    assert_market_custody_live_binding(
+        &fixture.physical_registry,
+        &fixture.root,
+        &fixture.catalog,
+        &fixture.market_call_cap,
+        &fixture.market_registry,
+        &fixture.market_treasury,
+        &listing.id,
+        &custody,
+    );
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidMarketCustody)]
+fun market_custody_rejects_wrong_asset_id() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 172, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.asset_id = object::id_from_address(@0xBAD);
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidMarketCustody)]
+fun market_custody_rejects_wrong_physical_registry() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 173, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.physical_registry_id = object::id_from_address(@0xBAD);
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidMarketCustody)]
+fun market_custody_rejects_wrong_root_id() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 174, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.root_id = object::id_from_address(@0xBAD);
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidMarketCustody)]
+fun market_custody_rejects_wrong_maker_version() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 175, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.maker_version = custody.maker_version + 1;
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidMarketCustody)]
+fun market_custody_rejects_wrong_root_content() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 176, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.root_content_commitment = test_hash(201);
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidMarketCustody)]
+fun market_custody_rejects_wrong_source_kind() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 177, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.source_kind = SOURCE_PACK_STYLE;
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidMarketCustody)]
+fun market_custody_rejects_wrong_source_identity() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 178, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.source_id = object::id_from_address(@0xBAD);
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidMarketCustody)]
+fun market_custody_rejects_wrong_source_content() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 179, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.source_content_commitment = test_hash(202);
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidTreasury)]
+fun market_custody_rejects_wrong_source_treasury() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 180, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.source_treasury_id = object::id_from_address(@0xBAD);
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EWrongHolder)]
+fun market_custody_rejects_wrong_stored_holder() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 181, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.holder = @0xB22;
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EStaleRevision)]
+fun market_custody_rejects_wrong_ownership_epoch() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 182, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.ownership_epoch = custody.ownership_epoch + 1;
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = ENotTransferable)]
+fun market_custody_rejects_wrong_transferable_readback() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 183, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.transferable = false;
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
+    finish_active_physical_fixture(fixture, &mut ctx)
+}
+
+#[test, expected_failure(abort_code = EInvalidCommitment)]
+fun market_custody_rejects_wrong_provenance() {
+    let mut ctx = sui::tx_context::new_from_hint(@0xA11, 184, 0, 0, 0);
+    let (fixture, listing, asset, mut custody) = new_base_market_binding_fixture(&mut ctx);
+    custody.provenance_commitment = test_hash(203);
+    assert_market_custody_asset(&custody, &fixture.root, &asset);
+    destroy_asset_for_testing(asset);
+    destroy_empty_test_market_listing(listing);
     finish_active_physical_fixture(fixture, &mut ctx)
 }

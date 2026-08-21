@@ -20,6 +20,13 @@ for (const [name, expected] of [
   ['adversarial_asset_api', 'restricted visibility'],
   ['adversarial_cap_extraction', 'restricted visibility'],
   ['adversarial_receipt_proof', 'Unbound function'],
+  ['adversarial_market_ticket_copy', "does not have the ability 'copy'"],
+  ['adversarial_market_ticket_drop', "does not have the ability 'drop'"],
+  ['adversarial_market_ticket_store', "does not have the ability 'store'"],
+  ['adversarial_market_ticket_forge', 'restricted visibility'],
+  ['adversarial_market_external_receive', 'invalid private transfer call'],
+  ['adversarial_market_replay', 'previously moved'],
+  ['adversarial_market_source_substitution', 'incompatible types'],
 ]) {
   try {
     execFileSync('sui', [

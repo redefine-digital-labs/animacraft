@@ -22,7 +22,10 @@ duplicate, or reordered lines abort the PTB, atomically rolling back counters
 and payments.
 
 Every Complete explicitly chooses an `output_key` and rereads its immutable
-sealed row. Recipe/render/output/receipt/Soul commitments bind that key, row
+sealed row. `CompleteOutputV8` and `CompleteReceiptV8` retain both immutable
+`original_holder` and mutable current `holder`; their content commitments bind
+the original holder, so later custody and sale cannot invalidate content or
+the Output/Receipt-ID-based protection binding. Recipe/render/output/receipt/Soul commitments bind that key, row
 commitment, per-output renderer schema, immutable Maker version/content, exact
 current loadout authorization, ordered selection/pricing commitments, and
 Runtime-derived used Packs. Base primary protocol share, Maker residual, every
@@ -35,9 +38,27 @@ Output consumes Seal's live `CompleteDecryptProofV8` and exact-matches receipt
 ID, output ID, recipe, render, output, receipt, scope key, asset key, and Seal
 ID before mint authorization exists.
 
-`CanonicalSoulV8` has `key` only. Output exposes no ordinary holder transfer.
-The later Market package may add the sole Output-owned transfer path, guarded
-by the concrete Market call cap and expected ownership-epoch CAS.
+`CompleteOutputV8`, `CompleteReceiptV8`, and `CanonicalSoulV8` have `key` only.
+Output exposes no ordinary holder transfer or public receive path. The sole
+resale path is `custody_soul_bundle_for_market_v8`, followed by exact
+`Receiving<T>` return or purchase. Custody atomically object-owns all three
+objects under the Listing UID without changing logical ownership. The
+no-copy/no-drop/no-store `SoulMarketCustodyTicketV8` is consumed in the same
+PTB into a private-field `SoulMarketCustodyBindingV8`; that persistable binding
+is listing data, never authority. Every hook additionally requires the exact
+Market call cap, Market original/callable TypeOrigins, concrete Market
+registry/treasury TypeOrigins and capability-bound IDs, and the Root-frozen
+catalog/product/call-cap set.
+
+`return_soul_bundle_from_market_v8` deliberately omits ACTIVE and live protocol
+config checks, so cancel/recover remains available while the Root is PAUSED or
+ARCHIVED and while protocol configuration is disabled or has drifted. It
+returns the unchanged bundle to the seller recorded by Output at custody.
+`purchase_soul_bundle_from_market_v8` instead requires ACTIVE plus the exact
+current protocol/catalog and registries; it receives and validates all three
+objects, changes all current holders, advances Soul ownership epoch exactly
+once, updates Output/Soul registry records, recomputes only the Soul ownership
+commitment, and transfers the complete bundle to a non-seller buyer.
 
 Physical materialization consumes Runtime's no-ability exact current-selection
 witness against the live loadout, including its exact Part, Item, Style, and
@@ -48,3 +69,8 @@ commitment and exposed only through the typed `PhysicalSelectionBindingV8`.
 The `PhysicalMaterializationWitnessV8` has no abilities and can only be consumed
 by a caller borrowing Core's concrete Physical call cap with the catalog-frozen
 Physical TypeOrigin.
+
+The adversarial runner includes independent compile-failure packages for
+Market ticket copy/drop/store, binding/ticket forgery, external receive, and
+ticket replay, in addition to the existing Output gates. The positive companion
+probe compiles all custody, consume, return, purchase, and readback signatures.

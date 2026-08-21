@@ -5,6 +5,8 @@ module animacraft_v8_core::maker_v8;
 use animacraft_v8_core::package_binding_v8::{
     Self as package_binding,
     CertifiedProductReleaseBindingV8,
+    MarketRoleV8,
+    PackageCallCapV8,
     PackageCallCapSetBindingV8,
     ProductReleaseCatalogV8,
     ProductReleaseBindingV8,
@@ -18,6 +20,7 @@ use std::option::{Self as option, Option};
 use std::string::{Self as string, String};
 use sui::clock::Clock;
 use sui::event;
+use sui::transfer::Receiving;
 
 const VERSION: u64 = 8;
 const HASH_LENGTH: u64 = 32;
@@ -1309,6 +1312,47 @@ public fun transfer_maker_control_v8<PaymentCoin>(
     transfer::transfer(next, new_owner);
 }
 
+/// Moves the real key-only AdminCap under a listing UID held by the exact
+/// Market package. Market shares that listing in the same atomic call.
+public fun custody_maker_admin_for_market_v8<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    admin: MakerAdminCapV8,
+    catalog: &ProductReleaseCatalogV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    listing_parent: &mut UID,
+){
+    assert_market_executor(root, catalog, market_call_cap);
+    assert!(root.lifecycle == PAUSED, EInvalidLifecycle);
+    assert_admin_v8(root, &admin);
+    transfer::transfer(admin, object::uid_to_address(listing_parent))
+}
+
+/// Resolves one listing-owned AdminCap. Returning it to the current owner is
+/// cancellation/recovery and preserves the cap; a buyer resolution rotates
+/// the canonical control epoch. The private Market call cap is the authority.
+public fun resolve_maker_admin_from_market_v8<PaymentCoin>(
+    root: &mut MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+    listing_parent: &mut UID,
+    receiving: Receiving<MakerAdminCapV8>,
+    recipient: address,
+    ctx: &mut TxContext,
+) {
+    assert_market_executor(root, catalog, market_call_cap);
+    let admin = transfer::receive(listing_parent, receiving);
+    assert_admin_v8(root, &admin);
+    if (recipient == root.owner) {
+        transfer::transfer(admin, recipient)
+    } else {
+        assert!(root.lifecycle == PAUSED, EInvalidLifecycle);
+        assert!(recipient == ctx.sender(), ENotCurrentOwner);
+        let epoch = root.control_epoch;
+        let next = rotate_maker_control_v8(root, admin, epoch, recipient, ctx);
+        transfer::transfer(next, recipient)
+    }
+}
+
 fun rotate_maker_control_v8<PaymentCoin>(
     root: &mut MakerRootV8<PaymentCoin>,
     admin: MakerAdminCapV8,
@@ -1317,7 +1361,7 @@ fun rotate_maker_control_v8<PaymentCoin>(
     ctx: &mut TxContext,
 ): MakerAdminCapV8 {
     assert_admin_v8(root, &admin);
-    assert!(root.owner == ctx.sender(), ENotCurrentOwner);
+    assert!(root.owner == ctx.sender() || new_owner == ctx.sender(), ENotCurrentOwner);
     assert!(root.control_epoch == expected_control_epoch, EControlEpochMismatch);
     assert!(root.successor_authority_id.is_none(), ESuccessorAuthorityAlreadyIssued);
     assert!(root.control_epoch < 0xffffffffffffffff, EControlEpochMismatch);
@@ -1351,6 +1395,16 @@ fun rotate_maker_control_v8<PaymentCoin>(
         new_admin_cap_id: root.admin_cap_id,
     });
     next
+}
+
+fun assert_market_executor<PaymentCoin>(
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_call_cap: &PackageCallCapV8<MarketRoleV8>,
+) {
+    assert!(root_product_release_catalog_id_v8(root)
+        == package_binding::catalog_id_v8(catalog), ECatalogMismatch);
+    package_binding::assert_market_call_cap_v8(catalog, market_call_cap);
 }
 
 public fun assert_base_registry_identity_v8<PaymentCoin>(
@@ -1756,18 +1810,6 @@ public fun root_maker_key_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): &Str
 public fun root_maker_version_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): u64 {
     root.maker_version
 }
-public fun root_previous_root_id_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): &Option<ID> { &root.previous_root_id }
-public fun root_previous_version_commitment_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): &Option<vector<u8>> { &root.previous_version_commitment }
-public fun root_successor_authority_id_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): &Option<ID> { &root.successor_authority_id }
-public fun root_successor_root_id_v8<PaymentCoin>(
-    root: &MakerRootV8<PaymentCoin>,
-): &Option<ID> { &root.successor_root_id }
 public fun root_control_epoch_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): u64 {
     root.control_epoch
 }
@@ -2050,19 +2092,6 @@ public fun rights_maker_source_royalty_bps_v8(rights: &RightsSnapshotV8): u16 {
 public fun rights_maker_resale_royalty_bps_v8(rights: &RightsSnapshotV8): u16 {
     rights.maker_resale_royalty_bps
 }
-
-public fun successor_authority_previous_root_id_v8<PaymentCoin>(
-    authority: &SuccessorAuthorityV8<PaymentCoin>,
-): ID { authority.previous_root_id }
-public fun successor_authority_maker_version_v8<PaymentCoin>(
-    authority: &SuccessorAuthorityV8<PaymentCoin>,
-): u64 { authority.maker_version }
-public fun successor_authority_control_epoch_v8<PaymentCoin>(
-    authority: &SuccessorAuthorityV8<PaymentCoin>,
-): u64 { authority.control_epoch }
-public fun successor_authority_owner_v8<PaymentCoin>(
-    authority: &SuccessorAuthorityV8<PaymentCoin>,
-): address { authority.owner }
 
 #[test_only]
 public fun set_lifecycle_for_testing<PaymentCoin>(

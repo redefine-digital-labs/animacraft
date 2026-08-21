@@ -3,13 +3,14 @@ module physical_companion_probe::probe;
 use animacraft_v8_core::activation_v8::PhysicalReadinessV8;
 use animacraft_v8_core::base_registry_v8::BaseDefinitionRegistryV8;
 use animacraft_v8_core::maker_v8::{MakerAdminCapV8, MakerRootV8};
-use animacraft_v8_core::package_binding_v8::{Self as binding, PackageCallCapV8,
-    PhysicalRoleV8, ProductReleaseCatalogV8};
+use animacraft_v8_core::package_binding_v8::{Self as binding, MarketRoleV8,
+    PackageCallCapV8, PhysicalRoleV8, ProductReleaseCatalogV8};
 use animacraft_v8_core::protocol_config_v8::{ProtocolConfigV8,
     ProtocolTreasuryV8};
 use animacraft_v8_core::treasury_v8::MakerTreasuryV8;
 use animacraft_v8_physical::physical_v8::{Self as physical,
-    PhysicalAssetV8, PhysicalCallableMarkerV8, PhysicalOriginalMarkerV8,
+    PhysicalAssetV8, PhysicalCallableMarkerV8, PhysicalMarketCustodyBindingV8,
+    PhysicalMarketCustodyTicketV8, PhysicalOriginalMarkerV8,
     PhysicalPackageConfigV8, PhysicalRegistryV8};
 use animacraft_v8_output::output_v8::{Self as output,
     PhysicalMaterializationWitnessV8, PhysicalSelectionBindingV8};
@@ -18,6 +19,13 @@ use animacraft_v8_runtime::runtime_v8::{MakerLoadoutV8, PackAdminCapV8,
     RuntimePhysicalSelectionWitnessV8};
 use std::string::String;
 use sui::coin::Coin;
+use sui::transfer::Receiving;
+
+public struct MarketOriginalProbe has drop {}
+public struct MarketCallableProbe has drop {}
+public struct MarketRegistryProbe has key { id: UID }
+public struct MarketTreasuryProbe has key { id: UID }
+public struct PhysicalListingProbe has key { id: UID }
 
 public fun new_config(
     catalog: &ProductReleaseCatalogV8,
@@ -320,5 +328,189 @@ public fun consume_asset(
 ) {
     physical::consume_physical_asset_v8(
         registry, asset, expected_ownership_epoch, ctx,
+    )
+}
+
+public fun custody_base_for_market<PaymentCoin>(
+    registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    config: &PhysicalPackageConfigV8,
+    market_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistryProbe,
+    market_treasury: &MarketTreasuryProbe,
+    listing: &mut PhysicalListingProbe,
+    maker_treasury: &MakerTreasuryV8<PaymentCoin>,
+    asset: PhysicalAssetV8,
+    ctx: &TxContext,
+): PhysicalMarketCustodyTicketV8 {
+    physical::custody_base_physical_for_market_v8<
+        PaymentCoin,
+        MarketOriginalProbe,
+        MarketCallableProbe,
+        MarketRegistryProbe,
+        MarketTreasuryProbe,
+    >(
+        registry,
+        root,
+        protocol_config,
+        catalog,
+        config,
+        market_cap,
+        market_registry,
+        market_treasury,
+        &mut listing.id,
+        maker_treasury,
+        asset,
+        ctx,
+    )
+}
+
+public fun custody_pack_for_market<PaymentCoin>(
+    registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    config: &PhysicalPackageConfigV8,
+    market_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistryProbe,
+    market_treasury: &MarketTreasuryProbe,
+    listing: &mut PhysicalListingProbe,
+    pack_treasury: &PackTreasuryV8<PaymentCoin>,
+    asset: PhysicalAssetV8,
+    ctx: &TxContext,
+): PhysicalMarketCustodyTicketV8 {
+    physical::custody_pack_physical_for_market_v8<
+        PaymentCoin,
+        MarketOriginalProbe,
+        MarketCallableProbe,
+        MarketRegistryProbe,
+        MarketTreasuryProbe,
+    >(
+        registry,
+        root,
+        protocol_config,
+        catalog,
+        config,
+        market_cap,
+        market_registry,
+        market_treasury,
+        &mut listing.id,
+        pack_treasury,
+        asset,
+        ctx,
+    )
+}
+
+public fun consume_custody_ticket(
+    ticket: PhysicalMarketCustodyTicketV8,
+): PhysicalMarketCustodyBindingV8 {
+    physical::consume_physical_market_custody_ticket_v8(ticket)
+}
+
+public fun return_from_market<PaymentCoin>(
+    registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    catalog: &ProductReleaseCatalogV8,
+    market_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistryProbe,
+    market_treasury: &MarketTreasuryProbe,
+    listing: &mut PhysicalListingProbe,
+    receiving: Receiving<PhysicalAssetV8>,
+    custody: &PhysicalMarketCustodyBindingV8,
+) {
+    physical::return_physical_from_market_v8<
+        PaymentCoin,
+        MarketOriginalProbe,
+        MarketCallableProbe,
+        MarketRegistryProbe,
+        MarketTreasuryProbe,
+    >(
+        registry,
+        root,
+        catalog,
+        market_cap,
+        market_registry,
+        market_treasury,
+        &mut listing.id,
+        receiving,
+        custody,
+    )
+}
+
+public fun purchase_base_from_market<PaymentCoin>(
+    registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    config: &PhysicalPackageConfigV8,
+    market_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistryProbe,
+    market_treasury: &MarketTreasuryProbe,
+    listing: &mut PhysicalListingProbe,
+    maker_treasury: &MakerTreasuryV8<PaymentCoin>,
+    receiving: Receiving<PhysicalAssetV8>,
+    custody: &PhysicalMarketCustodyBindingV8,
+    ctx: &TxContext,
+) {
+    physical::purchase_base_physical_from_market_v8<
+        PaymentCoin,
+        MarketOriginalProbe,
+        MarketCallableProbe,
+        MarketRegistryProbe,
+        MarketTreasuryProbe,
+    >(
+        registry,
+        root,
+        protocol_config,
+        catalog,
+        config,
+        market_cap,
+        market_registry,
+        market_treasury,
+        &mut listing.id,
+        maker_treasury,
+        receiving,
+        custody,
+        ctx,
+    )
+}
+
+public fun purchase_pack_from_market<PaymentCoin>(
+    registry: &PhysicalRegistryV8,
+    root: &MakerRootV8<PaymentCoin>,
+    protocol_config: &ProtocolConfigV8,
+    catalog: &ProductReleaseCatalogV8,
+    config: &PhysicalPackageConfigV8,
+    market_cap: &PackageCallCapV8<MarketRoleV8>,
+    market_registry: &MarketRegistryProbe,
+    market_treasury: &MarketTreasuryProbe,
+    listing: &mut PhysicalListingProbe,
+    pack_treasury: &PackTreasuryV8<PaymentCoin>,
+    receiving: Receiving<PhysicalAssetV8>,
+    custody: &PhysicalMarketCustodyBindingV8,
+    ctx: &TxContext,
+) {
+    physical::purchase_pack_physical_from_market_v8<
+        PaymentCoin,
+        MarketOriginalProbe,
+        MarketCallableProbe,
+        MarketRegistryProbe,
+        MarketTreasuryProbe,
+    >(
+        registry,
+        root,
+        protocol_config,
+        catalog,
+        config,
+        market_cap,
+        market_registry,
+        market_treasury,
+        &mut listing.id,
+        pack_treasury,
+        receiving,
+        custody,
+        ctx,
     )
 }

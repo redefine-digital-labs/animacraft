@@ -531,6 +531,20 @@ public fun share_protocol_for_testing(
     transfer::transfer(cap, ctx.sender());
 }
 
+#[test_only]
+public fun share_protocol_with_treasury_for_testing<PaymentCoin>(
+    config: ProtocolConfigV8,
+    treasury: ProtocolTreasuryV8<PaymentCoin>,
+    cap: ProtocolAdminCapV8,
+    ctx: &TxContext,
+) {
+    assert_admin(&config, &cap);
+    assert_protocol_treasury(&config, &treasury);
+    transfer::share_object(config);
+    transfer::share_object(treasury);
+    transfer::transfer(cap, ctx.sender());
+}
+
 #[test]
 fun enabled_config_exposes_exact_terms() {
     let mut ctx = sui::tx_context::new_from_hint(@0xA11, 1, 0, 0, 0);

@@ -16,6 +16,10 @@ for (const [name, expectedCode] of [
   ['adversarial_forge_config', 'E04001'],
   ['adversarial_mutate_registry', 'E04001'],
   ['adversarial_steal_cap', 'E04001'],
+  ['adversarial_forge_listing', 'E04001'],
+  ['adversarial_extract_escrow', 'E04001'],
+  ['adversarial_listing_parent', 'E04001'],
+  ['adversarial_listing_copy', 'E05001'],
 ]) {
   try {
     execFileSync('sui', [

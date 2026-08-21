@@ -1,0 +1,10 @@
+[package]
+name = "physical_adversarial_market_external_receive"
+edition = "2024.beta"
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1" }
+animacraft_v8_physical = { local = "../.." }
+
+[addresses]
+physical_adversarial_market_external_receive = "0x0"
