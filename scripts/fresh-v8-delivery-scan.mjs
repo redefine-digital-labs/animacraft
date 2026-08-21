@@ -56,9 +56,14 @@ const moveRoots = new Set([
 
 const retired = /OCMaker|MakerRootV5|CommerceV5|commerce_v5|composition_v6|physical_v7|publication_v[4-7]|SALE_PENDING|LegacyMakerMigrated|CreatorProfile/;
 const productionText = [
-  'README.md', 'app.js', 'index.html', 'chain-error-ui.js', 'config.example.js',
+  'README.md', 'SECURITY.md', 'GOVERNANCE.md', 'CONTRIBUTING.md',
+  'UNIFIED_MAKER_V8.md', 'docs/codex/CLIENT_V8_CUTOVER_SPEC.md',
+  'app.js', 'index.html', 'styles.css', 'chain-error-ui.js', 'config.example.js',
   'public-v8/config.js', 'package.json', 'vite.config.js',
-  'maker-v8-browser.js', 'maker-v8-chain.js', 'maker-v8-runtime.js',
+  'maker-commerce-v8.js', 'maker-v8-actions.js', 'maker-v8-browser.js',
+  'maker-v8-chain.js', 'maker-v8-compiler.js', 'maker-v8-document.js',
+  'maker-v8-finalized.js', 'maker-v8-market.js', 'maker-v8-recovery.js',
+  'maker-v8-runtime.js',
 ].map((path) => readFileSync(join(root, path), 'utf8')).join('\n');
 
 if (mode !== '--dist') {
