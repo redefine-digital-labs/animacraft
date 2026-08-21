@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { bcs } from '@mysten/sui/bcs';
 import { Inputs, TransactionDataBuilder } from '@mysten/sui/transactions';
-import { toBase64 } from '@mysten/sui/utils';
+import { normalizeStructTag, toBase64 } from '@mysten/sui/utils';
 
 import {
   MARKET_V8_ACTION_ABI,
@@ -675,7 +675,13 @@ function fullListTransactionBytes(result, { functionName, firstObjectId, extraCo
   return toBase64(data.build());
 }
 
-function canonicalSigningClient({ onDryRun, gasBudget = '10000000', mutateResolved } = {}) {
+function canonicalSigningClient({
+  onDryRun,
+  gasBudget = '10000000',
+  gasPayment = [{ objectId: id(999), version: '1', digest }],
+  gasAddressBalance = '20000000',
+  mutateResolved,
+} = {}) {
   return {
     async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
     async dryRunTransactionBlock({ transactionBlock }) {
@@ -685,6 +691,9 @@ function canonicalSigningClient({ onDryRun, gasBudget = '10000000', mutateResolv
     core: {
       async getCurrentSystemState() { return { systemState: { epoch: '100' } }; },
       async getBalance({ coinType }) {
+        if (coinType === normalizeStructTag('0x2::sui::SUI')) {
+          return { balance: { balance: gasAddressBalance, coinBalance: '0', addressBalance: gasAddressBalance, coinType } };
+        }
         return { balance: { balance: '1000000', coinBalance: '800000', addressBalance: '200000', coinType } };
       },
       async listCoins({ coinType }) {
@@ -710,7 +719,7 @@ function canonicalSigningClient({ onDryRun, gasBudget = '10000000', mutateResolv
             budget: gasBudget,
             price: '1000',
             owner: transactionData.sender,
-            payment: [{ objectId: id(999), version: '1', digest }],
+            payment: gasPayment,
           };
           mutateResolved?.(transactionData);
           await next();
@@ -990,6 +999,7 @@ test('signing evidence binds branded builder output, Mainnet dry run, and decode
     budget: '10000000',
     price: '1000',
     payment: [{ objectId: id(999), version: '1', digest }],
+    funding: { kind: 'OBJECT_REFS' },
   });
   assert.match(evidence.sourceFingerprint, /^0x[0-9a-f]{64}$/);
   assert.throws(
@@ -1079,6 +1089,30 @@ test('canonical signing rejects excessive gas, wrong gas owner, and resolver exp
       mutateResolved(transactionData) { transactionData.expiration = { Epoch: '102', '$kind': 'Epoch' }; },
     }), built),
     (error) => error.code === 'MARKET_V8_TRANSACTION_EXPIRATION_MISMATCH',
+  );
+});
+
+test('pinned SDK empty gas payment is accepted only with sufficient live SUI address balance', async () => {
+  const built = allActions().listMakerControl;
+  const proof = await inspectMarketActionOnChainV8(canonicalSigningClient({ gasPayment: [] }), built);
+  const evidence = createMarketV8RecoveryEvidenceV8(built, proof);
+  assert.deepEqual(evidence.gasData, {
+    owner: IDs.seller,
+    budget: '10000000',
+    price: '1000',
+    payment: [],
+    funding: {
+      kind: 'ADDRESS_BALANCE',
+      addressBalance: '20000000',
+      coinType: normalizeStructTag('0x2::sui::SUI'),
+    },
+  });
+  await assert.rejects(
+    () => inspectMarketActionOnChainV8(canonicalSigningClient({
+      gasPayment: [],
+      gasAddressBalance: '9999999',
+    }), built),
+    (error) => error.code === 'MARKET_V8_ADDRESS_GAS_INSUFFICIENT',
   );
 });
 

@@ -1617,8 +1617,8 @@ function canonicalGasData(snapshot, descriptor) {
   if (owner !== descriptor.sender) {
     fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_SENDER_MISMATCH', 'transaction.gasData.owner', 'Gas owner differs from the verified wallet account.');
   }
-  if (!Array.isArray(snapshot.gasData?.payment) || snapshot.gasData.payment.length === 0) {
-    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_GAS_INVALID', 'transaction.gasData.payment', 'At least one resolved gas object ref is required.');
+  if (!Array.isArray(snapshot.gasData?.payment)) {
+    fail(MarketV8BuildError, 'MARKET_V8_TRANSACTION_GAS_INVALID', 'transaction.gasData.payment', 'Gas payment must be the exact resolved object-ref list or the SDK address-balance empty list.');
   }
   const seen = new Set();
   const payment = Object.freeze(snapshot.gasData.payment.map((entry, index) => {
@@ -1634,6 +1634,30 @@ function canonicalGasData(snapshot, descriptor) {
     });
   }));
   return freezeRecord({ owner, budget: budget.toString(), price: price.toString(), payment });
+}
+
+async function attestGasFunding(client, gasData) {
+  if (gasData.payment.length > 0) {
+    return freezeRecord({ ...gasData, funding: freezeRecord({ kind: 'OBJECT_REFS' }) });
+  }
+  if (typeof client?.core?.getBalance !== 'function') {
+    fail(MarketV8BuildError, 'MARKET_V8_ADDRESS_GAS_PROOF_REQUIRED', 'client.core.getBalance', 'Empty gas payment requires a live Mainnet SUI address-balance proof.');
+  }
+  const suiType = normalizeStructTag('0x2::sui::SUI');
+  const response = await client.core.getBalance({ owner: gasData.owner, coinType: suiType });
+  const addressBalance = uint(
+    String(response?.balance?.addressBalance ?? ''),
+    64,
+    'transaction.gasData.addressBalance',
+    MarketV8BuildError,
+  );
+  if (addressBalance < BigInt(gasData.budget)) {
+    fail(MarketV8BuildError, 'MARKET_V8_ADDRESS_GAS_INSUFFICIENT', 'transaction.gasData.addressBalance', 'Mainnet address balance is below the exact gas budget.');
+  }
+  return freezeRecord({
+    ...gasData,
+    funding: freezeRecord({ kind: 'ADDRESS_BALANCE', addressBalance: addressBalance.toString(), coinType: suiType }),
+  });
 }
 
 function validateCanonicalMarketV8TransactionBytes(builtActionInput, transactionBytesInput, expectedEpoch) {
@@ -1733,6 +1757,7 @@ export async function inspectMarketActionOnChainV8(client, builtActionInput) {
     );
   }
   const checked = validateCanonicalMarketV8TransactionBytes(builtAction, transactionBytes, currentEpoch);
+  const gasData = await attestGasFunding(client, checked.gasData);
   let result;
   if (typeof client?.dryRunTransactionBlock === 'function') {
     result = await client.dryRunTransactionBlock({ transactionBlock: checked.transactionBytes });
@@ -1770,7 +1795,7 @@ export async function inspectMarketActionOnChainV8(client, builtActionInput) {
     descriptor: checked.descriptor,
     runtime: checked.runtime,
     transactionBytes: checked.transactionBytes,
-    gasData: checked.gasData,
+    gasData,
     expiration: checked.expiration,
     epochWindow: checked.epochWindow,
     sourceFingerprint: checked.sourceFingerprint,
