@@ -11,7 +11,10 @@ import {
 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { assertMakerV8Runtime } from './maker-v8-runtime.js';
-import { isMakerV8RuntimeAttested } from './maker-v8-chain.js';
+import {
+  assertMakerV8MainnetRpc,
+  isMakerV8RuntimeAttested,
+} from './maker-v8-chain.js';
 
 export const MARKET_V8_VERSION = 8n;
 export const MARKET_V8_ACTION_SCHEMA = 'animacraft.market-action.v8';
@@ -70,6 +73,7 @@ const CHECKED_MARKET_RUNTIMES = new WeakSet();
 const CHAIN_QUOTE_PROOFS = new WeakSet();
 const BUILT_MARKET_ACTIONS = new WeakSet();
 const MARKET_RECOVERY_EVIDENCE = new WeakSet();
+const MARKET_ACTION_DRY_RUN_PROOFS = new WeakSet();
 
 function freezeRecord(value) {
   return Object.freeze(value);
@@ -1536,7 +1540,7 @@ function allowedCoinPlumbing(command, paymentCoinType) {
     && call.typeArguments[0] === paymentCoinType;
 }
 
-export function createMarketV8RecoveryEvidenceV8(builtActionInput, transactionBytesInput) {
+function validateMarketV8TransactionBytes(builtActionInput, transactionBytesInput) {
   const builtAction = assertMarketV8BuiltActionV8(builtActionInput);
   if (!isMakerV8RuntimeAttested(builtAction.runtime)) {
     fail(
@@ -1602,8 +1606,68 @@ export function createMarketV8RecoveryEvidenceV8(builtActionInput, transactionBy
     descriptor,
     runtime: builtAction.runtime,
   });
-  MARKET_RECOVERY_EVIDENCE.add(evidence);
   return evidence;
+}
+
+export async function inspectMarketActionOnChainV8(client, builtActionInput, transactionBytesInput) {
+  await assertMakerV8MainnetRpc(client);
+  const checked = validateMarketV8TransactionBytes(builtActionInput, transactionBytesInput);
+  let result;
+  if (typeof client?.dryRunTransactionBlock === 'function') {
+    result = await client.dryRunTransactionBlock({ transactionBlock: checked.transactionBytes });
+  } else if (typeof client?.core?.simulateTransaction === 'function') {
+    result = await client.core.simulateTransaction({
+      transaction: checked.transactionBytes,
+      include: { effects: true, events: true, commandResults: true },
+    });
+  } else if (typeof client?.simulateTransaction === 'function') {
+    result = await client.simulateTransaction({
+      transaction: checked.transactionBytes,
+      include: { effects: true, events: true, commandResults: true },
+    });
+  } else {
+    fail(MarketV8BuildError, 'MARKET_V8_ACTION_DRY_RUN_CLIENT_MISSING', 'client', 'A Mainnet Sui client with transaction simulation is required immediately before signing.');
+  }
+  const status = result?.effects?.status?.status
+    ?? result?.effects?.status
+    ?? (result?.$kind === 'FailedTransaction' || result?.FailedTransaction ? 'failure' : 'success');
+  if (status !== 'success' && status !== 'SUCCESS') {
+    fail(
+      MarketV8EligibilityError,
+      'MARKET_V8_ACTION_DRY_RUN_FAILED',
+      'transaction',
+      result?.effects?.status?.error
+        ?? result?.FailedTransaction?.status?.error?.message
+        ?? result?.error
+        ?? 'The exact Market Transaction failed Mainnet simulation.',
+    );
+  }
+  const proof = freezeRecord({
+    schema: 'animacraft.market-action-dry-run.v8',
+    source: 'mainnet-transaction-simulation',
+    transactionDigest: checked.transactionDigest,
+    descriptor: checked.descriptor,
+    runtime: checked.runtime,
+  });
+  MARKET_ACTION_DRY_RUN_PROOFS.add(proof);
+  return proof;
+}
+
+export function createMarketV8RecoveryEvidenceV8(builtActionInput, transactionBytesInput, dryRunProof) {
+  const checked = validateMarketV8TransactionBytes(builtActionInput, transactionBytesInput);
+  if (!dryRunProof || !MARKET_ACTION_DRY_RUN_PROOFS.has(dryRunProof)
+    || dryRunProof.transactionDigest !== checked.transactionDigest
+    || dryRunProof.descriptor !== checked.descriptor
+    || dryRunProof.runtime !== checked.runtime) {
+    fail(
+      MarketV8BuildError,
+      'MARKET_V8_ACTION_DRY_RUN_PROOF_REQUIRED',
+      'dryRunProof',
+      'Signing recovery requires a fresh private proof that these exact TransactionData bytes succeeded in Mainnet simulation.',
+    );
+  }
+  MARKET_RECOVERY_EVIDENCE.add(checked);
+  return checked;
 }
 
 export function assertMarketV8RecoveryEvidenceV8(value) {

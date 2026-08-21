@@ -22,6 +22,7 @@ import {
   createMarketV8Client,
   deriveMarketQuoteCommitmentV8,
   inspectMarketQuoteOnChainV8,
+  inspectMarketActionOnChainV8,
   assertMarketV8RecoveryEvidenceV8,
   marketQuoteCommitmentBcsV8,
   parseMarketQuoteV8Bcs,
@@ -919,30 +920,41 @@ test('all 14 builders snapshot real Transaction data with exact targets, types, 
   }
 });
 
-test('signing evidence binds branded builder output to decoded full TransactionData bytes', () => {
+test('signing evidence binds branded builder output, Mainnet dry run, and decoded full TransactionData bytes', async () => {
   const built = allActions().listMakerControl;
   const transactionBytes = fullListTransactionBytes(built);
-  const evidence = createMarketV8RecoveryEvidenceV8(built, transactionBytes);
+  const dryRunProof = await inspectMarketActionOnChainV8({
+    async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+    async dryRunTransactionBlock({ transactionBlock }) {
+      assert.equal(transactionBlock, transactionBytes);
+      return { effects: { status: { status: 'success' } } };
+    },
+  }, built, transactionBytes);
+  const evidence = createMarketV8RecoveryEvidenceV8(built, transactionBytes, dryRunProof);
   assert.equal(assertMarketV8RecoveryEvidenceV8(evidence), evidence);
   assert.equal(evidence.descriptor.action, 'listMakerControl');
   assert.equal(evidence.runtime, attestedRuntime);
   assert.equal(evidence.transactionDigest, TransactionDataBuilder.getDigestFromBytes(Buffer.from(transactionBytes, 'base64')));
 
   assert.throws(
-    () => createMarketV8RecoveryEvidenceV8({ ...built }, transactionBytes),
+    () => createMarketV8RecoveryEvidenceV8({ ...built }, transactionBytes, dryRunProof),
     (error) => error.code === 'MARKET_V8_BUILT_ACTION_REQUIRED',
   );
   assert.throws(
-    () => createMarketV8RecoveryEvidenceV8(built, fullListTransactionBytes(built, { functionName: 'recover_maker_control_listing_v8' })),
+    () => createMarketV8RecoveryEvidenceV8(built, fullListTransactionBytes(built, { functionName: 'recover_maker_control_listing_v8' }), dryRunProof),
     (error) => error.code === 'MARKET_V8_TRANSACTION_TARGET_MISMATCH',
   );
   assert.throws(
-    () => createMarketV8RecoveryEvidenceV8(built, fullListTransactionBytes(built, { firstObjectId: id(998) })),
+    () => createMarketV8RecoveryEvidenceV8(built, fullListTransactionBytes(built, { firstObjectId: id(998) }), dryRunProof),
     (error) => error.code === 'MARKET_V8_TRANSACTION_OBJECT_MISMATCH',
   );
   assert.throws(
     () => assertMarketV8RecoveryEvidenceV8({ ...evidence }),
     (error) => error.code === 'MARKET_V8_RECOVERY_EVIDENCE_REQUIRED',
+  );
+  assert.throws(
+    () => createMarketV8RecoveryEvidenceV8(built, transactionBytes, { ...dryRunProof }),
+    (error) => error.code === 'MARKET_V8_ACTION_DRY_RUN_PROOF_REQUIRED',
   );
 });
 
