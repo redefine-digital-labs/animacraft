@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { bcs } from '@mysten/sui/bcs';
 import { Inputs, TransactionDataBuilder } from '@mysten/sui/transactions';
-import { normalizeStructTag, toBase64 } from '@mysten/sui/utils';
+import { fromBase64, normalizeStructTag, toBase64 } from '@mysten/sui/utils';
+
+import {
+  makerV8TransactionEventsDigestV8,
+  readFinalizedMakerV8EnvelopeV8,
+} from '../maker-v8-browser.js';
+import { assertFinalizedMarketReadbackV8 } from '../maker-v8-finalized.js';
 
 import {
   MARKET_V8_ACTION_ABI,
@@ -1437,4 +1444,710 @@ test('cancel remains available across quote drift while recovery mirrors Maker v
     root: rootAt(MARKET_V8_LIFECYCLES.PAUSED),
     protocolConfig: currentProtocol,
   }));
+});
+
+const FINALIZED_EVENT_BCS = Object.freeze({
+  MarketListingOpenedV8: bcs.struct('MarketListingOpenedV8Production', {
+    listing_id: bcs.Address, registry_id: bcs.Address, lane: bcs.u8(), root_id: bcs.Address,
+    asset_id: bcs.Address, seller: bcs.Address, ownership_epoch: bcs.u64(),
+    gross_atomic: bcs.u64(), quote_commitment: bcs.vector(bcs.u8()),
+  }),
+  MarketListingSettledV8: bcs.struct('MarketListingSettledV8Production', {
+    listing_id: bcs.Address, registry_id: bcs.Address, lane: bcs.u8(), asset_id: bcs.Address,
+    seller: bcs.Address, buyer: bcs.Address, gross_atomic: bcs.u64(), protocol_atomic: bcs.u64(),
+    creator_atomic: bcs.u64(), source_atomic: bcs.u64(), seller_atomic: bcs.u64(),
+  }),
+  MarketListingClosedV8: bcs.struct('MarketListingClosedV8Production', {
+    listing_id: bcs.Address, registry_id: bcs.Address, lane: bcs.u8(), asset_id: bcs.Address,
+    seller: bcs.Address, recovered: bcs.bool(),
+  }),
+  MakerControlTransferredV8: bcs.struct('MakerControlTransferredV8Production', {
+    root_id: bcs.Address, previous_owner: bcs.Address, new_owner: bcs.Address,
+    previous_control_epoch: bcs.u64(), new_control_epoch: bcs.u64(), new_admin_cap_id: bcs.Address,
+  }),
+  PhysicalMarketCustodyTransitionV8: bcs.struct('PhysicalMarketCustodyTransitionV8Production', {
+    action: bcs.u8(), listing_id: bcs.Address, asset_id: bcs.Address, source_kind: bcs.u8(),
+    source_treasury_id: bcs.Address, previous_holder: bcs.Address, holder: bcs.Address,
+    previous_ownership_epoch: bcs.u64(), ownership_epoch: bcs.u64(),
+    provenance_commitment: bcs.vector(bcs.u8()),
+  }),
+});
+
+const FINALIZED_SOUL_COMMITMENT_INPUT_BCS = bcs.struct('SoulCommitmentInputV8Production', {
+  domain: bcs.vector(bcs.u8()),
+  version: bcs.u64(),
+  soul_registry_id: bcs.Address,
+  root_id: bcs.Address,
+  maker_version: bcs.u64(),
+  root_content_commitment: bcs.vector(bcs.u8()),
+  output_key: bcs.string(),
+  output_policy_commitment: bcs.vector(bcs.u8()),
+  holder: bcs.Address,
+  ownership_epoch: bcs.u64(),
+  output_id: bcs.Address,
+  receipt_id: bcs.Address,
+  recipe_commitment: bcs.vector(bcs.u8()),
+  render_commitment: bcs.vector(bcs.u8()),
+  output_commitment: bcs.vector(bcs.u8()),
+  receipt_commitment: bcs.vector(bcs.u8()),
+  soul_creator_royalty_bps: bcs.u16(),
+  maker_source_royalty_bps: bcs.u16(),
+});
+const FINALIZED_SOUL_COMMITMENT_DOMAIN = new TextEncoder()
+  .encode('animacraft-v8/output/canonical-soul');
+
+const finalizedSharedOwner = Object.freeze({ $kind: 'Shared', Shared: { initialSharedVersion: '1' } });
+const finalizedAddressOwner = (owner) => ({ $kind: 'AddressOwner', AddressOwner: owner });
+const finalizedObjectOwner = (owner) => ({ $kind: 'ObjectOwner', ObjectOwner: owner });
+const finalizedHexBytes = (value) => Uint8Array.from(value.slice(2).match(/.{2}/g), (pair) => Number.parseInt(pair, 16));
+
+function finalizedSoulCommitment(fields) {
+  const encoded = FINALIZED_SOUL_COMMITMENT_INPUT_BCS.serialize({
+    domain: FINALIZED_SOUL_COMMITMENT_DOMAIN,
+    version: fields.version,
+    soul_registry_id: fields.soul_registry_id,
+    root_id: fields.root_id,
+    maker_version: fields.maker_version,
+    root_content_commitment: finalizedHexBytes(fields.root_content_commitment),
+    output_key: fields.output_key,
+    output_policy_commitment: finalizedHexBytes(fields.output_policy_commitment),
+    holder: fields.holder,
+    ownership_epoch: fields.ownership_epoch,
+    output_id: fields.output_id,
+    receipt_id: fields.receipt_id,
+    recipe_commitment: finalizedHexBytes(fields.recipe_commitment),
+    render_commitment: finalizedHexBytes(fields.render_commitment),
+    output_commitment: finalizedHexBytes(fields.output_commitment),
+    receipt_commitment: finalizedHexBytes(fields.receipt_commitment),
+    soul_creator_royalty_bps: Number(fields.soul_creator_royalty_bps),
+    maker_source_royalty_bps: Number(fields.maker_source_royalty_bps),
+  }).toBytes();
+  return `0x${[...sha256(encoded)].map((entry) => entry.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function finalizedStableJson(value) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') return JSON.stringify(value);
+  if (typeof value === 'bigint') return JSON.stringify(value.toString());
+  if (Array.isArray(value)) return `[${value.map(finalizedStableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${finalizedStableJson(value[key])}`).join(',')}}`;
+}
+
+function finalizedHash(value) {
+  return `0x${[...sha256(new TextEncoder().encode(finalizedStableJson(value)))]
+    .map((entry) => entry.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function finalizedActionKind(action) {
+  if (action.startsWith('list')) return 'LIST';
+  if (action.startsWith('purchase')) return 'PURCHASE';
+  if (action.startsWith('cancel')) return 'CANCEL';
+  return 'RECOVER';
+}
+
+function finalizedRegistryAfter(before, kind, quote) {
+  const after = { ...before, revision: (BigInt(before.revision) + 1n).toString() };
+  if (kind === 'LIST') {
+    after.listing_count = (BigInt(before.listing_count) + 1n).toString();
+    after.escrow_count = (BigInt(before.escrow_count) + 1n).toString();
+  } else if (kind === 'PURCHASE') {
+    after.escrow_count = (BigInt(before.escrow_count) - 1n).toString();
+    after.completed_sale_count = (BigInt(before.completed_sale_count) + 1n).toString();
+    for (const [field, amount] of [
+      ['gross_volume_atomic', quote.grossAtomic], ['protocol_paid_atomic', quote.protocolAtomic],
+      ['creator_paid_atomic', quote.creatorAtomic], ['source_paid_atomic', quote.sourceAtomic],
+      ['seller_paid_atomic', quote.sellerAtomic],
+    ]) after[field] = (BigInt(before[field]) + BigInt(amount)).toString();
+  } else {
+    after.escrow_count = (BigInt(before.escrow_count) - 1n).toString();
+    const field = kind === 'CANCEL' ? 'canceled_sale_count' : 'recovered_sale_count';
+    after[field] = (BigInt(before[field]) + 1n).toString();
+  }
+  return after;
+}
+
+function finalizedListingFields(descriptor, listingId, status, revision, terminalRecipient) {
+  const { preState } = descriptor;
+  const commonFields = {
+    version: '8',
+    registry_id: descriptor.registryId,
+    treasury_id: descriptor.treasuryId,
+    package_config_id: descriptor.roleConfigIds.market,
+    gross_atomic: preState.quote.grossAtomic,
+    protocol_atomic: preState.quote.protocolAtomic,
+    creator_atomic: preState.quote.creatorAtomic,
+    seller_atomic: preState.quote.sellerAtomic,
+    quote_commitment: preState.quote.commitment,
+    status: String(status),
+    revision: String(revision),
+    terminal_recipient: terminalRecipient,
+  };
+  if (descriptor.lane === MARKET_V8_LANES.MAKER) return {
+    ...commonFields,
+    root_id: descriptor.rootId,
+    maker_version: '42',
+    root_content_commitment: descriptor.rootContentCommitment,
+    admin_cap_id: preState.assetIds[0],
+    seller: preState.seller,
+    expected_control_epoch: preState.ownershipEpoch,
+  };
+  if (descriptor.lane === MARKET_V8_LANES.SOUL) return {
+    ...commonFields,
+    source_atomic: preState.quote.sourceAtomic,
+    custody: {
+      listing_id: listingId,
+      output_registry_id: preState.soul.outputRegistryId,
+      soul_registry_id: preState.soul.soulRegistryId,
+      market_registry_id: descriptor.registryId,
+      market_treasury_id: descriptor.treasuryId,
+      root_id: descriptor.rootId,
+      maker_version: '42',
+      root_content_commitment: descriptor.rootContentCommitment,
+      output_id: preState.assetIds[0],
+      receipt_id: preState.assetIds[1],
+      soul_id: preState.assetIds[2],
+      output_commitment: preState.soul.outputCommitment,
+      receipt_commitment: preState.soul.receiptCommitment,
+      soul_commitment: preState.soul.soulCommitment,
+      seller: preState.seller,
+      expected_soul_ownership_epoch: preState.ownershipEpoch,
+    },
+  };
+  return {
+    ...commonFields,
+    source_atomic: preState.quote.sourceAtomic,
+    custody: {
+      version: '8',
+      catalog_id: descriptor.catalogId,
+      product_binding_commitment: bytesHex(41),
+      call_cap_set_commitment: bytesHex(42),
+      market_authority_id: id(850),
+      market_registry_id: descriptor.registryId,
+      market_treasury_id: descriptor.treasuryId,
+      listing_id: listingId,
+      physical_package_config_id: descriptor.roleConfigIds.physical,
+      physical_registry_id: descriptor.arguments.find((entry) => entry.name === 'physicalRegistry').objectId,
+      root_id: descriptor.rootId,
+      maker_version: '42',
+      root_content_commitment: descriptor.rootContentCommitment,
+      asset_id: preState.assetIds[0],
+      source_kind: preState.physical.sourceKind,
+      source_treasury_id: preState.physical.sourceTreasuryId,
+      source_id: preState.physical.sourceId,
+      source_semantic_id: preState.physical.sourceSemanticId,
+      asset_content_commitment: preState.physical.assetContentCommitment,
+      source_content_commitment: preState.physical.sourceContentCommitment,
+      provenance_commitment: preState.physical.provenanceCommitment,
+      transferable: preState.physical.transferable,
+      holder: preState.seller,
+      ownership_epoch: preState.ownershipEpoch,
+    },
+  };
+}
+
+function finalizedRawEvents(descriptor, listingId, newAdminId) {
+  const kind = finalizedActionKind(descriptor.action);
+  const { preState } = descriptor;
+  const eventName = kind === 'LIST' ? 'MarketListingOpenedV8'
+    : kind === 'PURCHASE' ? 'MarketListingSettledV8' : 'MarketListingClosedV8';
+  const terminalJson = kind === 'LIST' ? {
+    listing_id: listingId, registry_id: descriptor.registryId, lane: descriptor.lane,
+    root_id: descriptor.rootId, asset_id: preState.assetIds.at(-1), seller: preState.seller,
+    ownership_epoch: preState.ownershipEpoch, gross_atomic: preState.quote.grossAtomic,
+    quote_commitment: preState.quote.commitment,
+  } : kind === 'PURCHASE' ? {
+    listing_id: listingId, registry_id: descriptor.registryId, lane: descriptor.lane,
+    asset_id: preState.assetIds.at(-1), seller: preState.seller, buyer: descriptor.sender,
+    gross_atomic: preState.quote.grossAtomic, protocol_atomic: preState.quote.protocolAtomic,
+    creator_atomic: preState.quote.creatorAtomic, source_atomic: preState.quote.sourceAtomic,
+    seller_atomic: preState.quote.sellerAtomic,
+  } : {
+    listing_id: listingId, registry_id: descriptor.registryId, lane: descriptor.lane,
+    asset_id: preState.assetIds.at(-1), seller: preState.seller, recovered: kind === 'RECOVER',
+  };
+  const terminalBcs = { ...terminalJson };
+  if (terminalBcs.quote_commitment) terminalBcs.quote_commitment = finalizedHexBytes(terminalBcs.quote_commitment);
+  const marketCallablePackageId = descriptor.target.split('::')[0];
+  const events = [{
+    packageId: marketCallablePackageId,
+    module: 'market_v8',
+    sender: descriptor.sender,
+    eventType: `${runtimeInput.roles.market.typeOriginPackageId}::market_v8::${eventName}`,
+    bcs: FINALIZED_EVENT_BCS[eventName].serialize(terminalBcs).toBytes(),
+    json: terminalJson,
+  }];
+  if (descriptor.action === 'purchaseMakerControl') {
+    const json = {
+      root_id: descriptor.rootId, previous_owner: preState.root.owner, new_owner: descriptor.sender,
+      previous_control_epoch: preState.root.controlEpoch,
+      new_control_epoch: (BigInt(preState.root.controlEpoch) + 1n).toString(),
+      new_admin_cap_id: newAdminId,
+    };
+    events.push({
+      packageId: marketCallablePackageId,
+      module: 'market_v8', sender: descriptor.sender,
+      eventType: `${runtimeInput.roles.core.typeOriginPackageId}::maker_v8::MakerControlTransferredV8`,
+      bcs: FINALIZED_EVENT_BCS.MakerControlTransferredV8.serialize(json).toBytes(), json,
+    });
+  }
+  if ([MARKET_V8_LANES.PHYSICAL_BASE, MARKET_V8_LANES.PHYSICAL_PACK].includes(descriptor.lane)) {
+    const json = {
+      action: kind === 'LIST' ? 0 : kind === 'PURCHASE' ? 2 : 1,
+      listing_id: listingId, asset_id: preState.assetIds[0], source_kind: Number(preState.physical.sourceKind),
+      source_treasury_id: preState.physical.sourceTreasuryId, previous_holder: preState.seller,
+      holder: kind === 'PURCHASE' ? descriptor.sender : preState.seller,
+      previous_ownership_epoch: preState.ownershipEpoch,
+      ownership_epoch: kind === 'PURCHASE'
+        ? (BigInt(preState.ownershipEpoch) + 1n).toString() : preState.ownershipEpoch,
+      provenance_commitment: preState.physical.provenanceCommitment,
+    };
+    events.push({
+      packageId: marketCallablePackageId,
+      module: 'market_v8', sender: descriptor.sender,
+      eventType: `${runtimeInput.roles.physical.typeOriginPackageId}::physical_v8::PhysicalMarketCustodyTransitionV8`,
+      bcs: FINALIZED_EVENT_BCS.PhysicalMarketCustodyTransitionV8.serialize({
+        ...json, provenance_commitment: finalizedHexBytes(json.provenance_commitment),
+      }).toBytes(),
+      json,
+    });
+  }
+  return events;
+}
+
+function finalizedCoreFixture(built, evidence, index) {
+  const descriptor = built.descriptor;
+  const { preState } = descriptor;
+  const kind = finalizedActionKind(descriptor.action);
+  const listingId = kind === 'LIST' ? id(2_000 + index) : preState.listing.objectId;
+  const newAdminId = id(3_000 + index);
+  const payoutBase = 4_000 + index * 4;
+  const dynamicBase = 5_000 + index * 4;
+  const effectsBytes = Uint8Array.of(8, index + 1, 14);
+  const effectsFingerprint = `0x${[...sha256(effectsBytes)]
+    .map((entry) => entry.toString(16).padStart(2, '0')).join('')}`;
+  const transactionBytes = fromBase64(evidence.transactionBytes);
+  const transactionDigest = evidence.transactionDigest;
+  const transaction = TransactionDataBuilder.fromBytes(transactionBytes).snapshot();
+  const changedObjects = [];
+  const unchangedConsensusObjects = [];
+  const objectTypes = {};
+  const past = new Map();
+  const historicalOwner = (owner) => {
+    if (owner?.$kind === 'Shared') return {
+      Shared: { initial_shared_version: owner.Shared.initialSharedVersion },
+    };
+    if (owner?.$kind === 'AddressOwner') return { AddressOwner: owner.AddressOwner };
+    if (owner?.$kind === 'ObjectOwner') return { ObjectOwner: owner.ObjectOwner };
+    return owner;
+  };
+
+  const remember = (objectId, version, type, owner, fields, previousTransaction = 'prior-transaction') => {
+    objectTypes[objectId] = type;
+    past.set(`${objectId}:${version}`, {
+      status: 'VersionFound',
+      details: {
+        objectId, version, digest, type, owner: historicalOwner(owner), previousTransaction,
+        content: { dataType: 'moveObject', type, fields },
+      },
+    });
+  };
+  const readonly = (objectId, type, fields) => {
+    unchangedConsensusObjects.push({ kind: 'ReadOnlyRoot', objectId, version: '7', digest });
+    remember(objectId, '7', type, finalizedSharedOwner, fields);
+  };
+  const changed = (objectId, type, before, after, beforeOwner, afterOwner, idOperation = 'None') => {
+    changedObjects.push({
+      objectId,
+      inputState: before === null ? 'DoesNotExist' : 'Exists',
+      inputVersion: before === null ? null : '7',
+      inputDigest: before === null ? null : digest,
+      inputOwner: before === null ? null : beforeOwner,
+      outputState: after === null ? 'DoesNotExist' : 'ObjectWrite',
+      outputVersion: after === null ? null : '8',
+      outputDigest: after === null ? null : digest,
+      outputOwner: after === null ? null : afterOwner,
+      idOperation,
+    });
+    objectTypes[objectId] = type;
+    if (before !== null) remember(objectId, '7', type, beforeOwner, before);
+    if (after !== null) remember(objectId, '8', type, afterOwner, after, transactionDigest);
+  };
+
+  const rootBefore = {
+    owner: preState.root.owner, creator: preState.root.creator,
+    admin_cap_id: preState.root.adminCapId, control_epoch: preState.root.controlEpoch,
+    content_commitment: descriptor.rootContentCommitment,
+  };
+  if (descriptor.lane !== MARKET_V8_LANES.MAKER) Object.assign(rootBefore, {
+    owner: id(9_000 + index),
+    admin_cap_id: id(9_100 + index),
+    control_epoch: (BigInt(preState.root.controlEpoch) + 100n).toString(),
+  });
+  if (descriptor.action === 'purchaseMakerControl') changed(
+    descriptor.rootId, types.makerRoot, rootBefore,
+    { ...rootBefore, owner: descriptor.sender, admin_cap_id: newAdminId, control_epoch: (BigInt(preState.root.controlEpoch) + 1n).toString() },
+    finalizedSharedOwner, finalizedSharedOwner,
+  ); else readonly(descriptor.rootId, types.makerRoot, rootBefore);
+
+  const registryBefore = Object.fromEntries(Object.entries(preState.registry).map(([field, value]) => [
+    field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`), value,
+  ]));
+  Object.assign(registryBefore, {
+    version: '8', catalog_id: descriptor.catalogId,
+    package_config_id: descriptor.roleConfigIds.market,
+    product_binding_commitment: bytesHex(43), call_cap_set_commitment: bytesHex(44),
+    root_id: descriptor.rootId, maker_version: '42',
+    root_content_commitment: descriptor.rootContentCommitment,
+    protocol_config_id: descriptor.protocolConfigId,
+    protocol_config_revision: descriptor.protocolRevision,
+    protocol_config_commitment: bytesHex(45), economics_commitment: bytesHex(46),
+    rights_commitment: bytesHex(47), maker_market_fee_bps: '250',
+    soul_market_fee_bps: '300', soul_creator_royalty_bps: '0',
+    maker_source_royalty_bps: '200', maker_resale_royalty_bps: '500',
+    treasury_id: descriptor.treasuryId, sealed: true,
+    zero_state_commitment: bytesHex(48),
+  });
+  changed(descriptor.registryId, types.marketRegistry, registryBefore,
+    finalizedRegistryAfter(registryBefore, kind, preState.quote), finalizedSharedOwner, finalizedSharedOwner);
+
+  const treasuryBefore = {
+    version: '8', catalog_id: descriptor.catalogId,
+    package_config_id: descriptor.roleConfigIds.market,
+    root_id: descriptor.rootId, maker_version: '42',
+    root_content_commitment: descriptor.rootContentCommitment,
+    escrow: { value: preState.treasury.escrowAtomic },
+    gross_escrowed_atomic: preState.treasury.grossEscrowedAtomic,
+    gross_released_atomic: preState.treasury.grossReleasedAtomic,
+  };
+  const treasuryAfter = kind === 'PURCHASE' ? {
+    ...treasuryBefore,
+    gross_escrowed_atomic: (BigInt(treasuryBefore.gross_escrowed_atomic) + BigInt(preState.quote.grossAtomic)).toString(),
+    gross_released_atomic: (BigInt(treasuryBefore.gross_released_atomic) + BigInt(preState.quote.grossAtomic)).toString(),
+  } : treasuryBefore;
+  if (kind === 'PURCHASE') changed(descriptor.treasuryId, types.marketTreasury, treasuryBefore, treasuryAfter,
+    finalizedSharedOwner, finalizedSharedOwner);
+  else readonly(descriptor.treasuryId, types.marketTreasury, treasuryBefore);
+
+  const listingType = descriptor.lane === MARKET_V8_LANES.MAKER ? types.makerListing
+    : descriptor.lane === MARKET_V8_LANES.SOUL ? types.soulListing : types.physicalListing;
+  const listingBefore = kind === 'LIST' ? null
+    : finalizedListingFields(descriptor, listingId, 0, preState.listing.revision, id(0));
+  const terminalRecipient = kind === 'LIST' ? id(0) : kind === 'PURCHASE' ? descriptor.sender : preState.seller;
+  const listingAfter = finalizedListingFields(
+    descriptor, listingId,
+    kind === 'LIST' ? 0 : kind === 'PURCHASE' ? 1 : kind === 'CANCEL' ? 2 : 3,
+    kind === 'LIST' ? 0 : BigInt(preState.listing.revision) + 1n,
+    terminalRecipient,
+  );
+  changed(listingId, listingType, listingBefore, listingAfter, finalizedSharedOwner, finalizedSharedOwner,
+    kind === 'LIST' ? 'Created' : 'None');
+
+  const revenueFields = (balance, collected = balance) => ({
+    revenue: { value: String(balance) }, total_collected: String(collected), total_withdrawn: '0',
+  });
+  const addRevenue = (argumentName, type, delta) => {
+    const argument = descriptor.arguments.find((entry) => entry.name === argumentName);
+    if (!argument) return;
+    const key = argumentName === 'protocolTreasury' ? 'protocolTreasury'
+      : argumentName === 'makerTreasury' ? 'makerTreasury' : 'packTreasury';
+    const balance = preState.revenueObjects[key]?.balanceAtomic ?? '0';
+    const before = revenueFields(balance);
+    if (kind === 'PURCHASE') {
+      const next = (BigInt(balance) + BigInt(delta)).toString();
+      changed(argument.objectId, type, before, revenueFields(next), finalizedSharedOwner, finalizedSharedOwner);
+    } else readonly(argument.objectId, type, before);
+  };
+  addRevenue('protocolTreasury', types.protocolTreasury, preState.quote.protocolAtomic);
+  addRevenue('makerTreasury', types.makerTreasury, preState.quote.sourceAtomic);
+  addRevenue('packTreasury', types.packTreasury, preState.quote.sourceAtomic);
+
+  if (descriptor.lane === MARKET_V8_LANES.MAKER) {
+    const adminId = preState.assetIds[0];
+    const adminBefore = { root_id: descriptor.rootId, owner: preState.seller, control_epoch: preState.root.controlEpoch };
+    if (kind === 'PURCHASE') {
+      changed(adminId, types.makerAdmin, adminBefore, null, finalizedObjectOwner(listingId), null, 'Deleted');
+      changed(newAdminId, types.makerAdmin, null, {
+        root_id: descriptor.rootId, owner: descriptor.sender,
+        control_epoch: (BigInt(preState.root.controlEpoch) + 1n).toString(),
+      }, null, finalizedAddressOwner(descriptor.sender), 'Created');
+    } else {
+      const beforeOwner = kind === 'LIST' ? finalizedAddressOwner(preState.seller) : finalizedObjectOwner(listingId);
+      const afterOwner = kind === 'LIST' ? finalizedObjectOwner(listingId) : finalizedAddressOwner(preState.seller);
+      changed(adminId, types.makerAdmin, adminBefore, adminBefore, beforeOwner, afterOwner);
+    }
+  }
+
+  if (descriptor.lane === MARKET_V8_LANES.SOUL) {
+    const outputTable = id(dynamicBase + 2);
+    const soulTable = id(dynamicBase + 3);
+    readonly(preState.soul.outputRegistryId, types.outputRegistry, { outputs: { id: { id: outputTable } } });
+    readonly(preState.soul.soulRegistryId, types.soulRegistry, { souls: { id: { id: soulTable } } });
+    const targetOwner = kind === 'LIST' ? finalizedObjectOwner(listingId)
+      : finalizedAddressOwner(kind === 'PURCHASE' ? descriptor.sender : preState.seller);
+    const beforeOwner = kind === 'LIST' ? finalizedAddressOwner(preState.seller) : finalizedObjectOwner(listingId);
+    const holder = kind === 'LIST' ? preState.seller : kind === 'PURCHASE' ? descriptor.sender : preState.seller;
+    const epoch = kind === 'PURCHASE' ? (BigInt(preState.ownershipEpoch) + 1n).toString() : preState.ownershipEpoch;
+    const soulBefore = {
+      version: '8', soul_registry_id: preState.soul.soulRegistryId,
+      root_id: descriptor.rootId, maker_version: '42',
+      root_content_commitment: descriptor.rootContentCommitment,
+      output_key: 'primary', output_policy_commitment: bytesHex(31),
+      holder: preState.seller, ownership_epoch: preState.ownershipEpoch,
+      output_id: preState.assetIds[0], receipt_id: preState.assetIds[1],
+      recipe_commitment: bytesHex(32), render_commitment: bytesHex(33),
+      output_commitment: preState.soul.outputCommitment,
+      receipt_commitment: preState.soul.receiptCommitment,
+      soul_creator_royalty_bps: '0', maker_source_royalty_bps: '200',
+      soul_commitment: preState.soul.soulCommitment,
+    };
+    const soulAfter = { ...soulBefore, holder, ownership_epoch: epoch };
+    if (kind === 'PURCHASE') soulAfter.soul_commitment = finalizedSoulCommitment(soulAfter);
+    const rows = [
+      [preState.assetIds[0], types.completeOutput, { holder: preState.seller, output_commitment: preState.soul.outputCommitment },
+        { holder, output_commitment: preState.soul.outputCommitment }],
+      [preState.assetIds[1], types.completeReceipt, { holder: preState.seller, output_id: preState.assetIds[0], receipt_commitment: preState.soul.receiptCommitment },
+        { holder, output_id: preState.assetIds[0], receipt_commitment: preState.soul.receiptCommitment }],
+      [preState.assetIds[2], types.canonicalSoul, soulBefore, soulAfter],
+    ];
+    for (const [objectId, type, before, after] of rows) changed(objectId, type, before, after, beforeOwner, targetOwner);
+    if (kind === 'PURCHASE') {
+      const baseRecord = (recordHolder) => ({
+        holder: recordHolder, output_id: preState.assetIds[0], receipt_id: preState.assetIds[1], soul_id: preState.assetIds[2],
+      });
+      const outputRecordType = normalizeStructTag(`0x2::dynamic_field::Field<0x2::object::ID,${runtimeInput.roles.output.typeOriginPackageId}::output_v8::OutputRecordV8>`);
+      const soulRecordType = normalizeStructTag(`0x2::dynamic_field::Field<0x2::object::ID,${runtimeInput.roles.output.typeOriginPackageId}::output_v8::SoulRecordV8>`);
+      changed(id(dynamicBase), outputRecordType,
+        { name: preState.assetIds[0], value: { ...baseRecord(preState.seller), output_commitment: preState.soul.outputCommitment, receipt_commitment: preState.soul.receiptCommitment } },
+        { name: preState.assetIds[0], value: { ...baseRecord(descriptor.sender), output_commitment: preState.soul.outputCommitment, receipt_commitment: preState.soul.receiptCommitment } },
+        finalizedObjectOwner(outputTable), finalizedObjectOwner(outputTable));
+      changed(id(dynamicBase + 1), soulRecordType,
+        { name: preState.assetIds[2], value: { ...baseRecord(preState.seller), ownership_epoch: preState.ownershipEpoch, soul_commitment: preState.soul.soulCommitment } },
+        { name: preState.assetIds[2], value: { ...baseRecord(descriptor.sender), ownership_epoch: epoch, soul_commitment: soulAfter.soul_commitment } },
+        finalizedObjectOwner(soulTable), finalizedObjectOwner(soulTable));
+    }
+  }
+
+  if ([MARKET_V8_LANES.PHYSICAL_BASE, MARKET_V8_LANES.PHYSICAL_PACK].includes(descriptor.lane)) {
+    const physicalRegistry = descriptor.arguments.find((entry) => entry.name === 'physicalRegistry');
+    readonly(physicalRegistry.objectId, types.physicalRegistry, { revision: '1' });
+    const treasuryOption = descriptor.lane === MARKET_V8_LANES.PHYSICAL_BASE
+      ? { vec: [] } : { vec: [preState.physical.sourceTreasuryId] };
+    const before = {
+      holder: preState.seller, ownership_epoch: preState.ownershipEpoch,
+      source_kind: preState.physical.sourceKind, source_treasury_id: treasuryOption,
+      source_id: preState.physical.sourceId, source_semantic_id: preState.physical.sourceSemanticId,
+      asset_content_commitment: preState.physical.assetContentCommitment,
+      source_content_commitment: preState.physical.sourceContentCommitment,
+      provenance_commitment: preState.physical.provenanceCommitment,
+      transferable: preState.physical.transferable,
+    };
+    const after = {
+      ...before,
+      holder: kind === 'LIST' ? preState.seller : kind === 'PURCHASE' ? descriptor.sender : preState.seller,
+      ownership_epoch: kind === 'PURCHASE'
+        ? (BigInt(preState.ownershipEpoch) + 1n).toString() : preState.ownershipEpoch,
+    };
+    changed(preState.assetIds[0], types.physicalAsset, before, after,
+      kind === 'LIST' ? finalizedAddressOwner(preState.seller) : finalizedObjectOwner(listingId),
+      kind === 'LIST' ? finalizedObjectOwner(listingId)
+        : finalizedAddressOwner(kind === 'PURCHASE' ? descriptor.sender : preState.seller));
+  }
+
+  if (kind === 'PURCHASE') {
+    const paymentType = types.paymentCoin;
+    for (const [offset, owner, amount] of [
+      [0, preState.root.creator, preState.quote.creatorAtomic],
+      [1, preState.seller, preState.quote.sellerAtomic],
+    ]) {
+      if (amount === '0') continue;
+      changed(id(payoutBase + offset), paymentType, null, { balance: amount }, null,
+        finalizedAddressOwner(owner), 'Created');
+    }
+  }
+
+  const rawEvents = finalizedRawEvents(descriptor, listingId, newAdminId);
+  const transactionEvents = makerV8TransactionEventsDigestV8(rawEvents);
+  const planBase = {
+    transactionBytes: evidence.transactionBytes,
+    transactionDigest,
+    stage: `MARKET_${kind}`,
+    sequence: descriptor.expectation?.listingRevision ?? '0',
+    signer: descriptor.sender,
+    epochWindow: evidence.epochWindow,
+    gas: evidence.gasData,
+    expiration: evidence.expiration,
+    sourceSnapshot: {
+      schema: 'animacraft.market-source-snapshot.v8',
+      fingerprint: evidence.sourceFingerprint,
+      descriptor,
+    },
+    market: { schema: evidence.schema, descriptor, runtime: {} },
+  };
+  const planHash = finalizedHash(planBase);
+  const plan = { ...planBase, fingerprint: planHash };
+  const request = {
+    digest: transactionDigest,
+    planHash,
+    identity: {
+      action: descriptor.action.toUpperCase(), wallet: descriptor.sender,
+      root: { id: descriptor.rootId }, listing: { id: listingId },
+      registry: { id: descriptor.registryId }, treasury: { id: descriptor.treasuryId },
+    },
+    plan,
+    outcome: { epoch: '100', effectsFingerprint, eventsDigest: transactionEvents.digest },
+  };
+  const rpc = {
+    core: {
+      async getTransaction(input) {
+        assert.equal(input.digest, transactionDigest);
+        assert.deepEqual(input.include, {
+          transaction: true, bcs: true, effects: true, events: true, objectTypes: true,
+        });
+        return {
+          $kind: 'Transaction',
+          Transaction: {
+            digest: transactionDigest, epoch: '100', status: { success: true, error: null },
+            transaction,
+            effects: {
+              status: { success: true, error: null }, transactionDigest,
+              eventsDigest: transactionEvents.digest, bcs: effectsBytes,
+              changedObjects, unchangedConsensusObjects,
+            },
+            events: rawEvents, objectTypes, bcs: transactionBytes,
+          },
+        };
+      },
+    },
+    async tryGetPastObject({ id: objectId, version, options }) {
+      assert.equal(Number.isSafeInteger(version), true);
+      assert.equal(options.showPreviousTransaction, true);
+      return past.get(`${objectId}:${version}`) ?? { status: 'VersionNotFound' };
+    },
+  };
+  return { rpc, request, descriptor, listingId, rawEvents, transactionEvents };
+}
+
+async function finalizedProductionActions() {
+  const actions = allActions();
+  const sameOwnerRoot = object(IDs.root, types.makerRoot, {
+    adminCapId: IDs.admin, ownerAddress: IDs.seller, creatorAddress: IDs.seller, controlEpoch: 5n,
+    binding: common.root.binding, lifecycleCode: MARKET_V8_LIFECYCLES.ACTIVE,
+  });
+  actions.purchaseMakerControl = client.buildPurchaseMakerControl({
+    ...makerExisting(), root: sameOwnerRoot, protocolTreasury,
+  });
+
+  const zeroCreatorRegistryResponse = structuredClone(registryResponse);
+  zeroCreatorRegistryResponse.data.content.fields.soul_creator_royalty_bps = '0';
+  const zeroCreatorRegistry = client.parseRegistry(zeroCreatorRegistryResponse);
+  const zeroCreatorQuote = client.quoteSoulResale(zeroCreatorRegistry, 1_000_000n);
+  const zeroCreatorListingResponse = structuredClone(soulListingResponse());
+  Object.assign(zeroCreatorListingResponse.data.content.fields, listingAmounts(zeroCreatorQuote));
+  const zeroCreatorListing = client.parseSoulListing(zeroCreatorListingResponse);
+  const zeroCreatorChainQuote = await client.inspectQuoteOnChain({
+    async simulateTransaction() {
+      return { $kind: 'Transaction', commandResults: [{ returnValues: [{ bcs: quoteBytes(zeroCreatorQuote) }] }] };
+    },
+  }, {
+    registry: zeroCreatorRegistry, treasury, root: common.root, wallet: wallet(IDs.buyer),
+    quoteKind: MARKET_V8_QUOTE_KINDS.SOUL_RESALE, grossAtomic: 1_000_000n,
+  });
+  actions.purchaseSoulBundle = client.buildPurchaseSoulBundle({
+    ...common,
+    registry: zeroCreatorRegistry,
+    listing: zeroCreatorListing,
+    wallet: wallet(IDs.buyer),
+    expectation: {
+      listingRevision: zeroCreatorListing.fields.revision,
+      registryRevision: zeroCreatorRegistry.fields.revision,
+      quoteCommitment: zeroCreatorListing.fields.quoteCommitment,
+    },
+    chainQuote: zeroCreatorChainQuote,
+    outputRegistry, soulRegistry,
+    outputReceiving: receiving(IDs.output, types.completeOutput),
+    receiptReceiving: receiving(IDs.receipt, types.completeReceipt),
+    soulReceiving: receiving(IDs.soul, types.canonicalSoul),
+    makerTreasury, protocolTreasury,
+  });
+  return actions;
+}
+
+test('all 14 production builders normalize exact Core V2 history/events and verify finalized readback', async () => {
+  const actions = await finalizedProductionActions();
+  assert.deepEqual(Object.keys(actions), Object.keys(MARKET_V8_ACTION_ABI));
+  const verifiedActions = [];
+  const envelopes = new Map();
+  for (const [index, [action, built]] of Object.entries(actions).entries()) {
+    assert.equal(built.descriptor.action, action);
+    const proof = await inspectMarketActionOnChainV8(canonicalSigningClient(), built);
+    const evidence = createMarketV8RecoveryEvidenceV8(built, proof);
+    assert.equal(evidence.descriptor, built.descriptor, `${action} descriptor must come from the branded builder`);
+    assert.equal(
+      TransactionDataBuilder.getDigestFromBytes(fromBase64(evidence.transactionBytes)),
+      evidence.transactionDigest,
+      `${action} TransactionData digest`,
+    );
+    const fixtureValue = finalizedCoreFixture(built, evidence, index);
+    const envelope = await readFinalizedMakerV8EnvelopeV8({
+      client: fixtureValue.rpc, market: client, request: fixtureValue.request,
+    });
+    const verified = assertFinalizedMarketReadbackV8(
+      envelope, fixtureValue.request, client, await import('../maker-v8-market.js'),
+    );
+    assert.equal(verified.verified, true, action);
+    assert.equal(verified.evidence.source, 'FINALIZED_CORE_V2', action);
+    assert.equal(envelope.effects.transactionBcs, evidence.transactionBytes, action);
+    assert.equal(envelope.effects.eventsBcs, fixtureValue.transactionEvents.bcs, action);
+    assert.equal(envelope.eventsDigest, fixtureValue.transactionEvents.digest, action);
+    assert.equal(envelope.effects.objects.some((entry) => entry.role === 'LISTING'), true, action);
+    envelopes.set(action, envelope);
+    verifiedActions.push(action);
+  }
+  assert.deepEqual(verifiedActions, Object.keys(MARKET_V8_ACTION_ABI));
+
+  const makerPurchase = actions.purchaseMakerControl.descriptor;
+  assert.equal(makerPurchase.preState.root.creator, makerPurchase.preState.seller);
+  const soulPurchase = actions.purchaseSoulBundle.descriptor;
+  assert.equal(soulPurchase.preState.quote.creatorAtomic, '0');
+  assert.equal(soulPurchase.preState.quote.sourceAtomic !== '0', true);
+
+  const roles = (action) => new Map(envelopes.get(action).effects.objects.map((entry) => [entry.role, entry]));
+  const makerPurchaseRoles = roles('purchaseMakerControl');
+  assert.equal(makerPurchaseRoles.get('ADMIN').change, 'DELETED');
+  assert.equal(makerPurchaseRoles.get('ADMIN_NEW').change, 'CREATED');
+  assert.equal(makerPurchaseRoles.get('CREATOR_COIN').after.owner.value, makerPurchase.preState.seller);
+  assert.equal(makerPurchaseRoles.get('SELLER_COIN').after.owner.value, makerPurchase.preState.seller);
+  assert.equal(envelopes.get('purchaseMakerControl').events.some(
+    (event) => event.type.endsWith('::maker_v8::MakerControlTransferredV8'),
+  ), true);
+
+  for (const envelope of envelopes.values()) for (const event of envelope.events) {
+    assert.equal(event.packageId, runtimeInput.roles.market.callablePackageId);
+    assert.equal(event.transactionModule, 'market_v8');
+  }
+
+  const postPrepareRoot = roles('purchaseSoulBundle').get('ROOT');
+  assert.notEqual(postPrepareRoot.before.parsed.owner, soulPurchase.preState.root.owner);
+  assert.deepEqual(postPrepareRoot.before.parsed, postPrepareRoot.after.parsed);
+
+  const soulPurchaseRoles = roles('purchaseSoulBundle');
+  assert.equal(soulPurchaseRoles.has('OUTPUT_RECORD'), true);
+  assert.equal(soulPurchaseRoles.has('SOUL_RECORD'), true);
+  assert.equal(soulPurchaseRoles.has('CREATOR_COIN'), false);
+  assert.equal(soulPurchaseRoles.has('SELLER_COIN'), true);
+
+  const baseAsset = roles('listBasePhysical').get('ASSET');
+  const packAsset = roles('listPackPhysical').get('ASSET');
+  assert.deepEqual(baseAsset.before.parsed.source_treasury_id, { vec: [] });
+  assert.deepEqual(packAsset.before.parsed.source_treasury_id, {
+    vec: [actions.listPackPhysical.descriptor.preState.physical.sourceTreasuryId],
+  });
+  assert.equal(actions.cancelPhysicalListing.descriptor.lane, MARKET_V8_LANES.PHYSICAL_BASE);
+  assert.equal(actions.recoverPhysicalListing.descriptor.lane, MARKET_V8_LANES.PHYSICAL_PACK);
+  for (const action of [
+    'listBasePhysical', 'listPackPhysical', 'purchaseBasePhysical', 'purchasePackPhysical',
+    'cancelPhysicalListing', 'recoverPhysicalListing',
+  ]) assert.equal(envelopes.get(action).events.some(
+    (event) => event.type.endsWith('::physical_v8::PhysicalMarketCustodyTransitionV8'),
+  ), true, `${action} Physical companion event`);
 });

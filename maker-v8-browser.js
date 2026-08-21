@@ -417,12 +417,16 @@ async function exactPastObject(client, ref, expectedType, role, outputDigest = n
   if (details.content?.dataType !== 'moveObject' || !plain(details.content.fields)) {
     fail('MAKER_V8_BROWSER_HISTORICAL_CONTENT_INVALID', `${role} historical object is not parsed Move content.`, 'READBACK');
   }
+  const observedOwner = ownerEvidence(details.owner);
+  if (JSON.stringify(observedOwner) !== JSON.stringify(ref.owner)) {
+    fail('MAKER_V8_BROWSER_HISTORICAL_OWNER_DRIFT', `${role} historical owner differs from its effects ref.`, 'READBACK');
+  }
   return freeze({
     objectId: ref.objectId,
     type,
-    ownerKind: ownerEvidence(details.owner).kind,
+    ownerKind: observedOwner.kind,
     ref,
-    owner: ownerEvidence(details.owner),
+    owner: observedOwner,
     previousTransaction: details.previousTransaction ?? null,
     parsed: details.content.fields,
   });
@@ -633,7 +637,7 @@ function canonicalEventField(value, kind, label) {
   if (kind === 'u8') {
     const normalized = decimal(value, label);
     if (BigInt(normalized) > 255n) fail('MAKER_V8_BROWSER_EVENT_BCS_INVALID', `${label} exceeds u8.`, 'READBACK');
-    return Number(normalized);
+    return normalized;
   }
   if (kind === 'bool') {
     if (typeof value !== 'boolean') fail('MAKER_V8_BROWSER_EVENT_BCS_INVALID', `${label} must be bool.`, 'READBACK');
@@ -1123,14 +1127,40 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
     changes.set(objectIdValue, { raw: change, normalized });
     return normalized;
   }));
+  const sharedInputs = new Map();
+  for (const input of finalized.transaction?.inputs ?? []) {
+    const shared = input?.Object?.SharedObject;
+    if (!shared) continue;
+    const objectIdValue = id(shared.objectId, 'transaction.sharedInput.objectId');
+    if (sharedInputs.has(objectIdValue)) {
+      fail('MAKER_V8_BROWSER_CORE_INPUT_INVALID', 'Finalized TransactionData repeats a SharedObject input.', 'READBACK');
+    }
+    sharedInputs.set(objectIdValue, freeze({
+      kind: 'Shared',
+      value: freeze({
+        initialSharedVersion: decimal(
+          shared.initialSharedVersion,
+          `transaction.sharedInput.${objectIdValue}.initialSharedVersion`,
+        ),
+      }),
+    }));
+  }
   const unchanged = new Map((effects.unchangedConsensusObjects || []).map((entry, index) => {
     const objectIdValue = id(entry.objectId, `effects.unchangedConsensusObjects[${index}].objectId`);
     if (!entry.version || !entry.digest) return [objectIdValue, null];
+    const owner = sharedInputs.get(objectIdValue);
+    if (!owner) {
+      fail(
+        'MAKER_V8_BROWSER_CORE_INPUT_INVALID',
+        'Unchanged consensus object is absent from the exact finalized TransactionData SharedObject inputs.',
+        'READBACK',
+      );
+    }
     return [objectIdValue, freeze({
       objectId: objectIdValue,
       version: decimal(entry.version, `effects.unchangedConsensusObjects[${index}].version`),
       digest: digest(entry.digest, `effects.unchangedConsensusObjects[${index}].digest`),
-      owner: freeze({ kind: 'Shared', value: null }),
+      owner,
       kind: entry.kind,
     })];
   }));
@@ -1320,7 +1350,12 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
     eventsDigest,
     planHash,
     identity: request.identity,
-    transaction,
+    transaction: freeze({
+      sender: transaction.sender,
+      status: transaction.status,
+      target: transaction.target,
+      typeArguments: transaction.typeArguments,
+    }),
     event: terminal[0].event,
     events,
     effects: freeze({

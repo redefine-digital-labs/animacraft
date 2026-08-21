@@ -644,6 +644,15 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
             transaction: {
               version: 2,
               sender: objectId(99),
+              inputs: [{
+                Object: {
+                  SharedObject: {
+                    objectId: ids.root,
+                    initialSharedVersion: '1',
+                    mutable: false,
+                  },
+                },
+              }],
               commands: [{
                 $kind: 'MoveCall',
                 MoveCall: {
