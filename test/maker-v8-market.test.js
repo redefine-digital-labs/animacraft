@@ -383,6 +383,7 @@ const expectation = (listing) => ({
 const rootAt = (lifecycleCode) => object(IDs.root, types.makerRoot, {
   adminCapId: IDs.admin,
   ownerAddress: IDs.seller,
+  creatorAddress: id(203),
   controlEpoch: 5n,
   binding: Object.freeze({
     makerTreasuryId: IDs.makerTreasury,
@@ -411,12 +412,12 @@ const common = Object.freeze({
   protocolConfig: currentProtocol,
 });
 const makerTreasury = object(IDs.makerTreasury, types.makerTreasury, { balanceAtomic: 0n });
-const protocolTreasury = object(IDs.protocolTreasury, types.protocolTreasury);
+const protocolTreasury = object(IDs.protocolTreasury, types.protocolTreasury, { balanceAtomic: 0n });
 const outputRegistry = object(IDs.outputRegistry, types.outputRegistry);
 const soulRegistry = object(IDs.soulRegistry, types.soulRegistry);
 const physicalRegistry = object(IDs.physicalRegistry, types.physicalRegistry);
 const physicalConfig = object(IDs.physicalConfig, types.physicalConfig);
-const packTreasury = object(IDs.packTreasury, types.packTreasury);
+const packTreasury = object(IDs.packTreasury, types.packTreasury, { balanceAtomic: 0n });
 const packRelease = object(IDs.packRelease, types.packRelease);
 
 function makerExisting(listing = makerListing, sender = IDs.buyer) {

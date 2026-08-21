@@ -1446,10 +1446,31 @@ function actionPreState(action, lane, sender, args) {
   const rootSnapshot = freezeRecord({
     objectId: root.objectId,
     owner: buildAddress(root.ownerAddress ?? root.fields?.owner, 'root.owner'),
+    creator: buildAddress(root.creatorAddress ?? root.fields?.creator, 'root.creator'),
     adminCapId: buildId(root.adminCapId ?? root.fields?.admin_cap_id, 'root.adminCapId'),
     controlEpoch: decimalSnapshot(root.controlEpoch ?? root.fields?.control_epoch, 'root.controlEpoch'),
     lifecycleCode: String(observedRootLifecycle(root)),
   });
+  const revenueObjects = {};
+  for (const [field, argumentName] of [
+    ['protocolTreasury', 'protocolTreasury'],
+    ['makerTreasury', 'makerTreasury'],
+    ['packTreasury', 'packTreasury'],
+  ]) {
+    const argument = byName.get(argumentName);
+    if (!argument) {
+      revenueObjects[field] = null;
+      continue;
+    }
+    const balance = argument.source?.balanceAtomic;
+    if (action.startsWith('purchase') && balance === undefined) {
+      fail(MarketV8BuildError, 'MARKET_V8_REVENUE_PRESTATE_REQUIRED', `${argumentName}.balanceAtomic`, 'Purchase signing requires the exact revenue treasury balance pre-state.');
+    }
+    revenueObjects[field] = freezeRecord({
+      objectId: argument.objectId,
+      balanceAtomic: balance === undefined ? null : decimalSnapshot(balance, `${argumentName}.balanceAtomic`),
+    });
+  }
   return freezeRecord({
     schema: 'animacraft.market-action-prestate.v8',
     action,
@@ -1463,11 +1484,7 @@ function actionPreState(action, lane, sender, args) {
     listing: listingSnapshot,
     root: rootSnapshot,
     quote: quoteSnapshot,
-    revenueObjectIds: freezeRecord({
-      protocolTreasuryId: byName.get('protocolTreasury')?.objectId ?? null,
-      makerTreasuryId: byName.get('makerTreasury')?.objectId ?? null,
-      packTreasuryId: byName.get('packTreasury')?.objectId ?? null,
-    }),
+    revenueObjects: freezeRecord(revenueObjects),
   });
 }
 
