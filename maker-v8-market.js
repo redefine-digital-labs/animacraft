@@ -1010,6 +1010,10 @@ export function assertMarketPairV8(registryInput, treasuryInput) {
   if (!registry.fields.sealed) {
     fail(MarketV8EligibilityError, 'MARKET_V8_REGISTRY_NOT_SEALED', 'registry.sealed', 'Market registry must be sealed.');
   }
+  same(treasury.fields.escrowAtomic, 0n, 'MARKET_V8_ESCROW_NOT_ZERO', 'treasury.escrowAtomic', 'Market payment escrow must be zero before every atomic action.');
+  same(treasury.fields.grossEscrowedAtomic, treasury.fields.grossReleasedAtomic,
+    'MARKET_V8_ESCROW_COUNTER_DRIFT', 'treasury.grossReleasedAtomic',
+    'Market gross escrowed and released counters must be equal before every atomic action.');
   return freezeRecord({ registry, treasury });
 }
 

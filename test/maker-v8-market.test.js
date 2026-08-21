@@ -774,6 +774,29 @@ test('runtime and parsers pin every stable TypeOrigin and preserve u64/u128 as b
   ));
 });
 
+test('every action fails closed unless Market payment escrow is exactly zero and fully released', () => {
+  for (const [field, value, code] of [
+    ['escrow.value', '1', 'MARKET_V8_ESCROW_NOT_ZERO'],
+    ['gross_released_atomic', '1', 'MARKET_V8_ESCROW_COUNTER_DRIFT'],
+  ]) {
+    const response = structuredClone(treasuryResponse);
+    if (field === 'escrow.value') response.data.content.fields.escrow.value = value;
+    else response.data.content.fields[field] = value;
+    const invalidTreasury = client.parseTreasury(response);
+    assert.throws(() => client.buildListMakerControl({
+      ...common,
+      treasury: invalidTreasury,
+      wallet: wallet(IDs.seller),
+      root: rootAt(MARKET_V8_LIFECYCLES.PAUSED),
+      admin: object(IDs.admin, types.makerAdmin),
+      makerTreasury,
+      chainQuote: makerChainQuote,
+      grossAtomic: 1_000_000n,
+      expectedRegistryRevision: registry.fields.revision,
+    }), (error) => error instanceof MarketV8EligibilityError && error.code === code);
+  }
+});
+
 test('quote mirror uses exact bigint shares and exact Move BCS commitment bytes', () => {
   assert.deepEqual(makerQuote, {
     version: 8n,
