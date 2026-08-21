@@ -1,99 +1,42 @@
-window.ANIMACRAFT_CONFIG = {
-  network: 'mainnet',
-  grpcUrl: 'https://fullnode.mainnet.sui.io:443',
-  graphqlUrl: 'https://graphql.mainnet.sui.io/graphql',
-  packageId: '0x2221610b5513ef3f926433229b7f0b565e850d56020e344266737cdca078af3b',
-  callablePackageId: '0x2221610b5513ef3f926433229b7f0b565e850d56020e344266737cdca078af3b',
-  originalPackageId: '0x9678afa6b008ddd0637b7723e30beac1c2a1d096b39c76b103f1a1841dc1ffea',
-  paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
-  paymentCoinSymbol: 'USDC',
-  paymentCoinDecimals: 6,
-  walrusAggregatorUrl: 'https://aggregator.walrus-mainnet.walrus.space',
-  walrusUploadRelayUrl: 'https://upload-relay.mainnet.walrus.space',
-  // Client-side ceiling. The relay charges its exact live quote, not this cap.
-  walrusRelayMaxTipMist: 100000000,
-  walrusEpochs: 53,
-  featuredMakers: {},
-  appUrl: 'https://animacraft.soulidity.ai',
-  soulidityAppUrl: 'https://www.soulidity.ai',
-  soulidityIntegrationPath: '/integrations/animacraft',
-  soulidityPackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
-  soulidityCallablePackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
-  souliditySealNamespacePackageId: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d',
-  soulidityTypeOriginPackageId: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d',
-  protocolFeePackageId: '0xc1bbfe03cc93e27903e1ffd1a712745384cd537d6edadfb0e759bf6e090e53cc',
-  protocolFeeConfigId: '0x60d141c7b9c5726a85a3b53dd08879d86af313cf3fe96d5e6440a8d5cb60ee32',
-  protocolTreasuryId: '0xf859174faa620adcdae10d2554eb356cb8a499dcbe47f15327a1347fe752af54',
-  protocolFeeAdminCapId: '0x28a99dfbfc37b474b4bdb3330eeb1a2ef3bb1139e0268112d91bd11a4e3fdcbd',
-  protocolFeeAdminCapOwner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
-  primaryProtocolFeeBps: 5000,
-  canonicalSoulMintEnabled: false,
-  // Fresh unified Maker v8 remains off until its one-package protocol tuple,
-  // native Soul/Seal/Physical modules and v8-only web cutover are verified.
-  makerV8ReleaseEnabled: false,
-  makerV8CallablePackageId: '',
-  makerV8TypeOriginPackageId: '',
-  makerV8ProtocolConfigId: '',
-  makerV8ProtocolTreasuryId: '',
-  makerV8PaymentCoinType: '',
-  // The reviewed v5 core is initialized on Mainnet with its release gate off.
-  // The callable advances with the v8 package so recovery can reach the
-  // additive Maker release-evidence entrypoint while TypeOrigin stays frozen.
-  commerceV5CallablePackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
-  commerceV5TypeOriginPackageId: '0xcf369b8b02ac1e997146fc3be3f03870db14eaccf3d2cb7a9b93724be463108e',
-  commerceProtocolConfigV5Id: '0xf63dc43bb3787fff47fec7f8c3ff2e777dd0966500570fa7deab2bef9b6da0d5',
-  commerceProtocolTreasuryV5Id: '0x97ba8042011d6c2d4857a33789a8250c16f6effeda622cb312fe481e0b907d44',
-  commerceV5LogicalAuxiliaryBlobId: '2W6FuNVQhJXdWonFSEf1e-1MuecbA1Cd3H8a4_Yrkm4',
-  commerceV5SoulBindingProofType: '0xa43cc9a94caa904a97316d97c08804369ee8fbe3335d2ddae154022d7d6e5d5d::animacraft_soul_binding_v5::AnimacraftSoulBindingProofV5',
-  commerceV5ReleaseEnabled: false,
-  // The reviewed v6 composition core and its Soul owner proof are bound on
-  // Mainnet, but the product release gate remains deliberately disabled.
-  compositionV6TypeOriginPackageId: '0x2221610b5513ef3f926433229b7f0b565e850d56020e344266737cdca078af3b',
-  compositionProtocolConfigV6Id: '0x23cc495061f62a9b6a4e1048e154cd1fdc41f3b251783887db5948644eaca26d',
-  compositionProtocolTreasuryV6Id: '0xa60448ef8c32690efdbfb07aff0c13b40c7c948b9819448181ae70257be9dc1c',
-  compositionRegistryV6Id: '0x2ffed9aadcdb3a5dc670bf75c1ce8ee671afe93d0f4770cf5a0604dbaec4e5ab',
-  compositionAdminCapV6Id: '0x3feb45f8ed2062fb3fb32ca92bb3c1fa4002d521fc73022a3265db6bbba27cdd',
-  compositionAdminCapV6Owner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
-  compositionValidatorCapV6Id: '0x5d791f7752f3c7ca9509089de5c2376367a4d5fa8a70fc40b456a276c7bcee75',
-  compositionValidatorCapV6Owner: '0xadea1910ac0e738dc020247bc5408b57b15f3701026a96098b716a35c3a6c52f',
-  compositionValidatorEpochV6: 1,
-  compositionValidatorPolicyCommitmentV6: '0x26b7f87b8c4cb428288d1ac76cc1e9ba42de338dcaf1b21d305bafc133122f13',
-  // Soulidity v6 is deployed and the exact bound owner-proof TypeOrigin and
-  // concrete proof type are recorded for readback while its gate stays off.
-  compositionV6SoulOwnerProofTypeOriginPackageId: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd',
-  compositionV6SoulOwnerProofType: '0x60bf39455f90e2af94381f2434d2c013c4e38a12fd16873ac296a26660f92ecd::animacraft_soul_owner_proof_v6::AnimacraftSoulOwnerProofV6',
-  compositionV6ReleaseEnabled: false,
-  // v7 remains fail-closed until the package upgrade, disabled protocol
-  // initialization and Soulidity wardrobe adapter have all been verified.
-  physicalV7CallablePackageId: '',
-  physicalV7TypeOriginPackageId: '',
-  physicalProtocolConfigV7Id: '',
-  physicalRegistryV7Id: '',
-  physicalAdminCapV7Id: '',
-  physicalAdminCapV7Owner: '',
-  physicalV7SoulOwnerProofTypeOriginPackageId: '',
-  physicalV7SoulOwnerProofType: '',
-  physicalStyleV7ReleaseEnabled: false,
-  // v8 keeps its v6 TypeOrigin while the corrective package-only v7 upgrade
-  // supplies the callable package and new independent-extension datatypes.
-  expansionPackV8CallablePackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
-  expansionPackV8TypeOriginPackageId: '0x4b7109b4780c91ec528cced9fd77f4ed9dad4cb462484c74f100f1ed7f309c7a',
-  independentExtensionV5TypeOriginPackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
-  legacyLogicalV5TypeOriginPackageId: '0x1a797e32f594c53abab3e5bc0df9368c60deb4564e7947bea42db00d32dbe9ee',
-  // Shared Authority created by the reviewed atomic parent finalizer. The Root
-  // stays PAUSED; only the independently verified FREE v8 Pack is exposed.
-  independentExtensionAuthorityV5Id: '0xc2b39910070116bc9614f4f55b6b1013377fc86ba6273630f5cee83111bd8e19',
-  expansionPackV8ReleaseEnabled: true,
-  // Intentionally empty while the reviewed Commerce/Seal release gate is off.
-  // Mainnet activation requires the official committee endpoint plus an Enoki
-  // X-API-Key; never claim paid assets are protected without it.
-  sealV5CallablePackageId: '',
-  sealV5TypeOriginPackageId: '',
-  // Deprecated compatibility alias. New deployments set the two identities
-  // above explicitly so later upgrades do not rewrite the stable TypeOrigin.
-  sealV5PackageId: '',
-  sealKeyServers: [],
-  sealThreshold: 0,
-  sealTimeoutMs: 10000,
-  sealVerifyKeyServers: true
-};
+(() => {
+  const placeholderId = (byte) => `0x${byte.repeat(32)}`;
+
+  // Safe deployment lock. Replace every placeholder with read-back chain
+  // evidence before changing enabled, signature, or broadcast policy.
+  window.SoulidityMakerV8 = Object.freeze({
+    schemaVersion: 'animacraft.maker-v8-runtime.v8',
+    protocolVersion: 8,
+    enabled: false,
+    catalogId: placeholderId('80'),
+    protocolConfigId: placeholderId('81'),
+    protocolTreasuryId: placeholderId('82'),
+    paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
+    clockObjectId: `0x${'0'.repeat(63)}6`,
+    roles: Object.freeze({
+      core: Object.freeze({ typeOriginPackageId: placeholderId('10'), callablePackageId: placeholderId('10') }),
+      seal: Object.freeze({ typeOriginPackageId: placeholderId('11'), callablePackageId: placeholderId('11') }),
+      runtime: Object.freeze({ typeOriginPackageId: placeholderId('12'), callablePackageId: placeholderId('12') }),
+      output: Object.freeze({ typeOriginPackageId: placeholderId('13'), callablePackageId: placeholderId('13') }),
+      physical: Object.freeze({ typeOriginPackageId: placeholderId('14'), callablePackageId: placeholderId('14') }),
+      market: Object.freeze({ typeOriginPackageId: placeholderId('15'), callablePackageId: placeholderId('15') }),
+      release: Object.freeze({ typeOriginPackageId: placeholderId('16'), callablePackageId: placeholderId('16') }),
+    }),
+    roleConfigIds: Object.freeze({
+      seal: placeholderId('83'),
+      runtime: placeholderId('84'),
+      output: placeholderId('85'),
+      physical: placeholderId('86'),
+      market: placeholderId('87'),
+      release: placeholderId('88'),
+    }),
+    makerBindings: Object.freeze([]),
+  });
+
+  window.SoulidityV8Execution = Object.freeze({
+    schemaVersion: 'animacraft.web-execution.v8',
+    network: 'mainnet',
+    chainIdentifier: 'mainnet',
+    allowWalletSignature: false,
+    allowBroadcast: false,
+  });
+})();

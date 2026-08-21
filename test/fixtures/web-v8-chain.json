@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "animacraft.web-v8-chain-fixture.v1",
+  "activationEvent": {
+    "module": "release_v8",
+    "name": "MakerV8Activated",
+    "fields": [
+      "root_id",
+      "version",
+      "owner",
+      "control_epoch",
+      "admin_cap_id",
+      "maker_key",
+      "maker_version",
+      "version_commitment",
+      "content_commitment",
+      "renderer_commitment",
+      "protocol_config_id",
+      "protocol_config_revision",
+      "protocol_config_commitment",
+      "protocol_treasury_id",
+      "maker_treasury_id",
+      "catalog_id",
+      "product_binding_commitment",
+      "call_cap_set_commitment",
+      "native_capability_mask",
+      "capability_binding_commitment",
+      "base_registry_id",
+      "seal_policy_config_id",
+      "seal_registry_id",
+      "runtime_definition_registry_id",
+      "pack_registry_id",
+      "admission_authority_id",
+      "output_registry_id",
+      "soul_registry_id",
+      "physical_registry_id",
+      "market_registry_id",
+      "market_treasury_id"
+    ]
+  },
+  "listingTypes": [
+    "MakerListingV8",
+    "SoulListingV8",
+    "PhysicalListingV8"
+  ],
+  "actions": [
+    "listMakerControl",
+    "purchaseMakerControl",
+    "cancelMakerControl",
+    "recoverMakerControl",
+    "listSoulBundle",
+    "purchaseSoulBundle",
+    "cancelSoulListing",
+    "recoverSoulListing",
+    "listBasePhysical",
+    "listPackPhysical",
+    "purchaseBasePhysical",
+    "purchasePackPhysical",
+    "cancelPhysicalListing",
+    "recoverPhysicalListing"
+  ]
+}
