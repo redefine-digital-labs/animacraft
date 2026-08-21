@@ -349,6 +349,7 @@ test('Root readback verifies lifecycle, immutable snapshot, and every capability
   const root = parsedRoot();
   assert.equal(root.lifecycle, 'ACTIVE');
   assert.equal(root.owner.kind, 'shared');
+  assert.equal(root.creatorAddress, wallet);
   assert.equal(root.capabilityBindingCommitment, '07'.repeat(32));
   const corrupted = rootResponse();
   corrupted.data.content.fields.capability_registry_binding[0].fields.market_registry_id = sid(999);

@@ -575,6 +575,7 @@ export function parseMakerRootV8(response, runtimeInput, activationInput, observ
     ...object,
     binding: activation.binding,
     ownerAddress: address(fields.owner, 'root.owner'),
+    creatorAddress: address(fields.creator, 'root.creator'),
     adminCapId: id(fields.admin_cap_id, 'root.admin_cap_id'),
     controlEpoch: decimal(fields.control_epoch, 'root.control_epoch'),
     lifecycleCode,
