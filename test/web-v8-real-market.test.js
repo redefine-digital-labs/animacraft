@@ -395,7 +395,19 @@ test('web runtime bridge invokes the real Market Transaction builder', {
   const finalizedPlanHash = hexHash(planBase);
   const plan = { ...planBase, fingerprint: finalizedPlanHash };
   const pre = compiled.descriptor.preState;
-  const registryBefore = snakeCounters(pre.registry);
+  const registryBefore = {
+    ...snakeCounters(pre.registry),
+    version: '8',
+    catalog_id: runtime.catalogId,
+    package_config_id: runtime.roleConfigIds.market,
+    root_id: IDs.root,
+    maker_version: '42',
+    root_content_commitment: compiled.descriptor.rootContentCommitment,
+    protocol_config_id: runtime.protocolConfigId,
+    protocol_config_revision: compiled.descriptor.protocolRevision,
+    treasury_id: IDs.treasury,
+    sealed: true,
+  };
   const registryAfter = {
     ...registryBefore,
     revision: String(BigInt(registryBefore.revision) + 1n),
@@ -403,6 +415,12 @@ test('web runtime bridge invokes the real Market Transaction builder', {
     escrow_count: String(BigInt(registryBefore.escrow_count) + 1n),
   };
   const treasuryParsed = {
+    version: '8',
+    catalog_id: runtime.catalogId,
+    package_config_id: runtime.roleConfigIds.market,
+    root_id: IDs.root,
+    maker_version: '42',
+    root_content_commitment: compiled.descriptor.rootContentCommitment,
     escrow: { value: '0' },
     gross_escrowed_atomic: pre.treasury.grossEscrowedAtomic,
     gross_released_atomic: pre.treasury.grossReleasedAtomic,
@@ -420,13 +438,20 @@ test('web runtime bridge invokes the real Market Transaction builder', {
     control_epoch: pre.root.controlEpoch,
   };
   const listingParsed = {
+    version: '8',
     registry_id: IDs.registry,
     treasury_id: IDs.treasury,
+    package_config_id: runtime.roleConfigIds.market,
     root_id: IDs.root,
+    maker_version: '42',
+    root_content_commitment: compiled.descriptor.rootContentCommitment,
     admin_cap_id: IDs.admin,
     seller: IDs.seller,
     expected_control_epoch: pre.ownershipEpoch,
     gross_atomic: pre.quote.grossAtomic,
+    protocol_atomic: pre.quote.protocolAtomic,
+    creator_atomic: pre.quote.creatorAtomic,
+    seller_atomic: pre.quote.sellerAtomic,
     quote_commitment: pre.quote.commitment,
     status: '0',
     revision: '0',

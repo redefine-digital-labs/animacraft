@@ -128,6 +128,14 @@ function hash(value, label) {
 
 function plus(value, delta) { return (BigInt(value) + BigInt(delta)).toString(); }
 
+function boundedDecimal(value, width, label) {
+  const normalized = decimal(value, label);
+  if (BigInt(normalized) > (1n << BigInt(width)) - 1n) {
+    fail('WEB_V8_FINALIZED_COUNTER_INVALID', `${label} exceeds u${width}.`);
+  }
+  return normalized;
+}
+
 function minus(value, delta, label) {
   if (BigInt(value) < BigInt(delta)) fail('WEB_V8_FINALIZED_COUNTER_INVALID', `${label} underflows.`);
   return (BigInt(value) - BigInt(delta)).toString();
@@ -497,9 +505,24 @@ function parsed(roles, role, side = 'after') {
   return result;
 }
 
-function assertRegistryAndTreasury(roles, action, quote) {
+function assertRegistryAndTreasury(roles, action, quote, descriptor) {
   const before = parsed(roles, 'REGISTRY', 'before');
   const after = parsed(roles, 'REGISTRY', 'after');
+  const makerVersion = decimal(scalar(before, 'maker_version', 'makerVersion'), 'REGISTRY.before.makerVersion');
+  for (const [side, fields] of [['before', before], ['after', after]]) {
+    if (decimal(scalar(fields, 'version'), `REGISTRY.${side}.version`) !== '8'
+      || id(scalar(fields, 'catalog_id', 'catalogId'), `REGISTRY.${side}.catalogId`) !== descriptor.catalogId
+      || id(scalar(fields, 'package_config_id', 'packageConfigId'), `REGISTRY.${side}.packageConfigId`) !== descriptor.roleConfigIds.market
+      || id(scalar(fields, 'root_id', 'rootId'), `REGISTRY.${side}.rootId`) !== descriptor.rootId
+      || decimal(scalar(fields, 'maker_version', 'makerVersion'), `REGISTRY.${side}.makerVersion`) !== makerVersion
+      || commitment(scalar(fields, 'root_content_commitment', 'rootContentCommitment'), `REGISTRY.${side}.rootContentCommitment`) !== descriptor.rootContentCommitment
+      || id(scalar(fields, 'protocol_config_id', 'protocolConfigId'), `REGISTRY.${side}.protocolConfigId`) !== descriptor.protocolConfigId
+      || decimal(scalar(fields, 'protocol_config_revision', 'protocolConfigRevision'), `REGISTRY.${side}.protocolConfigRevision`) !== descriptor.protocolRevision
+      || id(scalar(fields, 'treasury_id', 'treasuryId'), `REGISTRY.${side}.treasuryId`) !== descriptor.treasuryId
+      || scalar(fields, 'sealed') !== true) {
+      fail('WEB_V8_FINALIZED_REGISTRY_DELTA_MISMATCH', `MarketRegistry ${side} binding differs from the durable runtime and Root.`);
+    }
+  }
   const expected = {};
   for (const field of REGISTRY_FIELDS) expected[field] = decimal(scalar(before, field, camel(field)), `REGISTRY.before.${field}`);
   expected.revision = plus(expected.revision, '1');
@@ -522,9 +545,25 @@ function assertRegistryAndTreasury(roles, action, quote) {
   const observed = {};
   for (const field of REGISTRY_FIELDS) observed[field] = decimal(scalar(after, field, camel(field)), `REGISTRY.after.${field}`);
   same(observed, expected, 'WEB_V8_FINALIZED_REGISTRY_DELTA_MISMATCH', 'Actual MarketRegistry before/after delta is invalid.');
+  same(
+    withoutFields(before, REGISTRY_FIELDS),
+    withoutFields(after, REGISTRY_FIELDS),
+    'WEB_V8_FINALIZED_REGISTRY_DELTA_MISMATCH',
+    'MarketRegistry immutable configuration changed during the action.',
+  );
 
   const treasuryBefore = parsed(roles, 'TREASURY', 'before');
   const treasuryAfter = parsed(roles, 'TREASURY', 'after');
+  for (const [side, fields] of [['before', treasuryBefore], ['after', treasuryAfter]]) {
+    if (decimal(scalar(fields, 'version'), `TREASURY.${side}.version`) !== '8'
+      || id(scalar(fields, 'catalog_id', 'catalogId'), `TREASURY.${side}.catalogId`) !== descriptor.catalogId
+      || id(scalar(fields, 'package_config_id', 'packageConfigId'), `TREASURY.${side}.packageConfigId`) !== descriptor.roleConfigIds.market
+      || id(scalar(fields, 'root_id', 'rootId'), `TREASURY.${side}.rootId`) !== descriptor.rootId
+      || decimal(scalar(fields, 'maker_version', 'makerVersion'), `TREASURY.${side}.makerVersion`) !== makerVersion
+      || commitment(scalar(fields, 'root_content_commitment', 'rootContentCommitment'), `TREASURY.${side}.rootContentCommitment`) !== descriptor.rootContentCommitment) {
+      fail('WEB_V8_FINALIZED_TREASURY_DELTA_MISMATCH', `MarketTreasury ${side} binding differs from the durable runtime and Root.`);
+    }
+  }
   const balanceValue = (fields, field) => {
     const raw = fields?.[field];
     return scalar(struct(raw), 'value') ?? scalar(fields, field);
@@ -538,6 +577,12 @@ function assertRegistryAndTreasury(roles, action, quote) {
     const expectedNext = action.kind === 'PURCHASE' ? plus(prior, quote.grossAtomic) : prior;
     if (next !== expectedNext) fail('WEB_V8_FINALIZED_TREASURY_DELTA_MISMATCH', `Actual MarketTreasury ${field} delta is invalid.`);
   }
+  same(
+    withoutFields(treasuryBefore, ['escrow', 'gross_escrowed_atomic', 'gross_released_atomic']),
+    withoutFields(treasuryAfter, ['escrow', 'gross_escrowed_atomic', 'gross_released_atomic']),
+    'WEB_V8_FINALIZED_TREASURY_DELTA_MISMATCH',
+    'MarketTreasury immutable binding changed during the action.',
+  );
 }
 
 function camel(value) { return value.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()); }
@@ -555,6 +600,8 @@ function assertListing(roles, action, descriptor, terminal, marketClient) {
     : action.lane === 'SOUL' ? marketClient.types.soulListing : marketClient.types.physicalListing;
   if (normalizeType(object.type, 'LISTING.type') !== normalizeType(expectedType, 'expected listing type')
     || object.change !== (action.kind === 'LIST' ? 'CREATED' : 'CHANGED')
+    || decimal(scalar(after, 'version'), 'LISTING.version') !== '8'
+    || id(scalar(after, 'package_config_id', 'packageConfigId'), 'LISTING.packageConfigId') !== descriptor.roleConfigIds.market
     || decimal(scalar(after, 'status'), 'LISTING.status') !== expectedStatus
     || decimal(scalar(after, 'revision'), 'LISTING.revision') !== (action.kind === 'LIST' ? '0' : plus(decimal(scalar(before, 'revision'), 'LISTING.before.revision'), '1'))
     || id(scalar(after, 'registry_id', 'registryId'), 'LISTING.registryId') !== descriptor.registryId
@@ -566,6 +613,17 @@ function assertListing(roles, action, descriptor, terminal, marketClient) {
     || object.objectId !== terminal.fields.listingId) {
     fail('WEB_V8_FINALIZED_LISTING_TRANSITION_MISMATCH', 'Listing history is not the exact action transition.');
   }
+  for (const [field, amount] of [
+    ['gross_atomic', quote.grossAtomic],
+    ['protocol_atomic', quote.protocolAtomic],
+    ['creator_atomic', quote.creatorAtomic],
+    ...(action.lane === 'MAKER' ? [] : [['source_atomic', quote.sourceAtomic]]),
+    ['seller_atomic', quote.sellerAtomic],
+  ]) {
+    if (decimal(scalar(after, field, camel(field)), `LISTING.${field}`) !== amount) {
+      fail('WEB_V8_FINALIZED_LISTING_TRANSITION_MISMATCH', `Listing stored ${field} differs from the exact quote.`);
+    }
+  }
   if (before && (decimal(scalar(before, 'status'), 'LISTING.before.status') !== '0'
     || id(scalar(before, 'terminal_recipient', 'terminalRecipient'), 'LISTING.before.terminalRecipient', true) !== ZERO
     || id(scalar(before, 'registry_id', 'registryId'), 'LISTING.before.registryId') !== descriptor.registryId
@@ -574,12 +632,49 @@ function assertListing(roles, action, descriptor, terminal, marketClient) {
     || commitment(scalar(before, 'quote_commitment', 'quoteCommitment'), 'LISTING.before.quoteCommitment') !== quote.commitment)) {
     fail('WEB_V8_FINALIZED_LISTING_TRANSITION_MISMATCH', 'Listing input history is not the exact open state.');
   }
+  if (before) {
+    same(
+      withoutFields(before, ['status', 'revision', 'terminal_recipient']),
+      withoutFields(after, ['status', 'revision', 'terminal_recipient']),
+      'WEB_V8_FINALIZED_LISTING_TRANSITION_MISMATCH',
+      'Terminal action changed immutable listing economics or custody.',
+    );
+  }
   const custody = action.lane === 'MAKER' ? after : listingCustody(after);
   const seller = action.lane === 'MAKER' ? scalar(after, 'seller') : scalar(custody, 'seller', 'holder');
   const epoch = action.lane === 'MAKER' ? scalar(after, 'expected_control_epoch', 'expectedControlEpoch')
     : scalar(custody, action.lane === 'SOUL' ? 'expected_soul_ownership_epoch' : 'ownership_epoch', action.lane === 'SOUL' ? 'expectedSoulOwnershipEpoch' : 'ownershipEpoch');
   if (id(seller, 'LISTING.seller') !== pre.seller || decimal(epoch, 'LISTING.ownershipEpoch') !== pre.ownershipEpoch) {
     fail('WEB_V8_FINALIZED_LISTING_CUSTODY_MISMATCH', 'Listing seller or custody epoch differs from the durable asset state.');
+  }
+  const registry = parsed(roles, 'REGISTRY', 'before');
+  const makerVersion = decimal(scalar(registry, 'maker_version', 'makerVersion'), 'REGISTRY.makerVersion');
+  if (action.lane === 'MAKER') {
+    if (id(scalar(after, 'root_id', 'rootId'), 'LISTING.rootId') !== descriptor.rootId
+      || decimal(scalar(after, 'maker_version', 'makerVersion'), 'LISTING.makerVersion') !== makerVersion
+      || commitment(scalar(after, 'root_content_commitment', 'rootContentCommitment'), 'LISTING.rootContentCommitment') !== descriptor.rootContentCommitment
+      || id(scalar(after, 'admin_cap_id', 'adminCapId'), 'LISTING.adminCapId') !== descriptor.preState.assetIds[0]) {
+      fail('WEB_V8_FINALIZED_LISTING_CUSTODY_MISMATCH', 'Maker listing Root/Admin binding is invalid.');
+    }
+  } else if (id(scalar(custody, 'listing_id', 'listingId'), 'LISTING.custody.listingId') !== object.objectId
+    || id(scalar(custody, 'market_registry_id', 'marketRegistryId'), 'LISTING.custody.marketRegistryId') !== descriptor.registryId
+    || id(scalar(custody, 'market_treasury_id', 'marketTreasuryId'), 'LISTING.custody.marketTreasuryId') !== descriptor.treasuryId
+    || id(scalar(custody, 'root_id', 'rootId'), 'LISTING.custody.rootId') !== descriptor.rootId
+    || decimal(scalar(custody, 'maker_version', 'makerVersion'), 'LISTING.custody.makerVersion') !== makerVersion
+    || commitment(scalar(custody, 'root_content_commitment', 'rootContentCommitment'), 'LISTING.custody.rootContentCommitment') !== descriptor.rootContentCommitment) {
+    fail('WEB_V8_FINALIZED_LISTING_CUSTODY_MISMATCH', 'Asset listing custody does not bind the exact Market and Root identities.');
+  }
+  if (action.lane === 'SOUL') {
+    if (id(scalar(custody, 'output_registry_id', 'outputRegistryId'), 'LISTING.custody.outputRegistryId') !== roles.get('OUTPUT_REGISTRY')?.objectId
+      || id(scalar(custody, 'soul_registry_id', 'soulRegistryId'), 'LISTING.custody.soulRegistryId') !== roles.get('SOUL_REGISTRY')?.objectId) {
+      fail('WEB_V8_FINALIZED_LISTING_CUSTODY_MISMATCH', 'Soul listing custody registry binding is invalid.');
+    }
+  } else if (action.lanes.some((lane) => lane.startsWith('PHYSICAL_'))) {
+    if (id(scalar(custody, 'catalog_id', 'catalogId'), 'LISTING.custody.catalogId') !== descriptor.catalogId
+      || id(scalar(custody, 'physical_package_config_id', 'physicalPackageConfigId'), 'LISTING.custody.physicalConfigId') !== descriptor.roleConfigIds.physical
+      || id(scalar(custody, 'physical_registry_id', 'physicalRegistryId'), 'LISTING.custody.physicalRegistryId') !== roles.get('PHYSICAL_REGISTRY')?.objectId) {
+      fail('WEB_V8_FINALIZED_LISTING_CUSTODY_MISMATCH', 'Physical listing custody catalog/config/registry binding is invalid.');
+    }
   }
   return custody;
 }
@@ -836,11 +931,37 @@ function assertPhysical(roles, action, descriptor, custody) {
 function revenueState(object, side, role) {
   const fields = parsed(new Map([[role, object]]), role, side);
   const revenue = struct(fields.revenue ?? fields.balance);
+  const integerWidth = role === 'PACK_TREASURY' ? 64 : 128;
   return {
-    balance: decimal(scalar(revenue, 'value') ?? scalar(fields, 'revenue', 'balance'), `${role}.${side}.balance`),
-    totalCollected: decimal(scalar(fields, 'total_collected', 'totalCollected'), `${role}.${side}.totalCollected`),
-    totalWithdrawn: decimal(scalar(fields, 'total_withdrawn', 'totalWithdrawn'), `${role}.${side}.totalWithdrawn`),
+    balance: boundedDecimal(
+      scalar(revenue, 'value') ?? scalar(fields, 'revenue', 'balance'),
+      64,
+      `${role}.${side}.balance`,
+    ),
+    totalCollected: boundedDecimal(
+      scalar(fields, 'total_collected', 'totalCollected'),
+      integerWidth,
+      `${role}.${side}.totalCollected`,
+    ),
+    totalWithdrawn: boundedDecimal(
+      scalar(fields, 'total_withdrawn', 'totalWithdrawn'),
+      integerWidth,
+      `${role}.${side}.totalWithdrawn`,
+    ),
   };
+}
+
+function assertAuxiliaryRegistries(roles) {
+  for (const role of ['OUTPUT_REGISTRY', 'SOUL_REGISTRY', 'PHYSICAL_REGISTRY']) {
+    const object = roles.get(role);
+    if (!object) continue;
+    same(
+      parsed(roles, role, 'before'),
+      parsed(roles, role, 'after'),
+      'WEB_V8_FINALIZED_REGISTRY_DELTA_MISMATCH',
+      `${role} content must remain unchanged during Market custody.`,
+    );
+  }
 }
 
 function assertRevenueAndPayouts(roles, action, descriptor, marketClient) {
@@ -860,6 +981,12 @@ function assertRevenueAndPayouts(roles, action, descriptor, marketClient) {
       || after.totalWithdrawn !== before.totalWithdrawn) {
       fail('WEB_V8_FINALIZED_REVENUE_DELTA_MISMATCH', `${role} actual balance/collected/withdrawn delta is invalid.`);
     }
+    same(
+      withoutFields(parsed(roles, role, 'before'), ['revenue', 'balance', 'total_collected', 'total_withdrawn']),
+      withoutFields(parsed(roles, role, 'after'), ['revenue', 'balance', 'total_collected', 'total_withdrawn']),
+      'WEB_V8_FINALIZED_REVENUE_DELTA_MISMATCH',
+      `${role} immutable binding changed during settlement.`,
+    );
     same(object.revenue.before, { ...before, integerWidth: role === 'PACK_TREASURY' ? 64 : 128 }, 'WEB_V8_FINALIZED_REVENUE_SUMMARY_MISMATCH', `${role} before revenue summary differs from historical content.`);
     same(object.revenue.after, { ...after, integerWidth: role === 'PACK_TREASURY' ? 64 : 128 }, 'WEB_V8_FINALIZED_REVENUE_SUMMARY_MISMATCH', `${role} after revenue summary differs from historical content.`);
   }
@@ -1017,7 +1144,8 @@ export function assertFinalizedMarketReadbackV8(value, request, marketClient, ma
     fail('WEB_V8_FINALIZED_EVENT_MISMATCH', 'Terminal event listing differs from the durable recovery identity.');
   }
   const custody = assertListing(evidence.roles, action, descriptor, terminal, marketClient);
-  assertRegistryAndTreasury(evidence.roles, action, quote);
+  assertRegistryAndTreasury(evidence.roles, action, quote, descriptor);
+  assertAuxiliaryRegistries(evidence.roles);
   assertSoul(evidence.roles, action, descriptor, custody);
   assertPhysical(evidence.roles, action, descriptor, custody);
   assertRevenueAndPayouts(evidence.roles, action, descriptor, marketClient);
