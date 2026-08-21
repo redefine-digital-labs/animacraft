@@ -957,17 +957,19 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   assert.deepEqual(await persistence.load(scopeKey), durableSigned,
     'invalid commit options and physical deletion cannot reset the durable revision');
 
-  const verified = await controller.recoverOutcome();
-  assert.equal(verified.state, 'VERIFIED');
+  const cleaned = await controller.recoverOutcome();
+  assert.equal(cleaned.state, 'CLEANED');
   assert.equal(queryRequests.length, 1);
   assert.equal(readbackRequests.length, 1);
   assert.deepEqual(queryRequests[0].plan, signed.plan);
   assert.deepEqual(readbackRequests[0].plan, signed.plan);
-  assert.equal(verified.receipt.planHash, signed.plan.fingerprint);
-  assert.equal(verified.receipt.evidence.source, 'FINALIZED_CORE_V2');
+  assert.equal(cleaned.receipt.planHash, signed.plan.fingerprint);
+  assert.equal(cleaned.receipt.evidence.source, 'FINALIZED_CORE_V2');
+  assert.equal(controller.snapshot().status, 'CLEANED');
+  assert.equal(controller.snapshot().recoveryRecord, null);
+  assert.deepEqual(controller.snapshot().completionReceipt, cleaned.receipt);
 
-  const receipt = await controller.cleanupVerified();
-  assert.deepEqual(receipt, verified.receipt);
+  const receipt = cleaned.receipt;
   const tombstone = await persistence.load(scopeKey);
   assert.equal(tombstone.state, 'CLEANED');
   assert.equal(tombstone.plan, null);

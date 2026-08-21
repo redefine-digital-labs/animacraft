@@ -1422,7 +1422,21 @@ export function createFreshV8Controller({
     try {
       if (!currentIdentity) throw appError('WEB_V8_CONTEXT_UNAVAILABLE', 'Refresh the exact action context first.', 'CONTEXT');
       setBusy(true, 'OUTCOME_PENDING');
-      const record = await recovery.recover(currentIdentity, { replayIfNotFound: false });
+      const durable = await recovery.load(currentIdentity);
+      const record = durable?.state === 'VERIFIED'
+        ? durable
+        : await recovery.recover(currentIdentity, { replayIfNotFound: false });
+      if (record.state === 'VERIFIED') {
+        setBusy(true, 'CLEANING');
+        const receipt = await recovery.cleanupVerified(currentIdentity);
+        state.recoveryRecord = null;
+        state.completionReceipt = receipt;
+        state.prepared = null;
+        state.status = 'CLEANED';
+        state.busy = false;
+        emit();
+        return Object.freeze({ state: 'CLEANED', receipt });
+      }
       state.recoveryRecord = record;
       state.status = record.state;
       state.busy = false;
@@ -1451,23 +1465,6 @@ export function createFreshV8Controller({
     }
   }
 
-  async function cleanupVerified() {
-    try {
-      if (!currentIdentity) throw appError('WEB_V8_CONTEXT_UNAVAILABLE', 'Refresh the exact action context first.', 'CONTEXT');
-      setBusy(true, 'CLEANING');
-      const receipt = await recovery.cleanupVerified(currentIdentity);
-      state.recoveryRecord = null;
-      state.completionReceipt = receipt;
-      state.prepared = null;
-      state.status = 'CLEANED';
-      state.busy = false;
-      emit();
-      return receipt;
-    } catch (error) {
-      return rememberError(error);
-    }
-  }
-
   return Object.freeze({
     snapshot,
     subscribe(listener) { listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener); },
@@ -1484,7 +1481,6 @@ export function createFreshV8Controller({
     requestSignature,
     recoverOutcome,
     replayExact,
-    cleanupVerified,
   });
 }
 
