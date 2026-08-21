@@ -181,8 +181,14 @@ test('Physical Base and every Pack action parse canonical Move Option<ID> arrays
       packTreasuryId,
     );
   }
-  assert.equal(parseMakerV8MoveOptionIdV8({ vec: [] }), null);
-  assert.equal(parseMakerV8MoveOptionIdV8({ fields: { vec: [packTreasuryId] } }), packTreasuryId);
+  for (const nonCanonical of [
+    packTreasuryId,
+    { vec: [] },
+    { fields: { vec: [packTreasuryId] } },
+  ]) assert.throws(
+    () => parseMakerV8MoveOptionIdV8(nonCanonical),
+    (error) => error.code === 'MAKER_V8_BROWSER_OPTION_INVALID',
+  );
   assert.throws(
     () => parseMakerV8MoveOptionIdV8([packTreasuryId, objectId(402)]),
     (error) => error.code === 'MAKER_V8_BROWSER_OPTION_INVALID',
@@ -571,7 +577,7 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
     `${packageId(9)}::market_v8::${role[0].toUpperCase()}${role.slice(1)}V8`,
   ]));
   const owner = { $kind: 'Shared', Shared: { initialSharedVersion: '1' } };
-  const outputOwner = { $kind: 'AddressOwner', AddressOwner: objectId(99) };
+  const outputOwner = { $kind: 'Shared', Shared: { initialSharedVersion: '8' } };
   const changed = (object, inputVersion, outputVersion, idOperation = 'None', chosenOwner = owner) => ({
     objectId: object,
     inputState: inputVersion ? 'Exists' : 'DoesNotExist',
@@ -652,7 +658,15 @@ test('Core V2 readback binds exact effects refs, historical snapshots, input cal
                     mutable: false,
                   },
                 },
-              }],
+              }, ...[ids.registry, ids.treasury].map((object) => ({
+                Object: {
+                  SharedObject: {
+                    objectId: object,
+                    initialSharedVersion: '1',
+                    mutable: true,
+                  },
+                },
+              }))],
               commands: [{
                 $kind: 'MoveCall',
                 MoveCall: {

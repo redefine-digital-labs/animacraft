@@ -717,6 +717,9 @@ function canonicalSigningClient({
   gasAddressBalance = '20000000',
   mutateResolved,
 } = {}) {
+  const ownedObjectIds = new Set([
+    IDs.admin, IDs.output, IDs.receipt, IDs.soul, IDs.baseAsset, IDs.packAsset,
+  ]);
   return {
     async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
     async dryRunTransactionBlock({ transactionBlock }) {
@@ -744,6 +747,13 @@ function canonicalSigningClient({
         return async (transactionData, _options, next) => {
           transactionData.inputs = transactionData.inputs.map((input) => {
             if (!input.UnresolvedObject) return input;
+            if (ownedObjectIds.has(input.UnresolvedObject.objectId)) {
+              return Inputs.ObjectRef({
+                objectId: input.UnresolvedObject.objectId,
+                version: '7',
+                digest,
+              });
+            }
             return Inputs.SharedObjectRef({
               objectId: input.UnresolvedObject.objectId,
               initialSharedVersion: '1',
@@ -1497,6 +1507,7 @@ const FINALIZED_SOUL_COMMITMENT_DOMAIN = new TextEncoder()
   .encode('animacraft-v8/output/canonical-soul');
 
 const finalizedSharedOwner = Object.freeze({ $kind: 'Shared', Shared: { initialSharedVersion: '1' } });
+const finalizedCreatedSharedOwner = Object.freeze({ $kind: 'Shared', Shared: { initialSharedVersion: '8' } });
 const finalizedAddressOwner = (owner) => ({ $kind: 'AddressOwner', AddressOwner: owner });
 const finalizedObjectOwner = (owner) => ({ $kind: 'ObjectOwner', ObjectOwner: owner });
 const finalizedHexBytes = (value) => Uint8Array.from(value.slice(2).match(/.{2}/g), (pair) => Number.parseInt(pair, 16));
@@ -1839,7 +1850,8 @@ function finalizedCoreFixture(built, evidence, index) {
     kind === 'LIST' ? 0 : BigInt(preState.listing.revision) + 1n,
     terminalRecipient,
   );
-  changed(listingId, listingType, listingBefore, listingAfter, finalizedSharedOwner, finalizedSharedOwner,
+  changed(listingId, listingType, listingBefore, listingAfter, finalizedSharedOwner,
+    kind === 'LIST' ? finalizedCreatedSharedOwner : finalizedSharedOwner,
     kind === 'LIST' ? 'Created' : 'None');
 
   const revenueFields = (balance, collected = balance) => ({
@@ -1931,7 +1943,7 @@ function finalizedCoreFixture(built, evidence, index) {
     const physicalRegistry = descriptor.arguments.find((entry) => entry.name === 'physicalRegistry');
     readonly(physicalRegistry.objectId, types.physicalRegistry, { revision: '1' });
     const treasuryOption = descriptor.lane === MARKET_V8_LANES.PHYSICAL_BASE
-      ? { vec: [] } : { vec: [preState.physical.sourceTreasuryId] };
+      ? [] : [preState.physical.sourceTreasuryId];
     const before = {
       holder: preState.seller, ownership_epoch: preState.ownershipEpoch,
       source_kind: preState.physical.sourceKind, source_treasury_id: treasuryOption,
@@ -2077,6 +2089,8 @@ test('all 14 production builders normalize exact Core V2 history/events and veri
   assert.deepEqual(Object.keys(actions), Object.keys(MARKET_V8_ACTION_ABI));
   const verifiedActions = [];
   const envelopes = new Map();
+  const requests = new Map();
+  const finalizedMarketModule = await import('../maker-v8-market.js');
   for (const [index, [action, built]] of Object.entries(actions).entries()) {
     assert.equal(built.descriptor.action, action);
     const proof = await inspectMarketActionOnChainV8(canonicalSigningClient(), built);
@@ -2092,7 +2106,7 @@ test('all 14 production builders normalize exact Core V2 history/events and veri
       client: fixtureValue.rpc, market: client, request: fixtureValue.request,
     });
     const verified = assertFinalizedMarketReadbackV8(
-      envelope, fixtureValue.request, client, await import('../maker-v8-market.js'),
+      envelope, fixtureValue.request, client, finalizedMarketModule,
     );
     assert.equal(verified.verified, true, action);
     assert.equal(verified.evidence.source, 'FINALIZED_CORE_V2', action);
@@ -2101,9 +2115,84 @@ test('all 14 production builders normalize exact Core V2 history/events and veri
     assert.equal(envelope.eventsDigest, fixtureValue.transactionEvents.digest, action);
     assert.equal(envelope.effects.objects.some((entry) => entry.role === 'LISTING'), true, action);
     envelopes.set(action, envelope);
+    requests.set(action, fixtureValue.request);
     verifiedActions.push(action);
   }
   assert.deepEqual(verifiedActions, Object.keys(MARKET_V8_ACTION_ABI));
+
+  const rewriteOwner = (envelope, role, sides, owner) => {
+    const object = envelope.effects.objects.find((entry) => entry.role === role);
+    assert.ok(object, `${role} evidence`);
+    const change = envelope.effects.changedObjects.find((entry) => entry.objectId === object.objectId);
+    for (const side of sides) {
+      const snapshot = object[side];
+      if (!snapshot) continue;
+      snapshot.owner = structuredClone(owner);
+      snapshot.ownerKind = owner.kind;
+      snapshot.ref.owner = structuredClone(owner);
+      if (change) change[side === 'before' ? 'input' : 'output'].owner = structuredClone(owner);
+    }
+    object.ownerKind = (object.after ?? object.before).ownerKind;
+  };
+  const rejectsOwnerDrift = (action, envelope, label) => assert.throws(
+    () => assertFinalizedMarketReadbackV8(
+      envelope, requests.get(action), client, finalizedMarketModule,
+    ),
+    (failure) => failure?.code === 'WEB_V8_FINALIZED_OWNER_INVALID'
+      || failure?.code === 'WEB_V8_FINALIZED_HISTORY_OWNER_MISMATCH',
+    `${action}: ${label}`,
+  );
+  for (const [action, source] of envelopes) {
+    const listing = source.effects.objects.find((entry) => entry.role === 'LISTING');
+    const listingAddressOwner = { kind: 'AddressOwner', value: listing.objectId };
+    const listingTamper = structuredClone(source);
+    rewriteOwner(listingTamper, 'LISTING', ['before', 'after'], listingAddressOwner);
+    rejectsOwnerDrift(action, listingTamper, 'LISTING cannot masquerade as AddressOwner');
+
+    const registryTamper = structuredClone(source);
+    const registry = registryTamper.effects.objects.find((entry) => entry.role === 'REGISTRY');
+    rewriteOwner(registryTamper, 'REGISTRY', ['before', 'after'], {
+      kind: 'AddressOwner', value: registry.objectId,
+    });
+    rejectsOwnerDrift(action, registryTamper, 'changed registry must derive Shared owner from TransactionData');
+
+    const descriptor = actions[action].descriptor;
+    const custodyRole = descriptor.lane === MARKET_V8_LANES.MAKER ? 'ADMIN'
+      : descriptor.lane === MARKET_V8_LANES.SOUL ? 'OUTPUT' : 'ASSET';
+    const custodyTamper = structuredClone(source);
+    const custody = custodyTamper.effects.objects.find((entry) => entry.role === custodyRole);
+    const objectSide = custody.before?.owner.kind === 'ObjectOwner' ? 'before' : 'after';
+    const custodyOwner = custody[objectSide].owner.value;
+    rewriteOwner(custodyTamper, custodyRole, [objectSide], {
+      kind: 'AddressOwner', value: custodyOwner,
+    });
+    rejectsOwnerDrift(action, custodyTamper, `${custodyRole} custody requires ObjectOwner(listing)`);
+
+    if (finalizedActionKind(action) === 'LIST') {
+      const versionTamper = structuredClone(source);
+      const created = versionTamper.effects.objects.find((entry) => entry.role === 'LISTING');
+      const badOwner = { kind: 'Shared', value: { initialSharedVersion: '7' } };
+      rewriteOwner(versionTamper, 'LISTING', ['after'], badOwner);
+      rejectsOwnerDrift(action, versionTamper, 'created Shared initial version must equal output version');
+    }
+    if (finalizedActionKind(action) === 'PURCHASE') {
+      const payoutTamper = structuredClone(source);
+      const payout = payoutTamper.effects.objects.find((entry) => entry.role === 'SELLER_COIN');
+      rewriteOwner(payoutTamper, 'SELLER_COIN', ['after'], {
+        kind: 'ObjectOwner', value: payout.after.owner.value,
+      });
+      rejectsOwnerDrift(action, payoutTamper, 'wallet payout must be AddressOwner');
+    }
+  }
+
+  for (const role of ['OUTPUT_RECORD', 'SOUL_RECORD']) {
+    const dynamicTamper = structuredClone(envelopes.get('purchaseSoulBundle'));
+    const record = dynamicTamper.effects.objects.find((entry) => entry.role === role);
+    rewriteOwner(dynamicTamper, role, ['before', 'after'], {
+      kind: 'AddressOwner', value: record.before.owner.value,
+    });
+    rejectsOwnerDrift('purchaseSoulBundle', dynamicTamper, `${role} must remain ObjectOwner(registry table)`);
+  }
 
   const makerPurchase = actions.purchaseMakerControl.descriptor;
   assert.equal(makerPurchase.preState.root.creator, makerPurchase.preState.seller);
@@ -2138,10 +2227,10 @@ test('all 14 production builders normalize exact Core V2 history/events and veri
 
   const baseAsset = roles('listBasePhysical').get('ASSET');
   const packAsset = roles('listPackPhysical').get('ASSET');
-  assert.deepEqual(baseAsset.before.parsed.source_treasury_id, { vec: [] });
-  assert.deepEqual(packAsset.before.parsed.source_treasury_id, {
-    vec: [actions.listPackPhysical.descriptor.preState.physical.sourceTreasuryId],
-  });
+  assert.deepEqual(baseAsset.before.parsed.source_treasury_id, []);
+  assert.deepEqual(packAsset.before.parsed.source_treasury_id, [
+    actions.listPackPhysical.descriptor.preState.physical.sourceTreasuryId,
+  ]);
   assert.equal(actions.cancelPhysicalListing.descriptor.lane, MARKET_V8_LANES.PHYSICAL_BASE);
   assert.equal(actions.recoverPhysicalListing.descriptor.lane, MARKET_V8_LANES.PHYSICAL_PACK);
   for (const action of [

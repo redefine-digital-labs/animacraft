@@ -176,10 +176,10 @@ function scalar(fields, ...names) {
 function struct(value) { return plain(value?.fields) ? value.fields : value; }
 
 function option(value, label) {
-  if (typeof value === 'string') return id(value, label);
-  const vec = Array.isArray(value) ? value : value?.vec ?? value?.fields?.vec;
-  if (!Array.isArray(vec) || vec.length > 1) fail('WEB_V8_FINALIZED_OPTION_INVALID', `${label} is not a canonical Move option.`);
-  return vec.length ? id(vec[0], label) : null;
+  if (!Array.isArray(value) || value.length > 1) {
+    fail('WEB_V8_FINALIZED_OPTION_INVALID', `${label} is not the canonical zero-or-one-element Move Option<ID> JSON shape.`);
+  }
+  return value.length ? id(value[0], label) : null;
 }
 
 function commitment(value, label) {
@@ -280,15 +280,12 @@ function ownerId(owner, kind, label) {
   return id(typeof value === 'string' ? value : value?.owner ?? value?.objectId ?? value?.address, label);
 }
 
-function custodyOwnerId(owner, expected, label, allowObjectOwner = false) {
-  const allowed = allowObjectOwner ? ['AddressOwner', 'ObjectOwner'] : ['AddressOwner'];
-  if (!allowed.includes(owner?.kind)) {
-    fail('WEB_V8_FINALIZED_OWNER_INVALID', `${label} has the wrong ownership kind.`);
+function sharedOwnerVersion(owner, label) {
+  if (owner?.kind !== 'Shared') {
+    fail('WEB_V8_FINALIZED_OWNER_INVALID', `${label} must have Shared ownership.`);
   }
-  const value = typeof owner.value === 'string'
-    ? owner.value : owner.value?.owner ?? owner.value?.objectId ?? owner.value?.address;
-  if (id(value, label) !== expected) fail('WEB_V8_FINALIZED_OWNER_INVALID', `${label} has the wrong owner.`);
-  return value;
+  exactKeys(owner.value, ['initialSharedVersion'], `${label}.value`);
+  return decimal(owner.value.initialSharedVersion, `${label}.initialSharedVersion`);
 }
 
 function normalizeType(value, label) {
@@ -416,6 +413,29 @@ function assertEffects(value, transactionDigest, transactionSnapshot) {
       mutable: shared.mutable === true,
     });
   }
+  for (const [objectId, change] of changed) {
+    const shared = sharedInputs.get(objectId);
+    if (shared) {
+      if (!change.input
+        || sharedOwnerVersion(change.input.owner, `effects.changedObjects.${objectId}.input.owner`) !== shared.initialSharedVersion
+        || (change.output && sharedOwnerVersion(
+          change.output.owner,
+          `effects.changedObjects.${objectId}.output.owner`,
+        ) !== shared.initialSharedVersion)) {
+        fail(
+          'WEB_V8_FINALIZED_HISTORY_OWNER_MISMATCH',
+          'Changed Shared refs must derive their exact owner and initial version from TransactionData.',
+        );
+      }
+    } else if (change.input?.owner?.kind === 'Shared'
+      || (change.output?.owner?.kind === 'Shared' && change.idOperation !== 'Created')) {
+      fail(
+        'WEB_V8_FINALIZED_HISTORY_OWNER_MISMATCH',
+        'A changed existing Shared ref is absent from the exact TransactionData SharedObject inputs.',
+        { objectId },
+      );
+    }
+  }
   const unchanged = new Map();
   for (const [index, entry] of value.effects.unchangedConsensusObjects.entries()) {
     exactKeys(entry, ['objectId', 'version', 'digest', 'owner', 'kind'], `effects.unchangedConsensusObjects[${index}]`);
@@ -496,6 +516,60 @@ function assertRoleSet(roles, descriptor, action, quote) {
   const expected = [...expectedRoles(descriptor, action, quote)].sort();
   const actual = [...roles.keys()].sort();
   same(actual, expected, 'WEB_V8_FINALIZED_ROLE_SET_INVALID', `Core V2 role set is not exact for ${action.id}.`);
+}
+
+function registryTableId(roles, registryRole, tableField, label) {
+  const registry = parsed(roles, registryRole, 'before');
+  const table = scalar(registry, tableField);
+  return id(
+    scalar(struct(scalar(struct(table), 'id')), 'id') ?? scalar(struct(table), 'id'),
+    label,
+  );
+}
+
+function assertRoleOwners(roles, action, descriptor) {
+  for (const role of [
+    'ROOT', 'REGISTRY', 'TREASURY', 'LISTING', 'OUTPUT_REGISTRY', 'SOUL_REGISTRY',
+    'PHYSICAL_REGISTRY', 'PROTOCOL_TREASURY', 'MAKER_TREASURY', 'PACK_TREASURY',
+  ]) {
+    const object = roles.get(role);
+    if (!object) continue;
+    if (object.before) sharedOwnerVersion(object.before.owner, `${role}.before.owner`);
+    if (object.after) sharedOwnerVersion(object.after.owner, `${role}.after.owner`);
+  }
+  if (action.id === 'purchaseSoulBundle') {
+    for (const [role, registryRole, tableField] of [
+      ['OUTPUT_RECORD', 'OUTPUT_REGISTRY', 'outputs'],
+      ['SOUL_RECORD', 'SOUL_REGISTRY', 'souls'],
+    ]) {
+      const object = roles.get(role);
+      const parent = registryTableId(roles, registryRole, tableField, `${role}.parent`);
+      if (!object?.before || !object.after
+        || ownerId(object.before.owner, 'ObjectOwner', `${role}.before.owner`) !== parent
+        || ownerId(object.after.owner, 'ObjectOwner', `${role}.after.owner`) !== parent) {
+        fail('WEB_V8_FINALIZED_OWNER_INVALID', `${role} must remain owned by its exact registry table.`);
+      }
+    }
+  }
+  for (const role of ['CREATOR_COIN', 'SELLER_COIN']) {
+    const object = roles.get(role);
+    if (object?.after) ownerId(object.after.owner, 'AddressOwner', `${role}.after.owner`);
+  }
+  if (roles.get('LISTING')?.after?.owner?.kind !== 'Shared') {
+    fail('WEB_V8_FINALIZED_OWNER_INVALID', 'LISTING must remain a Shared object.');
+  }
+  if (action.kind === 'LIST') {
+    const listing = roles.get('LISTING');
+    if (sharedOwnerVersion(listing.after.owner, 'LISTING.after.owner') !== listing.after.ref.version) {
+      fail(
+        'WEB_V8_FINALIZED_OWNER_INVALID',
+        'A newly created Shared LISTING must bind its initial shared version to its created object version.',
+      );
+    }
+  }
+  if (descriptor.lane === undefined) {
+    fail('WEB_V8_FINALIZED_OWNER_INVALID', 'Durable descriptor lane is required for owner validation.');
+  }
 }
 
 function parsed(roles, role, side = 'after') {
@@ -721,7 +795,7 @@ function assertRootAndAdmin(roles, action, descriptor) {
         || id(scalar(oldFields, 'root_id', 'rootId'), 'ADMIN.rootId') !== descriptor.rootId
         || id(scalar(oldFields, 'owner'), 'ADMIN.owner') !== descriptor.preState.seller
         || decimal(scalar(oldFields, 'control_epoch', 'controlEpoch'), 'ADMIN.controlEpoch') !== beforeEpoch
-        || custodyOwnerId(admin.before.owner, roles.get('LISTING').objectId, 'ADMIN.before.effectsOwner', true) !== roles.get('LISTING').objectId
+        || ownerId(admin.before.owner, 'ObjectOwner', 'ADMIN.before.effectsOwner') !== roles.get('LISTING').objectId
         || id(scalar(newFields, 'root_id', 'rootId'), 'ADMIN_NEW.rootId') !== descriptor.rootId
         || id(scalar(newFields, 'owner'), 'ADMIN_NEW.owner') !== descriptor.sender
         || decimal(scalar(newFields, 'control_epoch', 'controlEpoch'), 'ADMIN_NEW.controlEpoch') !== afterEpoch
@@ -733,14 +807,17 @@ function assertRootAndAdmin(roles, action, descriptor) {
       const fields = parsed(roles, 'ADMIN', 'after');
       const expectedOwner = action.kind === 'LIST' ? roles.get('LISTING').objectId : descriptor.preState.seller;
       const priorOwner = action.kind === 'LIST' ? descriptor.preState.seller : roles.get('LISTING').objectId;
-      const observedOwner = custodyOwnerId(
+      const observedOwner = ownerId(
         admin.after.owner,
-        expectedOwner,
+        action.kind === 'LIST' ? 'ObjectOwner' : 'AddressOwner',
         'ADMIN.effectsOwner',
-        action.kind === 'LIST',
       );
       if (observedOwner !== expectedOwner
-        || custodyOwnerId(admin.before.owner, priorOwner, 'ADMIN.before.effectsOwner', action.kind !== 'LIST') !== priorOwner
+        || ownerId(
+          admin.before.owner,
+          action.kind === 'LIST' ? 'AddressOwner' : 'ObjectOwner',
+          'ADMIN.before.effectsOwner',
+        ) !== priorOwner
         || id(scalar(beforeFields, 'root_id', 'rootId'), 'ADMIN.before.rootId') !== descriptor.rootId
         || id(scalar(beforeFields, 'owner'), 'ADMIN.before.owner') !== descriptor.preState.seller
         || decimal(scalar(beforeFields, 'control_epoch', 'controlEpoch'), 'ADMIN.before.controlEpoch') !== beforeEpoch
@@ -767,8 +844,16 @@ function assertSoul(roles, action, descriptor, custody) {
     const after = parsed(roles, role, 'after');
     const priorOwner = action.kind === 'LIST' ? descriptor.preState.seller : listingId;
     if (object.objectId !== objectId
-      || custodyOwnerId(object.after.owner, terminalOwner, `${role}.effectsOwner`, action.kind === 'LIST') !== terminalOwner
-      || custodyOwnerId(object.before.owner, priorOwner, `${role}.before.effectsOwner`, action.kind !== 'LIST') !== priorOwner
+      || ownerId(
+        object.after.owner,
+        action.kind === 'LIST' ? 'ObjectOwner' : 'AddressOwner',
+        `${role}.effectsOwner`,
+      ) !== terminalOwner
+      || ownerId(
+        object.before.owner,
+        action.kind === 'LIST' ? 'AddressOwner' : 'ObjectOwner',
+        `${role}.before.effectsOwner`,
+      ) !== priorOwner
       || id(scalar(before, 'holder'), `${role}.before.holder`) !== descriptor.preState.seller
       || id(scalar(after, 'holder'), `${role}.holder`) !== (action.kind === 'LIST' ? descriptor.preState.seller : terminalOwner)) {
       fail('WEB_V8_FINALIZED_SOUL_BUNDLE_MISMATCH', `${role} custody/holder transition is invalid.`);
@@ -891,8 +976,16 @@ function assertPhysical(roles, action, descriptor, custody) {
   const beforeTreasury = option(scalar(beforeFields, 'source_treasury_id', 'sourceTreasuryId'), 'ASSET.before.sourceTreasuryId');
   const priorOwner = action.kind === 'LIST' ? descriptor.preState.seller : listingId;
   if (asset.objectId !== descriptor.preState.assetIds[0]
-    || custodyOwnerId(asset.after.owner, expectedOwner, 'ASSET.effectsOwner', action.kind === 'LIST') !== expectedOwner
-    || custodyOwnerId(asset.before.owner, priorOwner, 'ASSET.before.effectsOwner', action.kind !== 'LIST') !== priorOwner
+    || ownerId(
+      asset.after.owner,
+      action.kind === 'LIST' ? 'ObjectOwner' : 'AddressOwner',
+      'ASSET.effectsOwner',
+    ) !== expectedOwner
+    || ownerId(
+      asset.before.owner,
+      action.kind === 'LIST' ? 'AddressOwner' : 'ObjectOwner',
+      'ASSET.before.effectsOwner',
+    ) !== priorOwner
     || id(scalar(beforeFields, 'holder'), 'ASSET.before.holder') !== descriptor.preState.seller
     || decimal(scalar(beforeFields, 'ownership_epoch', 'ownershipEpoch'), 'ASSET.before.ownershipEpoch') !== descriptor.preState.ownershipEpoch
     || id(scalar(fields, 'holder'), 'ASSET.holder') !== expectedHolder
@@ -1138,6 +1231,7 @@ export function assertFinalizedMarketReadbackV8(value, request, marketClient, ma
   const evidence = assertEffects(value, value.digest, transactionSnapshot);
   const quote = descriptor.preState.quote;
   assertRoleSet(evidence.roles, descriptor, action, quote);
+  assertRoleOwners(evidence.roles, action, descriptor);
   const rootState = assertRootAndAdmin(evidence.roles, action, descriptor);
   const terminal = assertEvents(value, action, descriptor, marketClient, marketModule, evidence.roles, rootState);
   if (action.kind !== 'LIST' && terminal.fields.listingId !== request.identity.listing.id) {

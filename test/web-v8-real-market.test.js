@@ -43,7 +43,9 @@ function stableJson(value) {
 const hexHash = (value) => `0x${[...sha256(new TextEncoder().encode(stableJson(value)))]
   .map((entry) => entry.toString(16).padStart(2, '0')).join('')}`;
 const addressOwner = (value) => ({ kind: 'AddressOwner', value });
+const objectOwner = (value) => ({ kind: 'ObjectOwner', value });
 const sharedOwner = Object.freeze({ kind: 'Shared', value: { initialSharedVersion: '1' } });
+const createdSharedOwner = Object.freeze({ kind: 'Shared', value: { initialSharedVersion: '8' } });
 
 function coreRef(objectId, version, owner) {
   return { objectId, version, digest, owner };
@@ -362,7 +364,10 @@ test('web runtime bridge invokes the real Market Transaction builder', {
     sender: IDs.seller,
     expiration: { Epoch: '8' },
     gasData: { budget: '1000', price: '1', owner: IDs.seller, payment: [] },
-    inputs: [sharedInput(IDs.root), sharedInput(IDs.treasury), sharedInput(IDs.makerTreasury)],
+    inputs: [
+      sharedInput(IDs.root), sharedInput(IDs.registry), sharedInput(IDs.treasury),
+      sharedInput(IDs.makerTreasury),
+    ],
     commands: [{
       $kind: 'MoveCall',
       MoveCall: {
@@ -465,8 +470,8 @@ test('web runtime bridge invokes the real Market Transaction builder', {
   const registryInput = coreRef(IDs.registry, '7', sharedOwner);
   const registryOutput = coreRef(IDs.registry, '8', sharedOwner);
   const adminInput = coreRef(IDs.admin, '7', addressOwner(IDs.seller));
-  const adminOutput = coreRef(IDs.admin, '8', addressOwner(listingId));
-  const listingOutput = coreRef(listingId, '8', sharedOwner);
+  const adminOutput = coreRef(IDs.admin, '8', objectOwner(listingId));
+  const listingOutput = coreRef(listingId, '8', createdSharedOwner);
   const objectEvidence = (role, objectId, type, change, idOperation, before, after, revenue = { before: null, after: null }) => ({
     role, objectId, type, ownerKind: (after ?? before).ownerKind,
     change, idOperation, before, after, revenue,

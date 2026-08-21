@@ -825,18 +825,14 @@ function scalarField(fields, ...names) {
 }
 
 export function parseMakerV8MoveOptionIdV8(value, label = 'physical.sourceTreasuryId') {
-  if (typeof value === 'string') return id(value, label);
-  const vec = Array.isArray(value)
-    ? value
-    : value?.vec ?? value?.fields?.vec;
-  if (!Array.isArray(vec) || vec.length > 1) {
+  if (!Array.isArray(value) || value.length > 1) {
     fail(
       'MAKER_V8_BROWSER_OPTION_INVALID',
-      `${label} must be an exact zero-or-one-element Move Option<ID>.`,
+      `${label} must be the canonical zero-or-one-element Move Option<ID> JSON array.`,
       'READBACK',
     );
   }
-  return vec.length === 0 ? null : id(vec[0], label);
+  return value.length === 0 ? null : id(value[0], label);
 }
 
 function commitmentHex(value, label) {
@@ -864,7 +860,7 @@ function validatePhysicalCustody(descriptor, objects) {
   const expectedSourceKind = descriptor.lane === MARKET_V8_LANES.PHYSICAL_BASE ? 0 : 1;
   const sourceRole = expectedSourceKind === 0 ? 'MAKER_TREASURY' : 'PACK_TREASURY';
   const sourceTreasury = objects.find((entry) => entry.role === sourceRole);
-  const custodyTreasuryId = parseMakerV8MoveOptionIdV8(
+  const custodyTreasuryId = id(
     scalarField(custody, 'source_treasury_id', 'sourceTreasuryId'),
     'physical.custody.sourceTreasuryId',
   );
@@ -1144,6 +1140,31 @@ export async function readFinalizedMakerV8EnvelopeV8({ client, market, request }
         ),
       }),
     }));
+  }
+  for (const [objectIdValue, change] of changes) {
+    const sharedOwner = sharedInputs.get(objectIdValue);
+    if (sharedOwner) {
+      if (!change.normalized.input
+        || JSON.stringify(change.normalized.input.owner) !== JSON.stringify(sharedOwner)
+        || (change.normalized.output
+          && JSON.stringify(change.normalized.output.owner) !== JSON.stringify(sharedOwner))) {
+        fail(
+          'MAKER_V8_BROWSER_CORE_INPUT_INVALID',
+          'Changed Shared refs differ from the exact finalized TransactionData SharedObject input.',
+          'READBACK',
+          { objectId: objectIdValue, sharedOwner, inputOwner: change.normalized.input?.owner, outputOwner: change.normalized.output?.owner },
+        );
+      }
+    } else if (change.normalized.input?.owner?.kind === 'Shared'
+      || (change.normalized.output?.owner?.kind === 'Shared'
+        && change.normalized.idOperation !== 'Created')) {
+      fail(
+        'MAKER_V8_BROWSER_CORE_INPUT_INVALID',
+        'A changed existing Shared ref is absent from finalized TransactionData.',
+        'READBACK',
+        { objectId: objectIdValue },
+      );
+    }
   }
   const unchanged = new Map((effects.unchangedConsensusObjects || []).map((entry, index) => {
     const objectIdValue = id(entry.objectId, `effects.unchangedConsensusObjects[${index}].objectId`);
