@@ -14,6 +14,9 @@ import {
   makerV8ActionV8,
 } from './maker-v8-actions.js';
 import { assertFinalizedMarketReadbackV8 as assertCoreV2FinalizedMarketReadbackV8 } from './maker-v8-finalized.js';
+import * as productionBrowserModule from './maker-v8-browser.js';
+import * as productionMarketModule from './maker-v8-market.js';
+import * as productionRecoveryModule from './maker-v8-recovery.js';
 
 export const WEB_V8_CONTEXT_SCHEMA = 'animacraft.web-market-context.v8';
 export const WEB_V8_ROUTE_SCHEMA = 'animacraft.web-route-view.v8';
@@ -1619,10 +1622,6 @@ function renderBootstrapError(root, error) {
   root.innerHTML = `<main class="bootstrap-error"><a class="brand" href="/market">Animacraft v8</a>${issueMarkup(issue)}<p><a href="/market">Open the fresh v8 market</a></p></main>`;
 }
 
-async function defaultModule(path) {
-  return import(/* @vite-ignore */ new URL(path, import.meta.url).href);
-}
-
 export async function bootstrapFreshV8Browser({
   win = window,
   doc = document,
@@ -1643,7 +1642,7 @@ export async function bootstrapFreshV8Browser({
     const execution = assertWebV8ExecutionConfig(rawExecution);
     let concreteAdapters = adapters;
     if (concreteAdapters === undefined) {
-      const browser = browserModule || await defaultModule('./maker-v8-browser.js');
+      const browser = browserModule || productionBrowserModule;
       if (typeof browser?.createProductionMakerV8BrowserAdapters !== 'function') {
         throw appError('WEB_V8_ADAPTER_INVALID', 'The production fresh-v8 browser adapter factory is unavailable.', 'CONFIGURATION');
       }
@@ -1658,8 +1657,8 @@ export async function bootstrapFreshV8Browser({
       throw appError('WEB_V8_NETWORK_MISMATCH', 'RPC is connected to a different chain.', 'CONTEXT');
     }
     const runtime = await assertLiveMakerV8Runtime(rawRuntime, checkedAdapters.rpc);
-    const market = marketModule || await defaultModule('./maker-v8-market.js');
-    const recovery = recoveryModule || await defaultModule('./maker-v8-recovery.js');
+    const market = marketModule || productionMarketModule;
+    const recovery = recoveryModule || productionRecoveryModule;
     const controller = createFreshV8Controller({
       route,
       runtime,
