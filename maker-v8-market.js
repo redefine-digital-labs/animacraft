@@ -176,7 +176,9 @@ export function assertMarketV8Runtime(runtime) {
   if (CHECKED_MARKET_RUNTIMES.has(runtime)) return runtime;
   let checked;
   try {
-    checked = assertMakerV8Runtime(runtime);
+    // Runtime attestation is an object-identity trust anchor.  Re-normalizing an
+    // attested runtime would silently drop its private chain-readback brand.
+    checked = isMakerV8RuntimeAttested(runtime) ? runtime : assertMakerV8Runtime(runtime);
   } catch (error) {
     fail(
       MarketV8RuntimeError,

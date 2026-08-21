@@ -147,6 +147,7 @@ function runtimeAttestationRpc(runtime) {
 
 const attestedRuntime = (await attestMakerV8Runtime(runtimeAttestationRpc(runtimeInput), runtimeInput)).runtime;
 const client = createMarketV8Client(attestedRuntime, { network: NETWORK });
+assert.equal(client.runtime.sourceRuntime, attestedRuntime, 'Market client must preserve the private runtime-attestation identity');
 const { types } = client;
 
 const IDs = Object.freeze({
