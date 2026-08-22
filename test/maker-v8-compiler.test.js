@@ -23,6 +23,8 @@ import {
   MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE_COMMITMENT,
   MAKER_V8_COMMITMENT_FIXTURE_SCHEMA,
   MAKER_V8_COMPANION_READBACK_SCHEMA,
+  MAKER_V8_PUBLICATION_COMPILER_ABI,
+  MAKER_V8_PUBLICATION_TOPOLOGY,
   MAKER_V8_ROLE_ORDER,
   MAKER_V8_SCAFFOLD_READBACK_SCHEMA,
   MAKER_V8_TRUSTED_CONTEXT_SCHEMA,
@@ -416,6 +418,28 @@ async function allActivationBuilds(path) {
   return builds;
 }
 
+async function allBaseBuilds(publication, scaffold) {
+  const builds = []; let prior = null;
+  do {
+    const build = await buildMakerV8BaseChunkTransaction(publication, scaffold, prior);
+    builds.push(build);
+    prior = await certifyMakerV8BaseChunkReadback(
+      publication,
+      scaffold,
+      build,
+      await baseChunkRaw(publication, scaffold, build, `${DIGEST}b${builds.length}`),
+    );
+  } while (!builds.at(-1).checkpoint.final);
+  return { builds, base: prior.base };
+}
+
+function compilerTargetKey(target) {
+  const [packageId, module, fn] = target.split('::');
+  const role = MAKER_V8_ROLE_ORDER.find((candidate) => packageId === nid(fixture.packageRoles[candidate][1]));
+  assert.ok(role, `unknown compiler callable package ${packageId}`);
+  return `${role}:${module}::${fn}`;
+}
+
 test('fresh fixture compiles canonical certified bytes into executable bounded seven-role checkpoints', async () => {
   assert.equal(fixture.schemaVersion, MAKER_V8_COMMITMENT_FIXTURE_SCHEMA);
   const path = await compilePath();
@@ -472,6 +496,175 @@ test('targets use callable packages, stable origins remain readback-only, and AB
   assert.deepEqual(final.arguments.slice(0, 8).map((argument) => argumentObjectId(finalTransaction, argument)), [fixture.ids.root, fixture.ids.adminCap, fixture.ids.protocolConfig, fixture.ids.catalog, fixture.ids.baseRegistry, fixture.ids.makerTreasury, fixture.ids.protocolTreasury, fixture.ids.releaseConfig].map(nid));
   assert.equal(path.companion.physicalRegistry.type.startsWith(path.context.catalog.fields.roles.physical.originalPackageId), true);
   assert.notEqual(path.context.catalog.fields.roles.physical.originalPackageId, path.context.catalog.fields.roles.physical.callablePackageId);
+});
+
+test('publication topology, Activation append-to-seal cursors, and the exact 46-target ABI match compiler output', async () => {
+  const document = clone(fixture.document); const assets = clone(fixture.transportAssets);
+  document.colors = [{
+    key: 'primary', label: 'Primary', defaultSwatchKey: 'black',
+    swatches: [{ key: 'black', label: 'Black', rgba: '#000000ff', stops: [] }],
+  }];
+  document.parts[0].items[0].styles[0].colorChannelKey = 'primary';
+  document.parts[0].items[0].styles[0].defaultSwatchKey = 'black';
+  document.parts[0].items[0].styles[0].protected = true;
+  document.defaultRecipe.colors = [{ channelKey: 'primary', swatchKey: 'black' }];
+  document.rules = [{
+    key: 'body-required', kind: 'REQUIRE',
+    left: { partKey: 'body', itemKey: 'body' },
+    right: { partKey: 'body', itemKey: 'body' },
+    payload: { fixture: 'abi-complete' },
+  }];
+  const outputTemplate = document.outputs[0];
+  document.outputs = Array.from({ length: 17 }, (_, index) => ({
+    ...clone(outputTemplate),
+    key: `output${String(index).padStart(2, '0')}`,
+    label: `Output ${index}`,
+    payload: { fixture: 'abi-complete', index },
+  }));
+  document.commerce.rightsOrigin = 'LICENSE_WRAPPED';
+  document.commerce.rightsEvidence = { licensor: 'Fixture Licensor', evidenceAssetId: 'rights-proof' };
+  document.assets.push({ id: 'rights-proof', kind: 'rights-evidence', mediaType: 'application/pdf', byteLength: '5' });
+  assets.push({ assetId: 'rights-proof', blobId: 'walrus-rights-proof-v8', mediaType: 'application/pdf', bytesBase64: 'JVBERi0=' });
+
+  const context = await trustedContext(document, assets);
+  const publication = await compileMakerV8Publication(document, context);
+  const scaffold = await scaffoldReadback(publication);
+  const baseRun = await allBaseBuilds(publication, scaffold);
+  const companionBuild = await buildMakerV8CompanionObjectsTransaction(publication, baseRun.base);
+  const companion = await companionReadback(publication, baseRun.base, companionBuild.expected, companionBuild.transaction);
+  const activationBuilds = await allActivationBuilds({ publication, base: baseRun.base, companion });
+
+  assert.deepEqual(
+    baseRun.builds.map((build) => build.checkpoint.phase),
+    MAKER_V8_PUBLICATION_TOPOLOGY.base.phases,
+  );
+  const activationPhases = activationBuilds.map((build) => build.checkpoint.phase);
+  assert.deepEqual(
+    activationPhases.filter((phase, index) => index === 0 || phase !== activationPhases[index - 1]),
+    MAKER_V8_PUBLICATION_TOPOLOGY.activation.phases,
+  );
+  assert.ok(activationPhases.filter((phase) => phase === 'ACTIVATION_OUTPUT_APPEND').length > 1);
+  const appendSealBoundaries = [];
+  for (let index = 1; index < activationBuilds.length; index += 1) {
+    const append = activationBuilds[index - 1].checkpoint;
+    const seal = activationBuilds[index].checkpoint;
+    if (append.action === 'APPEND' && seal.action === 'APPEND' && append.lane === seal.lane) {
+      assert.equal(seal.startSequence, append.endSequence, `${append.lane} append chunks must be contiguous`);
+    }
+    if (append.action === 'APPEND' && seal.action === 'SEAL' && append.lane === seal.lane) {
+      appendSealBoundaries.push(append.lane);
+      assert.equal(seal.startSequence, append.endSequence, `${append.lane} seal must resume at the append end`);
+      assert.equal(seal.endSequence, append.endSequence, `${append.lane} seal must cover the exact appended prefix`);
+    }
+  }
+  assert.deepEqual(appendSealBoundaries, ['SEAL', 'RUNTIME', 'OUTPUT', 'PHYSICAL']);
+
+  const nativePath = await compilePath();
+  const nativeActivationBuilds = await allActivationBuilds(nativePath);
+  const emptySealExpected = MAKER_V8_PUBLICATION_TOPOLOGY.activation.phases
+    .filter((phase) => phase !== 'ACTIVATION_SEAL_APPEND');
+  assert.deepEqual(nativeActivationBuilds.map((build) => build.checkpoint.phase), emptySealExpected);
+  assert.equal(nativeActivationBuilds.some((build) => build.checkpoint.phase === 'ACTIVATION_SEAL_APPEND'), false);
+  assert.equal(nativeActivationBuilds.some((build) => build.checkpoint.phase === 'ACTIVATION_SEAL_SEAL'), true);
+  const transactions = [
+    buildMakerV8ScaffoldTransaction(nativePath.publication),
+    buildMakerV8ScaffoldTransaction(publication),
+    ...baseRun.builds.map((build) => build.transaction),
+    companionBuild.transaction,
+    ...activationBuilds.map((build) => build.transaction),
+  ];
+  assert.deepEqual(suffixes(transactions[0]), [
+    'maker_v8::new_economics_snapshot_v8', 'maker_v8::new_onchain_native_rights_snapshot_v8',
+    'base_registry_v8::new_base_definition_counts_v8', 'base_registry_v8::new_base_definition_commitments_v8',
+    'core_v8::new_initial_maker_draft_v8', 'release_v8::finalize_product_release_binding_v8',
+    'core_v8::share_maker_draft_v8',
+  ]);
+  assert.deepEqual(suffixes(transactions[1]), [
+    'maker_v8::new_economics_snapshot_v8', 'release_v8::new_license_wrapped_rights_snapshot_v8',
+    'base_registry_v8::new_base_definition_counts_v8', 'base_registry_v8::new_base_definition_commitments_v8',
+    'core_v8::new_initial_maker_draft_v8', 'release_v8::finalize_product_release_binding_v8',
+    'core_v8::share_maker_draft_v8',
+  ]);
+  assert.deepEqual(baseRun.builds.map((build) => suffixes(build.transaction)), [[
+    'base_registry_v8::append_track_v8', 'base_registry_v8::append_part_v8',
+    'base_registry_v8::append_item_v8', 'base_registry_v8::append_style_v8',
+    'base_registry_v8::append_color_v8', 'base_registry_v8::append_rule_v8',
+  ], ['base_registry_v8::seal_base_definition_registry_v8']]);
+  assert.deepEqual(suffixes(companionBuild.transaction), [
+    'seal_v8::new_seal_registry_v8', 'seal_v8::share_seal_registry_v8',
+    'runtime_v8::new_runtime_registries_v8', 'runtime_v8::share_runtime_definition_registry_v8',
+    'runtime_v8::share_pack_registry_v8', 'runtime_v8::transfer_pack_admission_authority_v8',
+    'output_v8::new_output_registries_v8', 'output_v8::share_output_registries_v8',
+    'physical_v8::new_physical_registry_v8', 'physical_v8::share_physical_registry_v8',
+    'market_v8::new_market_objects_v8', 'market_v8::share_market_registry_v8',
+    'market_v8::share_market_treasury_v8',
+  ]);
+  const actualKeys = [];
+  const activationOrder = Object.freeze({
+    ACTIVATION_SEAL_APPEND: ['release_v8::certify_base_ciphertext_v8', 'seal_v8::append_protected_asset_v8'],
+    ACTIVATION_SEAL_SEAL: ['seal_v8::seal_registry_v8'],
+    ACTIVATION_RUNTIME_APPEND: ['runtime_v8::append_part_profile_v8'],
+    ACTIVATION_RUNTIME_SEAL: ['runtime_v8::seal_runtime_definitions_v8'],
+    ACTIVATION_OUTPUT_APPEND: ['output_v8::append_output_policy_v8'],
+    ACTIVATION_OUTPUT_SEAL: ['output_v8::seal_output_registry_v8'],
+    ACTIVATION_PHYSICAL_APPEND: ['physical_v8::append_base_style_policy_v8'],
+    ACTIVATION_PHYSICAL_SEAL: ['physical_v8::seal_physical_registry_v8'],
+    ACTIVATION_FINALIZE: [
+      'market_v8::seal_market_registry_v8',
+      'seal_v8::issue_seal_readiness_v8',
+      'seal_v8::certify_activation_readiness_v8',
+      'runtime_v8::runtime_activation_readiness_v8',
+      'runtime_binding_v8::certify_runtime_activation_readiness_v8',
+      'output_v8::certify_output_activation_readiness_v8',
+      'physical_v8::certify_physical_activation_readiness_v8',
+      'market_v8::certify_market_activation_readiness_v8',
+      'release_v8::seal_and_activate_maker_v8',
+    ],
+  });
+  for (const build of activationBuilds) {
+    const expected = activationOrder[build.checkpoint.phase];
+    const repeat = build.checkpoint.action === 'APPEND'
+      ? Number(build.checkpoint.endSequence) - Number(build.checkpoint.startSequence)
+      : 1;
+    assert.deepEqual(suffixes(build.transaction), expected.length === 1 ? Array(repeat).fill(expected[0]) : expected);
+  }
+  for (const transaction of transactions) {
+    const extracted = exactMakerV8TransactionTargets(transaction).map(compilerTargetKey);
+    const commandOrder = moves(transaction).map((move) => compilerTargetKey(`${move.package}::${move.module}::${move.function}`));
+    assert.deepEqual(extracted, commandOrder, 'target projection must preserve exact MoveCall order');
+    actualKeys.push(...extracted);
+  }
+
+  assert.deepEqual(Object.keys(MAKER_V8_PUBLICATION_COMPILER_ABI), MAKER_V8_ROLE_ORDER);
+  const declaredKeys = MAKER_V8_ROLE_ORDER.flatMap((role) => (
+    MAKER_V8_PUBLICATION_COMPILER_ABI[role].map((suffix) => `${role}:${suffix}`)
+  ));
+  assert.equal(declaredKeys.length, 46);
+  assert.equal(new Set(declaredKeys).size, 46);
+  assert.deepEqual(
+    [...new Set(actualKeys)].sort(compareMakerV8ProtocolText),
+    [...declaredKeys].sort(compareMakerV8ProtocolText),
+  );
+
+  const source = await readFile(new URL('../maker-v8-compiler.js', import.meta.url), 'utf8');
+  const literalKeys = [...source.matchAll(/call\(tx,\s*publication,\s*'([^']+)',\s*'([^']+)',\s*'([^']+)'/g)]
+    .map((match) => `${match[1]}:${match[2]}::${match[3]}`);
+  const dynamicBlock = source.match(/const functions = \{([^}]+)\};/);
+  assert.ok(dynamicBlock, 'Base dynamic target map must remain explicit');
+  const dynamicKeys = [...dynamicBlock[1].matchAll(/[a-z]+:\s*'([^']+)'/g)]
+    .map((match) => `core:base_registry_v8::${match[1]}`);
+  const callSites = [...source.matchAll(/\bcall\(tx,\s*publication,\s*([^,]+),\s*([^,]+),\s*([^,]+),/g)]
+    .filter((match) => match[1].trim() !== 'role');
+  const dynamicSites = callSites
+    .filter((match) => ![match[1], match[2], match[3]].every((value) => /^'[^']+'$/.test(value.trim())))
+    .map((match) => [match[1], match[2], match[3]].map((value) => value.trim()).join('|'));
+  assert.equal(callSites.length, literalKeys.length + 1);
+  assert.deepEqual(dynamicSites, ["'core'|'base_registry_v8'|functions[kind]"]);
+  assert.deepEqual(
+    [...new Set([...literalKeys, ...dynamicKeys])].sort(compareMakerV8ProtocolText),
+    [...declaredKeys].sort(compareMakerV8ProtocolText),
+    'the exported ABI must have no missing or extra literal/dynamic compiler target',
+  );
 });
 
 test('license-wrapped protected Base uses only Release certification wrappers and exact consumed result order', async () => {

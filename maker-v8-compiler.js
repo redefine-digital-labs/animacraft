@@ -27,6 +27,30 @@ export const MAKER_V8_REQUIRED_CAPABILITIES = 127n;
 export const MAKER_V8_ROOT_CATEGORIES = Object.freeze({ TRACK: 0, PART: 1, ITEM: 2, STYLE: 3, COLOR: 4, RULE: 5, AGGREGATE: 255 });
 export const MAKER_V8_TRANSACTION_LIMITS = Object.freeze({ maxKindBytes: 96 * 1024, maxCommands: 64, maxInputs: 256, maxRowsPerChunk: 16 });
 export const MAKER_V8_BYTE_BUDGETS = Object.freeze({ maxDocumentUtf8Bytes: 8 * 1024 * 1024, maxManifestBytes: 12 * 1024 * 1024, maxAssetBytes: 8 * 1024 * 1024, maxTotalAssetBytes: 32 * 1024 * 1024, maxTransportBase64Chars: 48 * 1024 * 1024, maxTransactionDataBytes: 128 * 1024 });
+export const MAKER_V8_PUBLICATION_TOPOLOGY = Object.freeze({
+  scaffold: Object.freeze({
+    kind: 'SCAFFOLD', phase: 'SCAFFOLD', lane: 'SCAFFOLD', action: 'CREATE',
+    checkpointSchema: 'animacraft.maker-v8-scaffold-checkpoint.v1',
+  }),
+  base: Object.freeze({
+    kind: 'BASE_CHUNK', lane: 'BASE', checkpointSchema: 'animacraft.maker-v8-base-checkpoint.v1',
+    phases: Object.freeze(['BASE_APPEND', 'BASE_SEAL']),
+  }),
+  companion: Object.freeze({
+    kind: 'COMPANION_OBJECTS', phase: 'COMPANION_OBJECTS', lane: 'COMPANION', action: 'CREATE',
+    checkpointSchema: 'animacraft.maker-v8-companion-checkpoint.v1',
+  }),
+  activation: Object.freeze({
+    kind: 'ACTIVATION_CHUNK', checkpointSchema: 'animacraft.maker-v8-activation-checkpoint.v1',
+    phases: Object.freeze([
+      'ACTIVATION_SEAL_APPEND', 'ACTIVATION_SEAL_SEAL',
+      'ACTIVATION_RUNTIME_APPEND', 'ACTIVATION_RUNTIME_SEAL',
+      'ACTIVATION_OUTPUT_APPEND', 'ACTIVATION_OUTPUT_SEAL',
+      'ACTIVATION_PHYSICAL_APPEND', 'ACTIVATION_PHYSICAL_SEAL',
+      'ACTIVATION_FINALIZE',
+    ]),
+  }),
+});
 export const MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE = Object.freeze({
   protocolVersion: '130',
   objectRuntimeMaxNumCachedObjects: '1000',
@@ -61,14 +85,48 @@ const MARKERS = Object.freeze({
   market: ['market_v8', 'MarketOriginalMarkerV8', 'MarketCallableMarkerV8'],
   release: ['release_v8', 'ReleaseOriginalMarkerV8', 'ReleaseCallableMarkerV8'],
 });
-const FRESH_ROLE_MODULES = Object.freeze({
-  core: Object.freeze(['maker_v8', 'base_registry_v8', 'core_v8']),
-  seal: Object.freeze(['seal_v8']),
-  runtime: Object.freeze(['runtime_v8', 'runtime_binding_v8']),
-  output: Object.freeze(['output_v8']),
-  physical: Object.freeze(['physical_v8']),
-  market: Object.freeze(['market_v8']),
-  release: Object.freeze(['release_v8']),
+export const MAKER_V8_PUBLICATION_COMPILER_ABI = Object.freeze({
+  core: Object.freeze([
+    'base_registry_v8::append_track_v8', 'base_registry_v8::append_part_v8',
+    'base_registry_v8::append_item_v8', 'base_registry_v8::append_style_v8',
+    'base_registry_v8::append_color_v8', 'base_registry_v8::append_rule_v8',
+    'base_registry_v8::new_base_definition_commitments_v8',
+    'base_registry_v8::new_base_definition_counts_v8',
+    'base_registry_v8::seal_base_definition_registry_v8',
+    'core_v8::new_initial_maker_draft_v8', 'core_v8::share_maker_draft_v8',
+    'maker_v8::new_economics_snapshot_v8', 'maker_v8::new_onchain_native_rights_snapshot_v8',
+  ]),
+  seal: Object.freeze([
+    'seal_v8::append_protected_asset_v8', 'seal_v8::certify_activation_readiness_v8',
+    'seal_v8::issue_seal_readiness_v8', 'seal_v8::new_seal_registry_v8',
+    'seal_v8::seal_registry_v8', 'seal_v8::share_seal_registry_v8',
+  ]),
+  runtime: Object.freeze([
+    'runtime_binding_v8::certify_runtime_activation_readiness_v8',
+    'runtime_v8::append_part_profile_v8', 'runtime_v8::new_runtime_registries_v8',
+    'runtime_v8::runtime_activation_readiness_v8', 'runtime_v8::seal_runtime_definitions_v8',
+    'runtime_v8::share_pack_registry_v8', 'runtime_v8::share_runtime_definition_registry_v8',
+    'runtime_v8::transfer_pack_admission_authority_v8',
+  ]),
+  output: Object.freeze([
+    'output_v8::append_output_policy_v8', 'output_v8::certify_output_activation_readiness_v8',
+    'output_v8::new_output_registries_v8', 'output_v8::seal_output_registry_v8',
+    'output_v8::share_output_registries_v8',
+  ]),
+  physical: Object.freeze([
+    'physical_v8::append_base_style_policy_v8', 'physical_v8::certify_physical_activation_readiness_v8',
+    'physical_v8::new_physical_registry_v8', 'physical_v8::seal_physical_registry_v8',
+    'physical_v8::share_physical_registry_v8',
+  ]),
+  market: Object.freeze([
+    'market_v8::certify_market_activation_readiness_v8', 'market_v8::new_market_objects_v8',
+    'market_v8::seal_market_registry_v8', 'market_v8::share_market_registry_v8',
+    'market_v8::share_market_treasury_v8',
+  ]),
+  release: Object.freeze([
+    'release_v8::certify_base_ciphertext_v8', 'release_v8::finalize_product_release_binding_v8',
+    'release_v8::new_license_wrapped_rights_snapshot_v8', 'release_v8::seal_and_activate_maker_v8',
+  ]),
 });
 const FIELDS = Object.freeze({
   document: ['schemaVersion', 'protocolVersion', 'lineage', 'metadata', 'canvas', 'composition', 'tracks', 'colors', 'parts', 'rules', 'defaultRecipe', 'outputs', 'commerce', 'assets'],
@@ -216,8 +274,7 @@ const oid = (object) => object.reference.objectId;
 function stableType(context, role, module, struct, generic = '') { return normType(`${context.catalog.fields.roles[role].originalPackageId}::${module}::${struct}${generic}`); }
 function requireType(object, expected, label) { same(object.type, expected, 'MAKER_V8_TYPE_ORIGIN_MISMATCH', `${label} stable TypeOrigin`); }
 function target(publication, role, module, fn) {
-  const modules = FRESH_ROLE_MODULES[role];
-  if (!modules?.includes(module) || typeof fn !== 'string' || !/^[a-z][a-z0-9_]*_v8$/.test(fn)) {
+  if (!MAKER_V8_PUBLICATION_COMPILER_ABI[role]?.includes(`${module}::${fn}`)) {
     fail('MAKER_V8_TARGET_INVALID', 'Compiler target is outside the exact fresh-v8 role/module/function allowlist.', { role, module, fn });
   }
   return `${publication.context.catalog.fields.roles[role].callablePackageId}::${module}::${fn}`;
@@ -403,12 +460,12 @@ async function verifyFinalizedTransactionKind(build, value, label) {
 }
 function transactionFits(metrics) { return metrics.kindBytes <= MAKER_V8_TRANSACTION_LIMITS.maxKindBytes && metrics.commands <= MAKER_V8_TRANSACTION_LIMITS.maxCommands && metrics.inputs <= MAKER_V8_TRANSACTION_LIMITS.maxInputs; }
 function publicBaseCheckpoint(index, phase, start, end, expected, final, metrics) {
-  return Object.freeze({ schemaVersion: 'animacraft.maker-v8-base-checkpoint.v1', phase, lane: 'BASE', index, startSequence: String(start), endSequence: String(end), final, expected: Object.freeze({ observedCounts: Object.freeze(Object.fromEntries(Object.entries(expected.observedCounts).map(([key, value]) => [key, String(value)]))), rollingCommitments: expected.rollingCommitments, nextSequence: String(expected.nextSequence), protectedStyleCount: String(expected.protectedStyleCount), sealed: expected.sealed }), metrics });
+  return Object.freeze({ schemaVersion: MAKER_V8_PUBLICATION_TOPOLOGY.base.checkpointSchema, phase, lane: 'BASE', index, startSequence: String(start), endSequence: String(end), final, expected: Object.freeze({ observedCounts: Object.freeze(Object.fromEntries(Object.entries(expected.observedCounts).map(([key, value]) => [key, String(value)]))), rollingCommitments: expected.rollingCommitments, nextSequence: String(expected.nextSequence), protectedStyleCount: String(expected.protectedStyleCount), sealed: expected.sealed }), metrics });
 }
 
 async function buildBaseChunkAt(publication, scaffold, { start, index, phase }) {
   const progress = publicationProgress.get(publication)?.base; if (!progress) fail('MAKER_V8_COMPILER_PROGRESS_MISSING', 'Compiler progress is unavailable.');
-  const total = progress.flatRows.length; if (!Number.isSafeInteger(start) || start < 0 || start > total || !Number.isSafeInteger(index) || index < 0 || !['BASE_APPEND', 'BASE_SEAL'].includes(phase) || (phase === 'BASE_SEAL' && start !== total)) fail('MAKER_V8_BASE_PROGRESS_INVALID', 'Base checkpoint cursor is invalid.'); let end = phase === 'BASE_SEAL' ? total : Math.min(total, start + MAKER_V8_TRANSACTION_LIMITS.maxRowsPerChunk); let transaction; let metrics;
+  const total = progress.flatRows.length; if (!Number.isSafeInteger(start) || start < 0 || start > total || !Number.isSafeInteger(index) || index < 0 || !MAKER_V8_PUBLICATION_TOPOLOGY.base.phases.includes(phase) || (phase === 'BASE_SEAL' && start !== total)) fail('MAKER_V8_BASE_PROGRESS_INVALID', 'Base checkpoint cursor is invalid.'); let end = phase === 'BASE_SEAL' ? total : Math.min(total, start + MAKER_V8_TRANSACTION_LIMITS.maxRowsPerChunk); let transaction; let metrics;
   do { transaction = makeBaseChunkTransaction(publication, scaffold, phase === 'BASE_SEAL' ? [] : progress.flatRows.slice(start, end), phase === 'BASE_SEAL'); metrics = await transactionMetrics(transaction); if (transactionFits(metrics)) break; end -= 1; } while (phase === 'BASE_APPEND' && end > start);
   if (!transactionFits(metrics)) fail('MAKER_V8_TRANSACTION_LIMIT_UNSATISFIABLE', 'A Base checkpoint exceeds the pinned Sui transaction limits.', { phase, startSequence: String(start), metrics });
   const rowState = progress.checkpoints[end]; const final = phase === 'BASE_SEAL'; const expected = final ? Object.freeze({ ...rowState, sealed: true }) : rowState; const nextPhase = final ? null : end === total ? 'BASE_SEAL' : 'BASE_APPEND'; const checkpoint = publicBaseCheckpoint(index, phase, start, end, expected, final, metrics); const result = Object.freeze({ transaction, checkpoint }); baseChunkBuilds.set(result, Object.freeze({ publication, scaffold, index, phase, start, end, final, nextPhase, expected })); return result;
@@ -435,7 +492,7 @@ export async function certifyMakerV8BaseChunkReadback(publication, scaffold, bui
 }
 
 export async function rehydrateMakerV8BaseChunkCertificateV8(publication, scaffold, durable) {
-  requireCompiled(publication); if (!scaffoldSet.has(scaffold)) fail('MAKER_V8_SCAFFOLD_CONTEXT_REQUIRED', 'Verified scaffold readback is required.'); const value = snapshot(durable, 'durableBaseCertificate'); exact(value, ['checkpoint', 'readback'], 'durableBaseCertificate'); const checkpoint = value.checkpoint; if (!plain(checkpoint) || checkpoint.schemaVersion !== 'animacraft.maker-v8-base-checkpoint.v1') fail('MAKER_V8_BASE_PROGRESS_INVALID', 'Durable Base checkpoint schema is invalid.'); const build = await buildBaseChunkAt(publication, scaffold, { start: Number(u64(checkpoint.startSequence, 'Base startSequence')), index: Number(u64(checkpoint.index, 'Base index')), phase: checkpoint.phase }); if (canonicalMakerV8Json(build.checkpoint) !== canonicalMakerV8Json(checkpoint)) fail('MAKER_V8_BASE_PROGRESS_INVALID', 'Durable Base checkpoint differs from deterministic compiler output.'); return certifyMakerV8BaseChunkReadback(publication, scaffold, build, value.readback);
+  requireCompiled(publication); if (!scaffoldSet.has(scaffold)) fail('MAKER_V8_SCAFFOLD_CONTEXT_REQUIRED', 'Verified scaffold readback is required.'); const value = snapshot(durable, 'durableBaseCertificate'); exact(value, ['checkpoint', 'readback'], 'durableBaseCertificate'); const checkpoint = value.checkpoint; if (!plain(checkpoint) || checkpoint.schemaVersion !== MAKER_V8_PUBLICATION_TOPOLOGY.base.checkpointSchema) fail('MAKER_V8_BASE_PROGRESS_INVALID', 'Durable Base checkpoint schema is invalid.'); const build = await buildBaseChunkAt(publication, scaffold, { start: Number(u64(checkpoint.startSequence, 'Base startSequence')), index: Number(u64(checkpoint.index, 'Base index')), phase: checkpoint.phase }); if (canonicalMakerV8Json(build.checkpoint) !== canonicalMakerV8Json(checkpoint)) fail('MAKER_V8_BASE_PROGRESS_INVALID', 'Durable Base checkpoint differs from deterministic compiler output.'); return certifyMakerV8BaseChunkReadback(publication, scaffold, build, value.readback);
 }
 
 async function companionCommitments(publication, base) {
@@ -498,7 +555,7 @@ export async function certifyMakerV8CompanionReadback(publication, base, readbac
   value.expected = expected; value.transactionKind = transactionKind; delete value.transactionKindBytesBase64; freeze(value); companionSet.add(value); return value;
 }
 
-const ACTIVATION_PHASES = Object.freeze(['SEAL_APPEND', 'SEAL_SEAL', 'RUNTIME_APPEND', 'RUNTIME_SEAL', 'OUTPUT_APPEND', 'OUTPUT_SEAL', 'PHYSICAL_APPEND', 'PHYSICAL_SEAL', 'FINALIZE']);
+const ACTIVATION_PHASES = Object.freeze(MAKER_V8_PUBLICATION_TOPOLOGY.activation.phases.map((phase) => phase.replace(/^ACTIVATION_/, '')));
 function activationRows(publication, companion, lane) { if (lane === 'SEAL') return companion.expected.seal.rows; if (lane === 'RUNTIME') return publication.runtime.profiles; if (lane === 'OUTPUT') return companion.expected.output.rows; if (lane === 'PHYSICAL') return companion.expected.physical.rows; return []; }
 function makeActivationPhaseTransaction(publication, base, companion, phase, rows, sealPhase) {
   const tx = new Transaction(); const c = publication.context; tx.setSender(c.signerAddress); const coin = coinType(publication); const root = objectArg(tx, base.root, phase === 'FINALIZE'); const admin = objectArg(tx, base.adminCap, false); const baseRegistry = objectArg(tx, base.baseRegistry, false); const catalog = objectArg(tx, c.catalog, false);
@@ -522,7 +579,7 @@ async function buildActivationChunkAt(publication, base, companion, { phaseIndex
   while (ACTIVATION_PHASES[phaseIndex]?.endsWith('_APPEND')) { const lane = ACTIVATION_PHASES[phaseIndex].split('_')[0]; if (activationRows(publication, companion, lane).length) break; phaseIndex += 1; start = 0; }
   const phase = ACTIVATION_PHASES[phaseIndex]; if (!phase) fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Activation progress is invalid.'); const final = phase === 'FINALIZE'; const [lane, action = 'FINALIZE'] = final ? ['FINALIZE', 'FINALIZE'] : phase.split('_'); const allRows = activationRows(publication, companion, lane); const sealPhase = action === 'SEAL'; let end = final ? 0 : sealPhase ? allRows.length : Math.min(allRows.length, start + MAKER_V8_TRANSACTION_LIMITS.maxRowsPerChunk); let transaction; let metrics;
   do { transaction = makeActivationPhaseTransaction(publication, base, companion, lane, sealPhase ? [] : allRows.slice(start, end), sealPhase); metrics = await transactionMetrics(transaction); if (transactionFits(metrics)) break; end -= 1; } while (action === 'APPEND' && end > start);
-  if (!transactionFits(metrics)) fail('MAKER_V8_TRANSACTION_LIMIT_UNSATISFIABLE', 'An Activation checkpoint exceeds the pinned Sui transaction limits.', { phase, startSequence: String(start), metrics }); const appendComplete = action === 'APPEND' && end === allRows.length; const nextPhaseIndex = final ? ACTIVATION_PHASES.length : sealPhase || appendComplete ? phaseIndex + 1 : phaseIndex; const nextStart = final || sealPhase || appendComplete ? 0 : end; const expected = activationExpected(companion, publication, lane, end, sealPhase); const checkpoint = Object.freeze({ schemaVersion: 'animacraft.maker-v8-activation-checkpoint.v1', phase: `ACTIVATION_${phase}`, lane, action, index, startSequence: String(start), endSequence: String(end), final, expected, metrics }); const result = Object.freeze({ transaction, checkpoint }); activationChunkBuilds.set(result, Object.freeze({ publication, base, companion, phase, lane, action, phaseIndex, index, start, end, final, nextPhaseIndex, nextStart, expected })); return result;
+  if (!transactionFits(metrics)) fail('MAKER_V8_TRANSACTION_LIMIT_UNSATISFIABLE', 'An Activation checkpoint exceeds the pinned Sui transaction limits.', { phase, startSequence: String(start), metrics }); const appendComplete = action === 'APPEND' && end === allRows.length; const nextPhaseIndex = final ? ACTIVATION_PHASES.length : sealPhase || appendComplete ? phaseIndex + 1 : phaseIndex; const nextStart = final || sealPhase ? 0 : end; const expected = activationExpected(companion, publication, lane, end, sealPhase); const checkpoint = Object.freeze({ schemaVersion: MAKER_V8_PUBLICATION_TOPOLOGY.activation.checkpointSchema, phase: `ACTIVATION_${phase}`, lane, action, index, startSequence: String(start), endSequence: String(end), final, expected, metrics }); const result = Object.freeze({ transaction, checkpoint }); activationChunkBuilds.set(result, Object.freeze({ publication, base, companion, phase, lane, action, phaseIndex, index, start, end, final, nextPhaseIndex, nextStart, expected })); return result;
 }
 
 export async function buildMakerV8ActivationChunkTransaction(publication, base, companion, priorCertificate = null) {
@@ -549,7 +606,7 @@ export async function certifyMakerV8ActivationChunkReadback(publication, base, c
 }
 
 export async function rehydrateMakerV8ActivationChunkCertificateV8(publication, base, companion, durable) {
-  requireCompiled(publication); if (!baseSet.has(base)) fail('MAKER_V8_BASE_CONTEXT_REQUIRED', 'Verified Base readback is required.'); if (!companionSet.has(companion)) fail('MAKER_V8_COMPANION_CONTEXT_REQUIRED', 'Verified companion readback is required.'); const value = snapshot(durable, 'durableActivationCertificate'); exact(value, ['checkpoint', 'readback'], 'durableActivationCertificate'); const checkpoint = value.checkpoint; if (!plain(checkpoint) || checkpoint.schemaVersion !== 'animacraft.maker-v8-activation-checkpoint.v1' || typeof checkpoint.phase !== 'string') fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation checkpoint schema is invalid.'); const phaseName = checkpoint.phase.replace(/^ACTIVATION_/, ''); const phaseIndex = ACTIVATION_PHASES.indexOf(phaseName); if (phaseIndex < 0) fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation phase is invalid.'); const build = await buildActivationChunkAt(publication, base, companion, { phaseIndex, start: Number(u64(checkpoint.startSequence, 'Activation startSequence')), index: Number(u64(checkpoint.index, 'Activation index')) }); if (canonicalMakerV8Json(build.checkpoint) !== canonicalMakerV8Json(checkpoint)) fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation checkpoint differs from deterministic compiler output.'); return certifyMakerV8ActivationChunkReadback(publication, base, companion, build, value.readback);
+  requireCompiled(publication); if (!baseSet.has(base)) fail('MAKER_V8_BASE_CONTEXT_REQUIRED', 'Verified Base readback is required.'); if (!companionSet.has(companion)) fail('MAKER_V8_COMPANION_CONTEXT_REQUIRED', 'Verified companion readback is required.'); const value = snapshot(durable, 'durableActivationCertificate'); exact(value, ['checkpoint', 'readback'], 'durableActivationCertificate'); const checkpoint = value.checkpoint; if (!plain(checkpoint) || checkpoint.schemaVersion !== MAKER_V8_PUBLICATION_TOPOLOGY.activation.checkpointSchema || typeof checkpoint.phase !== 'string') fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation checkpoint schema is invalid.'); const phaseName = checkpoint.phase.replace(/^ACTIVATION_/, ''); const phaseIndex = ACTIVATION_PHASES.indexOf(phaseName); if (phaseIndex < 0) fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation phase is invalid.'); const build = await buildActivationChunkAt(publication, base, companion, { phaseIndex, start: Number(u64(checkpoint.startSequence, 'Activation startSequence')), index: Number(u64(checkpoint.index, 'Activation index')) }); if (canonicalMakerV8Json(build.checkpoint) !== canonicalMakerV8Json(checkpoint)) fail('MAKER_V8_ACTIVATION_PROGRESS_INVALID', 'Durable Activation checkpoint differs from deterministic compiler output.'); return certifyMakerV8ActivationChunkReadback(publication, base, companion, build, value.readback);
 }
 
 export function exactMakerV8TransactionTargets(transaction) {
