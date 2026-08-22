@@ -28,6 +28,7 @@ const allowedTopFiles = new Set([
   'maker-v8-browser.js', 'maker-v8-chain.js', 'maker-v8-compiler.js',
   'maker-v8-document.js', 'maker-v8-finalized.js', 'maker-v8-market.js',
   'maker-v8-publication-store.js', 'maker-v8-recovery.js', 'maker-v8-runtime.js',
+  'maker-v8-sui-grpc.js',
   'package-lock.json', 'package.json', 'styles.css', 'vercel.json', 'vite.config.js',
 ]);
 const allowedTopDirectories = new Set(['.github', 'docs', 'move', 'public-v8', 'scripts', 'test']);
@@ -38,6 +39,7 @@ const allowedTests = new Set([
   'test/maker-v8-compiler.test.js', 'test/maker-v8-document.test.js',
   'test/maker-v8-market.test.js', 'test/maker-v8-recovery.test.js',
   'test/maker-v8-publication-store.test.js', 'test/maker-v8-runtime.test.js',
+  'test/maker-v8-sui-grpc.test.js',
   'test/web-v8-controller-real.test.js',
   'test/web-v8-production-factory.test.js', 'test/web-v8-real-market.test.js',
   'test/web-v8-shell.test.js',
@@ -98,7 +100,7 @@ const productionText = [
   'maker-commerce-v8.js', 'maker-v8-actions.js', 'maker-v8-browser.js',
   'maker-v8-chain.js', 'maker-v8-compiler.js', 'maker-v8-document.js',
   'maker-v8-finalized.js', 'maker-v8-market.js', 'maker-v8-recovery.js',
-  'maker-v8-publication-store.js', 'maker-v8-runtime.js',
+  'maker-v8-publication-store.js', 'maker-v8-runtime.js', 'maker-v8-sui-grpc.js',
 ].map((path) => readFileSync(join(root, path), 'utf8')).join('\n');
 
 if (mode !== '--dist') {
