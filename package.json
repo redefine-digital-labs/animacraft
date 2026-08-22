@@ -17,7 +17,9 @@
     "move:test": "for package in core seal runtime output physical market release; do sui move test --path move/animacraft_v8_$package --warnings-are-errors || exit 1; done",
     "move:probes": "for package in core seal runtime output physical market release; do node move/animacraft_v8_$package/scripts/run_adversarial_probes.mjs || exit 1; done",
     "move:size": "for package in core seal runtime output physical market release; do node move/animacraft_v8_$package/scripts/measure_package_size.mjs || exit 1; done",
-    "move:seal-cap:harness": "sui move build --path test/harness/animacraft_v8_seal_cap_harness --warnings-are-errors && node test/harness/animacraft_v8_seal_cap_harness/scripts/generate_commitments.mjs --self-test"
+    "move:seal-cap:quick": "node test/harness/animacraft_v8_seal_cap_harness/scripts/verify_reproducibility.mjs",
+    "move:seal-cap:harness": "npm run move:seal-cap:quick",
+    "move:seal-cap:localnet": "node test/harness/animacraft_v8_seal_cap_harness/scripts/run_localnet_replay.mjs"
   },
   "dependencies": {
     "@mysten/sui": "2.20.2",

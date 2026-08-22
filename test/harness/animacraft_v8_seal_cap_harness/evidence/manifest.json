@@ -1,0 +1,124 @@
+{
+  "schema": "animacraft-v8-seal-cap-evidence.v1",
+  "approvedProtocolProfile": {
+    "file": "approved-protocol-profile.json",
+    "canonicalSha256": "1b38afda274cb9a9ebd8307aec0af689d2a396db960fc3c1020bfd8188450ec0"
+  },
+  "production": {
+    "moveRootCount": 7,
+    "coreModuleCount": 7,
+    "corePackageObjectBytes": 63918,
+    "coreTargetHeadroomBytes": 82,
+    "baseRegistrySourceBytes": 41505,
+    "baseRegistrySourceSha256": "d4537b1d55e6e3c9e6e27785f6f3014cb832394cf370c2f093d94a0e6207dc48",
+    "baseRegistryBytecodeBytes": 9412,
+    "baseRegistryBytecodeSha256": "89ecbd9e3640ab218f92094c516d05d7efdacac4a12c56630759354af8d1bbc7"
+  },
+  "fixtureMetadata": {
+    "Move.lock": "0020bca016980a7141499af8191f1725c30c87cc499d85353ac25a14fe248c9f",
+    "Move.toml": "7287132edc9f9f1aac038d2d6a70cd07776ab0c8410ebb55594d145e1f99207e"
+  },
+  "fixtureSources": {
+    "activation_v8.move": "4ce066e54962a05a8ed9eba6171725ce6ce2ec7e286682b5e796f4c570d7173c",
+    "base_registry_v8.move": "d4537b1d55e6e3c9e6e27785f6f3014cb832394cf370c2f093d94a0e6207dc48",
+    "core_v8.move": "024fc4141b2c80d5c1239b2b51725cad4652855a6629e4b81046e16e6dbff8c2",
+    "maker_v8.move": "345b68ace2f280406e4328b6870b12860835b1e6b7fb7067860a06432b94b098",
+    "package_binding_v8.move": "479a174aeaf8ec8d8b2b78b4efaa830d3744f640f5bec34a25880e8b6329f416",
+    "protocol_config_v8.move": "44341b3d18fef5c10965d30b791bbb397b191e52de82c25588b786e914fcd971",
+    "treasury_v8.move": "9765253787bda09302b6de049c13fe89abcf71cb3978edb36eab6e132573a712"
+  },
+  "artifacts": {
+    "protocol-config-v130.rpc.json": {
+      "bytes": 58719,
+      "sha256": "2e8774f371c81fbd7cf3b81346640bc57fc0b15e2b8487b11a9506ac2b700350"
+    },
+    "seal-333-colored.rpc.json": {
+      "bytes": 18222,
+      "sha256": "8fbb80205cd2c892c1c761b07f2de97665c5ae616c4eee06672276afadbf696f"
+    },
+    "seal-334-colored.rpc.json": {
+      "bytes": 17362,
+      "sha256": "be0ba4be4f9d408c7e20a1afc191a9b7172387f6af91c15844d271f308109e49"
+    },
+    "seal-500-colorless.rpc.json": {
+      "bytes": 18262,
+      "sha256": "b8f4e17815a43a213b7930da12010278e2fa483301910f1c4bc4ee4a763188e2"
+    },
+    "seal-501-colorless.rpc.json": {
+      "bytes": 16973,
+      "sha256": "75a477c9ea7976318d0a052a9b61bf52fee274417078b97982ddf96cc2239ca8"
+    }
+  },
+  "scenarios": {
+    "333-colored": {
+      "artifact": "seal-333-colored.rpc.json",
+      "styles": 333,
+      "colors": 333,
+      "referencedColorPairs": 333,
+      "cacheDemand": 999,
+      "status": "success",
+      "originalDigest": "GNu1LQvpt4UjruQiqU5uE3toNgCF7mmgw4y6sv9h2Qbi",
+      "gasUsed": {
+        "computationCost": "27800000",
+        "storageCost": "9507600",
+        "storageRebate": "9412524",
+        "nonRefundableStorageFee": "95076"
+      },
+      "rawEffectsLength": 809,
+      "eventCount": 1
+    },
+    "334-colored": {
+      "artifact": "seal-334-colored.rpc.json",
+      "styles": 334,
+      "colors": 334,
+      "referencedColorPairs": 334,
+      "cacheDemand": 1002,
+      "status": "failure",
+      "expectedError": "MovePrimitiveRuntimeError(MoveLocationOpt(Some(MoveLocation { module: ModuleId { address: 0000000000000000000000000000000000000000000000000000000000000002, name: Identifier(\"dynamic_field\") }, function: 14, instruction: 0, function_name: Some(\"borrow_child_object\") }))) in command 0",
+      "originalDigest": "EXeSrBjD86uPU3efBXmCGNWXQodUGspRJ1EMDEWqUBhS",
+      "gasUsed": {
+        "computationCost": "27600000",
+        "storageCost": "9507600",
+        "storageRebate": "9412524",
+        "nonRefundableStorageFee": "95076"
+      },
+      "rawEffectsLength": 858,
+      "eventCount": 0
+    },
+    "500-colorless": {
+      "artifact": "seal-500-colorless.rpc.json",
+      "styles": 500,
+      "colors": 0,
+      "referencedColorPairs": 0,
+      "cacheDemand": 1000,
+      "status": "success",
+      "originalDigest": "CDe4EMxJ6yAcvzf7pykRdSKRanw2nJ6p7mWScN9NAiX3",
+      "gasUsed": {
+        "computationCost": "30100000",
+        "storageCost": "9507600",
+        "storageRebate": "9412524",
+        "nonRefundableStorageFee": "95076"
+      },
+      "rawEffectsLength": 809,
+      "eventCount": 1
+    },
+    "501-colorless": {
+      "artifact": "seal-501-colorless.rpc.json",
+      "styles": 501,
+      "colors": 0,
+      "referencedColorPairs": 0,
+      "cacheDemand": 1002,
+      "status": "failure",
+      "expectedError": "MovePrimitiveRuntimeError(MoveLocationOpt(Some(MoveLocation { module: ModuleId { address: 0000000000000000000000000000000000000000000000000000000000000002, name: Identifier(\"dynamic_field\") }, function: 14, instruction: 0, function_name: Some(\"borrow_child_object\") }))) in command 0",
+      "originalDigest": "24q5hz3pxPfWq6bSiJuTYDwomdv2nZkxAmBK1rZZxiwh",
+      "gasUsed": {
+        "computationCost": "29800000",
+        "storageCost": "9507600",
+        "storageRebate": "9412524",
+        "nonRefundableStorageFee": "95076"
+      },
+      "rawEffectsLength": 825,
+      "eventCount": 0
+    }
+  }
+}
