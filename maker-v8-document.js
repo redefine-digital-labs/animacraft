@@ -72,6 +72,7 @@ const LIMITS = Object.freeze({
   // Sui 1.76.1 object-runtime metering proves seal is bounded by
   // 2 * style rows + distinct referenced color pairs <= 1000.
   styles: 500,
+  authorStyles: 25_000,
   styleSealObjectRuntimeUnits: 1_000,
   colors: 5_000,
   rules: 1_000,
@@ -144,8 +145,8 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-function issue(issues, path, code, message) {
-  issues.push(Object.freeze({ path, code, message }));
+function issue(issues, path, code, message, details = undefined) {
+  issues.push(Object.freeze(details === undefined ? { path, code, message } : { path, code, message, details: Object.freeze({ ...details }) }));
 }
 
 function inspectJsonTree(root, issues) {
@@ -444,6 +445,7 @@ function collectSemanticIssues(document, issues, { mode }) {
 
   let itemCount = 0;
   let styleCount = 0;
+  let publishedStyleCount = 0;
   const referencedStyleColorPairs = new Set();
   const publicItems = new Set();
   const publicStyles = new Set();
@@ -484,6 +486,7 @@ function collectSemanticIssues(document, issues, { mode }) {
       if (!['PUBLIC', 'PRIVATE'].includes(item.status) || !Number.isSafeInteger(item.displayOrder)) issue(issues, itemPath, 'MAKER_V8_ITEM_INVALID', 'Item status/order is invalid.');
       const styleKeys = uniqueKeys(item.styles, `${itemPath}.styles`, issues);
       styleCount += item.styles?.length || 0;
+      if (item.status === 'PUBLIC') publishedStyleCount += item.styles?.length || 0;
       if (!styleKeys.has(item.defaultStyleKey)) issue(issues, `${itemPath}.defaultStyleKey`, 'MAKER_V8_DEFAULT_STYLE_UNKNOWN', 'Default Style does not exist.');
       if (item.status === 'PUBLIC') publicItems.add(`${part.key}/${item.key}`);
       item.styles?.forEach((style, styleIndex) => {
@@ -498,7 +501,7 @@ function collectSemanticIssues(document, issues, { mode }) {
           const channel = document.colors.find((entry) => entry.key === style.colorChannelKey);
           if (!channel?.swatches?.some((entry) => entry.key === style.defaultSwatchKey)) {
             issue(issues, `${stylePath}.defaultSwatchKey`, 'MAKER_V8_SWATCH_UNKNOWN', 'Style default swatch must exist in its exact Color channel.');
-          } else {
+          } else if (item.status === 'PUBLIC') {
             referencedStyleColorPairs.add(`${style.colorChannelKey}\u0000${style.defaultSwatchKey}`);
           }
         }
@@ -525,9 +528,17 @@ function collectSemanticIssues(document, issues, { mode }) {
   });
   if (mode === 'compile' && !parts.size) issue(issues, 'parts', 'MAKER_V8_PART_REQUIRED', 'Publication requires at least one Part.');
   if (document.tracks?.length > LIMITS.tracks || document.parts?.length > LIMITS.parts
-    || itemCount > LIMITS.items || styleCount > LIMITS.styles) issue(issues, 'parts', 'MAKER_V8_DEFINITION_LIMIT', 'Base definition limit exceeded.');
-  if ((2 * styleCount) + referencedStyleColorPairs.size > LIMITS.styleSealObjectRuntimeUnits) {
-    issue(issues, 'parts', 'MAKER_V8_STYLE_SEAL_LIMIT', 'Style rows and distinct referenced Color pairs exceed the measured Sui object-runtime seal budget.');
+    || itemCount > LIMITS.items) issue(issues, 'parts', 'MAKER_V8_DEFINITION_LIMIT', 'Base definition limit exceeded.');
+  if (styleCount > LIMITS.authorStyles) issue(issues, 'parts', 'MAKER_V8_AUTHOR_STYLE_LIMIT', 'Author Style arrays exceed the bounded document budget.', { observedStyles: styleCount, maximumStyles: LIMITS.authorStyles });
+  const measuredStyleUnits = (2 * publishedStyleCount) + referencedStyleColorPairs.size;
+  if (publishedStyleCount > LIMITS.styles || measuredStyleUnits > LIMITS.styleSealObjectRuntimeUnits) {
+    issue(issues, 'parts', 'MAKER_V8_STYLE_SEAL_LIMIT', 'Published Style rows exceed the measured client publication seal cap.', {
+      observedPublishedStyles: publishedStyleCount,
+      observedDistinctColorPairs: referencedStyleColorPairs.size,
+      observedUnits: measuredStyleUnits,
+      maximumPublishedStyles: LIMITS.styles,
+      maximumUnits: LIMITS.styleSealObjectRuntimeUnits,
+    });
   }
 
   const ruleKeys = uniqueKeys(document.rules, 'rules', issues);

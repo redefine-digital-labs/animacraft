@@ -56,6 +56,7 @@ import {
   MAKER_V8_BASE_CHUNK_READBACK_SCHEMA,
   MAKER_V8_ACTIVATION_CHUNK_READBACK_SCHEMA,
   MAKER_V8_ACTIVATION_READBACK_SCHEMA,
+  MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE,
   MAKER_V8_COMPANION_READBACK_SCHEMA,
   MAKER_V8_SCAFFOLD_READBACK_SCHEMA,
   MAKER_V8_TRUSTED_CONTEXT_SCHEMA,
@@ -2708,14 +2709,48 @@ function compilerAuthorityProjection(context) {
     chainIdentifier: context.chainIdentifier,
     signerAddress: context.signerAddress,
     paymentCoinType: context.paymentCoinType,
+    protocolProfile: context.protocolProfile,
     ...Object.fromEntries(COMPILER_CONTEXT_OBJECTS.map((name) => [name, object(context[name])])),
     configs: Object.fromEntries(Object.entries(context.configs).map(([name, value]) => [name, object(value)])),
     derived: {
       productBindingCommitment: context._derived.productBindingCommitment,
       callCapSetCommitment: context._derived.callCapSetCommitment,
       sealPolicyCommitment: context._derived.sealPolicyCommitment,
+      protocolProfileCommitment: context._derived.protocolProfileCommitment,
     },
   };
+}
+
+export async function readMakerV8CompilerProtocolProfileV8(client) {
+  if (typeof client?.getProtocolConfig !== 'function') {
+    fail('MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID', 'Compiler RPC must expose getProtocolConfig.', 'CONTEXT');
+  }
+  const response = await client.getProtocolConfig();
+  if (!plain(response) || typeof response.protocolVersion !== 'string'
+    || !/^(?:0|[1-9][0-9]*)$/.test(response.protocolVersion)
+    || !plain(response.attributes)) {
+    fail('MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID', 'Sui protocol profile readback has an invalid exact shape.', 'CONTEXT');
+  }
+  const attribute = (name) => {
+    const value = response.attributes[name];
+    if (!plain(value) || Object.keys(value).length !== 1 || typeof value.u64 !== 'string'
+      || !/^(?:0|[1-9][0-9]*)$/.test(value.u64)) {
+      fail('MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID', `Sui protocol attribute ${name} must be one exact u64.`, 'CONTEXT', { attribute: name });
+    }
+    return value.u64;
+  };
+  const observed = freeze({
+    protocolVersion: response.protocolVersion,
+    objectRuntimeMaxNumCachedObjects: attribute('object_runtime_max_num_cached_objects'),
+    objectRuntimeMaxNumStoreEntries: attribute('object_runtime_max_num_store_entries'),
+  });
+  if (canonicalMakerV8Json(observed) !== canonicalMakerV8Json(MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE)) {
+    fail('MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED', 'The live Sui protocol profile has not been approved by the Maker v8 seal-cap harness.', 'CONTEXT', {
+      expected: MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE,
+      actual: observed,
+    });
+  }
+  return observed;
 }
 
 export function assertMakerV8CompilerContextFreshV8(expected, observed) {
@@ -3016,7 +3051,7 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
     await assertPinnedMainnet(client);
     const attested = await attestMakerV8Runtime(client, runtimeInput, { network: MAKER_V8_CHAIN_NETWORK });
     const runtime = attested.runtime;
-    const [protocolResponse, clockResponse] = await Promise.all([
+    const [protocolResponse, clockResponse, protocolProfile] = await Promise.all([
       client.getObject({
         id: runtime.protocolConfigId,
         options: { showType: true, showContent: true, showOwner: true },
@@ -3025,6 +3060,7 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
         id: runtime.clockObjectId,
         options: { showType: true, showContent: true, showOwner: true },
       }),
+      readMakerV8CompilerProtocolProfileV8(client),
     ]);
     const protocol = moveObject(
       protocolResponse,
@@ -3053,6 +3089,7 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
       chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
       signerAddress: id(signerAddress, 'compiler signer'),
       paymentCoinType: runtime.paymentCoinType,
+      protocolProfile,
       clock: compilerObjectFromParsed(clock, {}, 'Clock'),
       protocolConfig: compilerObjectFromParsed(protocol, {
         version: Number(decimal(rawMoveField(protocolFields, 'version', 'ProtocolConfigV8'), 'ProtocolConfigV8.version')),
@@ -3105,7 +3142,14 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
       name,
       await compilerChangedObject(client, response, types[name], name, SCAFFOLD_FIELDS[name]),
     ]));
-    return { schemaVersion: MAKER_V8_SCAFFOLD_READBACK_SCHEMA, ...Object.fromEntries(entries) };
+    return {
+      schemaVersion: MAKER_V8_SCAFFOLD_READBACK_SCHEMA,
+      source: 'FINALIZED_RPC',
+      transactionDigest: response.digest,
+      transactionKindBytesBase64: response.compilerTransactionKindProof.transactionKindBytesBase64,
+      transactionKindSha256: response.compilerTransactionKindProof.transactionKindSha256,
+      ...Object.fromEntries(entries),
+    };
   }
 
   async function baseReadback(response, scaffold) {
@@ -3167,7 +3211,14 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
       name,
       await compilerChangedObject(client, response, types[name], name, COMPANION_FIELDS[name]),
     ]));
-    return { schemaVersion: MAKER_V8_COMPANION_READBACK_SCHEMA, ...Object.fromEntries(entries) };
+    return {
+      schemaVersion: MAKER_V8_COMPANION_READBACK_SCHEMA,
+      source: 'FINALIZED_RPC',
+      transactionDigest: response.digest,
+      transactionKindBytesBase64: response.compilerTransactionKindProof.transactionKindBytesBase64,
+      transactionKindSha256: response.compilerTransactionKindProof.transactionKindSha256,
+      ...Object.fromEntries(entries),
+    };
   }
 
   async function activationReadback(response, attested, publication, base, transactionDigest) {

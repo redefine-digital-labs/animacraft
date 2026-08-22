@@ -15,6 +15,7 @@ import {
   MAKER_V8_BASE_CHUNK_READBACK_SCHEMA,
   MAKER_V8_ACTIVATION_CHUNK_READBACK_SCHEMA,
   MAKER_V8_ACTIVATION_READBACK_SCHEMA,
+  MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE,
   MAKER_V8_COMMITMENT_FIXTURE_SCHEMA,
   MAKER_V8_COMPANION_READBACK_SCHEMA,
   MAKER_V8_ROLE_ORDER,
@@ -34,6 +35,8 @@ import {
   compileMakerV8Publication,
   deriveMakerV8ReleaseCommitments,
   exactMakerV8TransactionTargets,
+  rehydrateMakerV8ActivationChunkCertificateV8,
+  rehydrateMakerV8BaseChunkCertificateV8,
 } from '../maker-v8-compiler.js';
 
 const fixture = JSON.parse(await readFile(new URL('./fixtures/maker-v8-compiler-v1.json', import.meta.url), 'utf8'));
@@ -100,7 +103,7 @@ async function releaseTuple() {
   return deriveMakerV8ReleaseCommitments({ catalogId: fixture.ids.catalog, roles, authorities });
 }
 
-async function trustedContext(document = clone(fixture.document), assets = clone(fixture.transportAssets), mutateTransport = null) {
+async function trustedContext(document = clone(fixture.document), assets = clone(fixture.transportAssets), mutateTransport = null, mutateContext = null) {
   const release = await releaseTuple();
   const core = release.roles.core.originalPackageId;
   const catalogFields = {
@@ -116,6 +119,7 @@ async function trustedContext(document = clone(fixture.document), assets = clone
   const context = {
     schemaVersion: MAKER_V8_TRUSTED_CONTEXT_SCHEMA,
     chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER, signerAddress: fixture.ids.signer, paymentCoinType: COIN,
+    protocolProfile: clone(MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE),
     clock: shared('0x6', '0x2::clock::Clock', {}),
     protocolConfig: shared(fixture.ids.protocolConfig, `${core}::protocol_config_v8::ProtocolConfigV8`, protocolFields),
     protocolTreasury: shared(fixture.ids.protocolTreasury, `${core}::protocol_config_v8::ProtocolTreasuryV8<${COIN}>`, { version: 8, configId: fixture.ids.protocolConfig }),
@@ -142,6 +146,7 @@ async function trustedContext(document = clone(fixture.document), assets = clone
     context.configs.seal.fields.commitment = error.details.expected;
     return true;
   });
+  mutateContext?.(context);
   return certifyMakerV8TrustedContext(context);
 }
 
@@ -171,7 +176,13 @@ function rootObjects(publication) {
 }
 
 async function scaffoldReadback(publication) {
-  const raw = { schemaVersion: MAKER_V8_SCAFFOLD_READBACK_SCHEMA, ...rootObjects(publication) };
+  const raw = {
+    schemaVersion: MAKER_V8_SCAFFOLD_READBACK_SCHEMA,
+    source: 'FINALIZED_RPC',
+    transactionDigest: DIGEST,
+    ...await transactionKindProof({ transaction: buildMakerV8ScaffoldTransaction(publication) }),
+    ...rootObjects(publication),
+  };
   for (const key of ['tracks', 'parts', 'items', 'styles', 'colors', 'rules', 'aggregate']) {
     await assert.rejects(certifyMakerV8ScaffoldReadback(publication, raw), (error) => {
       assert.equal(error.code, 'MAKER_V8_BASE_ROLLING_MISMATCH');
@@ -194,7 +205,7 @@ function baseReadbackRaw(publication, scaffold) {
   };
 }
 
-function companionRaw(publication, base, expected) {
+async function companionRaw(publication, base, expected, transaction = null) {
   const c = publication.context; const type = (role, module, struct, generic = '') => `${c.catalog.fields.roles[role].originalPackageId}::${module}::${struct}${generic}`; const rootId = nid(fixture.ids.root); const content = publication.commitments.content;
   const sealRegistry = shared(fixture.ids.sealRegistry, type('seal', 'seal_v8', 'SealRegistryV8'), {
     version: 8, rootId, makerVersion: 1, rootContentCommitment: content, catalogId: nid(fixture.ids.catalog), productBindingCommitment: c._derived.productBindingCommitment,
@@ -208,11 +219,12 @@ function companionRaw(publication, base, expected) {
   const physicalRegistry = shared(fixture.ids.physicalRegistry, type('physical', 'physical_v8', 'PhysicalRegistryV8'), { version: 8, catalogId: nid(fixture.ids.catalog), packageConfigId: nid(fixture.ids.physicalConfig), productBindingCommitment: c._derived.productBindingCommitment, callCapSetCommitment: c._derived.callCapSetCommitment, rootId, makerVersion: 1, rootContentCommitment: content, baseRegistryId: nid(fixture.ids.baseRegistry), expectedBasePolicyCount: String(expected.physical.rows.length), observedBasePolicyCount: '0', expectedBasePolicyCommitment: expected.physical.commitment, rollingBasePolicyCommitment: ZERO, baseSealed: false, revision: '0', packPolicyCount: '0' });
   const marketTreasury = shared(fixture.ids.marketTreasury, type('market', 'market_v8', 'MarketTreasuryV8', `<${COIN}>`), { version: 8, catalogId: nid(fixture.ids.catalog), packageConfigId: nid(fixture.ids.marketConfig), rootId, makerVersion: 1, rootContentCommitment: content, balanceAtomic: '0', grossEscrowedAtomic: '0', grossReleasedAtomic: '0' });
   const marketRegistry = shared(fixture.ids.marketRegistry, type('market', 'market_v8', 'MarketRegistryV8', `<${COIN}>`), { version: 8, catalogId: nid(fixture.ids.catalog), packageConfigId: nid(fixture.ids.marketConfig), productBindingCommitment: c._derived.productBindingCommitment, callCapSetCommitment: c._derived.callCapSetCommitment, rootId, makerVersion: 1, rootContentCommitment: content, protocolConfigId: nid(fixture.ids.protocolConfig), protocolConfigRevision: '3', protocolConfigCommitment: c.protocolConfig.fields.commitment, economicsCommitment: publication.commitments.economics, rightsCommitment: publication.commitments.rights, makerMarketFeeBps: 80, soulMarketFeeBps: 90, soulCreatorRoyaltyBps: publication.document.commerce.soulCreatorRoyaltyBps, makerSourceRoyaltyBps: publication.document.commerce.makerSourceRoyaltyBps, makerResaleRoyaltyBps: publication.document.commerce.makerResaleRoyaltyBps, treasuryId: nid(fixture.ids.marketTreasury), sealed: false, revision: '0', listingCount: '0', escrowCount: '0', completedSaleCount: '0', canceledSaleCount: '0', recoveredSaleCount: '0', grossVolumeAtomic: '0', protocolPaidAtomic: '0', creatorPaidAtomic: '0', sourcePaidAtomic: '0', sellerPaidAtomic: '0', zeroStateCommitment: ZERO });
-  return { schemaVersion: MAKER_V8_COMPANION_READBACK_SCHEMA, sealRegistry, runtimeDefinitions, packRegistry, admissionAuthority, outputRegistry, soulRegistry, physicalRegistry, marketRegistry, marketTreasury };
+  const companionTransaction = transaction ?? (await buildMakerV8CompanionObjectsTransaction(publication, base)).transaction;
+  return { schemaVersion: MAKER_V8_COMPANION_READBACK_SCHEMA, source: 'FINALIZED_RPC', transactionDigest: DIGEST, ...await transactionKindProof({ transaction: companionTransaction }), sealRegistry, runtimeDefinitions, packRegistry, admissionAuthority, outputRegistry, soulRegistry, physicalRegistry, marketRegistry, marketTreasury };
 }
 
-async function companionReadback(publication, base, expected) {
-  const raw = companionRaw(publication, base, expected);
+async function companionReadback(publication, base, expected, transaction = null) {
+  const raw = await companionRaw(publication, base, expected, transaction);
   for (const [code, object, field] of [
     ['MAKER_V8_SEAL_READBACK_MISMATCH', raw.sealRegistry, 'rollingCommitment'],
     ['MAKER_V8_SEAL_READBACK_MISMATCH', raw.sealRegistry, 'runtimeCommitment'],
@@ -227,10 +239,29 @@ async function companionReadback(publication, base, expected) {
 }
 
 async function compilePath(document = clone(fixture.document), assets = clone(fixture.transportAssets)) {
-  const context = await trustedContext(document, assets); const publication = await compileMakerV8Publication(document, context); const scaffold = await scaffoldReadback(publication); const base = certifyMakerV8BaseReadback(publication, scaffold, baseReadbackRaw(publication, scaffold)); const companionBuild = await buildMakerV8CompanionObjectsTransaction(publication, base); const companion = await companionReadback(publication, base, companionBuild.expected); return { context, publication, scaffold, base, companionBuild, companion };
+  const context = await trustedContext(document, assets); const publication = await compileMakerV8Publication(document, context); const scaffold = await scaffoldReadback(publication); const base = certifyMakerV8BaseReadback(publication, scaffold, baseReadbackRaw(publication, scaffold)); const companionBuild = await buildMakerV8CompanionObjectsTransaction(publication, base); const companion = await companionReadback(publication, base, companionBuild.expected, companionBuild.transaction); return { context, publication, scaffold, base, companionBuild, companion };
 }
 
 const moves = (transaction) => transaction.getData().commands.filter((command) => command.$kind === 'MoveCall').map((command) => command.MoveCall);
+
+test('trusted context pins the exact measured Sui protocol profile and commitment', async () => {
+  const approved = await trustedContext();
+  assert.deepEqual(approved.protocolProfile, MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE);
+  assert.match(approved._derived.protocolProfileCommitment, /^[0-9a-f]{64}$/);
+
+  for (const [mutate, code] of [
+    [(context) => { context.protocolProfile.protocolVersion = '131'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
+    [(context) => { context.protocolProfile.objectRuntimeMaxNumCachedObjects = '999'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
+    [(context) => { context.protocolProfile.objectRuntimeMaxNumStoreEntries = '1001'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
+    [(context) => { context.protocolProfile.objectRuntimeMaxNumCachedObjects = 1000; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID'],
+    [(context) => { delete context.protocolProfile.objectRuntimeMaxNumStoreEntries; }, 'MAKER_V8_FIELDS_INVALID'],
+  ]) {
+    await assert.rejects(
+      trustedContext(clone(fixture.document), clone(fixture.transportAssets), null, mutate),
+      (error) => error.code === code,
+    );
+  }
+});
 const suffixes = (transaction) => exactMakerV8TransactionTargets(transaction).map((target) => target.split('::').slice(-2).join('::'));
 const argKinds = (move) => move.arguments.map((argument) => argument.$kind);
 
@@ -429,7 +460,7 @@ test('caller-authored authority and unverified lookalikes cannot reach a transac
   await assert.rejects(compileMakerV8Publication(fixture.document, clone(context)), (error) => error.code === 'MAKER_V8_TRUSTED_CONTEXT_REQUIRED');
   const publication = await compileMakerV8Publication(fixture.document, context);
   await assert.rejects(buildMakerV8BaseChunkTransaction(publication, rootObjects(publication)), (error) => error.code === 'MAKER_V8_SCAFFOLD_CONTEXT_REQUIRED');
-  const scaffold = await scaffoldReadback(publication); const base = certifyMakerV8BaseReadback(publication, scaffold, baseReadbackRaw(publication, scaffold)); const built = await buildMakerV8CompanionObjectsTransaction(publication, base); const lookalike = companionRaw(publication, base, built.expected);
+  const scaffold = await scaffoldReadback(publication); const base = certifyMakerV8BaseReadback(publication, scaffold, baseReadbackRaw(publication, scaffold)); const built = await buildMakerV8CompanionObjectsTransaction(publication, base); const lookalike = await companionRaw(publication, base, built.expected, built.transaction);
   await assert.rejects(buildMakerV8ActivationChunkTransaction(publication, base, lookalike), (error) => error.code === 'MAKER_V8_COMPANION_CONTEXT_REQUIRED');
 });
 
@@ -442,9 +473,9 @@ test('manifest, asset bytes, package tuple, stable TypeOrigin, and zero-state ta
   const tuple = await releaseTuple(); const collision = clone(tuple.roles); collision.runtime.originalPackageId = collision.seal.callablePackageId; collision.runtime.originalMarkerType = `${collision.runtime.originalPackageId}::runtime_v8::RuntimeOriginalMarkerV8`;
   await assert.rejects(deriveMakerV8ReleaseCommitments({ catalogId: fixture.ids.catalog, roles: collision, authorities: tuple.authorities }), (error) => { assert.equal(error.code, 'MAKER_V8_PACKAGE_BINDING_COMMITMENT_MISMATCH'); collision.runtime.bindingCommitment = error.details.expected; return true; });
   await assert.rejects(deriveMakerV8ReleaseCommitments({ catalogId: fixture.ids.catalog, roles: collision, authorities: tuple.authorities }), (error) => error.code === 'MAKER_V8_PACKAGE_ROLE_COLLISION');
-  const path = await compilePath(); const wrongType = companionRaw(path.publication, path.base, path.companionBuild.expected); wrongType.physicalRegistry.type = wrongType.physicalRegistry.type.replace(path.context.catalog.fields.roles.physical.originalPackageId, path.context.catalog.fields.roles.physical.callablePackageId);
+  const path = await compilePath(); const wrongType = await companionRaw(path.publication, path.base, path.companionBuild.expected, path.companionBuild.transaction); wrongType.physicalRegistry.type = wrongType.physicalRegistry.type.replace(path.context.catalog.fields.roles.physical.originalPackageId, path.context.catalog.fields.roles.physical.callablePackageId);
   await assert.rejects(certifyMakerV8CompanionReadback(path.publication, path.base, wrongType), (error) => error.code === 'MAKER_V8_TYPE_ORIGIN_MISMATCH');
-  const zero = clone(path.companion); delete zero.expected; zero.marketRegistry.fields.zeroStateCommitment = 'ff'.repeat(32);
+  const zero = clone(path.companion); delete zero.expected; delete zero.transactionKind; Object.assign(zero, await transactionKindProof(path.companionBuild)); zero.marketRegistry.fields.zeroStateCommitment = 'ff'.repeat(32);
   await assert.rejects(certifyMakerV8CompanionReadback(path.publication, path.base, zero), (error) => error.code === 'MAKER_V8_MARKET_ZERO_COMMITMENT_MISMATCH');
 });
 
@@ -504,7 +535,7 @@ test('measured style seal budget accepts exact boundaries and rejects 334 unique
   );
   assert.throws(
     () => assertMakerV8Document(styleLimitDocument(501, 0), { mode: 'compile' }),
-    (error) => error.issues.some((entry) => entry.code === 'MAKER_V8_DEFINITION_LIMIT'),
+    (error) => error.issues.some((entry) => entry.code === 'MAKER_V8_STYLE_SEAL_LIMIT'),
   );
 
   const context = await trustedContext(fiveHundred);
@@ -544,8 +575,14 @@ test('bounded chunks require exact prior finalized certificates and certify ACTI
     assert.ok(build.checkpoint.metrics.kindBytes <= 96 * 1024);
     assert.ok(build.checkpoint.metrics.commands <= 64);
     assert.ok(build.checkpoint.metrics.inputs <= 256);
-    certificate = await certifyMakerV8BaseChunkReadback(publication, scaffold, build, await baseChunkRaw(publication, scaffold, build, `${DIGEST}${chunkCount}`));
-    prior = certificate;
+    const raw = await baseChunkRaw(publication, scaffold, build, `${DIGEST}${chunkCount}`);
+    certificate = await certifyMakerV8BaseChunkReadback(publication, scaffold, build, raw);
+    if (chunkCount === 0) {
+      prior = await rehydrateMakerV8BaseChunkCertificateV8(publication, scaffold, { checkpoint: build.checkpoint, readback: raw });
+      const tampered = { checkpoint: clone(build.checkpoint), readback: raw };
+      tampered.checkpoint.endSequence = String(Number(tampered.checkpoint.endSequence) + 1);
+      await assert.rejects(rehydrateMakerV8BaseChunkCertificateV8(publication, scaffold, tampered), (error) => error.code === 'MAKER_V8_BASE_PROGRESS_INVALID');
+    } else prior = certificate;
     chunkCount += 1;
   } while (!build.checkpoint.final);
   assert.ok(chunkCount > 4);
@@ -570,7 +607,12 @@ test('bounded chunks require exact prior finalized certificates and certify ACTI
       callCapSetCommitment: publication.context._derived.callCapSetCommitment,
     });
     activationCertificate = await certifyMakerV8ActivationChunkReadback(publication, certificate.base, companion, activationBuild, raw);
-    activationPrior = activationCertificate;
+    if (phases.length === 1) {
+      activationPrior = await rehydrateMakerV8ActivationChunkCertificateV8(publication, certificate.base, companion, { checkpoint: activationBuild.checkpoint, readback: raw });
+      const tampered = { checkpoint: clone(activationBuild.checkpoint), readback: raw };
+      tampered.checkpoint.endSequence = String(Number(tampered.checkpoint.endSequence) + 1);
+      await assert.rejects(rehydrateMakerV8ActivationChunkCertificateV8(publication, certificate.base, companion, tampered), (error) => error.code === 'MAKER_V8_ACTIVATION_PROGRESS_INVALID');
+    } else activationPrior = activationCertificate;
   } while (!activationBuild.checkpoint.final);
   assert.deepEqual(phases, ['ACTIVATION_SEAL_SEAL', 'ACTIVATION_RUNTIME_APPEND', 'ACTIVATION_RUNTIME_SEAL', 'ACTIVATION_OUTPUT_APPEND', 'ACTIVATION_OUTPUT_SEAL', 'ACTIVATION_PHYSICAL_APPEND', 'ACTIVATION_PHYSICAL_SEAL', 'ACTIVATION_FINALIZE']);
   assert.equal(activationCertificate.lifecycle, 'ACTIVE');

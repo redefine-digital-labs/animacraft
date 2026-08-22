@@ -80,6 +80,38 @@ test('starter compiles with the exact Track-Part-Item-Style vocabulary', () => {
   });
 });
 
+test('measured seal cap counts only published Styles while author arrays remain bounded', () => {
+  const document = mutableStarter();
+  const template = document.parts[0].items[0].styles[0];
+  document.parts[0].items.push({
+    ...structuredClone(document.parts[0].items[0]),
+    key: 'private-library',
+    label: 'Private library',
+    status: 'PRIVATE',
+    defaultStyleKey: 'private-0',
+    styles: Array.from({ length: 600 }, (_, index) => ({
+      ...structuredClone(template),
+      key: `private-${index}`,
+      label: `Private ${index}`,
+      displayOrder: index,
+    })),
+  });
+  assert.doesNotThrow(() => assertMakerV8Document(document, { mode: 'compile' }));
+  assert.equal(projectPublicMakerV8Document(document).parts[0].items.length, 1);
+
+  document.parts[0].items[0].styles = Array.from({ length: 501 }, (_, index) => ({
+    ...structuredClone(template), key: `public-${index}`, label: `Public ${index}`, displayOrder: index,
+  }));
+  document.parts[0].items[0].defaultStyleKey = 'public-0';
+  document.defaultRecipe.selections[0].styleKey = 'public-0';
+  assert.throws(
+    () => assertMakerV8Document(document, { mode: 'compile' }),
+    (error) => error.issues.some((entry) => entry.code === 'MAKER_V8_STYLE_SEAL_LIMIT'
+      && entry.details.observedPublishedStyles === 501
+      && entry.details.maximumPublishedStyles === 500),
+  );
+});
+
 test('every schema boundary is exact and arbitrary payload cannot smuggle authority', () => {
   const forbidden = [
     ['rootId', '0xdead'],

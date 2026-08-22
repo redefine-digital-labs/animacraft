@@ -25,6 +25,7 @@ import {
   decodeMakerV8CoreEventV8,
   makerV8TransactionEventsDigestV8,
   parseMakerV8MoveOptionIdV8,
+  readMakerV8CompilerProtocolProfileV8,
   readMakerV8CompilerHistoricalObjectV8,
   readFinalizedMakerV8EnvelopeV8,
 } from '../maker-v8-browser.js';
@@ -95,6 +96,38 @@ const mainnetExecution = (overrides = {}) => ({
   allowWalletSignature: false,
   allowBroadcast: false,
   ...overrides,
+});
+
+test('compiler RPC pins the exact measured Sui protocol profile', async () => {
+  const response = {
+    protocolVersion: '130',
+    attributes: {
+      object_runtime_max_num_cached_objects: { u64: '1000' },
+      object_runtime_max_num_store_entries: { u64: '1000' },
+    },
+    featureFlags: {},
+  };
+  const read = (value) => readMakerV8CompilerProtocolProfileV8({
+    async getProtocolConfig() { return structuredClone(value); },
+  });
+  assert.deepEqual(await read(response), {
+    protocolVersion: '130',
+    objectRuntimeMaxNumCachedObjects: '1000',
+    objectRuntimeMaxNumStoreEntries: '1000',
+  });
+
+  for (const [mutate, code] of [
+    [(value) => { value.protocolVersion = '131'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
+    [(value) => { value.attributes.object_runtime_max_num_cached_objects.u64 = '999'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
+    [(value) => { value.attributes.object_runtime_max_num_store_entries.u64 = '1001'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
+    [(value) => { delete value.attributes.object_runtime_max_num_store_entries; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID'],
+    [(value) => { value.attributes.object_runtime_max_num_cached_objects = { u32: 1000 }; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID'],
+    [(value) => { value.attributes.object_runtime_max_num_cached_objects.u64 = 1000; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID'],
+  ]) {
+    const drift = structuredClone(response);
+    mutate(drift);
+    await assert.rejects(read(drift), (error) => error.code === code);
+  }
 });
 
 async function compilerFinalizedFixture() {

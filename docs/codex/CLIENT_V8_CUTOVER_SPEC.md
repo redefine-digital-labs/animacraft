@@ -51,14 +51,28 @@ transport bytes and live release bindings. It:
   roles, counters, and readback assertions.
 
 Initial base definitions are additionally bounded by the measured Sui 1.76.1
-object-runtime cost of sealing the Style registry. Let `S` be the total Style
-row count and `R` the number of distinct referenced
-`(colorChannelKey, defaultSwatchKey)` pairs. A document is publishable only
-when `S <= 500` and `2*S + R <= 1000`. The measured boundaries are 500 Styles
-with no Color pair and 333 Styles with 333 distinct Color pairs; 501/0 and
-334/334 fail closed before a transaction is built. This client limit is more
-restrictive than the unchanged Move source count constant and must not be
-raised without a new metered execution proof.
+object-runtime cost of sealing the Style registry. This measurement applies
+after `projectPublic`: let `S` be the published `PUBLIC` Style row count and
+`R` the number of distinct published `(colorChannelKey, defaultSwatchKey)`
+pairs. Private author-library Styles are still covered by the document
+byte/node/array budgets, but are not counted as rows that the compiler will
+publish. A document is publishable only when `S <= 500` and
+`2*S + R <= 1000`. The measured boundaries are 500 published Styles with no
+Color pair and 333 published Styles with 333 distinct Color pairs; 501/0 and
+334/334 fail closed before a transaction is built. This is a measured client
+publication cap, not the unchanged Move structural count constant, and must
+not be raised without a new metered execution proof.
+
+The matching approved Sui protocol profile is exact: protocol version `130`,
+`object_runtime_max_num_cached_objects = 1000`, and
+`object_runtime_max_num_store_entries = 1000`. The compiler reads those values
+from `getProtocolConfig`, encodes the normalized profile as canonical JSON,
+hashes it with SHA-256, and binds both profile and hash into the trusted
+context and immutable publication plan. Missing, differently typed, lower,
+or higher values—and any protocol-version drift—fail closed as
+`MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED`. A changed profile requires the
+seal-cap harness to be rerun and its evidence, review, specification, and
+approved profile to be updated explicitly before publication can resume.
 
 ## Typed Market contract
 
