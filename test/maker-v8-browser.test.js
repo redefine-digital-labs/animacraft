@@ -12,6 +12,8 @@ import {
   StandardConnect,
   StandardEvents,
   SuiSignTransaction,
+  WALLET_STANDARD_ERROR__USER__REQUEST_REJECTED,
+  WalletStandardError,
 } from '@mysten/wallet-standard';
 
 import {
@@ -307,6 +309,59 @@ test('false execution gates permit public browse, canonical build, and dry-run b
   assert.equal(client.dryRuns, 1);
 });
 
+test('signing cannot be enabled without exact-byte broadcast', () => {
+  const keypair = new Ed25519Keypair();
+  const harness = walletHarness(keypair);
+  assert.throws(
+    () => createProductionMakerV8BrowserAdapters({
+      execution: mainnetExecution({ allowWalletSignature: true, allowBroadcast: false }),
+      client: buildClient(),
+      walletRegistry: harness.registry,
+      dataSource: dataSourceStub(),
+    }),
+    { code: 'MAKER_V8_BROWSER_EXECUTION_INVALID' },
+  );
+});
+
+test('only the exact Wallet Standard request-rejected code is classified as definitive', async () => {
+  const keypair = new Ed25519Keypair();
+  const raw = exactBytes(keypair);
+  const bytes = toBase64(raw);
+  const transactionDigest = TransactionDataBuilder.getDigestFromBytes(raw);
+  const request = { bytes, digest: transactionDigest, signer: keypair.toSuiAddress() };
+  const execution = mainnetExecution({ allowWalletSignature: true, allowBroadcast: true });
+
+  const rejectedHarness = walletHarness(keypair, async () => {
+    throw new WalletStandardError(WALLET_STANDARD_ERROR__USER__REQUEST_REJECTED);
+  });
+  const rejected = createWalletStandardConnectorV8({
+    registry: rejectedHarness.registry,
+    execution,
+    client: buildClient(),
+  });
+  await assert.rejects(
+    rejected.signExactTransaction(request),
+    (error) => error.code === 'MAKER_V8_BROWSER_WALLET_REQUEST_REJECTED'
+      && error.definitiveRejection === true
+      && error.signedArtifactCreated === false,
+  );
+
+  const unknownCause = new Error('User rejected the wallet prompt');
+  unknownCause.code = 4001;
+  const unknownHarness = walletHarness(keypair, async () => { throw unknownCause; });
+  const unknown = createWalletStandardConnectorV8({
+    registry: unknownHarness.registry,
+    execution,
+    client: buildClient(),
+  });
+  await assert.rejects(
+    unknown.signExactTransaction(request),
+    (error) => error === unknownCause
+      && error.definitiveRejection === undefined
+      && error.signedArtifactCreated === undefined,
+  );
+});
+
 test('Wallet Standard returns the exact bytes and fails closed on account or RPC network drift', async () => {
   const keypair = new Ed25519Keypair();
   const raw = exactBytes(keypair);
@@ -315,7 +370,7 @@ test('Wallet Standard returns the exact bytes and fails closed on account or RPC
   const stableHarness = walletHarness(keypair);
   const stable = createWalletStandardConnectorV8({
     registry: stableHarness.registry,
-    execution: mainnetExecution({ allowWalletSignature: true }),
+    execution: mainnetExecution({ allowWalletSignature: true, allowBroadcast: true }),
     client: buildClient(),
   });
   const signed = await stable.signExactTransaction({
@@ -353,7 +408,7 @@ test('Wallet Standard returns the exact bytes and fails closed on account or RPC
   });
   const driftConnector = createWalletStandardConnectorV8({
     registry: accountDrift.registry,
-    execution: mainnetExecution({ allowWalletSignature: true }),
+    execution: mainnetExecution({ allowWalletSignature: true, allowBroadcast: true }),
     client: buildClient(),
   });
   await assert.rejects(
@@ -365,7 +420,7 @@ test('Wallet Standard returns the exact bytes and fails closed on account or RPC
 
   const networkDrift = createWalletStandardConnectorV8({
     registry: walletHarness(keypair).registry,
-    execution: mainnetExecution({ allowWalletSignature: true }),
+    execution: mainnetExecution({ allowWalletSignature: true, allowBroadcast: true }),
     client: buildClient({ chainIds: [MAKER_V8_MAINNET_CHAIN_IDENTIFIER, 'testnet-drift'] }),
   });
   await assert.rejects(

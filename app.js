@@ -26,6 +26,8 @@ export const WEB_V8_EXECUTION_SCHEMA = 'animacraft.web-execution.v8';
 export const WEB_V8_CACHE_SCHEMA = 'animacraft.web-cache.v8';
 export const WEB_V8_READBACK_SCHEMA = 'animacraft.web-market-finalized-readback.v8';
 export const UNSUPPORTED_PRODUCT_CODE = 'UNSUPPORTED_LEGACY_PRODUCT';
+export const WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION = 'I CONFIRM NO SIGNED ARTIFACT EXISTS';
+export const WEB_V8_UNSIGNED_DISCARD_CONFIRMATION = 'DISCARD UNSIGNED PLAN';
 const MAKER_V8_CHAIN_SCHEMA = 'animacraft.maker-v8-chain.v8';
 
 const EXACT_SUI_ID = /^0x[0-9a-f]{64}$/;
@@ -254,8 +256,12 @@ export function assertWebV8ExecutionConfig(value) {
   if (typeof value.allowWalletSignature !== 'boolean' || typeof value.allowBroadcast !== 'boolean') {
     throw appError('WEB_V8_EXECUTION_FLAG_INVALID', 'Execution flags must be explicit booleans.');
   }
-  if (value.allowBroadcast && !value.allowWalletSignature) {
-    throw appError('WEB_V8_EXECUTION_FLAG_INVALID', 'Broadcast cannot be enabled while wallet signature is disabled.');
+  if (value.allowBroadcast !== value.allowWalletSignature) {
+    throw appError(
+      'WEB_V8_EXECUTION_FLAG_INVALID',
+      'Wallet signing and exact-byte broadcast must be enabled or disabled together.',
+      'CONFIGURATION',
+    );
   }
   return Object.freeze({
     schemaVersion: WEB_V8_EXECUTION_SCHEMA,
@@ -845,18 +851,22 @@ async function requestWhileTransactionActive(request, done) {
 
 export function createIndexedDbRecoveryAdapter(indexedDb, {
   databaseName = 'animacraft-fresh-maker-v8',
+  clock = Date.now,
 } = {}) {
   if (!indexedDb || typeof indexedDb.open !== 'function') {
     throw appError('WEB_V8_INDEXEDDB_REQUIRED', 'Durable IndexedDB storage is required.', 'STORAGE');
+  }
+  if (typeof clock !== 'function') {
+    throw appError('WEB_V8_INDEXEDDB_CLOCK_INVALID', 'Recovery storage clock must be callable.', 'CONFIGURATION');
   }
   let opened;
   const open = () => {
     if (opened) return opened;
     opened = new Promise((resolve, reject) => {
-      const request = indexedDb.open(databaseName, 1);
+      const request = indexedDb.open(databaseName, 2);
       request.onupgradeneeded = () => {
         const database = request.result;
-        for (const store of ['active', 'receipts', 'failures']) {
+        for (const store of ['active', 'receipts', 'failures', 'expirations']) {
           if (!database.objectStoreNames.contains(store)) database.createObjectStore(store);
         }
       };
@@ -876,76 +886,75 @@ export function createIndexedDbRecoveryAdapter(indexedDb, {
   return Object.freeze({
     load: (scopeKey) => read('active', scopeKey),
     async compareAndSwap(scopeKey, expectedRevision, nextRecord, options = {}) {
-      if (!isPlainRecord(options)) {
-        throw appError('MAKER_V8_RECOVERY_RECORD_INVALID', 'Recovery commit options must be an exact record.', 'STORAGE');
-      }
-      const optionKeys = Object.keys(options);
-      const validOptions = optionKeys.length === 0
-        || (optionKeys.length === 1 && options.archiveFinalizedFailure === true)
-        || (optionKeys.length === 1 && options.discardUnsigned === true)
-        || (optionKeys.length === 1 && Object.hasOwn(options, 'completionReceipt'))
-        || (optionKeys.length === 1 && options.replaceTombstone === true)
-        || (optionKeys.length === 1 && options.replaceFinalizedFailure === true)
-        || (optionKeys.length === 1 && Object.hasOwn(options, 'resetUnsigned'));
-      if (!validOptions) {
-        throw appError(
-          'MAKER_V8_RECOVERY_RECORD_INVALID',
-          'Recovery commit options are unsupported or ambiguous.',
-          'STORAGE',
-        );
-      }
       const database = await open();
-      const transaction = database.transaction(['active', 'receipts', 'failures'], 'readwrite');
+      const transaction = database.transaction(
+        ['active', 'receipts', 'failures', 'expirations'],
+        'readwrite',
+      );
       const done = transactionDone(transaction);
       const active = transaction.objectStore('active');
       const current = await requestWhileTransactionActive(active.get(scopeKey), done);
-      const actualRevision = current?.revision ?? 0;
-      if (actualRevision !== expectedRevision) {
+      const receipts = transaction.objectStore('receipts');
+      const failures = transaction.objectStore('failures');
+      const expirations = transaction.objectStore('expirations');
+      const receiptKey = options?.completionReceipt?.identityKey ?? current?.identityKey;
+      const failureEvidence = options?.archiveFinalizedFailure === true
+        ? nextRecord?.failure : current?.failure;
+      const expirationEvidence = options?.expireNotFound ?? current?.expiration;
+      const priorReceipt = receiptKey
+        ? await requestWhileTransactionActive(receipts.get(receiptKey), done) : null;
+      const failureIdentityKey = options?.archiveFinalizedFailure === true
+        ? nextRecord?.identityKey : current?.identityKey;
+      const finalizedFailureArchive = failureEvidence && failureIdentityKey
+        ? await requestWhileTransactionActive(
+          failures.get(`${failureIdentityKey}:digest:${failureEvidence.digest}`),
+          done,
+        ) : null;
+      const expirationIdentityKey = options && Object.hasOwn(options, 'expireNotFound')
+        ? nextRecord?.identityKey : current?.identityKey;
+      const expiredNotFoundArchive = expirationEvidence && expirationIdentityKey
+        ? await requestWhileTransactionActive(
+          expirations.get(`${expirationIdentityKey}:digest:${expirationEvidence.digest}`),
+          done,
+        ) : null;
+      let checked;
+      try {
+        checked = productionRecoveryModule.assertMakerV8RecoveryPersistenceCommit({
+          scopeKey,
+          expectedRevision,
+          current,
+          nextRecord,
+          commitOptions: options,
+          priorReceipt,
+          finalizedFailureArchive,
+          expiredNotFoundArchive,
+          observedAtMs: Number(clock()),
+        });
+      } catch (error) {
         transaction.abort();
         await done.catch(() => {});
-        throw appError('MAKER_V8_RECOVERY_CAS_CONFLICT', 'Recovery state changed in another tab.', 'CONCURRENCY');
+        throw error;
       }
-      if (!nextRecord) {
-        transaction.abort();
-        await done.catch(() => {});
-        throw appError(
-          'MAKER_V8_RECOVERY_RECORD_INVALID',
-          'Physical recovery deletion is forbidden because it resets the durable CAS revision.',
-          'STORAGE',
+      if (checked.options.archiveFinalizedFailure === true) {
+        failures.put(
+          checked.next.failure,
+          `${checked.next.identityKey}:digest:${checked.next.failure.digest}`,
         );
       }
-      if (options.archiveFinalizedFailure === true && nextRecord.failure) {
-        transaction.objectStore('failures').put(
-          nextRecord.failure,
-          `${nextRecord.identityKey}:digest:${nextRecord.failure.digest}`,
-        );
-      }
-      if (Object.hasOwn(options, 'completionReceipt')) {
-        const receipt = options.completionReceipt;
-        const receipts = transaction.objectStore('receipts');
-        const prior = receipt?.identityKey
-          ? await requestWhileTransactionActive(receipts.get(receipt.identityKey), done)
-          : null;
-        if (!receipt || current?.state !== 'VERIFIED' || nextRecord.state !== 'CLEANED'
-          || current.identityKey !== receipt.identityKey
-          || nextRecord.identityKey !== receipt.identityKey
-          || nextRecord.plan !== null || nextRecord.signed !== null
-          || stableJson(current.receipt) !== stableJson(receipt)
-          || stableJson(nextRecord.receipt) !== stableJson(receipt)
-          || (prior && stableJson(prior) !== stableJson(receipt))) {
-          transaction.abort();
-          await done.catch(() => {});
-          throw appError(
-            'MAKER_V8_RECOVERY_RECEIPT_INVALID',
-            'Verified cleanup requires an atomic CLEANED tombstone and its exact receipt.',
-            'STORAGE',
-          );
-        }
+      if (Object.hasOwn(checked.options, 'completionReceipt')) {
+        const receipt = checked.options.completionReceipt;
         receipts.put(receipt, receipt.identityKey);
       }
-      active.put(nextRecord, scopeKey);
+      if (Object.hasOwn(checked.options, 'expireNotFound')) {
+        const expiration = checked.options.expireNotFound;
+        expirations.put(
+          expiration,
+          `${expiration.identityKey}:digest:${expiration.digest}`,
+        );
+      }
+      active.put(checked.next, scopeKey);
       await done;
-      return nextRecord ?? null;
+      return checked.next;
     },
     loadReceipt: (identityKey) => read('receipts', identityKey),
     loadFinalizedFailure: (identityKey, digest) => read('failures', `${identityKey}:digest:${digest}`),
@@ -954,6 +963,20 @@ export function createIndexedDbRecoveryAdapter(indexedDb, {
       const transaction = database.transaction('failures', 'readonly');
       const done = transactionDone(transaction);
       const values = await requestWhileTransactionActive(transaction.objectStore('failures').getAll(), done);
+      await done;
+      return values.filter((entry) => entry?.scopeKey === scopeKey);
+    },
+    loadExpiredNotFound: (identityKey, digest) => (
+      read('expirations', `${identityKey}:digest:${digest}`)
+    ),
+    async listExpiredNotFound(scopeKey) {
+      const database = await open();
+      const transaction = database.transaction('expirations', 'readonly');
+      const done = transactionDone(transaction);
+      const values = await requestWhileTransactionActive(
+        transaction.objectStore('expirations').getAll(),
+        done,
+      );
       await done;
       return values.filter((entry) => entry?.scopeKey === scopeKey);
     },
@@ -975,6 +998,7 @@ function normalizeView(result, request, runtime, execution) {
   const rootId = exactId(result.activation.rootId, 'activation.rootId');
   assertActivation(result.activation, runtime, { id: rootId });
   return Object.freeze({
+    rootId,
     view: Object.freeze({
       title: exactText(result.view.title, 'view.title'),
       subtitle: exactText(result.view.subtitle, 'view.subtitle', 2_048),
@@ -1135,11 +1159,13 @@ export function createFreshV8Controller({
   }
   if (typeof recoveryModule?.createMakerV8RecoveryController !== 'function'
     || typeof recoveryModule?.makerV8RecoveryScopeKey !== 'function'
+    || typeof recoveryModule?.makerV8RecoveryScopeLookupKey !== 'function'
     || typeof recoveryModule?.canonicalMakerV8RecoveryIdentity !== 'function') {
     throw appError('WEB_V8_RECOVERY_MODULE_INVALID', 'Recovery module must expose its controller and stable Root scope key.', 'CONFIGURATION');
   }
   const persistence = adapters.persistence || createIndexedDbRecoveryAdapter(indexedDb);
   let currentIdentity = null;
+  let pendingUnsignedConfirmation = null;
   const recovery = recoveryModule.createMakerV8RecoveryController({
     persist: persistence,
     deriveTransactionDigest: (bytes) => adapters.transactions.deriveTransactionDigest(bytes),
@@ -1149,6 +1175,38 @@ export function createFreshV8Controller({
       return Object.freeze({
         identity: fresh.identity,
         currentEpoch: await readCurrentMainnetEpoch(fresh.suiClient),
+      });
+    },
+    getCurrentEpoch: async () => {
+      const observedChain = await adapters.rpc.getChainIdentifier();
+      if (observedChain !== execution.chainIdentifier) {
+        throw appError('WEB_V8_NETWORK_MISMATCH', 'RPC chain changed during recovery.', 'CONTEXT');
+      }
+      return readCurrentMainnetEpoch(await adapters.rpc.getSuiClient());
+    },
+    confirmNoSignedArtifact: async (request) => {
+      const confirmation = pendingUnsignedConfirmation;
+      pendingUnsignedConfirmation = null;
+      if (!confirmation
+        || confirmation.scopeKey !== request.scopeKey
+        || confirmation.identityKey !== request.identityKey
+        || confirmation.planHash !== request.planHash
+        || confirmation.sessionId !== request.sessionId
+        || confirmation.leaseExpiresAtMs !== request.leaseExpiresAtMs) {
+        throw appError(
+          'WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION_INVALID',
+          'No exact one-shot user confirmation exists for this wallet request lease.',
+          'SIGNING',
+        );
+      }
+      return Object.freeze({
+        confirmedUnsigned: true,
+        scopeKey: request.scopeKey,
+        identityKey: request.identityKey,
+        planHash: request.planHash,
+        sessionId: request.sessionId,
+        leaseExpiresAtMs: request.leaseExpiresAtMs,
+        checkedAtMs: request.checkedAtMs,
       });
     },
     sign: async (request) => {
@@ -1181,6 +1239,7 @@ export function createFreshV8Controller({
     busy: false,
     account: null,
     view: null,
+    rootId: null,
     browse: null,
     availableActions: [],
     action: null,
@@ -1212,7 +1271,8 @@ export function createFreshV8Controller({
     state.issue = classifyFreshV8Error(error, { action: state.action?.id || route.kind });
     state.status = state.issue.layer === 'FINALIZED_EXECUTION'
       ? 'FINALIZED_FAILURE'
-      : state.issue.layer === 'WALLET' ? 'RECONNECT_REQUIRED' : 'ERROR';
+      : state.recoveryRecord?.state
+        || (state.issue.layer === 'WALLET' ? 'RECONNECT_REQUIRED' : 'ERROR');
     emit();
     throw error;
   };
@@ -1233,6 +1293,53 @@ export function createFreshV8Controller({
       state.inventoryChoices = [];
       state.selectedInventoryId = null;
     }
+  }
+
+  function hydrateDurableRecord(record) {
+    state.recoveryRecord = record;
+    state.completionReceipt = null;
+    currentIdentity = record.identity;
+    state.action = actionById(record.identity.action);
+    state.prepared = record.plan ? Object.freeze({
+      descriptor: clonePublic(
+        record.plan.market?.descriptor ?? record.plan.sourceSnapshot?.descriptor,
+      ),
+      digest: record.plan.transactionDigest,
+      identity: record.identity,
+    }) : null;
+    state.status = record.state;
+    return record;
+  }
+
+  async function loadDurableRoot(rootId) {
+    const record = await recovery.loadByScope({
+      chain: execution.chainIdentifier,
+      rootId,
+    });
+    if (record) return hydrateDurableRecord(record);
+
+    // loadByScope intentionally hides tombstones so DISCARDED and
+    // EXPIRED_NOT_FOUND release the Root for a fresh action. CLEANED is the one
+    // hidden state whose durable receipt must still be visible when a terminal
+    // listing exposes no live action/context at all.
+    const scopeKey = recoveryModule.makerV8RecoveryScopeLookupKey({
+      chain: execution.chainIdentifier,
+      rootId,
+    });
+    const tombstone = await persistence.load(scopeKey);
+    if (tombstone?.state === 'CLEANED' && tombstone.identity) {
+      const receipt = await recovery.loadReceipt(tombstone.identity);
+      if (receipt) {
+        currentIdentity = tombstone.identity;
+        state.action = actionById(tombstone.identity.action);
+        state.recoveryRecord = null;
+        state.completionReceipt = receipt;
+        state.prepared = null;
+        state.status = 'CLEANED';
+        return Object.freeze({ state: 'CLEANED', identity: tombstone.identity, receipt });
+      }
+    }
+    return null;
   }
 
   async function readCurrentAccount({ optional = false } = {}) {
@@ -1356,19 +1463,27 @@ export function createFreshV8Controller({
     state.fingerprint = fingerprint;
     const liveIdentity = recoveryIdentity(state, execution);
     const scopeKey = recoveryModule.makerV8RecoveryScopeKey(liveIdentity);
-    const pendingAtRoot = await persistence.load(scopeKey);
-    if (pendingAtRoot?.identity) {
+    const pendingAtRoot = await recovery.loadByScope({
+      chain: execution.chainIdentifier,
+      rootId: liveIdentity.root.id,
+    });
+    if (pendingAtRoot) {
       // Re-enter through Recovery validation using the immutable identity saved
       // with the plan. Never reconstruct an old signed action from fresh refs.
-      state.recoveryRecord = await recovery.load(pendingAtRoot.identity);
-      currentIdentity = pendingAtRoot.identity;
-      if (!state.recoveryRecord) {
-        state.completionReceipt = await recovery.loadReceipt(pendingAtRoot.identity);
-      }
+      hydrateDurableRecord(pendingAtRoot);
     } else {
       currentIdentity = liveIdentity;
       state.recoveryRecord = await recovery.load(liveIdentity);
-      if (!state.recoveryRecord) state.completionReceipt = await recovery.loadReceipt(liveIdentity);
+      if (state.recoveryRecord) hydrateDurableRecord(state.recoveryRecord);
+      if (!state.recoveryRecord) {
+        const tombstone = await persistence.load(scopeKey);
+        if (tombstone?.state === 'CLEANED' && tombstone.identity) {
+          state.completionReceipt = await recovery.loadReceipt(tombstone.identity);
+          if (state.completionReceipt) currentIdentity = tombstone.identity;
+        } else {
+          state.completionReceipt = await recovery.loadReceipt(liveIdentity);
+        }
+      }
     }
     state.status = state.recoveryRecord?.state
       || (state.completionReceipt ? 'CLEANED' : 'QUOTING');
@@ -1402,27 +1517,47 @@ export function createFreshV8Controller({
           listingTypes: marketClient.types,
         }), request, runtime, execution);
         state.view = result.view;
+        state.rootId = result.rootId;
         state.availableActions = result.availableActions;
-        if (state.action && !state.availableActions.includes(state.action.id)) {
-          state.action = null;
-          invalidateActionContext({ clearInventory: true });
-        }
+        // Wallet discovery stays optional so a disconnected browser can still
+        // expose an immutable durable recovery record and its exact next step.
         const account = await readCurrentAccount({ optional: true });
-        if (!account) {
-          state.status = 'READY';
-        } else {
-          if (!state.action && state.availableActions.length) {
-            state.action = actionById(state.availableActions[0]);
-          }
-          if (state.action && OWNED_INVENTORY_ACTIONS.has(state.action.id)) {
-            if (state.selectedInventoryId) {
+        // Root-scoped WAL discovery precedes every requirement for a live action
+        // or inventory selection. A terminal purchase/cancel/recover can remove
+        // all route actions while its digest still needs query/readback/cleanup.
+        const pending = await loadDurableRoot(result.rootId);
+        if (pending) {
+          const actionIsLive = state.action
+            && state.availableActions.includes(state.action.id);
+          const inventoryIsSelected = !OWNED_INVENTORY_ACTIONS.has(state.action?.id)
+            || state.selectedInventoryId;
+          if (account && actionIsLive && inventoryIsSelected) {
+            if (OWNED_INVENTORY_ACTIONS.has(state.action.id)) {
               await loadOwnedInventory({ preserveSelection: true });
-              await loadSelectedAction();
-            } else await loadOwnedInventory();
-          } else if (state.action) {
+            }
             await loadSelectedAction();
-          } else {
+          }
+        } else {
+          if (state.action && !state.availableActions.includes(state.action.id)) {
+            state.action = null;
+            invalidateActionContext({ clearInventory: true });
+          }
+          if (!account) {
             state.status = 'READY';
+          } else {
+            if (!state.action && state.availableActions.length) {
+              state.action = actionById(state.availableActions[0]);
+            }
+            if (state.action && OWNED_INVENTORY_ACTIONS.has(state.action.id)) {
+              if (state.selectedInventoryId) {
+                await loadOwnedInventory({ preserveSelection: true });
+                await loadSelectedAction();
+              } else await loadOwnedInventory();
+            } else if (state.action) {
+              await loadSelectedAction();
+            } else {
+              state.status = 'READY';
+            }
           }
         }
       }
@@ -1747,11 +1882,136 @@ export function createFreshV8Controller({
         expectedPlanHash: durable.plan.fingerprint,
         evidence,
       });
-      state.recoveryRecord = record;
-      state.status = record.state;
+      hydrateDurableRecord(record);
       state.busy = false;
       emit();
       return record;
+    } catch (error) {
+      // The failure can occur either before the AWAITING_SIGNATURE WAL write
+      // (for example fresh-ref drift) or after it (wallet rejection/unknown
+      // outcome). Re-read the exact durable state so the product exposes the
+      // correct discard or reclaim action instead of stranding the UI in the
+      // optimistic in-flight status.
+      if (currentIdentity) {
+        try {
+          const durable = await recovery.load(currentIdentity);
+          if (durable) hydrateDurableRecord(durable);
+        } catch {
+          // Preserve the original layered signing error. Refresh independently
+          // validates and reports any subsequent storage fault.
+        }
+      }
+      return rememberError(error);
+    }
+  }
+
+  async function reclaimAwaitingSignature(confirmation) {
+    try {
+      if (confirmation !== WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION) {
+        throw appError(
+          'WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION_REQUIRED',
+          `Type the exact no-artifact confirmation phrase: ${WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION}`,
+          'SIGNING',
+        );
+      }
+      if (!currentIdentity) throw appError(
+        'WEB_V8_CONTEXT_UNAVAILABLE',
+        'Refresh the exact durable wallet request first.',
+        'CONTEXT',
+      );
+      setBusy(true, 'RECLAIMING_SIGNATURE');
+      const durable = await recovery.load(currentIdentity);
+      if (durable?.state !== 'AWAITING_SIGNATURE' || !durable.plan || durable.signed) {
+        throw appError(
+          'WEB_V8_AWAITING_SIGNATURE_REQUIRED',
+          'Only an outstanding unsigned wallet request can be reclaimed.',
+          'RECOVERY',
+        );
+      }
+      const fresh = await refetchExactSigningSnapshot(durable);
+      const { evidence, plan } = await rebuildAndSimulateExactAction(
+        durable.plan,
+        fresh.candidate,
+        fresh.suiClient,
+        fresh.marketClient,
+      );
+      pendingUnsignedConfirmation = Object.freeze({
+        scopeKey: durable.scopeKey,
+        identityKey: durable.identityKey,
+        planHash: durable.plan.fingerprint,
+        sessionId: durable.signatureSessionId,
+        leaseExpiresAtMs: durable.signatureLease.expiresAtMs,
+      });
+      let record;
+      try {
+        record = await recovery.reclaimAwaitingSignature({
+          identity: durable.identity,
+          liveIdentity: fresh.identity,
+          plan,
+          expectedRevision: durable.revision,
+          expectedPlanHash: durable.plan.fingerprint,
+          evidence,
+        });
+      } finally {
+        pendingUnsignedConfirmation = null;
+      }
+      hydrateDurableRecord(record);
+      state.issue = null;
+      state.busy = false;
+      emit();
+      return record;
+    } catch (error) {
+      pendingUnsignedConfirmation = null;
+      if (currentIdentity) {
+        try {
+          const durable = await recovery.load(currentIdentity);
+          if (durable) hydrateDurableRecord(durable);
+        } catch {
+          // Preserve the original layered reclaim error. A later Refresh will
+          // independently validate any storage failure.
+        }
+      }
+      return rememberError(error);
+    }
+  }
+
+  async function discardUnsigned(confirmation) {
+    try {
+      if (confirmation !== WEB_V8_UNSIGNED_DISCARD_CONFIRMATION) {
+        throw appError(
+          'WEB_V8_UNSIGNED_DISCARD_CONFIRMATION_REQUIRED',
+          `Type the exact discard phrase: ${WEB_V8_UNSIGNED_DISCARD_CONFIRMATION}`,
+          'RECOVERY',
+        );
+      }
+      if (!currentIdentity) throw appError(
+        'WEB_V8_CONTEXT_UNAVAILABLE',
+        'Refresh the exact durable unsigned plan first.',
+        'CONTEXT',
+      );
+      const durable = await recovery.load(currentIdentity);
+      if (durable?.state !== 'READY' || !durable.plan || durable.signed) {
+        throw appError(
+          'WEB_V8_UNSIGNED_READY_REQUIRED',
+          'Only a READY unsigned plan can be discarded. Reclaim an outstanding wallet request first.',
+          'RECOVERY',
+        );
+      }
+      setBusy(true, 'DISCARDING_UNSIGNED');
+      await recovery.discardUnsigned(durable.identity);
+      state.recoveryRecord = null;
+      state.completionReceipt = null;
+      state.prepared = null;
+      state.issue = null;
+      currentIdentity = null;
+      if (state.action && state.availableActions.includes(state.action.id)) {
+        await loadSelectedAction();
+      } else {
+        state.status = 'DISCARDED';
+      }
+      state.busy = false;
+      emit();
+      return snapshot();
     } catch (error) {
       return rememberError(error);
     }
@@ -1776,8 +2036,7 @@ export function createFreshV8Controller({
         emit();
         return Object.freeze({ state: 'CLEANED', receipt });
       }
-      state.recoveryRecord = record;
-      state.status = record.state;
+      hydrateDurableRecord(record);
       state.busy = false;
       emit();
       return record;
@@ -1841,6 +2100,8 @@ export function createFreshV8Controller({
     confirmExactPayment,
     prepare,
     requestSignature,
+    reclaimAwaitingSignature,
+    discardUnsigned,
     recoverOutcome,
     replayExact,
   });
@@ -1946,13 +2207,20 @@ function executionMarkup(state) {
   const currentPayment = !PURCHASE_ACTIONS.has(state.action?.id) || state.paymentFingerprint === state.fingerprint;
   const canPrepare = state.status === 'READY' && currentReview && currentPayment && !state.busy;
   const signed = ['SIGNED_DURABLE', 'BROADCASTING', 'OUTCOME_PENDING'].includes(state.status);
+  const recoverable = signed || state.status === 'VERIFIED';
+  const awaiting = state.status === 'AWAITING_SIGNATURE';
+  const unsignedReady = state.status === 'READY' && state.recoveryRecord?.state === 'READY';
   return `<section class="execution-panel" aria-labelledby="execution-title">
     <div class="section-heading"><div><p class="eyebrow">Local-first execution</p><h2 id="execution-title">Build, dry run, persist, recover</h2></div><span class="safety-badge">Signature ${state.execution.allowWalletSignature ? 'enabled' : 'disabled'} · Broadcast ${state.execution.allowBroadcast ? 'enabled' : 'disabled'}</span></div>
     <div class="execution-actions">
       <button type="button" data-command="prepare" ${canPrepare ? '' : 'disabled'}>Build & dry run</button>
       <label>Signature confirmation<input id="signaturePhrase" autocomplete="off" spellcheck="false" placeholder="SIGN EXACT TRANSACTION" /></label>
-      <button type="button" data-command="sign" ${state.prepared && state.execution.allowWalletSignature && !state.busy ? '' : 'disabled'}>Request wallet signature</button>
-      <button type="button" data-command="recover" ${signed && !state.busy ? '' : 'disabled'}>Refresh saved outcome</button>
+      <button type="button" data-command="sign" ${state.prepared && unsignedReady && state.execution.allowWalletSignature && !state.busy ? '' : 'disabled'}>Request wallet signature</button>
+      <label>No-artifact reclaim confirmation<input id="reclaimPhrase" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION)}" /></label>
+      <button type="button" data-command="reclaim" ${awaiting && !state.busy ? '' : 'disabled'}>Reclaim expired wallet request</button>
+      <label>Unsigned discard confirmation<input id="discardPhrase" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(WEB_V8_UNSIGNED_DISCARD_CONFIRMATION)}" /></label>
+      <button type="button" data-command="discard" ${unsignedReady && !state.busy ? '' : 'disabled'}>Discard unsigned plan & rebuild</button>
+      <button type="button" data-command="recover" ${recoverable && !state.busy ? '' : 'disabled'}>${state.status === 'VERIFIED' ? 'Persist receipt & finish cleanup' : 'Refresh saved outcome'}</button>
       <label>Replay confirmation<input id="replayPhrase" autocomplete="off" spellcheck="false" placeholder="REPLAY SAVED BYTES" /></label>
       <button type="button" data-command="replay" ${signed && state.execution.allowBroadcast && !state.busy ? '' : 'disabled'}>Replay identical saved bytes</button>
     </div>
@@ -1978,6 +2246,8 @@ export function renderFreshV8App(root, controller) {
       }
       if (commandButton?.dataset.command === 'prepare') await controller.prepare();
       if (commandButton?.dataset.command === 'sign') await controller.requestSignature(root.querySelector('#signaturePhrase')?.value || '');
+      if (commandButton?.dataset.command === 'reclaim') await controller.reclaimAwaitingSignature(root.querySelector('#reclaimPhrase')?.value || '');
+      if (commandButton?.dataset.command === 'discard') await controller.discardUnsigned(root.querySelector('#discardPhrase')?.value || '');
       if (commandButton?.dataset.command === 'recover') await controller.recoverOutcome();
       if (commandButton?.dataset.command === 'replay') await controller.replayExact(root.querySelector('#replayPhrase')?.value || '');
     } catch {

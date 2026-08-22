@@ -12,6 +12,9 @@ import {
   WEB_V8_EXECUTION_SCHEMA,
   WEB_V8_INVENTORY_SCHEMA,
   WEB_V8_ROUTE_SCHEMA,
+  WEB_V8_UNSIGNED_DISCARD_CONFIRMATION,
+  WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION,
+  assertWebV8ExecutionConfig,
   createIndexedDbRecoveryAdapter,
   createFreshV8Controller,
   parseFreshV8Route,
@@ -42,6 +45,151 @@ const id = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const packageId = (digit) => `0x${digit.repeat(64)}`;
 const bytes32 = (value) => Array(32).fill(value);
 const digest = '11111111111111111111111111111111';
+
+test('web execution config rejects a signing-only deployment', () => {
+  assert.throws(
+    () => assertWebV8ExecutionConfig({
+      schemaVersion: WEB_V8_EXECUTION_SCHEMA,
+      network: 'mainnet',
+      chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+      allowWalletSignature: true,
+      allowBroadcast: false,
+    }),
+    { code: 'WEB_V8_EXECUTION_FLAG_INVALID', layer: 'CONFIGURATION' },
+  );
+});
+
+test('production UI exposes the exact durable-state liveness buttons', () => {
+  const action = (actionId) => ({ id: actionId });
+  const prepared = (actionId) => ({
+    descriptor: { action: actionId, target: `${packageId('5')}::market_v8::${actionId}` },
+    digest: `${actionId}:digest`,
+  });
+  const base = {
+    route: { kind: 'maker', id: id(104) },
+    runtime: { paymentCoinType: '0x2::sui::SUI' },
+    execution: {
+      chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+      allowWalletSignature: true,
+      allowBroadcast: true,
+    },
+    status: 'QUOTING',
+    busy: false,
+    account: { address: id(200) },
+    view: {
+      title: 'Durable state fixture', subtitle: 'Production UI liveness',
+      lifecycle: 'PAUSED', listingKind: null, listingStatus: null,
+    },
+    browse: null,
+    availableActions: ['listMakerControl'],
+    action: action('listMakerControl'),
+    grossAtomic: '1000000',
+    context: null,
+    quote: null,
+    quoteEvidence: null,
+    chainQuoteProof: null,
+    fingerprint: null,
+    reviewedFingerprint: null,
+    paymentFingerprint: null,
+    prepared: null,
+    recoveryRecord: null,
+    completionReceipt: null,
+    issue: null,
+  };
+  const render = (patch) => {
+    const root = { innerHTML: '', addEventListener() {} };
+    renderFreshV8App(root, {
+      subscribe(listener) {
+        listener({ ...base, ...patch });
+        return () => {};
+      },
+    });
+    return root.innerHTML;
+  };
+  const button = (html, command) => {
+    const match = html.match(new RegExp(`<button[^>]*data-command="${command}"[^>]*>`));
+    assert.ok(match, `missing production ${command} button`);
+    return { tag: match[0], enabled: !match[0].includes('disabled') };
+  };
+
+  const verified = render({
+    status: 'VERIFIED',
+    recoveryRecord: { state: 'VERIFIED' },
+    prepared: prepared('listMakerControl'),
+  });
+  assert.equal(button(verified, 'recover').enabled, true);
+  assert.match(verified, /Persist receipt & finish cleanup/);
+
+  const awaiting = render({
+    status: 'AWAITING_SIGNATURE',
+    recoveryRecord: { state: 'AWAITING_SIGNATURE' },
+    prepared: prepared('listMakerControl'),
+  });
+  assert.equal(button(awaiting, 'reclaim').enabled, true);
+  assert.equal(button(awaiting, 'discard').enabled, false);
+  assert.equal(button(awaiting, 'sign').enabled, false);
+
+  const ready = render({
+    status: 'READY',
+    recoveryRecord: { state: 'READY' },
+    prepared: prepared('listMakerControl'),
+  });
+  assert.equal(button(ready, 'discard').enabled, true);
+  assert.equal(button(ready, 'sign').enabled, true);
+
+  const terminal = render({
+    status: 'OUTCOME_PENDING',
+    view: { ...base.view, listingKind: 'MAKER', listingStatus: 'SETTLED' },
+    availableActions: [],
+    action: action('purchaseMakerControl'),
+    recoveryRecord: { state: 'OUTCOME_PENDING' },
+    prepared: prepared('purchaseMakerControl'),
+  });
+  assert.equal(button(terminal, 'recover').enabled, true);
+  assert.equal(button(terminal, 'replay').enabled, true);
+  assert.match(
+    terminal.match(/<button[^>]*data-action="purchaseMakerControl"[^>]*>/)?.[0] || '',
+    /disabled/,
+    'terminal live action stays disabled while immutable WAL recovery remains enabled',
+  );
+
+  const quote = {
+    grossAtomic: '1000000', protocolAtomic: '1', creatorAtomic: '1',
+    sourceAtomic: '1', sellerAtomic: '999997', commitment: `0x${'ab'.repeat(32)}`,
+  };
+  const expiredTerminal = render({
+    status: 'EXPIRED_NOT_FOUND',
+    recoveryRecord: { state: 'EXPIRED_NOT_FOUND' },
+    prepared: null,
+  });
+  assert.equal(button(expiredTerminal, 'refresh').enabled, true);
+  const expiredFresh = render({
+    status: 'READY',
+    action: action('cancelMakerControl'),
+    availableActions: ['cancelMakerControl'],
+    quote,
+    quoteEvidence: { source: 'MAINNET_DRY_RUN' },
+    fingerprint: 'fresh-after-expiration',
+    reviewedFingerprint: 'fresh-after-expiration',
+    recoveryRecord: null,
+    prepared: null,
+  });
+  assert.equal(button(expiredFresh, 'prepare').enabled, true);
+  assert.equal(button(expiredFresh, 'discard').enabled, false);
+  assert.equal(button(expiredFresh, 'replay').enabled, false);
+
+  const finalizedFailure = render({
+    status: 'FINALIZED_FAILURE',
+    action: action('cancelMakerControl'),
+    availableActions: ['cancelMakerControl'],
+    quote,
+    fingerprint: 'fresh-after-failure',
+    recoveryRecord: { state: 'FINALIZED_FAILURE' },
+    prepared: prepared('cancelMakerControl'),
+  });
+  assert.equal(button(finalizedFailure, 'review').enabled, true);
+  assert.equal(button(finalizedFailure, 'prepare').enabled, false);
+});
 
 function clone(value) {
   return value === undefined ? undefined : structuredClone(value);
@@ -1290,7 +1438,7 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
     network: 'mainnet',
     chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
     allowWalletSignature: true,
-    allowBroadcast: false,
+    allowBroadcast: true,
   };
   const ref = (objectId, version = '7') => ({ id: objectId, version, digest });
   const packageTuple = Object.entries(runtime.roles).map(([role, entry], index) => ({
@@ -1303,6 +1451,22 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   const memory = memoryIndexedDb();
   const databaseName = `animacraft-fresh-maker-v8-test:${globalThis.crypto.randomUUID()}`;
   const persistence = createIndexedDbRecoveryAdapter(memory.factory, { databaseName });
+  let interruptVerifiedCleanup = true;
+  const crashAfterVerifiedPersistence = {
+    load: (...args) => persistence.load(...args),
+    loadReceipt: (...args) => persistence.loadReceipt(...args),
+    loadFinalizedFailure: (...args) => persistence.loadFinalizedFailure(...args),
+    listFinalizedFailures: (...args) => persistence.listFinalizedFailures(...args),
+    loadExpiredNotFound: (...args) => persistence.loadExpiredNotFound(...args),
+    listExpiredNotFound: (...args) => persistence.listExpiredNotFound(...args),
+    async compareAndSwap(scopeKey, expectedRevision, nextRecord, options) {
+      if (interruptVerifiedCleanup && nextRecord?.state === 'CLEANED') {
+        interruptVerifiedCleanup = false;
+        throw new Error('simulated page crash after durable VERIFIED');
+      }
+      return persistence.compareAndSwap(scopeKey, expectedRevision, nextRecord, options);
+    },
+  };
   const actionContextRequestIds = [];
   const actionContextRefs = [];
   const queryRequests = [];
@@ -1310,6 +1474,7 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   const signRequests = [];
   let dryRunCalls = 0;
   let finalized = null;
+  let currentEpoch = '100';
 
   const suiClient = runtimeAttestationRpc(runtime, {
     async simulateTransaction() {
@@ -1322,15 +1487,16 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
       return { effects: { status: { status: 'success' } } };
     },
     core: {
-      async getCurrentSystemState() { return { systemState: { epoch: '100' } }; },
+      async getCurrentSystemState() { return { systemState: { epoch: currentEpoch } }; },
       resolveTransactionPlugin() {
         return async (transactionData, _options, next) => {
+          const liveVersion = finalized ? '8' : '7';
           transactionData.inputs = transactionData.inputs.map((input) => {
             if (!input.UnresolvedObject) return input;
             if (input.UnresolvedObject.objectId === firstData.IDs.admin) {
               return Inputs.ObjectRef({
                 objectId: firstData.IDs.admin,
-                version: '7',
+                version: liveVersion,
                 digest,
               });
             }
@@ -1353,7 +1519,7 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   });
 
   const adapters = {
-    persistence,
+    persistence: crashAfterVerifiedPersistence,
     rpc: {
       async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
       async getSuiClient() { return suiClient; },
@@ -1500,34 +1666,142 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   assert.equal(durableSigned.state, 'SIGNED_DURABLE');
   assert.deepEqual(durableSigned.plan, signed.plan);
   assert.deepEqual(durableSigned.signed, signed.signed);
+  const validSignedSuccessor = {
+    ...clone(durableSigned),
+    revision: durableSigned.revision + 1,
+    writerSessionId: 'adversarial-session',
+    updatedAt: durableSigned.updatedAt + 1,
+  };
   await assert.rejects(
-    persistence.compareAndSwap(scopeKey, durableSigned.revision, durableSigned, {
+    persistence.compareAndSwap(scopeKey, durableSigned.revision, validSignedSuccessor, {
       completionReceipt: null,
       discardUnsigned: true,
     }),
-    { code: 'MAKER_V8_RECOVERY_RECORD_INVALID' },
+    { code: 'MAKER_V8_RECOVERY_STORAGE_RECORD_INVALID' },
+  );
+  await assert.rejects(
+    persistence.compareAndSwap(scopeKey, durableSigned.revision, {
+      ...validSignedSuccessor,
+      state: 'DISCARDED',
+      plan: null,
+      signed: null,
+      queryOutcome: null,
+      lastError: null,
+      receipt: null,
+      failure: null,
+      expiration: null,
+    }, { discardUnsigned: true }),
+    { code: 'MAKER_V8_RECOVERY_UNSIGNED_DISCARD_FORBIDDEN' },
+  );
+  await assert.rejects(
+    persistence.compareAndSwap(scopeKey, durableSigned.revision, {
+      ...validSignedSuccessor,
+      identity: { ...validSignedSuccessor.identity, wallet: id(123_456) },
+    }),
+    { code: 'MAKER_V8_RECOVERY_STORAGE_RECORD_INVALID' },
+  );
+  await assert.rejects(
+    persistence.compareAndSwap(scopeKey, durableSigned.revision, {
+      ...validSignedSuccessor,
+      attempt: durableSigned.attempt + 1,
+    }),
+    { code: 'MAKER_V8_RECOVERY_STORAGE_RECORD_INVALID' },
+  );
+  await assert.rejects(
+    persistence.compareAndSwap(scopeKey, durableSigned.revision, {
+      ...validSignedSuccessor,
+      plan: { ...validSignedSuccessor.plan, fingerprint: `0x${'cd'.repeat(32)}` },
+    }),
+    { code: 'MAKER_V8_RECOVERY_STORAGE_RECORD_INVALID' },
+  );
+  await assert.rejects(
+    persistence.compareAndSwap(scopeKey, durableSigned.revision, {
+      ...validSignedSuccessor,
+      state: 'READY',
+      signed: null,
+      signatureSessionId: null,
+      signatureDisposition: null,
+      signatureLease: null,
+      queryOutcome: null,
+      lastError: null,
+      receipt: null,
+      failure: null,
+      expiration: null,
+    }),
+    { code: 'MAKER_V8_RECOVERY_STORAGE_RECORD_INVALID' },
+  );
+  await assert.rejects(
+    persistence.compareAndSwap(scopeKey, durableSigned.revision, {
+      ...validSignedSuccessor,
+      revision: durableSigned.revision + 2,
+    }),
+    { code: 'MAKER_V8_RECOVERY_STORAGE_RECORD_INVALID' },
+  );
+  await assert.rejects(
+    persistence.compareAndSwap(scopeKey, durableSigned.revision - 1, validSignedSuccessor),
+    { code: 'MAKER_V8_RECOVERY_CAS_CONFLICT' },
   );
   await assert.rejects(
     persistence.compareAndSwap(scopeKey, durableSigned.revision, null),
-    { code: 'MAKER_V8_RECOVERY_RECORD_INVALID' },
+    { code: 'MAKER_V8_RECOVERY_STORAGE_RECORD_INVALID' },
   );
   assert.deepEqual(await persistence.load(scopeKey), durableSigned,
     'invalid commit options and physical deletion cannot reset the durable revision');
 
-  const cleaned = await controller.recoverOutcome();
-  assert.equal(cleaned.state, 'CLEANED');
+  await assert.rejects(
+    controller.recoverOutcome(),
+    { code: 'MAKER_V8_RECOVERY_STORAGE_FAILED' },
+  );
   assert.equal(queryRequests.length, 1);
   assert.equal(readbackRequests.length, 1);
   assert.deepEqual(queryRequests[0].plan, signed.plan);
   assert.deepEqual(readbackRequests[0].plan, signed.plan);
-  assert.equal(cleaned.receipt.planHash, signed.plan.fingerprint);
-  assert.equal(cleaned.receipt.evidence.source, 'FINALIZED_CORE_V2');
-  assert.equal(controller.snapshot().status, 'CLEANED');
-  assert.equal(controller.snapshot().recoveryRecord, null);
-  assert.deepEqual(controller.snapshot().completionReceipt, cleaned.receipt);
+  const durableVerified = await persistence.load(scopeKey);
+  assert.equal(durableVerified.state, 'VERIFIED');
+  assert.equal(durableVerified.receipt.planHash, signed.plan.fingerprint);
+  assert.equal(durableVerified.receipt.evidence.source, 'FINALIZED_CORE_V2');
+  await assert.rejects(
+    persistence.compareAndSwap(scopeKey, durableVerified.revision, {
+      ...clone(durableVerified),
+      revision: durableVerified.revision + 1,
+      state: 'CLEANED',
+      plan: null,
+      signed: null,
+      signatureSessionId: null,
+      signatureDisposition: null,
+      signatureLease: null,
+      queryOutcome: null,
+      lastError: null,
+      failure: null,
+      expiration: null,
+      writerSessionId: 'forged-cleanup-session',
+      updatedAt: durableVerified.updatedAt + 1,
+    }),
+    { code: 'MAKER_V8_RECOVERY_STORAGE_RECORD_INVALID' },
+  );
+
+  const recoveryPersistence = createIndexedDbRecoveryAdapter(memory.factory, { databaseName });
+  const recoveryPage = createFreshV8Controller({
+    route,
+    runtime,
+    execution,
+    adapters: { ...adapters, persistence: recoveryPersistence },
+    marketModule,
+    recoveryModule,
+  });
+  await recoveryPage.refresh();
+  assert.equal(recoveryPage.snapshot().status, 'VERIFIED');
+  assert.equal(recoveryPage.snapshot().recoveryRecord.state, 'VERIFIED');
+  const cleaned = await recoveryPage.recoverOutcome();
+  assert.equal(cleaned.state, 'CLEANED');
+  assert.equal(queryRequests.length, 1, 'VERIFIED cleanup must not query again');
+  assert.equal(readbackRequests.length, 1, 'VERIFIED cleanup must not read back again');
+  assert.equal(recoveryPage.snapshot().status, 'CLEANED');
+  assert.equal(recoveryPage.snapshot().recoveryRecord, null);
+  assert.deepEqual(recoveryPage.snapshot().completionReceipt, cleaned.receipt);
 
   const receipt = cleaned.receipt;
-  const tombstone = await persistence.load(scopeKey);
+  const tombstone = await recoveryPersistence.load(scopeKey);
   assert.equal(tombstone.state, 'CLEANED');
   assert.equal(tombstone.plan, null);
   assert.equal(tombstone.signed, null);
@@ -1543,17 +1817,563 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
     recoveryModule,
   });
   await reloaded.refresh();
-  assert.equal(actionContextRequestIds.length, 3,
+  assert.equal(actionContextRequestIds.length, 4,
     'a new page/controller must refetch live identity instead of caching authority');
   assert.equal(new Set(actionContextRequestIds).size, actionContextRequestIds.length);
-  assert.deepEqual(actionContextRefs.map((entry) => entry.registry.version), ['7', '7', '8']);
-  assert.deepEqual(actionContextRefs.map((entry) => entry.primary.version), ['7', '7', '8']);
+  assert.deepEqual(actionContextRefs.map((entry) => entry.registry.version), ['7', '7', '8', '8']);
+  assert.deepEqual(actionContextRefs.map((entry) => entry.primary.version), ['7', '7', '8', '8']);
   assert.equal(reloaded.snapshot().status, 'CLEANED');
   assert.equal(reloaded.snapshot().recoveryRecord, null);
   assert.deepEqual(reloaded.snapshot().completionReceipt, receipt);
   assert.deepEqual(await reloadedPersistence.loadReceipt(tombstone.identityKey), receipt);
   assert.deepEqual(memory.openCalls, [
-    { name: databaseName, version: 1 },
-    { name: databaseName, version: 1 },
+    { name: databaseName, version: 2 },
+    { name: databaseName, version: 2 },
+    { name: databaseName, version: 2 },
   ]);
+
+  // A generic wallet transport failure is outcome-unknown. A random new page
+  // session must rediscover the AWAITING_SIGNATURE WAL, wait out its bounded
+  // lease, require the exact product phrase, and consume a fresh refetch/build/
+  // Mainnet simulation before it can return to READY.
+  finalized = null;
+  const awaitingMemory = memoryIndexedDb();
+  const awaitingDatabaseName = `animacraft-fresh-maker-v8-awaiting:${globalThis.crypto.randomUUID()}`;
+  let leaseNow = 0;
+  const leaseClock = () => Math.max(Date.now(), leaseNow);
+  const awaitingPersistence = createIndexedDbRecoveryAdapter(awaitingMemory.factory, {
+    databaseName: awaitingDatabaseName,
+    clock: leaseClock,
+  });
+  const leasedRecoveryModule = {
+    ...recoveryModule,
+    createMakerV8RecoveryController(options) {
+      return recoveryModule.createMakerV8RecoveryController({
+        ...options,
+        signatureLeaseMs: 1_000,
+        clock: leaseClock,
+      });
+    },
+  };
+  let unknownWalletCalls = 0;
+  const awaitingAdapters = {
+    ...adapters,
+    persistence: awaitingPersistence,
+    wallet: {
+      ...adapters.wallet,
+      async signExactTransaction() {
+        unknownWalletCalls += 1;
+        throw new Error('wallet transport closed without a signed-artifact disposition');
+      },
+    },
+  };
+  const awaitingPage = createFreshV8Controller({
+    route,
+    runtime,
+    execution,
+    adapters: awaitingAdapters,
+    marketModule,
+    recoveryModule: leasedRecoveryModule,
+  });
+  await awaitingPage.refresh();
+  await awaitingPage.reviewQuote();
+  await awaitingPage.prepare();
+  const dryRunsBeforeUnknown = dryRunCalls;
+  await assert.rejects(
+    awaitingPage.requestSignature('SIGN EXACT TRANSACTION'),
+    { code: 'MAKER_V8_RECOVERY_SIGNING_FAILED', layer: 'SIGNING' },
+  );
+  assert.equal(unknownWalletCalls, 1);
+  assert.equal(dryRunCalls, dryRunsBeforeUnknown + 1);
+  assert.equal(awaitingPage.snapshot().status, 'AWAITING_SIGNATURE');
+  const awaitingRecord = await awaitingPersistence.load(scopeKey);
+  assert.equal(awaitingRecord.state, 'AWAITING_SIGNATURE');
+  assert.equal(awaitingRecord.signatureDisposition, 'OUTCOME_UNKNOWN');
+  const abandonedSigningSession = awaitingRecord.signatureSessionId;
+  assert.match(abandonedSigningSession,
+    /^web-v8-session:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+
+  const randomReload = createFreshV8Controller({
+    route,
+    runtime,
+    execution,
+    adapters: awaitingAdapters,
+    marketModule,
+    recoveryModule: leasedRecoveryModule,
+  });
+  await randomReload.refresh();
+  assert.equal(randomReload.snapshot().status, 'AWAITING_SIGNATURE');
+  assert.equal(randomReload.snapshot().recoveryRecord.signatureSessionId, abandonedSigningSession);
+  assert.ok(randomReload.snapshot().prepared, 'reload reconstructs the immutable durable plan summary');
+  await assert.rejects(
+    randomReload.reclaimAwaitingSignature('yes, nothing was signed'),
+    { code: 'WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION_REQUIRED' },
+  );
+  assert.equal(randomReload.snapshot().status, 'AWAITING_SIGNATURE');
+
+  leaseNow = awaitingRecord.signatureLease.expiresAtMs - 1;
+  const dryRunsBeforeEarlyReclaim = dryRunCalls;
+  await assert.rejects(
+    randomReload.reclaimAwaitingSignature(WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION),
+    { code: 'MAKER_V8_RECOVERY_SIGNATURE_LEASE_ACTIVE' },
+  );
+  assert.equal(dryRunCalls, dryRunsBeforeEarlyReclaim + 1,
+    'pre-expiry reclaim still reacquires and simulates a fresh exact plan before failing closed');
+  assert.equal(randomReload.snapshot().status, 'AWAITING_SIGNATURE');
+  assert.equal((await awaitingPersistence.load(scopeKey)).revision, awaitingRecord.revision);
+
+  const forgedEarlyReady = {
+    ...clone(awaitingRecord),
+    revision: awaitingRecord.revision + 1,
+    state: 'READY',
+    signatureSessionId: null,
+    signatureDisposition: null,
+    signatureLease: null,
+    lastError: null,
+    writerSessionId: 'forged-reset-session',
+    updatedAt: awaitingRecord.updatedAt + 1,
+  };
+  await assert.rejects(
+    awaitingPersistence.compareAndSwap(scopeKey, awaitingRecord.revision, forgedEarlyReady, {
+      resetUnsigned: {
+        kind: 'EXTERNAL_UNSIGNED_CONFIRMATION',
+        scopeKey,
+        identityKey: awaitingRecord.identityKey,
+        planHash: awaitingRecord.plan.fingerprint,
+        sessionId: awaitingRecord.signatureSessionId,
+        leaseExpiresAtMs: awaitingRecord.signatureLease.expiresAtMs,
+        checkedAtMs: awaitingRecord.signatureLease.expiresAtMs - 1,
+      },
+    }),
+    { code: 'MAKER_V8_RECOVERY_UNSIGNED_CONFIRMATION_INVALID' },
+  );
+  await assert.rejects(
+    awaitingPersistence.compareAndSwap(scopeKey, awaitingRecord.revision, forgedEarlyReady, {
+      resetUnsigned: {
+        kind: 'EXTERNAL_UNSIGNED_CONFIRMATION',
+        scopeKey,
+        identityKey: awaitingRecord.identityKey,
+        planHash: awaitingRecord.plan.fingerprint,
+        sessionId: awaitingRecord.signatureSessionId,
+        leaseExpiresAtMs: awaitingRecord.signatureLease.expiresAtMs,
+        checkedAtMs: awaitingRecord.signatureLease.expiresAtMs,
+      },
+    }),
+    { code: 'MAKER_V8_RECOVERY_UNSIGNED_CONFIRMATION_INVALID' },
+    'the storage adapter rejects a caller that claims a future post-lease check',
+  );
+  assert.equal((await awaitingPersistence.load(scopeKey)).state, 'AWAITING_SIGNATURE');
+
+  leaseNow = awaitingRecord.signatureLease.expiresAtMs;
+  const contextReadsBeforeReclaim = actionContextRequestIds.length;
+  const dryRunsBeforeReclaim = dryRunCalls;
+  const reclaimed = await randomReload.reclaimAwaitingSignature(
+    WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION,
+  );
+  assert.equal(reclaimed.state, 'READY');
+  assert.equal(unknownWalletCalls, 1, 'reclaim never opens a second wallet prompt');
+  assert.equal(actionContextRequestIds.length, contextReadsBeforeReclaim + 1);
+  assert.equal(dryRunCalls, dryRunsBeforeReclaim + 1);
+  assert.notEqual(reclaimed.writerSessionId, abandonedSigningSession);
+  assert.match(reclaimed.writerSessionId,
+    /^web-v8-session:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+
+  // READY is also durable across a random reload. If live refs drift, signing
+  // fails before a wallet prompt and the UI returns to READY so the explicit
+  // unsigned discard/rebuild path remains reachable.
+  const readyReload = createFreshV8Controller({
+    route,
+    runtime,
+    execution,
+    adapters: awaitingAdapters,
+    marketModule,
+    recoveryModule: leasedRecoveryModule,
+  });
+  await readyReload.refresh();
+  assert.equal(readyReload.snapshot().status, 'READY');
+  assert.equal(readyReload.snapshot().recoveryRecord.state, 'READY');
+  await assert.rejects(
+    readyReload.discardUnsigned('discard it'),
+    { code: 'WEB_V8_UNSIGNED_DISCARD_CONFIRMATION_REQUIRED' },
+  );
+  finalized = { refDrift: true };
+  await assert.rejects(
+    readyReload.requestSignature('SIGN EXACT TRANSACTION'),
+    { code: 'WEB_V8_SIGNING_CONTEXT_DRIFT', layer: 'CONTEXT' },
+  );
+  assert.equal(unknownWalletCalls, 1, 'ref drift fails before Wallet Standard');
+  assert.equal(readyReload.snapshot().status, 'READY');
+  assert.equal(readyReload.snapshot().recoveryRecord.state, 'READY');
+
+  const discardedAttempt = reclaimed.attempt;
+  const discardedRevision = reclaimed.revision + 1;
+  const oldDigest = reclaimed.plan.transactionDigest;
+  await readyReload.discardUnsigned(WEB_V8_UNSIGNED_DISCARD_CONFIRMATION);
+  assert.equal(readyReload.snapshot().status, 'QUOTING');
+  const discardTombstone = await awaitingPersistence.load(scopeKey);
+  assert.equal(discardTombstone.state, 'DISCARDED');
+  assert.equal(discardTombstone.revision, discardedRevision);
+  assert.equal(discardTombstone.plan, null);
+  leaseNow = 0;
+  const tombstoneClockDelay = Math.max(0, discardTombstone.updatedAt - Date.now() + 1);
+  if (tombstoneClockDelay) {
+    await new Promise((resolve) => setTimeout(resolve, tombstoneClockDelay));
+  }
+  await readyReload.reviewQuote();
+  await readyReload.prepare();
+  const rebuilt = await awaitingPersistence.load(scopeKey);
+  assert.equal(rebuilt.state, 'READY');
+  assert.equal(rebuilt.attempt, discardedAttempt + 1);
+  assert.equal(rebuilt.revision, discardTombstone.revision + 1,
+    'discard/rebuild keeps the Root CAS revision monotonic (no ABA)');
+  assert.notEqual(rebuilt.plan.transactionDigest, oldDigest,
+    'fresh object refs produce new canonical bytes after the discarded plan drifted');
+
+  // An authoritative NOT_FOUND only retires signed bytes after the on-chain
+  // epoch has passed their Transaction expiration. The archive and tombstone
+  // are atomic, the old digest stays blocked, and a reload can prepare fresh
+  // bytes under the same logical identity.
+  finalized = null;
+  currentEpoch = '100';
+  const expirationMemory = memoryIndexedDb();
+  const expirationDatabaseName = `animacraft-fresh-maker-v8-expiration:${globalThis.crypto.randomUUID()}`;
+  const expirationPersistence = createIndexedDbRecoveryAdapter(expirationMemory.factory, {
+    databaseName: expirationDatabaseName,
+  });
+  const expirationAdapters = {
+    ...adapters,
+    persistence: expirationPersistence,
+    rpc: {
+      ...adapters.rpc,
+      async queryTransaction(request) {
+        return { status: 'NOT_FOUND', digest: request.digest };
+      },
+      async readbackMarketAction() { throw new Error('NOT_FOUND must not read finalized state'); },
+    },
+  };
+  const expirationPage = createFreshV8Controller({
+    route,
+    runtime,
+    execution,
+    adapters: expirationAdapters,
+    marketModule,
+    recoveryModule,
+  });
+  await expirationPage.refresh();
+  await expirationPage.reviewQuote();
+  await expirationPage.prepare();
+  const expiringSigned = await expirationPage.requestSignature('SIGN EXACT TRANSACTION');
+  assert.equal(expiringSigned.state, 'SIGNED_DURABLE');
+  assert.equal(expiringSigned.plan.expiration.epoch, '101');
+  currentEpoch = '102';
+  const expired = await expirationPage.recoverOutcome();
+  assert.equal(expired.state, 'EXPIRED_NOT_FOUND');
+  assert.equal(expired.plan, null);
+  assert.equal(expired.signed, null);
+  assert.equal(expired.expiration.digest, expiringSigned.signed.digest);
+  assert.equal(expired.expiration.planHash, expiringSigned.plan.fingerprint);
+  assert.deepEqual(Object.keys(expired.expiration).sort(), [
+    'digest',
+    'expirationEpoch',
+    'identity',
+    'identityKey',
+    'observedEpoch',
+    'planHash',
+    'queryStatus',
+    'retiredAt',
+    'schemaVersion',
+    'scopeKey',
+  ]);
+  assert.equal(expired.expiration.scopeKey, scopeKey);
+  assert.equal(expired.expiration.identityKey, expiringSigned.identityKey);
+  assert.deepEqual(expired.expiration.identity, expiringSigned.identity);
+  assert.equal(expired.expiration.expirationEpoch, '101');
+  assert.equal(expired.expiration.observedEpoch, '102');
+  assert.equal(expired.expiration.queryStatus, 'NOT_FOUND');
+  assert.ok(Number.isSafeInteger(expired.expiration.retiredAt));
+  assert.equal(expirationMemory.database.records.get('expirations').size, 1);
+  assert.deepEqual(
+    await expirationPersistence.loadExpiredNotFound(
+      expiringSigned.identityKey,
+      expiringSigned.signed.digest,
+    ),
+    expired.expiration,
+  );
+
+  const expiredReload = createFreshV8Controller({
+    route,
+    runtime,
+    execution,
+    adapters: expirationAdapters,
+    marketModule,
+    recoveryModule,
+  });
+  await expiredReload.refresh();
+  assert.equal(expiredReload.snapshot().status, 'QUOTING');
+  assert.equal(expiredReload.snapshot().recoveryRecord, null);
+  await expiredReload.reviewQuote();
+  await expiredReload.prepare();
+  const expirationReplacement = await expirationPersistence.load(scopeKey);
+  assert.equal(expirationReplacement.state, 'READY');
+  assert.equal(expirationReplacement.identityKey, expiringSigned.identityKey,
+    'epoch/gas refresh preserves the same logical action identity');
+  assert.equal(expirationReplacement.attempt, expired.attempt + 1);
+  assert.equal(expirationReplacement.revision, expired.revision + 1);
+  assert.notEqual(expirationReplacement.plan.transactionDigest, expired.expiration.digest);
+  assert.deepEqual(
+    await expirationPersistence.loadExpiredNotFound(
+      expiringSigned.identityKey,
+      expiringSigned.signed.digest,
+    ),
+    expired.expiration,
+    'fresh preparation preserves the expired digest archive',
+  );
+
+  // Finalized Move failure has the same liveness rule: only its exact failed
+  // digest/plan is terminal. A new controller can re-review a freshly rebuilt
+  // epoch/gas plan for the same identity while retaining the failure archive.
+  currentEpoch = '100';
+  const failureMemory = memoryIndexedDb();
+  const failureDatabaseName = `animacraft-fresh-maker-v8-failure:${globalThis.crypto.randomUUID()}`;
+  const failurePersistence = createIndexedDbRecoveryAdapter(failureMemory.factory, {
+    databaseName: failureDatabaseName,
+  });
+  const failureEffectsFingerprint = `0x${'ef'.repeat(32)}`;
+  const failureAdapters = {
+    ...adapters,
+    persistence: failurePersistence,
+    rpc: {
+      ...adapters.rpc,
+      async queryTransaction(request) {
+        return {
+          status: 'FINALIZED_FAILURE',
+          digest: request.digest,
+          epoch: currentEpoch,
+          effectsFingerprint: failureEffectsFingerprint,
+          eventsDigest: null,
+          error: { code: 'MOVE_ABORT', message: 'MoveAbort(8)' },
+        };
+      },
+      async readbackMarketAction() { throw new Error('failure must not run success readback'); },
+    },
+  };
+  const failurePage = createFreshV8Controller({
+    route,
+    runtime,
+    execution,
+    adapters: failureAdapters,
+    marketModule,
+    recoveryModule,
+  });
+  await failurePage.refresh();
+  await failurePage.reviewQuote();
+  await failurePage.prepare();
+  const failureSigned = await failurePage.requestSignature('SIGN EXACT TRANSACTION');
+  const finalizedFailure = await failurePage.recoverOutcome();
+  assert.equal(finalizedFailure.state, 'FINALIZED_FAILURE');
+  assert.equal(finalizedFailure.failure.digest, failureSigned.signed.digest);
+  assert.equal(failureMemory.database.records.get('failures').size, 1);
+
+  currentEpoch = '102';
+  const failureReload = createFreshV8Controller({
+    route,
+    runtime,
+    execution,
+    adapters: failureAdapters,
+    marketModule,
+    recoveryModule,
+  });
+  await failureReload.refresh();
+  assert.equal(failureReload.snapshot().status, 'FINALIZED_FAILURE');
+  await failureReload.reviewQuote();
+  await failureReload.prepare();
+  const failureReplacement = await failurePersistence.load(scopeKey);
+  assert.equal(failureReplacement.state, 'READY');
+  assert.equal(failureReplacement.identityKey, failureSigned.identityKey);
+  assert.equal(failureReplacement.attempt, finalizedFailure.attempt + 1);
+  assert.equal(failureReplacement.revision, finalizedFailure.revision + 1);
+  assert.notEqual(failureReplacement.plan.transactionDigest, finalizedFailure.failure.digest);
+  assert.deepEqual(
+    await failurePersistence.loadFinalizedFailure(
+      failureSigned.identityKey,
+      failureSigned.signed.digest,
+    ),
+    finalizedFailure.failure,
+  );
+});
+
+test('terminal listing reload discovers purchase/cancel/recover WAL by Root before live actions', {
+  skip: available ? false : 'Run with the integrated Maker v8 Market and Recovery modules.',
+}, async (t) => {
+  const rawRuntime = runtimeFixture();
+  const runtime = (await attestMakerV8Runtime(runtimeAttestationRpc(rawRuntime), rawRuntime)).runtime;
+  const data = fixture(runtime);
+  const execution = {
+    schemaVersion: WEB_V8_EXECUTION_SCHEMA,
+    network: 'mainnet',
+    chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+    allowWalletSignature: false,
+    allowBroadcast: false,
+  };
+  const eventType = makerV8StableType(runtime, 'release', 'release_v8', 'MakerV8Activated');
+  const cases = [
+    ['purchaseMakerControl', 'SETTLED'],
+    ['cancelMakerControl', 'CANCELED'],
+    ['recoverMakerControl', 'RECOVERED'],
+  ];
+  for (const [action, listingStatus] of cases) {
+    await t.test(action, async () => {
+      const listingId = id(4_000 + cases.findIndex(([candidate]) => candidate === action));
+      const route = parseFreshV8Route(`/market/${listingId}`);
+      const identity = Object.freeze({
+        chain: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+        action,
+        root: Object.freeze({ id: data.IDs.root }),
+      });
+      const plan = Object.freeze({
+        transactionDigest: `${action}:immutable-digest`,
+        fingerprint: `0x${'ab'.repeat(32)}`,
+        market: Object.freeze({
+          descriptor: Object.freeze({
+            action,
+            target: `${runtime.roles.market.callablePackageId}::market_v8::${action}`,
+          }),
+        }),
+      });
+      const receipt = Object.freeze({
+        digest: plan.transactionDigest,
+        planHash: plan.fingerprint,
+        action,
+      });
+      let durable = Object.freeze({
+        state: 'OUTCOME_PENDING',
+        identity,
+        plan,
+        signed: Object.freeze({ digest: plan.transactionDigest }),
+      });
+      let cleanedTombstone = null;
+      const calls = [];
+      const terminalRecovery = {
+        ...recoveryModule,
+        createMakerV8RecoveryController() {
+          return Object.freeze({
+            async loadByScope(scope) {
+              calls.push({ kind: 'loadByScope', scope: clone(scope) });
+              assert.deepEqual(scope, {
+                chain: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+                rootId: data.IDs.root,
+              });
+              return durable;
+            },
+            async load(requestIdentity) {
+              calls.push({ kind: 'load', identity: clone(requestIdentity) });
+              assert.deepEqual(requestIdentity, identity);
+              return durable;
+            },
+            async loadReceipt(requestIdentity) {
+              calls.push({ kind: 'loadReceipt', identity: clone(requestIdentity) });
+              return cleanedTombstone ? receipt : null;
+            },
+            async recover(requestIdentity, options) {
+              calls.push({ kind: 'recover', identity: clone(requestIdentity), options: clone(options) });
+              assert.deepEqual(requestIdentity, identity);
+              assert.deepEqual(options, { replayIfNotFound: false });
+              durable = Object.freeze({ ...durable, state: 'VERIFIED', receipt });
+              return durable;
+            },
+            async cleanupVerified(requestIdentity) {
+              calls.push({ kind: 'cleanup', identity: clone(requestIdentity) });
+              assert.deepEqual(requestIdentity, identity);
+              assert.equal(durable.state, 'VERIFIED');
+              cleanedTombstone = Object.freeze({ state: 'CLEANED', identity, receipt });
+              durable = null;
+              return receipt;
+            },
+          });
+        },
+      };
+      let actionContextReads = 0;
+      const terminalAdapters = {
+          persistence: {
+            async load() {
+              calls.push({ kind: 'loadTombstone' });
+              return cleanedTombstone;
+            },
+          },
+          rpc: {
+            async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+            async getSuiClient() { return runtimeAttestationRpc(runtime); },
+            async browseMarket() { throw new Error('not used'); },
+            async loadRoute(request) {
+              return {
+                schemaVersion: WEB_V8_ROUTE_SCHEMA,
+                source: 'LIVE_RPC',
+                requestId: request.requestId,
+                chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+                route: `listing:${listingId}`,
+                activation: { eventType, rootId: data.IDs.root, lifecycle: 'ACTIVE' },
+                view: {
+                  title: 'Terminal listing',
+                  subtitle: 'No live action remains after finality.',
+                  lifecycle: 'PAUSED',
+                  listingKind: 'MAKER',
+                  listingStatus,
+                },
+                availableActions: [],
+              };
+            },
+            async loadActionContext() {
+              actionContextReads += 1;
+              throw new Error('terminal listing must recover without live action context');
+            },
+            async loadOwnedInventory() {
+              throw new Error('terminal listing must recover without wallet inventory');
+            },
+            async queryTransaction() { throw new Error('owned by recovery boundary'); },
+            async readbackMarketAction() { throw new Error('owned by recovery boundary'); },
+          },
+          wallet: {
+            async getCurrentAccount() { return data.wallet; },
+            async reconnect() { return data.wallet; },
+            async signExactTransaction() { throw new Error('not used'); },
+            async verifyExactSignature() { throw new Error('not used'); },
+          },
+          transactions: {
+            async buildExactTransaction() { throw new Error('not used'); },
+            async deriveTransactionDigest() { throw new Error('not used'); },
+            async dryRunExactTransaction() { throw new Error('not used'); },
+            async broadcastExactTransaction() { throw new Error('not used'); },
+          },
+        };
+      const createTerminalPage = () => createFreshV8Controller({
+        route,
+        runtime,
+        execution,
+        adapters: terminalAdapters,
+        marketModule,
+        recoveryModule: terminalRecovery,
+      });
+      const controller = createTerminalPage();
+      await controller.refresh();
+      assert.equal(controller.snapshot().status, 'OUTCOME_PENDING');
+      assert.equal(controller.snapshot().action.id, action);
+      assert.deepEqual(controller.snapshot().availableActions, []);
+      assert.equal(actionContextReads, 0);
+      const cleaned = await controller.recoverOutcome();
+      assert.deepEqual(cleaned, { state: 'CLEANED', receipt });
+      assert.equal(controller.snapshot().status, 'CLEANED');
+      assert.deepEqual(calls.map((entry) => entry.kind), [
+        'loadByScope', 'load', 'recover', 'cleanup',
+      ]);
+      const cleanedReload = createTerminalPage();
+      await cleanedReload.refresh();
+      assert.equal(cleanedReload.snapshot().status, 'CLEANED');
+      assert.equal(cleanedReload.snapshot().action.id, action);
+      assert.deepEqual(cleanedReload.snapshot().completionReceipt, receipt);
+      assert.equal(actionContextReads, 0);
+      assert.deepEqual(calls.slice(-3).map((entry) => entry.kind), [
+        'loadByScope', 'loadTombstone', 'loadReceipt',
+      ]);
+    });
+  }
 });

@@ -493,6 +493,8 @@ function forwardingAdapter(base, compareAndSwap, load = undefined) {
     loadReceipt: (...args) => base.loadReceipt(...args),
     loadFinalizedFailure: (...args) => base.loadFinalizedFailure(...args),
     listFinalizedFailures: (...args) => base.listFinalizedFailures(...args),
+    loadExpiredNotFound: (...args) => base.loadExpiredNotFound(...args),
+    listExpiredNotFound: (...args) => base.listExpiredNotFound(...args),
   };
 }
 
@@ -533,6 +535,9 @@ function harness({
         currentEpoch: typeof currentEpoch === 'function' ? currentEpoch() : currentEpoch,
       };
     },
+    getCurrentEpoch: async () => (
+      typeof currentEpoch === 'function' ? currentEpoch() : currentEpoch
+    ),
     sign: sign || (async (request) => {
       calls.push({ kind: 'sign', request });
       return {
@@ -805,6 +810,7 @@ test('wallet rejection survives reload; explicit reclaim CAS permits only a new 
   const rejected = harness({
     persist,
     sessionId: 'session-rejected-0001',
+    signatureLeaseMs: 1_000,
     sign: async () => {
       const error = new Error('wallet user rejected');
       error.definitiveRejection = true;
@@ -817,18 +823,38 @@ test('wallet rejection survives reload; explicit reclaim CAS permits only a new 
     requestSignatureWithFreshBinding(rejected),
     errorIs(MAKER_V8_RECOVERY_ERROR.SIGNING_FAILED, MAKER_V8_RECOVERY_ERROR_LAYER.SIGNING),
   );
-  const reloaded = harness({ persist, sessionId: 'session-reloaded-0002' });
-  const stranded = await reloaded.controller.loadByScope({
+  const stranded = await rejected.controller.loadByScope({
     chain: primary.identity.chain,
     rootId: primary.identity.root.id,
   });
   assert.equal(stranded.state, MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE);
   assert.equal(stranded.signed, null);
+  let now = stranded.signatureLease.expiresAtMs - 1;
+  const reloaded = harness({
+    persist,
+    sessionId: 'session-reloaded-0002',
+    signatureLeaseMs: 1_000,
+    clock: () => now,
+    confirmNoSignedArtifact: async (request) => ({
+      confirmedUnsigned: true,
+      scopeKey: request.scopeKey,
+      identityKey: request.identityKey,
+      planHash: request.planHash,
+      sessionId: request.sessionId,
+      leaseExpiresAtMs: request.leaseExpiresAtMs,
+      checkedAtMs: request.checkedAtMs,
+    }),
+  });
   const premature = await primary.freshEvidence();
   await assert.rejects(
     requestSignatureWithFreshBinding(reloaded, primary, premature),
     errorIs(MAKER_V8_RECOVERY_ERROR.SIGNATURE_REPLACEMENT_FORBIDDEN),
   );
+  await assert.rejects(
+    reclaimWithFreshBinding(reloaded, primary, premature),
+    errorIs(MAKER_V8_RECOVERY_ERROR.SIGNATURE_LEASE_ACTIVE),
+  );
+  now = stranded.signatureLease.expiresAtMs;
   const ready = await reclaimWithFreshBinding(reloaded, primary, premature);
   assert.equal(ready.state, MAKER_V8_RECOVERY_STATE.READY);
   assert.equal(ready.revision, stranded.revision + 1);
@@ -836,8 +862,6 @@ test('wallet rejection survives reload; explicit reclaim CAS permits only a new 
     requestSignatureWithFreshBinding(reloaded, primary, premature),
     errorIs(MAKER_V8_RECOVERY_ERROR.PLAN_EVIDENCE_REPLAY),
   );
-  assert.equal((await requestSignatureWithFreshBinding(reloaded)).state,
-    MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE);
 });
 
 test('unknown wallet outcome survives reload and requires an exact expired-lease confirmation', async () => {
@@ -935,7 +959,7 @@ test('unknown wallet outcome survives reload and requires an exact expired-lease
   assert.equal(ready.signatureLease, null);
 });
 
-test('unsigned READY/AWAITING can be discarded into monotonic tombstones and rebuilt', async () => {
+test('unsigned READY can be discarded; AWAITING must be explicitly reclaimed first', async () => {
   const persist = createMakerV8RecoveryMemoryAdapter();
   const setup = harness({ persist });
   const ready = await prepare(setup);
@@ -956,6 +980,7 @@ test('unsigned READY/AWAITING can be discarded into monotonic tombstones and reb
     fixture: changedQuote,
     persist,
     sessionId: createMakerV8RecoverySessionId(),
+    signatureLeaseMs: 1_000,
     sign: async () => {
       const error = new Error('wallet canceled without signing');
       error.definitiveRejection = true;
@@ -969,11 +994,30 @@ test('unsigned READY/AWAITING can be discarded into monotonic tombstones and reb
   );
   assert.equal((await pending.controller.load(changedQuote.identity)).signatureDisposition,
     MAKER_V8_SIGNATURE_DISPOSITION.DEFINITIVE_REJECTION);
+  const awaiting = await pending.controller.load(changedQuote.identity);
+  let now = awaiting.signatureLease.expiresAtMs;
   const disposer = harness({
     fixture: changedQuote,
     persist,
     sessionId: createMakerV8RecoverySessionId(),
+    signatureLeaseMs: 1_000,
+    clock: () => now,
+    confirmNoSignedArtifact: async (request) => ({
+      confirmedUnsigned: true,
+      scopeKey: request.scopeKey,
+      identityKey: request.identityKey,
+      planHash: request.planHash,
+      sessionId: request.sessionId,
+      leaseExpiresAtMs: request.leaseExpiresAtMs,
+      checkedAtMs: request.checkedAtMs,
+    }),
   });
+  await assert.rejects(
+    disposer.controller.discardUnsigned(changedQuote.identity),
+    errorIs(MAKER_V8_RECOVERY_ERROR.UNSIGNED_DISCARD_FORBIDDEN),
+  );
+  assert.equal((await reclaimWithFreshBinding(disposer, changedQuote)).state,
+    MAKER_V8_RECOVERY_STATE.READY);
   assert.equal(await disposer.controller.discardUnsigned(changedQuote.identity), null);
   assert.equal(await disposer.controller.load(changedQuote.identity), null);
 });
@@ -1309,7 +1353,7 @@ test('finalized readback must echo the exact full durable plan hash', async () =
   assert.equal(pending.receipt, null);
 });
 
-test('finalized failure is archived and blocks the exact signed identity and digest', async () => {
+test('finalized failure archives exact bytes but permits a fresh plan for the same identity', async () => {
   const persist = createMakerV8RecoveryMemoryAdapter();
   const failedSessionId = createMakerV8RecoverySessionId();
   const replacementSessionId = createMakerV8RecoverySessionId();
@@ -1344,17 +1388,62 @@ test('finalized failure is archived and blocks the exact signed identity and dig
     }),
     errorIs(MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_REPLAY),
   );
+  assert.equal(makerV8RecoveryIdentityKey(epochDrift.identity),
+    makerV8RecoveryIdentityKey(primary.identity));
   const reloaded = harness({
-    fixture: changedQuote,
+    fixture: epochDrift,
     persist,
     sessionId: replacementSessionId,
   });
   const replacement = await reloaded.controller.prepare({
-    identity: changedQuote.identity,
-    plan: changedQuote.plan,
-    evidence: await changedQuote.freshEvidence(),
+    identity: epochDrift.identity,
+    plan: epochDrift.plan,
+    evidence: await epochDrift.freshEvidence(),
     options: { afterFinalizedFailure: true },
   });
   assert.equal(replacement.state, MAKER_V8_RECOVERY_STATE.READY);
   assert.equal(replacement.revision, failed.revision + 1);
+  assert.equal((await reloaded.controller.listFinalizedFailures(epochDrift.identity)).length, 1);
+});
+
+test('authoritative NOT_FOUND past expiration is archived and releases the Root for fresh bytes', async () => {
+  const persist = createMakerV8RecoveryMemoryAdapter();
+  let currentEpoch = primary.plan.expiration.epoch;
+  const setup = harness({
+    persist,
+    currentEpoch: () => currentEpoch,
+    query: async () => ({ status: 'NOT_FOUND' }),
+  });
+  await prepareAndSign(setup);
+  const stillPending = await setup.controller.recover(primary.identity, { replayIfNotFound: false });
+  assert.equal(stillPending.state, MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING);
+  currentEpoch = String(BigInt(primary.plan.expiration.epoch) + 1n);
+  const expired = await setup.controller.recover(primary.identity, { replayIfNotFound: false });
+  assert.equal(expired.state, MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND);
+  assert.equal(expired.plan, null);
+  assert.equal(expired.signed, null);
+  assert.equal(expired.expiration.digest, primary.transactionDigest);
+  assert.equal(expired.expiration.planHash, stillPending.plan.fingerprint);
+  assert.equal(await setup.controller.load(primary.identity), null);
+  const archive = await setup.controller.listExpiredNotFound(primary.identity);
+  assert.equal(archive.length, 1);
+  assert.deepEqual(archive[0], expired.expiration);
+  await assert.rejects(
+    setup.controller.prepare({
+      identity: primary.identity,
+      plan: primary.plan,
+      evidence: await primary.freshEvidence(),
+      options: { afterFinalizedFailure: false },
+    }),
+    errorIs(MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_REPLAY),
+  );
+  const replacement = await setup.controller.prepare({
+    identity: epochDrift.identity,
+    plan: epochDrift.plan,
+    evidence: await epochDrift.freshEvidence(),
+    options: { afterFinalizedFailure: false },
+  });
+  assert.equal(replacement.state, MAKER_V8_RECOVERY_STATE.READY);
+  assert.equal(replacement.revision, expired.revision + 1);
+  assert.equal((await setup.controller.listExpiredNotFound(primary.identity)).length, 1);
 });

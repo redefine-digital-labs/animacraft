@@ -20,7 +20,9 @@ import {
   StandardConnect,
   StandardEvents,
   SuiSignTransaction,
+  WALLET_STANDARD_ERROR__USER__REQUEST_REJECTED,
   getWallets,
+  isWalletStandardError,
 } from '@mysten/wallet-standard';
 
 import {
@@ -151,10 +153,10 @@ function executionConfig(value) {
     || value.chainIdentifier !== MAKER_V8_MAINNET_CHAIN_IDENTIFIER
     || typeof value.allowWalletSignature !== 'boolean'
     || typeof value.allowBroadcast !== 'boolean'
-    || (value.allowBroadcast && !value.allowWalletSignature)) {
+    || value.allowBroadcast !== value.allowWalletSignature) {
     fail(
       'MAKER_V8_BROWSER_EXECUTION_INVALID',
-      `Execution must pin ${MAKER_V8_CHAIN_NETWORK}/${MAKER_V8_MAINNET_CHAIN_IDENTIFIER} with explicit monotonic gates.`,
+      `Execution must pin ${MAKER_V8_CHAIN_NETWORK}/${MAKER_V8_MAINNET_CHAIN_IDENTIFIER} and gate signing with exact-byte broadcast.`,
     );
   }
   return freeze({
@@ -1948,6 +1950,17 @@ function mainnetAccount(accounts) {
   )) ?? null;
 }
 
+export function isDefinitiveWalletStandardRejectionV8(cause) {
+  try {
+    return isWalletStandardError(
+      cause,
+      WALLET_STANDARD_ERROR__USER__REQUEST_REJECTED,
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Wallet Standard connector with account and chain drift invalidation. */
 export function createWalletStandardConnectorV8({
   registry,
@@ -2067,11 +2080,24 @@ export function createWalletStandardConnectorV8({
       if (actualDigest !== expectedDigest) {
         fail('MAKER_V8_BROWSER_DIGEST_DRIFT', 'Prepared digest does not match the exact TransactionData bytes.', 'CONTEXT');
       }
-      const result = await captured.wallet.features[SuiSignTransaction].signTransaction({
-        transaction: Transaction.from(raw),
-        account: captured.account,
-        chain: SUI_MAINNET_CHAIN,
-      });
+      let result;
+      try {
+        result = await captured.wallet.features[SuiSignTransaction].signTransaction({
+          transaction: Transaction.from(raw),
+          account: captured.account,
+          chain: SUI_MAINNET_CHAIN,
+        });
+      } catch (cause) {
+        if (!isDefinitiveWalletStandardRejectionV8(cause)) throw cause;
+        const rejection = new MakerV8BrowserError(
+          'MAKER_V8_BROWSER_WALLET_REQUEST_REJECTED',
+          'Wallet Standard reported an exact user-request rejection before returning a signed artifact.',
+          'SIGNING',
+        );
+        rejection.definitiveRejection = true;
+        rejection.signedArtifactCreated = false;
+        throw rejection;
+      }
       await assertPinnedMainnet(client);
       const current = requireAccount();
       if (current.wallet !== captured.wallet || current.account !== captured.account

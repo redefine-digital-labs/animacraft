@@ -18,6 +18,8 @@ export const MAKER_V8_RECOVERY_SCHEMA = 'animacraft.maker-v8-recovery.v1';
 export const MAKER_V8_RECOVERY_RECEIPT_SCHEMA = 'animacraft.maker-v8-recovery-receipt.v1';
 export const MAKER_V8_RECOVERY_FAILURE_SCHEMA =
   'animacraft.maker-v8-recovery-finalized-failure.v1';
+export const MAKER_V8_RECOVERY_EXPIRATION_SCHEMA =
+  'animacraft.maker-v8-recovery-expired-not-found.v1';
 
 export const MAKER_V8_RECOVERY_STATE = Object.freeze({
   READY: 'READY',
@@ -27,6 +29,7 @@ export const MAKER_V8_RECOVERY_STATE = Object.freeze({
   OUTCOME_PENDING: 'OUTCOME_PENDING',
   VERIFIED: 'VERIFIED',
   FINALIZED_FAILURE: 'FINALIZED_FAILURE',
+  EXPIRED_NOT_FOUND: 'EXPIRED_NOT_FOUND',
   DISCARDED: 'DISCARDED',
   CLEANED: 'CLEANED',
 });
@@ -78,6 +81,8 @@ export const MAKER_V8_RECOVERY_ERROR = Object.freeze({
   READBACK_MISMATCH: 'MAKER_V8_RECOVERY_READBACK_MISMATCH',
   FINALIZED_FAILURE_INVALID: 'MAKER_V8_RECOVERY_FINALIZED_FAILURE_INVALID',
   FINALIZED_FAILURE_REPLAY: 'MAKER_V8_RECOVERY_FINALIZED_FAILURE_REPLAY',
+  EXPIRED_NOT_FOUND_INVALID: 'MAKER_V8_RECOVERY_EXPIRED_NOT_FOUND_INVALID',
+  EXPIRED_NOT_FOUND_REPLAY: 'MAKER_V8_RECOVERY_EXPIRED_NOT_FOUND_REPLAY',
   RECEIPT_INVALID: 'MAKER_V8_RECOVERY_RECEIPT_INVALID',
   ALREADY_COMPLETED: 'MAKER_V8_RECOVERY_ALREADY_COMPLETED',
 });
@@ -1525,13 +1530,15 @@ function requireDependency(value, name) {
 
 /**
  * Runtime contract for an injected persistence adapter.  IndexedDB adapters
- * should implement all five methods with stores dedicated to this schema:
+ * should implement all seven methods with stores dedicated to this schema:
  *
  *   load(scopeKey)
  *   compareAndSwap(scopeKey, expectedRevision, nextRecord, commitOptions)
  *   loadReceipt(identityKey)
  *   loadFinalizedFailure(identityKey, digest)
  *   listFinalizedFailures(scopeKey)
+ *   loadExpiredNotFound(identityKey, digest)
+ *   listExpiredNotFound(scopeKey)
  *
  * `load(scopeKey)` loads the sole active record for an exact chain + Root
  * scope; it must not require the caller to know the current full identity.
@@ -1539,13 +1546,15 @@ function requireDependency(value, name) {
  * `compareAndSwap` must atomically validate the revision and perform exactly
  * one operation: (a) write `nextRecord`, optionally archiving its finalized
  * failure; (b) durably put `commitOptions.completionReceipt` while replacing a
- * VERIFIED record with a CLEANED tombstone; or (c) replace an unsigned
- * READY/AWAITING_SIGNATURE record with a DISCARDED tombstone when
- * `commitOptions.discardUnsigned === true`; or (d) reset an unsigned
+ * VERIFIED record with a CLEANED tombstone; (c) replace an unsigned READY
+ * record with a DISCARDED tombstone when
+ * `commitOptions.discardUnsigned === true`; (d) reset an unsigned
  * AWAITING_SIGNATURE record to READY only when `commitOptions.resetUnsigned`
- * contains the exact definitive-rejection or externally verified no-artifact
- * binding for the current scope, identity, plan hash, signing session, and
- * lease. Tombstone revisions MUST remain in
+ * contains the exact externally verified no-artifact binding for the current
+ * scope, identity, plan hash, signing session, lease, and a check timestamp at
+ * or after lease expiry; or (e) atomically archive an authoritative expired
+ * NOT_FOUND result while writing its EXPIRED_NOT_FOUND tombstone. Tombstone
+ * revisions MUST remain in
  * the same scope and increase monotonically when a later plan replaces them.
  * Physically deleting active state and resetting the revision creates a CAS ABA
  * vulnerability and is forbidden. Operation (c) MUST reject every record that
@@ -1558,6 +1567,8 @@ export function assertMakerV8RecoveryPersistenceAdapter(value) {
     'loadReceipt',
     'loadFinalizedFailure',
     'listFinalizedFailures',
+    'loadExpiredNotFound',
+    'listExpiredNotFound',
   ];
   if (!value || typeof value !== 'object'
     || methods.some((method) => typeof value[method] !== 'function')) fail(
@@ -1580,12 +1591,15 @@ export function createMakerV8RecoveryMemoryAdapter(seed = {}) {
   const active = new Map();
   const receipts = new Map();
   const failures = new Map();
+  const expirations = new Map();
   const seeded = clonePlainData(seed, 'Memory adapter seed', { allowScalar: false });
   for (const [key, value] of Object.entries(seeded.active || {})) active.set(key, value);
   for (const [key, value] of Object.entries(seeded.receipts || {})) receipts.set(key, value);
   for (const [key, value] of Object.entries(seeded.failures || {})) failures.set(key, value);
+  for (const [key, value] of Object.entries(seeded.expirations || {})) expirations.set(key, value);
 
   function failureArchiveKey(identityKey, digest) { return `${identityKey}:digest:${digest}`; }
+  function expirationArchiveKey(identityKey, digest) { return `${identityKey}:digest:${digest}`; }
 
   return Object.freeze({
     async load(scopeKey) {
@@ -1594,188 +1608,51 @@ export function createMakerV8RecoveryMemoryAdapter(seed = {}) {
 
     async compareAndSwap(scopeKey, expectedRevision, nextRecord, commitOptions = {}) {
       const current = active.get(scopeKey) ?? null;
-      const actualRevision = current?.revision ?? 0;
-      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0
-        || actualRevision !== expectedRevision) fail(
-        MAKER_V8_RECOVERY_ERROR.CAS_CONFLICT,
-        MAKER_V8_RECOVERY_ERROR_LAYER.CONCURRENCY,
-        'Recovery state changed in another session.',
-        { scopeKey, expectedRevision, actualRevision },
-        true,
-      );
-
-      const options = cloneForMemory(commitOptions) || {};
       const next = cloneForMemory(nextRecord);
-      if (!next) fail(
-        MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID,
-        MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-        'Physical recovery deletion is forbidden because it resets the CAS revision.',
-      );
-      if (next.scopeKey !== scopeKey || next.revision !== expectedRevision + 1) fail(
-        MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID,
-        MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-        'CAS attempted to write an invalid scope or revision.',
-      );
-
-      const optionKeys = Object.keys(options);
-      const noOptions = optionKeys.length === 0;
-      const archiveFailure = optionKeys.length === 1
-        && options.archiveFinalizedFailure === true;
-      const discardUnsigned = optionKeys.length === 1
-        && options.discardUnsigned === true;
-      const completionReceipt = optionKeys.length === 1
-        && Object.hasOwn(options, 'completionReceipt');
-      const replaceTombstone = optionKeys.length === 1
-        && options.replaceTombstone === true;
-      const replaceFinalizedFailure = optionKeys.length === 1
-        && options.replaceFinalizedFailure === true;
-      const resetUnsigned = optionKeys.length === 1
-        && Object.hasOwn(options, 'resetUnsigned');
-      if (!noOptions && !archiveFailure && !discardUnsigned && !completionReceipt
-        && !replaceTombstone && !replaceFinalizedFailure && !resetUnsigned) fail(
-        MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID,
-        MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-        'A recovery write received unsupported atomic commit options.',
-      );
-
-      if (!current) {
-        if (!noOptions || expectedRevision !== 0
-          || next.state !== MAKER_V8_RECOVERY_STATE.READY) fail(
-          MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID,
-          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-          'A new recovery scope must begin with an exact READY record.',
-        );
-      } else if (discardUnsigned) {
-        if (![
-          MAKER_V8_RECOVERY_STATE.READY,
-          MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE,
-        ].includes(current.state)
-          || current.signed !== null
-          || (current.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE
-            && current.signatureDisposition
-              !== MAKER_V8_SIGNATURE_DISPOSITION.DEFINITIVE_REJECTION)
-          || next.state !== MAKER_V8_RECOVERY_STATE.DISCARDED
-          || next.identityKey !== current.identityKey
-          || next.plan !== null || next.signed !== null) fail(
-          MAKER_V8_RECOVERY_ERROR.UNSIGNED_DISCARD_FORBIDDEN,
-          MAKER_V8_RECOVERY_ERROR_LAYER.TERMINAL,
-          'Only an unsigned READY or AWAITING_SIGNATURE recovery can become a tombstone.',
-          { scopeKey, state: current.state },
-        );
-      } else if (resetUnsigned) {
-        const reset = options.resetUnsigned;
-        const confirmed = current.signatureDisposition
-          === MAKER_V8_SIGNATURE_DISPOSITION.DEFINITIVE_REJECTION
-          ? reset?.kind === 'DEFINITIVE_REJECTION'
-            && Object.keys(reset).length === 1
-          : reset?.kind === 'EXTERNAL_UNSIGNED_CONFIRMATION'
-            && Object.keys(reset).length === 6
-            && reset.scopeKey === current.scopeKey
-            && reset.identityKey === current.identityKey
-            && reset.planHash === current.plan?.fingerprint
-            && reset.sessionId === current.signatureSessionId
-            && reset.leaseExpiresAtMs === current.signatureLease?.expiresAtMs;
-        if (current.state !== MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE
-          || current.signed !== null || next.state !== MAKER_V8_RECOVERY_STATE.READY
-          || next.signatureSessionId !== null || next.signatureDisposition !== null
-          || next.signatureLease !== null || !confirmed) fail(
-          MAKER_V8_RECOVERY_ERROR.UNSIGNED_CONFIRMATION_INVALID,
-          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-          'AWAITING_SIGNATURE can reset only with an exact durable unsigned confirmation.',
-        );
-      } else if (completionReceipt) {
-        const receipt = options.completionReceipt;
-        if (!receipt || current.state !== MAKER_V8_RECOVERY_STATE.VERIFIED
-          || next.state !== MAKER_V8_RECOVERY_STATE.CLEANED
-          || next.identityKey !== current.identityKey
-          || next.plan !== null || next.signed !== null
-          || stableJson(receipt) !== stableJson(current.receipt)
-          || stableJson(next.receipt) !== stableJson(receipt)) fail(
-          MAKER_V8_RECOVERY_ERROR.RECEIPT_INVALID,
-          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-          'Verified recovery can be cleaned only into a tombstone with its exact receipt.',
-        );
-        const prior = receipts.get(receipt.identityKey);
-        if (prior && stableJson(prior) !== stableJson(receipt)) fail(
-          MAKER_V8_RECOVERY_ERROR.RECEIPT_INVALID,
-          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-          'A completion receipt key already contains different evidence.',
-        );
-        // The receipt put and CLEANED tombstone write are one synchronous
-        // atomic commit. IndexedDB implementations must use one transaction.
-        receipts.set(receipt.identityKey, cloneForMemory(receipt));
-      } else if (replaceTombstone) {
-        if (![MAKER_V8_RECOVERY_STATE.DISCARDED,
-          MAKER_V8_RECOVERY_STATE.CLEANED].includes(current.state)
-          || next.state !== MAKER_V8_RECOVERY_STATE.READY) fail(
-          MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID,
-          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-          'Only a durable recovery tombstone can be replaced by a new READY plan.',
-        );
-        if (current.state === MAKER_V8_RECOVERY_STATE.CLEANED) {
-          const durable = receipts.get(current.identityKey);
-          if (!durable || stableJson(durable) !== stableJson(current.receipt)) fail(
-            MAKER_V8_RECOVERY_ERROR.RECEIPT_INVALID,
-            MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-            'A CLEANED tombstone must retain its exact durable completion receipt.',
-          );
-        }
-      } else if (replaceFinalizedFailure) {
-        const archive = current.failure
-          ? failures.get(failureArchiveKey(current.identityKey, current.failure.digest))
-          : null;
-        if (current.state !== MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE
-          || next.state !== MAKER_V8_RECOVERY_STATE.READY
-          || !archive || stableJson(archive) !== stableJson(current.failure)) fail(
-          MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_INVALID,
-          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-          'Only an archived FINALIZED_FAILURE can be replaced by a new READY plan.',
-        );
-      } else {
-        if ((current.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE
-            && next.state === MAKER_V8_RECOVERY_STATE.READY)
-          || next.identityKey !== current.identityKey
-          || stableJson(next.identity) !== stableJson(current.identity)
-          || !ALLOWED_TRANSITIONS[current.state]?.has(next.state)) fail(
-          MAKER_V8_RECOVERY_ERROR.STATE_INVALID,
-          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-          'The persistence adapter rejected an invalid recovery state transition.',
-          { from: current.state, to: next.state },
+      const options = cloneForMemory(commitOptions) || {};
+      const receiptKey = options.completionReceipt?.identityKey ?? current?.identityKey;
+      const failureEvidence = options.archiveFinalizedFailure === true
+        ? next?.failure : current?.failure;
+      const expirationEvidence = options.expireNotFound ?? current?.expiration;
+      const checked = assertMakerV8RecoveryPersistenceCommit({
+        scopeKey,
+        expectedRevision,
+        current,
+        nextRecord: next,
+        commitOptions: options,
+        priorReceipt: receiptKey ? receipts.get(receiptKey) ?? null : null,
+        finalizedFailureArchive: failureEvidence
+          ? failures.get(failureArchiveKey(
+            options.archiveFinalizedFailure === true ? next.identityKey : current.identityKey,
+            failureEvidence.digest,
+          )) ?? null : null,
+        expiredNotFoundArchive: expirationEvidence
+          ? expirations.get(expirationArchiveKey(
+            options.expireNotFound ? next.identityKey : current.identityKey,
+            expirationEvidence.digest,
+          )) ?? null : null,
+        // The process-local test adapter deliberately follows the injected
+        // controller clock. Production IndexedDB supplies its own observed
+        // wall-clock value and therefore rejects future-dated confirmations.
+        observedAtMs: options.resetUnsigned?.checkedAtMs ?? Date.now(),
+      });
+      if (Object.hasOwn(options, 'completionReceipt')) {
+        receipts.set(options.completionReceipt.identityKey, cloneForMemory(options.completionReceipt));
+      }
+      if (options.archiveFinalizedFailure === true) {
+        failures.set(
+          failureArchiveKey(next.identityKey, next.failure.digest),
+          cloneForMemory(next.failure),
         );
       }
-
-      if (next.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE) {
-        if (!Object.values(MAKER_V8_SIGNATURE_DISPOSITION)
-          .includes(next.signatureDisposition)) fail(
-          MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID,
-          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-          'AWAITING_SIGNATURE requires an exact wallet outcome disposition.',
+      if (Object.hasOwn(options, 'expireNotFound')) {
+        expirations.set(
+          expirationArchiveKey(next.identityKey, options.expireNotFound.digest),
+          cloneForMemory(options.expireNotFound),
         );
-        canonicalSignatureLease(next.signatureLease, next.plan, next.signatureSessionId);
-      } else if (next.signatureSessionId !== null || next.signatureDisposition !== null
-        || next.signatureLease !== null) fail(
-        MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID,
-        MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-        'Only AWAITING_SIGNATURE may retain an outstanding signature lease.',
-      );
-
-      if (archiveFailure) {
-        if (next.state !== MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE || !next.failure) fail(
-          MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_INVALID,
-          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-          'Only an exact FINALIZED_FAILURE can be archived.',
-        );
-        const archiveKey = failureArchiveKey(next.identityKey, next.failure.digest);
-        const prior = failures.get(archiveKey);
-        if (prior && stableJson(prior) !== stableJson(next.failure)) fail(
-          MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_INVALID,
-          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
-          'A finalized failure archive key already contains different evidence.',
-        );
-        failures.set(archiveKey, cloneForMemory(next.failure));
       }
-      active.set(scopeKey, next);
-      return cloneForMemory(next);
+      active.set(scopeKey, checked.next);
+      return cloneForMemory(checked.next);
     },
 
     async loadReceipt(identityKey) {
@@ -1794,12 +1671,25 @@ export function createMakerV8RecoveryMemoryAdapter(seed = {}) {
         .map(cloneForMemory);
     },
 
+    async loadExpiredNotFound(identityKey, digest) {
+      return cloneForMemory(expirations.get(expirationArchiveKey(identityKey, digest)));
+    },
+
+    async listExpiredNotFound(scopeKey) {
+      return [...expirations.values()]
+        .filter((entry) => entry.scopeKey === scopeKey)
+        .sort((left, right) => left.retiredAt - right.retiredAt
+          || left.identityKey.localeCompare(right.identityKey))
+        .map(cloneForMemory);
+    },
+
     /** A deterministic snapshot useful for crash/reload test setup. */
     snapshot() {
       return publicData({
         active: Object.fromEntries(active),
         receipts: Object.fromEntries(receipts),
         failures: Object.fromEntries(failures),
+        expirations: Object.fromEntries(expirations),
       });
     },
   });
@@ -1824,6 +1714,7 @@ const RECORD_FIELDS = Object.freeze([
   'lastError',
   'receipt',
   'failure',
+  'expiration',
   'createdAt',
   'updatedAt',
 ]);
@@ -1841,26 +1732,426 @@ const ALLOWED_TRANSITIONS = Object.freeze({
   ]),
   [MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE]: new Set([
     MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE,
-    MAKER_V8_RECOVERY_STATE.BROADCASTING,
     MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING,
     MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE,
+    MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND,
   ]),
   [MAKER_V8_RECOVERY_STATE.BROADCASTING]: new Set([
-    MAKER_V8_RECOVERY_STATE.BROADCASTING,
     MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING,
     MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE,
+    MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND,
   ]),
   [MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING]: new Set([
     MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING,
     MAKER_V8_RECOVERY_STATE.BROADCASTING,
     MAKER_V8_RECOVERY_STATE.VERIFIED,
     MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE,
+    MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND,
   ]),
   [MAKER_V8_RECOVERY_STATE.VERIFIED]: new Set([MAKER_V8_RECOVERY_STATE.CLEANED]),
   [MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE]: new Set(),
+  [MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND]: new Set(),
   [MAKER_V8_RECOVERY_STATE.DISCARDED]: new Set(),
   [MAKER_V8_RECOVERY_STATE.CLEANED]: new Set(),
 });
+
+function persistenceInvalid(message, details = {}, code = MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID) {
+  fail(code, MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE, message, details);
+}
+
+function persistenceSignedArtifact(value, record) {
+  exactKeys(value, ['bytes', 'signature', 'digest', 'signer', 'signedAt'],
+    'Durable signed artifact', MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID);
+  if (value.bytes !== record.plan?.transactionBytes
+    || normalizeDigest(value.digest, 'Durable signed digest') !== record.plan?.transactionDigest
+    || canonicalSuiId(value.signer, 'Durable signed signer') !== record.identity.wallet
+    || canonicalSuiId(value.signer, 'Durable signed signer') !== record.plan?.signer
+    || !text(value.signature, 'Durable serialized signature',
+      MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID, 65_536)
+    || exactTimestamp(value.signedAt, 'Durable signed timestamp') > record.updatedAt) {
+    throw new Error('signed artifact binding');
+  }
+}
+
+function persistenceQueryOutcome(value, record) {
+  exactKeys(value, ['status', 'digest', 'epoch', 'effectsFingerprint', 'eventsDigest', 'error'],
+    'Durable query outcome', MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID);
+  const canonical = normalizeQueryResult(value, record.signed.digest);
+  if (stableJson(canonical) !== stableJson(value)) throw new Error('query outcome binding');
+  return canonical;
+}
+
+function persistenceLastError(value) {
+  exactKeys(value, ['code', 'message'], 'Durable error summary',
+    MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID);
+  text(value.code, 'Durable error code', MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID, 256);
+  text(value.message, 'Durable error message', MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID, 1_024);
+}
+
+function persistenceRecord(value, label) {
+  let record;
+  try {
+    record = clonePlainData(value, label, { allowScalar: false });
+    exactKeys(record, RECORD_FIELDS, label, MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID);
+    if (record.schemaVersion !== MAKER_V8_RECOVERY_SCHEMA
+      || !Object.values(MAKER_V8_RECOVERY_STATE).includes(record.state)
+      || !Number.isSafeInteger(record.revision) || record.revision < 1
+      || !Number.isSafeInteger(record.attempt) || record.attempt < 1
+      || !Number.isSafeInteger(record.broadcastCount) || record.broadcastCount < 0
+      || !Number.isSafeInteger(record.createdAt) || record.createdAt < 0
+      || !Number.isSafeInteger(record.updatedAt) || record.updatedAt < record.createdAt) {
+      throw new Error('record header');
+    }
+    exactSessionId(record.writerSessionId);
+    const identity = canonicalMakerV8RecoveryIdentity(record.identity);
+    if (record.scopeKey !== makerV8RecoveryScopeKey(identity)
+      || record.identityKey !== makerV8RecoveryIdentityKey(identity)) throw new Error('identity binding');
+
+    const tombstone = [
+      MAKER_V8_RECOVERY_STATE.DISCARDED,
+      MAKER_V8_RECOVERY_STATE.CLEANED,
+      MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND,
+    ].includes(record.state);
+    const signedState = [
+      MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE,
+      MAKER_V8_RECOVERY_STATE.BROADCASTING,
+      MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING,
+      MAKER_V8_RECOVERY_STATE.VERIFIED,
+      MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE,
+    ].includes(record.state);
+    if (tombstone !== (record.plan === null)
+      || signedState !== Boolean(record.signed)
+      || (!tombstone && (!record.plan || typeof record.plan.fingerprint !== 'string'))
+      || (record.signed && (record.signed.bytes !== record.plan?.transactionBytes
+        || record.signed.digest !== record.plan?.transactionDigest
+        || record.signed.signer !== record.identity.wallet))) throw new Error('plan/signed state');
+    if (record.signed) persistenceSignedArtifact(record.signed, record);
+
+    const query = record.queryOutcome === null
+      ? null : persistenceQueryOutcome(record.queryOutcome, record);
+    if (record.lastError !== null) persistenceLastError(record.lastError);
+    if ([MAKER_V8_RECOVERY_STATE.READY, MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE,
+      MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE].includes(record.state)
+      && query !== null) throw new Error('query outcome state');
+    if (record.state === MAKER_V8_RECOVERY_STATE.BROADCASTING
+      && query?.status !== 'NOT_FOUND') throw new Error('broadcast query boundary');
+    if (record.state === MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING
+      && query === null) throw new Error('pending query outcome');
+    if (record.state === MAKER_V8_RECOVERY_STATE.VERIFIED
+      && query?.status !== 'FINALIZED_SUCCESS') throw new Error('verified query outcome');
+    if (record.state === MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE
+      && query?.status !== 'FINALIZED_FAILURE') throw new Error('failure query outcome');
+    if ([MAKER_V8_RECOVERY_STATE.READY, MAKER_V8_RECOVERY_STATE.VERIFIED,
+      MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE].includes(record.state)
+      && record.lastError !== null) throw new Error('terminal error state');
+
+    if (record.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE) {
+      exactSessionId(record.signatureSessionId);
+      if (!Object.values(MAKER_V8_SIGNATURE_DISPOSITION).includes(record.signatureDisposition)) {
+        throw new Error('signature disposition');
+      }
+      canonicalSignatureLease(record.signatureLease, record.plan, record.signatureSessionId);
+      if (record.signatureDisposition === MAKER_V8_SIGNATURE_DISPOSITION.REQUEST_IN_FLIGHT
+        ? record.lastError !== null : record.lastError === null) throw new Error('signature disposition error');
+    } else if (record.signatureSessionId !== null || record.signatureDisposition !== null
+      || record.signatureLease !== null) throw new Error('signature lease state');
+
+    if (record.state === MAKER_V8_RECOVERY_STATE.VERIFIED) validateReceipt(record.receipt, record);
+    else if (record.state === MAKER_V8_RECOVERY_STATE.CLEANED) validateReceipt(
+      record.receipt,
+      { ...record, signed: { digest: record.receipt?.digest } },
+    );
+    else if (record.receipt !== null) throw new Error('receipt state');
+
+    if (record.state === MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE) {
+      if (!record.failure || record.failure.schemaVersion !== MAKER_V8_RECOVERY_FAILURE_SCHEMA
+        || record.failure.scopeKey !== record.scopeKey
+        || record.failure.identityKey !== record.identityKey
+        || stableJson(record.failure.identity) !== stableJson(record.identity)
+        || record.failure.digest !== record.signed.digest
+        || record.failure.planHash !== record.plan.fingerprint
+        || record.failure.finalized !== true
+        || record.failure.executionStatus !== 'FAILURE') throw new Error('failure state');
+    } else if (record.failure !== null) throw new Error('failure state');
+
+    if (record.state === MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND) {
+      validateExpiredNotFound(record.expiration, record);
+    } else if (record.expiration !== null) throw new Error('expiration state');
+    if (tombstone && (record.queryOutcome !== null || record.lastError !== null)) {
+      throw new Error('tombstone transient state');
+    }
+  } catch (cause) {
+    if (cause instanceof MakerV8RecoveryError
+      && cause.code === MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID) throw cause;
+    persistenceInvalid(`${label} is not an exact durable recovery record.`, {
+      reason: String(cause?.message || cause || 'invalid').slice(0, 256),
+    });
+  }
+  return record;
+}
+
+function samePersistenceFields(left, right, fields, message) {
+  if (fields.some((field) => stableJson(left[field]) !== stableJson(right[field]))) {
+    persistenceInvalid(message, {
+      changedFields: fields.filter((field) => stableJson(left[field]) !== stableJson(right[field])),
+    });
+  }
+}
+
+/**
+ * Validate a persistence CAS independently of the controller that proposed it.
+ * Browser adapters call this inside the same read/write transaction as every
+ * archive/receipt side write, so a direct adapter caller cannot bypass WAL
+ * identity, transition, revision, signed-byte, or tombstone invariants.
+ */
+export function assertMakerV8RecoveryPersistenceCommit({
+  scopeKey,
+  expectedRevision,
+  current: currentValue,
+  nextRecord,
+  commitOptions = {},
+  priorReceipt = null,
+  finalizedFailureArchive = null,
+  expiredNotFoundArchive = null,
+  observedAtMs = Date.now(),
+} = {}) {
+  if (typeof scopeKey !== 'string' || !scopeKey
+    || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0
+    || !Number.isSafeInteger(observedAtMs) || observedAtMs < 0) {
+    persistenceInvalid('Recovery CAS scope and expected revision must be exact.');
+  }
+  if (nextRecord === null || nextRecord === undefined) {
+    persistenceInvalid('Physical recovery deletion is forbidden because it resets the CAS revision.');
+  }
+  const current = currentValue == null ? null : persistenceRecord(currentValue, 'Current recovery record');
+  const next = persistenceRecord(nextRecord, 'Next recovery record');
+  const actualRevision = current?.revision ?? 0;
+  if (actualRevision !== expectedRevision) fail(
+    MAKER_V8_RECOVERY_ERROR.CAS_CONFLICT,
+    MAKER_V8_RECOVERY_ERROR_LAYER.CONCURRENCY,
+    'Recovery state changed in another session.',
+    { scopeKey, expectedRevision, actualRevision },
+    true,
+  );
+  if (next.scopeKey !== scopeKey || next.revision !== expectedRevision + 1) {
+    persistenceInvalid('Recovery CAS attempted to change scope or skip/reset a revision.', {
+      scopeKey,
+      nextScopeKey: next.scopeKey,
+      expectedRevision,
+      nextRevision: next.revision,
+    });
+  }
+
+  let options;
+  try { options = clonePlainData(commitOptions, 'Recovery commit options', { allowScalar: false }); } catch {
+    persistenceInvalid('Recovery commit options must be exact plain data.');
+  }
+  const optionKeys = Object.keys(options);
+  const noOptions = optionKeys.length === 0;
+  const operation = optionKeys.length === 1 ? optionKeys[0] : null;
+  const flagOperation = ['archiveFinalizedFailure', 'discardUnsigned', 'replaceTombstone',
+    'replaceFinalizedFailure'].includes(operation) && options[operation] === true;
+  const valueOperation = ['completionReceipt', 'resetUnsigned', 'expireNotFound'].includes(operation);
+  if (!noOptions && !flagOperation && !valueOperation) {
+    persistenceInvalid('Recovery commit options are unsupported or ambiguous.', { optionKeys });
+  }
+
+  if (!current) {
+    if (!noOptions || expectedRevision !== 0 || next.state !== MAKER_V8_RECOVERY_STATE.READY
+      || next.revision !== 1 || next.attempt !== 1 || next.broadcastCount !== 0
+      || next.queryOutcome !== null || next.lastError !== null) {
+      persistenceInvalid('A new recovery scope must begin with revision-one READY state.');
+    }
+    return deepFreeze({ current: null, next, options });
+  }
+
+  const transitionValidatedByOperation = [
+    'discardUnsigned',
+    'resetUnsigned',
+    'completionReceipt',
+    'expireNotFound',
+    'replaceTombstone',
+    'replaceFinalizedFailure',
+  ].includes(operation);
+  if (!transitionValidatedByOperation && !ALLOWED_TRANSITIONS[current.state]?.has(next.state)) {
+    persistenceInvalid('The persistence adapter rejected an invalid recovery state transition.', {
+      from: current.state,
+      to: next.state,
+    });
+  }
+  if (next.updatedAt < current.updatedAt) {
+    persistenceInvalid('Recovery updates cannot move the durable clock backwards.');
+  }
+
+  const stableCore = ['scopeKey', 'identityKey', 'identity', 'attempt', 'plan', 'createdAt'];
+  if (operation === 'discardUnsigned') {
+    if (current.state !== MAKER_V8_RECOVERY_STATE.READY || current.signed !== null
+      || next.state !== MAKER_V8_RECOVERY_STATE.DISCARDED || next.plan !== null
+      || next.signed !== null || next.receipt !== null || next.failure !== null
+      || next.expiration !== null) persistenceInvalid(
+      'Only an unsigned READY recovery can become a discard tombstone.',
+      { state: current.state },
+      MAKER_V8_RECOVERY_ERROR.UNSIGNED_DISCARD_FORBIDDEN,
+    );
+    samePersistenceFields(current, next,
+      ['scopeKey', 'identityKey', 'identity', 'attempt', 'createdAt', 'broadcastCount'],
+      'Unsigned discard changed immutable recovery fields.');
+  } else if (operation === 'resetUnsigned') {
+    const reset = options.resetUnsigned;
+    const confirmed = reset?.kind === 'EXTERNAL_UNSIGNED_CONFIRMATION'
+      && Object.keys(reset).length === 7
+      && reset.scopeKey === current.scopeKey
+      && reset.identityKey === current.identityKey
+      && reset.planHash === current.plan?.fingerprint
+      && reset.sessionId === current.signatureSessionId
+      && reset.leaseExpiresAtMs === current.signatureLease?.expiresAtMs
+      && Number.isSafeInteger(reset.checkedAtMs)
+      && reset.checkedAtMs >= current.signatureLease?.expiresAtMs
+      && reset.checkedAtMs <= observedAtMs;
+    if (current.state !== MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE
+      || current.signed !== null || next.state !== MAKER_V8_RECOVERY_STATE.READY
+      || !confirmed) persistenceInvalid(
+      'AWAITING_SIGNATURE can reset only with an exact post-lease no-artifact confirmation.',
+      {},
+      MAKER_V8_RECOVERY_ERROR.UNSIGNED_CONFIRMATION_INVALID,
+    );
+    samePersistenceFields(current, next, stableCore.concat('broadcastCount'),
+      'Signature reclaim changed immutable recovery fields.');
+  } else if (operation === 'completionReceipt') {
+    const receipt = options.completionReceipt;
+    if (!receipt || current.state !== MAKER_V8_RECOVERY_STATE.VERIFIED
+      || next.state !== MAKER_V8_RECOVERY_STATE.CLEANED
+      || next.plan !== null || next.signed !== null
+      || stableJson(receipt) !== stableJson(current.receipt)
+      || stableJson(receipt) !== stableJson(next.receipt)
+      || (priorReceipt && stableJson(priorReceipt) !== stableJson(receipt))) {
+      persistenceInvalid('Verified cleanup requires its exact receipt and CLEANED tombstone.', {},
+        MAKER_V8_RECOVERY_ERROR.RECEIPT_INVALID);
+    }
+    samePersistenceFields(current, next,
+      ['scopeKey', 'identityKey', 'identity', 'attempt', 'createdAt', 'broadcastCount'],
+      'Verified cleanup changed immutable recovery fields.');
+  } else if (operation === 'expireNotFound') {
+    const expiration = options.expireNotFound;
+    if (![MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE, MAKER_V8_RECOVERY_STATE.BROADCASTING,
+      MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING].includes(current.state)
+      || next.state !== MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND
+      || current.queryOutcome?.status !== 'NOT_FOUND'
+      || next.plan !== null || next.signed !== null
+      || stableJson(next.expiration) !== stableJson(expiration)) {
+      persistenceInvalid('Expired NOT_FOUND retirement must atomically tombstone exact signed bytes.', {},
+        MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_INVALID);
+    }
+    validateExpiredNotFound(expiration, current);
+    if (expiredNotFoundArchive && stableJson(expiredNotFoundArchive) !== stableJson(expiration)) {
+      persistenceInvalid('An expiration archive key already contains different evidence.', {},
+        MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_INVALID);
+    }
+    samePersistenceFields(current, next,
+      ['scopeKey', 'identityKey', 'identity', 'attempt', 'createdAt', 'broadcastCount'],
+      'Expired NOT_FOUND retirement changed immutable recovery fields.');
+  } else if (operation === 'replaceTombstone') {
+    if (![MAKER_V8_RECOVERY_STATE.DISCARDED, MAKER_V8_RECOVERY_STATE.CLEANED,
+      MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND].includes(current.state)
+      || next.state !== MAKER_V8_RECOVERY_STATE.READY
+      || next.attempt !== current.attempt + 1 || next.createdAt < current.updatedAt
+      || next.broadcastCount !== 0 || next.queryOutcome !== null || next.lastError !== null) {
+      persistenceInvalid('Only a durable tombstone can start the next monotonic READY attempt.');
+    }
+    if (current.state === MAKER_V8_RECOVERY_STATE.CLEANED
+      && (!priorReceipt || stableJson(priorReceipt) !== stableJson(current.receipt))) {
+      persistenceInvalid('A CLEANED tombstone lost its exact durable receipt.', {},
+        MAKER_V8_RECOVERY_ERROR.RECEIPT_INVALID);
+    }
+    if (current.state === MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND
+      && (!expiredNotFoundArchive
+        || stableJson(expiredNotFoundArchive) !== stableJson(current.expiration)
+        || next.plan.transactionDigest === current.expiration.digest
+        || next.plan.fingerprint === current.expiration.planHash)) {
+      persistenceInvalid('An expired plan must stay archived and cannot be prepared again.', {},
+        MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_REPLAY);
+    }
+  } else if (operation === 'replaceFinalizedFailure') {
+    if (current.state !== MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE
+      || next.state !== MAKER_V8_RECOVERY_STATE.READY
+      || next.attempt !== current.attempt + 1 || next.createdAt < current.updatedAt
+      || next.broadcastCount !== 0 || next.queryOutcome !== null || next.lastError !== null
+      || !finalizedFailureArchive
+      || stableJson(finalizedFailureArchive) !== stableJson(current.failure)
+      || next.plan.transactionDigest === current.failure.digest
+      || next.plan.fingerprint === current.failure.planHash) {
+      persistenceInvalid('A finalized failure replacement must preserve the archive and use fresh bytes.', {},
+        MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_INVALID);
+    }
+  } else {
+    if (operation === 'archiveFinalizedFailure') {
+      if (next.state !== MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE || !next.failure
+        || (finalizedFailureArchive
+          && stableJson(finalizedFailureArchive) !== stableJson(next.failure))) {
+        persistenceInvalid('Only exact finalized failure evidence can be archived.', {},
+          MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_INVALID);
+      }
+    } else if (!noOptions) {
+      persistenceInvalid('Recovery commit option does not match its transition.');
+    }
+    if ([MAKER_V8_RECOVERY_STATE.DISCARDED, MAKER_V8_RECOVERY_STATE.CLEANED,
+      MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND].includes(next.state)
+      || next.state === MAKER_V8_RECOVERY_STATE.READY
+        && current.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE
+      || next.state === MAKER_V8_RECOVERY_STATE.FINALIZED_FAILURE
+        && operation !== 'archiveFinalizedFailure') {
+      persistenceInvalid('This recovery transition requires its exact atomic commit option.');
+    }
+    samePersistenceFields(current, next, stableCore,
+      'Recovery transition changed immutable identity, plan, attempt, or creation fields.');
+    if (current.signed && stableJson(next.signed) !== stableJson(current.signed)) {
+      persistenceInvalid('Durable signed bytes cannot be replaced or erased.');
+    }
+    if (!current.signed && next.signed
+      && !(current.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE
+        && next.state === MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE)) {
+      persistenceInvalid('A signed artifact can become durable only from AWAITING_SIGNATURE.');
+    }
+    const expectedBroadcastCount = next.state === MAKER_V8_RECOVERY_STATE.BROADCASTING
+      ? current.broadcastCount + 1 : current.broadcastCount;
+    if (next.broadcastCount !== expectedBroadcastCount) {
+      persistenceInvalid('Broadcast count must increase exactly once at the BROADCASTING WAL boundary.');
+    }
+    if (current.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE
+      && next.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE) {
+      samePersistenceFields(current, next, ['signatureSessionId', 'signatureLease'],
+        'Wallet outcome updates cannot replace their signing session or lease.');
+      if (next.writerSessionId !== current.signatureSessionId) {
+        persistenceInvalid('Only the owning signing session can update its wallet disposition.');
+      }
+      if (current.signatureDisposition !== MAKER_V8_SIGNATURE_DISPOSITION.REQUEST_IN_FLIGHT
+        && next.signatureDisposition !== current.signatureDisposition) {
+        persistenceInvalid('A terminal wallet disposition cannot revert or change.');
+      }
+    }
+    if (current.state === MAKER_V8_RECOVERY_STATE.READY
+      && next.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE
+      && (next.signatureDisposition !== MAKER_V8_SIGNATURE_DISPOSITION.REQUEST_IN_FLIGHT
+        || next.writerSessionId !== next.signatureSessionId
+        || next.signatureLease.expiresAtMs <= next.updatedAt
+        || next.signatureLease.expiresAtMs - next.updatedAt > 300_000)) {
+      persistenceInvalid('A wallet request must begin with its owning random session and bounded lease.');
+    }
+    if (current.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE
+      && next.state === MAKER_V8_RECOVERY_STATE.SIGNED_DURABLE
+      && (current.signatureDisposition !== MAKER_V8_SIGNATURE_DISPOSITION.REQUEST_IN_FLIGHT
+        || next.writerSessionId !== current.signatureSessionId)) {
+      persistenceInvalid('Only the owning in-flight wallet session can durably commit its signature.');
+    }
+    if (next.state === MAKER_V8_RECOVERY_STATE.BROADCASTING
+      && (current.state !== MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING
+        || current.queryOutcome?.status !== 'NOT_FOUND'
+        || stableJson(next.queryOutcome) !== stableJson(current.queryOutcome))) {
+      persistenceInvalid('Broadcasting saved bytes requires an immediately prior durable NOT_FOUND query.');
+    }
+  }
+  return deepFreeze({ current, next, options });
+}
 
 function nextRecord(current, state, patch, sessionId, now) {
   if (!ALLOWED_TRANSITIONS[current.state]?.has(state)) fail(
@@ -1899,6 +2190,7 @@ function initialRecord(identity, plan, sessionId, now, { revision = 1, attempt =
     lastError: null,
     receipt: null,
     failure: null,
+    expiration: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -2109,6 +2401,53 @@ function failureFromQuery(outcome, record, now) {
   });
 }
 
+function expirationFromNotFound(record, currentEpoch, now) {
+  const observedEpoch = canonicalU64(currentEpoch, 'Observed Mainnet epoch');
+  if (record.queryOutcome?.status !== 'NOT_FOUND'
+    || BigInt(observedEpoch) <= BigInt(record.plan.expiration.epoch)) fail(
+    MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_INVALID,
+    MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
+    'Only an authoritative NOT_FOUND observed after Transaction expiration can retire signed bytes.',
+    {
+      queryStatus: record.queryOutcome?.status ?? null,
+      observedEpoch,
+      expirationEpoch: record.plan.expiration.epoch,
+    },
+  );
+  return deepFreeze({
+    schemaVersion: MAKER_V8_RECOVERY_EXPIRATION_SCHEMA,
+    scopeKey: record.scopeKey,
+    identityKey: record.identityKey,
+    identity: clonePlainData(record.identity, 'Expiration identity'),
+    digest: record.signed.digest,
+    planHash: record.plan.fingerprint,
+    expirationEpoch: record.plan.expiration.epoch,
+    observedEpoch,
+    queryStatus: 'NOT_FOUND',
+    retiredAt: now,
+  });
+}
+
+function validateExpiredNotFound(expiration, record) {
+  if (!expiration || expiration.schemaVersion !== MAKER_V8_RECOVERY_EXPIRATION_SCHEMA
+    || expiration.scopeKey !== record.scopeKey
+    || expiration.identityKey !== record.identityKey
+    || stableJson(expiration.identity) !== stableJson(record.identity)
+    || expiration.digest !== (record.signed?.digest ?? record.expiration?.digest)
+    || expiration.planHash !== (record.plan?.fingerprint ?? record.expiration?.planHash)
+    || expiration.expirationEpoch
+      !== (record.plan?.expiration?.epoch ?? record.expiration?.expirationEpoch)
+    || expiration.queryStatus !== 'NOT_FOUND'
+    || !Number.isSafeInteger(expiration.retiredAt)
+    || BigInt(canonicalU64(expiration.observedEpoch, 'Expiration observed epoch'))
+      <= BigInt(canonicalU64(expiration.expirationEpoch, 'Expiration epoch'))) fail(
+    MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_INVALID,
+    MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
+    'Expired NOT_FOUND evidence does not bind the exact recovery identity, digest, and plan hash.',
+  );
+  return expiration;
+}
+
 function normalizeBroadcastResult(value, digest) {
   const result = clonePlainData(value, 'Broadcast result', { allowScalar: false });
   const observed = normalizeDigest(
@@ -2134,6 +2473,7 @@ function normalizeBroadcastResult(value, digest) {
  * - verifySignature({ bytes, signature, digest, signer }) -> true or
  *   { verified: true, signer?, digest?, bytes? }
  * - getContext({ identity }) -> current full identity and epoch (used only for replay)
+ * - getCurrentEpoch({ identity, digest, planHash }) -> authoritative current Mainnet epoch
  * - sign({ bytes, digest, signer, identity, plan }) -> signed envelope
  * - broadcast({ bytes, signature, digest, signer, identity }) -> { digest }
  * - query({ digest, identity, plan, planHash }) -> strict digest status
@@ -2147,6 +2487,7 @@ export function createMakerV8RecoveryController(options = {}) {
   );
   const verifySignature = requireDependency(options.verifySignature, 'verifySignature');
   const getContext = requireDependency(options.getContext, 'getContext');
+  const getCurrentEpoch = requireDependency(options.getCurrentEpoch, 'getCurrentEpoch');
   const signBoundary = requireDependency(options.sign, 'sign');
   const broadcastBoundary = requireDependency(options.broadcast, 'broadcast');
   const queryBoundary = requireDependency(options.query, 'query');
@@ -2308,6 +2649,7 @@ export function createMakerV8RecoveryController(options = {}) {
       const tombstone = [
         MAKER_V8_RECOVERY_STATE.DISCARDED,
         MAKER_V8_RECOVERY_STATE.CLEANED,
+        MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND,
       ].includes(record.state);
       let plan = null;
       if (tombstone) {
@@ -2321,6 +2663,7 @@ export function createMakerV8RecoveryController(options = {}) {
         MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE,
         MAKER_V8_RECOVERY_STATE.DISCARDED,
         MAKER_V8_RECOVERY_STATE.CLEANED,
+        MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND,
       ].includes(record.state);
       if (needsSigned !== Boolean(record.signed)) throw new Error('signed state');
       if (record.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE) {
@@ -2356,6 +2699,9 @@ export function createMakerV8RecoveryController(options = {}) {
           || record.failure.planHash !== plan.fingerprint
           || record.failure.executionStatus !== 'FAILURE') throw new Error('failure');
       } else if (record.failure !== null) throw new Error('failure state');
+      if (record.state === MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND) {
+        validateExpiredNotFound(record.expiration, record);
+      } else if (record.expiration !== null) throw new Error('expiration state');
       if (tombstone && (record.queryOutcome !== null || record.lastError !== null)) {
         throw new Error('tombstone transient state');
       }
@@ -2413,6 +2759,7 @@ export function createMakerV8RecoveryController(options = {}) {
     return record && [
       MAKER_V8_RECOVERY_STATE.DISCARDED,
       MAKER_V8_RECOVERY_STATE.CLEANED,
+      MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND,
     ].includes(record.state);
   }
 
@@ -2642,6 +2989,7 @@ export function createMakerV8RecoveryController(options = {}) {
         planHash: record.plan.fingerprint,
         sessionId: record.signatureSessionId,
         leaseExpiresAtMs: record.signatureLease.expiresAtMs,
+        checkedAtMs: now,
       });
     } catch (cause) {
       fail(
@@ -2697,6 +3045,7 @@ export function createMakerV8RecoveryController(options = {}) {
       planHash: record.plan.fingerprint,
       sessionId: record.signatureSessionId,
       leaseExpiresAtMs: record.signatureLease.expiresAtMs,
+      checkedAtMs: confirmation.checkedAtMs,
     });
   }
 
@@ -2727,13 +3076,25 @@ export function createMakerV8RecoveryController(options = {}) {
         persist.listFinalizedFailures(scopeKey)
       ));
       const terminalFailure = (archivedFailures || []).find((entry) => (
-        entry?.identityKey === identityKey || entry?.digest === plan.transactionDigest
+        entry?.digest === plan.transactionDigest || entry?.planHash === plan.fingerprint
       ));
       if (terminalFailure) fail(
         MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_REPLAY,
         MAKER_V8_RECOVERY_ERROR_LAYER.TERMINAL,
-        'A previously finalized identity or digest cannot receive a replacement signature.',
+        'Previously finalized failed bytes cannot receive a replacement signature.',
         { digest: terminalFailure.digest, identityKey: terminalFailure.identityKey },
+      );
+      const archivedExpirations = await storage('listExpiredNotFound before prepare', () => (
+        persist.listExpiredNotFound(scopeKey)
+      ));
+      const expiredReplay = (archivedExpirations || []).find((entry) => (
+        entry?.digest === plan.transactionDigest || entry?.planHash === plan.fingerprint
+      ));
+      if (expiredReplay) fail(
+        MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_REPLAY,
+        MAKER_V8_RECOVERY_ERROR_LAYER.TERMINAL,
+        'Previously expired NOT_FOUND bytes cannot receive a replacement signature.',
+        { digest: expiredReplay.digest, planHash: expiredReplay.planHash },
       );
       const receipt = await loadReceipt(identity);
       if (receipt) fail(
@@ -2764,6 +3125,15 @@ export function createMakerV8RecoveryController(options = {}) {
             MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
             'A CLEANED tombstone lost its exact durable completion receipt.',
           );
+        } else if (current.state === MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND) {
+          const durable = await storage('loadExpiredNotFound before tombstone replacement', () => (
+            persist.loadExpiredNotFound(current.identityKey, current.expiration.digest)
+          ));
+          if (!durable || stableJson(durable) !== stableJson(current.expiration)) fail(
+            MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_INVALID,
+            MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
+            'An EXPIRED_NOT_FOUND tombstone lost its exact durable archive.',
+          );
         }
         const replacement = initialRecord(identity, plan, sessionId, safeClock(clock), {
           revision: current.revision + 1,
@@ -2790,11 +3160,11 @@ export function createMakerV8RecoveryController(options = {}) {
           MAKER_V8_RECOVERY_ERROR_LAYER.TERMINAL,
           'A finalized failure must remain archived before a changed action can start.',
         );
-        if (current.identityKey === makerV8RecoveryIdentityKey(identity)
-          || current.signed.digest === plan.transactionDigest) fail(
+        if (current.signed.digest === plan.transactionDigest
+          || current.plan.fingerprint === plan.fingerprint) fail(
           MAKER_V8_RECOVERY_ERROR.FINALIZED_FAILURE_REPLAY,
           MAKER_V8_RECOVERY_ERROR_LAYER.TERMINAL,
-          'The failed identity or digest cannot receive a replacement signature.',
+          'The failed bytes or exact plan cannot receive a replacement signature.',
         );
         const archive = await storage('loadFinalizedFailure', () => persist.loadFinalizedFailure(
           current.identityKey,
@@ -2875,13 +3245,11 @@ export function createMakerV8RecoveryController(options = {}) {
         input,
         'reclaimAwaitingSignature',
       );
-      let resetUnsigned;
-      if (record.signatureDisposition
-        === MAKER_V8_SIGNATURE_DISPOSITION.DEFINITIVE_REJECTION) {
-        resetUnsigned = { kind: 'DEFINITIVE_REJECTION' };
-      } else {
-        resetUnsigned = await externalUnsignedConfirmation(record);
-      }
+      // Even a safely classified Wallet Standard rejection is not authority to
+      // erase a durable in-flight WAL entry. Every new/random page session must
+      // wait out the bounded lease and receive an exact one-shot user
+      // no-artifact confirmation before it may reset the request to READY.
+      const resetUnsigned = await externalUnsignedConfirmation(record);
       await planFromFreshEvidence(
         record,
         liveIdentity,
@@ -2901,17 +3269,12 @@ export function createMakerV8RecoveryController(options = {}) {
       const identity = canonicalMakerV8RecoveryIdentity(identityValue);
       const record = requireExactIdentity(await loadScope(identity), identity);
       if (!record
-        || ![
-          MAKER_V8_RECOVERY_STATE.READY,
-          MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE,
-        ].includes(record.state)
+        || record.state !== MAKER_V8_RECOVERY_STATE.READY
         || record.signed !== null
-        || (record.state === MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE
-          && record.signatureDisposition
-            !== MAKER_V8_SIGNATURE_DISPOSITION.DEFINITIVE_REJECTION)) fail(
+      ) fail(
         MAKER_V8_RECOVERY_ERROR.UNSIGNED_DISCARD_FORBIDDEN,
         MAKER_V8_RECOVERY_ERROR_LAYER.TERMINAL,
-        'Only an unsigned READY or AWAITING_SIGNATURE recovery can be discarded.',
+        'Only an unsigned READY recovery can be discarded; reclaim an outstanding wallet request first.',
         { state: record?.state ?? null },
       );
       await cas(record, MAKER_V8_RECOVERY_STATE.DISCARDED, {
@@ -3066,6 +3429,11 @@ export function createMakerV8RecoveryController(options = {}) {
         MAKER_V8_RECOVERY_ERROR_LAYER.TERMINAL,
         'A finalized failed digest is terminal and cannot be replayed.',
       );
+      if (record.state === MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND) fail(
+        MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_REPLAY,
+        MAKER_V8_RECOVERY_ERROR_LAYER.TERMINAL,
+        'Authoritatively expired NOT_FOUND bytes are terminal and cannot be replayed.',
+      );
       if (!record.signed) fail(
         MAKER_V8_RECOVERY_ERROR.STATE_INVALID,
         MAKER_V8_RECOVERY_ERROR_LAYER.VALIDATION,
@@ -3176,12 +3544,60 @@ export function createMakerV8RecoveryController(options = {}) {
         });
       }
 
-      if (recoverOptions.replayIfNotFound !== true) {
-        if (record.state === MAKER_V8_RECOVERY_STATE.BROADCASTING) return cas(
-          record,
-          MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING,
-          { queryOutcome: queried, lastError: null },
+      // Persist the authoritative query result before consulting the current
+      // epoch. If the page crashes between these boundaries, a later session
+      // repeats the harmless digest query and cannot infer expiration from
+      // elapsed wall-clock time.
+      record = await cas(record, MAKER_V8_RECOVERY_STATE.OUTCOME_PENDING, {
+        queryOutcome: queried,
+        lastError: null,
+      });
+      let currentEpoch;
+      try {
+        currentEpoch = canonicalU64(await getCurrentEpoch({
+          identity: publicData(identity),
+          digest: record.signed.digest,
+          planHash: record.plan.fingerprint,
+        }), 'Authoritative current Mainnet epoch');
+      } catch (cause) {
+        if (cause instanceof MakerV8RecoveryError) throw cause;
+        fail(
+          MAKER_V8_RECOVERY_ERROR.CONTEXT_UNAVAILABLE,
+          MAKER_V8_RECOVERY_ERROR_LAYER.CONTEXT,
+          'The authoritative current Mainnet epoch could not be read after NOT_FOUND.',
+          {},
+          true,
+          cause,
         );
+      }
+      if (BigInt(currentEpoch) > BigInt(record.plan.expiration.epoch)) {
+        const expiration = expirationFromNotFound(record, currentEpoch, safeClock(clock));
+        const expired = await cas(record, MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND, {
+          plan: null,
+          signed: null,
+          signatureSessionId: null,
+          signatureDisposition: null,
+          signatureLease: null,
+          queryOutcome: null,
+          lastError: null,
+          receipt: null,
+          failure: null,
+          expiration,
+        }, { expireNotFound: expiration });
+        const archived = await storage('expired NOT_FOUND durable readback', () => (
+          persist.loadExpiredNotFound(expired.identityKey, expiration.digest)
+        ));
+        if (!archived || stableJson(archived) !== stableJson(expiration)) fail(
+          MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_INVALID,
+          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
+          'Expired NOT_FOUND evidence did not survive its atomic archive commit.',
+          { digest: expiration.digest },
+          true,
+        );
+        return expired;
+      }
+
+      if (recoverOptions.replayIfNotFound !== true) {
         return record;
       }
 
@@ -3278,6 +3694,34 @@ export function createMakerV8RecoveryController(options = {}) {
           'Stored finalized failure archive is malformed.',
         );
         return failure;
+      }));
+    },
+
+    async listExpiredNotFound(identityValue) {
+      const identity = canonicalMakerV8RecoveryIdentity(identityValue);
+      const entries = await storage('listExpiredNotFound', () => (
+        persist.listExpiredNotFound(makerV8RecoveryScopeKey(identity))
+      ));
+      return deepFreeze((entries || []).map((entry) => {
+        const expiration = publicData(entry);
+        const shell = {
+          scopeKey: expiration.scopeKey,
+          identityKey: expiration.identityKey,
+          identity: expiration.identity,
+          signed: { digest: expiration.digest },
+          plan: {
+            fingerprint: expiration.planHash,
+            expiration: { epoch: expiration.expirationEpoch },
+          },
+          expiration,
+        };
+        validateExpiredNotFound(expiration, shell);
+        if (expiration.scopeKey !== makerV8RecoveryScopeKey(identity)) fail(
+          MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_INVALID,
+          MAKER_V8_RECOVERY_ERROR_LAYER.STORAGE,
+          'Stored expired NOT_FOUND archive crossed its chain + Root scope.',
+        );
+        return expiration;
       }));
     },
   };
