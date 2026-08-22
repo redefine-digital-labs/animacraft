@@ -40,6 +40,7 @@ const totalTimeoutMs = 15 * 60_000;
 const transactionTimeoutMs = 45_000;
 const deadline = Date.now() + totalTimeoutMs;
 const temporaryPrefix = 'animacraft-seal-cap-localnet-';
+const fullnodeRpcKeys = new Set(['json-rpc-address', 'json_rpc_address']);
 const liveIndexMissingMessage = "the embedded rpc-store's live index has no committed checkpoint yet";
 const liveIndexMissingStdout = `code: 'Some requested entity was not found', message: "Error { inner: Inner { kind: Missing, source: Some(\\\"${liveIndexMissingMessage}\\\") } }"`;
 const testPublishMaximumAttempts = 6;
@@ -265,6 +266,106 @@ async function freePort() {
   });
 }
 
+function checkedRpcPort(value, label) {
+  if (!Number.isInteger(value) || value < 1 || value > 65_535) {
+    fail(`${label} is not a valid TCP port: ${value}`);
+  }
+  return value;
+}
+
+function parseRpcEndpoint(value, label) {
+  const match = /^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/.exec(value);
+  if (!match) fail(`${label} is not an IPv4 host:port scalar: ${value}`);
+  const octets = match[1].split('.').map(Number);
+  if (octets.some((octet) => octet > 255)) {
+    fail(`${label} has an invalid IPv4 address: ${value}`);
+  }
+  return {
+    address: value,
+    host: match[1],
+    port: checkedRpcPort(Number(match[2]), `${label} port`),
+  };
+}
+
+function parseFullnodeRpcBinding(yaml, label = 'fullnode config') {
+  if (typeof yaml !== 'string' || yaml.length === 0) {
+    fail(`${label} is empty or not text`);
+  }
+  const bindings = [];
+  const unknownKeys = [];
+  const topLevelScalar = /^([A-Za-z0-9_-]+):([^\r\n]*)(?:\r?\n|$)/gm;
+  for (const match of yaml.matchAll(topLevelScalar)) {
+    const key = match[1];
+    const normalizedKey = key.replaceAll('-', '').replaceAll('_', '').toLowerCase();
+    if (normalizedKey !== 'jsonrpcaddress') continue;
+    if (!fullnodeRpcKeys.has(key)) {
+      unknownKeys.push(key);
+      continue;
+    }
+    const valueText = match[2];
+    const scalar = /^(\s*)("([^"\\\r\n]*)"|'([^'\r\n]*)'|([^\s#]+))(\s*(?:#.*)?)$/.exec(valueText);
+    if (!scalar) {
+      fail(`${label} ${key} must be one plain or quoted host:port scalar`);
+    }
+    const scalarStart = match.index + key.length + 1 + scalar[1].length;
+    bindings.push({
+      address: scalar[3] ?? scalar[4] ?? scalar[5],
+      key,
+      scalarEnd: scalarStart + scalar[2].length,
+      scalarStart,
+    });
+  }
+  if (unknownKeys.length > 0) {
+    fail(`${label} has unknown JSON-RPC bind key(s): ${unknownKeys.join(', ')}`);
+  }
+  if (bindings.length !== 1) {
+    fail(`${label} must contain exactly one JSON-RPC bind, found ${bindings.length}`);
+  }
+  return bindings[0];
+}
+
+function rewriteFullnodeRpcLoopback(yaml, rpcPort, label = 'fullnode config') {
+  const port = checkedRpcPort(rpcPort, 'chosen JSON-RPC port');
+  const binding = parseFullnodeRpcBinding(yaml, label);
+  const endpoint = parseRpcEndpoint(binding.address, `${label} ${binding.key}`);
+  if (!['0.0.0.0', '127.0.0.1'].includes(endpoint.host)) {
+    fail(`${label} refused unexpected non-loopback JSON-RPC host ${endpoint.host}`);
+  }
+  return `${yaml.slice(0, binding.scalarStart)}"127.0.0.1:${port}"${yaml.slice(binding.scalarEnd)}`;
+}
+
+function assertFullnodeRpcLoopback(yaml, rpcPort, label = 'fullnode config') {
+  const port = checkedRpcPort(rpcPort, 'chosen JSON-RPC port');
+  const binding = parseFullnodeRpcBinding(yaml, label);
+  const endpoint = parseRpcEndpoint(binding.address, `${label} ${binding.key}`);
+  if (endpoint.host !== '127.0.0.1' || endpoint.port !== port) {
+    fail(`${label} JSON-RPC bind is not exact loopback 127.0.0.1:${port}: ${endpoint.address}`);
+  }
+  return endpoint.address;
+}
+
+function configureFullnodeRpcLoopback(networkDirectory, rpcPort) {
+  const fullnodeConfig = checkedTemporaryChild(
+    join(networkDirectory, 'fullnode.yaml'),
+    'fullnode config',
+  );
+  if (!existsSync(fullnodeConfig) || !statSync(fullnodeConfig).isFile()) {
+    fail('genesis did not create fullnode.yaml before localnet start');
+  }
+  const rewritten = rewriteFullnodeRpcLoopback(
+    readFileSync(fullnodeConfig, 'utf8'),
+    rpcPort,
+    'generated fullnode.yaml',
+  );
+  writeFileSync(fullnodeConfig, rewritten, { encoding: 'utf8', mode: 0o600 });
+  assertFullnodeRpcLoopback(
+    readFileSync(fullnodeConfig, 'utf8'),
+    rpcPort,
+    're-read fullnode.yaml',
+  );
+  return fullnodeConfig;
+}
+
 function startLocalnet(networkDirectory, rpcPort) {
   const logs = [];
   let logBytes = 0;
@@ -453,6 +554,7 @@ async function main() {
 
     const rpcPort = await freePort();
     rpcUrl = `http://127.0.0.1:${rpcPort}`;
+    configureFullnodeRpcLoopback(networkDirectory, rpcPort);
     clientConfig = checkedTemporaryChild(
       join(networkDirectory, 'client.yaml'),
       'client config',
@@ -617,6 +719,71 @@ async function workspaceSelfTest() {
   if (!publishHelp.stdout.includes('--pubfile-path')) {
     fail('Sui test-publish CLI omitted required --pubfile-path support');
   }
+  const rpcPort = 45_678;
+  for (const [shape, key] of [
+    ['kebab', 'json-rpc-address'],
+    ['snake', 'json_rpc_address'],
+  ]) {
+    const yaml = [
+      '---',
+      'network-address: /ip4/127.0.0.1/tcp/5555/https',
+      `${key}: "0.0.0.0:9000"`,
+      'rpc:',
+      '  enable-indexing: true',
+      'metrics-address: "127.0.0.1:9184"',
+      '',
+    ].join('\n');
+    const rewritten = rewriteFullnodeRpcLoopback(yaml, rpcPort, `${shape} self-test config`);
+    if (!rewritten.includes(`${key}: "127.0.0.1:${rpcPort}"`)
+        || rewritten.replace(`127.0.0.1:${rpcPort}`, '0.0.0.0:9000') !== yaml) {
+      fail(`${shape} JSON-RPC shape self-test changed anything except its bind scalar`);
+    }
+    assertFullnodeRpcLoopback(rewritten, rpcPort, `${shape} re-read self-test config`);
+  }
+  const expectRpcConfigFailure = (yaml, pattern, label, operation = rewriteFullnodeRpcLoopback) => {
+    let error = null;
+    try {
+      operation(yaml, rpcPort, `${label} self-test config`);
+    } catch (caught) {
+      error = caught;
+    }
+    if (!error || !pattern.test(error.message)) {
+      fail(`${label} RPC config self-test was not rejected by ${pattern}`);
+    }
+  };
+  expectRpcConfigFailure(
+    'jsonRpcAddress: "0.0.0.0:9000"\n',
+    /unknown JSON-RPC bind key/,
+    'unknown-key',
+  );
+  expectRpcConfigFailure(
+    'json-rpc-bind-address: "0.0.0.0:9000"\n',
+    /exactly one JSON-RPC bind, found 0/,
+    'unknown-shape',
+  );
+  for (const yaml of [
+    'json-rpc-address: "0.0.0.0:9000"\njson-rpc-address: "0.0.0.0:9001"\n',
+    'json-rpc-address: "0.0.0.0:9000"\njson_rpc_address: "0.0.0.0:9000"\n',
+  ]) {
+    expectRpcConfigFailure(yaml, /exactly one JSON-RPC bind, found 2/, 'multiple-bind');
+  }
+  expectRpcConfigFailure(
+    'json-rpc-address: "192.0.2.10:9000"\n',
+    /refused unexpected non-loopback JSON-RPC host/,
+    'non-loopback-source',
+  );
+  expectRpcConfigFailure(
+    'json-rpc-address: "0.0.0.0:45678"\n',
+    /is not exact loopback/,
+    'wildcard-re-read',
+    assertFullnodeRpcLoopback,
+  );
+  expectRpcConfigFailure(
+    'json_rpc_address: "127.0.0.1:45679"\n',
+    /is not exact loopback/,
+    'wrong-port-re-read',
+    assertFullnodeRpcLoopback,
+  );
   const knownMissing = {
     code: 1,
     signal: null,
@@ -721,7 +888,7 @@ async function workspaceSelfTest() {
   await cleanup();
   if (existsSync(safeRoot)) fail(`workspace self-test did not clean ${safeRoot}`);
   process.stdout.write(
-    'ok: localnet CLI/workspace and bounded pre-execution retry self-test\n',
+    'ok: localnet CLI/workspace, strict loopback RPC config, and bounded pre-execution retry self-test\n',
   );
 }
 

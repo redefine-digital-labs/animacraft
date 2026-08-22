@@ -325,8 +325,11 @@ commitment self-test, requires exactly seven production Move roots, and enforces
 Core `63,918 / 64,000` bytes (82-byte headroom). It also runs a fast workspace
 self-test proving the required `genesis`/`test-publish` CLI contract, that the
 genesis directory is created before use, every generated path remains below the
-unique `mkdtemp` root, and cleanup removes it. The same deterministic fake
-self-test proves that publication retries only the exact pre-execution
+unique `mkdtemp` root, and cleanup removes it. Static kebab-case and snake_case
+fixtures prove that exactly one known top-level JSON-RPC bind is rewritten and
+that unknown keys, multiple binds, wildcard/non-loopback re-reads, and port
+drift fail closed. The same deterministic fake self-test proves that publication
+retries only the exact pre-execution
 `the embedded rpc-store's live index has no committed checkpoint yet` failure,
 never an unknown error, signal, JSON effects/digest, or textual transaction
 digest, and stops at six attempts.
@@ -340,15 +343,21 @@ npm run move:seal-cap:localnet
 This single bounded command reruns the quick gate, requires exact Sui `1.76.1`,
 creates a fresh one-validator localnet and key only in a unique OS temporary
 directory (including creating the contained `network` directory before
-`sui genesis`), waits until a committed checkpoint and the genesis gas coin are
-visible through the embedded live index, verifies the exact protocol profile
-through local RPC, publishes only the test slim fixture through Sui's ephemeral
-`test-publish`, and replays `333/334/500/501`. Every create/append operation
+`sui genesis`). Before `sui start`, it strictly locates the one supported
+`json-rpc-address`/`json_rpc_address` scalar in generated `fullnode.yaml`,
+rewrites only that scalar to the chosen `127.0.0.1` port, then re-reads the file
+and requires the exact loopback bind. The same generated network config remains
+the input to `sui start`; the port flag alone is not treated as a bind-address
+control. The runner then waits until a committed checkpoint and the genesis gas
+coin are visible through the embedded live index, verifies the exact protocol
+profile through local RPC, publishes only the test slim fixture through Sui's
+ephemeral `test-publish`, and replays `333/334/500/501`. Every create/append operation
 finalizes before a separate `core_v8::seal` transaction. The runner
 queries typed and raw effects, matches canonical limits/status/error/gas/effects
 shape, has a 15-minute total bound and per-transaction bounds, terminates the
 process group, and deletes all temporary keys and network state even on failure
-or interruption. It hard-codes loopback RPC and an explicit temporary client
+or interruption. It enforces loopback in both fullnode and client configs and
+uses an explicit temporary client
 config; it never reads the user's Sui config and never contacts Mainnet. Sui
 swarm port collisions receive at most three fresh-genesis attempts inside the
 same bounded temporary root. An embedded rpc-store can briefly lag the JSON-RPC
