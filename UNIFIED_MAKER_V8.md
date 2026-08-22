@@ -450,13 +450,15 @@ fall back to an older protocol surface.
 
 ## Web cutover
 
-Production runtime has one `makerV8ReleaseEnabled` gate and one complete tuple:
-the immutable `ProductReleaseBindingV8`, Core/Seal/Runtime/Output/Physical/
-Market/Release original and callable package identities, ProtocolConfig,
-protocol and market treasuries, payment coin, ABI/source/package commitments,
-key-server policy and canonical Soul TypeOrigin/registry identity.
+Production runtime is one exact fresh-v8 record whose only product availability
+field is the top-level boolean `enabled`. The same record carries the immutable
+`ProductReleaseBindingV8`, Core/Seal/Runtime/Output/Physical/Market/Release
+original and callable package identities, ProtocolConfig, protocol and market
+treasuries, payment coin, ABI/source/package commitments, key-server policy and
+canonical Soul TypeOrigin/registry identity. Retired product gate aliases are
+not part of this schema and are rejected.
 
-When the v8 gate is enabled:
+When `enabled` is true:
 
 - all old product gates are required to be false;
 - new publication uses only the v8 recovery controller;

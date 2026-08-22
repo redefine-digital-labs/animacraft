@@ -54,7 +54,7 @@ const moveRoots = new Set([
   'animacraft_v8_release',
 ]);
 
-const retired = /OCMaker|MakerRootV5|CommerceV5|commerce_v5|composition_v6|physical_v7|publication_v[4-7]|SALE_PENDING|LegacyMakerMigrated|CreatorProfile/;
+const retired = /makerV8ReleaseEnabled|OCMaker|MakerRootV5|CommerceV5|commerce_v5|composition_v6|physical_v7|publication_v[4-7]|SALE_PENDING|LegacyMakerMigrated|CreatorProfile/;
 const productionText = [
   'README.md', 'SECURITY.md', 'GOVERNANCE.md', 'CONTRIBUTING.md',
   'UNIFIED_MAKER_V8.md', 'docs/codex/CLIENT_V8_CUTOVER_SPEC.md',

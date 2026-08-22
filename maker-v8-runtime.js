@@ -46,7 +46,6 @@ export const MAKER_V8_MAKER_BINDING_FIELDS = Object.freeze([
 ]);
 
 export const MAKER_V8_LEGACY_FIELDS = Object.freeze([
-  'makerV8ReleaseEnabled',
   'makerV8PackageId',
   'makerV8CallablePackageId',
   'makerV8TypeOriginPackageId',
