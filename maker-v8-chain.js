@@ -42,6 +42,7 @@ const HASH_HEX = /^(?:0x)?[0-9a-fA-F]{64}$/;
 const VERIFIED_MAINNET_RPCS = new WeakSet();
 const ATTESTED_MAKER_V8_RUNTIMES = new WeakSet();
 const ATTESTED_MAKER_V8_PACKAGE_TUPLES = new WeakMap();
+const ATTESTED_MAKER_V8_CORE_ARTIFACTS = new WeakMap();
 
 function freeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -391,6 +392,13 @@ export function makerV8AttestedPackageTuple(runtime) {
   return ATTESTED_MAKER_V8_PACKAGE_TUPLES.get(runtime);
 }
 
+export function makerV8AttestedCoreArtifact(runtime) {
+  if (!isMakerV8RuntimeAttested(runtime) || !ATTESTED_MAKER_V8_CORE_ARTIFACTS.has(runtime)) {
+    fail('config', 'MAKER_V8_RUNTIME_ATTESTATION_REQUIRED', 'Core artifact evidence requires the exact Mainnet-attested Maker v8 runtime.');
+  }
+  return ATTESTED_MAKER_V8_CORE_ARTIFACTS.get(runtime);
+}
+
 function parseCallablePackageIdentity(response, runtime, role) {
   if (!record(response) || response.error || !record(response.data)) {
     fail('readback', 'MAKER_V8_PACKAGE_READ_FAILED', `${role} callable package could not be read from Mainnet.`);
@@ -480,12 +488,28 @@ export async function attestMakerV8Runtime(rpc, config, { network: observedNetwo
     id: runtime.roles[role].callablePackageId,
     options: { showBcs: true, showOwner: true },
   })));
-  const packageTuple = freeze(Object.keys(runtime.roles).map((role, index) => (
+  const packageEvidence = freeze(Object.keys(runtime.roles).map((role, index) => (
     parseCallablePackageIdentity(packageResponses[index], runtime, role)
   )));
+  const packageTuple = freeze(packageEvidence.map((entry) => freeze({
+    role: entry.role,
+    originalPackageId: entry.originalPackageId,
+    callablePackageId: entry.callablePackageId,
+    packageDigest: entry.packageDigest,
+  })));
+  const coreEvidence = packageEvidence.find((entry) => entry.role === 'core');
+  const coreArtifact = freeze({
+    callablePackageId: coreEvidence.callablePackageId,
+    packageDigest: coreEvidence.packageDigest,
+    baseRegistryModuleSha256: coreEvidence.baseRegistryModuleSha256,
+  });
   ATTESTED_MAKER_V8_RUNTIMES.add(runtime);
   ATTESTED_MAKER_V8_PACKAGE_TUPLES.set(runtime, packageTuple);
-  return freeze({ runtime, catalog, configs: freeze(configs), packageTuple, network: observedNetwork });
+  ATTESTED_MAKER_V8_CORE_ARTIFACTS.set(runtime, coreArtifact);
+  return freeze({
+    runtime, catalog, configs: freeze(configs), packageTuple, coreArtifact,
+    network: observedNetwork,
+  });
 }
 
 const ACTIVATION_FIELDS = Object.freeze([

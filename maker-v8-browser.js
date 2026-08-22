@@ -31,6 +31,7 @@ import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
   attestMakerV8Runtime,
   createMakerV8ChainClient,
+  makerV8AttestedCoreArtifact,
   parseMakerRootV8,
   parseMakerV8ActivatedEvent,
 } from './maker-v8-chain.js';
@@ -3053,7 +3054,7 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
     await assertPinnedMainnet(client);
     const attested = await attestMakerV8Runtime(client, runtimeInput, { network: MAKER_V8_CHAIN_NETWORK });
     const runtime = attested.runtime;
-    const corePackage = attested.packageTuple.find((entry) => entry.role === 'core');
+    const corePackage = makerV8AttestedCoreArtifact(runtime);
     if (!corePackage?.baseRegistryModuleSha256) fail('MAKER_V8_CORE_ARTIFACT_UNMEASURED', 'Runtime attestation omitted the metered Core base_registry_v8 artifact.', 'CONTEXT');
     const [protocolResponse, clockResponse, protocolProfile] = await Promise.all([
       client.getObject({

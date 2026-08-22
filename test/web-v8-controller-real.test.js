@@ -517,7 +517,7 @@ function packageTuple(runtime) {
     role,
     originalPackageId: entry.typeOriginPackageId,
     callablePackageId: entry.callablePackageId,
-    packageDigest: `${index + 2}`.repeat(32),
+    packageDigest: `${index + 2}`.repeat(44),
   }));
 }
 
@@ -1279,7 +1279,7 @@ test('controller uses real builder, forces re-review on ref drift, and stays uns
     role,
     originalPackageId: entry.typeOriginPackageId,
     callablePackageId: entry.callablePackageId,
-    packageDigest: `${index + 2}`.repeat(32),
+    packageDigest: `${index + 2}`.repeat(44),
   }));
   const eventType = makerV8StableType(runtime, 'release', 'release_v8', 'MakerV8Activated');
   const persistence = recoveryModule.createMakerV8RecoveryMemoryAdapter();
@@ -1480,7 +1480,7 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
     role,
     originalPackageId: entry.typeOriginPackageId,
     callablePackageId: entry.callablePackageId,
-    packageDigest: `${index + 2}`.repeat(32),
+    packageDigest: `${index + 2}`.repeat(44),
   }));
   const eventType = makerV8StableType(runtime, 'release', 'release_v8', 'MakerV8Activated');
   const memory = memoryIndexedDb();

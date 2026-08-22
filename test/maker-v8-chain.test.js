@@ -25,6 +25,7 @@ import {
   parseSoulBundleV8,
   readFinalizedMakerV8Transaction,
   isMakerV8RuntimeAttested,
+  makerV8AttestedCoreArtifact,
   makerV8AttestedPackageTuple,
 } from '../maker-v8-chain.js';
 import { CORE_BASE_REGISTRY_MODULE_BASE64 } from './fixtures/maker-v8-runtime-attestation.js';
@@ -324,9 +325,20 @@ test('Mainnet ProductReleaseCatalog and all six installed call caps attest the o
     { role: 'market', packageDigest: '7'.repeat(44) },
     { role: 'release', packageDigest: '8'.repeat(44) },
   ]);
-  assert.equal(attested.packageTuple[0].baseRegistryModuleSha256, MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256);
+  assert.deepEqual(Object.keys(attested.packageTuple[0]), [
+    'role', 'originalPackageId', 'callablePackageId', 'packageDigest',
+  ]);
+  assert.deepEqual(makerV8AttestedCoreArtifact(attested.runtime), attested.coreArtifact);
+  assert.deepEqual(Object.keys(attested.coreArtifact), [
+    'callablePackageId', 'packageDigest', 'baseRegistryModuleSha256',
+  ]);
+  assert.equal(attested.coreArtifact.baseRegistryModuleSha256, MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256);
   assert.throws(
     () => makerV8AttestedPackageTuple(rt),
+    (error) => error.code === 'MAKER_V8_RUNTIME_ATTESTATION_REQUIRED',
+  );
+  assert.throws(
+    () => makerV8AttestedCoreArtifact(rt),
     (error) => error.code === 'MAKER_V8_RUNTIME_ATTESTATION_REQUIRED',
   );
 

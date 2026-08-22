@@ -130,7 +130,7 @@ test('live action context binds route, wallet, activation, seven packages, refs,
       role,
       originalPackageId: runtime.roles[role].typeOriginPackageId,
       callablePackageId: runtime.roles[role].callablePackageId,
-      packageDigest: String(index + 2).repeat(32),
+      packageDigest: String(index + 2).repeat(44),
     })),
     builderInput: { wallet: account },
     refs: {
@@ -177,6 +177,15 @@ test('live action context binds route, wallet, activation, seven packages, refs,
       )),
     }, request, runtime, execution, account),
     { code: 'WEB_V8_PACKAGE_TUPLE_DRIFT' },
+  );
+  assert.throws(
+    () => assertFreshV8ActionContext({
+      ...context,
+      packageTuple: context.packageTuple.map((entry, index) => (
+        index === 0 ? { ...entry, baseRegistryModuleSha256: 'aa'.repeat(32) } : entry
+      )),
+    }, request, runtime, execution, account),
+    { code: 'WEB_V8_FIELDS_INVALID' },
   );
   assert.throws(
     () => assertFreshV8ActionContext({ ...context, authority: { kind: 'MAKER', refs: [], authorized: true } }, request, runtime, execution, account),
