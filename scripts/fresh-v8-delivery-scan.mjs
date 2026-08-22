@@ -9,6 +9,7 @@ const allowedDependencies = new Map([
   ['@noble/hashes', '2.2.0'],
 ]);
 const allowedDevDependencies = new Map([
+  ['fake-indexeddb', '6.2.5'],
   ['vite', '8.1.4'],
 ]);
 
@@ -26,8 +27,8 @@ const allowedTopFiles = new Set([
   'config.example.js', 'index.html', 'maker-commerce-v8.js', 'maker-v8-actions.js',
   'maker-v8-browser.js', 'maker-v8-chain.js', 'maker-v8-compiler.js',
   'maker-v8-document.js', 'maker-v8-finalized.js', 'maker-v8-market.js',
-  'maker-v8-recovery.js', 'maker-v8-runtime.js', 'package-lock.json', 'package.json',
-  'styles.css', 'vercel.json', 'vite.config.js',
+  'maker-v8-publication-store.js', 'maker-v8-recovery.js', 'maker-v8-runtime.js',
+  'package-lock.json', 'package.json', 'styles.css', 'vercel.json', 'vite.config.js',
 ]);
 const allowedTopDirectories = new Set(['.github', 'docs', 'move', 'public-v8', 'scripts', 'test']);
 const allowedTests = new Set([
@@ -35,7 +36,8 @@ const allowedTests = new Set([
   'test/maker-v8-browser.test.js', 'test/maker-v8-chain.test.js',
   'test/maker-v8-compiler.test.js', 'test/maker-v8-document.test.js',
   'test/maker-v8-market.test.js', 'test/maker-v8-recovery.test.js',
-  'test/maker-v8-runtime.test.js', 'test/web-v8-controller-real.test.js',
+  'test/maker-v8-publication-store.test.js', 'test/maker-v8-runtime.test.js',
+  'test/web-v8-controller-real.test.js',
   'test/web-v8-production-factory.test.js', 'test/web-v8-real-market.test.js',
   'test/web-v8-shell.test.js',
   'test/fixtures/maker-v8-compiler-v1.json',
@@ -88,7 +90,7 @@ const productionText = [
   'maker-commerce-v8.js', 'maker-v8-actions.js', 'maker-v8-browser.js',
   'maker-v8-chain.js', 'maker-v8-compiler.js', 'maker-v8-document.js',
   'maker-v8-finalized.js', 'maker-v8-market.js', 'maker-v8-recovery.js',
-  'maker-v8-runtime.js',
+  'maker-v8-publication-store.js', 'maker-v8-runtime.js',
 ].map((path) => readFileSync(join(root, path), 'utf8')).join('\n');
 
 if (mode !== '--dist') {
