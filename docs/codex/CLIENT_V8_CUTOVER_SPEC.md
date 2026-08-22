@@ -71,16 +71,16 @@ in addition to the independent per-asset and aggregate byte budgets. The
 compiler consumes only a document that has passed these same canonical
 limits; it does not maintain a second, looser count path.
 
-The matching approved Sui protocol profile is exact: protocol version `130`,
+The matching approved Sui protocol profile is exact: protocol version `133`,
 `object_runtime_max_num_cached_objects = 1000`, and
 `object_runtime_max_num_store_entries = 1000`. The compiler reads those values
 from `getProtocolConfig`, encodes the normalized profile as canonical JSON,
 hashes it with SHA-256, and binds both profile and hash into the trusted
 context. The durable publication controller must include that exact profile
 hash in its immutable plan before execution is enabled. The exact canonical JSON vector is
-`{"objectRuntimeMaxNumCachedObjects":"1000","objectRuntimeMaxNumStoreEntries":"1000","protocolVersion":"130","schemaVersion":"animacraft.maker-v8-sui-protocol-profile.v1"}`
+`{"objectRuntimeMaxNumCachedObjects":"1000","objectRuntimeMaxNumStoreEntries":"1000","protocolVersion":"133","schemaVersion":"animacraft.maker-v8-sui-protocol-profile.v1"}`
 and its approved SHA-256 is
-`1b38afda274cb9a9ebd8307aec0af689d2a396db960fc3c1020bfd8188450ec0`.
+`47a00c7f70f9359a3e1f28e301c51705ff6ce4d5912dde65685015a8bb2f8457`.
 Missing, malformed, or differently typed RPC values fail closed as
 `MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID`. Well-typed lower or higher values—and
 any protocol-version drift—fail closed as

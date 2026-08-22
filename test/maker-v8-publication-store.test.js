@@ -297,7 +297,7 @@ async function authority() {
   return makerV8PublicationCompilerAuthorityV8({
     schemaVersion: 'animacraft.maker-v8-publication-authority.v1',
     protocolProfile: {
-      protocolVersion: '130',
+      protocolVersion: '133',
       objectRuntimeMaxNumCachedObjects: '1000',
       objectRuntimeMaxNumStoreEntries: '1000',
     },
@@ -404,7 +404,7 @@ async function planFixture({
     makerKey,
     manifestSha256: hash('aa'),
     contentCommitment: hash('cc'),
-    protocolProfileCommitment: '1b38afda274cb9a9ebd8307aec0af689d2a396db960fc3c1020bfd8188450ec0',
+    protocolProfileCommitment: '47a00c7f70f9359a3e1f28e301c51705ff6ce4d5912dde65685015a8bb2f8457',
     coreArtifactCommitment: await crypto.subtle.digest(
       'SHA-256',
       new TextEncoder().encode(JSON.stringify({

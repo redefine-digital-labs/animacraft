@@ -52,11 +52,11 @@ export const MAKER_V8_PUBLICATION_TOPOLOGY = Object.freeze({
   }),
 });
 export const MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE = Object.freeze({
-  protocolVersion: '130',
+  protocolVersion: '133',
   objectRuntimeMaxNumCachedObjects: '1000',
   objectRuntimeMaxNumStoreEntries: '1000',
 });
-export const MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE_COMMITMENT = '1b38afda274cb9a9ebd8307aec0af689d2a396db960fc3c1020bfd8188450ec0';
+export const MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE_COMMITMENT = '47a00c7f70f9359a3e1f28e301c51705ff6ce4d5912dde65685015a8bb2f8457';
 
 const VERSION = 8n;
 const U64_MAX = (1n << 64n) - 1n;

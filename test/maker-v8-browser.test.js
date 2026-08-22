@@ -100,7 +100,7 @@ const mainnetExecution = (overrides = {}) => ({
 
 test('compiler RPC pins the exact measured Sui protocol profile', async () => {
   const response = {
-    protocolVersion: '130',
+    protocolVersion: '133',
     attributes: {
       object_runtime_max_num_cached_objects: { u64: '1000' },
       object_runtime_max_num_store_entries: { u64: '1000' },
@@ -111,7 +111,7 @@ test('compiler RPC pins the exact measured Sui protocol profile', async () => {
     async getProtocolConfig() { return structuredClone(value); },
   });
   assert.deepEqual(await read(response), {
-    protocolVersion: '130',
+    protocolVersion: '133',
     objectRuntimeMaxNumCachedObjects: '1000',
     objectRuntimeMaxNumStoreEntries: '1000',
   });
