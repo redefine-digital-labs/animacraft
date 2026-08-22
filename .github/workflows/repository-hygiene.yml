@@ -79,6 +79,9 @@ jobs:
       - name: Test all seven packages
         run: npm run move:test
 
+      - name: Verify test-only seal-cap evidence harness
+        run: npm run move:seal-cap:harness
+
       - name: Run adversarial compile probes
         run: npm run move:probes
 
@@ -128,6 +131,8 @@ jobs:
           for package in core seal runtime output physical market release; do
             test -f "move/animacraft_v8_${package}/Move.toml"
           done
+          test -f test/harness/animacraft_v8_seal_cap_harness/Move.toml
+          test -f test/harness/animacraft_v8_seal_cap_harness/README.md
 
       - name: Verify fresh-only delivery surface
         run: npm run scan:fresh:source

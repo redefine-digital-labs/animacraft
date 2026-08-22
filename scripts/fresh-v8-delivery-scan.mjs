@@ -40,6 +40,11 @@ const allowedTests = new Set([
   'test/fixtures/maker-v8-compiler-v1.json',
   'test/fixtures/maker-v8-runtime-attestation.js',
   'test/fixtures/market-v8-abi.json', 'test/fixtures/web-v8-chain.json',
+  'test/harness/animacraft_v8_seal_cap_harness/Move.lock',
+  'test/harness/animacraft_v8_seal_cap_harness/Move.toml',
+  'test/harness/animacraft_v8_seal_cap_harness/README.md',
+  'test/harness/animacraft_v8_seal_cap_harness/scripts/generate_commitments.mjs',
+  'test/harness/animacraft_v8_seal_cap_harness/sources/seal_style_cap_harness.move',
 ]);
 const allowedDocs = new Set([
   'docs/codex/CLIENT_V8_CUTOVER_SPEC.md',

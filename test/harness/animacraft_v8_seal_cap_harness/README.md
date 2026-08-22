@@ -189,13 +189,13 @@ The dependency-free generator implements the exact BCS layouts and rolling
 SHA-256 commitments used by `base_registry_v8`:
 
 ```bash
-node move/animacraft_v8_seal_cap_harness/scripts/generate_commitments.mjs \
+node test/harness/animacraft_v8_seal_cap_harness/scripts/generate_commitments.mjs \
   --self-test
 
-node move/animacraft_v8_seal_cap_harness/scripts/generate_commitments.mjs \
+node test/harness/animacraft_v8_seal_cap_harness/scripts/generate_commitments.mjs \
   --styles 333 --unique-colors > /tmp/seal-cap-333.json
 
-node move/animacraft_v8_seal_cap_harness/scripts/generate_commitments.mjs \
+node test/harness/animacraft_v8_seal_cap_harness/scripts/generate_commitments.mjs \
   --styles 500 --colorless > /tmp/seal-cap-500.json
 ```
 
@@ -266,9 +266,9 @@ are the limit proof and their effects are the authoritative gas evidence.
 
 ```bash
 sui --version
-sui move build --path move/animacraft_v8_seal_cap_harness \
+sui move build --path test/harness/animacraft_v8_seal_cap_harness \
   --force --warnings-are-errors
-node move/animacraft_v8_seal_cap_harness/scripts/generate_commitments.mjs \
+node test/harness/animacraft_v8_seal_cap_harness/scripts/generate_commitments.mjs \
   --self-test
 sui move build --path move/animacraft_v8_core \
   --force --disassemble --warnings-are-errors
