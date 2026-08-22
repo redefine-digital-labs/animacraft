@@ -1,14 +1,19 @@
 import { SuiGraphQLClient, isSuiGraphQLClient } from '@mysten/sui/graphql';
-import { SuiGrpcClient, isSuiGrpcClient } from '@mysten/sui/grpc';
+import { GrpcTypes, SuiGrpcClient, isSuiGrpcClient } from '@mysten/sui/grpc';
+import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
+import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import {
   fromBase58,
   fromBase64,
+  fromHex,
   normalizeStructTag,
   normalizeSuiAddress,
   parseStructTag,
   toBase58,
   toBase64,
 } from '@mysten/sui/utils';
+import { blake2b } from '@noble/hashes/blake2.js';
+import { RpcError } from '@protobuf-ts/runtime-rpc';
 
 export const MAKER_V8_SUI_GRPC_SCHEMA = 'animacraft.maker-v8-sui-grpc.v1';
 export const MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT = 'https://fullnode.mainnet.sui.io:443';
@@ -58,6 +63,23 @@ export const MAKER_V8_SUI_EVENT_DISCOVERY_QUERY = `
 const TRANSPORT_BRAND = Symbol(MAKER_V8_SUI_GRPC_SCHEMA);
 const UINT = /^(?:0|[1-9][0-9]*)$/;
 const MODULE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const LEDGER_SERVICE = 'sui.rpc.v2.LedgerService';
+const GET_TRANSACTION = 'GetTransaction';
+const TRANSACTION_NOT_FOUND_CONTEXT = new WeakMap();
+const SEAL_PROFILE_ATTRIBUTES = Object.freeze([
+  'object_runtime_max_num_cached_objects',
+  'object_runtime_max_num_store_entries',
+]);
+const SUI_EVENT_BCS = bcs.struct('SuiEventV8GrpcPinned', {
+  package_id: bcs.Address,
+  transaction_module: bcs.string(),
+  sender: bcs.Address,
+  event_type: bcs.StructTag,
+  contents: bcs.vector(bcs.u8()),
+});
+const SUI_TRANSACTION_EVENTS_BCS = bcs.struct('SuiTransactionEventsV8GrpcPinned', {
+  data: bcs.vector(SUI_EVENT_BCS),
+});
 
 export class MakerV8SuiGrpcTransportError extends Error {
   constructor(code, message, details = {}) {
@@ -76,6 +98,29 @@ function plain(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function sdkMessage(value, messageType, label) {
+  if (!value || typeof value !== 'object'
+    || Object.getPrototypeOf(value) !== messageType.messagePrototype
+    || !messageType.is(value)) {
+    fail('MAKER_V8_SUI_GRPC_SDK_MESSAGE_INVALID', `${label} is not one exact official SDK message.`, {
+      expectedType: messageType.typeName,
+    });
+  }
+  return value;
+}
+
+function sameBytes(left, right) {
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
+function typedDigest(name, value) {
+  const domain = new TextEncoder().encode(`${name}::`);
+  const typed = new Uint8Array(domain.length + value.length);
+  typed.set(domain);
+  typed.set(value, domain.length);
+  return toBase58(blake2b(typed, { dkLen: 32 }));
 }
 
 function boundedText(value, label, maximum = 1024) {
@@ -142,6 +187,93 @@ function bytes(value, label, { allowEmpty = false, maximum = 4 * 1024 * 1024 } =
   return new Uint8Array(value);
 }
 
+function namedBcsBytes(container, expectedName, label) {
+  const value = sdkMessage(container, GrpcTypes.Bcs, label);
+  if (value.name !== expectedName) {
+    fail('MAKER_V8_SUI_GRPC_BCS_NAME_INVALID', `${label}.name must identify exact ${expectedName} BCS.`, {
+      expected: expectedName,
+      observed: value.name ?? null,
+    });
+  }
+  return bytes(value.value, `${label}.value`);
+}
+
+function canonicalBcs(container, expectedName, schema, label) {
+  const encoded = namedBcsBytes(container, expectedName, label);
+  let parsed;
+  let roundtrip;
+  try {
+    parsed = schema.parse(encoded);
+    roundtrip = schema.serialize(parsed).toBytes();
+  } catch (cause) {
+    fail('MAKER_V8_SUI_GRPC_BCS_INVALID', `${label}.value is not valid ${expectedName} BCS.`, {
+      cause: String(cause?.message ?? cause),
+    });
+  }
+  if (!sameBytes(encoded, roundtrip)) {
+    fail('MAKER_V8_SUI_GRPC_BCS_NONCANONICAL', `${label}.value is not canonical ${expectedName} BCS.`);
+  }
+  return Object.freeze({ bytes: encoded, parsed });
+}
+
+function bcsOwner(owner, label) {
+  if (!plain(owner) || typeof owner.$kind !== 'string') {
+    fail('MAKER_V8_SUI_GRPC_OWNER_INVALID', `${label} has no exact BCS owner union.`);
+  }
+  switch (owner.$kind) {
+    case 'AddressOwner':
+      return Object.freeze({ AddressOwner: address(owner.AddressOwner, `${label}.AddressOwner`) });
+    case 'ObjectOwner':
+      return Object.freeze({ ObjectOwner: address(owner.ObjectOwner, `${label}.ObjectOwner`) });
+    case 'Shared':
+      if (!plain(owner.Shared)) fail('MAKER_V8_SUI_GRPC_OWNER_INVALID', `${label}.Shared is malformed.`);
+      return Object.freeze({
+        Shared: Object.freeze({
+          initial_shared_version: decimal(owner.Shared.initialSharedVersion, `${label}.Shared.initialSharedVersion`, { positive: true }),
+        }),
+      });
+    case 'Immutable':
+      return Object.freeze({ Immutable: true });
+    case 'ConsensusAddressOwner':
+      fail('MAKER_V8_SUI_GRPC_OWNER_UNSUPPORTED', `${label} consensus ownership cannot be represented by the existing Maker v8 parser.`);
+      break;
+    default:
+      fail('MAKER_V8_SUI_GRPC_OWNER_INVALID', `${label} has an unknown BCS owner kind.`, {
+        ownerKind: owner.$kind,
+      });
+  }
+}
+
+function bcsMoveObjectType(value, label) {
+  if (!plain(value) || typeof value.$kind !== 'string') {
+    fail('MAKER_V8_SUI_GRPC_TYPE_INVALID', `${label} has no exact MoveObjectType union.`);
+  }
+  switch (value.$kind) {
+    case 'Other':
+      try {
+        return normalizeStructTag(TypeTagSerializer.tagToString({ struct: value.Other }));
+      } catch {
+        fail('MAKER_V8_SUI_GRPC_TYPE_INVALID', `${label}.Other is not one concrete StructTag.`);
+      }
+      break;
+    case 'GasCoin':
+      return normalizeStructTag('0x2::coin::Coin<0x2::sui::SUI>');
+    case 'StakedSui':
+      return normalizeStructTag('0x3::staking_pool::StakedSui');
+    case 'Coin':
+      return normalizeStructTag(`0x2::coin::Coin<${TypeTagSerializer.tagToString(
+        TypeTagSerializer.parseFromStr(value.Coin, true),
+      )}>`);
+    case 'AccumulatorBalanceWrapper':
+      fail('MAKER_V8_SUI_GRPC_TYPE_UNSUPPORTED', `${label} accumulator wrapper type is not exposed by the pinned SDK schema.`);
+      break;
+    default:
+      fail('MAKER_V8_SUI_GRPC_TYPE_INVALID', `${label} has an unknown MoveObjectType kind.`, {
+        typeKind: value.$kind,
+      });
+  }
+}
+
 function canonicalBase64(value, label) {
   try {
     const decoded = fromBase64(boundedText(value, label, 8 * 1024 * 1024));
@@ -201,7 +333,8 @@ function coreOwner(owner, label) {
 }
 
 function rawOwner(owner, label) {
-  if (!plain(owner) || !Number.isInteger(owner.kind)) {
+  sdkMessage(owner, GrpcTypes.Owner, label);
+  if (!Number.isInteger(owner.kind)) {
     fail('MAKER_V8_SUI_GRPC_OWNER_INVALID', `${label} has no exact raw gRPC owner.`);
   }
   switch (owner.kind) {
@@ -237,7 +370,7 @@ function currentReference(object, label) {
 }
 
 function rawReference(object, label) {
-  if (!plain(object)) fail('MAKER_V8_SUI_GRPC_OBJECT_INVALID', `${label} is not a raw gRPC object.`);
+  sdkMessage(object, GrpcTypes.Object, label);
   return Object.freeze({
     objectId: address(object.objectId, `${label}.objectId`),
     version: uint64(object.version, `${label}.version`, { positive: true }).toString(),
@@ -278,11 +411,13 @@ export function normalizeMakerV8CurrentMoveObject(object, options = {}) {
 }
 
 export function canonicalMakerV8PackageModuleMap(rawPackage) {
-  if (!plain(rawPackage) || !Array.isArray(rawPackage.modules)) {
+  sdkMessage(rawPackage, GrpcTypes.Package, 'package');
+  if (!Array.isArray(rawPackage.modules) || rawPackage.modules.length === 0) {
     fail('MAKER_V8_SUI_GRPC_PACKAGE_INVALID', 'Raw package modules are missing.');
   }
   const rows = rawPackage.modules.map((module, index) => {
-    if (!plain(module) || typeof module.name !== 'string' || !MODULE_NAME.test(module.name)) {
+    sdkMessage(module, GrpcTypes.Module, `package.modules[${index}]`);
+    if (typeof module.name !== 'string' || !MODULE_NAME.test(module.name)) {
       fail('MAKER_V8_SUI_GRPC_PACKAGE_MODULE_INVALID', `package.modules[${index}] has an invalid name.`);
     }
     return [module.name, toBase64(bytes(module.contents, `package.modules[${index}].contents`, { maximum: 1024 * 1024 }))];
@@ -299,9 +434,10 @@ export function canonicalMakerV8PackageModuleMap(rawPackage) {
 
 export function normalizeMakerV8RawPackageObject(object, expectedReference = null) {
   const reference = rawReference(object, 'packageObject');
-  if (object.objectType !== 'package' || !plain(object.package)) {
+  if (object.objectType !== 'package') {
     fail('MAKER_V8_SUI_GRPC_PACKAGE_INVALID', 'Raw gRPC object is not a Move package.');
   }
+  sdkMessage(object.package, GrpcTypes.Package, 'packageObject.package');
   const owner = rawOwner(object.owner, 'packageObject.owner');
   if (!Object.hasOwn(owner, 'Immutable')) {
     fail('MAKER_V8_SUI_GRPC_PACKAGE_OWNER_INVALID', 'Move package must be immutable.');
@@ -315,11 +451,6 @@ export function normalizeMakerV8RawPackageObject(object, expectedReference = nul
       raw: reference,
     });
   }
-  if (object.package.storageId !== reference.objectId
-    || uint64(object.package.version, 'package.version', { positive: true }).toString() !== reference.version) {
-    fail('MAKER_V8_SUI_GRPC_PACKAGE_DRIFT', 'Raw package identity differs from its object envelope.');
-  }
-  address(object.package.originalId, 'package.originalId');
   const moduleMap = canonicalMakerV8PackageModuleMap(object.package);
   return Object.freeze({
     data: Object.freeze({
@@ -351,35 +482,78 @@ export function normalizeMakerV8HistoricalObject(object, requested) {
   const normalizedType = object.objectType === 'package'
     ? 'package'
     : typeName(object.objectType, 'historicalObject.objectType');
+  const owner = rawOwner(object.owner, 'historicalObject.owner');
+  const objectEvidence = canonicalBcs(object.bcs, 'Object', bcs.Object, 'historicalObject.bcs');
+  if (typedDigest('Object', objectEvidence.bytes) !== reference.digest) {
+    fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_DRIFT', 'Historical Object BCS does not derive its envelope digest.');
+  }
+  if (objectEvidence.parsed.previousTransaction !== previousTransaction
+    || JSON.stringify(bcsOwner(objectEvidence.parsed.owner, 'historicalObject.bcs.owner')) !== JSON.stringify(owner)
+    || decimal(objectEvidence.parsed.storageRebate, 'historicalObject.bcs.storageRebate')
+      !== uint64(object.storageRebate, 'historicalObject.storageRebate').toString()) {
+    fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_DRIFT', 'Historical Object BCS metadata differs from its gRPC envelope.');
+  }
+  let contentBcs = null;
+  if (objectEvidence.parsed.data?.$kind === 'Move') {
+    const move = objectEvidence.parsed.data.Move;
+    if (normalizedType === 'package'
+      || decimal(move.version, 'historicalObject.bcs.data.Move.version', { positive: true }) !== reference.version
+      || bcsMoveObjectType(move.type, 'historicalObject.bcs.data.Move.type') !== normalizedType
+      || typeof object.hasPublicTransfer !== 'boolean'
+      || move.hasPublicTransfer !== object.hasPublicTransfer) {
+      fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_DRIFT', 'Historical Move Object BCS differs from its gRPC envelope.');
+    }
+    const contents = namedBcsBytes(object.contents, normalizedType, 'historicalObject.contents');
+    if (!sameBytes(contents, move.contents)) {
+      fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_DRIFT', 'Historical Move contents differ from full Object BCS.');
+    }
+    const objectIdBytes = fromHex(reference.objectId.slice(2));
+    if (move.contents.length < objectIdBytes.length
+      || !sameBytes(move.contents.subarray(0, objectIdBytes.length), objectIdBytes)) {
+      fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_DRIFT', 'Historical Move contents do not bind the requested object ID.');
+    }
+    contentBcs = contents;
+  } else if (objectEvidence.parsed.data?.$kind === 'Package') {
+    const rawPackage = objectEvidence.parsed.data.Package;
+    if (normalizedType !== 'package'
+      || address(rawPackage.id, 'historicalObject.bcs.data.Package.id') !== reference.objectId
+      || decimal(rawPackage.version, 'historicalObject.bcs.data.Package.version', { positive: true }) !== reference.version
+      || object.contents !== undefined) {
+      fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_DRIFT', 'Historical Package BCS differs from its gRPC envelope.');
+    }
+  } else {
+    fail('MAKER_V8_SUI_GRPC_HISTORY_BCS_INVALID', 'Historical Object BCS has no supported Data variant.');
+  }
   return Object.freeze({
     schemaVersion: MAKER_V8_SUI_GRPC_SCHEMA,
     ...reference,
     type: normalizedType,
-    owner: rawOwner(object.owner, 'historicalObject.owner'),
+    owner,
     previousTransaction,
-    contentBcs: object.contents?.value == null
-      ? null
-      : bytes(object.contents.value, 'historicalObject.contents.value'),
-    objectBcs: object.bcs?.value == null
-      ? null
-      : bytes(object.bcs.value, 'historicalObject.bcs.value'),
+    contentBcs,
+    objectBcs: objectEvidence.bytes,
   });
 }
 
-export function isMakerV8SuiGrpcNotFoundError(error) {
-  return error instanceof Error && error.name === 'RpcError' && error.code === 'NOT_FOUND';
+export function isMakerV8SuiGrpcNotFoundError(error, expectedDigest) {
+  return error instanceof RpcError
+    && error.name === 'RpcError'
+    && error.code === 'NOT_FOUND'
+    && error.serviceName === LEDGER_SERVICE
+    && error.methodName === GET_TRANSACTION
+    && TRANSACTION_NOT_FOUND_CONTEXT.get(error) === expectedDigest;
 }
 
-async function unary(call, label) {
+async function unary(call, label, responseType) {
   const result = await call;
-  if (!plain(result) || !plain(result.response)) {
+  if (!plain(result)) {
     fail('MAKER_V8_SUI_GRPC_UNARY_INVALID', `${label} did not return an official unary response envelope.`);
   }
-  return result.response;
+  return sdkMessage(result.response, responseType, `${label}.response`);
 }
 
 function serviceInfo(response) {
-  if (!plain(response)) fail('MAKER_V8_SUI_GRPC_SERVICE_INFO_INVALID', 'getServiceInfo response is malformed.');
+  sdkMessage(response, GrpcTypes.GetServiceInfoResponse, 'serviceInfo');
   if (response.chainId !== MAKER_V8_SUI_MAINNET_GENESIS_DIGEST || response.chain !== 'mainnet') {
     fail('MAKER_V8_SUI_GRPC_CHAIN_MISMATCH', 'gRPC service is not the pinned Sui Mainnet genesis.', {
       observedChainId: response.chainId ?? null,
@@ -409,62 +583,121 @@ function serviceInfo(response) {
 }
 
 function checkpoint(response, requested) {
-  const value = response?.checkpoint;
-  if (!plain(value)) fail('MAKER_V8_SUI_GRPC_CHECKPOINT_INVALID', 'getCheckpoint omitted its checkpoint.');
+  sdkMessage(response, GrpcTypes.GetCheckpointResponse, 'getCheckpoint');
+  const value = sdkMessage(response.checkpoint, GrpcTypes.Checkpoint, 'getCheckpoint.checkpoint');
+  const summary = sdkMessage(value.summary, GrpcTypes.CheckpointSummary, 'getCheckpoint.checkpoint.summary');
   const sequenceNumber = uint64(value.sequenceNumber, 'checkpoint.sequenceNumber');
   const checkpointDigest = digest(value.digest, 'checkpoint.digest');
+  const epoch = uint64(summary.epoch, 'checkpoint.summary.epoch');
   if (requested.sequenceNumber !== undefined && sequenceNumber !== requested.sequenceNumber) {
     fail('MAKER_V8_SUI_GRPC_CHECKPOINT_DRIFT', 'getCheckpoint returned another sequence number.');
   }
   if (requested.digest !== undefined && checkpointDigest !== requested.digest) {
     fail('MAKER_V8_SUI_GRPC_CHECKPOINT_DRIFT', 'getCheckpoint returned another digest.');
   }
-  return Object.freeze({ sequenceNumber: sequenceNumber.toString(), digest: checkpointDigest });
+  return Object.freeze({
+    sequenceNumber: sequenceNumber.toString(),
+    digest: checkpointDigest,
+    epoch: epoch.toString(),
+  });
 }
 
 export function normalizeMakerV8FinalizedTransactionEvidence(transaction, expectedDigest) {
-  if (!plain(transaction)) {
-    fail('MAKER_V8_SUI_GRPC_TRANSACTION_INVALID', 'Raw getTransaction omitted its executed transaction.');
-  }
+  sdkMessage(transaction, GrpcTypes.ExecutedTransaction, 'transaction');
   const observedDigest = digest(transaction.digest, 'transaction.digest');
   if (observedDigest !== expectedDigest) {
     fail('MAKER_V8_SUI_GRPC_TRANSACTION_DRIFT', 'Raw getTransaction returned another digest.');
   }
   const checkpointHeight = uint64(transaction.checkpoint, 'transaction.checkpoint');
-  const transactionBcs = bytes(transaction.transaction?.bcs?.value, 'transaction.transaction.bcs.value');
-  if (transaction.transaction?.digest != null
-    && digest(transaction.transaction.digest, 'transaction.transaction.digest') !== expectedDigest) {
+  const innerTransaction = sdkMessage(transaction.transaction, GrpcTypes.Transaction, 'transaction.transaction');
+  if (digest(innerTransaction.digest, 'transaction.transaction.digest') !== expectedDigest) {
     fail('MAKER_V8_SUI_GRPC_TRANSACTION_DRIFT', 'Raw TransactionData digest differs from the requested digest.');
+  }
+  const transactionEvidence = canonicalBcs(
+    innerTransaction.bcs,
+    'TransactionData',
+    bcs.TransactionData,
+    'transaction.transaction.bcs',
+  );
+  const transactionBcs = transactionEvidence.bytes;
+  if (TransactionDataBuilder.getDigestFromBytes(transactionBcs) !== expectedDigest) {
+    fail('MAKER_V8_SUI_GRPC_TRANSACTION_BCS_DRIFT', 'TransactionData BCS does not derive the requested digest.');
   }
   if (!Array.isArray(transaction.signatures) || transaction.signatures.length === 0) {
     fail('MAKER_V8_SUI_GRPC_SIGNATURES_INVALID', 'Finalized transaction has no exact user signature BCS.');
   }
-  const signatureBcs = transaction.signatures.map((signature, index) => (
-    bytes(signature?.bcs?.value, `transaction.signatures[${index}].bcs.value`)
-  ));
-  const effects = transaction.effects;
-  if (!plain(effects) || !plain(effects.status)) {
-    fail('MAKER_V8_SUI_GRPC_EFFECTS_INVALID', 'Finalized transaction has no raw effects status.');
+  const signatureBcs = transaction.signatures.map((signature, index) => {
+    sdkMessage(signature, GrpcTypes.UserSignature, `transaction.signatures[${index}]`);
+    return namedBcsBytes(
+      signature.bcs,
+      'UserSignatureBytes',
+      `transaction.signatures[${index}].bcs`,
+    );
+  });
+  const effects = sdkMessage(transaction.effects, GrpcTypes.TransactionEffects, 'transaction.effects');
+  const effectsStatus = sdkMessage(effects.status, GrpcTypes.ExecutionStatus, 'transaction.effects.status');
+  if (effectsStatus.success !== true || effectsStatus.error !== undefined) {
+    fail('MAKER_V8_SUI_GRPC_TRANSACTION_FAILED', 'Finalized transaction did not execute successfully.');
   }
   if (digest(effects.transactionDigest, 'transaction.effects.transactionDigest') !== expectedDigest) {
     fail('MAKER_V8_SUI_GRPC_TRANSACTION_DRIFT', 'Raw effects bind another transaction digest.');
   }
-  const effectsBcs = bytes(effects.bcs?.value, 'transaction.effects.bcs.value');
+  const effectsEvidence = canonicalBcs(
+    effects.bcs,
+    'TransactionEffects',
+    bcs.TransactionEffects,
+    'transaction.effects.bcs',
+  );
+  const effectsBcs = effectsEvidence.bytes;
+  const parsedEffects = effectsEvidence.parsed.V1 ?? effectsEvidence.parsed.V2;
+  const expectedEffectsVersion = effectsEvidence.parsed.$kind === 'V1' ? 1
+    : effectsEvidence.parsed.$kind === 'V2' ? 2 : null;
+  if (!parsedEffects || expectedEffectsVersion === null
+    || effects.version !== expectedEffectsVersion
+    || parsedEffects.status?.$kind !== 'Success'
+    || parsedEffects.transactionDigest !== expectedDigest) {
+    fail('MAKER_V8_SUI_GRPC_EFFECTS_DRIFT', 'Canonical TransactionEffects version, status, or transaction digest drifted.');
+  }
   const epoch = uint64(effects.epoch, 'transaction.effects.epoch');
-  const eventsDigest = effects.eventsDigest == null
+  if (decimal(parsedEffects.executedEpoch, 'transaction.effects.bcs.executedEpoch') !== epoch.toString()) {
+    fail('MAKER_V8_SUI_GRPC_EFFECTS_DRIFT', 'Canonical TransactionEffects epoch differs from its gRPC envelope.');
+  }
+  const observedEffectsDigest = digest(effects.digest, 'transaction.effects.digest');
+  if (typedDigest('TransactionEffects', effectsBcs) !== observedEffectsDigest) {
+    fail('MAKER_V8_SUI_GRPC_EFFECTS_DRIFT', 'TransactionEffects BCS does not derive its advertised digest.');
+  }
+  const envelopeEventsDigest = effects.eventsDigest == null
     ? null
     : digest(effects.eventsDigest, 'transaction.effects.eventsDigest');
+  const parsedEventsDigest = parsedEffects.eventsDigest == null
+    ? null
+    : digest(parsedEffects.eventsDigest, 'transaction.effects.bcs.eventsDigest');
+  if (envelopeEventsDigest !== parsedEventsDigest) {
+    fail('MAKER_V8_SUI_GRPC_EVENTS_DRIFT', 'Canonical TransactionEffects event digest differs from its gRPC envelope.');
+  }
   let transactionEvents = null;
-  if (eventsDigest !== null) {
-    if (!plain(transaction.events)
-      || digest(transaction.events.digest, 'transaction.events.digest') !== eventsDigest) {
+  if (parsedEventsDigest !== null) {
+    const events = sdkMessage(transaction.events, GrpcTypes.TransactionEvents, 'transaction.events');
+    if (digest(events.digest, 'transaction.events.digest') !== parsedEventsDigest) {
       fail('MAKER_V8_SUI_GRPC_EVENTS_DRIFT', 'TransactionEvents digest differs from raw effects.');
     }
+    const eventsEvidence = canonicalBcs(
+      events.bcs,
+      'TransactionEvents',
+      SUI_TRANSACTION_EVENTS_BCS,
+      'transaction.events.bcs',
+    );
+    if (!Array.isArray(eventsEvidence.parsed.data) || eventsEvidence.parsed.data.length === 0
+      || typedDigest('TransactionEvents', eventsEvidence.bytes) !== parsedEventsDigest) {
+      fail('MAKER_V8_SUI_GRPC_EVENTS_DRIFT', 'TransactionEvents BCS does not derive the effects event digest.');
+    }
     transactionEvents = Object.freeze({
-      digest: eventsDigest,
-      bcs: bytes(transaction.events.bcs?.value, 'transaction.events.bcs.value'),
+      digest: parsedEventsDigest,
+      bcs: eventsEvidence.bytes,
+      bcsBase64: toBase64(eventsEvidence.bytes),
+      eventCount: eventsEvidence.parsed.data.length,
     });
-  } else if (transaction.events?.digest != null || transaction.events?.bcs?.value != null) {
+  } else if (transaction.events !== undefined) {
     fail('MAKER_V8_SUI_GRPC_EVENTS_DRIFT', 'Raw events exist while effects declare no events digest.');
   }
   return Object.freeze({
@@ -479,9 +712,9 @@ export function normalizeMakerV8FinalizedTransactionEvidence(transaction, expect
     signatures: Object.freeze(signatureBcs.map((value) => toBase64(value))),
     effectsBcs,
     effectsBcsBase64: toBase64(effectsBcs),
-    effectsStatus: effects.status,
-    effectsDigest: digest(effects.digest, 'transaction.effects.digest'),
-    eventsDigest,
+    effectsStatus: Object.freeze({ success: true }),
+    effectsDigest: observedEffectsDigest,
+    eventsDigest: parsedEventsDigest,
     transactionEvents,
   });
 }
@@ -571,6 +804,7 @@ export function createMakerV8SuiGrpcTransport({
   const readServiceInfo = async () => serviceInfo(await unary(
       grpc.ledgerService.getServiceInfo({}),
       'ledgerService.getServiceInfo',
+      GrpcTypes.GetServiceInfoResponse,
     ));
   let pinnedServiceInfo = null;
   const ensurePinnedMainnet = async () => {
@@ -604,8 +838,8 @@ export function createMakerV8SuiGrpcTransport({
       : { oneofKind: 'digest', digest: requested.digest };
     const response = await unary(grpc.ledgerService.getCheckpoint({
       checkpointId,
-      readMask: { paths: ['sequence_number', 'digest'] },
-    }), 'ledgerService.getCheckpoint');
+      readMask: { paths: ['sequence_number', 'digest', 'summary.epoch'] },
+    }), 'ledgerService.getCheckpoint', GrpcTypes.GetCheckpointResponse);
     return checkpoint(response, requested);
   };
 
@@ -636,10 +870,10 @@ export function createMakerV8SuiGrpcTransport({
       readMask: {
         paths: [
           'object_id', 'version', 'digest', 'owner', 'object_type', 'previous_transaction',
-          'package',
+          'package.modules.name', 'package.modules.contents',
         ],
       },
-    }), 'ledgerService.getObject(package)');
+    }), 'ledgerService.getObject(package)', GrpcTypes.GetObjectResponse);
     return normalizeMakerV8RawPackageObject(raw.object, reference);
   };
 
@@ -719,8 +953,14 @@ export function createMakerV8SuiGrpcTransport({
     const attributes = Object.fromEntries(Object.entries(profile.attributes).map(([name, value]) => {
       boundedText(name, 'protocol.attribute.name');
       if (value === null) return [name, null];
-      return [name, Object.freeze({ u64: decimal(value, `protocol.attributes.${name}`) })];
+      if (typeof value !== 'string' || new TextEncoder().encode(value).length > 64 * 1024) {
+        fail('MAKER_V8_SUI_GRPC_PROTOCOL_INVALID', `protocol.attributes.${name} must be an exact string or null.`);
+      }
+      return [name, value];
     }));
+    for (const name of SEAL_PROFILE_ATTRIBUTES) {
+      decimal(attributes[name], `protocol.attributes.${name}`);
+    }
     for (const [name, value] of Object.entries(profile.featureFlags)) {
       boundedText(name, 'protocol.featureFlag.name');
       if (typeof value !== 'boolean') {
@@ -751,9 +991,12 @@ export function createMakerV8SuiGrpcTransport({
       objectId: requested.objectId,
       version: requested.version,
       readMask: {
-        paths: ['object_id', 'version', 'digest', 'owner', 'object_type', 'previous_transaction', 'contents', 'bcs'],
+        paths: [
+          'object_id', 'version', 'digest', 'owner', 'object_type', 'has_public_transfer',
+          'previous_transaction', 'storage_rebate', 'contents', 'bcs',
+        ],
       },
-    }), 'ledgerService.getObject(historical)');
+    }), 'ledgerService.getObject(historical)', GrpcTypes.GetObjectResponse);
     return normalizeMakerV8HistoricalObject(response.object, requested);
   };
 
@@ -761,16 +1004,28 @@ export function createMakerV8SuiGrpcTransport({
     await ensurePinnedMainnet();
     if (!plain(input)) fail('MAKER_V8_SUI_GRPC_TRANSACTION_REQUEST_INVALID', 'Transaction request is required.');
     const expectedDigest = digest(input.digest, 'transaction.digest');
-    const response = await unary(grpc.ledgerService.getTransaction({
-      digest: expectedDigest,
-      readMask: {
-        paths: [
-          'digest', 'checkpoint', 'transaction.digest', 'transaction.bcs', 'signatures',
-          'effects.bcs', 'effects.digest', 'effects.status', 'effects.epoch',
-          'effects.transaction_digest', 'effects.events_digest', 'events.bcs', 'events.digest',
-        ],
-      },
-    }), 'ledgerService.getTransaction');
+    let response;
+    try {
+      response = await unary(grpc.ledgerService.getTransaction({
+        digest: expectedDigest,
+        readMask: {
+          paths: [
+            'digest', 'checkpoint', 'transaction.digest', 'transaction.bcs', 'signatures.bcs',
+            'effects.bcs', 'effects.digest', 'effects.version', 'effects.status', 'effects.epoch',
+            'effects.transaction_digest', 'effects.events_digest', 'events.bcs', 'events.digest',
+          ],
+        },
+      }), 'ledgerService.getTransaction', GrpcTypes.GetTransactionResponse);
+    } catch (error) {
+      if (error instanceof RpcError
+        && error.name === 'RpcError'
+        && error.code === 'NOT_FOUND'
+        && error.serviceName === LEDGER_SERVICE
+        && error.methodName === GET_TRANSACTION) {
+        TRANSACTION_NOT_FOUND_CONTEXT.set(error, expectedDigest);
+      }
+      throw error;
+    }
     return normalizeMakerV8FinalizedTransactionEvidence(response.transaction, expectedDigest);
   };
 
@@ -852,11 +1107,17 @@ export function createMakerV8SuiGrpcTransport({
   const getCheckpointWatermark = async () => {
     const info = await getServiceInfo();
     const latest = await getCheckpoint({ sequenceNumber: BigInt(info.checkpointHeight) });
+    if (latest.epoch !== info.epoch) {
+      fail('MAKER_V8_SUI_GRPC_CHECKPOINT_EPOCH_DRIFT', 'Latest checkpoint summary epoch differs from serviceInfo.', {
+        serviceInfoEpoch: info.epoch,
+        checkpointEpoch: latest.epoch,
+      });
+    }
     return Object.freeze({
       schemaVersion: MAKER_V8_SUI_GRPC_SCHEMA,
       chainIdentifier: info.chainIdentifier,
-      epoch: info.epoch,
-      checkpoint: latest,
+      epoch: latest.epoch,
+      checkpoint: Object.freeze({ sequenceNumber: latest.sequenceNumber, digest: latest.digest }),
       lowestAvailableCheckpoint: info.lowestAvailableCheckpoint,
       lowestAvailableCheckpointObjects: info.lowestAvailableCheckpointObjects,
     });

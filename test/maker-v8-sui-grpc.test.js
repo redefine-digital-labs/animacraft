@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
+import { GrpcTypes } from '@mysten/sui/grpc';
+import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { RpcError } from '@protobuf-ts/runtime-rpc';
-import { normalizeStructTag, toBase58, toBase64 } from '@mysten/sui/utils';
+import {
+  fromHex,
+  normalizeStructTag,
+  toBase58,
+  toBase64,
+} from '@mysten/sui/utils';
+import { blake2b } from '@noble/hashes/blake2.js';
 import {
   MAKER_V8_SUI_EVENT_DISCOVERY_QUERY,
   MAKER_V8_SUI_EVENT_DISCOVERY_SOURCE,
@@ -22,17 +31,103 @@ const OWNER = objectId('1');
 const PARENT = objectId('2');
 const OBJECT = objectId('3');
 const PACKAGE = objectId('4');
-const ORIGINAL_PACKAGE = objectId('5');
-const TX = digest(6);
 const PREVIOUS_TX = digest(7);
-const OBJECT_DIGEST = digest(8);
 const PACKAGE_DIGEST = digest(9);
 const CHECKPOINT_DIGEST = digest(10);
-const EFFECTS_DIGEST = digest(11);
-const EVENTS_DIGEST = digest(12);
 const OTHER_DIGEST = digest(13);
 const TYPE = `${PACKAGE}::maker_v8::MakerRootV8<0x2::sui::SUI>`;
 const EVENT_TYPE = `${PACKAGE}::release_v8::MakerV8Activated`;
+
+const SUI_EVENT_BCS = bcs.struct('SuiEventV8GrpcTest', {
+  package_id: bcs.Address,
+  transaction_module: bcs.string(),
+  sender: bcs.Address,
+  event_type: bcs.StructTag,
+  contents: bcs.vector(bcs.u8()),
+});
+const SUI_TRANSACTION_EVENTS_BCS = bcs.struct('SuiTransactionEventsV8GrpcTest', {
+  data: bcs.vector(SUI_EVENT_BCS),
+});
+
+function typedDigest(name, value) {
+  const domain = new TextEncoder().encode(`${name}::`);
+  const typed = new Uint8Array(domain.length + value.length);
+  typed.set(domain);
+  typed.set(value, domain.length);
+  return toBase58(blake2b(typed, { dkLen: 32 }));
+}
+
+function concatBytes(...values) {
+  const result = new Uint8Array(values.reduce((length, value) => length + value.length, 0));
+  let offset = 0;
+  for (const value of values) {
+    result.set(value, offset);
+    offset += value.length;
+  }
+  return result;
+}
+
+const HISTORICAL_CONTENT_BCS = concatBytes(fromHex(OBJECT.slice(2)), new Uint8Array([21, 22]));
+const HISTORICAL_OBJECT_BCS = bcs.Object.serialize({
+  data: {
+    Move: {
+      type: { Other: TypeTagSerializer.parseFromStr(normalizeStructTag(TYPE), true).struct },
+      hasPublicTransfer: true,
+      version: '11',
+      contents: HISTORICAL_CONTENT_BCS,
+    },
+  },
+  owner: { ObjectOwner: PARENT },
+  previousTransaction: PREVIOUS_TX,
+  storageRebate: '77',
+}).toBytes();
+const OBJECT_DIGEST = typedDigest('Object', HISTORICAL_OBJECT_BCS);
+
+const TRANSACTION_DATA = {
+  V1: {
+    kind: { ProgrammableTransaction: { inputs: [], commands: [] } },
+    sender: OWNER,
+    gasData: {
+      payment: [{ objectId: OBJECT, version: '10', digest: OBJECT_DIGEST }],
+      owner: OWNER,
+      price: '1',
+      budget: '1000',
+    },
+    expiration: { None: true },
+  },
+};
+const TRANSACTION_BCS = bcs.TransactionData.serialize(TRANSACTION_DATA).toBytes();
+const TX = TransactionDataBuilder.getDigestFromBytes(TRANSACTION_BCS);
+const TRANSACTION_EVENTS = {
+  data: [{
+    package_id: PACKAGE,
+    transaction_module: 'release_v8',
+    sender: OWNER,
+    event_type: TypeTagSerializer.parseFromStr(normalizeStructTag(EVENT_TYPE), true).struct,
+    contents: new Uint8Array([37, 38]),
+  }],
+};
+const TRANSACTION_EVENTS_BCS = SUI_TRANSACTION_EVENTS_BCS.serialize(TRANSACTION_EVENTS).toBytes();
+const EVENTS_DIGEST = typedDigest('TransactionEvents', TRANSACTION_EVENTS_BCS);
+const TRANSACTION_EFFECTS = {
+  V1: {
+    status: { Success: true },
+    executedEpoch: '91',
+    gasUsed: {
+      computationCost: '1', storageCost: '1', storageRebate: '0', nonRefundableStorageFee: '0',
+    },
+    modifiedAtVersions: [],
+    sharedObjects: [],
+    transactionDigest: TX,
+    created: [], mutated: [], unwrapped: [], deleted: [], unwrappedThenDeleted: [], wrapped: [],
+    gasObject: [{ objectId: OBJECT, version: '11', digest: OBJECT_DIGEST }, { AddressOwner: OWNER }],
+    eventsDigest: EVENTS_DIGEST,
+    dependencies: [],
+  },
+};
+const TRANSACTION_EFFECTS_BCS = bcs.TransactionEffects.serialize(TRANSACTION_EFFECTS).toBytes();
+const EFFECTS_DIGEST = typedDigest('TransactionEffects', TRANSACTION_EFFECTS_BCS);
+const USER_SIGNATURE_BCS = new Uint8Array(97).fill(33);
 
 function moveObject(overrides = {}) {
   return {
@@ -59,9 +154,6 @@ function rawPackage(overrides = {}) {
     objectType: 'package',
     previousTransaction: PREVIOUS_TX,
     package: {
-      storageId: PACKAGE,
-      originalId: ORIGINAL_PACKAGE,
-      version: 23n,
       modules: [
         { name: 'zeta', contents: new Uint8Array([9, 8]) },
         { name: 'alpha', contents: new Uint8Array([1, 2]) },
@@ -78,9 +170,11 @@ function rawHistorical(overrides = {}) {
     digest: OBJECT_DIGEST,
     owner: { kind: 2, address: PARENT },
     objectType: TYPE,
+    hasPublicTransfer: true,
     previousTransaction: PREVIOUS_TX,
-    contents: { value: new Uint8Array([21, 22]) },
-    bcs: { value: new Uint8Array([23, 24]) },
+    storageRebate: 77n,
+    contents: { name: normalizeStructTag(TYPE), value: HISTORICAL_CONTENT_BCS },
+    bcs: { name: 'Object', value: HISTORICAL_OBJECT_BCS },
     ...overrides,
   };
 }
@@ -89,17 +183,22 @@ function rawTransaction(overrides = {}) {
   return {
     digest: TX,
     checkpoint: 77n,
-    transaction: { digest: TX, bcs: { value: new Uint8Array([31, 32]) } },
-    signatures: [{ bcs: { value: new Uint8Array([33, 34]) } }],
+    transaction: { digest: TX, bcs: { name: 'TransactionData', value: TRANSACTION_BCS } },
+    signatures: [{ bcs: { name: 'UserSignatureBytes', value: USER_SIGNATURE_BCS } }],
     effects: {
-      bcs: { value: new Uint8Array([35, 36]) },
+      bcs: { name: 'TransactionEffects', value: TRANSACTION_EFFECTS_BCS },
       digest: EFFECTS_DIGEST,
+      version: 1,
       status: { success: true },
       epoch: 91n,
       transactionDigest: TX,
       eventsDigest: EVENTS_DIGEST,
     },
-    events: { digest: EVENTS_DIGEST, bcs: { value: new Uint8Array([37, 38]) }, events: [] },
+    events: {
+      digest: EVENTS_DIGEST,
+      bcs: { name: 'TransactionEvents', value: TRANSACTION_EVENTS_BCS },
+      events: [],
+    },
     ...overrides,
   };
 }
@@ -137,13 +236,16 @@ function fixtures() {
       lowestAvailableCheckpointObjects: 9n,
       server: 'fixture-grpc/2.20.2',
     },
-    checkpoint: { sequenceNumber: 100n, digest: CHECKPOINT_DIGEST },
+    checkpoint: { sequenceNumber: 100n, digest: CHECKPOINT_DIGEST, summary: { epoch: 91n } },
     protocolConfig: {
-      protocolVersion: '130',
+      protocolVersion: '133',
       featureFlags: { receive_objects: true },
       attributes: {
         object_runtime_max_num_cached_objects: '1000',
         object_runtime_max_num_store_entries: '1000',
+        bridge_should_try_to_finalize_committee: 'true',
+        gasless_allowed_token_types: '[["0x2::coin::COIN","10000"]]',
+        opaque_empty_string: '',
         optional_future_limit: null,
       },
     },
@@ -202,21 +304,25 @@ function fixtures() {
     },
     ledgerService: {
       async getObject(input) {
-        calls.push(['ledger.getObject', input]);
         const object = input.version === undefined ? values.rawPackage : values.historical;
-        return { response: { object: structuredClone(object) } };
+        const response = GrpcTypes.GetObjectResponse.create({ object });
+        calls.push(['ledger.getObject', input, response]);
+        return { response };
       },
       async getTransaction(input) {
-        calls.push(['ledger.getTransaction', input]);
-        return { response: { transaction: structuredClone(values.transaction) } };
+        const response = GrpcTypes.GetTransactionResponse.create({ transaction: values.transaction });
+        calls.push(['ledger.getTransaction', input, response]);
+        return { response };
       },
       async getServiceInfo(input) {
-        calls.push(['ledger.getServiceInfo', input]);
-        return { response: structuredClone(values.serviceInfo) };
+        const response = GrpcTypes.GetServiceInfoResponse.create(values.serviceInfo);
+        calls.push(['ledger.getServiceInfo', input, response]);
+        return { response };
       },
       async getCheckpoint(input) {
-        calls.push(['ledger.getCheckpoint', input]);
-        return { response: { checkpoint: structuredClone(values.checkpoint) } };
+        const response = GrpcTypes.GetCheckpointResponse.create({ checkpoint: values.checkpoint });
+        calls.push(['ledger.getCheckpoint', input, response]);
+        return { response };
       },
     },
   };
@@ -266,6 +372,20 @@ test('factory rejects non-Mainnet and incomplete clients while brand cannot be s
     network: 'mainnet',
     chainIdentifier: MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
   }), false);
+});
+
+test('ledger unary responses require real protobuf-ts message prototypes', async () => {
+  const fixture = fixtures();
+  const official = GrpcTypes.GetServiceInfoResponse.create(fixture.values.serviceInfo);
+  assert.equal(Object.getPrototypeOf(official), GrpcTypes.GetServiceInfoResponse.messagePrototype);
+  assert.notEqual(Object.getPrototypeOf(official), Object.prototype);
+  const plainClone = structuredClone(official);
+  assert.equal(Object.getPrototypeOf(plainClone), Object.prototype);
+  fixture.grpcClient.ledgerService.getServiceInfo = async () => ({ response: plainClone });
+  await assert.rejects(
+    fixture.transport.getServiceInfo(),
+    code('MAKER_V8_SUI_GRPC_SDK_MESSAGE_INVALID'),
+  );
 });
 
 test('Core current Move object becomes the exact existing-parser envelope and GraphQL is not consulted', async () => {
@@ -331,7 +451,16 @@ test('raw package modules become a sorted canonical moduleMap and duplicate name
   assert.deepEqual(response.data.owner, { Immutable: true });
   const rawCall = fixture.calls.find(([name]) => name === 'ledger.getObject')[1];
   assert.equal(rawCall.version, undefined);
-  assert.ok(rawCall.readMask.paths.includes('package'));
+  assert.ok(rawCall.readMask.paths.includes('package.modules.name'));
+  assert.ok(rawCall.readMask.paths.includes('package.modules.contents'));
+  assert.equal(fixture.values.rawPackage.package.storageId, undefined);
+  assert.equal(fixture.values.rawPackage.package.originalId, undefined);
+  assert.equal(fixture.values.rawPackage.package.version, undefined);
+  const rawResponse = fixture.calls.find(([name]) => name === 'ledger.getObject')[2];
+  assert.equal(Object.getPrototypeOf(rawResponse), GrpcTypes.GetObjectResponse.messagePrototype);
+  assert.equal(Object.getPrototypeOf(rawResponse.object), GrpcTypes.Object.messagePrototype);
+  assert.equal(Object.getPrototypeOf(rawResponse.object.package), GrpcTypes.Package.messagePrototype);
+  assert.equal(Object.getPrototypeOf(rawResponse.object.package.modules[0]), GrpcTypes.Module.messagePrototype);
 
   fixture.values.rawPackage.package.modules.push({ name: 'alpha', contents: new Uint8Array([99]) });
   await assert.rejects(
@@ -378,34 +507,48 @@ test('owned objects, coins, balance, current epoch, and protocol string|null sha
   });
   assert.deepEqual(await fixture.transport.getLatestSuiSystemState(), { epoch: '91' });
   assert.deepEqual(await fixture.transport.getProtocolConfig(), {
-    protocolVersion: '130',
+    protocolVersion: '133',
     featureFlags: { receive_objects: true },
     attributes: {
-      object_runtime_max_num_cached_objects: { u64: '1000' },
-      object_runtime_max_num_store_entries: { u64: '1000' },
+      object_runtime_max_num_cached_objects: '1000',
+      object_runtime_max_num_store_entries: '1000',
+      bridge_should_try_to_finalize_committee: 'true',
+      gasless_allowed_token_types: '[["0x2::coin::COIN","10000"]]',
+      opaque_empty_string: '',
       optional_future_limit: null,
     },
   });
 
   fixture.values.protocolConfig.attributes.optional_future_limit = 1000;
-  await assert.rejects(fixture.transport.getProtocolConfig(), code('MAKER_V8_SUI_GRPC_DECIMAL_INVALID'));
+  await assert.rejects(fixture.transport.getProtocolConfig(), code('MAKER_V8_SUI_GRPC_PROTOCOL_INVALID'));
+  const malformedNumeric = fixtures();
+  malformedNumeric.values.protocolConfig.attributes.object_runtime_max_num_cached_objects = '1e3';
+  await assert.rejects(
+    malformedNumeric.transport.getProtocolConfig(),
+    code('MAKER_V8_SUI_GRPC_DECIMAL_INVALID'),
+  );
   await assert.rejects(
     fixture.transport.getOwnedObjects({ owner: OWNER, filter: { MatchAll: [] } }),
     code('MAKER_V8_SUI_GRPC_OWNED_FILTER_INVALID'),
   );
 });
 
-test('historical object uses an exact bigint version and rejects history drift', async () => {
+test('historical Object BCS binds exact version, ID, type, owner, contents, metadata, and digest', async () => {
   const fixture = fixtures();
   const historical = await fixture.transport.getHistoricalObject({ objectId: OBJECT, version: 11n });
   assert.equal(historical.objectId, OBJECT);
   assert.equal(historical.version, '11');
   assert.equal(historical.previousTransaction, PREVIOUS_TX);
-  assert.deepEqual([...historical.contentBcs], [21, 22]);
+  assert.deepEqual(historical.contentBcs, HISTORICAL_CONTENT_BCS);
+  assert.deepEqual(historical.objectBcs, HISTORICAL_OBJECT_BCS);
   const call = fixture.calls.find(([name]) => name === 'ledger.getObject')[1];
   assert.equal(typeof call.version, 'bigint');
   assert.equal(call.version, 11n);
   assert.ok(call.readMask.paths.includes('previous_transaction'));
+  assert.ok(call.readMask.paths.includes('storage_rebate'));
+  const rawResponse = fixture.calls.find(([name]) => name === 'ledger.getObject')[2];
+  assert.equal(Object.getPrototypeOf(rawResponse.object.bcs), GrpcTypes.Bcs.messagePrototype);
+  assert.equal(Object.getPrototypeOf(rawResponse.object.contents), GrpcTypes.Bcs.messagePrototype);
 
   fixture.values.historical.version = 12n;
   await assert.rejects(
@@ -416,18 +559,55 @@ test('historical object uses an exact bigint version and rejects history drift',
     fixture.transport.getHistoricalObject({ objectId: OBJECT, version: '11' }),
     code('MAKER_V8_SUI_GRPC_UINT64_INVALID'),
   );
+
+  for (const [mutate, expected] of [
+    [(value) => { value.bcs.name = 'ObjectV2'; }, 'MAKER_V8_SUI_GRPC_BCS_NAME_INVALID'],
+    [(value) => { value.contents.name = normalizeStructTag(`${PACKAGE}::maker_v8::OtherRootV8`); }, 'MAKER_V8_SUI_GRPC_BCS_NAME_INVALID'],
+    [(value) => { value.digest = OTHER_DIGEST; }, 'MAKER_V8_SUI_GRPC_HISTORY_BCS_DRIFT'],
+    [(value) => { value.owner = { kind: 1, address: OWNER }; }, 'MAKER_V8_SUI_GRPC_HISTORY_BCS_DRIFT'],
+    [(value) => { value.contents.value = new Uint8Array(value.contents.value).fill(0, 32); }, 'MAKER_V8_SUI_GRPC_HISTORY_BCS_DRIFT'],
+    [(value) => { value.bcs.value = concatBytes(value.bcs.value, Uint8Array.of(0)); }, 'MAKER_V8_SUI_GRPC_BCS_NONCANONICAL'],
+  ]) {
+    const drift = fixtures();
+    mutate(drift.values.historical);
+    await assert.rejects(
+      drift.transport.getHistoricalObject({ objectId: OBJECT, version: 11n }),
+      code(expected),
+    );
+  }
 });
 
-test('typed RpcError NOT_FOUND remains distinguishable and is never converted into generic absence', async () => {
+test('only exact GetTransaction RpcError NOT_FOUND is digest-bound by the requested call', async () => {
   const fixture = fixtures();
-  const notFound = new RpcError('historical object not found', 'NOT_FOUND');
-  fixture.grpcClient.ledgerService.getObject = async () => { throw notFound; };
-  assert.equal(isMakerV8SuiGrpcNotFoundError(notFound), true);
-  assert.equal(isMakerV8SuiGrpcNotFoundError(new RpcError('unavailable', 'UNAVAILABLE')), false);
-  await assert.rejects(
-    fixture.transport.getHistoricalObject({ objectId: OBJECT, version: 11n }),
-    (error) => error === notFound,
-  );
+  const notFound = new RpcError(`Transaction ${TX} not found`, 'NOT_FOUND');
+  notFound.serviceName = 'sui.rpc.v2.LedgerService';
+  notFound.methodName = 'GetTransaction';
+  fixture.grpcClient.ledgerService.getTransaction = async (input) => {
+    fixture.calls.push(['ledger.getTransaction', input]);
+    throw notFound;
+  };
+  assert.equal(isMakerV8SuiGrpcNotFoundError(notFound, TX), false);
+  let caught;
+  try {
+    await fixture.transport.getFinalizedTransactionEvidence({ digest: TX });
+  } catch (error) {
+    caught = error;
+  }
+  assert.equal(caught, notFound);
+  assert.equal(isMakerV8SuiGrpcNotFoundError(caught, TX), true);
+  assert.equal(isMakerV8SuiGrpcNotFoundError(caught, OTHER_DIGEST), false);
+  assert.equal(fixture.calls.find(([name]) => name === 'ledger.getTransaction')[1].digest, TX);
+
+  for (const [codeValue, serviceName, methodName] of [
+    ['UNAVAILABLE', 'sui.rpc.v2.LedgerService', 'GetTransaction'],
+    ['NOT_FOUND', 'sui.rpc.v2.StateService', 'GetTransaction'],
+    ['NOT_FOUND', 'sui.rpc.v2.LedgerService', 'GetObject'],
+  ]) {
+    const error = new RpcError('not found', codeValue);
+    error.serviceName = serviceName;
+    error.methodName = methodName;
+    assert.equal(isMakerV8SuiGrpcNotFoundError(error, TX), false);
+  }
 });
 
 test('raw finalized transaction evidence binds checkpoint, transaction/signature/effects/events BCS and digests', async () => {
@@ -436,24 +616,94 @@ test('raw finalized transaction evidence binds checkpoint, transaction/signature
   assert.equal(evidence.chainIdentifier, MAKER_V8_SUI_MAINNET_GENESIS_DIGEST);
   assert.equal(evidence.checkpoint, '77');
   assert.equal(evidence.epoch, '91');
-  assert.equal(evidence.transactionBcsBase64, toBase64(new Uint8Array([31, 32])));
-  assert.deepEqual(evidence.signatures, [toBase64(new Uint8Array([33, 34]))]);
-  assert.equal(evidence.effectsBcsBase64, toBase64(new Uint8Array([35, 36])));
+  assert.equal(evidence.transactionBcsBase64, toBase64(TRANSACTION_BCS));
+  assert.deepEqual(evidence.signatures, [toBase64(USER_SIGNATURE_BCS)]);
+  assert.equal(evidence.effectsBcsBase64, toBase64(TRANSACTION_EFFECTS_BCS));
   assert.equal(evidence.effectsDigest, EFFECTS_DIGEST);
   assert.equal(evidence.eventsDigest, EVENTS_DIGEST);
   assert.equal(evidence.transactionEvents.digest, EVENTS_DIGEST);
-  assert.deepEqual([...evidence.transactionEvents.bcs], [37, 38]);
+  assert.deepEqual(evidence.transactionEvents.bcs, TRANSACTION_EVENTS_BCS);
+  assert.equal(evidence.transactionEvents.eventCount, 1);
   const call = fixture.calls.find(([name]) => name === 'ledger.getTransaction')[1];
   assert.ok(call.readMask.paths.includes('checkpoint'));
   assert.ok(call.readMask.paths.includes('transaction.bcs'));
-  assert.ok(call.readMask.paths.includes('signatures'));
+  assert.ok(call.readMask.paths.includes('signatures.bcs'));
   assert.ok(call.readMask.paths.includes('effects.bcs'));
   assert.ok(call.readMask.paths.includes('events.bcs'));
+  const rawResponse = fixture.calls.find(([name]) => name === 'ledger.getTransaction')[2];
+  assert.equal(Object.getPrototypeOf(rawResponse), GrpcTypes.GetTransactionResponse.messagePrototype);
+  assert.equal(Object.getPrototypeOf(rawResponse.transaction), GrpcTypes.ExecutedTransaction.messagePrototype);
+  assert.equal(Object.getPrototypeOf(rawResponse.transaction.transaction.bcs), GrpcTypes.Bcs.messagePrototype);
+  assert.equal(Object.getPrototypeOf(rawResponse.transaction.effects), GrpcTypes.TransactionEffects.messagePrototype);
+  assert.equal(Object.getPrototypeOf(rawResponse.transaction.events), GrpcTypes.TransactionEvents.messagePrototype);
 
   fixture.values.transaction.effects.eventsDigest = OTHER_DIGEST;
   await assert.rejects(
     fixture.transport.getFinalizedTransactionEvidence({ digest: TX }),
     code('MAKER_V8_SUI_GRPC_EVENTS_DRIFT'),
+  );
+
+  const rejects = async (mutate, expected) => {
+    const drift = fixtures();
+    mutate(drift.values.transaction);
+    await assert.rejects(
+      drift.transport.getFinalizedTransactionEvidence({ digest: TX }),
+      code(expected),
+    );
+  };
+  await rejects(
+    (value) => { value.transaction.digest = OTHER_DIGEST; },
+    'MAKER_V8_SUI_GRPC_TRANSACTION_DRIFT',
+  );
+  await rejects((value) => {
+    const changed = structuredClone(TRANSACTION_DATA);
+    changed.V1.gasData.budget = '1001';
+    value.transaction.bcs.value = bcs.TransactionData.serialize(changed).toBytes();
+  }, 'MAKER_V8_SUI_GRPC_TRANSACTION_BCS_DRIFT');
+  await rejects(
+    (value) => { value.transaction.bcs.value = concatBytes(value.transaction.bcs.value, Uint8Array.of(0)); },
+    'MAKER_V8_SUI_GRPC_BCS_NONCANONICAL',
+  );
+  await rejects(
+    (value) => { value.transaction.bcs.name = 'SenderSignedData'; },
+    'MAKER_V8_SUI_GRPC_BCS_NAME_INVALID',
+  );
+  await rejects(
+    (value) => { value.signatures[0].bcs.name = 'UserSignature'; },
+    'MAKER_V8_SUI_GRPC_BCS_NAME_INVALID',
+  );
+  await rejects(
+    (value) => { value.effects.status = { success: false }; },
+    'MAKER_V8_SUI_GRPC_TRANSACTION_FAILED',
+  );
+  await rejects((value) => {
+    const changed = structuredClone(TRANSACTION_EFFECTS);
+    changed.V1.transactionDigest = OTHER_DIGEST;
+    value.effects.bcs.value = bcs.TransactionEffects.serialize(changed).toBytes();
+  }, 'MAKER_V8_SUI_GRPC_EFFECTS_DRIFT');
+  await rejects((value) => {
+    const changed = structuredClone(TRANSACTION_EFFECTS);
+    changed.V1.status = { Failure: { error: { InsufficientGas: true }, command: null } };
+    value.effects.bcs.value = bcs.TransactionEffects.serialize(changed).toBytes();
+  }, 'MAKER_V8_SUI_GRPC_EFFECTS_DRIFT');
+  await rejects(
+    (value) => { value.effects.bcs.value = concatBytes(value.effects.bcs.value, Uint8Array.of(0)); },
+    'MAKER_V8_SUI_GRPC_BCS_NONCANONICAL',
+  );
+  await rejects(
+    (value) => { value.effects.digest = OTHER_DIGEST; },
+    'MAKER_V8_SUI_GRPC_EFFECTS_DRIFT',
+  );
+  await rejects(
+    (value) => { value.events.bcs.name = 'Event'; },
+    'MAKER_V8_SUI_GRPC_BCS_NAME_INVALID',
+  );
+  await rejects((value) => {
+    value.events.bcs.value = SUI_TRANSACTION_EVENTS_BCS.serialize({ data: [] }).toBytes();
+  }, 'MAKER_V8_SUI_GRPC_EVENTS_DRIFT');
+  await rejects(
+    (value) => { value.events.bcs.value = concatBytes(value.events.bcs.value, Uint8Array.of(0)); },
+    'MAKER_V8_SUI_GRPC_BCS_NONCANONICAL',
   );
 });
 
@@ -466,7 +716,7 @@ test('getServiceInfo/getCheckpoint watermark primitives pin full genesis and exa
   assert.equal(info.checkpointHeight, '100');
   assert.equal(info.lowestAvailableCheckpointObjects, '9');
   assert.deepEqual(await fixture.transport.getCheckpoint({ sequenceNumber: 100n }), {
-    sequenceNumber: '100', digest: CHECKPOINT_DIGEST,
+    sequenceNumber: '100', digest: CHECKPOINT_DIGEST, epoch: '91',
   });
   assert.deepEqual(await fixture.transport.getCheckpointWatermark(), {
     schemaVersion: 'animacraft.maker-v8-sui-grpc.v1',
@@ -478,6 +728,18 @@ test('getServiceInfo/getCheckpoint watermark primitives pin full genesis and exa
   });
   const checkpointCalls = fixture.calls.filter(([name]) => name === 'ledger.getCheckpoint');
   assert.equal(checkpointCalls.at(-1)[1].checkpointId.sequenceNumber, 100n);
+  assert.ok(checkpointCalls.at(-1)[1].readMask.paths.includes('summary.epoch'));
+  assert.equal(
+    Object.getPrototypeOf(checkpointCalls.at(-1)[2].checkpoint.summary),
+    GrpcTypes.CheckpointSummary.messagePrototype,
+  );
+
+  const epochDrift = fixtures();
+  epochDrift.values.checkpoint.summary.epoch = 92n;
+  await assert.rejects(
+    epochDrift.transport.getCheckpointWatermark(),
+    code('MAKER_V8_SUI_GRPC_CHECKPOINT_EPOCH_DRIFT'),
+  );
 
   fixture.values.serviceInfo.chainId = '35834a8a';
   await assert.rejects(fixture.transport.getServiceInfo(), code('MAKER_V8_SUI_GRPC_CHAIN_MISMATCH'));

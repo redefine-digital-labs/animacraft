@@ -7,6 +7,7 @@ const allowedDependencies = new Map([
   ['@mysten/sui', '2.20.2'],
   ['@mysten/wallet-standard', '0.21.4'],
   ['@noble/hashes', '2.2.0'],
+  ['@protobuf-ts/runtime-rpc', '2.11.1'],
 ]);
 const allowedDevDependencies = new Map([
   ['fake-indexeddb', '6.2.5'],
@@ -85,6 +86,11 @@ const allowedGithub = new Set([
   '.github/CODEOWNERS', '.github/pull_request_template.md',
   '.github/workflows/repository-hygiene.yml',
 ]);
+const allowedScripts = new Set([
+  'scripts/fresh-v8-delivery-scan.mjs',
+  'scripts/maker-v8-sui-grpc-mainnet-smoke.mjs',
+  'scripts/verify-move-struct-field-limits.mjs',
+]);
 const moveRoots = new Set([
   'animacraft_v8_core', 'animacraft_v8_seal', 'animacraft_v8_runtime',
   'animacraft_v8_output', 'animacraft_v8_physical', 'animacraft_v8_market',
@@ -102,6 +108,10 @@ const productionText = [
   'maker-v8-finalized.js', 'maker-v8-market.js', 'maker-v8-recovery.js',
   'maker-v8-publication-store.js', 'maker-v8-runtime.js', 'maker-v8-sui-grpc.js',
 ].map((path) => readFileSync(join(root, path), 'utf8')).join('\n');
+const suiGrpcReadOnlyText = [
+  'maker-v8-sui-grpc.js',
+  'scripts/maker-v8-sui-grpc-mainnet-smoke.mjs',
+].map((path) => readFileSync(join(root, path), 'utf8')).join('\n');
 
 if (mode !== '--dist') {
   const rejected = [];
@@ -116,10 +126,7 @@ if (mode !== '--dist') {
     else if (top === 'docs' && !allowedDocs.has(path)) rejected.push(path);
     else if (top === '.github' && !allowedGithub.has(path)) rejected.push(path);
     else if (top === 'public-v8' && path !== 'public-v8/config.js') rejected.push(path);
-    else if (top === 'scripts' && ![
-      'scripts/fresh-v8-delivery-scan.mjs',
-      'scripts/verify-move-struct-field-limits.mjs',
-    ].includes(path)) rejected.push(path);
+    else if (top === 'scripts' && !allowedScripts.has(path)) rejected.push(path);
     else if (top === 'move' && !moveRoots.has(second)) rejected.push(path);
   }
   if (rejected.length) {
@@ -149,6 +156,12 @@ if (mode !== '--dist') {
   const importLines = productionText.split('\n').filter((line) => /^\s*import\b/.test(line)).join('\n');
   if (/legacy|expansion-pack|maker-(?:commerce-v5|composable|physical-v7|publication-v4)/i.test(importLines)) {
     throw new Error('A retired product module remains imported by the production surface.');
+  }
+  if (/@mysten\/sui\/(?:jsonrpc|client)|SuiJsonRpcClient|JsonRpcProvider/i.test(suiGrpcReadOnlyText)) {
+    throw new Error('Maker v8 Sui gRPC transport or smoke contains a JSON-RPC dependency or fallback.');
+  }
+  if (/\b(?:executeTransaction|signAndExecuteTransaction|signTransaction|simulateTransaction|broadcastTransaction)\b/.test(suiGrpcReadOnlyText)) {
+    throw new Error('Maker v8 Sui gRPC transport or smoke contains a write, signing, broadcast, or simulation path.');
   }
   console.log(`Fresh-v8 source scan passed: ${tracked.length} tracked files.`);
 }
