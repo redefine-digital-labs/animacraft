@@ -170,9 +170,6 @@ public struct MakerRootV8<phantom PaymentCoin> has key {
     version: u64,
     core_original_package_id: ID,
     core_callable_package_id: ID,
-    protocol_config_id: ID,
-    protocol_config_revision: u64,
-    protocol_config_commitment: vector<u8>,
     creator: address,
     owner: address,
     admin_cap_id: ID,
@@ -822,9 +819,6 @@ fun new_maker_draft_internal_v8<PaymentCoin>(
         version: VERSION,
         core_original_package_id,
         core_callable_package_id,
-        protocol_config_id,
-        protocol_config_revision,
-        protocol_config_commitment,
         creator: owner,
         owner,
         admin_cap_id,
@@ -924,17 +918,17 @@ public fun finalize_product_release_binding_v8<PaymentCoin>(
     package_binding::assert_certified_binding_v8(&certified);
     assert!(
         package_binding::certified_protocol_config_id_v8(&certified)
-            == root.protocol_config_id,
+            == root.economics.protocol_config_id,
         ECatalogMismatch,
     );
     assert!(
         package_binding::certified_protocol_config_revision_v8(&certified)
-            == root.protocol_config_revision,
+            == root.economics.protocol_config_revision,
         ECatalogMismatch,
     );
     assert!(
         package_binding::certified_protocol_config_commitment_v8(&certified)
-            == &root.protocol_config_commitment,
+            == &root.economics.protocol_config_commitment,
         ECatalogMismatch,
     );
     let binding = package_binding::certified_binding_v8(&certified);
@@ -1269,9 +1263,9 @@ public fun assert_current_protocol_config_v8<PaymentCoin>(
 ) {
     protocol::assert_exact_snapshot_v8<PaymentCoin>(
         config,
-        root.protocol_config_id,
-        root.protocol_config_revision,
-        &root.protocol_config_commitment,
+        root.economics.protocol_config_id,
+        root.economics.protocol_config_revision,
+        &root.economics.protocol_config_commitment,
     );
     assert!(
         protocol::config_treasury_id_v8(config).is_some(),
@@ -1490,7 +1484,10 @@ fun assert_capability_registry_binding<PaymentCoin>(
         &binding.call_cap_set,
         package_binding::certified_call_cap_set_v8(certified),
     );
-    assert!(binding.protocol_config_id == root.protocol_config_id, EProtocolSnapshotMismatch);
+    assert!(
+        binding.protocol_config_id == root.economics.protocol_config_id,
+        EProtocolSnapshotMismatch,
+    );
     assert!(root.base_registry_id.is_some(), EBaseRegistryMissing);
     assert!(binding.base_registry_id == *root.base_registry_id.borrow(), EBaseRegistryMismatch);
     assert!(root.maker_treasury_id.is_some(), EMakerTreasuryMissing);
@@ -1818,13 +1815,13 @@ public fun root_lifecycle_v8<PaymentCoin>(root: &MakerRootV8<PaymentCoin>): u8 {
 }
 public fun root_protocol_config_id_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
-): ID { root.protocol_config_id }
+): ID { root.economics.protocol_config_id }
 public fun root_protocol_config_revision_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
-): u64 { root.protocol_config_revision }
+): u64 { root.economics.protocol_config_revision }
 public fun root_protocol_config_commitment_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
-): &vector<u8> { &root.protocol_config_commitment }
+): &vector<u8> { &root.economics.protocol_config_commitment }
 public fun root_protocol_treasury_id_v8<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
 ): ID { root.economics.protocol_treasury_id }
@@ -2140,9 +2137,6 @@ public fun destroy_maker_for_testing<PaymentCoin>(
         version: _,
         core_original_package_id: _,
         core_callable_package_id: _,
-        protocol_config_id: _,
-        protocol_config_revision: _,
-        protocol_config_commitment: _,
         creator: _,
         owner: _,
         admin_cap_id: _,

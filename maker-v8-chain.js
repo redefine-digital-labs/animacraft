@@ -645,11 +645,15 @@ export function parseMakerRootV8(response, runtimeInput, activationInput, observ
     : parseMakerV8ActivatedEvent(activationInput, runtime, observedNetwork);
   const object = parsedObject(response, makerV8ChainTypes(runtime).root, observedNetwork, 'MakerRootV8');
   const fields = object.fields;
+  if (!record(fields.economics)) {
+    fail('schema', 'MAKER_V8_ROOT_ECONOMICS_INVALID', 'Root has no exact economics snapshot.');
+  }
+  const economics = fields.economics;
   if (object.objectId !== activation.binding.rootId) fail('readback', 'MAKER_V8_ROOT_ID_MISMATCH', 'Root object does not match MakerV8Activated.');
   const checks = [
     [id(fields.core_original_package_id, 'root.core_original_package_id'), runtime.roles.core.typeOriginPackageId, 'core original'],
     [id(fields.core_callable_package_id, 'root.core_callable_package_id'), runtime.roles.core.callablePackageId, 'core callable'],
-    [id(fields.protocol_config_id, 'root.protocol_config_id'), runtime.protocolConfigId, 'protocol config'],
+    [id(economics.protocol_config_id, 'root.economics.protocol_config_id'), runtime.protocolConfigId, 'protocol config'],
   ];
   checks.forEach(([observed, expected, label]) => {
     if (observed !== expected) fail('readback', 'MAKER_V8_ROOT_READBACK_MISMATCH', `Root ${label} does not match verified context.`, { expected, observed });
@@ -725,7 +729,10 @@ export function parseProtocolConfigV8(response, runtimeInput, rootInput, observe
     || treasuryId === null
     || id(treasuryId, 'protocol.treasury_id') !== runtime.protocolTreasuryId
     || fields.payment_coin_type !== runtime.paymentCoinType
-    || (rootInput && id(rootInput.fields.protocol_config_id, 'root.protocol_config_id') !== object.objectId)) {
+    || (rootInput && id(
+      rootInput.fields.economics?.protocol_config_id,
+      'root.economics.protocol_config_id',
+    ) !== object.objectId)) {
     fail('readback', 'MAKER_V8_PROTOCOL_CONFIG_MISMATCH', 'ProtocolConfig does not match the pinned runtime and live Root.');
   }
   if (typeof fields.enabled !== 'boolean') fail('schema', 'MAKER_V8_PROTOCOL_ENABLED_INVALID', 'Protocol enabled state is not boolean.');
