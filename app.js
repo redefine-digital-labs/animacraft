@@ -28,6 +28,8 @@ export const WEB_V8_READBACK_SCHEMA = 'animacraft.web-market-finalized-readback.
 export const UNSUPPORTED_PRODUCT_CODE = 'UNSUPPORTED_LEGACY_PRODUCT';
 export const WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION = 'I CONFIRM NO SIGNED ARTIFACT EXISTS';
 export const WEB_V8_UNSIGNED_DISCARD_CONFIRMATION = 'DISCARD UNSIGNED PLAN';
+export const WEB_V8_RECOVERY_DATABASE_NAME = 'animacraft-fresh-maker-v8-recovery-v2';
+export const WEB_V8_RECOVERY_DATABASE_VERSION = 1;
 const MAKER_V8_CHAIN_SCHEMA = 'animacraft.maker-v8-chain.v8';
 
 const EXACT_SUI_ID = /^0x[0-9a-f]{64}$/;
@@ -850,7 +852,7 @@ async function requestWhileTransactionActive(request, done) {
 }
 
 export function createIndexedDbRecoveryAdapter(indexedDb, {
-  databaseName = 'animacraft-fresh-maker-v8',
+  databaseName = WEB_V8_RECOVERY_DATABASE_NAME,
   clock = Date.now,
 } = {}) {
   if (!indexedDb || typeof indexedDb.open !== 'function') {
@@ -863,7 +865,11 @@ export function createIndexedDbRecoveryAdapter(indexedDb, {
   const open = () => {
     if (opened) return opened;
     opened = new Promise((resolve, reject) => {
-      const request = indexedDb.open(databaseName, 2);
+      // Fresh v8 uses a new database name and a version-one exact schema. The
+      // similarly named pre-release development database was never reachable
+      // with signature/broadcast gates enabled, so it is neither opened nor
+      // treated as authority for a supported signed artifact.
+      const request = indexedDb.open(databaseName, WEB_V8_RECOVERY_DATABASE_VERSION);
       request.onupgradeneeded = () => {
         const database = request.result;
         for (const store of ['active', 'receipts', 'failures', 'expirations']) {
@@ -1176,13 +1182,6 @@ export function createFreshV8Controller({
         identity: fresh.identity,
         currentEpoch: await readCurrentMainnetEpoch(fresh.suiClient),
       });
-    },
-    getCurrentEpoch: async () => {
-      const observedChain = await adapters.rpc.getChainIdentifier();
-      if (observedChain !== execution.chainIdentifier) {
-        throw appError('WEB_V8_NETWORK_MISMATCH', 'RPC chain changed during recovery.', 'CONTEXT');
-      }
-      return readCurrentMainnetEpoch(await adapters.rpc.getSuiClient());
     },
     confirmNoSignedArtifact: async (request) => {
       const confirmation = pendingUnsignedConfirmation;
@@ -1928,13 +1927,6 @@ export function createFreshV8Controller({
           'RECOVERY',
         );
       }
-      const fresh = await refetchExactSigningSnapshot(durable);
-      const { evidence, plan } = await rebuildAndSimulateExactAction(
-        durable.plan,
-        fresh.candidate,
-        fresh.suiClient,
-        fresh.marketClient,
-      );
       pendingUnsignedConfirmation = Object.freeze({
         scopeKey: durable.scopeKey,
         identityKey: durable.identityKey,
@@ -1946,11 +1938,8 @@ export function createFreshV8Controller({
       try {
         record = await recovery.reclaimAwaitingSignature({
           identity: durable.identity,
-          liveIdentity: fresh.identity,
-          plan,
           expectedRevision: durable.revision,
           expectedPlanHash: durable.plan.fingerprint,
-          evidence,
         });
       } finally {
         pendingUnsignedConfirmation = null;

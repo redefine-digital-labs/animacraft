@@ -22,6 +22,9 @@ const ACTION_ROWS = [
   ['recoverPhysicalListing', 'Recover typed Physical listing', 'PHYSICAL', 'RECOVER', 'buildRecoverPhysicalListing', 'quotePhysicalResale'],
 ];
 
+export const MAKER_V8_TRANSACTION_ABSENCE_SCHEMA =
+  'animacraft.sui-transaction-absence.v8';
+
 export const MAKER_V8_ACTIONS = Object.freeze(ACTION_ROWS.map(([
   id, label, lane, kind, builder, quote,
 ]) => Object.freeze({

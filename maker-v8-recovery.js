@@ -2,7 +2,10 @@ import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { consumeMarketV8RecoveryEvidenceV8 } from './maker-v8-market.js';
-import { makerV8ActionV8 } from './maker-v8-actions.js';
+import {
+  MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
+  makerV8ActionV8,
+} from './maker-v8-actions.js';
 
 /**
  * Fresh-v8 transaction recovery.
@@ -1774,9 +1777,11 @@ function persistenceSignedArtifact(value, record) {
 }
 
 function persistenceQueryOutcome(value, record) {
-  exactKeys(value, ['status', 'digest', 'epoch', 'effectsFingerprint', 'eventsDigest', 'error'],
+  exactKeys(value, [
+    'status', 'digest', 'epoch', 'effectsFingerprint', 'eventsDigest', 'error', 'absence',
+  ],
     'Durable query outcome', MAKER_V8_RECOVERY_ERROR.STORAGE_RECORD_INVALID);
-  const canonical = normalizeQueryResult(value, record.signed.digest);
+  const canonical = normalizeQueryResult(value, record.signed.digest, record.identity.chain);
   if (stableJson(canonical) !== stableJson(value)) throw new Error('query outcome binding');
   return canonical;
 }
@@ -2196,14 +2201,77 @@ function initialRecord(identity, plan, sessionId, now, { revision = 1, attempt =
   };
 }
 
-function normalizeQueryResult(value, digest) {
-  if (value === null || value === undefined) return deepFreeze({
-    status: 'NOT_FOUND', digest: null, epoch: null, effectsFingerprint: null,
-    eventsDigest: null, error: null,
+function canonicalTransactionAbsence(value, digest, chainIdentifier) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || (Object.getPrototypeOf(value) !== Object.prototype
+      && Object.getPrototypeOf(value) !== null)) fail(
+    MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
+    MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
+    'Typed NOT_FOUND requires exact transaction absence evidence.',
+  );
+  let absence;
+  try {
+    absence = clonePlainData(value, 'Transaction absence evidence', { allowScalar: false });
+    exactKeys(absence, [
+      'schemaVersion',
+      'kind',
+      'rpcCode',
+      'rpcType',
+      'requestedDigest',
+      'chainIdentifier',
+      'watermarkEpoch',
+      'watermarkCheckpointSequence',
+      'watermarkCheckpointDigest',
+    ], 'Transaction absence evidence', MAKER_V8_RECOVERY_ERROR.QUERY_INVALID);
+  } catch (cause) {
+    if (cause instanceof MakerV8RecoveryError) throw cause;
+    fail(
+      MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
+      MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
+      'Transaction absence evidence is malformed.',
+      {},
+      false,
+      cause,
+    );
+  }
+  if (absence.schemaVersion !== MAKER_V8_TRANSACTION_ABSENCE_SCHEMA
+    || absence.kind !== 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND'
+    || absence.rpcCode !== -32602
+    || absence.rpcType !== 'InvalidParams'
+    || normalizeDigest(
+      absence.requestedDigest,
+      'Absent transaction digest',
+      MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
+    ) !== digest
+    || absence.chainIdentifier !== chainIdentifier) fail(
+    MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
+    MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
+    'Transaction absence evidence does not bind the exact digest and chain.',
+  );
+  return deepFreeze({
+    ...absence,
+    watermarkEpoch: canonicalU64(absence.watermarkEpoch, 'Absence watermark epoch'),
+    watermarkCheckpointSequence: canonicalU64(
+      absence.watermarkCheckpointSequence,
+      'Absence watermark checkpoint sequence',
+    ),
+    watermarkCheckpointDigest: normalizeDigest(
+      absence.watermarkCheckpointDigest,
+      'Absence watermark checkpoint digest',
+      MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
+    ),
   });
+}
+
+function normalizeQueryResult(value, digest, chainIdentifier) {
+  if (value === null || value === undefined) fail(
+    MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
+    MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
+    'Digest query returned no typed result.',
+  );
   const result = clonePlainData(value, 'Digest query result', { allowScalar: false });
   const aliases = {
-    NOT_FOUND: 'NOT_FOUND', UNKNOWN: 'NOT_FOUND',
+    NOT_FOUND: 'NOT_FOUND',
     PENDING: 'PENDING',
     SUCCESS: 'FINALIZED_SUCCESS', FINALIZED_SUCCESS: 'FINALIZED_SUCCESS',
     FAILURE: 'FINALIZED_FAILURE', FINALIZED_FAILURE: 'FINALIZED_FAILURE',
@@ -2214,25 +2282,27 @@ function normalizeQueryResult(value, digest) {
     MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
     'Digest query returned an unsupported status.',
   );
-  if (status !== 'NOT_FOUND') {
-    const observed = normalizeDigest(
-      result.digest ?? result.transactionDigest,
-      'Queried transaction digest',
-      MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
-    );
-    if (observed !== digest) fail(
+  const observed = normalizeDigest(
+    result.digest ?? result.transactionDigest,
+    'Queried transaction digest',
+    MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
+  );
+  if (observed !== digest) {
+    fail(
       MAKER_V8_RECOVERY_ERROR.DIGEST_MISMATCH,
       MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
       'Digest query returned evidence for a different transaction.',
       { expected: digest, observed },
     );
-  } else if (result.digest && normalizeDigest(result.digest, 'Queried transaction digest') !== digest) {
-    fail(
-      MAKER_V8_RECOVERY_ERROR.DIGEST_MISMATCH,
-      MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
-      'Not-found query evidence named a different transaction.',
-    );
   }
+  const absence = status === 'NOT_FOUND'
+    ? canonicalTransactionAbsence(result.absence, digest, chainIdentifier)
+    : null;
+  if (status !== 'NOT_FOUND' && result.absence != null) fail(
+    MAKER_V8_RECOVERY_ERROR.QUERY_INVALID,
+    MAKER_V8_RECOVERY_ERROR_LAYER.QUERY,
+    'Only a typed NOT_FOUND result may contain transaction absence evidence.',
+  );
   const finalized = status.startsWith('FINALIZED_');
   const epoch = finalized
     ? canonicalU64(result.epoch, 'Finalized transaction epoch') : null;
@@ -2253,11 +2323,12 @@ function normalizeQueryResult(value, digest) {
     : null;
   return deepFreeze({
     status,
-    digest: status === 'NOT_FOUND' ? null : digest,
+    digest,
     epoch,
     effectsFingerprint,
     eventsDigest,
     error,
+    absence,
   });
 }
 
@@ -2401,8 +2472,13 @@ function failureFromQuery(outcome, record, now) {
   });
 }
 
-function expirationFromNotFound(record, currentEpoch, now) {
-  const observedEpoch = canonicalU64(currentEpoch, 'Observed Mainnet epoch');
+function expirationFromNotFound(record, now) {
+  const absence = canonicalTransactionAbsence(
+    record.queryOutcome?.absence,
+    record.signed.digest,
+    record.identity.chain,
+  );
+  const observedEpoch = absence.watermarkEpoch;
   if (record.queryOutcome?.status !== 'NOT_FOUND'
     || BigInt(observedEpoch) <= BigInt(record.plan.expiration.epoch)) fail(
     MAKER_V8_RECOVERY_ERROR.EXPIRED_NOT_FOUND_INVALID,
@@ -2424,6 +2500,7 @@ function expirationFromNotFound(record, currentEpoch, now) {
     expirationEpoch: record.plan.expiration.epoch,
     observedEpoch,
     queryStatus: 'NOT_FOUND',
+    absence,
     retiredAt: now,
   });
 }
@@ -2438,6 +2515,12 @@ function validateExpiredNotFound(expiration, record) {
     || expiration.expirationEpoch
       !== (record.plan?.expiration?.epoch ?? record.expiration?.expirationEpoch)
     || expiration.queryStatus !== 'NOT_FOUND'
+    || stableJson(canonicalTransactionAbsence(
+      expiration.absence,
+      expiration.digest,
+      expiration.identity.chain,
+    )) !== stableJson(expiration.absence)
+    || expiration.observedEpoch !== expiration.absence.watermarkEpoch
     || !Number.isSafeInteger(expiration.retiredAt)
     || BigInt(canonicalU64(expiration.observedEpoch, 'Expiration observed epoch'))
       <= BigInt(canonicalU64(expiration.expirationEpoch, 'Expiration epoch'))) fail(
@@ -2473,7 +2556,6 @@ function normalizeBroadcastResult(value, digest) {
  * - verifySignature({ bytes, signature, digest, signer }) -> true or
  *   { verified: true, signer?, digest?, bytes? }
  * - getContext({ identity }) -> current full identity and epoch (used only for replay)
- * - getCurrentEpoch({ identity, digest, planHash }) -> authoritative current Mainnet epoch
  * - sign({ bytes, digest, signer, identity, plan }) -> signed envelope
  * - broadcast({ bytes, signature, digest, signer, identity }) -> { digest }
  * - query({ digest, identity, plan, planHash }) -> strict digest status
@@ -2487,7 +2569,6 @@ export function createMakerV8RecoveryController(options = {}) {
   );
   const verifySignature = requireDependency(options.verifySignature, 'verifySignature');
   const getContext = requireDependency(options.getContext, 'getContext');
-  const getCurrentEpoch = requireDependency(options.getCurrentEpoch, 'getCurrentEpoch');
   const signBoundary = requireDependency(options.sign, 'sign');
   const broadcastBoundary = requireDependency(options.broadcast, 'broadcast');
   const queryBoundary = requireDependency(options.query, 'query');
@@ -2878,29 +2959,7 @@ export function createMakerV8RecoveryController(options = {}) {
     return receipt;
   }
 
-  function assertLiveRecoveryBinding(record, durableIdentity, input, phase) {
-    let liveIdentity;
-    try {
-      liveIdentity = canonicalMakerV8RecoveryIdentity(input.liveIdentity);
-    } catch (cause) {
-      fail(
-        MAKER_V8_RECOVERY_ERROR.CONTEXT_DRIFT,
-        MAKER_V8_RECOVERY_ERROR_LAYER.CONTEXT,
-        `${phase} live identity is incomplete or invalid.`,
-        {},
-        false,
-        cause,
-      );
-    }
-    if (stableJson(liveIdentity) !== stableJson(durableIdentity)) fail(
-      MAKER_V8_RECOVERY_ERROR.CONTEXT_DRIFT,
-      MAKER_V8_RECOVERY_ERROR_LAYER.CONTEXT,
-      `${phase} live identity differs from the exact durable recovery identity.`,
-      {
-        durableIdentityKey: record.identityKey,
-        liveIdentityKey: makerV8RecoveryIdentityKey(liveIdentity),
-      },
-    );
+  function assertExpectedDurablePlan(record, input, phase) {
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) fail(
       MAKER_V8_RECOVERY_ERROR.PLAN_INVALID,
       MAKER_V8_RECOVERY_ERROR_LAYER.VALIDATION,
@@ -2925,6 +2984,32 @@ export function createMakerV8RecoveryController(options = {}) {
       },
       true,
     );
+  }
+
+  function assertLiveRecoveryBinding(record, durableIdentity, input, phase) {
+    let liveIdentity;
+    try {
+      liveIdentity = canonicalMakerV8RecoveryIdentity(input.liveIdentity);
+    } catch (cause) {
+      fail(
+        MAKER_V8_RECOVERY_ERROR.CONTEXT_DRIFT,
+        MAKER_V8_RECOVERY_ERROR_LAYER.CONTEXT,
+        `${phase} live identity is incomplete or invalid.`,
+        {},
+        false,
+        cause,
+      );
+    }
+    if (stableJson(liveIdentity) !== stableJson(durableIdentity)) fail(
+      MAKER_V8_RECOVERY_ERROR.CONTEXT_DRIFT,
+      MAKER_V8_RECOVERY_ERROR_LAYER.CONTEXT,
+      `${phase} live identity differs from the exact durable recovery identity.`,
+      {
+        durableIdentityKey: record.identityKey,
+        liveIdentityKey: makerV8RecoveryIdentityKey(liveIdentity),
+      },
+    );
+    assertExpectedDurablePlan(record, input, phase);
     return liveIdentity;
   }
 
@@ -3222,14 +3307,11 @@ export function createMakerV8RecoveryController(options = {}) {
     async reclaimAwaitingSignature(input) {
       exactKeys(input, [
         'identity',
-        'liveIdentity',
-        'plan',
         'expectedRevision',
         'expectedPlanHash',
-        'evidence',
       ], 'Signature reclaim request',
         MAKER_V8_RECOVERY_ERROR.PLAN_INVALID);
-      const { identity: identityValue, evidence } = input;
+      const { identity: identityValue } = input;
       const identity = canonicalMakerV8RecoveryIdentity(identityValue);
       const record = requireExactIdentity(await loadScope(identity), identity);
       if (!record || record.state !== MAKER_V8_RECOVERY_STATE.AWAITING_SIGNATURE
@@ -3239,24 +3321,16 @@ export function createMakerV8RecoveryController(options = {}) {
         'Only an unsigned AWAITING_SIGNATURE recovery can be reclaimed.',
         { state: record?.state ?? null },
       );
-      const liveIdentity = assertLiveRecoveryBinding(
-        record,
-        identity,
-        input,
-        'reclaimAwaitingSignature',
-      );
+      assertExpectedDurablePlan(record, input, 'reclaimAwaitingSignature');
       // Even a safely classified Wallet Standard rejection is not authority to
       // erase a durable in-flight WAL entry. Every new/random page session must
       // wait out the bounded lease and receive an exact one-shot user
-      // no-artifact confirmation before it may reset the request to READY.
+      // no-artifact confirmation before it may reset the request to READY. A
+      // reclaim deliberately does not refetch mutable chain state or replay a
+      // dry run: those inputs may have drifted after the abandoned wallet
+      // prompt, and no new signature is produced at this boundary. Any later
+      // signing attempt must discard/rebuild and perform the full fresh proof.
       const resetUnsigned = await externalUnsignedConfirmation(record);
-      await planFromFreshEvidence(
-        record,
-        liveIdentity,
-        input.plan,
-        evidence,
-        'reclaimAwaitingSignature',
-      );
       return cas(record, MAKER_V8_RECOVERY_STATE.READY, {
         signatureSessionId: null,
         signatureDisposition: null,
@@ -3450,7 +3524,7 @@ export function createMakerV8RecoveryController(options = {}) {
           identity: publicData(identity),
           plan: publicData(record.plan),
           planHash: record.plan.fingerprint,
-        }), record.signed.digest);
+        }), record.signed.digest, record.identity.chain);
       } catch (cause) {
         const error = cause instanceof MakerV8RecoveryError ? cause
           : new MakerV8RecoveryError('Transaction digest query failed.', {
@@ -3552,26 +3626,8 @@ export function createMakerV8RecoveryController(options = {}) {
         queryOutcome: queried,
         lastError: null,
       });
-      let currentEpoch;
-      try {
-        currentEpoch = canonicalU64(await getCurrentEpoch({
-          identity: publicData(identity),
-          digest: record.signed.digest,
-          planHash: record.plan.fingerprint,
-        }), 'Authoritative current Mainnet epoch');
-      } catch (cause) {
-        if (cause instanceof MakerV8RecoveryError) throw cause;
-        fail(
-          MAKER_V8_RECOVERY_ERROR.CONTEXT_UNAVAILABLE,
-          MAKER_V8_RECOVERY_ERROR_LAYER.CONTEXT,
-          'The authoritative current Mainnet epoch could not be read after NOT_FOUND.',
-          {},
-          true,
-          cause,
-        );
-      }
-      if (BigInt(currentEpoch) > BigInt(record.plan.expiration.epoch)) {
-        const expiration = expirationFromNotFound(record, currentEpoch, safeClock(clock));
+      if (BigInt(queried.absence.watermarkEpoch) > BigInt(record.plan.expiration.epoch)) {
+        const expiration = expirationFromNotFound(record, safeClock(clock));
         const expired = await cas(record, MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND, {
           plan: null,
           signed: null,
@@ -3636,6 +3692,7 @@ export function createMakerV8RecoveryController(options = {}) {
           effectsFingerprint: null,
           eventsDigest: null,
           error: null,
+          absence: null,
         }),
         lastError: null,
       });

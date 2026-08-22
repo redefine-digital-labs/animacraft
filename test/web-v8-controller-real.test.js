@@ -11,6 +11,8 @@ import {
   WEB_V8_CONTEXT_SCHEMA,
   WEB_V8_EXECUTION_SCHEMA,
   WEB_V8_INVENTORY_SCHEMA,
+  WEB_V8_RECOVERY_DATABASE_NAME,
+  WEB_V8_RECOVERY_DATABASE_VERSION,
   WEB_V8_ROUTE_SCHEMA,
   WEB_V8_UNSIGNED_DISCARD_CONFIRMATION,
   WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION,
@@ -21,6 +23,7 @@ import {
   renderFreshV8App,
 } from '../app.js';
 import { makerV8StableType } from '../maker-v8-runtime.js';
+import { MAKER_V8_TRANSACTION_ABSENCE_SCHEMA } from '../maker-v8-actions.js';
 import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
   attestMakerV8Runtime,
@@ -45,6 +48,24 @@ const id = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const packageId = (digit) => `0x${digit.repeat(64)}`;
 const bytes32 = (value) => Array(32).fill(value);
 const digest = '11111111111111111111111111111111';
+
+function absentTransactionResult(transactionDigest, watermarkEpoch = '100') {
+  return {
+    status: 'NOT_FOUND',
+    digest: transactionDigest,
+    absence: {
+      schemaVersion: MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
+      kind: 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND',
+      rpcCode: -32602,
+      rpcType: 'InvalidParams',
+      requestedDigest: transactionDigest,
+      chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+      watermarkEpoch,
+      watermarkCheckpointSequence: '777',
+      watermarkCheckpointDigest: digest,
+    },
+  };
+}
 
 test('web execution config rejects a signing-only deployment', () => {
   assert.throws(
@@ -303,6 +324,18 @@ function memoryIndexedDb() {
     },
   };
 }
+
+test('fresh recovery opens a new version-one database instead of upgrading the pre-release cache', async () => {
+  const memory = memoryIndexedDb();
+  const adapter = createIndexedDbRecoveryAdapter(memory.factory);
+  assert.equal(await adapter.load('missing-scope'), null);
+  assert.deepEqual(memory.openCalls, [{
+    name: WEB_V8_RECOVERY_DATABASE_NAME,
+    version: WEB_V8_RECOVERY_DATABASE_VERSION,
+  }]);
+  assert.notEqual(WEB_V8_RECOVERY_DATABASE_NAME, 'animacraft-fresh-maker-v8');
+  assert.equal(WEB_V8_RECOVERY_DATABASE_VERSION, 1);
+});
 
 function u64Bytes(value) {
   const bytes = [];
@@ -1332,7 +1365,9 @@ test('controller uses real builder, forces re-review on ref drift, and stays uns
           authority: { kind: 'MAKER_ADMIN', refs: [ref(data.IDs.admin)] },
         };
       },
-      async queryTransaction({ digest: transactionDigest }) { return { status: 'NOT_FOUND', digest: transactionDigest, checkpoint: null, error: null }; },
+      async queryTransaction({ digest: transactionDigest }) {
+        return absentTransactionResult(transactionDigest);
+      },
       async readbackMarketAction() { throw new Error('not used'); },
     },
     wallet: {
@@ -1827,15 +1862,17 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   assert.deepEqual(reloaded.snapshot().completionReceipt, receipt);
   assert.deepEqual(await reloadedPersistence.loadReceipt(tombstone.identityKey), receipt);
   assert.deepEqual(memory.openCalls, [
-    { name: databaseName, version: 2 },
-    { name: databaseName, version: 2 },
-    { name: databaseName, version: 2 },
+    { name: databaseName, version: WEB_V8_RECOVERY_DATABASE_VERSION },
+    { name: databaseName, version: WEB_V8_RECOVERY_DATABASE_VERSION },
+    { name: databaseName, version: WEB_V8_RECOVERY_DATABASE_VERSION },
   ]);
 
   // A generic wallet transport failure is outcome-unknown. A random new page
   // session must rediscover the AWAITING_SIGNATURE WAL, wait out its bounded
-  // lease, require the exact product phrase, and consume a fresh refetch/build/
-  // Mainnet simulation before it can return to READY.
+  // lease, and require the exact product phrase plus a trusted no-artifact
+  // confirmation before it can return to READY. Reclaim itself must not depend
+  // on mutable live refs or a dry run: no new signature is produced, and those
+  // refs may legitimately have drifted while the old wallet prompt was open.
   finalized = null;
   const awaitingMemory = memoryIndexedDb();
   const awaitingDatabaseName = `animacraft-fresh-maker-v8-awaiting:${globalThis.crypto.randomUUID()}`;
@@ -1917,8 +1954,8 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
     randomReload.reclaimAwaitingSignature(WEB_V8_UNSIGNED_RECLAIM_CONFIRMATION),
     { code: 'MAKER_V8_RECOVERY_SIGNATURE_LEASE_ACTIVE' },
   );
-  assert.equal(dryRunCalls, dryRunsBeforeEarlyReclaim + 1,
-    'pre-expiry reclaim still reacquires and simulates a fresh exact plan before failing closed');
+  assert.equal(dryRunCalls, dryRunsBeforeEarlyReclaim,
+    'pre-expiry reclaim never rebuilds or simulates the abandoned plan');
   assert.equal(randomReload.snapshot().status, 'AWAITING_SIGNATURE');
   assert.equal((await awaitingPersistence.load(scopeKey)).revision, awaitingRecord.revision);
 
@@ -1965,6 +2002,7 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   assert.equal((await awaitingPersistence.load(scopeKey)).state, 'AWAITING_SIGNATURE');
 
   leaseNow = awaitingRecord.signatureLease.expiresAtMs;
+  finalized = { refDrift: true };
   const contextReadsBeforeReclaim = actionContextRequestIds.length;
   const dryRunsBeforeReclaim = dryRunCalls;
   const reclaimed = await randomReload.reclaimAwaitingSignature(
@@ -1972,8 +2010,10 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   );
   assert.equal(reclaimed.state, 'READY');
   assert.equal(unknownWalletCalls, 1, 'reclaim never opens a second wallet prompt');
-  assert.equal(actionContextRequestIds.length, contextReadsBeforeReclaim + 1);
-  assert.equal(dryRunCalls, dryRunsBeforeReclaim + 1);
+  assert.equal(actionContextRequestIds.length, contextReadsBeforeReclaim,
+    'post-lease no-artifact reclaim stays available after live object drift');
+  assert.equal(dryRunCalls, dryRunsBeforeReclaim,
+    'post-lease no-artifact reclaim does not authorize or dry-run a stale plan');
   assert.notEqual(reclaimed.writerSessionId, abandonedSigningSession);
   assert.match(reclaimed.writerSessionId,
     /^web-v8-session:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
@@ -1996,7 +2036,6 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
     readyReload.discardUnsigned('discard it'),
     { code: 'WEB_V8_UNSIGNED_DISCARD_CONFIRMATION_REQUIRED' },
   );
-  finalized = { refDrift: true };
   await assert.rejects(
     readyReload.requestSignature('SIGN EXACT TRANSACTION'),
     { code: 'WEB_V8_SIGNING_CONTEXT_DRIFT', layer: 'CONTEXT' },
@@ -2046,7 +2085,7 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
     rpc: {
       ...adapters.rpc,
       async queryTransaction(request) {
-        return { status: 'NOT_FOUND', digest: request.digest };
+        return absentTransactionResult(request.digest, currentEpoch);
       },
       async readbackMarketAction() { throw new Error('NOT_FOUND must not read finalized state'); },
     },
@@ -2073,6 +2112,7 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   assert.equal(expired.expiration.digest, expiringSigned.signed.digest);
   assert.equal(expired.expiration.planHash, expiringSigned.plan.fingerprint);
   assert.deepEqual(Object.keys(expired.expiration).sort(), [
+    'absence',
     'digest',
     'expirationEpoch',
     'identity',
@@ -2090,6 +2130,11 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
   assert.equal(expired.expiration.expirationEpoch, '101');
   assert.equal(expired.expiration.observedEpoch, '102');
   assert.equal(expired.expiration.queryStatus, 'NOT_FOUND');
+  assert.equal(expired.expiration.absence.watermarkEpoch, '102');
+  assert.equal(expired.expiration.absence.watermarkCheckpointSequence, '777');
+  assert.equal(expired.expiration.absence.requestedDigest, expiringSigned.signed.digest);
+  assert.equal(expired.expiration.absence.chainIdentifier,
+    MAKER_V8_MAINNET_CHAIN_IDENTIFIER);
   assert.ok(Number.isSafeInteger(expired.expiration.retiredAt));
   assert.equal(expirationMemory.database.records.get('expirations').size, 1);
   assert.deepEqual(

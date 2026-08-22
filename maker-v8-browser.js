@@ -1,4 +1,5 @@
 import {
+  JsonRpcError,
   SuiJsonRpcClient,
   getJsonRpcFullnodeUrl,
 } from '@mysten/sui/jsonRpc';
@@ -40,6 +41,7 @@ import {
 import { MAKER_V8_ROLES } from './maker-v8-runtime.js';
 import {
   MAKER_V8_ACTIONS,
+  MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
   makerV8ActionV8,
 } from './maker-v8-actions.js';
 
@@ -76,6 +78,21 @@ function freeze(value) {
 function plain(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   return [Object.prototype, null].includes(Object.getPrototypeOf(value));
+}
+
+function isTypedTransactionNotFound(error, transactionDigest) {
+  if (!(error instanceof JsonRpcError)
+    || error.code !== -32602
+    || error.type !== 'InvalidParams') return false;
+  const message = String(error.message || '').trim().replace(/\.$/, '');
+  return new Set([
+    `Could not find the referenced transaction ${transactionDigest}`,
+    `Could not find the referenced transaction: ${transactionDigest}`,
+    `Could not find the referenced transaction [${transactionDigest}]`,
+    `Could not find the referenced transaction '${transactionDigest}'`,
+    `Could not find the referenced transaction \"${transactionDigest}\"`,
+    `Transaction ${transactionDigest} not found`,
+  ]).has(message);
 }
 
 function fail(code, message, layer = 'CONFIGURATION', details = {}) {
@@ -1882,7 +1899,7 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
 
     async queryTransaction({ digest: transactionDigest }) {
       await assertPinnedMainnet(client);
-      try {
+      const readExactDigest = async () => {
         if (typeof client?.core?.getTransaction !== 'function') {
           fail('MAKER_V8_BROWSER_CORE_V2_REQUIRED', 'Core V2 getTransaction is required for transaction queries.', 'READBACK');
         }
@@ -1912,15 +1929,67 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
               ?? 'Move execution failed.',
             ),
           }),
+          absence: null,
         });
-      } catch (error) {
-        if (/not found|could not find the referenced transaction|transaction.*does not exist/i.test(String(error?.message || ''))) {
-          return freeze({
-            status: 'NOT_FOUND', digest: null, epoch: null,
-            effectsFingerprint: null, eventsDigest: null, error: null,
-          });
+      };
+      try {
+        return await readExactDigest();
+      } catch (firstError) {
+        if (!isTypedTransactionNotFound(firstError, transactionDigest)) throw firstError;
+        if (typeof client?.getLatestCheckpointSequenceNumber !== 'function'
+          || typeof client?.getCheckpoint !== 'function') {
+          fail('MAKER_V8_BROWSER_ABSENCE_WATERMARK_REQUIRED',
+            'Typed transaction absence requires an exact ledger checkpoint watermark.',
+            'READBACK');
         }
-        throw error;
+        const latestSequence = decimal(
+          await client.getLatestCheckpointSequenceNumber(),
+          'transaction absence latest checkpoint sequence',
+        );
+        const checkpoint = await client.getCheckpoint({ id: latestSequence });
+        const watermarkCheckpointSequence = decimal(
+          checkpoint?.sequenceNumber,
+          'transaction absence checkpoint sequence',
+        );
+        if (watermarkCheckpointSequence !== latestSequence) {
+          fail('MAKER_V8_BROWSER_ABSENCE_WATERMARK_DRIFT',
+            'Ledger checkpoint response differs from the requested watermark.',
+            'READBACK');
+        }
+        await assertPinnedMainnet(client);
+        let secondError;
+        try {
+          // The second exact-digest read occurs after the checkpoint watermark.
+          // If the transaction became visible between the first absence and the
+          // watermark, its finalized result wins and the bytes are never retired.
+          return await readExactDigest();
+        } catch (error) {
+          if (!isTypedTransactionNotFound(error, transactionDigest)) throw error;
+          secondError = error;
+        }
+        await assertPinnedMainnet(client);
+        return freeze({
+          status: 'NOT_FOUND',
+          digest: transactionDigest,
+          epoch: null,
+          effectsFingerprint: null,
+          eventsDigest: null,
+          error: null,
+          absence: freeze({
+            schemaVersion: MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
+            kind: 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND',
+            rpcCode: secondError.code,
+            rpcType: secondError.type,
+            requestedDigest: transactionDigest,
+            chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+            watermarkEpoch: decimal(checkpoint?.epoch, 'transaction absence checkpoint epoch'),
+            watermarkCheckpointSequence,
+            watermarkCheckpointDigest: digest(
+              checkpoint?.digest,
+              'transaction absence checkpoint digest',
+            ),
+          }),
+        });
       }
     },
 

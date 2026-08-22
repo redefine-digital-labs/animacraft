@@ -49,6 +49,12 @@ the exact TransactionData with the pinned Sui SDK; and consumes a new one-shot
 dry-run proof. Signed bytes, digest, signature, plan, and source fingerprint are
 persisted in IndexedDB before broadcast.
 
+The durable WAL lives in the fresh database
+`animacraft-fresh-maker-v8-recovery-v2` (schema version 1). The client never
+opens or migrates the similarly named pre-release development cache: its
+signature and broadcast gates were never enabled, so it is not a supported
+source of signed authority.
+
 Recovery always queries the saved digest first. It may replay only the same
 signed bytes, never replacement-sign an ambiguous outcome. Success is accepted
 only after Core V2 effects-certified finality, exact TransactionData, effects
@@ -56,6 +62,9 @@ and TransactionEvents BCS digests, historical input/output refs, typed events,
 listing state, custody, counters, revenue and payout ownership all agree. A
 verified record is atomically replaced by a durable receipt and monotonic
 `CLEANED` tombstone so signed material does not remain in the active WAL.
+An expired absent transaction can release its Root only after two typed
+digest queries bracket an exact Mainnet checkpoint watermark and both remain
+absent; transport errors and message-string matches are never absence proof.
 
 Effects-certified finality is not a claim of checkpoint inclusion. A future
 release may add independently bound checkpoint receipts as an auditability

@@ -4,7 +4,7 @@ import test from 'node:test';
 
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { bcs } from '@mysten/sui/bcs';
-import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import { JsonRpcError, SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import {
@@ -18,6 +18,7 @@ import {
 
 import {
   MAKER_V8_OFFICIAL_MAINNET_RPC_URL,
+  createMakerV8LiveDataSourceV8,
   createProductionMakerV8BrowserAdapters,
   createWalletStandardConnectorV8,
   decodeMakerV8CoreEventV8,
@@ -26,6 +27,7 @@ import {
   readFinalizedMakerV8EnvelopeV8,
 } from '../maker-v8-browser.js';
 import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
+import { MAKER_V8_TRANSACTION_ABSENCE_SCHEMA } from '../maker-v8-actions.js';
 
 const planHash = `0x${'ab'.repeat(32)}`;
 const finalizedTransactionBytes = toBase64(new Uint8Array([4, 5]));
@@ -200,6 +202,102 @@ test('Physical Base and every Pack action parse canonical Move Option<ID> arrays
     () => parseMakerV8MoveOptionIdV8({ vec: 'not-an-option' }),
     (error) => error.code === 'MAKER_V8_BROWSER_OPTION_INVALID',
   );
+});
+
+function typedTransactionAbsentError(transactionDigest = suiDigest) {
+  return new JsonRpcError(
+    `Could not find the referenced transaction ${transactionDigest}`,
+    -32602,
+  );
+}
+
+function finalizedQueryResult(transactionDigest = suiDigest) {
+  return {
+    $kind: 'Transaction',
+    Transaction: {
+      digest: transactionDigest,
+      epoch: '102',
+      status: { success: true },
+      effects: {
+        transactionDigest,
+        status: { success: true },
+        eventsDigest: null,
+        bcs: new Uint8Array([1, 2, 3]),
+      },
+    },
+  };
+}
+
+function queryClient(responses) {
+  const queue = [...responses];
+  let queries = 0;
+  return {
+    core: {
+      async getTransaction() {
+        queries += 1;
+        const next = queue.shift();
+        if (next instanceof Error) throw next;
+        return next;
+      },
+    },
+    async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+    async getLatestCheckpointSequenceNumber() { return '900'; },
+    async getCheckpoint({ id }) {
+      assert.equal(id, '900');
+      return { sequenceNumber: '900', epoch: '102', digest: suiDigest };
+    },
+    get queries() { return queries; },
+  };
+}
+
+test('production transaction absence classifier is typed, watermarked, and rechecks after the watermark', async () => {
+  const falseMessageClient = queryClient([
+    new JsonRpcError(`Could not find the referenced transaction ${suiDigest}`, -32603),
+  ]);
+  await assert.rejects(
+    createMakerV8LiveDataSourceV8({ client: falseMessageClient, runtime: {} })
+      .queryTransaction({ digest: suiDigest }),
+    (error) => error instanceof JsonRpcError && error.code === -32603,
+  );
+
+  const raceClient = queryClient([
+    typedTransactionAbsentError(),
+    finalizedQueryResult(),
+  ]);
+  const finalized = await createMakerV8LiveDataSourceV8({ client: raceClient, runtime: {} })
+    .queryTransaction({ digest: suiDigest });
+  assert.equal(finalized.status, 'FINALIZED_SUCCESS');
+  assert.equal(finalized.digest, suiDigest);
+  assert.equal(finalized.absence, null);
+  assert.equal(raceClient.queries, 2,
+    'a transaction finalized between the first absence and watermark must win');
+
+  const absentClient = queryClient([
+    typedTransactionAbsentError(),
+    typedTransactionAbsentError(),
+  ]);
+  const absent = await createMakerV8LiveDataSourceV8({ client: absentClient, runtime: {} })
+    .queryTransaction({ digest: suiDigest });
+  assert.deepEqual(absent, {
+    status: 'NOT_FOUND',
+    digest: suiDigest,
+    epoch: null,
+    effectsFingerprint: null,
+    eventsDigest: null,
+    error: null,
+    absence: {
+      schemaVersion: MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
+      kind: 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND',
+      rpcCode: -32602,
+      rpcType: 'InvalidParams',
+      requestedDigest: suiDigest,
+      chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+      watermarkEpoch: '102',
+      watermarkCheckpointSequence: '900',
+      watermarkCheckpointDigest: suiDigest,
+    },
+  });
+  assert.equal(absentClient.queries, 2);
 });
 
 function buildClient({ chainIds = [MAKER_V8_MAINNET_CHAIN_IDENTIFIER] } = {}) {

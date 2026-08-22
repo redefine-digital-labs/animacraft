@@ -15,6 +15,7 @@ import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
   attestMakerV8Runtime,
 } from '../maker-v8-chain.js';
+import { MAKER_V8_TRANSACTION_ABSENCE_SCHEMA } from '../maker-v8-actions.js';
 import {
   MAKER_V8_CLOCK_OBJECT_ID,
   MAKER_V8_PAYMENT_COIN_TYPE,
@@ -44,6 +45,28 @@ const NETWORK = 'mainnet';
 const FINALIZED_EPOCH = '77';
 const EFFECTS_FINGERPRINT = `0x${'ab'.repeat(32)}`;
 const EVENTS_DIGEST = '22222222222222222222222222222222';
+
+function absentTransactionResult(transactionDigest, {
+  watermarkEpoch = '0',
+  watermarkCheckpointSequence = '1',
+  watermarkCheckpointDigest = digest,
+} = {}) {
+  return {
+    status: 'NOT_FOUND',
+    digest: transactionDigest,
+    absence: {
+      schemaVersion: MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
+      kind: 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND',
+      rpcCode: -32602,
+      rpcType: 'InvalidParams',
+      requestedDigest: transactionDigest,
+      chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+      watermarkEpoch,
+      watermarkCheckpointSequence,
+      watermarkCheckpointDigest,
+    },
+  };
+}
 
 const runtimeInput = Object.freeze({
   schemaVersion: MAKER_V8_RUNTIME_SCHEMA,
@@ -549,7 +572,7 @@ function harness({
     }),
     query: query || (async (request) => {
       calls.push({ kind: 'query', request });
-      return { status: 'NOT_FOUND' };
+      return absentTransactionResult(request.digest);
     }),
     broadcast: broadcast || (async (request) => {
       calls.push({ kind: 'broadcast', request });
@@ -613,10 +636,13 @@ async function requestSignatureWithFreshBinding(
   );
 }
 
-async function reclaimWithFreshBinding(setup, fixture = primary, evidence = undefined) {
-  return setup.controller.reclaimAwaitingSignature(
-    await freshSigningBinding(setup, fixture, evidence),
-  );
+async function reclaimDurableUnsigned(setup, fixture = primary) {
+  const record = await setup.controller.load(fixture.identity);
+  return setup.controller.reclaimAwaitingSignature({
+    identity: record.identity,
+    expectedRevision: record.revision,
+    expectedPlanHash: record.plan.fingerprint,
+  });
 }
 
 function errorIs(code, layer) {
@@ -754,7 +780,7 @@ test('signed bytes become durable before query and byte-identical query-first re
     query: async (request) => {
       order.push('query');
       setup.calls.push({ kind: 'query', request });
-      return { status: 'NOT_FOUND' };
+      return absentTransactionResult(request.digest);
     },
     broadcast: async (request) => {
       order.push('broadcast');
@@ -851,17 +877,13 @@ test('wallet rejection survives reload; explicit reclaim CAS permits only a new 
     errorIs(MAKER_V8_RECOVERY_ERROR.SIGNATURE_REPLACEMENT_FORBIDDEN),
   );
   await assert.rejects(
-    reclaimWithFreshBinding(reloaded, primary, premature),
+    reclaimDurableUnsigned(reloaded, primary),
     errorIs(MAKER_V8_RECOVERY_ERROR.SIGNATURE_LEASE_ACTIVE),
   );
   now = stranded.signatureLease.expiresAtMs;
-  const ready = await reclaimWithFreshBinding(reloaded, primary, premature);
+  const ready = await reclaimDurableUnsigned(reloaded, primary);
   assert.equal(ready.state, MAKER_V8_RECOVERY_STATE.READY);
   assert.equal(ready.revision, stranded.revision + 1);
-  await assert.rejects(
-    requestSignatureWithFreshBinding(reloaded, primary, premature),
-    errorIs(MAKER_V8_RECOVERY_ERROR.PLAN_EVIDENCE_REPLAY),
-  );
 });
 
 test('unknown wallet outcome survives reload and requires an exact expired-lease confirmation', async () => {
@@ -908,12 +930,12 @@ test('unknown wallet outcome survives reload and requires an exact expired-lease
     errorIs(MAKER_V8_RECOVERY_ERROR.UNSIGNED_DISCARD_FORBIDDEN),
   );
   await assert.rejects(
-    reclaimWithFreshBinding(reloaded, primary, proof),
+    reclaimDurableUnsigned(reloaded, primary),
     errorIs(MAKER_V8_RECOVERY_ERROR.SIGNATURE_LEASE_ACTIVE),
   );
   now = stranded.signatureLease.expiresAtMs;
   await assert.rejects(
-    reclaimWithFreshBinding(reloaded, primary, proof),
+    reclaimDurableUnsigned(reloaded, primary),
     errorIs(MAKER_V8_RECOVERY_ERROR.UNSIGNED_CONFIRMATION_REQUIRED),
   );
 
@@ -933,7 +955,7 @@ test('unknown wallet outcome survives reload and requires an exact expired-lease
     }),
   });
   await assert.rejects(
-    reclaimWithFreshBinding(malformed, primary, proof),
+    reclaimDurableUnsigned(malformed, primary),
     errorIs(MAKER_V8_RECOVERY_ERROR.UNSIGNED_CONFIRMATION_INVALID),
   );
 
@@ -952,7 +974,8 @@ test('unknown wallet outcome survives reload and requires an exact expired-lease
       checkedAtMs: now,
     }),
   });
-  const ready = await reclaimWithFreshBinding(confirmed, primary, proof);
+  confirmed.setContext(changedQuote.identity);
+  const ready = await reclaimDurableUnsigned(confirmed, primary);
   assert.equal(ready.state, MAKER_V8_RECOVERY_STATE.READY);
   assert.equal(ready.revision, stranded.revision + 1);
   assert.equal(ready.signatureSessionId, null);
@@ -1016,7 +1039,7 @@ test('unsigned READY can be discarded; AWAITING must be explicitly reclaimed fir
     disposer.controller.discardUnsigned(changedQuote.identity),
     errorIs(MAKER_V8_RECOVERY_ERROR.UNSIGNED_DISCARD_FORBIDDEN),
   );
-  assert.equal((await reclaimWithFreshBinding(disposer, changedQuote)).state,
+  assert.equal((await reclaimDurableUnsigned(disposer, changedQuote)).state,
     MAKER_V8_RECOVERY_STATE.READY);
   assert.equal(await disposer.controller.discardUnsigned(changedQuote.identity), null);
   assert.equal(await disposer.controller.load(changedQuote.identity), null);
@@ -1062,7 +1085,8 @@ test('tombstone revisions prevent late-wallet ABA overwrite after same-scope rep
   const stranded = await first.controller.load(primary.identity);
   const remainingLeaseMs = Math.max(0, stranded.signatureLease.expiresAtMs - Date.now());
   await new Promise((resolve) => setTimeout(resolve, remainingLeaseMs + 5));
-  const reclaimed = await reclaimWithFreshBinding(winner);
+  winner.setContext(changedQuote.identity);
+  const reclaimed = await reclaimDurableUnsigned(winner);
   assert.equal(reclaimed.revision, stranded.revision + 1);
   await winner.controller.discardUnsigned(primary.identity);
   await prepare(winner, changedQuote);
@@ -1406,13 +1430,47 @@ test('finalized failure archives exact bytes but permits a fresh plan for the sa
   assert.equal((await reloaded.controller.listFinalizedFailures(epochDrift.identity)).length, 1);
 });
 
+test('untyped or unbound query absence never retires durable signed bytes', async (suite) => {
+  const malformed = [
+    ['null', null],
+    ['undefined', undefined],
+    ['unknown alias', { status: 'UNKNOWN', digest: primary.transactionDigest }],
+    ['legacy bare not found', { status: 'NOT_FOUND', digest: primary.transactionDigest }],
+    ['wrong chain', {
+      ...absentTransactionResult(primary.transactionDigest),
+      absence: {
+        ...absentTransactionResult(primary.transactionDigest).absence,
+        chainIdentifier: 'sui:testnet',
+      },
+    }],
+  ];
+  for (const [label, result] of malformed) {
+    await suite.test(label, async () => {
+      const persist = createMakerV8RecoveryMemoryAdapter();
+      const setup = harness({ persist, query: async () => result });
+      const signed = await prepareAndSign(setup);
+      await assert.rejects(
+        setup.controller.recover(primary.identity, { replayIfNotFound: false }),
+        errorIs(MAKER_V8_RECOVERY_ERROR.QUERY_INVALID, MAKER_V8_RECOVERY_ERROR_LAYER.QUERY),
+      );
+      const durable = await setup.controller.load(primary.identity);
+      assert.equal(durable.signed.digest, signed.signed.digest);
+      assert.notEqual(durable.state, MAKER_V8_RECOVERY_STATE.EXPIRED_NOT_FOUND);
+      assert.equal((await setup.controller.listExpiredNotFound(primary.identity)).length, 0);
+    });
+  }
+});
+
 test('authoritative NOT_FOUND past expiration is archived and releases the Root for fresh bytes', async () => {
   const persist = createMakerV8RecoveryMemoryAdapter();
   let currentEpoch = primary.plan.expiration.epoch;
   const setup = harness({
     persist,
     currentEpoch: () => currentEpoch,
-    query: async () => ({ status: 'NOT_FOUND' }),
+    query: async (request) => absentTransactionResult(request.digest, {
+      watermarkEpoch: currentEpoch,
+      watermarkCheckpointSequence: '777',
+    }),
   });
   await prepareAndSign(setup);
   const stillPending = await setup.controller.recover(primary.identity, { replayIfNotFound: false });
