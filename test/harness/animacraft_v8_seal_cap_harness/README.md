@@ -322,7 +322,10 @@ approved profile and canonical artifacts, builds the production Core and slim
 fixture with forced disassembly, performs source and `.mv` byte-for-byte
 comparisons plus SHA-256 checks, builds the companion harness, runs the offline
 commitment self-test, requires exactly seven production Move roots, and enforces
-Core `63,918 / 64,000` bytes (82-byte headroom).
+Core `63,918 / 64,000` bytes (82-byte headroom). It also runs a fast workspace
+self-test proving the required `genesis`/`test-publish` CLI contract, that the
+genesis directory is created before use, every generated path remains below the
+unique `mkdtemp` root, and cleanup removes it.
 
 The expensive metered replay is intentionally optional in default CI:
 
@@ -332,14 +335,19 @@ npm run move:seal-cap:localnet
 
 This single bounded command reruns the quick gate, requires exact Sui `1.76.1`,
 creates a fresh one-validator localnet and key only in a unique OS temporary
-directory, verifies the exact protocol profile through local RPC, publishes
-only the test slim fixture, and replays `333/334/500/501`. Every create/append
-operation finalizes before a separate `core_v8::seal` transaction. The runner
+directory (including creating the contained `network` directory before
+`sui genesis`), waits until a committed checkpoint and the genesis gas coin are
+visible through the embedded live index, verifies the exact protocol profile
+through local RPC, publishes only the test slim fixture through Sui's ephemeral
+`test-publish`, and replays `333/334/500/501`. Every create/append operation
+finalizes before a separate `core_v8::seal` transaction. The runner
 queries typed and raw effects, matches canonical limits/status/error/gas/effects
 shape, has a 15-minute total bound and per-transaction bounds, terminates the
 process group, and deletes all temporary keys and network state even on failure
 or interruption. It hard-codes loopback RPC and an explicit temporary client
-config; it never reads the user's Sui config and never contacts Mainnet.
+config; it never reads the user's Sui config and never contacts Mainnet. Sui
+swarm port collisions receive at most three fresh-genesis attempts inside the
+same bounded temporary root.
 
 ## Regression recommendation
 

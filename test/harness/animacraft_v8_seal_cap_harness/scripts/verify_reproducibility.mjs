@@ -67,6 +67,10 @@ process.stdout.write(
   `ok: approved protocol profile ${manifest.approvedProtocolProfile.canonicalSha256}\n`,
 );
 run(process.execPath, ['--check', join(scriptDirectory, 'run_localnet_replay.mjs')]);
+run(process.execPath, [
+  join(scriptDirectory, 'run_localnet_replay.mjs'),
+  '--workspace-self-test',
+]);
 
 const harnessRelative = 'test/harness/animacraft_v8_seal_cap_harness';
 const trackedHarnessFiles = String(run('git', [

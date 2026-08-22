@@ -3,9 +3,12 @@
 import { spawn } from 'node:child_process';
 import {
   cpSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
@@ -36,6 +39,7 @@ const gasBudget = '100000000000';
 const totalTimeoutMs = 15 * 60_000;
 const transactionTimeoutMs = 45_000;
 const deadline = Date.now() + totalTimeoutMs;
+const temporaryPrefix = 'animacraft-seal-cap-localnet-';
 
 let localnet = null;
 let localnetExit = null;
@@ -44,6 +48,56 @@ let cleanupPromise = null;
 
 function fail(message) {
   throw new Error(`seal-cap localnet replay: ${message}`);
+}
+
+function checkedTemporaryRoot(path) {
+  const target = resolve(path);
+  const temporaryDirectory = resolve(tmpdir());
+  if (dirname(target) !== temporaryDirectory
+      || !basename(target).startsWith(temporaryPrefix)
+      || !target.startsWith(join(temporaryDirectory, temporaryPrefix))) {
+    fail(`refusing unsafe temporary root ${path}`);
+  }
+  return target;
+}
+
+function checkedTemporaryChild(path, label) {
+  if (!temporaryRoot) fail(`${label} requested before temporary root creation`);
+  const safeRoot = checkedTemporaryRoot(temporaryRoot);
+  const target = resolve(path);
+  if (!target.startsWith(`${safeRoot}${sep}`)) {
+    fail(`refusing ${label} outside temporary root: ${path}`);
+  }
+  return target;
+}
+
+function prepareTemporaryWorkspace() {
+  temporaryRoot = checkedTemporaryRoot(
+    mkdtempSync(join(resolve(tmpdir()), temporaryPrefix)),
+  );
+  return {
+    fixtureDirectory: checkedTemporaryChild(
+      join(temporaryRoot, 'slim-core'),
+      'fixture directory',
+    ),
+    publicationFile: checkedTemporaryChild(
+      join(temporaryRoot, 'SlimPublished.toml'),
+      'publication file',
+    ),
+  };
+}
+
+function prepareNetworkDirectory(attempt) {
+  const name = attempt === 1 ? 'network' : `network-retry-${attempt}`;
+  const networkDirectory = checkedTemporaryChild(
+    join(temporaryRoot, name),
+    'network directory',
+  );
+  mkdirSync(networkDirectory, { mode: 0o700, recursive: true });
+  if (!statSync(networkDirectory).isDirectory()) {
+    fail('network directory was not created before genesis');
+  }
+  return networkDirectory;
 }
 
 function remaining(maximum) {
@@ -173,35 +227,40 @@ function startLocalnet(networkDirectory, rpcPort) {
   return () => Buffer.concat(logs).toString('utf8');
 }
 
-async function cleanup() {
-  if (cleanupPromise) return cleanupPromise;
-  cleanupPromise = (async () => {
-    if (localnet && localnet.exitCode === null && localnet.signalCode === null) {
+async function stopLocalnet() {
+  const process_ = localnet;
+  const exit = localnetExit;
+  if (process_) {
+    if (process_.exitCode === null && process_.signalCode === null) {
       try {
-        process.kill(-localnet.pid, 'SIGTERM');
+        process.kill(-process_.pid, 'SIGTERM');
       } catch {}
       await Promise.race([
-        localnetExit,
+        exit,
         new Promise((resolveWait) => setTimeout(resolveWait, 5_000)),
       ]);
-      if (localnet.exitCode === null && localnet.signalCode === null) {
+      if (process_.exitCode === null && process_.signalCode === null) {
         try {
-          process.kill(-localnet.pid, 'SIGKILL');
+          process.kill(-process_.pid, 'SIGKILL');
         } catch {}
         await Promise.race([
-          localnetExit,
+          exit,
           new Promise((resolveWait) => setTimeout(resolveWait, 1_000)),
         ]);
       }
     }
+    localnet = null;
+    localnetExit = null;
+  }
+}
+
+async function cleanup() {
+  if (cleanupPromise) return cleanupPromise;
+  cleanupPromise = (async () => {
+    await stopLocalnet();
     if (temporaryRoot) {
-      const expectedPrefix = join(tmpdir(), 'animacraft-seal-cap-localnet-');
-      if (!temporaryRoot.startsWith(expectedPrefix)
-          || dirname(temporaryRoot) !== resolve(tmpdir())
-          || !basename(temporaryRoot).startsWith('animacraft-seal-cap-localnet-')) {
-        fail(`refusing unsafe temporary cleanup target ${temporaryRoot}`);
-      }
-      rmSync(temporaryRoot, { force: true, recursive: true, maxRetries: 3, retryDelay: 100 });
+      const safeRoot = checkedTemporaryRoot(temporaryRoot);
+      rmSync(safeRoot, { force: true, recursive: true, maxRetries: 3, retryDelay: 100 });
     }
   })();
   return cleanupPromise;
@@ -224,23 +283,48 @@ async function rpc(rpcUrl, method, params) {
   return response.json();
 }
 
-async function waitForRpc(rpcUrl, getLocalnetLogs) {
+async function waitForRpc(rpcUrl, activeAddress, getLocalnetLogs) {
   const stopAt = Date.now() + remaining(60_000);
   let lastError = null;
+  let protocolEnvelope = null;
   while (Date.now() < stopAt) {
     if (localnet.exitCode !== null || localnet.signalCode !== null) {
       fail(`localnet exited before RPC readiness:\n${getLocalnetLogs()}`);
     }
     try {
-      const envelope = await rpc(rpcUrl, 'sui_getProtocolConfig', []);
-      if (envelope?.result) return envelope;
-      lastError = new Error(canonicalJson(envelope?.error ?? envelope));
+      protocolEnvelope ??= await rpc(rpcUrl, 'sui_getProtocolConfig', []);
+      if (!protocolEnvelope?.result) {
+        lastError = new Error(canonicalJson(
+          protocolEnvelope?.error ?? protocolEnvelope,
+        ));
+        protocolEnvelope = null;
+      } else {
+        const checkpoint = await rpc(
+          rpcUrl,
+          'sui_getLatestCheckpointSequenceNumber',
+          [],
+        );
+        if (typeof checkpoint?.result !== 'string') {
+          lastError = new Error(canonicalJson(checkpoint?.error ?? checkpoint));
+        } else {
+          const coins = await rpc(
+            rpcUrl,
+            'suix_getAllCoins',
+            [activeAddress, null, null],
+          );
+          if (Array.isArray(coins?.result?.data)
+              && coins.result.data.length > 0) {
+            return protocolEnvelope;
+          }
+          lastError = new Error(canonicalJson(coins?.error ?? coins));
+        }
+      }
     } catch (error) {
       lastError = error;
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 500));
   }
-  fail(`localnet RPC did not become ready: ${lastError?.message ?? 'unknown error'}`);
+  fail(`localnet RPC/checkpoint did not become ready: ${lastError?.message ?? 'unknown error'}`);
 }
 
 async function transactionEnvelope(rpcUrl, digest) {
@@ -280,37 +364,60 @@ function assertSuccess(envelope, label) {
 }
 
 async function main() {
-  if (process.argv.length !== 2) {
-    fail('this runner takes no arguments; use `npm run move:seal-cap:localnet`');
-  }
-
   await run(process.execPath, [quickGate], { timeoutMs: 4 * 60_000 });
   const evidence = loadAndVerifyEvidence(harnessDirectory);
 
-  temporaryRoot = mkdtempSync(join(tmpdir(), 'animacraft-seal-cap-localnet-'));
-  const networkDirectory = join(temporaryRoot, 'network');
-  const fixtureDirectory = join(temporaryRoot, 'slim-core');
-  await run('sui', [
-    'genesis',
-    '--force',
-    '--with-faucet',
-    '--working-dir', networkDirectory,
-    '--committee-size', '1',
-    '--epoch-duration-ms', '3600000',
-    '--quiet',
-  ], { timeoutMs: 60_000 });
+  const { fixtureDirectory, publicationFile } = prepareTemporaryWorkspace();
+  let clientConfig = null;
+  let protocolEnvelope = null;
+  let rpcUrl = null;
+  const startAttempts = 3;
+  for (let attempt = 1; attempt <= startAttempts; attempt += 1) {
+    const networkDirectory = prepareNetworkDirectory(attempt);
+    await run('sui', [
+      'genesis',
+      '--force',
+      '--with-faucet',
+      '--working-dir', networkDirectory,
+      '--committee-size', '1',
+      '--epoch-duration-ms', '3600000',
+      '--quiet',
+    ], { timeoutMs: 60_000 });
 
-  const rpcPort = await freePort();
-  const rpcUrl = `http://127.0.0.1:${rpcPort}`;
-  const clientConfig = join(networkDirectory, 'client.yaml');
-  const clientYaml = readFileSync(clientConfig, 'utf8')
-    .replaceAll('http://127.0.0.1:9000', rpcUrl)
-    .replaceAll('ws://127.0.0.1:9000', `ws://127.0.0.1:${rpcPort}`);
-  if (!clientYaml.includes(rpcUrl)) fail('generated client config did not expose localnet RPC');
-  writeFileSync(clientConfig, clientYaml, { mode: 0o600 });
+    const rpcPort = await freePort();
+    rpcUrl = `http://127.0.0.1:${rpcPort}`;
+    clientConfig = checkedTemporaryChild(
+      join(networkDirectory, 'client.yaml'),
+      'client config',
+    );
+    const clientYaml = readFileSync(clientConfig, 'utf8')
+      .replaceAll('http://127.0.0.1:9000', rpcUrl)
+      .replaceAll('ws://127.0.0.1:9000', `ws://127.0.0.1:${rpcPort}`);
+    if (!clientYaml.includes(rpcUrl)) fail('generated client config did not expose localnet RPC');
+    const activeAddress = clientYaml.match(
+      /^active_address:\s*["']?(0x[0-9a-fA-F]{64})["']?\s*$/m,
+    )?.[1];
+    if (!activeAddress) fail('generated client config omitted its active address');
+    writeFileSync(clientConfig, clientYaml, { mode: 0o600 });
 
-  const getLocalnetLogs = startLocalnet(networkDirectory, rpcPort);
-  const protocolEnvelope = await waitForRpc(rpcUrl, getLocalnetLogs);
+    const getLocalnetLogs = startLocalnet(networkDirectory, rpcPort);
+    try {
+      protocolEnvelope = await waitForRpc(rpcUrl, activeAddress, getLocalnetLogs);
+      break;
+    } catch (error) {
+      const collision = /Address already in use/.test(
+        `${error.stack ?? error.message}\n${getLocalnetLogs()}`,
+      );
+      await stopLocalnet();
+      if (!collision || attempt === startAttempts) throw error;
+      process.stderr.write(
+        `retry: Sui swarm port collision (${attempt}/${startAttempts})\n`,
+      );
+    }
+  }
+  if (!protocolEnvelope || !rpcUrl || !clientConfig) {
+    fail('localnet start attempts completed without an RPC/profile result');
+  }
   const profile = assertApprovedProtocolProfile(
     protocolEnvelope,
     evidence.approvedProfile,
@@ -337,9 +444,9 @@ async function main() {
   ];
   const published = await run('sui', [
     ...clientPrefix,
-    'publish', fixtureDirectory,
+    'test-publish', fixtureDirectory,
     '--build-env', 'sealcap',
-    '--pubfile-path', join(temporaryRoot, 'SlimPublished.toml'),
+    '--pubfile-path', publicationFile,
     '--gas-budget', gasBudget,
     '--warnings-are-errors',
     '--json',
@@ -422,8 +529,54 @@ async function main() {
   }, null, 2)}\n`);
 }
 
+async function workspaceSelfTest() {
+  const genesisHelp = await run('sui', ['genesis', '--help'], { timeoutMs: 10_000 });
+  if (!genesisHelp.stdout.includes('--working-dir')) {
+    fail('Sui genesis CLI omitted required --working-dir support');
+  }
+  const publishHelp = await run(
+    'sui',
+    ['client', 'test-publish', '--help'],
+    { timeoutMs: 10_000 },
+  );
+  if (!publishHelp.stdout.includes('--pubfile-path')) {
+    fail('Sui test-publish CLI omitted required --pubfile-path support');
+  }
+  prepareTemporaryWorkspace();
+  const networkDirectory = prepareNetworkDirectory(1);
+  if (!existsSync(networkDirectory) || !statSync(networkDirectory).isDirectory()) {
+    fail('workspace self-test did not create the genesis network directory');
+  }
+  for (const unsafePath of [
+    temporaryRoot,
+    dirname(temporaryRoot),
+    join(dirname(temporaryRoot), `${temporaryPrefix}outside`),
+  ]) {
+    let rejected = false;
+    try {
+      checkedTemporaryChild(unsafePath, 'workspace self-test target');
+    } catch {
+      rejected = true;
+    }
+    if (!rejected) fail(`workspace self-test accepted unsafe path ${unsafePath}`);
+  }
+  const safeRoot = temporaryRoot;
+  await cleanup();
+  if (existsSync(safeRoot)) fail(`workspace self-test did not clean ${safeRoot}`);
+  process.stdout.write(
+    'ok: localnet CLI/workspace mkdir, containment, and cleanup self-test\n',
+  );
+}
+
 try {
-  await main();
+  const arguments_ = process.argv.slice(2);
+  if (arguments_.length === 0) {
+    await main();
+  } else if (arguments_.length === 1 && arguments_[0] === '--workspace-self-test') {
+    await workspaceSelfTest();
+  } else {
+    fail('runner accepts only `--workspace-self-test`; use `npm run move:seal-cap:localnet` for replay');
+  }
 } finally {
   await cleanup();
 }
