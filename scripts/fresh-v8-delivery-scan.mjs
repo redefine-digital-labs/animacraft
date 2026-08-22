@@ -36,7 +36,6 @@ const allowedTests = new Set([
   'test/maker-v8-browser.test.js', 'test/maker-v8-chain.test.js',
   'test/maker-v8-core-publish-limits.test.js',
   'test/maker-v8-compiler.test.js', 'test/maker-v8-document.test.js',
-  'test/maker-v8-core-publish-limits.test.js',
   'test/maker-v8-market.test.js', 'test/maker-v8-recovery.test.js',
   'test/maker-v8-publication-store.test.js', 'test/maker-v8-runtime.test.js',
   'test/web-v8-controller-real.test.js',
