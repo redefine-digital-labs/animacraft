@@ -29,7 +29,6 @@ const U64_MAX = (1n << 64n) - 1n;
 const HASH = /^[0-9a-f]{64}$/;
 const ID = /^0x[0-9a-fA-F]{1,64}$/;
 const KEY = /^(?!0x[0-9a-fA-F]{64}$)[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-const LEGACY_TARGET = new RegExp(`(?:${['publication', 'composition', 'expansion_pack', 'complete'].map((name) => `${name}_v8`).join('|')}|animacraft_v[4-7]|${'physical'}_v7)`);
 const encoder = new TextEncoder();
 const trustedSet = new WeakSet();
 const compiledSet = new WeakSet();
@@ -51,6 +50,15 @@ const MARKERS = Object.freeze({
   physical: ['physical_v8', 'PhysicalOriginalMarkerV8', 'PhysicalCallableMarkerV8'],
   market: ['market_v8', 'MarketOriginalMarkerV8', 'MarketCallableMarkerV8'],
   release: ['release_v8', 'ReleaseOriginalMarkerV8', 'ReleaseCallableMarkerV8'],
+});
+const FRESH_ROLE_MODULES = Object.freeze({
+  core: Object.freeze(['maker_v8', 'base_registry_v8', 'core_v8']),
+  seal: Object.freeze(['seal_v8']),
+  runtime: Object.freeze(['runtime_v8', 'runtime_binding_v8']),
+  output: Object.freeze(['output_v8']),
+  physical: Object.freeze(['physical_v8']),
+  market: Object.freeze(['market_v8']),
+  release: Object.freeze(['release_v8']),
 });
 const FIELDS = Object.freeze({
   document: ['schemaVersion', 'protocolVersion', 'lineage', 'metadata', 'canvas', 'composition', 'tracks', 'colors', 'parts', 'rules', 'defaultRecipe', 'outputs', 'commerce', 'assets'],
@@ -196,7 +204,13 @@ function requireReferenceKind(object, expected, label) { if (object.reference.ki
 const oid = (object) => object.reference.objectId;
 function stableType(context, role, module, struct, generic = '') { return normType(`${context.catalog.fields.roles[role].originalPackageId}::${module}::${struct}${generic}`); }
 function requireType(object, expected, label) { same(object.type, expected, 'MAKER_V8_TYPE_ORIGIN_MISMATCH', `${label} stable TypeOrigin`); }
-function target(publication, role, module, fn) { const value = `${publication.context.catalog.fields.roles[role].callablePackageId}::${module}::${fn}`; if (LEGACY_TARGET.test(value)) fail('MAKER_V8_FORBIDDEN_TARGET', `Forbidden legacy target ${value}.`); return value; }
+function target(publication, role, module, fn) {
+  const modules = FRESH_ROLE_MODULES[role];
+  if (!modules?.includes(module) || typeof fn !== 'string' || !/^[a-z][a-z0-9_]*_v8$/.test(fn)) {
+    fail('MAKER_V8_TARGET_INVALID', 'Compiler target is outside the exact fresh-v8 role/module/function allowlist.', { role, module, fn });
+  }
+  return `${publication.context.catalog.fields.roles[role].callablePackageId}::${module}::${fn}`;
+}
 
 export async function deriveMakerV8ReleaseCommitments(value) {
   const input = snapshot(value, 'releaseReadback');

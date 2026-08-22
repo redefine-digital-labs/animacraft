@@ -356,7 +356,18 @@ test('fresh fixture compiles canonical certified bytes into executable bounded s
   assert.deepEqual(suffixes(activationBuild.transaction), ['seal_v8::seal_registry_v8']);
   const allTargets = [scaffoldTx, baseBuild.transaction, path.companionBuild.transaction, activationBuild.transaction].flatMap(exactMakerV8TransactionTargets);
   assert.deepEqual(new Set(allTargets.map((target) => MAKER_V8_ROLE_ORDER.find((role) => target.startsWith(nid(fixture.packageRoles[role][1]))))), new Set(MAKER_V8_ROLE_ORDER));
-  assert.equal(allTargets.some((target) => ['publication', 'composition', 'expansion_pack', 'complete'].some((name) => target.includes(`${name}_v8`)) || /animacraft_v[4-7]/.test(target) || target.includes(`${'physical'}_v7`)), false);
+  const modulesByRole = Object.freeze({
+    core: ['maker_v8', 'base_registry_v8', 'core_v8'], seal: ['seal_v8'],
+    runtime: ['runtime_v8', 'runtime_binding_v8'], output: ['output_v8'],
+    physical: ['physical_v8'], market: ['market_v8'], release: ['release_v8'],
+  });
+  for (const target of allTargets) {
+    const [packageId, module, fn] = target.split('::');
+    const role = MAKER_V8_ROLE_ORDER.find((candidate) => packageId === nid(fixture.packageRoles[candidate][1]));
+    assert.ok(role);
+    assert.ok(modulesByRole[role].includes(module), `${role} cannot call ${module}`);
+    assert.match(fn, /^[a-z][a-z0-9_]*_v8$/);
+  }
 });
 
 test('targets use callable packages, stable origins remain readback-only, and ABI order/type arguments are exact', async () => {
