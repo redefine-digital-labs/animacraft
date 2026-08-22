@@ -161,6 +161,7 @@ function dataSourceStub() {
     resolveRoleLineages: async () => ({}),
     loadRoute: async () => ({ route: true }),
     browseMarket: async () => ({ source: 'FAKE_PUBLIC' }),
+    loadOwnedInventory: async () => ({ choices: [] }),
     loadActionContext: async () => ({ context: true }),
     queryTransaction: async () => ({ status: 'NOT_FOUND' }),
     readbackMarketAction: async () => ({ receipt: true }),
@@ -372,6 +373,58 @@ test('Wallet Standard returns the exact bytes and fails closed on account or RPC
       bytes, digest: transactionDigest, signer: keypair.toSuiAddress(),
     }),
     { code: 'MAKER_V8_BROWSER_NETWORK_DRIFT' },
+  );
+});
+
+test('Wallet Standard reconnect preserves explicit wallet-layer errors for missing, rejected, and wrong-network providers', async () => {
+  const execution = mainnetExecution();
+  const emptyRegistry = {
+    get: () => [],
+    on: () => () => {},
+  };
+  const missing = createWalletStandardConnectorV8({
+    registry: emptyRegistry,
+    execution,
+    client: buildClient(),
+  });
+  await assert.rejects(
+    missing.reconnect(),
+    (error) => error.code === 'MAKER_V8_BROWSER_WALLET_UNAVAILABLE'
+      && error.layer === 'WALLET',
+  );
+
+  const rejectedHarness = walletHarness(new Ed25519Keypair());
+  rejectedHarness.wallet.features[StandardConnect].connect = async () => {
+    throw new Error('User rejected the wallet request');
+  };
+  const rejected = createWalletStandardConnectorV8({
+    registry: rejectedHarness.registry,
+    execution,
+    client: buildClient(),
+  });
+  await assert.rejects(
+    rejected.reconnect(),
+    (error) => error.code === 'MAKER_V8_BROWSER_WALLET_RECONNECT_REJECTED'
+      && error.layer === 'WALLET'
+      && /rejected/i.test(error.message),
+  );
+
+  const wrongNetworkHarness = walletHarness(new Ed25519Keypair());
+  wrongNetworkHarness.wallet.features[StandardConnect].connect = async () => ({
+    accounts: [{
+      ...wrongNetworkHarness.account,
+      chains: ['sui:testnet'],
+    }],
+  });
+  const wrongNetwork = createWalletStandardConnectorV8({
+    registry: wrongNetworkHarness.registry,
+    execution,
+    client: buildClient(),
+  });
+  await assert.rejects(
+    wrongNetwork.reconnect(),
+    (error) => error.code === 'MAKER_V8_BROWSER_WALLET_NETWORK_DRIFT'
+      && error.layer === 'WALLET',
   );
 });
 

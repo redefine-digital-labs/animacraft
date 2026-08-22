@@ -10,10 +10,12 @@ import { toBase64 } from '@mysten/sui/utils';
 import {
   WEB_V8_CONTEXT_SCHEMA,
   WEB_V8_EXECUTION_SCHEMA,
+  WEB_V8_INVENTORY_SCHEMA,
   WEB_V8_ROUTE_SCHEMA,
   createIndexedDbRecoveryAdapter,
   createFreshV8Controller,
   parseFreshV8Route,
+  renderFreshV8App,
 } from '../app.js';
 import { makerV8StableType } from '../maker-v8-runtime.js';
 import {
@@ -329,6 +331,545 @@ function fixture(runtime, { registryVersion = '7', adminVersion = '7' } = {}) {
   return { market, IDs, registry, treasury, builderInput, wallet };
 }
 
+function packageTuple(runtime) {
+  return Object.entries(runtime.roles).map(([role, entry], index) => ({
+    role,
+    originalPackageId: entry.typeOriginPackageId,
+    callablePackageId: entry.callablePackageId,
+    packageDigest: `${index + 2}`.repeat(32),
+  }));
+}
+
+function renderRoot() {
+  return {
+    innerHTML: '',
+    click: null,
+    addEventListener(type, listener) {
+      assert.equal(type, 'click');
+      this.click = listener;
+    },
+    querySelector() { return null; },
+  };
+}
+
+function layeredError(code, message, layer) {
+  const error = new Error(message);
+  error.code = code;
+  error.layer = layer;
+  return error;
+}
+
+test('detail routes browse verified live state while disconnected and render every reconnect failure layer', {
+  skip: available ? false : 'Run with the integrated Maker v8 Market and Recovery modules.',
+}, async () => {
+  const rawRuntime = runtimeFixture();
+  const runtime = (await attestMakerV8Runtime(runtimeAttestationRpc(rawRuntime), rawRuntime)).runtime;
+  const data = fixture(runtime);
+  const listingId = id(260);
+  const execution = {
+    schemaVersion: WEB_V8_EXECUTION_SCHEMA,
+    network: 'mainnet',
+    chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+    allowWalletSignature: false,
+    allowBroadcast: false,
+  };
+  const eventType = makerV8StableType(runtime, 'release', 'release_v8', 'MakerV8Activated');
+  let reconnectMode = 'no-provider';
+  let routeReads = 0;
+  const adapters = {
+    persistence: recoveryModule.createMakerV8RecoveryMemoryAdapter(),
+    rpc: {
+      async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+      async getSuiClient() { throw new Error('passive detail browse must not request a signing client'); },
+      async browseMarket() { throw new Error('not used'); },
+      async loadOwnedInventory() { throw new Error('not used'); },
+      async loadRoute(request) {
+        routeReads += 1;
+        return {
+          schemaVersion: WEB_V8_ROUTE_SCHEMA,
+          source: 'LIVE_RPC',
+          requestId: request.requestId,
+          chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+          route: `${request.route.kind}:${request.route.id}`,
+          activation: { eventType, rootId: data.IDs.root, lifecycle: 'ACTIVE' },
+          view: {
+            title: request.route.kind === 'maker' ? 'Disconnected Maker detail' : 'Disconnected Listing detail',
+            subtitle: 'Verified without wallet authority',
+            lifecycle: 'PAUSED',
+            listingKind: request.route.kind === 'listing' ? 'MakerListingV8' : null,
+            listingStatus: request.route.kind === 'listing' ? 'OPEN' : null,
+          },
+          availableActions: request.route.kind === 'listing'
+            ? ['cancelMakerControl', 'recoverMakerControl'] : ['listMakerControl'],
+        };
+      },
+      async loadActionContext() { throw new Error('disconnected browse must not select action authority'); },
+      async queryTransaction() { throw new Error('not used'); },
+      async readbackMarketAction() { throw new Error('not used'); },
+    },
+    wallet: {
+      async getCurrentAccount() {
+        throw layeredError(
+          'MAKER_V8_BROWSER_WALLET_NOT_CONNECTED',
+          'Connect a Sui Mainnet wallet account first.',
+          'WALLET',
+        );
+      },
+      async reconnect() {
+        if (reconnectMode === 'no-provider') {
+          throw layeredError(
+            'MAKER_V8_BROWSER_WALLET_UNAVAILABLE',
+            'No compatible Sui Wallet Standard wallet is registered.',
+            'WALLET',
+          );
+        }
+        if (reconnectMode === 'rejected') {
+          throw layeredError(
+            'MAKER_V8_BROWSER_WALLET_RECONNECT_REJECTED',
+            'The wallet rejected the reconnect request.',
+            'WALLET',
+          );
+        }
+        return { address: data.wallet.address, network: 'testnet' };
+      },
+      async signExactTransaction() { throw new Error('not used'); },
+      async verifyExactSignature() { throw new Error('not used'); },
+    },
+    transactions: {
+      async buildExactTransaction() { throw new Error('not used'); },
+      async deriveTransactionDigest() { throw new Error('not used'); },
+      async dryRunExactTransaction() { throw new Error('not used'); },
+      async broadcastExactTransaction() { throw new Error('not used'); },
+    },
+  };
+
+  for (const route of [
+    parseFreshV8Route(`/maker/${data.IDs.root}`),
+    parseFreshV8Route(`/market/${listingId}`),
+  ]) {
+    const controller = createFreshV8Controller({
+      route, runtime, execution, adapters, marketModule, recoveryModule,
+    });
+    await controller.refresh();
+    const state = controller.snapshot();
+    assert.equal(state.account, null);
+    assert.equal(state.action, null, 'passive detail browse must not choose wallet authority');
+    assert.equal(state.status, 'READY');
+    assert.match(state.view.title, /Disconnected/);
+  }
+  assert.equal(routeReads, 2);
+
+  const controller = createFreshV8Controller({
+    route: parseFreshV8Route(`/maker/${data.IDs.root}`),
+    runtime,
+    execution,
+    adapters,
+    marketModule,
+    recoveryModule,
+  });
+  const root = renderRoot();
+  renderFreshV8App(root, controller);
+  await controller.refresh();
+  assert.match(root.innerHTML, /Disconnected Maker detail/);
+  assert.match(root.innerHTML, /Reconnect wallet/);
+
+  const reconnectClick = {
+    target: {
+      closest(selector) {
+        return selector === '[data-command]' ? { dataset: { command: 'reconnect' } } : null;
+      },
+    },
+  };
+  for (const [mode, expectedLayer, expectedStatus] of [
+    ['no-provider', 'WALLET', 'RECONNECT_REQUIRED'],
+    ['rejected', 'WALLET', 'RECONNECT_REQUIRED'],
+    ['wrong-network', 'STALE_CONTEXT', 'ERROR'],
+  ]) {
+    reconnectMode = mode;
+    await root.click(reconnectClick);
+    assert.equal(controller.snapshot().issue.layer, expectedLayer);
+    assert.equal(controller.snapshot().status, expectedStatus);
+    assert.match(root.innerHTML, new RegExp(`layer-pill">${expectedLayer}`));
+    assert.match(root.innerHTML, /Disconnected Maker detail/);
+    assert.match(root.innerHTML, /Reconnect wallet/);
+  }
+});
+
+test('owned Soul and Physical inventory renders every exact choice and never selects or refetches the first implicitly', {
+  skip: available ? false : 'Run with the integrated Maker v8 Market and Recovery modules.',
+}, async () => {
+  const rawRuntime = runtimeFixture();
+  const runtime = (await attestMakerV8Runtime(runtimeAttestationRpc(rawRuntime), rawRuntime)).runtime;
+  const data = fixture(runtime);
+  const execution = {
+    schemaVersion: WEB_V8_EXECUTION_SCHEMA,
+    network: 'mainnet',
+    chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+    allowWalletSignature: false,
+    allowBroadcast: false,
+  };
+  const eventType = makerV8StableType(runtime, 'release', 'release_v8', 'MakerV8Activated');
+  const bundles = [
+    [id(301), id(302), id(303)],
+    [id(311), id(312), id(313)],
+  ];
+  const physicalAssets = [
+    { id: id(331), sourceId: id(341) },
+    { id: id(332), sourceId: id(342) },
+  ];
+  const chainObject = (objectId, type, fields = {}) => ({
+    schemaVersion: 'animacraft.maker-v8-chain.v8',
+    objectId,
+    version: '7',
+    digest,
+    network: 'mainnet',
+    type,
+    ...fields,
+  });
+  const rootObject = Object.freeze({
+    ...data.builderInput.root,
+    lifecycleCode: marketModule.MARKET_V8_LIFECYCLES.ACTIVE,
+    binding: Object.freeze({
+      ...data.builderInput.root.binding,
+      outputRegistryId: id(320),
+      soulRegistryId: id(321),
+      physicalRegistryId: id(322),
+    }),
+  });
+  const ref = (objectId) => ({ id: objectId, version: '7', digest });
+  const inventoryRequests = [];
+  const soulContextRequests = [];
+  const physicalContextRequests = [];
+  let selectedStillOwned = true;
+  let omitSelectedFromInventory = false;
+  const adapters = {
+    persistence: recoveryModule.createMakerV8RecoveryMemoryAdapter(),
+    rpc: {
+      async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+      async getSuiClient() { throw new Error('not used until quote review'); },
+      async browseMarket() { throw new Error('not used'); },
+      async loadRoute(request) {
+        return {
+          schemaVersion: WEB_V8_ROUTE_SCHEMA,
+          source: 'LIVE_RPC',
+          requestId: request.requestId,
+          chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+          route: `maker:${data.IDs.root}`,
+          activation: { eventType, rootId: data.IDs.root, lifecycle: 'ACTIVE' },
+          view: {
+            title: 'Multiple exact assets', subtitle: 'Choose exact authority', lifecycle: 'ACTIVE',
+            listingKind: null, listingStatus: null,
+          },
+          availableActions: ['listSoulBundle', 'listBasePhysical'],
+        };
+      },
+      async loadOwnedInventory(request) {
+        inventoryRequests.push(request.action);
+        const soul = request.action === 'listSoulBundle';
+        return {
+          schemaVersion: WEB_V8_INVENTORY_SCHEMA,
+          source: 'LIVE_RPC',
+          requestId: request.requestId,
+          chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+          route: `maker:${data.IDs.root}`,
+          action: request.action,
+          account: data.wallet.address,
+          rootId: data.IDs.root,
+          choices: soul
+            ? bundles.map((objectIds) => ({
+                id: objectIds[0], kind: 'SOUL_BUNDLE', objectIds, ownershipEpoch: '5',
+                sourceKind: null, sourceId: null, sourceTreasuryId: null,
+              }))
+            : physicalAssets
+                .filter((asset) => !omitSelectedFromInventory || asset.id !== physicalAssets[1].id)
+                .map((asset) => ({
+                id: asset.id, kind: 'PHYSICAL_BASE', objectIds: [asset.id], ownershipEpoch: '6',
+                sourceKind: 0, sourceId: asset.sourceId, sourceTreasuryId: null,
+                })),
+        };
+      },
+      async loadActionContext(request) {
+        const soul = request.action === 'listSoulBundle';
+        (soul ? soulContextRequests : physicalContextRequests).push(request.selectedInventoryId);
+        if (!selectedStillOwned) {
+          throw layeredError(
+            'MAKER_V8_BROWSER_INVENTORY_SELECTION_STALE',
+            'The selected Soul bundle is no longer in connected inventory.',
+            'CUSTODY',
+          );
+        }
+        const selected = soul
+          ? bundles.find((entry) => entry[0] === request.selectedInventoryId)
+          : physicalAssets.find((entry) => entry.id === request.selectedInventoryId);
+        assert.ok(selected, 'only an explicit current inventory ID may reach action context');
+        const primaryId = soul ? selected[0] : selected.id;
+        return {
+          schemaVersion: WEB_V8_CONTEXT_SCHEMA,
+          source: 'LIVE_RPC',
+          requestId: request.requestId,
+          chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+          route: `maker:${data.IDs.root}`,
+          action: request.action,
+          activation: { eventType, rootId: data.IDs.root, lifecycle: 'ACTIVE' },
+          packageTuple: packageTuple(runtime),
+          builderInput: {
+            ...data.builderInput,
+            root: rootObject,
+            wallet: data.wallet,
+            ...(soul ? {
+              outputRegistry: chainObject(id(320), data.market.types.outputRegistry),
+              soulRegistry: chainObject(id(321), data.market.types.soulRegistry),
+              outputAsset: chainObject(selected[0], data.market.types.completeOutput),
+              receipt: chainObject(selected[1], data.market.types.completeReceipt),
+              soul: chainObject(selected[2], data.market.types.canonicalSoul),
+            } : {
+              physicalRegistry: chainObject(id(322), data.market.types.physicalRegistry),
+              physicalConfig: chainObject(runtime.roleConfigIds.physical, data.market.types.physicalConfig),
+              asset: chainObject(selected.id, data.market.types.physicalAsset, {
+                sourceKind: 0,
+                sourceTreasuryId: null,
+                sourceId: selected.sourceId,
+                ownershipEpoch: '6',
+              }),
+            }),
+            expectedRegistryRevision: data.registry.fields.revision,
+          },
+          refs: {
+            primary: ref(primaryId), root: ref(data.IDs.root),
+            registry: ref(data.IDs.registry), treasury: ref(data.IDs.treasury),
+          },
+          authority: {
+            kind: soul ? 'SOUL_LIST' : 'PHYSICAL_BASE_LIST',
+            refs: soul ? selected.map(ref) : [ref(selected.id)],
+          },
+        };
+      },
+      async queryTransaction() { throw new Error('not used'); },
+      async readbackMarketAction() { throw new Error('not used'); },
+    },
+    wallet: {
+      async getCurrentAccount() { return data.wallet; },
+      async reconnect() { return data.wallet; },
+      async signExactTransaction() { throw new Error('not used'); },
+      async verifyExactSignature() { throw new Error('not used'); },
+    },
+    transactions: {
+      async buildExactTransaction() { throw new Error('not used'); },
+      async deriveTransactionDigest() { throw new Error('not used'); },
+      async dryRunExactTransaction() { throw new Error('not used'); },
+      async broadcastExactTransaction() { throw new Error('not used'); },
+    },
+  };
+  const controller = createFreshV8Controller({
+    route: parseFreshV8Route(`/maker/${data.IDs.root}`),
+    runtime,
+    execution,
+    adapters,
+    marketModule,
+    recoveryModule,
+  });
+  const root = renderRoot();
+  renderFreshV8App(root, controller);
+  await controller.refresh();
+  assert.equal(controller.snapshot().status, 'SELECTION_REQUIRED');
+  assert.equal(controller.snapshot().selectedInventoryId, null);
+  assert.deepEqual(soulContextRequests, []);
+  for (const objectId of bundles.flat()) assert.match(root.innerHTML, new RegExp(objectId));
+
+  await root.click({
+    target: {
+      closest(selector) {
+        return selector === '[data-inventory-id]'
+          ? { dataset: { inventoryId: bundles[1][0] } } : null;
+      },
+    },
+  });
+  assert.equal(controller.snapshot().selectedInventoryId, bundles[1][0]);
+  assert.deepEqual(soulContextRequests, [bundles[1][0]]);
+  assert.doesNotMatch(root.innerHTML, new RegExp(`data-inventory-id="${bundles[0][0]}"[^>]*aria-pressed="true"`));
+  assert.match(root.innerHTML, new RegExp(`data-inventory-id="${bundles[1][0]}"[^>]*aria-pressed="true"`));
+
+  await controller.refresh();
+  assert.equal(controller.snapshot().selectedInventoryId, bundles[1][0]);
+  assert.deepEqual(soulContextRequests, [bundles[1][0], bundles[1][0]],
+    'refresh must retain only the selected ID and reacquire its exact live context');
+  assert.deepEqual(inventoryRequests, ['listSoulBundle', 'listSoulBundle'],
+    'refresh must also replace the visible choices from a new owned-inventory read');
+
+  selectedStillOwned = false;
+  await assert.rejects(() => controller.setGrossAtomic('1000001'), {
+    code: 'MAKER_V8_BROWSER_INVENTORY_SELECTION_STALE',
+  });
+  assert.deepEqual(soulContextRequests, [bundles[1][0], bundles[1][0], bundles[1][0]]);
+  assert.equal(controller.snapshot().context, null);
+  assert.equal(controller.snapshot().issue.layer, 'CUSTODY_AUTHORITY');
+
+  selectedStillOwned = true;
+  await controller.selectAction('listBasePhysical');
+  assert.equal(controller.snapshot().selectedInventoryId, null);
+  assert.equal(controller.snapshot().status, 'SELECTION_REQUIRED');
+  assert.deepEqual(physicalContextRequests, []);
+  assert.deepEqual(inventoryRequests, ['listSoulBundle', 'listSoulBundle', 'listBasePhysical']);
+  for (const asset of physicalAssets) {
+    assert.match(root.innerHTML, new RegExp(asset.id));
+    assert.match(root.innerHTML, new RegExp(asset.sourceId));
+  }
+  await root.click({
+    target: {
+      closest(selector) {
+        return selector === '[data-inventory-id]'
+          ? { dataset: { inventoryId: physicalAssets[1].id } } : null;
+      },
+    },
+  });
+  assert.equal(controller.snapshot().selectedInventoryId, physicalAssets[1].id);
+  assert.deepEqual(physicalContextRequests, [physicalAssets[1].id]);
+  assert.doesNotMatch(root.innerHTML, new RegExp(`data-inventory-id="${physicalAssets[0].id}"[^>]*aria-pressed="true"`));
+  assert.match(root.innerHTML, new RegExp(`data-inventory-id="${physicalAssets[1].id}"[^>]*aria-pressed="true"`));
+
+  omitSelectedFromInventory = true;
+  await assert.rejects(() => controller.refresh(), { code: 'WEB_V8_INVENTORY_SELECTION_STALE' });
+  assert.equal(controller.snapshot().selectedInventoryId, null);
+  assert.equal(controller.snapshot().context, null);
+  assert.equal(controller.snapshot().issue.layer, 'CUSTODY_AUTHORITY');
+});
+
+test('all six cancel/recover controllers review frozen live listing economics without Move quote inspection', {
+  skip: available ? false : 'Run with the integrated Maker v8 Market and Recovery modules.',
+}, async () => {
+  const rawRuntime = runtimeFixture();
+  const runtime = (await attestMakerV8Runtime(runtimeAttestationRpc(rawRuntime), rawRuntime)).runtime;
+  const data = fixture(runtime);
+  const execution = {
+    schemaVersion: WEB_V8_EXECUTION_SCHEMA,
+    network: 'mainnet',
+    chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+    allowWalletSignature: false,
+    allowBroadcast: false,
+  };
+  const eventType = makerV8StableType(runtime, 'release', 'release_v8', 'MakerV8Activated');
+  const ref = (objectId) => ({ id: objectId, version: '7', digest });
+  const quote = Object.freeze({
+    grossAtomic: 1_000_000n,
+    protocolAtomic: 12_345n,
+    creatorAtomic: 23_456n,
+    sourceAtomic: 34_567n,
+    sellerAtomic: 929_632n,
+    quoteCommitment: `0x${'ab'.repeat(32)}`,
+  });
+  const cases = [
+    ['cancelMakerControl', 'MakerListingV8', 'ACTIVE'],
+    ['recoverMakerControl', 'MakerListingV8', 'ARCHIVED'],
+    ['cancelSoulListing', 'SoulListingV8', 'ACTIVE'],
+    ['recoverSoulListing', 'SoulListingV8', 'PAUSED'],
+    ['cancelPhysicalListing', 'PhysicalListingV8', 'ACTIVE'],
+    ['recoverPhysicalListing', 'PhysicalListingV8', 'ARCHIVED'],
+  ];
+  for (const [action, listingKind, lifecycle] of cases) {
+    const listingId = id(400 + cases.findIndex((entry) => entry[0] === action));
+    const lifecycleCode = marketModule.MARKET_V8_LIFECYCLES[lifecycle];
+    let suiClientReads = 0;
+    const listing = {
+      kind: listingKind,
+      network: 'mainnet',
+      objectId: listingId,
+      objectVersion: 7n,
+      digest,
+      fields: {
+        ...quote,
+        sourceAtomic: listingKind === 'MakerListingV8' ? 0n : quote.sourceAtomic,
+        sellerAtomic: listingKind === 'MakerListingV8'
+          ? quote.sellerAtomic + quote.sourceAtomic : quote.sellerAtomic,
+        ...(listingKind === 'PhysicalListingV8'
+          ? { custody: { sourceKind: action === 'recoverPhysicalListing' ? 1 : 0 } }
+          : {}),
+        revision: 0n,
+      },
+    };
+    const adapters = {
+      persistence: recoveryModule.createMakerV8RecoveryMemoryAdapter(),
+      rpc: {
+        async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+        async getSuiClient() { suiClientReads += 1; throw new Error('Move quote inspection is unavailable'); },
+        async browseMarket() { throw new Error('not used'); },
+        async loadOwnedInventory() { throw new Error('not used'); },
+        async loadRoute(request) {
+          return {
+            schemaVersion: WEB_V8_ROUTE_SCHEMA,
+            source: 'LIVE_RPC',
+            requestId: request.requestId,
+            chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+            route: `listing:${listingId}`,
+            activation: { eventType, rootId: data.IDs.root, lifecycle: 'ACTIVE' },
+            view: {
+              title: `${action} listing`, subtitle: 'Frozen quote fixture', lifecycle,
+              listingKind, listingStatus: 'OPEN',
+            },
+            availableActions: [action],
+          };
+        },
+        async loadActionContext(request) {
+          return {
+            schemaVersion: WEB_V8_CONTEXT_SCHEMA,
+            source: 'LIVE_RPC',
+            requestId: request.requestId,
+            chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+            route: `listing:${listingId}`,
+            action,
+            activation: { eventType, rootId: data.IDs.root, lifecycle: 'ACTIVE' },
+            packageTuple: packageTuple(runtime),
+            builderInput: {
+              ...data.builderInput,
+              root: { ...data.builderInput.root, lifecycleCode },
+              listing,
+              expectation: {
+                listingRevision: listing.fields.revision,
+                registryRevision: data.registry.fields.revision,
+                quoteCommitment: listing.fields.quoteCommitment,
+              },
+            },
+            refs: {
+              primary: ref(listingId), root: ref(data.IDs.root),
+              registry: ref(data.IDs.registry), treasury: ref(data.IDs.treasury),
+            },
+            authority: { kind: `${action}_AUTHORITY`, refs: [ref(listingId)] },
+          };
+        },
+        async queryTransaction() { throw new Error('not used'); },
+        async readbackMarketAction() { throw new Error('not used'); },
+      },
+      wallet: {
+        async getCurrentAccount() { return data.wallet; },
+        async reconnect() { return data.wallet; },
+        async signExactTransaction() { throw new Error('not used'); },
+        async verifyExactSignature() { throw new Error('not used'); },
+      },
+      transactions: {
+        async buildExactTransaction() { throw new Error('not used'); },
+        async deriveTransactionDigest() { throw new Error('not used'); },
+        async dryRunExactTransaction() { throw new Error('not used'); },
+        async broadcastExactTransaction() { throw new Error('not used'); },
+      },
+    };
+    const controller = createFreshV8Controller({
+      route: parseFreshV8Route(`/market/${listingId}`),
+      runtime,
+      execution,
+      adapters,
+      marketModule,
+      recoveryModule,
+    });
+    await controller.refresh();
+    const reviewed = await controller.reviewQuote();
+    assert.equal(reviewed.evidence.source, 'live-listing');
+    assert.equal(reviewed.grossAtomic, quote.grossAtomic.toString());
+    assert.equal(reviewed.protocolAtomic, quote.protocolAtomic.toString());
+    assert.equal(reviewed.commitment, quote.quoteCommitment);
+    assert.equal(suiClientReads, 0, `${action} must not invoke unavailable Move quote inspection`);
+    assert.equal(controller.snapshot().status, 'READY');
+  }
+});
+
 const sharedOwner = Object.freeze({ kind: 'Shared', value: { initialSharedVersion: '1' } });
 const addressOwner = (value) => ({ kind: 'AddressOwner', value });
 
@@ -429,8 +970,10 @@ function finalizedListMakerEnvelope(data, request) {
   const registryInput = coreRef(IDs.registry, '7', sharedOwner);
   const registryOutput = coreRef(IDs.registry, '8', sharedOwner);
   const adminInput = coreRef(IDs.admin, '7', addressOwner(IDs.seller));
-  const adminOutput = coreRef(IDs.admin, '8', addressOwner(listingId));
-  const listingOutput = coreRef(listingId, '8', sharedOwner);
+  const adminOutput = coreRef(IDs.admin, '8', { kind: 'ObjectOwner', value: listingId });
+  const listingOutput = coreRef(listingId, '8', {
+    kind: 'Shared', value: { initialSharedVersion: '8' },
+  });
   const objectEvidence = (
     role,
     objectId,
@@ -578,15 +1121,21 @@ test('controller uses real builder, forces re-review on ref drift, and stays uns
       async getCurrentSystemState() { return { systemState: { epoch: '100' } }; },
       resolveTransactionPlugin() {
         return async (transactionData, _options, next) => {
-          transactionData.inputs = transactionData.inputs.map((input) => (
-            input.UnresolvedObject
-              ? Inputs.SharedObjectRef({
-                  objectId: input.UnresolvedObject.objectId,
-                  initialSharedVersion: '1',
-                  mutable: true,
-                })
-              : input
-          ));
+          transactionData.inputs = transactionData.inputs.map((input) => {
+            if (!input.UnresolvedObject) return input;
+            if (input.UnresolvedObject.objectId === data.IDs.admin) {
+              return Inputs.ObjectRef({
+                objectId: data.IDs.admin,
+                version: '7',
+                digest,
+              });
+            }
+            return Inputs.SharedObjectRef({
+              objectId: input.UnresolvedObject.objectId,
+              initialSharedVersion: '1',
+              mutable: true,
+            });
+          });
           transactionData.gasData = {
             budget: '10000000',
             price: '1000',
@@ -604,6 +1153,7 @@ test('controller uses real builder, forces re-review on ref drift, and stays uns
       async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
       async getSuiClient() { return suiClient; },
       async browseMarket() { throw new Error('not used'); },
+      async loadOwnedInventory() { throw new Error('not used'); },
       async loadRoute(request) {
         return {
           schemaVersion: WEB_V8_ROUTE_SCHEMA,
@@ -775,15 +1325,21 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
       async getCurrentSystemState() { return { systemState: { epoch: '100' } }; },
       resolveTransactionPlugin() {
         return async (transactionData, _options, next) => {
-          transactionData.inputs = transactionData.inputs.map((input) => (
-            input.UnresolvedObject
-              ? Inputs.SharedObjectRef({
-                  objectId: input.UnresolvedObject.objectId,
-                  initialSharedVersion: '1',
-                  mutable: true,
-                })
-              : input
-          ));
+          transactionData.inputs = transactionData.inputs.map((input) => {
+            if (!input.UnresolvedObject) return input;
+            if (input.UnresolvedObject.objectId === firstData.IDs.admin) {
+              return Inputs.ObjectRef({
+                objectId: firstData.IDs.admin,
+                version: '7',
+                digest,
+              });
+            }
+            return Inputs.SharedObjectRef({
+              objectId: input.UnresolvedObject.objectId,
+              initialSharedVersion: '1',
+              mutable: true,
+            });
+          });
           transactionData.gasData = {
             budget: '10000000',
             price: '1000',
@@ -802,6 +1358,7 @@ test('fresh controller signs durable WAL, verifies Core V2 finality, and reloads
       async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
       async getSuiClient() { return suiClient; },
       async browseMarket() { throw new Error('not used'); },
+      async loadOwnedInventory() { throw new Error('not used'); },
       async loadRoute(request) {
         return {
           schemaVersion: WEB_V8_ROUTE_SCHEMA,

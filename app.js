@@ -21,6 +21,7 @@ import * as productionRecoveryModule from './maker-v8-recovery.js';
 export const WEB_V8_CONTEXT_SCHEMA = 'animacraft.web-market-context.v8';
 export const WEB_V8_ROUTE_SCHEMA = 'animacraft.web-route-view.v8';
 export const WEB_V8_BROWSE_SCHEMA = 'animacraft.web-market-browse.v8';
+export const WEB_V8_INVENTORY_SCHEMA = 'animacraft.web-owned-inventory.v8';
 export const WEB_V8_EXECUTION_SCHEMA = 'animacraft.web-execution.v8';
 export const WEB_V8_CACHE_SCHEMA = 'animacraft.web-cache.v8';
 export const WEB_V8_READBACK_SCHEMA = 'animacraft.web-market-finalized-readback.v8';
@@ -46,6 +47,19 @@ const PURCHASE_ACTIONS = new Set([
 ]);
 const LIST_ACTIONS = new Set([
   'listMakerControl',
+  'listSoulBundle',
+  'listBasePhysical',
+  'listPackPhysical',
+]);
+const FROZEN_LISTING_ACTIONS = new Set([
+  'cancelMakerControl',
+  'recoverMakerControl',
+  'cancelSoulListing',
+  'recoverSoulListing',
+  'cancelPhysicalListing',
+  'recoverPhysicalListing',
+]);
+const OWNED_INVENTORY_ACTIONS = new Set([
   'listSoulBundle',
   'listBasePhysical',
   'listPackPhysical',
@@ -282,7 +296,7 @@ export function assertFreshV8Adapters(value) {
   for (const group of ['rpc', 'wallet', 'transactions']) {
     if (!isPlainRecord(value[group])) throw appError('WEB_V8_ADAPTER_INVALID', `${group} adapter is required.`, 'CONFIGURATION');
   }
-  for (const method of ['getChainIdentifier', 'getSuiClient', 'loadRoute', 'browseMarket', 'loadActionContext', 'queryTransaction', 'readbackMarketAction']) {
+  for (const method of ['getChainIdentifier', 'getSuiClient', 'loadRoute', 'browseMarket', 'loadOwnedInventory', 'loadActionContext', 'queryTransaction', 'readbackMarketAction']) {
     assertMethod(value.rpc, method, 'rpc');
   }
   for (const method of ['getCurrentAccount', 'reconnect', 'signExactTransaction', 'verifyExactSignature']) {
@@ -305,6 +319,7 @@ export function createSuiV8BrowserAdapters({ client, wallet, dataSource, transac
       resolveRoleLineages: (requests) => dataSource.resolveRoleLineages(requests),
       loadRoute: (request) => dataSource.loadRoute(request),
       browseMarket: (request) => dataSource.browseMarket(request),
+      loadOwnedInventory: (request) => dataSource.loadOwnedInventory(request),
       loadActionContext: (request) => dataSource.loadActionContext(request),
       queryTransaction: (request) => dataSource.queryTransaction({ client, ...request }),
       readbackMarketAction: (request) => dataSource.readbackMarketAction({ client, ...request }),
@@ -543,6 +558,19 @@ export function assertFreshV8ActionContext(value, request, runtime, execution, a
   if (request.route.kind === 'listing' && request.route.id !== refs.primary.id) {
     throw appError('WEB_V8_ROUTE_LISTING_MISMATCH', 'Listing route does not match the live typed listing.', 'CONTEXT');
   }
+  if (OWNED_INVENTORY_ACTIONS.has(request.action)) {
+    const selectedInventoryId = exactId(
+      request.selectedInventoryId,
+      'request.selectedInventoryId',
+    );
+    if (refs.primary.id !== selectedInventoryId) {
+      throw appError(
+        'WEB_V8_INVENTORY_SELECTION_DRIFT',
+        'Live action authority does not match the explicitly selected owned object.',
+        'CUSTODY',
+      );
+    }
+  }
   const wallet = value.builderInput.wallet;
   if (!isPlainRecord(wallet) || wallet.address !== account.address || wallet.network !== execution.network) {
     throw appError('WEB_V8_BUILDER_WALLET_MISMATCH', 'Builder input is not bound to the active wallet and network.', 'CONTEXT');
@@ -563,30 +591,47 @@ export function assertFreshV8ActionContext(value, request, runtime, execution, a
   });
 }
 
+function parsedListingForAction(marketClient, action, builderInput) {
+  if (action.lane === 'MAKER') return builderInput.listing?.kind === 'MakerListingV8'
+    ? builderInput.listing : marketClient.parseMakerListing(builderInput.listing);
+  if (action.lane === 'SOUL') return builderInput.listing?.kind === 'SoulListingV8'
+    ? builderInput.listing : marketClient.parseSoulListing(builderInput.listing);
+  return builderInput.listing?.kind === 'PhysicalListingV8'
+    ? builderInput.listing : marketClient.parsePhysicalListing(builderInput.listing);
+}
+
+function normalizedQuoteParts(value) {
+  const normalized = {};
+  for (const field of QUOTE_FIELDS) normalized[field] = exactU64(value[field], `quote.${field}`);
+  normalized.commitment = exactText(value.commitment, 'quote.commitment');
+  if (QUOTE_FIELDS.slice(1).reduce((sum, field) => sum + BigInt(normalized[field]), 0n)
+    !== BigInt(normalized.grossAtomic)) {
+    throw appError('WEB_V8_QUOTE_SPLIT_INVALID', 'Quote splits do not sum to the exact gross.', 'VALIDATION');
+  }
+  return Object.freeze(normalized);
+}
+
 function quoteForAction(marketClient, action, builderInput, grossAtomic) {
   const registry = builderInput.registry?.kind === 'MarketRegistryV8'
     ? builderInput.registry
     : marketClient.parseRegistry(builderInput.registry);
   let gross = grossAtomic;
   if (!LIST_ACTIONS.has(action.id)) {
-    let listing;
-    if (action.lane === 'MAKER') listing = builderInput.listing?.kind === 'MakerListingV8'
-      ? builderInput.listing : marketClient.parseMakerListing(builderInput.listing);
-    else if (action.lane === 'SOUL') listing = builderInput.listing?.kind === 'SoulListingV8'
-      ? builderInput.listing : marketClient.parseSoulListing(builderInput.listing);
-    else listing = builderInput.listing?.kind === 'PhysicalListingV8'
-      ? builderInput.listing : marketClient.parsePhysicalListing(builderInput.listing);
+    const listing = parsedListingForAction(marketClient, action, builderInput);
+    if (FROZEN_LISTING_ACTIONS.has(action.id)) {
+      return normalizedQuoteParts({
+        grossAtomic: listing.fields.grossAtomic,
+        protocolAtomic: listing.fields.protocolAtomic,
+        creatorAtomic: listing.fields.creatorAtomic,
+        sourceAtomic: listing.fields.sourceAtomic ?? 0n,
+        sellerAtomic: listing.fields.sellerAtomic,
+        commitment: listing.fields.quoteCommitment,
+      });
+    }
     gross = listing.fields.grossAtomic;
   }
   const quote = marketClient[action.quote](registry, exactU64(gross, 'grossAtomic'));
-  const normalized = {};
-  for (const field of QUOTE_FIELDS) normalized[field] = exactU64(quote[field], `quote.${field}`);
-  normalized.commitment = exactText(quote.commitment, 'quote.commitment');
-  if (QUOTE_FIELDS.slice(1).reduce((sum, field) => sum + BigInt(normalized[field]), 0n)
-    !== BigInt(normalized.grossAtomic)) {
-    throw appError('WEB_V8_QUOTE_SPLIT_INVALID', 'Quote splits do not sum to the exact gross.', 'VALIDATION');
-  }
-  return Object.freeze(normalized);
+  return normalizedQuoteParts(quote);
 }
 
 function quoteKindForAction(marketModule, action) {
@@ -622,6 +667,20 @@ function normalizedInspectedQuote(quote) {
     registryId: exactId(quote.evidence.registryId, 'quote.evidence.registryId'),
   });
   return Object.freeze(normalized);
+}
+
+function frozenListingQuoteEvidence(state) {
+  return Object.freeze({
+    source: 'live-listing',
+    network: state.execution.network,
+    listingId: state.context.refs.primary.id,
+    listingVersion: state.context.refs.primary.version,
+    listingRevision: exactU64(
+      state.context.builderInput.expectation?.listingRevision,
+      'expectation.listingRevision',
+    ),
+    quoteCommitment: exactText(state.quote.commitment, 'quote.commitment'),
+  });
 }
 
 function contextFingerprint(context, quote, account) {
@@ -671,11 +730,26 @@ function exactPaymentIntentFor(state) {
   });
 }
 
+function recoveryLaneFor(state) {
+  if (state.action.lane !== 'PHYSICAL') return state.action.lane;
+  const sourceKind = exactU8(
+    state.context.builderInput.listing?.fields?.custody?.sourceKind,
+    'listing.custody.sourceKind',
+  );
+  if (sourceKind === 0) return 'PHYSICAL_BASE';
+  if (sourceKind === 1) return 'PHYSICAL_PACK';
+  throw appError(
+    'WEB_V8_PHYSICAL_SOURCE_MISMATCH',
+    'Physical cancel/recovery identity requires an exact Base or Pack listing source.',
+    'CUSTODY',
+  );
+}
+
 function recoveryIdentity(state, execution) {
   return Object.freeze({
     chain: execution.chainIdentifier,
     wallet: state.account.address,
-    lane: state.action.lane,
+    lane: recoveryLaneFor(state),
     action: state.action.id,
     packageTuple: state.context.packageTuple,
     paymentCoin: state.runtime.paymentCoinType,
@@ -944,6 +1018,97 @@ function normalizeBrowse(result, request, runtime, execution) {
   return Object.freeze({ makers: Object.freeze(makers), listings: Object.freeze(listings) });
 }
 
+function normalizeOwnedInventory(result, request, execution, account) {
+  exactKeys(result, [
+    'schemaVersion',
+    'source',
+    'requestId',
+    'chainIdentifier',
+    'route',
+    'action',
+    'account',
+    'rootId',
+    'choices',
+  ], 'Owned inventory result');
+  if (result.schemaVersion !== WEB_V8_INVENTORY_SCHEMA || result.source !== 'LIVE_RPC'
+    || result.requestId !== request.requestId
+    || result.chainIdentifier !== execution.chainIdentifier
+    || result.route !== routeIdentity(request.route)
+    || result.action !== request.action
+    || exactId(result.account, 'inventory.account') !== account.address
+    || exactId(result.rootId, 'inventory.rootId') !== request.route.id
+    || !Array.isArray(result.choices)) {
+    throw appError(
+      'WEB_V8_INVENTORY_CONTEXT_DRIFT',
+      'Owned inventory choices do not bind the exact live request, account, Root, and action.',
+      'CONTEXT',
+    );
+  }
+  const action = actionById(request.action);
+  if (!OWNED_INVENTORY_ACTIONS.has(action.id)) {
+    throw appError('WEB_V8_INVENTORY_ACTION_INVALID', 'This action does not consume an owned Soul or Physical object.');
+  }
+  const expectedKind = action.id === 'listSoulBundle'
+    ? 'SOUL_BUNDLE'
+    : action.id === 'listBasePhysical' ? 'PHYSICAL_BASE' : 'PHYSICAL_PACK';
+  const expectedSourceKind = action.id === 'listBasePhysical' ? 0
+    : action.id === 'listPackPhysical' ? 1 : null;
+  const seen = new Set();
+  const choices = result.choices.map((choice, index) => {
+    exactKeys(choice, [
+      'id',
+      'kind',
+      'objectIds',
+      'ownershipEpoch',
+      'sourceKind',
+      'sourceId',
+      'sourceTreasuryId',
+    ], `inventory.choices[${index}]`);
+    const choiceId = exactId(choice.id, `inventory.choices[${index}].id`);
+    if (seen.has(choiceId)) {
+      throw appError('WEB_V8_INVENTORY_DUPLICATE', 'Owned inventory contains a duplicate selectable ID.', 'CUSTODY');
+    }
+    seen.add(choiceId);
+    if (choice.kind !== expectedKind || !Array.isArray(choice.objectIds)) {
+      throw appError('WEB_V8_INVENTORY_KIND_MISMATCH', 'Owned inventory choice belongs to another listing lane.', 'CUSTODY');
+    }
+    const objectIds = Object.freeze(choice.objectIds.map((value, objectIndex) => (
+      exactId(value, `inventory.choices[${index}].objectIds[${objectIndex}]`)
+    )));
+    const soul = expectedKind === 'SOUL_BUNDLE';
+    if ((soul && (objectIds.length !== 3 || choiceId !== objectIds[0]
+        || choice.sourceKind !== null || choice.sourceId !== null || choice.sourceTreasuryId !== null))
+      || (!soul && (objectIds.length !== 1 || choiceId !== objectIds[0]
+        || exactU8(choice.sourceKind, `inventory.choices[${index}].sourceKind`) !== expectedSourceKind))) {
+      throw appError('WEB_V8_INVENTORY_BINDING_MISMATCH', 'Owned inventory choice has inconsistent bundle or provenance fields.', 'CUSTODY');
+    }
+    const sourceId = soul ? null : exactId(choice.sourceId, `inventory.choices[${index}].sourceId`);
+    const sourceTreasuryId = choice.sourceTreasuryId === null
+      ? null : exactId(choice.sourceTreasuryId, `inventory.choices[${index}].sourceTreasuryId`);
+    if (!soul && ((expectedSourceKind === 0 && sourceTreasuryId !== null)
+      || (expectedSourceKind === 1 && sourceTreasuryId === null))) {
+      throw appError('WEB_V8_INVENTORY_BINDING_MISMATCH', 'Physical inventory source treasury does not match its lane.', 'CUSTODY');
+    }
+    return Object.freeze({
+      id: choiceId,
+      kind: expectedKind,
+      objectIds,
+      ownershipEpoch: exactU64(choice.ownershipEpoch, `inventory.choices[${index}].ownershipEpoch`),
+      sourceKind: expectedSourceKind,
+      sourceId,
+      sourceTreasuryId,
+    });
+  });
+  return Object.freeze(choices);
+}
+
+function disconnectedWalletError(error) {
+  return ['MAKER_V8_BROWSER_WALLET_UNAVAILABLE', 'MAKER_V8_BROWSER_WALLET_NOT_CONNECTED']
+    .includes(error?.code)
+    || /no (?:compatible )?(?:sui )?wallet|no wallet standard provider|not connected|connect .*wallet/i
+      .test(String(error?.message || ''));
+}
+
 export function createFreshV8Controller({
   route,
   runtime,
@@ -1019,6 +1184,8 @@ export function createFreshV8Controller({
     browse: null,
     availableActions: [],
     action: null,
+    inventoryChoices: [],
+    selectedInventoryId: null,
     grossAtomic: '1000000',
     context: null,
     quote: null,
@@ -1033,21 +1200,27 @@ export function createFreshV8Controller({
     issue: null,
   };
   const listeners = new Set();
-  const snapshot = () => Object.freeze({ ...state, availableActions: Object.freeze([...state.availableActions]) });
+  const snapshot = () => Object.freeze({
+    ...state,
+    availableActions: Object.freeze([...state.availableActions]),
+    inventoryChoices: Object.freeze([...state.inventoryChoices]),
+  });
   const emit = () => listeners.forEach((listener) => listener(snapshot()));
   const setBusy = (busy, status = state.status) => { state.busy = busy; state.status = status; emit(); };
   const rememberError = (error) => {
     state.busy = false;
     state.issue = classifyFreshV8Error(error, { action: state.action?.id || route.kind });
-    if (state.issue.layer === 'FINALIZED_EXECUTION') state.status = 'FINALIZED_FAILURE';
+    state.status = state.issue.layer === 'FINALIZED_EXECUTION'
+      ? 'FINALIZED_FAILURE'
+      : state.issue.layer === 'WALLET' ? 'RECONNECT_REQUIRED' : 'ERROR';
     emit();
     throw error;
   };
 
-  async function loadSelectedAction() {
-    if (!state.action) return;
-    // Refetch is an authority boundary. Invalidate every prior approval before
-    // asking the RPC adapter for a new object snapshot, including failed reads.
+  function invalidateActionContext({ clearInventory = false } = {}) {
+    state.context = null;
+    state.quote = null;
+    state.fingerprint = null;
     state.reviewedFingerprint = null;
     state.paymentFingerprint = null;
     state.quoteEvidence = null;
@@ -1055,6 +1228,95 @@ export function createFreshV8Controller({
     state.prepared = null;
     state.recoveryRecord = null;
     state.completionReceipt = null;
+    currentIdentity = null;
+    if (clearInventory) {
+      state.inventoryChoices = [];
+      state.selectedInventoryId = null;
+    }
+  }
+
+  async function readCurrentAccount({ optional = false } = {}) {
+    try {
+      const account = assertAccount(await adapters.wallet.getCurrentAccount(), execution);
+      if (state.account && stableJson(account) !== stableJson(state.account)) {
+        invalidateActionContext({ clearInventory: true });
+      }
+      state.account = account;
+      return account;
+    } catch (error) {
+      if (optional && disconnectedWalletError(error)) {
+        state.account = null;
+        invalidateActionContext({ clearInventory: true });
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async function loadOwnedInventory({ preserveSelection = false } = {}) {
+    if (!state.action || !OWNED_INVENTORY_ACTIONS.has(state.action.id) || !state.account) {
+      throw appError(
+        'WEB_V8_INVENTORY_CONTEXT_REQUIRED',
+        'Connect a wallet and select a Soul or Physical listing action first.',
+        'CUSTODY',
+      );
+    }
+    const selectedInventoryId = preserveSelection ? state.selectedInventoryId : null;
+    invalidateActionContext();
+    state.inventoryChoices = [];
+    state.selectedInventoryId = null;
+    const requested = {
+      requestId: requestId(),
+      route,
+      action: state.action.id,
+      account: state.account,
+      eventType: makerV8StableType(runtime, 'release', 'release_v8', 'MakerV8Activated'),
+      marketTypes: marketClient.types,
+      runtime,
+    };
+    state.status = 'READING_INVENTORY';
+    emit();
+    state.inventoryChoices = normalizeOwnedInventory(
+      await adapters.rpc.loadOwnedInventory(requested),
+      requested,
+      execution,
+      state.account,
+    );
+    state.selectedInventoryId = null;
+    if (!state.inventoryChoices.length) {
+      throw appError(
+        'WEB_V8_INVENTORY_EMPTY',
+        'The connected wallet has no exact owned object for this listing lane.',
+        'CUSTODY',
+      );
+    }
+    if (selectedInventoryId
+      && !state.inventoryChoices.some((choice) => choice.id === selectedInventoryId)) {
+      throw appError(
+        'WEB_V8_INVENTORY_SELECTION_STALE',
+        'The selected owned object is no longer present in the refreshed wallet inventory.',
+        'CUSTODY',
+      );
+    }
+    state.selectedInventoryId = selectedInventoryId;
+    state.status = selectedInventoryId ? 'READING' : 'SELECTION_REQUIRED';
+  }
+
+  async function loadSelectedAction() {
+    if (!state.action) return;
+    if (!state.account) {
+      throw appError('WEB_V8_WALLET_REQUIRED', 'Connect the wallet that will authorize this action.', 'WALLET');
+    }
+    if (OWNED_INVENTORY_ACTIONS.has(state.action.id) && !state.selectedInventoryId) {
+      throw appError(
+        'WEB_V8_INVENTORY_SELECTION_REQUIRED',
+        'Select the exact owned Soul bundle or Physical asset before building a list action.',
+        'CUSTODY',
+      );
+    }
+    // Refetch is an authority boundary. Invalidate every prior approval before
+    // asking the RPC adapter for a new object snapshot, including failed reads.
+    invalidateActionContext();
     const requested = {
       requestId: requestId(),
       route,
@@ -1063,6 +1325,9 @@ export function createFreshV8Controller({
       marketTypes: marketClient.types,
       account: state.account,
       runtime,
+      ...(OWNED_INVENTORY_ACTIONS.has(state.action.id)
+        ? { selectedInventoryId: state.selectedInventoryId }
+        : {}),
     };
     state.status = 'READING';
     emit();
@@ -1130,7 +1395,6 @@ export function createFreshV8Controller({
         state.browse = normalizeBrowse(await adapters.rpc.browseMarket(request), request, runtime, execution);
         state.status = 'READY';
       } else {
-        state.account = assertAccount(await adapters.wallet.getCurrentAccount(), execution);
         const request = { requestId: requestId(), route };
         const result = normalizeView(await adapters.rpc.loadRoute({
           ...request,
@@ -1139,10 +1403,28 @@ export function createFreshV8Controller({
         }), request, runtime, execution);
         state.view = result.view;
         state.availableActions = result.availableActions;
-        if (!state.action || !state.availableActions.includes(state.action.id)) {
-          state.action = state.availableActions.length ? actionById(state.availableActions[0]) : null;
+        if (state.action && !state.availableActions.includes(state.action.id)) {
+          state.action = null;
+          invalidateActionContext({ clearInventory: true });
         }
-        await loadSelectedAction();
+        const account = await readCurrentAccount({ optional: true });
+        if (!account) {
+          state.status = 'READY';
+        } else {
+          if (!state.action && state.availableActions.length) {
+            state.action = actionById(state.availableActions[0]);
+          }
+          if (state.action && OWNED_INVENTORY_ACTIONS.has(state.action.id)) {
+            if (state.selectedInventoryId) {
+              await loadOwnedInventory({ preserveSelection: true });
+              await loadSelectedAction();
+            } else await loadOwnedInventory();
+          } else if (state.action) {
+            await loadSelectedAction();
+          } else {
+            state.status = 'READY';
+          }
+        }
       }
       state.busy = false;
       emit();
@@ -1160,7 +1442,36 @@ export function createFreshV8Controller({
       }
       state.action = action;
       state.issue = null;
+      invalidateActionContext({ clearInventory: true });
       setBusy(true, 'READING');
+      await readCurrentAccount();
+      if (OWNED_INVENTORY_ACTIONS.has(action.id)) await loadOwnedInventory();
+      else await loadSelectedAction();
+      state.busy = false;
+      emit();
+      return snapshot();
+    } catch (error) {
+      return rememberError(error);
+    }
+  }
+
+  async function selectInventory(id) {
+    try {
+      if (!state.action || !OWNED_INVENTORY_ACTIONS.has(state.action.id)) {
+        throw appError('WEB_V8_INVENTORY_ACTION_INVALID', 'No owned-inventory list action is selected.');
+      }
+      const selected = exactId(id, 'selectedInventoryId');
+      if (!state.inventoryChoices.some((choice) => choice.id === selected)) {
+        throw appError(
+          'WEB_V8_INVENTORY_SELECTION_STALE',
+          'The selected owned object is not present in the latest verified inventory.',
+          'CUSTODY',
+        );
+      }
+      state.issue = null;
+      setBusy(true, 'READING');
+      await readCurrentAccount();
+      state.selectedInventoryId = selected;
       await loadSelectedAction();
       state.busy = false;
       emit();
@@ -1176,7 +1487,8 @@ export function createFreshV8Controller({
       state.reviewedFingerprint = null;
       state.paymentFingerprint = null;
       state.prepared = null;
-      if (state.action) await loadSelectedAction();
+      if (state.action && (!OWNED_INVENTORY_ACTIONS.has(state.action.id)
+        || state.selectedInventoryId)) await loadSelectedAction();
       emit();
     } catch (error) {
       rememberError(error);
@@ -1188,6 +1500,19 @@ export function createFreshV8Controller({
       if (!state.fingerprint || !state.quote) throw appError('WEB_V8_QUOTE_REQUIRED', 'Refresh and calculate the exact quote first.', 'VALIDATION');
       setBusy(true, 'QUOTING');
       const localFingerprint = state.fingerprint;
+      if (FROZEN_LISTING_ACTIONS.has(state.action.id)) {
+        const evidence = frozenListingQuoteEvidence(state);
+        if (localFingerprint !== state.fingerprint) {
+          throw appError('WEB_V8_QUOTE_CONTEXT_DRIFT', 'Live listing context changed during quote review.', 'CONTEXT');
+        }
+        state.quoteEvidence = evidence;
+        state.chainQuoteProof = null;
+        state.reviewedFingerprint = state.fingerprint;
+        state.status = 'READY';
+        state.busy = false;
+        emit();
+        return Object.freeze({ ...state.quote, evidence });
+      }
       const inspected = await marketClient.inspectQuoteOnChain(
         await adapters.rpc.getSuiClient(),
         quoteInspectionInput(marketModule, state),
@@ -1305,6 +1630,9 @@ export function createFreshV8Controller({
       marketTypes: freshMarketClient.types,
       account,
       runtime: freshRuntime,
+      ...(OWNED_INVENTORY_ACTIONS.has(durableAction.id)
+        ? { selectedInventoryId: durable.identity.listing.id }
+        : {}),
     };
     const context = assertFreshV8ActionContext(
       await adapters.rpc.loadActionContext(request),
@@ -1324,22 +1652,30 @@ export function createFreshV8Controller({
       quoteEvidence: null,
       chainQuoteProof: null,
     };
-    const inspected = await freshMarketClient.inspectQuoteOnChain(
-      suiClient,
-      quoteInspectionInput(marketModule, candidate),
-    );
-    const chainQuote = normalizedInspectedQuote(inspected);
-    for (const field of [...QUOTE_FIELDS, 'commitment']) {
-      if (chainQuote[field] !== localQuote[field]) {
-        throw appError('MARKET_V8_QUOTE_DRIFT', 'Fresh pre-sign chain quote differs from the complete live context.', 'CONTEXT');
+    if (FROZEN_LISTING_ACTIONS.has(durableAction.id)) {
+      const evidence = frozenListingQuoteEvidence(candidate);
+      candidate = Object.freeze({
+        ...candidate,
+        quoteEvidence: evidence,
+      });
+    } else {
+      const inspected = await freshMarketClient.inspectQuoteOnChain(
+        suiClient,
+        quoteInspectionInput(marketModule, candidate),
+      );
+      const chainQuote = normalizedInspectedQuote(inspected);
+      for (const field of [...QUOTE_FIELDS, 'commitment']) {
+        if (chainQuote[field] !== localQuote[field]) {
+          throw appError('MARKET_V8_QUOTE_DRIFT', 'Fresh pre-sign chain quote differs from the complete live context.', 'CONTEXT');
+        }
       }
+      candidate = Object.freeze({
+        ...candidate,
+        quote: chainQuote,
+        quoteEvidence: chainQuote.evidence,
+        chainQuoteProof: inspected,
+      });
     }
-    candidate = Object.freeze({
-      ...candidate,
-      quote: chainQuote,
-      quoteEvidence: chainQuote.evidence,
-      chainQuoteProof: inspected,
-    });
     const liveIdentity = recoveryModule.canonicalMakerV8RecoveryIdentity(recoveryIdentity(candidate, execution));
     const durableIdentity = recoveryModule.canonicalMakerV8RecoveryIdentity(durable.identity);
     if (stableJson(liveIdentity) !== stableJson(durableIdentity)) {
@@ -1354,7 +1690,7 @@ export function createFreshV8Controller({
         throw appError('WEB_V8_QUOTE_REVIEW_REQUIRED', 'The current exact quote has not been reviewed.', 'VALIDATION');
       }
       if (!state.quoteEvidence) {
-        throw appError('WEB_V8_QUOTE_EVIDENCE_REQUIRED', 'Chain quote inspection must complete before Transaction preparation.', 'VALIDATION');
+        throw appError('WEB_V8_QUOTE_EVIDENCE_REQUIRED', 'The exact chain quote or frozen live listing quote must be reviewed before Transaction preparation.', 'VALIDATION');
       }
       if (PURCHASE_ACTIONS.has(state.action.id) && state.paymentFingerprint !== state.fingerprint) {
         throw appError('WEB_V8_EXACT_PAYMENT_CONFIRMATION_REQUIRED', 'Exact payment has not been confirmed.', 'VALIDATION');
@@ -1473,10 +1809,33 @@ export function createFreshV8Controller({
     subscribe(listener) { listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener); },
     refresh,
     async reconnect() {
-      state.account = assertAccount(await adapters.wallet.reconnect(), execution);
-      return refresh();
+      try {
+        state.issue = null;
+        setBusy(true, 'CONNECTING');
+        const account = assertAccount(await adapters.wallet.reconnect(), execution);
+        if (state.account && stableJson(account) !== stableJson(state.account)) {
+          invalidateActionContext({ clearInventory: true });
+        }
+        state.account = account;
+        if (state.action && OWNED_INVENTORY_ACTIONS.has(state.action.id)) {
+          if (state.selectedInventoryId) {
+            await loadOwnedInventory({ preserveSelection: true });
+            await loadSelectedAction();
+          } else await loadOwnedInventory();
+        } else if (state.action) {
+          await loadSelectedAction();
+        } else {
+          state.status = 'READY';
+        }
+        state.busy = false;
+        emit();
+        return snapshot();
+      } catch (error) {
+        return rememberError(error);
+      }
     },
     selectAction,
+    selectInventory,
     setGrossAtomic,
     reviewQuote,
     confirmExactPayment,
@@ -1503,6 +1862,29 @@ function actionControls(state) {
     const selected = state.action?.id === action.id;
     return `<button type="button" class="action-chip ${selected ? 'selected' : ''}" data-action="${action.id}" aria-pressed="${selected}" ${available && !state.busy ? '' : 'disabled'}><span>${escapeHtml(action.label)}</span><small>${action.lane} · ${action.kind}</small></button>`;
   }).join('');
+}
+
+function inventoryMarkup(state) {
+  if (!OWNED_INVENTORY_ACTIONS.has(state.action?.id)) return '';
+  const names = state.action.id === 'listSoulBundle'
+    ? ['Output', 'Receipt', 'Soul'] : ['Asset'];
+  const choices = state.inventoryChoices.map((choice) => {
+    const selected = state.selectedInventoryId === choice.id;
+    const objectIds = choice.objectIds.map((objectId, index) => `
+      <div><dt>${escapeHtml(names[index] || `Object ${index + 1}`)}</dt><dd><code>${escapeHtml(objectId)}</code></dd></div>`).join('');
+    const provenance = choice.sourceId ? `
+      <div><dt>Source</dt><dd><code>${escapeHtml(choice.sourceId)}</code></dd></div>
+      ${choice.sourceTreasuryId ? `<div><dt>Source treasury</dt><dd><code>${escapeHtml(choice.sourceTreasuryId)}</code></dd></div>` : ''}` : '';
+    return `<button type="button" class="inventory-choice ${selected ? 'selected' : ''}" data-inventory-id="${escapeHtml(choice.id)}" aria-pressed="${selected}" ${state.busy ? 'disabled' : ''}>
+      <span class="inventory-choice-heading"><strong>${escapeHtml(choice.kind.replaceAll('_', ' '))}</strong><span>Ownership epoch ${escapeHtml(choice.ownershipEpoch)}</span></span>
+      <dl>${objectIds}${provenance}</dl>
+    </button>`;
+  }).join('');
+  return `<section class="inventory-panel" aria-labelledby="inventory-title">
+    <div class="section-heading"><div><p class="eyebrow">Live wallet inventory</p><h2 id="inventory-title">Select the exact object to list</h2></div><span class="safety-badge">No selection is persisted</span></div>
+    <p class="fine-print">Inventory is read again for action context and before signing. A missing or changed selection fails closed.</p>
+    <div class="inventory-grid">${choices || '<p class="empty-state">Reconnect the owning wallet to load exact inventory choices.</p>'}</div>
+  </section>`;
 }
 
 function browseMarkup(state) {
@@ -1538,16 +1920,24 @@ function quoteMarkup(state) {
   const reviewed = state.reviewedFingerprint === state.fingerprint;
   const payment = state.paymentFingerprint === state.fingerprint;
   const purchase = PURCHASE_ACTIONS.has(state.action.id);
+  const frozen = FROZEN_LISTING_ACTIONS.has(state.action.id);
+  const evidenceLabel = frozen
+    ? (state.quoteEvidence ? 'Live listing quote verified' : 'Awaiting listing review')
+    : (state.quoteEvidence ? 'Chain dry-run verified' : 'Awaiting chain inspection');
   return `<section class="quote-panel" aria-labelledby="quote-title">
-    <div class="section-heading"><div><p class="eyebrow">${state.quoteEvidence ? 'Chain dry-run verified' : 'Awaiting chain inspection'}</p><h2 id="quote-title">Exact quote review</h2></div><code>${escapeHtml(shortId(state.quote.commitment))}</code></div>
+    <div class="section-heading"><div><p class="eyebrow">${evidenceLabel}</p><h2 id="quote-title">Exact quote review</h2></div><code>${escapeHtml(shortId(state.quote.commitment))}</code></div>
     <dl class="quote-grid">
       ${QUOTE_FIELDS.map((field) => `<div><dt>${escapeHtml(field.replace('Atomic', ''))}</dt><dd>${escapeHtml(state.quote[field])}</dd></div>`).join('')}
     </dl>
     <div class="review-row">
-      <button type="button" data-command="review" ${state.busy ? 'disabled' : ''}>${reviewed ? 'Chain quote reviewed' : 'Inspect & review chain quote'}</button>
+      <button type="button" data-command="review" ${state.busy ? 'disabled' : ''}>${frozen
+        ? (reviewed ? 'Frozen listing quote reviewed' : 'Review frozen listing quote')
+        : (reviewed ? 'Chain quote reviewed' : 'Inspect & review chain quote')}</button>
       ${purchase ? `<button type="button" data-command="payment" ${reviewed && !state.busy ? '' : 'disabled'}>${payment ? `Exact ${escapeHtml(state.quote.grossAtomic)} intent confirmed` : `Confirm exact ${escapeHtml(state.quote.grossAtomic)} payment intent`}</button>` : ''}
     </div>
-    <p class="fine-print">The Transaction derives exact ${escapeHtml(state.runtime.paymentCoinType)} balance from the current wallet at build time. Refreshing account or chain state clears every confirmation.</p>
+    <p class="fine-print">${frozen
+      ? 'Cancel and recovery preserve the exact economics committed by the verified live listing; object state is read again before signing.'
+      : `The Transaction derives exact ${escapeHtml(state.runtime.paymentCoinType)} balance from the current wallet at build time. Refreshing account or chain state clears every confirmation.`}</p>
   </section>`;
 }
 
@@ -1574,9 +1964,11 @@ export function renderFreshV8App(root, controller) {
   if (!root || typeof root.addEventListener !== 'function') throw appError('WEB_V8_ROOT_INVALID', 'A browser application root is required.');
   root.addEventListener('click', async (event) => {
     const actionButton = event.target.closest?.('[data-action]');
+    const inventoryButton = event.target.closest?.('[data-inventory-id]');
     const commandButton = event.target.closest?.('[data-command]');
     try {
       if (actionButton) await controller.selectAction(actionButton.dataset.action);
+      if (inventoryButton) await controller.selectInventory(inventoryButton.dataset.inventoryId);
       if (commandButton?.dataset.command === 'refresh') await controller.refresh();
       if (commandButton?.dataset.command === 'reconnect') await controller.reconnect();
       if (commandButton?.dataset.command === 'review') await controller.reviewQuote();
@@ -1601,6 +1993,7 @@ export function renderFreshV8App(root, controller) {
         <div class="object-meta"><span>${escapeHtml(state.view?.lifecycle || 'READING')}</span><span>${escapeHtml(state.view?.listingStatus || '—')}</span><code>${escapeHtml(shortId(state.route.id))}</code></div>
       </section>
       <section aria-labelledby="actions-title"><div class="section-heading"><div><p class="eyebrow">Static ABI surface</p><h2 id="actions-title">Four lanes · fourteen actions</h2></div></div><div class="action-grid">${actionControls(state)}</div></section>
+      ${inventoryMarkup(state)}
       ${LIST_ACTIONS.has(state.action?.id) ? `<section class="price-row"><label for="grossAtomic">Gross atomic amount</label><input id="grossAtomic" inputmode="numeric" pattern="[0-9]*" value="${escapeHtml(state.grossAtomic)}" /><button type="button" data-command="price">Recalculate</button></section>` : ''}
       ${quoteMarkup(state)}
       ${executionMarkup(state)}`;

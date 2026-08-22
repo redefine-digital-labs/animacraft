@@ -1430,30 +1430,104 @@ test('purchase derives one exact-value CoinWithBalance and forbids caller-author
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_INTEGER_INVALID');
 });
 
-test('cancel remains available across quote drift while recovery mirrors Maker versus asset lifecycle rules', () => {
+test('all Maker, Soul, and Physical cancel/recover lifecycles build without a fresh quote and stale listing state fails', () => {
   const driftedResponse = structuredClone(registryResponse);
   driftedResponse.data.content.fields.economics_commitment = bytes32(0xee);
   const driftedRegistry = client.parseRegistry(driftedResponse);
-  const canceled = client.buildCancelMakerControl({
-    ...makerExisting(makerListing, IDs.seller),
+  const drifted = (input, listing) => ({
+    ...input,
     registry: driftedRegistry,
     expectation: {
-      listingRevision: 0n,
-      registryRevision: 4n,
-      quoteCommitment: makerListing.fields.quoteCommitment,
+      listingRevision: listing.fields.revision,
+      registryRevision: driftedRegistry.fields.revision,
+      quoteCommitment: listing.fields.quoteCommitment,
     },
   });
-  assert.equal(canceled.descriptor.action, 'cancelMakerControl');
+  const cancelCases = [
+    ['cancelMakerControl', (root) => client.buildCancelMakerControl({
+      ...drifted(makerExisting(makerListing, IDs.seller), makerListing), root,
+    })],
+    ['cancelSoulListing', (root) => client.buildCancelSoulListing({
+      ...drifted(soulExisting(soulListing, IDs.seller), soulListing), root,
+    })],
+    ['cancelPhysicalListing', (root) => client.buildCancelPhysicalListing({
+      ...drifted(physicalExisting(baseListing, IDs.seller), baseListing), root,
+    })],
+    ['cancelPhysicalListing', (root) => client.buildCancelPhysicalListing({
+      ...drifted(physicalExisting(packListing, IDs.seller), packListing), root,
+    })],
+  ];
+  for (const lifecycle of [
+    MARKET_V8_LIFECYCLES.ACTIVE,
+    MARKET_V8_LIFECYCLES.PAUSED,
+    MARKET_V8_LIFECYCLES.ARCHIVED,
+  ]) {
+    for (const [action, build] of cancelCases) {
+      assert.equal(build(rootAt(lifecycle)).descriptor.action, action);
+    }
+  }
+
   assert.throws(() => client.buildRecoverMakerControl({
     ...makerExisting(makerListing, IDs.recoveryCaller),
     root: rootAt(MARKET_V8_LIFECYCLES.PAUSED),
     protocolConfig: currentProtocol,
   }), (error) => error instanceof MarketV8EligibilityError && error.code === 'MARKET_V8_NOT_RECOVERABLE');
-  assert.doesNotThrow(() => client.buildRecoverSoulListing({
-    ...soulExisting(soulListing, IDs.recoveryCaller),
-    root: rootAt(MARKET_V8_LIFECYCLES.PAUSED),
-    protocolConfig: currentProtocol,
-  }));
+  const recoverCases = [
+    ['recoverMakerControl', (root, protocolConfig) => client.buildRecoverMakerControl({
+      ...makerExisting(makerListing, IDs.recoveryCaller), root, protocolConfig,
+    }), [MARKET_V8_LIFECYCLES.ARCHIVED]],
+    ['recoverSoulListing', (root, protocolConfig) => client.buildRecoverSoulListing({
+      ...soulExisting(soulListing, IDs.recoveryCaller), root, protocolConfig,
+    }), [MARKET_V8_LIFECYCLES.PAUSED, MARKET_V8_LIFECYCLES.ARCHIVED]],
+    ['recoverPhysicalListing', (root, protocolConfig) => client.buildRecoverPhysicalListing({
+      ...physicalExisting(baseListing, IDs.recoveryCaller), root, protocolConfig,
+    }), [MARKET_V8_LIFECYCLES.PAUSED, MARKET_V8_LIFECYCLES.ARCHIVED]],
+    ['recoverPhysicalListing', (root, protocolConfig) => client.buildRecoverPhysicalListing({
+      ...physicalExisting(packListing, IDs.recoveryCaller), root, protocolConfig,
+    }), [MARKET_V8_LIFECYCLES.PAUSED, MARKET_V8_LIFECYCLES.ARCHIVED]],
+  ];
+  for (const [action, build, lifecycles] of recoverCases) {
+    for (const lifecycle of lifecycles) {
+      assert.equal(build(rootAt(lifecycle), currentProtocol).descriptor.action, action);
+    }
+    assert.equal(
+      build(rootAt(MARKET_V8_LIFECYCLES.ACTIVE), degraded).descriptor.action,
+      action,
+      `${action} must remain executable during verified protocol degradation`,
+    );
+  }
+
+  const stale = (input) => ({
+    ...input,
+    expectation: {
+      ...input.expectation,
+      listingRevision: input.listing.fields.revision + 1n,
+    },
+  });
+  const staleCases = [
+    () => client.buildCancelMakerControl(stale(makerExisting(makerListing, IDs.seller))),
+    () => client.buildRecoverMakerControl(stale({
+      ...makerExisting(makerListing, IDs.recoveryCaller),
+      root: rootAt(MARKET_V8_LIFECYCLES.ARCHIVED), protocolConfig: currentProtocol,
+    })),
+    () => client.buildCancelSoulListing(stale(soulExisting(soulListing, IDs.seller))),
+    () => client.buildRecoverSoulListing(stale({
+      ...soulExisting(soulListing, IDs.recoveryCaller),
+      root: rootAt(MARKET_V8_LIFECYCLES.PAUSED), protocolConfig: currentProtocol,
+    })),
+    () => client.buildCancelPhysicalListing(stale(physicalExisting(baseListing, IDs.seller))),
+    () => client.buildRecoverPhysicalListing(stale({
+      ...physicalExisting(packListing, IDs.recoveryCaller),
+      root: rootAt(MARKET_V8_LIFECYCLES.PAUSED), protocolConfig: currentProtocol,
+    })),
+  ];
+  for (const build of staleCases) {
+    assert.throws(
+      build,
+      (error) => error instanceof MarketV8EligibilityError
+        && error.code === 'MARKET_V8_STALE_LISTING_REVISION',
+    );
+  }
 });
 
 const FINALIZED_EVENT_BCS = Object.freeze({

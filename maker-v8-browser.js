@@ -48,6 +48,7 @@ export const MAKER_V8_WALLET_CHAIN = SUI_MAINNET_CHAIN;
 const WEB_V8_CONTEXT_SCHEMA = 'animacraft.web-market-context.v8';
 const WEB_V8_ROUTE_SCHEMA = 'animacraft.web-route-view.v8';
 const WEB_V8_BROWSE_SCHEMA = 'animacraft.web-market-browse.v8';
+const WEB_V8_INVENTORY_SCHEMA = 'animacraft.web-owned-inventory.v8';
 const WEB_V8_READBACK_SCHEMA = 'animacraft.web-market-finalized-readback.v8';
 const EXACT_ID = /^0x[0-9a-f]{64}$/;
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{20,64}$/;
@@ -58,6 +59,11 @@ const LIST_ACTIONS = new Set(Object.entries(ACTIONS)
   .filter(([, value]) => value.kind === 'LIST').map(([name]) => name));
 const PURCHASE_ACTIONS = new Set(Object.entries(ACTIONS)
   .filter(([, value]) => value.kind === 'PURCHASE').map(([name]) => name));
+const OWNED_INVENTORY_ACTIONS = new Set([
+  'listSoulBundle',
+  'listBasePhysical',
+  'listPackPhysical',
+]);
 
 function freeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -1614,8 +1620,16 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
       if (!input.admin) fail('MAKER_V8_BROWSER_INVENTORY_EMPTY', 'Wallet has no exact Maker AdminCap for this Root.', 'CUSTODY');
       refs.push(input.admin);
     } else if (action === 'listSoulBundle') {
-      const bundle = inventory.soulBundles[0];
-      if (!bundle) fail('MAKER_V8_BROWSER_INVENTORY_EMPTY', 'Wallet has no exact Soul bundle for this Root.', 'CUSTODY');
+      const selectedId = id(request.selectedInventoryId, 'selectedInventoryId');
+      const bundle = inventory.soulBundles.find((entry) => entry.output.objectId === selectedId);
+      if (!bundle) {
+        fail(
+          'MAKER_V8_BROWSER_INVENTORY_SELECTION_STALE',
+          'The selected Soul bundle is no longer in the connected wallet inventory.',
+          'CUSTODY',
+          { selectedInventoryId: selectedId },
+        );
+      }
       input.outputRegistry = await genericRootObject(common, 'outputRegistryId', 'outputRegistry', 'OutputRegistryV8');
       input.soulRegistry = await genericRootObject(common, 'soulRegistryId', 'soulRegistry', 'SoulRegistryV8');
       input.outputAsset = bundle.output;
@@ -1624,8 +1638,18 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
       refs.push(bundle.output, bundle.receipt, bundle.soul);
     } else {
       const expectedSource = action === 'listBasePhysical' ? 0 : 1;
-      input.asset = inventory.physicalAssets.find((asset) => asset.sourceKind === expectedSource);
-      if (!input.asset) fail('MAKER_V8_BROWSER_INVENTORY_EMPTY', 'Wallet has no exact typed Physical asset for this lane.', 'CUSTODY');
+      const selectedId = id(request.selectedInventoryId, 'selectedInventoryId');
+      input.asset = inventory.physicalAssets.find((asset) => (
+        asset.objectId === selectedId && asset.sourceKind === expectedSource
+      ));
+      if (!input.asset) {
+        fail(
+          'MAKER_V8_BROWSER_INVENTORY_SELECTION_STALE',
+          'The selected Physical asset is no longer in the connected wallet inventory or listing lane.',
+          'CUSTODY',
+          { selectedInventoryId: selectedId, expectedSource },
+        );
+      }
       input.physicalRegistry = await genericRootObject(common, 'physicalRegistryId', 'physicalRegistry', 'PhysicalRegistryV8');
       input.physicalConfig = common.configs.physical;
       if (expectedSource === 0) input.makerTreasury = common.makerTreasury;
@@ -1745,6 +1769,60 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
         chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
         makers: freeze(makers),
         listings: freeze(listings),
+      });
+    },
+
+    async loadOwnedInventory(request) {
+      await assertPinnedMainnet(client);
+      const action = makerV8ActionV8(request.action);
+      if (!action || !OWNED_INVENTORY_ACTIONS.has(action.id)
+        || request.route?.kind !== 'maker') {
+        fail(
+          'MAKER_V8_BROWSER_INVENTORY_ACTION_INVALID',
+          'Owned inventory can only be read for a Soul or Physical list action on an exact Maker route.',
+          'VALIDATION',
+        );
+      }
+      const rootId = id(request.route.id, 'route.id');
+      const account = id(request.account?.address, 'account.address');
+      const common = await commonContext(rootId);
+      const inventory = await common.chain.inventory(account, common.root);
+      const choices = action.id === 'listSoulBundle'
+        ? inventory.soulBundles.map((bundle) => freeze({
+            id: bundle.output.objectId,
+            kind: 'SOUL_BUNDLE',
+            objectIds: freeze([
+              bundle.output.objectId,
+              bundle.receipt.objectId,
+              bundle.soul.objectId,
+            ]),
+            ownershipEpoch: bundle.ownershipEpoch.toString(),
+            sourceKind: null,
+            sourceId: null,
+            sourceTreasuryId: null,
+          }))
+        : inventory.physicalAssets
+            .filter((asset) => asset.sourceKind === (action.id === 'listBasePhysical' ? 0 : 1))
+            .map((asset) => freeze({
+              id: asset.objectId,
+              kind: action.id === 'listBasePhysical' ? 'PHYSICAL_BASE' : 'PHYSICAL_PACK',
+              objectIds: freeze([asset.objectId]),
+              ownershipEpoch: asset.ownershipEpoch.toString(),
+              sourceKind: asset.sourceKind,
+              sourceId: asset.sourceId,
+              sourceTreasuryId: asset.sourceTreasuryId,
+            }));
+      choices.sort((left, right) => left.id.localeCompare(right.id));
+      return freeze({
+        schemaVersion: WEB_V8_INVENTORY_SCHEMA,
+        source: 'LIVE_RPC',
+        requestId: request.requestId,
+        chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+        route: routeIdentity(request.route),
+        action: action.id,
+        account,
+        rootId,
+        choices: freeze(choices),
       });
     },
 
@@ -1953,15 +2031,25 @@ export function createWalletStandardConnectorV8({
     },
 
     async reconnect() {
-      const wallet = select();
-      const result = await wallet.features[StandardConnect].connect();
-      const account = mainnetAccount(result?.accounts ?? wallet.accounts);
-      if (!account) {
-        invalidate([]);
-        fail('MAKER_V8_BROWSER_WALLET_NETWORK_DRIFT', 'Wallet did not authorize a Sui Mainnet account.', 'CONTEXT');
+      try {
+        const wallet = select();
+        const result = await wallet.features[StandardConnect].connect();
+        const account = mainnetAccount(result?.accounts ?? wallet.accounts);
+        if (!account) {
+          invalidate([]);
+          fail('MAKER_V8_BROWSER_WALLET_NETWORK_DRIFT', 'Wallet did not authorize a Sui Mainnet account.', 'WALLET');
+        }
+        bind(wallet, result.accounts);
+        return freeze({ address: id(account.address, 'wallet.account.address'), network: checkedExecution.network });
+      } catch (error) {
+        if (error instanceof MakerV8BrowserError) throw error;
+        throw new MakerV8BrowserError(
+          'MAKER_V8_BROWSER_WALLET_RECONNECT_REJECTED',
+          `Wallet reconnect did not complete: ${String(error?.message || 'The wallet rejected the request.')}`,
+          'WALLET',
+          { cause: String(error?.message || error || 'unknown') },
+        );
       }
-      bind(wallet, result.accounts);
-      return freeze({ address: id(account.address, 'wallet.account.address'), network: checkedExecution.network });
     },
 
     async signExactTransaction({ bytes, digest: expectedDigest, signer }) {
@@ -2244,7 +2332,7 @@ export function createProductionMakerV8BrowserAdapters({
   const checkedExecution = executionConfig(execution);
   const reader = dataSource || createMakerV8LiveDataSourceV8({ client, runtime });
   for (const method of [
-    'resolveRoleLineages', 'loadRoute', 'browseMarket', 'loadActionContext',
+    'resolveRoleLineages', 'loadRoute', 'browseMarket', 'loadOwnedInventory', 'loadActionContext',
     'queryTransaction', 'readbackMarketAction',
   ]) requireMethod(reader, method, 'dataSource');
   const wallet = createWalletStandardConnectorV8({
@@ -2271,6 +2359,7 @@ export function createProductionMakerV8BrowserAdapters({
       resolveRoleLineages: (requests) => reader.resolveRoleLineages(requests),
       loadRoute: (request) => reader.loadRoute(request),
       browseMarket: (request) => reader.browseMarket(request),
+      loadOwnedInventory: (request) => reader.loadOwnedInventory(request),
       loadActionContext: (request) => reader.loadActionContext(request),
       queryTransaction: (request) => reader.queryTransaction(request),
       readbackMarketAction: (request) => reader.readbackMarketAction(request),
