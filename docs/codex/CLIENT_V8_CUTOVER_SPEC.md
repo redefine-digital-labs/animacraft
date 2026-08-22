@@ -50,6 +50,16 @@ transport bytes and live release bindings. It:
 - emits bounded, resumable stages with exact targets, type arguments, input
   roles, counters, and readback assertions.
 
+Initial base definitions are additionally bounded by the measured Sui 1.76.1
+object-runtime cost of sealing the Style registry. Let `S` be the total Style
+row count and `R` the number of distinct referenced
+`(colorChannelKey, defaultSwatchKey)` pairs. A document is publishable only
+when `S <= 500` and `2*S + R <= 1000`. The measured boundaries are 500 Styles
+with no Color pair and 333 Styles with 333 distinct Color pairs; 501/0 and
+334/334 fail closed before a transaction is built. This client limit is more
+restrictive than the unchanged Move source count constant and must not be
+raised without a new metered execution proof.
+
 ## Typed Market contract
 
 There are four static lanes and fourteen callable actions:

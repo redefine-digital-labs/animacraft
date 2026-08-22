@@ -5,7 +5,7 @@ import test from 'node:test';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { bcs } from '@mysten/sui/bcs';
 import { JsonRpcError, SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
-import { TransactionDataBuilder } from '@mysten/sui/transactions';
+import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import {
   SUI_MAINNET_CHAIN,
@@ -19,11 +19,13 @@ import {
 import {
   MAKER_V8_OFFICIAL_MAINNET_RPC_URL,
   createMakerV8LiveDataSourceV8,
+  assertFinalizedMakerV8CompilerTransactionV8,
   createProductionMakerV8BrowserAdapters,
   createWalletStandardConnectorV8,
   decodeMakerV8CoreEventV8,
   makerV8TransactionEventsDigestV8,
   parseMakerV8MoveOptionIdV8,
+  readMakerV8CompilerHistoricalObjectV8,
   readFinalizedMakerV8EnvelopeV8,
 } from '../maker-v8-browser.js';
 import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
@@ -94,6 +96,64 @@ const mainnetExecution = (overrides = {}) => ({
   allowBroadcast: false,
   ...overrides,
 });
+
+async function compilerFinalizedFixture() {
+  const sender = objectId(901);
+  const expected = new Transaction();
+  expected.setSender(sender);
+  const kind = bcs.TransactionKind.parse(await expected.build({ onlyTransactionKind: true }));
+  const transactionData = {
+    V1: {
+      kind,
+      sender,
+      gasData: {
+        payment: [{ objectId: objectId(902), version: '7', digest: suiDigest }],
+        owner: sender,
+        price: '1',
+        budget: '1000',
+      },
+      expiration: { None: true },
+    },
+  };
+  const transactionDataBytes = bcs.TransactionData.serialize(transactionData).toBytes();
+  const transactionDigest = TransactionDataBuilder.getDigestFromBytes(transactionDataBytes);
+  const signed = [{
+    intentMessage: {
+      intent: {
+        scope: { TransactionData: true },
+        version: { V0: true },
+        appId: { Sui: true },
+      },
+      value: transactionData,
+    },
+    txSignatures: [],
+  }];
+  const effects = {
+    V1: {
+      status: { Success: true },
+      executedEpoch: '1',
+      gasUsed: { computationCost: '1', storageCost: '1', storageRebate: '0', nonRefundableStorageFee: '0' },
+      modifiedAtVersions: [],
+      sharedObjects: [],
+      transactionDigest,
+      created: [], mutated: [], unwrapped: [], deleted: [], unwrappedThenDeleted: [], wrapped: [],
+      gasObject: [{ objectId: objectId(902), version: '8', digest: suiDigest }, { AddressOwner: sender }],
+      eventsDigest: null,
+      dependencies: [],
+    },
+  };
+  const response = {
+    digest: transactionDigest,
+    checkpoint: '7',
+    effects: { status: { status: 'success' }, transactionDigest },
+    transaction: { data: { sender, transaction: { transactions: [] } } },
+    rawTransaction: toBase64(bcs.SenderSignedData.serialize(signed).toBytes()),
+    rawEffects: [...bcs.TransactionEffects.serialize(effects).toBytes()],
+    objectChanges: [],
+    events: { data: [] },
+  };
+  return { sender, expected, signed, effects, response, transactionData, transactionDigest };
+}
 
 function walletHarness(keypair, onSign = null) {
   let changeListener = null;
@@ -1134,4 +1194,132 @@ test('pinned SDK JSON-RPC past-object transport receives an exact safe integer v
   assert.equal(calls[0].method, 'sui_tryGetPastObject');
   assert.equal(calls[0].params[1], 7);
   assert.equal(typeof calls[0].params[1], 'number');
+});
+
+test('compiler recovery binds canonical singleton SenderSignedData intent, sender, digest, kind, and raw effects', async () => {
+  const fixture = await compilerFinalizedFixture();
+  const client = { async getTransactionBlock() { return structuredClone(fixture.response); } };
+  const observed = await assertFinalizedMakerV8CompilerTransactionV8(
+    client,
+    fixture.transactionDigest,
+    fixture.expected,
+  );
+  assert.equal(observed.compilerTransactionKindProof.transactionDataByteLength > 0, true);
+  assert.equal(observed.compilerEffectsOutputRefs.length, 0);
+
+  const rejects = async (mutate, code) => {
+    const response = structuredClone(fixture.response);
+    await mutate(response);
+    await assert.rejects(
+      assertFinalizedMakerV8CompilerTransactionV8(
+        { async getTransactionBlock() { return response; } },
+        fixture.transactionDigest,
+        fixture.expected,
+      ),
+      (error) => error.code === code,
+    );
+  };
+  await rejects(async (response) => {
+    response.rawTransaction = toBase64(bcs.SenderSignedData.serialize([
+      ...fixture.signed,
+      ...fixture.signed,
+    ]).toBytes());
+  }, 'MAKER_V8_COMPILER_RAW_TRANSACTION_INVALID');
+  await rejects(async (response) => {
+    const changed = structuredClone(fixture.signed);
+    changed[0].intentMessage.intent.scope = { PersonalMessage: true };
+    response.rawTransaction = toBase64(bcs.SenderSignedData.serialize(changed).toBytes());
+  }, 'MAKER_V8_COMPILER_RAW_TRANSACTION_INVALID');
+  await rejects(async (response) => {
+    const changed = structuredClone(fixture.signed);
+    changed[0].intentMessage.value.V1.sender = objectId(999);
+    response.rawTransaction = toBase64(bcs.SenderSignedData.serialize(changed).toBytes());
+  }, 'MAKER_V8_COMPILER_RAW_SENDER_DRIFT');
+  await rejects(async (response) => {
+    response.transaction.data.sender = objectId(998);
+  }, 'MAKER_V8_COMPILER_SENDER_DRIFT');
+  await rejects(async (response) => {
+    const changed = structuredClone(fixture.signed);
+    changed[0].intentMessage.value.V1.gasData.budget = '1001';
+    response.rawTransaction = toBase64(bcs.SenderSignedData.serialize(changed).toBytes());
+  }, 'MAKER_V8_COMPILER_RAW_DIGEST_DRIFT');
+  await rejects(async (response) => {
+    const changed = structuredClone(fixture.effects);
+    changed.V1.transactionDigest = TransactionDataBuilder.getDigestFromBytes(Uint8Array.of(1));
+    response.rawEffects = [...bcs.TransactionEffects.serialize(changed).toBytes()];
+  }, 'MAKER_V8_COMPILER_RAW_EFFECTS_DRIFT');
+  await rejects(async (response) => {
+    const changed = Uint8Array.from(response.rawEffects);
+    changed[changed.length - 1] ^= 1;
+    response.rawEffects = [...changed];
+  }, 'MAKER_V8_COMPILER_RAW_EFFECTS_INVALID');
+});
+
+test('compiler shared historical projections preserve exact initial version and fail closed when pruned', async () => {
+  const outputDigest = suiDigest;
+  const expectedType = `${objectId(51)}::maker_v8::MakerRootV8`;
+  const ref = Object.freeze({
+    objectId: objectId(52), version: '7', digest: suiDigest,
+    owner: Object.freeze({ kind: 'Shared', value: Object.freeze({ initialSharedVersion: '3' }) }),
+  });
+  const ownerShapes = [
+    { Shared: { initial_shared_version: '3' } },
+    { $kind: 'Shared', Shared: { initialSharedVersion: '3' } },
+    { kind: 'Shared', value: { initialSharedVersion: '3' } },
+  ];
+  for (const [index, owner] of ownerShapes.entries()) {
+    const result = await readMakerV8CompilerHistoricalObjectV8({
+      async tryGetPastObject() {
+        return { status: 'VersionFound', details: {
+          objectId: ref.objectId, version: ref.version, digest: ref.digest,
+          type: expectedType, owner, previousTransaction: outputDigest,
+          content: { dataType: 'moveObject', type: expectedType, fields: { version: '8', root_id: objectId(53) } },
+        } };
+      },
+    }, ref, expectedType, ['Scaffold', 'Base', 'Activation'][index], ['version', 'rootId'], outputDigest);
+    assert.deepEqual(result.reference, {
+      kind: 'shared', objectId: ref.objectId, initialSharedVersion: '3',
+    });
+    assert.equal(result.fields.version, 8);
+    assert.equal(result.fields.rootId, objectId(53));
+  }
+  const historicalClient = (mutate) => ({
+    async tryGetPastObject() {
+      const details = {
+        objectId: ref.objectId, version: ref.version, digest: ref.digest,
+        type: expectedType, owner: ownerShapes[0], previousTransaction: outputDigest,
+        content: { dataType: 'moveObject', type: expectedType, fields: { version: '8' } },
+      };
+      mutate(details);
+      return { status: 'VersionFound', details };
+    },
+  });
+  await assert.rejects(
+    readMakerV8CompilerHistoricalObjectV8(
+      historicalClient((details) => { details.previousTransaction = TransactionDataBuilder.getDigestFromBytes(Uint8Array.of(2)); }),
+      ref, expectedType, 'Base', ['version'], outputDigest,
+    ),
+    (error) => error.code === 'MAKER_V8_BROWSER_OUTPUT_TRANSACTION_DRIFT',
+  );
+  await assert.rejects(
+    readMakerV8CompilerHistoricalObjectV8(
+      historicalClient((details) => { details.content.type = `${objectId(99)}::maker_v8::MakerRootV8`; }),
+      ref, expectedType, 'Activation', ['version'], outputDigest,
+    ),
+    (error) => error.code === 'MAKER_V8_BROWSER_HISTORICAL_TYPE_DRIFT',
+  );
+  await assert.rejects(
+    readMakerV8CompilerHistoricalObjectV8(
+      historicalClient((details) => { details.owner.Shared.initial_shared_version = '4'; }),
+      ref, expectedType, 'Scaffold', ['version'], outputDigest,
+    ),
+    (error) => error.code === 'MAKER_V8_BROWSER_HISTORICAL_OWNER_DRIFT',
+  );
+  await assert.rejects(
+    readMakerV8CompilerHistoricalObjectV8({
+      async tryGetPastObject() { return { status: 'VersionNotFound' }; },
+    }, ref, expectedType, 'Activation', ['version'], outputDigest),
+    (error) => error.code === 'MAKER_V8_BROWSER_READBACK_UNAVAILABLE'
+      && error.details.archivalRpcRequired === true,
+  );
 });

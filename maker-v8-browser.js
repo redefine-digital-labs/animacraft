@@ -31,6 +31,8 @@ import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
   attestMakerV8Runtime,
   createMakerV8ChainClient,
+  parseMakerRootV8,
+  parseMakerV8ActivatedEvent,
 } from './maker-v8-chain.js';
 import {
   MARKET_V8_LANES,
@@ -38,12 +40,29 @@ import {
   MARKET_V8_QUOTE_KINDS,
   createMarketV8Client,
 } from './maker-v8-market.js';
-import { MAKER_V8_ROLES } from './maker-v8-runtime.js';
+import {
+  MAKER_V8_ROLES,
+  assertMakerV8Runtime,
+  makerV8StableType,
+} from './maker-v8-runtime.js';
 import {
   MAKER_V8_ACTIONS,
   MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
   makerV8ActionV8,
 } from './maker-v8-actions.js';
+import {
+  MAKER_V8_BASE_READBACK_SCHEMA,
+  MAKER_V8_BYTE_BUDGETS,
+  MAKER_V8_BASE_CHUNK_READBACK_SCHEMA,
+  MAKER_V8_ACTIVATION_CHUNK_READBACK_SCHEMA,
+  MAKER_V8_ACTIVATION_READBACK_SCHEMA,
+  MAKER_V8_COMPANION_READBACK_SCHEMA,
+  MAKER_V8_SCAFFOLD_READBACK_SCHEMA,
+  MAKER_V8_TRUSTED_CONTEXT_SCHEMA,
+  canonicalMakerV8Json,
+  certifyMakerV8TrustedContext,
+  exactMakerV8TransactionTargets,
+} from './maker-v8-compiler.js';
 
 export const MAKER_V8_BROWSER_SCHEMA = 'animacraft.maker-v8-browser.v8';
 export const MAKER_V8_OFFICIAL_MAINNET_RPC_URL = getJsonRpcFullnodeUrl('mainnet');
@@ -430,12 +449,19 @@ async function exactPastObject(client, ref, expectedType, role, outputDigest = n
   if (outputDigest && details.previousTransaction !== outputDigest) {
     fail('MAKER_V8_BROWSER_OUTPUT_TRANSACTION_DRIFT', `${role} output was not written by the finalized transaction.`, 'READBACK');
   }
-  let type;
+  let outerType;
+  let contentType;
   try {
-    type = normalizeStructTag(details.type ?? details.content?.type);
+    outerType = details.type === undefined ? null : normalizeStructTag(details.type);
+    contentType = details.content?.type === undefined ? null : normalizeStructTag(details.content.type);
+    if (!outerType && !contentType) throw new Error('missing historical type');
   } catch {
     fail('MAKER_V8_BROWSER_HISTORICAL_TYPE_INVALID', `${role} historical object type is invalid.`, 'READBACK');
   }
+  if (outerType && contentType && outerType !== contentType) {
+    fail('MAKER_V8_BROWSER_HISTORICAL_TYPE_DRIFT', `${role} historical outer/content types differ.`, 'READBACK');
+  }
+  const type = outerType ?? contentType;
   if (expectedType && type !== normalizeStructTag(expectedType)) {
     fail('MAKER_V8_BROWSER_HISTORICAL_TYPE_DRIFT', `${role} historical object has the wrong TypeOrigin.`, 'READBACK');
   }
@@ -2407,6 +2433,879 @@ export function createMakerV8TransactionAdaptersV8({ client, execution, wallet }
   });
 }
 
+const COMPILER_ROLE_MARKERS = Object.freeze({
+  core: Object.freeze(['protocol_config_v8', 'CorePackageMarkerV8', 'CorePackageMarkerV8']),
+  seal: Object.freeze(['seal_v8', 'SealOriginalMarkerV8', 'SealCallableMarkerV8']),
+  runtime: Object.freeze(['runtime_v8', 'RuntimeOriginalMarkerV8', 'RuntimeCallableMarkerV8']),
+  output: Object.freeze(['output_v8', 'OutputOriginalMarkerV8', 'OutputCallableMarkerV8']),
+  physical: Object.freeze(['physical_v8', 'PhysicalOriginalMarkerV8', 'PhysicalCallableMarkerV8']),
+  market: Object.freeze(['market_v8', 'MarketOriginalMarkerV8', 'MarketCallableMarkerV8']),
+  release: Object.freeze(['release_v8', 'ReleaseOriginalMarkerV8', 'ReleaseCallableMarkerV8']),
+});
+
+const COMPILER_CONTEXT_OBJECTS = Object.freeze([
+  'clock', 'protocolConfig', 'protocolTreasury', 'catalog',
+]);
+
+const SCAFFOLD_FIELDS = Object.freeze({
+  root: Object.freeze([
+    'version', 'creator', 'owner', 'adminCapId', 'controlEpoch', 'lifecycle',
+    'makerKey', 'makerVersion', 'versionCommitment', 'rendererCommitment',
+    'manifestBlobId', 'manifestSha256', 'contentCommitment', 'protocolConfigId',
+    'protocolConfigRevision', 'protocolConfigCommitment', 'baseRegistryId',
+    'makerTreasuryId', 'expectedBaseDefinitionCount',
+    'expectedBaseRegistryCommitment', 'expectedPackAdmissionPolicyCommitment',
+    'economicsCommitment', 'rightsCommitment', 'catalogId',
+    'productBindingCommitment', 'callCapSetCommitment',
+  ]),
+  baseRegistry: Object.freeze([
+    'version', 'rootId', 'makerVersion', 'rootContentCommitment',
+    'expectedCounts', 'observedCounts', 'expectedCommitments',
+    'rollingCommitments', 'nextSequence', 'expectedSequenceCount',
+    'protectedStyleCount', 'sealed',
+  ]),
+  makerTreasury: Object.freeze(['version', 'rootId', 'makerVersion', 'rootContentCommitment']),
+  adminCap: Object.freeze(['version', 'rootId', 'owner', 'controlEpoch']),
+});
+
+const BASE_FIELDS = Object.freeze([
+  'version', 'rootId', 'makerVersion', 'rootContentCommitment',
+  'observedCounts', 'rollingCommitments', 'nextSequence',
+  'protectedStyleCount', 'sealed',
+]);
+
+const COMPANION_FIELDS = Object.freeze({
+  sealRegistry: Object.freeze([
+    'version', 'rootId', 'makerVersion', 'rootContentCommitment', 'catalogId',
+    'productBindingCommitment', 'policyConfigId', 'policyCommitment',
+    'expectedBaseCount', 'expectedPackCount', 'expectedCompleteCount',
+    'expectedCount', 'observedBaseCount', 'observedPackCount',
+    'observedCompleteCount', 'observedCount', 'expectedCommitment',
+    'rollingCommitment', 'sealed', 'runtimeRevision', 'runtimeCommitment',
+  ]),
+  runtimeDefinitions: Object.freeze([
+    'version', 'rootId', 'rootVersion', 'rootContentCommitment',
+    'baseRegistryId', 'expectedProfileCount', 'observedProfileCount',
+    'expectedProfileCommitment', 'rollingProfileCommitment',
+    'admissionCeiling', 'sealed',
+  ]),
+  packRegistry: Object.freeze([
+    'version', 'rootId', 'rootVersion', 'rootContentCommitment',
+    'definitionRegistryId', 'admissionAuthorityId', 'admissionPolicyCommitment',
+    'revision', 'releaseCount', 'externalAdmissionCount',
+  ]),
+  admissionAuthority: Object.freeze(['version', 'rootId', 'rootVersion', 'rootContentCommitment']),
+  outputRegistry: Object.freeze([
+    'version', 'rootId', 'makerVersion', 'rootContentCommitment',
+    'rendererCommitment', 'soulRegistryId', 'expectedOutputCount',
+    'observedOutputCount', 'expectedPolicyCommitment',
+    'rollingPolicyCommitment', 'sealed',
+  ]),
+  soulRegistry: Object.freeze([
+    'version', 'rootId', 'makerVersion', 'rootContentCommitment',
+    'outputRegistryId', 'soulCount',
+  ]),
+  physicalRegistry: Object.freeze([
+    'version', 'catalogId', 'packageConfigId', 'productBindingCommitment',
+    'callCapSetCommitment', 'rootId', 'makerVersion', 'rootContentCommitment',
+    'baseRegistryId', 'expectedBasePolicyCount', 'observedBasePolicyCount',
+    'expectedBasePolicyCommitment', 'rollingBasePolicyCommitment',
+    'baseSealed', 'revision', 'packPolicyCount',
+  ]),
+  marketTreasury: Object.freeze([
+    'version', 'catalogId', 'packageConfigId', 'rootId', 'makerVersion',
+    'rootContentCommitment', 'balanceAtomic', 'grossEscrowedAtomic',
+    'grossReleasedAtomic',
+  ]),
+  marketRegistry: Object.freeze([
+    'version', 'catalogId', 'packageConfigId', 'productBindingCommitment',
+    'callCapSetCommitment', 'rootId', 'makerVersion', 'rootContentCommitment',
+    'protocolConfigId', 'protocolConfigRevision', 'protocolConfigCommitment',
+    'economicsCommitment', 'rightsCommitment', 'makerMarketFeeBps',
+    'soulMarketFeeBps', 'soulCreatorRoyaltyBps', 'makerSourceRoyaltyBps',
+    'makerResaleRoyaltyBps', 'treasuryId', 'sealed', 'revision',
+    'listingCount', 'escrowCount', 'completedSaleCount', 'canceledSaleCount',
+    'recoveredSaleCount', 'grossVolumeAtomic', 'protocolPaidAtomic',
+    'creatorPaidAtomic', 'sourcePaidAtomic', 'sellerPaidAtomic',
+    'zeroStateCommitment',
+  ]),
+});
+
+function snakeField(name) {
+  return name.replace(/[A-Z]/g, (character) => `_${character.toLowerCase()}`);
+}
+
+function rawMoveFields(value, label) {
+  const result = plain(value?.fields) ? value.fields : value;
+  if (!plain(result)) fail('MAKER_V8_COMPILER_FIELDS_INVALID', `${label} has no parsed Move fields.`, 'READBACK');
+  return result;
+}
+
+function rawMoveField(value, name, label) {
+  const fields = rawMoveFields(value, label);
+  const snake = snakeField(name);
+  if (Object.hasOwn(fields, name)) return fields[name];
+  if (Object.hasOwn(fields, snake)) return fields[snake];
+  fail('MAKER_V8_COMPILER_FIELD_MISSING', `${label}.${snake} is missing from live readback.`, 'READBACK');
+}
+
+function compilerMoveId(value, label) {
+  if (typeof value === 'string') return id(value, label);
+  if (plain(value) && typeof value.id === 'string') return id(value.id, label);
+  if (plain(value?.fields)) return compilerMoveId(value.fields, label);
+  fail('MAKER_V8_COMPILER_ID_INVALID', `${label} is not an exact live Sui ID.`, 'READBACK');
+}
+
+function compilerHash(value, label) {
+  if (Array.isArray(value) && value.length === 32
+    && value.every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 255)) {
+    return value.map((entry) => entry.toString(16).padStart(2, '0')).join('');
+  }
+  const normalized = typeof value === 'string' ? value.replace(/^0x/, '').toLowerCase() : '';
+  if (!/^[0-9a-f]{64}$/.test(normalized)) {
+    fail('MAKER_V8_COMPILER_HASH_INVALID', `${label} is not an exact 32-byte live commitment.`, 'READBACK');
+  }
+  return normalized;
+}
+
+function compilerOptionId(value, label) {
+  const option = plain(value) && Array.isArray(value.vec) ? value.vec : value;
+  if (Array.isArray(option)) {
+    if (option.length !== 1) fail('MAKER_V8_COMPILER_OPTION_INVALID', `${label} must contain exactly one live ID.`, 'READBACK');
+    return compilerMoveId(option[0], label);
+  }
+  return compilerMoveId(option, label);
+}
+
+function compilerCountRecord(value, label) {
+  const fields = rawMoveFields(value, label);
+  return Object.fromEntries(['tracks', 'parts', 'items', 'styles', 'colors', 'rules'].map((name) => [
+    name,
+    decimal(rawMoveField(fields, name, label), `${label}.${name}`),
+  ]));
+}
+
+function compilerCommitmentRecord(value, label) {
+  const fields = rawMoveFields(value, label);
+  return Object.fromEntries(['tracks', 'parts', 'items', 'styles', 'colors', 'rules', 'aggregate'].map((name) => [
+    name,
+    compilerHash(rawMoveField(fields, name, label), `${label}.${name}`),
+  ]));
+}
+
+function compilerField(value, name, label) {
+  if (['expectedCounts', 'observedCounts'].includes(name)) return compilerCountRecord(value, label);
+  if (['expectedCommitments', 'rollingCommitments'].includes(name)) return compilerCommitmentRecord(value, label);
+  if (/Commitment$|Sha256$/.test(name)) return compilerHash(value, label);
+  if (/Id$/.test(name) && !/BlobId$/.test(name)) return compilerMoveId(value, label);
+  if (['creator', 'owner'].includes(name)) return compilerMoveId(value, label);
+  if (['version', 'makerVersion', 'lifecycle'].includes(name)) {
+    const normalized = decimal(value, label);
+    const number = Number(normalized);
+    if (!Number.isSafeInteger(number)) fail('MAKER_V8_COMPILER_INTEGER_INVALID', `${label} is outside the exact browser integer range.`, 'READBACK');
+    return number;
+  }
+  if (typeof value === 'number' || typeof value === 'bigint') return String(value);
+  return value;
+}
+
+function compilerFields(value, names, label) {
+  return Object.fromEntries(names.map((name) => {
+    const raw = rawMoveField(value, name, label);
+    return [name, compilerField(raw, name, `${label}.${name}`)];
+  }));
+}
+
+function compilerReferenceFromOwner({ objectId, version, digest: objectDigest, owner }, label) {
+  if (plain(owner?.Shared)) {
+    return {
+      kind: 'shared',
+      objectId,
+      initialSharedVersion: decimal(
+        owner.Shared.initialSharedVersion ?? owner.Shared.initial_shared_version,
+        `${label}.initialSharedVersion`,
+      ),
+    };
+  }
+  if (Object.hasOwn(owner || {}, 'Immutable')) {
+    return { kind: 'immutable', objectId, version: decimal(version, `${label}.version`), digest: digest(objectDigest, `${label}.digest`) };
+  }
+  if (typeof owner?.AddressOwner === 'string' || typeof owner?.ObjectOwner === 'string') {
+    return { kind: 'owned', objectId, version: decimal(version, `${label}.version`), digest: digest(objectDigest, `${label}.digest`) };
+  }
+  fail('MAKER_V8_COMPILER_OWNER_INVALID', `${label} has an unsupported live owner.`, 'READBACK');
+}
+
+function compilerReferenceFromChainObject(value, label) {
+  if (value.owner?.kind === 'shared') {
+    return {
+      kind: 'shared', objectId: value.objectId,
+      initialSharedVersion: value.owner.initialSharedVersion.toString(),
+    };
+  }
+  if (value.owner?.kind === 'immutable') {
+    return { kind: 'immutable', objectId: value.objectId, version: value.version.toString(), digest: value.digest };
+  }
+  if (['address', 'object'].includes(value.owner?.kind)) {
+    return { kind: 'owned', objectId: value.objectId, version: value.version.toString(), digest: value.digest };
+  }
+  fail('MAKER_V8_COMPILER_OWNER_INVALID', `${label} has an unsupported attested owner.`, 'READBACK');
+}
+
+function compilerObjectFromParsed(value, fields, label) {
+  return {
+    type: value.type,
+    reference: compilerReferenceFromOwner(value, label),
+    fields,
+  };
+}
+
+function compilerObjectFromChain(value, fields, label) {
+  return {
+    type: value.type,
+    reference: compilerReferenceFromChainObject(value, label),
+    fields,
+  };
+}
+
+function compilerObjectFromHistorical(value, fields, label) {
+  let reference;
+  if (value.owner.kind === 'Shared') reference = {
+    kind: 'shared',
+    objectId: value.objectId,
+    initialSharedVersion: decimal(
+      value.owner.value?.initialSharedVersion ?? value.owner.value?.initial_shared_version,
+      `${label}.initialSharedVersion`,
+    ),
+  };
+  else if (value.owner.kind === 'Immutable') reference = { kind: 'immutable', objectId: value.objectId, version: value.ref.version, digest: value.ref.digest };
+  else if (['AddressOwner', 'ObjectOwner'].includes(value.owner.kind)) reference = { kind: 'owned', objectId: value.objectId, version: value.ref.version, digest: value.ref.digest };
+  else fail('MAKER_V8_COMPILER_OWNER_INVALID', `${label} has an unsupported historical owner.`, 'READBACK');
+  return { type: value.type, reference, fields };
+}
+
+export async function readMakerV8CompilerHistoricalObjectV8(
+  client,
+  ref,
+  expectedType,
+  label,
+  fields,
+  outputDigest,
+) {
+  const historical = await exactPastObject(client, ref, expectedType, label, outputDigest);
+  return compilerObjectFromHistorical(
+    historical,
+    compilerFields(historical.parsed, fields, label),
+    label,
+  );
+}
+
+function compilerAuthorityProjection(context) {
+  const object = (value) => ({ type: value.type, reference: value.reference, fields: value.fields });
+  return {
+    schemaVersion: context.schemaVersion,
+    chainIdentifier: context.chainIdentifier,
+    signerAddress: context.signerAddress,
+    paymentCoinType: context.paymentCoinType,
+    ...Object.fromEntries(COMPILER_CONTEXT_OBJECTS.map((name) => [name, object(context[name])])),
+    configs: Object.fromEntries(Object.entries(context.configs).map(([name, value]) => [name, object(value)])),
+    derived: {
+      productBindingCommitment: context._derived.productBindingCommitment,
+      callCapSetCommitment: context._derived.callCapSetCommitment,
+      sealPolicyCommitment: context._derived.sealPolicyCommitment,
+    },
+  };
+}
+
+export function assertMakerV8CompilerContextFreshV8(expected, observed) {
+  let left;
+  let right;
+  try {
+    left = canonicalMakerV8Json(compilerAuthorityProjection(expected));
+    right = canonicalMakerV8Json(compilerAuthorityProjection(observed));
+  } catch {
+    fail('MAKER_V8_COMPILER_CONTEXT_INVALID', 'Compiler context cannot be compared safely.', 'CONTEXT');
+  }
+  if (left !== right) {
+    fail(
+      'MAKER_V8_COMPILER_CONTEXT_DRIFT',
+      'The live seven-role compiler context or one of its exact references changed after compilation.',
+      'CONTEXT',
+      { recovery: 'Discard every prepared Transaction kind and compile again from fresh live readback.' },
+    );
+  }
+  return observed;
+}
+
+function compilerRoles(attested) {
+  return Object.fromEntries(MAKER_V8_ROLES.map((role) => {
+    const identity = attested.catalog.roles[role];
+    const [moduleName, originalMarker, callableMarker] = COMPILER_ROLE_MARKERS[role];
+    return [role, {
+      originalPackageId: identity.originalPackageId,
+      callablePackageId: identity.callablePackageId,
+      sourceCommitment: identity.sourceCommitment,
+      packageCommitment: identity.packageCommitment,
+      abiCommitment: identity.abiCommitment,
+      bindingCommitment: identity.commitment,
+      originalMarkerType: `${identity.originalPackageId}::${moduleName}::${originalMarker}`,
+      callableMarkerType: `${identity.callablePackageId}::${moduleName}::${callableMarker}`,
+    }];
+  }));
+}
+
+function compilerConfigObject(attested, role) {
+  const source = attested.configs[role];
+  const common = {
+    version: 8,
+    catalogId: attested.catalog.objectId,
+    productBindingCommitment: attested.catalog.productBindingCommitment,
+    callCapSetCommitment: attested.catalog.callCapSetCommitment,
+    authorityId: attested.catalog.authorities[role],
+  };
+  if (role !== 'seal') return compilerObjectFromChain(source, common, `${role} config`);
+  const keyServersValue = rawMoveField(source.fields, 'keyServers', 'seal config');
+  if (!Array.isArray(keyServersValue) || !keyServersValue.length) {
+    fail('MAKER_V8_COMPILER_SEAL_SERVERS_INVALID', 'Seal config has no live key-server bindings.', 'READBACK');
+  }
+  const keyServerIds = [];
+  const weights = [];
+  keyServersValue.forEach((row, index) => {
+    keyServerIds.push(compilerMoveId(rawMoveField(row, 'keyServerId', `seal.keyServers[${index}]`), `seal.keyServers[${index}].keyServerId`));
+    weights.push(decimal(rawMoveField(row, 'weight', `seal.keyServers[${index}]`), `seal.keyServers[${index}].weight`));
+  });
+  return compilerObjectFromChain(source, {
+    ...common,
+    commitment: compilerHash(rawMoveField(source.fields, 'commitment', 'seal config'), 'seal.commitment'),
+    keyServerIds,
+    weights,
+    threshold: decimal(rawMoveField(source.fields, 'threshold', 'seal config'), 'seal.threshold'),
+    keyServerSetCommitment: compilerHash(rawMoveField(source.fields, 'keyServerSetCommitment', 'seal config'), 'seal.keyServerSetCommitment'),
+    encryptionPolicyCommitment: compilerHash(rawMoveField(source.fields, 'encryptionPolicyCommitment', 'seal config'), 'seal.encryptionPolicyCommitment'),
+  }, 'seal config');
+}
+
+function expectedCompilerType(runtime, name) {
+  const types = {
+    protocolConfig: makerV8StableType(runtime, 'core', 'protocol_config_v8', 'ProtocolConfigV8'),
+    protocolTreasury: `${makerV8StableType(runtime, 'core', 'protocol_config_v8', 'ProtocolTreasuryV8')}<${runtime.paymentCoinType}>`,
+    clock: '0x2::clock::Clock',
+  };
+  return types[name];
+}
+
+function finalizedMoveTargets(response) {
+  const programmable = response?.transaction?.data?.transaction;
+  const commands = programmable?.transactions ?? programmable?.commands;
+  if (!Array.isArray(commands)) {
+    fail('MAKER_V8_COMPILER_FINALIZED_INPUT_INVALID', 'Finalized transaction has no parsed ProgrammableTransaction commands.', 'READBACK');
+  }
+  return commands.filter((command) => command?.MoveCall || command?.$kind === 'MoveCall').map((command) => {
+    const call = command.MoveCall ?? command;
+    return `${id(call.package, 'finalized MoveCall package')}::${call.module}::${call.function}`;
+  });
+}
+
+function finalizedEffectsOutputRefs(response, transactionDigest) {
+  let bytes; let parsed; let canonical;
+  try {
+    if (!Array.isArray(response.rawEffects) || response.rawEffects.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) throw new Error('rawEffects bytes missing');
+    bytes = Uint8Array.from(response.rawEffects);
+    parsed = bcs.TransactionEffects.parse(bytes);
+    canonical = bcs.TransactionEffects.serialize(parsed).toBytes();
+  } catch {
+    fail('MAKER_V8_COMPILER_RAW_EFFECTS_INVALID', 'Finalized raw TransactionEffects cannot be parsed and reserialized by the pinned SDK.', 'READBACK');
+  }
+  if (canonical.length !== bytes.length || canonical.some((byte, index) => byte !== bytes[index])) {
+    fail('MAKER_V8_COMPILER_RAW_EFFECTS_INVALID', 'Finalized raw TransactionEffects are not canonical BCS.', 'READBACK');
+  }
+  const effects = parsed.V1 ?? parsed.V2;
+  if (!effects || effects.status?.$kind !== 'Success' || effects.transactionDigest !== transactionDigest) {
+    fail('MAKER_V8_COMPILER_RAW_EFFECTS_DRIFT', 'Raw TransactionEffects status or digest differs from the finalized response.', 'READBACK');
+  }
+  const refs = [];
+  if (parsed.$kind === 'V1') {
+    for (const [objectRef, owner] of [...effects.created, ...effects.mutated, ...effects.unwrapped]) {
+      refs.push(Object.freeze({
+        objectId: id(objectRef.objectId, 'raw effects objectId'),
+        version: decimal(objectRef.version, 'raw effects version'),
+        digest: digest(objectRef.digest, 'raw effects digest'),
+        owner: ownerEvidence(owner),
+      }));
+    }
+  } else if (parsed.$kind === 'V2') {
+    for (const [objectId, change] of effects.changedObjects) {
+      if (change.outputState?.$kind !== 'ObjectWrite') continue;
+      refs.push(Object.freeze({
+        objectId: id(objectId, 'raw effects objectId'),
+        version: decimal(effects.lamportVersion, 'raw effects lamportVersion'),
+        digest: digest(change.outputState.ObjectWrite[0], 'raw effects digest'),
+        owner: ownerEvidence(change.outputState.ObjectWrite[1]),
+      }));
+    }
+  } else {
+    fail('MAKER_V8_COMPILER_RAW_EFFECTS_INVALID', 'Unsupported raw TransactionEffects version.', 'READBACK');
+  }
+  return Object.freeze(refs);
+}
+
+export async function assertFinalizedMakerV8CompilerTransactionV8(client, transactionDigest, expectedTransaction) {
+  if (typeof client?.getTransactionBlock !== 'function') {
+    fail('MAKER_V8_COMPILER_RPC_INVALID', 'RPC getTransactionBlock is required for publication recovery.', 'CONFIGURATION');
+  }
+  const response = await client.getTransactionBlock({
+    digest: transactionDigest,
+    options: {
+      showInput: true,
+      showEffects: true,
+      showEvents: true,
+      showObjectChanges: true,
+      showRawInput: true,
+      showRawEffects: true,
+    },
+  });
+  if (response?.digest !== transactionDigest || response?.checkpoint === null || response?.checkpoint === undefined) {
+    fail('MAKER_V8_COMPILER_NOT_FINALIZED', 'Transaction is not present in a finalized checkpoint.', 'READBACK', { retryable: true });
+  }
+  const status = response.effects?.status?.status ?? response.effects?.status;
+  if (status !== 'success') {
+    fail('MAKER_V8_COMPILER_TRANSACTION_FAILED', 'Finalized publication Transaction did not succeed.', 'READBACK', { status });
+  }
+  if (response.effects?.transactionDigest !== transactionDigest) {
+    fail('MAKER_V8_COMPILER_EFFECTS_DIGEST_DRIFT', 'Finalized effects are not bound to the requested transaction digest.', 'READBACK');
+  }
+  const expectedSender = id(expectedTransaction.getData().sender, 'expected sender');
+  const jsonSender = id(response.transaction?.data?.sender, 'finalized sender');
+  if (jsonSender !== expectedSender) {
+    fail('MAKER_V8_COMPILER_SENDER_DRIFT', 'Finalized Transaction sender differs from the compiler signer.', 'CONTEXT');
+  }
+  const expectedTargets = [...exactMakerV8TransactionTargets(expectedTransaction)];
+  const observedTargets = finalizedMoveTargets(response);
+  if (canonicalMakerV8Json(observedTargets) !== canonicalMakerV8Json(expectedTargets)) {
+    fail('MAKER_V8_COMPILER_TARGET_DRIFT', 'Finalized Move-call sequence differs from the exact compiler Transaction.', 'CONTEXT');
+  }
+  if (!Array.isArray(response.objectChanges)) {
+    fail('MAKER_V8_COMPILER_OBJECT_CHANGES_MISSING', 'Finalized object changes are required for exact recovery.', 'READBACK');
+  }
+  response.compilerEffectsOutputRefs = finalizedEffectsOutputRefs(response, transactionDigest);
+  let rawSignedBytes; let signed; let transactionData; let transactionDataBytes; let observedKind;
+  try {
+    rawSignedBytes = fromBase64(response.rawTransaction);
+    if (toBase64(rawSignedBytes) !== response.rawTransaction) throw new Error('non-canonical Base64');
+    const parsed = bcs.SenderSignedData.parse(rawSignedBytes);
+    if (parsed.length !== 1) throw new Error('SenderSignedData must contain one transaction');
+    const roundTrip = bcs.SenderSignedData.serialize(parsed).toBytes();
+    if (roundTrip.length !== rawSignedBytes.length || roundTrip.some((byte, index) => byte !== rawSignedBytes[index])) throw new Error('non-canonical SenderSignedData');
+    [signed] = parsed;
+    if (signed.intentMessage.intent.scope?.$kind !== 'TransactionData'
+      || signed.intentMessage.intent.version?.$kind !== 'V0'
+      || signed.intentMessage.intent.appId?.$kind !== 'Sui'
+      || signed.intentMessage.value?.$kind !== 'V1') throw new Error('wrong Sui transaction intent');
+    transactionData = signed.intentMessage.value.V1;
+    transactionDataBytes = bcs.TransactionData.serialize(signed.intentMessage.value).toBytes();
+    observedKind = bcs.TransactionKind.serialize(transactionData.kind).toBytes();
+  } catch {
+    fail('MAKER_V8_COMPILER_RAW_TRANSACTION_INVALID', 'Finalized RPC SenderSignedData cannot be parsed and reserialized by the pinned SDK.', 'READBACK');
+  }
+  const rawSender = id(transactionData.sender, 'raw TransactionData sender');
+  if (rawSender !== expectedSender || rawSender !== jsonSender) {
+    fail('MAKER_V8_COMPILER_RAW_SENDER_DRIFT', 'Raw TransactionData sender differs from the compiler and parsed RPC sender.', 'CONTEXT');
+  }
+  if (TransactionDataBuilder.getDigestFromBytes(transactionDataBytes) !== transactionDigest) {
+    fail('MAKER_V8_COMPILER_RAW_DIGEST_DRIFT', 'Raw TransactionData digest differs from the requested and response digest.', 'CONTEXT');
+  }
+  if (transactionDataBytes.length > MAKER_V8_BYTE_BUDGETS.maxTransactionDataBytes) fail('MAKER_V8_COMPILER_TRANSACTION_DATA_LIMIT', 'Finalized TransactionData exceeds the compiler byte budget.', 'READBACK', { byteLength: transactionDataBytes.length, maximum: MAKER_V8_BYTE_BUDGETS.maxTransactionDataBytes });
+  const expectedKind = await expectedTransaction.build({ onlyTransactionKind: true });
+  if (observedKind.length !== expectedKind.length || observedKind.some((byte, index) => byte !== expectedKind[index])) {
+    fail('MAKER_V8_COMPILER_TRANSACTION_KIND_DRIFT', 'Finalized raw TransactionKind differs byte-for-byte from the compiler build.', 'CONTEXT');
+  }
+  const kindHash = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', observedKind));
+  response.compilerTransactionKindProof = Object.freeze({
+    transactionKindBytesBase64: toBase64(observedKind),
+    transactionKindSha256: [...kindHash].map((byte) => byte.toString(16).padStart(2, '0')).join(''),
+    transactionDataByteLength: transactionDataBytes.length,
+  });
+  return response;
+}
+
+function compilerChange(response, expectedType, label, expectedId = null) {
+  const normalizedType = normalizeStructTag(expectedType);
+  const matches = response.objectChanges.filter((change) => {
+    if (!['created', 'mutated'].includes(change?.type)) return false;
+    if (expectedId && change.objectId !== expectedId) return false;
+    try {
+      return normalizeStructTag(change.objectType) === normalizedType;
+    } catch {
+      return false;
+    }
+  });
+  if (matches.length !== 1) {
+    fail('MAKER_V8_COMPILER_OBJECT_CHANGE_INVALID', `${label} requires one exact finalized object change.`, 'READBACK', { matches: matches.length });
+  }
+  return matches[0];
+}
+
+function compilerEffectsRefForChange(response, change, label) {
+  const objectId = id(change.objectId, `${label}.objectId`);
+  const matches = response.compilerEffectsOutputRefs?.filter((candidate) => candidate.objectId === objectId) ?? [];
+  if (matches.length !== 1) {
+    fail('MAKER_V8_COMPILER_EFFECTS_OUTPUT_REF_INVALID', `${label} requires one exact raw-effects ObjectWrite ref.`, 'READBACK', { matches: matches.length });
+  }
+  const ref = matches[0];
+  const jsonRef = { objectId, version: decimal(change.version, `${label}.version`), digest: digest(change.digest, `${label}.digest`), owner: ownerEvidence(change.owner) };
+  if (canonicalMakerV8Json(jsonRef) !== canonicalMakerV8Json(ref)) {
+    fail('MAKER_V8_COMPILER_EFFECTS_OBJECT_CHANGE_DRIFT', `${label} objectChanges ref differs from raw TransactionEffects.`, 'READBACK');
+  }
+  return ref;
+}
+
+async function compilerChangedObject(client, response, expectedType, label, fields, expectedId = null) {
+  const change = compilerChange(response, expectedType, label, expectedId);
+  const ref = compilerEffectsRefForChange(response, change, label);
+  return readMakerV8CompilerHistoricalObjectV8(
+    client, ref, expectedType, label, fields, response.digest,
+  );
+}
+
+function companionTypes(runtime) {
+  return {
+    sealRegistry: makerV8StableType(runtime, 'seal', 'seal_v8', 'SealRegistryV8'),
+    runtimeDefinitions: makerV8StableType(runtime, 'runtime', 'runtime_v8', 'RuntimeDefinitionRegistryV8'),
+    packRegistry: makerV8StableType(runtime, 'runtime', 'runtime_v8', 'PackRegistryV8'),
+    admissionAuthority: makerV8StableType(runtime, 'runtime', 'runtime_v8', 'PackAdmissionAuthorityV8'),
+    outputRegistry: makerV8StableType(runtime, 'output', 'output_v8', 'OutputRegistryV8'),
+    soulRegistry: makerV8StableType(runtime, 'output', 'output_v8', 'SoulRegistryV8'),
+    physicalRegistry: makerV8StableType(runtime, 'physical', 'physical_v8', 'PhysicalRegistryV8'),
+    marketRegistry: `${makerV8StableType(runtime, 'market', 'market_v8', 'MarketRegistryV8')}<${runtime.paymentCoinType}>`,
+    marketTreasury: `${makerV8StableType(runtime, 'market', 'market_v8', 'MarketTreasuryV8')}<${runtime.paymentCoinType}>`,
+  };
+}
+
+function compilerPublicationType(publication, role, moduleName, structName, generic = '') {
+  const original = publication.context.catalog.fields.roles[role]?.originalPackageId;
+  return `${id(original, `${role} original package`)}::${moduleName}::${structName}${generic}`;
+}
+
+function compilerPublicationCompanionTypes(publication) {
+  const coin = publication.context.paymentCoinType;
+  return {
+    sealRegistry: compilerPublicationType(publication, 'seal', 'seal_v8', 'SealRegistryV8'),
+    runtimeDefinitions: compilerPublicationType(publication, 'runtime', 'runtime_v8', 'RuntimeDefinitionRegistryV8'),
+    packRegistry: compilerPublicationType(publication, 'runtime', 'runtime_v8', 'PackRegistryV8'),
+    admissionAuthority: compilerPublicationType(publication, 'runtime', 'runtime_v8', 'PackAdmissionAuthorityV8'),
+    outputRegistry: compilerPublicationType(publication, 'output', 'output_v8', 'OutputRegistryV8'),
+    soulRegistry: compilerPublicationType(publication, 'output', 'output_v8', 'SoulRegistryV8'),
+    physicalRegistry: compilerPublicationType(publication, 'physical', 'physical_v8', 'PhysicalRegistryV8'),
+    marketRegistry: compilerPublicationType(publication, 'market', 'market_v8', 'MarketRegistryV8', `<${coin}>`),
+    marketTreasury: compilerPublicationType(publication, 'market', 'market_v8', 'MarketTreasuryV8', `<${coin}>`),
+  };
+}
+
+/**
+ * Strict compiler-only production adapter. Runtime/package/call-cap authority
+ * is reconstructed from live parsed objects and runtime attestation, never
+ * from author-provided IDs, booleans, or hashes.
+ */
+export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInput }) {
+  if (!client || !runtimeInput) {
+    fail('MAKER_V8_COMPILER_ADAPTER_INVALID', 'Compiler adapter requires a concrete RPC and seven-role runtime.');
+  }
+
+  async function loadContextDetails({ signerAddress, transport }) {
+    await assertPinnedMainnet(client);
+    const attested = await attestMakerV8Runtime(client, runtimeInput, { network: MAKER_V8_CHAIN_NETWORK });
+    const runtime = attested.runtime;
+    const [protocolResponse, clockResponse] = await Promise.all([
+      client.getObject({
+        id: runtime.protocolConfigId,
+        options: { showType: true, showContent: true, showOwner: true },
+      }),
+      client.getObject({
+        id: runtime.clockObjectId,
+        options: { showType: true, showContent: true, showOwner: true },
+      }),
+    ]);
+    const protocol = moveObject(
+      protocolResponse,
+      runtime.protocolConfigId,
+      expectedCompilerType(runtime, 'protocolConfig'),
+      'ProtocolConfigV8',
+    );
+    const protocolFields = protocol.fields;
+    const treasuryId = compilerOptionId(rawMoveField(protocolFields, 'treasuryId', 'ProtocolConfigV8'), 'ProtocolConfigV8.treasuryId');
+    if (treasuryId !== runtime.protocolTreasuryId) {
+      fail('MAKER_V8_COMPILER_TREASURY_DRIFT', 'Live ProtocolConfig treasury differs from the attested runtime.', 'CONTEXT');
+    }
+    const treasuryResponse = await client.getObject({
+      id: treasuryId,
+      options: { showType: true, showContent: true, showOwner: true },
+    });
+    const treasury = moveObject(
+      treasuryResponse,
+      treasuryId,
+      expectedCompilerType(runtime, 'protocolTreasury'),
+      'ProtocolTreasuryV8',
+    );
+    const clock = moveObject(clockResponse, runtime.clockObjectId, expectedCompilerType(runtime, 'clock'), 'Clock');
+    const context = {
+      schemaVersion: MAKER_V8_TRUSTED_CONTEXT_SCHEMA,
+      chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+      signerAddress: id(signerAddress, 'compiler signer'),
+      paymentCoinType: runtime.paymentCoinType,
+      clock: compilerObjectFromParsed(clock, {}, 'Clock'),
+      protocolConfig: compilerObjectFromParsed(protocol, {
+        version: Number(decimal(rawMoveField(protocolFields, 'version', 'ProtocolConfigV8'), 'ProtocolConfigV8.version')),
+        revision: decimal(rawMoveField(protocolFields, 'revision', 'ProtocolConfigV8'), 'ProtocolConfigV8.revision'),
+        enabled: rawMoveField(protocolFields, 'enabled', 'ProtocolConfigV8'),
+        coreOriginalPackageId: compilerMoveId(rawMoveField(protocolFields, 'coreOriginalPackageId', 'ProtocolConfigV8'), 'ProtocolConfigV8.coreOriginalPackageId'),
+        coreCallablePackageId: compilerMoveId(rawMoveField(protocolFields, 'coreCallablePackageId', 'ProtocolConfigV8'), 'ProtocolConfigV8.coreCallablePackageId'),
+        treasuryId,
+        paymentCoinType: rawMoveField(protocolFields, 'paymentCoinType', 'ProtocolConfigV8'),
+        primaryContentFeeBps: decimal(rawMoveField(protocolFields, 'primaryContentFeeBps', 'ProtocolConfigV8'), 'ProtocolConfigV8.primaryContentFeeBps'),
+        fixedCompleteFeeAtomic: decimal(rawMoveField(protocolFields, 'fixedCompleteFeeAtomic', 'ProtocolConfigV8'), 'ProtocolConfigV8.fixedCompleteFeeAtomic'),
+        makerMarketFeeBps: decimal(rawMoveField(protocolFields, 'makerMarketFeeBps', 'ProtocolConfigV8'), 'ProtocolConfigV8.makerMarketFeeBps'),
+        soulMarketFeeBps: decimal(rawMoveField(protocolFields, 'soulMarketFeeBps', 'ProtocolConfigV8'), 'ProtocolConfigV8.soulMarketFeeBps'),
+        commitment: compilerHash(rawMoveField(protocolFields, 'commitment', 'ProtocolConfigV8'), 'ProtocolConfigV8.commitment'),
+      }, 'ProtocolConfigV8'),
+      protocolTreasury: compilerObjectFromParsed(treasury, {
+        version: Number(decimal(rawMoveField(treasury.fields, 'version', 'ProtocolTreasuryV8'), 'ProtocolTreasuryV8.version')),
+        configId: compilerMoveId(rawMoveField(treasury.fields, 'configId', 'ProtocolTreasuryV8'), 'ProtocolTreasuryV8.configId'),
+      }, 'ProtocolTreasuryV8'),
+      catalog: compilerObjectFromChain(attested.catalog, {
+        version: 8,
+        protocolConfigId: attested.catalog.fields.protocol_config_id,
+        protocolConfigRevision: attested.catalog.protocolConfigRevision.toString(),
+        protocolConfigCommitment: attested.catalog.protocolConfigCommitment,
+        nativeCapabilityMask: '127',
+        productBindingCommitment: attested.catalog.productBindingCommitment,
+        callCapSetCommitment: attested.catalog.callCapSetCommitment,
+        roles: compilerRoles(attested),
+        authorities: { ...attested.catalog.authorities },
+      }, 'ProductReleaseCatalogV8'),
+      configs: Object.fromEntries(['seal', 'runtime', 'output', 'physical', 'market', 'release'].map((role) => [
+        role,
+        compilerConfigObject(attested, role),
+      ])),
+      transport,
+    };
+    const certified = await certifyMakerV8TrustedContext(context);
+    return freeze({ context: certified, attested });
+  }
+
+  async function scaffoldReadback(response, publication) {
+    const coin = publication.context.paymentCoinType;
+    const types = {
+      root: compilerPublicationType(publication, 'core', 'maker_v8', 'MakerRootV8', `<${coin}>`),
+      baseRegistry: compilerPublicationType(publication, 'core', 'base_registry_v8', 'BaseDefinitionRegistryV8'),
+      makerTreasury: compilerPublicationType(publication, 'core', 'treasury_v8', 'MakerTreasuryV8', `<${coin}>`),
+      adminCap: compilerPublicationType(publication, 'core', 'maker_v8', 'MakerAdminCapV8'),
+    };
+    const entries = await Promise.all(Object.keys(types).map(async (name) => [
+      name,
+      await compilerChangedObject(client, response, types[name], name, SCAFFOLD_FIELDS[name]),
+    ]));
+    return { schemaVersion: MAKER_V8_SCAFFOLD_READBACK_SCHEMA, ...Object.fromEntries(entries) };
+  }
+
+  async function baseReadback(response, scaffold) {
+    return {
+      schemaVersion: MAKER_V8_BASE_READBACK_SCHEMA,
+      baseRegistry: await compilerChangedObject(
+        client,
+        response,
+        scaffold.baseRegistry.type,
+        'baseRegistry',
+        BASE_FIELDS,
+        scaffold.baseRegistry.reference.objectId,
+      ),
+    };
+  }
+
+  async function baseChunkReadback(response, scaffold) {
+    return {
+      schemaVersion: MAKER_V8_BASE_CHUNK_READBACK_SCHEMA,
+      source: 'FINALIZED_RPC',
+      transactionDigest: response.digest,
+      transactionKindBytesBase64: response.compilerTransactionKindProof.transactionKindBytesBase64,
+      transactionKindSha256: response.compilerTransactionKindProof.transactionKindSha256,
+      baseRegistry: await compilerChangedObject(
+        client,
+        response,
+        scaffold.baseRegistry.type,
+        'baseRegistry',
+        BASE_FIELDS,
+        scaffold.baseRegistry.reference.objectId,
+      ),
+    };
+  }
+
+  async function activationChunkReadback(response, build, companion) {
+    const phase = build.checkpoint.phase.replace('ACTIVATION_', '');
+    const objectKey = build.checkpoint.expected.objectKey;
+    return {
+      schemaVersion: MAKER_V8_ACTIVATION_CHUNK_READBACK_SCHEMA,
+      source: 'FINALIZED_RPC',
+      transactionDigest: response.digest,
+      transactionKindBytesBase64: response.compilerTransactionKindProof.transactionKindBytesBase64,
+      transactionKindSha256: response.compilerTransactionKindProof.transactionKindSha256,
+      phase,
+      object: await compilerChangedObject(
+        client,
+        response,
+        companion[objectKey].type,
+        objectKey,
+        COMPANION_FIELDS[objectKey],
+        companion[objectKey].reference.objectId,
+      ),
+    };
+  }
+
+  async function companionReadback(response, publication) {
+    const types = compilerPublicationCompanionTypes(publication);
+    const entries = await Promise.all(Object.keys(types).map(async (name) => [
+      name,
+      await compilerChangedObject(client, response, types[name], name, COMPANION_FIELDS[name]),
+    ]));
+    return { schemaVersion: MAKER_V8_COMPANION_READBACK_SCHEMA, ...Object.fromEntries(entries) };
+  }
+
+  async function activationReadback(response, attested, publication, base, transactionDigest) {
+    const eventType = makerV8StableType(attested.runtime, 'release', 'release_v8', 'MakerV8Activated');
+    const events = response.events?.data ?? response.events;
+    if (!Array.isArray(events)) fail('MAKER_V8_COMPILER_ACTIVATION_EVENT_MISSING', 'Finalized activation events are unavailable.', 'READBACK');
+    const candidates = events.filter((event) => {
+      try { return normalizeStructTag(event.type) === normalizeStructTag(eventType); } catch { return false; }
+    });
+    if (candidates.length !== 1) {
+      fail('MAKER_V8_COMPILER_ACTIVATION_EVENT_INVALID', 'Activation requires one exact MakerV8Activated event.', 'READBACK', { matches: candidates.length });
+    }
+    const activation = parseMakerV8ActivatedEvent(candidates[0], attested.runtime, MAKER_V8_CHAIN_NETWORK);
+    if (activation.transactionDigest !== transactionDigest) {
+      fail('MAKER_V8_COMPILER_ACTIVATION_DIGEST_DRIFT', 'MakerV8Activated belongs to a different transaction.', 'CONTEXT');
+    }
+    if (activation.binding.rootId !== base.root.reference.objectId
+      || activation.owner !== publication.context.signerAddress
+      || activation.makerKey !== publication.document.lineage.makerKey
+      || activation.contentCommitment !== publication.commitments.content
+      || activation.versionCommitment !== publication.commitments.version
+      || activation.productBindingCommitment !== publication.context._derived.productBindingCommitment
+      || activation.callCapSetCommitment !== publication.context._derived.callCapSetCommitment) {
+      fail('MAKER_V8_COMPILER_ACTIVATION_DRIFT', 'MakerV8Activated differs from the exact compiler publication.', 'CONTEXT');
+    }
+    const rootChange = compilerChange(
+      response,
+      `${makerV8StableType(attested.runtime, 'core', 'maker_v8', 'MakerRootV8')}<${attested.runtime.paymentCoinType}>`,
+      'activated Root',
+      activation.binding.rootId,
+    );
+    const rootRef = compilerEffectsRefForChange(response, rootChange, 'activated Root');
+    if (rootRef.owner.kind !== 'Shared'
+      || rootRef.owner.value.initialSharedVersion !== base.root.reference.initialSharedVersion) {
+      fail('MAKER_V8_COMPILER_ACTIVATION_ROOT_OWNER_DRIFT', 'Activated Root shared owner differs from the verified Scaffold Root.', 'READBACK');
+    }
+    const historicalRoot = await exactPastObject(
+      client,
+      rootRef,
+      `${makerV8StableType(attested.runtime, 'core', 'maker_v8', 'MakerRootV8')}<${attested.runtime.paymentCoinType}>`,
+      'activated Root',
+      transactionDigest,
+    );
+    const rootResponse = { data: {
+      objectId: historicalRoot.objectId,
+      version: historicalRoot.ref.version,
+      digest: historicalRoot.ref.digest,
+      type: historicalRoot.type,
+      owner: rootChange.owner,
+      previousTransaction: historicalRoot.previousTransaction,
+      content: { dataType: 'moveObject', type: historicalRoot.type, fields: historicalRoot.parsed },
+    } };
+    const root = parseMakerRootV8(rootResponse, attested.runtime, activation, MAKER_V8_CHAIN_NETWORK);
+    if (root.lifecycle !== 'ACTIVE'
+      || root.ownerAddress !== publication.context.signerAddress
+      || root.creatorAddress !== publication.context.signerAddress) {
+      fail('MAKER_V8_COMPILER_ACTIVATION_ROOT_INVALID', 'Activated Root ownership/lifecycle differs from the compiler signer.', 'READBACK');
+    }
+    const historical = compilerFields(historicalRoot.parsed, [
+      'manifestSha256', 'protocolConfigCommitment', 'productBindingCommitment',
+      'callCapSetCommitment',
+    ], 'activated Root');
+    const historicalManifest = compilerHash(historical.manifestSha256, 'activated Root.manifestSha256');
+    const historicalProtocol = compilerHash(historical.protocolConfigCommitment, 'activated Root.protocolConfigCommitment');
+    const historicalBinding = compilerHash(historical.productBindingCommitment, 'activated Root.productBindingCommitment');
+    const historicalCaps = compilerHash(historical.callCapSetCommitment, 'activated Root.callCapSetCommitment');
+    if (historicalManifest !== publication.manifest.sha256
+      || historicalProtocol !== activation.protocolConfigCommitment
+      || historicalBinding !== activation.productBindingCommitment
+      || historicalCaps !== activation.callCapSetCommitment) {
+      fail('MAKER_V8_COMPILER_ACTIVATION_ROOT_DRIFT', 'Exact historical activated Root differs from the compiler/event commitments.', 'CONTEXT');
+    }
+    return freeze({
+      schemaVersion: MAKER_V8_ACTIVATION_READBACK_SCHEMA,
+      source: 'FINALIZED_RPC',
+      transactionDigest,
+      transactionKindBytesBase64: response.compilerTransactionKindProof.transactionKindBytesBase64,
+      transactionKindSha256: response.compilerTransactionKindProof.transactionKindSha256,
+      rootId: root.objectId,
+      makerVersion: Number(root.makerVersion),
+      lifecycle: root.lifecycle,
+      makerKey: root.makerKey,
+      versionCommitment: activation.versionCommitment,
+      manifestSha256: historicalManifest,
+      contentCommitment: root.contentCommitment,
+      protocolConfigCommitment: historicalProtocol,
+      productBindingCommitment: historicalBinding,
+      callCapSetCommitment: historicalCaps,
+    });
+  }
+
+  return freeze({
+    async loadTrustedContext({ signerAddress, transport }) {
+      return (await loadContextDetails({ signerAddress, transport })).context;
+    },
+    async assertContextFresh({ publication, transport }) {
+      await assertPinnedMainnet(client);
+      const fresh = await loadContextDetails({ signerAddress: publication.context.signerAddress, transport });
+      return assertMakerV8CompilerContextFreshV8(publication.context, fresh.context);
+    },
+    async recoverStage({
+      stage, digest: transactionDigest, transaction, publication, transport,
+      scaffold, base,
+    }) {
+      await assertPinnedMainnet(client);
+      const fresh = await loadContextDetails({
+        signerAddress: publication.context.signerAddress,
+        transport,
+      });
+      assertMakerV8CompilerContextFreshV8(publication.context, fresh.context);
+      const response = await assertFinalizedMakerV8CompilerTransactionV8(client, transactionDigest, transaction);
+      if (stage === 'SCAFFOLD') return scaffoldReadback(response, publication);
+      if (stage === 'BASE_DEFINITIONS') return baseReadback(response, scaffold);
+      if (stage === 'COMPANION_OBJECTS') return companionReadback(response, publication);
+      if (stage === 'ACTIVATION') {
+        return activationReadback(response, fresh.attested, publication, base, transactionDigest);
+      }
+      fail('MAKER_V8_COMPILER_STAGE_INVALID', 'Unknown Maker v8 compiler stage.', 'VALIDATION');
+    },
+    async recoverCheckpoint({
+      kind, digest: transactionDigest, build, transaction, publication, transport,
+      scaffold, base, companion,
+    }) {
+      await assertPinnedMainnet(client);
+      const expectedTransaction = build?.transaction ?? transaction;
+      if (!(expectedTransaction instanceof Transaction)) fail('MAKER_V8_COMPILER_TRANSACTION_REQUIRED', 'Recovery requires the exact compiler Transaction.', 'VALIDATION');
+      const response = await assertFinalizedMakerV8CompilerTransactionV8(client, transactionDigest, expectedTransaction);
+      if (kind === 'SCAFFOLD') return scaffoldReadback(response, publication);
+      if (kind === 'BASE_CHUNK') return baseChunkReadback(response, scaffold);
+      if (kind === 'COMPANION_OBJECTS') return companionReadback(response, publication);
+      if (kind === 'ACTIVATION_CHUNK') {
+        if (build.checkpoint.final) return activationReadback(response, { runtime: assertMakerV8Runtime(runtimeInput) }, publication, base, transactionDigest);
+        return activationChunkReadback(response, build, companion);
+      }
+      fail('MAKER_V8_COMPILER_STAGE_INVALID', 'Unknown Maker v8 compiler checkpoint.', 'VALIDATION');
+    },
+  });
+}
+
 /**
  * Production factory. The default path creates its own official Mainnet
  * client, live reader, and Wallet Standard connector; no adapter global is
@@ -2441,6 +3340,9 @@ export function createProductionMakerV8BrowserAdapters({
     execution: checkedExecution,
     wallet,
   });
+  const compiler = runtime
+    ? createMakerV8CompilerRpcAdapterV8({ client, runtime })
+    : null;
   return freeze({
     rpc: freeze({
       async getChainIdentifier() {
@@ -2461,6 +3363,7 @@ export function createProductionMakerV8BrowserAdapters({
     }),
     wallet,
     transactions,
+    ...(compiler ? { compiler } : {}),
     ...(persistence ? { persistence } : {}),
   });
 }

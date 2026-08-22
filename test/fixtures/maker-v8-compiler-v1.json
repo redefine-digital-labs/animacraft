@@ -29,8 +29,8 @@
     "outputs": [{ "key": "avatar", "label": "Avatar", "protected": false, "allowedPackPolicy": { "kind": "ALL_ADMITTED", "packIds": [] }, "payload": { "format": "png" } }],
     "commerce": {
       "schemaVersion": "animacraft.maker-commerce.v8", "rightsOrigin": "ONCHAIN_NATIVE", "rightsOriginConfirmed": true, "rightsEvidence": null,
-      "makerAccess": { "mode": "FREE", "purchasePriceAtomic": "0" },
-      "baseCompletion": { "mode": "UNLIMITED_FREE", "freeQuotaPerWallet": "0", "priceAtomic": "0", "totalCap": null },
+      "makerAccess": { "mode": "FREE", "purchasePriceAtomic": 0 },
+      "baseCompletion": { "mode": "UNLIMITED_FREE", "freeQuotaPerWallet": 0, "priceAtomic": 0, "totalCap": null },
       "soulCreatorRoyaltyBps": 250, "makerSourceRoyaltyBps": 300, "makerResaleRoyaltyBps": 500
     },
     "assets": [{ "id": "body-layer", "kind": "layer", "mediaType": "image/png", "byteLength": "8" }]
@@ -46,9 +46,9 @@
     "core": ["0x401", "0x402"], "seal": ["0x411", "0x412"], "runtime": ["0x421", "0x422"], "output": ["0x431", "0x432"], "physical": ["0x441", "0x442"], "market": ["0x451", "0x452"], "release": ["0x461", "0x462"]
   },
   "expected": {
-    "manifestSha256": "ab63882e37a374cef2af1ef0495d9f988635a561969fd77c31fe51deb83c138f",
-    "contentCommitment": "ab63882e37a374cef2af1ef0495d9f988635a561969fd77c31fe51deb83c138f",
-    "baseAggregateCommitment": "858eba446ead05a159ee20163c6a21a1293eb10e2fece9eb90a0d93c2a0973a0",
-    "runtimePolicyCommitment": "e0237e714cab44fca9e214940d5c6fd5635018cd02249881efcd891644ed101d"
+    "manifestSha256": "b084791277d949ae369955784013fbc38bfa9565a0fd70b3abe09d427601f18c",
+    "contentCommitment": "b084791277d949ae369955784013fbc38bfa9565a0fd70b3abe09d427601f18c",
+    "baseAggregateCommitment": "f93483bdcbbc07739475972272734086fda6831b3062aeb9af949ae9ded02bf3",
+    "runtimePolicyCommitment": "9efe72e1d6e79a17b87b590d0ad319152f7d357503739295159ec954e779c6d6"
   }
 }

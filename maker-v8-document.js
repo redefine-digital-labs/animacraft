@@ -55,13 +55,24 @@ const RGBA = /^#[0-9a-fA-F]{8}$/;
 const MEDIA_TYPE = /^[a-z0-9][a-z0-9.+-]{0,63}\/[a-z0-9][a-z0-9.+-]{0,127}$/i;
 const U64_MAX = (1n << 64n) - 1n;
 const MAX_DEPTH = 64;
-const MAX_NODES = 100_000;
+// Canonical byte/count budgets remain the primary memory bound; this ceiling
+// only rejects hostile JSON graph expansion.
+const MAX_NODES = 1_000_000;
+
+// Protocol ordering is the ECMAScript UTF-16 code-unit order used by JSON
+// member sorting. It is deliberately independent of locale and ICU data.
+export function compareMakerV8ProtocolText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
 
 const LIMITS = Object.freeze({
   tracks: 256,
   parts: 750,
   items: 5_000,
-  styles: 10_000,
+  // Sui 1.76.1 object-runtime metering proves seal is bounded by
+  // 2 * style rows + distinct referenced color pairs <= 1000.
+  styles: 500,
+  styleSealObjectRuntimeUnits: 1_000,
   colors: 5_000,
   rules: 1_000,
   outputs: 256,
@@ -433,6 +444,7 @@ function collectSemanticIssues(document, issues, { mode }) {
 
   let itemCount = 0;
   let styleCount = 0;
+  const referencedStyleColorPairs = new Set();
   const publicItems = new Set();
   const publicStyles = new Set();
   document.tracks?.forEach((track, index) => {
@@ -486,6 +498,8 @@ function collectSemanticIssues(document, issues, { mode }) {
           const channel = document.colors.find((entry) => entry.key === style.colorChannelKey);
           if (!channel?.swatches?.some((entry) => entry.key === style.defaultSwatchKey)) {
             issue(issues, `${stylePath}.defaultSwatchKey`, 'MAKER_V8_SWATCH_UNKNOWN', 'Style default swatch must exist in its exact Color channel.');
+          } else {
+            referencedStyleColorPairs.add(`${style.colorChannelKey}\u0000${style.defaultSwatchKey}`);
           }
         }
         if (!assets.has(style.assetId)) issue(issues, `${stylePath}.assetId`, 'MAKER_V8_STYLE_ASSET_UNKNOWN', 'Style asset does not exist.');
@@ -512,6 +526,9 @@ function collectSemanticIssues(document, issues, { mode }) {
   if (mode === 'compile' && !parts.size) issue(issues, 'parts', 'MAKER_V8_PART_REQUIRED', 'Publication requires at least one Part.');
   if (document.tracks?.length > LIMITS.tracks || document.parts?.length > LIMITS.parts
     || itemCount > LIMITS.items || styleCount > LIMITS.styles) issue(issues, 'parts', 'MAKER_V8_DEFINITION_LIMIT', 'Base definition limit exceeded.');
+  if ((2 * styleCount) + referencedStyleColorPairs.size > LIMITS.styleSealObjectRuntimeUnits) {
+    issue(issues, 'parts', 'MAKER_V8_STYLE_SEAL_LIMIT', 'Style rows and distinct referenced Color pairs exceed the measured Sui object-runtime seal budget.');
+  }
 
   const ruleKeys = uniqueKeys(document.rules, 'rules', issues);
   document.rules?.forEach((rule, index) => {
@@ -564,7 +581,7 @@ function collectSemanticIssues(document, issues, { mode }) {
     validateText(output.label, `${path}.label`, issues, { maximum: 256 });
     if (typeof output.protected !== 'boolean' || !Object.values(MAKER_V8_OUTPUT_PACK_POLICIES).includes(output.allowedPackPolicy?.kind)
       || !Array.isArray(output.allowedPackPolicy?.packIds)) issue(issues, path, 'MAKER_V8_OUTPUT_INVALID', 'Output policy is invalid.');
-    const sorted = [...(output.allowedPackPolicy?.packIds || [])].sort();
+    const sorted = [...(output.allowedPackPolicy?.packIds || [])].sort(compareMakerV8ProtocolText);
     sorted.forEach((packId, packIndex) => validateKey(packId, `${path}.allowedPackPolicy.packIds[${packIndex}]`, issues));
     if (new Set(sorted).size !== sorted.length || sorted.some((entry, entryIndex) => entry !== output.allowedPackPolicy.packIds[entryIndex])) issue(issues, `${path}.allowedPackPolicy.packIds`, 'MAKER_V8_PACK_ALLOWLIST_INVALID', 'Pack allowlist must be strictly sorted and duplicate-free.');
     if (output.allowedPackPolicy?.kind === 'ALL_ADMITTED' && sorted.length) issue(issues, `${path}.allowedPackPolicy.packIds`, 'MAKER_V8_PACK_ALLOWLIST_INVALID', 'ALL_ADMITTED has no allowlist.');
