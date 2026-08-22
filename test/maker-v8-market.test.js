@@ -44,6 +44,7 @@ import {
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
   attestMakerV8Runtime,
 } from '../maker-v8-chain.js';
+import { CORE_BASE_REGISTRY_MODULE_BASE64 } from './fixtures/maker-v8-runtime-attestation.js';
 
 const fixture = JSON.parse(await readFile(
   new URL('./fixtures/market-v8-abi.json', import.meta.url),
@@ -152,9 +153,9 @@ function runtimeAttestationRpc(runtime) {
         data: {
           objectId,
           version: '1',
-          digest: String(packageIndex + 2).repeat(32),
+          digest: String(packageIndex + 2).repeat(44),
           owner: { Immutable: true },
-          bcs: { dataType: 'package', id: objectId, version: '1', moduleMap: {} },
+          bcs: { dataType: 'package', id: objectId, version: '1', moduleMap: packageIndex === 0 ? { base_registry_v8: CORE_BASE_REGISTRY_MODULE_BASE64 } : {} },
         },
       };
       const role = roles.find((candidate) => runtime.roleConfigIds[candidate] === objectId);

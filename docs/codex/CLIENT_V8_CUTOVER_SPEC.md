@@ -68,11 +68,29 @@ The matching approved Sui protocol profile is exact: protocol version `130`,
 `object_runtime_max_num_store_entries = 1000`. The compiler reads those values
 from `getProtocolConfig`, encodes the normalized profile as canonical JSON,
 hashes it with SHA-256, and binds both profile and hash into the trusted
-context and immutable publication plan. Missing, differently typed, lower,
-or higher values—and any protocol-version drift—fail closed as
+context. The durable publication controller must include that exact profile
+hash in its immutable plan before execution is enabled. The exact canonical JSON vector is
+`{"objectRuntimeMaxNumCachedObjects":"1000","objectRuntimeMaxNumStoreEntries":"1000","protocolVersion":"130","schemaVersion":"animacraft.maker-v8-sui-protocol-profile.v1"}`
+and its approved SHA-256 is
+`1b38afda274cb9a9ebd8307aec0af689d2a396db960fc3c1020bfd8188450ec0`.
+Missing, malformed, or differently typed RPC values fail closed as
+`MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID`. Well-typed lower or higher values—and
+any protocol-version drift—fail closed as
 `MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED`. A changed profile requires the
 seal-cap harness to be rerun and its evidence, review, specification, and
 approved profile to be updated explicitly before publication can resume.
+
+The metered code artifact is equally exact. Runtime attestation reads the live
+Core callable package object, retains its callable ID and package-object
+digest, canonically decodes `bcs.moduleMap.base_registry_v8`, and requires the
+module SHA-256
+`89ecbd9e3640ab218f92094c516d05d7efdacac4a12c56630759354af8d1bbc7`.
+Those three values are bound into the trusted-context Core artifact
+commitment; the durable publication controller must include that commitment
+in its immutable plan. Missing/non-canonical module bytes or a different
+module hash are unmeasured. Any later callable ID, package digest, module hash,
+or profile drift retires the release attempt instead of silently reusing the
+old measurement.
 
 ## Typed Market contract
 

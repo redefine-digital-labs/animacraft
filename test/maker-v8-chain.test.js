@@ -8,6 +8,7 @@ import {
 } from '../maker-v8-runtime.js';
 import {
   MakerV8ChainError,
+  MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256,
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
   attestMakerV8Runtime,
   createMakerV8ChainClient,
@@ -26,6 +27,7 @@ import {
   isMakerV8RuntimeAttested,
   makerV8AttestedPackageTuple,
 } from '../maker-v8-chain.js';
+import { CORE_BASE_REGISTRY_MODULE_BASE64 } from './fixtures/maker-v8-runtime-attestation.js';
 
 const sid = (number) => `0x${number.toString(16).padStart(64, '0')}`;
 const txDigest = (character = '4') => character.repeat(44);
@@ -284,9 +286,12 @@ function catalogAndConfigResponses(rt, overrides = {}) {
     data: {
       objectId: rt.roles[role].callablePackageId,
       version: '1',
-      digest: String(index + 2).repeat(32),
+      digest: String(index + 2).repeat(44),
       owner: { Immutable: true },
-      bcs: { dataType: 'package', id: rt.roles[role].callablePackageId, version: '1', moduleMap: {} },
+      bcs: {
+        dataType: 'package', id: rt.roles[role].callablePackageId, version: '1',
+        moduleMap: role === 'core' ? { base_registry_v8: CORE_BASE_REGISTRY_MODULE_BASE64 } : {},
+      },
     },
   }]));
   return { catalog, configs, packages };
@@ -311,14 +316,15 @@ test('Mainnet ProductReleaseCatalog and all six installed call caps attest the o
   assert.equal(isMakerV8RuntimeAttested(rt), false, 'caller config is not the normalized attested capability');
   assert.deepEqual(makerV8AttestedPackageTuple(attested.runtime), attested.packageTuple);
   assert.deepEqual(attested.packageTuple.map(({ role, packageDigest }) => ({ role, packageDigest })), [
-    { role: 'core', packageDigest: '2'.repeat(32) },
-    { role: 'seal', packageDigest: '3'.repeat(32) },
-    { role: 'runtime', packageDigest: '4'.repeat(32) },
-    { role: 'output', packageDigest: '5'.repeat(32) },
-    { role: 'physical', packageDigest: '6'.repeat(32) },
-    { role: 'market', packageDigest: '7'.repeat(32) },
-    { role: 'release', packageDigest: '8'.repeat(32) },
+    { role: 'core', packageDigest: '2'.repeat(44) },
+    { role: 'seal', packageDigest: '3'.repeat(44) },
+    { role: 'runtime', packageDigest: '4'.repeat(44) },
+    { role: 'output', packageDigest: '5'.repeat(44) },
+    { role: 'physical', packageDigest: '6'.repeat(44) },
+    { role: 'market', packageDigest: '7'.repeat(44) },
+    { role: 'release', packageDigest: '8'.repeat(44) },
   ]);
+  assert.equal(attested.packageTuple[0].baseRegistryModuleSha256, MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256);
   assert.throws(
     () => makerV8AttestedPackageTuple(rt),
     (error) => error.code === 'MAKER_V8_RUNTIME_ATTESTATION_REQUIRED',
@@ -355,6 +361,25 @@ test('Mainnet ProductReleaseCatalog and all six installed call caps attest the o
         return corrupt.configs[role];
       },
     }), rt), (error) => error.code === expectedCode, name);
+  }
+
+  for (const [name, mutate] of [
+    ['missing Core module', (response) => { delete response.data.bcs.moduleMap.base_registry_v8; }],
+    ['wrong Core module', (response) => { response.data.bcs.moduleMap.base_registry_v8 = Buffer.from('drift').toString('base64'); }],
+    ['non-canonical Core module', (response) => { response.data.bcs.moduleMap.base_registry_v8 = `${response.data.bcs.moduleMap.base_registry_v8}=\n`; }],
+    ['malformed Core package digest', (response) => { response.data.digest = 'not-a-sui-digest'; }],
+  ]) {
+    const corrupt = catalogAndConfigResponses(rt);
+    mutate(corrupt.packages.core);
+    await assert.rejects(() => attestMakerV8Runtime(mainnetRpc({
+      async getObject({ id: objectId }) {
+        if (objectId === rt.catalogId) return corrupt.catalog;
+        const packageRole = Object.keys(rt.roles).find((candidate) => rt.roles[candidate].callablePackageId === objectId);
+        if (packageRole) return corrupt.packages[packageRole];
+        const role = Object.keys(rt.roleConfigIds).find((candidate) => rt.roleConfigIds[candidate] === objectId);
+        return corrupt.configs[role];
+      },
+    }), rt), (error) => error.code === 'MAKER_V8_CORE_ARTIFACT_UNMEASURED', name);
   }
 });
 

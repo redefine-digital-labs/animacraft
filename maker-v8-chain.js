@@ -1,3 +1,8 @@
+import { sha256 } from '@noble/hashes/sha2.js';
+import {
+  fromBase58, fromBase64, toBase58, toBase64,
+} from '@mysten/sui/utils';
+
 import {
   MAKER_V8_MAKER_BINDING_FIELDS,
   assertMakerV8Runtime,
@@ -9,6 +14,7 @@ export const MAKER_V8_CHAIN_NETWORK = 'mainnet';
 export const MAKER_V8_CHAIN_SCHEMA = 'animacraft.maker-v8-chain.v8';
 export const MAKER_V8_MAINNET_CHAIN_IDENTIFIER = '35834a8a';
 export const MAKER_V8_MAINNET_GENESIS_DIGEST = '4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S';
+export const MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256 = '89ecbd9e3640ab218f92094c516d05d7efdacac4a12c56630759354af8d1bbc7';
 
 export const MAKER_V8_LIFECYCLES = Object.freeze({
   0: 'DRAFT',
@@ -92,7 +98,12 @@ function decimal(value, label, { positive = false } = {}) {
 }
 
 function digest(value, label) {
-  if (typeof value !== 'string' || !DIGEST.test(value)) {
+  let bytes;
+  try {
+    if (typeof value !== 'string' || !DIGEST.test(value)) throw new Error('shape');
+    bytes = fromBase58(value);
+    if (bytes.length !== 32 || toBase58(bytes) !== value) throw new Error('canonical');
+  } catch {
     fail('schema', 'MAKER_V8_CHAIN_DIGEST_INVALID', `${label} is not an exact Sui digest.`, { label });
   }
   return value;
@@ -387,7 +398,13 @@ function parseCallablePackageIdentity(response, runtime, role) {
   const data = response.data;
   const expectedId = runtime.roles[role].callablePackageId;
   const packageId = id(data.objectId, `${role}.callablePackageId`);
-  const packageDigest = digest(data.digest, `${role}.packageDigest`);
+  let packageDigest;
+  try {
+    packageDigest = digest(data.digest, `${role}.packageDigest`);
+  } catch (error) {
+    if (role !== 'core') throw error;
+    fail('readback', 'MAKER_V8_CORE_ARTIFACT_UNMEASURED', 'Core callable package digest is missing or malformed.', { cause: error.code });
+  }
   const packageVersion = decimal(data.version, `${role}.packageVersion`, { positive: true });
   const packageDataType = data.bcs?.dataType ?? data.content?.dataType;
   const packageOwner = ownerOf(data.owner);
@@ -399,12 +416,34 @@ function parseCallablePackageIdentity(response, runtime, role) {
       ownerKind: packageOwner.kind,
     });
   }
+  let coreModuleEvidence = {};
+  if (role === 'core') {
+    const encoded = data.bcs?.moduleMap?.base_registry_v8;
+    let moduleBytes;
+    try {
+      if (typeof encoded !== 'string' || encoded.length === 0 || encoded.length > 256 * 1024) throw new Error('shape');
+      moduleBytes = fromBase64(encoded);
+      if (toBase64(moduleBytes) !== encoded) throw new Error('canonical');
+    } catch {
+      fail('readback', 'MAKER_V8_CORE_ARTIFACT_UNMEASURED', 'Core base_registry_v8 module bytes are missing or not canonical Base64.');
+    }
+    const moduleSha256 = [...sha256(moduleBytes)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    if (moduleSha256 !== MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256) {
+      fail('readback', 'MAKER_V8_CORE_ARTIFACT_UNMEASURED', 'Core base_registry_v8 module bytes do not match the metered seal-cap artifact.', {
+        expectedSha256: MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256,
+        observedSha256: moduleSha256,
+        byteLength: moduleBytes.length,
+      });
+    }
+    coreModuleEvidence = { baseRegistryModuleSha256: moduleSha256 };
+  }
   return freeze({
     role,
     originalPackageId: runtime.roles[role].typeOriginPackageId,
     callablePackageId: packageId,
     packageVersion: packageVersion.toString(),
     packageDigest,
+    ...coreModuleEvidence,
   });
 }
 

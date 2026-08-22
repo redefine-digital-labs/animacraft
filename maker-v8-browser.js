@@ -2710,6 +2710,7 @@ function compilerAuthorityProjection(context) {
     signerAddress: context.signerAddress,
     paymentCoinType: context.paymentCoinType,
     protocolProfile: context.protocolProfile,
+    coreArtifact: context.coreArtifact,
     ...Object.fromEntries(COMPILER_CONTEXT_OBJECTS.map((name) => [name, object(context[name])])),
     configs: Object.fromEntries(Object.entries(context.configs).map(([name, value]) => [name, object(value)])),
     derived: {
@@ -2717,6 +2718,7 @@ function compilerAuthorityProjection(context) {
       callCapSetCommitment: context._derived.callCapSetCommitment,
       sealPolicyCommitment: context._derived.sealPolicyCommitment,
       protocolProfileCommitment: context._derived.protocolProfileCommitment,
+      coreArtifactCommitment: context._derived.coreArtifactCommitment,
     },
   };
 }
@@ -3051,6 +3053,8 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
     await assertPinnedMainnet(client);
     const attested = await attestMakerV8Runtime(client, runtimeInput, { network: MAKER_V8_CHAIN_NETWORK });
     const runtime = attested.runtime;
+    const corePackage = attested.packageTuple.find((entry) => entry.role === 'core');
+    if (!corePackage?.baseRegistryModuleSha256) fail('MAKER_V8_CORE_ARTIFACT_UNMEASURED', 'Runtime attestation omitted the metered Core base_registry_v8 artifact.', 'CONTEXT');
     const [protocolResponse, clockResponse, protocolProfile] = await Promise.all([
       client.getObject({
         id: runtime.protocolConfigId,
@@ -3090,6 +3094,11 @@ export function createMakerV8CompilerRpcAdapterV8({ client, runtime: runtimeInpu
       signerAddress: id(signerAddress, 'compiler signer'),
       paymentCoinType: runtime.paymentCoinType,
       protocolProfile,
+      coreArtifact: {
+        callablePackageId: corePackage.callablePackageId,
+        packageDigest: corePackage.packageDigest,
+        baseRegistryModuleSha256: corePackage.baseRegistryModuleSha256,
+      },
       clock: compilerObjectFromParsed(clock, {}, 'Clock'),
       protocolConfig: compilerObjectFromParsed(protocol, {
         version: Number(decimal(rawMoveField(protocolFields, 'version', 'ProtocolConfigV8'), 'ProtocolConfigV8.version')),

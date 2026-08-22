@@ -2,13 +2,17 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { Transaction } from '@mysten/sui/transactions';
-import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
+import {
+  MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256,
+  MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+} from '../maker-v8-chain.js';
 import { MAKER_V8_PAYMENT_COIN_TYPE } from '../maker-v8-runtime.js';
 import {
   MAKER_V8_DOCUMENT_LIMITS,
   assertMakerV8Document,
   compareMakerV8ProtocolText,
 } from '../maker-v8-document.js';
+import { assertMakerV8CompilerContextFreshV8 } from '../maker-v8-browser.js';
 
 import {
   MAKER_V8_BASE_READBACK_SCHEMA,
@@ -16,6 +20,7 @@ import {
   MAKER_V8_ACTIVATION_CHUNK_READBACK_SCHEMA,
   MAKER_V8_ACTIVATION_READBACK_SCHEMA,
   MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE,
+  MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE_COMMITMENT,
   MAKER_V8_COMMITMENT_FIXTURE_SCHEMA,
   MAKER_V8_COMPANION_READBACK_SCHEMA,
   MAKER_V8_ROLE_ORDER,
@@ -120,6 +125,11 @@ async function trustedContext(document = clone(fixture.document), assets = clone
     schemaVersion: MAKER_V8_TRUSTED_CONTEXT_SCHEMA,
     chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER, signerAddress: fixture.ids.signer, paymentCoinType: COIN,
     protocolProfile: clone(MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE),
+    coreArtifact: {
+      callablePackageId: release.roles.core.callablePackageId,
+      packageDigest: '2'.repeat(44),
+      baseRegistryModuleSha256: MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256,
+    },
     clock: shared('0x6', '0x2::clock::Clock', {}),
     protocolConfig: shared(fixture.ids.protocolConfig, `${core}::protocol_config_v8::ProtocolConfigV8`, protocolFields),
     protocolTreasury: shared(fixture.ids.protocolTreasury, `${core}::protocol_config_v8::ProtocolTreasuryV8<${COIN}>`, { version: 8, configId: fixture.ids.protocolConfig }),
@@ -244,10 +254,13 @@ async function compilePath(document = clone(fixture.document), assets = clone(fi
 
 const moves = (transaction) => transaction.getData().commands.filter((command) => command.$kind === 'MoveCall').map((command) => command.MoveCall);
 
-test('trusted context pins the exact measured Sui protocol profile and commitment', async () => {
+test('trusted context pins exact measured Sui protocol and Core artifact commitments', async () => {
   const approved = await trustedContext();
   assert.deepEqual(approved.protocolProfile, MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE);
-  assert.match(approved._derived.protocolProfileCommitment, /^[0-9a-f]{64}$/);
+  assert.equal(approved._derived.protocolProfileCommitment, MAKER_V8_APPROVED_SUI_PROTOCOL_PROFILE_COMMITMENT);
+  assert.equal(approved.coreArtifact.callablePackageId, approved.catalog.fields.roles.core.callablePackageId);
+  assert.equal(approved.coreArtifact.baseRegistryModuleSha256, MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256);
+  assert.match(approved._derived.coreArtifactCommitment, /^[0-9a-f]{64}$/);
 
   for (const [mutate, code] of [
     [(context) => { context.protocolProfile.protocolVersion = '131'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
@@ -261,6 +274,26 @@ test('trusted context pins the exact measured Sui protocol profile and commitmen
       (error) => error.code === code,
     );
   }
+  for (const mutate of [
+    (context) => { context.coreArtifact.callablePackageId = fixture.ids.sealConfig; },
+    (context) => { context.coreArtifact.baseRegistryModuleSha256 = 'ff'.repeat(32); },
+    (context) => { context.coreArtifact.packageDigest = 'not-a-sui-digest'; },
+    (context) => { context.coreArtifact.packageDigest = '2'.repeat(32); },
+    (context) => { context.coreArtifact.packageDigest = ` ${'2'.repeat(44)}`; },
+  ]) {
+    await assert.rejects(
+      trustedContext(clone(fixture.document), clone(fixture.transportAssets), null, mutate),
+      (error) => error.code === 'MAKER_V8_CORE_ARTIFACT_UNMEASURED',
+    );
+  }
+  const packageDigestDrift = await trustedContext(clone(fixture.document), clone(fixture.transportAssets), null, (context) => {
+    context.coreArtifact.packageDigest = '3'.repeat(44);
+  });
+  assert.notEqual(packageDigestDrift._derived.coreArtifactCommitment, approved._derived.coreArtifactCommitment);
+  assert.throws(
+    () => assertMakerV8CompilerContextFreshV8(approved, packageDigestDrift),
+    (error) => error.code === 'MAKER_V8_COMPILER_CONTEXT_DRIFT',
+  );
 });
 const suffixes = (transaction) => exactMakerV8TransactionTargets(transaction).map((target) => target.split('::').slice(-2).join('::'));
 const argKinds = (move) => move.arguments.map((argument) => argument.$kind);

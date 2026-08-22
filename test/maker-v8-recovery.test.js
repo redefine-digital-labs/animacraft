@@ -36,6 +36,7 @@ import {
   makerV8RecoveryScopeKey,
   makerV8RecoveryScopeLookupKey,
 } from '../maker-v8-recovery.js';
+import { CORE_BASE_REGISTRY_MODULE_BASE64 } from './fixtures/maker-v8-runtime-attestation.js';
 
 const packageId = (digit) => `0x${digit.repeat(64)}`;
 const id = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
@@ -192,9 +193,9 @@ function runtimeAttestationRpc(runtime) {
         data: {
           objectId,
           version: '1',
-          digest: String(packageIndex + 2).repeat(32),
+          digest: String(packageIndex + 2).repeat(44),
           owner: { Immutable: true },
-          bcs: { dataType: 'package', id: objectId, version: '1', moduleMap: {} },
+          bcs: { dataType: 'package', id: objectId, version: '1', moduleMap: packageIndex === 0 ? { base_registry_v8: CORE_BASE_REGISTRY_MODULE_BASE64 } : {} },
         },
       };
       const role = roles.find((candidate) => runtime.roleConfigIds[candidate] === objectId);
