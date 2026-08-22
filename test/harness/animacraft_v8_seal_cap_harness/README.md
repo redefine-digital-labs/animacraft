@@ -12,7 +12,8 @@ temporary keys, and localnet state are ignored and are not evidence inputs.
 
 ## Result
 
-On Sui CLI `1.76.1-homebrew`, localnet protocol version `130` reports:
+On the official Sui CLI `1.77.2-51d177ad7d65`, localnet protocol version
+`133` reports:
 
 ```text
 object_runtime_max_num_cached_objects = 1000
@@ -23,11 +24,11 @@ This is an exact approved profile, not a minimum-capability test. The canonical
 profile JSON is:
 
 ```json
-{"objectRuntimeMaxNumCachedObjects":"1000","objectRuntimeMaxNumStoreEntries":"1000","protocolVersion":"130","schemaVersion":"animacraft.maker-v8-sui-protocol-profile.v1"}
+{"objectRuntimeMaxNumCachedObjects":"1000","objectRuntimeMaxNumStoreEntries":"1000","protocolVersion":"133","schemaVersion":"animacraft.maker-v8-sui-protocol-profile.v1"}
 ```
 
 Its canonical SHA-256 is
-`1b38afda274cb9a9ebd8307aec0af689d2a396db960fc3c1020bfd8188450ec0`.
+`47a00c7f70f9359a3e1f28e301c51705ff6ce4d5912dde65685015a8bb2f8457`.
 The quick gate and localnet runner independently reconstruct and hash this
 profile from typed `sui_getProtocolConfig` fields. Any change, including a
 higher limit, fails closed and requires a new measurement plus an explicit
@@ -53,7 +54,7 @@ color pair adds one `ColorKeyV8 -> ColorRowV8` child through `df::exists`.
 The registry, Root, and AdminCap are top-level inputs and are not child-cache
 entries. Key values and the registry UID are not separate child objects.
 
-Therefore the row-aware safe condition for every measured Sui 1.76.1
+Therefore the row-aware safe condition for every measured Sui 1.77.2 / protocol 133
 transaction is:
 
 ```text
@@ -90,10 +91,10 @@ cached children. Gas budget increases cannot lift the ObjectRuntime hard limit.
 
 ## Exact baseline and production-byte proof
 
-The measurement branch started from clean commit:
+The protocol-133 retest and production fixes are based on integration commit:
 
 ```text
-4333c4b2a6d9d3a544dc29c394a12e8b7db1012b
+8f2374ed0b95fcdaab2ee077bca30bed544331fd
 ```
 
 The reproducibility fixture was recovered from the original scratch directory
@@ -118,15 +119,18 @@ color `df::exists` calls count as child lookups.
 The production Core package was built normally and remained:
 
 ```text
-MovePackage::size       63,918 bytes
-64,000-byte headroom        82 bytes
+MovePackage::size       63,909 bytes
+64,000-byte headroom        91 bytes
 base_registry_v8.mv      9,412 bytes
 base_registry_v8.mv SHA-256
 89ecbd9e3640ab218f92094c516d05d7efdacac4a12c56630759354af8d1bbc7
 ```
 
-The full production package hit a localnet publish-time VM verification error,
-so the metered test published a localnet-only slim package containing the same
+The former full production package hit a protocol-133 publish-time verifier
+error because `MakerRootV8` had 34 fields while `max_fields_in_struct=32`.
+After removing three exact economics duplicates, full Core publishes locally
+and is 9 bytes smaller. The seal-cap measurement still publishes a
+localnet-only slim package containing the same
 seven module names, test fixture stubs for the six non-target modules, and an
 unchanged copy of the production `base_registry_v8.move`. The normally built
 production `base_registry_v8.mv` and the localnet fixture module had the exact
@@ -139,25 +143,20 @@ bounded setup/seal driver, `maker_v8` is the minimal typed authority stub, and
 `activation_v8`, `package_binding_v8`, `protocol_config_v8`, and `treasury_v8`
 are single-purpose name/version stubs. None is production code.
 
-Localnet-only publication evidence:
-
-```text
-package  0x32da689aca9cc39e2a9bdafb17ff10f0e607c8cb3139c25e701dc9402c406858
-publish  5GN7KgpyvirpEEJtMXQykyGgi73EEA2Q8wiHZ8EQ5mjb
-```
-
 ## Canonical evidence artifacts
 
-`evidence/protocol-config-v130.rpc.json` is the sorted raw JSON-RPC protocol
-response. The four `evidence/seal-*.rpc.json` files are sorted raw transaction
-responses with typed effects and `rawEffects` bytes for each boundary. They
-were recovered read-only from the original persisted localnet transaction
-history; no wallet or network-state file is stored here.
+`evidence/protocol-config-v133.rpc.json` and all four
+`evidence/seal-*.rpc.json` files are complete JSON-RPC envelopes captured in
+one protocol-133 localnet run. They include typed effects and `rawEffects`
+bytes for each boundary; no wallet or network-state file is stored here.
 
 `evidence/manifest.json` locks the exact artifact file allowlist, byte lengths,
 SHA-256 hashes, approved profile hash, production source/bytecode hashes, Core
 size, fixture hashes, boundary inputs, typed status/error, gas, event count, and
-raw-effects length. The ordinary quick gate verifies all of those fields. A
+raw-effects length. It also pins tag `mainnet-v1.77.2`, commit
+`51d177ad7d65102fc368b582408f466d97b31548`, and macOS arm64 release-asset
+SHA-256 `f0871c35ce1f3261028a3b0d389c2e34166fbf2f4982fd52d728806a03736d0d`.
+The ordinary quick gate verifies all of those fields. A
 fresh localnet has different object IDs and transaction digests, so the replay
 matches the canonical typed status, error, gas and effects shape rather than
 pretending its raw bytes are identical.
@@ -172,10 +171,10 @@ none timed out.
 
 | `S/C/R` | Cache demand | Seal digest | Status | Computation cost |
 | --- | ---: | --- | --- | ---: |
-| `333/333/333` | `999` | `GNu1LQvpt4UjruQiqU5uE3toNgCF7mmgw4y6sv9h2Qbi` | success | `27,800,000` |
-| `334/334/334` | `1002` | `EXeSrBjD86uPU3efBXmCGNWXQodUGspRJ1EMDEWqUBhS` | failure | `27,600,000` |
-| `500/0/0` | `1000` | `CDe4EMxJ6yAcvzf7pykRdSKRanw2nJ6p7mWScN9NAiX3` | success | `30,100,000` |
-| `501/0/0` | `1002` | `24q5hz3pxPfWq6bSiJuTYDwomdv2nZkxAmBK1rZZxiwh` | failure | `29,800,000` |
+| `333/333/333` | `999` | `CF7n2JPmtP5HM8r67df7Vb9rL1JUVRELSG8pHVRqf4RX` | success | `27,800,000` |
+| `334/334/334` | `1002` | `Fer3xh4yWkwjQnf1GEsKLRuAw9g8hBiFAd64Ye3Q9PcF` | failure | `27,600,000` |
+| `500/0/0` | `1000` | `HKdFo6Dz4oVoiedxevjZaD9hTQ7zjAYbu9DqtwuJiBJ` | success | `30,100,000` |
+| `501/0/0` | `1002` | `E8Uow6m7TWBhxva7fBmmxBvk8xJGFHNiE25FGtfWv9gF` | failure | `29,800,000` |
 
 Both over-bound effects contain the same error:
 
@@ -191,39 +190,10 @@ runtime source gives the internal message `Object runtime cached objects limit
 (1000 entries) reached` and substatus
 `OBJECT_RUNTIME_CACHE_LIMIT_EXCEEDED`.
 
-Setup/seal separation is visible in the transaction history:
-
-- `333/333`: create `G3bMLc25zmy4guLKn1RgSfuBWHRCgs2qTXCKhYr7L41n`;
-  style batches `7zwS4Y1HfaizDvkFpJSMBFAcEjKEu9sDEq15NZPTpXqo`,
-  `C5UoTGDAzEgutuMF4LgnAvbTtkxUdERjvhBSBTYUauoL`,
-  `H5sMutVKDHK5tGGzTWNJZtTL8ozcRqBu2GK2qZ1MD2f7`, and
-  `QXZqgzRs2nhFoxjx6giTbnrZWiWMdKux9r3y3vXp5Tw`; color batches
-  `CNs5ceLi4vZHkcwpueypxQEAGMR1eGbYRyHomdiHK644`,
-  `8adxVZVGWhiNQcZaExV3AWCvF6UiPDX7yywN5nxRxBzQ`,
-  `5yTGLbEGv2y8fHeTA2s8r7AzNbSARFXVtPy556CL5AqR`, and
-  `T2EKfzd87bDAKhAAcKw7f2i22tDVEcvD9nSJDGYGhGC`; then the seal above.
-- `334/334`: create `FZFKvSCve85nu2pr86MG4TRVraZURyvdCbabS5CAv4RE`;
-  style batches `J6WiXKVW3MeEV9Q6QMrq9pFHwJFKCTqaUG1dmRfx7jwu`,
-  `CpHZhFKhngUWxbTdafFZtntWGhXaPjZ1AiTuNVfUSK1D`,
-  `8W5Sv38bib4fUycWCCgK4f9FdkoyWMqk763ZAF1mNubF`, and
-  `6zp4edA6QRx9RkAZ63T3iqcNVnVUeUGGcaTYhoigrbDR`; color batches
-  `J6Mo1wHjZUbJWVWiiKPQs8wx7YRtGHt9RiBT3nNLziyQ`,
-  `5xnebGd8SEu54q7XvxV9WkvHKuPZXEt22ENUC1FEHbaz`,
-  `AksVFwuXfwG8eKtUEqmiVicXctBpe3DRyvPBVMb4rWmR`, and
-  `GYwz2iXsQLGmratq4an1E2dXrVbWs2ruKCWuHZUy55VX`; then the seal above.
-- `500/0`: create `7mN3HrDBS2UKYTtnLupcMirQbbjkaUgwVXs34UKsGbCK`;
-  style batches `CuFzG9jxmarAJXXjhBnYGbJqwPAGHUZMz4xPgKsHtgjb`,
-  `J95Ht5AB8oHeEUdyTQch8y1gWho3GbtbyqcKRSSXwgeJ`,
-  `2dQwmeVpcXAPSRrx6mEbBcccw39jcJbVphMcMHrf61KY`,
-  `39FMtXpjZhAR3QUijfM1uxbzJKPXo6TMqBTaSeGRLQsy`, and
-  `GzbNRMvAwYRH5x3fJNRs2t5o4qRfXpqhpsAPodaqwZDx`; then the seal above.
-- `501/0`: create `283EpzsyYyAgg2Ns6CxFSYxqMwEMquEXJVF9oBRhHRYp`;
-  style batches `Q9QixvZkTduoANevpYswgyGxosqXCYvVkAoG32mHJUa`,
-  `6kKPVg4UGgQ1ri9h93W652FnnUb6VQXDhuvoZF5JzJES`,
-  `7gL3i5Dpd5nG8eLPETKqApziCoFk2DzTeENvuRXJH6Q2`,
-  `H6mqxsSJ72XHy39WZ2sVq6PkkVLLrvWauq7HpqgvFwvh`,
-  `Eon512DNggTK9272DUTKiDnCM8H7Mdhy7L1sY872cKVF`, and
-  `DzibeAxJcCZpYmKZXoFpkcfVFoSaQ2PcfLHjoLtbHoLs`; then the seal above.
+Setup transactions are intentionally excluded from the canonical four seal
+artifacts. The runner finalizes all create/append batches first and then issues
+exactly one `core_v8::seal` call, which the evidence verifier checks from the
+typed transaction input.
 
 The exact slim fixture constructor computes expected commitments in its own
 create transaction, which cannot contribute gas or cached objects to the later
@@ -317,12 +287,12 @@ are the limit proof and their effects are the authoritative gas evidence.
 npm run move:seal-cap:quick
 ```
 
-That ordinary/CI-safe gate requires Sui CLI `1.76.1`, verifies the exact
+That ordinary/CI-safe gate requires Sui CLI `1.77.2`, verifies the exact
 approved profile and canonical artifacts, builds the production Core and slim
 fixture with forced disassembly, performs source and `.mv` byte-for-byte
 comparisons plus SHA-256 checks, builds the companion harness, runs the offline
 commitment self-test, requires exactly seven production Move roots, and enforces
-Core `63,918 / 64,000` bytes (82-byte headroom). It also runs a fast workspace
+Core `63,909 / 64,000` bytes (91-byte headroom). It also runs a fast workspace
 self-test proving the required `genesis`/`test-publish` CLI contract, that the
 genesis directory is created before use, every generated path remains below the
 unique `mkdtemp` root, and cleanup removes it. Static kebab-case and snake_case
@@ -340,7 +310,7 @@ The expensive metered replay is intentionally optional in default CI:
 npm run move:seal-cap:localnet
 ```
 
-This single bounded command reruns the quick gate, requires exact Sui `1.76.1`,
+This single bounded command reruns the quick gate, requires exact Sui `1.77.2`,
 creates a fresh one-validator localnet and key only in a unique OS temporary
 directory (including creating the contained `network` directory before
 `sui genesis`). Before `sui start`, it strictly locates the one supported
@@ -375,7 +345,8 @@ Keep both boundary pairs as metered regressions:
 
 For a production validator, count distinct referenced color pairs from the
 style rows and reject before publication when `2*S+R>1000`. Keep the exact
-approved profile guard: the cap is proven only for Sui 1.76.1, protocol version
-130, cached objects 1000, store entries 1000, and canonical profile hash
-`1b38afda274cb9a9ebd8307aec0af689d2a396db960fc3c1020bfd8188450ec0`.
+approved profile guard: the cap is proven only for official Sui 1.77.2 commit
+`51d177ad7d65102fc368b582408f466d97b31548`, protocol version 133, cached
+objects 1000, store entries 1000, and canonical profile hash
+`47a00c7f70f9359a3e1f28e301c51705ff6ce4d5912dde65685015a8bb2f8457`.
 Any profile or seal implementation change must be remeasured and reviewed.

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 const PROFILE_SCHEMA = 'animacraft.maker-v8-sui-protocol-profile.v1';
 const EVIDENCE_SCHEMA = 'animacraft-v8-seal-cap-evidence.v1';
 const APPROVED_PROFILE_ARTIFACT = 'approved-protocol-profile.json';
-const PROTOCOL_ARTIFACT = 'protocol-config-v130.rpc.json';
+const PROTOCOL_ARTIFACT = 'protocol-config-v133.rpc.json';
 const SCENARIO_ARTIFACTS = Object.freeze({
   '333-colored': 'seal-333-colored.rpc.json',
   '334-colored': 'seal-334-colored.rpc.json',
@@ -15,12 +15,20 @@ const SCENARIO_ARTIFACTS = Object.freeze({
 export const EVIDENCE_SCENARIO_NAMES = Object.freeze(Object.keys(SCENARIO_ARTIFACTS));
 export const APPROVED_PROTOCOL_PROFILE = Object.freeze({
   schemaVersion: PROFILE_SCHEMA,
-  protocolVersion: '130',
+  protocolVersion: '133',
   objectRuntimeMaxNumCachedObjects: '1000',
   objectRuntimeMaxNumStoreEntries: '1000',
 });
 export const APPROVED_PROTOCOL_PROFILE_HASH =
-  '1b38afda274cb9a9ebd8307aec0af689d2a396db960fc3c1020bfd8188450ec0';
+  '47a00c7f70f9359a3e1f28e301c51705ff6ce4d5912dde65685015a8bb2f8457';
+export const APPROVED_REPLAY_PROVENANCE = Object.freeze({
+  binaryTag: 'mainnet-v1.77.2',
+  commit: '51d177ad7d65102fc368b582408f466d97b31548',
+  asset: 'sui-mainnet-v1.77.2-macos-arm64.tgz',
+  assetSha256: 'f0871c35ce1f3261028a3b0d389c2e34166fbf2f4982fd52d728806a03736d0d',
+  cliVersion: 'sui 1.77.2-51d177ad7d65',
+  protocolVersion: '133',
+});
 
 function fail(message) {
   throw new Error(`seal-cap evidence: ${message}`);
@@ -147,6 +155,7 @@ function assertScenarioResult(result, scenario, canonicalResult, label) {
   if ((result.events ?? []).length !== scenario.eventCount) {
     fail(`${label} event count mismatch`);
   }
+  exact(effectShape(result), scenario.effectsShape, `${label} manifest effects shape`);
   if (canonicalResult) {
     exact(effectShape(result), effectShape(canonicalResult), `${label} typed effects shape`);
   }
@@ -156,6 +165,7 @@ export function loadAndVerifyEvidence(harnessDirectory) {
   const evidenceDirectory = join(harnessDirectory, 'evidence');
   const manifest = json(join(evidenceDirectory, 'manifest.json'));
   if (manifest.schema !== EVIDENCE_SCHEMA) fail(`unsupported manifest schema ${manifest.schema}`);
+  exact(manifest.replayProvenance, APPROVED_REPLAY_PROVENANCE, 'approved replay binary provenance');
 
   const approvedProfile = json(join(
     evidenceDirectory,

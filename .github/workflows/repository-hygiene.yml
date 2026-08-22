@@ -44,8 +44,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      SUI_COMMIT: 82ac538148cc951d35b97d98062d1573f1b98f05
-      SUI_BINARY_SHA256: cfb006b9775f69d891fde8f6506af7aabb4a2643087d26b10bdbbe904e26d657
+      SUI_COMMIT: 51d177ad7d65102fc368b582408f466d97b31548
+      SUI_BINARY_SHA256: c4318640723ebba4169bfe3d9e8ac10016d4e6380675e6f07d4e63eba6911f73
 
     steps:
       - name: Checkout
@@ -71,7 +71,7 @@ jobs:
           echo "${SUI_BINARY_SHA256}  ${binary}" | sha256sum --check --strict
           chmod 0755 "$binary"
           echo "$bin_dir" >> "$GITHUB_PATH"
-          "$binary" --version | grep --fixed-strings 'sui 1.76.1'
+          "$binary" --version | grep --fixed-strings 'sui 1.77.2-51d177ad7d65'
 
       - name: Build all seven packages
         run: npm run move:build
@@ -96,6 +96,7 @@ jobs:
               --disassemble \
               --warnings-are-errors
           done
+          npm run move:field-limits
           npm run move:size
 
   hygiene:

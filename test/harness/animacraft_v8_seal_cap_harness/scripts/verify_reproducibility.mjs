@@ -57,8 +57,8 @@ function exactList(actual, expected, label) {
 }
 
 const version = String(run('sui', ['--version'], { capture: true })).trim();
-if (!/^sui 1\.76\.1(?:[-+\s]|$)/.test(version)) {
-  fail(`Sui CLI must be exactly 1.76.1; got ${version}`);
+if (!/^sui 1\.77\.2(?:[-+\s]|$)/.test(version)) {
+  fail(`Sui CLI must be exactly 1.77.2; got ${version}`);
 }
 
 const evidence = loadAndVerifyEvidence(harnessDirectory);

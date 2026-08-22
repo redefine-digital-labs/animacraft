@@ -44,12 +44,19 @@ const allowedTests = new Set([
   'test/fixtures/maker-v8-compiler-v1.json',
   'test/fixtures/maker-v8-runtime-attestation.js',
   'test/fixtures/market-v8-abi.json', 'test/fixtures/web-v8-chain.json',
+  'test/harness/animacraft_v8_field_limit_32/Move.lock',
+  'test/harness/animacraft_v8_field_limit_32/Move.toml',
+  'test/harness/animacraft_v8_field_limit_32/sources/field_limit.move',
+  'test/harness/animacraft_v8_field_limit_33/Move.lock',
+  'test/harness/animacraft_v8_field_limit_33/Move.toml',
+  'test/harness/animacraft_v8_field_limit_33/sources/field_limit.move',
+  'test/harness/animacraft_v8_field_limit_protocol133.json',
   'test/harness/animacraft_v8_seal_cap_harness/Move.lock',
   'test/harness/animacraft_v8_seal_cap_harness/Move.toml',
   'test/harness/animacraft_v8_seal_cap_harness/README.md',
   'test/harness/animacraft_v8_seal_cap_harness/evidence/approved-protocol-profile.json',
   'test/harness/animacraft_v8_seal_cap_harness/evidence/manifest.json',
-  'test/harness/animacraft_v8_seal_cap_harness/evidence/protocol-config-v130.rpc.json',
+  'test/harness/animacraft_v8_seal_cap_harness/evidence/protocol-config-v133.rpc.json',
   'test/harness/animacraft_v8_seal_cap_harness/evidence/seal-333-colored.rpc.json',
   'test/harness/animacraft_v8_seal_cap_harness/evidence/seal-334-colored.rpc.json',
   'test/harness/animacraft_v8_seal_cap_harness/evidence/seal-500-colorless.rpc.json',
@@ -107,7 +114,10 @@ if (mode !== '--dist') {
     else if (top === 'docs' && !allowedDocs.has(path)) rejected.push(path);
     else if (top === '.github' && !allowedGithub.has(path)) rejected.push(path);
     else if (top === 'public-v8' && path !== 'public-v8/config.js') rejected.push(path);
-    else if (top === 'scripts' && path !== 'scripts/fresh-v8-delivery-scan.mjs') rejected.push(path);
+    else if (top === 'scripts' && ![
+      'scripts/fresh-v8-delivery-scan.mjs',
+      'scripts/verify-move-struct-field-limits.mjs',
+    ].includes(path)) rejected.push(path);
     else if (top === 'move' && !moveRoots.has(second)) rejected.push(path);
   }
   if (rejected.length) {

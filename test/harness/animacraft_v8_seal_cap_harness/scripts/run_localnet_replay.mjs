@@ -28,12 +28,14 @@ import {
   canonicalJson,
   EVIDENCE_SCENARIO_NAMES,
   loadAndVerifyEvidence,
+  sha256Bytes,
 } from './evidence.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const harnessDirectory = resolve(scriptDirectory, '..');
 const root = resolve(harnessDirectory, '../../..');
 const fixtureSource = join(harnessDirectory, 'fixture/slim-core');
+const productionCoreSource = join(root, 'move/animacraft_v8_core');
 const quickGate = join(scriptDirectory, 'verify_reproducibility.mjs');
 const gasBudget = '100000000000';
 const totalTimeoutMs = 15 * 60_000;
@@ -531,13 +533,18 @@ function assertSuccess(envelope, label) {
   if (status?.status !== 'success') fail(`${label} failed: ${canonicalJson(status)}`);
 }
 
-async function main() {
+async function main({
+  diagnoseFullCorePublish = false,
+  diagnoseSevenPackagePublish = false,
+  recordProtocol133Evidence = false,
+} = {}) {
   await run(process.execPath, [quickGate], { timeoutMs: 4 * 60_000 });
   const evidence = loadAndVerifyEvidence(harnessDirectory);
 
   const { fixtureDirectory, publicationFile } = prepareTemporaryWorkspace();
   let clientConfig = null;
   let protocolEnvelope = null;
+  let getLocalnetLogs = () => '';
   let rpcUrl = null;
   const startAttempts = 3;
   for (let attempt = 1; attempt <= startAttempts; attempt += 1) {
@@ -569,7 +576,7 @@ async function main() {
     if (!activeAddress) fail('generated client config omitted its active address');
     writeFileSync(clientConfig, clientYaml, { mode: 0o600 });
 
-    const getLocalnetLogs = startLocalnet(networkDirectory, rpcPort);
+    getLocalnetLogs = startLocalnet(networkDirectory, rpcPort);
     try {
       protocolEnvelope = await waitForRpc(rpcUrl, activeAddress, getLocalnetLogs);
       break;
@@ -596,25 +603,120 @@ async function main() {
     `ok: exact approved protocol profile ${canonicalJson(profile)} (${evidence.manifest.approvedProtocolProfile.canonicalSha256})\n`,
   );
 
-  cpSync(fixtureSource, fixtureDirectory, {
-    recursive: true,
-    filter(source) {
-      const components = relative(fixtureSource, source).split(sep);
-      return !components.includes('build')
-        && !['Published.toml', 'SlimPublished.toml'].includes(basename(source));
-    },
-  });
-
   const clientPrefix = [
     'client',
     '--client.config', clientConfig,
     '--client.env', 'localnet',
     '-y',
   ];
+  if (diagnoseSevenPackagePublish) {
+    const packageNames = [
+      'animacraft_v8_core',
+      'animacraft_v8_seal',
+      'animacraft_v8_runtime',
+      'animacraft_v8_output',
+      'animacraft_v8_physical',
+      'animacraft_v8_market',
+      'animacraft_v8_release',
+    ];
+    const packageTargets = new Map();
+    for (const packageName of packageNames) {
+      const source = join(root, 'move', packageName);
+      const target = checkedTemporaryChild(
+        join(temporaryRoot, packageName),
+        `${packageName} diagnostic directory`,
+      );
+      cpSync(source, target, {
+        recursive: true,
+        filter(path) {
+          const components = relative(source, path).split(sep);
+          return !components.includes('build')
+            && !['Published.toml', 'SlimPublished.toml'].includes(basename(path));
+        },
+      });
+      packageTargets.set(packageName, target);
+    }
+    const results = [];
+    for (const packageName of packageNames) {
+      const target = packageTargets.get(packageName);
+      const published = await runTestPublishWithRetry(() => run('sui', [
+        ...clientPrefix,
+        'test-publish', target,
+        '--build-env', 'mainnet',
+        '--pubfile-path', publicationFile,
+        '--gas-budget', gasBudget,
+        '--warnings-are-errors',
+        '--json',
+      ], { allowFailure: true, timeoutMs: 180_000 }));
+      if (published.code !== 0) {
+        fail(`${packageName} test-publish exited ${published.code ?? published.signal}: ${combinedCommandOutput(published).trim()}`);
+      }
+      const parsed = parseJsonOutput(published.stdout, `${packageName} publish`);
+      if (parsed.effects?.status?.status !== 'success') {
+        fail(`${packageName} publish failed: ${canonicalJson(parsed.effects?.status)}`);
+      }
+      const packageId = parsed.objectChanges
+        ?.find(({ type }) => type === 'published')?.packageId;
+      if (typeof packageId !== 'string') {
+        fail(`${packageName} publish omitted packageId`);
+      }
+      results.push({
+        packageName,
+        packageId,
+        digest: parsed.digest,
+        gasUsed: parsed.effects?.gasUsed,
+      });
+      process.stdout.write(`ok: ${packageName} published as ${packageId}\n`);
+    }
+    process.stdout.write(`${JSON.stringify({
+      schema: 'animacraft-v8-seven-package-publish-diagnostic.v1',
+      approvedProtocolProfileHash: evidence.manifest.approvedProtocolProfile.canonicalSha256,
+      packages: results,
+    }, null, 2)}\n`);
+    return;
+  }
+
+  const diagnosticSourceRelative = String(
+    process.env.CORE_DIAGNOSTIC_SOURCE ?? 'move/animacraft_v8_core',
+  );
+  const diagnosticSource = resolve(root, diagnosticSourceRelative);
+  if (diagnoseFullCorePublish
+      && (!diagnosticSource.startsWith(`${root}${sep}`)
+        || diagnosticSourceRelative.includes('..'))) {
+    fail(`diagnostic publication source must stay below the worktree: ${diagnosticSourceRelative}`);
+  }
+  const publicationSource = diagnoseFullCorePublish
+    ? diagnosticSource
+    : fixtureSource;
+  cpSync(publicationSource, fixtureDirectory, {
+    recursive: true,
+    filter(source) {
+      const components = relative(publicationSource, source).split(sep);
+      return !components.includes('build')
+        && !['Published.toml', 'SlimPublished.toml'].includes(basename(source));
+    },
+  });
+  const diagnosticOmissions = diagnoseFullCorePublish
+    ? String(process.env.CORE_DIAGNOSTIC_OMIT ?? '').split(',').filter(Boolean)
+    : [];
+  for (const moduleName of diagnosticOmissions) {
+    if (!/^[a-z][a-z0-9_]*\.move$/.test(moduleName)) {
+      fail(`invalid diagnostic module omission ${moduleName}`);
+    }
+    const omittedPath = checkedTemporaryChild(
+      join(fixtureDirectory, 'sources', moduleName),
+      'diagnostic omitted module',
+    );
+    if (!existsSync(omittedPath)) fail(`diagnostic omitted module not found: ${moduleName}`);
+    rmSync(omittedPath);
+  }
+
   const testPublishArgs = [
     ...clientPrefix,
     'test-publish', fixtureDirectory,
-    '--build-env', 'sealcap',
+    '--build-env', diagnoseFullCorePublish
+      ? String(process.env.CORE_DIAGNOSTIC_BUILD_ENV ?? 'mainnet')
+      : 'sealcap',
     '--pubfile-path', publicationFile,
     '--gas-budget', gasBudget,
     '--warnings-are-errors',
@@ -625,6 +727,20 @@ async function main() {
     testPublishArgs,
     { allowFailure: true, timeoutMs: 180_000 },
   ));
+  if (diagnoseFullCorePublish) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
+    process.stdout.write(`${JSON.stringify({
+      schema: 'animacraft-v8-full-core-publish-diagnostic.v1',
+      omittedModules: diagnosticOmissions,
+      publicationSource: diagnosticSourceRelative,
+      exitCode: published.code,
+      signal: published.signal,
+      stdout: published.stdout,
+      stderr: published.stderr,
+      localnetLogTail: getLocalnetLogs(),
+    }, null, 2)}\n`);
+    return;
+  }
   if (published.code !== 0) {
     fail(`slim fixture test-publish exited ${published.code ?? published.signal}: ${combinedCommandOutput(published).trim()}`);
   }
@@ -652,6 +768,7 @@ async function main() {
   };
 
   const summaries = [];
+  const recordedEnvelopes = new Map();
   for (const name of EVIDENCE_SCENARIO_NAMES) {
     const scenario = evidence.manifest.scenarios[name];
     const colored = scenario.colors > 0;
@@ -696,7 +813,58 @@ async function main() {
       { allowFailure: scenario.status === 'failure' },
     );
     summaries.push(assertReplayMatchesEvidence(name, sealed, evidence));
-    process.stdout.write(`ok: ${name} typed seal effects match canonical evidence\n`);
+    if (recordProtocol133Evidence) recordedEnvelopes.set(name, sealed);
+    process.stdout.write(`ok: ${name} typed seal effects match the protocol retest boundary\n`);
+  }
+
+  if (recordProtocol133Evidence) {
+    const manifest = structuredClone(evidence.manifest);
+    manifest.replayProvenance = {
+      binaryTag: 'mainnet-v1.77.2',
+      commit: '51d177ad7d65102fc368b582408f466d97b31548',
+      asset: 'sui-mainnet-v1.77.2-macos-arm64.tgz',
+      assetSha256: 'f0871c35ce1f3261028a3b0d389c2e34166fbf2f4982fd52d728806a03736d0d',
+      cliVersion: 'sui 1.77.2-51d177ad7d65',
+      protocolVersion: '133',
+    };
+    const artifacts = new Map([
+      ['protocol-config-v133.rpc.json', protocolEnvelope],
+      ...EVIDENCE_SCENARIO_NAMES.map((name) => [
+        manifest.scenarios[name].artifact,
+        recordedEnvelopes.get(name),
+      ]),
+    ]);
+    for (const [file, value] of artifacts) {
+      const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+      writeFileSync(join(evidence.evidenceDirectory, file), bytes);
+      manifest.artifacts[file] = {
+        bytes: bytes.length,
+        sha256: sha256Bytes(bytes),
+      };
+    }
+    for (const name of EVIDENCE_SCENARIO_NAMES) {
+      const result = recordedEnvelopes.get(name).result;
+      const scenario = manifest.scenarios[name];
+      scenario.originalDigest = result.digest;
+      scenario.gasUsed = result.effects.gasUsed;
+      scenario.rawEffectsLength = result.rawEffects.length;
+      scenario.eventCount = (result.events ?? []).length;
+      scenario.effectsShape = {
+        messageVersion: result.effects.messageVersion,
+        created: (result.effects.created ?? []).length,
+        mutated: (result.effects.mutated ?? []).length,
+        deleted: (result.effects.deleted ?? []).length,
+        wrapped: (result.effects.wrapped ?? []).length,
+        unwrapped: (result.effects.unwrapped ?? []).length,
+        eventCount: (result.events ?? []).length,
+        objectChangeTypes: (result.objectChanges ?? []).map(({ type }) => type),
+      };
+    }
+    writeFileSync(
+      join(evidence.evidenceDirectory, 'manifest.json'),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+    );
+    process.stdout.write('ok: recorded same-run protocol 133 profile and four complete RPC envelopes\n');
   }
 
   process.stdout.write(`${JSON.stringify({
@@ -898,8 +1066,14 @@ try {
     await main();
   } else if (arguments_.length === 1 && arguments_[0] === '--workspace-self-test') {
     await workspaceSelfTest();
+  } else if (arguments_.length === 1 && arguments_[0] === '--diagnose-full-core-publish') {
+    await main({ diagnoseFullCorePublish: true });
+  } else if (arguments_.length === 1 && arguments_[0] === '--diagnose-seven-package-publish') {
+    await main({ diagnoseSevenPackagePublish: true });
+  } else if (arguments_.length === 1 && arguments_[0] === '--record-protocol133-evidence') {
+    await main({ recordProtocol133Evidence: true });
   } else {
-    fail('runner accepts only `--workspace-self-test`; use `npm run move:seal-cap:localnet` for replay');
+    fail('runner accepts only `--workspace-self-test`, `--diagnose-full-core-publish`, `--diagnose-seven-package-publish`, or `--record-protocol133-evidence`; use `npm run move:seal-cap:localnet` for replay');
   }
 } finally {
   await cleanup();

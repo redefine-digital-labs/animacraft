@@ -2,7 +2,7 @@
   "schema": "animacraft-v8-seal-cap-evidence.v1",
   "approvedProtocolProfile": {
     "file": "approved-protocol-profile.json",
-    "canonicalSha256": "1b38afda274cb9a9ebd8307aec0af689d2a396db960fc3c1020bfd8188450ec0"
+    "canonicalSha256": "47a00c7f70f9359a3e1f28e301c51705ff6ce4d5912dde65685015a8bb2f8457"
   },
   "production": {
     "moveRootCount": 7,
@@ -28,25 +28,25 @@
     "treasury_v8.move": "9765253787bda09302b6de049c13fe89abcf71cb3978edb36eab6e132573a712"
   },
   "artifacts": {
-    "protocol-config-v130.rpc.json": {
-      "bytes": 58719,
-      "sha256": "2e8774f371c81fbd7cf3b81346640bc57fc0b15e2b8487b11a9506ac2b700350"
+    "protocol-config-v133.rpc.json": {
+      "bytes": 59637,
+      "sha256": "18d385e5cb5dd6cd87f82efea0e8e115ea5ad7645f5d598019bdcbd80b6d8314"
     },
     "seal-333-colored.rpc.json": {
-      "bytes": 18222,
-      "sha256": "8fbb80205cd2c892c1c761b07f2de97665c5ae616c4eee06672276afadbf696f"
+      "bytes": 17818,
+      "sha256": "7c2f6d29185a72843415f38bb9f5c2f96bc861194c57e06eaf09696e5281114b"
     },
     "seal-334-colored.rpc.json": {
-      "bytes": 17362,
-      "sha256": "be0ba4be4f9d408c7e20a1afc191a9b7172387f6af91c15844d271f308109e49"
+      "bytes": 16983,
+      "sha256": "5c7b4b3cff8efa63b0f20b3de8d082734a3b213d63343bfae7ae6f62bc157c57"
     },
     "seal-500-colorless.rpc.json": {
-      "bytes": 18262,
-      "sha256": "b8f4e17815a43a213b7930da12010278e2fa483301910f1c4bc4ee4a763188e2"
+      "bytes": 17858,
+      "sha256": "59f27be50251cdd415e9efced87c3203d5ee931e85df365fd0645de74f9b1b24"
     },
     "seal-501-colorless.rpc.json": {
-      "bytes": 16973,
-      "sha256": "75a477c9ea7976318d0a052a9b61bf52fee274417078b97982ddf96cc2239ca8"
+      "bytes": 16986,
+      "sha256": "bbd99aa0ee2e1e01a2a596befdea171bcb6ca3721a574961d36f8f75d14b9788"
     }
   },
   "scenarios": {
@@ -57,15 +57,29 @@
       "referencedColorPairs": 333,
       "cacheDemand": 999,
       "status": "success",
-      "originalDigest": "GNu1LQvpt4UjruQiqU5uE3toNgCF7mmgw4y6sv9h2Qbi",
+      "originalDigest": "CF7n2JPmtP5HM8r67df7Vb9rL1JUVRELSG8pHVRqf4RX",
       "gasUsed": {
         "computationCost": "27800000",
         "storageCost": "9507600",
         "storageRebate": "9412524",
         "nonRefundableStorageFee": "95076"
       },
-      "rawEffectsLength": 809,
-      "eventCount": 1
+      "rawEffectsLength": 776,
+      "eventCount": 1,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 3,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 1,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      }
     },
     "334-colored": {
       "artifact": "seal-334-colored.rpc.json",
@@ -75,15 +89,29 @@
       "cacheDemand": 1002,
       "status": "failure",
       "expectedError": "MovePrimitiveRuntimeError(MoveLocationOpt(Some(MoveLocation { module: ModuleId { address: 0000000000000000000000000000000000000000000000000000000000000002, name: Identifier(\"dynamic_field\") }, function: 14, instruction: 0, function_name: Some(\"borrow_child_object\") }))) in command 0",
-      "originalDigest": "EXeSrBjD86uPU3efBXmCGNWXQodUGspRJ1EMDEWqUBhS",
+      "originalDigest": "Fer3xh4yWkwjQnf1GEsKLRuAw9g8hBiFAd64Ye3Q9PcF",
       "gasUsed": {
         "computationCost": "27600000",
         "storageCost": "9507600",
         "storageRebate": "9412524",
         "nonRefundableStorageFee": "95076"
       },
-      "rawEffectsLength": 858,
-      "eventCount": 0
+      "rawEffectsLength": 825,
+      "eventCount": 0,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 3,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 0,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      }
     },
     "500-colorless": {
       "artifact": "seal-500-colorless.rpc.json",
@@ -92,15 +120,29 @@
       "referencedColorPairs": 0,
       "cacheDemand": 1000,
       "status": "success",
-      "originalDigest": "CDe4EMxJ6yAcvzf7pykRdSKRanw2nJ6p7mWScN9NAiX3",
+      "originalDigest": "HKdFo6Dz4oVoiedxevjZaD9hTQ7zjAYbu9DqtwuJiBJ",
       "gasUsed": {
         "computationCost": "30100000",
         "storageCost": "9507600",
         "storageRebate": "9412524",
         "nonRefundableStorageFee": "95076"
       },
-      "rawEffectsLength": 809,
-      "eventCount": 1
+      "rawEffectsLength": 776,
+      "eventCount": 1,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 3,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 1,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      }
     },
     "501-colorless": {
       "artifact": "seal-501-colorless.rpc.json",
@@ -110,7 +152,7 @@
       "cacheDemand": 1002,
       "status": "failure",
       "expectedError": "MovePrimitiveRuntimeError(MoveLocationOpt(Some(MoveLocation { module: ModuleId { address: 0000000000000000000000000000000000000000000000000000000000000002, name: Identifier(\"dynamic_field\") }, function: 14, instruction: 0, function_name: Some(\"borrow_child_object\") }))) in command 0",
-      "originalDigest": "24q5hz3pxPfWq6bSiJuTYDwomdv2nZkxAmBK1rZZxiwh",
+      "originalDigest": "E8Uow6m7TWBhxva7fBmmxBvk8xJGFHNiE25FGtfWv9gF",
       "gasUsed": {
         "computationCost": "29800000",
         "storageCost": "9507600",
@@ -118,7 +160,29 @@
         "nonRefundableStorageFee": "95076"
       },
       "rawEffectsLength": 825,
-      "eventCount": 0
+      "eventCount": 0,
+      "effectsShape": {
+        "messageVersion": "v1",
+        "created": 0,
+        "mutated": 3,
+        "deleted": 0,
+        "wrapped": 0,
+        "unwrapped": 0,
+        "eventCount": 0,
+        "objectChangeTypes": [
+          "mutated",
+          "mutated",
+          "mutated"
+        ]
+      }
     }
+  },
+  "replayProvenance": {
+    "binaryTag": "mainnet-v1.77.2",
+    "commit": "51d177ad7d65102fc368b582408f466d97b31548",
+    "asset": "sui-mainnet-v1.77.2-macos-arm64.tgz",
+    "assetSha256": "f0871c35ce1f3261028a3b0d389c2e34166fbf2f4982fd52d728806a03736d0d",
+    "cliVersion": "sui 1.77.2-51d177ad7d65",
+    "protocolVersion": "133"
   }
 }
