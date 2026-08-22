@@ -806,36 +806,72 @@ export function parseSoulBundleV8(input, runtimeInput, walletAddress, rootInput,
   });
 }
 
+const PHYSICAL_SOURCE_FIELDS = Object.freeze([
+  'source_kind', 'source_id', 'source_semantic_id', 'source_content_commitment',
+  'source_treasury_id', 'pack_registry_id', 'pack_registry_revision',
+  'registered_pack_owner', 'registered_pack_control_epoch',
+  'registered_pack_admin_cap_id',
+]);
+const PHYSICAL_STYLE_FIELDS = Object.freeze([
+  'part_key', 'item_key', 'style_key', 'layer_track_key', 'color_channel_key',
+  'default_swatch_key', 'style_asset_blob_id', 'style_asset_sha256',
+  'style_protected',
+]);
+const PHYSICAL_RETIRED_FLAT_FIELDS = Object.freeze(
+  [...PHYSICAL_SOURCE_FIELDS, ...PHYSICAL_STYLE_FIELDS].flatMap((name) => [
+    name,
+    name.replace(/_([a-z])/g, (_match, letter) => letter.toUpperCase()),
+  ]),
+);
+
+function exactPhysicalFields(fields, expected, label) {
+  exactRecord(fields, expected, label);
+  if (expected.some((name) => !Object.hasOwn(fields, name))) {
+    fail('schema', 'MAKER_V8_PHYSICAL_FIELDS_MISSING', `${label} omits required fields.`);
+  }
+}
+
 export function parsePhysicalAssetV8(response, runtimeInput, walletAddress, rootInput, observedNetwork = MAKER_V8_CHAIN_NETWORK) {
   const runtime = assertMakerV8Runtime(runtimeInput);
   const object = parsedObject(response, makerV8ChainTypes(runtime).physicalAsset, observedNetwork, 'PhysicalAssetV8');
+  const sourceFields = fieldsOf(object.fields.source, 'PhysicalAssetV8.source');
+  const styleFields = fieldsOf(object.fields.style, 'PhysicalAssetV8.style');
+  exactPhysicalFields(sourceFields, PHYSICAL_SOURCE_FIELDS, 'PhysicalAssetV8.source');
+  exactPhysicalFields(styleFields, PHYSICAL_STYLE_FIELDS, 'PhysicalAssetV8.style');
+  if (PHYSICAL_RETIRED_FLAT_FIELDS
+    .some((name) => Object.hasOwn(object.fields, name))) {
+    fail('schema', 'MAKER_V8_PHYSICAL_FIELDS_LEGACY', 'PhysicalAssetV8 contains retired flat Physical fields.');
+  }
+  const { source: _source, style: _style, ...outerFields } = object.fields;
+  const fields = freeze({ ...outerFields, ...sourceFields, ...styleFields });
   const wallet = address(walletAddress, 'wallet.address');
   if (object.owner.kind !== 'address' || object.owner.address !== wallet
-    || address(object.fields.holder, 'physical.holder') !== wallet
-    || id(object.fields.root_id, 'physical.root_id') !== rootInput.objectId
-    || id(object.fields.registry_id, 'physical.registry_id') !== rootInput.binding.physicalRegistryId
-    || hash(object.fields.root_content_commitment, 'physical.root_content_commitment') !== rootInput.contentCommitment) {
+    || address(fields.holder, 'physical.holder') !== wallet
+    || id(fields.root_id, 'physical.root_id') !== rootInput.objectId
+    || id(fields.registry_id, 'physical.registry_id') !== rootInput.binding.physicalRegistryId
+    || hash(fields.root_content_commitment, 'physical.root_content_commitment') !== rootInput.contentCommitment) {
     fail('readback', 'MAKER_V8_PHYSICAL_ASSET_MISMATCH', 'Physical asset does not match the wallet and verified Maker binding.');
   }
-  const sourceKind = Number(decimal(object.fields.source_kind, 'physical.source_kind'));
+  const sourceKind = Number(decimal(fields.source_kind, 'physical.source_kind'));
   if (![0, 1].includes(sourceKind)) fail('schema', 'MAKER_V8_PHYSICAL_SOURCE_INVALID', 'Physical source must be Base or Pack.');
-  const sourceTreasuryId = moveOption(object.fields.source_treasury_id, 'physical.source_treasury_id');
+  const sourceTreasuryId = moveOption(fields.source_treasury_id, 'physical.source_treasury_id');
   if ((sourceKind === 0 && sourceTreasuryId !== null)
     || (sourceKind === 1 && sourceTreasuryId === null)) {
     fail('readback', 'MAKER_V8_PHYSICAL_SOURCE_MISMATCH', 'Physical Base/Pack custody fields are inconsistent.');
   }
   return freeze({
     ...object,
+    fields,
     rootId: rootInput.objectId,
     holder: wallet,
     sourceKind,
     source: sourceKind === 0 ? 'BASE' : 'PACK',
-    sourceId: id(object.fields.source_id, 'physical.source_id'),
+    sourceId: id(fields.source_id, 'physical.source_id'),
     sourceTreasuryId: sourceTreasuryId === null
       ? null
       : id(sourceTreasuryId, 'physical.source_treasury_id'),
-    ownershipEpoch: decimal(object.fields.ownership_epoch, 'physical.ownership_epoch'),
-    transferable: object.fields.transferable === true,
+    ownershipEpoch: decimal(fields.ownership_epoch, 'physical.ownership_epoch'),
+    transferable: fields.transferable === true,
   });
 }
 

@@ -31,8 +31,8 @@ for (const [name, expectedCode] of [
     const output = `${error.stdout || ''}\n${error.stderr || ''}`
       .replace(/\u001b\[[0-9;]*m/g, '');
     if (error.message === `${name} unexpectedly compiled`) throw error;
-    const diagnostics = [...output.matchAll(/error\[(E\d+)\]/g)]
-      .map((match) => match[1]);
+    const diagnostics = [...output.matchAll(/error\[(E(?:C)?\d+)\]/g)]
+      .map((match) => match[1].replace(/^EC/, 'E'));
     const sourcePath = path.join('sources', 'attack.move');
     if (diagnostics.length !== 1
       || diagnostics[0] !== expectedCode

@@ -361,38 +361,8 @@ public struct SoulMarketCustodyTicketV8 {
 /// Same-PTB authorization for one exact current selection and one live
 /// Complete receipt/Soul pair. It deliberately has no abilities.
 public struct PhysicalMaterializationWitnessV8 {
-    output_registry_id: ID,
-    root_id: ID,
-    maker_version: u64,
-    root_content_commitment: vector<u8>,
-    holder: address,
-    output_key: String,
-    output_policy_commitment: vector<u8>,
-    output_id: ID,
-    receipt_id: ID,
-    soul_id: ID,
-    soul_ownership_epoch: u64,
-    recipe_commitment: vector<u8>,
-    render_commitment: vector<u8>,
-    output_commitment: vector<u8>,
-    receipt_commitment: vector<u8>,
-    soul_commitment: vector<u8>,
-    loadout_id: ID,
-    loadout_revision: u64,
-    loadout_commitment: vector<u8>,
-    selection_index: u64,
-    selection_commitment: vector<u8>,
-    part_key: String,
-    item_key: String,
-    style_key: String,
-    layer_track_key: String,
-    source_class: u8,
-    source_definition_id: ID,
-    source_semantic_id: String,
-    source_content_commitment: vector<u8>,
-    source_epoch: u64,
-    pricing_commitment: vector<u8>,
-    asset_content_commitment: vector<u8>,
+    complete: PhysicalCompleteBindingV8,
+    selection: PhysicalSelectionBindingV8,
     materialization_key: String,
     witness_commitment: vector<u8>,
 }
@@ -1375,25 +1345,7 @@ public fun new_physical_materialization_witness_v8<PaymentCoin>(
     let key = MaterializationKeyV8 { soul_id, materialization_key };
     reserve_materialization(output_registry, key, witness_commitment);
     PhysicalMaterializationWitnessV8 {
-        output_registry_id: object::id(output_registry),
-        root_id: complete.root_id, maker_version: complete.maker_version,
-        root_content_commitment: complete.root_content_commitment,
-        holder, output_key: complete.output_key,
-        output_policy_commitment: complete.output_policy_commitment,
-        output_id: complete.output_id, receipt_id, soul_id,
-        soul_ownership_epoch: complete.soul_ownership_epoch,
-        recipe_commitment: complete.recipe_commitment,
-        render_commitment: complete.render_commitment,
-        output_commitment: complete.output_commitment,
-        receipt_commitment: complete.receipt_commitment,
-        soul_commitment: complete.soul_commitment,
-        loadout_id, loadout_revision, loadout_commitment, selection_index,
-        selection_commitment, part_key, item_key, style_key, layer_track_key,
-        source_class, source_definition_id,
-        source_semantic_id: selection.source_semantic_id,
-        source_content_commitment, source_epoch, pricing_commitment,
-        asset_content_commitment, materialization_key,
-        witness_commitment,
+        complete, selection, materialization_key, witness_commitment,
     }
 }
 
@@ -1411,32 +1363,10 @@ public fun consume_physical_materialization_witness_v8<
     binding::assert_type_origins_v8<PhysicalOriginalMarker, PhysicalCallableMarker>(
         binding::physical_binding_v8(binding::catalog_binding_v8(catalog)));
     let PhysicalMaterializationWitnessV8 {
-        output_registry_id, root_id, maker_version, root_content_commitment,
-        holder, output_key, output_policy_commitment, output_id, receipt_id,
-        soul_id, soul_ownership_epoch, recipe_commitment, render_commitment,
-        output_commitment, receipt_commitment, soul_commitment, loadout_id,
-        loadout_revision, loadout_commitment, selection_index,
-        selection_commitment, part_key, item_key, style_key, layer_track_key,
-        source_class, source_definition_id,
-        source_semantic_id, source_content_commitment, source_epoch,
-        pricing_commitment, asset_content_commitment, materialization_key,
-        witness_commitment,
+        complete, selection, materialization_key, witness_commitment,
     } = witness;
-    let complete = PhysicalCompleteBindingV8 {
-        output_registry_id, root_id, maker_version, root_content_commitment,
-        holder, output_key, output_policy_commitment, output_id, receipt_id,
-        soul_id, soul_ownership_epoch, recipe_commitment, render_commitment,
-        output_commitment, receipt_commitment, soul_commitment,
-    };
-    let selection = PhysicalSelectionBindingV8 {
-        loadout_id, loadout_revision, loadout_commitment, selection_index,
-        selection_commitment, part_key, item_key, style_key, layer_track_key,
-        source_class, source_definition_id,
-        source_semantic_id, source_content_commitment, source_epoch,
-        pricing_commitment, asset_content_commitment,
-    };
     let expected = derive_physical_witness_commitment(
-        output_registry_id, complete, selection, materialization_key);
+        complete.output_registry_id, complete, selection, materialization_key);
     assert!(witness_commitment == expected, EInvalidProof);
     (complete, selection, materialization_key, witness_commitment)
 }

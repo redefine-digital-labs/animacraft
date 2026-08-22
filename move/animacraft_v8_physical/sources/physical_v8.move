@@ -134,11 +134,10 @@ public struct PhysicalPolicyKeyV8 has copy, drop, store {
     style_key: String,
 }
 
-/// Frozen policy row. Base Style identity is copied only after reading the
-/// exact sealed Core row; those copied fields are later re-readable and do not
-/// grant authority independent of the bound Root/Base registry tuple.
-public struct PhysicalStylePolicyV8 has copy, drop, store {
-    sequence: u64,
+/// Immutable source identity copied into policy rows, issued assets, and the
+/// asset commitment preimage. The fields deliberately retain the historical
+/// flat-field order so nested BCS encoding is byte-for-byte identical.
+public struct PhysicalSourceBindingV8 has copy, drop, store {
     source_kind: u8,
     source_id: ID,
     source_semantic_id: String,
@@ -149,6 +148,12 @@ public struct PhysicalStylePolicyV8 has copy, drop, store {
     registered_pack_owner: Option<address>,
     registered_pack_control_epoch: u64,
     registered_pack_admin_cap_id: Option<ID>,
+}
+
+/// Immutable visual descriptor copied into policy rows, issued assets, and
+/// the asset commitment preimage. Its field order matches the former flat
+/// segment, preserving the commitment's BCS byte sequence.
+public struct PhysicalStyleDescriptorV8 has copy, drop, store {
     part_key: String,
     item_key: String,
     style_key: String,
@@ -158,6 +163,15 @@ public struct PhysicalStylePolicyV8 has copy, drop, store {
     style_asset_blob_id: String,
     style_asset_sha256: vector<u8>,
     style_protected: bool,
+}
+
+/// Frozen policy row. Base Style identity is copied only after reading the
+/// exact sealed Core row; those copied fields are later re-readable and do not
+/// grant authority independent of the bound Root/Base registry tuple.
+public struct PhysicalStylePolicyV8 has copy, drop, store {
+    sequence: u64,
+    source: PhysicalSourceBindingV8,
+    style: PhysicalStyleDescriptorV8,
     style_payload_commitment: vector<u8>,
     style_seal_binding_commitment: vector<u8>,
     source_style_commitment: vector<u8>,
@@ -200,25 +214,8 @@ public struct PhysicalAssetV8 has key {
     root_id: ID,
     maker_version: u64,
     root_content_commitment: vector<u8>,
-    source_kind: u8,
-    source_id: ID,
-    source_semantic_id: String,
-    source_content_commitment: vector<u8>,
-    source_treasury_id: Option<ID>,
-    pack_registry_id: Option<ID>,
-    pack_registry_revision: u64,
-    registered_pack_owner: Option<address>,
-    registered_pack_control_epoch: u64,
-    registered_pack_admin_cap_id: Option<ID>,
-    part_key: String,
-    item_key: String,
-    style_key: String,
-    layer_track_key: String,
-    color_channel_key: Option<String>,
-    default_swatch_key: Option<String>,
-    style_asset_blob_id: String,
-    style_asset_sha256: vector<u8>,
-    style_protected: bool,
+    source: PhysicalSourceBindingV8,
+    style: PhysicalStyleDescriptorV8,
     style_seal_binding_commitment: vector<u8>,
     source_style_commitment: vector<u8>,
     style_identity_commitment: vector<u8>,
@@ -492,25 +489,8 @@ public struct PhysicalAssetCommitmentInputV8 has drop {
     root_id: ID,
     maker_version: u64,
     root_content_commitment: vector<u8>,
-    source_kind: u8,
-    source_id: ID,
-    source_semantic_id: String,
-    source_content_commitment: vector<u8>,
-    source_treasury_id: Option<ID>,
-    pack_registry_id: Option<ID>,
-    pack_registry_revision: u64,
-    registered_pack_owner: Option<address>,
-    registered_pack_control_epoch: u64,
-    registered_pack_admin_cap_id: Option<ID>,
-    part_key: String,
-    item_key: String,
-    style_key: String,
-    layer_track_key: String,
-    color_channel_key: Option<String>,
-    default_swatch_key: Option<String>,
-    style_asset_blob_id: String,
-    style_asset_sha256: vector<u8>,
-    style_protected: bool,
+    source: PhysicalSourceBindingV8,
+    style: PhysicalStyleDescriptorV8,
     style_seal_binding_commitment: vector<u8>,
     source_style_commitment: vector<u8>,
     style_identity_commitment: vector<u8>,
@@ -886,25 +866,29 @@ fun append_base_style_policy<PaymentCoin>(
     );
     registry.base_policies.add(key, PhysicalStylePolicyV8 {
         sequence,
-        source_kind: SOURCE_BASE_STYLE,
-        source_id: base::registry_id_v8(base_registry),
-        source_semantic_id: b"".to_string(),
-        source_content_commitment: *maker::root_content_commitment_v8(root),
-        source_treasury_id: option::none(),
-        pack_registry_id: option::none(),
-        pack_registry_revision: 0,
-        registered_pack_owner: option::none(),
-        registered_pack_control_epoch: 0,
-        registered_pack_admin_cap_id: option::none(),
-        part_key: *base::style_part_key_v8(style),
-        item_key: *base::style_item_key_v8(style),
-        style_key: *base::style_key_v8(style),
-        layer_track_key: *base::style_layer_track_key_v8(style),
-        color_channel_key: *base::style_color_channel_key_v8(style),
-        default_swatch_key: *base::style_default_swatch_key_v8(style),
-        style_asset_blob_id: *base::style_asset_blob_id_v8(style),
-        style_asset_sha256: *base::style_asset_sha256_v8(style),
-        style_protected: base::style_protected_v8(style),
+        source: PhysicalSourceBindingV8 {
+            source_kind: SOURCE_BASE_STYLE,
+            source_id: base::registry_id_v8(base_registry),
+            source_semantic_id: b"".to_string(),
+            source_content_commitment: *maker::root_content_commitment_v8(root),
+            source_treasury_id: option::none(),
+            pack_registry_id: option::none(),
+            pack_registry_revision: 0,
+            registered_pack_owner: option::none(),
+            registered_pack_control_epoch: 0,
+            registered_pack_admin_cap_id: option::none(),
+        },
+        style: PhysicalStyleDescriptorV8 {
+            part_key: *base::style_part_key_v8(style),
+            item_key: *base::style_item_key_v8(style),
+            style_key: *base::style_key_v8(style),
+            layer_track_key: *base::style_layer_track_key_v8(style),
+            color_channel_key: *base::style_color_channel_key_v8(style),
+            default_swatch_key: *base::style_default_swatch_key_v8(style),
+            style_asset_blob_id: *base::style_asset_blob_id_v8(style),
+            style_asset_sha256: *base::style_asset_sha256_v8(style),
+            style_protected: base::style_protected_v8(style),
+        },
         style_payload_commitment: *base::style_payload_commitment_v8(style),
         style_seal_binding_commitment: vector[],
         source_style_commitment: *base::style_payload_commitment_v8(style),
@@ -1183,25 +1167,29 @@ fun append_pack_policy_from_witness(
     ));
     registry.pack_policies.add(key, PhysicalStylePolicyV8 {
         sequence,
-        source_kind: SOURCE_PACK_STYLE,
-        source_id: release_id,
-        source_semantic_id: semantic_pack_id,
-        source_content_commitment: release_content_commitment,
-        source_treasury_id: option::some(pack_treasury_id),
-        pack_registry_id: option::some(pack_registry_id),
-        pack_registry_revision,
-        registered_pack_owner: option::some(pack_owner),
-        registered_pack_control_epoch: pack_control_epoch,
-        registered_pack_admin_cap_id: option::some(pack_admin_cap_id),
-        part_key,
-        item_key,
-        style_key,
-        layer_track_key,
-        color_channel_key,
-        default_swatch_key,
-        style_asset_blob_id: asset_blob_id,
-        style_asset_sha256: asset_sha256,
-        style_protected: protected,
+        source: PhysicalSourceBindingV8 {
+            source_kind: SOURCE_PACK_STYLE,
+            source_id: release_id,
+            source_semantic_id: semantic_pack_id,
+            source_content_commitment: release_content_commitment,
+            source_treasury_id: option::some(pack_treasury_id),
+            pack_registry_id: option::some(pack_registry_id),
+            pack_registry_revision,
+            registered_pack_owner: option::some(pack_owner),
+            registered_pack_control_epoch: pack_control_epoch,
+            registered_pack_admin_cap_id: option::some(pack_admin_cap_id),
+        },
+        style: PhysicalStyleDescriptorV8 {
+            part_key,
+            item_key,
+            style_key,
+            layer_track_key,
+            color_channel_key,
+            default_swatch_key,
+            style_asset_blob_id: asset_blob_id,
+            style_asset_sha256: asset_sha256,
+            style_protected: protected,
+        },
         style_payload_commitment: asset_content_commitment,
         style_seal_binding_commitment: seal_binding_commitment,
         source_style_commitment,
@@ -1254,7 +1242,7 @@ public fun claim_free_base_style_v8<PaymentCoin>(
         registry,
         &policy,
         selection.holder,
-        policy.source_id,
+        policy.source.source_id,
         vector[],
     );
     issue_asset(
@@ -1305,7 +1293,7 @@ public fun claim_free_pack_style_v8<PaymentCoin>(
         registry,
         &policy,
         selection.holder,
-        policy.source_id,
+        policy.source.source_id,
         vector[],
     );
     issue_asset(
@@ -1746,7 +1734,7 @@ public fun return_physical_from_market_v8<
     let asset_id = object::id(&asset);
     let holder = asset.holder;
     let ownership_epoch = asset.ownership_epoch;
-    let source_kind = asset.source_kind;
+    let source_kind = asset.source.source_kind;
     let source_treasury_id = custody.source_treasury_id;
     let provenance_commitment = asset.provenance_commitment;
     event::emit(PhysicalMarketCustodyTransitionV8 {
@@ -1960,10 +1948,10 @@ fun new_physical_market_custody_binding<MarketRegistry: key, MarketTreasury: key
         root_content_commitment: asset.root_content_commitment,
         asset_id: object::id(asset),
         asset_content_commitment: asset.asset_content_commitment,
-        source_kind: asset.source_kind,
-        source_id: asset.source_id,
-        source_semantic_id: asset.source_semantic_id,
-        source_content_commitment: asset.source_content_commitment,
+        source_kind: asset.source.source_kind,
+        source_id: asset.source.source_id,
+        source_semantic_id: asset.source.source_semantic_id,
+        source_content_commitment: asset.source.source_content_commitment,
         source_treasury_id,
         holder: asset.holder,
         ownership_epoch: asset.ownership_epoch,
@@ -1988,7 +1976,7 @@ fun purchase_received_market_asset(
         action: MARKET_PURCHASE,
         listing_id: custody.listing_id,
         asset_id: object::id(&asset),
-        source_kind: asset.source_kind,
+        source_kind: asset.source.source_kind,
         source_treasury_id: custody.source_treasury_id,
         previous_holder,
         holder: buyer,
@@ -2041,16 +2029,16 @@ public fun consume_physical_asset_v8(
     assert!(asset.registry_id == object::id(registry), EInvalidBinding);
     assert!(asset.root_id == registry.root_id, EInvalidBinding);
     let key = PhysicalPolicyKeyV8 {
-        source_kind: asset.source_kind,
-        source_id: asset.source_id,
-        part_key: asset.part_key,
-        item_key: asset.item_key,
-        style_key: asset.style_key,
+        source_kind: asset.source.source_kind,
+        source_id: asset.source.source_id,
+        part_key: asset.style.part_key,
+        item_key: asset.style.item_key,
+        style_key: asset.style.style_key,
     };
-    let policy = if (asset.source_kind == SOURCE_BASE_STYLE) {
+    let policy = if (asset.source.source_kind == SOURCE_BASE_STYLE) {
         registry.base_policies.borrow_mut(key)
     } else {
-        assert!(asset.source_kind == SOURCE_PACK_STYLE, EInvalidBinding);
+        assert!(asset.source.source_kind == SOURCE_PACK_STYLE, EInvalidBinding);
         registry.pack_policies.borrow_mut(key)
     };
     assert!(policy.row_commitment == asset.policy_row_commitment, EInvalidBinding);
@@ -2060,20 +2048,14 @@ public fun consume_physical_asset_v8(
     let asset_id = object::id(&asset);
     let root_id = asset.root_id;
     let registry_id = asset.registry_id;
-    let source_kind = asset.source_kind;
-    let source_id = asset.source_id;
+    let source_kind = asset.source.source_kind;
+    let source_id = asset.source.source_id;
     let serial = asset.serial;
     let holder = asset.holder;
     let provenance_commitment = asset.provenance_commitment;
     let PhysicalAssetV8 {
         id, version: _, registry_id: _, root_id: _, maker_version: _,
-        root_content_commitment: _, source_kind: _, source_id: _,
-        source_semantic_id: _, source_content_commitment: _,
-        source_treasury_id: _, pack_registry_id: _, pack_registry_revision: _,
-        registered_pack_owner: _, registered_pack_control_epoch: _,
-        registered_pack_admin_cap_id: _, part_key: _, item_key: _, style_key: _,
-        layer_track_key: _, color_channel_key: _, default_swatch_key: _,
-        style_asset_blob_id: _, style_asset_sha256: _, style_protected: _,
+        root_content_commitment: _, source: _, style: _,
         style_seal_binding_commitment: _, source_style_commitment: _,
         style_identity_commitment: _,
         asset_content_commitment: _, material_policy_commitment: _,
@@ -2325,14 +2307,14 @@ fun assert_market_custody_asset<PaymentCoin>(
         custody.asset_content_commitment == asset.asset_content_commitment,
         EInvalidMarketCustody,
     );
-    assert!(custody.source_kind == asset.source_kind, EInvalidMarketCustody);
-    assert!(custody.source_id == asset.source_id, EInvalidMarketCustody);
+    assert!(custody.source_kind == asset.source.source_kind, EInvalidMarketCustody);
+    assert!(custody.source_id == asset.source.source_id, EInvalidMarketCustody);
     assert!(
-        custody.source_semantic_id == asset.source_semantic_id,
+        custody.source_semantic_id == asset.source.source_semantic_id,
         EInvalidMarketCustody,
     );
     assert!(
-        custody.source_content_commitment == asset.source_content_commitment,
+        custody.source_content_commitment == asset.source.source_content_commitment,
         EInvalidMarketCustody,
     );
     assert!(custody.holder == asset.holder, EWrongHolder);
@@ -2343,17 +2325,17 @@ fun assert_market_custody_asset<PaymentCoin>(
         custody.provenance_commitment == asset.provenance_commitment,
         EInvalidCommitment,
     );
-    if (asset.source_kind == SOURCE_BASE_STYLE) {
-        assert!(asset.source_treasury_id.is_none(), EInvalidTreasury);
+    if (asset.source.source_kind == SOURCE_BASE_STYLE) {
+        assert!(asset.source.source_treasury_id.is_none(), EInvalidTreasury);
         assert!(
             custody.source_treasury_id == maker::root_maker_treasury_id_v8(root),
             EInvalidTreasury,
         );
     } else {
-        assert!(asset.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
-        assert!(asset.source_treasury_id.is_some(), EInvalidTreasury);
+        assert!(asset.source.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
+        assert!(asset.source.source_treasury_id.is_some(), EInvalidTreasury);
         assert!(
-            custody.source_treasury_id == *asset.source_treasury_id.borrow(),
+            custody.source_treasury_id == *asset.source.source_treasury_id.borrow(),
             EInvalidTreasury,
         );
     };
@@ -2379,28 +2361,28 @@ fun assert_market_asset_registry_binding<PaymentCoin>(
         EInvalidBinding,
     );
     let key = PhysicalPolicyKeyV8 {
-        source_kind: asset.source_kind,
-        source_id: asset.source_id,
-        part_key: asset.part_key,
-        item_key: asset.item_key,
-        style_key: asset.style_key,
+        source_kind: asset.source.source_kind,
+        source_id: asset.source.source_id,
+        part_key: asset.style.part_key,
+        item_key: asset.style.item_key,
+        style_key: asset.style.style_key,
     };
-    let policy = if (asset.source_kind == SOURCE_BASE_STYLE) {
+    let policy = if (asset.source.source_kind == SOURCE_BASE_STYLE) {
         physical_registry.base_policies.borrow(key)
     } else {
-        assert!(asset.source_kind == SOURCE_PACK_STYLE, EInvalidBinding);
+        assert!(asset.source.source_kind == SOURCE_PACK_STYLE, EInvalidBinding);
         physical_registry.pack_policies.borrow(key)
     };
-    assert!(policy.source_kind == asset.source_kind, EInvalidBinding);
-    assert!(policy.source_id == asset.source_id, EInvalidBinding);
-    assert!(policy.source_semantic_id == asset.source_semantic_id, EInvalidBinding);
+    assert!(policy.source.source_kind == asset.source.source_kind, EInvalidBinding);
+    assert!(policy.source.source_id == asset.source.source_id, EInvalidBinding);
+    assert!(policy.source.source_semantic_id == asset.source.source_semantic_id, EInvalidBinding);
     assert!(
-        policy.source_content_commitment == asset.source_content_commitment,
+        policy.source.source_content_commitment == asset.source.source_content_commitment,
         EInvalidBinding,
     );
-    assert!(policy.source_treasury_id == asset.source_treasury_id, EInvalidTreasury);
-    assert!(policy.pack_registry_id == asset.pack_registry_id, EInvalidBinding);
-    assert!(policy.pack_registry_revision == asset.pack_registry_revision, EInvalidBinding);
+    assert!(policy.source.source_treasury_id == asset.source.source_treasury_id, EInvalidTreasury);
+    assert!(policy.source.pack_registry_id == asset.source.pack_registry_id, EInvalidBinding);
+    assert!(policy.source.pack_registry_revision == asset.source.pack_registry_revision, EInvalidBinding);
     assert!(policy.row_commitment == asset.policy_row_commitment, EInvalidBinding);
     assert!(
         policy.style_payload_commitment == asset.asset_content_commitment,
@@ -2416,30 +2398,30 @@ fun assert_base_market_source<PaymentCoin>(
     asset: &PhysicalAssetV8,
     source_treasury_id: ID,
 ) {
-    assert!(asset.source_kind == SOURCE_BASE_STYLE, EInvalidMarketCustody);
-    assert!(asset.source_id == physical_registry.base_registry_id, EInvalidBinding);
-    assert!(asset.source_semantic_id == b"".to_string(), EInvalidBinding);
+    assert!(asset.source.source_kind == SOURCE_BASE_STYLE, EInvalidMarketCustody);
+    assert!(asset.source.source_id == physical_registry.base_registry_id, EInvalidBinding);
+    assert!(asset.source.source_semantic_id == b"".to_string(), EInvalidBinding);
     assert!(
-        &asset.source_content_commitment == maker::root_content_commitment_v8(root),
+        &asset.source.source_content_commitment == maker::root_content_commitment_v8(root),
         EInvalidCommitment,
     );
-    assert!(asset.source_treasury_id.is_none(), EInvalidTreasury);
+    assert!(asset.source.source_treasury_id.is_none(), EInvalidTreasury);
     assert!(source_treasury_id == maker::root_maker_treasury_id_v8(root), EInvalidTreasury);
-    assert!(asset.pack_registry_id.is_none(), EInvalidBinding);
-    assert!(asset.registered_pack_owner.is_none(), EInvalidBinding);
-    assert!(asset.registered_pack_admin_cap_id.is_none(), EInvalidBinding);
+    assert!(asset.source.pack_registry_id.is_none(), EInvalidBinding);
+    assert!(asset.source.registered_pack_owner.is_none(), EInvalidBinding);
+    assert!(asset.source.registered_pack_admin_cap_id.is_none(), EInvalidBinding);
 }
 
 fun assert_pack_market_source(
     asset: &PhysicalAssetV8,
     source_treasury_id: ID,
 ) {
-    assert!(asset.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
-    assert!(asset.source_treasury_id.is_some(), EInvalidTreasury);
-    assert!(*asset.source_treasury_id.borrow() == source_treasury_id, EInvalidTreasury);
-    assert!(asset.pack_registry_id.is_some(), EInvalidBinding);
-    assert!(asset.registered_pack_owner.is_some(), EInvalidBinding);
-    assert!(asset.registered_pack_admin_cap_id.is_some(), EInvalidBinding);
+    assert!(asset.source.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
+    assert!(asset.source.source_treasury_id.is_some(), EInvalidTreasury);
+    assert!(*asset.source.source_treasury_id.borrow() == source_treasury_id, EInvalidTreasury);
+    assert!(asset.source.pack_registry_id.is_some(), EInvalidBinding);
+    assert!(asset.source.registered_pack_owner.is_some(), EInvalidBinding);
+    assert!(asset.source.registered_pack_admin_cap_id.is_some(), EInvalidBinding);
 }
 
 fun consume_runtime_selection(
@@ -2605,7 +2587,7 @@ fun borrow_base_policy_by_selection(
         selection.item_key,
         selection.style_key,
     );
-    assert!(policy.layer_track_key == selection.layer_track_key, EInvalidBinding);
+    assert!(policy.style.layer_track_key == selection.layer_track_key, EInvalidBinding);
     assert!(policy.style_payload_commitment == selection.asset_content_commitment, EInvalidBinding);
     policy
 }
@@ -2625,14 +2607,14 @@ fun borrow_pack_policy_by_access(
         style_key: access.style_key,
     };
     let policy = registry.pack_policies.borrow(key);
-    assert!(*policy.pack_registry_id.borrow() == access.pack_registry_id, EInvalidBinding);
-    assert!(access.pack_registry_revision >= policy.pack_registry_revision,
+    assert!(*policy.source.pack_registry_id.borrow() == access.pack_registry_id, EInvalidBinding);
+    assert!(access.pack_registry_revision >= policy.source.pack_registry_revision,
         EStaleRevision);
-    assert!(*policy.source_treasury_id.borrow() == access.pack_treasury_id, EInvalidTreasury);
+    assert!(*policy.source.source_treasury_id.borrow() == access.pack_treasury_id, EInvalidTreasury);
     assert_hash(&access.pack_pass_commitment);
-    assert!(policy.source_semantic_id == access.semantic_pack_id, EInvalidBinding);
-    assert!(policy.source_content_commitment == access.release_content_commitment, EInvalidBinding);
-    assert!(policy.layer_track_key == access.layer_track_key, EInvalidBinding);
+    assert!(policy.source.source_semantic_id == access.semantic_pack_id, EInvalidBinding);
+    assert!(policy.source.source_content_commitment == access.release_content_commitment, EInvalidBinding);
+    assert!(policy.style.layer_track_key == access.layer_track_key, EInvalidBinding);
     assert!(policy.style_payload_commitment == access.asset_content_commitment, EInvalidBinding);
     assert!(policy.style_identity_commitment == access.style_identity_commitment, EInvalidBinding);
     policy
@@ -2782,8 +2764,8 @@ fun derive_authorization_key(
         version: VERSION,
         registry_id: object::id(registry),
         root_id: registry.root_id,
-        source_kind: policy.source_kind,
-        source_id: policy.source_id,
+        source_kind: policy.source.source_kind,
+        source_id: policy.source.source_id,
         policy_row_commitment: policy.row_commitment,
         holder,
         subject_id,
@@ -2801,21 +2783,21 @@ fun assert_issue_available(
     assert!(policy.issued_count == expected_issued_count, EStaleRevision);
     assert!(policy.issued_count < policy.max_supply, ESupplyExhausted);
     assert!(!registry.used_authorizations.contains(*authorization_key), EReplay);
-    let current = if (policy.source_kind == SOURCE_BASE_STYLE) {
+    let current = if (policy.source.source_kind == SOURCE_BASE_STYLE) {
         registry.base_policies.borrow(PhysicalPolicyKeyV8 {
-            source_kind: policy.source_kind,
-            source_id: policy.source_id,
-            part_key: policy.part_key,
-            item_key: policy.item_key,
-            style_key: policy.style_key,
+            source_kind: policy.source.source_kind,
+            source_id: policy.source.source_id,
+            part_key: policy.style.part_key,
+            item_key: policy.style.item_key,
+            style_key: policy.style.style_key,
         })
     } else {
         registry.pack_policies.borrow(PhysicalPolicyKeyV8 {
-            source_kind: policy.source_kind,
-            source_id: policy.source_id,
-            part_key: policy.part_key,
-            item_key: policy.item_key,
-            style_key: policy.style_key,
+            source_kind: policy.source.source_kind,
+            source_id: policy.source.source_id,
+            part_key: policy.style.part_key,
+            item_key: policy.style.item_key,
+            style_key: policy.style.style_key,
         })
     };
     assert!(current.row_commitment == policy.row_commitment, EInvalidBinding);
@@ -2845,21 +2827,21 @@ fun issue_asset(
     };
     registry.used_authorizations.add(authorization_key, true);
     registry.used_authorization_count = registry.used_authorization_count + 1;
-    let current = if (policy.source_kind == SOURCE_BASE_STYLE) {
+    let current = if (policy.source.source_kind == SOURCE_BASE_STYLE) {
         registry.base_policies.borrow_mut(PhysicalPolicyKeyV8 {
-            source_kind: policy.source_kind,
-            source_id: policy.source_id,
-            part_key: policy.part_key,
-            item_key: policy.item_key,
-            style_key: policy.style_key,
+            source_kind: policy.source.source_kind,
+            source_id: policy.source.source_id,
+            part_key: policy.style.part_key,
+            item_key: policy.style.item_key,
+            style_key: policy.style.style_key,
         })
     } else {
         registry.pack_policies.borrow_mut(PhysicalPolicyKeyV8 {
-            source_kind: policy.source_kind,
-            source_id: policy.source_id,
-            part_key: policy.part_key,
-            item_key: policy.item_key,
-            style_key: policy.style_key,
+            source_kind: policy.source.source_kind,
+            source_id: policy.source.source_id,
+            part_key: policy.style.part_key,
+            item_key: policy.style.item_key,
+            style_key: policy.style.style_key,
         })
     };
     assert!(current.row_commitment == policy.row_commitment, EInvalidBinding);
@@ -2883,25 +2865,8 @@ fun issue_asset(
             root_id: registry.root_id,
             maker_version: registry.maker_version,
             root_content_commitment: registry.root_content_commitment,
-            source_kind: policy.source_kind,
-            source_id: policy.source_id,
-            source_semantic_id: policy.source_semantic_id,
-            source_content_commitment: policy.source_content_commitment,
-            source_treasury_id: policy.source_treasury_id,
-            pack_registry_id: policy.pack_registry_id,
-            pack_registry_revision: policy.pack_registry_revision,
-            registered_pack_owner: policy.registered_pack_owner,
-            registered_pack_control_epoch: policy.registered_pack_control_epoch,
-            registered_pack_admin_cap_id: policy.registered_pack_admin_cap_id,
-            part_key: policy.part_key,
-            item_key: policy.item_key,
-            style_key: policy.style_key,
-            layer_track_key: policy.layer_track_key,
-            color_channel_key: policy.color_channel_key,
-            default_swatch_key: policy.default_swatch_key,
-            style_asset_blob_id: policy.style_asset_blob_id,
-            style_asset_sha256: policy.style_asset_sha256,
-            style_protected: policy.style_protected,
+            source: policy.source,
+            style: policy.style,
             style_seal_binding_commitment: policy.style_seal_binding_commitment,
             source_style_commitment: policy.source_style_commitment,
             style_identity_commitment: policy.style_identity_commitment,
@@ -2924,25 +2889,8 @@ fun issue_asset(
         root_id: registry.root_id,
         maker_version: registry.maker_version,
         root_content_commitment: registry.root_content_commitment,
-        source_kind: policy.source_kind,
-        source_id: policy.source_id,
-        source_semantic_id: policy.source_semantic_id,
-        source_content_commitment: policy.source_content_commitment,
-        source_treasury_id: policy.source_treasury_id,
-        pack_registry_id: policy.pack_registry_id,
-        pack_registry_revision: policy.pack_registry_revision,
-        registered_pack_owner: policy.registered_pack_owner,
-        registered_pack_control_epoch: policy.registered_pack_control_epoch,
-        registered_pack_admin_cap_id: policy.registered_pack_admin_cap_id,
-        part_key: policy.part_key,
-        item_key: policy.item_key,
-        style_key: policy.style_key,
-        layer_track_key: policy.layer_track_key,
-        color_channel_key: policy.color_channel_key,
-        default_swatch_key: policy.default_swatch_key,
-        style_asset_blob_id: policy.style_asset_blob_id,
-        style_asset_sha256: policy.style_asset_sha256,
-        style_protected: policy.style_protected,
+        source: policy.source,
+        style: policy.style,
         style_seal_binding_commitment: policy.style_seal_binding_commitment,
         source_style_commitment: policy.source_style_commitment,
         style_identity_commitment: policy.style_identity_commitment,
@@ -2963,8 +2911,8 @@ fun issue_asset(
         asset_id: object::id(&asset),
         root_id: registry.root_id,
         registry_id: object::id(registry),
-        source_kind: policy.source_kind,
-        source_id: policy.source_id,
+        source_kind: policy.source.source_kind,
+        source_id: policy.source.source_id,
         serial,
         holder,
         issuance_kind: policy.issuance_kind,
@@ -3294,7 +3242,7 @@ public fun borrow_base_policy_v8(
         *output::physical_selection_style_key_v8(selection),
     );
     assert!(
-        &policy.layer_track_key
+        &policy.style.layer_track_key
             == output::physical_selection_layer_track_key_v8(selection),
         EInvalidBinding,
     );
@@ -3322,55 +3270,55 @@ fun borrow_base_policy_by_keys(
 }
 public fun policy_sequence_v8(policy: &PhysicalStylePolicyV8): u64 { policy.sequence }
 public fun policy_source_kind_v8(policy: &PhysicalStylePolicyV8): u8 {
-    policy.source_kind
+    policy.source.source_kind
 }
 public fun policy_source_id_v8(policy: &PhysicalStylePolicyV8): ID {
-    policy.source_id
+    policy.source.source_id
 }
 public fun policy_source_semantic_id_v8(
     policy: &PhysicalStylePolicyV8,
-): &String { &policy.source_semantic_id }
+): &String { &policy.source.source_semantic_id }
 public fun policy_source_content_commitment_v8(
     policy: &PhysicalStylePolicyV8,
-): &vector<u8> { &policy.source_content_commitment }
+): &vector<u8> { &policy.source.source_content_commitment }
 public fun policy_source_treasury_id_v8(
     policy: &PhysicalStylePolicyV8,
-): &Option<ID> { &policy.source_treasury_id }
+): &Option<ID> { &policy.source.source_treasury_id }
 public fun policy_pack_registry_id_v8(
     policy: &PhysicalStylePolicyV8,
-): &Option<ID> { &policy.pack_registry_id }
+): &Option<ID> { &policy.source.pack_registry_id }
 public fun policy_pack_registry_revision_v8(policy: &PhysicalStylePolicyV8): u64 {
-    policy.pack_registry_revision
+    policy.source.pack_registry_revision
 }
 public fun policy_registered_pack_owner_v8(
     policy: &PhysicalStylePolicyV8,
-): &Option<address> { &policy.registered_pack_owner }
+): &Option<address> { &policy.source.registered_pack_owner }
 public fun policy_registered_pack_control_epoch_v8(
     policy: &PhysicalStylePolicyV8,
-): u64 { policy.registered_pack_control_epoch }
+): u64 { policy.source.registered_pack_control_epoch }
 public fun policy_registered_pack_admin_cap_id_v8(
     policy: &PhysicalStylePolicyV8,
-): &Option<ID> { &policy.registered_pack_admin_cap_id }
-public fun policy_part_key_v8(policy: &PhysicalStylePolicyV8): &String { &policy.part_key }
-public fun policy_item_key_v8(policy: &PhysicalStylePolicyV8): &String { &policy.item_key }
-public fun policy_style_key_v8(policy: &PhysicalStylePolicyV8): &String { &policy.style_key }
+): &Option<ID> { &policy.source.registered_pack_admin_cap_id }
+public fun policy_part_key_v8(policy: &PhysicalStylePolicyV8): &String { &policy.style.part_key }
+public fun policy_item_key_v8(policy: &PhysicalStylePolicyV8): &String { &policy.style.item_key }
+public fun policy_style_key_v8(policy: &PhysicalStylePolicyV8): &String { &policy.style.style_key }
 public fun policy_layer_track_key_v8(policy: &PhysicalStylePolicyV8): &String {
-    &policy.layer_track_key
+    &policy.style.layer_track_key
 }
 public fun policy_color_channel_key_v8(
     policy: &PhysicalStylePolicyV8,
-): &Option<String> { &policy.color_channel_key }
+): &Option<String> { &policy.style.color_channel_key }
 public fun policy_default_swatch_key_v8(
     policy: &PhysicalStylePolicyV8,
-): &Option<String> { &policy.default_swatch_key }
+): &Option<String> { &policy.style.default_swatch_key }
 public fun policy_style_asset_blob_id_v8(
     policy: &PhysicalStylePolicyV8,
-): &String { &policy.style_asset_blob_id }
+): &String { &policy.style.style_asset_blob_id }
 public fun policy_style_asset_sha256_v8(
     policy: &PhysicalStylePolicyV8,
-): &vector<u8> { &policy.style_asset_sha256 }
+): &vector<u8> { &policy.style.style_asset_sha256 }
 public fun policy_style_protected_v8(policy: &PhysicalStylePolicyV8): bool {
-    policy.style_protected
+    policy.style.style_protected
 }
 public fun policy_style_payload_commitment_v8(
     policy: &PhysicalStylePolicyV8,
@@ -3467,52 +3415,52 @@ public fun asset_maker_version_v8(asset: &PhysicalAssetV8): u64 {
 public fun asset_root_content_commitment_v8(
     asset: &PhysicalAssetV8,
 ): &vector<u8> { &asset.root_content_commitment }
-public fun asset_source_kind_v8(asset: &PhysicalAssetV8): u8 { asset.source_kind }
-public fun asset_source_id_v8(asset: &PhysicalAssetV8): ID { asset.source_id }
+public fun asset_source_kind_v8(asset: &PhysicalAssetV8): u8 { asset.source.source_kind }
+public fun asset_source_id_v8(asset: &PhysicalAssetV8): ID { asset.source.source_id }
 public fun asset_source_semantic_id_v8(asset: &PhysicalAssetV8): &String {
-    &asset.source_semantic_id
+    &asset.source.source_semantic_id
 }
 public fun asset_source_content_commitment_v8(
     asset: &PhysicalAssetV8,
-): &vector<u8> { &asset.source_content_commitment }
+): &vector<u8> { &asset.source.source_content_commitment }
 public fun asset_source_treasury_id_v8(
     asset: &PhysicalAssetV8,
-): &Option<ID> { &asset.source_treasury_id }
+): &Option<ID> { &asset.source.source_treasury_id }
 public fun asset_pack_registry_id_v8(asset: &PhysicalAssetV8): &Option<ID> {
-    &asset.pack_registry_id
+    &asset.source.pack_registry_id
 }
 public fun asset_pack_registry_revision_v8(asset: &PhysicalAssetV8): u64 {
-    asset.pack_registry_revision
+    asset.source.pack_registry_revision
 }
 public fun asset_registered_pack_owner_v8(
     asset: &PhysicalAssetV8,
-): &Option<address> { &asset.registered_pack_owner }
+): &Option<address> { &asset.source.registered_pack_owner }
 public fun asset_registered_pack_control_epoch_v8(asset: &PhysicalAssetV8): u64 {
-    asset.registered_pack_control_epoch
+    asset.source.registered_pack_control_epoch
 }
 public fun asset_registered_pack_admin_cap_id_v8(
     asset: &PhysicalAssetV8,
-): &Option<ID> { &asset.registered_pack_admin_cap_id }
-public fun asset_part_key_v8(asset: &PhysicalAssetV8): &String { &asset.part_key }
-public fun asset_item_key_v8(asset: &PhysicalAssetV8): &String { &asset.item_key }
-public fun asset_style_key_v8(asset: &PhysicalAssetV8): &String { &asset.style_key }
+): &Option<ID> { &asset.source.registered_pack_admin_cap_id }
+public fun asset_part_key_v8(asset: &PhysicalAssetV8): &String { &asset.style.part_key }
+public fun asset_item_key_v8(asset: &PhysicalAssetV8): &String { &asset.style.item_key }
+public fun asset_style_key_v8(asset: &PhysicalAssetV8): &String { &asset.style.style_key }
 public fun asset_layer_track_key_v8(asset: &PhysicalAssetV8): &String {
-    &asset.layer_track_key
+    &asset.style.layer_track_key
 }
 public fun asset_color_channel_key_v8(asset: &PhysicalAssetV8): &Option<String> {
-    &asset.color_channel_key
+    &asset.style.color_channel_key
 }
 public fun asset_default_swatch_key_v8(asset: &PhysicalAssetV8): &Option<String> {
-    &asset.default_swatch_key
+    &asset.style.default_swatch_key
 }
 public fun asset_style_asset_blob_id_v8(asset: &PhysicalAssetV8): &String {
-    &asset.style_asset_blob_id
+    &asset.style.style_asset_blob_id
 }
 public fun asset_style_asset_sha256_v8(asset: &PhysicalAssetV8): &vector<u8> {
-    &asset.style_asset_sha256
+    &asset.style.style_asset_sha256
 }
 public fun asset_style_protected_v8(asset: &PhysicalAssetV8): bool {
-    asset.style_protected
+    asset.style.style_protected
 }
 public fun asset_style_seal_binding_commitment_v8(
     asset: &PhysicalAssetV8,
@@ -3657,11 +3605,11 @@ fun receive_test_market_asset(
         EInvalidMarketCustody);
     assert!(asset.asset_content_commitment == custody.asset_content_commitment,
         EInvalidMarketCustody);
-    assert!(asset.source_kind == custody.source_kind, EInvalidMarketCustody);
-    assert!(asset.source_id == custody.source_id, EInvalidMarketCustody);
-    assert!(asset.source_semantic_id == custody.source_semantic_id,
+    assert!(asset.source.source_kind == custody.source_kind, EInvalidMarketCustody);
+    assert!(asset.source.source_id == custody.source_id, EInvalidMarketCustody);
+    assert!(asset.source.source_semantic_id == custody.source_semantic_id,
         EInvalidMarketCustody);
-    assert!(asset.source_content_commitment == custody.source_content_commitment,
+    assert!(asset.source.source_content_commitment == custody.source_content_commitment,
         EInvalidMarketCustody);
     assert!(asset.holder == custody.holder, EWrongHolder);
     assert!(asset.ownership_epoch == custody.ownership_epoch, EStaleRevision);
@@ -3669,12 +3617,12 @@ fun receive_test_market_asset(
         ENotTransferable);
     assert!(asset.provenance_commitment == custody.provenance_commitment,
         EInvalidCommitment);
-    if (asset.source_kind == SOURCE_BASE_STYLE) {
-        assert!(asset.source_treasury_id.is_none(), EInvalidTreasury);
+    if (asset.source.source_kind == SOURCE_BASE_STYLE) {
+        assert!(asset.source.source_treasury_id.is_none(), EInvalidTreasury);
     } else {
-        assert!(asset.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
-        assert!(asset.source_treasury_id.is_some(), EInvalidTreasury);
-        assert!(*asset.source_treasury_id.borrow() == custody.source_treasury_id,
+        assert!(asset.source.source_kind == SOURCE_PACK_STYLE, EInvalidMarketCustody);
+        assert!(asset.source.source_treasury_id.is_some(), EInvalidTreasury);
+        assert!(*asset.source.source_treasury_id.borrow() == custody.source_treasury_id,
             EInvalidTreasury);
     };
     (asset, custody)
@@ -4345,7 +4293,7 @@ public fun issue_transferable_base_physical_for_market_testing(
     assert!(!registry.base_policy_keys.is_empty(), EInvalidPolicy);
     let key = *registry.base_policy_keys.borrow(0);
     let policy = *registry.base_policies.borrow(key);
-    assert!(policy.source_kind == SOURCE_BASE_STYLE, EInvalidPolicy);
+    assert!(policy.source.source_kind == SOURCE_BASE_STYLE, EInvalidPolicy);
     assert!(policy.transferable, ENotTransferable);
     assert!(policy.proof_kind == PROOF_NONE, EWrongIssuance);
     let nonce = object::new(ctx);
@@ -4371,7 +4319,7 @@ public fun issue_transferable_pack_physical_for_market_testing(
     assert!(!registry.pack_policy_keys.is_empty(), EInvalidPolicy);
     let key = *registry.pack_policy_keys.borrow(0);
     let policy = *registry.pack_policies.borrow(key);
-    assert!(policy.source_kind == SOURCE_PACK_STYLE, EInvalidPolicy);
+    assert!(policy.source.source_kind == SOURCE_PACK_STYLE, EInvalidPolicy);
     assert!(policy.transferable, ENotTransferable);
     assert!(policy.proof_kind == PROOF_NONE, EWrongIssuance);
     let nonce = object::new(ctx);
@@ -4403,25 +4351,8 @@ fun destroy_asset_for_testing(asset: PhysicalAssetV8) {
         root_id: _,
         maker_version: _,
         root_content_commitment: _,
-        source_kind: _,
-        source_id: _,
-        source_semantic_id: _,
-        source_content_commitment: _,
-        source_treasury_id: _,
-        pack_registry_id: _,
-        pack_registry_revision: _,
-        registered_pack_owner: _,
-        registered_pack_control_epoch: _,
-        registered_pack_admin_cap_id: _,
-        part_key: _,
-        item_key: _,
-        style_key: _,
-        layer_track_key: _,
-        color_channel_key: _,
-        default_swatch_key: _,
-        style_asset_blob_id: _,
-        style_asset_sha256: _,
-        style_protected: _,
+        source: _,
+        style: _,
         style_seal_binding_commitment: _,
         source_style_commitment: _,
         style_identity_commitment: _,
@@ -5044,28 +4975,28 @@ fun pack_policy_registers_from_live_witness_and_free_issues_exact_asset() {
     assert!(fixture.physical_registry.pack_policy_count == 1, EInvalidCount);
     let witness = pack_selection_witness(&fixture, &ctx);
     let asset = claim_fixture_pack_free(&mut fixture, witness, 0, &mut ctx);
-    assert!(asset.source_kind == SOURCE_PACK_STYLE, EInvalidBinding);
-    assert!(asset.source_id == runtime::pack_release_id_v8(&fixture.pack_release),
+    assert!(asset.source.source_kind == SOURCE_PACK_STYLE, EInvalidBinding);
+    assert!(asset.source.source_id == runtime::pack_release_id_v8(&fixture.pack_release),
         EInvalidBinding);
-    assert!(asset.source_treasury_id.is_some(), EInvalidTreasury);
-    assert!(*asset.source_treasury_id.borrow()
+    assert!(asset.source.source_treasury_id.is_some(), EInvalidTreasury);
+    assert!(*asset.source.source_treasury_id.borrow()
         == object::id(&fixture.pack_treasury), EInvalidTreasury);
-    assert!(*asset.pack_registry_id.borrow()
+    assert!(*asset.source.pack_registry_id.borrow()
         == object::id(&fixture.pack_registry), EInvalidBinding);
-    assert!(asset.pack_registry_revision
+    assert!(asset.source.pack_registry_revision
         == runtime::pack_registry_revision_v8(&fixture.pack_registry),
         EStaleRevision);
-    assert!(*asset.registered_pack_owner.borrow() == @0xA11, EWrongHolder);
-    assert!(asset.registered_pack_control_epoch == 0, EInvalidBinding);
-    assert!(*asset.registered_pack_admin_cap_id.borrow()
+    assert!(*asset.source.registered_pack_owner.borrow() == @0xA11, EWrongHolder);
+    assert!(asset.source.registered_pack_control_epoch == 0, EInvalidBinding);
+    assert!(*asset.source.registered_pack_admin_cap_id.borrow()
         == object::id(&fixture.pack_admin), EInvalidBinding);
-    assert!(asset.part_key == b"part".to_string()
-        && asset.item_key == b"pack-item".to_string()
-        && asset.style_key == b"pack-style".to_string()
-        && asset.layer_track_key == b"track".to_string(), EInvalidBinding);
-    assert!(asset.style_asset_blob_id == b"pack-style-blob".to_string(),
+    assert!(asset.style.part_key == b"part".to_string()
+        && asset.style.item_key == b"pack-item".to_string()
+        && asset.style.style_key == b"pack-style".to_string()
+        && asset.style.layer_track_key == b"track".to_string(), EInvalidBinding);
+    assert!(asset.style.style_asset_blob_id == b"pack-style-blob".to_string(),
         EInvalidBinding);
-    assert!(asset.style_asset_sha256 == test_hash(72), EInvalidCommitment);
+    assert!(asset.style.style_asset_sha256 == test_hash(72), EInvalidCommitment);
     assert!(asset.source_style_commitment == test_hash(74), EInvalidCommitment);
     assert!(asset.serial == 1 && asset.ownership_epoch == 0, EInvalidSequence);
     consume_physical_asset_v8(
@@ -5195,8 +5126,8 @@ fun pack_control_epoch_change_does_not_invalidate_registered_content() {
             style_key: b"pack-style".to_string(),
         },
     );
-    assert!(policy.registered_pack_control_epoch == 1, EInvalidBinding);
-    assert!(*policy.registered_pack_admin_cap_id.borrow()
+    assert!(policy.source.registered_pack_control_epoch == 1, EInvalidBinding);
+    assert!(*policy.source.registered_pack_admin_cap_id.borrow()
         == object::id(&fixture.pack_admin), EInvalidBinding);
     advance_fixture_pack_control(&mut fixture);
     let witness = pack_selection_witness(&fixture, &ctx);
@@ -5338,9 +5269,9 @@ fun soul_proof_issuance_records_exact_provenance_and_counter() {
     );
     assert!(asset.proof.is_some(), EWrongIssuance);
     assert!(asset.proof_kind == PROOF_CANONICAL_SOUL, EWrongIssuance);
-    assert!(asset.source_id == fixture.physical_registry.base_registry_id,
+    assert!(asset.source.source_id == fixture.physical_registry.base_registry_id,
         EInvalidBinding);
-    assert!(asset.source_treasury_id.is_none(), EInvalidTreasury);
+    assert!(asset.source.source_treasury_id.is_none(), EInvalidTreasury);
     assert!(fixture.physical_registry.total_proof_materialized == 1,
         EInvalidCount);
     consume_physical_asset_v8(&mut fixture.physical_registry, asset, 0, &ctx);
@@ -5567,7 +5498,7 @@ fun cross_transaction_base_market_return_preserves_exact_state() {
         let asset_id = object::id(&asset);
         let provenance_commitment = asset.provenance_commitment;
         let asset_content_commitment = asset.asset_content_commitment;
-        let source_content_commitment = asset.source_content_commitment;
+        let source_content_commitment = asset.source.source_content_commitment;
         let mut listing = PhysicalMarketTestListingV8 {
             id: object::new(ctx),
             custody: option::none(),
@@ -5629,7 +5560,7 @@ fun cross_transaction_base_market_return_preserves_exact_state() {
         assert!(asset.ownership_epoch == 0, EStaleRevision);
         assert!(asset.provenance_commitment == provenance_commitment, EInvalidCommitment);
         assert!(asset.asset_content_commitment == asset_content_commitment, EInvalidCommitment);
-        assert!(asset.source_content_commitment == source_content_commitment, EInvalidCommitment);
+        assert!(asset.source.source_content_commitment == source_content_commitment, EInvalidCommitment);
         destroy_asset_for_testing(asset);
     };
     scenario.end();
@@ -5654,8 +5585,8 @@ fun cross_transaction_pack_market_purchase_changes_only_owner_state() {
         );
         let asset_id = object::id(&asset);
         let provenance_commitment = asset.provenance_commitment;
-        let source_id = asset.source_id;
-        let source_content_commitment = asset.source_content_commitment;
+        let source_id = asset.source.source_id;
+        let source_content_commitment = asset.source.source_content_commitment;
         let mut listing = PhysicalMarketTestListingV8 {
             id: object::new(ctx),
             custody: option::none(),
@@ -5702,8 +5633,8 @@ fun cross_transaction_pack_market_purchase_changes_only_owner_state() {
         assert!(asset.holder == buyer, EWrongHolder);
         assert!(asset.ownership_epoch == 1, EStaleRevision);
         assert!(asset.provenance_commitment == provenance_commitment, EInvalidCommitment);
-        assert!(asset.source_id == source_id, EInvalidBinding);
-        assert!(asset.source_content_commitment == source_content_commitment,
+        assert!(asset.source.source_id == source_id, EInvalidBinding);
+        assert!(asset.source.source_content_commitment == source_content_commitment,
             EInvalidCommitment);
         destroy_asset_for_testing(asset);
     };

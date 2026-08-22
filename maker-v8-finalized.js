@@ -18,6 +18,23 @@ const REGISTRY_FIELDS = Object.freeze([
   'protocol_paid_atomic', 'creator_paid_atomic', 'source_paid_atomic',
   'seller_paid_atomic',
 ]);
+const PHYSICAL_SOURCE_FIELDS = Object.freeze([
+  'source_kind', 'source_id', 'source_semantic_id', 'source_content_commitment',
+  'source_treasury_id', 'pack_registry_id', 'pack_registry_revision',
+  'registered_pack_owner', 'registered_pack_control_epoch',
+  'registered_pack_admin_cap_id',
+]);
+const PHYSICAL_STYLE_FIELDS = Object.freeze([
+  'part_key', 'item_key', 'style_key', 'layer_track_key', 'color_channel_key',
+  'default_swatch_key', 'style_asset_blob_id', 'style_asset_sha256',
+  'style_protected',
+]);
+const PHYSICAL_RETIRED_FLAT_FIELDS = Object.freeze(
+  [...PHYSICAL_SOURCE_FIELDS, ...PHYSICAL_STYLE_FIELDS].flatMap((name) => [
+    name,
+    name.replace(/_([a-z])/g, (_match, letter) => letter.toUpperCase()),
+  ]),
+);
 const SOUL_COMMITMENT_INPUT_BCS = bcs.struct('SoulCommitmentInputV8', {
   domain: bcs.vector(bcs.u8()),
   version: bcs.u64(),
@@ -174,6 +191,33 @@ function scalar(fields, ...names) {
 }
 
 function struct(value) { return plain(value?.fields) ? value.fields : value; }
+
+function physicalAssetState(fields, label) {
+  const source = struct(fields?.source);
+  const style = struct(fields?.style);
+  const exact = (value, expected, nestedLabel) => {
+    if (!plain(value)) fail('WEB_V8_FINALIZED_PHYSICAL_SCHEMA_INVALID', `${nestedLabel} is required.`);
+    const keys = Object.keys(value);
+    if (keys.length !== expected.length || expected.some((name) => !Object.hasOwn(value, name))) {
+      fail('WEB_V8_FINALIZED_PHYSICAL_SCHEMA_INVALID', `${nestedLabel} has an invalid field layout.`);
+    }
+  };
+  exact(source, PHYSICAL_SOURCE_FIELDS, `${label}.source`);
+  exact(style, PHYSICAL_STYLE_FIELDS, `${label}.style`);
+  if (PHYSICAL_RETIRED_FLAT_FIELDS
+    .some((name) => Object.hasOwn(fields, name))) {
+    fail('WEB_V8_FINALIZED_PHYSICAL_SCHEMA_INVALID', `${label} contains retired flat Physical fields.`);
+  }
+  return { outer: fields, source, style };
+}
+
+function physicalScalar(state, ...names) {
+  for (const fields of [state.source, state.style, state.outer]) {
+    const value = scalar(fields, ...names);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
 
 function option(value, label) {
   if (!Array.isArray(value) || value.length > 1) {
@@ -584,8 +628,7 @@ function assertRegistryAndTreasury(roles, action, quote, descriptor) {
   const after = parsed(roles, 'REGISTRY', 'after');
   const makerVersion = decimal(scalar(before, 'maker_version', 'makerVersion'), 'REGISTRY.before.makerVersion');
   for (const [side, fields] of [['before', before], ['after', after]]) {
-    if (decimal(scalar(fields, 'version'), `REGISTRY.${side}.version`) !== '8'
-      || id(scalar(fields, 'catalog_id', 'catalogId'), `REGISTRY.${side}.catalogId`) !== descriptor.catalogId
+    if (id(scalar(fields, 'catalog_id', 'catalogId'), `REGISTRY.${side}.catalogId`) !== descriptor.catalogId
       || id(scalar(fields, 'package_config_id', 'packageConfigId'), `REGISTRY.${side}.packageConfigId`) !== descriptor.roleConfigIds.market
       || id(scalar(fields, 'root_id', 'rootId'), `REGISTRY.${side}.rootId`) !== descriptor.rootId
       || decimal(scalar(fields, 'maker_version', 'makerVersion'), `REGISTRY.${side}.makerVersion`) !== makerVersion
@@ -967,13 +1010,15 @@ function assertPhysical(roles, action, descriptor, custody) {
   const asset = roles.get('ASSET');
   const beforeFields = parsed(roles, 'ASSET', 'before');
   const fields = parsed(roles, 'ASSET', 'after');
+  const beforeState = physicalAssetState(beforeFields, 'ASSET.before');
+  const state = physicalAssetState(fields, 'ASSET.after');
   const listingId = roles.get('LISTING').objectId;
   const expectedOwner = action.kind === 'LIST' ? listingId : action.kind === 'PURCHASE' ? descriptor.sender : descriptor.preState.seller;
   const expectedHolder = action.kind === 'LIST' ? descriptor.preState.seller : expectedOwner;
   const expectedEpoch = action.kind === 'PURCHASE' ? plus(descriptor.preState.ownershipEpoch, '1') : descriptor.preState.ownershipEpoch;
   const expectedSourceKind = descriptor.lane === 2 ? '0' : '1';
-  const assetTreasury = option(scalar(fields, 'source_treasury_id', 'sourceTreasuryId'), 'ASSET.sourceTreasuryId');
-  const beforeTreasury = option(scalar(beforeFields, 'source_treasury_id', 'sourceTreasuryId'), 'ASSET.before.sourceTreasuryId');
+  const assetTreasury = option(physicalScalar(state, 'source_treasury_id', 'sourceTreasuryId'), 'ASSET.sourceTreasuryId');
+  const beforeTreasury = option(physicalScalar(beforeState, 'source_treasury_id', 'sourceTreasuryId'), 'ASSET.before.sourceTreasuryId');
   const priorOwner = action.kind === 'LIST' ? descriptor.preState.seller : listingId;
   if (asset.objectId !== descriptor.preState.assetIds[0]
     || ownerId(
@@ -986,26 +1031,26 @@ function assertPhysical(roles, action, descriptor, custody) {
       action.kind === 'LIST' ? 'AddressOwner' : 'ObjectOwner',
       'ASSET.before.effectsOwner',
     ) !== priorOwner
-    || id(scalar(beforeFields, 'holder'), 'ASSET.before.holder') !== descriptor.preState.seller
-    || decimal(scalar(beforeFields, 'ownership_epoch', 'ownershipEpoch'), 'ASSET.before.ownershipEpoch') !== descriptor.preState.ownershipEpoch
-    || id(scalar(fields, 'holder'), 'ASSET.holder') !== expectedHolder
-    || decimal(scalar(fields, 'ownership_epoch', 'ownershipEpoch'), 'ASSET.ownershipEpoch') !== expectedEpoch
-    || decimal(scalar(fields, 'source_kind', 'sourceKind'), 'ASSET.sourceKind') !== expectedSourceKind
-    || decimal(scalar(beforeFields, 'source_kind', 'sourceKind'), 'ASSET.before.sourceKind') !== expectedSourceKind
+    || id(physicalScalar(beforeState, 'holder'), 'ASSET.before.holder') !== descriptor.preState.seller
+    || decimal(physicalScalar(beforeState, 'ownership_epoch', 'ownershipEpoch'), 'ASSET.before.ownershipEpoch') !== descriptor.preState.ownershipEpoch
+    || id(physicalScalar(state, 'holder'), 'ASSET.holder') !== expectedHolder
+    || decimal(physicalScalar(state, 'ownership_epoch', 'ownershipEpoch'), 'ASSET.ownershipEpoch') !== expectedEpoch
+    || decimal(physicalScalar(state, 'source_kind', 'sourceKind'), 'ASSET.sourceKind') !== expectedSourceKind
+    || decimal(physicalScalar(beforeState, 'source_kind', 'sourceKind'), 'ASSET.before.sourceKind') !== expectedSourceKind
     || assetTreasury !== (expectedSourceKind === '0' ? null : expected.sourceTreasuryId)
     || beforeTreasury !== (expectedSourceKind === '0' ? null : expected.sourceTreasuryId)
-    || id(scalar(beforeFields, 'source_id', 'sourceId'), 'ASSET.before.sourceId') !== expected.sourceId
-    || String(scalar(beforeFields, 'source_semantic_id', 'sourceSemanticId')) !== expected.sourceSemanticId
-    || commitment(scalar(beforeFields, 'asset_content_commitment', 'assetContentCommitment'), 'ASSET.before.assetContent') !== expected.assetContentCommitment
-    || commitment(scalar(beforeFields, 'source_content_commitment', 'sourceContentCommitment'), 'ASSET.before.sourceContent') !== expected.sourceContentCommitment
-    || commitment(scalar(beforeFields, 'provenance_commitment', 'provenanceCommitment'), 'ASSET.before.provenance') !== expected.provenanceCommitment
-    || scalar(beforeFields, 'transferable') !== expected.transferable
-    || id(scalar(fields, 'source_id', 'sourceId'), 'ASSET.sourceId') !== expected.sourceId
-    || String(scalar(fields, 'source_semantic_id', 'sourceSemanticId')) !== expected.sourceSemanticId
-    || commitment(scalar(fields, 'asset_content_commitment', 'assetContentCommitment'), 'ASSET.assetContent') !== expected.assetContentCommitment
-    || commitment(scalar(fields, 'source_content_commitment', 'sourceContentCommitment'), 'ASSET.sourceContent') !== expected.sourceContentCommitment
-    || commitment(scalar(fields, 'provenance_commitment', 'provenanceCommitment'), 'ASSET.provenance') !== expected.provenanceCommitment
-    || scalar(fields, 'transferable') !== expected.transferable) {
+    || id(physicalScalar(beforeState, 'source_id', 'sourceId'), 'ASSET.before.sourceId') !== expected.sourceId
+    || String(physicalScalar(beforeState, 'source_semantic_id', 'sourceSemanticId')) !== expected.sourceSemanticId
+    || commitment(physicalScalar(beforeState, 'asset_content_commitment', 'assetContentCommitment'), 'ASSET.before.assetContent') !== expected.assetContentCommitment
+    || commitment(physicalScalar(beforeState, 'source_content_commitment', 'sourceContentCommitment'), 'ASSET.before.sourceContent') !== expected.sourceContentCommitment
+    || commitment(physicalScalar(beforeState, 'provenance_commitment', 'provenanceCommitment'), 'ASSET.before.provenance') !== expected.provenanceCommitment
+    || physicalScalar(beforeState, 'transferable') !== expected.transferable
+    || id(physicalScalar(state, 'source_id', 'sourceId'), 'ASSET.sourceId') !== expected.sourceId
+    || String(physicalScalar(state, 'source_semantic_id', 'sourceSemanticId')) !== expected.sourceSemanticId
+    || commitment(physicalScalar(state, 'asset_content_commitment', 'assetContentCommitment'), 'ASSET.assetContent') !== expected.assetContentCommitment
+    || commitment(physicalScalar(state, 'source_content_commitment', 'sourceContentCommitment'), 'ASSET.sourceContent') !== expected.sourceContentCommitment
+    || commitment(physicalScalar(state, 'provenance_commitment', 'provenanceCommitment'), 'ASSET.provenance') !== expected.provenanceCommitment
+    || physicalScalar(state, 'transferable') !== expected.transferable) {
     fail('WEB_V8_FINALIZED_PHYSICAL_MISMATCH', 'Physical source, provenance, content, transferability, holder, or epoch is invalid.');
   }
   const binding = struct(custody);

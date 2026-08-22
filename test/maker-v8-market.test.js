@@ -222,7 +222,6 @@ function moveObject(type, objectId, fields, overrides = {}) {
 }
 
 const registryFields = Object.freeze({
-  version: '8',
   catalog_id: IDs.catalog,
   package_config_id: IDs.config,
   product_binding_commitment: bytes32(1),
@@ -798,6 +797,7 @@ test('runtime and parsers pin every stable TypeOrigin and preserve u64/u128 as b
   assert.equal(client.types.completeOutput.startsWith(`${packageId('2')}::output_v8::`), true);
   assert.equal(client.types.physicalAsset.startsWith(`${packageId('3')}::physical_v8::`), true);
   assert.equal(client.types.packTreasury.startsWith(`${packageId('4')}::runtime_v8::`), true);
+  assert.equal(registry.fields.version, 8n);
   assert.equal(typeof registry.fields.revision, 'bigint');
   assert.equal(typeof registry.fields.grossVolumeAtomic, 'bigint');
   assert.equal(typeof treasury.fields.grossEscrowedAtomic, 'bigint');
@@ -812,6 +812,11 @@ test('runtime and parsers pin every stable TypeOrigin and preserve u64/u128 as b
   maxRegistry.data.content.fields.gross_volume_atomic = (1n << 128n).toString();
   assert.throws(() => client.parseRegistry(maxRegistry), (error) => (
     error instanceof MarketV8ParseError && error.code === 'MARKET_V8_INTEGER_RANGE'
+  ));
+  const retiredFlatVersion = structuredClone(registryResponse);
+  retiredFlatVersion.data.content.fields.version = '8';
+  assert.throws(() => client.parseRegistry(retiredFlatVersion), (error) => (
+    error instanceof MarketV8ParseError && error.code === 'MARKET_V8_FIELDS_INVALID'
   ));
 });
 
@@ -1879,7 +1884,7 @@ function finalizedCoreFixture(built, evidence, index) {
     field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`), value,
   ]));
   Object.assign(registryBefore, {
-    version: '8', catalog_id: descriptor.catalogId,
+    catalog_id: descriptor.catalogId,
     package_config_id: descriptor.roleConfigIds.market,
     product_binding_commitment: bytesHex(43), call_cap_set_commitment: bytesHex(44),
     root_id: descriptor.rootId, maker_version: '42',
@@ -2021,10 +2026,19 @@ function finalizedCoreFixture(built, evidence, index) {
       ? [] : [preState.physical.sourceTreasuryId];
     const before = {
       holder: preState.seller, ownership_epoch: preState.ownershipEpoch,
-      source_kind: preState.physical.sourceKind, source_treasury_id: treasuryOption,
-      source_id: preState.physical.sourceId, source_semantic_id: preState.physical.sourceSemanticId,
+      source: { fields: {
+        source_kind: preState.physical.sourceKind, source_treasury_id: treasuryOption,
+        source_id: preState.physical.sourceId, source_semantic_id: preState.physical.sourceSemanticId,
+        source_content_commitment: preState.physical.sourceContentCommitment,
+        pack_registry_id: [], pack_registry_revision: '0', registered_pack_owner: [],
+        registered_pack_control_epoch: '0', registered_pack_admin_cap_id: [],
+      } },
+      style: { fields: {
+        part_key: 'body', item_key: 'shirt', style_key: 'default', layer_track_key: 'body',
+        color_channel_key: [], default_swatch_key: [], style_asset_blob_id: 'asset',
+        style_asset_sha256: bytesHex(77), style_protected: false,
+      } },
       asset_content_commitment: preState.physical.assetContentCommitment,
-      source_content_commitment: preState.physical.sourceContentCommitment,
       provenance_commitment: preState.physical.provenanceCommitment,
       transferable: preState.physical.transferable,
     };
@@ -2111,7 +2125,7 @@ function finalizedCoreFixture(built, evidence, index) {
       return past.get(`${objectId}:${version}`) ?? { status: 'VersionNotFound' };
     },
   };
-  return { rpc, request, descriptor, listingId, rawEvents, transactionEvents };
+  return { rpc, request, descriptor, listingId, rawEvents, transactionEvents, past };
 }
 
 async function finalizedProductionActions() {
@@ -2165,6 +2179,7 @@ test('all 14 production builders normalize exact Core V2 history/events and veri
   const verifiedActions = [];
   const envelopes = new Map();
   const requests = new Map();
+  const fixtures = new Map();
   const finalizedMarketModule = await import('../maker-v8-market.js');
   for (const [index, [action, built]] of Object.entries(actions).entries()) {
     assert.equal(built.descriptor.action, action);
@@ -2191,6 +2206,7 @@ test('all 14 production builders normalize exact Core V2 history/events and veri
     assert.equal(envelope.effects.objects.some((entry) => entry.role === 'LISTING'), true, action);
     envelopes.set(action, envelope);
     requests.set(action, fixtureValue.request);
+    fixtures.set(action, fixtureValue);
     verifiedActions.push(action);
   }
   assert.deepEqual(verifiedActions, Object.keys(MARKET_V8_ACTION_ABI));
@@ -2269,6 +2285,46 @@ test('all 14 production builders normalize exact Core V2 history/events and veri
     rejectsOwnerDrift('purchaseSoulBundle', dynamicTamper, `${role} must remain ObjectOwner(registry table)`);
   }
 
+  const rejectsPhysicalSchema = (envelope, label) => assert.throws(
+    () => assertFinalizedMarketReadbackV8(
+      envelope, requests.get('listBasePhysical'), client, finalizedMarketModule,
+    ),
+    (failure) => failure?.code === 'WEB_V8_FINALIZED_PHYSICAL_SCHEMA_INVALID',
+    `listBasePhysical: ${label}`,
+  );
+  const physicalConflict = structuredClone(envelopes.get('listBasePhysical'));
+  const conflictAsset = physicalConflict.effects.objects.find((entry) => entry.role === 'ASSET');
+  for (const side of ['before', 'after']) {
+    conflictAsset[side].parsed.sourceKind = conflictAsset[side].parsed.source.fields.source_kind;
+  }
+  rejectsPhysicalSchema(physicalConflict, 'outer camelCase source must not shadow nested source');
+
+  const physicalFlatOnly = structuredClone(envelopes.get('listBasePhysical'));
+  const flatAsset = physicalFlatOnly.effects.objects.find((entry) => entry.role === 'ASSET');
+  for (const side of ['before', 'after']) {
+    const fields = flatAsset[side].parsed;
+    Object.assign(fields, fields.source.fields, fields.style.fields);
+    delete fields.source;
+    delete fields.style;
+  }
+  rejectsPhysicalSchema(physicalFlatOnly, 'retired flat-only Physical shape must fail closed');
+
+  const browserPhysicalFixture = fixtures.get('listBasePhysical');
+  for (const [key, historical] of browserPhysicalFixture.past) {
+    if (historical?.details?.type !== types.physicalAsset) continue;
+    const tampered = structuredClone(historical);
+    tampered.details.content.fields.sourceKind = tampered.details.content.fields.source.fields.source_kind;
+    browserPhysicalFixture.past.set(key, tampered);
+  }
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client: browserPhysicalFixture.rpc,
+      market: client,
+      request: browserPhysicalFixture.request,
+    }),
+    (failure) => failure?.code === 'MAKER_V8_BROWSER_PHYSICAL_ASSET_SCHEMA_INVALID',
+  );
+
   const makerPurchase = actions.purchaseMakerControl.descriptor;
   assert.equal(makerPurchase.preState.root.creator, makerPurchase.preState.seller);
   const soulPurchase = actions.purchaseSoulBundle.descriptor;
@@ -2302,8 +2358,8 @@ test('all 14 production builders normalize exact Core V2 history/events and veri
 
   const baseAsset = roles('listBasePhysical').get('ASSET');
   const packAsset = roles('listPackPhysical').get('ASSET');
-  assert.deepEqual(baseAsset.before.parsed.source_treasury_id, []);
-  assert.deepEqual(packAsset.before.parsed.source_treasury_id, [
+  assert.deepEqual(baseAsset.before.parsed.source.fields.source_treasury_id, []);
+  assert.deepEqual(packAsset.before.parsed.source.fields.source_treasury_id, [
     actions.listPackPhysical.descriptor.preState.physical.sourceTreasuryId,
   ]);
   assert.equal(actions.cancelPhysicalListing.descriptor.lane, MARKET_V8_LANES.PHYSICAL_BASE);

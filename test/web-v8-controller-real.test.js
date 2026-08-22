@@ -452,7 +452,7 @@ function fixture(runtime, { registryVersion = '7', adminVersion = '7' } = {}) {
     protocolConfig: runtime.protocolConfigId, admin: id(107), makerTreasury: id(108), seller: id(200),
   };
   const registryResponse = moveObject(market.types.marketRegistry, IDs.registry, {
-    version: '8', catalog_id: IDs.catalog, package_config_id: IDs.config,
+    catalog_id: IDs.catalog, package_config_id: IDs.config,
     product_binding_commitment: bytes32(1), call_cap_set_commitment: bytes32(2),
     root_id: IDs.root, maker_version: '42', root_content_commitment: bytes32(0xaa),
     protocol_config_id: IDs.protocolConfig, protocol_config_revision: '7',
@@ -1083,7 +1083,6 @@ function finalizedListMakerEnvelope(data, request) {
   const listingId = id(109);
   const registryBefore = {
     ...snakeCounters(pre.registry),
-    version: '8',
     catalog_id: descriptor.catalogId,
     package_config_id: descriptor.roleConfigIds.market,
     root_id: descriptor.rootId,

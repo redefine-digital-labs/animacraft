@@ -34,6 +34,7 @@ const allowedTopDirectories = new Set(['.github', 'docs', 'move', 'public-v8', '
 const allowedTests = new Set([
   'test/chain-error-ui.test.js', 'test/maker-commerce-v8.test.js',
   'test/maker-v8-browser.test.js', 'test/maker-v8-chain.test.js',
+  'test/maker-v8-core-publish-limits.test.js',
   'test/maker-v8-compiler.test.js', 'test/maker-v8-document.test.js',
   'test/maker-v8-core-publish-limits.test.js',
   'test/maker-v8-market.test.js', 'test/maker-v8-recovery.test.js',

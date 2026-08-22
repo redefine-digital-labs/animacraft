@@ -419,7 +419,7 @@ function digestValue(value, field, ErrorType = MarketV8BuildError) {
 }
 
 const REGISTRY_FIELDS = Object.freeze([
-  'id', 'version', 'catalog_id', 'package_config_id', 'product_binding_commitment',
+  'id', 'catalog_id', 'package_config_id', 'product_binding_commitment',
   'call_cap_set_commitment', 'root_id', 'maker_version', 'root_content_commitment',
   'protocol_config_id', 'protocol_config_revision', 'protocol_config_commitment',
   'economics_commitment', 'rights_commitment', 'maker_market_fee_bps',
@@ -436,7 +436,9 @@ export function parseMarketRegistryV8(input, runtime, networkInput) {
   const base = unwrapMoveObject(input, marketV8Types(runtime).marketRegistry, 'MarketRegistryV8');
   const f = expectFields(base.fields, REGISTRY_FIELDS, 'MarketRegistryV8.fields');
   const fields = {
-    version: uint(f.version, 64, 'MarketRegistryV8.version'),
+    // MarketRegistryV8's package/type identity is the version discriminator.
+    // Keep the normalized API stable without spending a verifier-limited Move field.
+    version: MARKET_V8_VERSION,
     catalogId: objectId(f.catalog_id, 'MarketRegistryV8.catalog_id'),
     packageConfigId: objectId(f.package_config_id, 'MarketRegistryV8.package_config_id'),
     productBindingCommitment: commitment(f.product_binding_commitment, 'MarketRegistryV8.product_binding_commitment'),
@@ -469,9 +471,6 @@ export function parseMarketRegistryV8(input, runtime, networkInput) {
     sellerPaidAtomic: uint(f.seller_paid_atomic, 128, 'MarketRegistryV8.seller_paid_atomic'),
     zeroStateCommitment: commitment(f.zero_state_commitment, 'MarketRegistryV8.zero_state_commitment'),
   };
-  if (fields.version !== MARKET_V8_VERSION) {
-    fail(MarketV8ParseError, 'MARKET_V8_VERSION_MISMATCH', 'MarketRegistryV8.version', 'Market registry version must be 8.');
-  }
   const pinned = checkedRuntime.sourceRuntime;
   for (const [field, observed, expected] of [
     ['catalog_id', fields.catalogId, pinned.catalogId],

@@ -877,6 +877,52 @@ function scalarField(fields, ...names) {
   return undefined;
 }
 
+const PHYSICAL_ASSET_SOURCE_FIELDS = Object.freeze([
+  'source_kind', 'source_id', 'source_semantic_id', 'source_content_commitment',
+  'source_treasury_id', 'pack_registry_id', 'pack_registry_revision',
+  'registered_pack_owner', 'registered_pack_control_epoch',
+  'registered_pack_admin_cap_id',
+]);
+const PHYSICAL_ASSET_STYLE_FIELDS = Object.freeze([
+  'part_key', 'item_key', 'style_key', 'layer_track_key', 'color_channel_key',
+  'default_swatch_key', 'style_asset_blob_id', 'style_asset_sha256',
+  'style_protected',
+]);
+const PHYSICAL_ASSET_RETIRED_FLAT_FIELDS = Object.freeze(
+  [...PHYSICAL_ASSET_SOURCE_FIELDS, ...PHYSICAL_ASSET_STYLE_FIELDS].flatMap((name) => [
+    name,
+    name.replace(/_([a-z])/g, (_match, letter) => letter.toUpperCase()),
+  ]),
+);
+
+function physicalAssetState(fields, label) {
+  const nested = (value) => value?.fields ?? value;
+  const source = nested(fields?.source);
+  const style = nested(fields?.style);
+  const exact = (value, expected, nestedLabel) => {
+    if (!plain(value)) fail('MAKER_V8_BROWSER_PHYSICAL_ASSET_SCHEMA_INVALID', `${nestedLabel} is required.`, 'READBACK');
+    const keys = Object.keys(value);
+    if (keys.length !== expected.length || expected.some((name) => !Object.hasOwn(value, name))) {
+      fail('MAKER_V8_BROWSER_PHYSICAL_ASSET_SCHEMA_INVALID', `${nestedLabel} has an invalid field layout.`, 'READBACK');
+    }
+  };
+  exact(source, PHYSICAL_ASSET_SOURCE_FIELDS, `${label}.source`);
+  exact(style, PHYSICAL_ASSET_STYLE_FIELDS, `${label}.style`);
+  if (PHYSICAL_ASSET_RETIRED_FLAT_FIELDS
+    .some((name) => Object.hasOwn(fields, name))) {
+    fail('MAKER_V8_BROWSER_PHYSICAL_ASSET_SCHEMA_INVALID', `${label} contains retired flat Physical fields.`, 'READBACK');
+  }
+  return { outer: fields, source, style };
+}
+
+function physicalAssetField(state, ...names) {
+  for (const fields of [state.source, state.style, state.outer]) {
+    const value = scalarField(fields, ...names);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 export function parseMakerV8MoveOptionIdV8(value, label = 'physical.sourceTreasuryId') {
   if (!Array.isArray(value) || value.length > 1) {
     fail(
@@ -936,28 +982,29 @@ function validatePhysicalCustody(descriptor, objects) {
   const assetObject = objects.find((entry) => entry.role === 'ASSET');
   const asset = assetObject?.before?.parsed ?? assetObject?.after?.parsed;
   if (asset) {
+    const assetState = physicalAssetState(asset, 'physical.asset');
     const assetTreasuryId = parseMakerV8MoveOptionIdV8(
-      scalarField(asset, 'source_treasury_id', 'sourceTreasuryId'),
+      physicalAssetField(assetState, 'source_treasury_id', 'sourceTreasuryId'),
       'physical.asset.sourceTreasuryId',
     );
     const expectedAssetTreasuryId = expectedSourceKind === 0 ? null : expected.sourceTreasuryId;
-    if (Number(scalarField(asset, 'source_kind', 'sourceKind')) !== expectedSourceKind
+    if (Number(physicalAssetField(assetState, 'source_kind', 'sourceKind')) !== expectedSourceKind
       || assetTreasuryId !== expectedAssetTreasuryId
-      || id(scalarField(asset, 'source_id', 'sourceId'), 'physical.asset.sourceId') !== expected.sourceId
-      || String(scalarField(asset, 'source_semantic_id', 'sourceSemanticId')) !== expected.sourceSemanticId
+      || id(physicalAssetField(assetState, 'source_id', 'sourceId'), 'physical.asset.sourceId') !== expected.sourceId
+      || String(physicalAssetField(assetState, 'source_semantic_id', 'sourceSemanticId')) !== expected.sourceSemanticId
       || commitmentHex(
-        scalarField(asset, 'asset_content_commitment', 'assetContentCommitment'),
+        physicalAssetField(assetState, 'asset_content_commitment', 'assetContentCommitment'),
         'physical.asset.assetContentCommitment',
       ) !== expected.assetContentCommitment
       || commitmentHex(
-        scalarField(asset, 'source_content_commitment', 'sourceContentCommitment'),
+        physicalAssetField(assetState, 'source_content_commitment', 'sourceContentCommitment'),
         'physical.asset.sourceContentCommitment',
       ) !== expected.sourceContentCommitment
       || commitmentHex(
-        scalarField(asset, 'provenance_commitment', 'provenanceCommitment'),
+        physicalAssetField(assetState, 'provenance_commitment', 'provenanceCommitment'),
         'physical.asset.provenanceCommitment',
       ) !== expected.provenanceCommitment
-      || scalarField(asset, 'transferable') !== expected.transferable) {
+      || physicalAssetField(assetState, 'transferable') !== expected.transferable) {
       fail('MAKER_V8_BROWSER_PHYSICAL_ASSET_DRIFT', 'Physical asset provenance differs from its exact listing custody binding.', 'READBACK');
     }
   }
@@ -2521,7 +2568,7 @@ const COMPANION_FIELDS = Object.freeze({
     'grossReleasedAtomic',
   ]),
   marketRegistry: Object.freeze([
-    'version', 'catalogId', 'packageConfigId', 'productBindingCommitment',
+    'catalogId', 'packageConfigId', 'productBindingCommitment',
     'callCapSetCommitment', 'rootId', 'makerVersion', 'rootContentCommitment',
     'protocolConfigId', 'protocolConfigRevision', 'protocolConfigCommitment',
     'economicsCommitment', 'rightsCommitment', 'makerMarketFeeBps',

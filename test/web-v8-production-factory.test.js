@@ -341,13 +341,24 @@ function physicalAsset(types, {
     root_id: IDs.rootId,
     maker_version: '42',
     root_content_commitment: bytes32(0xaa),
-    source_kind: String(sourceKind),
-    source_id: sourceId,
-    source_semantic_id: sourceKind === 0 ? `base-${ownershipEpoch}` : `pack-${ownershipEpoch}`,
+    source: { fields: {
+      source_kind: String(sourceKind),
+      source_id: sourceId,
+      source_semantic_id: sourceKind === 0 ? `base-${ownershipEpoch}` : `pack-${ownershipEpoch}`,
+      source_content_commitment: bytes32(60 + ownershipEpoch),
+      source_treasury_id: sourceTreasuryId ? [sourceTreasuryId] : [],
+      pack_registry_id: sourceKind === 1 ? [IDs.packRegistryId] : [],
+      pack_registry_revision: '0',
+      registered_pack_owner: [],
+      registered_pack_control_epoch: '0',
+      registered_pack_admin_cap_id: [],
+    } },
+    style: { fields: {
+      part_key: 'body', item_key: 'shirt', style_key: 'default', layer_track_key: 'body',
+      color_channel_key: [], default_swatch_key: [], style_asset_blob_id: 'asset',
+      style_asset_sha256: bytes32(49 + ownershipEpoch), style_protected: false,
+    } },
     asset_content_commitment: bytes32(50 + ownershipEpoch),
-    source_content_commitment: bytes32(60 + ownershipEpoch),
-    source_treasury_id: sourceTreasuryId ? [sourceTreasuryId] : [],
-    pack_registry_id: sourceKind === 1 ? [IDs.packRegistryId] : [],
     holder: IDs.seller,
     ownership_epoch: String(ownershipEpoch),
     transferable: true,
@@ -500,7 +511,6 @@ async function productionFixture() {
   const chainTypes = makerV8ChainTypes(runtime);
 
   const registryResponse = moveObject(market.types.marketRegistry, IDs.marketRegistryId, {
-    version: '8',
     catalog_id: runtime.catalogId,
     package_config_id: runtime.roleConfigIds.market,
     product_binding_commitment: bytes32(60),

@@ -136,7 +136,6 @@ public struct MarketTreasuryV8<phantom PaymentCoin> has key {
 /// activation can prove a concrete zero state rather than relying on absence.
 public struct MarketRegistryV8<phantom PaymentCoin> has key {
     id: UID,
-    version: u64,
     catalog_id: ID,
     package_config_id: ID,
     product_binding_commitment: vector<u8>,
@@ -427,7 +426,6 @@ fun new_market_objects<PaymentCoin>(
     );
     let registry = MarketRegistryV8<PaymentCoin> {
         id: object::new(ctx),
-        version: VERSION,
         catalog_id: config.catalog_id,
         package_config_id: object::id(config),
         product_binding_commitment: config.product_binding_commitment,
@@ -2104,7 +2102,7 @@ fun assert_market_identity<PaymentCoin>(
     root: &MakerRootV8<PaymentCoin>,
     config: &MarketPackageConfigV8,
 ) {
-    assert!(registry.version == VERSION && treasury.version == VERSION, EInvalidBinding);
+    assert!(treasury.version == VERSION, EInvalidBinding);
     maker::assert_root_identity_v8(
         root,
         registry.root_id,
@@ -3305,7 +3303,7 @@ fun destroy_market_objects_for_testing<PaymentCoin>(
     registry: MarketRegistryV8<PaymentCoin>,
     treasury: MarketTreasuryV8<PaymentCoin>,
 ) {
-    let MarketRegistryV8 { id: registry_id, version: _, catalog_id: _, package_config_id: _,
+    let MarketRegistryV8 { id: registry_id, catalog_id: _, package_config_id: _,
         product_binding_commitment: _, call_cap_set_commitment: _, root_id: _, maker_version: _,
         root_content_commitment: _, protocol_config_id: _, protocol_config_revision: _,
         protocol_config_commitment: _, economics_commitment: _, rights_commitment: _,

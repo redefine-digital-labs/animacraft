@@ -155,7 +155,6 @@ test('web runtime bridge invokes the real Market Transaction builder', {
     protocolConfig: runtime.protocolConfigId, admin: id(107), makerTreasury: id(108), seller: id(200),
   };
   const registryResponse = moveObject(client.types.marketRegistry, IDs.registry, {
-    version: '8',
     catalog_id: IDs.catalog,
     package_config_id: IDs.config,
     product_binding_commitment: bytes32(1),
@@ -402,7 +401,6 @@ test('web runtime bridge invokes the real Market Transaction builder', {
   const pre = compiled.descriptor.preState;
   const registryBefore = {
     ...snakeCounters(pre.registry),
-    version: '8',
     catalog_id: runtime.catalogId,
     package_config_id: runtime.roleConfigIds.market,
     root_id: IDs.root,

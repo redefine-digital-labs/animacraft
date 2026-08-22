@@ -286,7 +286,6 @@ async function makeFixture({ offset = 0, grossAtomic = 1_000_000n, currentEpoch 
     seller: id(200 + offset),
   };
   const registryFields = {
-    version: '8',
     catalog_id: runtimeInput.catalogId,
     package_config_id: runtimeInput.roleConfigIds.market,
     product_binding_commitment: bytes32(1),

@@ -562,9 +562,18 @@ function physicalResponse(sourceKind = 0) {
   return moveObject(makerV8ChainTypes(rt).physicalAsset, sid(300 + sourceKind), {
     version: '8', registry_id: root.binding.physicalRegistryId,
     root_id: root.objectId, maker_version: '1', root_content_commitment: hash(2),
-    source_kind: String(sourceKind), source_id: sourceKind ? sid(400) : root.binding.baseRegistryId,
-    source_semantic_id: sourceKind ? 'pack-alpha' : '', source_content_commitment: hash(20),
-    source_treasury_id: sourceKind ? [sid(401)] : [], pack_registry_id: sourceKind ? [root.binding.packRegistryId] : [],
+    source: { fields: {
+      source_kind: String(sourceKind), source_id: sourceKind ? sid(400) : root.binding.baseRegistryId,
+      source_semantic_id: sourceKind ? 'pack-alpha' : '', source_content_commitment: hash(20),
+      source_treasury_id: sourceKind ? [sid(401)] : [], pack_registry_id: sourceKind ? [root.binding.packRegistryId] : [],
+      pack_registry_revision: '0', registered_pack_owner: [], registered_pack_control_epoch: '0',
+      registered_pack_admin_cap_id: [],
+    } },
+    style: { fields: {
+      part_key: 'body', item_key: 'shirt', style_key: 'default', layer_track_key: 'body',
+      color_channel_key: [], default_swatch_key: [], style_asset_blob_id: 'asset',
+      style_asset_sha256: hash(21), style_protected: false,
+    } },
     holder: wallet, ownership_epoch: '2', transferable: true,
   });
 }
@@ -578,10 +587,27 @@ test('Physical inventory infers Base versus Pack only from verified custody fiel
   assert.equal(pack.source, 'PACK');
   assert.equal(pack.sourceTreasuryId, sid(401));
   const forged = physicalResponse(0);
-  forged.data.content.fields.source_treasury_id = [sid(401)];
+  forged.data.content.fields.source.fields.source_treasury_id = [sid(401)];
   assert.throws(
     () => parsePhysicalAssetV8(forged, runtime(), wallet, root),
     (error) => error.code === 'MAKER_V8_PHYSICAL_SOURCE_MISMATCH',
+  );
+
+  const flatConflict = physicalResponse(0);
+  flatConflict.data.content.fields.sourceKind = '1';
+  assert.throws(
+    () => parsePhysicalAssetV8(flatConflict, runtime(), wallet, root),
+    (error) => error.code === 'MAKER_V8_PHYSICAL_FIELDS_LEGACY',
+  );
+
+  const flatOnly = physicalResponse(0);
+  const flatFields = flatOnly.data.content.fields;
+  Object.assign(flatFields, flatFields.source.fields, flatFields.style.fields);
+  delete flatFields.source;
+  delete flatFields.style;
+  assert.throws(
+    () => parsePhysicalAssetV8(flatOnly, runtime(), wallet, root),
+    (error) => error.code === 'MAKER_V8_CHAIN_FIELDS_INVALID',
   );
 });
 
