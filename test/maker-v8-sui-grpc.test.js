@@ -2,9 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
 import { GrpcTypes } from '@mysten/sui/grpc';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { MultiSigPublicKey } from '@mysten/sui/multisig';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
+import { getZkLoginSignature } from '@mysten/sui/zklogin';
 import { RpcError } from '@protobuf-ts/runtime-rpc';
 import {
+  fromBase64,
   fromHex,
   normalizeStructTag,
   toBase58,
@@ -27,7 +31,10 @@ import {
 
 const objectId = (byte) => `0x${byte.repeat(64)}`;
 const digest = (byte) => toBase58(new Uint8Array(32).fill(byte));
-const OWNER = objectId('1');
+const SENDER_KEYPAIR = Ed25519Keypair.fromSecretKey(new Uint8Array(32).fill(1));
+const SPONSOR_KEYPAIR = Ed25519Keypair.fromSecretKey(new Uint8Array(32).fill(2));
+const ATTACKER_KEYPAIR = Ed25519Keypair.fromSecretKey(new Uint8Array(32).fill(3));
+const OWNER = SENDER_KEYPAIR.toSuiAddress();
 const PARENT = objectId('2');
 const OBJECT = objectId('3');
 const PACKAGE = objectId('4');
@@ -127,7 +134,7 @@ const TRANSACTION_EFFECTS = {
 };
 const TRANSACTION_EFFECTS_BCS = bcs.TransactionEffects.serialize(TRANSACTION_EFFECTS).toBytes();
 const EFFECTS_DIGEST = typedDigest('TransactionEffects', TRANSACTION_EFFECTS_BCS);
-const USER_SIGNATURE_BCS = new Uint8Array(97).fill(33);
+const USER_SIGNATURE_BCS = fromBase64((await SENDER_KEYPAIR.signTransaction(TRANSACTION_BCS)).signature);
 
 function moveObject(overrides = {}) {
   return {
@@ -201,6 +208,56 @@ function rawTransaction(overrides = {}) {
     },
     ...overrides,
   };
+}
+
+async function installSignedTransaction(fixture, {
+  senderKeypair = SENDER_KEYPAIR,
+  gasOwnerKeypair = senderKeypair,
+  senderAddress = senderKeypair.toSuiAddress(),
+  gasOwnerAddress = gasOwnerKeypair.toSuiAddress(),
+  signerKeypairs = senderKeypair === gasOwnerKeypair
+    ? [senderKeypair]
+    : [senderKeypair, gasOwnerKeypair],
+  signatureBytes = null,
+  signatureFactory = null,
+} = {}) {
+  const transactionData = structuredClone(TRANSACTION_DATA);
+  transactionData.V1.sender = senderAddress;
+  transactionData.V1.gasData.owner = gasOwnerAddress;
+  const transactionBcs = bcs.TransactionData.serialize(transactionData).toBytes();
+  const transactionDigest = TransactionDataBuilder.getDigestFromBytes(transactionBcs);
+  const signatures = signatureBytes
+    ?? (signatureFactory
+      ? await signatureFactory(transactionBcs)
+      : await Promise.all(
+        signerKeypairs.map(async (keypair) => fromBase64(
+          (await keypair.signTransaction(transactionBcs)).signature,
+        )),
+      ));
+  const transactionEffects = structuredClone(TRANSACTION_EFFECTS);
+  transactionEffects.V1.transactionDigest = transactionDigest;
+  transactionEffects.V1.gasObject[1] = { AddressOwner: gasOwnerAddress };
+  const transactionEffectsBcs = bcs.TransactionEffects.serialize(transactionEffects).toBytes();
+  fixture.values.transaction = rawTransaction({
+    digest: transactionDigest,
+    transaction: {
+      digest: transactionDigest,
+      bcs: { name: 'TransactionData', value: transactionBcs },
+    },
+    signatures: signatures.map((value) => ({
+      bcs: { name: 'UserSignatureBytes', value },
+    })),
+    effects: {
+      bcs: { name: 'TransactionEffects', value: transactionEffectsBcs },
+      digest: typedDigest('TransactionEffects', transactionEffectsBcs),
+      version: 1,
+      status: { success: true },
+      epoch: 91n,
+      transactionDigest,
+      eventsDigest: EVENTS_DIGEST,
+    },
+  });
+  return Object.freeze({ transactionData, transactionBcs, transactionDigest, signatures });
 }
 
 function graphqlEvent(sequenceNumber = 3, overrides = {}) {
@@ -704,6 +761,175 @@ test('raw finalized transaction evidence binds checkpoint, transaction/signature
   await rejects(
     (value) => { value.events.bcs.value = concatBytes(value.events.bcs.value, Uint8Array.of(0)); },
     'MAKER_V8_SUI_GRPC_BCS_NONCANONICAL',
+  );
+});
+
+test('finalized evidence accepts exact sender-only and sponsored ED25519 signer multisets', async () => {
+  const senderOnly = fixtures();
+  const senderOnlyTransaction = await installSignedTransaction(senderOnly);
+  const senderOnlyEvidence = await senderOnly.transport.getFinalizedTransactionEvidence({
+    digest: senderOnlyTransaction.transactionDigest,
+  });
+  assert.equal(senderOnlyEvidence.signatures.length, 1);
+
+  const sponsored = fixtures();
+  const sponsoredTransaction = await installSignedTransaction(sponsored, {
+    gasOwnerKeypair: SPONSOR_KEYPAIR,
+    signerKeypairs: [SPONSOR_KEYPAIR, SENDER_KEYPAIR],
+  });
+  const sponsoredEvidence = await sponsored.transport.getFinalizedTransactionEvidence({
+    digest: sponsoredTransaction.transactionDigest,
+  });
+  assert.equal(sponsoredEvidence.signatures.length, 2);
+});
+
+test('serialized signatures reject malformed flags, trailing bytes, noncanonical BCS, and ZkLogin', async () => {
+  const malformedFlag = fixtures();
+  const malformedBytes = new Uint8Array(USER_SIGNATURE_BCS);
+  malformedBytes[0] = 4;
+  const malformedTransaction = await installSignedTransaction(malformedFlag, {
+    signatureBytes: [malformedBytes],
+  });
+  await assert.rejects(
+    malformedFlag.transport.getFinalizedTransactionEvidence({
+      digest: malformedTransaction.transactionDigest,
+    }),
+    code('MAKER_V8_SUI_GRPC_SIGNATURE_BCS_INVALID'),
+  );
+
+  const trailing = fixtures();
+  const trailingTransaction = await installSignedTransaction(trailing, {
+    signatureBytes: [concatBytes(USER_SIGNATURE_BCS, Uint8Array.of(0))],
+  });
+  await assert.rejects(
+    trailing.transport.getFinalizedTransactionEvidence({ digest: trailingTransaction.transactionDigest }),
+    code('MAKER_V8_SUI_GRPC_SIGNATURE_BCS_NONCANONICAL'),
+  );
+
+  const multisigPublicKey = MultiSigPublicKey.fromPublicKeys({
+    threshold: 1,
+    publicKeys: [{ publicKey: SENDER_KEYPAIR.getPublicKey(), weight: 1 }],
+  });
+  const multisig = fixtures();
+  const multisigTransaction = await installSignedTransaction(multisig, {
+    senderAddress: multisigPublicKey.toSuiAddress(),
+    gasOwnerAddress: multisigPublicKey.toSuiAddress(),
+    signatureFactory: async (transactionBcs) => {
+      const partial = await SENDER_KEYPAIR.signTransaction(transactionBcs);
+      return [fromBase64(multisigPublicKey.combinePartialSignatures([partial.signature]))];
+    },
+  });
+  const multisigEvidence = await multisig.transport.getFinalizedTransactionEvidence({
+    digest: multisigTransaction.transactionDigest,
+  });
+  assert.equal(multisigEvidence.signatures.length, 1);
+  const canonicalMultisig = multisig.values.transaction.signatures[0].bcs.value;
+  const overlongUlebMultisig = new Uint8Array(canonicalMultisig.length + 1);
+  overlongUlebMultisig[0] = canonicalMultisig[0];
+  overlongUlebMultisig.set([0x81, 0], 1);
+  overlongUlebMultisig.set(canonicalMultisig.slice(2), 3);
+  multisig.values.transaction.signatures[0].bcs.value = overlongUlebMultisig;
+  await assert.rejects(
+    multisig.transport.getFinalizedTransactionEvidence({ digest: multisigTransaction.transactionDigest }),
+    code('MAKER_V8_SUI_GRPC_SIGNATURE_BCS_NONCANONICAL'),
+  );
+  multisig.values.transaction.signatures[0].bcs.value = concatBytes(
+    canonicalMultisig,
+    Uint8Array.of(0),
+  );
+  await assert.rejects(
+    multisig.transport.getFinalizedTransactionEvidence({ digest: multisigTransaction.transactionDigest }),
+    code('MAKER_V8_SUI_GRPC_SIGNATURE_BCS_NONCANONICAL'),
+  );
+
+  const zkLogin = fixtures();
+  const zkLoginSignature = fromBase64(getZkLoginSignature({
+    inputs: {
+      proofPoints: {
+        a: ['1', '2', '1'],
+        b: [['1', '2'], ['1', '2'], ['1', '2']],
+        c: ['1', '2', '1'],
+      },
+      issBase64Details: { value: 'ImlzcyI6ImFiYyIs', indexMod4: 0 },
+      headerBase64: 'e30',
+      addressSeed: '1',
+    },
+    maxEpoch: '999',
+    userSignature: USER_SIGNATURE_BCS,
+  }));
+  const zkLoginTransaction = await installSignedTransaction(zkLogin, {
+    signatureBytes: [zkLoginSignature],
+  });
+  await assert.rejects(
+    zkLogin.transport.getFinalizedTransactionEvidence({ digest: zkLoginTransaction.transactionDigest }),
+    code('MAKER_V8_SUI_GRPC_SIGNATURE_SCHEME_UNSUPPORTED'),
+  );
+});
+
+test('serialized signatures must verify offline over the exact canonical TransactionData BCS', async () => {
+  const wrongTransaction = fixtures();
+  const wrongTransactionSignature = fromBase64(
+    (await SENDER_KEYPAIR.signTransaction(Uint8Array.of(9, 8, 7))).signature,
+  );
+  const wrongTransactionData = await installSignedTransaction(wrongTransaction, {
+    signatureBytes: [wrongTransactionSignature],
+  });
+  await assert.rejects(
+    wrongTransaction.transport.getFinalizedTransactionEvidence({
+      digest: wrongTransactionData.transactionDigest,
+    }),
+    code('MAKER_V8_SUI_GRPC_SIGNATURE_VERIFICATION_FAILED'),
+  );
+
+  const corrupted = fixtures();
+  const corruptedSignature = new Uint8Array(USER_SIGNATURE_BCS);
+  corruptedSignature[1] ^= 0x80;
+  const corruptedTransaction = await installSignedTransaction(corrupted, {
+    signatureBytes: [corruptedSignature],
+  });
+  await assert.rejects(
+    corrupted.transport.getFinalizedTransactionEvidence({ digest: corruptedTransaction.transactionDigest }),
+    code('MAKER_V8_SUI_GRPC_SIGNATURE_VERIFICATION_FAILED'),
+  );
+});
+
+test('finalized evidence rejects wrong, duplicate, missing, and extra signer signatures', async () => {
+  const wrongSigner = fixtures();
+  const wrongSignerTransaction = await installSignedTransaction(wrongSigner, {
+    signerKeypairs: [ATTACKER_KEYPAIR],
+  });
+  await assert.rejects(
+    wrongSigner.transport.getFinalizedTransactionEvidence({ digest: wrongSignerTransaction.transactionDigest }),
+    code('MAKER_V8_SUI_GRPC_SIGNATURE_SIGNER_EXTRA'),
+  );
+
+  const duplicate = fixtures();
+  const duplicateTransaction = await installSignedTransaction(duplicate, {
+    gasOwnerKeypair: SPONSOR_KEYPAIR,
+    signerKeypairs: [SENDER_KEYPAIR, SENDER_KEYPAIR],
+  });
+  await assert.rejects(
+    duplicate.transport.getFinalizedTransactionEvidence({ digest: duplicateTransaction.transactionDigest }),
+    code('MAKER_V8_SUI_GRPC_SIGNATURE_SIGNER_DUPLICATE'),
+  );
+
+  const missing = fixtures();
+  const missingTransaction = await installSignedTransaction(missing, {
+    gasOwnerKeypair: SPONSOR_KEYPAIR,
+    signerKeypairs: [SENDER_KEYPAIR],
+  });
+  await assert.rejects(
+    missing.transport.getFinalizedTransactionEvidence({ digest: missingTransaction.transactionDigest }),
+    code('MAKER_V8_SUI_GRPC_SIGNATURE_SIGNER_MISSING'),
+  );
+
+  const extra = fixtures();
+  const extraTransaction = await installSignedTransaction(extra, {
+    signerKeypairs: [SENDER_KEYPAIR, ATTACKER_KEYPAIR],
+  });
+  await assert.rejects(
+    extra.transport.getFinalizedTransactionEvidence({ digest: extraTransaction.transactionDigest }),
+    code('MAKER_V8_SUI_GRPC_SIGNATURE_SIGNER_EXTRA'),
   );
 });
 

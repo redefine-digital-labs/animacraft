@@ -1,7 +1,10 @@
 import { SuiGraphQLClient, isSuiGraphQLClient } from '@mysten/sui/graphql';
 import { GrpcTypes, SuiGrpcClient, isSuiGrpcClient } from '@mysten/sui/grpc';
 import { bcs, TypeTagSerializer } from '@mysten/sui/bcs';
+import { parseSerializedSignature, toSerializedSignature } from '@mysten/sui/cryptography';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
+import { publicKeyFromRawBytes, verifyTransactionSignature } from '@mysten/sui/verify';
+import { getZkLoginSignature } from '@mysten/sui/zklogin';
 import {
   fromBase58,
   fromBase64,
@@ -214,6 +217,84 @@ function canonicalBcs(container, expectedName, schema, label) {
     fail('MAKER_V8_SUI_GRPC_BCS_NONCANONICAL', `${label}.value is not canonical ${expectedName} BCS.`);
   }
   return Object.freeze({ bytes: encoded, parsed });
+}
+
+function signatureEnumKind(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (typeof value.$kind === 'string') return value.$kind;
+  return Object.keys(value).find((key) => key !== '$kind') ?? null;
+}
+
+function canonicalSerializedSignature(encoded, label) {
+  const serializedSignature = toBase64(encoded);
+  let parsed;
+  let roundtrip;
+  try {
+    parsed = parseSerializedSignature(serializedSignature);
+    switch (parsed.signatureScheme) {
+      case 'ED25519':
+      case 'Secp256k1':
+      case 'Secp256r1': {
+        if (parsed.signature.length !== 64) {
+          roundtrip = new Uint8Array();
+          break;
+        }
+        const publicKey = publicKeyFromRawBytes(parsed.signatureScheme, parsed.publicKey);
+        roundtrip = fromBase64(toSerializedSignature({
+          signatureScheme: parsed.signatureScheme,
+          signature: parsed.signature,
+          publicKey,
+        }));
+        break;
+      }
+      case 'MultiSig': {
+        const payload = bcs.MultiSig.serialize(parsed.multisig, { maxSize: 8192 }).toBytes();
+        roundtrip = new Uint8Array(payload.length + 1);
+        roundtrip[0] = encoded[0];
+        roundtrip.set(payload, 1);
+        break;
+      }
+      case 'Passkey': {
+        const payload = bcs.PasskeyAuthenticator.serialize({
+          authenticatorData: parsed.authenticatorData,
+          clientDataJson: parsed.clientDataJson,
+          userSignature: parsed.userSignature,
+        }).toBytes();
+        roundtrip = new Uint8Array(payload.length + 1);
+        roundtrip[0] = encoded[0];
+        roundtrip.set(payload, 1);
+        break;
+      }
+      case 'ZkLogin':
+        roundtrip = fromBase64(getZkLoginSignature(parsed.zkLogin));
+        break;
+      default:
+        throw new Error(`Unsupported signature scheme ${parsed.signatureScheme}`);
+    }
+  } catch (cause) {
+    fail('MAKER_V8_SUI_GRPC_SIGNATURE_BCS_INVALID', `${label}.value is not one valid serialized Sui signature.`, {
+      cause: String(cause?.message ?? cause),
+    });
+  }
+  if (!sameBytes(encoded, roundtrip)) {
+    fail(
+      'MAKER_V8_SUI_GRPC_SIGNATURE_BCS_NONCANONICAL',
+      `${label}.value is not one canonical serialized Sui signature.`,
+    );
+  }
+  const multisigUsesZkLogin = parsed.signatureScheme === 'MultiSig'
+    && (parsed.multisig.sigs.some((signature) => signatureEnumKind(signature) === 'ZkLogin')
+      || parsed.multisig.multisig_pk.pk_map.some(
+        ({ pubKey }) => signatureEnumKind(pubKey) === 'ZkLogin',
+      ));
+  if (parsed.signatureScheme === 'ZkLogin' || multisigUsesZkLogin) {
+    fail(
+      'MAKER_V8_SUI_GRPC_SIGNATURE_SCHEME_UNSUPPORTED',
+      `${label}.value uses a signature scheme that cannot be verified offline.`,
+      { signatureScheme: parsed.signatureScheme },
+    );
+  }
+  return Object.freeze({ serializedSignature, signatureScheme: parsed.signatureScheme });
 }
 
 function bcsOwner(owner, label) {
@@ -602,7 +683,7 @@ function checkpoint(response, requested) {
   });
 }
 
-export function normalizeMakerV8FinalizedTransactionEvidence(transaction, expectedDigest) {
+export async function normalizeMakerV8FinalizedTransactionEvidence(transaction, expectedDigest) {
   sdkMessage(transaction, GrpcTypes.ExecutedTransaction, 'transaction');
   const observedDigest = digest(transaction.digest, 'transaction.digest');
   if (observedDigest !== expectedDigest) {
@@ -623,6 +704,18 @@ export function normalizeMakerV8FinalizedTransactionEvidence(transaction, expect
   if (TransactionDataBuilder.getDigestFromBytes(transactionBcs) !== expectedDigest) {
     fail('MAKER_V8_SUI_GRPC_TRANSACTION_BCS_DRIFT', 'TransactionData BCS does not derive the requested digest.');
   }
+  if (transactionEvidence.parsed.$kind !== 'V1' || !transactionEvidence.parsed.V1) {
+    fail(
+      'MAKER_V8_SUI_GRPC_TRANSACTION_BCS_UNSUPPORTED',
+      'Finalized transaction does not contain supported TransactionData.V1 BCS.',
+    );
+  }
+  const sender = address(transactionEvidence.parsed.V1.sender, 'transaction.transaction.bcs.V1.sender');
+  const gasOwner = address(
+    transactionEvidence.parsed.V1.gasData?.owner,
+    'transaction.transaction.bcs.V1.gasData.owner',
+  );
+  const requiredSigners = sender === gasOwner ? [sender] : [sender, gasOwner];
   if (!Array.isArray(transaction.signatures) || transaction.signatures.length === 0) {
     fail('MAKER_V8_SUI_GRPC_SIGNATURES_INVALID', 'Finalized transaction has no exact user signature BCS.');
   }
@@ -634,6 +727,48 @@ export function normalizeMakerV8FinalizedTransactionEvidence(transaction, expect
       `transaction.signatures[${index}].bcs`,
     );
   });
+  const observedSigners = new Set();
+  for (let index = 0; index < signatureBcs.length; index += 1) {
+    const label = `transaction.signatures[${index}].bcs`;
+    const canonical = canonicalSerializedSignature(signatureBcs[index], label);
+    let publicKey;
+    try {
+      publicKey = await verifyTransactionSignature(transactionBcs, canonical.serializedSignature);
+    } catch (cause) {
+      fail(
+        'MAKER_V8_SUI_GRPC_SIGNATURE_VERIFICATION_FAILED',
+        `${label}.value is not a valid offline signature over exact TransactionData BCS.`,
+        {
+          signatureScheme: canonical.signatureScheme,
+          cause: String(cause?.message ?? cause),
+        },
+      );
+    }
+    const signer = address(publicKey.toSuiAddress(), `${label}.signer`);
+    if (observedSigners.has(signer)) {
+      fail(
+        'MAKER_V8_SUI_GRPC_SIGNATURE_SIGNER_DUPLICATE',
+        'Finalized transaction contains more than one signature from the same signer.',
+        { signer },
+      );
+    }
+    if (!requiredSigners.includes(signer)) {
+      fail(
+        'MAKER_V8_SUI_GRPC_SIGNATURE_SIGNER_EXTRA',
+        'Finalized transaction contains a signature from an unrequired signer.',
+        { signer, requiredSigners },
+      );
+    }
+    observedSigners.add(signer);
+  }
+  const missingSigners = requiredSigners.filter((signer) => !observedSigners.has(signer));
+  if (missingSigners.length > 0) {
+    fail(
+      'MAKER_V8_SUI_GRPC_SIGNATURE_SIGNER_MISSING',
+      'Finalized transaction is missing one or more required signer signatures.',
+      { missingSigners, requiredSigners },
+    );
+  }
   const effects = sdkMessage(transaction.effects, GrpcTypes.TransactionEffects, 'transaction.effects');
   const effectsStatus = sdkMessage(effects.status, GrpcTypes.ExecutionStatus, 'transaction.effects.status');
   if (effectsStatus.success !== true || effectsStatus.error !== undefined) {
@@ -1026,7 +1161,7 @@ export function createMakerV8SuiGrpcTransport({
       }
       throw error;
     }
-    return normalizeMakerV8FinalizedTransactionEvidence(response.transaction, expectedDigest);
+    return await normalizeMakerV8FinalizedTransactionEvidence(response.transaction, expectedDigest);
   };
 
   const discoverEvents = async ({ type, cursor = null, limit = 50, order = 'descending', signal } = {}) => {
