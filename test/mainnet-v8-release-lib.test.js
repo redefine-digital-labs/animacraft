@@ -19,6 +19,7 @@ import {
   MAINNET_V8_ROLE_DEPENDENCIES,
   MAINNET_V8_ROLE_ORDER,
   MAINNET_V8_SOURCE_ARTIFACT_DOMAIN,
+  MAINNET_V8_SUI_VERSION,
   MainnetV8ReleaseError,
   appendReleaseWal,
   appendMainnetV8ReleaseWal,
@@ -58,7 +59,7 @@ const hash = (value) => createHash('sha256').update(value).digest('hex');
 const clone = (value) => structuredClone(value);
 const sourceRevision = Object.freeze({ gitCommit: 'a'.repeat(40), gitTree: 'b'.repeat(40), clean: true });
 const toolchain = Object.freeze({
-  suiVersion: '1.77.2-51d177ad7d65',
+  suiVersion: '1.77.2',
   suiBinarySha256: 'c'.repeat(64),
   frameworkRevision: '73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1',
 });
@@ -128,6 +129,26 @@ function fixturePlan() {
   });
 }
 
+function readyPublishEvidence(index, extra = {}) {
+  const artifact = artifacts(MAINNET_V8_ROLE_ORDER[index], index);
+  return {
+    ...extra,
+    packageArtifact: artifact.packageArtifact,
+    packageCommitment: artifact.packageCommitment,
+  };
+}
+
+function finalizedPublishEvidence(index, extra = {}) {
+  const artifact = artifacts(MAINNET_V8_ROLE_ORDER[index], index);
+  return {
+    ...readyPublishEvidence(index),
+    success: true,
+    abiArtifact: artifact.abiArtifact,
+    abiCommitment: artifact.abiCommitment,
+    ...extra,
+  };
+}
+
 function expectCode(code) {
   return (error) => error instanceof MainnetV8ReleaseError && error.code === code;
 }
@@ -176,6 +197,7 @@ test('the seven roles, direct dependency DAG, package names, and ten release ord
 test('source artifacts bind the exact source set, release revision, toolchain, sizes, and hashes', () => {
   const artifact = artifacts('core', 0).sourceArtifact;
   assert.equal(artifact.domain, MAINNET_V8_SOURCE_ARTIFACT_DOMAIN);
+  assert.equal(artifact.toolchain.suiVersion, MAINNET_V8_SUI_VERSION);
   assert.deepEqual(artifact.files.map(({ path }) => path), [
     'Move.lock', 'Move.toml', 'sources/alpha.move', 'sources/zeta.move',
   ]);
@@ -192,6 +214,9 @@ test('source artifacts bind the exact source set, release revision, toolchain, s
   const pathTamper = clone(artifact);
   pathTamper.files[2].path = '../alpha.move';
   assert.throws(() => assertMainnetV8SourceArtifact(pathTamper), expectCode('MAINNET_V8_SOURCE_PATH_INVALID'));
+  const binaryCommitVersion = clone(artifact);
+  binaryCommitVersion.toolchain.suiVersion = '1.77.2-51d177ad7d65';
+  assert.throws(() => assertMainnetV8SourceArtifact(binaryCommitVersion), expectCode('MAINNET_V8_TOOLCHAIN_INVALID'));
 });
 
 test('package artifacts bind exact module bytes, normalized dependencies, and build digest', () => {
@@ -258,13 +283,15 @@ test('Seal policy commitments bind only immutable semantic policy and reject inv
   assert.throws(() => assertMainnetV8SealPolicy(commitmentTamper), expectCode('MAINNET_V8_SEAL_POLICY_INVALID'));
 });
 
-test('releaseId binds exact Mainnet, sender, clean Git revision, protocol 133, USDC, Seal, and all seven artifacts', () => {
+test('releaseId binds exact Mainnet, sender, clean Git revision, protocol 133, USDC, Seal, and seven source artifacts only', () => {
   const plan = fixturePlan();
   assert.equal(plan.chain.chainIdentifier, MAINNET_V8_CHAIN_IDENTIFIER);
   assert.equal(plan.chain.legacyChainIdentifier, MAINNET_V8_LEGACY_CHAIN_IDENTIFIER);
   assert.equal(plan.paymentCoinType, MAINNET_V8_PAYMENT_COIN_TYPE);
   assert.equal(plan.packages.length, 7);
-  assert.equal(plan.packages.some((entry) => Object.hasOwn(entry, 'abiArtifact') || Object.hasOwn(entry, 'abiCommitment')), false);
+  assert.equal(plan.packages.some((entry) => [
+    'packageArtifact', 'packageCommitment', 'abiArtifact', 'abiCommitment',
+  ].some((field) => Object.hasOwn(entry, field))), false);
   assert.equal(plan.releaseId, sha256MainnetV8Json(Object.fromEntries(
     Object.entries(plan).filter(([key]) => key !== 'releaseId'),
   )));
@@ -275,11 +302,25 @@ test('releaseId binds exact Mainnet, sender, clean Git revision, protocol 133, U
   dirty.sourceRevision.clean = false;
   assert.throws(() => assertMainnetV8ReleasePlan(dirty), expectCode('MAINNET_V8_PLAN_INVALID'));
   const artifactTamper = clone(plan);
-  artifactTamper.packages[3].packageArtifact.modules[0].bytesBase64 = 'AQID';
+  artifactTamper.packages[3].sourceArtifact.files[0].sha256 = 'd'.repeat(64);
   artifactTamper.releaseId = sha256MainnetV8Json(Object.fromEntries(
     Object.entries(artifactTamper).filter(([key]) => key !== 'releaseId'),
   ));
-  assert.throws(() => assertMainnetV8ReleasePlan(artifactTamper), expectCode('MAINNET_V8_PACKAGE_ARTIFACT_INVALID'));
+  assert.throws(() => assertMainnetV8ReleasePlan(artifactTamper), expectCode('MAINNET_V8_PLAN_INVALID'));
+
+  const rebuiltInputs = MAINNET_V8_ROLE_ORDER.map((role, index) => {
+    const entry = artifacts(role, index);
+    entry.packageArtifact = buildMainnetV8PackageArtifact({
+      role, modules: [{ name: 'changed', bytes: Uint8Array.of(99, index) }],
+      dependencies: [id(index + 40)], buildDigest: String(index + 1).repeat(64).slice(0, 64),
+    });
+    entry.packageCommitment = mainnetV8PackageCommitment(entry.packageArtifact);
+    return entry;
+  });
+  const sameSourcePlan = buildMainnetV8ReleasePlan({
+    sender: id(173), sourceRevision, toolchain, sealPolicy: plan.sealPolicy, packages: rebuiltInputs,
+  });
+  assert.equal(sameSourcePlan.releaseId, plan.releaseId);
 });
 
 test('Published.toml renderer/parser roundtrips the exact deterministic Sui ephemeral prefix', async () => {
@@ -309,7 +350,8 @@ test('fsync WAL is hash-linked, append-only, atomically replaced, and CAS protec
   const path = join(root, 'release.json');
   const plan = fixturePlan();
   let wal = await createMainnetV8ReleaseWal(path, plan, {
-    recordedAt: '2026-08-22T00:00:00.000Z', evidence: { transactionDataSha256: '1'.repeat(64) },
+    recordedAt: '2026-08-22T00:00:00.000Z',
+    evidence: readyPublishEvidence(0, { transactionDataSha256: '1'.repeat(64) }),
   });
   assert.equal(wal.revision, '1');
   assert.equal(wal.events[0].status, 'READY');
@@ -319,32 +361,32 @@ test('fsync WAL is hash-linked, append-only, atomically replaced, and CAS protec
   wal = await appendMainnetV8ReleaseWal(path, {
     expectedRevision: wal.revision,
     expectedHeadEventSha256: wal.headEventSha256,
-    ordinal: '0', status: 'SIGNED', recordedAt: '2026-08-22T00:00:01.000Z',
+    ordinal: '0', attempt: '0', status: 'SIGNED', recordedAt: '2026-08-22T00:00:01.000Z',
     evidence: { signedTransactionSha256: '2'.repeat(64) },
   });
   wal = await appendMainnetV8ReleaseWal(path, {
     expectedRevision: wal.revision,
     expectedHeadEventSha256: wal.headEventSha256,
-    ordinal: '0', status: 'OUTCOME_PENDING', recordedAt: '2026-08-22T00:00:02.000Z',
+    ordinal: '0', attempt: '0', status: 'OUTCOME_PENDING', recordedAt: '2026-08-22T00:00:02.000Z',
     evidence: { digest: 'pending' },
   });
   wal = await appendMainnetV8ReleaseWal(path, {
     expectedRevision: wal.revision,
     expectedHeadEventSha256: wal.headEventSha256,
-    ordinal: '0', status: 'OUTCOME_PENDING', recordedAt: '2026-08-22T00:00:03.000Z',
+    ordinal: '0', attempt: '0', status: 'OUTCOME_PENDING', recordedAt: '2026-08-22T00:00:03.000Z',
     evidence: { digest: 'same-bytes-rebroadcast' },
   });
   wal = await appendMainnetV8ReleaseWal(path, {
     expectedRevision: wal.revision,
     expectedHeadEventSha256: wal.headEventSha256,
-    ordinal: '0', status: 'FINALIZED', recordedAt: '2026-08-22T00:00:04.000Z',
-    evidence: { success: true, certificateSha256: '3'.repeat(64) },
+    ordinal: '0', attempt: '0', status: 'FINALIZED_SUCCESS', recordedAt: '2026-08-22T00:00:04.000Z',
+    evidence: finalizedPublishEvidence(0, { certificateSha256: '3'.repeat(64) }),
   });
   wal = await appendMainnetV8ReleaseWal(path, {
     expectedRevision: wal.revision,
     expectedHeadEventSha256: wal.headEventSha256,
-    ordinal: '1', status: 'READY', recordedAt: '2026-08-22T00:00:05.000Z',
-    evidence: { transactionDataSha256: '4'.repeat(64) },
+    ordinal: '1', attempt: '0', status: 'READY', recordedAt: '2026-08-22T00:00:05.000Z',
+    evidence: readyPublishEvidence(1, { transactionDataSha256: '4'.repeat(64) }),
   });
   assert.equal(wal.revision, '6');
   assert.equal(wal.events.length, 6);
@@ -354,7 +396,7 @@ test('fsync WAL is hash-linked, append-only, atomically replaced, and CAS protec
 
   await assert.rejects(() => appendMainnetV8ReleaseWal(path, {
     expectedRevision: '1', expectedHeadEventSha256: firstHead,
-    ordinal: '1', status: 'SIGNED', evidence: {},
+    ordinal: '1', attempt: '0', status: 'SIGNED', evidence: {},
   }), expectCode('MAINNET_V8_WAL_CAS_MISMATCH'));
   assert.deepEqual(await readMainnetV8ReleaseWal(path), wal);
 
@@ -371,14 +413,17 @@ test('runner-facing WAL aliases accept object CAS events and durably include opt
   let wal = await createReleaseWal({
     path,
     plan,
-    event: { status: 'READY', recordedAt: '2026-08-22T01:00:00.000Z', evidence: { prepared: true } },
+    event: {
+      status: 'READY', recordedAt: '2026-08-22T01:00:00.000Z',
+      evidence: readyPublishEvidence(0, { prepared: true }),
+    },
   });
   wal = await appendReleaseWal({
     path,
     expectedRevision: wal.revision,
     expectedHeadHash: wal.headEventSha256,
     event: {
-      ordinal: '0', status: 'SIGNED', recordedAt: '2026-08-22T01:00:01.000Z',
+      ordinal: '0', attempt: '0', status: 'SIGNED', recordedAt: '2026-08-22T01:00:01.000Z',
       evidence: { transactionDataSha256: 'a'.repeat(64) },
     },
     blobs: { signedTransaction: { encoding: 'BASE64', data: 'AQID' } },
@@ -387,4 +432,58 @@ test('runner-facing WAL aliases accept object CAS events and durably include opt
     signedTransaction: { encoding: 'BASE64', data: 'AQID' },
   });
   assert.deepEqual(await readReleaseWal({ path }), wal);
+});
+
+test('WAL query-first matrix retains unknown attempts and retries failure/expiry only on the same ordinal', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'animacraft-v8-attempt-wal-'));
+  const path = join(root, 'attempts.json');
+  let wal = await createMainnetV8ReleaseWal(path, fixturePlan(), {
+    recordedAt: '2026-08-22T02:00:00.000Z',
+    evidence: readyPublishEvidence(0, { prepared: 'attempt-0' }),
+  });
+  let tick = 1;
+  const next = async (status, attempt, evidence = {}, ordinal = '0') => {
+    wal = await appendMainnetV8ReleaseWal(path, {
+      expectedRevision: wal.revision,
+      expectedHeadEventSha256: wal.headEventSha256,
+      ordinal,
+      attempt,
+      status,
+      evidence,
+      recordedAt: `2026-08-22T02:00:${String(tick++).padStart(2, '0')}.000Z`,
+    });
+  };
+
+  await next('SIGNED', '0', { signed: true });
+  await next('OUTCOME_PENDING', '0', { queryFirst: true });
+  await next('OUTCOME_UNKNOWN', '0', { retryableUnknown: true });
+  await assert.rejects(() => appendMainnetV8ReleaseWal(path, {
+    expectedRevision: wal.revision,
+    expectedHeadEventSha256: wal.headEventSha256,
+    ordinal: '1', attempt: '0', status: 'READY',
+    evidence: readyPublishEvidence(1),
+    recordedAt: '2026-08-22T02:00:59.000Z',
+  }), expectCode('MAINNET_V8_WAL_TRANSITION_INVALID'));
+  await next('OUTCOME_PENDING', '0', { queriedBeforeRebroadcast: true });
+  await next('BROADCAST_ACCEPTED', '0', { accepted: true });
+  await next('OUTCOME_PENDING', '0', { queriedAfterAccepted: true });
+  await next('FINALIZED_FAILURE', '0', readyPublishEvidence(0, { failure: { code: 'MOVE_ABORT' } }));
+
+  await assert.rejects(() => appendMainnetV8ReleaseWal(path, {
+    expectedRevision: wal.revision,
+    expectedHeadEventSha256: wal.headEventSha256,
+    ordinal: '1', attempt: '0', status: 'READY',
+    evidence: readyPublishEvidence(1),
+    recordedAt: '2026-08-22T02:01:00.000Z',
+  }), expectCode('MAINNET_V8_WAL_TRANSITION_INVALID'));
+  await next('READY', '1', readyPublishEvidence(0, { prepared: 'attempt-1' }));
+  await next('SIGNED', '1', { signed: true });
+  await next('OUTCOME_PENDING', '1', { queryFirst: true });
+  await next('EXPIRED_NOT_FOUND', '1', { typedNotFound: true, expired: true });
+  await next('READY', '2', readyPublishEvidence(0, { prepared: 'attempt-2' }));
+
+  assert.equal(wal.events.at(-1).ordinal, '0');
+  assert.equal(wal.events.at(-1).attempt, '2');
+  assert.equal(wal.events.at(-1).status, 'READY');
+  assert.deepEqual(await readMainnetV8ReleaseWal(path), wal);
 });

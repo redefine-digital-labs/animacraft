@@ -16,6 +16,8 @@ export const MAINNET_V8_ENCRYPTION_POLICY_DOMAIN = 'animacraft-v8/seal-encryptio
 export const MAINNET_V8_CHAIN_IDENTIFIER = '4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S';
 export const MAINNET_V8_LEGACY_CHAIN_IDENTIFIER = '35834a8a';
 export const MAINNET_V8_PAYMENT_COIN_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+export const MAINNET_V8_SUI_VERSION = '1.77.2';
+export const MAINNET_V8_FRAMEWORK_REVISION = '73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1';
 export const MAINNET_V8_PROTOCOL_PROFILE = Object.freeze({
   protocolVersion: '133',
   objectRuntimeMaxNumCachedObjects: '1000',
@@ -50,7 +52,8 @@ export const MAINNET_V8_RELEASE_STEPS = Object.freeze([
 ]);
 
 export const MAINNET_V8_WAL_STATUSES = Object.freeze([
-  'READY', 'SIGNED', 'OUTCOME_PENDING', 'FINALIZED',
+  'READY', 'SIGNED', 'OUTCOME_PENDING', 'BROADCAST_ACCEPTED', 'OUTCOME_UNKNOWN',
+  'FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND',
 ]);
 
 export const MAINNET_V8_SEAL_APPROVALS = Object.freeze([
@@ -100,14 +103,13 @@ const CHAIN_FIELDS = Object.freeze(['network', 'chainIdentifier', 'legacyChainId
 const SOURCE_REVISION_FIELDS = Object.freeze(['gitCommit', 'gitTree', 'clean']);
 const PLAN_PACKAGE_FIELDS = Object.freeze([
   'role', 'packageName', 'sourceArtifact', 'sourceCommitment',
-  'packageArtifact', 'packageCommitment',
 ]);
 const STEP_FIELDS = Object.freeze(['ordinal', 'kind', 'role']);
 const WAL_FIELDS = Object.freeze([
   'schemaVersion', 'releaseId', 'plan', 'revision', 'headEventSha256', 'events', 'walSha256',
 ]);
 const WAL_EVENT_FIELDS = Object.freeze([
-  'revision', 'ordinal', 'status', 'evidence', 'recordedAt',
+  'revision', 'ordinal', 'attempt', 'status', 'evidence', 'recordedAt',
   'previousEventSha256', 'eventSha256',
 ]);
 
@@ -333,9 +335,19 @@ function assertGitId(value, label) {
 
 function assertToolchain(toolchain, label = 'toolchain') {
   exactFields(toolchain, TOOLCHAIN_FIELDS, label);
-  boundedText(toolchain.suiVersion, `${label}.suiVersion`, 256);
+  if (toolchain.suiVersion !== MAINNET_V8_SUI_VERSION) {
+    fail('MAINNET_V8_TOOLCHAIN_INVALID', `${label}.suiVersion must be the exact official release version.`, {
+      expected: MAINNET_V8_SUI_VERSION,
+      observed: toolchain.suiVersion,
+    });
+  }
   assertHash(toolchain.suiBinarySha256, `${label}.suiBinarySha256`);
-  assertGitId(toolchain.frameworkRevision, `${label}.frameworkRevision`);
+  if (toolchain.frameworkRevision !== MAINNET_V8_FRAMEWORK_REVISION) {
+    fail('MAINNET_V8_TOOLCHAIN_INVALID', `${label}.frameworkRevision must match the exact Move.toml framework pin.`, {
+      expected: MAINNET_V8_FRAMEWORK_REVISION,
+      observed: toolchain.frameworkRevision,
+    });
+  }
   return toolchain;
 }
 
@@ -744,16 +756,12 @@ function artifactPackage(role, entry, index) {
   if (entry.role !== role) fail('MAINNET_V8_PLAN_INVALID', 'Release packages are outside exact role order.');
   assertPackageName(role, entry.packageName, `Release package[${index}].packageName`);
   assertMainnetV8SourceArtifact(entry.sourceArtifact);
-  assertMainnetV8PackageArtifact(entry.packageArtifact);
-  if (entry.sourceArtifact.role !== role || entry.packageArtifact.role !== role
-    || entry.sourceArtifact.packageName !== entry.packageName) {
+  if (entry.sourceArtifact.role !== role || entry.sourceArtifact.packageName !== entry.packageName) {
     fail('MAINNET_V8_PLAN_INVALID', `Release package ${role} artifact roles disagree.`);
   }
   assertHash(entry.sourceCommitment, `Release package ${role} sourceCommitment`);
-  assertHash(entry.packageCommitment, `Release package ${role} packageCommitment`);
-  if (entry.sourceCommitment !== mainnetV8SourceCommitment(entry.sourceArtifact)
-    || entry.packageCommitment !== mainnetV8PackageCommitment(entry.packageArtifact)) {
-    fail('MAINNET_V8_PLAN_INVALID', `Release package ${role} commitment does not match its artifact.`);
+  if (entry.sourceCommitment !== mainnetV8SourceCommitment(entry.sourceArtifact)) {
+    fail('MAINNET_V8_PLAN_INVALID', `Release package ${role} source commitment does not match its artifact.`);
   }
 }
 
@@ -782,7 +790,7 @@ export function assertMainnetV8ReleasePlan(plan) {
   if (plan.paymentCoinType !== MAINNET_V8_PAYMENT_COIN_TYPE) fail('MAINNET_V8_PLAN_INVALID', 'Release payment coin is not Mainnet native USDC.');
   assertMainnetV8SealPolicy(plan.sealPolicy);
   if (!Array.isArray(plan.packages) || plan.packages.length !== MAINNET_V8_ROLE_ORDER.length) {
-    fail('MAINNET_V8_PLAN_INVALID', 'Release plan must bind exactly seven package artifacts.');
+    fail('MAINNET_V8_PLAN_INVALID', 'Release plan must bind exactly seven source artifacts.');
   }
   plan.packages.forEach((entry, index) => {
     const role = MAINNET_V8_ROLE_ORDER[index];
@@ -812,8 +820,6 @@ export function buildMainnetV8ReleasePlan(input) {
     packageName: entry.packageName ?? MAINNET_V8_PACKAGE_NAMES[entry.role],
     sourceArtifact: cloneJson(entry.sourceArtifact),
     sourceCommitment: entry.sourceCommitment ?? mainnetV8SourceCommitment(entry.sourceArtifact),
-    packageArtifact: cloneJson(entry.packageArtifact),
-    packageCommitment: entry.packageCommitment ?? mainnetV8PackageCommitment(entry.packageArtifact),
   }));
   const plan = {
     schemaVersion: MAINNET_V8_RELEASE_PLAN_SCHEMA,
@@ -996,9 +1002,10 @@ function assertRecordedAt(value) {
 
 function assertWalTransition(previous, current) {
   if (!previous) {
-    if (current.revision !== '1' || current.ordinal !== '0' || current.status !== 'READY'
+    if (current.revision !== '1' || current.ordinal !== '0' || current.attempt !== '0'
+      || current.status !== 'READY'
       || current.previousEventSha256 !== ZERO_HASH) {
-      fail('MAINNET_V8_WAL_TRANSITION_INVALID', 'The first WAL event must be revision 1, ordinal 0 READY.');
+      fail('MAINNET_V8_WAL_TRANSITION_INVALID', 'The first WAL event must be revision 1, ordinal 0, attempt 0 READY.');
     }
     return;
   }
@@ -1006,27 +1013,81 @@ function assertWalTransition(previous, current) {
     || current.previousEventSha256 !== previous.eventSha256) {
     fail('MAINNET_V8_WAL_TRANSITION_INVALID', 'WAL revision or hash link is discontinuous.');
   }
-  const sameOrdinal = current.ordinal === previous.ordinal;
-  const nextOrdinal = BigInt(current.ordinal) === BigInt(previous.ordinal) + 1n;
-  const valid = previous.status === 'READY' && current.status === 'SIGNED' && sameOrdinal
-    || previous.status === 'SIGNED' && current.status === 'OUTCOME_PENDING' && sameOrdinal
+  const sameCursor = current.ordinal === previous.ordinal && current.attempt === previous.attempt;
+  const retryCursor = current.ordinal === previous.ordinal
+    && BigInt(current.attempt) === BigInt(previous.attempt) + 1n;
+  const nextOrdinal = BigInt(current.ordinal) === BigInt(previous.ordinal) + 1n
+    && current.attempt === '0';
+  const valid = previous.status === 'READY' && current.status === 'SIGNED' && sameCursor
+    || previous.status === 'SIGNED' && current.status === 'OUTCOME_PENDING' && sameCursor
     || previous.status === 'OUTCOME_PENDING'
-      && ['OUTCOME_PENDING', 'FINALIZED'].includes(current.status) && sameOrdinal
-    || previous.status === 'FINALIZED' && current.status === 'READY' && nextOrdinal
+      && [
+        'OUTCOME_PENDING', 'BROADCAST_ACCEPTED', 'OUTCOME_UNKNOWN',
+        'FINALIZED_SUCCESS', 'FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND',
+      ].includes(current.status) && sameCursor
+    || ['BROADCAST_ACCEPTED', 'OUTCOME_UNKNOWN'].includes(previous.status)
+      && current.status === 'OUTCOME_PENDING' && sameCursor
+    || ['FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND'].includes(previous.status)
+      && current.status === 'READY' && retryCursor
+    || previous.status === 'FINALIZED_SUCCESS' && current.status === 'READY' && nextOrdinal
       && BigInt(current.ordinal) < BigInt(MAINNET_V8_RELEASE_STEPS.length);
   if (!valid) fail('MAINNET_V8_WAL_TRANSITION_INVALID', `Invalid WAL transition ${previous.status} -> ${current.status}.`);
+}
+
+export function assertMainnetV8PublishPackageEvidence(evidence, ordinal, options = {}) {
+  const { requireAbi = false } = options;
+  if (!isPlain(evidence)) fail('MAINNET_V8_WAL_INVALID', 'Publish evidence must be a plain record.');
+  assertMainnetV8DeterministicJson(evidence, 'Publish evidence');
+  const index = Number(assertMainnetV8Decimal(
+    typeof ordinal === 'number' ? String(ordinal) : ordinal,
+    'Publish ordinal',
+  ));
+  if (!Number.isSafeInteger(index) || index < 0 || index >= MAINNET_V8_ROLE_ORDER.length) {
+    fail('MAINNET_V8_WAL_INVALID', 'Publish evidence ordinal is outside the seven package steps.');
+  }
+  const role = MAINNET_V8_ROLE_ORDER[index];
+  if (!Object.hasOwn(evidence, 'packageArtifact') || !Object.hasOwn(evidence, 'packageCommitment')) {
+    fail('MAINNET_V8_WAL_INVALID', `Publish ${role} evidence omits its frozen package artifact.`);
+  }
+  assertMainnetV8PackageArtifact(evidence.packageArtifact);
+  assertHash(evidence.packageCommitment, `Publish ${role} packageCommitment`);
+  if (evidence.packageArtifact.role !== role
+    || evidence.packageCommitment !== mainnetV8PackageCommitment(evidence.packageArtifact)) {
+    fail('MAINNET_V8_WAL_INVALID', `Publish ${role} package artifact binding is invalid.`);
+  }
+  if (requireAbi) {
+    if (!Object.hasOwn(evidence, 'abiArtifact') || !Object.hasOwn(evidence, 'abiCommitment')) {
+      fail('MAINNET_V8_WAL_INVALID', `Finalized publish ${role} evidence omits its post-publish ABI artifact.`);
+    }
+    assertMainnetV8AbiArtifact(evidence.abiArtifact);
+    assertHash(evidence.abiCommitment, `Publish ${role} abiCommitment`);
+    if (evidence.abiArtifact.role !== role
+      || evidence.abiCommitment !== mainnetV8AbiCommitment(evidence.abiArtifact)) {
+      fail('MAINNET_V8_WAL_INVALID', `Finalized publish ${role} ABI binding is invalid.`);
+    }
+  }
+  return evidence;
 }
 
 function assertWalEvent(event, index, previous) {
   exactFields(event, WAL_EVENT_FIELDS, `WAL event[${index}]`);
   assertMainnetV8Decimal(event.revision, `WAL event[${index}].revision`, { positive: true });
   assertMainnetV8Decimal(event.ordinal, `WAL event[${index}].ordinal`);
+  assertMainnetV8Decimal(event.attempt, `WAL event[${index}].attempt`);
   if (BigInt(event.ordinal) >= BigInt(MAINNET_V8_RELEASE_STEPS.length)
     || !MAINNET_V8_WAL_STATUSES.includes(event.status)) {
     fail('MAINNET_V8_WAL_INVALID', `WAL event ${index} status or ordinal is invalid.`);
   }
   if (!isPlain(event.evidence)) fail('MAINNET_V8_WAL_INVALID', `WAL event ${index} evidence must be a record.`);
   assertMainnetV8DeterministicJson(event.evidence, `WAL event[${index}].evidence`);
+  const ordinal = Number(BigInt(event.ordinal));
+  if (ordinal < MAINNET_V8_ROLE_ORDER.length
+    && (event.status === 'READY'
+      || ['FINALIZED_SUCCESS', 'FINALIZED_FAILURE'].includes(event.status))) {
+    assertMainnetV8PublishPackageEvidence(event.evidence, event.ordinal, {
+      requireAbi: event.status === 'FINALIZED_SUCCESS',
+    });
+  }
   assertRecordedAt(event.recordedAt);
   assertHash(event.previousEventSha256, `WAL event[${index}].previousEventSha256`);
   assertHash(event.eventSha256, `WAL event[${index}].eventSha256`);
@@ -1045,8 +1106,25 @@ export function assertMainnetV8ReleaseWal(wal) {
     fail('MAINNET_V8_WAL_INVALID', 'WAL revision must equal its append-only event count.');
   }
   let previous = null;
+  const readyPublishEvidence = new Map();
   wal.events.forEach((event, index) => {
     assertWalEvent(event, index, previous);
+    const ordinal = Number(BigInt(event.ordinal));
+    const cursor = `${event.ordinal}:${event.attempt}`;
+    if (ordinal < MAINNET_V8_ROLE_ORDER.length && event.status === 'READY') {
+      readyPublishEvidence.set(cursor, {
+        packageCommitment: event.evidence.packageCommitment,
+        packageArtifact: canonicalMainnetV8Json(event.evidence.packageArtifact),
+      });
+    }
+    if (ordinal < MAINNET_V8_ROLE_ORDER.length
+      && ['FINALIZED_SUCCESS', 'FINALIZED_FAILURE'].includes(event.status)) {
+      const ready = readyPublishEvidence.get(cursor);
+      if (!ready || ready.packageCommitment !== event.evidence.packageCommitment
+        || ready.packageArtifact !== canonicalMainnetV8Json(event.evidence.packageArtifact)) {
+        fail('MAINNET_V8_WAL_INVALID', `Finalized publish ordinal ${event.ordinal} differs from its READY package artifact.`);
+      }
+    }
     previous = event;
   });
   if (wal.headEventSha256 !== previous.eventSha256) fail('MAINNET_V8_WAL_INVALID', 'WAL head hash is stale.');
@@ -1055,10 +1133,11 @@ export function assertMainnetV8ReleaseWal(wal) {
   return wal;
 }
 
-function makeWalEvent({ revision, ordinal, status, evidence, recordedAt, previousEventSha256 }) {
+function makeWalEvent({ revision, ordinal, attempt, status, evidence, recordedAt, previousEventSha256 }) {
   const event = {
     revision,
     ordinal,
+    attempt,
     status,
     evidence: cloneJson(evidence),
     recordedAt: recordedAt ?? new Date().toISOString(),
@@ -1158,6 +1237,7 @@ export async function createMainnetV8ReleaseWal(path, plan, options = {}) {
     const event = makeWalEvent({
       revision: '1',
       ordinal: '0',
+      attempt: '0',
       status: 'READY',
       evidence: options.evidence ?? {},
       recordedAt: options.recordedAt,
@@ -1194,6 +1274,7 @@ export async function appendMainnetV8ReleaseWal(path, input) {
     const event = makeWalEvent({
       revision: (BigInt(current.revision) + 1n).toString(),
       ordinal: decimalInput(input.ordinal, 'WAL ordinal'),
+      attempt: decimalInput(input.attempt, 'WAL attempt'),
       status: input.status,
       evidence: input.evidence ?? {},
       recordedAt: input.recordedAt,
@@ -1261,6 +1342,9 @@ export async function createReleaseWal(pathOrOptions, plan, options = {}) {
   if (event.status !== undefined && event.status !== 'READY') {
     fail('MAINNET_V8_WAL_TRANSITION_INVALID', 'createReleaseWal initial event must be READY.');
   }
+  if (event.attempt !== undefined && decimalInput(event.attempt, 'Initial WAL attempt') !== '0') {
+    fail('MAINNET_V8_WAL_TRANSITION_INVALID', 'createReleaseWal initial attempt must be 0.');
+  }
   return createMainnetV8ReleaseWal(input.path, input.plan, {
     recordedAt: event.recordedAt ?? input.recordedAt,
     evidence: event.evidence ?? input.evidence ?? {},
@@ -1286,6 +1370,7 @@ export async function appendReleaseWal(options) {
     expectedRevision: options.expectedRevision,
     expectedHeadEventSha256,
     ordinal: event.ordinal,
+    attempt: event.attempt,
     status: event.status,
     evidence,
     recordedAt: event.recordedAt,
