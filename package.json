@@ -14,6 +14,8 @@
     "test": "node --test test/chain-error-ui.test.js test/maker-commerce-v8.test.js test/maker-v8-*.test.js test/web-v8-*.test.js",
     "check": "node --check app.js && node --check chain-error-ui.js && node --check maker-commerce-v8.js && node --check maker-v8-actions.js && node --check maker-v8-browser.js && node --check maker-v8-chain.js && node --check maker-v8-compiler.js && node --check maker-v8-document.js && node --check maker-v8-finalized.js && node --check maker-v8-market.js && node --check maker-v8-recovery.js && node --check maker-v8-runtime.js && node --check vite.config.js && npm test && npm run build && npm run scan:fresh",
     "move:build": "for package in core seal runtime output physical market release; do sui move build --path move/animacraft_v8_$package --warnings-are-errors || exit 1; done",
+    "move:build:disassemble": "for package in core seal runtime output physical market release; do sui move build --path move/animacraft_v8_$package --disassemble --warnings-are-errors || exit 1; done",
+    "move:field-limits": "node scripts/verify-move-struct-field-limits.mjs",
     "move:test": "for package in core seal runtime output physical market release; do sui move test --path move/animacraft_v8_$package --warnings-are-errors || exit 1; done",
     "move:probes": "for package in core seal runtime output physical market release; do node move/animacraft_v8_$package/scripts/run_adversarial_probes.mjs || exit 1; done",
     "move:size": "for package in core seal runtime output physical market release; do node move/animacraft_v8_$package/scripts/measure_package_size.mjs || exit 1; done",

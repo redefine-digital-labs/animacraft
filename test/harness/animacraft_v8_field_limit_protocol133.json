@@ -1,0 +1,30 @@
+{
+  "schema": "animacraft-v8-struct-field-limit-evidence.v1",
+  "replayProvenance": {
+    "binaryTag": "mainnet-v1.77.2",
+    "commit": "51d177ad7d65102fc368b582408f466d97b31548",
+    "asset": "sui-mainnet-v1.77.2-macos-arm64.tgz",
+    "assetSha256": "f0871c35ce1f3261028a3b0d389c2e34166fbf2f4982fd52d728806a03736d0d",
+    "cliVersion": "sui 1.77.2-51d177ad7d65",
+    "protocolVersion": "133",
+    "maxFieldsInStruct": "32"
+  },
+  "approvedProtocolProfileHash": "47a00c7f70f9359a3e1f28e301c51705ff6ce4d5912dde65685015a8bb2f8457",
+  "cases": {
+    "32-fields": {
+      "package": "test/harness/animacraft_v8_field_limit_32",
+      "struct": "FieldLimit32",
+      "fieldCount": 32,
+      "status": "success",
+      "digest": "Hb2kxbQPLCqBBjivD5Bso74JX7cLfk4536H3KfUCDfNe"
+    },
+    "33-fields": {
+      "package": "test/harness/animacraft_v8_field_limit_33",
+      "struct": "FieldLimit33",
+      "fieldCount": 33,
+      "status": "failure",
+      "digest": "FqQqrWhkjodUup9tWhdrLhwoEGVYve2iKpVtQiasv9hf",
+      "error": "VMVerificationOrDeserializationError in command 0"
+    }
+  }
+}
