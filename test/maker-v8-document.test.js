@@ -4,6 +4,7 @@ import test from 'node:test';
 import { MAKER_V8_RIGHTS_ORIGINS } from '../maker-commerce-v8.js';
 import {
   MAKER_V8_COMPOSITION_MODES,
+  MAKER_V8_DOCUMENT_LIMITS,
   MAKER_V8_DOCUMENT_SCHEMA,
   MAKER_V8_OUTPUT_PACK_POLICIES,
   MAKER_V8_PART_KINDS,
@@ -109,6 +110,49 @@ test('measured seal cap counts only published Styles while author arrays remain 
     (error) => error.issues.some((entry) => entry.code === 'MAKER_V8_STYLE_SEAL_LIMIT'
       && entry.details.observedPublishedStyles === 501
       && entry.details.maximumPublishedStyles === 500),
+  );
+});
+
+test('document limits count every published Color row and every author asset', () => {
+  const colorDocument = mutableStarter();
+  colorDocument.colors = [{
+    key: 'bounded-colors',
+    label: 'Bounded colors',
+    defaultSwatchKey: 'swatch-0000',
+    swatches: Array.from({ length: MAKER_V8_DOCUMENT_LIMITS.colors }, (_, index) => ({
+      key: `swatch-${String(index).padStart(4, '0')}`,
+      label: `Swatch ${index}`,
+      rgba: '#010203ff',
+      stops: [],
+    })),
+  }];
+  assert.doesNotThrow(() => assertMakerV8Document(colorDocument, { mode: 'compile' }));
+  colorDocument.colors[0].swatches.push({
+    key: 'swatch-over-limit', label: 'Over limit', rgba: '#010203ff', stops: [],
+  });
+  assert.throws(
+    () => assertMakerV8Document(colorDocument, { mode: 'compile' }),
+    (error) => error.issues.some((entry) => entry.code === 'MAKER_V8_COLOR_LIMIT'
+      && entry.details.observedColorRows === MAKER_V8_DOCUMENT_LIMITS.colors + 1
+      && entry.details.maximumColorRows === MAKER_V8_DOCUMENT_LIMITS.colors),
+  );
+
+  const assetDocument = mutableStarter();
+  const template = assetDocument.assets[0];
+  assetDocument.assets = [
+    template,
+    ...Array.from({ length: MAKER_V8_DOCUMENT_LIMITS.assets - 1 }, (_, index) => ({
+      ...template,
+      id: `bounded-asset-${String(index).padStart(4, '0')}`,
+    })),
+  ];
+  assert.doesNotThrow(() => assertMakerV8Document(assetDocument, { mode: 'compile' }));
+  assetDocument.assets.push({ ...template, id: 'bounded-asset-over-limit' });
+  assert.throws(
+    () => assertMakerV8Document(assetDocument, { mode: 'compile' }),
+    (error) => error.issues.some((entry) => entry.code === 'MAKER_V8_ASSET_LIMIT'
+      && entry.details.observedAssets === MAKER_V8_DOCUMENT_LIMITS.assets + 1
+      && entry.details.maximumAssets === MAKER_V8_DOCUMENT_LIMITS.assets),
   );
 });
 

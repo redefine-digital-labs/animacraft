@@ -63,6 +63,14 @@ Color pair and 333 published Styles with 333 distinct Color pairs; 501/0 and
 publication cap, not the unchanged Move structural count constant, and must
 not be raised without a new metered execution proof.
 
+The canonical document validator also counts the exact rows and blobs that
+cross the compiler boundary: every Swatch becomes one Base Color row, so the
+aggregate across all Color channels is limited to `5,000`, matching the
+unchanged Move registry maximum. Author assets are limited to `4,999` entries
+in addition to the independent per-asset and aggregate byte budgets. The
+compiler consumes only a document that has passed these same canonical
+limits; it does not maintain a second, looser count path.
+
 The matching approved Sui protocol profile is exact: protocol version `130`,
 `object_runtime_max_num_cached_objects = 1000`, and
 `object_runtime_max_num_store_entries = 1000`. The compiler reads those values

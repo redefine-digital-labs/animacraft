@@ -433,6 +433,12 @@ function collectSemanticIssues(document, issues, { mode }) {
   const parts = uniqueKeys(document.parts, 'parts', issues);
   const assets = new Map();
   uniqueKeys(document.assets?.map((asset) => ({ key: asset.id })), 'assets', issues);
+  if (Array.isArray(document.assets) && document.assets.length > LIMITS.assets) {
+    issue(issues, 'assets', 'MAKER_V8_ASSET_LIMIT', 'Author assets exceed the bounded client publication limit.', {
+      observedAssets: document.assets.length,
+      maximumAssets: LIMITS.assets,
+    });
+  }
   document.assets?.forEach((asset, index) => {
     const path = `assets[${index}]`;
     validateKey(asset.id, `${path}.id`, issues);
@@ -446,6 +452,7 @@ function collectSemanticIssues(document, issues, { mode }) {
   let itemCount = 0;
   let styleCount = 0;
   let publishedStyleCount = 0;
+  let colorRowCount = 0;
   const referencedStyleColorPairs = new Set();
   const publicItems = new Set();
   const publicStyles = new Set();
@@ -457,6 +464,7 @@ function collectSemanticIssues(document, issues, { mode }) {
     const path = `colors[${channelIndex}]`;
     validateText(channel.label, `${path}.label`, issues, { maximum: 256 });
     const swatches = uniqueKeys(channel.swatches, `${path}.swatches`, issues);
+    if (Array.isArray(channel.swatches)) colorRowCount += channel.swatches.length;
     if (!swatches.has(channel.defaultSwatchKey)) issue(issues, `${path}.defaultSwatchKey`, 'MAKER_V8_DEFAULT_SWATCH_UNKNOWN', 'Default swatch does not exist.');
     channel.swatches?.forEach((swatch, swatchIndex) => {
       const swatchPath = `${path}.swatches[${swatchIndex}]`;
@@ -467,6 +475,12 @@ function collectSemanticIssues(document, issues, { mode }) {
       });
     });
   });
+  if (colorRowCount > LIMITS.colors) {
+    issue(issues, 'colors', 'MAKER_V8_COLOR_LIMIT', 'Published Color rows exceed the bounded client and Move registry limit.', {
+      observedColorRows: colorRowCount,
+      maximumColorRows: LIMITS.colors,
+    });
+  }
   document.parts?.forEach((part, partIndex) => {
     const partPath = `parts[${partIndex}]`;
     validateText(part.label, `${partPath}.label`, issues, { maximum: 256 });

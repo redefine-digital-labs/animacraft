@@ -321,6 +321,22 @@ function styleLimitDocument(styleCount, uniqueColorPairs = 0) {
   document.defaultRecipe.colors = [];
   return document;
 }
+
+function colorRowLimitDocument(colorRowCount) {
+  const document = clone(fixture.document);
+  document.colors = [{
+    key: 'compiler-colors',
+    label: 'Compiler colors',
+    defaultSwatchKey: 'swatch-0000',
+    swatches: Array.from({ length: colorRowCount }, (_, index) => ({
+      key: `swatch-${String(index).padStart(4, '0')}`,
+      label: `Swatch ${index}`,
+      rgba: '#010203ff',
+      stops: [],
+    })),
+  }];
+  return document;
+}
 function argumentObjectId(transaction, argument) {
   const input = transaction.getData().inputs[argument.Input].Object;
   return input.SharedObject?.objectId ?? input.ImmOrOwnedObject?.objectId ?? input.Receiving?.objectId;
@@ -588,6 +604,21 @@ test('measured style seal budget accepts exact boundaries and rejects 334 unique
     chunks += 1;
   } while (!build.checkpoint.final);
   assert.ok(chunks > 30);
+});
+
+test('compiler Color rows exactly match the canonical document and Move count limit', async () => {
+  const accepted = colorRowLimitDocument(MAKER_V8_DOCUMENT_LIMITS.colors);
+  const context = await trustedContext(accepted);
+  const publication = await compileMakerV8Publication(accepted, context);
+  assert.equal(publication.rows.color.length, MAKER_V8_DOCUMENT_LIMITS.colors);
+  assert.equal(publication.counts.colors, BigInt(MAKER_V8_DOCUMENT_LIMITS.colors));
+
+  const overLimit = colorRowLimitDocument(MAKER_V8_DOCUMENT_LIMITS.colors + 1);
+  await assert.rejects(
+    compileMakerV8Publication(overLimit, context),
+    (error) => error.issues?.some((entry) => entry.code === 'MAKER_V8_COLOR_LIMIT'
+      && entry.details.observedColorRows === MAKER_V8_DOCUMENT_LIMITS.colors + 1),
+  );
 });
 
 test('bounded chunks require exact prior finalized certificates and certify ACTIVE readback', async () => {
