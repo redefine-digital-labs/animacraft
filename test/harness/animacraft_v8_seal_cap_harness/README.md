@@ -325,7 +325,11 @@ commitment self-test, requires exactly seven production Move roots, and enforces
 Core `63,918 / 64,000` bytes (82-byte headroom). It also runs a fast workspace
 self-test proving the required `genesis`/`test-publish` CLI contract, that the
 genesis directory is created before use, every generated path remains below the
-unique `mkdtemp` root, and cleanup removes it.
+unique `mkdtemp` root, and cleanup removes it. The same deterministic fake
+self-test proves that publication retries only the exact pre-execution
+`the embedded rpc-store's live index has no committed checkpoint yet` failure,
+never an unknown error, signal, JSON effects/digest, or textual transaction
+digest, and stops at six attempts.
 
 The expensive metered replay is intentionally optional in default CI:
 
@@ -347,7 +351,11 @@ process group, and deletes all temporary keys and network state even on failure
 or interruption. It hard-codes loopback RPC and an explicit temporary client
 config; it never reads the user's Sui config and never contacts Mainnet. Sui
 swarm port collisions receive at most three fresh-genesis attempts inside the
-same bounded temporary root.
+same bounded temporary root. An embedded rpc-store can briefly lag the JSON-RPC
+checkpoint/coin readiness checks; only its exact no-committed-checkpoint
+pre-execution `test-publish` error is retried, at 500 ms and at most six total
+attempts. Any execution evidence or different failure aborts without retry so a
+possibly submitted transaction is never duplicated.
 
 ## Regression recommendation
 

@@ -40,6 +40,10 @@ const totalTimeoutMs = 15 * 60_000;
 const transactionTimeoutMs = 45_000;
 const deadline = Date.now() + totalTimeoutMs;
 const temporaryPrefix = 'animacraft-seal-cap-localnet-';
+const liveIndexMissingMessage = "the embedded rpc-store's live index has no committed checkpoint yet";
+const liveIndexMissingStdout = `code: 'Some requested entity was not found', message: "Error { inner: Inner { kind: Missing, source: Some(\\\"${liveIndexMissingMessage}\\\") } }"`;
+const testPublishMaximumAttempts = 6;
+const testPublishRetryDelayMs = 500;
 
 let localnet = null;
 let localnetExit = null;
@@ -184,6 +188,69 @@ function parseJsonOutput(output, label) {
   }
 }
 
+function combinedCommandOutput(result) {
+  return `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+}
+
+function normalizedCommandStream(stream) {
+  return String(stream ?? '')
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
+    .trim();
+}
+
+function jsonContainsExecutionEvidence(value) {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(jsonContainsExecutionEvidence);
+  for (const [key, child] of Object.entries(value)) {
+    if (/^(?:digest|transactionDigest|effects|rawEffects|objectChanges|balanceChanges)$/i.test(key)) {
+      return true;
+    }
+    if (jsonContainsExecutionEvidence(child)) return true;
+  }
+  return false;
+}
+
+function hasTransactionExecutionEvidence(result) {
+  const stdout = result.stdout?.trim();
+  if (stdout) {
+    try {
+      if (jsonContainsExecutionEvidence(JSON.parse(stdout))) return true;
+    } catch {}
+  }
+  const combined = combinedCommandOutput(result);
+  return /\btransaction(?:\s+digest)?\s*(?::|=|is)?\s*['"]?[1-9A-HJ-NP-Za-km-z]{40,}\b/i.test(combined)
+    || /["'](?:digest|transactionDigest)["']\s*:\s*["'][1-9A-HJ-NP-Za-km-z]{40,}\b/i.test(combined);
+}
+
+function isPreExecutionLiveIndexMissing(result) {
+  return result.code !== 0
+    && result.signal === null
+    && normalizedCommandStream(result.stdout) === liveIndexMissingStdout
+    && normalizedCommandStream(result.stderr) === ''
+    && !hasTransactionExecutionEvidence(result);
+}
+
+async function runTestPublishWithRetry(
+  invoke,
+  {
+    wait = (delayMs) => new Promise((resolveWait) => setTimeout(resolveWait, delayMs)),
+    onRetry = (attempt) => process.stderr.write(
+      `retry: pre-execution embedded rpc-store live index missing (${attempt}/${testPublishMaximumAttempts})\n`,
+    ),
+  } = {},
+) {
+  let result = null;
+  for (let attempt = 1; attempt <= testPublishMaximumAttempts; attempt += 1) {
+    result = await invoke(attempt);
+    if (result.code === 0 || !isPreExecutionLiveIndexMissing(result)) return result;
+    if (attempt < testPublishMaximumAttempts) {
+      onRetry(attempt);
+      await wait(testPublishRetryDelayMs);
+    }
+  }
+  return result;
+}
+
 async function freePort() {
   return new Promise((resolvePort, rejectPort) => {
     const server = createServer();
@@ -304,7 +371,7 @@ async function waitForRpc(rpcUrl, activeAddress, getLocalnetLogs) {
           'sui_getLatestCheckpointSequenceNumber',
           [],
         );
-        if (typeof checkpoint?.result !== 'string') {
+        if (!/^(?:0|[1-9][0-9]*)$/.test(checkpoint?.result ?? '')) {
           lastError = new Error(canonicalJson(checkpoint?.error ?? checkpoint));
         } else {
           const coins = await rpc(
@@ -442,7 +509,7 @@ async function main() {
     '--client.env', 'localnet',
     '-y',
   ];
-  const published = await run('sui', [
+  const testPublishArgs = [
     ...clientPrefix,
     'test-publish', fixtureDirectory,
     '--build-env', 'sealcap',
@@ -450,7 +517,15 @@ async function main() {
     '--gas-budget', gasBudget,
     '--warnings-are-errors',
     '--json',
-  ], { timeoutMs: 180_000 });
+  ];
+  const published = await runTestPublishWithRetry(() => run(
+    'sui',
+    testPublishArgs,
+    { allowFailure: true, timeoutMs: 180_000 },
+  ));
+  if (published.code !== 0) {
+    fail(`slim fixture test-publish exited ${published.code ?? published.signal}: ${combinedCommandOutput(published).trim()}`);
+  }
   const publishJson = parseJsonOutput(published.stdout, 'slim fixture publish');
   if (publishJson.effects?.status?.status !== 'success') {
     fail(`slim fixture publish failed: ${canonicalJson(publishJson.effects?.status)}`);
@@ -542,6 +617,88 @@ async function workspaceSelfTest() {
   if (!publishHelp.stdout.includes('--pubfile-path')) {
     fail('Sui test-publish CLI omitted required --pubfile-path support');
   }
+  const knownMissing = {
+    code: 1,
+    signal: null,
+    stdout: `${liveIndexMissingStdout}\n`,
+    stderr: '',
+  };
+  const success = { code: 0, signal: null, stdout: '{}', stderr: '' };
+  const fakeRun = async (results, observed, delays) => runTestPublishWithRetry(
+    async () => {
+      observed.count += 1;
+      return results[Math.min(observed.count - 1, results.length - 1)];
+    },
+    {
+      wait: async (delayMs) => delays.push(delayMs),
+      onRetry: () => {},
+    },
+  );
+
+  let observed = { count: 0 };
+  let delays = [];
+  let result = await fakeRun([knownMissing, success], observed, delays);
+  if (result.code !== 0 || observed.count !== 2
+      || canonicalJson(delays) !== canonicalJson([testPublishRetryDelayMs])) {
+    fail('retry self-test did not retry the exact pre-execution live-index miss once');
+  }
+
+  for (const rejected of [
+    {
+      ...knownMissing,
+      stdout: 'Some requested entity was not found',
+    },
+    {
+      ...knownMissing,
+      stdout: `unknown prefix: ${liveIndexMissingStdout}`,
+    },
+    {
+      ...knownMissing,
+      stdout: `${liveIndexMissingStdout}: unknown suffix`,
+    },
+    {
+      ...knownMissing,
+      stderr: 'unknown extra error',
+    },
+    {
+      ...knownMissing,
+      stdout: `${knownMissing.stdout.trim()}; transaction '${'2'.repeat(44)}'`,
+    },
+    {
+      ...knownMissing,
+      stdout: JSON.stringify({ digest: '3'.repeat(44), effects: {} }),
+    },
+    {
+      ...knownMissing,
+      signal: 'SIGTERM',
+    },
+  ]) {
+    observed = { count: 0 };
+    delays = [];
+    result = await fakeRun([rejected, success], observed, delays);
+    if (result !== rejected || observed.count !== 1 || delays.length !== 0) {
+      fail('retry self-test retried an unknown or possibly executed failure');
+    }
+  }
+
+  observed = { count: 0 };
+  delays = [];
+  result = await fakeRun([{
+    ...knownMissing,
+    stdout: `\u001B[31m${liveIndexMissingStdout}\u001B[0m\n`,
+  }, success], observed, delays);
+  if (result.code !== 0 || observed.count !== 2 || delays.length !== 1) {
+    fail('retry self-test did not accept ANSI-only decoration of the exact framing');
+  }
+
+  observed = { count: 0 };
+  delays = [];
+  result = await fakeRun([knownMissing], observed, delays);
+  if (result !== knownMissing || observed.count !== testPublishMaximumAttempts
+      || delays.length !== testPublishMaximumAttempts - 1
+      || delays.some((delay) => delay !== testPublishRetryDelayMs)) {
+    fail('retry self-test exceeded or under-ran its exact attempt bound');
+  }
   prepareTemporaryWorkspace();
   const networkDirectory = prepareNetworkDirectory(1);
   if (!existsSync(networkDirectory) || !statSync(networkDirectory).isDirectory()) {
@@ -564,7 +721,7 @@ async function workspaceSelfTest() {
   await cleanup();
   if (existsSync(safeRoot)) fail(`workspace self-test did not clean ${safeRoot}`);
   process.stdout.write(
-    'ok: localnet CLI/workspace mkdir, containment, and cleanup self-test\n',
+    'ok: localnet CLI/workspace and bounded pre-execution retry self-test\n',
   );
 }
 
