@@ -1544,6 +1544,7 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
       packageTuple: freeze(packageTuple),
       catalog: state.catalog,
       config: state.configs.market,
+      physicalConfig: state.configs.physical,
     });
   }
 
@@ -1610,7 +1611,7 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
       if (action === 'purchaseSoulBundle') input.makerTreasury = common.makerTreasury;
     } else {
       input.physicalRegistry = await genericRootObject(common, 'physicalRegistryId', 'physicalRegistry', 'PhysicalRegistryV8');
-      input.physicalConfig = common.configs.physical;
+      input.physicalConfig = common.physicalConfig;
       const custody = listing.fields.custody;
       input.receiving = await receiving(
         common,
@@ -1696,7 +1697,7 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
         );
       }
       input.physicalRegistry = await genericRootObject(common, 'physicalRegistryId', 'physicalRegistry', 'PhysicalRegistryV8');
-      input.physicalConfig = common.configs.physical;
+      input.physicalConfig = common.physicalConfig;
       if (expectedSource === 0) input.makerTreasury = common.makerTreasury;
       else {
         input.packTreasury = await getObject(
@@ -1907,7 +1908,7 @@ export function createMakerV8LiveDataSourceV8({ client, runtime: runtimeInput })
         packageTuple: common.packageTuple,
         builderInput: freeze({
           ...selected.input,
-          rootContentCommitment: common.root.contentCommitment,
+          rootContentCommitment: common.registry.fields.rootContentCommitment,
           protocolRevision: common.protocolConfig.revision.toString(),
         }),
         refs: freeze({

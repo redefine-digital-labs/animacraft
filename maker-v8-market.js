@@ -1472,7 +1472,7 @@ function actionPreState(action, lane, sender, args) {
     terminalRecipient: listingFields.terminalRecipient,
     seller,
     ownershipEpoch: decimalSnapshot(ownershipEpoch, 'listing.ownershipEpoch'),
-    assetIds: Object.freeze(assetIds),
+    assetIds: Object.freeze([...assetIds]),
   }) : null;
   const rootSnapshot = freezeRecord({
     objectId: root.objectId,
