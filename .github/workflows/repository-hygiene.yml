@@ -39,6 +39,62 @@ jobs:
       - name: Check production build
         run: npm run check
 
+  move:
+    name: Seven-package Move gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SUI_COMMIT: 82ac538148cc951d35b97d98062d1573f1b98f05
+      SUI_BINARY_SHA256: cfb006b9775f69d891fde8f6506af7aabb4a2643087d26b10bdbbe904e26d657
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install pinned Sui CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_dir="$RUNNER_TEMP/sui-bin"
+          binary="$bin_dir/sui"
+          mkdir -p "$bin_dir"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            "https://releases.sui.io/${SUI_COMMIT}/sui" \
+            --output "$binary"
+          echo "${SUI_BINARY_SHA256}  ${binary}" | sha256sum --check --strict
+          chmod 0755 "$binary"
+          echo "$bin_dir" >> "$GITHUB_PATH"
+          "$binary" --version | grep --fixed-strings 'sui 1.76.1'
+
+      - name: Build all seven packages
+        run: npm run move:build
+
+      - name: Test all seven packages
+        run: npm run move:test
+
+      - name: Run adversarial compile probes
+        run: npm run move:probes
+
+      - name: Force disassembly and enforce package sizes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in core seal runtime output physical market release; do
+            sui move build \
+              --path "move/animacraft_v8_${package}" \
+              --force \
+              --disassemble \
+              --warnings-are-errors
+          done
+          npm run move:size
+
   hygiene:
     name: Repository hygiene
     runs-on: ubuntu-24.04

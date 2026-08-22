@@ -240,3 +240,18 @@ test('production entry files have no retired imports, aliases, routes, or pendin
   assert.match(source, /publicDir:\s*['"]public-v8['"]/);
   assert.deepEqual(await readdir(new URL('../public-v8/', import.meta.url)), ['config.js']);
 });
+
+test('CI pins the verified Sui CLI and gates all fresh web and Move artifacts', async () => {
+  const workflow = await readFile(
+    new URL('../.github/workflows/repository-hygiene.yml', import.meta.url),
+    'utf8',
+  );
+  assert.match(workflow, /SUI_COMMIT:\s*82ac538148cc951d35b97d98062d1573f1b98f05/);
+  assert.match(workflow, /SUI_BINARY_SHA256:\s*cfb006b9775f69d891fde8f6506af7aabb4a2643087d26b10bdbbe904e26d657/);
+  assert.match(workflow, /npm run check/);
+  assert.match(workflow, /npm run scan:fresh:source/);
+  for (const command of ['move:build', 'move:test', 'move:probes', 'move:size']) {
+    assert.match(workflow, new RegExp(`npm run ${command.replace(':', '\\:')}`));
+  }
+  assert.match(workflow, /--force[\s\\]+--disassemble[\s\\]+--warnings-are-errors/);
+});
