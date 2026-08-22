@@ -2,7 +2,6 @@ node_modules/
 dist/
 move/
 test/
-public/
 .git/
 .github/
 *.md
