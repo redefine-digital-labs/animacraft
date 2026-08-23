@@ -507,7 +507,8 @@ const PACKAGE_READBACK_FIELDS = Object.freeze([
 const PACKAGE_TYPE_ORIGIN_FIELDS = Object.freeze(['moduleName', 'datatypeName', 'package']);
 const PACKAGE_LINKAGE_FIELDS = Object.freeze(['originalId', 'upgradedId', 'upgradedVersion']);
 const PROTOCOL_INIT_CERTIFICATE_FIELDS = Object.freeze([
-  'schemaVersion', 'kind', 'transactionDigest', 'protocolConfig', 'protocolTreasury', 'events',
+  'schemaVersion', 'kind', 'transactionDigest', 'protocolConfig',
+  'protocolAdminCap', 'protocolTreasury', 'events',
 ]);
 const PROTOCOL_INIT_EVENTS_FIELDS = Object.freeze([
   'treasuryInitialized', 'enabledChanged', 'intermediateCommitment', 'finalCommitment',
@@ -3009,9 +3010,18 @@ function assertProtocolInitCertificate(readback, finalityEvidence, signer = null
     revision: '2',
     treasuryId: readback.protocolTreasury.reference.objectId,
   }, `${label}.protocolConfig`);
+  assertProtocolAdminOutput(
+    readback.protocolAdminCap,
+    corePackageId,
+    readback.protocolConfig.reference.objectId,
+    finalityEvidence.digest,
+    signer,
+    `${label}.protocolAdminCap`,
+  );
   const writes = finalityWrites(finalityEvidence);
-  if (writes.length !== 2) fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} write set is not exact.`);
+  if (writes.length !== 3) fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} write set is not exact.`);
   findWrite(writes, readback.protocolConfig, 'MUTATED', `${label}.protocolConfig`);
+  findWrite(writes, readback.protocolAdminCap, 'MUTATED', `${label}.protocolAdminCap`);
   findWrite(writes, readback.protocolTreasury, 'CREATED', `${label}.protocolTreasury`);
   assertProtocolInitEvents(readback, finalityEvidence, corePackageId, signer);
   return readback;
@@ -4270,7 +4280,11 @@ function assertWalTransition(previous, current) {
   const repairsKnownReadbackIncident = previousIncident !== null
     && currentPending !== null
     && previous.ordinal !== '9'
-    && ['MAINNET_V8_CREATED_OUTPUT_INVALID', 'MAINNET_V8_PACKAGE_BYTES_DRIFT']
+    && [
+      'MAINNET_V8_CREATED_OUTPUT_INVALID',
+      'MAINNET_V8_PACKAGE_BYTES_DRIFT',
+      'MAINNET_V8_INIT_WRITE_SET_INVALID',
+    ]
       .includes(previousIncident.incident.code)
     && previousIncident.finalityEvidenceSha256 === currentPending.finalityEvidenceSha256
     && canonicalMainnetV8Json(previousIncident.finalityEvidence)
@@ -4445,10 +4459,16 @@ function assertStageReadyWalContext(event, wal, sealedManifest, successfulCertif
         successfulCertificates.get('7')?.details?.certificate?.readback?.protocolConfig,
         'Initialized ProtocolConfig',
       );
+  const protocolAdminCap = ordinal === 7
+    ? ownedReferenceFromCertifiedOutput(core.protocolAdminCap, 'Core ProtocolAdminCap')
+    : ownedReferenceFromCertifiedOutput(
+        successfulCertificates.get('7')?.details?.certificate?.readback?.protocolAdminCap,
+        'Initialized ProtocolAdminCap',
+      );
   const base = {
     packageIds,
     protocolConfig,
-    protocolAdminCap: ownedReferenceFromCertifiedOutput(core.protocolAdminCap, 'Core ProtocolAdminCap'),
+    protocolAdminCap,
   };
   if (ordinal === 7) {
     if (canonicalMainnetV8Json(stageData) !== canonicalMainnetV8Json(base)) {
@@ -4480,8 +4500,12 @@ function assertStageSuccessContext(event, ready, wal, sealedManifest, successful
     const coreManifest = sealedManifest?.packages?.[0];
     if (!core || !coreManifest
       || readback.protocolConfig.reference.objectId !== core.protocolConfig.reference.objectId
+      || readback.protocolAdminCap.reference.objectId
+        !== core.protocolAdminCap.reference.objectId
       || readback.protocolConfig.type
-        !== `${coreManifest.packageId}::protocol_config_v8::ProtocolConfigV8`) {
+        !== `${coreManifest.packageId}::protocol_config_v8::ProtocolConfigV8`
+      || readback.protocolAdminCap.type
+        !== `${coreManifest.packageId}::protocol_config_v8::ProtocolAdminCapV8`) {
       fail('MAINNET_V8_WAL_INVALID', 'Protocol init readback differs from sealed Core publication.');
     }
     return;

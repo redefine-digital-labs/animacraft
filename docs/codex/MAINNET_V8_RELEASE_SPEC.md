@@ -428,6 +428,7 @@ core::protocol_config_v8::set_protocol_enabled_v8(
 成功回读必须证明：
 
 - 创建且共享唯一 `ProtocolTreasuryV8<MAINNET_USDC>`；
+- `ProtocolConfigV8` 与 owned `ProtocolAdminCapV8` 都由 effects 精确标记为 `MUTATED`，并使用同一 ordinal 7 transaction 产生的新 version/digest；bootstrap 只能使用该 v2 AdminCap 引用，不得复用 Core publish 时的 v1 引用；
 - config treasury ID 精确等于新 treasury ID；
 - config 从 revision 0 依次变为 revision 2，`enabled == true`；
 - `ProtocolTreasuryV8Initialized` 和 `ProtocolV8EnabledChanged` 事件的 config ID、treasury ID、revision、enabled 和 commitment 精确匹配；
@@ -542,7 +543,7 @@ verify-source 运行目录不得复用发布时的 build cache；cache hit 不�
 - typed not-found 以外的错误不是“未上链”证据；
 - 过期且 typed not-found 时 abandon 整个 release，不为同 release 重签；
 - 链上 success 但对象/事件/readback 不满足本规格时，标为 `INCIDENT_STOPPED`，保留全部证据，禁止自动继续或 Web 切流；
-- 唯一允许的 readback repair 是本轮已锁定的两个本地证书解析器缺陷：`MAINNET_V8_CREATED_OUTPUT_INVALID`（把 V2 `AccumulatorWriteV1` 误当 created object）和 `MAINNET_V8_PACKAGE_BYTES_DRIFT`（未按 Sui publish 规则把每个 module 唯一的 32-byte `0x0` self address 与新 package ID 归一化比较）。必须由显式 `--repair-readback-incident` 触发，在同一 ordinal/attempt/digest/signature/finality bytes 上 append-only 地重新进入 `FINALIZED_SUCCESS_PENDING_READBACK`，不得 query、签名、广播或替换交易；module 比较只允许恰好一段连续 32 bytes 从全零变为 effects 认证的 package ID，任何其他 byte drift 仍 fail closed。WAL 必须拒绝任何 finality 漂移，修复调用在得到 `FINALIZED_SUCCESS` 后立即停止，下一 ordinal 只能由后续独立 resume 启动。其他 incident 一律保持 terminal；
+- 唯一允许的 readback repair 是本轮已锁定的三个本地证书解析器缺陷：`MAINNET_V8_CREATED_OUTPUT_INVALID`（把 V2 `AccumulatorWriteV1` 误当 created object）、`MAINNET_V8_PACKAGE_BYTES_DRIFT`（未按 Sui publish 规则把每个 module 唯一的 32-byte `0x0` self address 与新 package ID 归一化比较）和 `MAINNET_V8_INIT_WRITE_SET_INVALID`（旧 certifier 漏计 ordinal 7 PTB 中 owned `ProtocolAdminCapV8` 的版本推进）。必须由显式 `--repair-readback-incident` 触发，在同一 ordinal/attempt/digest/signature/finality bytes 上 append-only 地重新进入 `FINALIZED_SUCCESS_PENDING_READBACK`，不得 query、签名、广播或替换交易；module 比较只允许恰好一段连续 32 bytes 从全零变为 effects 认证的 package ID，任何其他 byte drift 仍 fail closed；init 写集修复必须精确绑定同一 finality 中的 config `MUTATED`、AdminCap `MUTATED`、treasury `CREATED` 三项，并历史回读 v2 AdminCap。WAL 必须拒绝任何 finality 漂移，修复调用在得到 `FINALIZED_SUCCESS` 后立即停止，下一 ordinal 只能由后续独立 resume 启动。其他 incident 一律保持 terminal；
 - effects-certified failure 后停止；不得跳过、重排或把新交易冒充同 ordinal；
 - 已有部分 package 成功时不能删除。放弃 release 会留下未被 production config 引用的 orphan packages/UpgradeCaps，必须明确登记，未来 release 使用新 releaseId 从头认证；
 - AdminCap、UpgradeCaps 是高价值权威对象；不得在自动恢复中转移、销毁或更改 upgrade policy。

@@ -1891,9 +1891,19 @@ test('ordinal 7 and 8 READY context is inseparable from the sealed manifest and 
     }),
     owner: Object.freeze({ Shared: Object.freeze({ initial_shared_version: '1' }) }),
   });
+  const initializedAdmin = Object.freeze({
+    reference: Object.freeze({
+      objectId: protocolAdminCap.objectId,
+      version: '2',
+      digest: objectDigest(214),
+    }),
+  });
   const initDetails = Object.freeze({
     certificate: Object.freeze({
-      readback: Object.freeze({ protocolConfig: initializedConfig }),
+      readback: Object.freeze({
+        protocolConfig: initializedConfig,
+        protocolAdminCap: initializedAdmin,
+      }),
     }),
   });
   const walWithInit = clone(wal);
@@ -1926,7 +1936,7 @@ test('ordinal 7 and 8 READY context is inseparable from the sealed manifest and 
       objectId: initializedConfig.reference.objectId,
       initialSharedVersion: initializedConfig.owner.Shared.initial_shared_version,
     }),
-    protocolAdminCap,
+    protocolAdminCap: initializedAdmin.reference,
     commitments,
     sealPolicy: wal.finalManifest.sealPolicy,
     keyServerCertificates,
@@ -1947,6 +1957,7 @@ test('ordinal 7 and 8 READY context is inseparable from the sealed manifest and 
     ['manifest commitments', (ready) => { ready.stageData.commitments.output.abi = hash32(221); }],
     ['final Seal policy', (ready) => { ready.stageData.sealPolicy = clone(SEAL_POLICY_TEMPLATE); }],
     ['initialized config ref', (ready) => { ready.stageData.protocolConfig.objectId = objectId(222); }],
+    ['initialized admin ref', (ready) => { ready.stageData.protocolAdminCap.version = '1'; }],
     ['key-server certificate', (ready) => {
       ready.stageData.keyServerCertificates[0].objectId = objectId(223);
     }],

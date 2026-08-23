@@ -508,7 +508,7 @@ function fixtureStageData(ordinal) {
       objectId: initialized.protocolConfig.reference.objectId,
       initialSharedVersion: initialized.protocolConfig.owner.Shared.initial_shared_version,
     },
-    protocolAdminCap: ownedAdmin,
+    protocolAdminCap: clone(initialized.protocolAdminCap.reference),
     commitments: Object.fromEntries(MAINNET_V8_ROLE_ORDER.map((role, index) => {
       const artifact = artifacts(role, index);
       return [role, {
@@ -683,7 +683,11 @@ function readbackWrites(readback) {
     ];
   }
   if (readback.kind === 'PROTOCOL_INIT_CERTIFICATE') {
-    return [outputWrite(readback.protocolConfig, 'MUTATED'), outputWrite(readback.protocolTreasury)];
+    return [
+      outputWrite(readback.protocolConfig, 'MUTATED'),
+      outputWrite(readback.protocolAdminCap, 'MUTATED'),
+      outputWrite(readback.protocolTreasury),
+    ];
   }
   if (readback.kind === 'BOOTSTRAP_CERTIFICATE') {
     return [outputWrite(readback.catalog), ...Object.values(readback.configs).map((entry) => outputWrite(entry))];
@@ -870,6 +874,7 @@ function protocolInitReadback() {
   const corePackageId = id(40);
   const configId = id(90);
   const treasuryId = id(100);
+  const adminId = packageReadback(0).protocolAdminCap.reference.objectId;
   const protocolTreasury = moveOutput({
     objectId: treasuryId,
     byte: 100,
@@ -890,6 +895,14 @@ function protocolInitReadback() {
       enabled: true, revision: '2', treasuryId,
     }),
   });
+  const protocolAdminCap = moveOutput({
+    objectId: adminId,
+    byte: 93,
+    version: '2',
+    type: `${corePackageId}::protocol_config_v8::ProtocolAdminCapV8`,
+    owner: { AddressOwner: sender },
+    fields: { id: adminId, version: '8', config_id: configId },
+  });
   const intermediateCommitment = fixtureProtocolConfigCommitment({
     corePackageId, configId, revision: '1', treasuryId, enabled: false,
   });
@@ -899,6 +912,7 @@ function protocolInitReadback() {
     kind: 'PROTOCOL_INIT_CERTIFICATE',
     transactionDigest: signedArtifact.digest,
     protocolConfig,
+    protocolAdminCap,
     protocolTreasury,
     events: {
       treasuryInitialized: {
@@ -2239,8 +2253,8 @@ test('known successful-readback parser incident only reopens the exact durable f
     'FINALIZED_SUCCESS_PENDING_READBACK', ready, signed, '0', '0', pendingDetails,
   ), '2026-08-23T00:00:03.000Z');
   const incident = {
-    code: 'MAINNET_V8_CREATED_OUTPUT_INVALID',
-    message: 'Created effects entry has no object/package output.',
+    code: 'MAINNET_V8_INIT_WRITE_SET_INVALID',
+    message: 'Protocol init write set omitted the owned AdminCap mutation.',
     details: {},
   };
   await append('INCIDENT_STOPPED', outcomeWalEvidence(

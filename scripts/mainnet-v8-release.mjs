@@ -102,6 +102,7 @@ export const MAINNET_V8_PUBLISHED_FILENAME = 'Published.toml';
 export const MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS = Object.freeze([
   'MAINNET_V8_CREATED_OUTPUT_INVALID',
   'MAINNET_V8_PACKAGE_BYTES_DRIFT',
+  'MAINNET_V8_INIT_WRITE_SET_INVALID',
 ]);
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
@@ -3037,6 +3038,7 @@ export async function certifyMainnetV8ProtocolInit({
   transport,
   packageIds,
   protocolConfigId,
+  protocolAdminCapId,
   signer,
   finalityEvidence,
 }) {
@@ -3047,13 +3049,16 @@ export async function certifyMainnetV8ProtocolInit({
   );
   const configWrites = writes.filter((reference) => reference.objectId === protocolConfigId
     && reference.operation === 'MUTATED');
+  const adminWrites = writes.filter((reference) => reference.objectId === protocolAdminCapId
+    && reference.operation === 'MUTATED');
   const created = writes.filter((reference) => reference.operation === 'CREATED');
-  if (writes.length !== 2 || configWrites.length !== 1 || created.length !== 1) {
-    fail('MAINNET_V8_INIT_WRITE_SET_INVALID', 'Protocol init must mutate only config and create only treasury.', {
+  if (writes.length !== 3 || configWrites.length !== 1
+    || adminWrites.length !== 1 || created.length !== 1) {
+    fail('MAINNET_V8_INIT_WRITE_SET_INVALID', 'Protocol init must mutate config/AdminCap and create only treasury.', {
       writes,
     });
   }
-  const relevant = [configWrites[0], created[0]];
+  const relevant = [configWrites[0], adminWrites[0], created[0]];
   const outputs = await Promise.all(relevant.map((reference) => readExactMainnetV8MoveOutput({
     transport,
     reference,
@@ -3069,6 +3074,11 @@ export async function certifyMainnetV8ProtocolInit({
     `${packageIds.core}::protocol_config_v8::ProtocolConfigV8`,
     'ProtocolConfigV8',
   ), packageIds, treasury.reference.objectId);
+  const protocolAdminCap = assertProtocolAdminCap(exactType(
+    outputs,
+    `${packageIds.core}::protocol_config_v8::ProtocolAdminCapV8`,
+    'ProtocolAdminCapV8',
+  ), protocolConfigId, signer);
   const events = assertMainnetV8ProtocolInitEvents({
     finalityEvidence,
     packageIds,
@@ -3081,6 +3091,7 @@ export async function certifyMainnetV8ProtocolInit({
     kind: 'PROTOCOL_INIT_CERTIFICATE',
     transactionDigest,
     protocolConfig: config,
+    protocolAdminCap,
     protocolTreasury: treasury,
     events,
   });
@@ -3859,7 +3870,9 @@ export function assertMainnetV8ReadyWalContext({ wal, ordinal, readyArtifact }) 
     expectedStageData = Object.freeze({
       packageIds,
       protocolConfig: sharedReferenceFromOutput(init.protocolConfig, 'Initialized ProtocolConfig'),
-      protocolAdminCap: ownedReferenceFromOutput(core.protocolAdminCap, 'Core ProtocolAdminCap'),
+      protocolAdminCap: ownedReferenceFromOutput(
+        init.protocolAdminCap, 'Initialized ProtocolAdminCap',
+      ),
       commitments,
       sealPolicy: finalSealPolicy,
       keyServerCertificates: readyArtifact.stageData.keyServerCertificates,
@@ -4405,7 +4418,7 @@ export async function assertMainnetV8StageReadyAuthority({ wal, event, transport
   );
   const [protocolConfig, protocolAdminCap, keyServerCertificates] = await Promise.all([
     rereadExactMoveOutput(transport, initialized.protocolConfig, 'Initialized ProtocolConfig'),
-    rereadExactMoveOutput(transport, core.protocolAdminCap, 'Core ProtocolAdminCap'),
+    rereadExactMoveOutput(transport, initialized.protocolAdminCap, 'Initialized ProtocolAdminCap'),
     certifyMainnetV8SealKeyServers({ transport, sealPolicy: finalSealPolicy }),
   ]);
   const expectedCertificates = event.evidence.readyArtifact.stageData.keyServerCertificates;
@@ -4423,10 +4436,11 @@ export async function assertMainnetV8StageReadyAuthority({ wal, event, transport
 async function prepareBootstrapReady({ paths, wal, client, transport }) {
   const published = await materializePublishedPrefix(paths, wal);
   const packageIds = packageIdsFromFinalManifest(wal);
-  const core = finalizedDetails(wal, 0).certificate.readback;
   const init = finalizedDetails(wal, 7).certificate.readback;
   const protocolConfig = sharedReferenceFromOutput(init.protocolConfig, 'Initialized ProtocolConfig');
-  const protocolAdminCap = ownedReferenceFromOutput(core.protocolAdminCap, 'Core ProtocolAdminCap');
+  const protocolAdminCap = ownedReferenceFromOutput(
+    init.protocolAdminCap, 'Initialized ProtocolAdminCap',
+  );
   const commitments = Object.freeze(Object.fromEntries(wal.finalManifest.packages.map((entry) => [
     entry.role,
     Object.freeze({
@@ -4678,6 +4692,7 @@ async function certifyOrdinalReadback({ ordinal, wal, ready, client, transport, 
       transport,
       packageIds,
       protocolConfigId: core.protocolConfig.reference.objectId,
+      protocolAdminCapId: ready.readyArtifact.stageData.protocolAdminCap.objectId,
       signer: wal.plan.sender,
       finalityEvidence,
     });
