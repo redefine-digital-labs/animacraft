@@ -601,7 +601,10 @@ function moveContentBytes(type, fields) {
     return TEST_PROTOCOL_ADMIN_CAP_BCS.serialize(fields).toBytes();
   }
   if (type.includes('::protocol_config_v8::ProtocolTreasuryV8<')) {
-    return TEST_PROTOCOL_TREASURY_BCS.serialize(fields).toBytes();
+    return TEST_PROTOCOL_TREASURY_BCS.serialize({
+      ...fields,
+      revenue: { value: fields.revenue },
+    }).toBytes();
   }
   return null;
 }
@@ -881,7 +884,7 @@ function protocolInitReadback() {
     type: `${corePackageId}::protocol_config_v8::ProtocolTreasuryV8<${MAINNET_V8_PAYMENT_COIN_TYPE}>`,
     owner: { Shared: { initial_shared_version: '2' } },
     fields: {
-      id: treasuryId, version: '8', config_id: configId, revenue: { value: '0' },
+      id: treasuryId, version: '8', config_id: configId, revenue: '0',
       total_collected: '0', total_withdrawn: '0',
     },
   });

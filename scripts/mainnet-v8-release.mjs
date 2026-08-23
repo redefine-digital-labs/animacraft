@@ -103,7 +103,12 @@ export const MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS = Object.freeze([
   'MAINNET_V8_CREATED_OUTPUT_INVALID',
   'MAINNET_V8_PACKAGE_BYTES_DRIFT',
   'MAINNET_V8_INIT_WRITE_SET_INVALID',
+  'MAINNET_V8_MOVE_FIELDS_INVALID',
 ]);
+const MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT = Object.freeze({
+  code: 'MAINNET_V8_MOVE_FIELDS_INVALID',
+  message: 'ProtocolTreasuryV8.revenue has no exact Move field record.',
+});
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, '..');
@@ -3012,12 +3017,10 @@ function assertProtocolTreasury(output, configId) {
   exactKeys(fields, [
     'id', 'version', 'config_id', 'revenue', 'total_collected', 'total_withdrawn',
   ], 'ProtocolTreasuryV8.fields');
-  const revenue = moveFields(fields.revenue, 'ProtocolTreasuryV8.revenue');
-  exactKeys(revenue, ['value'], 'ProtocolTreasuryV8.revenue.fields');
   if (moveId(fields.id, 'ProtocolTreasuryV8.id') !== output.reference.objectId
     || moveU64(fields.version, 'ProtocolTreasuryV8.version') !== '8'
     || moveId(fields.config_id, 'ProtocolTreasuryV8.config_id') !== configId
-    || moveU64(revenue.value, 'ProtocolTreasuryV8.revenue.value') !== '0'
+    || moveU64(fields.revenue, 'ProtocolTreasuryV8.revenue') !== '0'
     || moveU64(fields.total_collected, 'ProtocolTreasuryV8.total_collected') !== '0'
     || moveU64(fields.total_withdrawn, 'ProtocolTreasuryV8.total_withdrawn') !== '0') {
     fail('MAINNET_V8_PROTOCOL_TREASURY_INVALID', 'ProtocolTreasuryV8 initial fields are invalid.');
@@ -4782,11 +4785,16 @@ async function certifyPendingReadback({ paths, wal, client, transport, operation
 }
 
 function repairableReadbackIncident(event) {
+  const incident = event?.evidence?.observation?.details?.incident;
+  const exactTreasuryBalanceIncident = event?.ordinal === '7'
+    && incident?.code === MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT.code
+    && incident?.message === MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT.message
+    && plain(incident?.details) && Object.keys(incident.details).length === 0;
   return event?.status === 'INCIDENT_STOPPED'
     && event.ordinal !== '9'
-    && MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS.includes(
-      event.evidence?.observation?.details?.incident?.code,
-    );
+    && MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS.includes(incident?.code)
+    && (incident.code !== MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT.code
+      || exactTreasuryBalanceIncident);
 }
 
 function pendingReadbackRepair(wal) {

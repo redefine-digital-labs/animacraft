@@ -2696,11 +2696,10 @@ function assertProtocolTreasuryOutput(output, corePackageId, configId, transacti
     fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} type or shared owner is invalid.`);
   }
   exactFields(output.fields, PROTOCOL_TREASURY_MOVE_FIELDS, `${label}.fields`);
-  exactFields(output.fields.revenue, ['value'], `${label}.fields.revenue`);
   if (moveObjectId(output.fields.id, `${label}.fields.id`) !== output.reference.objectId
     || moveDecimal(output.fields.version, `${label}.fields.version`) !== '8'
     || moveObjectId(output.fields.config_id, `${label}.fields.config_id`) !== configId
-    || moveDecimal(output.fields.revenue.value, `${label}.fields.revenue.value`) !== '0'
+    || moveDecimal(output.fields.revenue, `${label}.fields.revenue`) !== '0'
     || moveDecimal(output.fields.total_collected, `${label}.fields.total_collected`) !== '0'
     || moveDecimal(output.fields.total_withdrawn, `${label}.fields.total_withdrawn`) !== '0') {
     fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} fields differ from a fresh protocol treasury.`);
@@ -4284,8 +4283,14 @@ function assertWalTransition(previous, current) {
       'MAINNET_V8_CREATED_OUTPUT_INVALID',
       'MAINNET_V8_PACKAGE_BYTES_DRIFT',
       'MAINNET_V8_INIT_WRITE_SET_INVALID',
+      'MAINNET_V8_MOVE_FIELDS_INVALID',
     ]
       .includes(previousIncident.incident.code)
+    && (previousIncident.incident.code !== 'MAINNET_V8_MOVE_FIELDS_INVALID'
+      || previous.ordinal === '7'
+        && previousIncident.incident.message
+          === 'ProtocolTreasuryV8.revenue has no exact Move field record.'
+        && Object.keys(previousIncident.incident.details).length === 0)
     && previousIncident.finalityEvidenceSha256 === currentPending.finalityEvidenceSha256
     && canonicalMainnetV8Json(previousIncident.finalityEvidence)
       === canonicalMainnetV8Json(currentPending.finalityEvidence);
