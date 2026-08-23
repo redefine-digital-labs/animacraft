@@ -90,7 +90,11 @@ const GIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const MODULE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const RELEASE_ROLE = new Set(MAINNET_V8_ROLE_ORDER);
-const MAX_JSON_NODES = 200_000;
+// A complete ten-ordinal release intentionally retains every READY artifact,
+// package ABI certificate, and its immediate predecessor certificate.  The
+// seven package boundary can therefore exceed 200k nodes while remaining
+// bounded by the fixed release topology and the per-artifact limits below.
+const MAX_JSON_NODES = 500_000;
 const MAX_JSON_DEPTH = 128;
 const MAX_CANONICAL_BYTES = 128 * 1024 * 1024;
 const ZERO_HASH = '0'.repeat(64);

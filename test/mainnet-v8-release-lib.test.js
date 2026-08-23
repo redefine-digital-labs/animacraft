@@ -1420,6 +1420,13 @@ test('canonical JSON is safe, injective, and sorted by ECMAScript UTF-16 code un
     () => assertMainnetV8DeterministicJson(entry),
     expectCode('MAINNET_V8_JSON_DOMAIN_INVALID'),
   ));
+
+  // A real seven-package WAL contains full ABI and predecessor certificates;
+  // keep its accepted deterministic domain above the former 200k-node limit.
+  assert.doesNotThrow(() => assertMainnetV8DeterministicJson(
+    Array.from({ length: 210_000 }, () => null),
+    'bounded release WAL fixture',
+  ));
 });
 
 test('the seven roles, direct dependency DAG, package names, and ten release ordinals are frozen', () => {
