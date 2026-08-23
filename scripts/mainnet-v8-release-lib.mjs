@@ -514,7 +514,7 @@ const PROTOCOL_INIT_EVENTS_FIELDS = Object.freeze([
   'treasuryInitialized', 'enabledChanged', 'intermediateCommitment', 'finalCommitment',
 ]);
 const BOOTSTRAP_CERTIFICATE_FIELDS = Object.freeze([
-  'schemaVersion', 'kind', 'transactionDigest', 'runtimeConfig', 'catalog',
+  'schemaVersion', 'kind', 'transactionDigest', 'protocolAdminCap', 'runtimeConfig', 'catalog',
   'configs', 'releaseCommitments', 'sealPolicyCommitment', 'events', 'attestation',
 ]);
 const RELEASE_COMMITMENTS_FIELDS = Object.freeze([
@@ -3605,6 +3605,14 @@ function assertBootstrapCertificate(readback, finalityEvidence, signer = null) {
       fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} must bind fresh identical original/callable package IDs.`);
     }
   });
+  assertProtocolAdminOutput(
+    readback.protocolAdminCap,
+    runtime.roles.core.callablePackageId,
+    runtime.protocolConfigId,
+    finalityEvidence.digest,
+    signer,
+    `${label}.protocolAdminCap`,
+  );
   const companionRoles = MAINNET_V8_ROLE_ORDER.slice(1);
   exactFields(runtime.roleConfigIds, companionRoles, `${label}.runtimeConfig.roleConfigIds`);
   companionRoles.forEach((role) => assertFullId(
@@ -3636,10 +3644,12 @@ function assertBootstrapCertificate(readback, finalityEvidence, signer = null) {
   });
   const outputs = [readback.catalog, ...companionRoles.map((role) => readback.configs[role])];
   const writes = finalityWrites(finalityEvidence);
-  if (writes.length !== 7 || writes.some((entry) => entry.operation !== 'CREATED')) {
+  if (writes.length !== 8
+    || writes.filter((entry) => entry.operation === 'CREATED').length !== 7) {
     fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} write set is not exact.`);
   }
   outputs.forEach((output, index) => findWrite(writes, output, 'CREATED', `${label}.outputs[${index}]`));
+  findWrite(writes, readback.protocolAdminCap, 'MUTATED', `${label}.protocolAdminCap`);
   if (new Set(outputs.map((output) => output.reference.objectId)).size !== 7) {
     fail('MAINNET_V8_WAL_EVIDENCE_INVALID', `${label} output identities collide.`);
   }
@@ -4284,6 +4294,7 @@ function assertWalTransition(previous, current) {
       'MAINNET_V8_PACKAGE_BYTES_DRIFT',
       'MAINNET_V8_INIT_WRITE_SET_INVALID',
       'MAINNET_V8_MOVE_FIELDS_INVALID',
+      'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
     ]
       .includes(previousIncident.incident.code)
     && (previousIncident.incident.code !== 'MAINNET_V8_MOVE_FIELDS_INVALID'
@@ -4291,6 +4302,12 @@ function assertWalTransition(previous, current) {
         && previousIncident.incident.message
           === 'ProtocolTreasuryV8.revenue has no exact Move field record.'
         && Object.keys(previousIncident.incident.details).length === 0)
+    && (previousIncident.incident.code !== 'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID'
+      || previous.ordinal === '8'
+        && previousIncident.incident.message
+          === 'Bootstrap effects must contain exactly seven created shared outputs.'
+        && Array.isArray(previousIncident.incident.details.writes)
+        && previousIncident.incident.details.writes.length === 8)
     && previousIncident.finalityEvidenceSha256 === currentPending.finalityEvidenceSha256
     && canonicalMainnetV8Json(previousIncident.finalityEvidence)
       === canonicalMainnetV8Json(currentPending.finalityEvidence);
@@ -4519,6 +4536,8 @@ function assertStageSuccessContext(event, ready, wal, sealedManifest, successful
     const init = successfulCertificates.get('7')?.details?.certificate?.readback;
     const readback = details.certificate.readback;
     if (!init || !sealedManifest
+      || readback.protocolAdminCap.reference.objectId
+        !== init.protocolAdminCap.reference.objectId
       || readback.runtimeConfig.protocolConfigId !== init.protocolConfig.reference.objectId
       || readback.runtimeConfig.protocolTreasuryId !== init.protocolTreasury.reference.objectId
       || readback.attestation.catalog.protocolConfigRevision !== '2'

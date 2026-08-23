@@ -104,10 +104,15 @@ export const MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS = Object.freeze([
   'MAINNET_V8_PACKAGE_BYTES_DRIFT',
   'MAINNET_V8_INIT_WRITE_SET_INVALID',
   'MAINNET_V8_MOVE_FIELDS_INVALID',
+  'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
 ]);
 const MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT = Object.freeze({
   code: 'MAINNET_V8_MOVE_FIELDS_INVALID',
   message: 'ProtocolTreasuryV8.revenue has no exact Move field record.',
+});
+const MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT = Object.freeze({
+  code: 'MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID',
+  message: 'Bootstrap effects must contain exactly seven created shared outputs.',
 });
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
@@ -3343,20 +3348,35 @@ export async function certifyMainnetV8Bootstrap({
     transactionDigest,
   );
   const created = writes.filter((entry) => entry.operation === 'CREATED');
-  if (writes.length !== 7 || created.length !== 7) {
-    fail('MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID', 'Bootstrap effects must contain exactly seven created shared outputs.', {
+  const adminWrites = writes.filter((entry) =>
+    entry.objectId === initCertificate.protocolAdminCap.reference.objectId
+      && entry.operation === 'MUTATED');
+  if (writes.length !== 8 || created.length !== 7 || adminWrites.length !== 1) {
+    fail('MAINNET_V8_BOOTSTRAP_WRITE_SET_INVALID', 'Bootstrap effects must create seven shared outputs and mutate only ProtocolAdminCap.', {
       writes,
     });
   }
-  const outputs = await Promise.all(created.map((reference) => readExactMainnetV8MoveOutput({
-    transport,
-    reference,
-    transactionDigest,
-  })));
+  const [outputs, protocolAdminCapOutput] = await Promise.all([
+    Promise.all(created.map((reference) => readExactMainnetV8MoveOutput({
+      transport,
+      reference,
+      transactionDigest,
+    }))),
+    readExactMainnetV8MoveOutput({
+      transport,
+      reference: adminWrites[0],
+      transactionDigest,
+    }),
+  ]);
   if (outputs.length !== 7 || outputs.some((output) => !Object.hasOwn(output.owner, 'Shared'))) {
     fail('MAINNET_V8_BOOTSTRAP_OUTPUT_CARDINALITY', 'Bootstrap must create exactly Catalog plus six shared configs.');
   }
   const prepared = runtimeConfigFromBootstrap({ packageIds, initCertificate, outputs });
+  const protocolAdminCap = assertProtocolAdminCap(
+    protocolAdminCapOutput,
+    initCertificate.protocolConfig.reference.objectId,
+    signer,
+  );
   // Treat current JSON as a presentation layer only.  Every catalog/config
   // semantic field used below must first match the canonical historical BCS
   // created by this exact transaction.
@@ -3409,6 +3429,7 @@ export async function certifyMainnetV8Bootstrap({
     schemaVersion: MAINNET_V8_RELEASE_RUNNER_SCHEMA,
     kind: 'BOOTSTRAP_CERTIFICATE',
     transactionDigest,
+    protocolAdminCap,
     runtimeConfig: prepared.runtimeConfig,
     catalog: prepared.catalog,
     configs: prepared.configs,
@@ -4790,11 +4811,18 @@ function repairableReadbackIncident(event) {
     && incident?.code === MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT.code
     && incident?.message === MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT.message
     && plain(incident?.details) && Object.keys(incident.details).length === 0;
+  const exactBootstrapAdminWriteIncident = event?.ordinal === '8'
+    && incident?.code === MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT.code
+    && incident?.message === MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT.message
+    && Array.isArray(incident?.details?.writes)
+    && incident.details.writes.length === 8;
   return event?.status === 'INCIDENT_STOPPED'
     && event.ordinal !== '9'
     && MAINNET_V8_REPAIRABLE_READBACK_INCIDENTS.includes(incident?.code)
     && (incident.code !== MAINNET_V8_TREASURY_BALANCE_JSON_INCIDENT.code
-      || exactTreasuryBalanceIncident);
+      || exactTreasuryBalanceIncident)
+    && (incident.code !== MAINNET_V8_BOOTSTRAP_ADMIN_WRITE_INCIDENT.code
+      || exactBootstrapAdminWriteIncident);
 }
 
 function pendingReadbackRepair(wal) {

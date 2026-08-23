@@ -693,7 +693,11 @@ function readbackWrites(readback) {
     ];
   }
   if (readback.kind === 'BOOTSTRAP_CERTIFICATE') {
-    return [outputWrite(readback.catalog), ...Object.values(readback.configs).map((entry) => outputWrite(entry))];
+    return [
+      outputWrite(readback.protocolAdminCap, 'MUTATED'),
+      outputWrite(readback.catalog),
+      ...Object.values(readback.configs).map((entry) => outputWrite(entry)),
+    ];
   }
   return [];
 }
@@ -1072,6 +1076,19 @@ function bootstrapReadback() {
   const catalogId = id(110);
   const configRoles = MAINNET_V8_ROLE_ORDER.slice(1);
   const roleConfigIds = Object.fromEntries(configRoles.map((role, index) => [role, id(111 + index)]));
+  const init = protocolInitReadback();
+  const protocolAdminCap = moveOutput({
+    objectId: init.protocolAdminCap.reference.objectId,
+    byte: 94,
+    version: '3',
+    type: `${packageIds.core}::protocol_config_v8::ProtocolAdminCapV8`,
+    owner: { AddressOwner: sender },
+    fields: {
+      id: init.protocolAdminCap.reference.objectId,
+      version: '8',
+      config_id: init.protocolConfig.reference.objectId,
+    },
+  });
   const runtimeConfig = {
     schemaVersion: 'animacraft.maker-v8-runtime.v8',
     protocolVersion: 8,
@@ -1264,6 +1281,7 @@ function bootstrapReadback() {
     schemaVersion: 'animacraft.mainnet-v8-release-runner.v1',
     kind: 'BOOTSTRAP_CERTIFICATE',
     transactionDigest: signedArtifact.digest,
+    protocolAdminCap,
     runtimeConfig,
     catalog,
     configs,
