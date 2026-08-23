@@ -157,7 +157,12 @@ public fun native_usdc_type_v8(): String {
 }
 
 public fun payment_coin_type_name_v8<PaymentCoin>(): String {
-    string::from_ascii(type_name::with_original_ids<PaymentCoin>().into_string())
+    // std::type_name emits a fixed-width hexadecimal address without the
+    // `0x` prefix, while every public v8 config/client type uses canonical Sui
+    // struct-tag notation. Normalize at this single authority boundary.
+    let mut canonical = b"0x";
+    canonical.append(type_name::with_original_ids<PaymentCoin>().into_string().into_bytes());
+    string::utf8(canonical)
 }
 
 /// One-time generic initialization binds the concrete PaymentCoin treasury to
@@ -543,6 +548,16 @@ public fun share_protocol_with_treasury_for_testing<PaymentCoin>(
     transfer::share_object(config);
     transfer::share_object(treasury);
     transfer::transfer(cap, ctx.sender());
+}
+
+#[test]
+fun payment_coin_type_name_has_canonical_sui_prefix() {
+    assert!(
+        payment_coin_type_name_v8<sui::sui::SUI>() ==
+            b"0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+                .to_string(),
+        EPaymentCoinMismatch,
+    );
 }
 
 #[test]

@@ -7,8 +7,8 @@
   "production": {
     "moveRootCount": 7,
     "coreModuleCount": 7,
-    "corePackageObjectBytes": 63909,
-    "coreTargetHeadroomBytes": 91,
+    "corePackageObjectBytes": 63961,
+    "coreTargetHeadroomBytes": 39,
     "baseRegistrySourceBytes": 41505,
     "baseRegistrySourceSha256": "d4537b1d55e6e3c9e6e27785f6f3014cb832394cf370c2f093d94a0e6207dc48",
     "baseRegistryBytecodeBytes": 9412,
