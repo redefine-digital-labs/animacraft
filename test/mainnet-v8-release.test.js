@@ -1105,7 +1105,7 @@ test('release CLI parsing keeps all three Mainnet write gates explicit and rejec
   assert.deepEqual(parseMainnetV8ReleaseArgs([
     'run', '--state-dir', '/tmp/release-state', '--sui-binary', '/tmp/sui',
     '--confirm-mainnet', '--allow-signing', '--allow-broadcast',
-    '--repair-readback-incident', '--json',
+    '--repair-readback-incident', '--maximum-transitions', '1', '--json',
   ]), {
     command: 'run',
     options: {
@@ -1115,6 +1115,7 @@ test('release CLI parsing keeps all three Mainnet write gates explicit and rejec
       'allow-signing': true,
       'allow-broadcast': true,
       'repair-readback-incident': true,
+      'maximum-transitions': '1',
       json: true,
     },
   });

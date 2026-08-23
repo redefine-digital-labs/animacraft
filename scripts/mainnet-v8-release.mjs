@@ -5492,6 +5492,9 @@ async function main(argv = process.argv.slice(2)) {
       expectedExecutionPlanId: options['execution-plan-id'],
       expectedReleaseId: options['release-id'] ?? null,
       repairReadbackIncident: options['repair-readback-incident'] === true,
+      maximumTransitions: options['maximum-transitions'] === undefined
+        ? 128
+        : Number(options['maximum-transitions']),
     });
     process.stdout.write(`${JSON.stringify({
       status: result.status,
