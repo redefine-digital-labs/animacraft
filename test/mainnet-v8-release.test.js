@@ -1028,7 +1028,7 @@ function publishCertificationFixture(fixture, signedArtifact, ordinal = 0) {
       fields: Object.freeze({
         id: Object.freeze({ id: upgradeCapId }),
         package: packageId,
-        policy: '0',
+        policy: 0,
         version: '1',
       }),
     }),
@@ -1066,19 +1066,19 @@ function publishCertificationFixture(fixture, signedArtifact, ordinal = 0) {
         revision: '0',
         treasury_id: null,
         payment_coin_type: MAINNET_V8_USDC_TYPE,
-        primary_content_fee_bps: '1000',
+        primary_content_fee_bps: 1000,
         fixed_complete_fee_atomic: '0',
-        maker_market_fee_bps: '250',
-        soul_market_fee_bps: '250',
+        maker_market_fee_bps: 250,
+        soul_market_fee_bps: 250,
         enabled: false,
-        commitment: deriveMainnetV8ProtocolConfigCommitment({
+        commitment: toBase64(fromHex(deriveMainnetV8ProtocolConfigCommitment({
           configId: protocolConfigId,
           coreOriginalPackageId: packageId,
           coreCallablePackageId: packageId,
           revision: '0',
           treasuryId: null,
           enabled: false,
-        }),
+        }))),
       }),
     }) : null,
     protocolAdminCap: role === 'core' ? moveOutput({

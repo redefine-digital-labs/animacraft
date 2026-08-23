@@ -2526,8 +2526,10 @@ function moveObjectId(value, label) {
 }
 
 function moveDecimal(value, label) {
-  assertMainnetV8Decimal(value, label);
-  return value;
+  const normalized = typeof value === 'number' && Number.isSafeInteger(value)
+    && !Object.is(value, -0) ? String(value) : value;
+  assertMainnetV8Decimal(normalized, label);
+  return normalized;
 }
 
 function moveHash(value, label) {
