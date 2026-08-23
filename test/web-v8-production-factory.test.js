@@ -22,6 +22,7 @@ import {
   attestMakerV8Runtime,
   makerV8ChainTypes,
 } from '../maker-v8-chain.js';
+import { MAKER_V8_SUI_GRAPHQL_MAX_PAGE_SIZE } from '../maker-v8-sui-grpc.js';
 import * as marketModule from '../maker-v8-market.js';
 import * as recoveryModule from '../maker-v8-recovery.js';
 import {
@@ -432,6 +433,7 @@ async function productionFixture() {
   const reads = new Map();
   const quoteInspectionFunctions = [];
   const actionDryRunFunctions = [];
+  const eventQueries = [];
   let forbidQuoteInspection = false;
   let broadcastCalls = 0;
   let runtime;
@@ -444,7 +446,9 @@ async function productionFixture() {
       reads.set(request.id, (reads.get(request.id) || 0) + 1);
       return objects.get(request.id) ?? attestation.getObject(request);
     },
-    async queryEvents({ query }) {
+    async queryEvents(request) {
+      eventQueries.push(request);
+      const { query } = request;
       if (query.MoveEventType === makerV8ChainTypes(rawRuntime).activationEvent) {
         return { data: [activationEvent(rawRuntime)], hasNextPage: false, nextCursor: null };
       }
@@ -705,6 +709,7 @@ async function productionFixture() {
     readCount(objectId) { return reads.get(objectId) || 0; },
     get quoteInspectionFunctions() { return [...quoteInspectionFunctions]; },
     get actionDryRunFunctions() { return [...actionDryRunFunctions]; },
+    get eventQueries() { return [...eventQueries]; },
     get broadcastCalls() { return broadcastCalls; },
   };
 }
@@ -729,6 +734,17 @@ function controllerFor(route, fixture, wallet) {
     recoveryModule,
   });
 }
+
+test('production market discovery keeps every GraphQL page within the Mainnet service limit', async () => {
+  const fixture = await productionFixture();
+  const adapters = productionAdapters(fixture, walletRegistry({ provider: false }));
+  await adapters.rpc.browseMarket({ requestId: 'graphql-page-boundary' });
+  assert.ok(fixture.eventQueries.length >= 2);
+  assert.ok(fixture.eventQueries.every((request) => (
+    request.limit === MAKER_V8_SUI_GRAPHQL_MAX_PAGE_SIZE
+  )));
+  assert.equal(MAKER_V8_SUI_GRAPHQL_MAX_PAGE_SIZE, 50);
+});
 
 test('default production factory stays browseable without a wallet and enumerates exact live inventory after reconnect', async () => {
   const fixture = await productionFixture();

@@ -31,6 +31,7 @@ import {
   parseMakerV8ActivatedEvent,
 } from './maker-v8-chain.js';
 import {
+  MAKER_V8_SUI_GRAPHQL_MAX_PAGE_SIZE,
   MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT,
   MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
   createProductionMakerV8SuiGrpcTransport,
@@ -276,7 +277,7 @@ async function allEventPages(client, type, maximum = 5_000) {
     const page = await client.queryEvents({
       query: { MoveEventType: type },
       cursor,
-      limit: 100,
+      limit: MAKER_V8_SUI_GRAPHQL_MAX_PAGE_SIZE,
       order: 'descending',
     });
     if (!plain(page) || !Array.isArray(page.data)) {
