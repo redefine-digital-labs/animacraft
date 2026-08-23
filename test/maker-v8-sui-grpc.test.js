@@ -18,6 +18,7 @@ import { blake2b } from '@noble/hashes/blake2.js';
 import {
   MAKER_V8_SUI_EVENT_DISCOVERY_QUERY,
   MAKER_V8_SUI_EVENT_DISCOVERY_SOURCE,
+  MAKER_V8_SUI_GRAPHQL_MAX_PAGE_SIZE,
   MAKER_V8_SUI_GRAPHQL_MAINNET_ENDPOINT,
   MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT,
   MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
@@ -1293,6 +1294,14 @@ test('GraphQL discovery rejects event type drift, malformed shapes, duplicates, 
   await assert.rejects(
     fixtures().transport.queryEvents({ query: { Sender: OWNER } }),
     code('MAKER_V8_SUI_GRAPHQL_FILTER_INVALID'),
+  );
+
+  await assert.rejects(
+    fixtures().transport.queryEvents({
+      query: { MoveEventType: EVENT_TYPE },
+      limit: MAKER_V8_SUI_GRAPHQL_MAX_PAGE_SIZE + 1,
+    }),
+    code('MAKER_V8_SUI_GRAPHQL_PAGE_SIZE_INVALID'),
   );
 });
 

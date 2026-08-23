@@ -18,6 +18,7 @@ export const MAKER_V8_CHAIN_SCHEMA = 'animacraft.maker-v8-chain.v8';
 export const MAKER_V8_MAINNET_CHAIN_IDENTIFIER = '35834a8a';
 export const MAKER_V8_MAINNET_GENESIS_DIGEST = '4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S';
 export const MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256 = '89ecbd9e3640ab218f92094c516d05d7efdacac4a12c56630759354af8d1bbc7';
+export const MAKER_V8_EVENT_DISCOVERY_PAGE_SIZE = 50;
 
 export const MAKER_V8_LIFECYCLES = Object.freeze({
   0: 'DRAFT',
@@ -925,7 +926,7 @@ export async function discoverMakerV8Activations(rpc, runtimeInput, { network: o
   if (typeof rpc?.queryEvents !== 'function') fail('config', 'MAKER_V8_RPC_INVALID', 'RPC queryEvents is required.');
   const eventType = makerV8ChainTypes(runtime).activationEvent;
   const events = await allPages((cursor) => rpc.queryEvents({
-    query: { MoveEventType: eventType }, cursor, limit: 100, order: 'descending',
+    query: { MoveEventType: eventType }, cursor, limit: MAKER_V8_EVENT_DISCOVERY_PAGE_SIZE, order: 'descending',
   }));
   return freeze(events.map((event) => parseMakerV8ActivatedEvent(event, runtime, observedNetwork)));
 }

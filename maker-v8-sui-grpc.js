@@ -23,6 +23,7 @@ export const MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT = 'https://fullnode.mainnet.sui.
 export const MAKER_V8_SUI_GRAPHQL_MAINNET_ENDPOINT = 'https://graphql.mainnet.sui.io/graphql';
 export const MAKER_V8_SUI_MAINNET_GENESIS_DIGEST = '4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S';
 export const MAKER_V8_SUI_EVENT_DISCOVERY_SOURCE = 'SUI_GRAPHQL_INDEX';
+export const MAKER_V8_SUI_GRAPHQL_MAX_PAGE_SIZE = 50;
 
 export const MAKER_V8_SUI_EVENT_DISCOVERY_QUERY = `
   query MakerV8EventDiscovery(
@@ -1653,8 +1654,11 @@ export function createMakerV8SuiGrpcTransport({
 
   const discoverEvents = async ({ type, cursor = null, limit = 50, order = 'descending', signal } = {}) => {
     const eventType = typeName(type, 'event.type');
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      fail('MAKER_V8_SUI_GRAPHQL_PAGE_SIZE_INVALID', 'GraphQL event page size must be within 1..100.');
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAKER_V8_SUI_GRAPHQL_MAX_PAGE_SIZE) {
+      fail(
+        'MAKER_V8_SUI_GRAPHQL_PAGE_SIZE_INVALID',
+        `GraphQL event page size must be within 1..${MAKER_V8_SUI_GRAPHQL_MAX_PAGE_SIZE}.`,
+      );
     }
     if (!['ascending', 'descending'].includes(order) || !(cursor === null || typeof cursor === 'string')) {
       fail('MAKER_V8_SUI_GRAPHQL_PAGE_INVALID', 'GraphQL event pagination request is invalid.');

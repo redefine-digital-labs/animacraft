@@ -11,6 +11,7 @@ import {
 import {
   MakerV8ChainError,
   MAKER_V8_APPROVED_CORE_BASE_REGISTRY_MODULE_SHA256,
+  MAKER_V8_EVENT_DISCOVERY_PAGE_SIZE,
   MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
   attestMakerV8Runtime,
   createMakerV8ChainClient,
@@ -668,6 +669,8 @@ test('discovery queries only MakerV8Activated and paginates without dual reads',
   const rows = await discoverMakerV8Activations(rpc, runtime());
   assert.equal(rows.length, 1);
   assert.deepEqual(calls[0].query, { MoveEventType: makerV8ChainTypes(runtime()).activationEvent });
+  assert.equal(calls[0].limit, MAKER_V8_EVENT_DISCOVERY_PAGE_SIZE);
+  assert.equal(calls[0].limit, 50);
   assert.equal(JSON.stringify(calls).includes('OCMaker'), false);
 });
 
