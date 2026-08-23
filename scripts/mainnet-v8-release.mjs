@@ -33,7 +33,7 @@ import {
 } from '../maker-v8-sui-grpc.js';
 import {
   ROLE_DEPENDENCIES,
-  ROLE_DEPENDENCY_CLOSURE,
+  ROLE_PUBLISH_DEPENDENCIES,
   ROLE_ORDER,
   ROLE_PACKAGE_NAMES,
   MAINNET_V8_DEFAULT_COMMITTEE,
@@ -4018,7 +4018,7 @@ async function withFreshReleaseCheckout({ repositoryRoot, wal, suiBinary }, oper
 
 function expectedProductDependencies(wal, ordinal) {
   const role = ROLE_ORDER[ordinal];
-  return ROLE_DEPENDENCY_CLOSURE[role]
+  return ROLE_PUBLISH_DEPENDENCIES[role]
     .map((dependencyRole) => finalizedDetails(wal, ROLE_ORDER.indexOf(dependencyRole))
       .certificate.readback.package.reference.objectId)
     .sort();

@@ -56,18 +56,19 @@ export const MAINNET_V8_ROLE_DEPENDENCIES = Object.freeze({
   market: Object.freeze(['core', 'output', 'physical', 'runtime']),
   release: Object.freeze(['core', 'seal', 'runtime', 'output', 'physical']),
 });
-export const MAINNET_V8_ROLE_DEPENDENCY_CLOSURE = Object.freeze(Object.fromEntries(
-  MAINNET_V8_ROLE_ORDER.map((role) => {
-    const closure = new Set();
-    const visit = (entry) => MAINNET_V8_ROLE_DEPENDENCIES[entry].forEach((dependency) => {
-      if (closure.has(dependency)) return;
-      closure.add(dependency);
-      visit(dependency);
-    });
-    visit(role);
-    return [role, Object.freeze(MAINNET_V8_ROLE_ORDER.filter((entry) => closure.has(entry)))];
-  }),
-));
+// Exact product package IDs encoded in each publish TransactionKind.  This is
+// deliberately distinct from the Move.toml source DAG: the compiler omits a
+// declared package when production bytecode never references it (Release
+// declares Physical for source/test closure but does not link it on chain).
+export const MAINNET_V8_ROLE_PUBLISH_DEPENDENCIES = Object.freeze({
+  core: Object.freeze([]),
+  seal: Object.freeze(['core']),
+  runtime: Object.freeze(['core', 'seal']),
+  output: Object.freeze(['core', 'seal', 'runtime']),
+  physical: Object.freeze(['core', 'seal', 'runtime', 'output']),
+  market: Object.freeze(['core', 'seal', 'runtime', 'output', 'physical']),
+  release: Object.freeze(['core', 'seal', 'runtime', 'output']),
+});
 
 export const MAINNET_V8_PACKAGE_NAMES = Object.freeze(Object.fromEntries(
   MAINNET_V8_ROLE_ORDER.map((role) => [role, `animacraft_v8_${role}`]),
@@ -4583,7 +4584,7 @@ export function assertMainnetV8ReleaseWal(wal) {
           || event.evidence.readyArtifact.packageArtifact.role !== planned.role) {
           fail('MAINNET_V8_WAL_INVALID', `READY ordinal ${event.ordinal} differs from its immutable source-plan role.`);
         }
-        const expectedRoleDependencies = MAINNET_V8_ROLE_DEPENDENCY_CLOSURE[planned.role].map((role) => {
+        const expectedRoleDependencies = MAINNET_V8_ROLE_PUBLISH_DEPENDENCIES[planned.role].map((role) => {
           const dependencyOrdinal = String(MAINNET_V8_ROLE_ORDER.indexOf(role));
           const dependency = successfulCertificates.get(dependencyOrdinal)?.details?.certificate?.readback;
           if (!dependency) {
@@ -5083,7 +5084,7 @@ export async function appendMainnetV8ReleaseWal(path, input) {
 // release runner compact and form the public integration contract.
 export const ROLE_ORDER = MAINNET_V8_ROLE_ORDER;
 export const ROLE_DEPENDENCIES = MAINNET_V8_ROLE_DEPENDENCIES;
-export const ROLE_DEPENDENCY_CLOSURE = MAINNET_V8_ROLE_DEPENDENCY_CLOSURE;
+export const ROLE_PUBLISH_DEPENDENCIES = MAINNET_V8_ROLE_PUBLISH_DEPENDENCIES;
 export const ROLE_PACKAGE_NAMES = MAINNET_V8_PACKAGE_NAMES;
 export const canonicalJson = canonicalMainnetV8Json;
 

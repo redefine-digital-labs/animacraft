@@ -26,7 +26,7 @@ import {
   MAINNET_V8_SUI_BINARY_SHA256,
   MAINNET_V8_RELEASE_STEPS,
   MAINNET_V8_ROLE_DEPENDENCIES,
-  MAINNET_V8_ROLE_DEPENDENCY_CLOSURE,
+  MAINNET_V8_ROLE_PUBLISH_DEPENDENCIES,
   MAINNET_V8_ROLE_ORDER,
   MAINNET_V8_SOURCE_ARTIFACT_DOMAIN,
   MAINNET_V8_SUI_SOURCE_COMMIT,
@@ -415,7 +415,7 @@ function artifacts(role, index) {
     ],
     dependencies: [
       id(index + 20), id(2), id(1),
-      ...MAINNET_V8_ROLE_DEPENDENCY_CLOSURE[role].map((dependency) => (
+      ...MAINNET_V8_ROLE_PUBLISH_DEPENDENCIES[role].map((dependency) => (
         id(40 + MAINNET_V8_ROLE_ORDER.indexOf(dependency))
       )),
     ],
@@ -1441,14 +1441,14 @@ test('the seven roles, direct dependency DAG, package names, and ten release ord
     market: ['core', 'output', 'physical', 'runtime'],
     release: ['core', 'seal', 'runtime', 'output', 'physical'],
   });
-  assert.deepEqual(MAINNET_V8_ROLE_DEPENDENCY_CLOSURE, {
+  assert.deepEqual(MAINNET_V8_ROLE_PUBLISH_DEPENDENCIES, {
     core: [],
     seal: ['core'],
     runtime: ['core', 'seal'],
     output: ['core', 'seal', 'runtime'],
     physical: ['core', 'seal', 'runtime', 'output'],
     market: ['core', 'seal', 'runtime', 'output', 'physical'],
-    release: ['core', 'seal', 'runtime', 'output', 'physical'],
+    release: ['core', 'seal', 'runtime', 'output'],
   });
   assert.deepEqual(Object.values(MAINNET_V8_PACKAGE_NAMES), MAINNET_V8_ROLE_ORDER.map((role) => `animacraft_v8_${role}`));
   assert.deepEqual(MAINNET_V8_RELEASE_STEPS.map(({ ordinal, kind }) => [ordinal, kind]), [

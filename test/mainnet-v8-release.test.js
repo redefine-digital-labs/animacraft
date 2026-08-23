@@ -29,7 +29,7 @@ import { blake2b } from '@noble/hashes/blake2.js';
 import {
   MAINNET_V8_PACKAGE_NAMES,
   MAINNET_V8_ROLE_DEPENDENCIES,
-  MAINNET_V8_ROLE_DEPENDENCY_CLOSURE,
+  MAINNET_V8_ROLE_PUBLISH_DEPENDENCIES,
   MAINNET_V8_ROLE_ORDER,
   appendReleaseWal,
   buildMainnetV8AbiArtifact,
@@ -753,7 +753,7 @@ async function createExecutionState(t) {
 
 async function publishReadyFixture(ordinal, predecessor) {
   const role = MAINNET_V8_ROLE_ORDER[ordinal];
-  const roleDependencies = MAINNET_V8_ROLE_DEPENDENCY_CLOSURE[role].map((dependencyRole) => {
+  const roleDependencies = MAINNET_V8_ROLE_PUBLISH_DEPENDENCIES[role].map((dependencyRole) => {
     const dependencyOrdinal = MAINNET_V8_ROLE_ORDER.indexOf(dependencyRole);
     return objectId(88 + dependencyOrdinal * 5);
   });
