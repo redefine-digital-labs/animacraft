@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "animacraft.maker-v8-sui-protocol-profile.v1",
+  "protocolVersion": "133",
+  "objectRuntimeMaxNumCachedObjects": "1000",
+  "objectRuntimeMaxNumStoreEntries": "1000"
+}

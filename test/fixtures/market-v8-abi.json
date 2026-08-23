@@ -1,0 +1,91 @@
+{
+  "quoteCommitment": {
+    "bcsHex": "1a616e696d6163726166742d76382f6d61726b65742f71756f746508000000000000000200000000000000000000000000000000000000000000000000000000000000682a0000000000000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa20bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb20cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc40420f0000000000307500000000000050c3000000000000204e000000000000a0bb0d0000000000",
+    "sha256": "0x2f0096b96f88e8beb8a81ac14e979ebc9de6413656d89db1c212201cf3c19952"
+  },
+  "structFields": {
+    "MarketRegistryV8": ["id", "catalog_id", "package_config_id", "product_binding_commitment", "call_cap_set_commitment", "root_id", "maker_version", "root_content_commitment", "protocol_config_id", "protocol_config_revision", "protocol_config_commitment", "economics_commitment", "rights_commitment", "maker_market_fee_bps", "soul_market_fee_bps", "soul_creator_royalty_bps", "maker_source_royalty_bps", "maker_resale_royalty_bps", "treasury_id", "sealed", "revision", "listing_count", "escrow_count", "completed_sale_count", "canceled_sale_count", "recovered_sale_count", "gross_volume_atomic", "protocol_paid_atomic", "creator_paid_atomic", "source_paid_atomic", "seller_paid_atomic", "zero_state_commitment"],
+    "MarketTreasuryV8": ["id", "version", "catalog_id", "package_config_id", "root_id", "maker_version", "root_content_commitment", "escrow", "gross_escrowed_atomic", "gross_released_atomic"],
+    "MakerListingV8": ["id", "version", "registry_id", "treasury_id", "package_config_id", "root_id", "maker_version", "root_content_commitment", "admin_cap_id", "seller", "expected_control_epoch", "gross_atomic", "protocol_atomic", "creator_atomic", "seller_atomic", "quote_commitment", "status", "revision", "terminal_recipient"],
+    "SoulListingV8": ["id", "version", "registry_id", "treasury_id", "package_config_id", "custody", "gross_atomic", "protocol_atomic", "creator_atomic", "source_atomic", "seller_atomic", "quote_commitment", "status", "revision", "terminal_recipient"],
+    "PhysicalListingV8": ["id", "version", "registry_id", "treasury_id", "package_config_id", "custody", "gross_atomic", "protocol_atomic", "creator_atomic", "source_atomic", "seller_atomic", "quote_commitment", "status", "revision", "terminal_recipient"]
+  },
+  "eventFields": {
+    "MarketRegistrySealedV8": ["root_id", "registry_id", "treasury_id", "zero_state_commitment"],
+    "MarketListingOpenedV8": ["listing_id", "registry_id", "lane", "root_id", "asset_id", "seller", "ownership_epoch", "gross_atomic", "quote_commitment"],
+    "MarketListingSettledV8": ["listing_id", "registry_id", "lane", "asset_id", "seller", "buyer", "gross_atomic", "protocol_atomic", "creator_atomic", "source_atomic", "seller_atomic"],
+    "MarketListingClosedV8": ["listing_id", "registry_id", "lane", "asset_id", "seller", "recovered"]
+  },
+  "actions": {
+    "listMakerControl": {
+      "function": "list_maker_control_v8",
+      "clientArguments": ["registry", "treasury", "root", "admin", "makerTreasury", "protocolConfig", "catalog", "config", "grossAtomic"],
+      "parameters": [["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&MarketTreasuryV8<PaymentCoin>"], ["root", "&MakerRootV8<PaymentCoin>"], ["admin", "MakerAdminCapV8"], ["maker_treasury", "&MakerTreasuryV8<PaymentCoin>"], ["protocol_config", "&ProtocolConfigV8"], ["catalog", "&ProductReleaseCatalogV8"], ["config", "&MarketPackageConfigV8"], ["gross_atomic", "u64"], ["ctx", "&mut TxContext"]]
+    },
+    "purchaseMakerControl": {
+      "function": "purchase_maker_control_v8",
+      "clientArguments": ["listing", "registry", "treasury", "root", "protocolConfig", "protocolTreasury", "catalog", "config", "adminReceiving", "payment"],
+      "parameters": [["listing", "&mut MakerListingV8<PaymentCoin>"], ["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&mut MarketTreasuryV8<PaymentCoin>"], ["root", "&mut MakerRootV8<PaymentCoin>"], ["protocol_config", "&ProtocolConfigV8"], ["protocol_treasury", "&mut ProtocolTreasuryV8<PaymentCoin>"], ["catalog", "&ProductReleaseCatalogV8"], ["config", "&MarketPackageConfigV8"], ["receiving", "Receiving<MakerAdminCapV8>"], ["payment", "Coin<PaymentCoin>"], ["ctx", "&mut TxContext"]]
+    },
+    "cancelMakerControl": {
+      "function": "cancel_maker_control_listing_v8",
+      "clientArguments": ["listing", "registry", "treasury", "root", "catalog", "config", "adminReceiving"],
+      "parameters": [["listing", "&mut MakerListingV8<PaymentCoin>"], ["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&MarketTreasuryV8<PaymentCoin>"], ["root", "&mut MakerRootV8<PaymentCoin>"], ["catalog", "&ProductReleaseCatalogV8"], ["config", "&MarketPackageConfigV8"], ["receiving", "Receiving<MakerAdminCapV8>"], ["ctx", "&mut TxContext"]]
+    },
+    "recoverMakerControl": {
+      "function": "recover_maker_control_listing_v8",
+      "clientArguments": ["listing", "registry", "treasury", "root", "protocolConfig", "catalog", "config", "adminReceiving"],
+      "parameters": [["listing", "&mut MakerListingV8<PaymentCoin>"], ["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&MarketTreasuryV8<PaymentCoin>"], ["root", "&mut MakerRootV8<PaymentCoin>"], ["protocol_config", "&ProtocolConfigV8"], ["catalog", "&ProductReleaseCatalogV8"], ["config", "&MarketPackageConfigV8"], ["receiving", "Receiving<MakerAdminCapV8>"], ["ctx", "&mut TxContext"]]
+    },
+    "listSoulBundle": {
+      "function": "list_soul_bundle_v8",
+      "clientArguments": ["registry", "treasury", "outputRegistry", "soulRegistry", "root", "protocolConfig", "catalog", "config", "outputAsset", "receipt", "soul", "grossAtomic"],
+      "parameters": [["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&MarketTreasuryV8<PaymentCoin>"], ["output_registry", "&OutputRegistryV8"], ["soul_registry", "&SoulRegistryV8"], ["root", "&MakerRootV8<PaymentCoin>"], ["protocol_config", "&ProtocolConfigV8"], ["catalog", "&ProductReleaseCatalogV8"], ["config", "&MarketPackageConfigV8"], ["output_asset", "CompleteOutputV8"], ["receipt", "CompleteReceiptV8"], ["soul", "CanonicalSoulV8"], ["gross_atomic", "u64"], ["ctx", "&mut TxContext"]]
+    },
+    "purchaseSoulBundle": {
+      "function": "purchase_soul_bundle_v8",
+      "clientArguments": ["listing", "registry", "treasury", "outputRegistry", "soulRegistry", "root", "makerTreasury", "protocolConfig", "protocolTreasury", "catalog", "config", "outputReceiving", "receiptReceiving", "soulReceiving", "payment"],
+      "parameters": [["listing", "&mut SoulListingV8<PaymentCoin>"], ["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&mut MarketTreasuryV8<PaymentCoin>"], ["output_registry", "&mut OutputRegistryV8"], ["soul_registry", "&mut SoulRegistryV8"], ["root", "&MakerRootV8<PaymentCoin>"], ["maker_treasury", "&mut MakerTreasuryV8<PaymentCoin>"], ["protocol_config", "&ProtocolConfigV8"], ["protocol_treasury", "&mut ProtocolTreasuryV8<PaymentCoin>"], ["catalog", "&ProductReleaseCatalogV8"], ["config", "&MarketPackageConfigV8"], ["output_receiving", "Receiving<CompleteOutputV8>"], ["receipt_receiving", "Receiving<CompleteReceiptV8>"], ["soul_receiving", "Receiving<CanonicalSoulV8>"], ["payment", "Coin<PaymentCoin>"], ["ctx", "&mut TxContext"]]
+    },
+    "cancelSoulListing": {
+      "function": "cancel_soul_listing_v8",
+      "clientArguments": ["listing", "registry", "treasury", "outputRegistry", "soulRegistry", "root", "catalog", "config", "outputReceiving", "receiptReceiving", "soulReceiving"],
+      "parameters": [["listing", "&mut SoulListingV8<PaymentCoin>"], ["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&MarketTreasuryV8<PaymentCoin>"], ["output_registry", "&OutputRegistryV8"], ["soul_registry", "&SoulRegistryV8"], ["root", "&MakerRootV8<PaymentCoin>"], ["catalog", "&ProductReleaseCatalogV8"], ["config", "&MarketPackageConfigV8"], ["output_receiving", "Receiving<CompleteOutputV8>"], ["receipt_receiving", "Receiving<CompleteReceiptV8>"], ["soul_receiving", "Receiving<CanonicalSoulV8>"], ["ctx", "&mut TxContext"]]
+    },
+    "recoverSoulListing": {
+      "function": "recover_soul_listing_v8",
+      "clientArguments": ["listing", "registry", "treasury", "outputRegistry", "soulRegistry", "root", "protocolConfig", "catalog", "config", "outputReceiving", "receiptReceiving", "soulReceiving"],
+      "parameters": [["listing", "&mut SoulListingV8<PaymentCoin>"], ["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&MarketTreasuryV8<PaymentCoin>"], ["output_registry", "&OutputRegistryV8"], ["soul_registry", "&SoulRegistryV8"], ["root", "&MakerRootV8<PaymentCoin>"], ["protocol_config", "&ProtocolConfigV8"], ["catalog", "&ProductReleaseCatalogV8"], ["config", "&MarketPackageConfigV8"], ["output_receiving", "Receiving<CompleteOutputV8>"], ["receipt_receiving", "Receiving<CompleteReceiptV8>"], ["soul_receiving", "Receiving<CanonicalSoulV8>"]]
+    },
+    "listBasePhysical": {
+      "function": "list_base_physical_v8",
+      "clientArguments": ["registry", "treasury", "physicalRegistry", "root", "makerTreasury", "protocolConfig", "catalog", "physicalConfig", "config", "asset", "grossAtomic"],
+      "parameters": [["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&MarketTreasuryV8<PaymentCoin>"], ["physical_registry", "&PhysicalRegistryV8"], ["root", "&MakerRootV8<PaymentCoin>"], ["maker_treasury", "&MakerTreasuryV8<PaymentCoin>"], ["protocol_config", "&ProtocolConfigV8"], ["catalog", "&ProductReleaseCatalogV8"], ["physical_config", "&PhysicalPackageConfigV8"], ["config", "&MarketPackageConfigV8"], ["asset", "PhysicalAssetV8"], ["gross_atomic", "u64"], ["ctx", "&mut TxContext"]]
+    },
+    "listPackPhysical": {
+      "function": "list_pack_physical_v8",
+      "clientArguments": ["registry", "treasury", "physicalRegistry", "root", "packTreasury", "protocolConfig", "catalog", "physicalConfig", "config", "asset", "grossAtomic"],
+      "parameters": [["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&MarketTreasuryV8<PaymentCoin>"], ["physical_registry", "&PhysicalRegistryV8"], ["root", "&MakerRootV8<PaymentCoin>"], ["pack_treasury", "&PackTreasuryV8<PaymentCoin>"], ["protocol_config", "&ProtocolConfigV8"], ["catalog", "&ProductReleaseCatalogV8"], ["physical_config", "&PhysicalPackageConfigV8"], ["config", "&MarketPackageConfigV8"], ["asset", "PhysicalAssetV8"], ["gross_atomic", "u64"], ["ctx", "&mut TxContext"]]
+    },
+    "purchaseBasePhysical": {
+      "function": "purchase_base_physical_v8",
+      "clientArguments": ["listing", "registry", "treasury", "physicalRegistry", "root", "makerTreasury", "protocolConfig", "protocolTreasury", "catalog", "physicalConfig", "config", "receiving", "payment"],
+      "parameters": [["listing", "&mut PhysicalListingV8<PaymentCoin>"], ["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&mut MarketTreasuryV8<PaymentCoin>"], ["physical_registry", "&PhysicalRegistryV8"], ["root", "&MakerRootV8<PaymentCoin>"], ["maker_treasury", "&mut MakerTreasuryV8<PaymentCoin>"], ["protocol_config", "&ProtocolConfigV8"], ["protocol_treasury", "&mut ProtocolTreasuryV8<PaymentCoin>"], ["catalog", "&ProductReleaseCatalogV8"], ["physical_config", "&PhysicalPackageConfigV8"], ["config", "&MarketPackageConfigV8"], ["receiving", "Receiving<PhysicalAssetV8>"], ["payment", "Coin<PaymentCoin>"], ["ctx", "&mut TxContext"]]
+    },
+    "purchasePackPhysical": {
+      "function": "purchase_pack_physical_v8",
+      "clientArguments": ["listing", "registry", "treasury", "physicalRegistry", "root", "packRelease", "packTreasury", "protocolConfig", "protocolTreasury", "catalog", "physicalConfig", "config", "receiving", "payment"],
+      "parameters": [["listing", "&mut PhysicalListingV8<PaymentCoin>"], ["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&mut MarketTreasuryV8<PaymentCoin>"], ["physical_registry", "&PhysicalRegistryV8"], ["root", "&MakerRootV8<PaymentCoin>"], ["pack_release", "&PackReleaseV8<PaymentCoin>"], ["pack_treasury", "&mut PackTreasuryV8<PaymentCoin>"], ["protocol_config", "&ProtocolConfigV8"], ["protocol_treasury", "&mut ProtocolTreasuryV8<PaymentCoin>"], ["catalog", "&ProductReleaseCatalogV8"], ["physical_config", "&PhysicalPackageConfigV8"], ["config", "&MarketPackageConfigV8"], ["receiving", "Receiving<PhysicalAssetV8>"], ["payment", "Coin<PaymentCoin>"], ["ctx", "&mut TxContext"]]
+    },
+    "cancelPhysicalListing": {
+      "function": "cancel_physical_listing_v8",
+      "clientArguments": ["listing", "registry", "treasury", "physicalRegistry", "root", "catalog", "config", "receiving"],
+      "parameters": [["listing", "&mut PhysicalListingV8<PaymentCoin>"], ["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&MarketTreasuryV8<PaymentCoin>"], ["physical_registry", "&PhysicalRegistryV8"], ["root", "&MakerRootV8<PaymentCoin>"], ["catalog", "&ProductReleaseCatalogV8"], ["config", "&MarketPackageConfigV8"], ["receiving", "Receiving<PhysicalAssetV8>"], ["ctx", "&TxContext"]]
+    },
+    "recoverPhysicalListing": {
+      "function": "recover_physical_listing_v8",
+      "clientArguments": ["listing", "registry", "treasury", "physicalRegistry", "root", "protocolConfig", "catalog", "config", "receiving"],
+      "parameters": [["listing", "&mut PhysicalListingV8<PaymentCoin>"], ["registry", "&mut MarketRegistryV8<PaymentCoin>"], ["treasury", "&MarketTreasuryV8<PaymentCoin>"], ["physical_registry", "&PhysicalRegistryV8"], ["root", "&MakerRootV8<PaymentCoin>"], ["protocol_config", "&ProtocolConfigV8"], ["catalog", "&ProductReleaseCatalogV8"], ["config", "&MarketPackageConfigV8"], ["receiving", "Receiving<PhysicalAssetV8>"]]
+    }
+  }
+}

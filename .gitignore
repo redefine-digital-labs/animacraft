@@ -14,5 +14,6 @@ __pycache__/
 
 # Move build artifacts
 move/**/build/
+test/harness/**/build/
 .vercel
 .env*

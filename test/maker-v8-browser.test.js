@@ -1,0 +1,1484 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import test from 'node:test';
+
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { bcs } from '@mysten/sui/bcs';
+import { GrpcTypes } from '@mysten/sui/grpc';
+import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
+import { fromBase64, toBase64 } from '@mysten/sui/utils';
+import { RpcError } from '@protobuf-ts/runtime-rpc';
+import {
+  SUI_MAINNET_CHAIN,
+  StandardConnect,
+  StandardEvents,
+  SuiSignTransaction,
+  WALLET_STANDARD_ERROR__USER__REQUEST_REJECTED,
+  WalletStandardError,
+} from '@mysten/wallet-standard';
+
+import {
+  MAKER_V8_OFFICIAL_MAINNET_GRPC_URL,
+  createMakerV8LiveDataSourceV8,
+  assertFinalizedMakerV8CompilerTransactionV8,
+  createProductionMakerV8BrowserAdapters,
+  createWalletStandardConnectorV8,
+  decodeMakerV8CoreEventV8,
+  makerV8TransactionEventsDigestV8,
+  parseMakerV8MoveOptionIdV8,
+  readMakerV8CompilerProtocolProfileV8,
+  readMakerV8CompilerHistoricalObjectV8,
+  readFinalizedMakerV8EnvelopeV8,
+} from '../maker-v8-browser.js';
+import { MAKER_V8_MAINNET_CHAIN_IDENTIFIER } from '../maker-v8-chain.js';
+import { MAKER_V8_TRANSACTION_ABSENCE_SCHEMA } from '../maker-v8-actions.js';
+import {
+  createMakerV8SuiGrpcTransport,
+  MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
+} from '../maker-v8-sui-grpc.js';
+
+const planHash = `0x${'ab'.repeat(32)}`;
+const finalizedTransactionBytes = toBase64(new Uint8Array([4, 5]));
+
+const objectId = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
+const packageId = objectId;
+const suiDigest = '11111111111111111111111111111111';
+const listingOpenedEventBcs = bcs.struct('MarketListingOpenedV8Test', {
+  listing_id: bcs.Address,
+  registry_id: bcs.Address,
+  lane: bcs.u8(),
+  root_id: bcs.Address,
+  asset_id: bcs.Address,
+  seller: bcs.Address,
+  ownership_epoch: bcs.u64(),
+  gross_atomic: bcs.u64(),
+  quote_commitment: bcs.vector(bcs.u8()),
+});
+const listingSettledEventBcs = bcs.struct('MarketListingSettledV8Test', {
+  listing_id: bcs.Address,
+  registry_id: bcs.Address,
+  lane: bcs.u8(),
+  asset_id: bcs.Address,
+  seller: bcs.Address,
+  buyer: bcs.Address,
+  gross_atomic: bcs.u64(),
+  protocol_atomic: bcs.u64(),
+  creator_atomic: bcs.u64(),
+  source_atomic: bcs.u64(),
+  seller_atomic: bcs.u64(),
+});
+const listingClosedEventBcs = bcs.struct('MarketListingClosedV8Test', {
+  listing_id: bcs.Address,
+  registry_id: bcs.Address,
+  lane: bcs.u8(),
+  asset_id: bcs.Address,
+  seller: bcs.Address,
+  recovered: bcs.bool(),
+});
+const makerTransferredEventBcs = bcs.struct('MakerControlTransferredV8Test', {
+  root_id: bcs.Address,
+  previous_owner: bcs.Address,
+  new_owner: bcs.Address,
+  previous_control_epoch: bcs.u64(),
+  new_control_epoch: bcs.u64(),
+  new_admin_cap_id: bcs.Address,
+});
+const physicalTransitionEventBcs = bcs.struct('PhysicalMarketCustodyTransitionV8Test', {
+  action: bcs.u8(),
+  listing_id: bcs.Address,
+  asset_id: bcs.Address,
+  source_kind: bcs.u8(),
+  source_treasury_id: bcs.Address,
+  previous_holder: bcs.Address,
+  holder: bcs.Address,
+  previous_ownership_epoch: bcs.u64(),
+  ownership_epoch: bcs.u64(),
+  provenance_commitment: bcs.vector(bcs.u8()),
+});
+const mainnetExecution = (overrides = {}) => ({
+  network: 'mainnet',
+  chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+  allowWalletSignature: false,
+  allowBroadcast: false,
+  ...overrides,
+});
+
+test('compiler gRPC pins the exact measured Sui protocol profile', async () => {
+  const response = {
+    protocolVersion: '133',
+    attributes: {
+      object_runtime_max_num_cached_objects: '1000',
+      object_runtime_max_num_store_entries: '1000',
+    },
+    featureFlags: {},
+  };
+  const read = (value) => readMakerV8CompilerProtocolProfileV8({
+    async getProtocolConfig() { return structuredClone(value); },
+  });
+  assert.deepEqual(await read(response), {
+    protocolVersion: '133',
+    objectRuntimeMaxNumCachedObjects: '1000',
+    objectRuntimeMaxNumStoreEntries: '1000',
+  });
+
+  for (const [mutate, code] of [
+    [(value) => { value.protocolVersion = '131'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
+    [(value) => { value.attributes.object_runtime_max_num_cached_objects = '999'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
+    [(value) => { value.attributes.object_runtime_max_num_store_entries = '1001'; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED'],
+    [(value) => { delete value.attributes.object_runtime_max_num_store_entries; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID'],
+    [(value) => { value.attributes.object_runtime_max_num_cached_objects = { u32: 1000 }; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID'],
+    [(value) => { value.attributes.object_runtime_max_num_cached_objects = 1000; }, 'MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID'],
+  ]) {
+    const drift = structuredClone(response);
+    mutate(drift);
+    await assert.rejects(read(drift), (error) => error.code === code);
+  }
+});
+
+async function compilerFinalizedFixture() {
+  const sender = objectId(901);
+  const expected = new Transaction();
+  expected.setSender(sender);
+  const kind = bcs.TransactionKind.parse(await expected.build({ onlyTransactionKind: true }));
+  const transactionData = {
+    V1: {
+      kind,
+      sender,
+      gasData: {
+        payment: [{ objectId: objectId(902), version: '7', digest: suiDigest }],
+        owner: sender,
+        price: '1',
+        budget: '1000',
+      },
+      expiration: { None: true },
+    },
+  };
+  const transactionDataBytes = bcs.TransactionData.serialize(transactionData).toBytes();
+  const transactionDigest = TransactionDataBuilder.getDigestFromBytes(transactionDataBytes);
+  const effects = {
+    V1: {
+      status: { Success: true },
+      executedEpoch: '1',
+      gasUsed: { computationCost: '1', storageCost: '1', storageRebate: '0', nonRefundableStorageFee: '0' },
+      modifiedAtVersions: [],
+      sharedObjects: [],
+      transactionDigest,
+      created: [], mutated: [], unwrapped: [], deleted: [], unwrappedThenDeleted: [], wrapped: [],
+      gasObject: [{ objectId: objectId(902), version: '8', digest: suiDigest }, { AddressOwner: sender }],
+      eventsDigest: null,
+      dependencies: [],
+    },
+  };
+  const effectsBytes = bcs.TransactionEffects.serialize(effects).toBytes();
+  const evidence = {
+    digest: transactionDigest,
+    checkpoint: '7',
+    epoch: '1',
+    transactionBcs: transactionDataBytes,
+    transactionBcsBase64: toBase64(transactionDataBytes),
+    effectsBcs: effectsBytes,
+    effectsBcsBase64: toBase64(effectsBytes),
+    effectsStatus: { success: true, error: null },
+    eventsDigest: null,
+    transactionEvents: null,
+  };
+  const coreResult = {
+    $kind: 'Transaction',
+    Transaction: {
+      digest: transactionDigest,
+      epoch: '1',
+      status: { success: true, error: null },
+      transaction: { sender, commands: [] },
+      bcs: transactionDataBytes,
+      effects: {
+        status: { success: true, error: null },
+        transactionDigest,
+        bcs: effectsBytes,
+        eventsDigest: null,
+        changedObjects: [],
+      },
+      events: [],
+      objectTypes: {},
+    },
+  };
+  return { sender, expected, effects, evidence, coreResult, transactionData, transactionDataBytes, transactionDigest };
+}
+
+function walletHarness(keypair, onSign = null) {
+  let changeListener = null;
+  let signCalls = 0;
+  const account = {
+    address: keypair.toSuiAddress(),
+    chains: [SUI_MAINNET_CHAIN],
+    features: [SuiSignTransaction],
+    publicKey: keypair.getPublicKey().toRawBytes(),
+  };
+  const wallet = {
+    id: 'fake-wallet',
+    name: 'Fake Wallet',
+    version: '1.0.0',
+    icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>',
+    chains: [SUI_MAINNET_CHAIN],
+    accounts: [account],
+    features: {
+      [StandardConnect]: {
+        version: '1.0.0',
+        connect: async () => ({ accounts: wallet.accounts }),
+      },
+      [StandardEvents]: {
+        version: '1.0.0',
+        on(_event, listener) {
+          changeListener = listener;
+          return () => { changeListener = null; };
+        },
+      },
+      [SuiSignTransaction]: {
+        version: '2.0.0',
+        async signTransaction({ transaction }) {
+          signCalls += 1;
+          await onSign?.({ wallet, emit: (properties) => changeListener?.(properties) });
+          return keypair.signTransaction(await transaction.build());
+        },
+      },
+    },
+  };
+  const registryListeners = new Map();
+  const registry = {
+    get: () => [wallet],
+    on(event, listener) {
+      registryListeners.set(event, listener);
+      return () => registryListeners.delete(event);
+    },
+  };
+  return { wallet, account, registry, get signCalls() { return signCalls; } };
+}
+
+function exactBytes(keypair) {
+  return TransactionDataBuilder.restore({
+    version: 2,
+    sender: keypair.toSuiAddress(),
+    expiration: { Epoch: '101' },
+    gasData: {
+      budget: '1000',
+      price: '1',
+      owner: keypair.toSuiAddress(),
+      payment: [],
+    },
+    inputs: [],
+    commands: [],
+  }).build();
+}
+
+function dataSourceStub() {
+  return {
+    resolveRoleLineages: async () => ({}),
+    loadRoute: async () => ({ route: true }),
+    browseMarket: async () => ({ source: 'FAKE_PUBLIC' }),
+    loadOwnedInventory: async () => ({ choices: [] }),
+    loadActionContext: async () => ({ context: true }),
+    queryTransaction: async () => ({ status: 'NOT_FOUND' }),
+    readbackMarketAction: async () => ({ receipt: true }),
+  };
+}
+
+test('Physical Base and every Pack action parse canonical Move Option<ID> arrays exactly', () => {
+  const packTreasuryId = objectId(401);
+  assert.equal(parseMakerV8MoveOptionIdV8([]), null);
+  for (const action of [
+    'listPackPhysical',
+    'purchasePackPhysical',
+    'cancelPhysicalListing',
+    'recoverPhysicalListing',
+  ]) {
+    assert.equal(
+      parseMakerV8MoveOptionIdV8([packTreasuryId], `${action}.sourceTreasuryId`),
+      packTreasuryId,
+    );
+  }
+  for (const nonCanonical of [
+    packTreasuryId,
+    { vec: [] },
+    { fields: { vec: [packTreasuryId] } },
+  ]) assert.throws(
+    () => parseMakerV8MoveOptionIdV8(nonCanonical),
+    (error) => error.code === 'MAKER_V8_BROWSER_OPTION_INVALID',
+  );
+  assert.throws(
+    () => parseMakerV8MoveOptionIdV8([packTreasuryId, objectId(402)]),
+    (error) => error.code === 'MAKER_V8_BROWSER_OPTION_INVALID',
+  );
+  assert.throws(
+    () => parseMakerV8MoveOptionIdV8({ vec: 'not-an-option' }),
+    (error) => error.code === 'MAKER_V8_BROWSER_OPTION_INVALID',
+  );
+});
+
+async function typedTransactionAbsentError(transactionDigest = suiDigest) {
+  const notFound = new RpcError(`Transaction ${transactionDigest} not found`, 'NOT_FOUND');
+  notFound.serviceName = 'sui.rpc.v2.LedgerService';
+  notFound.methodName = 'GetTransaction';
+  const noop = async () => ({});
+  const grpcClient = {
+    network: 'mainnet',
+    getObject: noop,
+    listOwnedObjects: noop,
+    listCoins: noop,
+    getBalance: noop,
+    simulateTransaction: noop,
+    executeTransaction: noop,
+    core: {
+      getTransaction: noop,
+      executeTransaction: noop,
+      simulateTransaction: noop,
+      getProtocolConfig: noop,
+      getCurrentSystemState: noop,
+      resolveTransactionPlugin: () => async (_data, _options, next) => next(),
+    },
+    ledgerService: {
+      getObject: noop,
+      async getTransaction() { throw notFound; },
+      async getServiceInfo() {
+        return { response: GrpcTypes.GetServiceInfoResponse.create({
+          chainId: MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
+          chain: 'mainnet',
+          epoch: 102n,
+          checkpointHeight: 900n,
+          lowestAvailableCheckpoint: 0n,
+          lowestAvailableCheckpointObjects: 0n,
+        }) };
+      },
+      getCheckpoint: noop,
+    },
+    movePackageService: { getDatatype: noop },
+  };
+  const transport = createMakerV8SuiGrpcTransport({
+    grpcClient,
+    graphqlClient: { network: 'mainnet', query: noop },
+  });
+  try {
+    await transport.getTransactionFinality({ digest: transactionDigest });
+  } catch (error) {
+    return error;
+  }
+  throw new Error('typed transaction absence fixture did not reject');
+}
+
+function finalizedQueryResult(transactionDigest = suiDigest) {
+  return {
+    $kind: 'Transaction',
+    Transaction: {
+      digest: transactionDigest,
+      epoch: '102',
+      status: { success: true },
+      effects: {
+        transactionDigest,
+        status: { success: true },
+        eventsDigest: null,
+        bcs: new Uint8Array([1, 2, 3]),
+      },
+    },
+  };
+}
+
+function queryClient(responses) {
+  const queue = [...responses];
+  let queries = 0;
+  let pending = null;
+  return {
+    core: {
+      async getTransaction() {
+        const next = pending;
+        pending = null;
+        return next;
+      },
+    },
+    async getTransactionFinality({ digest: transactionDigest }) {
+        queries += 1;
+        const next = queue.shift();
+        if (next instanceof Error) throw next;
+        pending = next;
+        const transaction = next.Transaction ?? next.FailedTransaction;
+        return {
+          digest: transactionDigest,
+          checkpoint: '777',
+          epoch: transaction.epoch,
+          status: transaction.status,
+        };
+    },
+    async getChainIdentifier() { return MAKER_V8_MAINNET_CHAIN_IDENTIFIER; },
+    async getCheckpointWatermark() {
+      return {
+        chainIdentifier: MAKER_V8_SUI_MAINNET_GENESIS_DIGEST,
+        epoch: '102',
+        checkpoint: { sequenceNumber: '900', epoch: '102', digest: suiDigest },
+      };
+    },
+    get queries() { return queries; },
+  };
+}
+
+test('production transaction absence classifier is typed, watermarked, and rechecks after the watermark', async () => {
+  const unavailable = new RpcError(`Transaction ${suiDigest} not found`, 'UNAVAILABLE');
+  unavailable.serviceName = 'sui.rpc.v2.LedgerService';
+  unavailable.methodName = 'GetTransaction';
+  const falseMessageClient = queryClient([
+    unavailable,
+  ]);
+  await assert.rejects(
+    createMakerV8LiveDataSourceV8({ client: falseMessageClient, runtime: {} })
+      .queryTransaction({ digest: suiDigest }),
+    (error) => error === unavailable,
+  );
+
+  const raceClient = queryClient([
+    await typedTransactionAbsentError(),
+    finalizedQueryResult(),
+  ]);
+  const finalized = await createMakerV8LiveDataSourceV8({ client: raceClient, runtime: {} })
+    .queryTransaction({ digest: suiDigest });
+  assert.equal(finalized.status, 'FINALIZED_SUCCESS');
+  assert.equal(finalized.digest, suiDigest);
+  assert.equal(finalized.absence, null);
+  assert.equal(raceClient.queries, 2,
+    'a transaction finalized between the first absence and watermark must win');
+
+  const absentClient = queryClient([
+    await typedTransactionAbsentError(),
+    await typedTransactionAbsentError(),
+  ]);
+  const absent = await createMakerV8LiveDataSourceV8({ client: absentClient, runtime: {} })
+    .queryTransaction({ digest: suiDigest });
+  assert.deepEqual(absent, {
+    status: 'NOT_FOUND',
+    digest: suiDigest,
+    epoch: null,
+    effectsFingerprint: null,
+    eventsDigest: null,
+    error: null,
+    absence: {
+      schemaVersion: MAKER_V8_TRANSACTION_ABSENCE_SCHEMA,
+      kind: 'SUI_JSON_RPC_TRANSACTION_NOT_FOUND',
+      rpcCode: -32602,
+      rpcType: 'InvalidParams',
+      requestedDigest: suiDigest,
+      chainIdentifier: MAKER_V8_MAINNET_CHAIN_IDENTIFIER,
+      watermarkEpoch: '102',
+      watermarkCheckpointSequence: '900',
+      watermarkCheckpointDigest: suiDigest,
+    },
+  });
+  assert.equal(absentClient.queries, 2);
+});
+
+function buildClient({ chainIds = [MAKER_V8_MAINNET_CHAIN_IDENTIFIER] } = {}) {
+  let chainIndex = 0;
+  let dryRuns = 0;
+  let broadcasts = 0;
+  return {
+    core: {
+      getCurrentSystemState: async () => ({ systemState: { epoch: '100' } }),
+      resolveTransactionPlugin: () => async (data, _options, next) => {
+        data.gasData.owner = data.sender;
+        data.gasData.budget = '1000';
+        data.gasData.price = '1';
+        data.gasData.payment = [];
+        await next();
+      },
+      async simulateTransaction({ transaction }) {
+        dryRuns += 1;
+        const digest = TransactionDataBuilder.getDigestFromBytes(transaction);
+        return {
+          $kind: 'Transaction',
+          Transaction: {
+            digest,
+            status: { success: true, error: null },
+            effects: { transactionDigest: digest, status: { success: true, error: null } },
+          },
+        };
+      },
+      async executeTransaction({ transaction }) {
+        broadcasts += 1;
+        const digest = TransactionDataBuilder.getDigestFromBytes(transaction);
+        return {
+          $kind: 'Transaction',
+          Transaction: {
+            digest,
+            status: { success: true, error: null },
+            effects: { transactionDigest: digest, status: { success: true, error: null } },
+          },
+        };
+      },
+    },
+    async getChainIdentifier() {
+      return chainIds[Math.min(chainIndex++, chainIds.length - 1)];
+    },
+    get dryRuns() { return dryRuns; },
+    get broadcasts() { return broadcasts; },
+  };
+}
+
+test('real browser module import and production factory never consult an injected adapter global', async () => {
+  Object.defineProperty(globalThis, 'SoulidityV8Adapters', {
+    configurable: true,
+    get() { throw new Error('legacy adapter global was consulted'); },
+  });
+  try {
+    const module = await import(`../maker-v8-browser.js?fresh=${Date.now()}`);
+    assert.equal(typeof module.createProductionMakerV8BrowserAdapters, 'function');
+    assert.equal(MAKER_V8_OFFICIAL_MAINNET_GRPC_URL, 'https://fullnode.mainnet.sui.io:443');
+    const keypair = new Ed25519Keypair();
+    const harness = walletHarness(keypair);
+    const adapters = module.createProductionMakerV8BrowserAdapters({
+      execution: mainnetExecution(),
+      client: buildClient(),
+      walletRegistry: harness.registry,
+      dataSource: dataSourceStub(),
+    });
+    assert.equal((await adapters.rpc.browseMarket({})).source, 'FAKE_PUBLIC');
+  } finally {
+    delete globalThis.SoulidityV8Adapters;
+  }
+});
+
+test('false execution gates permit public browse, canonical build, and dry-run but never sign or broadcast', async () => {
+  const keypair = new Ed25519Keypair();
+  const harness = walletHarness(keypair);
+  const client = buildClient();
+  const adapters = createProductionMakerV8BrowserAdapters({
+    execution: mainnetExecution(),
+    client,
+    walletRegistry: harness.registry,
+    dataSource: dataSourceStub(),
+  });
+  assert.equal((await adapters.rpc.browseMarket({})).source, 'FAKE_PUBLIC');
+  const descriptor = Object.freeze({
+    schema: 'animacraft.market-action.v8',
+    action: 'listMakerControl',
+    network: 'mainnet',
+    sender: keypair.toSuiAddress(),
+    target: `${packageId(9)}::market_v8::list_maker_control`,
+    typeArguments: [],
+    arguments: [],
+    rootId: objectId(1), registryId: objectId(2), treasuryId: objectId(3),
+    protocolRevision: '1', preState: {},
+  });
+  const built = await adapters.transactions.buildExactTransaction({ descriptor });
+  assert.equal(adapters.transactions.deriveTransactionDigest(built.transactionBytes), built.transactionDigest);
+  assert.deepEqual(
+    await adapters.transactions.dryRunExactTransaction({
+      transactionBytes: built.transactionBytes,
+      descriptor,
+    }),
+    { status: 'SUCCESS' },
+  );
+  await assert.rejects(
+    adapters.wallet.signExactTransaction({
+      bytes: built.transactionBytes,
+      digest: built.transactionDigest,
+      signer: keypair.toSuiAddress(),
+    }),
+    { code: 'WEB_V8_SIGNING_DISABLED' },
+  );
+  await assert.rejects(
+    adapters.transactions.broadcastExactTransaction({
+      bytes: built.transactionBytes,
+      digest: built.transactionDigest,
+      signer: keypair.toSuiAddress(),
+      signature: 'not-reached',
+    }),
+    { code: 'WEB_V8_BROADCAST_DISABLED' },
+  );
+  assert.equal(harness.signCalls, 0);
+  assert.equal(client.broadcasts, 0);
+  assert.equal(client.dryRuns, 1);
+});
+
+test('signing cannot be enabled without exact-byte broadcast', () => {
+  const keypair = new Ed25519Keypair();
+  const harness = walletHarness(keypair);
+  assert.throws(
+    () => createProductionMakerV8BrowserAdapters({
+      execution: mainnetExecution({ allowWalletSignature: true, allowBroadcast: false }),
+      client: buildClient(),
+      walletRegistry: harness.registry,
+      dataSource: dataSourceStub(),
+    }),
+    { code: 'MAKER_V8_BROWSER_EXECUTION_INVALID' },
+  );
+});
+
+test('only the exact Wallet Standard request-rejected code is classified as definitive', async () => {
+  const keypair = new Ed25519Keypair();
+  const raw = exactBytes(keypair);
+  const bytes = toBase64(raw);
+  const transactionDigest = TransactionDataBuilder.getDigestFromBytes(raw);
+  const request = { bytes, digest: transactionDigest, signer: keypair.toSuiAddress() };
+  const execution = mainnetExecution({ allowWalletSignature: true, allowBroadcast: true });
+
+  const rejectedHarness = walletHarness(keypair, async () => {
+    throw new WalletStandardError(WALLET_STANDARD_ERROR__USER__REQUEST_REJECTED);
+  });
+  const rejected = createWalletStandardConnectorV8({
+    registry: rejectedHarness.registry,
+    execution,
+    client: buildClient(),
+  });
+  await assert.rejects(
+    rejected.signExactTransaction(request),
+    (error) => error.code === 'MAKER_V8_BROWSER_WALLET_REQUEST_REJECTED'
+      && error.definitiveRejection === true
+      && error.signedArtifactCreated === false,
+  );
+
+  const unknownCause = new Error('User rejected the wallet prompt');
+  unknownCause.code = 4001;
+  const unknownHarness = walletHarness(keypair, async () => { throw unknownCause; });
+  const unknown = createWalletStandardConnectorV8({
+    registry: unknownHarness.registry,
+    execution,
+    client: buildClient(),
+  });
+  await assert.rejects(
+    unknown.signExactTransaction(request),
+    (error) => error === unknownCause
+      && error.definitiveRejection === undefined
+      && error.signedArtifactCreated === undefined,
+  );
+});
+
+test('Wallet Standard returns the exact bytes and fails closed on account or RPC network drift', async () => {
+  const keypair = new Ed25519Keypair();
+  const raw = exactBytes(keypair);
+  const bytes = toBase64(raw);
+  const transactionDigest = TransactionDataBuilder.getDigestFromBytes(raw);
+  const stableHarness = walletHarness(keypair);
+  const stable = createWalletStandardConnectorV8({
+    registry: stableHarness.registry,
+    execution: mainnetExecution({ allowWalletSignature: true, allowBroadcast: true }),
+    client: buildClient(),
+  });
+  const signed = await stable.signExactTransaction({
+    bytes, digest: transactionDigest, signer: keypair.toSuiAddress(),
+  });
+  assert.equal(signed.bytes, bytes);
+  assert.equal(signed.digest, transactionDigest);
+  assert.equal((await stable.verifyExactSignature({ ...signed, signer: keypair.toSuiAddress() })).bytes, bytes);
+
+  const broadcastClient = buildClient();
+  const broadcastHarness = walletHarness(keypair);
+  const enabled = createProductionMakerV8BrowserAdapters({
+    execution: mainnetExecution({ allowWalletSignature: true, allowBroadcast: true }),
+    client: broadcastClient,
+    walletRegistry: broadcastHarness.registry,
+    dataSource: dataSourceStub(),
+  });
+  const enabledSignature = await enabled.wallet.signExactTransaction({
+    bytes, digest: transactionDigest, signer: keypair.toSuiAddress(),
+  });
+  assert.deepEqual(await enabled.transactions.broadcastExactTransaction({
+    ...enabledSignature,
+    signer: keypair.toSuiAddress(),
+  }), { digest: transactionDigest, accepted: true });
+  assert.equal(broadcastClient.broadcasts, 1);
+
+  const replacement = new Ed25519Keypair();
+  const accountDrift = walletHarness(keypair, async ({ wallet, emit }) => {
+    const next = {
+      address: replacement.toSuiAddress(), chains: [SUI_MAINNET_CHAIN],
+      features: [SuiSignTransaction], publicKey: replacement.getPublicKey().toRawBytes(),
+    };
+    wallet.accounts = [next];
+    emit({ accounts: [next] });
+  });
+  const driftConnector = createWalletStandardConnectorV8({
+    registry: accountDrift.registry,
+    execution: mainnetExecution({ allowWalletSignature: true, allowBroadcast: true }),
+    client: buildClient(),
+  });
+  await assert.rejects(
+    driftConnector.signExactTransaction({
+      bytes, digest: transactionDigest, signer: keypair.toSuiAddress(),
+    }),
+    { code: 'MAKER_V8_BROWSER_ACCOUNT_DRIFT' },
+  );
+
+  const networkDrift = createWalletStandardConnectorV8({
+    registry: walletHarness(keypair).registry,
+    execution: mainnetExecution({ allowWalletSignature: true, allowBroadcast: true }),
+    client: buildClient({ chainIds: [MAKER_V8_MAINNET_CHAIN_IDENTIFIER, 'testnet-drift'] }),
+  });
+  await assert.rejects(
+    networkDrift.signExactTransaction({
+      bytes, digest: transactionDigest, signer: keypair.toSuiAddress(),
+    }),
+    { code: 'MAKER_V8_BROWSER_NETWORK_DRIFT' },
+  );
+});
+
+test('Wallet Standard reconnect preserves explicit wallet-layer errors for missing, rejected, and wrong-network providers', async () => {
+  const execution = mainnetExecution();
+  const emptyRegistry = {
+    get: () => [],
+    on: () => () => {},
+  };
+  const missing = createWalletStandardConnectorV8({
+    registry: emptyRegistry,
+    execution,
+    client: buildClient(),
+  });
+  await assert.rejects(
+    missing.reconnect(),
+    (error) => error.code === 'MAKER_V8_BROWSER_WALLET_UNAVAILABLE'
+      && error.layer === 'WALLET',
+  );
+
+  const rejectedHarness = walletHarness(new Ed25519Keypair());
+  rejectedHarness.wallet.features[StandardConnect].connect = async () => {
+    throw new Error('User rejected the wallet request');
+  };
+  const rejected = createWalletStandardConnectorV8({
+    registry: rejectedHarness.registry,
+    execution,
+    client: buildClient(),
+  });
+  await assert.rejects(
+    rejected.reconnect(),
+    (error) => error.code === 'MAKER_V8_BROWSER_WALLET_RECONNECT_REJECTED'
+      && error.layer === 'WALLET'
+      && /rejected/i.test(error.message),
+  );
+
+  const wrongNetworkHarness = walletHarness(new Ed25519Keypair());
+  wrongNetworkHarness.wallet.features[StandardConnect].connect = async () => ({
+    accounts: [{
+      ...wrongNetworkHarness.account,
+      chains: ['sui:testnet'],
+    }],
+  });
+  const wrongNetwork = createWalletStandardConnectorV8({
+    registry: wrongNetworkHarness.registry,
+    execution,
+    client: buildClient(),
+  });
+  await assert.rejects(
+    wrongNetwork.reconnect(),
+    (error) => error.code === 'MAKER_V8_BROWSER_WALLET_NETWORK_DRIFT'
+      && error.layer === 'WALLET',
+  );
+});
+
+test('five pinned fresh-v8 event layouts decode BCS as authority and reject JSON or byte drift', async () => {
+  const origins = {
+    marketPackageId: packageId(9),
+    corePackageId: packageId(1),
+    physicalPackageId: packageId(3),
+  };
+  const callables = {
+    market: packageId(19),
+    core: packageId(11),
+    physical: packageId(13),
+  };
+  const market = {
+    runtime: {
+      typeOrigins: origins,
+      callablePackageId: callables.market,
+      sourceRuntime: {
+        roles: Object.fromEntries(Object.entries(callables).map(([role, callablePackageId]) => [
+          role, { callablePackageId },
+        ])),
+      },
+    },
+  };
+  const commitment = Array(32).fill(7);
+  const cases = [
+    {
+      name: 'MarketListingOpenedV8', module: 'market_v8', role: 'market', origin: 'marketPackageId',
+      schema: listingOpenedEventBcs, expectedLength: 210, tamperField: 'seller',
+      sha256: '347743d9998044a0fcacd76742de1ec86a3936ef26fa17314aeca66a7103aa55',
+      fields: {
+        listing_id: objectId(11), registry_id: objectId(12), lane: 0, root_id: objectId(13),
+        asset_id: objectId(14), seller: objectId(15), ownership_epoch: '72623859790382856',
+        gross_atomic: '10', quote_commitment: commitment,
+      },
+    },
+    {
+      name: 'MarketListingSettledV8', module: 'market_v8', role: 'market', origin: 'marketPackageId',
+      schema: listingSettledEventBcs, expectedLength: 201, tamperField: 'buyer',
+      sha256: '54680762d15a3369d6aefa6ca5e85d504953359b0ef481ef893468c1cd0f5806',
+      fields: {
+        listing_id: objectId(21), registry_id: objectId(22), lane: 1, asset_id: objectId(23),
+        seller: objectId(24), buyer: objectId(25), gross_atomic: '10', protocol_atomic: '1',
+        creator_atomic: '2', source_atomic: '3', seller_atomic: '4',
+      },
+    },
+    {
+      name: 'MarketListingClosedV8', module: 'market_v8', role: 'market', origin: 'marketPackageId',
+      schema: listingClosedEventBcs, expectedLength: 130, tamperField: 'seller',
+      sha256: '4a7e82ee7aa110c28e955873d532696a6cba00b3c659dcad644c04943a384cb8',
+      fields: {
+        listing_id: objectId(31), registry_id: objectId(32), lane: 2, asset_id: objectId(33),
+        seller: objectId(34), recovered: true,
+      },
+    },
+    {
+      name: 'MakerControlTransferredV8', module: 'maker_v8', role: 'core', origin: 'corePackageId',
+      schema: makerTransferredEventBcs, expectedLength: 144, tamperField: 'new_owner',
+      sha256: '085ea109860a61756fc4deffec953dbe5a6fb0c3285e429e94c8b78afda2cb4e',
+      fields: {
+        root_id: objectId(41), previous_owner: objectId(42), new_owner: objectId(43),
+        previous_control_epoch: '72623859790382856', new_control_epoch: '72623859790382857',
+        new_admin_cap_id: objectId(44),
+      },
+    },
+    {
+      name: 'PhysicalMarketCustodyTransitionV8', module: 'physical_v8', role: 'physical', origin: 'physicalPackageId',
+      schema: physicalTransitionEventBcs, expectedLength: 211, tamperField: 'holder',
+      sha256: 'c8e7605d19b7d142f5445f8a5fdcd6838c9ba1056a7b4e93a0bb3606ef62d459',
+      fields: {
+        action: 2, listing_id: objectId(51), asset_id: objectId(52), source_kind: 1,
+        source_treasury_id: objectId(53), previous_holder: objectId(54), holder: objectId(55),
+        previous_ownership_epoch: '72623859790382856', ownership_epoch: '72623859790382857',
+        provenance_commitment: commitment,
+      },
+    },
+  ];
+  const decode = (entry, bytes, json) => decodeMakerV8CoreEventV8({
+    event: {
+      packageId: callables.market,
+      module: 'market_v8',
+      sender: objectId(99),
+      eventType: `${origins[entry.origin]}::${entry.module}::${entry.name}`,
+      bcs: bytes,
+      json,
+    },
+    transactionDigest: suiDigest,
+    eventsDigest: suiDigest,
+    market,
+    emitter: { packageId: callables.market, module: 'market_v8' },
+  });
+  for (const entry of cases) {
+    const bytes = entry.schema.serialize(entry.fields).toBytes();
+    assert.equal(bytes.length, entry.expectedLength, entry.name);
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.sha256, `${entry.name} fixture`);
+    const withoutJson = decode(entry, bytes, null);
+    assert.equal(withoutJson.type, `${origins[entry.origin]}::${entry.module}::${entry.name}`);
+    assert.equal(withoutJson.parsedJson[entry.tamperField], entry.fields[entry.tamperField]);
+    assert.doesNotThrow(() => decode(entry, bytes, entry.fields));
+    await assert.rejects(
+      async () => decode(entry, bytes, {
+        ...entry.fields,
+        [entry.tamperField]: objectId(999),
+      }),
+      (error) => error.code === 'MAKER_V8_BROWSER_EVENT_JSON_BCS_DRIFT',
+    );
+    await assert.rejects(
+      async () => decode(entry, Uint8Array.from([...bytes, 0]), null),
+      (error) => error.code === 'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+    );
+    await assert.rejects(
+      async () => decode(entry, bytes.slice(0, -1), null),
+      (error) => error.code === 'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+    );
+  }
+
+  const closed = listingClosedEventBcs.serialize(cases[2].fields).toBytes();
+  closed[closed.length - 1] = 2;
+  assert.throws(
+    () => decode(cases[2], closed, null),
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+  );
+
+  const opened = listingOpenedEventBcs.serialize(cases[0].fields).toBytes();
+  assert.throws(
+    () => decodeMakerV8CoreEventV8({
+      event: {
+        packageId: origins.marketPackageId,
+        module: 'market_v8',
+        sender: objectId(99),
+        eventType: `${origins.marketPackageId}::market_v8::MarketListingOpenedV8`,
+        bcs: opened,
+        json: null,
+      },
+      transactionDigest: suiDigest,
+      eventsDigest: suiDigest,
+      market,
+      emitter: { packageId: callables.market, module: 'market_v8' },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENT_ORIGIN_DRIFT',
+  );
+  for (const entry of cases.filter(({ role }) => role !== 'market')) {
+    const bytes = entry.schema.serialize(entry.fields).toBytes();
+    assert.throws(
+      () => decodeMakerV8CoreEventV8({
+        event: {
+          packageId: callables[entry.role],
+          module: entry.module,
+          sender: objectId(99),
+          eventType: `${origins[entry.origin]}::${entry.module}::${entry.name}`,
+          bcs: bytes,
+          json: null,
+        },
+        transactionDigest: suiDigest,
+        eventsDigest: suiDigest,
+        market,
+        emitter: { packageId: callables.market, module: 'market_v8' },
+      }),
+      (error) => error.code === 'MAKER_V8_BROWSER_EVENT_ORIGIN_DRIFT',
+      `${entry.name} must reject inner-module metadata`,
+    );
+  }
+  const commitmentLengthOffset = opened.length - 33;
+  assert.equal(opened[commitmentLengthOffset], 32);
+  const noncanonicalLength = Uint8Array.from([
+    ...opened.slice(0, commitmentLengthOffset), 0xa0, 0x00, ...opened.slice(commitmentLengthOffset + 1, -1),
+  ]);
+  assert.equal(noncanonicalLength.length, opened.length);
+  assert.throws(
+    () => decode(cases[0], noncanonicalLength, null),
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENT_BCS_INVALID',
+  );
+});
+
+test('official Sui RPC TransactionEvents vector pins BCS, typed Blake2b, and base58 digest', () => {
+  // Public Sui response captured in MystenLabs/sui#20877.  This independently
+  // pins the Rust TransactionEvents digest, rather than comparing two copies
+  // of this repository's implementation.
+  const event = {
+    packageId: '0x9a84b6a7914aedd6741e73cc2ca23cbc77e22ed3c5f884c072a51868fedde45b',
+    module: 'hyperspace',
+    sender: '0x36a05394e882fb4160790c9214c7f00438e6a11ef07c5ace2ad818d34cda575e',
+    eventType: '0x9a84b6a7914aedd6741e73cc2ca23cbc77e22ed3c5f884c072a51868fedde45b::hyperspace::ItemListed<0xee496a0cc04d06a345982ba6697c90c619020de9e274408c7819f787ff66e1a1::suifrens::SuiFren<0x8894fa02fc6f36cbc485ae9145d05f247a78e220814fb8419ab261bd81f08f32::bullshark::Bullshark>, 0x9a84b6a7914aedd6741e73cc2ca23cbc77e22ed3c5f884c072a51868fedde45b::hyperspace_mp::Hyperspace_mp>',
+    bcs: fromBase64('n77AZQCfwqscBWLT5mazPSWlhikwVBLlav2S18M9vqZ50mowsdBPvsX3K13DdqzRQbJD1KGDz2GN9dZiDaWrsYD5iCgCAAAA'),
+  };
+  const observed = makerV8TransactionEventsDigestV8([event]);
+  assert.equal(observed.digest, '8fpiGNxDRJm7WP3v7cEYRQRKANLvGzMCiQeoEpbMV8WZ');
+  assert.equal(
+    observed.bcs,
+    'AZqEtqeRSu3WdB5zzCyiPLx34i7TxfiEwHKlGGj+3eRbCmh5cGVyc3BhY2U2oFOU6IL7QWB5DJIUx/AEOOahHvB8Ws4q2BjTTNpXXpqEtqeRSu3WdB5zzCyiPLx34i7TxfiEwHKlGGj+3eRbCmh5cGVyc3BhY2UKSXRlbUxpc3RlZAIH7klqDMBNBqNFmCumaXyQxhkCDenidECMeBn3h/9m4aEIc3VpZnJlbnMHU3VpRnJlbgEHiJT6AvxvNsvEha6RRdBfJHp44iCBT7hBmrJhvYHwjzIJYnVsbHNoYXJrCUJ1bGxzaGFyawAHmoS2p5FK7dZ0HnPMLKI8vHfiLtPF+ITAcqUYaP7d5FsNaHlwZXJzcGFjZV9tcA1IeXBlcnNwYWNlX21wAEifvsBlAJ/CqxwFYtPmZrM9JaWGKTBUEuVq/ZLXwz2+pnnSajCx0E++xfcrXcN2rNFBskPUoYPPYY311mINpauxgPmIKAIAAAA=',
+  );
+});
+
+test('Core V2 readback binds exact effects refs, historical snapshots, input call, and events digest', async () => {
+  const effectsBytes = new Uint8Array([1, 2, 3]);
+  const effectsFingerprint = `0x${createHash('sha256').update(effectsBytes).digest('hex')}`;
+  const ids = {
+    root: objectId(11), registry: objectId(12), treasury: objectId(13), listing: objectId(14),
+  };
+  const types = Object.fromEntries(Object.entries(ids).map(([role, value]) => [
+    value,
+    `${packageId(9)}::market_v8::${role[0].toUpperCase()}${role.slice(1)}V8`,
+  ]));
+  const owner = { $kind: 'Shared', Shared: { initialSharedVersion: '1' } };
+  const outputOwner = { $kind: 'Shared', Shared: { initialSharedVersion: '8' } };
+  const changed = (object, inputVersion, outputVersion, idOperation = 'None', chosenOwner = owner) => ({
+    objectId: object,
+    inputState: inputVersion ? 'Exists' : 'DoesNotExist',
+    inputVersion: inputVersion ?? null,
+    inputDigest: inputVersion ? suiDigest : null,
+    inputOwner: inputVersion ? chosenOwner : null,
+    outputState: 'ObjectWrite',
+    outputVersion,
+    outputDigest: suiDigest,
+    outputOwner: chosenOwner,
+    idOperation,
+  });
+  const past = new Map();
+  const remember = (object, version, fields, previousTransaction = 'previous-digest') => {
+    past.set(`${object}:${version}`, {
+      objectId: object,
+      version,
+      digest: suiDigest,
+      type: types[object],
+      owner,
+      previousTransaction,
+      parsed: fields,
+      contentBcs: new Uint8Array([1, 2, 3]),
+      objectBcs: new Uint8Array([4, 5, 6]),
+    });
+  };
+  remember(ids.root, '7', { control_epoch: '4' });
+  past.get(`${ids.root}:7`).owner = { Shared: { initial_shared_version: '1' } };
+  remember(ids.registry, '5', { revision: '9' });
+  remember(ids.registry, '8', { revision: '10' }, suiDigest);
+  remember(ids.treasury, '5', { escrow_atomic: '0' });
+  remember(ids.treasury, '8', { escrow_atomic: '0' }, suiDigest);
+  remember(ids.listing, '8', { status: '0' }, suiDigest);
+  past.get(`${ids.listing}:8`).owner = outputOwner;
+  let registryInputVersion = '5';
+  const historicalVersions = [];
+  let tamperEventJson = false;
+  let tamperEventSender = false;
+  let replaceEvent = false;
+  const eventJson = {
+    listing_id: ids.listing,
+    registry_id: ids.registry,
+    lane: 0,
+    root_id: ids.root,
+    asset_id: objectId(15),
+    seller: objectId(99),
+    ownership_epoch: '4',
+    gross_atomic: '1000',
+    quote_commitment: Array(32).fill(7),
+  };
+  const eventBcs = listingOpenedEventBcs.serialize(eventJson).toBytes();
+  const replacementEventJson = { ...eventJson, seller: objectId(98) };
+  const replacementEventBcs = listingOpenedEventBcs.serialize(replacementEventJson).toBytes();
+  const eventForRpc = () => ({
+    packageId: packageId(9),
+    module: 'market_v8',
+    sender: tamperEventSender ? objectId(98) : objectId(99),
+    eventType: `${packageId(9)}::market_v8::MarketListingOpenedV8`,
+    bcs: replaceEvent ? replacementEventBcs : eventBcs,
+    json: replaceEvent
+      ? replacementEventJson
+      : tamperEventJson ? { ...eventJson, seller: objectId(98) } : eventJson,
+  });
+  const transactionEventsDigest = makerV8TransactionEventsDigestV8([eventForRpc()]).digest;
+  const client = {
+    core: {
+      async getTransaction() {
+        return {
+          $kind: 'Transaction',
+          Transaction: {
+            digest: suiDigest,
+            epoch: '77',
+            status: { success: true, error: null },
+            transaction: {
+              version: 2,
+              sender: objectId(99),
+              inputs: [{
+                Object: {
+                  SharedObject: {
+                    objectId: ids.root,
+                    initialSharedVersion: '1',
+                    mutable: false,
+                  },
+                },
+              }, ...[ids.registry, ids.treasury].map((object) => ({
+                Object: {
+                  SharedObject: {
+                    objectId: object,
+                    initialSharedVersion: '1',
+                    mutable: true,
+                  },
+                },
+              }))],
+              commands: [{
+                $kind: 'MoveCall',
+                MoveCall: {
+                  package: packageId(9), module: 'market_v8', function: 'list_maker_control',
+                  typeArguments: [`${packageId(8)}::coin::PAY`], arguments: [],
+                },
+              }],
+            },
+            effects: {
+              status: { success: true, error: null },
+              transactionDigest: suiDigest,
+              eventsDigest: transactionEventsDigest,
+              bcs: effectsBytes,
+              changedObjects: [
+                changed(ids.registry, registryInputVersion, '8'), changed(ids.treasury, '5', '8'),
+                changed(ids.listing, null, '8', 'Created', outputOwner),
+              ],
+              unchangedConsensusObjects: [{
+                kind: 'ReadOnlyRoot', objectId: ids.root, version: '7', digest: suiDigest,
+              }],
+            },
+            events: [eventForRpc()],
+            objectTypes: types,
+            bcs: new Uint8Array([4, 5]),
+          },
+        };
+      },
+    },
+    async getHistoricalObject({ objectId: requestedId, version }) {
+      assert.equal(typeof version, 'bigint');
+      historicalVersions.push(version);
+      const historical = past.get(`${requestedId}:${version}`);
+      if (!historical) throw new Error('historical object version was pruned');
+      return historical;
+    },
+  };
+  const market = {
+    runtime: {
+      typeOrigins: {
+        corePackageId: packageId(1),
+        marketPackageId: packageId(9),
+        physicalPackageId: packageId(3),
+        outputPackageId: packageId(2),
+      },
+      callablePackageId: packageId(9),
+      sourceRuntime: {
+        roles: {
+          core: { callablePackageId: packageId(1) },
+          market: { callablePackageId: packageId(9) },
+          physical: { callablePackageId: packageId(3) },
+        },
+      },
+    },
+    parseEvent(event) {
+      assert.equal(event.id.txDigest, suiDigest);
+      return {
+        kind: 'MarketListingOpenedV8',
+        fields: { listingId: event.parsedJson.listing_id, lane: 0 },
+      };
+    },
+  };
+  const descriptor = {
+    schema: 'animacraft.market-action.v8', action: 'listMakerControl', lane: 0,
+    sender: objectId(99), target: `${packageId(9)}::market_v8::list_maker_control`,
+    typeArguments: [`${packageId(8)}::coin::PAY`], arguments: [],
+    rootId: ids.root, registryId: ids.registry, treasuryId: ids.treasury,
+    preState: { action: 'listMakerControl', lane: 0 },
+  };
+  const recoveryIdentity = (action = 'LISTMAKERCONTROL') => ({
+    action,
+    wallet: descriptor.sender,
+    root: { id: ids.root },
+    registry: { id: ids.registry },
+    treasury: { id: ids.treasury },
+  });
+  const receipt = await readFinalizedMakerV8EnvelopeV8({
+    client,
+    market,
+    request: {
+      digest: suiDigest,
+      planHash,
+      outcome: {
+        status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+        eventsDigest: transactionEventsDigest,
+      },
+      identity: recoveryIdentity(),
+      plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+    },
+  });
+  assert.equal(receipt.source, 'FINALIZED_CORE_V2');
+  assert.equal(receipt.epoch, '77');
+  assert.equal(receipt.planHash, planHash);
+  assert.equal(receipt.effectsFingerprint, effectsFingerprint);
+  assert.equal(receipt.transaction.sender, objectId(99));
+  assert.equal(receipt.transaction.target, descriptor.target);
+  assert.equal(receipt.effects.transactionDigest, suiDigest);
+  assert.equal(receipt.effects.eventsDigest, transactionEventsDigest);
+  assert.deepEqual(receipt.effects.objects.map(({ role }) => role), [
+    'ROOT', 'REGISTRY', 'TREASURY', 'LISTING',
+  ]);
+  assert.equal(receipt.effects.objects.find(({ role }) => role === 'REGISTRY').after.ref.version, '8');
+  assert.equal(receipt.effects.objects.find(({ role }) => role === 'LISTING').change, 'CREATED');
+  assert.deepEqual(
+    receipt.effects.objects.find(({ role }) => role === 'ROOT').before.owner,
+    { kind: 'Shared', value: { initialSharedVersion: '1' } },
+  );
+
+  tamperEventJson = true;
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client,
+      market,
+      request: {
+        digest: suiDigest,
+        planHash,
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
+        },
+        identity: recoveryIdentity(),
+        plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENT_JSON_BCS_DRIFT',
+  );
+  tamperEventJson = false;
+
+  replaceEvent = true;
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client,
+      market,
+      request: {
+        digest: suiDigest,
+        planHash,
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
+        },
+        identity: recoveryIdentity(),
+        plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENTS_DIGEST_DRIFT',
+  );
+  replaceEvent = false;
+
+  tamperEventSender = true;
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client,
+      market,
+      request: {
+        digest: suiDigest,
+        planHash,
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
+        },
+        identity: recoveryIdentity(),
+        plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_EVENTS_DIGEST_DRIFT',
+  );
+  tamperEventSender = false;
+
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client,
+      market,
+      request: {
+        digest: suiDigest,
+        planHash: 'ab'.repeat(32),
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
+        },
+        identity: recoveryIdentity(),
+        plan: { fingerprint: 'ab'.repeat(32), transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_PLAN_HASH_INVALID',
+  );
+
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client,
+      market,
+      request: {
+        digest: suiDigest,
+        planHash,
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
+        },
+        identity: recoveryIdentity('CANCELPHYSICALLISTING'),
+        plan: {
+          fingerprint: planHash,
+          transactionBytes: finalizedTransactionBytes,
+          sourceSnapshot: { descriptor: { ...descriptor, action: 'cancelPhysicalListing' } },
+        },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_PHYSICAL_LANE_DRIFT',
+  );
+
+  registryInputVersion = '9007199254740992';
+  past.set(`${ids.registry}:${registryInputVersion}`, {
+    ...past.get(`${ids.registry}:5`),
+    version: registryInputVersion,
+  });
+  await readFinalizedMakerV8EnvelopeV8({
+    client,
+    market,
+    request: {
+      digest: suiDigest,
+      planHash,
+      outcome: {
+        status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+        eventsDigest: transactionEventsDigest,
+      },
+      identity: recoveryIdentity(),
+      plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+    },
+  });
+  assert.equal(historicalVersions.includes(9007199254740992n), true);
+  registryInputVersion = '5';
+
+  past.delete(`${ids.registry}:5`);
+  await assert.rejects(
+    readFinalizedMakerV8EnvelopeV8({
+      client, market,
+      request: {
+        digest: suiDigest, planHash,
+        outcome: {
+          status: 'FINALIZED_SUCCESS', epoch: '77', effectsFingerprint,
+          eventsDigest: transactionEventsDigest,
+        },
+        identity: recoveryIdentity('listMakerControl'),
+        plan: { fingerprint: planHash, transactionBytes: finalizedTransactionBytes, sourceSnapshot: { descriptor } },
+      },
+    }),
+    (error) => error.code === 'MAKER_V8_BROWSER_READBACK_UNAVAILABLE'
+      && error.details.archivalRpcRequired === true,
+  );
+});
+
+test('gRPC historical readback preserves an exact uint64 bigint version', async () => {
+  const expectedType = `${objectId(51)}::maker_v8::MakerRootV8`;
+  const requestedVersion = '9007199254740992';
+  let observedVersion = null;
+  const result = await readMakerV8CompilerHistoricalObjectV8({
+    async getHistoricalObject({ objectId: requestedId, version }) {
+      assert.equal(requestedId, objectId(1));
+      observedVersion = version;
+      return {
+        objectId: requestedId,
+        version: version.toString(),
+        digest: suiDigest,
+        type: expectedType,
+        owner: { Shared: { initial_shared_version: '3' } },
+        previousTransaction: suiDigest,
+        parsed: { version: '8' },
+        contentBcs: new Uint8Array([1]),
+        objectBcs: new Uint8Array([2]),
+      };
+    },
+  }, {
+    objectId: objectId(1),
+    version: requestedVersion,
+    digest: suiDigest,
+    owner: { kind: 'Shared', value: { initialSharedVersion: '3' } },
+  }, expectedType, 'Root', ['version'], suiDigest);
+  assert.equal(observedVersion, 9007199254740992n);
+  assert.equal(result.fields.version, 8);
+});
+
+test('compiler recovery binds canonical gRPC TransactionData, Core sender/digest/kind, and raw effects', async () => {
+  const fixture = await compilerFinalizedFixture();
+  const client = {
+    async getFinalizedTransactionEvidence() { return structuredClone(fixture.evidence); },
+    core: { async getTransaction() { return structuredClone(fixture.coreResult); } },
+  };
+  const observed = await assertFinalizedMakerV8CompilerTransactionV8(
+    client,
+    fixture.transactionDigest,
+    fixture.expected,
+  );
+  assert.equal(observed.compilerTransactionKindProof.transactionDataByteLength > 0, true);
+  assert.equal(observed.compilerEffectsOutputRefs.length, 0);
+
+  const rejects = async (mutate, code) => {
+    const evidence = structuredClone(fixture.evidence);
+    const coreResult = structuredClone(fixture.coreResult);
+    await mutate({ evidence, coreResult });
+    evidence.transactionBcsBase64 = toBase64(evidence.transactionBcs);
+    evidence.effectsBcsBase64 = toBase64(evidence.effectsBcs);
+    await assert.rejects(
+      assertFinalizedMakerV8CompilerTransactionV8(
+        {
+          async getFinalizedTransactionEvidence() { return evidence; },
+          core: { async getTransaction() { return coreResult; } },
+        },
+        fixture.transactionDigest,
+        fixture.expected,
+      ),
+      (error) => error.code === code,
+    );
+  };
+  await rejects(async ({ evidence, coreResult }) => {
+    const changed = new Uint8Array(evidence.transactionBcs.length + 1);
+    changed.set(evidence.transactionBcs);
+    evidence.transactionBcs = changed;
+    coreResult.Transaction.bcs = changed;
+  }, 'MAKER_V8_COMPILER_RAW_TRANSACTION_INVALID');
+  await rejects(async ({ evidence, coreResult }) => {
+    const changed = structuredClone(fixture.transactionData);
+    changed.V1.sender = objectId(999);
+    evidence.transactionBcs = bcs.TransactionData.serialize(changed).toBytes();
+    coreResult.Transaction.bcs = evidence.transactionBcs;
+  }, 'MAKER_V8_COMPILER_RAW_SENDER_DRIFT');
+  await rejects(async ({ coreResult }) => {
+    coreResult.Transaction.transaction.sender = objectId(998);
+  }, 'MAKER_V8_COMPILER_SENDER_DRIFT');
+  await rejects(async ({ evidence, coreResult }) => {
+    const changed = structuredClone(fixture.transactionData);
+    changed.V1.gasData.budget = '1001';
+    evidence.transactionBcs = bcs.TransactionData.serialize(changed).toBytes();
+    coreResult.Transaction.bcs = evidence.transactionBcs;
+  }, 'MAKER_V8_COMPILER_RAW_DIGEST_DRIFT');
+  await rejects(async ({ evidence, coreResult }) => {
+    const changed = structuredClone(fixture.effects);
+    changed.V1.transactionDigest = TransactionDataBuilder.getDigestFromBytes(Uint8Array.of(1));
+    evidence.effectsBcs = bcs.TransactionEffects.serialize(changed).toBytes();
+    coreResult.Transaction.effects.bcs = evidence.effectsBcs;
+  }, 'MAKER_V8_COMPILER_RAW_EFFECTS_DRIFT');
+  await rejects(async ({ evidence, coreResult }) => {
+    const changed = new Uint8Array(evidence.effectsBcs.length + 1);
+    changed.set(evidence.effectsBcs);
+    evidence.effectsBcs = changed;
+    coreResult.Transaction.effects.bcs = changed;
+  }, 'MAKER_V8_COMPILER_RAW_EFFECTS_INVALID');
+  await rejects(async ({ coreResult }) => {
+    coreResult.Transaction.bcs = Uint8Array.of(1);
+  }, 'MAKER_V8_COMPILER_GRPC_BCS_DRIFT');
+});
+
+test('compiler shared historical projections preserve exact initial version and fail closed when pruned', async () => {
+  const outputDigest = suiDigest;
+  const expectedType = `${objectId(51)}::maker_v8::MakerRootV8`;
+  const ref = Object.freeze({
+    objectId: objectId(52), version: '7', digest: suiDigest,
+    owner: Object.freeze({ kind: 'Shared', value: Object.freeze({ initialSharedVersion: '3' }) }),
+  });
+  const ownerShapes = [
+    { Shared: { initial_shared_version: '3' } },
+    { $kind: 'Shared', Shared: { initialSharedVersion: '3' } },
+    { kind: 'Shared', value: { initialSharedVersion: '3' } },
+  ];
+  for (const [index, owner] of ownerShapes.entries()) {
+    const result = await readMakerV8CompilerHistoricalObjectV8({
+      async getHistoricalObject({ version }) {
+        assert.equal(version, 7n);
+        return {
+          objectId: ref.objectId, version: ref.version, digest: ref.digest,
+          type: expectedType, owner, previousTransaction: outputDigest,
+          parsed: { version: '8', root_id: objectId(53) },
+          contentBcs: new Uint8Array([1]), objectBcs: new Uint8Array([2]),
+        };
+      },
+    }, ref, expectedType, ['Scaffold', 'Base', 'Activation'][index], ['version', 'rootId'], outputDigest);
+    assert.deepEqual(result.reference, {
+      kind: 'shared', objectId: ref.objectId, initialSharedVersion: '3',
+    });
+    assert.equal(result.fields.version, 8);
+    assert.equal(result.fields.rootId, objectId(53));
+  }
+  const historicalClient = (mutate) => ({
+    async getHistoricalObject() {
+      const details = {
+        objectId: ref.objectId, version: ref.version, digest: ref.digest,
+        type: expectedType, owner: ownerShapes[0], previousTransaction: outputDigest,
+        parsed: { version: '8' },
+        contentBcs: new Uint8Array([1]), objectBcs: new Uint8Array([2]),
+      };
+      mutate(details);
+      return details;
+    },
+  });
+  await assert.rejects(
+    readMakerV8CompilerHistoricalObjectV8(
+      historicalClient((details) => { details.previousTransaction = TransactionDataBuilder.getDigestFromBytes(Uint8Array.of(2)); }),
+      ref, expectedType, 'Base', ['version'], outputDigest,
+    ),
+    (error) => error.code === 'MAKER_V8_BROWSER_OUTPUT_TRANSACTION_DRIFT',
+  );
+  await assert.rejects(
+    readMakerV8CompilerHistoricalObjectV8(
+      historicalClient((details) => { details.type = `${objectId(99)}::maker_v8::MakerRootV8`; }),
+      ref, expectedType, 'Activation', ['version'], outputDigest,
+    ),
+    (error) => error.code === 'MAKER_V8_BROWSER_HISTORICAL_TYPE_DRIFT',
+  );
+  await assert.rejects(
+    readMakerV8CompilerHistoricalObjectV8(
+      historicalClient((details) => { details.owner.Shared.initial_shared_version = '4'; }),
+      ref, expectedType, 'Scaffold', ['version'], outputDigest,
+    ),
+    (error) => error.code === 'MAKER_V8_BROWSER_HISTORICAL_OWNER_DRIFT',
+  );
+  await assert.rejects(
+    readMakerV8CompilerHistoricalObjectV8({
+      async getHistoricalObject() { throw new Error('historical version pruned'); },
+    }, ref, expectedType, 'Activation', ['version'], outputDigest),
+    (error) => error.code === 'MAKER_V8_BROWSER_READBACK_UNAVAILABLE'
+      && error.details.archivalRpcRequired === true,
+  );
+});

@@ -1,0 +1,295 @@
+import assert from 'node:assert/strict';
+import { readdir, readFile } from 'node:fs/promises';
+import test from 'node:test';
+import { runInNewContext } from 'node:vm';
+
+import {
+  MARKET_V8_ACTIONS,
+  UNSUPPORTED_PRODUCT_CODE,
+  WEB_V8_CACHE_SCHEMA,
+  WEB_V8_CONTEXT_SCHEMA,
+  assertFreshV8ActionContext,
+  assertLiveMakerV8Runtime,
+  assertWebV8ExecutionConfig,
+  inspectFreshV8Cache,
+  marketRuntimeFromMakerRuntime,
+  parseFreshV8Route,
+} from '../app.js';
+import { assertMakerV8Runtime, makerV8StableType } from '../maker-v8-runtime.js';
+import { runtimeAttestationRpc } from './fixtures/maker-v8-runtime-attestation.js';
+
+const id = (byte) => `0x${byte.repeat(32)}`;
+const digest = (byte) => byte.repeat(32);
+const roles = ['core', 'seal', 'runtime', 'output', 'physical', 'market', 'release'];
+const roleBytes = Object.freeze({ core: '10', seal: '11', runtime: '12', output: '13', physical: '14', market: '15', release: '16' });
+
+function runtimeInput(enabled = true) {
+  return {
+    schemaVersion: 'animacraft.maker-v8-runtime.v8',
+    protocolVersion: 8,
+    enabled,
+    catalogId: id('80'),
+    protocolConfigId: id('81'),
+    protocolTreasuryId: id('82'),
+    paymentCoinType: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
+    clockObjectId: `0x${'0'.repeat(63)}6`,
+    roles: Object.fromEntries(roles.map((role) => [role, {
+      typeOriginPackageId: id(roleBytes[role]),
+      callablePackageId: id(roleBytes[role]),
+    }])),
+    roleConfigIds: {
+      seal: id('83'), runtime: id('84'), output: id('85'), physical: id('86'), market: id('87'), release: id('88'),
+    },
+    makerBindings: [],
+  };
+}
+
+const execution = assertWebV8ExecutionConfig({
+  schemaVersion: 'animacraft.web-execution.v8',
+  network: 'mainnet',
+  chainIdentifier: '35834a8a',
+  allowWalletSignature: false,
+  allowBroadcast: false,
+});
+const runtime = await assertLiveMakerV8Runtime(runtimeInput(), {
+  async getSuiClient() { return runtimeAttestationRpc(runtimeInput()); },
+});
+
+test('only three canonical fresh-v8 routes are accepted', () => {
+  const listingId = id('20');
+  const rootId = id('21');
+  assert.deepEqual(parseFreshV8Route('/market'), {
+    valid: true, kind: 'market', id: null, canonicalPath: '/market',
+  });
+  assert.equal(parseFreshV8Route(`/market/${listingId}`).kind, 'listing');
+  assert.equal(parseFreshV8Route(`/maker/${rootId}`).kind, 'maker');
+  for (const path of [
+    '/templates',
+    '/creator',
+    `/market/${listingId}?source=cache`,
+    `/market%2f${listingId}`,
+    '/maker/not-an-object',
+  ]) {
+    const parsed = parseFreshV8Route(path);
+    assert.equal(parsed.valid, false, path);
+    assert.equal(parsed.code, UNSUPPORTED_PRODUCT_CODE, path);
+  }
+});
+
+test('unsupported cache entries are rejected without conversion or deletion', () => {
+  const entries = new Map([
+    ['soulidity:retired-product', '{"root":"x"}'],
+    ['soulidity:fresh-maker-v8:route', JSON.stringify({ schemaVersion: WEB_V8_CACHE_SCHEMA })],
+  ]);
+  const storage = {
+    get length() { return entries.size; },
+    key(index) { return [...entries.keys()][index] ?? null; },
+    getItem(key) { return entries.get(key) ?? null; },
+  };
+  const result = inspectFreshV8Cache(storage);
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.entries, [{ key: 'soulidity:retired-product', code: UNSUPPORTED_PRODUCT_CODE }]);
+  assert.equal(entries.size, 2, 'scanner must not mutate browser data');
+});
+
+test('the runtime bridge consumes the strict seven-role tuple', async () => {
+  const initial = runtimeInput();
+  const checked = await assertLiveMakerV8Runtime(initial, {
+    async getSuiClient() { return runtimeAttestationRpc(initial); },
+  });
+  const market = marketRuntimeFromMakerRuntime(checked, 'mainnet');
+  assert.equal(Object.keys(checked.roles).length, 7);
+  assert.equal(market, checked);
+  assert.equal(market.roles.market.callablePackageId, checked.roles.market.callablePackageId);
+
+  const upgraded = runtimeInput();
+  upgraded.roles.market.callablePackageId = id('19');
+  const upgradedRuntime = await assertLiveMakerV8Runtime(upgraded, {
+    async getSuiClient() { return runtimeAttestationRpc(upgraded); },
+  });
+  assert.equal(upgradedRuntime.roles.market.callablePackageId, id('19'));
+});
+
+test('live action context binds route, wallet, activation, seven packages, refs, and authority refs', () => {
+  const route = parseFreshV8Route(`/market/${id('30')}`);
+  const account = { address: id('40'), network: 'mainnet' };
+  const request = { requestId: 'web-v8:test-request', route, action: 'purchaseMakerControl' };
+  const ref = (byte) => ({ id: id(byte), version: '7', digest: digest(byte) });
+  const context = {
+    schemaVersion: WEB_V8_CONTEXT_SCHEMA,
+    source: 'LIVE_RPC',
+    requestId: request.requestId,
+    chainIdentifier: '35834a8a',
+    route: `listing:${route.id}`,
+    action: request.action,
+    activation: {
+      eventType: makerV8StableType(runtime, 'release', 'release_v8', 'MakerV8Activated'),
+      rootId: id('31'),
+      lifecycle: 'ACTIVE',
+    },
+    packageTuple: roles.map((role, index) => ({
+      role,
+      originalPackageId: runtime.roles[role].typeOriginPackageId,
+      callablePackageId: runtime.roles[role].callablePackageId,
+      packageDigest: String(index + 2).repeat(44),
+    })),
+    builderInput: { wallet: account },
+    refs: {
+      primary: ref('30'), root: ref('31'), registry: ref('32'), treasury: ref('33'),
+    },
+    authority: { kind: 'MAKER_ADMIN_RECEIVING', refs: [ref('34')] },
+  };
+  context.builderInput = {
+    wallet: account,
+    registry: {
+      kind: 'MarketRegistryV8', network: 'mainnet', objectId: id('32'), objectVersion: '7', digest: digest('32'),
+    },
+    treasury: {
+      kind: 'MarketTreasuryV8', network: 'mainnet', objectId: id('33'), objectVersion: '7', digest: digest('33'),
+    },
+    listing: {
+      kind: 'MakerListingV8', network: 'mainnet', objectId: id('30'), objectVersion: '7', digest: digest('30'),
+    },
+    root: {
+      schemaVersion: 'animacraft.maker-v8-chain.v8', network: 'mainnet', objectId: id('31'),
+      version: '7', digest: digest('31'), type: `${runtime.roles.core.typeOriginPackageId}::maker_v8::MakerRootV8<${runtime.paymentCoinType}>`,
+      lifecycleCode: 1, binding: { makerTreasuryId: id('35') },
+    },
+    protocolConfig: {
+      schemaVersion: 'animacraft.maker-v8-chain.v8', network: 'mainnet', objectId: runtime.protocolConfigId,
+      version: '7', digest: digest('36'), type: `${runtime.roles.core.typeOriginPackageId}::protocol_config_v8::ProtocolConfigV8`,
+      enabled: true, revision: '7', commitment: `0x${'aa'.repeat(32)}`,
+    },
+  };
+  const checked = assertFreshV8ActionContext(context, request, runtime, execution, account);
+  assert.equal(checked.refs.primary.id, route.id);
+  assert.equal(checked.packageTuple.length, 7);
+  assert.equal(checked.authority.refs.length, 1);
+
+  assert.throws(
+    () => assertFreshV8ActionContext({ ...context, chainIdentifier: 'testnet' }, request, runtime, execution, account),
+    { code: 'WEB_V8_CONTEXT_DRIFT' },
+  );
+  assert.throws(
+    () => assertFreshV8ActionContext({
+      ...context,
+      packageTuple: context.packageTuple.map((entry, index) => (
+        index === 5 ? { ...entry, packageDigest: 'Z'.repeat(32) } : entry
+      )),
+    }, request, runtime, execution, account),
+    { code: 'WEB_V8_PACKAGE_TUPLE_DRIFT' },
+  );
+  assert.throws(
+    () => assertFreshV8ActionContext({
+      ...context,
+      packageTuple: context.packageTuple.map((entry, index) => (
+        index === 0 ? { ...entry, baseRegistryModuleSha256: 'aa'.repeat(32) } : entry
+      )),
+    }, request, runtime, execution, account),
+    { code: 'WEB_V8_FIELDS_INVALID' },
+  );
+  assert.throws(
+    () => assertFreshV8ActionContext({ ...context, authority: { kind: 'MAKER', refs: [], authorized: true } }, request, runtime, execution, account),
+    { code: 'WEB_V8_FIELDS_INVALID' },
+  );
+  assert.throws(
+    () => assertFreshV8ActionContext({ ...context, activation: { ...context.activation, lifecycle: 'DRAFT' } }, request, runtime, execution, account),
+    { code: 'WEB_V8_ROOT_NOT_ACTIVE' },
+  );
+  assert.throws(
+    () => assertFreshV8ActionContext({
+      ...context,
+      builderInput: { ...context.builderInput, root: { ...context.builderInput.root, schemaVersion: undefined } },
+    }, request, runtime, execution, account),
+    { code: 'WEB_V8_CHAIN_READBACK_MISMATCH' },
+  );
+  assert.throws(
+    () => assertFreshV8ActionContext({
+      ...context,
+      builderInput: {
+        ...context.builderInput,
+        payment: { objectId: id('50'), balanceAtomic: '1000000' },
+      },
+    }, request, runtime, execution, account),
+    { code: 'MARKET_V8_CALLER_PAYMENT_FORBIDDEN' },
+  );
+});
+
+test('the UI exposes exactly fourteen static Market actions and accessible semantics', async () => {
+  assert.equal(MARKET_V8_ACTIONS.length, 14);
+  assert.equal(new Set(MARKET_V8_ACTIONS.map((action) => action.id)).size, 14);
+  assert.deepEqual(
+    MARKET_V8_ACTIONS.filter((action) => action.kind === 'PURCHASE').map((action) => action.lane),
+    ['MAKER', 'SOUL', 'PHYSICAL_BASE', 'PHYSICAL_PACK'],
+  );
+  const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8');
+  assert.match(html, /<main[\s>]/);
+  assert.match(html, /aria-live="polite"/);
+  assert.match(html, /Skip to fresh v8 market/);
+  assert.match(app, /role="alert"/);
+  assert.match(app, /aria-pressed=/);
+  assert.match(app, /role="status" aria-live="polite"/);
+});
+
+test('production entry files have no retired imports, aliases, routes, or pending pseudo-state', async () => {
+  const files = [
+    '../app.js', '../index.html', '../chain-error-ui.js', '../public-v8/config.js',
+    '../config.example.js', '../README.md', '../vite.config.js',
+  ];
+  const source = (await Promise.all(files.map((file) => readFile(new URL(file, import.meta.url), 'utf8')))).join('\n');
+  const importLines = source.split('\n').filter((line) => /^\s*import\b/.test(line)).join('\n');
+  assert.doesNotMatch(importLines, /maker-(?:commerce|composable|physical|publication|legacy)|expansion-pack|oc-handoff/i);
+  assert.doesNotMatch(source, /SALE_PENDING|dual[-_ ]path/i);
+  assert.doesNotMatch(source, /data-page=|#templates|#creator|#make(?:\b|["'])/i);
+  assert.doesNotMatch(source, /ANIMACRAFT_CONFIG|makerV8ReleaseEnabled|commerceV\d|compositionV\d|physicalV\d/i);
+  assert.doesNotMatch(source, /SoulidityV8Adapters/);
+  assert.doesNotMatch(source, /OCMaker|MakerRootV5|Commerce v5|Composable Assets v6|v5 migration/i);
+  assert.match(source, /createProductionMakerV8BrowserAdapters/);
+  assert.match(source, /UNSUPPORTED_LEGACY_PRODUCT/);
+  assert.match(source, /publicDir:\s*['"]public-v8['"]/);
+  assert.deepEqual(await readdir(new URL('../public-v8/', import.meta.url)), ['config.js']);
+});
+
+test('production config is the certified Mainnet release and enables exact wallet execution', async () => {
+  const source = await readFile(new URL('../public-v8/config.js', import.meta.url), 'utf8');
+  const context = { window: {} };
+  runInNewContext(source, context);
+  const runtime = assertMakerV8Runtime(JSON.parse(JSON.stringify(context.window.SoulidityMakerV8)));
+  const execution = assertWebV8ExecutionConfig(JSON.parse(JSON.stringify(context.window.SoulidityV8Execution)));
+  assert.equal(runtime.enabled, true);
+  assert.equal(runtime.catalogId, '0x98c4172b00ef802b801c01348ad9da640424ddbaee61a33eb835091305502498');
+  assert.equal(runtime.protocolConfigId, '0x598d25ca56848bfe0d51acc054784d186a81f827e791f2d523c197e0c7a89334');
+  assert.equal(runtime.protocolTreasuryId, '0x40a47df4956b33461163ba803d520156187fcf4c954a04984744f9a8b4c82736');
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(runtime.roles)
+      .map(([role, identity]) => [role, identity.callablePackageId])),
+    {
+      core: '0xca762c5432604d6680fbdc87367c3956a2e7536eb2d12222eb929945d97c9e6e',
+      seal: '0x0f12dc22b720dc9d87cde8d76952ab252959cced372e8511abb54cbaa177e2a3',
+      runtime: '0xa2d7c3c289d884d5899eb0afdfae8abca7555fb8640b493016502196a7500476',
+      output: '0x09bb4c47e26b4cfa94d4c309ee9ba6d734cca6dc36111067c388deab12e20438',
+      physical: '0x88abc74b3e3ba58f96cd3bc23ccccb774b489657ddd7f64b959210a08e056936',
+      market: '0x85c13a96e7f5a90f9d9da9fe7ab0cd11b6b9d48366b376b07aa962c43d67ac0c',
+      release: '0x4ce1a661a5a427d607ec486ce8aaa7f7bb8e8c1f7f30770eca55e4a079a89297',
+    },
+  );
+  assert.equal(execution.allowWalletSignature, true);
+  assert.equal(execution.allowBroadcast, true);
+  assert.doesNotMatch(source, /placeholderId|0x(?:10|11|12|13|14|15|16|80|81|82|83|84|85|86|87|88){32}/);
+});
+
+test('CI pins the verified Sui CLI and gates all fresh web and Move artifacts', async () => {
+  const workflow = await readFile(
+    new URL('../.github/workflows/repository-hygiene.yml', import.meta.url),
+    'utf8',
+  );
+  assert.match(workflow, /SUI_COMMIT:\s*51d177ad7d65102fc368b582408f466d97b31548/);
+  assert.match(workflow, /SUI_BINARY_SHA256:\s*c4318640723ebba4169bfe3d9e8ac10016d4e6380675e6f07d4e63eba6911f73/);
+  assert.match(workflow, /npm run check/);
+  assert.match(workflow, /npm run scan:fresh:source/);
+  for (const command of ['move:build', 'move:test', 'move:probes', 'move:field-limits', 'move:size']) {
+    assert.match(workflow, new RegExp(`npm run ${command.replace(':', '\\:')}`));
+  }
+  assert.match(workflow, /--force[\s\\]+--disassemble[\s\\]+--warnings-are-errors/);
+});

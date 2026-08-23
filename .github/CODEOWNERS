@@ -2,11 +2,15 @@
 * @soul893
 
 # Protocol changes should always be reviewed by a maintainer.
-/move/animacraft/ @soul893
-/move/animacraft_physical_v7/ @soul893
+/move/animacraft_v8_core/ @soul893
+/move/animacraft_v8_seal/ @soul893
+/move/animacraft_v8_runtime/ @soul893
+/move/animacraft_v8_output/ @soul893
+/move/animacraft_v8_physical/ @soul893
+/move/animacraft_v8_market/ @soul893
+/move/animacraft_v8_release/ @soul893
 
 # Product and creator-facing docs should always be reviewed.
-/PRODUCT.md @soul893
-/CREATOR_ONBOARDING.md @soul893
-/NEKA_STYLE_ONCHAIN_PRD.md @soul893
-/NEKA_STYLE_ONCHAIN_PRD.zh-CN.md @soul893
+/README.md @soul893
+/UNIFIED_MAKER_V8.md @soul893
+/docs/codex/CLIENT_V8_CUTOVER_SPEC.md @soul893

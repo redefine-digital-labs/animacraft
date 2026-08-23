@@ -1,0 +1,166 @@
+# Fresh Maker v8 Client Cutover
+
+## Phase boundary
+
+This phase replaces the public client with one fresh-v8 product path. It does
+not publish packages, deploy a site, sign or broadcast a transaction, or touch
+Mainnet. All executable builders are verified against local fixtures and the
+checked-in Move source.
+
+The client recognizes only the seven-role release tuple:
+
+1. Core
+2. Seal
+3. Runtime
+4. Output
+5. Physical
+6. Market
+7. Release
+
+Each role has one stable TypeOrigin and one current callable package. The
+client pins the ProductReleaseCatalog, protocol objects, role configs, payment
+coin, and the exact per-Maker capability objects read from a live Root. It
+never derives authority from a caller-supplied role name, source flag, object
+ID, digest, or local boolean.
+
+## Single product path
+
+- The browser bundle, runtime config, routes, scripts, docs, and tests contain
+  no retired-product compatibility, migration, fallback, or dual-read product path.
+- A legacy object, cache record, deep link, or document is reported as
+  `UNSUPPORTED_LEGACY_PRODUCT`; it is never migrated into v8.
+- Initial Maker publication starts with no embedded Pack Release. Packs and
+  Pack Physical policies are mutable post-activation v8 operations.
+- Core remains unchanged. Its recorded size gate is 63,918 / 64,000 bytes.
+
+## Compiler contract
+
+`compileMakerV8Publication(document, trustedContext)` accepts an exact
+chain-free author document and a separate trusted context containing certified
+transport bytes and live release bindings. It:
+
+- rejects compiler-owned IDs, package fields, commitments, signatures, and
+  transaction evidence in the author document;
+- projects public rows only, then revalidates references and the default
+  recipe;
+- recomputes certified file hashes and all locally-computable BCS commitments;
+- emits the current seven-package call graph, never the retired monolithic
+  `publication_v8` / `composition_v8` / `complete_v8` graph;
+- creates empty mutable Pack and Market state at activation;
+- emits bounded, resumable stages with exact targets, type arguments, input
+  roles, counters, and readback assertions.
+
+Initial base definitions are additionally bounded by the measured Sui 1.76.1
+object-runtime cost of sealing the Style registry. This measurement applies
+after `projectPublic`: let `S` be the published `PUBLIC` Style row count and
+`R` the number of distinct published `(colorChannelKey, defaultSwatchKey)`
+pairs. Private author-library Styles are still covered by the document
+byte/node/array budgets, but are not counted as rows that the compiler will
+publish. A document is publishable only when `S <= 500` and
+`2*S + R <= 1000`. The measured boundaries are 500 published Styles with no
+Color pair and 333 published Styles with 333 distinct Color pairs; 501/0 and
+334/334 fail closed before a transaction is built. This is a measured client
+publication cap, not the unchanged Move structural count constant, and must
+not be raised without a new metered execution proof.
+
+The canonical document validator also counts the exact rows and blobs that
+cross the compiler boundary: every Swatch becomes one Base Color row, so the
+aggregate across all Color channels is limited to `5,000`, matching the
+unchanged Move registry maximum. Author assets are limited to `4,999` entries
+in addition to the independent per-asset and aggregate byte budgets. The
+compiler consumes only a document that has passed these same canonical
+limits; it does not maintain a second, looser count path.
+
+The matching approved Sui protocol profile is exact: protocol version `133`,
+`object_runtime_max_num_cached_objects = 1000`, and
+`object_runtime_max_num_store_entries = 1000`. The compiler reads those values
+from `getProtocolConfig`, encodes the normalized profile as canonical JSON,
+hashes it with SHA-256, and binds both profile and hash into the trusted
+context. The durable publication controller must include that exact profile
+hash in its immutable plan before execution is enabled. The exact canonical JSON vector is
+`{"objectRuntimeMaxNumCachedObjects":"1000","objectRuntimeMaxNumStoreEntries":"1000","protocolVersion":"133","schemaVersion":"animacraft.maker-v8-sui-protocol-profile.v1"}`
+and its approved SHA-256 is
+`47a00c7f70f9359a3e1f28e301c51705ff6ce4d5912dde65685015a8bb2f8457`.
+Missing, malformed, or differently typed RPC values fail closed as
+`MAKER_V8_SUI_PROTOCOL_PROFILE_INVALID`. Well-typed lower or higher values—and
+any protocol-version drift—fail closed as
+`MAKER_V8_SUI_PROTOCOL_PROFILE_UNMEASURED`. A changed profile requires the
+seal-cap harness to be rerun and its evidence, review, specification, and
+approved profile to be updated explicitly before publication can resume.
+
+The metered code artifact is equally exact. Runtime attestation reads the live
+Core callable package object, retains its callable ID and package-object
+digest, canonically decodes `bcs.moduleMap.base_registry_v8`, and requires the
+module SHA-256
+`89ecbd9e3640ab218f92094c516d05d7efdacac4a12c56630759354af8d1bbc7`.
+Those three values are bound into the trusted-context Core artifact
+commitment; the durable publication controller must include that commitment
+in its immutable plan. Missing/non-canonical module bytes or a different
+module hash are unmeasured. Any later callable ID, package digest, module hash,
+or profile drift retires the release attempt instead of silently reusing the
+old measurement.
+
+## Typed Market contract
+
+There are four static lanes and fourteen callable actions:
+
+| Lane | List | Purchase | Cancel | Recover |
+| --- | --- | --- | --- | --- |
+| Maker control | yes | yes | yes | yes |
+| Soul bundle | yes | yes | yes | yes |
+| Base Physical | yes | yes | shared typed Physical | shared typed Physical |
+| Pack Physical | yes | yes | shared typed Physical | shared typed Physical |
+
+Maker, Soul, and Physical custody uses the exact `Receiving<T>` object
+reference (ID, version, digest). A Soul operation always carries all three
+children. Base and Pack Physical list/purchase targets are statically distinct.
+
+Quotes preserve u64/u128 values as `bigint` or canonical decimal strings. The
+client recomputes the Market quote commitment from verified live Root terms,
+shows gross/protocol/creator/source/seller amounts, and uses the Sui SDK's
+live-wallet `CoinWithBalance` resolver to merge/split exactly one
+`Coin<PaymentCoin>` whose value equals the listing gross. Callers cannot inject
+a payment object ID or amount. It forces quote review
+again after any Root, listing, wallet, revision, epoch, or commitment drift.
+
+## Status, errors, and recovery
+
+Visible transaction state is:
+
+`READING -> QUOTING -> READY -> AWAITING_SIGNATURE -> SIGNED_DURABLE -> BROADCASTING -> OUTCOME_PENDING -> VERIFIED | FINALIZED_FAILURE`.
+
+Errors retain one layer: local schema/config, stale context, eligibility,
+custody/authority, quote/payment, dry-run Move abort, wallet, durable storage,
+submission ambiguity, finalized execution, or readback/indexing mismatch.
+
+Signed bytes, signature, and digest are persisted before broadcast. Reload and
+retry query the digest first and may replay only those identical bytes. An
+ambiguous outcome never permits replacement signing. Success needs exact
+effects, event, terminal listing fields, custody ownership, and epoch readback;
+RPC success alone is insufficient.
+
+`FINALIZED_SUCCESS` and `FINALIZED_FAILURE` mean **effects-certified
+finality**: the pinned Core V2 response must return a successful or failed
+transaction-effects certificate bound to the exact transaction digest, exact
+TransactionData bytes, raw effects BCS SHA-256 fingerprint, epoch, and events
+digest. This phase does not claim checkpoint-inclusion evidence; a receipt
+that independently proves checkpoint inclusion is a later auditability
+enhancement and must not be inferred from the effects certificate.
+
+On-chain escape routes mirror Move exactly:
+
+- a healthy PAUSED Maker listing may be purchased or seller-canceled, but not
+  permissionlessly recovered;
+- Maker recovery requires ARCHIVED or degraded protocol state;
+- Soul and Physical recovery permits PAUSED, ARCHIVED, or degraded protocol;
+- seller cancellation remains available independently of protocol health.
+
+## Verification gates
+
+- checked-in normalized ABI/object/event/quote fixtures;
+- compiler commitment and seven-package call-plan fixtures;
+- positive and adversarial tests for every Market action and recovery crash
+  boundary;
+- fresh-only route, import, config, and source scans;
+- all seven Move test suites, adversarial runners, and bytecode size gates;
+- two independent P0/P1 audits with every finding closed before commit.

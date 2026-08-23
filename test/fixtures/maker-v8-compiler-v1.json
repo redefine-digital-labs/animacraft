@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "animacraft.maker-v8-compiler-fixture.v2",
+  "description": "Fresh-v8 author document, certified byte transport, package origins, and object-reference seeds for executable seven-role PTBs.",
+  "document": {
+    "schemaVersion": "animacraft.maker.v8",
+    "protocolVersion": 8,
+    "lineage": { "makerKey": "small-native-v8", "version": 1, "changelog": [] },
+    "metadata": { "name": "Small Native V8", "summary": "One exact Base style through all seven production packages.", "license": { "kind": "personal-use", "note": "Fixture terms" }, "coverAssetId": null },
+    "canvas": { "width": 64, "height": 64, "pixelMode": "pixelated" },
+    "composition": { "mode": "FIXED", "thirdPartyAdmission": "DISABLED", "itemAssetization": false },
+    "tracks": [{ "key": "base", "label": "Base", "renderOrder": 0, "locked": true }],
+    "colors": [],
+    "parts": [{
+      "key": "body", "label": "Body", "kind": "STANDARD", "renderOrder": 0, "menuOrder": 0, "visible": true, "required": true, "wardrobeMode": "FIXED", "capacity": 1,
+      "items": [{
+        "key": "body", "label": "Body", "status": "PUBLIC", "displayOrder": 0, "defaultStyleKey": "default",
+        "styles": [{
+          "key": "default", "label": "Default", "displayOrder": 0, "trackKey": "base", "colorChannelKey": null, "defaultSwatchKey": null, "assetId": "body-layer", "protected": false,
+          "transform": { "x": 0, "y": 0, "scale": 1, "rotation": 0 }, "opacity": 1, "blendMode": "normal",
+          "physical": { "material": "digital-print", "issuance": "FREE_CLAIM", "proof": "NONE", "priceAtomic": "0", "maxSupply": "10", "transferable": true },
+          "payload": { "fixture": "base-style" }
+        }],
+        "payload": { "fixture": "base-item" }
+      }],
+      "payload": { "fixture": "base-part" }
+    }],
+    "rules": [],
+    "defaultRecipe": { "selections": [{ "partKey": "body", "itemKey": "body", "styleKey": "default" }], "colors": [] },
+    "outputs": [{ "key": "avatar", "label": "Avatar", "protected": false, "allowedPackPolicy": { "kind": "ALL_ADMITTED", "packIds": [] }, "payload": { "format": "png" } }],
+    "commerce": {
+      "schemaVersion": "animacraft.maker-commerce.v8", "rightsOrigin": "ONCHAIN_NATIVE", "rightsOriginConfirmed": true, "rightsEvidence": null,
+      "makerAccess": { "mode": "FREE", "purchasePriceAtomic": 0 },
+      "baseCompletion": { "mode": "UNLIMITED_FREE", "freeQuotaPerWallet": 0, "priceAtomic": 0, "totalCap": null },
+      "soulCreatorRoyaltyBps": 250, "makerSourceRoyaltyBps": 300, "makerResaleRoyaltyBps": 500
+    },
+    "assets": [{ "id": "body-layer", "kind": "layer", "mediaType": "image/png", "byteLength": "8" }]
+  },
+  "transportAssets": [{ "assetId": "body-layer", "blobId": "walrus-body-layer-v8", "mediaType": "image/png", "bytesBase64": "iVBORw0KGgo=" }],
+  "ids": {
+    "signer": "0xa11ce", "protocolConfig": "0x101", "protocolTreasury": "0x102", "catalog": "0x103",
+    "sealConfig": "0x104", "runtimeConfig": "0x105", "outputConfig": "0x106", "physicalConfig": "0x107", "marketConfig": "0x108", "releaseConfig": "0x109",
+    "root": "0x201", "baseRegistry": "0x202", "makerTreasury": "0x203", "adminCap": "0x204",
+    "sealRegistry": "0x301", "runtimeDefinitions": "0x302", "packRegistry": "0x303", "admissionAuthority": "0x304", "outputRegistry": "0x305", "soulRegistry": "0x306", "physicalRegistry": "0x307", "marketRegistry": "0x308", "marketTreasury": "0x309"
+  },
+  "packageRoles": {
+    "core": ["0x401", "0x402"], "seal": ["0x411", "0x412"], "runtime": ["0x421", "0x422"], "output": ["0x431", "0x432"], "physical": ["0x441", "0x442"], "market": ["0x451", "0x452"], "release": ["0x461", "0x462"]
+  },
+  "expected": {
+    "manifestSha256": "b084791277d949ae369955784013fbc38bfa9565a0fd70b3abe09d427601f18c",
+    "contentCommitment": "b084791277d949ae369955784013fbc38bfa9565a0fd70b3abe09d427601f18c",
+    "baseAggregateCommitment": "f93483bdcbbc07739475972272734086fda6831b3062aeb9af949ae9ded02bf3",
+    "runtimePolicyCommitment": "9efe72e1d6e79a17b87b590d0ad319152f7d357503739295159ec954e779c6d6"
+  }
+}

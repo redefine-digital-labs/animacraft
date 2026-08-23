@@ -1,0 +1,10 @@
+[package]
+name = "animacraft_v8_core_adversarial_abilities"
+edition = "2024.beta"
+
+[dependencies]
+animacraft_v8_core = { local = "../.." }
+animacraft_v8_core_companion_probe = { local = "../companion_compile" }
+
+[addresses]
+animacraft_v8_core_adversarial_abilities = "0x0"

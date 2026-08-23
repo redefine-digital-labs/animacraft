@@ -1,55 +1,53 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { classifyChainUiError } from '../chain-error-ui.js';
+import {
+  FRESH_V8_ERROR_LAYER,
+  classifyFreshV8Error,
+} from '../chain-error-ui.js';
 
-test('classifies a nested Walrus relay maximum-tip rejection without exposing a stack', () => {
-  const error = new Error('Walrus relay transaction could not be prepared');
-  error.cause = {
-    code: 'RPC_ERROR',
-    error: {
-      message: 'Tip amount 1200000 exceeds maximum allowed tip 1000000',
-    },
-  };
-  const result = classifyChainUiError(error, {
-    action: 'publish',
-    occurredAt: '2026-07-27T12:00:00.000Z',
-  });
-
-  assert.equal(result.code, 'TIP_TOO_HIGH');
-  assert.equal(result.action, 'publish');
-  assert.match(result.details, /Tip amount 1200000 exceeds maximum allowed tip 1000000/);
-  assert.match(result.diagnostic, /Code: TIP_TOO_HIGH/);
-  assert.match(result.diagnostic, /Action: publish/);
-  assert.doesNotMatch(result.diagnostic, /\n\s+at /);
+test('fresh v8 errors retain exactly one user-visible layer', () => {
+  const cases = [
+    ['MAKER_V8_SCHEMA_INVALID', FRESH_V8_ERROR_LAYER.LOCAL_SCHEMA_CONFIG],
+    ['MARKET_V8_STALE_QUOTE_COMMITMENT', FRESH_V8_ERROR_LAYER.STALE_CONTEXT],
+    ['MARKET_V8_LISTING_STATUS_INVALID', FRESH_V8_ERROR_LAYER.ELIGIBILITY],
+    ['MARKET_V8_OBJECT_REF_MISMATCH', FRESH_V8_ERROR_LAYER.CUSTODY_AUTHORITY],
+    ['MARKET_V8_PAYMENT_AMOUNT_MISMATCH', FRESH_V8_ERROR_LAYER.QUOTE_PAYMENT],
+    ['WEB_V8_MOVE_ABORT', FRESH_V8_ERROR_LAYER.DRY_RUN_MOVE_ABORT],
+    ['WEB_V8_WALLET_NETWORK_MISMATCH', FRESH_V8_ERROR_LAYER.WALLET],
+    ['MAKER_V8_RECOVERY_STORAGE_FAILED', FRESH_V8_ERROR_LAYER.DURABLE_STORAGE],
+    ['MAKER_V8_RECOVERY_BROADCAST_FAILED', FRESH_V8_ERROR_LAYER.SUBMISSION_AMBIGUITY],
+    ['MAKER_V8_RECOVERY_FINALIZED_FAILURE_REPLAY', FRESH_V8_ERROR_LAYER.FINALIZED_EXECUTION],
+    ['MAKER_V8_RECOVERY_READBACK_PENDING', FRESH_V8_ERROR_LAYER.READBACK_INDEXING],
+  ];
+  for (const [code, layer] of cases) {
+    const issue = classifyFreshV8Error(Object.assign(new Error(code), { code }), {
+      action: 'purchaseMakerControl',
+      occurredAt: '2026-08-21T00:00:00.000Z',
+    });
+    assert.equal(issue.layer, layer, code);
+    assert.equal(Object.values(FRESH_V8_ERROR_LAYER).filter((entry) => entry === issue.layer).length, 1);
+    assert.match(issue.diagnostic, new RegExp(`Layer: ${layer}`));
+    assert.match(issue.diagnostic, /Action: purchaseMakerControl/);
+  }
 });
 
-test('classifies common retry and wallet outcomes with a safe generic fallback', () => {
-  assert.equal(classifyChainUiError({ code: 'UPLOAD_QUOTE_CHANGED' }).code, 'UPLOAD_QUOTE_CHANGED');
-  assert.equal(
-    classifyChainUiError({ code: 'WALRUS_CERTIFICATION_NOT_VISIBLE' }).code,
-    'WALRUS_CERTIFICATION_NOT_VISIBLE',
-  );
-  assert.equal(classifyChainUiError({ code: 'TRANSACTION_OUTCOME_PENDING' }).code, 'TRANSACTION_OUTCOME_PENDING');
-  assert.equal(classifyChainUiError({ code: 'INSUFFICIENT_WAL_BALANCE' }).code, 'INSUFFICIENT_WAL_BALANCE');
-  assert.equal(classifyChainUiError({ code: 'INSUFFICIENT_SUI_BALANCE' }).code, 'INSUFFICIENT_SUI_BALANCE');
-  assert.equal(classifyChainUiError({ code: 'UPLOAD_RECOVERY_MISMATCH' }).code, 'UPLOAD_RECOVERY_MISMATCH');
-  assert.equal(classifyChainUiError(new Error('User rejected the request')).code, 'WALLET_REJECTED');
-  assert.equal(classifyChainUiError(new Error('Insufficient gas balance')).code, 'INSUFFICIENT_GAS');
-  assert.equal(classifyChainUiError(new Error('Network error: failed to fetch')).code, 'NETWORK_UNAVAILABLE');
-  assert.equal(classifyChainUiError(new Error('Move abort 42')).code, 'CHAIN_ACTION_FAILED');
+test('recovery-supplied layers take precedence over ambiguous text', () => {
+  const issue = classifyFreshV8Error(Object.assign(new Error('wallet and broadcast words'), {
+    code: 'MAKER_V8_RECOVERY_CONTEXT_DRIFT',
+    layer: 'CONTEXT',
+    retryable: false,
+  }));
+  assert.equal(issue.layer, FRESH_V8_ERROR_LAYER.STALE_CONTEXT);
+  assert.equal(issue.retryable, true);
 });
 
-test('classifies a confirmed Walrus certification as a state-sync wait rather than a failed action', () => {
-  const result = classifyChainUiError(new Error(
-    'Walrus certification 0xdigest is confirmed but the certified Blob object is not visible yet.',
-  ), {
-    action: 'certify',
-    occurredAt: '2026-07-27T06:21:08.240Z',
+test('diagnostics are bounded and do not serialize arbitrary object fields', () => {
+  const issue = classifyFreshV8Error({
+    code: 'WEB_V8_BAD_INPUT',
+    message: 'x'.repeat(20_000),
+    secret: 'must-not-appear',
   });
-
-  assert.equal(result.code, 'WALRUS_CERTIFICATION_NOT_VISIBLE');
-  assert.equal(result.action, 'certify');
-  assert.match(result.diagnostic, /^Animacraft chain state is still syncing/m);
-  assert.doesNotMatch(result.diagnostic, /^Animacraft chain action failed/m);
+  assert.ok(issue.details.length <= 8_000);
+  assert.doesNotMatch(issue.diagnostic, /must-not-appear/);
 });
