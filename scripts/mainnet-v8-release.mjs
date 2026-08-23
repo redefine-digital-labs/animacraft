@@ -97,6 +97,8 @@ export const MAINNET_V8_MINIMUM_GAS_CUSHION = 100_000_000n;
 export const MAINNET_V8_WAL_FILENAME = 'release-wal.json';
 export const MAINNET_V8_PLAN_FILENAME = 'release-plan.json';
 export const MAINNET_V8_PUBLISHED_FILENAME = 'Published.toml';
+export const MAINNET_V8_REPAIRABLE_READBACK_INCIDENT =
+  'MAINNET_V8_CREATED_OUTPUT_INVALID';
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, '..');
@@ -551,7 +553,8 @@ export function parseMainnetV8ReleaseArgs(argv) {
     const token = input.shift();
     if (!token.startsWith('--')) fail('MAINNET_V8_ARGUMENT_INVALID', `Unexpected argument: ${token}`);
     const name = token.slice(2);
-    if (['confirm-mainnet', 'allow-signing', 'allow-broadcast', 'json'].includes(name)) {
+    if (['confirm-mainnet', 'allow-signing', 'allow-broadcast', 'repair-readback-incident', 'json']
+      .includes(name)) {
       options[name] = true;
       continue;
     }
@@ -1501,6 +1504,10 @@ export function writtenReferencesFromEffects(effectsBytes, expectedDigest) {
         digest: digest(packageDigest, 'effects.package.digest'),
         owner: Object.freeze({ kind: 'Immutable' }),
       })];
+    }
+    if (change.idOperation?.$kind !== 'Created'
+      && ['NotExist', 'AccumulatorWriteV1'].includes(change.outputState?.$kind)) {
+      return [];
     }
     fail('MAINNET_V8_CREATED_OUTPUT_INVALID', 'Created effects entry has no object/package output.');
   }));
@@ -3350,6 +3357,7 @@ function printUsage() {
   process.stdout.write(`Required for prepare: --state-dir PATH --sui-binary PATH --sender 0x...\n`);
   process.stdout.write(`Required for run/resume: --state-dir PATH --sui-binary PATH --execution-plan-id SHA256\n`);
   process.stdout.write(`After manifest seal, run/resume also requires --release-id SHA256\n`);
+  process.stdout.write(`Known parser incidents may be reopened with --repair-readback-incident; this never signs or broadcasts by itself.\n`);
   process.stdout.write(`Writes require all three gates: --confirm-mainnet --allow-signing --allow-broadcast\n`);
 }
 
@@ -4678,6 +4686,47 @@ async function certifyPendingReadback({ paths, wal, client, transport, operation
   return Object.freeze({ wal: advanced, blocked: null, error: null });
 }
 
+function repairableReadbackIncident(event) {
+  return event?.status === 'INCIDENT_STOPPED'
+    && event.ordinal !== '9'
+    && event.evidence?.observation?.details?.incident?.code
+      === MAINNET_V8_REPAIRABLE_READBACK_INCIDENT;
+}
+
+function pendingReadbackRepair(wal) {
+  const event = headEvent(wal);
+  const previous = wal.events.at(-2);
+  return event?.status === 'FINALIZED_SUCCESS_PENDING_READBACK'
+    && repairableReadbackIncident(previous)
+    && previous.ordinal === event.ordinal
+    && previous.attempt === event.attempt;
+}
+
+async function reopenReadbackIncident({ paths, wal }) {
+  const event = headEvent(wal);
+  if (!repairableReadbackIncident(event)) {
+    fail(
+      'MAINNET_V8_READBACK_INCIDENT_NOT_REPAIRABLE',
+      'Only the exact known successful-effects output parser incident can be reopened.',
+    );
+  }
+  const { ready, signed } = signedContext(wal, event);
+  const finalityEvidence = event.evidence.observation.details.finalityEvidence;
+  const observation = {
+    finalityEvidence,
+    finalityEvidenceSha256: mainnetV8JsonSha(finalityEvidence),
+  };
+  const evidence = outcomeEvidenceFor({
+    status: 'FINALIZED_SUCCESS_PENDING_READBACK', event, ready, signed, observation,
+  });
+  return appendAndColdRead(paths, wal, {
+    ordinal: event.ordinal,
+    attempt: event.attempt,
+    status: 'FINALIZED_SUCCESS_PENDING_READBACK',
+    evidence,
+  });
+}
+
 function finalManifestFromWal(wal) {
   const packages = ROLE_ORDER.map((role, ordinal) => {
     const details = finalizedDetails(wal, ordinal);
@@ -5151,6 +5200,7 @@ export async function executeMainnetV8Release({
   client = new SuiGrpcClient({ network: 'mainnet', baseUrl: MAKER_V8_SUI_GRPC_MAINNET_ENDPOINT }),
   transport = createProductionMakerV8SuiGrpcTransport(),
   maximumTransitions = 128,
+  repairReadbackIncident = false,
   dependencies = {},
 }) {
   if (!Number.isSafeInteger(maximumTransitions) || maximumTransitions < 1 || maximumTransitions > 10_000) {
@@ -5200,9 +5250,22 @@ export async function executeMainnetV8Release({
     || toolchain.frameworkRevision !== wal.plan.toolchain.frameworkRevision) {
     fail('MAINNET_V8_TOOLCHAIN_DRIFT', 'Resume toolchain differs from the immutable release plan.');
   }
+  const initialEvent = headEvent(wal);
+  if (repairReadbackIncident !== false
+    && (repairReadbackIncident !== true
+      || !(repairableReadbackIncident(initialEvent) || pendingReadbackRepair(wal)))) {
+    fail(
+      'MAINNET_V8_READBACK_INCIDENT_NOT_REPAIRABLE',
+      'Readback repair requires the exact durable parser incident or its reopened pending state.',
+    );
+  }
   for (let transition = 0; transition < maximumTransitions; transition += 1) {
     const event = headEvent(wal);
     const ordinal = Number(event.ordinal);
+    if (event.status === 'INCIDENT_STOPPED' && repairReadbackIncident === true) {
+      wal = await reopenReadbackIncident({ paths, wal });
+      continue;
+    }
     if (['FINALIZED_FAILURE', 'EXPIRED_NOT_FOUND', 'INCIDENT_STOPPED'].includes(event.status)) {
       return Object.freeze({ status: event.status, wal, writesComplete: false });
     }
@@ -5255,6 +5318,13 @@ export async function executeMainnetV8Release({
       wal = certified.wal;
       if (certified.blocked) {
         return Object.freeze({ status: certified.blocked, wal, writesComplete: false });
+      }
+      if (repairReadbackIncident === true) {
+        return Object.freeze({
+          status: 'READBACK_REPAIR_COMPLETE',
+          wal,
+          writesComplete: false,
+        });
       }
       continue;
     }
@@ -5345,6 +5415,7 @@ async function main(argv = process.argv.slice(2)) {
       suiBinary: options['sui-binary'],
       expectedExecutionPlanId: options['execution-plan-id'],
       expectedReleaseId: options['release-id'] ?? null,
+      repairReadbackIncident: options['repair-readback-incident'] === true,
     });
     process.stdout.write(`${JSON.stringify({
       status: result.status,
@@ -5359,7 +5430,7 @@ async function main(argv = process.argv.slice(2)) {
       'QUERY_RETRY_REQUIRED', 'FINALITY_EVIDENCE_RETRY_REQUIRED',
       'READBACK_RETRY_REQUIRED', 'BROADCAST_OUTCOME_UNKNOWN',
       'QUERY_ONLY_PROFILE_DRIFT', 'TRANSITION_LIMIT_REACHED',
-      'FINAL_MANIFEST_REVIEW_REQUIRED',
+      'FINAL_MANIFEST_REVIEW_REQUIRED', 'READBACK_REPAIR_COMPLETE',
     ].includes(result.status)) process.exitCode = 2;
     return;
   }

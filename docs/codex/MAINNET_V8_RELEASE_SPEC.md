@@ -542,6 +542,7 @@ verify-source 运行目录不得复用发布时的 build cache；cache hit 不�
 - typed not-found 以外的错误不是“未上链”证据；
 - 过期且 typed not-found 时 abandon 整个 release，不为同 release 重签；
 - 链上 success 但对象/事件/readback 不满足本规格时，标为 `INCIDENT_STOPPED`，保留全部证据，禁止自动继续或 Web 切流；
+- 唯一允许的 readback repair 是已锁定的本地证书解析器缺陷 `MAINNET_V8_CREATED_OUTPUT_INVALID`：必须由显式 `--repair-readback-incident` 触发，在同一 ordinal/attempt/digest/signature/finality bytes 上 append-only 地重新进入 `FINALIZED_SUCCESS_PENDING_READBACK`，不得 query、签名、广播或替换交易；WAL 必须拒绝任何 finality 漂移，修复调用在得到 `FINALIZED_SUCCESS` 后立即停止，下一 ordinal 只能由后续独立 resume 启动。其他 incident 一律保持 terminal；
 - effects-certified failure 后停止；不得跳过、重排或把新交易冒充同 ordinal；
 - 已有部分 package 成功时不能删除。放弃 release 会留下未被 production config 引用的 orphan packages/UpgradeCaps，必须明确登记，未来 release 使用新 releaseId 从头认证；
 - AdminCap、UpgradeCaps 是高价值权威对象；不得在自动恢复中转移、销毁或更改 upgrade policy。

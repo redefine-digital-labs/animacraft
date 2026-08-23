@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
-  chmod, mkdtemp, readFile, readdir, stat, unlink, writeFile,
+  chmod, mkdtemp, readFile, readdir, rm, stat, unlink, writeFile,
 } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2192,6 +2192,67 @@ test('all ten ordinals bind predecessor certificates and verify ordinal 9 withou
   assert.equal(wal.events.at(-1).status, 'FINALIZED_SUCCESS');
   assert.equal(wal.events.at(-1).ordinal, '9');
   assert.equal(Object.hasOwn(wal.events.at(-1).evidence, 'signedArtifact'), false);
+  assert.deepEqual(await readMainnetV8ReleaseWal(path), wal);
+});
+
+test('known successful-readback parser incident only reopens the exact durable finality', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'animacraft-v8-readback-repair-wal-'));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'release.json');
+  const ready = readyPublishEvidence(0);
+  const signed = signedWalEvidence(ready, '0', '0');
+  const finalized = finalizedPublishDetails(0);
+  const pendingDetails = pendingReadbackDetails(finalized);
+  let wal = await createMainnetV8ReleaseWal(path, fixturePlan(), {
+    recordedAt: '2026-08-23T00:00:00.000Z', evidence: ready,
+  });
+  const append = async (status, evidence, recordedAt) => {
+    wal = await appendMainnetV8ReleaseWal(path, {
+      expectedRevision: wal.revision,
+      expectedHeadEventSha256: wal.headEventSha256,
+      ordinal: '0', attempt: '0', status, evidence, recordedAt,
+    });
+    return wal;
+  };
+  await append('SIGNED', signed, '2026-08-23T00:00:01.000Z');
+  await append('OUTCOME_PENDING', outcomeWalEvidence(
+    'OUTCOME_PENDING', ready, signed, '0', '0', queryIntent,
+  ), '2026-08-23T00:00:02.000Z');
+  await append('FINALIZED_SUCCESS_PENDING_READBACK', outcomeWalEvidence(
+    'FINALIZED_SUCCESS_PENDING_READBACK', ready, signed, '0', '0', pendingDetails,
+  ), '2026-08-23T00:00:03.000Z');
+  const incident = {
+    code: 'MAINNET_V8_CREATED_OUTPUT_INVALID',
+    message: 'Created effects entry has no object/package output.',
+    details: {},
+  };
+  await append('INCIDENT_STOPPED', outcomeWalEvidence(
+    'INCIDENT_STOPPED', ready, signed, '0', '0', {
+      ...pendingDetails,
+      incident,
+      incidentSha256: sha256MainnetV8Json(incident),
+    },
+  ), '2026-08-23T00:00:04.000Z');
+
+  const drifted = clone(pendingDetails);
+  drifted.finalityEvidence.checkpoint = '999';
+  drifted.finalityEvidenceSha256 = sha256MainnetV8Json(drifted.finalityEvidence);
+  await assert.rejects(() => appendMainnetV8ReleaseWal(path, {
+    expectedRevision: wal.revision,
+    expectedHeadEventSha256: wal.headEventSha256,
+    ordinal: '0', attempt: '0', status: 'FINALIZED_SUCCESS_PENDING_READBACK',
+    evidence: outcomeWalEvidence(
+      'FINALIZED_SUCCESS_PENDING_READBACK', ready, signed, '0', '0', drifted,
+    ),
+    recordedAt: '2026-08-23T00:00:05.000Z',
+  }), expectCode('MAINNET_V8_WAL_TRANSITION_INVALID'));
+
+  await append('FINALIZED_SUCCESS_PENDING_READBACK', outcomeWalEvidence(
+    'FINALIZED_SUCCESS_PENDING_READBACK', ready, signed, '0', '0', pendingDetails,
+  ), '2026-08-23T00:00:05.000Z');
+  assert.equal(wal.revision, '6');
+  assert.equal(wal.events.at(-2).status, 'INCIDENT_STOPPED');
+  assert.equal(wal.events.at(-1).status, 'FINALIZED_SUCCESS_PENDING_READBACK');
   assert.deepEqual(await readMainnetV8ReleaseWal(path), wal);
 });
 

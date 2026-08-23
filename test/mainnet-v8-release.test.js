@@ -1102,7 +1102,8 @@ test('release CLI parsing keeps all three Mainnet write gates explicit and rejec
   assert.deepEqual(parseMainnetV8ReleaseArgs([]), { command: 'status', options: {} });
   assert.deepEqual(parseMainnetV8ReleaseArgs([
     'run', '--state-dir', '/tmp/release-state', '--sui-binary', '/tmp/sui',
-    '--confirm-mainnet', '--allow-signing', '--allow-broadcast', '--json',
+    '--confirm-mainnet', '--allow-signing', '--allow-broadcast',
+    '--repair-readback-incident', '--json',
   ]), {
     command: 'run',
     options: {
@@ -1111,6 +1112,7 @@ test('release CLI parsing keeps all three Mainnet write gates explicit and rejec
       'confirm-mainnet': true,
       'allow-signing': true,
       'allow-broadcast': true,
+      'repair-readback-incident': true,
       json: true,
     },
   });
@@ -2502,6 +2504,94 @@ test('execute runner persists pending readback before certification and advances
   ]);
 });
 
+test('execute runner re-certifies the exact known readback incident without signing or broadcasting', async (t) => {
+  const { stateDir, fixture } = await createExecutionState(t);
+  const signedArtifact = await signEnvelopeFixture(fixture.unsignedEnvelope);
+  const { finalityEvidence, readback } = publishCertificationFixture(fixture, signedArtifact);
+  let signCount = 0;
+  let queryCount = 0;
+  let broadcastCount = 0;
+  let certifyCount = 0;
+  let repairParser = false;
+  const dependencies = {
+    inspectToolchain: async () => fixture.plan.toolchain,
+    assertProtocolProfile: async () => fixture.readyArtifact.protocolProfile,
+    assertReadyBuild: async () => Object.freeze({ kind: 'PUBLISH_BUILD_VERIFIED' }),
+    assertReadyAuthority: async () => Object.freeze({ kind: 'NO_STAGE_AUTHORITY', ordinal: '0' }),
+    signExactTransaction: async () => {
+      signCount += 1;
+      return signedArtifact;
+    },
+    verifySignedArtifact: acceptFixtureSignedArtifact,
+    queryFinalizedOutcome: async () => {
+      queryCount += 1;
+      return Object.freeze({ status: 'FINALIZED_SUCCESS', evidence: finalityEvidence });
+    },
+    broadcastExactTransaction: async () => {
+      broadcastCount += 1;
+      assert.fail('finalized digest must never be broadcast');
+    },
+    getCheckpointWatermark: async () => assert.fail('finalized digest needs no watermark'),
+    certifyReadback: async () => {
+      certifyCount += 1;
+      if (!repairParser) {
+        const error = new Error('Created effects entry has no object/package output.');
+        error.code = 'MAINNET_V8_CREATED_OUTPUT_INVALID';
+        throw error;
+      }
+      return readback;
+    },
+    now: () => assert.fail('finalized digest needs no NOT_FOUND clock'),
+  };
+  const executeOne = (options = {}) => executeMainnetV8Release({
+    stateDir,
+    suiBinary: '/offline/fake-sui',
+    expectedExecutionPlanId: fixture.plan.executionPlanId,
+    client: {},
+    transport: {},
+    maximumTransitions: 1,
+    dependencies,
+    ...options,
+  });
+
+  await executeOne();
+  await executeOne();
+  await executeOne();
+  const stopped = await executeOne();
+  assert.equal(stopped.status, 'INCIDENT_STOPPED');
+  assert.equal((await coldHead(stateDir)).event.status, 'INCIDENT_STOPPED');
+  assert.equal(signCount, 1);
+  assert.equal(queryCount, 1);
+  assert.equal(broadcastCount, 0);
+  assert.equal(certifyCount, 1);
+
+  const unchanged = await executeOne();
+  assert.equal(unchanged.status, 'INCIDENT_STOPPED');
+  assert.equal(certifyCount, 1, 'ordinary resume must preserve the terminal incident');
+
+  repairParser = true;
+  const repaired = await executeOne({
+    maximumTransitions: 2,
+    repairReadbackIncident: true,
+  });
+  assert.equal(repaired.status, 'READBACK_REPAIR_COMPLETE');
+  assert.equal(repaired.writesComplete, false);
+  const head = await coldHead(stateDir);
+  assert.equal(head.event.status, 'FINALIZED_SUCCESS');
+  assert.equal(head.wal.revision, '7');
+  assert.equal(head.wal.events.at(-3).status, 'INCIDENT_STOPPED');
+  assert.equal(head.wal.events.at(-2).status, 'FINALIZED_SUCCESS_PENDING_READBACK');
+  assert.equal(head.wal.events.at(-1).status, 'FINALIZED_SUCCESS');
+  assert.equal(signCount, 1);
+  assert.equal(queryCount, 1);
+  assert.equal(broadcastCount, 0);
+  assert.equal(certifyCount, 2);
+  assert.deepEqual(
+    head.event.evidence.observation.details.certificate.readback,
+    readback,
+  );
+});
+
 test('durable V1 finality evidence binds canonical effects hash, digest, status, epoch, and events', async () => {
   const { artifact } = await signedFixture();
   const effectsBytes = bcs.TransactionEffects.serialize({
@@ -2682,6 +2772,20 @@ test('TransactionEffects V2 returns object and package writes with correct versi
           outputState: { PackageWrite: ['9', objectDigest(74)] },
           idOperation: { Created: true },
         }],
+        [objectId(75), {
+          inputState: { NotExist: true },
+          outputState: {
+            AccumulatorWriteV1: {
+              address: {
+                address: RELEASE_SENDER,
+                ty: '0x2::balance::Balance<0x2::sui::SUI>',
+              },
+              operation: { Split: true },
+              value: { Integer: '493223600' },
+            },
+          },
+          idOperation: { None: true },
+        }],
       ],
       unchangedConsensusObjects: [],
       auxDataDigest: null,
@@ -2712,4 +2816,11 @@ test('TransactionEffects V2 returns object and package writes with correct versi
       owner: { kind: 'Immutable' },
     },
   ]);
+  const impossibleCreatedAccumulator = structuredClone(bcs.TransactionEffects.parse(effectsBytes));
+  impossibleCreatedAccumulator.V2.changedObjects.at(-1)[1].idOperation = { Created: true };
+  const impossibleBytes = bcs.TransactionEffects.serialize(impossibleCreatedAccumulator).toBytes();
+  assert.throws(
+    () => writtenReferencesFromEffects(impossibleBytes, transactionDigest),
+    expectCode('MAINNET_V8_CREATED_OUTPUT_INVALID'),
+  );
 });

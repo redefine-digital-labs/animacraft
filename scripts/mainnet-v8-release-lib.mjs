@@ -4180,6 +4180,17 @@ function assertWalTransition(previous, current) {
     ? previous.evidence.observation.kind : null;
   const currentIntent = current.status === 'OUTCOME_PENDING'
     ? current.evidence.observation.kind : null;
+  const previousIncident = previous.status === 'INCIDENT_STOPPED'
+    ? previous.evidence.observation.details : null;
+  const currentPending = current.status === 'FINALIZED_SUCCESS_PENDING_READBACK'
+    ? current.evidence.observation.details : null;
+  const repairsKnownReadbackIncident = previousIncident !== null
+    && currentPending !== null
+    && previous.ordinal !== '9'
+    && previousIncident.incident.code === 'MAINNET_V8_CREATED_OUTPUT_INVALID'
+    && previousIncident.finalityEvidenceSha256 === currentPending.finalityEvidenceSha256
+    && canonicalMainnetV8Json(previousIncident.finalityEvidence)
+      === canonicalMainnetV8Json(currentPending.finalityEvidence);
   const valid = previous.status === 'READY' && previous.ordinal !== '9'
       && current.status === 'SIGNED' && sameCursor
     || previous.status === 'READY' && previous.ordinal === '9'
@@ -4200,6 +4211,9 @@ function assertWalTransition(previous, current) {
       && current.status === 'OUTCOME_PENDING' && currentIntent === 'QUERY_INTENT' && sameCursor
     || previous.status === 'FINALIZED_SUCCESS_PENDING_READBACK'
       && ['FINALIZED_SUCCESS', 'INCIDENT_STOPPED'].includes(current.status) && sameCursor
+    || previous.status === 'INCIDENT_STOPPED'
+      && current.status === 'FINALIZED_SUCCESS_PENDING_READBACK'
+      && repairsKnownReadbackIncident && sameCursor
     || previous.status === 'FINALIZED_SUCCESS' && previous.ordinal === '6'
       && current.status === 'FINAL_MANIFEST_SEALED' && sameCursor
     || previous.status === 'FINAL_MANIFEST_SEALED' && current.status === 'READY'
